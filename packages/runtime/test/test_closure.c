@@ -11,6 +11,7 @@
 extern long scr_str_live_count(void);
 extern long scr_box_live_count(void);
 extern long scr_closure_live_count(void);
+extern long scr_union_live_count(void);
 
 static int failures = 0;
 #define CHECK(cond)                                                            \
@@ -87,6 +88,46 @@ int main(void) {
   CHECK(scr_closure_retain(ic) == ic);
   scr_closure_release(ic);
   CHECK(ic->rc == SIZE_MAX);
+
+  /* union boxes: only a box whose trace visits its payload can be a cycle
+   * root, so only such a box is buffered when a release leaves it alive */
+  ScrUnion *su = scr_union_new_ref(0, scr_str_new("u", 1), &scr_str_retain_v,
+                                   &scr_str_release_v, NULL);
+  scr_union_retain(su);
+  scr_union_release(su);
+  CHECK(!scr_cyc_hdr(su)->buffered);
+  scr_union_release(su);
+  CHECK(scr_str_live_count() == 0);
+  ScrUnion *fu = scr_union_new_f64(1, 2.5);
+  scr_union_retain(fu);
+  scr_union_release(fu);
+  CHECK(!scr_cyc_hdr(fu)->buffered);
+  scr_union_release(fu);
+  ScrUnion *cu = scr_union_new_ref(0, scr_closure_new((void *)&dummy_fn, 0),
+                                   &scr_closure_retain_v, &scr_closure_release_v,
+                                   &scr_closure_trace_v);
+  scr_union_retain(cu);
+  scr_union_release(cu);
+  CHECK(scr_cyc_hdr(cu)->buffered);
+  scr_union_release(cu); /* dies while buffered: leaves the buffer, frees */
+  CHECK(scr_closure_live_count() == 0);
+
+  /* a cycle through a traced union box is still collected:
+   * closure -> box -> union -> closure */
+  ScrClosure *loop = scr_closure_new((void *)&dummy_fn, 1);
+  ScrBox *ub = scr_box_new_obj(&scr_union_retain_v, &scr_union_release_v,
+                               &scr_union_trace_v);
+  loop->caps[0] = ub; /* the closure owns the box's only reference */
+  scr_box_set_ref(ub, scr_union_new_ref(0, scr_closure_retain(loop),
+                                        &scr_closure_retain_v,
+                                        &scr_closure_release_v,
+                                        &scr_closure_trace_v));
+  scr_closure_release(loop); /* only the cycle keeps it alive now */
+  CHECK(scr_closure_live_count() == 1);
+  scr_collect_cycles();
+  CHECK(scr_closure_live_count() == 0);
+  CHECK(scr_box_live_count() == 0);
+  CHECK(scr_union_live_count() == 0);
 
   fprintf(stderr, "%s\n", failures ? "FAILED" : "all closure tests passed");
   return failures ? 1 : 0;

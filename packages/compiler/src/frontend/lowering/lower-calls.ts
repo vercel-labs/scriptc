@@ -76,6 +76,7 @@ import {
   lowerObjectIterOverIndexShape,
 } from "./containers/indexed-objects.js";
 import { lowerTupleReadMethodCall } from "./containers/array-methods.js";
+import { tryFuseIndexRead } from "./array-values.js";
 import { lowerBytesStaticCall } from "./containers/bytes.js";
 import {
   lowerRegexMethodCall,
@@ -2396,6 +2397,29 @@ function lowerNumberConstructorValue(
     return { kind: "libCall", fn: "num.fromString", args: [arg], type: F64, loc };
   if (arg.type.kind === "dyn")
     return { kind: "libCall", fn: "dyn.numberConstructor", args: [arg], type: F64, loc };
+  // Number(strings[i]) without boxing `string | undefined`: a missing slot
+  // converts like undefined, to NaN.
+  const indexedString =
+    arg.type.kind === "union" &&
+    arg.kind === "call" &&
+    arg.args[0]?.type.kind === "array" &&
+    arg.args[0].type.elem.kind === "string"
+      ? tryFuseIndexRead(
+          lowerer,
+          arg,
+          F64,
+          (read) => ({ kind: "libCall", fn: "num.fromString", args: [read], type: F64, loc }),
+          {
+            kind: "bin",
+            op: "/",
+            left: { kind: "numLit", value: 0, type: F64, loc },
+            right: { kind: "numLit", value: 0, type: F64, loc },
+            type: F64,
+            loc,
+          },
+        )
+      : null;
+  if (indexedString) return indexedString;
   if (arg.type.kind === "union" && lowerer.dynConvertible(arg.type))
     return {
       kind: "libCall",

@@ -66,11 +66,11 @@ static void scr_box_gcfree(void *o) {
 #ifdef SCR_RC_AUDIT
   scr_live_boxes--;
 #endif
-  scr_cyc_free(b);
+  scr_cyc_free_inline(b);
 }
 
 ScrBox *scr_box_new(ScrBoxKind kind) {
-  ScrBox *b = scr_cyc_alloc(sizeof(ScrBox), &scr_box_trace, &scr_box_gcfree);
+  ScrBox *b = scr_cyc_alloc_inline(sizeof(ScrBox), &scr_box_trace, &scr_box_gcfree);
   b->rc = 1;
   b->kind = kind;
 #ifdef SCR_RC_AUDIT
@@ -118,7 +118,7 @@ static void scr_box_destroy(void *object) {
 #ifdef SCR_RC_AUDIT
   scr_live_boxes--;
 #endif
-  scr_cyc_free(b);
+  scr_cyc_free_inline(b);
 }
 
 void scr_box_release(ScrBox *b) {
@@ -181,12 +181,12 @@ static void scr_closure_gcfree(void *o) {
 #ifdef SCR_RC_AUDIT
   scr_live_closures--;
 #endif
-  scr_cyc_free(o);
+  scr_cyc_free_inline(o);
 }
 
 ScrClosure *scr_closure_new(void *fn, size_t ncaps) {
-  ScrClosure *c = scr_cyc_alloc(sizeof(ScrClosure) + ncaps * sizeof(ScrBox *),
-                                 &scr_closure_trace, &scr_closure_gcfree);
+  ScrClosure *c = scr_cyc_alloc_inline(sizeof(ScrClosure) + ncaps * sizeof(ScrBox *),
+                                        &scr_closure_trace, &scr_closure_gcfree);
   c->rc = 1;
   c->fn = fn;
   c->ncaps = ncaps;
@@ -217,7 +217,7 @@ static void scr_closure_destroy(void *object) {
 #ifdef SCR_RC_AUDIT
   scr_live_closures--;
 #endif
-  scr_cyc_free(c);
+  scr_cyc_free_inline(c);
 }
 
 void scr_closure_release(ScrClosure *c) {

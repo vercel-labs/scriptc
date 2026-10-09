@@ -21,6 +21,7 @@ test("cycle traversal preserves counts, deep graphs and configured thresholds", 
     bin,
     join(testDir, "test_cycle.c"),
     join(testDir, "../src/scr_cycle.c"),
+    join(testDir, "../src/scr_alloc.c"),
   ]);
   const baseEnv = {
     ...process.env,

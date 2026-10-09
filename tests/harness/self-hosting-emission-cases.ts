@@ -85,7 +85,11 @@ export function emissionCases(): EmissionCase[] {
       ],
     },
   ];
-  add("scalar record allocation", scalar, ["type { i64, i8, double }", "@calloc", "@free"]);
+  add("scalar record allocation", scalar, [
+    "type { i64, i8, double }",
+    "@scr_rt_calloc",
+    "@scr_rt_free",
+  ]);
 
   const refs = emissionModule();
   refs.records = [
@@ -116,15 +120,33 @@ export function emissionCases(): EmissionCase[] {
       ],
     },
   ];
-  add("recursive records", recursive, [
-    "@scr_cyc_alloc",
-    "@scr_cyc_on_dead",
-    "@scr_arr_trace",
-    "@scr_cyc_free",
+  // The free path is width-specific (64-bit emission inlines the allocator
+  // and pushes the block onto its free list; 32-bit calls scr_cyc_free), so
+  // only the shared allocation and collector entry points are asserted.
+  add("recursive records", recursive, ["@scr_cyc_alloc", "@scr_cyc_on_dead", "@scr_arr_trace"]);
+
+  // Constructor-only edges are proven acyclic (cycle-analysis.ts): a record
+  // whose only self reference goes through a nullable union field skips
+  // the collector. An array edge is always mutable, so adding one closes a
+  // collectable cycle through the same union.
+  const acyclicUnion = emissionModule();
+  acyclicUnion.records = [{ id: "linked", fields: [{ name: "next", type: optional }] }];
+  acyclicUnion.unions = [{ id: "optional", arms: [rec("linked"), UNDEFINED_T] }];
+  add("constructor-only nullable union edge", acyclicUnion, [
+    "@scr_rt_calloc",
+    "@scr_union_release",
   ]);
 
   const union = emissionModule();
-  union.records = [{ id: "linked", fields: [{ name: "next", type: optional }] }];
+  union.records = [
+    {
+      id: "linked",
+      fields: [
+        { name: "next", type: optional },
+        { name: "peers", type: arrayOf(optional) },
+      ],
+    },
+  ];
   union.unions = [{ id: "optional", arms: [rec("linked"), UNDEFINED_T] }];
   add("cycles through a nullable union", union, ["@scr_union_trace", "@scr_union_release"]);
 
@@ -224,9 +246,18 @@ export function emissionCases(): EmissionCase[] {
     siblingSlots.functions.push(method(name, "read"));
   add("same method name in sibling subtrees", siblingSlots, ["[read, read]"]);
 
+  // The array edge is mutable, so the First/Second cycle stays collectable
+  // (constructor-only references alone are proven acyclic).
   const classCycle = emissionModule();
   classCycle.classes = [
-    { name: "First", fields: [{ name: "other", type: obj("Second") }], loc },
+    {
+      name: "First",
+      fields: [
+        { name: "other", type: obj("Second") },
+        { name: "peers", type: arrayOf(obj("Second")) },
+      ],
+      loc,
+    },
     { name: "Second", fields: [{ name: "other", type: obj("First") }], loc },
   ];
   add("mutually recursive classes", classCycle, [

@@ -36,6 +36,6 @@ void initializeTargets();
 bool supportsTarget(llvm::StringRef Triple);
 std::unique_ptr<llvm::TargetMachine>
 createTargetMachine(llvm::StringRef Triple, llvm::StringRef OptLevel,
-                    std::string &Error);
+                    std::string &Error, bool RequireAllowed = true);
 
 } // namespace scriptc

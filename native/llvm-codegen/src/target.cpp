@@ -14,6 +14,7 @@ void LLVMInitializeAArch64TargetInfo();
 void LLVMInitializeAArch64Target();
 void LLVMInitializeAArch64TargetMC();
 void LLVMInitializeAArch64AsmPrinter();
+void LLVMInitializeAArch64AsmParser();
 }
 #endif
 #if defined(SCRIPTC_ENABLE_X86)
@@ -22,6 +23,7 @@ void LLVMInitializeX86TargetInfo();
 void LLVMInitializeX86Target();
 void LLVMInitializeX86TargetMC();
 void LLVMInitializeX86AsmPrinter();
+void LLVMInitializeX86AsmParser();
 }
 #endif
 #if defined(SCRIPTC_ENABLE_WEBASSEMBLY)
@@ -30,6 +32,7 @@ void LLVMInitializeWebAssemblyTargetInfo();
 void LLVMInitializeWebAssemblyTarget();
 void LLVMInitializeWebAssemblyTargetMC();
 void LLVMInitializeWebAssemblyAsmPrinter();
+void LLVMInitializeWebAssemblyAsmParser();
 }
 #endif
 
@@ -44,18 +47,24 @@ void initializeTargets() {
   LLVMInitializeAArch64Target();
   LLVMInitializeAArch64TargetMC();
   LLVMInitializeAArch64AsmPrinter();
+  // Runtime units may contain inline assembly (runtime-unit emission).
+  LLVMInitializeAArch64AsmParser();
 #endif
 #if defined(SCRIPTC_ENABLE_X86)
   LLVMInitializeX86TargetInfo();
   LLVMInitializeX86Target();
   LLVMInitializeX86TargetMC();
   LLVMInitializeX86AsmPrinter();
+  // Runtime units may contain inline assembly (runtime-unit emission).
+  LLVMInitializeX86AsmParser();
 #endif
 #if defined(SCRIPTC_ENABLE_WEBASSEMBLY)
   LLVMInitializeWebAssemblyTargetInfo();
   LLVMInitializeWebAssemblyTarget();
   LLVMInitializeWebAssemblyTargetMC();
   LLVMInitializeWebAssemblyAsmPrinter();
+  // Runtime units may contain inline assembly (runtime-unit emission).
+  LLVMInitializeWebAssemblyAsmParser();
 #endif
   Initialized = true;
 }
@@ -107,9 +116,10 @@ static CodeGenOptLevel codeGenLevel(StringRef Level) {
 
 std::unique_ptr<TargetMachine> createTargetMachine(StringRef TripleName,
                                                    StringRef OptLevel,
-                                                   std::string &Error) {
+                                                   std::string &Error,
+                                                   bool RequireAllowed) {
   initializeTargets();
-  if (!supportsTarget(TripleName)) {
+  if (RequireAllowed && !supportsTarget(TripleName)) {
     Error = (Twine("target '") + TripleName + "' was not compiled into this helper").str();
     return nullptr;
   }

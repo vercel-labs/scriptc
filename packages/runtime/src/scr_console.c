@@ -11,6 +11,24 @@
 #include <windows.h>
 #endif
 
+/* POSIX executables submit each JavaScript-visible stdout/stderr chunk with
+ * write(2)/writev(2) on the descriptor itself. The C stream layer added a
+ * copy, several stream calls per console line, and — for the unbuffered
+ * stderr stream — one write(2) per argument, separator, and newline. Windows
+ * (CRT text/binary modes, console code pages), WASI, and library artifacts
+ * (whose host owns the process's C streams) keep the C stream path, now fed
+ * one formatted chunk per call. */
+#if !defined(_WIN32) && !defined(__wasi__) && !defined(SCR_LIB)
+#define SCR_STDIO_DIRECT 1
+#include <sys/uio.h>
+#include <unistd.h>
+#if defined(__linux__)
+#include <stdio_ext.h> /* __fpending: glibc and musl */
+#endif
+#else
+#define SCR_STDIO_DIRECT 0
+#endif
+
 /* Set by scr_async.c at loop exhaustion; lives here (unconditionally) so
  * binaries that link the console without the async runtime still link, and
  * plain builds satisfy scr_async's reference. */
@@ -162,100 +180,165 @@ void scr_init(void) {
  * a tentative common symbol stays externally visible on Mach-O. */
 SCR_TL bool (*scr_stdio_write_hook)(int fd, const void *data, size_t len) = NULL;
 
-static void scr_console_write(FILE *out, size_t n, const ScrLogArg *args) {
-  if (scr_stdio_write_hook) {
-    size_t capacity = 1;
-    for (size_t i = 0; i < n; i++) {
-      size_t length = args[i].tag == SCR_ARG_STR ? args[i].v.s->len : 32;
-      if (length >= SIZE_MAX - capacity) scr_trap("scriptc: console output too large\n");
-      capacity += length + 1;
+/* Lines up to this size render on the C stack (fiber stacks are 256 KiB). */
+#define SCR_CONSOLE_STACK_LINE 2048
+
+#if SCR_STDIO_DIRECT
+/* True when the C stdout buffer holds bytes: runtime-internal output that
+ * went through stdio without flushing. A direct write must submit them
+ * first so stdout keeps source order and merged (2>&1) redirections keep
+ * stdout-before-stderr order. Unknown platforms flush unconditionally. */
+static inline bool scr_stdout_pending(void) {
+#if defined(__linux__)
+  return __fpending(stdout) != 0;
+#elif defined(__APPLE__)
+  return (stdout->_flags & __SWR) && stdout->_bf._base && stdout->_p > stdout->_bf._base;
+#else
+  return true;
+#endif
+}
+
+/* Submit every byte of iov[0..count) to fd. Short writes continue with the
+ * remainder and EINTR retries. Any other failure (EAGAIN on a non-blocking
+ * descriptor, EPIPE, EBADF, ...) returns its errno with the rest of the
+ * chunk dropped — what the C stream flush did before. */
+static int scr_fd_writev_all(int fd, struct iovec *iov, int count) {
+  while (count > 0 && iov->iov_len == 0) iov++, count--;
+  while (count > 0) {
+    ssize_t written = count == 1 ? write(fd, iov->iov_base, iov->iov_len) : writev(fd, iov, count);
+    if (written < 0) {
+      if (errno == EINTR) continue;
+      return errno ? errno : EIO;
     }
-    char *line = malloc(capacity);
-    if (!line) scr_trap("scriptc: out of memory\n");
-    size_t used = 0;
-    for (size_t i = 0; i < n; i++) {
-      if (i) line[used++] = ' ';
-      const ScrLogArg *arg = &args[i];
-      if (arg->tag == SCR_ARG_STR) {
-        memcpy(line + used, arg->v.s->data, arg->v.s->len);
-        used += arg->v.s->len;
-      } else if (arg->tag == SCR_ARG_BOOL) {
-        const char *text = arg->v.b ? "true" : "false";
-        size_t length = arg->v.b ? 4 : 5;
-        memcpy(line + used, text, length);
-        used += length;
-      } else if (arg->v.f == 0 && signbit(arg->v.f)) {
-        memcpy(line + used, "-0", 2);
-        used += 2;
-      } else {
-        used += scr_f64_to_str(arg->v.f, line + used);
-      }
+    if (written == 0) return EIO;
+    size_t left = (size_t)written;
+    while (count > 0 && left >= iov->iov_len) left -= iov->iov_len, iov++, count--;
+    if (count > 0) {
+      iov->iov_base = (char *)iov->iov_base + left;
+      iov->iov_len -= left;
     }
-    line[used++] = '\n';
-    scr_stdio_write_hook(out == stderr ? 2 : 1, line, used);
-    free(line);
-    /* The global Node console uses ignoreErrors=true for stream writes. */
-    if (scr_exc_pending()) scr_exc_clear();
+  }
+  return 0;
+}
+
+/* Worker executables run several runtime threads that all write to the
+ * process descriptors. Hold the matching C stream's lock (recursive, so the
+ * pending-stdout flush inside is fine) around each direct submission, so a
+ * chunk that needs several write(2) calls, and the stdout flush that precedes
+ * it, cannot interleave with another thread's output. */
+static inline FILE *scr_fd_stream_lock(int fd) {
+#ifdef SCR_WORKERS
+  FILE *stream = fd == 2 ? stderr : stdout;
+  flockfile(stream);
+  return stream;
+#else
+  (void)fd;
+  return NULL;
+#endif
+}
+
+static inline void scr_fd_stream_unlock(FILE *stream) {
+#ifdef SCR_WORKERS
+  funlockfile(stream);
+#else
+  (void)stream;
+#endif
+}
+#endif
+
+/* Render args into line (capacity from scr_console_capacity): space-joined
+ * with a trailing newline. Returns the byte count. Tags may carry
+ * SCR_ARG_GLUE, so every kind test masks with SCR_ARG_KIND: a glued string
+ * part must reserve its full length, exactly as scr_console_render copies
+ * it. */
+static size_t scr_console_capacity(size_t n, const ScrLogArg *args) {
+  size_t capacity = 1;
+  for (size_t i = 0; i < n; i++) {
+    size_t length = (args[i].tag & SCR_ARG_KIND) == SCR_ARG_STR ? args[i].v.s->len : 32;
+    if (length >= SIZE_MAX - capacity) scr_trap("scriptc: console output too large\n");
+    capacity += length + 1;
+  }
+  return capacity;
+}
+
+static size_t scr_console_render(char *line, size_t n, const ScrLogArg *args) {
+  size_t used = 0;
+  for (size_t i = 0; i < n; i++) {
+    const ScrLogArg *arg = &args[i];
+    if (i && !(arg->tag & SCR_ARG_GLUE)) line[used++] = ' ';
+    int kind = arg->tag & SCR_ARG_KIND;
+    if (kind == SCR_ARG_STR) {
+      memcpy(line + used, arg->v.s->data, arg->v.s->len);
+      used += arg->v.s->len;
+    } else if (kind == SCR_ARG_BOOL) {
+      const char *text = arg->v.b ? "true" : "false";
+      size_t length = arg->v.b ? 4 : 5;
+      memcpy(line + used, text, length);
+      used += length;
+    } else if (kind == SCR_ARG_F64 && arg->v.f == 0 && signbit(arg->v.f)) {
+      /* console.log renders numbers via inspect, which distinguishes -0
+       * (String(-0) is "0", but console.log(-0) prints "-0"). A number
+       * inside a concatenation (SCR_ARG_NUM) keeps String()'s "0". */
+      memcpy(line + used, "-0", 2);
+      used += 2;
+    } else {
+      used += scr_f64_to_str(arg->v.f, line + used);
+    }
+  }
+  line[used++] = '\n';
+  return used;
+}
+
+/* Console methods submit one formatted chunk to their backing stream before
+ * returning, as Node's console does: a caller observing a live child sees
+ * this line before the next JS turn. Errors are ignored (the global Node
+ * console uses ignoreErrors=true for stream writes). */
+static void scr_console_write(int fd, size_t n, const ScrLogArg *args) {
+#if SCR_STDIO_DIRECT
+  /* A large single string goes out without a copy: string + newline in one
+   * vectored write. */
+  if (!scr_stdio_write_hook && n == 1 && (args[0].tag & SCR_ARG_KIND) == SCR_ARG_STR &&
+      args[0].v.s->len >= SCR_CONSOLE_STACK_LINE) {
+    FILE *locked = scr_fd_stream_lock(fd);
+    if (scr_stdout_pending()) fflush(stdout);
+    struct iovec iov[2] = {{(void *)args[0].v.s->data, args[0].v.s->len}, {(void *)"\n", 1}};
+    (void)scr_fd_writev_all(fd, iov, 2);
+    scr_fd_stream_unlock(locked);
     return;
   }
-  /* Formatting a single line uses several libc calls. Hold the stream lock
-   * for that whole chunk so concurrent workers cannot interleave arguments. */
-#ifdef SCR_WORKERS
-#ifdef _WIN32
-  _lock_file(out);
-#else
-  flockfile(out);
 #endif
-#endif
-  char numbuf[32];
-  for (size_t i = 0; i < n; i++) {
-    if (i > 0) fputc(' ', out);
-    const ScrLogArg *a = &args[i];
-    switch (a->tag) {
-    case SCR_ARG_F64: {
-      /* console.log renders numbers via inspect, which distinguishes -0
-       * (String(-0) is "0", but console.log(-0) prints "-0"). */
-      if (a->v.f == 0 && signbit(a->v.f)) {
-        fputs("-0", out);
-        break;
-      }
-      size_t len = scr_f64_to_str(a->v.f, numbuf);
-      fwrite(numbuf, 1, len, out);
-      break;
-    }
-    case SCR_ARG_STR:
-      fwrite(a->v.s->data, 1, a->v.s->len, out);
-      break;
-    case SCR_ARG_BOOL:
-      fputs(a->v.b ? "true" : "false", out);
-      break;
-    }
+  char stack[SCR_CONSOLE_STACK_LINE];
+  size_t capacity = scr_console_capacity(n, args);
+  char *line = capacity <= sizeof stack ? stack : malloc(capacity);
+  if (!line) scr_trap("scriptc: out of memory\n");
+  size_t used = scr_console_render(line, n, args);
+  if (scr_stdio_write_hook) {
+    scr_stdio_write_hook(fd, line, used);
+    if (scr_exc_pending()) scr_exc_clear();
+  } else {
+    (void)scr_stdio_write_raw(fd, line, used);
   }
-  fputc('\n', out);
-  /* Console methods submit one formatted chunk to their backing stream.
-   * Keep the C buffer only as a formatter coalescing detail: a caller
-   * observing a live child must see this line before the next JS turn. */
-  fflush(out);
-#ifdef SCR_WORKERS
-#ifdef _WIN32
-  _unlock_file(out);
-#else
-  funlockfile(out);
-#endif
-#endif
+  if (line != stack) free(line);
 }
 
 void scr_console_log(size_t n, const ScrLogArg *args) {
-  scr_console_write(stdout, n, args);
+  scr_console_write(1, n, args);
 }
 
-/* console.error and console.warn. Flush stdout first so runtime-internal
- * output that is still being assembled cannot cross this stderr line under
- * a merged redirection (2>&1); JavaScript-visible stdout writes have already
- * flushed themselves. */
+/* console.error and console.warn. Runtime-internal stdout output that is
+ * still buffered goes out first so it cannot cross this stderr line under a
+ * merged redirection (2>&1); JavaScript-visible stdout writes have already
+ * been submitted. */
 void scr_console_error(size_t n, const ScrLogArg *args) {
-  fflush(stdout);
-  scr_console_write(stderr, n, args);
+  scr_console_write(2, n, args);
+}
+
+void scr_console_log_parts(size_t n, const ScrLogArg *args) {
+  scr_console_write(1, n, args);
+}
+
+void scr_console_error_parts(size_t n, const ScrLogArg *args) {
+  scr_console_write(2, n, args);
 }
 
 /* One JavaScript-visible raw write. Node's global console and process stream
@@ -264,14 +347,23 @@ void scr_console_error(size_t n, const ScrLogArg *args) {
  * exit. The runtime remains synchronous internally, so its backpressure
  * surface is still constantly true, but the bytes are observable promptly.
  *
- * stderr flushes any runtime-internal stdout fragment first to preserve the
- * existing merged-fd ordering convention. */
+ * Buffered runtime-internal stdout bytes go out first (for both streams) to
+ * preserve stdout order and the merged-fd ordering convention. */
 int scr_stdio_write_raw(int fd, const void *data, size_t len) {
+#if SCR_STDIO_DIRECT
+  FILE *locked = scr_fd_stream_lock(fd == 2 ? 2 : 1);
+  if (scr_stdout_pending()) fflush(stdout);
+  struct iovec iov = {(void *)data, len};
+  int result = len == 0 ? 0 : scr_fd_writev_all(fd == 2 ? 2 : 1, &iov, 1);
+  scr_fd_stream_unlock(locked);
+  return result;
+#else
   FILE *out = fd == 2 ? stderr : stdout;
   if (fd == 2) fflush(stdout);
   if (len > 0 && fwrite(data, 1, len, out) != len) return errno ? errno : EIO;
   if (fflush(out) != 0) return errno ? errno : EIO;
   return 0;
+#endif
 }
 
 bool scr_stdio_write(int fd, const void *data, size_t len) {

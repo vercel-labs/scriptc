@@ -175,30 +175,17 @@ void scr_rc_destroy(void *obj, void (*destroy)(void *)) {
   }
 }
 
-/* Live cycle-headered objects — what the growth triggers watch — and the
- * running count of OLD objects freed, which is how a full pass measures what
- * only it could have reclaimed. */
-static SCR_TL size_t scr_cyc_live = 0;
-static SCR_TL size_t scr_cyc_old_freed = 0;
+/* Live cycle-headered objects and the running count of OLD objects freed.
+ * The inline allocation/free paths (scr_runtime.h, llvm/alloc.ts) maintain
+ * both counters so full passes can measure old-generation reclamation. */
+SCR_TL size_t scr_cyc_live = 0;
+SCR_TL size_t scr_cyc_old_freed = 0;
 
 void *scr_cyc_alloc(size_t size, ScrTraceFn trace, ScrCycFreeFn free_fn) {
-  if (size > SIZE_MAX - sizeof(ScrCycHdr)) scr_cyc_oom();
-  ScrCycHdr *h = calloc(1, sizeof(ScrCycHdr) + size);
-  if (!h) scr_cyc_oom();
-  h->trace = trace;
-  h->free_fn = free_fn;
-  h->color = SCR_CYC_BLACK;
-  h->gen = SCR_CYC_NURSERY;
-  scr_cyc_live++;
-  return h + 1;
+  return scr_cyc_alloc_inline(size, trace, free_fn);
 }
 
-void scr_cyc_free(void *obj) {
-  scr_weak_dispose(obj);
-  scr_cyc_live--;
-  if (scr_cyc_hdr(obj)->gen == SCR_CYC_OLD) scr_cyc_old_freed++;
-  free(scr_cyc_hdr(obj));
-}
+void scr_cyc_free(void *obj) { scr_cyc_free_inline(obj); }
 
 /* A pointer vector that only ever grows (these reuse their capacity across
  * passes rather than churning it). Pointer, count and capacity live in ONE

@@ -830,3 +830,85 @@ test.each(["different index", "different array", "effectful operand", "different
     expect(reads.get(value)).toBeNull();
   },
 );
+
+/** Retype the fixture's element as a scalar and consume the read by an
+ * immediate projection (`if (a[i])` / `a[i] ?? d`) instead of a local. */
+function scalarFixture(elem: IrType, consumer: "truthy" | "nullish" | "local"): IrModule {
+  const retype = <T>(value: T): T =>
+    JSON.parse(
+      JSON.stringify(value, (key, field: unknown) =>
+        field &&
+        typeof field === "object" &&
+        (field as { kind?: string }).kind === "record" &&
+        (field as { shapeId?: string }).shapeId === "cell"
+          ? elem
+          : field,
+      ),
+    ) as T;
+  const mod = retype(fixture());
+  mod.unions = [{ id: "optional", arms: [elem, UNDEFINED_T] }];
+  const work = mod.functions[2]!;
+  const read: IrExpr = {
+    kind: "call",
+    callee: "read",
+    args: [ref("a", arrayOf(elem)), ref("i", F64)],
+    type: optional,
+    loc,
+  };
+  work.returnType = elem;
+  if (consumer === "truthy") {
+    work.returnType = BOOL;
+    work.body = [
+      { kind: "return", value: { kind: "toBool", operand: read, type: BOOL, loc }, loc },
+    ];
+  } else if (consumer === "nullish") {
+    const fallback: IrExpr =
+      elem.kind === "bool" ? { kind: "boolLit", value: true, type: BOOL, loc } : num(-1);
+    work.body = [
+      {
+        kind: "return",
+        value: { kind: "nullish", left: read, right: fallback, type: elem, loc },
+        loc,
+      },
+    ];
+  } else {
+    work.body = [
+      { kind: "varDecl", localId: "value", init: read, loc },
+      {
+        kind: "return",
+        value: {
+          kind: "unionNarrow",
+          unionId: "optional",
+          tag: 0,
+          value: unionValue,
+          type: elem,
+          loc,
+        },
+        loc,
+      },
+    ];
+  }
+  return mod;
+}
+
+test.each([
+  [F64, "truthy"],
+  [F64, "nullish"],
+  [F64, "local"],
+  [BOOL, "truthy"],
+  [BOOL, "nullish"],
+  [BOOL, "local"],
+] as const)("scalar %o optional reads consumed as %s need no heap union", (elem, consumer) => {
+  const mod = scalarFixture(elem, consumer);
+  expect(validateModule(mod)).toEqual([]);
+  for (const bits of [32, 64] as const) {
+    const ir = workBody(mod, bits);
+    expect(ir).not.toContain("@scr_union_new");
+    expect(ir).not.toContain("@scr_union_release");
+    expect(ir).not.toContain("@scr_union_get");
+    // Holes, sparse and noncanonical indices keep the runtime state check.
+    expect(ir).toContain("@scr_arr_state");
+    expect(ir).toContain(elem.kind === "f64" ? "@scr_arr_get_f64" : "@scr_arr_get_bool");
+    if (consumer !== "local") expect(ir).toContain("local.array.dense");
+  }
+});

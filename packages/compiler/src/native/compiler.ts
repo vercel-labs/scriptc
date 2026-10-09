@@ -1,3 +1,4 @@
+import type { NativeOptimization } from "../backend/optimization.js";
 import { compilationTiming } from "../timing.js";
 import {
   mkdirSync,
@@ -111,7 +112,7 @@ export class NativeCompiler {
     input: string,
     output: string,
     source: string,
-    optimization: "release" | "dev",
+    optimization: NativeOptimization,
     outputKind: "obj" | "asm",
     partitions = 1,
   ): string[] {
@@ -188,7 +189,7 @@ export class NativeCompiler {
     input: string,
     output: string,
     source: string,
-    optimization: "release" | "dev",
+    optimization: NativeOptimization,
     stage: string,
     library: boolean,
   ): string[] {

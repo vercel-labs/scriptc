@@ -1,7 +1,9 @@
 import { emitBorrowedInput } from "./borrowed-inputs.js";
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
-import { type IrType, isRefCounted, isUnitType, typeEquals } from "../../ir/ir.js";
+import { type IrExpr, type IrType, isRefCounted, isUnitType, typeEquals } from "../../ir/ir.js";
+import { stringParts } from "./string-construction.js";
+import { emitStringInputs } from "./string-lifetimes.js";
 import { mangleRecordNew } from "../mangle.js";
 import { arrNewCall, traceAdapter, traceArg, vAdapters } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
@@ -184,12 +186,43 @@ export function emitIntrinsicExpr(host: LlvmEmitterContext, e: ExprOf<"intrinsic
       // function's max arity), tag + 8-byte union slot per argument.
       // String args are BORROWED — their temps stay frame-owned and
       // release at statement end, after the call.
-      const args = e.args.map((a) => host.emitExpr(a));
+      //
+      // A string-concatenation argument (template literal, `"a" + n`)
+      // passes its parts instead of the joined string: later parts carry
+      // the GLUE flag (no separating space), and number/boolean conversions
+      // pass the raw value (SCR_ARG_NUM keeps String()'s "-0" -> "0"). The
+      // runtime renders straight into the line it writes, so the parts'
+      // strings and the joined copy are never allocated. Parts evaluate in
+      // source order with concatenation's borrowing rules.
+      const plan: { expr: IrExpr; glue: boolean; num: boolean }[] = [];
+      for (const a of e.args) {
+        if (a.kind !== "strConcat") {
+          plan.push({ expr: a, glue: false, num: false });
+          continue;
+        }
+        stringParts(a).forEach((part, j) => {
+          const operand = part.kind === "toString" ? part.operand : undefined;
+          if (
+            operand !== undefined &&
+            (operand.type.kind === "f64" || operand.type.kind === "bool")
+          )
+            plan.push({ expr: operand, glue: j > 0, num: operand.type.kind === "f64" });
+          else plan.push({ expr: part, glue: j > 0, num: false });
+        });
+      }
+      const usesParts = plan.length !== e.args.length;
+      const args = usesParts
+        ? emitStringInputs(
+            host,
+            plan.map((p) => p.expr),
+          )
+        : e.args.map((a) => host.emitExpr(a));
       host.logArgSlots = Math.max(host.logArgSlots, Math.max(args.length, 1));
       args.forEach((a, i) => {
         const tagOf: Record<string, number> = { f64: 0, string: 1, bool: 2 };
-        const tag = tagOf[a.type.kind];
-        if (tag === undefined) throw new LlvmUnsupportedError(`logArg:${a.type.kind}`, e.loc);
+        const kind = usesParts && plan[i]!.num ? 3 : tagOf[a.type.kind];
+        if (kind === undefined) throw new LlvmUnsupportedError(`logArg:${a.type.kind}`, e.loc);
+        const tag = usesParts && plan[i]!.glue ? kind | 0x100 : kind;
         const tp = B.tmp();
         const vp = B.tmp();
         B.line(`${tp} = getelementptr inbounds %ScrLogArg, ptr %logargs, i64 ${i}, i32 0`);
@@ -203,7 +236,9 @@ export function emitIntrinsicExpr(host: LlvmEmitterContext, e: ExprOf<"intrinsic
           B.line(`store i8 ${z}, ptr ${vp}`);
         }
       });
-      const fn = e.name === "console.error" ? "scr_console_error" : "scr_console_log";
+      const fn =
+        (e.name === "console.error" ? "scr_console_error" : "scr_console_log") +
+        (usesParts ? "_parts" : "");
       host.declare(`declare void @${fn}(${host.sizeType}, ptr)`);
       B.line(`call void @${fn}(${host.sizeType} ${args.length}, ptr %logargs)`);
       return { name: "", type: e.type };
@@ -278,6 +313,20 @@ export function emitSerializationExpr(
       // path-annotated TypeError. The dyn temp is BORROWED; the result
       // joins the frame BEFORE the pending check so an unwind releases
       // the dummy harmlessly.
+      // `JSON.parse(text) as T` fuses into one schema-directed parse that
+      // falls back to exactly this route whenever the fast path declines.
+      const parsed = e.value;
+      if (!e.preserveRefs && parsed.kind === "libCall" && parsed.fn === "json.parse") {
+        const fused = host.dyn.jsonParseHelper(e.type);
+        if (fused) {
+          const text = emitBorrowedInput(host, parsed.args[0]!);
+          const r = B.tmp();
+          B.line(`${r} = call ptr @${fused}(ptr ${text.name})`);
+          const fusedOut = host.own({ name: r, type: e.type });
+          host.emitPendingCheck();
+          return fusedOut;
+        }
+      }
       const dynV = emitBorrowedInput(host, e.value);
       const helper = host.dyn.dynCheckHelper(e.type, e.preserveRefs);
       const ty = host.llType(e.type);

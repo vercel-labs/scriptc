@@ -64,6 +64,7 @@ export const EXECUTABLE_RUNTIME_SOURCES = [
   "scr_crypto_async.c",
   "scr_child.c",
   "scr_cycle.c",
+  "scr_alloc.c",
 ] as const;
 
 export function runtimeSrcDir(): string {

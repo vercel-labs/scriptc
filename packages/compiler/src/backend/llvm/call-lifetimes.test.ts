@@ -273,6 +273,48 @@ test("records safe local consumers without accepting duplicate or absent declara
   expect(analyze(fn, leaf).locals.get("work")?.size).toBe(0);
 });
 
+test("closure locals get local facts while their parameters stay unproven", () => {
+  const fn = helper("closure");
+  fn.captures = [];
+  fn.locals.push(local("item"));
+  fn.body = [
+    { kind: "varDecl", localId: "item", init: ref("value"), loc },
+    { kind: "exprStmt", expr: tag("item"), loc },
+  ];
+  const result = analyze(fn);
+  expect(result.parameters.has("closure")).toBe(false);
+  expect(result.borrowed.has("closure")).toBe(false);
+  expect(result.locals.get("closure")).toEqual(new Set(["item"]));
+  // A captured local is never a stack candidate inside the closure body.
+  fn.captures = [{ localId: "item", name: "item", type: optional }];
+  expect(analyze(fn).locals.get("closure")?.has("item")).toBe(false);
+});
+
+test("strict union equality and narrowed nullish reads are projections", () => {
+  const fn = helper("compare");
+  const equal: IrExpr = {
+    kind: "unionEq",
+    unionId: "optional",
+    negated: false,
+    sameValue: false,
+    left: ref("value"),
+    right: ref("value"),
+    type: BOOL,
+    loc,
+  };
+  fn.body = [{ kind: "exprStmt", expr: equal, loc }];
+  expect(analyze(fn).parameters.get("compare")).toEqual(new Set([0]));
+  const narrowed: IrExpr = { kind: "nullish", left: ref("value"), right: num(), type: F64, loc };
+  fn.body = [ret(narrowed)];
+  expect(analyze(fn).parameters.get("compare")).toEqual(new Set([0]));
+  // The pass-through shape returns the box itself.
+  fn.returnType = optional;
+  fn.body = [
+    ret({ kind: "nullish", left: ref("value"), right: ref("value"), type: optional, loc }),
+  ];
+  expect(analyze(fn).parameters.has("compare")).toBe(false);
+});
+
 test("visits nested argument effects even when the outer helper is safe", () => {
   const fn = helper("work"),
     leaf = helper("leaf");
@@ -473,4 +515,96 @@ test("environment bodies prove their own locals but never their parameters", () 
   expect(facts.borrowed.has("lifted")).toBe(false);
   fn.async = true;
   expect(analyze(fn, leaf).locals.has("lifted")).toBe(false);
+});
+
+test("strict union equality is a borrowing use of a local operand", () => {
+  const fn = helper("same", ["left", "right"]);
+  fn.returnType = BOOL;
+  fn.body = [
+    ret({
+      kind: "unionEq",
+      unionId: "optional",
+      negated: false,
+      sameValue: false,
+      left: ref("left"),
+      right: ref("right"),
+      type: BOOL,
+      loc,
+    }),
+  ];
+  expect(analyze(fn).parameters.get("same")).toEqual(new Set([0, 1]));
+  fn.body = [
+    ret({
+      kind: "unionEq",
+      unionId: "optional",
+      negated: false,
+      sameValue: false,
+      left: ref("left"),
+      right: {
+        kind: "unionWrap",
+        value: ref("right"),
+        unionId: "nested",
+        tag: 0,
+        type: optional,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    }),
+  ];
+  expect(analyze(fn).parameters.get("same")).toEqual(new Set([0]));
+});
+
+test("closure bodies get local facts but never parameter facts", () => {
+  const fn = helper("closure");
+  fn.captures = [];
+  fn.locals.push(local("item"));
+  fn.body = [
+    { kind: "varDecl", localId: "item", init: ref("value"), loc },
+    { kind: "exprStmt", expr: tag("item"), loc },
+  ];
+  const result = analyze(fn);
+  expect(result.parameters.has("closure")).toBe(false);
+  expect(result.borrowed.has("closure")).toBe(false);
+  expect(result.locals.get("closure")).toEqual(new Set(["item"]));
+  expect(result.projectedLocals.get("closure")).toEqual(new Set(["item"]));
+  expect(result.bindings.get("closure")).toEqual(new Set(["item"]));
+  fn.locals[0]!.boxed = true;
+  fn.body.push({ kind: "exprStmt", expr: tag("value"), loc });
+  expect(analyze(fn).locals.get("closure")).toEqual(new Set(["item"]));
+});
+
+test("stores into nullable-pointer class fields project the stored union", () => {
+  const self: IrType = { kind: "object", className: "Node" };
+  const store = (className: string, field: string, value: IrExpr): IrStmt => ({
+    kind: "fieldSet",
+    obj: ref("this", self),
+    className,
+    field,
+    value,
+    loc,
+  });
+  const fn: IrFunction = {
+    name: "%Node.constructor",
+    loc,
+    returnType: { kind: "void" },
+    params: [
+      { localId: "this", name: "this", type: self },
+      { localId: "value", name: "value", type: optional },
+    ],
+    locals: [local("this", self), local("value")],
+    body: [store("Node", "next", ref("value"))],
+  };
+  const nullable = (className: string, field: string): boolean =>
+    className === "Node" && field === "next";
+  const functions = new Map([[fn.name, fn]]);
+  // Ordinary union fields store (retain) the box itself.
+  expect(analyzeCallLifetimes(functions).parameters.get(fn.name)?.has(1)).toBeFalsy();
+  expect(analyzeCallLifetimes(functions, nullable).parameters.get(fn.name)).toEqual(new Set([1]));
+  // Another field of the same class keeps ordinary storage.
+  fn.body = [store("Node", "other", ref("value"))];
+  expect(analyzeCallLifetimes(functions, nullable).parameters.get(fn.name)?.has(1)).toBeFalsy();
+  // The receiver is still an ordinary use, and a second escape still rejects.
+  fn.body = [store("Node", "next", ref("value")), ret(ref("value"))];
+  expect(analyzeCallLifetimes(functions, nullable).parameters.get(fn.name)?.has(1)).toBeFalsy();
 });

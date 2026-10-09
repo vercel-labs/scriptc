@@ -9,6 +9,7 @@ import type { NativeLinkFeatures } from "./native-link-info.js";
 import {
   effectiveRuntimeFeatures,
   evaluateRuntimePredicate,
+  loadRuntimeBitcode,
   loadRuntimePack,
   parseRuntimePackManifest,
   RuntimePackError,
@@ -246,6 +247,80 @@ describe("runtime pack manifests", () => {
     expect(dynamic.flavor).toBe("dev");
     expect(dynamic.runtimeObjects.map((path) => path.split("/").at(-1))).toEqual(["dynamic.o"]);
     expect(dynamic.archives.map((path) => path.split("/").at(-1))).toEqual(["qjs.a"]);
+  });
+
+  test("runtime bitcode follows the selected speed variant and is verified", async () => {
+    const { root, packagePath, manifest } = await fixture();
+    const bitcode = async (path: string, bytes: string) => {
+      await writeFile(join(root, path), bytes);
+      return {
+        path,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        size: Buffer.byteLength(bytes),
+      };
+    };
+    const unit = manifest.flavors.release!.runtime_units[0]!;
+    const withBitcode: RuntimePackManifest = {
+      ...manifest,
+      flavors: {
+        ...manifest.flavors,
+        speed: {
+          optimization: "-O2",
+          runtime_units: [
+            {
+              ...unit,
+              variants: [
+                { ...unit.variants[0]!, bitcode: await bitcode("artifacts/base.bc", "base-bc") },
+                {
+                  ...unit.variants[1]!,
+                  bitcode: await bitcode("artifacts/legacy.bc", "legacy-bc"),
+                },
+                unit.variants[2]!,
+              ],
+            },
+          ],
+        },
+      },
+    };
+    const resolver = () => packagePath;
+    // Release-flavor bitcode is never imported; only the speed flavor's is.
+    await writeFile(
+      join(root, "runtime-pack.json"),
+      JSON.stringify({
+        ...withBitcode,
+        flavors: { ...withBitcode.flavors, release: withBitcode.flavors.speed, speed: undefined },
+      }),
+    );
+    expect(
+      await loadRuntimeBitcode({ target: MACOS_ARM64_TARGET, features: BASE, resolver }),
+    ).toBeNull();
+    await writeFile(join(root, "runtime-pack.json"), JSON.stringify(withBitcode));
+    const legacy = await loadRuntimeBitcode({
+      target: MACOS_ARM64_TARGET,
+      features: { ...BASE, textDecoderLegacy: true },
+      resolver,
+    });
+    expect(legacy?.paths.map((path) => basename(path))).toEqual(["legacy.bc"]);
+    expect(legacy?.digests).toEqual([createHash("sha256").update("legacy-bc").digest("hex")]);
+    // A variant without bitcode imports nothing.
+    expect(
+      await loadRuntimeBitcode({
+        target: MACOS_ARM64_TARGET,
+        features: { ...BASE, dynamic: true },
+        resolver,
+      }),
+    ).toBeNull();
+    await writeFile(join(root, "artifacts/base.bc"), "damaged");
+    await expect(
+      loadRuntimeBitcode({ target: MACOS_ARM64_TARGET, features: BASE, resolver }),
+    ).rejects.toThrow("hash mismatch");
+    const malformed = structuredClone(withBitcode);
+    malformed.flavors.speed!.runtime_units[0]!.variants[0]!.bitcode = {
+      path: "../escape.bc",
+      sha256: "0".repeat(64),
+      size: 1,
+    };
+    expect(() => parseRuntimePackManifest(malformed)).toThrow("malformed");
   });
 
   test("a stale manifest reports its identity independently from the package", async () => {
@@ -626,4 +701,63 @@ test("library runtime selection requires dedicated packs and never substitutes e
     runtimeObjects: threaded.runtimeObjects,
   });
   await expect(loadRuntimePack(options)).rejects.toThrow("no release flavor");
+});
+
+test("speed selects the pack's speed flavor and falls back to release objects without one", async () => {
+  const f = await fixture();
+  const options = {
+    target: MACOS_ARM64_TARGET,
+    features: BASE,
+    resolver: () => f.packagePath,
+  };
+  // A pack without a speed flavor links its release objects for speed.
+  const fallback = await loadRuntimePack({ ...options, optimization: "speed" });
+  expect(fallback.flavor).toBe("speed");
+  expect(fallback.runtimeObjects.map((path) => basename(path))).toEqual(["base.o"]);
+
+  const bytes = "speed";
+  await writeFile(join(f.root, "artifacts/speed.o"), bytes);
+  const speedArtifact = {
+    path: "artifacts/speed.o",
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+    size: Buffer.byteLength(bytes),
+  };
+  const unit = f.manifest.flavors.release!.runtime_units[0]!;
+  f.manifest.flavors.speed = {
+    optimization: "-O2",
+    runtime_units: [
+      {
+        ...unit,
+        variants: unit.variants.map((variant) =>
+          variant.id === "default" ? { ...variant, ...speedArtifact } : variant,
+        ),
+      },
+    ],
+  };
+  await writeFile(join(f.root, "runtime-pack.json"), JSON.stringify(f.manifest));
+  const speed = await loadRuntimePack({ ...options, optimization: "speed" });
+  expect(speed.runtimeObjects.map((path) => basename(path))).toEqual(["speed.o"]);
+  // Release and dev never see the speed flavor's objects.
+  const release = await loadRuntimePack({ ...options, optimization: "release" });
+  expect(release.runtimeObjects.map((path) => basename(path))).toEqual(["base.o"]);
+  // Library modes have no speed flavor and link their release objects.
+  f.manifest.flavors["library-release"] = {
+    optimization: "-O2",
+    runtime_units: [{ ...unit, variants: [{ ...unit.variants[0]!, defines: ["SCR_LIB"] }] }],
+  };
+  await writeFile(join(f.root, "runtime-pack.json"), JSON.stringify(f.manifest));
+  await expect(
+    loadRuntimePack({ ...options, optimization: "speed", mode: "library" }),
+  ).resolves.toMatchObject({ runtimeObjects: release.runtimeObjects });
+  // A speed flavor must be optimized and accompany the release flavor.
+  expect(() =>
+    parseRuntimePackManifest({
+      ...f.manifest,
+      flavors: { ...f.manifest.flavors, speed: { optimization: "-O0", runtime_units: [unit] } },
+    }),
+  ).toThrow("malformed");
+  const { release: _release, dev: _dev, ...withoutExecutable } = f.manifest.flavors;
+  expect(() => parseRuntimePackManifest({ ...f.manifest, flavors: withoutExecutable })).toThrow(
+    "malformed",
+  );
 });

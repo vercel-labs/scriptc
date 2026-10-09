@@ -16,6 +16,8 @@ struct EmitOptions {
   std::string RelocationModel = "pic";
   std::string DiagnosticFormat = "json";
   std::string SourcePath;
+  // Runtime bitcode whose small functions are imported available_externally.
+  std::vector<std::string> ImportBitcode;
 };
 
 std::optional<EmitOptions> parseEmitOptions(int Argc, char **Argv);

@@ -1,3 +1,4 @@
+import type { NativeOptimization } from "../optimization.js";
 import { isMobileTarget, mobileLibraryTarget } from "../target-platform.js";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,7 +13,7 @@ export type NativeCacheWarmProfile = "runtime" | "tls" | "dynamic";
 
 export interface WarmNativeCachesOptions {
   /** Native object posture to seed. Defaults to the shipped release/-O2 lane. */
-  optimization?: "release" | "dev";
+  optimization?: NativeOptimization;
   /** Seed ASan + RC-audit objects instead of the ordinary lane. */
   sanitize?: boolean;
   /** Feature families to seed. Defaults to every expensive native family. */

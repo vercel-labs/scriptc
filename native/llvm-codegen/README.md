@@ -32,3 +32,15 @@ Emission uses LLVM 22's default per-module O2 pipeline, including coroutine
 lowering, verifies before and after optimization, and publishes through a
 private sibling file so a failed or interrupted request cannot truncate the
 requested output.
+
+`--optimization=speed` program builds pass `--import-bitcode <unit.bc>` once per runtime-pack unit the program links. Small runtime functions reachable from the program's runtime calls are imported as `available_externally` so LLVM can inline them; the runtime objects remain the only definitions. The helper never runs a sanitizer pass, so with import it also drops the emitter's inert `sanitize_address` attributes, which would otherwise block that inlining. Without `--import-bitcode` the module is optimized exactly as emitted.
+
+Runtime-pack builds emit each unit of the executable `speed` flavor through the helper:
+
+```console
+scriptc-llvm-codegen runtime-unit --input unit.opt.bc --object unit.o \
+  --bitcode unit.bc --target x86_64-unknown-linux-gnu --tag scr_array \
+  [--function-sections --data-sections]
+```
+
+The input is the runtime compiler's optimized bitcode. The command promotes unit-local symbols to hidden `<name>.scrunit.<tag>` globals and writes the object and the import bitcode from that one module, so imported bodies can reference the unit's private state and helpers.

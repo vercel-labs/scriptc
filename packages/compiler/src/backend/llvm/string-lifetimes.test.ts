@@ -94,7 +94,7 @@ test("string comparisons borrow parameters while owned entry adapters release th
   expect(facts(compare).parameters.get("compare")).toEqual(new Set([0, 1]));
   for (const bits of [32, 64] as const) {
     const borrowed = body(mod(compare), "sc_bf_compare", bits);
-    expect(borrowed).toContain("@scr_str_eq");
+    expect(borrowed).toContain("@sc_str_eq");
     expect(borrowed).not.toContain("@scr_str_retain");
     expect(borrowed).not.toContain("@scr_str_release");
     const owned = body(mod(compare), "sc_f_compare", bits);
@@ -154,7 +154,7 @@ test("string operands preserve their left-to-right snapshot when a later assignm
   const f = fn("replace", ["text"], equal(ref("text"), assigned));
   const ir = body(mod(f), "sc_f_replace");
   expect(ir.indexOf("@scr_str_retain_v")).toBeLessThan(ir.indexOf("@scr_str_release"));
-  expect(ir).toContain("@scr_str_eq");
+  expect(ir).toContain("@sc_str_eq");
   expect(facts(f).parameters.has("replace")).toBe(false);
 });
 
@@ -390,7 +390,47 @@ test("borrowed literals keep UTF-16 string comparison without temporary owners",
     loc,
   });
   const ir = body(mod(compare), "sc_f_compare");
-  expect(ir).toContain("@scr_str_cmp_u16");
+  expect(ir).toContain("@sc_str_cmp_u16");
   expect(ir).not.toContain("@scr_str_retain_v");
   expect(ir).not.toContain("@scr_str_release");
+});
+
+test("string comparisons decide identity, lengths and leading bytes before the runtime", () => {
+  const order = (utf16: boolean) =>
+    fn(`order${utf16 ? 16 : 8}`, [], {
+      kind: "strCmp",
+      op: "<",
+      left: str("apple"),
+      right: str("apricot"),
+      utf16,
+      type: BOOL,
+      loc,
+    });
+  const same = fn("same", [], {
+    kind: "strEq",
+    left: str("a"),
+    right: str("b"),
+    negated: false,
+    type: BOOL,
+    loc,
+  });
+  for (const bits of [32, 64] as const) {
+    const ir = emitLlvmModule(mod(order(false), order(true), same), { pointerBits: bits });
+    const helper = (name: string) =>
+      new RegExp(`^define internal [^\\n]*@${name}\\([^]*?^}`, "m").exec(ir)![0];
+    const eq = helper("sc_str_eq");
+    expect(eq).toContain("icmp eq ptr %a, %b");
+    expect(eq).toMatch(/icmp eq i(32|64) %alen, %blen/);
+    expect(eq).toContain("call zeroext i1 @scr_str_eq(ptr %a, ptr %b)");
+    const bytes = helper("sc_str_cmp");
+    expect(bytes).toContain("@llvm.bswap.i64");
+    expect(bytes).not.toContain("%ascii");
+    expect(bytes).toContain("call i32 @scr_str_cmp(ptr %a, ptr %b)");
+    const units = helper("sc_str_cmp_u16");
+    expect(units).toContain("%wascii = icmp eq i64 %whigh, 0");
+    expect(units).toContain("%tascii = icmp eq i64 %thigh, 0");
+    expect(bytes).toContain("%tailable = and i1 %samelen, %short");
+    expect(units).toContain("%ascii = icmp sge i8 %bits, 0");
+    expect(units).toContain("call i32 @scr_str_cmp_u16(ptr %a, ptr %b)");
+  }
 });

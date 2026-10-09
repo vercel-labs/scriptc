@@ -892,6 +892,155 @@ export class LlDyn {
     return name;
   }
 
+  /* ── schema-directed JSON.parse ───────────────────────────────── */
+
+  private readonly jsonSchemas = new Map<string, string>();
+  private readonly jsonParsers = new Map<string, string>();
+
+  /** Targets the one-pass parser (scr_json_parse_schema) can build
+   * directly: number, boolean and string leaves inside arrays and plain
+   * records (no tuple, index signature, internal '%' slot or `__proto__`
+   * member; 1..64 fields). Everything else keeps the checked-dynamic
+   * route alone. */
+  private jsonSchemaSupported(t: IrType, visiting: Set<string>): boolean {
+    switch (t.kind) {
+      case "f64":
+      case "bool":
+      case "string":
+        return true;
+      case "array":
+        return this.jsonSchemaSupported(t.elem, visiting);
+      case "record": {
+        if (visiting.has(t.shapeId)) return true;
+        const shape = this.host.recordsById.get(t.shapeId);
+        if (!shape || shape.tuple || shape.indexValue) return false;
+        if (shape.fields.length === 0 || shape.fields.length > 64) return false;
+        visiting.add(t.shapeId);
+        return shape.fields.every(
+          (f) =>
+            !f.name.startsWith("%") &&
+            f.name !== "__proto__" &&
+            this.jsonSchemaSupported(f.type, visiting),
+        );
+      }
+      default:
+        return false;
+    }
+  }
+
+  /** The ScrJsonSchema constant for t (scr_runtime.h layout). Records list
+   * fields in declaration order — the order JSON.stringify writes — so the
+   * runtime's next-field guess usually matches without a scan. */
+  private jsonSchema(t: IrType): string {
+    const key = typeKey(t);
+    const existing = this.jsonSchemas.get(key);
+    if (existing) return existing;
+    const host = this.host;
+    const S = host.sizeType;
+    const name = `sc_jsch_${this.jsonSchemas.size}`;
+    this.jsonSchemas.set(key, name);
+    let body: string;
+    switch (t.kind) {
+      case "f64":
+      case "bool":
+      case "string": {
+        const kind = t.kind === "f64" ? 0 : t.kind === "bool" ? 1 : 2;
+        body = `${S} ${kind}, ${S} 0, ptr null, ptr null, ptr null, ptr null, ptr null`;
+        break;
+      }
+      case "array": {
+        const elem = this.jsonSchema(t.elem);
+        const ctor = `${name}_new`;
+        this.defs.push(
+          `define internal ptr @${ctor}(${S} %cap) ${FN_ATTRS} {`,
+          `entry:`,
+          `  %a = ${arrNewCall(host, t.elem, "%cap")}`,
+          `  ret ptr %a`,
+          `}`,
+          ``,
+        );
+        body = `${S} 4, ${S} 0, ptr null, ptr @${elem}, ptr null, ptr @${ctor}, ptr ${vAdapters(host, t).release}`;
+        break;
+      }
+      case "record": {
+        const shape = host.recordsById.get(t.shapeId);
+        if (!shape)
+          throw new InternalCompilerError(
+            `llvm emitter bug: JSON schema of unknown shape ${t.shapeId}`,
+          );
+        const struct = mangleRecordStruct(t.shapeId);
+        const index = new Map(shape.fields.map((f, i) => [f.name, i + 1]));
+        const order = [...(shape.declaredOrder ?? []).filter((n) => index.has(n))];
+        for (const f of shape.fields) if (!order.includes(f.name)) order.push(f.name);
+        const fieldTy = `{ ptr, ${S}, ${S}, ptr }`;
+        const entries = order.map((fieldName) => {
+          const field = shape.fields[index.get(fieldName)! - 1]!;
+          const sub = this.jsonSchema(field.type);
+          const offset = `ptrtoint (ptr getelementptr (%${struct}, ptr null, i64 0, i32 ${index.get(fieldName)}) to ${S})`;
+          return `${fieldTy} { ptr ${host.cstr(fieldName)}, ${S} ${Buffer.byteLength(fieldName, "utf8")}, ${S} ${offset}, ptr @${sub} }`;
+        });
+        const fields = `${name}_fields`;
+        this.defs.push(
+          `@${fields} = internal constant [${entries.length} x ${fieldTy}] [${entries.join(", ")}]`,
+          ``,
+        );
+        body = `${S} 3, ${S} ${entries.length}, ptr @${fields}, ptr null, ptr @${mangleRecordNew(t.shapeId)}, ptr null, ptr ${vAdapters(host, t).release}`;
+        break;
+      }
+      default:
+        throw new InternalCompilerError(`llvm emitter bug: JSON schema of ${t.kind}`);
+    }
+    this.defs.push(
+      `@${name} = internal constant { ${S}, ${S}, ptr, ptr, ptr, ptr, ptr } { ${body} }`,
+      ``,
+    );
+    return name;
+  }
+
+  /** `sc_jp_<n>(ptr text) -> T` for `JSON.parse(text) as T`, or null when T
+   * is not a schema target. Tries the one-pass schema parser; when it
+   * declines (any input the checked route might reject or read
+   * differently), runs the checked-dynamic route — scr_json_parse plus the
+   * dynCheck builder — which reports the exact error. Returns +1, or null
+   * with the pending flag set. */
+  jsonParseHelper(t: IrType): string | null {
+    if (t.kind !== "record" && t.kind !== "array") return null;
+    const key = typeKey(t);
+    const existing = this.jsonParsers.get(key);
+    if (existing) return existing;
+    if (!this.jsonSchemaSupported(t, new Set())) return null;
+    const host = this.host;
+    const name = `sc_jp_${this.jsonParsers.size}`;
+    this.jsonParsers.set(key, name);
+    const schema = this.jsonSchema(t);
+    const check = this.dynCheckHelper(t);
+    host.declare(`declare ptr @scr_json_parse_schema(ptr, ptr)`);
+    host.declare(`declare ptr @scr_json_parse(ptr)`);
+    host.declare(`declare void @scr_dyn_release(ptr)`);
+    this.defs.push(
+      `define internal ptr @${name}(ptr %text) ${FN_ATTRS} { ; JSON.parse as ${llvmCommentText(key)}`,
+      `entry:`,
+      `  %fast = call ptr @scr_json_parse_schema(ptr %text, ptr @${schema})`,
+      `  %hit = icmp ne ptr %fast, null`,
+      `  br i1 %hit, label %done, label %slow`,
+      `done:`,
+      `  ret ptr %fast`,
+      `slow:`,
+      `  %d = call ptr @scr_json_parse(ptr %text)`,
+      `  %bad = icmp eq ptr %d, null`,
+      `  br i1 %bad, label %fail, label %check`,
+      `fail:`,
+      `  ret ptr null`,
+      `check:`,
+      `  %v = call ptr @${check}(ptr %d, ptr null)`,
+      `  call void @scr_dyn_release(ptr %d)`,
+      `  ret ptr %v`,
+      `}`,
+      ``,
+    );
+    return name;
+  }
+
   /* ── dynCheckHelper (walkers.ts, ported) ──────────────────────── */
 
   /** `sc_dc_<n>(ptr d, ptr path) -> T` — validate the checked-dynamic tree against T and

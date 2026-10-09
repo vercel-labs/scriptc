@@ -14,7 +14,8 @@
  *   message (Node throws SyntaxError at parse time — documented divergence;
  *   rare, since tsc's parser has already syntax-checked the literal).
  * - ASCII subjects borrow their existing bytes; other subjects use a
- *   per-call UTF-16 conversion. Both engine representations report UTF-16
+ *   per-call UTF-16 conversion (exec/test keep the last long subject's
+ *   decoding, see scr_regex_input_init_cached). Both engine representations report UTF-16
  *   code-unit indices, matching .length/slice/charCodeAt.
  * - Match loops mirror quickjs.c's own (JS_RegExpDelete /
  *   js_regexp_Symbol_replace): capture buffers are sized by
@@ -25,6 +26,9 @@
  * - Global and sticky exec/test use numeric lastIndex and update or reset
  *   it after matching. String matching/replacement follows its own state
  *   rules; matchAll, search, and split preserve the original regex state.
+ * - One-byte (ASCII) subjects run a native matcher translated from the same
+ *   bytecode when the pattern stays inside its subset (scr_regex_native.h);
+ *   it reports lre_exec's exact captures, so every loop below is shared.
  */
 #include "scr_runtime.h"
 
@@ -34,6 +38,7 @@
 #include <string.h>
 
 #include "libregexp.h"
+#include "scr_regex_native.h"
 
 static void scr_regex_oom(void) {
   scr_trap("scriptc: out of memory\n");
@@ -88,6 +93,8 @@ static void scr_regex_free_bytecodes(void) {
   for (size_t i = 0; i < scr_compiled_len; i++) {
     lre_realloc(lre_opaque(), scr_compiled[i]->bc, 0);
     scr_compiled[i]->bc = NULL;
+    scr_re_native_free(scr_compiled[i]->native);
+    scr_compiled[i]->native = NULL;
   }
   free(scr_compiled);
   scr_compiled = NULL;
@@ -175,7 +182,11 @@ static char *scr_pattern_cesu8(const ScrStr *src, size_t *plen) {
 /* The compiled bytecode, compiling (and caching) on first use. */
 static uint8_t *scr_regex_bc(ScrRegex *re) {
   if (re->bc) return re->bc;
-  if (re->literal) return re->bc = scr_regex_bc(re->literal);
+  if (re->literal) {
+    re->bc = scr_regex_bc(re->literal);
+    re->native = re->literal->native;
+    return re->bc;
+  }
   int flags = scr_lre_flags(re->flags);
   const char *pat = re->source->data;
   size_t pat_len = re->source->len;
@@ -199,6 +210,7 @@ static uint8_t *scr_regex_bc(ScrRegex *re) {
                  re->source->data, re->flags->data, error_msg);
   }
   re->bc = bc;
+  re->native = scr_re_native_build(bc);
   scr_note_compiled(re);
   return bc;
 }
@@ -212,7 +224,10 @@ void scr_regex_release(ScrRegex *re) {
   if (--re->rc == 0) {
     scr_str_release(re->source);
     scr_str_release(re->flags);
-    if (re->bc && !re->literal) lre_realloc(lre_opaque(), re->bc, 0);
+    if (re->bc && !re->literal) {
+      lre_realloc(lre_opaque(), re->bc, 0);
+      scr_re_native_free(re->native);
+    }
     free(re);
   }
 }
@@ -392,8 +407,10 @@ static void scr_jb_put_utf16(ScrJsonBuf *b, const uint16_t *u, int start, int en
 typedef struct ScrRegexInput {
   const uint8_t *data;
   uint16_t *utf16;
+  const ScrReNative *native; /* one-byte subjects of translated patterns */
   int len;
   int wide;
+  bool borrowed_utf16; /* utf16 belongs to the subject cache below */
   uint8_t **capture;
   uint8_t *registers[32];
 } ScrRegexInput;
@@ -411,27 +428,90 @@ static bool scr_text_ascii(const ScrStr *s) {
   return true;
 }
 
-static void scr_regex_input_init(ScrRegexInput *input, const uint8_t *bc,
-                                  const ScrStr *s) {
-  if (s->len > (size_t)INT32_MAX - 1) scr_regex_oom();
-  input->wide = !scr_text_ascii(s);
-  input->utf16 = input->wide ? scr_to_utf16(s, &input->len) : NULL;
-  input->data = input->wide ? (const uint8_t *)input->utf16 : (const uint8_t *)s->data;
-  if (!input->wide) input->len = (int)s->len;
+static void scr_regex_input_registers(ScrRegexInput *input, const uint8_t *bc) {
   /* The executor writes temporary registers beyond the capture pairs. */
   int count = lre_get_alloc_count(bc);
   input->capture = count <= 32 ? input->registers : malloc((size_t)count * sizeof(uint8_t *));
   if (!input->capture) scr_regex_oom();
 }
 
+static void scr_regex_input_init(ScrRegexInput *input, const ScrRegex *re,
+                                  const uint8_t *bc, const ScrStr *s) {
+  if (s->len > (size_t)INT32_MAX - 1) scr_regex_oom();
+  input->wide = !scr_text_ascii(s);
+  input->native = input->wide ? NULL : (const ScrReNative *)re->native;
+  input->utf16 = input->wide ? scr_to_utf16(s, &input->len) : NULL;
+  input->borrowed_utf16 = false;
+  input->data = input->wide ? (const uint8_t *)input->utf16 : (const uint8_t *)s->data;
+  if (!input->wide) input->len = (int)s->len;
+  scr_regex_input_registers(input, bc);
+}
+
+/* Single-entry decoding cache for exec/test subjects. A lastIndex-driven
+ * loop (`while ((m = re.exec(s)) !== null)`, sticky tokenizers, repeated
+ * tests of one document) calls into the engine once per match on the same
+ * immutable string. Rescanning it for ASCII on every call, and converting
+ * a non-ASCII subject to UTF-16 again, made those loops quadratic in the
+ * subject length. The cache retains its subject: the address cannot be
+ * recycled, and a retained string is never appended in place (only rc == 1
+ * strings mutate). Only exec and test use it. They run no user code while
+ * their input is live, so a nested regex call cannot evict a buffer that
+ * is still in use; the draining entry points convert once per call. Short
+ * subjects skip the cache: their scan is cheaper than the bookkeeping. */
+enum { SCR_REGEX_SUBJECT_CACHE_MIN = 256 };
+static SCR_TL ScrStr *scr_subject_str;
+static SCR_TL uint16_t *scr_subject_utf16;
+static SCR_TL int scr_subject_len;
+static SCR_TL bool scr_subject_wide;
+static SCR_TL bool scr_subject_armed;
+
+static void scr_regex_subject_clear(void) {
+  ScrStr *old = scr_subject_str;
+  free(scr_subject_utf16);
+  scr_subject_str = NULL;
+  scr_subject_utf16 = NULL;
+  scr_str_release(old);
+}
+
+static void scr_regex_input_init_cached(ScrRegexInput *input, const ScrRegex *re,
+                                         const uint8_t *bc, ScrStr *s) {
+  if (s->len < SCR_REGEX_SUBJECT_CACHE_MIN) {
+    scr_regex_input_init(input, re, bc, s);
+    return;
+  }
+  if (s != scr_subject_str) {
+    if (s->len > (size_t)INT32_MAX - 1) scr_regex_oom();
+    bool wide = !scr_text_ascii(s);
+    int len = (int)s->len;
+    uint16_t *utf16 = wide ? scr_to_utf16(s, &len) : NULL;
+    scr_regex_subject_clear();
+    if (!scr_subject_armed) {
+      scr_subject_armed = true;
+      scr_atexit(scr_regex_subject_clear);
+    }
+    scr_subject_str = scr_str_retain(s);
+    scr_subject_utf16 = utf16;
+    scr_subject_len = len;
+    scr_subject_wide = wide;
+  }
+  input->wide = scr_subject_wide;
+  input->native = input->wide ? NULL : (const ScrReNative *)re->native;
+  input->utf16 = scr_subject_utf16;
+  input->borrowed_utf16 = true;
+  input->data = input->wide ? (const uint8_t *)input->utf16 : (const uint8_t *)s->data;
+  input->len = scr_subject_len;
+  scr_regex_input_registers(input, bc);
+}
+
 static void scr_regex_input_dispose(ScrRegexInput *input) {
   if (input->capture != input->registers) free(input->capture);
-  free(input->utf16);
+  if (!input->borrowed_utf16) free(input->utf16);
 }
 
 static int scr_exec(ScrRegexInput *input, const uint8_t *bc, int index) {
-  int rc = lre_exec(input->capture, bc, input->data, index, input->len,
-                    input->wide, lre_opaque());
+  int rc = input->native
+    ? scr_re_native_exec(input->native, input->capture, input->data, index, input->len)
+    : lre_exec(input->capture, bc, input->data, index, input->len, input->wide, lre_opaque());
   if (rc < 0) {
     fflush(stdout);
     scr_trap("scriptc: regular expression execution failed\n");
@@ -496,7 +576,7 @@ static int scr_regex_start(ScrRegex *re, int len) {
 bool scr_regex_test(ScrRegex *re, ScrStr *s) {
   uint8_t *bc = scr_regex_bc(re);
   ScrRegexInput input;
-  scr_regex_input_init(&input, bc, s);
+  scr_regex_input_init_cached(&input, re, bc, s);
   bool stateful = (lre_get_flags(bc) & (LRE_FLAG_GLOBAL | LRE_FLAG_STICKY)) != 0;
   int pos = stateful ? scr_regex_start(re, input.len) : 0;
   int rc = pos < 0 ? 0 : scr_exec(&input, bc, pos);
@@ -517,7 +597,7 @@ ScrArr *scr_regex_exec(ScrStr *s, ScrRegex *re) {
   uint8_t *bc = scr_regex_bc(re);
   bool stateful = (lre_get_flags(bc) & (LRE_FLAG_GLOBAL | LRE_FLAG_STICKY)) != 0;
   ScrRegexInput input;
-  scr_regex_input_init(&input, bc, s);
+  scr_regex_input_init_cached(&input, re, bc, s);
   int len = input.len;
   uint8_t **capture = input.capture;
   int pos = stateful ? scr_regex_start(re, len) : 0;
@@ -557,7 +637,7 @@ ScrArr *scr_regex_match(ScrStr *s, ScrRegex *re) {
   re->last_index = 0;
   bool unicode = (flags & (LRE_FLAG_UNICODE | LRE_FLAG_UNICODE_SETS)) != 0;
   ScrRegexInput input;
-  scr_regex_input_init(&input, bc, s);
+  scr_regex_input_init(&input, re, bc, s);
   int len = input.len;
   uint8_t **capture = input.capture;
   ScrArr *out = NULL;
@@ -584,7 +664,7 @@ ScrArr *scr_regex_match(ScrStr *s, ScrRegex *re) {
 double scr_regex_search(ScrStr *s, ScrRegex *re) {
   uint8_t *bc = scr_regex_bc(re);
   ScrRegexInput input;
-  scr_regex_input_init(&input, bc, s);
+  scr_regex_input_init(&input, re, bc, s);
   uint8_t **capture = input.capture;
   int rc = scr_exec(&input, bc, 0);
   double out = -1;
@@ -614,7 +694,7 @@ static ScrArr *scr_regex_match_all_core(ScrStr *s, ScrRegex *re, ScrArr *indices
   bool unicode = (re_flags & (LRE_FLAG_UNICODE | LRE_FLAG_UNICODE_SETS)) != 0;
   int capture_count = lre_get_capture_count(bc);
   ScrRegexInput input;
-  scr_regex_input_init(&input, bc, s);
+  scr_regex_input_init(&input, re, bc, s);
   int len = input.len;
   uint8_t **capture = input.capture;
   ScrArr *out = scr_arr_new(SCR_ELEM_ARR, 4);
@@ -758,7 +838,7 @@ static ScrStr *scr_replace_impl(ScrStr *s, ScrRegex *re, ScrStr *rep) {
   int capture_count = lre_get_capture_count(bc);
   const char *groupnames = lre_get_groupnames(bc);
   ScrRegexInput input;
-  scr_regex_input_init(&input, bc, s);
+  scr_regex_input_init(&input, re, bc, s);
   int len = input.len;
   uint8_t **capture = input.capture;
   ScrJsonBuf b;
@@ -831,7 +911,7 @@ ScrStr *scr_regex_replace_callback(ScrStr *s, ScrRegex *re, ScrDyn *callback, bo
   int capture_count = lre_get_capture_count(bc);
   const char *groupnames = lre_get_groupnames(bc);
   ScrRegexInput input;
-  scr_regex_input_init(&input, bc, s);
+  scr_regex_input_init(&input, re, bc, s);
   int len = input.len;
   ScrReplacementMatch *matches = NULL;
   size_t count = 0, capacity = 0;
@@ -981,7 +1061,7 @@ ScrArr *scr_regex_split_limit(ScrStr *s, ScrRegex *re, double limit_num) {
   bool unicode = (re_flags & (LRE_FLAG_UNICODE | LRE_FLAG_UNICODE_SETS)) != 0;
   bool sticky = (re_flags & LRE_FLAG_STICKY) != 0;
   ScrRegexInput input;
-  scr_regex_input_init(&input, bc, s);
+  scr_regex_input_init(&input, re, bc, s);
   int len = input.len;
   uint8_t **capture = input.capture;
   ScrArr *out = scr_arr_new(SCR_ELEM_STR, 0);
@@ -1355,6 +1435,93 @@ void scr_assert_shape_re(int key, ScrRegex *re) {
  * by design; e.name is exact). Unknown flag letters throw Node's
  * "Invalid flags supplied to RegExp constructor 'x'". An empty pattern
  * stores the spec's "(?:)" source, like Node. Borrows both; +1. */
+/* Compiled-pattern cache for the RegExp constructor. Code that builds the
+ * same pattern repeatedly (`new RegExp(word, "i")` inside a per-item
+ * helper) recompiled it on every construction. Valid patterns compile to
+ * immutable bytecode, so instances share it exactly as literal instances
+ * share their template's: an immortal template owns the bytecode (freed at
+ * exit with the literal templates) and each instance borrows it through
+ * `literal`. Entries are never evicted, because live instances borrow
+ * them; past the entry budget, or for long sources, constructions compile
+ * privately as before. Invalid patterns are never cached, so each one
+ * still throws its SyntaxError.
+ *
+ * Worker executables (SCR_WORKERS) leave the cache empty: their templates
+ * would be thread-local, and a worker's context teardown has no point at
+ * which the never-evicted templates could be released after every borrowing
+ * instance. Constructions there compile privately. */
+enum { SCR_REGEX_CTOR_CAP = 512, SCR_REGEX_CTOR_MAX = 256, SCR_REGEX_CTOR_SOURCE_MAX = 1024 };
+typedef struct {
+  ScrRegex *shared; /* NULL = empty slot */
+  uint64_t hash;
+  char *key; /* flags, NUL, source */
+  size_t key_len;
+} ScrRegexCtorEntry;
+static SCR_TL ScrRegexCtorEntry *scr_regex_ctor_table;
+static SCR_TL size_t scr_regex_ctor_count;
+
+static uint64_t scr_regex_ctor_hash(const ScrStr *source, const ScrStr *flags) {
+  uint64_t h = UINT64_C(1469598103934665603);
+  for (size_t i = 0; i < flags->len; i++) h = (h ^ (unsigned char)flags->data[i]) * UINT64_C(1099511628211);
+  h = (h ^ 0xFF) * UINT64_C(1099511628211);
+  for (size_t i = 0; i < source->len; i++) h = (h ^ (unsigned char)source->data[i]) * UINT64_C(1099511628211);
+  return h;
+}
+
+static bool scr_regex_ctor_matches(const ScrRegexCtorEntry *e, uint64_t hash,
+                                   const ScrStr *source, const ScrStr *flags) {
+  return e->hash == hash && e->key_len == flags->len + 1 + source->len &&
+         memcmp(e->key, flags->data, flags->len) == 0 && e->key[flags->len] == '\0' &&
+         memcmp(e->key + flags->len + 1, source->data, source->len) == 0;
+}
+
+static ScrRegex *scr_regex_ctor_lookup(const ScrStr *source, const ScrStr *flags) {
+  if (!scr_regex_ctor_table || source->len > SCR_REGEX_CTOR_SOURCE_MAX) return NULL;
+  uint64_t hash = scr_regex_ctor_hash(source, flags);
+  for (size_t i = hash & (SCR_REGEX_CTOR_CAP - 1);; i = (i + 1) & (SCR_REGEX_CTOR_CAP - 1)) {
+    ScrRegexCtorEntry *e = &scr_regex_ctor_table[i];
+    if (!e->shared) return NULL;
+    /* bc is NULL after the exit-time teardown: compile privately then. */
+    if (scr_regex_ctor_matches(e, hash, source, flags)) return e->shared->bc ? e->shared : NULL;
+  }
+}
+
+/* Move a freshly compiled constructor regex's bytecode into a shared
+ * template when the cache has room; the instance then borrows it. */
+static void scr_regex_ctor_remember(ScrRegex *re) {
+#ifdef SCR_WORKERS
+  (void)re;
+#else
+  if (re->source->len > SCR_REGEX_CTOR_SOURCE_MAX || scr_regex_ctor_count >= SCR_REGEX_CTOR_MAX)
+    return;
+  if (!scr_regex_ctor_table) {
+    scr_regex_ctor_table = calloc(SCR_REGEX_CTOR_CAP, sizeof *scr_regex_ctor_table);
+    if (!scr_regex_ctor_table) return;
+  }
+  size_t key_len = re->flags->len + 1 + re->source->len;
+  char *key = malloc(key_len);
+  ScrRegex *shared = calloc(1, sizeof *shared);
+  if (!key || !shared) {
+    free(key);
+    free(shared);
+    return;
+  }
+  memcpy(key, re->flags->data, re->flags->len);
+  key[re->flags->len] = '\0';
+  memcpy(key + re->flags->len + 1, re->source->data, re->source->len);
+  shared->rc = SIZE_MAX;
+  shared->bc = re->bc;
+  shared->native = re->native;
+  scr_note_compiled(shared);
+  uint64_t hash = scr_regex_ctor_hash(re->source, re->flags);
+  size_t i = hash & (SCR_REGEX_CTOR_CAP - 1);
+  while (scr_regex_ctor_table[i].shared) i = (i + 1) & (SCR_REGEX_CTOR_CAP - 1);
+  scr_regex_ctor_table[i] = (ScrRegexCtorEntry){shared, hash, key, key_len};
+  scr_regex_ctor_count++;
+  re->literal = shared;
+#endif
+}
+
 ScrRegex *scr_regex_new(ScrStr *pattern, ScrStr *flags) {
   unsigned seen_flags = 0;
   for (size_t i = 0; i < flags->len; i++) {
@@ -1394,6 +1561,13 @@ ScrRegex *scr_regex_new(ScrStr *pattern, ScrStr *flags) {
   }
   re->flags = flag_count == flags->len && memcmp(canonical, flags->data, flag_count) == 0
     ? scr_str_retain(flags) : scr_str_new(canonical, flag_count);
+  ScrRegex *shared = scr_regex_ctor_lookup(re->source, re->flags);
+  if (shared) {
+    re->literal = shared;
+    re->bc = shared->bc;
+    re->native = shared->native;
+    return re;
+  }
   /* Eager compile — the literal path stays lazy (its failure is an
    * abort; tsc already parsed those patterns). */
   int lre_flags = scr_lre_flags(re->flags);
@@ -1420,6 +1594,8 @@ ScrRegex *scr_regex_new(ScrStr *pattern, ScrStr *flags) {
     return NULL;
   }
   re->bc = bc;
+  re->native = scr_re_native_build(bc);
+  scr_regex_ctor_remember(re);
   return re;
 }
 

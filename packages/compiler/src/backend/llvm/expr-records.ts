@@ -220,7 +220,7 @@ export function keyedRecordReadInto(
       const lit = host.internLiteral(f.name);
       const hit = B.tmp();
       B.line(
-        `${hit} = call zeroext i1 @scr_str_eq(ptr ${keyName}, ptr ${lit}) ; ${llvmCommentText(f.name)}`,
+        `${hit} = call zeroext i1 @sc_str_eq(ptr ${keyName}, ptr ${lit}) ; ${llvmCommentText(f.name)}`,
       );
       const lh = B.newLabel("rkg.h");
       const ln = B.newLabel("rkg.n");
@@ -341,7 +341,7 @@ export function keyedRecordReadInto(
     const lit = host.internLiteral(f.name);
     const hit = B.tmp();
     B.line(
-      `${hit} = call zeroext i1 @scr_str_eq(ptr ${keyName}, ptr ${lit}) ; ${llvmCommentText(f.name)}`,
+      `${hit} = call zeroext i1 @sc_str_eq(ptr ${keyName}, ptr ${lit}) ; ${llvmCommentText(f.name)}`,
     );
     const lh = B.newLabel("rkg.h");
     const ln = B.newLabel("rkg.n");

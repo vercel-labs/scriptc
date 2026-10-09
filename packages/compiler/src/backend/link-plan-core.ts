@@ -1,4 +1,5 @@
 /** Ordered link inputs shared by synchronous native and asynchronous Node hosts. */
+import type { NativeOptimization } from "./optimization.js";
 import {
   executableOptimizationLinkerArgs,
   executableStripLinkerArgs,
@@ -24,19 +25,32 @@ export function executableLinkInputs(options: {
   runtimeObjects: readonly string[];
   runtimeArchives: readonly string[];
   runtimeSystemLibraries: readonly string[];
-  optimization: "release" | "dev";
+  optimization: NativeOptimization;
   strip?: boolean;
   windowsSubsystem?: WindowsSubsystem;
 }): ExecutableLinkInputs {
   if (options.ffiFrameworks.length !== 0 && options.target.platform !== "darwin")
     throw new Error("FFI frameworks require a Darwin target");
   return {
+    // Linkers lay out code in input order. The precompiled runtime and its
+    // archives go first so their addresses do not depend on the size of the
+    // program object: otherwise any program edit shifts every runtime
+    // function, and hot interpreter loops (the regex engine's especially)
+    // swing by double-digit percentages with incidental cache-line
+    // placement. Program code never references archive members directly,
+    // so single-pass archive resolution (GNU ld) still sees every runtime
+    // reference first. FFI libraries stay after the program that uses them;
+    // single-pass linkers get the archives once more after them in case a
+    // foreign library depends on a vendored one.
     inputs: [
+      ...options.runtimeObjects,
+      ...options.runtimeArchives,
       options.programObject,
       ...(options.programPartitions ?? []),
       ...options.ffiLibraries,
-      ...options.runtimeObjects,
-      ...options.runtimeArchives,
+      ...(options.ffiLibraries.length !== 0 && options.target.platform !== "darwin"
+        ? options.runtimeArchives
+        : []),
     ],
     systemLibraries: [
       ...new Set([...options.ffiSystemLibraries, ...options.runtimeSystemLibraries]),

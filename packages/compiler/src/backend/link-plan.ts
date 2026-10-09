@@ -6,6 +6,7 @@
  * program, FFI inputs, runtime objects/archives, and system libraries meet
  * the platform linker.
  */
+import type { NativeOptimization } from "./optimization.js";
 import type { FfiProfile } from "../ffi/ffi-manifest.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
 import type { NativeArtifactDependency } from "./native/contracts.js";
@@ -36,7 +37,7 @@ export async function createNativeLinkPlan(options: {
   outPath: string;
   features: NativeLinkFeatures;
   ffi: FfiProfile | null;
-  optimization: "release" | "dev";
+  optimization: NativeOptimization;
   strip?: boolean;
   windowsSubsystem?: WindowsSubsystem;
   programObjectDependencies?: readonly NativeArtifactDependency[];

@@ -693,6 +693,131 @@ static void test_sparse_holes(void) {
 #endif
 }
 
+/* Arrays beyond the 2^20 dense cutoff: contiguous growth and bulk writes stay
+ * packed, rewrites of sparse entries happen in place, a populated sparse tail
+ * densifies (moving its states and references), and genuinely sparse indices
+ * keep side storage. */
+static void test_large_storage(void) {
+#ifdef SCR_RC_AUDIT
+  long strings0 = scr_str_live_count();
+  long arrays0 = scr_arr_live_count();
+#endif
+  const size_t cutoff = (size_t)1 << 20;
+  const double n = (double)cutoff + 200000;
+
+  ScrArr *pushed = scr_arr_new(SCR_ELEM_F64, 0);
+  for (double i = 0; i < n; i++) scr_arr_push_f64(pushed, i);
+  check(pushed->sparse_len == 0 && pushed->cap >= (size_t)n,
+        "appends past the cutoff stay dense");
+  check_f64(scr_arr_get_f64(pushed, n - 1), n - 1, "large append round-trips");
+  scr_arr_release(pushed);
+
+  ScrArr *filled = scr_arr_new(SCR_ELEM_BOOL, 0);
+  scr_arr_set_len(filled, n);
+  scr_arr_release(scr_arr_fill_bool(filled, true, 0, INFINITY));
+  check(filled->sparse_len == 0 && filled->cap >= (size_t)n,
+        "fill of a large holey array allocates dense storage");
+  scr_arr_set_bool(filled, n - 1, false);
+  check(!scr_arr_get_bool(filled, n - 1) && scr_arr_get_bool(filled, n - 2),
+        "large filled array accepts indexed writes");
+  scr_arr_release(filled);
+
+  ScrArr *forward = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_set_len(forward, n);
+  for (double i = 0; i < n; i++) scr_arr_set_f64(forward, i, i * 2);
+  check(forward->sparse_len == 0, "forward indexed writes extend dense storage");
+  scr_arr_release(forward);
+
+  /* Every 64th index past the cutoff is too sparse for packed slots, even
+   * after a full dense prefix, once it starts beyond the append gap. */
+  ScrArr *strided = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_set_len(strided, (double)cutoff);
+  scr_arr_release(scr_arr_fill_f64(strided, 0, 0, INFINITY));
+  size_t entries = 0;
+  for (double i = (double)cutoff + 4095; i < n; i += 64, entries++) scr_arr_set_f64(strided, i, i);
+  check(strided->cap == cutoff && strided->sparse_len == entries,
+        "strided indices past the cutoff keep side storage");
+  for (int round = 0; round < 3; round++) {
+    for (double i = (double)cutoff + 4095; i < n; i += 64) {
+      scr_arr_set_f64(strided, i, scr_arr_get_f64(strided, i) + 1);
+    }
+  }
+  check(strided->sparse_len == entries &&
+            scr_arr_get_f64(strided, (double)cutoff + 4159) == (double)cutoff + 4162,
+        "rewriting sparse entries updates them in place");
+  check(!scr_arr_has(strided, (double)cutoff + 1) && scr_arr_len(strided) > (double)cutoff + 4095,
+        "side storage keeps holes absent");
+  scr_arr_set_f64(strided, (double)cutoff + 1000, 1);
+  check(strided->cap > cutoff + 1000 && scr_arr_has(strided, (double)cutoff + 1000) &&
+            !scr_arr_has(strided, (double)cutoff + 999),
+        "a write within the gap past a full prefix extends dense storage");
+  scr_arr_release(strided);
+
+  /* Writing backwards from the end leaves a populated sorted tail that
+   * densifies; holes, undefined and references move with it. */
+  ScrArr *backward = scr_arr_new(SCR_ELEM_STR, 0);
+  scr_arr_set_len(backward, n);
+  scr_arr_set_undefined(backward, n - 1);
+  for (double i = n - 2; i >= (double)cutoff; i -= 2) {
+    scr_arr_set_ref(backward, i, scr_str_new("v", 1));
+  }
+  check(backward->sparse_len == 0 && backward->cap >= (size_t)n,
+        "a populated sparse tail densifies");
+  check(scr_arr_state(backward, n - 1) == SCR_ARR_UNDEFINED &&
+            scr_arr_state(backward, n - 3) == SCR_ARR_HOLE &&
+            scr_arr_state(backward, n - 2) == SCR_ARR_VALUE &&
+            scr_arr_state(backward, (double)cutoff) == SCR_ARR_VALUE,
+        "densifying preserves values, holes and undefined");
+  scr_arr_release(backward);
+
+  /* The side store is a deque: descending and ascending first touches,
+   * deletes near both ends, and detached storage keep sorted order. */
+  ScrArr *deque = scr_arr_new(SCR_ELEM_STR, 0);
+  const double middle = 3000000000.0;
+  for (double k = 0; k < 3000; k++) {
+    scr_arr_set_ref(deque, middle - k * 1000, scr_str_new("d", 1));
+    scr_arr_set_ref(deque, middle + 1 + k * 1000, scr_str_new("a", 1));
+  }
+  check(deque->sparse_len == 6000 && deque->cap == 0, "spread first touches stay sparse");
+  for (double k = 0; k < 3000; k += 3) {
+    scr_arr_delete(deque, middle - k * 1000);
+    scr_arr_delete(deque, middle + 1 + k * 1000);
+  }
+  size_t visited = 0;
+  bool ordered = true;
+  double previous = -1;
+  for (double i = scr_arr_next_present(deque, 0); i < scr_arr_len(deque);
+       i = scr_arr_next_present(deque, i + 1)) {
+    ordered = ordered && i > previous;
+    previous = i;
+    visited++;
+  }
+  check(visited == 4000 && ordered, "deque traversal stays sorted after deletes");
+  check(!scr_arr_has(deque, middle) && scr_arr_has(deque, middle - 1000) &&
+            scr_arr_has(deque, middle + 1001) && !scr_arr_has(deque, middle + 1),
+        "deque deletes remove exactly their entries");
+  scr_arr_unshift_ref(deque, scr_str_new("u", 1));
+  check(scr_arr_has(deque, middle - 999) && scr_arr_has(deque, 0),
+        "unshift rebuilds deque storage");
+  scr_arr_release(scr_arr_reverse(deque));
+  scr_arr_release(deque);
+
+  ScrArr *high = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_set_f64(high, 0, 1);
+  scr_arr_set_f64(high, 4294967294.0, 2);
+  ScrArr *holes = scr_arr_slice(high, 1, INFINITY);
+  check(holes->cap <= cutoff && scr_arr_len(holes) == 4294967294.0,
+        "slicing a huge hole run keeps a bounded allocation");
+  check(holes->sparse_len == 1 && scr_arr_get_f64(holes, 4294967293.0) == 2,
+        "a sliced hole run keeps its sparse value");
+  scr_arr_release(holes);
+  scr_arr_release(high);
+#ifdef SCR_RC_AUDIT
+  check(scr_str_live_count() == strings0, "large-array references are released");
+  check(scr_arr_live_count() == arrays0, "large arrays do not leak");
+#endif
+}
+
 static void test_borrowed_ref_read(void) {
   ScrArr *a = scr_arr_new(SCR_ELEM_STR, 0);
   ScrStr *value = scr_str_new("borrowed", 8);
@@ -824,6 +949,125 @@ static void test_primitive_sort(void) {
   check(scr_arr_live_count() == arrays0, "primitive sorting releases all arrays");
 }
 
+/* scr_arr_sort_values: closures built by hand with the callValue ABI. */
+static long sort_calls = 0, sort_throw_at = -1;
+
+static double sort_by_floor(ScrClosure *self, double a, double b) {
+  (void)self;
+  sort_calls++;
+  return floor(a) - floor(b);
+}
+
+static double sort_by_length(ScrClosure *self, void *a, void *b) {
+  (void)self;
+  double d = (double)((ScrStr *)a)->len - (double)((ScrStr *)b)->len;
+  scr_str_release((ScrStr *)a); /* the callee owns its parameters */
+  scr_str_release((ScrStr *)b);
+  if (++sort_calls == sort_throw_at) scr_throw_f64(42);
+  return d;
+}
+
+static double sort_one_arg(ScrClosure *self, double a) {
+  (void)self;
+  sort_calls++;
+  return a > 1 ? 1 : 0;
+}
+
+static double sort_nan(ScrClosure *self) {
+  (void)self;
+  sort_calls++;
+  return NAN;
+}
+
+static void test_comparator_sort(void) {
+  ScrClosure floor_fn = {SIZE_MAX, (void *)sort_by_floor, 0, NULL, 0};
+  ScrArr *nums = scr_arr_new(SCR_ELEM_F64, 0);
+  const double input[] = {3.1, 1.1, 2.1, 1.2, 9.1, 3.2, 0.1, 1.3, 2.2, 8.1, 7.1, 6.1,
+                          5.1, 4.1, 3.3, 2.3, 1.4, 0.2, 9.2, 8.2, 7.2, 6.2, 5.2, 4.2};
+  const size_t n = sizeof(input) / sizeof(*input);
+  for (size_t i = 0; i < n; i++) scr_arr_push_f64(nums, input[i]);
+  scr_arr_push_f64(nums, -1); /* beyond the sorted count */
+  scr_arr_sort_values(nums, (double)n, &floor_fn, 2);
+  bool ordered = true;
+  for (size_t i = 1; i < n; i++) {
+    double a = scr_arr_get_f64(nums, (double)(i - 1)), b = scr_arr_get_f64(nums, (double)i);
+    if (floor(a) > floor(b) || (floor(a) == floor(b) && a > b)) ordered = false;
+  }
+  check(ordered, "comparator sort orders keys and keeps equal keys stable");
+  check_f64(scr_arr_get_f64(nums, (double)n), -1, "comparator sort leaves slots past the count");
+
+  ScrClosure one_fn = {SIZE_MAX, (void *)sort_one_arg, 0, NULL, 0};
+  ScrClosure nan_fn = {SIZE_MAX, (void *)sort_nan, 0, NULL, 0};
+  ScrArr *few = scr_arr_new(SCR_ELEM_F64, 0);
+  for (int i = 0; i < 5; i++) scr_arr_push_f64(few, 5 - i);
+  sort_calls = 0;
+  scr_arr_sort_values(few, 5, &nan_fn, 0);
+  check(sort_calls > 0 && scr_arr_get_f64(few, 0) == 5 && scr_arr_get_f64(few, 4) == 1,
+        "a NaN comparator result keeps the input order");
+  scr_arr_sort_values(few, 5, &one_fn, 1);
+  check_f64(scr_arr_len(few), 5, "a one-parameter comparator sort keeps every element");
+  sort_calls = 0;
+  scr_arr_sort_values(few, 1, &nan_fn, 0);
+  check(sort_calls == 0, "a single value needs no comparator call");
+  scr_arr_release(few);
+  scr_arr_release(nums);
+
+  long strings0 = scr_str_live_count();
+  ScrClosure length_fn = {SIZE_MAX, (void *)sort_by_length, 0, NULL, 0};
+  ScrArr *words = scr_arr_new(SCR_ELEM_STR, 0);
+  const char *spellings[] = {"ccc", "a", "bb", "dddd", "e", "ff", "ggg", "h",
+                             "iiiii", "jj", "k", "llll", "mmm", "n", "oo", "p",
+                             "qqq", "r", "ss", "t"};
+  const size_t word_count = sizeof(spellings) / sizeof(*spellings);
+  ScrStr *originals[sizeof(spellings) / sizeof(*spellings)];
+  for (size_t i = 0; i < word_count; i++) {
+    originals[i] = scr_str_new(spellings[i], strlen(spellings[i]));
+    scr_arr_push_ref(words, scr_str_retain(originals[i]));
+  }
+  sort_calls = 0;
+  sort_throw_at = 7;
+  scr_arr_sort_values(words, (double)word_count, &length_fn, 2);
+  check(scr_exc_pending(), "a throwing comparator leaves the exception pending");
+  scr_exc_clear();
+  check(sort_calls == 7, "the sort stops at the first comparator exception");
+  bool unchanged = true;
+  for (size_t i = 0; i < word_count; i++)
+    if (scr_arr_peek_ref(words, (double)i) != originals[i]) unchanged = false;
+  check(unchanged, "a comparator exception leaves the snapshot unchanged");
+  sort_throw_at = -1;
+  scr_arr_sort_values(words, (double)word_count, &length_fn, 2);
+  check(!scr_exc_pending(), "a successful comparator sort leaves no exception");
+  bool stable = true;
+  size_t last_index = 0, last_len = 0;
+  for (size_t i = 0; i < word_count; i++) {
+    ScrStr *s = scr_arr_peek_ref(words, (double)i);
+    size_t index = 0;
+    while (index < word_count && originals[index] != s) index++;
+    size_t len = s->len;
+    if (index == word_count || len < last_len || (i && len == last_len && index < last_index))
+      stable = false;
+    last_len = len;
+    last_index = index;
+  }
+  check(stable, "reference sort is a stable permutation of the original strings");
+  for (size_t i = 0; i < word_count; i++) scr_str_release(originals[i]);
+  check(scr_str_live_count() == strings0 + (long)word_count,
+        "comparator calls balance every retained argument");
+  scr_arr_release(words);
+  check(scr_str_live_count() == strings0, "comparator sort releases all strings");
+
+  /* Past the dense limit the tail lives in sparse slots. */
+  const size_t big = ((size_t)1 << 20) + 300;
+  ScrArr *wide = scr_arr_new(SCR_ELEM_F64, 0);
+  for (size_t i = 0; i < big; i++) scr_arr_push_f64(wide, (double)(big - i) + 0.5);
+  scr_arr_sort_values(wide, (double)big, &floor_fn, 2);
+  bool wide_ordered = true;
+  for (size_t i = 0; i < big; i++)
+    if (scr_arr_get_f64(wide, (double)i) != (double)(i + 1) + 0.5) wide_ordered = false;
+  check(wide_ordered, "comparator sort writes sparse tail slots");
+  scr_arr_release(wide);
+}
+
 int main(int argc, char **argv) {
   if (argc > 1) {
     ScrArr *a = scr_arr_new(SCR_ELEM_F64, 0);
@@ -847,6 +1091,7 @@ int main(int argc, char **argv) {
   }
 
   test_primitive_sort();
+  test_comparator_sort();
   test_f64_basics();
   test_numeric_read();
   test_borrowed_ref_read();
@@ -862,6 +1107,7 @@ int main(int argc, char **argv) {
   test_ref_trace_storage_boundaries();
   test_join();
   test_sparse_holes();
+  test_large_storage();
   test_bulk_reference_ownership();
 
   fprintf(stderr, "%ld/%ld cases passed\n", total - failed, total);

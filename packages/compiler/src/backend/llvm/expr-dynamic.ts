@@ -305,7 +305,7 @@ export function emitDynamicExpr(
       // Tag-UNCHECKED payload extraction: the frontend emits this only
       // where tsc's control-flow narrowing proved the tag. Ref payloads
       // come out +1. The receiver is consumed before any later expression.
-      const u = host.emitReadReceiver(e.value);
+      const u = host.emitUnionProjection(e.value);
       const arm = e.type;
       if (isUnitType(arm))
         throw new InternalCompilerError(`llvm emitter bug: unionNarrow to unit arm ${arm.kind}`);
@@ -316,7 +316,7 @@ export function emitDynamicExpr(
       // Shared-field read `r.kind`: switch on the runtime tag and read
       // the (same-typed) field from the concretely-typed payload.
       // Ref-counted results come out retained (+1), owned by this frame.
-      const u = host.emitReadReceiver(e.value);
+      const u = host.emitUnionProjection(e.value);
       const def = host.unionsById.get(e.unionId);
       if (!def)
         throw new InternalCompilerError(
@@ -338,9 +338,15 @@ export function emitDynamicExpr(
             arm.kind === "object"
               ? host.classFieldPtr(payload, arm.className, e.field)
               : host.recordFieldPtr(payload, arm.shapeId, e.field);
+          const nullable =
+            arm.kind === "object" ? host.nullableFields.get(arm.className, e.field) : null;
           const v =
             arm.kind === "object" ? host.loadField(ptr, type) : host.loadRecordField(ptr, type);
-          const value = isRefCounted(e.type) ? host.retainValue(v, e.type) : v;
+          const value = nullable
+            ? host.nullableToOwnedUnion(v, nullable)
+            : isRefCounted(e.type)
+              ? host.retainValue(v, e.type)
+              : v;
           B.line(`store ${ty} ${value}, ptr ${slot}`);
           B.br(join);
         },
@@ -486,7 +492,7 @@ export function emitDynamicExpr(
     }
     case "unionIsTag": {
       // A pure tag compare — the box is borrowed, no payload is touched.
-      const u = host.emitReadReceiver(e.value);
+      const u = host.emitUnionProjection(e.value);
       const tag = host.unionTag(u.name);
       const t = B.tmp();
       B.line(`${t} = icmp ${e.negated ? "ne" : "eq"} i32 ${tag}, ${e.tag}`);
@@ -560,7 +566,7 @@ export function emitDynamicExpr(
           B.line(`${pv} = getelementptr inbounds i8, ptr ${d.name}, i64 16 ; ->v.str`);
           const sv = B.tmp();
           B.line(`${sv} = load ptr, ptr ${pv}`);
-          B.line(`${eq} = call zeroext i1 @scr_str_eq(ptr ${sv}, ptr ${s.name})`);
+          B.line(`${eq} = call zeroext i1 @sc_str_eq(ptr ${sv}, ptr ${s.name})`);
         } else if (st.kind === "f64") {
           B.line(`${pv} = getelementptr inbounds i8, ptr ${d.name}, i64 16 ; ->v.num`);
           const nv = B.tmp();
@@ -734,9 +740,23 @@ export function emitDynamicExpr(
       const direct = emitUnionEqWrappedScalar(host, e);
       if (direct) return direct;
       // Strict equality of the ARM values (tag compare + per-arm payload
-      // compare — the C per-union helper, inlined). Both boxes borrowed;
-      // a fresh operand box can live on the stack for the comparison.
-      const inputs = emitUnionEqInputs(host, e.left, e.right);
+      // compare — the C per-union helper, inlined). Both boxes borrowed.
+      // Stack-representable operands (wrapped literals, optional array
+      // reads, Map.get results) and stack-boxed locals never allocate: the
+      // compare only reads tags and payloads, and each payload has its own
+      // owner, so later operands cannot invalidate an earlier stack box.
+      // A borrowed nullable-pointer field read projects its pointer the
+      // same way; borrowableInputs already proved later operands cannot
+      // replace the field.
+      const operands = [e.left, e.right];
+      const borrowed = borrowableInputs(host, operands);
+      const inputs = operands.map((value, index) =>
+        borrowed[index] ||
+        host.isStackUnionSource(value) ||
+        (value.kind === "varRef" && host.isStackUnionLocal(value.localId))
+          ? host.emitUnionProjection(value)
+          : host.emitExpr(value),
+      );
       const l = inputs[0]!,
         r = inputs[1]!;
       const def = host.unionsById.get(e.unionId);
@@ -760,12 +780,9 @@ export function emitDynamicExpr(
             B.line(`store i1 true, ptr ${slot}`);
             break;
           case "f64": {
-            host.declare(`declare double @scr_union_get_f64(ptr)`);
-            const a = B.tmp();
-            const b = B.tmp();
+            const a = host.unionGetF64(l.name);
+            const b = host.unionGetF64(r.name);
             const t = B.tmp();
-            B.line(`${a} = call double @scr_union_get_f64(ptr ${l.name})`);
-            B.line(`${b} = call double @scr_union_get_f64(ptr ${r.name})`);
             if (e.sameValue) {
               // Object.is's f64 compare: NaN equals NaN, +0 differs
               // from -0 — the runtime SameValue.
@@ -778,12 +795,9 @@ export function emitDynamicExpr(
             break;
           }
           case "bool": {
-            host.declare(`declare zeroext i1 @scr_union_get_bool(ptr)`);
-            const a = B.tmp();
-            const b = B.tmp();
+            const a = host.unionGetBool(l.name);
+            const b = host.unionGetBool(r.name);
             const t = B.tmp();
-            B.line(`${a} = call zeroext i1 @scr_union_get_bool(ptr ${l.name})`);
-            B.line(`${b} = call zeroext i1 @scr_union_get_bool(ptr ${r.name})`);
             B.line(`${t} = icmp eq i1 ${a}, ${b}`);
             B.line(`store i1 ${t}, ptr ${slot}`);
             break;
@@ -793,7 +807,7 @@ export function emitDynamicExpr(
             const a = host.unionPeek(l.name);
             const b = host.unionPeek(r.name);
             const t = B.tmp();
-            B.line(`${t} = call zeroext i1 @scr_str_eq(ptr ${a}, ptr ${b})`);
+            B.line(`${t} = call zeroext i1 @sc_str_eq(ptr ${a}, ptr ${b})`);
             B.line(`store i1 ${t}, ptr ${slot}`);
             break;
           }
@@ -1043,19 +1057,6 @@ export function emitDynamicExpr(
       throw new InternalCompilerError("unreachable");
     }
   }
-}
-
-/** Equality only reads both tags and payloads. Operands that would be fresh
- * heap boxes use a private stack box whose payload snapshot is owned by the
- * frame; other operands keep the ordinary borrowed-input rules. */
-function emitUnionEqInputs(host: LlvmEmitterContext, left: IrExpr, right: IrExpr): LlValue[] {
-  const inputs = [left, right];
-  const borrowed = borrowableInputs(host, inputs);
-  return inputs.map((value, index) =>
-    borrowed[index] || host.canStackReceiver(value)
-      ? host.emitReadReceiver(value)
-      : host.emitExpr(value),
-  );
 }
 
 /** `u === v` where one side wraps a unit, bool, or number arm value

@@ -167,6 +167,30 @@ test("resolves a package helper, emits atomically, and caches by all native inpu
   expect(secondArtifact.dependencies).toEqual(firstArtifact.dependencies);
 });
 
+test("runtime bitcode imports reach the helper and key the native cache", async () => {
+  const pkg = await fakePackage();
+  const base = request(pkg.root, pkg.packageJson, join(pkg.root, "plain.o"));
+  await emitNativeArtifact(base);
+  const imported = {
+    ...request(pkg.root, pkg.packageJson, join(pkg.root, "imported.o")),
+    importBitcode: {
+      paths: ["/pack/a.bc", "/pack/b.bc"],
+      digests: ["a".repeat(64), "b".repeat(64)],
+    },
+  };
+  await emitNativeArtifact(imported);
+  await emitNativeArtifact({
+    ...imported,
+    outputPath: join(pkg.root, "changed.o"),
+    importBitcode: { ...imported.importBitcode, digests: ["a".repeat(64), "c".repeat(64)] },
+  });
+  await emitNativeArtifact({ ...imported, outputPath: join(pkg.root, "again.o") });
+  const calls = (await readFile(pkg.log, "utf8")).trim().split("\n");
+  expect(calls).toHaveLength(3);
+  expect(calls[0]).not.toContain("--import-bitcode");
+  expect(calls[1]).toContain("--import-bitcode /pack/a.bc --import-bitcode /pack/b.bc");
+});
+
 test("chunked LLVM input preserves emitted bytes and the native cache identity", async () => {
   const pkg = await fakePackage();
   const first = request(pkg.root, pkg.packageJson, join(pkg.root, "chunks.o"));

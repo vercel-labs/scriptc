@@ -28,6 +28,7 @@ beforeAll(async () => {
     join(testDir, "../src/scr_string.c"),
     join(testDir, "../src/scr_number.c"),
     join(testDir, "../src/scr_cycle.c"),
+    join(testDir, "../src/scr_alloc.c"),
     // the _v RC adapters (scr_str_retain_v & co.) live with the unions,
     // which pull in the closure/array/box machinery
     join(testDir, "../src/scr_union.c"),

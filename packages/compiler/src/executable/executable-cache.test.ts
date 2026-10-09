@@ -216,6 +216,7 @@ test("early executable keys isolate compile modes, paths, implementation, and FF
     { ...f.options, sanitize: true },
     { ...f.options, dynamic: true },
     { ...f.options, optimization: "dev" },
+    { ...f.options, optimization: "speed" },
     { ...f.options, npmStatic: "auto" },
     { ...f.options, npmStatic: ["commander"] },
     { ...f.options, outPath: join(f.options.outDir, "other") },
@@ -232,6 +233,26 @@ test("early executable keys isolate compile modes, paths, implementation, and FF
   for (const options of variants) {
     expect(await readEarlyExecutableCache(f.root, options)).toBeNull();
   }
+});
+
+test("speed entries round-trip their posture and stay isolated from release and dev", async () => {
+  const f = await fixture();
+  const speedOptions: EarlyExecutableCacheOptions = { ...f.options, optimization: "speed" };
+  const tracker = new FrontendInputTracker();
+  tracker.run(() => trackedReadFile(f.source));
+  await publishEarlyExecutableCache(f.root, speedOptions, {
+    llvmPath: f.llvmPath,
+    irPath: f.irPath,
+    native: { ...native, optimization: "speed" },
+    executableRestored: false,
+    frontend: tracker.snapshot(),
+  });
+  expect((await readEarlyExecutableCache(f.root, speedOptions))?.native).toEqual({
+    ...native,
+    optimization: "speed",
+  });
+  expect(await readEarlyExecutableCache(f.root, f.options)).toBeNull();
+  expect(await readEarlyExecutableCache(f.root, { ...f.options, optimization: "dev" })).toBeNull();
 });
 
 test("early executable cache rejects corruption and refreshes payload LRU times", async () => {

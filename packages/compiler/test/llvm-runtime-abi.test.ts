@@ -206,6 +206,7 @@ async function parseHeader(): Promise<{ protos: Map<string, CProto>; dataSyms: S
       .trim();
     if (retText === "" || !/^[A-Za-z_][A-Za-z0-9_ *]*[ *]$/.test(`${retText} `)) continue;
     if (/\btypedef\b/.test(retText)) continue;
+    if (/\breturn\b/.test(retText)) continue; // a call inside a static inline body
     const argsText = src
       .slice(m.index + m[0].length, end)
       .replace(/\s+/g, " ")
@@ -217,6 +218,12 @@ async function parseHeader(): Promise<{ protos: Map<string, CProto>; dataSyms: S
   }
   const dataSyms = new Set<string>();
   for (const m of src.matchAll(/\bextern\s+[^;(){}]*?\b(scr_[a-z0-9_]+)\s*(?:\[[^\]]*\])?\s*;/g)) {
+    dataSyms.add(m[1]!);
+  }
+  // Function-pointer data: `extern void (*scr_hook)(void *);`.
+  for (const m of src.matchAll(
+    /\bextern\s+[^;(){}]*\(\s*\*\s*(scr_[a-z0-9_]+)\s*\)\s*\([^;{}]*\)\s*;/g,
+  )) {
     dataSyms.add(m[1]!);
   }
   return { protos, dataSyms };

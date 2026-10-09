@@ -10,6 +10,7 @@ import {
   UNDEFINED_T,
   VOID,
   arrayOf,
+  funcOf,
   mapOf,
   setOf,
   type IrExpr,
@@ -1839,6 +1840,57 @@ test("signature adapters capture the function whose identity they share", () => 
       error.message.includes("an adapter's first capture must be a function"),
     ),
   ).toBe(true);
+});
+
+test("runtime comparator sort validates element kinds and the comparator shape", () => {
+  const comparator = (params: IrType[], ret: IrType = F64): IrExpr => ({
+    kind: "closure",
+    fnName: "cmp",
+    captures: [],
+    type: funcOf(params, ret),
+    loc,
+  });
+  const sortModule = (elem: IrType, cmp: IrExpr, arms?: IrType[]): IrModule => {
+    const mod = numericReadModule({
+      method: "sortValues",
+      receiver: { kind: "arrayLit", elems: [], type: arrayOf(elem), loc },
+      args: [{ kind: "numLit", value: 0, type: F64, loc }, cmp],
+      type: VOID,
+    });
+    const params = cmp.type.kind === "func" ? cmp.type.params : [];
+    mod.functions.push({
+      name: "cmp",
+      params: params.map((type, index) => ({ localId: `p${index}`, name: `p${index}`, type })),
+      locals: params.map((type, index) => ({
+        id: `p${index}`,
+        name: `p${index}`,
+        type,
+        mutable: false,
+      })),
+      returnType: F64,
+      body: [{ kind: "return", value: { kind: "numLit", value: 0, type: F64, loc }, loc }],
+      loc,
+    });
+    if (arms) mod.unions = [{ id: "u", arms }];
+    return mod;
+  };
+  const union: IrType = { kind: "union", unionId: "u" };
+  for (const mod of [
+    sortModule(F64, comparator([F64, F64])),
+    sortModule(STRING, comparator([STRING])),
+    sortModule(union, comparator([union, union]), [STRING, F64]),
+  ]) {
+    expect(validateModule(mod)).toEqual([]);
+    expect(deserializeModule(serializeModule(mod))).toEqual(mod);
+  }
+  for (const [mod, message] of [
+    [sortModule(BOOL, comparator([BOOL, BOOL])), "sortValues on bool"],
+    [sortModule(union, comparator([union, union]), [STRING, UNDEFINED_T]), "sortValues on union"],
+    [sortModule(F64, comparator([STRING, STRING])), "comparator must be"],
+    [sortModule(F64, comparator([F64, F64, F64])), "comparator must be"],
+  ] as const) {
+    expect(validateModule(mod).some((error) => error.message.includes(message))).toBe(true);
+  }
 });
 
 test("a caught-typed global records a module error only from a catch binding", () => {

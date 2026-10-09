@@ -1,5 +1,6 @@
 import type { WindowsSubsystem } from "./backend/targets.js";
 import type { NativeLinkInfo } from "./backend/native-link-info.js";
+import type { NativeOptimization } from "./backend/optimization.js";
 import type { ScrDiagnostic } from "./diagnostics/diagnostic.js";
 import type { CoverageInput } from "./coverage/report.js";
 
@@ -24,8 +25,10 @@ export interface CompileBaseOptions {
   backend?: "llvm";
   /** Native optimization posture. Release is the shipped -O2 default; dev
    * uses -O0, source line tables, and stable multi-TU object caching for
-   * large LLVM programs. Darwin executables include an adjacent .dSYM. */
-  optimization?: "release" | "dev";
+   * large LLVM programs. Darwin executables include an adjacent .dSYM. Speed
+   * is -O2 plus size-for-speed optimizations (larger executables, longer
+   * builds); release output never depends on them. */
+  optimization?: NativeOptimization;
   /** Remove symbol/debug payload from an executable at link time. */
   strip?: boolean;
   /** Windows PE executable subsystem. Console is the default; GUI suppresses

@@ -3,6 +3,26 @@ import { literalValues } from "../literal-values.js";
 import { isJsSourceFile } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
 
+/** Members every function value has (Function.prototype and
+ * Object.prototype, plus own `length`/`name`/`prototype`). */
+const FUNCTION_MEMBER_NAMES = new Set([
+  "apply",
+  "arguments",
+  "bind",
+  "call",
+  "caller",
+  "constructor",
+  "hasOwnProperty",
+  "isPrototypeOf",
+  "length",
+  "name",
+  "propertyIsEnumerable",
+  "prototype",
+  "toLocaleString",
+  "toString",
+  "valueOf",
+]);
+
 /** Census observable slots before choosing native calls. Names are shared
  * conservatively across classes: aliases cannot hide a named replacement. */
 export function collectClassMethodMutations(
@@ -17,6 +37,7 @@ export function collectClassMethodMutations(
     receiver: ts.Expression | undefined;
     site: ts.Node;
   }[] = [];
+  const propertyWrites: { target: ts.PropertyAccessExpression; site: ts.Node }[] = [];
   const reflection: ts.PropertyAccessExpression[] = [];
   const globals: ts.Identifier[] = [];
   const jsAssignments: (ts.PropertyAccessExpression | ts.ElementAccessExpression)[] = [];
@@ -88,26 +109,53 @@ export function collectClassMethodMutations(
       lowerer.stdlibGlobalMember(value.expression, "Object") === "create"
     );
   };
-  const primitiveDictionary = (value: ts.Expression): boolean => {
-    const primitive = (type: ts.Type): boolean =>
-      type.isUnionType()
-        ? ts.constituentTypes(type).every(primitive)
-        : (type.flags &
-            (ts.TypeFlags.StringLike |
-              ts.TypeFlags.NumberLike |
-              ts.TypeFlags.BooleanLike |
-              ts.TypeFlags.BigIntLike |
-              ts.TypeFlags.Null |
-              ts.TypeFlags.Undefined |
-              ts.TypeFlags.ESSymbolLike)) !==
-          0;
-    return lowerer.checker
+  // Whether no function value can inhabit `type`. Primitives qualify, and so
+  // do non-callable object types a function is not assignable to: one that
+  // requires a property functions lack, or a weak (all-optional) type that
+  // shares no property with functions (TypeScript's weak-type rule rejects
+  // callable sources too).
+  const functionFree = (type: ts.Type): boolean => {
+    if (type.isUnionType()) return ts.constituentTypes(type).every(functionFree);
+    if (
+      (type.flags &
+        (ts.TypeFlags.StringLike |
+          ts.TypeFlags.NumberLike |
+          ts.TypeFlags.BooleanLike |
+          ts.TypeFlags.BigIntLike |
+          ts.TypeFlags.Null |
+          ts.TypeFlags.Undefined |
+          ts.TypeFlags.ESSymbolLike)) !==
+      0
+    )
+      return true;
+    if (
+      !(type.flags & ts.TypeFlags.Object) ||
+      lowerer.checker.getCallSignatures(type).length > 0 ||
+      lowerer.checker.getConstructSignatures(type).length > 0
+    )
+      return false;
+    const properties = lowerer.checker.getPropertiesOfType(type);
+    if (properties.length === 0) return false;
+    const required = properties.filter(
+      (property) => (property.flags & ts.SymbolFlags.Optional) === 0,
+    );
+    if (required.some((property) => !FUNCTION_MEMBER_NAMES.has(property.name))) return true;
+    return (
+      required.length === 0 &&
+      properties.every((property) => !FUNCTION_MEMBER_NAMES.has(property.name))
+    );
+  };
+  // A string index whose values cannot be functions excludes callable
+  // method slots. Class instances have no implicit index signature, so such
+  // a dictionary is only a class view when the class declares that index
+  // signature, and then every method must be assignable to its value type.
+  const functionFreeDictionary = (value: ts.Expression): boolean =>
+    lowerer.checker
       .getIndexInfosOfType(lowerer.typeOf(value))
       .some(
         (index) =>
-          (index.keyType.flags & ts.TypeFlags.StringLike) !== 0 && primitive(index.valueType),
+          (index.keyType.flags & ts.TypeFlags.StringLike) !== 0 && functionFree(index.valueType),
       );
-  };
   const literalLoopKeys = (key: ts.Expression): (string | number)[] | null => {
     if (!ts.isIdentifier(key)) return null;
     const symbol = lowerer.checker.getSymbolAtLocation(key);
@@ -201,8 +249,15 @@ export function collectClassMethodMutations(
   };
   const markTarget = (target: ts.Expression, site: ts.Node, arrow = false): void => {
     target = unwrap(target);
-    if (ts.isPropertyAccessExpression(target)) markName(target.name.text, site, arrow);
-    else if (ts.isElementAccessExpression(target))
+    if (ts.isPropertyAccessExpression(target)) {
+      const name = target.name.text;
+      // A named write to a method name is judged by the written property's
+      // type once types are prefetched (see propertyWrites below).
+      if (methods.has(name) && name !== "prototype" && name !== "__proto__") {
+        if (!arrow) receiverFields.add(name);
+        propertyWrites.push({ target, site });
+      } else markName(name, site, arrow);
+    } else if (ts.isElementAccessExpression(target))
       markKey(target.argumentExpression, site, target.expression);
     else if (ts.isArrayLiteralExpression(target)) {
       for (const element of target.elements) {
@@ -392,6 +447,20 @@ export function collectClassMethodMutations(
       ...(write.receiver ? [write.receiver] : []),
     ]),
   );
+  // A named write can replace a method only when the written property can
+  // hold a function: a class instance seen through the receiver's type must
+  // have its method assignable to that property's type. Data fields (an AST
+  // node, a string, a JSON record) cannot shadow a same-named method of an
+  // unrelated class, so they stay out of the observed-slot census.
+  lowerer.checker.prefetchClassCollection(
+    propertyWrites.map((write) => write.target),
+    [],
+  );
+  for (const { target, site } of propertyWrites) {
+    const name = target.name.text;
+    if (lowerer.prototypeMethodAccesses.has(name) || functionFree(lowerer.typeOf(target))) continue;
+    lowerer.prototypeMethodAccesses.set(name, site);
+  }
   for (const { key, receiver, site } of computedWrites) {
     const type = key ? lowerer.typeOf(key) : undefined;
     const names = type && (literalValues(type) ?? (key ? literalLoopKeys(key) : null));
@@ -406,9 +475,10 @@ export function collectClassMethodMutations(
       unknownOwnField = true;
       continue;
     }
-    // A primitive-only string index excludes callable method slots. Unlike
-    // structural interfaces, it cannot be a live class-method view.
-    if (receiver && (freshReceiver(receiver) || primitiveDictionary(receiver))) continue;
+    // A string index whose values cannot be functions excludes callable
+    // method slots. Unlike structural interfaces, it cannot be a live
+    // class-method view.
+    if (receiver && (freshReceiver(receiver) || functionFreeDictionary(receiver))) continue;
     const flags = type?.flags ?? ts.TypeFlags.Unknown;
     if (flags & ts.TypeFlags.NumberLike) {
       // Numeric writes can replace numeric names but not ordinary names.

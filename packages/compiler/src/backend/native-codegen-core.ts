@@ -1,4 +1,5 @@
 /** Native codegen helper protocol shared by compiler hosts. */
+import type { NativeOptimization } from "./optimization.js";
 import type { NativeHelperSpec, NativeTargetSpec } from "./targets.js";
 
 export const NATIVE_CODEGEN_PROTOCOL_VERSION = "1";
@@ -15,7 +16,7 @@ const MAX_PROGRAM_PARTITIONS = 8;
  * count depends only on the module, so artifacts never vary with the host. */
 export function nativeProgramPartitions(
   target: NativeTargetSpec,
-  optimization: "release" | "dev",
+  optimization: NativeOptimization,
   llvmBytes: number,
 ): number {
   if (optimization === "dev" || target.platform === "wasi") return 1;

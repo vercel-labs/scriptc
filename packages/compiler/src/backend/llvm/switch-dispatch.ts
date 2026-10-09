@@ -108,7 +108,7 @@ function emitStringSwitch(
       const literal = host.internLiteral(item.value);
       const hit = B.tmp();
       const next = index + 1 < group.length ? B.newLabel("sw.equal") : fallback;
-      B.line(`${hit} = call zeroext i1 @scr_str_eq(ptr ${disc.name}, ptr ${literal})`);
+      B.line(`${hit} = call zeroext i1 @sc_str_eq(ptr ${disc.name}, ptr ${literal})`);
       B.condBr(hit, item.label, next);
       if (next !== fallback) B.startBlock(next);
     }

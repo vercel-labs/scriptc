@@ -26,6 +26,7 @@ import {
   mangleRecordStruct,
   mangleRecordTrace,
 } from "../mangle.js";
+import { emitObjectAlloc, emitObjectFree } from "./alloc.js";
 import { llvmCommentText } from "./common.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 
@@ -43,6 +44,19 @@ export interface ShapeHost {
   readonly tracedUnions: Set<string>;
   readonly recordsById: Map<string, IrRecordShape>;
   readonly recordCloneShapes: ReadonlySet<string>;
+  /** Emit the live-object audit notes (`scr_obj_alloc_note` /
+   * `scr_obj_free_note`) in emitted new/free helpers. Only runtimes built
+   * with SCR_RC_AUDIT (the sanitized lane) count them; release and dev
+   * runtime packs define them empty, so plain builds omit the calls.
+   * Absent means emit. */
+  readonly objectAudit?: boolean;
+  /** Inline the small-object allocator's fast paths (llvm/alloc.ts). */
+  readonly inlineAlloc?: boolean;
+  /** Inline RC fast-path helpers requested so far ("<family>:<op>"); the
+   * emitter defines each once through {@link emitInlineRcHelpers}. Null
+   * keeps every retain/release a runtime call: inline RC is a
+   * size-for-speed optimization of the `speed` posture only. */
+  readonly rcHelpers: Set<string> | null;
 }
 
 /** Every emitted function/helper carries #0 = { sanitize_address } — see
@@ -91,16 +105,25 @@ export function vAdapters(host: ShapeHost, t: IrType): { retain: string; release
 }
 
 /** The retain call target (ptr → ptr, +1 unless immortal) — the `_v`
- * table above; the split exists so call sites read type-directedly. */
+ * table above; the split exists so call sites read type-directedly.
+ * Families with a mirrored fast path call the inline helper instead. */
 export function retainSym(host: ShapeHost, t: IrType): string {
+  const stem = runtimeRcStem(t);
+  if (host.rcHelpers !== null && stem !== null && inlineRcFamily(stem, "retain") !== null) {
+    return inlineRcSym(host, stem, "retain");
+  }
   return vAdapters(host, t).retain;
 }
 
 /** The release call target (ptr → void, NULL-tolerant). The runtime's
  * typed releases are external symbols, so the direct (non-`_v`) entry
- * points serve where one exists; records use their emitted helper. */
+ * points serve where one exists; records use their emitted helper.
+ * Families with a mirrored fast path call the inline helper instead. */
 export function releaseSym(host: ShapeHost, t: IrType): string {
   const stem = runtimeRcStem(t);
+  if (host.rcHelpers !== null && stem !== null && inlineRcFamily(stem, "release") !== null) {
+    return inlineRcSym(host, stem, "release");
+  }
   if (stem !== null) {
     // Class objects share the container adapter at direct release sites.
     const suffix = t.kind === "classval" ? "_release_v" : "_release";
@@ -116,6 +139,267 @@ export function releaseSym(host: ShapeHost, t: IrType): string {
     default:
       throw new LlvmUnsupportedError(`rc:${t.kind}`);
   }
+}
+
+/* ── inline RC fast paths ─────────────────────────────────────────────── */
+
+/** How a runtime family decides whether an object carries a ScrCycHdr:
+ * never, always, or per object through the trace slots its C retain and
+ * release test (`a->elem_trace`, `m->key_trace || m->val_trace`). */
+type RcCycle = "none" | "always" | "arr" | "map";
+
+interface InlineRcFamily {
+  readonly cycle: RcCycle;
+  /** The C retain tolerates NULL (the others dereference unconditionally). */
+  readonly retainNull: boolean;
+  /** The out-of-line release behind the inline fast path: it owns the
+   * rc == 1 → 0 transition and, for per-object (`arr`/`map`) families,
+   * every release of a headered object. Null keeps the release a plain
+   * runtime call. */
+  readonly release: string | null;
+}
+
+/** Runtime RC families whose fast paths the backend mirrors in IR, keyed
+ * by the family name without its `scr_` stem prefix. Each
+ * row restates the C entry points in scr_runtime.h and the runtime TUs:
+ * retain is `if (rc != SIZE_MAX) { rc++; mark-live if headered }`, and a
+ * release that leaves the object alive is `rc--`, then scr_cyc_on_release
+ * when headered. Everything else (destruction, RC-audit accounting, the
+ * collector's on_dead bookkeeping) stays in the runtime release, which
+ * repeats its own checks, so the fast path never duplicates it.
+ *
+ * Releases stay plain calls for:
+ * - dyn: scr_dyn_release buffers a surviving object only for some kinds.
+ * - arr: array releases are the most numerous release sites and the
+ *   least hot (at most 1% self time across the benchmark suite), and
+ *   inlining them roughly doubled the code growth for no measured speedup.
+ *   Array retains are inlined. */
+export const INLINE_RC_FAMILIES: Readonly<Record<string, InlineRcFamily>> = {
+  str: { cycle: "none", retainNull: false, release: "scr_str_release" },
+  bytes: { cycle: "none", retainNull: false, release: "scr_bytes_release" },
+  regex: { cycle: "none", retainNull: false, release: "scr_regex_release" },
+  bigint: { cycle: "none", retainNull: true, release: "scr_bigint_release" },
+  arr: { cycle: "arr", retainNull: false, release: null },
+  map: { cycle: "map", retainNull: false, release: "scr_map_release" },
+  union: { cycle: "always", retainNull: false, release: "scr_union_release" },
+  closure: { cycle: "always", retainNull: false, release: "scr_closure_release" },
+  promise: { cycle: "always", retainNull: true, release: "scr_promise_release" },
+  classobj: { cycle: "always", retainNull: true, release: "scr_classobj_release" },
+  box: { cycle: "always", retainNull: false, release: "scr_box_release" },
+  dyn: { cycle: "always", retainNull: false, release: null },
+};
+
+type RcOp = "retain" | "release";
+
+/** The mirrored family for an RC operation on a runtime stem (`scr_str`),
+ * or null when it stays a call. */
+export function inlineRcFamily(stem: string, op: RcOp): InlineRcFamily | null {
+  return mirroredFamily(stem.replace(/^scr_/, ""), op);
+}
+
+function mirroredFamily(family: string, op: RcOp): InlineRcFamily | null {
+  if (!Object.hasOwn(INLINE_RC_FAMILIES, family)) return null;
+  const row = INLINE_RC_FAMILIES[family]!;
+  return op === "retain" || row.release !== null ? row : null;
+}
+
+/** Request one inline RC helper for a runtime stem (`scr_str`) and return
+ * its symbol. */
+function inlineRcSym(host: ShapeHost, stem: string, op: RcOp): string {
+  return requestRcHelper(host, stem.replace(/^scr_/, ""), op);
+}
+
+/** The release call target for a capture box: scr_box_release's fast path,
+ * or scr_box_release itself without inline RC. */
+export function boxReleaseSym(host: ShapeHost): string {
+  if (host.rcHelpers === null) {
+    host.declare(`declare void @scr_box_release(ptr)`);
+    return "@scr_box_release";
+  }
+  return requestRcHelper(host, "box", "release");
+}
+
+/** Record the helper and declare the runtime symbols it calls now, so they
+ * land in the extern block. */
+function requestRcHelper(host: ShapeHost, family: string, op: RcOp): string {
+  if (host.rcHelpers === null || mirroredFamily(family, op) === null) {
+    throw new LlvmUnsupportedError(`inline rc:${family}:${op}`);
+  }
+  host.rcHelpers.add(`${family}:${op}`);
+  for (const decl of rcHelperDecls(family, op)) host.declare(decl);
+  return `@${inlineRcName(family, op)}`;
+}
+
+function inlineRcName(family: string, op: RcOp): string {
+  return `sc_rc_${op}_${family}`;
+}
+
+function rcHelperDecls(family: string, op: RcOp): string[] {
+  const row = INLINE_RC_FAMILIES[family]!;
+  if (op === "retain" || row.release === null) return [];
+  return [
+    `declare void @${row.release}(ptr)`,
+    ...(row.cycle === "always" ? [`declare void @scr_cyc_on_release(ptr)`] : []),
+  ];
+}
+
+/** The runtime declarations the requested helpers call (deduplicated). */
+/** The inline retain/release helper keys ("family:op") the program used, in
+ * insertion order; empty when inline RC is off. Copied into a plain array so
+ * callers stay inside the self-hosted subset (no `Set | []` unions). */
+function rcHelperKeys(host: ShapeHost): string[] {
+  const keys: string[] = [];
+  if (host.rcHelpers) for (const key of host.rcHelpers) keys.push(key);
+  return keys;
+}
+
+export function inlineRcDecls(host: ShapeHost): string[] {
+  const decls = new Set<string>();
+  for (const key of rcHelperKeys(host)) {
+    const [family, op] = key.split(":") as [string, RcOp];
+    for (const decl of rcHelperDecls(family, op)) decls.add(decl);
+  }
+  return [...decls];
+}
+
+/** Branch to `yes` when a per-object family's object carries a cycle
+ * header (its C retain/release trace-slot test), else to `no`. */
+function rcHeaderTest(cycle: "arr" | "map", yes: string, no: string): string[] {
+  if (cycle === "arr") {
+    return [
+      `  %tracep = getelementptr inbounds %ScrArr, ptr %o, i32 0, i32 6 ; elem_trace`,
+      `  %trace = load ptr, ptr %tracep`,
+      `  %headered = icmp ne ptr %trace, null`,
+      `  br i1 %headered, label %${yes}, label %${no}`,
+    ];
+  }
+  return [
+    `  %vtracep = getelementptr inbounds %ScrMapRc, ptr %o, i32 0, i32 5 ; val_trace`,
+    `  %vtrace = load ptr, ptr %vtracep`,
+    `  %ktracep = getelementptr inbounds %ScrMapRc, ptr %o, i32 0, i32 8 ; key_trace`,
+    `  %ktrace = load ptr, ptr %ktracep`,
+    `  %vheadered = icmp ne ptr %vtrace, null`,
+    `  %kheadered = icmp ne ptr %ktrace, null`,
+    `  %headered = or i1 %vheadered, %kheadered`,
+    `  br i1 %headered, label %${yes}, label %${no}`,
+  ];
+}
+
+function retainHelper(host: ShapeHost, family: string, row: InlineRcFamily): string[] {
+  const S = host.sizeType;
+  const markLive = [
+    `  %colorp = getelementptr i8, ptr %o, ${S} -${host.cycleColorOffset}`,
+    `  store i32 0, ptr %colorp ; mark live`,
+    `  br label %done`,
+  ];
+  return [
+    `define internal ptr @${inlineRcName(family, "retain")}(ptr %o) ${FN_ATTRS} { ; scr_${family}_retain fast path`,
+    `entry:`,
+    ...(row.retainNull
+      ? [`  %isnull = icmp eq ptr %o, null`, `  br i1 %isnull, label %done, label %check`, `check:`]
+      : []),
+    `  %rc = load ${S}, ptr %o`,
+    `  %imm = icmp eq ${S} %rc, -1`,
+    `  br i1 %imm, label %done, label %inc`,
+    `inc:`,
+    `  %n = add ${S} %rc, 1`,
+    `  store ${S} %n, ptr %o`,
+    ...(row.cycle === "none"
+      ? [`  br label %done`]
+      : row.cycle === "always"
+        ? markLive
+        : [...rcHeaderTest(row.cycle, "live", "done"), `live:`, ...markLive]),
+    `done:`,
+    `  ret ptr %o`,
+    `}`,
+    ``,
+  ];
+}
+
+function releaseHelper(host: ShapeHost, family: string, row: InlineRcFamily): string[] {
+  const S = host.sizeType;
+  const color = host.cycleColorOffset;
+  const cycle = row.cycle;
+  return [
+    `define internal void @${inlineRcName(family, "release")}(ptr %o) ${FN_ATTRS} { ; ${row.release} fast path`,
+    `entry:`,
+    `  %isnull = icmp eq ptr %o, null`,
+    `  br i1 %isnull, label %done, label %check`,
+    `check:`,
+    `  %rc = load ${S}, ptr %o`,
+    `  %imm = icmp eq ${S} %rc, -1`,
+    `  br i1 %imm, label %done, label %owned`,
+    `owned:`,
+    `  %last = icmp eq ${S} %rc, 1`,
+    ...(cycle === "arr" || cycle === "map"
+      ? [
+          `  br i1 %last, label %slow, label %probe`,
+          `probe:`,
+          ...rcHeaderTest(cycle, "slow", "dec"),
+        ]
+      : [`  br i1 %last, label %slow, label %dec`]),
+    `slow:`,
+    `  call void @${row.release}(ptr %o) cold ; the runtime release owns this case`,
+    `  br label %done`,
+    `dec:`,
+    `  %n = sub ${S} %rc, 1`,
+    `  store ${S} %n, ptr %o`,
+    ...(family === "union"
+      ? [
+          // scr_union_release buffers a surviving box only when its arm can
+          // reach a cycle: a box whose arm_trace is NULL visits nothing.
+          `  %atp = getelementptr i8, ptr %o, ${S} ${S === "i64" ? 32 : 16} ; ScrUnion.arm_trace`,
+          `  %at = load ptr, ptr %atp`,
+          `  %untraced = icmp eq ptr %at, null`,
+          `  br i1 %untraced, label %done, label %root`,
+          `root:`,
+        ]
+      : []),
+    ...(cycle === "always"
+      ? [
+          // scr_cyc_on_release: color = PURPLE; an already-buffered candidate
+          // is done, anything else is enqueued by the runtime.
+          `  %colorp = getelementptr i8, ptr %o, ${S} -${color}`,
+          `  store i32 1, ptr %colorp ; purple: possible cycle root`,
+          `  %bufp = getelementptr i8, ptr %o, ${S} -${color - 4}`,
+          `  %buf = load i16, ptr %bufp`,
+          `  %queued = icmp ne i16 %buf, 0`,
+          `  br i1 %queued, label %done, label %enqueue`,
+          `enqueue:`,
+          `  call void @scr_cyc_on_release(ptr %o) ; buffer the candidate; may collect`,
+        ]
+      : []),
+    `  br label %done`,
+    `done:`,
+    `  ret void`,
+    `}`,
+    ``,
+  ];
+}
+
+/** Definitions for every requested inline RC helper, in a stable order.
+ *
+ * retain: a NULL skip where the C retain tolerates NULL, the immortal skip,
+ * the increment, and for headered objects the mark-live `store i32 0` at
+ * obj-cycleColorOffset (scr_cyc_mark_live).
+ *
+ * release: NULL and immortal skips. rc == 1 (and any headered object of a
+ * per-object family) calls the runtime release, marked cold so destruction
+ * stays out of line. Otherwise decrement; always-headered families then
+ * inline scr_cyc_on_release's already-buffered case (color = PURPLE, and
+ * `buffered` is the i16 four bytes after color), calling the runtime only
+ * to enqueue a new candidate. scr_runtime.h asserts both header offsets and
+ * the trace-slot offsets. */
+export function emitInlineRcHelpers(host: ShapeHost): string[] {
+  const out: string[] = [];
+  for (const key of rcHelperKeys(host).sort()) {
+    const [family, op] = key.split(":") as [string, RcOp];
+    const row = INLINE_RC_FAMILIES[family]!;
+    out.push(
+      ...(op === "retain" ? retainHelper(host, family, row) : releaseHelper(host, family, row)),
+    );
+  }
+  return out;
 }
 
 /** The trace entry point for a payload/field type, or null when the type
@@ -499,8 +783,11 @@ export function emitRecordShapes(
   const defs: string[] = [];
   const records = mod.records ?? [];
   if (records.length === 0) return { typeDefs, defs };
-  host.declare(`declare void @scr_obj_alloc_note()`);
-  host.declare(`declare void @scr_obj_free_note()`);
+  const audit = host.objectAudit !== false;
+  if (audit) {
+    host.declare(`declare void @scr_obj_alloc_note()`);
+    host.declare(`declare void @scr_obj_free_note()`);
+  }
 
   for (const shape of records) {
     const struct = mangleRecordStruct(shape.id);
@@ -535,15 +822,7 @@ export function emitRecordShapes(
       );
       t++;
     }
-    freeBody.push(`  call void @scr_obj_free_note()`);
-    if (traced) {
-      host.declare(`declare void @scr_cyc_free(ptr)`);
-      freeBody.push(`  call void @scr_cyc_free(ptr %o)`);
-    } else {
-      host.declare(`declare void @free(ptr)`);
-      host.declare(`declare void @scr_weak_dispose(ptr)`);
-      freeBody.push(`  call void @scr_weak_dispose(ptr %o)`, `  call void @free(ptr %o)`);
-    }
+    freeBody.push(...emitObjectFree(host, traced));
     defs.push(
       ...releaseBody(
         host,
@@ -557,30 +836,24 @@ export function emitRecordShapes(
     );
 
     // new: zeroed allocation (+ the overflow map on index-signature
-    // shapes), rc = 1, alloc note. Traced shapes allocate with the
-    // collector header (scr_cyc_alloc zeroes and aborts on OOM itself).
+    // shapes), rc = 1. Traced shapes allocate with the collector header;
+    // alloc.ts inlines the allocator fast paths and the alloc note.
     const nw: string[] = [
       `define internal ptr @${mangleRecordNew(shape.id)}() ${FN_ATTRS} {`,
       `entry:`,
     ];
-    if (traced) {
-      host.declare(`declare ptr @scr_cyc_alloc(${host.sizeType}, ptr, ptr)`);
-      nw.push(
-        `  %o = call ptr @scr_cyc_alloc(${host.sizeType} ${sizeOf}, ptr @${mangleRecordTrace(shape.id)}, ptr @${mangleRecordGcFree(shape.id)})`,
-      );
-    } else {
-      host.declare(`declare ptr @calloc(${host.sizeType}, ${host.sizeType})`);
-      host.needOom();
-      nw.push(
-        `  %o = call ptr @calloc(${host.sizeType} 1, ${host.sizeType} ${sizeOf})`,
-        `  %isnull = icmp eq ptr %o, null`,
-        `  br i1 %isnull, label %oom, label %ok`,
-        `oom:`,
-        `  call void @sc_oom()`,
-        `  unreachable`,
-        `ok:`,
-      );
-    }
+    nw.push(
+      ...emitObjectAlloc(
+        host,
+        sizeOf,
+        traced
+          ? {
+              trace: `@${mangleRecordTrace(shape.id)}`,
+              free: `@${mangleRecordGcFree(shape.id)}`,
+            }
+          : null,
+      ),
+    );
     nw.push(`  store ${host.sizeType} 1, ptr %o`);
     if (shape.indexValue) {
       // The overflow map (string-keyed): value handling is type-directed
@@ -596,7 +869,7 @@ export function emitRecordShapes(
         `  store ptr %ovf, ptr %ovfp`,
       );
     }
-    nw.push(`  call void @scr_obj_alloc_note()`, `  ret ptr %o`, `}`, ``);
+    nw.push(`  ret ptr %o`, `}`, ``);
     defs.push(...nw);
 
     if (host.recordCloneShapes.has(shape.id)) {
@@ -659,13 +932,7 @@ export function emitRecordShapes(
           `  call void ${releaseSym(host, m.type)}(ptr %v${i}) ; ${llvmCommentText(m.name)} (acyclic)`,
         );
       });
-      gf.push(
-        `  call void @scr_obj_free_note()`,
-        `  call void @scr_cyc_free(ptr %o)`,
-        `  ret void`,
-        `}`,
-        ``,
-      );
+      gf.push(...emitObjectFree(host, true), `  ret void`, `}`, ``);
       defs.push(...gf);
     }
   }

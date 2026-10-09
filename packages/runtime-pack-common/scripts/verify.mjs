@@ -16,7 +16,11 @@ if (
   throw new Error("runtime pack identity does not match package.json");
 const artifacts = [
   ...Object.values(manifest.flavors).flatMap((flavor) =>
-    flavor.runtime_units.flatMap((unit) => unit.variants),
+    flavor.runtime_units.flatMap((unit) =>
+      unit.variants.flatMap((variant) =>
+        variant.bitcode ? [variant, variant.bitcode] : [variant],
+      ),
+    ),
   ),
   ...manifest.archives,
 ];

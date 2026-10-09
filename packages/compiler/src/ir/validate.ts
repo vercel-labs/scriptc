@@ -41,6 +41,7 @@ import {
   isJsonSafeType,
   isJsonStringifySafeType,
   isRefCounted,
+  isSortValuesElement,
   isSupportedArrayElem,
   isSupportedIndexValue,
   isSupportedMapKey,
@@ -2343,7 +2344,9 @@ function validateFunction(
                                                   ? { argTypes: [e.type], result: e.type }
                                                   : e.method === "shift"
                                                     ? { argTypes: [], result: e.type } // union-checked below
-                                                    : { argTypes: [], result: F64 }; // length
+                                                    : e.method === "sortValues"
+                                                      ? { argTypes: [F64, null], result: VOID }
+                                                      : { argTypes: [], result: F64 }; // length
         if (
           (e.method === "sortPrimitive" || e.method === "toSortedPrimitive") &&
           elem.kind !== "string" &&
@@ -2351,6 +2354,20 @@ function validateFunction(
           elem.kind !== "bool"
         ) {
           err(`arrIntrinsic ${e.method} requires primitive elements, got ${elem.kind}`, e.loc);
+        }
+        if (e.method === "sortValues") {
+          const arms = elem.kind === "union" ? unions.get(elem.unionId)?.arms : undefined;
+          if (!isSortValuesElement(elem, arms))
+            err(`arrIntrinsic sortValues on ${elem.kind} elements`, e.loc);
+          const cmp = e.args[1]?.type;
+          if (
+            !cmp ||
+            cmp.kind !== "func" ||
+            cmp.params.length > 2 ||
+            !cmp.params.every((param) => typeEquals(param, elem)) ||
+            cmp.ret.kind !== "f64"
+          )
+            err("arrIntrinsic sortValues comparator must be (elem, elem) => number", e.loc);
         }
         if (e.method === "getNumber" && elem.kind !== "f64") {
           err(`arrIntrinsic getNumber requires f64 elements, got ${elem.kind}`, e.loc);

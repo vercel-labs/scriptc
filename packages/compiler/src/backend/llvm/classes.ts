@@ -26,7 +26,9 @@ import {
   mangleVtInstance,
   mangleVtStruct,
 } from "../mangle.js";
+import { emitObjectAlloc, emitObjectFree } from "./alloc.js";
 import { llvmCommentText } from "./common.js";
+import { NullableRefFields } from "./nullable-fields.js";
 import {
   FN_ATTRS,
   llFieldType,
@@ -301,12 +303,18 @@ export interface ClassHost extends ShapeHost {
  * at the interned unit instance; dyn fields start at native undefined;
  * jsval fields (an `any` class field under --dynamic) start at the engine's
  * undefined cell. */
-function undefFieldInits(host: ClassHost, meta: LlClassMeta): string[] {
+function undefFieldInits(
+  host: ClassHost,
+  meta: LlClassMeta,
+  nullable: NullableRefFields | undefined,
+): string[] {
   const out: string[] = [];
   meta.def.fields.forEach((f, i) => {
     // Error.cause uses NULL for absence; an options constructor installs
     // a value only when the cause property is present.
     if (f.name === "%cause") return;
+    // A nullable-pointer field's zeroed slot already is its unit arm.
+    if (nullable?.get(meta.def.name, f.name)) return;
     const { index } = classFieldIndex(meta, f.name);
     if (f.type.kind === "jsval" || f.type.kind === "dyn") {
       const undefinedFn = f.type.kind === "dyn" ? "scr_dyn_undefined" : "scr_jsval_undefined";
@@ -338,13 +346,17 @@ export function emitClassShapes(
   host: ClassHost,
   mod: IrModule,
   metaMap: Map<string, LlClassMeta>,
+  nullable?: NullableRefFields,
 ): { typeDefs: string[]; defs: string[] } {
   const typeDefs: string[] = [];
   const defs: string[] = [];
   const emitted = (mod.classes ?? []).filter((c) => !c.runtime);
   if (emitted.length === 0) return { typeDefs, defs };
-  host.declare(`declare void @scr_obj_alloc_note()`);
-  host.declare(`declare void @scr_obj_free_note()`);
+  const audit = host.objectAudit !== false;
+  if (audit) {
+    host.declare(`declare void @scr_obj_alloc_note()`);
+    host.declare(`declare void @scr_obj_free_note()`);
+  }
 
   for (const cls of emitted) {
     const meta = metaMap.get(cls.name)!;
@@ -411,8 +423,15 @@ export function emitClassShapes(
     const isEmitterRooted = emitterRooted(meta);
     const isStreamRooted = streamRooted(meta);
     const fieldIndex = (i: number): number => fieldBase(meta) + i;
+    // Teardown, trace and gcFree see each slot's storage type: a nullable
+    // class field holds the instance pointer (NULL for the unit arm), and
+    // every class retain/release/visit entry point is NULL-tolerant.
     const indexedFields = [
-      ...cls.fields.map((f, i) => ({ name: f.name, type: f.type, index: fieldIndex(i) })),
+      ...cls.fields.map((f, i) => ({
+        name: f.name,
+        type: nullable?.storageType(cls.name, f.name, f.type) ?? f.type,
+        index: fieldIndex(i),
+      })),
     ];
     const refFields = indexedFields.filter((f) => isRefCounted(f.type));
     const bounded =
@@ -459,15 +478,7 @@ export function emitClassShapes(
       });
       if (isEmitterRooted) lines.push(...regCall("td", "scr_emitter_reg_drop", ""));
       if (isStreamRooted) lines.push(...stCall("tds", "scr_stream_st_release", ""));
-      lines.push(`  call void @scr_obj_free_note()`);
-      if (traced) {
-        host.declare(`declare void @scr_cyc_free(ptr)`);
-        lines.push(`  call void @scr_cyc_free(ptr %o)`);
-      } else {
-        host.declare(`declare void @free(ptr)`);
-        host.declare(`declare void @scr_weak_dispose(ptr)`);
-        lines.push(`  call void @scr_weak_dispose(ptr %o)`, `  call void @free(ptr %o)`);
-      }
+      lines.push(...emitObjectFree(host, traced));
     };
 
     if (meta.hierarchy) {
@@ -552,30 +563,22 @@ export function emitClassShapes(
 
     // new: zeroed allocation, rc = 1, the vtable word on hierarchy
     // members, undefined-admitting union fields at the interned unit
-    // instance, alloc note. Traced shapes allocate with the collector
-    // header (scr_cyc_alloc zeroes and aborts on OOM itself).
+    // instance. Traced shapes allocate with the collector header; alloc.ts
+    // inlines the allocator fast paths and the alloc note.
     const nw: string[] = [
       `define internal ptr @${mangleClassNew(cls.name)}() ${FN_ATTRS} { ; new ${cls.name}`,
       `entry:`,
     ];
-    if (traced) {
-      host.declare(`declare ptr @scr_cyc_alloc(${host.sizeType}, ptr, ptr)`);
-      nw.push(
-        `  %o = call ptr @scr_cyc_alloc(${host.sizeType} ${sizeOf}, ptr @${mangleClassTrace(cls.name)}, ptr @${mangleClassGcFree(cls.name)})`,
-      );
-    } else {
-      host.declare(`declare ptr @calloc(${host.sizeType}, ${host.sizeType})`);
-      host.needOom();
-      nw.push(
-        `  %o = call ptr @calloc(${host.sizeType} 1, ${host.sizeType} ${sizeOf})`,
-        `  %isnull = icmp eq ptr %o, null`,
-        `  br i1 %isnull, label %oom, label %ok`,
-        `oom:`,
-        `  call void @sc_oom()`,
-        `  unreachable`,
-        `ok:`,
-      );
-    }
+    nw.push(
+      ...emitObjectAlloc(
+        host,
+        sizeOf,
+        traced
+          ? { trace: `@${mangleClassTrace(cls.name)}`, free: `@${mangleClassGcFree(cls.name)}` }
+          : null,
+        meta.hierarchy ? 16 : 8,
+      ),
+    );
     nw.push(`  store ${host.sizeType} 1, ptr %o`);
     if (meta.hierarchy) {
       nw.push(
@@ -595,8 +598,8 @@ export function emitClassShapes(
         `  store ptr ${host.cstr(displayName)}, ptr %clsp ; EventEmitter prefix display name`,
       );
     }
-    nw.push(...undefFieldInits(host, meta));
-    nw.push(`  call void @scr_obj_alloc_note()`, `  ret ptr %o`, `}`, ``);
+    nw.push(...undefFieldInits(host, meta, nullable));
+    nw.push(`  ret ptr %o`, `}`, ``);
     defs.push(...nw);
 
     if (traced) {
@@ -639,14 +642,7 @@ export function emitClassShapes(
           `  call void ${releaseSym(host, f.type)}(ptr %v${i}) ; ${llvmCommentText(f.name)} (acyclic)`,
         );
       });
-      host.declare(`declare void @scr_cyc_free(ptr)`);
-      gf.push(
-        `  call void @scr_obj_free_note()`,
-        `  call void @scr_cyc_free(ptr %o)`,
-        `  ret void`,
-        `}`,
-        ``,
-      );
+      gf.push(...emitObjectFree(host, true), `  ret void`, `}`, ``);
       defs.push(...gf);
     }
   }

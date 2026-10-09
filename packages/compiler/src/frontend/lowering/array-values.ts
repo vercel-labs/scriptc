@@ -14,6 +14,7 @@ import {
   unionContainerArmsOk,
 } from "../../ir/ir.js";
 import type { Lowerer } from "./lowerer.js";
+import type * as ts from "../ts7/adapter.js";
 
 /** Test whether one array index contains a value rather than a hole. */
 export function arrayIndexPresent(arr: IrExpr, index: IrExpr, loc: SrcLoc): IrExpr {
@@ -256,6 +257,74 @@ export function tryLowerNumericIndexRead(
     receiver: arr,
     args: [index],
     type: F64,
+    loc,
+  };
+}
+
+/** Fuse our own scalar-array read helper with an immediate ToBoolean, so a
+ * condition such as `if (flags[i])` never boxes `T | undefined`. Numbers
+ * reuse getNumber: a missing slot reads as NaN, which is falsy exactly like
+ * undefined. Booleans test the slot state and then read the value; both
+ * operands are evaluated twice, so they must be plain bindings/literals
+ * (the same proof the indexed-comparison fusion uses). Returns a BOOL
+ * expression with the original evaluation order, or null. */
+export function tryLowerIndexTruthiness(
+  lowerer: Lowerer,
+  operand: IrExpr,
+  node: ts.Expression,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (operand.kind !== "call" || operand.args.length !== 2) return null;
+  const [arr, index] = operand.args;
+  if (arr?.type.kind !== "array" || index?.type.kind !== "f64") return null;
+  const elem = arr.type.elem;
+  if (elem.kind !== "f64" && elem.kind !== "bool") return null;
+  if (operand.callee !== lowerer.arrHofHelpers.get(`idxOr:${typeKey(elem)}`)) return null;
+  if (elem.kind === "f64") {
+    const number = tryLowerNumericIndexRead(lowerer, operand, loc);
+    return number ? lowerer.ensureBool(number, node) : null;
+  }
+  return tryFuseIndexRead(lowerer, operand, BOOL, (read) => read, {
+    kind: "boolLit",
+    value: false,
+    type: BOOL,
+    loc,
+  });
+}
+
+/** Fuse our own non-union array read helper with its single consumer:
+ * `present` receives the strict element read, `missing` answers holes,
+ * present undefined, and absent indices. The receiver and index evaluate
+ * once more than in the helper form, so both must be plain bindings or
+ * numeric literals (nothing can run between the state test and the read). */
+export function tryFuseIndexRead(
+  lowerer: Lowerer,
+  operand: IrExpr,
+  type: IrType,
+  present: (read: IrExpr) => IrExpr,
+  missing: IrExpr,
+): IrExpr | null {
+  if (operand.kind !== "call" || operand.args.length !== 2) return null;
+  const [arr, index] = operand.args;
+  if (arr?.type.kind !== "array" || index?.type.kind !== "f64") return null;
+  const elem = arr.type.elem;
+  if (elem.kind === "union" || elem.kind === "void") return null;
+  if (operand.callee !== lowerer.arrHofHelpers.get(`idxOr:${typeKey(elem)}`)) return null;
+  if (arr.kind !== "varRef" || (index.kind !== "varRef" && index.kind !== "numLit")) return null;
+  const loc = operand.loc;
+  return {
+    kind: "ternary",
+    cond: {
+      kind: "bin",
+      op: "===",
+      left: { kind: "arrayState", arr, index, type: F64, loc },
+      right: { kind: "numLit", value: 1, type: F64, loc },
+      type: BOOL,
+      loc,
+    },
+    then: present({ kind: "arrayGet", arr, index, type: elem, loc }),
+    else_: missing,
+    type,
     loc,
   };
 }

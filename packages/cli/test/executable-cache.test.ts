@@ -87,6 +87,16 @@ test("exact executable repeats skip lowering while edits and damaged outputs sta
     expect(await run()).toBe("two\n");
     expect((await build(["--optimization", "dev"])).stderr).not.toContain("scriptc lowering");
     expect(await readFile(tuPath, "utf8")).toContain("define i32 @main");
+
+    // Speed shares release's -O2 class but links different code: it can
+    // consume neither the release nor the dev entry, and neither can
+    // consume its entry afterwards.
+    expect((await build(["--optimization", "speed"])).stderr).toContain("scriptc lowering");
+    expect(await run()).toBe("two\n");
+    expect((await build(["--optimization", "speed"])).stderr).not.toContain("scriptc lowering");
+    expect((await build(["--optimization", "release"])).stderr).not.toContain("scriptc lowering");
+    expect(await run()).toBe("two\n");
+    expect((await build(["--optimization", "speed"])).stderr).not.toContain("scriptc lowering");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

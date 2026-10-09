@@ -43,7 +43,7 @@ test("CI restores each seed only into its matching instrumented bootstrap lane",
     jobs: Record<
       string,
       {
-        needs?: string;
+        needs?: string | string[];
         strategy: { matrix: { flavor?: string[]; include?: { flavor: string }[] } };
         env: Record<string, string>;
         steps: {
@@ -58,7 +58,8 @@ test("CI restores each seed only into its matching instrumented bootstrap lane",
   };
   const seed = workflow.jobs.bootstrap_seed!;
   const checks = workflow.jobs.bootstrap!;
-  expect(checks.needs).toBe("bootstrap_seed");
+  const dependencies = Array.isArray(checks.needs) ? checks.needs : [checks.needs];
+  expect(dependencies).toContain("bootstrap_seed");
   expect(
     seed.steps
       .filter((step) => step.uses === "./.github/actions/native-packages")

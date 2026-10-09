@@ -39,6 +39,12 @@ interface ArrayReadShape {
   missingTag: number;
 }
 
+/** f64 and bool elements copy their slot bits into the box payload. They
+ * have no owner, so every lifetime proof for them is trivially satisfied. */
+function isScalarElement(element: IrType): boolean {
+  return element.kind === "f64" || element.kind === "bool";
+}
+
 /** Recognize the state-test/read pair shared by helpers and lowered loops.
  * Repeated operands must be plain bindings or numeric literals: folding an
  * effectful index or receiver would change evaluation count and ordering. */
@@ -78,7 +84,13 @@ function inlineArrayRead(
     return null;
   const element = array.type.elem;
   const arms = unions.get(value.type.unionId)?.arms;
-  if (!isRefCounted(element) || element.kind === "union" || !arms || arms.length !== 2) return null;
+  if (
+    (!isRefCounted(element) && !isScalarElement(element)) ||
+    element.kind === "union" ||
+    !arms ||
+    arms.length !== 2
+  )
+    return null;
   const presentTag = arms.findIndex((arm) => typeEquals(arm, element));
   const missingTag = arms.findIndex((arm) => arm.kind === "undefinedT");
   if (presentTag < 0 || missingTag < 0 || then.tag !== presentTag || missing.tag !== missingTag)
@@ -242,13 +254,18 @@ export function findCallArrayReads(
 /** Call-scoped owners are released by the existing argument frame on both
  * normal and exceptional exits. Each use gets a distinct stack box: nested
  * calls and repeated operands must never overwrite an earlier snapshot. */
-export function emitCallArrayRead(host: LlvmEmitterContext, read: LocalArrayRead): LlValue {
+export function emitCallArrayRead(
+  host: LlvmEmitterContext,
+  read: LocalArrayRead,
+  inline = read.borrow === true,
+): LlValue {
   const slot = host.B.slot();
   host.B.entryAllocas.push(`${slot} = alloca ptr`);
   // Snapshot arguments already cross a runtime ownership boundary. Keep
   // their lookup compact instead of duplicating the dense fast path at
-  // every call site; proven borrowed reads still expose that path to LLVM.
-  const owner = emitLocalArrayRead(host, read, slot, read.borrow === true);
+  // every call site; proven borrowed reads and immediate projections
+  // (tests, narrowing, comparisons) still expose that path to LLVM.
+  const owner = emitLocalArrayRead(host, read, slot, inline);
   if (owner) host.ownSlot(owner.slot, owner.type);
   const value = host.B.tmp();
   host.B.line(`${value} = load ptr, ptr ${slot}`);
@@ -280,6 +297,7 @@ function emitDenseReferenceArrayRead(
   no: string,
   slow: string,
   join: string,
+  loadType: "ptr" | "i64" = "ptr",
 ): void {
   const B = host.B;
   const range = B.newLabel("local.array.range"),
@@ -349,7 +367,7 @@ function emitDenseReferenceArrayRead(
   B.line(`${data} = load ptr, ptr ${dataPtr}${host.fieldAliasAttachment(dataPtr)}`);
   B.line(`${valuePtr} = getelementptr inbounds i64, ptr ${data}, ${host.sizeType} ${offset}`);
   host.markMemoryPointer(valuePtr, "array:elements");
-  B.line(`${raw} = load ptr, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+  B.line(`${raw} = load ${loadType}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
   present(raw);
   B.br(join);
 }
@@ -410,31 +428,81 @@ export function emitLocalArrayRead(
   const slow = B.newLabel("local.array.slow");
   const no = B.newLabel("local.array.missing"),
     join = B.newLabel("local.array.join");
+  const scalar = isScalarElement(read.element);
   const storeValue = (value: string): void => {
-    B.line(
-      `store ptr ${read.borrow ? value : host.retainValue(value, read.element)}, ptr ${payload}`,
-    );
+    if (scalar) {
+      // Slot bits for f64; a canonical 0/1 for bool, like scr_union_new_bool.
+      let bits = value;
+      if (read.element.kind === "bool") {
+        const nonzero = B.tmp();
+        bits = B.tmp();
+        B.line(`${nonzero} = icmp ne i64 ${value}, 0`);
+        B.line(`${bits} = zext i1 ${nonzero} to i64`);
+      }
+      B.line(`store i64 ${bits}, ptr ${payload}`);
+    } else {
+      B.line(
+        `store ptr ${read.borrow ? value : host.retainValue(value, read.element)}, ptr ${payload}`,
+      );
+    }
     B.line(`store i32 ${read.presentTag}, ptr ${tag}`);
   };
   if (inline)
-    emitDenseReferenceArrayRead(host, array, index, integerIndex, storeValue, no, slow, join);
+    emitDenseReferenceArrayRead(
+      host,
+      array,
+      index,
+      integerIndex,
+      storeValue,
+      no,
+      slow,
+      join,
+      scalar ? "i64" : "ptr",
+    );
   else B.br(slow);
   B.startBlock(slow);
-  const value = B.tmp(),
-    present = B.tmp();
-  host.declare("declare ptr @scr_arr_peek_ref(ptr, double) memory(read)");
-  B.line(`${value} = call ptr @scr_arr_peek_ref(ptr ${array.name}, double ${index.name})`);
-  B.line(`${present} = icmp ne ptr ${value}, null`);
   const slowValue = B.newLabel("local.array.slow.value");
-  B.condBr(present, slowValue, no);
-  B.startBlock(slowValue);
-  storeValue(value);
+  if (scalar) {
+    // Holes, present undefined, sparse and noncanonical indices: the
+    // runtime state decides presence, then the strict getter reads it.
+    const state = B.tmp(),
+      present = B.tmp();
+    host.declare(`declare double @scr_arr_state(ptr, double)`);
+    B.line(`${state} = call double @scr_arr_state(ptr ${array.name}, double ${index.name})`);
+    B.line(`${present} = fcmp oeq double ${state}, 1.0`);
+    B.condBr(present, slowValue, no);
+    B.startBlock(slowValue);
+    const value = B.tmp(),
+      bits = B.tmp();
+    if (read.element.kind === "f64") {
+      host.declare(`declare double @scr_arr_get_f64(ptr, double)`);
+      B.line(`${value} = call double @scr_arr_get_f64(ptr ${array.name}, double ${index.name})`);
+      B.line(`${bits} = bitcast double ${value} to i64`);
+    } else {
+      host.declare(`declare zeroext i1 @scr_arr_get_bool(ptr, double)`);
+      B.line(
+        `${value} = call zeroext i1 @scr_arr_get_bool(ptr ${array.name}, double ${index.name})`,
+      );
+      B.line(`${bits} = zext i1 ${value} to i64`);
+    }
+    B.line(`store i64 ${bits}, ptr ${payload}`);
+    B.line(`store i32 ${read.presentTag}, ptr ${tag}`);
+  } else {
+    const value = B.tmp(),
+      present = B.tmp();
+    host.declare("declare ptr @scr_arr_peek_ref(ptr, double) memory(read)");
+    B.line(`${value} = call ptr @scr_arr_peek_ref(ptr ${array.name}, double ${index.name})`);
+    B.line(`${present} = icmp ne ptr ${value}, null`);
+    B.condBr(present, slowValue, no);
+    B.startBlock(slowValue);
+    storeValue(value);
+  }
   B.br(join);
   B.startBlock(no);
-  B.line(`store ptr null, ptr ${payload}`);
+  B.line(`store i64 0, ptr ${payload}`);
   B.line(`store i32 ${read.missingTag}, ptr ${tag}`);
   B.br(join);
   B.startBlock(join);
   B.line(`store ptr ${box}, ptr ${localSlot}`);
-  return read.borrow ? null : { slot: payload, type: read.element };
+  return read.borrow || scalar ? null : { slot: payload, type: read.element };
 }

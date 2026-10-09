@@ -24,10 +24,13 @@ Options:
       --print <kind> print machine-readable metadata instead of the output path
                      (native-link-info implies --emit=obj and never links)
       --backend <b>  code generator (llvm)
-      --optimization <release|dev>
+      --optimization <release|dev|speed>
                      native optimization posture (default: release/-O2). dev
                      uses -O0, source breakpoints, and cached LLVM object shards;
-                     macOS executable builds also produce an adjacent .dSYM
+                     macOS executable builds also produce an adjacent .dSYM.
+                     speed trades larger executables and longer builds for
+                     faster programs (runtime inlining, inline reference
+                     counting, cache-line-aligned runtime code on x86-64)
       --strip        remove symbol/debug payload from the linked executable
                      for smaller builds (opt in; --emit=exe only)
       --windows-subsystem <console|gui>

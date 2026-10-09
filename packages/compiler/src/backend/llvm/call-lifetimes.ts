@@ -68,7 +68,11 @@ function eligible(local: IrLocal): boolean {
  * Projection results may escape: the existing emitter retains extracted
  * payloads. The enclosing union box itself must never be retained, released,
  * stored, returned, captured, or passed to arbitrary runtime code. */
-function collectUses(fn: IrFunction): Uses {
+/** True for class fields stored as nullable instance pointers: a store
+ * extracts and retains the payload, so the stored union is only projected. */
+export type NullableFieldTest = (className: string, field: string) => boolean;
+
+function collectUses(fn: IrFunction, nullableField: NullableFieldTest): Uses {
   const uses: Uses = {
     invalid: new Set(),
     written: new Set(),
@@ -101,9 +105,22 @@ function collectUses(fn: IrFunction): Uses {
       case "unionIsTag":
         if (node.value.kind === "varRef") return true;
         break;
-      case "unionEq":
-        // Equality reads each operand's tag and payload; neither box escapes.
-        return [node.left, node.right].every((side) => side.kind === "varRef" || expr(side));
+      case "unionEq": {
+        // Tag compare plus a borrowed arm compare; neither box escapes.
+        const operand = (value: IrExpr): boolean =>
+          (value.kind === "varRef" && value.type.kind === "union") || expr(value);
+        return operand(node.left) && operand(node.right);
+      }
+      case "nullish":
+        // The narrowed shape only tests the tag and extracts the payload.
+        // The pass-through shape returns the box itself.
+        if (
+          node.left.kind === "varRef" &&
+          node.left.type.kind === "union" &&
+          node.type.kind !== "union"
+        )
+          return expr(node.right);
+        break;
       case "fieldGet":
       case "recordGet":
         if (node.obj.kind === "varRef") return true;
@@ -146,6 +163,14 @@ function collectUses(fn: IrFunction): Uses {
       case "varDecl":
         uses.declarations.set(node.localId, (uses.declarations.get(node.localId) ?? 0) + 1);
         break;
+      case "fieldSet":
+        if (
+          node.value.kind === "varRef" &&
+          node.value.type.kind === "union" &&
+          nullableField(node.className, node.field)
+        )
+          return expr(node.obj);
+        break;
       case "assign":
         uses.written.add(node.localId);
         // Sequence expressions can rebind a previous call argument before
@@ -185,10 +210,13 @@ function collectUses(fn: IrFunction): Uses {
  * do not recurse on the compiler stack or repeatedly rescan function bodies.
  *
  * The result is private to one emission of the finalized IR. No fact is
- * serialized or reused after a compiler transformation. Only synchronous
- * bodies are analyzed; parameter facts additionally require a body without
- * an environment, which is the only directly called convention. */
-export function analyzeCallLifetimes(functions: ReadonlyMap<string, IrFunction>): CallLifetimes {
+ * serialized or reused after a compiler transformation. Parameter facts
+ * cover synchronous bodies without environments only; closure bodies get
+ * local facts alone. */
+export function analyzeCallLifetimes(
+  functions: ReadonlyMap<string, IrFunction>,
+  nullableField: NullableFieldTest = () => false,
+): CallLifetimes {
   const usesByFunction = new Map<string, Uses>();
   const nodes = new Map<string, Parameter[]>();
   const unsafe: Parameter[] = [];
@@ -201,8 +229,13 @@ export function analyzeCallLifetimes(functions: ReadonlyMap<string, IrFunction>)
   };
   for (const fn of functions.values()) {
     if (fn.async || fn.generator) continue;
-    const uses = collectUses(fn);
+    const uses = collectUses(fn, nullableField);
     usesByFunction.set(fn.name, uses);
+    // Class-capturing bodies get only local facts (computed below from
+    // their uses; class captures are already invalid). Binding and
+    // parameter facts stay limited to plain functions and closures.
+    if (fn.classCaptures !== undefined) continue;
+    const locals = new Map(fn.locals.map((local) => [local.id, local]));
     const stable = (local: IrLocal): boolean =>
       !local.boxed && !local.tdz && !uses.written.has(local.id);
     result.bindings.set(
@@ -213,11 +246,13 @@ export function analyzeCallLifetimes(functions: ReadonlyMap<string, IrFunction>)
           .map((local) => local.id),
       ),
     );
-    // Environment-taking bodies are reached through closure or class
-    // dispatch, never a direct call. Their own locals follow the same
-    // proof (captures are already writes), but parameters keep ownership.
-    if (fn.captures !== undefined || fn.classCaptures !== undefined) continue;
-    const locals = new Map(fn.locals.map((local) => [local.id, local]));
+    if (fn.captures !== undefined) {
+      // A closure body is invoked through its environment trampoline, so
+      // its parameters keep the owned convention and no direct call can
+      // forward to them. Its own unboxed locals follow the same rules as
+      // any synchronous body; captured cells are boxed and marked invalid.
+      continue;
+    }
     const borrowed = new Set<number>();
     fn.params.forEach((param, index) => {
       const local = locals.get(param.localId);

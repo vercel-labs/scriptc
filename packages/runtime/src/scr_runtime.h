@@ -392,11 +392,18 @@ typedef struct ScrCycHdr {
  * llvm/shapes.ts, llvm/classes.ts, and llvm/emitter.ts. Nothing but `color`
  * may share those four bytes: a field placed in them is silently zeroed by
  * every retain, which is invisible to the type system and to the C
- * compiler. Hence the target-width assertions. */
+ * compiler. Hence the target-width assertions.
+ *
+ * The inline release fast paths (llvm/shapes.ts emitInlineRcHelpers) also
+ * mirror scr_cyc_on_release's already-buffered case: they store
+ * SCR_CYC_PURPLE (the literal 1) into color and read `buffered` as the i16
+ * immediately after it, calling scr_cyc_on_release only when it is 0. */
 #if UINTPTR_MAX == UINT64_MAX
 _Static_assert(sizeof(ScrCycHdr) == 32, "LLVM backend expects a 32-byte cycle header");
 _Static_assert(offsetof(ScrCycHdr, color) == 16,
                "LLVM backend's inlined mark-live stores i32 0 at obj-16");
+_Static_assert(offsetof(ScrCycHdr, gen) == 22,
+               "LLVM backend's inline free reads the generation at header+22");
 #elif UINTPTR_MAX == UINT32_MAX
 _Static_assert(sizeof(ScrCycHdr) == 24, "wasm32 cycle payloads require an aligned 24-byte header");
 _Static_assert(offsetof(ScrCycHdr, color) == 12,
@@ -410,6 +417,12 @@ _Static_assert(SCR_CYC_BLACK == 0,
                "the emitted mark-live stores the LITERAL 0, not the enumerator "
                "— reordering the colors would make every compiled retain write "
                "the wrong one");
+_Static_assert(SCR_CYC_PURPLE == 1,
+               "the emitted release fast path stores the LITERAL 1 as purple");
+_Static_assert(offsetof(ScrCycHdr, buffered) == offsetof(ScrCycHdr, color) + 4 &&
+                   sizeof(((ScrCycHdr *)0)->buffered) == 2,
+               "the emitted release fast path reads `buffered` as an i16 four bytes "
+               "after color");
 
 static inline ScrCycHdr *scr_cyc_hdr(void *obj) { return (ScrCycHdr *)obj - 1; }
 
@@ -417,6 +430,161 @@ static inline ScrCycHdr *scr_cyc_hdr(void *obj) { return (ScrCycHdr *)obj - 1; }
  * pointer (header at scr_cyc_hdr). Aborts on OOM. */
 void *scr_cyc_alloc(size_t size, ScrTraceFn trace, ScrCycFreeFn free_fn);
 void scr_cyc_free(void *obj); /* frees the block, header included */
+
+/* ── small-object allocator (scr_alloc.c) ───────────────────────────────
+ * Runtime objects are small, short-lived and freed by the thread that made
+ * them — the pattern a general-purpose malloc pays the most for. Blocks of
+ * up to SCR_SA_MAX bytes come from per-size-class free lists refilled by a
+ * bump pointer; the fast paths below inline into every runtime unit.
+ *
+ * Contracts match malloc/calloc/realloc/free (NULL on OOM, 16-byte
+ * alignment). scr_mem_free and scr_mem_realloc accept ANY pointer — a
+ * block outside the allocator's reservation goes back to the system — so a
+ * free site can be switched without proving where its pointers came from.
+ * The converse does not hold: a block from scr_mem_alloc/calloc/realloc
+ * must never reach the system free/realloc. Emitted code reaches the same
+ * allocator through scr_rt_calloc/scr_rt_free.
+ *
+ * Compiled to the plain system calls under SCR_RC_AUDIT and AddressSanitizer
+ * (the audit lane must see every logical free as a real free), on targets
+ * without a cheap address-space reservation (wasm32, Windows, 32-bit), and
+ * in thread-instanced library archives and worker executables (SCR_WORKERS),
+ * where several runtime instances run on their own threads and would race
+ * on, or strand each other's, free lists. Elsewhere the allocator state is
+ * process-global and unsynchronized: runtime objects are only allocated and
+ * freed on the runtime thread (native worker jobs never touch them). */
+#include <stdlib.h>
+#if defined(SCR_RC_AUDIT) || defined(__SANITIZE_ADDRESS__) || defined(__wasi__) || \
+    defined(__wasm__) || defined(_WIN32) || UINTPTR_MAX != UINT64_MAX ||              \
+    (defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES)) || defined(SCR_WORKERS)
+#define SCR_SMALL_ALLOC 0
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define SCR_SMALL_ALLOC 0
+#else
+#define SCR_SMALL_ALLOC 1
+#endif
+#else
+#define SCR_SMALL_ALLOC 1
+#endif
+
+void *scr_mem_realloc(void *p, size_t n);
+void *scr_rt_calloc(size_t n); /* emitted-code entry points */
+void scr_rt_free(void *p);
+
+#define SCR_SA_STEP 16u   /* class granularity; keeps malloc's 16-byte alignment */
+#define SCR_SA_NCLASS 32u /* classes of 16, 32, ... 512 bytes */
+#define SCR_SA_MAX (SCR_SA_STEP * SCR_SA_NCLASS)
+
+typedef struct ScrSaBlock {
+  struct ScrSaBlock *next;
+} ScrSaBlock;
+
+/* One reservation split into SCR_SA_NCLASS equal slices, one per class, so
+ * a block's class is its slice index: (p - base) >> shift. span is 0 until
+ * the first refill reserves (and stays 0 if the host refuses).
+ *
+ * scr_sa exists in EVERY build, and its layout is an ABI: the LLVM backend
+ * inlines the fast paths into emitted constructors and releases
+ * (llvm/alloc.ts) as `{ i64, i64, i32, [32 x ptr], [32 x ptr], [32 x ptr] }`
+ * on 64-bit targets. Where SCR_SMALL_ALLOC is 0 the state is never written,
+ * so the emitted fast paths see no free block, no bump room and an empty
+ * span, and always take their out-of-line slow path (scr_rt_calloc /
+ * scr_rt_free → the system allocator) — the sanitizer and RC-audit lanes
+ * therefore see every logical allocation and free without the compiler
+ * knowing which runtime it links against. The emitted fast paths also skip
+ * scr_obj_alloc_note/scr_obj_free_note, which is sound because those are
+ * no-ops whenever the allocator is live (SCR_RC_AUDIT implies
+ * SCR_SMALL_ALLOC == 0). */
+typedef struct ScrSaState {
+  uintptr_t base, span;
+  unsigned shift;
+  ScrSaBlock *free[SCR_SA_NCLASS];
+  char *bump[SCR_SA_NCLASS], *lim[SCR_SA_NCLASS];
+} ScrSaState;
+extern ScrSaState scr_sa;
+#if UINTPTR_MAX == UINT64_MAX
+_Static_assert(offsetof(ScrSaState, span) == 8 && offsetof(ScrSaState, shift) == 16 &&
+                   offsetof(ScrSaState, free) == 24 && offsetof(ScrSaState, bump) == 280 &&
+                   offsetof(ScrSaState, lim) == 536 && sizeof(ScrSaState) == 792,
+               "llvm/alloc.ts inlines the small-object allocator against this layout");
+#endif
+#if defined(SCR_RC_AUDIT) && SCR_SMALL_ALLOC
+#error "emitted allocation fast paths skip the RC-audit object notes"
+#endif
+
+#if SCR_SMALL_ALLOC
+/* Refill miss: reserves on first use, falls back to the system allocator
+ * for large blocks, n == 0, an exhausted slice, or a refused reservation. */
+void *scr_sa_slow(size_t n, bool zero);
+
+static inline void *scr_sa_take(size_t n, bool zero) {
+  if (n - 1 < SCR_SA_MAX) { /* n == 0 wraps to the slow path */
+    unsigned c = (unsigned)((n - 1) / SCR_SA_STEP);
+    ScrSaBlock *b = scr_sa.free[c];
+    if (b) {
+      scr_sa.free[c] = b->next;
+      if (zero) memset(b, 0, n); /* recycled blocks are dirty */
+      return b;
+    }
+    size_t sz = (size_t)(c + 1) * SCR_SA_STEP;
+    char *p = scr_sa.bump[c];
+    if ((size_t)(scr_sa.lim[c] - p) >= sz) { /* fresh mmap memory is zero */
+      scr_sa.bump[c] = p + sz;
+      return p;
+    }
+  }
+  return scr_sa_slow(n, zero);
+}
+
+static inline void *scr_mem_alloc(size_t n) { return scr_sa_take(n, false); }
+static inline void *scr_mem_calloc(size_t n) { return scr_sa_take(n, true); }
+
+static inline void scr_mem_free(void *p) {
+  uintptr_t off = (uintptr_t)p - scr_sa.base;
+  if (off < scr_sa.span) {
+    ScrSaBlock *b = p;
+    unsigned c = (unsigned)(off >> scr_sa.shift);
+    b->next = scr_sa.free[c];
+    scr_sa.free[c] = b;
+    return;
+  }
+  free(p);
+}
+#else
+static inline void *scr_mem_alloc(size_t n) { return malloc(n); }
+static inline void *scr_mem_calloc(size_t n) { return calloc(1, n); }
+static inline void scr_mem_free(void *p) { free(p); }
+#endif
+
+/* Inline twins of scr_cyc_alloc/scr_cyc_free for hot runtime allocation
+ * sites (union boxes, arrays, boxes, closures, maps, dyn nodes). With a
+ * constant size the size class and the zeroing fold at compile time. The
+ * live count is exported for these and for the emitted inline paths
+ * (llvm/alloc.ts), which do the same three things: header words, live
+ * count, block. Every other header word starts zero (SCR_CYC_BLACK,
+ * SCR_CYC_NURSERY, unbuffered). */
+extern SCR_TL size_t scr_cyc_live;
+extern SCR_TL size_t scr_cyc_old_freed;
+extern SCR_TL void (*scr_weak_dispose_hook)(void *);
+static inline void *scr_cyc_alloc_inline(size_t size, ScrTraceFn trace, ScrCycFreeFn free_fn) {
+  if (size > SIZE_MAX - sizeof(ScrCycHdr)) scr_trap("scriptc: out of memory\n");
+  ScrCycHdr *h = (ScrCycHdr *)scr_mem_calloc(sizeof(ScrCycHdr) + size);
+  if (!h) scr_trap("scriptc: out of memory\n");
+  h->trace = trace;
+  h->free_fn = free_fn;
+  scr_cyc_live++;
+  return h + 1;
+}
+static inline void scr_cyc_free_inline(void *obj) {
+  if (scr_weak_dispose_hook) scr_weak_dispose_hook(obj);
+  scr_cyc_live--;
+  if (scr_cyc_hdr(obj)->gen == SCR_CYC_OLD) scr_cyc_old_freed++;
+  scr_mem_free(scr_cyc_hdr(obj));
+}
+_Static_assert(SCR_CYC_NURSERY == 0, "zeroed cycle headers start in the nursery");
+_Static_assert(sizeof(((ScrCycHdr *)0)->gen) == 2 && SCR_CYC_OLD == 2,
+               "LLVM backend's inline free compares an i16 generation against 2");
 
 /* Dispose an object whose reference count already reached zero. The caller
  * removes its cycle candidate first. Nested disposals keep bounded stack
@@ -486,13 +654,50 @@ typedef struct ScrVt {
  * scr_str_concat can append in place when the left operand is uniquely
  * owned (rc == 1) — observable immutability is preserved: a string with
  * rc > 1 or rc == SIZE_MAX is never mutated.
+ *
+ * On 64-bit little-endian targets the capacity word is split: the low half
+ * is cap (strings never exceed SCR_STR_MAX_CAP bytes; JavaScript strings are
+ * far shorter) and the high half caches the string's Map key hash (0 = not
+ * computed). Emitted literals and runtime statics still initialize one
+ * size-sized word to len, which leaves the hash half zero. Only uniquely
+ * owned heap strings are ever mutated, and every such path clears the hash
+ * (scr_str_hash_forget); immortal strings are never written, so they always
+ * hash on demand.
  */
+#if SIZE_MAX > UINT32_MAX && defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+#define SCR_STR_HASH_CACHE 1
+#define SCR_STR_MAX_CAP ((size_t)UINT32_MAX)
+#else
+#define SCR_STR_HASH_CACHE 0
+#define SCR_STR_MAX_CAP (SIZE_MAX - sizeof(size_t) * 3 - 1)
+#endif
 typedef struct ScrStr {
   size_t rc;
   size_t len;
+#if SCR_STR_HASH_CACHE
+  uint32_t cap;
+  uint32_t hash;
+#else
   size_t cap;
+#endif
   char data[];
 } ScrStr;
+
+/* The capacity word of a static string: cap == len, plus the precomputed
+ * 32-bit key hash where the header caches one (0 leaves it to be computed). */
+#if SCR_STR_HASH_CACHE
+#define SCR_STR_CAP_WORD(len, hash32) ((size_t)(len) | ((size_t)(uint32_t)(hash32) << 32))
+#else
+#define SCR_STR_CAP_WORD(len, hash32) ((size_t)(len))
+#endif
+
+static inline void scr_str_hash_forget(ScrStr *s) {
+#if SCR_STR_HASH_CACHE
+  s->hash = 0;
+#else
+  (void)s;
+#endif
+}
 
 ScrStr *scr_str_new(const char *bytes, size_t len); /* returns +1 */
 /* Native callback boundary: copy and WHATWG-decode a UTF-8 span, replacing
@@ -1123,6 +1328,11 @@ typedef struct ScrArr {
   size_t prop_cap;
   struct ScrDyn *metadata; /* heterogeneous named properties of match results */
 } ScrArr;
+/* The LLVM backend's inline retain/release read elem_trace through its
+ * mirrored %ScrArr type (field 6) to decide mark-live / candidate buffering
+ * exactly like scr_arr_retain and scr_arr_release. */
+_Static_assert(offsetof(ScrArr, elem_trace) == 3 * sizeof(size_t) + 3 * sizeof(void *),
+               "inline RC fast paths read ScrArr.elem_trace as %ScrArr field 6");
 
 typedef struct ScrArrSparseSlot {
   size_t index;
@@ -1281,6 +1491,13 @@ double scr_arr_unshift_spread(ScrArr *a, const ScrArr *src);
 ScrArr *scr_arr_reverse(ScrArr *a);
 /* Default primitive String ordering; stable, borrowed receiver, owned result. */
 ScrArr *scr_arr_sort_primitive(ScrArr *a, bool copy);
+/* Stable comparator sort of the first `count` slots of a private, compacted
+ * snapshot (every slot a value; f64 or reference elements). `f` is a borrowed
+ * closure of `arity` (0..2) element parameters returning a number. Elements
+ * move without reference-count traffic; a pending exception from `f` stops
+ * the sort and leaves the snapshot unchanged. */
+struct ScrClosure;
+void scr_arr_sort_values(ScrArr *a, double count, struct ScrClosure *f, uint32_t arity);
 
 /* pop traps on an empty array; _ref transfers ownership out (+1 to the
  * caller, no release). */
@@ -1358,6 +1575,7 @@ typedef struct ScrRegex {
   uint8_t *bc;    /* lazily compiled libregexp bytecode; NULL until first use */
   double last_index;
   struct ScrRegex *literal; /* immutable bytecode owner for literal instances */
+  void *native;   /* one-byte-subject matcher built with bc (NULL: lre_exec only) */
 } ScrRegex;
 
 static inline ScrRegex *scr_regex_retain(ScrRegex *re) {
@@ -1496,6 +1714,13 @@ typedef struct ScrMap {
   const ScrMapDynOps *dyn_ops;
   const uint8_t *union_keys; /* immutable key-kind table indexed by union tag */
 } ScrMap;
+/* The LLVM backend's inline retain/release read both trace slots through
+ * its %ScrMapRc prefix type (fields 5 and 8), mirroring scr_map_retain and
+ * scr_map_release's `key_trace || val_trace` header test. */
+_Static_assert(offsetof(ScrMap, val_trace) == sizeof(size_t) + 2 * sizeof(uint32_t) + 2 * sizeof(void *),
+               "inline RC fast paths read ScrMap.val_trace as %ScrMapRc field 5");
+_Static_assert(offsetof(ScrMap, key_trace) == offsetof(ScrMap, val_trace) + 3 * sizeof(void *),
+               "inline RC fast paths read ScrMap.key_trace as %ScrMapRc field 8");
 
 /* Called once on a fresh UNION_VALUE collection, before its first insert. */
 void scr_map_union_keys(ScrMap *map, const uint8_t *kinds);
@@ -1876,6 +2101,10 @@ typedef struct ScrUnion {
   ScrTraceFn arm_trace;
   uint64_t slot; /* double/bool/pointer via memcpy and casts */
 } ScrUnion;
+/* The speed posture's inline union release (shapes.ts) reads arm_trace at
+ * this byte offset to skip buffering untraced boxes, like scr_union_release. */
+_Static_assert(offsetof(ScrUnion, arm_trace) == 2 * sizeof(size_t) + 2 * sizeof(void *),
+               "inline RC fast paths read ScrUnion.arm_trace at 32 (64-bit) / 16 (32-bit)");
 
 ScrUnion *scr_union_new_f64(uint32_t tag, double v);  /* returns +1 */
 ScrUnion *scr_union_new_bool(uint32_t tag, bool v);   /* returns +1 */
@@ -3952,6 +4181,42 @@ void scr_dyn_release(ScrDyn *d); /* releases the tree recursively; NULL-tolerant
  * compiler-emitted pending checks — json.parse is in the may-throw seed). */
 ScrDyn *scr_json_parse(ScrStr *text);
 
+/* Compiler-emitted description of a statically known JSON.parse target
+ * (`JSON.parse(text) as T`). Constant data in the program image; the LLVM
+ * backend mirrors this layout ({size, size, ptr, ptr, ptr, ptr, ptr} and
+ * {ptr, size, size, ptr}). Records list their declared fields (at most
+ * 64), each with its byte offset in the record struct; bool fields are one
+ * byte, f64 fields doubles, every other kind a +1 pointer. */
+enum {
+  SCR_JSCHEMA_F64 = 0,
+  SCR_JSCHEMA_BOOL = 1,
+  SCR_JSCHEMA_STR = 2,
+  SCR_JSCHEMA_REC = 3,
+  SCR_JSCHEMA_ARR = 4,
+};
+typedef struct ScrJsonSchema ScrJsonSchema;
+typedef struct {
+  const char *name;
+  size_t name_len;
+  size_t offset;
+  const ScrJsonSchema *type;
+} ScrJsonSchemaField;
+struct ScrJsonSchema {
+  size_t kind;
+  size_t nfields;
+  const ScrJsonSchemaField *fields; /* records */
+  const ScrJsonSchema *elem;        /* arrays */
+  void *(*rec_new)(void);           /* records: zeroed instance, rc 1 */
+  ScrArr *(*arr_new)(size_t);       /* arrays: empty array of the element kind */
+  void (*release)(void *);          /* records and arrays */
+};
+
+/* One-pass parse straight into the native layout. Returns the +1 record
+ * or array, or NULL WITHOUT throwing whenever the checked-dynamic route
+ * (scr_json_parse + dynCheck) might fail or differ; the caller then runs
+ * that route, which reports the exact error. */
+void *scr_json_parse_schema(const ScrStr *text, const ScrJsonSchema *schema);
+
 /* Native JSON callbacks. All inputs borrowed, result owned (+1), NULL on
  * pending exception. Stringify returns a dyn string OR actual undefined
  * when the replacer omits the root. gap has already applied space rules. */
@@ -4747,6 +5012,12 @@ void scr_obj_alloc_note(void);
 void scr_obj_free_note(void);
 #ifdef SCR_RC_AUDIT
 long scr_obj_live_count(void);
+#else
+/* Only the RC audit lane counts live objects. Other runtimes keep the
+ * out-of-line no-op symbols for direct-emission objects that still call
+ * them (scr_object.c), while runtime-internal call sites compile away. */
+#define scr_obj_alloc_note() ((void)0)
+#define scr_obj_free_note() ((void)0)
 #endif
 
 /* ── async: promises, fibers, event loop ────────────────────────────
@@ -4772,6 +5043,18 @@ ScrPromise *scr_async_spawn(void (*entry)(ScrFiber *, void *), void *argpack);
 ScrPromise *scr_async_spawn_after(ScrPromise *dependency,
                                   void (*entry)(ScrFiber *, void *),
                                   void *argpack);
+/* Fiberless async call (native targets): the compiler proves an async body
+ * can never park its execution context and runs it directly on the
+ * caller's stack between enter and leave. The frame saves what a fresh
+ * fiber would isolate — the Error.stack frame chain and the
+ * AsyncLocalStorage context — and leave restores both, returning a fresh
+ * pending promise (+1) the caller settles from the body's outcome. */
+typedef struct ScrAsyncInline {
+  void *stack;
+  void *als;
+} ScrAsyncInline;
+void scr_async_inline_enter(ScrAsyncInline *frame);
+ScrPromise *scr_async_inline_leave(ScrAsyncInline *frame);
 
 /* wasm32-wasi lowers async functions and generators through LLVM switched
  * coroutines instead of the native stack-switching implementations. The
@@ -5761,6 +6044,24 @@ size_t scr_f64_to_str(double x, char *buf);
  * Returns k, the digit count (≤ 17). */
 int scr_f64_digits(double x, char digits[18], int *n_out);
 
+/* Clinger's exact fast path for a VALIDATED decimal span ([+-]? digits
+ * with optional fraction and exponent; no whitespace, no Infinity): sets
+ * *out and returns true when the value is m × 10^e with m <= 2^53 and a
+ * small |e| (one correctly rounded multiply/divide, bit-identical to
+ * strtod); false means the caller must take its strtod path. */
+bool scr_decimal_fast(const char *p, size_t n, double *out);
+/* The same fast path with whole-span validation folded into its scan: -1
+ * when p[0..n) is not such a decimal literal, 1 with *out set when exact,
+ * 0 when valid but the caller must use strtod. */
+int scr_decimal_scan(const char *p, size_t n, double *out);
+
+/* Number.prototype.toFixed's digit string for finite |x| < 1e21 and
+ * 0 <= f <= 100: the spec's n (closest to |x| × 10^f on the EXACT binary
+ * value, ties up) with the point placed f digits from the right and "-"
+ * for x < 0. Writes NUL-terminated text into buf (>= 128 bytes); returns
+ * the length. */
+size_t scr_f64_to_fixed(double x, int f, char *buf);
+
 /* ToString for template literals / string coercion. Returns +1. */
 ScrStr *scr_f64_to_scrstr(double x);
 ScrStr *scr_bool_to_scrstr(bool b); /* interned "true"/"false" */
@@ -6518,6 +6819,14 @@ bool scr_net_sock_established(ScrNetSocket *s); /* connected, including TLS hand
 void scr_net_sock_set_native_events(ScrNetSocket *s, ScrNetNativeEventFn timeout, ScrNetNativeErrFn err);
 void scr_net_sock_set_native_http_timeout(ScrNetSocket *s, ScrNetNativeTimeoutHandledFn fn);
 void scr_net_sock_write_native(ScrNetSocket *s, const char *buf, size_t n);
+/* Several protocol-layer slices in order as one write: a single vectored
+ * syscall when the bytes can go out immediately, else the same buffering
+ * as consecutive scr_net_sock_write_native calls. */
+typedef struct {
+  const char *data;
+  size_t len;
+} ScrNetSlice;
+void scr_net_sock_writev_native(ScrNetSocket *s, const ScrNetSlice *slices, size_t n);
 /* The protocol layer's deferred-emit hook: `pending` joins the loop's
  * liveness test, `sweep` runs at every net sweep top. */
 void scr_net_set_proto_sweep(bool (*pending)(void), void (*sweep)(void));
@@ -7705,8 +8014,19 @@ void scr_assert_eq_sym(ScrSym *a, ScrSym *b, bool negated, bool deep,
 
 /* ── console ──────────────────────────────────────────────────────────── */
 
+enum {
+  SCR_ARG_F64,  /* a number argument: inspect rendering (-0 prints "-0") */
+  SCR_ARG_STR,  /* a string, verbatim */
+  SCR_ARG_BOOL, /* true / false */
+  SCR_ARG_NUM,  /* a number inside a string concatenation: String() rendering
+                 * (-0 prints "0") — scr_console_*_parts only */
+  SCR_ARG_KIND = 0xff,
+  SCR_ARG_GLUE = 0x100, /* flag: this part continues the previous argument
+                         * (no separating space) — scr_console_*_parts only */
+};
+
 typedef struct {
-  enum { SCR_ARG_F64, SCR_ARG_STR, SCR_ARG_BOOL } tag;
+  int tag; /* SCR_ARG_KIND bits, optionally | SCR_ARG_GLUE */
   union {
     double f;
     ScrStr *s;
@@ -7720,6 +8040,13 @@ void scr_console_log(size_t n, const ScrLogArg *args);
  * identical formatting, with stdout settled first so merged (2>&1) output
  * keeps source order. */
 void scr_console_error(size_t n, const ScrLogArg *args);
+/* The same lines where the compiler passed a string-concatenation argument
+ * (template literal, `"a" + n`) as its parts — glued with SCR_ARG_GLUE and
+ * numbers as SCR_ARG_NUM — so the joined string is never materialized.
+ * Separate entry points: programs using these tags cannot link against a
+ * runtime that does not understand them. */
+void scr_console_log_parts(size_t n, const ScrLogArg *args);
+void scr_console_error_parts(size_t n, const ScrLogArg *args);
 
 bool scr_fetch_web_is(const ScrDyn *value, const ScrStr *name);
 bool scr_fetch_stream_is(const ScrDyn *value);

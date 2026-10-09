@@ -1,3 +1,4 @@
+import type { NativeOptimization } from "./optimization.js";
 import { release } from "node:os";
 
 /** Helpers run on the build host and emit every supported target ABI. */
@@ -68,9 +69,9 @@ export function windowsSubsystemLinkerArgs(
  * payload, while dev executables retain it for inspection and debugging. */
 export function executableOptimizationLinkerArgs(
   platform: string,
-  optimization: "release" | "dev",
+  optimization: NativeOptimization,
 ): string[] {
-  return platform === "wasi" && optimization === "release" ? ["-Wl,--strip-debug"] : [];
+  return platform === "wasi" && optimization !== "dev" ? ["-Wl,--strip-debug"] : [];
 }
 
 /** Remove symbol/debug payload at link time so the executable cache stores

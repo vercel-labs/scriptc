@@ -67,7 +67,8 @@ static void test_string_bucket_collisions(void) {
   for (unsigned i = 0; i < 65536 && count < 12; i++) {
     char bytes[9];
     snprintf(bytes, sizeof bytes, "%08x", i);
-    if ((scr_key_hash(bytes, 8) & 127) != 0) continue;
+    uint64_t hash = scr_key_hash(bytes, 8);
+    if (((uint32_t)(hash ^ (hash >> 32)) & 127) != 0) continue; /* folded map hash */
     keys[count] = scr_str_new(bytes, 8);
     scr_map_set_str_f64(m, keys[count], (double)count);
     count++;
@@ -122,6 +123,84 @@ static void test_string_keys(void) {
   check(scr_map_size(m) == 0 && !scr_map_has_str(m, kb), "clear empties");
   scr_str_release(ka);
   scr_str_release(kb);
+  scr_map_release(m);
+}
+
+/* String keys hash to 32 bits; heap strings cache the value in their header
+ * and static strings (compiler literals, runtime one-character strings)
+ * carry it precomputed. The vectors are shared with the compiler's
+ * string-key-hash.test.ts: literal keys only work if both sides agree. */
+static const struct { const char *bytes; size_t length; uint32_t hash; } hash_vectors[] = {
+  {"", 0, 0x993d6596u},
+  {"a", 1, 0x16793313u},
+  {"q", 1, 0x81558571u},
+  {"ab", 2, 0x2985501fu},
+  {"abc", 3, 0xd7f8c3adu},
+  {"alpha", 5, 0x837effcdu},
+  {"kalomi", 6, 0x4ed53d7du},
+  {"hello world!", 12, 0xd1ecb7bbu},
+  {"\xEF\xBF\xBD", 3, 0xeba2c495u},
+  {"a much longer key of 31 bytes!!", 31, 0x1a2fe80fu},
+  {"\xC3\xA9t\xC3\xA9", 5, 0x17c315c4u},
+};
+
+static void test_string_hash_cache(void) {
+  ScrMap *m = scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_F64, NULL, NULL, NULL);
+  for (size_t i = 0; i < sizeof hash_vectors / sizeof hash_vectors[0]; i++) {
+    ScrStr *key = scr_str_new(hash_vectors[i].bytes, hash_vectors[i].length);
+    scr_map_set_str_f64(m, key, (double)i);
+#if SCR_STR_HASH_CACHE
+    check(key->hash == hash_vectors[i].hash, "pinned 32-bit key hash (shared with the compiler)");
+    check(key->cap == key->len, "hash half leaves the capacity intact");
+#endif
+    double out = -1;
+    check(scr_map_get_span_f64(m, hash_vectors[i].bytes, hash_vectors[i].length, &out) && out == (double)i,
+          "span probes hash like cached strings");
+    scr_str_release(key);
+  }
+  scr_map_release(m);
+
+  /* Immortal one-character and empty strings carry the same hash as heap
+   * strings with equal bytes, so either form finds the other's entry. */
+  m = scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_F64, NULL, NULL, NULL);
+  ScrStr *source = S("qa");
+  ScrStr *q = scr_str_char_at(source, 0);
+  ScrStr *empty = scr_str_char_at(source, 9);
+  check(q->rc == SIZE_MAX && empty->rc == SIZE_MAX, "one-character and empty strings are immortal");
+#if SCR_STR_HASH_CACHE
+  check(q->hash == 0x81558571u && q->cap == 1, "static one-character hash precomputed");
+  check(empty->hash == 0x993d6596u && empty->cap == 0, "static empty-string hash precomputed");
+#endif
+  ScrStr *heap_q = S("q");
+  ScrStr *heap_empty = S("");
+  scr_map_set_str_f64(m, q, 1);
+  scr_map_set_str_f64(m, heap_empty, 2);
+  double out = 0;
+  check(scr_map_get_str_f64(m, heap_q, &out) && out == 1, "heap probe finds static key");
+  check(scr_map_get_str_f64(m, empty, &out) && out == 2, "static probe finds heap key");
+  scr_str_release(heap_q);
+  scr_str_release(heap_empty);
+  scr_str_release(source);
+  scr_map_clear(m);
+
+  /* A uniquely owned string appended in place must drop its cached hash:
+   * a stale hash would probe the old content's bucket and miss. */
+  ScrStr *ab = S("ab");
+  ScrStr *cd = S("cd");
+  ScrStr *grown = scr_str_concat(ab, cd); /* rc 1, spare capacity */
+  scr_str_release(ab);
+  ScrStr *full = S("abcde");
+  scr_map_set_str_f64(m, full, 5);
+  check(!scr_map_has_str(m, grown), "prefix misses (and caches its hash)");
+  ScrStr *e = S("e");
+  ScrStr *appended = scr_str_concat(grown, e);
+  check(appended == grown, "unique string appended in place");
+  check(scr_map_get_str_f64(m, appended, &out) && out == 5, "in-place append invalidates the cached hash");
+  scr_str_release(appended);
+  scr_str_release(grown);
+  scr_str_release(e);
+  scr_str_release(cd);
+  scr_str_release(full);
   scr_map_release(m);
 }
 
@@ -501,6 +580,7 @@ int main(void) {
   test_string_keys();
   test_same_value_zero();
   test_span_keys();
+  test_string_hash_cache();
 #ifdef SCR_RC_AUDIT
   test_rc_accounting();
 #endif

@@ -141,6 +141,126 @@ console.log("unreachable", c.host);
     expect(r.stderr).toContain("Uncaught TypeError: expected number at $.port, got string");
   });
 
+  test("schema-directed JSON.parse declines to the checked route with identical errors", async () => {
+    // `JSON.parse(text) as T` for plain record/array targets parses in one
+    // pass and reruns the checked-dynamic route whenever it declines, so
+    // syntax, depth, and checked-cast failures keep their exact messages.
+    const r = await compileAndRun(
+      "schema-parse-errors",
+      `interface Item { sku: string; qty: number }
+const deep = "[" + "[".repeat(1000) + "]".repeat(1000) + "]";
+const inputs = [
+  '[{"sku":"a","qty":1},',
+  '[{"sku":"a","qty":01}]',
+  '[{"sku":"a\\\\q","qty":1}]',
+  '[{"sku":"a","qty":1}] x',
+  '[{"sku":"a","x":[1,],"qty":1}]',
+  '[{"sku":"a","x":"\\\\u12","qty":1}]',
+  deep,
+  '[{"sku":"a"}]',
+  '[{"sku":"a","qty":1},{"sku":"b","qty":true}]',
+  '[{"sku":"a","qty":1,"qty":"x"}]',
+  '[{"sku":"a","qty":"x","qty":2}]',
+];
+for (const text of inputs) {
+  let plain = "ok";
+  try { JSON.parse(text); } catch (e) { plain = (e as Error).name + ": " + (e as Error).message; }
+  let typed = "";
+  try { const v = JSON.parse(text) as Item[]; typed = "ok " + v.length + " " + v[0]!.qty; }
+  catch (e) { typed = (e as Error).name + ": " + (e as Error).message; }
+  console.log(typed, plain === "ok" ? "(plain ok)" : plain === typed ? "(same)" : "(DIFFERENT: " + plain + ")");
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(r.stdout.split("\n")).toEqual([
+      "SyntaxError: Unexpected end of JSON input (same)",
+      "SyntaxError: Expected ',' or '}' after property value in JSON at position 19 (same)",
+      "SyntaxError: Bad escaped character in JSON at position 11 (same)",
+      "SyntaxError: Unexpected non-whitespace character after JSON at position 22 (same)",
+      'SyntaxError: Unexpected token \']\', ...","x":[1,],"qty":"... is not valid JSON (same)',
+      "SyntaxError: Bad Unicode escape in JSON at position 21 (same)",
+      "RangeError: Maximum call stack size exceeded (same)",
+      "TypeError: expected number at $[0].qty, got undefined (plain ok)",
+      "TypeError: expected number at $[1].qty, got boolean (plain ok)",
+      "TypeError: expected number at $[0].qty, got string (plain ok)",
+      "ok 1 2 (plain ok)",
+      "",
+    ]);
+  });
+
+  test("schema-directed JSON.parse matches the checked route on wrong-typed input", async () => {
+    // Pins the fast path against inputs whose shape disagrees with the target:
+    // wrong leaf kinds at the top level, in nested records, record arrays and
+    // string arrays; null for object and number; missing fields; object vs
+    // array at a field and at the root; duplicate keys; truncated JSON; 1e400
+    // and a lone surrogate; extra nested members; reordered keys; and an Item[]
+    // root. Every line equals the perf/harness (checked-route-only) output.
+    const r = await compileAndRun(
+      "schema-parse-wrong-types",
+      `interface Item { sku: string; qty: number; ok: boolean }
+interface Order { id: number; name: string; items: Item[]; tags: string[] }
+const cases: string[] = [
+  '{"id":1,"name":"a","items":[{"sku":"x","qty":2,"ok":true}],"tags":["t"]}',
+  '{"id":"1","name":"a","items":[],"tags":[]}',
+  '{"id":1,"name":2,"items":[],"tags":[]}',
+  '{"id":1,"name":"a","items":[{"sku":"x","qty":"2","ok":true}],"tags":[]}',
+  '{"id":1,"name":"a","items":[{"sku":"x","qty":2}],"tags":[]}',
+  '{"id":1,"name":"a","items":[{"sku":"x","qty":2,"ok":1}],"tags":[]}',
+  '{"id":1,"name":"a","items":{},"tags":[]}',
+  '{"id":1,"name":"a","items":[null],"tags":[]}',
+  '{"id":1,"name":"a","items":[],"tags":[1]}',
+  '{"id":1,"name":"a","items":[],"tags":[],"extra":{"deep":[1,2,3]}}',
+  '{"id":1,"id":2,"name":"a","items":[],"tags":[]}',
+  '{"name":"a","items":[],"tags":[]}',
+  '{"id":null,"name":"a","items":[],"tags":[]}',
+  '[{"id":1}]',
+  '{"id":1,"name":"a","items":[],"tags":[]',
+  '{"id":1e400,"name":"\\\\ud800","items":[],"tags":[]}',
+  '{"tags":[],"items":[],"name":"reordered","id":7}',
+];
+for (const text of cases) {
+  try {
+    const o = JSON.parse(text) as Order;
+    console.log("ok", o.id, o.name, o.items.length, o.items.map((i) => i.sku + ":" + i.qty + ":" + i.ok).join(","), o.tags.join(","));
+  } catch (e) {
+    console.log("err", e instanceof Error ? e.name + ": " + e.message : String(e));
+  }
+}
+try {
+  const arr = JSON.parse('[{"sku":"a","qty":1,"ok":true},{"sku":"b","qty":"2","ok":false}]') as Item[];
+  console.log("ok", arr.length);
+} catch (e) {
+  console.log("err", e instanceof Error ? e.message : String(e));
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(r.stdout.split("\n")).toEqual([
+      "ok 1 a 1 x:2:true t",
+      "err TypeError: expected number at $.id, got string",
+      "err TypeError: expected string at $.name, got number",
+      "err TypeError: expected number at $.items[0].qty, got string",
+      "err TypeError: expected boolean at $.items[0].ok, got undefined",
+      "err TypeError: expected boolean at $.items[0].ok, got number",
+      "err TypeError: expected array at $.items, got object",
+      "err TypeError: expected object at $.items[0], got null",
+      "err TypeError: expected string at $.tags[0], got number",
+      "ok 1 a 0  ",
+      "ok 2 a 0  ",
+      "err TypeError: expected number at $.id, got undefined",
+      "err TypeError: expected number at $.id, got null",
+      "err TypeError: expected object at $, got array",
+      "err SyntaxError: Unexpected end of JSON input",
+      "ok Infinity \uFFFD 0  ",
+      "ok 7 reordered 0  ",
+      "err expected number at $[1].qty, got string",
+      "",
+    ]);
+  });
+
   test("missing field throws as undefined", async () => {
     const r = await compileAndRun(
       "missing-field",

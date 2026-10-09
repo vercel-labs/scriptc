@@ -1,3 +1,4 @@
+import type { NativeOptimization } from "./optimization.js";
 import { join } from "node:path";
 import type { FfiProfile } from "../ffi/ffi-manifest.js";
 import {
@@ -78,7 +79,7 @@ export interface NativeLinkInfo {
     version: string;
     root: string;
     path_base: "runtime_pack.root";
-    flavor: "release" | "dev";
+    flavor: NativeOptimization;
     objects: RuntimePackArtifact[];
     archives: RuntimePackArtifact[];
   };
@@ -107,7 +108,7 @@ export function formatNativeLinkInfo(
     root: string;
     manifest: RuntimePackManifest;
     selected: RuntimePackArtifacts;
-    flavor: "release" | "dev";
+    flavor: NativeOptimization;
   },
 ): NativeLinkInfo {
   const ffiLibraries = options.ffi?.libraries ?? [];

@@ -154,3 +154,32 @@ test("worker programs refuse foreign callbacks and guard byte-pointer FFI calls"
       );
   }
 });
+
+test("worker programs keep thread-local allocator and async state behind runtime calls", async () => {
+  const source =
+    worker +
+    `
+class Cell {
+  constructor(public next: Cell | null, public value: number) {}
+}
+let head: Cell | null = null;
+for (let i = 0; i < 3; i++) head = new Cell(head, i);
+async function settle(): Promise<number> {
+  return head === null ? 0 : head.value;
+}
+settle().then((value) => console.log(value));
+`;
+  const request = await fixture(source);
+  const result = await compile(request.entry, request);
+  expect(result.ok, JSON.stringify(result)).toBe(true);
+  if (result.ok) {
+    const llvm = await readFile(request.outPath, "utf8");
+    // scr_cyc_live and scr_weak_dispose_hook are thread-local in worker
+    // runtimes, and their small-object allocator is compiled out.
+    expect(llvm).not.toContain("@scr_sa");
+    expect(llvm).not.toContain("@scr_cyc_live");
+    expect(llvm).not.toContain("@scr_weak_dispose_hook");
+    // Worker fibers own context termination; no fiberless async frames.
+    expect(llvm).not.toContain("@scr_async_inline_enter");
+  }
+});

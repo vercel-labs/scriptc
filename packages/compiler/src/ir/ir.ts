@@ -1796,6 +1796,12 @@ export type IrArrIntrinsicMethod =
   /** Default String ordering for f64/bool/string payloads; no user callbacks. */
   | "sortPrimitive"
   | "toSortedPrimitive"
+  /** Internal stable comparator sort of a private, compacted snapshot:
+   * arguments are [value count, comparator]. Every slot below the count is
+   * a value of an `isSortValuesElement` type; the comparator is invoked
+   * with exactly its declared arity. Returns void; comparator exceptions
+   * propagate and leave the snapshot unchanged. */
+  | "sortValues"
   | "length"
   /** Internal ToNumber(a[index]) for f64-backed arrays: one numeric index,
    * returning the stored number or NaN for a hole/undefined/missing key.
@@ -1848,7 +1854,21 @@ export type IrArrIntrinsicMethod =
 export const MAY_THROW_ARR_METHODS: ReadonlySet<IrArrIntrinsicMethod> = new Set([
   "with",
   "withUndefined",
+  "sortValues",
 ]);
+
+/** Element types whose comparator sort can run in the runtime over raw
+ * slots: numbers, and reference-counted values passed to the comparator by
+ * pointer. Unions with an undefined arm order undefined last without a
+ * comparator call, and checked or island values have their own ABI; those
+ * keep the IR sort helper. */
+export function isSortValuesElement(elem: IrType, unionArms?: readonly IrType[]): boolean {
+  if (elem.kind === "f64") return true;
+  if (elem.kind === "dyn" || elem.kind === "jsval" || elem.kind === "caught") return false;
+  if (elem.kind === "union" && (!unionArms || unionArms.some((arm) => arm.kind === "undefinedT")))
+    return false;
+  return isRefCounted(elem);
+}
 
 /** The Map method/property surface (mirrors ambient/scriptc.d.ts) plus the
  * iteration primitives behind the forEach desugar. `forEach` itself is NOT

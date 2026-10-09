@@ -44,8 +44,11 @@ try {
     tracedShapes: traced.shapes,
     tracedUnions: traced.unions,
     recordsById: new Map((mod.records ?? []).map((record) => [record.id, record])),
+    // emitLlvmModule enables the inline allocator for 64-bit host targets.
+    inlineAlloc: request.bits === 64,
     unionsById: new Map((mod.unions ?? []).map((union) => [union.id, union])),
     recordCloneShapes: new Set(request.clones),
+    rcHelpers: null,
     unitInstanceRef: (union, tag) => {
       let index = units.findIndex((unit) => unit.union === union && unit.tag === tag);
       if (index === -1) {

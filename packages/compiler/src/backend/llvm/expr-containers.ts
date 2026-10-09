@@ -24,6 +24,7 @@ import {
 } from "./map-read-lifetimes.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
 import { emitStringSliceRead } from "./string-slices.js";
+import { emitDenseArrayNumber, emitDenseArrayPush } from "./dense-array-access.js";
 
 export function resolveThunkFor(host: LlvmEmitterContext, inner: IrType): string {
   const key = typeKey(inner);
@@ -69,13 +70,7 @@ export function arrPush(
   acc: "f64" | "bool" | "ref",
   value: string,
 ): string {
-  const argTy = acc === "f64" ? "double" : acc === "bool" ? "i1" : "ptr";
-  host.declare(
-    `declare double @scr_arr_push_${acc}(ptr, ${argTy === "i1" ? "i1 zeroext" : argTy})`,
-  );
-  const t = host.B.tmp();
-  host.B.line(`${t} = call double @scr_arr_push_${acc}(ptr ${arr}, ${argTy} ${value})`);
-  return t;
+  return emitDenseArrayPush(host, arr, acc, value);
 }
 
 /** Move evaluated values through one bounded slot buffer per call site. */
@@ -421,6 +416,8 @@ export function emitArrIntrinsic(
         e.receiver.kind === "varRef"
           ? host.constantNumericTables.get(e.receiver.localId)
           : undefined;
+      if (!table && elem.kind === "f64")
+        return { name: emitDenseArrayNumber(host, r.name, index, e.args[0]), type: e.type };
       host.declare(`declare double @scr_arr_get_number(ptr, double)`);
       const t = B.tmp();
       B.line(
@@ -594,6 +591,20 @@ export function emitArrIntrinsic(
         `${result} = call ptr @scr_arr_sort_primitive(ptr ${r.name}, i1 ${e.method === "toSortedPrimitive" ? 1 : 0})`,
       );
       return host.own({ name: result, type: e.type });
+    }
+    case "sortValues": {
+      // The runtime invokes the borrowed comparator with the callValue ABI
+      // and stops at the first pending exception.
+      const count = host.emitExpr(e.args[0]!);
+      const comparator = emitBorrowedInput(host, e.args[1]!);
+      const cmp = e.args[1]!.type;
+      const arity = cmp.kind === "func" ? cmp.params.length : 0;
+      host.declare(`declare void @scr_arr_sort_values(ptr, double, ptr, i32)`);
+      B.line(
+        `call void @scr_arr_sort_values(ptr ${r.name}, double ${count.name}, ptr ${comparator.name}, i32 ${arity})`,
+      );
+      host.emitPendingCheck();
+      return { name: "", type: e.type };
     }
     case "reverse": {
       // Mutates in place and returns the same receiver as a fresh +1.

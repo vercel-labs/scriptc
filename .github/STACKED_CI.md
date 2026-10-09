@@ -1,0 +1,9 @@
+# CI for stacked pull requests
+
+CI follows GitHub's [lowest unmerged pull request condition](https://docs.github.com/en/pull-requests/how-tos/merge-and-close-pull-requests/optimizing-ci-for-stacked-pull-requests): a native stacked PR gets full validation when its base branch matches the stack's base branch. After a bottom PR merges, GitHub rebases the next PR onto the stack base and its new CI run performs full validation. The original stack position can remain greater than 1.
+
+Ordinary PRs, fork PRs, outside contributors, pushes to `main`, and events with missing or incomplete scope metadata always receive full CI. Only upper stack layers authored by an `OWNER`, `MEMBER`, or `COLLABORATOR`, with both head and base branches in this repository, defer expensive jobs. Lint, formatting, and CI policy tests still run on every PR. Scope selection reads GitHub's event without checking out PR code and needs no token permissions.
+
+An upper layer's `test` check intentionally fails until that layer becomes the lowest unmerged PR and all CI lanes pass. Merge these stacks individually from the bottom up. This prevents an untested upper layer or contiguous group from passing the merge gate. Skipping the required check would not enforce this policy because GitHub treats skipped jobs as successful. The aggregate check also runs after failed or cancelled dependencies and requires every full CI lane to succeed.
+
+The stack base's branch protection or ruleset must require the GitHub Actions `test` check for this merge gate to be enforced. Workflow changes also need maintainer review: like other `pull_request` workflows, a PR can modify the workflow definition itself. Configure code owner review or equivalent repository rules for `.github/workflows/` as appropriate. The workflow does not configure repository protection or override permitted bypasses.

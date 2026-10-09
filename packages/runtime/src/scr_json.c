@@ -785,7 +785,7 @@ static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
     return d;
   }
 #endif
-  ScrDyn *fresh = scr_cyc_alloc(sizeof *fresh, &scr_dyn_trace_v, &scr_dyn_gcfree);
+  ScrDyn *fresh = scr_cyc_alloc_inline(sizeof *fresh, &scr_dyn_trace_v, &scr_dyn_gcfree);
   if (!fresh) scr_json_oom();
   fresh->rc = 1;
   fresh->kind = kind;
@@ -904,12 +904,12 @@ static void scr_dyn_dispose(ScrDyn *d, bool collected) {
     return;
   }
 #endif
-  if (d->kind == SCR_DYN_ARR) free(d->v.arr.items);
+  if (d->kind == SCR_DYN_ARR) scr_mem_free(d->v.arr.items);
   else if (d->kind == SCR_DYN_OBJ) {
     scr_dyn_obj_drop_keys(d, false);
-    free(d->v.obj.entries);
+    scr_mem_free(d->v.obj.entries);
   }
-  scr_cyc_free(d);
+  scr_cyc_free_inline(d);
 }
 
 static void scr_dyn_gcfree(void *ptr) { scr_dyn_dispose(ptr, true); }
@@ -1066,7 +1066,7 @@ bool scr_dyn_field_eq_bool(const ScrDyn *d, const ScrStr *key, bool value) {
 void scr_dyn_arr_push(ScrDyn *arr, ScrDyn *item) {
   if (arr->v.arr.len == arr->v.arr.cap) {
     size_t cap = arr->v.arr.cap ? arr->v.arr.cap * 2 : 4;
-    ScrDyn **items = realloc(arr->v.arr.items, cap * sizeof *items);
+    ScrDyn **items = scr_mem_realloc(arr->v.arr.items, cap * sizeof *items);
     if (!items) scr_json_oom();
     arr->v.arr.items = items;
     if (arr->v.arr.presence) {
@@ -1332,7 +1332,7 @@ static void scr_dyn_obj_put(ScrDyn *obj, const char *key, size_t key_len, ScrDyn
   }
   if (obj->v.obj.len == obj->v.obj.cap) {
     size_t cap = obj->v.obj.cap ? obj->v.obj.cap * 2 : 4;
-    ScrDynEntry *entries = realloc(obj->v.obj.entries, cap * sizeof *entries);
+    ScrDynEntry *entries = scr_mem_realloc(obj->v.obj.entries, cap * sizeof *entries);
     if (!entries) scr_json_oom();
     memset(entries + obj->v.obj.cap, 0, (cap - obj->v.obj.cap) * sizeof *entries);
     obj->v.obj.entries = entries;
@@ -5954,13 +5954,16 @@ typedef struct {
   size_t len;
   size_t pos;
   int depth;
+  bool quiet; /* schema fast path: report failure without throwing */
 } ScrJsonP;
 
-static void scr_json_throw(const char *msg) {
+static void scr_json_throw(const ScrJsonP *p, const char *msg) {
+  if (p->quiet) return;
   scr_throw_error_msg(SCR_ERR_SYNTAX, msg, strlen(msg));
 }
 
-static void scr_json_throw_pos(const char *what, size_t pos) {
+static void scr_json_throw_pos(const ScrJsonP *p, const char *what, size_t pos) {
+  if (p->quiet) return;
   char buf[128];
   int n = snprintf(buf, sizeof buf, "%s in JSON at position %zu", what, pos);
   scr_throw_error_msg(SCR_ERR_SYNTAX, buf, (size_t)n);
@@ -5969,6 +5972,7 @@ static void scr_json_throw_pos(const char *what, size_t pos) {
 /* V8-flavored bad-token message with a short snippet of the input around
  * the offending character. Approximate fidelity (documented). */
 static void scr_json_throw_token(const ScrJsonP *p) {
+  if (p->quiet) return;
   size_t start = p->pos > 8 ? p->pos - 8 : 0;
   size_t take = p->len - start < 16 ? p->len - start : 16;
   char buf[192];
@@ -6009,7 +6013,7 @@ static void scr_json_put_cp(ScrJsonBuf *b, uint32_t cp) {
 /* Four hex digits at pos, or -1 (throws). */
 static int32_t scr_json_hex4(ScrJsonP *p) {
   if (p->len - p->pos < 4) {
-    scr_json_throw("Unexpected end of JSON input");
+    scr_json_throw(p, "Unexpected end of JSON input");
     return -1;
   }
   uint32_t v = 0;
@@ -6020,7 +6024,7 @@ static int32_t scr_json_hex4(ScrJsonP *p) {
     else if (c >= 'a' && c <= 'f') digit = (uint32_t)(c - 'a' + 10);
     else if (c >= 'A' && c <= 'F') digit = (uint32_t)(c - 'A' + 10);
     else {
-      scr_json_throw_pos("Bad Unicode escape", p->pos + (size_t)i);
+      scr_json_throw_pos(p, "Bad Unicode escape", p->pos + (size_t)i);
       return -1;
     }
     v = v * 16 + digit;
@@ -6050,11 +6054,11 @@ static int scr_json_string_span(ScrJsonP *p, const char **span,
     }
     if (c == '\\') return 0;
     if (c < 0x20) {
-      scr_json_throw_pos("Bad control character in string literal", i);
+      scr_json_throw_pos(p, "Bad control character in string literal", i);
       return -1;
     }
   }
-  scr_json_throw_pos("Unterminated string", p->pos);
+  scr_json_throw_pos(p, "Unterminated string", p->pos);
   return -1;
 }
 
@@ -6070,7 +6074,7 @@ static ScrStr *scr_json_string_slow(ScrJsonP *p, size_t prefix) {
   for (;;) {
     if (p->pos >= p->len) {
       scr_jb_dispose(&b);
-      scr_json_throw_pos("Unterminated string", open);
+      scr_json_throw_pos(p, "Unterminated string", open);
       return NULL;
     }
     unsigned char c = (unsigned char)p->s[p->pos];
@@ -6080,7 +6084,7 @@ static ScrStr *scr_json_string_slow(ScrJsonP *p, size_t prefix) {
     }
     if (c < 0x20) {
       scr_jb_dispose(&b);
-      scr_json_throw_pos("Bad control character in string literal", p->pos);
+      scr_json_throw_pos(p, "Bad control character in string literal", p->pos);
       return NULL;
     }
     if (c != '\\') {
@@ -6092,7 +6096,7 @@ static ScrStr *scr_json_string_slow(ScrJsonP *p, size_t prefix) {
     p->pos++; /* backslash */
     if (p->pos >= p->len) {
       scr_jb_dispose(&b);
-      scr_json_throw("Unexpected end of JSON input");
+      scr_json_throw(p, "Unexpected end of JSON input");
       return NULL;
     }
     char e = p->s[p->pos];
@@ -6147,7 +6151,7 @@ static ScrStr *scr_json_string_slow(ScrJsonP *p, size_t prefix) {
     }
     default:
       scr_jb_dispose(&b);
-      scr_json_throw_pos("Bad escaped character", p->pos);
+      scr_json_throw_pos(p, "Bad escaped character", p->pos);
       return NULL;
     }
   }
@@ -6171,7 +6175,10 @@ static const double scr_json_pow10[23] = {
     1e0,  1e1,  1e2,  1e3,  1e4,  1e5,  1e6,  1e7,  1e8,  1e9,  1e10, 1e11,
     1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22};
 
-static ScrDyn *scr_json_number(ScrJsonP *p) {
+/* Scans the number token at p->pos into *out. false on a grammar error
+ * (thrown unless quiet). Shared by the dyn tree and the schema parser so
+ * both produce bit-identical values. */
+static bool scr_json_number_value(ScrJsonP *p, double *out) {
   size_t start = p->pos;
   /* Grammar validation and value accumulation in one pass. Clinger's fast
    * path: with at most 15 significant digits the mantissa is exact in a
@@ -6185,8 +6192,8 @@ static ScrDyn *scr_json_number(ScrJsonP *p) {
     neg = true;
     p->pos++;
     if (p->pos >= p->len || p->s[p->pos] < '0' || p->s[p->pos] > '9') {
-      scr_json_throw_pos("No number after minus sign", p->pos);
-      return NULL;
+      scr_json_throw_pos(p, "No number after minus sign", p->pos);
+      return false;
     }
   }
   if (p->s[p->pos] == '0') {
@@ -6205,8 +6212,8 @@ static ScrDyn *scr_json_number(ScrJsonP *p) {
   if (p->pos < p->len && p->s[p->pos] == '.') {
     p->pos++;
     if (p->pos >= p->len || p->s[p->pos] < '0' || p->s[p->pos] > '9') {
-      scr_json_throw_pos("Unterminated fractional number", p->pos);
-      return NULL;
+      scr_json_throw_pos(p, "Unterminated fractional number", p->pos);
+      return false;
     }
     while (p->pos < p->len && p->s[p->pos] >= '0' && p->s[p->pos] <= '9') {
       unsigned digit = (unsigned)(p->s[p->pos] - '0');
@@ -6230,8 +6237,8 @@ static ScrDyn *scr_json_number(ScrJsonP *p) {
       p->pos++;
     }
     if (p->pos >= p->len || p->s[p->pos] < '0' || p->s[p->pos] > '9') {
-      scr_json_throw_pos("Exponent part is missing a number", p->pos);
-      return NULL;
+      scr_json_throw_pos(p, "Exponent part is missing a number", p->pos);
+      return false;
     }
     int ev = 0;
     while (p->pos < p->len && p->s[p->pos] >= '0' && p->s[p->pos] <= '9') {
@@ -6244,13 +6251,21 @@ static ScrDyn *scr_json_number(ScrJsonP *p) {
     double v = (double)mant; /* exact: mant < 10^15 < 2^53 */
     if (exp10 > 0) v *= scr_json_pow10[exp10];
     else if (exp10 < 0) v /= scr_json_pow10[-exp10];
-    return scr_dyn_new_num(neg ? -v : v);
+    *out = neg ? -v : v;
+    return true;
   }
   /* The validated span re-parses with strtod (correctly rounded, and the
    * grammar above is a strict subset of what strtod accepts). The ScrStr
    * data is NUL-terminated, and strtod stops at the first non-number char,
    * so parsing from `start` reads exactly the validated token. */
-  return scr_dyn_new_num(strtod(p->s + start, NULL));
+  *out = strtod(p->s + start, NULL);
+  return true;
+}
+
+static ScrDyn *scr_json_number(ScrJsonP *p) {
+  double v;
+  if (!scr_json_number_value(p, &v)) return NULL;
+  return scr_dyn_new_num(v);
 }
 
 static bool scr_json_lit(ScrJsonP *p, const char *word, size_t n) {
@@ -6280,7 +6295,7 @@ static ScrDyn *scr_json_array(ScrJsonP *p) {
     scr_json_ws(p);
     if (p->pos >= p->len) {
       scr_dyn_release(arr);
-      scr_json_throw("Unexpected end of JSON input");
+      scr_json_throw(p, "Unexpected end of JSON input");
       return NULL;
     }
     if (p->s[p->pos] == ',') {
@@ -6292,7 +6307,7 @@ static ScrDyn *scr_json_array(ScrJsonP *p) {
       return arr;
     }
     scr_dyn_release(arr);
-    scr_json_throw_pos("Expected ',' or ']' after array element", p->pos);
+    scr_json_throw_pos(p, "Expected ',' or ']' after array element", p->pos);
     return NULL;
   }
 }
@@ -6309,12 +6324,12 @@ static ScrDyn *scr_json_object(ScrJsonP *p) {
     scr_json_ws(p);
     if (p->pos >= p->len) {
       scr_dyn_release(obj);
-      scr_json_throw("Unexpected end of JSON input");
+      scr_json_throw(p, "Unexpected end of JSON input");
       return NULL;
     }
     if (p->s[p->pos] != '"') {
       scr_dyn_release(obj);
-      scr_json_throw_pos("Expected property name or '}'", p->pos);
+      scr_json_throw_pos(p, "Expected property name or '}'", p->pos);
       return NULL;
     }
     /* Keep the key borrowed until insertion determines whether it already
@@ -6348,8 +6363,8 @@ static ScrDyn *scr_json_object(ScrJsonP *p) {
     if (p->pos >= p->len || p->s[p->pos] != ':') {
       scr_str_release(decoded_key);
       scr_dyn_release(obj);
-      if (p->pos >= p->len) scr_json_throw("Unexpected end of JSON input");
-      else scr_json_throw_pos("Expected ':' after property name", p->pos);
+      if (p->pos >= p->len) scr_json_throw(p, "Unexpected end of JSON input");
+      else scr_json_throw_pos(p, "Expected ':' after property name", p->pos);
       return NULL;
     }
     p->pos++; /* ':' */
@@ -6364,7 +6379,7 @@ static ScrDyn *scr_json_object(ScrJsonP *p) {
     scr_json_ws(p);
     if (p->pos >= p->len) {
       scr_dyn_release(obj);
-      scr_json_throw("Unexpected end of JSON input");
+      scr_json_throw(p, "Unexpected end of JSON input");
       return NULL;
     }
     if (p->s[p->pos] == ',') {
@@ -6376,7 +6391,7 @@ static ScrDyn *scr_json_object(ScrJsonP *p) {
       return obj;
     }
     scr_dyn_release(obj);
-    scr_json_throw_pos("Expected ',' or '}' after property value", p->pos);
+    scr_json_throw_pos(p, "Expected ',' or '}' after property value", p->pos);
     return NULL;
   }
 }
@@ -6384,7 +6399,7 @@ static ScrDyn *scr_json_object(ScrJsonP *p) {
 static ScrDyn *scr_json_value(ScrJsonP *p) {
   scr_json_ws(p);
   if (p->pos >= p->len) {
-    scr_json_throw("Unexpected end of JSON input");
+    scr_json_throw(p, "Unexpected end of JSON input");
     return NULL;
   }
   char c = p->s[p->pos];
@@ -6428,7 +6443,7 @@ ScrDyn *scr_json_parse(ScrStr *text) {
   ScrJsonP p = { text->data, text->len, 0, 0 };
   scr_json_ws(&p);
   if (p.pos >= p.len) {
-    scr_json_throw("Unexpected end of JSON input");
+    scr_json_throw(&p, "Unexpected end of JSON input");
     return NULL;
   }
   ScrDyn *d = scr_json_value(&p);
@@ -6443,6 +6458,252 @@ ScrDyn *scr_json_parse(ScrStr *text) {
     return NULL;
   }
   return d;
+}
+
+/* ── Schema-directed parse (JSON.parse(text) as T) ─────────────────────
+ * An optimistic one-pass parser that writes straight into the native
+ * layout the compiler describes in a ScrJsonSchema. It accepts only input
+ * for which the checked-dynamic route (scr_json_parse + the generated
+ * dynCheck builder) would succeed with the same value: every declared key
+ * present exactly once with a value of its declared kind, undeclared keys
+ * syntactically valid and ignored. Anything else — a syntax error, a kind
+ * mismatch, a missing or repeated declared key, excessive nesting —
+ * releases the partial value and returns NULL WITHOUT throwing; the
+ * compiler-emitted caller then reruns the checked-dynamic route, which
+ * produces the exact SyntaxError/TypeError/RangeError. JSON.parse without
+ * a reviver is pure, so the rerun is unobservable. The lexer helpers are
+ * the ones the dyn parser uses (quiet mode), so strings and numbers decode
+ * identically. */
+
+typedef union {
+  double f;
+  bool b;
+  void *ptr;
+} ScrJsonSlot;
+
+static bool scr_jschema_read(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot *out);
+
+static void scr_jschema_drop(const ScrJsonSchema *s, ScrJsonSlot *v) {
+  if (s->kind == SCR_JSCHEMA_STR) scr_str_release(v->ptr);
+  else if (s->kind == SCR_JSCHEMA_REC || s->kind == SCR_JSCHEMA_ARR) s->release(v->ptr);
+}
+
+static bool scr_jschema_string_skip(ScrJsonP *p) {
+  const char *span;
+  size_t span_len;
+  int r = scr_json_string_span(p, &span, &span_len);
+  if (r > 0) return true;
+  if (r < 0) return false;
+  ScrStr *decoded = scr_json_string_slow(p, span_len);
+  if (!decoded) return false;
+  scr_str_release(decoded);
+  return true;
+}
+
+/* Validates and skips one value (undeclared members). */
+static bool scr_jschema_skip(ScrJsonP *p) {
+  scr_json_ws(p);
+  if (p->pos >= p->len) return false;
+  char c = p->s[p->pos];
+  if (c == '"') return scr_jschema_string_skip(p);
+  if (c == '-' || (c >= '0' && c <= '9')) {
+    double ignored;
+    return scr_json_number_value(p, &ignored);
+  }
+  if (c == 't') return scr_json_lit(p, "true", 4);
+  if (c == 'f') return scr_json_lit(p, "false", 5);
+  if (c == 'n') return scr_json_lit(p, "null", 4);
+  if (c != '{' && c != '[') return false;
+  if (++p->depth > SCR_JSON_MAX_DEPTH) return false;
+  char close = c == '{' ? '}' : ']';
+  p->pos++;
+  scr_json_ws(p);
+  if (p->pos < p->len && p->s[p->pos] == close) {
+    p->pos++;
+    p->depth--;
+    return true;
+  }
+  for (;;) {
+    if (c == '{') {
+      scr_json_ws(p);
+      if (p->pos >= p->len || p->s[p->pos] != '"' || !scr_jschema_string_skip(p)) return false;
+      scr_json_ws(p);
+      if (p->pos >= p->len || p->s[p->pos] != ':') return false;
+      p->pos++;
+    }
+    if (!scr_jschema_skip(p)) return false;
+    scr_json_ws(p);
+    if (p->pos >= p->len) return false;
+    if (p->s[p->pos] == ',') {
+      p->pos++;
+      continue;
+    }
+    if (p->s[p->pos] != close) return false;
+    p->pos++;
+    p->depth--;
+    return true;
+  }
+}
+
+static bool scr_jschema_record(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot *out) {
+  p->pos++; /* '{' */
+  char *rec = s->rec_new();
+  const size_t n = s->nfields;
+  const uint64_t all = n == 64 ? ~(uint64_t)0 : (((uint64_t)1 << n) - 1);
+  uint64_t seen = 0;
+  size_t guess = 0;
+  scr_json_ws(p);
+  if (p->pos < p->len && p->s[p->pos] == '}') {
+    p->pos++;
+    goto close;
+  }
+  for (;;) {
+    scr_json_ws(p);
+    if (p->pos >= p->len || p->s[p->pos] != '"') goto fail;
+    const char *key;
+    size_t key_len;
+    ScrStr *decoded = NULL;
+    int r = scr_json_string_span(p, &key, &key_len);
+    if (r < 0) goto fail;
+    if (r == 0) {
+      decoded = scr_json_string_slow(p, key_len);
+      if (!decoded) goto fail;
+      key = decoded->data;
+      key_len = decoded->len;
+    }
+    /* Members usually arrive in declaration order: try the successor of
+     * the previous match before scanning. */
+    size_t idx = n;
+    if (guess < n && s->fields[guess].name_len == key_len &&
+        memcmp(s->fields[guess].name, key, key_len) == 0) {
+      idx = guess;
+    } else {
+      for (size_t i = 0; i < n; i++) {
+        if (s->fields[i].name_len == key_len && memcmp(s->fields[i].name, key, key_len) == 0) {
+          idx = i;
+          break;
+        }
+      }
+    }
+    scr_str_release(decoded);
+    scr_json_ws(p);
+    if (p->pos >= p->len || p->s[p->pos] != ':') goto fail;
+    p->pos++;
+    if (idx == n) {
+      if (!scr_jschema_skip(p)) goto fail;
+    } else {
+      const ScrJsonSchemaField *f = &s->fields[idx];
+      uint64_t bit = (uint64_t)1 << idx;
+      if (seen & bit) goto fail; /* duplicate: last-wins stays on the checked route */
+      seen |= bit;
+      guess = idx + 1;
+      ScrJsonSlot v;
+      if (!scr_jschema_read(p, f->type, &v)) goto fail;
+      char *slot = rec + f->offset;
+      switch (f->type->kind) {
+      case SCR_JSCHEMA_F64: memcpy(slot, &v.f, sizeof v.f); break;
+      case SCR_JSCHEMA_BOOL: *(uint8_t *)slot = v.b ? 1 : 0; break;
+      default: memcpy(slot, &v.ptr, sizeof v.ptr); break; /* zeroed slot; moves in */
+      }
+    }
+    scr_json_ws(p);
+    if (p->pos >= p->len) goto fail;
+    if (p->s[p->pos] == ',') {
+      p->pos++;
+      continue;
+    }
+    if (p->s[p->pos] != '}') goto fail;
+    p->pos++;
+    break;
+  }
+close:
+  if (seen != all) goto fail;
+  out->ptr = rec;
+  return true;
+fail:
+  s->release(rec);
+  return false;
+}
+
+static bool scr_jschema_array(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot *out) {
+  p->pos++; /* '[' */
+  ScrArr *arr = s->arr_new(0);
+  const ScrJsonSchema *elem = s->elem;
+  scr_json_ws(p);
+  if (p->pos < p->len && p->s[p->pos] == ']') {
+    p->pos++;
+    out->ptr = arr;
+    return true;
+  }
+  for (;;) {
+    ScrJsonSlot v;
+    if (!scr_jschema_read(p, elem, &v)) goto fail;
+    switch (elem->kind) {
+    case SCR_JSCHEMA_F64: scr_arr_push_f64(arr, v.f); break;
+    case SCR_JSCHEMA_BOOL: scr_arr_push_bool(arr, v.b); break;
+    default: scr_arr_push_ref(arr, v.ptr); break; /* moves in */
+    }
+    scr_json_ws(p);
+    if (p->pos >= p->len) goto fail;
+    if (p->s[p->pos] == ',') {
+      p->pos++;
+      continue;
+    }
+    if (p->s[p->pos] != ']') goto fail;
+    p->pos++;
+    out->ptr = arr;
+    return true;
+  }
+fail:
+  s->release(arr);
+  return false;
+}
+
+static bool scr_jschema_read(ScrJsonP *p, const ScrJsonSchema *s, ScrJsonSlot *out) {
+  scr_json_ws(p);
+  if (p->pos >= p->len) return false;
+  char c = p->s[p->pos];
+  switch (s->kind) {
+  case SCR_JSCHEMA_F64:
+    if (c != '-' && (c < '0' || c > '9')) return false;
+    return scr_json_number_value(p, &out->f);
+  case SCR_JSCHEMA_BOOL:
+    if (c == 't' && scr_json_lit(p, "true", 4)) {
+      out->b = true;
+      return true;
+    }
+    if (c == 'f' && scr_json_lit(p, "false", 5)) {
+      out->b = false;
+      return true;
+    }
+    return false;
+  case SCR_JSCHEMA_STR:
+    if (c != '"') return false;
+    out->ptr = scr_json_string_scr(p);
+    return out->ptr != NULL;
+  case SCR_JSCHEMA_REC:
+  case SCR_JSCHEMA_ARR: {
+    if (c != (s->kind == SCR_JSCHEMA_REC ? '{' : '[')) return false;
+    if (++p->depth > SCR_JSON_MAX_DEPTH) return false;
+    bool ok = s->kind == SCR_JSCHEMA_REC ? scr_jschema_record(p, s, out)
+                                         : scr_jschema_array(p, s, out);
+    p->depth--;
+    return ok;
+  }
+  }
+  return false;
+}
+
+void *scr_json_parse_schema(const ScrStr *text, const ScrJsonSchema *schema) {
+  ScrJsonP p = { text->data, text->len, 0, 0, true };
+  ScrJsonSlot v;
+  if (!scr_jschema_read(&p, schema, &v)) return NULL;
+  scr_json_ws(&p);
+  if (p.pos < p.len) {
+    scr_jschema_drop(schema, &v);
+    return NULL;
+  }
+  return v.ptr;
 }
 
 /* ── Native JSON callback walks ──────────────────────────────────────

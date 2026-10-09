@@ -53,7 +53,8 @@ static void test_large_set_materialization(void) {
   for (size_t i = 0; i < count; i++) scr_map_set_f64_f64(set, (double)i, 0);
   scr_map_delete_f64(set, 1);
   ScrArr *values = scr_set_to_arr_f64(set);
-  check(values->len == count - 1 && values->cap < values->len, "large Set uses sparse array tail");
+  check(values->len == count - 1 && values->cap >= values->len && values->sparse_len == 0,
+    "large Set materializes into dense storage past the 2^20 cutoff");
   check(scr_arr_get_f64(values, 0) == 0 && scr_arr_get_f64(values, 1) == 2,
     "large Set materialization skips tombstones in order");
   check(scr_arr_get_f64(values, (double)count - 2) == (double)count - 1,

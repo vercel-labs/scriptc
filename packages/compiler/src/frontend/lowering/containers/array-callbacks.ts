@@ -1,8 +1,10 @@
 import { boolLit, countedFor, numLit, varRef } from "../../../ir/build.js";
+import { transformStmtList } from "../../../ir/traverse.js";
+import type { ScrDiagnostic } from "../../../diagnostics/diagnostic.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { canAssertClassValue, checkedClassAssertion } from "../class-assertions.js";
 import * as ts from "../../ts7/adapter.js";
-import type { Lowerer } from "../lowerer.js";
+import { PoisonError, type Lowerer } from "../lowerer.js";
 import {
   BOOL,
   DYN,
@@ -19,6 +21,7 @@ import {
   VOID,
   arrayOf,
   funcOf,
+  isSortValuesElement,
   isUnitType,
   typeEquals,
 } from "../../../ir/ir.js";
@@ -118,9 +121,30 @@ export function lowerArrayHofCall(
     method === "filter"
       ? filterResultElem(lowerer, call, argNode, elem, valueT, booleanFilter)
       : callbackArrayElement(lowerer, call, fnRet);
-  const helper = arrayHofHelper(lowerer, method, elem, fnRet, arity, loc, outElem);
+  // A filter that re-tags its elements keeps the single union-typed visit.
+  const fast =
+    booleanFilter || (method === "filter" && !typeEquals(outElem, elem))
+      ? null
+      : lowerFastCallback(lowerer, argNode, [valueT], 0, elem, arrayOf(elem), callback);
+  const helper = arrayHofHelper(
+    lowerer,
+    method,
+    elem,
+    fnRet,
+    arity,
+    loc,
+    outElem,
+    callbackSite(fast ?? fnArg),
+    fast?.type ?? null,
+  );
   const resultType: IrType = method === "map" || method === "filter" ? arrayOf(outElem) : VOID;
-  return { kind: "call", callee: helper, args: [receiver, fnArg], type: resultType, loc };
+  return {
+    kind: "call",
+    callee: helper,
+    args: [receiver, fnArg, ...(fast ? [fast] : [])],
+    type: resultType,
+    loc,
+  };
 }
 
 /** The checker-selected element of a filter result, with the same trust
@@ -276,6 +300,188 @@ function filterCond(call: IrExpr, fnRet: IrType, loc: SrcLoc): IrExpr {
   return { kind: "toBool", operand: call, type: BOOL, loc };
 }
 
+type CallbackType = IrType & { kind: "func" };
+
+/** Nested HOFs inside a fast lowering keep their single union visit, so
+ * duplication stays linear in nesting depth. */
+let fastLoweringDepth = 0;
+
+/** Array reads widen elements with undefined so holes and present
+ * undefined stay observable, which makes every callback parameter a boxed
+ * `T | undefined`. For an inline arrow over a plain element type, lower the
+ * callback a second time with the element type itself. The helper then
+ * splits each visit on the element state: a present value calls this fast
+ * closure with the plain element (no union box, no per-use undefined
+ * test), and a hole or present undefined calls the original closure with
+ * the undefined arm. Both closures share the same capture boxes and body,
+ * so every observable effect is the same; arrows have no own `this`,
+ * `arguments` or self binding that could tell the two apart. Any refusal
+ * in the second lowering is discarded and keeps the single visit. */
+function lowerFastCallback(
+  lowerer: Lowerer,
+  argNode: ts.Expression,
+  lead: IrType[],
+  elemIndex: number,
+  elem: IrType,
+  arrT: IrType,
+  slow: { fnArg: IrExpr & { type: CallbackType }; arity: number },
+  bindUntyped = false,
+  expectedReturn?: IrType,
+): (IrExpr & { type: CallbackType }) | null {
+  const valueT = lead[elemIndex];
+  if (
+    fastLoweringDepth > 0 ||
+    slow.arity <= elemIndex ||
+    !ts.isArrowFunction(argNode) ||
+    isJsSourceFile(argNode.getSourceFile()) ||
+    valueT?.kind !== "union" ||
+    typeEquals(valueT, elem) ||
+    elem.kind === "union" ||
+    elem.kind === "dyn" ||
+    elem.kind === "jsval" ||
+    isUnitType(elem)
+  )
+    return null;
+  const fastLead = lead.slice();
+  fastLead[elemIndex] = elem;
+  // The optional-read prepass binds an unannotated element parameter to
+  // the array's runtime value type. Rebind it to the plain element for
+  // this lowering only.
+  const param = argNode.parameters[elemIndex];
+  if (!param || param.initializer || param.dotDotDotToken || !ts.isIdentifier(param.name))
+    return null;
+  const symbol = param.type ? undefined : lowerer.checker.getSymbolAtLocation(param.name);
+  const previousBinding = symbol ? lowerer.runtimeOptionalBindingTypes.get(symbol) : undefined;
+  if (symbol) lowerer.runtimeOptionalBindingTypes.set(symbol, elem);
+  const sink: ScrDiagnostic[] = [];
+  const previousSink = lowerer.diagSink;
+  lowerer.diagSink = sink;
+  fastLoweringDepth++;
+  let fast: { fnArg: IrExpr & { type: CallbackType }; arity: number };
+  try {
+    fast = lowerArrayCallback(lowerer, argNode, fastLead, arrT, bindUntyped, expectedReturn);
+  } catch (e) {
+    if (e instanceof PoisonError) return null;
+    throw e;
+  } finally {
+    fastLoweringDepth--;
+    lowerer.diagSink = previousSink;
+    if (symbol) {
+      if (previousBinding === undefined) lowerer.runtimeOptionalBindingTypes.delete(symbol);
+      else lowerer.runtimeOptionalBindingTypes.set(symbol, previousBinding);
+    }
+  }
+  const fastT = fast.fnArg.type;
+  const slowT = slow.fnArg.type;
+  if (
+    fast.fnArg.kind !== "closure" ||
+    fast.arity !== slow.arity ||
+    !typeEquals(fastT.ret, slowT.ret) ||
+    !fastT.params.every((param, i) => typeEquals(param, i === elemIndex ? elem : slowT.params[i]!))
+  )
+    return null;
+  return fast.fnArg;
+}
+
+/** `a[i]` holds a value (array state 1): neither a hole nor a present
+ * undefined. */
+function presentValue(arr: IrExpr, index: IrExpr, loc: SrcLoc): IrExpr {
+  return {
+    kind: "bin",
+    op: "===",
+    left: { kind: "arrayState", arr, index, type: F64, loc },
+    right: numLit(1, loc),
+    type: BOOL,
+    loc,
+  };
+}
+
+/** Route a helper's callback calls through the split visit: every
+ * `f(<arrayValueRead a[i]>, ...)` becomes
+ * `state(a, i) === 1 ? fast(a[i], ...) : f(undefined, ...)`. The read is
+ * the call's only effectful operand (the rest are the loop's index and
+ * array locals), so evaluation order is unchanged. The fast closure is an
+ * extra trailing parameter. */
+function withFastCallback(fn: IrFunction, fastT: CallbackType | null, elem: IrType): IrFunction {
+  if (!fastT) return fn;
+  const isValueRead = (e: IrExpr): e is IrExpr & { kind: "ternary" } =>
+    e.kind === "ternary" &&
+    e.cond.kind === "bin" &&
+    e.cond.op === "===" &&
+    e.cond.left.kind === "arrayState" &&
+    e.cond.right.kind === "numLit" &&
+    e.cond.right.value === 1;
+  const split = (e: IrExpr): { cond: IrExpr; fast: IrExpr; slow: IrExpr } | null => {
+    if (e.kind !== "callValue" || e.callee.kind !== "varRef" || e.callee.localId !== "f.0")
+      return null;
+    const at = e.args.findIndex(isValueRead);
+    if (at < 0) return null;
+    const read = e.args[at]!;
+    if (read.kind !== "ternary") return null;
+    const condition = read.cond;
+    if (condition.kind !== "bin") return null;
+    const state = condition.left;
+    if (state.kind !== "arrayState") return null;
+    const fastArgs = e.args.slice();
+    fastArgs[at] = {
+      kind: "arrayGet",
+      arr: state.arr,
+      index: state.index,
+      type: elem,
+      loc: read.loc,
+    };
+    const slowArgs = e.args.slice();
+    slowArgs[at] = read.else_;
+    return {
+      cond: read.cond,
+      fast: { ...e, callee: varRef("fast.0", fastT, e.callee.loc), args: fastArgs },
+      slow: { ...e, args: slowArgs },
+    };
+  };
+  const body = transformStmtList(fn.body, {
+    stmt: (stmt) => {
+      if (stmt.kind !== "exprStmt") return stmt;
+      const parts = split(stmt.expr);
+      if (!parts) return stmt;
+      return {
+        kind: "if",
+        cond: parts.cond,
+        then: [{ kind: "exprStmt", expr: parts.fast, loc: stmt.loc }],
+        else_: [{ kind: "exprStmt", expr: parts.slow, loc: stmt.loc }],
+        loc: stmt.loc,
+      };
+    },
+    expr: (expr) => {
+      const parts = split(expr);
+      if (!parts) return expr;
+      return {
+        kind: "ternary",
+        cond: parts.cond,
+        then: parts.fast,
+        else_: parts.slow,
+        type: expr.type,
+        loc: expr.loc,
+      };
+    },
+  });
+  return {
+    ...fn,
+    params: [...fn.params, { localId: "fast.0", name: "fast", type: fastT }],
+    locals: [...fn.locals, { id: "fast.0", name: "fast", type: fastT, mutable: true }],
+    body,
+  };
+}
+
+/** The interning suffix for a callback argument. A literal closure (an
+ * inline arrow or function expression) gets a helper of its own, so the
+ * helper's only incoming callback is one known function: the backend's
+ * constant-callback census then calls it directly and LLVM can inline the
+ * callback into the loop (TurboFan's builtin+callback inlining). Callback
+ * values keep the shared, type-interned helper. */
+function callbackSite(fnArg: IrExpr): string {
+  return fnArg.kind === "closure" ? `@${fnArg.fnName}` : "";
+}
+
 /** Interned synthetic loop function for one (method, elem, fnRet, arity)
  * combo. Named `%arr.<method>.<n>` ('%' keeps it out of the user
  * namespace); rides `liftedFns` into the module like a lifted lambda (it
@@ -288,13 +494,16 @@ function arrayHofHelper(
   arity: number,
   loc: SrcLoc,
   outElem: IrType = fnRet,
+  site = "",
+  fastT: CallbackType | null = null,
 ): string {
-  const key = `${method}:${typeKey(elem)}:${typeKey(fnRet)}:${arity}:${typeKey(outElem)}`;
+  const key = `${method}:${typeKey(elem)}:${typeKey(fnRet)}:${arity}:${typeKey(outElem)}${site}${fastT ? ":split" : ""}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
   const name = `%arr.${method}.${lowerer.arrHofHelpers.size}`;
   lowerer.arrHofHelpers.set(key, name);
-  lowerer.liftedFns.push(buildArrayHofFn(lowerer, name, method, elem, fnRet, arity, loc, outElem));
+  const fn = buildArrayHofFn(lowerer, name, method, elem, fnRet, arity, loc, outElem, fastT);
+  lowerer.liftedFns.push(fastT ? withFastCallback(fn, fastT, elem) : fn);
   return name;
 }
 
@@ -487,6 +696,7 @@ function buildArrayHofFn(
   arity: number,
   loc: SrcLoc,
   outElem: IrType,
+  fastT: CallbackType | null = null,
 ): IrFunction {
   const arrT = arrayOf(elem);
   const valueT = arrayValueType(lowerer, elem);
@@ -562,6 +772,99 @@ function buildArrayHofFn(
               outElem,
               loc,
             ),
+          ],
+          else_: null,
+          loc,
+        },
+      ]),
+      { kind: "return", value: varRef("out.0", outT, loc), loc },
+    ];
+  } else if (method === "filter" && fastT) {
+    // Split visit (outElem === elem): a present value goes to the fast
+    // callback as a plain element and is kept as-is; a present undefined
+    // goes to the original callback and is kept as undefined.
+    const outT = arrayOf(outElem);
+    locals.push(
+      { id: "out.0", name: "out", type: outT, mutable: false },
+      { id: "e.0", name: "e", type: elem, mutable: false },
+    );
+    returnType = outT;
+    const a = varRef("a.0", arrT, loc);
+    const i = varRef("i.0", F64, loc);
+    const outLength: IrExpr = {
+      kind: "arrIntrinsic",
+      method: "length",
+      receiver: varRef("out.0", outT, loc),
+      args: [],
+      type: F64,
+      loc,
+    };
+    const missing = (getElem as IrExpr & { kind: "ternary" }).else_;
+    const callFast = (arg: IrExpr): IrExpr => ({
+      kind: "callValue",
+      callee: varRef("fast.0", fastT, loc),
+      args: [arg, i, a].slice(0, arity),
+      type: fnRet,
+      loc,
+    });
+    body = [
+      {
+        kind: "varDecl",
+        localId: "out.0",
+        init: { kind: "arrayLit", elems: [], type: outT, loc },
+        loc,
+      },
+      readLen,
+      forLoop([
+        {
+          kind: "if",
+          cond: hasElem,
+          then: [
+            {
+              kind: "if",
+              cond: presentValue(a, i, loc),
+              then: [
+                {
+                  kind: "varDecl",
+                  localId: "e.0",
+                  init: { kind: "arrayGet", arr: a, index: i, type: elem, loc },
+                  loc,
+                },
+                {
+                  kind: "if",
+                  cond: filterCond(callFast(varRef("e.0", elem, loc)), fnRet, loc),
+                  then: [
+                    arrayValueStore(
+                      lowerer,
+                      varRef("out.0", outT, loc),
+                      outLength,
+                      varRef("e.0", elem, loc),
+                      outElem,
+                      loc,
+                    ),
+                  ],
+                  else_: null,
+                  loc,
+                },
+              ],
+              else_: [
+                {
+                  kind: "if",
+                  cond: filterCond(callF(missing), fnRet, loc),
+                  then: [
+                    {
+                      kind: "arraySetUndefined",
+                      arr: varRef("out.0", outT, loc),
+                      index: outLength,
+                      loc,
+                    },
+                  ],
+                  else_: null,
+                  loc,
+                },
+              ],
+              loc,
+            },
           ],
           else_: null,
           loc,
@@ -712,14 +1015,43 @@ export function lowerArrayFindLikeCall(
     method === "findIndex" ||
     method === "findLastIndex"
   ) {
+    const fast = lowerFastCallback(
+      lowerer,
+      argNode,
+      [arrayValueType(lowerer, elem)],
+      0,
+      elem,
+      arrT,
+      { fnArg, arity },
+      bindUntyped,
+    );
+    const fastT = fast?.type ?? null;
     const helper =
       method === "findIndex" || method === "findLastIndex"
-        ? findIndexHelper(lowerer, elem, fnRet, arity, last, loc)
-        : someEveryHelper(lowerer, method, elem, fnRet, arity, loc);
+        ? findIndexHelper(
+            lowerer,
+            elem,
+            fnRet,
+            arity,
+            last,
+            loc,
+            callbackSite(fast ?? fnArg),
+            fastT,
+          )
+        : someEveryHelper(
+            lowerer,
+            method,
+            elem,
+            fnRet,
+            arity,
+            loc,
+            callbackSite(fast ?? fnArg),
+            fastT,
+          );
     return {
       kind: "call",
       callee: helper,
-      args: [receiver, fnArg],
+      args: [receiver, fnArg, ...(fast ? [fast] : [])],
       type: method === "findIndex" || method === "findLastIndex" ? F64 : BOOL,
       loc,
     };
@@ -775,7 +1107,18 @@ export function lowerArrayFindLikeCall(
         `'.${method}' narrowing to an incompatible result layout`,
       );
   }
-  const helper = findHelper(lowerer, elem, resultT, undefTag, fnRet, arity, last, loc, retag);
+  const helper = findHelper(
+    lowerer,
+    elem,
+    resultT,
+    undefTag,
+    fnRet,
+    arity,
+    last,
+    loc,
+    retag,
+    callbackSite(fnArg),
+  );
   return { kind: "call", callee: helper, args: [receiver, fnArg], type: resultT, loc };
 }
 
@@ -805,9 +1148,10 @@ function findHelper(
   last: boolean,
   loc: SrcLoc,
   retag: string | null,
+  site = "",
 ): string {
   const method = last ? "findLast" : "find";
-  const key = `${method}:${typeKey(elem)}:${typeKey(resultT)}:${typeKey(fnRet)}:${arity}`;
+  const key = `${method}:${typeKey(elem)}:${typeKey(resultT)}:${typeKey(fnRet)}:${arity}${site}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
   const name = `%arr.${method}.${lowerer.arrHofHelpers.size}`;
@@ -886,9 +1230,11 @@ function findIndexHelper(
   arity: number,
   last: boolean,
   loc: SrcLoc,
+  site = "",
+  fastT: CallbackType | null = null,
 ): string {
   const method = last ? "findLastIndex" : "findIndex";
-  const key = `${method}:${typeKey(elem)}:${typeKey(fnRet)}:${arity}`;
+  const key = `${method}:${typeKey(elem)}:${typeKey(fnRet)}:${arity}${site}${fastT ? ":split" : ""}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
   const name = `%arr.${method}.${lowerer.arrHofHelpers.size}`;
@@ -922,14 +1268,20 @@ function findIndexHelper(
     loop,
     { kind: "return", value: { kind: "numLit", value: -1, type: F64, loc }, loc },
   ];
-  lowerer.liftedFns.push({
-    name,
-    params: arrayCallbackParams(arrT, fnT),
-    returnType: F64,
-    locals: [...arrayCallbackLocals(arrT, fnT)],
-    body,
-    loc,
-  });
+  lowerer.liftedFns.push(
+    withFastCallback(
+      {
+        name,
+        params: arrayCallbackParams(arrT, fnT),
+        returnType: F64,
+        locals: [...arrayCallbackLocals(arrT, fnT)],
+        body,
+        loc,
+      },
+      fastT,
+      elem,
+    ),
+  );
   return name;
 }
 
@@ -945,8 +1297,10 @@ function someEveryHelper(
   fnRet: IrType,
   arity: number,
   loc: SrcLoc,
+  site = "",
+  fastT: CallbackType | null = null,
 ): string {
-  const key = `${method}:${typeKey(elem)}:${typeKey(fnRet)}:${arity}`;
+  const key = `${method}:${typeKey(elem)}:${typeKey(fnRet)}:${arity}${site}${fastT ? ":split" : ""}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
   const name = `%arr.${method}.${lowerer.arrHofHelpers.size}`;
@@ -987,14 +1341,20 @@ function someEveryHelper(
     ]),
     { kind: "return", value: boolLit(method !== "some", loc), loc },
   ];
-  lowerer.liftedFns.push({
-    name,
-    params: arrayCallbackParams(arrT, fnT),
-    returnType: BOOL,
-    locals: [...arrayCallbackLocals(arrT, fnT)],
-    body,
-    loc,
-  });
+  lowerer.liftedFns.push(
+    withFastCallback(
+      {
+        name,
+        params: arrayCallbackParams(arrT, fnT),
+        returnType: BOOL,
+        locals: [...arrayCallbackLocals(arrT, fnT)],
+        body,
+        loc,
+      },
+      fastT,
+      elem,
+    ),
+  );
   return name;
 }
 
@@ -1053,11 +1413,54 @@ export function lowerArrayFlatMapCall(
     if (fnRet.kind === "void" || fnRet.kind === "func") lowerer.badType(call, lowerer.typeOf(call));
     requireProducedArrayElement(lowerer, call, "'.flatMap()'", fnRet);
     const outElem = callbackArrayElement(lowerer, call, fnRet);
-    const helper = arrayHofHelper(lowerer, "flatMap", elem, fnRet, arity, loc, outElem);
-    return { kind: "call", callee: helper, args: [receiver, fnArg], type: arrayOf(outElem), loc };
+    const fast = lowerFastCallback(
+      lowerer,
+      argNode,
+      [arrayValueType(lowerer, elem)],
+      0,
+      elem,
+      arrT,
+      { fnArg, arity },
+    );
+    const helper = arrayHofHelper(
+      lowerer,
+      "flatMap",
+      elem,
+      fnRet,
+      arity,
+      loc,
+      outElem,
+      callbackSite(fast ?? fnArg),
+      fast?.type ?? null,
+    );
+    return {
+      kind: "call",
+      callee: helper,
+      args: [receiver, fnArg, ...(fast ? [fast] : [])],
+      type: arrayOf(outElem),
+      loc,
+    };
   }
-  const helper = flatMapHelper(lowerer, elem, fnRet, arity, loc);
-  return { kind: "call", callee: helper, args: [receiver, fnArg], type: fnRet, loc };
+  const fast = lowerFastCallback(lowerer, argNode, [arrayValueType(lowerer, elem)], 0, elem, arrT, {
+    fnArg,
+    arity,
+  });
+  const helper = flatMapHelper(
+    lowerer,
+    elem,
+    fnRet,
+    arity,
+    loc,
+    callbackSite(fast ?? fnArg),
+    fast?.type ?? null,
+  );
+  return {
+    kind: "call",
+    callee: helper,
+    args: [receiver, fnArg, ...(fast ? [fast] : [])],
+    type: fnRet,
+    loc,
+  };
 }
 
 /** The flatMap loop (array-returning callback), from existing IR nodes:
@@ -1075,8 +1478,10 @@ function flatMapHelper(
   fnRet: IrType & { kind: "array" },
   arity: number,
   loc: SrcLoc,
+  site = "",
+  fastT: CallbackType | null = null,
 ): string {
-  const key = `flatMap:${typeKey(elem)}:${typeKey(fnRet)}:${arity}`;
+  const key = `flatMap:${typeKey(elem)}:${typeKey(fnRet)}:${arity}${site}${fastT ? ":split" : ""}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
   const name = `%arr.flatMap.${lowerer.arrHofHelpers.size}`;
@@ -1195,21 +1600,27 @@ function flatMapHelper(
     ]),
     { kind: "return", value: varRef("out.0", fnRet, loc), loc },
   ];
-  lowerer.liftedFns.push({
-    name,
-    params: arrayCallbackParams(arrT, fnT),
-    returnType: fnRet,
-    locals: [
-      ...arrayCallbackLocals(arrT, fnT),
-      { id: "out.0", name: "out", type: fnRet, mutable: false },
-      { id: "r.0", name: "r", type: fnRet, mutable: false },
-      { id: "m.0", name: "m", type: F64, mutable: false },
-      { id: "j.0", name: "j", type: F64, mutable: true },
-      { id: "inner.0", name: "inner", type: arrayValueType(lowerer, inner), mutable: false },
-    ],
-    body,
-    loc,
-  });
+  lowerer.liftedFns.push(
+    withFastCallback(
+      {
+        name,
+        params: arrayCallbackParams(arrT, fnT),
+        returnType: fnRet,
+        locals: [
+          ...arrayCallbackLocals(arrT, fnT),
+          { id: "out.0", name: "out", type: fnRet, mutable: false },
+          { id: "r.0", name: "r", type: fnRet, mutable: false },
+          { id: "m.0", name: "m", type: F64, mutable: false },
+          { id: "j.0", name: "j", type: F64, mutable: true },
+          { id: "inner.0", name: "inner", type: arrayValueType(lowerer, inner), mutable: false },
+        ],
+        body,
+        loc,
+      },
+      fastT,
+      elem,
+    ),
+  );
   return name;
 }
 
@@ -1243,9 +1654,34 @@ export function lowerArrayReduceCall(
     false,
     accT,
   );
-  const helper = reduceHelper(lowerer, method, elem, accT, fnArg.type.ret, arity, hasInit, loc);
+  const fast = lowerFastCallback(
+    lowerer,
+    argNode,
+    [accT, arrayValueType(lowerer, elem)],
+    1,
+    elem,
+    arrT,
+    { fnArg, arity },
+    false,
+    accT,
+  );
+  const helper = reduceHelper(
+    lowerer,
+    method,
+    elem,
+    accT,
+    fnArg.type.ret,
+    arity,
+    hasInit,
+    loc,
+    callbackSite(fast ?? fnArg),
+    fast?.type ?? null,
+  );
   const args: IrExpr[] = [receiver, fnArg];
   if (hasInit) args.push(lowerer.lowerExprExpecting(call.arguments[1]!, accT));
+  // The fast closure is created last; making a closure has no observable
+  // effect, so the initial value still evaluates right after the callback.
+  if (fast) args.push(fast);
   return { kind: "call", callee: helper, args, type: accT, loc };
 }
 
@@ -1268,8 +1704,10 @@ function reduceHelper(
   arity: number,
   hasInit: boolean,
   loc: SrcLoc,
+  site = "",
+  fastT: CallbackType | null = null,
 ): string {
-  const key = `${method}:${typeKey(elem)}:${typeKey(accT)}:${typeKey(fnRet)}:${arity}:${hasInit ? "init" : "seed"}`;
+  const key = `${method}:${typeKey(elem)}:${typeKey(accT)}:${typeKey(fnRet)}:${arity}:${hasInit ? "init" : "seed"}${site}${fastT ? ":split" : ""}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
   const name = `%arr.${method}.${lowerer.arrHofHelpers.size}`;
@@ -1416,7 +1854,9 @@ function reduceHelper(
     loop,
     { kind: "return", value: varRef("acc.0", accT, loc), loc },
   ];
-  lowerer.liftedFns.push({ name, params, returnType: accT, locals, body, loc });
+  lowerer.liftedFns.push(
+    withFastCallback({ name, params, returnType: accT, locals, body, loc }, fastT, elem),
+  );
   return name;
 }
 
@@ -1539,7 +1979,13 @@ export function lowerArraySortCall(
     lowerer.badType(argNode, lowerer.typeOf(argNode));
   }
   const arity = fnArg.type.params.length;
-  const key = `${method}:${typeKey(elem)}:${arity}`;
+  // The runtime sorts raw slots without per-move reference counting; this
+  // beats the IR merge sort even when its comparator call becomes direct.
+  const native = isSortValuesElement(
+    elem,
+    elem.kind === "union" ? lowerer.unions.get(elem.unionId)?.arms : undefined,
+  );
+  const key = `${method}:${typeKey(elem)}:${arity}${native ? ":native" : ""}`;
   let helper = lowerer.arrHofHelpers.get(key);
   if (!helper) {
     helper = `%arr.${method}.${lowerer.arrHofHelpers.size}`;
@@ -1553,6 +1999,7 @@ export function lowerArraySortCall(
         copyFirst,
         undefinedTag >= 0 ? undefinedTag : null,
         loc,
+        native,
       ),
     );
   }

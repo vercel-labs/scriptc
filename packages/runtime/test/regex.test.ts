@@ -46,6 +46,7 @@ beforeAll(async () => {
     join(testDir, "../src/scr_object.c"),
     join(testDir, "../src/scr_union.c"),
     join(testDir, "../src/scr_cycle.c"),
+    join(testDir, "../src/scr_alloc.c"),
     join(testDir, "../src/scr_lib.c"),
     join(testDir, "../src/scr_url.c"),
     join(testDir, "../src/scr_url_params.c"),
@@ -60,3 +61,29 @@ test("regex runtime: matching, substitutions, split, throws, RC accounting", asy
   const { stderr } = await execFileAsync(bin, []);
   expect(stderr.trim()).toMatch(/^(\d+)\/\1 cases passed$/);
 });
+
+// The native one-byte matcher (scr_regex_native.h) against lre_exec itself:
+// random patterns over the translated subset and its bail-outs, random ASCII
+// subjects, every start index; results and all capture slots must agree.
+const fuzzBin = join(testDir, "build", "test_regex_native");
+
+test("regex native matcher: differential fuzz against libregexp", async () => {
+  await execFileAsync("clang", [
+    "-std=c11",
+    "-O1",
+    "-fsanitize=address,undefined",
+    "-fno-sanitize-recover=undefined",
+    "-I",
+    vendorDir,
+    "-o",
+    fuzzBin,
+    join(testDir, "test_regex_native.c"),
+    join(vendorDir, "libregexp.c"),
+    join(vendorDir, "libunicode.c"),
+    ...(process.platform === "linux" ? ["-D_GNU_SOURCE", "-lm"] : []),
+  ]);
+  for (const seed of ["1", "2", "3"]) {
+    const { stderr } = await execFileAsync(fuzzBin, ["4000", seed]);
+    expect(stderr.trim()).toMatch(/^\d+\/\d+ translated, \d+ checks$/);
+  }
+}, 120_000);

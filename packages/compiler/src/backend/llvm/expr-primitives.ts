@@ -14,7 +14,8 @@ import { emitBorrowedInput } from "./borrowed-inputs.js";
 import { exactInteger, widenInteger, integerNumber } from "./integer-values.js";
 import { integerArithmeticRange } from "../../ir/integer-ranges.js";
 import { emitArrayValues } from "./expr-containers.js";
-import { emitSignedIntegerRemainder } from "./integer-remainder.js";
+import { emitCheckedRemainder, emitSignedIntegerRemainder } from "./integer-remainder.js";
+import { emitDenseArrayGet, emitDenseArrayState } from "./dense-array-access.js";
 
 export function emitLiteralExpr(
   host: LlvmEmitterContext,
@@ -245,6 +246,10 @@ export function emitOperatorExpr(
             return { name: t, type: e.type };
           }
         }
+        if (e.op === "%") {
+          const checked = emitCheckedRemainder(host, l, r, li, ri);
+          if (checked) return checked;
+        }
         if (arith[e.op] !== undefined) B.line(`${t} = ${arith[e.op]} double ${l.name}, ${r.name}`);
         else B.line(`${t} = fcmp ${cmp[e.op]} double ${l.name}, ${r.name}`);
       } else if (bit[e.op] !== undefined) {
@@ -419,7 +424,7 @@ export function emitStringExpr(
       const [l, r] = emitStringInputs(host, [e.left, e.right]);
       host.declare(`declare zeroext i1 @scr_str_eq(ptr, ptr)`);
       const eq = B.tmp();
-      B.line(`${eq} = call zeroext i1 @scr_str_eq(ptr ${l!.name}, ptr ${r!.name})`);
+      B.line(`${eq} = call zeroext i1 @sc_str_eq(ptr ${l!.name}, ptr ${r!.name})`);
       if (!e.negated) return { name: eq, type: e.type };
       const t = B.tmp();
       B.line(`${t} = xor i1 ${eq}, true`);
@@ -432,7 +437,8 @@ export function emitStringExpr(
       const c = B.tmp();
       const t = B.tmp();
       const pred = { "<": "slt", "<=": "sle", ">": "sgt", ">=": "sge" }[e.op];
-      B.line(`${c} = call i32 @${fn}(ptr ${l!.name}, ptr ${r!.name})`);
+      // Identity short-circuits through the inlined sc_ wrapper (helperDefs).
+      B.line(`${c} = call i32 @${fn.replace(/^scr_/, "sc_")}(ptr ${l!.name}, ptr ${r!.name})`);
       B.line(`${t} = icmp ${pred} i32 ${c}, 0`);
       return { name: t, type: e.type };
     }
@@ -466,21 +472,17 @@ export function emitStringExpr(
               B.line(`store ptr ${host.retainValue(host.unionPeek(v.name), e.type)}, ptr ${slot}`);
               break;
             case "f64": {
-              const x = B.tmp();
+              const x = host.unionGetF64(v.name);
               const r = B.tmp();
-              host.declare(`declare double @scr_union_get_f64(ptr)`);
               host.declare(`declare ptr @scr_f64_to_scrstr(double)`);
-              B.line(`${x} = call double @scr_union_get_f64(ptr ${v.name})`);
               B.line(`${r} = call ptr @scr_f64_to_scrstr(double ${x})`);
               B.line(`store ptr ${r}, ptr ${slot}`);
               break;
             }
             case "bool": {
-              const x = B.tmp();
+              const x = host.unionGetBool(v.name);
               const r = B.tmp();
-              host.declare(`declare zeroext i1 @scr_union_get_bool(ptr)`);
               host.declare(`declare ptr @scr_bool_to_scrstr(i1 zeroext)`);
-              B.line(`${x} = call zeroext i1 @scr_union_get_bool(ptr ${v.name})`);
               B.line(`${r} = call ptr @scr_bool_to_scrstr(i1 zeroext ${x})`);
               B.line(`store ptr ${r}, ptr ${slot}`);
               break;
@@ -683,15 +685,20 @@ export function emitContainerExpr(
       const idx = host.emitExpr(e.index);
       if (e.arr.type.kind !== "array")
         throw new InternalCompilerError("llvm emitter bug: arrayGet on non-array");
-      // Ref-element reads return +1 (the runtime retains); own registers
-      // the owned temp in the frame like any other.
-      const acc = elemAccess(e.arr.type.elem);
-      const accTy = acc === "f64" ? "double" : acc === "bool" ? "i1" : "ptr";
-      host.declare(
-        `declare ${acc === "bool" ? "zeroext i1" : accTy} @scr_arr_get_${acc}(ptr, double)`,
+      // Ref-element reads return +1 (the inline dense path retains like
+      // the runtime getter); own registers the owned temp in the frame.
+      const elem = e.arr.type.elem;
+      const acc = elemAccess(elem);
+      const t = emitDenseArrayGet(
+        host,
+        arr.name,
+        idx,
+        e.index,
+        acc,
+        elem,
+        `scr_arr_get_${acc}`,
+        true,
       );
-      const t = B.tmp();
-      B.line(`${t} = call ${accTy} @scr_arr_get_${acc}(ptr ${arr.name}, double ${idx.name})`);
       return host.own({ name: t, type: e.type });
     }
     case "arrayHas": {
@@ -699,9 +706,7 @@ export function emitContainerExpr(
       const idx = host.emitExpr(e.index);
       if (e.arr.type.kind !== "array")
         throw new InternalCompilerError("llvm emitter bug: arrayHas on non-array");
-      host.declare(`declare zeroext i1 @scr_arr_has(ptr, double)`);
-      const t = B.tmp();
-      B.line(`${t} = call zeroext i1 @scr_arr_has(ptr ${arr.name}, double ${idx.name})`);
+      const t = emitDenseArrayState(host, arr.name, idx, e.index, "has");
       return { name: t, type: e.type };
     }
     case "arrayState": {
@@ -709,9 +714,7 @@ export function emitContainerExpr(
       const idx = host.emitExpr(e.index);
       if (e.arr.type.kind !== "array")
         throw new InternalCompilerError("llvm emitter bug: arrayState on non-array");
-      host.declare(`declare double @scr_arr_state(ptr, double)`);
-      const t = B.tmp();
-      B.line(`${t} = call double @scr_arr_state(ptr ${arr.name}, double ${idx.name})`);
+      const t = emitDenseArrayState(host, arr.name, idx, e.index, "state");
       return { name: t, type: e.type };
     }
     case "arrIntrinsic":
@@ -798,6 +801,12 @@ export function emitRecordExpr(
     case "fieldGet": {
       const obj = host.emitReadReceiver(e.obj);
       const { ptr, type } = host.classFieldPtr(obj.name, e.className, e.field);
+      const nullable = host.nullableFieldGet(e);
+      if (nullable) {
+        const p = B.tmp();
+        B.line(`${p} = load ptr, ptr ${ptr}${host.fieldAliasAttachment(ptr)}`);
+        return host.own({ name: host.nullableToOwnedUnion(p, nullable), type: e.type });
+      }
       const v = host.loadField(ptr, type);
       if (isRefCounted(e.type))
         return host.own({ name: host.retainValue(v, e.type), type: e.type });

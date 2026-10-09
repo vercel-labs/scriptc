@@ -9,6 +9,7 @@
     "build:fresh": "rm -rf packages/compiler/dist packages/cli/dist node_modules/.cache/scriptc-tsc && pnpm build",
     "build:native-compiler": "node --max-old-space-size=8192 --import tsx scripts/build-native-cli.mts",
     "bench:builds": "node scripts/bench-builds.mjs",
+    "bench:runtime": "node scripts/bench-runtime.mjs",
     "bench:ast-access": "node scripts/bench-ast-access.mjs",
     "bench:backend-analysis": "node scripts/bench-backend-analysis.mjs",
     "test": "vitest run",

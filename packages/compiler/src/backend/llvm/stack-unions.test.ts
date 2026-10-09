@@ -434,3 +434,46 @@ test("a borrowed call returns a new owner before releasing argument snapshots", 
   expect(unionReleaseAt).toBeLessThan(payloadReleaseAt);
   expect(main.match(/call void @sc_rrelease_/g)).toHaveLength(1);
 });
+
+test.each(["nullish", "equality"])(
+  "projection-only parameters consumed by %s borrow a caller's stack box",
+  (consumer) => {
+    const mod = fixture(F64);
+    const reader = mod.functions[1]!;
+    reader.body = [
+      ret(
+        consumer === "nullish"
+          ? { kind: "nullish", left: ref("value"), right: num(-1), type: F64, loc }
+          : {
+              kind: "ternary",
+              cond: {
+                kind: "unionEq",
+                unionId: "optional",
+                negated: false,
+                sameValue: false,
+                left: ref("value"),
+                right: wrap(num(3)),
+                type: BOOL,
+                loc,
+              },
+              then: num(1),
+              else_: num(0),
+              type: F64,
+              loc,
+            },
+      ),
+    ];
+    mod.functions[0]!.body.push(effect(call("read", [wrap(num(3))])));
+    for (const width of [32, 64] as const) {
+      const ir = emit(mod, width);
+      const main = body(ir, "sc_f_main");
+      expect(main).toContain("alloca %ScrUnion");
+      expect(main).not.toContain("@scr_union_new");
+      // The callee may receive that stack box: it must never reach RC.
+      const callee = body(ir, "sc_bf_read");
+      expect(callee).not.toContain("@scr_union_retain");
+      expect(callee).not.toContain("@scr_union_release");
+      expect(callee).not.toContain("@scr_union_new");
+    }
+  },
+);

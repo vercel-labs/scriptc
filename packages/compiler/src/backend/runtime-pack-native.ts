@@ -1,6 +1,7 @@
 /** Synchronous runtime-pack host for the statically compiled driver. Each
  * selected artifact is hashed and copied from the same read into private
  * storage. This host has no persistent cache or mutable installed link inputs. */
+import type { NativeOptimization } from "./optimization.js";
 import { createHash } from "node:crypto";
 import {
   closeSync,
@@ -37,7 +38,7 @@ export interface NativeRuntimeSelection {
   packageText: string;
   manifestText: string;
   selected: RuntimePackArtifacts;
-  flavor: "release" | "dev";
+  flavor: NativeOptimization;
 }
 
 export function selectNativeRuntimePack(
@@ -45,7 +46,7 @@ export function selectNativeRuntimePack(
   target: NativeTargetSpec,
   compilerVersion: string,
   features: NativeLinkFeatures,
-  flavor: "release" | "dev",
+  flavor: NativeOptimization,
   mode: RuntimePackMode = "executable",
 ): NativeRuntimeSelection {
   if (!existsSync(join(root, "package.json"))) {
@@ -109,7 +110,7 @@ export function stageNativeRuntimePack(
   target: NativeTargetSpec,
   compilerVersion: string,
   features: NativeLinkFeatures,
-  flavor: "release" | "dev",
+  flavor: NativeOptimization,
   mode: RuntimePackMode = "executable",
 ): NativeRuntimePack {
   return stageNativeRuntimeSelection(

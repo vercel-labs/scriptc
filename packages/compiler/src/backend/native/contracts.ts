@@ -1,3 +1,4 @@
+import type { NativeOptimization } from "../optimization.js";
 import { type WindowsSubsystem } from "../targets.js";
 
 export interface CcOptions {
@@ -17,7 +18,7 @@ export interface CcOptions {
   /** Native optimization posture. Release preserves the historical -O2
    * executable lane; dev selects -O0 and may compile a caller-provided LLVM
    * shard set into independently cached objects before the final link. */
-  optimization?: "release" | "dev";
+  optimization?: NativeOptimization;
   /** Remove symbol/debug payload from the linked executable. */
   strip?: boolean;
   /** PE executable subsystem; omitted and console use the driver default. */
@@ -253,7 +254,7 @@ export interface LibArchiveOptions {
   cacheIdentity?: string;
   sanitize?: boolean;
   /** Native optimization posture: release = -O2, dev = -O0. */
-  optimization?: "release" | "dev";
+  optimization?: NativeOptimization;
   /** Multi-instance library mode (the profile's abi.localize_runtime): the
    * external symbols to KEEP global — every other scriptc external
    * definition in the archive (the runtime's internals, the program TU's

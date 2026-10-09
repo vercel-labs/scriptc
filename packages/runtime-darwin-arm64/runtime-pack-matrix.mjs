@@ -39,6 +39,7 @@ const BASE_RUNTIME_SOURCES = [
   "scr_crypto_async.c",
   "scr_child.c",
   "scr_cycle.c",
+  "scr_alloc.c",
 ];
 
 // ld64 dead-strips Mach-O symbol subsections without an ELF-style compile

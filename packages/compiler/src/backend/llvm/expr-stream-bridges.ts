@@ -19,6 +19,42 @@ import { classFieldIndex, classStructSym } from "./classes.js";
 import { emitFieldAbsentTest, llvmCommentText } from "./common.js";
 import { FN_ATTRS, llFieldType, releaseSym, traceArg, vAdapters } from "./shapes.js";
 import type { LlvmEmitterContext, LlStreamTypedRefAdapter } from "./expr-context.js";
+import type { NullableRefField } from "./nullable-fields.js";
+
+/** An owned (+1) union value for a nullable-pointer class field slot `p`
+ * (the unit arm's immortal instance, or a fresh box around a retained
+ * instance). The bridge releases it after boxing. */
+function nullableFieldUnion(
+  host: LlvmEmitterContext,
+  B: BlockBuilder,
+  p: string,
+  nullable: NullableRefField,
+): string {
+  const rc = vAdapters(host.shapeHost, nullable.arm);
+  host.declare(`declare ptr @scr_union_new_ref(i32, ptr, ptr, ptr, ptr)`);
+  const isNull = B.tmp(),
+    retained = B.tmp(),
+    box = B.tmp(),
+    out = B.tmp();
+  const unit = B.newLabel("nf.u"),
+    ref = B.newLabel("nf.r"),
+    join = B.newLabel("nf.j");
+  B.line(`${isNull} = icmp eq ptr ${p}, null`);
+  B.condBr(isNull, unit, ref);
+  B.startBlock(unit);
+  B.br(join);
+  B.startBlock(ref);
+  B.line(`${retained} = call ptr ${rc.retain}(ptr ${p})`);
+  B.line(
+    `${box} = call ptr @scr_union_new_ref(i32 ${nullable.refTag}, ptr ${retained}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, nullable.arm)})`,
+  );
+  B.br(join);
+  B.startBlock(join);
+  B.line(
+    `${out} = phi ptr [ ${host.unitInstanceRef(nullable.unionId, nullable.unitTag)}, %${unit} ], [ ${box}, %${ref} ]`,
+  );
+  return out;
+}
 
 export function dynPromiseAdapter(host: LlvmEmitterContext, inner: IrType): string {
   if (inner.kind === "dyn") {
@@ -273,6 +309,28 @@ export function streamTypedRefCommitAdapter(
         `  %f${index}_ptr = getelementptr inbounds %${classStructSym(t.className)}, ptr %target, i64 0, i32 ${fieldIndex}`,
         `  %f${index}_old = load ${fieldTy}, ptr %f${index}_ptr`,
       );
+      const nullable = host.nullableFields.get(t.className, field.name);
+      if (nullable) {
+        // The checked union is owned here; the slot takes its retained
+        // instance pointer (NULL for the unit arm).
+        const rc = vAdapters(host.shapeHost, nullable.arm);
+        host.declare(`declare void @scr_union_release(ptr)`);
+        lines.push(
+          `  %f${index}_tagp = getelementptr inbounds %ScrUnion, ptr %${next}, i64 0, i32 1`,
+          `  %f${index}_tag = load i32, ptr %f${index}_tagp`,
+          `  %f${index}_isref = icmp eq i32 %f${index}_tag, ${nullable.refTag}`,
+          `  %f${index}_payp = getelementptr inbounds %ScrUnion, ptr %${next}, i64 0, i32 5`,
+          `  %f${index}_pay = load ptr, ptr %f${index}_payp`,
+          `  %f${index}_sel = select i1 %f${index}_isref, ptr %f${index}_pay, ptr null`,
+          `  %f${index}_new = call ptr ${rc.retain}(ptr %f${index}_sel)`,
+          `  store ptr %f${index}_new, ptr %f${index}_ptr`,
+          `  call void @scr_union_release(ptr %${next})`,
+          `  call void ${rc.release}(ptr %f${index}_old)`,
+          `  br label %${after}`,
+          `${after}:`,
+        );
+        continue;
+      }
       if (field.type.kind === "bool") {
         lines.push(
           `  %f${index}_stored = zext i1 %${next} to i8`,
@@ -719,10 +777,16 @@ export function streamTypedRefMaterializeAdapter(
         B.line(`${boolValue} = trunc i8 ${fieldValue} to i1`);
         fieldValue = boolValue;
       }
+      const nullable = host.nullableFields.get(t.className, field.name);
+      if (nullable) fieldValue = nullableFieldUnion(host, B, fieldValue, nullable);
       const boxed = host.streamTypedRefBoxValue(B, field.type, fieldValue);
       B.line(
         `call void @scr_dyn_obj_set(ptr ${out}, ptr ${host.cstr(field.name)}, ${host.sizeType} ${Buffer.byteLength(field.name, "utf8")}, ptr ${boxed})`,
       );
+      if (nullable) {
+        host.declare(`declare void @scr_union_release(ptr)`);
+        B.line(`call void @scr_union_release(ptr ${fieldValue})`);
+      }
       if (afterField) {
         B.br(afterField);
         B.startBlock(afterField);
@@ -761,7 +825,13 @@ export function streamTypedRefMaterializeAdapter(
         B.line(`${boolValue} = trunc i8 ${fieldValue} to i1`);
         fieldValue = boolValue;
       }
+      const symbolNullable = host.nullableFields.get(t.className, field.name);
+      if (symbolNullable) fieldValue = nullableFieldUnion(host, B, fieldValue, symbolNullable);
       const value = host.streamTypedRefBoxValue(B, field.type, fieldValue);
+      if (symbolNullable) {
+        host.declare(`declare void @scr_union_release(ptr)`);
+        B.line(`call void @scr_union_release(ptr ${fieldValue})`);
+      }
       host.declare(`declare void @scr_dyn_symbol_key_set(ptr, ptr, ptr)`);
       host.declare(`declare void @scr_dyn_release_v(ptr)`);
       B.line(`call void @scr_dyn_symbol_key_set(ptr ${out}, ptr ${key}, ptr ${value})`);

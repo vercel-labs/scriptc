@@ -341,10 +341,12 @@ export function backendAnalysisCases(): BackendAnalysisCase[] {
     shapes: [],
     unions: [],
   });
+  // Constructor-only references are proven acyclic (cycle-analysis.ts), so
+  // the cyclic branch closes through an array edge, which is always mutable.
   const branch = module();
   branch.records = [
     { id: "leaf", fields: [{ name: "value", type: F64 }] },
-    { id: "cycle", fields: [{ name: "next", type: record("cycle") }] },
+    { id: "cycle", fields: [{ name: "next", type: arrayOf(record("cycle")) }] },
     {
       id: "outer",
       fields: [

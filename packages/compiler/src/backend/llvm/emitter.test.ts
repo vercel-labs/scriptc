@@ -106,16 +106,40 @@ test("throwing-call count does not multiply identical scope cleanup", () => {
   }
 });
 
+test("inline RC is a speed-only emission mode and leaves release IR unchanged", () => {
+  for (const boxed of [false, true]) {
+    const module = moduleFor(Array.from({ length: 4 }, call), { boxed });
+    const release = emitLlvmModule(module);
+    expect(emitLlvmModule(module, { inlineRc: false })).toBe(release);
+    expect(release).not.toContain("@sc_rc_");
+    expect(release).not.toContain("%ScrMapRc");
+    const speed = emitLlvmModule(module, { inlineRc: true });
+    const helper = boxed ? "sc_rc_release_box" : "sc_rc_release_str";
+    const runtime = boxed ? "scr_box_release" : "scr_str_release";
+    expect(release.match(new RegExp(`call void @${runtime}\\(ptr`, "g"))?.length).toBeGreaterThan(
+      0,
+    );
+    expect(speed).toContain(`define internal void @${helper}(ptr %o)`);
+    // Speed calls the runtime release only from the helper's cold slow path.
+    expect(speed.match(new RegExp(`call void @${runtime}\\(ptr`, "g"))).toHaveLength(1);
+    expect(speed.match(new RegExp(`call void @${helper}\\(ptr`, "g"))?.length).toBe(
+      release.match(new RegExp(`call void @${runtime}\\(ptr`, "g"))?.length,
+    );
+  }
+});
+
 test("cleanup snapshots keep locals declared after an earlier throw separate", () => {
+  // An owned value: a stable binding of an immortal literal needs no cleanup.
+  const owned: IrExpr = {
+    kind: "strConcat",
+    left: literal("cre"),
+    right: literal("ated"),
+    type: STRING,
+    loc,
+  };
   const module = moduleFor([
     call(),
-    // An owned initializer: a stable literal binding needs no cleanup.
-    {
-      kind: "varDecl",
-      localId: "later",
-      init: { kind: "strConcat", left: literal("cre"), right: literal("ated"), type: STRING, loc },
-      loc,
-    },
+    { kind: "varDecl", localId: "later", init: owned, loc },
     call(),
   ]);
   const blocks = cleanupBlocks(module);

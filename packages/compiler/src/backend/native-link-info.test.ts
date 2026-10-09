@@ -52,10 +52,10 @@ describe("native link info", () => {
     });
     expect(info.ffi.symbols).toEqual(["native"]);
     expect(info.link.input_order).toEqual([
-      "/out/app.o",
-      "/ffi/native.a",
       "/installed/runtime/base.o",
       "/installed/runtime/vendor.a",
+      "/out/app.o",
+      "/ffi/native.a",
     ]);
     expect(info.link.system_libraries).toEqual(["sqlite3", "System"]);
     expect(info.link.frameworks).toEqual(["Foundation"]);

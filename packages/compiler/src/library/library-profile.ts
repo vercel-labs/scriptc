@@ -14,7 +14,7 @@
  *     "name": "<embedder identity string>",
  *     "entry": "src/lib.ts",                  // ONE module, profile-relative
  *     "emission": "llvm",                // pins the emission; no fallback
- *     "optimization": "release" | "dev",       // optional; default release
+ *     "optimization": "release" | "dev" | "speed", // optional; default release
  *     "abi": {
  *       "prefix": "<prefix>_",
  *       "init_symbol": "<prefix>_init",
@@ -248,6 +248,7 @@
  * array is exactly the footgun the fence machinery refuses everywhere
  * else). Only the INTERIOR of `determinism` keeps a reserved-and-ignored
  * surface beyond the three ask-5 keys. */
+import { isNativeOptimization, type NativeOptimization } from "../backend/optimization.js";
 import { readFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { libProfileDiag, type ScrDiagnostic } from "../diagnostics/diagnostic.js";
@@ -387,7 +388,7 @@ export interface LibraryProfile {
   emission: "llvm";
   /** Native optimizer posture. release preserves the production -O2 archive;
    * dev uses -O0 for fast iterative embedding builds. */
-  optimization: "release" | "dev";
+  optimization: NativeOptimization;
   /** Explicit source-inference attempts, including packages without declarations. */
   npmStatic: string[];
   prefix: string;
@@ -575,8 +576,10 @@ export function loadLibraryProfile(
       p["optimization"] === undefined
         ? "release"
         : req<string>(p["optimization"], "optimization", "string");
-    if (optimization !== "release" && optimization !== "dev") {
-      throw new ProfileError(`'optimization' must be "release" or "dev", got '${optimization}'`);
+    if (!isNativeOptimization(optimization)) {
+      throw new ProfileError(
+        `'optimization' must be "release", "dev", or "speed", got '${optimization}'`,
+      );
     }
     const abi = p["abi"];
     if (abi === null || typeof abi !== "object" || Array.isArray(abi)) {

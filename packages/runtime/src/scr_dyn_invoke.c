@@ -1079,7 +1079,7 @@ static ScrDyn *scr_dyn_invoke_impl(
           if (capacity > SIZE_MAX / 2) scr_trap("scriptc: array capacity overflow\n");
           capacity *= 2;
         }
-        ScrDyn **items = realloc(recv->v.arr.items, capacity * sizeof *items);
+        ScrDyn **items = scr_mem_realloc(recv->v.arr.items, capacity * sizeof *items);
         if (!items) scr_trap("scriptc: out of memory\n");
         recv->v.arr.items = items;
         recv->v.arr.cap = capacity;

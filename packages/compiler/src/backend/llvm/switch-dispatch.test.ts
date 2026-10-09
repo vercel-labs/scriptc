@@ -82,7 +82,7 @@ test("string dispatch uses target-width byte lengths and checks equality inside 
     expect(body).toContain(`load i${bits}, ptr`);
     expect(body).toContain(`switch i${bits}`);
     expect(body).not.toContain("scr_str_utf16_len");
-    expect(body.match(/call zeroext i1 @scr_str_eq/g)).toHaveLength(5);
+    expect(body.match(/call zeroext i1 @sc_str_eq/g)).toHaveLength(5);
     const dispatch = body.split("\n").find((line) => line.includes(`switch i${bits}`))!;
     expect(dispatch).toContain(`i${bits} 2, label`);
     expect(dispatch.match(new RegExp(`i${bits} 4, label`, "g"))).toHaveLength(1);

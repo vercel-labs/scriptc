@@ -42,9 +42,12 @@ static inline bool scr_key_equal(const char *a, const char *b, size_t length) {
 
 /* Unaligned loads stay inside the input. Hashing is process-local, so host
  * byte order is immaterial; equal byte strings always follow the same path.
- * Short keys need one avalanche and no variable-size tail copy. */
+ * Short keys need one avalanche and no variable-size tail copy. The length
+ * selects a full-width seed: XORing it into the low bits would cancel
+ * against the last byte ("ab" and "abc" used to collide). The compiler
+ * mirrors this function for literals (string-key-hash.ts). */
 static inline uint64_t scr_key_hash(const char *bytes, size_t length) {
-  uint64_t hash = UINT64_C(0x9e3779b97f4a7c15) ^ length;
+  uint64_t hash = UINT64_C(0x9e3779b97f4a7c15) * ((uint64_t)length + 1);
   if (length <= 8) return scr_key_mix(hash ^ scr_key_short_word(bytes, length));
   size_t i = 0;
   while (length - i >= sizeof(uint64_t)) {
@@ -55,6 +58,19 @@ static inline uint64_t scr_key_hash(const char *bytes, size_t length) {
   }
   return scr_key_mix(hash ^ scr_key_short_word(bytes + i, length - i));
 }
+
+/* Integer-constant forms of the string key hash for static strings of at
+ * most three bytes (word = scr_key_short_word of the bytes), folded to the
+ * 32-bit value native maps cache (scr_map_hash_fold). Static initializers
+ * cannot call functions; these expand to plain arithmetic. */
+#define SCR_KEY_MIX1_(v) (((v) ^ ((v) >> 30)) * UINT64_C(0xbf58476d1ce4e5b9))
+#define SCR_KEY_MIX2_(v) (((v) ^ ((v) >> 27)) * UINT64_C(0x94d049bb133111eb))
+#define SCR_KEY_MIX3_(v) ((v) ^ ((v) >> 31))
+#define SCR_KEY_MIX_CONST(v) SCR_KEY_MIX3_(SCR_KEY_MIX2_(SCR_KEY_MIX1_(v)))
+#define SCR_KEY_FOLD_(h) ((uint32_t)((h) ^ ((h) >> 32)))
+#define SCR_KEY_HASH32_(h) (SCR_KEY_FOLD_(h) ? SCR_KEY_FOLD_(h) : UINT32_C(1))
+#define SCR_KEY_HASH32_SHORT(length, word) \
+  SCR_KEY_HASH32_(SCR_KEY_MIX_CONST((UINT64_C(0x9e3779b97f4a7c15) * ((uint64_t)(length) + 1)) ^ (uint64_t)(word)))
 
 static inline bool scr_key_array_index(const char *key, size_t length, uint32_t *out) {
   if (length == 0 || length > 10 || (length > 1 && key[0] == '0')) return false;

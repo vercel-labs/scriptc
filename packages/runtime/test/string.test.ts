@@ -47,6 +47,7 @@ beforeAll(async () => {
     join(testDir, "../src/scr_exception.c"),
     join(testDir, "../src/scr_object.c"),
     join(testDir, "../src/scr_cycle.c"),
+    join(testDir, "../src/scr_alloc.c"),
     ...(process.platform === "linux" ? ["-lm"] : []),
   ]);
 });

@@ -1,5 +1,6 @@
 #include "diagnostics.h"
 #include "emit.h"
+#include "runtime-unit.h"
 #include "target.h"
 
 #include "llvm/ADT/StringRef.h"
@@ -72,6 +73,8 @@ int main(int Argc, char **Argv) {
     report_fatal_error("scriptc LLVM fatal diagnostic self-test");
   if (Argc >= 2 && StringRef(Argv[1]) == "version")
     return version(Argc, Argv);
+  if (Argc >= 2 && StringRef(Argv[1]) == "runtime-unit")
+    return scriptc::runtimeUnit(Argc, Argv);
   if (Argc >= 2 && StringRef(Argv[1]) == "emit") {
     std::optional<scriptc::EmitOptions> Options =
         scriptc::parseEmitOptions(Argc, Argv);
@@ -85,5 +88,5 @@ int main(int Argc, char **Argv) {
     return scriptc::emit(*Options);
   }
   return scriptc::reportError("usage",
-                              "expected 'version --format=json' or 'emit'");
+                              "expected 'version --format=json', 'emit', or 'runtime-unit'");
 }

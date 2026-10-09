@@ -1,6 +1,7 @@
 #include "emit.h"
 
 #include "diagnostics.h"
+#include "runtime-import.h"
 #include "target.h"
 
 #include "llvm/ADT/SmallString.h"
@@ -56,6 +57,8 @@ std::optional<EmitOptions> parseEmitOptions(int Argc, char **Argv) {
       Options.DiagnosticFormat = Value.str();
     else if (Arg == "--source-path")
       Options.SourcePath = Value.str();
+    else if (Arg == "--import-bitcode")
+      Options.ImportBitcode.push_back(Value.str());
     else
       return std::nullopt;
   }
@@ -310,6 +313,32 @@ int emit(const EmitOptions &Options) {
   if (verifyModule(*Mod, &VerificationStream))
     return reportError("verification_failed", VerificationStream.str(),
                        Options.DiagnosticFormat);
+
+  // Runtime bitcode import is the `speed` posture's opt-in; without it the
+  // module reaches the pipeline exactly as emitted.
+  if (!Options.ImportBitcode.empty()) {
+    if (Options.OptLevel == "0")
+      return reportError("invalid_import",
+                         "runtime bitcode import requires an optimized build",
+                         Options.DiagnosticFormat);
+    // The emitter marks every function sanitize_address so the sanitized
+    // lane's clang link can instrument it. This helper never runs a
+    // sanitizer pass, so the attribute is inert here except that it
+    // suppresses speculative loads and blocks inlining of runtime bodies,
+    // whose sanitizer attributes must match. Dropping it does not change
+    // program semantics.
+    for (Function &F : *Mod)
+      F.removeFnAttr(Attribute::SanitizeAddress);
+    if (std::optional<std::string> Error =
+            importRuntimeBitcode(*Mod, Options.ImportBitcode))
+      return reportError("runtime_import_failed", *Error,
+                         Options.DiagnosticFormat);
+    std::string ImportError;
+    raw_string_ostream ImportStream(ImportError);
+    if (verifyModule(*Mod, &ImportStream))
+      return reportError("runtime_import_verification_failed",
+                         ImportStream.str(), Options.DiagnosticFormat);
+  }
 
   OptimizationLevel Level = optimizationLevel(Options.OptLevel);
   CodeGenFileType Type = Options.FileType == "obj"

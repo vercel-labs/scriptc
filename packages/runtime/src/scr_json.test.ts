@@ -39,6 +39,7 @@ test.each([false, true])(
           "scr_object.c",
           "scr_union.c",
           "scr_cycle.c",
+          "scr_alloc.c",
           "scr_lib.c",
           "scr_bytes.c",
           "scr_shared.c",

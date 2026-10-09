@@ -16,6 +16,7 @@ import { frontendInputsStillMatch, validFrontendInputSnapshot } from "../fronten
 import { compilerReleaseVersion } from "../library/sidecar.js";
 import { nativeArtifactDependenciesStillMatch } from "../backend/native/artifact-stamps.js";
 import { type NativeArtifactDependency } from "../backend/native/contracts.js";
+import { optimizationKeyParts } from "../backend/optimization.js";
 import type { CompilerImplementationDependency } from "../library/compiler-self-identity.js";
 import {
   installDarwinDebugSymbols,
@@ -46,7 +47,7 @@ interface CachedExecutableFile {
 export interface EarlyExecutableNativeFeatures {
   backend: "llvm";
   /** Omitted is the historical release posture. */
-  optimization?: "dev";
+  optimization?: "dev" | "speed";
   dynamic: boolean;
   workers?: boolean;
   regex: boolean;
@@ -104,7 +105,7 @@ export interface EarlyExecutableCacheOptions {
   dynamic: boolean;
   backend: "llvm";
   /** Omitted is the historical release posture and preserves v1 keys. */
-  optimization?: "dev";
+  optimization?: "dev" | "speed";
   /** Omitted retains the unstripped executable's historical cache key. */
   strip?: true;
   /** Omitted for the default Windows console subsystem. */
@@ -196,7 +197,9 @@ function validNativeFeatures(value: unknown): value is EarlyExecutableNativeFeat
     value,
     BOOLEAN_NATIVE_KEYS,
     (native) =>
-      (native.optimization === undefined || native.optimization === "dev") &&
+      (native.optimization === undefined ||
+        native.optimization === "dev" ||
+        native.optimization === "speed") &&
       (native.workers === undefined || typeof native.workers === "boolean"),
   );
 }
@@ -214,7 +217,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     options.sanitize ? "sanitize" : "plain",
     options.dynamic ? "dynamic" : "static",
     options.backend,
-    ...(options.optimization === "dev" ? ["optimization-dev"] : []),
+    ...optimizationKeyParts(options.optimization),
     ...(options.strip ? ["strip"] : []),
     ...(options.windowsSubsystem === "gui" ? ["windows-subsystem-gui"] : []),
     options.npmStatic === null
@@ -252,7 +255,7 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
     .update("\0")
     .update(options.backend)
     .update("\0");
-  if (options.optimization === "dev") hash.update("optimization-dev\0");
+  for (const part of optimizationKeyParts(options.optimization)) hash.update(`${part}\0`);
   if (options.strip) hash.update("strip\0");
   if (options.windowsSubsystem === "gui") hash.update("windows-subsystem-gui\0");
   hash

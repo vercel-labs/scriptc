@@ -1,0 +1,143 @@
+{
+  "workloads": [
+    {
+      "name": "json-records",
+      "entry": "workloads/json-records.ts",
+      "args": [
+        "4"
+      ]
+    },
+    {
+      "name": "regex-logs",
+      "entry": "workloads/regex-logs.ts",
+      "args": [
+        "1"
+      ]
+    },
+    {
+      "name": "ast-interp",
+      "entry": "workloads/ast-interp.ts",
+      "args": [
+        "5"
+      ]
+    },
+    {
+      "name": "records-sort",
+      "entry": "workloads/records-sort.ts",
+      "args": [
+        "1"
+      ]
+    },
+    {
+      "name": "template-render",
+      "entry": "workloads/template-render.ts",
+      "args": [
+        "1"
+      ]
+    },
+    {
+      "name": "functional-pipeline",
+      "entry": "workloads/functional-pipeline.ts",
+      "args": [
+        "1"
+      ]
+    },
+    {
+      "name": "async-pipeline",
+      "entry": "workloads/async-pipeline.ts",
+      "args": [
+        "1"
+      ]
+    },
+    {
+      "name": "word-graph",
+      "entry": "workloads/word-graph.ts",
+      "args": [
+        "2"
+      ]
+    },
+    {
+      "name": "alloc-trees",
+      "entry": "workloads/alloc-trees.ts",
+      "args": [
+        "1"
+      ]
+    },
+    {
+      "name": "numeric-kernels",
+      "entry": "workloads/numeric-kernels.ts",
+      "args": [
+        "0.5"
+      ]
+    },
+    {
+      "name": "validate-errors",
+      "entry": "workloads/validate-errors.ts",
+      "args": [
+        "1"
+      ]
+    },
+    {
+      "name": "csv-numbers",
+      "entry": "workloads/csv-numbers.ts",
+      "args": [
+        "1"
+      ]
+    },
+    {
+      "name": "log-lines",
+      "entry": "workloads/log-lines.ts",
+      "args": [
+        "4"
+      ]
+    },
+    {
+      "name": "log-summary",
+      "entry": "../builds/log-summary/main.ts",
+      "input": "log-summary",
+      "args": [
+        "{input}",
+        "--min-status",
+        "200",
+        "--limit",
+        "12"
+      ]
+    },
+    {
+      "name": "inventory-report",
+      "entry": "../builds/inventory-report/main.ts",
+      "input": "inventory-report",
+      "args": [
+        "{input}"
+      ]
+    },
+    {
+      "name": "cli-config",
+      "entry": "workloads/cli-config.ts",
+      "input": "cli-config",
+      "launches": 20,
+      "args": [
+        "{input}",
+        "--env",
+        "production",
+        "--max-wave",
+        "12"
+      ]
+    },
+    {
+      "name": "http-api",
+      "kind": "server",
+      "entry": "workloads/http-api.ts",
+      "args": [],
+      "client": {
+        "script": "clients/http-load.mjs",
+        "args": [
+          "--connections=64",
+          "--threads=2",
+          "--warmup=4000",
+          "--requests=40000"
+        ]
+      }
+    }
+  ]
+}

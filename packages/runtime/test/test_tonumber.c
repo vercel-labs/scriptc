@@ -1,4 +1,5 @@
-/* Oracle test for scr_string_to_number (ToNumber over strings).
+/* Oracle test for scr_string_to_number (ToNumber over strings), or for
+ * scr_parse_float when argv[2] is "parseFloat" (parsefloat-cases.txt).
  * Reads case lines ("<input-hex or ->\t<16-hex-digit expected bit
  * pattern>\n" — see gen-tonumber-cases.mjs) from the file given as
  * argv[1] (or stdin), parses each input, and asserts the resulting
@@ -49,6 +50,7 @@ int main(int argc, char **argv) {
     }
   }
 
+  bool parse_float = argc > 2 && strcmp(argv[2], "parseFloat") == 0;
   static char linebuf[2 * MAX_FIELD + 32];
   static char input_bytes[MAX_FIELD];
   long total = 0, failed = 0;
@@ -75,7 +77,7 @@ int main(int argc, char **argv) {
     expected.u = strtoull(expected_hex, NULL, 16);
 
     ScrStr *s = scr_str_new(input_bytes, in_len);
-    got.d = scr_string_to_number(s);
+    got.d = parse_float ? scr_parse_float(s) : scr_string_to_number(s);
     scr_str_release(s);
 
     total++;

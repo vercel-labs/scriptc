@@ -1,5 +1,6 @@
 /** Runtime-pack schema and selection shared by compiler hosts. Filesystem
  * discovery, artifact verification and staging belong to the calling host. */
+import { optimizationClass, type NativeOptimization } from "./optimization.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
 import { RUNTIME_ABI_MARKER, RUNTIME_ABI_VERSION } from "./runtime-abi.js";
 import type { NativeTargetSpec } from "./targets.js";
@@ -18,10 +19,12 @@ export interface RuntimePackArtifact {
   size: number;
 }
 
-interface RuntimePackVariant extends RuntimePackArtifact {
+export interface RuntimePackVariant extends RuntimePackArtifact {
   id: string;
   when: Record<string, boolean>;
   defines: string[];
+  /** LLVM bitcode of the same unit, imported by the helper for inlining. */
+  bitcode?: RuntimePackArtifact;
 }
 
 interface RuntimePackUnit {
@@ -39,6 +42,7 @@ export type RuntimePackMode = "executable" | "library" | "library-thread";
 export type RuntimePackFlavor =
   | "release"
   | "dev"
+  | "speed"
   | "library-release"
   | "library-dev"
   | "library-thread-release"
@@ -159,6 +163,7 @@ export function parseRuntimePackManifest(value: unknown): RuntimePackManifest {
             const when = object(variant?.when);
             return (
               validArtifact(variantRaw) &&
+              (variant?.bitcode === undefined || validArtifact(variant.bitcode)) &&
               typeof variant?.id === "string" &&
               when !== null &&
               Object.values(when).every((entry) => typeof entry === "boolean") &&
@@ -193,6 +198,7 @@ export function parseRuntimePackManifest(value: unknown): RuntimePackManifest {
         ![
           "release",
           "dev",
+          "speed",
           "library-release",
           "library-dev",
           "library-thread-release",
@@ -201,6 +207,8 @@ export function parseRuntimePackManifest(value: unknown): RuntimePackManifest {
     ) ||
     ((flavors.release !== undefined || flavors.dev !== undefined) &&
       (!validFlavor(flavors.release, "-O2") || !validFlavor(flavors.dev, "-O0"))) ||
+    // The speed flavor is an optional companion of the executable flavors.
+    (flavors.speed !== undefined && flavors.release === undefined) ||
     Object.entries(flavors).some(
       ([name, flavor]) => !validFlavor(flavor, name.endsWith("dev") ? "-O0" : "-O2"),
     ) ||
@@ -339,9 +347,27 @@ export function validateRuntimePackIdentity(
 
 export interface RuntimePackArtifacts {
   features: RuntimeFeatureSet;
-  runtime: RuntimePackArtifact[];
+  /** Selected unit variants; each may carry its bitcode artifact. */
+  runtime: (RuntimePackArtifact & { bitcode?: RuntimePackArtifact })[];
   archives: RuntimePackArtifact[];
   systemLibraries: string[];
+}
+
+/** The manifest flavor a posture links. Speed selects the executable `speed`
+ * flavor when the pack ships one (size-for-speed runtime objects) and the
+ * release flavor otherwise; library modes have no speed flavor and link
+ * their release objects. */
+export function runtimePackFlavorKey(
+  manifest: RuntimePackManifest,
+  optimization: NativeOptimization,
+  mode: RuntimePackMode = "executable",
+): RuntimePackFlavor {
+  const optimized = optimizationClass(optimization);
+  if (mode === "library") return optimized === "release" ? "library-release" : "library-dev";
+  if (mode === "library-thread")
+    return optimized === "release" ? "library-thread-release" : "library-thread-dev";
+  if (optimization === "speed" && manifest.flavors.speed !== undefined) return "speed";
+  return optimized;
 }
 
 /** Selection is deterministic and independent of installation paths. Both
@@ -349,7 +375,7 @@ export interface RuntimePackArtifacts {
 export function selectRuntimePackArtifacts(
   manifest: RuntimePackManifest,
   requested: NativeLinkFeatures,
-  flavor: "release" | "dev",
+  flavor: NativeOptimization,
   env: NodeJS.ProcessEnv = process.env,
   mode: RuntimePackMode = "executable",
 ): RuntimePackArtifacts {
@@ -359,19 +385,8 @@ export function selectRuntimePackArtifacts(
     (mode !== "executable" || features.dynamic || manifest.target.object_format === "wasm")
   )
     throw new RuntimePackError("worker threads require a native static executable", "unsupported");
-  const key: RuntimePackFlavor = mode === "executable" ? flavor : `${mode}-${flavor}`;
-  const selectedFlavor =
-    mode === "library"
-      ? flavor === "release"
-        ? manifest.flavors["library-release"]
-        : manifest.flavors["library-dev"]
-      : mode === "library-thread"
-        ? flavor === "release"
-          ? manifest.flavors["library-thread-release"]
-          : manifest.flavors["library-thread-dev"]
-        : flavor === "release"
-          ? manifest.flavors.release
-          : manifest.flavors.dev;
+  const key = runtimePackFlavorKey(manifest, flavor, mode);
+  const selectedFlavor = manifest.flavors[key];
   if (selectedFlavor === undefined)
     throw new RuntimePackError(
       `runtime pack has no ${key} flavor; reinstall the matching runtime package`,

@@ -108,6 +108,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #if defined(__FreeBSD__) || defined(__DragonFly__) || defined(_AIX) || defined(__sun)
 #include <sys/param.h>
 #endif
@@ -1038,6 +1039,74 @@ static void scr_net_sock_write_raw(ScrNetSocket *s, const char *data, size_t len
   }
 }
 
+/* Ordered slices as ONE write (an HTTP head with its body, a chunk with
+ * its framing): when the bytes would go out immediately on a plain socket
+ * — the state where scr_net_sock_write_raw attempts its syscall — one
+ * vectored send carries them all and any unsent tail buffers exactly as
+ * write_raw's would. Every other state (connecting, already buffered, a
+ * transport, ending/closed) takes write_raw per slice, which buffers or
+ * drops identically to consecutive writes. The peer sees the same bytes
+ * in the same order; only the segmenting differs (Node writes these
+ * pieces with one writev as well). */
+void scr_net_sock_writev_native(ScrNetSocket *s, const ScrNetSlice *slices, size_t n) {
+#if defined(_WIN32)
+  for (size_t i = 0; i < n; i++) scr_net_sock_write_raw(s, slices[i].data, slices[i].len);
+#else
+  struct iovec iov[8];
+  int cnt = 0;
+  size_t total = 0;
+  bool immediate = n <= 8 && s->fd >= 0 && !s->wr_ending && !s->close_emitted &&
+                   !s->connecting && s->wlen == s->whead && !s->tops;
+  if (immediate) {
+    for (size_t i = 0; i < n; i++) {
+      if (slices[i].len == 0) continue;
+      iov[cnt].iov_base = (void *)slices[i].data;
+      iov[cnt++].iov_len = slices[i].len;
+      total += slices[i].len;
+    }
+  }
+  if (!immediate || cnt < 2) {
+    for (size_t i = 0; i < n; i++) scr_net_sock_write_raw(s, slices[i].data, slices[i].len);
+    return;
+  }
+  s->bytes_written += total; /* accepted bytes, as write_raw counts them */
+  struct msghdr msg;
+  memset(&msg, 0, sizeof msg);
+  msg.msg_iov = iov;
+  msg.msg_iovlen = cnt;
+#if defined(MSG_NOSIGNAL)
+  ssize_t sent = sendmsg(s->fd, &msg, MSG_NOSIGNAL);
+#else
+  ssize_t sent = sendmsg(s->fd, &msg, 0);
+#endif
+  if (sent > 0) scr_net_sock_touch(s);
+  if (sent < 0) {
+    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) sent = 0;
+    else {
+      char msg_text[96];
+      snprintf(msg_text, sizeof msg_text, "write %s", scr_net_errname(errno));
+      if (!s->pending_err) s->pending_err = scr_str_new(msg_text, strlen(msg_text));
+      s->had_error = true;
+      scr_net_sock_close_fd(s);
+      return;
+    }
+  }
+  if ((size_t)sent < total) {
+    size_t skip = (size_t)sent;
+    for (int i = 0; i < cnt; i++) {
+      size_t len = iov[i].iov_len;
+      if (skip >= len) {
+        skip -= len;
+        continue;
+      }
+      scr_net_sock_buffer(s, (const char *)iov[i].iov_base + skip, len - skip);
+      skip = 0;
+    }
+    scr_net_sock_update_write(s);
+  }
+#endif
+}
+
 /* Flush on write-readiness; drives the FIN when ENDING. */
 static void scr_net_sock_flush(ScrNetSocket *s) {
   if (s->tops && !s->t_est) return; /* nothing moves until the handshake ends */
@@ -1206,6 +1275,12 @@ static void scr_net_sock_read(ScrNetSocket *s) {
     }
     scr_net_sock_update_read(s); /* a once-listener may have been the last consumer */
     if (--reads_left == 0) return;
+    /* A short read drained the kernel buffer: return to the poller instead
+     * of paying a read() that answers EAGAIN (libuv's UV_HANDLE_READ_PARTIAL
+     * rule — the level-triggered poller reports any later bytes or EOF).
+     * Transports keep draining: their engine may hold decrypted bytes the
+     * fd no longer signals. */
+    if (!s->tops && (size_t)n < sizeof buf) return;
   }
 }
 

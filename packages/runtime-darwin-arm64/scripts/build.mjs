@@ -8,6 +8,10 @@ import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { RUNTIME_PACK_MATRIX } from "../runtime-pack-matrix.mjs";
+import {
+  buildRuntimeUnit,
+  resolveRuntimeUnitHelper,
+} from "../../runtime-pack-common/scripts/runtime-unit.mjs";
 import { createDeterministicArchive } from "./archive.mjs";
 import { installRuntimePack, withBuildLock } from "./build-state.mjs";
 
@@ -58,6 +62,12 @@ async function build() {
     "-I",
     runtimeSrc,
   ];
+  // Vendored -Os archives start each function on a cache-line boundary so
+  // their hot loops keep their placement when unrelated code changes size
+  // (see the shared pack builder in runtime-pack-common).
+  // libunicode's small table helpers are exempt (see runtime-pack-common).
+  const codeAlignment = ["-falign-functions=64"];
+  const unalignedVendorSources = new Set(["libunicode.c"]);
   const quickjs = join(vendorRoot, "quickjs-ng");
   const zlib = join(vendorRoot, "zlib");
   const mbedtls = join(vendorRoot, "mbedtls");
@@ -76,6 +86,13 @@ async function build() {
     "uncompr.c",
     "zutil.c",
   ];
+
+  // Speed-flavor executable units are emitted through the host LLVM helper
+  // so their object and import bitcode come from one promoted module.
+  const unitHelper = await resolveRuntimeUnitHelper(
+    repoRoot,
+    RUNTIME_PACK_MATRIX.target.llvm_triple,
+  );
 
   async function sha256(path) {
     return createHash("sha256")
@@ -100,7 +117,9 @@ async function build() {
       await compile(
         join(sourceRoot, source),
         join(objectRoot, source.replace(/\.c$/, ".o")),
-        flags,
+        unalignedVendorSources.has(source)
+          ? flags.filter((flag) => !codeAlignment.includes(flag))
+          : flags,
       );
     });
     const output = join(root, `libscriptc-${id}.a`);
@@ -120,7 +139,18 @@ async function build() {
 
   try {
     const flavors = {};
-    for (const [flavor, flavorSpec] of Object.entries(RUNTIME_PACK_MATRIX.flavors)) {
+    // The executable `speed` flavor (--optimization=speed) exists only when
+    // it differs from release: its static units are emitted through the host
+    // LLVM helper with import bitcode. Its SCR_DYNAMIC variants are the
+    // release objects themselves.
+    const flavorPlan = [
+      ...Object.entries(RUNTIME_PACK_MATRIX.flavors),
+      ...("release" in RUNTIME_PACK_MATRIX.flavors && unitHelper !== null
+        ? [["speed", RUNTIME_PACK_MATRIX.flavors.release]]
+        : []),
+    ];
+    const releaseVariants = new Map();
+    for (const [flavor, flavorSpec] of flavorPlan) {
       const units = await parallel(
         flavorSpec.runtime_units ?? RUNTIME_PACK_MATRIX.runtime_units,
         async (unit) => {
@@ -130,6 +160,11 @@ async function build() {
               ...baseVariant,
               defines: [...(flavorSpec.defines ?? []), ...baseVariant.defines],
             };
+            const variantKey = `${unit.source}\0${variant.id}`;
+            if (flavor === "speed" && variant.defines.includes("SCR_DYNAMIC")) {
+              variants.push(releaseVariants.get(variantKey));
+              continue;
+            }
             const variantName = variant.id === "default" ? "default" : variant.id;
             const output = join(
               stagedOutputRoot,
@@ -147,20 +182,58 @@ async function build() {
                 ? ["-I", zlib]
                 : []),
             ];
-            await compile(join(runtimeSrc, unit.source), output, [
+            const unitFlags = [
               ...commonFlags,
               flavorSpec.optimization,
               ...variant.defines.map((define) => `-D${define}`),
               ...includeFlags,
-            ]);
-            variants.push({
+            ];
+            let bitcode;
+            const bitcodeOutput = output.replace(/\.o$/, ".bc");
+            if (flavor === "speed") await mkdir(dirname(output), { recursive: true });
+            if (
+              flavor === "speed" &&
+              (await buildRuntimeUnit({
+                helper: unitHelper,
+                compileBitcode: (optimized) =>
+                  run(compiler, [
+                    ...sourcePathFlags,
+                    ...unitFlags,
+                    "-emit-llvm",
+                    "-c",
+                    join(runtimeSrc, unit.source),
+                    "-o",
+                    optimized,
+                  ]),
+                object: output,
+                bitcode: bitcodeOutput,
+                triple: RUNTIME_PACK_MATRIX.target.llvm_triple,
+                tag: unit.source.replace(/\.c$/, ""),
+                sections:
+                  RUNTIME_PACK_MATRIX.executable_section_elimination.compile_flags.includes(
+                    "-ffunction-sections",
+                  ),
+              }))
+            ) {
+              bitcode = {
+                path: artifactPath(bitcodeOutput),
+                sha256: await sha256(bitcodeOutput),
+                size: (await stat(bitcodeOutput)).size,
+              };
+            } else {
+              await compile(join(runtimeSrc, unit.source), output, unitFlags);
+            }
+            const built = {
               id: variant.id,
               when: variant.when,
               defines: variant.defines,
               path: artifactPath(output),
               sha256: await sha256(output),
               size: (await stat(output)).size,
-            });
+              ...(bitcode === undefined ? {} : { bitcode }),
+            };
+            if (flavor === "release") releaseVariants.set(variantKey, built);
+            variants.push(built);
           }
           return { source: unit.source, predicate: unit.predicate, variants };
         },
@@ -182,6 +255,7 @@ async function build() {
         "-D_GNU_SOURCE",
         "-DNDEBUG",
         "-Os",
+        ...codeAlignment,
         "-I",
         quickjs,
       ]),
@@ -190,6 +264,7 @@ async function build() {
         RUNTIME_PACK_MATRIX.target.llvm_triple,
         "-std=c11",
         "-Os",
+        ...codeAlignment,
         "-I",
         quickjs,
       ]),
@@ -198,6 +273,7 @@ async function build() {
         RUNTIME_PACK_MATRIX.target.llvm_triple,
         "-std=c11",
         "-Os",
+        ...codeAlignment,
         "-I",
         zlib,
       ]),
@@ -206,6 +282,7 @@ async function build() {
         RUNTIME_PACK_MATRIX.target.llvm_triple,
         "-std=c11",
         "-Os",
+        ...codeAlignment,
         "-I",
         join(mbedtls, "include"),
         "-I",
@@ -244,6 +321,7 @@ async function build() {
         command: compiler,
         identity: compilerVersion,
         target: RUNTIME_PACK_MATRIX.target.llvm_triple,
+        ...(unitHelper === null ? {} : { speed_codegen: unitHelper.identity }),
       },
       macros: {
         executable: ["SCR_DYNAMIC", "SCR_TEXT_DECODER_LEGACY"],

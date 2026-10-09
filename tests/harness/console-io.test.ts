@@ -152,4 +152,106 @@ describe(`console/process output visibility${sanitize ? " (sanitized)" : ""}`, (
     expect(nativeRes.code).toBe(nodeRes.code);
     expect(nativeRes.signal).toBe(nodeRes.signal);
   });
+
+  /* A bounded probe cannot fill the shared pipe: Node submits these writes
+   * immediately. With backpressure, its independent asynchronous stdout and
+   * stderr queues can interleave larger chunks, so compare large pipe output
+   * per stream and retain the shared-file ordering check below. */
+  const posix = process.platform !== "win32";
+  test.skipIf(!posix)("stdout/stderr merged into one pipe keep Node's order", async () => {
+    const probe = await build("merged-order");
+    const merged = (cmd: string, args: string[]) =>
+      runToClose("sh", ["-c", 'exec "$@" 2>&1', "sh", cmd, ...args]);
+    const [nodeRes, nativeRes] = await Promise.all([
+      merged("node", [probe.sourceFile, "--small"]),
+      merged(probe.binary, ["--small"]),
+    ]);
+    expect(nodeRes.code).toBe(0);
+    expect(nativeRes.code).toBe(0);
+    expect(nodeRes.stdout.length).toBeLessThan(4096);
+    expect(nativeRes.stdout).toEqual(nodeRes.stdout);
+  });
+
+  test("large stdout/stderr pipe writes match Node per stream", async () => {
+    const probe = await build("merged-order");
+    const [nodeRes, nativeRes] = await Promise.all([
+      runToClose("node", [probe.sourceFile]),
+      runToClose(probe.binary, []),
+    ]);
+    expect(nodeRes.code).toBe(0);
+    expect(nativeRes.code).toBe(0);
+    expect(nodeRes.stdout.length).toBeGreaterThan(65536);
+    expect(nodeRes.stderr.length).toBeGreaterThan(65536);
+    expect(nativeRes.stdout).toEqual(nodeRes.stdout);
+    expect(nativeRes.stderr).toEqual(nodeRes.stderr);
+  });
+
+  test.skipIf(!posix)("stdout/stderr merged into one file keep Node's order", async () => {
+    const probe = await build("merged-order");
+    const outDir = join(cacheDir, "console-io-merged-file");
+    mkdirSync(outDir, { recursive: true });
+    const toFile = async (label: string, cmd: string, args: string[]) => {
+      const path = join(outDir, `${label}.out`);
+      const res = await runToClose("sh", [
+        "-c",
+        'out="$1"; shift; exec "$@" >"$out" 2>&1',
+        "sh",
+        path,
+        cmd,
+        ...args,
+      ]);
+      expect(res.code).toBe(0);
+      return readFileSync(path);
+    };
+    const [nodeOut, nativeOut] = await Promise.all([
+      toFile("node", "node", [probe.sourceFile]),
+      toFile("native", probe.binary, []),
+    ]);
+    expect(nativeOut.length).toBe(nodeOut.length);
+    expect(nativeOut.equals(nodeOut)).toBe(true);
+  });
+
+  /* The reader closes after the first chunk. SIGPIPE is ignored in the child
+   * (Node ignores it unconditionally), so writes fail with EPIPE; console
+   * ignores stream errors and the program completes like Node. */
+  test.skipIf(!posix)(
+    "console.log after the stdout reader closes (EPIPE) matches Node",
+    async () => {
+      const probe = await build("epipe-console");
+      const readerCloses = (cmd: string, args: string[]) =>
+        new Promise<ClosedChild>((resolve, reject) => {
+          const child = spawn("sh", ["-c", 'trap "" PIPE; exec "$@"', "sh", cmd, ...args], {
+            stdio: ["ignore", "pipe", "pipe"],
+          });
+          const stdout: Buffer[] = [];
+          const stderr: Buffer[] = [];
+          const timer = setTimeout(() => {
+            child.kill("SIGKILL");
+            reject(new Error("EPIPE console probe timed out"));
+          }, 20_000);
+          child.stdout.once("data", (chunk: Buffer) => {
+            stdout.push(chunk);
+            child.stdout.destroy();
+          });
+          child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+          child.on("error", (err) => {
+            clearTimeout(timer);
+            reject(err);
+          });
+          child.on("close", (code, signal) => {
+            clearTimeout(timer);
+            resolve({ stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr), code, signal });
+          });
+        });
+      const [nodeRes, nativeRes] = await Promise.all([
+        readerCloses("node", [probe.sourceFile]),
+        readerCloses(probe.binary, []),
+      ]);
+      expect(nodeRes.stdout.subarray(0, 5).toString()).toBe("line ");
+      expect(nativeRes.stdout.subarray(0, 5).toString()).toBe("line ");
+      expect(nativeRes.stderr.toString()).toBe(nodeRes.stderr.toString());
+      expect(nativeRes.code).toBe(nodeRes.code);
+      expect(nativeRes.signal).toBe(nodeRes.signal);
+    },
+  );
 });

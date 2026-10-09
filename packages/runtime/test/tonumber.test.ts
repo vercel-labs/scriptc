@@ -17,7 +17,7 @@ const testDir = import.meta.dirname;
 // with giant exact-integer inputs, and the garbage shapes that must be
 // NaN. Built with ASan + the RC audit so the ~50k allocate/parse/release
 // round-trips also prove the parser neither leaks nor double-frees.
-test("scr_string_to_number matches Node Number(s) on committed oracle cases", async () => {
+test("scr_string_to_number and scr_parse_float match Node on committed oracle cases", async () => {
   const buildDir = join(testDir, "build");
   await mkdir(buildDir, { recursive: true });
   const bin = join(buildDir, "test_tonumber");
@@ -54,8 +54,13 @@ test("scr_string_to_number matches Node Number(s) on committed oracle cases", as
     join(testDir, "../src/scr_exception.c"),
     join(testDir, "../src/scr_object.c"),
     join(testDir, "../src/scr_cycle.c"),
+    join(testDir, "../src/scr_alloc.c"),
     ...(process.platform === "linux" ? ["-lm"] : []),
   ]);
   const { stderr } = await execFileAsync(bin, [join(testDir, "tonumber-cases.txt")]);
   expect(stderr.trim()).toMatch(/^(\d+)\/\1 cases passed$/);
+  // The same binary checks scr_parse_float against Node's parseFloat over
+  // the same inputs (gen-tonumber-cases.mjs cases --parse-float).
+  const parsed = await execFileAsync(bin, [join(testDir, "parsefloat-cases.txt"), "parseFloat"]);
+  expect(parsed.stderr.trim()).toMatch(/^(\d+)\/\1 cases passed$/);
 }, 120_000);

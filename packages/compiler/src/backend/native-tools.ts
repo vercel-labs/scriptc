@@ -1,4 +1,5 @@
 /** Native tool invocation without a JavaScript host or shell command construction. */
+import type { NativeOptimization } from "./optimization.js";
 import { execFileSync } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
 import type { NativeHelperSpec, NativeTargetSpec } from "./targets.js";
@@ -38,7 +39,7 @@ export function emitNativeObject(options: {
   inputPath: string;
   outputPath: string;
   sourcePath: string;
-  optimization: "release" | "dev";
+  optimization: NativeOptimization;
   outputKind?: NativeCodegenOutputKind;
   /** Program partitions, written to nativePartitionPaths(outputPath). */
   partitions?: number;

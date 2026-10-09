@@ -254,12 +254,13 @@ static void scr_sidx_concat_append(const ScrStr *s, size_t oldlen) {
 /* ── allocation ─────────────────────────────────────────────────────── */
 
 static ScrStr *scr_str_alloc(size_t len, size_t cap) {
-  if (len > cap || cap > SIZE_MAX - sizeof(ScrStr) - 1) scr_oom();
-  ScrStr *s = malloc(sizeof(ScrStr) + cap + 1);
+  if (len > cap || cap > SCR_STR_MAX_CAP) scr_oom();
+  ScrStr *s = scr_mem_alloc(sizeof(ScrStr) + cap + 1);
   if (!s) scr_oom();
   s->rc = 1;
   s->len = len;
   s->cap = cap;
+  scr_str_hash_forget(s);
 #ifdef SCR_RC_AUDIT
   scr_live_strings++;
 #endif
@@ -292,6 +293,7 @@ static ScrStr *scr_str_take_spare(size_t len) {
     scr_str_spare = NULL;
     s->rc = 1;
     s->len = len; /* keeps its larger cap */
+    scr_str_hash_forget(s);
     return s;
   }
 #else
@@ -311,10 +313,11 @@ ScrStr *scr_str_alloc_raw(size_t len, size_t cap) {
 }
 
 ScrStr *scr_str_regrow(ScrStr *s, size_t newcap) {
-  if (newcap < s->len || newcap > SIZE_MAX - sizeof(ScrStr) - 1) scr_oom();
+  if (newcap < s->len || newcap > SCR_STR_MAX_CAP) scr_oom();
   scr_short_forget(s);
+  scr_str_hash_forget(s);
   scr_sidx_purge(s); /* realloc may move; the old address may be recycled */
-  ScrStr *r = realloc(s, sizeof(ScrStr) + newcap + 1);
+  ScrStr *r = scr_mem_realloc(s, sizeof(ScrStr) + newcap + 1);
   if (!r) scr_oom();
   r->cap = newcap;
   return r;
@@ -336,7 +339,7 @@ void scr_str_release(ScrStr *s) {
       s = old; /* evict the previous spare */
     }
 #endif
-    free(s);
+    scr_mem_free(s);
   }
 }
 
@@ -353,6 +356,7 @@ ScrStr *scr_str_concat(ScrStr *a, ScrStr *b) {
   if (a->rc == 1 && a != b && a->cap >= newlen) {
     size_t oldlen = a->len;
     scr_short_forget(a);
+    scr_str_hash_forget(a);
     memcpy(a->data + a->len, b->data, b->len);
     a->len = newlen;
     a->data[newlen] = '\0';
@@ -373,11 +377,12 @@ ScrStr *scr_str_concat(ScrStr *a, ScrStr *b) {
    * can still benefit from the spare-block cache above. */
   size_t newcap = newlen;
   if (a->rc == 1) {
-    size_t grown = a->cap + (a->cap >> 1) + 16;
+    size_t grown = (size_t)a->cap + (a->cap >> 1) + 16;
     if (grown > newcap) newcap = grown;
   } else if (newlen >= 512 && newlen <= (SIZE_MAX - sizeof(ScrStr) - 1) / 2) {
     newcap = newlen + (newlen >> 1);
   }
+  if (newcap > SCR_STR_MAX_CAP && newlen <= SCR_STR_MAX_CAP) newcap = SCR_STR_MAX_CAP;
   ScrStr *s = scr_str_take_spare(newlen);
   if (!s) s = scr_str_alloc(newlen, newcap);
   memcpy(s->data, a->data, a->len);
@@ -454,7 +459,8 @@ int scr_str_cmp_u16(ScrStr *a, ScrStr *b) {
  * in tight loops returns these without allocating.
  */
 typedef struct { size_t rc; size_t len; size_t cap; char data[2]; } ScrChar1;
-#define SCR_A(c) {SIZE_MAX, 1, 1, {(char)(c), 0}}
+#define SCR_A_WORD(c) (((uint64_t)(c) << 16) | ((uint64_t)(c) << 8) | (uint64_t)(c))
+#define SCR_A(c) {SIZE_MAX, 1, SCR_STR_CAP_WORD(1, SCR_KEY_HASH32_SHORT(1, SCR_A_WORD(c))), {(char)(c), 0}}
 #define SCR_A8(c) \
   SCR_A(c), SCR_A(c + 1), SCR_A(c + 2), SCR_A(c + 3), \
   SCR_A(c + 4), SCR_A(c + 5), SCR_A(c + 6), SCR_A(c + 7)
@@ -465,7 +471,7 @@ static const ScrChar1 scr_ascii1[128] = {
   SCR_A8(96),  SCR_A8(104), SCR_A8(112), SCR_A8(120),
 };
 static const struct { size_t rc; size_t len; size_t cap; char data[1]; }
-    scr_lit_empty = {SIZE_MAX, 0, 0, ""};
+    scr_lit_empty = {SIZE_MAX, 0, SCR_STR_CAP_WORD(0, SCR_KEY_HASH32_SHORT(0, 0)), ""};
 
 static ScrStr *scr_str_empty(void) { return (ScrStr *)&scr_lit_empty; }
 
@@ -1351,7 +1357,7 @@ ScrStr *scr_str_trim_end(ScrStr *s) {
  * lone surrogate (empty-separator split of an astral char, a pad fill
  * truncated mid-pair). */
 static const struct { size_t rc; size_t len; size_t cap; char data[4]; }
-    scr_lit_fffd = {SIZE_MAX, 3, 3, "\xEF\xBF\xBD"};
+    scr_lit_fffd = {SIZE_MAX, 3, SCR_STR_CAP_WORD(3, SCR_KEY_HASH32_SHORT(3, 0xEFBFBD)), "\xEF\xBF\xBD"};
 
 /* Split owns a fresh array and appends only present string values. Fill an
  * available dense slot directly; ordinary push handles growth and the sparse
@@ -1381,6 +1387,7 @@ static ScrStr *scr_str_split_piece(const char *bytes, size_t len, ScrStr **scrat
     /* The scratch owner is the only remaining reference. Invalidate all
      * metadata before replacing bytes, just as unique concatenation does. */
     scr_short_forget(piece);
+    scr_str_hash_forget(piece);
     scr_sidx_purge(piece);
     memcpy(piece->data, bytes, len);
     piece->len = len;
@@ -1677,6 +1684,8 @@ double scr_parse_int(ScrStr *s, double radix) {
   const char *p = s->data;
   size_t n = s->len, i = 0;
   while (i < n) {
+    unsigned char c = (unsigned char)p[i];
+    if (c > 0x20 && c < 0x80) break; /* ASCII non-whitespace */
     size_t adv;
     uint32_t cp = scr_utf8_decode(p + i, &adv);
     if (!scr_is_js_whitespace(cp)) break;
@@ -1722,6 +1731,8 @@ double scr_parse_float(ScrStr *s) {
   const char *p = s->data;
   size_t n = s->len, i = 0;
   while (i < n) {
+    unsigned char c = (unsigned char)p[i];
+    if (c > 0x20 && c < 0x80) break; /* ASCII non-whitespace */
     size_t adv;
     uint32_t cp = scr_utf8_decode(p + i, &adv);
     if (!scr_is_js_whitespace(cp)) break;
@@ -1760,6 +1771,8 @@ double scr_parse_float(ScrStr *s) {
     if (j > ed) end = j; /* exponent joins only with digits ("1e" is 1) */
   }
   size_t span = end - start;
+  double fast;
+  if (scr_decimal_fast(p + start, span, &fast)) return fast;
   char buf[64];
   char *tmp = span < sizeof(buf) ? buf : malloc(span + 1);
   if (!tmp) scr_oom();
@@ -1786,12 +1799,16 @@ double scr_string_to_number(ScrStr *s) {
   const char *p = s->data;
   size_t b = 0, e = s->len;
   while (b < e) {
+    unsigned char c = (unsigned char)p[b];
+    if (c > 0x20 && c < 0x80) break; /* ASCII non-whitespace */
     size_t adv;
     uint32_t cp = scr_utf8_decode(p + b, &adv);
     if (!scr_is_js_whitespace(cp)) break;
     b += adv;
   }
   while (e > b) {
+    unsigned char c = (unsigned char)p[e - 1];
+    if (c > 0x20 && c < 0x80) break; /* ASCII non-whitespace */
     size_t cs = e - 1; /* back up to the lead byte of the last char */
     while (cs > b && ((unsigned char)p[cs] & 0xC0) == 0x80) cs--;
     size_t adv;
@@ -1817,37 +1834,18 @@ double scr_string_to_number(ScrStr *s) {
     return scr_digits_to_double(p + dig_start, i - dig_start, radix);
   }
   /* StrDecimalLiteral, whole-span: [+-]? (Infinity | digits [. digits*]
-   * | . digits) ([eE][+-]?digits)? — nothing before, nothing after. */
-  size_t i = 0;
-  double sign = 1.0;
-  if (p[0] == '+' || p[0] == '-') {
-    if (p[0] == '-') sign = -1.0;
-    i = 1;
-  }
+   * | . digits) ([eE][+-]?digits)? — nothing before, nothing after. The
+   * digit grammar and Clinger's exact fast path share one scan
+   * (scr_decimal_scan, scr_number.c); valid spans it cannot convert exactly
+   * fall through to strtod. */
+  size_t i = (p[0] == '+' || p[0] == '-') ? 1 : 0;
   if (n - i == 8 && memcmp(p + i, "Infinity", 8) == 0) {
-    return sign * (double)INFINITY;
+    return p[0] == '-' ? -(double)INFINITY : (double)INFINITY;
   }
-  size_t int_digits = 0, frac_digits = 0;
-  while (i < n && p[i] >= '0' && p[i] <= '9') {
-    i++;
-    int_digits++;
-  }
-  if (i < n && p[i] == '.') {
-    i++;
-    while (i < n && p[i] >= '0' && p[i] <= '9') {
-      i++;
-      frac_digits++;
-    }
-  }
-  if (int_digits == 0 && frac_digits == 0) return NAN; /* ".", "+", "e5" */
-  if (i < n && (p[i] == 'e' || p[i] == 'E')) {
-    i++;
-    if (i < n && (p[i] == '+' || p[i] == '-')) i++;
-    size_t ed = i;
-    while (i < n && p[i] >= '0' && p[i] <= '9') i++;
-    if (i == ed) return NAN; /* "1e", "1e+" — exponent needs digits */
-  }
-  if (i != n) return NAN; /* trailing garbage ("1_000", "1.2.3", "12px") */
+  double fast;
+  int scanned = scr_decimal_scan(p, n, &fast);
+  if (scanned < 0) return NAN; /* ".", "1e", "1.2.3", "12px", "1_000" */
+  if (scanned > 0) return fast;
   char buf[64];
   char *tmp = n < sizeof(buf) ? buf : malloc(n + 1);
   if (!tmp) scr_oom();

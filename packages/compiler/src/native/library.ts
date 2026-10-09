@@ -1,3 +1,4 @@
+import type { NativeOptimization } from "../backend/optimization.js";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { requireNativeArtifact, runNativeTool } from "../backend/native-tools.js";
@@ -136,7 +137,7 @@ export function linkNativeWasmLibrary(options: {
   programObject: string;
   outputPath: string;
   runtime: NativeRuntimePack;
-  optimization: "release" | "dev";
+  optimization: NativeOptimization;
   exports: string[];
 }): void {
   const { toolchain, runtime } = options;

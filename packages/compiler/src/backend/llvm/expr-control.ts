@@ -70,7 +70,7 @@ export function emitControlExpr(
       return out;
     }
     case "toBool":
-      return { name: host.truthy(host.emitReadReceiver(e.operand)), type: e.type };
+      return { name: host.truthy(host.emitUnionProjection(e.operand)), type: e.type };
     case "logical": {
       // JS value semantics: the result is the deciding operand itself.
       // Left evaluates once, ownership moves into the result slot; when
@@ -488,6 +488,38 @@ export function emitControlExpr(
         throw new InternalCompilerError("llvm emitter bug: nullish union lacks unit arms");
       const fused = emitNullishOptionalChain(host, e);
       if (fused) return fused;
+      if (
+        !typeEquals(e.type, e.left.type) &&
+        (e.left.kind === "varRef" ||
+          host.isStackUnionSource(e.left) ||
+          host.nullableFieldGet(e.left) !== null)
+      ) {
+        // Narrowed shape over a binding or a stack box (`arr[i] ?? d`,
+        // `map.get(k) ?? d`): test the tag and extract the payload (+1).
+        // The box is never retained or released. A binding is borrowed:
+        // no code runs between its read and the extraction, and the
+        // default never touches it. Bindings proven projection-only may
+        // hold stack boxes, which must never reach RC entry points.
+        const l = host.emitUnionProjection(e.left);
+        const ty = host.llType(e.type);
+        const slot = B.slot();
+        B.entryAllocas.push(`${slot} = alloca ${ty}`);
+        const isUnit = host.tagInSet(l.name, unitTags);
+        const lu = B.newLabel("nul.u");
+        const lv = B.newLabel("nul.v");
+        const lj = B.newLabel("nul.j");
+        B.condBr(isUnit, lu, lv);
+        B.startBlock(lu);
+        host.emitBranchInto(slot, e.right);
+        B.br(lj);
+        B.startBlock(lv);
+        B.line(`store ${ty} ${host.unionExtract(l.name, e.type)}, ptr ${slot}`);
+        B.br(lj);
+        B.startBlock(lj);
+        const t = B.tmp();
+        B.line(`${t} = load ${ty}, ptr ${slot}`);
+        return host.own({ name: t, type: e.type });
+      }
       const l = host.emitExpr(e.left);
       host.moveTemp(l);
       const ty = host.llType(e.type);

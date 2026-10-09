@@ -7,6 +7,10 @@
  *
  * SCRIPTC_SAN=1 re-runs every program built with ASan + the runtime RC audit,
  * turning the whole corpus into leak/use-after-free tests (default in CI).
+ *
+ * SCRIPTC_TEST_OPTIMIZATION=speed builds every program with
+ * --optimization=speed; `// @optimization: speed` in a program's directive
+ * head selects it for that program alone.
  */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -40,6 +44,9 @@ const files = shardSelect(
   (f) => f.slice(corpusDir.length + 1),
 );
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
+const laneOptimization = process.env["SCRIPTC_TEST_OPTIMIZATION"];
+if (laneOptimization !== undefined && laneOptimization !== "speed")
+  throw new Error(`SCRIPTC_TEST_OPTIMIZATION must be speed, got ${laneOptimization}`);
 
 // Both children (node and the native binary) inherit this process's env, so
 // corpus programs can read a KNOWN variable value-exactly — not just the
@@ -77,6 +84,16 @@ function expectedExitCode(file: string): number {
  * eval, so Node stays the oracle for island VALUE results. */
 function wantsDynamic(file: string): boolean {
   return directiveHead(file).some((l) => /^\/\/ @dynamic\s*$/.test(l));
+}
+
+/** `// @optimization: speed` in the entry file's directive head (or the
+ * SCRIPTC_TEST_OPTIMIZATION=speed lane): compile with --optimization=speed,
+ * for programs that pin behavior of the size-for-speed code paths. */
+function wantsSpeed(file: string): boolean {
+  return (
+    laneOptimization === "speed" ||
+    directiveHead(file).some((l) => /^\/\/ @optimization:\s*speed\s*$/.test(l))
+  );
 }
 
 /** `// @transform-types` in the entry file's directive head: the Node
@@ -354,11 +371,13 @@ async function compileAndRun(file: string): Promise<RunResult> {
   // Directory tests hash every sibling file so edits to imports bust the cache.
   const inputs = programInputs(file);
   const dynamic = wantsDynamic(file);
+  const speed = wantsSpeed(file);
   const hash = createHash("sha256");
   for (const f of inputs) hash.update(f).update(readFileSync(f));
   const key = hash
     .update(sanitize ? "san" : "plain")
     .update(dynamic ? "dyn" : "")
+    .update(speed ? "speed" : "")
     .digest("hex")
     .slice(0, 16);
   const outDir = join(cacheDir, key);
@@ -369,6 +388,7 @@ async function compileAndRun(file: string): Promise<RunResult> {
     sanitize,
     dynamic,
     backend: "llvm",
+    ...(speed ? { optimization: "speed" as const } : {}),
   });
   if (!result.ok) {
     throw new Error(

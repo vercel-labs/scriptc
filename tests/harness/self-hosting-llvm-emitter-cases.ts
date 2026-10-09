@@ -62,7 +62,7 @@ export function llvmEmitterCases(): LlvmEmitterCase[] {
     "@scr_str_release",
     "@scr_arr_release",
   );
-  find("recursive record trace and teardown").contains.push("@scr_cyc_alloc", "@scr_cyc_free");
+  find("recursive record trace and teardown").contains.push("@scr_cyc_alloc", "@scr_cyc_live");
   find("closure capture boxes").contains.push("@sc_retain_box", "@scr_closure_new");
   find("synchronous callback environment").contains.push(
     "alloca { %ScrClosure, [1 x ptr] }",

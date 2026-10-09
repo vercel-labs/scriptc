@@ -14926,6 +14926,207 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/3138-array-large-storage.ts": {
+   "order": [
+    "<repo>/tests/corpus/3138-array-large-storage.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3139-regex-native-deep-alternatives.ts": {
+   "order": [
+    "<repo>/tests/corpus/3139-regex-native-deep-alternatives.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3140-array-dense-access.ts": {
+   "order": [
+    "<repo>/tests/corpus/3140-array-dense-access.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3141-map-string-key-hash.ts": {
+   "order": [
+    "<repo>/tests/corpus/3141-map-string-key-hash.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3150-integer-remainder.ts": {
+   "order": [
+    "<repo>/tests/corpus/3150-integer-remainder.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3151-array-push-writes.ts": {
+   "order": [
+    "<repo>/tests/corpus/3151-array-push-writes.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3170-number-conversion-fast-paths.ts": {
+   "order": [
+    "<repo>/tests/corpus/3170-number-conversion-fast-paths.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/3171-method-census-data-writes.ts": {
+   "order": [
+    "<repo>/tests/corpus/3171-method-census-data-writes.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4032-inline-rc-fast-paths.ts": {
+   "order": [
+    "<repo>/tests/corpus/4032-inline-rc-fast-paths.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4060-stack-union-reads.ts": {
+   "order": [
+    "<repo>/tests/corpus/4060-stack-union-reads.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4061-nullable-ref-fields.ts": {
+   "order": [
+    "<repo>/tests/corpus/4061-nullable-ref-fields.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4140-array-callback-split-visit.ts": {
+   "order": [
+    "<repo>/tests/corpus/4140-array-callback-split-visit.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4141-array-callback-ambient-receiver/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/4141-array-callback-ambient-receiver/peek.mjs",
+    "<repo>/tests/corpus/4141-array-callback-ambient-receiver/mapper.ts",
+    "<repo>/tests/corpus/4141-array-callback-ambient-receiver/holder.mjs",
+    "<repo>/tests/corpus/4141-array-callback-ambient-receiver/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4142-array-callback-factories.ts": {
+   "order": [
+    "<repo>/tests/corpus/4142-array-callback-factories.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4290-acyclic-immutable-trees.ts": {
+   "order": [
+    "<repo>/tests/corpus/4290-acyclic-immutable-trees.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4291-acyclic-constructor-escapes.ts": {
+   "order": [
+    "<repo>/tests/corpus/4291-acyclic-constructor-escapes.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4292-acyclic-readonly-bypass.ts": {
+   "order": [
+    "<repo>/tests/corpus/4292-acyclic-readonly-bypass.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4293-acyclic-dynamic-writes.ts": {
+   "order": [
+    "<repo>/tests/corpus/4293-acyclic-dynamic-writes.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4294-console-line-sizes.ts": {
+   "order": [
+    "<repo>/tests/corpus/4294-console-line-sizes.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4295-console-template-parts.ts": {
+   "order": [
+    "<repo>/tests/corpus/4295-console-template-parts.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4296-console-glued-long-parts.ts": {
+   "order": [
+    "<repo>/tests/corpus/4296-console-glued-long-parts.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4410-inline-object-allocation.ts": {
+   "order": [
+    "<repo>/tests/corpus/4410-inline-object-allocation.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/array-sort-runtime-comparator.ts": {
+   "order": [
+    "<repo>/tests/corpus/array-sort-runtime-comparator.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/closure-union-locals.ts": {
+   "order": [
+    "<repo>/tests/corpus/closure-union-locals.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/fiber-switch-stress.ts": {
+   "order": [
+    "<repo>/tests/corpus/fiber-switch-stress.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/fiberless-async-ordering.ts": {
+   "order": [
+    "<repo>/tests/corpus/fiberless-async-ordering.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/fiberless-async-unhandled.ts": {
+   "order": [
+    "<repo>/tests/corpus/fiberless-async-unhandled.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/in-array-runtime-index.ts": {
+   "order": [
+    "<repo>/tests/corpus/in-array-runtime-index.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/json-typed-parse-direct.ts": {
+   "order": [
+    "<repo>/tests/corpus/json-typed-parse-direct.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/regex-exec-long-subject.ts": {
+   "order": [
+    "<repo>/tests/corpus/regex-exec-long-subject.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/regex-native-matcher.ts": {
+   "order": [
+    "<repo>/tests/corpus/regex-native-matcher.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/regexp-constructor-repeat.ts": {
+   "order": [
+    "<repo>/tests/corpus/regexp-constructor-repeat.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/timers-clear-many.ts": {
+   "order": [
+    "<repo>/tests/corpus/timers-clear-many.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/4080-optional-read-presence-tests.ts": {
    "order": [
     "<repo>/tests/corpus/4080-optional-read-presence-tests.ts"
@@ -14957,12 +15158,6 @@
    ],
    "diags": []
   },
-  "<repo>/tests/diagnostics/unrelated-class-assertion.ts": {
-   "order": [
-    "<repo>/tests/diagnostics/unrelated-class-assertion.ts"
-   ],
-   "diags": []
-  },
   "<repo>/tests/corpus/4085-generator-loop-close.ts": {
    "order": [
     "<repo>/tests/corpus/4085-generator-loop-close.ts"
@@ -14972,6 +15167,12 @@
   "<repo>/tests/corpus/4086-optional-capture-defaults.ts": {
    "order": [
     "<repo>/tests/corpus/4086-optional-capture-defaults.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/diagnostics/unrelated-class-assertion.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/unrelated-class-assertion.ts"
    ],
    "diags": []
   }

@@ -1189,6 +1189,27 @@ static void scr_http_buf_append(ScrHttpBuf *b, const char *s, size_t n) {
 
 static void scr_http_buf_str(ScrHttpBuf *b, const char *s) { scr_http_buf_append(b, s, strlen(s)); }
 
+/* Decimal digits of v (the status code, Content-Length) without printf. */
+static void scr_http_buf_uint(ScrHttpBuf *b, unsigned long long v) {
+  char digits[24];
+  size_t at = sizeof digits;
+  do {
+    digits[--at] = (char)('0' + v % 10);
+    v /= 10;
+  } while (v != 0);
+  scr_http_buf_append(b, digits + at, sizeof digits - at);
+}
+
+/* ASCII case-insensitive name compare against a lowercase literal. */
+static bool scr_http_name_is(const ScrStr *name, const char *lower) {
+  size_t len = strlen(lower);
+  if (name->len != len) return false;
+  for (size_t i = 0; i < len; i++) {
+    if (tolower((unsigned char)name->data[i]) != lower[i]) return false;
+  }
+  return true;
+}
+
 /* Informational response heads are written with Node's `ascii` encoding.
  * The header validator allows Latin-1 obs-text; collapse its UTF-8 C2/C3
  * spelling back to one wire byte. */
@@ -1327,32 +1348,45 @@ void scr_http_res_write_early_hints(ScrHttpRes *r, ScrArr *pairs /*borrowed*/) {
   free(b.data);
 }
 
+static void scr_http_buf_chunk_end(ScrHttpBuf *b, const ScrHttpTrailers *t) {
+  scr_http_buf_str(b, "0\r\n");
+  for (size_t i = 0; i < t->len; i++) {
+    scr_http_buf_append(b, t->names[i]->data, t->names[i]->len);
+    scr_http_buf_str(b, ": ");
+    scr_http_buf_append(b, t->values[i]->data, t->values[i]->len);
+    scr_http_buf_str(b, "\r\n");
+  }
+  scr_http_buf_str(b, "\r\n");
+}
+
 static void scr_http_send_chunk_end(ScrNetSocket *sock, const ScrHttpTrailers *t) {
   ScrHttpBuf b = {NULL, 0, 0};
-  scr_http_buf_str(&b, "0\r\n");
-  for (size_t i = 0; i < t->len; i++) {
-    scr_http_buf_append(&b, t->names[i]->data, t->names[i]->len);
-    scr_http_buf_str(&b, ": ");
-    scr_http_buf_append(&b, t->values[i]->data, t->values[i]->len);
-    scr_http_buf_str(&b, "\r\n");
-  }
-  scr_http_buf_str(&b, "\r\n");
+  scr_http_buf_chunk_end(&b, t);
   scr_net_sock_write_native(sock, b.data, b.len);
   free(b.data);
 }
 
+/* The Date line has one-second resolution, so it is formatted once per
+ * second and reused (Node caches its utcDate string the same way); SCR_TL
+ * keeps thread-instanced library sessions on their own copy. */
 static void scr_http_buf_date(ScrHttpBuf *b) {
+  static SCR_TL time_t cached_sec = (time_t)-1;
+  static SCR_TL char cached[64];
+  static SCR_TL size_t cached_len;
   time_t now = time(NULL);
-  struct tm tm;
-  gmtime_r(&now, &tm);
-  static const char *days[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
-  static const char *months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-                                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
-  char date[64];
-  snprintf(date, sizeof date, "Date: %s, %02d %s %04d %02d:%02d:%02d GMT\r\n",
-           days[tm.tm_wday], tm.tm_mday, months[tm.tm_mon], tm.tm_year + 1900,
-           tm.tm_hour, tm.tm_min, tm.tm_sec);
-  scr_http_buf_str(b, date);
+  if (now != cached_sec) {
+    struct tm tm;
+    gmtime_r(&now, &tm);
+    static const char *days[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+    static const char *months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    int n = snprintf(cached, sizeof cached, "Date: %s, %02d %s %04d %02d:%02d:%02d GMT\r\n",
+                     days[tm.tm_wday], tm.tm_mday, months[tm.tm_mon], tm.tm_year + 1900,
+                     tm.tm_hour, tm.tm_min, tm.tm_sec);
+    cached_len = n > 0 && (size_t)n < sizeof cached ? (size_t)n : 0;
+    cached_sec = cached_len > 0 ? now : (time_t)-1;
+  }
+  scr_http_buf_append(b, cached, cached_len);
 }
 
 static bool scr_http_header_has_token(const ScrStr *value, const char *token) {
@@ -1381,45 +1415,71 @@ static bool scr_http_header_has_token(const ScrStr *value, const char *token) {
  * Content-Length or Transfer-Encoding (Node's useChunkedEncodingByDefault
  * for 1.1). Header order matches Node's storeHeader: user headers as set,
  * then the injected Date / Connection (+Keep-Alive) / framing header. */
+static bool scr_http_res_build_head(ScrHttpRes *r, long long body_len, ScrHttpBuf *out);
+
 static void scr_http_res_send_head(ScrHttpRes *r, long long body_len) {
   if (r->head_sent) return;
-  int status = r->status > 0 ? r->status : 200;
   if (r->h2_stream != NULL) {
     /* the h2 transport: a HEADERS frame — no HTTP/1 framing headers */
     (void)body_len;
+    int status = r->status > 0 ? r->status : 200;
     scr_http_h2_ops->respond(r->h2_stream, (double)status, r->hnames, r->hvalues,
                              r->nheaders, !r->no_date);
     r->head_sent = true;
     return;
   }
   ScrHttpBuf b = {NULL, 0, 0};
-  char line[96];
-  snprintf(line, sizeof line, "HTTP/1.1 %d ", status);
-  scr_http_buf_str(&b, line);
+  if (!scr_http_res_build_head(r, body_len, &b)) return;
+  if (r->sock) scr_net_sock_write_native(r->sock, b.data, b.len);
+  free(b.data);
+}
+
+/* The HTTP/1 head serialization behind scr_http_res_send_head: fills *out
+ * (caller frees) and commits head_sent/chunked, or throws
+ * ERR_HTTP_TRAILER_INVALID and returns false with nothing to free. Callers
+ * that already hold the body send head and body as one write. */
+static bool scr_http_res_build_head(ScrHttpRes *r, long long body_len, ScrHttpBuf *out) {
+  int status = r->status > 0 ? r->status : 200;
+  ScrHttpBuf b = {NULL, 0, 0};
+  scr_http_buf_str(&b, "HTTP/1.1 ");
+  scr_http_buf_uint(&b, (unsigned long long)status);
+  scr_http_buf_str(&b, " ");
   /* the assigned reason phrase wins (writeHead's statusMessage argument /
    * the res.statusMessage assignment — "" serializes as an empty phrase,
    * Node's "HTTP/1.1 200 " line) */
   if (r->status_msg) scr_http_buf_append(&b, r->status_msg->data, r->status_msg->len);
   else scr_http_buf_str(&b, scr_http_reason(status));
   scr_http_buf_str(&b, "\r\n");
-  bool user_chunked = false;
+  /* One pass serializes the user headers and notes the framing-relevant
+   * names (case-insensitive, as scr_http_res_has_header compares). */
+  bool user_chunked = false, have_date = false, have_connection = false;
+  bool have_len = false, declared_trailer = false;
   for (size_t i = 0; i < r->nheaders; i++) {
-    scr_http_buf_append(&b, r->hnames[i]->data, r->hnames[i]->len);
+    const ScrStr *name = r->hnames[i];
+    scr_http_buf_append(&b, name->data, name->len);
     scr_http_buf_str(&b, ": ");
     scr_http_buf_append(&b, r->hvalues[i]->data, r->hvalues[i]->len);
     scr_http_buf_str(&b, "\r\n");
-    bool transfer = r->hnames[i]->len == 17;
-    for (size_t j = 0; j < 17 && transfer; j++) {
-      if (tolower((unsigned char)r->hnames[i]->data[j]) != "transfer-encoding"[j]) transfer = false;
+    switch (name->len) {
+    case 4: have_date = have_date || scr_http_name_is(name, "date"); break;
+    case 7: declared_trailer = declared_trailer || scr_http_name_is(name, "trailer"); break;
+    case 10: have_connection = have_connection || scr_http_name_is(name, "connection"); break;
+    case 14: have_len = have_len || scr_http_name_is(name, "content-length"); break;
+    case 17:
+      if (scr_http_name_is(name, "transfer-encoding")) {
+        have_len = true;
+        if (scr_http_header_has_token(r->hvalues[i], "chunked")) user_chunked = true;
+      }
+      break;
+    default: break;
     }
-    if (transfer && scr_http_header_has_token(r->hvalues[i], "chunked")) user_chunked = true;
   }
   r->chunked = user_chunked;
-  if (!r->no_date && !scr_http_res_has_header(r, "date")) {
+  if (!r->no_date && !have_date) {
     scr_http_buf_date(&b);
   }
   bool user_close = false;
-  if (scr_http_res_has_header(r, "connection")) {
+  if (have_connection) {
     /* the user's own Connection header decides (already serialized) */
     user_close = true; /* trust their framing intent; keep-alive logic off */
   } else if (r->keep_alive) {
@@ -1428,14 +1488,11 @@ static void scr_http_res_send_head(ScrHttpRes *r, long long body_len) {
     scr_http_buf_str(&b, "Connection: close\r\n");
   }
   (void)user_close;
-  bool have_len = scr_http_res_has_header(r, "content-length") ||
-                  scr_http_res_has_header(r, "transfer-encoding");
-  bool declared_trailer = scr_http_res_has_header(r, "trailer");
   if (!have_len) {
     if (body_len >= 0 && !declared_trailer) {
-      char cl[48];
-      snprintf(cl, sizeof cl, "Content-Length: %lld\r\n", body_len);
-      scr_http_buf_str(&b, cl);
+      scr_http_buf_str(&b, "Content-Length: ");
+      scr_http_buf_uint(&b, (unsigned long long)body_len);
+      scr_http_buf_str(&b, "\r\n");
     } else {
       scr_http_buf_str(&b, "Transfer-Encoding: chunked\r\n");
       r->chunked = true;
@@ -1445,12 +1502,41 @@ static void scr_http_res_send_head(ScrHttpRes *r, long long body_len) {
     static const char msg[] = "Trailers are invalid with this transfer encoding";
     free(b.data);
     scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "ERR_HTTP_TRAILER_INVALID");
-    return;
+    return false;
   }
   scr_http_buf_str(&b, "\r\n");
   r->head_sent = true;
-  if (r->sock) scr_net_sock_write_native(r->sock, b.data, b.len);
-  free(b.data);
+  *out = b;
+  return true;
+}
+
+/* One socket write for [head][body in the response's framing][the final
+ * chunk + trailers when `last` on a chunked body] — Node likewise hands
+ * the implicit head and the first chunk (and end()'s terminator) to the
+ * socket as one write, so a small response is one segment instead of a
+ * head segment followed by a body segment. The bytes are unchanged. */
+static void scr_http_res_emit(ScrHttpRes *r, const ScrHttpBuf *head, const char *data,
+                              size_t len, bool last) {
+  if (!r->sock) return;
+  ScrNetSlice v[4];
+  size_t n = 0;
+  char size[32];
+  ScrHttpBuf tail = {NULL, 0, 0};
+  if (head != NULL && head->len > 0) v[n++] = (ScrNetSlice){head->data, head->len};
+  if (r->chunked) {
+    if (len > 0) {
+      int sn = snprintf(size, sizeof size, "%zx\r\n", len);
+      v[n++] = (ScrNetSlice){size, (size_t)sn};
+      v[n++] = (ScrNetSlice){data, len};
+      scr_http_buf_str(&tail, "\r\n");
+    }
+    if (last) scr_http_buf_chunk_end(&tail, &r->trailers);
+    if (tail.len > 0) v[n++] = (ScrNetSlice){tail.data, tail.len};
+  } else if (len > 0) {
+    v[n++] = (ScrNetSlice){data, len};
+  }
+  scr_net_sock_writev_native(r->sock, v, n);
+  free(tail.data);
 }
 
 /* Writes while corked coalesce here and flush as ONE write when the
@@ -1476,24 +1562,18 @@ static void scr_http_res_write_raw(ScrHttpRes *r, const char *data, size_t len) 
     scr_http_cork_buffer(&r->cork_buf, &r->cork_len, &r->cork_cap, data, len);
     return;
   }
-  if (!r->head_sent) scr_http_res_send_head(r, -1); /* streaming: chunked */
-  if (scr_exc_pending()) return;
   if (r->h2_stream != NULL) {
+    if (!r->head_sent) scr_http_res_send_head(r, -1);
+    if (scr_exc_pending()) return;
     scr_http_h2_ops->write(r->h2_stream, data, len);
     return;
   }
-  if (!r->sock) return;
-  if (r->chunked) {
-    char size[32];
-    snprintf(size, sizeof size, "%zx\r\n", len);
-    if (len > 0) {
-      scr_net_sock_write_native(r->sock, size, strlen(size));
-      scr_net_sock_write_native(r->sock, data, len);
-      scr_net_sock_write_native(r->sock, "\r\n", 2);
-    }
-  } else {
-    scr_net_sock_write_native(r->sock, data, len);
-  }
+  /* streaming: the implicit head (chunked unless the user fixed the
+   * length) leaves with this first chunk */
+  ScrHttpBuf head = {NULL, 0, 0};
+  if (!r->head_sent && !scr_http_res_build_head(r, -1, &head)) return;
+  if (!scr_exc_pending()) scr_http_res_emit(r, &head, data, len, false);
+  free(head.data);
 }
 
 void scr_http_res_write_str(ScrHttpRes *r, ScrStr *data /*borrowed*/) {
@@ -1613,18 +1693,15 @@ static void scr_http_res_end_raw(ScrHttpRes *r, const char *data, size_t len) {
     return;
   }
   if (!r->head_sent) {
-    /* whole body known NOW: Content-Length framing, Node's implicit head */
-    scr_http_res_send_head(r, (long long)len);
+    /* whole body known NOW: Content-Length framing, Node's implicit head,
+     * head + body (+ the chunked terminator) as one write */
+    ScrHttpBuf head = {NULL, 0, 0};
+    if (!scr_http_res_build_head(r, (long long)len, &head)) return;
+    if (!scr_exc_pending()) scr_http_res_emit(r, &head, data, len, r->chunked);
+    free(head.data);
     if (scr_exc_pending()) return;
-    if (r->chunked) {
-      scr_http_res_write_raw(r, data, len);
-      if (r->sock) scr_http_send_chunk_end(r->sock, &r->trailers);
-    } else if (r->sock && len > 0) {
-      scr_net_sock_write_native(r->sock, data, len);
-    }
   } else {
-    scr_http_res_write_raw(r, data, len);
-    if (r->chunked && r->sock) scr_http_send_chunk_end(r->sock, &r->trailers);
+    scr_http_res_emit(r, NULL, data, len, r->chunked);
   }
   if (scr_http_res_expected_length(r, &expected) &&
       (double)r->strict_bytes_written != expected) {
@@ -2196,18 +2273,34 @@ static void scr_http_conn_response_finished(ScrHttpConn *conn, bool keep_alive) 
 /* One parsed header line (name lowercased into the req). */
 static void scr_http_req_add_header(ScrHttpReq *r, const char *name, size_t nlen,
                                      const char *value, size_t vlen) {
-  char *lower = malloc(nlen);
-  if (!lower && nlen > 0) scr_http_oom();
-  for (size_t i = 0; i < nlen; i++) lower[i] = (char)tolower((unsigned char)name[i]);
-  r->hnames = realloc(r->hnames, (r->nheaders + 1) * sizeof *r->hnames);
-  r->hnames_raw = realloc(r->hnames_raw, (r->nheaders + 1) * sizeof *r->hnames_raw);
-  r->hvalues = realloc(r->hvalues, (r->nheaders + 1) * sizeof *r->hvalues);
-  if (!r->hnames || !r->hnames_raw || !r->hvalues) scr_http_oom();
-  r->hnames[r->nheaders] = scr_str_new(lower, nlen);
-  r->hnames_raw[r->nheaders] = scr_str_new(name, nlen);
-  r->hvalues[r->nheaders] = scr_str_new(value, vlen);
-  r->nheaders++;
-  free(lower);
+  size_t n = r->nheaders;
+  /* Geometric growth with the capacity implied by the count (4, 8, 16,
+   * ...): this is the arrays' only appender. */
+  if (n == 0 || (n >= 4 && (n & (n - 1)) == 0)) {
+    size_t cap = n == 0 ? 4 : n * 2;
+    r->hnames = realloc(r->hnames, cap * sizeof *r->hnames);
+    r->hnames_raw = realloc(r->hnames_raw, cap * sizeof *r->hnames_raw);
+    r->hvalues = realloc(r->hvalues, cap * sizeof *r->hvalues);
+    if (!r->hnames || !r->hnames_raw || !r->hvalues) scr_http_oom();
+  }
+  ScrStr *raw = scr_str_new(name, nlen);
+  size_t first_upper = 0;
+  while (first_upper < nlen && !(name[first_upper] >= 'A' && name[first_upper] <= 'Z')) first_upper++;
+  ScrStr *lower;
+  if (first_upper == nlen) {
+    lower = scr_str_retain(raw); /* already lowercase: one immutable string serves both */
+  } else {
+    char small[128];
+    char *buf = nlen <= sizeof small ? small : malloc(nlen);
+    if (!buf) scr_http_oom();
+    for (size_t i = 0; i < nlen; i++) buf[i] = (char)tolower((unsigned char)name[i]);
+    lower = scr_str_new(buf, nlen);
+    if (buf != small) free(buf);
+  }
+  r->hnames[n] = lower;
+  r->hnames_raw[n] = raw;
+  r->hvalues[n] = scr_str_new(value, vlen);
+  r->nheaders = n + 1;
 }
 
 static void scr_http_req_add_trailer(ScrHttpReq *r, const char *name, size_t nlen,

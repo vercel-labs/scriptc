@@ -1,3 +1,4 @@
+import type { NativeOptimization } from "./optimization.js";
 import {
   formatNativeLinkInfo,
   type NativeLinkInfo,
@@ -14,7 +15,7 @@ export async function createNativeLinkInfo(options: {
   target: NativeTargetSpec;
   features: NativeLinkFeatures;
   ffi: FfiProfile | null;
-  optimization?: "release" | "dev";
+  optimization?: NativeOptimization;
   env?: NodeJS.ProcessEnv;
 }): Promise<NativeLinkInfo> {
   if (options.ffi?.frameworks?.length && options.target.platform !== "darwin")

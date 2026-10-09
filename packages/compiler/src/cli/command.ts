@@ -4,6 +4,7 @@ import { parseArgs } from "node:util";
 import { isExactExternalTypeSpecifier } from "../frontend/program.js";
 import { renderDiagnostics } from "../diagnostics/render.js";
 import { renderCoverage } from "../coverage/report.js";
+import { isNativeOptimization } from "../backend/optimization.js";
 import { setProvenanceSources } from "../frontend/provenance-registry.js";
 import type { CliHost, NativeCacheWarmProfile } from "./host.js";
 import { resolveOutputOptions } from "./output-options.js";
@@ -89,8 +90,8 @@ async function main(args: string[], host: CliHost): Promise<number> {
       );
     }
     const optimization = values.optimization;
-    if (optimization !== undefined && optimization !== "release" && optimization !== "dev") {
-      fail(`unknown optimization "${optimization}" (supported: release, dev)\n\n${USAGE}`);
+    if (optimization !== undefined && !isNativeOptimization(optimization)) {
+      fail(`unknown optimization "${optimization}" (supported: release, dev, speed)\n\n${USAGE}`);
     }
     const profileArgs = positionals.slice(2);
     const knownProfiles = new Set<NativeCacheWarmProfile>(["runtime", "tls", "dynamic"]);
@@ -237,8 +238,8 @@ async function main(args: string[], host: CliHost): Promise<number> {
     fail(`unknown backend "${values.backend}" (supported: llvm)\n\n${USAGE}`);
   }
   const optimization = values.optimization;
-  if (optimization !== undefined && optimization !== "release" && optimization !== "dev") {
-    fail(`unknown optimization "${optimization}" (supported: release, dev)\n\n${USAGE}`);
+  if (optimization !== undefined && !isNativeOptimization(optimization)) {
+    fail(`unknown optimization "${optimization}" (supported: release, dev, speed)\n\n${USAGE}`);
   }
   const windowsSubsystem = values["windows-subsystem"];
   if (

@@ -6,6 +6,7 @@ import type {
   CompileRequestOptions,
   CompileRequestResult,
 } from "../compile-types.js";
+import type { NativeOptimization } from "../backend/optimization.js";
 import type { ProvenanceSources } from "../frontend/provenance-registry.js";
 
 export type NativeCacheWarmProfile = "runtime" | "tls" | "dynamic";
@@ -19,7 +20,7 @@ export interface CliHost {
   compileLibrary: (options: CompileLibraryOptions) => Promise<CompileLibraryResult>;
   resolveProvenanceSources: (entry: string) => Promise<ProvenanceSources>;
   warmNativeCaches: (options: {
-    optimization?: "release" | "dev";
+    optimization?: NativeOptimization;
     sanitize: boolean;
     profiles?: NativeCacheWarmProfile[];
   }) => Promise<{

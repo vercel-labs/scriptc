@@ -91,6 +91,8 @@ long scr_obj_live_count(void) { return scr_live_objects; }
 void scr_obj_alloc_note(void) { scr_live_objects++; }
 void scr_obj_free_note(void) { scr_live_objects--; }
 #else
+#undef scr_obj_alloc_note
+#undef scr_obj_free_note
 void scr_obj_alloc_note(void) {}
 void scr_obj_free_note(void) {}
 #endif

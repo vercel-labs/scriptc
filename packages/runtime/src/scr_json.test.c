@@ -1,6 +1,9 @@
 #include "scr_runtime.h"
 #include <assert.h>
 #include <math.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -352,6 +355,145 @@ static void checked_number_storage(void) {
 #endif
 }
 
+/* ── schema-directed parse ──────────────────────────────────────────── */
+
+typedef struct {
+  size_t rc;
+  double qty;
+  ScrStr *sku;
+  uint8_t ok;
+  ScrArr *tags;
+} TestItem;
+
+static long test_items_live;
+
+static void *test_item_new(void) {
+  TestItem *item = calloc(1, sizeof *item);
+  assert(item);
+  item->rc = 1;
+  test_items_live++;
+  return item;
+}
+
+static void *test_item_retain(void *ptr) {
+  ((TestItem *)ptr)->rc++;
+  return ptr;
+}
+
+static void test_item_release(void *ptr) {
+  TestItem *item = ptr;
+  if (!item || --item->rc) return;
+  scr_str_release(item->sku);
+  scr_arr_release(item->tags);
+  test_items_live--;
+  free(item);
+}
+
+static ScrArr *test_tags_new(size_t cap) { return scr_arr_new(SCR_ELEM_STR, cap); }
+static ScrArr *test_list_new(size_t cap) {
+  return scr_arr_new_ref(test_item_retain, test_item_release, NULL, cap);
+}
+static void test_arr_release(void *ptr) { scr_arr_release(ptr); }
+
+static const ScrJsonSchema test_f64 = {SCR_JSCHEMA_F64, 0, NULL, NULL, NULL, NULL, NULL};
+static const ScrJsonSchema test_bool = {SCR_JSCHEMA_BOOL, 0, NULL, NULL, NULL, NULL, NULL};
+static const ScrJsonSchema test_str = {SCR_JSCHEMA_STR, 0, NULL, NULL, NULL, NULL, NULL};
+static const ScrJsonSchema test_tags = {SCR_JSCHEMA_ARR, 0, NULL, &test_str, NULL, test_tags_new, test_arr_release};
+static const ScrJsonSchemaField test_item_fields[] = {
+    {"sku", 3, offsetof(TestItem, sku), &test_str},
+    {"qty", 3, offsetof(TestItem, qty), &test_f64},
+    {"ok", 2, offsetof(TestItem, ok), &test_bool},
+    {"tags", 4, offsetof(TestItem, tags), &test_tags},
+};
+static const ScrJsonSchema test_item = {SCR_JSCHEMA_REC, 4, test_item_fields, NULL, test_item_new, NULL, test_item_release};
+static const ScrJsonSchema test_list = {SCR_JSCHEMA_ARR, 0, NULL, &test_item, NULL, test_list_new, test_arr_release};
+
+static bool str_is(const ScrStr *s, const char *text) {
+  return s->len == strlen(text) && memcmp(s->data, text, s->len) == 0;
+}
+
+static ScrArr *schema_parse(const char *text) {
+  ScrStr *input = scr_str_new(text, strlen(text));
+  ScrArr *list = scr_json_parse_schema(input, &test_list);
+  scr_str_release(input);
+  assert(!scr_exc_pending()); /* declining never throws */
+  return list;
+}
+
+static void json_schema_parse(void) {
+#ifdef SCR_RC_AUDIT
+  long strings = scr_str_live_count();
+#endif
+  ScrArr *list = schema_parse(
+      " [ {\"sku\":\"a\",\"qty\":1.5,\"ok\":true,\"tags\":[\"x\",\"y\\n\"]} ,"
+      "{\"tags\":[],\"ok\":false,\"extra\":{\"n\":[1,\"s\\u00e9\",null,true,-2e-3,{}]},"
+      "\"qty\":-0,\"\\u0073ku\":\"\\ud83d\\ude00\"} ] ");
+  assert(list && list->len == 2 && test_items_live == 2);
+  TestItem *first = scr_arr_get_ref(list, 0);
+  assert(first->qty == 1.5 && first->ok == 1 && str_is(first->sku, "a"));
+  assert(first->tags->len == 2);
+  ScrStr *tag = scr_arr_get_ref(first->tags, 1);
+  assert(str_is(tag, "y\n"));
+  scr_str_release(tag);
+  test_item_release(first);
+  TestItem *second = scr_arr_get_ref(list, 1);
+  assert(second->qty == 0 && signbit(second->qty) && second->ok == 0 && second->tags->len == 0);
+  assert(str_is(second->sku, "\xF0\x9F\x98\x80"));
+  test_item_release(second);
+  scr_arr_release(list);
+  assert(test_items_live == 0);
+
+  list = schema_parse("[]");
+  assert(list && list->len == 0);
+  scr_arr_release(list);
+
+  /* Inputs the checked-dynamic route might reject or read differently
+   * decline without throwing and release every partial value. */
+  static const char *const declined[] = {
+      "",
+      "   ",
+      "{}",
+      "[null]",
+      "[{\"sku\":\"a\",\"qty\":1,\"ok\":true}]",                         /* missing */
+      "[{\"sku\":\"a\",\"qty\":1,\"ok\":true,\"tags\":[],\"qty\":2}]",   /* duplicate */
+      "[{\"sku\":\"a\",\"qty\":\"1\",\"ok\":true,\"tags\":[]}]",         /* kind */
+      "[{\"sku\":\"a\",\"qty\":1,\"ok\":true,\"tags\":[\"t\",7]}]",      /* nested kind */
+      "[{\"sku\":\"a\",\"qty\":1,\"ok\":true,\"tags\":[]},{\"sku\":\"b\"",  /* truncated */
+      "[{\"sku\":\"a\",\"qty\":1,\"ok\":true,\"tags\":[]},]",            /* trailing comma */
+      "[{\"sku\":\"a\",\"qty\":1,\"ok\":true,\"tags\":[]}] x",           /* trailing content */
+      "[{\"sku\":\"a\",\"qty\":01,\"ok\":true,\"tags\":[]}]",            /* number syntax */
+      "[{\"sku\":\"a\",\"qty\":1,\"ok\":tru,\"tags\":[]}]",              /* literal */
+      "[{\"sku\":\"a\\q\",\"qty\":1,\"ok\":true,\"tags\":[]}]",          /* escape */
+      "[{\"sku\":\"a\",\"x\":\"\\u12\",\"qty\":1,\"ok\":true,\"tags\":[]}]", /* skipped escape */
+      "[{\"sku\":\"a\",\"x\":[1,],\"qty\":1,\"ok\":true,\"tags\":[]}]",  /* skipped syntax */
+      "[{\"sku\":\"a\",\"x\":{\"k\" 1},\"qty\":1,\"ok\":true,\"tags\":[]}]",
+      "[{\"sku\":\"a\nb\",\"qty\":1,\"ok\":true,\"tags\":[]}]",          /* control */
+      "[{\"sku\":\"a\",\"qty\":1,\"ok\":true,\"tags\":[]} {}]",
+  };
+  for (size_t i = 0; i < sizeof declined / sizeof *declined; i++) {
+    assert(!schema_parse(declined[i]));
+    assert(test_items_live == 0);
+  }
+
+  /* Nesting beyond the checked parser's limit declines (it reports the
+   * RangeError); nesting within it is skipped. */
+  for (int depth = 999; depth <= 1001; depth++) {
+    char text[2200];
+    size_t n = 0;
+    n += (size_t)snprintf(text + n, sizeof text - n, "[{\"x\":");
+    for (int i = 0; i < depth - 2; i++) text[n++] = '[';
+    for (int i = 0; i < depth - 2; i++) text[n++] = ']';
+    n += (size_t)snprintf(text + n, sizeof text - n, ",\"sku\":\"a\",\"qty\":1,\"ok\":true,\"tags\":[]}]");
+    ScrArr *parsed = schema_parse(text);
+    assert((parsed != NULL) == (depth <= 1000));
+    scr_arr_release(parsed);
+  }
+  assert(test_items_live == 0);
+#ifdef SCR_RC_AUDIT
+  assert(scr_str_live_count() == strings);
+#endif
+}
+
 int main(void) {
   json_string_boundaries();
   json_indent_ownership();
@@ -360,6 +502,7 @@ int main(void) {
   shared_property_keys();
   checked_leaf_cycles();
   checked_number_storage();
+  json_schema_parse();
   /* Native Set boxes may own headerless scalar/string maps. Collecting an
    * enclosing cycle must neither trace those leaves nor skip their release. */
   for (int i = 0; i < 2000; i++) {

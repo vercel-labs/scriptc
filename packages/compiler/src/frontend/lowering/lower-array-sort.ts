@@ -8,6 +8,7 @@ import {
   type IrStmt,
   type IrType,
   JSVAL,
+  VOID,
   type SrcLoc,
   arrayOf,
   funcOf,
@@ -304,6 +305,7 @@ export function buildArraySortFn(
   copyFirst: boolean,
   undefinedTag: number | null,
   loc: SrcLoc,
+  native = false,
 ): IrFunction {
   const b = new SortIr(loc);
   const arrT = arrayOf(elem),
@@ -379,7 +381,24 @@ export function buildArraySortFn(
     ]),
     // Sort only the compacted prefix. The tail is overwritten with undefined
     // for toSorted, or released with this private snapshot for sort.
-    ...stableSort(b, src, valueCount, greater),
+    // The runtime runs the same algorithm over raw slots when the element
+    // ABI allows it (isSortValuesElement).
+    ...(native
+      ? [
+          {
+            kind: "exprStmt" as const,
+            expr: {
+              kind: "arrIntrinsic" as const,
+              method: "sortValues" as const,
+              receiver: src,
+              args: [valueCount, f],
+              type: VOID,
+              loc,
+            },
+            loc,
+          },
+        ]
+      : stableSort(b, src, valueCount, greater)),
     ...(copyFirst
       ? []
       : [b.loop(index, b.num(0), valueCount, [b.set(a, index, b.at(src, index))])]),

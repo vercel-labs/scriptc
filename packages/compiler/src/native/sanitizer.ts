@@ -1,10 +1,11 @@
+import type { NativeOptimization } from "../backend/optimization.js";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { NativeCodegenError } from "../backend/native-codegen-core.js";
 import { requireNativeArtifact, runNativeTool } from "../backend/native-tools.js";
 import type { NativeRuntimePack, NativeRuntimeSelection } from "../backend/runtime-pack-native.js";
-import type { RuntimePackMode } from "../backend/runtime-pack-core.js";
+import { runtimePackFlavorKey, type RuntimePackMode } from "../backend/runtime-pack-core.js";
 import { QJS_ENGINE_SOURCES, LRE_SOURCES, ZLIB_SOURCES } from "../backend/vendor-inputs.js";
 import { contentDigest, type NativeCache } from "./cache.js";
 import type { NativeToolchain } from "./toolchain.js";
@@ -25,7 +26,7 @@ export function sanitizerDriver(toolchain: NativeToolchain): string {
 
 export function sanitizerFlags(
   toolchain: NativeToolchain,
-  optimization: "release" | "dev",
+  optimization: NativeOptimization,
 ): string[] {
   return [
     "-target",
@@ -117,20 +118,8 @@ export function buildSanitizedRuntime(
     }
     return output;
   };
-  const key = mode === "executable" ? selection.flavor : mode + "-" + selection.flavor;
-  const flavors = selection.manifest.flavors;
-  const flavor =
-    mode === "library"
-      ? selection.flavor === "dev"
-        ? flavors["library-dev"]
-        : flavors["library-release"]
-      : mode === "library-thread"
-        ? selection.flavor === "dev"
-          ? flavors["library-thread-dev"]
-          : flavors["library-thread-release"]
-        : selection.flavor === "dev"
-          ? flavors.dev
-          : flavors.release;
+  const key = runtimePackFlavorKey(selection.manifest, selection.flavor, mode);
+  const flavor = selection.manifest.flavors[key];
   if (flavor === undefined) throw new NativeCodegenError("SC3003", `runtime pack lacks ${key}`);
   const wanted = new Set(selection.selected.runtime.map((artifact) => artifact.path));
   const common = [

@@ -174,9 +174,17 @@ export function classPrototypeData(
     const helper = lowerer.liftedFns.find((fn) => fn.name === info.def.prototypeDataHelper)!;
     const value = varRef(`%g.${info.def.prototypeDataHelper}`, DYN, loc);
     // Materialize only observed method slots. Own declarations stop lookup
-    // at the correct prototype even if an ancestor is replaced later.
+    // at the correct prototype even if an ancestor is replaced later. An
+    // abstract declaration emits no prototype member in JavaScript, so it
+    // gets no slot: lookup continues to the ancestors, and the concrete
+    // descendants' prototypes carry the implementations.
     for (const [method, access] of lowerer.prototypeMethodAccesses) {
-      if (!info.methods.has(method) || method.startsWith("get:") || method.startsWith("set:"))
+      if (
+        !info.methods.has(method) ||
+        info.methods.get(method)?.abstract ||
+        method.startsWith("get:") ||
+        method.startsWith("set:")
+      )
         continue;
       const compiled = classMethodValue(lowerer, access, info, method, locOf(access));
       if (!compiled) continue;

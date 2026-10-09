@@ -17,10 +17,37 @@ export interface LocalUnionStorageProof {
   ownerType: IrType | null;
 }
 
-function supportedSource(expr: IrExpr, unions: ReadonlyMap<string, IrUnionDef>): boolean {
+/** A union source the local can snapshot with its own payload owner:
+ * wraps and map reads (existing owners), nullable-pointer field reads, and
+ * copies of another binding of the same union (both retain the payload). */
+export type CopiedUnionSource = (expr: IrExpr) => boolean;
+
+function isUnionCopy(expr: IrExpr, type: IrType): boolean {
+  return (
+    expr.kind === "varRef" &&
+    expr.type.kind === "union" &&
+    type.kind === "union" &&
+    expr.type.unionId === type.unionId
+  );
+}
+
+function supportedSource(
+  expr: IrExpr,
+  type: IrType,
+  unions: ReadonlyMap<string, IrUnionDef>,
+  nullableField: CopiedUnionSource,
+): boolean {
   if (expr.kind === "ternary")
-    return supportedSource(expr.then, unions) && supportedSource(expr.else_, unions);
-  return canStackUnion(expr, unions) || matchMapRead(expr, unions) !== null;
+    return (
+      supportedSource(expr.then, type, unions, nullableField) &&
+      supportedSource(expr.else_, type, unions, nullableField)
+    );
+  return (
+    canStackUnion(expr, unions) ||
+    matchMapRead(expr, unions) !== null ||
+    nullableField(expr) ||
+    isUnionCopy(expr, type)
+  );
 }
 
 /** A local box may change tags without escaping. Reject a binding as a
@@ -31,7 +58,9 @@ export function findLocalUnionStorage(
   fn: IrFunction,
   lifetimes: CallLifetimes,
   unions: ReadonlyMap<string, IrUnionDef>,
+  nullableField: CopiedUnionSource = () => false,
 ): Map<string, LocalUnionStorageProof> {
+  const types = new Map(fn.locals.map((local) => [local.id, local.type]));
   const result = new Map<string, LocalUnionStorageProof>();
   const safe = lifetimes.projectedLocals.get(fn.name);
   if (!safe?.size) return result;
@@ -47,7 +76,9 @@ export function findLocalUnionStorage(
     stmt: (stmt) => {
       if (stmt.kind === "varDecl" || stmt.kind === "assign") {
         const value = stmt.kind === "varDecl" ? stmt.init : stmt.value;
-        if (!value || !supportedSource(value, unions)) result.delete(stmt.localId);
+        const type = types.get(stmt.localId);
+        if (!value || !type || !supportedSource(value, type, unions, nullableField))
+          result.delete(stmt.localId);
       }
       return true;
     },
@@ -112,7 +143,37 @@ export function storeLocalUnion(
   }
   let source: string;
   let owner = "null";
-  if (canStackUnion(expr, host.unionsById)) {
+  if (host.nullableFieldGet(expr) !== null) {
+    const copied = host.emitOwnedNullableStack(expr);
+    source = copied.box;
+    owner = copied.owner.name;
+    host.moveTemp(copied.owner);
+  } else if (expr.kind === "varRef" && !canStackUnion(expr, host.unionsById)) {
+    // A copy of another binding: snapshot the tag and bits, and retain the
+    // reference payload (scalar and unit arms own nothing).
+    source = host.emitReadReceiver(expr).name;
+    if (storage.ownerType) {
+      const def = host.unionsById.get(expr.type.kind === "union" ? expr.type.unionId : "")!;
+      const refTag = def.arms.findIndex(isRefCounted);
+      // Not every retain entry point is NULL-tolerant: branch on the tag.
+      const tag = host.unionTag(source);
+      const isRef = B.tmp(),
+        held = B.slot();
+      B.entryAllocas.push(`${held} = alloca ptr`);
+      const yes = B.newLabel("union.copy.ref"),
+        join = B.newLabel("union.copy.join");
+      B.line(`store ptr null, ptr ${held}`);
+      B.line(`${isRef} = icmp eq i32 ${tag}, ${refTag}`);
+      B.condBr(isRef, yes, join);
+      B.startBlock(yes);
+      const retained = host.retainValue(host.unionPeek(source), storage.ownerType);
+      B.line(`store ptr ${retained}, ptr ${held}`);
+      B.br(join);
+      B.startBlock(join);
+      owner = B.tmp();
+      B.line(`${owner} = load ptr, ptr ${held}`);
+    }
+  } else if (canStackUnion(expr, host.unionsById)) {
     const wrapped = emitStackUnion(host, expr);
     source = wrapped.value.name;
     if (wrapped.payload) {

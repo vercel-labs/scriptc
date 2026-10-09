@@ -32,6 +32,7 @@ const RUNTIME_SOURCES = [
   "scr_async.c",
   "scr_child.c",
   "scr_cycle.c",
+  "scr_alloc.c",
 ].map((f) => join(srcDir, f));
 
 // Full runtime smoke under ASan + the RC audit: proves the API works and the

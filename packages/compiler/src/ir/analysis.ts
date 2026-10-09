@@ -162,6 +162,11 @@ const BORROW_SAFE_MATH = new Set<IrLibFn>([
   "math.imul",
 ]);
 
+/** A Math lowering that borrows no references and cannot invoke user code. */
+export function isBorrowSafeMath(fn: IrLibFn): boolean {
+  return BORROW_SAFE_MATH.has(fn);
+}
+
 /** Whether an operand preserves a direct receiver binding until its last
  * borrowed use. No user calls or suspension may intervene. This does not
  * prove the operation itself safe to borrow; callers must establish that

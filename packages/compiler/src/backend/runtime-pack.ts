@@ -1,3 +1,4 @@
+import type { NativeOptimization } from "./optimization.js";
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -35,7 +36,7 @@ export interface RuntimePackSelection {
   root: string;
   manifestPath: string;
   manifest: RuntimePackManifest;
-  flavor: "release" | "dev";
+  flavor: NativeOptimization;
   features: RuntimeFeatureSet;
   runtimeObjects: string[];
   archives: string[];
@@ -45,6 +46,8 @@ export interface RuntimePackSelection {
   sourceDependencies: NativeArtifactDependency[];
   selectedRuntimeArtifacts: RuntimePackArtifact[];
   selectedArchiveArtifacts: RuntimePackArtifact[];
+  /** Bitcode of the selected runtime units that ship it, in unit order. */
+  selectedRuntimeBitcode: RuntimePackArtifact[];
 }
 
 async function verifyArtifact(root: string, artifact: RuntimePackArtifact): Promise<string> {
@@ -154,7 +157,7 @@ export async function stageRuntimePackArtifacts(selection: RuntimePackSelection)
 export async function loadRuntimePack(options: {
   target: NativeTargetSpec;
   features: NativeLinkFeatures;
-  optimization: "release" | "dev";
+  optimization: NativeOptimization;
   mode?: RuntimePackMode;
   env?: NodeJS.ProcessEnv;
   resolver?: (specifier: string) => string;
@@ -246,5 +249,44 @@ export async function loadRuntimePack(options: {
     sourceDependencies,
     selectedRuntimeArtifacts: selectedVariants,
     selectedArchiveArtifacts: selectedArchives,
+    selectedRuntimeBitcode: selectedVariants.flatMap((variant) =>
+      variant.bitcode === undefined ? [] : [variant.bitcode],
+    ),
+  };
+}
+
+export interface RuntimeBitcodeImport {
+  paths: string[];
+  /** Content digests, in path order, for cache keys. */
+  digests: string[];
+  dependencies: NativeArtifactDependency[];
+}
+
+/** Verified bitcode for the speed-flavor runtime units a program links, for
+ * the helper's available_externally import. Null when the pack ships no
+ * bitcode (no speed flavor, or a speed flavor built without the helper). */
+export async function loadRuntimeBitcode(options: {
+  target: NativeTargetSpec;
+  features: NativeLinkFeatures;
+  env?: NodeJS.ProcessEnv;
+  resolver?: (specifier: string) => string;
+}): Promise<RuntimeBitcodeImport | null> {
+  const pack = await loadRuntimePack({ ...options, optimization: "speed" });
+  // Only a real speed flavor's promoted objects match its bitcode.
+  if (pack.manifest.flavors.speed === undefined || pack.selectedRuntimeBitcode.length === 0)
+    return null;
+  const paths = await Promise.all(
+    pack.selectedRuntimeBitcode.map((artifact) => verifyArtifact(pack.root, artifact)),
+  );
+  let dependencies: NativeArtifactDependency[];
+  try {
+    dependencies = await snapshotDependencies([pack.manifestPath, ...paths]);
+  } catch {
+    throw new RuntimePackError("runtime pack bitcode changed during selection", "invalid");
+  }
+  return {
+    paths,
+    digests: pack.selectedRuntimeBitcode.map((artifact) => artifact.sha256),
+    dependencies,
   };
 }

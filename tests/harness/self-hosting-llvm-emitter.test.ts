@@ -28,6 +28,7 @@ const entry = join(root, "tests/fixtures/self-hosting/llvm-emitter.ts");
 const execFileAsync = promisify(execFile);
 const runOptions = { cwd: root, timeout: 60_000, maxBuffer: 256 * 1024 * 1024 };
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
+const generatedProgram = "scriptc-generated-v1";
 
 function programStderr(stderr: Buffer): string {
   const text = stderr.toString("utf8");
@@ -223,6 +224,10 @@ for (const backend of ["llvm"] as const) {
         await compileC({
           cPath: llvmPath,
           outPath,
+          // Emitted modules are generated programs closed over the runtime
+          // tree, as in compile(): reuse cached runtime objects instead of
+          // rebuilding every runtime unit for each program.
+          cacheIdentity: generatedProgram,
           sanitize,
           optimization: "dev",
           ...executableLinkFeatures(mod, false),
@@ -248,6 +253,7 @@ for (const backend of ["llvm"] as const) {
       await compileC({
         cPath: selfPath,
         outPath: secondStage,
+        cacheIdentity: generatedProgram,
         sanitize,
         optimization: "dev",
         ...executableLinkFeatures(ownIr, false),

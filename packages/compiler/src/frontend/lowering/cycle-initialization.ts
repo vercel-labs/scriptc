@@ -25,7 +25,7 @@ import {
   type IrType,
   type SrcLoc,
 } from "../../ir/ir.js";
-import { everyStmt, transformStmtList } from "../../ir/traverse.js";
+import { everyStmt, mapExprChildren, mapStmtChildren } from "../../ir/traverse.js";
 
 /** One flagged binding: its storage, its flag, and the module bodies whose
  * top-level code only runs after the declaration (no check needed). */
@@ -235,7 +235,6 @@ function rewriteFunction(
     }
   }
   if (active.size === 0) return;
-  const produced = new WeakSet<object>();
   let temps = 0;
   const check = (flag: CycleInitFlag, loc: SrcLoc): IrStmt => {
     const expr: IrExpr = {
@@ -255,9 +254,11 @@ function rewriteFunction(
     fn.locals.push({ id, name: "%cycleInit", type, mutable: false });
     return id;
   };
-  const transform = {
+  // Post-order: children are rewritten before their parent is wrapped, so
+  // a wrapper is never visited again. (No identity set: compiled code
+  // cannot key weak collections by IR records.)
+  const wrap = {
     expr: (e: IrExpr): IrExpr => {
-      if (produced.has(e)) return e;
       if (e.kind !== "varRef" && e.kind !== "incDec" && e.kind !== "assignExpr") return e;
       const flag = active.get(e.localId);
       if (flag === undefined) return e;
@@ -265,7 +266,6 @@ function rewriteFunction(
         const t = temp(e.value.type);
         const value: IrExpr = { kind: "varRef", localId: t, type: e.value.type, loc: e.loc };
         const write: IrExpr = { ...e, value };
-        produced.add(write);
         return {
           kind: "seqExpr",
           stmts: [{ kind: "varDecl", localId: t, init: e.value, loc: e.loc }, check(flag, e.loc)],
@@ -274,11 +274,10 @@ function rewriteFunction(
           loc: e.loc,
         };
       }
-      produced.add(e);
       return { kind: "seqExpr", stmts: [check(flag, e.loc)], result: e, type: e.type, loc: e.loc };
     },
     stmt: (s: IrStmt): IrStmt => {
-      if (produced.has(s) || s.kind !== "assign" || s.initializes) return s;
+      if (s.kind !== "assign" || s.initializes) return s;
       const flag = active.get(s.localId);
       if (flag === undefined) return s;
       const t = temp(s.value.type);
@@ -288,7 +287,6 @@ function rewriteFunction(
         value: { kind: "varRef", localId: t, type: s.value.type, loc: s.loc },
         loc: s.loc,
       };
-      produced.add(write);
       return {
         kind: "block",
         body: [
@@ -300,15 +298,20 @@ function rewriteFunction(
       };
     },
   };
+  const rewriteExpr = (e: IrExpr): IrExpr =>
+    wrap.expr(mapExprChildren(e, rewriteExpr, rewriteStmt));
+  const rewriteStmt = (s: IrStmt): IrStmt =>
+    wrap.stmt(mapStmtChildren(s, rewriteExpr, rewriteStmt));
+  const rewriteList = (list: IrStmt[]): IrStmt[] => list.map(rewriteStmt);
   if (initOf === undefined) {
-    fn.body = transformStmtList(fn.body, transform);
+    fn.body = rewriteList(fn.body);
     return;
   }
   // A module %init: its own bindings stop needing checks once the
   // top-level statement setting their flag completed.
   fn.body = fn.body.map((s) => {
     if (active.size === 0) return s;
-    const out = transformStmtList([s], transform)[0]!;
+    const out = rewriteStmt(s);
     for (const [id, flag] of [...active]) {
       if (flag.module !== initOf) continue;
       const sets = !everyStmt(out, {

@@ -15187,6 +15187,30 @@
     "<repo>/tests/corpus/4081-string-index-unproven.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/4088-class-static-tdz.ts": {
+   "order": [
+    "<repo>/tests/corpus/4088-class-static-tdz.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4089-class-wrapper-tdz.js": {
+   "order": [
+    "<repo>/tests/corpus/4089-class-wrapper-tdz.js"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4090-computed-key-tdz.js": {
+   "order": [
+    "<repo>/tests/corpus/4090-computed-key-tdz.js"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4091-class-evaluation-deferred.ts": {
+   "order": [
+    "<repo>/tests/corpus/4091-class-evaluation-deferred.ts"
+   ],
+   "diags": []
   }
  }
 }

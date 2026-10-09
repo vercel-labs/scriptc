@@ -357,6 +357,21 @@ test.for([
     "function now(run: () => number) { return run(); } const read = now(() => total); const total = 3; console.log(read);",
     ["total"],
   ],
+  // A stored class expression's static initializer runs at its declaration.
+  [
+    "const Tag = class { static label = name(); }; function name(): string { return prefix; } const prefix = 'p'; console.log(Tag.label);",
+    ["prefix"],
+  ],
+  // A returned class's static initializer runs when the wrapper is called.
+  [
+    "function wrap(read: () => number) { return class { static total = read(); }; } const Made = wrap(() => budget); const budget = 2; console.log(Made.total);",
+    ["budget"],
+  ],
+  // A stored method's computed key evaluates with its object literal.
+  [
+    "const shelf = { [Keys.first]() { return 1; } }; const Keys = { first: 'f' }; console.log(shelf);",
+    ["Keys"],
+  ],
   // Object methods under member-chain computed keys are stored, not run.
   [
     "const shelf = { [Symbol.iterator]() { return [size][Symbol.iterator](); } }; const size = 2; console.log([...shelf]);",

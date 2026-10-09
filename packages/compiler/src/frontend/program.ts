@@ -2740,6 +2740,10 @@ function moduleEarlyBindingsOf7(
   // Stored callables, by the name of the binding that stores them.
   const stored = new Set<ts.Node>();
   const storedBy = new Map<string, { name: ts.Identifier; units: ts.Node[] }[]>();
+  // Parts of a stored node that run where it is evaluated: a class's
+  // heritage, computed keys, decorators and static initializers, and a
+  // stored method's computed key.
+  const immediate = new Map<ts.Node, ts.Node[]>();
   const store = (name: ts.Identifier, units: ts.Node[]): void => {
     if (units.length === 0) return;
     for (const u of units) stored.add(u);
@@ -2756,8 +2760,11 @@ function moduleEarlyBindingsOf7(
       ts.isNonNullExpression(e)
     )
       e = e.expression;
-    if (ts.isArrowFunction(e) || ts.isFunctionExpression(e) || ts.isClassExpression(e)) {
+    if (ts.isArrowFunction(e) || ts.isFunctionExpression(e)) {
       units.push(e);
+    } else if (ts.isClassExpression(e)) {
+      units.push(e);
+      immediate.set(e, classSyncParts7(e));
     } else if (ts.isObjectLiteralExpression(e)) {
       for (const p of e.properties) {
         if (
@@ -2767,8 +2774,11 @@ function moduleEarlyBindingsOf7(
         ) {
           // A computed key evaluates where the literal does; a plain
           // member-chain key (`[Equal.symbol]`) runs no user code.
-          if (!ts.isComputedPropertyName(p.name) || memberChainKey7(p.name.expression))
+          if (!ts.isComputedPropertyName(p.name)) units.push(p);
+          else if (memberChainKey7(p.name.expression)) {
             units.push(p);
+            immediate.set(p, [p.name]);
+          }
         } else if (ts.isPropertyAssignment(p)) storedIn(p.initializer, units);
       }
     } else if (ts.isArrayLiteralExpression(e)) {
@@ -2877,7 +2887,10 @@ function moduleEarlyBindingsOf7(
   const work: ts.Node[] = [];
   const visit = (root: ts.Node): void => {
     ts.walkPreorder(root, (node) => {
-      if (node !== root && stored.has(node)) return "skip";
+      if (node !== root && stored.has(node)) {
+        for (const part of immediate.get(node) ?? []) visit(part);
+        return "skip";
+      }
       if (ts.isImportDeclaration(node)) return "skip";
       if (!ts.isIdentifier(node)) return undefined;
       if (!candidateNames.has(node.text) && !storedBy.has(node.text)) return undefined;
@@ -2902,22 +2915,6 @@ function moduleEarlyBindingsOf7(
   const drain = (): void => {
     while (work.length > 0) visit(work.pop()!);
   };
-  /** The parts of a class declaration that run where it is declared. */
-  const classStatics = (c: ts.ClassDeclaration): ts.Node[] => {
-    const parts: ts.Node[] = [...(c.heritageClauses ?? [])];
-    for (const m of c.members) {
-      const memberName = (m as { name?: ts.PropertyName }).name;
-      if (memberName !== undefined && ts.isComputedPropertyName(memberName)) parts.push(memberName);
-      if (ts.isClassStaticBlockDeclaration(m)) parts.push(m);
-      else if (
-        ts.isPropertyDeclaration(m) &&
-        m.initializer !== undefined &&
-        (ts.getCombinedModifierFlags(m) & ts.ModifierFlags.Static) !== 0
-      )
-        parts.push(m.initializer);
-    }
-    return parts;
-  };
   const out: CycleEarlyBinding[] = [];
   const settled = new Set(order.filter((m) => m !== sf));
   let next = 0;
@@ -2935,7 +2932,7 @@ function moduleEarlyBindingsOf7(
     }
   };
   for (const stmt of sf.statements) {
-    if (ts.isClassDeclaration(stmt)) for (const part of classStatics(stmt)) visit(part);
+    if (ts.isClassDeclaration(stmt)) for (const part of classSyncParts7(stmt)) visit(part);
     else if (ts.isVariableStatement(stmt)) {
       // Declarators run in order: a later declarator's initializer cannot
       // observe an earlier binding before it was initialized.
@@ -2996,15 +2993,27 @@ function returnsOnlyClosuresOver7(
       let child: ts.Node = node;
       while (ts.isParenthesizedExpression(child.parent)) child = child.parent;
       const returned = ts.isReturnStatement(child.parent) && child.parent.expression === child;
+      const uses = (part: ts.Node): boolean => {
+        let found = false;
+        ts.walkPreorder(part, (inner) => {
+          if (ts.isIdentifier(inner) && inner.text === paramName) found = true;
+          return found ? "stop" : undefined;
+        });
+        return found;
+      };
       // A returned closure may use the parameter; any other nested
-      // function could escape and run before the result is called.
-      if (returned) return "skip";
-      let uses = false;
-      ts.walkPreorder(node, (inner) => {
-        if (ts.isIdentifier(inner) && inner.text === paramName) uses = true;
-        return uses ? "stop" : undefined;
-      });
-      if (uses) deferred = false;
+      // function could escape and run before the result is called. A
+      // returned class still evaluates its heritage, computed keys,
+      // decorators and static initializers when the callee runs.
+      if (returned) {
+        if (
+          (ts.isClassExpression(node) || ts.isClassDeclaration(node)) &&
+          classSyncParts7(node).some(uses)
+        )
+          deferred = false;
+        return "skip";
+      }
+      if (uses(node)) deferred = false;
       return "skip";
     }
     if (ts.isIdentifier(node) && (node.text === paramName || node.text === "arguments")) {
@@ -3013,6 +3022,31 @@ function returnsOnlyClosuresOver7(
     return undefined;
   });
   return deferred;
+}
+
+/** The parts of a class that run where the class is evaluated: heritage
+ * expressions, decorators, computed member keys, static field
+ * initializers and static blocks. Methods and instance fields wait for a
+ * call or a construction. */
+function classSyncParts7(c: ts.ClassLikeDeclaration): ts.Node[] {
+  const decorators = (n: ts.Node): ts.Node[] =>
+    ((n as { modifiers?: readonly ts.Node[] }).modifiers ?? []).filter(
+      (m) => m.kind === ts.SyntaxKind.Decorator,
+    );
+  const parts: ts.Node[] = [...decorators(c), ...(c.heritageClauses ?? [])];
+  for (const m of c.members) {
+    parts.push(...decorators(m));
+    const memberName = (m as { name?: ts.PropertyName }).name;
+    if (memberName !== undefined && ts.isComputedPropertyName(memberName)) parts.push(memberName);
+    if (ts.isClassStaticBlockDeclaration(m)) parts.push(m);
+    else if (
+      ts.isPropertyDeclaration(m) &&
+      m.initializer !== undefined &&
+      (ts.getCombinedModifierFlags(m) & ts.ModifierFlags.Static) !== 0
+    )
+      parts.push(m.initializer);
+  }
+  return parts;
 }
 
 /** An identifier or a chain of plain property reads. */

@@ -1846,6 +1846,10 @@ export class Lowerer {
    * every name destructured from a present source optional. */
   readonly runtimeOptionalPatternTypes = new Map<ts.Node, IrType>();
   readonly runtimeOptionalReduceTypes = new Map<ts.CallExpression, IrType>();
+  /** Non-null assertions whose value is forwarded into a slot promoted to
+   * hold undefined. `x!` has no runtime effect, so these keep the stored
+   * undefined state instead of trapping before any dereference. */
+  readonly runtimeOptionalAssertions = new Set<ts.NonNullExpression>();
   /** Capture entries and their origin share one mutable box. Normalize each
    * entry to the origin so writes and flow proofs stay synchronized. */
   readonly runtimeOptionalRoots = new Map<IrLocal, IrLocal>();
@@ -3851,6 +3855,50 @@ export class Lowerer {
       }
       return false;
     };
+    // `parent!` passed to a call or bound to a name forwards the value
+    // without reading it: a callee that never dereferences it observes
+    // undefined, as in JavaScript. Only a class value with one undefined
+    // arm qualifies; element reads keep the established bounds trap.
+    const forwardedAssertion = (node: ts.Expression): ts.NonNullExpression | null => {
+      let e = node;
+      while (ts.isParenthesizedExpression(e)) e = e.expression;
+      if (!ts.isNonNullExpression(e)) return null;
+      let operand = e.expression;
+      while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
+      if (ts.isElementAccessExpression(operand) || ts.isNonNullExpression(operand)) return null;
+      const stored = this.mapTypeOf(this.typeOf(e.expression));
+      const asserted = this.mapTypeOf(this.typeOf(e));
+      if (stored?.kind !== "union" || asserted?.kind !== "object") return null;
+      const arms = this.unions.get(stored.unionId)?.arms;
+      if (
+        arms?.length !== 2 ||
+        this.armTag(stored.unionId, UNDEFINED_T) < 0 ||
+        !arms.some((arm) => typeEquals(arm, asserted))
+      )
+        return null;
+      return e;
+    };
+    // `decode(xs[i]!)`: a missing element is passed as undefined in
+    // JavaScript, and the callee may never read it.
+    const forwardedElementAssertion = (node: ts.Expression): ts.NonNullExpression | null => {
+      let e = node;
+      while (ts.isParenthesizedExpression(e)) e = e.expression;
+      if (!ts.isNonNullExpression(e)) return null;
+      let read = e.expression;
+      while (ts.isParenthesizedExpression(read)) read = read.expression;
+      if (!ts.isElementAccessExpression(read)) return null;
+      if (this.mapTypeOf(this.typeOf(read.expression))?.kind !== "array") return null;
+      const element = this.mapTypeOf(this.typeOf(e));
+      if (
+        !element ||
+        element.kind === "void" ||
+        element.kind === "dyn" ||
+        element.kind === "jsval" ||
+        element.kind === "generator"
+      )
+        return null;
+      return e;
+    };
     const isIndexedRead = (node: ts.Expression): boolean => {
       const e = peel(node);
       if (!ts.isElementAccessExpression(e)) return false;
@@ -4355,6 +4403,15 @@ export class Lowerer {
                 provenance?.note("binding", node.name, node.initializer);
                 changed = true;
               }
+            } else if (ts.isIdentifier(node.name)) {
+              const assertion = forwardedAssertion(node.initializer);
+              const symbol = assertion ? symbolOf(node.name) : null;
+              if (assertion && symbol && !optionalSymbols.has(symbol)) {
+                optionalSymbols.add(symbol);
+                this.runtimeOptionalAssertions.add(assertion);
+                provenance?.note("asserted-binding", node.name, node.initializer);
+                changed = true;
+              }
             }
             if (ts.isIdentifier(node.name)) {
               const valueSymbol = ts.isIdentifier(peel(node.initializer))
@@ -4444,6 +4501,31 @@ export class Lowerer {
           const symbol = symbolOf(node.left);
           if (symbol && noteFieldsFrom(symbol, node.right)) {
             provenance?.note("record-copy", node.left, node.right);
+            changed = true;
+          }
+        }
+        if (
+          ts.isBinaryExpression(node) &&
+          node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          ts.isIdentifier(node.left)
+        ) {
+          const assertion = forwardedAssertion(node.right);
+          const symbol = assertion ? symbolOf(node.left) : null;
+          // Only a variable's storage is promoted (see the final pass).
+          const declaration = symbol ? this.checker.valueDeclarationOf(symbol) : undefined;
+          if (
+            assertion &&
+            symbol &&
+            declaration &&
+            ts.isVariableDeclaration(declaration) &&
+            ts.isIdentifier(declaration.name) &&
+            !this.runtimeOptionalAssertions.has(assertion)
+          ) {
+            this.runtimeOptionalAssertions.add(assertion);
+            if (!optionalSymbols.has(symbol)) {
+              optionalSymbols.add(symbol);
+              provenance?.note("asserted-binding", node.left, node.right);
+            }
             changed = true;
           }
         }
@@ -4647,7 +4729,24 @@ export class Lowerer {
                 }
               }
             }
-            if (ts.isSpreadElement(arg) || !mayBeOptional(arg) || !shape) return;
+            if (ts.isSpreadElement(arg) || !shape) return;
+            const assertion = forwardedAssertion(arg) ?? forwardedElementAssertion(arg);
+            if (!assertion && !mayBeOptional(arg)) return;
+            if (assertion) {
+              if (i === restAt) return;
+              // An omittable slot's ABI already holds undefined (an
+              // optional or defaulted parameter applies its own default).
+              if (shape.mode === "omittable") {
+                if (
+                  shape.type.kind === "union" &&
+                  this.armTag(shape.type.unionId, UNDEFINED_T) >= 0
+                )
+                  this.runtimeOptionalAssertions.add(assertion);
+                return;
+              }
+              if (shape.mode !== "required") return;
+              this.runtimeOptionalAssertions.add(assertion);
+            }
             if (i === restAt) {
               // A rest binding always receives an array. An unchecked
               // argument can make its elements undefined, not the pack.
@@ -4910,6 +5009,29 @@ export class Lowerer {
     }
 
     for (const symbol of optionalSymbols) this.runtimeOptionalAssignedSymbols.add(symbol);
+    // `decode(xs[i]!)` into a parameter whose final ABI already holds
+    // undefined: the assertion has no runtime effect, so a missing element
+    // reaches the callee as undefined instead of trapping at the read.
+    for (const sf of sourceFiles) {
+      for (const node of sitesOf(sf)) {
+        if (!ts.isCallExpression(node)) continue;
+        if (!ts.isIdentifier(node.expression) && !ts.isPropertyAccessExpression(node.expression))
+          continue;
+        const symbol = callableSymbolOf(node.expression);
+        const sig = symbol ? signatureBySymbol.get(symbol) : undefined;
+        if (!sig || node.arguments.some(ts.isSpreadElement)) continue;
+        node.arguments.forEach((arg, i) => {
+          let e = arg;
+          while (ts.isParenthesizedExpression(e)) e = e.expression;
+          if (!ts.isNonNullExpression(e) || !isIndexedRead(e.expression)) return;
+          const shape = sig.params[i];
+          if (shape?.mode !== "required" && shape?.mode !== "omittable") return;
+          if (shape.type.kind === "union" && this.armTag(shape.type.unionId, UNDEFINED_T) >= 0)
+            this.runtimeOptionalAssertions.add(e);
+        });
+      }
+    }
+
     provenance?.flush();
   }
 

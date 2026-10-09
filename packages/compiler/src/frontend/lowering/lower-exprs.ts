@@ -18,7 +18,7 @@ import { constituentTypes } from "../ts7/checker.js";
 import { dirname } from "node:path";
 import * as posix from "node:path/posix";
 import type { Lowerer } from "./lowerer.js";
-import { checkedClassAssertion } from "./class-assertions.js";
+import { checkedClassAssertion, checkedClassUnionAssertion } from "./class-assertions.js";
 import { narrowClassUnion, narrowStoredClassValue } from "./class-unions.js";
 import { lowerUnionFieldWrite } from "./expressions/union-field-write.js";
 import { captureContextArguments } from "./function-context.js";
@@ -489,6 +489,15 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   // traps. Sub-union assertions and non-union inners keep their
   // historic erasure (the widening sites re-tag with traps already).
   if (ts.isNonNullExpression(expr)) {
+    // An asserted element read forwarded into a slot that holds undefined
+    // (see analyzeRuntimeOptionalArrayReads) reads without the bounds trap.
+    if (
+      lowerer.runtimeOptionalAssertions.has(expr) &&
+      ts.isElementAccessExpression(expr.expression)
+    ) {
+      const probe = lowerAbsenceProbe(lowerer, expr.expression);
+      if (probe?.type.kind === "union") return probe;
+    }
     const inner = lowerer.lowerExpr(expr.expression);
     if (inner.type.kind === "union") {
       // `!` performs no runtime check: a missing array element stays
@@ -498,9 +507,17 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         assertedElementKeepsUndefined(lowerer, expr)
       )
         return inner;
+      // A forwarded assertion whose destination was promoted to hold
+      // undefined (see analyzeRuntimeOptionalArrayReads), or an equality
+      // operand, keeps the value: `!` performs no runtime check.
+      const target = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      if (
+        lowerer.runtimeOptionalAssertions.has(expr) ||
+        (target?.kind === "object" && isEqualityOperand(expr))
+      )
+        return inner;
       const use = runtimeOptionalUseOf(expr);
       if (runtimeOptionalAssertionErases(lowerer, expr, inner, use)) return inner;
-      const target = lowerer.mapTypeOf(lowerer.typeOf(expr));
       if (target && target.kind !== "union" && !typeEquals(target, inner.type)) {
         const helper = lowerer.narrowedArmHelper(inner.type.unionId, target, loc);
         if (helper) {
@@ -4022,6 +4039,20 @@ function runtimeOptionalElementKey(expr: ts.Expression): string | null {
   return null;
 }
 
+/** An operand of `===`, `!==`, `==` or `!=` (through parentheses). */
+function isEqualityOperand(node: ts.Expression): boolean {
+  let outer: ts.Expression = node;
+  while (ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
+  const parent = outer.parent;
+  return (
+    ts.isBinaryExpression(parent) &&
+    (parent.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+      parent.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
+      parent.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ||
+      parent.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken)
+  );
+}
+
 /** Whether `xs[i]!` lands where an absent element's undefined is
  * representable: array storage (a literal element, a push/unshift
  * argument, an element assignment — arrays record the undefined state),
@@ -4340,13 +4371,31 @@ export function lowerNullishCoalesce(
     lowerer,
     first,
     first === expr ? loc : locOf(first),
-    lowerPresenceOperand(lowerer, first.left),
+    assertedPresenceOperand(lowerer, first.left),
   );
   for (let i = parents.length - 1; i >= 0; i--) {
     const parent = parents[i]!;
     result = lowerNullishPair(lowerer, parent, parent === expr ? loc : locOf(parent), result);
   }
   return result;
+}
+
+/** The left side of `??` (see lowerPresenceOperand). The absence probe
+ * reads optional storage beneath erased assertions; a union assertion that
+ * narrows a stored class arm still applies its checked class view, so
+ * `(node.parent as Sub | undefined) ?? node` sees the asserted arm on both
+ * sides of the default. */
+function assertedPresenceOperand(lowerer: Lowerer, node: ts.Expression): IrExpr {
+  const probe = lowerAbsenceProbe(lowerer, node);
+  if (probe === null)
+    return runtimeOptionalStorageOperand(lowerer, node) ?? lowerer.lowerExpr(node);
+  if (probe.type.kind !== "union" && probe.type.kind !== "object") return probe;
+  let outer = node;
+  while (ts.isParenthesizedExpression(outer)) outer = outer.expression;
+  if (!ts.isAsExpression(outer) && !ts.isTypeAssertion(outer)) return probe;
+  const target = lowerer.mapTypeOf(lowerer.checker.getTypeFromTypeNode(outer.type));
+  if (target?.kind !== "union" || typeEquals(target, probe.type)) return probe;
+  return checkedClassUnionAssertion(lowerer, probe, target, locOf(outer)) ?? probe;
 }
 
 /** A plain value read that may be runtime-optional: an unchecked element
@@ -4489,6 +4538,35 @@ function lowerNullishPair(
         loc,
         () => lowerer.lowerExprExpecting(expr.right, type),
         (stable) => ({ kind: "call", callee: helper, args: [stable], type, loc }),
+      );
+    }
+  }
+  // A subclass value defaulted to a base-class value (`circle ?? shape`):
+  // the present arm upcasts after the original nullish test, and the
+  // default lowers lazily into the base-class result.
+  const present = rest.length === 1 ? rest[0]! : null;
+  if (
+    present?.kind === "object" &&
+    type.kind === "object" &&
+    present.className !== type.className &&
+    lowerer.isSubclassOf(present.className, type.className)
+  ) {
+    const helper = lowerer.narrowedArmHelper(left.type.unionId, present, loc);
+    if (helper !== null) {
+      return nullishBranches(
+        lowerer,
+        left,
+        left.type,
+        def.arms,
+        type,
+        loc,
+        () => lowerer.lowerExprExpecting(expr.right, type),
+        (stable) => ({
+          kind: "upcast",
+          value: { kind: "call", callee: helper, args: [stable], type: present, loc },
+          type,
+          loc,
+        }),
       );
     }
   }
@@ -8865,6 +8943,17 @@ export function lowerAsExpression(
           return { kind: "call", callee: helper, args: [inner], type: target, loc: locOf(expr) };
         }
       }
+    }
+    // `node.parent as Sub | undefined`: a union target whose class arm is
+    // narrower than the stored class gets the same checked class view as
+    // `node.parent as Sub`; the other arms keep their identical tags.
+    if (
+      target?.kind === "union" &&
+      (inner.type.kind === "union" || inner.type.kind === "object") &&
+      !typeEquals(target, inner.type)
+    ) {
+      const asserted = checkedClassUnionAssertion(lowerer, inner, target, locOf(expr));
+      if (asserted) return asserted;
     }
     return inner; // erasure, unchanged
   }

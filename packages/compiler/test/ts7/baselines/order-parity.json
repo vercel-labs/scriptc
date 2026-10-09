@@ -15223,6 +15223,45 @@
     "<repo>/tests/corpus/indexed-element-field-reads.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/const-enum-module-cycle/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/const-enum-module-cycle/flags.ts",
+    "<repo>/tests/corpus/const-enum-module-cycle/rules.ts",
+    "<repo>/tests/corpus/const-enum-module-cycle/limits.ts",
+    "<repo>/tests/corpus/const-enum-module-cycle/main.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/for-of-subclass-elements.ts": {
+   "order": [
+    "<repo>/tests/corpus/for-of-subclass-elements.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/nonnull-forwarded-class-values.ts": {
+   "order": [
+    "<repo>/tests/corpus/nonnull-forwarded-class-values.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/nullish-asserted-class-arms.ts": {
+   "order": [
+    "<repo>/tests/corpus/nullish-asserted-class-arms.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/diagnostics/nullish-class-defaults.ts": {
+   "order": [
+    "<repo>/tests/diagnostics/nullish-class-defaults.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/nonnull-element-arguments.ts": {
+   "order": [
+    "<repo>/tests/corpus/nonnull-element-arguments.ts"
+   ],
+   "diags": []
   }
  }
 }

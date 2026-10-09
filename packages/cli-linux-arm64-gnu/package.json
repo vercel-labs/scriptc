@@ -1,6 +1,6 @@
 {
   "name": "@scriptc/cli-linux-arm64-gnu",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "description": "Native scriptc compiler for linux-arm64-gnu",
   "license": "Apache-2.0",
   "homepage": "https://scriptc.dev",

@@ -1,0 +1,6 @@
+nullish-class-defaults.ts:15:14 - error SC1090: '??' where the default changes the result type (left is 'Ticket | undefined' but the whole expression is 'Voucher' — give both sides one type) is not supported yet
+
+  14 | }
+  15 | const pass = (lookup() as Voucher | undefined) ?? new Voucher();
+     |              ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  16 | console.log(pass.code);

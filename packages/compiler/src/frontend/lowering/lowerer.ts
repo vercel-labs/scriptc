@@ -4014,13 +4014,7 @@ export class Lowerer {
         return true;
       if (ts.isIdentifier(e)) {
         const symbol = symbolOf(e);
-        // A for-of binding over an array that can yield a hole or an
-        // explicit undefined carries that value like an unchecked read.
-        return (
-          symbol !== null &&
-          (optionalSymbols.has(symbol) || iterationSymbols.has(symbol)) &&
-          !provenPresent(e, symbol)
-        );
+        return symbol !== null && optionalSymbols.has(symbol) && !provenPresent(e, symbol);
       }
       if (ts.isPropertyAccessExpression(e)) {
         const symbol = symbolOf(e.name);

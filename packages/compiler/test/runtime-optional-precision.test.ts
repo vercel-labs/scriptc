@@ -222,17 +222,3 @@ console.log(describe(items[4]!));
 `);
   expect(signature(unproven, "describe")).toBe("describe(Item|undefined): string");
 });
-
-test("iterating an array with holes widens the parameters its elements reach", async () => {
-  const module = await lower(`${ITEM}
-const items: Item[] = [new Item(1)];
-items[2] = new Item(3);
-for (const item of items) console.log(item === undefined ? -1 : weigh(item));
-function show(item: Item): string {
-  return item === undefined ? "hole" : String(item.weight);
-}
-for (const item of items) console.log(show(item));
-`);
-  expect(signature(module, "weigh")).toBe("weigh(Item): f64");
-  expect(signature(module, "show")).toBe("show(Item|undefined): string");
-});

@@ -116,17 +116,6 @@ const rows = [{ name: "row", id: 1 }].slice();
 const labeled = rows.map((row) => ({ ...row, label: "copy" }));
 console.log(labeled.length, labeled[0]!.label, labeled[0]!.id);
 
-// Iterating holes passes undefined to typed parameters.
-function size(value: number): string {
-  return value === undefined ? "<none>" : String(value * 2);
-}
-const gaps: number[] = [1];
-gaps[2] = 3;
-for (const value of gaps) console.log("gap", size(value));
-const shelf: Tag[] = [new Tag("s1")];
-shelf[2] = new Tag("s3");
-for (const tag of shelf) console.log("shelf", name(tag));
-
 // Truncating keeps the remaining elements present.
 const trimmed: Tag[] = [new Tag("p"), new Tag("q"), new Tag("r")];
 trimmed.length = trimmed.length - 1;

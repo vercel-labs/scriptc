@@ -8,8 +8,8 @@
     "tiers": {
       "static": {
         "replace-refusal": 42,
-        "verify-gap": 2418,
-        "audit-partial": 746,
+        "verify-gap": 2417,
+        "audit-partial": 747,
         "classify": 2,
         "implement": 80
       },
@@ -66294,12 +66294,14 @@
       "priority": "high",
       "tiers": {
         "static": {
-          "status": "not-implemented",
-          "action": "verify-gap",
-          "verification": "registry-gap",
-          "confidence": "low",
-          "source": "compiler-unmatched:os",
-          "tests": []
+          "status": "partial",
+          "action": "audit-partial",
+          "verification": "test-backed",
+          "confidence": "high",
+          "source": "surface-manifest:node-builtin.os.availableParallelism",
+          "tests": [
+            "tests/corpus/4598-os-available-parallelism.ts"
+          ]
         },
         "dynamic": {
           "status": "partial",

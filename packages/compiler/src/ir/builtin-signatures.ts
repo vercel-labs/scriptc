@@ -432,6 +432,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "os.type": { argTypes: [], result: STRING },
   /** os.totalmem(): total physical memory in bytes. Never throws. */
   "os.totalmem": { argTypes: [], result: F64 },
+  /** os.availableParallelism(): CPUs the process may use (libuv's answer), >= 1. Never throws. */
+  "os.availableParallelism": { argTypes: [], result: F64 },
   /** umask(2): arg < 0 reads without setting (umask has no read-only form
    * — set 0, restore); otherwise sets and answers the PREVIOUS mask.
    * Never throws. */

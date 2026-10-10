@@ -1688,6 +1688,7 @@ declare module "os" {
   export function type(): string;
   /* Total system memory in bytes (sysctl hw.memsize / sysconf). */
   export function totalmem(): number;
+  export function availableParallelism(): number;
   /* The passwd-entry snapshot (uv_os_get_passwd): shell is `string |
    * null` to match @types/node (POSIX always answers the string arm);
    * homedir is pw_dir — NOT os.homedir()'s $HOME-first cascade. The type

@@ -1311,6 +1311,14 @@ export const BUILTIN_MODULE_FNS: Record<
     type: { fn: "os.type", params: [], result: STRING, valueParams: [] },
     // Total physical memory in bytes — same predating-pair story.
     totalmem: { fn: "os.totalmem", params: [], result: F64, valueParams: [] },
+    // uv_available_parallelism: the CPUs this process may use (affinity,
+    // then cgroup quota on Linux), at least 1.
+    availableParallelism: {
+      fn: "os.availableParallelism",
+      params: [],
+      result: F64,
+      valueParams: [],
+    },
     // Entirely special-cased (lowerOsNetworkInterfacesCall): the result is
     // the call site's mapped Dict<NetworkInterfaceInfo[]> shape, verified
     // structurally there — this entry only routes the dispatch.

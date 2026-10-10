@@ -1335,6 +1335,12 @@
       "note": "constant value read"
     },
     {
+      "id": "node-builtin.os.availableParallelism",
+      "kind": "node-builtin",
+      "name": "os.availableParallelism",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.os.homedir",
       "kind": "node-builtin",
       "name": "os.homedir",

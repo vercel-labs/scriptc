@@ -819,9 +819,9 @@
       "apiEntries": 24,
       "static": {
         "supported": 0,
-        "partial": 10,
+        "partial": 11,
         "refused": 0,
-        "not-implemented": 14,
+        "not-implemented": 13,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -83033,7 +83033,8 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1480-os-network-interfaces.ts",
-          "tests/corpus/2917-builtin-callable-widths.ts"
+          "tests/corpus/2917-builtin-callable-widths.ts",
+          "tests/corpus/4598-os-available-parallelism.ts"
         ]
       },
       "dynamic": {
@@ -83279,8 +83280,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:os"
+        "status": "partial",
+        "evidence": "surface-manifest:node-builtin.os.availableParallelism",
+        "tests": [
+          "tests/corpus/4598-os-available-parallelism.ts"
+        ]
       },
       "dynamic": {
         "status": "partial",

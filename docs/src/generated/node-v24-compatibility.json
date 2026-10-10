@@ -746,9 +746,9 @@
       "apiEntries": 24,
       "static": {
         "supported": 0,
-        "partial": 10,
+        "partial": 11,
         "refused": 0,
-        "not-implemented": 14,
+        "not-implemented": 13,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -61038,9 +61038,9 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "detail": "No static compiler lowering is registered for this API yet.",
-        "verification": "registry-gap"
+        "status": "partial",
+        "detail": "Implemented for the call shapes accepted by the compiler lowering.",
+        "verification": "test-backed"
       },
       "dynamic": {
         "status": "partial",

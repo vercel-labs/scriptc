@@ -310,7 +310,10 @@ export class NanCodedReads {
   }
 
   private symbolOf(node: ts.Node): ts.Symbol | null {
-    if (this.symbolCache.has(node)) return this.symbolCache.get(node)!;
+    // A cached null is an answer: `!` would be a checked extraction in a
+    // native build of the compiler.
+    const cached = this.symbolCache.get(node);
+    if (cached !== undefined) return cached;
     const symbol = this.host.symbolOf(node);
     this.symbolCache.set(node, symbol);
     return symbol;
@@ -366,7 +369,8 @@ export class NanCodedReads {
   /** The declaration of a directly called function or method, when every
    * reference to it is a direct call (no value use, no overrides). */
   private eligibleFunction(symbol: ts.Symbol): ts.FunctionLikeDeclaration | null {
-    if (this.fnEligibility.has(symbol)) return this.fnEligibility.get(symbol)!;
+    const known = this.fnEligibility.get(symbol);
+    if (known !== undefined) return known;
     this.fnEligibility.set(symbol, null);
     const decl = this.host.declarationOf(symbol);
     if (!decl || (!ts.isFunctionDeclaration(decl) && !ts.isMethodDeclaration(decl))) return null;
@@ -397,7 +401,8 @@ export class NanCodedReads {
   /** Every call of the function, or null when some reference is not a
    * direct, non-optional call. */
   private directCalls(symbol: ts.Symbol, declName: ts.Identifier): ts.CallExpression[] | null {
-    if (this.callSites.has(symbol)) return this.callSites.get(symbol)!;
+    const known = this.callSites.get(symbol);
+    if (known !== undefined) return known;
     const calls: ts.CallExpression[] = [];
     let ok = true;
     for (const id of this.names.get(declName.text) ?? []) {
@@ -962,7 +967,8 @@ export class NanCodedReads {
 
   /** A function whose every return value is a plain number. */
   private plainReturn(fn: ts.Symbol, depth: number): ValueInfo | null {
-    if (this.pneReturnCache.has(fn)) return this.pneReturnCache.get(fn)!;
+    const known = this.pneReturnCache.get(fn);
+    if (known !== undefined) return known;
     this.pneReturnCache.set(fn, null);
     const decl = this.eligibleFunction(fn);
     if (!decl?.body || !this.host.returnIsNumber(fn)) return null;

@@ -2,6 +2,7 @@ import { preservesDynTest } from "./checked-value-lifetimes.js";
 import { isStableReceiverOperand } from "../../ir/analysis.js";
 import {
   isRefCounted,
+  type IrArrIntrinsicMethod,
   type IrClassDef,
   type IrExpr,
   type IrFunction,
@@ -37,6 +38,25 @@ export function preservesRegexInputs(method: string): boolean {
       return false;
   }
 }
+
+/** Array operations that never release an element or run user code: reads,
+ * copies into fresh arrays, and appends (an append retains the new element
+ * and may move the slot storage, but every element stays referenced).
+ * Removals (pop, shift, splice), truncation and overwrites are absent. */
+const EDGE_PRESERVING_ARRAY_METHODS: ReadonlySet<IrArrIntrinsicMethod> = new Set([
+  "length",
+  "getNumber",
+  "indexEq",
+  "indexOf",
+  "includes",
+  "nextPresent",
+  "join",
+  "slice",
+  "concatSpread",
+  "toReversed",
+  "push",
+  "pushSpread",
+]);
 
 function expressionPreservesEdges(
   e: IrExpr,
@@ -94,6 +114,10 @@ function expressionPreservesEdges(
       );
     case "virtualCall":
       return virtualCall?.(e) ?? false;
+    // A module binding's TDZ check reads its initialization flag and may
+    // throw; it never touches a reference.
+    case "intrinsic":
+      return e.name === "module.tdzCheck";
     case "dynTest":
       return preservesDynTest(e.test);
     case "assignExpr":
@@ -113,12 +137,19 @@ function expressionPreservesEdges(
         e.fn === "error.new" ||
         e.fn === "error.nodeThrow" ||
         e.fn.startsWith("math.") ||
+        // Atomic read-modify-write on an integer typed array (a shared id
+        // counter): numbers only, no callback.
+        e.fn === "atomics.op" ||
         isStableReceiverOperand(e, "")
       );
     case "call":
       return call(e);
     case "arrIntrinsic":
-      return e.method === "length";
+      return EDGE_PRESERVING_ARRAY_METHODS.has(e.method);
+    // A fresh array retains its elements. Spreads keep the conservative
+    // answer (an iterable spread may run an iterator).
+    case "arrayLit":
+      return e.spreads === undefined || e.spreads.length === 0;
     case "bytesIntrinsic":
       return (
         e.method === "get" ||

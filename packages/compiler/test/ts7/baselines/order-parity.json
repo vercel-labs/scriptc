@@ -15754,6 +15754,14 @@
     "<repo>/tests/corpus/4620-optional-chain-borrowed-receivers.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/4621-edge-preserving-callees/main.ts": {
+   "order": [
+    "<repo>/tests/corpus/4621-edge-preserving-callees/compare.ts",
+    "<repo>/tests/corpus/4621-edge-preserving-callees/items.ts",
+    "<repo>/tests/corpus/4621-edge-preserving-callees/main.ts"
+   ],
+   "diags": []
   }
  }
 }

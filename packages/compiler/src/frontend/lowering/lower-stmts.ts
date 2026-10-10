@@ -4901,6 +4901,18 @@ export function lowerVarDecl(
     init.type.kind === "func"
   )
     type = init.type;
+  // A TypeScript lambda whose closure returns the runtime result (a missing
+  // read, a `??` default of another type) instead of the checker's bare
+  // return type: the binding keeps the checker's parameters and takes the
+  // closure's result.
+  if (
+    !decl.type &&
+    type?.kind === "func" &&
+    init.type.kind === "func" &&
+    (ts.isArrowFunction(decl.initializer) || ts.isFunctionExpression(decl.initializer)) &&
+    lowerer.runtimeOptionalFunctionReturns.has(decl.initializer)
+  )
+    type = { ...type, ret: init.type.ret };
   if (
     lowerer.implicitParamTypes !== null &&
     init.type.kind === "dyn" &&

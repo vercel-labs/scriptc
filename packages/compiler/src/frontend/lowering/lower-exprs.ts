@@ -2595,6 +2595,10 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
         lowerer.isRuntimeOptionalField(handled.shapeId, handled.field)
       )
         return handled;
+      // A class field assigned a missing read: the checker narrows this
+      // read to the assigned value's bare type, but the stored undefined
+      // arm is real (`obj.n = bytes[i]; obj.n` is undefined in Node).
+      if (runtimeOptionalClassField(lowerer, handled, expr)) return handled;
       return lowerer.maybeNarrow(handled, expr);
     }
     // `globalThis.<name>` that no lowering above claimed
@@ -6487,6 +6491,33 @@ export function lowerOptionalNumber(
     : { kind: "seqExpr", stmts: prefix, result: value, type: F64, loc };
 }
 
+/** A number argument of a builtin that converts it with ToNumber (Math
+ * functions, String.fromCharCode, the global isNaN/isFinite, DataView
+ * offsets and values). ToNumber(undefined) is NaN, so a missing value — an
+ * out-of-range read, a local or field holding one, or a hole — converts to
+ * NaN instead of trusting the checker's number type. */
+export function lowerToNumberArgument(lowerer: Lowerer, node: ts.Expression): IrExpr {
+  let inner = node;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  const loc = locOf(inner);
+  const isOptionalNumber = (value: IrExpr): boolean =>
+    value.type.kind === "union" &&
+    lowerer.armTag(value.type.unionId, UNDEFINED_T) >= 0 &&
+    lowerer.stripUndefinedArm(value.type).kind === "f64";
+  const optional = ts.isIdentifier(inner)
+    ? runtimeOptionalStorageOperand(lowerer, inner)
+    : ts.isElementAccessExpression(inner)
+      ? lowerAbsenceProbe(lowerer, inner)
+      : null;
+  if (optional && isOptionalNumber(optional))
+    return lowerOptionalNumber(lowerer, optional, loc, inner);
+  // A conditional builds each branch for the destination.
+  if (ts.isConditionalExpression(inner)) return lowerer.lowerExprExpecting(node, F64);
+  const value = lowerer.lowerExpr(node);
+  if (isOptionalNumber(value)) return lowerOptionalNumber(lowerer, value, loc, inner);
+  return lowerer.coerceInto(node, value, F64);
+}
+
 /** `a[i]` reads. Only f64 indices into array receivers are modeled; JS
  * string-key element access (`a["length"]`) and string indexing (`s[0]`
  * typechecks against the lib's index signature; use .charAt) stay out. */
@@ -7593,6 +7624,24 @@ export function runtimeOptionalStorageOperand(
   )
     return null;
   return optional.value;
+}
+
+/** A `T | undefined` class field read that the checker narrowed to `T`
+ * where the field was assigned a value that may be missing (an unchecked
+ * indexed read). TypeScript's assignment narrowing is not a runtime fact
+ * there, so the read keeps the stored union instead of extracting `T`. */
+function runtimeOptionalClassField(
+  lowerer: Lowerer,
+  value: IrExpr,
+  node: ts.PropertyAccessExpression,
+): boolean {
+  if (value.kind !== "fieldGet" || value.type.kind !== "union") return false;
+  if (lowerer.armTag(value.type.unionId, UNDEFINED_T) < 0) return false;
+  if ((lowerer.unions.get(value.type.unionId)?.arms.length ?? 0) !== 2) return false;
+  const symbol = lowerer.checker.getSymbolAtLocation(node.name);
+  if (!symbol || !lowerer.runtimeOptionalAssignedSymbols.has(symbol)) return false;
+  const narrowed = lowerer.mapTypeOf(lowerer.typeOf(node));
+  return narrowed !== null && typeEquals(narrowed, lowerer.stripUndefinedArm(value.type));
 }
 
 /** A presence-test operand: an absence-aware element or field read, an
@@ -14380,6 +14429,15 @@ function classFieldTarget(
   const lowerObjectReceiver = (): IrExpr => {
     let obj = represented;
     if (obj.type.kind === "union") {
+      // A receiver that may hold a missing value (a field assigned an
+      // unchecked read): Node's member-read TypeError for the unit arm.
+      const present = lowerer.runtimeOptionalPropertyReceiver(
+        receiverNode,
+        obj,
+        receiverType,
+        fieldName,
+      );
+      if (present) return present;
       const helper = lowerer.narrowedArmHelper(obj.type.unionId, receiverType, locOf(receiverNode));
       obj = helper
         ? lowerer.checkedNarrowCall(helper, obj, receiverType, locOf(receiverNode))

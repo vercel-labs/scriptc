@@ -32,6 +32,7 @@ import {
   lowerStaticallyUndefinedArgument,
 } from "../optional-arguments.js";
 import { lowerCheckedArrayFrom } from "./array-construction.js";
+import { lowerToNumberArgument } from "../lower-exprs.js";
 
 /** Uint8Array.prototype.toSorted. The receiver/comparator expressions are
  * evaluated before entering the helper; the helper snapshots with
@@ -486,7 +487,16 @@ export function lowerBytesMethodCall(
       lowerer.noLowering(`.${name} with ${nArgs} arguments on typed arrays`, call);
     }
     const receiver = lowerer.lowerExprExpecting(access.expression, receiverIr);
-    const args = call.arguments.map((a) => lowerer.lowerExprExpecting(a, F64));
+    // A missing start is 0 and a missing end is the length (+Infinity
+    // clamps to it), as for omitted arguments.
+    const args = call.arguments.map((a, i) =>
+      lowerOptionalArgument(lowerer, a, F64, {
+        kind: "numLit",
+        value: i === 0 ? 0 : Infinity,
+        type: F64,
+        loc,
+      }),
+    );
     // subarray is a VIEW (TypedArray.prototype.subarray aliases), and
     // Buffer's slice() is subarray's deprecated Node alias — resolved by
     // where the member is declared, the toString discipline below. Only
@@ -796,7 +806,8 @@ export function lowerBytesMethodCall(
       lowerer.noLowering(`.${name} with ${nArgs} arguments`, call);
     }
     const receiver = lowerer.lowerExprExpecting(access.expression, receiverIr);
-    const args = [lowerer.lowerExprExpecting(call.arguments[0]!, F64)];
+    // ToIndex(undefined) is ToIndex(NaN): a missing offset reads offset 0.
+    const args = [lowerToNumberArgument(lowerer, call.arguments[0]!)];
     if (nArgs === 2) args.push(lowerer.lowerExprExpecting(call.arguments[1]!, BOOL));
     return { kind: "bytesIntrinsic", method: dvGetter.method, receiver, args, type: F64, loc };
   }
@@ -829,9 +840,11 @@ export function lowerBytesMethodCall(
       lowerer.noLowering(`.${name} with ${nArgs} arguments`, call);
     }
     const receiver = lowerer.lowerExprExpecting(access.expression, receiverIr);
+    // The offset (ToIndex) and the value (ToNumber) treat a missing value
+    // as NaN.
     const args = [
-      lowerer.lowerExprExpecting(call.arguments[0]!, F64),
-      lowerer.lowerExprExpecting(call.arguments[1]!, F64),
+      lowerToNumberArgument(lowerer, call.arguments[0]!),
+      lowerToNumberArgument(lowerer, call.arguments[1]!),
     ];
     if (nArgs === 3) args.push(lowerer.lowerExprExpecting(call.arguments[2]!, BOOL));
     return { kind: "bytesIntrinsic", method: dvSetter.method, receiver, args, type: VOID, loc };

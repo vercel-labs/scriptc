@@ -107,8 +107,10 @@ import { lowerProcStreamMethodCall } from "./builtins/process.js";
 import { lowerReflectCall } from "./builtins/reflection.js";
 import {
   lowerAbsenceProbe,
+  lowerOptionalNumber,
   lowerPromiseAllTupleCall,
   lowerPromiseRejectCall,
+  lowerToNumberArgument,
   stringWrapperToString,
   symbolFieldInfo,
   templateRawTextOf,
@@ -9520,7 +9522,8 @@ export function lowerStaticNumberGlobal(
       );
     }
     if (name === "isNaN") {
-      const x = lowerer.lowerExprExpecting(args[0]!, F64);
+      // The global's ToNumber turns a missing value into NaN.
+      const x = lowerToNumberArgument(lowerer, args[0]!);
       return { kind: "libCall", fn: "num.isNaN", args: [x], type: BOOL, loc };
     }
     const radix: IrExpr = args[1]
@@ -9649,6 +9652,17 @@ export function lowerStaticNumberGlobal(
     }
     if (name === "isFinite" && probed?.type.kind === "f64") {
       return { kind: "libCall", fn: "number.isFinite", args: [probed], type: BOOL, loc };
+    }
+    // A number the checker trusts but storage may hold missing (an
+    // out-of-range read): the global's ToNumber makes undefined NaN.
+    if (
+      name === "isFinite" &&
+      probed?.type.kind === "union" &&
+      lowerer.armTag(probed.type.unionId, UNDEFINED_T) >= 0 &&
+      lowerer.stripUndefinedArm(probed.type).kind === "f64"
+    ) {
+      const x = lowerOptionalNumber(lowerer, probed, loc, args[0]);
+      return { kind: "libCall", fn: "number.isFinite", args: [x], type: BOOL, loc };
     }
   }
   return null;

@@ -30,6 +30,7 @@ sudo env DEBIAN_FRONTEND=noninteractive apt-get install --quiet=2 --yes --no-ins
   clang-22 \
   cmake \
   libclang-rt-22-dev \
+  libpolly-22-dev \
   libzstd-dev \
   llvm-22-dev \
   ninja-build \

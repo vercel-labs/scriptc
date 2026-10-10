@@ -10493,6 +10493,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/missing-read-lambda-results.ts": {
+   "order": [
+    "<repo>/tests/corpus/missing-read-lambda-results.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/missing-read-narrowed-storage.ts": {
    "order": [
     "<repo>/tests/corpus/missing-read-narrowed-storage.ts"

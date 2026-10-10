@@ -4370,12 +4370,29 @@ export class Lowerer {
       return found;
     };
     const jsLambdas: ts.FunctionLikeDeclaration[] = [];
+    // TypeScript lambdas keep the checker's inferred return type, which
+    // spells a missing read as its bare element type and `read ?? "text"`
+    // as a number. Their closures return the runtime result instead.
+    const tsLambdas: ts.FunctionLikeDeclaration[] = [];
     for (const sf of sourceFiles) {
-      if (!isJsSourceFile(sf)) continue;
+      const js = isJsSourceFile(sf);
+      if (!js && sf.isDeclarationFile) continue;
       ts.walkPreorder(sf, (node) => {
-        if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) jsLambdas.push(node);
+        if (ts.isArrowFunction(node) || ts.isFunctionExpression(node))
+          (js ? jsLambdas : tsLambdas).push(node);
       });
     }
+    /** The primitive result union of a lambda's returns (see
+     * optionalPrimitiveResultType), as declared functions record it. */
+    const lambdaArithmeticReturn = (fn: ts.FunctionLikeDeclaration): IrType | null => {
+      if (fn.body && !ts.isBlock(fn.body))
+        return optionalPrimitiveResultType(fn.body as ts.Expression);
+      for (const expression of returnsOf(fn)) {
+        const result = optionalPrimitiveResultType(expression);
+        if (result) return result;
+      }
+      return null;
+    };
     for (const [symbol, signature] of signatureBySymbol) {
       const declaration = functionDeclBySymbol.get(symbol);
       if (!declaration || !isJsSourceFile(declaration.getSourceFile())) continue;
@@ -5407,6 +5424,54 @@ export class Lowerer {
       for (const sf of sourceFiles) if (scanFile(sf)) changed = true;
       for (const [symbol, decl] of functionDeclBySymbol)
         if (scanReturns(symbol, decl)) changed = true;
+      for (const fn of tsLambdas) {
+        // An annotated return is the author's contract, as for parameters.
+        if (fn.type) continue;
+        const mapped = this.mapTypeOf(this.typeOf(fn));
+        if (mapped?.kind !== "func") continue;
+        const previous = this.runtimeOptionalFunctionReturnType(fn, mapped.ret);
+        // Async, generator and void bodies keep their own result shapes.
+        if (
+          previous.kind === "promise" ||
+          previous.kind === "generator" ||
+          previous.kind === "void"
+        )
+          continue;
+        const arithmetic = lambdaArithmeticReturn(fn);
+        const next =
+          arithmetic &&
+          (previous.kind === "f64" || previous.kind === "string" || previous.kind === "bool")
+            ? arithmetic
+            : bodyReturnsOptional(fn)
+              ? this.runtimeOptionalType(previous)
+              : previous;
+        if (!typeEquals(previous, next)) {
+          this.runtimeOptionalFunctionReturns.set(fn, next);
+          provenance?.note("lambda-return", fn, fn.body);
+          changed = true;
+        }
+        // Calls through the lambda's own binding (`const get = () => xs[i];
+        // get()`) produce the same result as calls of a declared function.
+        const binding = fn.parent;
+        if (
+          next !== previous &&
+          ts.isVariableDeclaration(binding) &&
+          binding.initializer === fn &&
+          !binding.type &&
+          ts.isIdentifier(binding.name)
+        ) {
+          const symbol = symbolOf(binding.name);
+          if (symbol && next.kind === "union" && this.armTag(next.unionId, UNDEFINED_T) >= 0) {
+            if (!optionalReturns.has(symbol)) {
+              optionalReturns.add(symbol);
+              changed = true;
+            }
+          } else if (symbol && !arithmeticReturns.has(symbol)) {
+            arithmeticReturns.set(symbol, next);
+            changed = true;
+          }
+        }
+      }
       for (const fn of jsLambdas) {
         if (!bodyReturnsOptional(fn)) continue;
         const mapped = this.mapTypeOf(this.typeOf(fn));
@@ -5517,11 +5582,11 @@ export class Lowerer {
         const symbol = symbolOf(node.name);
         if (!symbol) return;
         if (
-          isJsSourceFile(sf) &&
           !node.type &&
           !hasJsTypeAnnotation(node) &&
           node.initializer &&
-          (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer))
+          (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer)) &&
+          (isJsSourceFile(sf) || this.runtimeOptionalFunctionReturns.has(node.initializer))
         ) {
           const global = this.globalsBySymbol.get(symbol);
           if (global?.type.kind === "func")

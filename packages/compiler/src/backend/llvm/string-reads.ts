@@ -45,7 +45,7 @@ export const STRING_READ_HELPERS: readonly StringReadHelper[] = [
       `  br i1 %ascii, label %fast, label %slow`,
       `fast:`,
       ...loadLength(sz),
-      `  %n = uitofp ${sz} %len to double`,
+      `  %n = uitofp nneg ${sz} %len to double`,
       `  ret double %n`,
       `slow:`,
       `  %r = call double @scr_str_utf16_len(ptr %s)`,
@@ -62,7 +62,7 @@ export const STRING_READ_HELPERS: readonly StringReadHelper[] = [
       `  br i1 %ascii, label %bounds, label %slow`,
       `bounds:`,
       ...loadLength(sz),
-      `  %lenf = uitofp ${sz} %len to double`,
+      `  %lenf = uitofp nneg ${sz} %len to double`,
       // NaN fails both ordered comparisons; -0 passes and truncates to 0.
       `  %lo = fcmp oge double %i, 0.0`,
       `  %hi = fcmp olt double %i, %lenf`,

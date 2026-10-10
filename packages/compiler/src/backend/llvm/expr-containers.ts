@@ -520,7 +520,7 @@ export function emitArrIntrinsic(
       B.line(`${p} = getelementptr inbounds %ScrArr, ptr ${r.name}, i32 0, i32 1`);
       host.markMemoryPointer(p, "array:header");
       B.line(`${len} = load ${host.sizeType}, ptr ${p}${host.fieldAliasAttachment(p)}`);
-      B.line(`${t} = uitofp ${host.sizeType} ${len} to double`);
+      B.line(`${t} = uitofp nneg ${host.sizeType} ${len} to double`);
       return { name: t, type: e.type };
     }
     case "getNumber": {

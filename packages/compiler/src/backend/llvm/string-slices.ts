@@ -97,7 +97,7 @@ export function emitStringSliceRead(host: LlvmEmitterContext, value: Slice): LlV
       `${pointer} = getelementptr inbounds { ${host.sizeType}, ${host.sizeType}, i32 }, ptr ${snapshot.range}, i32 0, i32 1`,
     );
     B.line(`${length} = load ${host.sizeType}, ptr ${pointer}`);
-    B.line(`${number} = uitofp ${host.sizeType} ${length} to double`);
+    B.line(`${number} = uitofp nneg ${host.sizeType} ${length} to double`);
     return { name: number, type: value.type };
   }
   if (value.method !== "charCodeAt") return null;

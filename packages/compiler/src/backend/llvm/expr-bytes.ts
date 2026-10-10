@@ -122,7 +122,7 @@ export function emitBytesIndex(
   const nonnegative = B.tmp();
   const belowLen = B.tmp();
   const inRange = B.tmp();
-  B.line(`${lenF64} = uitofp ${host.sizeType} ${len} to double`);
+  B.line(`${lenF64} = uitofp nneg ${host.sizeType} ${len} to double`);
   B.line(`${nonnegative} = fcmp oge double ${index}, ${f64Lit(0)}`);
   B.line(`${belowLen} = fcmp olt double ${index}, ${lenF64}`);
   B.line(`${inRange} = and i1 ${nonnegative}, ${belowLen}`);
@@ -137,7 +137,7 @@ export function emitBytesIndex(
   const roundTrip = B.tmp();
   const integral = B.tmp();
   B.line(`${idx} = fptoui double ${index} to ${host.sizeType}`);
-  B.line(`${roundTrip} = uitofp ${host.sizeType} ${idx} to double`);
+  B.line(`${roundTrip} = uitofp nneg ${host.sizeType} ${idx} to double`);
   B.line(`${integral} = fcmp oeq double ${roundTrip}, ${index}`);
   B.condBr(integral, valid, invalid);
 
@@ -177,7 +177,7 @@ export function emitBytesLength(
   const count = bytes && size !== 1 ? B.tmp() : len;
   if (count !== len) B.line(`${count} = shl ${host.sizeType} ${len}, ${Math.log2(size)}`);
   const out = B.tmp();
-  B.line(`${out} = uitofp ${host.sizeType} ${count} to double`);
+  B.line(`${out} = uitofp nneg ${host.sizeType} ${count} to double`);
   return { name: out, type: F64 };
 }
 

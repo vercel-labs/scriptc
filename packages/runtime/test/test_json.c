@@ -71,6 +71,84 @@ static void typed_view_failure_tests(void) {
   scr_str_release(source);
 }
 
+/* Live array capsules with bound element hooks answer per-element queries
+ * from the native array; only holes, out-of-range reads, and rejected
+ * values may fall back to materializing the whole array. */
+static size_t live_array_materializations;
+static ScrDyn *live_array_materialize(void *value) {
+  live_array_materializations++;
+  ScrArr *arr = value;
+  ScrDyn *view = scr_dyn_new_arr();
+  for (size_t i = 0; i < arr->len; i++) {
+    if (scr_arr_state(arr, (double)i) == (double)SCR_ARR_VALUE)
+      scr_dyn_arr_push(view, scr_dyn_new_num(scr_arr_get_f64(arr, (double)i)));
+    else scr_dyn_arr_push_hole(view);
+  }
+  return view;
+}
+static ScrDyn *live_array_get(void *arr, double index) {
+  return scr_dyn_new_num(scr_arr_get_f64(arr, index));
+}
+static bool live_array_set(void *arr, double index, const ScrDyn *value) {
+  if (value->kind != SCR_DYN_NUM) return false;
+  scr_arr_set_f64(arr, index, value->v.num);
+  return true;
+}
+static const ScrDynTypedArrayOps live_array_ops = { live_array_get, live_array_set };
+
+static void live_array_ref_tests(void) {
+  ScrArr *arr = scr_arr_new(SCR_ELEM_F64, 4);
+  for (int i = 0; i < 4; i++) scr_arr_push_f64(arr, i * 10);
+  scr_arr_delete(arr, 2);
+  ScrDyn *capsule = scr_dyn_new_typed_ref(arr, scr_arr_retain_v, scr_arr_release_v,
+      "array<f64>", 10, live_array_materialize, NULL);
+  scr_dyn_typed_ref_bind_array(capsule, &live_array_ops);
+  live_array_materializations = 0;
+
+  ScrStr *length = S("length"), *one = S("1"), *two = S("2"), *four = S("4"), *five = S("5"), *lead = S("01");
+  ScrDyn *got = scr_dyn_typed_ref_key_get(capsule, length);
+  check(got && got->kind == SCR_DYN_NUM && got->v.num == 4, "live array length");
+  scr_dyn_release(got);
+  got = scr_dyn_typed_ref_key_get(capsule, one);
+  check(got && got->kind == SCR_DYN_NUM && got->v.num == 10, "live array element");
+  scr_dyn_release(got);
+  check(!scr_dyn_typed_ref_key_get(capsule, two), "live array hole needs the view");
+  check(!scr_dyn_typed_ref_key_get(capsule, four), "live array past length needs the view");
+  check(!scr_dyn_typed_ref_key_get(capsule, lead), "noncanonical index needs the view");
+  check(scr_dyn_has_key(capsule, one) && scr_dyn_has_own(capsule, one) && scr_dyn_has_own(capsule, length),
+      "live array own presence");
+  check(!scr_dyn_has_own(capsule, two) && !scr_dyn_has_own(capsule, four), "live array own absence");
+  check(live_array_materializations == 0, "live array reads never materialize");
+
+  ScrDyn *value = scr_dyn_new_num(7);
+  scr_dyn_key_set(capsule, one, value);
+  scr_dyn_key_set(capsule, two, value);
+  scr_dyn_key_set(capsule, four, value);
+  scr_dyn_release(value);
+  check(arr->len == 5 && scr_arr_get_f64(arr, 1) == 7 && scr_arr_get_f64(arr, 2) == 7 &&
+      scr_arr_get_f64(arr, 4) == 7, "live array writes and appends land natively");
+  check(live_array_materializations == 0, "live array writes never materialize");
+
+  ScrDyn *text = scr_dyn_new_str(one);
+  scr_dyn_key_set(capsule, one, text);
+  scr_dyn_release(text);
+  check(live_array_materializations == 1 && scr_arr_get_f64(arr, 1) == 7,
+      "rejected value takes the snapshot path without a native write");
+  ScrStr *seven = S("7");
+  value = scr_dyn_new_num(1);
+  scr_dyn_key_set(capsule, seven, value);
+  scr_dyn_release(value);
+  check(live_array_materializations == 2 && arr->len == 5, "growth past length takes the snapshot path");
+  check(!scr_dyn_has_key(capsule, five) && live_array_materializations == 3,
+      "absent index consults the view");
+  check(!scr_exc_pending(), "live array fallbacks raise nothing without a commit");
+
+  scr_str_release(length); scr_str_release(one); scr_str_release(two);
+  scr_str_release(four); scr_str_release(five); scr_str_release(seven); scr_str_release(lead);
+  scr_dyn_release(capsule);
+  scr_arr_release(arr);
+}
+
 /* Parse `text`, expect success, return the checked-dynamic tree (+1). */
 static ScrDyn *parse_ok(const char *text, const char *name) {
   ScrStr *t = S(text);
@@ -560,6 +638,7 @@ int main(void) {
 
   json_callback_tests();
   typed_view_failure_tests();
+  live_array_ref_tests();
 
   printf("%d/%d checks passed\n", checks - failures, checks);
   return failures == 0 ? 0 : 1;

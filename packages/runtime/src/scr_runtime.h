@@ -4321,6 +4321,20 @@ _Static_assert(sizeof(ScrDynEntry) == (sizeof(void *) == 8 ? 48 : 24),
 _Static_assert(offsetof(ScrDynEntry, value) == 2 * sizeof(void *),
                "LLVM checked-object readers use the third pointer-sized field");
 
+/* Element access for a live typed reference to a native ScrArr, emitted per
+ * array type by the compiler. The runtime decides presence and length from
+ * the native array itself; these hooks only convert one element.
+ *   get: +1 dyn view of the element at a dense index whose state is
+ *        SCR_ARR_VALUE, built exactly as the whole-array snapshot builds it.
+ *   set: stores `value` at index (index <= length) when it fits the element
+ *        type and returns true; returns false with no side effects when it
+ *        does not, so the caller can take the snapshot path and report the
+ *        mismatch with its usual diagnostic. */
+typedef struct ScrDynTypedArrayOps {
+  ScrDyn *(*get)(void *arr, double index);
+  bool (*set)(void *arr, double index, const ScrDyn *value);
+} ScrDynTypedArrayOps;
+
 struct ScrDyn {
   size_t rc; /* SIZE_MAX = immortal (unused for dyn; kept per convention) */
   ScrDynKind kind;
@@ -4382,17 +4396,21 @@ struct ScrDyn {
       void *(*retain)(void *);
       void (*release)(void *);
       const char *type_key;
-      size_t type_key_len;
       ScrDyn *(*materialize)(void *);
       void (*commit)(void *, const ScrDyn *);
+      /* Live native arrays: per-element access that bypasses the whole-array
+       * snapshot (scr_dyn_typed_ref_bind_array). NULL for other referents. */
+      const ScrDynTypedArrayOps *array;
       /* Both caches belong to this capsule. ReadableStream canonicalizes
        * capsules for repeated source references, so the refreshed dyn view
        * and every structurally converted static view keep JS reference
        * identity while the source reference remains observable. */
       ScrDyn *materialized;
       ScrDynTypedCast *casts;
-      bool traced; /* native referent has a cycle header */
-      bool observed; /* native release reports this identity's disposal */
+      /* One word keeps this, the largest payload, at its previous size. */
+      uint32_t type_key_len : 30;
+      uint32_t traced : 1; /* native referent has a cycle header */
+      uint32_t observed : 1; /* native release reports this identity's disposal */
     } typed_ref;
     /* SCR_DYN_PROMISE: the retained promise. The boundary contract: it
      * settles with a dyn payload (SCR_EXC_REF ScrDyn fulfillment or a
@@ -4659,6 +4677,17 @@ void *scr_dyn_typed_ref_unbox(const ScrDyn *d); /* +1 */
 ScrDyn *scr_dyn_class_view_unavailable(void *ptr);
 ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d); /* +1 */
 void scr_dyn_typed_ref_commit(ScrDyn *d);
+/* Attach per-element access to a live array capsule (idempotent). Indexed
+ * reads, `length`, in-range writes, `in`, own-property probes, and array
+ * iteration then touch one element instead of rebuilding the snapshot. */
+void scr_dyn_typed_ref_bind_array(ScrDyn *d, const ScrDynTypedArrayOps *ops);
+/* Fast keyed read on a live array capsule: +1 value for `length` and for
+ * present or explicitly-undefined elements; NULL when the answer needs the
+ * snapshot (holes, out-of-range, non-index names, or no bound ops). */
+ScrDyn *scr_dyn_typed_ref_key_get(const ScrDyn *d, const ScrStr *key);
+/* +1 view of an own element of a bound live array capsule; NULL for a hole
+ * or an index at or past its length. */
+ScrDyn *scr_dyn_typed_ref_element(const ScrDyn *d, size_t index);
 void *scr_dyn_typed_ref_cached_cast(
     const ScrDyn *d, const char *type_key, size_t type_key_len); /* +1/NULL */
 void scr_dyn_typed_ref_cache_cast(

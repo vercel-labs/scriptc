@@ -720,6 +720,49 @@ static ScrDyn *scr_dyn_invoke_impl(
     ScrDyn *recv, const char *method, ScrDyn *const *args, size_t argc,
     const char *what, ScrDyn *callback_recv);
 
+/* Live native arrays: the constant-time methods that loops call once per
+ * element. Each mirrors the checked-array dispatch below (which consults
+ * neither own properties nor the prototype for these builtins) but touches
+ * one native element instead of materializing and recommitting the whole
+ * array. Anything that could observe more — a hole, argument coercion, a
+ * multi-value push, a value the element type rejects — sets *handled false
+ * and takes the snapshot path. */
+static ScrDyn *dyn_live_array_method(ScrDyn *recv, const char *method, ScrDyn *const *args,
+                                     size_t argc, const char *what, bool *handled) {
+  const ScrDynTypedArrayOps *ops = recv->v.typed_ref.array;
+  if (!ops) return NULL;
+  ScrArr *arr = recv->v.typed_ref.ptr;
+  size_t len = arr->len;
+  if (dyn_name_is(method, "push") && argc == 1 && ops->set) {
+    if (!ops->set(arr, (double)len, args[0])) return NULL;
+    *handled = true;
+    return scr_exc_pending() ? NULL : scr_dyn_new_num((double)arr->len);
+  }
+  if (dyn_name_is(method, "pop")) {
+    if (len == 0) {
+      *handled = true;
+      return scr_dyn_retain(scr_dyn_undefined());
+    }
+    ScrDyn *last = scr_dyn_typed_ref_element(recv, len - 1);
+    if (!last) return NULL;
+    scr_arr_set_len(arr, (double)(len - 1));
+    *handled = true;
+    return last;
+  }
+  if (dyn_name_is(method, "at") && (argc == 0 || args[0]->kind == SCR_DYN_NUM || args[0]->kind == SCR_DYN_UNDEF)) {
+    double index = dyn_index_arg(args, argc, 0, 0, what);
+    if (index < 0) index += (double)len;
+    if (index < 0 || index >= (double)len) {
+      *handled = true;
+      return scr_dyn_retain(scr_dyn_undefined());
+    }
+    ScrDyn *value = scr_dyn_typed_ref_element(recv, (size_t)index);
+    if (value) *handled = true;
+    return value;
+  }
+  return NULL;
+}
+
 ScrDyn *scr_dyn_prepare_method(ScrDyn *recv, const char *method) {
   if (recv->kind == SCR_DYN_UNDEF || recv->kind == SCR_DYN_NULL)
     return scr_dyn_invoke(recv, method, NULL, 0, method);
@@ -800,6 +843,9 @@ static ScrDyn *scr_dyn_invoke_impl(
    * Mutators such as reverse/sort return their receiver, so translate that
    * snapshot identity back to the externally visible capsule. */
   if (recv->kind == SCR_DYN_TYPED_REF) {
+    bool handled = false;
+    ScrDyn *fast = dyn_live_array_method(recv, method, args, argc, what, &handled);
+    if (handled) return fast;
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(recv);
     if (scr_exc_pending()) {
       scr_dyn_release(materialized);

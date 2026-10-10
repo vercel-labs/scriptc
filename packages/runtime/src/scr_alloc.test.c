@@ -98,6 +98,64 @@ static void check_churn(void) {
   }
 }
 
+#if SCR_SMALL_ALLOC
+#include <string.h>
+#ifdef __linux__
+/* The VmFlags line of the mapping that contains p, or "". */
+static void vm_flags(const void *p, char *out, size_t cap) {
+  out[0] = '\0';
+  FILE *f = fopen("/proc/self/smaps", "r");
+  assert(f);
+  char line[512];
+  bool inside = false;
+  while (fgets(line, sizeof line, f)) {
+    unsigned long lo, hi;
+    if (sscanf(line, "%lx-%lx ", &lo, &hi) == 2 && strchr(line, '-') < strchr(line, ' ')) {
+      inside = (uintptr_t)p >= lo && (uintptr_t)p < hi;
+    } else if (inside && !strncmp(line, "VmFlags:", 8)) {
+      snprintf(out, cap, "%s", line + 8);
+      break;
+    }
+  }
+  fclose(f);
+}
+#endif
+
+/* A class slice carves contiguously from its start, across the point where
+ * its limit is raised; on Linux the slices are huge-page aligned, the first
+ * 8 MiB of a slice stay on small pages and the rest may use huge pages. */
+static void check_slice_growth(void) {
+  enum { SZ = 496, AFTER = 8 << 20 };
+  unsigned char *first = scr_mem_alloc(SZ), *prev = first;
+  assert(owned(first));
+  uintptr_t start = scr_sa.base + ((uintptr_t)((SZ - 1) / SCR_SA_STEP) << scr_sa.shift);
+  assert((uintptr_t)first == start); /* a class nothing else has touched */
+  size_t blocks = AFTER / SZ + 64;
+  for (size_t i = 1; i < blocks; i++) {
+    unsigned char *p = scr_mem_alloc(SZ);
+    assert(p == prev + SZ);
+    p[0] = (unsigned char)i; /* commit the pages */
+    prev = p;
+  }
+#ifdef __linux__
+  assert((scr_sa.base & ((2u << 20) - 1)) == 0);
+  FILE *thp = fopen("/sys/kernel/mm/transparent_hugepage/enabled", "r");
+  if (thp) { /* a kernel without THP refuses both advices */
+    fclose(thp);
+    char flags[256];
+    vm_flags(first, flags, sizeof flags);
+    assert(strstr(flags, " nh") && !strstr(flags, " hg"));
+    vm_flags((void *)(start + AFTER), flags, sizeof flags);
+    assert(strstr(flags, " hg") && !strstr(flags, " nh"));
+  }
+#endif
+  /* The blocks recycle through the free list like any others. */
+  for (size_t i = blocks; i-- > 0;) scr_mem_free(first + i * SZ);
+  assert(scr_mem_alloc(SZ) == first);
+  scr_mem_free(first);
+}
+#endif
+
 #if defined(SCR_WORKERS) && SCR_SMALL_ALLOC
 #include <pthread.h>
 
@@ -160,6 +218,9 @@ static void check_threads(void) {
 #endif
 
 int main(void) {
+#if SCR_SMALL_ALLOC
+  check_slice_growth(); /* first: its class must be untouched */
+#endif
   check_alignment_and_zeroing();
   check_realloc();
   check_system_pointers();

@@ -26,6 +26,9 @@ test.each([
       "-O1",
       "-Wall",
       "-Wextra",
+      // Linux runtime packs compile with _GNU_SOURCE, which exposes the
+      // madvise advice the page policy uses; build the checks the same way.
+      ...(process.platform === "linux" ? ["-D_GNU_SOURCE"] : []),
       ...sanitize,
       join(import.meta.dirname, "scr_alloc.test.c"),
       join(import.meta.dirname, "scr_alloc.c"),

@@ -26,6 +26,61 @@ ScrSaState scr_sa = {0};
 #if SCR_SMALL_ALLOC
 #include <sys/mman.h>
 
+/* Page policy. Slice pages are committed by first touch, which on 4 KiB
+ * pages is one fault (and page clear) per 4 KiB the bump pointers cross.
+ * Transparent huge pages fault 2 MiB at a time and shrink the TLB working
+ * set, but make the whole 2 MiB page around a bump pointer resident at once,
+ * so every class slice in use (per arena, in worker executables) would cost
+ * up to 2 MiB more than it holds. A slice therefore starts on small pages
+ * and moves the rest of its range to huge pages once it has carved
+ * SCR_SA_HUGE_AFTER bytes: only slices that already hold that much pay the
+ * partial last huge page. The reservation is huge-page aligned so the
+ * switch point and every slice start on a huge-page boundary. */
+#if defined(__linux__) && defined(MADV_HUGEPAGE) && defined(MADV_NOHUGEPAGE)
+#define SCR_SA_THP 1
+#define SCR_SA_HUGE_PAGE ((size_t)2 << 20)
+#define SCR_SA_HUGE_AFTER ((size_t)8 << 20)
+#endif
+
+/* Maps span bytes of address space for slices (huge-page aligned where the
+ * policy above applies), or NULL. */
+static void *scr_sa_map(size_t span) {
+  int flags = MAP_PRIVATE | MAP_ANON;
+#ifdef MAP_NORESERVE
+  flags |= MAP_NORESERVE;
+#endif
+#ifdef SCR_SA_THP
+  size_t pad = SCR_SA_HUGE_PAGE;
+#else
+  size_t pad = 0;
+#endif
+  char *p = mmap(NULL, span + pad, PROT_READ | PROT_WRITE, flags, -1, 0);
+  if (p == MAP_FAILED) return NULL;
+#ifdef SCR_SA_THP
+  char *a = (char *)(((uintptr_t)p + pad - 1) & ~(uintptr_t)(pad - 1));
+  if (a > p) (void)munmap(p, (size_t)(a - p));
+  (void)munmap(a + span, (size_t)(p + pad - a)); /* a < p + pad */
+  p = a;
+  (void)madvise(p, span, MADV_NOHUGEPAGE);
+#endif
+  return p;
+}
+
+/* The next bump limit of a class slice [start, end) whose limit is lim
+ * (< end): its small-page prefix ends at SCR_SA_HUGE_AFTER, where the rest
+ * of the slice switches to huge pages. */
+static char *scr_sa_extend(char *start, char *lim, char *end) {
+#ifdef SCR_SA_THP
+  if ((size_t)(lim - start) < SCR_SA_HUGE_AFTER && (size_t)(end - start) > SCR_SA_HUGE_AFTER)
+    return start + SCR_SA_HUGE_AFTER;
+  if (lim > start) (void)madvise(lim, (size_t)(end - lim), MADV_HUGEPAGE);
+#else
+  (void)start;
+  (void)lim;
+#endif
+  return end;
+}
+
 #ifdef SCR_WORKERS
 #include <pthread.h>
 #include <stdatomic.h>
@@ -55,15 +110,8 @@ static bool scr_sa_reserve_region(void) {
     for (unsigned shift = 30; shift >= 22; shift -= 2) {
       size_t arena = (size_t)SCR_SA_NCLASS << shift;
       size_t span = arena * SCR_SA_ARENAS;
-      int flags = MAP_PRIVATE | MAP_ANON;
-#ifdef MAP_NORESERVE
-      flags |= MAP_NORESERVE;
-#endif
-      void *p = mmap(NULL, span, PROT_READ | PROT_WRITE, flags, -1, 0);
-      if (p == MAP_FAILED) continue;
-#if defined(__linux__) && defined(MADV_NOHUGEPAGE)
-      (void)madvise(p, span, MADV_NOHUGEPAGE);
-#endif
+      void *p = scr_sa_map(span);
+      if (!p) continue;
       scr_sa_arena_span = arena;
       scr_sa_region_shift = shift;
       atomic_store_explicit(&scr_sa_region, (uintptr_t)p, memory_order_release);
@@ -161,17 +209,8 @@ static bool scr_sa_refused;
 static bool scr_sa_reserve(void) {
   for (unsigned shift = 30; shift >= 24; shift -= 2) {
     size_t span = (size_t)SCR_SA_NCLASS << shift;
-    int flags = MAP_PRIVATE | MAP_ANON;
-#ifdef MAP_NORESERVE
-    flags |= MAP_NORESERVE;
-#endif
-    void *p = mmap(NULL, span, PROT_READ | PROT_WRITE, flags, -1, 0);
-    if (p == MAP_FAILED) continue;
-#if defined(__linux__) && defined(MADV_NOHUGEPAGE)
-    /* Each class touches its own slice; transparent huge pages would make
-     * every touched slice a 2 MiB resident minimum. */
-    (void)madvise(p, span, MADV_NOHUGEPAGE);
-#endif
+    void *p = scr_sa_map(span);
+    if (!p) continue;
     scr_sa.base = (uintptr_t)p;
     scr_sa.shift = shift;
     scr_sa.span = span;
@@ -198,19 +237,21 @@ __attribute__((cold, noinline)) void *scr_sa_slow(size_t n, bool zero) {
       if (zero) memset(b, 0, n);
       return b;
     }
+#endif
+    /* Carve from the slice, opening it or raising its limit as needed;
+     * fresh pages are zero. */
     size_t sz = (size_t)(c + 1) * SCR_SA_STEP;
-    char *p = scr_sa.bump[c];
-    if (scr_sa.lim[c] && (size_t)(scr_sa.lim[c] - p) >= sz) {
+    char *start = (char *)scr_sa.base + ((size_t)c << scr_sa.shift);
+    char *end = start + ((size_t)1 << scr_sa.shift);
+    char *p = scr_sa.lim[c] ? scr_sa.bump[c] : start;
+    char *lim = scr_sa.lim[c] ? scr_sa.lim[c] : start;
+    while ((size_t)(lim - p) < sz && lim < end) lim = scr_sa_extend(start, lim, end);
+    scr_sa.lim[c] = lim;
+    if ((size_t)(lim - p) >= sz) {
       scr_sa.bump[c] = p + sz;
       return p;
     }
-#endif
-    if (!scr_sa.lim[c]) { /* open the class slice; fresh pages are zero */
-      char *p = (char *)scr_sa.base + ((size_t)c << scr_sa.shift);
-      scr_sa.lim[c] = p + ((size_t)1 << scr_sa.shift);
-      scr_sa.bump[c] = p + (size_t)(c + 1) * SCR_SA_STEP;
-      return p;
-    }
+    scr_sa.bump[c] = p;
   }
   /* Large or zero-sized, an exhausted slice, or no reservation. */
   return zero ? calloc(1, n) : malloc(n);

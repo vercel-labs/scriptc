@@ -67,7 +67,8 @@
  * whose condition holds:
  *   full, growth   the live cycle-headered heap is a fraction past its size
  *                  after the last full pass. The fraction starts at 1/4 and
- *                  is scheduled by YIELD: it widens by doublings (up to 1)
+ *                  is scheduled by YIELD: it widens by doublings (up to the
+ *                  growth cap, 16 unless SCR_CYCLE_GROWTH_CAP lowers it)
  *                  as growth-triggered full passes reclaim fewer OLD objects
  *                  relative to the growth that triggered them, and narrows
  *                  back as soon as a pass finds old garbage again (see
@@ -111,10 +112,11 @@
  * pass walks every buffer without skipping any generation, so it leaves no
  * cyclic garbage behind except what its own teardowns release for the next
  * pass. Between two full passes the cycle-headered heap can grow by at most
- * the old level's fraction, so it never exceeds twice its size after the
- * last full pass (or the growth floor); the mature level bounds younger
- * garbage the same way between mature passes. That cap is reached only after
- * passes have stopped finding garbage. While they find it, a level widens its
+ * the old level's fraction, so it never exceeds 17 times its size after the
+ * last full pass (or the growth floor), or twice it with
+ * SCR_CYCLE_GROWTH_CAP=1; the mature level bounds younger garbage the same
+ * way between mature passes. That cap is reached only after passes have
+ * stopped finding garbage. While they find it, a level widens its
  * fraction only in inverse proportion to its yield, so if the yield holds,
  * the garbage floating by its next pass stays below an eighth of the heap
  * once widened, inside the quarter the base fraction allows.
@@ -344,14 +346,42 @@ static SCR_TL size_t scr_cyc_live_after[SCR_CYC_NGENS];
 
 /* Per level, doublings of the growth fraction (see scr_cyc_adapt_growth),
  * and the run of growth-triggered passes at that level whose yield asked for
- * a wider fraction than the current one. Capped at a fraction of 1: the heap
- * may at most double past its size after the last pass at a level before
- * the next. Only the mature and old entries are used. */
-#define SCR_CYC_GROWTH_MAX_SHIFT 2
+ * a wider fraction than the current one. Only the mature and old entries are
+ * used.
+ *
+ * The fraction is capped at 16 (shift 6): after passes at a level stop
+ * finding garbage, the heap may grow to 17 times its size after the last
+ * pass there before the next. A lower cap bounds dead cyclic garbage more
+ * tightly, but a large live heap that keeps growing is then walked in full
+ * each time it grows by the cap, and on such heaps (a compiler checking a
+ * large program, say) those walks dominate collection time. The cap trades
+ * that walking for memory only when passes find nothing: while they find
+ * garbage, the yield keeps the fraction narrow. SCR_CYCLE_GROWTH_CAP lowers
+ * the cap for memory-sensitive programs: a power of two from 1 to 16, with
+ * other positive values rounded down to a power of two and larger ones read
+ * as 16. At 1 the heap may at most double past its size after the last pass
+ * at a level before the next. */
+#define SCR_CYC_GROWTH_MAX_SHIFT 6
 #ifndef SCR_WORKERS
 static SCR_TL unsigned char scr_cyc_growth_shift[SCR_CYC_NGENS];
 static SCR_TL unsigned char scr_cyc_growth_streak[SCR_CYC_NGENS];
 #endif
+
+/* Shift of the configured growth cap: 2 + log2(cap), since the base
+ * fraction is 1/4. */
+static unsigned scr_cyc_growth_max_shift(void) {
+  static SCR_TL unsigned char cached = 0;
+  if (cached == 0) {
+    const char *env = scr_getenv("SCR_CYCLE_GROWTH_CAP");
+    long v = env ? strtol(env, NULL, 10) : 0;
+    unsigned shift = SCR_CYC_GROWTH_MAX_SHIFT;
+    if (v > 0)
+      for (shift = 2; shift < SCR_CYC_GROWTH_MAX_SHIFT && (2L << (shift - 2)) <= v;)
+        shift++;
+    cached = (unsigned char)shift;
+  }
+  return cached;
+}
 
 /* Doublings of each generation's backlog threshold earned by consecutive
  * passes that found almost nothing to free (see scr_cyc_backlog_threshold).
@@ -467,9 +497,8 @@ static size_t scr_cyc_backlog_threshold(unsigned gen) {
  * it still younger, and a single miss says little. */
 static void scr_cyc_adapt_growth(unsigned gen, size_t growth,
                                  size_t reclaimed) {
-  unsigned want = 0;
-  while (want < SCR_CYC_GROWTH_MAX_SHIFT
-         && reclaimed * SCR_CYC_GROWTH_DIV < (growth >> want))
+  unsigned want = 0, max = scr_cyc_growth_max_shift();
+  while (want < max && reclaimed * SCR_CYC_GROWTH_DIV < (growth >> want))
     want++;
   if (want <= scr_cyc_growth_shift[gen]) {
     scr_cyc_growth_shift[gen] = (unsigned char)want;

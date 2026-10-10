@@ -7,7 +7,7 @@ import { expect, test } from "vitest";
 const execFileAsync = promisify(execFile);
 const testDir = import.meta.dirname;
 
-test("cycle traversal preserves counts, deep graphs and configured thresholds", async () => {
+test("cycle traversal preserves counts, deep graphs, configured thresholds and growth caps", async () => {
   const buildDir = join(testDir, "build");
   await mkdir(buildDir, { recursive: true });
   const bin = join(buildDir, "test_cycle");
@@ -29,16 +29,22 @@ test("cycle traversal preserves counts, deep graphs and configured thresholds", 
     UBSAN_OPTIONS: "halt_on_error=1",
   };
   delete baseEnv.SCR_CYCLE_THRESHOLD;
+  delete baseEnv.SCR_CYCLE_GROWTH_CAP;
 
-  for (const [configured, expected] of [
-    [undefined, "256"],
-    ["1", "1"],
-    ["2", "2"],
-    ["7", "7"],
+  for (const [threshold, cap, expected] of [
+    [undefined, undefined, "threshold=256 growth_cap=16"],
+    ["1", undefined, "threshold=1 growth_cap=16"],
+    ["2", undefined, "threshold=2 growth_cap=16"],
+    ["7", undefined, "threshold=7 growth_cap=16"],
+    [undefined, "1", "threshold=256 growth_cap=1"],
+    ["1", "1", "threshold=1 growth_cap=1"],
+    [undefined, "3", "threshold=256 growth_cap=2"],
+    [undefined, "64", "threshold=256 growth_cap=16"],
   ] as const) {
     const env = { ...baseEnv };
-    if (configured !== undefined) env.SCR_CYCLE_THRESHOLD = configured;
+    if (threshold !== undefined) env.SCR_CYCLE_THRESHOLD = threshold;
+    if (cap !== undefined) env.SCR_CYCLE_GROWTH_CAP = cap;
     const run = await execFileAsync(bin, [], { env });
-    expect(run.stdout).toBe(`cycle collection checks passed: threshold=${expected}\n`);
+    expect(run.stdout).toBe(`cycle collection checks passed: ${expected}\n`);
   }
 });

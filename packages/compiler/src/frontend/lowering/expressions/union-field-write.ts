@@ -1,6 +1,7 @@
 import { nodeThrowExpr, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import type { Lowerer } from "../lowerer.js";
+import { narrowStoredClassValue } from "../class-unions.js";
 import { BOOL, type IrExpr, type IrStmt, type IrType, typeEquals } from "../../../ir/ir.js";
 import { locOf } from "../../program.js";
 
@@ -15,7 +16,11 @@ export function lowerUnionFieldWrite(
 ): IrExpr | null {
   const mapped = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
   if (access.questionDotToken || mapped?.kind !== "union") return null;
-  const receiver = lowerer.maybeNarrow(lowerer.lowerExpr(access.expression), access.expression);
+  let receiver = lowerer.maybeNarrow(lowerer.lowerExpr(access.expression), access.expression);
+  // Optional base-class storage narrowed to several subclasses (see
+  // lowerUnionProperty): extract the instance and test its class.
+  if (receiver.type.kind === "union" && !typeEquals(receiver.type, mapped))
+    receiver = narrowStoredClassValue(lowerer, receiver, mapped) ?? receiver;
   if (receiver.type.kind !== "union") return null;
   const unionId = receiver.type.unionId;
   const arms = lowerer.unions.get(unionId)?.arms;

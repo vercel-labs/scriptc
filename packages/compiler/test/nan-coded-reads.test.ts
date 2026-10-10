@@ -104,6 +104,12 @@ class Relation {
 function probe(a: number, b: number): boolean {
   return a === b;
 }
+function escaped(a: number): boolean {
+  return String(a) === "0";
+}
+function grab(t: Uint32Array): number {
+  return t.length;
+}
 const relation = new Relation();
 const nan = process.argv.length / 0 - process.argv.length / 0;
 const ids = [1, nan, 3];
@@ -115,6 +121,7 @@ for (let i = 0; i < ids.length; i++) {
   targets[i] = ids[i]!;
   relation.assignable(ids[i]!, nan);
   probe(ids[i]!, nan);
+  escaped(nan);
 }
 function run(): number {
   const xs = new Uint32Array(ids.length);
@@ -122,6 +129,9 @@ function run(): number {
   let hits = 0;
   for (let i = 0; i < xs.length; i++) if (relation.assignable(xs[i], ys[i])) hits++;
   for (let i = 0; i < xs.length; i++) if (probe(xs[i], shorter[i])) hits++;
+  const zs = new Uint32Array(ids.length);
+  grab(zs);
+  for (let i = 0; i < zs.length; i++) if (escaped(zs[i])) hits++;
   return hits;
 }
 console.log(run(), sources.length, targets.length);
@@ -144,4 +154,6 @@ test("proven-present reads and guarded occurrences keep numeric parameters plain
   ).toEqual([f64, f64]);
   // `shorter` is not as long as `xs`: its read may be undefined.
   expect(fn(mod, "probe").params[1]!.type.kind).toBe("union");
+  // Code holding `zs` could detach its buffer: no proof.
+  expect(fn(mod, "escaped").params[0]!.type.kind).toBe("union");
 });

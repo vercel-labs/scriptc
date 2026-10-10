@@ -13961,6 +13961,10 @@ export function lowerUnionProperty(
     );
     if (helper)
       value = { kind: "call", callee: helper, args: [value], type: receiverIr, loc: locOf(expr) };
+    // Optional storage of a base class (a runtime-optional binding holding
+    // `Base | undefined`) that `instanceof` narrowed to several subclasses:
+    // extract the instance and test its class, as typed slots do.
+    else value = narrowStoredClassValue(lowerer, value, receiverIr) ?? value;
   }
   // A checker-union receiver whose VALUE lowered to a plain RECORD (the
   // merged-signature fiction — `runner(cmd, args)` where runner joined

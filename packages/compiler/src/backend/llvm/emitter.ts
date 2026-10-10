@@ -174,6 +174,7 @@ import { StackCaptures } from "./stack-captures.js";
 import {
   ABSENT_FIELD_PAYLOAD,
   emitFieldAbsentTest,
+  exactIndexLines,
   f64Lit,
   ffiNativeTypeLl,
   ffiNativeParamLl,
@@ -1911,25 +1912,18 @@ export class LlEmitter {
     const flushedDecls = new Set(this.decls);
     for (const table of this.constantNumericTables.values()) {
       const n = table.values.length;
+      let tableTmp = 0;
+      const tableIndex = exactIndexLines("%i", String(n), "i64", () => `%ix${tableTmp++}`);
       out.push(
         `@${table.symbol} = private constant [${n} x double] [${table.values.map((v) => `double ${f64Lit(v)}`).join(", ")}]`,
         `define internal double @${table.symbol}_get(ptr %a, double %i) alwaysinline #0 {`,
         `entry:`,
         `  %initialized = icmp ne ptr %a, null`,
-        `  %nonnegative = fcmp oge double %i, ${f64Lit(0)}`,
-        `  %below = fcmp olt double %i, ${f64Lit(n)}`,
-        `  %range = and i1 %nonnegative, %below`,
-        `  %safe = and i1 %initialized, %range`,
-        `  br i1 %safe, label %convert, label %fallback`,
-        `convert:`,
-        // The branch must dominate fptoui: NaN/out-of-range conversion
-        // would produce poison. Fractional indices also need a fallback.
-        `  %index = fptoui double %i to ${this.sizeType}`,
-        `  %roundtrip = uitofp ${this.sizeType} %index to double`,
-        `  %integer = fcmp oeq double %roundtrip, %i`,
-        `  br i1 %integer, label %read, label %fallback`,
+        ...tableIndex.lines.map((line) => `  ${line}`),
+        `  %safe = and i1 %initialized, ${tableIndex.ok}`,
+        `  br i1 %safe, label %read, label %fallback`,
         `read:`,
-        `  %slot = getelementptr inbounds [${n} x double], ptr @${table.symbol}, ${this.sizeType} 0, ${this.sizeType} %index`,
+        `  %slot = getelementptr inbounds [${n} x double], ptr @${table.symbol}, i64 0, i64 ${tableIndex.wide}`,
         `  %value = load double, ptr %slot`,
         `  ret double %value`,
         `fallback:`,
@@ -2754,22 +2748,20 @@ export class LlEmitter {
     // keeps the complete SameValueZero semantics.
     if (this.decls.has(NUMBER_MAP_ENTRY_DECL)) {
       const sz = this.sizeType;
+      let mapTmp = 0;
+      const mapIndex = exactIndexLines("%k", "%nd", sz, () => `%ix${mapTmp++}`);
       defs.push(
         `define internal ptr @sc_map_entry_f64(ptr %m, double %k) ${FN_ATTRS} {`,
         `entry:`,
         `  %ndp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 19`,
         `  %nd = load ${sz}, ptr %ndp`,
-        `  %ndf = uitofp ${sz} %nd to double`,
-        `  %lo = fcmp oge double %k, 0.0`,
-        `  %hi = fcmp olt double %k, %ndf`,
-        `  %in = and i1 %lo, %hi`,
-        `  br i1 %in, label %direct, label %outside`,
-        `direct:`,
-        `  %i = fptoui double %k to ${sz}`,
-        `  %back = uitofp ${sz} %i to double`,
-        `  %int = fcmp oeq double %back, %k`,
-        `  br i1 %int, label %slot, label %miss`,
+        // A non-integral key inside the table is as absent as one outside it.
+        ...mapIndex.lines.map((line) => `  ${line}`),
+        `  br i1 ${mapIndex.ok}, label %slot, label %outside`,
         `slot:`,
+        sz === "i64"
+          ? `  %i = add i64 ${mapIndex.wide}, 0`
+          : `  %i = trunc i64 ${mapIndex.wide} to ${sz}`,
         `  %dp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 18`,
         `  %dense = load ptr, ptr %dp`,
         `  %sp = getelementptr inbounds i32, ptr %dense, ${sz} %i`,

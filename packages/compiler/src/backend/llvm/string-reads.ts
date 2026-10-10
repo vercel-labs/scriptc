@@ -11,6 +11,8 @@
  * capacity word's low 32 bits on both i64 and i32 layouts.
  */
 
+import { exactIndexLines } from "./common.js";
+
 export const STRING_UTF16_LEN_DECL = "declare double @scr_str_utf16_len(ptr)";
 export const STRING_CHAR_CODE_AT_DECL = "declare double @scr_str_char_code_at(ptr, double)";
 
@@ -55,30 +57,32 @@ export const STRING_READ_HELPERS: readonly StringReadHelper[] = [
   },
   {
     decl: STRING_CHAR_CODE_AT_DECL,
-    define: (sz, attrs) => [
-      `define internal double @sc_str_char_code_at(ptr %s, double %i) ${attrs} {`,
-      `entry:`,
-      ...asciiTest(),
-      `  br i1 %ascii, label %bounds, label %slow`,
-      `bounds:`,
-      ...loadLength(sz),
-      `  %lenf = uitofp ${sz} %len to double`,
-      // NaN fails both ordered comparisons; -0 passes and truncates to 0.
-      `  %lo = fcmp oge double %i, 0.0`,
-      `  %hi = fcmp olt double %i, %lenf`,
-      `  %in = and i1 %lo, %hi`,
-      `  br i1 %in, label %read, label %slow`,
-      `read:`,
-      `  %k = fptoui double %i to ${sz}`,
-      `  %data = getelementptr inbounds %ScrStr, ptr %s, i32 1`,
-      `  %p = getelementptr inbounds i8, ptr %data, ${sz} %k`,
-      `  %byte = load i8, ptr %p`,
-      `  %unit = uitofp i8 %byte to double`,
-      `  ret double %unit`,
-      `slow:`,
-      `  %r = call double @scr_str_char_code_at(ptr %s, double %i)`,
-      `  ret double %r`,
-      `}`,
-    ],
+    define: (sz, attrs) => {
+      let n = 0;
+      const exactIndex = exactIndexLines("%i", "%len", sz, () => `%ix${n++}`);
+      return [
+        `define internal double @sc_str_char_code_at(ptr %s, double %i) ${attrs} {`,
+        `entry:`,
+        ...asciiTest(),
+        `  br i1 %ascii, label %bounds, label %slow`,
+        `bounds:`,
+        ...loadLength(sz),
+        ...exactIndex.lines.map((line) => `  ${line}`),
+        `  br i1 ${exactIndex.ok}, label %read, label %slow`,
+        `read:`,
+        sz === "i64"
+          ? `  %k = add i64 ${exactIndex.wide}, 0`
+          : `  %k = trunc i64 ${exactIndex.wide} to ${sz}`,
+        `  %data = getelementptr inbounds %ScrStr, ptr %s, i32 1`,
+        `  %p = getelementptr inbounds i8, ptr %data, ${sz} %k`,
+        `  %byte = load i8, ptr %p`,
+        `  %unit = uitofp i8 %byte to double`,
+        `  ret double %unit`,
+        `slow:`,
+        `  %r = call double @scr_str_char_code_at(ptr %s, double %i)`,
+        `  ret double %r`,
+        `}`,
+      ];
+    },
   },
 ];

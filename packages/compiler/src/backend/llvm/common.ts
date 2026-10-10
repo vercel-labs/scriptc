@@ -9,6 +9,45 @@ import type {
 } from "../../ir/ir.js";
 import type { LlvmEmitterContext } from "./expr-context.js";
 
+/** Lines that decide whether the double `index` is an integer in
+ * `[0, length)`, where `length` is an unsigned `sizeType` count, and give
+ * that integer as an i64. `%{ok}` is the answer; `%{wide}` is meaningful
+ * only when it holds.
+ *
+ * A signed round trip replaces the unsigned one (`fptoui`/`uitofp` expand
+ * to long sequences on x86-64), and an integer compare replaces two float
+ * compares against the converted length. `freeze` makes an out-of-range or
+ * NaN conversion an arbitrary integer instead of poison; such an integer
+ * never converts back to the index, or else is not below the length. Below
+ * the length (far under 2^53) the round trip is exact, so equality means the
+ * index is that integer. -0 converts to 0, as ToPropertyKey(-0) is "0". */
+export function exactIndexLines(
+  index: string,
+  length: string,
+  sizeType: string,
+  tmp: () => string,
+): { lines: string[]; ok: string; wide: string } {
+  const raw = tmp(),
+    wide = tmp(),
+    back = tmp(),
+    integral = tmp(),
+    below = tmp(),
+    ok = tmp();
+  const lines = [
+    `${raw} = fptosi double ${index} to i64`,
+    `${wide} = freeze i64 ${raw}`,
+    `${back} = sitofp i64 ${wide} to double`,
+    `${integral} = fcmp oeq double ${back}, ${index}`,
+  ];
+  let len64 = length;
+  if (sizeType !== "i64") {
+    len64 = tmp();
+    lines.push(`${len64} = zext ${sizeType} ${length} to i64`);
+  }
+  lines.push(`${below} = icmp ult i64 ${wide}, ${len64}`, `${ok} = and i1 ${integral}, ${below}`);
+  return { lines, ok, wide };
+}
+
 /** User-controlled text embedded after an LLVM `;` comment marker. Preserve
  * ordinary output byte-for-byte, but encode control and line-separator code
  * units so a property name can never inject a line or invalid source byte. */

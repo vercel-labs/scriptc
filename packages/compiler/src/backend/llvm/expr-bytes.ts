@@ -3,7 +3,7 @@ import { InternalCompilerError } from "../../errors.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
 import { BYTES_ELEMENT_SIZE, F64, type IrBytesElem, type IrExpr } from "../../ir/ir.js";
 import type { LlvmEmitterContext, LlValue } from "./expr-context.js";
-import { F64_INF, f64Lit } from "./common.js";
+import { F64_INF, exactIndexLines, f64Lit } from "./common.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
 import { byteNumberAccess } from "../../ir/byte-numbers.js";
 import { emitByteNumber } from "./byte-numbers.js";
@@ -118,28 +118,12 @@ export function emitBytesIndex(
     B.line(`${narrow} = trunc i64 ${wideIndex} to ${host.sizeType}`);
     return narrow;
   }
-  const lenF64 = B.tmp();
-  const nonnegative = B.tmp();
-  const belowLen = B.tmp();
-  const inRange = B.tmp();
-  B.line(`${lenF64} = uitofp ${host.sizeType} ${len} to double`);
-  B.line(`${nonnegative} = fcmp oge double ${index}, ${f64Lit(0)}`);
-  B.line(`${belowLen} = fcmp olt double ${index}, ${lenF64}`);
-  B.line(`${inRange} = and i1 ${nonnegative}, ${belowLen}`);
-
-  const rangeOk = B.newLabel("bytes.index.range");
+  const exact = exactIndexLines(index, len, host.sizeType, () => B.tmp());
+  for (const line of exact.lines) B.line(line);
   const invalid = B.newLabel("bytes.index.invalid");
   const valid = B.newLabel("bytes.index.valid");
-  B.condBr(inRange, rangeOk, invalid);
-
-  B.startBlock(rangeOk);
-  const idx = B.tmp();
-  const roundTrip = B.tmp();
-  const integral = B.tmp();
-  B.line(`${idx} = fptoui double ${index} to ${host.sizeType}`);
-  B.line(`${roundTrip} = uitofp ${host.sizeType} ${idx} to double`);
-  B.line(`${integral} = fcmp oeq double ${roundTrip}, ${index}`);
-  B.condBr(integral, valid, invalid);
+  B.condBr(exact.ok, valid, invalid);
+  let idx = exact.wide;
 
   B.startBlock(invalid);
   if (skipInvalid) B.br(skipInvalid);
@@ -151,6 +135,10 @@ export function emitBytesIndex(
   }
 
   B.startBlock(valid);
+  if (host.sizeType !== "i64") {
+    idx = B.tmp();
+    B.line(`${idx} = trunc i64 ${exact.wide} to ${host.sizeType}`);
+  }
   return idx;
 }
 

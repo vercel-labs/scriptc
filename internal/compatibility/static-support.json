@@ -80,6 +80,7 @@
     "node-builtin.module": ["tests/corpus/1598-cjs-builtin-require/main.js"],
     "node-builtin.net": ["tests/corpus/2500-net-autosel-timeout.ts", "tests/corpus/2596-net-arg-ladders.cjs"],
     "node-builtin.os": ["tests/corpus/1480-os-network-interfaces.ts", "tests/corpus/2917-builtin-callable-widths.ts"],
+    "node-builtin.os.availableParallelism": ["tests/corpus/4598-os-available-parallelism.ts"],
     "node-builtin.path": ["tests/corpus/957-builtins-namespace.ts", "tests/corpus/2915-path-function-values.ts", "tests/corpus/2916-path-function-values-cjs.ts", "tests/corpus/2917-builtin-callable-widths.ts", "tests/corpus/2918-builtin-callable-widths-cjs.ts"],
     "node-builtin.perf_hooks": ["tests/corpus/957-builtins-namespace.ts"],
     "node-builtin.process": ["tests/corpus/990-process-basics.ts", "tests/corpus/2314-process-introspection.ts"],

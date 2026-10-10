@@ -2,6 +2,7 @@ import { classMembershipIntervals } from "./classes.js";
 import { borrowableInputs, emitBorrowedInput, emitBorrowedInputs } from "./borrowed-inputs.js";
 import { preservesDynTest } from "./checked-value-lifetimes.js";
 import { typedRefConstructor } from "./shapes.js";
+import { bindLiveArrayOps } from "./expr-stream-bridges.js";
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { emitNullableIsTag, emitNullablePresent } from "./union-repr.js";
@@ -96,6 +97,7 @@ export function emitDynamicExpr(
         B.line(
           `${boxed} = call ptr ${typedRefConstructor(host.shapeHost, v.type)}(ptr ${v.name}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${host.cstr(key)}, ${host.sizeType} ${Buffer.byteLength(key, "utf8")}, ptr @${adapter.snapshot}, ptr ${adapter.commit})`,
         );
+        for (const line of bindLiveArrayOps(host, adapter, boxed)) B.line(line);
         return host.own({ name: boxed, type: e.type });
       }
       if (v.type.kind === "func") {

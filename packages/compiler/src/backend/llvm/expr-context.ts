@@ -28,4 +28,6 @@ export type LibCallPrefix = LibCallPrefixOf<IrLibFn>;
 export interface LlStreamTypedRefAdapter {
   snapshot: string;
   commit: string;
+  /** `@sym` of the ScrDynTypedArrayOps table for live array capsules. */
+  arrayOps?: string;
 }

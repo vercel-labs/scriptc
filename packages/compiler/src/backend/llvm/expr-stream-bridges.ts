@@ -17,7 +17,7 @@ import { mangleFunction, mangleGlobal, mangleRecordStruct } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
 import { classFieldIndex, classStructSym } from "./classes.js";
 import { llvmCommentText } from "./common.js";
-import { FN_ATTRS, llFieldType, releaseSym, traceArg, vAdapters } from "./shapes.js";
+import { FN_ATTRS, elemAccess, llFieldType, releaseSym, traceArg, vAdapters } from "./shapes.js";
 import type { LlvmEmitterContext, LlStreamTypedRefAdapter } from "./expr-context.js";
 import type { NullableRefField } from "./nullable-fields.js";
 import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
@@ -567,6 +567,7 @@ export function liveDynUnionRefAdapter(
     B.line(
       `${boxed} = call ptr ${typedRefConstructor(host.shapeHost, arm)}(ptr ${payload}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${host.cstr(armKey)}, ${host.sizeType} ${Buffer.byteLength(armKey, "utf8")}, ptr @${adapter.snapshot}, ptr ${adapter.commit})`,
     );
+    for (const line of bindLiveArrayOps(host, adapter, boxed)) B.line(line);
     B.terminate(`ret ptr ${boxed}`);
   });
   valueArms.forEach(({ arm }, index) => {
@@ -648,6 +649,7 @@ export function streamTypedRefBoxValue(
   B.line(
     `${boxed} = call ptr ${typedRefConstructor(host.shapeHost, t)}(ptr ${value}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${host.cstr(key)}, ${host.sizeType} ${Buffer.byteLength(key, "utf8")}, ptr @${nested.snapshot}, ptr ${nested.commit})`,
   );
+  for (const line of bindLiveArrayOps(host, nested, boxed)) B.line(line);
   return boxed;
 }
 
@@ -972,6 +974,9 @@ export function streamTypedRefMaterializeAdapter(
     }
   } else if (t.kind === "array") {
     const elem = t.elem;
+    // Published before the element converters: a recursive element type
+    // can box this same array type while the bodies below are emitted.
+    adapter.arrayOps = `@${snapshot}_ops`;
     host.declare(`declare ptr @scr_dyn_new_arr()`);
     host.declare(`declare void @scr_dyn_arr_push(ptr, ptr)`);
     host.declare(`declare double @scr_arr_len(ptr)`);
@@ -1033,6 +1038,7 @@ export function streamTypedRefMaterializeAdapter(
     host.declare(`declare void @scr_arr_copy_metadata(ptr, ptr)`);
     B.line(`call void @scr_arr_copy_metadata(ptr %p, ptr ${out})`);
     B.terminate(`ret ptr ${out}`);
+    liveArrayOps(host, t, snapshot);
   } else {
     const out = B.tmp();
     B.line(`${out} = call ptr @${host.dyn.toDynHelper(t)}(ptr %p)`);
@@ -1046,6 +1052,91 @@ export function streamTypedRefMaterializeAdapter(
     ``,
   );
   return adapter;
+}
+
+/** Per-element hooks for a live array capsule (ScrDynTypedArrayOps). The
+ * runtime answers presence and length from the native array and calls these
+ * to convert exactly one element, so `xs[i]`, `xs[i] = v`, `i in xs`, and
+ * iteration on a live array do not rebuild the whole snapshot per access.
+ * `get` boxes an element exactly like one step of the snapshot loop; `set`
+ * stores only values the element type accepts and otherwise reports false
+ * without side effects, leaving the snapshot path to raise its diagnostic. */
+function liveArrayOps(
+  host: LlvmEmitterContext,
+  t: IrType & { kind: "array" },
+  snapshot: string,
+): void {
+  const elem = t.elem;
+  const acc = elemAccess(elem);
+  const valueTy = acc === "f64" ? "double" : acc === "bool" ? "i1" : "ptr";
+  const get = `${snapshot}_get`;
+  const set = `${snapshot}_set`;
+  const ops = `${snapshot}_ops`;
+
+  const G = new BlockBuilder();
+  const value = G.tmp();
+  host.declare(
+    `declare ${acc === "bool" ? "zeroext i1" : valueTy} @scr_arr_get_${acc}(ptr, double)`,
+  );
+  G.line(
+    `${value} = call ${valueTy} @scr_arr_get_${acc}(ptr %p, double %i)${acc === "ref" ? " ; +1" : ""}`,
+  );
+  const boxed = host.streamTypedRefBoxValue(G, elem, value);
+  if (isRefCounted(elem)) G.line(`call void ${releaseSym(host.shapeHost, elem)}(ptr ${value})`);
+  G.terminate(`ret ptr ${boxed}`);
+
+  const S = new BlockBuilder();
+  const fits = S.tmp();
+  S.line(`${fits} = call zeroext i1 @${host.dyn.dynMatchHelper(elem)}(ptr %v)`);
+  const store = S.newLabel("live.array.store");
+  const refuse = S.newLabel("live.array.refuse");
+  S.condBr(fits, store, refuse);
+  S.startBlock(refuse);
+  S.terminate(`ret i1 false`);
+  S.startBlock(store);
+  const next = S.tmp();
+  S.line(
+    `${next} = call ${acc === "bool" ? "zeroext " : ""}${valueTy} @${host.dyn.dynCheckHelper(elem)}(ptr %v, ptr null)`,
+  );
+  // A conversion that throws (an accessor on a plain object, say) has
+  // already raised the write's error; report it as handled.
+  const pending = S.tmp();
+  for (const line of host.pendingTestLines(pending)) S.line(line.trimStart());
+  const write = S.newLabel("live.array.write");
+  const failed = S.newLabel("live.array.failed");
+  S.condBr(pending, failed, write);
+  S.startBlock(failed);
+  S.terminate(`ret i1 true`);
+  S.startBlock(write);
+  host.declare(
+    `declare void @scr_arr_set_${acc}(ptr, double, ${acc === "bool" ? "i1 zeroext" : valueTy})`,
+  );
+  S.line(`call void @scr_arr_set_${acc}(ptr %p, double %i, ${valueTy} ${next}) ; takes ownership`);
+  S.terminate(`ret i1 true`);
+
+  host.resolveThunkDefs.push(
+    `define internal ptr @${get}(ptr %p, double %i) ${FN_ATTRS} { ; live element of ${typeKey(t)}`,
+    G.render(),
+    `}`,
+    ``,
+    `define internal zeroext i1 @${set}(ptr %p, double %i, ptr %v) ${FN_ATTRS} { ; live element store into ${typeKey(t)}`,
+    S.render(),
+    `}`,
+    ``,
+    `@${ops} = internal constant { ptr, ptr } { ptr @${get}, ptr @${set} }`,
+    ``,
+  );
+}
+
+/** Attach the element hooks right after a live array capsule is built. */
+export function bindLiveArrayOps(
+  host: { declare(line: string): void },
+  adapter: LlStreamTypedRefAdapter,
+  capsule: string,
+): string[] {
+  if (adapter.arrayOps === undefined) return [];
+  host.declare(`declare void @scr_dyn_typed_ref_bind_array(ptr, ptr)`);
+  return [`call void @scr_dyn_typed_ref_bind_array(ptr ${capsule}, ptr ${adapter.arrayOps})`];
 }
 
 export function streamFromArrayAdapter(
@@ -1139,10 +1230,11 @@ export function streamFromArrayAdapter(
     const rc = vAdapters(host.shapeHost, elem);
     const keyPtr = host.cstr(key);
     let commit: string;
+    let live: LlStreamTypedRefAdapter | undefined;
     if (streamTypedRefEligible(elem)) {
-      const adapter = host.liveDynRefAdapter(elem);
-      snapshot = adapter.snapshot;
-      commit = adapter.commit;
+      live = host.liveDynRefAdapter(elem);
+      snapshot = live.snapshot;
+      commit = live.commit;
     } else {
       commit = host.streamTypedRefCommitAdapter(elem, snapshot);
       host.resolveThunkDefs.push(
@@ -1158,6 +1250,7 @@ export function streamFromArrayAdapter(
     B.line(
       `${boxed} = call ptr ${typedRefConstructor(host.shapeHost, elem)}(ptr ${value}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${keyPtr}, ${host.sizeType} ${Buffer.byteLength(key, "utf8")}, ptr @${snapshot}, ptr ${commit})`,
     );
+    if (live) for (const line of bindLiveArrayOps(host, live, boxed)) B.line(line);
   } else {
     boxed = B.tmp();
     B.line(`${boxed} = call ptr @${host.dyn.toDynHelper(elem)}(${valueTy} ${value})`);

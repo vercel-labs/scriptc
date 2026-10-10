@@ -2070,14 +2070,16 @@ ScrDyn *scr_dyn_new_typed_ref(
         value->v.typed_ref.type_key_len == type_key_len && !memcmp(value->v.typed_ref.type_key, type_key, type_key_len))
       return scr_dyn_retain(value);
   }
+  if (type_key_len >= (size_t)1 << 30) scr_trap("scriptc: typed reference key too long\n");
   ScrDyn *d = scr_dyn_alloc(SCR_DYN_TYPED_REF);
   d->v.typed_ref.ptr = retain(ptr);
   d->v.typed_ref.retain = retain;
   d->v.typed_ref.release = release;
   d->v.typed_ref.type_key = type_key;
-  d->v.typed_ref.type_key_len = type_key_len;
+  d->v.typed_ref.type_key_len = (uint32_t)type_key_len;
   d->v.typed_ref.materialize = materialize;
   d->v.typed_ref.commit = commit;
+  d->v.typed_ref.array = NULL;
   d->v.typed_ref.materialized = NULL;
   d->v.typed_ref.casts = NULL;
   d->v.typed_ref.traced = false;
@@ -2235,6 +2237,74 @@ void scr_dyn_typed_ref_commit(ScrDyn *d) {
     d->v.typed_ref.commit(d->v.typed_ref.ptr,
                           d->v.typed_ref.materialized);
   }
+}
+
+/* ── live native arrays: per-element access ──────────────────────────────
+ * Materializing rebuilds the whole array, so doing it for every `xs[i]`,
+ * `xs.length`, or iteration step makes a loop over a live array quadratic.
+ * The native array is the source of truth (every refresh rebuilds the view
+ * from it and keeps only the prototype and symbol properties), so element
+ * reads, presence, and in-range writes can consult it directly. Anything
+ * whose answer may come from the prototype chain — holes and out-of-range
+ * indexes — or needs the snapshot's diagnostics still takes the snapshot. */
+void scr_dyn_typed_ref_bind_array(ScrDyn *d, const ScrDynTypedArrayOps *ops) {
+  if (d && d->kind == SCR_DYN_TYPED_REF) d->v.typed_ref.array = ops;
+}
+
+static bool scr_typed_ref_canonical_index(const char *data, size_t len, size_t *out) {
+  if (len == 0 || len > 10 || (len > 1 && data[0] == '0')) return false;
+  uint64_t index = 0;
+  for (size_t i = 0; i < len; i++) {
+    if (data[i] < '0' || data[i] > '9') return false;
+    index = index * 10 + (uint64_t)(data[i] - '0');
+  }
+  if (index >= 4294967295ULL) return false;
+  *out = (size_t)index;
+  return true;
+}
+
+static bool scr_typed_ref_is_length(const ScrStr *key) {
+  return key->len == 6 && memcmp(key->data, "length", 6) == 0;
+}
+
+ScrDyn *scr_dyn_typed_ref_element(const ScrDyn *d, size_t index) {
+  ScrArr *arr = d->v.typed_ref.ptr;
+  if (index >= arr->len) return NULL;
+  double state = scr_arr_state(arr, (double)index);
+  if (state == (double)SCR_ARR_VALUE) return d->v.typed_ref.array->get(arr, (double)index);
+  if (state == (double)SCR_ARR_UNDEFINED) return scr_dyn_retain(scr_dyn_undefined());
+  return NULL;
+}
+
+ScrDyn *scr_dyn_typed_ref_key_get(const ScrDyn *d, const ScrStr *key) {
+  if (!d->v.typed_ref.array) return NULL;
+  if (scr_typed_ref_is_length(key)) return scr_dyn_new_num((double)((ScrArr *)d->v.typed_ref.ptr)->len);
+  size_t index;
+  if (!scr_typed_ref_canonical_index(key->data, key->len, &index)) return NULL;
+  return scr_dyn_typed_ref_element(d, index);
+}
+
+/* An own `length` or element answers `in`/hasOwn without the snapshot. */
+static bool scr_typed_ref_array_has_own(const ScrDyn *d, const ScrStr *key) {
+  if (!d->v.typed_ref.array) return false;
+  if (scr_typed_ref_is_length(key)) return true;
+  size_t index;
+  if (!scr_typed_ref_canonical_index(key->data, key->len, &index)) return false;
+  ScrArr *arr = d->v.typed_ref.ptr;
+  return index < arr->len && scr_arr_state(arr, (double)index) != (double)SCR_ARR_HOLE;
+}
+
+/* Writes an element in place or appends at `length`. False (nothing done)
+ * when the value does not fit the element type or the write could grow the
+ * array by more than one element: the snapshot path owns those outcomes. */
+static bool scr_typed_ref_array_set(ScrDyn *d, const ScrStr *key, const ScrDyn *value) {
+  const ScrDynTypedArrayOps *ops = d->v.typed_ref.array;
+  if (!ops || !ops->set) return false;
+  size_t index;
+  if (!scr_typed_ref_canonical_index(key->data, key->len, &index)) return false;
+  ScrArr *arr = d->v.typed_ref.ptr;
+  if (index > arr->len) return false;
+  return ops->set(arr, (double)index, value);
 }
 
 void *scr_dyn_typed_ref_cached_cast(
@@ -3432,6 +3502,27 @@ static ScrDyn *scr_native_iterator_value(ScrNativeIterator *iterator, bool *done
   /* An inherited indexed getter can advance this same iterator recursively.
    * Keep the source alive even if that nested call exhausts the iterator. */
   if (source) scr_dyn_retain(source);
+  /* A live native array answers an in-range own element directly. Holes
+   * (prototype lookups) and completion fall through to the view below. */
+  if (source && source->kind == SCR_DYN_TYPED_REF && source->v.typed_ref.array &&
+      iterator->kind == 0 && !iterator->array_like &&
+      iterator->index < (double)((ScrArr *)source->v.typed_ref.ptr)->len) {
+    double index = iterator->index;
+    ScrDyn *value = iterator->selection == 1 ? scr_dyn_new_num(index)
+                                             : scr_dyn_typed_ref_element(source, (size_t)index);
+    if (value) {
+      if (iterator->selection == 2) {
+        ScrDyn *entry = scr_dyn_new_arr();
+        scr_dyn_arr_push(entry, scr_dyn_new_num(index));
+        scr_dyn_arr_push(entry, value);
+        value = entry;
+      }
+      iterator->index++;
+      scr_dyn_release(source);
+      *done_out = false;
+      return value;
+    }
+  }
   /* Native array capsules retain the live array, so refresh its view at each
    * step rather than iterating a snapshot taken when the iterator opened. */
   ScrDyn *view = source && source->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(source) : NULL;
@@ -5503,6 +5594,7 @@ bool scr_dyn_has_key(const ScrDyn *v, const ScrStr *key) {
   if (v->kind == SCR_DYN_PROXY) return scr_dyn_proxy_has(v, key);
   if (v->kind == SCR_DYN_JSVAL) return scr_dyn_isl_fence(v, "'in'");
   if (v->kind == SCR_DYN_TYPED_REF) {
+    if (scr_typed_ref_array_has_own(v, key)) return true;
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(v);
     bool out = scr_dyn_has_key(materialized, key);
     scr_dyn_release(materialized);
@@ -5619,6 +5711,7 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
   if (scr_dyn_class_reflection_fence(recv)) return;
   if (recv->kind == SCR_DYN_PROXY) { scr_dyn_proxy_set(recv, key, value); return; }
   if (recv->kind == SCR_DYN_TYPED_REF) {
+    if (scr_typed_ref_array_set(recv, key, value)) return;
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(recv);
     scr_dyn_key_set(materialized, key, value);
     if (!scr_exc_pending()) scr_dyn_typed_ref_commit(recv);
@@ -8644,6 +8737,11 @@ static bool scr_dyn_canonical_own_index(const ScrStr *key, size_t length) {
 
 bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
   if (v->kind == SCR_DYN_TYPED_REF) {
+    /* Own canonical indexes never consult the prototype: a hole is absent. */
+    size_t index;
+    if (v->v.typed_ref.array &&
+        (scr_typed_ref_is_length(key) || scr_typed_ref_canonical_index(key->data, key->len, &index)))
+      return scr_typed_ref_array_has_own(v, key);
     ScrDyn *view = scr_dyn_typed_ref_materialize(v);
     if (!view) return false;
     bool result = scr_dyn_has_own(view, key);

@@ -1,5 +1,12 @@
 import type { IrModule, IrType } from "../ir/ir.js";
-import { funcOf, mapOf, RUNTIME_EMITTER_CLASS, STRING, VOID } from "../ir/ir.js";
+import {
+  DYN_CLASS_PROPERTIES,
+  funcOf,
+  mapOf,
+  RUNTIME_EMITTER_CLASS,
+  STRING,
+  VOID,
+} from "../ir/ir.js";
 import { computeCycleMutability, fieldKey } from "./cycle-mutability.js";
 
 /** Cycle capability for native code generation.
@@ -89,13 +96,28 @@ export function computeTraced(mod: IrModule): { shapes: Set<string>; unions: Set
     reverse: [],
     traced: false,
   });
-  const units = new Map<string, Node>();
+  // One node per class and record, plus a SUBTREE node per class with
+  // subclasses: a slot of static type C can hold an instance of any class
+  // in C's subtree, and of nothing else. Reachability is computed per
+  // class; tracing is then decided per hierarchy unit below.
   const shapes = new Map<string, Node>();
   const unions = new Map((mod.unions ?? []).map((u) => [u.id, node()]));
-  for (const s of shapeDefs) {
-    let unit = units.get(s.unit);
-    if (!unit) units.set(s.unit, (unit = node()));
-    shapes.set(s.key, unit);
+  for (const s of shapeDefs) shapes.set(s.key, node());
+  const children = new Map<string, string[]>();
+  for (const c of classes)
+    if (c.base !== undefined && shapes.has(`object:${c.base}`)) {
+      let list = children.get(c.base);
+      if (!list) children.set(c.base, (list = []));
+      list.push(c.name);
+    }
+  // Created up front and linked without recursion (hierarchies can be
+  // thousands deep).
+  const subtrees = new Map([...children.keys()].map((name) => [name, node()] as const));
+  const subtreeOf = (className: string): Node | undefined =>
+    subtrees.get(className) ?? shapes.get(`object:${className}`);
+  for (const [name, sub] of subtrees) {
+    sub.edges.set(shapes.get(`object:${name}`)!, false);
+    for (const kid of children.get(name)!) sub.edges.set(subtreeOf(kid)!, false);
   }
   // Each field/arm is an OR of intrinsic capability and referenced nodes.
   const addType = (from: Node, t: IrType, mutable: boolean): void => {
@@ -115,7 +137,9 @@ export function computeTraced(mod: IrModule): { shapes: Set<string>; unions: Set
         const dependency =
           t.kind === "union"
             ? unions.get(t.unionId)
-            : shapes.get(t.kind === "object" ? `object:${t.className}` : `record:${t.shapeId}`);
+            : t.kind === "object"
+              ? subtreeOf(t.className)
+              : shapes.get(`record:${t.shapeId}`);
         if (dependency)
           from.edges.set(dependency, (from.edges.get(dependency) ?? false) || mutable);
         break;
@@ -132,19 +156,21 @@ export function computeTraced(mod: IrModule): { shapes: Set<string>; unions: Set
   };
   for (const s of shapeDefs) {
     const unitMutable = mutability.all || mutability.units.has(s.unit);
-    for (const field of s.fields)
+    for (const field of s.fields) {
+      if (mutability.emptyPropertyBags && field.name === DYN_CLASS_PROPERTIES) continue;
       addType(
         shapes.get(s.key)!,
         field.type,
         unitMutable || mutability.fields.has(fieldKey(s.unit, field.name)),
       );
+    }
   }
   for (const u of mod.unions ?? [])
     for (const arm of u.arms) addType(unions.get(u.id)!, arm, mutability.all);
 
   // Tarjan's strongly connected components, iteratively (shape chains can
   // be thousands deep).
-  const all = [...units.values(), ...unions.values()];
+  const all = [...shapes.values(), ...subtrees.values(), ...unions.values()];
   const stack: Node[] = [];
   const componentCapable: boolean[] = [];
   let nextIndex = 0;
@@ -191,18 +217,28 @@ export function computeTraced(mod: IrModule): { shapes: Set<string>; unions: Set
       componentCapable.push(capable);
     }
   }
-  // Traced: reaches a cycle-capable component (reverse reachability).
+  // Traced: on a potential cycle. An intrinsic node can reach anything, so
+  // every node that reaches one (reverse reachability) may lie on a cycle
+  // through it; otherwise only the members of a component with a mutable
+  // internal edge can. A node that merely reaches such a component holds it
+  // from outside: no cycle can lead back to it, so its references are
+  // external counts and it dies by reference counting alone.
   for (const n of all) for (const dependency of n.edges.keys()) dependency.reverse.push(n);
-  const pending = all.filter((n) => componentCapable[n.component]);
-  for (const n of pending) n.traced = true;
+  const reachesIntrinsic = new Set<Node>(all.filter((n) => n.intrinsic));
+  const pending = [...reachesIntrinsic];
   for (let i = 0; i < pending.length; i++) {
     for (const dependent of pending[i]!.reverse) {
-      if (dependent.traced) continue;
-      dependent.traced = true;
+      if (reachesIntrinsic.has(dependent)) continue;
+      reachesIntrinsic.add(dependent);
       pending.push(dependent);
     }
   }
-  const tracedShapes = new Set([...shapes].filter(([, unit]) => unit.traced).map(([key]) => key));
+  for (const n of all) n.traced = componentCapable[n.component]! || reachesIntrinsic.has(n);
+  // Header presence is uniform across a hierarchy: a unit is traced iff any
+  // member class is.
+  const tracedUnits = new Set<string>();
+  for (const s of shapeDefs) if (shapes.get(s.key)!.traced) tracedUnits.add(s.unit);
+  const tracedShapes = new Set(shapeDefs.filter((s) => tracedUnits.has(s.unit)).map((s) => s.key));
   const tracedUnions = new Set([...unions].filter(([, n]) => n.traced).map(([id]) => id));
   return { shapes: tracedShapes, unions: tracedUnions };
 }

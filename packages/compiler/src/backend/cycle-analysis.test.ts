@@ -90,7 +90,7 @@ test("removes an entire acyclic dependency chain to a fixed point", () => {
   check(mod, []);
 });
 
-test("retains mutual cycles and every shape that can contain them", () => {
+test("retains mutual cycles but not the shapes that merely hold them", () => {
   const mod = module();
   mod.records = [
     shape("outer", [ref("a")]),
@@ -98,6 +98,19 @@ test("retains mutual cycles and every shape that can contain them", () => {
     shape("b", [ref("a")]),
     shape("leaf", [F64]),
   ];
+  // Nothing in the a/b cycle can reach `outer`: its reference is an
+  // external count and it dies by reference counting alone.
+  check(mod, ["record:a", "record:b"]);
+});
+
+test("a holder that reaches an intrinsic reference stays traced", () => {
+  const mod = module();
+  mod.records = [
+    shape("outer", [ref("a")]),
+    shape("a", [ref("b")]),
+    shape("b", [ref("a"), funcOf([], F64)]),
+  ];
+  // A closure can capture anything, including `outer`.
   check(mod, ["record:outer", "record:a", "record:b"]);
 });
 
@@ -182,7 +195,7 @@ test("map keys and set elements can close cycles without reference values", () =
     shape("leaf", [F64]),
     shape("acyclic", [mapOf(ref("leaf"), STRING), setOf(ref("leaf"))]),
   ];
-  check(mod, ["record:key", "record:member", "record:outer"]);
+  check(mod, ["record:key", "record:member"]);
 });
 
 test("boxed keys and nested array elements retain cycle capability", () => {
@@ -247,7 +260,7 @@ test("removing one dependency keeps other branches, cycles, and intrinsic refere
     shape("intrinsic", [ref("leaf"), { kind: "caught" }]),
     shape("pruned", [mapOf(ref("leaf"), arrayOf(ref("leaf")))]),
   ];
-  check(mod, ["record:outer", "record:cycle", "record:intrinsic"]);
+  check(mod, ["record:cycle", "record:intrinsic"]);
 });
 
 test("hierarchies and unions participate in the same dependency graph", () => {
@@ -262,10 +275,30 @@ test("hierarchies and unions participate in the same dependency graph", () => {
     { name: "Sibling", base: "Base", fields: [], loc },
     { name: "Base", fields: [], loc },
   ];
-  mod.unions = [{ id: "link", arms: [{ kind: "object", className: "Sibling" }, F64] }];
+  // A Base-typed arm can hold a Child, which holds the union again.
+  mod.unions = [{ id: "link", arms: [{ kind: "object", className: "Base" }, F64] }];
   check(mod, ["object:Child", "object:Sibling", "object:Base"], ["link"]);
+  // A Sibling-typed arm can only hold a Sibling, which holds nothing.
+  mod.unions[0]!.arms = [{ kind: "object", className: "Sibling" }, F64];
+  check(mod, []);
   mod.unions[0]!.arms = [F64, STRING];
   check(mod, []);
+});
+
+test("a slot reaches the subtree of its static class, not the whole hierarchy", () => {
+  const mod = module();
+  const base: IrType = { kind: "object", className: "Base" };
+  const other: IrType = { kind: "object", className: "Other" };
+  mod.classes = [
+    { name: "Base", fields: [], loc },
+    { name: "Leaf", base: "Base", fields: [{ name: "callback", type: funcOf([], VOID) }], loc },
+    { name: "Other", base: "Base", fields: [], loc },
+    { name: "HoldsOther", fields: [{ name: "other", type: other }], loc },
+    { name: "HoldsBase", fields: [{ name: "base", type: base }], loc },
+  ];
+  // Leaf's closure headers the whole hierarchy, but an Other-typed slot
+  // can never hold a Leaf.
+  check(mod, ["object:Base", "object:Leaf", "object:Other", "object:HoldsBase"]);
 });
 
 test("local class captures retain tracing even when the class has no fields", () => {
@@ -391,20 +424,30 @@ test("field increments count as writes", () => {
   checkExact(mod, ["object:Tree"], ["link"]);
 });
 
-test("this escaping from the constructor makes the hierarchy mutable", () => {
+/** tree(), with `escape` placed before the field stores. */
+function escapingTree(escape: IrStmt): IrModule {
+  const mod = tree();
+  mod.functions[1]!.body.unshift(escape);
+  return mod;
+}
+
+test("stores after this escapes from the constructor are writes", () => {
   const escape: IrStmt = {
     kind: "exprStmt",
     expr: { kind: "call", callee: "register", args: [thisRef("Tree")], type: VOID, loc },
     loc,
   };
-  checkExact(tree([escape]), ["object:Tree"], ["link"]);
+  checkExact(escapingTree(escape), ["object:Tree"], ["link"]);
+  // Stores that complete before the escape stay construction-only.
+  checkExact(tree([escape]), []);
   const capture: IrStmt = {
     kind: "varDecl",
     localId: "f.0",
     init: { kind: "closure", fnName: "%fn0", captures: ["this.0"], type: funcOf([], F64), loc },
     loc,
   };
-  checkExact(tree([capture]), ["object:Tree"], ["link"]);
+  checkExact(escapingTree(capture), ["object:Tree"], ["link"]);
+  checkExact(tree([capture]), []);
   const self: IrStmt = setThis("Tree", "left", link);
   (self as { value: IrExpr }).value = {
     kind: "unionWrap",
@@ -415,6 +458,59 @@ test("this escaping from the constructor makes the hierarchy mutable", () => {
     loc,
   };
   checkExact(tree([self]), ["object:Tree"], ["link"]);
+  // A compound assignment's receiver temporary is the same `this`.
+  const alias = tree();
+  alias.functions[1]!.locals.push({ id: "r.0", name: "r", type: obj("Tree"), mutable: false });
+  alias.functions[1]!.body.push(
+    { kind: "varDecl", localId: "r.0", init: thisRef("Tree"), loc },
+    {
+      kind: "fieldSet",
+      obj: { kind: "varRef", localId: "r.0", type: obj("Tree"), loc },
+      className: "Tree",
+      field: "left",
+      value: value(link),
+      loc,
+    },
+  );
+  checkExact(alias, []);
+});
+
+test("a subclass constructor runs after its base constructor's escape", () => {
+  const mod = module();
+  mod.classes = [
+    { name: "Base", fields: [{ name: "next", type: link }], loc },
+    {
+      name: "Sub",
+      base: "Base",
+      fields: [
+        { name: "next", type: link },
+        { name: "other", type: link },
+      ],
+      loc,
+    },
+  ];
+  mod.unions = [{ id: "link", arms: [obj("Base"), { kind: "nullT" }] }];
+  const superCall: IrStmt = {
+    kind: "exprStmt",
+    expr: {
+      kind: "call",
+      callee: "%Base.constructor",
+      args: [{ kind: "upcast", value: thisRef("Sub"), type: obj("Base"), loc }],
+      type: VOID,
+      loc,
+    },
+    loc,
+  };
+  const register: IrStmt = {
+    kind: "exprStmt",
+    expr: { kind: "call", callee: "register", args: [thisRef("Base")], type: VOID, loc },
+    loc,
+  };
+  mod.functions.push(
+    ctor("Base", [setThis("Base", "next", link), register]),
+    ctor("Sub", [superCall, setThis("Sub", "other", link)]),
+  );
+  checkExact(mod, ["object:Base", "object:Sub"], ["link"]);
 });
 
 test("field reads of this inside the constructor do not escape", () => {
@@ -494,8 +590,9 @@ test("derived constructors may initialize through super but not escape", () => {
   checkExact(method, ["object:Base", "object:Sub"], ["link"]);
 });
 
-test("an immutable edge into a mutable cycle stays traced", () => {
+test("a holder of a mutable cycle needs no tracing", () => {
   // X.holder is constructor-only; Holder.x is rewritten later: x -> h -> x.
+  // Wrapper holds X, but nothing reachable from X can lead back to it.
   const mod = module();
   mod.classes = [
     { name: "X", fields: [{ name: "holder", type: obj("Holder") }], loc },
@@ -512,7 +609,7 @@ test("an immutable edge into a mutable cycle stays traced", () => {
     value: value({ kind: "union", unionId: "maybeX" }),
     loc,
   });
-  checkExact(mod, ["object:X", "object:Holder", "object:Wrapper"], ["maybeX"]);
+  checkExact(mod, ["object:X", "object:Holder"], ["maybeX"]);
 });
 
 test("collection edges are mutable even behind constructor-only fields", () => {
@@ -522,25 +619,64 @@ test("collection edges are mutable even behind constructor-only fields", () => {
   checkExact(mod, ["object:Call"]);
 });
 
+/** A runtime store into a dynamic value under a computed key. */
+const dynamicStore: IrStmt = {
+  kind: "exprStmt",
+  expr: {
+    kind: "libCall",
+    fn: "dyn.keySet",
+    args: [value(DYN), value(STRING), value(DYN)],
+    type: VOID,
+    loc,
+  },
+  loc,
+};
+
+test("without a dynamic store, crossing into checked-dynamic code writes nothing", () => {
+  const toDyn: IrStmt = {
+    kind: "exprStmt",
+    expr: { kind: "dynFrom", value: value(obj("Tree")), type: DYN, loc },
+    loc,
+  };
+  checkExact(tree([toDyn]), []);
+  checkExact(tree([{ kind: "throw", value: value(link), loc }]), []);
+  // Publishing only marks objects immortal; FFI and other intrinsics count.
+  const intrinsic = (name: "threads.publish" | "console.log"): IrStmt => ({
+    kind: "exprStmt",
+    expr: { kind: "intrinsic", name, args: [value(obj("Tree"))], type: VOID, loc },
+    loc,
+  });
+  checkExact(tree([intrinsic("threads.publish")]), []);
+  checkExact(tree([intrinsic("console.log")]), ["object:Tree"], ["link"]);
+});
+
+test("hidden property bags hold nothing without a dynamic store", () => {
+  const mod = tree();
+  for (const c of mod.classes!) c.fields.push({ name: "%dynProperties", type: DYN });
+  checkExact(mod, []);
+  mod.functions[0]!.body.push(dynamicStore);
+  checkExact(mod, ["object:Tree"], ["link"]);
+});
+
 test("types that can become checked-dynamic capsules are mutable", () => {
   const toDyn: IrStmt = {
     kind: "exprStmt",
     expr: { kind: "dynFrom", value: value(obj("Tree")), type: DYN, loc },
     loc,
   };
-  checkExact(tree([toDyn]), ["object:Tree"], ["link"]);
+  checkExact(tree([toDyn, dynamicStore]), ["object:Tree"], ["link"]);
   const thrown: IrStmt = { kind: "throw", value: value(link), loc };
-  checkExact(tree([thrown]), ["object:Tree"], ["link"]);
+  checkExact(tree([thrown, dynamicStore]), ["object:Tree"], ["link"]);
   // Reached only through a boxed closure signature and a record field.
-  const holder = tree();
+  const holder = tree([dynamicStore]);
   holder.records = [shape("box", [obj("Tree")])];
   holder.functions[0]!.body.push({
     kind: "exprStmt",
     expr: { kind: "dynFrom", value: value(funcOf([], ref("box"))), type: DYN, loc },
     loc,
   });
-  checkExact(holder, ["object:Tree", "record:box"], ["link"]);
-  const logged = tree();
+  checkExact(holder, ["object:Tree"], ["link"]);
+  const logged = tree([dynamicStore]);
   logged.functions[0]!.body.push({
     kind: "exprStmt",
     expr: { kind: "jsonStringify", value: value(arrayOf(link)), type: STRING, loc },

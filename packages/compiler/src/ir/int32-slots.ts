@@ -271,6 +271,71 @@ function walkFunction(
   for (const s of fn.body) stmt(s);
 }
 
+/** The class and record field names checked-dynamic code can store into a
+ * live typed-ref capsule (a capsule commit rewrites every other field with
+ * its unchanged snapshot value). `all`: some runtime helper that can store
+ * an arbitrary property receives a dynamic value, or the program has a
+ * dynamic island; otherwise only literal-keyed `dyn.keySet`/`dyn.keyDelete`
+ * name fields, collected in `names`. */
+export function dynamicFieldStores(mod: IrModule): { all: boolean; names: Set<string> } {
+  const records = new Map((mod.records ?? []).map((r) => [r.id, r]));
+  const unions = new Map((mod.unions ?? []).map((u) => [u.id, u]));
+  const dynTypes = new Map<IrType, boolean>();
+  const dynNamed = new Map<string, boolean>();
+  const dynish = (type: IrType): boolean => {
+    if (DYN_KINDS.has(type.kind)) return true;
+    const cached = dynTypes.get(type);
+    if (cached !== undefined) return cached;
+    let result = false;
+    const named =
+      type.kind === "record"
+        ? `r:${type.shapeId}`
+        : type.kind === "union"
+          ? `u:${type.unionId}`
+          : null;
+    if (named) {
+      const known = dynNamed.get(named);
+      if (known !== undefined) return known;
+      dynNamed.set(named, false);
+      const members =
+        type.kind === "record"
+          ? [
+              ...(records.get(type.shapeId)?.fields.map((f) => f.type) ?? []),
+              ...(records.get(type.shapeId)?.indexValue
+                ? [records.get(type.shapeId)!.indexValue!]
+                : []),
+            ]
+          : type.kind === "union"
+            ? (unions.get(type.unionId)?.arms ?? [])
+            : [];
+      result = members.some(dynish);
+      dynNamed.set(named, result);
+    } else everyTypeChild(type, (child) => !(result = dynish(child)));
+    dynTypes.set(type, result);
+    return result;
+  };
+  const dynWritten = new Set<string>();
+  let dynWritesAll = false;
+  for (const fn of mod.functions)
+    walkFunction(fn, {
+      expr: (e) => {
+        if (dynWritesAll) return;
+        if (ISLAND_KINDS.has(e.kind) || e.type.kind === "jsval") dynWritesAll = true;
+        else if (
+          e.kind === "libCall" &&
+          !DYN_READ_ONLY.has(e.fn) &&
+          e.args.some((a) => dynish(a.type))
+        ) {
+          const key = e.args[1];
+          if ((e.fn === "dyn.keySet" || e.fn === "dyn.keyDelete") && key?.kind === "strLit")
+            dynWritten.add(key.value);
+          else dynWritesAll = true;
+        }
+      },
+    });
+  return { all: dynWritesAll, names: dynWritten };
+}
+
 export function analyzeInt32Slots(mod: IrModule): Int32Slots {
   const classes = new Map((mod.classes ?? []).map((c) => [c.name, c]));
   const slots = new Int32Slots(classes);
@@ -371,59 +436,7 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
   // writes every field from the view, which holds the exact snapshot value
   // of any property no store named. So reaching dynamic code disqualifies
   // exactly the field names some dynamic store in the program can name.
-  const dynTypes = new Map<IrType, boolean>();
-  const dynNamed = new Map<string, boolean>();
-  const dynish = (type: IrType): boolean => {
-    if (DYN_KINDS.has(type.kind)) return true;
-    const cached = dynTypes.get(type);
-    if (cached !== undefined) return cached;
-    let result = false;
-    const named =
-      type.kind === "record"
-        ? `r:${type.shapeId}`
-        : type.kind === "union"
-          ? `u:${type.unionId}`
-          : null;
-    if (named) {
-      const known = dynNamed.get(named);
-      if (known !== undefined) return known;
-      dynNamed.set(named, false);
-      const members =
-        type.kind === "record"
-          ? [
-              ...(records.get(type.shapeId)?.fields.map((f) => f.type) ?? []),
-              ...(records.get(type.shapeId)?.indexValue
-                ? [records.get(type.shapeId)!.indexValue!]
-                : []),
-            ]
-          : type.kind === "union"
-            ? (unions.get(type.unionId)?.arms ?? [])
-            : [];
-      result = members.some(dynish);
-      dynNamed.set(named, result);
-    } else everyTypeChild(type, (child) => !(result = dynish(child)));
-    dynTypes.set(type, result);
-    return result;
-  };
-  const dynWritten = new Set<string>();
-  let dynWritesAll = false;
-  for (const fn of mod.functions)
-    walkFunction(fn, {
-      expr: (e) => {
-        if (dynWritesAll) return;
-        if (ISLAND_KINDS.has(e.kind) || e.type.kind === "jsval") dynWritesAll = true;
-        else if (
-          e.kind === "libCall" &&
-          !DYN_READ_ONLY.has(e.fn) &&
-          e.args.some((a) => dynish(a.type))
-        ) {
-          const key = e.args[1];
-          if ((e.fn === "dyn.keySet" || e.fn === "dyn.keyDelete") && key?.kind === "strLit")
-            dynWritten.add(key.value);
-          else dynWritesAll = true;
-        }
-      },
-    });
+  const { all: dynWritesAll, names: dynWritten } = dynamicFieldStores(mod);
   for (const fn of mod.functions)
     walkFunction(fn, {
       expr: (e) => {

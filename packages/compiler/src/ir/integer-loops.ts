@@ -20,6 +20,11 @@ export interface IntegerCountedForLoop {
   step: number;
   inclusive: boolean;
   guarded: boolean;
+  /** The limit needs the run-time `guardLimit` test (part of `guarded`). */
+  limitGuarded: boolean;
+  /** The start has no proven integer range: the versioned loop also tests
+   * that it is an exact integer (not -0) of at most 2^53 in magnitude. */
+  startGuarded: boolean;
   guardLimit: number;
   range: IntegerRange;
 }
@@ -104,10 +109,13 @@ export function matchIntegerCountedForLoop(
   const local = locals.get(init.localId);
   if (local?.type.kind !== "f64" || !local.mutable || local.boxed || local.tdz) return null;
   const start = init.init;
-  const startRange =
+  let startRange =
     start.kind === "numLit" && Number.isSafeInteger(start.value) && !Object.is(start.value, -0)
       ? { min: start.value, max: start.value }
       : ranges.get(start);
+  // An unproven start is tested at run time, on a versioned loop.
+  const startGuarded = !startRange && start.kind !== "numLit" && start.type.kind === "f64";
+  if (startGuarded) startRange = { min: -Number.MAX_SAFE_INTEGER, max: Number.MAX_SAFE_INTEGER };
   if (
     !startRange ||
     startRange.min < -Number.MAX_SAFE_INTEGER ||
@@ -132,9 +140,10 @@ export function matchIntegerCountedForLoop(
   const guardLimit = step > 0 ? 2 ** 53 - (inclusive ? 1 : 0) : -(2 ** 53) + (inclusive ? 1 : 0);
   const boundRange =
     limit.kind === "numLit" ? { min: limit.value, max: limit.value } : ranges.get(limit);
-  const guarded =
+  const limitGuarded =
     !boundRange || (step > 0 ? !(boundRange.max <= guardLimit) : !(boundRange.min >= guardLimit));
-  if (guarded && limit.kind === "numLit") return null;
+  if (limitGuarded && limit.kind === "numLit") return null;
+  const guarded = limitGuarded || startGuarded;
   let useful = false;
   let cost = 0;
   const counter = (e: IrExpr): boolean =>
@@ -204,7 +213,18 @@ export function matchIntegerCountedForLoop(
           ),
           max: startRange.max,
         };
-  return { localId: local.id, start, limit, step, inclusive, guarded, guardLimit, range };
+  return {
+    localId: local.id,
+    start,
+    limit,
+    step,
+    inclusive,
+    guarded,
+    limitGuarded,
+    startGuarded,
+    guardLimit,
+    range,
+  };
 }
 
 /** True when a lowered subtree writes `localId`. Local ids are unique per

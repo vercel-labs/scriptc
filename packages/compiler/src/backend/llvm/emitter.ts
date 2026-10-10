@@ -6051,14 +6051,49 @@ export class LlEmitter {
         }
         let countedJoin: string | null = null;
         if (countedLoop?.guarded) {
-          const bound = this.emitExpr(countedLoop.limit);
-          const safe = B.tmp();
+          let safe = "true";
+          if (countedLoop.limitGuarded) {
+            const bound = this.emitExpr(countedLoop.limit);
+            safe = B.tmp();
+            B.line(
+              `${safe} = fcmp ${countedLoop.step > 0 ? "ole" : "oge"} double ${bound.name}, ${f64Lit(countedLoop.guardLimit)}`,
+            );
+          }
+          if (countedLoop.startGuarded) {
+            // An exact integer of at most 2^53 - 1 in magnitude, and not -0
+            // (the bit patterns of the value and its round trip agree).
+            // NaN and infinities fail the ordered range tests.
+            const start = this.emitExpr(countedLoop.start);
+            const low = B.tmp(),
+              high = B.tmp(),
+              raw = B.tmp(),
+              wide = B.tmp(),
+              back = B.tmp(),
+              bits = B.tmp(),
+              backBits = B.tmp(),
+              exact = B.tmp(),
+              inRange = B.tmp(),
+              ok = B.tmp();
+            B.line(`${low} = fcmp oge double ${start.name}, ${f64Lit(-Number.MAX_SAFE_INTEGER)}`);
+            B.line(`${high} = fcmp ole double ${start.name}, ${f64Lit(Number.MAX_SAFE_INTEGER)}`);
+            B.line(`${inRange} = and i1 ${low}, ${high}`);
+            B.line(`${raw} = fptosi double ${start.name} to i64`);
+            B.line(`${wide} = freeze i64 ${raw}`);
+            B.line(`${back} = sitofp i64 ${wide} to double`);
+            B.line(`${bits} = bitcast double ${start.name} to i64`);
+            B.line(`${backBits} = bitcast double ${back} to i64`);
+            B.line(`${exact} = icmp eq i64 ${bits}, ${backBits}`);
+            B.line(`${ok} = and i1 ${inRange}, ${exact}`);
+            if (safe === "true") safe = ok;
+            else {
+              const both = B.tmp();
+              B.line(`${both} = and i1 ${safe}, ${ok}`);
+              safe = both;
+            }
+          }
           const fast = B.newLabel("counted.fast");
           const slow = B.newLabel("counted.slow");
           countedJoin = B.newLabel("counted.done");
-          B.line(
-            `${safe} = fcmp ${countedLoop.step > 0 ? "ole" : "oge"} double ${bound.name}, ${f64Lit(countedLoop.guardLimit)}`,
-          );
           B.condBr(safe, fast, slow);
           B.startBlock(slow);
           this.countedLoopsEnabled = false;

@@ -15713,6 +15713,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/4594-union-class-field-mixed-types.ts": {
+   "order": [
+    "<repo>/tests/corpus/4594-union-class-field-mixed-types.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/4595-union-class-field-optional-receiver.ts": {
    "order": [
     "<repo>/tests/corpus/4595-union-class-field-optional-receiver.ts"

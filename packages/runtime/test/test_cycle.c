@@ -20,6 +20,18 @@ static size_t configured_nursery_threshold(void) {
   return value > 0 ? (size_t)value : 256;
 }
 
+/* How many times its size after the last full pass the heap may grow before
+ * the next once passes stop finding garbage: SCR_CYCLE_GROWTH_CAP rounded
+ * down to a power of two from 1 to 16, and 16 when unset. */
+static size_t configured_growth_cap(void) {
+  const char *env = getenv("SCR_CYCLE_GROWTH_CAP");
+  long value = env ? strtol(env, NULL, 10) : 0;
+  if (value <= 0) return 16;
+  size_t cap = 1;
+  while (cap < 16 && (long)(cap * 2) <= value) cap *= 2;
+  return cap;
+}
+
 static void check(bool condition, const char *message) {
   if (condition) return;
   fprintf(stderr, "cycle test failed: %s\n", message);
@@ -359,20 +371,16 @@ static Node *grow_chain(Node *head, size_t count) {
   return head;
 }
 
-/* A dead ring aged into the old generation, with no outside owner left. */
-static void make_dead_old_ring(size_t count) {
-  Node *ring = make_ring(count);
-  age_to_old(ring);
-  release_live(ring);
-}
-
 /* Full passes over a growing retained structure that find nothing widen the
  * growth fraction, so the structure is not re-walked at every quarter of its
- * growth; old garbage still goes before the heap has doubled past its size
- * after the last full pass, and garbage found in proportion to the growth
- * narrows the schedule again. */
+ * growth. How far the fraction may widen, and how a productive pass narrows
+ * it, are pinned on a heap at the growth floor by
+ * check_growth_cap_bounds_floating_garbage: on a structure this size the
+ * default cap lets a dead cycle wait through millions of allocations. Leaves
+ * the fraction widened, so it runs after the tests that assume the base
+ * schedule. */
 static void check_growth_schedule_follows_yield(void) {
-  enum { START = 4096, GROW = 64 * START, RING = 64 };
+  enum { START = 4096, GROW = 64 * START };
   size_t before = freed;
   Node *head = grow_chain(make_leaf(), START);
   scr_collect_cycles(); /* a baseline the bounds below are measured from */
@@ -385,42 +393,6 @@ static void check_growth_schedule_follows_yield(void) {
   check(traced - walked_before <= 7 * (size_t)GROW,
         "a growing retained structure was re-walked at every fraction of growth");
 
-  /* Widened to the cap: a dead old ring still goes within one doubling. */
-  make_dead_old_ring(RING);
-  size_t live = scr_cyc_live;
-  size_t grown = 0;
-  while (freed < before + RING && grown <= 2 * live) {
-    head = grow_chain(head, 1);
-    grown++;
-  }
-  check(freed == before + RING, "old garbage was never reclaimed after widening");
-  /* A pass waits for the release trigger, so allow one nursery's worth. */
-  check(grown <= live + configured_nursery_threshold(),
-        "old garbage outlived the doubled growth bound");
-
-  /* Old garbage in proportion to the growth narrows the fraction back. */
-  size_t big = scr_cyc_live / 2;
-  before = freed;
-  make_dead_old_ring(big);
-  live = scr_cyc_live;
-  grown = 0;
-  while (freed < before + big && grown <= 2 * live) {
-    head = grow_chain(head, 1);
-    grown++;
-  }
-  check(freed == before + big, "large old garbage was never reclaimed");
-  before = freed;
-  make_dead_old_ring(RING);
-  live = scr_cyc_live;
-  grown = 0;
-  while (freed < before + RING && grown <= 2 * live) {
-    head = grow_chain(head, 1);
-    grown++;
-  }
-  check(freed == before + RING, "old garbage was never reclaimed after narrowing");
-  check(grown <= live / 4 + configured_nursery_threshold(),
-        "a productive pass did not narrow the growth fraction");
-
   /* Close the chain into one dead cycle: the collector reclaims it whole. */
   Node *tail = head;
   while (tail->next) tail = tail->next;
@@ -431,6 +403,81 @@ static void check_growth_schedule_follows_yield(void) {
   release_live(head);
   scr_collect_cycles();
   check(freed == before + length, "the closed chain was not reclaimed whole");
+}
+
+/* Grow one dead cycle until a full pass reclaims it, and return the live
+ * heap at the release that ran that pass. The cycle's only old member is
+ * also its only candidate; the young nodes appended to it are never
+ * buffered, so only a full pass walks or frees them, and that pass reclaims
+ * one old object against all of the growth, plus a dead old ring of
+ * `old_garbage` objects when that is nonzero. Dead one-node rings keep the
+ * release path running restricted passes meanwhile. The explicit sweeps in
+ * age_to_old leave a live heap below the growth floor, so the full pass is
+ * due once the heap grows past the floor by the old level's fraction. */
+static size_t grow_dead_cycle_until_full_pass(size_t old_garbage) {
+  enum { FLOOR = 4096 };
+  size_t limit = FLOOR * 18 + 4 * configured_nursery_threshold();
+  Node *garbage = NULL;
+  if (old_garbage) {
+    garbage = make_ring(old_garbage);
+    age_to_old(garbage);
+  }
+  Node *old = make_leaf();
+  age_to_old(old);
+  check(scr_cyc_live < FLOOR, "live heap did not start below the growth floor");
+  if (garbage) release_live(garbage); /* last outside owner gone */
+  Node *first = make_leaf(); /* owned by old->other */
+  first->next = old;
+  old->rc++;
+  old->other = first;
+  release_live(old); /* external owner gone: a dead cycle with one old root */
+  size_t old_before = scr_cyc_old_freed;
+  for (size_t appended = 1; appended < limit; appended++) {
+    Node *node = make_leaf(); /* takes over old's reference to the newest */
+    node->next = old->other;
+    old->other = node;
+    Node *ring = make_ring(1);
+    size_t live = scr_cyc_live;
+    release_live(ring);
+    if (scr_cyc_old_freed != old_before) {
+      check(scr_cyc_old_freed == old_before + old_garbage + 1
+              && scr_cyc_live < FLOOR / 2,
+            "the full pass did not reclaim the dead old garbage whole");
+      return live;
+    }
+  }
+  check(false, "a dead cycle through the old generation outlived the growth cap");
+  return 0;
+}
+
+/* Passes that keep finding nothing widen the old level's fraction one
+ * doubling at a time up to the configured cap and no further: once there, a
+ * dead cycle goes exactly when the heap has grown the cap past the floor,
+ * not one doubling earlier (a narrower cap) and not later (a wider or
+ * missing one). A pass that then finds old garbage narrows the fraction at
+ * once. Runs last: it leaves the fraction narrowed but not at the base. */
+static void check_growth_cap_bounds_floating_garbage(void) {
+  enum { FLOOR = 4096 };
+  size_t cap = configured_growth_cap();
+  /* Passes wait for the release trigger, and dead rings float until the
+   * next restricted pass, so allow two nursery's worth. */
+  size_t slack = 2 * configured_nursery_threshold() + 2;
+  size_t rounds = 2; /* two passes asking to widen before the first doubling */
+  for (size_t c = cap; c >= 1; c /= 2) rounds++; /* one per doubling up to cap */
+  for (size_t i = 0; i < rounds; i++) grow_dead_cycle_until_full_pass(0);
+  size_t due = FLOOR + FLOOR * cap;
+  size_t live = grow_dead_cycle_until_full_pass(0);
+  check(live > due, "the growth fraction stopped widening below the cap");
+  check(live <= due + slack, "the growth fraction widened past the cap");
+
+  /* At any cap, old garbage of an eighth of the floor or more is a yield
+   * that asks for at least one doubling less (this ring asks for two below
+   * a cap of 2 or more), and narrowing does not wait for a second pass. */
+  live = grow_dead_cycle_until_full_pass(FLOOR / 2 - 64);
+  check(live > due && live <= due + slack, "a capped pass came early or late");
+  live = grow_dead_cycle_until_full_pass(0);
+  check(live <= FLOOR + FLOOR * cap / 2 + slack,
+        "a pass that found old garbage did not narrow the growth fraction");
 }
 
 static void check_deep_ring(void) {
@@ -604,7 +651,6 @@ static void check_deferred_white_restoration(void) {
 
 int main(void) {
   check_old_garbage_reclaimed_while_growing();
-  check_growth_schedule_follows_yield();
   check_older_rings_into_old();
   check_cycle_spanning_mature_and_old();
   check_unproductive_backlog_backs_off();
@@ -620,7 +666,9 @@ int main(void) {
   check_cross_generation_edges();
   check_deep_cross_generation_chain();
   check_teardown_rebuffers_and_immortals();
-  printf("cycle collection checks passed: threshold=%zu\n",
-         configured_nursery_threshold());
+  check_growth_schedule_follows_yield();
+  check_growth_cap_bounds_floating_garbage();
+  printf("cycle collection checks passed: threshold=%zu growth_cap=%zu\n",
+         configured_nursery_threshold(), configured_growth_cap());
   return 0;
 }

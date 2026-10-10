@@ -7,6 +7,7 @@ import {
   type IrStmt,
   type IrType,
   JSVAL,
+  isIntegerBytesElem,
   type SrcLoc,
   UNDEFINED_T,
   typeEquals,
@@ -282,6 +283,42 @@ export function lowerSafeBytesRead(
       type: F64,
       loc: at,
     };
+    if (isIntegerBytesElem(bytesT.elem)) {
+      // An integer element is never NaN, so the NaN-for-invalid read
+      // decides presence with one inline index check (no separate range
+      // and integrality tests).
+      const v = varRef("v.0", F64, at);
+      lowerer.liftedFns.push({
+        name,
+        params: [
+          { localId: "b.0", name: "b", type: bytesT },
+          { localId: "i.0", name: "i", type: F64 },
+        ],
+        returnType: resultT,
+        locals: [
+          { id: "b.0", name: "b", type: bytesT, mutable: false },
+          { id: "i.0", name: "i", type: F64, mutable: false },
+          { id: "v.0", name: "v", type: F64, mutable: false },
+        ],
+        body: [
+          { kind: "varDecl", localId: "v.0", init: { ...read, invalidNaN: true }, loc: at },
+          {
+            kind: "return",
+            value: {
+              kind: "ternary",
+              cond: { kind: "libCall", fn: "num.isNaN", args: [v], type: BOOL, loc: at },
+              then: lowerer.wrappedUndefined(resultT, at)!,
+              else_: lowerer.coerceToExpected(v, resultT),
+              type: resultT,
+              loc: at,
+            },
+            loc: at,
+          },
+        ],
+        loc: at,
+      });
+      return { kind: "call", callee: name, args: [receiver, index], type: resultT, loc };
+    }
     lowerer.liftedFns.push({
       name,
       params: [

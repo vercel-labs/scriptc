@@ -3,6 +3,7 @@ import type { IrExpr } from "../../ir/ir.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { f64Lit } from "./common.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
+import { emitTruncF64 } from "./trunc.js";
 
 /** Supported LLVM targets are little-endian. All memory accesses use align
  * 1: Buffer fields and DataView windows can start at arbitrary byte offsets. */
@@ -101,11 +102,9 @@ export function emitByteNumber(
       if (spec.dataView) {
         const nan = B.tmp(),
           finiteOrZero = B.tmp();
-        normalized = B.tmp();
         B.line(`${nan} = fcmp uno double ${offset.name}, ${offset.name}`);
         B.line(`${finiteOrZero} = select i1 ${nan}, double ${f64Lit(0)}, double ${offset.name}`);
-        host.declare("declare double @llvm.trunc.f64(double)");
-        B.line(`${normalized} = call double @llvm.trunc.f64(double ${finiteOrZero})`);
+        normalized = emitTruncF64(host, finiteOrZero);
       }
       const cap = B.tmp(),
         positive = B.tmp(),

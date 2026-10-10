@@ -15724,6 +15724,12 @@
     "<repo>/tests/corpus/4595-union-class-field-optional-receiver.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/4596-error-subclass-int-fields.ts": {
+   "order": [
+    "<repo>/tests/corpus/4596-error-subclass-int-fields.ts"
+   ],
+   "diags": []
   }
  }
 }

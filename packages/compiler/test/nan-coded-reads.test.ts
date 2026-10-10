@@ -84,3 +84,64 @@ test("reads whose consumers treat undefined like NaN lower to plain numbers", as
   // String() observes undefined: the ordinary optional read remains.
   expect(calls(fn(mod, "show").body).some((c) => c.startsWith("%bytes.idxOr"))).toBe(true);
 });
+
+const relation = `
+class Relation {
+  private readonly regular = new Int32Array(4);
+  assignable(source: number, target: number): boolean {
+    if (source === target) return true;
+    return this.related(source, target);
+  }
+  related(inputSource: number, inputTarget: number): boolean {
+    const regularSource = this.regular[inputSource];
+    const sourceId = regularSource >= 0 ? regularSource : inputSource;
+    return this.simple(sourceId, inputTarget);
+  }
+  simple(sourceId: number, targetId: number): boolean {
+    return sourceId === targetId;
+  }
+}
+function probe(a: number, b: number): boolean {
+  return a === b;
+}
+const relation = new Relation();
+const nan = process.argv.length / 0 - process.argv.length / 0;
+const ids = [1, nan, 3];
+const sources = new Uint32Array(ids.length);
+const targets = new Uint32Array(ids.length);
+const shorter = new Uint32Array(ids.length - 1);
+for (let i = 0; i < ids.length; i++) {
+  sources[i] = ids[i]!;
+  targets[i] = ids[i]!;
+  relation.assignable(ids[i]!, nan);
+  probe(ids[i]!, nan);
+}
+function run(): number {
+  const xs = new Uint32Array(ids.length);
+  const ys = new Uint32Array(ids.length);
+  let hits = 0;
+  for (let i = 0; i < xs.length; i++) if (relation.assignable(xs[i], ys[i])) hits++;
+  for (let i = 0; i < xs.length; i++) if (probe(xs[i], shorter[i])) hits++;
+  return hits;
+}
+console.log(run(), sources.length, targets.length);
+`;
+
+test("proven-present reads and guarded occurrences keep numeric parameters plain", async () => {
+  const mod = await lower(relation);
+  const f64 = { kind: "f64" };
+  // Parallel same-length typed arrays read under `i < xs.length`.
+  expect(
+    fn(mod, "assignable")
+      .params.slice(1)
+      .map((p) => p.type),
+  ).toEqual([f64, f64]);
+  // `regularSource >= 0 ? regularSource : ...` holds a number in its true arm.
+  expect(
+    fn(mod, "simple")
+      .params.slice(1)
+      .map((p) => p.type),
+  ).toEqual([f64, f64]);
+  // `shorter` is not as long as `xs`: its read may be undefined.
+  expect(fn(mod, "probe").params[1]!.type.kind).toBe("union");
+});

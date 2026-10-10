@@ -411,7 +411,7 @@ export function emitDenseArrayPush(
     fastValue = B.tmp();
   B.line(`${next} = add nuw ${size} ${len}, 1`);
   B.line(`store ${size} ${next}, ptr ${lenPtr}${host.fieldAliasAttachment(lenPtr)}`);
-  B.line(`${fastValue} = uitofp ${size} ${next} to double`);
+  B.line(`${fastValue} = uitofp nneg ${size} ${next} to double`);
   B.br(join);
   B.startBlock(slow);
   const slowValue = B.tmp();

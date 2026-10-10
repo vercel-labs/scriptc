@@ -348,7 +348,7 @@ function emitDenseReferenceArrayRead(
   B.line(`${cap} = load ${host.sizeType}, ptr ${capPtr}${host.fieldAliasAttachment(capPtr)}`);
   if (integerIndex) B.line(`${inRange} = icmp ult ${host.sizeType} ${integerIndex}, ${cap}`);
   else {
-    B.line(`${capNumber} = uitofp ${host.sizeType} ${cap} to double`);
+    B.line(`${capNumber} = uitofp nneg ${host.sizeType} ${cap} to double`);
     B.line(`${nonnegative} = fcmp oge double ${index.name}, 0.0`);
     B.line(`${belowCap} = fcmp olt double ${index.name}, ${capNumber}`);
     B.line(`${inRange} = and i1 ${nonnegative}, ${belowCap}`);
@@ -361,7 +361,7 @@ function emitDenseReferenceArrayRead(
   if (integerIndex) B.br(dense);
   else {
     B.line(`${offset} = fptoui double ${index.name} to ${host.sizeType}`);
-    B.line(`${roundTrip} = uitofp ${host.sizeType} ${offset} to double`);
+    B.line(`${roundTrip} = uitofp nneg ${host.sizeType} ${offset} to double`);
     B.line(`${integral} = fcmp oeq double ${index.name}, ${roundTrip}`);
     B.condBr(integral, dense, slow);
   }

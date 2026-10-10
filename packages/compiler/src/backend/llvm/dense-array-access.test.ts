@@ -213,7 +213,7 @@ test("length assignments skip the runtime when the length is unchanged", () => {
     module("reset", VOID, [{ kind: "arraySetLength", arr: ref("s", words), length: index, loc }]),
   );
   const fn = body(llvm, "reset");
-  expect(fn).toMatch(/uitofp i64 .* to double/);
+  expect(fn).toMatch(/uitofp nneg i64 .* to double/);
   expect(fn).toMatch(/fcmp oeq double %p?\S*, %t\d+/);
   expect(fn.match(/call void @scr_arr_set_len\(/g)).toHaveLength(1);
   expect(fn).toMatch(/br i1 %t\d+, label %arr\.len\.done\d*, label %arr\.len\.set\d*/);

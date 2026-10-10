@@ -15736,6 +15736,12 @@
     "<repo>/tests/corpus/4597-callback-field-method-name.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/4596-tdz-nullable-forward-capture.ts": {
+   "order": [
+    "<repo>/tests/corpus/4596-tdz-nullable-forward-capture.ts"
+   ],
+   "diags": []
   }
  }
 }

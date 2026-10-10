@@ -4648,18 +4648,37 @@ export class LlEmitter {
     B.line(`call void @scr_box_set_ref(ptr ${box}, ptr ${cell})`);
   }
 
+  /** The payload a TDZ box holds before its declaration runs, when that is
+   * not NULL. A nullable union's value is its arm pointer with NULL as a
+   * unit arm (nullable-unions.ts), so a stored `null`/`undefined` would
+   * read back as the temporal dead zone; such boxes start at the module's
+   * immortal NULLABLE_ABSENT sentinel instead, which no value of the
+   * binding can hold and every RC entry point and the collector skip. */
+  private tdzEmptySentinel(t: IrType): string | null {
+    if (!this.nullableUnions.of(t)) return null;
+    this.needsNullableAbsent = true;
+    this.immortalValues.add(NULLABLE_ABSENT);
+    return NULLABLE_ABSENT;
+  }
+
   /** The TDZ-guarded read of a boxed binding: an empty payload slot is
    * the temporal dead zone — throw Node's exact catchable ReferenceError
    * (exprs.ts's varRef guard). Scalars then peek the one-element
    * array cell; ref kinds read the box normally (+1). */
-  private checkTdz(box: string, name: string): string {
+  private checkTdz(box: string, t: IrType, name: string): string {
     const B = this.B;
     const slotp = B.tmp();
     const slotv = B.tmp();
     const empty = B.tmp();
     B.line(`${slotp} = getelementptr inbounds %ScrBox, ptr ${box}, i64 0, i32 5`);
-    B.line(`${slotv} = load i64, ptr ${slotp}`);
-    B.line(`${empty} = icmp eq i64 ${slotv}, 0`);
+    const sentinel = this.tdzEmptySentinel(t);
+    if (sentinel !== null) {
+      B.line(`${slotv} = load ptr, ptr ${slotp}`);
+      B.line(`${empty} = icmp eq ptr ${slotv}, ${sentinel}`);
+    } else {
+      B.line(`${slotv} = load i64, ptr ${slotp}`);
+      B.line(`${empty} = icmp eq i64 ${slotv}, 0`);
+    }
     this.throwIfUninitialized(empty, name);
     return slotv;
   }
@@ -4699,7 +4718,7 @@ export class LlEmitter {
   }
 
   tdzBoxRead(box: string, t: IrType, name: string): string {
-    const slotv = this.checkTdz(box, name);
+    const slotv = this.checkTdz(box, t, name);
     const B = this.B;
     const acc = boxAccess(t);
     if (acc === "ref") return this.boxGet(box, t);
@@ -4727,7 +4746,7 @@ export class LlEmitter {
   ): void {
     if (local.tdz) {
       const first = initializes || !local.mutable;
-      const slotv = first ? null : this.checkTdz(box, local.name);
+      const slotv = first ? null : this.checkTdz(box, local.type, local.name);
       const acc = boxAccess(local.type);
       if (acc !== "ref") {
         if (first) this.tdzScalarInit(box, local.type, value);
@@ -5447,7 +5466,13 @@ export class LlEmitter {
           B.line(`${box} = ${boxNew} ; let ${b.local!.name} (boxed)`);
           B.line(`store ptr ${box}, ptr ${b.slot}`);
           this.scopes[this.scopes.length - 1]!.push({ slot: b.slot, type: b.type, boxed: true });
-          if (s.init === null) break;
+          if (s.init === null) {
+            // An empty TDZ box whose payload can legitimately be NULL
+            // starts at its distinct sentinel (tdzEmptySentinel).
+            const sentinel = b.local!.tdz === true ? this.tdzEmptySentinel(b.type) : null;
+            if (sentinel !== null) B.line(`store ptr ${sentinel}, ptr ${this.boxSlot(box)}`);
+            break;
+          }
           const v = this.emitExpr(s.init);
           if (isRefCounted(v.type)) this.moveTemp(v); // the box takes ownership
           if (b.local!.tdz === true && boxAccess(b.type) !== "ref") {

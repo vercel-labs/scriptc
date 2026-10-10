@@ -216,6 +216,22 @@ test("reference fields borrow across preserving calls but snapshot across writes
   expect(body(module, "sc_bf_compare")).not.toContain("@scr_str_retain_v");
   source.body.unshift({ kind: "assign", localId: "%g.changed", value: str("effect"), loc });
   module.globals = [{ id: "%g.changed", name: "changed", type: STRING, mutable: true }];
+  // The field is never written after its record literal, so no call can
+  // replace (and release) it while the holder lives.
+  expect(body(module, "sc_bf_compare")).not.toContain("@scr_str_retain_v");
+  // Once the program writes the field, a reference-writing call snapshots it.
+  const writer = fn("writer", [], str("written"));
+  writer.params = [{ localId: "target", name: "target", type: record }];
+  writer.locals = [{ id: "target", name: "target", type: record, mutable: false }];
+  writer.body.unshift({
+    kind: "recordSet",
+    obj: ref("target", record),
+    shapeId: "text",
+    field: "value",
+    value: str("written"),
+    loc,
+  });
+  module.functions.push(writer);
   expect(body(module, "sc_bf_compare")).toContain("@scr_str_retain_v");
   f.body = [ret(equal(str("constant"), projection))];
   expect(body(module, "sc_bf_compare")).not.toContain("@scr_str_retain_v");

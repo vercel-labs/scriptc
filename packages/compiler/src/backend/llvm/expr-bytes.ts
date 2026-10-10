@@ -185,6 +185,20 @@ export function emitBytesGet(
     const local = emitSharedBytesSplit(host, receiver);
     const result = B.tmp();
     B.line(`${result} = call double @${fn}(ptr ${receiver}, double ${index.name})`);
+    // Integer elements read as integers in int32/uint32 range, or NaN for a
+    // missing one: ToUint32 is the integer, or 0. Keeping it lets the join
+    // carry the local path's integer hint.
+    let sharedU32: string | undefined;
+    if (elem !== "f32" && elem !== "f64") {
+      const missing = B.tmp(),
+        present = B.tmp(),
+        wide = B.tmp();
+      sharedU32 = B.tmp();
+      B.line(`${missing} = fcmp uno double ${result}, ${result}`);
+      B.line(`${present} = select i1 ${missing}, double 0.0, double ${result}`);
+      B.line(`${wide} = fptosi double ${present} to i64`);
+      B.line(`${sharedU32} = trunc i64 ${wide} to i32`);
+    }
     const shared = B.newLabel("bytes.shared.done");
     B.br(shared);
     B.startBlock(local);
@@ -199,7 +213,10 @@ export function emitBytesGet(
     B.startBlock(join);
     const out = B.tmp();
     B.line(`${out} = phi double [ ${own.name}, %${owned} ], [ ${result}, %${shared} ]`);
-    return { name: out, type: F64 };
+    if (own.uint32 === undefined || sharedU32 === undefined) return { name: out, type: F64 };
+    const u32 = B.tmp();
+    B.line(`${u32} = phi i32 [ ${own.uint32}, %${owned} ], [ ${sharedU32}, %${shared} ]`);
+    return { name: out, type: F64, uint32: u32 };
   }
   return emitBytesGetLocal(host, elem, receiver, index, expr, inBounds, invalidNaN);
 }
@@ -253,9 +270,10 @@ function emitBytesGetLocal(
   B.startBlock(done);
   const out = B.tmp();
   B.line(`${out} = phi double [ ${loaded.name}, %${ok} ], [ ${f64Lit(NaN)}, %${invalid} ]`);
-  // NaN has no integer value: the integer hint survives only when the read
-  // is proven valid (the invalid block is then unreachable).
-  if (loaded.uint32 === undefined || !inBounds) return { name: out, type: F64 };
+  // The hint is ToUint32 of the value, and ToUint32(NaN) is 0, so it holds
+  // for an invalid index too. Integer ranges (which would claim more) are
+  // never derived for NaN-coded reads.
+  if (loaded.uint32 === undefined) return { name: out, type: F64 };
   const u32 = B.tmp();
   B.line(`${u32} = phi i32 [ ${loaded.uint32}, %${ok} ], [ 0, %${invalid} ]`);
   return { name: out, type: F64, uint32: u32 };

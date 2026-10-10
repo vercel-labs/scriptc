@@ -45,7 +45,8 @@ test("numeric byte pipelines retain checked fallbacks and use field widths on bo
       expect(wide).toContain("phi i64");
       expect(wide).toContain("@llvm.bswap.i64");
       const offsets = body(ll, "offsets");
-      expect(offsets).toContain("@llvm.trunc.f64");
+      // Truncation is the intrinsic, or inline on an x86-64 host (trunc.ts).
+      expect(offsets).toMatch(/@llvm\.trunc\.f64|@llvm\.copysign\.f64/);
       expect(offsets).toContain("@scr_dataview_set");
       expect(offsets).toContain("@scr_dataview_get");
       expect(offsets).toMatch(/icmp ule i(?:32|64)/);

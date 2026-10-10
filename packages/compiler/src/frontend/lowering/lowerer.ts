@@ -4223,6 +4223,23 @@ export class Lowerer {
       if (!symbol) return false;
       return noteFieldSymbol(symbol, name);
     };
+    /** An instance field of a TypeScript class whose declared storage is
+     * exactly `T | undefined`: an assignment from a missing read stores the
+     * undefined arm while the checker narrows later reads to `T`. */
+    const optionalInstanceField = (symbol: ts.Symbol): boolean => {
+      const decl = this.checker.valueDeclarationOf(symbol);
+      if (!decl || !ts.isPropertyDeclaration(decl) || !ts.isIdentifier(decl.name)) return false;
+      if (ts.getCombinedModifierFlags(decl) & ts.ModifierFlags.Static) return false;
+      const sf = decl.getSourceFile();
+      if (isJsSourceFile(sf) || sf.isDeclarationFile) return false;
+      const declared = typeOrNull(decl.name);
+      const mapped = declared ? this.mapTypeOf(declared) : null;
+      if (mapped?.kind !== "union" || this.armTag(mapped.unionId, UNDEFINED_T) < 0) return false;
+      const arms = this.unions.get(mapped.unionId)?.arms ?? [];
+      return (
+        arms.length === 2 && arms.every((arm) => arm.kind === "undefinedT" || !isUnitType(arm))
+      );
+    };
     const noteFieldSymbol = (symbol: ts.Symbol, name: string): boolean => {
       const set = optionalFields.get(symbol) ?? new Set<string>();
       const before = set.size;
@@ -5048,6 +5065,13 @@ export class Lowerer {
             if (field && staticFieldsBySymbol.has(field) && !optionalSymbols.has(field)) {
               optionalSymbols.add(field);
               provenance?.note("static-field", node.left, node.right);
+              changed = true;
+            } else if (field && !optionalSymbols.has(field) && optionalInstanceField(field)) {
+              // The checker narrows the field to the assigned read's bare
+              // type, but the stored value can be undefined: reads keep the
+              // stored union (runtimeOptionalClassField).
+              optionalSymbols.add(field);
+              provenance?.note("assigned-field", node.left, node.right);
               changed = true;
             } else if (ts.isIdentifier(node.left.expression)) {
               const symbol = symbolOf(node.left.expression);
@@ -9591,14 +9615,32 @@ export class Lowerer {
   /* ── scoping and captures ─────────────────────────────────────────── */
 
   declareLocal(nameNode: ts.Node, name: string, type: IrType, mutable: boolean): IrLocal {
-    return declareContextLocal(
+    const symbol = this.checker.getSymbolAtLocation(nameNode);
+    const local = declareContextLocal(
       this.ctx,
       name,
       type,
       mutable,
-      this.checker.getSymbolAtLocation(nameNode),
+      symbol,
       bindingSource(nameNode),
     );
+    // A binding declared `T | undefined` that receives a missing read: the
+    // checker narrows it to `T` after the assignment, but the stored value
+    // can be undefined. Track it like widened storage so bare reads keep
+    // the union until a guard proves presence.
+    if (
+      symbol &&
+      this.runtimeOptionalAssignedSymbols.has(symbol) &&
+      type.kind === "union" &&
+      this.armTag(type.unionId, UNDEFINED_T) >= 0 &&
+      this.unions.get(type.unionId)?.arms.length === 2 &&
+      !isUnitType(this.stripUndefinedArm(type))
+    ) {
+      const root = this.runtimeOptionalRootOf(local);
+      this.runtimeOptionalStorageLocals.add(root);
+      this.runtimeOptionalLocals.add(root);
+    }
+    return local;
   }
 
   /** A never-returning call in a value position of type `expected`: the

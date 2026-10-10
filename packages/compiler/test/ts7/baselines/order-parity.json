@@ -10493,6 +10493,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/missing-read-narrowed-storage.ts": {
+   "order": [
+    "<repo>/tests/corpus/missing-read-narrowed-storage.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/missing-read-number-conversions.ts": {
    "order": [
     "<repo>/tests/corpus/missing-read-number-conversions.ts"

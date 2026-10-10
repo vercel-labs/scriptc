@@ -4,6 +4,7 @@
 import type { IrExpr, IrModule, IrStmt, IrType } from "../ir/ir.js";
 import { typeKey } from "../ir/ir.js";
 import { everyStmtList } from "../ir/traverse.js";
+import { computeConstructionFacts } from "./immutability.js";
 
 /** Array methods that write their receiver (the guarded ones). */
 export const MUTATING_ARRAY_METHODS: ReadonlySet<string> = new Set([
@@ -45,9 +46,17 @@ export class PublishedTypes {
   readonly records = new Set<string>();
   /** typeKeys of array, map and set types. */
   readonly containers = new Set<string>();
+  /** Constructor stores into a `this` nothing else can reach yet
+   * (immutability.ts): never a published target, so never guarded. */
+  privateStores: ReadonlySet<IrStmt> = new Set();
 
   classGuarded(className: string): boolean {
     return this.classes.has(className);
+  }
+
+  /** Whether a class field store needs the guard. */
+  fieldStoreGuarded(s: IrStmt): boolean {
+    return s.kind === "fieldSet" && this.classes.has(s.className) && !this.privateStores.has(s);
   }
 
   recordGuarded(shapeId: string): boolean {
@@ -83,6 +92,7 @@ export function computePublishedTypes(mod: IrModule): PublishedTypes | null {
   const records = new Map((mod.records ?? []).map((r) => [r.id, r]));
   const unions = new Map((mod.unions ?? []).map((u) => [u.id, u]));
   const out = new PublishedTypes();
+  out.privateStores = computeConstructionFacts(mod).privateStores;
   const seen = new Set<string>();
   const stack = [...roots];
   const addHierarchy = (className: string): void => {
@@ -142,6 +152,7 @@ export function computePublishedTypes(mod: IrModule): PublishedTypes | null {
 export function writesPublished(published: PublishedTypes, node: IrExpr | IrStmt): boolean {
   switch (node.kind) {
     case "fieldSet":
+      return published.fieldStoreGuarded(node);
     case "fieldIncDec":
       return published.classGuarded(node.className);
     case "recordSet":

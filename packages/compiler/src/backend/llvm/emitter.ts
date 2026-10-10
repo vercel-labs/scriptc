@@ -193,6 +193,7 @@ import { emitBorrowedResultCall, emitCallExpr } from "./expr-calls.js";
 import { emitDynamicExpr } from "./expr-dynamic.js";
 import { emitIntrinsicExpr, emitSerializationExpr, emitAsyncExpr } from "./expr-async.js";
 import { PublishWalkers } from "./publish.js";
+import { computeImmutableFields, stableGlobals, type ImmutableFields } from "../immutability.js";
 import { computePublishedTypes, type PublishedTypes } from "../publication.js";
 import { emitJsInteropExpr, emitExpr } from "./expr-dispatch.js";
 import {
@@ -622,6 +623,9 @@ export class LlEmitter {
   readonly ffiHasRetainedCallback: boolean;
   private readonly ffiHasForeignCallback: boolean;
   private readonly globalTypes = new Map<string, IrType>();
+  /** Module constants that keep one value once initialized
+   * (immutability.ts stableGlobals). */
+  private stableGlobals: ReadonlySet<string> = new Set();
   private readonly tdzGlobals = new Map<string, string>();
   readonly constantNumericTables: ReadonlyMap<string, ConstantNumericTable>;
   /** May-throw analysis (computeMayThrow): pending
@@ -637,6 +641,13 @@ export class LlEmitter {
   /** Static types whose values can be published (@scriptc/threads): their
    * stores carry the frozen-object guard. Null without publish calls. */
   readonly publishedTypes: PublishedTypes | null;
+  /** Construction-only class and record fields (immutability.ts); null
+   * where the facts are disabled. */
+  private readonly immutableFields: ImmutableFields | null;
+  /** Constructor function names: their bodies may still write their own
+   * `this`'s construction-only fields. */
+  private readonly constructorFunctions: ReadonlySet<string>;
+  private inConstructor = false;
   /** Method names with at least one may-throw implementation — the
    * virtualCall pending check's key. */
   readonly mayThrowMethods = new Set<string>();
@@ -842,6 +853,8 @@ export class LlEmitter {
     this.workerEntryPolls = mt.workerEntryPolls ?? null;
     this.stackChecks = mt.stackChecks ?? null;
     this.publishedTypes = computePublishedTypes(mod);
+    this.immutableFields = computeImmutableFields(mod);
+    this.constructorFunctions = new Set((mod.classes ?? []).map((c) => `%${c.name}.constructor`));
     this.indirectMayThrow = mt.indirect || mod.workers === true;
     for (const cls of mod.classes ?? []) {
       for (const m of cls.methods ?? []) {
@@ -977,6 +990,7 @@ export class LlEmitter {
       this.globalTypes.set(g.id, g.type);
       if (g.tdz) this.tdzGlobals.set(g.id, g.name);
     }
+    this.stableGlobals = stableGlobals(mod);
     // Runtime error, EventEmitter, and stream classes have known layouts.
     // Subclasses embed the ScrEmitter/ScrStream prefixes from classes.ts.
     const classes = mod.classes ?? [];
@@ -5002,6 +5016,7 @@ export class LlEmitter {
     this.currentReturnType = fn.returnType;
     this.currentGenerator = fn.generator ?? null;
     this.currentBorrowedReturn = this.borrowedReturns.has(fn.name);
+    this.inConstructor = this.constructorFunctions.has(fn.name);
     this.currentWasiCoro = null;
     this.logArgSlots = 0;
 
@@ -5326,8 +5341,14 @@ export class LlEmitter {
         this.canBorrowCallArgument(value.then) &&
         this.canBorrowCallArgument(value.else_)
       );
+    // A construction-only field of a stable owner keeps its value until the
+    // owner dies: no later operand or callee can replace and release it.
+    if ((value.kind === "fieldGet" || value.kind === "recordGet") && this.immutableRead(value))
+      return this.canBorrowCallArgument(value.obj);
     if (value.kind !== "varRef") return false;
     const binding = this.binding(value.localId);
+    // A module constant owns its value for the rest of the program.
+    if (binding.kind === "global") return this.stableGlobals.has(value.localId);
     return (
       binding.kind === "local" &&
       binding.local !== undefined &&
@@ -5338,6 +5359,17 @@ export class LlEmitter {
       !binding.local.boxed &&
       !binding.local.tdz
     );
+  }
+
+  /** A plain-pointer read of a construction-only field outside any
+   * constructor (ImmutableFields). */
+  private immutableRead(e: ExprOf<"fieldGet" | "recordGet">): boolean {
+    if (this.inConstructor || this.immutableFields === null) return false;
+    const t = e.type.kind;
+    if (t !== "object" && t !== "record" && t !== "array" && t !== "string") return false;
+    return e.kind === "fieldGet"
+      ? this.immutableFields.classField(e.className, e.field)
+      : this.immutableFields.recordField(e.shapeId, e.field);
   }
 
   // ── statements ──────────────────────────────────────────────────────────
@@ -5692,21 +5724,21 @@ export class LlEmitter {
           const obj = this.emitStableReceiver(s.obj, [s.value]);
           // (The guard precedes the value here: the nullable store
           // evaluates it itself.)
-          this.emitPublishedFieldGuard(obj.name, s.className, s.field);
+          this.emitStoreGuard(obj.name, s);
           this.emitNullableFieldStore(obj.name, s.className, s.field, nullable, s.value);
           break;
         }
         if (s.kind === "fieldSet" && this.int32Slots.isField(s.className, s.field)) {
           const obj = this.emitStableReceiver(s.obj, [s.value]);
           const v = this.emitExpr(s.value);
-          this.emitPublishedFieldGuard(obj.name, s.className, s.field);
+          this.emitStoreGuard(obj.name, s);
           const { ptr } = this.classFieldPtr(obj.name, s.className, s.field);
           this.storeInt32Field(ptr, v, s.value);
           break;
         }
         const obj = this.emitStableReceiver(s.obj, [s.value]);
         const v = this.emitExpr(s.value);
-        if (s.kind === "fieldSet") this.emitPublishedFieldGuard(obj.name, s.className, s.field);
+        if (s.kind === "fieldSet") this.emitStoreGuard(obj.name, s);
         else if (this.publishedTypes?.recordGuarded(s.shapeId) === true)
           this.emitPublishedFieldGuard(obj.name, null, s.field);
         const { ptr, type } =
@@ -7120,6 +7152,13 @@ export class LlEmitter {
       `${this.publishedNamesSym} = internal constant [${size} x ptr] [ ${names.join(", ")} ]`,
       ``,
     ];
+  }
+
+  /** The frozen-object guard of a class field store, unless the store
+   * provably targets a still-private `this` (PublishedTypes.privateStores). */
+  private emitStoreGuard(obj: string, s: Extract<IrStmt, { kind: "fieldSet" }>): void {
+    if (this.publishedTypes?.privateStores.has(s) === true) return;
+    this.emitPublishedFieldGuard(obj, s.className, s.field);
   }
 
   /** The frozen-object guard of a class field or record field store:

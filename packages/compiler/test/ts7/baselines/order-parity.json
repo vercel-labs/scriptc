@@ -15749,6 +15749,24 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/4598-publish-constructor-stores.ts": {
+   "order": [
+    "<repo>/tests/corpus/4598-publish-constructor-stores.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4599-construction-only-field-borrows.ts": {
+   "order": [
+    "<repo>/tests/corpus/4599-construction-only-field-borrows.ts"
+   ],
+   "diags": []
+  },
+  "<repo>/tests/corpus/4600-construction-only-fields-dynamic-writes.ts": {
+   "order": [
+    "<repo>/tests/corpus/4600-construction-only-fields-dynamic-writes.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/4601-cycle-holders.ts": {
    "order": [
     "<repo>/tests/corpus/4601-cycle-holders.ts"

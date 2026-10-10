@@ -444,6 +444,7 @@ export class NanCodedReads {
     if (!decl || this.containingFunction(decl) !== this.containingFunction(read)) return false;
     return indexReadInBounds(read, {
       sameLength: (array, other) => this.sameFixedLength(array, other),
+      conditions: true,
     });
   }
 

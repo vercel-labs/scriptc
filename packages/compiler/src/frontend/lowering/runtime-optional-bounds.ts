@@ -30,6 +30,10 @@ export interface BoundsFacts {
    * fixed-length typed arrays allocated with the same length), so a guard
    * `i < other.length` bounds `array[i]` as well. */
   sameLength?(array: ts.Expression, other: ts.Expression): boolean;
+  /** A read inside an `if` condition is bounded like one in a statement.
+   * Opt-in: a caller that does not also prove the index a non-negative
+   * integer keeps its established decision for such reads. */
+  conditions?: boolean;
 }
 
 /** Proves that an element read `xs[i]` (typically `xs[i]!` forwarded to a
@@ -79,7 +83,7 @@ export function indexReadInBounds(
     } else if (
       (ts.isExpressionStatement(parent) ||
         ts.isReturnStatement(parent) ||
-        ts.isIfStatement(parent)) &&
+        (facts.conditions === true && ts.isIfStatement(parent))) &&
       parent.expression === child
     ) {
       // An `if` condition runs before its branches, like a statement.

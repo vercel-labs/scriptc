@@ -93,6 +93,7 @@ test("an if condition reads like a statement, and a same-length fact extends the
   );
   const results: boolean[] = [];
   const facts = {
+    conditions: true,
     sameLength: (array: ts.Expression, other: ts.Expression) =>
       ts.isIdentifier(array) &&
       ts.isIdentifier(other) &&
@@ -103,4 +104,11 @@ test("an if condition reads like a statement, and a same-length fact extends the
     return undefined;
   });
   expect(results).toEqual([true, true, false, true, false]);
+  // Without the opt-in, a read in an `if` condition keeps its old answer.
+  const plain: boolean[] = [];
+  ts.walkPreorder(file, (node) => {
+    if (ts.isElementAccessExpression(node)) plain.push(indexReadInBounds(node));
+    return undefined;
+  });
+  expect(plain).toEqual([false, false, false, false, false]);
 });

@@ -5326,6 +5326,9 @@ export class LlEmitter {
         this.canBorrowCallArgument(value.then) &&
         this.canBorrowCallArgument(value.else_)
       );
+    // An optional chain's bound receiver stays unchanged until its body
+    // finishes (see emitReadReceiver).
+    if (value.kind === "chainRecv") return this.chainSlots.has(value.id);
     if (value.kind !== "varRef") return false;
     const binding = this.binding(value.localId);
     return (
@@ -7247,6 +7250,16 @@ export class LlEmitter {
       this.B.line(`${value} = load ptr, ptr ${binding.slot}`);
       return { name: value, type: e.type };
     }
+    if (e.kind === "chainRecv") {
+      // The chain's bind slot holds its receiver unchanged until the body
+      // finishes, owned by the slot itself or by the chain's receiver.
+      const bound = this.chainSlots.get(e.id);
+      if (!bound)
+        throw new InternalCompilerError(`llvm emitter bug: chainRecv "${e.id}" outside its chain`);
+      const value = this.B.tmp();
+      this.B.line(`${value} = load ${this.llType(bound.type)}, ptr ${bound.name}`);
+      return { name: value, type: e.type };
+    }
     if (e.kind === "arrayGet" && this.canBorrowReceiver(e)) {
       // The array keeps the element alive until the consumer; a missing
       // element still traps exactly like the owned read.
@@ -7499,6 +7512,8 @@ export class LlEmitter {
 
   canBorrowReceiver(e: IrExpr): boolean {
     switch (e.kind) {
+      case "chainRecv":
+        return this.chainSlots.has(e.id);
       case "varRef": {
         const binding = this.binding(e.localId);
         return (

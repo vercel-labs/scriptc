@@ -282,21 +282,51 @@ export function emitControlExpr(
         throw new InternalCompilerError("llvm emitter bug: optChain union arms");
       const multiple = def.arms.length - unitTags.length > 1;
       const narrowed = multiple ? e.receiver.type : def.arms[narrowIdx]!;
+      // `owner.field?.member`: a receiver projected from a borrowable owner
+      // needs no reference of its own while the body cannot remove an edge
+      // (so nothing can overwrite the projection before the body finishes).
+      const borrowReceiver =
+        !multiple &&
+        isRefCounted(narrowed) &&
+        host.canBorrowReceiver(e.receiver) &&
+        host.referenceEffects.preserves(e.body);
       // A single present arm is only tested and extracted (+1) before the
       // body runs, so a fresh receiver box can stay on the stack.
-      const r =
-        !multiple && host.canStackReceiver(e.receiver)
-          ? host.emitReadReceiver(e.receiver)
-          : host.emitExpr(e.receiver);
+      const stacked = !borrowReceiver && !multiple && host.canStackReceiver(e.receiver);
+      let r: LlValue;
+      const nullableField = borrowReceiver ? host.nullableFieldGet(e.receiver) : null;
+      if (nullableField !== null && e.receiver.kind === "fieldGet") {
+        // A nullable-pointer field stores no union: test and peek the
+        // pointer itself, through a private stack box when the union's own
+        // representation is boxed (emitUnionProjection's form).
+        const owner = host.emitReadReceiver(e.receiver.obj);
+        const { ptr } = host.classFieldPtr(owner.name, e.receiver.className, e.receiver.field);
+        const p = B.tmp();
+        B.line(`${p} = load ptr, ptr ${ptr}${host.fieldAliasAttachment(ptr)}`);
+        r = {
+          name: host.nullableUnions.get(def.id) ? p : host.stackNullableBox(p, nullableField),
+          type: e.receiver.type,
+        };
+      } else if (borrowReceiver || stacked) r = host.emitReadReceiver(e.receiver);
+      else r = host.emitExpr(e.receiver);
+      // The bind slot borrows a ref payload whenever something else keeps it
+      // alive until the body finishes: the borrowed projection above, or the
+      // receiver value the statement frame owns (emitExpr). Stack receivers
+      // may borrow their payload from a container, so they keep their +1.
+      const borrowBind = !multiple && !stacked && isRefCounted(narrowed);
       const bind = B.slot();
       B.entryAllocas.push(`${bind} = alloca ${host.llType(narrowed)}`);
       B.line(
         `store ${host.llType(narrowed)} ${host.llType(narrowed) === "ptr" ? "null" : host.llType(narrowed) === "double" ? f64Lit(0) : "false"}, ptr ${bind}`,
       );
-      host.ownSlot(bind, narrowed);
+      if (!borrowBind) host.ownSlot(bind, narrowed);
       const isUnit = host.tagInSet(r.name, def.id, unitTags);
       const extract = (): string =>
-        multiple ? host.retainValue(r.name, narrowed) : host.unionExtract(r.name, def.id, narrowed);
+        multiple
+          ? host.retainValue(r.name, narrowed)
+          : borrowBind
+            ? host.unionPeek(r.name, def.id)
+            : host.unionExtract(r.name, def.id, narrowed);
       if (e.type.kind === "void") {
         // Statement form (cb?.()): no result value at all.
         const lb = B.newLabel("oc.b");

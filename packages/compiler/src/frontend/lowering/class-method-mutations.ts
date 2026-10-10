@@ -42,6 +42,7 @@ export function collectClassMethodMutations(
   const globals: ts.Identifier[] = [];
   const jsAssignments: (ts.PropertyAccessExpression | ts.ElementAccessExpression)[] = [];
   const computedMethods: ts.Expression[] = [];
+  const typedClasses: (ts.ClassDeclaration | ts.ClassExpression)[] = [];
   let unknownKey: ts.Node | undefined;
   let numericKey: ts.Node | undefined;
   let unknownOwnField = false;
@@ -51,6 +52,7 @@ export function collectClassMethodMutations(
   for (const file of files) {
     if (isJsSourceFile(file)) continue;
     ts.walkPreorder(file, (node) => {
+      if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) typedClasses.push(node);
       if (
         !ts.isMethodDeclaration(node) ||
         (!ts.isClassDeclaration(node.parent) && !ts.isClassExpression(node.parent))
@@ -447,6 +449,88 @@ export function collectClassMethodMutations(
       ...(write.receiver ? [write.receiver] : []),
     ]),
   );
+  // Instance types of the typed classes that have method `name` (declared or
+  // inherited), or null when one of them cannot be judged by assignability:
+  // a generic class (an instantiation may fit where the declaration does not)
+  // or an anonymous class with a base or its own such method.
+  const ownerTypes = new Map<string, ts.Type[] | null>();
+  const methodOwners = (name: string): ts.Type[] | null => {
+    const cached = ownerTypes.get(name);
+    if (cached !== undefined) return cached;
+    let owners: ts.Type[] | null = [];
+    for (const cls of typedClasses) {
+      const symbol = cls.name ? lowerer.checker.getSymbolAtLocation(cls.name) : undefined;
+      if (!symbol) {
+        const declares = cls.members.some(
+          (member) =>
+            ts.isMethodDeclaration(member) &&
+            ts.isIdentifier(member.name) &&
+            member.name.text === name,
+        );
+        if (declares || cls.heritageClauses !== undefined) owners = null;
+        if (owners === null) break;
+        continue;
+      }
+      const type = lowerer.checker.getDeclaredTypeOfSymbol(symbol);
+      const property = lowerer.checker.getPropertyOfType(type, name);
+      if (!property || !lowerer.checker.declarationsOf(property).some(ts.isMethodDeclaration))
+        continue;
+      if (cls.typeParameters !== undefined && cls.typeParameters.length > 0) {
+        owners = null;
+        break;
+      }
+      owners.push(type);
+    }
+    ownerTypes.set(name, owners);
+    return owners;
+  };
+  // The type a write's receiver can hold: `this` in an instance member of a
+  // class is an instance of that class (or a subclass); `this` elsewhere,
+  // other type parameters, `any` and `unknown` answer null.
+  const receiverType = (receiver: ts.Expression): ts.Type | null => {
+    receiver = unwrap(receiver);
+    if (receiver.kind === ts.SyntaxKind.ThisKeyword) {
+      let member: ts.Node = receiver;
+      while (
+        member.parent &&
+        !ts.isClassDeclaration(member.parent) &&
+        !ts.isClassExpression(member.parent)
+      ) {
+        if (ts.isFunctionDeclaration(member) || ts.isFunctionExpression(member)) return null;
+        member = member.parent;
+      }
+      const cls = member.parent;
+      if (!cls || !(ts.isClassDeclaration(cls) || ts.isClassExpression(cls)) || !cls.name)
+        return null;
+      if (ts.isConstructorDeclaration(member)) {
+        // The constructor's `this` is the instance.
+      } else if (
+        ts.isMethodDeclaration(member) ||
+        ts.isPropertyDeclaration(member) ||
+        ts.isGetAccessorDeclaration(member) ||
+        ts.isSetAccessorDeclaration(member)
+      ) {
+        if (member.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword))
+          return null;
+      } else return null;
+      const symbol = lowerer.checker.getSymbolAtLocation(cls.name);
+      return symbol ? lowerer.checker.getDeclaredTypeOfSymbol(symbol) : null;
+    }
+    const type = lowerer.typeOf(receiver);
+    if (type.flags & (ts.TypeFlags.TypeParameter | ts.TypeFlags.Any | ts.TypeFlags.Unknown))
+      return null;
+    return type;
+  };
+  // A function-typed write shadows a method only on an object that has the
+  // method: an instance of a class with method `name` that the receiver's
+  // type admits. Without one (a callback field of an unrelated class that
+  // happens to share the name), the write leaves every method in place.
+  const methodOwnerCanInhabit = (receiver: ts.Expression, name: string): boolean => {
+    const owners = methodOwners(name);
+    const type = receiverType(receiver);
+    if (owners === null || type === null) return true;
+    return owners.some((owner) => lowerer.checker.isTypeAssignableTo(owner, type));
+  };
   // A named write can replace a method only when the written property can
   // hold a function: a class instance seen through the receiver's type must
   // have its method assignable to that property's type. Data fields (an AST
@@ -459,6 +543,7 @@ export function collectClassMethodMutations(
   for (const { target, site } of propertyWrites) {
     const name = target.name.text;
     if (lowerer.prototypeMethodAccesses.has(name) || functionFree(lowerer.typeOf(target))) continue;
+    if (!methodOwnerCanInhabit(target.expression, name)) continue;
     lowerer.prototypeMethodAccesses.set(name, site);
   }
   for (const { key, receiver, site } of computedWrites) {

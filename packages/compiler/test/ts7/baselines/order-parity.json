@@ -15730,6 +15730,12 @@
     "<repo>/tests/corpus/4596-error-subclass-int-fields.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/4597-callback-field-method-name.ts": {
+   "order": [
+    "<repo>/tests/corpus/4597-callback-field-method-name.ts"
+   ],
+   "diags": []
   }
  }
 }

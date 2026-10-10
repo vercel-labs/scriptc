@@ -362,13 +362,42 @@ export function lowerExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   }
   lowerExprDepth++;
   try {
-    const lowered = lowerExprInner(lowerer, expr);
+    let lowered = lowerExprInner(lowerer, expr);
+    const nanCoded = lowerer.nanCodedReads;
+    if (nanCoded) {
+      if (lowered.type.kind === "f64" && nanCoded.reboxes(expr))
+        lowered = reboxNanCoded(lowerer, lowered, locOf(expr));
+      else if (lowered.type.kind === "union" && nanCoded.convertsSource(expr))
+        lowered = lowerOptionalNumber(lowerer, lowered, locOf(expr));
+    }
     if (lowered.type.kind === "void" && (lowerer.typeOf(expr).flags & ts.TypeFlags.Never) !== 0)
       lowerer.neverValued.add(lowered);
     return lowered;
   } finally {
     lowerExprDepth--;
   }
+}
+
+/** `number | undefined` from a NaN-coded double whose slot never holds a
+ * genuine NaN (nan-coded-reads.ts): NaN is exactly undefined. */
+function reboxNanCoded(lowerer: Lowerer, value: IrExpr, loc: SrcLoc): IrExpr {
+  const optional = lowerer.withUndefinedArm(F64);
+  const stmts: IrStmt[] = [];
+  let stable = value;
+  if (value.kind !== "varRef") {
+    const tmp = lowerer.declareHiddenLocal("%nanCoded", F64);
+    stmts.push({ kind: "varDecl", localId: tmp.id, init: value, loc });
+    stable = varRef(tmp.id, F64, loc);
+  }
+  const result: IrExpr = {
+    kind: "ternary",
+    cond: { kind: "libCall", fn: "num.isNaN", args: [stable], type: BOOL, loc },
+    then: lowerer.wrappedUndefined(optional, loc)!,
+    else_: lowerer.coerceToExpected(stable, optional),
+    type: optional,
+    loc,
+  };
+  return stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type: optional, loc };
 }
 
 function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
@@ -6768,7 +6797,12 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     // `t[i]!` asserts presence: the numeric element read (NaN when
     // invalid). Every other read answers undefined for an invalid index,
     // like Node.
-    if (ts.isNonNullExpression(expr.parent) && expr.parent.expression === expr) {
+    // A read whose every consumer treats undefined like NaN (see
+    // nan-coded-reads.ts) is the same plain numeric read.
+    if (
+      (ts.isNonNullExpression(expr.parent) && expr.parent.expression === expr) ||
+      lowerer.nanCodedReads?.isNumericRead(expr) === true
+    ) {
       return {
         kind: "bytesIntrinsic",
         method: "get",
@@ -9670,12 +9704,76 @@ export function lowerCompoundValueToTarget(
   lowerer.unsupported("SC1043", expr);
 }
 
+/** Equality of two NaN-coded values (nan-coded-reads.ts), each of which may
+ * stand for undefined and never holds a genuine NaN: Node's undefined equals
+ * undefined, so two NaNs compare equal here. Operands evaluate once, in
+ * order. */
+function lowerNanCodedEquality(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr | null {
+  const loc = locOf(expr);
+  const left = lowerer.lowerExpr(expr.left);
+  const right = lowerer.lowerExpr(expr.right);
+  if (left.type.kind !== "f64" || right.type.kind !== "f64") {
+    throw new InternalCompilerError("NaN-coded equality operand is not a plain number");
+  }
+  const stmts: IrStmt[] = [];
+  const stable = (value: IrExpr, name: string): IrExpr => {
+    if (value.kind === "varRef" || value.kind === "numLit") return value;
+    const tmp = lowerer.declareHiddenLocal(name, F64);
+    stmts.push({ kind: "varDecl", localId: tmp.id, init: value, loc });
+    return varRef(tmp.id, F64, loc);
+  };
+  const a = stable(left, "%eqLeft");
+  const b = stable(right, "%eqRight");
+  const isNaN = (value: IrExpr): IrExpr => ({
+    kind: "libCall",
+    fn: "num.isNaN",
+    args: [value],
+    type: BOOL,
+    loc,
+  });
+  const bothUndefined: IrExpr = {
+    kind: "logical",
+    op: "&&",
+    left: isNaN(a),
+    right: isNaN(b),
+    type: BOOL,
+    loc,
+  };
+  const op = expr.operatorToken.kind;
+  const negated =
+    op === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
+    op === ts.SyntaxKind.ExclamationEqualsToken;
+  const result: IrExpr = negated
+    ? {
+        kind: "logical",
+        op: "&&",
+        left: { kind: "bin", op: "!==", left: a, right: b, type: BOOL, loc },
+        right: { kind: "unary", op: "!", operand: bothUndefined, type: BOOL, loc },
+        type: BOOL,
+        loc,
+      }
+    : {
+        kind: "logical",
+        op: "||",
+        left: { kind: "bin", op: "===", left: a, right: b, type: BOOL, loc },
+        right: bothUndefined,
+        type: BOOL,
+        loc,
+      };
+  return stmts.length === 0 ? result : { kind: "seqExpr", stmts, result, type: BOOL, loc };
+}
+
 export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr {
   const loc = locOf(expr);
   const op = expr.operatorToken.kind;
 
   const cacheHas = lowerRequireCacheHas(lowerer, expr);
   if (cacheHas) return cacheHas;
+
+  if (lowerer.nanCodedReads?.needsUndefinedEquality(expr)) {
+    const undefinedEquality = lowerNanCodedEquality(lowerer, expr);
+    if (undefinedEquality) return undefinedEquality;
+  }
 
   if (
     op === ts.SyntaxKind.EqualsToken ||

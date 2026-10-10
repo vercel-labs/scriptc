@@ -75,6 +75,7 @@ import { ArrayElementStates } from "./runtime-optional-elements.js";
 import { indexReadInBounds } from "./runtime-optional-bounds.js";
 import { ArrayOwnership } from "./runtime-optional-ownership.js";
 import { StringIndexBounds } from "./string-index-bounds.js";
+import { NanCodedReads } from "./nan-coded-reads.js";
 import { RuntimeOptionalLocals } from "./runtime-optional-locals.js";
 import { sanitizeUnregisteredClassTypes } from "./sanitize-class-types.js";
 import { UnregisteredClassTypes } from "./unregistered-class-types.js";
@@ -1641,6 +1642,10 @@ export class Lowerer {
   /** Per-symbol result of the never-reassigned file scan
    * (bindingNeverReassigned — object-literal generic-method receivers). */
   readonly neverReassignedCache = new Map<ts.Symbol, boolean>();
+  /** Typed-array element reads whose every consumer treats undefined like
+   * NaN, which lower to plain doubles (see nan-coded-reads.ts). Settled by
+   * analyzeRuntimeOptionalArrayReads before any body lowers. */
+  nanCodedReads: NanCodedReads | null = null;
   private stringIndexBoundsCache: StringIndexBounds | null = null;
   /** Proofs that a string element read names an existing code unit. The
    * indexed-read analysis and expression lowering share one instance, so a
@@ -3894,6 +3899,38 @@ export class Lowerer {
         }
       }
     }
+    const mappedOrNull = (node: ts.Node): IrType | null =>
+      panicSafe(() => this.mapTypeOf(this.typeOf(node)), null);
+    const nanCoded = new NanCodedReads(
+      {
+        symbolOf,
+        declarationOf: (symbol) => this.checker.valueDeclarationOf(symbol),
+        bytesElemOf: (receiver) => {
+          const t = mappedOrNull(receiver);
+          return t?.kind === "bytes" ? t.elem : null;
+        },
+        isNumber: (node) => mappedOrNull(node)?.kind === "f64",
+        isString: (node) => mappedOrNull(node)?.kind === "string",
+        hasLength: (node) => {
+          const kind = mappedOrNull(node)?.kind;
+          return kind === "array" || kind === "bytes";
+        },
+        isStdlibGlobal: (node, name) => this.isStdlibGlobal(node, name),
+        paramIsNumber: (fn, index) => {
+          const param = signatureBySymbol.get(fn)?.params[index];
+          return (
+            param !== undefined &&
+            param.type.kind === "f64" &&
+            (param.mode === "required" || param.mode === "omittable")
+          );
+        },
+        returnIsNumber: (fn) => signatureBySymbol.get(fn)?.returnType.kind === "f64",
+        methodOverridden: (fn) => (familyBySymbol.get(fn)?.length ?? 1) > 1,
+      },
+      sourceFiles,
+    );
+    nanCoded.analyze();
+    this.nanCodedReads = nanCoded;
     const peel = (node: ts.Expression): ts.Expression => {
       let e = node;
       while (
@@ -4005,8 +4042,10 @@ export class Lowerer {
       if (!ts.isElementAccessExpression(e)) return false;
       const kind = this.mapTypeOf(this.typeOf(e.expression))?.kind;
       if (kind === "string") return !this.stringIndexBounds.inBounds(e);
-      // Typed-array reads answer undefined for an invalid index too.
-      return kind === "array" || kind === "bytes";
+      // Typed-array reads answer undefined for an invalid index too, unless
+      // every consumer treats undefined like NaN.
+      if (kind === "bytes") return !nanCoded.isNumericRead(e);
+      return kind === "array";
     };
     const isDynamicObjectEntryRead = (node: ts.Expression): boolean => {
       const read = peel(node);
@@ -4094,6 +4133,11 @@ export class Lowerer {
         ) >= 0
       )
         return true;
+      // A NaN-coded value that reaches a consumer able to observe undefined
+      // is rebuilt as the ordinary optional value there; every other read
+      // of a NaN-coded slot is a plain number.
+      if (nanCoded.reboxes(e)) return true;
+      if (nanCoded.readsNanCodedSlot(e)) return false;
       if (ts.isIdentifier(e)) {
         const symbol = symbolOf(e);
         return (
@@ -5371,6 +5415,21 @@ export class Lowerer {
           }
         }
       }
+    }
+    // NaN-coded slots convert optional values on entry instead of holding
+    // the union, so promotion never applies to them.
+    for (const symbol of [...optionalSymbols])
+      if (nanCoded.nanCodedBinding(symbol)) optionalSymbols.delete(symbol);
+    for (const symbol of [...optionalReturns])
+      if (nanCoded.nanCodedReturn(symbol)) optionalReturns.delete(symbol);
+    for (const [symbol, params] of optionalParams) {
+      const decl = functionDeclBySymbol.get(symbol);
+      for (const index of [...params]) {
+        const name = decl?.parameters[index]?.name;
+        const param = name && ts.isIdentifier(name) ? symbolOf(name) : null;
+        if (param && nanCoded.nanCodedBinding(param)) params.delete(index);
+      }
+      if (params.size === 0) optionalParams.delete(symbol);
     }
     for (const [site, present] of presentSites) if (present) this.presentElementCalls.add(site);
     for (const [loop, present] of presentLoops) if (present) this.presentElementLoops.add(loop);

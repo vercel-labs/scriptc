@@ -24,12 +24,28 @@ export function indexStoreInBounds(store: ts.BinaryExpression): boolean {
   return boundedBefore(parent, { array, index }, [store.right]);
 }
 
+/** Facts about the program that a purely syntactic guard cannot see. */
+export interface BoundsFacts {
+  /** `other` always has the same length as `array` (for example, two
+   * fixed-length typed arrays allocated with the same length), so a guard
+   * `i < other.length` bounds `array[i]` as well. */
+  sameLength?(array: ts.Expression, other: ts.Expression): boolean;
+  /** A read inside an `if` condition is bounded like one in a statement.
+   * Opt-in: a caller that does not also prove the index a non-negative
+   * integer keeps its established decision for such reads. */
+  conditions?: boolean;
+}
+
 /** Proves that an element read `xs[i]` (typically `xs[i]!` forwarded to a
  * call) names an index below the length, by the same dominating guards as
  * indexStoreInBounds. Everything the enclosing statement evaluates before
  * the read (a callee, earlier arguments, a left operand) joins the code
- * that must leave the operands unchanged. */
-export function indexReadInBounds(read: ts.ElementAccessExpression): boolean {
+ * that must leave the operands unchanged. The proof says nothing about the
+ * sign or integrality of the index. */
+export function indexReadInBounds(
+  read: ts.ElementAccessExpression,
+  facts: BoundsFacts = {},
+): boolean {
   if (read.questionDotToken) return false;
   const array = peel(read.expression);
   const index = peel(read.argumentExpression);
@@ -63,12 +79,15 @@ export function indexReadInBounds(read: ts.ElementAccessExpression): boolean {
       parent.parent.declarations[0] === parent &&
       ts.isVariableStatement(parent.parent.parent)
     ) {
-      return boundedBefore(parent.parent.parent, { array, index }, before);
+      return boundedBefore(parent.parent.parent, { array, index, facts }, before);
     } else if (
-      (ts.isExpressionStatement(parent) || ts.isReturnStatement(parent)) &&
+      (ts.isExpressionStatement(parent) ||
+        ts.isReturnStatement(parent) ||
+        (facts.conditions === true && ts.isIfStatement(parent))) &&
       parent.expression === child
     ) {
-      return boundedBefore(parent, { array, index }, before);
+      // An `if` condition runs before its branches, like a statement.
+      return boundedBefore(parent, { array, index, facts }, before);
     } else return false;
     child = parent;
     parent = parent.parent;
@@ -138,6 +157,7 @@ function boundedBefore(statement: ts.Statement, operands: Operands, start: ts.No
 interface Operands {
   array: ts.Expression;
   index: ts.Expression;
+  facts?: BoundsFacts;
 }
 
 function isFunctionBoundary(node: ts.Node): boolean {
@@ -180,26 +200,28 @@ function sameReference(a: ts.Expression, b: ts.Expression): boolean {
   return false;
 }
 
-function isLengthOf(node: ts.Expression, array: ts.Expression): boolean {
+function isLengthOf(node: ts.Expression, array: ts.Expression, facts?: BoundsFacts): boolean {
   const e = peel(node);
   return (
     ts.isPropertyAccessExpression(e) &&
+    !e.questionDotToken &&
     e.name.text === "length" &&
-    sameReference(e.expression, array)
+    (sameReference(e.expression, array) || facts?.sameLength?.(array, e.expression) === true)
   );
 }
 
 /** `condition` holding proves `index < array.length`. */
-function boundedBy(condition: ts.Expression, { array, index }: Operands): boolean {
+function boundedBy(condition: ts.Expression, operands: Operands): boolean {
+  const { array, index, facts } = operands;
   const e = peel(condition);
   if (!ts.isBinaryExpression(e)) return false;
   const op = e.operatorToken.kind;
   if (op === ts.SyntaxKind.AmpersandAmpersandToken)
-    return boundedBy(e.left, { array, index }) || boundedBy(e.right, { array, index });
+    return boundedBy(e.left, operands) || boundedBy(e.right, operands);
   if (op === ts.SyntaxKind.LessThanToken)
-    return sameReference(e.left, index) && isLengthOf(e.right, array);
+    return sameReference(e.left, index) && isLengthOf(e.right, array, facts);
   if (op === ts.SyntaxKind.GreaterThanToken)
-    return isLengthOf(e.left, array) && sameReference(e.right, index);
+    return isLengthOf(e.left, array, facts) && sameReference(e.right, index);
   return false;
 }
 

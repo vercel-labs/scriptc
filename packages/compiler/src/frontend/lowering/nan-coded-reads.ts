@@ -2,6 +2,7 @@ import * as ts from "../ts7/adapter.js";
 import { isJsSourceFile } from "../program.js";
 import type { IrBytesElem } from "../../ir/ir.js";
 import { isIntegerBytesElem } from "../../ir/ir.js";
+import { indexReadInBounds } from "./runtime-optional-bounds.js";
 
 /* NaN-coded typed-array reads.
  *
@@ -27,6 +28,13 @@ import { isIntegerBytesElem } from "../../ir/ir.js";
  * lowered as `a === b || (a !== a && b !== b)`; that is exact only while
  * neither side can also hold a genuine NaN, which the analysis tracks (an
  * integer element is never NaN; arithmetic and float elements may be).
+ *
+ * Some occurrences are plain numbers outright. A read whose index is a
+ * non-negative integer counter bounded by a dominating `i < t.length` guard
+ * (or the length of a same-length, non-escaping typed array) is never
+ * undefined, so it is not NaN-coded at all. An occurrence of a never-reassigned
+ * NaN-coded binding under a dominating comparison with a number (`x >= 0 ?
+ * x : y`) is neither undefined nor NaN there.
  *
  * Everything else keeps the established `number | undefined` lowering. */
 
@@ -71,6 +79,8 @@ interface SlotBase {
 interface BindingSlot extends SlotBase {
   kind: "binding";
   symbol: ts.Symbol;
+  /** Some reference writes the binding after its declaration. */
+  reassigned: boolean;
 }
 
 interface ReturnSlot extends SlotBase {
@@ -172,9 +182,61 @@ function isLoopOrIf(node: ts.Node): boolean {
   );
 }
 
+/** Constructors of fixed-length number typed arrays. */
+const TYPED_ARRAYS = new Set([
+  "Int8Array",
+  "Uint8Array",
+  "Uint8ClampedArray",
+  "Int16Array",
+  "Uint16Array",
+  "Int32Array",
+  "Uint32Array",
+  "Float32Array",
+  "Float64Array",
+]);
+
+function nonNegativeIntegerLiteral(node: ts.Expression): boolean {
+  const e = peelTransparent(node);
+  if (!ts.isNumericLiteral(e)) return false;
+  const value = Number(e.text);
+  return Number.isInteger(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER;
+}
+
+/** `const a = ..., b = ...;` or two consecutive single declarations. */
+function adjacentDeclarations(a: ts.VariableDeclaration, b: ts.VariableDeclaration): boolean {
+  if (!ts.isVariableDeclaration(a) || !ts.isVariableDeclaration(b)) return false;
+  const la = a.parent;
+  const lb = b.parent;
+  if (!ts.isVariableDeclarationList(la) || !ts.isVariableDeclarationList(lb)) return false;
+  if (la === lb) {
+    const ia = la.declarations.indexOf(a);
+    const ib = la.declarations.indexOf(b);
+    return Math.abs(ia - ib) === 1;
+  }
+  const sa = la.parent;
+  const sb = lb.parent;
+  if (!ts.isVariableStatement(sa) || !ts.isVariableStatement(sb) || sa.parent !== sb.parent)
+    return false;
+  if (la.declarations.length !== 1 || lb.declarations.length !== 1) return false;
+  const list = sa.parent;
+  if (
+    !ts.isBlock(list) &&
+    !ts.isSourceFile(list) &&
+    !ts.isCaseClause(list) &&
+    !ts.isDefaultClause(list)
+  )
+    return false;
+  const statements = (list as { statements: ts.NodeArray<ts.Statement> }).statements;
+  return Math.abs(statements.indexOf(sa) - statements.indexOf(sb)) === 1;
+}
+
 export class NanCodedReads {
   /** Typed-array element reads that can lower as NaN-coded doubles. */
   private readonly reads = new Map<ts.ElementAccessExpression, IrBytesElem>();
+  /** Typed-array element reads proven to name an existing element. */
+  private readonly presentReads = new Map<ts.ElementAccessExpression, IrBytesElem>();
+  private readonly counters = new Map<ts.Symbol, boolean>();
+  private readonly fixedLengths = new Map<ts.Symbol, ts.NewExpression | null>();
   private readonly bindings = new Map<ts.Symbol, BindingSlot>();
   private readonly notSlots = new Set<ts.Symbol>();
   /** Every slot's value occurrences. */
@@ -200,7 +262,7 @@ export class NanCodedReads {
 
   /** The read lowers to a double holding NaN for an invalid index. */
   isNumericRead(read: ts.ElementAccessExpression): boolean {
-    return this.numericReads.has(read);
+    return this.numericReads.has(read) || this.presentReads.has(read);
   }
 
   /** Both operands of this equality are NaN-coded values that may stand
@@ -223,13 +285,18 @@ export class NanCodedReads {
     return slot !== undefined && this.eligible.has(slot);
   }
 
-  get size(): { reads: number; slots: number } {
-    return { reads: this.numericReads.size, slots: this.eligible.size };
+  get size(): { reads: number; slots: number; present: number } {
+    return {
+      reads: this.numericReads.size,
+      slots: this.eligible.size,
+      present: this.presentReads.size,
+    };
   }
 
   analyze(): void {
     if (this.analyzed) return;
     this.analyzed = true;
+    const candidates = new Map<ts.ElementAccessExpression, IrBytesElem>();
     for (const sf of this.files) {
       if (isJsSourceFile(sf) || sf.isDeclarationFile) continue;
       ts.walkPreorder(sf, (node) => {
@@ -241,10 +308,14 @@ export class NanCodedReads {
         }
         if (ts.isElementAccessExpression(node) && this.isReadCandidate(node)) {
           const elem = this.host.bytesElemOf(node.expression);
-          if (elem) this.reads.set(node, elem);
+          if (elem) candidates.set(node, elem);
         }
       });
     }
+    // A proven-present read is a plain number; only the rest may be
+    // undefined. The proof needs every reference, so it runs after the walk.
+    for (const [read, elem] of candidates)
+      (this.presentRead(read) ? this.presentReads : this.reads).set(read, elem);
     if (this.reads.size === 0) return;
     // Forward: the slots a read can reach.
     const work: ts.Expression[] = [...this.reads.keys()];
@@ -305,7 +376,7 @@ export class NanCodedReads {
       process.stderr.write(`nan-coded ${ok ? "yes" : "no "} ${name(slot)} ${why}\n`);
     }
     process.stderr.write(
-      `nan-coded reads ${this.numericReads.size}/${this.reads.size}, slots ${this.eligible.size}/${reached.size}\n`,
+      `nan-coded reads ${this.numericReads.size}/${this.reads.size}, present ${this.presentReads.size}, slots ${this.eligible.size}/${reached.size}\n`,
     );
   }
 
@@ -349,6 +420,214 @@ export class NanCodedReads {
     )
       return false;
     return true;
+  }
+
+  // ---- present reads ------------------------------------------------------
+
+  /** `t[i]` names an existing element: `i` is a non-negative integer
+   * counter and a dominating guard bounds it by `t.length` (or by the
+   * length of a typed array that always has the same length).
+   *
+   * The guard proof only sees code written between the guard and the read.
+   * Code it cannot see (a getter, a conversion hook) cannot reach either
+   * operand: `t` is a fixed-length typed array no other code can reach, and
+   * only the reading function itself writes `i`. */
+  private presentRead(read: ts.ElementAccessExpression): boolean {
+    const array = peelTransparent(read.expression);
+    const index = peelTransparent(read.argumentExpression);
+    if (!ts.isIdentifier(array) || !ts.isIdentifier(index)) return false;
+    const arraySymbol = this.symbolOf(array);
+    if (!arraySymbol || !this.fixedLength(arraySymbol)) return false;
+    const symbol = this.symbolOf(index);
+    if (!symbol || !this.nonNegativeCounter(symbol)) return false;
+    const decl = this.host.declarationOf(symbol);
+    if (!decl || this.containingFunction(decl) !== this.containingFunction(read)) return false;
+    return indexReadInBounds(read, {
+      sameLength: (array, other) => this.sameFixedLength(array, other),
+      conditions: true,
+    });
+  }
+
+  /** A `let`/`const` binding that starts at a non-negative integer literal
+   * and only ever grows by non-negative integer literals (`i++`, `++i`,
+   * `i += 2`) or is reset to one (`i = 0`): it always holds a non-negative
+   * integer. Every write is in the declaring function (no closure writes). */
+  private nonNegativeCounter(symbol: ts.Symbol): boolean {
+    const known = this.counters.get(symbol);
+    if (known !== undefined) return known;
+    this.counters.set(symbol, false);
+    const decl = this.host.declarationOf(symbol);
+    if (
+      !decl ||
+      !ts.isVariableDeclaration(decl) ||
+      !ts.isIdentifier(decl.name) ||
+      !decl.initializer ||
+      !nonNegativeIntegerLiteral(decl.initializer) ||
+      !ts.isVariableDeclarationList(decl.parent) ||
+      !(decl.parent.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)) ||
+      isJsSourceFile(decl.getSourceFile())
+    )
+      return false;
+    const name = decl.name;
+    const owner = this.containingFunction(decl);
+    for (const id of this.names.get(name.text) ?? []) {
+      if (id === name || this.symbolOf(id) !== symbol) continue;
+      let n: ts.Node = id;
+      let p = n.parent;
+      while (p && ts.isParenthesizedExpression(p)) {
+        n = p;
+        p = n.parent;
+      }
+      if (!p) return false;
+      if (this.writeOf(id) !== "read" && this.containingFunction(id) !== owner) return false;
+      if (ts.isBinaryExpression(p) && p.left === n && isAssignmentOperator(p.operatorToken.kind)) {
+        const k = p.operatorToken.kind;
+        if (k !== ts.SyntaxKind.EqualsToken && k !== ts.SyntaxKind.PlusEqualsToken) return false;
+        if (!nonNegativeIntegerLiteral(p.right)) return false;
+        continue;
+      }
+      if (ts.isPrefixUnaryExpression(p) || ts.isPostfixUnaryExpression(p)) {
+        if (p.operator === ts.SyntaxKind.MinusMinusToken) return false;
+        continue;
+      }
+      // Any other write position (destructuring, for-in/of) is a write of
+      // an unknown value.
+      if (this.writeOf(id) !== "read") return false;
+    }
+    this.counters.set(symbol, true);
+    return true;
+  }
+
+  /** Two typed arrays whose lengths are equal for their whole lifetime. */
+  private sameFixedLength(array: ts.Expression, other: ts.Expression): boolean {
+    const a = peelTransparent(array);
+    const b = peelTransparent(other);
+    if (!ts.isIdentifier(a) || !ts.isIdentifier(b)) return false;
+    const sa = this.symbolOf(a);
+    const sb = this.symbolOf(b);
+    if (!sa || !sb || sa === sb) return false;
+    const na = this.fixedLength(sa);
+    const nb = this.fixedLength(sb);
+    if (!na || !nb) return false;
+    const la = na.arguments![0]!;
+    const lb = nb.arguments![0]!;
+    // The same literal length.
+    const literal = (e: ts.Expression): number | null => {
+      const x = peelTransparent(e);
+      return ts.isNumericLiteral(x) ? Number(x.text) : null;
+    };
+    const literalA = literal(la);
+    if (literalA !== null) return literalA === literal(lb);
+    // The same `const` binding.
+    const ia = peelTransparent(la);
+    const ib = peelTransparent(lb);
+    if (ts.isIdentifier(ia) && ts.isIdentifier(ib)) {
+      const symbol = this.symbolOf(ia);
+      if (!symbol || symbol !== this.symbolOf(ib)) return false;
+      const decl = this.host.declarationOf(symbol);
+      return (
+        decl !== undefined &&
+        ts.isVariableDeclaration(decl) &&
+        ts.isVariableDeclarationList(decl.parent) &&
+        (decl.parent.flags & ts.NodeFlags.Const) !== 0 &&
+        this.host.isNumber(ia)
+      );
+    }
+    // `xs.length` of the same `const` array or typed array, read by two
+    // adjacent declarations: nothing runs between the two reads that could
+    // change it (allocating a typed array runs no program code).
+    if (
+      ts.isPropertyAccessExpression(ia) &&
+      ts.isPropertyAccessExpression(ib) &&
+      !ia.questionDotToken &&
+      !ib.questionDotToken &&
+      ia.name.text === "length" &&
+      ib.name.text === "length" &&
+      ts.isIdentifier(peelTransparent(ia.expression)) &&
+      ts.isIdentifier(peelTransparent(ib.expression)) &&
+      this.host.hasLength(ia.expression)
+    ) {
+      const owner = this.symbolOf(peelTransparent(ia.expression));
+      if (!owner || owner !== this.symbolOf(peelTransparent(ib.expression))) return false;
+      const ownerDecl = this.host.declarationOf(owner);
+      if (
+        !ownerDecl ||
+        !(
+          (ts.isVariableDeclaration(ownerDecl) &&
+            ts.isVariableDeclarationList(ownerDecl.parent) &&
+            ownerDecl.parent.flags & ts.NodeFlags.Const) ||
+          ts.isParameter(ownerDecl)
+        )
+      )
+        return false;
+      return adjacentDeclarations(
+        na.parent as ts.VariableDeclaration,
+        nb.parent as ts.VariableDeclaration,
+      );
+    }
+    return false;
+  }
+
+  /** The allocation `new Uint8Array(n)` of a `const` typed array whose every
+   * reference is an element access or `.length`: nothing can reach its
+   * buffer to detach it, so its length never changes. */
+  private fixedLength(symbol: ts.Symbol): ts.NewExpression | null {
+    const known = this.fixedLengths.get(symbol);
+    if (known !== undefined) return known;
+    this.fixedLengths.set(symbol, null);
+    const decl = this.host.declarationOf(symbol);
+    if (
+      !decl ||
+      !ts.isVariableDeclaration(decl) ||
+      !ts.isIdentifier(decl.name) ||
+      !decl.initializer ||
+      !ts.isVariableDeclarationList(decl.parent) ||
+      !(decl.parent.flags & ts.NodeFlags.Const) ||
+      // A module binding can escape through an export.
+      (ts.isVariableStatement(decl.parent.parent) && ts.isSourceFile(decl.parent.parent.parent)) ||
+      isJsSourceFile(decl.getSourceFile()) ||
+      this.host.bytesElemOf(decl.name) === null
+    )
+      return null;
+    const init = peelTransparent(decl.initializer);
+    if (
+      !ts.isNewExpression(init) ||
+      !ts.isIdentifier(init.expression) ||
+      !TYPED_ARRAYS.has(init.expression.text) ||
+      !this.host.isStdlibGlobal(init.expression, init.expression.text) ||
+      init.typeArguments ||
+      init.arguments?.length !== 1 ||
+      ts.isSpreadElement(init.arguments[0]!) ||
+      !this.host.isNumber(init.arguments[0]!)
+    )
+      return null;
+    const name = decl.name;
+    for (const id of this.names.get(name.text) ?? []) {
+      if (id === name || this.symbolOf(id) !== symbol) continue;
+      let n: ts.Node = id;
+      let p = n.parent;
+      while (p && ts.isParenthesizedExpression(p)) {
+        n = p;
+        p = n.parent;
+      }
+      if (!p) return null;
+      if (ts.isElementAccessExpression(p) && p.expression === n) continue;
+      if (
+        ts.isPropertyAccessExpression(p) &&
+        p.expression === n &&
+        p.name.text === "length" &&
+        !(
+          p.parent &&
+          ts.isBinaryExpression(p.parent) &&
+          p.parent.left === p &&
+          isAssignmentOperator(p.parent.operatorToken.kind)
+        )
+      )
+        continue;
+      return null;
+    }
+    this.fixedLengths.set(symbol, init);
+    return init;
   }
 
   // ---- slots --------------------------------------------------------------
@@ -461,6 +740,7 @@ export class NanCodedReads {
       sources: [],
       uses: [],
       arithmeticWrites: false,
+      reassigned: false,
     };
     if (ts.isVariableDeclaration(decl)) {
       const list = decl.parent;
@@ -496,6 +776,7 @@ export class NanCodedReads {
     for (const id of this.names.get(nameNode.text) ?? []) {
       if (id === nameNode || this.symbolOf(id) !== symbol) continue;
       const write = this.writeOf(id);
+      if (write !== "read") slot.reassigned = true;
       if (write === "read") slot.uses.push(id);
       else if (write === "arith") {
         slot.arithmeticWrites = true;
@@ -746,6 +1027,7 @@ export class NanCodedReads {
       if (elem !== undefined) return { nce: true, nan: !isIntegerBytesElem(elem) };
     }
     if (ts.isIdentifier(e)) {
+      if (this.guardedOccurrence(e)) return { nce: false, nan: false };
       const symbol = this.symbolOf(e);
       const slot = symbol ? this.bindings.get(symbol) : undefined;
       if (slot && this.eligible.has(slot)) return { nce: true, nan: this.genuineNaN.has(slot) };
@@ -826,6 +1108,24 @@ export class NanCodedReads {
     return info !== null && !info.nan;
   }
 
+  /** An occurrence of a never-reassigned number binding under a dominating
+   * comparison with a number that is never NaN (`x >= 0 ? x : y`): the
+   * comparison is false for undefined and for NaN, so here the binding
+   * holds a plain number that is not NaN, even when the binding itself is
+   * NaN-coded. */
+  private guardedOccurrence(use: ts.Identifier): boolean {
+    const symbol = this.symbolOf(use);
+    if (!symbol) return false;
+    const slot = this.bindingSlot(symbol);
+    return (
+      slot !== null &&
+      !slot.reassigned &&
+      !slot.arithmeticWrites &&
+      this.useNodes.has(use) &&
+      this.provenPresent(use, symbol)
+    );
+  }
+
   /** A dominating condition compares the never-reassigned binding with a
    * number literal, which is false for undefined. */
   private provenPresent(use: ts.Identifier, symbol: ts.Symbol): boolean {
@@ -879,6 +1179,7 @@ export class NanCodedReads {
       if (elem !== undefined && this.numericReads.has(e))
         return { nce: true, nan: !isIntegerBytesElem(elem) };
     }
+    if (ts.isIdentifier(e) && this.guardedOccurrence(e)) return { nce: false, nan: false };
     const slot = this.slotOfValue(e);
     if (slot) return { nce: true, nan: this.genuineNaN.has(slot) };
     return { nce: false, nan: true };
@@ -900,6 +1201,10 @@ export class NanCodedReads {
     while (ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isSatisfiesExpression(e))
       e = e.expression;
     if (ts.isNumericLiteral(e)) return { nce: false, nan: false };
+    if (ts.isElementAccessExpression(e)) {
+      const elem = this.presentReads.get(e);
+      return elem === undefined ? null : { nce: false, nan: !isIntegerBytesElem(elem) };
+    }
     if (ts.isPrefixUnaryExpression(e)) {
       if (e.operator === ts.SyntaxKind.TildeToken) return { nce: false, nan: false };
       if (e.operator === ts.SyntaxKind.MinusToken || e.operator === ts.SyntaxKind.PlusToken)
@@ -986,6 +1291,8 @@ export class NanCodedReads {
 
   /** Whether the value's consumer cannot tell undefined from NaN. */
   private useSafe(value: ts.Expression): boolean {
+    // A plain number here, whatever consumes it.
+    if (ts.isIdentifier(value) && this.guardedOccurrence(value)) return true;
     const e = transparentParent(value);
     const p = e.parent;
     if (!p) return false;

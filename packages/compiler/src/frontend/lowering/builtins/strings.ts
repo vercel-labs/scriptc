@@ -3,6 +3,7 @@ import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { lowerOptionalArgument, lowerStringSearchArgument } from "../optional-arguments.js";
+import { lowerToNumberArgument } from "../lower-exprs.js";
 import { F64, type IrExpr, STRING, arrayOf, isUnitType, typeEquals } from "../../../ir/ir.js";
 
 /** `String.fromCharCode/fromCodePoint(...codes)` on THE String global: every argument
@@ -97,7 +98,9 @@ export function lowerStringStaticCall(
     const packed = lowerer.lowerExprExpecting(spread.expression, arrayOf(F64));
     return { kind: "libCall", fn: `string.${member}`, args: [packed], type: STRING, loc };
   }
-  const elems = call.arguments.map((a) => lowerer.lowerExprExpecting(a, F64));
+  // Each code converts with ToNumber: a missing value is NaN (code unit 0
+  // for fromCharCode, a RangeError for fromCodePoint), exactly Node.
+  const elems = call.arguments.map((a) => lowerToNumberArgument(lowerer, a));
   const packed: IrExpr = { kind: "arrayLit", elems, type: arrayOf(F64), loc };
   return { kind: "libCall", fn: `string.${member}`, args: [packed], type: STRING, loc };
 }

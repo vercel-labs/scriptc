@@ -5,11 +5,7 @@ import { InternalCompilerError } from "../../errors.js";
  * surface (Math and number/string methods under --dynamic), and the npm
  * package boundary fences for node_modules-declared symbols. */
 import * as ts from "../ts7/adapter.js";
-import {
-  lowerAbsenceProbe,
-  lowerOptionalNumber,
-  runtimeOptionalStorageOperand,
-} from "./lower-exprs.js";
+import { lowerToNumberArgument } from "./lower-exprs.js";
 import type { Lowerer } from "./lowerer.js";
 import {
   arrayOf,
@@ -3401,23 +3397,10 @@ export function lowerIslandMethodCall(
   // Static numeric Math calls precede the island path. The scalar methods
   // use their declared arity; min/max and hypot accept their variadic forms.
   const staticMath = isMath ? own(STATIC_MATH_FNS, name) : undefined;
-  // A missing element (a hole bound by a loop, a local holding a missing
-  // read, or the read itself) converts to NaN, ToNumber's answer for
-  // undefined, instead of trusting the checker's number type.
-  const mathArg = (a: ts.Expression): IrExpr => {
-    let inner = a;
-    while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
-    const optional = ts.isIdentifier(inner)
-      ? runtimeOptionalStorageOperand(lowerer, inner)
-      : ts.isElementAccessExpression(inner)
-        ? lowerAbsenceProbe(lowerer, inner)
-        : null;
-    return optional &&
-      optional.type.kind === "union" &&
-      lowerer.stripUndefinedArm(optional.type).kind === "f64"
-      ? lowerOptionalNumber(lowerer, optional, loc, inner)
-      : lowerer.lowerExprExpecting(a, F64);
-  };
+  // A missing element (a hole bound by a loop, a local or field holding a
+  // missing read, or the read itself) converts to NaN, ToNumber's answer
+  // for undefined, instead of trusting the checker's number type.
+  const mathArg = (a: ts.Expression): IrExpr => lowerToNumberArgument(lowerer, a);
   if (staticMath && name === "hypot") {
     const elems = call.arguments.map((a) =>
       ts.isSpreadElement(a) ? lowerer.lowerExprExpecting(a.expression, arrayOf(F64)) : mathArg(a),

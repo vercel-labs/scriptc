@@ -10493,6 +10493,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/missing-read-number-conversions.ts": {
+   "order": [
+    "<repo>/tests/corpus/missing-read-number-conversions.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/module-fallback-functions/main.js": {
    "order": [
     "<repo>/tests/corpus/module-fallback-functions/platform.js",

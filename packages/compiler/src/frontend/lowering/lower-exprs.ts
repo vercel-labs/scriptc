@@ -6487,6 +6487,33 @@ export function lowerOptionalNumber(
     : { kind: "seqExpr", stmts: prefix, result: value, type: F64, loc };
 }
 
+/** A number argument of a builtin that converts it with ToNumber (Math
+ * functions, String.fromCharCode, the global isNaN/isFinite, DataView
+ * offsets and values). ToNumber(undefined) is NaN, so a missing value — an
+ * out-of-range read, a local or field holding one, or a hole — converts to
+ * NaN instead of trusting the checker's number type. */
+export function lowerToNumberArgument(lowerer: Lowerer, node: ts.Expression): IrExpr {
+  let inner = node;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  const loc = locOf(inner);
+  const isOptionalNumber = (value: IrExpr): boolean =>
+    value.type.kind === "union" &&
+    lowerer.armTag(value.type.unionId, UNDEFINED_T) >= 0 &&
+    lowerer.stripUndefinedArm(value.type).kind === "f64";
+  const optional = ts.isIdentifier(inner)
+    ? runtimeOptionalStorageOperand(lowerer, inner)
+    : ts.isElementAccessExpression(inner)
+      ? lowerAbsenceProbe(lowerer, inner)
+      : null;
+  if (optional && isOptionalNumber(optional))
+    return lowerOptionalNumber(lowerer, optional, loc, inner);
+  // A conditional builds each branch for the destination.
+  if (ts.isConditionalExpression(inner)) return lowerer.lowerExprExpecting(node, F64);
+  const value = lowerer.lowerExpr(node);
+  if (isOptionalNumber(value)) return lowerOptionalNumber(lowerer, value, loc, inner);
+  return lowerer.coerceInto(node, value, F64);
+}
+
 /** `a[i]` reads. Only f64 indices into array receivers are modeled; JS
  * string-key element access (`a["length"]`) and string indexing (`s[0]`
  * typechecks against the lib's index signature; use .charAt) stay out. */

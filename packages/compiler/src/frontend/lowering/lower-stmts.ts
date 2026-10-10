@@ -166,7 +166,7 @@ import { lowerShortCircuitAssignment } from "./expressions/nullish-assignment.js
 import { lowerEnvironmentKey, lowerNativeFunctionAssignment } from "./lower-exprs.js";
 import { isNativeProxyInitializer } from "./expressions/native-proxy.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
-import { lowerUnionFieldWrite } from "./expressions/union-field-write.js";
+import { lowerUnionFieldWrite } from "./expressions/union-fields.js";
 import {
   UNSUPPORTED,
   checkerPanicDiag,

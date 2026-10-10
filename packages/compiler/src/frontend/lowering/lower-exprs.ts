@@ -21,7 +21,7 @@ import * as posix from "node:path/posix";
 import type { Lowerer } from "./lowerer.js";
 import { checkedClassAssertion, checkedClassUnionAssertion } from "./class-assertions.js";
 import { narrowClassUnion, narrowStoredClassValue } from "./class-unions.js";
-import { lowerUnionFieldWrite } from "./expressions/union-field-write.js";
+import { lowerUnionFieldRead, lowerUnionFieldWrite } from "./expressions/union-fields.js";
 import { captureContextArguments } from "./function-context.js";
 import { OBJECT_CALLABLE_VALUES } from "./surfaces.js";
 import { wasiGuestPath } from "../../wasi-paths.js";
@@ -14102,6 +14102,10 @@ export function lowerUnionProperty(
   const key: IrExpr = { kind: "strLit", value: field, type: STRING, loc: locOf(expr.name) };
   const keyed = lowerUnionKeyedRead(lowerer, expr, value.type.unionId, value, key, field);
   if (keyed) return keyed;
+  // Class arms declaring the field with compatible but different types
+  // (`T | undefined` beside `T`): per-arm slot reads widened to one type.
+  const widened = lowerUnionFieldRead(lowerer, expr, value);
+  if (widened) return widened;
   // JavaScript overloads commonly inspect a class brand on a scalar-or-
   // instance argument (e.g. Matrix4.makeTranslation). Preserve primitive
   // missing-property semantics and dispatch class data through its native

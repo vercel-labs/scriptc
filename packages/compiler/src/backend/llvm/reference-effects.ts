@@ -80,6 +80,10 @@ function expressionPreservesEdges(
     case "caughtCheck":
     // An immortal class object, or a fresh one retaining captured boxes.
     case "classRef":
+    // A chain evaluates its receiver and body (checked as children); its
+    // bound receiver is a read.
+    case "optChain":
+    case "chainRecv":
       return true;
     // Formatting a primitive allocates a string and runs no user code.
     case "toString":

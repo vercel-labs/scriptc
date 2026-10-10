@@ -15748,6 +15748,12 @@
     "<repo>/tests/corpus/4596-tdz-nullable-forward-capture.ts"
    ],
    "diags": []
+  },
+  "<repo>/tests/corpus/4620-optional-chain-borrowed-receivers.ts": {
+   "order": [
+    "<repo>/tests/corpus/4620-optional-chain-borrowed-receivers.ts"
+   ],
+   "diags": []
   }
  }
 }

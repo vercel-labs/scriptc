@@ -223,6 +223,10 @@ const DYN_READ_ONLY = new Set<string>([
   "dyn.this",
   "dyn.toStringCoerce",
   "dyn.typedRefIs",
+  // error.ctorOptions runs scr_error_init_options, the initializer
+  // error.newOptions also runs: it stamps the receiver's runtime-owned
+  // error prefix and reads `options.cause`.
+  "error.ctorOptions",
   "error.new",
   "error.newOptions",
   "fs.utimesSync",

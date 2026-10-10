@@ -242,6 +242,41 @@ test("dynamic stores disqualify the field names they can reach", () => {
   expect([readOnly.isField("C", "a"), readOnly.isField("C", "b")]).toEqual([true, true]);
 });
 
+test("an Error subclass constructor forwarding dynamic arguments stores no class fields", () => {
+  // `class E extends Error {}` forwards its arguments into the builtin
+  // initializer; an unrelated class exposed to dynamic code keeps i32 fields.
+  const classes = [cls("C", ["a"]), cls("E", [])];
+  const view: IrExpr = { loc, kind: "dynFrom", value: ref("o", obj("C")), type: DYN };
+  const libCall = (fnName: string, args: IrExpr[]): IrStmt =>
+    stmt({ loc, kind: "libCall", fn: fnName, args, type: VOID } as IrExpr);
+  const slots = analyzeInt32Slots(
+    mod(classes, [
+      fn(
+        "init",
+        [
+          { id: "o", type: obj("C") },
+          { id: "e", type: obj("E") },
+          { id: "message", type: DYN },
+          { id: "options", type: DYN },
+        ],
+        [
+          set(ref("o", obj("C")), "C", "a", num(1)),
+          libCall("dyn.typedRefIs", [
+            view,
+            { loc, kind: "strLit", value: "object:C", type: STRING },
+          ]),
+          libCall("error.ctorOptions", [
+            ref("e", obj("E")),
+            ref("message", DYN),
+            ref("options", DYN),
+          ]),
+        ],
+      ),
+    ]),
+  );
+  expect(slots.isField("C", "a")).toBe(true);
+});
+
 test("captured bindings share one proof across the declaring function and its closures", () => {
   const closure: IrExpr = { loc, kind: "closure", fnName: "inner", captures: ["s"], type: DYN };
   const outer = (): IrFunction => ({

@@ -99,6 +99,7 @@ import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js"
 import { everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
 import { analyzeIntegerRanges, INT32_RANGE, type IntegerRanges } from "../../ir/integer-ranges.js";
 import { analyzeInt32Slots, type Int32Slots } from "../../ir/int32-slots.js";
+import { analyzeFinalFields, constructorClass, type FinalFields } from "../../ir/final-fields.js";
 import { findIntegerViews } from "./integer-views.js";
 import { findInitializerBindings, withInitializerBindings } from "../../ir/initializer-bindings.js";
 import { findConstantNumericTables, type ConstantNumericTable } from "../../ir/constant-tables.js";
@@ -734,6 +735,11 @@ export class LlEmitter {
     { slot: string; type: "i32" | "i64"; signed?: boolean; range?: { min: number; max: number } }
   >();
   private countedLoopsEnabled = false;
+  /** Whole-program final reference fields (ir/final-fields.ts). */
+  private finalFields!: FinalFields;
+  /** The current function may borrow final fields of borrowable objects:
+   * not a constructor (where they change), not async or a generator. */
+  private finalFieldBorrows = false;
   integerRanges: IntegerRanges = new Map();
   private byteWindowsEnabled = true;
   private byteWindowEntries: ReturnType<typeof findInitializedByteLoopBindings> = new Map();
@@ -808,6 +814,7 @@ export class LlEmitter {
     this.constantNumericTables = findConstantNumericTables(mod);
     this.initializerBindings = findInitializerBindings(mod);
     this.int32Slots = analyzeInt32Slots(mod);
+    this.finalFields = analyzeFinalFields(mod);
     this.sizeType = options.pointerBits === 32 ? "i32" : "i64";
     this.ffiExtendNarrowIntegers =
       options.wasi === true || ffiExtendsNarrowIntegers(options.targetTriple);
@@ -4942,6 +4949,8 @@ export class LlEmitter {
     );
     this.integerLoopBindings.clear();
     this.countedLoopsEnabled = this.debug === null && !fn.async && !fn.generator;
+    this.finalFieldBorrows =
+      !fn.async && !fn.generator && constructorClass(fn.name) === null && this.finalFields.size > 0;
     this.byteWindowsEnabled = this.countedLoopsEnabled;
     this.byteWindowEntries =
       this.byteWindowsEnabled && numericFn.locals.some((l) => l.type.kind === "bytes")
@@ -5311,6 +5320,17 @@ export class LlEmitter {
     // stable owner. The throwing arm's typed dummy owns nothing.
     if (value.kind === "unionNarrow") return this.canBorrowCallArgument(value.value);
     if (value.kind === "libCall") return value.fn === "error.nodeThrow";
+    // A final field never changes outside constructors: while its object is
+    // borrowable, so is the field's value. Nullable-pointer fields have no
+    // box to lend and keep their owning path.
+    if (
+      value.kind === "fieldGet" &&
+      this.finalFieldBorrows &&
+      isRefCounted(value.type) &&
+      this.finalFields.isFinal(value.className, value.field) &&
+      !this.nullableFieldGet(value)
+    )
+      return this.canBorrowReceiver(value.obj) && this.canBorrowCallArgument(value.obj);
     if (value.kind === "ternary")
       return (
         this.canBorrowReceiver(value.then) &&

@@ -1592,7 +1592,10 @@ export interface IrLocal {
    * empty throws JS's catchable ReferenceError ("Cannot access 'name'
    * before initialization"), exactly Node's temporal dead zone. Always
    * paired with `boxed`; scalar payloads use a one-element array cell so
-   * the NULL slot remains the TDZ sentinel. Capture entries inherit the flag. */
+   * the NULL slot remains the TDZ sentinel. Backends whose values of the
+   * binding's type can themselves be NULL (the LLVM backend's nullable
+   * unions, where NULL is `null`/`undefined`) mark the empty box with a
+   * distinct sentinel instead. Capture entries inherit the flag. */
   tdz?: true;
 }
 

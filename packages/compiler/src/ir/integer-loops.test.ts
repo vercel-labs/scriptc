@@ -164,3 +164,21 @@ test("versioning is bounded and requires an integer consumer", () => {
   expect(matchIntegerCountedForLoop(nested, withLimit)).toBeNull();
   expect(matchIntegerCountedForLoop(counted(number(4)), locals)?.guarded).toBe(false);
 });
+
+test("an unproven start versions the loop on an exact integer start", () => {
+  const withStart = new Map(locals);
+  withStart.set("start", { id: "start", name: "start", type: F64, mutable: false });
+  const s = counted(number(8));
+  s.init = { kind: "varDecl", localId: "i", init: ref("start"), loc };
+  expect(matchIntegerCountedForLoop(s, withStart)).toMatchObject({
+    guarded: true,
+    startGuarded: true,
+    limitGuarded: false,
+    range: { min: -Number.MAX_SAFE_INTEGER, max: 7 },
+  });
+  // The versioned body is duplicated, so the usual size bound applies.
+  const large = counted(number(8));
+  large.init = { kind: "varDecl", localId: "i", init: ref("start"), loc };
+  large.body = Array.from({ length: 81 }, () => large.body[0]!);
+  expect(matchIntegerCountedForLoop(large, withStart)).toBeNull();
+});

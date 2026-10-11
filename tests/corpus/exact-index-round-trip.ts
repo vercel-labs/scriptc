@@ -96,3 +96,17 @@ console.log(
   rangeHash(cursor.units, 0.5, 4),
   rangeHash(cursor.units, opaque(odd, 1), opaque(odd, 3)),
 );
+
+// Counted loops from an unproven start run as integer loops only when the
+// start is an exact integer; -0, fractions, NaN and huge starts keep the
+// double loop, and the counter's own value stays observable.
+function observe(chars: Uint16Array, start: number, end: number): string {
+  const seen: string[] = [];
+  for (let i = start; i < end; i++) {
+    seen.push(`${Object.is(i, -0) ? "-0" : i}:${chars[i] ^ 1}:${(i * 2) | 0}`);
+    if (seen.length > 6) break;
+  }
+  return seen.join(" ");
+}
+for (const start of [0, -0, 1, 2.5, -2, NaN, 2 ** 53 - 2, -(2 ** 53), 1e300, -Infinity])
+  console.log(String(start), observe(cursor.units, opaque([start], 0), opaque([start + 4, 9], start === -Infinity ? 1 : 0)));

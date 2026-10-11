@@ -100,6 +100,7 @@ import { everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse
 import { analyzeIntegerRanges, INT32_RANGE, type IntegerRanges } from "../../ir/integer-ranges.js";
 import { analyzeInt32Slots, type Int32Slots } from "../../ir/int32-slots.js";
 import { analyzeFinalFields, constructorClass, type FinalFields } from "../../ir/final-fields.js";
+import { foldConstantGlobals } from "../../ir/constant-globals.js";
 import { findIntegerViews } from "./integer-views.js";
 import { findInitializerBindings, withInitializerBindings } from "../../ir/initializer-bindings.js";
 import { findConstantNumericTables, type ConstantNumericTable } from "../../ir/constant-tables.js";
@@ -405,7 +406,7 @@ export function emitLlvmModule(mod: IrModule, options: LlvmTargetOptions = {}): 
   // Keep source storage intact for debugger inspection in dev builds.
   return new LlEmitter(
     options.debugSources === undefined
-      ? scalarizeNumericRecords(specializeNumericCalls(mod, mangleFunction))
+      ? scalarizeNumericRecords(specializeNumericCalls(foldConstantGlobals(mod), mangleFunction))
       : mod,
     options,
   ).emit();
@@ -418,7 +419,7 @@ export function emitLlvmModuleSource(
 ): string | readonly string[] {
   const parts = new LlEmitter(
     options.debugSources === undefined
-      ? scalarizeNumericRecords(specializeNumericCalls(mod, mangleFunction))
+      ? scalarizeNumericRecords(specializeNumericCalls(foldConstantGlobals(mod), mangleFunction))
       : mod,
     options,
   ).emitParts();

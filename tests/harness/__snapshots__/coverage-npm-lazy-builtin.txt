@@ -6,9 +6,10 @@ scriptc coverage tests/fixtures/npm/cases/esbuild-require/main.ts
 
   embedded npm code imports Node builtins:
     node:http2   not shimmed — lazy trap  (esbundled)
-    node:module  shimmed                  (esbundled)
+    node:module  partial                  (esbundled)
     node:os      shimmed                  (esbundled)
     node:tty     shimmed                  (esbundled)
+    (partial: the shim exists but covers only part of Node's surface; unsupported members throw at the call)
     (lazy trap: only reachable through require()/import() boundaries — the build embeds Node's call-time error; the call throws at runtime)
 
   builds with --dynamic — no remaining blockers (the island sites above run in the embedded engine).

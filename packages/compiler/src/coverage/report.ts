@@ -258,7 +258,9 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
     );
     for (const b of builtins) {
       const status = b.shimmed
-        ? c(GREEN, "shimmed".padEnd(widestS))
+        ? b.partial
+          ? c(YELLOW, "partial".padEnd(widestS))
+          : c(GREEN, "shimmed".padEnd(widestS))
         : b.lazy
           ? c(YELLOW, "not shimmed — lazy trap".padEnd(widestS))
           : c(RED, "not shimmed".padEnd(widestS));
@@ -275,6 +277,11 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
       out.push(
         `    ${t.specifier.padEnd(widestB)}  ${c(YELLOW, what.padEnd(widestS))}  ` +
           c(DIM, `(${t.via.join("/")} in ${t.packages.join(", ")})`),
+      );
+    }
+    if (builtins.some((b) => b.partial)) {
+      out.push(
+        `    ${c(DIM, "(partial: the shim exists but covers only part of Node's surface; unsupported members throw at the call)")}`,
       );
     }
     if (builtins.some((b) => b.lazy) || traps.length > 0) {

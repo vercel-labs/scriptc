@@ -3,7 +3,7 @@ import { InternalCompilerError } from "../../errors.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
 import { BYTES_ELEMENT_SIZE, F64, type IrBytesElem, type IrExpr } from "../../ir/ir.js";
 import type { LlvmEmitterContext, LlValue } from "./expr-context.js";
-import { F64_INF, f64Lit } from "./common.js";
+import { F64_INF, exactIndexLines, f64Lit } from "./common.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
 import { byteNumberAccess } from "../../ir/byte-numbers.js";
 import { emitByteNumber } from "./byte-numbers.js";
@@ -118,28 +118,12 @@ export function emitBytesIndex(
     B.line(`${narrow} = trunc i64 ${wideIndex} to ${host.sizeType}`);
     return narrow;
   }
-  const lenF64 = B.tmp();
-  const nonnegative = B.tmp();
-  const belowLen = B.tmp();
-  const inRange = B.tmp();
-  B.line(`${lenF64} = uitofp ${host.sizeType} ${len} to double`);
-  B.line(`${nonnegative} = fcmp oge double ${index}, ${f64Lit(0)}`);
-  B.line(`${belowLen} = fcmp olt double ${index}, ${lenF64}`);
-  B.line(`${inRange} = and i1 ${nonnegative}, ${belowLen}`);
-
-  const rangeOk = B.newLabel("bytes.index.range");
+  const exact = exactIndexLines(index, len, host.sizeType, () => B.tmp());
+  for (const line of exact.lines) B.line(line);
   const invalid = B.newLabel("bytes.index.invalid");
   const valid = B.newLabel("bytes.index.valid");
-  B.condBr(inRange, rangeOk, invalid);
-
-  B.startBlock(rangeOk);
-  const idx = B.tmp();
-  const roundTrip = B.tmp();
-  const integral = B.tmp();
-  B.line(`${idx} = fptoui double ${index} to ${host.sizeType}`);
-  B.line(`${roundTrip} = uitofp ${host.sizeType} ${idx} to double`);
-  B.line(`${integral} = fcmp oeq double ${roundTrip}, ${index}`);
-  B.condBr(integral, valid, invalid);
+  B.condBr(exact.ok, valid, invalid);
+  let idx = exact.wide;
 
   B.startBlock(invalid);
   if (skipInvalid) B.br(skipInvalid);
@@ -151,6 +135,10 @@ export function emitBytesIndex(
   }
 
   B.startBlock(valid);
+  if (host.sizeType !== "i64") {
+    idx = B.tmp();
+    B.line(`${idx} = trunc i64 ${exact.wide} to ${host.sizeType}`);
+  }
   return idx;
 }
 
@@ -197,6 +185,20 @@ export function emitBytesGet(
     const local = emitSharedBytesSplit(host, receiver);
     const result = B.tmp();
     B.line(`${result} = call double @${fn}(ptr ${receiver}, double ${index.name})`);
+    // Integer elements read as integers in int32/uint32 range, or NaN for a
+    // missing one: ToUint32 is the integer, or 0. Keeping it lets the join
+    // carry the local path's integer hint.
+    let sharedU32: string | undefined;
+    if (elem !== "f32" && elem !== "f64") {
+      const missing = B.tmp(),
+        present = B.tmp(),
+        wide = B.tmp();
+      sharedU32 = B.tmp();
+      B.line(`${missing} = fcmp uno double ${result}, ${result}`);
+      B.line(`${present} = select i1 ${missing}, double 0.0, double ${result}`);
+      B.line(`${wide} = fptosi double ${present} to i64`);
+      B.line(`${sharedU32} = trunc i64 ${wide} to i32`);
+    }
     const shared = B.newLabel("bytes.shared.done");
     B.br(shared);
     B.startBlock(local);
@@ -211,7 +213,10 @@ export function emitBytesGet(
     B.startBlock(join);
     const out = B.tmp();
     B.line(`${out} = phi double [ ${own.name}, %${owned} ], [ ${result}, %${shared} ]`);
-    return { name: out, type: F64 };
+    if (own.uint32 === undefined || sharedU32 === undefined) return { name: out, type: F64 };
+    const u32 = B.tmp();
+    B.line(`${u32} = phi i32 [ ${own.uint32}, %${owned} ], [ ${sharedU32}, %${shared} ]`);
+    return { name: out, type: F64, uint32: u32 };
   }
   return emitBytesGetLocal(host, elem, receiver, index, expr, inBounds, invalidNaN);
 }
@@ -265,9 +270,10 @@ function emitBytesGetLocal(
   B.startBlock(done);
   const out = B.tmp();
   B.line(`${out} = phi double [ ${loaded.name}, %${ok} ], [ ${f64Lit(NaN)}, %${invalid} ]`);
-  // NaN has no integer value: the integer hint survives only when the read
-  // is proven valid (the invalid block is then unreachable).
-  if (loaded.uint32 === undefined || !inBounds) return { name: out, type: F64 };
+  // The hint is ToUint32 of the value, and ToUint32(NaN) is 0, so it holds
+  // for an invalid index too. Integer ranges (which would claim more) are
+  // never derived for NaN-coded reads.
+  if (loaded.uint32 === undefined) return { name: out, type: F64 };
   const u32 = B.tmp();
   B.line(`${u32} = phi i32 [ ${loaded.uint32}, %${ok} ], [ 0, %${invalid} ]`);
   return { name: out, type: F64, uint32: u32 };

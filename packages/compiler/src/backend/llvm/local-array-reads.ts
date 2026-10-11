@@ -12,6 +12,7 @@ import { everyStmtList } from "../../ir/traverse.js";
 import { analyzeCallLifetimes, type CallLifetimes } from "./call-lifetimes.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { ReferenceEffects } from "./reference-effects.js";
+import { exactIndexLines } from "./common.js";
 
 export interface LocalArrayRead {
   type: IrType;
@@ -338,33 +339,29 @@ function emitDenseReferenceArrayRead(
   // The dense path uses the existing ScrArr ABI. Sparse indices and
   // noncanonical numeric properties retain the runtime lookup semantics.
   const capPtr = B.tmp(),
-    cap = B.tmp(),
-    capNumber = B.tmp(),
-    nonnegative = B.tmp(),
-    belowCap = B.tmp(),
-    inRange = B.tmp();
+    cap = B.tmp();
   B.line(`${capPtr} = getelementptr inbounds %ScrArr, ptr ${array.name}, i32 0, i32 2`);
   host.markMemoryPointer(capPtr, "array:header");
   B.line(`${cap} = load ${host.sizeType}, ptr ${capPtr}${host.fieldAliasAttachment(capPtr)}`);
-  if (integerIndex) B.line(`${inRange} = icmp ult ${host.sizeType} ${integerIndex}, ${cap}`);
-  else {
-    B.line(`${capNumber} = uitofp ${host.sizeType} ${cap} to double`);
-    B.line(`${nonnegative} = fcmp oge double ${index.name}, 0.0`);
-    B.line(`${belowCap} = fcmp olt double ${index.name}, ${capNumber}`);
-    B.line(`${inRange} = and i1 ${nonnegative}, ${belowCap}`);
+  let offset: string, inRange: string;
+  if (integerIndex) {
+    offset = integerIndex;
+    inRange = B.tmp();
+    B.line(`${inRange} = icmp ult ${host.sizeType} ${integerIndex}, ${cap}`);
+  } else {
+    // Capacity bounds the dense slots; the length check below still decides presence.
+    const exact = exactIndexLines(index.name, cap, host.sizeType, () => B.tmp());
+    for (const line of exact.lines) B.line(line);
+    inRange = exact.ok;
+    offset = exact.wide;
+    if (host.sizeType !== "i64") {
+      offset = B.tmp();
+      B.line(`${offset} = trunc i64 ${exact.wide} to ${host.sizeType}`);
+    }
   }
   B.condBr(inRange, range, slow);
   B.startBlock(range);
-  const offset = integerIndex ?? B.tmp(),
-    roundTrip = B.tmp(),
-    integral = B.tmp();
-  if (integerIndex) B.br(dense);
-  else {
-    B.line(`${offset} = fptoui double ${index.name} to ${host.sizeType}`);
-    B.line(`${roundTrip} = uitofp ${host.sizeType} ${offset} to double`);
-    B.line(`${integral} = fcmp oeq double ${index.name}, ${roundTrip}`);
-    B.condBr(integral, dense, slow);
-  }
+  B.br(dense);
   B.startBlock(dense);
   const lenPtr = B.tmp(),
     len = B.tmp(),

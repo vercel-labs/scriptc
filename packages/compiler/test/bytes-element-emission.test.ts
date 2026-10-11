@@ -314,7 +314,10 @@ test("canonical byte loops keep their induction variable and indices integral", 
 
   expect(ll).toContain("alloca i64 ; integer induction index");
   expect(ll).toContain("icmp ult i64");
-  expect(ll).not.toContain("fptosi double");
+  // The proven in-bounds index needs no element check at all. Do not assert
+  // on `fptosi double` here: the fixture's inline ToUint32 coercion of the
+  // running sum legitimately uses it.
+  expect(ll).not.toContain("bytes.index");
 });
 
 test("a body mutation keeps the byte loop on the general f64 path", () => {

@@ -7,6 +7,7 @@ import { arrNewCall, traceArg, vAdapters } from "./shapes.js";
 import type { LlvmEmitterContext, LibCallExpr, LlValue } from "./expr-context.js";
 import { f64Lit } from "./common.js";
 import { emitAlwaysThrowLibCall } from "./lib-shared.js";
+import { emitTruncF64 } from "./trunc.js";
 
 const FS_ALWAYS_THROW_SYMS: Readonly<Record<string, string>> = {
   "fs.mkdtempChk": "scr_fs_mkdtemp_chk",
@@ -663,8 +664,23 @@ export function emitPathUrlLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
 
 export function emitPrimitiveLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
-  if (e.fn === "math.floor" || e.fn === "math.trunc" || e.fn === "math.ceil") {
-    const intr = e.fn === "math.floor" ? "floor" : e.fn === "math.trunc" ? "trunc" : "ceil";
+  if (e.fn === "math.min" || e.fn === "math.max") {
+    // IEEE 754-2019 minimum/maximum: NaN propagates and -0 orders below +0,
+    // exactly Math.min/Math.max of two numbers.
+    const a = host.emitExpr(e.args[0]!);
+    const b = host.emitExpr(e.args[1]!);
+    const intr = e.fn === "math.min" ? "minimum" : "maximum";
+    host.declare(`declare double @llvm.${intr}.f64(double, double)`);
+    const t = B.tmp();
+    B.line(`${t} = call double @llvm.${intr}.f64(double ${a.name}, double ${b.name})`);
+    return { name: t, type: e.type };
+  }
+  if (e.fn === "math.trunc") {
+    const v = host.emitExpr(e.args[0]!);
+    return { name: emitTruncF64(host, v.name), type: e.type };
+  }
+  if (e.fn === "math.floor" || e.fn === "math.ceil") {
+    const intr = e.fn === "math.floor" ? "floor" : "ceil";
     const v = host.emitExpr(e.args[0]!);
     host.declare(`declare double @llvm.${intr}.f64(double)`);
     const t = B.tmp();

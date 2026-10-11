@@ -371,15 +371,14 @@ export function emitToUint32(
   B.condBr(finite, finiteLabel, nonfiniteLabel);
 
   B.startBlock(finiteLabel);
-  host.declare(`declare double @llvm.trunc.f64(double)`);
-  const truncated = B.tmp();
+  // Only magnitudes above 2^53 reach this block, and every such double is
+  // already an integer: no truncation is needed before the reduction.
   const residue = B.tmp();
   const negative = B.tmp();
   const wrapped = B.tmp();
   const normalized = B.tmp();
   const finiteU32 = B.tmp();
-  B.line(`${truncated} = call double @llvm.trunc.f64(double ${value})`);
-  B.line(`${residue} = frem double ${truncated}, ${f64Lit(4294967296)}`);
+  B.line(`${residue} = frem double ${value}, ${f64Lit(4294967296)}`);
   B.line(`${negative} = fcmp olt double ${residue}, ${f64Lit(0)}`);
   B.line(`${wrapped} = fadd double ${residue}, ${f64Lit(4294967296)}`);
   B.line(`${normalized} = select i1 ${negative}, double ${wrapped}, double ${residue}`);

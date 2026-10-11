@@ -516,6 +516,10 @@ export class LlEmitter {
   readonly ffiExtendNarrowIntegers: boolean;
   readonly cycleColorOffset: number;
   readonly wasi: boolean;
+  /** The target lacks a rounding instruction at its baseline CPU (x86-64
+   * before SSE4.1), so `llvm.trunc` would lower to a libm call: emit
+   * truncation inline through an integer round trip instead. */
+  readonly inlineTrunc: boolean;
   /** ELF worker executables give thread-locals the executable TLS models. */
   private readonly executableTls: boolean;
   private readonly emitLibraryIdentity: boolean;
@@ -807,6 +811,14 @@ export class LlEmitter {
     this.ffiExtendNarrowIntegers =
       options.wasi === true || ffiExtendsNarrowIntegers(options.targetTriple);
     this.wasi = options.wasi === true;
+    // An empty triple targets the host, as for executableTls below: the
+    // Node-hosted CLI passes none, the native CLI passes its toolchain's, and
+    // both must emit the same module for the same target.
+    this.inlineTrunc =
+      !this.wasi &&
+      (options.targetTriple
+        ? /^(x86_64|amd64)\b/i.test(options.targetTriple)
+        : process.arch === "x64");
     this.executableTls =
       mod.workers === true &&
       mod.lib === undefined &&

@@ -42,6 +42,11 @@ export const BYTES_ELEMENT_SIZE: Record<IrBytesElem, number> = {
   f64: 8,
 };
 
+/** Integer element kinds: a valid element read is never NaN. */
+export function isIntegerBytesElem(elem: IrBytesElem): boolean {
+  return elem !== "f32" && elem !== "f64";
+}
+
 export const BYTES_ELEMENT_NAME: Record<IrBytesElem, string> = {
   u8: "Uint8Array",
   u8c: "Uint8ClampedArray",

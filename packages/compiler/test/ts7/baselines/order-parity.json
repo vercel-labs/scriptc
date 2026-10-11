@@ -11409,6 +11409,12 @@
    ],
    "diags": []
   },
+  "<repo>/tests/corpus/typed-array-nan-coded-reads.ts": {
+   "order": [
+    "<repo>/tests/corpus/typed-array-nan-coded-reads.ts"
+   ],
+   "diags": []
+  },
   "<repo>/tests/corpus/typed-array-unknown.ts": {
    "order": [
     "<repo>/tests/corpus/typed-array-unknown.ts"

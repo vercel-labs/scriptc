@@ -109,7 +109,12 @@ import {
   mangleVtInstance,
 } from "../mangle.js";
 import { analyzeCallLifetimes, type CallLifetimes } from "./call-lifetimes.js";
-import { canStackUnion, emitStackUnion, findLocalStackUnions } from "./stack-unions.js";
+import {
+  canStackUnion,
+  emitStackUnion,
+  findLocalStackUnions,
+  sharesNarrowedUnionBox,
+} from "./stack-unions.js";
 import {
   allocateLocalUnion,
   findLocalUnionStorage,
@@ -964,6 +969,7 @@ export class LlEmitter {
       this.fnByName,
       (className, field) => this.nullableFields.get(className, field) !== null,
       walkParameters,
+      (node) => sharesNarrowedUnionBox(node, this.boxedUnionsById),
     );
     this.constantCallbacks = findConstantCallbacks(mod, this.callLifetimes);
     this.stackCallbacks = new StackCallbacks(this.fnByName);
@@ -2773,6 +2779,8 @@ export class LlEmitter {
     // inlines at each site: interned literals and shared values compare by
     // identity, and equality rejects different byte lengths, before any
     // runtime call (scr_str_eq/scr_str_cmp keep the complete semantics).
+    // One-byte strings (lexer characters, operator tokens) compare their
+    // single data byte inline; the data starts right after the header.
     if (this.decls.has(`declare zeroext i1 @scr_str_eq(ptr, ptr)`)) {
       defs.push(
         `define internal zeroext i1 @sc_str_eq(ptr %a, ptr %b) ${FN_ATTRS} {`,
@@ -2785,7 +2793,17 @@ export class LlEmitter {
         `  %alen = load ${this.sizeType}, ptr %alen.p`,
         `  %blen = load ${this.sizeType}, ptr %blen.p`,
         `  %samelen = icmp eq ${this.sizeType} %alen, %blen`,
-        `  br i1 %samelen, label %bytes, label %no`,
+        `  br i1 %samelen, label %short, label %no`,
+        `short:`,
+        `  %one = icmp eq ${this.sizeType} %alen, 1`,
+        `  br i1 %one, label %byte, label %bytes`,
+        `byte:`,
+        `  %adata = getelementptr inbounds %ScrStr, ptr %a, i32 1`,
+        `  %bdata = getelementptr inbounds %ScrStr, ptr %b, i32 1`,
+        `  %abyte = load i8, ptr %adata`,
+        `  %bbyte = load i8, ptr %bdata`,
+        `  %byteeq = icmp eq i8 %abyte, %bbyte`,
+        `  ret i1 %byteeq`,
         `bytes:`,
         `  %eq = call zeroext i1 @scr_str_eq(ptr %a, ptr %b)`,
         `  ret i1 %eq`,

@@ -73,7 +73,15 @@ function eligible(local: IrLocal): boolean {
  * extracts and retains the payload, so the stored union is only projected. */
 export type NullableFieldTest = (className: string, field: string) => boolean;
 
-function collectUses(fn: IrFunction, nullableField: NullableFieldTest): Uses {
+/** A `unionWrap` the emitter lowers by sharing its narrowed operand's box
+ * (stack-unions.ts sharesNarrowedUnionBox): that operand escapes. */
+export type SharedRewrapTest = (node: IrExpr & { kind: "unionWrap" }) => boolean;
+
+function collectUses(
+  fn: IrFunction,
+  nullableField: NullableFieldTest,
+  sharedRewrap: SharedRewrapTest,
+): Uses {
   const uses: Uses = {
     invalid: new Set(),
     written: new Set(),
@@ -101,6 +109,16 @@ function collectUses(fn: IrFunction, nullableField: NullableFieldTest): Uses {
       case "mapIntrinsic":
       case "setIntrinsic":
         if (borrowsMapReadInputs(node)) return expr(node.receiver) && node.args.every(stringInput);
+        break;
+      case "unionWrap":
+        if (
+          node.value.kind === "unionNarrow" &&
+          node.value.value.kind === "varRef" &&
+          sharedRewrap(node)
+        ) {
+          uses.invalid.add(node.value.value.localId);
+          return true;
+        }
         break;
       case "unionNarrow":
       case "unionIsTag":
@@ -220,6 +238,7 @@ export function analyzeCallLifetimes(
   /** Rebound parameters that only ever hold borrowed walk pointers
    * (walk-borrows.ts): they keep the borrowed convention although written. */
   walkParameters: ReadonlyMap<string, ReadonlySet<number>> = new Map(),
+  sharedRewrap: SharedRewrapTest = () => false,
 ): CallLifetimes {
   const usesByFunction = new Map<string, Uses>();
   const lazyCaptures = new LazyCaptures(functions);
@@ -234,7 +253,7 @@ export function analyzeCallLifetimes(
   };
   for (const fn of functions.values()) {
     if (fn.async || fn.generator) continue;
-    const uses = collectUses(fn, nullableField);
+    const uses = collectUses(fn, nullableField, sharedRewrap);
     usesByFunction.set(fn.name, uses);
     // Class-capturing bodies get only local facts (computed below from
     // their uses; class captures are already invalid). Binding and

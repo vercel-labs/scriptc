@@ -4,6 +4,10 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+### Performance
+
+- **Optional reads of union elements stop allocating.** `xs[i]` on an array of union values, and other conversions that re-wrap a narrowed value into a union storing the same arm under the same tag, share the immutable source box instead of building a copy. One-byte strings (lexer characters, single-character operators) now compare equal inline. A lexer, parser and evaluator over a discriminated-union AST runs about 28% fewer cycles.
+
 <!-- release:start -->
 
 ## 0.3.0

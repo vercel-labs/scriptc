@@ -12,6 +12,29 @@ import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
 
 type UnionWrap = IrExpr & { kind: "unionWrap" };
 
+/** `unionWrap(unionNarrow(u))` that stores the narrowed arm under the same
+ * tag with the same type (`T | undefined` from an element of `T`'s union, a
+ * retag between overlapping unions). Boxes are immutable and hold only the
+ * tag, the slot and the arm's RC entry points, so the source box already IS
+ * the target value and the emitter shares it. That retains the source box,
+ * so call-lifetime analysis must treat the operand as escaping: it can then
+ * never be a stack box. `boxed` holds only `%ScrUnion`-represented unions. */
+export function sharesNarrowedUnionBox(
+  value: UnionWrap,
+  boxed: ReadonlyMap<string, IrUnionDef>,
+): value is UnionWrap & { value: IrExpr & { kind: "unionNarrow" } } {
+  const narrowed = value.value;
+  if (narrowed.kind !== "unionNarrow" || narrowed.tag !== value.tag) return false;
+  const sourceArm = boxed.get(narrowed.unionId)?.arms[narrowed.tag];
+  const targetArm = boxed.get(value.unionId)?.arms[value.tag];
+  return (
+    sourceArm !== undefined &&
+    targetArm !== undefined &&
+    !isUnitType(sourceArm) &&
+    typeEquals(sourceArm, targetArm)
+  );
+}
+
 /** The ordinary tag and payload ABI can live on the stack when every
  * consumer is a projection. No RC or tracing entry point may receive this
  * box: its payload retains its ordinary independent owner instead. */

@@ -481,3 +481,47 @@ test.each(["nullish", "equality"])(
     }
   },
 );
+
+/** `optional` plus a wider union that stores the record arm under the same
+ * tag, and `widen(value)` re-wrapping the narrowed record into it. */
+function rewrapFixture(): IrModule {
+  const mod = fixture();
+  const wider: IrType = { kind: "union", unionId: "wider" };
+  mod.unions!.push({ id: "wider", arms: [record, UNDEFINED_T, NULL_T, F64] });
+  mod.functions.push({
+    name: "widen",
+    params: [{ localId: "value", name: "value", type: optional }],
+    returnType: wider,
+    loc,
+    locals: [{ id: "value", name: "value", type: optional, mutable: true }],
+    body: [
+      ret({
+        kind: "unionWrap",
+        value: narrow(ref("value"), record),
+        tag: 0,
+        unionId: "wider",
+        type: wider,
+        loc,
+      }),
+    ],
+  });
+  return mod;
+}
+
+test("a same-tag re-wrap into a wider union shares the source box", () => {
+  const widen = body(emit(rewrapFixture()), "sc_bf_widen");
+  expect(widen).not.toContain("@scr_union_new_ref");
+  expect(widen).toContain("@scr_union_retain");
+});
+
+test("a shared re-wrap keeps its argument off the stack", () => {
+  // The callee retains its argument's box, so a private stack box there
+  // would reach an RC entry point (free of a stack pointer at release).
+  const mod = rewrapFixture();
+  mod.functions[0]!.body.push(
+    effect(call("widen", [wrap(fresh())], { kind: "union", unionId: "wider" })),
+  );
+  const main = body(emit(mod), "sc_f_main");
+  expect(main).not.toContain("alloca %ScrUnion");
+  expect(main).toContain("@scr_union_new_ref");
+});

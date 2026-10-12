@@ -23,6 +23,7 @@ import { elemAccess, vAdapters } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 import { emitUnionWiden } from "./expr-records.js";
+import { sharesNarrowedUnionBox } from "./stack-unions.js";
 
 export function emitDynamicExpr(
   host: LlvmEmitterContext,
@@ -289,6 +290,16 @@ export function emitDynamicExpr(
       if (arm.kind === "void") {
         host.emitExpr(e.value);
         return host.own({ name: host.unitInstanceRef(e.unionId, e.tag), type: e.type });
+      }
+      // A same-tag, same-arm re-wrap shares the source box (see
+      // sharesNarrowedUnionBox; call lifetimes keep such operands off the
+      // stack). A stack box over a nullable field is never shareable.
+      if (
+        sharesNarrowedUnionBox(e, host.boxedUnionsById) &&
+        host.nullableFieldGet(e.value.value) === null
+      ) {
+        const box = host.emitReadReceiver(e.value.value);
+        return host.own({ name: host.retainValue(box.name, e.value.value.type), type: e.type });
       }
       const v = host.emitExpr(e.value);
       if (isRefCounted(arm)) host.moveTemp(v);

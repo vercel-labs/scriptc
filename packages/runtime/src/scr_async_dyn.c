@@ -1355,3 +1355,90 @@ ScrDyn *scr_crypto_native(void) {
   scr_dyn_obj_set(subtle, "digest", 6, scr_dyn_new_func(scr_closure_new(NULL, 0), scr_crypto_digest_call, 2, "crypto.subtle.digest", "digest"));
   ScrDyn *result = scr_dyn_new_obj(); scr_dyn_obj_set(result, "subtle", 6, subtle); return result;
 }
+
+/* ── promise method values (`d.then` read as a VALUE) ─────────────────────
+ * JS answers `Promise.prototype.then/catch/finally` for a `then`-keyed
+ * read on any promise: one shared function object per method, shared by
+ * every instance. The checked-dynamic key read over a promise box used to
+ * fall through to undefined, so a promise held in `any`/`unknown` storage
+ * answered `p.then === undefined` where Node answers a function. Each
+ * method name mints ONE immortal FUNC-kind box per process (identity
+ * matches JS's shared prototype method), and a call through the value
+ * dispatches through the promise reaction machinery with the ambient
+ * receiver (`this`) as the source promise — JS binds the promise the
+ * prototype method was read off. */
+static ScrDyn *scr_promise_then_method_call(ScrClosure *clo, ScrDyn *const *args, size_t argc);
+static ScrDyn *scr_promise_catch_method_call(ScrClosure *clo, ScrDyn *const *args, size_t argc);
+static ScrDyn *scr_promise_finally_method_call(ScrClosure *clo, ScrDyn *const *args, size_t argc);
+
+static ScrDyn *scr_promise_method_value(ScrDynThunk thunk, const char *sig, const char *name) {
+  static ScrDyn *values[3];
+  const size_t slot =
+    thunk == scr_promise_then_method_call ? 0 : thunk == scr_promise_catch_method_call ? 1 : 2;
+  if (!values[slot]) {
+    ScrClosure *closure = scr_closure_new((void *)thunk, 0);
+    values[slot] = scr_dyn_new_func(closure, thunk, 1, sig, name);
+  }
+  return scr_dyn_retain(values[slot]);
+}
+
+static ScrDyn *scr_promise_method_call(size_t slot, ScrDyn *const *args, size_t argc) {
+  static const char *const names[3] = { "then", "catch", "finally" };
+  ScrDyn *self = scr_dyn_this_get();
+  if (!self || self->kind != SCR_DYN_PROMISE) {
+    /* Node's exact call failure for an unbound prototype method read. */
+    if (!scr_exc_pending()) {
+      static const char head[] = "Method Promise.prototype.";
+      static const char tail[] = " called on incompatible receiver ";
+      const char *name = names[slot];
+      const char *recv;
+      size_t recv_len;
+      if (!self || self->kind == SCR_DYN_UNDEF) {
+        recv = "undefined";
+        recv_len = 9;
+      } else if (self->kind == SCR_DYN_NULL) {
+        recv = "null";
+        recv_len = 4;
+      } else {
+        recv = "[object Object]";
+        recv_len = 15;
+      }
+      ScrStr *msg = scr_str_concat(
+        scr_str_concat(scr_str_new(head, sizeof head - 1), scr_str_new(name, strlen(name))),
+        scr_str_concat(scr_str_new(tail, sizeof tail - 1), scr_str_new(recv, recv_len)));
+      scr_throw_error_msg_code(SCR_ERR_TYPE, msg->data, msg->len, "SC2020");
+      scr_str_release(msg);
+    }
+    return NULL;
+  }
+  ScrDyn *onf = slot == 0 && argc >= 1 ? args[0] : NULL;
+  ScrDyn *onr = slot == 0 ? (argc >= 2 ? args[1] : NULL) : slot == 1 && argc >= 1 ? args[0] : NULL;
+  ScrDyn *onfin = slot == 2 && argc >= 1 ? args[0] : NULL;
+  return scr_dyn_promise_then(self->v.promise, onf, onr, onfin);
+}
+
+static ScrDyn *scr_promise_then_method_call(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  (void)clo;
+  return scr_promise_method_call(0, args, argc);
+}
+
+static ScrDyn *scr_promise_catch_method_call(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  (void)clo;
+  return scr_promise_method_call(1, args, argc);
+}
+
+static ScrDyn *scr_promise_finally_method_call(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  (void)clo;
+  return scr_promise_method_call(2, args, argc);
+}
+
+ScrDyn *scr_dyn_promise_method_value(const char *name, size_t length) {
+  if (length == 4 && memcmp(name, "then", 4) == 0)
+    return scr_promise_method_value(scr_promise_then_method_call, "(onfulfilled?, onrejected?)", "then");
+  if (length == 5 && memcmp(name, "catch", 5) == 0)
+    return scr_promise_method_value(scr_promise_catch_method_call, "(onrejected?)", "catch");
+  if (length == 7 && memcmp(name, "finally", 7) == 0)
+    return scr_promise_method_value(scr_promise_finally_method_call, "(onfinally?)", "finally");
+  return NULL;
+}
+

@@ -5640,6 +5640,11 @@ ScrPromise *scr_dyn_promise_of(const ScrDyn *d);
 /* Promise.all / allSettled / any over a spread dyn array (borrowed);
  * `reader` (borrowed) reads a program class instance's `then`. +1. */
 ScrPromise *scr_dyn_promise_all(const ScrDyn *entries, const ScrDyn *reader);
+/* The shared Promise.prototype method value for `name` ("then", "catch",
+ * "finally" — length given), or NULL for any other key. The returned box
+ * is +1; calls through it bind the ambient receiver (`this`) as the source
+ * promise, exactly JS's prototype-method receiver. scr_async_dyn.c (gated). */
+ScrDyn *scr_dyn_promise_method_value(const char *name, size_t length);
 ScrPromise *scr_dyn_promise_all_settled(const ScrDyn *entries, const ScrDyn *reader);
 ScrPromise *scr_dyn_promise_any(const ScrDyn *entries, const ScrDyn *reader);
 

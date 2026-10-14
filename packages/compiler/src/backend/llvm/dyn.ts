@@ -3259,6 +3259,32 @@ export class LlDyn {
       B.terminate(`ret ptr ${r}`);
       B.startBlock(lNext);
     }
+    // PROMISE: then/catch/finally are the shared Promise.prototype method
+    // values (JS identity — one function object per method), everything
+    // else is the own-property answer, undefined.
+    {
+      const isP = B.tmp();
+      B.line(`${isP} = icmp eq i32 ${kd}, ${DYN_KIND.PROMISE}`);
+      const lP = B.newLabel("kg.pm");
+      const lNext = B.newLabel("kg.n");
+      B.condBr(isP, lP, lNext);
+      B.startBlock(lP);
+      host.declare(`declare ptr @scr_dyn_promise_method_value(ptr, ${host.sizeType})`);
+      const hit = B.tmp();
+      B.line(
+        `${hit} = call ptr @scr_dyn_promise_method_value(ptr ${kParts.data}, ${host.sizeType} ${kParts.len})`,
+      );
+      const has = B.tmp();
+      B.line(`${has} = icmp ne ptr ${hit}, null`);
+      const lHit = B.newLabel("kg.ph");
+      const lMiss = B.newLabel("kg.px");
+      B.condBr(has, lHit, lMiss);
+      B.startBlock(lHit);
+      B.terminate(`ret ptr ${hit}`);
+      B.startBlock(lMiss);
+      retainUndef();
+      B.startBlock(lNext);
+    }
     // The canonical-index parse, shared by BYTES/ARR/STR: digits only,
     // no leading zero. Leaves (digits, idx).
     const parseIndex = (): { digits: string; idx: string } => {

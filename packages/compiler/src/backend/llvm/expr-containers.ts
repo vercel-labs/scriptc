@@ -522,7 +522,7 @@ export function emitStableReceiver(
     if (b.kind !== "boxed") {
       if (b.kind === "global") host.checkGlobalTdz(receiver.localId);
       const value = host.B.tmp();
-      host.B.line(`${value} = load ptr, ptr ${b.slot}`);
+      host.B.line(`${value} = load ptr, ptr ${b.slot}${host.slotAlias(receiver.localId)}`);
       return { name: value, type: receiver.type };
     }
   }

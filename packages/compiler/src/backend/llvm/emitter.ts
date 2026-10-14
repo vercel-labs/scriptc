@@ -54,8 +54,10 @@ import {
   matchIntegerArrayForLoop,
   matchIntegerBytesForLoop,
   matchIntegerCountedForLoop,
+  type IntegerCountedForLoop,
 } from "../../ir/integer-loops.js";
-import { emitCountedLoopLimit } from "./counted-loops.js";
+import { emitCountedLoopLimit, emitCountedLoopSafety } from "./counted-loops.js";
+import { emitBytesLoopVersionGuard, matchBytesLoopVersion } from "./bytes-loop-versions.js";
 import {
   emitSafeIntegerCheck,
   emitSpeculativeInteger,
@@ -66,6 +68,7 @@ import {
 } from "./speculative-integers.js";
 import { emitLiteralSwitch } from "./switch-dispatch.js";
 import { findBytesBounds } from "./bytes-bounds.js";
+import { globalSlotAlias } from "./bytes-alias.js";
 import {
   emitByteWindowGuard,
   findInitializedByteLoopBindings,
@@ -991,6 +994,14 @@ export class LlEmitter {
   wrappingSums = new Set<IrExpr>();
   private byteWindowsEnabled = true;
   private byteWindowEntries: ReturnType<typeof findInitializedByteLoopBindings> = new Map();
+  /** Typed-array loop versioning (bytes-loop-versions.ts) for the current
+   * function: off in debug and suspending functions and inside a copy. */
+  private bytesLoopVersionsEnabled = false;
+  private bytesLoopEntries: ReturnType<typeof findInitializedByteLoopBindings> | null = null;
+  private bytesLoopFunction: IrFunction | null = null;
+  /** Counted loops whose integer-form safety test an enclosing version
+   * guard already passed. */
+  private readonly provenCountedGuards = new Set<IrStmt>();
   bytesBounds: ReadonlySet<IrExpr | IrStmt> = new Set();
   integerViews = new Map<string, string>();
   /** Module globals the current function owns outright (initializer
@@ -5832,6 +5843,34 @@ export class LlEmitter {
     };
   }
 
+  private matchBytesLoopVersion(
+    s: IrStmt & { kind: "for" },
+    counted: IntegerCountedForLoop | null,
+  ): ReturnType<typeof matchBytesLoopVersion> {
+    const fn = this.bytesLoopFunction;
+    if (!fn) return null;
+    this.bytesLoopEntries ??= findInitializedByteLoopBindings(fn);
+    const initialized = this.bytesLoopEntries.get(s);
+    if (!initialized) return null;
+    const invariantGlobals = new Set(this.stableGlobals);
+    for (const global of this.initializerBindings.get(fn.name) ?? [])
+      invariantGlobals.add(global.id);
+    return matchBytesLoopVersion(s, counted, {
+      locals: this.currentLocals,
+      invariantGlobals,
+      captured: this.captureIds,
+      ranges: this.integerRanges,
+      initialized,
+      proven: this.bytesBounds,
+    });
+  }
+
+  /** The alias tag of a whole-slot load of a binding (module globals only). */
+  slotAlias(id: string): string {
+    const binding = this.binding(id);
+    return binding.kind === "global" ? globalSlotAlias(this, id, binding.type.kind) : "";
+  }
+
   private emitDebugLocal(local: IrLocal, slot: string, arg = 0, captured = false): void {
     const debug = this.debug?.local(local, this.debugScope, arg, captured);
     if (!debug) return;
@@ -6336,6 +6375,9 @@ export class LlEmitter {
     this.finalFieldBorrows =
       !fn.async && !fn.generator && constructorClass(fn.name) === null && this.finalFields.size > 0;
     this.byteWindowsEnabled = this.countedLoopsEnabled;
+    this.bytesLoopVersionsEnabled = this.countedLoopsEnabled;
+    this.bytesLoopEntries = null;
+    this.bytesLoopFunction = fn;
     this.byteWindowEntries =
       this.byteWindowsEnabled && numericFn.locals.some((l) => l.type.kind === "bytes")
         ? findInitializedByteLoopBindings(fn)
@@ -8136,48 +8178,40 @@ export class LlEmitter {
           B.startBlock(done);
           break;
         }
+        const version = this.bytesLoopVersionsEnabled
+          ? this.matchBytesLoopVersion(s, countedLoop)
+          : null;
+        if (version) {
+          const fast = B.newLabel("bytes.version.fast"),
+            slow = B.newLabel("bytes.version.slow"),
+            done = B.newLabel("bytes.version.done");
+          emitBytesLoopVersionGuard(this, version, fast, slow);
+          const originalBounds = this.bytesBounds,
+            originalRanges = this.integerRanges;
+          this.bytesLoopVersionsEnabled = false;
+          try {
+            B.startBlock(slow);
+            this.emitStmt(s);
+            B.br(done);
+            B.startBlock(fast);
+            this.bytesBounds = new Set([...originalBounds, ...version.bounds]);
+            if (version.ranges.size > 0)
+              this.integerRanges = new Map([...originalRanges, ...version.ranges]);
+            if (version.counted?.guarded) this.provenCountedGuards.add(s);
+            this.emitStmt(s);
+            B.br(done);
+          } finally {
+            this.bytesBounds = originalBounds;
+            this.integerRanges = originalRanges;
+            this.provenCountedGuards.delete(s);
+            this.bytesLoopVersionsEnabled = true;
+          }
+          B.startBlock(done);
+          break;
+        }
         let countedJoin: string | null = null;
-        if (countedLoop?.guarded) {
-          let safe = "true";
-          if (countedLoop.limitGuarded) {
-            const bound = this.emitExpr(countedLoop.limit);
-            safe = B.tmp();
-            B.line(
-              `${safe} = fcmp ${countedLoop.step > 0 ? "ole" : "oge"} double ${bound.name}, ${f64Lit(countedLoop.guardLimit)}`,
-            );
-          }
-          if (countedLoop.startGuarded) {
-            // An exact integer of at most 2^53 - 1 in magnitude, and not -0
-            // (the bit patterns of the value and its round trip agree).
-            // NaN and infinities fail the ordered range tests.
-            const start = this.emitExpr(countedLoop.start);
-            const low = B.tmp(),
-              high = B.tmp(),
-              raw = B.tmp(),
-              wide = B.tmp(),
-              back = B.tmp(),
-              bits = B.tmp(),
-              backBits = B.tmp(),
-              exact = B.tmp(),
-              inRange = B.tmp(),
-              ok = B.tmp();
-            B.line(`${low} = fcmp oge double ${start.name}, ${f64Lit(-Number.MAX_SAFE_INTEGER)}`);
-            B.line(`${high} = fcmp ole double ${start.name}, ${f64Lit(Number.MAX_SAFE_INTEGER)}`);
-            B.line(`${inRange} = and i1 ${low}, ${high}`);
-            B.line(`${raw} = fptosi double ${start.name} to i64`);
-            B.line(`${wide} = freeze i64 ${raw}`);
-            B.line(`${back} = sitofp i64 ${wide} to double`);
-            B.line(`${bits} = bitcast double ${start.name} to i64`);
-            B.line(`${backBits} = bitcast double ${back} to i64`);
-            B.line(`${exact} = icmp eq i64 ${bits}, ${backBits}`);
-            B.line(`${ok} = and i1 ${inRange}, ${exact}`);
-            if (safe === "true") safe = ok;
-            else {
-              const both = B.tmp();
-              B.line(`${both} = and i1 ${safe}, ${ok}`);
-              safe = both;
-            }
-          }
+        if (countedLoop?.guarded && !this.provenCountedGuards.has(s)) {
+          const safe = emitCountedLoopSafety(this, countedLoop);
           const fast = B.newLabel("counted.fast");
           const slow = B.newLabel("counted.slow");
           countedJoin = B.newLabel("counted.done");
@@ -8284,7 +8318,7 @@ export class LlEmitter {
             B.line(
               `${lenPtr} = getelementptr inbounds %${integerArrayLoop ? "ScrArr" : "ScrBytes"}, ptr ${receiver.name}, i64 0, i32 1`,
             );
-            if (integerArrayLoop) this.markMemoryPointer(lenPtr, "array:header");
+            this.markMemoryPointer(lenPtr, integerArrayLoop ? "array:header" : "bytes:header");
             B.line(
               `${len} = load ${this.sizeType}, ptr ${lenPtr}${this.fieldAliasAttachment(lenPtr)}`,
             );
@@ -9769,7 +9803,7 @@ export class LlEmitter {
       }
       if (binding.kind === "global") this.checkGlobalTdz(e.localId);
       const value = this.B.tmp();
-      this.B.line(`${value} = load ptr, ptr ${binding.slot}`);
+      this.B.line(`${value} = load ptr, ptr ${binding.slot}${this.slotAlias(e.localId)}`);
       return { name: value, type: e.type };
     }
     if (e.kind === "dynCheck" && e.exact) return this.emitExactCapsuleObject(e.value, e.type);

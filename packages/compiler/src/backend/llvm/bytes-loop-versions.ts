@@ -14,7 +14,12 @@ type VarRef = IrExpr & { kind: "varRef" };
 /** One loop-invariant integer operand of an affine index. */
 interface Term {
   expr: IrExpr;
-  sign: 1 | -1;
+  /** 1 or -1. */
+  sign: number;
+}
+
+interface KeyedTerm extends Term {
+  key: string;
 }
 
 /** Every access of `receiver` at a static index range ends below `end + 1`. */
@@ -28,7 +33,7 @@ interface FixedCheck {
 interface AffineCheck {
   receiver: number;
   scale: number;
-  terms: Term[];
+  terms: KeyedTerm[];
   minOffset: number;
   maxEnd: number;
 }
@@ -195,7 +200,7 @@ export function matchBytesLoopVersion(
   interface Affine {
     /** The counter's coefficient; 0 when the value is loop-invariant. */
     counter: number;
-    terms: (Term & { key: string })[];
+    terms: KeyedTerm[];
     offset: number;
   }
   // Every operand of an affine index is `counter * k + Σ terms + offset`.
@@ -239,7 +244,7 @@ export function matchBytesLoopVersion(
         if (Math.abs(offset) > MAX_OFFSET) return null;
         const terms = [
           ...left.terms,
-          ...right.terms.map((t) => ({ ...t, sign: (sign * t.sign) as 1 | -1 })),
+          ...right.terms.map((t) => ({ expr: t.expr, sign: sign * t.sign, key: t.key })),
         ];
         const result = { counter: left.counter + sign * right.counter, terms, offset };
         if (result.counter !== 0 || facts.ranges.get(e)) return result;
@@ -248,12 +253,12 @@ export function matchBytesLoopVersion(
     // A positive constant multiple of the counter: `i * 4`, `4 * i`,
     // `(i + 1) * 8`. (A negative factor turns a zero into -0.)
     if (e.kind === "bin" && e.op === "*") {
-      const literal =
-        e.right.kind === "numLit" ? e.right : e.left.kind === "numLit" ? e.left : null;
-      const scaled = literal === e.right ? e.left : e.right;
-      const factor = literal?.value ?? 0;
+      const rightLiteral = e.right.kind === "numLit";
+      const scaled = rightLiteral ? e.left : e.right;
+      const literal = rightLiteral ? e.right : e.left;
+      const factor = literal.kind === "numLit" ? literal.value : 0;
       if (
-        literal &&
+        literal.kind === "numLit" &&
         scaled.type.kind === "f64" &&
         Number.isSafeInteger(factor) &&
         factor > 0 &&
@@ -372,17 +377,21 @@ export function matchBytesLoopVersion(
     bound = Math.min(bound, limit);
     return true;
   });
-  const groups = [...fixed.values(), ...affineGroups].slice(0, MAX_CHECKS);
-  if (groups.length === 0) return null;
+  const fixedKept = [...fixed.values()].slice(0, MAX_CHECKS);
+  const affineKept = affineGroups.slice(0, MAX_CHECKS - fixedKept.length);
+  if (fixedKept.length === 0 && affineKept.length === 0) return null;
   const bounds = new Set<Node>();
   const used = new Set<number>();
   const ranges = new Map<IrExpr, IntegerRange>();
   const counterLow = Math.max(counted?.range.min ?? 0, -bound),
     counterHigh = Math.min(counted?.range.max ?? 0, bound);
-  for (const group of groups) {
+  for (const group of fixedKept) {
     used.add(group.check.receiver);
     for (const node of group.nodes) bounds.add(node);
-    if (!("operands" in group)) continue;
+  }
+  for (const group of affineKept) {
+    used.add(group.check.receiver);
+    for (const node of group.nodes) bounds.add(node);
     for (const operand of group.operands) {
       if (facts.ranges.get(operand)) continue;
       const shape = shapes.get(operand)!;
@@ -398,8 +407,6 @@ export function matchBytesLoopVersion(
       if (counterLow <= counterHigh) ranges.set(operand, { min, max });
     }
   }
-  const kept = groups.map((g) => g.check);
-  const affineKept = kept.filter((c): c is AffineCheck => "terms" in c);
   // Renumber the receivers the kept checks use.
   const order = [...used].sort((a, b) => a - b);
   const renumber = new Map(order.map((old, index) => [old, index]));
@@ -410,10 +417,17 @@ export function matchBytesLoopVersion(
   return {
     bounds,
     receivers: order.map((index) => receivers[index]!),
-    fixed: kept
-      .filter((c): c is FixedCheck => !("terms" in c))
-      .map((c) => ({ ...c, receiver: renumber.get(c.receiver)! })),
-    affine: affineKept.map((c) => ({ ...c, receiver: renumber.get(c.receiver)! })),
+    fixed: fixedKept.map((g) => ({
+      receiver: renumber.get(g.check.receiver)!,
+      end: g.check.end,
+    })),
+    affine: affineKept.map((g) => ({
+      receiver: renumber.get(g.check.receiver)!,
+      scale: g.check.scale,
+      terms: g.check.terms,
+      minOffset: g.check.minOffset,
+      maxEnd: g.check.maxEnd,
+    })),
     counted: affineKept.length > 0 ? counted : null,
     counterBound: needsBound ? bound : null,
     ranges,

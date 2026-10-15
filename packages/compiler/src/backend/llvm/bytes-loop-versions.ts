@@ -64,6 +64,7 @@ export interface BytesLoopFacts {
 }
 
 const MAX_COST = 400;
+const MAX_FIXED_END = 2 ** 32;
 const MAX_CHECKS = 8;
 const MAX_OFFSET = 2 ** 31;
 const SAFE = Number.MAX_SAFE_INTEGER;
@@ -81,9 +82,10 @@ const INVARIANT_OPS = new Set(["+", "-", "*", "&", "|", "^", "<<", ">>", ">>>"])
  *   and last values in bounds, such as `out[base + i]` for `i < n` or
  *   `view.getUint32(i * 4)`.
  *
- * Only innermost synchronous loops are versioned, so the body is emitted
- * twice at most. The checked loop runs whenever the guard fails, and keeps
- * every out-of-bounds read, ignored write and NaN-index behavior. */
+ * Only small synchronous loops are versioned (nested loops included), and
+ * the emitter bounds how deeply versions nest. The checked loop runs
+ * whenever the guard fails, and keeps every out-of-bounds read, ignored
+ * write and NaN-index behavior. */
 export function matchBytesLoopVersion(
   loop: IrStmt & { kind: "for" },
   counted: IntegerCountedForLoop | null,
@@ -92,7 +94,6 @@ export function matchBytesLoopVersion(
   const written = new Set<string>();
   const temps = new Map<string, IrExpr>();
   let cost = 0;
-  let innermost = true;
   const scanExpr = (e: IrExpr): boolean => {
     if (++cost > MAX_COST) return false;
     if (e.kind === "assignExpr" || e.kind === "incDec") written.add(e.localId);
@@ -101,12 +102,9 @@ export function matchBytesLoopVersion(
   const scanStmt = (s: IrStmt): boolean => {
     if (++cost > MAX_COST) return false;
     switch (s.kind) {
-      case "for":
       case "forOf":
-      case "while":
-      case "doWhile":
-        innermost = false;
-        return false;
+        written.add(s.localId);
+        break;
       case "varDecl": {
         if (temps.has(s.localId) || written.has(s.localId)) temps.delete(s.localId);
         else if (s.init) temps.set(s.localId, s.init);
@@ -126,7 +124,6 @@ export function matchBytesLoopVersion(
   };
   if (
     !loop.body.every(scanStmt) ||
-    !innermost ||
     (loop.cond !== null && !scanExpr(loop.cond)) ||
     (loop.update !== null && !scanStmt(loop.update))
   )
@@ -339,7 +336,9 @@ export function matchBytesLoopVersion(
     const range = facts.ranges.get(index);
     if (!range) return;
     const end = range.max + width - 1;
-    if (range.min < 0 || !Number.isSafeInteger(end)) return;
+    // Only a length a buffer can have: an outer loop must not pay for a
+    // guard that bounds an inner loop's unbounded counter.
+    if (range.min < 0 || end >= MAX_FIXED_END) return;
     const receiver = receiverOf(ref);
     const group = fixed.get(receiver);
     if (group) {

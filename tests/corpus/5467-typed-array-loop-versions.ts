@@ -216,6 +216,21 @@ try {
   console.log((e as Error).message, Array.from(u32).join(","));
 }
 
+// An outer loop proved in bounds around an inner loop that is not.
+function nested(grid: Int32Array, w: number, h: number): number {
+  let sum = 0;
+  for (let y = 0; y < h; y++) {
+    sum += grid[y & 7];
+    for (let x = 0; x < w; x++) {
+      grid[y * w + x] = grid[y * w + x] + 1;
+      sum += grid[y * w + x] | 0;
+    }
+  }
+  return sum;
+}
+const grid = new Int32Array(16);
+console.log("nested", nested(grid, 4, 4), nested(grid, 5, 4), nested(grid, 4, 5), grid.join(","));
+
 // A matrix product over module-level constant arrays.
 const N = 6;
 const ma: Float64Array = new Float64Array(N * N);

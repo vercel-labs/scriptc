@@ -567,6 +567,9 @@ function mentionsLocal(e: IrExpr, localId: string): boolean {
   return found;
 }
 
+/** Typed-array loop versions nest at most this deep (each doubles a body). */
+const MAX_BYTES_LOOP_VERSION_DEPTH = 3;
+
 export class LlEmitter {
   localArrayReads = new Map<string, LocalArrayRead>();
   private loopArrayBorrows: ReadonlySet<IrStmt> = new Set();
@@ -997,6 +1000,9 @@ export class LlEmitter {
   /** Typed-array loop versioning (bytes-loop-versions.ts) for the current
    * function: off in debug and suspending functions and inside a copy. */
   private bytesLoopVersionsEnabled = false;
+  /** Loops being versioned around the statement being emitted: a loop is
+   * never versioned inside its own copies, and versions nest boundedly. */
+  private readonly bytesLoopVersioning = new Set<IrStmt>();
   private bytesLoopEntries: ReturnType<typeof findInitializedByteLoopBindings> | null = null;
   private bytesLoopFunction: IrFunction | null = null;
   /** Counted loops whose integer-form safety test an enclosing version
@@ -8178,9 +8184,12 @@ export class LlEmitter {
           B.startBlock(done);
           break;
         }
-        const version = this.bytesLoopVersionsEnabled
-          ? this.matchBytesLoopVersion(s, countedLoop)
-          : null;
+        const version =
+          this.bytesLoopVersionsEnabled &&
+          this.bytesLoopVersioning.size < MAX_BYTES_LOOP_VERSION_DEPTH &&
+          !this.bytesLoopVersioning.has(s)
+            ? this.matchBytesLoopVersion(s, countedLoop)
+            : null;
         if (version) {
           const fast = B.newLabel("bytes.version.fast"),
             slow = B.newLabel("bytes.version.slow"),
@@ -8188,7 +8197,7 @@ export class LlEmitter {
           emitBytesLoopVersionGuard(this, version, fast, slow);
           const originalBounds = this.bytesBounds,
             originalRanges = this.integerRanges;
-          this.bytesLoopVersionsEnabled = false;
+          this.bytesLoopVersioning.add(s);
           try {
             B.startBlock(slow);
             this.emitStmt(s);
@@ -8204,7 +8213,7 @@ export class LlEmitter {
             this.bytesBounds = originalBounds;
             this.integerRanges = originalRanges;
             this.provenCountedGuards.delete(s);
-            this.bytesLoopVersionsEnabled = true;
+            this.bytesLoopVersioning.delete(s);
           }
           B.startBlock(done);
           break;

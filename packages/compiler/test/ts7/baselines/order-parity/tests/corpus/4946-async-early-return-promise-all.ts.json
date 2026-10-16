@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/4946-async-early-return-promise-all.ts"
+ ],
+ "diags": []
+}

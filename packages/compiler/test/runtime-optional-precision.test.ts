@@ -325,3 +325,29 @@ console.log(cold([1, 2, 3]), drain([4, 5]), lookup(new Map([["a", 6]])));
   for (const caller of ["cold", "drain", "lookup"])
     expect(body(llvm, caller)).not.toContain("@scr_union_new");
 });
+
+test("Promise.all fulfills present values unless an entry can be missing", async () => {
+  const present = await lower(`${ITEM}
+async function settle(item: Item, extra: number[]): Promise<Item> {
+  if (extra.length === 0) return item;
+  return new Item(item.weight + extra.length);
+}
+let items: Item[] = [new Item(1), new Item(2)];
+items = await Promise.all(items.map((item) => settle(item, [])));
+for (const item of items) item.weight += 1;
+console.log(items.map((item) => weigh(item)).join(","));
+`);
+  expect(signature(present, "settle")).toBe("settle(Item, array): Item");
+  expect(signature(present, "weigh")).toBe("weigh(Item): f64");
+  const missing = await lower(`${ITEM}
+async function settle(item: Item): Promise<Item> {
+  return item;
+}
+const empty: Promise<Item>[] = [];
+const pending: Promise<Item>[] = [settle(new Item(1))];
+pending.push(empty[3]);
+const items = await Promise.all(pending);
+console.log(items.map((item) => weigh(item)).join(","));
+`);
+  expect(signature(missing, "weigh")).toBe("weigh(Item|undefined): f64");
+});

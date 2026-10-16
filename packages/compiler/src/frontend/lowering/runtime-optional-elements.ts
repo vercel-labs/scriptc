@@ -265,10 +265,19 @@ export class ArrayElementStates {
         : undefined;
     }
     if (this.host.isGlobal(owner, "Promise")) {
+      if (method === "all") {
+        // Each entry settles with a value of its promise's own type, which
+        // the element ABI already records; a hole or an undefined entry
+        // settles as undefined.
+        const source = args[0];
+        return {
+          undefined:
+            source !== undefined && !ts.isSpreadElement(source) && this.mayYieldUndefined(source),
+          holes: false,
+        };
+      }
       // A settled value can be a runtime-absent result.
-      return method === "all" || method === "allSettled"
-        ? { undefined: true, holes: false }
-        : undefined;
+      return method === "allSettled" ? { undefined: true, holes: false } : undefined;
     }
     if (method === "match" || method === "matchAll" || method === "exec" || method === "split") {
       const separator = args[0];

@@ -70,6 +70,12 @@ Some code compiles but can behave differently than under Node.js. Coverage repor
 - `SC6004`: a call passes a class instance to a function that casts it to an unrelated class.
 - `SC6005`: a `Date` string literal uses a form the native parser does not accept.
 
+## Slow paths
+
+Some code compiles and behaves like Node.js but makes the native program slower. Coverage lists the cases it can detect as `SC7xxx` notes under "slower natively", even when the program is fully static. They never fail a build, but `--fail-on=slow-paths` can fail a CI job on them.
+
+- `SC7001`: a write whose key can name any property (`target[key] = value` with a `string` key, `Object.assign` with a non-literal source, a prototype write) can replace class methods by name. Every call to the methods it can replace then reads the method from the instance instead of calling it directly. Type the key as a number or a string literal, write into an object created in the same scope, or keep the entries in a `Map`.
+
 ## Gating builds and CI
 
 By default, `scriptc coverage` exits with status 0 whenever the program type-checks, so you can use the report to track progress. To fail a CI job instead, add `--fail-on`:
@@ -78,7 +84,7 @@ By default, `scriptc coverage` exits with status 0 whenever the program type-che
 $ scriptc coverage src/main.ts --fail-on=blockers
 ```
 
-`--fail-on=blockers` exits with status 1 when the program has blockers that would fail `scriptc build`. Blockers in unreached code and deferred operations don't count. `--fail-on=divergences` also fails on Node divergences. A program that doesn't type-check always exits with status 1.
+`--fail-on=blockers` exits with status 1 when the program has blockers that would fail `scriptc build`. Blockers in unreached code and deferred operations don't count. `--fail-on=divergences` also fails on Node divergences, and `--fail-on=slow-paths` also fails on slow paths. A program that doesn't type-check always exits with status 1.
 
 Coverage caches its result. Running it again on an unchanged program, or after edits that only touch comments, reuses the previous verdict. Set `SCRIPTC_NO_CACHE=1` to turn the cache off.
 
@@ -152,7 +158,7 @@ For editors, CI annotations, and other tools, `scriptc coverage --print=diagnost
     </tr>
     <tr>
       <td><code>success</code></td>
-      <td>Coverage: no blockers on the entry path (and, with <code>--fail-on=divergences</code>, no divergences). Build: an artifact was produced, named by <code>artifact</code>.</td>
+      <td>Coverage: no blockers on the entry path (and, with <code>--fail-on=divergences</code>, no divergences, or with <code>--fail-on=slow-paths</code>, no slow paths). Build: an artifact was produced, named by <code>artifact</code>.</td>
     </tr>
     <tr>
       <td><code>phase</code></td>

@@ -44,6 +44,12 @@ export function collectClassMethodMutations(
   const computedMethods: ts.Expression[] = [];
   const typedClasses: (ts.ClassDeclaration | ts.ClassExpression)[] = [];
   let unknownKey: ts.Node | undefined;
+  // Every site that can replace any method, not only the one the census
+  // keeps: the slow-path report names each (frontend/lowering/slow-paths.ts).
+  const noteAnyMethodWrite = (site: ts.Node): ts.Node => {
+    lowerer.anyMethodWriteSites.push(site);
+    return site;
+  };
   let numericKey: ts.Node | undefined;
   let unknownOwnField = false;
   // JavaScript method inference and dynamic class factories keep their
@@ -71,7 +77,7 @@ export function collectClassMethodMutations(
   for (const key of computedMethods)
     for (const name of literalValues(lowerer.typeOf(key)) ?? []) methods.add(String(name));
   const markName = (name: string, site: ts.Node, arrow = false): void => {
-    if (name === "prototype" || name === "__proto__") unknownKey = site;
+    if (name === "prototype" || name === "__proto__") unknownKey = noteAnyMethodWrite(site);
     if (methods.has(name)) lowerer.prototypeMethodAccesses.set(name, site);
     if (!arrow) receiverFields.add(name);
   };
@@ -414,11 +420,12 @@ export function collectClassMethodMutations(
       (lowerer.isStdlibGlobal(node, "Object") || lowerer.isStdlibGlobal(node, "Reflect")) &&
       (!ts.isPropertyAccessExpression(node.parent) || node.parent.expression !== node)
     )
-      unknownKey = node;
+      unknownKey = noteAnyMethodWrite(node);
   for (const node of reflection) {
     const objectMethod = lowerer.stdlibGlobalMember(node, "Object");
     const reflectMethod = lowerer.stdlibGlobalMember(node, "Reflect");
-    if (objectMethod === "setPrototypeOf" || reflectMethod === "setPrototypeOf") unknownKey = node;
+    if (objectMethod === "setPrototypeOf" || reflectMethod === "setPrototypeOf")
+      unknownKey = noteAnyMethodWrite(node);
     const single =
       objectMethod === "defineProperty" ||
       reflectMethod === "defineProperty" ||
@@ -428,7 +435,7 @@ export function collectClassMethodMutations(
     if (!single && !multiple) continue;
     const call = node.parent;
     if (!ts.isCallExpression(call) || call.expression !== node) {
-      unknownKey = node;
+      unknownKey = noteAnyMethodWrite(node);
       continue;
     }
     const receiver = call.arguments[0];
@@ -568,7 +575,7 @@ export function collectClassMethodMutations(
       // Numeric writes can replace numeric names but not ordinary names.
       numericKey = site;
     } else if (!(flags & ts.TypeFlags.ESSymbolLike)) {
-      unknownKey = site;
+      unknownKey = noteAnyMethodWrite(site);
     }
   }
   if (numericKey) {

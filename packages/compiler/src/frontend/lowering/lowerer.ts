@@ -12,6 +12,7 @@ import {
 } from "./cycle-initialization.js";
 import { identityPreservingWidening } from "./coercions/identity.js";
 import { scanDivergences } from "./divergences.js";
+import { scanSlowPaths } from "./slow-paths.js";
 import { checkedClassAssertion } from "./class-assertions.js";
 import { narrowStoredClassValue, narrowGenericClassValue } from "./class-unions.js";
 import { isOptionalProcessStreamProperty } from "./builtins/process.js";
@@ -684,6 +685,9 @@ export interface LowerResult {
   /** Compile-time-detectable behavior differences from Node (SC6xxx
    * divergence warnings) in the program's own modules. Never failures. */
   divergences?: ScrDiagnostic[];
+  /** Sites that make the native program slower (SC7xxx slow-path notes).
+   * Never failures. */
+  slowPaths?: ScrDiagnostic[];
 }
 
 export interface LowerOptions {
@@ -968,6 +972,9 @@ export function lowerToIr(
   const divergences = scanDivergences(resultLowerer, moduleOrder);
   timing("divergence-scan", { found: divergences.length });
   if (divergences.length > 0) result = { ...result, divergences };
+  const slowPaths = scanSlowPaths(resultLowerer);
+  timing("slow-path-scan", { found: slowPaths.length });
+  if (slowPaths.length > 0) result = { ...result, slowPaths };
   // Contract types (@scriptc/types): written annotations, checked against
   // the IR by the compile pipeline (contracts/check.ts).
   // Acyclic object types name the IR unit the program lowered them to; a
@@ -2346,6 +2353,10 @@ export class Lowerer {
   readonly protocolDispatches = new Map<string, ProtocolDispatch>();
   /** Bindings no other function assigns (class-protocol-dispatch.ts). */
   readonly protocolOwnedBindings = new Map<ts.Symbol, boolean>();
+  /** Sites that can replace any method by name (an unknown key, reflection,
+   * a prototype): the census attributes every method to one of them, the
+   * slow-path report lists all. */
+  readonly anyMethodWriteSites: ts.Node[] = [];
   /** Field names whose complete source census stores only lexical arrows. */
   readonly receiverFreeCallbackFields = new Set<string>();
   /** Inferred JS methods participating in an override chain keep a vtable

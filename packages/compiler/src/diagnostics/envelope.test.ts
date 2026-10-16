@@ -49,6 +49,7 @@ test("instantiations of one component fence share a root-cause group", () => {
 
 test("every diagnostic carries a category and a hint", () => {
   expect(categoryOf(diag("SC6001", "copy", 0))).toBe("divergence");
+  expect(categoryOf(diag("SC7001", "slower", 0))).toBe("slow-path");
   expect(categoryOf(diag("SC2012", "api", 0))).toBe("unsupported");
   expect(categoryOf(diag("SC0001", "TS error", 0))).toBe("invalid-source");
   expect(categoryOf(diag("SC0001", "TS error", 0, { typeWorld: true }))).toBe("environment");

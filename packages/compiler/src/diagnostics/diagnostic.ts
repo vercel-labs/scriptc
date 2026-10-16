@@ -61,6 +61,11 @@
  *            collation does not cover (SC6003), a call feeding an instance
  *            to a cast to an unrelated class (SC6004), and Date strings the native parser does not
  *            accept (SC6005)
+ *   SC7xxx  slow paths: the program compiles and behaves like Node, but a
+ *            site makes the native binary slower — NOTES, never build
+ *            failures (coverage --fail-on=slow-paths opts in): a write or
+ *            read that makes methods replaceable, so every call to them
+ *            dispatches dynamically (SC7001)
  *   SC9xxx  internal compiler errors (still source-anchored)
  */
 import type { SrcLoc } from "../ir/ir.js";
@@ -105,6 +110,27 @@ export function nativeCodegenDiag(
     ...(code === "SC3003"
       ? { hint: "reinstall scriptc with optional dependencies enabled for this host" }
       : {}),
+  };
+}
+
+/* ── SC7xxx: slow paths (notes) ───────────────────────────────────────── */
+
+/** SC7001 — a site that can replace or observe class methods by name. Every
+ * method it names loses direct and virtual dispatch: each call reads the
+ * method from the instance's prototype slots, boxing the receiver. */
+export function replaceableMethodsDiag(
+  what: string,
+  names: readonly string[],
+  hint: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const shown = names.slice(0, 6).join(", ") + (names.length > 6 ? ", …" : "");
+  const count = names.length === 1 ? `method '${names[0]}'` : `${names.length} methods (${shown})`;
+  return {
+    code: "SC7001",
+    message: `${what}, so calls to ${count} dispatch dynamically: each call reads the method from the instance and boxes the receiver`,
+    loc,
+    hint,
   };
 }
 

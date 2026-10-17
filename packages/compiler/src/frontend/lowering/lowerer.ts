@@ -5880,10 +5880,15 @@ export class Lowerer {
 
   /** `unknown`, `object`, an array of those, or a union of those with
    * `null` and `undefined`: types whose values use checked-dynamic storage
-   * as they do in JavaScript class fields. */
+   * as they do in JavaScript class fields. A type parameter the current
+   * instantiation binds to the checked-dynamic kind counts as such a type
+   * (`Signal<unknown>`'s `_value: T`): generic instantiations are keyed by
+   * their mapped arguments, so every argument that maps to it shares that
+   * one instantiation and its slot; `Box<any>` keeps its own refusal. */
   private opaqueValueType(type: ts.Type): boolean {
     const opaque = (part: ts.Type): boolean =>
       (part.flags & (ts.TypeFlags.Unknown | ts.TypeFlags.NonPrimitive)) !== 0 ||
+      this.typeParamResolver(part)?.kind === "dyn" ||
       (this.checker.isArrayType(part) &&
         this.checker.getTypeArguments(part as ts.TypeReference).every(opaque));
     if (!type.isUnionType()) return opaque(type);

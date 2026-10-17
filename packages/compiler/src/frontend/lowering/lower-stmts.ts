@@ -5094,8 +5094,33 @@ export function jsBindingHasOpenWrites(lowerer: Lowerer, decl: ts.VariableDeclar
   return (writes.get(decl.name.text) ?? []).some(
     (node) =>
       lowerer.resolveValueSymbol(node.left as ts.Identifier) === symbol &&
-      (lowerer.typeOf(node.right).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0,
+      assignmentOpensJsBinding(lowerer, decl, node),
   );
+}
+
+/** A write that the binding's inferred shape cannot hold. `any` writes
+ * already did. An object literal that names a field the checker type
+ * does not have is the same hole: `let state = { _tag: "Both" }; state =
+ * { _tag: "Left", right }` — Stream.zip's pull state. */
+function assignmentOpensJsBinding(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+  write: ts.BinaryExpression,
+): boolean {
+  if ((lowerer.typeOf(write.right).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) {
+    return true;
+  }
+  let right = write.right;
+  while (ts.isParenthesizedExpression(right)) right = right.expression;
+  if (!ts.isObjectLiteralExpression(right)) return false;
+  const declared = lowerer.typeOf(decl.name);
+  for (const prop of right.properties) {
+    if (!ts.isPropertyAssignment(prop) && !ts.isShorthandPropertyAssignment(prop)) return true;
+    const name = prop.name;
+    if (!ts.isIdentifier(name) && !ts.isStringLiteral(name)) return true;
+    if (!lowerer.checker.getPropertyOfType(declared, name.text)) return true;
+  }
+  return false;
 }
 
 function immediatelyGuardedAbsenceProbe(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {

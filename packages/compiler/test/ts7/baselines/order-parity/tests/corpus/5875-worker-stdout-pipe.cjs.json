@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5875-worker-stdout-pipe.cjs"
+ ],
+ "diags": []
+}

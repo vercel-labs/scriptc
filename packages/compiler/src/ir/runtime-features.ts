@@ -265,6 +265,7 @@ function scanRuntimeFeatures(mod: IrModule, stopAt?: keyof RuntimeFeatures): Run
         fn === "stream.destroy" ||
         fn === "stream.destroyErr" ||
         fn === "stream.prop" ||
+        fn === "stream.workerStdio" ||
         fn === "stream.errored" ||
         fn === "sp.finished" ||
         fn === "sp.pipeline" ||

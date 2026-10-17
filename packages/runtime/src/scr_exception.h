@@ -213,5 +213,10 @@ extern SCR_TL int (*scr_uncaught_exception_hook)(bool from_promise);
 bool scr_exc_handle_uncaught(bool from_promise);
 void scr_process_on_uncaught_exception(ScrDyn *fn, bool once, bool monitor);
 void scr_process_off_uncaught_exception(ScrDyn *fn, bool monitor);
+/* The value Node reports for an unhandled rejection (scr_async_dyn.c): an
+ * error-like reason itself, otherwise an UnhandledPromiseRejection Error
+ * (code ERR_UNHANDLED_REJECTION) quoting the reason. Borrows; +1, NULL
+ * after a throw. */
+ScrDyn *scr_unhandled_rejection_error(ScrDyn *reason);
 
 #endif /* SCR_EXCEPTION_H */

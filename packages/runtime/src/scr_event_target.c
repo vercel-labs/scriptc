@@ -785,7 +785,8 @@ static ScrEventObj *scr_event_obj_of(const ScrDyn *d);
 
 static ScrEvent *scr_event_of(const ScrDyn *d) {
   if (d && d->kind == SCR_DYN_HANDLE &&
-      (d->v.handle.tag == SCR_DYNH_EVENT || d->v.handle.tag == SCR_DYNH_CUSTOM_EVENT)) {
+      (d->v.handle.tag == SCR_DYNH_EVENT || d->v.handle.tag == SCR_DYNH_CUSTOM_EVENT ||
+       d->v.handle.tag == SCR_DYNH_MESSAGE_EVENT)) {
     return (ScrEvent *)d->v.handle.ptr;
   }
   ScrEventObj *obj = scr_event_obj_of(d);
@@ -1079,6 +1080,17 @@ static ScrDyn *scr_event_get(void *ptr, const char *key, size_t len) {
   if (scr_et_key(key, len, "isTrusted")) return scr_dyn_new_bool(ev->trusted);
   if (ev->custom && scr_et_key(key, len, "detail"))
     return ev->detail ? scr_dyn_retain(ev->detail) : scr_dyn_new_null();
+  if (ev->message) {
+    if (scr_et_key(key, len, "data")) return ev->detail ? scr_dyn_retain(ev->detail) : scr_dyn_new_null();
+    if (scr_et_key(key, len, "origin") || scr_et_key(key, len, "lastEventId")) {
+      ScrStr *empty = scr_str_new("", 0);
+      ScrDyn *value = scr_dyn_new_str(empty);
+      scr_str_release(empty);
+      return value;
+    }
+    if (scr_et_key(key, len, "source")) return scr_dyn_new_null();
+    if (scr_et_key(key, len, "ports")) return scr_dyn_new_arr();
+  }
   return scr_et_method_value(key, len, false);
 }
 
@@ -1164,6 +1176,16 @@ static ScrDyn *scr_event_inspect_view(void *ptr) {
 
 static const ScrDynHandleOps scr_event_ops = {
     .cls = "Event",
+    .retain = scr_event_retain_v,
+    .release = scr_event_release_v,
+    .invoke = scr_event_invoke,
+    .get = scr_event_get,
+    .set = scr_event_set,
+    .inspect_view = scr_event_inspect_view,
+};
+
+static const ScrDynHandleOps scr_message_event_ops = {
+    .cls = "MessageEvent",
     .retain = scr_event_retain_v,
     .release = scr_event_release_v,
     .invoke = scr_event_invoke,
@@ -1493,6 +1515,7 @@ static void scr_et_install(void) {
   installed = true;
   scr_dyn_handle_install(SCR_DYNH_EVENT, &scr_event_ops);
   scr_dyn_handle_install(SCR_DYNH_CUSTOM_EVENT, &scr_custom_event_ops);
+  scr_dyn_handle_install(SCR_DYNH_MESSAGE_EVENT, &scr_message_event_ops);
   scr_dyn_handle_install(SCR_DYNH_EVENT_TARGET, &scr_event_target_ops);
   scr_event_ref_hooks = &scr_event_obj_ref_hooks;
   scr_et_register_teardown();
@@ -1592,6 +1615,46 @@ ScrDyn *scr_custom_event_new(ScrDyn *args) {
   return out;
 }
 
+/* ── BroadcastChannel's EventTarget side ───────────────────────────── */
+
+static ScrEventTargetCore *scr_et_broadcast_core_new(const char *cls) {
+  ScrEventTargetCore *core = scr_et_calloc(sizeof *core);
+  scr_et_core_init(core, 10, cls);
+  return core;
+}
+
+static void scr_et_broadcast_core_free(ScrEventTargetCore *core) {
+  scr_et_core_drop(core);
+  free(core);
+}
+
+/* the 'message' MessageEvent (not trusted, as in Node) with the data */
+static void scr_et_broadcast_dispatch(ScrEventTargetCore *core, ScrDyn *self, ScrDyn *data) {
+  ScrEvent *ev = scr_event_alloc(scr_str_new("message", 7), false);
+  ev->message = true;
+  ev->detail = scr_dyn_retain(data);
+  scr_event_track(ev);
+  ScrDyn *event = scr_dyn_new_handle(ev, SCR_DYNH_MESSAGE_EVENT);
+  scr_event_release_v(ev);
+  scr_et_dispatch(core, self, event);
+  scr_dyn_release(event);
+}
+
+static ScrDyn *scr_et_broadcast_method_value(const char *name, size_t length) {
+  return scr_et_method_value(name, length, true);
+}
+
+static const ScrEtBroadcastOps scr_et_broadcast_table = {
+    &scr_et_broadcast_core_new,     &scr_et_broadcast_core_free, &scr_et_broadcast_dispatch,
+    &scr_et_target_method,          &scr_et_broadcast_method_value,
+    &scr_et_handler_get,            &scr_et_handler_set,
+};
+
+void scr_et_broadcast_install(void) {
+  scr_et_install();
+  scr_et_broadcast_ops = &scr_et_broadcast_table;
+}
+
 bool scr_event_is(const ScrDyn *v, double kind) {
   if (v->kind == SCR_DYN_TYPED_REF) {
     /* Compiled subclasses extend Event or EventTarget (never CustomEvent). */
@@ -1600,7 +1663,8 @@ bool scr_event_is(const ScrDyn *v, double kind) {
   }
   if (v->kind != SCR_DYN_HANDLE) return false;
   ScrDynHandleTag tag = v->v.handle.tag;
-  if (kind == 0) return tag == SCR_DYNH_EVENT || tag == SCR_DYNH_CUSTOM_EVENT;
+  if (kind == 0)
+    return tag == SCR_DYNH_EVENT || tag == SCR_DYNH_CUSTOM_EVENT || tag == SCR_DYNH_MESSAGE_EVENT;
   if (kind == 1) return tag == SCR_DYNH_CUSTOM_EVENT;
   return tag == SCR_DYNH_EVENT_TARGET ||
          (scr_et_signal_core_fn != NULL && tag == SCR_DYNH_ABORT_SIGNAL);

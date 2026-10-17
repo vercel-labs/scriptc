@@ -6314,6 +6314,15 @@ const ScrChildStreamOps scr_stream_child_ops = {
   scr_stream_write_done, scr_stream_final_done,
 };
 
+static ScrDyn *scr_stream_dyn_view_v(void *stream) { return scr_stream_dyn_view(stream); }
+
+/* new Worker() with the stdout or stderr option (readable.workerStdio) */
+void scr_stream_worker_stdio(void) {
+#ifdef SCR_WORKERS
+  scr_worker_stdio_default(&scr_stream_child_ops, scr_stream_dyn_view_v);
+#endif
+}
+
 static ScrStream *scr_stream_view_receiver(const ScrDyn *value) {
   if (value->kind == SCR_DYN_TYPED_REF && value->v.typed_ref.type_key_len > 7 &&
       !memcmp(value->v.typed_ref.type_key, "object:", 7)) {

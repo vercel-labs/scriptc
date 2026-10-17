@@ -128,6 +128,7 @@ ScrMailbox *scr_mailbox_retain(ScrMailbox *mailbox) {
 void scr_mail_event_free(ScrMailEvent *event) {
   if (!event) return;
   scr_message_free(event->message);
+  free(event->data);
   free(event);
 }
 
@@ -167,6 +168,24 @@ ScrMailEvent *scr_mailbox_take(ScrMailbox *mailbox) {
   ScrMailEvent *event = mailbox->head;
   if (event) {
     mailbox->head = event->next;
+    event->next = NULL;
+  }
+  if (!mailbox->head) {
+    mailbox->tail = &mailbox->head;
+    scr_mailbox_drain(mailbox);
+  }
+  scr_mailbox_unlock(mailbox);
+  return event;
+}
+
+ScrMailEvent *scr_mailbox_take_kind(ScrMailbox *mailbox, unsigned kind, uint64_t source) {
+  scr_mailbox_lock(mailbox);
+  ScrMailEvent **slot = &mailbox->head;
+  while (*slot && ((*slot)->kind != kind || (*slot)->source != source)) slot = &(*slot)->next;
+  ScrMailEvent *event = *slot;
+  if (event) {
+    *slot = event->next;
+    if (mailbox->tail == &event->next) mailbox->tail = slot;
     event->next = NULL;
   }
   if (!mailbox->head) {
@@ -419,4 +438,81 @@ void scr_channel_drop(ScrChannel *channel, int side) {
     head = event->next;
     scr_mail_event_free(event);
   }
+}
+
+/* ── BroadcastChannel registry ───────────────────────────────────────── */
+
+/* Every open BroadcastChannel in the process, by name: each has a channel
+ * whose end 0 queues its incoming messages. */
+typedef struct ScrBroadcastEntry {
+  char *name;
+  size_t length;
+  ScrChannel *channel; /* +1 */
+  struct ScrBroadcastEntry *next;
+} ScrBroadcastEntry;
+
+static ScrBroadcastEntry *scr_broadcast_entries;
+#ifdef _WIN32
+static SRWLOCK scr_broadcast_lock = SRWLOCK_INIT;
+#define SCR_BROADCAST_LOCK() AcquireSRWLockExclusive(&scr_broadcast_lock)
+#define SCR_BROADCAST_UNLOCK() ReleaseSRWLockExclusive(&scr_broadcast_lock)
+#else
+static pthread_mutex_t scr_broadcast_lock = PTHREAD_MUTEX_INITIALIZER;
+#define SCR_BROADCAST_LOCK() (void)pthread_mutex_lock(&scr_broadcast_lock)
+#define SCR_BROADCAST_UNLOCK() (void)pthread_mutex_unlock(&scr_broadcast_lock)
+#endif
+
+void scr_broadcast_join(const char *name, size_t length, ScrChannel *channel) {
+  ScrBroadcastEntry *entry = calloc(1, sizeof(*entry));
+  if (!entry) scr_trap("scriptc: out of memory\n");
+  entry->name = malloc(length ? length : 1);
+  if (!entry->name) scr_trap("scriptc: out of memory\n");
+  memcpy(entry->name, name, length);
+  entry->length = length;
+  entry->channel = scr_channel_retain(channel);
+  SCR_BROADCAST_LOCK();
+  /* registration order is delivery order to the subscribers */
+  ScrBroadcastEntry **tail = &scr_broadcast_entries;
+  while (*tail) tail = &(*tail)->next;
+  *tail = entry;
+  SCR_BROADCAST_UNLOCK();
+}
+
+void scr_broadcast_leave(ScrChannel *channel) {
+  ScrBroadcastEntry *gone = NULL;
+  SCR_BROADCAST_LOCK();
+  for (ScrBroadcastEntry **at = &scr_broadcast_entries; *at; at = &(*at)->next) {
+    if ((*at)->channel != channel) continue;
+    gone = *at;
+    *at = gone->next;
+    break;
+  }
+  SCR_BROADCAST_UNLOCK();
+  if (!gone) return;
+  scr_channel_release(gone->channel);
+  free(gone->name);
+  free(gone);
+}
+
+/* The other open channels named `name` (+1 each, in registration order);
+ * the caller frees the array. */
+size_t scr_broadcast_peers(const char *name, size_t length, ScrChannel *self, ScrChannel ***out) {
+  size_t n = 0, cap = 0;
+  ScrChannel **peers = NULL;
+  SCR_BROADCAST_LOCK();
+  for (ScrBroadcastEntry *entry = scr_broadcast_entries; entry; entry = entry->next) {
+    if (entry->channel == self || entry->length != length ||
+        (length && memcmp(entry->name, name, length) != 0))
+      continue;
+    if (n == cap) {
+      cap = cap ? cap * 2 : 4;
+      ScrChannel **grown = realloc(peers, cap * sizeof *grown);
+      if (!grown) scr_trap("scriptc: out of memory\n");
+      peers = grown;
+    }
+    peers[n++] = scr_channel_retain(entry->channel);
+  }
+  SCR_BROADCAST_UNLOCK();
+  *out = peers;
+  return n;
 }

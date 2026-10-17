@@ -10,6 +10,7 @@
 #include <windows.h>
 #else
 #include <pthread.h>
+#include <unistd.h>
 #endif
 
 #if defined(__linux__)
@@ -60,7 +61,11 @@ struct ScrWorkerThread {
   ScrMailbox *inbox;
   ScrMailbox *parent;
   ScrMessage *data;
+  /* data is [workerData, entries] when the parent had environment data */
+  bool environment_data;
   ScrContextEnv *environment;
+  ScrStr *name; /* threadName: immortal copy shared by both threads */
+  unsigned capture; /* 1 stdout, 2 stderr: writes go to the parent as events */
   int argc;
   char **argv;
   bool joined;
@@ -75,6 +80,7 @@ struct ScrWorkerThread {
 static atomic_uint_fast64_t scr_worker_next_id = 1;
 static SCR_TL ScrWorkerThread *scr_worker_current;
 static SCR_TL ScrDyn *scr_worker_local_data;
+static SCR_TL ScrDyn *scr_worker_local_environment;
 
 /* SCRIPTC_WORKER_STATS=1 reports, as each worker thread exits, how long it
  * took to start, to run its script (runtime and module initialization
@@ -115,6 +121,7 @@ void scr_worker_thread_release(ScrWorkerThread *worker) {
   scr_mailbox_release(worker->parent);
   scr_message_free(worker->data);
   scr_context_env_free(worker->environment);
+  free(worker->name);
   for (int i = 0; i < worker->argc; i++) free(worker->argv[i]);
   free(worker->argv);
 #ifdef SCR_EXC_FLAG
@@ -125,21 +132,44 @@ void scr_worker_thread_release(ScrWorkerThread *worker) {
 
 static void scr_worker_data_cleanup(void) {
   ScrDyn *data = scr_worker_local_data;
+  ScrDyn *environment = scr_worker_local_environment;
   scr_worker_local_data = NULL;
+  scr_worker_local_environment = NULL;
   scr_dyn_release(data);
+  scr_dyn_release(environment);
+}
+
+/* Decodes the start message once: workerData and, when the parent had
+ * environment data, its entries. */
+static bool scr_worker_decode_start(void) {
+  if (scr_worker_local_data) return true;
+  ScrDyn *data = scr_message_decode(scr_worker_current->data);
+  if (!data) return false;
+  if (scr_worker_current->environment_data) {
+    scr_worker_local_environment = scr_dyn_arr_at(data, 1);
+    ScrDyn *value = scr_dyn_arr_at(data, 0);
+    scr_dyn_release(data);
+    data = value;
+  }
+  scr_worker_local_data = data;
+  if (scr_context_atexit(scr_worker_data_cleanup) != 0) scr_trap("scriptc: out of memory\n");
+  scr_message_free(scr_worker_current->data);
+  scr_worker_current->data = NULL;
+  return true;
 }
 
 ScrDyn *scr_worker_data(void) {
   if (!scr_worker_current) return scr_dyn_new_null();
-  if (!scr_worker_local_data) {
-    ScrDyn *data = scr_message_decode(scr_worker_current->data);
-    if (!data) return NULL;
-    scr_worker_local_data = data;
-    if (scr_context_atexit(scr_worker_data_cleanup) != 0) scr_trap("scriptc: out of memory\n");
-    scr_message_free(scr_worker_current->data);
-    scr_worker_current->data = NULL;
-  }
+  if (!scr_worker_decode_start()) return NULL;
   return scr_dyn_retain(scr_worker_local_data);
+}
+
+ScrDyn *scr_worker_take_environment(void) {
+  if (!scr_worker_current || !scr_worker_current->environment_data) return NULL;
+  if (!scr_worker_decode_start()) return NULL;
+  ScrDyn *entries = scr_worker_local_environment;
+  scr_worker_local_environment = NULL;
+  return entries;
 }
 
 ScrMailbox *scr_worker_inbox(void) {
@@ -151,6 +181,18 @@ int scr_worker_argc(void) { return scr_worker_current ? scr_worker_current->argc
 char **scr_worker_argv(void) { return scr_worker_current ? scr_worker_current->argv : NULL; }
 
 uint64_t scr_worker_thread_id(const ScrWorkerThread *worker) { return worker->id; }
+
+const ScrStr *scr_worker_thread_name(const ScrWorkerThread *worker) { return worker->name; }
+
+ScrDyn *scr_worker_thread_name_current(void) {
+  if (!scr_worker_current) {
+    ScrStr *empty = scr_str_new("", 0);
+    ScrDyn *name = scr_dyn_new_str(empty);
+    scr_str_release(empty);
+    return name;
+  }
+  return scr_dyn_new_str(scr_worker_current->name);
+}
 
 void scr_worker_thread_terminate(ScrWorkerThread *worker) {
   atomic_store_explicit(&worker->cancel, true, memory_order_relaxed);
@@ -187,16 +229,59 @@ void scr_worker_port_close(void) {
     atomic_store_explicit(&scr_worker_current->port_closed, true, memory_order_relaxed);
 }
 
+static _Atomic(void (*)(void)) scr_worker_stdin_attach;
+
+void scr_worker_set_stdin_attach(void (*attach)(void)) {
+  atomic_store_explicit(&scr_worker_stdin_attach, attach, memory_order_relaxed);
+}
+
+bool scr_worker_thread_post_stdin(ScrWorkerThread *worker, const void *data, size_t len, bool end) {
+  ScrMailEvent *event = scr_worker_event(SCR_WORKER_STDIN, 0, 0, NULL);
+  if (!end) {
+    event->data = malloc(len ? len : 1);
+    if (!event->data) scr_trap("scriptc: out of memory\n");
+    memcpy(event->data, data, len);
+    event->length = len;
+  }
+  return scr_mailbox_post(worker->inbox, event);
+}
+
 bool scr_worker_post_parent(ScrMessage *message) {
   if (!scr_worker_current) { scr_message_free(message); return false; }
   return scr_mailbox_post(scr_worker_current->parent,
     scr_worker_event(SCR_WORKER_MESSAGE, scr_worker_current->id, 0, message));
 }
 
+/* The stdout and stderr options: a captured write reaches the parent's
+ * worker.stdout or worker.stderr in order with the worker's other events. */
+static bool scr_worker_capture(int fd, const void *data, size_t len) {
+  unsigned bit = fd == 2 ? 2 : 1;
+  if (!scr_worker_current || !(scr_worker_current->capture & bit)) return false;
+  if (!len) return true;
+  ScrMailEvent *event = scr_worker_event(bit == 2 ? SCR_WORKER_STDERR : SCR_WORKER_STDOUT,
+                                         scr_worker_current->id, 0, NULL);
+  event->data = malloc(len);
+  if (!event->data) scr_trap("scriptc: out of memory\n");
+  memcpy(event->data, data, len);
+  event->length = len;
+  scr_mailbox_post(scr_worker_current->parent, event);
+  return true;
+}
+
 static void scr_worker_report_error(void) {
   ScrCaught *caught = scr_exc_take();
   ScrDyn *value = scr_caught_to_dyn(caught);
-  ScrMessage *message = scr_message_encode(value);
+  if (scr_context_report_rejection) {
+    ScrDyn *error = scr_unhandled_rejection_error(value);
+    scr_dyn_release(value);
+    value = error;
+  }
+  ScrMessage *message = value ? scr_message_encode_uncaught(value) : NULL;
+  if (!message && value) {
+    /* Node falls back to the plain clone when a property does not clone. */
+    scr_exc_clear();
+    message = scr_message_encode(value);
+  }
   scr_dyn_release(value);
   scr_caught_release(caught);
   if (!message) {
@@ -230,10 +315,16 @@ static void scr_worker_thread_run(ScrWorkerThread *worker) {
   worker->environment = NULL;
   scr_worker_current = worker;
   scr_context_report_error = scr_worker_report_error;
+  if (worker->capture & 3) scr_stdio_capture = scr_worker_capture;
+  if (worker->capture & 4) {
+    scr_stdin_fed = true;
+    scr_stdin_fed_attach = atomic_load_explicit(&scr_worker_stdin_attach, memory_order_relaxed);
+  }
   scr_mailbox_post(worker->parent, scr_worker_event(SCR_WORKER_ONLINE, worker->id, 0, NULL));
   int code = worker->entry(worker->root);
   scr_context_note_script_end(); /* when the program frees nothing at exit */
   scr_mailbox_close(worker->inbox);
+  scr_stdin_fed_clear(); /* chunks the worker never read */
   scr_context_cleanup();
   if (stats) {
     uint64_t now = scr_hrtime_ns();
@@ -241,6 +332,7 @@ static void scr_worker_thread_run(ScrWorkerThread *worker) {
             (unsigned long long)worker->id, (double)(started_ns - worker->spawned_ns) / 1e6,
             (double)(scr_context_script_end_ns() - started_ns) / 1e6, (double)(now - scr_context_script_end_ns()) / 1e6);
   }
+  scr_stdio_capture = NULL;
   scr_worker_current = NULL;
   scr_exc_alert_thread_exit();
 #ifdef SCR_EXC_FLAG
@@ -273,8 +365,10 @@ static void *scr_worker_thread_main(void *data) {
 #endif
 
 ScrWorkerThread *scr_worker_thread_start(ScrWorkerEntry entry, uint32_t root,
-                                        ScrMessage *data, ScrMailbox *parent,
-                                        ScrArr *arguments) {
+                                        ScrMessage *data, bool environment_data,
+                                        ScrMailbox *parent, ScrArr *arguments,
+                                        size_t stack_size, const ScrStr *name,
+                                        unsigned capture) {
   ScrWorkerThread *worker = calloc(1, sizeof(*worker));
   if (!worker) scr_trap("scriptc: out of memory\n");
   atomic_init(&worker->references, 2); /* owner and native thread */
@@ -290,7 +384,13 @@ ScrWorkerThread *scr_worker_thread_start(ScrWorkerEntry entry, uint32_t root,
   worker->entry = entry;
   worker->root = root;
   worker->data = data;
+  worker->environment_data = environment_data;
+  worker->capture = capture;
   worker->environment = scr_context_env_capture();
+  worker->name = malloc(sizeof(ScrStr) + name->len + 1);
+  if (!worker->name) scr_trap("scriptc: out of memory\n");
+  memcpy(worker->name, name, sizeof(ScrStr) + name->len + 1);
+  worker->name->rc = SIZE_MAX;
   worker->parent = scr_mailbox_retain(parent);
   if (arguments) {
     if (arguments->len > INT_MAX) scr_trap("scriptc: too many worker arguments\n");
@@ -309,16 +409,24 @@ ScrWorkerThread *scr_worker_thread_start(ScrWorkerEntry entry, uint32_t root,
   if (!worker->inbox) goto failed;
   if (scr_worker_stats()) worker->spawned_ns = scr_hrtime_ns();
 #ifdef _WIN32
-  worker->thread = (HANDLE)_beginthreadex(NULL, 0, scr_worker_thread_main, worker, 0, NULL);
+  worker->thread = (HANDLE)_beginthreadex(NULL, stack_size > UINT_MAX ? UINT_MAX : (unsigned)stack_size,
+                                          scr_worker_thread_main, worker, 0, NULL);
   if (!worker->thread) goto failed;
 #else
   /* An explicit size keeps recursion depth independent of the C library's
    * default thread stack (as small as 128 KiB with musl and 512 KiB on
-   * macOS): workers get the 8 MiB a main thread usually has. Pages are
-   * committed only as the stack grows. */
+   * macOS): workers get the 8 MiB a main thread usually has, or
+   * resourceLimits.stackSizeMb. Pages are committed only as the stack
+   * grows. */
   pthread_attr_t attr;
   if (pthread_attr_init(&attr) != 0) goto failed;
-  (void)pthread_attr_setstacksize(&attr, (size_t)8 << 20);
+  if (!stack_size) stack_size = (size_t)8 << 20;
+  long page = sysconf(_SC_PAGESIZE);
+  if (page > 0 && stack_size % (size_t)page) stack_size += (size_t)page - stack_size % (size_t)page;
+  if (pthread_attr_setstacksize(&attr, stack_size) != 0) {
+    pthread_attr_destroy(&attr);
+    goto failed;
+  }
   int started = pthread_create(&worker->thread, &attr, scr_worker_thread_main, worker);
   pthread_attr_destroy(&attr);
   if (started != 0) goto failed;
@@ -327,6 +435,7 @@ ScrWorkerThread *scr_worker_thread_start(ScrWorkerEntry entry, uint32_t root,
 failed:
   for (int i = 0; i < worker->argc; i++) free(worker->argv[i]);
   free(worker->argv);
+  free(worker->name);
   scr_context_env_free(worker->environment);
   scr_mailbox_release(worker->inbox);
   scr_mailbox_release(worker->parent);

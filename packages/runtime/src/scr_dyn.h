@@ -166,6 +166,8 @@ typedef enum {
   SCR_DYNH_DIR,            /* fs.Dir (scr_lib.c) */
   SCR_DYNH_CIPHER,         /* node:crypto Cipheriv (scr_cipher.c) */
   SCR_DYNH_DECIPHER,       /* node:crypto Decipheriv (scr_cipher.c) */
+  SCR_DYNH_MESSAGE_EVENT,  /* ScrEvent with data — BroadcastChannel's 'message' */
+  SCR_DYNH_BROADCAST_CHANNEL, /* worker_threads BroadcastChannel (scr_worker_events.c) */
   SCR_DYNH_COUNT,
 } ScrDynHandleTag;
 

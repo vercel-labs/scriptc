@@ -9,6 +9,7 @@ import {
   F64,
   STRING,
   UNDEFINED_T,
+  VOID,
   isFfiCallbackParam,
   type IrExpr,
   type SrcLoc,
@@ -27,6 +28,10 @@ export function lowerWorkerMetadata(member: string, loc: SrcLoc): IrExpr | null 
       return { kind: "libCall", fn: "worker.parentPort", args: [], type: DYN, loc };
     case "isInternalThread":
       return { kind: "boolLit", value: false, type: BOOL, loc };
+    case "resourceLimits":
+      return { kind: "libCall", fn: "worker.resourceLimits", args: [], type: DYN, loc };
+    case "threadName":
+      return { kind: "libCall", fn: "worker.threadName", args: [], type: DYN, loc };
     default:
       return null;
   }
@@ -76,6 +81,7 @@ export function lowerWorkerNew(lowerer: Lowerer, expression: ts.NewExpression): 
       "native callbacks in worker executables must run on their owning script thread",
     );
   }
+  refuseHeapLimits(lowerer, args[1]);
   lowerer.usesWorkers = true;
   const loc = locOf(expression);
   const options: IrExpr = args[1]
@@ -86,7 +92,7 @@ export function lowerWorkerNew(lowerer: Lowerer, expression: ts.NewExpression): 
         type: DYN,
         loc,
       };
-  return {
+  const create: IrExpr = {
     kind: "libCall",
     fn: "worker.new",
     args: [
@@ -97,6 +103,70 @@ export function lowerWorkerNew(lowerer: Lowerer, expression: ts.NewExpression): 
     type: DYN,
     loc,
   };
+  if (!capturesStdio(args[1])) return create;
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "exprStmt",
+        expr: { kind: "libCall", fn: "stream.workerStdio", args: [], type: VOID, loc },
+        loc,
+      },
+    ],
+    result: create,
+    type: DYN,
+    loc,
+  };
+}
+
+/** True when the options are not a literal, or a literal whose stdout,
+ * stderr or stdin member is not the literal false: worker.stdout,
+ * worker.stderr and worker.stdin then need the stream unit. */
+function capturesStdio(options: ts.Expression | undefined): boolean {
+  if (!options) return false;
+  if (!ts.isObjectLiteralExpression(options)) return true;
+  return options.properties.some((option) => {
+    if (ts.isSpreadAssignment(option)) return true;
+    if (!option.name) return false;
+    const name = propertyNameText(option.name);
+    if (name !== "stdout" && name !== "stderr" && name !== "stdin") return name === undefined;
+    return !(
+      ts.isPropertyAssignment(option) && option.initializer.kind === ts.SyntaxKind.FalseKeyword
+    );
+  });
+}
+
+const HEAP_LIMITS = new Set([
+  "maxOldGenerationSizeMb",
+  "maxYoungGenerationSizeMb",
+  "codeRangeSizeMb",
+]);
+
+/** resourceLimits' V8 heap fields, when an options literal spells them
+ * with numbers (Node ignores other values; the runtime refuses the rest). */
+function refuseHeapLimits(lowerer: Lowerer, options: ts.Expression | undefined): void {
+  if (!options || !ts.isObjectLiteralExpression(options)) return;
+  for (const option of options.properties) {
+    if (!ts.isPropertyAssignment(option) || propertyNameText(option.name) !== "resourceLimits")
+      continue;
+    if (!ts.isObjectLiteralExpression(option.initializer)) continue;
+    for (const limit of option.initializer.properties) {
+      if (!ts.isPropertyAssignment(limit)) continue;
+      const name = propertyNameText(limit.name);
+      if (name === undefined || !HEAP_LIMITS.has(name)) continue;
+      const type = lowerer.checker.getTypeAtLocation(limit.initializer);
+      if (!(type.flags & ts.TypeFlags.NumberLike)) continue;
+      lowerer.noLowering(
+        `Worker resourceLimits.${name}`,
+        limit,
+        "worker threads have no separate V8 heap; resourceLimits supports stackSizeMb",
+      );
+    }
+  }
+}
+
+function propertyNameText(name: ts.PropertyName): string | undefined {
+  return ts.isIdentifier(name) || ts.isStringLiteral(name) ? name.text : undefined;
 }
 
 /** True when `node`'s type is worker_threads' `name` class (also reached
@@ -165,4 +235,124 @@ export function lowerReceiveMessageOnPort(lowerer: Lowerer, call: ts.CallExpress
     type: DYN,
     loc,
   };
+}
+
+/** new BroadcastChannel(name): the EventTarget unit's half installs
+ * first, then the channel opens (the name converts at runtime). */
+export function lowerBroadcastChannelNew(
+  lowerer: Lowerer,
+  expression: ts.NewExpression,
+): IrExpr | null {
+  if (!isWorkerThreadsClass(lowerer, expression, "BroadcastChannel")) return null;
+  const args = expression.arguments ?? [];
+  if (args.length > 1 || args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(
+      `BroadcastChannel constructor with ${args.length} arguments`,
+      expression,
+      "use new BroadcastChannel(name)",
+    );
+  }
+  if (lowerer.targetPlatform === "wasi") {
+    lowerer.noLowering(
+      "BroadcastChannel in this target",
+      expression,
+      "use a native static executable",
+    );
+  }
+  lowerer.usesWorkers = true;
+  const loc = locOf(expression);
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "exprStmt",
+        expr: { kind: "libCall", fn: "event.broadcastInstall", args: [], type: VOID, loc },
+        loc,
+      },
+    ],
+    result: {
+      kind: "libCall",
+      fn: "worker.broadcastChannel",
+      args: [
+        {
+          kind: "dynArrLit",
+          elems: args.map((a) => lowerer.lowerExprExpecting(a, DYN)),
+          type: DYN,
+          loc,
+        },
+      ],
+      type: DYN,
+      loc,
+    },
+    type: DYN,
+    loc,
+  };
+}
+
+/** setEnvironmentData(key, value?) and getEnvironmentData(key): this
+ * thread's map, cloned into each Worker it constructs. */
+export function lowerEnvironmentData(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  member: "setEnvironmentData" | "getEnvironmentData",
+): IrExpr {
+  const args = call.arguments;
+  const arity = member === "setEnvironmentData" ? 2 : 1;
+  if (args.length > arity || args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(`${member} with ${args.length} arguments`, call);
+  }
+  if (lowerer.targetPlatform === "wasi") {
+    lowerer.noLowering(`${member} in this target`, call, "use a native static executable");
+  }
+  lowerer.usesWorkers = true;
+  const loc = locOf(call);
+  const lowered: IrExpr[] = [];
+  for (let i = 0; i < arity; i++) {
+    lowered.push(
+      args[i]
+        ? lowerer.lowerExprExpecting(args[i]!, DYN)
+        : {
+            kind: "dynFrom",
+            value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+            type: DYN,
+            loc,
+          },
+    );
+  }
+  return {
+    kind: "libCall",
+    fn: member === "setEnvironmentData" ? "worker.setEnvironmentData" : "worker.getEnvironmentData",
+    args: lowered,
+    type: member === "setEnvironmentData" ? VOID : DYN,
+    loc,
+  };
+}
+
+/** markAsUntransferable(value) and isMarkedAsUntransferable(value): marks
+ * kept by this thread (an ArrayBuffer's on its storage). */
+export function lowerUntransferable(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  member: "markAsUntransferable" | "isMarkedAsUntransferable",
+): IrExpr {
+  const args = call.arguments;
+  if (args.length > 1 || args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(`${member} with ${args.length} arguments`, call);
+  }
+  if (lowerer.targetPlatform === "wasi") {
+    lowerer.noLowering(`${member} in this target`, call, "use a native static executable");
+  }
+  lowerer.usesWorkers = true;
+  const loc = locOf(call);
+  const value: IrExpr = args[0]
+    ? lowerer.lowerExprExpecting(args[0], DYN)
+    : {
+        kind: "dynFrom",
+        value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+        type: DYN,
+        loc,
+      };
+  return member === "markAsUntransferable"
+    ? { kind: "libCall", fn: "worker.markUntransferable", args: [value], type: VOID, loc }
+    : { kind: "libCall", fn: "worker.isMarkedUntransferable", args: [value], type: BOOL, loc };
 }

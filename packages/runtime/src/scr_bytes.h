@@ -94,6 +94,26 @@ ScrDyn *scr_worker_parent_port(void);
  * (scr_worker_events.c). */
 ScrDyn *scr_worker_message_channel(void);
 ScrDyn *scr_worker_receive_message_on_port(ScrDyn *port);
+/* new BroadcastChannel(...args) (scr_worker_events.c): args is the argument
+ * vector as one array (borrowed); may throw. */
+ScrDyn *scr_worker_broadcast_channel(ScrDyn *args);
+/* setEnvironmentData(key, value) and getEnvironmentData(key) (+1); both
+ * borrow their arguments. */
+void scr_worker_set_environment_data(ScrDyn *key, ScrDyn *value);
+ScrDyn *scr_worker_get_environment_data(ScrDyn *key);
+ScrDyn *scr_worker_resource_limits(void);
+ScrDyn *scr_worker_thread_name_current(void);
+/* markAsUntransferable(value) and isMarkedAsUntransferable(value)
+ * (scr_worker_events.c); both borrow the value. */
+void scr_worker_mark_untransferable(ScrDyn *value);
+bool scr_worker_is_marked_untransferable(ScrDyn *value);
+/* worker.stdout, worker.stderr and worker.stdin streams: main installs the
+ * stream unit's operations and the Readable and Writable boxes (the
+ * Writable one may be NULL) when the program reads them. */
+struct ScrChildStreamOps;
+void scr_worker_stdio_install(const struct ScrChildStreamOps *ops, ScrDyn *(*readable_box)(void *),
+                              ScrDyn *(*writable_box)(void *));
+void scr_worker_stdio_default(const struct ScrChildStreamOps *ops, ScrDyn *(*view)(void *));
 ScrDyn *scr_worker_new(double root, ScrStr *filename, ScrDyn *options);
 bool scr_shared_array_buffer_is(const ScrDyn *);
 bool scr_buffer_storage_is(const ScrDyn *);

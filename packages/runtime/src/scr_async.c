@@ -4400,7 +4400,9 @@ bool scr_report_unhandled_rejections(void) {
 #ifdef SCR_WORKERS
         if (scr_context_report_error) {
           scr_promise_rethrow(p);
+          scr_context_report_rejection = true;
           scr_exc_print_uncaught();
+          scr_context_report_rejection = false;
           scr_promise_release(p);
           continue;
         }

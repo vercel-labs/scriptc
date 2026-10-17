@@ -31,6 +31,7 @@ typedef struct {
   char *key;
   size_t length;
   size_t value;
+  bool hidden; /* an Error's non-enumerable or inherited property */
 } ScrMessageProperty;
 
 typedef struct {
@@ -73,6 +74,7 @@ typedef struct {
   ScrDyn *view;
   ScrDyn *keys;
   size_t cursor;
+  bool uncaught; /* an Error encoded as an uncaught exception */
 } ScrMessageVisit;
 
 typedef struct {
@@ -91,6 +93,7 @@ typedef struct {
   size_t depth;
   size_t stack_capacity;
   const ScrDyn *transfer; /* the transfer list (a dyn array), or NULL */
+  bool uncaught; /* the next value is an uncaught exception or its cause */
 } ScrMessageEncoder;
 
 static bool scr_message_listed(const ScrMessageEncoder *encoder, const ScrDyn *value) {
@@ -211,7 +214,44 @@ static size_t scr_message_storage(ScrMessageEncoder *encoder, const ScrBytes *by
   return node;
 }
 
+/* The nearest built-in constructor an uncaught Error keeps: Node's
+ * serializer knows Error and its six native subclasses. */
+static int scr_message_error_kind(const ScrError *error) {
+  static const int kinds[] = {
+    SCR_ERR_TYPE, SCR_ERR_RANGE, SCR_ERR_SYNTAX, SCR_ERR_REFERENCE, SCR_ERR_EVAL, SCR_ERR_URI,
+  };
+  for (size_t i = 0; i < sizeof kinds / sizeof kinds[0]; i++)
+    if (scr_error_vts[kinds[i]].pre <= error->vt->pre && error->vt->pre <= scr_error_vts[kinds[i]].post)
+      return kinds[i];
+  return SCR_ERR_ERROR;
+}
+
+/* An uncaught Error's keys: name and message, which it may inherit, then
+ * its other own properties in order. */
+static ScrDyn *scr_message_uncaught_keys(const ScrDyn *view) {
+  ScrDyn *own = scr_dyn_get_own_property_names(view);
+  if (!own) return NULL;
+  ScrDyn *keys = scr_dyn_new_arr();
+  static const char *const first[] = {"name", "message"};
+  for (size_t i = 0; i < 2; i++) {
+    ScrStr *key = scr_str_new(first[i], strlen(first[i]));
+    scr_dyn_arr_push(keys, scr_dyn_new_str(key));
+    scr_str_release(key);
+  }
+  for (size_t i = 0; i < own->v.arr.len; i++) {
+    const ScrStr *key = own->v.arr.items[i]->v.str;
+    if ((key->len == 4 && !memcmp(key->data, "name", 4)) || (key->len == 7 && !memcmp(key->data, "message", 7)) ||
+        (key->len && key->data[0] == '%'))
+      continue;
+    scr_dyn_arr_push(keys, scr_dyn_retain(own->v.arr.items[i]));
+  }
+  scr_dyn_release(own);
+  return keys;
+}
+
 static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input) {
+  bool uncaught = encoder->uncaught;
+  encoder->uncaught = false;
   const void *identity = NULL;
   unsigned domain = 0;
   switch (input->kind) {
@@ -264,6 +304,16 @@ static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input)
   ScrMessageNode *node = &encoder->message->nodes[id];
   ScrError *error = scr_errdyn_err_of(input);
   if (!error && value != input) error = scr_errdyn_err_of(value);
+  if (error && uncaught && error->vt != &scr_error_vts[SCR_ERR_DOMEX]) {
+    node->kind = SCR_MESSAGE_ERROR;
+    node->number = scr_message_error_kind(error);
+    scr_error_release(error);
+    encoder->visits[id].uncaught = true;
+    encoder->visits[id].keys = scr_message_uncaught_keys(value);
+    if (!encoder->visits[id].keys) return SIZE_MAX;
+    scr_message_push(encoder, id);
+    return id;
+  }
   if (error) {
     node->kind = SCR_MESSAGE_ERROR;
     node->number = SCR_ERR_ERROR;
@@ -355,7 +405,7 @@ unsupported:
 }
 
 static void scr_message_property(ScrMessageEncoder *encoder, size_t id,
-                                  const ScrStr *key, size_t value) {
+                                  const ScrStr *key, size_t value, bool hidden) {
   ScrMessageNode *node = &encoder->message->nodes[id];
   if (node->count == node->capacity) {
     size_t capacity = scr_message_grow(node->capacity);
@@ -366,7 +416,7 @@ static void scr_message_property(ScrMessageEncoder *encoder, size_t id,
     node->capacity = capacity;
   }
   node->properties[node->count++] = (ScrMessageProperty){
-    (char *)scr_message_copy(key->data, key->len), key->len, value,
+    (char *)scr_message_copy(key->data, key->len), key->len, value, hidden,
   };
 }
 
@@ -521,8 +571,14 @@ static ScrMessage *scr_message_try_publish(const ScrDyn *value) {
 }
 
 static ScrMessage *scr_message_encode_with(const ScrDyn *value, const ScrDyn *transfer);
+static ScrMessage *scr_message_encode_run(ScrMessageEncoder encoder, const ScrDyn *value);
 
 ScrMessage *scr_message_encode(const ScrDyn *value) { return scr_message_encode_with(value, NULL); }
+
+ScrMessage *scr_message_encode_uncaught(const ScrDyn *value) {
+  ScrMessage *message = scr_message_alloc(1, sizeof(*message));
+  return scr_message_encode_run((ScrMessageEncoder){.message = message, .uncaught = true}, value);
+}
 
 ScrMessage *scr_message_encode_transfer(const ScrDyn *value, const ScrDyn *transfer) {
   if (!transfer || transfer->kind != SCR_DYN_ARR || transfer->v.arr.len == 0)
@@ -552,21 +608,33 @@ static ScrMessage *scr_message_encode_with(const ScrDyn *value, const ScrDyn *tr
   ScrMessage *published = transfer ? NULL : scr_message_try_publish(value);
   if (published) return published;
   ScrMessage *message = scr_message_alloc(1, sizeof(*message));
-  ScrMessageEncoder encoder = {.message = message, .transfer = transfer};
+  return scr_message_encode_run((ScrMessageEncoder){.message = message, .transfer = transfer}, value);
+}
+
+static ScrMessage *scr_message_encode_run(ScrMessageEncoder encoder, const ScrDyn *value) {
+  ScrMessage *message = encoder.message;
   if (scr_message_value(&encoder, value) == SIZE_MAX) goto done;
   while (encoder.depth && !scr_exc_pending()) {
     size_t id = encoder.stack[encoder.depth - 1];
     ScrMessageVisit *visit = &encoder.visits[id];
     if (visit->cursor == visit->keys->v.arr.len) { encoder.depth--; continue; }
     ScrDyn *key = visit->keys->v.arr.items[visit->cursor++];
-    if (key->kind != SCR_DYN_STR ||
-        (message->nodes[id].kind != SCR_MESSAGE_ERROR && !scr_dyn_property_is_enumerable(visit->view, key->v.str))) continue;
+    bool error = message->nodes[id].kind == SCR_MESSAGE_ERROR;
+    if (key->kind != SCR_DYN_STR || (!error && !scr_dyn_property_is_enumerable(visit->view, key->v.str))) continue;
     ScrDyn *child = scr_dyn_bag_get(visit->view, key->v.str, visit->view);
     if (!child || scr_exc_pending()) { scr_dyn_release(child); break; }
+    bool hidden = error;
+    if (visit->uncaught) {
+      /* Node keeps an uncaught Error's data properties except functions
+       * and symbols, and serializes its cause the same way. */
+      if (child->kind == SCR_DYN_FUNC || child->kind == SCR_DYN_SYMBOL) { scr_dyn_release(child); continue; }
+      hidden = !scr_dyn_has_own(visit->view, key->v.str) || !scr_dyn_property_is_enumerable(visit->view, key->v.str);
+      encoder.uncaught = key->v.str->len == 5 && !memcmp(key->v.str->data, "cause", 5);
+    }
     size_t next = scr_message_value(&encoder, child);
     scr_dyn_release(child);
     if (next == SIZE_MAX) break;
-    scr_message_property(&encoder, id, key->v.str, next);
+    scr_message_property(&encoder, id, key->v.str, next, hidden);
   }
 done:
   for (size_t i = 0; i < message->count; i++) {
@@ -710,7 +778,15 @@ ScrDyn *scr_message_decode(const ScrMessage *message) {
       } else scr_dyn_obj_set(values[i], property->key, property->length, value);
     }
     if (node->kind == SCR_MESSAGE_ERROR) {
-      for (size_t j = 0; j < values[i]->v.obj.len; j++) values[i]->v.obj.entries[j].enumerable = false;
+      for (size_t j = 0; j < values[i]->v.obj.len; j++) {
+        ScrDynEntry *entry = &values[i]->v.obj.entries[j];
+        entry->enumerable = false;
+        for (size_t k = 0; k < node->count; k++) {
+          const ScrMessageProperty *property = &node->properties[k];
+          if (!property->hidden && property->length == entry->key_len && !memcmp(property->key, entry->key, entry->key_len))
+            entry->enumerable = true;
+        }
+      }
       ScrError *error = scr_errdyn_err_of(values[i]);
       scr_error_commit_dyn(error, values[i]);
       scr_error_release(error);

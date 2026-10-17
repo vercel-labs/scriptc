@@ -123,6 +123,7 @@ void scr_stream_init_passthrough(ScrStream *s, double rhwm, double whwm, bool au
  * (a subclass's overridden underscore-method wrappers, shadowed by
  * options callbacks per Node's instance-property rule) MOVE. */
 ScrStream *scr_stream_new_readable_dyn(struct ScrDyn *opts);
+void scr_stream_worker_stdio(void);
 ScrStream *scr_stream_new_writable_dyn(struct ScrDyn *opts);
 ScrStream *scr_stream_new_duplex_dyn(struct ScrDyn *opts);
 ScrStream *scr_stream_new_transform_dyn(struct ScrDyn *opts);

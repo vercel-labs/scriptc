@@ -1944,14 +1944,17 @@ SCR_TL void (*scr_process_exit_hook)(double code) = NULL;
 SCR_TL void (*scr_warning_emit_hook)(const char *name, const char *code, ScrStr *message) = NULL;
 SCR_TL void (*scr_stdin_destroy_hook)(void) = NULL;
 
-void scr_process_set_exit_code(double code) {
+/* process.exitCode's validation: a safe integer, or a RangeError
+ * (ERR_OUT_OF_RANGE). Node converts valid codes to signed int32 for
+ * exitCode and exit listeners; the OS observes the low eight bits. */
+static bool scr_process_exit_code_of(double code, int *out) {
   if (!isfinite(code) || trunc(code) != code) {
     char recv[48], msg[160];
     scr_num_received(code, recv);
     int len = snprintf(msg, sizeof msg,
                        "The value of \"code\" is out of range. It must be an integer. Received %s", recv);
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
-    return;
+    return false;
   }
   if (fabs(code) > 9007199254740991.0) {
     char recv[48], msg[192];
@@ -1959,15 +1962,19 @@ void scr_process_set_exit_code(double code) {
     int len = snprintf(msg, sizeof msg,
                        "The value of \"code\" is out of range. It must be >= -9007199254740991 && <= 9007199254740991. Received %s", recv);
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
-    return;
+    return false;
   }
-  /* Node converts valid safe integers to signed int32 for exitCode and
-   * exit listeners. The OS subsequently observes the low eight bits. */
   double low = fmod(code, 4294967296.0);
   if (low < 0) low += 4294967296.0;
   int64_t signed_code = (int64_t)low;
   if (signed_code > INT_MAX) signed_code -= 4294967296LL;
-  scr_exit_code_note((int)signed_code);
+  *out = (int)signed_code;
+  return true;
+}
+
+void scr_process_set_exit_code(double code) {
+  int converted;
+  if (scr_process_exit_code_of(code, &converted)) scr_exit_code_note(converted);
 }
 
 double scr_process_exit_code_or_zero(void) {
@@ -2025,6 +2032,11 @@ static void scr_detach_teardown(void) {
 #endif
 
 void scr_process_exit(double code) {
+  /* process.exit(code) assigns process.exitCode first, so a code that is
+   * not a safe integer throws its RangeError and the program continues. */
+  int converted;
+  if (!scr_process_exit_code_of(code, &converted)) return;
+  code = converted;
   /* Node runs 'exit' listeners on explicit process.exit() too — they run
    * HERE, synchronously, before the teardown-free exit below. The hook is
    * non-NULL only when the events unit is linked (scr_events.c). */

@@ -544,6 +544,25 @@ ScrPromise *scr_stdin_next_chunk(void) {
  * consumer, so the pipe itself is the buffer (backpressure, not loss). */
 static void scr_stdin_deliver(ScrBytes *chunk);
 
+/* A chunk that arrived (moves): delivered, or buffered while paused or
+ * without a consumer. */
+static void scr_stdin_arrived(ScrBytes *chunk) {
+  if (scr_stdin_paused || (!scr_stdin_ndata && !scr_stdin_resumed && !scr_stdin_waiter)) {
+    if (scr_stdin_buffer) {
+      size_t before = scr_stdin_buffer->len;
+      ScrBytes *joined = scr_bytes_new(SCR_BYTES_U8, (double)(before + chunk->len));
+      memcpy(joined->data, scr_stdin_buffer->data, before);
+      memcpy(joined->data + before, chunk->data, chunk->len);
+      scr_bytes_release(scr_stdin_buffer);
+      scr_bytes_release(chunk);
+      scr_stdin_buffer = joined;
+    } else scr_stdin_buffer = chunk;
+    return;
+  }
+  scr_stdin_deliver(chunk);
+  scr_bytes_release(chunk);
+}
+
 static void scr_stdin_service(void) {
   if (!scr_stdin_watching()) return;
   if (!scr_stdin_paused && scr_stdin_buffer) {
@@ -555,6 +574,18 @@ static void scr_stdin_service(void) {
   }
   if (scr_stdin_read_eof) {
     if (!scr_stdin_buffer) scr_stdin_finish(true);
+    return;
+  }
+  if (scr_stdin_fed) {
+    /* the chunks the parent wrote to worker.stdin, one per pass like a
+     * read(2) */
+    bool ended = false;
+    ScrBytes *chunk = scr_stdin_fed_take(&ended);
+    if (chunk) scr_stdin_arrived(chunk);
+    else if (ended) {
+      scr_stdin_read_eof = true;
+      if (!scr_stdin_buffer) scr_stdin_finish(true);
+    }
     return;
   }
 #ifdef _WIN32
@@ -622,20 +653,7 @@ static void scr_stdin_service(void) {
   }
   ScrBytes *chunk = scr_bytes_new(SCR_BYTES_U8, (double)n);
   memcpy(chunk->data, buf, (size_t)n);
-  if (scr_stdin_paused || (!scr_stdin_ndata && !scr_stdin_resumed && !scr_stdin_waiter)) {
-    if (scr_stdin_buffer) {
-      size_t before = scr_stdin_buffer->len;
-      ScrBytes *joined = scr_bytes_new(SCR_BYTES_U8, (double)(before + (size_t)n));
-      memcpy(joined->data, scr_stdin_buffer->data, before);
-      memcpy(joined->data + before, buf, (size_t)n);
-      scr_bytes_release(scr_stdin_buffer);
-      scr_bytes_release(chunk);
-      scr_stdin_buffer = joined;
-    } else scr_stdin_buffer = chunk;
-    return;
-  }
-  scr_stdin_deliver(chunk);
-  scr_bytes_release(chunk);
+  scr_stdin_arrived(chunk);
 }
 
 static void scr_stdin_deliver(ScrBytes *chunk) {
@@ -1200,8 +1218,11 @@ void scr_stdin_data_thunk_bytes(ScrClosure *cb, ScrBytes *chunk) {
 
 static bool scr_events_pending(void) { return scr_stdin_pending(); }
 
+/* A worker's fed stdin has no descriptor to poll: its chunks arrive in
+ * the worker's mailbox, which the worker unit waits on while
+ * scr_stdin_fed_waiting answers true. */
 static bool scr_events_watching(void) {
-  return (scr_context_is_main() && scr_sig_watched > 0) || scr_stdin_pending();
+  return (scr_context_is_main() && scr_sig_watched > 0) || (!scr_stdin_fed && scr_stdin_pending());
 }
 
 /* One dispatch pass at a loop turn: wake-pipe bytes are consumed (safe
@@ -1249,7 +1270,12 @@ void scr_events_install(void) {
   static SCR_TL bool installed = false;
   if (installed) return;
   installed = true;
-  if (!scr_context_is_main()) scr_stdin_read_eof = true;
+  if (scr_stdin_fed) {
+    scr_stdin_fed_waiting = scr_stdin_pending;
+    if (scr_stdin_fed_attach) scr_stdin_fed_attach();
+  } else if (!scr_context_is_main()) {
+    scr_stdin_read_eof = true;
+  }
 #ifdef __wasi__
   int stdin_flags = fcntl(0, F_GETFL, 0);
   if (stdin_flags >= 0) (void)fcntl(0, F_SETFL, stdin_flags | O_NONBLOCK);

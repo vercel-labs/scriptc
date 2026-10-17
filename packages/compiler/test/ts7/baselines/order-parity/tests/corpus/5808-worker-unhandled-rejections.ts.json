@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5808-worker-unhandled-rejections.ts"
+ ],
+ "diags": []
+}

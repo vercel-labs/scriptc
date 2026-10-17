@@ -1,4 +1,8 @@
-import { lowerReceiveMessageOnPort } from "./builtins/workers.js";
+import {
+  lowerEnvironmentData,
+  lowerReceiveMessageOnPort,
+  lowerUntransferable,
+} from "./builtins/workers.js";
 import * as ts from "../ts7/adapter.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
 import { DYN, type IrExpr, type SrcLoc } from "../../ir/ir.js";
@@ -91,6 +95,18 @@ export function lowerBuiltinCall(
   if (nodeModuleServed) return nodeModuleServed;
   if (bi.module === "worker_threads" && bi.member === "receiveMessageOnPort") {
     return lowerReceiveMessageOnPort(lowerer, expr);
+  }
+  if (
+    bi.module === "worker_threads" &&
+    (bi.member === "setEnvironmentData" || bi.member === "getEnvironmentData")
+  ) {
+    return lowerEnvironmentData(lowerer, expr, bi.member);
+  }
+  if (
+    bi.module === "worker_threads" &&
+    (bi.member === "markAsUntransferable" || bi.member === "isMarkedAsUntransferable")
+  ) {
+    return lowerUntransferable(lowerer, expr, bi.member);
   }
   const builtinFn = builtinModuleFnOf(lowerer, bi.module, bi.member);
   if (!builtinFn) {

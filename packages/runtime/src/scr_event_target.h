@@ -39,9 +39,9 @@ typedef struct ScrEvent {
   size_t rc;
   ScrStr *type;
   ScrDyn *target;  /* +1, NULL until dispatched */
-  ScrDyn *detail;  /* CustomEvent's detail (+1); NULL for Event */
+  ScrDyn *detail;  /* CustomEvent's detail, MessageEvent's data (+1); NULL for Event */
   double time_stamp;
-  bool custom, bubbles, cancelable, composed, trusted;
+  bool custom, message, bubbles, cancelable, composed, trusted;
   bool default_prevented, propagation_stopped, stop, dispatching, in_passive;
   bool tracked;
   struct ScrEvent *tracked_prev, *tracked_next;
@@ -82,6 +82,25 @@ extern SCR_TL ScrEventTargetCore *(*scr_et_signal_core_fn)(const ScrDyn *d, bool
  * which reaches the class's compiled methods. Without it a capsule's own
  * view answers. */
 void scr_event_handle_event_reader(ScrDyn *reader);
+/* BroadcastChannel's EventTarget side, which the worker events unit
+ * reaches through this table (that unit links without this one): a core
+ * of its own, dispatching a 'message' MessageEvent with the data, the
+ * EventTarget methods (false: not one of them), and the on<type>
+ * attributes. scr_et_broadcast_install sets the table (defined in
+ * scr_json.c, which every program links). */
+typedef struct {
+  ScrEventTargetCore *(*core_new)(const char *cls);
+  void (*core_free)(ScrEventTargetCore *core);
+  void (*dispatch_message)(ScrEventTargetCore *core, ScrDyn *self, ScrDyn *data);
+  bool (*method)(ScrEventTargetCore *core, ScrDyn *self, const char *method, ScrDyn *const *args,
+                 size_t argc, ScrDyn **out);
+  ScrDyn *(*method_value)(const char *name, size_t length);
+  ScrDyn *(*handler_get)(ScrEventTargetCore *core, const char *type);
+  void (*handler_set)(ScrEventTargetCore *core, const char *type, const ScrDyn *value);
+} ScrEtBroadcastOps;
+extern SCR_TL const ScrEtBroadcastOps *scr_et_broadcast_ops;
+void scr_et_broadcast_install(void);
+
 /* events.addAbortListener(signal, listener): +1 disposable, or NULL. */
 ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener);
 

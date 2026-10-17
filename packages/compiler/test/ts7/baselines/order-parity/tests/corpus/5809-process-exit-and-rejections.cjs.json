@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5809-process-exit-and-rejections.cjs"
+ ],
+ "diags": []
+}

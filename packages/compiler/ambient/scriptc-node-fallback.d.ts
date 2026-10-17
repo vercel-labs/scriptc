@@ -699,6 +699,7 @@ interface MessageEvent<T = unknown> extends Event {
   readonly data: T;
   readonly origin: string;
   readonly lastEventId: string;
+  readonly source: unknown;
   readonly ports: readonly MessagePort[];
 }
 declare var MessageEvent: {
@@ -5677,19 +5678,40 @@ declare module "worker_threads" {
   export const isMainThread: boolean;
   export const isInternalThread: boolean;
   export const threadId: number;
+  export interface ResourceLimits {
+    maxYoungGenerationSizeMb?: number;
+    maxOldGenerationSizeMb?: number;
+    codeRangeSizeMb?: number;
+    stackSizeMb?: number;
+  }
+  /* {} in the main thread */
+  export const resourceLimits: ResourceLimits;
+  /* the Worker's name option, trimmed ("WorkerThread" by default); "" in the main thread */
+  export const threadName: string | null;
   export interface WorkerOptions {
     workerData?: unknown;
     transferList?: readonly unknown[];
     argv?: readonly unknown[];
     name?: string;
+    resourceLimits?: ResourceLimits;
+    stdout?: boolean;
+    stderr?: boolean;
+    stdin?: boolean;
     [option: string]: unknown;
   }
   export class Worker {
     constructor(filename: string | URL, options?: WorkerOptions);
     readonly threadId: number;
+    readonly resourceLimits?: ResourceLimits;
+    readonly threadName: string | null;
+    /* with the stdout/stderr options: the worker's writes to those streams */
+    readonly stdout: import("stream").Readable;
+    readonly stderr: import("stream").Readable;
+    /* with the stdin option: what the worker reads from process.stdin */
+    readonly stdin: import("stream").Writable | null;
     on(event: "online", listener: () => void): this;
     on(event: "message", listener: (value: any) => void): this;
-    on(event: "error", listener: (error: Error) => void): this;
+    on(event: "error", listener: (error: any) => void): this;
     on(event: "exit", listener: (code: number) => void): this;
     on(event: string, listener: (...args: any[]) => void): this;
     once(event: string, listener: (...args: any[]) => void): this;
@@ -5731,6 +5753,24 @@ declare module "worker_threads" {
     readonly port2: MessagePort;
   }
   export function receiveMessageOnPort(port: MessagePort): { message: any } | undefined;
+  /* This thread's environment data; each new Worker starts from a clone. */
+  export function setEnvironmentData(key: any, value?: any): void;
+  export function getEnvironmentData(key: any): any;
+  /* A marked object cannot be listed in a transfer list. */
+  export function markAsUntransferable(object: any): void;
+  export function isMarkedAsUntransferable(object: any): boolean;
+  /* Delivers each message to every other open channel with the name, in
+   * any thread, as a 'message' MessageEvent. */
+  export class BroadcastChannel extends EventTarget {
+    constructor(name: string);
+    readonly name: string;
+    onmessage: ((event: MessageEvent) => void) | null;
+    onmessageerror: ((event: MessageEvent) => void) | null;
+    postMessage(message: unknown): void;
+    close(): void;
+    ref(): this;
+    unref(): this;
+  }
   export const parentPort: MessagePort | null;
   export const workerData: any;
 }

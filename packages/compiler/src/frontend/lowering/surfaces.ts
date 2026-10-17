@@ -2069,7 +2069,14 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     id: "node-builtin.worker_threads.metadata",
     kind: "node-builtin",
     name: "worker_threads metadata",
-    fns: ["worker.isMainThread", "worker.threadId", "worker.data", "worker.parentPort"],
+    fns: [
+      "worker.isMainThread",
+      "worker.threadId",
+      "worker.data",
+      "worker.parentPort",
+      "worker.resourceLimits",
+      "worker.threadName",
+    ],
     note: "current-thread metadata and the worker's parent message port",
   },
   {

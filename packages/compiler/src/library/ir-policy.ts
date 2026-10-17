@@ -66,6 +66,11 @@ const LIB_MODE_REFUSED_PREFIXES: readonly [string, string][] = [
   ["worker.new", "native worker threads"],
   ["worker.channel", "native worker threads"],
   ["worker.receiveMessageOnPort", "native worker threads"],
+  ["worker.setEnvironmentData", "native worker threads"],
+  ["worker.getEnvironmentData", "native worker threads"],
+  ["worker.markUntransferable", "native worker threads"],
+  ["worker.isMarkedUntransferable", "native worker threads"],
+  ["worker.broadcastChannel", "native worker threads"],
 ];
 
 /** Value/type kinds whose mere presence means an excluded unit's code (or

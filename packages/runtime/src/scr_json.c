@@ -3505,6 +3505,9 @@ ScrDyn *scr_dyn_bind(ScrDyn *target, ScrDyn *const *args, size_t argc) {
  * they can box its handles. */
 static SCR_TL const ScrDynHandleOps *scr_dynh_ops[SCR_DYNH_COUNT];
 
+/* BroadcastChannel's EventTarget table (scr_et_broadcast_install). */
+SCR_TL const ScrEtBroadcastOps *scr_et_broadcast_ops = NULL;
+
 void scr_dyn_handle_install(ScrDynHandleTag tag, const ScrDynHandleOps *ops) {
   scr_dynh_ops[tag] = ops;
 }

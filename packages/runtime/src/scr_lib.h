@@ -64,6 +64,23 @@ int scr_stdio_write_raw(int fd, const void *data, size_t len);
 /* `wide` marks string bytes that may hold lone surrogates, which become
  * U+FFFD when they reach the stream itself. */
 extern SCR_TL bool (*scr_stdio_write_hook)(int fd, const void *data, size_t len, bool wide);
+/* A worker created with the stdout or stderr option: answers true when it
+ * took the bytes for fd 1 or 2 instead of the process descriptor. */
+extern SCR_TL bool (*scr_stdio_capture)(int fd, const void *data, size_t len);
+/* A worker created with the stdin option: process.stdin reads the chunks
+ * the parent writes to worker.stdin instead of fd 0. The worker's event
+ * dispatch queues them (scr_stdin_fed_push; NULL ends the input) and the
+ * stdin service takes them (+1, or NULL with *ended set once the input
+ * ended). scr_stdin_fed_attach (the worker unit) starts that dispatch
+ * when process.stdin is first used; scr_stdin_fed_waiting (the events
+ * unit) says whether process.stdin still wants data, which keeps the
+ * worker's loop waiting on its mailbox. */
+extern SCR_TL bool scr_stdin_fed;
+extern SCR_TL void (*scr_stdin_fed_attach)(void);
+extern SCR_TL bool (*scr_stdin_fed_waiting)(void);
+void scr_stdin_fed_push(struct ScrBytes *chunk /* moves; NULL ends the input */);
+struct ScrBytes *scr_stdin_fed_take(bool *ended);
+void scr_stdin_fed_clear(void);
 /* process.stdout/.stderr .write — raw bytes (no newline or formatting; data
  * borrowed), promptly visible and ordered with console output. Constantly
  * true (the synchronous runtime never queues backpressure). */

@@ -332,6 +332,8 @@ void scr_exc_alert_add(int delta); /* worker.terminate() references */
 void scr_exc_alert_thread_exit(void);
 void scr_loop_context_shutdown(void);
 extern SCR_TL void (*scr_context_report_error)(void);
+/* Set while scr_context_report_error reports an unhandled rejection. */
+extern SCR_TL bool scr_context_report_rejection;
 typedef struct ScrContextEnv ScrContextEnv;
 ScrContextEnv *scr_context_env_capture(void);
 void scr_context_env_free(ScrContextEnv *environment);

@@ -341,9 +341,100 @@ void scr_process_off_uncaught_exception(ScrDyn *fn, bool monitor) {
   scr_uncaught_sync_hook();
 }
 
+/* V8's side-effect-free string of a value, which Node's
+ * UnhandledPromiseRejection message quotes: primitives as String() gives
+ * them, a symbol as Symbol(description), an array as [object Array], an
+ * object with its own toString as [object Object], and other objects as
+ * #<Constructor>. */
+static bool scr_rejection_custom_to_string(const ScrDyn *value) {
+  if (value->kind == SCR_DYN_TYPED_REF) {
+    ScrStr *key = scr_str_new("toString", 8);
+    bool found = scr_dyn_typed_ref_class_has(value, key);
+    scr_str_release(key);
+    return found;
+  }
+  for (const ScrDyn *p = value; p; p = p->prototype)
+    if (p->kind == SCR_DYN_OBJ && scr_dyn_obj_get(p, "toString", 8)) return true;
+  return false;
+}
+
+static ScrStr *scr_rejection_reason_text(const ScrDyn *reason, const ScrDyn *view) {
+  switch (view->kind) {
+  case SCR_DYN_UNDEF: return scr_str_new("undefined", 9);
+  case SCR_DYN_NULL: return scr_str_new("null", 4);
+  case SCR_DYN_SYMBOL: return reason->v.symbol.render(reason->v.symbol.value);
+  case SCR_DYN_ARR: return scr_str_new("[object Array]", 14);
+  case SCR_DYN_PROMISE: return scr_str_new("#<Promise>", 10);
+  case SCR_DYN_OBJ: {
+    if (scr_rejection_custom_to_string(reason) || scr_rejection_custom_to_string(view))
+      return scr_str_new("[object Object]", 15);
+    const char *name = reason->kind == SCR_DYN_OBJ ? scr_dyn_class_name(reason) : NULL;
+    const ScrStr *typed = reason->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_class_name(reason) : NULL;
+    ScrStr *parts[3] = {
+      scr_str_new("#<", 2),
+      typed ? scr_str_new(typed->data, typed->len) : scr_str_new(name ? name : "Object", name ? strlen(name) : 6),
+      scr_str_new(">", 1),
+    };
+    ScrStr *text = scr_str_concat_parts(parts, 3);
+    for (size_t i = 0; i < 3; i++) scr_str_release(parts[i]);
+    return text;
+  }
+  default: return scr_dyn_to_string(view, NULL);
+  }
+}
+
+ScrDyn *scr_unhandled_rejection_error(ScrDyn *reason) {
+  ScrError *error = scr_errdyn_err_of(reason);
+  ScrDyn *view = reason->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(reason) : scr_dyn_retain(reason);
+  if (!view || scr_exc_pending()) {
+    scr_error_release(error);
+    scr_dyn_release(view);
+    return NULL;
+  }
+  ScrStr *stack = scr_str_new("stack", 5);
+  bool error_like = error || (view->kind == SCR_DYN_OBJ && scr_dyn_has_own(view, stack));
+  scr_str_release(stack);
+  if (error_like) {
+    scr_error_release(error);
+    scr_dyn_release(view);
+    return scr_dyn_retain(reason);
+  }
+  ScrStr *text = scr_rejection_reason_text(reason, view);
+  scr_dyn_release(view);
+  if (!text || scr_exc_pending()) {
+    scr_str_release(text);
+    return NULL;
+  }
+  static const char head[] = "This error originated either by throwing inside of an async function without a "
+                             "catch block, or by rejecting a promise which was not handled with .catch(). The "
+                             "promise rejected with the reason \"";
+  ScrStr *parts[3] = {scr_str_new(head, sizeof head - 1), text, scr_str_new("\".", 2)};
+  ScrStr *message = scr_str_concat_parts(parts, 3);
+  for (size_t i = 0; i < 3; i++) scr_str_release(parts[i]);
+  error = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(message);
+  scr_str_release(error->name);
+  error->name = scr_str_new("UnhandledPromiseRejection", 25);
+  error->code = scr_str_new("ERR_UNHANDLED_REJECTION", 23);
+  ScrDyn *value = scr_dyn_from_error(error);
+  /* Node's class fields: code, then name, both own and enumerable */
+  scr_dyn_obj_set(value, "name", 4, scr_dyn_new_str(error->name));
+  scr_error_release(error);
+  return value;
+}
+
 static int scr_uncaught_dispatch(bool from_promise) {
   ScrCaught *caught = scr_exc_take();
   ScrDyn *error = scr_caught_to_dyn(caught);
+  if (from_promise) {
+    ScrDyn *wrapped = scr_unhandled_rejection_error(error);
+    scr_dyn_release(error);
+    if (!wrapped) {
+      scr_caught_release(caught);
+      return -1;
+    }
+    error = wrapped;
+  }
   const char *origin = from_promise ? "unhandledRejection" : "uncaughtException";
   ScrStr *text = scr_str_new(origin, strlen(origin));
   ScrDyn *args[2] = {error, scr_dyn_new_str(text)};

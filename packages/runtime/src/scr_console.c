@@ -204,6 +204,61 @@ void scr_init(void) {
 /* A real definition lets relocatable library links localize this hook;
  * a tentative common symbol stays externally visible on Mach-O. */
 SCR_TL bool (*scr_stdio_write_hook)(int fd, const void *data, size_t len, bool wide) = NULL;
+SCR_TL bool (*scr_stdio_capture)(int fd, const void *data, size_t len) = NULL;
+
+SCR_TL bool scr_stdin_fed = false;
+SCR_TL void (*scr_stdin_fed_attach)(void) = NULL;
+SCR_TL bool (*scr_stdin_fed_waiting)(void) = NULL;
+static SCR_TL ScrBytes **scr_stdin_fed_q;
+static SCR_TL size_t scr_stdin_fed_head, scr_stdin_fed_len, scr_stdin_fed_cap;
+static SCR_TL bool scr_stdin_fed_end;
+
+void scr_stdin_fed_push(ScrBytes *chunk) {
+  if (scr_stdin_fed_end) {
+    if (chunk) scr_bytes_release(chunk);
+    return;
+  }
+  if (!chunk) {
+    scr_stdin_fed_end = true;
+    return;
+  }
+  if (scr_stdin_fed_head + scr_stdin_fed_len == scr_stdin_fed_cap) {
+    if (scr_stdin_fed_head > 0) {
+      memmove(scr_stdin_fed_q, scr_stdin_fed_q + scr_stdin_fed_head,
+              scr_stdin_fed_len * sizeof *scr_stdin_fed_q);
+      scr_stdin_fed_head = 0;
+    }
+    if (scr_stdin_fed_len == scr_stdin_fed_cap) {
+      scr_stdin_fed_cap = scr_stdin_fed_cap ? scr_stdin_fed_cap * 2 : 8;
+      scr_stdin_fed_q = realloc(scr_stdin_fed_q, scr_stdin_fed_cap * sizeof *scr_stdin_fed_q);
+      if (!scr_stdin_fed_q) scr_trap("scriptc: out of memory\n");
+    }
+  }
+  scr_stdin_fed_q[scr_stdin_fed_head + scr_stdin_fed_len++] = chunk;
+}
+
+ScrBytes *scr_stdin_fed_take(bool *ended) {
+  if (scr_stdin_fed_len == 0) {
+    *ended = scr_stdin_fed_end;
+    return NULL;
+  }
+  *ended = false;
+  ScrBytes *chunk = scr_stdin_fed_q[scr_stdin_fed_head++];
+  if (--scr_stdin_fed_len == 0) scr_stdin_fed_head = 0;
+  return chunk;
+}
+
+void scr_stdin_fed_clear(void) {
+  for (size_t i = 0; i < scr_stdin_fed_len; i++)
+    scr_bytes_release(scr_stdin_fed_q[scr_stdin_fed_head + i]);
+  free(scr_stdin_fed_q);
+  scr_stdin_fed_q = NULL;
+  scr_stdin_fed_head = scr_stdin_fed_len = scr_stdin_fed_cap = 0;
+  scr_stdin_fed_end = false;
+  scr_stdin_fed = false;
+  scr_stdin_fed_attach = NULL;
+  scr_stdin_fed_waiting = NULL;
+}
 
 /* Lines up to this size render on the C stack (fiber stacks are 256 KiB). */
 #define SCR_CONSOLE_STACK_LINE 2048
@@ -338,7 +393,7 @@ static void scr_console_write(int fd, size_t n, const ScrLogArg *args, bool glob
 #if SCR_STDIO_DIRECT
   /* A large single string goes out without a copy: string + newline in one
    * vectored write. */
-  if (!scr_stdio_write_hook && !(global && scr_console_indenter) && n == 1 &&
+  if (!scr_stdio_write_hook && !scr_stdio_capture && !(global && scr_console_indenter) && n == 1 &&
       (args[0].tag & SCR_ARG_KIND) == SCR_ARG_STR &&
       args[0].v.s->len >= SCR_CONSOLE_STACK_LINE) {
     char *owned;
@@ -409,6 +464,7 @@ void scr_console_write_fd(int fd, size_t n, const ScrLogArg *args) {
  * Buffered runtime-internal stdout bytes go out first (for both streams) to
  * preserve stdout order and the merged-fd ordering convention. */
 int scr_stdio_write_raw(int fd, const void *data, size_t len) {
+  if (__builtin_expect(scr_stdio_capture != NULL, 0) && scr_stdio_capture(fd == 2 ? 2 : 1, data, len)) return 0;
 #if SCR_STDIO_DIRECT
   FILE *locked = scr_fd_stream_lock(fd == 2 ? 2 : 1);
   if (scr_stdout_pending()) fflush(stdout);

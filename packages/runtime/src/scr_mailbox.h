@@ -9,6 +9,8 @@ typedef struct ScrMailEvent {
   uint64_t source;
   int code;
   ScrMessage *message;
+  unsigned char *data; /* raw bytes (a worker's captured stdout or stderr), owned */
+  size_t length;
   struct ScrMailEvent *next;
 } ScrMailEvent;
 
@@ -19,6 +21,8 @@ void scr_mailbox_release(ScrMailbox *mailbox);
  * closed. Taking returns an owned event; no runtime object crosses a queue. */
 bool scr_mailbox_post(ScrMailbox *mailbox, ScrMailEvent *event);
 ScrMailEvent *scr_mailbox_take(ScrMailbox *mailbox);
+/* The first queued event with this kind and source, or NULL. */
+ScrMailEvent *scr_mailbox_take_kind(ScrMailbox *mailbox, unsigned kind, uint64_t source);
 void scr_mail_event_free(ScrMailEvent *event);
 void scr_mailbox_close(ScrMailbox *mailbox);
 bool scr_mailbox_pending(ScrMailbox *mailbox);
@@ -45,5 +49,13 @@ ScrMailEvent *scr_channel_take(ScrChannel *channel, int side);
 size_t scr_channel_count(ScrChannel *channel, int side);
 uint64_t scr_channel_peer_closed(ScrChannel *channel, int side); /* the notice's order, 0: none */
 void scr_channel_drop(ScrChannel *channel, int side);
+
+/* BroadcastChannel: the process-wide registry of open channels by name.
+ * Each instance's channel queues its messages on end 0 (posts go through
+ * side 1). peers answers the others with the name (+1 each, array
+ * malloc'd). */
+void scr_broadcast_join(const char *name, size_t length, ScrChannel *channel);
+void scr_broadcast_leave(ScrChannel *channel);
+size_t scr_broadcast_peers(const char *name, size_t length, ScrChannel *self, ScrChannel ***out);
 
 #endif

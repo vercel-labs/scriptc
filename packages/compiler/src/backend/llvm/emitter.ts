@@ -1987,12 +1987,28 @@ export class LlEmitter {
             this.dyn.toDynHelper({ kind: "object", className: "%Writable" }),
           ]
         : null;
-    if (childStreamBoxes) {
+    // worker.stdout and worker.stderr box the stream unit's Readable the
+    // same way, and worker.stdin its Writable when the program has one
+    // (scr_worker_stdio_install, scr_worker_events.c).
+    const workerStdioBox =
+      this.mod.workers === true && usesStream && this.classMeta.has("%Readable")
+        ? (childStreamBoxes?.[0] ??
+          this.dyn.toDynHelper({ kind: "object", className: "%Readable" }))
+        : null;
+    const workerStdinBox =
+      this.mod.workers === true && usesStream && this.classMeta.has("%Writable")
+        ? (childStreamBoxes?.[1] ??
+          this.dyn.toDynHelper({ kind: "object", className: "%Writable" }))
+        : null;
+    if (childStreamBoxes || workerStdioBox || workerStdinBox) {
       this.declare(
         `@scr_stream_child_ops = external constant { ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr }`,
       );
-      this.declare(`declare void @scr_child_dyn_streams_install(ptr, ptr, ptr)`);
     }
+    if (childStreamBoxes)
+      this.declare(`declare void @scr_child_dyn_streams_install(ptr, ptr, ptr)`);
+    if (workerStdioBox || workerStdinBox)
+      this.declare(`declare void @scr_worker_stdio_install(ptr, ptr, ptr)`);
     if (usesFsWatch) this.declare(`declare void @scr_watch_install()`);
     if (this.ffiHasForeignCallback) this.declare(`declare void @scr_ffi_install()`);
     if (usesStream) this.declare(`declare void @scr_stream_install()`);
@@ -2580,6 +2596,11 @@ export class LlEmitter {
       ...(childStreamBoxes
         ? [
             `  call void @scr_child_dyn_streams_install(ptr @scr_stream_child_ops, ptr @${childStreamBoxes[0]}, ptr @${childStreamBoxes[1]})`,
+          ]
+        : []),
+      ...(workerStdioBox || workerStdinBox
+        ? [
+            `  call void @scr_worker_stdio_install(ptr @scr_stream_child_ops, ptr ${workerStdioBox ? `@${workerStdioBox}` : "null"}, ptr ${workerStdinBox ? `@${workerStdinBox}` : "null"})`,
           ]
         : []),
       // fs.watch programs fill the loop's watch hooks the same way —

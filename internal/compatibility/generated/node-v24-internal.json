@@ -941,9 +941,9 @@
       "apiEntries": 66,
       "static": {
         "supported": 0,
-        "partial": 26,
+        "partial": 43,
         "refused": 0,
-        "not-implemented": 40,
+        "not-implemented": 23,
         "by-design": 0,
         "unreviewed": 0,
         "not-applicable": 0
@@ -79208,6 +79208,7 @@
           "tests/corpus/5194-process-emit-warning-tick.cjs",
           "tests/corpus/5210-process-memory-usage.ts",
           "tests/corpus/5211-process-identity.ts",
+          "tests/corpus/5809-process-exit-and-rejections.cjs",
           "tests/corpus/990-process-basics.ts",
           "tests/corpus/node24-env-files-errors.ts",
           "tests/corpus/node24-env-files.ts",
@@ -80902,6 +80903,7 @@
         "status": "partial",
         "evidence": "surface-manifest:node-builtin.process.exitCode",
         "tests": [
+          "tests/corpus/5809-process-exit-and-rejections.cjs",
           "tests/corpus/2941-process-exit-code.ts",
           "tests/corpus/2942-process-exit-code-override.ts",
           "tests/corpus/2943-process-exit-code-invalid.ts",
@@ -112617,6 +112619,20 @@
           "tests/corpus/5793-worker-message-channel.ts",
           "tests/corpus/5796-worker-message-channel.cjs",
           "tests/corpus/5797-worker-message-port-transfer.ts",
+          "tests/corpus/5800-broadcast-channel.ts",
+          "tests/corpus/5801-broadcast-channel.cjs",
+          "tests/corpus/5802-broadcast-channel-workers.ts",
+          "tests/corpus/5803-worker-environment-data.ts",
+          "tests/corpus/5804-worker-environment-data.cjs",
+          "tests/corpus/5805-worker-receive-message-parent-port.ts",
+          "tests/corpus/5806-worker-resource-limits.ts",
+          "tests/corpus/5807-worker-error-values.ts",
+          "tests/corpus/5808-worker-unhandled-rejections.ts",
+          "tests/corpus/5870-worker-thread-names.ts",
+          "tests/corpus/5871-worker-untransferable.cjs",
+          "tests/corpus/5874-worker-stdio-streams.ts",
+          "tests/corpus/5875-worker-stdout-pipe.cjs",
+          "tests/corpus/5879-worker-stdin.ts",
           "tests/corpus/native-worker-clone-errors.ts",
           "tests/corpus/native-worker-commonjs.cjs",
           "tests/corpus/native-worker-delayed-messages.ts",
@@ -112724,8 +112740,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.BroadcastChannel extends EventTarget",
+        "tests": [
+          "tests/corpus/5800-broadcast-channel.ts",
+          "tests/corpus/5801-broadcast-channel.cjs",
+          "tests/corpus/5802-broadcast-channel-workers.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -112747,8 +112768,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.broadcastChannel.close",
+        "tests": [
+          "tests/corpus/5800-broadcast-channel.ts",
+          "tests/corpus/5801-broadcast-channel.cjs",
+          "tests/corpus/5802-broadcast-channel-workers.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -112770,8 +112796,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.broadcastChannel.postMessage",
+        "tests": [
+          "tests/corpus/5800-broadcast-channel.ts",
+          "tests/corpus/5801-broadcast-channel.cjs",
+          "tests/corpus/5802-broadcast-channel-workers.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -112793,8 +112824,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.broadcastChannel.ref",
+        "tests": [
+          "tests/corpus/5800-broadcast-channel.ts",
+          "tests/corpus/5801-broadcast-channel.cjs",
+          "tests/corpus/5802-broadcast-channel-workers.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -112816,8 +112852,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.broadcastChannel.unref",
+        "tests": [
+          "tests/corpus/5800-broadcast-channel.ts",
+          "tests/corpus/5801-broadcast-channel.cjs",
+          "tests/corpus/5802-broadcast-channel-workers.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -112839,8 +112880,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.onmessage",
+        "tests": [
+          "tests/corpus/5800-broadcast-channel.ts",
+          "tests/corpus/5801-broadcast-channel.cjs",
+          "tests/corpus/5802-broadcast-channel-workers.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -112890,7 +112936,8 @@
         "tests": [
           "tests/corpus/5793-worker-message-channel.ts",
           "tests/corpus/5796-worker-message-channel.cjs",
-          "tests/corpus/5797-worker-message-port-transfer.ts"
+          "tests/corpus/5797-worker-message-port-transfer.ts",
+          "tests/corpus/5805-worker-receive-message-parent-port.ts"
         ]
       },
       "anchorSource": "exact"
@@ -113546,8 +113593,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.resourceLimits",
+        "tests": [
+          "tests/corpus/5806-worker-resource-limits.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -113569,8 +113619,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.stderr",
+        "tests": [
+          "tests/corpus/5874-worker-stdio-streams.ts",
+          "tests/corpus/5875-worker-stdout-pipe.cjs",
+          "tests/corpus/5879-worker-stdin.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -113592,8 +113647,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.stdin",
+        "tests": [
+          "tests/corpus/5874-worker-stdio-streams.ts",
+          "tests/corpus/5875-worker-stdout-pipe.cjs",
+          "tests/corpus/5879-worker-stdin.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -113615,8 +113675,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.stdout",
+        "tests": [
+          "tests/corpus/5874-worker-stdio-streams.ts",
+          "tests/corpus/5875-worker-stdout-pipe.cjs",
+          "tests/corpus/5879-worker-stdin.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -113666,8 +113731,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.threadName",
+        "tests": [
+          "tests/corpus/5870-worker-thread-names.ts",
+          "tests/corpus/5871-worker-untransferable.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -113694,7 +113763,9 @@
         "tests": [
           "tests/corpus/native-worker-references.ts",
           "tests/corpus/native-worker-error.ts",
-          "tests/corpus/native-worker-exit-listeners.ts"
+          "tests/corpus/native-worker-exit-listeners.ts",
+          "tests/corpus/5807-worker-error-values.ts",
+          "tests/corpus/5808-worker-unhandled-rejections.ts"
         ]
       },
       "anchorSource": "exact"
@@ -113722,7 +113793,9 @@
         "tests": [
           "tests/corpus/native-worker-references.ts",
           "tests/corpus/native-worker-error.ts",
-          "tests/corpus/native-worker-exit-listeners.ts"
+          "tests/corpus/native-worker-exit-listeners.ts",
+          "tests/corpus/5807-worker-error-values.ts",
+          "tests/corpus/5808-worker-unhandled-rejections.ts"
         ]
       },
       "anchorSource": "exact"
@@ -113750,7 +113823,9 @@
         "tests": [
           "tests/corpus/native-worker-references.ts",
           "tests/corpus/native-worker-error.ts",
-          "tests/corpus/native-worker-exit-listeners.ts"
+          "tests/corpus/native-worker-exit-listeners.ts",
+          "tests/corpus/5807-worker-error-values.ts",
+          "tests/corpus/5808-worker-unhandled-rejections.ts"
         ]
       },
       "anchorSource": "exact"
@@ -113801,7 +113876,9 @@
         "tests": [
           "tests/corpus/native-worker-references.ts",
           "tests/corpus/native-worker-error.ts",
-          "tests/corpus/native-worker-exit-listeners.ts"
+          "tests/corpus/native-worker-exit-listeners.ts",
+          "tests/corpus/5807-worker-error-values.ts",
+          "tests/corpus/5808-worker-unhandled-rejections.ts"
         ]
       },
       "anchorSource": "exact"
@@ -113824,8 +113901,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.worker_threads.getEnvironmentData",
+        "tests": [
+          "tests/corpus/5803-worker-environment-data.ts",
+          "tests/corpus/5804-worker-environment-data.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -113847,8 +113928,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.worker_threads.markAsUntransferable",
+        "tests": [
+          "tests/corpus/5870-worker-thread-names.ts",
+          "tests/corpus/5871-worker-untransferable.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -113870,8 +113955,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.worker_threads.isMarkedAsUntransferable",
+        "tests": [
+          "tests/corpus/5870-worker-thread-names.ts",
+          "tests/corpus/5871-worker-untransferable.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -113967,7 +114056,8 @@
         "tests": [
           "tests/corpus/5793-worker-message-channel.ts",
           "tests/corpus/5796-worker-message-channel.cjs",
-          "tests/corpus/5797-worker-message-port-transfer.ts"
+          "tests/corpus/5797-worker-message-port-transfer.ts",
+          "tests/corpus/5805-worker-receive-message-parent-port.ts"
         ]
       },
       "anchorSource": "exact"
@@ -113990,8 +114080,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.worker_threads.setEnvironmentData",
+        "tests": [
+          "tests/corpus/5803-worker-environment-data.ts",
+          "tests/corpus/5804-worker-environment-data.cjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -114092,8 +114186,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.resourceLimits",
+        "tests": [
+          "tests/corpus/5806-worker-resource-limits.ts"
+        ]
       },
       "anchorSource": "chapter"
     },
@@ -114166,8 +114263,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:worker_threads"
+        "status": "partial",
+        "evidence": "compiler-feature:worker_threads.threadName",
+        "tests": [
+          "tests/corpus/5870-worker-thread-names.ts",
+          "tests/corpus/5871-worker-untransferable.cjs"
+        ]
       },
       "anchorSource": "chapter"
     },

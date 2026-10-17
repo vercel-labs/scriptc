@@ -1105,10 +1105,31 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "worker.root": { argTypes: [], result: F64 },
   "worker.data": { argTypes: [], result: DYN },
   "worker.parentPort": { argTypes: [], result: DYN },
+  /** worker_threads.resourceLimits: {} in the main thread; a refusal in a
+   * worker (scr_worker_events.c). */
+  "worker.resourceLimits": { argTypes: [], result: DYN },
+  /** worker_threads.threadName: the Worker's name in a worker, "" in the
+   * main thread (scr_worker.c). */
+  "worker.threadName": { argTypes: [], result: DYN },
   /** new MessageChannel() ({ port1, port2 }) and receiveMessageOnPort(port)
    * (scr_worker_events.c; the latter may throw). */
   "worker.channel": { argTypes: [], result: DYN },
   "worker.receiveMessageOnPort": { argTypes: [DYN], result: DYN },
+  /** setEnvironmentData(key, value) and getEnvironmentData(key)
+   * (scr_worker_events.c; arguments borrowed). */
+  "worker.setEnvironmentData": { argTypes: [DYN, DYN], result: VOID },
+  "worker.getEnvironmentData": { argTypes: [DYN], result: DYN },
+  /** markAsUntransferable(value) and isMarkedAsUntransferable(value)
+   * (scr_worker_events.c; the value borrowed). */
+  "worker.markUntransferable": { argTypes: [DYN], result: VOID },
+  "worker.isMarkedUntransferable": { argTypes: [DYN], result: BOOL },
+  /** before new Worker() with the stdout or stderr option: links the stream
+   * unit that worker.stdout and worker.stderr read through (scr_stream.c). */
+  "stream.workerStdio": { argTypes: [], result: VOID },
+  /** new BroadcastChannel(...args) (scr_worker_events.c; may throw), after
+   * event.broadcastInstall, which installs its EventTarget side. */
+  "worker.broadcastChannel": { argTypes: [DYN], result: DYN },
+  "event.broadcastInstall": { argTypes: [], result: VOID },
   /** child_process.spawnSync (scr_child.c): posix_spawn + waitpid + piped
    * utf8 capture — cmd borrowed, args one borrowed string[] (the frontend
    * completes an omitted list to an empty literal), result an owned (+1)

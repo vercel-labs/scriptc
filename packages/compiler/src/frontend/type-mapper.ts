@@ -1003,6 +1003,14 @@ export interface TypeMapperCtx {
    * only where literal identity matters — indexed accesses (`T[K]`) inside
    * generic bodies whose K is bound to a literal key. */
   resolveTypeParamTs?: TypeParamTsResolver;
+  /** Symbolic types inside a generic body (mapped and conditional types
+   * over the instance's type parameters: `{ [K in keyof S]: Infer<S[K]> }`)
+   * answered with the CONCRETE type the checker computed for the same
+   * position of the call site's resolved signature. The checker keeps
+   * these symbolic inside the body and has no instantiation API; the
+   * resolved signature already holds their evaluation. Consulted only after
+   * the ordinary mapping fails (mapViaSymbolicTwin); null without a twin. */
+  resolveSymbolicTs?: (type: ts.Type) => ts.Type | null;
   /** GENERIC program classes (monomorphization by flow): the mapping of a
    * concrete instantiation reference (`Box<number>`) — the Lowerer
    * registers/reuses the instantiation (`Box%0`) and answers its object
@@ -1300,6 +1308,11 @@ export function isWorkerHandleType(
   return handle;
 }
 
+/** Set while mapType follows a resolveSymbolicTs twin: the twin is already
+ * the checker's concrete answer, so its own parts must not chase twins
+ * again (no ping-pong between two symbolic spellings). */
+let resolvingSymbolicTwin = false;
+
 export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (mapTypeDepth >= MAP_TYPE_MAX_DEPTH) return null;
   // These intrinsic domains cannot depend on generic bindings, declaration
@@ -1323,7 +1336,7 @@ export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   const sensitivityAtEntry = contextResolutions;
   mapTypeDepth++;
   try {
-    const mapped = mapTypeInner(type, ctx);
+    const mapped = mapTypeInner(type, ctx) ?? mapViaSymbolicTwin(type, ctx);
     if (
       mapped !== null &&
       memoKey !== null &&
@@ -1337,6 +1350,26 @@ export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   } finally {
     mapTypeDepth--;
   }
+}
+
+/** The last resort inside a call-keyed generic instance: a symbolic type the
+ * ordinary path could not map (a mapped or conditional type over the
+ * instance's parameters) maps through its concrete twin from the call
+ * site's resolved signature. Only consulted after a failure, so every type
+ * the ordinary path maps keeps its mapping exactly. */
+function mapViaSymbolicTwin(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
+  if (resolvingSymbolicTwin) return null;
+  const twin = ctx.resolveSymbolicTs?.(type) ?? null;
+  if (twin === null || twin === type) return null;
+  resolvingSymbolicTwin = true;
+  let mapped: IrType | null;
+  try {
+    mapped = mapType(twin, ctx);
+  } finally {
+    resolvingSymbolicTwin = false;
+  }
+  if (mapped) contextResolutions++;
+  return mapped;
 }
 
 /** Local class types need the enclosing specialization's registered layout.

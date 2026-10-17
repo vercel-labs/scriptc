@@ -340,6 +340,7 @@ import {
   implicitAnyParamSymbolsOf,
   type GenericFnInfo,
   type GenericInstance,
+  type ResolvedTypeTable,
   implicitMonoFile,
   collectGenericSignature,
   genericFnOf,
@@ -1745,6 +1746,9 @@ export class Lowerer {
    * the body needs — indexed accesses (`T[K]` needs K's literal key) and
    * keyed record reads (`o[k]` where k's type is a literal-bound K). */
   typeParamTsBindings: Map<ts.Symbol, ts.Type> | null = null;
+  /** The current call-keyed generic instance's lazy symbolic → concrete
+   * table (GenericInstance.tsResolved); null outside one. */
+  resolvedTypeTable: ResolvedTypeTable | null = null;
   /** Non-null while an IMPLICIT-ANY instance body lowers (npm-static JS;
    * see generic-functions.ts): bound param symbol →
    * the call site's checker type, consulted by typeOf for identifier
@@ -2706,6 +2710,7 @@ export class Lowerer {
       classNamer: this.classNamer,
       resolveTypeParam: this.typeParamResolver,
       resolveTypeParamTs: this.typeParamTsResolver,
+      resolveSymbolicTs: this.symbolicTypeResolver,
       genericClassInstance: (decl, ref, mapArgument) =>
         this.genericClassInstanceType(decl, ref, mapArgument),
       mixinClassInstance: (decl) =>
@@ -7391,6 +7396,12 @@ export class Lowerer {
     const sym: ts.Symbol | undefined = t.getSymbol();
     return (sym && this.typeParamBindings.get(sym)) ?? null;
   };
+
+  /** Fallback for mapType inside a call-keyed generic instance: the
+   * concrete twin of a symbolic type the ordinary path could not map
+   * (ResolvedTypeTable). Inert outside one. */
+  readonly symbolicTypeResolver = (t: ts.Type): ts.Type | null =>
+    this.resolvedTypeTable?.lookup(t) ?? null;
 
   /** The ts-level twin of typeParamResolver: the bound CHECKER type of a
    * type parameter in the current instantiation (typeParamTsBindings), for

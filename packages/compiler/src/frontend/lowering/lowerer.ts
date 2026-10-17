@@ -15184,6 +15184,57 @@ export class Lowerer {
     return { kind: "return", value: this.returnedPromiseAwait(widened), loc };
   }
 
+  /** `return v` of a checked-dynamic value from an async function whose
+   * result is typed. JS resolves the function's promise with v: a promise
+   * behind the value is adopted like a typed returned promise (the then
+   * job's turn, then its settlement, after every crossed finally), and any
+   * other value settles the function as it is, with no turn of its own.
+   * Either result then converts into the declared one. */
+  dynamicAsyncReturn(
+    node: ts.Expression,
+    value: IrExpr,
+    expected: IrType,
+    loc: SrcLoc,
+  ): IrStmt | null {
+    if (
+      !this.adoptsReturnedPromise() ||
+      value.type.kind !== "dyn" ||
+      expected.kind === "dyn" ||
+      expected.kind === "void" ||
+      expected.kind === "promise"
+    )
+      return null;
+    const held = this.declareHiddenLocal("%returned", DYN);
+    const read = (): IrExpr => varRef(held.id, DYN, loc);
+    const promise: IrExpr = {
+      kind: "dynCheck",
+      value: read(),
+      type: { kind: "promise", inner: DYN },
+      loc,
+    };
+    return {
+      kind: "block",
+      body: [
+        { kind: "varDecl", localId: held.id, init: value, loc },
+        {
+          kind: "if",
+          cond: { kind: "dynTest", test: "promise", value: read(), type: BOOL, loc },
+          then: [
+            {
+              kind: "return",
+              value: this.coerceInto(node, this.returnedPromiseAwait(promise), expected),
+              loc,
+            },
+          ],
+          else_: null,
+          loc,
+        },
+        { kind: "return", value: this.coerceInto(node, read(), expected), loc },
+      ],
+      loc,
+    };
+  }
+
   /** The await a returned promise `e` lowers to: adopting in async
    * functions (one then-job turn first, outside the function's handlers). */
   returnedPromiseAwait(e: IrExpr): IrExpr {
@@ -15278,10 +15329,13 @@ export class Lowerer {
     ) {
       // The async return lowers its operand untyped first (a promise
       // adopts before its payload converts); a maybe-promise union needs
-      // the statement form, which branches between adoption and fulfillment.
+      // the statement form, which branches between adoption and fulfillment,
+      // and a checked-dynamic value is tested for a promise at run time.
       const e = this.lowerExpr(node);
       const flattened = this.maybePromiseReturn(node, e, expected);
       if (flattened) return flattened;
+      const dynamic = this.dynamicAsyncReturn(node, e, expected, loc);
+      if (dynamic) return dynamic;
       return { kind: "return", value: this.asyncReturnValueOf(node, e, expected), loc };
     }
     return { kind: "return", value: this.lowerReturnValue(node), loc };

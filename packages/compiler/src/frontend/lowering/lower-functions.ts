@@ -569,8 +569,13 @@ export function lowerLambda(
             isAsync && !fnCtx.inferReturn
               ? lowerer.maybePromiseReturn(bodyExpr, value, bodyReturn)
               : null;
-          body = flattened
-            ? [flattened]
+          const dynamic =
+            flattened === null && !fnCtx.inferReturn
+              ? lowerer.dynamicAsyncReturn(bodyExpr, value, bodyReturn, locOf(node.body!))
+              : null;
+          const settled = flattened ?? dynamic;
+          body = settled
+            ? [settled]
             : value.type.kind === "void" && lowerer.wrappedUndefined(bodyReturn, locOf(node.body!))
               ? [{ kind: "exprStmt", expr: value, loc: locOf(node.body!) }]
               : [

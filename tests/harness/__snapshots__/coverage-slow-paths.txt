@@ -1,0 +1,14 @@
+scriptc coverage tests/coverage-fixtures/slow-paths.ts
+
+  statements analyzed   12
+  compile statically    12  (100%)
+
+  fully static — all analyzed statements compile to native code.
+
+  slower natively   2 sites (compiles and behaves like Node; makes calls slower)
+      ×1  SC7001  this write's key can name any property, so calls to 2 methods (bump, read) dispatch dynamically: each call reads the method from the instance and boxes the receiver
+          at tests/coverage-fixtures/slow-paths.ts:19:3
+          hint: type the key as a number or a string literal, write into an object created in this scope, or keep the entries in a Map
+      ×1  SC7001  this reflective write can name any property, so calls to 2 methods (bump, read) dispatch dynamically: each call reads the method from the instance and boxes the receiver
+          at tests/coverage-fixtures/slow-paths.ts:22:3
+          hint: pass literal keys or object literals, or keep the entries in a Map

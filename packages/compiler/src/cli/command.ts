@@ -216,8 +216,15 @@ async function main(args: string[], host: CliHost): Promise<number> {
     fail(`--print=diagnostics is a build/coverage option\n\n${USAGE}`);
   }
   const failOnRaw = values["fail-on"];
-  if (failOnRaw !== undefined && failOnRaw !== "blockers" && failOnRaw !== "divergences") {
-    fail(`unknown --fail-on value "${failOnRaw}" (supported: blockers, divergences)\n\n${USAGE}`);
+  if (
+    failOnRaw !== undefined &&
+    failOnRaw !== "blockers" &&
+    failOnRaw !== "divergences" &&
+    failOnRaw !== "slow-paths"
+  ) {
+    fail(
+      `unknown --fail-on value "${failOnRaw}" (supported: blockers, divergences, slow-paths)\n\n${USAGE}`,
+    );
   }
   if (failOnRaw !== undefined && command !== "coverage") {
     fail(`--fail-on is a coverage option (a build already fails on blockers)\n\n${USAGE}`);

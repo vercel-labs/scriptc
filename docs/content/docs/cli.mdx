@@ -97,8 +97,8 @@ Verifies and loads the installed precompiled runtime objects and vendored librar
   <dt><code>--print &lt;native-link-info|diagnostics&gt;</code></dt>
   <dd><code>native-link-info</code>: build an object (equivalent to <code>--emit=obj</code>) and print its machine-readable external link recipe as JSON instead of printing the artifact path. The document names the exact installed precompiled runtime pack and all link inputs, but does not invoke a linker. <code>diagnostics</code>: for <code>build</code> and <code>coverage</code>, print the versioned JSON diagnostics document described in <a href="/docs/coverage#machine-readable-diagnostics">Coverage Reports</a> instead of the human output.</dd>
 
-  <dt><code>--fail-on &lt;blockers|divergences&gt;</code></dt>
-  <dd>Coverage only. Exit with status 1 when the entry has blockers that would fail a build, or with <code>divergences</code>, also when it has Node divergence warnings. See <a href="/docs/coverage#gating-builds-and-ci">Gating builds and CI</a>.</dd>
+  <dt><code>--fail-on &lt;blockers|divergences|slow-paths&gt;</code></dt>
+  <dd>Coverage only. Exit with status 1 when the entry has blockers that would fail a build, or with <code>divergences</code>, also when it has Node divergence warnings, or with <code>slow-paths</code>, also when it has slow-path notes. See <a href="/docs/coverage#gating-builds-and-ci">Gating builds and CI</a>.</dd>
 
   <dt><code>--ffi &lt;file&gt;</code></dt>
   <dd>Bind signature-only TypeScript declarations to native C ABI symbols and link the manifest's archive, object, and system-library inputs. See <a href="/docs/ffi">Native FFI</a>.</dd>

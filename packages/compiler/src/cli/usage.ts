@@ -24,10 +24,10 @@ Options:
                      (native-link-info implies --emit=obj and never links;
                      diagnostics prints the versioned JSON diagnostics
                      envelope for build and coverage)
-      --fail-on <blockers|divergences>
+      --fail-on <blockers|divergences|slow-paths>
                      coverage only: exit 1 when the entry path has blockers
                      (a build would fail), or also when it has Node
-                     divergences
+                     divergences, or also when it has slow paths
       --backend <b>  code generator (llvm)
       --optimization <release|dev|speed>
                      native optimization posture (default: release/-O2). dev

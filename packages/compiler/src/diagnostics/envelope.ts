@@ -24,12 +24,14 @@ export const DIAGNOSTICS_SCHEMA_VERSION = 1;
  *  - invalid-source: the program itself is wrong (TypeScript errors, bad JSON modules)
  *  - unsupported: valid TypeScript/JavaScript scriptc cannot compile yet
  *  - divergence: compiles, but the native program behaves differently from Node
+ *  - slow-path: compiles and behaves like Node, but the native program is slower
  *  - environment: project configuration, scriptc's type world, toolchain or target
  *  - internal: a compiler bug */
 export type DiagnosticCategory =
   | "invalid-source"
   | "unsupported"
   | "divergence"
+  | "slow-path"
   | "environment"
   | "internal";
 
@@ -88,7 +90,8 @@ export interface DiagnosticsEnvelope {
   command: "coverage" | "build";
   entry: string;
   /** coverage: no reached blockers (and, with --fail-on=divergences, no
-   * divergences); build: an artifact was produced. */
+   * divergences, or with --fail-on=slow-paths, no slow paths either);
+   * build: an artifact was produced. */
   success: boolean;
   /** How far the command got: "preflight" when it stopped there,
    * "compile" when blockers remain, "native" when native code generation
@@ -116,9 +119,16 @@ export function isDivergenceCode(code: string): boolean {
   return /^SC6\d{3}$/.test(code);
 }
 
+/** The slow-path band: compiles and behaves like Node, but the native
+ * program is slower. Warnings, never build failures. */
+export function isSlowPathCode(code: string): boolean {
+  return /^SC7\d{3}$/.test(code);
+}
+
 export function categoryOf(diag: ScrDiagnostic): DiagnosticCategory {
   const code = diag.code;
   if (isDivergenceCode(code)) return "divergence";
+  if (isSlowPathCode(code)) return "slow-path";
   if (code === "SC0001") return diag.typeWorld === true ? "environment" : "invalid-source";
   if (code === "SC0003") return "invalid-source";
   if (code === "SC0002" || code === "SC0004") return "environment";
@@ -238,7 +248,7 @@ export function locateDiagnostic(
   return {
     code: diag.code,
     category: categoryOf(diag),
-    severity: isDivergenceCode(diag.code) ? "warning" : "error",
+    severity: isDivergenceCode(diag.code) || isSlowPathCode(diag.code) ? "warning" : "error",
     scope,
     file: diag.loc.file,
     line: start.line,

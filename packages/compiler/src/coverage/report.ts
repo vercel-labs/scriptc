@@ -38,6 +38,10 @@ export interface CoverageInput {
    * the program compiles, but these sites can behave differently natively.
    * Never blockers; `--fail-on=divergences` opts into failing on them. */
   divergences?: ScrDiagnostic[];
+  /** Sites that make the native program slower (SC7xxx): the program
+   * compiles and behaves like Node. Never blockers;
+   * `--fail-on=slow-paths` opts into failing on them. */
+  slowPaths?: ScrDiagnostic[];
   /** Each dependency's native compilation outcome, with the first refusal
    * reason for a refused package. */
   npmStatic?: NpmStaticStatus[];
@@ -271,12 +275,27 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
     renderRows(groupBlockers(divergences), YELLOW);
   };
 
+  // Slow paths: the program compiles and behaves like Node, but these
+  // sites make it slower. Never blockers (--fail-on=slow-paths opts in).
+  const slowPaths = input.slowPaths ?? [];
+  const renderSlowPaths = () => {
+    if (slowPaths.length === 0) return;
+    out.push(
+      `  ${c(YELLOW, "slower natively")}   ${slowPaths.length} site${slowPaths.length === 1 ? "" : "s"} ${c(DIM, "(compiles and behaves like Node; makes calls slower)")}`,
+    );
+    renderRows(groupBlockers(slowPaths), YELLOW);
+  };
+
   const unreachedDiags = [...(un?.diagnostics ?? []), ...(un?.runtimeFences ?? [])];
   if (failed === 0 && input.diagnostics.length === 0 && unreachedDiags.length === 0) {
     out.push(`  ${c(GREEN, "fully static")} — all analyzed statements compile to native code.`);
     if (divergences.length > 0) {
       out.push("");
       renderDivergences();
+    }
+    if (slowPaths.length > 0) {
+      out.push("");
+      renderSlowPaths();
     }
     return out.join("\n");
   }
@@ -317,6 +336,10 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
   if (divergences.length > 0) {
     out.push("");
     renderDivergences();
+  }
+  if (slowPaths.length > 0) {
+    out.push("");
+    renderSlowPaths();
   }
   return out.join("\n");
 }
@@ -366,11 +389,12 @@ function displayPath(file: string, root: string | undefined): string {
 
 /** What `coverage --fail-on` checks: reached blockers (they fail a build)
  * and, optionally, divergences. Unreached blockers never fail. */
-export type CoverageFailOn = "blockers" | "divergences";
+export type CoverageFailOn = "blockers" | "divergences" | "slow-paths";
 
 /** Whether the analysis passes the selected gate. Preflight failures
  * always fail; `failOn` undefined means only preflight fails (the report's
- * historical contract). Divergence gating implies blocker gating. */
+ * historical contract). Divergence and slow-path gating imply blocker
+ * gating. */
 export function coveragePasses(input: CoverageInput, failOn?: CoverageFailOn): boolean {
   if (input.preflightFailed) return false;
   if (failOn === undefined) return true;
@@ -378,6 +402,7 @@ export function coveragePasses(input: CoverageInput, failOn?: CoverageFailOn): b
   // runtime fences build (the statement throws only if it executes).
   if (input.diagnostics.length > 0) return false;
   if (failOn === "divergences" && (input.divergences?.length ?? 0) > 0) return false;
+  if (failOn === "slow-paths" && (input.slowPaths?.length ?? 0) > 0) return false;
   return true;
 }
 
@@ -408,6 +433,7 @@ export function coverageEnvelope(
     add(input.unreached?.diagnostics, "unreached");
     add(input.unreached?.runtimeFences, "deferred");
     add(input.divergences, "reached");
+    add(input.slowPaths, "reached");
   }
   const un = input.unreached;
   const total = input.stats.statementsTotal + (un?.stats.statementsTotal ?? 0);

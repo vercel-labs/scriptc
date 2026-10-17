@@ -1093,6 +1093,7 @@ static void scr_h2_stream_rq_push(ScrH2Stream *st, const char *data, size_t n) {
 static void scr_h2_stream_fire_data(ScrH2Stream *st, const char *data, size_t n) {
   if (st->data_ls.n == 0) return;
   ScrBytes *chunk = scr_bytes_new(SCR_BYTES_U8, (double)n);
+  chunk->is_buffer = true; /* Node delivers 'data' chunks as Buffer: string coercion decodes utf8 */
   memcpy(chunk->data, data, n);
   ScrNetL *snap;
   size_t nl = scr_net_ls_snapshot(&st->data_ls, &snap);

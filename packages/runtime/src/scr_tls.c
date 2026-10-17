@@ -1767,6 +1767,7 @@ static void scr_tls_fire_session(ScrTlsSock *t) {
   size_t need = 0;
   (void)mbedtls_ssl_session_save(&sess, NULL, 0, &need);
   ScrBytes *buf = scr_bytes_new(SCR_BYTES_U8, (double)need);
+  buf->is_buffer = true; /* Node passes the 'session' payload as a Buffer */
   size_t used = 0;
   int ok = mbedtls_ssl_session_save(&sess, buf->data, need, &used) == 0;
   mbedtls_ssl_session_free(&sess);

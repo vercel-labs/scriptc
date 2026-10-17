@@ -4,6 +4,10 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+### Fixes
+
+- **Socket and HTTP `'data'` chunks are Buffers.** Chunks delivered to `IncomingMessage`, HTTP/2 stream, `net.Socket` and TLS `'session'` listeners carry the Buffer brand, so `body += chunk` and template interpolation decode UTF-8 as in Node.js instead of joining byte values (`"104,105"`).
+
 <!-- release:start -->
 
 ## 0.3.5

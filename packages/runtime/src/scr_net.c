@@ -1170,6 +1170,7 @@ static bool scr_net_sock_deliver(ScrNetSocket *s, const char *buf, size_t n) {
   if (s->pipe_dst) scr_net_sock_write_raw(s->pipe_dst, buf, n);
   if (s->data_ls.n > 0) {
     ScrBytes *chunk = scr_bytes_new(SCR_BYTES_U8, (double)n);
+    chunk->is_buffer = true; /* Node delivers 'data' chunks as Buffer: string coercion decodes utf8 */
     memcpy(chunk->data, buf, n);
     ScrNetL *snap;
     size_t nl = scr_net_ls_snapshot(&s->data_ls, &snap);

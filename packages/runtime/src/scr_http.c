@@ -2733,6 +2733,7 @@ static void scr_http_req_deliver(ScrHttpReq *r, const char *data, size_t n) {
   bool piped = r->pipe_res != NULL || r->pipe_client != NULL || r->pipe_sock != NULL;
   if (r->data_ls.n == 0 && !piped) return;
   ScrBytes *chunk = scr_bytes_new(SCR_BYTES_U8, (double)n);
+  chunk->is_buffer = true; /* Node delivers 'data' chunks as Buffer: string coercion decodes utf8 */
   memcpy(chunk->data, data, n);
   if (r->data_ls.n > 0) {
     ScrNetL *snap;

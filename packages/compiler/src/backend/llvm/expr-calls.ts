@@ -20,6 +20,7 @@ import { collectFfiRetainedOps, parseFfiCallbackKey } from "../ffi-callbacks.js"
 import {
   mangleAsyncAdoptCall,
   mangleAsyncAwaitCall,
+  mangleAsyncInlineAwaitCall,
   mangleBorrowedFunction,
   mangleBorrowingWrapper,
   mangleClassNew,
@@ -70,7 +71,7 @@ export function emitCallExpr(
     | "instanceOf"
     | "virtualCall"
   >,
-  awaitEntry: false | "await" | "adopt" = false,
+  awaitEntry: false | "await" | "adopt" | "inline" = false,
   /** A projection consumes a scalar union result (Int32Abi.union): answer
    * a private stack box instead of a heap box. */
   stackResult = false,
@@ -171,6 +172,21 @@ export function emitCallExpr(
             : `${host.llType(callee.params[i]!.type)} ${a.name}`,
         )
         .join(", ");
+      if (awaitEntry === "inline") {
+        // A stackless coroutine's await of a fiberless callee: the entry
+        // runs the body in place and leaves a throw pending; the enclosing
+        // await takes the turn and tests (emitCoroInlineAwait).
+        host.inlineAwaitCallees.add(e.callee);
+        const awaited = callee.returnType;
+        const entry = `@${mangleAsyncInlineAwaitCall(e.callee)}`;
+        if (awaited.kind === "void") {
+          B.line(`call void ${entry}(${argList})`);
+          return { name: "", type: awaited };
+        }
+        const t = B.tmp();
+        B.line(`${t} = call ${host.llType(awaited)} ${entry}(${argList})`);
+        return host.own({ name: t, type: awaited });
+      }
       if (awaitEntry) {
         // The enclosing await routes this call through the callee's
         // await-call entry: the result is the awaited value, and the

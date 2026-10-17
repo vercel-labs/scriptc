@@ -77,6 +77,25 @@ bool scr_wasi_module_await_prepare(ScrFiber *self, ScrPromise *p);
 void scr_wasi_async_finish(ScrFiber *self);
 void scr_wasi_gen_finish(ScrFiber *self);
 
+/* Native stackless async functions: an async body the compiler lowered to
+ * an LLVM switched coroutine because it suspends only at its own awaits.
+ * It runs on whichever stack resumes it (the spawner's for the eager
+ * prefix, the loop's afterwards) with a heap frame holding the values live
+ * across its awaits, instead of a dedicated fiber stack. Each await first
+ * prepares the continuation (true: the coroutine must suspend; false: it
+ * continues in place, exactly where a fiber's hop would continue without
+ * switching), then extracts the settled result after resuming without any
+ * further hop or park (a rejection re-throws). */
+ScrPromise *scr_async_spawn_stackless(void (*entry)(ScrFiber *, void *), void *argpack);
+bool scr_coro_await_prepare(ScrFiber *self, ScrPromise *p);
+bool scr_coro_hop_prepare(ScrFiber *self);
+void scr_coro_async_finish(ScrFiber *self);
+void scr_coro_await_void(ScrPromise *p);
+double scr_coro_await_f64(ScrPromise *p);
+bool scr_coro_await_bool(ScrPromise *p);
+ScrStr *scr_coro_await_str(ScrPromise *p); /* +1 */
+void *scr_coro_await_ref(ScrPromise *p);   /* +1 via the stored retain */
+
 double scr_await_f64(ScrPromise *p); /* rejected promises re-throw */
 bool scr_await_bool(ScrPromise *p);
 ScrStr *scr_await_str(ScrPromise *p); /* +1 */

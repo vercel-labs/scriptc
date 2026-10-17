@@ -892,6 +892,17 @@ export function emitAsyncExpr(
       // the callee's adopting entry. Past finally regions, the return has
       // already produced the promise (adoptedOperand).
       const adopted = e.adopt === true ? host.takeAdoptedOperand() : null;
+      // A stackless coroutine body runs a never-suspending callee in place
+      // and takes the await's turn itself.
+      if (adopted === null && e.value.kind === "call" && host.inlineAwaitEligible(e.value.callee)) {
+        const callee = host.fnByName.get(e.value.callee)!;
+        if (
+          typeEquals(callee.returnType, e.type) &&
+          !host.callLifetimes.borrowed.has(e.value.callee)
+        ) {
+          return host.emitCoroInlineAwait(e.value, e.adopt === true);
+        }
+      }
       if (adopted === null && e.value.kind === "call" && host.awaitCallEligible(e.value.callee)) {
         const callee = host.fnByName.get(e.value.callee)!;
         if (
@@ -903,32 +914,37 @@ export function emitAsyncExpr(
       }
       const pr = adopted ?? host.emitExpr(e.value);
       if (e.adopt === true) {
-        if (host.wasi) host.emitWasiSuspend(null);
+        if (host.coroAwait) host.emitCoroAwait(null);
         else {
           host.declare(`declare void @scr_await_hop()`);
           B.line(`call void @scr_await_hop()`);
         }
       }
-      if (host.wasi) host.emitWasiSuspend(pr.name);
+      if (host.coroAwait) host.emitCoroAwait(pr.name);
       if (e.type.kind === "void") {
-        host.declare(`declare void @scr_await_void(ptr)`);
-        B.line(`call void @scr_await_void(ptr ${pr.name})`);
+        const voidAwait = host.awaitResultFn("void");
+        host.declare(`declare void @${voidAwait}(ptr)`);
+        B.line(`call void @${voidAwait}(ptr ${pr.name})`);
         host.emitPendingCheck();
         return { name: "", type: e.type };
       }
       const t = B.tmp();
       if (e.type.kind === "f64" || e.type.kind === "date") {
-        host.declare(`declare double @scr_await_f64(ptr)`);
-        B.line(`${t} = call double @scr_await_f64(ptr ${pr.name})`);
+        const f64Await = host.awaitResultFn("f64");
+        host.declare(`declare double @${f64Await}(ptr)`);
+        B.line(`${t} = call double @${f64Await}(ptr ${pr.name})`);
       } else if (e.type.kind === "bool") {
-        host.declare(`declare zeroext i1 @scr_await_bool(ptr)`);
-        B.line(`${t} = call zeroext i1 @scr_await_bool(ptr ${pr.name})`);
+        const boolAwait = host.awaitResultFn("bool");
+        host.declare(`declare zeroext i1 @${boolAwait}(ptr)`);
+        B.line(`${t} = call zeroext i1 @${boolAwait}(ptr ${pr.name})`);
       } else if (e.type.kind === "string") {
-        host.declare(`declare ptr @scr_await_str(ptr)`);
-        B.line(`${t} = call ptr @scr_await_str(ptr ${pr.name})`);
+        const strAwait = host.awaitResultFn("str");
+        host.declare(`declare ptr @${strAwait}(ptr)`);
+        B.line(`${t} = call ptr @${strAwait}(ptr ${pr.name})`);
       } else {
-        host.declare(`declare ptr @scr_await_ref(ptr)`);
-        B.line(`${t} = call ptr @scr_await_ref(ptr ${pr.name})`);
+        const refAwait = host.awaitResultFn("ref");
+        host.declare(`declare ptr @${refAwait}(ptr)`);
+        B.line(`${t} = call ptr @${refAwait}(ptr ${pr.name})`);
       }
       const out = host.own({ name: t, type: e.type });
       host.emitPendingCheck();
@@ -960,15 +976,16 @@ export function emitAsyncExpr(
         const lj = B.newLabel("au.j");
         B.condBr(isP, lp, lh);
         B.startBlock(lp);
-        host.declare(`declare void @scr_await_void(ptr)`);
+        const voidAwait = host.awaitResultFn("void");
+        host.declare(`declare void @${voidAwait}(ptr)`);
         {
           const promise = host.unionPeek(u.name, def.id);
-          if (host.wasi) host.emitWasiSuspend(promise);
-          B.line(`call void @scr_await_void(ptr ${promise})`);
+          if (host.coroAwait) host.emitCoroAwait(promise);
+          B.line(`call void @${voidAwait}(ptr ${promise})`);
         }
         B.br(lj);
         B.startBlock(lh);
-        if (host.wasi) host.emitWasiSuspend(null);
+        if (host.coroAwait) host.emitCoroAwait(null);
         else B.line(`call void @scr_await_hop()`);
         B.br(lj);
         B.startBlock(lj);
@@ -1000,33 +1017,37 @@ export function emitAsyncExpr(
       B.condBr(isP, lp, lh);
       B.startBlock(lp);
       const peek = host.unionPeek(u.name, def.id);
-      if (host.wasi) host.emitWasiSuspend(peek);
+      if (host.coroAwait) host.emitCoroAwait(peek);
       let awaited: LlValue;
       if (inner.kind === "f64" || inner.kind === "date") {
-        host.declare(`declare double @scr_await_f64(ptr)`);
+        const f64Await = host.awaitResultFn("f64");
+        host.declare(`declare double @${f64Await}(ptr)`);
         const x = B.tmp();
-        B.line(`${x} = call double @scr_await_f64(ptr ${peek})`);
+        B.line(`${x} = call double @${f64Await}(ptr ${peek})`);
         awaited = { name: x, type: inner };
       } else if (inner.kind === "bool") {
-        host.declare(`declare zeroext i1 @scr_await_bool(ptr)`);
+        const boolAwait = host.awaitResultFn("bool");
+        host.declare(`declare zeroext i1 @${boolAwait}(ptr)`);
         const x = B.tmp();
-        B.line(`${x} = call zeroext i1 @scr_await_bool(ptr ${peek})`);
+        B.line(`${x} = call zeroext i1 @${boolAwait}(ptr ${peek})`);
         awaited = { name: x, type: inner };
       } else if (inner.kind === "string") {
-        host.declare(`declare ptr @scr_await_str(ptr)`);
+        const strAwait = host.awaitResultFn("str");
+        host.declare(`declare ptr @${strAwait}(ptr)`);
         const x = B.tmp();
-        B.line(`${x} = call ptr @scr_await_str(ptr ${peek})`);
+        B.line(`${x} = call ptr @${strAwait}(ptr ${peek})`);
         awaited = { name: x, type: inner };
       } else {
-        host.declare(`declare ptr @scr_await_ref(ptr)`);
+        const refAwait = host.awaitResultFn("ref");
+        host.declare(`declare ptr @${refAwait}(ptr)`);
         const x = B.tmp();
-        B.line(`${x} = call ptr @scr_await_ref(ptr ${peek})`);
+        B.line(`${x} = call ptr @${refAwait}(ptr ${peek})`);
         awaited = { name: x, type: inner };
       }
       B.line(`store ptr ${host.unionNewOwned(resUnionId, innerTag, awaited)}, ptr ${slot}`);
       B.br(lj);
       B.startBlock(lh);
-      if (host.wasi) host.emitWasiSuspend(null);
+      if (host.coroAwait) host.emitCoroAwait(null);
       else B.line(`call void @scr_await_hop()`);
       const unitTags = def.arms.flatMap((a, i) => (isUnitType(a) ? [i] : []));
       if (unitTags.length === 1) {

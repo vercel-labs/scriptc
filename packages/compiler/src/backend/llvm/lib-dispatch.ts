@@ -184,8 +184,8 @@ export function emitIoLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue
 
 export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
-  if (host.wasi && e.fn === "async.hop") {
-    host.emitWasiSuspend(null);
+  if (host.coroAwait && e.fn === "async.hop") {
+    host.emitCoroAwait(null);
     return { name: "", type: e.type };
   }
   if (host.wasi && e.fn === "async.awaitDyn") {

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/stackless-async-context.ts"
+ ],
+ "diags": []
+}

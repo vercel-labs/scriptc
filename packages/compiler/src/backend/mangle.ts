@@ -182,6 +182,12 @@ export function mangleAsyncAwaitCall(fnName: string): string {
 export function mangleAsyncAdoptCall(fnName: string): string {
   return `sc_ad_${sanitize(fnName)}`;
 }
+/** A stackless coroutine body's `await f(...)` of a fiberless async f: the
+ * body run in place, returning its result with any throw left pending; the
+ * coroutine takes the await's turn itself. */
+export function mangleAsyncInlineAwaitCall(fnName: string): string {
+  return `sc_ai_${sanitize(fnName)}`;
+}
 export function mangleTrampoline(fnName: string): string {
   return `sc_tr_${sanitize(fnName)}`;
 }

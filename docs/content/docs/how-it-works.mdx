@@ -77,7 +77,7 @@ Program objects define `main` and leave selected `scr_*` runtime functions undef
 ## Native runtime
 
 - **Memory:** Values use reference counting. Acyclic values are freed when their last reference is released, and a cycle collector runs at defined collection points. Some cycles involving opaque native values can remain allocated. When the main thread's script ends, the process exits without freeing what the program still holds, and the operating system reclaims it; worker threads free their heaps when they exit. Builds with `--sanitize`, and processes run with `SCRIPTC_EXIT_FREE=1` (for external leak checkers), free everything at exit.
-- **Concurrency:** `async`/`await` uses stackful fibers. The native event loop schedules microtasks, timers, and I/O, using kqueue on macOS and epoll on Linux.
+- **Concurrency:** An `async` function that suspends only at its own `await` expressions compiles to a stackless coroutine whose heap frame holds the values live across those awaits; other suspending `async` functions and async generators use stackful fibers. The native event loop schedules microtasks, timers, and I/O, using kqueue on macOS and epoll on Linux.
 - **Networking:** Supported `net`, `http`, `https`, `tls`, `dgram`, and `dns` APIs use native implementations. TLS uses vendored mbedTLS.
 - **Numbers:** Values use JavaScript's double-precision representation. Number-to-string formatting uses shortest-roundtrip output and is tested against Node.js.
 - **Regular expressions and Unicode:** The runtime uses QuickJS's regular-expression and Unicode libraries, linked into programs that use them.

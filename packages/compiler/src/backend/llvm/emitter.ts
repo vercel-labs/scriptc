@@ -142,6 +142,7 @@ import {
   mangleArgPack,
   mangleAsyncAdoptCall,
   mangleAsyncAwaitCall,
+  mangleAsyncInlineAwaitCall,
   mangleAsyncSpawn,
   mangleBorrowedFunction,
   mangleClassObj,
@@ -528,6 +529,18 @@ function llStrBytes(text: string): string {
 }
 
 const NO_BORROWED: ReadonlySet<number> = new Set();
+
+/** Runtime entry points (and await-call entries) that may park the running
+ * execution context, as they appear in emitted function text. */
+const SUSPENDS =
+  /@(?:scr_(?:await_|module_await\b|promise_await_settled\b|test_sub\b|gen_yield_|async_gen_|fiber_)|sc_a[wd]_)/;
+/** The suspensions of a fiber body's own awaits, which its stackless
+ * coroutine form suspends itself at instead. */
+const AWAIT_SUSPENSIONS = /@(?:scr_await_(?:void|f64|bool|str|ref|hop)\b|sc_a[wd]_[A-Za-z0-9_]+)/g;
+/** SUSPENDS in a stackless coroutine body, whose frame bookkeeping reads its
+ * own fiber and promise. */
+const COROUTINE_SUSPENDS =
+  /@(?:scr_(?:await_|module_await\b|promise_await_settled\b|test_sub\b|gen_yield_|async_gen_|fiber_(?!self\b|promise\b))|sc_a[wd]_)/;
 /** ScrExcKind tags of a generator slot holding a number or a boolean. */
 const SCR_EXC_F64 = 1;
 const SCR_EXC_BOOL = 2;
@@ -651,6 +664,12 @@ export class LlEmitter {
    * generator stacks) and so do debug builds (the debugger reads locals
    * from the native frame). */
   private stacklessGenerators = false;
+  /** Async bodies that suspend only at their own awaits compile to the same
+   * switched coroutines on native targets (selectStacklessAsync), under the
+   * generators' conditions; library and Windows builds keep fibers. */
+  private stacklessAsyncAllowed = false;
+  /** The async functions selectStacklessAsync lowered as coroutines. */
+  private readonly stacklessAsync = new Set<string>();
   /** Some function in the module is lowered as a coroutine. */
   private usesCoroutines = false;
   /** The target lacks a rounding instruction at its baseline CPU (x86-64
@@ -837,6 +856,12 @@ export class LlEmitter {
   /** Async functions returned directly at some `return f(...)` site of an
    * async function; each gets an adopting entry (emitAsyncAwaitCall). */
   readonly adoptCallees = new Set<string>();
+  /** Fiberless async functions a stackless coroutine body awaits directly;
+   * each gets an inline await entry (emitCoroInlineAwait). */
+  readonly inlineAwaitCallees = new Set<string>();
+  /** The async functions whose bodies never suspend and that a direct
+   * await may enter in place (selectStacklessAsync). */
+  private inlineAwaitable = new Set<string>();
   /** The promise a `return` emitted past its finally regions already
    * produced for its adopting await (borrowed from the return's parked
    * slot); that await takes it instead of evaluating its operand. */
@@ -1150,6 +1175,10 @@ export class LlEmitter {
     this.mayThrow = mt.fns;
     this.workerEntryPolls = mt.workerEntryPolls ?? null;
     this.stackChecks = mt.stackChecks ?? null;
+    // A stackless call's eager prefix borrows its caller's stack; the
+    // runtime moves deep prefix nests to a fresh stack using the guard,
+    // which Windows lacks.
+    this.stacklessAsyncAllowed = this.stacklessGenerators && mod.lib === undefined && !windows;
     this.publishedTypes = computePublishedTypes(mod);
     this.immutableFields = computeImmutableFields(mod);
     this.constructorFunctions = new Set((mod.classes ?? []).map((c) => `%${c.name}.constructor`));
@@ -1856,6 +1885,7 @@ export class LlEmitter {
       fnDefs.push(def);
       this.fnDefText.set(fn.name, def);
     }
+    this.selectStacklessAsync(fnDefs);
     const errorViews: string[] = [];
     for (const property of ["name", "message"])
       if (this.mod.functions.some((fn) => fn.name === `%error.${property}.read`)) {
@@ -3710,29 +3740,49 @@ export class LlEmitter {
    * cannot reorder execution undetected: the runtime traps when a context parks while a
    * fiberless body is on its stack. */
   private fiberlessAsyncFunctions(): Set<string> {
+    const parks = this.parkingFunctions();
+    const eligible = parks === null ? new Set<string>() : this.neverParkingAsync(parks);
+    for (const name of this.inlineAwaitCallees)
+      if (!eligible.has(name))
+        throw new InternalCompilerError(`llvm emitter bug: inline await of suspending ${name}`);
+    return eligible;
+  }
+
+  /** The async functions `parks` leaves fiberless (fiberlessAsyncFunctions). */
+  private neverParkingAsync(parks: ReadonlySet<string>): Set<string> {
     const eligible = new Set<string>();
-    if (this.wasi || this.mod.workers === true) return eligible;
-    const suspends =
-      /@(?:scr_(?:await_|module_await\b|promise_await_settled\b|test_sub\b|gen_yield_|async_gen_|fiber_)|sc_a[wd]_)/;
-    for (const decl of this.decls) if (/@scr_test_sub\b/.test(decl)) return eligible;
-    for (const text of this.fnDefText.values()) if (/@scr_test_sub\b/.test(text)) return eligible;
-    const byMangled = new Map<string, string>();
     for (const fn of this.mod.functions) {
-      byMangled.set(mangleFunction(fn.name), fn.name);
-      byMangled.set(mangleBorrowedFunction(fn.name), fn.name);
+      if (fn.async !== true || fn.generator !== undefined) continue;
+      if (fn.asyncCacheGlobal !== undefined || fn.asyncCycleCacheGlobal !== undefined) continue;
+      if (fn.returnType.kind === "dyn" || parks.has(fn.name)) continue;
+      if (!this.fnDefText.has(fn.name) || this.stacklessAsync.has(fn.name)) continue;
+      eligible.add(fn.name);
     }
+    return eligible;
+  }
+
+  /** The module functions whose bodies may park their execution context:
+   * their emitted text mentions a suspension entry point (SUSPENDS), or
+   * they mention such a function (transitively). Null where async bodies
+   * must keep fibers regardless: wasm32 (its coroutine lowering owns async
+   * bodies), worker programs, and programs that use node:test subtests,
+   * whose `t.test()` awaits on the CURRENT fiber even from synchronous
+   * code. */
+  private parkingFunctions(): Set<string> | null {
+    if (this.wasi || this.mod.workers === true) return null;
+    for (const decl of this.decls) if (/@scr_test_sub\b/.test(decl)) return null;
+    for (const text of this.fnDefText.values()) if (/@scr_test_sub\b/.test(text)) return null;
     // Reverse mention edges, then propagate "may park" to every mentioner.
     const mentionedBy = new Map<string, Set<string>>();
     const parks = new Set<string>();
     const work: string[] = [];
     for (const [name, text] of this.fnDefText) {
-      if (suspends.test(text)) {
+      if (SUSPENDS.test(text)) {
         parks.add(name);
         work.push(name);
       }
-      for (const match of text.matchAll(/@(sc_b?f_[A-Za-z0-9_]+)/g)) {
-        const callee = byMangled.get(match[1]!);
-        if (callee === undefined || callee === name) continue;
+      for (const callee of this.mentionedFunctions(text)) {
+        if (callee === name) continue;
         let callers = mentionedBy.get(callee);
         if (callers === undefined) mentionedBy.set(callee, (callers = new Set()));
         callers.add(name);
@@ -3747,14 +3797,67 @@ export class LlEmitter {
         work.push(caller);
       }
     }
-    for (const fn of this.mod.functions) {
-      if (fn.async !== true || fn.generator !== undefined) continue;
-      if (fn.asyncCacheGlobal !== undefined || fn.asyncCycleCacheGlobal !== undefined) continue;
-      if (fn.returnType.kind === "dyn" || parks.has(fn.name)) continue;
-      if (!this.fnDefText.has(fn.name)) continue;
-      eligible.add(fn.name);
+    return parks;
+  }
+
+  private mangledFunctions: Map<string, string> | null = null;
+
+  /** The module functions whose ordinary or borrowed body `text` mentions. */
+  private *mentionedFunctions(text: string): Generator<string> {
+    if (this.mangledFunctions === null) {
+      this.mangledFunctions = new Map();
+      for (const fn of this.mod.functions) {
+        this.mangledFunctions.set(mangleFunction(fn.name), fn.name);
+        this.mangledFunctions.set(mangleBorrowedFunction(fn.name), fn.name);
+      }
     }
-    return eligible;
+    for (const match of text.matchAll(/@(sc_b?f_[A-Za-z0-9_]+)/g)) {
+      const callee = this.mangledFunctions.get(match[1]!);
+      if (callee !== undefined) yield callee;
+    }
+  }
+
+  /** Chooses the native async functions whose bodies compile to switched
+   * coroutines instead of running on a fiber: a suspended call then keeps a
+   * heap frame of the values live across its awaits rather than a fiber and
+   * its stack. A body qualifies when its only suspension points are its own
+   * awaits, which the coroutine form suspends itself at (emitCoroAwait), so
+   * nothing it runs can park the stack it borrows. It is first emitted as
+   * usual: that text may suspend only through await runtime calls and
+   * await-call entries, which the coroutine form replaces, and may call no
+   * function that parks. The coroutine form is then emitted and must pass
+   * the same test with no exceptions (its frame bookkeeping excepted);
+   * otherwise the fiber form stays. Bodies that never suspend stay
+   * fiberless, and module evaluation bodies and `dyn` results keep fibers
+   * as they do there. The runtime traps if a stackless body ever parks. */
+  private selectStacklessAsync(fnDefs: string[]): void {
+    if (!this.stacklessAsyncAllowed) return;
+    const parks = this.parkingFunctions();
+    if (parks === null) return;
+    // Coroutine bodies emitted below are the only inline-await callers, and
+    // replacing their text changes no other function's parking.
+    this.inlineAwaitable = this.neverParkingAsync(parks);
+    const qualifies = (fn: IrFunction, text: string, suspends: RegExp): boolean => {
+      if (suspends.test(text)) return false;
+      for (const callee of this.mentionedFunctions(text))
+        if (callee !== fn.name && parks.has(callee)) return false;
+      return true;
+    };
+    this.mod.functions.forEach((fn, index) => {
+      if (fn.async !== true || fn.generator !== undefined) return;
+      if (fn.asyncCacheGlobal !== undefined || fn.asyncCycleCacheGlobal !== undefined) return;
+      if (fn.returnType.kind === "dyn" || !parks.has(fn.name)) return;
+      const fiberText = fnDefs[index]!;
+      if (!qualifies(fn, fiberText.replace(AWAIT_SUSPENSIONS, ""), SUSPENDS)) return;
+      this.stacklessAsync.add(fn.name);
+      const coroText = this.emitFunction(fn);
+      if (!qualifies(fn, coroText, COROUTINE_SUSPENDS)) {
+        this.stacklessAsync.delete(fn.name);
+        return;
+      }
+      fnDefs[index] = coroText;
+      this.fnDefText.set(fn.name, coroText);
+    });
   }
 
   /** The spawn wrapper of a fiberless async function: runs the body on the
@@ -3803,11 +3906,83 @@ export class LlEmitter {
    * entry's result is the awaited value of f's own body type; direct calls
    * never carry a lifted environment. */
   awaitCallEligible(fnName: string): boolean {
-    if (this.wasi || this.mod.workers === true) return false;
+    // A coroutine body suspends itself at the await; the entry would park
+    // the stack it runs on.
+    if (this.wasi || this.mod.workers === true || this.currentCoro !== null) return false;
     const fn = this.fnByName.get(fnName);
     if (fn === undefined || fn.async !== true || fn.generator !== undefined) return false;
     if (fn.captures !== undefined || fn.returnType.kind === "dyn") return false;
     return fn.asyncCacheGlobal === undefined && fn.asyncCycleCacheGlobal === undefined;
+  }
+
+  /** Whether a stackless coroutine body's `await f(...)` may run f's body in
+   * place (emitCoroInlineAwait): f never suspends, and its direct call is
+   * one an await-call entry could take. */
+  inlineAwaitEligible(fnName: string): boolean {
+    if (this.wasi || this.currentCoro?.kind !== "async") return false;
+    const fn = this.fnByName.get(fnName);
+    if (fn === undefined || !this.inlineAwaitable.has(fnName)) return false;
+    return fn.captures === undefined;
+  }
+
+  /** The inline await entry of a fiberless async function (`sc_ai_*`): its
+   * body on the caller's stack between scr_async_inline_enter/exit, as in
+   * its spawn wrapper, returning the result and leaving a throw pending for
+   * the awaiting coroutine (emitCoroInlineAwait). */
+  private emitAsyncInlineAwaitCall(fn: IrFunction): string[] {
+    const retTy = this.llType(fn.returnType);
+    const params = fn.params.map((p, i) => `${this.llType(p.type)} %a${i}`);
+    const args = params.join(", ");
+    this.declare(`declare void @scr_async_inline_enter(ptr)`);
+    this.declare(`declare void @scr_async_inline_exit(ptr)`);
+    const bodyCall = `call ${retTy} @${mangleFunction(fn.name)}(${args})`;
+    return [
+      `define internal ${retTy} @${mangleAsyncInlineAwaitCall(fn.name)}(${args}) ${FN_ATTRS} { ; inline await ${fn.name}`,
+      `entry:`,
+      `  %frame = alloca { ptr, ptr }`,
+      `  call void @scr_async_inline_enter(ptr %frame)`,
+      retTy === "void" ? `  ${bodyCall}` : `  %r = ${bodyCall}`,
+      `  call void @scr_async_inline_exit(ptr %frame)`,
+      retTy === "void" ? `  ret void` : `  ret ${retTy} %r`,
+      `}`,
+      ``,
+    ];
+  }
+
+  /** A stackless coroutine body's `await f(...)` of a fiberless f, the
+   * await-call entry's turns without its promise: the body runs in place,
+   * then a clean result takes the await's turn, and a throw becomes the
+   * rejected promise the await takes its turn on and re-throws, exactly as
+   * the spawn wrapper's promise would. An adopting await (`return f(...)`)
+   * first takes the adoption's then-job turn either way. */
+  emitCoroInlineAwait(call: ExprOf<"call">, adopt: boolean): LlValue {
+    const B = this.B;
+    const value = emitCallExpr(this, call, "inline");
+    const thrown = B.tmp();
+    for (const line of this.pendingTestLines(thrown)) B.line(line.trim());
+    if (adopt) this.emitCoroAwait(null);
+    const clean = B.newLabel("ai.clean");
+    const rejected = B.newLabel("ai.rejected");
+    const join = B.newLabel("ai.join");
+    B.condBr(thrown, rejected, clean);
+    B.startBlock(clean);
+    this.emitCoroAwait(null);
+    B.br(join);
+    B.startBlock(rejected);
+    this.declare(`declare ptr @scr_promise_new()`);
+    this.declare(`declare void @scr_promise_reject_pending(ptr)`);
+    this.declare(`declare void @scr_coro_await_void(ptr)`);
+    this.declare(`declare void @scr_promise_release(ptr)`);
+    const promise = B.tmp();
+    B.line(`${promise} = call ptr @scr_promise_new()`);
+    B.line(`call void @scr_promise_reject_pending(ptr ${promise})`);
+    this.emitCoroAwait(promise);
+    B.line(`call void @scr_coro_await_void(ptr ${promise})`);
+    B.line(`call void @scr_promise_release(ptr ${promise})`);
+    B.br(join);
+    B.startBlock(join);
+    this.emitPendingCheck();
+    return value;
   }
 
   /** The await-call entry of an async function (`sc_aw_*`): one direct
@@ -3867,6 +4042,21 @@ export class LlEmitter {
         `entry:`,
         `  %p = call ptr @${mangleAsyncSpawn(fn.name)}(${args})`,
         `  call void @scr_await_hop()`,
+        awaitLine("%v", "%p"),
+        `  call void @scr_promise_release(ptr %p)`,
+        retLine("%v"),
+        `}`,
+        ``,
+      ];
+    }
+    if (argPackLines !== null && this.stacklessAsync.has(fn.name)) {
+      // A stackless body's eager prefix already runs on the awaiter's
+      // stack, which then awaits the promise like the two separate steps.
+      this.declare(`declare void @scr_promise_release(ptr)`);
+      return [
+        head,
+        `entry:`,
+        `  %p = call ptr @${mangleAsyncSpawn(fn.name)}(${args})`,
         awaitLine("%v", "%p"),
         `  call void @scr_promise_release(ptr %p)`,
         retLine("%v"),
@@ -3974,6 +4164,9 @@ export class LlEmitter {
       if (fiberless.has(fn.name) && this.adoptCallees.has(fn.name)) {
         for (const line of this.emitAsyncAwaitCall(fn, null, true)) out.push(line);
       }
+      if (this.inlineAwaitCallees.has(fn.name)) {
+        for (const line of this.emitAsyncInlineAwaitCall(fn)) out.push(line);
+      }
       if (fiberless.has(fn.name)) {
         const fieldTys = [
           ...(fn.captures !== undefined ? ["ptr"] : []),
@@ -3992,10 +4185,12 @@ export class LlEmitter {
       if (this.adoptCallees.has(fn.name)) {
         for (const line of this.emitAsyncAwaitCall(fn, argPackLines, true)) out.push(line);
       }
+      const stackless = this.stacklessAsync.has(fn.name);
+      const spawn = stackless ? "scr_async_spawn_stackless" : "scr_async_spawn";
       this.declare(`declare ptr @scr_fiber_promise(ptr)`);
-      this.declare(`declare ptr @scr_async_spawn(ptr, ptr)`);
+      this.declare(`declare ptr @${spawn}(ptr, ptr)`);
       this.needOom();
-      if (this.wasi) {
+      if (this.wasi || stackless) {
         // The coroutine body settles its own promise and owns the retained
         // lifted environment until final suspension. Its initial call
         // returns here at the first suspend (or final suspend).
@@ -4051,7 +4246,7 @@ export class LlEmitter {
         ...argPackLines,
       ];
       sp.push(
-        `  %p = call ptr @scr_async_spawn(ptr @${mangleTrampoline(fn.name)}, ptr %ap)`,
+        `  %p = call ptr @${spawn}(ptr @${mangleTrampoline(fn.name)}, ptr %ap)`,
         ...(cache !== null
           ? [
               // The module loader owns this evaluation promise
@@ -4095,10 +4290,12 @@ export class LlEmitter {
   }
 
   /** Whether `fn`'s body is emitted as an LLVM switched coroutine: every
-   * wasm32 async or generator body, and native synchronous generators. */
+   * wasm32 async or generator body, native synchronous generators, and the
+   * native async bodies selectStacklessAsync chose. */
   private coroLowered(fn: IrFunction): boolean {
     if (this.wasi) return fn.async === true || fn.generator !== undefined;
-    return this.stacklessGenerators && fn.generator !== undefined && fn.async !== true;
+    if (fn.async === true) return fn.generator === undefined && this.stacklessAsync.has(fn.name);
+    return this.stacklessGenerators && fn.generator !== undefined;
   }
 
   /** Per-generator-function machinery — the async scaffolding's lazy
@@ -6115,6 +6312,53 @@ export class LlEmitter {
     this.emitCoroSuspendPrepared();
   }
 
+  /** Awaits in the current body suspend its coroutine: every wasm32 async
+   * body, and native stackless async bodies (selectStacklessAsync). */
+  get coroAwait(): boolean {
+    return this.wasi || this.currentCoro?.kind === "async";
+  }
+
+  /** Suspends the current coroutine body at an await of `promise` (null: a
+   * single microtask hop, as for a non-promise operand). A native body
+   * suspends unless the runtime continues it in place, where a fiber's
+   * hop would continue without switching (scr_coro_await_prepare). */
+  emitCoroAwait(promise: string | null): void {
+    if (this.wasi) {
+      this.emitWasiSuspend(promise);
+      return;
+    }
+    const coro = this.currentCoro;
+    if (coro === null)
+      throw new InternalCompilerError("llvm emitter bug: await suspension outside a coroutine");
+    const B = this.B;
+    const suspend = B.tmp();
+    if (promise === null) {
+      this.declare(`declare zeroext i1 @scr_coro_hop_prepare(ptr)`);
+      B.line(`${suspend} = call zeroext i1 @scr_coro_hop_prepare(ptr ${coro.self})`);
+    } else {
+      this.declare(`declare zeroext i1 @scr_coro_await_prepare(ptr, ptr)`);
+      B.line(
+        `${suspend} = call zeroext i1 @scr_coro_await_prepare(ptr ${coro.self}, ptr ${promise})`,
+      );
+    }
+    const park = B.newLabel("await.suspend");
+    const ready = B.newLabel("await.ready");
+    B.condBr(suspend, park, ready);
+    B.startBlock(park);
+    this.emitCoroSuspendPrepared();
+    B.br(ready);
+    B.startBlock(ready);
+  }
+
+  /** The runtime entry extracting an await's result of `kind`. A native
+   * coroutine has already suspended until the promise settled, so its
+   * extraction takes no further turn. */
+  awaitResultFn(kind: "void" | "f64" | "bool" | "str" | "ref"): string {
+    return !this.wasi && this.currentCoro?.kind === "async"
+      ? `scr_coro_await_${kind}`
+      : `scr_await_${kind}`;
+  }
+
   /** A native generator's OUT slot (scr_async.c's ScrGen.out, mirrored by
    * %ScrGenHead and %ScrGenSlot { kind, f64, b, payload, release_fn }). */
   genOutSlot(gen: string): string {
@@ -6701,8 +6945,9 @@ export class LlEmitter {
         this.declare(`declare void @${finish}(ptr)`);
         B.line(`call void @${finish}(ptr ${coro.self})`);
       } else {
-        this.declare(`declare void @scr_wasi_async_finish(ptr)`);
-        B.line(`call void @scr_wasi_async_finish(ptr ${coro.self})`);
+        const finish = this.wasi ? "scr_wasi_async_finish" : "scr_coro_async_finish";
+        this.declare(`declare void @${finish}(ptr)`);
+        B.line(`call void @${finish}(ptr ${coro.self})`);
       }
       const finalState = B.tmp();
       B.line(`${finalState} = call i8 @llvm.coro.suspend(token none, i1 true)`);

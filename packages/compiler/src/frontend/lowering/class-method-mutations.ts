@@ -287,7 +287,10 @@ export function collectClassMethodMutations(
           ts.isSetAccessorDeclaration(node)) &&
         ts.isComputedPropertyName(node.name)
       ) {
-        markKey(node.name.expression, node);
+        // A computed key naming a property of an object literal under construction cannot shadow a class method: the literal is a fresh value, and copies onto real receivers flow through the reflected write paths, which census the receiver.
+        // The same shape appears for destructuring assignment targets, whose keys name bindings, so skipping both is safe.
+        if (!ts.isPropertyAssignment(node) || !ts.isObjectLiteralExpression(node.parent))
+          markKey(node.name.expression, node);
       }
 
       if (

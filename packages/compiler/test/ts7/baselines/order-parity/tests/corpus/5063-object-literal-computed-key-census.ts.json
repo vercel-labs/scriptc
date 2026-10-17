@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5063-object-literal-computed-key-census.ts"
+ ],
+ "diags": []
+}

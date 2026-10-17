@@ -107,7 +107,7 @@ export function emitLiteralExpr(
         return host.own({ name: v, type: e.type });
       }
       const t = B.tmp();
-      B.line(`${t} = load ${host.llType(b.type)}, ptr ${b.slot}`);
+      B.line(`${t} = load ${host.llType(b.type)}, ptr ${b.slot}${host.slotAlias(e.localId)}`);
       const integerView = host.integerViews.get(e.localId);
       if (integerView !== undefined) {
         // Snapshot both representations before later operands can write

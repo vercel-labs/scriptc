@@ -4,6 +4,7 @@ import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { f64Lit } from "./common.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
 import { emitTruncF64 } from "./trunc.js";
+import { bytesElementAlias, bytesHeaderAlias } from "./bytes-alias.js";
 
 /** Supported LLVM targets are little-endian. All memory accesses use align
  * 1: Buffer fields and DataView windows can start at arbitrary byte offsets. */
@@ -79,7 +80,7 @@ export function emitByteNumber(
       capacity = B.tmp();
     room = B.tmp();
     B.line(`${lengthPtr} = getelementptr inbounds %ScrBytes, ptr ${receiver.name}, i64 0, i32 1`);
-    B.line(`${length} = load ${size}, ptr ${lengthPtr}`);
+    B.line(`${length} = load ${size}, ptr ${lengthPtr}${bytesHeaderAlias(host)}`);
     B.line(`${room} = icmp uge ${size} ${length}, ${spec.width}`);
     B.line(`${capacity} = sub ${size} ${length}, ${spec.width}`);
     if (integer) {
@@ -217,14 +218,14 @@ export function emitByteNumber(
       }
     }
     const stored = endianBits(host, raw, spec.width, little);
-    B.line(`store i${bits} ${stored}, ptr ${pointer}, align 1`);
+    B.line(`store i${bits} ${stored}, ptr ${pointer}, align 1${bytesElementAlias(host)}`);
     if (!spec.dataView) {
       fastResult = B.tmp();
       B.line(`${fastResult} = fadd double ${offset.name}, ${f64Lit(spec.width)}`);
     }
   } else {
     const loaded = B.tmp();
-    B.line(`${loaded} = load i${bits}, ptr ${pointer}, align 1`);
+    B.line(`${loaded} = load i${bits}, ptr ${pointer}, align 1${bytesElementAlias(host)}`);
     const raw = endianBits(host, loaded, spec.width, little);
     fastResult = B.tmp();
     if (spec.floating) {

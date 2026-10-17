@@ -7,6 +7,7 @@ import { F64_INF, exactIndexLines, f64Lit, sizeToDouble } from "./common.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
 import { byteNumberAccess } from "../../ir/byte-numbers.js";
 import { emitByteNumber } from "./byte-numbers.js";
+import { bytesElementAlias, bytesHeaderAlias } from "./bytes-alias.js";
 
 const BYTES_NUM_KIND: Record<string, { kind: number; le: boolean } | undefined> = {
   u8: { kind: 0, le: false },
@@ -90,10 +91,7 @@ export function emitBytesIndex(
     B.line(`${narrow} = trunc i64 ${wide} to ${host.sizeType}`);
     return narrow;
   }
-  const lenPtr = B.tmp();
-  const len = B.tmp();
-  B.line(`${lenPtr} = getelementptr inbounds %ScrBytes, ptr ${receiver}, i64 0, i32 1`);
-  B.line(`${len} = load ${host.sizeType}, ptr ${lenPtr}`);
+  const len = emitBytesHeaderLength(host, receiver);
   if (integer) {
     const wideIndex = widenInteger(host, integer);
     const wideLength = host.sizeType === "i64" ? len : B.tmp();
@@ -142,11 +140,20 @@ export function emitBytesIndex(
   return idx;
 }
 
+/** The element count of a typed array, in the target's size type. */
+export function emitBytesHeaderLength(host: LlvmEmitterContext, receiver: string): string {
+  const p = host.B.tmp();
+  const len = host.B.tmp();
+  host.B.line(`${p} = getelementptr inbounds %ScrBytes, ptr ${receiver}, i64 0, i32 1`);
+  host.B.line(`${len} = load ${host.sizeType}, ptr ${p}${bytesHeaderAlias(host)}`);
+  return len;
+}
+
 export function emitBytesData(host: LlvmEmitterContext, receiver: string): string {
   const p = host.B.tmp();
   const data = host.B.tmp();
   host.B.line(`${p} = getelementptr inbounds %ScrBytes, ptr ${receiver}, i64 0, i32 3`);
-  host.B.line(`${data} = load ptr, ptr ${p}`);
+  host.B.line(`${data} = load ptr, ptr ${p}${bytesHeaderAlias(host)}`);
   return data;
 }
 
@@ -157,10 +164,7 @@ export function emitBytesLength(
   bytes: boolean,
 ): LlValue {
   const B = host.B;
-  const p = B.tmp();
-  const len = B.tmp();
-  B.line(`${p} = getelementptr inbounds %ScrBytes, ptr ${receiver}, i64 0, i32 1`);
-  B.line(`${len} = load ${host.sizeType}, ptr ${p}`);
+  const len = emitBytesHeaderLength(host, receiver);
   const size = BYTES_ELEMENT_SIZE[elem];
   const count = bytes && size !== 1 ? B.tmp() : len;
   if (count !== len) B.line(`${count} = shl ${host.sizeType} ${len}, ${Math.log2(size)}`);
@@ -184,7 +188,7 @@ function emitSharedBytesSplit(host: LlvmEmitterContext, receiver: string): strin
     isShared = B.tmp(),
     expected = B.tmp();
   B.line(`${slot} = getelementptr inbounds %ScrBytes, ptr ${receiver}, i64 0, i32 9`);
-  B.line(`${storage} = load ptr, ptr ${slot}`);
+  B.line(`${storage} = load ptr, ptr ${slot}${bytesHeaderAlias(host)}`);
   B.line(`${isShared} = icmp ne ptr ${storage}, null`);
   B.line(`${expected} = call i1 @llvm.expect.i1(i1 ${isShared}, i1 false)`);
   const shared = B.newLabel("bytes.shared"),
@@ -254,9 +258,15 @@ function emitBytesLoad(
   inBounds: boolean,
   invalid: string | undefined,
 ): LlValue {
+  if (host.mod.workers) {
+    const idx = emitBytesIndex(host, receiver, index, expr, invalid, inBounds);
+    return emitSharedOrLocalLoad(host, elem, receiver, idx);
+  }
+  // The header is immutable, so the data pointer loads beside the length,
+  // ahead of the bounds branch: an unconditional load LICM can hoist.
+  const data = host.emitBytesData(receiver);
   const idx = emitBytesIndex(host, receiver, index, expr, invalid, inBounds);
-  if (host.mod.workers) return emitSharedOrLocalLoad(host, elem, receiver, idx);
-  return emitBytesLoadAt(host, elem, receiver, idx);
+  return emitBytesLoadAt(host, elem, data, idx);
 }
 
 /** Worker programs: the element at a checked index of a view that may be
@@ -282,7 +292,7 @@ function emitSharedOrLocalLoad(
   const sharedDone = B.newLabel("bytes.shared.done");
   B.br(sharedDone);
   B.startBlock(local);
-  const own = emitBytesLoadAt(host, elem, receiver, idx);
+  const own = emitBytesLoadAt(host, elem, host.emitBytesData(receiver), idx);
   const localDone = B.newLabel("bytes.local.done");
   B.br(localDone);
   B.startBlock(localDone);
@@ -303,15 +313,15 @@ function emitSharedOrLocalLoad(
   return { name: out, type: F64, uint32: u32 };
 }
 
-/** The element at a checked index of a thread-owned view. */
+/** The element at a checked index of a thread-owned view, given its data
+ * pointer. */
 function emitBytesLoadAt(
   host: LlvmEmitterContext,
   elem: IrBytesElem,
-  receiver: string,
+  data: string,
   idx: string,
 ): LlValue {
   const B = host.B;
-  const data = host.emitBytesData(receiver);
   const p = B.tmp();
   if (BYTES_ELEMENT_SIZE[elem] < 4) {
     const bits = BYTES_ELEMENT_SIZE[elem] * 8;
@@ -320,7 +330,7 @@ function emitBytesLoadAt(
     const wide = B.tmp();
     const out = B.tmp();
     B.line(`${p} = getelementptr inbounds i${bits}, ptr ${data}, ${host.sizeType} ${idx}`);
-    B.line(`${raw} = load i${bits}, ptr ${p}, align 1`);
+    B.line(`${raw} = load i${bits}, ptr ${p}, align 1${bytesElementAlias(host)}`);
     B.line(`${wide} = ${signed ? "sext" : "zext"} i${bits} ${raw} to i32`);
     B.line(`${out} = ${signed ? "sitofp" : "uitofp"} i32 ${wide} to double`);
     return { name: out, type: F64, uint32: wide };
@@ -329,20 +339,20 @@ function emitBytesLoadAt(
     const raw = B.tmp();
     const out = B.tmp();
     B.line(`${p} = getelementptr inbounds float, ptr ${data}, ${host.sizeType} ${idx}`);
-    B.line(`${raw} = load float, ptr ${p}, align 1`);
+    B.line(`${raw} = load float, ptr ${p}, align 1${bytesElementAlias(host)}`);
     B.line(`${out} = fpext float ${raw} to double`);
     return { name: out, type: F64 };
   }
   if (elem === "f64") {
     const out = B.tmp();
     B.line(`${p} = getelementptr inbounds double, ptr ${data}, ${host.sizeType} ${idx}`);
-    B.line(`${out} = load double, ptr ${p}, align 1`);
+    B.line(`${out} = load double, ptr ${p}, align 1${bytesElementAlias(host)}`);
     return { name: out, type: F64 };
   }
   const raw = B.tmp();
   const out = B.tmp();
   B.line(`${p} = getelementptr inbounds i32, ptr ${data}, ${host.sizeType} ${idx}`);
-  B.line(`${raw} = load i32, ptr ${p}, align 1`);
+  B.line(`${raw} = load i32, ptr ${p}, align 1${bytesElementAlias(host)}`);
   B.line(`${out} = ${elem === "i32" ? "sitofp" : "uitofp"} i32 ${raw} to double`);
   return { name: out, type: F64, uint32: raw };
 }
@@ -438,6 +448,7 @@ export function emitBytesSet(
   const B = host.B;
   // Invalid integer-indexed writes are ignored after evaluating the RHS.
   const done = B.newLabel("bytes.store.done");
+  const data = host.emitBytesData(receiver);
   const idx = emitBytesIndex(host, receiver, index, indexExpr, done, inBounds);
   if (host.mod.workers) {
     host.declare(`declare void @scr_bytes_shared_set(ptr, ${host.sizeType}, double)`);
@@ -458,25 +469,24 @@ export function emitBytesSet(
   } else
     stored =
       elem === "f32" || elem === "f64" ? null : host.emitToUint32(value.name, expr, value.uint32);
-  const data = host.emitBytesData(receiver);
   const p = B.tmp();
   if (BYTES_ELEMENT_SIZE[elem] < 4) {
     const bits = BYTES_ELEMENT_SIZE[elem] * 8;
     const byte = B.tmp();
     B.line(`${byte} = trunc i32 ${stored!} to i${bits}`);
     B.line(`${p} = getelementptr inbounds i${bits}, ptr ${data}, ${host.sizeType} ${idx}`);
-    B.line(`store i${bits} ${byte}, ptr ${p}, align 1`);
+    B.line(`store i${bits} ${byte}, ptr ${p}, align 1${bytesElementAlias(host)}`);
   } else if (elem === "f32") {
     const narrowed = B.tmp();
     B.line(`${narrowed} = fptrunc double ${value.name} to float`);
     B.line(`${p} = getelementptr inbounds float, ptr ${data}, ${host.sizeType} ${idx}`);
-    B.line(`store float ${narrowed}, ptr ${p}, align 1`);
+    B.line(`store float ${narrowed}, ptr ${p}, align 1${bytesElementAlias(host)}`);
   } else if (elem === "f64") {
     B.line(`${p} = getelementptr inbounds double, ptr ${data}, ${host.sizeType} ${idx}`);
-    B.line(`store double ${value.name}, ptr ${p}, align 1`);
+    B.line(`store double ${value.name}, ptr ${p}, align 1${bytesElementAlias(host)}`);
   } else {
     B.line(`${p} = getelementptr inbounds i32, ptr ${data}, ${host.sizeType} ${idx}`);
-    B.line(`store i32 ${stored!}, ptr ${p}, align 1`);
+    B.line(`store i32 ${stored!}, ptr ${p}, align 1${bytesElementAlias(host)}`);
   }
   B.br(done);
   B.startBlock(done);

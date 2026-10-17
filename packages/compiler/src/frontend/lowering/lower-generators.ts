@@ -100,6 +100,16 @@ export function lowerYield(lowerer: Lowerer, expr: ts.YieldExpression): IrExpr {
   return { kind: "yieldExpr", value, ...(awaited ? { awaited: true as const } : {}), type, loc };
 }
 
+/** A generator receiver the call can resume. Package JS keeps the checker
+ * type at `any`; the local still holds the generator from the call site. */
+function generatorReceiverType(lowerer: Lowerer, expr: ts.Expression): GenType | null {
+  const mapped = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (mapped?.kind === "generator") return mapped;
+  if (!ts.isIdentifier(expr)) return null;
+  const stored = lowerer.peekLocal(expr)?.type ?? lowerer.globalOf(expr)?.type;
+  return stored?.kind === "generator" ? stored : null;
+}
+
 /** `g.next(v)` / `g.return(v)` / `g.throw(e)` on a generator-typed
  * receiver → genResume. Null when this is not that call (the dispatch
  * chain moves on). */
@@ -111,7 +121,7 @@ export function lowerGenMethodCall(
   if (lowerer.chainBlocked(access, call)) return null;
   const name = access.name.text;
   if (name !== "next" && name !== "return" && name !== "throw") return null;
-  if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "generator") return null;
+  if (generatorReceiverType(lowerer, access.expression) === null) return null;
   if (call.arguments.some(ts.isSpreadElement)) {
     lowerer.unsupported("SC1090", call, "spread arguments");
   }

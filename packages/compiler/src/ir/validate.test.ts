@@ -2154,3 +2154,22 @@ test("a caught-typed global records a module error only from a catch binding", (
     'in main: assign to catch binding "%error" (frontend must reject)',
   ]);
 });
+
+test.each([-1, 0, 1.5, 99])("uninhabited union tags reject invalid index %s", (tag) => {
+  const mod = discriminatedModule();
+  mod.unions![0]!.uninhabited = [tag];
+  expect(
+    validateModule(mod).some((error) => error.message.includes("invalid uninhabited record tag")),
+  ).toBe(true);
+});
+
+test("uninhabited union tags require distinct record arms", () => {
+  const mod = discriminatedModule();
+  mod.unions![0]!.uninhabited = [1];
+  expect(validateModule(mod)).toEqual([]);
+  expect(deserializeModule(serializeModule(mod))).toEqual(mod);
+  mod.unions![0]!.uninhabited = [1, 1];
+  expect(
+    validateModule(mod).some((error) => error.message.includes("invalid uninhabited record tag")),
+  ).toBe(true);
+});

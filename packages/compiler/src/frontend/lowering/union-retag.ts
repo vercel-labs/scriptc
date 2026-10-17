@@ -138,7 +138,7 @@ export function planUnionRetag(
     }
     // A checker-proven absent arm retains any exact representation, as
     // before. Otherwise the narrowing path needs no structural conversion.
-    if (identity < 0 && trappable?.has(tag)) {
+    if (identity < 0 && (trappable?.has(tag) || from.uninhabited?.includes(tag))) {
       result.push({ kind: "trap" });
       continue;
     }

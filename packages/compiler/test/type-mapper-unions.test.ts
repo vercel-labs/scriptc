@@ -26,6 +26,16 @@ beforeAll(() => {
   writeFileSync(
     entry,
     `
+    type Result<T, E> = { ok: true; value: T } | { ok: false; error: E };
+    export type NumberError = Result<string, number>;
+    export type SharedLayout = Result<string, never> | { ok: false; error: number };
+    export type IntersectionNever = { ok: true; value: string } | ({ ok: false } & { error: never });
+    export type SuccessOnly = Result<string, never>;
+    export type FailureOnly = Result<never, string>;
+    export type OptionalNever = { ok: true; value: string } | { ok: false; error?: never };
+    export type NeverArray = { ok: true; value: string } | { ok: false; error: never[] };
+    export type NeverCallback = { ok: true; value: string } | { ok: false; error: () => never };
+    export type NeverGetter = { ok: true; value: string } | { ok: false; get error(): never };
     export type Choice = { kind: "a" | "alias"; value: number } | { kind: "b"; text: string };
     export type Other = { kind: "x"; value: number } | { kind: "y"; text: string };
     export type Numeric = { kind: 0; value: number } | { kind: -2.5; text: string };
@@ -186,4 +196,48 @@ describe("checker and synthesized optional union identity", () => {
     expect(ctx.unions.get(tree.unionId)).toBe(original);
     expect(original.arms.some((arm) => arm.kind === "undefinedT")).toBe(false);
   });
+});
+
+describe("uninhabited record union members", () => {
+  test.each(["SuccessOnly", "FailureOnly", "IntersectionNever"])(
+    "%s marks only its impossible record",
+    (name) => {
+      const ctx = context();
+      const result = mapped(name, ctx);
+      const union = ctx.unions.get(result.unionId)!;
+      expect(union.arms).toHaveLength(2);
+      expect(union.uninhabited).toHaveLength(1);
+      const arm = union.arms[union.uninhabited![0]!]!;
+      expect(arm.kind).toBe("record");
+      if (arm.kind !== "record") return;
+      expect(ctx.shapes.get(arm.shapeId)!.fields.map((field) => field.name)).toEqual(
+        name === "FailureOnly" ? ["ok", "value"] : ["error", "ok"],
+      );
+      const optional = withUndefinedArm(result, ctx.unions)!;
+      expect(optional.kind).toBe("union");
+      if (optional.kind !== "union") return;
+      expect(ctx.unions.get(optional.unionId)!.uninhabited).toHaveLength(1);
+    },
+  );
+
+  test.each([true, false])(
+    "never and number contracts remain distinct (never first: %s)",
+    (first) => {
+      const ctx = context();
+      const names = first ? ["SuccessOnly", "NumberError"] : ["NumberError", "SuccessOnly"];
+      const [a, b] = names.map((name) => mapped(name, ctx));
+      expect(a!.unionId).not.toBe(b!.unionId);
+      expect(ctx.unions.get(mapped("NumberError", ctx).unionId)!.uninhabited).toBeUndefined();
+    },
+  );
+
+  test.each(["OptionalNever", "NeverArray", "NeverCallback", "NeverGetter", "SharedLayout"])(
+    "%s retains its inhabited alternative",
+    (name) => {
+      const ctx = context();
+      const result = mapped(name, ctx);
+      expect(ctx.unions.get(result.unionId)!.arms).toHaveLength(2);
+      expect(ctx.unions.get(result.unionId)!.uninhabited).toBeUndefined();
+    },
+  );
 });

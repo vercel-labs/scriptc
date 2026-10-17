@@ -1562,6 +1562,7 @@ export interface IrUnionDef {
    * unit kinds (undefinedT/nullT) are payload-less arms. */
   arms: IrType[];
   discriminant?: IrUnionDiscriminant;
+  uninhabited?: number[];
 }
 
 export interface IrFunction {

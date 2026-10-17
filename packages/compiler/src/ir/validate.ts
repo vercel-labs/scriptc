@@ -742,6 +742,16 @@ export function validateModule(mod: IrModule): IrValidationError[] {
     if (u.arms.length < 2) {
       errors.push({ message: `union ${u.id}: fewer than 2 arms`, loc: noLoc });
     }
+    const uninhabited = new Set<number>();
+    for (const tag of u.uninhabited ?? []) {
+      if (!Number.isInteger(tag) || u.arms[tag]?.kind !== "record" || uninhabited.has(tag)) {
+        errors.push({
+          message: `union ${u.id}: invalid uninhabited record tag ${tag}`,
+          loc: noLoc,
+        });
+      }
+      uninhabited.add(tag);
+    }
     if (u.discriminant) {
       const { field, cases } = u.discriminant;
       const tags = new Set<number>();

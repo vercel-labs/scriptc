@@ -700,3 +700,21 @@ describe("retag IR construction", () => {
     ).toThrow("incomplete union retag plan");
   });
 });
+
+test("only a proven uninhabited arm can bypass an incompatible payload conversion", () => {
+  const from: IrUnionDef = { id: "u0", arms: [record("ok"), record("numberError")] };
+  const to: IrUnionDef = { id: "u1", arms: [record("ok"), record("stringError")] };
+  const plan = () =>
+    planUnionRetag(
+      from,
+      to,
+      () => undefined,
+      () => null,
+    );
+  expect(plan()).toBeNull();
+  from.uninhabited = [1];
+  expect(plan()).toEqual([
+    { kind: "direct", route: { tag: 0, lift: { how: "copy" }, values: [] } },
+    { kind: "trap" },
+  ]);
+});

@@ -524,7 +524,12 @@ export class UnionRegistry {
 
   /** Completes a recursive placeholder with its canonical arm list and
    * registers the structural key (first writer wins, like shapes). */
-  finalizeRecursive(t: ts.Type, arms: IrType[], discriminant?: IrUnionDiscriminant): string {
+  finalizeRecursive(
+    t: ts.Type,
+    arms: IrType[],
+    discriminant?: IrUnionDiscriminant,
+    uninhabited?: number[],
+  ): string {
     const id = this.recIds.get(t);
     if (id === undefined)
       throw new InternalCompilerError(
@@ -534,22 +539,28 @@ export class UnionRegistry {
       const def = this.byId.get(id)!;
       def.arms.push(...arms);
       if (discriminant) def.discriminant = discriminant;
+      if (uninhabited) def.uninhabited = uninhabited;
       this.pendingRec.delete(id);
       this.armTags.delete(id);
       this.revision++;
-      const key = JSON.stringify([arms.map(typeKey), discriminant]);
+      const key = JSON.stringify([arms.map(typeKey), discriminant, uninhabited]);
       if (!this.byKey.has(key)) this.byKey.set(key, id);
     }
     return id;
   }
 
   /** Interns canonical arms and discriminator cases, returning their unionId. */
-  intern(arms: IrType[], discriminant?: IrUnionDiscriminant): string {
-    const key = JSON.stringify([arms.map(typeKey), discriminant]);
+  intern(arms: IrType[], discriminant?: IrUnionDiscriminant, uninhabited?: number[]): string {
+    const key = JSON.stringify([arms.map(typeKey), discriminant, uninhabited]);
     let id = this.byKey.get(key);
     if (id === undefined) {
       id = `u${this.unions.length}`;
-      const def: IrUnionDef = { id, arms, ...(discriminant ? { discriminant } : {}) };
+      const def: IrUnionDef = {
+        id,
+        arms,
+        ...(discriminant ? { discriminant } : {}),
+        ...(uninhabited ? { uninhabited } : {}),
+      };
       this.byKey.set(key, id);
       this.byId.set(id, def);
       this.unions.push(def);
@@ -559,7 +570,14 @@ export class UnionRegistry {
 
   /** An exact arm transformation keeps the source's semantic variants. */
   transform(source: IrUnionDef, arms: IrType[]): string {
-    return this.intern(arms, remapUnionDiscriminant(source, arms));
+    const uninhabited = arms.flatMap((arm, tag) =>
+      source.uninhabited?.some((index) => typeEquals(source.arms[index]!, arm)) ? [tag] : [],
+    );
+    return this.intern(
+      arms,
+      remapUnionDiscriminant(source, arms),
+      uninhabited.length ? uninhabited : undefined,
+    );
   }
 
   get(unionId: string): IrUnionDef | undefined {
@@ -4082,6 +4100,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const sensitivityAtEntry = contextResolutions;
     try {
       const byKey = new Map<string, IrType>();
+      const inhabited = new Set<string>();
       const recordParts: { source: ts.Type; mapped: IrType & { kind: "record" } }[] = [];
       const substitutedUnions: IrUnionDef[] = [];
       // The lib's `T extends readonly unknown[] | []` idiom (Promise.all,
@@ -4104,10 +4123,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         // void stays VOID (the return-position mapping above).
         if (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) {
           byKey.set(typeKey(UNDEFINED_T), UNDEFINED_T);
+          inhabited.add(typeKey(UNDEFINED_T));
           continue;
         }
         if (part.flags & ts.TypeFlags.Null) {
           byKey.set(typeKey(NULL_T), NULL_T);
+          inhabited.add(typeKey(NULL_T));
           continue;
         }
         const mapped = mapType(part, ctx);
@@ -4117,6 +4138,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         }
         if (mapped.kind === "void") {
           byKey.set(typeKey(UNDEFINED_T), UNDEFINED_T);
+          inhabited.add(typeKey(UNDEFINED_T));
           continue;
         }
         // A generic parameter can substitute a complete union into one
@@ -4128,10 +4150,15 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
           if (!substituted?.arms.length || substituted.arms.some((arm) => arm.kind === "union"))
             return null;
           substitutedUnions.push(substituted);
-          for (const arm of substituted.arms) byKey.set(typeKey(arm), arm);
+          substituted.arms.forEach((arm, tag) => {
+            byKey.set(typeKey(arm), arm);
+            if (!substituted.uninhabited?.includes(tag)) inhabited.add(typeKey(arm));
+          });
           continue;
         }
         byKey.set(typeKey(mapped), mapped);
+        if (mapped.kind !== "record" || !hasRequiredNeverProperty(part, ctx))
+          inhabited.add(typeKey(mapped));
         if (mapped.kind === "record") recordParts.push({ source: part, mapped });
       }
       const arms = [...byKey.values()];
@@ -4186,6 +4213,8 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         return null;
       }
       arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+      const impossible = arms.flatMap((arm, tag) => (inhabited.has(typeKey(arm)) ? [] : [tag]));
+      const uninhabited = impossible.length ? impossible : undefined;
       const discriminant =
         unionDiscriminant(recordParts, arms, ctx) ??
         (substitutedUnions.length === 1
@@ -4198,14 +4227,37 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         // same ts.Type answers differently per instantiation — so
         // recursive generic-open unions stay fenced.
         if (contextResolutions !== sensitivityAtEntry) return null;
-        return { kind: "union", unionId: unions.finalizeRecursive(widened, arms, discriminant) };
+        return {
+          kind: "union",
+          unionId: unions.finalizeRecursive(widened, arms, discriminant, uninhabited),
+        };
       }
-      return { kind: "union", unionId: unions.intern(arms, discriminant) };
+      return { kind: "union", unionId: unions.intern(arms, discriminant, uninhabited) };
     } finally {
       unions.inProgress.delete(widened);
     }
   }
   return null;
+}
+
+function hasRequiredNeverProperty(type: ts.Type, ctx: TypeMapperCtx): boolean {
+  if (!(type.flags & (ts.TypeFlags.Object | ts.TypeFlags.Intersection))) return false;
+  return ctx.checker.getPropertiesOfType(type).some((property) => {
+    if (
+      property.flags &
+      (ts.SymbolFlags.Optional | ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)
+    )
+      return false;
+    let value = ctx.checker.getTypeOfSymbol(property);
+    if (value.flags & ts.TypeFlags.TypeParameter) {
+      const resolved = ctx.resolveTypeParamTs?.(value);
+      if (resolved) {
+        contextResolutions++;
+        value = resolved;
+      }
+    }
+    return ctx.checker.isNeverType(value);
+  });
 }
 
 /** Retain a literal discriminator before widening erases its values. A

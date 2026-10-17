@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/result-never-widening.ts"
+ ],
+ "diags": []
+}

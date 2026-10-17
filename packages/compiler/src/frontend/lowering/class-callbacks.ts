@@ -14,7 +14,7 @@ import { isJsSourceFile, locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
 import { findMethodOn, type ClassInfo } from "./lower-classes.js";
 import { classPropertiesHelper } from "./class-dynamic-dispatch.js";
-import { classPrototypeData } from "./class-prototypes.js";
+import { classPrototypeData, prototypeMethodRead } from "./class-prototypes.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 
@@ -43,6 +43,10 @@ export function isClassCallback(lowerer: Lowerer, info: ClassInfo, name: string)
   );
 }
 
+function receiverClass(lowerer: Lowerer, receiver: IrExpr): ClassInfo | undefined {
+  return receiver.type.kind === "object" ? lowerer.classes.get(receiver.type.className) : undefined;
+}
+
 function callbackBag(
   lowerer: Lowerer,
   receiver: IrExpr,
@@ -50,9 +54,8 @@ function callbackBag(
   name: string,
   readOnly = false,
 ): IrExpr {
-  const info =
-    receiver.type.kind === "object" ? lowerer.classes.get(receiver.type.className) : null;
-  if (info && lowerer.prototypeMethodAccesses.has(name)) classPrototypeData(lowerer, info, loc);
+  const info = receiverClass(lowerer, receiver);
+  if (info && prototypeMethodRead(lowerer, info, name)) classPrototypeData(lowerer, info, loc);
   return {
     kind: "call",
     callee: classPropertiesHelper(lowerer, loc, readOnly).name,
@@ -116,7 +119,7 @@ export function classCallbackValue(
   const bag = lowerer.declareHiddenLocal("%callbackBag", DYN);
   const value = varRef(bag.id, DYN, loc);
   const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
-  const result: IrExpr = lowerer.prototypeMethodAccesses.has(name)
+  const result: IrExpr = prototypeMethodRead(lowerer, receiverClass(lowerer, receiver), name)
     ? { kind: "dynKeyGet", value, key, type: DYN, loc }
     : {
         kind: "ternary",
@@ -156,6 +159,7 @@ export function classCallbackCall(
   const callback = lowerer.declareHiddenLocal("%callback", DYN);
   const value = varRef(bag.id, DYN, loc);
   const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
+  const prototypeMethod = prototypeMethodRead(lowerer, receiverClass(lowerer, receiver), name);
   const spreads: { arg: number; what: string }[] = [];
   const args = argumentNodes.map((argument, index) => {
     if (!ts.isSpreadElement(argument)) return lowerer.lowerExprExpecting(argument, DYN);
@@ -173,7 +177,7 @@ export function classCallbackCall(
     type: DYN,
     loc,
   };
-  const result: IrExpr = lowerer.prototypeMethodAccesses.has(name)
+  const result: IrExpr = prototypeMethod
     ? call
     : {
         kind: "ternary",
@@ -206,7 +210,7 @@ export function classCallbackCall(
       {
         kind: "varDecl",
         localId: present.id,
-        init: lowerer.prototypeMethodAccesses.has(name)
+        init: prototypeMethod
           ? { kind: "boolLit", value: true, type: BOOL, loc }
           : callbackPresent(value, key, loc),
         loc,

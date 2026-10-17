@@ -25,6 +25,31 @@ import type { Lowerer } from "./lowerer.js";
 import { newFnCtx } from "./lowerer.js";
 import { classMethodValue } from "./class-method-values.js";
 
+/** A generic declaration or instantiation, a mixin instance, or a subclass
+ * of one has no prototype data (classPrototypeData returns null for it). */
+function lacksPrototypeData(info: ClassInfo): boolean {
+  for (let owner: ClassInfo | null = info; owner; owner = owner.base)
+    if (owner.generic || owner.genericInstance || owner.mixinInstance) return true;
+  return false;
+}
+
+function familyLacksPrototypeData(info: ClassInfo): boolean {
+  return lacksPrototypeData(info) || info.subclasses.some(familyLacksPrototypeData);
+}
+
+/** Whether a read of method `name` through a receiver typed `info` may read
+ * the property bag alone: the name is replaceable, and every class the
+ * receiver can hold has prototype data behind its bag to find the method in.
+ * Otherwise the read checks the bag for an own entry and falls back to the
+ * declared method. */
+export function prototypeMethodRead(
+  lowerer: Lowerer,
+  info: ClassInfo | null | undefined,
+  name: string,
+): boolean {
+  return lowerer.prototypeMethodAccesses.has(name) && !(info && familyLacksPrototypeData(info));
+}
+
 /** Data added to a top-level class prototype has shared identity and remains
  * separate from instance fields. Allocate lazily so inheritance and module
  * initialization order do not require hoisting source assignments. */

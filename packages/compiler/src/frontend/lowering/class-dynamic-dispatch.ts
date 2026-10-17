@@ -40,6 +40,7 @@ import {
 import {
   classPrototypeData,
   hasClassPrototypeData,
+  prototypeMethodRead,
   reflectClassPrototype,
 } from "./class-prototypes.js";
 import {
@@ -2319,7 +2320,7 @@ export class ClassDynamicDispatch {
         const value = varRef("p.0", DYN, loc);
         const { receiver, condition } = this.propertyReceiver(plan, loc);
         if (isClassCallback(lowerer, info, dispatch.source.method)) {
-          const prototypeMethod = lowerer.prototypeMethodAccesses.has(dispatch.source.method);
+          const prototypeMethod = prototypeMethodRead(lowerer, info, dispatch.source.method);
           if (prototypeMethod) classPrototypeData(lowerer, info, loc);
           const bag = this.readPropertyBagOrEmpty(lowerer, value, loc);
           dispatch.callback.body.unshift({
@@ -3790,7 +3791,7 @@ export class ClassDynamicDispatch {
           const body: IrStmt[] = [];
           const symbol = symbolMemberKey(lowerer, info, name, loc);
           if (symbol || (isClassOwnEnumerableFieldName(name) && !name.startsWith("sym:"))) {
-            const prototypeMethod = lowerer.prototypeMethodAccesses.has(name);
+            const prototypeMethod = prototypeMethodRead(lowerer, info, name);
             if (prototypeMethod) classPrototypeData(lowerer, info, loc, receiver);
             // Selecting the method must not give the object own storage.
             const bag = this.readPropertyBag(lowerer, receiver, loc);

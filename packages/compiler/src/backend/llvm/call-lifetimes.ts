@@ -178,6 +178,12 @@ function collectUses(
         )
           return true;
         break;
+      case "recordClone":
+        // A same-shape spread copies the source's fields (retaining the
+        // references) and keeps no reference to the source itself.
+        if (node.source.kind !== "varRef") break;
+        for (const field of node.overrides) expr(field.value);
+        return true;
       case "recordLit":
         if (node.type.kind !== "record") break;
         for (const field of node.fields)

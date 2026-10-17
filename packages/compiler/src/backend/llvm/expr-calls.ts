@@ -146,7 +146,10 @@ export function emitCallExpr(
               return emitScalarOptional(host, a);
             if (a.kind === "call" && host.scalarResultCall(a))
               return emitCallExpr(host, a, false, true);
-            if (host.stackObjects && canStackObject(host, a)) return emitStackObject(host, a);
+            if (host.stackObjects && canStackObject(host, a))
+              return emitStackObject(host, a, (fields) => {
+                for (const field of fields) host.ownSlot(field.ptr, field.type);
+              });
             if (host.nullableFieldGet(a))
               return { name: host.emitOwnedNullableStack(a).box, type: a.type };
             // An inline union field read copies its tag and bits.

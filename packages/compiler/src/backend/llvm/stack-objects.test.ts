@@ -275,3 +275,64 @@ console.log(pick({ x: 1, y: 2 }, { x: 3, y: 4 }, true).y, forward({ x: 1, y: 1 }
     .sort();
   expect(entries).toEqual([`${RESULT_ENTRY_PREFIX}forward`, `${RESULT_ENTRY_PREFIX}pick`]);
 });
+
+const TOKENS = `
+interface Token { kind: string; text: string; pos: number }
+function make(kind: string, text: string, pos: number): Token { return { kind, text, pos }; }
+function width(t: Token): number { return t.text.length + t.kind.length; }
+function divmod(a: number, b: number): [number, number] { return [Math.floor(a / b), a % b]; }
+interface State { name: string; count: number }
+function bump(s: State): State { return { ...s, count: s.count + 1 }; }
+export function tokens(n: number, w: string): number {
+  const t = { kind: "id", text: w, pos: n };
+  const u = make("num", w, n);
+  const [q, r] = divmod(n, 7);
+  return t.pos + width(u) + width({ kind: w, text: w, pos: 0 }) + q + r;
+}
+export function states(n: number, w: string): number {
+  let s: State = { name: w, count: 0 };
+  for (let i = 0; i < n; i++) {
+    s = { ...s, count: s.count + 1 };
+    s = bump(s);
+  }
+  return s.count + s.name.length;
+}
+console.log(tokens(3, "ab"), states(4, "cd"));
+`;
+
+test("records and tuples that own references live in frame storage", async () => {
+  const ir = emitLlvmModule(await moduleFor(TOKENS));
+  const tokens = body(ir, "tokens");
+  expect(tokens).not.toMatch(/@sc_rnew_/);
+  expect(tokens).toMatch(/call void @sc_\w*into_make\(/);
+  expect(tokens).toMatch(/call void @sc_\w*into_divmod\(/);
+  // Reference fields start empty in entry-addressed slots, and the frame
+  // releases them; an interned literal field (`kind: "id"`) needs neither.
+  const fields = [...tokens.matchAll(/(%s\d+) = getelementptr inbounds %sc_rs_\w+, ptr %s\d+/g)];
+  const owned = fields.filter(([, ptr]) => tokens.includes(`store ptr null, ptr ${ptr}\n`));
+  expect(owned.length).toBe(5);
+  expect(fields.length).toBe(6);
+  for (const [, ptr] of owned)
+    expect(tokens).toMatch(new RegExp(`load ptr, ptr ${ptr}\\n\\s+call void @\\w+\\(`));
+});
+
+test("spread updates copy into the binding's slot and release the replaced fields", async () => {
+  const mod = await moduleFor(TOKENS);
+  const entries = addRecordResultEntries(mod)
+    .functions.map((fn) => fn.name)
+    .filter((name) => name.startsWith(RESULT_ENTRY_PREFIX));
+  expect(entries).toEqual(
+    expect.arrayContaining([
+      `${RESULT_ENTRY_PREFIX}make`,
+      `${RESULT_ENTRY_PREFIX}divmod`,
+      `${RESULT_ENTRY_PREFIX}bump`,
+    ]),
+  );
+  const states = body(emitLlvmModule(mod), "states");
+  expect(states).not.toMatch(/@sc_rnew_|@sc_rclone_/);
+  expect(states).toMatch(/call void @sc_\w*into_bump\(/);
+  // The old name is loaded before the copy and released after it.
+  expect(states).toMatch(
+    /(%t\d+) = load ptr, ptr %s\d+\n\s+(%t\d+) = load %sc_rs_\w+, ptr %s\d+\n\s+store %sc_rs_\w+ \2, ptr %s\d+\n(?:.*\n)*?\s+call void @\w+\(ptr \1\)/,
+  );
+});

@@ -21,6 +21,16 @@ export function resultEntryName(name: string): string {
   return `${RESULT_ENTRY_PREFIX}${name}`;
 }
 
+/** The local id of a result-slot entry's destination parameter. The
+ * caller passes zeroed frame storage, and on every path the entry stores
+ * each of its fields at most once, so a store into it is an
+ * initialization: there is no old value to release. */
+export const RESULT_DST_ID = "%into.dst";
+
+function distinctNames(names: readonly string[]): boolean {
+  return new Set(names).size === names.length;
+}
+
 /** A plain record shape whose fields are numbers, booleans and inline
  * scalar unions (inline-unions.ts): its fields own nothing. */
 export function scalarRecordShape(
@@ -36,6 +46,15 @@ export function scalarRecordShape(
         field.type.kind === "f64" || field.type.kind === "bool" || inline.record(field.type),
     )
   );
+}
+
+/** A closed record or tuple shape: declared fields only. Its instance can
+ * live in caller storage; fields that own references are released by the
+ * frame that holds the storage (stack-objects.ts). Tuples are element
+ * records: destructuring and element reads project them, and every
+ * array-like use of one is a whole-value use that keeps it on the heap. */
+export function frameRecordShape(shape: IrRecordShape | undefined): boolean {
+  return shape !== undefined && !shape.indexValue;
 }
 
 /** A literal that stores every field of its shape, none of them through
@@ -110,7 +129,7 @@ export function constructorInitializesFields(cls: IrClassDef, ctor: IrFunction):
 }
 
 /** Add a result-slot entry for every function whose returns all build a
- * fresh scalar record or standalone scalar object, return another such
+ * fresh closed record or standalone scalar object, return another such
  * producer's result (forwarding the slot), or return a parameter of a
  * record shape no store can change (copied into the slot). The original
  * function stays as it is; the backend calls the entry only where the
@@ -155,8 +174,12 @@ export function addRecordResultEntries(mod: IrModule): IrModule {
       },
     });
   const dynamicStores = dynamicFieldStores(mod);
+  // Copies are limited to scalar shapes: a copy of a reference-owning
+  // record would not carry the undeclared source keys a checked conversion
+  // may keep beside the original (record-sources.ts).
   const copyable = (type: IrType): boolean =>
     type.kind === "record" &&
+    scalarRecordShape(shapes.get(type.shapeId), inline) &&
     mod.lib === undefined &&
     !written.has(type.shapeId) &&
     !dynamicStores.all &&
@@ -165,9 +188,11 @@ export function addRecordResultEntries(mod: IrModule): IrModule {
   const fillable = (value: IrExpr, params: ReadonlySet<string>): boolean => {
     switch (value.kind) {
       case "recordLit":
-        return completeRecordLiteral(
-          value,
-          shapes.get((value.type as IrType & { kind: "record" }).shapeId),
+        return (
+          completeRecordLiteral(
+            value,
+            shapes.get((value.type as IrType & { kind: "record" }).shapeId),
+          ) && distinctNames(value.fields.map((field) => field.name))
         );
       case "new":
         return stackClass(value.className);
@@ -175,6 +200,15 @@ export function addRecordResultEntries(mod: IrModule): IrModule {
         return fillable(value.then, params) && fillable(value.else_, params);
       case "varRef":
         return params.has(value.localId) && copyable(value.type);
+      case "recordClone":
+        // A spread of a binding: the copies read it before any override
+        // evaluates, as the heap clone does.
+        return (
+          value.source.kind === "varRef" &&
+          value.type.kind === "record" &&
+          frameRecordShape(shapes.get(value.type.shapeId)) &&
+          distinctNames(value.overrides.map((override) => override.name))
+        );
       case "call":
         return producers.has(value.callee);
       default:
@@ -209,6 +243,39 @@ export function addRecordResultEntries(mod: IrModule): IrModule {
           },
           loc: value.loc,
         }));
+      }
+      case "recordClone": {
+        const shapeId = (value.type as IrType & { kind: "record" }).shapeId;
+        const overridden = new Set(value.overrides.map((override) => override.name));
+        const copies: IrStmt[] = shapes
+          .get(shapeId)!
+          .fields.filter((field) => !overridden.has(field.name))
+          .map((field): IrStmt => ({
+            kind: "recordSet",
+            obj: dst,
+            shapeId,
+            field: field.name,
+            value: {
+              kind: "recordGet",
+              obj: value.source,
+              shapeId,
+              field: field.name,
+              type: field.type,
+              loc: value.loc,
+            },
+            loc: value.loc,
+          }));
+        return [
+          ...copies,
+          ...value.overrides.map((override): IrStmt => ({
+            kind: "recordSet",
+            obj: dst,
+            shapeId,
+            field: override.name,
+            value: override.value,
+            loc: override.value.loc,
+          })),
+        ];
       }
       case "call":
         return [
@@ -327,7 +394,7 @@ export function addRecordResultEntries(mod: IrModule): IrModule {
       return false;
     const ret = fn.returnType;
     return (
-      (ret.kind === "record" && scalarRecordShape(shapes.get(ret.shapeId), inline)) ||
+      (ret.kind === "record" && frameRecordShape(shapes.get(ret.shapeId))) ||
       (ret.kind === "object" && stackClass(ret.className))
     );
   });
@@ -360,7 +427,7 @@ export function addRecordResultEntries(mod: IrModule): IrModule {
   for (const fn of candidates) {
     if (!producers.has(fn.name)) continue;
     const ret = fn.returnType;
-    const dstId = "%into.dst";
+    const dstId = RESULT_DST_ID;
     const dst: IrExpr = { kind: "varRef", localId: dstId, type: ret, loc: fn.loc };
     const body = transformStmtList(fn.body, {
       expr: (e) => e,

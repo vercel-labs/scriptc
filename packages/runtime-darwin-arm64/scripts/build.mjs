@@ -14,6 +14,7 @@ import {
   resolveRuntimeUnitHelper,
 } from "../../runtime-pack-common/scripts/runtime-unit.mjs";
 import { createDeterministicArchive } from "./archive.mjs";
+import { runtimeHardeningFlags } from "../../runtime-pack-common/scripts/hardening.mjs";
 import { installRuntimePack, withBuildLock } from "./build-state.mjs";
 
 const run = promisify(execFile);
@@ -182,6 +183,10 @@ async function build() {
               flavorSpec.optimization,
               ...variant.defines.map((define) => `-D${define}`),
               ...includeFlags,
+              ...runtimeHardeningFlags(
+                { platform: "darwin", target: RUNTIME_PACK_MATRIX.target },
+                { optimized: flavorSpec.optimization !== "-O0" },
+              ),
             ];
             let bitcode;
             const bitcodeOutput = output.replace(/\.o$/, ".bc");
@@ -263,6 +268,12 @@ async function build() {
     const mbedtlsSources = (await readdir(join(mbedtls, "library")))
       .filter((name) => !name.startsWith(".") && name.endsWith(".c"))
       .sort();
+    // zlib and mbedtls parse untrusted input and are hardened like the
+    // runtime units; QuickJS and libregexp are not (see hardening.mjs).
+    const vendorHardening = runtimeHardeningFlags(
+      { platform: "darwin", target: RUNTIME_PACK_MATRIX.target },
+      { optimized: true },
+    );
     const archives = [
       await archive("quickjs", QJS_SOURCES, quickjs, [
         "-target",
@@ -293,6 +304,7 @@ async function build() {
         "-std=c11",
         "-Os",
         ...codeAlignment,
+        ...vendorHardening,
         "-I",
         zlib,
       ]),
@@ -302,6 +314,7 @@ async function build() {
         "-std=c11",
         "-Os",
         ...codeAlignment,
+        ...vendorHardening,
         "-I",
         join(mbedtls, "include"),
         "-I",

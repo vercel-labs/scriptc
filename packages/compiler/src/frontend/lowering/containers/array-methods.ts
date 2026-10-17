@@ -46,6 +46,7 @@ import {
   lowerArrayFindLikeCall,
   lowerArrayFlatMapCall,
   lowerArrayReduceCall,
+  lowerTuplePredicateCall,
 } from "./array-callbacks.js";
 import {
   lowerArraySpreadItems,
@@ -402,6 +403,14 @@ export function lowerArrayMethodCall(
     if (receiver.type.kind === "record" && lowerer.shapes.get(receiver.type.shapeId)?.tuple) {
       return lowerTupleReadMethodCall(lowerer, call, access, receiver);
     }
+    const checkerType = lowerer.typeOf(access.expression);
+    if (
+      receiver.type.kind === "array" &&
+      ["filter", "find", "findIndex", "some"].includes(name) &&
+      lowerer.checker.isTupleType(checkerType) &&
+      lowerer.checker.getTypeArguments(checkerType as ts.TypeReference).length === 0
+    )
+      return lowerTuplePredicateCall(lowerer, call, access, receiver, F64);
 
     // An array-mapped CHECKER type whose VALUE lives in the checked-dynamic tree
     // (`Object.keys(dynObj).sort()` — the key-walk answers a dyn array):
@@ -1847,11 +1856,13 @@ export function lowerTupleReadMethodCall(
   if (lowerer.chainBlocked(access, call)) return null;
   const method = access.name.text;
   const search = method === "includes" || method === "indexOf" || method === "lastIndexOf";
+  const predicate = ["filter", "find", "findIndex", "some"].includes(method);
   if (
     method !== "slice" &&
     method !== "map" &&
     method !== "flatMap" &&
     method !== "join" &&
+    !predicate &&
     !search
   )
     return null;
@@ -1892,9 +1903,14 @@ export function lowerTupleReadMethodCall(
       field.type.kind === "union" ? lowerer.unions.get(field.type.unionId)!.arms : [field.type];
     for (const type of types) if (!arms.some((arm) => typeEquals(arm, type))) arms.push(type);
   }
-  if (arms.length === 0) return null;
+  if (predicate) arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  if (arms.length === 0 && !predicate) return null;
   const elem: IrType =
-    arms.length === 1 ? arms[0]! : { kind: "union", unionId: lowerer.unions.intern(arms) };
+    arms.length === 0
+      ? F64
+      : arms.length === 1
+        ? arms[0]!
+        : { kind: "union", unionId: lowerer.unions.intern(arms) };
   const loc = locOf(call);
   const tuple = varRef("a.0", receiver.type, loc);
   const read = (field: (typeof fields)[number]): IrExpr =>
@@ -2031,6 +2047,7 @@ export function lowerTupleReadMethodCall(
     }
     return { kind: "call", callee: helper, args: [receiver, ...args], type: resultType, loc };
   }
+  if (predicate) return lowerTuplePredicateCall(lowerer, call, access, receiver, elem);
   if (call.arguments.length !== 1 || call.arguments.some(ts.isSpreadElement)) {
     lowerer.noLowering(
       `.${method} with ${call.arguments.length} arguments`,

@@ -2580,3 +2580,185 @@ function buildDynFilterFn(name: string, elemT: IrType, arity: number, loc: SrcLo
     loc,
   };
 }
+
+export function lowerTuplePredicateCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+  receiver: IrExpr,
+  elem: IrType,
+): IrExpr {
+  const method = access.name.text;
+  const loc = locOf(call);
+  const argNode = call.arguments[0]!;
+  const shape = receiver.type.kind === "record" ? lowerer.shapes.get(receiver.type.shapeId)! : null;
+  const fields = [...(shape?.fields ?? [])].sort((a, b) => Number(a.name) - Number(b.name));
+  if (call.arguments.length !== 1 || call.arguments.some(ts.isSpreadElement))
+    lowerer.noLowering(`tuple .${method} with spread or extra arguments`, call);
+  const signatures = lowerer.checker.getCallSignatures(lowerer.typeOf(argNode));
+  if (signatures.some((signature) => signature.getParameters().length > 2))
+    lowerer.noLowering(
+      `tuple .${method} callback array parameter`,
+      argNode,
+      "capture the original tuple explicitly to preserve its identity",
+    );
+  const booleanFilter =
+    method === "filter" &&
+    ts.isIdentifier(argNode) &&
+    argNode.text === "Boolean" &&
+    lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(argNode) ?? undefined);
+  const { fnArg, arity } = booleanFilter
+    ? { fnArg: truthyFilterCallback(lowerer, elem, loc), arity: 1 }
+    : lowerArrayCallback(lowerer, argNode, [elem], receiver.type);
+  if (!filterPredicateOk(lowerer, fnArg.type.ret))
+    lowerer.unsupported(
+      "SC1090",
+      argNode,
+      `tuple .${method} with a predicate whose return value has no truthiness representation`,
+    );
+  const outElem =
+    method === "filter"
+      ? fields.length
+        ? filterResultElem(lowerer, call, argNode, elem, elem, booleanFilter)
+        : elem
+      : elem;
+  if (method === "filter") requireProducedArrayElement(lowerer, call, "'.filter()'", outElem);
+  const resultType =
+    method === "filter"
+      ? arrayOf(outElem)
+      : method === "some"
+        ? BOOL
+        : method === "findIndex"
+          ? F64
+          : fields.length
+            ? lowerer.irTypeOf(call)
+            : arrayValueType(lowerer, elem);
+  let findRetag: string | null = null;
+  const valueType = arrayValueType(lowerer, elem);
+  if (method === "find" && fields.length > 0 && !lowerer.coercibleValue(valueType, resultType)) {
+    const inline = ts.isArrowFunction(argNode) || ts.isFunctionExpression(argNode);
+    const signature = inline ? lowerer.checker.getSignatureFromDeclaration(argNode) : undefined;
+    const predicate = signature
+      ? lowerer.checker.getTypePredicateOfSignature(signature)
+      : undefined;
+    if (!inline || argNode.type || !predicate || predicate.parameterIndex !== 0)
+      lowerer.unsupported(
+        "SC1090",
+        argNode,
+        "tuple .find narrowing requires an inline callback with an inferred predicate",
+      );
+    if (valueType.kind === "union" && resultType.kind === "union")
+      findRetag = lowerer.narrowedRetagHelper(call, valueType.unionId, resultType.unionId, loc);
+    if (!findRetag)
+      lowerer.unsupported("SC1090", call, "tuple .find narrowing to an incompatible result layout");
+  }
+  const key = `tuple.${method}:${typeKey(receiver.type)}:${typeKey(fnArg.type)}:${typeKey(resultType)}`;
+  let helper = lowerer.arrHofHelpers.get(key);
+  if (!helper) {
+    helper = `%tuple.${method}.${lowerer.arrHofHelpers.size}`;
+    const tuple = varRef("a.0", receiver.type, loc);
+    const value = varRef("v.0", elem, loc);
+    const out = varRef("out.0", resultType, loc);
+    const locals: IrLocal[] = [
+      { id: "a.0", name: "a", type: receiver.type, mutable: false },
+      { id: "f.0", name: "f", type: fnArg.type, mutable: false },
+      { id: "v.0", name: "v", type: elem, mutable: true },
+    ];
+    let retained: IrExpr = value;
+    if (method === "filter" && !typeEquals(outElem, elem)) {
+      const classView =
+        outElem.kind === "object" ? checkedClassAssertion(lowerer, value, outElem, loc) : null;
+      retained = classView ?? lowerer.coerceToExpected(value, outElem);
+    }
+    if (method === "find" && fields.length > 0) {
+      retained = findRetag
+        ? {
+            kind: "call",
+            callee: findRetag,
+            args: [lowerer.coerceToExpected(value, valueType)],
+            type: resultType,
+            loc,
+          }
+        : lowerer.coerceToExpected(value, resultType);
+    }
+    const body: IrStmt[] = [];
+    if (method === "filter") {
+      locals.push({ id: "out.0", name: "out", type: resultType, mutable: false });
+      body.push({
+        kind: "varDecl",
+        localId: "out.0",
+        init: { kind: "arrayLit", elems: [], type: resultType, loc },
+        loc,
+      });
+    }
+    for (const field of fields) {
+      const read: IrExpr = {
+        kind: "recordGet",
+        obj: tuple,
+        shapeId: shape!.id,
+        field: field.name,
+        type: field.type,
+        loc,
+      };
+      const init = lowerer.coerceToExpected(read, elem);
+      body.push(
+        field === fields[0]
+          ? { kind: "varDecl", localId: "v.0", init, loc }
+          : { kind: "assign", localId: "v.0", value: init, loc },
+      );
+      const invoke: IrExpr = {
+        kind: "callValue",
+        callee: varRef("f.0", fnArg.type, loc),
+        args: [value, numLit(Number(field.name), loc)].slice(0, arity),
+        type: fnArg.type.ret,
+        loc,
+      };
+      const found: IrStmt =
+        method === "filter"
+          ? arrayValueStore(
+              lowerer,
+              out,
+              { kind: "arrIntrinsic", method: "length", receiver: out, args: [], type: F64, loc },
+              retained,
+              outElem,
+              loc,
+            )
+          : {
+              kind: "return",
+              value:
+                method === "find"
+                  ? retained
+                  : method === "some"
+                    ? boolLit(true, loc)
+                    : numLit(Number(field.name), loc),
+              loc,
+            };
+      body.push({ kind: "if", cond: predicateToBoolean(invoke), then: [found], else_: null, loc });
+    }
+    const miss =
+      method === "filter"
+        ? out
+        : method === "some"
+          ? boolLit(false, loc)
+          : method === "findIndex"
+            ? numLit(-1, loc)
+            : lowerer.coerceToExpected(
+                { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+                resultType,
+              );
+    body.push({ kind: "return", value: miss, loc });
+    lowerer.arrHofHelpers.set(key, helper);
+    lowerer.liftedFns.push({
+      name: helper,
+      params: [
+        { localId: "a.0", name: "a", type: receiver.type },
+        { localId: "f.0", name: "f", type: fnArg.type },
+      ],
+      returnType: resultType,
+      locals,
+      body,
+      loc,
+    });
+  }
+  return { kind: "call", callee: helper, args: [receiver, fnArg], type: resultType, loc };
+}

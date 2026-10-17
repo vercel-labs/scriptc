@@ -34,6 +34,8 @@ export function collectClassMethodMutations(
   const receiverFields = new Set<string>();
   const computedWrites: {
     key: ts.Expression | undefined;
+    /** The key as written, with its assertions (`i as number`, `k!`). */
+    written: ts.Expression | undefined;
     receiver: ts.Expression | undefined;
     site: ts.Node;
   }[] = [];
@@ -229,16 +231,16 @@ export function collectClassMethodMutations(
       sameBinding(receiver, keys.arguments[0]!)
     );
   };
-  const markKey = (key: ts.Expression, site: ts.Node, receiver?: ts.Expression): void => {
-    key = unwrap(key);
+  const markKey = (written: ts.Expression, site: ts.Node, receiver?: ts.Expression): void => {
+    const key = unwrap(written);
     if (ts.isStringLiteralLike(key)) markName(key.text, site);
     else if (ts.isNumericLiteral(key)) markName(String(Number(key.text)), site);
-    else computedWrites.push({ key, receiver, site });
+    else computedWrites.push({ key, written, receiver, site });
   };
   const markFields = (value: ts.Expression, site: ts.Node, receiver?: ts.Expression): void => {
     value = unwrap(value);
     if (!ts.isObjectLiteralExpression(value)) {
-      computedWrites.push({ key: undefined, receiver, site });
+      computedWrites.push({ key: undefined, written: undefined, receiver, site });
       return;
     }
     for (const field of value.properties) {
@@ -441,10 +443,12 @@ export function collectClassMethodMutations(
   lowerer.checker.prefetchClassCollection(
     computedWrites.flatMap((write) => [
       ...(write.key ? [write.key] : []),
+      ...(write.written && write.written !== write.key ? [write.written] : []),
       ...(write.receiver ? [write.receiver] : []),
     ]),
     computedWrites.flatMap((write) => [
       ...(write.key ? [write.key] : []),
+      ...(write.written && write.written !== write.key ? [write.written] : []),
       ...(write.receiver ? [write.receiver] : []),
     ]),
   );
@@ -545,7 +549,7 @@ export function collectClassMethodMutations(
     if (!methodOwnerCanInhabit(target.expression, name)) continue;
     lowerer.prototypeMethodAccesses.set(name, site);
   }
-  for (const { key, receiver, site } of computedWrites) {
+  for (const { key, written, receiver, site } of computedWrites) {
     const type = key ? lowerer.typeOf(key) : undefined;
     const names = type && (literalValues(type) ?? (key ? literalLoopKeys(key) : null));
     if (names) {
@@ -563,7 +567,10 @@ export function collectClassMethodMutations(
     // method slots. Unlike structural interfaces, it cannot be a live
     // class-method view.
     if (receiver && (freshReceiver(receiver) || functionFreeDictionary(receiver))) continue;
-    const flags = type?.flags ?? ts.TypeFlags.Unknown;
+    // An assertion states the key's type where the operand's is wider:
+    // `slots[i as number]` with `i: number | undefined` writes a number key.
+    const asserted = written && written !== key ? lowerer.typeOf(written) : type;
+    const flags = asserted?.flags ?? ts.TypeFlags.Unknown;
     if (flags & ts.TypeFlags.NumberLike) {
       // Numeric writes can replace numeric names but not ordinary names.
       numericKey = site;

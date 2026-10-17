@@ -55,3 +55,45 @@ console.log(reporter.count);
 `;
   expect(await callersOf(relabeled, "%dyn.class.properties")).not.toEqual([]);
 });
+
+// A method call the census leaves alone stays a direct call from the
+// module's top level (`%init.0`); a replaceable method is called through a
+// method value instead.
+const counter = `
+class Counter {
+  n = 0;
+  bump(): void { this.n = this.n + 1; }
+}
+const counter = new Counter();
+counter.bump();
+`;
+
+test("a key asserted to be a number leaves method calls direct", async () => {
+  const asserted = `${counter}
+function clear(slots: (Counter | null)[], at: number | undefined): void {
+  slots[at as number] = null;
+  slots[at!] = null;
+}
+clear([counter], 0);
+console.log(counter.n);
+`;
+  expect(await callersOf(asserted, "%Counter.bump")).toContain("%init.0");
+});
+
+test("a literal key keeps its names under a wider assertion", async () => {
+  const literal = `${counter}
+function put(target: Record<string, unknown>, key: "a" | "b"): void { target[key as string] = 1; }
+put({}, "a");
+console.log(counter.n);
+`;
+  expect(await callersOf(literal, "%Counter.bump")).toContain("%init.0");
+});
+
+test("a key that can be any string makes method calls checked", async () => {
+  const anyKey = `${counter}
+function put(target: Record<string, unknown>, key: string): void { target[key] = 1; }
+put({}, process.argv.length > 99 ? "bump" : "a");
+console.log(counter.n);
+`;
+  expect(await callersOf(anyKey, "%Counter.bump")).not.toContain("%init.0");
+});

@@ -39,7 +39,7 @@ function localCapture(): () => number {
   return () => local as number;
 }
 class Holder {
-  data: unknown = JSON.parse("{}");
+  data: unknown = JSON.parse("{}"); // an `unknown` field stores the checked-dynamic value now — no fence (corpus 4944)
 }
 const anything: any = 5; // checker-`any` bindings ride the checked-dynamic tree now — no fence
 const dynArray: unknown[] = []; // unknown[] IS the dyn array now — no fence (corpus 2585)

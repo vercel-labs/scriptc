@@ -137,6 +137,28 @@ import { checkedClassConstruction, checkedClassConstructionPacked } from "./clas
 import { initializeRuntimeStatics, hasRuntimeStatics } from "./class-runtime-statics.js";
 import { reflectedClassStaticMethodValue } from "./class-method-values.js";
 
+/** A TypeScript field whose type admits any value or any object (`unknown`,
+ * `object`, either with `null` or `undefined`, or an array of those) keeps
+ * its values in the checked-dynamic storage JavaScript fields already use.
+ * Other types that lower to a dynamic value (`any`, a `WeakMap`, ...) stay
+ * refused. */
+function declaresUnknownField(lowerer: Lowerer, type: ts.Type): boolean {
+  const open = (t: ts.Type): boolean =>
+    (t.flags & (ts.TypeFlags.Unknown | ts.TypeFlags.NonPrimitive)) !== 0;
+  const unit = (t: ts.Type): boolean =>
+    (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0;
+  const admits = (t: ts.Type): boolean => {
+    if (open(t)) return true;
+    if ((t.flags & ts.TypeFlags.Union) === 0) return false;
+    const arms = ts.constituentTypes(t);
+    return arms.some(open) && arms.every((arm) => open(arm) || unit(arm));
+  };
+  if (admits(type)) return true;
+  if (!lowerer.checker.isArrayType(type)) return false;
+  const element = lowerer.checker.getTypeArguments(type as ts.TypeReference)[0];
+  return element !== undefined && admits(element);
+}
+
 export function returnsOnlyThis(member: ts.MethodDeclaration): boolean {
   const body = member.body;
   const last = body?.statements.at(-1);
@@ -2763,11 +2785,14 @@ export function collectClassShapeInner(
         if (type.kind === "void") lowerer.badType(member.name, lowerer.typeOf(member.name));
         // Bundled JS declares fields without annotations before assigning
         // them in the constructor. Use the same native checked-dynamic
-        // storage as implicit constructor-assigned JS fields.
+        // storage as implicit constructor-assigned JS fields. A TypeScript
+        // field declared `unknown` (or an array of `unknown`) stores its
+        // values the same way.
         if (
           type.kind === "dyn" &&
           !isJsSourceFile(member.getSourceFile()) &&
-          !lowerer.classFieldStoresDyn(lowerer.typeOf(member.name))
+          !lowerer.classFieldStoresDyn(lowerer.typeOf(member.name)) &&
+          !declaresUnknownField(lowerer, lowerer.typeOf(member.name))
         ) {
           lowerer.unsupported("SC1090", member.name, "'unknown'-typed class fields");
         }
@@ -2902,7 +2927,11 @@ export function collectClassShapeInner(
           const type = shape.bodyType ?? shape.type;
           if (type.kind === "void") lowerer.badType(p.name, lowerer.typeOf(p.name));
           // The class-field dyn rule verbatim (KEEP NARROW).
-          if (type.kind === "dyn" && !lowerer.classFieldStoresDyn(lowerer.typeOf(p))) {
+          if (
+            type.kind === "dyn" &&
+            !lowerer.classFieldStoresDyn(lowerer.typeOf(p)) &&
+            !declaresUnknownField(lowerer, lowerer.typeOf(p))
+          ) {
             lowerer.unsupported("SC1090", p.name, "'unknown'-typed class fields");
           }
           // `override x` (and any same-named inherited member) would

@@ -2815,7 +2815,9 @@ export class Lowerer {
 
   /** Declared class fields may store a DYN value only when its static type
    * names checked protocol identity or an owned runtime handle (a Worker
-   * or MessagePort); `unknown` and `any` fields stay refused. */
+   * or MessagePort). Instance fields declared `unknown` or `object` are
+   * admitted separately (lower-classes.ts, declaresUnknownField); `any`
+   * fields stay refused. */
   classFieldStoresDyn(type: ts.Type): boolean {
     return this.classImplementedProtocol(type) || isWorkerHandleType(type, this.typeCtx);
   }

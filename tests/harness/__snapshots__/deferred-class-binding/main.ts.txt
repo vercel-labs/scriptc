@@ -1,7 +1,7 @@
 deferred-class-binding/crate.ts:3:3 - error SC1090: 'unknown'-typed class fields are not supported yet
 
   2 |   readonly label: string;
-  3 |   contents: unknown;
+  3 |   contents: WeakMap<object, string>;
     |   ^~~~~~~~
   4 |   constructor(label: string) {
 

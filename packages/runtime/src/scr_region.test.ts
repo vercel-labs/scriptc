@@ -122,11 +122,16 @@ describe.skipIf(process.platform === "win32")("counted lifetime regions", () => 
       const sanitized = lane === "sanitized";
       expect(owned.stdout.trim().split("\n")).toEqual([
         ...OWNED_STDOUT,
-        ...(sanitized ? ["sanitized builds fault on any access to a freed region"] : []),
+        sanitized
+          ? "sanitized builds fault on any access to a freed region"
+          : "a freed region's chunk serves the next region, cleared",
       ]);
       const ownedStats = attempts(owned.stderr);
-      expect(ownedStats.attempts).toEqual([...OWNED_ATTEMPTS, ...(sanitized ? ["18 freed"] : [])]);
-      const n = sanitized ? 18 : 17;
+      expect(ownedStats.attempts).toEqual([
+        ...OWNED_ATTEMPTS,
+        ...(sanitized ? ["18 freed"] : ["18 freed", "19 freed"]),
+      ]);
+      const n = sanitized ? 18 : 19;
       expect(ownedStats.summaries).toEqual([
         `scriptc regions: ${n} created, ${n} released, ${n} freed, 0 pinned, 0 kept`,
       ]);

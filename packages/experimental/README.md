@@ -21,7 +21,7 @@ function rebuild(): Program {
 
 - `run(fn)` calls `fn` with the region as the current region and returns its result. `ProgramLifetime` instances created during the call belong to the region; calls nest.
 - Instances created outside every `run` call belong to the default region, which is never freed.
-- Work that resumes after an `await` inside `fn` runs outside the region.
+- Async work started inside `fn` keeps its region: what it creates after an `await` belongs to the region too, and the region is not freed before that work has finished.
 - `release()` requests that the region be freed. scriptc frees it once nothing outside the region refers to any of its instances; until then the region stays allocated. Later `run` calls on a released region allocate in the default region.
 - A region that holds a published object (`@scriptc/threads`) is never freed.
 

@@ -2,6 +2,11 @@
  * one runtime layout, including captured bindings for local classes. */
 #include "scr_runtime.h"
 
+/* The lifetime-region fiber hooks (scr_region.h) live in this always-linked
+ * unit: scr_async.c reads them, and some runtime test links take
+ * scr_async.c without scr_region.c. scr_region_create installs them. */
+_Atomic(const ScrRgnFiberHooks *) scr_region_fiber_hooks = NULL;
+
 void scr_classobj_trace_v(void *object, ScrTraceVisit visit, void *ctx) {
   ScrClassObj *c = object;
   for (size_t i = 0; i < c->ncaps; i++) visit(c->caps[i], ctx);

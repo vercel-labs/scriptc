@@ -7,13 +7,14 @@ export declare class LifetimeRegion {
   constructor();
   /** Calls `fn` with this region as the current region and returns its
    * result. ProgramLifetime instances created during the call, outside
-   * nested `run` calls of other regions, belong to this region. Work that
-   * resumes after an `await` inside `fn` runs outside the region. */
+   * nested `run` calls of other regions, belong to this region, and so do
+   * those that async functions called during it create after an `await`. */
   run<T>(fn: () => T): T;
   /** Requests that the region be freed. Its instances are freed once
-   * nothing outside the region refers to any of them; until then the
-   * region stays allocated. Later `run` calls allocate outside the region.
-   * Never observable except through memory use. */
+   * nothing outside the region refers to any of them and the async work
+   * started inside it has finished; until then the region stays allocated.
+   * Later `run` calls allocate outside the region. Never observable except
+   * through memory use. */
   release(): void;
 }
 

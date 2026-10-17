@@ -70,6 +70,18 @@ void __lsan_unregister_root_region(const void *p, size_t size) __attribute__((we
 #define SCR_RGN_AHEAD_START ((size_t)1 << 20)  /* see scr_rgn_ahead */
 _Static_assert(sizeof(ScrRgnChunk) <= SCR_RGN_HDR, "the chunk header fits before the first segment");
 
+/* Freed chunks a thread keeps for its next regions: a program that frees
+ * a region per request or per batch would otherwise map, fault in and
+ * unmap its chunks every time. A cached chunk keeps at most its first
+ * SCR_RGN_CACHE_WARM bytes resident (cleared), and gets fresh pages past
+ * them, so a small region that reuses the chunk of a large one does not
+ * hold the large one's memory. The cache holds at most SCR_RGN_CACHE_BYTES
+ * of resident chunk memory (whole chunks where chunks are not mapped
+ * pages); chunks beyond it, and chunks huge pages may back, are unmapped
+ * as before. */
+#define SCR_RGN_CACHE_BYTES ((size_t)8 << 20)
+#define SCR_RGN_CACHE_WARM ((size_t)256 << 10)
+
 /* Regions start with small pages and switch to huge pages once they span
  * this many chunks (a default region at once): small regions then do not
  * pay a 2 MiB fault, large ones do not pay 512 small ones. */
@@ -99,6 +111,7 @@ typedef struct ScrRegion {
   uint64_t id; /* 0: the thread's default region */
   int state;
   uint32_t depth; /* run() frames active on this region */
+  size_t fibers;  /* async fibers that carry it (scr_region_fiber_hooks) */
   ScrRgnChunk *chunks;
   size_t nchunks;
   ScrRgnSeg *segs;
@@ -210,7 +223,10 @@ typedef struct {
   size_t allocated; /* bytes of region segments this thread has allocated */
   size_t checked;   /* `allocated` at the last retry */
   ScrRgnWalk walk;
+  ScrRgnChunk *cache;   /* freed chunks, linked through `next` (SCR_RGN_CACHE_BYTES) */
+  size_t cache_bytes;   /* their resident bytes, as recorded in each one's `found` */
   bool exit_registered;
+  bool exited; /* the exit cleanup ran: the fiber hooks do nothing */
   double cycle_ms; /* the cycle pass before the next attempt (stats) */
   struct {
     size_t created, released, freed, pinned, leaked, attempts;
@@ -329,18 +345,39 @@ static bool scr_rgn_huge(const ScrRegion *r) { return r->id == 0 || r->nchunks +
 /* A chunk for `r`'s next one, with its page policy. */
 static ScrRgnChunk *scr_rgn_chunk_reserve(const ScrRegion *r) {
   ScrRgnChunk *c = scr_rgn_chunk_map();
+  c->huge = false;
+#if SCR_RGN_MMAP
+  c->touched = (char *)c + SCR_RGN_HDR;
+#else
+  c->touched = (char *)c + SCR_RGN_CHUNK; /* allocated zeroed */
+#endif
 #if SCR_RGN_MMAP && defined(MADV_HUGEPAGE)
-  if (scr_rgn_huge(r)) (void)madvise(c, SCR_RGN_CHUNK, MADV_HUGEPAGE);
+  if (scr_rgn_huge(r)) {
+    (void)madvise(c, SCR_RGN_CHUNK, MADV_HUGEPAGE);
+    c->huge = true;
+  }
 #else
   (void)r;
 #endif
   return c;
 }
 
+/* Faults [from, to) of chunk `c` in ahead of use. */
+static void scr_rgn_prefault(ScrRgnChunk *c, char *from, char *to) {
+  if (to > c->touched) c->touched = to;
+  scr_mem_prefault(from, to);
+}
+
 static ScrRgnChunk *scr_rgn_chunk_new(ScrRegion *r) {
-  ScrRgnChunk *c = r->spare ? r->spare : scr_rgn_chunk_reserve(r);
+  ScrRgnChunk *c = r->spare;
+  if (!c && scr_rgn.cache) {
+    c = scr_rgn.cache;
+    scr_rgn.cache = c->next;
+    scr_rgn.cache_bytes -= (size_t)c->found;
+  }
+  if (!c) c = scr_rgn_chunk_reserve(r);
   r->spare = NULL;
-  if (r->bytes >= SCR_RGN_AHEAD_START) scr_mem_prefault(c, (char *)c + 2 * SCR_RGN_AHEAD);
+  if (r->bytes >= SCR_RGN_AHEAD_START) scr_rgn_prefault(c, (char *)c, (char *)c + 2 * SCR_RGN_AHEAD);
 #ifdef SCR_LSAN_IMMORTAL
   if (__lsan_register_root_region) __lsan_register_root_region(c, SCR_RGN_CHUNK);
 #endif
@@ -369,26 +406,74 @@ static void scr_rgn_ahead(ScrRegion *r, ScrRgnChunk *c, char *from) {
   size_t before = (size_t)(from - (char *)c), after = (size_t)(c->bump - (char *)c);
   if (after / SCR_RGN_AHEAD != before / SCR_RGN_AHEAD) {
     char *lo = (char *)c + (after / SCR_RGN_AHEAD + 1) * SCR_RGN_AHEAD;
-    if (lo < (char *)c + SCR_RGN_CHUNK) scr_mem_prefault(lo, lo + SCR_RGN_AHEAD);
+    if (lo < (char *)c + SCR_RGN_CHUNK) scr_rgn_prefault(c, lo, lo + SCR_RGN_AHEAD);
   }
   if (!r->spare && after >= SCR_RGN_CHUNK / 2 && before < SCR_RGN_CHUNK / 2) {
     bool huge = scr_rgn_huge(r);
     r->spare = scr_rgn_chunk_reserve(r);
-    scr_mem_prefault(r->spare, (char *)r->spare + (huge ? SCR_RGN_CHUNK : SCR_RGN_AHEAD));
+    scr_rgn_prefault(r->spare, (char *)r->spare, (char *)r->spare + (huge ? SCR_RGN_CHUNK : SCR_RGN_AHEAD));
   }
+}
+
+/* Returns a chunk that holds no object to the system. */
+static void scr_rgn_chunk_drop(ScrRgnChunk *c) {
+#if SCR_RGN_MMAP
+  munmap(c, SCR_RGN_CHUNK);
+#elif defined(_WIN32)
+  _aligned_free(c);
+#else
+  free(c);
+#endif
 }
 
 /* A spare chunk never held objects: it goes straight back. */
 static void scr_rgn_spare_drop(ScrRegion *r) {
   if (!r->spare) return;
-#if SCR_RGN_MMAP
-  munmap(r->spare, SCR_RGN_CHUNK);
-#elif defined(_WIN32)
-  _aligned_free(r->spare);
-#else
-  free(r->spare);
-#endif
+  scr_rgn_chunk_drop(r->spare);
   r->spare = NULL;
+}
+
+/* A freed region's chunk: kept for the thread's next regions while the
+ * cache has room, cleared (a fresh chunk is zero, and allocation relies on
+ * that), else unmapped (SCR_RGN_CACHE_BYTES). Sanitized builds never reuse
+ * a chunk (scr_rgn_chunk_unmap). */
+static void scr_rgn_chunk_retire(ScrRgnThread *t, ScrRgnChunk *c) {
+#ifndef SCR_RGN_POISON
+  char *first = (char *)c + SCR_RGN_HDR;
+  if (c->bump > c->touched) c->touched = c->bump;
+#if SCR_RGN_MMAP
+  char *warm = (char *)c + SCR_RGN_CACHE_WARM;
+  size_t resident = (size_t)((c->touched < warm ? c->touched : warm) - (char *)c);
+#else
+  size_t resident = SCR_RGN_CHUNK;
+#endif
+  if (!c->huge && t->cache_bytes + resident <= SCR_RGN_CACHE_BYTES) {
+#if SCR_RGN_MMAP
+    if (c->touched > warm) {
+      /* Fresh zero pages past the warm part (64 KiB steps cover every
+       * page size). */
+      size_t tail = ((size_t)(c->touched - warm) + 0xffff) & ~(size_t)0xffff;
+      if (tail > SCR_RGN_CHUNK - SCR_RGN_CACHE_WARM) tail = SCR_RGN_CHUNK - SCR_RGN_CACHE_WARM;
+      if (mmap(warm, tail, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == MAP_FAILED) {
+        scr_rgn_chunk_unmap(c);
+        return;
+      }
+      c->touched = warm;
+    }
+    memset(first, 0, (size_t)((c->bump < warm ? c->bump : warm) - first));
+#else
+    memset(first, 0, (size_t)(c->bump - first));
+#endif
+    c->found = (int64_t)resident;
+    c->next = t->cache;
+    t->cache = c;
+    t->cache_bytes += resident;
+    return;
+  }
+#else
+  (void)t;
+#endif
+  scr_rgn_chunk_unmap(c);
 }
 
 /* The instance stride: the emitted fast path rounds the size the same way. */
@@ -875,7 +960,7 @@ static void scr_rgn_free_region(ScrRgnThread *t, ScrRegion *r) {
   scr_rgn_spare_drop(r);
   for (ScrRgnChunk *c = r->chunks, *next; c; c = next) {
     next = c->next;
-    scr_rgn_chunk_unmap(c);
+    scr_rgn_chunk_retire(t, c);
   }
   for (ScrRgnSeg *s = r->segs, *next; s; s = next) {
     next = s->next;
@@ -1118,7 +1203,7 @@ static bool scr_rgn_try_free(ScrRgnThread *t, ScrRegion *r, bool tentative) {
 /* A condemned region not in use, never attempted, or kept by an attempt
  * whose outcome may have changed since (see SCR_RGN_RETRY_BYTES). */
 static bool scr_rgn_due(const ScrRegion *r, const ScrRgnThread *t) {
-  if (r->state != SCR_RGN_CONDEMNED || r->depth != 0 || r == t->current) return false;
+  if (r->state != SCR_RGN_CONDEMNED || r->depth != 0 || r->fibers != 0 || r == t->current) return false;
   return !r->kept || t->allocated >= r->retry_at || scr_rgn_counted(r) != r->kept_counted;
 }
 
@@ -1162,11 +1247,53 @@ static void scr_rgn_retry(ScrRgnThread *t) {
   scr_rgn_try_due(t, false);
 }
 
+/* ── async continuations ─────────────────────────────────────────────── */
+
+/* A fiber spawned while a region is current carries it: the region
+ * cannot be freed until the fiber is gone, so work that resumes after an
+ * await can keep allocating in it, condemned or not (scr_rgn_due). The
+ * fiber's own references to the region's objects are counted like any
+ * others. Fibers of the default region carry nothing. */
+static void *scr_rgn_fiber_capture(void) {
+  ScrRgnThread *t = &scr_rgn;
+  ScrRegion *r = t->current;
+  if (t->exited || !r || r->id == 0) return NULL;
+  r->fibers++;
+  return r;
+}
+
+static void scr_rgn_fiber_drop(void *region) {
+  if (region && !scr_rgn.exited) ((ScrRegion *)region)->fibers--;
+}
+
+/* The event loop resumes a fiber: its region becomes current until the
+ * fiber suspends or finishes. Run frames never span a suspension, so the
+ * fiber leaves the region current that it found. */
+static void *scr_rgn_fiber_resume(void *region) {
+  ScrRgnThread *t = &scr_rgn;
+  if (t->exited || !t->dflt) return NULL; /* no region on this thread yet */
+  ScrRegion *previous = t->current;
+  scr_rgn_switch(t, region ? (ScrRegion *)region : t->dflt);
+  return previous;
+}
+
+static void scr_rgn_fiber_suspend(void *previous) {
+  if (previous && !scr_rgn.exited) scr_rgn_switch(&scr_rgn, previous);
+}
+
+static const ScrRgnFiberHooks scr_rgn_fiber_hooks = {
+    scr_rgn_fiber_capture,
+    scr_rgn_fiber_drop,
+    scr_rgn_fiber_resume,
+    scr_rgn_fiber_suspend,
+};
+
 /* ── program-facing entry points ─────────────────────────────────────── */
 
 double scr_region_create(const ScrRgnType *types) {
   const ScrRgnType *expected = NULL;
   atomic_compare_exchange_strong(&scr_rgn_types, &expected, types);
+  atomic_store_explicit(&scr_region_fiber_hooks, &scr_rgn_fiber_hooks, memory_order_relaxed);
   /* Counting starts before the region's first object exists. */
   atomic_store_explicit(&scr_region_counting, 1, memory_order_relaxed);
   ScrRgnThread *t = scr_rgn_thread();
@@ -1230,6 +1357,10 @@ static void scr_rgn_thread_exit(void) {
     free(r->cur);
     free(r);
   }
+  for (ScrRgnChunk *c = t->cache, *next; c; c = next) {
+    next = c->next;
+    scr_rgn_chunk_drop(c);
+  }
   free(t->regions);
   free(t->cursors);
   free(t->stack);
@@ -1243,4 +1374,5 @@ static void scr_rgn_thread_exit(void) {
 #endif
   memset(t, 0, sizeof *t);
   t->exit_registered = true; /* the cleanup ran; a late allocation keeps its memory */
+  t->exited = true;          /* fibers destroyed later must not touch the freed regions */
 }

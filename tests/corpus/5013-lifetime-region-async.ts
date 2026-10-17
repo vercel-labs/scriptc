@@ -1,10 +1,9 @@
 // LifetimeRegion (@scriptc/experimental) with async callbacks: run(fn)
 // returns fn's promise once fn first awaits, and the work that resumes
-// after an await runs outside the region (it allocates in the default
-// region, which is never freed). Releasing the region while the async work
-// is still pending is safe: everything the pending work refers to stays
-// allocated, and objects of the default region that refer into a released
-// region keep it allocated for good. Node.js prints the same.
+// after an await still allocates in the region. Releasing the region while
+// the async work is still pending is safe: the region is not freed before
+// that work has finished and nothing outside refers to its objects.
+// Node.js prints the same.
 import type { ProgramLifetime } from "@scriptc/types";
 import { LifetimeRegion } from "@scriptc/experimental";
 

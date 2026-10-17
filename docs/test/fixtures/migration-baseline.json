@@ -274,6 +274,10 @@
         "id": "when-a-region-is-freed"
       },
       {
+        "text": "Async work",
+        "id": "async-work"
+      },
+      {
         "text": "Threads",
         "id": "threads"
       },

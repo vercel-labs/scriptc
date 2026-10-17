@@ -381,6 +381,30 @@ static void check_debug_report(void) {
   puts("the debug report names what keeps a region");
 }
 
+/* A freed region's chunk serves the thread's next region, cleared where
+ * the freed objects were. Sanitized builds never reuse a chunk. */
+static void check_chunk_reuse(void) {
+#ifndef SCR_RC_AUDIT
+  double r = region();
+  scr_region_enter(r);
+  Node *first = node_new(7);
+  first->other = node_retain(first);
+  scr_region_leave();
+  ScrRgnChunk *chunk = scr_rgn_chunk_of(first);
+  node_release(first);
+  scr_region_release(r);
+  double s = region();
+  scr_region_enter(s);
+  Node *again = node_new(8);
+  scr_region_leave();
+  assert(scr_rgn_chunk_of(again) == chunk);
+  assert(again->other == NULL && again->parent == NULL && again->kids == NULL);
+  node_release(again);
+  scr_region_release(s);
+  puts("a freed region's chunk serves the next region, cleared");
+#endif
+}
+
 static void check_poison(void) {
 #if defined(SCR_RC_AUDIT) && !defined(_WIN32)
   double r = region();
@@ -499,6 +523,7 @@ int main(int argc, char **argv) {
     check_in_use();
     check_cursors();
     check_retry_schedule();
+    check_chunk_reuse();
     check_poison();
   } else if (!strcmp(mode, "debug")) {
     check_debug_report();

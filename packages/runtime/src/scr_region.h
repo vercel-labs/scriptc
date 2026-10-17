@@ -77,6 +77,11 @@ typedef struct ScrRgnChunk {
   struct ScrRgnChunk *next;
   char *bump;    /* the next free segment byte */
   int64_t found; /* references the last walk saw into this chunk */
+  /* What stays resident across reuse (scr_region.c's chunk cache): the
+   * highest byte any region carved or faulted in, and whether the chunk
+   * may be backed by huge pages. */
+  char *touched;
+  bool huge;
 } ScrRgnChunk;
 _Static_assert(offsetof(ScrRgnChunk, count) == 0 && offsetof(ScrRgnChunk, owner) == sizeof(int64_t),
                "llvm/regions.ts addresses the chunk count at 0 and the owner at 8");
@@ -110,5 +115,21 @@ void scr_region_release(double id);
  * unexplained). Both tolerate NULL. */
 void scr_region_ref(ScrRgnWalk *w, void *obj);
 void scr_region_slot(ScrRgnWalk *w, void *obj, void (*release)(void *));
+
+/* Async continuations. A fiber that runs an async function body carries
+ * the region that was current when it was spawned (`capture`; NULL is the
+ * default region), and the event loop makes that region current while the
+ * fiber runs after an await (`resume` answers the region to restore with
+ * `suspend`). A region is never freed while a fiber that carries it
+ * exists; `drop` ends the fiber's hold. scr_region_create installs the
+ * hooks (process-wide, once); until then the fiber machinery (scr_async.c)
+ * calls nothing. Every hook acts on the calling thread's regions. */
+typedef struct ScrRgnFiberHooks {
+  void *(*capture)(void);
+  void (*drop)(void *region);
+  void *(*resume)(void *region);
+  void (*suspend)(void *previous);
+} ScrRgnFiberHooks;
+extern _Atomic(const ScrRgnFiberHooks *) scr_region_fiber_hooks;
 
 #endif /* SCR_REGION_H */

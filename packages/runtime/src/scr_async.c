@@ -29,6 +29,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -594,6 +595,11 @@ struct ScrFiber {
    * SPAWNER at spawn (Node's init-time capture), swapped active with the
    * fiber (the exc-cell pattern) so run()'s window rides awaits. */
   ScrAlsCtx *als;
+  /* The lifetime region the body was spawned in (scr_region_fiber_hooks;
+   * NULL = the default region): the loop makes it current again whenever
+   * it resumes the fiber. Async bodies only; generators run in their
+   * resumer's region. */
+  void *region;
   bool done;
   /* A native synchronous generator compiled as an LLVM coroutine (see coro
    * above): no stack or saved context; resumes call into the frame on the
@@ -674,6 +680,12 @@ void scr_als_ctx_release(ScrAlsCtx *c) {
   if (!c || --c->rc != 0) return;
   for (size_t i = 0; i < c->len; i++) scr_dyn_release(c->entries[i].value);
   free(c);
+}
+
+/* The lifetime region a new async fiber carries (ScrFiber.region). */
+static inline void *scr_fiber_region_capture(void) {
+  const ScrRgnFiberHooks *regions = atomic_load_explicit(&scr_region_fiber_hooks, memory_order_relaxed);
+  return regions != NULL ? regions->capture() : NULL;
 }
 
 static SCR_TL ScrCtx scr_loop_ctx; /* the main stack (scheduler home) */
@@ -1883,6 +1895,7 @@ static void scr_fiber_destroy(ScrFiber *f) {
 #endif
 #endif
   scr_als_ctx_release(f->als);
+  if (f->region != NULL) atomic_load_explicit(&scr_region_fiber_hooks, memory_order_relaxed)->drop(f->region);
 #if !defined(_WIN32) && !defined(__wasi__)
   scr_fiber_stack_free(f->stack);
 #else
@@ -1914,6 +1927,7 @@ static ScrPromise *scr_async_spawn_impl(void (*entry)(ScrFiber *, void *), void 
   /* AsyncLocalStorage: the child runs in the SPAWNER's context (Node's
    * init-time capture); snapshots are immutable, so a retain suffices. */
   f->als = scr_als_ctx_retain(*SCR_ALS_SLOT());
+  f->region = scr_fiber_region_capture();
   scr_fibers_live++;
 
 #ifdef _WIN32
@@ -2123,6 +2137,7 @@ ScrPromise *scr_async_spawn_after(ScrPromise *dependency,
   f->entry = entry;
   f->argpack = argpack;
   f->als = scr_als_ctx_retain(*SCR_ALS_SLOT());
+  f->region = scr_fiber_region_capture();
   scr_fibers_live++;
 
   if (dependency->state == SCR_PROM_PENDING) {
@@ -3624,6 +3639,9 @@ static void scr_resume_fiber(ScrFiber *f) {
   (void)scr_win_self();
 #endif
   f->return_to = &scr_loop_ctx;
+  /* The body continues in the lifetime region it was spawned in. */
+  const ScrRgnFiberHooks *regions = atomic_load_explicit(&scr_region_fiber_hooks, memory_order_relaxed);
+  void *region_before = regions != NULL ? regions->resume(f->region) : NULL;
 #ifdef __wasi__
   scr_current = f;
   scr_exc_swap_cell(&f->exc);
@@ -3640,8 +3658,10 @@ static void scr_resume_fiber(ScrFiber *f) {
   scr_current = NULL;
   scr_exc_swap_cell(NULL);
   scr_als_active = &scr_als_main_slot;
+  if (regions != NULL) regions->suspend(region_before);
 #else
   scr_switch(&scr_loop_ctx, &f->ctx, f);
+  if (regions != NULL) regions->suspend(region_before);
   f = scr_loop_reap;
   if (f == NULL) return;
   scr_loop_reap = NULL;

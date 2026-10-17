@@ -1999,20 +1999,34 @@ ScrStr *scr_str_slice(ScrStr *s, double start, double end) {
   return scr_str_slice_units(s, e, from, to);
 }
 
+/* One slice() or substring() boundary in [0, length]: ToIntegerOrInfinity,
+ * then slice's end-relative negative or substring's clamp. Conversion to an
+ * integer truncates toward zero exactly like ToIntegerOrInfinity, so no
+ * libm call is needed; NaN fails both comparisons and lands on 0, and a
+ * negative fraction above -1 is -0, which slice treats as 0. */
+static inline size_t scr_slice_unit(double v, size_t length, bool substring) {
+  if (v >= 0) return v >= (double)length ? length : (size_t)v;
+  if (substring || !(v > -(double)length)) return 0;
+  long long unit = (long long)v; /* in (-length, 0] */
+  return unit == 0 ? 0 : (size_t)((long long)length + unit);
+}
+
+/* slice()/substring() boundaries in UTF-16 units over the receiver's length. */
+static void scr_str_slice_bounds(ScrStr *s, ScrSidx *e, double start, double end, bool substring,
+                                 size_t *from_out, size_t *to_out) {
+  size_t length = scr_sidx_len(s, e);
+  size_t from = scr_slice_unit(start, length, substring);
+  size_t to = scr_slice_unit(end, length, substring);
+  if (substring && from > to) { size_t swap = from; from = to; to = swap; }
+  *from_out = from;
+  *to_out = to;
+}
+
 void scr_str_slice_range(ScrStr *s, double start, double end, bool substring,
                          ScrStringSlice *out) {
   ScrSidx *e = scr_sidx_for(s);
-  size_t length = scr_sidx_len(s, e);
-  double a = scr_to_integer_or_infinity(start), b = scr_to_integer_or_infinity(end);
   size_t from, to;
-  if (substring) {
-    from = a <= 0 ? 0 : a >= (double)length ? length : (size_t)a;
-    to = b <= 0 ? 0 : b >= (double)length ? length : (size_t)b;
-    if (from > to) { size_t swap = from; from = to; to = swap; }
-  } else {
-    from = scr_slice_boundary(a, length);
-    to = scr_slice_boundary(b, length);
-  }
+  scr_str_slice_bounds(s, e, start, end, substring, &from, &to);
   out->start = from;
   out->length = to > from ? to - from : 0;
   out->split = 0;
@@ -2022,6 +2036,56 @@ void scr_str_slice_range(ScrStr *s, double start, double end, bool substring,
     (void)scr_u16_to_byte_c(s, e, to, &last);
     out->split = (first ? 1u : 0u) | (last ? 2u : 0u);
   }
+}
+
+/* Fill a scratch buffer with `units` ASCII bytes (scr_str_is_scratch). */
+static inline ScrStr *scr_str_scratch_fill(ScrStr *scratch, const char *data, size_t units) {
+  scratch->rc = SIZE_MAX;
+  scratch->len = units;
+  scratch->cap = 0; /* below len: the scratch marker */
+  scratch->ascii = 1;
+#if SCR_STR_HASH_CACHE
+  scratch->hash = 0;
+#endif
+  scr_copy_bytes(scratch->data, data, units);
+  scratch->data[units] = '\0';
+  return scratch;
+}
+
+ScrStr *scr_str_slice_scratch(ScrStr *s, double start, double end, bool substring,
+                              ScrStr *scratch, size_t bytes) {
+  size_t capacity = bytes - sizeof(ScrStr) - 1;
+  if (__builtin_expect(s->ascii, 1)) {
+    /* Units are bytes: no index entry, and the bounds are byte offsets. */
+    size_t length = s->len;
+    size_t from = scr_slice_unit(start, length, substring);
+    size_t to = scr_slice_unit(end, length, substring);
+    if (substring && from > to) { size_t swap = from; from = to; to = swap; }
+    size_t units = to > from ? to - from : 0;
+    /* Shorter results are interned statics. */
+    if (units >= 2 && units <= capacity) return scr_str_scratch_fill(scratch, s->data + from, units);
+    return scr_str_slice_units(s, NULL, from, to);
+  }
+  ScrSidx *e = scr_sidx_for(s);
+  size_t from, to;
+  scr_str_slice_bounds(s, e, start, end, substring, &from, &to);
+  size_t units = to > from ? to - from : 0;
+  if (units >= 2 && units <= capacity) {
+    /* Equal unit and byte counts between two character boundaries prove
+     * the span is ASCII: every other character takes more bytes than
+     * UTF-16 units. Non-ASCII results keep the owned copy and its index. */
+    bool first, last;
+    size_t from_b = scr_u16_to_byte_c(s, e, from, &first);
+    size_t to_b = scr_u16_to_byte_c(s, e, to, &last);
+    if (!first && !last && to_b - from_b == units)
+      return scr_str_scratch_fill(scratch, s->data + from_b, units);
+  }
+  return scr_str_slice_units(s, e, from, to);
+}
+
+ScrStr *scr_str_scratch_keep(ScrStr *s) {
+  if (!scr_str_is_scratch(s)) return scr_str_retain(s);
+  return scr_str_from_span_ascii(s->data, s->len);
 }
 
 double scr_str_slice_char_code_at(ScrStr *s, const ScrStringSlice *range, double index) {

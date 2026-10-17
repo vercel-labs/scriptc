@@ -83,6 +83,16 @@ typedef struct ScrStringSlice {
 void scr_str_slice_range(ScrStr *s, double start, double end, bool substring,
                          ScrStringSlice *out);
 double scr_str_slice_char_code_at(ScrStr *s, const ScrStringSlice *range, double index);
+/* A slice that only borrowing consumers read (string-slices.ts) is written
+ * into the caller's `bytes`-sized stack buffer as an immortal ASCII string,
+ * whose header marks it as a scratch copy (scr_str_is_scratch). Results
+ * that do not fit, are not ASCII, or are interned statics are returned as
+ * the ordinary +1 slice. Releasing either result is correct. */
+ScrStr *scr_str_slice_scratch(ScrStr *s, double start, double end, bool substring,
+                              ScrStr *scratch, size_t bytes);
+/* The owning reference a container stores for `s`: a heap copy of a scratch
+ * string, else `s` retained. */
+ScrStr *scr_str_scratch_keep(ScrStr *s);
 
 /* repeat(count): count < 0 or Infinity is a JS RangeError; scriptc has no
  * exceptions, so it prints "scriptc: RangeError: Invalid count value" to

@@ -184,6 +184,14 @@ static inline ScrStr *scr_str_retain(ScrStr *s) {
 
 void scr_str_release(ScrStr *s); /* NULL-tolerant (uninitialized locals) */
 
+/* A transient stack copy of a slice (scr_str_slice_scratch): immortal for
+ * retain and release, and valid only while its borrowing consumer runs. No
+ * other string has a capacity below its length. Containers that keep a
+ * string they were lent store scr_str_scratch_keep's copy instead. */
+static inline bool scr_str_is_scratch(const ScrStr *s) {
+  return s->rc == SIZE_MAX && s->cap < s->len;
+}
+
 /* ── lone surrogates: canonical WTF-8 storage ─────────────────────────
  * String storage is UTF-8 extended to lone UTF-16 surrogates: an unpaired
  * surrogate is its generalized 3-byte encoding ED A0..BF 80..BF, while a

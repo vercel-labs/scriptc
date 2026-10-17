@@ -42,7 +42,7 @@ import {
 } from "./map-number-lookup.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
 import { emitFusedMapSet, rememberMapEntry } from "./map-entry-fusion.js";
-import { emitStringSliceRead } from "./string-slices.js";
+import { emitScratchStringSlice, emitStringSliceRead } from "./string-slices.js";
 import {
   STRING_CHAR_CODE_AT_DECL,
   STRING_CHAR_CODE_AT_INT_MARKER,
@@ -391,6 +391,7 @@ export function emitStrIntrinsic(
             false,
           );
     case "slice":
+      if (host.scratchStringSlices.has(e)) return emitScratchStringSlice(host, e, r, args);
       return call(
         "scr_str_slice",
         "ptr (ptr, double, double)",
@@ -399,6 +400,7 @@ export function emitStrIntrinsic(
         true,
       );
     case "substring":
+      if (host.scratchStringSlices.has(e)) return emitScratchStringSlice(host, e, r, args);
       return call(
         "scr_str_substring",
         "ptr (ptr, double, double)",

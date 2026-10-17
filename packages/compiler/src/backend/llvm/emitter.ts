@@ -219,7 +219,10 @@ import { findAppendedArrayLiterals } from "./appended-array-literals.js";
 import { AmbientReceiverReaders, findConstantCallbacks } from "./constant-callbacks.js";
 import {
   findScalarStringSlices,
+  findScratchStringSlices,
+  findLentStringParameters,
   emitStringSliceSnapshot,
+  type LentStringParameters,
   type StringSliceSnapshot,
 } from "./string-slices.js";
 import { LazyCaptures } from "./lazy-captures.js";
@@ -569,6 +572,10 @@ export class LlEmitter {
   private loopArrayBorrows: ReadonlySet<IrStmt> = new Set();
   private scalarStringSlices = new Map<string, IrExpr & { kind: "strIntrinsic" }>();
   readonly stringSlices = new Map<string, StringSliceSnapshot>();
+  /** Slices written into stack buffers (findScratchStringSlices). */
+  scratchStringSlices: ReadonlySet<IrExpr> = new Set();
+  /** String parameters a caller may lend scratch slices to. */
+  private lentStringParameters: LentStringParameters = new Map();
   private localStackUnions = new Map<string, IrExpr & { kind: "unionWrap" }>();
   private localStackObjects = new Map<string, StackObjectSource>();
   private reassignedStackObjects = new Set<string>();
@@ -1245,6 +1252,8 @@ export class LlEmitter {
         return shape !== undefined && !recordDynKeepsIdentity(shape);
       },
     );
+    this.lentStringParameters =
+      this.debug === null ? findLentStringParameters(this.fnByName, this.callLifetimes) : new Map();
     this.constantCallbacks = findConstantCallbacks(mod, this.callLifetimes);
     // Integer clones signal a stack overflow through their result, which
     // needs the single-threaded guard; worker programs also poll for
@@ -6373,6 +6382,15 @@ export class LlEmitter {
     );
     this.scalarStringSlices =
       this.debug === null ? findScalarStringSlices(fn, this.callLifetimes) : new Map();
+    this.scratchStringSlices =
+      this.debug === null
+        ? findScratchStringSlices(
+            fn,
+            this.callLifetimes,
+            this.scalarStringSlices,
+            this.lentStringParameters,
+          )
+        : new Set();
     this.mapReadLifetimes = findMapReadLifetimes(fn, this.boxedUnionsById, this.callLifetimes);
     this.readNumberMapWrites = findReadNumberMapWrites(fn);
     this.mapEntryFusion = this.debug === null ? findMapEntryFusions(fn) : null;

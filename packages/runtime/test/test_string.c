@@ -205,6 +205,38 @@ static void surrogate_asserts(void) {
       }
     }
   }
+  /* Scratch slices hold the materialized text. Only ASCII results of at
+   * least two units use the caller's buffer, marked as scratch. */
+  {
+    ScrStr *sources[] = {two, s, scr_str_new("GET /api/users 200", 18)};
+    const double marks[] = {-INFINITY, -7.5, -3, -0.5, -0.0, 0, 0.5, 1,
+                            2, 3.9, 5, 9, 40, INFINITY, NAN};
+    const size_t nmarks = sizeof marks / sizeof marks[0];
+    _Alignas(16) unsigned char buffer[96];
+    for (size_t k = 0; k < 3; k++) {
+      for (size_t a = 0; a < nmarks; a++) {
+        for (size_t b = 0; b < nmarks; b++) {
+          for (unsigned substring = 0; substring < 2; substring++) {
+            ScrStr *src = sources[k];
+            ScrStr *scratch = scr_str_slice_scratch(src, marks[a], marks[b], substring != 0,
+                                                    (ScrStr *)buffer, sizeof buffer);
+            ScrStr *copy = substring ? scr_str_substring(src, marks[a], marks[b])
+                                     : scr_str_slice(src, marks[a], marks[b]);
+            bool used = scratch == (ScrStr *)buffer;
+            bool expected = copy->len >= 2 && scr_bytes_all_ascii(copy->data, copy->len);
+            total++;
+            if (scratch->len != copy->len || memcmp(scratch->data, copy->data, copy->len) != 0 ||
+                used != expected || used != scr_str_is_scratch(scratch) ||
+                scr_str_utf16_len(scratch) != scr_str_utf16_len(copy))
+              failed++;
+            scr_str_release(scratch);
+            scr_str_release(copy);
+          }
+        }
+      }
+    }
+    scr_str_release(sources[2]);
+  }
   scr_str_release(two);
   scr_str_release(s);
 }

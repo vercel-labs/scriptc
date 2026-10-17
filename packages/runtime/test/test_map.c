@@ -284,6 +284,36 @@ static void test_span_keys(void) {
   scr_map_release(numbers);
 }
 
+/* A scratch slice probes like any key; an insertion stores a heap copy, so
+ * the stored key survives the buffer's next contents. */
+static void test_scratch_keys(void) {
+  ScrMap *m = scr_map_new(SCR_MAP_KEY_STR, SCR_MAP_VAL_F64, NULL);
+  ScrStr *line = S("alpha beta alpha");
+  _Alignas(16) unsigned char buffer[96];
+  ScrStr *alpha = scr_str_slice_scratch(line, 0, 5, false, (ScrStr *)buffer, sizeof buffer);
+  check(alpha == (ScrStr *)buffer && scr_str_is_scratch(alpha), "short ASCII slice uses the buffer");
+  scr_map_set_str_f64(m, alpha, 1);
+  double out = 0;
+  check(scr_map_get_str_f64(m, alpha, &out) && out == 1, "scratch key probes its entry");
+  ScrStr *beta = scr_str_slice_scratch(line, 6, 10, false, (ScrStr *)buffer, sizeof buffer);
+  check(!scr_map_has_str(m, beta), "refilled buffer probes its new text");
+  scr_map_set_str_f64(m, beta, 2);
+  ScrStr *again = scr_str_slice_scratch(line, 11, 16, false, (ScrStr *)buffer, sizeof buffer);
+  scr_map_set_str_f64(m, again, 3);
+  check(scr_map_size(m) == 2, "scratch overwrite keeps one entry");
+  ScrStr *first = scr_map_iter_key_str(m, 0), *second = scr_map_iter_key_str(m, 1);
+  ScrStr *a = S("alpha"), *b = S("beta");
+  check(!scr_str_is_scratch(first) && scr_str_eq(first, a), "stored key is an owned copy");
+  check(!scr_str_is_scratch(second) && scr_str_eq(second, b), "second stored key is a copy");
+  check(scr_map_get_str_f64(m, a, &out) && out == 3, "overwrite through scratch key");
+  scr_str_release(a);
+  scr_str_release(b);
+  scr_str_release(first);
+  scr_str_release(second);
+  scr_str_release(line);
+  scr_map_release(m);
+}
+
 static void test_same_value_zero(void) {
   ScrMap *m = scr_map_new(SCR_MAP_KEY_F64, SCR_MAP_VAL_BOOL, NULL);
   scr_map_set_f64_bool(m, 0.0 / 0.0, true); /* NaN key */
@@ -793,6 +823,7 @@ int main(void) {
   test_string_entries();
   test_same_value_zero();
   test_span_keys();
+  test_scratch_keys();
   test_string_hash_cache();
 #ifdef SCR_RC_AUDIT
   test_rc_accounting();

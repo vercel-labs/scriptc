@@ -82,7 +82,14 @@ export function lowerJsonMethodCall(
     // conversion so a stale capture cannot read an impossible payload.
     // Optional strings have a serializer that preserves a missing root;
     // an unchecked array read can still be absent despite its checker type.
-    if (value.type.kind === "union" && optionalStringTags(lowerer, value.type) === null) {
+    // A json-safe union already stringifies each arm. Date.toJSON is
+    // `string` to the checker and `string | null` at runtime; narrowing
+    // that null arm away throws before Node can print null.
+    if (
+      value.type.kind === "union" &&
+      optionalStringTags(lowerer, value.type) === null &&
+      !lowerer.jsonStringifySafe(value.type)
+    ) {
       const narrowed = lowerer.mapTypeOf(lowerer.typeOf(argNode));
       if (narrowed && !isUnitType(narrowed) && narrowed.kind !== "void") {
         const helper =

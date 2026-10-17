@@ -1,7 +1,16 @@
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, own } from "../lowerer.js";
 import { locOf } from "../../program.js";
-import { F64, type IrExpr, type IrLibFn, STRING } from "../../../ir/ir.js";
+import {
+  BOOL,
+  F64,
+  type IrExpr,
+  type IrLibFn,
+  type IrType,
+  NULL_T,
+  STRING,
+  type SrcLoc,
+} from "../../../ir/ir.js";
 
 const DATE_GETTER_FNS: Readonly<Record<string, IrLibFn>> = {
   getFullYear: "date.getFullYear",
@@ -25,6 +34,31 @@ const DATE_GETTER_FNS: Readonly<Record<string, IrLibFn>> = {
 
 const DATE_METHOD_HINT =
   "getTime(), valueOf(), toISOString(), the local/UTC calendar getters, and getTimezoneOffset() are supported; Date setters and locale/string formatters have no lowering";
+
+/** Date.prototype.toJSON returns null when the time is not finite, and
+ * otherwise the same ISO string as toISOString. toISOString still throws. */
+function dateToJson(lowerer: Lowerer, receiver: IrExpr, loc: SrcLoc): IrExpr {
+  const stored = lowerer.declareHiddenLocal("%dateJson", receiver.type);
+  const ref: IrExpr = { kind: "varRef", localId: stored.id, type: stored.type, loc };
+  const time: IrExpr = { kind: "libCall", fn: "date.getTime", args: [ref], type: F64, loc };
+  const finite: IrExpr = { kind: "libCall", fn: "number.isFinite", args: [time], type: BOOL, loc };
+  const type: IrType = { kind: "union", unionId: lowerer.unions.intern([STRING, NULL_T]) };
+  const text = lowerer.coerceToExpected(
+    { kind: "libCall", fn: "date.toISOStringValue", args: [ref], type: STRING, loc },
+    type,
+  );
+  const empty = lowerer.coerceToExpected(
+    { kind: "unitLit", unit: "null", type: NULL_T, loc },
+    type,
+  );
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: stored.id, init: receiver, loc }],
+    result: { kind: "ternary", cond: finite, then: text, else_: empty, type, loc },
+    type,
+    loc,
+  };
+}
 
 /** The Date slice: statics plus read-only Date values backed by one
  * TimeClip'd millisecond scalar. Construction lives in lowerNew;
@@ -99,6 +133,7 @@ export function lowerDateCall(
       loc,
     };
   }
+  if (name === "toJSON") return dateToJson(lowerer, receiver, loc);
   if (name === "toISOString") {
     return { kind: "libCall", fn: "date.toISOStringValue", args: [receiver], type: STRING, loc };
   }

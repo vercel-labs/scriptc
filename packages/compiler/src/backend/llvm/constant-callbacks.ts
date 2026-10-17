@@ -1,12 +1,17 @@
-import type { IrExpr, IrModule } from "../../ir/ir.js";
+import type { IrExpr, IrFunction, IrModule } from "../../ir/ir.js";
 import { exprFunctionReference, moduleFunctionReferences } from "../../ir/function-references.js";
+import { writtenLocals } from "../../ir/callback-specialization.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import type { CallLifetimes } from "./call-lifetimes.js";
 
 /** Closed direct-call consumers can devirtualize a callback when every
  * incoming call supplies the same function. Keep its evaluated environment,
  * arguments and ordinary ownership; only the loaded code pointer changes.
- * Escaped, exported, recursive forwarding and unknown targets stay indirect. */
+ * A call that forwards the consumer's own unchanged parameter (recursion)
+ * agrees with the others; a parameter forwarded to another consumer, or
+ * captured unchanged by a closure, resolves through the incoming calls of
+ * the function that declares it. Escaped, exported, mutually recursive
+ * forwarding and unknown targets stay indirect. */
 export function findConstantCallbacks(
   mod: IrModule,
   lifetimes: CallLifetimes,
@@ -39,6 +44,9 @@ export function findConstantCallbacks(
   );
   const globals = new Map<string, IrExpr>();
   const writes = new Set<string>();
+  // Parameters and captures each function (or a closure sharing the
+  // binding) writes after entry.
+  const rebinds = writtenLocals(mod);
   // A function named anywhere but as a direct call's callee can be entered
   // by a generated adapter or the runtime, which a direct-call census cannot
   // specialize: the entry, exports, class helpers and methods here, and
@@ -175,10 +183,18 @@ export function findConstantCallbacks(
     const next = definitions.get(owner)?.get(id);
     if (next) return resolve(owner, next, seen);
     const fn = functions.get(owner);
+    const parameter = fn?.params.findIndex((param) => param.localId === id) ?? -1;
+    if (fn && parameter >= 0) return parameterTarget(fn, parameter, seen);
     const index = fn?.captures?.findIndex((capture) => capture.localId === id) ?? -1;
     const local = fn?.locals.find((candidate) => candidate.id === id);
     const sites = closureSites.get(owner);
-    if (index < 0 || !local || local.mutable || !sites?.length) return null;
+    if (
+      index < 0 ||
+      !local ||
+      (local.mutable && rebinds.get(owner)?.has(id) !== false) ||
+      !sites?.length
+    )
+      return null;
     let target: string | null = null;
     for (const site of sites) {
       const outer = site.captures[index];
@@ -194,6 +210,40 @@ export function findConstantCallbacks(
     }
     return target;
   }
+  // The one function every incoming call passes in a consumer's callback
+  // parameter that its body never rebinds. Results are cached: helpers
+  // forwarding one callback through several calls resolve it once.
+  const parameterTargets = new Map<string, string | null>();
+  function parameterTarget(fn: IrFunction, index: number, seen: Set<string>): string | null {
+    const param = fn.params[index]!;
+    const key = `%param:${fn.name}:${index}`;
+    const cached = parameterTargets.get(key);
+    if (cached !== undefined) return cached;
+    if (
+      seen.has(key) ||
+      param.type.kind !== "func" ||
+      !consumers.has(fn.name) ||
+      escaped.has(fn.name) ||
+      rebinds.get(fn.name)?.has(param.localId) !== false
+    )
+      return null;
+    seen.add(key);
+    const calls = incoming.get(fn.name) ?? [];
+    let target: string | null = null;
+    for (const call of calls) {
+      const value = call.args[index];
+      if (call.owner === fn.name && value?.kind === "varRef" && value.localId === param.localId)
+        continue;
+      const next = value ? resolve(call.owner, value, new Set(seen)) : null;
+      if (!next || (target && target !== next)) {
+        target = null;
+        break;
+      }
+      target = next;
+    }
+    parameterTargets.set(key, target);
+    return target;
+  }
   // Global targets are module facts. Resolve them once, and copy only
   // entries actually used as indirect callees in each body. A module-wide
   // global/function cross product would dominate large-source emission.
@@ -207,7 +257,11 @@ export function findConstantCallbacks(
     const needed = indirectCallees.get(fn.name)!;
     if (!needed.size) continue;
     const targets = new Map<string, string>();
+    const params = new Set(fn.params.map((param) => param.localId));
     for (const id of needed) {
+      // A parameter called in its own body resolves below, only where the
+      // body borrows it.
+      if (params.has(id)) continue;
       if (localIds.get(fn.name)?.has(id)) {
         const target = resolveLocal(fn.name, id, new Set());
         if (target) targets.set(id, target);
@@ -228,16 +282,7 @@ export function findConstantCallbacks(
               : lifetimes.borrowed.get(fn.name)?.has(index))
           )
             return;
-          let target: string | null = null;
-          for (const call of calls) {
-            const value = call.args[index];
-            const next = value ? resolve(call.owner, value) : null;
-            if (!next || (target && target !== next)) {
-              target = null;
-              break;
-            }
-            target = next;
-          }
+          const target = parameterTarget(fn, index, new Set());
           if (target) targets.set(param.localId, target);
         });
     }

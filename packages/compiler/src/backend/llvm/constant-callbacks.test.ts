@@ -156,6 +156,93 @@ test("global closure aliases resolve without borrowing the caller's local namesp
   entry.body.push({ kind: "assign", localId: "%g.callback", value: closure("predicate"), loc });
   expect(facts(mod).get("consume")?.has("test")).not.toBe(true);
 });
+test("recursion that forwards the unchanged callback agrees with the outer calls", () => {
+  const mod = fixture();
+  const consumer = mod.functions[1]!;
+  const recurse: IrStmt = {
+    kind: "exprStmt",
+    expr: { kind: "call", callee: "consume", args: [ref("test")], type: BOOL, loc },
+    loc,
+  };
+  consumer.body.unshift(recurse);
+  expect(facts(mod).get("consume")?.get("test")).toBe("predicate");
+  // Forwarding another function's callback is an ordinary incoming call.
+  consumer.body[0] = {
+    kind: "exprStmt",
+    expr: { kind: "call", callee: "consume", args: [closure("other")], type: BOOL, loc },
+    loc,
+  };
+  mod.functions.push({ ...mod.functions[0]!, name: "other" });
+  expect(facts(mod).get("consume")?.has("test")).not.toBe(true);
+});
+test("a callback forwarded through another consumer's parameter resolves", () => {
+  const mod = fixture();
+  const entry = mod.functions[2]!;
+  const forward: IrFunction = {
+    name: "forward",
+    ownsPrototype: true,
+    params: [{ localId: "f", name: "f", type: callback }],
+    locals: [{ id: "f", name: "f", type: callback, mutable: true }],
+    returnType: BOOL,
+    body: [
+      {
+        kind: "return",
+        value: { kind: "call", callee: "consume", args: [ref("f")], type: BOOL, loc },
+        loc,
+      },
+    ],
+    loc,
+  };
+  mod.functions.push(forward);
+  entry.body = [
+    {
+      kind: "exprStmt",
+      expr: { kind: "call", callee: "forward", args: [closure("predicate")], type: BOOL, loc },
+      loc,
+    },
+  ];
+  expect(facts(mod).get("consume")?.get("test")).toBe("predicate");
+  // A forwarder that rebinds its parameter forwards an unknown value.
+  forward.body.unshift({ kind: "assign", localId: "f", value: closure("other"), loc });
+  mod.functions.push({ ...mod.functions[0]!, name: "other" });
+  expect(facts(mod).get("consume")?.has("test")).not.toBe(true);
+});
+test("a closure capturing an unchanged callback parameter calls its target", () => {
+  const mod = fixture();
+  const consumer = mod.functions[1]!;
+  const inner: IrFunction = {
+    name: "%inner",
+    params: [],
+    captures: [{ localId: "c", name: "c", type: callback }],
+    locals: [{ id: "c", name: "c", type: callback, mutable: true, boxed: true }],
+    returnType: BOOL,
+    body: [
+      {
+        kind: "return",
+        value: {
+          kind: "callValue",
+          callee: ref("c"),
+          args: [{ kind: "numLit", value: 2, type: F64, loc }],
+          type: BOOL,
+          loc,
+        },
+        loc,
+      },
+    ],
+    loc,
+  };
+  mod.functions.push(inner);
+  consumer.locals[0]!.boxed = true;
+  consumer.body.unshift({
+    kind: "exprStmt",
+    expr: { kind: "closure", fnName: "%inner", captures: ["test"], type: funcOf([], BOOL), loc },
+    loc,
+  });
+  expect(facts(mod).get("%inner")?.get("c")).toBe("predicate");
+  // A write through the environment rebinds the shared binding.
+  inner.body.unshift({ kind: "assign", localId: "c", value: closure("predicate"), loc });
+  expect(facts(mod).get("%inner")?.has("c")).not.toBe(true);
+});
 test("receiver elision admits only synchronous receiver-free work", () => {
   const fn = fixture().functions[0]!;
   expect(callbackIgnoresReceiver(fn)).toBe(true);

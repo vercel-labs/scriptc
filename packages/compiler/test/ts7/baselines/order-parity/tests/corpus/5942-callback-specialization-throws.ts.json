@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5942-callback-specialization-throws.ts"
+ ],
+ "diags": []
+}

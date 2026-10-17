@@ -89,6 +89,7 @@ import {
 } from "./split-loops.js";
 import { scalarizeNumericRecords } from "../../ir/scalar-records.js";
 import { RESULT_ENTRY_PREFIX, addRecordResultEntries } from "./record-results.js";
+import { specializeCallbackCalls } from "../../ir/callback-specialization.js";
 import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js";
 import { everyExpr, everyExprChild, everyStmtChild, everyStmtList } from "../../ir/traverse.js";
 import {
@@ -480,11 +481,14 @@ export function emitLlvmModule(input: IrModule, options: LlvmTargetOptions = {})
     options.debugSources === undefined
       ? addRecordResultEntries(
           scalarizeNumericRecords(
-            specializeNumericCalls(
-              foldConstantGlobals(
-                copyStableCaptures(
-                  hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+            specializeCallbackCalls(
+              specializeNumericCalls(
+                foldConstantGlobals(
+                  copyStableCaptures(
+                    hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+                  ),
                 ),
+                mangleFunction,
               ),
               mangleFunction,
             ),
@@ -505,11 +509,14 @@ export function emitLlvmModuleSource(
     options.debugSources === undefined
       ? addRecordResultEntries(
           scalarizeNumericRecords(
-            specializeNumericCalls(
-              foldConstantGlobals(
-                copyStableCaptures(
-                  hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+            specializeCallbackCalls(
+              specializeNumericCalls(
+                foldConstantGlobals(
+                  copyStableCaptures(
+                    hoistFinalFieldReads(freezeInitOnlyGlobals(dropUnwrittenPropertyBags(mod))),
+                  ),
                 ),
+                mangleFunction,
               ),
               mangleFunction,
             ),

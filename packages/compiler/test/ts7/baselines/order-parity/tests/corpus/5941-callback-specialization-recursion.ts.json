@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5941-callback-specialization-recursion.ts"
+ ],
+ "diags": []
+}

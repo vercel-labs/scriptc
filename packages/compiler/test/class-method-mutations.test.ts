@@ -114,3 +114,29 @@ test("a computed key in an Object.assign source keeps checked dispatch", async (
     .replace("LITERAL", "Object.assign(target, { [key]: value })");
   expect(await callersOf(source, "%dyn.class.properties")).not.toEqual([]);
 });
+
+const groups = `
+class Tally {
+  n = 0;
+  add(): void { this.n++; }
+}
+interface Settings { groups: VALUE }
+function addGroup(settings: Settings, name: string): void {
+  settings.groups[name] = {};
+}
+const settings: Settings = { groups: {} };
+const tally = new Tally();
+addGroup(settings, String(tally.n));
+tally.add();
+console.log(tally.n, Object.keys(settings.groups));
+`;
+
+test("a computed write into a dictionary of dictionaries leaves method calls direct", async () => {
+  const source = groups.replace("VALUE", "Record<string, Record<string, string>>");
+  expect(await callersOf(source, "%dyn.class.properties")).toEqual([]);
+});
+
+test("a computed write into a dictionary that can hold functions keeps checked dispatch", async () => {
+  const source = groups.replace("VALUE", "Record<string, Record<string, string> | (() => void)>");
+  expect(await callersOf(source, "%dyn.class.properties")).not.toEqual([]);
+});

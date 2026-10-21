@@ -10,13 +10,29 @@
  * resolver as workspace links are discovered and reset per load. */
 
 const workspacePackageDirs = new Map<string, string>();
+const workspaceSourcePackages = new Set<string>();
 
 export function registerWorkspacePackage(name: string, realDir: string): void {
   workspacePackageDirs.set(realDir.split("\\").join("/"), name);
 }
 
+/** Records that a bare import of `name` was answered by the package's own
+ * TypeScript source (resolveWorkspaceSourceModule): the package compiles
+ * from source, so the JavaScript modules its sources reach relatively are
+ * program modules like the TypeScript ones, not the unselected package JS
+ * a shipped (declarations-plus-JS) workspace link would be. */
+export function registerWorkspaceSourcePackage(name: string): void {
+  workspaceSourcePackages.add(name);
+}
+
+/** True when a bare import of `name` was answered by its TypeScript source. */
+export function isWorkspaceSourcePackage(name: string): boolean {
+  return workspaceSourcePackages.has(name);
+}
+
 export function clearWorkspacePackages(): void {
   workspacePackageDirs.clear();
+  workspaceSourcePackages.clear();
 }
 
 /** True when `name` is a registered workspace package — the NAME-keyed

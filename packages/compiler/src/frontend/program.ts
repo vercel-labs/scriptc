@@ -61,6 +61,7 @@ import {
   projectDtsRuntimeSibling,
   resolveBareModule,
   resolveProjectModule,
+  resolveWorkspaceSourceModule,
   resolveTypeDirective,
   setProjectPathMappings,
   setProjectRealm,
@@ -125,9 +126,11 @@ import {
   clearWorkspacePackages,
   isRelativeSpecifier,
   isWorkspacePackageName,
+  isWorkspaceSourcePackage,
   npmPackageNameOf,
   packageNameOfSpecifier,
   registerWorkspacePackage,
+  registerWorkspaceSourcePackage,
   workspacePackageOfPath,
 } from "./workspace-registry.js";
 import {
@@ -5867,11 +5870,20 @@ function sameResolvedFile(a: string, b: string): boolean {
  * (the symlinked-install shape): Node never loads it as program source. */
 function unselectedPackageJsFilePredicate(entryFileName: string): (file: string) => boolean {
   const entryPackageFile = entryPackageFilePredicate(entryFileName);
+  // JS inside a workspace package compiled from its TypeScript source (a
+  // bare import answered by a .ts file) is program source like that source:
+  // the package's own modules in their JavaScript spelling. A workspace
+  // link answered by declarations and JavaScript keeps the shipped-package
+  // rule.
+  const unselectedWorkspaceJsFile = (file: string): boolean => {
+    const workspace = workspacePackageOfPath(file);
+    return workspace !== null && !isWorkspaceSourcePackage(workspace);
+  };
   return (file) =>
     isJsSourceFileName(file) &&
     !entryPackageFile(file) &&
     npmStaticPackageOfPath(file) === null &&
-    (isNodeModulesPath(file) || workspacePackageOfPath(file) !== null);
+    (isNodeModulesPath(file) || unselectedWorkspaceJsFile(file));
 }
 
 /** Workspace-linked packages register before the tsc gate. Their files live
@@ -5905,8 +5917,11 @@ function registerWorkspaceEdges(load: LoadResult): void {
       if (probed.has(key)) return;
       probed.add(key);
       const r = resolveBareModule(fromFile, spec);
-      if (r !== null && r.workspaceDir !== undefined)
+      if (r !== null && r.workspaceDir !== undefined) {
         registerWorkspacePackage(r.packageName, r.workspaceDir);
+        if (resolveWorkspaceSourceModule(fromFile, spec) !== null)
+          registerWorkspaceSourcePackage(r.packageName);
+      }
     };
     for (const sf of program.getImplementationSourceFiles()) {
       if (sf.isDeclarationFile || sf.fileName.endsWith(".json")) continue;

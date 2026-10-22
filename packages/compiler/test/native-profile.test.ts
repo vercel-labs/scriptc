@@ -224,6 +224,24 @@ describe.runIf(helper !== null)("LLVM profile-guided optimization", () => {
     ).rejects.toMatchObject({ stderr: expect.stringContaining("profile_read_failed") });
   });
 
+  test("merge-profiles multiplies a weighted input's counts by its weight", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-merge-weight-"));
+    dirs.push(dir);
+    const input = join(dir, "input.proftext");
+    await writeFile(input, ":ir\nf0\n# Func Hash:\n1\n# Num Counters:\n1\n# Counter Values:\n3\n");
+    const once = join(dir, "once.profdata");
+    const thrice = join(dir, "thrice.profdata");
+    const weighted = join(dir, "weighted.profdata");
+    await merge(once, [input]);
+    await merge(thrice, [input, input, input]);
+    await merge(weighted, ["--weighted-input", `3,${input}`]);
+    expect(await readFile(weighted)).toEqual(await readFile(thrice));
+    expect(await readFile(weighted)).not.toEqual(await readFile(once));
+    await expect(
+      merge(join(dir, "zero.profdata"), ["--weighted-input", `0,${input}`]),
+    ).rejects.toMatchObject({ stderr: expect.stringContaining('"code":"usage"') });
+  });
+
   test("merge-profiles leaves a link at the old temporary path untouched", async () => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-merge-link-"));
     dirs.push(dir);
@@ -266,6 +284,27 @@ describe.runIf(helper !== null)("LLVM profile-guided optimization", () => {
         expect(await bytes(objects)).not.toEqual(await bytes(plain));
       });
     }
+
+    test.runIf(target?.platform === "linux")(
+      "partitions emitted with a profile give each function its own section",
+      async () => {
+        const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-sections-"));
+        dirs.push(dir);
+        const { profile } = await collect(dir, program(), 4, "train");
+        // The section of `main`: .text.main, or .text.hot.main or
+        // .text.unlikely.main by its profile counts.
+        const ownSection = /\.text(?:\.hot|\.unlikely)?\.main\0/;
+        const sections = async (paths: string[]) =>
+          (await Promise.all(paths.map((path) => readFile(path, "latin1")))).some((text) =>
+            ownSection.test(text),
+          );
+        const guided = await emit(dir, program(), { outputs: 4, name: "guided", use: profile });
+        expect(await sections(guided)).toBe(true);
+        expect(await run(await link(dir, guided, "guided"), 2)).toBe(expectedExit(2));
+        const plain = await emit(dir, program(), { outputs: 4, name: "plain" });
+        expect(await sections(plain)).toBe(false);
+      },
+    );
 
     test("merge-profiles combines raw and indexed profiles", async () => {
       const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-merge-"));

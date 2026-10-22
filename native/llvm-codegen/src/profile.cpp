@@ -9,7 +9,9 @@
 #include "llvm/Support/VirtualFileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace llvm;
@@ -19,19 +21,29 @@ namespace scriptc {
 int mergeProfiles(int Argc, char **Argv) {
   std::string Output;
   bool Sparse = false;
-  std::vector<std::string> Inputs;
+  // Each input with the weight its counts are multiplied by: 1, or the
+  // <weight> of --weighted-input <weight>,<file>.
+  std::vector<std::pair<uint64_t, std::string>> Inputs;
   for (int I = 2; I < Argc; ++I) {
     StringRef Arg(Argv[I]);
     if (Arg == "--output" && I + 1 < Argc)
       Output = Argv[++I];
     else if (Arg == "--sparse")
       Sparse = true;
-    else if (!Arg.starts_with("--"))
-      Inputs.push_back(Arg.str());
+    else if (Arg == "--weighted-input" && I + 1 < Argc) {
+      auto [WeightText, Path] = StringRef(Argv[++I]).split(',');
+      uint64_t Weight = 0;
+      if (Path.empty() || WeightText.getAsInteger(10, Weight) || Weight == 0)
+        return reportError("usage", "--weighted-input expects <weight>,<file> "
+                                    "with a weight of 1 or more");
+      Inputs.emplace_back(Weight, Path.str());
+    } else if (!Arg.starts_with("--"))
+      Inputs.emplace_back(1, Arg.str());
     else
       return reportError("usage", "merge-profiles requires --output <file> "
                                   "and one or more input profiles, and "
-                                  "accepts --sparse");
+                                  "accepts --sparse and --weighted-input "
+                                  "<weight>,<file>");
   }
   if (Output.empty() || Inputs.empty())
     return reportError("usage", "merge-profiles requires --output <file> and "
@@ -41,7 +53,7 @@ int mergeProfiles(int Argc, char **Argv) {
   // optimize as without a profile instead of as cold.
   InstrProfWriter Writer(Sparse);
   IntrusiveRefCntPtr<vfs::FileSystem> FS = vfs::getRealFileSystem();
-  for (const std::string &Path : Inputs) {
+  for (const auto &[Weight, Path] : Inputs) {
     Expected<std::unique_ptr<InstrProfReader>> Reader =
         InstrProfReader::create(Path, *FS);
     if (!Reader)
@@ -52,7 +64,7 @@ int mergeProfiles(int Argc, char **Argv) {
                          Path + ": " + toString(std::move(E)));
     std::string RecordError;
     for (NamedInstrProfRecord &Record : **Reader) {
-      Writer.addRecord(std::move(Record), /*Weight=*/1, [&](Error E) {
+      Writer.addRecord(std::move(Record), Weight, [&](Error E) {
         if (RecordError.empty())
           RecordError = toString(std::move(E));
         else

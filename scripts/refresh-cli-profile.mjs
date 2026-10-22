@@ -6,8 +6,10 @@
  * training builds below, and merges the raw profiles it writes into one
  * sparse indexed profile. The training builds are tsc-ts (a cold `speed`
  * build, then a rebuild after an edit), every seventh corpus program at the
- * default optimization and a further slice in `dev`, and the runtime
- * benchmark workloads. Run it on a quiet Linux x64 host after changes that
+ * default optimization and a further slice in `dev`, the runtime
+ * benchmark workloads, and small builds: a slice of corpus programs built
+ * cold and then from the cache, whose counts are weighted (see
+ * SMALL_BUILD_WEIGHT). Run it on a quiet Linux x64 host after changes that
  * move much compiler code; a stale profile only loses part of its gain. A
  * refresh takes about 11 minutes on 16 cores.
  *
@@ -64,6 +66,14 @@ const log = join(work, "training.log");
 
 // Every run merges its counters into one of four pooled raw profiles.
 const profileFile = join(raw, "cli-%4m.profraw");
+// Small builds pool theirs apart, so the merge can weight them.
+const smallProfileFile = join(raw, "small-%4m.profraw");
+// The weight of the small builds' counts. tsc-ts's build counts far more
+// than all the small builds together, so without a weight the linker's
+// call-graph ordering places code by that one build, and the code every
+// build runs (startup, the frontend, the cache) is spread over the whole
+// profiled range. Weighted, the small builds' calls come first.
+const SMALL_BUILD_WEIGHT = 200;
 // --instrumented reuses a compiler an earlier run built in <work>/cli.
 const cli = resolve(values.instrumented ?? join(work, "cli"));
 if (values.instrumented === undefined) {
@@ -98,7 +108,11 @@ function run(args, options) {
     const child = spawn(scriptc, args, {
       cwd: options.cwd,
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...trainingEnv, SCRIPTC_CACHE_DIR: options.cache },
+      env: {
+        ...trainingEnv,
+        SCRIPTC_CACHE_DIR: options.cache,
+        ...(options.profile === undefined ? {} : { LLVM_PROFILE_FILE: options.profile }),
+      },
     });
     let output = "";
     child.stdout.on("data", (chunk) => (output += chunk));
@@ -185,15 +199,41 @@ console.log(
   `trained in ${Math.round((Date.now() - started) / 1000)} s; ${passed} of ${training.length} programs built (failures still profile; see ${log})`,
 );
 
-const profiles = readdirSync(raw)
-  .filter((name) => name.endsWith(".profraw"))
-  .map((name) => join(raw, name));
+// Small builds: one program in fifty, built cold and then again from the
+// cache, as `scriptc build` runs on most edits.
+const small = corpus.filter((name) => programNumber(name) % 50 === 3);
+console.log(`training: ${small.length} small builds, cold and from the cache`);
+await pool(
+  small.map((name, index) => async () => {
+    const cache = join(work, `cache-small-${index}`);
+    const args = ["build", join(root, "tests/corpus", name), "-o", join(builds, `small-${index}`)];
+    const options = { cwd: root, cache, profile: smallProfileFile };
+    const ok = (await run(args, options)) && (await run(args, options));
+    rmSync(cache, { recursive: true, force: true });
+    rmSync(join(builds, `small-${index}`), { force: true });
+    return ok;
+  }),
+);
+
+const rawProfiles = readdirSync(raw).filter((name) => name.endsWith(".profraw"));
 rmSync(builds, { recursive: true, force: true });
 const indexed = join(work, "cli.profdata");
-const merged = spawnSync(scriptc, ["merge-profiles", "--sparse", "-o", indexed, ...profiles], {
-  stdio: "inherit",
-  env: { ...trainingEnv, LLVM_PROFILE_FILE: join(work, "merge.profraw") },
-});
+// The bundled helper merges, since only it takes weighted inputs.
+const merged = spawnSync(
+  join(cli, "lib/llvm/bin/scriptc-llvm-codegen"),
+  [
+    "merge-profiles",
+    "--sparse",
+    "--output",
+    indexed,
+    ...rawProfiles.flatMap((name) =>
+      name.startsWith("small-")
+        ? ["--weighted-input", `${SMALL_BUILD_WEIGHT},${join(raw, name)}`]
+        : [join(raw, name)],
+    ),
+  ],
+  { stdio: "inherit", env: { ...trainingEnv, LLVM_PROFILE_FILE: join(work, "merge.profraw") } },
+);
 if (merged.status !== 0) throw new Error("merge-profiles failed");
 // The indexed profile compresses to about an eighth of its size.
 const output = resolve(values.output);

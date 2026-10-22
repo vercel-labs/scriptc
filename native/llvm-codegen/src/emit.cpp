@@ -609,6 +609,11 @@ compileOptimizedPartitions(const EmitOptions &Options,
   Triple TargetTriple(Options.Target);
   Config.CPU = "generic";
   Config.Options = targetOptions(TargetTriple);
+  // With a profile, every function gets its own section, so the linker can
+  // order functions by the call graph the profile records and place the
+  // ones that run together.
+  if (!Options.ProfileUse.empty() && TargetTriple.isOSBinFormatELF())
+    Config.Options.FunctionSections = true;
   Config.RelocModel = Reloc::PIC_;
   Config.CodeModel = CodeModel::Small;
   Config.CGOptLevel = codeGenLevel(Options.OptLevel);

@@ -58,6 +58,8 @@ using v8::Value;
 
 const ScrNodeBridgeHost *g_host = nullptr;
 void DropAllHandles();
+void DropAllExports();
+void FlushReleasedExports();
 std::unique_ptr<node::MultiIsolatePlatform> g_platform;
 node::EmbedderSnapshotData::Pointer g_snapshot;
 std::unique_ptr<node::CommonEnvironmentSetup> g_setup;
@@ -177,6 +179,16 @@ bool TakeFunction(Isolate *isolate, Local<Context> context, Local<Object> from, 
   return true;
 }
 
+uint32_t ExportIdOf(Isolate *isolate, Local<Context> context, Local<Value> v);
+
+// isExport(value): whether a value is the representative of a native value
+// (NI-5), for the bootstrap's structuredClone of native data.
+void IsExport(const FunctionCallbackInfo<Value> &info) {
+  Isolate *isolate = info.GetIsolate();
+  info.GetReturnValue().Set(info.Length() > 0 &&
+                            ExportIdOf(isolate, isolate->GetCurrentContext(), info[0]) != 0);
+}
+
 char *Start(const ScrNodeBridgeHost *host, const char *bootstrap, const char *argv0,
             uintptr_t stack_limit) {
   if (g_setup) return nullptr;
@@ -235,6 +247,7 @@ char *Start(const ScrNodeBridgeHost *host, const char *bootstrap, const char *ar
   SetMethod(context, native, "settle", Settle);
   SetMethod(context, native, "run", Run);
   SetMethod(context, native, "listen", Listen);
+  SetMethod(context, native, "isExport", IsExport);
   global->Set(context, Utf8(isolate, "__scriptcNodeIslandHost"), native).Check();
   TryCatch try_catch(isolate);
   if (node::LoadEnvironment(g_setup->env(), bootstrap).IsEmpty()) {
@@ -456,6 +469,7 @@ void SyncIo(int phase) {
 // its liveness, which the callback may have changed after the turn's check.
 void OnMicrotasksDone(Isolate *, void *) {
   if (!g_hosted) return;
+  FlushReleasedExports();
   g_host->microtasks_done();
   SyncIo(SCR_NODE_IO_JOBS);
 }
@@ -590,6 +604,7 @@ void Stop() {
   g_call.Reset();
   g_load.Reset();
   DropAllHandles();
+  DropAllExports();
   for (Global<Function> *fn :
        {&g_set_timer, &g_clear_timer, &g_ref_timer, &g_refresh_timer, &g_set_immediate,
         &g_clear_immediate, &g_ref_immediate, &g_next_tick, &g_emit})
@@ -777,6 +792,320 @@ size_t ElemSize(uint32_t elem) {
   return elem < 10 ? sizes[elem] : 1;
 }
 
+Local<Value> ToV8(Isolate *isolate, Local<Context> context, const ScrNodeValue *in);
+void FromV8(Isolate *isolate, Local<Context> context, Local<Value> v, ScrNodeValue *out);
+
+// ── exports: native values in V8 (scope-B NI-5) ─────────────────────────
+// A native value that crosses into Node by reference has an export id in
+// the runtime's table and one V8 representative here, held weakly: a
+// function whose calls run the native closure (export_call), a promise the
+// runtime settles inside its own promise's settlement (export_settle), or
+// an object whose property operations all go to the native storage
+// (interceptors). The representative carries its id in a private symbol, so
+// it crosses back as the native value itself. When V8 collects one, the
+// runtime hears export_release at the next microtask checkpoint.
+
+Global<v8::Private> g_export_key;
+Global<v8::ObjectTemplate> g_export_template;
+std::unordered_map<uint32_t, Global<Object>> g_exports;
+std::unordered_map<uint32_t, Global<v8::Promise::Resolver>> g_resolvers;
+std::vector<uint32_t> g_released_exports;
+
+Local<v8::Private> ExportKey(Isolate *isolate) {
+  if (g_export_key.IsEmpty())
+    g_export_key.Reset(isolate, v8::Private::New(isolate, Utf8(isolate, "scriptc:export")));
+  return g_export_key.Get(isolate);
+}
+
+uint32_t ExportIdOf(Isolate *isolate, Local<Context> context, Local<Value> v) {
+  if (!v->IsObject() || v->IsProxy() || g_exports.empty()) return 0;
+  Local<Value> id;
+  if (!v.As<Object>()->GetPrivate(context, ExportKey(isolate)).ToLocal(&id) || !id->IsUint32())
+    return 0;
+  return id.As<v8::Uint32>()->Value();
+}
+
+void OnExportGone(const v8::WeakCallbackInfo<void> &info) {
+  uint32_t id = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(info.GetParameter()));
+  auto it = g_exports.find(id);
+  if (it != g_exports.end()) {
+    it->second.Reset();
+    g_exports.erase(it);
+  }
+  g_released_exports.push_back(id);
+}
+
+// Delivers the releases V8's collector queued (never from inside a GC).
+void FlushReleasedExports() {
+  while (!g_released_exports.empty()) {
+    uint32_t id = g_released_exports.back();
+    g_released_exports.pop_back();
+    if (g_exports.count(id) != 0) continue; // crossed again since
+    g_host->export_release(id);
+  }
+}
+
+uint32_t ExportIdArg(Local<Value> data) {
+  return data->IsUint32() ? data.As<v8::Uint32>()->Value() : 0;
+}
+
+// Out-value scratch of host calls made from outside any runtime entry (a
+// listener Node's loop dispatches) is reset when the call returns.
+struct HostCall {
+  HostCall() {
+    if (g_entry_depth++ == 0) g_scratch.clear();
+  }
+  ~HostCall() { g_entry_depth--; }
+};
+
+void ThrowOrReturn(Isolate *isolate, Local<Context> context, int status, const ScrNodeValue *out,
+                   Local<Value> *result) {
+  Local<Value> v = ToV8(isolate, context, out);
+  if (status == 1) isolate->ThrowException(v);
+  else *result = v;
+}
+
+void ExportCall(const FunctionCallbackInfo<Value> &info) {
+  Isolate *isolate = info.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
+  HostCall scope;
+  uint32_t id = ExportIdArg(info.Data());
+  std::vector<ScrNodeValue> args(static_cast<size_t>(info.Length()));
+  for (int i = 0; i < info.Length(); i++) FromV8(isolate, context, info[i], &args[i]);
+  ScrNodeValue out;
+  std::memset(&out, 0, sizeof out);
+  int status;
+  if (info.IsConstructCall()) {
+    status = g_host->export_construct(id, args.data(), args.size(), &out);
+  } else {
+    ScrNodeValue self;
+    FromV8(isolate, context, info.This(), &self);
+    status = g_host->export_call(id, &self, args.data(), args.size(), &out);
+  }
+  Local<Value> result;
+  ThrowOrReturn(isolate, context, status, &out, &result);
+  if (!result.IsEmpty()) info.GetReturnValue().Set(result);
+}
+
+uint32_t HolderId(Local<Object> holder) {
+  if (holder->InternalFieldCount() < 1) return 0;
+  return ExportIdArg(holder->GetInternalField(0).As<Value>());
+}
+
+template <typename T>
+uint32_t InfoId(const v8::PropertyCallbackInfo<T> &info) {
+  return HolderId(info.HolderV2());
+}
+
+void NameKey(Isolate *isolate, Local<Context> context, Local<v8::Name> name, ScrNodeValue *key) {
+  FromV8(isolate, context, name, key);
+}
+
+void IndexKey(uint32_t index, ScrNodeValue *key) {
+  std::memset(key, 0, sizeof *key);
+  key->tag = SCR_NV_NUMBER;
+  key->u.num = index;
+}
+
+v8::Intercepted GetKey(const v8::PropertyCallbackInfo<Value> &info, const ScrNodeValue *key) {
+  Isolate *isolate = info.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
+  HostCall scope;
+  ScrNodeValue out;
+  std::memset(&out, 0, sizeof out);
+  int status = g_host->export_get(InfoId(info), key, &out);
+  if (status == 2) return v8::Intercepted::kNo;
+  Local<Value> result;
+  ThrowOrReturn(isolate, context, status, &out, &result);
+  if (!result.IsEmpty()) info.GetReturnValue().Set(result);
+  return v8::Intercepted::kYes;
+}
+
+v8::Intercepted SetKey(const v8::PropertyCallbackInfo<void> &info, const ScrNodeValue *key,
+                       Local<Value> value) {
+  Isolate *isolate = info.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
+  HostCall scope;
+  ScrNodeValue v, out;
+  FromV8(isolate, context, value, &v);
+  std::memset(&out, 0, sizeof out);
+  int status = g_host->export_set(InfoId(info), key, &v, &out);
+  if (status == 2) return v8::Intercepted::kNo;
+  if (status == 1) isolate->ThrowException(ToV8(isolate, context, &out));
+  return v8::Intercepted::kYes;
+}
+
+v8::Intercepted QueryKey(const v8::PropertyCallbackInfo<v8::Integer> &info,
+                         const ScrNodeValue *key) {
+  HostCall scope;
+  if (!g_host->export_has(InfoId(info), key)) return v8::Intercepted::kNo;
+  info.GetReturnValue().Set(static_cast<int32_t>(v8::None));
+  return v8::Intercepted::kYes;
+}
+
+v8::Intercepted DeleteKey(const v8::PropertyCallbackInfo<v8::Boolean> &info,
+                          const ScrNodeValue *key) {
+  Isolate *isolate = info.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
+  HostCall scope;
+  ScrNodeValue out;
+  std::memset(&out, 0, sizeof out);
+  int status = g_host->export_delete(InfoId(info), key, &out);
+  if (status == 2) return v8::Intercepted::kNo;
+  if (status == 1) isolate->ThrowException(ToV8(isolate, context, &out));
+  else info.GetReturnValue().Set(true);
+  return v8::Intercepted::kYes;
+}
+
+v8::Intercepted NamedGet(Local<v8::Name> name, const v8::PropertyCallbackInfo<Value> &info) {
+  ScrNodeValue key;
+  NameKey(info.GetIsolate(), info.GetIsolate()->GetCurrentContext(), name, &key);
+  return GetKey(info, &key);
+}
+v8::Intercepted NamedSet(Local<v8::Name> name, Local<Value> value,
+                         const v8::PropertyCallbackInfo<void> &info) {
+  ScrNodeValue key;
+  NameKey(info.GetIsolate(), info.GetIsolate()->GetCurrentContext(), name, &key);
+  return SetKey(info, &key, value);
+}
+v8::Intercepted NamedQuery(Local<v8::Name> name, const v8::PropertyCallbackInfo<v8::Integer> &info) {
+  ScrNodeValue key;
+  NameKey(info.GetIsolate(), info.GetIsolate()->GetCurrentContext(), name, &key);
+  return QueryKey(info, &key);
+}
+v8::Intercepted NamedDelete(Local<v8::Name> name, const v8::PropertyCallbackInfo<v8::Boolean> &info) {
+  ScrNodeValue key;
+  NameKey(info.GetIsolate(), info.GetIsolate()->GetCurrentContext(), name, &key);
+  return DeleteKey(info, &key);
+}
+v8::Intercepted IndexedGet(uint32_t index, const v8::PropertyCallbackInfo<Value> &info) {
+  ScrNodeValue key;
+  IndexKey(index, &key);
+  return GetKey(info, &key);
+}
+v8::Intercepted IndexedSet(uint32_t index, Local<Value> value,
+                           const v8::PropertyCallbackInfo<void> &info) {
+  ScrNodeValue key;
+  IndexKey(index, &key);
+  return SetKey(info, &key, value);
+}
+v8::Intercepted IndexedQuery(uint32_t index, const v8::PropertyCallbackInfo<v8::Integer> &info) {
+  ScrNodeValue key;
+  IndexKey(index, &key);
+  return QueryKey(info, &key);
+}
+v8::Intercepted IndexedDelete(uint32_t index, const v8::PropertyCallbackInfo<v8::Boolean> &info) {
+  ScrNodeValue key;
+  IndexKey(index, &key);
+  return DeleteKey(info, &key);
+}
+
+// Own enumerable keys, split for V8: names for the named enumerator, array
+// indices for the indexed one.
+Local<v8::Array> ExportKeys(const v8::PropertyCallbackInfo<v8::Array> &info, bool indices) {
+  Isolate *isolate = info.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
+  HostCall scope;
+  ScrNodeValue out;
+  std::memset(&out, 0, sizeof out);
+  std::vector<Local<Value>> keep;
+  if (g_host->export_keys(InfoId(info), &out) == 0) {
+    Local<Value> all = ToV8(isolate, context, &out);
+    if (all->IsArray()) {
+      Local<v8::Array> list = all.As<v8::Array>();
+      for (uint32_t i = 0; i < list->Length(); i++) {
+        Local<Value> key = list->Get(context, i).ToLocalChecked();
+        uint32_t index = 0;
+        bool is_index = false;
+        if (key->IsString()) {
+          Local<v8::Uint32> as_index;
+          if (key->ToArrayIndex(context).ToLocal(&as_index)) {
+            is_index = true;
+            index = as_index->Value();
+          }
+        }
+        if (is_index != indices) continue;
+        keep.push_back(indices ? Local<Value>(v8::Integer::NewFromUnsigned(isolate, index)) : key);
+      }
+    }
+  }
+  return v8::Array::New(isolate, keep.data(), keep.size());
+}
+
+void NamedEnum(const v8::PropertyCallbackInfo<v8::Array> &info) {
+  info.GetReturnValue().Set(ExportKeys(info, false));
+}
+void IndexedEnum(const v8::PropertyCallbackInfo<v8::Array> &info) {
+  info.GetReturnValue().Set(ExportKeys(info, true));
+}
+
+Local<v8::ObjectTemplate> ExportTemplate(Isolate *isolate) {
+  if (g_export_template.IsEmpty()) {
+    Local<v8::ObjectTemplate> t = v8::ObjectTemplate::New(isolate);
+    t->SetInternalFieldCount(1);
+    t->SetHandler(v8::NamedPropertyHandlerConfiguration(
+        NamedGet, NamedSet, NamedQuery, NamedDelete, NamedEnum, Local<Value>(),
+        v8::PropertyHandlerFlags::kOnlyInterceptStrings));
+    t->SetHandler(v8::IndexedPropertyHandlerConfiguration(IndexedGet, IndexedSet, IndexedQuery,
+                                                          IndexedDelete, IndexedEnum));
+    g_export_template.Reset(isolate, t);
+  }
+  return g_export_template.Get(isolate);
+}
+
+Local<Value> ExportValue(Isolate *isolate, Local<Context> context, const ScrNodeValue *in) {
+  uint32_t id = in->u.exp.id;
+  auto found = g_exports.find(id);
+  if (found != g_exports.end()) return found->second.Get(isolate);
+  Local<Object> obj;
+  Local<Value> data = v8::Integer::NewFromUnsigned(isolate, id);
+  if (in->flags & SCR_NVF_FUNCTION) {
+    Local<Function> fn =
+        Function::New(context, ExportCall, data, static_cast<int>(in->u.exp.length))
+            .ToLocalChecked();
+    fn->SetName(in->u.exp.name != nullptr
+                    ? FromWtf8(isolate, in->u.exp.name, in->u.exp.name_len)
+                    : String::Empty(isolate));
+    obj = fn;
+  } else if (in->flags & SCR_NVF_PROMISE) {
+    Local<v8::Promise::Resolver> resolver = v8::Promise::Resolver::New(context).ToLocalChecked();
+    g_resolvers[id].Reset(isolate, resolver);
+    obj = resolver->GetPromise();
+  } else {
+    obj = ExportTemplate(isolate)->NewInstance(context).ToLocalChecked();
+    obj->SetInternalField(0, data);
+  }
+  obj->SetPrivate(context, ExportKey(isolate), data).Check();
+  Global<Object> &slot = g_exports[id];
+  slot.Reset(isolate, obj);
+  slot.SetWeak(reinterpret_cast<void *>(static_cast<uintptr_t>(id)), OnExportGone,
+               v8::WeakCallbackType::kParameter);
+  if (in->flags & SCR_NVF_PROMISE) g_host->export_watch(id);
+  return obj;
+}
+
+void ExportSettle(uint32_t id, int rejected, const ScrNodeValue *value) {
+  Enter e;
+  auto it = g_resolvers.find(id);
+  if (it == g_resolvers.end()) return;
+  Local<v8::Promise::Resolver> resolver = it->second.Get(e.isolate);
+  it->second.Reset();
+  g_resolvers.erase(it);
+  Local<Value> v = ToV8(e.isolate, e.context, value);
+  if (rejected) resolver->Reject(e.context, v).Check();
+  else resolver->Resolve(e.context, v).Check();
+}
+
+void DropAllExports() {
+  for (auto &it : g_exports) it.second.Reset();
+  g_exports.clear();
+  for (auto &it : g_resolvers) it.second.Reset();
+  g_resolvers.clear();
+  g_released_exports.clear();
+  g_export_template.Reset();
+  g_export_key.Reset();
+}
+
 void FromV8(Isolate *isolate, Local<Context> context, Local<Value> v, ScrNodeValue *out) {
   std::memset(out, 0, sizeof *out);
   if (v.IsEmpty() || v->IsUndefined()) { out->tag = SCR_NV_UNDEFINED; return; }
@@ -811,6 +1140,11 @@ void FromV8(Isolate *isolate, Local<Context> context, Local<Value> v, ScrNodeVal
       out->u.bytes.handle = Import(isolate, v, store);
       return;
     }
+  }
+  if (uint32_t export_id = ExportIdOf(isolate, context, v)) {
+    out->tag = SCR_NV_EXPORT;
+    out->u.exp.id = export_id;
+    return;
   }
   out->tag = SCR_NV_HANDLE;
   uint32_t flags = 0;
@@ -894,6 +1228,7 @@ Local<Value> ToV8(Isolate *isolate, Local<Context> context, const ScrNodeValue *
                  FromWtf8(isolate, in->u.error.code, in->u.error.code_len)).Check();
     return error;
   }
+  case SCR_NV_EXPORT: return ExportValue(isolate, context, in);
   case SCR_NV_JSON: {
     Local<Value> parsed;
     if (v8::JSON::Parse(context, FromWtf8(isolate, in->u.str.data, in->u.str.len)).ToLocal(&parsed))
@@ -1226,6 +1561,7 @@ const ScrNodeBridge kBridge = {
     ErrorInfo,
     DropHandle,
     LiveHandles,
+    ExportSettle,
 };
 
 }  // namespace

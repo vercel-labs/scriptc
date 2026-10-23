@@ -81,6 +81,9 @@ bool scr_ni_is_function(const ScrDyn *value); /* an island handle that is callab
 ScrStr *scr_ni_inspect(const ScrDyn *value, double recurse, double depth);
 ScrDyn *scr_ni_own_keys(ScrDyn *obj, int mode); /* 0 Object.keys, 1 Reflect.ownKeys */
 ScrPromise *scr_ni_await(ScrDyn *value);
+/* Island arrays as copies for results typed as arrays of copied values. */
+ScrDyn *scr_node_island_copy_arrays(ScrDyn *value);
+ScrPromise *scr_node_island_await_copy(ScrDyn *value);
 uint32_t scr_ni_live_handles(void); /* live import-table entries (leak tests) */
 
 /* Between the two island units. */
@@ -92,6 +95,36 @@ void scr_ni_settle_value(uint32_t token, int rejected, const struct ScrNodeValue
 void scr_ni_bytes_free(void *owner);
 void scr_ni_handles_install(void);
 void scr_ni_stop(void);
+
+/* ── native values in Node (scope-B NI-5, scr_node_island_export.c) ───────
+ * Closures, promises, records, class instances and dyn objects cross into
+ * Node by reference: one export id and one V8 representative per native
+ * referent. The conversions of scr_node_island_handle.c call these. */
+bool scr_ni_value_out(ScrDyn *v, struct ScrNodeValue *out); /* NI-4's into-V8 conversion */
+ScrDyn *scr_ni_value_in(const struct ScrNodeValue *v);      /* +1 */
+ScrDyn *scr_ni_arg_in(const struct ScrNodeValue *v); /* +1; island Errors as their ScrError */
+bool scr_ni_exportable(const ScrDyn *v);
+void scr_ni_export_out(ScrDyn *v, struct ScrNodeValue *out);
+ScrDyn *scr_ni_export_value(uint32_t id); /* borrowed, or NULL */
+uint32_t scr_ni_live_exports(void);
+/* nodeIsland.classMethods: registers the method table of a class capsule. */
+ScrDyn *scr_node_island_class_methods(ScrDyn *value, ScrDyn *builder);
+void scr_ni_bridge_export_settle(uint32_t id, int rejected, const struct ScrNodeValue *value);
+int scr_ni_host_export_call(uint32_t id, const struct ScrNodeValue *this_,
+                            const struct ScrNodeValue *args, size_t argc, struct ScrNodeValue *out);
+int scr_ni_host_export_construct(uint32_t id, const struct ScrNodeValue *args, size_t argc,
+                                 struct ScrNodeValue *out);
+int scr_ni_host_export_get(uint32_t id, const struct ScrNodeValue *key, struct ScrNodeValue *out);
+int scr_ni_host_export_set(uint32_t id, const struct ScrNodeValue *key,
+                           const struct ScrNodeValue *value, struct ScrNodeValue *out);
+int scr_ni_host_export_has(uint32_t id, const struct ScrNodeValue *key);
+int scr_ni_host_export_delete(uint32_t id, const struct ScrNodeValue *key, struct ScrNodeValue *out);
+int scr_ni_host_export_keys(uint32_t id, struct ScrNodeValue *out);
+void scr_ni_host_export_watch(uint32_t id);
+void scr_ni_host_export_release(uint32_t id);
+void scr_ni_exports_release_all(void); /* at exit, after Node stopped */
+/* Promise settlement callback (SCR_NODE_ISLANDS build of scr_async.c). */
+void scr_promise_on_settle_sync(ScrPromise *in, void (*cb)(ScrPromise *dst, ScrPromise *src));
 
 /* Island operations the compiler emits (lib-shared.ts adapters). */
 ScrDyn *scr_node_island_apply(ScrDyn *fn, ScrDyn *args);

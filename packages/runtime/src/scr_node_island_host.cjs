@@ -30,6 +30,63 @@ const ERROR_KINDS = [
   [URIError, 7],
 ];
 
+// structuredClone of native values (NI-5). A native record, class
+// instance or object is an object with interceptors in V8, which V8's
+// serializer cannot clone (DataCloneError). Node clones such values as the
+// plain data they are, so when a clone fails on a value holding native
+// values, it clones a plain copy instead: native values and the plain
+// objects and arrays around them are copied (own enumerable string keys,
+// shared references and cycles kept), everything else is cloned as is.
+const nodeStructuredClone = globalThis.structuredClone;
+function plainCopy(value, memo) {
+  if (value === null || typeof value !== "object") return value;
+  if (memo.has(value)) return memo.get(value);
+  const native = nativeHost.isExport(value);
+  if (Array.isArray(value)) {
+    const out = [];
+    memo.set(value, out);
+    for (let i = 0; i < value.length; i++) out[i] = plainCopy(value[i], memo);
+    return out;
+  }
+  const proto = Object.getPrototypeOf(value);
+  if (!native && proto !== Object.prototype && proto !== null) return value;
+  const out = {};
+  memo.set(value, out);
+  for (const key of Object.keys(value)) out[key] = plainCopy(value[key], memo);
+  return out;
+}
+function holdsNative(value, seen) {
+  if (value === null || typeof value !== "object" || seen.has(value)) return false;
+  seen.add(value);
+  if (nativeHost.isExport(value)) return true;
+  const proto = Object.getPrototypeOf(value);
+  if (!Array.isArray(value) && proto !== Object.prototype && proto !== null) return false;
+  for (const key of Object.keys(value)) if (holdsNative(value[key], seen)) return true;
+  return false;
+}
+if (typeof nodeStructuredClone === "function") {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "structuredClone");
+  const structuredClone = {
+    structuredClone(value, options = undefined) {
+      try {
+        return Reflect.apply(nodeStructuredClone, globalThis, arguments);
+      } catch (error) {
+        if (!holdsNative(value, new Set())) throw error;
+        return Reflect.apply(nodeStructuredClone, globalThis, [
+          plainCopy(value, new Map()),
+          options,
+        ]);
+      }
+    },
+  }.structuredClone;
+  Object.defineProperty(globalThis, "structuredClone", {
+    configurable: descriptor === undefined || descriptor.configurable,
+    enumerable: descriptor !== undefined && descriptor.enumerable,
+    writable: true,
+    value: structuredClone,
+  });
+}
+
 const requires = new Map();
 
 function exportedFunction(file, specifier, name) {

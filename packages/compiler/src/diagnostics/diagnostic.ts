@@ -250,6 +250,18 @@ export function projectConfigDiag(
   };
 }
 
+/** SC8011 — a native class extends a class owned by a Node island. Native
+ * subclasses of island classes are scope-B milestone NI-5b. */
+export function nativeSubclassOfIslandDiag(loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC8011",
+    message:
+      "a native class cannot extend a class owned by a Node island yet (native subclasses of island classes)",
+    loc,
+    hint: "keep the subclass in Node: move it into the island module, or mark its module as a Node island; a registry shim of the package also lifts this",
+  };
+}
+
 /** SC8002 — Node islands are off (or limited to marked islands) and an
  * npm package is outside the native subset. */
 export function nodeIslandsOffDiag(pkg: string, why: string, loc: SrcLoc): ScrDiagnostic {

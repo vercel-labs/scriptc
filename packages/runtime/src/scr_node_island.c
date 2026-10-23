@@ -480,6 +480,15 @@ static const ScrNodeBridgeHost ni_host = {
     &ni_stack_start,
     &scr_ni_settle_value,
     &scr_ni_bytes_free,
+    &scr_ni_host_export_call,
+    &scr_ni_host_export_construct,
+    &scr_ni_host_export_get,
+    &scr_ni_host_export_set,
+    &scr_ni_host_export_has,
+    &scr_ni_host_export_delete,
+    &scr_ni_host_export_keys,
+    &scr_ni_host_export_watch,
+    &scr_ni_host_export_release,
 };
 
 typedef struct {
@@ -525,6 +534,8 @@ static void ni_stop_atexit(void) {
     fprintf(stderr, "[node-islands] live handles %u\n", scr_ni_live_handles());
   }
   ni_on_node_stack(ni_stop_job, NULL);
+  /* Node is gone: no representative can call in again. */
+  scr_ni_exports_release_all();
 }
 
 /* The hosted loop's run_loop on Node's stack. */

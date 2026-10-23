@@ -62,3 +62,28 @@ export function nodeApiCalleeOf(program: ts.Program, callee: ts.Expression): Nod
   if (!isNodeApiMember(member)) return null;
   return isNodeApiNamespace(program, callee.expression) ? member : null;
 }
+
+/** Whether an expression evaluates to a value owned by a Node island: a
+ * requireModule(...) result or anything reached from one through member
+ * reads, element reads, destructuring or a const alias (`const { Point } =
+ * requireModule("./lib.cjs")`, `lib.Point`, `const P = lib.Point`). Used
+ * to refuse native subclasses of island classes (SC8011). */
+export function islandValueOrigin(program: ts.Program, expr: ts.Expression, depth = 0): boolean {
+  if (depth > 8) return false;
+  let e: ts.Node = expr;
+  for (;;) {
+    if (ts.isParenthesizedExpression(e)) e = e.expression;
+    else if (ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e)) e = e.expression;
+    else if (ts.isAsExpression(e) || ts.isNonNullExpression(e)) e = e.expression;
+    else break;
+  }
+  if (ts.isCallExpression(e)) return nodeApiCalleeOf(program, e.expression) === "requireModule";
+  if (!ts.isIdentifier(e)) return false;
+  const symbol = program.getTypeChecker().getSymbolAtLocation(e);
+  let decl: ts.Node | undefined = symbol ? symbol.declarations[0] : undefined;
+  // A destructuring binding: climb to the declaration that initializes it.
+  while (decl !== undefined && ts.isBindingElement(decl)) decl = decl.parent?.parent;
+  if (decl === undefined || !ts.isVariableDeclaration(decl) || decl.initializer === undefined)
+    return false;
+  return islandValueOrigin(program, decl.initializer, depth + 1);
+}

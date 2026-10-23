@@ -171,6 +171,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // over the SCR_NODE_ISLANDS build of scr_async.c.
   ["scr_node_island.c", "nodeIsland"],
   ["scr_node_island_handle.c", "nodeIsland"],
+  ["scr_node_island_export.c", "nodeIsland"],
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
 ];
 

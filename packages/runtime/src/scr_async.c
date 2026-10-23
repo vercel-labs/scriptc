@@ -171,6 +171,9 @@ static void scr_fiber_stack_free(void *stack) {
 enum { SCR_PROM_PENDING = 0, SCR_PROM_FULFILLED = 1, SCR_PROM_REJECTED = 2 };
 
 #define SCR_CB_SYNC SIZE_MAX
+#ifdef SCR_NODE_ISLANDS
+#define SCR_CB_ANY SIZE_MAX /* all_idx of an any-settlement callback */
+#endif
 #define SCR_CB_BATCH (SIZE_MAX - 1)
 
 typedef struct ScrFiber ScrFiber;
@@ -1768,6 +1771,10 @@ static void scr_promise_cb_run(struct ScrPromiseCbWaiter *cb, ScrPromise *src) {
     scr_promise_all_state_release(cb->all);
   } else if (src->state == SCR_PROM_FULFILLED) {
     cb->adapt(cb->dst, src);
+#ifdef SCR_NODE_ISLANDS
+  } else if (cb->all_idx == SCR_CB_ANY) {
+    cb->adapt(cb->dst, src); /* scr_promise_on_settle_sync: rejections too */
+#endif
   } else {
     scr_promise_settle_from(cb->dst, src);
   }
@@ -1871,6 +1878,17 @@ void scr_promise_race_join(ScrPromise *race, ScrPromise *in,
   scr_promise_cb_subscribe(
       in, (struct ScrPromiseCbWaiter){ adapt, scr_promise_retain(race), NULL, 0, 0 });
 }
+
+#ifdef SCR_NODE_ISLANDS
+/* Node islands (NI-5): runs `cb(in, in)` inside `in`'s settlement, for
+ * fulfillments and rejections alike (a native promise's V8 representative
+ * settles at the same moment, so its reactions queue where a JavaScript
+ * promise's would). `in` must be pending. */
+void scr_promise_on_settle_sync(ScrPromise *in, void (*cb)(ScrPromise *dst, ScrPromise *src)) {
+  *scr_promise_cb_push(in) =
+      (struct ScrPromiseCbWaiter){ cb, scr_promise_retain(in), NULL, SCR_CB_ANY, SCR_CB_SYNC };
+}
+#endif
 
 void scr_promise_race_add(ScrPromise *race, ScrPromise *in,
                            void (*adapt)(ScrPromise *dst, ScrPromise *src)) {

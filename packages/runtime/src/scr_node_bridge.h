@@ -17,7 +17,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SCR_NODE_BRIDGE_ABI 5u
+#define SCR_NODE_BRIDGE_ABI 6u
 /* The symbol a bridge library exports: `const ScrNodeBridge *(void)`. */
 #define SCR_NODE_BRIDGE_ENTRY "scr_node_bridge_v1"
 
@@ -82,7 +82,8 @@ enum {
   SCR_NV_BYTES = 7,  /* bytes: a typed array / Buffer / DataView over shared memory */
   SCR_NV_ERROR = 8,  /* into V8 only: a new Error of an intrinsic class */
   SCR_NV_JSON = 9,   /* into V8 only: str is JSON text, parsed there (a copy) */
-  SCR_NV_EXPORT = 10, /* reserved for NI-5: a runtime object exported by reference */
+  SCR_NV_EXPORT = 10, /* exp: a runtime value exported by reference (NI-5); flags: SCR_NVF_FUNCTION,
+                         SCR_NVF_PROMISE, SCR_NVF_ARRAY or 0 for an object */
 };
 /* What a handle is, reported with every handle the bridge answers. */
 enum {
@@ -119,6 +120,12 @@ typedef struct ScrNodeValue {
       const char *name, *message, *stack, *code; /* code NULL: none */
       size_t name_len, message_len, stack_len, code_len;
     } error;
+    struct {
+      uint32_t id;     /* the runtime's export-table id */
+      uint32_t length; /* functions: their `length` */
+      const char *name; /* functions: their `name` (NULL: anonymous) */
+      size_t name_len;
+    } exp;
   } u;
 } ScrNodeValue;
 
@@ -172,6 +179,27 @@ typedef struct ScrNodeBridgeHost {
    * value that went into V8). May run on any thread: the runtime queues
    * the release for its own thread. */
   void (*bytes_free)(void *owner);
+  /* Native values in Node (NI-5): the V8 representative of export `id`
+   * was called, constructed, or had a property read, written, tested,
+   * deleted or enumerated. 0: returned (*out), 1: threw (*out is the thrown
+   * value), 2: absent (get/set/delete: the ordinary object answers). Out
+   * strings are runtime-owned until the next host call. Keys are strings
+   * or array indices (numbers). export_keys answers SCR_NV_JSON: the own
+   * enumerable string keys. */
+  int (*export_call)(uint32_t id, const ScrNodeValue *this_, const ScrNodeValue *args,
+                     size_t argc, ScrNodeValue *out);
+  int (*export_construct)(uint32_t id, const ScrNodeValue *args, size_t argc, ScrNodeValue *out);
+  int (*export_get)(uint32_t id, const ScrNodeValue *key, ScrNodeValue *out);
+  int (*export_set)(uint32_t id, const ScrNodeValue *key, const ScrNodeValue *value,
+                    ScrNodeValue *out);
+  int (*export_has)(uint32_t id, const ScrNodeValue *key);
+  int (*export_delete)(uint32_t id, const ScrNodeValue *key, ScrNodeValue *out);
+  int (*export_keys)(uint32_t id, ScrNodeValue *out);
+  /* The V8 promise representing native promise `id` exists: settle it
+   * (bridge->export_settle) when the native promise settles. */
+  void (*export_watch)(uint32_t id);
+  /* V8 collected the representative of `id`. */
+  void (*export_release)(uint32_t id);
 } ScrNodeBridgeHost;
 
 typedef struct ScrNodeBridge {
@@ -260,6 +288,8 @@ typedef struct ScrNodeBridge {
   void (*drop)(uint32_t h);
   /* The number of live import-table entries (leak tests). */
   uint32_t (*live_handles)(void);
+  /* Settles the V8 promise representing native promise `id` (NI-5). */
+  void (*export_settle)(uint32_t id, int rejected, const ScrNodeValue *value);
 } ScrNodeBridge;
 
 #endif /* SCR_NODE_BRIDGE_H */

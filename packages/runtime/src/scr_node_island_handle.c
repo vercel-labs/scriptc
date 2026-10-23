@@ -330,8 +330,69 @@ static ScrDyn *nh_from_node(const ScrNodeValue *v) {
     return d;
   }
   case SCR_NV_BYTES: return nh_bytes_box(v);
+  case SCR_NV_EXPORT: {
+    /* A native value's representative came back: the value itself. */
+    ScrDyn *d = scr_ni_export_value(v->u.exp.id);
+    return d != NULL ? scr_dyn_retain(d) : scr_dyn_undefined();
+  }
   default: return scr_dyn_undefined();
   }
+}
+
+/* The ScrError of an island Error handle (+1): the one already pinned to
+ * it, else a new one of the nearest intrinsic class, pinned. */
+static ScrError *nh_error_of(const ScrNodeValue *v) {
+  ScrNodeRef *ref = nh_ref(v->u.handle, v->flags);
+  ScrError *pinned = nh_pinned_obj(ref, NH_PIN_ERROR);
+  if (pinned != NULL) {
+    nh_ref_release(ref);
+    return scr_error_retain(pinned);
+  }
+  ScrNodeErrorInfo info;
+  nh_bridge()->error_info(ref->id, &info);
+  ScrStr *message = nh_str(info.message ? info.message : "", info.message_len);
+  ScrError *e = scr_error_new((int)info.kind, message);
+  scr_str_release(message);
+  if (info.name != NULL) {
+    ScrStr *name = nh_str(info.name, info.name_len);
+    ScrStr *deflt = scr_error_default_name(e);
+    bool differs = deflt == NULL || deflt->len != name->len ||
+                   memcmp(deflt->data, name->data, name->len) != 0;
+    if (deflt != NULL) scr_str_release(deflt);
+    if (differs) {
+      scr_str_release(e->name);
+      e->name = name;
+      e->name_present = true;
+    } else {
+      scr_str_release(name);
+    }
+  }
+  if (info.stack != NULL) {
+    ScrStr *stack = nh_str(info.stack, info.stack_len);
+    scr_error_set_stack(e, stack);
+    scr_str_release(stack);
+  }
+  if (info.code != NULL) {
+    ScrStr *code = nh_str(info.code, info.code_len);
+    scr_error_set_code_value(e, code);
+    scr_str_release(code);
+  }
+  nh_pin(e, NH_PIN_ERROR, ref);
+  nh_ref_release(ref);
+  return e;
+}
+
+/* An argument of a native callback (scr_node_island_export.c): island
+ * Errors arrive as their pinned ScrError, as thrown ones do, so typed code
+ * sees `instanceof RangeError`, `message` and `code`. +1. */
+ScrDyn *scr_ni_arg_in(const ScrNodeValue *v) {
+  if (v->tag == SCR_NV_HANDLE && (v->flags & SCR_NVF_ERROR)) {
+    ScrError *e = nh_error_of(v);
+    ScrDyn *d = scr_dyn_from_error(e);
+    scr_error_release(e);
+    return d;
+  }
+  return scr_ni_value_in(v);
 }
 
 /* Leaves a thrown island value pending as a scriptc exception. An Error
@@ -340,46 +401,7 @@ static ScrDyn *nh_from_node(const ScrNodeValue *v) {
  * that error again if it crosses back. */
 static void nh_throw_value(const ScrNodeValue *v) {
   if (v->tag == SCR_NV_HANDLE && (v->flags & SCR_NVF_ERROR)) {
-    ScrNodeRef *ref = nh_ref(v->u.handle, v->flags);
-    /* An island error the program already holds is that ScrError again. */
-    ScrError *known = nh_pinned_obj(ref, NH_PIN_ERROR);
-    if (known != NULL) {
-      nh_ref_release(ref);
-      scr_throw_obj(scr_error_retain(known), &scr_error_retain_v, &scr_error_release_v,
-                    scr_error_trace_arg());
-      return;
-    }
-    ScrNodeErrorInfo info;
-    nh_bridge()->error_info(ref->id, &info);
-    ScrStr *message = nh_str(info.message ? info.message : "", info.message_len);
-    ScrError *e = scr_error_new((int)info.kind, message);
-    scr_str_release(message);
-    if (info.name != NULL) {
-      ScrStr *name = nh_str(info.name, info.name_len);
-      ScrStr *deflt = scr_error_default_name(e);
-      bool differs = deflt == NULL || deflt->len != name->len ||
-                     memcmp(deflt->data, name->data, name->len) != 0;
-      if (deflt != NULL) scr_str_release(deflt);
-      if (differs) {
-        scr_str_release(e->name);
-        e->name = name;
-        e->name_present = true;
-      } else {
-        scr_str_release(name);
-      }
-    }
-    if (info.stack != NULL) {
-      ScrStr *stack = nh_str(info.stack, info.stack_len);
-      scr_error_set_stack(e, stack);
-      scr_str_release(stack);
-    }
-    if (info.code != NULL) {
-      ScrStr *code = nh_str(info.code, info.code_len);
-      scr_error_set_code_value(e, code);
-      scr_str_release(code);
-    }
-    nh_pin(e, NH_PIN_ERROR, ref);
-    nh_ref_release(ref);
+    ScrError *e = nh_error_of(v);
     scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
     return;
   }
@@ -462,6 +484,12 @@ SCR_COLD static bool nh_refuse(const char *what) {
  * native objects and arrays). Until then: plain dyn objects and arrays
  * cross as a JSON copy (the NI-4 shortcut), anything else is refused. */
 static bool nh_export_value(ScrDyn *v, ScrNodeValue *out, NhKeep *keep) {
+  /* NI-5: closures, promises, records, class instances and dyn objects
+   * cross by reference (scr_node_island_export.c). */
+  if (scr_ni_exportable(v)) {
+    scr_ni_export_out(v, out);
+    return true;
+  }
   if (v->kind == SCR_DYN_OBJ || v->kind == SCR_DYN_ARR) {
     ScrStr *gap = scr_str_new("", 0);
     ScrDyn *json = scr_json_stringify_replacer(v, scr_dyn_undefined(), gap);
@@ -990,6 +1018,74 @@ ScrStr *scr_ni_inspect(const ScrDyn *value, double recurse, double depth) {
   ScrStr *s = text->kind == SCR_DYN_STR ? scr_str_retain(text->v.str) : scr_str_new("", 0);
   scr_dyn_release(text);
   return s;
+}
+
+/* The conversions for scr_node_island_export.c: what a value_out keeps
+ * alive lives until the next value_out (the bridge reads it at once). */
+static NhKeep nh_out_keep;
+
+bool scr_ni_value_out(ScrDyn *v, ScrNodeValue *out) {
+  NhKeep old = nh_out_keep;
+  memset(&nh_out_keep, 0, sizeof nh_out_keep);
+  nh_keep_done(&old);
+  return nh_to_node(v, out, &nh_out_keep);
+}
+
+ScrDyn *scr_ni_value_in(const ScrNodeValue *v) {
+  ScrDyn *d = nh_from_node(v);
+  return d != NULL ? d : scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* ── island arrays as copies (results typed as arrays of copied values) ─
+ * An island array whose declared native type is an array of primitives or
+ * strings (or arrays of those) crosses as a copy of its elements, the
+ * values the checked cast then meets; nested island arrays copy too, any
+ * other value (a native export coming back, an island object) is itself. */
+ScrDyn *scr_node_island_copy_arrays(ScrDyn *value) {
+  ScrNodeRef *ref = nh_ref_of(value);
+  if (ref == NULL || (ref->flags & SCR_NVF_ARRAY) == 0) return scr_dyn_retain(value);
+  ScrDyn *len = scr_ni_get_str(value, "length", 6);
+  if (len == NULL) return NULL;
+  double n = len->kind == SCR_DYN_NUM ? len->v.num : 0;
+  scr_dyn_release(len);
+  ScrDyn *out = scr_dyn_new_arr();
+  for (double i = 0; i < n; i++) {
+    ScrDyn *key = scr_dyn_new_num(i);
+    ScrDyn *element = scr_ni_get(value, key);
+    scr_dyn_release(key);
+    ScrDyn *copy = element != NULL ? scr_node_island_copy_arrays(element) : NULL;
+    scr_dyn_release(element);
+    if (copy == NULL) {
+      scr_dyn_release(out);
+      return NULL;
+    }
+    scr_dyn_arr_push(out, copy);
+  }
+  return out;
+}
+
+static void nh_copy_fulfilled(ScrPromise *dst, ScrPromise *src) {
+  ScrDyn *payload = scr_promise_payload_is_dyn(src) ? (ScrDyn *)scr_promise_payload_ref(src)
+                                                    : scr_dyn_retain(scr_dyn_undefined());
+  ScrDyn *copy = scr_node_island_copy_arrays(payload);
+  scr_dyn_release(payload);
+  if (copy == NULL) {
+    scr_promise_reject_pending(dst);
+    return;
+  }
+  scr_promise_fulfill_ref(dst, copy, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+}
+
+/* `await` of an island promise whose declared result holds arrays: the
+ * fulfillment value's island arrays copied (inside the settlement, so no
+ * reaction turn is added), rejections as they are. +1 promise<dyn>. */
+ScrPromise *scr_node_island_await_copy(ScrDyn *value) {
+  ScrPromise *src = scr_ni_await(value);
+  ScrPromise *dst = scr_promise_new();
+  scr_promise_mark_handled(src);
+  scr_promise_race_add(dst, src, nh_copy_fulfilled);
+  scr_promise_release(src);
+  return dst;
 }
 
 uint32_t scr_ni_live_handles(void) {

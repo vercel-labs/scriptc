@@ -183,6 +183,26 @@ bool TakeFunction(Isolate *isolate, Local<Context> context, Local<Object> from, 
   return true;
 }
 
+// OpenSSL registers OPENSSL_cleanup with atexit on its first
+// initialization. In a scriptc program that loaded Node, threads Node owns
+// can still be inside OpenSSL when the process's exit handlers run: the
+// threads node:tls starts to parse the root certificates (long with
+// NODE_USE_SYSTEM_CA=1; RunLoop waits for them, but an exit that does not
+// end the loop does not) are joined only by Node's per-process teardown,
+// which cannot run here (see Stop). OPENSSL_cleanup
+// freed OpenSSL's locks and method stores under them (SIGSEGV/SIGABRT at
+// exit in up to half the runs, NI-7c). Initializing OpenSSL first with
+// OPENSSL_INIT_NO_ATEXIT keeps that handler from being registered: OpenSSL's
+// process-lifetime state is left to process exit, like the rest of Node's
+// per-process state. Packs whose libnode does not export the symbol keep
+// OpenSSL's default.
+void KeepOpenSSLAtExit() {
+  using InitCrypto = int (*)(uint64_t, const void *);
+  constexpr uint64_t kNoAtExit = 0x00080000L; // OPENSSL_INIT_NO_ATEXIT (OpenSSL 3)
+  auto init = reinterpret_cast<InitCrypto>(dlsym(RTLD_DEFAULT, "OPENSSL_init_crypto"));
+  if (init != nullptr) init(kNoAtExit, nullptr);
+}
+
 uint32_t ExportIdOf(Isolate *isolate, Local<Context> context, Local<Value> v);
 
 // isExport(value): whether a value is the representative of a native value
@@ -202,6 +222,7 @@ char *Start(const ScrNodeBridgeHost *host, const char *bootstrap, const char *ar
   Dl_info info;
   if (dladdr(reinterpret_cast<void *>(&napi_create_function), &info) && info.dli_fname)
     dlopen(info.dli_fname, RTLD_NOW | RTLD_NOLOAD | RTLD_GLOBAL);
+  KeepOpenSSLAtExit();
   std::vector<std::string> args = {argv0};
   auto result = node::InitializeOncePerProcess(
       args, {node::ProcessInitializationFlags::kNoInitializeV8,
@@ -401,10 +422,18 @@ void OnCap(uv_timer_t *) {
   SyncIo(SCR_NODE_IO_JOBS);
 }
 
-void OnPrepare(uv_prepare_t *) { SyncIo(SCR_NODE_IO_PREPARE); }
+// Before each poll phase, while the runtime has live work: one pass over
+// its dispatch stations, as the runtime's own loop makes one per turn.
+// Some of their work no fd announces (a server's deferred 'listening' or
+// 'close', a socket's queued writes), so waiting for an fd could block the
+// loop forever with that work pending.
+void OnPrepare(uv_prepare_t *handle) {
+  if (uv_has_ref(reinterpret_cast<uv_handle_t *>(handle))) Dispatch();
+  SyncIo(SCR_NODE_IO_PREPARE);
+}
 
 // The end of an iteration: the next one may dispatch again (from its idle
-// phase when work is ready, else from its poll phase).
+// or prepare phase, else from its poll phase).
 void OnCheck(uv_check_t *) {
   g_dispatched = false;
   SyncIo(SCR_NODE_IO_CHECK);
@@ -584,6 +613,29 @@ void Checkpoint(int microtasks_first) {
   node::CallbackScope scope(e.isolate, Object::New(e.isolate), node::async_context{0, 0});
 }
 
+// Loading node:tls starts threads that parse the root certificates into
+// function-local statics (bundled, NODE_EXTRA_CA_CERTS, and the system
+// store with NODE_USE_SYSTEM_CA=1, which takes long). Only Node's
+// CleanupCachedRootCertificates joins them. Once exit() begins, the
+// statics' destructors (registered when the threads initialize them, so
+// they run before any handler the program registered earlier) free the
+// vectors under a thread that is still parsing, and OpenSSL's state goes
+// away under it: heap corruption and SIGSEGV/SIGABRT at exit (NI-7c). So
+// when the loop is done, before the program returns, the bridge waits for
+// them: building a root store reads the same statics under the same
+// conditions, and initializing a static blocks until the thread that runs
+// it is done. A store built earlier means the statics were initialized
+// then. Programs that never loaded node:tls do nothing here.
+void AwaitCertificateLoading(Enter &e) {
+  TryCatch try_catch(e.isolate);
+  static const char kSource[] =
+      "(() => { try { if (process.moduleLoadList.includes('NativeModule tls'))"
+      " process.getBuiltinModule('node:tls').createSecureContext(); } catch {} })()";
+  Local<v8::Script> script;
+  if (v8::Script::Compile(e.context, Utf8(e.isolate, kSource)).ToLocal(&script))
+    (void)script->Run(e.context);
+}
+
 int RunLoop(int continue_turn) {
   Enter e;
   // The rest of the turn the switch interrupted: libuv's UV_RUN_ONCE skips
@@ -592,7 +644,9 @@ int RunLoop(int continue_turn) {
     uv_run(g_setup->event_loop(), UV_RUN_ONCE);
     g_platform->DrainTasks(e.isolate);
   }
-  return node::SpinEventLoop(g_setup->env()).FromMaybe(0);
+  int code = node::SpinEventLoop(g_setup->env()).FromMaybe(0);
+  AwaitCertificateLoading(e);
+  return code;
 }
 
 // An island listener of a process event: through MakeCallback, so a throw
@@ -621,9 +675,16 @@ void Stop() {
   delete g_locker;
   g_locker = nullptr;
   g_setup.reset();
+  // As Node's own exit does (DefaultProcessExitHandlerInternal): join
+  // libuv's thread pool, whose work (pbkdf2, key generation, ...) may be
+  // inside OpenSSL, before the process's exit handlers clean OpenSSL up.
+  uv_library_shutdown();
   v8::V8::Dispose();
   v8::V8::DisposePlatform();
-  node::TearDownOncePerProcess();
+  // Node's per-process teardown is left to process exit: Stop runs from an
+  // exit handler registered when Node started, after the destructors of
+  // the certificate statics (registered later) already ran, so its
+  // certificate cleanup would free them a second time.
 }
 
 

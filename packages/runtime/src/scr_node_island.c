@@ -313,8 +313,15 @@ static void ni_nested_trampoline(void) {
 static void ni_on_node_stack_below_mark(void (*job)(void *), void *arg) {
   ucontext_t nested, caller;
   char *lo = ni_stack + NI_GUARD;
-  /* Below the red zone and 16-byte aligned, as makecontext expects. */
-  uintptr_t hi = (ni_mark - 512) & ~(uintptr_t)15;
+  /* Below every live frame of Node's stack: the mark the host callback
+   * recorded, or lower where runtime code it ran went deeper before it
+   * switched to this fiber (an async call's eager start, a job: the
+   * spawner's frame and its saved context are still in use there). Below
+   * the red zone and the swap's own frame, 16-byte aligned, as makecontext
+   * expects. */
+  uintptr_t top = ni_mark;
+  if (scr_node_stack_low != 0 && scr_node_stack_low < top) top = scr_node_stack_low;
+  uintptr_t hi = (top - 1024) & ~(uintptr_t)15;
   if (getcontext(&nested) != 0) scr_trap("scriptc: getcontext failed\n");
   nested.uc_stack.ss_sp = lo;
   nested.uc_stack.ss_size = hi - (uintptr_t)lo;
@@ -325,6 +332,7 @@ static void ni_on_node_stack_below_mark(void (*job)(void *), void *arg) {
   ni_nested_return = &caller;
   uintptr_t guard = scr_stack_guard;
   SCR_STACK_GUARD_SET(scr_stack_guard_for((uintptr_t)lo, hi - (uintptr_t)lo));
+  void *loop_save = scr_loop_nested_enter();
 #ifdef NI_ASAN
   void *caller_fake = NULL;
   __sanitizer_start_switch_fiber(&caller_fake, lo, hi - (uintptr_t)lo);
@@ -335,6 +343,7 @@ static void ni_on_node_stack_below_mark(void (*job)(void *), void *arg) {
   size_t size;
   __sanitizer_finish_switch_fiber(caller_fake, &bottom, &size);
 #endif
+  scr_loop_nested_leave(loop_save);
   SCR_STACK_GUARD_SET(guard);
 }
 
@@ -354,6 +363,7 @@ static void ni_on_node_stack(void (*job)(void *), void *arg) {
     ni_stack = mmap(NULL, NI_STACK, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (ni_stack == MAP_FAILED) ni_oom();
     (void)mprotect(ni_stack, NI_GUARD, PROT_NONE);
+    scr_node_stack_has = &ni_stack_has;
 #ifdef NI_ASAN
     if (__lsan_register_root_region) __lsan_register_root_region(ni_stack, NI_STACK);
 #endif

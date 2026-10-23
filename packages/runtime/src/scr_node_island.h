@@ -34,6 +34,16 @@ ScrPromise *scr_node_island_call(ScrStr *file, ScrStr *specifier, ScrStr *name, 
 struct ScrNodeBridge;
 struct ScrNodeIoState;
 void scr_loop_host(const struct ScrNodeBridge *bridge, double since_ms);
+/* The lowest live frame of Node's stack while a fiber runs (the SCR_NODE_ISLANDS
+ * build of scr_async.c records it at each switch from Node's stack to a
+ * fiber; 0: none), and the test for Node's stack it uses. */
+extern uintptr_t scr_node_stack_low;
+extern bool (*scr_node_stack_has)(uintptr_t sp);
+/* Around a nested entry: the runtime's scheduling state of the suspended
+ * calling fiber, saved and put back (the SCR_NODE_ISLANDS build of
+ * scr_async.c). */
+void *scr_loop_nested_enter(void);
+void scr_loop_nested_leave(void *save);
 bool scr_loop_is_hosted(void);
 void scr_loop_hosted_run(uint32_t kind, uint32_t token);
 void scr_loop_hosted_io_state(struct ScrNodeIoState *state);

@@ -1633,9 +1633,26 @@ static void *scr_win_self(void) {
 }
 #endif
 
+#ifdef SCR_NODE_ISLANDS
+/* The lowest frame of Node's stack that is still live while a fiber runs:
+ * where runtime code on Node's stack (a job or host callback, however deep
+ * it went) last switched to a fiber. A call into Node from that fiber runs
+ * on Node's stack below it (scr_node_island.c), never over those frames.
+ * 0: none. scr_node_stack_has (set when Node starts) tells Node's stack. */
+uintptr_t scr_node_stack_low = 0;
+bool (*scr_node_stack_has)(uintptr_t sp) = NULL;
+#endif
+
 static void scr_switch(ScrCtx *from, ScrCtx *to, ScrFiber *to_fiber) {
 #ifdef SCR_ASAN_FIBERS
   ScrFiber *from_fiber = scr_current;
+#endif
+#ifdef SCR_NODE_ISLANDS
+  uintptr_t node_low = scr_node_stack_low;
+  if (to_fiber != NULL && scr_node_stack_has != NULL) {
+    uintptr_t here = (uintptr_t)__builtin_frame_address(0);
+    if (scr_node_stack_has(here)) scr_node_stack_low = here;
+  }
 #endif
   scr_current = to_fiber;
   scr_exc_swap_cell(to_fiber ? &to_fiber->exc : NULL);
@@ -1677,7 +1694,58 @@ static void scr_switch(ScrCtx *from, ScrCtx *to, ScrFiber *to_fiber) {
 #if !defined(_WIN32) && !defined(__wasi__)
   SCR_STACK_GUARD_SET(guard);
 #endif
+#ifdef SCR_NODE_ISLANDS
+  scr_node_stack_low = node_low; /* back on the stack that switched away */
+#endif
 }
+
+#ifdef SCR_NODE_ISLANDS
+/* A nested entry into Node (scr_node_island.c) runs on Node's stack in a
+ * context of its own while the fiber that made the call stays suspended in
+ * it. Runtime code that Node calls back there runs as the loop's code does:
+ * no current fiber, the main exception cell and ALS slot. It may resume
+ * other fibers, which saves the resumer's context in scr_loop_ctx (and,
+ * under ASan, its fake stack in the main slot); those belong to whoever
+ * resumed the calling fiber, so they are saved here and put back when the
+ * nested entry returns, or the calling fiber's next park would return to a
+ * context that no longer exists. */
+typedef struct {
+  ScrFiber *current;
+  ScrAlsCtx **als;
+  ScrCtx loop_ctx;
+#ifdef SCR_ASAN_FIBERS
+  void *main_fake;
+#endif
+} ScrNestedSave;
+
+void *scr_loop_nested_enter(void) {
+  ScrNestedSave *s = malloc(sizeof *s);
+  if (s == NULL) scr_oom();
+  s->current = scr_current;
+  s->als = scr_als_active;
+  s->loop_ctx = scr_loop_ctx;
+#ifdef SCR_ASAN_FIBERS
+  s->main_fake = scr_main_fake_stack;
+  scr_main_fake_stack = NULL;
+#endif
+  scr_current = NULL;
+  scr_exc_swap_cell(NULL);
+  scr_als_active = &scr_als_main_slot;
+  return s;
+}
+
+void scr_loop_nested_leave(void *save) {
+  ScrNestedSave *s = save;
+  scr_loop_ctx = s->loop_ctx;
+#ifdef SCR_ASAN_FIBERS
+  scr_main_fake_stack = s->main_fake;
+#endif
+  scr_current = s->current;
+  scr_exc_swap_cell(s->current ? &s->current->exc : NULL);
+  scr_als_active = s->als;
+  free(s);
+}
+#endif
 
 static void scr_promise_settle_wake(ScrPromise *p);
 

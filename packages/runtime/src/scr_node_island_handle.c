@@ -1421,6 +1421,10 @@ static const ScrDynHandleOps nh_ops = {
  * own objects. */
 static void nh_cleanup(void) {
   nh_drain_freed();
+  /* What the last conversion for the export unit kept alive. */
+  NhKeep last = nh_out_keep;
+  memset(&nh_out_keep, 0, sizeof nh_out_keep);
+  nh_keep_done(&last);
   if (nh_inspect_fn != NULL) {
     scr_dyn_release(nh_inspect_fn);
     nh_inspect_fn = NULL;

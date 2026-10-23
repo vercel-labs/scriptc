@@ -2,3 +2,24 @@
 # (scripts/ci-test-plan.mjs). One `leak:<function>` line per intentional
 # leak, under a comment that gives the reason. Empty: no corpus program
 # leaks.
+
+# Node islands (scope-B NI-7c): OpenSSL inside libnode is initialized with
+# OPENSSL_INIT_NO_ATEXIT (scr_node_bridge.cc, KeepOpenSSLAtExit), so its
+# process-lifetime state is never freed: OPENSSL_cleanup at exit raced the
+# threads Node owns that can still be inside OpenSSL.
+leak:OPENSSL_init_crypto
+# Node islands (scope-B NI-7c): Node's root certificates (bundled, system
+# store, NODE_EXTRA_CA_CERTS) live in function-local statics that Node's
+# per-process teardown frees; a scriptc program leaves that teardown to
+# process exit (scr_node_bridge.cc, Stop), and the vectors' own destructors
+# drop the last pointers at exit.
+leak:node::crypto::LoadCACertificates
+leak:node::crypto::LoadSystemCACertificates
+leak:node::crypto::GetBundledRootCertificates
+leak:node::crypto::GetSystemStoreCACertificates
+leak:node::crypto::GetExtraCACertificates
+leak:node::crypto::GetOpenSSLSystemCertificates
+leak:node::crypto::LoadCertsFromBIO
+# The certificates' lazily decoded keys, cached in them when a root store
+# is built.
+leak:node::crypto::NewRootCertStore

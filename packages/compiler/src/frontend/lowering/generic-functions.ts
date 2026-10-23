@@ -1388,13 +1388,14 @@ export function lowerGenericFnValue(
       if (callable.length === 1) target = callable[0]![0]!;
     }
   }
-  if (!target) {
-    // Stored as a generic member of an object literal (`{ object:
-    // objectOf }`, `{ objectOf }`): the member's runtime value is the
-    // erased instance, as for generic methods and arrow properties.
-    if (!storedAsGenericMember(lowerer, ref)) fenceUnpinned();
+  // Stored as a generic member of an object literal (`{ object:
+  // objectOf }`, `{ objectOf }`), with no slot type or with a slot that
+  // keeps a generic signature (an annotated or `satisfies`-checked
+  // literal): the member's runtime value is the erased instance, as for
+  // generic methods and arrow properties.
+  if ((!target || target.getTypeParameters().length > 0) && storedAsGenericMember(lowerer, ref))
     return guardEarlyBindingValue(lowerer, info, ref, erasedGenericClosure(lowerer, ref, info));
-  }
+  if (!target) fenceUnpinned();
   return guardEarlyBindingValue(
     lowerer,
     info,

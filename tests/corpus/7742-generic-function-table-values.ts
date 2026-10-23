@@ -52,6 +52,14 @@ console.log(kit.box(1).value + 1, kit.box("a").value.length);
 console.log(pick({ x: 1, y: "two" }, "y"));
 console.log(typeof kit.box, typeof kit.pick);
 
+// An annotated or `satisfies`-checked literal whose slot keeps the generic
+// signature stores the erased instance too; a concrete slot pins one.
+type Kit = { box: <T>(value: T) => Box<T> };
+const typed: Kit = { box };
+const checked = { wrap: box } satisfies { wrap: <T>(value: T) => Box<T> };
+const pinned: { box: (value: number) => Box<number> } = { box };
+console.log(typed.box(2).value * 3, checked.wrap("b").value, pinned.box(4).value + 1);
+
 // Through `any`, the stored member is the erased instance.
 const loose: any = kit;
 console.log(JSON.stringify(loose.box([1, 2])));

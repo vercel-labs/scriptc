@@ -322,6 +322,17 @@ function deferIslandModule(path: string, loc: SrcLoc): IrExpr {
   };
 }
 
+/** Whether `node` runs while its module evaluates: no enclosing function,
+ * method, accessor, constructor or class member initializer. */
+function runsAtModuleEvaluation(node: ts.Node): boolean {
+  for (let n = node.parent; n !== undefined; n = n.parent) {
+    if (ts.isSourceFile(n)) return true;
+    if (ts.isFunctionLike(n) || ts.isClassStaticBlockDeclaration(n) || ts.isPropertyDeclaration(n))
+      return false;
+  }
+  return false;
+}
+
 /** A static import (or re-export) of an island package: loads the module
  * in the importer's %init prelude. Returns false when `spec` is not an
  * island module. */
@@ -1543,7 +1554,14 @@ function lowerIslandLoadCall(
       loc,
     };
   }
-  return fromIsland(lowerer, loadIslandModule(path, loc), expr);
+  // A require() the module's own evaluation runs (not inside a function or
+  // class body) loads the island exactly when a static import would: it is
+  // deferred the same way (scope-B NI-7d), so a native package's top-level
+  // `const x = require("<island>")` does not start Node at boot.
+  const load = runsAtModuleEvaluation(expr)
+    ? deferIslandModule(path, loc)
+    : loadIslandModule(path, loc);
+  return fromIsland(lowerer, load, expr);
 }
 
 /* ── native classes extending island classes (scope-B NI-5b) ───────────
@@ -1872,7 +1890,8 @@ function requireSpecOf(decl: ts.Node): string | null {
 /** Top-level `const x = require("pkg")` statements of island packages in a
  * compiled module (a native package requiring an island package): load the
  * island module in the module's %init prelude (shortcut: before the body,
- * not at the statement). */
+ * not at the statement), deferred exactly like a static import (scope-B
+ * NI-7d: the build decides from the probe, stubs stand in until first use). */
 export function collectIslandRequires(lowerer: Lowerer, sf: ts.SourceFile): void {
   const islands = lowerer.nodeIslands;
   if (islands === null) return;
@@ -1891,7 +1910,7 @@ export function collectIslandRequires(lowerer: Lowerer, sf: ts.SourceFile): void
       actions.push({
         kind: "assign",
         localId: binding.global.id,
-        value: loadIslandModule(path, loc),
+        value: deferIslandModule(path, loc),
         loc,
       });
     }

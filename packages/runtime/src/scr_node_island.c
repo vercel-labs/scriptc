@@ -690,10 +690,11 @@ static void ni_start(void) {
              ni_node_version, bridge->node_version, bridge->module_version, dir);
     ni_fatal(message);
   }
-  ScrStr *self = scr_process_exec_path();
-  char argv0[4096];
-  snprintf(argv0, sizeof argv0, "%.*s", (int)self->len, self->data);
-  scr_str_release(self);
+  /* Node's argv[0] is "node": island process.argv0 reads it, and Node's
+   * warning hint is built from it ("(Use `node --trace-deprecation ...`"),
+   * which the runtime's own warnings print too. process.execPath stays the
+   * executable (libuv's exepath). */
+  char argv0[] = "node";
   /* Flush first: Node writes to the same stdout. */
   fflush(stdout);
   ni_bridge = bridge;

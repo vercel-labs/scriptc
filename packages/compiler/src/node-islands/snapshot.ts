@@ -7,16 +7,23 @@
  * decides each one:
  *
  *   - the package's `evaluate` setting (`scriptc.packages.<name>`):
- *     "eager" keeps the module eager; "lazy" skips the static effect gate
- *     and the probe's effect log (the user judged the effects benign);
- *     "auto" (the default) needs both;
- *   - the static effect gate (effect-gate.ts) over the module's closure;
+ *     "eager" keeps the module eager; "lazy" defers it whatever its load
+ *     does (the user judged the effects benign);
  *   - the probe: one run of the build-time probe host
  *     (runtime src/tools/scr_node_island_probe.c) in a libnode environment
- *     from the same pack, which loads every candidate module, records what
- *     it can observe of their evaluation (output, warnings, listeners,
- *     timers, new globals, a throw) and takes the interface snapshot of
- *     each module's value;
+ *     from the same pack, which loads every candidate module under the
+ *     load recorder (probe-recorder.ts) and takes the interface snapshot of
+ *     each module's value. "auto" (the default) defers a module whose
+ *     recorded load threw nothing, had no effects and read no run-time
+ *     input other than env keys and stdio TTY state, which become boot
+ *     guards (the determinism argument in probe-recorder.ts). The static
+ *     effect gate (effect-gate.ts) is reported alongside, as the tier that
+ *     needs no recording;
+ *   - per-module mode (NI-7b): when every static island import defers,
+ *     none mutates builtin state and no island module loads at a call site,
+ *     Node starting evaluates nothing by itself; components of deferred
+ *     modules that share files evaluate on first use. Otherwise every
+ *     deferred module evaluates when Node starts (in import order);
  *
  * and rewrites the call: a deferred module keeps `nodeIsland.defer` with
  * its snapshot text (format: runtime scr_node_island_boot.c), any other
@@ -40,6 +47,7 @@ import type { IrExpr, IrModule } from "../ir/ir.js";
 import { readProjectConfig } from "../project-config.js";
 import { effectGate } from "./effect-gate.js";
 import { packageDirOf } from "./origin.js";
+import { PROBE_RECORDER } from "./probe-recorder.js";
 
 type DeferCall = Extract<IrExpr, { kind: "libCall" }>;
 
@@ -87,6 +95,30 @@ function traceDecision(d: DeferralDecision): void {
     );
 }
 
+/** Island loads lowering emitted at call sites (`require()`, `import()`). */
+function hasDynamicLoads(mod: IrModule): boolean {
+  let found = false;
+  const seen = new Set<object>();
+  const walk = (v: unknown): void => {
+    if (found || v === null || typeof v !== "object" || seen.has(v)) return;
+    seen.add(v);
+    if (Array.isArray(v)) {
+      for (const x of v) walk(x);
+      return;
+    }
+    const o = v as Record<string, unknown>;
+    if (
+      o["kind"] === "libCall" &&
+      (o["fn"] === "nodeIsland.require" || o["fn"] === "nodeIsland.import")
+    )
+      found = true;
+    for (const k in o) if (k !== "loc" && k !== "type") walk(o[k]);
+  };
+  walk(mod.functions);
+  walk(mod.globals);
+  return found;
+}
+
 export function finalizeDeferredIslands(
   mod: IrModule,
   entryPath: string,
@@ -94,6 +126,7 @@ export function finalizeDeferredIslands(
 ): DeferralDecision[] {
   const calls = deferCalls(mod);
   if (calls.length === 0) return [];
+  const dynamicLoads = hasDynamicLoads(mod);
   const decisions: DeferralDecision[] = [];
   const decide = (call: DeferCall, deferred: boolean, reason: string): void => {
     const d = { path: pathOf(call), deferred, reason };
@@ -106,7 +139,7 @@ export function finalizeDeferredIslands(
     return decisions;
   }
   const config = readProjectConfig(entryPath);
-  const candidates: { call: DeferCall; path: string; lazy: boolean; files: string[] }[] = [];
+  const candidates: { call: DeferCall; path: string; lazy: boolean; gate: string }[] = [];
   for (const call of calls) {
     const path = pathOf(call);
     const pkg = packageDirOf(path);
@@ -116,17 +149,14 @@ export function finalizeDeferredIslands(
       continue;
     }
     const gate = effectGate(path);
-    if (!gate.ok && evaluate !== "lazy") {
-      decide(call, false, `${gate.reason} in ${gate.file}`);
-      continue;
-    }
     candidates.push({
       call,
       path,
       lazy: evaluate === "lazy",
-      files: gate.ok ? gate.files : [path],
+      gate: gate.ok ? "" : `${gate.reason} in ${gate.file}`,
     });
   }
+  let allDeferred = candidates.length === calls.length;
   if (candidates.length === 0) return decisions;
   const probe = runProbe(packDir, [...new Set(candidates.map((c) => c.path))]);
   if (typeof probe === "string") {
@@ -134,24 +164,71 @@ export function finalizeDeferredIslands(
     return decisions;
   }
   const packGuards = packGuardLines(packDir);
+  const deferred: { call: DeferCall; result: ProbeResult; why: string }[] = [];
   for (const c of candidates) {
     const result = probe.results.find((r) => r.path === c.path);
-    if (result?.throws !== undefined) {
-      decide(c.call, false, `its evaluation throws: ${result.throws}`);
+    const why = (() => {
+      if (result === undefined) return "the probe did not load it";
+      if (result.throws !== undefined) return `its evaluation throws: ${result.throws}`;
+      if (result.root === undefined) return result.reason ?? "the probe did not load it";
+      if (c.lazy) return null;
+      if (result.effects.length > 0) return `its load has effects: ${result.effects.join(", ")}`;
+      if (result.inputs.length > 0) return `its load reads ${result.inputs.join(", ")}`;
+      return null;
+    })();
+    if (why !== null || result === undefined) {
+      allDeferred = false;
+      decide(c.call, false, why ?? "");
       continue;
     }
-    if (result === undefined || result.root === undefined) {
-      decide(c.call, false, result?.reason ?? "the probe did not load it");
-      continue;
-    }
-    if (result.effects.length > 0 && !c.lazy) {
-      decide(c.call, false, `the probe saw ${result.effects.join(", ")}`);
-      continue;
-    }
-    const text = encodeSnapshot(probe, result.root, [...packGuards, ...fileGuardLines(c.files)]);
-    const arg = c.call.args[1];
+    const how = c.lazy
+      ? `"evaluate": "lazy"`
+      : c.gate === ""
+        ? "static gate"
+        : `recorded load is deterministic (static gate: ${c.gate})`;
+    deferred.push({ call: c.call, result, why: how });
+  }
+  // Per-module evaluation once Node runs (no materialize-all at start):
+  // every static island import is deferred, none mutates builtin state,
+  // and the program loads no island module at a call site. Deferred
+  // modules whose closures share files form one component, evaluated
+  // together in import order.
+  const lazyMode =
+    allDeferred && !dynamicLoads && deferred.every((d) => d.result.mutations.length === 0);
+  const component = new Map<string, number>();
+  if (lazyMode) {
+    const parent = deferred.map((_, i) => i);
+    const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i]!)));
+    const owner = new Map<string, number>();
+    deferred.forEach((d, i) => {
+      for (const f of d.result.files) {
+        const j = owner.get(f);
+        if (j === undefined) owner.set(f, i);
+        else parent[find(i)] = find(j);
+      }
+    });
+    deferred.forEach((d, i) => component.set(d.result.path, find(i) + 1));
+  }
+  for (const d of deferred) {
+    const r = d.result;
+    const guards = [
+      ...packGuards,
+      ...fileGuardLines(r.files),
+      ...r.env.map(([k, v]) => `E ${lstr(k)} ${v === null ? "0 0:" : `1 ${lstr(v)}`}`),
+      ...r.tty.map(([fd, isTty]) => `T ${fd} ${isTty ? 1 : 0}`),
+      ...(lazyMode ? [`M ${component.get(r.path)}`] : []),
+    ];
+    const text = encodeSnapshot(probe, r.root!, guards, r.volatile.length === 0);
+    const arg = d.call.args[1];
     if (arg !== undefined && arg.kind === "strLit") (arg as { value: string }).value = text;
-    decide(c.call, true, "");
+    const notes = [
+      d.why,
+      ...(r.env.length > 0 ? [`env guards ${r.env.map(([k]) => k).join(",")}`] : []),
+      ...(r.volatile.length > 0 ? [`volatile ${r.volatile.join(",")}: no constants`] : []),
+      ...(r.mutations.length > 0 ? [`mutates ${r.mutations.join(",")}`] : []),
+      lazyMode ? `per-module (component ${component.get(r.path)})` : "evaluated when Node starts",
+    ];
+    decide(d.call, true, notes.join("; "));
   }
   return decisions;
 }
@@ -213,8 +290,22 @@ interface ProbeObject {
   m: [string, ProbeValue][];
 }
 
+interface ProbeResult {
+  path: string;
+  root?: number;
+  inputs: string[];
+  volatile: string[];
+  effects: string[];
+  mutations: string[];
+  env: [string, string | null][];
+  tty: [number, boolean][];
+  files: string[];
+  throws?: string;
+  reason?: string;
+}
+
 interface ProbeOutput {
-  results: { path: string; root?: number; effects: string[]; throws?: string; reason?: string }[];
+  results: ProbeResult[];
   objects: Record<string, ProbeObject>;
 }
 
@@ -228,7 +319,12 @@ function encodeValue(v: ProbeValue): string | null {
   return null;
 }
 
-function encodeSnapshot(probe: ProbeOutput, root: number, guards: string[]): string {
+function encodeSnapshot(
+  probe: ProbeOutput,
+  root: number,
+  guards: string[],
+  constants: boolean,
+): string {
   const lines = [...guards];
   const reached: number[] = [];
   const seen = new Set<number>();
@@ -246,7 +342,7 @@ function encodeSnapshot(probe: ProbeOutput, root: number, guards: string[]): str
   for (const oid of reached) {
     for (const [key, v] of probe.objects[oid]!.m) {
       const enc = encodeValue(v);
-      if (enc !== null) lines.push(`K ${oid} ${lstr(key)} ${enc}`);
+      if (enc !== null && (constants || "o" in v)) lines.push(`K ${oid} ${lstr(key)} ${enc}`);
     }
   }
   lines.push(`R ${root}`);
@@ -256,16 +352,16 @@ function encodeSnapshot(probe: ProbeOutput, root: number, guards: string[]): str
 /* ── the probe ────────────────────────────────────────────────────────── */
 
 /** The bootstrap the probe host starts Node with: the dispatcher the
- * bridge requires, and the probe as its `call`. */
-const PROBE_BOOTSTRAP = String.raw`
-"use strict";
-const types = require("node:util").types;
-const { createRequire } = require("node:module");
+ * bridge requires, whose `call` runs the recorder (probe-recorder.ts)
+ * from `recorder`. */
+function probeBootstrap(recorder: string): string {
+  return `"use strict";
 const noop = () => {};
 globalThis.__scriptcNodeIsland = {
   call(id, sync, file, specifier, name, args) {
     try {
-      return "R" + JSON.stringify(probe(JSON.parse(args)));
+      const recorder = require("node:module").createRequire(${JSON.stringify(recorder)})(${JSON.stringify(recorder)});
+      return "R" + JSON.stringify(recorder.probe(JSON.parse(args)));
     } catch (e) {
       return "T" + JSON.stringify(String((e && e.stack) || e));
     }
@@ -274,110 +370,17 @@ globalThis.__scriptcNodeIsland = {
   setImmediate: noop, clearImmediate: noop, refImmediate: noop,
   nextTick: noop, emit: noop, load: noop, sharedPush: noop,
 };
-const fnToString = Function.prototype.toString;
-const hasOwn = Object.prototype.hasOwnProperty;
-function isConstructor(f) {
-  try { Reflect.construct(String, [], f); return true; } catch { return false; }
-}
-function plainClass(f) {
-  let source = "";
-  try { source = fnToString.call(f); } catch { return false; }
-  if (/\[native code\]\s*\}$/.test(source)) return false;
-  for (let o = f; o !== null && o !== Function.prototype; o = Object.getPrototypeOf(o))
-    if (hasOwn.call(o, Symbol.hasInstance)) return false;
-  return true;
-}
-function probe(input) {
-  const objects = {};
-  const oids = new Map();
-  let next = 1;
-  const value = (v, depth) => {
-    if (v === undefined) return { u: 1 };
-    if (v === null) return { l: 1 };
-    switch (typeof v) {
-      case "boolean": return { b: v };
-      case "number": return { n: Object.is(v, -0) ? "-0" : String(v) };
-      case "string": return v.isWellFormed() ? { s: v } : { x: 1 };
-      case "symbol": return object(v, 2, depth);
-      case "function":
-        if (types.isProxy(v)) return { x: 1 };
-        return object(v, 1 | (isConstructor(v) ? 32 : 0), depth);
-      case "object":
-        if (types.isProxy(v) || types.isPromise(v) || types.isNativeError(v) ||
-            ArrayBuffer.isView(v) || types.isExternal(v)) return { x: 1 };
-        return object(v, Array.isArray(v) ? 8 : 0, depth);
-      default: return { x: 1 };
-    }
-  };
-  const object = (v, flags, depth) => {
-    if (oids.has(v)) return { o: oids.get(v) };
-    const id = next++;
-    oids.set(v, id);
-    const entry = { f: flags, p: (flags & 1) !== 0 && plainClass(v), m: [] };
-    objects[id] = entry;
-    if (typeof v === "symbol") return { o: id };
-    // The module's value and its direct members: every own data property
-    // (namespace member lists); functions anywhere: name and length.
-    const keys = depth === 0 || (depth === 1 && typeof v !== "function")
-      ? Object.getOwnPropertyNames(v)
-      : typeof v === "function" ? ["name", "length"] : [];
-    for (const key of keys) {
-      let d;
-      try { d = Object.getOwnPropertyDescriptor(v, key); } catch { continue; }
-      if (d === undefined || !("value" in d)) continue;
-      entry.m.push([key, value(d.value, depth + 1)]);
-    }
-    return { o: id };
-  };
-  const effects = [];
-  const watch = (owner, key, label) => {
-    const original = owner[key];
-    if (typeof original !== "function") return () => {};
-    owner[key] = function (...a) { effects.push(label); return original.apply(this, a); };
-    return () => { owner[key] = original; };
-  };
-  const results = [];
-  for (const path of input.modules) {
-    effects.length = 0;
-    const globals = new Set(Reflect.ownKeys(globalThis));
-    const restore = [
-      watch(process.stdout, "write", "stdout output"),
-      watch(process.stderr, "write", "stderr output"),
-      watch(process, "emitWarning", "a process warning"),
-      watch(process, "on", "a process listener"),
-      watch(process, "addListener", "a process listener"),
-      watch(process, "once", "a process listener"),
-      watch(process, "prependListener", "a process listener"),
-      watch(process, "nextTick", "process.nextTick"),
-      watch(globalThis, "setTimeout", "a timer"),
-      watch(globalThis, "setInterval", "a timer"),
-      watch(globalThis, "setImmediate", "an immediate"),
-      watch(globalThis, "queueMicrotask", "a microtask"),
-    ];
-    let exportsValue, threw;
-    try { exportsValue = createRequire(path)(path); } catch (e) { threw = String((e && e.message) || e); }
-    for (const r of restore) r();
-    for (const k of Reflect.ownKeys(globalThis))
-      if (!globals.has(k)) effects.push("a new global " + String(k));
-    if (threw !== undefined) { results.push({ path, effects: [...effects], throws: threw }); continue; }
-    const root = value(exportsValue, 0);
-    if (!("o" in root)) {
-      results.push({ path, effects: [...effects], reason: "its value is not an object" });
-      continue;
-    }
-    results.push({ path, root: root.o, effects: [...new Set(effects)] });
-  }
-  return { results, objects };
-}
 `;
+}
 
 function runtimeSrc(): string {
   const require = createRequire(import.meta.url);
   return join(dirname(require.resolve("@scriptc/runtime/package.json")), "src");
 }
 
-/** The probe host executable, built once per probe source and bridge
- * header (cached under the temporary directory). */
+/** The probe host executable with its bootstrap and recorder, built once
+ * per probe source, bridge header and recorder (cached under the
+ * temporary directory). */
 function probeHost(): string | string[] {
   const src = runtimeSrc();
   const source = join(src, "tools", "scr_node_island_probe.c");
@@ -385,13 +388,15 @@ function probeHost(): string | string[] {
   const hash = createHash("sha256")
     .update(readFileSync(source))
     .update(readFileSync(header))
-    .update(PROBE_BOOTSTRAP)
+    .update(PROBE_RECORDER)
+    .update(probeBootstrap(""))
     .digest("hex")
     .slice(0, 16);
   const dir = join(tmpdir(), `scriptc-node-probe-${process.getuid?.() ?? 0}`, hash);
   const exe = join(dir, "scr-node-probe");
   const bootstrap = join(dir, "bootstrap.js");
-  if (existsSync(exe) && existsSync(bootstrap)) return [exe, bootstrap];
+  const recorder = join(dir, "recorder.cjs");
+  if (existsSync(exe) && existsSync(bootstrap) && existsSync(recorder)) return [exe, bootstrap];
   mkdirSync(dir, { recursive: true });
   const tmp = `${exe}.${process.pid}`;
   const errors: string[] = [];
@@ -399,7 +404,9 @@ function probeHost(): string | string[] {
     if (cc === undefined || cc === "") continue;
     const r = spawnSync(cc, ["-O1", "-I", src, source, "-o", tmp, "-ldl"], { encoding: "utf8" });
     if (r.status === 0) {
-      writeFileSync(`${bootstrap}.${process.pid}`, PROBE_BOOTSTRAP);
+      writeFileSync(`${recorder}.${process.pid}`, PROBE_RECORDER);
+      renameSync(`${recorder}.${process.pid}`, recorder);
+      writeFileSync(`${bootstrap}.${process.pid}`, probeBootstrap(recorder));
       renameSync(`${bootstrap}.${process.pid}`, bootstrap);
       renameSync(tmp, exe);
       return [exe, bootstrap];
@@ -413,24 +420,32 @@ function runProbe(packDir: string, modules: string[]): ProbeOutput | string {
   const host = probeHost();
   if (typeof host === "string") return host;
   const [exe, bootstrap] = host as [string, string];
-  const input = join(dirname(exe), `input.${process.pid}.${Date.now()}.json`);
+  const stem = join(dirname(exe), `run.${process.pid}.${Date.now()}`);
+  const input = `${stem}.in.json`;
+  const output = `${stem}.out.json`;
   writeFileSync(input, JSON.stringify({ modules }));
   let out: string;
   try {
-    out = execFileSync(exe, [packDir, bootstrap, input], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-      maxBuffer: 64 * 1024 * 1024,
+    execFileSync(exe, [packDir, bootstrap, input, output], {
+      stdio: ["ignore", "ignore", "pipe"],
       timeout: 60_000,
     });
+    out = readFileSync(output, "utf8");
   } catch (e) {
-    const err = e as { stderr?: string; message: string };
-    return `the probe failed: ${(err.stderr ?? "").trim().split("\n")[0] || err.message}`;
-  }
-  try {
-    rmSync(input);
-  } catch {
-    /* best effort */
+    const err = e as { stderr?: Buffer | string; message: string };
+    return `the probe failed: ${
+      String(err.stderr ?? "")
+        .trim()
+        .split("\n")[0] || err.message
+    }`;
+  } finally {
+    for (const f of [input, output]) {
+      try {
+        rmSync(f);
+      } catch {
+        /* best effort */
+      }
+    }
   }
   if (!out.startsWith("R")) return `the probe threw: ${out.slice(1, 400)}`;
   return JSON.parse(out.slice(1)) as ProbeOutput;

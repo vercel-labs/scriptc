@@ -146,6 +146,13 @@ function nodeOracleFile(file: string): string {
   return path;
 }
 
+/** `// @normalize-pid` (differential.test.ts): Node's process warnings
+ * compare with the pid replaced on both sides. */
+function pidFree(file: string, stderr: Buffer): Buffer {
+  if (!directiveHead(file).some((l) => /^\/\/ @normalize-pid\s*$/.test(l))) return stderr;
+  return Buffer.from(stderr.toString("utf8").replace(/^\(node:\d+\) /gm, "(node:PID) "), "utf8");
+}
+
 function wantsNoDeprecation(file: string): boolean {
   return directiveHead(file).some((l) => /^\/\/ @no-deprecation\s*$/.test(l));
 }
@@ -213,7 +220,9 @@ describe(`llvm differential corpus (${files.length} programs, ${optimizationMode
         const actual = await runBinary(result.binaryPath, []);
         expect(actual.stdout, `${optimization} stdout`).toEqual(oracle.stdout);
         if (expectedExit === 0)
-          expect(comparableStderr(actual.stderr), `${optimization} stderr`).toEqual(oracle.stderr);
+          expect(pidFree(file, comparableStderr(actual.stderr)), `${optimization} stderr`).toEqual(
+            pidFree(file, oracle.stderr),
+          );
         expect(actual.exitCode, `${optimization} exit status`).toBe(expectedExit);
       }
     },

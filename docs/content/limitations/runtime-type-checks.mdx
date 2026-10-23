@@ -11,3 +11,4 @@ Rejection reasons and reference equality are preserved across conversions.
 
 A non-null assertion (`value!`) checks the value when it extracts an object, array or other non-nullable member from a union.
 If the value holds `null` or `undefined`, the assertion throws a `TypeError`, even when the result is never used; Node.js continues until a property of the value is read.
+An asserted array or typed-array element read follows the rules for missing elements in "Array bounds and runtime errors" instead, and reading a property of a missing element throws Node's `TypeError`.

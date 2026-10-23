@@ -5,7 +5,8 @@ import type { LlvmEmitterContext, LlValue } from "./expr-context.js";
 /** The value of a sequence whose statements are only throwing guards over
  * scalar conditions: `if (cond) throw` with no else, where the throw is the
  * runtime's coded Node error (a derived constructor's `this` before super()
- * lowers to exactly this). Such guards read no reference and replace no
+ * lowers to exactly this, and so does an asserted array element read's
+ * presence test). Such guards read no reference and replace no
  * owner, so the sequence can be read wherever its result can: the guards
  * still run in place, and only the result is borrowed. Null otherwise. */
 export function guardedValue(e: IrExpr): IrExpr | null {
@@ -34,13 +35,29 @@ export function guardedValue(e: IrExpr): IrExpr | null {
 function scalarGuardCondition(e: IrExpr): boolean {
   switch (e.kind) {
     case "boolLit":
+    case "numLit":
     case "varRef":
       return !isRefCounted(e.type);
     case "unary":
       return scalarGuardCondition(e.operand);
+    case "bin":
+      return (
+        (e.op === "===" || e.op === "!==") &&
+        scalarGuardCondition(e.left) &&
+        scalarGuardCondition(e.right)
+      );
+    // An asserted element read's presence test (`xs[i]!`): it reads the
+    // slot's state without taking a reference.
+    case "arrayState":
+      return simpleRead(e.arr) && scalarGuardCondition(e.index);
     default:
       return false;
   }
+}
+
+/** A local, or a field read through a chain of fields of one. */
+function simpleRead(e: IrExpr): boolean {
+  return e.kind === "varRef" || (e.kind === "fieldGet" && simpleRead(e.obj));
 }
 
 function stableProjection(host: LlvmEmitterContext, e: IrExpr): boolean {

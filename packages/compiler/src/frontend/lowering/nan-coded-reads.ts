@@ -46,6 +46,9 @@ export interface NanCodedHost {
   /** The read is a keyed read of a record's `number` index signature,
    * which answers undefined for a missing key. */
   isNumberRecordRead(read: ts.ElementAccessExpression): boolean;
+  /** The read is an element read of a `number[]` array, which answers
+   * undefined for a hole or a missing index. */
+  isNumberArrayRead(read: ts.ElementAccessExpression): boolean;
   /** The static IR type of the node is a plain number. */
   isNumber(node: ts.Node): boolean;
   isString(node: ts.Expression): boolean;
@@ -58,6 +61,8 @@ export interface NanCodedHost {
   returnIsNumber(fn: ts.Symbol): boolean;
   /** The method shares its dispatch slot with another class's method. */
   methodOverridden(fn: ts.Symbol): boolean;
+  /** A library build, whose `t[i]!` reads are the plain numeric read. */
+  library: boolean;
 }
 
 interface ValueInfo {
@@ -318,10 +323,13 @@ export class NanCodedReads {
           return;
         }
         if (ts.isElementAccessExpression(node) && this.isReadCandidate(node)) {
-          // A record's number values may hold a genuine NaN, like f64 elements.
+          // A record's number values and a number array's elements may
+          // hold a genuine NaN, like f64 elements.
           const elem =
             this.host.bytesElemOf(node.expression) ??
-            (this.host.isNumberRecordRead(node) ? "f64" : null);
+            (this.host.isNumberRecordRead(node) || this.host.isNumberArrayRead(node)
+              ? "f64"
+              : null);
           if (elem) candidates.set(node, elem);
         }
       });
@@ -417,13 +425,15 @@ export class NanCodedReads {
     if (read.questionDotToken) return false;
     let n: ts.Node = read;
     let p = n.parent;
-    while (p && ts.isParenthesizedExpression(p)) {
+    // `t[i]!` has no runtime effect, so it reads like `t[i]`, also as an
+    // assignment target (`t[i]! = v`). A library build lowers it to the
+    // plain numeric read, which is never optional.
+    while (p && (ts.isParenthesizedExpression(p) || ts.isNonNullExpression(p))) {
+      if (ts.isNonNullExpression(p) && this.host.library) return false;
       n = p;
       p = n.parent;
     }
-    // `t[i]!` asserts presence: it already lowers to the plain numeric read
-    // and is never optional.
-    if (!p || ts.isNonNullExpression(p)) return false;
+    if (!p) return false;
     if (ts.isBinaryExpression(p) && p.left === n && isAssignmentOperator(p.operatorToken.kind))
       return false;
     if (
@@ -880,7 +890,11 @@ export class NanCodedReads {
       }
     } else return null;
     for (const id of this.names.get(nameNode.text) ?? []) {
-      if (id === nameNode || this.symbolOf(id) !== symbol) continue;
+      if (id === nameNode) continue;
+      // A shorthand property (`{ v }`) resolves to the property, not the
+      // binding it reads: one of the binding's name in its file is a use.
+      const shorthand = ts.isShorthandPropertyAssignment(id.parent) && id.parent.name === id;
+      if (shorthand ? ts.getSourceFileOfNode(id) !== sf : this.symbolOf(id) !== symbol) continue;
       const write = this.writeOf(id);
       if (write !== "read") slot.reassigned = true;
       if (write === "read") slot.uses.push(id);
@@ -1430,6 +1444,9 @@ export class NanCodedReads {
       }
       if (k === ts.SyntaxKind.AmpersandAmpersandToken || k === ts.SyntaxKind.BarBarToken)
         return this.inConditionContext(p);
+      // `a ?? v`: the value is v itself when `a` is nullish. (As the left
+      // operand, undefined and NaN select different values.)
+      if (k === ts.SyntaxKind.QuestionQuestionToken) return p.right === e && this.useSafe(p);
       if (k === ts.SyntaxKind.CommaToken) return p.left === e || this.useSafe(p);
       if (p.left === e) {
         // Compound assignment reads of a binding: arithmetic.

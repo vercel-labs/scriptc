@@ -39,7 +39,8 @@ test("an element read indexed by a loop counter reads above the prefix through t
   expect(sum).not.toMatch(/getelementptr inbounds \[9 x i8\], ptr /);
   // The loop bound compares the counter with the i32 length field in 32 bits.
   expect(sum).toMatch(/(%\S+) = trunc i64 %\S+ to i32\n\s*%\S+ = icmp ult i32 \1, %\S+/);
-  // Other indices keep the inline state check.
-  const at = /^define internal double @sc_bf_at[.(][^]*?^}/m.exec(llvm)?.[0] ?? "";
+  // Other indices keep the inline state check. `values[k]!` at any index
+  // may read a missing element, which is undefined, as for `values[k]`.
+  const at = /^define internal [^\n]*@sc_bf_at[.(][^]*?^}/m.exec(llvm)?.[0] ?? "";
   expect(at).toMatch(/getelementptr inbounds \[9 x i8\], ptr /);
 });

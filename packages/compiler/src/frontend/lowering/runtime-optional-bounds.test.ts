@@ -1,12 +1,16 @@
 import { afterAll, expect, test } from "vitest";
 import * as ts from "../ts7/adapter.js";
 import { closeSourceParser, parseSourceFile } from "../ts7/source-parser-node.js";
-import { indexReadInBounds, indexStoreInBounds } from "./runtime-optional-bounds.js";
+import {
+  type BoundsFacts,
+  indexReadInBounds,
+  indexStoreInBounds,
+} from "./runtime-optional-bounds.js";
 
 afterAll(closeSourceParser);
 
 /** Whether each indexed store in `body` is proven to stay inside its array. */
-function stores(body: string): boolean[] {
+function stores(body: string, facts: BoundsFacts = {}): boolean[] {
   const file = parseSourceFile("bounds.ts", body, "ts");
   const results: boolean[] = [];
   ts.walkPreorder(file, (node) => {
@@ -15,33 +19,34 @@ function stores(body: string): boolean[] {
       node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
       ts.isElementAccessExpression(node.left)
     )
-      results.push(indexStoreInBounds(node));
+      results.push(indexStoreInBounds(node, facts));
     return undefined;
   });
   return results;
 }
 
 test("a dominating length comparison or asserted read bounds the store", () => {
-  expect(
-    stores(`function f(xs: number[], i: number) {
+  const body = `function f(xs: number[], i: number) {
       for (let j = 0; j < xs.length; j++) xs[j] = 0;
       if (i < xs.length) xs[i] = 1;
       if (xs.length > i) { xs[i] = 2; }
       const old = xs[i]!;
       xs[i] = old + 1;
       xs[i] = 3;
-    }`),
-  ).toEqual([true, true, true, true, true]);
+    }`;
+  expect(stores(body, { assertedReadsThrow: true })).toEqual([true, true, true, true, true]);
+  // Where `xs[i]!` reads undefined for a missing index, it bounds nothing.
+  expect(stores(body)).toEqual([true, true, true, false, false]);
 });
 
 test("a swap is bounded by the reads that precede each store", () => {
-  expect(
-    stores(`function swap(xs: number[], a: number, b: number) {
+  const body = `function swap(xs: number[], a: number, b: number) {
       const t = xs[a]!;
       xs[a] = xs[b]!;
       xs[b] = t;
-    }`),
-  ).toEqual([true, true]);
+    }`;
+  expect(stores(body, { assertedReadsThrow: true })).toEqual([true, true]);
+  expect(stores(body)).toEqual([false, false]);
 });
 
 test("code that can change the length or an operand voids the proof", () => {
@@ -142,4 +147,24 @@ test("a length-alias fact lets a cached length bound the read", () => {
     return undefined;
   });
   expect(plain).toEqual([false, false]);
+});
+
+test("a conditional expression's condition bounds its true branch", () => {
+  const file = parseSourceFile(
+    "conditional.ts",
+    `declare function use(...values: number[]): number;
+    function f(xs: number[], i: number) {
+      const a = xs.length > 2 ? xs[2]! : 0;
+      const b = i < xs.length ? xs[i]! : -1;
+      const c = i < xs.length ? 0 : xs[i]!;
+      const d = i < xs.length ? use(xs[i]!, i++, xs[i]!) : 0;
+    }`,
+    "ts",
+  );
+  const results: boolean[] = [];
+  ts.walkPreorder(file, (node) => {
+    if (ts.isElementAccessExpression(node)) results.push(indexReadInBounds(node));
+    return undefined;
+  });
+  expect(results).toEqual([true, true, false, true, false]);
 });

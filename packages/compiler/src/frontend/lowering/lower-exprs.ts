@@ -406,13 +406,21 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
       const probe = lowerAbsenceProbe(lowerer, expr.expression);
       if (probe?.type.kind === "union") return probe;
     }
+    // An asserted array element whose value must be the element type reads
+    // the element behind a presence test (see checkedElementMember).
+    if (ts.isElementAccessExpression(expr.expression)) {
+      const member = checkedElementMember(lowerer, expr);
+      if (member !== undefined) lowerer.checkedElementReads.set(expr.expression, member);
+    }
     const inner = lowerer.lowerExpr(expr.expression);
     if (inner.type.kind === "union") {
-      // `!` performs no runtime check: a missing array element stays
-      // undefined where its destination can hold it.
+      // `!` performs no runtime check: a missing array or typed-array
+      // element stays undefined, as for the read without the assertion. A
+      // library build keeps it only where its destination can hold it.
       if (
         ts.isElementAccessExpression(expr.expression) &&
-        assertedElementKeepsUndefined(lowerer, expr)
+        (assertsElementWithoutCheck(lowerer, expr.expression) ||
+          assertedElementKeepsUndefined(lowerer, expr))
       )
         return inner;
       // A forwarded assertion whose destination was promoted to hold
@@ -880,6 +888,75 @@ function isEqualityOperand(node: ts.Expression): boolean {
       parent.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken ||
       parent.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken ||
       parent.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken)
+  );
+}
+
+/** `xs[i]!` of an ordinary array outside a library build whose value must be
+ * the element type: no consumer keeps a missing element as undefined (an
+ * operator, a forwarded or undefined-admitting destination, an equality, an
+ * erased optional use). The read takes the element behind a presence test,
+ * whose failure throws the TypeError the checked extraction would: Node's
+ * member-read TypeError for a dereferenced element (`xs[i]!.name`, which
+ * returns the member's name), the extraction's own otherwise (null).
+ * Undefined when the read takes the general path. */
+function checkedElementMember(
+  lowerer: Lowerer,
+  expr: ts.NonNullExpression,
+): string | null | undefined {
+  if (lowerer.library) return undefined;
+  const read = expr.expression;
+  if (!ts.isElementAccessExpression(read) || read.questionDotToken) return undefined;
+  const receiver = lowerer.mapTypeOf(lowerer.typeOf(read.expression));
+  const target = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (
+    receiver?.kind !== "array" ||
+    !target ||
+    target.kind === "union" ||
+    !typeEquals(target, receiver.elem) ||
+    lowerer.presentElementReads.has(read) ||
+    lowerer.runtimeOptionalAssertions.has(expr) ||
+    assertsElementWithoutCheck(lowerer, read) ||
+    assertedElementKeepsUndefined(lowerer, expr) ||
+    isEqualityOperand(expr)
+  )
+    return undefined;
+  const use = runtimeOptionalUseOf(expr);
+  if (use?.optional && !use.complex) return undefined;
+  const parent = expr.parent;
+  if (ts.isPropertyAccessExpression(parent) && parent.expression === expr)
+    return parent.questionDotToken || !ts.isIdentifier(parent.name) ? undefined : parent.name.text;
+  if (
+    (ts.isElementAccessExpression(parent) || ts.isCallExpression(parent)) &&
+    parent.expression === expr
+  )
+    return undefined;
+  return null;
+}
+
+/** `xs[i]!` of an array or typed array outside a library build, consumed by
+ * an operator that converts undefined as Node does (arithmetic, comparison,
+ * equality, bitwise and logical operators, unary operators, `typeof`, a
+ * template span) or stored in a fresh object literal's field: the
+ * assertion has no runtime effect there, as for the read without it (see `mayBeOptional` in lowerer.ts). Other consumers keep
+ * the checked extraction unless the value is forwarded into storage that
+ * holds undefined; a dereferenced element (`xs[i]!.length`) throws Node's
+ * TypeError through the member-read check. */
+function assertsElementWithoutCheck(lowerer: Lowerer, read: ts.ElementAccessExpression): boolean {
+  if (lowerer.library) return false;
+  const kind = lowerer.mapTypeOf(lowerer.typeOf(read.expression))?.kind;
+  if (kind !== "array" && kind !== "bytes") return false;
+  let outer: ts.Node = read.parent!;
+  while (outer.parent && ts.isParenthesizedExpression(outer.parent)) outer = outer.parent;
+  const parent = outer.parent;
+  if (!parent) return false;
+  // A compound assignment (`total += xs[i]!`) converts its operand like
+  // the operator; a plain `=` stores it.
+  if (ts.isBinaryExpression(parent)) return parent.operatorToken.kind !== ts.SyntaxKind.EqualsToken;
+  // A fresh object literal's field takes the optional value, as for the
+  // read without the assertion.
+  if (ts.isPropertyAssignment(parent)) return ts.isObjectLiteralExpression(parent.parent);
+  return (
+    ts.isPrefixUnaryExpression(parent) || ts.isTypeOfExpression(parent) || ts.isTemplateSpan(parent)
   );
 }
 

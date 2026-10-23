@@ -23,6 +23,9 @@ export interface ElementStateHost {
   isArrayLikeObject(node: ts.Expression): boolean;
   /** The expression's static type is a string. */
   isString(node: ts.Expression): boolean;
+  /** Asserted array reads (`xs[i]!`) throw for a missing index
+   * (BoundsFacts.assertedReadsThrow). */
+  assertedReadsThrow: boolean;
   /** `node` names the standard global `name` (`Array`, `Object`, ...). */
   isGlobal(node: ts.Expression, name: string): boolean;
   /** Element keys of the rest parameter that the spread arguments of
@@ -481,7 +484,9 @@ export class ArrayElementStates {
     if (ts.isElementAccessExpression(target)) {
       // A write past the end leaves holes before it; appending at the
       // receiver's own length does not.
-      const holes = !isAppendIndex(target) && !indexStoreInBounds(node);
+      const holes =
+        !isAppendIndex(target) &&
+        !indexStoreInBounds(node, { assertedReadsThrow: this.host.assertedReadsThrow });
       const storesValue =
         op === ts.SyntaxKind.EqualsToken ||
         op === ts.SyntaxKind.QuestionQuestionEqualsToken ||

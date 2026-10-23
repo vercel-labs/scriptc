@@ -38,6 +38,7 @@ import {
   STRING,
   UNDEFINED_T,
   type SrcLoc,
+  typeEquals,
   typeKey,
   VOID,
 } from "../../ir/ir.js";
@@ -6512,7 +6513,9 @@ function lowerHttpClientCall(
       );
     }
     const key = (prop.name as ts.Identifier | ts.StringLiteral).text;
-    const lowerVal = (want: "string" | "f64"): IrExpr => {
+    /** The option's value; `fallback` is the default Node applies when the
+     * value is undefined, as when the option is absent. */
+    const lowerVal = (want: "string" | "f64", fallback?: IrExpr): IrExpr => {
       const v =
         initializer !== null
           ? lowerer.lowerExpr(initializer)
@@ -6527,6 +6530,47 @@ function lowerHttpClientCall(
           value: v,
           type: want === "string" ? STRING : F64,
           loc: locOf(prop),
+        };
+      }
+      const wantT = want === "string" ? STRING : F64;
+      if (
+        fallback !== undefined &&
+        v.type.kind === "union" &&
+        lowerer.armTag(v.type.unionId, UNDEFINED_T) >= 0 &&
+        typeEquals(lowerer.stripUndefinedArm(v.type), wantT)
+      ) {
+        const at = locOf(prop);
+        const unionId = v.type.unionId;
+        const local = lowerer.declareHiddenLocal("%requestOption", v.type);
+        const value = (): IrExpr => varRef(local.id, v.type, at);
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "varDecl", localId: local.id, init: v, loc: at }],
+          result: {
+            kind: "ternary",
+            cond: {
+              kind: "unionIsTag",
+              unionId,
+              tag: lowerer.armTag(unionId, UNDEFINED_T),
+              negated: false,
+              value: value(),
+              type: BOOL,
+              loc: at,
+            },
+            then: fallback,
+            else_: {
+              kind: "unionNarrow",
+              unionId,
+              tag: lowerer.armTag(unionId, wantT),
+              value: value(),
+              type: wantT,
+              loc: at,
+            },
+            type: wantT,
+            loc: at,
+          },
+          type: wantT,
+          loc: at,
         };
       }
       if (v.type.kind !== want) {
@@ -6549,10 +6593,10 @@ function lowerHttpClientCall(
         port = lowerVal("f64");
         break;
       case "path":
-        path = lowerVal("string");
+        path = lowerVal("string", strLit("/", loc));
         break;
       case "method":
-        method = lowerVal("string");
+        method = lowerVal("string", strLit("GET", loc));
         break;
       case "timeout":
         timeout = lowerVal("f64");

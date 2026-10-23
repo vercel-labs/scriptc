@@ -117,6 +117,7 @@ import { lowerMapSeedNew, lowerSetSeedNew } from "./containers/collection-method
 import { lowerObjectConstructor } from "./containers/indexed-objects.js";
 import { knownBufEncoding, lowerNodeModulesBufferConstruct } from "./containers/bytes.js";
 import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
+import { lowerOptionalNumber } from "./lower-exprs.js";
 import { lowerSearchParamsNew } from "./builtins/url.js";
 import { lowerTextCodecNew } from "./builtins/text-codecs.js";
 import {
@@ -10420,6 +10421,21 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       }
       if (arg.type.kind === "date") {
         return arg;
+      }
+      // A number that may be undefined (a read that may miss): ToNumber
+      // makes undefined NaN, an invalid date, as in Node.
+      if (
+        arg.type.kind === "union" &&
+        lowerer.armTag(arg.type.unionId, UNDEFINED_T) >= 0 &&
+        lowerer.stripUndefinedArm(arg.type).kind === "f64"
+      ) {
+        return {
+          kind: "libCall",
+          fn: "date.newMs",
+          args: [lowerOptionalNumber(lowerer, arg, loc)],
+          type: DATE_T,
+          loc,
+        };
       }
       lowerer.noLowering(
         `new Date of '${lowerer.fmt(arg.type)}' values`,

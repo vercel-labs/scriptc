@@ -64,14 +64,16 @@ export function foldRegexSpanReads(lowerer: Lowerer, fn: IrFunction): void {
   for (const id of assigned) candidates.delete(id);
 
   const stringIndexHelper = lowerer.arrHofHelpers.get(`idxOr:${typeKey(STRING)}`);
-  /** `m[k]` as lowered: the optional element read of the narrowed result
-   * (or, for `m[k]!`, the dense read). */
+  /** `m[k]` as lowered: the optional element read of the narrowed result,
+   * or the dense read with or without the presence test before it (`m[k]!`,
+   * a read concatenated with a string). */
   const captureRead = (expr: IrExpr): { local: string; use: CaptureUse } | null => {
     let result: IrExpr | undefined;
     let index: IrExpr | undefined;
     if (expr.kind === "call" && expr.callee === stringIndexHelper && expr.args.length === 2)
       [result, index] = expr.args;
-    else if (expr.kind === "arrayGet") ({ arr: result, index } = expr);
+    else if (expr.kind === "arrayGet" || expr.kind === "arrayState")
+      ({ arr: result, index } = expr);
     else return null;
     if (
       result?.kind !== "unionNarrow" ||

@@ -79,7 +79,28 @@ export function lowerNodeModuleCall(
     );
   }
   const argumentNode = expr.arguments.nodes[0]!;
-  const argument = lowerer.lowerExpr(argumentNode);
+  let argument = lowerer.lowerExpr(argumentNode);
+  // A name that may be undefined (a read that may miss): undefined is not a
+  // builtin's name, so the call answers false for it, as in Node.
+  let optional: { stored: IrExpr; init: IrExpr; unionId: string } | null = null;
+  if (
+    argument.type.kind === "union" &&
+    lowerer.armTag(argument.type.unionId, UNDEFINED_T) >= 0 &&
+    lowerer.stripUndefinedArm(argument.type).kind === "string"
+  ) {
+    const unionId = argument.type.unionId;
+    const local = lowerer.declareHiddenLocal("%builtinOptional", argument.type);
+    const stored = varRef(local.id, argument.type, loc);
+    optional = { stored, init: argument, unionId };
+    argument = {
+      kind: "unionNarrow",
+      unionId,
+      tag: lowerer.armTag(unionId, STRING),
+      value: stored,
+      type: STRING,
+      loc,
+    };
+  }
   if (argument.type.kind !== "string") {
     if (argument.type.kind === "dyn" || argument.type.kind === "union") {
       lowerer.noLowering(
@@ -125,10 +146,34 @@ export function lowerNodeModuleCall(
     };
     result = { kind: "logical", op: "||", left: equal, right: result, type: BOOL, loc };
   }
-  return {
+  const checked: IrExpr = {
     kind: "seqExpr",
     stmts: [{ kind: "varDecl", localId: slot.id, init: argument, loc }],
     result,
+    type: BOOL,
+    loc,
+  };
+  if (optional === null) return checked;
+  const stored = optional.stored as IrExpr & { kind: "varRef" };
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: stored.localId, init: optional.init, loc }],
+    result: {
+      kind: "ternary",
+      cond: {
+        kind: "unionIsTag",
+        unionId: optional.unionId,
+        tag: lowerer.armTag(optional.unionId, UNDEFINED_T),
+        negated: false,
+        value: stored,
+        type: BOOL,
+        loc,
+      },
+      then: boolLit(false, loc),
+      else_: checked,
+      type: BOOL,
+      loc,
+    },
     type: BOOL,
     loc,
   };

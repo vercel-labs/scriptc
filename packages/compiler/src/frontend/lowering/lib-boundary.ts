@@ -122,6 +122,13 @@ function coerceSlot(lowerer: Lowerer, arg: IrExpr, want: IrType, what: string): 
     );
   }
   if (arg.type.kind === "union" && want.kind !== "union" && !containsDynOrUnit(want)) {
+    // The slot's type or undefined (a read that may miss, or a function
+    // returning one): the checked extraction, which throws a catchable
+    // TypeError for undefined, as other storage that cannot hold it does.
+    if (typeEquals(lowerer.stripUndefinedArm(arg.type), want)) {
+      const helper = lowerer.narrowedArmHelper(arg.type.unionId, want, arg.loc);
+      if (helper) return lowerer.checkedNarrowCall(helper, arg, want, arg.loc);
+    }
     lowerer.pushDiag(unionMismatchDiag(lowerer.fmt(want), lowerer.fmt(arg.type), arg.loc));
     throw new PoisonError();
   }

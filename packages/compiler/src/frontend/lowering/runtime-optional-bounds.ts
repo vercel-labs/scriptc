@@ -6,12 +6,13 @@ import * as ts from "../ts7/adapter.js";
  *
  * The proof is syntactic: a guard that dominates the store shows `i` is
  * below `xs.length`, either a condition `i < xs.length` (`xs.length > i`)
- * of an enclosing `if` or loop, or an earlier asserted read `xs[i]!`, which
- * throws for a missing index. Between the guard and the store nothing may
+ * of an enclosing `if` or loop, or, where asserted reads throw for a
+ * missing index (BoundsFacts.assertedReadsThrow), an earlier asserted read
+ * `xs[i]!`. Between the guard and the store nothing may
  * change the length or either operand: no call, construction, `await`,
  * `yield` or `delete`, and no write of `xs`, `i` or `xs.length`. A loop
  * crossed on the way repeats its whole body between the two. */
-export function indexStoreInBounds(store: ts.BinaryExpression): boolean {
+export function indexStoreInBounds(store: ts.BinaryExpression, facts: BoundsFacts = {}): boolean {
   if (store.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return false;
   const target = peel(store.left);
   if (!ts.isElementAccessExpression(target)) return false;
@@ -21,7 +22,7 @@ export function indexStoreInBounds(store: ts.BinaryExpression): boolean {
     return false;
   const parent = store.parent;
   if (!parent || !ts.isExpressionStatement(parent)) return false;
-  return boundedBefore(parent, { array, index }, [store.right]);
+  return boundedBefore(parent, { array, index, facts }, [store.right]);
 }
 
 /** Facts about the program that a purely syntactic guard cannot see. */
@@ -34,6 +35,12 @@ export interface BoundsFacts {
    * the length of a typed array whose binding is never reassigned), so a
    * guard `i < bound` bounds `array[i]`. */
   lengthAlias?(bound: ts.Expression, array: ts.Expression): boolean;
+  /** An asserted read `xs[i]!` throws for a missing index (an ordinary
+   * array's bounds trap in a library build), so it bounds later accesses
+   * of `xs[i]`. Elsewhere `xs[i]!` reads like `xs[i]`. */
+  assertedReadsThrow?: boolean;
+  /** `callee` names the standard `Object.hasOwn`. */
+  isHasOwn?(callee: ts.Expression): boolean;
   /** A read inside an `if` condition is bounded like one in a statement.
    * Opt-in: a caller that does not also prove the index a non-negative
    * integer keeps its established decision for such reads. */
@@ -49,6 +56,22 @@ export interface BoundsFacts {
 export function indexReadInBounds(
   read: ts.ElementAccessExpression,
   facts: BoundsFacts = {},
+): boolean {
+  return readGuarded(read, facts, "length");
+}
+
+/** Proves that an element read `xs[i]` names an own element of the array:
+ * a dominating `Object.hasOwn(xs, i)` (BoundsFacts.isHasOwn) holds, so the
+ * index is below the length and its slot is no hole. Nothing between the
+ * guard and the read may change the operands, as for indexReadInBounds. */
+export function indexReadOwned(read: ts.ElementAccessExpression, facts: BoundsFacts): boolean {
+  return facts.isHasOwn !== undefined && readGuarded(read, facts, "own");
+}
+
+function readGuarded(
+  read: ts.ElementAccessExpression,
+  facts: BoundsFacts,
+  guard: "length" | "own",
 ): boolean {
   if (read.questionDotToken) return false;
   const array = peel(read.expression);
@@ -76,6 +99,18 @@ export function indexReadInBounds(
       if (op >= ts.SyntaxKind.FirstAssignment && op <= ts.SyntaxKind.LastAssignment) {
         if (parent.right !== child || !ts.isIdentifier(parent.left)) return false;
       } else if (parent.right === child) before.push(parent.left);
+    } else if (ts.isConditionalExpression(parent)) {
+      // `cond ? xs[i] : other`: the true branch runs right after a
+      // condition that holds.
+      if (parent.condition !== child) {
+        if (
+          parent.whenTrue === child &&
+          boundedBy(parent.condition, { array, index, facts, guard }) &&
+          unchanged([parent.condition, ...before], { array, index, facts, guard })
+        )
+          return true;
+        before.push(parent.condition);
+      }
     } else if (
       ts.isVariableDeclaration(parent) &&
       parent.initializer === child &&
@@ -83,7 +118,7 @@ export function indexReadInBounds(
       parent.parent.declarations.nodes[0] === parent &&
       ts.isVariableStatement(parent.parent.parent)
     ) {
-      return boundedBefore(parent.parent.parent, { array, index, facts }, before);
+      return boundedBefore(parent.parent.parent, { array, index, facts, guard }, before);
     } else if (
       (ts.isExpressionStatement(parent) ||
         ts.isReturnStatement(parent) ||
@@ -91,7 +126,7 @@ export function indexReadInBounds(
       parent.expression === child
     ) {
       // An `if` condition runs before its branches, like a statement.
-      return boundedBefore(parent, { array, index, facts }, before);
+      return boundedBefore(parent, { array, index, facts, guard }, before);
     } else return false;
     child = parent;
     parent = parent.parent;
@@ -162,6 +197,9 @@ interface Operands {
   array: ts.Expression;
   index: ts.Expression;
   facts?: BoundsFacts;
+  /** The guards that count: length comparisons (and asserted reads, where
+   * they throw), or `Object.hasOwn(array, index)` alone. */
+  guard?: "length" | "own";
 }
 
 function isFunctionBoundary(node: ts.Node): boolean {
@@ -215,10 +253,16 @@ function isLengthOf(node: ts.Expression, array: ts.Expression, facts?: BoundsFac
   );
 }
 
-/** `condition` holding proves `index < array.length`. */
+/** `condition` holding proves `index < array.length`, or with the "own"
+ * guard, that `index` names an own element of `array`. */
 function boundedBy(condition: ts.Expression, operands: Operands): boolean {
   const { array, index, facts } = operands;
   const e = peel(condition);
+  if (operands.guard === "own") {
+    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken)
+      return boundedBy(e.left, operands) || boundedBy(e.right, operands);
+    return isOwnCheck(e, operands);
+  }
   if (!ts.isBinaryExpression(e)) return false;
   const op = e.operatorToken.kind;
   if (op === ts.SyntaxKind.AmpersandAmpersandToken)
@@ -230,8 +274,10 @@ function boundedBy(condition: ts.Expression, operands: Operands): boolean {
   return false;
 }
 
-/** Evaluating `node` reads `array[index]!` on every path that completes. */
+/** Evaluating `node` reads `array[index]!` on every path that completes,
+ * where asserted reads throw for a missing index. */
 function assertsSlot(node: ts.Node, operands: Operands): boolean {
+  if (operands.guard === "own" || operands.facts?.assertedReadsThrow !== true) return false;
   let found = false;
   const visit = (n: ts.Node): void => {
     if (found) return;
@@ -297,8 +343,21 @@ function assertsSlot(node: ts.Node, operands: Operands): boolean {
   return found;
 }
 
+/** `node` is `Object.hasOwn(array, index)`. */
+function isOwnCheck(node: ts.Node, { array, index, facts }: Operands): boolean {
+  if (
+    !ts.isCallExpression(node) ||
+    node.questionDotToken ||
+    facts?.isHasOwn?.(node.expression) !== true
+  )
+    return false;
+  const args = node.arguments.nodes;
+  return args.length === 2 && sameReference(args[0]!, array) && sameReference(args[1]!, index);
+}
+
 /** Running `nodes` cannot change the array's length or either operand. */
-function unchanged(nodes: readonly ts.Node[], { array, index }: Operands): boolean {
+function unchanged(nodes: readonly ts.Node[], operands: Operands): boolean {
+  const { array, index } = operands;
   const roots: string[] = [];
   for (const operand of [array, index]) {
     const root = rootName(operand);
@@ -333,6 +392,8 @@ function unchanged(nodes: readonly ts.Node[], { array, index }: Operands): boole
   const visit = (n: ts.Node): void => {
     if (!ok) return;
     if (ts.isFunctionLike(n) || ts.isClassDeclaration(n) || ts.isClassExpression(n)) return;
+    // The own-element check only reads its operands.
+    if (isOwnCheck(n, operands)) return;
     if (
       ts.isCallExpression(n) ||
       ts.isNewExpression(n) ||

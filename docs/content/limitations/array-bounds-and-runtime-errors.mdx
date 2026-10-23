@@ -1,5 +1,7 @@
 Typed-array reads at an index that is not an integer in the array's range return `undefined`, as in Node.js, and invalid numeric indexed writes are ignored, while the assignment expression retains its original value.
-A non-null assertion on such a read (`bytes[i]!`) yields `NaN` instead of `undefined`.
+A non-null assertion on an element read of a typed array or an ordinary array (`bytes[i]!`, `items[i]!`) reads a missing element as `undefined`, as in Node.js, where the value is an operand of an operator, a template literal value or a field of a fresh object literal, and where it is stored in a binding, parameter, return value or array that can hold `undefined`.
+Other uses, such as a call argument typed `number`, throw a `TypeError` for a missing element, like other storage that cannot hold `undefined`.
+In library builds, an asserted typed-array read yields `NaN` instead of `undefined`, and an asserted ordinary-array read whose value must be the element type traps for a missing element.
 
 Ordinary arrays track holes separately from present `undefined` values.
 Missing reads and empty `pop()`/`shift()` return `undefined`, indexed writes can grow the array, and length growth creates holes.
@@ -8,7 +10,7 @@ Keyed reads of a `Record` or an index signature return `undefined` for a missing
 A missing array element or key that reaches storage that cannot hold `undefined`, such as a class field typed `number`, throws a `TypeError`.
 
 Runtime traps cannot be caught.
-User-thrown values and supported exceptions, including JSON parse, checked-cast, filesystem, regex, and `String.prototype.repeat` count errors, can be caught; hard traps such as out-of-range reads of statically typed ordinary arrays terminate the process.
+User-thrown values and supported exceptions, including JSON parse, checked-cast, filesystem, regex, and `String.prototype.repeat` count errors, can be caught; hard traps terminate the process.
 
 Deep recursion in Linux and macOS executables throws Node's catchable `RangeError: Maximum call stack size exceeded`, on the main thread, in worker threads, and inside async functions and generators.
 The depth at which it is thrown differs from Node: the main thread uses the process stack limit (usually 8 MiB), worker threads get an 8 MiB stack, and async functions and generators run on 512 KiB stacks, so native code usually recurses deeper than Node on threads and somewhat less deeply inside async bodies.

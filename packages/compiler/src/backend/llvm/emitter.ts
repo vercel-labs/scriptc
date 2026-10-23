@@ -6645,6 +6645,11 @@ export class LlEmitter {
       // The caller proves each arm separately.
       case "ternary":
         return true;
+      // Throwing guards before the value (guardedValue) take no reference.
+      case "seqExpr": {
+        const guarded = guardedValue(e);
+        return guarded !== null && this.borrowsWithoutOwning(guarded);
+      }
       // The caller proves the arguments are walks; their evaluation must not
       // remove an edge before the call reads them.
       case "call":

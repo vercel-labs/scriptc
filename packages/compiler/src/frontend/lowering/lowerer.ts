@@ -126,7 +126,7 @@ import { RuntimeOptionalProvenance } from "./runtime-optional-provenance.js";
 import { presentAtUse, reassignedBindings } from "./runtime-optional-guards.js";
 import { NarrowingStability } from "./narrowing-stability.js";
 import { ArrayElementStates } from "./runtime-optional-elements.js";
-import { indexReadInBounds } from "./runtime-optional-bounds.js";
+import { indexReadInBounds, indexReadOwned } from "./runtime-optional-bounds.js";
 import { ArrayOwnership } from "./runtime-optional-ownership.js";
 import { RecordFlowClasses } from "./runtime-optional-records.js";
 import { SiteDependencies } from "./site-dependencies.js";
@@ -937,6 +937,8 @@ export interface LowererMode {
   inlineRequireCycleCalls?: ReadonlySet<ts.Node> | undefined;
   /** LowerOptions.libraryCallbacks (see there). */
   libraryCallbacks?: boolean;
+  /** A LIBRARY build (LowerOptions.libRoots is set). */
+  library?: boolean;
   projectCheckJs?: boolean;
   /** Names of bodies a prior reachability pass reached; null lowers everything. */
   reachable?: ReadonlySet<string> | null;
@@ -1079,6 +1081,7 @@ export function lowerToIr(
   }
   const ffiImports = options.ffiImports ?? [];
   const libraryCallbacks = options.libraryCallbacks ?? false;
+  const library = options.libRoots !== undefined;
   const externalTypes = options.externalTypes ?? new Map<string, string>();
   const externalTypeSpecifiersByFile =
     options.externalTypeSpecifiersByFile ?? directExternalTypeSpecifiersByFile(externalTypes);
@@ -1091,6 +1094,7 @@ export function lowerToIr(
     inlineRequireCycleCalls,
     ffiImports,
     libraryCallbacks,
+    library,
     forkTargets,
     workerTargets,
     externalTypes,
@@ -1115,6 +1119,7 @@ export function lowerToIr(
           inlineRequireCycleCalls,
           ffiImports,
           libraryCallbacks,
+          library,
           forkTargets,
           workerTargets,
           externalTypes,
@@ -1147,6 +1152,7 @@ export function lowerToIr(
       inlineRequireCycleCalls,
       ffiImports,
       libraryCallbacks,
+      library,
       forkTargets,
       workerTargets,
       externalTypes,
@@ -1191,6 +1197,7 @@ export function lowerToIr(
       inlineRequireCycleCalls,
       ffiImports,
       libraryCallbacks,
+      library,
       forkTargets,
       workerTargets,
       ffiBindingSymbols: ffiValidation.symbolsByName,
@@ -1307,6 +1314,7 @@ export function lowerToIr(
       targetPlatform,
       ffiImports,
       libraryCallbacks,
+      library,
       forkTargets,
       workerTargets,
       ffiBindingSymbols: ffiValidation.symbolsByName,
@@ -2356,6 +2364,14 @@ export class Lowerer {
   /** for-of loops over arrays that can hold neither holes nor undefined:
    * each pass reads the element payload directly. */
   readonly presentElementLoops = new Set<ts.ForOfStatement>();
+  /** Asserted array element reads (`xs[i]!`) at an in-bounds index of an
+   * array that can hold neither holes nor undefined: each reads the element
+   * payload directly. */
+  readonly presentElementReads = new Set<ts.ElementAccessExpression>();
+  /** Asserted array element reads whose value must be the element type
+   * (checkedElementMember in lower-exprs.ts), with the member a dereference
+   * reads (null for a value). */
+  readonly checkedElementReads = new Map<ts.ElementAccessExpression, string | null>();
   /** The fs/promises glob() call lowerForOf is lowering as a for await
    * head; other glob() calls have no lowering. */
   fspGlobHead: ts.Node | null = null;
@@ -2554,7 +2570,15 @@ export class Lowerer {
    * (runtimeOptionalSourceValue); this is the syntactic precondition. */
   isRuntimeOptionalOrigin(node: ts.Expression): boolean {
     let origin: ts.Expression = node;
-    while (ts.isParenthesizedExpression(origin)) origin = origin.expression;
+    // `xs[i]!` reads like `xs[i]` outside a library build: a missing
+    // element dereferenced throws the same member-read TypeError.
+    while (
+      ts.isParenthesizedExpression(origin) ||
+      (!this.library &&
+        ts.isNonNullExpression(origin) &&
+        ts.isElementAccessExpression(origin.expression))
+    )
+      origin = origin.expression;
     if (ts.isElementAccessExpression(origin) || ts.isPropertyAccessExpression(origin)) return true;
     if (ts.isCallExpression(origin)) {
       const name = ts.isPropertyAccessExpression(origin.expression)
@@ -3567,6 +3591,8 @@ export class Lowerer {
   /** Outbound native bindings by their source-level ambient name. */
   readonly ffiImports: readonly IrFfiImport[];
   readonly libraryCallbacks: boolean;
+  /** LowererMode.library. */
+  readonly library: boolean;
   readonly ffiImportsByName: ReadonlyMap<string, IrFfiImport>;
   /** Non-null after whole-program FFI declaration validation. */
   readonly ffiBindingSymbols: ReadonlyMap<string, ReadonlySet<ts.Symbol>> | null;
@@ -3670,6 +3696,7 @@ export class Lowerer {
     this.frontendServices = mode.frontendServices;
     this.inlineRequireCycleCalls = mode.inlineRequireCycleCalls ?? new Set();
     this.libraryCallbacks = mode.libraryCallbacks ?? false;
+    this.library = mode.library ?? false;
     this.projectCheckJs = mode.projectCheckJs ?? false;
     this.reachable = mode.reachable ?? null;
     this.remainder = mode.remainder ?? false;
@@ -5230,6 +5257,10 @@ export class Lowerer {
           return t?.kind === "bytes" ? t.elem : null;
         },
         isNumberRecordRead: (read) => this.optionalIndexSignatureRead(read)?.kind === "f64",
+        isNumberArrayRead: (read) => {
+          const t = mappedOrNull(read.expression);
+          return t?.kind === "array" && t.elem.kind === "f64";
+        },
         isNumber: (node) => mappedOrNull(node)?.kind === "f64",
         isString: (node) => mappedOrNull(node)?.kind === "string",
         hasLength: (node) => {
@@ -5247,6 +5278,7 @@ export class Lowerer {
         },
         returnIsNumber: (fn) => signatureBySymbol.get(fn)?.returnType.kind === "f64",
         methodOverridden: (fn) => (familyBySymbol.get(fn)?.length ?? 1) > 1,
+        library: this.library,
       },
       sourceFiles,
     );
@@ -5346,10 +5378,8 @@ export class Lowerer {
       while (ts.isParenthesizedExpression(read)) read = read.expression;
       if (!ts.isElementAccessExpression(read)) return null;
       if (this.mapTypeOf(this.typeOf(read.expression))?.kind !== "array") return null;
-      // An in-bounds read of an array that never holds undefined or holes
-      // always produces a present element.
-      if (indexReadInBounds(read) && elementStates.elementsPresent(read.expression, "find"))
-        return null;
+      // A proven-present read always produces an element.
+      if (presentArrayRead(read)) return null;
       const element = this.mapTypeOf(this.typeOf(e));
       if (
         !element ||
@@ -5359,6 +5389,42 @@ export class Lowerer {
       )
         return null;
       return e;
+    };
+    // A library build's asserted array read traps for a missing index.
+    const boundsFacts = { assertedReadsThrow: this.library };
+    const ownFacts = {
+      isHasOwn: (callee: ts.Expression) =>
+        ts.isPropertyAccessExpression(callee) &&
+        callee.name.text === "hasOwn" &&
+        this.isStdlibGlobal(callee.expression, "Object"),
+    };
+    /** An array element read that always produces a present element: an
+     * in-bounds index into an array that holds neither undefined nor holes,
+     * or an own element (`Object.hasOwn(xs, i)`) of one that holds no
+     * undefined. */
+    const presentArrayRead = (read: ts.ElementAccessExpression): boolean =>
+      (indexReadInBounds(read, boundsFacts) &&
+        elementStates.elementsPresent(read.expression, "find")) ||
+      (indexReadOwned(read, ownFacts) && elementStates.elementsPresent(read.expression, "map"));
+    /** The outermost non-null assertion of `node` under parentheses. */
+    const asAssertion = (node: ts.Expression): ts.NonNullExpression | null => {
+      let e = node;
+      while (ts.isParenthesizedExpression(e)) e = e.expression;
+      return ts.isNonNullExpression(e) ? e : null;
+    };
+    /** `xs[i]!` of an array or typed array outside a library build, which
+     * may be undefined unless its array read is proven present: an
+     * in-bounds index into an array that holds neither undefined nor holes
+     * (typed-array reads are decided by the NaN-coded analysis). */
+    const assertedElementRead = (node: ts.Expression): boolean => {
+      if (this.library) return false;
+      const e = peel(node);
+      if (!ts.isElementAccessExpression(e)) return false;
+      const kind = this.mapTypeOf(this.typeOf(e.expression))?.kind;
+      // A NaN-coded read is a plain number (nan-coded-reads.ts).
+      if (nanCoded.isNumericRead(e)) return false;
+      if (kind === "bytes") return true;
+      return kind === "array" && !presentArrayRead(e);
     };
     const isIndexedRead = (node: ts.Expression): boolean => {
       const e = peel(node);
@@ -5370,7 +5436,7 @@ export class Lowerer {
       if (kind === "bytes") return !nanCoded.isNumericRead(e);
       if (kind === "record")
         return this.optionalIndexSignatureRead(e) !== null && !nanCoded.isNumericRead(e);
-      return kind === "array";
+      return kind === "array" && !nanCoded.isNumericRead(e);
     };
     /** `r.name` where the name resolves to the receiver's index signature. */
     const isRecordIndexPropertyRead = (e: ts.PropertyAccessExpression): boolean => {
@@ -5408,7 +5474,7 @@ export class Lowerer {
       });
     }
     const genericMayBeOptional = (node: ts.Expression): boolean => {
-      if (explicitlyNonNull(node)) return false;
+      if (explicitlyNonNull(node) && !assertedElementRead(node)) return false;
       if (mayBeOptional(node)) return true;
       const e = peel(node);
       if (ts.isConditionalExpression(e))
@@ -5440,7 +5506,11 @@ export class Lowerer {
     };
     const genericIndexedRead = (node: ts.Expression): boolean => {
       const e = peel(node);
-      if (!ts.isElementAccessExpression(e) || explicitlyNonNull(node)) return false;
+      if (
+        !ts.isElementAccessExpression(e) ||
+        (explicitlyNonNull(node) && !assertedElementRead(node))
+      )
+        return false;
       const read = typeOrNull(e);
       if (!read || (read.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Any)) !== 0) return false;
       if (
@@ -5546,10 +5616,17 @@ export class Lowerer {
       );
     };
     const mayBeOptional = (node: ts.Expression): boolean => {
-      // `xs[i]!` is the explicit proven-present form. Its array read keeps
-      // the established dense bounds trap and must not promote the enclosing
-      // function/global ABI to `T | undefined`.
-      if (explicitlyNonNull(node)) return false;
+      // A non-null assertion has no runtime effect, so an asserted array or
+      // typed-array element read may be undefined like the plain read. Other
+      // asserted values are checked where they are extracted, and a library
+      // build's `xs[i]!` keeps the dense bounds trap: neither promotes the
+      // enclosing function/global ABI to `T | undefined`.
+      if (explicitlyNonNull(node)) {
+        if (!assertedElementRead(node)) return false;
+        // The asserted read is forwarded into storage that holds undefined.
+        const assertion = asAssertion(node);
+        if (assertion) this.runtimeOptionalAssertions.add(assertion);
+      }
       if (assertsDefined(node)) return false;
       const e = peel(node);
       if (isIndexedRead(e)) return true;
@@ -5670,6 +5747,12 @@ export class Lowerer {
       };
       if (!stringRead(e.left) && !stringRead(e.right)) return null;
       if (!primitive(e.left) || !primitive(e.right)) return null;
+      // A missing string read is undefined: `undefined + s` is a string for a
+      // string s, and NaN for a number or another undefined.
+      const number = (part: ts.Expression): boolean =>
+        this.mapTypeOf(this.typeOf(part))?.kind === "f64" || stringRead(part);
+      if (!(stringRead(e.left) && number(e.right)) && !(stringRead(e.right) && number(e.left)))
+        return null;
       return { kind: "union", unionId: this.unions.intern([F64, STRING]) };
     };
     /** The union of primitive result types, or null when any is missing or
@@ -6412,6 +6495,7 @@ export class Lowerer {
       return keys;
     };
     const elementStates = new ArrayElementStates({
+      assertedReadsThrow: this.library,
       elementAdmitsUndefined: (key) => {
         siteDependencies?.read(key);
         return optionalElementKeys.has(key);
@@ -6420,7 +6504,7 @@ export class Lowerer {
       allocationOwner: (node) => ownership.allocationOwner(node),
       arrayKeys: arrayKeysOf,
       mayBeUndefined: (node) => {
-        if (explicitlyNonNull(node)) return false;
+        if (explicitlyNonNull(node) && !assertedElementRead(node)) return false;
         if (mayBeOptional(node)) return true;
         // `undefined as unknown as T` keeps the undefined value.
         for (
@@ -6496,6 +6580,8 @@ export class Lowerer {
     const presentSites = new Map<ts.CallExpression, boolean>();
     // The same for each for-of loop over an array.
     const presentLoops = new Map<ts.ForOfStatement, boolean>();
+    // The same for each asserted array element read (`xs[i]!`).
+    const presentReads = new Map<ts.ElementAccessExpression, boolean>();
     const scanSites = new Map<ts.SourceFile, ts.Node[]>();
     const sitesOf = (sf: ts.SourceFile): ts.Node[] => {
       const cached = scanSites.get(sf);
@@ -6513,7 +6599,10 @@ export class Lowerer {
           ts.isForOfStatement(node) ||
           ts.isArrayBindingPattern(node) ||
           ts.isPrefixUnaryExpression(node) ||
-          ts.isPostfixUnaryExpression(node)
+          ts.isPostfixUnaryExpression(node) ||
+          (!this.library &&
+            ts.isNonNullExpression(node) &&
+            ts.isElementAccessExpression(node.expression))
         )
           nodes.push(node);
       });
@@ -6523,6 +6612,12 @@ export class Lowerer {
     const scanFile = (sf: ts.SourceFile): boolean => {
       let changed = false;
       const scan = (node: ts.Node): void => {
+        if (ts.isNonNullExpression(node)) {
+          const read = node.expression as ts.ElementAccessExpression;
+          if (this.mapTypeOf(this.typeOf(read.expression))?.kind === "array")
+            presentReads.set(read, presentArrayRead(read));
+          return;
+        }
         if (elementStates.scan(node)) changed = true;
         if (ts.isForOfStatement(node))
           presentLoops.set(node, !elementStates.loopMayYieldUndefined(node));
@@ -7256,6 +7351,7 @@ export class Lowerer {
     }
     for (const [site, present] of presentSites) if (present) this.presentElementCalls.add(site);
     for (const [loop, present] of presentLoops) if (present) this.presentElementLoops.add(loop);
+    for (const [read, present] of presentReads) if (present) this.presentElementReads.add(read);
     const globalsById = new Map(this.globalsList.map((global) => [global.id, global]));
     for (const [symbol, field] of staticFieldsBySymbol) {
       if (!optionalSymbols.has(symbol)) continue;
@@ -9600,6 +9696,21 @@ export class Lowerer {
       )
         expr = this.coerceToExpected(expr, mp.promise);
     }
+    // A promise whose payload is the destination's with an undefined arm
+    // (an async return the optional-read analysis widened) settles into the
+    // destination payload through an async adapter, which keeps a record or
+    // object payload the same value; the checked-dynamic route below copies
+    // it. An undefined payload rejects with the checked narrowing's
+    // TypeError, as storage that cannot hold undefined does.
+    if (
+      expected.kind === "promise" &&
+      expected.inner.kind !== "void" &&
+      expr.type.kind === "promise" &&
+      expr.type.inner.kind === "union" &&
+      !typeEquals(expected, expr.type) &&
+      typeEquals(this.stripUndefinedArm(expr.type.inner), expected.inner)
+    )
+      return this.promisePayloadAdapter(expr, expected);
     // Promise payloads may widen at a checked return boundary, including
     // arrays inferred as tuple results by Promise.all. Keep both payload
     // ABIs explicit: box settlement, then validate the destination payload.
@@ -11249,6 +11360,46 @@ export class Lowerer {
    * when `t` isn't a union). The body-facing type of a defaulted parameter:
    * tsc types uses of `x: string | undefined = "hi"` as plain `string` inside
    * the body — the default removes exactly the undefined possibility. */
+  /** `promise` settled into the `expected` payload by a lifted async
+   * adapter: `async (p) => <coerced> await p` (see coerceToExpected). */
+  private promisePayloadAdapter(promise: IrExpr, expected: IrType & { kind: "promise" }): IrExpr {
+    const source = promise.type as IrType & { kind: "promise" };
+    const loc = promise.loc;
+    const key = `promise.payload:${typeKey(source)}:${typeKey(expected)}`;
+    let helper = this.valueHelpers.get(key);
+    if (!helper) {
+      helper = keyedHelperName(this, "%promise.payload", key);
+      this.valueHelpers.set(key, helper);
+      const settled: IrExpr = { kind: "varRef", localId: "settled", type: source.inner, loc };
+      this.liftedFns.push({
+        name: helper,
+        params: [{ localId: "promise", name: "promise", type: source }],
+        returnType: expected.inner,
+        locals: [
+          { id: "promise", name: "promise", type: source, mutable: false },
+          { id: "settled", name: "settled", type: source.inner, mutable: false },
+        ],
+        body: [
+          {
+            kind: "varDecl",
+            localId: "settled",
+            init: {
+              kind: "awaitExpr",
+              value: { kind: "varRef", localId: "promise", type: source, loc },
+              type: source.inner,
+              loc,
+            },
+            loc,
+          },
+          { kind: "return", value: this.coerceToExpected(settled, expected.inner), loc },
+        ],
+        loc,
+        async: true,
+      });
+    }
+    return { kind: "call", callee: helper, args: [promise], type: expected, loc };
+  }
+
   stripUndefinedArm(t: IrType): IrType {
     if (t.kind !== "union") return t;
     const cached = this.strippedUndefinedArms.get(t.unionId);

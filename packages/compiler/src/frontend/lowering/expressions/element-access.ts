@@ -64,6 +64,7 @@ import {
 import { lowerOptionalStringIndex, lowerUnionStringIndex } from "../string-index.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
+import { unionNarrowFailureMessage } from "../union-narrow.js";
 import { npmStaticPackageOfPath } from "../../npm-static.js";
 import { isSafeToRepeat } from "./evaluation-safety.js";
 import { lowerClassPrototypeComputedAssignment } from "../class-prototypes.js";
@@ -346,13 +347,13 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     if (index.type.kind !== "f64") {
       lowerer.unsupported("SC1090", expr.argumentExpression, "indexing with non-number keys");
     }
-    // `t[i]!` asserts presence: the numeric element read (NaN when
-    // invalid). Every other read answers undefined for an invalid index,
-    // like Node.
-    // A read whose every consumer treats undefined like NaN (see
-    // nan-coded-reads.ts) is the same plain numeric read.
+    // An invalid index answers undefined, like Node, with or without a
+    // non-null assertion (`t[i]!` has no runtime effect). A read whose every
+    // consumer treats undefined like NaN (see nan-coded-reads.ts) is the
+    // plain numeric read, NaN when invalid. A library build keeps the
+    // numeric read for `t[i]!`, whose value reaches the export ABI's number.
     if (
-      (ts.isNonNullExpression(expr.parent) && expr.parent.expression === expr) ||
+      (lowerer.library && ts.isNonNullExpression(expr.parent) && expr.parent.expression === expr) ||
       lowerer.nanCodedReads?.isNumericRead(expr) === true
     ) {
       return {
@@ -838,21 +839,39 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   // uses the dense getter for the proven-present path, so this does not
   // change the storage representation or the low-level getter itself.
   if (arr.type.kind === "array") {
-    // A non-null assertion is the explicit proven-present form. Preserve
-    // the dense getter's established bounds trap where the asserted value
-    // must be the element type (library ABI checks and the catchable
-    // RangeError contract for an out-of-bounds assert). Where undefined is
-    // representable, the assertion keeps JavaScript's unchecked read.
+    // `xs[i]!` has no runtime effect: a missing element is undefined, as
+    // for `xs[i]`. An asserted read the optional-read analysis proved
+    // present reads the element directly. A library build keeps the dense
+    // getter's bounds trap where the asserted value must be the element
+    // type (the export ABI and the host's trap channel); where undefined is
+    // representable, the assertion keeps JavaScript's unchecked read there
+    // too.
     const provenPresent =
-      ts.isNonNullExpression(expr.parent) &&
-      expr.parent.expression === expr &&
-      !assertedElementKeepsUndefined(lowerer, expr.parent);
+      lowerer.presentElementReads.has(expr) ||
+      (lowerer.library &&
+        ts.isNonNullExpression(expr.parent) &&
+        expr.parent.expression === expr &&
+        !assertedElementKeepsUndefined(lowerer, expr.parent));
     if (provenPresent) {
       return lowerer.maybeNarrow(
         { kind: "arrayGet", arr, index, type: elemT, loc: locOf(expr) },
         expr,
       );
     }
+    // An asserted read whose value must be the element type: the element
+    // behind a presence test that throws the checked extraction's TypeError.
+    const checked = lowerer.checkedElementReads.get(expr);
+    if (checked !== undefined)
+      return lowerCheckedElementRead(lowerer, arr, index, elemT, checked, expr);
+    // A string element converted to a string where it is used (a template
+    // literal value, or concatenated with a string): a missing element is the
+    // text "undefined", as ToString(undefined) is.
+    if (elemT.kind === "string" && stringifiedOperand(expr))
+      return lowerStringifiedElementRead(lowerer, arr, index, expr);
+    // A number element read whose every consumer treats undefined like NaN
+    // (see nan-coded-reads.ts): NaN for a hole or a missing index.
+    if (elemT.kind === "f64" && lowerer.nanCodedReads?.isNumericRead(expr) === true)
+      return arrayNumberRead(arr, index, locOf(expr));
     const safe = lowerSafeIndexRead(lowerer, arr, index, locOf(expr));
     if (safe) return safe;
   }
@@ -2324,4 +2343,136 @@ export function lowerEnvironmentKey(lowerer: Lowerer, node: ts.Expression): IrEx
   if (key.type.kind === "dyn")
     return { kind: "libCall", fn: "dyn.toStringCoerce", args: [key], type: STRING, loc: key.loc };
   return lowerRecordPropertyKey(lowerer, key, node);
+}
+
+/** `xs[i]!` whose value must be the element type (checkedElementMember in
+ * lower-exprs.ts): the element when the slot holds a value; otherwise the
+ * TypeError the checked extraction throws, or Node's member-read TypeError
+ * when `member` names the property a dereference reads. */
+function lowerCheckedElementRead(
+  lowerer: Lowerer,
+  arr: IrExpr,
+  index: IrExpr,
+  elemT: IrType,
+  member: string | null,
+  expr: ts.ElementAccessExpression,
+): IrExpr {
+  const loc = locOf(expr);
+  const message =
+    member === null
+      ? unionNarrowFailureMessage(UNDEFINED_T, (t) => lowerer.fmt(t))
+      : `Cannot read properties of undefined (reading '${member}')`;
+  // Operands that are safe to read twice stay in place: the result is then
+  // the plain element read behind a throwing guard, which a receiver can
+  // borrow (guardedValue in borrowed-receivers.ts).
+  const repeat = isSafeToRepeat(arr) && (isSafeToRepeat(index) || index.kind === "numLit");
+  const stmts: IrStmt[] = [];
+  let array = (): IrExpr => arr;
+  let at = (): IrExpr => index;
+  if (!repeat) {
+    const arrLocal = lowerer.declareHiddenLocal("%assertedArray", arr.type);
+    const indexLocal = lowerer.declareHiddenLocal("%assertedIndex", F64);
+    stmts.push(
+      { kind: "varDecl", localId: arrLocal.id, init: arr, loc },
+      { kind: "varDecl", localId: indexLocal.id, init: index, loc },
+    );
+    array = () => ({ kind: "varRef", localId: arrLocal.id, type: arr.type, loc });
+    at = () => ({ kind: "varRef", localId: indexLocal.id, type: F64, loc });
+  }
+  stmts.push({
+    kind: "if",
+    cond: {
+      kind: "bin",
+      op: "!==",
+      left: { kind: "arrayState", arr: array(), index: at(), type: F64, loc },
+      right: { kind: "numLit", value: 1, type: F64, loc },
+      type: BOOL,
+      loc,
+    },
+    then: [{ kind: "exprStmt", expr: nodeThrowExpr(1, "", message, VOID, loc), loc }],
+    else_: null,
+    loc,
+  });
+  return {
+    kind: "seqExpr",
+    stmts,
+    result: { kind: "arrayGet", arr: array(), index: at(), type: elemT, loc },
+    type: elemT,
+    loc,
+  };
+}
+
+/** The read's value is converted with ToString where it is used: it is a
+ * template literal's value, or an operand of `+` whose other operand is
+ * always a string (so the sum concatenates; `undefined + undefined` would be
+ * NaN instead). */
+function stringifiedOperand(read: ts.ElementAccessExpression): boolean {
+  let node: ts.Node = read;
+  while (
+    node.parent &&
+    (ts.isParenthesizedExpression(node.parent) ||
+      (ts.isNonNullExpression(node.parent) && node.parent.expression === node))
+  )
+    node = node.parent;
+  const parent = node.parent;
+  if (!parent) return false;
+  if (ts.isTemplateSpan(parent)) return parent.expression === node;
+  if (!ts.isBinaryExpression(parent) || parent.operatorToken.kind !== ts.SyntaxKind.PlusToken)
+    return false;
+  return alwaysString(parent.left === node ? parent.right : parent.left);
+}
+
+/** A string literal, a template literal, or a sum with such an operand. */
+function alwaysString(node: ts.Expression): boolean {
+  let e = node;
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e) || ts.isTemplateExpression(e))
+    return true;
+  return (
+    ts.isBinaryExpression(e) &&
+    e.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+    (alwaysString(e.left) || alwaysString(e.right))
+  );
+}
+
+/** A string element read whose consumer converts it with ToString
+ * (stringifiedOperand): the element when the slot holds a value, else the
+ * text "undefined" (a hole, a present undefined or a missing index). */
+function lowerStringifiedElementRead(
+  lowerer: Lowerer,
+  arr: IrExpr,
+  index: IrExpr,
+  expr: ts.ElementAccessExpression,
+): IrExpr {
+  const loc = locOf(expr);
+  const repeat = isSafeToRepeat(arr) && (isSafeToRepeat(index) || index.kind === "numLit");
+  const stmts: IrStmt[] = [];
+  let array = (): IrExpr => arr;
+  let at = (): IrExpr => index;
+  if (!repeat) {
+    const arrLocal = lowerer.declareHiddenLocal("%stringifiedArray", arr.type);
+    const indexLocal = lowerer.declareHiddenLocal("%stringifiedIndex", F64);
+    stmts.push(
+      { kind: "varDecl", localId: arrLocal.id, init: arr, loc },
+      { kind: "varDecl", localId: indexLocal.id, init: index, loc },
+    );
+    array = () => ({ kind: "varRef", localId: arrLocal.id, type: arr.type, loc });
+    at = () => ({ kind: "varRef", localId: indexLocal.id, type: F64, loc });
+  }
+  const read: IrExpr = {
+    kind: "ternary",
+    cond: {
+      kind: "bin",
+      op: "===",
+      left: { kind: "arrayState", arr: array(), index: at(), type: F64, loc },
+      right: { kind: "numLit", value: 1, type: F64, loc },
+      type: BOOL,
+      loc,
+    },
+    then: { kind: "arrayGet", arr: array(), index: at(), type: STRING, loc },
+    else_: strLit("undefined", loc),
+    type: STRING,
+    loc,
+  };
+  return stmts.length === 0 ? read : { kind: "seqExpr", stmts, result: read, type: STRING, loc };
 }

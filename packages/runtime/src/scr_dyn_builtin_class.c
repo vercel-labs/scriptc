@@ -1576,6 +1576,9 @@ bool scr_dyn_builtin_instanceof(ScrDyn *value, double kind) {
 
 /* `value instanceof callee` for an untyped constructor function. */
 bool scr_dyn_function_instanceof(ScrDyn *value, ScrDyn *callee) {
+#ifdef SCR_NODE_ISLANDS
+  if (scr_ni_is_handle(callee)) return scr_ni_instanceof(value, callee) == 1;
+#endif
   if (!scr_dyn_is_callable(callee)) {
     static const char message[] = "Right-hand side of 'instanceof' is not callable";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);

@@ -3,6 +3,13 @@ import { relieveHeapPressure } from "../../heap-pressure.js";
 import { moduleNamespaceObject } from "./module-namespace-elements.js";
 import { keyedHelperName } from "./stable-names.js";
 import { positionTag, StructuralPositions } from "./structural-positions.js";
+import {
+  activeNodeIslands,
+  isForeignType,
+  setActiveNodeIslands,
+  type NodeIslandSet,
+} from "../../node-islands/boundary.js";
+import type { IslandModuleBinding } from "./lower-node-island.js";
 import { onlyForwarded, stripTypeWrappers } from "./typed-arguments.js";
 import {
   needsGeneralNodeStreams,
@@ -809,6 +816,9 @@ export interface LowerResult {
 }
 
 export interface LowerOptions {
+  /** Packages that run in Node islands (scope-B NI-4): their imports lower
+   * to island loads and their values to island handles. */
+  nodeIslands?: NodeIslandSet | null;
   /** Parser/checker services owned by the load; required for npm graph analysis. */
   frontendServices?: FrontendServices | undefined;
   /** The project's tsconfig sets `checkJs` (see isCheckedJsSourceFile). */
@@ -1024,6 +1034,20 @@ export function lowerToIr(
   entry: ts.SourceFile,
   moduleOrder: ts.SourceFile[],
   options: LowerOptions = {},
+): LowerResult {
+  setActiveNodeIslands(options.nodeIslands ?? null);
+  try {
+    return lowerToIrWithIslands(program, entry, moduleOrder, options);
+  } finally {
+    setActiveNodeIslands(null);
+  }
+}
+
+function lowerToIrWithIslands(
+  program: ts.Program,
+  entry: ts.SourceFile,
+  moduleOrder: ts.SourceFile[],
+  options: LowerOptions,
 ): LowerResult {
   const phaseTiming = process.env["SCRIPTC_TIMING"] === "1";
   const phaseStarted = performance.now();
@@ -3140,6 +3164,11 @@ export class Lowerer {
   /** The program calls into Node.js (@scriptc/node): the module carries
    * the nodeIsland record, which the executable build fills in. */
   usesNodeIsland = false;
+  /** The program's Node island packages (scope-B NI-4), or null. */
+  readonly nodeIslands: NodeIslandSet | null = activeNodeIslands();
+  /** Island module loads, by the importing file and specifier: the module
+   * global holding what the import form sees (lower-node-island.ts). */
+  readonly islandModules = new Map<string, IslandModuleBinding>();
   /** Per-directory answers of experimental-import.ts's declaration-file test. */
   readonly experimentalFiles = new Map<string, boolean>();
   /** Interned LifetimeRegion.run helpers, by callback type key. */
@@ -3692,7 +3721,11 @@ export class Lowerer {
     this.externalTypeSpecifiersByFile =
       mode.externalTypeSpecifiersByFile ?? directExternalTypeSpecifiersByFile(this.externalTypes);
     this.checker = program.getTypeChecker();
+    const islands = this.nodeIslands;
     this.typeCtx = {
+      ...(islands !== null
+        ? { foreignType: (t: ts.Type) => isForeignType(islands, t, this.checker) }
+        : {}),
       checker: this.checker,
       positionOf: (node) => this.positions.of(node),
       shapes: this.shapes,

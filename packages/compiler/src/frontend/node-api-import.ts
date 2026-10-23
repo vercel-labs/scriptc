@@ -6,7 +6,11 @@ import * as ts from "./ts7/adapter.js";
 
 export const NODE_API_MODULE = "@scriptc/node";
 
-export type NodeApiMember = "call" | "callSync";
+export type NodeApiMember = "call" | "callSync" | "requireModule";
+
+function isNodeApiMember(name: string): name is NodeApiMember {
+  return name === "call" || name === "callSync" || name === "requireModule";
+}
 
 function moduleSpecifierText(decl: ts.Node | undefined): string | null {
   return ts.isImportDeclaration(decl) && ts.isStringLiteral(decl.moduleSpecifier)
@@ -28,7 +32,7 @@ export function nodeApiBindingOf(
   if (!ts.isImportSpecifier(decl)) return null;
   if (moduleSpecifierText(decl.parent?.parent?.parent) !== NODE_API_MODULE) return null;
   const member = decl.propertyName?.text ?? decl.name.text;
-  return member === "call" || member === "callSync" ? member : null;
+  return isNodeApiMember(member) ? member : null;
 }
 
 /** The @scriptc/node export an identifier is a named-import binding of. */
@@ -55,6 +59,6 @@ export function nodeApiCalleeOf(program: ts.Program, callee: ts.Expression): Nod
   )
     return null;
   const member = callee.name.text;
-  if (member !== "call" && member !== "callSync") return null;
+  if (!isNodeApiMember(member)) return null;
   return isNodeApiNamespace(program, callee.expression) ? member : null;
 }

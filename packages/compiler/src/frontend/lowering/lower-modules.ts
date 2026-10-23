@@ -1,4 +1,5 @@
 import { THREADS_MODULE } from "../threads-import.js";
+import { collectIslandImport } from "./lower-node-island.js";
 import { NODE_API_MODULE } from "../node-api-import.js";
 import { positionTag } from "./structural-positions.js";
 import { EXPERIMENTAL_MODULE } from "../experimental-import.js";
@@ -678,6 +679,9 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
       // it, %main throws before any init runs, and the bindings never
 
       if (npm !== null && probeNodeImportRefusal(fp.sf.fileName, spec) !== null) continue;
+      // A Node island package (scope-B NI-4): loaded in Node at this
+      // module's position, its bindings are island values.
+      if (collectIslandImport(lowerer, fp.sf, stmt, spec)) continue;
       {
         lowerer.pushDiag(unsupportedPackageImportDiag(npm?.packageName ?? relPkg!, locOf(stmt)));
         continue;

@@ -127,6 +127,18 @@ static const char scr_node_island_host_js[] =
     "  return undefined;\012"
     "}\012"
     "\012"
+    "// \342\224\200\342\224\200 island modules (scope-B NI-4) \342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\012"
+    "// Island code loaded by absolute path: require (CommonJS, and require(esm)\012"
+    "// for ES modules without top-level await) answers the exports; import\012"
+    "// answers a promise of the namespace.\012"
+    "const { pathToFileURL } = require(\"node:url\");\012"
+    "\012"
+    "function load(path, esm) {\012"
+    "  if (path.startsWith(\"node:\")) return require(path);\012"
+    "  if (esm) return import(pathToFileURL(path).href);\012"
+    "  return createRequire(path)(path);\012"
+    "}\012"
+    "\012"
     "// \342\224\200\342\224\200 the hosted loop (scope-B NI-3) \342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\342\224\200\012"
     "// The runtime's ticks, timers and immediates are Node's, created here with\012"
     "// Node's own timers (captured now, so island code replacing the globals\012"
@@ -300,6 +312,7 @@ static const char scr_node_island_host_js[] =
     "  refImmediate,\012"
     "  nextTick,\012"
     "  emit,\012"
+    "  load,\012"
     "};\012";
 
 #endif /* SCR_NODE_ISLAND_HOST_H */

@@ -52,4 +52,54 @@ void scr_signal_off_island(uint32_t listener);
 void scr_process_on_exit_island(uint32_t listener);
 void scr_process_off_exit_island(uint32_t listener);
 
+/* ── object handles (scope-B NI-4, scr_node_island_handle.c) ─────────────
+ * Island values the program holds are SCR_DYN_HANDLE boxes with tag
+ * SCR_DYNH_NODE_ISLAND: one handle per V8 value, so `===` is identity.
+ * Primitives, strings and BigInt are copies; island promises are scriptc
+ * promises; typed arrays and Buffers are ScrBytes over the same memory.
+ * All arguments are borrowed; ScrDyn results are +1, NULL (or false, or
+ * -1 for the int forms) with the exception pending. The first call loads
+ * Node. See scriptc-perf/results/ni-4/ABI.md. */
+ScrDyn *scr_ni_require(ScrStr *path);     /* require(absolute path): the exports */
+ScrPromise *scr_ni_import(ScrStr *path);  /* import(absolute path): the namespace */
+ScrDyn *scr_ni_get(ScrDyn *obj, ScrDyn *key);
+ScrDyn *scr_ni_get_str(ScrDyn *obj, const char *key, size_t len);
+bool scr_ni_set(ScrDyn *obj, ScrDyn *key, ScrDyn *value);
+bool scr_ni_set_str(ScrDyn *obj, const char *key, size_t len, ScrDyn *value);
+int scr_ni_has(ScrDyn *obj, ScrDyn *key);
+int scr_ni_delete(ScrDyn *obj, ScrDyn *key);
+ScrDyn *scr_ni_call(ScrDyn *fn, ScrDyn *this_, ScrDyn *const *args, size_t argc);
+ScrDyn *scr_ni_call_method(ScrDyn *obj, const char *key, size_t len, ScrDyn *const *args,
+                           size_t argc);
+ScrDyn *scr_ni_construct(ScrDyn *ctor, ScrDyn *const *args, size_t argc);
+ScrStr *scr_ni_typeof(ScrDyn *value);
+int scr_ni_instanceof(ScrDyn *value, ScrDyn *ctor);
+bool scr_ni_is_handle(const ScrDyn *value);
+bool scr_ni_is_function(const ScrDyn *value); /* an island handle that is callable */
+/* util.inspect of an island value at nesting `recurse` with limit `depth`,
+ * by Node's own util.inspect (+1; "" with the exception pending). */
+ScrStr *scr_ni_inspect(const ScrDyn *value, double recurse, double depth);
+ScrDyn *scr_ni_own_keys(ScrDyn *obj, int mode); /* 0 Object.keys, 1 Reflect.ownKeys */
+ScrPromise *scr_ni_await(ScrDyn *value);
+uint32_t scr_ni_live_handles(void); /* live import-table entries (leak tests) */
+
+/* Between the two island units. */
+struct ScrNodeValue;
+const struct ScrNodeBridge *scr_ni_bridge(void);        /* loads Node */
+const struct ScrNodeBridge *scr_ni_bridge_loaded(void); /* NULL until loaded */
+void scr_ni_on_node_stack(void (*job)(void *), void *arg);
+void scr_ni_settle_value(uint32_t token, int rejected, const struct ScrNodeValue *value);
+void scr_ni_bytes_free(void *owner);
+void scr_ni_handles_install(void);
+void scr_ni_stop(void);
+
+/* Island operations the compiler emits (lib-shared.ts adapters). */
+ScrDyn *scr_node_island_apply(ScrDyn *fn, ScrDyn *args);
+ScrDyn *scr_node_island_construct(ScrDyn *ctor, ScrDyn *args);
+ScrDyn *scr_node_island_get(ScrDyn *obj, ScrStr *key);
+bool scr_node_island_instanceof(ScrDyn *value, ScrDyn *ctor);
+ScrDyn *scr_node_island_invoke(ScrDyn *obj, ScrStr *key, ScrDyn *args);
+void scr_node_island_set(ScrDyn *obj, ScrStr *key, ScrDyn *value);
+void scr_node_island_set_key(ScrDyn *obj, ScrDyn *key, ScrDyn *value);
+
 #endif /* SCR_NODE_ISLAND_H */

@@ -9,6 +9,9 @@ import type { NodeIslandOptions } from "./node-islands/policy.js";
 export type CompileOutputKind = "ir" | "llvm" | "asm" | "obj" | "exe";
 
 export interface CompileBaseOptions {
+  /** The Node island policy's command-line half (`--node-islands`,
+   * `--node-island`, `--native`): which npm packages run in Node islands. */
+  nodeIslands?: NodeIslandOptions;
   /** Primary artifact path. The CLI supplies the output-kind default. */
   outPath: string;
   /** Where generated intermediates and compatibility side artifacts land. */

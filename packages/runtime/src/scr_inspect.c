@@ -1617,6 +1617,10 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
         ScrStr *iterator = scr_insp_native_iterator(d, recurse, depth);
         if (iterator) return iterator;
       }
+#ifdef SCR_NODE_ISLANDS
+      /* An island object prints as Node's util.inspect prints it. */
+      if (d->v.handle.tag == SCR_DYNH_NODE_ISLAND) return scr_ni_inspect(d, recurse, depth);
+#endif
       const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(d);
       if (ops->inspect_view) {
         /* Node's custom inspectors answer the bare class name beyond the

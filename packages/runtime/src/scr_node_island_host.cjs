@@ -121,6 +121,18 @@ function call(id, sync, file, specifier, name, argsJson) {
   return undefined;
 }
 
+// ── island modules (scope-B NI-4) ──────────────────────────────────────
+// Island code loaded by absolute path: require (CommonJS, and require(esm)
+// for ES modules without top-level await) answers the exports; import
+// answers a promise of the namespace.
+const { pathToFileURL } = require("node:url");
+
+function load(path, esm) {
+  if (path.startsWith("node:")) return require(path);
+  if (esm) return import(pathToFileURL(path).href);
+  return createRequire(path)(path);
+}
+
 // ── the hosted loop (scope-B NI-3) ─────────────────────────────────────
 // The runtime's ticks, timers and immediates are Node's, created here with
 // Node's own timers (captured now, so island code replacing the globals
@@ -294,4 +306,5 @@ globalThis.__scriptcNodeIsland = {
   refImmediate,
   nextTick,
   emit,
+  load,
 };

@@ -17,7 +17,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SCR_NODE_BRIDGE_ABI 4u
+#define SCR_NODE_BRIDGE_ABI 5u
 /* The symbol a bridge library exports: `const ScrNodeBridge *(void)`. */
 #define SCR_NODE_BRIDGE_ENTRY "scr_node_bridge_v1"
 
@@ -59,6 +59,78 @@ typedef struct ScrNodeIoState {
   int cap_ms;
 } ScrNodeIoState;
 
+
+/* ── object handles (scope-B NI-4) ────────────────────────────────────────
+ * A value crossing between the runtime and V8. Primitives, strings and
+ * BigInt are copies; objects are handles: ids into the bridge's import
+ * table of v8::Global references, one id per V8 object while the runtime
+ * holds it (the bridge answers the same id for the same object), released
+ * with `drop`. Typed arrays and Buffers coming out of V8 also carry their
+ * backing store's memory (BYTES), which the runtime aliases.
+ *
+ * Out-values the bridge writes hold bridge-owned string data valid until
+ * the next bridge entry; the runtime copies it at once. In-values are
+ * borrowed for the call. */
+enum {
+  SCR_NV_UNDEFINED = 0,
+  SCR_NV_NULL = 1,
+  SCR_NV_BOOL = 2,
+  SCR_NV_NUMBER = 3,
+  SCR_NV_STRING = 4, /* WTF-8: lone surrogates as their 3-byte forms */
+  SCR_NV_BIGINT = 5, /* str: decimal text with an optional leading '-' */
+  SCR_NV_HANDLE = 6, /* handle: an import-table id; flags: SCR_NVF_* */
+  SCR_NV_BYTES = 7,  /* bytes: a typed array / Buffer / DataView over shared memory */
+  SCR_NV_ERROR = 8,  /* into V8 only: a new Error of an intrinsic class */
+  SCR_NV_JSON = 9,   /* into V8 only: str is JSON text, parsed there (a copy) */
+  SCR_NV_EXPORT = 10, /* reserved for NI-5: a runtime object exported by reference */
+};
+/* What a handle is, reported with every handle the bridge answers. */
+enum {
+  SCR_NVF_FUNCTION = 1,
+  SCR_NVF_SYMBOL = 2,
+  SCR_NVF_ERROR = 4,
+  SCR_NVF_ARRAY = 8,
+  SCR_NVF_PROMISE = 16,
+  SCR_NVF_CONSTRUCTOR = 32,
+  SCR_NVF_BUFFER = 64, /* BYTES: a Buffer; DATAVIEW: a DataView */
+  SCR_NVF_DATAVIEW = 128,
+};
+/* BYTES element kinds: ScrBytesElem's numbering (scr_bytes.h). */
+typedef struct ScrNodeValue {
+  uint32_t tag;
+  uint32_t flags;
+  union {
+    int boolean;
+    double num;
+    struct {
+      const char *data;
+      size_t len;
+    } str;
+    uint32_t handle;
+    struct {
+      uint8_t *data; /* first element */
+      size_t len;    /* elements */
+      uint32_t elem; /* ScrBytesElem */
+      uint32_t handle; /* out of V8: the view's handle (keeps the store alive) */
+      void *owner;   /* into V8: the runtime ScrBytes root that owns data */
+    } bytes;
+    struct {
+      uint32_t kind; /* scr_error.h SCR_ERR_* (intrinsic class) */
+      const char *name, *message, *stack, *code; /* code NULL: none */
+      size_t name_len, message_len, stack_len, code_len;
+    } error;
+  } u;
+} ScrNodeValue;
+
+/* An island error's own properties, read by `error_info` (bridge-owned
+ * strings, valid until the next entry; code NULL when it has no string
+ * code). kind is the nearest intrinsic class (SCR_ERR_*). */
+typedef struct ScrNodeErrorInfo {
+  uint32_t kind;
+  const char *name, *message, *stack, *code;
+  size_t name_len, message_len, stack_len, code_len;
+} ScrNodeErrorInfo;
+
 /* What the runtime provides to the bridge. */
 typedef struct ScrNodeBridgeHost {
   /* An asynchronous call settled with this outcome. */
@@ -93,6 +165,13 @@ typedef struct ScrNodeBridgeHost {
    * start it records for the thread, so it must not record the thread's
    * when JavaScript runs on the runtime's stack. */
   uintptr_t (*stack_start)(void);
+  /* NI-4: a thenable the runtime awaits (`then`) settled; `value` is the
+   * fulfillment or (rejected=1) the reason. Runs as a V8 reaction job. */
+  void (*settle_value)(uint32_t token, int rejected, const ScrNodeValue *value);
+  /* NI-4: V8 freed a backing store over runtime bytes (`owner` of a BYTES
+   * value that went into V8). May run on any thread: the runtime queues
+   * the release for its own thread. */
+  void (*bytes_free)(void *owner);
 } ScrNodeBridgeHost;
 
 typedef struct ScrNodeBridge {
@@ -151,6 +230,36 @@ typedef struct ScrNodeBridge {
   void (*emit)(uint32_t event, uint32_t listener, const char *name, int arg);
   /* Tears Node down at process exit. */
   void (*stop)(void);
+  /* ── object handles (NI-4). Each operation answers 0 (returned: *out is
+   * the result) or 1 (threw: *out is the thrown value). ── */
+  /* Loads a module by absolute path: require(path) (esm=0, the exports),
+   * or import(path) (esm=1, a promise of the namespace). */
+  int (*load)(const char *path, int esm, ScrNodeValue *out);
+  /* Property access on handle h; key goes through ToPropertyKey. */
+  int (*get)(uint32_t h, const ScrNodeValue *key, ScrNodeValue *out);
+  int (*set)(uint32_t h, const ScrNodeValue *key, const ScrNodeValue *value, ScrNodeValue *out);
+  int (*has)(uint32_t h, const ScrNodeValue *key, ScrNodeValue *out);  /* out: BOOL */
+  int (*del)(uint32_t h, const ScrNodeValue *key, ScrNodeValue *out);  /* out: BOOL */
+  /* fn(...args) with receiver this_ (NULL: undefined). */
+  int (*invoke)(uint32_t fn, const ScrNodeValue *this_, const ScrNodeValue *args, size_t argc,
+                ScrNodeValue *out);
+  /* h[key](...args) with h as the receiver. */
+  int (*invoke_method)(uint32_t h, const ScrNodeValue *key, const ScrNodeValue *args, size_t argc,
+                       ScrNodeValue *out);
+  int (*construct)(uint32_t h, const ScrNodeValue *args, size_t argc, ScrNodeValue *out);
+  int (*instance_of)(const ScrNodeValue *value, uint32_t ctor, ScrNodeValue *out); /* BOOL */
+  /* Own keys of h: mode 0 Object.keys, mode 1 Reflect.ownKeys. out: a
+   * handle to a fresh array, which the runtime reads and drops. */
+  int (*own_keys)(uint32_t h, int mode, ScrNodeValue *out);
+  /* Promise.resolve(value).then(...): settles through host->settle_value
+   * with `token`. Answers 1 with *out thrown if `then` could not attach. */
+  int (*then)(const ScrNodeValue *value, uint32_t token, ScrNodeValue *out);
+  /* The own name, message, stack and string code of an error handle. */
+  void (*error_info)(uint32_t h, ScrNodeErrorInfo *out);
+  /* Releases handle h's Global. */
+  void (*drop)(uint32_t h);
+  /* The number of live import-table entries (leak tests). */
+  uint32_t (*live_handles)(void);
 } ScrNodeBridge;
 
 #endif /* SCR_NODE_BRIDGE_H */

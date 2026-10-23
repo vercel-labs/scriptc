@@ -608,6 +608,14 @@ export const CHILDWRITER_T: IrType = { kind: "childWriter" };
 export const PROCSTREAM_T: IrType = { kind: "procStream" };
 export const VOID: IrType = { kind: "void" };
 export const DYN: IrType = { kind: "dyn" };
+/** The `foreign` type (scope-B NI-4): a value owned by a Node island,
+ * typed by the island package's declarations. Objects stay in V8 and cross
+ * as handles (identity is the V8 object's); member operations compile from
+ * the declarations into `nodeIsland.*` bridge calls. NI-4 represents it
+ * exactly as `dyn` (a handle box with the island tag, primitives as plain
+ * dyn values), so foreign -> any is the identity and the generic dyn paths
+ * (equality, inspection, any slots) apply unchanged. */
+export const FOREIGN: IrType = DYN;
 export const JSVAL: IrType = { kind: "jsval" };
 export const CAUGHT: IrType = { kind: "caught" };
 export const UNDEFINED_T: IrType = { kind: "undefinedT" };

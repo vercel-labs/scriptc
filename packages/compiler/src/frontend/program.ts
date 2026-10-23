@@ -39,6 +39,7 @@
  *    JSON.parse's wording rather than tsc's, the one message-text delta on
  *    that path (no snapshot pins it). */
 
+import { isFrontendIsland } from "../node-islands/boundary.js";
 import { builtinModules } from "node:module";
 import { dirname, isAbsolute, resolve } from "node:path";
 import * as ts from "./ts7/adapter.js";
@@ -121,6 +122,7 @@ import {
   isRelativeSpecifier,
   isWorkspacePackageName,
   npmPackageNameOf,
+  packageNameOfSpecifier,
   registerWorkspacePackage,
   workspacePackageOfPath,
 } from "./workspace-registry.js";
@@ -5467,7 +5469,12 @@ function preflight7(load: LoadResult): {
                 ),
               );
             }
-          } else if (dep === null && !(!isRelative && ambientModules.has(spec))) {
+          } else if (
+            dep === null &&
+            !(!isRelative && ambientModules.has(spec)) &&
+            // A Node island module's namespace (scope-B NI-4).
+            !(!isRelative && isFrontendIsland(packageNameOfSpecifier(spec)))
+          ) {
             diags.push(unsupportedDiag("SC1013", locOf7(clause.namedBindings)));
           }
         }

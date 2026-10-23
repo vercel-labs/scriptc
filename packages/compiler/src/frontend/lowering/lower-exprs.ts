@@ -6,6 +6,7 @@ import {
   lowerNewTargetName,
 } from "./new-target.js";
 import { lowerWebAssemblyValue, refuseWebAssemblyUse } from "./builtins/webassembly.js";
+import { lowerIslandExpr } from "./lower-node-island.js";
 import { lowerAwaitedUniformPromiseAll } from "./builtins/promises.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
@@ -279,6 +280,13 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   // enclosing optChain — read the bind temp instead of re-lowering.
   const chainRecv = lowerer.chainRecvByNode.get(expr);
   if (chainRecv) return { ...chainRecv, loc };
+
+  // Node islands (scope-B NI-4): member operations on island values and
+  // island import bindings. Programs without islands skip it.
+  if (lowerer.nodeIslands !== null) {
+    const island = lowerIslandExpr(lowerer, expr);
+    if (island !== null) return island;
+  }
 
   // --external-types supplies CHECKER truth only. A value rooted in one
   // of those declarations has no runtime implementation in scriptc, so

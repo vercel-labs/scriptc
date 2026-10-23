@@ -24,6 +24,7 @@
 
 #include <dlfcn.h>
 #include <node.h>
+#include <node_buffer.h>
 #include <node_api.h>
 #include <node_version.h>
 #include <uv.h>
@@ -32,6 +33,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -55,6 +57,7 @@ using v8::TryCatch;
 using v8::Value;
 
 const ScrNodeBridgeHost *g_host = nullptr;
+void DropAllHandles();
 std::unique_ptr<node::MultiIsolatePlatform> g_platform;
 node::EmbedderSnapshotData::Pointer g_snapshot;
 std::unique_ptr<node::CommonEnvironmentSetup> g_setup;
@@ -64,6 +67,7 @@ Global<Function> g_call;
 Global<Function> g_set_timer, g_clear_timer, g_ref_timer, g_refresh_timer;
 Global<Function> g_set_immediate, g_clear_immediate, g_ref_immediate;
 Global<Function> g_next_tick, g_emit;
+Global<Function> g_load; // the bootstrap's module loader (NI-4)
 
 char *Copy(const std::string &text, size_t *len) {
   char *out = static_cast<char *>(std::malloc(text.size() + 1));
@@ -262,7 +266,8 @@ char *Start(const ScrNodeBridgeHost *host, const char *bootstrap, const char *ar
       !TakeFunction(isolate, context, d, "clearImmediate", &g_clear_immediate) ||
       !TakeFunction(isolate, context, d, "refImmediate", &g_ref_immediate) ||
       !TakeFunction(isolate, context, d, "nextTick", &g_next_tick) ||
-      !TakeFunction(isolate, context, d, "emit", &g_emit))
+      !TakeFunction(isolate, context, d, "emit", &g_emit) ||
+      !TakeFunction(isolate, context, d, "load", &g_load))
     return Copy("the Node island bootstrap left an incomplete dispatcher", nullptr);
   global->Delete(context, Utf8(isolate, "__scriptcNodeIsland")).FromMaybe(false);
   global->Delete(context, Utf8(isolate, "__scriptcNodeIslandHost")).FromMaybe(false);
@@ -583,6 +588,8 @@ void Stop() {
   Isolate *isolate = g_setup->isolate();
   node::Stop(g_setup->env());
   g_call.Reset();
+  g_load.Reset();
+  DropAllHandles();
   for (Global<Function> *fn :
        {&g_set_timer, &g_clear_timer, &g_ref_timer, &g_refresh_timer, &g_set_immediate,
         &g_clear_immediate, &g_ref_immediate, &g_next_tick, &g_emit})
@@ -594,6 +601,594 @@ void Stop() {
   v8::V8::Dispose();
   v8::V8::DisposePlatform();
   node::TearDownOncePerProcess();
+}
+
+
+// ── object handles (scope-B NI-4) ───────────────────────────────────────
+// The import table: V8 values the runtime holds, one v8::Global per value
+// and one id per value while held (found again through the value's
+// identity hash), so a V8 object crossing twice is the same runtime
+// handle. A typed array's slot also keeps its backing store, so memory the
+// runtime aliases stays valid even if JavaScript detaches the buffer.
+
+struct Slot {
+  Global<Value> value;
+  std::shared_ptr<v8::BackingStore> store;
+  int hash = 0;
+  bool live = false;
+};
+
+std::vector<Slot> g_slots(1); // id 0 is never used
+std::vector<uint32_t> g_free_ids;
+std::unordered_multimap<int, uint32_t> g_ids;
+uint32_t g_live_handles = 0;
+// Strings of out-values: valid until the next outermost entry.
+std::deque<std::string> g_scratch;
+int g_entry_depth = 0;
+
+int IdentityHash(Local<Value> v) {
+  if (v->IsObject()) return v.As<Object>()->GetIdentityHash();
+  if (v->IsSymbol()) return v.As<v8::Name>()->GetIdentityHash();
+  return 0;
+}
+
+uint32_t Import(Isolate *isolate, Local<Value> v, std::shared_ptr<v8::BackingStore> store = nullptr) {
+  int hash = IdentityHash(v);
+  auto range = g_ids.equal_range(hash);
+  for (auto it = range.first; it != range.second; ++it) {
+    Slot &slot = g_slots[it->second];
+    if (slot.value.Get(isolate)->StrictEquals(v)) return it->second;
+  }
+  uint32_t id;
+  if (!g_free_ids.empty()) {
+    id = g_free_ids.back();
+    g_free_ids.pop_back();
+  } else {
+    id = static_cast<uint32_t>(g_slots.size());
+    g_slots.emplace_back();
+  }
+  Slot &slot = g_slots[id];
+  slot.value.Reset(isolate, v);
+  slot.store = std::move(store);
+  slot.hash = hash;
+  slot.live = true;
+  g_ids.emplace(hash, id);
+  g_live_handles++;
+  return id;
+}
+
+Local<Value> HandleValue(Isolate *isolate, uint32_t id) {
+  if (id == 0 || id >= g_slots.size() || !g_slots[id].live) return v8::Undefined(isolate);
+  return g_slots[id].value.Get(isolate);
+}
+
+void Drop(uint32_t id) {
+  if (id == 0 || id >= g_slots.size() || !g_slots[id].live) return;
+  Slot &slot = g_slots[id];
+  auto range = g_ids.equal_range(slot.hash);
+  for (auto it = range.first; it != range.second; ++it) {
+    if (it->second == id) {
+      g_ids.erase(it);
+      break;
+    }
+  }
+  slot.value.Reset();
+  slot.store.reset();
+  slot.live = false;
+  g_free_ids.push_back(id);
+  g_live_handles--;
+}
+
+void DropAllHandles() {
+  for (uint32_t id = 1; id < g_slots.size(); id++) Drop(id);
+}
+
+uint32_t LiveHandles() { return g_live_handles; }
+
+const char *Scratch(std::string text, size_t *len) {
+  g_scratch.push_back(std::move(text));
+  *len = g_scratch.back().size();
+  return g_scratch.back().data();
+}
+
+// WTF-8: V8's UTF-8 writer encodes a lone surrogate as its 3-byte form.
+std::string Wtf8(Isolate *isolate, Local<String> s) {
+  size_t n = s->Utf8LengthV2(isolate);
+  std::string out(n, '\0');
+  if (n > 0) s->WriteUtf8V2(isolate, out.data(), n);
+  return out;
+}
+
+bool HasLoneSurrogate(const char *p, size_t n) {
+  for (size_t i = 0; i + 1 < n; i++)
+    if (static_cast<unsigned char>(p[i]) == 0xED && static_cast<unsigned char>(p[i + 1]) >= 0xA0)
+      return true;
+  return false;
+}
+
+// A runtime string in V8: NewFromUtf8 would replace lone surrogates, so a
+// string that holds one decodes WTF-8 to UTF-16 here.
+Local<String> FromWtf8(Isolate *isolate, const char *p, size_t n) {
+  if (!HasLoneSurrogate(p, n)) return Utf8(isolate, p, n);
+  std::vector<uint16_t> units;
+  units.reserve(n);
+  for (size_t i = 0; i < n;) {
+    unsigned char c = static_cast<unsigned char>(p[i]);
+    uint32_t cp;
+    size_t k;
+    if (c < 0x80) { cp = c; k = 1; }
+    else if ((c & 0xE0) == 0xC0 && i + 1 < n) { cp = ((c & 0x1F) << 6) | (p[i + 1] & 0x3F); k = 2; }
+    else if ((c & 0xF0) == 0xE0 && i + 2 < n) {
+      cp = ((c & 0x0F) << 12) | ((p[i + 1] & 0x3F) << 6) | (p[i + 2] & 0x3F); k = 3;
+    } else if ((c & 0xF8) == 0xF0 && i + 3 < n) {
+      cp = ((c & 0x07) << 18) | ((p[i + 1] & 0x3F) << 12) | ((p[i + 2] & 0x3F) << 6) | (p[i + 3] & 0x3F);
+      k = 4;
+    } else { cp = 0xFFFD; k = 1; }
+    if (cp >= 0x10000) {
+      cp -= 0x10000;
+      units.push_back(static_cast<uint16_t>(0xD800 + (cp >> 10)));
+      units.push_back(static_cast<uint16_t>(0xDC00 + (cp & 0x3FF)));
+    } else {
+      units.push_back(static_cast<uint16_t>(cp));
+    }
+    i += k;
+  }
+  return String::NewFromTwoByte(isolate, units.data(), NewStringType::kNormal,
+                                static_cast<int>(units.size()))
+      .ToLocalChecked();
+}
+
+// A decimal BigInt text in V8, through 64-bit words.
+Local<Value> BigIntFromText(Local<Context> context, const char *p, size_t n) {
+  int sign = 0;
+  size_t i = 0;
+  if (i < n && p[i] == '-') { sign = 1; i++; }
+  std::vector<uint64_t> words(1, 0);
+  for (; i < n; i++) {
+    unsigned __int128 carry = static_cast<unsigned>(p[i] - '0');
+    for (uint64_t &w : words) {
+      unsigned __int128 v = static_cast<unsigned __int128>(w) * 10 + carry;
+      w = static_cast<uint64_t>(v);
+      carry = v >> 64;
+    }
+    if (carry != 0) words.push_back(static_cast<uint64_t>(carry));
+  }
+  return v8::BigInt::NewFromWords(context, sign, static_cast<int>(words.size()), words.data())
+      .ToLocalChecked();
+}
+
+uint32_t ElemOf(Local<v8::ArrayBufferView> view) {
+  // ScrBytesElem numbering (scr_bytes.h).
+  if (view->IsUint8Array()) return 0;
+  if (view->IsUint32Array()) return 1;
+  if (view->IsFloat32Array()) return 2;
+  if (view->IsInt32Array()) return 3;
+  if (view->IsFloat64Array()) return 4;
+  if (view->IsInt8Array()) return 5;
+  if (view->IsUint16Array()) return 6;
+  if (view->IsInt16Array()) return 7;
+  if (view->IsUint8ClampedArray()) return 8;
+  if (view->IsFloat16Array()) return 9;
+  return 0; // DataView: bytes
+}
+
+size_t ElemSize(uint32_t elem) {
+  static const size_t sizes[] = {1, 4, 4, 4, 8, 1, 2, 2, 1, 2};
+  return elem < 10 ? sizes[elem] : 1;
+}
+
+void FromV8(Isolate *isolate, Local<Context> context, Local<Value> v, ScrNodeValue *out) {
+  std::memset(out, 0, sizeof *out);
+  if (v.IsEmpty() || v->IsUndefined()) { out->tag = SCR_NV_UNDEFINED; return; }
+  if (v->IsNull()) { out->tag = SCR_NV_NULL; return; }
+  if (v->IsBoolean()) { out->tag = SCR_NV_BOOL; out->u.boolean = v->IsTrue() ? 1 : 0; return; }
+  if (v->IsNumber()) { out->tag = SCR_NV_NUMBER; out->u.num = v.As<v8::Number>()->Value(); return; }
+  if (v->IsString()) {
+    out->tag = SCR_NV_STRING;
+    out->u.str.data = Scratch(Wtf8(isolate, v.As<String>()), &out->u.str.len);
+    return;
+  }
+  if (v->IsBigInt()) {
+    out->tag = SCR_NV_BIGINT;
+    Local<String> text = v->ToString(context).ToLocalChecked();
+    out->u.str.data = Scratch(Wtf8(isolate, text), &out->u.str.len);
+    return;
+  }
+  if (v->IsArrayBufferView()) {
+    Local<v8::ArrayBufferView> view = v.As<v8::ArrayBufferView>();
+    bool dataview = view->IsDataView();
+    // Buffer() moves on-heap elements off the heap: the data stays put.
+    Local<v8::ArrayBuffer> buffer = view->Buffer();
+    std::shared_ptr<v8::BackingStore> store = buffer->GetBackingStore();
+    if (!store->IsShared() && !store->IsResizableByUserJavaScript()) {
+      uint32_t elem = dataview ? 0 : ElemOf(view);
+      out->tag = SCR_NV_BYTES;
+      out->u.bytes.elem = elem;
+      out->u.bytes.data = static_cast<uint8_t *>(store->Data()) + view->ByteOffset();
+      out->u.bytes.len = view->ByteLength() / ElemSize(elem);
+      if (node::Buffer::HasInstance(v)) out->flags |= SCR_NVF_BUFFER;
+      if (dataview) out->flags |= SCR_NVF_DATAVIEW;
+      out->u.bytes.handle = Import(isolate, v, store);
+      return;
+    }
+  }
+  out->tag = SCR_NV_HANDLE;
+  uint32_t flags = 0;
+  if (v->IsSymbol()) flags |= SCR_NVF_SYMBOL;
+  if (v->IsFunction()) {
+    flags |= SCR_NVF_FUNCTION;
+    if (v.As<Function>()->IsConstructor()) flags |= SCR_NVF_CONSTRUCTOR;
+  }
+  if (v->IsNativeError()) flags |= SCR_NVF_ERROR;
+  if (v->IsArray()) flags |= SCR_NVF_ARRAY;
+  if (v->IsPromise()) flags |= SCR_NVF_PROMISE;
+  out->flags = flags;
+  out->u.handle = Import(isolate, v);
+}
+
+void FreeRuntimeBytes(void *, size_t, void *owner) {
+  if (owner != nullptr) g_host->bytes_free(owner);
+}
+
+Local<Value> ErrorConstructor(Isolate *isolate, Local<Context> context, uint32_t kind) {
+  static const char *const names[] = {"Error",          "TypeError", "RangeError", "SyntaxError",
+                                      "Error",          "ReferenceError", "EvalError",
+                                      "URIError"};
+  const char *name = kind < 8 ? names[kind] : "Error";
+  return context->Global()->Get(context, Utf8(isolate, name)).ToLocalChecked();
+}
+
+Local<Value> ToV8(Isolate *isolate, Local<Context> context, const ScrNodeValue *in) {
+  if (in == nullptr) return v8::Undefined(isolate);
+  switch (in->tag) {
+  case SCR_NV_NULL: return v8::Null(isolate);
+  case SCR_NV_BOOL: return v8::Boolean::New(isolate, in->u.boolean != 0);
+  case SCR_NV_NUMBER: return v8::Number::New(isolate, in->u.num);
+  case SCR_NV_STRING: return FromWtf8(isolate, in->u.str.data, in->u.str.len);
+  case SCR_NV_BIGINT: return BigIntFromText(context, in->u.str.data, in->u.str.len);
+  case SCR_NV_HANDLE: return HandleValue(isolate, in->u.handle);
+  case SCR_NV_BYTES: {
+    if (in->u.bytes.handle != 0) return HandleValue(isolate, in->u.bytes.handle);
+    size_t elem_size = ElemSize(in->u.bytes.elem);
+    size_t byte_len = in->u.bytes.len * elem_size;
+    Local<v8::ArrayBuffer> buffer;
+    if (byte_len == 0 || in->u.bytes.data == nullptr) {
+      buffer = v8::ArrayBuffer::New(isolate, 0);
+      if (in->u.bytes.owner != nullptr) g_host->bytes_free(in->u.bytes.owner);
+    } else {
+      std::unique_ptr<v8::BackingStore> store = v8::ArrayBuffer::NewBackingStore(
+          in->u.bytes.data, byte_len, FreeRuntimeBytes, in->u.bytes.owner);
+      buffer = v8::ArrayBuffer::New(isolate, std::move(store));
+    }
+    size_t n = in->u.bytes.len;
+    if (in->flags & SCR_NVF_DATAVIEW) return v8::DataView::New(buffer, 0, byte_len);
+    if (in->flags & SCR_NVF_BUFFER)
+      return node::Buffer::New(isolate, buffer, 0, byte_len).ToLocalChecked();
+    switch (in->u.bytes.elem) {
+    case 1: return v8::Uint32Array::New(buffer, 0, n);
+    case 2: return v8::Float32Array::New(buffer, 0, n);
+    case 3: return v8::Int32Array::New(buffer, 0, n);
+    case 4: return v8::Float64Array::New(buffer, 0, n);
+    case 5: return v8::Int8Array::New(buffer, 0, n);
+    case 6: return v8::Uint16Array::New(buffer, 0, n);
+    case 7: return v8::Int16Array::New(buffer, 0, n);
+    case 8: return v8::Uint8ClampedArray::New(buffer, 0, n);
+    case 9: return v8::Float16Array::New(buffer, 0, n);
+    default: return v8::Uint8Array::New(buffer, 0, n);
+    }
+  }
+  case SCR_NV_ERROR: {
+    Local<Value> ctor = ErrorConstructor(isolate, context, in->u.error.kind);
+    Local<Value> argv[] = {FromWtf8(isolate, in->u.error.message, in->u.error.message_len)};
+    Local<Object> error = ctor.As<Function>()->NewInstance(context, 1, argv).ToLocalChecked();
+    std::string name(in->u.error.name, in->u.error.name_len);
+    Local<Value> default_name;
+    if (!error->Get(context, Utf8(isolate, "name")).ToLocal(&default_name) ||
+        ToStdString(isolate, default_name) != name)
+      error->Set(context, Utf8(isolate, "name"), FromWtf8(isolate, name.data(), name.size())).Check();
+    if (in->u.error.stack != nullptr)
+      error->Set(context, Utf8(isolate, "stack"),
+                 FromWtf8(isolate, in->u.error.stack, in->u.error.stack_len)).Check();
+    if (in->u.error.code != nullptr)
+      error->Set(context, Utf8(isolate, "code"),
+                 FromWtf8(isolate, in->u.error.code, in->u.error.code_len)).Check();
+    return error;
+  }
+  case SCR_NV_JSON: {
+    Local<Value> parsed;
+    if (v8::JSON::Parse(context, FromWtf8(isolate, in->u.str.data, in->u.str.len)).ToLocal(&parsed))
+      return parsed;
+    return v8::Undefined(isolate);
+  }
+  default: return v8::Undefined(isolate);
+  }
+}
+
+// One entry from the runtime: the isolate scope, V8's stack limit for the
+// caller's stack, and the out-value scratch (reset by outermost entries).
+struct Op {
+  Enter e;
+  TryCatch try_catch;
+  Op() : try_catch(e.isolate) {
+    if (g_entry_depth++ == 0) g_scratch.clear();
+  }
+  ~Op() { g_entry_depth--; }
+  // The operation's outcome: 0 and the result, or 1 and the thrown value.
+  int Finish(Local<Value> result, bool ok, ScrNodeValue *out) {
+    if (ok) {
+      FromV8(e.isolate, e.context, result, out);
+      return 0;
+    }
+    if (try_catch.HasCaught() && !try_catch.HasTerminated()) {
+      Local<Value> exception = try_catch.Exception();
+      try_catch.Reset();
+      FromV8(e.isolate, e.context, exception, out);
+    } else {
+      std::memset(out, 0, sizeof *out);
+      out->tag = SCR_NV_UNDEFINED;
+    }
+    return 1;
+  }
+  Local<Value> V(const ScrNodeValue *in) { return ToV8(e.isolate, e.context, in); }
+};
+
+int Load(const char *path, int esm, ScrNodeValue *out) {
+  Op op;
+  Local<Value> argv[] = {Utf8(op.e.isolate, path), v8::Boolean::New(op.e.isolate, esm != 0)};
+  Local<Value> result;
+  bool ok = g_load.Get(op.e.isolate)
+                ->Call(op.e.context, v8::Undefined(op.e.isolate), 2, argv)
+                .ToLocal(&result);
+  return op.Finish(result, ok, out);
+}
+
+// The target of a property operation: an object, or a primitive whose
+// wrapper answers (ToObject throws for undefined and null).
+bool Target(Op &op, uint32_t h, Local<Object> *target) {
+  return HandleValue(op.e.isolate, h)->ToObject(op.e.context).ToLocal(target);
+}
+
+bool Key(Op &op, const ScrNodeValue *key, Local<Value> *out) {
+  Local<Value> k = op.V(key);
+  if (k->IsString() || k->IsSymbol() || k->IsNumber()) {
+    *out = k;
+    return true;
+  }
+  Local<String> name;
+  if (!k->ToString(op.e.context).ToLocal(&name)) return false;
+  *out = name;
+  return true;
+}
+
+int Get(uint32_t h, const ScrNodeValue *key, ScrNodeValue *out) {
+  Op op;
+  Local<Object> target;
+  Local<Value> k, result;
+  bool ok = Target(op, h, &target) && Key(op, key, &k) && target->Get(op.e.context, k).ToLocal(&result);
+  return op.Finish(result, ok, out);
+}
+
+int SetProp(uint32_t h, const ScrNodeValue *key, const ScrNodeValue *value, ScrNodeValue *out) {
+  Op op;
+  Local<Object> target;
+  Local<Value> k;
+  bool ok = Target(op, h, &target) && Key(op, key, &k);
+  if (ok) {
+    v8::Maybe<bool> done = target->Set(op.e.context, k, op.V(value));
+    ok = done.IsJust();
+    // Strict-mode semantics: a refused assignment throws, as in a module.
+    if (ok && !done.FromJust()) {
+      op.e.isolate->ThrowException(v8::Exception::TypeError(
+          Utf8(op.e.isolate, "Cannot assign to read only property")));
+      ok = false;
+    }
+  }
+  return op.Finish(v8::Undefined(op.e.isolate), ok, out);
+}
+
+int Has(uint32_t h, const ScrNodeValue *key, ScrNodeValue *out) {
+  Op op;
+  Local<Value> target = HandleValue(op.e.isolate, h);
+  if (!target->IsObject()) {
+    op.e.isolate->ThrowException(v8::Exception::TypeError(
+        Utf8(op.e.isolate, "Cannot use 'in' operator to search for a key in a primitive")));
+    return op.Finish(Local<Value>(), false, out);
+  }
+  Local<Value> k;
+  bool ok = Key(op, key, &k);
+  v8::Maybe<bool> found = ok ? target.As<Object>()->Has(op.e.context, k) : v8::Nothing<bool>();
+  ok = found.IsJust();
+  return op.Finish(v8::Boolean::New(op.e.isolate, ok && found.FromJust()), ok, out);
+}
+
+int Del(uint32_t h, const ScrNodeValue *key, ScrNodeValue *out) {
+  Op op;
+  Local<Object> target;
+  Local<Value> k;
+  bool ok = Target(op, h, &target) && Key(op, key, &k);
+  v8::Maybe<bool> done = ok ? target->Delete(op.e.context, k) : v8::Nothing<bool>();
+  ok = done.IsJust();
+  if (ok && !done.FromJust()) {
+    op.e.isolate->ThrowException(v8::Exception::TypeError(
+        Utf8(op.e.isolate, "Cannot delete property")));
+    ok = false;
+  }
+  return op.Finish(v8::Boolean::New(op.e.isolate, ok), ok, out);
+}
+
+std::vector<Local<Value>> Args(Op &op, const ScrNodeValue *args, size_t argc) {
+  std::vector<Local<Value>> argv;
+  argv.reserve(argc);
+  for (size_t i = 0; i < argc; i++) argv.push_back(op.V(&args[i]));
+  return argv;
+}
+
+void NotAFunction(Op &op, const char *what) {
+  op.e.isolate->ThrowException(v8::Exception::TypeError(
+      Utf8(op.e.isolate, (std::string(what) + " is not a function").c_str())));
+}
+
+int Invoke(uint32_t fn, const ScrNodeValue *this_, const ScrNodeValue *args, size_t argc,
+           ScrNodeValue *out) {
+  Op op;
+  Local<Value> callee = HandleValue(op.e.isolate, fn);
+  if (!callee->IsFunction()) {
+    NotAFunction(op, "value");
+    return op.Finish(Local<Value>(), false, out);
+  }
+  std::vector<Local<Value>> argv = Args(op, args, argc);
+  Local<Value> result;
+  bool ok = callee.As<Function>()
+                ->Call(op.e.context, op.V(this_), static_cast<int>(argv.size()), argv.data())
+                .ToLocal(&result);
+  return op.Finish(result, ok, out);
+}
+
+int InvokeMethod(uint32_t h, const ScrNodeValue *key, const ScrNodeValue *args, size_t argc,
+                 ScrNodeValue *out) {
+  Op op;
+  Local<Value> receiver = HandleValue(op.e.isolate, h);
+  Local<Object> target;
+  Local<Value> k, callee;
+  if (!receiver->ToObject(op.e.context).ToLocal(&target) || !Key(op, key, &k) ||
+      !target->Get(op.e.context, k).ToLocal(&callee))
+    return op.Finish(Local<Value>(), false, out);
+  if (!callee->IsFunction()) {
+    std::string what = "property";
+    if (k->IsString()) what = ToStdString(op.e.isolate, k);
+    NotAFunction(op, what.c_str());
+    return op.Finish(Local<Value>(), false, out);
+  }
+  std::vector<Local<Value>> argv = Args(op, args, argc);
+  Local<Value> result;
+  bool ok = callee.As<Function>()
+                ->Call(op.e.context, receiver, static_cast<int>(argv.size()), argv.data())
+                .ToLocal(&result);
+  return op.Finish(result, ok, out);
+}
+
+int Construct(uint32_t h, const ScrNodeValue *args, size_t argc, ScrNodeValue *out) {
+  Op op;
+  Local<Value> callee = HandleValue(op.e.isolate, h);
+  if (!callee->IsFunction() || !callee.As<Function>()->IsConstructor()) {
+    op.e.isolate->ThrowException(v8::Exception::TypeError(
+        Utf8(op.e.isolate, "value is not a constructor")));
+    return op.Finish(Local<Value>(), false, out);
+  }
+  std::vector<Local<Value>> argv = Args(op, args, argc);
+  Local<Object> result;
+  bool ok = callee.As<Function>()
+                ->NewInstance(op.e.context, static_cast<int>(argv.size()), argv.data())
+                .ToLocal(&result);
+  return op.Finish(result, ok, out);
+}
+
+int InstanceOf(const ScrNodeValue *value, uint32_t ctor, ScrNodeValue *out) {
+  Op op;
+  Local<Value> v = op.V(value);
+  Local<Value> c = HandleValue(op.e.isolate, ctor);
+  if (!c->IsObject()) {
+    op.e.isolate->ThrowException(v8::Exception::TypeError(
+        Utf8(op.e.isolate, "Right-hand side of 'instanceof' is not callable")));
+    return op.Finish(Local<Value>(), false, out);
+  }
+  v8::Maybe<bool> is = v->InstanceOf(op.e.context, c.As<Object>());
+  bool ok = is.IsJust();
+  return op.Finish(v8::Boolean::New(op.e.isolate, ok && is.FromJust()), ok, out);
+}
+
+int OwnKeys(uint32_t h, int mode, ScrNodeValue *out) {
+  Op op;
+  Local<Object> target;
+  Local<v8::Array> keys;
+  bool ok = Target(op, h, &target) &&
+            target
+                ->GetOwnPropertyNames(
+                    op.e.context,
+                    mode == 0 ? static_cast<v8::PropertyFilter>(v8::ONLY_ENUMERABLE | v8::SKIP_SYMBOLS)
+                              : v8::ALL_PROPERTIES,
+                    v8::KeyConversionMode::kConvertToString)
+                .ToLocal(&keys);
+  return op.Finish(keys, ok, out);
+}
+
+void OnSettled(const FunctionCallbackInfo<Value> &info, int rejected) {
+  Isolate *isolate = info.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
+  uint32_t token = info.Data()->Uint32Value(context).FromMaybe(0);
+  ScrNodeValue value;
+  FromV8(isolate, context, info[0], &value);
+  g_host->settle_value(token, rejected, &value);
+}
+
+void OnFulfilled(const FunctionCallbackInfo<Value> &info) { OnSettled(info, 0); }
+void OnRejected(const FunctionCallbackInfo<Value> &info) { OnSettled(info, 1); }
+
+// await of a value: PromiseResolve (a native promise is itself) and one
+// reaction, as `await` does in JavaScript.
+int Then(const ScrNodeValue *value, uint32_t token, ScrNodeValue *out) {
+  Op op;
+  Local<Value> v = op.V(value);
+  Local<v8::Promise> promise;
+  if (v->IsPromise()) {
+    promise = v.As<v8::Promise>();
+  } else {
+    Local<v8::Promise::Resolver> resolver;
+    if (!v8::Promise::Resolver::New(op.e.context).ToLocal(&resolver) ||
+        resolver->Resolve(op.e.context, v).IsNothing())
+      return op.Finish(Local<Value>(), false, out);
+    promise = resolver->GetPromise();
+  }
+  Local<Value> data = Integer::NewFromUnsigned(op.e.isolate, token);
+  Local<Function> fulfilled, rejected;
+  Local<v8::Promise> chained;
+  bool ok = Function::New(op.e.context, OnFulfilled, data).ToLocal(&fulfilled) &&
+            Function::New(op.e.context, OnRejected, data).ToLocal(&rejected) &&
+            promise->Then(op.e.context, fulfilled, rejected).ToLocal(&chained);
+  return op.Finish(v8::Undefined(op.e.isolate), ok, out);
+}
+
+void ErrorInfo(uint32_t h, ScrNodeErrorInfo *out) {
+  Op op;
+  std::memset(out, 0, sizeof *out);
+  Local<Value> v = HandleValue(op.e.isolate, h);
+  if (!v->IsObject()) return;
+  Local<Object> error = v.As<Object>();
+  static const struct { const char *name; uint32_t kind; } kinds[] = {
+      {"TypeError", 1}, {"RangeError", 2}, {"SyntaxError", 3},
+      {"ReferenceError", 5}, {"EvalError", 6}, {"URIError", 7}};
+  for (const auto &k : kinds) {
+    Local<Value> ctor = op.e.context->Global()->Get(op.e.context, Utf8(op.e.isolate, k.name)).ToLocalChecked();
+    if (error->InstanceOf(op.e.context, ctor.As<Object>()).FromMaybe(false)) {
+      out->kind = k.kind;
+      break;
+    }
+  }
+  auto read = [&](const char *key, const char **data, size_t *len, bool optional) {
+    Local<Value> value;
+    if (!error->Get(op.e.context, Utf8(op.e.isolate, key)).ToLocal(&value)) {
+      op.try_catch.Reset();
+      return;
+    }
+    if (optional && !value->IsString()) return;
+    Local<String> text;
+    if (!value->ToString(op.e.context).ToLocal(&text)) {
+      op.try_catch.Reset();
+      return;
+    }
+    *data = Scratch(Wtf8(op.e.isolate, text), len);
+  };
+  read("name", &out->name, &out->name_len, false);
+  read("message", &out->message, &out->message_len, false);
+  read("stack", &out->stack, &out->stack_len, true);
+  read("code", &out->code, &out->code_len, true);
+}
+
+void DropHandle(uint32_t h) {
+  if (!g_setup) return;
+  Isolate *isolate = g_setup->isolate();
+  HandleScope handles(isolate);
+  Drop(h);
 }
 
 const ScrNodeBridge kBridge = {
@@ -617,6 +1212,20 @@ const ScrNodeBridge kBridge = {
     RunLoop,
     Emit,
     Stop,
+    Load,
+    Get,
+    SetProp,
+    Has,
+    Del,
+    Invoke,
+    InvokeMethod,
+    Construct,
+    InstanceOf,
+    OwnKeys,
+    Then,
+    ErrorInfo,
+    DropHandle,
+    LiveHandles,
 };
 
 }  // namespace

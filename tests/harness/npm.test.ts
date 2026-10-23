@@ -9,7 +9,10 @@
  *   (a refusal deferred to the operation that reached it), for every argv
  *   list or for the listed `argvs`, while the other lists match Node;
  * - divergence: it runs but does not match Node yet. These run as expected
- *   failures, so a fix that makes one match fails here until KNOWN drops it.
+ *   failures, so a fix that makes one match fails here until KNOWN drops it;
+ * - island: a package it imports runs in a Node island (scope-B NI-4): with
+ *   a libnode pack (SCRIPTC_LIBNODE) it matches Node; without one the build
+ *   stops with SC8005 (no pack to load Node from).
  *
  * The fixture node_modules are committed test data. Binaries compile the
  * package sources at build time and read nothing from node_modules at run
@@ -24,6 +27,7 @@ import { describe, expect, test } from "vitest";
 import { compile } from "@scriptc/compiler";
 import { npmCases, type NpmCase } from "./npm-cases.js";
 import { shardSelect, shardSuffix } from "./shard.js";
+import { libnodePack } from "./libnode.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -31,23 +35,27 @@ const fixturesRoot = join(repoRoot, "tests/fixtures");
 const cacheDir = join(repoRoot, "node_modules/.cache/scriptc-tests");
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
 
-type Known = { build: string } | { run: string; argvs?: string[][] } | { divergence: string };
+type Known =
+  | { build: string }
+  | { run: string; argvs?: string[][] }
+  | { divergence: string }
+  | { island: true };
 
 const KNOWN: Record<string, Known> = {
   "any-chaining": { build: "SC2003" },
   "assert-shims": { run: "SC1043" },
   "buffer-shims": { run: "SC2020" },
   "bytes-exit": { build: "SC2004" },
-  "cjs-esm-named": { build: "SC2013" },
-  "cjs-lexer-aligned": { build: "SC2013" },
+  "cjs-esm-named": { island: true },
+  "cjs-lexer-aligned": { island: true },
   "commander-calc": { run: "SC1090", argvs: [["--help"]] },
   "commander-calc-async": { run: "SC1090", argvs: [["--help"]] },
   "create-require": { run: "SC1090" },
   "dotfolder": { run: "SC1090" },
-  "dual-package-kinds": { build: "SC2013" },
-  "dynamic-import": { build: "SC2012" },
+  "dual-package-kinds": { island: true },
+  "dynamic-import": { island: true },
   "dynamic-import-local": { build: "SC2012" },
-  "esbuild-require": { build: "SC2013" },
+  "esbuild-require": { island: true },
   "esm-missing-default": { build: "SC1090" },
   "esm-missing-export": { build: "SC1090" },
   "fetch-destructure": { run: "SC1031" },
@@ -59,11 +67,17 @@ const KNOWN: Record<string, Known> = {
       "Timeout handles are numbers (typeof) and lose their ref flag once fired or cleared",
   },
   "island-web-plumbing": { run: "SC2020" },
-  "lazy-traps": { build: "SC2013" },
+  "lazy-traps": {
+    divergence:
+      "an island module loaded by path lists itself twice in MODULE_NOT_FOUND require stacks",
+  },
   "misc-shims": { run: "SC2020" },
-  "namespace": { build: "SC1013" },
+  namespace: { island: true },
   "node24-async-events": { run: "SC2020" },
-  "node24-commonjs-metadata": { run: "SC2020" },
+  "node24-commonjs-metadata": {
+    divergence:
+      "a Node island (its require.cache use needs the runtime) loads its entry with itself as the CJS parent, so require stacks list it twice",
+  },
   "node24-crypto-kdf": { run: "SC2020" },
   "node24-deep-equality": { run: "SC2020" },
   "node24-diagnostics-async": { run: "SC1090" },
@@ -71,7 +85,7 @@ const KNOWN: Record<string, Known> = {
   "node24-env": { run: "SC1090" },
   "node24-esm-metadata": { run: "SC1090" },
   "node24-event-emitter": { run: "SC2020" },
-  "node24-file-url-conversion": { build: "SC1090" },
+  "node24-file-url-conversion": { island: true },
   "node24-fs-descriptors": { run: "SC2020" },
   "node24-mime": { run: "SC2020" },
   "node24-mime-errors": { run: "SC1090" },
@@ -99,13 +113,13 @@ const KNOWN: Record<string, Known> = {
   "node24-web-stream-readers": { run: "SC1090" },
   "node24-web-stream-tee": { run: "SC2020" },
   "node24-web-stream-transforms": { run: "SC1090" },
-  "package-imports": { build: "SC2013" },
+  "package-imports": { island: true },
   "promise-bridge": { build: "SC1090" },
   "self-name": { build: "SC2013" },
   "stream-shims": { run: "SC2020" },
   "util-shims": { run: "SC2020" },
   "web-streams": { run: "SC1090" },
-  "workspace-copied": { build: "SC2013" },
+  "workspace-copied": { island: true },
   "workspace-unclean": { build: "SC2013" },
 };
 
@@ -219,6 +233,19 @@ describe(`npm native (${cases.length} programs${sanitize ? ", sanitized" : ""}${
       test.fails(`${c.name} (diverges: ${known.divergence})`, async () => {
         const built = await build(c.entry);
         if (!built.ok) throw new Error(built.text);
+        await expectMatchesNode(c, built.binary);
+      }, 120_000);
+      continue;
+    }
+    if (known !== undefined && "island" in known) {
+      test(`${c.name} (Node island)`, async () => {
+        const built = await build(c.entry);
+        if (libnodePack() === null) {
+          expect(built.ok, "no libnode pack: the compile stops").toBe(false);
+          if (!built.ok) expect(built.codes, built.text).toContain("SC8005");
+          return;
+        }
+        if (!built.ok) throw new Error(`npm fixture failed to compile:\n${built.text}`);
         await expectMatchesNode(c, built.binary);
       }, 120_000);
       continue;

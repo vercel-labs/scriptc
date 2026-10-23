@@ -197,7 +197,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
       u.opts.workers ||
       u.opts.dc ||
       u.opts.fileHandle ||
-      u.nativeFetch,
+      u.nativeFetch ||
+      // Island promises cross as dyn promise boxes (scr_node_island_handle.c).
+      u.opts.nodeIsland === true,
     "scr_async_dyn.c",
   ),
   // The performance timeline (every perf_hooks user-timing call selects
@@ -339,7 +341,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unitArgs((u) => (u.tlsCa && targetPlatform(u.driver) === "win32" ? ["-lcrypt32"] : [])),
   // Fetch uses the native network, TLS, and HTTP runtime.
   unit((u) => u.nativeFetch, "scr_fetch.c"),
-  unit((u) => u.opts.nodeIsland === true, "scr_node_island.c"),
+  unit((u) => u.opts.nodeIsland === true, "scr_node_island.c", "scr_node_island_handle.c"),
   // Readable.fromWeb reads a web ReadableStream through its reader.
   unit((u) => u.nativeFetch && u.opts.stream, "scr_stream_from_web.c"),
 ];

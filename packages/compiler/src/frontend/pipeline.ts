@@ -48,6 +48,7 @@ import { NODE_API_MODULE } from "./node-api-import.js";
 import { erasedTypeOnlyImport } from "./type-only-imports.js";
 import { EXPERIMENTAL_MODULE } from "./experimental-import.js";
 import { readProjectConfig } from "../project-config.js";
+import { setFrontendIslands } from "../node-islands/boundary.js";
 import { packageDirOf } from "../node-islands/origin.js";
 import {
   scanFiles,
@@ -128,6 +129,9 @@ export type FrontendFactory = (
   npmStatic?: readonly string[] | "auto" | "lib",
   externalTypes?: Readonly<Record<string, string>>,
   libraryNpmStatic?: readonly string[],
+  /** Packages that run in Node islands (scope-B NI-4): never compiled,
+   * typed by their declarations. */
+  nodeIslands?: ReadonlySet<string>,
 ) => Frontend;
 
 /** Adds the program modules a literal `import()` reaches to `scanned`,
@@ -432,6 +436,7 @@ export function runFrontend(
   npmStatic?: readonly string[] | "auto" | "lib",
   externalTypes?: Readonly<Record<string, string>>,
   libraryNpmStatic: readonly string[] = [],
+  nodeIslands: ReadonlySet<string> = new Set(),
 ): Frontend {
   // A preflight or package probe may throw after its host has opened. Track
   // only live loads, releasing each immediately on normal fallback; this
@@ -464,14 +469,20 @@ export function runFrontend(
       transitive.add(base);
       return base;
     });
-    return loadFrontend(
-      entryPath,
-      trackedLoader,
-      "lib",
-      externalTypes,
-      [...new Set(names)],
-      transitive,
-    );
+    setFrontendIslands(nodeIslands);
+    try {
+      return loadFrontend(
+        entryPath,
+        trackedLoader,
+        "lib",
+        externalTypes,
+        [...new Set(names)].filter((name) => !nodeIslands.has(name)),
+        transitive,
+        nodeIslands,
+      );
+    } finally {
+      setFrontendIslands(new Set());
+    }
   } catch (error) {
     for (const load of active) {
       // Preserve the original failure and attempt every remaining cleanup.
@@ -492,6 +503,7 @@ function loadFrontend(
   externalTypes?: Readonly<Record<string, string>>,
   libraryNpmStatic: readonly string[] = [],
   transitive: Set<string> = new Set(),
+  nodeIslands: ReadonlySet<string> = new Set(),
 ): Frontend {
   // Resolver package/workspace metadata is intentionally shared across the
   // several load attempts of ONE auto-detection fixpoint, but never across
@@ -512,7 +524,9 @@ function loadFrontend(
   };
   // Explicit library attempts bypass only the auto-selection heuristics.
   // The shared preflight/lowering refusal and dependency-closure checks remain.
-  const judged = new Set<string>(libraryNpmStatic);
+  // Node island packages are judged already: they stay out of the
+  // program, typed by their declarations (scope-B NI-4).
+  const judged = new Set<string>([...libraryNpmStatic, ...nodeIslands]);
   let requested: string[] = [];
   let reusableScout: ReturnType<typeof loadProgram> | null = null;
   let reusablePreflight: ScrDiagnostic[] | null = null;

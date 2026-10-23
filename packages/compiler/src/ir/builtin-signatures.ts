@@ -187,6 +187,22 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     argTypes: [STRING, STRING, STRING, DYN],
     result: { kind: "promise", inner: DYN },
   },
+  /** Node islands (scope-B NI-4, scr_node_island_handle.c): island values
+   * are dyn values (`foreign` lowers as dyn), objects are handle boxes
+   * whose identity is the V8 object's. require/import load an island
+   * module by its absolute (or `$ORIGIN/`) path (also @scriptc/node
+   * requireModule); the rest are member reads,
+   * writes and calls on island values, argument lists as one dyn array. */
+  "nodeIsland.require": { argTypes: [STRING], result: DYN },
+  "nodeIsland.import": { argTypes: [STRING], result: { kind: "promise", inner: DYN } },
+  "nodeIsland.get": { argTypes: [DYN, STRING], result: DYN },
+  "nodeIsland.getKey": { argTypes: [DYN, DYN], result: DYN },
+  "nodeIsland.set": { argTypes: [DYN, STRING, DYN], result: VOID },
+  "nodeIsland.setKey": { argTypes: [DYN, DYN, DYN], result: VOID },
+  "nodeIsland.invoke": { argTypes: [DYN, STRING, DYN], result: DYN },
+  "nodeIsland.apply": { argTypes: [DYN, DYN], result: DYN },
+  "nodeIsland.construct": { argTypes: [DYN, DYN], result: DYN },
+  "nodeIsland.instanceof": { argTypes: [DYN, DYN], result: BOOL },
   /** Keyed WRITE on a dyn value — `h.onDone = cb` / `h["k"] = v` on a
    * checked-dynamic object (args: receiver, key string, value — all
    * borrowed; the runtime copies the key and retains the value in). An

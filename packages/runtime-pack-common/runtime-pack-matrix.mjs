@@ -73,7 +73,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_js_value.c", "dynTier"],
   ["scr_js_object.c", "dynTier"],
   ["scr_event_target.c", any("eventTarget", "nativeFetch")],
-  ["scr_async_dyn.c", any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch")],
+  [
+    "scr_async_dyn.c",
+    any("dynAsync", "dynInvoke", "dc", "fileHandle", "nativeFetch", "nodeIsland"),
+  ],
   // The crypto global's object extends scr_async_dyn.c's crypto object.
   ["scr_webcrypto_object.c", all("webcrypto", "dynAsync")],
   // The performance timeline emits its buffer warning through scr_async_dyn.c.
@@ -167,6 +170,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // Node islands: libnode loaded on first use (explicit @scriptc/node calls),
   // over the SCR_NODE_ISLANDS build of scr_async.c.
   ["scr_node_island.c", "nodeIsland"],
+  ["scr_node_island_handle.c", "nodeIsland"],
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
 ];
 
@@ -177,6 +181,26 @@ export function variantsFor(source) {
   // ordinary object, byte for byte.
   if (source === "scr_json.c") {
     variants.push({ id: "dyn-tier", when: { dynTier: true }, defines: ["SCR_JS_TIER"] });
+    // Dynamic operations on Node island handles (typeof, calls, `in`,
+    // delete, Object.keys) route to scr_node_island_handle.c.
+    variants.push({
+      id: "node-island",
+      when: { nodeIsland: true },
+      defines: ["SCR_NODE_ISLANDS"],
+    });
+    variants.push({
+      id: "dyn-tier-node-island",
+      when: { dynTier: true, nodeIsland: true },
+      defines: ["SCR_JS_TIER", "SCR_NODE_ISLANDS"],
+    });
+  }
+  // util.inspect and instanceof of Node island handles.
+  if (source === "scr_inspect.c" || source === "scr_dyn_builtin_class.c") {
+    variants.push({
+      id: "node-island",
+      when: { nodeIsland: true },
+      defines: ["SCR_NODE_ISLANDS"],
+    });
   }
   if (source === "scr_bytes.c") {
     variants.push({

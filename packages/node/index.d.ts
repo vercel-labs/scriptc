@@ -34,3 +34,16 @@ export declare function call<T = unknown>(
   name: string,
   ...args: unknown[]
 ): Promise<T>;
+
+/** Loads the module `specifier` with require() from the calling module and
+ * returns its exports **by reference** (scope-B Node islands, NI-4).
+ *
+ * In scriptc builds the module runs in Node.js loaded into the program on
+ * first use; the specifier must be a string literal, resolved at build time
+ * as `require.resolve` resolves it from the caller. The exports and every
+ * object reached through them stay Node objects: the program holds handles
+ * to them, so identity, aliasing and mutation are shared with Node.
+ * Primitives, strings and BigInt are copied; promises become promises;
+ * Buffers and typed arrays share their memory. Under Node.js this is
+ * `createRequire(callerFile)(specifier)`. */
+export declare function requireModule<T = any>(specifier: string): T;

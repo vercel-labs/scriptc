@@ -1394,6 +1394,11 @@ Local<Value> ExportValue(Isolate *isolate, Local<Context> context, const ScrNode
   } else {
     obj = ExportTemplate(isolate)->NewInstance(context).ToLocalChecked();
     obj->SetInternalField(0, data);
+    // A template instance inherits from its implicit constructor's own
+    // prototype object; a native plain object is a plain object to island
+    // code (`Object.getPrototypeOf(o) === Object.prototype`, as jose's
+    // isObject checks), so it inherits Object.prototype directly.
+    obj->SetPrototypeV2(context, v8::Object::New(isolate)->GetPrototypeV2()).FromMaybe(false);
   }
   if (!obj->IsProxy()) obj->SetPrivate(context, ExportKey(isolate), data).Check();
   Global<Object> &slot = g_exports[id];
@@ -1561,6 +1566,41 @@ Local<Value> ToV8(Isolate *isolate, Local<Context> context, const ScrNodeValue *
   }
 }
 
+// Node's arrow header for an exception's throw site, recorded once on the
+// error object (as Node decorates an error the first time it is thrown):
+// "<resource>:<line>\n<source line>\n<caret>", the caret under the
+// message's columns with tabs kept. Printed by the runtime when the error
+// ends the program uncaught (ErrorInfo's `arrow`).
+Local<v8::Private> ArrowKey(Isolate *isolate) {
+  return v8::Private::ForApi(isolate, Utf8(isolate, "scriptc.node-island.arrow"));
+}
+
+void RecordArrow(Isolate *isolate, Local<Context> context, const TryCatch &try_catch,
+                 Local<Value> exception) {
+  if (!exception->IsObject()) return;
+  Local<Object> error = exception.As<Object>();
+  Local<v8::Private> key = ArrowKey(isolate);
+  if (error->HasPrivate(context, key).FromMaybe(true)) return;
+  // Node decorates from the error's own message (its construction site,
+  // as Exception::CreateMessage answers for an Error with a stack), not
+  // from where the throw left the call.
+  Local<v8::Message> message = v8::Exception::CreateMessage(isolate, exception);
+  if (message.IsEmpty()) message = try_catch.Message();
+  if (message.IsEmpty()) return;
+  Local<String> source;
+  if (!message->GetSourceLine(context).ToLocal(&source)) return;
+  std::string line = *String::Utf8Value(isolate, source);
+  std::string resource = *String::Utf8Value(isolate, message->GetScriptResourceName());
+  int linenum = message->GetLineNumber(context).FromMaybe(0);
+  int start = message->GetStartColumn(context).FromMaybe(0);
+  int end = message->GetEndColumn(context).FromMaybe(start + 1);
+  std::string arrow = resource + ":" + std::to_string(linenum) + "\n" + line + "\n";
+  for (int i = 0; i < start; i++)
+    arrow += (i < static_cast<int>(line.size()) && line[i] == '\t') ? '\t' : ' ';
+  for (int i = start; i < end || i == start; i++) arrow += '^';
+  (void)error->SetPrivate(context, key, Utf8(isolate, arrow.data(), arrow.size()));
+}
+
 // One entry from the runtime: the isolate scope, V8's stack limit for the
 // caller's stack, and the out-value scratch (reset by outermost entries).
 struct Op {
@@ -1578,6 +1618,7 @@ struct Op {
     }
     if (try_catch.HasCaught() && !try_catch.HasTerminated()) {
       Local<Value> exception = try_catch.Exception();
+      RecordArrow(e.isolate, e.context, try_catch, exception);
       try_catch.Reset();
       FromV8(e.isolate, e.context, exception, out);
     } else {
@@ -1839,6 +1880,9 @@ void ErrorInfo(uint32_t h, ScrNodeErrorInfo *out) {
   read("message", &out->message, &out->message_len, false);
   read("stack", &out->stack, &out->stack_len, true);
   read("code", &out->code, &out->code_len, true);
+  Local<Value> arrow;
+  if (error->GetPrivate(op.e.context, ArrowKey(op.e.isolate)).ToLocal(&arrow) && arrow->IsString())
+    out->arrow = Scratch(Wtf8(op.e.isolate, arrow.As<String>()), &out->arrow_len);
 }
 
 void DropHandle(uint32_t h) {

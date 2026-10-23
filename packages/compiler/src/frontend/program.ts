@@ -5650,7 +5650,11 @@ function preflight7(load: LoadResult): {
                 // optional-dependency try/require pattern), so no fence.
                 // Binding forms keep the fence: their downstream reads
                 // would need the module that never loads.
-                if (req.decl !== null || probeNodeRequireRefusal(sf.fileName, req.spec) === null) {
+                if (
+                  (req.decl !== null || probeNodeRequireRefusal(sf.fileName, req.spec) === null) &&
+                  // A Node island package: loaded in Node at the require (NI-4).
+                  !isFrontendIsland(packageNameOfSpecifier(req.spec))
+                ) {
                   diags.push(unsupportedDiag("SC1010", loc, unsupportedModuleFeatureOf(req.spec)));
                 }
               }
@@ -5707,7 +5711,10 @@ function preflight7(load: LoadResult): {
           if (canonicalBuiltinModule(spec) === null && !processModuleAliasRequire7(spec, null)) {
             // Binding-less by construction — same require-site throw
             // channel as the statement-level form above.
-            if (probeNodeRequireRefusal(sf.fileName, spec) === null) {
+            if (
+              probeNodeRequireRefusal(sf.fileName, spec) === null &&
+              !isFrontendIsland(packageNameOfSpecifier(spec))
+            ) {
               diags.push(unsupportedDiag("SC1010", loc, unsupportedModuleFeatureOf(spec)));
             }
           }

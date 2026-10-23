@@ -1454,6 +1454,58 @@ void scr_ni_handles_install(void) {
   scr_atexit(nh_cleanup);
 }
 
+/* ── NI-4d: util.types, Array.isArray and uncaught reports ─────────────── */
+
+static ScrDyn *nh_util_types = NULL; /* Node's util.types (held to exit) */
+
+static void nh_util_types_cleanup(void) {
+  scr_dyn_release(nh_util_types);
+  nh_util_types = NULL;
+}
+
+bool scr_ni_util_type_is(const ScrDyn *value, const ScrStr *probe) {
+  if (nh_util_types == NULL) {
+    ScrStr *path = scr_str_new("node:util", 9);
+    ScrDyn *util = scr_ni_require(path);
+    scr_str_release(path);
+    if (util == NULL) return false;
+    nh_util_types = scr_ni_get_str(util, "types", 5);
+    if (nh_util_types != NULL) scr_atexit(nh_util_types_cleanup);
+    scr_dyn_release(util);
+    if (nh_util_types == NULL) return false;
+  }
+  ScrDyn *args[1] = {(ScrDyn *)value};
+  ScrDyn *r = scr_ni_call_method(nh_util_types, probe->data, probe->len, args, 1);
+  if (r == NULL) return false;
+  bool answer = r->kind == SCR_DYN_BOOL && r->v.b;
+  scr_dyn_release(r);
+  return answer;
+}
+
+bool scr_ni_is_array(ScrDyn *value) {
+  if (value == NULL) return false;
+  if (value->kind == SCR_DYN_ARR) return true;
+  if (!scr_ni_is_handle(value)) return value->kind == SCR_DYN_TYPED_REF && scr_dyn_ref_is_array(value);
+  return (((ScrNodeRef *)value->v.handle.ptr)->flags & SCR_NVF_ARRAY) != 0;
+}
+
+bool scr_ni_report_uncaught(ScrError *error) {
+  ScrNodeRef *ref = nh_pinned(error, NH_PIN_ERROR);
+  const ScrNodeBridge *bridge = scr_ni_bridge_loaded();
+  if (ref == NULL || ref->id == 0 || bridge == NULL) return false;
+  ScrNodeErrorInfo info;
+  bridge->error_info(ref->id, &info);
+  if (info.stack == NULL) return false;
+  if (info.arrow != NULL && info.arrow_len > 0) {
+    fwrite(info.arrow, 1, info.arrow_len, stderr);
+    fputs("\n\n", stderr);
+  }
+  fwrite(info.stack, 1, info.stack_len, stderr);
+  fprintf(stderr, "\n\nNode.js v%s\n", bridge->node_version);
+  fflush(stderr);
+  return true;
+}
+
 /* ── NI-4a: libCall entry points of compiled island code ─────────────────
  * The compiler (frontend/lowering/lower-node-island.ts) lowers member
  * operations on island values to `nodeIsland.*` libCalls, which pass
@@ -1470,31 +1522,70 @@ static size_t ni_libcall_args(ScrDyn *args, ScrDyn *const **items) {
   return args->v.arr.len;
 }
 
+/* Routing follows the value: a value typed by an island's declarations
+ * may still be a native object (an island interface annotating a native
+ * literal, a native error handed to an island callback). Those take the
+ * ordinary checked-dynamic operations instead of the bridge. */
+ScrDyn *scr_dyn_reflect_get(ScrDyn *target, ScrDyn *raw_key, ScrDyn *receiver);
+
+static bool ni_lc_island(const ScrDyn *v) { return v != NULL && scr_ni_is_handle(v); }
+
+/* A NUL-terminated copy of `key` for the dyn invoke path (heap only for long names). */
+static ScrDyn *ni_lc_native_invoke(ScrDyn *obj, ScrStr *key, ScrDyn *const *items, size_t argc) {
+  char small[128];
+  char *name = key->len < sizeof small ? small : malloc(key->len + 1);
+  if (name == NULL) scr_trap("scriptc: out of memory\n");
+  memcpy(name, key->data, key->len);
+  name[key->len] = '\0';
+  ScrDyn *result = scr_dyn_invoke(obj, name, items, argc, name);
+  if (name != small) free(name);
+  return result;
+}
+
 ScrDyn *scr_node_island_get(ScrDyn *obj, ScrStr *key) {
-  return scr_ni_get_str(obj, key->data, key->len);
+  if (ni_lc_island(obj)) return scr_ni_get_str(obj, key->data, key->len);
+  ScrDyn *k = scr_dyn_new_str(key);
+  ScrDyn *value = scr_dyn_reflect_get(obj, k, obj);
+  scr_dyn_release(k);
+  return value;
+}
+
+ScrDyn *scr_node_island_get_key(ScrDyn *obj, ScrDyn *key) {
+  if (ni_lc_island(obj)) return scr_ni_get(obj, key);
+  return scr_dyn_reflect_get(obj, key, obj);
 }
 
 void scr_node_island_set(ScrDyn *obj, ScrStr *key, ScrDyn *value) {
-  (void)scr_ni_set_str(obj, key->data, key->len, value);
+  if (ni_lc_island(obj)) (void)scr_ni_set_str(obj, key->data, key->len, value);
+  else scr_dyn_key_set(obj, key, value);
 }
 
 void scr_node_island_set_key(ScrDyn *obj, ScrDyn *key, ScrDyn *value) {
-  (void)scr_ni_set(obj, key, value);
+  if (ni_lc_island(obj)) (void)scr_ni_set(obj, key, value);
+  else scr_dyn_key_set_computed(obj, key, value);
 }
 
 ScrDyn *scr_node_island_invoke(ScrDyn *obj, ScrStr *key, ScrDyn *args) {
   ScrDyn *const *items;
   size_t argc = ni_libcall_args(args, &items);
-  return scr_ni_call_method(obj, key->data, key->len, items, argc);
+  if (ni_lc_island(obj)) return scr_ni_call_method(obj, key->data, key->len, items, argc);
+  return ni_lc_native_invoke(obj, key, items, argc);
 }
 
 ScrDyn *scr_node_island_apply(ScrDyn *fn, ScrDyn *args) {
   ScrDyn *const *items;
   size_t argc = ni_libcall_args(args, &items);
-  return scr_ni_call(fn, NULL, items, argc);
+  if (ni_lc_island(fn)) return scr_ni_call(fn, NULL, items, argc);
+  return scr_dyn_call(fn, items, argc, "value");
 }
 
 ScrDyn *scr_node_island_construct(ScrDyn *ctor, ScrDyn *args) {
+  if (!ni_lc_island(ctor)) {
+    ScrStr *what = scr_str_new("value", 5);
+    ScrDyn *result = scr_dyn_construct(ctor, args, what);
+    scr_str_release(what);
+    return result;
+  }
   ScrDyn *const *items;
   size_t argc = ni_libcall_args(args, &items);
   return scr_ni_construct(ctor, items, argc);

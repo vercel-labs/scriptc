@@ -105,6 +105,11 @@ export interface ScrDiagnostic {
    * alone does not say it (a computed require(), a native addon, `with`).
    * Report-only: never part of the rendered message. */
   reason?: string;
+  /** Runtime fences only: the fenced site is in a module's top-level code
+   * (outside every function body), so it runs, and throws, when the module
+   * evaluates. Island selection treats such a fence like one that needs the
+   * runtime (scope-B NI-4). */
+  moduleInit?: true;
   /** A runtime fence in a module's top-level code, outside every function
    * and class member body: it throws when the module initializes, which is
    * program startup for a module the entry imports. */
@@ -338,6 +343,23 @@ export function nodeIslandBoundaryDiag(what: string, loc: SrcLoc): ScrDiagnostic
     message: `${what} cannot cross into or out of a Node island yet`,
     loc,
     hint: "pass primitives, strings, island objects or fresh object and array literals of those; callbacks, native objects and promises cross from NI-5 on",
+  };
+}
+
+/** SC8023 — the build that ran fenced packages as Node islands failed, so
+ * the program was built natively with those runtime fences (each throws
+ * when reached). A warning on the native build, with the island build's
+ * first error. */
+export function nodeIslandRetryFailedDiag(
+  packages: readonly string[],
+  first: ScrDiagnostic,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8023",
+    message: `running ${packages.map((p) => `'${p}'`).join(", ")} in Node islands failed to compile (${first.code} at ${first.loc.file}:${first.loc.start}: ${first.message}); built natively instead, where their runtime fences throw when reached`,
+    loc,
+    hint: "fix the island build's error, or mark the packages with --node-island=<pkg> to see every error",
   };
 }
 

@@ -205,6 +205,9 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "nodeIsland.apply": { argTypes: [DYN, DYN], result: DYN },
   "nodeIsland.construct": { argTypes: [DYN, DYN], result: DYN },
   "nodeIsland.instanceof": { argTypes: [DYN, DYN], result: BOOL },
+  /** Array.isArray of a dyn value in a program with Node islands: island
+   * arrays answer true too. */
+  "nodeIsland.isArray": { argTypes: [DYN], result: BOOL },
   /** NI-5: a class instance crossing into an island, with the builder of
    * its class's method table (run once per class). Answers the value. */
   "nodeIsland.classMethods": { argTypes: [DYN, DYN], result: DYN },

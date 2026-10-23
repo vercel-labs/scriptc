@@ -73,6 +73,13 @@ ScrDyn *scr_ni_call_method(ScrDyn *obj, const char *key, size_t len, ScrDyn *con
                            size_t argc);
 ScrDyn *scr_ni_construct(ScrDyn *ctor, ScrDyn *const *args, size_t argc);
 ScrStr *scr_ni_typeof(ScrDyn *value);
+/* util.types.<probe>(value) answered by Node for an island handle. */
+bool scr_ni_util_type_is(const ScrDyn *value, const ScrStr *probe);
+/* Array.isArray of a dyn value, island arrays included. */
+bool scr_ni_is_array(ScrDyn *value);
+/* Prints Node's uncaught-exception report for an error thrown by island
+ * code (true), or nothing (false: not an island error). */
+bool scr_ni_report_uncaught(ScrError *error);
 int scr_ni_instanceof(ScrDyn *value, ScrDyn *ctor);
 bool scr_ni_is_handle(const ScrDyn *value);
 /* ToPrimitive of an island object (hint SCR_DYN_HINT_*), run by V8:
@@ -175,6 +182,7 @@ ScrDyn *scr_node_island_apply(ScrDyn *fn, ScrDyn *args);
 ScrDyn *scr_node_island_construct(ScrDyn *ctor, ScrDyn *args);
 void scr_node_island_define_field(ScrDyn *self, ScrStr *key, ScrDyn *value);
 ScrDyn *scr_node_island_get(ScrDyn *obj, ScrStr *key);
+ScrDyn *scr_node_island_get_key(ScrDyn *obj, ScrDyn *key);
 bool scr_node_island_instanceof(ScrDyn *value, ScrDyn *ctor);
 bool scr_node_island_instanceof_global(ScrDyn *value, ScrStr *name);
 ScrDyn *scr_node_island_invoke(ScrDyn *obj, ScrStr *key, ScrDyn *args);

@@ -62,7 +62,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_assert.c", any("assert", "regex", "symbol")],
   ["scr_inspect.c", "inspect"],
   ["scr_console_native.c", "inspect"],
-  ["scr_dyn_invoke.c", any("dynInvoke", "nativeFetch")],
+  // Island libCalls on native values typed by island declarations invoke
+  // through the checked-dynamic path (scr_node_island_handle.c).
+  ["scr_dyn_invoke.c", any("dynInvoke", "nativeFetch", "nodeIsland")],
   // Buffer.prototype methods called on checked-dynamic values.
   ["scr_bytes_dyn.c", all("dynBuffer", "dynInvoke")],
   // Builtin functions read as values in JavaScript dependencies.
@@ -196,8 +198,13 @@ export function variantsFor(source) {
       defines: ["SCR_JS_TIER", "SCR_NODE_ISLANDS"],
     });
   }
-  // util.inspect and instanceof of Node island handles.
-  if (source === "scr_inspect.c" || source === "scr_dyn_builtin_class.c") {
+  // util.inspect and instanceof of Node island handles; Node's report for
+  // an uncaught island error.
+  if (
+    source === "scr_inspect.c" ||
+    source === "scr_dyn_builtin_class.c" ||
+    source === "scr_exception.c"
+  ) {
     variants.push({
       id: "node-island",
       when: { nodeIsland: true },

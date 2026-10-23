@@ -4033,6 +4033,9 @@ static bool scr_native_iterator_over(const ScrDyn *value, unsigned kind);
 /* Node util.types reads internal brands, never user properties or prototypes. */
 bool scr_dyn_util_type_is(const ScrDyn *value, const ScrStr *probe) {
   if (!value) return false;
+#ifdef SCR_NODE_ISLANDS
+  if (scr_ni_is_handle(value)) return scr_ni_util_type_is(value, probe);
+#endif
 
 #define PROBE(name) (probe->len == sizeof(name) - 1 && memcmp(probe->data, name, sizeof(name) - 1) == 0)
   if (PROBE("isAnyArrayBuffer")) return scr_buffer_storage_is(value);

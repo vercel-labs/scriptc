@@ -17,7 +17,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SCR_NODE_BRIDGE_ABI 8u
+#define SCR_NODE_BRIDGE_ABI 9u
 /* The symbol a bridge library exports: `const ScrNodeBridge *(void)`. */
 #define SCR_NODE_BRIDGE_ENTRY "scr_node_bridge_v1"
 
@@ -149,6 +149,11 @@ typedef struct ScrNodeErrorInfo {
   uint32_t kind;
   const char *name, *message, *stack, *code;
   size_t name_len, message_len, stack_len, code_len;
+  /* Node's arrow header for the throw site ("<file>:<line>\n<source
+   * line>\n<caret>"), recorded when the error was thrown out of island
+   * code; NULL when none. */
+  const char *arrow;
+  size_t arrow_len;
 } ScrNodeErrorInfo;
 
 /* What the runtime provides to the bridge. */

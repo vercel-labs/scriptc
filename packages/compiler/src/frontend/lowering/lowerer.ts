@@ -1037,9 +1037,45 @@ export function lowerToIr(
 ): LowerResult {
   setActiveNodeIslands(options.nodeIslands ?? null);
   try {
-    return lowerToIrWithIslands(program, entry, moduleOrder, options);
+    const result = lowerToIrWithIslands(program, entry, moduleOrder, options);
+    markModuleInitFences(program, result.runtimeFences);
+    return result;
   } finally {
     setActiveNodeIslands(null);
+  }
+}
+
+/** Marks the runtime fences in npm package code whose site is top-level
+ * module code (outside every function body): they throw when the module
+ * evaluates (ScrDiagnostic.moduleInit). */
+function markModuleInitFences(program: ts.Program, fences: readonly ScrDiagnostic[]): void {
+  for (const d of fences) {
+    if (!d.loc.file.includes("/node_modules/")) continue;
+    const sf = program.getSourceFile(d.loc.file);
+    if (sf === undefined) continue;
+    let inFunction = false;
+    let node: ts.Node | undefined = sf;
+    while (node !== undefined && !inFunction) {
+      let next: ts.Node | undefined;
+      ts.forEachChild(node, (child) => {
+        if (
+          next === undefined &&
+          ts.tokenStartOfNode(child) <= d.loc.start &&
+          d.loc.start < child.end
+        )
+          next = child;
+        return undefined;
+      });
+      if (next === undefined) break;
+      if (
+        ts.isFunctionLike(next) ||
+        (ts.isPropertyDeclaration(next) &&
+          !next.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.StaticKeyword))
+      )
+        inFunction = true;
+      node = next;
+    }
+    if (!inFunction) d.moduleInit = true;
   }
 }
 

@@ -4,6 +4,7 @@
  * longer than FRAME_MAX_WIDTH (minified sources) shows a window of that
  * width around the diagnostic's column, with "…" where text is cut.
  */
+import { isNodeIslandNoteCode, isNodeIslandNoticeCode } from "./envelope.js";
 import type { ScrDiagnostic } from "./diagnostic.js";
 
 export interface RenderOptions {
@@ -102,16 +103,23 @@ export function renderDiagnostic(
     frame.push(
       c(DIM, `  ${" ".repeat(gutterWidth)} | `) +
         " ".repeat(caretCol) +
-        c(/^SC6\d{3}$/.test(diag.code) ? YELLOW : RED, "^" + "~".repeat(spanOnLine - 1)),
+        c(
+          /^SC6\d{3}$/.test(diag.code) || isNodeIslandNoticeCode(diag.code) ? YELLOW : RED,
+          "^" + "~".repeat(spanOnLine - 1),
+        ),
     );
     emitLine(lineNum + 1);
   }
 
   // The divergence band (SC6xxx) is the one warning severity: the program
   // compiles, and the site can behave differently from Node.
-  const warning = /^SC6\d{3}$/.test(diag.code);
+  // Node island notices of a successful build: SC8020 warns, SC8001 and
+  // SC8021 are notes.
+  const note = isNodeIslandNoteCode(diag.code);
+  const warning = /^SC6\d{3}$/.test(diag.code) || diag.code === "SC8020" || diag.code === "SC8023";
+  const severity = note ? c(CYAN, "note") : warning ? c(YELLOW, "warning") : c(RED, "error");
   out.push(
-    `${c(BOLD, `${diag.loc.file}:${lineNum}:${colNum}`)} - ${warning ? c(YELLOW, "warning") : c(RED, "error")} ${c(BOLD, diag.code)}: ${diag.message}`,
+    `${c(BOLD, `${diag.loc.file}:${lineNum}:${colNum}`)} - ${severity} ${c(BOLD, diag.code)}: ${diag.message}`,
   );
   if (frame.length) {
     out.push("", ...frame);
@@ -159,9 +167,11 @@ export function renderWarnings(
   sourceTextByFile: Map<string, string>,
   opts: RenderOptions = {},
 ): string {
-  const n = diags.length;
+  const n = diags.filter((d) => !isNodeIslandNoteCode(d.code)).length;
+  const rendered = renderDiagnostics([...diags], sourceTextByFile, opts);
+  if (n === 0) return rendered;
   return (
-    renderDiagnostics([...diags], sourceTextByFile, opts) +
+    rendered +
     `\n\n${n} warning${n === 1 ? "" : "s"}: the program compiled, but ${n === 1 ? "this site" : "these sites"} can behave differently from Node.`
   );
 }

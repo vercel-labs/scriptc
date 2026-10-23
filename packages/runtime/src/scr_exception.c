@@ -9,6 +9,9 @@
  * dummy returns); this file only stores, renders, and releases the value.
  */
 #include "scr_runtime.h"
+#ifdef SCR_NODE_ISLANDS
+#include "scr_node_island.h"
+#endif
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -684,6 +687,16 @@ void scr_exc_print_uncaught(void) {
   /* Settle any runtime-internal stdout fragment before the stderr line when
    * both share an fd. JavaScript-visible writes already flush themselves. */
   fflush(stdout);
+#ifdef SCR_NODE_ISLANDS
+  /* An error thrown by Node island code: Node's own report (the throw
+   * site's source line, the stack, the Node.js version). */
+  if (scr_exc_kind == SCR_EXC_OBJ && scr_error_is(scr_exc_payload) &&
+      scr_ni_report_uncaught((ScrError *)scr_exc_payload)) {
+    scr_exc_reset(); /* the payload counts as live until released */
+    scr_exc_cell_changed();
+    return;
+  }
+#endif
   fputs("Uncaught ", stderr);
   switch (scr_exc_kind) {
   case SCR_EXC_F64: {

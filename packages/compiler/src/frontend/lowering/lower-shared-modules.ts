@@ -275,6 +275,11 @@ export function statefulReason(sf: ts.SourceFile): string | null {
     )
       continue;
     if (ts.isExpressionStatement(stmt) && ts.isStringLiteral(stmt.expression)) continue; // directives
+    // CommonJS export statements (`module.exports = f`, `exports.x = v`,
+    // `module.exports.x = v`) and expandos on the module's own functions
+    // (`f.sync = g`) declare the module's surface; they are not effects.
+    if (ts.isExpressionStatement(stmt) && isCjsDeclaringAssignment(stmt.expression, functions(sf)))
+      continue;
     return "its evaluation has effects beyond declarations";
   }
   // Writes from function bodies to module-level bindings.
@@ -526,4 +531,40 @@ export function sharedModuleRegistrations(lowerer: Lowerer): IrStmt[] {
     });
   });
   return out;
+}
+
+/** The names of a module's top-level function declarations. */
+function functions(sf: ts.SourceFile): Set<string> {
+  const names = new Set<string>();
+  for (const stmt of sf.statements.nodes)
+    if (ts.isFunctionDeclaration(stmt) && stmt.name !== undefined) names.add(stmt.name.text);
+  return names;
+}
+
+/** `module.exports = …`, `exports.x = …`, `module.exports.x = …` (also
+ * chained: `exports = module.exports = …`), or `f.x = …` for a top-level
+ * function `f`. */
+function isCjsDeclaringAssignment(e: ts.Expression, fns: Set<string>): boolean {
+  while (ts.isParenthesizedExpression(e)) e = e.expression;
+  if (!ts.isBinaryExpression(e) || e.operatorToken.kind !== ts.SyntaxKind.EqualsToken) return false;
+  const left = e.left;
+  const isModuleExports = (n: ts.Expression): boolean =>
+    ts.isPropertyAccessExpression(n) &&
+    ts.isIdentifier(n.expression) &&
+    n.expression.text === "module" &&
+    ts.isIdentifier(n.name) &&
+    n.name.text === "exports";
+  const target =
+    (ts.isIdentifier(left) && left.text === "exports") ||
+    isModuleExports(left) ||
+    (ts.isPropertyAccessExpression(left) &&
+      ((ts.isIdentifier(left.expression) &&
+        (left.expression.text === "exports" || fns.has(left.expression.text))) ||
+        isModuleExports(left.expression)));
+  if (!target) return false;
+  // A chained assignment declares too.
+  const right = e.right;
+  if (ts.isBinaryExpression(right) && right.operatorToken.kind === ts.SyntaxKind.EqualsToken)
+    return isCjsDeclaringAssignment(right, fns);
+  return true;
 }

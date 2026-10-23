@@ -4,6 +4,7 @@ import { frontendDisposed } from "../frontend/dispose-hook.js";
 import {
   checkerPanicDiag,
   nodeIslandNoteDiag,
+  nodeIslandRetryFailedDiag,
   npmStaticRefusalDiag,
   iceDiag,
   isCheckerPanic,
@@ -70,6 +71,8 @@ export function prepareExecutableModule(
   let lowered: LowerResult;
   let sourceTexts: Map<string, string>;
   let disposed = false;
+  let fenceGrown: Map<string, IslandPackage> | null = null;
+  const fenceSure = new Set<string>();
   // The frontend (and its tsgo server) is released as soon as lowering
   // ends — clang and the link never hold it open.
   try {
@@ -152,6 +155,31 @@ export function prepareExecutableModule(
           retryFences,
         );
       }
+      // A failed program whose compiled packages need the runtime or a
+      // mutable object model (NI-2's report): try them as islands, and
+      // report this failure if that build fails too.
+      const marked = retryFences
+        ? fenceIslands(entryPath, opts, fe, lowered, lowerIslands, false)
+        : null;
+      if (marked !== null) {
+        const diagnostics = lowered.diagnostics;
+        const texts = fe.sourceTexts();
+        fe.dispose();
+        frontendDisposed();
+        disposed = true;
+        const islanded = prepareExecutableModule(
+          entryPath,
+          opts,
+          ffi,
+          buildPlatform,
+          createFrontend,
+          timing,
+          marked,
+          false,
+        );
+        if (islanded.ok) return islanded;
+        return { ok: false, diagnostics, sourceTexts: texts };
+      }
       return fail(lowered.diagnostics);
     }
 
@@ -181,6 +209,8 @@ export function prepareExecutableModule(
       if (checked.diagnostics.length > 0) return fail(checked.diagnostics);
       if (checked.contracts) lowered.module.contracts = checked.contracts;
     }
+    if (retryFences)
+      fenceGrown = fenceIslands(entryPath, opts, fe, lowered, lowerIslands, true, fenceSure);
   } finally {
     if (!disposed) {
       fe.dispose();
@@ -200,17 +230,21 @@ export function prepareExecutableModule(
       ...(lowered.performance ?? []),
     ],
   };
-  // Runtime fences in a compiled package that need the JavaScript runtime
-  // itself (R1: code from strings, computed import()/require(), addons,
-  // loader hooks) can never run natively: build again with those packages
-  // as islands, and keep this build when that one cannot compile. Gap
-  // fences stay deferred refusals until decision 8 (D6) retires them.
-  const runtimeFences = lowered.runtimeFences.filter(
-    (d) => classifyDiagnostic(d, "fence").class === "runtime",
-  );
-  if (retryFences && runtimeFences.length > 0) {
-    const grown = loweringIslands(entryPath, opts, fe, runtimeFences, lowerIslands);
-    if (grown !== null) {
+  // Packages compiled with runtime fences that need the JavaScript
+  // runtime or a mutable object model (fenceIslands): build again with
+  // them as islands, and keep this build when that one cannot compile.
+  // If that build fails, retry with only the packages whose fences fire
+  // for sure (module-init or runtime fences); if that fails too, the native
+  // build carries an SC8023 warning with the island build's first error,
+  // never a silent fallback.
+  if (fenceGrown !== null) {
+    const attempts = [fenceGrown];
+    const sure = new Map(
+      [...fenceGrown].filter(([name]) => lowerIslands.has(name) || fenceSure.has(name)),
+    );
+    if (sure.size > lowerIslands.size && sure.size < fenceGrown.size) attempts.push(sure);
+    let firstError: ScrDiagnostic | null = null;
+    for (const islands of attempts) {
       const islanded = prepareExecutableModule(
         entryPath,
         opts,
@@ -218,10 +252,17 @@ export function prepareExecutableModule(
         buildPlatform,
         createFrontend,
         timing,
-        grown,
+        islands,
         false,
       );
       if (islanded.ok) return islanded;
+      firstError ??= islanded.diagnostics[0] ?? null;
+    }
+    if (firstError !== null) {
+      const added = [...fenceGrown.keys()].filter((name) => !lowerIslands.has(name));
+      prepared.warnings.push(
+        nodeIslandRetryFailedDiag(added, firstError, { file: entryPath, start: 0, end: 0 }),
+      );
     }
   }
   return prepared;
@@ -413,6 +454,82 @@ function preflightIslands(
       dir: at.dir,
       class: "gap",
       reason: `${d.code}: ${d.message}`,
+    });
+  }
+  return grown.size === known.size ? null : grown;
+}
+
+/** Packages compiled natively with runtime fences (refusals deferred to the
+ * operation that reaches them) that should run in islands instead: those
+ * with a fence that surely fires (one in top-level module code, which runs
+ * when the module evaluates) or that itself needs the runtime (R1). Other
+ * fences stay deferred refusals until decision 8 (D6) retires them, so
+ * typed packages like jose stay native. With `requireFence` false (after a
+ * failed build) the package's island class by NI-2's report decides
+ * instead: runtime (R1) or object-model (R2). `--node-islands=auto` only;
+ * null for none. */
+function fenceIslands(
+  entryPath: string,
+  opts: CompileRequestOptions,
+  fe: ReturnType<FrontendFactory>,
+  lowered: LowerResult,
+  known: ReadonlyMap<string, IslandPackage>,
+  requireFence = true,
+  sure?: Set<string>,
+): Map<string, IslandPackage> | null {
+  if (fe.nodeIslandScan === undefined) return null;
+  if (requireFence && lowered.runtimeFences.length === 0) return null;
+  const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
+  if (policy.mode !== "auto" || known.size > 32) return null;
+  // An explicit --npm-static request keeps its package native.
+  const explicit = new Set(
+    Array.isArray(opts.npmStatic) ? opts.npmStatic.map((n) => n.replace(/\.\.\.$/, "")) : [],
+  );
+  const compiled = new Set(
+    fe.npmStatic
+      .filter((e) => e.status === "static" && !explicit.has(e.package))
+      .map((e) => e.package),
+  );
+  const fenced = new Map<string, boolean>();
+  for (const d of lowered.runtimeFences) {
+    const at = packageDirOf(d.loc.file);
+    if (at === null || !compiled.has(at.name) || known.has(at.name)) continue;
+    if (policy.forcedNative.has(at.name) || policy.unloaded.has(at.name)) continue;
+    // A fence in top-level module code throws when the module evaluates:
+    // it counts like one that needs the runtime.
+    const runtime = d.moduleInit === true || classifyDiagnostic(d, "fence").class === "runtime";
+    fenced.set(at.name, (fenced.get(at.name) ?? false) || runtime);
+    if (runtime) sure?.add(at.name);
+  }
+  if (requireFence && fenced.size === 0) return null;
+  const report = buildNodeIslandReport({
+    entry: entryPath,
+    scan: fe.nodeIslandScan({ userJs: false }),
+    npm: fe.npmStatic,
+    diagnostics: lowered.diagnostics,
+    fences: lowered.runtimeFences,
+    policy,
+  });
+  const grown = new Map(known);
+  for (const island of report.islands) {
+    const runtimeFence = requireFence
+      ? fenced.get(island.package)
+      : (fenced.get(island.package) ?? false);
+    if (runtimeFence === undefined || island.path === null) continue;
+    if (!compiled.has(island.package) || known.has(island.package)) continue;
+    if (policy.forcedNative.has(island.package) || policy.unloaded.has(island.package)) continue;
+    // With fences (requireFence), only fences that surely fire count: a
+    // gap fence inside a function body may never run (jose's typed paths
+    // stay native, DECISIONS.md 2026-10-21). After a failed build
+    // (!requireFence), the package's report class decides.
+    if (requireFence && !runtimeFence) continue;
+    if (!runtimeFence && island.class !== "runtime" && island.class !== "object-model") continue;
+    grown.set(island.package, {
+      name: island.package,
+      version: island.version,
+      dir: island.path,
+      class: island.class,
+      reason: island.reason,
     });
   }
   return grown.size === known.size ? null : grown;

@@ -4790,6 +4790,9 @@ function lowerArrayIsArrayCall(
   // itself instead of folding on the extracted type (typeof's rule).
   if (arg.kind === "dynCheck" && arg.value.type.kind === "dyn") arg = arg.value;
   if (arg.type.kind === "dyn") {
+    // With Node islands the value may be an island array (scope-B NI-4).
+    if (lowerer.nodeIslands !== null)
+      return { kind: "libCall", fn: "nodeIsland.isArray", args: [arg], type: BOOL, loc };
     return { kind: "dynTest", test: "array", value: arg, type: BOOL, loc };
   }
   if (arg.type.kind === "union") {
@@ -5004,11 +5007,22 @@ function lowerUnionToStringCall(
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (call.questionDotToken || access.questionDotToken) return null;
-  if (access.name.text !== "toString" || call.arguments.nodes.length !== 0) return null;
+  if (access.name.text !== "toString") return null;
+  // `.toString("utf8")` on `string | Buffer` (a Buffer's default decode;
+  // String.prototype.toString ignores its arguments): the same helper.
+  const args = call.arguments.nodes;
+  const utf8Arg =
+    args.length === 1 && ts.isStringLiteralLike(args[0]!) && /^utf-?8$/i.test(args[0].text);
+  if (args.length !== 0 && !utf8Arg) return null;
   const recvT = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
   if (recvT?.kind !== "union") return null;
   if (!lowerer.isStdlibMember(access)) return null;
   const def = lowerer.unions.get(recvT.unionId);
+  if (
+    utf8Arg &&
+    !def?.arms.every((a) => a.kind === "string" || (a.kind === "bytes" && a.elem === "u8"))
+  )
+    return null;
   const stringable = def?.arms.every(
     (a) =>
       a.kind === "string" ||

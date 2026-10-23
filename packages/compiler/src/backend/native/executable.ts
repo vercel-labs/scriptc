@@ -181,7 +181,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   ),
   unit((u) => u.opts.assert || u.regex || u.opts.symbol, "scr_assert.c"),
   unit((u) => u.opts.inspect, "scr_inspect.c", "scr_console_native.c"),
-  unit((u) => u.opts.dynInvoke || u.opts.workers || u.nativeFetch, "scr_dyn_invoke.c"),
+  unit(
+    (u) => u.opts.dynInvoke || u.opts.workers || u.nativeFetch || u.opts.nodeIsland === true,
+    "scr_dyn_invoke.c",
+  ),
   // Buffer.prototype methods called on checked-dynamic values.
   unit((u) => u.opts.dynBuffer === true && u.opts.dynInvoke, "scr_bytes_dyn.c"),
   // Builtin functions read as values in JavaScript dependencies.

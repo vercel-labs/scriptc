@@ -17,7 +17,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SCR_NODE_BRIDGE_ABI 3u
+#define SCR_NODE_BRIDGE_ABI 4u
 /* The symbol a bridge library exports: `const ScrNodeBridge *(void)`. */
 #define SCR_NODE_BRIDGE_ENTRY "scr_node_bridge_v1"
 
@@ -87,6 +87,12 @@ typedef struct ScrNodeBridgeHost {
    * is calling in from (its main thread's or an async fiber's), for V8's
    * stack limit; 0 leaves V8's own. */
   uintptr_t (*stack_limit)(void);
+  /* The start (highest address) of the stack the caller runs on when the
+   * runtime provides it (Node's own stack), 0 for a thread's own stack.
+   * V8 scans the stack conservatively from the current position up to the
+   * start it records for the thread, so it must not record the thread's
+   * when JavaScript runs on the runtime's stack. */
+  uintptr_t (*stack_start)(void);
 } ScrNodeBridgeHost;
 
 typedef struct ScrNodeBridge {

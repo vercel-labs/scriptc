@@ -23,7 +23,7 @@ import { findInstalledLibnodePack, hostLibnodeTarget, libnodePackPackage } from 
 export const NODE_ISLAND_MIN_NODE = "24.13.1";
 
 /** The bridge ABI this compiler's runtime speaks (scr_node_bridge.h). */
-export const NODE_BRIDGE_ABI = 3;
+export const NODE_BRIDGE_ABI = 4;
 
 /** The prefix of a recorded path relative to the executable's directory. */
 export const ORIGIN = "$ORIGIN/";

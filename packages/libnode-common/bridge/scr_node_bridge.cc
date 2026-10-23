@@ -97,6 +97,12 @@ struct StackLimit {
   }
 };
 
+// The start of the runtime's stack when the caller runs on it (see the
+// v8::base::Stack definitions at the end of this file), else 0.
+uintptr_t HostStackStart() {
+  return g_host != nullptr && g_host->stack_start != nullptr ? g_host->stack_start() : 0;
+}
+
 Local<String> Utf8(Isolate *isolate, const char *text, size_t len) {
   return String::NewFromUtf8(isolate, text, NewStringType::kNormal, static_cast<int>(len))
       .ToLocalChecked();
@@ -614,6 +620,32 @@ const ScrNodeBridge kBridge = {
 };
 
 }  // namespace
+
+#if defined(__linux__)
+// V8 asks v8::base::Stack for the start of the current thread's stack when
+// it records the bound of its conservative stack scan (isolate creation,
+// Locker). libnode calls these exported functions through its PLT, and this
+// library precedes libnode in the lookup scope, so the definitions below
+// answer for it: the runtime's stack while the caller runs on it, else
+// libnode's own answer (RTLD_NEXT). Without them a garbage collection that
+// scans the stack while JavaScript runs on the runtime's stack walks from
+// that stack up to the main thread's and faults in the unmapped gap.
+// (macOS binds libnode's calls inside libnode; its packs need another way.)
+#define SCR_V8_STACK_START(fn, symbol)                                        \
+  extern "C" __attribute__((visibility("default"))) void *fn() __asm__(symbol); \
+  extern "C" void *fn() {                                                     \
+    static void *(*next)() = nullptr;                                         \
+    uintptr_t start = HostStackStart();                                       \
+    if (start != 0) return reinterpret_cast<void *>(start);                   \
+    if (next == nullptr) next = reinterpret_cast<void *(*)()>(dlsym(RTLD_NEXT, symbol)); \
+    return next != nullptr ? next() : nullptr;                                \
+  }
+SCR_V8_STACK_START(ScrV8GetStackStart, "_ZN2v84base5Stack13GetStackStartEv")
+SCR_V8_STACK_START(ScrV8GetStackStartUnchecked, "_ZN2v84base5Stack22GetStackStartUncheckedEv")
+SCR_V8_STACK_START(ScrV8ObtainCurrentThreadStackStart,
+                   "_ZN2v84base5Stack29ObtainCurrentThreadStackStartEv")
+#undef SCR_V8_STACK_START
+#endif
 
 extern "C" __attribute__((visibility("default"))) const ScrNodeBridge *scr_node_bridge_v1() {
   return &kBridge;

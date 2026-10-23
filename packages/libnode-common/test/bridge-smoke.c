@@ -45,9 +45,10 @@ static void listen(uint32_t event, const char *name, uint32_t listener, int add,
 }
 
 static uintptr_t stack_limit(void) { return 0; }
+static uintptr_t stack_start(void) { return 0; }
 
 static const ScrNodeBridgeHost host = {settle,          on_exit_code, run,   io_state, io_dispatch,
-                                       microtasks_done, listen,       stack_limit};
+                                       microtasks_done, listen,       stack_limit, stack_start};
 
 static void call(const ScrNodeBridge *b, uint32_t id, int sync, const char *module,
                  const char *name, const char *args) {

@@ -3,6 +3,7 @@
  * calls through the bridge with the runtime's embedded bootstrap. Needs a
  * pack in SCRIPTC_LIBNODE; required in the Linux x64 CI lanes
  * (tests/harness/libnode.ts). */
+import { bridgeAbi } from "../build-pack.mjs";
 import { execFile } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -45,7 +46,7 @@ exports.quit = (code) => process.exit(code);
   expect(result.stderr).toBe("");
   expect(result.stdout).toBe(
     [
-      "abi 3 ok 1",
+      `abi ${bridgeAbi()} ok 1`,
       "sync add -> R5",
       'sync fails -> T{"error":{"kind":2,"message":"out of range","code":"ERR_X"}}',
       `sync missing -> T{"error":{"kind":1,"message":"'missing' exported by './smoke.cjs' is not a function"}}`,

@@ -17,9 +17,20 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SCR_NODE_BRIDGE_ABI 7u
+#define SCR_NODE_BRIDGE_ABI 8u
 /* The symbol a bridge library exports: `const ScrNodeBridge *(void)`. */
 #define SCR_NODE_BRIDGE_ENTRY "scr_node_bridge_v1"
+
+/* Operations on Map and Set exports (host->export_op, NI-5b). */
+enum {
+  SCR_NODE_COLLECTION_GET = 0,
+  SCR_NODE_COLLECTION_SET = 1, /* Map#set, Set#add */
+  SCR_NODE_COLLECTION_HAS = 2,
+  SCR_NODE_COLLECTION_DELETE = 3,
+  SCR_NODE_COLLECTION_CLEAR = 4,
+  SCR_NODE_COLLECTION_SIZE = 5,
+  SCR_NODE_COLLECTION_ENTRIES = 6,
+};
 
 /* Kinds of runtime jobs the bridge schedules on Node's queues (`run`). */
 enum {
@@ -95,6 +106,8 @@ enum {
   SCR_NVF_CONSTRUCTOR = 32,
   SCR_NVF_BUFFER = 64, /* BYTES: a Buffer; DATAVIEW: a DataView */
   SCR_NVF_DATAVIEW = 128,
+  SCR_NVF_MAP = 256, /* EXPORT: a native Map (NI-5b) */
+  SCR_NVF_SET = 512, /* EXPORT: a native Set (NI-5b) */
 };
 /* BYTES element kinds: ScrBytesElem's numbering (scr_bytes.h). */
 typedef struct ScrNodeValue {
@@ -218,6 +231,11 @@ typedef struct ScrNodeBridgeHost {
   /* The exports in their temporal dead zone now, as SCR_NV_STRING JSON
    * [[mod, slot], ...]. */
   void (*shared_tdz)(ScrNodeValue *out);
+  /* A Map or Set export's operation (SCR_NODE_COLLECTION_*): 0 returned
+   * (*out), 1 threw. ENTRIES answers an array export: [key, value] pairs
+   * of a Map, the values of a Set. */
+  int (*export_op)(uint32_t id, uint32_t op, const ScrNodeValue *args, size_t argc,
+                   ScrNodeValue *out);
 } ScrNodeBridgeHost;
 
 typedef struct ScrNodeBridge {

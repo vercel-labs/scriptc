@@ -208,6 +208,16 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   /** NI-5: a class instance crossing into an island, with the builder of
    * its class's method table (run once per class). Answers the value. */
   "nodeIsland.classMethods": { argTypes: [DYN, DYN], result: DYN },
+  /** NI-5b: native classes extending island classes. subclass(base, name,
+   * ctor, fields, methods, getters, setters) makes the JavaScript class;
+   * superConstruct(box, args) is the native constructor's super(...);
+   * superMethod(base, this, name, args) is super.name(...); defineField
+   * defines an instance field; promisify is util.promisify in the island. */
+  "nodeIsland.subclass": { argTypes: [DYN, STRING, DYN, DYN, DYN, DYN, DYN], result: DYN },
+  "nodeIsland.superConstruct": { argTypes: [DYN, DYN], result: DYN },
+  "nodeIsland.superMethod": { argTypes: [DYN, DYN, STRING, DYN], result: DYN },
+  "nodeIsland.defineField": { argTypes: [DYN, STRING, DYN], result: VOID },
+  "nodeIsland.promisify": { argTypes: [DYN], result: DYN },
   /** NI-6 shared modules: registers a module the program shares with its
    * islands (real path, exports JSON, accessor); the TDZ sentinel an
    * accessor answers; the method table and constructor helper of an
@@ -216,6 +226,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "nodeIsland.share": { argTypes: [STRING, STRING, DYN], result: VOID },
   "nodeIsland.sharedTdz": { argTypes: [], result: DYN },
   "nodeIsland.classMethodsOf": { argTypes: [DYN, DYN, DYN], result: DYN },
+  /** `v instanceof Error` (or a builtin Error subclass) for an island value. */
+  "nodeIsland.instanceofGlobal": { argTypes: [DYN, STRING], result: BOOL },
+  /** Whether a dyn value is an island handle (never loads Node). */
+  "nodeIsland.isHandle": { argTypes: [DYN], result: BOOL },
   /** Island arrays of copied values as copies (a result, or an awaited
    * promise's value). */
   "nodeIsland.copyArrays": { argTypes: [DYN], result: DYN },

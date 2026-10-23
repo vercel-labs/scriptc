@@ -1600,6 +1600,9 @@ typedef struct ScrDynHandleOps {
   ScrDyn *(*rejected)(void);
 } ScrDynHandleOps;
 
+/* ToPrimitive hints (scr_ni_to_primitive, Node island objects). */
+enum { SCR_DYN_HINT_DEFAULT = 0, SCR_DYN_HINT_NUMBER = 1, SCR_DYN_HINT_STRING = 2 };
+
 /* The operations a Transform handle gives the stream unit (scr_stream.c):
  * the slot where the handle keeps its stream (+1) with the stream's
  * release, update() and final() over bytes (+1 Buffer, or NULL with the

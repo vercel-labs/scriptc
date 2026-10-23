@@ -50,6 +50,9 @@ typedef struct ScrNodeRef {
    * when the value already had one (identity split, traced). */
   void *stub;
   struct ScrNodeRef *alias;
+  /* NI-5d: a native subclass of an island class not created yet: the
+   * seven subclass arguments (retained), created on first need. */
+  ScrDyn **lazy;
 } ScrNodeRef;
 
 static ScrNodeRef **ni_refs = NULL; /* by bridge id */
@@ -180,6 +183,13 @@ static void *nh_ref_retain_v(void *h) {
   return h;
 }
 
+static void nh_lazy_free(ScrNodeRef *ref) {
+  if (ref->lazy == NULL) return;
+  for (int i = 0; i < 7; i++) scr_dyn_release(ref->lazy[i]);
+  free(ref->lazy);
+  ref->lazy = NULL;
+}
+
 static void nh_ref_release(ScrNodeRef *ref) {
   if (--ref->rc != 0) return;
   if (ref->alias != NULL) {
@@ -188,6 +198,7 @@ static void nh_ref_release(ScrNodeRef *ref) {
     return;
   }
   if (ref->id == 0) { /* a stub never materialized, or a transplanted ref */
+    nh_lazy_free(ref);
     free(ref);
     return;
   }
@@ -281,7 +292,54 @@ bool scr_ni_stub_reconcile(ScrDyn *stub, ScrDyn *real) {
 /* A stub whose Node value is needed: starting Node materializes every
  * deferred module (scr_node_island_boot.c), after which the ref is real.
  * False with the module's load error pending. */
+ScrDyn *scr_ni_lazy_subclass_new(ScrDyn *const *args) {
+  ScrNodeRef *ref = calloc(1, sizeof *ref);
+  ScrDyn **lazy = malloc(7 * sizeof *lazy);
+  if (ref == NULL || lazy == NULL) nh_oom();
+  for (int i = 0; i < 7; i++) lazy[i] = scr_dyn_retain(args[i]);
+  ref->rc = 1;
+  ref->flags = SCR_NVF_FUNCTION | SCR_NVF_CONSTRUCTOR;
+  ref->lazy = lazy;
+  ScrDyn *box = scr_dyn_new_handle(ref, SCR_DYNH_NODE_ISLAND);
+  ref->rc--; /* the box holds the only reference */
+  return box;
+}
+
+static bool nh_lazy_is(const ScrDyn *value) {
+  return scr_ni_is_handle(value) && ((ScrNodeRef *)value->v.handle.ptr)->lazy != NULL;
+}
+
+/* Creates a lazy subclass now (its base materializes first, as the
+ * conversion of the base argument needs it) and makes the lazy ref the
+ * class's handle, so the box the program holds is the class. */
+static bool nh_lazy_create(ScrNodeRef *ref) {
+  ScrDyn **lazy = ref->lazy;
+  ref->lazy = NULL;
+  ScrDyn *real = scr_ni_subclass_create(lazy);
+  if (real == NULL || !scr_ni_is_handle(real)) {
+    ref->lazy = lazy;
+    scr_dyn_release(real);
+    return false;
+  }
+  ScrNodeRef *r = real->v.handle.ptr;
+  ref->id = r->id;
+  ref->flags = r->flags;
+  ni_refs[r->id] = ref;
+  real->v.handle.ptr = ref;
+  ref->rc++;
+  r->id = 0;
+  r->rc = 0;
+  free(r);
+  scr_dyn_release(real);
+  for (int i = 0; i < 7; i++) scr_dyn_release(lazy[i]);
+  free(lazy);
+  if (getenv("SCRIPTC_NODE_ISLANDS_TRACE") != NULL)
+    fprintf(stderr, "[node-islands] created native subclass (id %u)\n", ref->id);
+  return true;
+}
+
 static bool nh_live(ScrNodeRef *ref) {
+  if (ref->lazy != NULL) return nh_lazy_create(ref);
   if (ref->stub == NULL) return true;
   void *stub = ref->stub;
   scr_ni_bridge();
@@ -796,10 +854,24 @@ static bool nh_receiver(ScrDyn *obj, uint32_t *id, const char *what) {
 static ScrDyn *nh_load(ScrStr *path, int esm) {
   nh_bridge();
   nh_enter();
-  char *p = malloc(path->len + 1);
+  /* A recorded `$ORIGIN/` path (`--libnode=beside` packaging) names a
+   * file beside the executable, whatever the working directory. */
+  static const char origin[] = "$ORIGIN/";
+  size_t skip = 0, dirlen = 0;
+  ScrStr *self = NULL;
+  if (path->len >= sizeof origin - 1 && memcmp(path->data, origin, sizeof origin - 1) == 0) {
+    skip = sizeof origin - 1;
+    self = scr_process_exec_path();
+    dirlen = self->len;
+    while (dirlen > 0 && self->data[dirlen - 1] != '/') dirlen--;
+  }
+  size_t len = dirlen + path->len - skip;
+  char *p = malloc(len + 1);
   if (p == NULL) nh_oom();
-  memcpy(p, path->data, path->len);
-  p[path->len] = '\0';
+  if (dirlen > 0) memcpy(p, self->data, dirlen);
+  memcpy(p + dirlen, path->data + skip, path->len - skip);
+  p[len] = '\0';
+  if (self != NULL) scr_str_release(self);
   ScrNodeValue out;
   NhCall c = {.op = NH_LOAD, .path = p, .mode = esm, .out = &out};
   nh_run(&c);
@@ -829,7 +901,7 @@ ScrPromise *scr_ni_import(ScrStr *path) {
 }
 
 ScrDyn *scr_ni_get(ScrDyn *obj, ScrDyn *key) {
-  if (key != NULL && key->kind == SCR_DYN_STR && scr_ni_stub_of(obj) != NULL)
+  if (key != NULL && key->kind == SCR_DYN_STR && (scr_ni_stub_of(obj) != NULL || nh_lazy_is(obj)))
     return scr_ni_get_str(obj, key->v.str->data, key->v.str->len);
   uint32_t id;
   if (!nh_receiver(obj, &id, "a property read")) return NULL;
@@ -847,6 +919,9 @@ ScrDyn *scr_ni_get(ScrDyn *obj, ScrDyn *key) {
 }
 
 ScrDyn *scr_ni_get_str(ScrDyn *obj, const char *key, size_t len) {
+  /* A lazy subclass answers its name without creating the class. */
+  if (nh_lazy_is(obj) && len == 4 && memcmp(key, "name", 4) == 0)
+    return scr_dyn_retain(((ScrNodeRef *)obj->v.handle.ptr)->lazy[1]);
   void *stub = scr_ni_stub_of(obj);
   if (stub != NULL && scr_ni_bridge_loaded() == NULL) {
     /* Before Node starts, the interface snapshot answers what it holds. */
@@ -1008,6 +1083,9 @@ int scr_ni_instanceof(ScrDyn *value, ScrDyn *ctor) {
   if (stub != NULL && scr_ni_bridge_loaded() == NULL && !scr_ni_is_handle(value) &&
       scr_ni_boot_plain_class(stub))
     return 0;
+  /* A lazy subclass has no instances yet, and a native value is never one
+   * (its prototype chain is the subclass's own). */
+  if (nh_lazy_is(ctor) && !scr_ni_is_handle(value)) return 0;
   uint32_t id;
   if (!nh_receiver(ctor, &id, "instanceof")) return -1;
   nh_enter();
@@ -1265,6 +1343,68 @@ static ScrDyn *nh_op_symbol_get(void *h, const ScrDyn *key) {
   return result;
 }
 
+/* The host's ToPrimitive (scr_node_island_host.cjs), loaded once. */
+static ScrDyn *nh_to_primitive_fn = NULL;
+
+/* ToPrimitive of an island object, run by V8: Symbol.toPrimitive, then
+ * toString/valueOf in the hint's order, with V8's TypeErrors. */
+ScrDyn *scr_ni_to_primitive(const ScrDyn *self, int hint) {
+  if (nh_to_primitive_fn == NULL) {
+    ScrStr *name = scr_str_new("scriptc:toPrimitive", 19);
+    nh_to_primitive_fn = nh_load(name, 0);
+    scr_str_release(name);
+    if (nh_to_primitive_fn == NULL) return NULL;
+  }
+  static const char *const hints[] = {"default", "number", "string"};
+  const char *text = hints[hint >= 0 && hint <= 2 ? hint : 0];
+  ScrStr *hs = scr_str_new(text, strlen(text));
+  ScrDyn *args[2] = {(ScrDyn *)self, scr_dyn_new_str(hs)};
+  scr_str_release(hs);
+  ScrDyn *result = scr_ni_call(nh_to_primitive_fn, scr_dyn_undefined(), args, 2);
+  scr_dyn_release(args[1]);
+  return result;
+}
+
+/* The host's spread helper (`[...value]`), loaded once. */
+static ScrDyn *nh_spread_fn = NULL;
+
+/* Spread of an island value (`[...x]`, `f(...x)`): V8 drives the
+ * iterator protocol, and the elements cross one by one into a fresh dyn
+ * array (objects stay handles). +1, or NULL with the exception pending. */
+static ScrDyn *nh_op_iter_pack(void *h) {
+  if (nh_spread_fn == NULL) {
+    ScrStr *name = scr_str_new("scriptc:spread", 14);
+    nh_spread_fn = nh_load(name, 0);
+    scr_str_release(name);
+    if (nh_spread_fn == NULL) return NULL;
+  }
+  ScrDyn *box = scr_dyn_new_handle(h, SCR_DYNH_NODE_ISLAND);
+  ScrDyn *items = scr_ni_call(nh_spread_fn, scr_dyn_undefined(), &box, 1);
+  scr_dyn_release(box);
+  if (items == NULL) return NULL;
+  ScrDyn *length = scr_ni_get_str(items, "length", 6);
+  if (length == NULL) {
+    scr_dyn_release(items);
+    return NULL;
+  }
+  size_t n = length->kind == SCR_DYN_NUM && length->v.num > 0 ? (size_t)length->v.num : 0;
+  scr_dyn_release(length);
+  ScrDyn *out = scr_dyn_new_arr();
+  for (size_t i = 0; i < n; i++) {
+    ScrDyn *key = scr_dyn_new_num((double)i);
+    ScrDyn *item = scr_ni_get(items, key);
+    scr_dyn_release(key);
+    if (item == NULL) {
+      scr_dyn_release(out);
+      scr_dyn_release(items);
+      return NULL;
+    }
+    scr_dyn_arr_push(out, item);
+  }
+  scr_dyn_release(items);
+  return out;
+}
+
 static const ScrDynHandleOps nh_ops = {
     .cls = "Object",
     .retain = nh_ref_retain_v,
@@ -1273,6 +1413,7 @@ static const ScrDynHandleOps nh_ops = {
     .get = nh_op_get,
     .set = nh_op_set,
     .symbol_get = nh_op_symbol_get,
+    .iter_pack = nh_op_iter_pack,
 };
 
 /* At exit: what the unit itself still holds (pins, unsettled waiters,
@@ -1283,6 +1424,14 @@ static void nh_cleanup(void) {
   if (nh_inspect_fn != NULL) {
     scr_dyn_release(nh_inspect_fn);
     nh_inspect_fn = NULL;
+  }
+  if (nh_to_primitive_fn != NULL) {
+    scr_dyn_release(nh_to_primitive_fn);
+    nh_to_primitive_fn = NULL;
+  }
+  if (nh_spread_fn != NULL) {
+    scr_dyn_release(nh_spread_fn);
+    nh_spread_fn = NULL;
   }
   while (nh_npins > 0) {
     NhPin pin = nh_pins[--nh_npins];

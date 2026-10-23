@@ -497,6 +497,7 @@ static const ScrNodeBridgeHost ni_host = {
     &scr_ni_host_shared_table,
     &scr_ni_host_shared_get,
     &scr_ni_host_shared_tdz,
+    &scr_ni_host_export_op,
 };
 
 typedef struct {

@@ -18,31 +18,39 @@ import { dirname, join } from "node:path";
 import * as ts from "../ts7/adapter.js";
 import { locOf } from "../program.js";
 import type { NodeApiMember } from "../node-api-import.js";
-import { PoisonError, type Lowerer } from "./lowerer.js";
+import { PoisonError, newFnCtx, type Lowerer } from "./lowerer.js";
 import {
   BOOL,
   DYN,
   FOREIGN,
   STRING,
+  VOID,
   type IrExpr,
   type IrGlobal,
   type IrStmt,
   type IrType,
   type SrcLoc,
 } from "../../ir/ir.js";
-import { varRef } from "../../ir/build.js";
+import { dynUndefinedExpr, varRef } from "../../ir/build.js";
 import { classMethodValue } from "./class-method-values.js";
 import { funcTypeFromParamShapes } from "./call-signatures.js";
 import { resolveBareModule } from "../resolve.js";
-import { nodeIslandBoundaryDiag } from "../../diagnostics/diagnostic.js";
+import {
+  nativeSubclassOfIslandDiag,
+  nodeIslandBoundaryDiag,
+} from "../../diagnostics/diagnostic.js";
 import {
   crossingOf,
   isForeignType,
+  isIslandSubclassDecl,
+  markIslandSubclass,
   islandPackageOfFile,
   type NodeIslandSet,
 } from "../../node-islands/boundary.js";
 import { stripTypeWrappers } from "./typed-arguments.js";
 import { thenReader } from "./checked-promise-all.js";
+import { dynCompoundValue } from "./lower-exprs.js";
+import { COMPOUND_ASSIGN_OPS } from "./surfaces.js";
 
 const JSON_HINT =
   "only JSON data (numbers, strings, booleans, null, arrays, plain objects of those, and unknown) crosses into Node.js in this version";
@@ -493,9 +501,9 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
     return mapped.inner.kind === "dyn" ? promise : lowerer.coerceToExpected(promise, mapped);
   }
   // Arrays of copied values (or arrays of those) cross as copies of the
-  // island array, directly or as an awaited promise's value; the checked
-  // cast then meets the copy. A native array that crossed in comes back as
-  // itself.
+  // island array as an awaited promise's value, and directly where they do
+  // not stay handles (below); the checked cast then meets the copy. A
+  // native array that crossed in comes back as itself.
   if (mapped.kind === "promise" && copiedArrayType(lowerer, mapped.inner)) {
     const promise: IrExpr = {
       kind: "libCall",
@@ -506,6 +514,16 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
     };
     return lowerer.coerceToExpected(promise, mapped);
   }
+  // NI-5: a native value the program passed in comes back as itself (an
+  // export); the checked cast unboxes it, and anything else fails the cast
+  // (types don't lie).
+  // An array, tuple, Map or Set the island does not declare stays a handle
+  // where the program only uses it through island operations (a native
+  // array that crossed in and came back answers them too: member
+  // operations follow the value).
+  if (!copiedType(lowerer, mapped) && containerType(lowerer, tsType) && handleUseOk(lowerer, node))
+    return raw;
+  // Otherwise an array of copied values is a copy (above).
   if (copiedArrayType(lowerer, mapped)) {
     const copy: IrExpr = {
       kind: "libCall",
@@ -516,9 +534,6 @@ function fromIsland(lowerer: Lowerer, raw: IrExpr, node: ts.Expression): IrExpr 
     };
     return lowerer.coerceToExpected(copy, mapped);
   }
-  // NI-5: a native value the program passed in comes back as itself (an
-  // export); the checked cast unboxes it, and anything else fails the cast
-  // (types don't lie).
   if (!copiedType(lowerer, mapped) && exportedByReference(lowerer, tsType))
     return lowerer.coerceToExpected(raw, mapped);
   if (!copiedType(lowerer, mapped))
@@ -570,8 +585,178 @@ function isForeignExpr(lowerer: Lowerer, node: ts.Expression): boolean {
   const islands = lowerer.nodeIslands;
   if (islands === null) return false;
   const inner = stripTypeWrappers(node);
+  // super(...) and super.m(...) of an island subclass lower on their own.
+  if (inner.kind === ts.SyntaxKind.SuperKeyword) return false;
+  // `this` in an island subclass member (its checker type is the
+  // polymorphic `this` type parameter).
+  if (inner.kind === ts.SyntaxKind.ThisKeyword && islandSubclassMember(inner) !== null) return true;
   if (ts.isIdentifier(inner) && islandBindingOf(lowerer, inner) !== null) return true;
-  return isForeignType(islands, lowerer.typeOf(inner), lowerer.checker);
+  if (isIslandPromisifyCall(lowerer, inner)) return true;
+  if (ts.isIdentifier(inner)) {
+    // `const f = util.promisify(islandFn)`: f is an island function.
+    const decl = lowerer.resolveValueSymbol(inner)?.declarations[0];
+    if (
+      decl !== undefined &&
+      ts.isVariableDeclaration(decl) &&
+      decl.initializer !== undefined &&
+      (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0 &&
+      isIslandPromisifyCall(lowerer, stripTypeWrappers(decl.initializer))
+    )
+      return true;
+  }
+  if (isForeignType(islands, lowerer.typeOf(inner), lowerer.checker)) return true;
+  if (ts.isIdentifier(inner)) return islandHandleBinding(lowerer, inner);
+  return isIslandHandleExpr(lowerer, inner);
+}
+
+/** Whether a value of TypeScript type `type` coming out of an island is
+ * an object the island does not declare and the program cannot take by
+ * reference natively (arrays, tuples, Maps, Sets): it stays a handle. */
+function undeclaredHandleType(lowerer: Lowerer, type: ts.Type): boolean {
+  if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return false;
+  if (isForeignType(lowerer.nodeIslands!, type, lowerer.checker)) return false;
+  const mapped = lowerer.mapTypeOf(type);
+  if (mapped === null || mapped.kind === "dyn" || mapped.kind === "void") return false;
+  if (mapped.kind === "promise" || copiedType(lowerer, mapped)) return false;
+  return containerType(lowerer, type);
+}
+
+/** Arrays, tuples, Maps and Sets (every arm of a union, nullish arms
+ * aside): the object types an island hands back without declaring them. */
+function containerType(lowerer: Lowerer, type: ts.Type): boolean {
+  if (type.isUnionType())
+    return ts
+      .constituentTypes(type)
+      .every(
+        (t) =>
+          (t.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0 ||
+          containerType(lowerer, t),
+      );
+  if ((type.flags & ts.TypeFlags.Object) === 0) return false;
+  if (lowerer.checker.isArrayType(type) || lowerer.checker.isTupleType(type)) return true;
+  const name = type.getSymbol()?.escapedName;
+  return name === "Map" || name === "Set";
+}
+
+/** A member read, call, index or `new` whose receiver or callee is an
+ * island value. */
+function islandRooted(lowerer: Lowerer, node: ts.Expression): boolean {
+  const e = stripTypeWrappers(node);
+  if (ts.isCallExpression(e)) {
+    if (e.expression.kind === ts.SyntaxKind.ImportKeyword) return false;
+    const callee = stripTypeWrappers(e.expression);
+    if (ts.isPropertyAccessExpression(callee) || ts.isElementAccessExpression(callee))
+      return isForeignExpr(lowerer, callee.expression);
+    return isForeignExpr(lowerer, callee);
+  }
+  if (ts.isPropertyAccessExpression(e) || ts.isElementAccessExpression(e) || ts.isNewExpression(e))
+    return isForeignExpr(lowerer, e.expression);
+  return false;
+}
+
+/** An island operation whose result is an undeclared object (a handle). */
+function isIslandHandleExpr(lowerer: Lowerer, node: ts.Expression): boolean {
+  return islandRooted(lowerer, node) && undeclaredHandleType(lowerer, lowerer.typeOf(node));
+}
+
+/** Whether `name` names a `const` initialized with an undeclared island
+ * object (`const files = pkg.list()`): the binding holds the handle, and
+ * every use goes through island operations. */
+export function islandHandleBinding(lowerer: Lowerer, name: ts.Identifier): boolean {
+  if (lowerer.nodeIslands === null) return false;
+  const symbol = lowerer.resolveValueSymbol(name) ?? lowerer.checker.getSymbolAtLocation(name);
+  if (symbol === undefined || symbol === null) return false;
+  const known = lowerer.islandHandleBindings.get(symbol);
+  if (known !== undefined) return known;
+  lowerer.islandHandleBindings.set(symbol, false);
+  const d = symbol.valueDeclaration;
+  const result =
+    d !== undefined &&
+    ts.isVariableDeclaration(d) &&
+    ts.isIdentifier(d.name) &&
+    d.initializer !== undefined &&
+    ts.isVariableDeclarationList(d.parent) &&
+    (d.parent.flags & ts.NodeFlags.Const) !== 0 &&
+    isIslandHandleExpr(lowerer, d.initializer);
+  lowerer.islandHandleBindings.set(symbol, result);
+  return result;
+}
+
+/** `a === b` / `a !== b` where both sides are island values and one is
+ * an undeclared island object (a handle): handle identity. */
+function isIslandIdentityTest(lowerer: Lowerer, e: ts.BinaryExpression): boolean {
+  const op = e.operatorToken.kind;
+  if (
+    op !== ts.SyntaxKind.EqualsEqualsEqualsToken &&
+    op !== ts.SyntaxKind.ExclamationEqualsEqualsToken
+  )
+    return false;
+  const handle = (x: ts.Expression): boolean => {
+    const inner = stripTypeWrappers(x);
+    return (
+      (ts.isIdentifier(inner) && islandHandleBinding(lowerer, inner)) ||
+      isIslandHandleExpr(lowerer, inner)
+    );
+  };
+  return (
+    (handle(e.left) || handle(e.right)) &&
+    isForeignExpr(lowerer, e.left) &&
+    isForeignExpr(lowerer, e.right)
+  );
+}
+
+/** Whether an island handle at `node` is used only through island
+ * operations: as a receiver or callee, an argument of an island call, a
+ * spread the island lowering flattens, a handle binding's initializer, or
+ * a discarded value. */
+function handleUseOk(lowerer: Lowerer, node: ts.Expression): boolean {
+  let n: ts.Node = node;
+  while (
+    n.parent !== undefined &&
+    (ts.isParenthesizedExpression(n.parent) ||
+      ts.isAsExpression(n.parent) ||
+      ts.isNonNullExpression(n.parent) ||
+      ts.isSatisfiesExpression(n.parent))
+  )
+    n = n.parent;
+  const p = n.parent;
+  if (p === undefined) return false;
+  if ((ts.isPropertyAccessExpression(p) || ts.isElementAccessExpression(p)) && p.expression === n)
+    return true;
+  const islandCallee = (callee: ts.Expression): boolean => {
+    const c = stripTypeWrappers(callee);
+    if (ts.isPropertyAccessExpression(c) || ts.isElementAccessExpression(c))
+      return isForeignExpr(lowerer, c.expression);
+    return isForeignExpr(lowerer, c);
+  };
+  if (ts.isCallExpression(p) || ts.isNewExpression(p))
+    return p.expression === n || islandCallee(p.expression);
+  if (ts.isSpreadElement(p)) {
+    const q = p.parent;
+    if (ts.isArrayLiteralExpression(q)) return true;
+    return (ts.isCallExpression(q) || ts.isNewExpression(q)) && islandCallee(q.expression);
+  }
+  if (ts.isVariableDeclaration(p) && p.initializer === n && ts.isIdentifier(p.name))
+    return islandHandleBinding(lowerer, p.name);
+  if (ts.isBinaryExpression(p) && isIslandIdentityTest(lowerer, p)) return true;
+  return ts.isExpressionStatement(p) || ts.isVoidExpression(p);
+}
+
+/** `util.promisify(f)` (or the named `promisify` import of node:util) of an
+ * island function: Node's own promisify runs in the island, so the result
+ * is an island function too (custom promisify symbols, callback order). */
+export function isIslandPromisifyCall(lowerer: Lowerer, node: ts.Node): node is ts.CallExpression {
+  if (lowerer.nodeIslands === null) return false;
+  if (!ts.isCallExpression(node) || node.questionDotToken || node.arguments.nodes.length !== 1)
+    return false;
+  const callee = node.expression;
+  const bi = ts.isIdentifier(callee)
+    ? lowerer.builtinImportOf(callee)
+    : ts.isPropertyAccessExpression(callee)
+      ? lowerer.builtinMemberOf(callee)
+      : null;
+  if (!bi || bi.module !== "util" || bi.member !== "promisify") return false;
+  return isForeignExpr(lowerer, node.arguments.nodes[0]!);
 }
 
 /** A value crossing INTO the island (an argument or an assigned value), as
@@ -582,6 +767,11 @@ function toIsland(lowerer: Lowerer, node: ts.Expression): IrExpr {
   if (ts.isObjectLiteralExpression(inner) || ts.isArrayLiteralExpression(inner)) {
     return freshLiteral(lowerer, inner);
   }
+  if (
+    (ts.isIdentifier(inner) && islandHandleBinding(lowerer, inner)) ||
+    isIslandHandleExpr(lowerer, inner)
+  )
+    return lowerer.coerceToExpected(lowerer.lowerExpr(node), DYN);
   const crossing = crossingOf(islands, lowerer.typeOf(node), lowerer.checker);
   switch (crossing) {
     case "copy":
@@ -765,9 +955,10 @@ function exportedByReference(lowerer: Lowerer, type: ts.Type): boolean {
           exportedByReference(lowerer, t),
       );
   if ((type.flags & ts.TypeFlags.Object) === 0) return false;
-  if (checker.isArrayType(type) || checker.isTupleType(type)) return false;
+  // Arrays and tuples cross as Proxies over the native array (NI-5b).
+  void checker;
   const name = type.getSymbol()?.escapedName;
-  if (name === "Map" || name === "Set" || name === "WeakMap" || name === "WeakSet") return false;
+  if (name === "WeakMap" || name === "WeakSet") return false;
   return true;
 }
 
@@ -810,8 +1001,125 @@ function freshLiteral(
 }
 
 function argsOf(lowerer: Lowerer, args: readonly ts.Expression[], loc: SrcLoc): IrExpr {
-  for (const a of args) if (ts.isSpreadElement(a)) boundaryFail(lowerer, "spread arguments", a);
+  if (args.some((a) => ts.isSpreadElement(a))) return spreadPack(lowerer, args, loc);
   return { kind: "dynArrLit", elems: args.map((a) => toIsland(lowerer, a)), type: DYN, loc };
+}
+
+/** A fresh dyn array of `items` with their spreads flattened in order
+ * (JavaScript's ArgumentListEvaluation / array literal spread): plain
+ * items cross as island arguments, spread sources (native arrays or
+ * island iterables) flatten through the runtime's spread walk. */
+function spreadPack(lowerer: Lowerer, items: readonly ts.Expression[], loc: SrcLoc): IrExpr {
+  const pack = lowerer.declareHiddenLocal("%islandSpread", DYN);
+  const ref = varRef(pack.id, DYN, loc);
+  const stmts: IrStmt[] = [
+    {
+      kind: "varDecl",
+      localId: pack.id,
+      init: { kind: "dynArrLit", elems: [], type: DYN, loc },
+      loc,
+    },
+  ];
+  for (const item of items) {
+    if (ts.isOmittedExpression(item)) boundaryFail(lowerer, "a hole in an array literal", item);
+    const spread = ts.isSpreadElement(item);
+    const value = spread
+      ? lowerer.coerceToExpected(lowerer.lowerExpr(item.expression), DYN)
+      : toIsland(lowerer, item);
+    stmts.push({
+      kind: "exprStmt",
+      expr: {
+        kind: "libCall",
+        fn: spread ? "dyn.packPushSpreadIter" : "dyn.packPush",
+        args: [ref, value],
+        type: { kind: "void" },
+        loc,
+      },
+      loc,
+    });
+  }
+  return { kind: "seqExpr", stmts, result: ref, type: DYN, loc };
+}
+
+/** Optional-chain dots on island receivers the island lowering is
+ * currently lowering the guarded body of. */
+const handledDots = new Set<ts.Node>();
+
+/** The outermost unhandled `?.` in `expr`'s access spine whose receiver
+ * is an island value: that dot guards the whole chain. */
+function islandChainDot(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+): { dot: ts.Expression; recv: ts.Expression } | null {
+  let cur: ts.Expression = expr;
+  for (;;) {
+    if (lowerer.chainRecvByNode.has(cur)) return null;
+    if (ts.isNonNullExpression(cur)) {
+      cur = cur.expression;
+      continue;
+    }
+    if (
+      ts.isCallExpression(cur) ||
+      ts.isPropertyAccessExpression(cur) ||
+      ts.isElementAccessExpression(cur)
+    ) {
+      if (cur.questionDotToken && !handledDots.has(cur)) {
+        return isForeignExpr(lowerer, cur.expression) ? { dot: cur, recv: cur.expression } : null;
+      }
+      cur = cur.expression;
+      continue;
+    }
+    return null;
+  }
+}
+
+/** An optional chain guarded by an island receiver: the receiver
+ * evaluates once; nullish answers undefined, anything else runs the
+ * whole chain with the receiver read back from the guard. */
+function lowerIslandChain(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+  chain: { dot: ts.Expression; recv: ts.Expression },
+  loc: SrcLoc,
+): IrExpr {
+  lowerer.usesNodeIsland = true;
+  const stmts: IrStmt[] = [];
+  const run = (lower: () => IrExpr): IrExpr => {
+    // `x.m?.()`: the method's receiver evaluates once, before the guard.
+    const recv = stripTypeWrappers(chain.recv);
+    if (
+      ts.isCallExpression(chain.dot) &&
+      (ts.isPropertyAccessExpression(recv) || ts.isElementAccessExpression(recv))
+    ) {
+      const object = lowerer.coerceToExpected(lowerer.lowerExpr(recv.expression), DYN);
+      const local = lowerer.declareHiddenLocal("%islandThis", DYN);
+      stmts.push({ kind: "varDecl", localId: local.id, init: object, loc });
+      return lowerer.withExpressionOverride(recv.expression, varRef(local.id, DYN, loc), lower);
+    }
+    return lower();
+  };
+  const value = run(() => {
+    const id = lowerer.closureName(loc, "", "chain");
+    const receiver = lowerer.coerceToExpected(lowerer.lowerExpr(chain.recv), DYN);
+    const ref: IrExpr = { kind: "chainRecv", id, type: DYN, loc };
+    handledDots.add(chain.dot);
+    let body: IrExpr;
+    try {
+      body = lowerer.withExpressionOverride(chain.recv, ref, () => lowerer.lowerExpr(expr));
+    } finally {
+      handledDots.delete(chain.dot);
+    }
+    return {
+      kind: "optChain",
+      id,
+      receiver,
+      body: lowerer.coerceToExpected(body, DYN),
+      type: DYN,
+      loc,
+    };
+  });
+  const result = fromIsland(lowerer, value, expr);
+  return stmts.length > 0 ? { kind: "seqExpr", stmts, result, type: result.type, loc } : result;
 }
 
 /** Expressions on island values (the lowerExpr hook; null: not an island
@@ -820,15 +1128,54 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
   if (lowerer.nodeIslands === null) return null;
   const loc = locOf(expr);
   if (ts.isIdentifier(expr)) {
+    const subclass = islandSubclassGlobal(lowerer, expr);
+    if (subclass !== null) {
+      lowerer.usesNodeIsland = true;
+      return varRef(subclass.id, DYN, loc);
+    }
     const b = islandBindingOf(lowerer, expr);
-    if (b === null) return null;
+    if (b === null) {
+      if (!islandHandleBinding(lowerer, expr)) return null;
+      if (!handleUseOk(lowerer, expr))
+        boundaryFail(
+          lowerer,
+          `an island value of type '${lowerer.checker.typeToString(lowerer.typeOf(expr))}' used as a native value (island arrays, Maps and Sets stay handles: read members, call methods, index or spread them)`,
+          expr,
+        );
+      lowerer.usesNodeIsland = true;
+      const g = lowerer.globalOf(expr);
+      if (g === null) return null; // the local is declared dyn
+      g.type = DYN;
+      return varRef(g.id, DYN, loc);
+    }
     lowerer.usesNodeIsland = true;
     return fromIsland(lowerer, islandBindingValue(lowerer, b, expr, loc), expr);
   }
+  if (
+    ts.isPropertyAccessExpression(expr) ||
+    ts.isElementAccessExpression(expr) ||
+    ts.isCallExpression(expr)
+  ) {
+    const chain = islandChainDot(lowerer, expr);
+    if (chain !== null) return lowerIslandChain(lowerer, expr, chain, loc);
+  }
+  if (ts.isArrayLiteralExpression(expr)) {
+    if (
+      !expr.elements.nodes.some(
+        (el) => ts.isSpreadElement(el) && isForeignExpr(lowerer, el.expression),
+      )
+    )
+      return null;
+    lowerer.usesNodeIsland = true;
+    const mapped = lowerer.mapTypeOf(lowerer.typeOf(expr));
+    if (mapped === null) boundaryFail(lowerer, "an array literal spreading an island value", expr);
+    const pack = spreadPack(lowerer, expr.elements.nodes, loc);
+    return mapped.kind === "dyn" ? pack : lowerer.coerceToExpected(pack, mapped);
+  }
   if (ts.isPropertyAccessExpression(expr) && ts.isIdentifier(expr.name)) {
+    const caughtRead = islandCaughtRead(lowerer, expr);
+    if (caughtRead !== null) return caughtRead;
     if (!isForeignExpr(lowerer, expr.expression)) return null;
-    if (expr.questionDotToken)
-      boundaryFail(lowerer, "an optional member read on an island value", expr);
     lowerer.usesNodeIsland = true;
     const target = islandReceiver(lowerer, expr.expression, expr.name.text, loc);
     if (target.direct !== undefined) return fromIsland(lowerer, target.direct, expr);
@@ -836,8 +1183,6 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
   }
   if (ts.isElementAccessExpression(expr)) {
     if (!isForeignExpr(lowerer, expr.expression)) return null;
-    if (expr.questionDotToken)
-      boundaryFail(lowerer, "an optional member read on an island value", expr);
     lowerer.usesNodeIsland = true;
     const target = lowerer.lowerExpr(expr.expression);
     const key = toIsland(lowerer, expr.argumentExpression);
@@ -847,16 +1192,24 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
       expr,
     );
   }
+  if (ts.isCallExpression(expr) && isIslandPromisifyCall(lowerer, expr)) {
+    lowerer.usesNodeIsland = true;
+    return {
+      kind: "libCall",
+      fn: "nodeIsland.promisify",
+      args: [lowerer.coerceToExpected(lowerer.lowerExpr(expr.arguments.nodes[0]!), DYN)],
+      type: DYN,
+      loc,
+    };
+  }
   if (ts.isCallExpression(expr)) {
     const dynamicLoad = lowerIslandLoadCall(lowerer, expr, loc);
     if (dynamicLoad !== undefined) return dynamicLoad;
     const callee = stripTypeWrappers(expr.expression);
-    if (expr.questionDotToken) return null;
+    if (expr.questionDotToken && !handledDots.has(expr)) return null;
     const args = expr.arguments.nodes;
     if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.name)) {
       if (!isForeignExpr(lowerer, callee.expression)) return null;
-      if (callee.questionDotToken)
-        boundaryFail(lowerer, "an optional call on an island value", expr);
       lowerer.usesNodeIsland = true;
       const target = islandReceiver(lowerer, callee.expression, callee.name.text, loc);
       if (target.direct !== undefined) {
@@ -921,11 +1274,70 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
   }
   if (ts.isBinaryExpression(expr)) {
     const op = expr.operatorToken.kind;
+    if (op === ts.SyntaxKind.InstanceOfKeyword) {
+      const global = intrinsicErrorClassOf(lowerer, expr.right);
+      if (global !== null && !lowerer.islandInstanceofHandled.has(expr)) {
+        const name: IrExpr = { kind: "strLit", value: global, type: STRING, loc };
+        // An island value (an instance of a native subclass of an island
+        // error class, say) answers as in Node.
+        if (isForeignExpr(lowerer, expr.left)) {
+          lowerer.usesNodeIsland = true;
+          const value = lowerer.coerceToExpected(lowerer.lowerExpr(expr.left), DYN);
+          return {
+            kind: "libCall",
+            fn: "nodeIsland.instanceofGlobal",
+            args: [value, name],
+            type: BOOL,
+            loc,
+          };
+        }
+        // A dyn or caught value may hold one: the native test, else Node's.
+        const left = stripTypeWrappers(expr.left);
+        if (ts.isIdentifier(left)) {
+          const probe = lowerer.lowerExpr(left);
+          if (probe.type.kind === "dyn" || probe.type.kind === "caught") {
+            lowerer.islandInstanceofHandled.add(expr);
+            let native: IrExpr;
+            try {
+              native = lowerer.lowerExpr(expr);
+            } finally {
+              lowerer.islandInstanceofHandled.delete(expr);
+            }
+            lowerer.usesNodeIsland = true;
+            return {
+              kind: "logical",
+              op: "||",
+              left: native,
+              right: {
+                kind: "libCall",
+                fn: "nodeIsland.instanceofGlobal",
+                args: [lowerer.coerceToExpected(probe, DYN), name],
+                type: BOOL,
+                loc,
+              },
+              type: BOOL,
+              loc,
+            };
+          }
+        }
+      }
+    }
     if (op === ts.SyntaxKind.InstanceOfKeyword && isForeignExpr(lowerer, expr.right)) {
       lowerer.usesNodeIsland = true;
       const value = lowerer.coerceToExpected(lowerer.lowerExpr(expr.left), DYN);
       const ctor = lowerer.lowerExpr(expr.right);
       return { kind: "libCall", fn: "nodeIsland.instanceof", args: [value, ctor], type: BOOL, loc };
+    }
+    if (isIslandIdentityTest(lowerer, expr)) {
+      lowerer.usesNodeIsland = true;
+      return {
+        kind: "dynScalarEq",
+        left: lowerer.coerceToExpected(lowerer.lowerExpr(expr.left), DYN),
+        right: lowerer.coerceToExpected(lowerer.lowerExpr(expr.right), DYN),
+        ...(op === ts.SyntaxKind.ExclamationEqualsEqualsToken ? { negated: true as const } : {}),
+        type: BOOL,
+        loc,
+      };
     }
     if (op === ts.SyntaxKind.EqualsToken) {
       const left = stripTypeWrappers(expr.left);
@@ -971,10 +1383,70 @@ export function lowerIslandExpr(lowerer: Lowerer, expr: ts.Expression): IrExpr |
       (ts.isPropertyAccessExpression(left) || ts.isElementAccessExpression(left)) &&
       isForeignExpr(lowerer, left.expression)
     ) {
-      boundaryFail(lowerer, "a compound assignment to an island object's member", expr);
+      const cop = COMPOUND_ASSIGN_OPS[op];
+      if (cop === undefined)
+        boundaryFail(lowerer, "a logical assignment to an island object's member", expr);
+      return islandCompoundAssign(lowerer, expr, left, cop, loc);
     }
   }
   return null;
+}
+
+/** `obj.k op= v` / `obj[k] op= v` on an island object: the receiver and
+ * key evaluate once, then the read, the right side, the operator (with
+ * JavaScript's ToPrimitive order, in the runtime) and the write. */
+function islandCompoundAssign(
+  lowerer: Lowerer,
+  expr: ts.BinaryExpression,
+  left: ts.PropertyAccessExpression | ts.ElementAccessExpression,
+  op: NonNullable<(typeof COMPOUND_ASSIGN_OPS)[ts.SyntaxKind]>,
+  loc: SrcLoc,
+): IrExpr {
+  lowerer.usesNodeIsland = true;
+  const stmts: IrStmt[] = [];
+  const hold = (name: string, init: IrExpr): IrExpr => {
+    const local = lowerer.declareHiddenLocal(name, DYN);
+    stmts.push({ kind: "varDecl", localId: local.id, init, loc });
+    return varRef(local.id, DYN, loc);
+  };
+  const target = hold(
+    "%islandObj",
+    lowerer.coerceToExpected(lowerer.lowerExpr(left.expression), DYN),
+  );
+  const key = ts.isPropertyAccessExpression(left)
+    ? null
+    : hold("%islandKey", toIsland(lowerer, left.argumentExpression));
+  const name: IrExpr | null = ts.isPropertyAccessExpression(left)
+    ? { kind: "strLit", value: left.name.text, type: STRING, loc }
+    : null;
+  const old: IrExpr =
+    name !== null
+      ? { kind: "libCall", fn: "nodeIsland.get", args: [target, name], type: DYN, loc }
+      : { kind: "libCall", fn: "nodeIsland.getKey", args: [target, key!], type: DYN, loc };
+  const rhs = lowerer.coerceToExpected(lowerer.lowerExpr(expr.right), DYN);
+  const next = hold("%islandNext", dynCompoundValue(op, old, rhs, loc));
+  stmts.push({
+    kind: "exprStmt",
+    expr:
+      name !== null
+        ? {
+            kind: "libCall",
+            fn: "nodeIsland.set",
+            args: [target, name, next],
+            type: { kind: "void" },
+            loc,
+          }
+        : {
+            kind: "libCall",
+            fn: "nodeIsland.setKey",
+            args: [target, key!, next],
+            type: { kind: "void" },
+            loc,
+          },
+    loc,
+  });
+  const result = fromIsland(lowerer, next, expr);
+  return { kind: "seqExpr", stmts, result, type: result.type, loc };
 }
 
 /** The receiver of a member operation on an island value. A CommonJS
@@ -1032,4 +1504,350 @@ function lowerIslandLoadCall(
     };
   }
   return fromIsland(lowerer, loadIslandModule(path, loc), expr);
+}
+
+/* ── native classes extending island classes (scope-B NI-5b) ───────────
+ * `class Sub extends IslandBase { ... }` at module top level: the class is
+ * a JavaScript constructor (nodeIsland.subclass) whose instances
+ * Reflect.construct makes through the island base, so island code sees an
+ * instance of the base and `instanceof` holds on both sides. Its
+ * constructor, field initializers, methods and accessors are native
+ * closures (receivers read through dyn.this); `Sub` and its instances are
+ * island values (boundary.ts marks the declaration foreign), so member
+ * operations on them, `this.x` included, are island operations. */
+
+/** The extends clause of a top-level class whose base is an island class
+ * (or another such subclass), or null. */
+export function islandSubclassHeritage(
+  lowerer: Lowerer,
+  decl: ts.ClassDeclaration,
+): ts.ExpressionWithTypeArguments | null {
+  const islands = lowerer.nodeIslands;
+  if (islands === null || decl.name === undefined || !ts.isSourceFile(decl.parent)) return null;
+  const t = decl.heritageClauses?.nodes.find((c) => c.token === ts.SyntaxKind.ExtendsKeyword)?.types
+    ?.nodes[0];
+  if (t === undefined) return null;
+  if (!isForeignType(islands, lowerer.typeOf(t.expression), lowerer.checker)) return null;
+  return t;
+}
+
+/** Registers a top-level island subclass (splitFiles, before any type
+ * maps): true when `decl` is one. */
+export function noteIslandSubclass(lowerer: Lowerer, decl: ts.ClassDeclaration): boolean {
+  if (isIslandSubclassDecl(decl)) return true;
+  if (islandSubclassHeritage(lowerer, decl) === null) return false;
+  markIslandSubclass(decl);
+  return true;
+}
+
+function islandSubclassGlobal(lowerer: Lowerer, ident: ts.Identifier): IrGlobal | null {
+  const symbol = lowerer.resolveValueSymbol(ident);
+  const decl = symbol?.declarations.find(ts.isClassDeclaration);
+  if (decl === undefined || !isIslandSubclassDecl(decl)) return null;
+  return lowerer.globalsByDeclNode.get(decl) ?? null;
+}
+
+function memberName(m: ts.ClassElement): string | null {
+  const name = m.name;
+  if (name === undefined) return null;
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name)) return name.text;
+  return null;
+}
+
+/** What NI-5b does not build yet, or null. */
+function islandSubclassRefusal(decl: ts.ClassDeclaration): { node: ts.Node; what: string } | null {
+  for (const m of decl.members.nodes) {
+    if (ts.isSemicolonClassElement(m)) continue;
+    const mods = m.modifiers?.nodes ?? [];
+    if (mods.some((x) => x.kind === ts.SyntaxKind.StaticKeyword))
+      return { node: m, what: "static members" };
+    if (mods.some((x) => x.kind === ts.SyntaxKind.Decorator))
+      return { node: m, what: "decorators" };
+    if (ts.isConstructorDeclaration(m)) {
+      if (m.parameters.nodes.some((p) => (p.modifiers?.nodes.length ?? 0) > 0))
+        return { node: m, what: "constructor parameter properties" };
+      continue;
+    }
+    if (ts.isIndexSignatureDeclaration(m)) continue;
+    if (
+      ts.isMethodDeclaration(m) ||
+      ts.isPropertyDeclaration(m) ||
+      ts.isGetAccessorDeclaration(m) ||
+      ts.isSetAccessorDeclaration(m)
+    ) {
+      if (memberName(m) === null) return { node: m, what: "private or computed member names" };
+      continue;
+    }
+    return { node: m, what: "this kind of member" };
+  }
+  return null;
+}
+
+/** A closure over a fresh native function whose body `build` makes, with
+ * `this` read from the call's receiver (dyn.this). */
+function receiverFn(
+  lowerer: Lowerer,
+  name: string,
+  loc: SrcLoc,
+  build: (self: IrExpr) => IrStmt[],
+): IrExpr {
+  const type = funcTypeFromParamShapes([], VOID);
+  const ctx = newFnCtx(true, null, type, VOID);
+  lowerer.fnStack.push(ctx);
+  try {
+    const self = lowerer.declareThis(DYN);
+    const body: IrStmt[] = [
+      {
+        kind: "varDecl",
+        localId: self.id,
+        init: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
+        loc,
+      },
+      ...build(varRef(self.id, DYN, loc)),
+      { kind: "return", value: null, loc },
+    ];
+    lowerer.liftedFns.push({
+      name,
+      params: [],
+      returnType: VOID,
+      locals: ctx.locals,
+      captures: ctx.captures!,
+      body,
+      loc,
+    });
+    return { kind: "closure", fnName: name, captures: ctx.captureSources, type, loc };
+  } finally {
+    lowerer.fnStack.pop();
+  }
+}
+
+/** The statement that creates the class: its module global assigned the
+ * JavaScript constructor. */
+export function lowerIslandSubclass(lowerer: Lowerer, decl: ts.ClassDeclaration): IrStmt {
+  const loc = locOf(decl);
+  const heritage = islandSubclassHeritage(lowerer, decl)!;
+  const global = lowerer.globalsByDeclNode.get(decl);
+  const refusal = islandSubclassRefusal(decl);
+  if (refusal !== null || global === undefined) {
+    lowerer.pushDiag(
+      nativeSubclassOfIslandDiag(
+        locOf(refusal?.node ?? heritage),
+        refusal?.what ?? "this declaration form",
+      ),
+    );
+    throw new PoisonError();
+  }
+  lowerer.usesNodeIsland = true;
+  const className = decl.name!.text;
+  const base = lowerer.coerceToExpected(lowerer.lowerExpr(heritage.expression), DYN);
+  const methods: { key: IrExpr; value: IrExpr }[] = [];
+  const getters: { key: IrExpr; value: IrExpr }[] = [];
+  const setters: { key: IrExpr; value: IrExpr }[] = [];
+  const fields: ts.PropertyDeclaration[] = [];
+  let ctor: IrExpr = dynUndefinedExpr(loc);
+  const key = (name: string): IrExpr => ({ kind: "strLit", value: name, type: STRING, loc });
+  for (const m of decl.members.nodes) {
+    if (ts.isConstructorDeclaration(m)) {
+      if (m.body === undefined) continue;
+      ctor = lowerer.coerceToExpected(
+        lowerer.lowerLambda(m as unknown as ts.MethodDeclaration, true),
+        DYN,
+      );
+    } else if (ts.isMethodDeclaration(m)) {
+      if (m.body === undefined) continue;
+      methods.push({
+        key: key(memberName(m)!),
+        value: lowerer.coerceToExpected(lowerer.lowerLambda(m, true), DYN),
+      });
+    } else if (ts.isGetAccessorDeclaration(m)) {
+      if (m.body === undefined) continue;
+      getters.push({
+        key: key(memberName(m)!),
+        value: lowerer.coerceToExpected(lowerer.lowerLambda(m, true), DYN),
+      });
+    } else if (ts.isSetAccessorDeclaration(m)) {
+      if (m.body === undefined) continue;
+      setters.push({
+        key: key(memberName(m)!),
+        value: lowerer.coerceToExpected(lowerer.lowerLambda(m, true), DYN),
+      });
+    } else if (ts.isPropertyDeclaration(m)) {
+      const mods = m.modifiers?.nodes ?? [];
+      if (mods.some((x) => x.kind === ts.SyntaxKind.DeclareKeyword)) continue;
+      fields.push(m);
+    }
+  }
+  const fieldsFn: IrExpr =
+    fields.length === 0
+      ? dynUndefinedExpr(loc)
+      : lowerer.coerceToExpected(
+          receiverFn(lowerer, `%island.fields:${className}`, loc, (self) =>
+            fields.map((f) => ({
+              kind: "exprStmt",
+              expr: {
+                kind: "libCall",
+                fn: "nodeIsland.defineField",
+                args: [
+                  self,
+                  key(memberName(f)!),
+                  f.initializer !== undefined
+                    ? toIsland(lowerer, f.initializer)
+                    : dynUndefinedExpr(locOf(f)),
+                ],
+                type: VOID,
+                loc: locOf(f),
+              },
+              loc: locOf(f),
+            })),
+          ),
+          DYN,
+        );
+  const obj = (entries: { key: IrExpr; value: IrExpr }[]): IrExpr => ({
+    kind: "dynObjLit",
+    fields: entries,
+    type: DYN,
+    loc,
+  });
+  return {
+    kind: "assign",
+    localId: global.id,
+    value: {
+      kind: "libCall",
+      fn: "nodeIsland.subclass",
+      args: [base, key(className), ctor, fieldsFn, obj(methods), obj(getters), obj(setters)],
+      type: DYN,
+      loc,
+    },
+    loc,
+  };
+}
+
+/** The function whose `this` an expression inside a class member sees,
+ * when that class is an island subclass. */
+function islandSubclassMember(node: ts.Node): ts.FunctionLikeDeclaration | null {
+  let n: ts.Node | undefined = node.parent;
+  while (n !== undefined && ts.isArrowFunction(n)) n = n.parent;
+  while (n !== undefined && !ts.isFunctionLike(n)) {
+    n = n.parent;
+    while (n !== undefined && ts.isArrowFunction(n)) n = n.parent;
+  }
+  if (n === undefined || !ts.isClassDeclaration(n.parent!) || !isIslandSubclassDecl(n.parent))
+    return null;
+  return n as ts.FunctionLikeDeclaration;
+}
+
+/** super(...) in an island subclass's constructor: the instance comes from
+ * the island base (Reflect.construct with the subclass as new.target) and
+ * becomes `this`. */
+export function lowerIslandSuperCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+  if (lowerer.nodeIslands === null) return null;
+  const member = islandSubclassMember(call);
+  if (member === null || !ts.isConstructorDeclaration(member)) return null;
+  const self = lowerer.resolveThis(call);
+  if (self === null) return null;
+  (self as { mutable: boolean }).mutable = true;
+  const loc = locOf(call);
+  const value: IrExpr = {
+    kind: "libCall",
+    fn: "nodeIsland.superConstruct",
+    args: [varRef(self.id, DYN, loc), argsOf(lowerer, call.arguments.nodes, loc)],
+    type: DYN,
+    loc,
+  };
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "assign", localId: self.id, value, loc }],
+    result: varRef(self.id, DYN, loc),
+    type: DYN,
+    loc,
+  };
+}
+
+/** super.name(...) in an island subclass member: the base prototype's
+ * method on this instance. */
+export function lowerIslandSuperMethodCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (lowerer.nodeIslands === null || !ts.isIdentifier(access.name)) return null;
+  const member = islandSubclassMember(call);
+  if (member === null) return null;
+  const heritage = islandSubclassHeritage(lowerer, member.parent as ts.ClassDeclaration);
+  const self = lowerer.resolveThis(call);
+  if (heritage === null || self === null) return null;
+  const loc = locOf(call);
+  const raw: IrExpr = {
+    kind: "libCall",
+    fn: "nodeIsland.superMethod",
+    args: [
+      lowerer.coerceToExpected(lowerer.lowerExpr(heritage.expression), DYN),
+      varRef(self.id, DYN, loc),
+      { kind: "strLit", value: access.name.text, type: STRING, loc },
+      argsOf(lowerer, call.arguments.nodes, loc),
+    ],
+    type: DYN,
+    loc,
+  };
+  return fromIsland(lowerer, raw, call);
+}
+
+/* `x instanceof Error` for values that may be island objects (NI-5c). */
+const INTRINSIC_ERRORS = new Set([
+  "Error",
+  "TypeError",
+  "RangeError",
+  "SyntaxError",
+  "ReferenceError",
+  "EvalError",
+  "URIError",
+  "AggregateError",
+]);
+
+/** The name of the builtin Error class an expression names (the global, not
+ * a shadowing binding), or null. */
+function intrinsicErrorClassOf(lowerer: Lowerer, node: ts.Expression): string | null {
+  const inner = stripTypeWrappers(node);
+  if (!ts.isIdentifier(inner) || !INTRINSIC_ERRORS.has(inner.text)) return null;
+  const decl = lowerer.checker.getSymbolAtLocation(inner)?.declarations[0];
+  if (decl === undefined || !ts.getSourceFileOfNode(decl).isDeclarationFile) return null;
+  return inner.text;
+}
+
+/** `e.message` on a catch binding narrowed to a native type (`if (e
+ * instanceof Error)`): the thrown value may be an island object (an
+ * instance of a native subclass of an island error class), whose members
+ * are island reads; anything else takes the ordinary narrowed read. */
+function islandCaughtRead(lowerer: Lowerer, expr: ts.PropertyAccessExpression): IrExpr | null {
+  if (lowerer.islandInstanceofHandled.has(expr) || expr.questionDotToken) return null;
+  const receiver = stripTypeWrappers(expr.expression);
+  if (!ts.isIdentifier(receiver)) return null;
+  const caught = lowerer.caughtLocalOf(receiver);
+  if (caught === null || isForeignExpr(lowerer, receiver)) return null;
+  const tsType = lowerer.typeOf(expr);
+  const mapped = lowerer.mapTypeOf(tsType);
+  if (mapped === null || !copiedType(lowerer, mapped)) return null;
+  lowerer.islandInstanceofHandled.add(expr);
+  let ordinary: IrExpr;
+  try {
+    ordinary = lowerer.lowerExpr(expr);
+  } finally {
+    lowerer.islandInstanceofHandled.delete(expr);
+  }
+  const loc = locOf(expr);
+  const value: IrExpr = {
+    kind: "caughtToDyn",
+    value: varRef(caught.id, caught.type, loc),
+    type: DYN,
+    loc,
+  };
+  lowerer.usesNodeIsland = true;
+  return {
+    kind: "ternary",
+    cond: { kind: "libCall", fn: "nodeIsland.isHandle", args: [value], type: BOOL, loc },
+    then: lowerer.coerceToExpected(islandGet(value, expr.name.text, loc), ordinary.type),
+    else_: ordinary,
+    type: ordinary.type,
+    loc,
+  };
 }

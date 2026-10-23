@@ -40,6 +40,8 @@
 
 #if !defined(_WIN32) && !defined(__wasi__)
 
+const ScrDynHandleOps *scr_dyn_handle_ops_of(const ScrDyn *d); /* scr_json.c */
+
 typedef struct {
   ScrDyn *value; /* +1; NULL for a free slot */
   const void *identity;
@@ -135,9 +137,52 @@ static const void *ni_identity(const ScrDyn *v) {
     return v->v.promise;
   case SCR_DYN_TYPED_REF:
     return v->v.typed_ref.ptr;
+  case SCR_DYN_HANDLE:
+    return v->v.handle.ptr; /* a Map or Set: its native storage */
   default:
     return v;
   }
+}
+
+static bool ni_index_key(const ScrStr *s) {
+  if (s->len == 0 || s->len > 10) return false;
+  if (s->len > 1 && s->data[0] == '0') return false;
+  for (size_t i = 0; i < s->len; i++)
+    if (s->data[i] < '0' || s->data[i] > '9') return false;
+  return true;
+}
+
+/* A dyn array, a live array capsule, or a capsule whose view is an array
+ * (a tuple). */
+static bool ni_is_array(const ScrDyn *v) {
+  if (v->kind == SCR_DYN_ARR) return true;
+  if (v->kind != SCR_DYN_TYPED_REF) return false;
+  if (scr_dyn_typed_ref_array_ops(v) != NULL) return true;
+  if (v->v.typed_ref.record || v->v.typed_ref.klass) return false;
+  ScrDyn *view = scr_dyn_typed_ref_materialize(v);
+  bool array = view != NULL && view->kind == SCR_DYN_ARR;
+  scr_dyn_release(view);
+  if (scr_exc_pending()) scr_exc_clear();
+  return array;
+}
+
+/* The live Map or Set a value is (a dyn handle, or a typed capsule whose
+ * view is one): +1 view with *set telling which, or NULL. */
+static ScrDyn *ni_collection(const ScrDyn *v, bool *set) {
+  ScrDyn *view = NULL;
+  if (v->kind == SCR_DYN_HANDLE) view = scr_dyn_retain((ScrDyn *)v);
+  else if (v->kind == SCR_DYN_TYPED_REF && !v->v.typed_ref.record && !v->v.typed_ref.klass &&
+           scr_dyn_typed_ref_array_ops(v) == NULL) {
+    view = scr_dyn_typed_ref_materialize(v);
+    if (scr_exc_pending()) scr_exc_clear();
+  }
+  if (view != NULL && view->kind == SCR_DYN_HANDLE &&
+      (view->v.handle.tag == SCR_DYNH_MAP || view->v.handle.tag == SCR_DYNH_SET)) {
+    *set = view->v.handle.tag == SCR_DYNH_SET;
+    return view;
+  }
+  scr_dyn_release(view);
+  return NULL;
 }
 
 uint32_t scr_ni_export_flags(const ScrDyn *v) {
@@ -148,27 +193,37 @@ uint32_t scr_ni_export_flags(const ScrDyn *v) {
     return SCR_NVF_PROMISE;
   case SCR_DYN_ARR:
     return SCR_NVF_ARRAY;
-  case SCR_DYN_TYPED_REF:
-    return scr_dyn_typed_ref_array_ops(v) != NULL ? SCR_NVF_ARRAY : 0;
+  case SCR_DYN_HANDLE:
+  case SCR_DYN_TYPED_REF: {
+    if (v->kind == SCR_DYN_TYPED_REF && ni_is_array(v)) return SCR_NVF_ARRAY;
+    bool set = false;
+    ScrDyn *c = ni_collection(v, &set);
+    if (c == NULL) return 0;
+    scr_dyn_release(c);
+    return set ? SCR_NVF_SET : SCR_NVF_MAP;
+  }
   default:
     return 0;
   }
 }
 
-/* Whether `v` crosses into Node as an export. Arrays keep NI-4's JSON
- * copy for now: an interceptor object is not an Array in V8 (NOTES.md). */
+/* Whether `v` crosses into Node as an export (by reference). */
+bool scr_ni_exportable(const ScrDyn *v);
 bool scr_ni_exportable(const ScrDyn *v) {
   switch (v->kind) {
   case SCR_DYN_FUNC:
   case SCR_DYN_PROMISE:
   case SCR_DYN_OBJ:
-    return true;
+  case SCR_DYN_ARR: /* a Proxy over an Array in V8 (NI-5b) */
   case SCR_DYN_TYPED_REF:
-    return scr_dyn_typed_ref_array_ops(v) == NULL;
+    return true;
+  case SCR_DYN_HANDLE: /* Maps and Sets (NI-5b) */
+    return v->v.handle.tag == SCR_DYNH_MAP || v->v.handle.tag == SCR_DYNH_SET;
   default:
     return false;
   }
 }
+
 
 /* The export id of `v` (borrowed), minting one on first crossing. */
 uint32_t scr_ni_export_id(ScrDyn *v) {
@@ -462,6 +517,36 @@ int scr_ni_host_export_get(uint32_t id, const ScrNodeValue *key, ScrNodeValue *o
     scr_dyn_release(k);
     return ni_threw(out);
   }
+  if (ni_is_array(target) && pk->kind == SCR_DYN_STR) {
+    /* length and elements straight from the native array: a live array
+     * capsule answers them without rebuilding its snapshot. */
+    ScrDyn *fast = NULL;
+    if (target->kind == SCR_DYN_TYPED_REF) {
+      fast = scr_dyn_typed_ref_key_get(target, pk->v.str);
+    } else if (pk->v.str->len == 6 && memcmp(pk->v.str->data, "length", 6) == 0) {
+      fast = scr_dyn_new_num((double)target->v.arr.len);
+    }
+    if (fast != NULL) {
+      scr_dyn_release(pk);
+      scr_dyn_release(k);
+      return ni_returned(fast, out);
+    }
+    /* Anything but an index is Array.prototype's (the Proxy target's). */
+    if (!ni_index_key(pk->v.str) &&
+        !(pk->v.str->len == 6 && memcmp(pk->v.str->data, "length", 6) == 0)) {
+      scr_dyn_release(pk);
+      scr_dyn_release(k);
+      return 2;
+    }
+    ScrDyn *element = scr_dyn_reflect_get(target, pk, target);
+    scr_dyn_release(pk);
+    scr_dyn_release(k);
+    if (element == NULL || scr_exc_pending()) {
+      scr_dyn_release(element);
+      return ni_threw(out);
+    }
+    return ni_returned(element, out);
+  }
   int present = 0;
   if (pk->kind == SCR_DYN_STR) present = scr_dyn_in(target, pk->v.str);
   if (!present && !scr_exc_pending()) {
@@ -513,7 +598,20 @@ int scr_ni_host_export_has(uint32_t id, const ScrNodeValue *key) {
   ScrDyn *k = scr_ni_value_in(key);
   ScrDyn *pk = scr_dyn_property_key_value(k);
   int present = 0;
-  if (pk != NULL && pk->kind == SCR_DYN_STR) present = scr_dyn_in(target, pk->v.str);
+  if (pk != NULL && pk->kind == SCR_DYN_STR && ni_is_array(target)) {
+    if (ni_index_key(pk->v.str)) {
+      ScrStr *lk = scr_str_new("length", 6);
+      ScrDyn *lkey = scr_dyn_new_str(lk);
+      scr_str_release(lk);
+      ScrDyn *len = scr_dyn_reflect_get(target, lkey, target);
+      scr_dyn_release(lkey);
+      double index = strtod(pk->v.str->data, NULL);
+      present = len != NULL && len->kind == SCR_DYN_NUM && index < len->v.num;
+      scr_dyn_release(len);
+    }
+  } else if (pk != NULL && pk->kind == SCR_DYN_STR) {
+    present = scr_dyn_in(target, pk->v.str);
+  }
   if (scr_exc_pending()) scr_exc_clear();
   if (!present && pk != NULL) {
     ScrDyn *method = ni_class_method(target, pk);
@@ -564,6 +662,45 @@ int scr_ni_host_export_keys(uint32_t id, ScrNodeValue *out) {
   out->u.str.len = json->v.str->len;
   ni_keep_set(json);
   return 0;
+}
+
+int scr_ni_host_export_op(uint32_t id, uint32_t op, const ScrNodeValue *args, size_t argc,
+                          ScrNodeValue *out) {
+  ni_keep_set(NULL);
+  ScrDyn *target = scr_ni_export_value(id);
+  bool set = false;
+  ScrDyn *view = target != NULL ? ni_collection(target, &set) : NULL;
+  if (view == NULL) {
+    scr_throw_error_msg(SCR_ERR_TYPE, "native collection is gone", 25);
+    return ni_threw(out);
+  }
+  ScrDyn *small[4];
+  ScrDyn **in = ni_args_in(args, argc, small, 4);
+  /* The collection's own handle operations (scr_json.c), which every
+   * program with Maps or Sets links. */
+  const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(view);
+  void *ptr = view->v.handle.ptr;
+  static const char *const names[] = {"get", "set", "has", "delete", "clear"};
+  ScrDyn *result = NULL;
+  if (op <= SCR_NODE_COLLECTION_CLEAR) {
+    const char *name = op == SCR_NODE_COLLECTION_SET && set ? "add" : names[op];
+    result = ops->invoke(ptr, view, name, in, op == SCR_NODE_COLLECTION_CLEAR ? 0 : argc, name);
+  } else if (op == SCR_NODE_COLLECTION_SIZE) {
+    result = ops->get(ptr, "size", 4);
+  } else {
+    result = ops->iter_pack != NULL ? ops->iter_pack(ptr) : scr_dyn_new_arr();
+  }
+  ni_args_free(in, argc, small);
+  scr_dyn_release(view);
+  if (op == SCR_NODE_COLLECTION_SET && result != NULL) {
+    scr_dyn_release(result); /* the JS side answers itself */
+    result = scr_dyn_retain(scr_dyn_undefined());
+  }
+  if (result == NULL || scr_exc_pending()) {
+    scr_dyn_release(result);
+    return ni_threw(out);
+  }
+  return ni_returned(result, out);
 }
 
 void scr_ni_host_export_release(uint32_t id) {
@@ -937,4 +1074,107 @@ void scr_ni_exports_release_all(void) {
   ni_tdz = NULL;
 }
 
+#endif
+
+#if !defined(_WIN32) && !defined(__wasi__)
+/* ── native classes extending island classes (scope-B NI-5b) ───────────
+ * The class is a JavaScript constructor made by the bootstrap's helpers
+ * (scr_node_island_host.cjs, module "scriptc:island-helpers"); its
+ * constructor, field initializers, methods and accessors are native
+ * closures exported into Node, and its instances are island objects. */
+static ScrDyn *ni_helpers = NULL;
+
+/* At exit the helpers module is the unit's own reference, not the
+ * program's: release it so the reference audit sees only program objects. */
+static void ni_helpers_cleanup(void) {
+  if (ni_helpers == NULL) return;
+  scr_dyn_release(ni_helpers);
+  ni_helpers = NULL;
+}
+
+static ScrDyn *ni_helper(const char *name, ScrDyn *const *args, size_t argc) {
+  if (ni_helpers == NULL) {
+    ScrStr *path = scr_str_new("scriptc:island-helpers", 22);
+    ni_helpers = scr_ni_require(path);
+    scr_str_release(path);
+    if (ni_helpers == NULL) return NULL;
+    scr_atexit(ni_helpers_cleanup);
+  }
+  return scr_ni_call_method(ni_helpers, name, strlen(name), args, argc);
+}
+
+/* args: a dyn array whose items cross one by one (never as a copy). */
+static ScrDyn *ni_helper_spread(const char *name, ScrDyn **lead, size_t nlead, ScrDyn *args) {
+  size_t n = args != NULL && args->kind == SCR_DYN_ARR ? args->v.arr.len : 0;
+  ScrDyn *small[16];
+  ScrDyn **all = nlead + n <= 16 ? small : malloc((nlead + n) * sizeof *all);
+  if (all == NULL) ni_export_oom();
+  for (size_t i = 0; i < nlead; i++) all[i] = lead[i];
+  for (size_t i = 0; i < n; i++) all[nlead + i] = args->v.arr.items[i];
+  ScrDyn *r = ni_helper(name, all, nlead + n);
+  if (all != small) free(all);
+  return r;
+}
+
+/* Creates the JavaScript class (base, name, ctor, fields, methods, getters,
+ * setters): +1 island handle, or NULL with the error pending. */
+ScrDyn *scr_ni_subclass_create(ScrDyn *const *args) {
+  return ni_helper("subclass", args, 7);
+}
+
+/* NI-5d: before Node has started (the base is a deferred island class's
+ * stub), the class is a lazy ref: its name and typeof answer without Node,
+ * and the first operation that needs the class creates it
+ * (scr_node_island_handle.c, nh_live). */
+ScrDyn *scr_node_island_subclass(ScrDyn *base, ScrStr *name, ScrDyn *ctor, ScrDyn *fields,
+                                 ScrDyn *methods, ScrDyn *getters, ScrDyn *setters) {
+  ScrDyn *n = scr_dyn_new_str(name);
+  ScrDyn *args[] = {base, n, ctor, fields, methods, getters, setters};
+  ScrDyn *r = scr_ni_bridge_loaded() == NULL ? scr_ni_lazy_subclass_new(args)
+                                              : scr_ni_subclass_create(args);
+  scr_dyn_release(n);
+  return r;
+}
+
+ScrDyn *scr_node_island_super_construct(ScrDyn *box, ScrDyn *args) {
+  ScrDyn *lead[] = {box};
+  return ni_helper_spread("superConstruct", lead, 1, args);
+}
+
+ScrDyn *scr_node_island_super_method(ScrDyn *base, ScrDyn *self, ScrStr *name, ScrDyn *args) {
+  ScrDyn *n = scr_dyn_new_str(name);
+  ScrDyn *lead[] = {base, self, n};
+  ScrDyn *r = ni_helper_spread("superMethod", lead, 3, args);
+  scr_dyn_release(n);
+  return r;
+}
+
+void scr_node_island_define_field(ScrDyn *self, ScrStr *key, ScrDyn *value) {
+  ScrDyn *k = scr_dyn_new_str(key);
+  ScrDyn *args[] = {self, k, value};
+  ScrDyn *r = ni_helper("defineField", args, 3);
+  scr_dyn_release(k);
+  scr_dyn_release(r);
+}
+
+/* `value instanceof Error` (or a builtin Error subclass, `name`) for an
+ * island value: Node's own answer. False for every other value, which the
+ * native test answers. */
+bool scr_node_island_instanceof_global(ScrDyn *value, ScrStr *name) {
+  if (value == NULL || !scr_ni_is_handle(value)) return false;
+  ScrDyn *n = scr_dyn_new_str(name);
+  ScrDyn *args[] = {value, n};
+  ScrDyn *r = ni_helper("isInstance", args, 2);
+  scr_dyn_release(n);
+  bool yes = r != NULL && r->kind == SCR_DYN_BOOL && r->v.b;
+  scr_dyn_release(r);
+  if (scr_exc_pending()) scr_exc_clear();
+  return yes;
+}
+
+/* util.promisify of an island function: Node's own, in the island. */
+ScrDyn *scr_node_island_promisify(ScrDyn *fn) {
+  ScrDyn *args[] = {fn};
+  return ni_helper("promisify", args, 1);
+}
 #endif

@@ -183,19 +183,232 @@ function call(id, sync, file, specifier, name, argsJson) {
 // for ES modules without top-level await) answers the exports; import
 // answers a promise of the namespace.
 const { pathToFileURL } = require("node:url");
+const Module = require("node:module");
+
+// ToPrimitive for the runtime's String(), template literals, `+` and
+// numeric conversions of island objects (scr_node_island_handle.c loads it
+// as "scriptc:toPrimitive").
+function toPrimitive(value, hint) {
+  const exotic = value[Symbol.toPrimitive];
+  if (exotic !== undefined && exotic !== null) {
+    if (typeof exotic !== "function") {
+      throw new TypeError(`${String(exotic)} is not a function`);
+    }
+    const result = Reflect.apply(exotic, value, [hint]);
+    if (result !== null && (typeof result === "object" || typeof result === "function")) {
+      throw new TypeError("Cannot convert object to primitive value");
+    }
+    return result;
+  }
+  const order = hint === "string" ? ["toString", "valueOf"] : ["valueOf", "toString"];
+  for (const name of order) {
+    const method = value[name];
+    if (typeof method === "function") {
+      const result = Reflect.apply(method, value, []);
+      if (result === null || (typeof result !== "object" && typeof result !== "function")) {
+        return result;
+      }
+    }
+  }
+  throw new TypeError("Cannot convert object to primitive value");
+}
+
+// Helpers for native classes extending island classes (scope-B NI-5b),
+// reached by the runtime as the module "scriptc:island-helpers". A native
+// subclass is a JavaScript constructor whose instances Reflect.construct
+// builds through the island base, so island code sees an instance of the
+// base and `instanceof` holds on both sides; the native constructor runs
+// with a box as `this` until its super() call constructs the instance
+// (superConstruct), field initializers run right after (the native
+// `fields` function), and the native methods and accessors sit on the
+// subclass prototype.
+const MUST_CALL_SUPER =
+  "Must call super constructor in derived class before accessing 'this' or returning from derived constructor";
+class SuperBox {
+  constructor(base, target, fields) {
+    this.base = base;
+    this.target = target;
+    this.fields = fields;
+    this.self = undefined;
+  }
+}
+// The intrinsic classes a native `instanceof Error` (and its builtin
+// subclasses) asks about island values, captured before island code runs.
+const INTRINSIC_CLASSES = {
+  Error,
+  TypeError,
+  RangeError,
+  SyntaxError,
+  ReferenceError,
+  EvalError,
+  URIError,
+  AggregateError,
+};
+const collectionSyncs = new WeakMap();
+const islandHelpers = {
+  isInstance(value, name) {
+    const C = INTRINSIC_CLASSES[name];
+    return C !== undefined && value instanceof C;
+  },
+  subclass(Base, name, ctor, fields, methods, getters, setters) {
+    const C = {
+      [name]: function (...args) {
+        if (new.target === undefined)
+          throw new TypeError(`Class constructor ${name} cannot be invoked without 'new'`);
+        if (typeof ctor !== "function") {
+          const self = Reflect.construct(Base, args, new.target);
+          if (typeof fields === "function") Reflect.apply(fields, self, []);
+          return self;
+        }
+        const box = new SuperBox(Base, new.target, fields);
+        Reflect.apply(ctor, box, args);
+        if (box.self === undefined) throw new ReferenceError(MUST_CALL_SUPER);
+        return box.self;
+      },
+    }[name];
+    Object.setPrototypeOf(C, Base);
+    const proto = Object.create(Base.prototype, {
+      constructor: { value: C, writable: true, configurable: true },
+    });
+    for (const key of Object.keys(methods))
+      Object.defineProperty(proto, key, {
+        value: methods[key],
+        writable: true,
+        configurable: true,
+      });
+    const accessors = new Set([...Object.keys(getters), ...Object.keys(setters)]);
+    for (const key of accessors)
+      Object.defineProperty(proto, key, {
+        get: getters[key],
+        set: setters[key],
+        configurable: true,
+      });
+    Object.defineProperty(C, "prototype", { value: proto, writable: false });
+    return C;
+  },
+  superConstruct(box, ...args) {
+    if (!(box instanceof SuperBox)) throw new ReferenceError(MUST_CALL_SUPER);
+    if (box.self !== undefined)
+      throw new ReferenceError("Super constructor may only be called once");
+    const self = Reflect.construct(box.base, args, box.target);
+    box.self = self;
+    if (typeof box.fields === "function") Reflect.apply(box.fields, self, []);
+    return self;
+  },
+  superMethod(Base, self, name, ...args) {
+    return Reflect.apply(Reflect.get(Base.prototype, name, self), self, args);
+  },
+  defineField(self, key, value) {
+    Object.defineProperty(self, key, {
+      value,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  },
+  // A native Map or Set in Node (NI-5b): a real Map/Set (util.types,
+  // instanceof) whose prototype's methods run the native operations
+  // through `op` (scr_node_bridge.h SCR_NODE_COLLECTION_*).
+  makeCollection(isMap, op) {
+    const Base = isMap ? Map : Set;
+    const proto = Object.create(Base.prototype);
+    const methods = {
+      has(k) {
+        return op(2, k);
+      },
+      delete(k) {
+        Base.prototype.delete.call(this, k);
+        return op(3, k);
+      },
+      clear() {
+        Base.prototype.clear.call(this);
+        op(4);
+      },
+      forEach(callback, thisArg) {
+        for (const e of op(6)) {
+          if (isMap) Reflect.apply(callback, thisArg, [e[1], e[0], this]);
+          else Reflect.apply(callback, thisArg, [e, e, this]);
+        }
+      },
+      entries() {
+        return Array.from(op(6), (e) => (isMap ? [e[0], e[1]] : [e, e])).values();
+      },
+      keys() {
+        return Array.from(op(6), (e) => (isMap ? e[0] : e)).values();
+      },
+      values() {
+        return Array.from(op(6), (e) => (isMap ? e[1] : e)).values();
+      },
+    };
+    if (isMap) {
+      methods.get = function (k) {
+        return op(0, k);
+      };
+      methods.set = function (k, v) {
+        op(1, k, v);
+        Map.prototype.set.call(this, k, v);
+        return this;
+      };
+    } else {
+      methods.add = function (v) {
+        op(1, v);
+        Set.prototype.add.call(this, v);
+        return this;
+      };
+    }
+    for (const key of Object.keys(methods))
+      Object.defineProperty(proto, key, {
+        value: methods[key],
+        writable: true,
+        configurable: true,
+      });
+    Object.defineProperty(proto, "size", { get: () => op(5), configurable: true });
+    Object.defineProperty(proto, Symbol.iterator, {
+      value: isMap ? methods.entries : methods.values,
+      writable: true,
+      configurable: true,
+    });
+    const self = new Base();
+    Object.setPrototypeOf(self, proto);
+    collectionSyncs.set(self, () => {
+      Base.prototype.clear.call(self);
+      for (const e of op(6)) {
+        if (isMap) Map.prototype.set.call(self, e[0], e[1]);
+        else Set.prototype.add.call(self, e);
+      }
+    });
+    return self;
+  },
+  // The collection's internal slots mirror the native contents, for what
+  // reads them directly (util.inspect): refreshed at every crossing and by
+  // the island's own writes.
+  syncCollection(self) {
+    const sync = collectionSyncs.get(self);
+    if (sync !== undefined) sync();
+  },
+  promisify(fn) {
+    return require("node:util").promisify(fn);
+  },
+};
 
 // Island imports of modules the program shares resolve to their native
 // exports (NI-6, scr_node_island_hooks.cjs, appended to this file).
 let sharedModules = null;
 
 function load(path, esm) {
+  if (path === "scriptc:toPrimitive") return toPrimitive;
+  if (path === "scriptc:spread") return (value) => [...value];
+  if (path === "scriptc:island-helpers") return islandHelpers;
   if (path.startsWith("node:")) return require(path);
   if (sharedModules === null) sharedModules = scriptcSharedModules(nativeHost);
   if (esm) return import(pathToFileURL(path).href);
-  const load = createRequire(path);
+  // No CommonJS parent, as when Node's ES-module loader imports CommonJS
+  // (the program's entry is an ES module): `module.parent` is undefined
+  // and MODULE_NOT_FOUND require stacks start at the island module. A
+  // module the program shares loads through its entry first (NI-6).
   return sharedModules.entry(path, (entry) => {
-    if (entry !== null) load(entry);
-    return load(path);
+    if (entry !== null) createRequire(path)(entry);
+    return Module._load(path, undefined, false);
   });
 }
 

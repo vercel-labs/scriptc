@@ -8449,6 +8449,15 @@ static ScrDyn *scr_dyn_date_value_of(const ScrDyn *d) {
   return scr_dyn_handle_ops_of(d)->invoke(d->v.handle.ptr, (ScrDyn *)d, "valueOf", NULL, 0, "valueOf");
 }
 
+#ifdef SCR_NODE_ISLANDS
+/* An island object's own ToPrimitive, or NULL with *hooked false for any
+ * other value. +1 / NULL pending. */
+static ScrDyn *scr_dyn_handle_primitive(const ScrDyn *d, int hint, bool *hooked) {
+  *hooked = scr_ni_is_handle(d);
+  return *hooked ? scr_ni_to_primitive(d, hint) : NULL;
+}
+#endif
+
 /* Receiver-kind-dispatched toString() on a checked-dynamic value (the
  * dyn method surface — a stream's 'data'/for-await chunk is the common
  * receiver): bytes decode per the encoding (Node's Buffer.toString,
@@ -8489,6 +8498,18 @@ ScrStr *scr_dyn_to_string(const ScrDyn *d, const ScrStr *enc) {
     if (scr_dyn_error_encoding(d) && !scr_dyn_property_owner(d, "toString", 8)) return scr_dyn_error_string(d);
     return scr_str_new("[object Object]", 15);
   case SCR_DYN_HANDLE:
+#ifdef SCR_NODE_ISLANDS
+  {
+    bool hooked;
+    ScrDyn *primitive = scr_dyn_handle_primitive(d, SCR_DYN_HINT_STRING, &hooked);
+    if (hooked) {
+      if (!primitive) return NULL;
+      ScrStr *text = scr_dyn_string_coerce(primitive);
+      scr_dyn_release(primitive);
+      return text;
+    }
+  }
+#endif
     if (d->v.handle.tag == SCR_DYNH_REGEXP || d->v.handle.tag == SCR_DYNH_URL || d->v.handle.tag == SCR_DYNH_DATE) {
       ScrDyn *text = scr_dyn_handle_ops_of(d)->invoke(d->v.handle.ptr, (ScrDyn *)d, "toString", NULL, 0, "RegExp.toString");
       if (!text) return NULL;
@@ -8956,6 +8977,16 @@ bool scr_dyn_number_coerce_js(const ScrDyn *d, double *out) {
     return false;
   }
   default: {
+#ifdef SCR_NODE_ISLANDS
+    bool hooked;
+    ScrDyn *primitive = scr_dyn_handle_primitive(d, SCR_DYN_HINT_NUMBER, &hooked);
+    if (hooked) {
+      if (!primitive) return false;
+      bool ok = scr_dyn_number_coerce_js(primitive, out);
+      scr_dyn_release(primitive);
+      return ok;
+    }
+#endif
     /* A Date's valueOf answers its time value. */
     if (scr_dyn_is_date(d)) {
       ScrDyn *time = scr_dyn_date_value_of(d);
@@ -8988,6 +9019,11 @@ static ScrDyn *scr_dyn_add_primitive(const ScrDyn *d);
  * only for a Date: its time value, or the valueOf of an instance of a class
  * declared `extends Date`. */
 static ScrDyn *scr_dyn_number_primitive(const ScrDyn *d) {
+#ifdef SCR_NODE_ISLANDS
+  bool hooked;
+  ScrDyn *primitive = scr_dyn_handle_primitive(d, SCR_DYN_HINT_NUMBER, &hooked);
+  if (hooked) return primitive;
+#endif
   if (scr_dyn_is_date(d)) return scr_dyn_date_value_of(d);
   double time;
   if (d->kind == SCR_DYN_TYPED_REF && scr_dyn_date_class_time(d, &time)) {
@@ -9107,6 +9143,11 @@ static ScrDyn *scr_dyn_add_primitive(const ScrDyn *d) {
     return NULL;
   }
   if (!scr_dyn_to_primitive_result_is_object(d)) return scr_dyn_retain((ScrDyn *)d);
+#ifdef SCR_NODE_ISLANDS
+  bool hooked;
+  ScrDyn *primitive = scr_dyn_handle_primitive(d, SCR_DYN_HINT_DEFAULT, &hooked);
+  if (hooked) return primitive;
+#endif
   ScrStr *str = scr_dyn_string_coerce(d);
   if (!str) return NULL;
   ScrDyn *out = scr_dyn_new_str(str);

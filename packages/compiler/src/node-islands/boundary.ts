@@ -46,10 +46,24 @@ export function islandPackageOfFile(islands: NodeIslandSet, file: string): Islan
   return islands.packages.get(name) ?? null;
 }
 
+/* Native classes extending island classes (scope-B NI-5b): their class
+ * values and instances are island objects, so their types are foreign.
+ * Registered by the lowering's module split before any type maps. */
+const islandSubclassDecls = new Set<ts.Node>();
+
+export function markIslandSubclass(decl: ts.ClassDeclaration): void {
+  islandSubclassDecls.add(decl);
+}
+
+export function isIslandSubclassDecl(decl: ts.Node | undefined): boolean {
+  return decl !== undefined && islandSubclassDecls.has(decl);
+}
+
 function declaredInIsland(islands: NodeIslandSet, symbol: ts.Symbol | null | undefined): boolean {
   if (!symbol) return false;
   const decls = symbol.declarations;
   if (decls.length === 0) return false;
+  if (islandSubclassDecls.size > 0 && decls.some((d) => islandSubclassDecls.has(d))) return true;
   return decls.every(
     (d) => islandPackageOfFile(islands, ts.getSourceFileOfNode(d).fileName) !== null,
   );

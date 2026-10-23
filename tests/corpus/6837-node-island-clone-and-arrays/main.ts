@@ -21,6 +21,8 @@ async function main(): Promise<void> {
   console.log("native unchanged", claims.sub);
   console.log(cloneNested({ list: [1, 2], session: new Session() }));
   console.log(cloneNested([claims, claims]));
+  const tags: string[] = ["a", "b"];
+  console.log(cloneNested({ tags, claims }), cloneNested(tags));
   console.log(cloneFails());
   const files = await listFiles("/tmp");
   for (const f of files) console.log("file", f);

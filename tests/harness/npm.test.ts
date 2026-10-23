@@ -67,17 +67,11 @@ const KNOWN: Record<string, Known> = {
       "Timeout handles are numbers (typeof) and lose their ref flag once fired or cleared",
   },
   "island-web-plumbing": { run: "SC2020" },
-  "lazy-traps": {
-    divergence:
-      "an island module loaded by path lists itself twice in MODULE_NOT_FOUND require stacks",
-  },
+  "lazy-traps": { island: true },
   "misc-shims": { run: "SC2020" },
   namespace: { island: true },
   "node24-async-events": { run: "SC2020" },
-  "node24-commonjs-metadata": {
-    divergence:
-      "a Node island (its require.cache use needs the runtime) loads its entry with itself as the CJS parent, so require stacks list it twice",
-  },
+  "node24-commonjs-metadata": { island: true },
   "node24-crypto-kdf": { run: "SC2020" },
   "node24-deep-equality": { run: "SC2020" },
   "node24-diagnostics-async": { run: "SC1090" },

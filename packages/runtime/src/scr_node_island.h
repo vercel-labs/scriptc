@@ -75,6 +75,10 @@ ScrDyn *scr_ni_construct(ScrDyn *ctor, ScrDyn *const *args, size_t argc);
 ScrStr *scr_ni_typeof(ScrDyn *value);
 int scr_ni_instanceof(ScrDyn *value, ScrDyn *ctor);
 bool scr_ni_is_handle(const ScrDyn *value);
+/* ToPrimitive of an island object (hint SCR_DYN_HINT_*), run by V8:
+ * Symbol.toPrimitive, then toString/valueOf in the hint's order. +1, or
+ * NULL with the exception pending. */
+ScrDyn *scr_ni_to_primitive(const ScrDyn *self, int hint);
 bool scr_ni_is_function(const ScrDyn *value); /* an island handle that is callable */
 /* util.inspect of an island value at nesting `recurse` with limit `depth`,
  * by Node's own util.inspect (+1; "" with the exception pending). */
@@ -109,6 +113,9 @@ ScrDyn *scr_ni_export_value(uint32_t id); /* borrowed, or NULL */
 uint32_t scr_ni_live_exports(void);
 /* nodeIsland.classMethods: registers the method table of a class capsule. */
 ScrDyn *scr_node_island_class_methods(ScrDyn *value, ScrDyn *builder);
+/* NI-5d: native subclasses of island classes created on first use. */
+ScrDyn *scr_ni_subclass_create(ScrDyn *const *args);
+ScrDyn *scr_ni_lazy_subclass_new(ScrDyn *const *args);
 void scr_ni_bridge_export_settle(uint32_t id, int rejected, const struct ScrNodeValue *value);
 int scr_ni_host_export_call(uint32_t id, const struct ScrNodeValue *this_,
                             const struct ScrNodeValue *args, size_t argc, struct ScrNodeValue *out);
@@ -134,6 +141,8 @@ int scr_ni_host_export_instance_of(uint32_t id, const struct ScrNodeValue *value
 void scr_ni_host_shared_table(struct ScrNodeValue *out);
 int scr_ni_host_shared_get(uint32_t mod, uint32_t slot, int mode, struct ScrNodeValue *out);
 void scr_ni_host_shared_tdz(struct ScrNodeValue *out);
+int scr_ni_host_export_op(uint32_t id, uint32_t op, const struct ScrNodeValue *args, size_t argc,
+                          struct ScrNodeValue *out);
 /* Promise settlement callback (SCR_NODE_ISLANDS build of scr_async.c). */
 void scr_promise_on_settle_sync(ScrPromise *in, void (*cb)(ScrPromise *dst, ScrPromise *src));
 
@@ -164,10 +173,16 @@ extern void (*scr_ni_started_hook)(void);
 /* Island operations the compiler emits (lib-shared.ts adapters). */
 ScrDyn *scr_node_island_apply(ScrDyn *fn, ScrDyn *args);
 ScrDyn *scr_node_island_construct(ScrDyn *ctor, ScrDyn *args);
+void scr_node_island_define_field(ScrDyn *self, ScrStr *key, ScrDyn *value);
 ScrDyn *scr_node_island_get(ScrDyn *obj, ScrStr *key);
 bool scr_node_island_instanceof(ScrDyn *value, ScrDyn *ctor);
+bool scr_node_island_instanceof_global(ScrDyn *value, ScrStr *name);
 ScrDyn *scr_node_island_invoke(ScrDyn *obj, ScrStr *key, ScrDyn *args);
+ScrDyn *scr_node_island_promisify(ScrDyn *fn);
 void scr_node_island_set(ScrDyn *obj, ScrStr *key, ScrDyn *value);
 void scr_node_island_set_key(ScrDyn *obj, ScrDyn *key, ScrDyn *value);
+ScrDyn *scr_node_island_subclass(ScrDyn *base, ScrStr *name, ScrDyn *ctor, ScrDyn *fields, ScrDyn *methods, ScrDyn *getters, ScrDyn *setters);
+ScrDyn *scr_node_island_super_construct(ScrDyn *box, ScrDyn *args);
+ScrDyn *scr_node_island_super_method(ScrDyn *base, ScrDyn *self, ScrStr *name, ScrDyn *args);
 
 #endif /* SCR_NODE_ISLAND_H */

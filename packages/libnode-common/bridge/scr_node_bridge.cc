@@ -825,8 +825,20 @@ Local<v8::Private> ExportKey(Isolate *isolate) {
   return g_export_key.Get(isolate);
 }
 
+// Array exports are Proxies (Array.isArray holds); a Proxy has no private
+// symbols of its own, so they are found by identity hash.
+std::unordered_multimap<int, uint32_t> g_proxy_ids;
+
 uint32_t ExportIdOf(Isolate *isolate, Local<Context> context, Local<Value> v) {
-  if (!v->IsObject() || v->IsProxy() || g_exports.empty()) return 0;
+  if (!v->IsObject() || g_exports.empty()) return 0;
+  if (v->IsProxy()) {
+    auto range = g_proxy_ids.equal_range(v.As<Object>()->GetIdentityHash());
+    for (auto it = range.first; it != range.second; ++it) {
+      auto found = g_exports.find(it->second);
+      if (found != g_exports.end() && found->second.Get(isolate)->StrictEquals(v)) return it->second;
+    }
+    return 0;
+  }
   Local<Value> id;
   if (!v.As<Object>()->GetPrivate(context, ExportKey(isolate)).ToLocal(&id) || !id->IsUint32())
     return 0;
@@ -839,6 +851,10 @@ void OnExportGone(const v8::WeakCallbackInfo<void> &info) {
   if (it != g_exports.end()) {
     it->second.Reset();
     g_exports.erase(it);
+  }
+  for (auto p = g_proxy_ids.begin(); p != g_proxy_ids.end();) {
+    if (p->second == id) p = g_proxy_ids.erase(p);
+    else ++p;
   }
   g_released_exports.push_back(id);
 }
@@ -1078,10 +1094,276 @@ Local<v8::ObjectTemplate> ExportTemplate(Isolate *isolate) {
   return g_export_template.Get(isolate);
 }
 
+// ── array exports: a Proxy over an empty Array whose traps reach the
+// native array (length and elements); everything else (the Array.prototype
+// methods, symbols) is the target's, so `map`, `push`, iteration and
+// JSON.stringify work through the traps.
+uint32_t TrapId(const FunctionCallbackInfo<Value> &info) { return ExportIdArg(info.Data()); }
+
+bool TrapStringKey(Isolate *isolate, Local<Context> context, Local<Value> key, ScrNodeValue *out) {
+  if (!key->IsString()) return false;
+  FromV8(isolate, context, key, out);
+  return true;
+}
+
+// The Proxy target mirrors the native array, for what reads the target
+// directly (util.inspect formats a Proxy's target): refreshed whenever the
+// array crosses into Node, and updated by the island's own writes.
+void MirrorSet(Local<Context> context, Local<Value> target, Local<Value> key, Local<Value> value) {
+  if (target->IsArray()) target.As<Object>()->Set(context, key, value).FromMaybe(false);
+}
+
+Local<Value> ArrayLength(Isolate *isolate, Local<Context> context, uint32_t id);
+
+void SyncArrayTarget(Isolate *isolate, Local<Context> context, uint32_t id, Local<Object> proxy) {
+  if (!proxy->IsProxy()) return;
+  Local<Value> target_value = proxy.As<v8::Proxy>()->GetTarget();
+  if (!target_value->IsArray()) return;
+  Local<v8::Array> target = target_value.As<v8::Array>();
+  uint32_t n = ArrayLength(isolate, context, id)->Uint32Value(context).FromMaybe(0);
+  target->Set(context, Utf8(isolate, "length"), v8::Integer::NewFromUnsigned(isolate, 0)).FromMaybe(false);
+  for (uint32_t i = 0; i < n; i++) {
+    std::string index = std::to_string(i);
+    ScrNodeValue key, out;
+    std::memset(&key, 0, sizeof key);
+    std::memset(&out, 0, sizeof out);
+    key.tag = SCR_NV_STRING;
+    key.u.str.data = index.data();
+    key.u.str.len = index.size();
+    if (g_host->export_get(id, &key, &out) != 0) continue;
+    target->Set(context, i, ToV8(isolate, context, &out)).FromMaybe(false);
+  }
+}
+
+void ArrayGet(const FunctionCallbackInfo<Value> &info) {
+  Isolate *isolate = info.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
+  HostCall scope;
+  ScrNodeValue key, out;
+  std::memset(&out, 0, sizeof out);
+  if (TrapStringKey(isolate, context, info[1], &key)) {
+    int status = g_host->export_get(TrapId(info), &key, &out);
+    if (status != 2) {
+      Local<Value> result;
+      ThrowOrReturn(isolate, context, status, &out, &result);
+      if (!result.IsEmpty()) info.GetReturnValue().Set(result);
+      return;
+    }
+  }
+  Local<Value> v;
+  if (info[0].As<Object>()->Get(context, info[1]).ToLocal(&v)) info.GetReturnValue().Set(v);
+}
+
+void ArraySet(const FunctionCallbackInfo<Value> &info) {
+  Isolate *isolate = info.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
+  HostCall scope;
+  ScrNodeValue key, value, out;
+  std::memset(&out, 0, sizeof out);
+  if (!TrapStringKey(isolate, context, info[1], &key)) {
+    info.GetReturnValue().Set(info[0].As<Object>()->Set(context, info[1], info[2]).FromMaybe(false));
+    return;
+  }
+  FromV8(isolate, context, info[2], &value);
+  int status = g_host->export_set(TrapId(info), &key, &value, &out);
+  if (status == 1) {
+    isolate->ThrowException(ToV8(isolate, context, &out));
+    return;
+  }
+  MirrorSet(context, info[0], info[1], info[2]);
+  info.GetReturnValue().Set(true);
+}
+
+void ArrayHas(const FunctionCallbackInfo<Value> &info) {
+  Isolate *isolate = info.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
+  HostCall scope;
+  ScrNodeValue key;
+  if (TrapStringKey(isolate, context, info[1], &key) && g_host->export_has(TrapId(info), &key)) {
+    info.GetReturnValue().Set(true);
+    return;
+  }
+  info.GetReturnValue().Set(info[0].As<Object>()->Has(context, info[1]).FromMaybe(false));
+}
+
+void ArrayDelete(const FunctionCallbackInfo<Value> &info) {
+  Isolate *isolate = info.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
+  HostCall scope;
+  ScrNodeValue key, out;
+  std::memset(&out, 0, sizeof out);
+  if (TrapStringKey(isolate, context, info[1], &key)) {
+    int status = g_host->export_delete(TrapId(info), &key, &out);
+    if (status == 1) {
+      isolate->ThrowException(ToV8(isolate, context, &out));
+      return;
+    }
+  }
+  info[0].As<Object>()->Delete(context, info[1]).FromMaybe(false);
+  info.GetReturnValue().Set(true);
+}
+
+Local<Value> ArrayLength(Isolate *isolate, Local<Context> context, uint32_t id) {
+  ScrNodeValue key, out;
+  std::memset(&key, 0, sizeof key);
+  std::memset(&out, 0, sizeof out);
+  key.tag = SCR_NV_STRING;
+  key.u.str.data = "length";
+  key.u.str.len = 6;
+  if (g_host->export_get(id, &key, &out) != 0) return v8::Integer::New(isolate, 0);
+  return ToV8(isolate, context, &out);
+}
+
+void ArrayOwnKeys(const FunctionCallbackInfo<Value> &info) {
+  Isolate *isolate = info.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
+  HostCall scope;
+  ScrNodeValue out;
+  std::memset(&out, 0, sizeof out);
+  std::vector<Local<Value>> keys;
+  if (g_host->export_keys(TrapId(info), &out) == 0) {
+    Local<Value> all = ToV8(isolate, context, &out);
+    if (all->IsArray()) {
+      Local<v8::Array> list = all.As<v8::Array>();
+      for (uint32_t i = 0; i < list->Length(); i++) keys.push_back(list->Get(context, i).ToLocalChecked());
+    }
+  }
+  keys.push_back(Utf8(isolate, "length"));
+  info.GetReturnValue().Set(v8::Array::New(isolate, keys.data(), keys.size()));
+}
+
+void ArrayDescriptor(const FunctionCallbackInfo<Value> &info) {
+  Isolate *isolate = info.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
+  HostCall scope;
+  uint32_t id = TrapId(info);
+  ScrNodeValue key, out;
+  std::memset(&out, 0, sizeof out);
+  if (!TrapStringKey(isolate, context, info[1], &key)) return;
+  Local<Object> desc = Object::New(isolate);
+  if (key.u.str.len == 6 && std::memcmp(key.u.str.data, "length", 6) == 0) {
+    desc->Set(context, Utf8(isolate, "value"), ArrayLength(isolate, context, id)).Check();
+    desc->Set(context, Utf8(isolate, "writable"), v8::True(isolate)).Check();
+    desc->Set(context, Utf8(isolate, "enumerable"), v8::False(isolate)).Check();
+    desc->Set(context, Utf8(isolate, "configurable"), v8::False(isolate)).Check();
+    info.GetReturnValue().Set(desc);
+    return;
+  }
+  if (!g_host->export_has(id, &key)) return;
+  int status = g_host->export_get(id, &key, &out);
+  if (status == 1) {
+    isolate->ThrowException(ToV8(isolate, context, &out));
+    return;
+  }
+  desc->Set(context, Utf8(isolate, "value"), status == 0 ? ToV8(isolate, context, &out)
+                                                         : Local<Value>(v8::Undefined(isolate))).Check();
+  desc->Set(context, Utf8(isolate, "writable"), v8::True(isolate)).Check();
+  desc->Set(context, Utf8(isolate, "enumerable"), v8::True(isolate)).Check();
+  desc->Set(context, Utf8(isolate, "configurable"), v8::True(isolate)).Check();
+  info.GetReturnValue().Set(desc);
+}
+
+void ArrayDefine(const FunctionCallbackInfo<Value> &info) {
+  Isolate *isolate = info.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
+  HostCall scope;
+  ScrNodeValue key, value, out;
+  std::memset(&out, 0, sizeof out);
+  if (!TrapStringKey(isolate, context, info[1], &key) || !info[2]->IsObject()) {
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  Local<Value> v;
+  if (!info[2].As<Object>()->Get(context, Utf8(isolate, "value")).ToLocal(&v)) return;
+  FromV8(isolate, context, v, &value);
+  int status = g_host->export_set(TrapId(info), &key, &value, &out);
+  if (status == 1) {
+    isolate->ThrowException(ToV8(isolate, context, &out));
+    return;
+  }
+  MirrorSet(context, info[0], info[1], v);
+  info.GetReturnValue().Set(true);
+}
+
+// ── Map and Set exports: a real Map/Set made by the bootstrap's
+// makeCollection, whose methods call `op` (host->export_op).
+void CollectionOp(const FunctionCallbackInfo<Value> &info) {
+  Isolate *isolate = info.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
+  HostCall scope;
+  uint32_t op = info.Length() > 0 ? info[0]->Uint32Value(context).FromMaybe(0) : 0;
+  std::vector<ScrNodeValue> args(info.Length() > 1 ? static_cast<size_t>(info.Length() - 1) : 0);
+  for (int i = 1; i < info.Length(); i++) FromV8(isolate, context, info[i], &args[i - 1]);
+  ScrNodeValue out;
+  std::memset(&out, 0, sizeof out);
+  int status = g_host->export_op(TrapId(info), op, args.data(), args.size(), &out);
+  Local<Value> result;
+  ThrowOrReturn(isolate, context, status, &out, &result);
+  if (!result.IsEmpty()) info.GetReturnValue().Set(result);
+}
+
+Local<Object> CollectionView(Isolate *isolate, Local<Context> context, Local<Value> data, bool map) {
+  Local<Value> helpers, make, view;
+  Local<Value> load_argv[] = {Utf8(isolate, "scriptc:island-helpers"), v8::False(isolate)};
+  if (g_load.Get(isolate)->Call(context, v8::Undefined(isolate), 2, load_argv).ToLocal(&helpers) &&
+      helpers->IsObject() &&
+      helpers.As<Object>()->Get(context, Utf8(isolate, "makeCollection")).ToLocal(&make) &&
+      make->IsFunction()) {
+    Local<Value> argv[] = {v8::Boolean::New(isolate, map),
+                           Function::New(context, CollectionOp, data).ToLocalChecked()};
+    if (make.As<Function>()->Call(context, helpers, 2, argv).ToLocal(&view) && view->IsObject())
+      return view.As<Object>();
+  }
+  return Object::New(isolate);
+}
+
+Local<Object> ArrayProxy(Isolate *isolate, Local<Context> context, Local<Value> data) {
+  Local<Object> handler = Object::New(isolate);
+  struct Trap {
+    const char *name;
+    v8::FunctionCallback fn;
+  } traps[] = {{"get", ArrayGet},
+               {"set", ArraySet},
+               {"has", ArrayHas},
+               {"deleteProperty", ArrayDelete},
+               {"ownKeys", ArrayOwnKeys},
+               {"getOwnPropertyDescriptor", ArrayDescriptor},
+               {"defineProperty", ArrayDefine}};
+  for (const Trap &t : traps)
+    handler->Set(context, Utf8(isolate, t.name), Function::New(context, t.fn, data).ToLocalChecked())
+        .Check();
+  return v8::Proxy::New(context, v8::Array::New(isolate, 0), handler).ToLocalChecked();
+}
+
+// Arrays, Maps and Sets keep a copy of their contents where util.inspect
+// looks (the Proxy target, the collection's internal slots), refreshed at
+// every crossing.
+void RefreshMirror(Isolate *isolate, Local<Context> context, uint32_t id, uint32_t flags,
+                   Local<Object> obj) {
+  HostCall scope;
+  if (flags & SCR_NVF_ARRAY) {
+    SyncArrayTarget(isolate, context, id, obj);
+  } else if (flags & (SCR_NVF_MAP | SCR_NVF_SET)) {
+    Local<Value> helpers, sync;
+    Local<Value> load_argv[] = {Utf8(isolate, "scriptc:island-helpers"), v8::False(isolate)};
+    if (g_load.Get(isolate)->Call(context, v8::Undefined(isolate), 2, load_argv).ToLocal(&helpers) &&
+        helpers->IsObject() &&
+        helpers.As<Object>()->Get(context, Utf8(isolate, "syncCollection")).ToLocal(&sync) &&
+        sync->IsFunction()) {
+      Local<Value> argv[] = {obj};
+      sync.As<Function>()->Call(context, helpers, 1, argv).FromMaybe(Local<Value>());
+    }
+  }
+}
+
 Local<Value> ExportValue(Isolate *isolate, Local<Context> context, const ScrNodeValue *in) {
   uint32_t id = in->u.exp.id;
   auto found = g_exports.find(id);
-  if (found != g_exports.end()) return found->second.Get(isolate);
+  if (found != g_exports.end()) {
+    Local<Object> existing = found->second.Get(isolate);
+    RefreshMirror(isolate, context, id, in->flags, existing);
+    return existing;
+  }
   Local<Object> obj;
   Local<Value> data = v8::Integer::NewFromUnsigned(isolate, id);
   if (in->flags & SCR_NVF_FUNCTION) {
@@ -1104,16 +1386,22 @@ Local<Value> ExportValue(Isolate *isolate, Local<Context> context, const ScrNode
     Local<v8::Promise::Resolver> resolver = v8::Promise::Resolver::New(context).ToLocalChecked();
     g_resolvers[id].Reset(isolate, resolver);
     obj = resolver->GetPromise();
+  } else if (in->flags & (SCR_NVF_MAP | SCR_NVF_SET)) {
+    obj = CollectionView(isolate, context, data, (in->flags & SCR_NVF_MAP) != 0);
+  } else if (in->flags & SCR_NVF_ARRAY) {
+    obj = ArrayProxy(isolate, context, data);
+    g_proxy_ids.emplace(obj->GetIdentityHash(), id);
   } else {
     obj = ExportTemplate(isolate)->NewInstance(context).ToLocalChecked();
     obj->SetInternalField(0, data);
   }
-  obj->SetPrivate(context, ExportKey(isolate), data).Check();
+  if (!obj->IsProxy()) obj->SetPrivate(context, ExportKey(isolate), data).Check();
   Global<Object> &slot = g_exports[id];
   slot.Reset(isolate, obj);
   slot.SetWeak(reinterpret_cast<void *>(static_cast<uintptr_t>(id)), OnExportGone,
                v8::WeakCallbackType::kParameter);
   if (in->flags & SCR_NVF_PROMISE) g_host->export_watch(id);
+  RefreshMirror(isolate, context, id, in->flags, obj);
   return obj;
 }
 
@@ -1135,6 +1423,7 @@ void DropAllExports() {
   for (auto &it : g_resolvers) it.second.Reset();
   g_resolvers.clear();
   g_released_exports.clear();
+  g_proxy_ids.clear();
   g_export_template.Reset();
   g_export_key.Reset();
 }

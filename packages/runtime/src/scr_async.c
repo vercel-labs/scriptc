@@ -1956,6 +1956,17 @@ void scr_promise_on_settle_sync(ScrPromise *in, void (*cb)(ScrPromise *dst, ScrP
   *scr_promise_cb_push(in) =
       (struct ScrPromiseCbWaiter){ cb, scr_promise_retain(in), NULL, SCR_CB_ANY, SCR_CB_SYNC };
 }
+
+/* Node islands (NI-8): a settled promise's dyn payload when the promise
+ * owns a reference to it that its trace does not visit (settled without a
+ * trace function), else NULL. The cross-heap analysis counts that edge. */
+void *scr_promise_untraced_dyn_payload(const ScrPromise *p) {
+  if ((p->payload_kind == SCR_EXC_REF || p->payload_kind == SCR_EXC_OBJ ||
+       p->payload_kind == SCR_EXC_PRIMITIVE_REF) &&
+      p->payload != NULL && p->trace_fn == NULL && p->release_fn == scr_dyn_release_v)
+    return p->payload;
+  return NULL;
+}
 #endif
 
 void scr_promise_race_add(ScrPromise *race, ScrPromise *in,

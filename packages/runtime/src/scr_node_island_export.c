@@ -26,7 +26,8 @@
  *
  * When V8 collects a representative, the bridge reports export_release at
  * its next entry (never inside a GC) and the table drops its reference.
- * Cycles through both heaps leak until NI-8. */
+ * Cycles through both heaps are found by the analysis of
+ * scr_node_island_gc.c before each major GC (NI-8). */
 #define _XOPEN_SOURCE 700
 #define _DARWIN_C_SOURCE 1
 #include "scr_runtime.h"
@@ -270,6 +271,13 @@ void scr_ni_export_out(ScrDyn *v, ScrNodeValue *out) {
       out->u.exp.name_len = strlen(v->v.fn.name);
     }
   }
+}
+
+/* NI-8: the identity of export `id` (the referent its representative
+ * stands for), or NULL for a free id. */
+const void *scr_ni_export_identity(uint32_t id) {
+  if (id == 0 || id >= ni_exports_len) return NULL;
+  return ni_exports[id].identity;
 }
 
 uint32_t scr_ni_live_exports(void) {

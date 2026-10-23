@@ -162,6 +162,17 @@ int scr_ni_host_export_op(uint32_t id, uint32_t op, const struct ScrNodeValue *a
                           struct ScrNodeValue *out);
 /* Promise settlement callback (SCR_NODE_ISLANDS build of scr_async.c). */
 void scr_promise_on_settle_sync(ScrPromise *in, void (*cb)(ScrPromise *dst, ScrPromise *src));
+void *scr_promise_untraced_dyn_payload(const ScrPromise *p);
+
+/* ── cross-heap cycle collection (scope-B NI-8, scr_node_island_gc.c) ──── */
+const void *scr_ni_export_identity(uint32_t id);
+void *scr_ni_gc_ref(const ScrDyn *box, size_t *rc, uint32_t *id);
+void *scr_ni_gc_ref_info(void *ref, size_t *rc, uint32_t *id);
+size_t scr_ni_gc_pins(void ***objs, void ***refs);
+struct ScrNodeGcResult;
+int scr_ni_host_gc_analyze(const uint32_t *exports, size_t nexports,
+                           struct ScrNodeGcResult *out);
+void scr_ni_gc_cleanup(void); /* at exit */
 
 /* ── deferred island modules (scope-B NI-7, scr_node_island_boot.c) ─────
  * nodeIsland.defer(path, snapshot): a statically imported island module the

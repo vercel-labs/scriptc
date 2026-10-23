@@ -1,9 +1,9 @@
 /* Island object handles (scope-B NI-4) where a differential corpus program
  * cannot show it: handles to Node objects the program dropped are released,
  * so the import table does not grow with the work a program does (acyclic
- * garbage; cycles across both heaps wait for NI-8). The corpus (6812-6815)
- * pins handle semantics against Node. Needs a libnode pack in
- * SCRIPTC_LIBNODE (libnode.ts). */
+ * garbage; node-island-gc.test.ts covers cycles across both heaps). The
+ * corpus (6812-6815) pins handle semantics against Node. Needs a libnode
+ * pack in SCRIPTC_LIBNODE (libnode.ts). */
 import { execFile } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";

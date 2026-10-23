@@ -10,6 +10,9 @@
  * zero bytes and keep their exact historical link line. */
 #define _XOPEN_SOURCE 700
 #include "scr_runtime.h"
+#ifdef SCR_NODE_ISLANDS
+#include "scr_node_island.h"
+#endif
 
 #include <errno.h>
 #include <fcntl.h>
@@ -80,6 +83,11 @@ typedef struct {
   ScrStr *name; /* aliases of one signum remain distinct event names */
   bool once;
   uint64_t id;
+#ifdef SCR_NODE_ISLANDS
+  /* Nonzero: a listener island code added (its cb is undefined); the
+   * delivery calls it through the bridge at this position. */
+  uint32_t island;
+#endif
 } ScrSigListener;
 
 typedef struct ScrSigReg {
@@ -280,6 +288,63 @@ void scr_signal_off(ScrStr *name, ScrDyn *cb) {
   }
 }
 
+#ifdef SCR_NODE_ISLANDS
+/* Island code's signal listeners (scr_node_island.c forwards Node's
+ * newListener/removeListener for signal events here): each takes its place
+ * in the registry like a native listener, so scriptc owns every signal
+ * disposition and libuv never installs one. Removing the last listener of
+ * either side restores the previous disposition, as for native ones. */
+void scr_signal_on_island(ScrStr *name, uint32_t island) {
+#if defined(_WIN32) || defined(__wasi__)
+  (void)name;
+  (void)island;
+#else
+  if (!scr_context_is_main()) return;
+  int sig = scr_signal_from_name(name);
+  if (sig < 0) sig = 0;
+  ScrSigReg *reg = scr_sig_regs;
+  while (reg && reg->sig != sig) reg = reg->next;
+  if (!reg) {
+    reg = calloc(1, sizeof *reg);
+    if (!reg) scr_events_oom();
+    reg->sig = sig;
+    if (sig > 0) {
+      struct sigaction sa;
+      memset(&sa, 0, sizeof sa);
+      sa.sa_handler = scr_sig_handler;
+      sigemptyset(&sa.sa_mask);
+      if (sig >= SCR_SIG_MAX || sigaction(sig, &sa, &reg->prev) != 0) {
+        free(reg);
+        return;
+      }
+      scr_sig_watched++;
+      scr_wake_pipe_init();
+    }
+    reg->next = scr_sig_regs;
+    scr_sig_regs = reg;
+  }
+  if (reg->n == reg->cap) {
+    reg->cap = reg->cap ? reg->cap * 2 : 2;
+    reg->ls = realloc(reg->ls, reg->cap * sizeof *reg->ls);
+    if (!reg->ls) scr_events_oom();
+  }
+  reg->ls[reg->n++] =
+      (ScrSigListener){scr_dyn_retain(scr_dyn_undefined()), scr_str_retain(name), false, ++scr_sig_id, island};
+#endif
+}
+
+void scr_signal_off_island(uint32_t island) {
+  for (ScrSigReg *reg = scr_sig_regs; reg; reg = reg->next) {
+    for (size_t i = 0; i < reg->n; i++) {
+      if (reg->ls[i].island == island) {
+        scr_sig_remove(reg, i);
+        return;
+      }
+    }
+  }
+}
+#endif
+
 /* Snapshot all pending deliveries before invoking user code. No live
  * registry pointer survives a callback: off() can remove this signal or
  * another pending signal and free either registry. */
@@ -315,11 +380,19 @@ static void scr_signals_drain(void) {
           if (found) break;
         }
       }
-      ScrDyn *args[2] = {scr_dyn_new_str(snap[i].name), scr_dyn_new_num(scr_signal_from_name(snap[i].name))};
-      ScrDyn *result = scr_dyn_call(snap[i].cb, args, 2, "listener");
-      scr_dyn_release(result);
-      scr_dyn_release(args[0]);
-      scr_dyn_release(args[1]);
+#ifdef SCR_NODE_ISLANDS
+      if (snap[i].island != 0) {
+        scr_node_island_emit(SCR_NODE_ISLAND_EVENT_SIGNAL, snap[i].island, snap[i].name,
+                             scr_signal_from_name(snap[i].name));
+      } else
+#endif
+      {
+        ScrDyn *args[2] = {scr_dyn_new_str(snap[i].name), scr_dyn_new_num(scr_signal_from_name(snap[i].name))};
+        ScrDyn *result = scr_dyn_call(snap[i].cb, args, 2, "listener");
+        scr_dyn_release(result);
+        scr_dyn_release(args[0]);
+        scr_dyn_release(args[1]);
+      }
     }
     scr_dyn_release(snap[i].cb);
     scr_str_release(snap[i].name);
@@ -1390,6 +1463,9 @@ typedef struct {
   ScrClosure *cb; /* owned */
   void (*fn)(ScrClosure *cb, double code); /* adapter: 0-param or (code) */
   bool once;
+#ifdef SCR_NODE_ISLANDS
+  uint32_t island; /* nonzero: island code's listener (cb and fn NULL) */
+#endif
 } ScrExitListener;
 
 static SCR_TL ScrExitListener *scr_exit_ls = NULL;
@@ -1403,6 +1479,13 @@ void scr_run_exit_listeners(double code) {
   for (size_t i = 0; i < scr_exit_n; i++) {
 #ifdef SCR_WORKERS
     if (scr_context_stopping()) break;
+#endif
+#ifdef SCR_NODE_ISLANDS
+    if (scr_exit_ls[i].island != 0) {
+      ScrStr *exit_name = scr_str_new("exit", 4);
+      scr_node_island_emit(SCR_NODE_ISLAND_EVENT_EXIT, scr_exit_ls[i].island, exit_name, (int)code);
+      scr_str_release(exit_name);
+    } else
 #endif
     scr_exit_ls[i].fn(scr_exit_ls[i].cb, code);
 #ifdef SCR_WORKERS
@@ -1420,7 +1503,12 @@ void scr_run_exit_listeners(double code) {
       _Exit(7);
     }
   }
-  for (size_t i = 0; i < scr_exit_n; i++) scr_closure_release(scr_exit_ls[i].cb);
+  for (size_t i = 0; i < scr_exit_n; i++) {
+#ifdef SCR_NODE_ISLANDS
+    if (scr_exit_ls[i].cb == NULL) continue;
+#endif
+    scr_closure_release(scr_exit_ls[i].cb);
+  }
   free(scr_exit_ls);
   scr_exit_ls = NULL;
   scr_exit_n = scr_exit_cap = 0;
@@ -1444,11 +1532,43 @@ void scr_process_on_exit(ScrClosure *cb /*moves*/, void (*fn)(ScrClosure *, doub
   scr_exit_ls[scr_exit_n].cb = cb;
   scr_exit_ls[scr_exit_n].fn = fn;
   scr_exit_ls[scr_exit_n].once = once;
+#ifdef SCR_NODE_ISLANDS
+  scr_exit_ls[scr_exit_n].island = 0;
+#endif
   scr_exit_n++;
 }
 
+#ifdef SCR_NODE_ISLANDS
+/* Island code's 'exit' listeners, at their registration position among
+ * the program's own. */
+void scr_process_on_exit_island(uint32_t island) {
+  if (scr_exit_ran) return;
+  if (scr_exit_n == scr_exit_cap) {
+    scr_exit_cap = scr_exit_cap ? scr_exit_cap * 2 : 2;
+    scr_exit_ls = realloc(scr_exit_ls, scr_exit_cap * sizeof *scr_exit_ls);
+    if (!scr_exit_ls) scr_events_oom();
+  }
+  scr_exit_ls[scr_exit_n] = (ScrExitListener){NULL, NULL, false, island};
+  scr_exit_n++;
+}
+
+void scr_process_off_exit_island(uint32_t island) {
+  if (scr_exit_ran) return;
+  for (size_t i = 0; i < scr_exit_n; i++) {
+    if (scr_exit_ls[i].island == island) {
+      memmove(scr_exit_ls + i, scr_exit_ls + i + 1, (scr_exit_n - i - 1) * sizeof *scr_exit_ls);
+      scr_exit_n--;
+      return;
+    }
+  }
+}
+#endif
+
 void scr_process_off_exit(ScrClosure *cb /*borrowed*/) {
   for (size_t i = 0; i < scr_exit_n; i++) {
+#ifdef SCR_NODE_ISLANDS
+    if (scr_exit_ls[i].cb == NULL) continue;
+#endif
     if (scr_closure_identity_equal(scr_exit_ls[i].cb, cb)) {
       scr_closure_release(scr_exit_ls[i].cb);
       memmove(scr_exit_ls + i, scr_exit_ls + i + 1, (scr_exit_n - i - 1) * sizeof *scr_exit_ls);

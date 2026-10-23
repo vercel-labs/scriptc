@@ -22,7 +22,7 @@ import { basename, isAbsolute, join, resolve } from "node:path";
 export const NODE_ISLAND_MIN_NODE = "24.13.1";
 
 /** The bridge ABI this compiler's runtime speaks (scr_node_bridge.h). */
-export const NODE_BRIDGE_ABI = 2;
+export const NODE_BRIDGE_ABI = 3;
 
 /** The prefix of a recorded path relative to the executable's directory. */
 export const ORIGIN = "$ORIGIN/";

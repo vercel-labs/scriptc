@@ -201,6 +201,17 @@ export function variantsFor(source) {
       when: { stdioExtended: true },
       defines: ["SCR_STDIO_EXTENDED"],
     });
+    // Island listeners for signals and 'exit' join the registries.
+    variants.push({
+      id: "node-island",
+      when: { nodeIsland: true },
+      defines: ["SCR_NODE_ISLANDS"],
+    });
+    variants.push({
+      id: "stdio-extended-node-island",
+      when: { stdioExtended: true, nodeIsland: true },
+      defines: ["SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS"],
+    });
   }
   // Programs with Node islands link the event loop with the Node island slot;
   // every other program keeps the default object, byte for byte.

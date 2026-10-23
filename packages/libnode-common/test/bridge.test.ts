@@ -45,7 +45,7 @@ exports.quit = (code) => process.exit(code);
   expect(result.stderr).toBe("");
   expect(result.stdout).toBe(
     [
-      "abi 2 ok 1",
+      "abi 3 ok 1",
       "sync add -> R5",
       'sync fails -> T{"error":{"kind":2,"message":"out of range","code":"ERR_X"}}',
       `sync missing -> T{"error":{"kind":1,"message":"'missing' exported by './smoke.cjs' is not a function"}}`,

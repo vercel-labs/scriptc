@@ -18,20 +18,36 @@
  * the bridge (a callback scope, so ticks and microtasks drain when it
  * returns) and parses the outcome: the result's JSON copy, or the copied
  * error (see scr_node_island_host.cjs). An asynchronous call registers its
- * promise first, because the bridge may settle it before returning. Until
- * NI-3 hosts the runtime's queues on Node's libuv, the runtime's loop drives
- * Node's: the loop slot keeps the program alive while Node has ref'd work,
- * sleeps on its backend fd up to its next timer, and runs one non-blocking
- * turn of it per loop turn.
+ * promise first, because the bridge may settle it before returning.
+ *
+ * One loop (scope-B NI-3). Right after Node starts, scr_loop_host moves the
+ * runtime's pending ticks, promise jobs, timers and immediates onto Node's
+ * queues and from then on schedules them there, and the bridge watches the
+ * runtime's I/O on Node's libuv loop: there is one loop and one set of
+ * queues, so the jobs of both sides interleave as in Node. Calls into
+ * JavaScript do not drain queues themselves; the runtime's checkpoints do
+ * (the bridge's `checkpoint`, and Node's own after every callback it
+ * dispatches).
+ *
+ * Process state is shared, not mirrored: island listeners for signals and
+ * 'exit' join the runtime's registries (scr_events.c) at their position,
+ * so the runtime keeps owning every signal disposition; the exit code
+ * island code leaves in process.exitCode becomes the program's when the
+ * loop ends; Node's process.exit runs the runtime's exit sequence.
  *
  * Node's stack. V8 fixes an isolate's stack limit where it is created, and
  * calls into Node can come from any async fiber (512 KB stacks without a
- * guard page) or from the main stack. Every entry into Node therefore runs
- * on one dedicated stack of NI_STACK bytes with a guard page, reached by a
- * context switch; the runtime's own stack guard follows it there. */
+ * guard page) or from the main stack. Every entry into Node from outside
+ * it runs on one dedicated stack of NI_STACK bytes with a guard page,
+ * reached by a context switch; the runtime's own stack guard follows it
+ * there. Node's loop runs there too once it hosts the runtime's queues, so
+ * a runtime job it dispatches may resume an async fiber that calls into
+ * Node again from the fiber's stack: the bridge sets V8's limit for the
+ * stack each entry comes from (ni_stack_limit). */
 #define _XOPEN_SOURCE 700
 #define _DARWIN_C_SOURCE 1
 #include "scr_runtime.h"
+#include "scr_events.h"
 #include "scr_node_bridge.h"
 #include "scr_node_island.h"
 
@@ -46,6 +62,7 @@
 #include <dlfcn.h>
 #include <sys/mman.h>
 #include <ucontext.h>
+#include <pthread.h>
 
 #ifdef __APPLE__
 #define NI_BRIDGE_FILE "libscr_node_bridge.dylib"
@@ -180,18 +197,47 @@ static void ni_exit(int code) {
   ni_fatal("");
 }
 
-static const ScrNodeBridgeHost ni_host = {&ni_settle, &ni_exit};
+/* An island listener for a process event was added or removed. */
+static void ni_listen(uint32_t event, const char *name, uint32_t listener, int add, int once) {
+  (void)once; /* Node's once wrapper removes itself through removeListener */
+  if (event == SCR_NODE_EVENT_SIGNAL) {
+    if (add) {
+      ScrStr *s = scr_str_new(name, strlen(name));
+      scr_signal_on_island(s, listener);
+      scr_str_release(s);
+    } else {
+      scr_signal_off_island(listener);
+    }
+  } else if (event == SCR_NODE_EVENT_EXIT) {
+    if (add) scr_process_on_exit_island(listener);
+    else scr_process_off_exit_island(listener);
+  }
+}
 
-/* ── the loop slot ────────────────────────────────────────────────────── */
+/* The main thread's stack, for V8's stack limit (ni_stack_limit). */
+static uintptr_t ni_main_lo = 0, ni_main_hi = 0;
 
-static bool ni_alive(void) { return ni_bridge->alive() != 0; }
-static void ni_pump_job(void *p);
-static void ni_stop_job(void *p);
+static void ni_main_stack(void) {
+#if defined(__APPLE__)
+  pthread_t self = pthread_self();
+  ni_main_hi = (uintptr_t)pthread_get_stackaddr_np(self);
+  ni_main_lo = ni_main_hi - pthread_get_stacksize_np(self);
+#elif defined(__linux__)
+  pthread_attr_t attr;
+  if (pthread_getattr_np(pthread_self(), &attr) == 0) {
+    void *addr = NULL;
+    size_t size = 0;
+    if (pthread_attr_getstack(&attr, &addr, &size) == 0) {
+      ni_main_lo = (uintptr_t)addr;
+      ni_main_hi = ni_main_lo + size;
+    }
+    pthread_attr_destroy(&attr);
+  }
+#endif
+}
+
 static void ni_on_node_stack(void (*job)(void *), void *arg);
-static void ni_pump(void) { ni_on_node_stack(ni_pump_job, NULL); }
-static int ni_backend_fd(void) { return ni_bridge->backend_fd(); }
-static int ni_backend_timeout(void) { return ni_bridge->backend_timeout(); }
-static void ni_stop_atexit(void) { ni_on_node_stack(ni_stop_job, NULL); }
+static const ScrNodeBridgeHost ni_host;
 
 /* ── Node's stack ─────────────────────────────────────────────────────── */
 
@@ -284,9 +330,44 @@ static void ni_call_job(void *p) {
       ni_bridge->call(a->id, a->sync, a->file, a->specifier, a->name, a->args, a->args_len, &a->len);
 }
 
-static void ni_pump_job(void *p) {
-  (void)p;
-  ni_bridge->pump();
+/* V8's stack limit for the stack an entry comes from: Node's own stack
+ * (a reserve above its guard page), the main thread's (Node's default
+ * --stack-size, 984 KiB, below its top), or an async fiber's (the
+ * runtime's guard for it: its mapping's start plus the reserve compiled
+ * code keeps). */
+static uintptr_t ni_stack_limit(void) {
+  /* The frame address, not a local's: under ASan's use-after-return
+   * detection locals live on a fake stack elsewhere in memory. */
+  uintptr_t sp = (uintptr_t)__builtin_frame_address(0);
+  if (ni_stack != NULL && sp > (uintptr_t)ni_stack && sp <= (uintptr_t)ni_stack + NI_STACK)
+    return (uintptr_t)(ni_stack + NI_GUARD) + NI_STACK / 8;
+  if (sp > ni_main_lo && sp <= ni_main_hi) {
+    uintptr_t limit = ni_main_hi > 984 * 1024 ? ni_main_hi - 984 * 1024 : 0;
+    return limit > ni_main_lo ? limit : ni_main_lo + 64 * 1024;
+  }
+  if (scr_stack_guard != 0 && scr_stack_guard < sp) return scr_stack_guard;
+  return 0;
+}
+
+static const ScrNodeBridgeHost ni_host = {
+    &ni_settle,
+    &ni_exit,
+    &scr_loop_hosted_run,
+    &scr_loop_hosted_io_state,
+    &scr_loop_hosted_io,
+    &scr_loop_hosted_microtasks_done,
+    &ni_listen,
+    &ni_stack_limit,
+};
+
+void scr_node_island_emit(uint32_t event, uint32_t listener, ScrStr *name, int arg) {
+  if (ni_bridge == NULL) return;
+  char *n = malloc(name->len + 1);
+  if (n == NULL) ni_oom();
+  memcpy(n, name->data, name->len);
+  n[name->len] = '\0';
+  ni_bridge->emit(event, listener, n, arg);
+  free(n);
 }
 
 static void ni_stop_job(void *p) {
@@ -294,10 +375,40 @@ static void ni_stop_job(void *p) {
   ni_bridge->stop();
 }
 
+/* Process end after a normal return: the 'exit' listeners of both sides
+ * run while Node can still call into JavaScript (this handler runs before
+ * the events unit's own, which then finds them done), then Node stops. */
+static void ni_stop_atexit(void) {
+  scr_run_exit_listeners((double)scr_exit_code_hint_get());
+  ni_on_node_stack(ni_stop_job, NULL);
+}
+
+/* The hosted loop's run_loop on Node's stack. */
+typedef struct {
+  int continue_turn, code;
+} NiRunLoop;
+
+static void ni_run_loop_job(void *p) {
+  NiRunLoop *a = p;
+  a->code = ni_bridge->run_loop(a->continue_turn);
+}
+
+static int ni_run_loop(int continue_turn) {
+  NiRunLoop a = {continue_turn, 0};
+  ni_on_node_stack(ni_run_loop_job, &a);
+  return a.code;
+}
+
+/* The bridge as the hosted loop sees it: Node's loop runs on Node's stack. */
+static ScrNodeBridge ni_hosted;
+
 /* ── loading Node ─────────────────────────────────────────────────────── */
 
 static void ni_start(void) {
   if (ni_bridge != NULL) return;
+  /* Timers pending now keep their deadlines relative to this moment: the
+   * time Node takes to load is invisible to their order. */
+  double since = scr_now_ms();
   const char *dir = ni_pack_dir();
   char path[4352];
   snprintf(path, sizeof path, "%s/%s", dir, NI_BRIDGE_FILE);
@@ -337,6 +448,7 @@ static void ni_start(void) {
   /* Flush first: Node writes to the same stdout. */
   fflush(stdout);
   ni_bridge = bridge;
+  ni_main_stack();
   NiStart start = {scr_node_island_host_js, argv0, NULL};
   ni_on_node_stack(ni_start_job, &start);
   char *error = start.error;
@@ -346,8 +458,14 @@ static void ni_start(void) {
     bridge->release(error);
     ni_fatal(message);
   }
+  /* Island listeners need the runtime's event registries and their
+   * delivery; installed before the stop handler, whose 'exit' listeners
+   * run first. */
+  scr_events_install();
   scr_atexit(ni_stop_atexit);
-  scr_loop_set_node_island(&ni_alive, &ni_pump, &ni_backend_fd, &ni_backend_timeout);
+  ni_hosted = *bridge;
+  ni_hosted.run_loop = &ni_run_loop;
+  scr_loop_host(&ni_hosted, since);
 }
 
 /* ── calls ────────────────────────────────────────────────────────────── */
@@ -426,6 +544,13 @@ ScrPromise *scr_node_island_call(ScrStr *file, ScrStr *specifier, ScrStr *name, 
 }
 
 #else /* _WIN32 || __wasi__ */
+
+void scr_node_island_emit(uint32_t event, uint32_t listener, ScrStr *name, int arg) {
+  (void)event;
+  (void)listener;
+  (void)name;
+  (void)arg;
+}
 
 /* Node islands need a libnode pack, which these targets do not have: the
  * compiler refuses them there, so these entry points only report that. */

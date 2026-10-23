@@ -34,7 +34,9 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.builtinValues ? { builtinValues: true } : {}),
-    events: features.processEvents,
+    // Island code's signal and exit listeners join the events unit's
+    // registries (scope-B NI-3).
+    events: features.processEvents || features.nodeIsland === true,
     emitter: features.emitter,
     symbol: features.symbol,
     bigint: features.bigint,

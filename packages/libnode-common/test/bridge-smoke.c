@@ -2,10 +2,10 @@
  * check its ABI, start Node from the snapshot with the runtime's embedded
  * bootstrap) and makes calls through the bridge: synchronous results and
  * errors, and an asynchronous call settled by Node's own loop, which this
- * host drives like the runtime's loop slot. bridge.test.ts compares the
- * transcript. Usage: bridge-smoke <pack dir> <module path> */
+ * host runs the way the runtime's hosted loop does (host_loop, a
+ * checkpoint, run_loop) with no runtime work of its own. bridge.test.ts
+ * compares the transcript. Usage: bridge-smoke <pack dir> <module path> */
 #include <dlfcn.h>
-#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,7 +26,28 @@ static void on_exit_code(int code) {
   _Exit(code);
 }
 
-static const ScrNodeBridgeHost host = {settle, on_exit_code};
+static void run(uint32_t kind, uint32_t token) {
+  printf("run %u %u\n", kind, token);
+}
+
+static void io_state(ScrNodeIoState *state) {
+  state->nfds = 0;
+  state->alive = 0;
+  state->ready = 0;
+  state->cap_ms = -1;
+}
+
+static void io_dispatch(void) {}
+static void microtasks_done(void) {}
+
+static void listen(uint32_t event, const char *name, uint32_t listener, int add, int once) {
+  printf("listen %u %s %u %d %d\n", event, name, listener, add, once);
+}
+
+static uintptr_t stack_limit(void) { return 0; }
+
+static const ScrNodeBridgeHost host = {settle,          on_exit_code, run,   io_state, io_dispatch,
+                                       microtasks_done, listen,       stack_limit};
 
 static void call(const ScrNodeBridge *b, uint32_t id, int sync, const char *module,
                  const char *name, const char *args) {
@@ -64,11 +85,9 @@ int main(int argc, char **argv) {
   call(b, 0, 1, file, "fails", "[]");
   call(b, 0, 1, file, "missing", "[]");
   call(b, 7, 0, file, "later", "[5]");
-  while (settled == 0 || b->alive()) {
-    struct pollfd fd = {b->backend_fd(), POLLIN, 0};
-    (void)poll(&fd, 1, b->backend_timeout());
-    b->pump();
-  }
+  b->host_loop();
+  b->checkpoint(0);
+  b->run_loop(0);
   call(b, 0, 1, file, "quit", "[3]");
   return 0;
 }

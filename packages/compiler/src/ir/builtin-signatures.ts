@@ -194,6 +194,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * writes and calls on island values, argument lists as one dyn array.
    * requireModule(specifier) of @scriptc/node lowers to require too. */
   "nodeIsland.require": { argTypes: [STRING], result: DYN },
+  /** NI-7: a deferred island module (path, boot guards + interface snapshot). */
+  "nodeIsland.defer": { argTypes: [STRING, STRING], result: DYN },
   "nodeIsland.import": { argTypes: [STRING], result: { kind: "promise", inner: DYN } },
   "nodeIsland.get": { argTypes: [DYN, STRING], result: DYN },
   "nodeIsland.getKey": { argTypes: [DYN, DYN], result: DYN },

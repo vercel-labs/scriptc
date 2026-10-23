@@ -12,6 +12,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "nodeIsland.callSync",
   // Island module evaluation and member operations run JavaScript.
   "nodeIsland.require",
+  "nodeIsland.defer",
   "nodeIsland.get",
   "nodeIsland.getKey",
   "nodeIsland.set",

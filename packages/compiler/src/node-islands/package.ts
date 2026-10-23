@@ -13,7 +13,7 @@ import type { IrModule } from "../ir/ir.js";
 import { ORIGIN } from "./libnode.js";
 import { packageDirOf } from "./origin.js";
 
-const LOAD_FNS = new Set(["nodeIsland.require", "nodeIsland.import"]);
+const LOAD_FNS = new Set(["nodeIsland.require", "nodeIsland.defer", "nodeIsland.import"]);
 
 /** Every island module path the IR loads (the string literal argument of
  * each nodeIsland.require / nodeIsland.import). */

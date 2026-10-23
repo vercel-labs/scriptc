@@ -126,6 +126,30 @@ void scr_ni_exports_release_all(void); /* at exit, after Node stopped */
 /* Promise settlement callback (SCR_NODE_ISLANDS build of scr_async.c). */
 void scr_promise_on_settle_sync(ScrPromise *in, void (*cb)(ScrPromise *dst, ScrPromise *src));
 
+/* ── deferred island modules (scope-B NI-7, scr_node_island_boot.c) ─────
+ * nodeIsland.defer(path, snapshot): a statically imported island module the
+ * build proved effect-free at load evaluates on first real use instead of
+ * at its import position. The snapshot (lower-node-island.ts) holds the
+ * boot guards (the libnode pack's and the module files' identity) and the
+ * interface snapshot (export names, kinds, function name/length, primitive
+ * constants). Guards pass: the module's value is a stub handle and Node
+ * does not start; a guard fails: the module loads here, eagerly. When Node
+ * starts for any reason, every deferred module evaluates first, in import
+ * order, and each stub is reconciled with its real value (same ref, so
+ * identity holds for the rest of the program). +1, NULL with an exception
+ * pending (an eager load that threw). */
+ScrDyn *scr_node_island_defer(ScrStr *path, ScrStr *snapshot);
+/* Between the boot and handle units. */
+ScrDyn *scr_ni_stub_new(uint32_t flags, void *stub); /* +1 box over a fresh stub ref */
+void *scr_ni_stub_of(const ScrDyn *value); /* the stub entry of an unmaterialized stub, or NULL */
+bool scr_ni_stub_reconcile(ScrDyn *stub, ScrDyn *real);
+ScrDyn *scr_ni_boot_member(void *stub, const char *key, size_t len); /* +1 or NULL: unknown */
+bool scr_ni_boot_plain_class(void *stub);
+const char *scr_ni_pack_dir(void); /* the libnode pack directory this run uses */
+void scr_ni_boot_stub_failed(void *stub); /* raises the module's load error */
+/* Called at the end of Node's start (scr_node_island.c), set by the boot unit. */
+extern void (*scr_ni_started_hook)(void);
+
 /* Island operations the compiler emits (lib-shared.ts adapters). */
 ScrDyn *scr_node_island_apply(ScrDyn *fn, ScrDyn *args);
 ScrDyn *scr_node_island_construct(ScrDyn *ctor, ScrDyn *args);

@@ -297,6 +297,23 @@ function loadIslandModule(path: string, loc: SrcLoc): IrExpr {
   };
 }
 
+/** A static import's load: `nodeIsland.defer(path, snapshot)`, which the
+ * build decides after lowering (node-islands/snapshot.ts, scope-B NI-7):
+ * a module proved effect-free at load keeps it with its interface snapshot
+ * and evaluates on first use; any other becomes nodeIsland.require. */
+function deferIslandModule(path: string, loc: SrcLoc): IrExpr {
+  return {
+    kind: "libCall",
+    fn: "nodeIsland.defer",
+    args: [
+      { kind: "strLit", value: path, type: STRING, loc },
+      { kind: "strLit", value: "", type: STRING, loc },
+    ],
+    type: DYN,
+    loc,
+  };
+}
+
 /** A static import (or re-export) of an island package: loads the module
  * in the importer's %init prelude. Returns false when `spec` is not an
  * island module. */
@@ -324,7 +341,7 @@ export function collectIslandImport(
   actions.push({
     kind: "assign",
     localId: binding.global.id,
-    value: loadIslandModule(path, loc),
+    value: deferIslandModule(path, loc),
     loc,
   });
   // CommonJS named imports: Node's namespace snapshots them once the

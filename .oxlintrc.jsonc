@@ -245,6 +245,7 @@
         "packages/compiler/src/frontend/npm-static-rewrite.ts",
         "packages/compiler/src/frontend/npm-static-bundled-cjs.ts",
         "packages/compiler/src/library/semantic-source.ts",
+        "packages/compiler/src/node-islands/effect-gate.ts",
       ],
       "rules": {
         "no-restricted-imports": [

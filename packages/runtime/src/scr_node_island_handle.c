@@ -44,6 +44,12 @@ typedef struct ScrNodeRef {
   size_t rc;
   uint32_t id;
   uint32_t flags; /* SCR_NVF_* */
+  /* NI-7: a stub of a deferred island module's value (id 0) carries its
+   * interface-snapshot entry (scr_node_island_boot.c) until Node starts and
+   * the boot unit reconciles it with the real value. `alias`: the real ref
+   * when the value already had one (identity split, traced). */
+  void *stub;
+  struct ScrNodeRef *alias;
 } ScrNodeRef;
 
 static ScrNodeRef **ni_refs = NULL; /* by bridge id */
@@ -176,6 +182,15 @@ static void *nh_ref_retain_v(void *h) {
 
 static void nh_ref_release(ScrNodeRef *ref) {
   if (--ref->rc != 0) return;
+  if (ref->alias != NULL) {
+    nh_ref_release(ref->alias);
+    free(ref);
+    return;
+  }
+  if (ref->id == 0) { /* a stub never materialized, or a transplanted ref */
+    free(ref);
+    return;
+  }
   if (ref->id < ni_refs_cap && ni_refs[ref->id] == ref) ni_refs[ref->id] = NULL;
   if (!ni_stopped && scr_ni_bridge_loaded() != NULL) scr_ni_bridge_loaded()->drop(ref->id);
   free(ref);
@@ -199,13 +214,80 @@ static ScrNodeRef *nh_ref(uint32_t id, uint32_t flags) {
     ref->rc++;
     return ref;
   }
-  ref = malloc(sizeof *ref);
+  ref = calloc(1, sizeof *ref);
   if (ref == NULL) nh_oom();
   ref->rc = 1;
   ref->id = id;
   ref->flags = flags;
   ni_refs[id] = ref;
   return ref;
+}
+
+/* ── NI-7 stubs (deferred island modules, scr_node_island_boot.c) ─────── */
+
+ScrDyn *scr_ni_stub_new(uint32_t flags, void *stub) {
+  ScrNodeRef *ref = calloc(1, sizeof *ref);
+  if (ref == NULL) nh_oom();
+  ref->rc = 1;
+  ref->flags = flags;
+  ref->stub = stub;
+  ScrDyn *box = scr_dyn_new_handle(ref, SCR_DYNH_NODE_ISLAND);
+  ref->rc--; /* the box holds the only reference */
+  return box;
+}
+
+void *scr_ni_stub_of(const ScrDyn *value) {
+  if (value == NULL || value->kind != SCR_DYN_HANDLE || value->v.handle.tag != SCR_DYNH_NODE_ISLAND)
+    return NULL;
+  return ((ScrNodeRef *)value->v.handle.ptr)->stub;
+}
+
+/* Identity reconciliation: the stub box `stub` becomes the program's
+ * handle of the real island value `real` (borrowed). When the runtime saw
+ * the value for the first time, the stub takes over its bridge id, so every
+ * later crossing of the value answers the stub's ref and `===` holds; the
+ * fresh ref is retired without dropping the bridge entry. Answers false
+ * when the value is not an island object (the snapshot no longer applies). */
+bool scr_ni_stub_reconcile(ScrDyn *stub, ScrDyn *real) {
+  ScrNodeRef *s = stub->v.handle.ptr;
+  if (!scr_ni_is_handle(real)) return false;
+  ScrNodeRef *r = real->v.handle.ptr;
+  if (r != s && r->stub != NULL) return false;
+  s->stub = NULL;
+  if (r == s) return true;
+  if (r->rc == 1 && r->alias == NULL) {
+    /* Only `real` holds the fresh ref: move its id to the stub. */
+    s->id = r->id;
+    s->flags = r->flags;
+    ni_refs[r->id] = s;
+    r->id = 0;
+    real->v.handle.ptr = s;
+    s->rc++;
+    r->rc = 0;
+    free(r);
+    return true;
+  }
+  /* The program already holds the value through another ref: the stub
+   * forwards to it (identity split for `===` between the two). */
+  s->alias = r;
+  r->rc++;
+  s->id = r->id;
+  s->flags = r->flags;
+  if (getenv("SCRIPTC_NODE_ISLANDS_TRACE") != NULL)
+    fprintf(stderr, "[node-islands] stub identity split (id %u)\n", r->id);
+  return true;
+}
+
+/* A stub whose Node value is needed: starting Node materializes every
+ * deferred module (scr_node_island_boot.c), after which the ref is real.
+ * False with the module's load error pending. */
+static bool nh_live(ScrNodeRef *ref) {
+  if (ref->stub == NULL) return true;
+  void *stub = ref->stub;
+  scr_ni_bridge();
+  if (ref->stub == NULL) return true;
+  scr_ni_boot_stub_failed(stub);
+  return false;
 }
 
 static const ScrDynHandleOps nh_ops;
@@ -557,6 +639,7 @@ static bool nh_to_node(ScrDyn *v, ScrNodeValue *out, NhKeep *keep) {
   case SCR_DYN_HANDLE:
     if (v->v.handle.tag == SCR_DYNH_NODE_ISLAND) {
       ScrNodeRef *ref = v->v.handle.ptr;
+      if (!nh_live(ref)) return false;
       out->tag = SCR_NV_HANDLE;
       out->flags = ref->flags;
       out->u.handle = ref->id;
@@ -699,6 +782,7 @@ static bool nh_receiver(ScrDyn *obj, uint32_t *id, const char *what) {
     scr_throw_error_msg(SCR_ERR_TYPE, message, strlen(message));
     return false;
   }
+  if (!nh_live(ref)) return false;
   *id = ref->id;
   return true;
 }
@@ -741,6 +825,8 @@ ScrPromise *scr_ni_import(ScrStr *path) {
 }
 
 ScrDyn *scr_ni_get(ScrDyn *obj, ScrDyn *key) {
+  if (key != NULL && key->kind == SCR_DYN_STR && scr_ni_stub_of(obj) != NULL)
+    return scr_ni_get_str(obj, key->v.str->data, key->v.str->len);
   uint32_t id;
   if (!nh_receiver(obj, &id, "a property read")) return NULL;
   nh_enter();
@@ -757,6 +843,12 @@ ScrDyn *scr_ni_get(ScrDyn *obj, ScrDyn *key) {
 }
 
 ScrDyn *scr_ni_get_str(ScrDyn *obj, const char *key, size_t len) {
+  void *stub = scr_ni_stub_of(obj);
+  if (stub != NULL && scr_ni_bridge_loaded() == NULL) {
+    /* Before Node starts, the interface snapshot answers what it holds. */
+    ScrDyn *known = scr_ni_boot_member(stub, key, len);
+    if (known != NULL) return known;
+  }
   uint32_t id;
   if (!nh_receiver(obj, &id, "a property read")) return NULL;
   nh_enter();
@@ -905,6 +997,13 @@ ScrStr *scr_ni_typeof(ScrDyn *value) {
 }
 
 int scr_ni_instanceof(ScrDyn *value, ScrDyn *ctor) {
+  /* A stub class before Node starts: no island object exists yet, and a
+   * native value crossing into Node is never an instance of an ordinary
+   * island class (the snapshot says whether the class is one). */
+  void *stub = scr_ni_stub_of(ctor);
+  if (stub != NULL && scr_ni_bridge_loaded() == NULL && !scr_ni_is_handle(value) &&
+      scr_ni_boot_plain_class(stub))
+    return 0;
   uint32_t id;
   if (!nh_receiver(ctor, &id, "instanceof")) return -1;
   nh_enter();
@@ -957,6 +1056,11 @@ ScrPromise *scr_ni_await(ScrDyn *value) {
   ScrPromise *boxed = value != NULL ? scr_dyn_promise_of(value) : NULL;
   if (boxed != NULL) return scr_promise_retain(boxed);
   ScrNodeRef *ref = nh_ref_of(value);
+  if (ref != NULL && !nh_live(ref)) {
+    ScrPromise *p = scr_promise_new();
+    scr_promise_reject_pending(p);
+    return p;
+  }
   ScrPromise *p = scr_promise_new();
   if (ref == NULL) {
     scr_promise_fulfill_ref(p, scr_dyn_retain(value != NULL ? value : scr_dyn_undefined()),
@@ -985,6 +1089,7 @@ static ScrDyn *nh_inspect_fn = NULL;
 ScrStr *scr_ni_inspect(const ScrDyn *value, double recurse, double depth) {
   ScrNodeRef *ref = nh_ref_of(value);
   if (ref == NULL) return scr_str_new("", 0);
+  if (!nh_live(ref)) return scr_str_new("", 0);
   if (nh_inspect_fn == NULL) {
     ScrStr *util = scr_str_new("node:util", 9);
     ScrDyn *module = nh_load(util, 0);
@@ -1175,6 +1280,9 @@ static void nh_cleanup(void) {
 }
 
 void scr_ni_handles_install(void) {
+  static bool installed = false;
+  if (installed) return;
+  installed = true;
   scr_dyn_handle_install(SCR_DYNH_NODE_ISLAND, &nh_ops);
   scr_atexit(nh_cleanup);
 }

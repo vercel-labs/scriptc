@@ -117,7 +117,8 @@ import {
   nodeIslandNodeDiag,
   type ScrDiagnostic,
 } from "./diagnostics/diagnostic.js";
-import { libnodeCacheKey, libnodeRecord } from "./node-islands/libnode.js";
+import { libnodeCacheKey, libnodeProbePack, libnodeRecord } from "./node-islands/libnode.js";
+import { finalizeDeferredIslands } from "./node-islands/snapshot.js";
 import { loadLibraryProfile, type LibraryProfile } from "./library/library-profile.js";
 import { clearFenceEvalCaches, decorateLibraryRefusals } from "./library/fence-eval.js";
 import {
@@ -802,8 +803,17 @@ async function prepareExecutableInput(
       if (typeof recorded === "string")
         return { ok: false, diagnostics: [nodeIslandNodeDiag(recorded, entryPath)], sourceTexts };
       mod.nodeIsland = recorded;
+      // Deferred island modules (scope-B NI-7): probed in the same pack.
+      finalizeDeferredIslands(
+        mod,
+        entryPath,
+        libnodeProbePack(opts.libnode, process.env, dirname(entryPath)),
+      );
       // `beside` packaging carries the island code too (scope-B NI-4).
       if (opts.libnode === "beside") placeIslandsBeside(mod, opts.outPath);
+    } else {
+      // IR, LLVM and object outputs have no pack to probe with: eager.
+      finalizeDeferredIslands(mod, entryPath, null);
     }
   }
   if (warningSink !== undefined && prepared.warnings.length > 0) {

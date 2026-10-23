@@ -17,7 +17,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SCR_NODE_BRIDGE_ABI 6u
+#define SCR_NODE_BRIDGE_ABI 7u
 /* The symbol a bridge library exports: `const ScrNodeBridge *(void)`. */
 #define SCR_NODE_BRIDGE_ENTRY "scr_node_bridge_v1"
 
@@ -200,6 +200,24 @@ typedef struct ScrNodeBridgeHost {
   void (*export_watch)(uint32_t id);
   /* V8 collected the representative of `id`. */
   void (*export_release)(uint32_t id);
+  /* `value instanceof <export id>` for a native class representative
+   * (its Symbol.hasInstance): 1 or 0. */
+  int (*export_instance_of)(uint32_t id, const ScrNodeValue *value);
+  /* ── shared modules (NI-6): modules the program compiled that island
+   * code imports resolve, through the loader hooks of the bootstrap, to
+   * generated modules over the live native exports. ── */
+  /* The table, as SCR_NV_STRING JSON: [{"path","exports":[{"name","kind"}]}]
+   * (index = module id, export index = slot). */
+  void (*shared_table)(ScrNodeValue *out);
+  /* The current value of a shared export. mode 0: read; 1: read and bind
+   * (the generated module holds it: later native changes are pushed with
+   * bridge->shared_push); 2: bind late (the binding is in its temporal
+   * dead zone: it is pushed once the native declaration ran). 0: *out is
+   * the value; 1: threw (*out thrown); 3: in its temporal dead zone. */
+  int (*shared_get)(uint32_t mod, uint32_t slot, int mode, ScrNodeValue *out);
+  /* The exports in their temporal dead zone now, as SCR_NV_STRING JSON
+   * [[mod, slot], ...]. */
+  void (*shared_tdz)(ScrNodeValue *out);
 } ScrNodeBridgeHost;
 
 typedef struct ScrNodeBridge {
@@ -290,6 +308,9 @@ typedef struct ScrNodeBridge {
   uint32_t (*live_handles)(void);
   /* Settles the V8 promise representing native promise `id` (NI-5). */
   void (*export_settle)(uint32_t id, int rejected, const ScrNodeValue *value);
+  /* NI-6: the native value of shared export (mod, slot) changed: the
+   * generated module's binding takes `value`. */
+  void (*shared_push)(uint32_t mod, uint32_t slot, const ScrNodeValue *value);
 } ScrNodeBridge;
 
 #endif /* SCR_NODE_BRIDGE_H */

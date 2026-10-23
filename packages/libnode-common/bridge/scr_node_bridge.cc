@@ -70,6 +70,10 @@ Global<Function> g_set_timer, g_clear_timer, g_ref_timer, g_refresh_timer;
 Global<Function> g_set_immediate, g_clear_immediate, g_ref_immediate;
 Global<Function> g_next_tick, g_emit;
 Global<Function> g_load; // the bootstrap's module loader (NI-4)
+Global<Function> g_shared_push; // the loader hooks' binding updates (NI-6)
+void SharedTable(const FunctionCallbackInfo<Value> &info);
+void SharedGet(const FunctionCallbackInfo<Value> &info);
+void SharedTdz(const FunctionCallbackInfo<Value> &info);
 
 char *Copy(const std::string &text, size_t *len) {
   char *out = static_cast<char *>(std::malloc(text.size() + 1));
@@ -247,6 +251,9 @@ char *Start(const ScrNodeBridgeHost *host, const char *bootstrap, const char *ar
   SetMethod(context, native, "settle", Settle);
   SetMethod(context, native, "run", Run);
   SetMethod(context, native, "listen", Listen);
+  SetMethod(context, native, "sharedTable", SharedTable);
+  SetMethod(context, native, "sharedGet", SharedGet);
+  SetMethod(context, native, "sharedTdz", SharedTdz);
   SetMethod(context, native, "isExport", IsExport);
   global->Set(context, Utf8(isolate, "__scriptcNodeIslandHost"), native).Check();
   TryCatch try_catch(isolate);
@@ -280,7 +287,8 @@ char *Start(const ScrNodeBridgeHost *host, const char *bootstrap, const char *ar
       !TakeFunction(isolate, context, d, "refImmediate", &g_ref_immediate) ||
       !TakeFunction(isolate, context, d, "nextTick", &g_next_tick) ||
       !TakeFunction(isolate, context, d, "emit", &g_emit) ||
-      !TakeFunction(isolate, context, d, "load", &g_load))
+      !TakeFunction(isolate, context, d, "load", &g_load) ||
+      !TakeFunction(isolate, context, d, "sharedPush", &g_shared_push))
     return Copy("the Node island bootstrap left an incomplete dispatcher", nullptr);
   global->Delete(context, Utf8(isolate, "__scriptcNodeIsland")).FromMaybe(false);
   global->Delete(context, Utf8(isolate, "__scriptcNodeIslandHost")).FromMaybe(false);
@@ -607,7 +615,7 @@ void Stop() {
   DropAllExports();
   for (Global<Function> *fn :
        {&g_set_timer, &g_clear_timer, &g_ref_timer, &g_refresh_timer, &g_set_immediate,
-        &g_clear_immediate, &g_ref_immediate, &g_next_tick, &g_emit})
+        &g_clear_immediate, &g_ref_immediate, &g_next_tick, &g_emit, &g_shared_push})
     fn->Reset();
   isolate->Exit();
   delete g_locker;
@@ -876,6 +884,14 @@ void ExportCall(const FunctionCallbackInfo<Value> &info) {
   std::memset(&out, 0, sizeof out);
   int status;
   if (info.IsConstructCall()) {
+    // `class Sub extends NativeClass` in island code: the native instance
+    // cannot take the island prototype's overrides (NI-6 shortcut).
+    auto self = g_exports.find(id);
+    if (self != g_exports.end() && !info.NewTarget()->StrictEquals(self->second.Get(isolate))) {
+      isolate->ThrowException(v8::Exception::TypeError(Utf8(
+          isolate, "scriptc: island code cannot extend a native class of a shared module yet")));
+      return;
+    }
     status = g_host->export_construct(id, args.data(), args.size(), &out);
   } else {
     ScrNodeValue self;
@@ -885,6 +901,15 @@ void ExportCall(const FunctionCallbackInfo<Value> &info) {
   Local<Value> result;
   ThrowOrReturn(isolate, context, status, &out, &result);
   if (!result.IsEmpty()) info.GetReturnValue().Set(result);
+}
+
+void ExportHasInstance(const FunctionCallbackInfo<Value> &info) {
+  Isolate *isolate = info.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
+  HostCall scope;
+  ScrNodeValue v;
+  FromV8(isolate, context, info[0], &v);
+  info.GetReturnValue().Set(g_host->export_instance_of(ExportIdArg(info.Data()), &v) == 1);
 }
 
 uint32_t HolderId(Local<Object> holder) {
@@ -1066,6 +1091,14 @@ Local<Value> ExportValue(Isolate *isolate, Local<Context> context, const ScrNode
     fn->SetName(in->u.exp.name != nullptr
                     ? FromWtf8(isolate, in->u.exp.name, in->u.exp.name_len)
                     : String::Empty(isolate));
+    if (in->flags & SCR_NVF_CONSTRUCTOR) {
+      // A native class: instanceof asks the runtime (NI-6).
+      fn->DefineOwnProperty(context, v8::Symbol::GetHasInstance(isolate),
+                            Function::New(context, ExportHasInstance, data, 1).ToLocalChecked(),
+                            static_cast<v8::PropertyAttribute>(v8::DontEnum | v8::DontDelete |
+                                                               v8::ReadOnly))
+          .Check();
+    }
     obj = fn;
   } else if (in->flags & SCR_NVF_PROMISE) {
     Local<v8::Promise::Resolver> resolver = v8::Promise::Resolver::New(context).ToLocalChecked();
@@ -1526,6 +1559,56 @@ void DropHandle(uint32_t h) {
   Drop(h);
 }
 
+// ── shared modules (NI-6) ──────────────────────────────────────────────
+// Natives of the loader hooks (scr_node_island_hooks.cjs): the table of
+// modules the program shares, the current value of one export, and the
+// exports still in their temporal dead zone.
+
+void SharedTable(const FunctionCallbackInfo<Value> &info) {
+  Isolate *isolate = info.GetIsolate();
+  HostCall scope;
+  ScrNodeValue out;
+  std::memset(&out, 0, sizeof out);
+  g_host->shared_table(&out);
+  info.GetReturnValue().Set(FromWtf8(isolate, out.u.str.data, out.u.str.len));
+}
+
+void SharedTdz(const FunctionCallbackInfo<Value> &info) {
+  Isolate *isolate = info.GetIsolate();
+  HostCall scope;
+  ScrNodeValue out;
+  std::memset(&out, 0, sizeof out);
+  g_host->shared_tdz(&out);
+  info.GetReturnValue().Set(FromWtf8(isolate, out.u.str.data, out.u.str.len));
+}
+
+// sharedGet(mod, slot, mode, tdz): the value, or `tdz` for a binding in its
+// temporal dead zone.
+void SharedGet(const FunctionCallbackInfo<Value> &info) {
+  Isolate *isolate = info.GetIsolate();
+  Local<Context> context = isolate->GetCurrentContext();
+  HostCall scope;
+  ScrNodeValue out;
+  std::memset(&out, 0, sizeof out);
+  int status = g_host->shared_get(Uint32Arg(info, 0), Uint32Arg(info, 1),
+                                  static_cast<int>(Uint32Arg(info, 2)), &out);
+  if (status == 3) {
+    info.GetReturnValue().Set(info[3]);
+    return;
+  }
+  Local<Value> result;
+  ThrowOrReturn(isolate, context, status, &out, &result);
+  if (!result.IsEmpty()) info.GetReturnValue().Set(result);
+}
+
+void SharedPush(uint32_t mod, uint32_t slot, const ScrNodeValue *value) {
+  Enter e;
+  Local<Value> argv[] = {Integer::NewFromUnsigned(e.isolate, mod),
+                         Integer::NewFromUnsigned(e.isolate, slot),
+                         ToV8(e.isolate, e.context, value)};
+  Helper(e, g_shared_push, 3, argv);
+}
+
 const ScrNodeBridge kBridge = {
     SCR_NODE_BRIDGE_ABI,
     NODE_VERSION_STRING,
@@ -1562,6 +1645,7 @@ const ScrNodeBridge kBridge = {
     DropHandle,
     LiveHandles,
     ExportSettle,
+    SharedPush,
 };
 
 }  // namespace

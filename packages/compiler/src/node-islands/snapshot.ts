@@ -272,7 +272,7 @@ globalThis.__scriptcNodeIsland = {
   },
   setTimer: noop, clearTimer: noop, refTimer: noop, refreshTimer: noop,
   setImmediate: noop, clearImmediate: noop, refImmediate: noop,
-  nextTick: noop, emit: noop, load: noop,
+  nextTick: noop, emit: noop, load: noop, sharedPush: noop,
 };
 const fnToString = Function.prototype.toString;
 const hasOwn = Object.prototype.hasOwnProperty;

@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6854-node-island-shared-registry-native/registry.mjs",
+  "<repo>/tests/corpus/6854-node-island-shared-registry-native/main.mjs"
+ ],
+ "diags": []
+}

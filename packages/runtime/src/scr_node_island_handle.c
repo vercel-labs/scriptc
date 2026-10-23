@@ -572,7 +572,10 @@ static bool nh_export_value(ScrDyn *v, ScrNodeValue *out, NhKeep *keep) {
     scr_ni_export_out(v, out);
     return true;
   }
-  if (v->kind == SCR_DYN_OBJ || v->kind == SCR_DYN_ARR) {
+  /* Arrays (dyn, and typed array capsules: NI-6 shortcut, as for dyn
+   * arrays) keep NI-4's JSON copy. */
+  if (v->kind == SCR_DYN_OBJ || v->kind == SCR_DYN_ARR ||
+      (v->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_array_ops(v) != NULL)) {
     ScrStr *gap = scr_str_new("", 0);
     ScrDyn *json = scr_json_stringify_replacer(v, scr_dyn_undefined(), gap);
     scr_str_release(gap);
@@ -752,6 +755,7 @@ static void nh_call_job(void *p) {
 }
 
 static int nh_run(NhCall *c) {
+  scr_ni_shared_refresh();
   scr_ni_on_node_stack(nh_call_job, c);
   return c->threw;
 }
@@ -1134,6 +1138,20 @@ bool scr_ni_value_out(ScrDyn *v, ScrNodeValue *out) {
   memset(&nh_out_keep, 0, sizeof nh_out_keep);
   nh_keep_done(&old);
   return nh_to_node(v, out, &nh_out_keep);
+}
+
+/* NI-6: a conversion whose keep belongs to the caller, for values the
+ * runtime pushes into Node between other conversions (shared modules). */
+void *scr_ni_value_out_begin(ScrDyn *v, ScrNodeValue *out, bool *ok) {
+  NhKeep *k = calloc(1, sizeof *k);
+  if (k == NULL) nh_oom();
+  *ok = nh_to_node(v, out, k);
+  return k;
+}
+
+void scr_ni_value_out_end(void *keep) {
+  nh_keep_done(keep);
+  free(keep);
 }
 
 ScrDyn *scr_ni_value_in(const ScrNodeValue *v) {

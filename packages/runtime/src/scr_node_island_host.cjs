@@ -184,10 +184,23 @@ function call(id, sync, file, specifier, name, argsJson) {
 // answers a promise of the namespace.
 const { pathToFileURL } = require("node:url");
 
+// Island imports of modules the program shares resolve to their native
+// exports (NI-6, scr_node_island_hooks.cjs, appended to this file).
+let sharedModules = null;
+
 function load(path, esm) {
   if (path.startsWith("node:")) return require(path);
+  if (sharedModules === null) sharedModules = scriptcSharedModules(nativeHost);
   if (esm) return import(pathToFileURL(path).href);
-  return createRequire(path)(path);
+  const load = createRequire(path);
+  return sharedModules.entry(path, (entry) => {
+    if (entry !== null) load(entry);
+    return load(path);
+  });
+}
+
+function sharedPush(mod, slot, value) {
+  if (sharedModules !== null) sharedModules.push(mod, slot, value);
 }
 
 // ── the hosted loop (scope-B NI-3) ─────────────────────────────────────
@@ -364,4 +377,5 @@ globalThis.__scriptcNodeIsland = {
   nextTick,
   emit,
   load,
+  sharedPush,
 };

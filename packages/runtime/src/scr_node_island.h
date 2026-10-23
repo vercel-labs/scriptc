@@ -122,7 +122,18 @@ int scr_ni_host_export_delete(uint32_t id, const struct ScrNodeValue *key, struc
 int scr_ni_host_export_keys(uint32_t id, struct ScrNodeValue *out);
 void scr_ni_host_export_watch(uint32_t id);
 void scr_ni_host_export_release(uint32_t id);
+/* ── shared modules (scope-B NI-6, scr_node_island_export.c) ── */
+void scr_node_island_share(ScrStr *path, ScrStr *exports, ScrDyn *accessor);
+ScrDyn *scr_node_island_shared_tdz(void);
+ScrDyn *scr_node_island_class_methods_of(ScrDyn *cls, ScrDyn *builder, ScrDyn *ctor);
+void scr_ni_shared_refresh(void);
 void scr_ni_exports_release_all(void); /* at exit, after Node stopped */
+void *scr_ni_value_out_begin(ScrDyn *v, struct ScrNodeValue *out, bool *ok);
+void scr_ni_value_out_end(void *keep);
+int scr_ni_host_export_instance_of(uint32_t id, const struct ScrNodeValue *value);
+void scr_ni_host_shared_table(struct ScrNodeValue *out);
+int scr_ni_host_shared_get(uint32_t mod, uint32_t slot, int mode, struct ScrNodeValue *out);
+void scr_ni_host_shared_tdz(struct ScrNodeValue *out);
 /* Promise settlement callback (SCR_NODE_ISLANDS build of scr_async.c). */
 void scr_promise_on_settle_sync(ScrPromise *in, void (*cb)(ScrPromise *dst, ScrPromise *src));
 

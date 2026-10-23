@@ -347,6 +347,9 @@ static void ni_on_node_stack(void (*job)(void *), void *arg) {
       job(arg);
     return;
   }
+  /* Island code is about to run: it sees the current native values of
+   * shared exports (NI-6). */
+  scr_ni_shared_refresh();
   if (ni_stack == NULL) {
     ni_stack = mmap(NULL, NI_STACK, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (ni_stack == MAP_FAILED) ni_oom();
@@ -446,6 +449,7 @@ static void ni_host_exit(int code) {
 static void ni_host_run(uint32_t kind, uint32_t token) {
   NI_MARK_BEGIN;
   scr_loop_hosted_run(kind, token);
+  scr_ni_shared_refresh();
   NI_MARK_END;
 }
 
@@ -489,6 +493,10 @@ static const ScrNodeBridgeHost ni_host = {
     &scr_ni_host_export_keys,
     &scr_ni_host_export_watch,
     &scr_ni_host_export_release,
+    &scr_ni_host_export_instance_of,
+    &scr_ni_host_shared_table,
+    &scr_ni_host_shared_get,
+    &scr_ni_host_shared_tdz,
 };
 
 typedef struct {

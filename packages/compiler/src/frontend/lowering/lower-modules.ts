@@ -14,6 +14,11 @@ import * as ts from "../ts7/adapter.js";
 import { collectRebindableFunctions, isRebindableFunction } from "./rebindable-functions.js";
 import { bindingSource } from "../binding-source.js";
 import type { Lowerer } from "./lowerer.js";
+import {
+  sharedInitFlagStores,
+  sharedModulePlans,
+  sharedModuleRegistrations,
+} from "./lower-shared-modules.js";
 import { dirname as dirnamePath, resolve as resolvePath } from "node:path";
 import { packageNameOfPath, probeNodeImportRefusal } from "../npm.js";
 import { isNpmStaticPackage } from "../npm-static.js";
@@ -3006,6 +3011,10 @@ export function lowerFileInit(
       });
     }
     if (sf === lowerer.entry) header.push(...lowerer.punycodeLinkWarning());
+    // Modules shared with Node islands register before any module runs
+    // (NI-6); the plan also creates their declarations' TDZ flags.
+    if (sharedModulePlans(lowerer).length > 0 && sf === lowerer.entry)
+      header.push(...sharedModuleRegistrations(lowerer));
     // Top-level `this` of a CommonJS module: its object exists before the
     // module's first statement (lowerCjsTopLevelThis).
     const exportsThis = lowerer.cjsExportsThis.get(sf);
@@ -3242,6 +3251,7 @@ export function lowerFileInit(
         stmt,
         deferred ? [deferred] : lowerer.lowerStmts([stmt]),
       );
+      if (lowerer.sharedInitFlags.size > 0) stmtIr.push(...sharedInitFlagStores(lowerer, stmt));
       // Class EXPRESSIONS inside this statement queued their static
       // inits while it lowered: they land immediately before it — JS's
       // order for the supported whole-initializer positions.

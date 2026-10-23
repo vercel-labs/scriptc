@@ -46,7 +46,7 @@ static const char kBootstrap[] =
     "  },\n"
     "  setTimer() { return 0; }, clearTimer() {}, refTimer() {}, refreshTimer() {},\n"
     "  setImmediate() { return 0; }, clearImmediate() {}, refImmediate() {},\n"
-    "  nextTick() {}, emit() {}, load() {},\n"
+    "  nextTick() {}, emit() {}, load() {}, sharedPush() {},\n"
     "};\n";
 
 static double now_ms(void) {

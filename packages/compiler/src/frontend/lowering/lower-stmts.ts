@@ -1,5 +1,11 @@
 import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
-import { islandHandleBinding, lowerIslandExpr, lowerIslandSubclass } from "./lower-node-island.js";
+import {
+  islandHandleBinding,
+  lowerIslandExpr,
+  isIslandRequireSpec,
+  lowerIslandRequireAtStatement,
+  lowerIslandSubclass,
+} from "./lower-node-island.js";
 import { isIslandSubclassDecl } from "../../node-islands/boundary.js";
 import { declaredMemberOf, isPromisePrototypeRead } from "./expressions/property-access.js";
 import { hostsAll } from "./expressions/hosted-narrowing.js";
@@ -1980,6 +1986,10 @@ function lowerVarDeclarator(
     const spec = requireSpecOf(decl.initializer)!;
     if (lowerer.externalTypes.has(spec)) lowerer.externalHostFence(spec, decl, false);
     if (ts.isSourceFile(stmt.parent)) {
+      // `const x = require("<island>")` and `const { name } = …`: the
+      // island module loads here, at the statement (lower-node-island.ts).
+      const island = lowerIslandRequireAtStatement(lowerer, decl);
+      if (island !== null) return [island];
       const init = lowerer.requireInitStmt(spec, decl);
       const out: IrStmt[] = init ? [init] : [];
       // Nested patterns destructure the named export's value right after
@@ -2004,6 +2014,12 @@ function lowerVarDeclarator(
     // same routing top-level requires use, and no statement remains.
     // Relative requires keep the fence: their module-init-at-position
     // semantics needs storage this model doesn't represent.
+    // A nested require of an island package is an ordinary binding of the
+    // island module, loaded at the statement (lower-node-island.ts).
+    if (isIslandRequireSpec(lowerer, ts.getSourceFileOfNode(decl).fileName, spec)) {
+      const lowered = lowerer.lowerVarDecl(decl, isLet);
+      return lowered ? [lowered] : [];
+    }
     if (canonicalBuiltinModule(spec) !== null) {
       return canonicalBuiltinModule(spec) === "punycode"
         ? [lowerer.punycodeRequireWarning(decl)]
@@ -5850,6 +5866,12 @@ export function lowerVarDecl(
   // Promise.prototype is an ordinary object the checker types Promise<any>.
   if (!decl.type && !hasJsTypeAnnotation(decl) && isPromisePrototypeRead(lowerer, decl.initializer))
     type = DYN;
+  // A JavaScript binding assigned values outside its declared type
+  // (analyzeJsWidenedBindings in lowerer.ts) holds them as checked-dynamic.
+  {
+    const symbol = lowerer.resolveValueSymbol(decl.name);
+    if (symbol && lowerer.jsWidenedBindings.has(symbol)) type = DYN;
+  }
   // A typed-arguments function expression (typed-arguments.ts): the
   // checker types the binding variadic, but its value has the fixed
   // signature every use asserts.

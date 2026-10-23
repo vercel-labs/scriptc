@@ -2366,6 +2366,10 @@ export class Lowerer {
    * prepass. This includes explicit annotations: unchecked TS annotations do
    * not prove that an array property read produced a value. */
   readonly runtimeOptionalBindingTypes = new Map<ts.Symbol, IrType>();
+  /** JavaScript bindings assigned values outside their declared type
+   * (analyzeJsWidenedBindings): checked-dynamic storage, and reads keep the
+   * stored value instead of narrowing it to the checker's type. */
+  readonly jsWidenedBindings = new Set<ts.Symbol>();
   /** A pipeline() function stage's `source` parameter: the IR type of what
    * the pipeline passes it (the previous stage as an async iterable), set
    * while the stage lowers. Parameter typing and `for await` heads read
@@ -5139,6 +5143,49 @@ export class Lowerer {
     }
   }
 
+  /** A JavaScript `let`/`var` binding assigned a value its declared type
+   * does not admit (`let t = parseInt(s); if (isNaN(t)) t = undefined`):
+   * TypeScript types the binding from its initializer and reports the
+   * assignment (TS2322), which JavaScript files relax, so the binding takes
+   * checked-dynamic storage and holds whatever the program stores. JSDoc
+   * type annotations keep their declared storage. */
+  analyzeJsWidenedBindings(parts: FileParts[]): void {
+    for (const { sf } of parts) {
+      if (!isJsSourceFileName(sf.fileName) || sf.isDeclarationFile) continue;
+      ts.walkPreorder(sf, (node) => {
+        if (
+          !ts.isBinaryExpression(node) ||
+          node.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+          !ts.isIdentifier(node.left)
+        )
+          return undefined;
+        const symbol = this.resolveValueSymbol(node.left);
+        if (!symbol || this.runtimeOptionalBindingTypes.has(symbol)) return undefined;
+        const decl = symbol.valueDeclaration;
+        if (
+          decl === undefined ||
+          !ts.isVariableDeclaration(decl) ||
+          !ts.isIdentifier(decl.name) ||
+          !isJsSourceFileName(ts.getSourceFileOfNode(decl).fileName) ||
+          hasJsTypeAnnotation(decl) ||
+          decl.parent === undefined ||
+          !ts.isVariableDeclarationList(decl.parent) ||
+          (decl.parent.flags & ts.NodeFlags.Const) !== 0
+        )
+          return undefined;
+        const declared = this.checker.getTypeOfSymbol(symbol);
+        if (declared.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) return undefined;
+        const assigned = this.checker.getTypeAtLocation(node.right);
+        if (this.checker.isTypeAssignableTo(assigned, declared)) return undefined;
+        this.runtimeOptionalBindingTypes.set(symbol, DYN);
+        this.jsWidenedBindings.add(symbol);
+        const global = this.globalsBySymbol.get(symbol);
+        if (global) global.type = DYN;
+        return undefined;
+      });
+    }
+  }
+
   analyzeRuntimeOptionalArrayReads(parts: FileParts[]): void {
     const provenance = RuntimeOptionalProvenance.fromEnvironment();
     // The site whose value the current promotion follows (debug only).
@@ -7621,6 +7668,7 @@ export class Lowerer {
       this.analyzeRuntimeOptionalArrayReads(parts);
       this.analyzeDateJsonResults(parts);
       this.analyzeGuardedRecordReadGlobals(parts);
+      this.analyzeJsWidenedBindings(parts);
     });
     // Decorated classes analyze AFTER the whole collection pass: a
     // decorator's return type may name a subclass declared below the
@@ -8068,6 +8116,7 @@ export class Lowerer {
       this.analyzeRuntimeOptionalArrayReads(parts);
       this.analyzeDateJsonResults(parts);
       this.analyzeGuardedRecordReadGlobals(parts);
+      this.analyzeJsWidenedBindings(parts);
     });
     // Decorated classes analyze post-collection here too: the %init seeds
     // lower the decoration calls, whose edges (decorator bodies, construct

@@ -85,6 +85,15 @@ import { mixinFnOfCallee } from "../lower-mixins.js";
 import { isNavigatorGlobal, refuseNavigator } from "../builtins/navigator.js";
 import { wasiGuestPath } from "../../../wasi-paths.js";
 
+/** A JavaScript binding with checked-dynamic storage because the program
+ * stores values outside its declared type (analyzeJsWidenedBindings): the
+ * checker's narrowing at a read does not describe the stored value. */
+function isJsWidenedBinding(lowerer: Lowerer, expr: ts.Identifier): boolean {
+  if (lowerer.jsWidenedBindings.size === 0) return false;
+  const symbol = lowerer.resolveValueSymbol(expr);
+  return symbol !== null && symbol !== undefined && lowerer.jsWidenedBindings.has(symbol);
+}
+
 export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: SrcLoc): IrExpr {
   if (lowerer.isStdlibGlobal(expr, "console")) {
     return { kind: "libCall", fn: "console.native", args: [], type: DYN, loc };
@@ -269,6 +278,8 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       }
       return { kind: "varRef", localId: local.id, type: local.type, loc };
     }
+    if (local.type.kind === "dyn" && isJsWidenedBinding(lowerer, expr))
+      return { kind: "varRef", localId: local.id, type: local.type, loc };
     const narrowed = lowerer.maybeNarrow(
       { kind: "varRef", localId: local.id, type: local.type, loc },
       expr,
@@ -382,6 +393,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       if (use?.kind === "call") return runtimeOptionalReceiverRead(lowerer, expr, g, null, loc);
       return ref;
     }
+    if (g.type.kind === "dyn" && isJsWidenedBinding(lowerer, expr)) return ref;
     return lowerer.maybeNarrow(ref, expr);
   }
   // `undefined` — tsc's intrinsic global (a local shadowing the name

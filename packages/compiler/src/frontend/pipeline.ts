@@ -230,7 +230,7 @@ function detectAutoPackages(
     // without the declaration eligibility bar.
     const owner = npmStaticPackageOfPath(sf.fileName);
     const viaTransitive = owner !== null && transitive.has(owner);
-    const edges: { spec: string; loc: SrcLoc }[] = [];
+    const edges: { spec: string; loc: SrcLoc; nested?: true }[] = [];
     for (const stmt of sf.statements.nodes) {
       if (
         (isImportDeclaration(stmt) || isExportDeclaration(stmt)) &&
@@ -248,6 +248,33 @@ function detectAutoPackages(
         for (const req of requiresOf(stmt)) edges.push({ spec: req.spec, loc: locOf(req.node) });
       }
     }
+    // A program file's literal require() calls outside top-level require
+    // statements (inside functions, in expressions) name packages the
+    // program loads at run time too. They count only to refuse a package
+    // that ships no declarations, which then runs in a Node island; any
+    // other package keeps the top-level edge rule.
+    if (
+      mode === "lib" &&
+      !viaTransitive &&
+      owner === null &&
+      !sf.fileName.includes("/node_modules/") &&
+      sf.text.includes("require(")
+    ) {
+      const topLevel = new Set(edges.map((e) => `${e.spec}@${e.loc.start}`));
+      for (const call of moduleSourceCandidates(load.program, sf).calls) {
+        const arg = call.arguments.nodes[0];
+        if (
+          arg === undefined ||
+          !isStringLiteralLike(arg) ||
+          !isIdentifier(call.expression) ||
+          call.expression.text !== "require"
+        )
+          continue;
+        const loc = locOf(call);
+        if (topLevel.has(`${arg.text}@${loc.start}`)) continue;
+        edges.push({ spec: arg.text, loc, nested: true });
+      }
+    }
     // Transitive selection counts every literal require() and import()
     // anywhere in the package, nested ones included.
     if (viaTransitive) {
@@ -262,7 +289,7 @@ function detectAutoPackages(
           edges.push({ spec: arg.text, loc: locOf(call) });
       }
     }
-    for (const { spec, loc } of edges) {
+    for (const { spec, loc, nested } of edges) {
       if (load.externalTypes?.has(spec)) continue;
       // scriptc's own packages are not npm dependencies: contract types are
       // declarations only, and @scriptc/threads and @scriptc/experimental
@@ -304,6 +331,13 @@ function detectAutoPackages(
           ? resolveBareModule(sf.fileName, spec, "js-only")
           : null;
       const runtimePkg = js !== null && js.packageName !== npm?.packageName ? js.packageName : null;
+      // Nested requires only refuse packages without own declarations.
+      if (
+        nested === true &&
+        !(npm === null && runtimePkg !== null) &&
+        !(npm !== null && !/\.d\.(ts|mts|cts)$/.test(npm.typesFile))
+      )
+        continue;
       if (npm === null || runtimePkg !== null) {
         if (mode !== "lib" || runtimePkg === null || judged!.has(runtimePkg)) continue;
         judged!.add(runtimePkg);

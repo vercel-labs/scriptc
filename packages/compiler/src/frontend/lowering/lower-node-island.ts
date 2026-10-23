@@ -16,7 +16,7 @@ import { readFileSync, realpathSync } from "node:fs";
 import { resolveFrom } from "../../node-islands/resolve.js";
 import { dirname, join } from "node:path";
 import * as ts from "../ts7/adapter.js";
-import { locOf } from "../program.js";
+import { isJsSourceFile, locOf } from "../program.js";
 import type { NodeApiMember } from "../node-api-import.js";
 import { PoisonError, newFnCtx, type Lowerer } from "./lowerer.js";
 import {
@@ -458,6 +458,17 @@ function islandBindingOf(lowerer: Lowerer, ident: ts.Identifier): IslandBinding 
     const name = decl.propertyName?.text ?? decl.name.text;
     binding = name === "default" ? "default" : { name };
   } else {
+    // `const { name } = require("pkg")`: a member of module.exports, read
+    // at each use (shortcut: not copied once at the declaration).
+    const property = requiredPropertyOf(decl);
+    if (property !== null && loadsAtStatement(property.declaration)) {
+      const spec = requireInitSpecOf(property.declaration);
+      if (spec === null) return null;
+      const file = ts.getSourceFileOfNode(decl).fileName;
+      const path = islandModuleFile(islands, file, spec, "require");
+      const module = path === null ? undefined : lowerer.islandModules.get(path);
+      return module === undefined ? null : { kind: "named", module, name: property.name };
+    }
     // `const x = require("pkg")` (a CommonJS module of a native package
     // requiring an island package): x is module.exports.
     const spec = requireSpecOf(decl);
@@ -665,8 +676,41 @@ function undeclaredHandleType(lowerer: Lowerer, type: ts.Type): boolean {
   return containerType(lowerer, type);
 }
 
+/** Builtin classes whose native representation is not a JavaScript object
+ * (URLSearchParams, Headers, Request, …): an island instance of one has no
+ * native counterpart to convert into, so it stays a handle. */
+const BUILTIN_HANDLE_CLASSES: ReadonlySet<string> = new Set([
+  "URL",
+  "URLSearchParams",
+  "Headers",
+  "Request",
+  "Response",
+  "FormData",
+  "Blob",
+  "File",
+  "AbortController",
+  "AbortSignal",
+  "ReadableStream",
+  "WritableStream",
+  "TransformStream",
+  "TextEncoder",
+  "TextDecoder",
+]);
+
+/** Whether `type` is one of BUILTIN_HANDLE_CLASSES as declared by the
+ * standard library or @types/node (not a program class of the same name). */
+function builtinHandleClass(type: ts.Type): boolean {
+  const symbol = type.getSymbol();
+  if (symbol === undefined || !BUILTIN_HANDLE_CLASSES.has(String(symbol.escapedName))) return false;
+  return (
+    symbol.declarations.length > 0 &&
+    symbol.declarations.every((d) => ts.getSourceFileOfNode(d).isDeclarationFile)
+  );
+}
+
 /** Arrays, tuples, Maps and Sets (every arm of a union, nullish arms
- * aside): the object types an island hands back without declaring them. */
+ * aside), and the builtin classes of builtinHandleClass: the object types
+ * an island hands back without declaring them. */
 function containerType(lowerer: Lowerer, type: ts.Type): boolean {
   if (type.isUnionType())
     return ts
@@ -679,7 +723,7 @@ function containerType(lowerer: Lowerer, type: ts.Type): boolean {
   if ((type.flags & ts.TypeFlags.Object) === 0) return false;
   if (lowerer.checker.isArrayType(type) || lowerer.checker.isTupleType(type)) return true;
   const name = type.getSymbol()?.escapedName;
-  return name === "Map" || name === "Set";
+  return name === "Map" || name === "Set" || builtinHandleClass(type);
 }
 
 /** A member read, call, index or `new` whose receiver or callee is an
@@ -1521,6 +1565,20 @@ function islandReceiver(
   return { value: lowerer.coerceToExpected(lowerer.lowerExpr(receiver), FOREIGN) };
 }
 
+/** Whether `require(spec)` in `file` loads an island module. */
+export function isIslandRequireSpec(lowerer: Lowerer, file: string, spec: string): boolean {
+  const islands = lowerer.nodeIslands;
+  return islands !== null && islandModuleFile(islands, file, spec, "require") !== null;
+}
+
+/** `require("<island pkg>")` in a CommonJS module, at a call no other
+ * lowering claimed (inside a function, or as a subexpression): the island
+ * module loads at the call. Null when the package is not an island. */
+export function lowerIslandRequireCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
+  if (lowerer.nodeIslands === null) return null;
+  return lowerIslandLoadCall(lowerer, call, locOf(call)) ?? null;
+}
+
 /** `require("pkg")` (the global require, anywhere) and `import("pkg")` of
  * an island module: load it at the call. Undefined: not such a call. */
 function lowerIslandLoadCall(
@@ -1868,12 +1926,84 @@ function plainLiteral(node: ts.ObjectLiteralExpression | ts.ArrayLiteralExpressi
 /** The specifier of `x = require("spec")` (a variable declaration binding
  * an identifier to a literal require), or null. */
 function requireSpecOf(decl: ts.Node): string | null {
-  if (
-    !ts.isVariableDeclaration(decl) ||
-    !ts.isIdentifier(decl.name) ||
-    decl.initializer === undefined
-  )
-    return null;
+  if (!ts.isVariableDeclaration(decl) || !ts.isIdentifier(decl.name)) return null;
+  return requireInitSpecOf(decl);
+}
+
+/** The property a destructured CommonJS require binds: `name` in
+ * `const { name } = require("spec")` or `const { name: local } = …`, with
+ * the declaration. Rest elements, defaults and nested patterns are null. */
+function requiredPropertyOf(
+  decl: ts.Node,
+): { name: string; declaration: ts.VariableDeclaration } | null {
+  if (!ts.isBindingElement(decl) || decl.dotDotDotToken || decl.initializer) return null;
+  if (!ts.isIdentifier(decl.name)) return null;
+  const pattern = decl.parent;
+  if (pattern === undefined || !ts.isObjectBindingPattern(pattern)) return null;
+  const declaration = pattern.parent;
+  if (declaration === undefined || !ts.isVariableDeclaration(declaration)) return null;
+  const key = decl.propertyName;
+  const name =
+    key === undefined
+      ? decl.name.text
+      : ts.isIdentifier(key) || ts.isStringLiteral(key)
+        ? key.text
+        : null;
+  return name === null ? null : { name, declaration };
+}
+
+/** Whether every element of `const { … } = require("<island>")` binds a
+ * plain member (requiredPropertyOf): only then do the names read the
+ * module global; other patterns keep the ordinary lowering. */
+function islandPatternBindable(pattern: ts.ObjectBindingPattern): boolean {
+  return pattern.elements.nodes.every((e) => requiredPropertyOf(e) !== null);
+}
+
+/** Whether the top-level declaration `decl` of a JavaScript module loads
+ * its island module at the statement (lowerIslandRequireAtStatement)
+ * rather than in the module's %init prelude: `const`/`let` declarations
+ * binding an identifier or a plain object pattern. Reads before the
+ * statement are TDZ errors in Node, so the binding is never observed
+ * unassigned. `var` keeps the prelude load (shortcut: a hoisted `var` read
+ * before its statement sees the module, where Node sees undefined). */
+function loadsAtStatement(decl: ts.VariableDeclaration): boolean {
+  const list = decl.parent;
+  if (list === undefined || !ts.isVariableDeclarationList(list)) return false;
+  if ((list.flags & (ts.NodeFlags.Const | ts.NodeFlags.Let)) === 0) return false;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(decl))) return false;
+  if (ts.isIdentifier(decl.name)) return true;
+  return ts.isObjectBindingPattern(decl.name) && islandPatternBindable(decl.name);
+}
+
+/** The top-level statement `const x = require("<island>")` or `const { a,
+ * b: c } = require("<island>")` of a JavaScript module: assigns the island
+ * module (deferred like any top-level require) to its module global at the
+ * statement's position, so writes before it (`process.env.NODE_ENV = …`)
+ * are visible to the module's evaluation, as in Node; `x` is the module,
+ * `a` and `c` read its members at each use (shortcut: not copied once at
+ * the declaration). Null for any other declaration. */
+export function lowerIslandRequireAtStatement(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+): IrStmt | null {
+  const islands = lowerer.nodeIslands;
+  if (islands === null || !loadsAtStatement(decl)) return null;
+  const spec = requireInitSpecOf(decl);
+  if (spec === null) return null;
+  const path = islandModuleFile(islands, ts.getSourceFileOfNode(decl).fileName, spec, "require");
+  const module = path === null ? undefined : lowerer.islandModules.get(path);
+  if (path === null || module === undefined) return null;
+  const loc = locOf(decl);
+  const load = runsAtModuleEvaluation(decl)
+    ? deferIslandModule(path, loc)
+    : loadIslandModule(path, loc);
+  return { kind: "assign", localId: module.global.id, value: load, loc };
+}
+
+/** The specifier of a variable declaration initialized with a literal
+ * `require("spec")`, whatever its binding name or pattern, or null. */
+function requireInitSpecOf(decl: ts.VariableDeclaration): string | null {
+  if (decl.initializer === undefined) return null;
   let init: ts.Expression = decl.initializer;
   while (ts.isParenthesizedExpression(init)) init = init.expression;
   if (
@@ -1890,7 +2020,8 @@ function requireSpecOf(decl: ts.Node): string | null {
 /** Top-level `const x = require("pkg")` statements of island packages in a
  * compiled module (a native package requiring an island package): load the
  * island module in the module's %init prelude (shortcut: before the body,
- * not at the statement), deferred exactly like a static import (scope-B
+ * not at the statement; JavaScript `const`/`let` declarations load at the
+ * statement instead, loadsAtStatement), deferred exactly like a static import (scope-B
  * NI-7d: the build decides from the probe, stubs stand in until first use). */
 export function collectIslandRequires(lowerer: Lowerer, sf: ts.SourceFile): void {
   const islands = lowerer.nodeIslands;
@@ -1898,6 +2029,18 @@ export function collectIslandRequires(lowerer: Lowerer, sf: ts.SourceFile): void
   for (const stmt of sf.statements.nodes) {
     if (!ts.isVariableStatement(stmt)) continue;
     for (const decl of stmt.declarationList.declarations.nodes) {
+      // JavaScript `const`/`let` requires: the module global exists from
+      // here on; the statement itself loads the module at its position
+      // (lowerIslandRequireAtStatement).
+      if (loadsAtStatement(decl)) {
+        const spec = requireInitSpecOf(decl);
+        const path = spec === null ? null : islandModuleFile(islands, sf.fileName, spec, "require");
+        if (path !== null) {
+          lowerer.usesNodeIsland = true;
+          islandModuleGlobal(lowerer, path);
+        }
+        continue;
+      }
       const spec = requireSpecOf(decl);
       if (spec === null) continue;
       const path = islandModuleFile(islands, sf.fileName, spec, "require");

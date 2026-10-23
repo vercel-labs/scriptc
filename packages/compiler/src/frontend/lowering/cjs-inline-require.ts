@@ -36,6 +36,7 @@ import { isCjsRequireGlobal } from "./lower-node-module.js";
 import { DYN, type IrExpr } from "../../ir/ir.js";
 import { nodeThrowExpr } from "../../ir/build.js";
 import { probeNodeRequireRefusal } from "../npm.js";
+import { lowerIslandRequireCall } from "./lower-node-island.js";
 
 export interface InlineRequire {
   call: ts.CallExpression;
@@ -216,6 +217,9 @@ export function lowerUncompiledRequireCall(
     );
   }
   if (canonicalBuiltinModule(spec) !== null) return null;
+  // A package that runs in a Node island loads at the call (scope B).
+  const island = lowerIslandRequireCall(lowerer, call);
+  if (island !== null) return island;
   if (!spec.startsWith(".") && !spec.startsWith("/") && !spec.startsWith("#")) {
     const refusal = probeNodeRequireRefusal(sf.fileName, spec);
     if (refusal !== null) {

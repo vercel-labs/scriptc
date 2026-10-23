@@ -3329,14 +3329,7 @@ export function lowerShorthandValue(
       return { kind: "closure", fnName: sig.name, captures: [], type: funcType, loc };
     }
     const generic = lowerer.genericFnsBySymbol.get(resolved);
-    if (generic?.implicitParams) return lowerer.lowerGenericFnValue(propName, generic);
-    if (generic) {
-      lowerer.unsupported(
-        "SC1090",
-        prop,
-        `generic functions as values (call '${propName.text}' directly)`,
-      );
-    }
+    if (generic) return lowerer.lowerGenericFnValue(propName, generic);
     // A program class name (`{ parse, TomlError }`, an imported class
     // included): the class object, exactly the long form `{ C: C }`.
     // Generic classes keep the identifier path's contextual pinning.

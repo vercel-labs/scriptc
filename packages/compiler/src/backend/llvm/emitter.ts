@@ -1420,6 +1420,10 @@ export class LlEmitter {
    * commit back into their objects. Library builds keep their commits:
    * their values cross a native boundary. */
   readonly liveViewsReadOnly: boolean;
+  /** The program freezes, seals or prevents extensions of untyped values
+   * (IrModule.untypedIntegrity): the commits of class views store the
+   * view's integrity state in the instance's integrity word. */
+  readonly untypedIntegrity: boolean;
   /** Functions whose direct calls use i32 parameters or results. */
   readonly int32Abis: ReadonlyMap<string, Int32Abi>;
   /** Pure number functions with speculative integer clones. */
@@ -1637,8 +1641,12 @@ export class LlEmitter {
         initializerBindings: this.initializerBindings,
         nodes: this.nodeIndex,
       });
+    this.untypedIntegrity = mod.untypedIntegrity === true;
     this.liveViewsReadOnly =
-      mod.lib === undefined && !dynamicStores.all && dynamicStores.names.size === 0;
+      mod.lib === undefined &&
+      !this.untypedIntegrity &&
+      !dynamicStores.all &&
+      dynamicStores.names.size === 0;
     this.int32Abis = this.debug === null ? findInt32Abis(mod, this.int32Slots) : new Map();
     this.immortalGlobals = new Set(mod.contracts?.immortalGlobals ?? []);
     this.programLifetime = new Set(mod.contracts?.programLifetime ?? []);

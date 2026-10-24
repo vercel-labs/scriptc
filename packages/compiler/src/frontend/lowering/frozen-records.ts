@@ -24,7 +24,8 @@ import { isStrictCode } from "./strict-mode.js";
  * (scr_array.h SCR_ARR_FROZEN), which the backend's array write guards test
  * for the array types the module lists (IrModule.freezableArrays). A type is
  * freezable when a static Object.freeze names it, or, in a program that
- * freezes untyped values, when a value of it or of a type reaching it can be
+ * freezes, seals or prevents extensions of untyped values
+ * (noteUntypedIntegrity), when a value of it or of a type reaching it can be
  * held as a live untyped reference. */
 
 type RecordType = Extract<IrType, { kind: "record" }>;
@@ -57,6 +58,17 @@ export function lowerNativeFreeze(
     type,
     loc,
   };
+}
+
+/** Records that the program freezes, seals or prevents extensions of the
+ * untyped value `node` lowers to. Unless it is a fresh object or array
+ * literal, the value can be any record, array or class instance the program
+ * holds as an untyped reference, so those types become freezable. */
+export function noteUntypedIntegrity(lowerer: Lowerer, node: ts.Expression): void {
+  let inner = node;
+  while (ts.isParenthesizedExpression(inner) || ts.isAsExpression(inner)) inner = inner.expression;
+  if (!ts.isObjectLiteralExpression(inner) && !ts.isArrayLiteralExpression(inner))
+    lowerer.untypedIntegrity = true;
 }
 
 function isRecordWrite(s: IrStmt): s is RecordWrite {
@@ -109,7 +121,6 @@ function freezableTypes(
   const shapes = new Set<string>();
   const arrays = new Set<string>();
   const live: IrType[] = [];
-  let dynFreeze = false;
   for (const fn of functions)
     everyStmtList(fn.body, {
       expr: (e) => {
@@ -119,13 +130,12 @@ function freezableTypes(
         } else if (e.kind === "libCall" && e.fn === "array.freeze") {
           const target = e.args[0];
           if (target && target.type.kind === "array") arrays.add(typeKey(target.type));
-        } else if (e.kind === "libCall" && e.fn === "dyn.freeze") dynFreeze = true;
-        else if (e.kind === "dynFrom") live.push(e.value.type);
+        } else if (e.kind === "dynFrom") live.push(e.value.type);
         return true;
       },
       stmt: () => true,
     });
-  if (!dynFreeze) return { shapes, arrays };
+  if (!lowerer.untypedIntegrity) return { shapes, arrays };
   // An untyped reference to a class instance, or to a record or array
   // boxed live, reaches the values its fields and elements hold as further
   // live references. Class instances also cross into untyped code through

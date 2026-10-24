@@ -155,7 +155,7 @@ import {
   boxClassInstancesExactly,
   trackClassFieldCreation,
 } from "./class-dynamic-dispatch.js";
-import { guardClassAttributeWrites } from "./class-attributes.js";
+import { addUntypedIntegrityWords, guardClassAttributeWrites } from "./class-attributes.js";
 import { guardFrozenWrites, markSloppyRecordWrites } from "./frozen-records.js";
 import { applyHandleProperties } from "./handle-properties.js";
 import { installBufferValue } from "./containers/bytes.js";
@@ -3303,6 +3303,9 @@ export class Lowerer {
   readonly recordFieldDeletes = new Set<string>();
   /** typeKeys of the array types the program may freeze (IrModule.freezableArrays). */
   readonly freezableArrays = new Set<string>();
+  /** Whether the program freezes, seals or prevents extensions of untyped
+   * values other than fresh literals (noteUntypedIntegrity). */
+  untypedIntegrity = false;
   readonly liftedFns: IrFunction[] = [];
   /** The first lifted function of each name (liftedFnNamed), for the
    * liftedFns indexed so far. liftedFns only grows. */
@@ -7791,6 +7794,7 @@ export class Lowerer {
     finalizePrivateBrands(this, functions);
     trackClassFieldCreation(this, functions);
     boxClassInstancesExactly(this, functions);
+    addUntypedIntegrityWords(this);
     guardClassAttributeWrites(this, functions);
     guardFrozenWrites(this, functions);
     applyHandleProperties(this, functions);
@@ -7905,6 +7909,7 @@ export class Lowerer {
             ...(this.freezableArrays.size > 0
               ? { freezableArrays: [...this.freezableArrays].sort() }
               : {}),
+            ...(this.untypedIntegrity ? { untypedIntegrity: true as const } : {}),
             ...(isNodeEsmFile(this.entry, this.program) ? {} : { commonJsEntry: true }),
             ...(this.ffiImports.length > 0 ? { ffiImports: [...this.ffiImports] } : {}),
           };

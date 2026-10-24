@@ -499,6 +499,8 @@ export function lowerPropertyAccessExpr(
     };
   }
   if (lowerer.stdlibGlobalMember(expr, "Object") === "freeze") {
+    // Object.freeze as a value can freeze any untyped value it is passed.
+    lowerer.untypedIntegrity = true;
     const name = "%builtin.Object.freeze";
     if (!lowerer.liftedFns.some((fn) => fn.name === name))
       lowerer.liftedFns.push({

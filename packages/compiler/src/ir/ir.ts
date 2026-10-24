@@ -1073,6 +1073,11 @@ export interface IrModule {
    * (frontend frozen-records.ts): their writes test the array's frozen bit
    * (SCR_ARR_FROZEN) and throw Node's TypeError when it is set. */
   freezableArrays?: string[];
+  /** The program freezes, seals or prevents extensions of untyped values
+   * (frontend frozen-records.ts noteUntypedIntegrity). Class hierarchies
+   * that can be held there carry an integrity word, which the runtime sets
+   * through the commit of the instance's checked view. */
+  untypedIntegrity?: true;
   /** The entry module is CommonJS under Node's classification. Node runs a
    * CommonJS main synchronously and drains process.nextTick callbacks
    * before promise jobs at the first checkpoint; an ES-module main's

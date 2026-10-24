@@ -438,10 +438,14 @@ export function streamTypedRefCommitAdapter(
       host.declare(`declare ptr @scr_str_new(ptr, ${host.sizeType})`);
       host.declare(`declare void @scr_str_release(ptr)`);
       host.declare(`declare void @scr_dyn_key_delete(ptr, ptr, i1 zeroext)`);
+      // The view of a sealed or frozen instance holds its fields as
+      // non-configurable entries, which the bag copies.
+      const withAttributes = meta.def.fields.some((field) => field.name === CLASS_ATTRIBUTES);
+      const placeholderSet = withAttributes ? "scr_dyn_obj_set_field" : "scr_dyn_obj_set";
       if (meta.def.tracksOwnFields) {
         host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
-        host.declare(`declare void @scr_dyn_obj_set(ptr, ptr, ${host.sizeType}, ptr)`);
-      }
+        host.declare(`declare void @${placeholderSet}(ptr, ptr, ${host.sizeType}, ptr)`);
+      } else if (withAttributes) host.declare(`declare void @scr_dyn_obj_delete_field(ptr, ptr)`);
       lines.push(
         `  %bag = call ptr @scr_dyn_new_obj()`,
         `  %bag_copy = call ptr @scr_dyn_copy_property_descriptors(ptr %bag, ptr %d)`,
@@ -478,14 +482,16 @@ export function streamTypedRefCommitAdapter(
               `bag_field${index}_present:`,
               `  %bag_undefined${index} = call ptr @scr_dyn_undefined()`,
               `  %bag_placeholder${index} = call ptr @scr_dyn_retain_v(ptr %bag_undefined${index})`,
-              `  call void @scr_dyn_obj_set(ptr %bag, ptr ${host.cstr(field.name)}, ${host.sizeType} ${Buffer.byteLength(field.name, "utf8")}, ptr %bag_placeholder${index})`,
+              `  call void @${placeholderSet}(ptr %bag, ptr ${host.cstr(field.name)}, ${host.sizeType} ${Buffer.byteLength(field.name, "utf8")}, ptr %bag_placeholder${index})`,
               `  br label %bag_field${index}_after`,
               `bag_field${index}_after:`,
             );
           else
             lines.push(
               `  %bag_key${index} = call ptr @scr_str_new(ptr ${host.cstr(field.name)}, ${host.sizeType} ${Buffer.byteLength(field.name, "utf8")})`,
-              `  call void @scr_dyn_key_delete(ptr %bag, ptr %bag_key${index}, i1 zeroext false)`,
+              withAttributes
+                ? `  call void @scr_dyn_obj_delete_field(ptr %bag, ptr %bag_key${index})`
+                : `  call void @scr_dyn_key_delete(ptr %bag, ptr %bag_key${index}, i1 zeroext false)`,
               `  call void @scr_str_release(ptr %bag_key${index})`,
             );
         });
@@ -493,7 +499,9 @@ export function streamTypedRefCommitAdapter(
         host.declare(
           meta.def.tracksOwnFields
             ? `declare void @scr_dyn_symbol_key_placeholder(ptr, ptr)`
-            : `declare void @scr_dyn_key_delete_computed(ptr, ptr, i1 zeroext)`,
+            : withAttributes
+              ? `declare void @scr_dyn_obj_delete_symbol_field(ptr, ptr)`
+              : `declare void @scr_dyn_key_delete_computed(ptr, ptr, i1 zeroext)`,
         );
       [...symbols.values()].forEach((symbol, index) => {
         const keyLines = symbolKeyLines(host, symbol, `bag_symraw${index}`);
@@ -503,7 +511,9 @@ export function streamTypedRefCommitAdapter(
           ...keyLines.release,
           meta.def.tracksOwnFields
             ? `  call void @scr_dyn_symbol_key_placeholder(ptr %bag, ptr %bag_sym${index})`
-            : `  call void @scr_dyn_key_delete_computed(ptr %bag, ptr %bag_sym${index}, i1 zeroext false)`,
+            : withAttributes
+              ? `  call void @scr_dyn_obj_delete_symbol_field(ptr %bag, ptr %bag_sym${index})`
+              : `  call void @scr_dyn_key_delete_computed(ptr %bag, ptr %bag_sym${index}, i1 zeroext false)`,
           `  call void @scr_dyn_release_v(ptr %bag_sym${index})`,
         );
       });
@@ -518,6 +528,20 @@ export function streamTypedRefCommitAdapter(
     if (meta.root.def.name === "%Error") {
       host.declare(`declare void @scr_error_commit_dyn(ptr, ptr)`);
       lines.push(`  call void @scr_error_commit_dyn(ptr %target, ptr %d)`);
+    }
+    // Untyped Object.freeze, seal and preventExtensions apply to the view;
+    // the instance's integrity word records them.
+    if (host.untypedIntegrity && meta.def.fields.some((field) => field.name === CLASS_ATTRIBUTES)) {
+      const bag = meta.def.fields.some((field) => field.name === DYN_CLASS_PROPERTIES)
+        ? "%bag"
+        : "null";
+      host.declare(`declare double @scr_dyn_class_view_integrity(ptr, double, ptr)`);
+      lines.push(
+        `  %word_ptr = getelementptr inbounds %${classStructSym(t.className)}, ptr %target, i64 0, i32 ${classFieldIndex(meta, CLASS_ATTRIBUTES).index}`,
+        `  %word = load double, ptr %word_ptr`,
+        `  %word_next = call double @scr_dyn_class_view_integrity(ptr %d, double %word, ptr ${bag})`,
+        `  store double %word_next, ptr %word_ptr`,
+      );
     }
     lines.push(`  br label %done`, `done:`, `  ret void`, `}`, ``);
     host.resolveThunkDefs.push(...lines);

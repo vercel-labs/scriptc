@@ -2444,9 +2444,78 @@ void scr_record_throw_frozen(ScrStr *key, ScrStr *owner, double operation) {
   scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&buffer));
 }
 
-/* A class instance's integrity state lives in its native layout, which only
- * statically typed calls can reach (the compiler adds the state to the
- * hierarchies they name). Through an untyped value the operation throws. */
+/* ── class instance attributes ───────────────────────────────────────────
+ * A hierarchy passed to Object.freeze, Object.seal, Object.preventExtensions
+ * or Object.defineProperty keeps an integrity state per instance and an
+ * attribute word per redefined field (CLASS_* and FIELD_* bits in the
+ * compiler's ir.ts). The checked view of an instance carries them, so
+ * reflection over the view answers as Node does. */
+enum {
+  SCR_CLASS_NOT_EXTENSIBLE = 1,
+  SCR_CLASS_SEALED = 2,
+  SCR_CLASS_FROZEN = 4,
+  SCR_FIELD_NOT_WRITABLE = 1,
+  SCR_FIELD_NOT_ENUMERABLE = 2,
+  SCR_FIELD_NOT_CONFIGURABLE = 4,
+};
+
+/* Set by scr_dyn_class_view_integrity, which only the commits of
+ * hierarchies with an integrity word call. */
+static SCR_TL bool scr_class_integrity_committed;
+
+double scr_dyn_class_view_integrity(const ScrDyn *view, double bits, ScrDyn *bag) {
+  scr_class_integrity_committed = true;
+  unsigned state = (unsigned)bits;
+  if (view->kind != SCR_DYN_OBJ || !view->non_extensible) return state;
+  state |= SCR_CLASS_NOT_EXTENSIBLE;
+  if (bag && bag->kind == SCR_DYN_OBJ) bag->non_extensible = true;
+  bool sealed = true, frozen = true;
+  /* The string-keyed entries, then the symbol-keyed ones. */
+  for (const ScrDyn *table = view; table; table = table == view ? view->symbol_properties : NULL) {
+    if (table->kind != SCR_DYN_OBJ) continue;
+    for (size_t i = 0; i < table->v.obj.len; i++) {
+      const ScrDynEntry *entry = &table->v.obj.entries[i];
+      if (entry->configurable) sealed = false;
+      if (!entry->accessor && entry->writable) frozen = false;
+    }
+  }
+  if (sealed) state |= SCR_CLASS_SEALED;
+  if (sealed && frozen) state |= SCR_CLASS_FROZEN;
+  return state;
+}
+
+/* Object.freeze, Object.seal or Object.preventExtensions (`operation`) of
+ * the class instance a capsule refers to. In a program that applies them to
+ * untyped values, every hierarchy that can be held there keeps an
+ * integrity word (class-attributes.ts), and its commit stores the
+ * integrity state of the instance's checked view in the word
+ * (scr_dyn_class_view_integrity). The operation applies to the view, and
+ * the commit records it. A first commit of the unchanged view finds out
+ * whether the hierarchy has the word. Answers false for other values and
+ * for instances whose hierarchy has no word, whose state stays as it was,
+ * and true when the operation applied or threw. */
+static bool scr_dyn_class_integrity(ScrDyn *object, ScrDyn *(*operation)(ScrDyn *)) {
+  if (object->kind != SCR_DYN_TYPED_REF || !object->v.typed_ref.commit ||
+      object->v.typed_ref.type_key_len < 7 || memcmp(object->v.typed_ref.type_key, "object:", 7) != 0)
+    return false;
+  ScrDyn *view = scr_dyn_typed_ref_materialize(object);
+  bool word = false;
+  if (!scr_exc_pending()) {
+    scr_class_integrity_committed = false;
+    scr_dyn_typed_ref_commit(object);
+    word = scr_class_integrity_committed;
+  }
+  if (word && !scr_exc_pending()) {
+    scr_dyn_release(operation(view));
+    if (!scr_exc_pending()) scr_dyn_typed_ref_commit(object);
+  }
+  scr_dyn_release(view);
+  return word || scr_exc_pending();
+}
+
+/* A class instance's integrity state lives in its native layout. Through an
+ * untyped value whose hierarchy has no integrity word, the operation
+ * throws. */
 static bool scr_dyn_class_integrity_fence(const ScrDyn *object, const char *operation) {
   if (object->kind != SCR_DYN_TYPED_REF) return false;
   ScrJsonBuf buffer;
@@ -2511,6 +2580,8 @@ ScrDyn *scr_dyn_prevent_extensions(ScrDyn *object) {
     scr_map_prevent_extensions(collection);
     return scr_dyn_retain(object);
   }
+  if (scr_dyn_class_integrity(object, scr_dyn_prevent_extensions))
+    return scr_exc_pending() ? NULL : scr_dyn_retain(object);
   if (scr_dyn_class_integrity_fence(object, "Object.preventExtensions")) return NULL;
   ScrDyn *table = scr_dyn_fn_integrity_table(object);
   if (table) {
@@ -2549,6 +2620,8 @@ ScrDyn *scr_dyn_seal(ScrDyn *object) {
     scr_map_prevent_extensions(collection);
     return scr_dyn_retain(object);
   }
+  if (scr_dyn_class_integrity(object, scr_dyn_seal))
+    return scr_exc_pending() ? NULL : scr_dyn_retain(object);
   if (scr_dyn_class_integrity_fence(object, "Object.seal")) return NULL;
   if (object->symbol_properties) scr_dyn_release(scr_dyn_seal(object->symbol_properties));
   ScrDyn *table = scr_dyn_fn_integrity_table(object);
@@ -7985,6 +8058,22 @@ bool scr_dyn_has_key_computed(const ScrDyn *value, const ScrDyn *key) { return s
 bool scr_dyn_has_own_computed(const ScrDyn *value, const ScrDyn *key) { return scr_dyn_key_probe_computed(value, key, 1); }
 bool scr_dyn_property_is_enumerable_computed(const ScrDyn *value, const ScrDyn *key) { return scr_dyn_key_probe_computed(value, key, 2); }
 
+static void scr_json_delete_member(ScrDyn *object, const ScrStr *key);
+
+void scr_dyn_obj_delete_symbol_field(ScrDyn *obj, ScrDyn *symbol) {
+  if (obj->kind != SCR_DYN_OBJ || !obj->symbol_properties) return;
+  ScrStr *name = scr_dyn_symbol_storage_key(symbol);
+  scr_json_delete_member(obj->symbol_properties, name);
+  scr_str_release(name);
+  for (size_t i = 0; obj->symbol_keys && i < obj->symbol_keys->v.arr.len; i++) {
+    if (!scr_dyn_strict_eq(obj->symbol_keys->v.arr.items[i], symbol)) continue;
+    scr_dyn_release(obj->symbol_keys->v.arr.items[i]);
+    size_t remaining = --obj->symbol_keys->v.arr.len - i;
+    memmove(&obj->symbol_keys->v.arr.items[i], &obj->symbol_keys->v.arr.items[i + 1], remaining * sizeof(ScrDyn *));
+    break;
+  }
+}
+
 void scr_dyn_key_delete_computed(ScrDyn *value, const ScrDyn *raw_key, bool strict) {
   ScrDyn *key = scr_dyn_property_key_value(raw_key);
   if (!key) return;
@@ -12388,6 +12477,10 @@ static void scr_json_delete_member(ScrDyn *object, const ScrStr *key) {
     scr_dyn_release(removed.setter);
     return;
   }
+}
+
+void scr_dyn_obj_delete_field(ScrDyn *obj, const ScrStr *key) {
+  if (obj->kind == SCR_DYN_OBJ) scr_json_delete_member(obj, key);
 }
 
 /* Ordinary native objects carry removable own data properties. Dense
@@ -17031,6 +17124,8 @@ ScrDyn *scr_dyn_freeze(ScrDyn *value) {
   if (scr_dyn_class_reflection_fence(value) || scr_dyn_error_prototype_fence(value)) return NULL;
   ScrDyn *native = scr_dyn_freeze_native(value);
   if (native) return native;
+  if (scr_dyn_class_integrity(value, scr_dyn_freeze_data))
+    return scr_exc_pending() ? NULL : scr_dyn_retain(value);
   if (scr_dyn_class_integrity_fence(value, "Object.freeze")) return NULL;
   ScrDyn *table = scr_dyn_fn_integrity_table(value);
   if (!table) return scr_dyn_freeze_data(value);
@@ -17136,21 +17231,6 @@ ScrDyn *scr_caught_to_dyn(const ScrCaught *c) {
   }
 }
 
-/* ── class instance attributes ───────────────────────────────────────────
- * A hierarchy passed to Object.freeze, Object.seal, Object.preventExtensions
- * or Object.defineProperty keeps an integrity state per instance and an
- * attribute word per redefined field (CLASS_* and FIELD_* bits in the
- * compiler's ir.ts). The checked view of an instance carries them, so
- * reflection over the view answers as Node does. */
-enum {
-  SCR_CLASS_NOT_EXTENSIBLE = 1,
-  SCR_CLASS_SEALED = 2,
-  SCR_CLASS_FROZEN = 4,
-  SCR_FIELD_NOT_WRITABLE = 1,
-  SCR_FIELD_NOT_ENUMERABLE = 2,
-  SCR_FIELD_NOT_CONFIGURABLE = 4,
-};
-
 void scr_dyn_class_field_attributes(ScrDyn *view, ScrStr *name, double bits) {
   unsigned b = (unsigned)bits;
   if (b == 0 || view->kind != SCR_DYN_OBJ) return;
@@ -17161,15 +17241,25 @@ void scr_dyn_class_field_attributes(ScrDyn *view, ScrStr *name, double bits) {
   if (b & SCR_FIELD_NOT_CONFIGURABLE) entry->configurable = false;
 }
 
-void scr_dyn_class_view_attributes(ScrDyn *view, double bits) {
-  unsigned b = (unsigned)bits;
-  if (b == 0 || view->kind != SCR_DYN_OBJ) return;
-  view->non_extensible = true;
-  for (size_t i = 0; i < view->v.obj.len; i++) {
-    ScrDynEntry *entry = &view->v.obj.entries[i];
+/* The integrity state `b` on the entries of `table`: a view, or the table
+ * of its symbol-keyed properties. */
+static void scr_dyn_class_table_attributes(ScrDyn *table, unsigned b) {
+  table->non_extensible = true;
+  for (size_t i = 0; i < table->v.obj.len; i++) {
+    ScrDynEntry *entry = &table->v.obj.entries[i];
     if (b & (SCR_CLASS_SEALED | SCR_CLASS_FROZEN)) entry->configurable = false;
     if ((b & SCR_CLASS_FROZEN) && !entry->accessor) entry->writable = false;
   }
+}
+
+void scr_dyn_class_view_attributes(ScrDyn *view, double bits) {
+  unsigned b = (unsigned)bits;
+  if (b == 0 || view->kind != SCR_DYN_OBJ) return;
+  scr_dyn_class_table_attributes(view, b);
+  /* Symbol-keyed fields, and symbol-keyed properties added to the
+   * instance, take the same state. */
+  if (view->symbol_properties && view->symbol_properties->kind == SCR_DYN_OBJ)
+    scr_dyn_class_table_attributes(view->symbol_properties, b);
 }
 
 /* Object.defineProperty on a declared class field. The descriptor applies to

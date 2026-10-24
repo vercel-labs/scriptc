@@ -82,3 +82,33 @@ b.x = 2;
   expect(throwing.length).toBeGreaterThan(0);
   expect(throwing.every((name) => name.includes("constructor"))).toBe(true);
 });
+
+test("an untyped freeze gives every class hierarchy attribute state", async () => {
+  const mod = await lowerModule(`
+export {};
+class Point { x = 1; }
+class Labeled extends Point { label = "a"; }
+function freezeUnknown(value: unknown): unknown { return Object.freeze(value); }
+function move(p: Point): void { p.x = 2; }
+freezeUnknown(new Labeled());
+move(new Point());
+`);
+  expect(mod.untypedIntegrity).toBe(true);
+  expect(fieldsOf(mod, "Point")).toContain("%attributes");
+  expect(fieldsOf(mod, "Labeled")).toContain("%attributes");
+  expect(functionsCalling(mod, "class.throwReadOnly")).toContain("move");
+});
+
+test("untyped freezes of fresh literals and tagged templates leave classes unchanged", async () => {
+  const mod = await lowerModule(
+    `
+class Point { constructor() { this.x = 1; } }
+const tag = (strings) => strings.length;
+const frozen = Object.freeze({ a: 1 });
+console.log(tag\`a\${1}b\`, frozen.a, new Point().x);
+`,
+    "main.js",
+  );
+  expect(mod.untypedIntegrity).toBeUndefined();
+  expect(fieldsOf(mod, "Point")).not.toContain("%attributes");
+});

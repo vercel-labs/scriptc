@@ -2,6 +2,7 @@ import { keyedHelperName } from "../stable-names.js";
 import * as ts from "../../ts7/adapter.js";
 import type { Lowerer } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
+import { primitiveElement } from "../array-values.js";
 import { varRef } from "../../../ir/build.js";
 import { typeKey } from "../../type-mapper.js";
 import {
@@ -144,12 +145,22 @@ export function lowerArrayCallback(
       const untyped = (checkerType.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
       const raw = untyped ? null : lowerer.mapTypeOf(checkerType);
       const mapped = raw ? lowerer.runtimeOptionalBindingType(param.name, raw) : null;
+      // A helper that passes present number, string or boolean elements
+      // (a `(T | undefined)[]` stores T elements) binds a `T | undefined`
+      // parameter to T, so the callback takes them without an adapter.
+      const presentElement =
+        mapped !== null &&
+        primitiveElement(expected) &&
+        mapped.kind === "union" &&
+        lowerer.armTag(mapped.unionId, UNDEFINED_T) >= 0 &&
+        typeEquals(lowerer.stripUndefinedArm(mapped), expected);
       if (
         untyped
           ? !bindUntyped
           : mapped === null ||
             (lowerer.coercibleValue(expected, mapped) &&
-              !runtimeOptionalPairVariant(lowerer, expected, mapped))
+              !runtimeOptionalPairVariant(lowerer, expected, mapped) &&
+              !presentElement)
       )
         return;
       const symbol = lowerer.checker.getSymbolAtLocation(param.name);

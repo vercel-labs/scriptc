@@ -2341,6 +2341,23 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       elem = unitOnlyUnion(unions);
 
     if (!elem) return null;
+    // `(T | undefined)[]` of a number, string or boolean T stores T
+    // elements: an array slot holds a present undefined by its own state,
+    // so a T[] seen as `(T | undefined)[]` stays the same array.
+    let optionalElements = false;
+    if (elem.kind === "union") {
+      const arms = unions.get(elem.unionId)?.arms;
+      const present =
+        arms?.length === 2 ? arms.find((arm) => arm.kind !== "undefinedT") : undefined;
+      if (
+        present !== undefined &&
+        arms!.some((arm) => arm.kind === "undefinedT") &&
+        (present.kind === "f64" || present.kind === "string" || present.kind === "bool")
+      ) {
+        elem = present;
+        optionalElements = true;
+      }
+    }
     // A dyn ELEMENT makes the WHOLE array the checked-dynamic value:
     // `unknown[]`, `object[]`, and the collapsed `(string | object)[]`
     // (the plugins-slot shape) — the checked-dynamic tree has real arrays, so length/
@@ -2362,7 +2379,7 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     // drain of the auxiliary-server registries): handles are ordinary
     // refcounted REF elements (their `_v` adapters, no trace — both drop
     // their closures at their terminal event).
-    return arrayOf(elem);
+    return optionalElements ? { kind: "array", elem, optionalElements: true } : arrayOf(elem);
   }
   // Tuples: `[string, string]` maps to an interned RECORD shape flagged
   // `tuple`, with one field per position named by its index ("0", "1", ...)

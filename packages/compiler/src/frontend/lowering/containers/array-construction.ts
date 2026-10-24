@@ -35,7 +35,13 @@ import {
   typeEquals,
 } from "../../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../../program.js";
-import { arrayValueRead, arrayValueStore, arrayValueType } from "../array-values.js";
+import {
+  arrayValueRead,
+  arrayValueStore,
+  arrayValueType,
+  optionalElementValue,
+  primitiveElement,
+} from "../array-values.js";
 import { typeKey } from "../../type-mapper.js";
 import { newFnCtx } from "../lowerer.js";
 import { iteratorCanStep, iteratorValue } from "../iterator-consumption.js";
@@ -88,7 +94,8 @@ export function lowerArrayValueItems(
   ];
   for (const value of values) {
     const stored =
-      lowerer.runtimeOptionalWidening(value.type, elem) !== null
+      lowerer.runtimeOptionalWidening(value.type, elem) !== null ||
+      optionalElementValue(lowerer, value, elem)
         ? value
         : lowerer.coerceToExpected(value, elem);
     body.push(arrayValueStore(lowerer, outRef, length(), stored, elem, loc));
@@ -212,7 +219,8 @@ export function lowerArraySpreadItems(
     } else {
       const value = lowerer.lowerExpr(node);
       const stored =
-        lowerer.runtimeOptionalWidening(value.type, elem) !== null
+        lowerer.runtimeOptionalWidening(value.type, elem) !== null ||
+        optionalElementValue(lowerer, value, elem)
           ? value
           : lowerer.coerceInto(node, value, elem);
       body.push(arrayValueStore(lowerer, outRef, length(), stored, elem, loc));
@@ -517,6 +525,20 @@ export function lowerArrayOfCall(
   }
   if (call.arguments.nodes.some(ts.isSpreadElement)) {
     return lowerArraySpreadItems(lowerer, call.arguments.nodes, result.elem, result, locOf(call));
+  }
+  // A `(T | undefined)[]` (primitiveElement) stores undefined arguments as
+  // present undefined elements.
+  if (result.optionalElements === true) {
+    const nodes = call.arguments.nodes;
+    const values = nodes.map((arg) => lowerer.lowerExpr(arg));
+    if (values.some((value) => optionalElementValue(lowerer, value, result.elem)))
+      return lowerArrayValueItems(lowerer, values, result.elem, result, locOf(call));
+    return {
+      kind: "arrayLit",
+      elems: values.map((value, i) => lowerer.coerceInto(nodes[i]!, value, result.elem)),
+      type: result,
+      loc: locOf(call),
+    };
   }
   return {
     kind: "arrayLit",
@@ -959,6 +981,31 @@ export function lowerArrayFromCall(
       const arrT = lowerer.mapTypeOf(lowerer.typeOf(call));
       if (arrT?.kind !== "array") lowerer.badType(call, lowerer.typeOf(call));
       const elem = arrT.elem;
+      // A `(T | undefined)[]` (primitiveElement): n present undefined
+      // elements.
+      const elemTs = lowerer.checker.isArrayType(lowerer.typeOf(call))
+        ? lowerer.checker.getTypeArguments(lowerer.typeOf(call) as ts.TypeReference)[0]
+        : undefined;
+      if (
+        primitiveElement(elem) &&
+        elemTs !== undefined &&
+        (elemTs.isUnionType() ? ts.constituentTypes(elemTs) : [elemTs]).some(
+          (part) => (part.flags & ts.TypeFlags.Undefined) !== 0,
+        )
+      ) {
+        return {
+          kind: "arrIntrinsic",
+          method: "fillUndefined",
+          receiver: { kind: "arrayNewLen", length: n, type: arrT, loc },
+          // To the end: fill clamps an infinite end to the length.
+          args: [
+            numLit(0, loc),
+            { kind: "bin", op: "/", left: numLit(1, loc), right: numLit(0, loc), type: F64, loc },
+          ],
+          type: arrT,
+          loc,
+        };
+      }
       const absent =
         elem.kind === "union"
           ? lowerer.wrappedUndefined(elem, loc) !== null ||
@@ -1085,7 +1132,10 @@ export function lowerArrayFromCall(
     // A generator (or an iterator adapted into one) drains in order.
     if (src.type.kind === "generator" && args.length === 1) {
       const arrT = lowerer.mapTypeOf(lowerer.typeOf(call));
-      const drained = arrT?.kind === "array" ? generatorDrain(lowerer, src, arrT.elem, loc) : null;
+      const drained =
+        arrT?.kind === "array"
+          ? generatorDrain(lowerer, src, arrT.elem, loc, arrT.optionalElements === true)
+          : null;
       if (drained) return drained;
     }
     lowerer.noLowering(
@@ -1159,6 +1209,11 @@ function buildArrayFromArrayFn(
     type: fnRet,
     loc,
   };
+  // A result of another type than the element (`T | undefined` into a
+  // `(T | undefined)[]`, which stores T elements) is held in a local, so
+  // the store tests and converts one value.
+  const held = !typeEquals(fnRet, outElem);
+  const value: IrExpr = held ? varRef("v.0", fnRet, loc) : mapped;
   return {
     name,
     params: [
@@ -1171,6 +1226,7 @@ function buildArrayFromArrayFn(
       { id: "f.0", name: "f", type: fnT, mutable: true },
       { id: "out.0", name: "out", type: outT, mutable: false },
       { id: "i.0", name: "i", type: F64, mutable: true },
+      ...(held ? [{ id: "v.0", name: "v", type: fnRet, mutable: false }] : []),
     ],
     body: [
       {
@@ -1191,7 +1247,8 @@ function buildArrayFromArrayFn(
           loc,
         },
         body: [
-          arrayValueStore(lowerer, out, i, mapped, outElem, loc),
+          ...(held ? [{ kind: "varDecl", localId: "v.0", init: mapped, loc } as const] : []),
+          arrayValueStore(lowerer, out, i, value, outElem, loc),
           {
             kind: "assign",
             localId: "i.0",

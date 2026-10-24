@@ -61,6 +61,8 @@ import {
   arrayValueType,
   lowerSafeBytesRead,
   lowerSafeIndexRead,
+  primitiveElement,
+  unionArrayValueRead,
 } from "../array-values.js";
 import { lowerOptionalStringIndex, lowerUnionStringIndex } from "../string-index.js";
 import { InternalCompilerError } from "../../../errors.js";
@@ -594,6 +596,8 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
         }
       }
       if (key.type.kind === "f64") {
+        const optional = optionalArmIndexRead(lowerer, value, key, locOf(expr));
+        if (optional) return lowerer.maybeNarrow(optional, expr);
         const safe = lowerOptionalArrayIndexRead(lowerer, expr, value, key);
         if (safe) return safe;
       }
@@ -884,9 +888,14 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     // must be the element type (library ABI checks and the catchable
     // RangeError contract for an out-of-bounds assert). Where undefined is
     // representable, the assertion keeps JavaScript's unchecked read.
+    // A declared `(T | undefined)[]` element (stored as T) keeps its
+    // optional read: the assertion then narrows it with a catchable
+    // TypeError, as for a union element.
+    const declaredOptional = arr.type.optionalElements === true;
     const provenPresent =
       ts.isNonNullExpression(expr.parent) &&
       expr.parent.expression === expr &&
+      !declaredOptional &&
       !assertedElementKeepsUndefined(lowerer, expr.parent);
     if (provenPresent) {
       return lowerer.maybeNarrow(
@@ -2436,4 +2445,40 @@ export function lowerEnvironmentKey(lowerer: Lowerer, node: ts.Expression): IrEx
   if (key.type.kind === "dyn")
     return { kind: "libCall", fn: "dyn.toStringCoerce", args: [key], type: STRING, loc: key.loc };
   return lowerRecordPropertyKey(lowerer, key, node);
+}
+
+/** A number-keyed read of a union of arrays with a `(T | undefined)[]` arm
+ * (stored as T elements, primitiveElement) whose element facts admit
+ * missing values: each arm reads its element by its state
+ * (unionArrayValueRead), where the keyed read would trap on a present
+ * undefined. The receiver and key evaluate once. Null for other unions. */
+function optionalArmIndexRead(
+  lowerer: Lowerer,
+  value: IrExpr,
+  key: IrExpr,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (value.type.kind !== "union") return null;
+  const arms = lowerer.unions.get(value.type.unionId)?.arms ?? [];
+  if (
+    !arms.some(
+      (arm) =>
+        arm.kind === "array" &&
+        primitiveElement(arm.elem) &&
+        arrayValueType(lowerer, arm.elem).kind === "union",
+    )
+  )
+    return null;
+  if (unionArrayValueRead(lowerer, value, key, loc) === null) return null;
+  const stmts: IrStmt[] = [];
+  const stable = (e: IrExpr, name: string): IrExpr => {
+    if (e.kind === "varRef" || e.kind === "numLit") return e;
+    const local = lowerer.declareHiddenLocal(name, e.type);
+    stmts.push({ kind: "varDecl", localId: local.id, init: e, loc });
+    return varRef(local.id, e.type, loc);
+  };
+  const receiver = stable(value, "%indexReceiver");
+  const index = stable(key, "%indexKey");
+  const read = unionArrayValueRead(lowerer, receiver, index, loc)!;
+  return stmts.length === 0 ? read : { kind: "seqExpr", stmts, result: read, type: read.type, loc };
 }

@@ -1,4 +1,5 @@
 import { keyedHelperName } from "../stable-names.js";
+import { primitiveElement } from "../array-values.js";
 import { nodeThrowExpr, boolLit, countedFor, numLit, strLit, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
@@ -1137,6 +1138,17 @@ function setFromSeedValue(
     seed = strCharsCall(lowerer, source, loc);
   } else if (source.type.kind === "array" && typeEquals(source.type.elem, setT.elem)) {
     seed = source;
+  } else if (
+    source.type.kind === "array" &&
+    primitiveElement(source.type.elem) &&
+    setT.elem.kind === "union" &&
+    lowerer.armTag(setT.elem.unionId, UNDEFINED_T) >= 0 &&
+    typeEquals(lowerer.stripUndefinedArm(setT.elem), source.type.elem)
+  ) {
+    // A `(T | undefined)[]` stores T elements: its present undefined
+    // elements copy as the Set's undefined.
+    seed = lowerer.coerceToExpected(source, arrayOf(setT.elem));
+    if (!typeEquals(seed.type, arrayOf(setT.elem))) return null;
   } else if (source.type.kind === "record") {
     const shape = lowerer.shapes.get(source.type.shapeId);
     if (!shape?.tuple || !shape.fields.every((field) => typeEquals(field.type, setT.elem)))

@@ -2069,12 +2069,18 @@ function validateFunction(
       }
       case "arrayNewLen": {
         // Mapper-less Array.from({length: n}): absent-slot fill exists
-        // only for refcounted element kinds (frontend fences scalars).
+        // only for refcounted element kinds. Number and boolean slots are
+        // filled with present undefined values right after
+        // (`(T | undefined)[]`); the frontend fences other scalar uses.
         if (e.type.kind !== "array") {
           err(`arrayNewLen must be array-typed, got ${e.type.kind}`, e.loc);
           break;
         }
-        if (!isRefCounted(e.type.elem)) {
+        if (
+          !isRefCounted(e.type.elem) &&
+          e.type.elem.kind !== "f64" &&
+          e.type.elem.kind !== "bool"
+        ) {
           err(
             `arrayNewLen with non-refcounted ${e.type.elem.kind} elements (no absent value)`,
             e.loc,

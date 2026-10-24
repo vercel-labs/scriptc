@@ -32,6 +32,10 @@ import {
   arrayValueRead,
   arrayValueStore,
   arrayValueType,
+  elementPlaceholder,
+  insertedValues,
+  optionalElementValue,
+  primitiveElement,
 } from "../array-values.js";
 import { typeKey } from "../../type-mapper.js";
 import {
@@ -123,6 +127,14 @@ function lowerOptionalArrayPush(
     }
   }
   return { kind: "seqExpr", stmts, result: length(), type: F64, loc };
+}
+
+/** The checker type of `node` admits undefined. */
+function checkerTypeAdmitsUndefined(lowerer: Lowerer, node: ts.Expression): boolean {
+  const type = lowerer.typeOf(node);
+  return (type.isUnionType() ? ts.constituentTypes(type) : [type]).some(
+    (part) => (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0,
+  );
 }
 
 /** `a.splice(start, count, v)` where v may hold undefined at run time.
@@ -658,7 +670,10 @@ export function lowerArrayMethodCall(
     const hasSpread = itemNodes.some(ts.isSpreadElement);
     const itemProbes = hasSpread ? [] : itemNodes.map((arg) => tryLowerExpression(lowerer, arg));
     const statefulItems = itemProbes.some(
-      (probe) => probe !== null && lowerer.runtimeOptionalWidening(probe.type, elem) !== null,
+      (probe) =>
+        probe !== null &&
+        (lowerer.runtimeOptionalWidening(probe.type, elem) !== null ||
+          optionalElementValue(lowerer, probe, elem)),
     );
     const items: IrExpr = hasSpread
       ? lowerArraySpreadItems(lowerer, itemNodes, elem, receiverIr, loc)
@@ -875,6 +890,65 @@ export function lowerArrayMethodCall(
         loc,
       };
     }
+    // A `(T | undefined)[]` (primitiveElement) takes undefined values as
+    // present undefined elements, stored after the insertion.
+    if (
+      (name === "push" || name === "unshift") &&
+      primitiveElement(elem) &&
+      call.arguments.nodes.some((a) => checkerTypeAdmitsUndefined(lowerer, a))
+    ) {
+      const nodes = call.arguments.nodes;
+      const values = nodes.map((a) => lowerer.lowerExpr(a));
+      const inserted = insertedValues(
+        lowerer,
+        values,
+        elem,
+        (value, i) => lowerer.coerceInto(nodes[i]!, value, elem),
+        loc,
+      );
+      if (inserted.optional) {
+        const array = lowerer.declareHiddenLocal("%insertInto", receiver.type);
+        const arr = varRef(array.id, array.type, loc);
+        const length = lowerer.declareHiddenLocal("%insertLength", F64);
+        const count: IrExpr = numLit(values.length, loc);
+        const first: IrExpr =
+          name === "push"
+            ? {
+                kind: "bin",
+                op: "-",
+                left: varRef(length.id, F64, loc),
+                right: count,
+                type: F64,
+                loc,
+              }
+            : numLit(0, loc);
+        return {
+          kind: "seqExpr",
+          stmts: [
+            { kind: "varDecl", localId: array.id, init: receiver, loc },
+            ...inserted.stmts,
+            {
+              kind: "varDecl",
+              localId: length.id,
+              init: {
+                kind: "arrIntrinsic",
+                method: name,
+                receiver: arr,
+                args: inserted.args,
+                type: F64,
+                loc,
+              },
+              loc,
+            },
+            ...inserted.fill(arr, first),
+          ],
+          result: varRef(length.id, F64, loc),
+          type: F64,
+          loc,
+        };
+      }
+      return { kind: "arrIntrinsic", method: name, receiver, args: inserted.args, type: F64, loc };
+    }
     // Inserted values flow into the element slot like an assignment would:
     // union-element arrays wrap plain arm values (coerceInto is inert
     // when the types already agree).
@@ -996,9 +1070,12 @@ export function lowerArrayMethodCall(
     const hasSpread = itemNodes.some(ts.isSpreadElement);
     const itemProbes = hasSpread ? [] : itemNodes.map((arg) => tryLowerExpression(lowerer, arg));
     const statefulItems = itemProbes.some(
-      (probe) => probe !== null && lowerer.runtimeOptionalWidening(probe.type, elem) !== null,
+      (probe) =>
+        probe !== null &&
+        (lowerer.runtimeOptionalWidening(probe.type, elem) !== null ||
+          optionalElementValue(lowerer, probe, elem)),
     );
-    if (statefulItems && itemNodes.length === 1) {
+    if (statefulItems && itemNodes.length === 1 && itemProbes[0]?.type.kind === "union") {
       return lowerOptionalSpliceItem(
         lowerer,
         receiver,
@@ -1734,7 +1811,28 @@ function arraySearchHelper(
     type: valueT,
     loc,
   };
-  const value = directNeedle ? rawRead : optionalValue;
+  // A direct needle matches only a present value (`match` tests the state
+  // first); a present undefined of a `(T | undefined)[]` (primitiveElement)
+  // must not be read as T.
+  const value = !directNeedle
+    ? optionalValue
+    : primitiveElement(elem)
+      ? {
+          kind: "ternary" as const,
+          cond: {
+            kind: "bin" as const,
+            op: "===" as const,
+            left: stateRef,
+            right: numLit(1, loc),
+            type: BOOL,
+            loc,
+          },
+          then: rawRead,
+          else_: elementPlaceholder(elem, loc),
+          type: elem,
+          loc,
+        }
+      : rawRead;
   const readT = directNeedle ? elem : valueT;
   const equal = arraySearchEquality(
     lowerer,

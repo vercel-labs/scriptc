@@ -768,13 +768,16 @@ export function streamTypedRefMaterializeAdapter(
   t: IrType,
 ): LlStreamTypedRefAdapter {
   const key = typeKey(t);
-  const existing = host.liveDynRefAdapters.get(key);
+  // A `(T | undefined)[]` stored as T elements shares T[]'s capsule type,
+  // but its adapters also store undefined elements.
+  const adapterKey = t.kind === "array" && t.optionalElements ? `${key}?` : key;
+  const existing = host.liveDynRefAdapters.get(adapterKey);
   if (existing) return existing;
   // The converter depends only on the static type. Intern the complete
   // graph across roots and union arms so recursive types emit once.
   const snapshot = `sc_ldr_${host.liveDynRefAdapters.size}_materialize`;
   const adapter: LlStreamTypedRefAdapter = { snapshot, commit: "null" };
-  host.liveDynRefAdapters.set(key, adapter);
+  host.liveDynRefAdapters.set(adapterKey, adapter);
   host.journal?.allocated(
     snapshot.replace(/_materialize$/, ""),
     "streamTypedRefMaterializeAdapter",
@@ -1283,6 +1286,18 @@ function liveArrayOps(
   G.terminate(`ret ptr ${boxed}`);
 
   const S = new BlockBuilder();
+  if (t.optionalElements) {
+    // A `(T | undefined)[]` stores undefined as a present undefined.
+    const undef = host.dyn.isUndefined(S, "%v");
+    const storeUndefined = S.newLabel("live.array.undefined");
+    const other = S.newLabel("live.array.value");
+    S.condBr(undef, storeUndefined, other);
+    S.startBlock(storeUndefined);
+    host.declare(`declare void @scr_arr_set_undefined(ptr, double)`);
+    S.line(`call void @scr_arr_set_undefined(ptr %p, double %i)`);
+    S.terminate(`ret i1 true`);
+    S.startBlock(other);
+  }
   const fits = S.tmp();
   S.line(`${fits} = call zeroext i1 @${host.dyn.dynMatchHelper(elem)}(ptr %v)`);
   const store = S.newLabel("live.array.store");

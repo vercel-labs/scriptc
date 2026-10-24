@@ -31,7 +31,7 @@ import { strCharsCall } from "../containers/array-construction.js";
 import { generatorDrain } from "../iterator-adapters.js";
 import { isSearchParamsIterable } from "../builtins/url.js";
 import { varRef } from "../../../ir/build.js";
-import { arrayValueStore } from "../array-values.js";
+import { arrayValueStore, primitiveElement } from "../array-values.js";
 import { classGeneratorIterable } from "../class-iterables.js";
 
 /** JavaScript: whether `expr` is or holds an existing checked-dynamic
@@ -102,6 +102,13 @@ function emptyNeverLiteral(lowerer: Lowerer, expr: ts.ArrayLiteralExpression): b
  * tsc's API doesn't surface it (ternary arms under an array context —
  * tsc accepts the arm covariantly, but a tagged element representation
  * must be BUILT as the slot's element type). */
+/** The checker type of `node` admits undefined. */
+function mayHoldUndefined(lowerer: Lowerer, node: ts.Expression): boolean {
+  const type = lowerer.typeOf(node);
+  const parts = type.isUnionType() ? ts.constituentTypes(type) : [type];
+  return parts.some((part) => (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0);
+}
+
 export function lowerArrayLiteral(
   lowerer: Lowerer,
   expr: ts.ArrayLiteralExpression,
@@ -515,7 +522,13 @@ export function lowerArrayLiteral(
       // `[...it]` over a generator (or an iterator adapted into one):
       // drain it once, in order, into a fresh element array.
       if (src.type.kind === "generator") {
-        const drained = generatorDrain(lowerer, src, type.elem, locOf(el));
+        const drained = generatorDrain(
+          lowerer,
+          src,
+          type.elem,
+          locOf(el),
+          type.optionalElements === true,
+        );
         if (drained) src = drained;
       }
       // `[...sp]` and `[...sp.entries()]` over a URLSearchParams: its
@@ -606,6 +619,9 @@ export function lowerArrayLiteral(
     let lowered: IrExpr;
     const directOptionalCandidate =
       runtimeOptionalElements.has(i) ||
+      // An element that can be undefined in a `(T | undefined)[]`
+      // (primitiveElement) is stored as a present undefined.
+      (primitiveElement(type.elem) && mayHoldUndefined(lowerer, el)) ||
       ts.isElementAccessExpression(el) ||
       (ts.isCallExpression(el) &&
         ts.isPropertyAccessExpression(el.expression) &&
@@ -683,7 +699,8 @@ export function lowerArrayLiteral(
       continue;
     }
     let value = el;
-    if (!typeEquals(value.type, type.elem)) {
+    // An undefined element is stored directly (arrayValueStore).
+    if (!typeEquals(value.type, type.elem) && value.type.kind !== "undefinedT") {
       const temp = lowerer.declareHiddenLocal("%arrayValue", value.type);
       body.push({ kind: "varDecl", localId: temp.id, init: value, loc });
       value = varRef(temp.id, temp.type, loc);

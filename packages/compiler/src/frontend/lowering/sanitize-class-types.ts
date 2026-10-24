@@ -16,6 +16,8 @@ export function sanitizeUnregisteredClassTypes(
       case "object":
         return hasClass(type.className) ? type : F64;
       case "array":
+        type.elem = rewrite(type.elem);
+        break;
       case "set":
         type.elem = rewrite(type.elem);
         break;

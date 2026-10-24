@@ -16,6 +16,9 @@ export interface ElementStateHost {
   elementAdmitsUndefined(key: string): boolean;
   /** The value stored by `node` can be `undefined` at runtime. */
   mayBeUndefined(node: ts.Expression): boolean;
+  /** Iterating `node`, an iterable other than an array (a Set, a Map's
+   * values, a generator), can yield `undefined`. */
+  iterationMayYieldUndefined?(node: ts.Expression): boolean;
   /** A callback argument can return `undefined` at runtime. */
   callbackReturnsUndefined(node: ts.Expression): boolean;
   /** The value may be a plain array-like object, whose missing indices
@@ -353,7 +356,11 @@ export class ArrayElementStates {
 
   /** One stored value, or the elements a spread copies. */
   private valueMayBeUndefined(value: ts.Expression): boolean {
-    if (ts.isSpreadElement(value)) return this.mayYieldUndefined(value.expression);
+    if (ts.isSpreadElement(value))
+      return (
+        this.mayYieldUndefined(value.expression) ||
+        (this.host.iterationMayYieldUndefined?.(value.expression) ?? false)
+      );
     return this.host.mayBeUndefined(value);
   }
 

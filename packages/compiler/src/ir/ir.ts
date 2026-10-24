@@ -87,7 +87,16 @@ export type IrType =
   | { kind: "date" }
   | { kind: "string" } // heap, refcounted, UTF-8
   | { kind: "bool" }
-  | { kind: "array"; elem: IrType } // heap, refcounted, monomorphic elements
+  | {
+      kind: "array";
+      elem: IrType;
+      /** A `(T | undefined)[]` of a number, string or boolean T, stored as
+       * T elements (which hold a present undefined by their state). Not
+       * part of the type's identity (typeEquals, typeKey): it only lets a
+       * checked conversion from a dynamic value accept undefined
+       * elements. */
+      optionalElements?: true;
+    } // heap, refcounted, monomorphic elements
   /** ES `Map<K, V>` — heap, refcounted, insertion-ordered hash map with ONE
    * runtime representation (ScrMap) and type-directed key/value handling,
    * exactly the array pattern (never per-instantiation structs). Keys use

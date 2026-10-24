@@ -667,6 +667,13 @@ export class LlDyn {
   /* ── dyn node plumbing ─────────────────────────────────────────────── */
 
   /** Loads a dyn node's kind tag (after the size_t rc word). */
+  /** i1: the checked-dynamic value `d` is undefined. */
+  isUndefined(B: BlockBuilder, d: string): string {
+    const is = B.tmp();
+    B.line(`${is} = icmp eq i32 ${this.kindOf(B, d)}, ${DYN_KIND.UNDEF}`);
+    return is;
+  }
+
   private kindOf(B: BlockBuilder, d: string): string {
     const p = B.tmp();
     const k = B.tmp();
@@ -1790,7 +1797,8 @@ export class LlDyn {
    * BUILD the typed value (+1), or throw the catchable path-annotated
    * TypeError and return a dummy with the pending flag set. */
   dynCheckHelper(t: IrType, preserveRefs = false): string {
-    const key = typeKey(t);
+    // A `(T | undefined)[]` stored as T elements also takes undefined ones.
+    const key = t.kind === "array" && t.optionalElements ? `${typeKey(t)}?` : typeKey(t);
     const builderKey = preserveRefs ? `identity:${key}` : key;
     const existing = this.dynBuilders.get(builderKey);
     if (existing) return existing;
@@ -2570,6 +2578,21 @@ export class LlDyn {
           B.line(`${ip} = getelementptr inbounds %ScrDynPath, ptr ${pathSlot}, i64 0, i32 2`);
           B.line(`store ${host.sizeType} ${i}, ptr ${ip}`);
           const e = this.itemAt(B, items, i);
+          if (t.optionalElements) {
+            // An undefined element is a present undefined element.
+            const undef = B.tmp();
+            const storeUndefined = B.newLabel("dca.undef");
+            const checkLabel = B.newLabel("dca.check");
+            B.line(`${undef} = icmp eq i32 ${this.kindOf(B, e)}, ${DYN_KIND.UNDEF}`);
+            B.condBr(undef, storeUndefined, checkLabel);
+            B.startBlock(storeUndefined);
+            host.declare(`declare void @scr_arr_set_undefined(ptr, double)`);
+            const at = B.tmp();
+            B.line(`${at} = ${sizeToDouble(this.S)} ${this.S} ${i} to double`);
+            B.line(`call void @scr_arr_set_undefined(ptr ${a}, double ${at})`);
+            B.br(doneLabel);
+            B.startBlock(checkLabel);
+          }
           const v = B.tmp();
           B.line(`${v} = call ${this.valTy(elem)} @${c}(ptr ${e}, ptr ${pathSlot})`);
           this.pendingBail(

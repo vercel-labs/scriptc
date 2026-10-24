@@ -28,6 +28,7 @@ import { checkedIterableSpread } from "./checked-iterable-spread.js";
 import { type ParamShape } from "./call-signatures.js";
 import { arrayValueRead, arrayValueType } from "./array-values.js";
 import { buildArrayConversion } from "./coercions/builders.js";
+import { lowerArraySpreadItems } from "./containers/array-construction.js";
 import { restTupleElementTypes, typeKey } from "../type-mapper.js";
 
 function fixedTupleSpreadInfo(
@@ -403,6 +404,15 @@ export function completeArgs(
       }
     }
     if (restType.kind !== "array") lowerer.unsupported("SC1090", blame, "this call form");
+    // A `(T | undefined)[]` rest (stored as T elements) packs undefined
+    // arguments as present undefined elements.
+    const restNodes = sources.slice(restAt);
+    if (restType.optionalElements === true && !restNodes.some(isIr)) {
+      out.push(
+        lowerArraySpreadItems(lowerer, restNodes as ts.Expression[], restType.elem, restType, loc),
+      );
+      return out;
+    }
     // The rest pack is a fresh array per call; surplus SPREADS copy
     // their elements in (JS-exact — `f(a, ...xs, b, ...ys)` packs in
     // order, sources untouched).

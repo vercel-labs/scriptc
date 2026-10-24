@@ -269,6 +269,140 @@ function readsMutableLocal(lowerer: Lowerer, e: IrExpr): boolean {
   });
 }
 
+/** A number, string or boolean element type. Arrays of it hold a present
+ * undefined in the element's state, so `(T | undefined)[]` stores T
+ * elements (the type mapper) and a T[] seen as one stays the same array. */
+export function primitiveElement(elem: IrType): boolean {
+  return elem.kind === "f64" || elem.kind === "string" || elem.kind === "bool";
+}
+
+/** `value` is the element type with undefined, stored into an array of a
+ * primitive element type: a present undefined or the element. */
+export function optionalElementValue(lowerer: Lowerer, value: IrExpr, elem: IrType): boolean {
+  if (!primitiveElement(elem)) return false;
+  if (value.type.kind === "undefinedT") return true;
+  return (
+    value.type.kind === "union" &&
+    lowerer.armTag(value.type.unionId, UNDEFINED_T) >= 0 &&
+    typeEquals(lowerer.stripUndefinedArm(value.type), elem)
+  );
+}
+
+/** A value of a primitive element type that holds a slot until the value
+ * stored there replaces it (insertedValues), or stands for a slot that is
+ * not read. */
+export function elementPlaceholder(elem: IrType, loc: SrcLoc): IrExpr {
+  if (elem.kind === "f64") return { kind: "numLit", value: 0, type: F64, loc };
+  if (elem.kind === "bool") return { kind: "boolLit", value: false, type: BOOL, loc };
+  return { kind: "strLit", value: "", type: STRING, loc };
+}
+
+/** Values inserted into an array (push, unshift, splice, a literal), in
+ * source order. A value that can be undefined (optionalElementValue) is
+ * kept in a temporary: the insertion takes a placeholder for it, and
+ * `fill` then stores the value at the placeholder's index. */
+export function insertedValues(
+  lowerer: Lowerer,
+  values: readonly IrExpr[],
+  elem: IrType,
+  coerce: (value: IrExpr, index: number) => IrExpr,
+  loc: SrcLoc,
+): {
+  stmts: IrStmt[];
+  args: IrExpr[];
+  optional: boolean;
+  fill: (arr: IrExpr, first: IrExpr) => IrStmt[];
+} {
+  if (!values.some((value) => optionalElementValue(lowerer, value, elem)))
+    return { stmts: [], args: values.map(coerce), optional: false, fill: () => [] };
+  const stmts: IrStmt[] = [];
+  const args: IrExpr[] = [];
+  const held: { offset: number; value: IrExpr }[] = [];
+  values.forEach((value, offset) => {
+    // Every value is evaluated in order before the insertion.
+    if (value.type.kind === "undefinedT") {
+      if (value.kind !== "unitLit") stmts.push({ kind: "exprStmt", expr: value, loc });
+      args.push(elementPlaceholder(elem, loc));
+      held.push({ offset, value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc } });
+      return;
+    }
+    const temp = lowerer.declareHiddenLocal("%inserted", value.type);
+    stmts.push({ kind: "varDecl", localId: temp.id, init: value, loc });
+    const stable = varRef(temp.id, temp.type, loc);
+    if (optionalElementValue(lowerer, value, elem)) {
+      args.push(elementPlaceholder(elem, loc));
+      held.push({ offset, value: stable });
+    } else {
+      args.push(coerce(stable, offset));
+    }
+  });
+  const fill = (arr: IrExpr, first: IrExpr): IrStmt[] =>
+    held.map(({ offset, value }) =>
+      arrayValueStore(
+        lowerer,
+        arr,
+        offset === 0
+          ? first
+          : {
+              kind: "bin",
+              op: "+",
+              left: first,
+              right: { kind: "numLit", value: offset, type: F64, loc },
+              type: F64,
+              loc,
+            },
+        value,
+        elem,
+        loc,
+      ),
+    );
+  return { stmts, args, optional: true, fill };
+}
+
+/** Statements appending `value` to `arr` inside a lifted helper. A value
+ * that can be undefined in a primitive array (optionalElementValue) is held
+ * in the helper's local `slot` (which the caller declares with the value's
+ * type) and stored as a present undefined or the element; any other value
+ * converts to the element type. */
+export function appendElement(
+  lowerer: Lowerer,
+  arr: IrExpr,
+  value: IrExpr,
+  elem: IrType,
+  slot: string,
+  loc: SrcLoc,
+): IrStmt[] {
+  if (optionalElementValue(lowerer, value, elem) && value.type.kind !== "undefinedT") {
+    const held = varRef(slot, value.type, loc);
+    const length: IrExpr = {
+      kind: "arrIntrinsic",
+      method: "length",
+      receiver: arr,
+      args: [],
+      type: F64,
+      loc,
+    };
+    return [
+      { kind: "varDecl", localId: slot, init: value, loc },
+      arrayValueStore(lowerer, arr, length, held, elem, loc),
+    ];
+  }
+  return [
+    {
+      kind: "exprStmt",
+      expr: {
+        kind: "arrIntrinsic",
+        method: "push",
+        receiver: arr,
+        args: [lowerer.coerceToExpected(value, elem)],
+        type: F64,
+        loc,
+      },
+      loc,
+    },
+  ];
+}
+
 /** Store a stabilized value without changing the array's element ABI. */
 export function arrayValueStore(
   lowerer: Lowerer,
@@ -279,6 +413,12 @@ export function arrayValueStore(
   loc: SrcLoc,
 ): IrStmt {
   if (typeEquals(value.type, elem)) return { kind: "arraySet", arr, index, value, loc };
+  // An undefined value of a `(T | undefined)[]` (primitiveElement).
+  if (value.type.kind === "undefinedT" && primitiveElement(elem)) {
+    const write: IrStmt = { kind: "arraySetUndefined", arr, index, loc };
+    if (value.kind === "unitLit") return write;
+    return { kind: "block", body: [{ kind: "exprStmt", expr: value, loc }, write], loc };
+  }
   if (value.type.kind === "union" && lowerer.armTag(value.type.unionId, UNDEFINED_T) >= 0) {
     // The tag test and the VALUE arm extraction both consume the value. Keep
     // an arbitrary expression (especially an array read or call) single

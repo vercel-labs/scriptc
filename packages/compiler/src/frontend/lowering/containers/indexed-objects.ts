@@ -1,6 +1,7 @@
 import { keyedHelperName } from "../stable-names.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js";
 import { countedFor, numLit, varRef } from "../../../ir/build.js";
+import { arrayValueStore, optionalElementValue, primitiveElement } from "../array-values.js";
 import { objectEnumerationReceiver } from "../object-enumeration-receiver.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
@@ -156,7 +157,14 @@ export function objectIterOverIndexShape(
   // also holds numbers): each overflow value checks into the element type,
   // so a value of a dropped arm throws instead of mistyping.
   let ivNarrows = false;
-  if (valueT) {
+  // `T | undefined` values into a `(T | undefined)[]`, which stores T
+  // elements (primitiveElement): each value is stored with its present
+  // undefined.
+  const optionalValues =
+    member === "values" &&
+    valueT !== null &&
+    optionalElementValue(lowerer, { kind: "unitLit", unit: "undefined", type: iv, loc }, valueT);
+  if (valueT && !optionalValues) {
     const ivSurfaces =
       typeEquals(iv, valueT) ||
       (valueT.kind === "union" && lowerer.armTag(valueT.unionId, iv) >= 0) ||
@@ -350,7 +358,25 @@ export function objectIterOverIndexShape(
               loc,
             },
             then: [fieldStmt],
-            else_: undefinedElement ? [push(pushedOf(undefinedElement))] : null,
+            else_: undefinedElement
+              ? [push(pushedOf(undefinedElement))]
+              : member === "values" && valueT && primitiveElement(valueT)
+                ? [
+                    {
+                      kind: "arraySetUndefined",
+                      arr: outRef,
+                      index: {
+                        kind: "arrIntrinsic",
+                        method: "length",
+                        receiver: outRef,
+                        args: [],
+                        type: F64,
+                        loc,
+                      },
+                      loc,
+                    },
+                  ]
+                : null,
             loc,
           };
         }
@@ -374,35 +400,45 @@ export function objectIterOverIndexShape(
     const kRef = varRef("k.0", STRING, loc);
     const readValue: IrExpr | null = !valueT
       ? null
-      : ivNarrows
+      : optionalValues
         ? {
-            kind: "dynCheck",
-            value: {
-              kind: "dynFrom",
-              value: {
-                kind: "recordKeyGet",
-                obj: rRef,
-                shapeId: argIr.shapeId,
-                key: kRef,
-                overflowOnly: true,
-                type: iv,
-                loc,
-              },
-              type: DYN,
-              loc,
-            },
-            type: valueT,
-            loc,
-          }
-        : {
             kind: "recordKeyGet",
             obj: rRef,
             shapeId: argIr.shapeId,
             key: kRef,
             overflowOnly: true,
-            type: valueT,
+            type: iv,
             loc,
-          };
+          }
+        : ivNarrows
+          ? {
+              kind: "dynCheck",
+              value: {
+                kind: "dynFrom",
+                value: {
+                  kind: "recordKeyGet",
+                  obj: rRef,
+                  shapeId: argIr.shapeId,
+                  key: kRef,
+                  overflowOnly: true,
+                  type: iv,
+                  loc,
+                },
+                type: DYN,
+                loc,
+              },
+              type: valueT,
+              loc,
+            }
+          : {
+              kind: "recordKeyGet",
+              obj: rRef,
+              shapeId: argIr.shapeId,
+              key: kRef,
+              overflowOnly: true,
+              type: valueT,
+              loc,
+            };
     const loopPushed: IrExpr =
       member === "keys"
         ? kRef
@@ -440,7 +476,26 @@ export function objectIterOverIndexShape(
             },
             loc,
           },
-          push(loopPushed),
+          ...(optionalValues
+            ? [
+                { kind: "varDecl" as const, localId: "v.0", init: readValue!, loc },
+                arrayValueStore(
+                  lowerer,
+                  outRef,
+                  {
+                    kind: "arrIntrinsic",
+                    method: "length",
+                    receiver: outRef,
+                    args: [],
+                    type: F64,
+                    loc,
+                  },
+                  varRef("v.0", iv, loc),
+                  valueT!,
+                  loc,
+                ),
+              ]
+            : [push(loopPushed)]),
         ],
       ),
       { kind: "return", value: outRef, loc },
@@ -457,6 +512,7 @@ export function objectIterOverIndexShape(
         { id: "ks.0", name: "ks", type: ksT, mutable: false },
         { id: "i.0", name: "i", type: F64, mutable: true },
         { id: "k.0", name: "k", type: STRING, mutable: false },
+        ...(optionalValues ? [{ id: "v.0", name: "v", type: iv, mutable: false }] : []),
       ],
       body,
       loc,

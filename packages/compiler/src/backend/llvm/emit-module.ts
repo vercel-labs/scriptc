@@ -1616,8 +1616,8 @@ export function helperDefs(emitter: LlEmitter): string[] {
   // order; other differing words decide by their first differing byte,
   // and strings shorter than a word by their first byte. Otherwise a
   // proven-ASCII string on either side orders by bytes (scr_str_cmp), and
-  // other pairs call scr_str_cmp_u16_bytes, which only reads the two
-  // strings, so LLVM can merge repeated comparisons of one pair. Callers
+  // other pairs call scr_str_cmp_u16_bytes. Both only read the two strings,
+  // so LLVM can merge repeated comparisons of one pair. Callers
   // only test the sign of the result.
   if (emitter.decls.has(`declare i32 @scr_str_cmp_u16(ptr, ptr)`)) {
     const fn = "scr_str_cmp_u16";
@@ -1747,7 +1747,7 @@ export function helperDefs(emitter: LlEmitter): string[] {
       `  %anyascii = icmp slt i32 %cws, 0`,
       `  br i1 %anyascii, label %memorder, label %units`,
       `memorder:`,
-      `  %m = call i32 @scr_str_cmp(ptr %a, ptr %b)`,
+      `  %m = call i32 @scr_str_cmp(ptr %a, ptr %b) nounwind willreturn memory(argmem: read)`,
       `  ret i32 %m`,
       `units:`,
       `  %c = call i32 @scr_str_cmp_u16_bytes(ptr %a, ptr %b) nounwind willreturn memory(argmem: read)`,

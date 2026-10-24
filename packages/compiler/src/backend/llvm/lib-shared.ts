@@ -1577,7 +1577,6 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.objectPrototype": "scr_dyn_object_prototype",
   "dyn.errorPrototype": "scr_dyn_error_prototype",
   "dyn.inheritsErrorPrototype": "scr_dyn_inherits_error_prototype",
-  "dyn.errorCaptureStackTrace": "scr_dyn_error_capture_stack_trace",
   "dyn.errorCaptureStackTraceFunction": "scr_dyn_error_capture_stack_trace_function",
   "dyn.functionApply": "scr_dyn_function_apply",
   "dyn.builtinMethod": "scr_dyn_builtin_method",

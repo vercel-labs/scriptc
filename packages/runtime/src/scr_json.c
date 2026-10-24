@@ -2051,52 +2051,13 @@ ScrDyn *scr_dyn_error_prototype(void) {
   return scr_dyn_retain(scr_builtin_error_prototype);
 }
 
-/* Error.captureStackTrace(target): defines a non-enumerable own `stack`
- * on target. Node's value is the Error.prototype.toString text of target
- * (read without calling an overriding toString) followed by stack frames;
- * here, as for scriptc's own Error instances, it is the text alone.
- * Answers undefined, or NULL with the exception pending. */
-ScrDyn *scr_dyn_error_capture_stack_trace(ScrDyn *target) {
-  /* An instance of a class that extends Error derives its stack from its
-   * name and message when the stack is read. */
-  if (target->kind == SCR_DYN_TYPED_REF) {
-    ScrDyn *view = scr_dyn_typed_ref_materialize(target);
-    bool error = view && view->kind == SCR_DYN_OBJ && scr_dyn_obj_get(view, "%error", 6) != NULL;
-    scr_dyn_release(view);
-    if (scr_exc_pending()) return NULL;
-    if (error) return scr_dyn_retain(scr_dyn_undefined());
-  }
-  if (target->kind != SCR_DYN_OBJ) {
-    if (target->kind == SCR_DYN_ARR || target->kind == SCR_DYN_FUNC || target->kind == SCR_DYN_TYPED_REF ||
-        target->kind == SCR_DYN_HANDLE || target->kind == SCR_DYN_PROXY) {
-      static const char message[] = "Error.captureStackTrace on this object is not supported yet";
-      scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
-    } else {
-      static const char message[] = "invalid_argument";
-      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
-    }
-    return NULL;
-  }
-  ScrDynEntry *existing = scr_dyn_find_entry(target, "stack", 5);
-  if (existing ? existing->accessor || !existing->configurable : target->non_extensible) {
-    static const char message[] = "Cannot redefine property: stack";
-    static const char extensible[] = "Cannot define property stack, object is not extensible";
-    if (existing) scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
-    else scr_throw_error_msg(SCR_ERR_TYPE, extensible, sizeof extensible - 1);
-    return NULL;
-  }
-  ScrStr *text = scr_dyn_error_string(target);
-  if (!text) return NULL;
-  scr_dyn_obj_set_field(target, "stack", 5, scr_dyn_new_str(text));
-  scr_str_release(text);
-  ScrDynEntry *entry = scr_dyn_find_entry(target, "stack", 5);
-  entry->enumerable = false;
-  entry->writable = entry->configurable = true;
-  return scr_dyn_retain(scr_dyn_undefined());
-}
+/* Error.captureStackTrace called through its function value. The
+ * constructor argument's frame cannot be found from a function value, so
+ * every frame is kept: the frames V8 keeps and the ones above them. */
 static ScrDyn *scr_error_capture_stack_trace_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   (void)closure;
-  return scr_dyn_error_capture_stack_trace(argc > 0 ? args[0] : scr_dyn_undefined());
+  scr_error_capture_stack_trace(argc > 0 ? args[0] : scr_dyn_undefined(), NULL, false);
+  return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
 }
 /* Error.captureStackTrace read as a value: one function per thread. */
 static SCR_TL ScrDyn *scr_error_capture_stack_trace_fn;
@@ -17479,6 +17440,107 @@ bool scr_error_has_key(ScrError *e, const ScrStr *key) {
   if (view != NULL && view->kind == SCR_DYN_OBJ && scr_dyn_find_entry(view, key->data, key->len) != NULL)
     return true;
   return scr_dyn_object_proto_name(key);
+}
+
+/* The `stack` accessor Error.captureStackTrace gives an object that is not
+ * an error. caps[0] holds the captured frames until the first read, then the
+ * stack; caps[1] is nonzero once caps[0] holds the stack. The first read
+ * formats it with the receiver's name and message then, as V8 does. */
+static ScrDyn *scr_captured_stack_get_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)args; (void)argc;
+  ScrDyn *value = scr_box_get_ref(closure->caps[0]);
+  if (scr_box_get_f64(closure->caps[1]) != 0) return value;
+  ScrDyn *self = scr_dyn_this_get();
+  ScrStr *heading = scr_dyn_error_string(self);
+  scr_dyn_release(self);
+  if (!heading) {
+    scr_dyn_release(value);
+    return NULL;
+  }
+  ScrStr *stack = scr_str_concat(heading, value->v.str);
+  scr_str_release(heading);
+  scr_dyn_release(value);
+  ScrDyn *out = scr_dyn_new_str(stack);
+  scr_str_release(stack);
+  scr_box_set_ref(closure->caps[0], scr_dyn_retain(out));
+  scr_box_set_f64(closure->caps[1], 1);
+  return out;
+}
+
+static ScrDyn *scr_captured_stack_set_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  scr_box_set_ref(closure->caps[0], scr_dyn_retain(argc > 0 ? args[0] : scr_dyn_undefined()));
+  scr_box_set_f64(closure->caps[1], 1);
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* Error.captureStackTrace(target, constructorOpt), as V8 does it: target.stack
+ * becomes the target's heading and the current stack frames, formatted when
+ * first read. With `skip`, the frames up to and including the topmost one
+ * whose text is `through` are left out (none remain when `through` is NULL or
+ * not on the stack). An error keeps the frames as its own; another object
+ * gets an own non-enumerable, configurable `stack` accessor. A primitive
+ * target throws `TypeError: invalid_argument` and a non-extensible object
+ * V8's define-property TypeError. */
+void scr_error_capture_stack_trace(ScrDyn *target, const char *through, bool skip) {
+  switch (target->kind) {
+  case SCR_DYN_UNDEF:
+  case SCR_DYN_NULL:
+  case SCR_DYN_BOOL:
+  case SCR_DYN_NUM:
+  case SCR_DYN_STR:
+  case SCR_DYN_BIGINT:
+  case SCR_DYN_SYMBOL: {
+    static const char msg[] = "invalid_argument";
+    scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+    return;
+  }
+  default:
+    break;
+  }
+  ScrStr *frames = !skip ? scr_stack_capture() : through ? scr_stack_capture_after(through) : NULL;
+  ScrError *error = scr_errdyn_err_of(target);
+  if (error) {
+    scr_str_release(error->stack_frames);
+    error->stack_frames = frames;
+    scr_str_release(error->stack);
+    error->stack = NULL;
+    scr_error_release(error);
+    return;
+  }
+  if (target->kind != SCR_DYN_OBJ && target->kind != SCR_DYN_ARR) {
+    static const char msg[] = "Error.captureStackTrace on this object is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+    scr_str_release(frames);
+    return;
+  }
+  if (!scr_dyn_is_extensible(target)) {
+    static const char msg[] = "Cannot define property stack, object is not extensible";
+    scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+    scr_str_release(frames);
+    return;
+  }
+  if (!frames) frames = scr_str_new("", 0);
+  /* The getter and setter share their boxes. */
+  ScrClosure *state[2] = {scr_closure_new(NULL, 2), scr_closure_new(NULL, 2)};
+  state[0]->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  state[0]->caps[1] = scr_box_new(SCR_BOX_F64);
+  scr_box_set_ref(state[0]->caps[0], scr_dyn_new_str(frames));
+  scr_str_release(frames);
+  for (int i = 0; i < 2; i++) state[1]->caps[i] = scr_box_retain(state[0]->caps[i]);
+  ScrDyn *descriptor = scr_dyn_new_obj();
+  scr_dyn_obj_set(descriptor, "get", 3,
+                  scr_dyn_new_func(state[0], scr_captured_stack_get_call, 0, "native:error.stack", NULL));
+  scr_dyn_obj_set(descriptor, "set", 3,
+                  scr_dyn_new_func(state[1], scr_captured_stack_set_call, 1, "native:error.stack", NULL));
+  scr_dyn_obj_set(descriptor, "enumerable", 10, scr_dyn_new_bool(false));
+  scr_dyn_obj_set(descriptor, "configurable", 12, scr_dyn_new_bool(true));
+  ScrStr *key_text = scr_str_new("stack", 5);
+  ScrDyn *key = scr_dyn_new_str(key_text);
+  scr_str_release(key_text);
+  ScrDyn *result = scr_dyn_define_property(target, key, descriptor);
+  scr_dyn_release(result);
+  scr_dyn_release(key);
+  scr_dyn_release(descriptor);
 }
 
 /* ── declaration-typed boundary: in-place capsules ─────────────────────

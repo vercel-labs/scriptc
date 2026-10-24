@@ -1253,7 +1253,6 @@ ScrStr *scr_dyn_to_string_method(const ScrDyn *d, const ScrStr *enc, const ScrSt
 ScrDyn *scr_dyn_object_prototype(void);
 ScrDyn *scr_dyn_error_prototype(void);
 bool scr_dyn_inherits_error_prototype(const ScrDyn *value);
-ScrDyn *scr_dyn_error_capture_stack_trace(ScrDyn *target);
 ScrDyn *scr_dyn_error_capture_stack_trace_function(void);
 ScrDyn *scr_dyn_function_apply(void);
 ScrDyn *scr_dyn_reflect_apply(ScrDyn *target, ScrDyn *receiver, ScrDyn *arguments_list);
@@ -1361,6 +1360,7 @@ ScrError *scr_error_from_dyn(const ScrDyn *d); /* scr_async_dyn.c (gated) */
 /* The cache's runtime-internal access pair (scr_json.c owns the storage;
  * the gated extraction reads/writes through these). */
 ScrError *scr_errdyn_err_of(const ScrDyn *d); /* +1 or NULL */
+void scr_error_capture_stack_trace(ScrDyn *target, const char *through, bool skip);
 void scr_errdyn_put(ScrError *e, ScrDyn *d);  /* retains both sides */
 /* Sets an own property on an error: its checked-dynamic node, which casts
  * and util.inspect read. Moves value. */

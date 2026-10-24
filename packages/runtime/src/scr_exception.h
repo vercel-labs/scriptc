@@ -68,6 +68,7 @@ typedef struct ScrStackFrame {
 void scr_stack_enter(ScrStackFrame *frame, const char *text);
 void scr_stack_leave(ScrStackFrame *frame);
 ScrStr *scr_stack_capture(void); /* +1, NULL when no source frames exist */
+ScrStr *scr_stack_capture_after(const char *through); /* +1, NULL when none remain */
 double scr_stack_limit_get(void);
 void scr_stack_limit_set(double limit);
 

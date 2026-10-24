@@ -8098,4 +8098,5 @@ declare module "node:stream/web" {
 }
 interface ErrorConstructor {
   stackTraceLimit: number;
+  captureStackTrace(targetObject: object, constructorOpt?: Function): void;
 }

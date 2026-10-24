@@ -10821,6 +10821,13 @@ static SCR_TL ScrDynVisitLog scr_dyn_viewed_log;
 /* The member value a matcher or builder read last and holds one
  * reference to until it calls scr_dyn_release_held. */
 static SCR_TL const ScrDyn *scr_dyn_visit_held;
+/* Set while a union's builder builds the arm it matched in full
+ * (scr_dyn_trust_enter). */
+static SCR_TL bool scr_dyn_trusted;
+/* Set once a getter or proxy trap has run during this session. Their code
+ * can return a value the match never saw or change one it saw, so no build
+ * in the rest of the session trusts an earlier match. */
+static SCR_TL bool scr_dyn_session_ran_code;
 
 /* Tables up to this many slots stay allocated for the next session. */
 #define SCR_DYN_VISIT_KEEP 4096
@@ -10918,6 +10925,7 @@ static void scr_dyn_visit_clear(ScrDynVisitSet *s, ScrDynVisitLog *log) {
 
 static void scr_dyn_visit_exit(void) {
   if (--scr_dyn_visit_depth != 0) return;
+  scr_dyn_session_ran_code = false;
   scr_dyn_visit_clear(&scr_dyn_built, &scr_dyn_built_log);
   scr_dyn_visit_clear(&scr_dyn_viewed, &scr_dyn_viewed_log);
 }
@@ -10932,13 +10940,18 @@ typedef struct {
   ScrDynVisitLog built_log, viewed_log;
   bool track;
   const ScrDyn *held;
+  bool trusted;
+  bool ran_code;
 } ScrDynVisitState;
 
 static void scr_dyn_visit_suspend(ScrDynVisitState *saved) {
-  *saved = (ScrDynVisitState){scr_dyn_visit_depth, scr_dyn_matching, scr_dyn_built,
-                              scr_dyn_viewed, scr_dyn_built_log, scr_dyn_viewed_log,
-                              scr_dyn_build_track, scr_dyn_visit_held};
+  *saved = (ScrDynVisitState){scr_dyn_visit_depth, scr_dyn_matching,   scr_dyn_built,
+                              scr_dyn_viewed,      scr_dyn_built_log,  scr_dyn_viewed_log,
+                              scr_dyn_build_track, scr_dyn_visit_held, scr_dyn_trusted,
+                              scr_dyn_session_ran_code};
   scr_dyn_visit_depth = 0;
+  scr_dyn_trusted = false;
+  scr_dyn_session_ran_code = false;
   scr_dyn_matching = scr_dyn_built = scr_dyn_viewed = (ScrDynVisitSet){NULL, 0, 0};
   scr_dyn_built_log = scr_dyn_viewed_log = (ScrDynVisitLog){NULL, 0, 0};
   scr_dyn_visit_held = NULL;
@@ -10958,6 +10971,9 @@ static void scr_dyn_visit_resume(const ScrDynVisitState *saved) {
   scr_dyn_viewed_log = saved->viewed_log;
   scr_dyn_build_track = saved->track;
   scr_dyn_visit_held = saved->held;
+  scr_dyn_trusted = saved->trusted;
+  /* The getter or trap this session was set aside for has run. */
+  scr_dyn_session_ran_code = true;
 }
 
 /* Calls a getter for a member read, outside any visit session. */
@@ -10979,6 +10995,16 @@ static ScrDyn *scr_dyn_visit_proxy_get(const ScrDyn *d, ScrStr *name) {
   scr_dyn_visit_resume(&saved);
   return result;
 }
+
+bool scr_dyn_trust_enter(void) {
+  bool previous = scr_dyn_trusted;
+  scr_dyn_trusted = true;
+  return previous;
+}
+
+void scr_dyn_trust_exit(bool previous) { scr_dyn_trusted = previous; }
+
+bool scr_dyn_trusted_build(void) { return scr_dyn_trusted && !scr_dyn_session_ran_code; }
 
 ScrDyn *scr_dyn_obj_read_held(const ScrDyn *d, const char *key, size_t key_len) {
   ScrDyn *value = scr_dyn_obj_read(d, key, key_len);

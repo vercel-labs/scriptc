@@ -1570,6 +1570,19 @@ void scr_dyn_build_note(const ScrDyn *d, const void *builder, void *value);
 void scr_dyn_build_rekey(const ScrDyn *d, const void *builder, void *value);
 ScrDyn *scr_dyn_visit_view(const ScrDyn *capsule);
 
+/* A union's builder converts the arm whose literal discriminator and
+ * complete structure matched; every value inside that arm then matched its
+ * own type too. Between scr_dyn_trust_enter and scr_dyn_trust_exit (which
+ * restores the value enter returned), scr_dyn_trusted_build answers true,
+ * and the builder of a nested union whose arms' literals are disjoint picks
+ * a plain object's arm by its literal alone instead of matching the arm's
+ * structure again (dyn.ts unionArmMatch). Code a getter or proxy trap runs
+ * sees false, and so does the rest of the conversion once such code has
+ * run: it can return a value the match never saw. */
+bool scr_dyn_trust_enter(void);
+void scr_dyn_trust_exit(bool previous);
+bool scr_dyn_trusted_build(void);
+
 /* ── native handles in the checked-dynamic tree (SCR_DYN_HANDLE) ────────────────────────
  * Per-tag dispatch ops, registered by the handle's owning unit
  * (scr_http_dyn_install / scr_net_dyn_install — emitted main() calls

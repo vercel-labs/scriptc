@@ -151,6 +151,18 @@ export const DYN_KIND = {
   SYMBOL: 15,
 } as const;
 
+/** Union arm kinds whose matchers reject every plain dyn object
+ * (trustedArmByLiteral). */
+const NON_OBJECT_ARM_KINDS: ReadonlySet<IrType["kind"]> = new Set<IrType["kind"]>([
+  "f64",
+  "string",
+  "bool",
+  "nullT",
+  "undefinedT",
+  "bigint",
+  "symbol",
+]);
+
 /** What the dyn helpers need beyond the walker host: interned immortal
  * unit instances (undefined-armed dynCheck targets build them). */
 export interface DynHost extends WalkerHost {
@@ -388,6 +400,51 @@ export class LlDyn {
     B.line(`call void @scr_dyn_build_add(ptr %d, ptr @${name}, ptr ${value})`);
   }
 
+  /** Whether a builder of `def` may pick a plain object's arm by its literal
+   * discriminator alone inside a trusted build (scr_dyn_trust_enter): the
+   * arms' literals are disjoint, and every arm without a literal has a kind
+   * no plain object matches. The value then matched exactly one arm with a
+   * literal, the arm whose literal it carries. */
+  private trustedArmByLiteral(def: IrUnionDef): boolean {
+    const discriminant = def.discriminant;
+    if (!discriminant) return false;
+    const seen = new Set<string>();
+    for (const { values } of discriminant.cases) {
+      for (const value of values) {
+        const key = `${typeof value}:${String(value)}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+      }
+    }
+    return def.arms.every(
+      (arm, tag) =>
+        discriminant.cases.some((candidate) => candidate.tag === tag) ||
+        NON_OBJECT_ARM_KINDS.has(arm.kind),
+    );
+  }
+
+  /** Per arm of `def`, the dyn kind of the values a builder may convert into
+   * that arm without matching its structure inside a trusted build, or null.
+   * A value there already matched one of the union's arms, so the arm is
+   * known when it is the only arm that takes values of its kind: the arm
+   * whose literal a plain object carries (trustedArmByLiteral), or the one
+   * arm a plain object or an array can match at all. */
+  private trustedArmKinds(def: IrUnionDef): (number | null)[] {
+    const byLiteral = this.trustedArmByLiteral(def);
+    const objectArms = def.arms.flatMap((arm, tag) =>
+      NON_OBJECT_ARM_KINDS.has(arm.kind) ? [] : [tag],
+    );
+    return def.arms.map((arm, tag) => {
+      if (def.discriminant?.cases.some((candidate) => candidate.tag === tag))
+        return byLiteral ? DYN_KIND.OBJ : null;
+      if (objectArms.length !== 1 || objectArms[0] !== tag) return null;
+      if (arm.kind === "array") return DYN_KIND.ARR;
+      if (arm.kind === "record" && this.host.recordsById.get(arm.shapeId)?.tuple !== true)
+        return DYN_KIND.OBJ;
+      return null;
+    });
+  }
+
   /** The order a dyn value tries a union's arms in: the canonical order,
    * except that among the record arms, those with more required fields go
    * first, then those with more fields. Records are width-tolerant, so an
@@ -455,6 +512,7 @@ export class LlDyn {
     none: string,
     preserveRefs: boolean,
     table: string,
+    trustedKinds: readonly (number | null)[] = def.arms.map(() => null),
   ): void {
     const discriminant = def.discriminant!;
     const literalsOf = (tag: number): readonly (string | number | boolean)[] | null =>
@@ -494,7 +552,7 @@ export class LlDyn {
       positions.forEach((position, index) => {
         const tag = order[position]!;
         const failed = B.newLabel("du.c.f");
-        this.unionArmStructure(B, def, tag, hits[tag]!, failed, preserveRefs);
+        this.unionArmStructure(B, def, tag, hits[tag]!, failed, preserveRefs, trustedKinds[tag]!);
         B.startBlock(failed);
         const next = index === positions.length - 1 ? none : B.newLabel("du.c.n");
         const same = B.tmp();
@@ -517,12 +575,23 @@ export class LlDyn {
     tryCase(-1);
     order.forEach((tag, position) => {
       B.startBlock(from[position]!);
-      this.unionArmMatch(B, def, tag, hits[tag]!, after(position), preserveRefs);
+      this.unionArmMatch(
+        B,
+        def,
+        tag,
+        hits[tag]!,
+        after(position),
+        preserveRefs,
+        trustedKinds[tag]!,
+      );
     });
   }
 
   /** Branch to a variant only after its literal discriminator and complete
-   * structure match. Use the same path for predicates and builders. */
+   * structure match. Use the same path for predicates and builders. With a
+   * `trustedKind` (builders, trustedArmKinds), a value of that dyn kind
+   * inside a trusted build skips the structure match once its literal
+   * matched. */
   private unionArmMatch(
     B: BlockBuilder,
     def: IrUnionDef,
@@ -530,6 +599,7 @@ export class LlDyn {
     yes: string,
     no: string,
     preserveRefs = false,
+    trustedKind: number | null = null,
   ): void {
     const guard = def.discriminant?.cases.find((candidate) => candidate.tag === tag);
     if (guard && def.discriminant) {
@@ -558,10 +628,12 @@ export class LlDyn {
       });
       B.startBlock(structure);
     }
-    this.unionArmStructure(B, def, tag, yes, no, preserveRefs);
+    this.unionArmStructure(B, def, tag, yes, no, preserveRefs, trustedKind);
   }
 
-  /** The part of unionArmMatch past the arm's literal test. */
+  /** The part of unionArmMatch past the arm's literal test. With a
+   * `trustedKind`, a value of that dyn kind inside a trusted build skips the
+   * structure match. */
   private unionArmStructure(
     B: BlockBuilder,
     def: IrUnionDef,
@@ -569,7 +641,21 @@ export class LlDyn {
     yes: string,
     no: string,
     preserveRefs: boolean,
+    trustedKind: number | null = null,
   ): void {
+    if (trustedKind !== null) {
+      this.host.declare(`declare zeroext i1 @scr_dyn_trusted_build()`);
+      const kind = this.kindOf(B, "%d");
+      const sameKind = B.tmp();
+      const trusted = B.tmp();
+      const skip = B.tmp();
+      B.line(`${sameKind} = icmp eq i32 ${kind}, ${trustedKind}`);
+      B.line(`${trusted} = call zeroext i1 @scr_dyn_trusted_build()`);
+      B.line(`${skip} = and i1 ${sameKind}, ${trusted}`);
+      const full = B.newLabel("du.full");
+      B.condBr(skip, yes, full);
+      B.startBlock(full);
+    }
     const matches = B.tmp();
     B.line(
       `${matches} = call zeroext i1 @${this.dynMatchHelper(def.arms[tag]!, preserveRefs)}(ptr %d)`,
@@ -2596,7 +2682,18 @@ export class LlDyn {
             `llvm emitter bug: dynCheck of unknown union ${t.unionId}`,
           );
         // Arms in unionArmOrder, first FULL match wins. The matched arm's
-        // builder can no longer fail.
+        // builder can no longer fail, and it runs as a trusted build: a
+        // nested union inside it picks the arm trustedArmKinds names without
+        // matching the structure that this match already checked.
+        const trustedKinds = preserveRefs ? def.arms.map(() => null) : this.trustedArmKinds(def);
+        const trustedCall = (call: () => void): void => {
+          host.declare(`declare zeroext i1 @scr_dyn_trust_enter()`);
+          host.declare(`declare void @scr_dyn_trust_exit(i1 zeroext)`);
+          const previous = B.tmp();
+          B.line(`${previous} = call zeroext i1 @scr_dyn_trust_enter()`);
+          call();
+          B.line(`call void @scr_dyn_trust_exit(i1 zeroext ${previous})`);
+        };
         const build = (i: number): void => {
           const arm = def.arms[i]!;
           if (arm.kind === "undefinedT" || arm.kind === "nullT") {
@@ -2624,14 +2721,22 @@ export class LlDyn {
           } else if (host.nullableUnions.has(t.unionId)) {
             // A nullable union is its (+1) reference payload.
             const x = B.tmp();
-            B.line(`${x} = call ptr @${this.dynCheckHelper(arm, preserveRefs)}(ptr %d, ptr %path)`);
+            trustedCall(() =>
+              B.line(
+                `${x} = call ptr @${this.dynCheckHelper(arm, preserveRefs)}(ptr %d, ptr %path)`,
+              ),
+            );
             B.terminate(`ret ptr ${x}`);
           } else {
             const rc = vAdapters(host, arm);
             host.declare(`declare ptr @scr_union_new_ref(i32, ptr, ptr, ptr, ptr)`);
             const x = B.tmp();
             const u = B.tmp();
-            B.line(`${x} = call ptr @${this.dynCheckHelper(arm, preserveRefs)}(ptr %d, ptr %path)`);
+            trustedCall(() =>
+              B.line(
+                `${x} = call ptr @${this.dynCheckHelper(arm, preserveRefs)}(ptr %d, ptr %path)`,
+              ),
+            );
             B.line(
               `${u} = call ptr @scr_union_new_ref(i32 ${i}, ptr ${x}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host, arm)})`,
             );
@@ -2652,6 +2757,7 @@ export class LlDyn {
             unmatched,
             preserveRefs,
             `@${name}.cases`,
+            trustedKinds,
           );
           for (const i of order) {
             B.startBlock(hits[i]!);
@@ -2662,7 +2768,7 @@ export class LlDyn {
           for (const i of order) {
             const lHit = B.newLabel("dcu.h");
             const lNext = B.newLabel("dcu.n");
-            this.unionArmMatch(B, def, i, lHit, lNext, preserveRefs);
+            this.unionArmMatch(B, def, i, lHit, lNext, preserveRefs, trustedKinds[i]!);
             B.startBlock(lHit);
             build(i);
             B.startBlock(lNext);

@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import { executableLinkInputs } from "./link-plan-core.js";
 import {
+  parseNativeProfileMatch,
   nativeProfileHelperArgs,
   nativeProfileKey,
   nativeProfileRefusal,
@@ -70,4 +71,16 @@ test("only the instrumented link adds the profile runtime", () => {
   expect(executableLinkInputs({ ...inputs, profileGenerate: true }).driverFlags).toContain(
     "-fprofile-generate",
   );
+});
+
+test("the helper's profile match is read from its output", () => {
+  expect(
+    parseNativeProfileMatch(
+      '{"ok":true,"profile":{"annotated":120,"mismatched":7,"missing":40,"unknown_partitions":1}}\n',
+    ),
+  ).toEqual({ annotated: 120, mismatched: 7, missing: 40, unknownPartitions: 1 });
+  // A helper that predates the report prints nothing.
+  expect(parseNativeProfileMatch("")).toBeNull();
+  expect(parseNativeProfileMatch('{"ok":true}\n')).toBeNull();
+  expect(parseNativeProfileMatch('{"ok":true,"profile":{"annotated":-1}}\n')).toBeNull();
 });

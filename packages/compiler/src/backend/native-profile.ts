@@ -44,6 +44,45 @@ export function nativeProfileHelperArgs(profile: NativeProfileOptions | undefine
   return [];
 }
 
+/** How an optimized build's profile matched the program's functions, as the
+ * helper reports it: functions that took the profile's counts, functions
+ * whose control flow changed since the profile was collected, functions the
+ * profile has no record of (new, or never run while it was collected), and
+ * partitions reused from the cache without their counts. */
+export interface NativeProfileMatch {
+  annotated: number;
+  mismatched: number;
+  missing: number;
+  unknownPartitions: number;
+}
+
+/** The profile match in a successful helper emit's output, or null when the
+ * helper reports none (a helper that predates the report). */
+export function parseNativeProfileMatch(stdout: string): NativeProfileMatch | null {
+  for (const line of stdout.split("\n")) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const profile = (parsed as { profile?: Record<string, unknown> } | null)?.profile;
+    if (typeof profile !== "object" || profile === null) continue;
+    const count = (key: string): number | null => {
+      const value = profile[key];
+      return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+    };
+    const annotated = count("annotated");
+    const mismatched = count("mismatched");
+    const missing = count("missing");
+    const unknownPartitions = count("unknown_partitions");
+    if (annotated === null || mismatched === null || missing === null || unknownPartitions === null)
+      continue;
+    return { annotated, mismatched, missing, unknownPartitions };
+  }
+  return null;
+}
+
 /** Cache-key part; empty without a profile so other keys are unchanged. */
 export function nativeProfileKey(profile: NativeProfileOptions | undefined): string {
   if (profile?.generate !== undefined) return `profile-generate:${profile.generate}`;

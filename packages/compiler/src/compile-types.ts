@@ -2,6 +2,7 @@ import type { TargetCpu } from "./backend/target-cpu.js";
 import type { WindowsSubsystem } from "./backend/targets.js";
 import type { NativeLinkInfo } from "./backend/native-link-info.js";
 import type { NativeOptimization } from "./backend/optimization.js";
+import type { NativeProfileMatch } from "./backend/native-profile.js";
 import type { ScrDiagnostic } from "./diagnostics/diagnostic.js";
 import type { CoverageInput } from "./coverage/report.js";
 import type { TierMode } from "./frontend/tier-analysis.js";
@@ -100,6 +101,8 @@ export type CompileArtifact =
       path: string;
       translationUnitPath: string;
       backend: "llvm";
+      /** How a `profileUse` build's profile matched the program's functions. */
+      profileMatch?: NativeProfileMatch;
     };
 
 export type CompileFailure = {

@@ -20,6 +20,12 @@ const sanitize = process.env["SCRIPTC_SAN"] === "1";
 // SCRIPTC_NATIVE_PROFILE_USE names; an empty SCRIPTC_NATIVE_PROFILE_USE
 // builds without one.
 const profileGenerate = process.env["SCRIPTC_NATIVE_PROFILE_GENERATE"] || undefined;
+// Below this share of matching functions, the build warns that the profile
+// has lost most of its gain. A profile refreshed on the same commit matched
+// 92.7% of the native compiler's profiled functions, one refreshed 1.5 days
+// and about 200 commits earlier 87.2%, and that one kept about half of the
+// fresh profile's gain on a cold tsc-ts build.
+const PROFILE_MATCH_WARNING = 0.9;
 const committedProfile = join(root, "packages/compiler/native/cli.profdata.gz");
 const requestedProfile = process.env["SCRIPTC_NATIVE_PROFILE_USE"];
 const useProfile =
@@ -127,6 +133,25 @@ if (!result.ok)
       )
       .join("\n"),
   );
+// How well the profile still describes the compiler: a function whose
+// control flow changed since the profile was collected is optimized as
+// without one. The share falls as compiler code changes, and with it the
+// profile's gain (refresh it with scripts/refresh-cli-profile.mjs).
+const match = useProfile && "artifact" in result ? result.artifact.profileMatch : undefined;
+if (match !== undefined) {
+  const profiled = match.annotated + match.mismatched;
+  const share = profiled === 0 ? 0 : match.annotated / profiled;
+  console.log(
+    `native compiler profile: ${match.annotated} of ${profiled} profiled functions match (${(100 * share).toFixed(1)}%); ${match.missing} functions have no profile` +
+      (match.unknownPartitions > 0
+        ? `; ${match.unknownPartitions} partitions reused without counts`
+        : ""),
+  );
+  if (match.unknownPartitions === 0 && share < PROFILE_MATCH_WARNING)
+    console.warn(
+      `warning: the native compiler profile matches ${(100 * share).toFixed(1)}% of the functions it describes; run scripts/refresh-cli-profile.mjs`,
+    );
+}
 const compilerVersion = (
   JSON.parse(readFileSync(join(root, "packages/compiler/package.json"), "utf8")) as {
     version: string;

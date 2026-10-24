@@ -523,6 +523,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fs.openSync": "scr_fs_open",
   "fs.openNumericSync": "scr_fs_open_numeric",
   "fs.readSync": "scr_fs_read_sync",
+  "fs.readSyncDyn": "scr_fs_read_sync_dyn",
   "fs.writeSync": "scr_fs_write_sync",
   "fs.writeStrSync": "scr_fs_write_str_sync",
   "fs.closeSync": "scr_fs_close",

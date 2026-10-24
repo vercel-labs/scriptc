@@ -2,7 +2,7 @@ import { dynUndefinedExpr, boolLit, numLit, varRef } from "../../../ir/build.js"
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { lowerFsPath } from "./fs-paths.js";
-import { locOf } from "../../program.js";
+import { isJsSourceFile, locOf } from "../../program.js";
 import {
   type BuiltinModuleFn,
   FS_WRITE_FILE_DOCUMENTED_OPTIONS,
@@ -402,6 +402,28 @@ export function lowerFsReadSyncCall(
       );
     }
     lowerer.noLowering("readSync with a non-literal options argument", optionsNode, supported);
+  }
+  // JavaScript arguments outside the typed signature (an untyped fd or
+  // buffer, a bigint or untyped position) take Node's argument checks at
+  // run time, then the same read.
+  if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    const nodes = expr.arguments.nodes;
+    const typed = [F64, BYTES_U8, F64, F64, F64].every((want, i) => {
+      const node = nodes[i];
+      if (node === undefined) return true;
+      let value: ts.Expression = node;
+      while (ts.isParenthesizedExpression(value)) value = value.expression;
+      if (i === 4 && value.kind === ts.SyntaxKind.NullKeyword) return true;
+      const t = lowerer.mapTypeOf(lowerer.typeOf(node));
+      return t !== null && (want.kind === "bytes" ? t.kind === "bytes" : t.kind === "f64");
+    });
+    if (!typed) {
+      const args = [0, 1, 2, 3, 4].map((i): IrExpr => {
+        const node = nodes[i];
+        return node === undefined ? dynUndefinedExpr(loc) : lowerer.lowerExprExpecting(node, DYN);
+      });
+      return { kind: "libCall", fn: "fs.readSyncDyn", args, type: F64, loc };
+    }
   }
   const args: IrExpr[] = [
     lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, F64),

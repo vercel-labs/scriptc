@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/cjs-required-top-level-return/lib.js",
+  "<repo>/tests/diagnostics/cjs-required-top-level-return/main.js"
+ ],
+ "diags": []
+}

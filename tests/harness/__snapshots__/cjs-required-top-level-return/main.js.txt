@@ -1,0 +1,6 @@
+cjs-required-top-level-return/lib.js:4:43 - error SC1090: top-level return statements in CommonJS modules the program requires (only the entry module can end its evaluation early) are not supported yet
+
+  3 | exports.ready = true;
+  4 | if (process.env.SCRIPTC_SKIP_LIB === '1') return;
+    |                                           ^~~~~~~
+  5 | exports.value = 42;

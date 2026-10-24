@@ -24,7 +24,11 @@ import {
 import { lowerMockTimersElementCall } from "./lower-test.js";
 import { objectEnumerationReceiver } from "./object-enumeration-receiver.js";
 import { InternalCompilerError } from "../../errors.js";
-import { isFsStreamMember, lowerFsStreamMethodCall } from "./builtins/fs-streams.js";
+import {
+  isFsStreamMember,
+  lowerFsStreamCall,
+  lowerFsStreamMethodCall,
+} from "./builtins/fs-streams.js";
 import * as ts from "../ts7/adapter.js";
 import {
   isZlibStreamMember,
@@ -374,6 +378,10 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   {
     const buffer = lowerBufferConstruct(lowerer, expr);
     if (buffer) return { kind: "dynFrom", value: buffer, type: DYN, loc };
+  }
+  {
+    const stream = lowerFsStreamCall(lowerer, expr);
+    if (stream) return stream;
   }
   // A package shim's runtime intrinsic (a bodiless `declare function`
   // named scriptcUnixDgram* in a shipped shim): a direct runtime call.

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8271-cjs-top-level-return.cjs"
+ ],
+ "diags": []
+}

@@ -213,7 +213,9 @@ export function builtinNamespaceDestructureModuleOf(
   if (ts.isCallExpression(init)) {
     const cr = createRequireSpecOf(lowerer, init);
     module = cr !== null && cr.spec !== null ? canonicalBuiltinModule(cr.spec) : null;
-  } else if (ts.isIdentifier(init)) {
+  } else if (ts.isIdentifier(init) || ts.isPropertyAccessExpression(init)) {
+    // `const { open } = fs.promises` / `= require("fs").promises`: a member
+    // that is itself a supported module.
     module = lowerer.builtinNamespaceModuleOf(init);
   }
   if (module === null) return null;

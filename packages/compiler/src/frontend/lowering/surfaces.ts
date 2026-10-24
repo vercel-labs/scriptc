@@ -2127,6 +2127,8 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     ],
     // The utf8 string overload; the table row is the Buffer-window form.
     writeSync: ["fs.writeStrSync"],
+    // The form whose arguments Node checks at run time.
+    readSync: ["fs.readSyncDyn"],
     // The { recursive, mode } option lowerings.
     mkdirSync: ["fs.mkdirModeSync", "fs.mkdirRecursiveSync", "fs.mkdirRecursiveModeSync"],
     // The { recursive, force } and maxRetries/retryDelay option lowerings.

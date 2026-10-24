@@ -524,6 +524,8 @@ ScrDyn *scr_fs_lchmod_sync_chk(const ScrDyn *path, const ScrDyn *mode);
 ScrPromise *scr_fsp_lchmod_chk(const ScrDyn *path, const ScrDyn *mode);
 void scr_fs_read_chk(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn *offset,
                      const ScrDyn *length, const ScrDyn *position, const ScrStr *fence);
+double scr_fs_read_sync_dyn(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn *offset,
+                            const ScrDyn *length, const ScrDyn *position);
 void scr_fs_stream_opts_chk(const ScrDyn *path, const ScrDyn *opts, const ScrStr *fence);
 /* The fs streams' option pieces (scr_fs_stream.c): the getOptions,
  * options.fd and path checks above without the fence; the checked path

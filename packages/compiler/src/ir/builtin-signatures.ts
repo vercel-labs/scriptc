@@ -1195,6 +1195,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "fs.openSync": { argTypes: [STRING, STRING], result: F64 },
   "fs.openNumericSync": { argTypes: [STRING, F64, F64], result: F64 },
   "fs.readSync": { argTypes: [F64, BYTES_U8, F64, F64, F64], result: F64 },
+  "fs.readSyncDyn": { argTypes: [DYN, DYN, DYN, DYN, DYN], result: F64 },
   "fs.writeSync": { argTypes: [F64, BYTES_U8, F64, F64, F64], result: F64 },
   "fs.writeStrSync": { argTypes: [F64, STRING, F64, STRING], result: F64 },
   // fs.watch's callback func type is program-dependent (zero params, or

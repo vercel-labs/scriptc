@@ -46,8 +46,8 @@ console.log(String(names.get("a")!), String(names.get("b")!));
 console.log(Number(amounts.get("a")!), Number(amounts.get("b")!));
 console.log(kindOf(names.get("a")!), kindOf(amounts.get("a")!), kindOf(names.get("b")!));
 
-// An optional parameter of a standard library method keeps the checked
-// narrowing: `decode(input?)` reads the asserted Uint8Array.
+// TextDecoder.decode reads the asserted Uint8Array; an undefined input
+// decodes no bytes (text-decoder-undefined-input.ts).
 const chunks = new Map<string, Uint8Array | undefined>([["a", new TextEncoder().encode("chunk")]]);
 interface Read {
   done: boolean;

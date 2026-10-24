@@ -3171,3 +3171,33 @@ export function lowerTuplePredicateCall(
     loc,
   };
 }
+
+/** The `%arr.<method>` helper `name` (map, flatMap or filter) taking its
+ * iteration bound as a last parameter: the loop runs to the bound instead
+ * of the receiver's length when it starts. ArraySpeciesCreate reads the
+ * receiver's length before the species constructor runs, so a constructor
+ * that appends to the receiver does not extend the loop
+ * (lowerWithArraySpecies). Null when `name` is no such helper. */
+export function boundedArrayHofHelper(lowerer: Lowerer, name: string): string | null {
+  const info = lowerer.arrHofInfo.get(name);
+  if (!info || info.method === "forEach") return null;
+  const bounded = `${name}.bounded`;
+  if (lowerer.liftedFnNamed(bounded)) return bounded;
+  const fn = lowerer.liftedFnNamed(name);
+  if (!fn) return null;
+  let replaced = false;
+  const body = fn.body.map((stmt): IrStmt => {
+    if (replaced || stmt.kind !== "varDecl" || stmt.localId !== "n.0") return stmt;
+    replaced = true;
+    return { ...stmt, init: varRef("bound.0", F64, stmt.loc) };
+  });
+  if (!replaced) return null;
+  lowerer.liftedFns.push({
+    ...fn,
+    name: bounded,
+    params: [...fn.params, { localId: "bound.0", name: "bound", type: F64 }],
+    locals: [...fn.locals, { id: "bound.0", name: "bound", type: F64, mutable: false }],
+    body,
+  });
+  return bounded;
+}

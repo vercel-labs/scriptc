@@ -499,12 +499,15 @@ export function lowerArrayOfCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
+  /** The receiver is a class declared `extends Array` (array-classes.ts
+   * constructs the result through it). */
+  arrayClassReceiver = false,
 ): IrExpr | null {
   if (
     call.questionDotToken ||
     access.questionDotToken ||
     access.name.text !== "of" ||
-    !lowerer.isStdlibGlobal(access.expression, "Array")
+    (!arrayClassReceiver && !lowerer.isStdlibGlobal(access.expression, "Array"))
   )
     return null;
   let result = lowerer.mapTypeOf(lowerer.typeOf(call));
@@ -857,9 +860,11 @@ export function lowerArrayFromCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
+  /** The receiver is a class declared `extends Array` (array-classes.ts). */
+  arrayClassReceiver = false,
 ): IrExpr | null {
   if (call.questionDotToken || access.questionDotToken) return null;
-  if (!lowerer.isStdlibGlobal(access.expression, "Array")) return null;
+  if (!arrayClassReceiver && !lowerer.isStdlibGlobal(access.expression, "Array")) return null;
   if (access.name.text !== "from") return null;
   const loc = locOf(call);
   const args = call.arguments.nodes;

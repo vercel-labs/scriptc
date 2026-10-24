@@ -1,3 +1,4 @@
+import { arrayClassDescriptor } from "./classes.js";
 import { emitBigIntWrap } from "./bigint-wrap.js";
 import { emitBorrowedInput, emitBorrowedInputs } from "./borrowed-inputs.js";
 import { borrowsIteratorInputs, borrowsJsonInputs } from "./checked-value-lifetimes.js";
@@ -275,6 +276,82 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
       throw new InternalCompilerError("llvm emitter bug: record.sourceSpread of a non-record");
     host.dyn.emitRecordSourceSpread(B, built.name, value.name, type.shapeId);
     return { name: "", type: e.type };
+  }
+  if (e.fn === "array.speciesCreate") {
+    // The receiver is borrowed; the call answers a new reference.
+    const receiver = emitBorrowedInput(host, e.args[0]!);
+    const length = host.emitExpr(e.args[1]!);
+    host.declare(`declare ptr @scr_arr_species_create(ptr, double)`);
+    const out = B.tmp();
+    B.line(
+      `${out} = call ptr @scr_arr_species_create(ptr ${receiver.name}, double ${length.name})`,
+    );
+    const value = host.own({ name: out, type: e.type });
+    host.emitPendingCheck();
+    return value;
+  }
+  if (e.fn === "array.speciesFinish") {
+    // The instance is borrowed; the method's result moves into the call,
+    // which answers it or the instance that holds its elements.
+    const instance = emitBorrowedInput(host, e.args[0]!);
+    const result = host.emitExpr(e.args[1]!);
+    host.toHeap(result);
+    const setLength = host.emitExpr(e.args[2]!);
+    host.declare(`declare ptr @scr_arr_species_finish(ptr, ptr, i1 zeroext)`);
+    const out = B.tmp();
+    B.line(
+      `${out} = call ptr @scr_arr_species_finish(ptr ${instance.name}, ptr ${result.name}, i1 zeroext ${setLength.name})`,
+    );
+    const value = host.own({ name: out, type: e.type });
+    host.emitPendingCheck();
+    return value;
+  }
+  if (e.fn === "array.speciesAdopt") {
+    // The receiver is borrowed; the method's result moves into the call,
+    // which answers it or the species instance that replaces it.
+    const receiver = emitBorrowedInput(host, e.args[0]!);
+    const result = host.emitExpr(e.args[1]!);
+    host.toHeap(result);
+    const length = host.emitExpr(e.args[2]!);
+    const setLength = host.emitExpr(e.args[3]!);
+    host.declare(`declare ptr @scr_arr_species_adopt(ptr, ptr, double, i1 zeroext)`);
+    const out = B.tmp();
+    B.line(
+      `${out} = call ptr @scr_arr_species_adopt(ptr ${receiver.name}, ptr ${result.name}, double ${length.name}, i1 zeroext ${setLength.name})`,
+    );
+    const value = host.own({ name: out, type: e.type });
+    host.emitPendingCheck();
+    return value;
+  }
+  if (e.fn === "array.dynIsClass") {
+    const className = e.args[1]!.kind === "strLit" ? e.args[1]!.value : null;
+    if (className === null)
+      throw new InternalCompilerError("llvm emitter bug: array.dynIsClass needs a class name");
+    const value = emitBorrowedInput(host, e.args[0]!);
+    host.declare(`declare zeroext i1 @scr_dyn_is_array_class(ptr, ptr)`);
+    const out = B.tmp();
+    B.line(
+      `${out} = call zeroext i1 @scr_dyn_is_array_class(ptr ${value.name}, ptr ${arrayClassDescriptor(className)})`,
+    );
+    return { name: out, type: e.type };
+  }
+  if (e.fn === "array.classConstructAdopt") {
+    const className = e.args[0]!.kind === "strLit" ? e.args[0]!.value : null;
+    if (className === null)
+      throw new InternalCompilerError(
+        "llvm emitter bug: array.classConstructAdopt needs a class name",
+      );
+    const result = host.emitExpr(e.args[1]!);
+    host.toHeap(result);
+    const length = host.emitExpr(e.args[2]!);
+    host.declare(`declare ptr @scr_arr_class_construct_adopt(ptr, ptr, double)`);
+    const out = B.tmp();
+    B.line(
+      `${out} = call ptr @scr_arr_class_construct_adopt(ptr ${arrayClassDescriptor(className)}, ptr ${result.name}, double ${length.name})`,
+    );
+    const value = host.own({ name: out, type: e.type });
+    host.emitPendingCheck();
+    return value;
   }
   if (e.fn === "dyn.typedRefIs" || e.fn === "dyn.typedRefKeyIs") {
     const literal = e.args[1]!.kind === "strLit" ? e.args[1]!.value : null;

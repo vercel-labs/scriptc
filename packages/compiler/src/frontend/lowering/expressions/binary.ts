@@ -773,6 +773,12 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
             isUnitType(a),
         ) ??
         false);
+    // Checked-dynamic elements: the runtime's String() over the array's
+    // dyn form (its join, element by element).
+    if (elem.kind === "dyn") {
+      const boxed: IrExpr = { kind: "dynFrom", value: e, type: DYN, loc: e.loc };
+      return { kind: "toString", operand: boxed, type: STRING, loc: e.loc };
+    }
     if (
       elem.kind === "f64" ||
       elem.kind === "string" ||

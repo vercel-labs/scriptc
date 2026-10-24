@@ -1,4 +1,5 @@
 /* Focused LLVM expression emission extracted from emitter.ts. */
+import { arrayClassDescriptor } from "./classes.js";
 import { InternalCompilerError } from "../../errors.js";
 import { newValueMayThrow } from "../../ir/analysis.js";
 import {
@@ -1154,6 +1155,17 @@ export function emitCallExpr(
       return host.own({ name: v.name, type: e.type });
     }
     case "instanceOf": {
+      // An array is an instance of a class declared `extends Array` when
+      // its ext names that class (scr_arr_class_of).
+      if (e.value.type.kind === "array") {
+        const v = emitBorrowedInputs(host, [e.value])[0]!;
+        host.declare(`declare ptr @scr_arr_class_of(ptr)`);
+        const cls = host.B.tmp();
+        const result = host.B.tmp();
+        host.B.line(`${cls} = call ptr @scr_arr_class_of(ptr ${v.name})`);
+        host.B.line(`${result} = icmp eq ptr ${cls}, ${arrayClassDescriptor(e.className)}`);
+        return { name: result, type: e.type };
+      }
       // O(1) preorder-interval test against the vtable the object
       // carries; the target's interval is a compile-time constant.
       if (e.value.type.kind !== "object")

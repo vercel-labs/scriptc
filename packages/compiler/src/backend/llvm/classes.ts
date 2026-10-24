@@ -58,6 +58,7 @@ import {
   traceAdapter,
   type ShapeHost,
   youngEntryLines,
+  arrElemInit,
 } from "./shapes.js";
 
 /** One virtual method slot of a hierarchy: the ROOT-MOST declaring class
@@ -371,9 +372,32 @@ function runtimePrefixOf(meta: LlClassMeta): RuntimePrefix | null {
  * on classes rooted at a runtime base, then the stream-state slot on
  * stream-rooted ones. */
 function headerEnd(meta: LlClassMeta): number {
+  if (meta.def.arrayElem !== undefined) return ARRAY_PREFIX.length + 1;
   if (!meta.hierarchy || meta.idInRc) return 1;
   if (streamRooted(meta)) return 5;
   return runtimePrefixOf(meta) ? 4 : 2;
+}
+
+/** The array header a class declared `extends Array` begins with, after
+ * the size_t reference count: %ScrArr's len, cap, elem, cyc, spare, filled
+ * and data (scr_array.h). */
+const ARRAY_PREFIX = ["i32", "i32", "i8", "i8", "i16", "i32", "ptr"];
+
+/** LLVM `c"..."` text of a string's UTF-8 bytes and a terminating NUL. */
+function nulTerminatedBytes(text: string): string {
+  let out = "";
+  for (const byte of Buffer.from(text, "utf8"))
+    out +=
+      byte >= 0x20 && byte < 0x7f && byte !== 0x22 && byte !== 0x5c
+        ? String.fromCharCode(byte)
+        : `\\${byte.toString(16).padStart(2, "0").toUpperCase()}`;
+  return out + "\\00";
+}
+
+/** The class descriptor (ScrArrClass: name, destroy) of a class declared
+ * `extends Array`. */
+export function arrayClassDescriptor(className: string): string {
+  return `@${mangleClassStruct(className)}.arrcls`;
 }
 
 /** The GEP index of the ThreadSlots slot word (an i32) in a class whose
@@ -473,7 +497,11 @@ export interface ClassHost extends ShapeHost {
  * hierarchy folds away. The cycle analysis leaves the hierarchy untraced, so
  * no trace adapter ever visits an instance (as for every untraced class). */
 export function programLifetimeClass(host: ClassHost, meta: LlClassMeta): boolean {
-  return host.programLifetime?.has(meta.root.def.name) === true && meta.root.def.runtime !== true;
+  return (
+    host.programLifetime?.has(meta.root.def.name) === true &&
+    meta.root.def.runtime !== true &&
+    meta.root.def.arrayElem === undefined
+  );
 }
 
 /** The reference count a program-lifetime instance is created with: the
@@ -725,7 +753,12 @@ export function assignCompactLayouts(
 ): void {
   const isCompact = (className: string): boolean => {
     const target = metaMap.get(className);
-    return target !== undefined && target.def.runtime !== true && compact(target.root);
+    return (
+      target !== undefined &&
+      target.def.runtime !== true &&
+      target.root.def.arrayElem === undefined &&
+      compact(target.root)
+    );
   };
   const byPre = [...metaMap.values()].sort((a, b) => a.pre - b.pre);
   for (const meta of byPre) {
@@ -900,13 +933,15 @@ export function emitClassShapes(
     // usual pointer reinterprets.
     const runtimePrefix = runtimePrefixOf(meta);
     const prefix =
-      meta.hierarchy && !meta.idInRc
-        ? streamRooted(meta)
-          ? ["ptr", "ptr", "ptr", "ptr"]
-          : runtimePrefix
-            ? ["ptr", "ptr", "ptr"]
-            : ["ptr"]
-        : [];
+      cls.arrayElem !== undefined
+        ? ARRAY_PREFIX
+        : meta.hierarchy && !meta.idInRc
+          ? streamRooted(meta)
+            ? ["ptr", "ptr", "ptr", "ptr"]
+            : runtimePrefix
+              ? ["ptr", "ptr", "ptr"]
+              : ["ptr"]
+          : [];
     const members = [...prefix, ...(meta.threadSlot ? ["i32"] : []), ...fieldTys];
     typeDefs.push(
       `%${mangleClassStruct(cls.name)} = type { ${host.sizeType}${members.length ? ", " + members.join(", ") : ""} } ` +
@@ -993,6 +1028,7 @@ export function emitClassShapes(
     const types = ownedFields(cls).map(({ field }) => storedFieldType(cls, field));
     for (const t of types) fieldTypes.push(t);
     if (programLifetimeClass(host, meta)) continue;
+    if (cls.arrayElem !== undefined) continue;
     if (meta.hierarchy && (meta.children.length !== 0 || meta.root.def.runtime === true)) continue;
     if (!types.some((t) => isRefCounted(t) && needsBoundedRelease(t))) continue;
     const release = mangleClassRelease(cls.name);
@@ -1009,6 +1045,12 @@ export function emitClassShapes(
   }
   const directTargets = usedDirectTargets(host, candidates, fieldTypes);
 
+  // The descriptor entries of a class declared `extends Array`: a helper
+  // the module defines, or null (a class that is never constructed has
+  // neither).
+  const defined = new Set(mod.functions.map((fn) => fn.name));
+  const arrayClassFn = (name: string | undefined): string =>
+    name !== undefined && defined.has(name) ? `@${mangleFunction(name)}` : "null";
   for (const cls of emitted) {
     const meta = metaMap.get(cls.name)!;
     const struct = mangleClassStruct(cls.name);
@@ -1090,6 +1132,7 @@ export function emitClassShapes(
     const destroy = `${meta.hierarchy ? mangleClassReleaseDirect(cls.name) : mangleClassRelease(cls.name)}_destroy`;
     const segmented =
       chained &&
+      cls.arrayElem === undefined &&
       !meta.compact &&
       runtimePrefix === null &&
       !isStreamRooted &&
@@ -1105,7 +1148,12 @@ export function emitClassShapes(
     // members). Runs at rc == 0.
     const teardown = (lines: string[]): void => {
       const release = (prefix: string, f: (typeof refFields)[number], t: number): string[] => {
-        const direct = bounded ? directDestroyTarget(host, f.type, directTargets) : null;
+        // An Array subclass instance's destroy releases its fields plainly
+        // (it takes no chain length).
+        const direct =
+          bounded && cls.arrayElem === undefined
+            ? directDestroyTarget(host, f.type, directTargets)
+            : null;
         if (direct === null)
           return [
             `  call void ${releaseSym(host, f.type)}(ptr %v${t}) ; ${llvmCommentText(f.name)}`,
@@ -1236,6 +1284,45 @@ export function emitClassShapes(
         reld.push(`done:`, `  ret void`, `}`, ``);
         defs.push(...reld);
       }
+    } else if (cls.arrayElem !== undefined) {
+      // An instance is an array: its release is the array's, which reaches
+      // the class's destroy (the descriptor's) when the count reaches zero.
+      host.declare(`declare void @scr_arr_release(ptr)`);
+      host.declare(`declare void @scr_arr_subclass_drop(ptr)`);
+      const destroy = `${mangleClassRelease(cls.name)}.arrdestroy`;
+      const destroyBody: string[] = [
+        `define internal void @${destroy}(ptr %o) ${FN_ATTRS} { ; destroy ${cls.name} (an Array subclass instance)`,
+        `entry:`,
+      ];
+      const fieldsTeardown: string[] = [];
+      teardown(fieldsTeardown);
+      const free = emitObjectFree(host, traced);
+      destroyBody.push(
+        ...fieldsTeardown.slice(0, fieldsTeardown.length - free.length),
+        `  call void @scr_arr_subclass_drop(ptr %o)`,
+        ...free,
+        `  ret void`,
+        `}`,
+        ``,
+      );
+      const displayName = cls.name.includes(".")
+        ? cls.name.slice(cls.name.lastIndexOf(".") + 1)
+        : cls.name;
+      const jsName = cls.jsName ?? displayName;
+      defs.push(
+        ...destroyBody,
+        // The name is the class's own copy: its address identifies the
+        // class in dyn snapshots of an instance (scr_arr_copy_metadata).
+        `${arrayClassDescriptor(cls.name)}.name = private constant [${Buffer.byteLength(jsName, "utf8") + 1} x i8] c"${nulTerminatedBytes(jsName)}"`,
+        `${arrayClassDescriptor(cls.name)} = internal constant { ptr, ptr, ptr, ptr } { ptr ${arrayClassDescriptor(cls.name)}.name, ptr @${destroy}, ptr ${arrayClassFn(cls.arrayFields)}, ptr ${arrayClassFn(cls.arraySpecies)} }`,
+        ``,
+        `define internal void @${mangleClassRelease(cls.name)}(ptr %o) ${FN_ATTRS} { ; release ${cls.name} (the array's)`,
+        `entry:`,
+        `  call void @scr_arr_release(ptr %o)`,
+        `  ret void`,
+        `}`,
+        ``,
+      );
     } else {
       const freeBody: string[] = [];
       teardown(freeBody);
@@ -1323,6 +1410,13 @@ export function emitClassShapes(
       nw.push(
         `  store ${host.sizeType} ${lifetime ? programLifetimeRc(host.sizeType) : 1}, ptr %o`,
       );
+    if (cls.arrayElem !== undefined) {
+      const init = arrElemInit(host, cls.arrayElem);
+      host.declare(`declare void @scr_arr_subclass_init(ptr, i8, ptr, ptr, i1 zeroext)`);
+      nw.push(
+        `  call void @scr_arr_subclass_init(ptr %o, i8 ${init.kind}, ptr ${init.ops}, ptr ${arrayClassDescriptor(cls.name)}, i1 ${traced})`,
+      );
+    }
     if (lifetime && audit) {
       // --sanitize builds: the RC audit skips its leak report when the
       // program keeps program-lifetime objects (scr_console.c), and
@@ -1359,7 +1453,12 @@ export function emitClassShapes(
     // Young instances: program-owned traced classes. Classes rooted at a
     // runtime base (errors, emitters, events, streams) carry runtime state
     // and stay with trial deletion, like every runtime family.
-    if (traced && !lifetime && (!meta.hierarchy || meta.root.def.runtime !== true))
+    if (
+      traced &&
+      !lifetime &&
+      (!meta.hierarchy || meta.root.def.runtime !== true) &&
+      cls.arrayElem === undefined
+    )
       nw.push(...youngEntryLines(host));
     nw.push(`  ret ptr ${meta.hierarchy ? "%o.vt" : "%o"}`, `}`, ``);
     defs.push(...nw);
@@ -1382,6 +1481,12 @@ export function emitClassShapes(
       tracedFields.forEach((f, i) => {
         tr.push(...traceFieldVisitLines(struct, f.index, i, llvmCommentText(f.name)));
       });
+      // An Array subclass instance's elements, when its current element
+      // storage is cycle-capable (a species result can retype it).
+      if (cls.arrayElem !== undefined) {
+        host.declare(`declare void @scr_arr_subclass_trace(ptr, ptr, ptr)`);
+        tr.push(`  call void @scr_arr_subclass_trace(ptr %o, ptr %visit, ptr %ctx) ; the elements`);
+      }
       tr.push(`  ret void`, `}`, ``);
       defs.push(...tr);
 
@@ -1399,6 +1504,12 @@ export function emitClassShapes(
         );
       });
       if (meta.threadSlot) gf.push(...slotForgetLines(host, struct, meta, "gfw"));
+      if (cls.arrayElem !== undefined) {
+        // The elements: traced ones are the collector's, the others are
+        // released with the storage (the same test as the trace's).
+        host.declare(`declare void @scr_arr_subclass_gc_drop(ptr)`);
+        gf.push(`  call void @scr_arr_subclass_gc_drop(ptr %o)`);
+      }
       gf.push(...emitObjectFree(host, true), `  ret void`, `}`, ``);
       defs.push(...gf);
     }

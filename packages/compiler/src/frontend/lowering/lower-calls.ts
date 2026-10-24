@@ -1,3 +1,8 @@
+import {
+  arrayClassMemberOwner,
+  arrayClassView,
+  lowerArrayClassStaticCall,
+} from "./builtins/array-classes.js";
 import { keyedHelperName } from "./stable-names.js";
 import { perKeyOrder } from "./key-order-witness.js";
 import { isForwardedTupleSpread, lowerForwardingApply } from "./typed-arguments.js";
@@ -1670,6 +1675,7 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       lowerIteratorStaticFence(lowerer, expr, expr.expression) ??
       lowerObjectStaticCall(lowerer, expr, expr.expression) ??
       lowerObjectFromEntriesCall(lowerer, expr, expr.expression) ??
+      lowerArrayClassStaticCall(lowerer, expr, expr.expression) ??
       lowerArrayFromCall(lowerer, expr, expr.expression) ??
       lowerArrayFromAsyncCall(lowerer, expr, expr.expression) ??
       lowerArrayOfCall(lowerer, expr, expr.expression) ??
@@ -10083,6 +10089,12 @@ export function lowerObjectMethodCall(
       ? probe
       : null;
   if (specializedReceiver) mappedReceiver = specializedReceiver.type;
+  // A member declared by a class that extends Array, called on an instance
+  // (whose type maps to its array): the class's own method.
+  const arrayClassOwner =
+    mappedReceiver?.kind === "array" ? arrayClassMemberOwner(lowerer, access) : null;
+  if (arrayClassOwner !== null)
+    mappedReceiver = { kind: "object", className: arrayClassOwner.def.name };
   if (mappedReceiver?.kind === "union") {
     const dispatched =
       lowerUnionObjectMethodCall(lowerer, call, access, mappedReceiver) ??
@@ -10116,6 +10128,12 @@ export function lowerObjectMethodCall(
         : null;
   if (receiverIr === null) return null;
   const lowerReceiver = (): IrExpr => {
+    if (arrayClassOwner !== null) {
+      const value = lowerer.lowerExpr(access.expression);
+      return value.type.kind === "array"
+        ? arrayClassView(arrayClassOwner, value, locOf(access.expression))
+        : value;
+    }
     const receiver = specializedReceiver ?? lowerer.lowerExpr(access.expression);
     const optional = lowerer.runtimeOptionalPropertyReceiver(
       access.expression,

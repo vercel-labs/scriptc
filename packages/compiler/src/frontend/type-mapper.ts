@@ -1781,6 +1781,36 @@ export function isFetchHandleType(
   return handle;
 }
 
+/** The array type a class declared `extends Array` maps to (its base type,
+ * `T[]`), or null for every other class. */
+function arrayClassBaseType(
+  classDecl: ts.ClassLikeDeclaration,
+  instance: ts.Type,
+  ctx: TypeMapperCtx,
+): IrType | null {
+  const heritage = classDecl.heritageClauses?.nodes.find(
+    (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
+  )?.types?.nodes[0];
+  if (heritage === undefined || !ts.isIdentifier(heritage.expression)) return null;
+  if (heritage.expression.text !== "Array") return null;
+  // The polymorphic `this` type of the class names the class's own type.
+  const symbol = instance.getSymbol();
+  const declared =
+    (instance.flags & ts.TypeFlags.TypeParameter) !== 0 && symbol !== undefined
+      ? ctx.checker.getDeclaredTypeOfSymbol(symbol)
+      : instance;
+  if ((declared.flags & ts.TypeFlags.Object) === 0) return null;
+  const target = declared.isTypeReference() ? (declared.getTarget() ?? declared) : declared;
+  const bases = ctx.checker.getBaseTypes(target as ts.InterfaceType);
+  const base = bases[0];
+  if (base === undefined || !ctx.checker.isArrayType(base)) return null;
+  const mapped = mapType(base, ctx);
+  if (mapped?.kind === "array") return mapped;
+  // `extends Array` in JavaScript reads `any[]`: dyn elements (the class's
+  // arrayClassBase).
+  return isJsSourceFile(ts.getSourceFileOfNode(classDecl)) ? { kind: "array", elem: DYN } : null;
+}
+
 export function mapType(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   if (mapTypeDepth >= MAP_TYPE_MAX_DEPTH) return null;
   // These intrinsic domains cannot depend on generic bindings, declaration
@@ -2547,6 +2577,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         contextResolutions++;
         return viaMixin;
       }
+    }
+    // A class declared `extends Array` (frontend/lowering/builtins/
+    // array-classes.ts): its instances are arrays of the base's elements.
+    {
+      const arrayBase = arrayClassBaseType(classDecl, widened, ctx);
+      if (arrayBase !== null) return arrayBase;
     }
     if (classExprNeedsContext(classDecl)) {
       const local = ctx.localClassInstance?.(classDecl, widened);

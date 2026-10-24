@@ -1521,6 +1521,17 @@ export interface IrClassDef {
    * RUNTIME_ERROR_CLASSES). User subclasses are ordinary emitted classes
    * whose layout prefix embeds ScrError's fields. */
   runtime?: true;
+  /** A class declared `extends Array`: its instances are arrays of this
+   * element type. The struct begins with the runtime's array header (the
+   * reference count is the array's, field 0) and the class's fields follow
+   * it; the runtime finds the class through the array's ext. */
+  arrayElem?: IrType;
+  /** The function (array) => dyn listing such a class's own fields
+   * (ScrArrClass.fields); absent when it declares none. */
+  arrayFields?: string;
+  /** The function (length) => array constructing such a class for
+   * ArraySpeciesCreate (ScrArrClass.species). */
+  arraySpecies?: string;
   /** Base class name (single inheritance, `extends`). A class is IN A
    * HIERARCHY when it has a base or is some class's base; hierarchy classes
    * carry a vtable word after `rc` (backends), standalone classes are laid

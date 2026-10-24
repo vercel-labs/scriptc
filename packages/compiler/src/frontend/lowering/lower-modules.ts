@@ -949,6 +949,12 @@ export function moduleArtifacts(
             visitClass("%Readable");
             visitClass("%Writable");
           }
+          // A class declared `extends Array` named by its instanceof test
+          // or by X.of / X.from.
+          if (node.fn === "array.dynIsClass" && node.args[1]?.kind === "strLit")
+            visitClass(node.args[1].value);
+          if (node.fn === "array.classConstructAdopt" && node.args[0]?.kind === "strLit")
+            visitClass(node.args[0].value);
           break;
         case "dynFrom":
           if (boxedChild(node.value.type)) {

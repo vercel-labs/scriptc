@@ -1084,7 +1084,33 @@ export function arrNewCall(
    * live in its own block): capText must be "0". */
   small = false,
 ): string {
-  const useRef =
+  const useRef = arrUsesRef(host, elem);
+  if (!useRef) {
+    if (small) {
+      host.declare(`declare ptr @scr_arr_new_small(i32)`);
+      return `call ptr @scr_arr_new_small(i32 ${elemKindNum(elem)})`;
+    }
+    host.declare(`declare ptr @scr_arr_new(i32, ${host.sizeType})`);
+    return `call ptr @scr_arr_new(i32 ${elemKindNum(elem)}, ${host.sizeType} ${capText})`;
+  }
+  if (small) {
+    host.declare(`declare ptr @scr_arr_new_ops_small(ptr)`);
+    return `call ptr @scr_arr_new_ops_small(ptr ${arrOps(host, elem)})`;
+  }
+  host.declare(`declare ptr @scr_arr_new_ops(ptr, ${host.sizeType})`);
+  return `call ptr @scr_arr_new_ops(ptr ${arrOps(host, elem)}, ${host.sizeType} ${capText})`;
+}
+
+/** The ScrElemKind and ops descriptor (or `null`) an array of `elem`
+ * starts with: the arrays arrNewCall constructs, for the instances of a
+ * class that extends Array (scr_arr_subclass_init). */
+export function arrElemInit(host: ShapeHost, elem: IrType): { kind: number; ops: string } {
+  if (!arrUsesRef(host, elem)) return { kind: elemKindNum(elem), ops: "null" };
+  return { kind: host.compactArrayElem?.(elem) === true ? 6 : 5, ops: arrOps(host, elem) };
+}
+
+function arrUsesRef(host: ShapeHost, elem: IrType): boolean {
+  return (
     elem.kind === "record" ||
     elem.kind === "object" ||
     elem.kind === "union" ||
@@ -1101,21 +1127,8 @@ export function arrNewCall(
     elem.kind === "dyn" || // native collection seeds/drains: traced REF
     elem.kind === "regex" || // RegExp values: scr_regex_* adapters, no trace (no refs inside)
     elem.kind === "date" || // Date objects: scr_date_* adapters, no trace (no refs inside)
-    (elem.kind === "array" && traceAdapter(host, elem) !== null);
-  if (!useRef) {
-    if (small) {
-      host.declare(`declare ptr @scr_arr_new_small(i32)`);
-      return `call ptr @scr_arr_new_small(i32 ${elemKindNum(elem)})`;
-    }
-    host.declare(`declare ptr @scr_arr_new(i32, ${host.sizeType})`);
-    return `call ptr @scr_arr_new(i32 ${elemKindNum(elem)}, ${host.sizeType} ${capText})`;
-  }
-  if (small) {
-    host.declare(`declare ptr @scr_arr_new_ops_small(ptr)`);
-    return `call ptr @scr_arr_new_ops_small(ptr ${arrOps(host, elem)})`;
-  }
-  host.declare(`declare ptr @scr_arr_new_ops(ptr, ${host.sizeType})`);
-  return `call ptr @scr_arr_new_ops(ptr ${arrOps(host, elem)}, ${host.sizeType} ${capText})`;
+    (elem.kind === "array" && traceAdapter(host, elem) !== null)
+  );
 }
 
 /** The %ScrArrOps descriptor (retain, release, trace, registry id) of a REF

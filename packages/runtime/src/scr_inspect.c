@@ -1759,8 +1759,25 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
       const ScrDyn *props = d->v.arr.properties;
       size_t nprops = 0;
       for (size_t i = 0; props && i < props->v.obj.len; i++) nprops += insp_obj_shows(&props->v.obj.entries[i]);
-      if (len == 0 && nprops == 0 && !g_show_hidden) return scr_str_new("[]", 2);
-      if (recurse > depth) return scr_str_new("[Array]", 7);
+      /* An instance of a class that extends Array: Node's `Name(length) `
+       * prefix (scr_arr_copy_metadata names the class). */
+      const char *cls = props ? props->v.obj.class_name : NULL;
+      char prefix[160] = "";
+      if (cls) snprintf(prefix, sizeof prefix, "%.120s(%zu) ", cls, len);
+      if (len == 0 && nprops == 0 && !g_show_hidden) {
+        InspBuf eb = {0};
+        ib_cstr(&eb, prefix);
+        ib_cstr(&eb, "[]");
+        return ib_take(&eb);
+      }
+      if (recurse > depth) {
+        if (!cls) return scr_str_new("[Array]", 7);
+        InspBuf eb = {0};
+        ib_char(&eb, '[');
+        ib_cstr(&eb, cls);
+        ib_char(&eb, ']');
+        return ib_take(&eb);
+      }
       scr_insp_begin(recurse + 1);
       /* Node's maxArrayLength (100) counts output entries; a run of holes
        * is one `<n empty items>` entry (formatSpecialArray). */
@@ -1829,7 +1846,10 @@ ScrStr *scr_insp_dyn(ScrDyn *d, double recurse, double depth) {
        * `[length]` under showHidden, or the last property. */
       bool last_out = entries > 100;
       ScrStr *base = scr_str_new("", 0);
-      ScrStr *b0 = scr_str_new("[", 1);
+      InspBuf ob = {0};
+      ib_cstr(&ob, prefix);
+      ib_char(&ob, '[');
+      ScrStr *b0 = ib_take(&ob);
       ScrStr *b1 = scr_str_new("]", 1);
       ScrStr *out = scr_insp_end(base, b0, b1, recurse + 1, true, last_out);
       scr_str_release(base);

@@ -3015,6 +3015,18 @@ function validateFunction(
           }
           break;
         }
+        // An instance of a class declared `extends Array` and its array
+        // are the same object: upcast to the array, downcast back.
+        {
+          const instance = e.kind === "upcast" ? e.value.type : e.type;
+          const array = e.kind === "upcast" ? e.type : e.value.type;
+          if (instance.kind === "object" && array.kind === "array") {
+            const elem = classes.get(instance.className)?.arrayElem;
+            if (elem === undefined || !typeEquals(elem, array.elem))
+              err(`${e.kind}: "${instance.className}" is not an array of that element type`, e.loc);
+            break;
+          }
+        }
         if (e.type.kind !== "object" || e.value.type.kind !== "object") {
           err(`${e.kind} between non-class types`, e.loc);
           break;
@@ -3122,6 +3134,15 @@ function validateFunction(
       case "instanceOf": {
         checkExpr(e.value);
         if (e.type.kind !== "bool") err("instanceOf must be bool", e.loc);
+        // An array against a class declared `extends Array` (its ext).
+        if (e.value.type.kind === "array") {
+          if (classes.get(e.className)?.arrayElem === undefined)
+            err(
+              `instanceOf of an array against "${e.className}", which does not extend Array`,
+              e.loc,
+            );
+          break;
+        }
         if (!hierarchy.has(e.className)) {
           err(`instanceOf against non-hierarchy class "${e.className}"`, e.loc);
         }
@@ -4212,6 +4233,41 @@ function validateFunction(
   }
 
   function checkLibValueCall(e: IrExpr & { kind: "libCall" }): boolean {
+    // ArraySpeciesCreate over an Array method's result, and Array.of /
+    // Array.from on a class that extends Array: the result has the plain
+    // result's array type.
+    if (e.fn === "array.dynIsClass") {
+      const cls = e.args[1]?.kind === "strLit" ? classes.get(e.args[1].value) : undefined;
+      if (cls?.arrayElem === undefined)
+        err("libCall array.dynIsClass must name a class that extends Array", e.loc);
+      return false;
+    }
+    if (e.fn === "array.speciesCreate") {
+      if (e.args[0]?.type.kind !== "array" || !typeEquals(e.type, e.args[0].type))
+        err("libCall array.speciesCreate must have its receiver's array type", e.loc);
+      return true;
+    }
+    if (e.fn === "array.speciesFinish") {
+      const plain = e.args[1];
+      if (plain?.type.kind !== "array" || !typeEquals(e.type, plain.type))
+        err("libCall array.speciesFinish must have its array argument's type", e.loc);
+      if (e.args[0]?.type.kind !== "array")
+        err("libCall array.speciesFinish instance must be an array", e.loc);
+      return true;
+    }
+    if (e.fn === "array.speciesAdopt" || e.fn === "array.classConstructAdopt") {
+      const plain = e.args[1];
+      if (plain?.type.kind !== "array" || !typeEquals(e.type, plain.type))
+        err(`libCall ${e.fn} must have its array argument's type`, e.loc);
+      if (e.fn === "array.speciesAdopt" && e.args[0]?.type.kind !== "array")
+        err("libCall array.speciesAdopt receiver must be an array", e.loc);
+      if (e.fn === "array.classConstructAdopt") {
+        const cls = e.args[0]?.kind === "strLit" ? classes.get(e.args[0].value) : undefined;
+        if (cls?.arrayElem === undefined)
+          err("libCall array.classConstructAdopt must name a class that extends Array", e.loc);
+      }
+      return true;
+    }
     const cryptoPromise = CRYPTO_PROMISE_VALUES[e.fn];
     if (cryptoPromise) {
       const inner = e.type.kind === "promise" ? e.type.inner : undefined;

@@ -1,3 +1,8 @@
+import {
+  arrayClassMemberOwner,
+  arrayOfClassInstance,
+  arrayRootOf,
+} from "./builtins/array-classes.js";
 import { keyedHelperName } from "./stable-names.js";
 import {
   isNewTarget,
@@ -503,7 +508,23 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // noImplicitThis, so the generic scope walk here is preflight-safe.
     const local = lowerer.resolveThis(expr);
     if (local) {
-      const value: IrExpr = { kind: "varRef", localId: local.id, type: local.type, loc };
+      let value: IrExpr = { kind: "varRef", localId: local.id, type: local.type, loc };
+      // `this` in a class declared `extends Array` is the array, except as
+      // the receiver of a member the class declares.
+      if (local.type.kind === "object") {
+        const arrayClass = lowerer.classes.get(local.type.className);
+        const parent = expr.parent;
+        if (
+          arrayClass &&
+          arrayRootOf(arrayClass) &&
+          !(
+            ts.isPropertyAccessExpression(parent) &&
+            parent.expression === expr &&
+            arrayClassMemberOwner(lowerer, parent) !== null
+          )
+        )
+          value = arrayOfClassInstance(arrayClass, value, loc);
+      }
       // `this.#x` in a function-local class's prototype method, whose `this`
       // is the call-site value: the field lives on the native instance of
       // this evaluation (checkedPrivateReceiver).
@@ -579,7 +600,24 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
     // any other super position (field reads, bare references) stays out.
     lowerer.unsupported("SC1090", expr, "'super' outside super() and super.method() calls");
   }
-  if (ts.isNewExpression(expr)) return lowerer.lowerNew(expr);
+  if (ts.isNewExpression(expr)) {
+    const value = lowerer.lowerNew(expr);
+    // `new X()` for a class declared `extends Array` is the array, except
+    // as the receiver of a member the class declares (as `this` above).
+    if (value.type.kind !== "object") return value;
+    const arrayClass = lowerer.classes.get(value.type.className);
+    if (!arrayClass || !arrayRootOf(arrayClass)) return value;
+    let operand: ts.Expression = expr;
+    while (ts.isParenthesizedExpression(operand.parent)) operand = operand.parent;
+    const parent = operand.parent;
+    if (
+      ts.isPropertyAccessExpression(parent) &&
+      parent.expression === operand &&
+      arrayClassMemberOwner(lowerer, parent) !== null
+    )
+      return value;
+    return arrayOfClassInstance(arrayClass, value, loc);
+  }
   if (ts.isAwaitExpression(expr)) {
     if (!lowerer.ctx.isAsync) {
       // A tsc-clean occurrence here is outside both an async function

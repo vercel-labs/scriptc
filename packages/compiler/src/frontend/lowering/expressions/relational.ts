@@ -1,4 +1,5 @@
 /* instanceof and in, including private-name and runtime-key in. */
+import { lowerArrayClassInstanceOf } from "../builtins/array-classes.js";
 import { dateRootOf } from "../builtins/date-classes.js";
 import { keyedHelperName } from "../stable-names.js";
 import * as ts from "../../ts7/adapter.js";
@@ -106,6 +107,8 @@ const NO_CLASS_INSTANCE_KINDS: ReadonlySet<IrType["kind"]> = new Set([
  * Folding is limited to side-effect-free operands — dropping a computed
  * operand would skip its effects, so those are rejected instead. */
 export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc): IrExpr {
+  const arrayClassTest = lowerArrayClassInstanceOf(lowerer, expr, loc);
+  if (arrayClassTest !== null) return arrayClassTest;
   const webAssembly = lowerWebAssemblyInstanceof(lowerer, expr);
   if (webAssembly !== null) return webAssembly;
   refuseWebAssemblyUse(lowerer, expr.right);

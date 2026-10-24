@@ -159,6 +159,10 @@ static void scr_dyn_display_buf(ScrJsonBuf *b, const ScrDyn *d, bool to_string) 
   }
 }
 
+void scr_jb_join_dyn(ScrJsonBuf *b, const ScrDyn *d) {
+  if (d->kind != SCR_DYN_UNDEF && d->kind != SCR_DYN_NULL) scr_dyn_display_buf(b, d, true);
+}
+
 ScrStr *scr_dyn_display(const ScrDyn *d) {
   ScrJsonBuf b;
   scr_jb_init(&b);

@@ -184,7 +184,11 @@ export function streamTypedRefCommitAdapter(
   }
   if (t.kind === "array") {
     const commit = `${snapshot}_commit`;
-    const check = host.dyn.dynCheckHelper(t);
+    // A value the element type cannot hold stays in the array as a foreign
+    // element where the program can store one (LlEmitter.mayHoldForeign).
+    const check = host.mayHoldForeign(t.elem)
+      ? host.dyn.dynViewArrayHelper(t)
+      : host.dyn.dynCheckHelper(t);
     host.declare(`declare void @scr_arr_release(ptr)`);
     host.declare(`declare void @scr_arr_outline(ptr)`);
     host.declare(`declare void @scr_arr_adopt_view_properties(ptr, ptr, ptr)`);
@@ -1203,6 +1207,21 @@ export function streamTypedRefMaterializeAdapter(
       B.line(`call void @scr_dyn_arr_push_hole(ptr ${out})`);
       B.br(doneLabel);
       B.startBlock(undefinedLabel);
+      if (host.mayHoldForeign(elem)) {
+        // A foreign element (SCR_ARR_FOREIGN) holds its own value.
+        const foreign = B.tmp();
+        const foreignLabel = B.newLabel("live.array.foreign");
+        const presentUndefined = B.newLabel("live.array.present.undefined");
+        B.line(`${foreign} = fcmp oeq double ${state}, 3.0`);
+        B.condBr(foreign, foreignLabel, presentUndefined);
+        B.startBlock(foreignLabel);
+        host.declare(`declare ptr @scr_arr_get_foreign(ptr, double)`);
+        const payload = B.tmp();
+        B.line(`${payload} = call ptr @scr_arr_get_foreign(ptr %p, double ${index}) ; +1`);
+        B.line(`call void @scr_dyn_arr_push(ptr ${out}, ptr ${payload})`);
+        B.br(doneLabel);
+        B.startBlock(presentUndefined);
+      }
       const undefinedValue = B.tmp();
       const retained = B.tmp();
       B.line(`${undefinedValue} = call ptr @scr_dyn_undefined()`);
@@ -1289,7 +1308,16 @@ function liveArrayOps(
   const refuse = S.newLabel("live.array.refuse");
   S.condBr(fits, store, refuse);
   S.startBlock(refuse);
-  S.terminate(`ret i1 false`);
+  if (host.mayHoldForeign(elem)) {
+    // The array keeps a value its element type cannot hold as a foreign
+    // element, and undefined as a present undefined.
+    host.declare(`declare zeroext i1 @scr_arr_set_foreign(ptr, double, ptr)`);
+    const kept = S.tmp();
+    S.line(`${kept} = call zeroext i1 @scr_arr_set_foreign(ptr %p, double %i, ptr %v)`);
+    S.terminate(`ret i1 ${kept}`);
+  } else {
+    S.terminate(`ret i1 false`);
+  }
   S.startBlock(store);
   const next = S.tmp();
   S.line(

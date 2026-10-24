@@ -1625,6 +1625,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "regex.groupParseInt": "scr_regex_group_parse_int",
   "regex.resultProp": "scr_regex_result_prop",
   "array.namedKeys": "scr_arr_named_keys",
+  "array.foreign": "scr_arr_get_foreign",
   "array.hasNamedKey": "scr_arr_has_named_key",
   "array.hasProperties": "scr_arr_has_properties",
   "array.undefinedKey": "scr_arr_undefined_key",

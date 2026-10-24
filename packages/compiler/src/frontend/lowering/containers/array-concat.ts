@@ -1,5 +1,6 @@
 import { keyedHelperName } from "../stable-names.js";
 import { identityPreservingWidening } from "../coercions/identity.js";
+import { elementMayBeForeign, foreignElementThrow } from "../array-values.js";
 import { countedFor, numLit, varRef } from "../../../ir/build.js";
 import {
   BOOL,
@@ -131,7 +132,33 @@ export function arrayConcatHelper(
                 loc,
               },
               then: [{ kind: "arraySetUndefined", arr: out, index: destination, loc }],
-              else_: null,
+              else_: elementMayBeForeign(lowerer, sourceElem)
+                ? [
+                    {
+                      // A foreign element takes the checked conversion's TypeError.
+                      kind: "if",
+                      cond: {
+                        kind: "bin",
+                        op: "===",
+                        left: { kind: "arrayState", arr: source, index, type: F64, loc },
+                        right: numLit(3, loc),
+                        type: BOOL,
+                        loc,
+                      },
+                      then: [
+                        {
+                          kind: "arraySet",
+                          arr: out,
+                          index: destination,
+                          value: foreignElementThrow(lowerer, source, index, elem, loc),
+                          loc,
+                        },
+                      ],
+                      else_: null,
+                      loc,
+                    },
+                  ]
+                : null,
               loc,
             },
           ],

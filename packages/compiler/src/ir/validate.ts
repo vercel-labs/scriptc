@@ -4310,7 +4310,9 @@ function validateFunction(
     if (
       e.fn === "array.namedKeys" ||
       e.fn === "array.hasNamedKey" ||
-      e.fn === "array.hasProperties"
+      e.fn === "array.hasProperties" ||
+      e.fn === "array.foreign" ||
+      e.fn === "array.foreignThrow"
     ) {
       if (e.args[0]?.type.kind !== "array") {
         err(`libCall ${e.fn} arg 0: expected an array, got ${e.args[0]?.type.kind}`, e.loc);

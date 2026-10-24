@@ -453,7 +453,11 @@ export function emitDenseArrayRead(
   B.br(join);
   B.startBlock(slow);
   const slowValue = B.tmp();
-  const attrs = acc === "ref" && retain ? " cold" : READ_FALLBACK;
+  // ToNumber of a foreign element (SCR_ARR_FOREIGN) can run user code.
+  const attrs =
+    (acc === "ref" && retain) || (getter === "scr_arr_get_number" && host.mayHoldForeign(element))
+      ? " cold"
+      : READ_FALLBACK;
   B.line(`${slowValue} = call ${ty} @${getter}(ptr ${array}, double ${index.name})${attrs}`);
   let slowInt: string | null = null;
   if (fastInt !== null) {
@@ -610,6 +614,28 @@ export function emitDenseArraySet(
       B.line(`store ptr ${value}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
     }
   };
+  if ((acc === "f64" || kind === "ref") && host.mayHoldForeign(element)) {
+    // Past the hole-free prefix a slot may hold a foreign element, whose
+    // value the runtime setter releases; below it every slot is a value.
+    B.br(slow);
+    B.startBlock(filledLabel);
+    const filledValuePtr = valuePointer(host, guard, kind);
+    let filledOld: string | null = null;
+    if (kind === "ref") {
+      filledOld = B.tmp();
+      B.line(
+        `${filledOld} = load ptr, ptr ${filledValuePtr}${host.fieldAliasAttachment(filledValuePtr)}`,
+      );
+    }
+    storeValue(filledValuePtr);
+    if (filledOld) host.releaseHeap(filledOld, element);
+    B.br(join);
+    B.startBlock(slow);
+    call(" cold");
+    B.br(join);
+    B.startBlock(join);
+    return;
+  }
   const stated = B.newLabel("arr.set.states"),
     plain = B.newLabel("arr.set.plain"),
     plainStore = B.newLabel("arr.set.values"),

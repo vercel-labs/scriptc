@@ -1065,6 +1065,10 @@ export interface IrModule {
    * ProgramLifetime instance lives in a counted region (the region.*
    * intrinsics; backend/llvm/regions.ts). */
   lifetimeRegions?: true;
+  /** Element keys (typeKey of the element type) of native arrays that can
+   * hold elements outside their element type (SCR_ARR_FOREIGN), stored
+   * through dynamic views; "*" for every array. Absent when none can. */
+  foreignElementKeys?: string[];
   /** Classes used as ThreadSlots keys (@scriptc/experimental): the root of
    * each one's hierarchy carries a slot word (the slots.* intrinsics;
    * backend/llvm/thread-slots.ts). */

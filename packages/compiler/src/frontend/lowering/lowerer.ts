@@ -2381,6 +2381,11 @@ export class Lowerer {
   /** for-of loops over arrays that can hold neither holes nor undefined:
    * each pass reads the element payload directly. */
   readonly presentElementLoops = new Set<ts.ForOfStatement>();
+  /** Element keys (typeKey of the element type) of native arrays that can
+   * hold elements outside their element type, stored through dynamic views
+   * (SCR_ARR_FOREIGN); "*" for every array. Empty unless the program stores
+   * values through a dynamic value that can view a native array. */
+  foreignElementKeys: ReadonlySet<string> = new Set();
   /** The fs/promises glob() call lowerForOf is lowering as a for await
    * head; other glob() calls have no lowering. */
   fspGlobHead: ts.Node | null = null;
@@ -6402,6 +6407,20 @@ export class Lowerer {
     let dynamicViews: Set<string> | null = null;
     // Element ABIs of the native arrays that an `any` or `unknown` value is
     // converted to, including arrays nested in the converted value.
+    // Assignments, including the logical ones (`view ??= numbers`).
+    const assignmentOperators = new Set<ts.SyntaxKind>([
+      ts.SyntaxKind.EqualsToken,
+      ts.SyntaxKind.QuestionQuestionEqualsToken,
+      ts.SyntaxKind.BarBarEqualsToken,
+      ts.SyntaxKind.AmpersandAmpersandEqualsToken,
+    ]);
+    // Initializers of class properties, parameter defaults and
+    // destructuring defaults, which convert to the binding's type.
+    const initializedBinding = (
+      node: ts.Node,
+    ): node is ts.PropertyDeclaration | ts.ParameterDeclaration | ts.BindingElement =>
+      (ts.isPropertyDeclaration(node) || ts.isParameter(node) || ts.isBindingElement(node)) &&
+      node.initializer !== undefined;
     const collectDynamicViews = (): Set<string> => {
       const keys = new Set<string>();
       const dynamicValue = (node: ts.Expression): boolean => {
@@ -6452,13 +6471,17 @@ export class Lowerer {
           dynamicValue(node.initializer)
         )
           target(typeOrNull(node.name));
+        else if (initializedBinding(node) && dynamicValue(node.initializer!))
+          target(typeOrNull(node.name ?? node));
         else if (
           ts.isBinaryExpression(node) &&
-          node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+          assignmentOperators.has(node.operatorToken.kind) &&
           dynamicValue(node.right)
         )
           target(typeOrNull(node.left));
         else if (ts.isReturnStatement(node) && node.expression && dynamicValue(node.expression))
+          target(contextualOrNull(node.expression));
+        else if (ts.isYieldExpression(node) && node.expression && dynamicValue(node.expression))
           target(contextualOrNull(node.expression));
         else if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
           for (const arg of node.arguments?.nodes ?? [])
@@ -6488,6 +6511,237 @@ export class Lowerer {
         });
       return keys;
     };
+    // Element ABIs of the native arrays a value converted to a dynamic type
+    // can reach: the conversion keeps each such array as a live view, so
+    // stores through the dynamic value write the native storage.
+    // Standard library functions that only read the arguments they take as
+    // `any` or `unknown`: the console methods, String, Number, Boolean,
+    // Array.isArray, Object.is, JSON.stringify without a replacer function,
+    // and util's inspect and format. Any other function can keep an
+    // argument (Promise.resolve, Map.prototype.set, push onto an
+    // `unknown[]`) or pass it to a callback (a JSON.stringify replacer, an
+    // emitted event), which can write through it.
+    const readerGlobals = new Map<string, ReadonlySet<string> | null>([
+      ["console", null],
+      ["JSON", new Set(["stringify"])],
+      ["Array", new Set(["isArray"])],
+      ["Object", new Set(["is"])],
+    ]);
+    const readerFunctions = new Set(["String", "Number", "Boolean"]);
+    const utilReaders = new Set(["inspect", "format"]);
+    const standardLibraryReader = (node: ts.CallExpression | ts.NewExpression): boolean =>
+      panicSafe(() => {
+        if (!ts.isCallExpression(node)) return false;
+        const callee = peel(node.expression);
+        if (ts.isIdentifier(callee))
+          return [...readerFunctions].some((name) => this.isStdlibGlobal(callee, name));
+        if (!ts.isPropertyAccessExpression(callee)) return false;
+        const member = callee.name.text;
+        for (const [global, members] of readerGlobals) {
+          if (!this.isStdlibGlobal(callee.expression, global)) continue;
+          if (members !== null && !members.has(member)) return false;
+          if (global !== "JSON") return true;
+          const replacer = node.arguments.nodes[1];
+          return (
+            replacer === undefined ||
+            ts.isArrayLiteralExpression(peel(replacer)) ||
+            peel(replacer).kind === ts.SyntaxKind.NullKeyword
+          );
+        }
+        if (!utilReaders.has(member)) return false;
+        const declaration = this.checker.getResolvedSignature(node)?.declaration;
+        if (declaration === undefined) return false;
+        const file = ts.getSourceFileOfNode(declaration);
+        return this.isStdlibFile(file) && /[\\/]util\.d\.ts$/.test(file.fileName);
+      }, false);
+    const collectNativeViews = (): Set<string> => {
+      const keys = new Set<string>();
+      const seen = new Set<string>();
+      const collect = (type: IrType | null): void => {
+        if (!type) return;
+        const id = typeKey(type);
+        if (seen.has(id)) return;
+        seen.add(id);
+        if (type.kind === "array") {
+          if (type.elem.kind !== "dyn") keys.add(typeKey(type.elem));
+          collect(type.elem);
+        } else if (type.kind === "union") {
+          for (const arm of this.unions.get(type.unionId)?.arms ?? []) collect(arm);
+        } else if (type.kind === "record") {
+          for (const field of this.shapes.get(type.shapeId)?.fields ?? []) collect(field.type);
+        } else if (type.kind === "object") {
+          for (const field of this.classes.get(type.className)?.fields.values() ?? [])
+            collect(field);
+        } else if (type.kind === "map") {
+          collect(type.key);
+          collect(type.value);
+        } else if (type.kind === "set") collect(type.elem);
+        else if (type.kind === "promise") collect(type.inner);
+      };
+      const holdsDynamic = (type: IrType | null, depth: number): boolean => {
+        if (!type || depth > 4) return false;
+        if (type.kind === "dyn") return true;
+        if (type.kind === "array" || type.kind === "set") return holdsDynamic(type.elem, depth + 1);
+        if (type.kind === "map") return holdsDynamic(type.value, depth + 1);
+        if (type.kind === "promise") return holdsDynamic(type.inner, depth + 1);
+        if (type.kind === "union")
+          return (this.unions.get(type.unionId)?.arms ?? []).some((arm) =>
+            holdsDynamic(arm, depth + 1),
+          );
+        if (type.kind === "record")
+          return (this.shapes.get(type.shapeId)?.fields ?? []).some((field) =>
+            holdsDynamic(field.type, depth + 1),
+          );
+        return false;
+      };
+      const mapped = (type: ts.Type | null | undefined): IrType | null =>
+        type ? panicSafe(() => this.mapTypeOf(type), null) : null;
+      const flow = (source: ts.Expression, target: ts.Type | null | undefined): void => {
+        if (target === undefined) return;
+        const into = target === null ? null : mapped(target);
+        // An unanswerable target may be dynamic.
+        if (target !== null && into !== null && !holdsDynamic(into, 0)) return;
+        const from = typeOrNull(source);
+        if (from === null) keys.add("*");
+        else collect(mapped(from));
+      };
+      const visit = (node: ts.Node): void => {
+        if (ts.isAsExpression(node) || ts.isTypeAssertion(node))
+          flow(node.expression, typeOrNull(node));
+        else if (ts.isVariableDeclaration(node) && node.type && node.initializer)
+          flow(node.initializer, typeOrNull(node.name));
+        else if (initializedBinding(node)) flow(node.initializer!, typeOrNull(node.name ?? node));
+        else if (ts.isBinaryExpression(node) && assignmentOperators.has(node.operatorToken.kind))
+          flow(node.right, typeOrNull(node.left));
+        else if (ts.isReturnStatement(node) && node.expression)
+          flow(node.expression, contextualOrNull(node.expression));
+        else if (ts.isYieldExpression(node) && node.expression)
+          flow(node.expression, contextualOrNull(node.expression));
+        // A thrown value reaches a catch binding, which is dynamic.
+        else if (ts.isThrowStatement(node)) flow(node.expression, null);
+        else if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+          if (!standardLibraryReader(node))
+            for (const arg of node.arguments?.nodes ?? [])
+              flow(ts.isSpreadElement(arg) ? arg.expression : arg, contextualOrNull(arg));
+        } else if (ts.isPropertyAssignment(node))
+          flow(node.initializer, contextualOrNull(node.initializer));
+        else if (ts.isShorthandPropertyAssignment(node)) {
+          const name = node.name as ts.Expression;
+          flow(name, contextualOrNull(name));
+        } else if (ts.isArrayLiteralExpression(node)) {
+          for (const element of node.elements.nodes)
+            if (!ts.isSpreadElement(element) && !ts.isOmittedExpression(element))
+              flow(element, contextualOrNull(element));
+        } else if (ts.isArrowFunction(node) && !ts.isBlock(node.body))
+          flow(node.body as ts.Expression, contextualOrNull(node.body as ts.Expression));
+      };
+      for (const sf of sourceFiles)
+        ts.walkPreorder(sf, (node) => {
+          // A checker panic hides this conversion: any array.
+          if (!panicSafe(() => (visit(node), true), false)) keys.add("*");
+          return undefined;
+        });
+      return keys;
+    };
+    // A receiver typed `any`, `unknown` or an array of either can be a live
+    // view of a native array. A receiver of another type (`Worker[]`,
+    // `Record<string, unknown>`) is one only after a lying assertion, even
+    // when its values are dynamic.
+    const dynamicType = (type: ts.Type): boolean => {
+      if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) return true;
+      if (!this.checker.isArrayType(type) || this.checker.isTupleType(type)) return false;
+      const element = this.checker.getTypeArguments(type as ts.TypeReference)[0];
+      return (
+        element !== undefined && (element.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0
+      );
+    };
+    // A binding that only ever holds the array its declaration creates (a
+    // const variable, or a readonly property with an initializer) is never
+    // a view of a native array, even when its elements are dynamic.
+    const freshDynamicStorage = (node: ts.Expression, depth: number): boolean => {
+      const e = peel(node);
+      if (ts.isArrayLiteralExpression(e)) return true;
+      if (ts.isNewExpression(e) || ts.isCallExpression(e)) {
+        const callee = peel(e.expression);
+        if (ts.isIdentifier(callee)) return this.isStdlibGlobal(callee, "Array");
+        return (
+          ts.isPropertyAccessExpression(callee) &&
+          (callee.name.text === "of" || callee.name.text === "from") &&
+          this.isStdlibGlobal(callee.expression, "Array")
+        );
+      }
+      if (depth > 4 || (!ts.isIdentifier(e) && !ts.isPropertyAccessExpression(e))) return false;
+      // A typed array along the way is the array a view shows.
+      const type = typeOrNull(e);
+      if (type === null || !dynamicType(type)) return false;
+      const symbol = panicSafe(
+        () => this.checker.getSymbolAtLocation(ts.isIdentifier(e) ? e : e.name),
+        undefined,
+      );
+      const declaration = symbol?.valueDeclaration;
+      if (!symbol || !declaration) return false;
+      // Variables and class properties only: parameters take any argument,
+      // and object literals fill interface properties.
+      if (
+        !(ts.isVariableDeclaration(declaration) && ts.isIdentifier(declaration.name)) &&
+        !ts.isPropertyDeclaration(declaration)
+      )
+        return false;
+      const assigned = assignedValues(symbol);
+      if (assigned === null) return false;
+      const values = [
+        ...(declaration.initializer ? [declaration.initializer] : []),
+        ...(assigned ?? []),
+      ];
+      return values.length > 0 && values.every((value) => freshDynamicStorage(value, depth + 1));
+    };
+    // Every value `=` assigns to each variable or property of the program,
+    // by symbol; null for one also written another way (compound or
+    // destructuring assignment). Built on first use.
+    let assignments: Map<ts.Symbol, ts.Expression[] | null> | null = null;
+    const assignedValues = (symbol: ts.Symbol): ts.Expression[] | null | undefined => {
+      if (assignments === null) {
+        const found = new Map<ts.Symbol, ts.Expression[] | null>();
+        const add = (target: ts.Expression, value: ts.Expression | null): void => {
+          const e = peel(target);
+          if (ts.isArrayLiteralExpression(e) || ts.isObjectLiteralExpression(e)) {
+            // Destructuring: every target is written with a part of the value.
+            ts.forEachChild(e, (child) => {
+              if (ts.isIdentifier(child) || ts.isPropertyAccessExpression(child)) add(child, null);
+              else if (ts.isSpreadElement(child)) add(child.expression, null);
+              else if (ts.isPropertyAssignment(child)) add(child.initializer, null);
+              else if (ts.isShorthandPropertyAssignment(child))
+                add(child.name as ts.Expression, null);
+              else if (ts.isBinaryExpression(child)) add(child.left, null);
+              return undefined;
+            });
+            return;
+          }
+          const name = ts.isIdentifier(e) ? e : ts.isPropertyAccessExpression(e) ? e.name : null;
+          const written = name
+            ? panicSafe(() => this.checker.getSymbolAtLocation(name), undefined)
+            : undefined;
+          if (!written) return;
+          const list = found.get(written);
+          if (list === null) return;
+          if (value === null) found.set(written, null);
+          else if (list) list.push(value);
+          else found.set(written, [value]);
+        };
+        for (const sf of sourceFiles)
+          ts.walkPreorder(sf, (node) => {
+            if (ts.isBinaryExpression(node)) {
+              const op = node.operatorToken.kind;
+              if (op === ts.SyntaxKind.EqualsToken) add(node.left, node.right);
+              else if (op >= ts.SyntaxKind.FirstAssignment && op <= ts.SyntaxKind.LastAssignment)
+                add(node.left, null);
+            }
+            return undefined;
+          });
+        assignments = found;
+      }
+      return assignments.get(symbol);
+    };
     // `t[i]!` on a typed array, stored into an array, keeps an invalid
     // index's undefined (assertedReadObservesUndefined): `!` performs no
     // runtime check. A read whose consumers treat undefined like NaN stores
@@ -6505,6 +6759,11 @@ export class Lowerer {
       );
     };
     const elementStates = new ArrayElementStates({
+      isDynamicArray: (node) => {
+        const type = typeOrNull(node);
+        return (type === null || dynamicType(type)) && !freshDynamicStorage(node, 0);
+      },
+      nativeViewKeys: collectNativeViews,
       elementAdmitsUndefined: (key) => {
         siteDependencies?.read(key);
         return optionalElementKeys.has(key);
@@ -7349,6 +7608,7 @@ export class Lowerer {
     }
     for (const [site, present] of presentSites) if (present) this.presentElementCalls.add(site);
     for (const [loop, present] of presentLoops) if (present) this.presentElementLoops.add(loop);
+    this.foreignElementKeys = elementStates.foreignKeys();
     const globalsById = new Map(this.globalsList.map((global) => [global.id, global]));
     for (const [symbol, field] of staticFieldsBySymbol) {
       if (!optionalSymbols.has(symbol)) continue;
@@ -7899,6 +8159,9 @@ export class Lowerer {
             ...(this.usesWorkers ? { workers: true } : {}),
             ...(this.usesLifetimeRegions ? { lifetimeRegions: true as const } : {}),
             ...(this.declBoundary ? { declBoundary: true as const } : {}),
+            ...(this.foreignElementKeys.size > 0
+              ? { foreignElementKeys: [...this.foreignElementKeys].sort() }
+              : {}),
             ...(this.threadSlotKeys.size > 0
               ? { threadSlotKeys: [...this.threadSlotKeys].sort() }
               : {}),

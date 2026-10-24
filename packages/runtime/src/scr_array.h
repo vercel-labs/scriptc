@@ -60,6 +60,10 @@ typedef enum {
   SCR_ARR_HOLE = 0,
   SCR_ARR_VALUE = 1,
   SCR_ARR_UNDEFINED = 2,
+  /* A present element outside the element type, stored through a dynamic
+   * view: the slot holds a retained ScrDyn * (scr_arr_set_foreign). Arrays
+   * that hold one mark their out-of-line storage (ScrArrExt.foreign). */
+  SCR_ARR_FOREIGN = 3,
 } ScrArrState;
 
 /* The RC entry points of an SCR_ELEM_REF array's element type: one constant
@@ -171,6 +175,9 @@ typedef struct ScrArrExt {
   /* The element ops of an array whose ops have no registry id
    * (SCR_ARR_OPS_OVERFLOW). */
   const ScrArrOps *ops;
+  /* Some slot may hold SCR_ARR_FOREIGN; release and copies walk the states
+   * for their payloads only then. */
+  bool foreign;
 } ScrArrExt;
 /* The LLVM backend mirrors ScrArr as %ScrArr: its inline retain/release read
  * `cyc` (field 4, i8) to decide mark-live / candidate buffering exactly like
@@ -591,6 +598,20 @@ void scr_arr_set_f64(ScrArr *a, double i, double v);
 void scr_arr_set_bool(ScrArr *a, double i, bool v);
 void scr_arr_set_ref(ScrArr *a, double i, void *v);
 void scr_arr_set_undefined(ScrArr *a, double i);
+/* Stores `v` (borrowed, retained) at a canonical index as a value outside
+ * the element type (SCR_ARR_FOREIGN), or as a present undefined when it is
+ * undefined, extending the length like the typed setters. False, with
+ * nothing stored, for an index that is not canonical and for a foreign
+ * value in a boolean array, whose 1-byte dense slots cannot hold it. */
+bool scr_arr_set_foreign(ScrArr *a, double i, struct ScrDyn *v);
+/* The value of a foreign element (+1), or NULL when a[i] is not one. */
+struct ScrDyn *scr_arr_get_foreign(const ScrArr *a, double i);
+/* Throws the checked conversion's TypeError for the foreign element a[i]
+ * read where a value of type `want` is expected. */
+void scr_arr_foreign_throw(const ScrArr *a, double i, const ScrStr *want);
+/* The same TypeError for a foreign element's value removed from an array
+ * (pop/shift into a typed result); takes and releases `value`. */
+void scr_dyn_foreign_throw(struct ScrDyn *value, const char *want);
 bool scr_arr_delete(ScrArr *a, double i);
 
 /* slice(start?, end?): a fresh +1 shallow copy of the index range —

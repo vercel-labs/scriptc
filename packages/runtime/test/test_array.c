@@ -2513,6 +2513,84 @@ static void test_states_on_demand(void) {
 #endif
 }
 
+/* Elements outside the element type (SCR_ARR_FOREIGN): stores, reads,
+ * copies, sorting and removal keep the stored value's count balanced. */
+static void test_foreign_elements(void) {
+  ScrStr *text = scr_str_new("x", 1);
+  ScrDyn *x = scr_dyn_new_str(text);
+  scr_str_release(text);
+  ScrArr *a = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_push_f64(a, 1);
+  scr_arr_push_f64(a, 2);
+  check(scr_arr_set_foreign(a, 2, x), "foreign store appends");
+  check_f64(scr_arr_len(a), 3, "foreign store extends the length");
+  check_f64(scr_arr_state(a, 2), SCR_ARR_FOREIGN, "foreign element state");
+  ScrDyn *got = scr_arr_get_foreign(a, 2);
+  check(got == x, "get_foreign answers the stored value");
+  scr_dyn_release(got);
+  check(scr_arr_get_foreign(a, 0) == NULL, "a number is not a foreign element");
+  check(isnan(scr_arr_get_number(a, 2)), "numeric read of a foreign 'x' is NaN");
+  check(scr_arr_set_foreign(a, 3, scr_dyn_undefined()), "undefined store");
+  check_f64(scr_arr_state(a, 3), SCR_ARR_UNDEFINED, "undefined is a present undefined");
+  ScrStr *sep = scr_str_new(",", 1);
+  ScrStr *joined = scr_arr_join(a, sep);
+  check(joined->len == 6 && memcmp(joined->data, "1,2,x,", 6) == 0, "join converts foreign");
+  scr_str_release(joined);
+  ScrArr *copy = scr_arr_slice(a, 0, INFINITY);
+  check_f64(scr_arr_state(copy, 2), SCR_ARR_FOREIGN, "slice keeps a foreign element");
+  scr_arr_release(copy);
+  ScrArr *head = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_set_foreign(head, 0, x);
+  scr_arr_push_f64(head, 2);
+  scr_arr_push_f64(head, 3);
+  copy = scr_arr_slice(head, 1, INFINITY);
+  check_f64(scr_arr_get_f64(copy, 1), 3, "slice past a foreign element");
+  scr_arr_release(copy);
+  scr_arr_release(head);
+  scr_arr_set_f64(a, 2, 5);
+  check_f64(scr_arr_get_f64(a, 2), 5, "a number replaces a foreign element");
+  scr_arr_set_foreign(a, 2, x);
+  scr_arr_set_len(a, 1);
+  check_f64(scr_arr_len(a), 1, "truncation drops foreign elements");
+  scr_arr_set_foreign(a, 1, x);
+  check(scr_arr_delete(a, 1), "delete removes a foreign element");
+  scr_arr_set_foreign(a, 1, x);
+  uint64_t slot = 0;
+  check(scr_arr_pop_state(a, &slot) == SCR_ARR_FOREIGN, "pop answers the foreign state");
+  check((ScrDyn *)(uintptr_t)slot == x, "pop moves the value out");
+  scr_dyn_release((ScrDyn *)(uintptr_t)slot);
+  for (int i = 0; i < 12; i++) scr_arr_set_foreign(a, (double)(1 + i), x);
+  double seven = 7;
+  uint64_t inserted[1];
+  memcpy(&inserted[0], &seven, sizeof seven);
+  scr_arr_splice_drop(a, 1, 10, 1, inserted);
+  check_f64(scr_arr_len(a), 4, "splice removes foreign elements");
+  check_f64(scr_arr_get_f64(a, 1), 7, "splice inserts after them");
+  scr_arr_release(a);
+
+  ScrStr *letter = scr_str_new("a", 1);
+  ScrDyn *a_value = scr_dyn_new_str(letter);
+  scr_str_release(letter);
+  ScrArr *s = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_push_f64(s, 10);
+  scr_arr_push_f64(s, 9);
+  scr_arr_set_foreign(s, 2, a_value);
+  scr_arr_push_f64(s, 1);
+  scr_arr_release(scr_arr_sort_primitive(s, false));
+  check(scr_arr_get_f64(s, 0) == 1 && scr_arr_get_f64(s, 1) == 10 && scr_arr_get_f64(s, 2) == 9,
+        "default sort orders numbers by their strings");
+  check_f64(scr_arr_state(s, 3), SCR_ARR_FOREIGN, "default sort orders 'a' after the digits");
+  scr_arr_release(s);
+  scr_dyn_release(a_value);
+
+  ScrArr *flags = scr_arr_new(SCR_ELEM_BOOL, 0);
+  check(!scr_arr_set_foreign(flags, 0, x), "boolean arrays hold no foreign elements");
+  scr_arr_release(flags);
+  scr_str_release(sep);
+  check(x->rc == 1, "every foreign store released its count");
+  scr_dyn_release(x);
+}
+
 int main(int argc, char **argv) {
   if (argc > 1) {
     ScrArr *a = scr_arr_new(SCR_ELEM_F64, 0);
@@ -2572,6 +2650,8 @@ int main(int argc, char **argv) {
   test_inline_slots();
   test_head_room();
   test_states_on_demand();
+
+  test_foreign_elements();
 
   fprintf(stderr, "%ld/%ld cases passed\n", total - failed, total);
   return failed == 0 ? 0 : 1;

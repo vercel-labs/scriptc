@@ -107,6 +107,7 @@ const INERT_LIB_CALLS = new Set([
   "regex.groupParseInt",
   "regex.resultProp",
   "array.namedKeys",
+  "array.foreign",
   "array.hasNamedKey",
   "array.hasProperties",
   "process.cwd",

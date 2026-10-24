@@ -1,3 +1,4 @@
+import { dynDesc } from "../../ir/analysis.js";
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { arraySearchHelperName, arraySearchKind } from "./array-search.js";
 import { InternalCompilerError } from "../../errors.js";
@@ -772,6 +773,9 @@ export function emitArrIntrinsic(
     case "shift": {
       host.emitPublishedArrayGuard(r.name, e.receiver.type, method === "pop" ? 2 : 6);
       const checkedValue = elem.kind === "dyn" && e.type.kind === "dyn";
+      // A foreign element (SCR_ARR_FOREIGN) cannot be the typed result:
+      // removing one throws the checked conversion's TypeError.
+      const foreignElements = !checkedValue && host.mayHoldForeign(elem);
       if (!checkedValue && e.type.kind !== "union")
         throw new InternalCompilerError("llvm emitter bug: array removal result is not a union");
       const def = e.type.kind === "union" ? host.unionsById.get(e.type.unionId) : undefined;
@@ -814,7 +818,25 @@ export function emitArrIntrinsic(
       );
       B.line(`${slowRaw} = load i64, ptr ${rawSlot}`);
       B.line(`${has} = icmp eq i8 ${state}, 1`);
-      B.condBr(has, lp, la);
+      const lf = foreignElements ? B.newLabel("remove.f") : la;
+      B.condBr(has, lp, lf);
+      if (foreignElements) {
+        // Only the runtime call removes a foreign element; its value moves
+        // out with the slot, and the throw releases it.
+        B.startBlock(lf);
+        const foreign = B.tmp();
+        const throwLabel = B.newLabel("remove.foreign");
+        B.line(`${foreign} = icmp eq i8 ${state}, 3`);
+        B.condBr(foreign, throwLabel, la);
+        B.startBlock(throwLabel);
+        const payload = B.tmp();
+        B.line(`${payload} = inttoptr i64 ${slowRaw} to ptr`);
+        host.declare(`declare void @scr_dyn_foreign_throw(ptr, ptr)`);
+        const want = host.cstr(dynDesc(e.type, host.recordsById, host.unionsById));
+        B.line(`call void @scr_dyn_foreign_throw(ptr ${payload}, ptr ${want})`);
+        host.emitAlwaysPendingUnwind();
+        B.br(la);
+      }
       B.startBlock(lp);
       let raw = slowRaw;
       const value = B.tmp();

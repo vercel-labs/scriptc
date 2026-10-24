@@ -58,7 +58,33 @@ export function arrayNumberRead(arr: IrExpr, index: IrExpr, loc: SrcLoc): IrExpr
   };
 }
 
-/** Read one stabilized receiver/index pair. Both a hole and present undefined yield undefined. */
+/** A foreign element read into a typed result: it never fits, so the read
+ * throws the checked conversion's TypeError (array.foreignThrow). */
+export function foreignElementThrow(
+  lowerer: Lowerer,
+  arr: IrExpr,
+  index: IrExpr,
+  type: IrType,
+  loc: SrcLoc,
+): IrExpr {
+  return {
+    kind: "libCall",
+    fn: "array.foreignThrow",
+    args: [arr, index, { kind: "strLit", value: lowerer.fmt(type), type: STRING, loc }],
+    type,
+    loc,
+  };
+}
+
+/** Arrays of this element type can hold elements outside it, stored
+ * through dynamic views (Lowerer.foreignElementKeys). */
+export function elementMayBeForeign(lowerer: Lowerer, elem: IrType): boolean {
+  const keys = lowerer.foreignElementKeys;
+  return keys.size > 0 && elem.kind !== "dyn" && (keys.has("*") || keys.has(typeKey(elem)));
+}
+
+/** Read one stabilized receiver/index pair. Both a hole and present undefined yield undefined;
+ * a foreign element (state 3) takes the checked conversion into the typed result. */
 export function arrayValueRead(
   lowerer: Lowerer,
   arr: IrExpr,
@@ -68,8 +94,25 @@ export function arrayValueRead(
 ): IrExpr {
   const type = arrayValueType(lowerer, elem);
   const read: IrExpr = { kind: "arrayGet", arr, index, type: elem, loc };
-  const missing: IrExpr =
+  let missing: IrExpr =
     type.kind === "dyn" ? dynUndefinedExpr(loc) : lowerer.wrappedUndefined(type, loc)!;
+  if (elementMayBeForeign(lowerer, elem)) {
+    missing = {
+      kind: "ternary",
+      cond: {
+        kind: "bin",
+        op: "===",
+        left: { kind: "arrayState", arr, index, type: F64, loc },
+        right: { kind: "numLit", value: 3, type: F64, loc },
+        type: BOOL,
+        loc,
+      },
+      then: foreignElementThrow(lowerer, arr, index, type, loc),
+      else_: missing,
+      type,
+      loc,
+    };
+  }
   return {
     kind: "ternary",
     cond: {
@@ -544,6 +587,9 @@ export function tryLowerNumericIndexRead(
     operand.callee !== lowerer.arrHofHelpers.get(`idxOr:${typeKey(F64)}`)
   )
     return null;
+  // ToNumber of a foreign element differs from its own value under `+`,
+  // comparisons and ToBoolean.
+  if (elementMayBeForeign(lowerer, F64)) return null;
   const [arr, index] = operand.args;
   if (
     operand.args.length !== 2 ||
@@ -637,6 +683,8 @@ export function tryFuseIndexRead(
   if (arr?.type.kind !== "array" || index?.type.kind !== "f64") return null;
   const elem = arr.type.elem;
   if (elem.kind === "union" || elem.kind === "void") return null;
+  // A foreign element is neither the present value nor the missing one.
+  if (elementMayBeForeign(lowerer, elem)) return null;
   if (operand.callee !== lowerer.arrHofHelpers.get(`idxOr:${typeKey(elem)}`)) return null;
   if (arr.kind !== "varRef" || (index.kind !== "varRef" && index.kind !== "numLit")) return null;
   const loc = operand.loc;

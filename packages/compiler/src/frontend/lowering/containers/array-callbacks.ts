@@ -42,6 +42,8 @@ import {
   arrayValueStore,
   arrayValueType,
   currentArrayIndexPresent,
+  elementMayBeForeign,
+  foreignElementThrow,
 } from "../array-values.js";
 import { typeKey } from "../../type-mapper.js";
 import {
@@ -2492,6 +2494,9 @@ export function lowerArraySortCall(
         loc,
         native,
         keyed && { order, key: reads !== null, keys: keyed.length },
+        elementMayBeForeign(lowerer, elem)
+          ? (arr, index) => foreignElementThrow(lowerer, arr, index, elem, loc)
+          : null,
       ),
     );
   }

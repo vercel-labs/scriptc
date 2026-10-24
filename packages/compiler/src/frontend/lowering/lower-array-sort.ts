@@ -926,6 +926,10 @@ export function buildArraySortFn(
   loc: SrcLoc,
   native = false,
   keyed: { order: number; key: boolean; keys: number } | null = null,
+  /** The throw for a foreign element (SCR_ARR_FOREIGN) at `index` of
+   * `arr`, which the comparator's element type cannot hold; for element
+   * types whose arrays can hold one. */
+  checkForeign: ((arr: IrExpr, index: IrExpr) => IrExpr) | null = null,
 ): IrFunction {
   const b = new SortIr(loc);
   const arrT = arrayOf(elem),
@@ -1035,7 +1039,21 @@ export function buildArraySortFn(
       b.branch(
         b.eq(state, b.num(1)),
         [compactValue()],
-        [b.branch(b.eq(state, b.num(2)), [b.step(undefinedCount)])],
+        [
+          b.branch(
+            b.eq(state, b.num(2)),
+            [b.step(undefinedCount)],
+            checkForeign
+              ? [
+                  // A foreign element does not fit the comparator's element
+                  // type: the checked conversion's TypeError.
+                  b.branch(b.eq(state, b.num(3)), [
+                    { kind: "exprStmt", expr: checkForeign(src, index), loc },
+                  ]),
+                ]
+              : null,
+          ),
+        ],
       ),
     ]),
     // Sort only the compacted prefix. The tail is overwritten with undefined

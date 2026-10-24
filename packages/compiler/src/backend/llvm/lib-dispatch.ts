@@ -1048,6 +1048,8 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "blob":
     case "wasm":
     case "array":
+      if (e.fn === "array.foreignThrow") return emitArrayForeignThrow(host, e);
+      return host.emitGenericLibCall(e);
     case "collection":
     case "record":
     case "disposable":
@@ -1067,6 +1069,29 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
       throw new InternalCompilerError("unreachable");
     }
   }
+}
+
+/** `array.foreignThrow`: the checked conversion's TypeError for a foreign
+ * element read into a typed result. Always throws; the result is a dummy
+ * of the replaced read's type (the error.argTypeThrow pattern). */
+function emitArrayForeignThrow(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
+  const B = host.B;
+  const arr = host.emitExpr(e.args[0]!);
+  const index = host.emitExpr(e.args[1]!);
+  const want = host.emitExpr(e.args[2]!);
+  host.declare(`declare void @scr_arr_foreign_throw(ptr, double, ptr)`);
+  B.line(
+    `call void @scr_arr_foreign_throw(ptr ${arr.name}, double ${index.name}, ptr ${want.name})`,
+  );
+  const ty = host.llType(e.type);
+  if (ty === "void") {
+    host.emitAlwaysPendingUnwind();
+    return { name: "", type: e.type };
+  }
+  const dummy = ty === "double" ? "0.0" : ty === "i1" ? "false" : "null";
+  const out = host.own({ name: dummy, type: e.type });
+  host.emitAlwaysPendingUnwind();
+  return out;
 }
 
 /** Promise.all's tuple form (promise.allTuple): the combinator over the

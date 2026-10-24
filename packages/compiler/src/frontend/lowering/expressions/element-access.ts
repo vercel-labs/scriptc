@@ -59,6 +59,7 @@ import {
   arrayValueRead,
   arrayValueStore,
   arrayValueType,
+  elementMayBeForeign,
   lowerSafeBytesRead,
   lowerSafeIndexRead,
 } from "../array-values.js";
@@ -1614,11 +1615,14 @@ export function lowerElementCompoundParts(
   const indexRef = (): IrExpr => varRef(indexLocal.id, F64, loc);
   const oldValue: IrExpr =
     receiver.type.kind === "array"
-      ? receiver.type.elem.kind === "f64"
+      ? receiver.type.elem.kind === "f64" &&
+        !(op === "+" && elementMayBeForeign(lowerer, receiver.type.elem))
         ? // Every numeric operator applies ToNumber to the old value, so a
           // missing element is NaN without materializing `number | undefined`.
           arrayNumberRead(receiverRef(), indexRef(), locOf(target))
-        : receiver.type.elem.kind === "string" && op === "+"
+        : receiver.type.elem.kind === "string" &&
+            op === "+" &&
+            !elementMayBeForeign(lowerer, receiver.type.elem)
           ? arrayStringOperand(receiverRef(), indexRef(), locOf(target))
           : arrayValueRead(lowerer, receiverRef(), indexRef(), receiver.type.elem, locOf(target))
       : {

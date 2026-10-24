@@ -1789,6 +1789,87 @@ export class LlDyn {
   /** `sc_dc_<n>(ptr d, ptr path) -> T` — validate the checked-dynamic tree against T and
    * BUILD the typed value (+1), or throw the catchable path-annotated
    * TypeError and return a dummy with the pending flag set. */
+  /** The array a live view's snapshot commits back into, for element types
+   * whose arrays can hold foreign elements (LlEmitter.mayHoldForeign):
+   * like dynCheckHelper's array case on a checked array `%d`, except that
+   * an element the element type cannot hold is stored as a foreign element
+   * (undefined as a present undefined) instead of failing the conversion.
+   * Boolean arrays, whose slots cannot hold one, keep the failing check. */
+  dynViewArrayHelper(t: IrType & { kind: "array" }): string {
+    const builderKey = `view:${typeKey(t)}`;
+    const existing = this.dynBuilders.get(builderKey);
+    if (existing) return existing;
+    const name = `sc_dva_${this.dynBuilders.size}`;
+    this.dynBuilders.set(builderKey, name);
+    const host = this.host;
+    const elem = t.elem;
+    const check = this.dynCheckHelper(elem);
+    const match = this.dynMatchHelper(elem);
+    const B = new BlockBuilder();
+    const n = this.lenOf(B, "%d");
+    const a = B.tmp();
+    B.line(`${a} = ${arrNewCall(host, elem, n)}`);
+    const items = this.itemsOf(B, "%d");
+    const acc = elemAccess(elem);
+    const accTy = acc === "f64" ? "double" : acc === "bool" ? "i1" : "ptr";
+    host.declare(
+      `declare double @scr_arr_push_${acc}(ptr, ${acc === "bool" ? "i1 zeroext" : accTy})`,
+    );
+    host.declare(`declare zeroext i1 @scr_dyn_arr_has_index(ptr, ${this.S})`);
+    host.declare(`declare void @scr_arr_set_len(ptr, double)`);
+    host.declare(`declare zeroext i1 @scr_arr_set_foreign(ptr, double, ptr)`);
+    this.i64Loop(B, "dva", n, (i) => {
+      const index = B.tmp();
+      B.line(`${index} = ${sizeToDouble(this.S)} ${this.S} ${i} to double`);
+      const present = B.tmp();
+      B.line(`${present} = call zeroext i1 @scr_dyn_arr_has_index(ptr %d, ${this.S} ${i})`);
+      const valueLabel = B.newLabel("dva.present");
+      const holeLabel = B.newLabel("dva.hole");
+      const typedLabel = B.newLabel("dva.typed");
+      const foreignLabel = B.newLabel("dva.foreign");
+      const doneLabel = B.newLabel("dva.done");
+      B.condBr(present, valueLabel, holeLabel);
+      B.startBlock(holeLabel);
+      const length = B.tmp();
+      B.line(`${length} = fadd double ${index}, 1.0`);
+      B.line(`call void @scr_arr_set_len(ptr ${a}, double ${length})`);
+      B.br(doneLabel);
+      B.startBlock(valueLabel);
+      const e = this.itemAt(B, items, i);
+      const fits = B.tmp();
+      B.line(`${fits} = call zeroext i1 @${match}(ptr ${e})`);
+      B.condBr(fits, typedLabel, foreignLabel);
+      B.startBlock(foreignLabel);
+      const kept = B.tmp();
+      B.line(`${kept} = call zeroext i1 @scr_arr_set_foreign(ptr ${a}, double ${index}, ptr ${e})`);
+      B.condBr(kept, doneLabel, typedLabel);
+      B.startBlock(typedLabel);
+      const v = B.tmp();
+      B.line(`${v} = call ${this.valTy(elem)} @${check}(ptr ${e}, ptr null)`);
+      this.pendingBail(
+        B,
+        "dva",
+        () => {
+          host.declare(`declare void @scr_arr_release(ptr)`);
+          B.line(`call void @scr_arr_release(ptr ${a})`);
+        },
+        "ptr null",
+      );
+      const pushed = B.tmp();
+      B.line(`${pushed} = call double @scr_arr_push_${acc}(ptr ${a}, ${accTy} ${v})`);
+      B.br(doneLabel);
+      B.startBlock(doneLabel);
+    });
+    B.terminate(`ret ptr ${a}`);
+    this.defs.push(
+      `define internal ptr @${name}(ptr %d, ptr %path) ${FN_ATTRS} { ; view commit ${typeKey(t)}`,
+      B.render(),
+      `}`,
+      ``,
+    );
+    return name;
+  }
+
   dynCheckHelper(t: IrType, preserveRefs = false): string {
     const key = typeKey(t);
     const builderKey = preserveRefs ? `identity:${key}` : key;
@@ -3430,7 +3511,25 @@ export class LlDyn {
           B.br(doneLabel);
           B.startBlock(presentLabel);
           B.line(`${undefinedState} = fcmp oeq double ${state}, 2.0`); // SCR_ARR_UNDEFINED
-          B.terminate(`br i1 ${undefinedState}, label %${undefinedLabel}, label %${valueLabel}`);
+          if (host.mayHoldForeign(t.elem)) {
+            // A foreign element (SCR_ARR_FOREIGN) holds its own value.
+            const typedLabel = B.newLabel("tda.typed");
+            const foreignLabel = B.newLabel("tda.foreign");
+            B.terminate(`br i1 ${undefinedState}, label %${undefinedLabel}, label %${typedLabel}`);
+            B.startBlock(typedLabel);
+            const foreign = B.tmp();
+            B.line(`${foreign} = fcmp oeq double ${state}, 3.0`);
+            B.condBr(foreign, foreignLabel, valueLabel);
+            B.startBlock(foreignLabel);
+            host.declare(`declare ptr @scr_arr_get_foreign(ptr, double)`);
+            host.declare(`declare void @scr_dyn_arr_push(ptr, ptr)`);
+            const payload = B.tmp();
+            B.line(`${payload} = call ptr @scr_arr_get_foreign(ptr %v, double ${i}) ; +1`);
+            B.line(`call void @scr_dyn_arr_push(ptr ${d}, ptr ${payload})`);
+            B.br(doneLabel);
+          } else {
+            B.terminate(`br i1 ${undefinedState}, label %${undefinedLabel}, label %${valueLabel}`);
+          }
           B.startBlock(undefinedLabel);
           const retained = this.retainDyn(B, this.undef(B));
           B.line(`call void @scr_dyn_arr_push(ptr ${d}, ptr ${retained})`);

@@ -51,6 +51,7 @@ try {
     declare: (decl) => { declarations.add(decl); },
     needOom: () => { needsOom = true; },
     needBadTag: () => { needsBadTag = true; },
+    mayHoldForeign: () => false,
     internLiteral: (text) => {
       let index = literals.indexOf(text);
       if (index === -1) { index = literals.length; literals.push(text); }

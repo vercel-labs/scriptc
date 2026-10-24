@@ -3897,6 +3897,15 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   // The string keys `for...in` visits on an array (args[0], any element
   // type) after its indices. Borrowed; never throws.
   "array.namedKeys": { argTypes: [null], result: arrayOf(STRING) },
+  // The value of the foreign element (SCR_ARR_FOREIGN) at args[1] of an
+  // array (args[0], any element type); callers test the element state
+  // first. Borrowed; never throws.
+  "array.foreign": { argTypes: [null, F64], result: DYN },
+  /** The checked conversion's TypeError for the foreign element at args[1]
+   * of an array (args[0]) read where a value described by args[2] is
+   * expected. ALWAYS THROWS; polymorphic result (the error.nodeThrow
+   * pattern). May-throw seed. */
+  "array.foreignThrow": { argTypes: [null, F64, STRING], result: VOID },
   // Whether the array (args[0]) still has the key (args[1]) from its
   // namedKeys list. Borrowed; never throws.
   "array.hasNamedKey": { argTypes: [null, STRING], result: BOOL },

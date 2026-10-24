@@ -4043,6 +4043,7 @@ ScrDyn *scr_dyn_typed_ref_element(const ScrDyn *d, size_t index) {
   double state = scr_arr_state(arr, (double)index);
   if (state == (double)SCR_ARR_VALUE) return scr_dyn_typed_ref_array_ops(d)->get(arr, (double)index);
   if (state == (double)SCR_ARR_UNDEFINED) return scr_dyn_retain(scr_dyn_undefined());
+  if (state == (double)SCR_ARR_FOREIGN) return scr_arr_get_foreign(arr, (double)index);
   return NULL;
 }
 

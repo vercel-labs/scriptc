@@ -269,9 +269,55 @@ static uint64_t scr_elem_retain_slot(const ScrArr *a, uint64_t slot) {
   return scr_elem_retain_with(a->elem, scr_arr_ops(a), slot);
 }
 
+/* ToNumber and ToString of a foreign element. Both can run user code and
+ * pull in the dynamic tier, so they are reached through this table, which
+ * scr_arr_set_foreign installs: every foreign element is stored by it, and
+ * a program that never stores one links neither conversion. */
+typedef struct ScrArrForeignConversions {
+  double (*to_number)(const ScrDyn *);
+  ScrStr *(*to_string)(const ScrDyn *);
+} ScrArrForeignConversions;
+
+static const ScrArrForeignConversions scr_arr_dyn_conversions = {
+  scr_dyn_number_coerce,
+  scr_dyn_string_coerce_js,
+};
+static const ScrArrForeignConversions *scr_arr_conversions;
+
+static const ScrArrForeignConversions *scr_arr_foreign_conversions(void) {
+  return __atomic_load_n(&scr_arr_conversions, __ATOMIC_RELAXED);
+}
+
+/* The array may hold SCR_ARR_FOREIGN elements (ScrArrExt.foreign). Such
+ * an array always has states. */
+static inline bool scr_arr_may_hold_foreign(const ScrArr *a) {
+  return SCR_AX(a)->foreign;
+}
+
+/* `dst` takes slots of `src` (moved or retained): it may hold foreign
+ * elements too. Marking allocates the out-of-line storage, which can move
+ * the dense slots: mark before taking pointers into them. */
+static inline void scr_arr_inherit_foreign(ScrArr *dst, const ScrArr *src) {
+  if (scr_arr_may_hold_foreign(src)) scr_arr_ext(dst)->foreign = true;
+}
+
 static uint64_t scr_arr_retain_state_slot(const ScrArr *a, uint64_t slot,
                                           uint8_t state) {
+  if (state == SCR_ARR_FOREIGN) {
+    scr_dyn_retain(scr_slot_to_ptr(slot));
+    return slot;
+  }
   return state == SCR_ARR_VALUE ? scr_elem_retain_slot(a, slot) : 0;
+}
+
+/* Releases what a slot in `state` owns: a reference element, or the value
+ * of a foreign element. */
+static void scr_arr_release_state_slot(const ScrArr *a, uint64_t slot, uint8_t state) {
+  if (state == SCR_ARR_VALUE) {
+    if (scr_elem_is_ref(a->elem)) scr_elem_release(a, slot);
+  } else if (state == SCR_ARR_FOREIGN) {
+    scr_dyn_release(scr_slot_to_ptr(slot));
+  }
 }
 
 /* ── storage and lifecycle ─────────────────────────────────────────────── */
@@ -981,6 +1027,7 @@ static inline bool scr_arr_slot_at(const ScrArr *a, size_t index, uint64_t *out)
 static void scr_arr_store_state_owned(ScrArr *a, size_t index, uint64_t slot,
                                       uint8_t state) {
   if (state != SCR_ARR_VALUE) scr_arr_cut(a, index);
+  if (state == SCR_ARR_FOREIGN) scr_arr_ext(a)->foreign = true;
   if (!scr_arr_has_states(a) && (state != SCR_ARR_VALUE || index != a->len)) scr_arr_add_states(a);
   scr_arr_grow_for_index(a, index);
   if (index < a->cap) {
@@ -1034,6 +1081,7 @@ static void scr_arr_replace_state_owned(ScrArr *a, size_t index, uint64_t slot,
   uint8_t old_state;
   uint64_t old = 0;
   if (state != SCR_ARR_VALUE) scr_arr_cut(a, index);
+  if (state == SCR_ARR_FOREIGN) scr_arr_ext(a)->foreign = true;
   /* Without states, a value below the length replaces a value. */
   if (!scr_arr_has_states(a) && (state != SCR_ARR_VALUE || index >= a->len)) {
     if (state == SCR_ARR_VALUE && index == a->len) {
@@ -1044,7 +1092,7 @@ static void scr_arr_replace_state_owned(ScrArr *a, size_t index, uint64_t slot,
   }
   if (index < a->cap) {
     old_state = scr_arr_dense_state(a, index);
-    if (old_state == SCR_ARR_VALUE) old = scr_arr_dense_get(a, index);
+    if (old_state == SCR_ARR_VALUE || old_state == SCR_ARR_FOREIGN) old = scr_arr_dense_get(a, index);
     scr_arr_dense_put(a, index, slot);
     if (scr_arr_has_states(a)) *scr_arr_state_ptr(a, index) = state;
   } else {
@@ -1058,7 +1106,7 @@ static void scr_arr_replace_state_owned(ScrArr *a, size_t index, uint64_t slot,
     SCR_AX(a)->sparse[pos].slot = slot;
     SCR_AX(a)->sparse[pos].state = state;
   }
-  if (old_state == SCR_ARR_VALUE && scr_elem_is_ref(a->elem)) scr_elem_release(a, old);
+  scr_arr_release_state_slot(a, old, old_state);
 }
 
 static void scr_arr_replace_owned(ScrArr *a, size_t index, uint64_t slot) {
@@ -1300,6 +1348,7 @@ static void scr_arr_copy_dense(ScrArr *dst, size_t to, const ScrArr *src,
                                 size_t from, size_t count, bool reverse,
                                 bool materialize_holes) {
   if (count == 0) return;
+  scr_arr_inherit_foreign(dst, src);
   scr_arr_cut(dst, to);
   /* 8-byte slots: a constant slot size, and constant-width state ends. */
   size_t width = scr_arr_slot_width(dst);
@@ -1350,12 +1399,15 @@ static void scr_arr_copy_dense(ScrArr *dst, size_t to, const ScrArr *src,
       *scr_arr_state_in(dst_states, to + i) = values ? SCR_ARR_VALUE : *scr_arr_state_in(src_states, source);
     }
   }
-  if (!refs && (!materialize_holes || values)) return;
+  bool foreign = !values && scr_arr_may_hold_foreign(src);
+  if (!refs && !foreign && (!materialize_holes || values)) return;
   uint8_t elem = src->elem;
   const ScrArrOps *ops = scr_arr_ops(src);
   for (size_t i = to; i < to + count; i++) {
     if (*scr_arr_state_in(dst_states, i) == SCR_ARR_VALUE) {
       if (refs) dst->data[i] = scr_elem_retain_with(elem, ops, dst->data[i]);
+    } else if (*scr_arr_state_in(dst_states, i) == SCR_ARR_FOREIGN) {
+      scr_dyn_retain(scr_slot_to_ptr(dst->data[i]));
     } else if (materialize_holes && *scr_arr_state_in(dst_states, i) == SCR_ARR_HOLE) {
       scr_arr_dense_put(dst, i, 0);
       *scr_arr_state_in(dst_states, i) = SCR_ARR_UNDEFINED;
@@ -1477,11 +1529,13 @@ void scr_arr_trace_v(void *a0, ScrTraceVisit visit, void *ctx) {
   } else {
     const uint8_t *states = scr_arr_states_end(a);
     for (size_t i = 0; i < end; i++) {
-      if (*scr_arr_state_in(states, i) == SCR_ARR_VALUE) visit(scr_slot_to_ptr(a->data[i]), ctx);
+      uint8_t state = *scr_arr_state_in(states, i);
+      if (state == SCR_ARR_VALUE || state == SCR_ARR_FOREIGN) visit(scr_slot_to_ptr(a->data[i]), ctx);
     }
   }
   for (size_t i = 0; i < SCR_AX(a)->sparse_len; i++) {
-    if (SCR_AX(a)->sparse[i].state == SCR_ARR_VALUE) {
+    uint8_t state = SCR_AX(a)->sparse[i].state;
+    if (state == SCR_ARR_VALUE || state == SCR_ARR_FOREIGN) {
       visit(scr_slot_to_ptr(SCR_AX(a)->sparse[i].slot), ctx);
     }
   }
@@ -1590,11 +1644,37 @@ static inline __attribute__((always_inline)) void scr_arr_free(ScrArr *a) {
   scr_mem_free(a);
 }
 
+/* Releases the values of foreign elements and leaves holes in their place,
+ * so the release below sees only typed elements. Arrays that hold foreign
+ * elements have states; a copy carries the mark of its source whatever
+ * range it takes, so an array with the mark and no states holds only
+ * values in its dense slots. */
+static void scr_arr_release_foreign(ScrArr *a) {
+  uint8_t *states = scr_arr_has_states(a) ? scr_arr_states_end(a) : NULL;
+  for (size_t i = 0, end = states ? (a->len < a->cap ? a->len : a->cap) : 0; i < end; i++) {
+    if (*scr_arr_state_in(states, i) != SCR_ARR_FOREIGN) continue;
+    uint64_t old = a->data[i];
+    *scr_arr_state_in(states, i) = SCR_ARR_HOLE;
+    a->data[i] = 0;
+    scr_dyn_release(scr_slot_to_ptr(old));
+  }
+  ScrArrExt *x = scr_arr_ext_of(a);
+  for (size_t i = 0; i < x->sparse_len; i++) {
+    if (x->sparse[i].state != SCR_ARR_FOREIGN) continue;
+    uint64_t old = x->sparse[i].slot;
+    x->sparse[i].state = SCR_ARR_HOLE;
+    x->sparse[i].slot = 0;
+    scr_dyn_release(scr_slot_to_ptr(old));
+  }
+  x->foreign = false;
+}
+
 static void scr_arr_destroy(void *object) {
   ScrArr *a = object;
   if (scr_arr_ext_of(a)) {
     scr_dyn_release(scr_arr_ext_of(a)->metadata);
     scr_arr_ext_of(a)->metadata = NULL;
+    if (scr_arr_ext_of(a)->foreign) scr_arr_release_foreign(a);
   }
   if (scr_elem_is_ref(a->elem)) {
     size_t end = a->len < a->cap ? a->len : a->cap;
@@ -1890,14 +1970,14 @@ void scr_arr_set_len(ScrArr *a, double length) {
       }
       return;
     }
-    if (scr_elem_is_ref(a->elem)) {
+    if (scr_elem_is_ref(a->elem) || scr_arr_may_hold_foreign(a)) {
       for (size_t i = dense_stop; i < dense_end; i++) {
         if (*scr_arr_state_ptr(a, i) != SCR_ARR_HOLE) {
           uint64_t old = a->data[i];
           uint8_t state = *scr_arr_state_ptr(a, i);
           *scr_arr_state_ptr(a, i) = 0;
           a->data[i] = 0;
-          if (state == SCR_ARR_VALUE) scr_elem_release(a, old);
+          scr_arr_release_state_slot(a, old, state);
         }
       }
       if (scr_arr_ext_of(a)) {
@@ -1907,7 +1987,7 @@ void scr_arr_set_len(ScrArr *a, double length) {
           uint64_t old = scr_arr_ext_of(a)->sparse[i].slot;
           uint8_t state = scr_arr_ext_of(a)->sparse[i].state;
           scr_arr_ext_of(a)->sparse_len = i;
-          if (state == SCR_ARR_VALUE) scr_elem_release(a, old);
+          scr_arr_release_state_slot(a, old, state);
         }
       }
     } else {
@@ -1941,7 +2021,7 @@ void scr_arr_copy_index(ScrArr *dst, size_t dst_index, const ScrArr *src,
   uint64_t slot;
   uint8_t state = scr_arr_state_at(src, src_index, &slot);
   if (state == SCR_ARR_HOLE) return;
-  if (state == SCR_ARR_VALUE) slot = scr_elem_retain_slot(src, slot);
+  slot = scr_arr_retain_state_slot(src, slot, state);
   scr_arr_replace_state_owned(dst, dst_index, slot, state);
 }
 
@@ -2048,7 +2128,7 @@ ScrArr *scr_arr_copy_within(ScrArr *a, double target, double start, double end) 
     if (state == SCR_ARR_HOLE) {
       scr_arr_delete(a, (double)(to + offset));
     } else {
-      if (state == SCR_ARR_VALUE) slot = scr_elem_retain_slot(a, slot);
+      slot = scr_arr_retain_state_slot(a, slot, state);
       /* Each replacement publishes its edge before releasing the previous
        * owner; cycle collection can run between successive positions. */
       scr_arr_replace_state_owned(a, to + offset, slot, state);
@@ -2066,7 +2146,7 @@ static ScrArr *scr_arr_fill_slot(ScrArr *a, uint64_t slot, uint8_t state,
   bool refs = scr_elem_is_ref(a->elem);
   if (scr_arr_dense_ok(a, until, until - from)) scr_arr_grow_dense(a, until);
   if (state != SCR_ARR_VALUE) scr_arr_need_states(a);
-  if (!refs && until <= a->cap) {
+  if (!refs && until <= a->cap && !scr_arr_may_hold_foreign(a)) {
     if (state != SCR_ARR_VALUE) scr_arr_cut(a, from);
     if (a->elem == SCR_ELEM_BOOL) memset(scr_arr_dense_at(a, from), (int)slot, until - from);
     else if (a->elem == SCR_ELEM_CREF) for (size_t i = from; i < until; i++) scr_arr_dense_put(a, i, slot);
@@ -2106,7 +2186,63 @@ ScrArr *scr_arr_fill_undefined(ScrArr *a, double start, double end) {
  * The JS fold exactly (ECMA Math.max/min applied to the elements): any
  * NaN poisons the result, +0 beats -0 for max (the reverse for min), and
  * the empty array yields the zero-argument constants. Borrows the array. */
+/* ToNumber of every element in order, as Math.max/min/hypot apply it to
+ * their spread arguments before comparing; for arrays that may hold
+ * foreign elements, whose conversion can call user code. As in the spread,
+ * the elements are taken first: the foreign values are retained before
+ * any conversion runs, so a conversion that changes the array changes
+ * neither the count (*count) nor the values. NULL with the exception
+ * pending when a conversion throws. +1 malloc'd buffer. */
+static double *scr_arr_coerced_numbers(const ScrArr *a, size_t *count) {
+  size_t n = a->len;
+  /* A sparse array's length can exceed what the buffers can count. */
+  if (n > SIZE_MAX / sizeof(double)) scr_arr_oom();
+  double *out = malloc((n ? n : 1) * sizeof(*out));
+  ScrDyn **held = calloc(n ? n : 1, sizeof(*held));
+  if (!out || !held) scr_arr_oom();
+  for (size_t i = 0; i < n; i++) {
+    uint64_t slot;
+    uint8_t state = scr_arr_f64_state_at(a, i, &slot);
+    if (state == SCR_ARR_FOREIGN) held[i] = scr_dyn_retain(scr_slot_to_ptr(slot));
+    out[i] = state == SCR_ARR_VALUE ? scr_slot_to_f64(slot) : NAN;
+  }
+  bool failed = false;
+  for (size_t i = 0; i < n; i++) {
+    if (!held[i]) continue;
+    if (!failed) {
+      out[i] = scr_arr_foreign_conversions()->to_number(held[i]);
+      failed = scr_exc_pending();
+    }
+    scr_dyn_release(held[i]);
+  }
+  free(held);
+  if (failed) {
+    free(out);
+    return NULL;
+  }
+  *count = n;
+  return out;
+}
+
+static double scr_math_extreme_foreign(ScrArr *a, bool max) {
+  size_t n;
+  double *values = scr_arr_coerced_numbers(a, &n);
+  if (!values) return NAN;
+  double best = max ? -INFINITY : INFINITY;
+  bool nan = false;
+  for (size_t i = 0; i < n; i++) {
+    double v = values[i];
+    if (isnan(v)) nan = true;
+    else if (max ? (v > best || (v == 0.0 && best == 0.0 && !signbit(v)))
+                 : (v < best || (v == 0.0 && best == 0.0 && signbit(v))))
+      best = v;
+  }
+  free(values);
+  return nan ? NAN : best;
+}
+
 double scr_math_max_arr(ScrArr *a) {
+  if (scr_arr_may_hold_foreign(a)) return scr_math_extreme_foreign(a, true);
   double best = -INFINITY;
   for (size_t i = 0; i < a->len; i++) {
     uint64_t slot;
@@ -2119,6 +2255,7 @@ double scr_math_max_arr(ScrArr *a) {
 }
 
 double scr_math_min_arr(ScrArr *a) {
+  if (scr_arr_may_hold_foreign(a)) return scr_math_extreme_foreign(a, false);
   double best = INFINITY;
   for (size_t i = 0; i < a->len; i++) {
     uint64_t slot;
@@ -2135,30 +2272,43 @@ double scr_math_min_arr(ScrArr *a) {
 double scr_math_hypot_arr(ScrArr *a) {
   double scale = 0.0;
   bool has_nan = false;
-  for (size_t i = 0; i < a->len; i++) {
+  double *coerced = NULL;
+  size_t n = a->len;
+  if (scr_arr_may_hold_foreign(a) && !(coerced = scr_arr_coerced_numbers(a, &n))) return NAN;
+  for (size_t i = 0; i < n; i++) {
     uint64_t slot;
-    if (scr_arr_f64_state_at(a, i, &slot) != SCR_ARR_VALUE) {
+    double v;
+    if (coerced) {
+      v = fabs(coerced[i]);
+    } else if (scr_arr_f64_state_at(a, i, &slot) != SCR_ARR_VALUE) {
       has_nan = true;
       continue;
+    } else {
+      v = fabs(scr_slot_to_f64(slot));
     }
-    double v = fabs(scr_slot_to_f64(slot));
-    if (isinf(v)) return INFINITY;
+    if (isinf(v)) {
+      free(coerced);
+      return INFINITY;
+    }
     if (isnan(v)) has_nan = true;
     else if (v > scale) scale = v;
   }
-  if (has_nan) return NAN;
-  if (scale == 0.0) return 0.0;
+  if (has_nan || scale == 0.0) {
+    free(coerced);
+    return has_nan ? NAN : 0.0;
+  }
   double sum = 0.0;
   double correction = 0.0;
-  for (size_t i = 0; i < a->len; i++) {
-    uint64_t slot;
-    (void)scr_arr_f64_state_at(a, i, &slot);
-    double v = scr_slot_to_f64(slot) / scale;
+  for (size_t i = 0; i < n; i++) {
+    uint64_t slot = 0;
+    if (!coerced) (void)scr_arr_f64_state_at(a, i, &slot);
+    double v = (coerced ? coerced[i] : scr_slot_to_f64(slot)) / scale;
     double term = v * v - correction;
     double next = sum + term;
     correction = (next - sum) - term;
     sum = next;
   }
+  free(coerced);
   return scale * sqrt(sum);
 }
 
@@ -2203,6 +2353,13 @@ static uint64_t scr_arr_require_index(const ScrArr *a, size_t idx, double i) {
     scr_trap_fmt("scriptc: RangeError: array index %s is undefined (length %zu)\n",
                  buf, a->len);
   }
+  if (state == SCR_ARR_FOREIGN) {
+    char buf[32];
+    scr_f64_to_str(i, buf);
+    scr_trap_fmt("scriptc: RangeError: array index %s holds a value outside its element type "
+                 "(length %zu)\n",
+                 buf, a->len);
+  }
   return slot;
 }
 
@@ -2210,16 +2367,20 @@ double scr_arr_get_f64(ScrArr *a, double i) {
   return scr_slot_to_f64(scr_arr_require_slot(a, i));
 }
 
-static bool scr_arr_read_value(const ScrArr *a, double i, uint64_t *slot) {
+/* The state of a[i] for any numeric key (a hole when missing), with its
+ * slot. */
+static uint8_t scr_arr_read_state(const ScrArr *a, double i, uint64_t *slot) {
   size_t idx;
   uint8_t state;
   if (scr_arr_valid_index(i, &idx)) {
-    if (idx >= a->len) return false;
-    state = scr_arr_state_at(a, idx, slot);
-  } else if (!scr_arr_prop_get_state(a, i, slot, &state)) {
-    return false;
+    if (idx >= a->len) return SCR_ARR_HOLE;
+    return scr_arr_state_at(a, idx, slot);
   }
-  return state == SCR_ARR_VALUE;
+  return scr_arr_prop_get_state(a, i, slot, &state) ? state : SCR_ARR_HOLE;
+}
+
+static bool scr_arr_read_value(const ScrArr *a, double i, uint64_t *slot) {
+  return scr_arr_read_state(a, i, slot) == SCR_ARR_VALUE;
 }
 
 void *scr_arr_peek_ref(const ScrArr *a, double i) {
@@ -2249,6 +2410,13 @@ double scr_arr_get_number(const ScrArr *a, double i) {
   } else if (!scr_arr_prop_get_state(a, i, &slot, &state)) {
     return NAN;
   }
+  if (state == SCR_ARR_FOREIGN) {
+    /* The conversion can call user code that removes the element. */
+    ScrDyn *value = scr_dyn_retain(scr_slot_to_ptr(slot));
+    double number = scr_arr_foreign_conversions()->to_number(value);
+    scr_dyn_release(value);
+    return number;
+  }
   return state == SCR_ARR_VALUE ? scr_slot_to_f64(slot) : NAN;
 }
 
@@ -2259,14 +2427,26 @@ bool scr_arr_index_eq(const ScrArr *a, double i, const ScrArr *b, double j) {
   if (i >= 0 && i < (double)a->cap && i == trunc(i) &&
       j >= 0 && j < (double)b->cap && j == trunc(j)) {
     size_t ai = (size_t)i, bi = (size_t)j;
-    bool ap = ai < a->len && scr_arr_dense_state(a, ai) == SCR_ARR_VALUE;
-    bool bp = bi < b->len && scr_arr_dense_state(b, bi) == SCR_ARR_VALUE;
+    uint8_t as = ai < a->len ? scr_arr_dense_state(a, ai) : SCR_ARR_HOLE;
+    uint8_t bs = bi < b->len ? scr_arr_dense_state(b, bi) : SCR_ARR_HOLE;
+    if (as == SCR_ARR_FOREIGN || bs == SCR_ARR_FOREIGN) {
+      /* A foreign element is never a value of the element type, undefined
+       * or a hole. */
+      return as == bs && scr_dyn_strict_eq(scr_slot_to_ptr(scr_arr_dense_get(a, ai)),
+                                           scr_slot_to_ptr(scr_arr_dense_get(b, bi)));
+    }
+    bool ap = as == SCR_ARR_VALUE;
+    bool bp = bs == SCR_ARR_VALUE;
     if (!ap || !bp) return ap == bp;
     av = scr_arr_dense_get(a, ai);
     bv = scr_arr_dense_get(b, bi);
   } else {
-    bool ap = scr_arr_read_value(a, i, &av);
-    bool bp = scr_arr_read_value(b, j, &bv);
+    uint8_t as = scr_arr_read_state(a, i, &av);
+    uint8_t bs = scr_arr_read_state(b, j, &bv);
+    if (as == SCR_ARR_FOREIGN || bs == SCR_ARR_FOREIGN)
+      return as == bs && scr_dyn_strict_eq(scr_slot_to_ptr(av), scr_slot_to_ptr(bv));
+    bool ap = as == SCR_ARR_VALUE;
+    bool bp = bs == SCR_ARR_VALUE;
     if (!ap || !bp) return ap == bp;
   }
   if (a->elem == SCR_ELEM_F64) return scr_slot_to_f64(av) == scr_slot_to_f64(bv);
@@ -2341,6 +2521,44 @@ void scr_arr_set_undefined(ScrArr *a, double i) {
   scr_arr_replace_state_owned(a, idx, 0, SCR_ARR_UNDEFINED);
 }
 
+bool scr_arr_set_foreign(ScrArr *a, double i, ScrDyn *v) {
+  size_t idx;
+  if (!scr_arr_valid_index(i, &idx)) return false;
+  if (v->kind == SCR_DYN_UNDEF) {
+    scr_arr_set_undefined(a, i);
+    return true;
+  }
+  /* A foreign element keeps a pointer in its slot: int32 slots widen to
+   * doubles first, and 1-byte and compact slots cannot hold one. */
+  if (a->elem == SCR_ELEM_I32) scr_arr_widen_i32(a);
+  if (scr_arr_slot_width(a) != sizeof(uint64_t)) return false;
+  __atomic_store_n(&scr_arr_conversions, &scr_arr_dyn_conversions, __ATOMIC_RELAXED);
+  scr_dyn_retain(v);
+  scr_arr_need_states(a);
+  if (idx >= a->len) a->len = idx + 1;
+  scr_arr_replace_state_owned(a, idx, scr_slot_from_ptr(v), SCR_ARR_FOREIGN);
+  return true;
+}
+
+ScrDyn *scr_arr_get_foreign(const ScrArr *a, double i) {
+  size_t idx;
+  uint64_t slot;
+  if (!scr_arr_valid_index(i, &idx) || idx >= a->len) return NULL;
+  if (scr_arr_state_at(a, idx, &slot) != SCR_ARR_FOREIGN) return NULL;
+  return scr_dyn_retain(scr_slot_to_ptr(slot));
+}
+
+void scr_arr_foreign_throw(const ScrArr *a, double i, const ScrStr *want) {
+  ScrDyn *value = scr_arr_get_foreign(a, i);
+  scr_dyn_check_fail(NULL, want->data, value ? value : scr_dyn_undefined());
+  scr_dyn_release(value);
+}
+
+void scr_dyn_foreign_throw(ScrDyn *value, const char *want) {
+  scr_dyn_check_fail(NULL, want, value);
+  scr_dyn_release(value);
+}
+
 bool scr_arr_delete(ScrArr *a, double i) {
   size_t idx;
   if (!scr_arr_valid_index(i, &idx)) return scr_arr_prop_delete(a, i);
@@ -2348,9 +2566,7 @@ bool scr_arr_delete(ScrArr *a, double i) {
   uint64_t old;
   uint8_t state;
   if (!scr_arr_take_state(a, idx, &old, &state)) return false;
-  if (state == SCR_ARR_VALUE && scr_elem_is_ref(a->elem)) {
-    scr_elem_release(a, old);
-  }
+  scr_arr_release_state_slot(a, old, state);
   return true;
 }
 
@@ -2421,8 +2637,8 @@ double scr_arr_push_spread(ScrArr *a, const ScrArr *src) {
       uint64_t slot;
       uint8_t state = scr_arr_state_at_storage(&old, i, &slot);
       if (state != SCR_ARR_HOLE) scr_arr_store_state_owned(a, i, slot, state);
-      if (state == SCR_ARR_VALUE) {
-        scr_arr_store_owned(a, old_len + i, scr_elem_retain_slot(a, slot));
+      if (state == SCR_ARR_VALUE || state == SCR_ARR_FOREIGN) {
+        scr_arr_store_state_owned(a, old_len + i, scr_arr_retain_state_slot(a, slot, state), state);
       } else {
         scr_arr_store_state_owned(a, old_len + i, 0, SCR_ARR_UNDEFINED);
       }
@@ -2437,8 +2653,8 @@ double scr_arr_push_spread(ScrArr *a, const ScrArr *src) {
   for (size_t i = 0; i < add; i++) {
     uint64_t slot;
     uint8_t state = scr_arr_state_at(src, i, &slot);
-    if (state == SCR_ARR_VALUE) {
-      scr_arr_store_owned(a, old_len + i, scr_elem_retain_slot(src, slot));
+    if (state == SCR_ARR_VALUE || state == SCR_ARR_FOREIGN) {
+      scr_arr_store_state_owned(a, old_len + i, scr_arr_retain_state_slot(src, slot, state), state);
     } else {
       scr_arr_store_state_owned(a, old_len + i, 0, SCR_ARR_UNDEFINED);
     }
@@ -2466,11 +2682,8 @@ double scr_arr_concat_copy(ScrArr *a, const ScrArr *src) {
       uint64_t slot;
       uint8_t state = scr_arr_state_at_storage(&old, i, &slot);
       if (state != SCR_ARR_HOLE) scr_arr_store_state_owned(a, i, slot, state);
-      if (state == SCR_ARR_VALUE) {
-        scr_arr_store_owned(a, old_len + i, scr_elem_retain_slot(a, slot));
-      } else if (state == SCR_ARR_UNDEFINED) {
-        scr_arr_store_state_owned(a, old_len + i, 0, state);
-      }
+      if (state != SCR_ARR_HOLE)
+        scr_arr_store_state_owned(a, old_len + i, scr_arr_retain_state_slot(a, slot, state), state);
     }
     a->len = old_len + add;
     scr_arr_free_storage(&old);
@@ -2651,8 +2864,9 @@ double scr_arr_unshift_spread(ScrArr *a, const ScrArr *src) {
     uint8_t state = src == a
         ? scr_arr_state_at_storage(&old, i, &slot)
         : scr_arr_state_at(src, i, &slot);
-    if (state == SCR_ARR_VALUE) {
-      scr_arr_store_owned(a, i, scr_arr_retain_state_slot(src == a ? a : src, slot, state));
+    if (state == SCR_ARR_VALUE || state == SCR_ARR_FOREIGN) {
+      scr_arr_store_state_owned(a, i, scr_arr_retain_state_slot(src == a ? a : src, slot, state),
+                                state);
     } else {
       scr_arr_store_state_owned(a, i, 0, SCR_ARR_UNDEFINED);
     }
@@ -2761,7 +2975,8 @@ uint8_t scr_arr_shift_state(ScrArr *a, uint64_t *slot_out) {
   size_t old_len = a->len;
   if (scr_arr_is_dense(a)) {
     uint8_t state = scr_arr_dense_state(a, 0);
-    if (slot_out && state == SCR_ARR_VALUE) *slot_out = scr_arr_dense_get(a, 0);
+    if (slot_out && (state == SCR_ARR_VALUE || state == SCR_ARR_FOREIGN))
+      *slot_out = scr_arr_dense_get(a, 0);
     /* The first slot becomes head room; the tail stays where it is. */
     if (scr_arr_drop_front(a, 1)) return state;
     /* The prefix slides down with the tail. */
@@ -2834,6 +3049,7 @@ ScrArr *scr_arr_splice(ScrArr *a, double start, double deleteCount) {
   size_t old_len = a->len;
   if (scr_arr_is_dense(a)) {
     if (n) {
+      scr_arr_inherit_foreign(out, a);
       /* The removed elements keep their states unless all are values. */
       if (!scr_arr_dense_run_values(a, from, n)) scr_arr_add_states(out);
       memcpy(out->data, scr_arr_dense_at(a, from), n * scr_arr_slot_width(a));
@@ -2919,6 +3135,7 @@ ScrArr *scr_arr_splice_insert(ScrArr *a, double start, double deleteCount,
         ? scr_arr_new_ops(scr_arr_ops(a), n)
         : scr_arr_new(a->elem, n);
     if (n) {
+      scr_arr_inherit_foreign(removed, a);
       if (!scr_arr_dense_run_values(a, from, n)) scr_arr_add_states(removed);
       memcpy(removed->data, scr_arr_dense_at(a, from), n * scr_arr_slot_width(a));
       if (scr_arr_has_states(removed))
@@ -2973,22 +3190,30 @@ void scr_arr_splice_drop(ScrArr *a, double start, double deleteCount, size_t cou
   }
   /* Removed slots, kept until the receiver is rewritten. */
   uint64_t inline_removed[8];
+  uint8_t inline_states[8];
   uint64_t *removed = inline_removed;
+  uint8_t *removed_states = inline_states;
   size_t kept = 0;
-  if (refs && n > 0) {
+  if ((refs || scr_arr_may_hold_foreign(a)) && n > 0) {
     if (n > 8) {
       removed = scr_mem_alloc(n * sizeof(uint64_t));
-      if (!removed) scr_arr_oom();
+      removed_states = scr_mem_alloc(n);
+      if (!removed || !removed_states) scr_arr_oom();
     }
     for (size_t i = from; i < from + n; i++) {
-      if (scr_arr_dense_state(a, i) == SCR_ARR_VALUE) removed[kept++] = a->data[i];
+      uint8_t state = scr_arr_dense_state(a, i);
+      if ((refs && state == SCR_ARR_VALUE) || state == SCR_ARR_FOREIGN) {
+        removed_states[kept] = state;
+        removed[kept++] = a->data[i];
+      }
     }
   }
   size_t old_len = a->len;
   if (from == 0 && count == 0 && scr_arr_drop_front(a, n)) {
     /* A removed prefix becomes head room. */
-    for (size_t i = 0; i < kept; i++) scr_elem_release(a, removed[i]);
+    for (size_t i = 0; i < kept; i++) scr_arr_release_state_slot(a, removed[i], removed_states[i]);
     if (removed != inline_removed) scr_mem_free(removed);
+    if (removed_states != inline_states) scr_mem_free(removed_states);
     return;
   }
   scr_arr_grow_dense(a, next_len);
@@ -3003,8 +3228,9 @@ void scr_arr_splice_drop(ScrArr *a, double start, double deleteCount, size_t cou
   /* Values inserted into a hole-free array keep it hole-free. */
   if (packed) a->filled = (uint32_t)next_len;
   else scr_arr_refill(a);
-  for (size_t i = 0; i < kept; i++) scr_elem_release(a, removed[i]);
+  for (size_t i = 0; i < kept; i++) scr_arr_release_state_slot(a, removed[i], removed_states[i]);
   if (removed != inline_removed) scr_mem_free(removed);
+  if (removed_states != inline_states) scr_mem_free(removed_states);
 }
 
 /* FlattenIntoArray for static arrays: a dense copy with depth zero, or one
@@ -3228,7 +3454,10 @@ typedef struct {
 typedef struct {
   ScrElemKind kind;
   const ScrNumberSortKey *numbers;
-  ScrStr *const *texts; /* reference elements: each element's String() text */
+  /* When set, values are indices into these string keys: each element's
+   * String() text (reference elements such as Dates, and the elements of an
+   * array that may hold foreign elements). */
+  ScrStr *const *texts;
 } ScrPrimitiveOrder;
 
 static int scr_arr_primitive_compare(uint64_t left, uint64_t right,
@@ -3321,6 +3550,110 @@ static void scr_arr_primitive_order(uint64_t *values, size_t count,
   if (runs != local_runs) free(runs);
 }
 
+/* The default ordering of an array that may hold foreign elements: present
+ * elements sort by their string conversions, then present undefined
+ * values, then holes (toSorted reads them as undefined). The conversions
+ * may call user code, so the elements are taken first, each retained, as
+ * the sort's element list is; a throw leaves the array unchanged. */
+static ScrArr *scr_arr_sort_foreign(ScrArr *a, bool copy) {
+  size_t length = a->len;
+  size_t dense = a->len < a->cap ? a->len : a->cap;
+  size_t cap = dense + SCR_AX(a)->sparse_len;
+  if (cap > SIZE_MAX / sizeof(uint64_t)) scr_arr_oom();
+  uint64_t *slots = cap ? malloc(cap * sizeof(*slots)) : NULL;
+  uint8_t *states = cap ? malloc(cap) : NULL;
+  ScrStr **keys = cap ? malloc(cap * sizeof(*keys)) : NULL;
+  uint64_t *order_of = cap ? malloc(cap * sizeof(*order_of)) : NULL;
+  if (cap && (!slots || !states || !keys || !order_of)) scr_arr_oom();
+  size_t count = 0, undefined_count = 0;
+  for (size_t at = 0; at < cap; at++) {
+    uint64_t slot;
+    uint8_t state;
+    if (at < dense) {
+      state = scr_arr_dense_state(a, at);
+      slot = scr_arr_dense_get(a, at);
+    } else {
+      state = SCR_AX(a)->sparse[at - dense].state;
+      slot = SCR_AX(a)->sparse[at - dense].slot;
+    }
+    if (state == SCR_ARR_UNDEFINED) undefined_count++;
+    if (state != SCR_ARR_VALUE && state != SCR_ARR_FOREIGN) continue;
+    slots[count] = scr_arr_retain_state_slot(a, slot, state);
+    states[count] = state;
+    count++;
+  }
+  bool failed = false;
+  size_t keyed = 0;
+  for (; keyed < count; keyed++) {
+    uint64_t slot = slots[keyed];
+    ScrStr *key;
+    if (states[keyed] == SCR_ARR_FOREIGN) {
+      key = scr_arr_foreign_conversions()->to_string(scr_slot_to_ptr(slot));
+    } else if (a->elem == SCR_ELEM_STR) {
+      key = scr_str_retain(scr_slot_to_ptr(slot));
+    } else {
+      char text[32];
+      size_t n = scr_f64_to_str(scr_slot_to_f64(slot), text);
+      key = scr_str_new(text, n);
+    }
+    if (!key) {
+      failed = true;
+      break;
+    }
+    keys[keyed] = key;
+    order_of[keyed] = keyed;
+  }
+  ScrArr *out = a;
+  if (!failed) {
+    ScrPrimitiveOrder order = {a->elem, NULL, keys};
+    scr_arr_primitive_order(order_of, count, &order);
+    if (copy) {
+      /* The values, then present undefined for every other index. */
+      out = scr_arr_has_ops(a) ? scr_arr_new_ops(scr_arr_ops(a), length)
+                               : scr_arr_new(a->elem, length);
+      for (size_t i = 0; i < length; i++) {
+        if (i < count) scr_arr_store_state_owned(out, i, slots[order_of[i]], states[order_of[i]]);
+        else scr_arr_store_state_owned(out, i, 0, SCR_ARR_UNDEFINED);
+        out->len = (uint32_t)(i + 1);
+      }
+    } else {
+      /* The values, then the present undefined values; holes after them
+       * up to the sorted length. Elements a conversion added at or past
+       * that length stay, and the array keeps the longer of its current
+       * length and the sorted count, as in Node. The taken elements own
+       * their references; release the ones the array holds now below the
+       * sorted length, which a conversion may have changed. */
+      size_t now = a->len;
+      size_t sorted = count + undefined_count;
+      ScrArrStorage old = scr_arr_take_storage(a);
+      a->len = (uint32_t)(now > sorted ? now : sorted);
+      for (size_t i = 0; i < count; i++)
+        scr_arr_store_state_owned(a, i, slots[order_of[i]], states[order_of[i]]);
+      for (size_t i = count; i < sorted; i++) scr_arr_store_state_owned(a, i, 0, SCR_ARR_UNDEFINED);
+      size_t old_dense = now < old.cap ? now : old.cap;
+      for (size_t i = 0; i < old_dense + old.sparse_len; i++) {
+        size_t index = i < old_dense ? i : old.sparse[i - old_dense].index;
+        uint64_t slot = 0;
+        uint8_t state = scr_arr_state_at_storage(&old, index, &slot);
+        if (state == SCR_ARR_HOLE) continue;
+        if (index < length) scr_arr_release_state_slot(a, slot, state);
+        else scr_arr_store_state_owned(a, index, slot, state);
+      }
+      scr_arr_free_storage(&old);
+    }
+    scr_arr_refill(out);
+  } else {
+    for (size_t i = 0; i < count; i++) scr_arr_release_state_slot(a, slots[i], states[i]);
+  }
+  for (size_t i = 0; i < keyed; i++) scr_str_release(keys[i]);
+  free(slots);
+  free(states);
+  free(keys);
+  free(order_of);
+  if (failed) return copy ? scr_arr_new(a->elem, 0) : scr_arr_retain(a);
+  return copy ? out : scr_arr_retain(a);
+}
+
 static ScrArr *scr_arr_sort_default(ScrArr *a, bool copy, ScrStr *(*text)(void *));
 
 static ScrArr *scr_arr_new_like(const ScrArr *a, size_t cap) {
@@ -3330,6 +3663,7 @@ static ScrArr *scr_arr_new_like(const ScrArr *a, size_t cap) {
 ScrArr *scr_arr_sort_primitive(ScrArr *a, bool copy) {
   if (a->elem != SCR_ELEM_STR && a->elem != SCR_ELEM_F64 && a->elem != SCR_ELEM_BOOL)
     scr_trap("scriptc: invalid primitive array ordering\n");
+  if (a->len > 0 && scr_arr_may_hold_foreign(a)) return scr_arr_sort_foreign(a, copy);
   return scr_arr_sort_default(a, copy, NULL);
 }
 
@@ -5182,7 +5516,8 @@ bool scr_arr_sort_dense(ScrArr *a, ScrClosure *f, uint32_t arity, bool owned, in
       for (size_t i = 0; i < n; i++) scr_elem_release_with(elem, ops, src[i]);
     scr_array_frozen_error(0, a->len, 0, 0, 0);
   } else if (a->len >= n && a->cap >= n) {
-    if (!retained) {
+    /* The comparator may have stored foreign elements through a view. */
+    if (!retained && !scr_arr_may_hold_foreign(a)) {
       memcpy(a->data, src, n * sizeof(*src));
       if (scr_arr_has_states(a)) memset(scr_arr_state_run(a, 0, n), SCR_ARR_VALUE, n);
     } else {
@@ -5190,11 +5525,11 @@ bool scr_arr_sort_dense(ScrArr *a, ScrClosure *f, uint32_t arity, bool owned, in
        * release can collect cycles. The buffer still holds the slots not
        * yet written. */
       for (size_t i = 0; i < n; i++) {
-        bool held = scr_arr_dense_state(a, i) == SCR_ARR_VALUE;
-        uint64_t old = held ? a->data[i] : 0;
+        uint8_t old_state = scr_arr_dense_state(a, i);
+        uint64_t old = old_state == SCR_ARR_VALUE || old_state == SCR_ARR_FOREIGN ? a->data[i] : 0;
         a->data[i] = src[i];
         if (scr_arr_has_states(a)) *scr_arr_state_ptr(a, i) = SCR_ARR_VALUE;
-        if (held) scr_elem_release(a, old);
+        scr_arr_release_state_slot(a, old, old_state);
       }
     }
   } else {
@@ -5262,10 +5597,28 @@ ScrStr *scr_arr_join(ScrArr *a, ScrStr *sep) {
    * across its seam; the finished string then needs fusing. */
   bool lone = scr_wtf8_any();
   bool lead_low = lone && a->len > 1 && scr_wtf8_low_at(sep->data);
-  for (size_t i = 0; i < a->len; i++) {
+  /* The length is read once: a conversion that shortens the array leaves
+   * the indices past its new end empty. */
+  size_t length = a->len;
+  for (size_t i = 0; i < length; i++) {
     if (i > 0) scr_join_append(&out, sep->data, sep->len);
+    if (i >= a->len) continue;
     uint64_t slot;
     uint8_t state = scr_arr_state_at(a, i, &slot);
+    if (state == SCR_ARR_FOREIGN) {
+      /* join converts every element but undefined and null with ToString,
+       * which can call user code that removes the element; a throw ends
+       * the join with the exception pending. */
+      ScrDyn *value = scr_slot_to_ptr(slot);
+      if (value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL) continue;
+      scr_dyn_retain(value);
+      ScrStr *text = scr_arr_foreign_conversions()->to_string(value);
+      scr_dyn_release(value);
+      if (!text) break;
+      scr_join_append(&out, text->data, text->len);
+      scr_str_release(text);
+      continue;
+    }
     if (state != SCR_ARR_VALUE) continue;
     switch (a->elem) {
       case SCR_ELEM_F64: {

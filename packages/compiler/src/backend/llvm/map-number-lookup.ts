@@ -122,14 +122,16 @@ export function emitStringMapGetScalar(
 }
 
 /** Map.get of a reference value: a +1 value, or null when absent — the
- * contract of scr_map_get_f64_ref. */
+ * contract of scr_map_get_f64_ref. `borrow`: the entry's own reference,
+ * without a retain, for a reader that finishes before the map can change. */
 export function emitNumberMapGetRef(
   host: LlvmEmitterContext,
   map: string,
   key: string,
   value: IrType,
+  borrow = false,
 ): string {
-  return emitMapEntryGetRef(host, emitNumberMapEntry(host, map, key), value);
+  return emitMapEntryGetRef(host, emitNumberMapEntry(host, map, key), value, false, borrow);
 }
 
 /** Map.get of a reference value under a string key, with scr_map_get_str_ref's
@@ -141,16 +143,25 @@ export function emitStringMapGetRef(
   key: string,
   value: IrType,
   compact = false,
+  borrow = false,
 ): string {
-  return emitMapEntryGetRef(host, emitStringMapEntry(host, map, key, compact), value, compact);
+  return emitMapEntryGetRef(
+    host,
+    emitStringMapEntry(host, map, key, compact),
+    value,
+    compact,
+    borrow,
+  );
 }
 
-/** The +1 value of a found entry, or null for a missing (null) entry. */
+/** The +1 value of a found entry (its own reference when `borrow`), or
+ * null for a missing (null) entry. */
 function emitMapEntryGetRef(
   host: LlvmEmitterContext,
   entry: string,
   value: IrType,
   compact = false,
+  borrow = false,
 ): string {
   const B = host.B;
   const found = B.tmp();
@@ -160,10 +171,8 @@ function emitMapEntryGetRef(
     join = B.newLabel("mapn.join");
   B.condBr(found, hit, miss);
   B.startBlock(hit);
-  const retained = host.retainFrame(
-    compact ? emitCompactMapSlot(host, entry) : emitNumberMapSlot(host, entry, "ptr"),
-    value,
-  );
+  const loaded = compact ? emitCompactMapSlot(host, entry) : emitNumberMapSlot(host, entry, "ptr");
+  const retained = borrow ? loaded : host.retainFrame(loaded, value);
   B.br(join);
   B.startBlock(miss);
   B.br(join);

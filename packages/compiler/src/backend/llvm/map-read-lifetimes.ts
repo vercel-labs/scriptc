@@ -9,6 +9,7 @@ import {
 } from "../../ir/ir.js";
 import { everyExpr, everyStmt, everyStmtList } from "../../ir/traverse.js";
 import type { CallLifetimes } from "./call-lifetimes.js";
+import type { ReferenceEffects } from "./reference-effects.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
 import {
   emitNumberMapGetRef,
@@ -68,6 +69,10 @@ export function borrowsMapMutationReceiver(expr: IrExpr): boolean {
 export interface LocalMapRead {
   /** The Map.get expression itself. */
   expr: IrExpr;
+  /** A local's reference result may stay the entry's own reference: every
+   * use of the local runs before anything that can change a reference
+   * edge (findMapReadBorrows), so the entry still holds the value. */
+  borrowed?: boolean;
   type: IrType;
   receiver: IrExpr;
   key: IrExpr;
@@ -126,6 +131,7 @@ export function findMapReadLifetimes(
   fn: IrFunction,
   unions: ReadonlyMap<string, IrUnionDef>,
   lifetimes: CallLifetimes,
+  effects?: ReferenceEffects,
 ): MapReadLifetimes {
   const result: MapReadLifetimes = { locals: new Map(), arguments: new Map() };
   if (fn.async || fn.generator) return result;
@@ -150,6 +156,85 @@ export function findMapReadLifetimes(
       return true;
     },
   });
+  if (effects) {
+    const borrowed = findMapReadBorrows(fn, effects, (decl) => {
+      const read = result.locals.get(decl.localId);
+      return read !== undefined && isRefCounted(read.value);
+    });
+    for (const id of borrowed) result.locals.get(id)!.borrowed = true;
+  }
+  return result;
+}
+
+/** The locals, declared by statements `candidate` accepts, that can hold a
+ * map entry's own reference instead of a +1 copy. The statements after the
+ * declaration run in order, and every one that names the local must
+ * preserve reference edges (ReferenceEffects) and run before any statement
+ * that may not, so no write, deletion or unknown call can release the value
+ * while the local is read. An `if` passes its condition's state to both
+ * branches and joins them; any other statement that names the local is
+ * judged whole. A later pass of an enclosing loop declares the local again,
+ * so only the rest of its own statement list matters. An update such as
+ * `const c = m.get(k); if (c === undefined) m.set(k, v); else c.n++` keeps
+ * the borrow: the write runs only on the branch that does not read `c`. */
+export function findMapReadBorrows(
+  fn: IrFunction,
+  effects: ReferenceEffects,
+  candidate: (decl: IrStmt & { kind: "varDecl" }) => boolean,
+): Set<string> {
+  const result = new Set<string>();
+  if (fn.async || fn.generator) return result;
+  const names = (node: IrStmt | IrExpr, id: string, isStmt: boolean): boolean => {
+    let found = false;
+    const visitor = {
+      stmt: () => !found,
+      expr: (expr: IrExpr) => {
+        if (expr.kind === "varRef" && expr.localId === id) found = true;
+        return !found;
+      },
+    };
+    if (isStmt) everyStmt(node as IrStmt, visitor);
+    else everyExpr(node as IrExpr, visitor);
+    return found;
+  };
+  // Whether an edge may have changed after `list`, or null when a statement
+  // names the local after such a change (or changes edges itself).
+  const walk = (list: readonly IrStmt[], id: string, changed: boolean): boolean | null => {
+    for (const stmt of list) {
+      if (stmt.kind === "if") {
+        const preserving = effects.preserves(stmt.cond);
+        if (names(stmt.cond, id, false) && (changed || !preserving)) return null;
+        const condition = changed || !preserving;
+        const then = walk(stmt.then, id, condition);
+        const otherwise = stmt.else_ === null ? condition : walk(stmt.else_, id, condition);
+        if (then === null || otherwise === null) return null;
+        changed = then || otherwise;
+        continue;
+      }
+      if (stmt.kind === "block") {
+        const inner = walk(stmt.body, id, changed);
+        if (inner === null) return null;
+        changed = inner;
+        continue;
+      }
+      const preserving = effects.preservesScope([stmt]);
+      if (names(stmt, id, true) && (changed || !preserving)) return null;
+      changed ||= !preserving;
+    }
+    return changed;
+  };
+  const visit = (list: readonly IrStmt[]): void => {
+    list.forEach((stmt, index) => {
+      if (
+        stmt.kind === "varDecl" &&
+        candidate(stmt) &&
+        walk(list.slice(index + 1), stmt.localId, false) !== null
+      )
+        result.add(stmt.localId);
+      for (const nested of nestedStmtLists(stmt)) visit(nested);
+    });
+  };
+  visit(fn.body);
   return result;
 }
 
@@ -303,13 +388,14 @@ export function emitStackMapRead(host: LlvmEmitterContext, read: LocalMapRead): 
   let owner: StackMapRead["owner"] = null;
   const number = inlineNumberKey(key);
   const string = entryStringKey(key);
+  const borrow = read.borrowed === true;
   if (number !== null) {
     if (isRefCounted(read.value)) {
-      const raw = emitNumberMapGetRef(host, receiver.name, number, read.value);
+      const raw = emitNumberMapGetRef(host, receiver.name, number, read.value, borrow);
       B.line(`${found} = icmp ne ptr ${raw}, null`);
       B.line(`store i64 0, ptr ${payload}`);
       B.line(`store ptr ${raw}, ptr ${payload}`);
-      owner = { slot: payload, type: read.value };
+      if (!borrow) owner = { slot: payload, type: read.value };
     } else {
       // Booleans are stored as 0/1, already the widened union payload.
       const scalar = emitNumberMapGetScalar(host, receiver.name, number);
@@ -326,8 +412,10 @@ export function emitStackMapRead(host: LlvmEmitterContext, read: LocalMapRead): 
     let raw: string;
     const mapType = read.receiver.type;
     const compact = mapType.kind === "map" && compactMapValues(host, mapType.key, mapType.value);
+    // The runtime's other key kinds return +1, which the frame then owns.
+    const borrowed = borrow && stringKey !== null;
     if (stringKey !== null)
-      raw = emitStringMapGetRef(host, receiver.name, stringKey, read.value, compact);
+      raw = emitStringMapGetRef(host, receiver.name, stringKey, read.value, compact, borrowed);
     else {
       raw = B.tmp();
       host.declare(`declare ptr @scr_map_get_${access}_ref(ptr, ${keyType})`);
@@ -336,7 +424,7 @@ export function emitStackMapRead(host: LlvmEmitterContext, read: LocalMapRead): 
     B.line(`${found} = icmp ne ptr ${raw}, null`);
     B.line(`store i64 0, ptr ${payload}`);
     B.line(`store ptr ${raw}, ptr ${payload}`);
-    owner = { slot: payload, type: read.value };
+    if (!borrowed) owner = { slot: payload, type: read.value };
   } else {
     const scalar = read.value.kind === "f64" ? "f64" : "bool";
     B.line(`store i64 0, ptr ${payload}`);

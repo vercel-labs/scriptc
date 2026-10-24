@@ -32,7 +32,7 @@ import { allocateLocalUnion, storeLocalUnion } from "./local-union-storage.js";
 import { boxAccess, boxNewCall, elemAccess } from "./shapes.js";
 import { dynHoleRead } from "./loop-array-borrows.js";
 import { endsWithJump, matchStringSelfConcat } from "../../ir/analysis.js";
-import { charAtUnitRead, emitDiscardedSplice } from "./expr-containers.js";
+import { charAtUnitRead, emitBorrowedMapGet, emitDiscardedSplice } from "./expr-containers.js";
 import { InternalCompilerError } from "../../errors.js";
 import {
   emitDenseArrayGet,
@@ -104,6 +104,19 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         break;
       }
       const b = emitter.binding(s.localId);
+      if (
+        emitter.borrowedMapGets.has(s.localId) &&
+        b.kind === "local" &&
+        s.init?.kind === "mapIntrinsic"
+      ) {
+        // The map entry's own reference: no retain now, no release at scope
+        // exit (findMapReadBorrows).
+        const borrowed = emitBorrowedMapGet(emitter, s.init);
+        if (borrowed) {
+          B.line(`store ptr ${borrowed.name}, ptr ${b.slot}`);
+          break;
+        }
+      }
       if (emitter.walkBorrows.has(s.localId) && b.kind === "local") {
         // A borrowed walk pointer: no retain now, no release at scope exit.
         const v = s.init === null ? "null" : emitter.emitReadReceiver(s.init).name;

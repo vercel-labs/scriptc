@@ -20,7 +20,12 @@ import { constructorClass } from "../../ir/final-fields.js";
 import { findLoopArrayBorrows } from "./loop-array-borrows.js";
 import { findCallArrayReads, findLocalArrayReads } from "./local-array-reads.js";
 import { findScalarStringSlices, findScratchStringSlices } from "./string-slices.js";
-import { findMapReadLifetimes, findReadNumberMapWrites } from "./map-read-lifetimes.js";
+import {
+  findMapReadBorrows,
+  findMapReadLifetimes,
+  findReadNumberMapWrites,
+} from "./map-read-lifetimes.js";
+import { borrowableMapGet } from "./expr-containers.js";
 import { findMapEntryFusions } from "./map-entry-fusion.js";
 import { findLocalStackUnions } from "./stack-unions.js";
 import { findLocalStackObjects, findReassignedStackObjects } from "./stack-objects.js";
@@ -193,6 +198,17 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     fn,
     emitter.boxedUnionsById,
     emitter.callLifetimes,
+    emitter.referenceEffects,
+  );
+  const stable = emitter.callLifetimes.bindings.get(fn.name);
+  emitter.borrowedMapGets = findMapReadBorrows(
+    fn,
+    emitter.referenceEffects,
+    (decl) =>
+      decl.init !== null &&
+      stable?.has(decl.localId) === true &&
+      !emitter.mapReadLifetimes.locals.has(decl.localId) &&
+      borrowableMapGet(emitter, decl.init),
   );
   emitter.readNumberMapWrites = findReadNumberMapWrites(fn);
   emitter.mapEntryFusion = emitter.debug === null ? findMapEntryFusions(fn) : null;

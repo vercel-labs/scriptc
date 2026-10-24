@@ -1145,6 +1145,9 @@ export class LlEmitter {
   readonly checkedNarrows: CheckedNarrows;
   callArrayReads = new Map<IrExpr, LocalArrayRead>();
   mapReadLifetimes: MapReadLifetimes = { locals: new Map(), arguments: new Map() };
+  /** Locals of the current function that hold a Map.get result as the
+   * entry's own reference (findMapReadBorrows, borrowableMapGet). */
+  borrowedMapGets: ReadonlySet<string> = new Set();
   readNumberMapWrites: ReadonlySet<IrExpr> = new Set();
   /** The current function's fused string-key Map get-then-set pairs (map-entry-fusion.ts). */
   mapEntryFusion: MapEntryFusion | null = null;

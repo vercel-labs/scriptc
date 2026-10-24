@@ -1,0 +1,36 @@
+name: Prune caches
+
+# Pull request caches are scoped to that pull request, so once it is closed no
+# run can use them again. Deleting them keeps the repository under its cache
+# size limit, so caches that main and open pull requests use are not evicted.
+on:
+  pull_request:
+    types: [closed]
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  pull-requests: read
+
+jobs:
+  prune:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Delete caches of closed pull requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          open=" $(gh api --paginate "repos/$REPO/pulls?state=open&per_page=100" --jq '.[].number' | tr '\n' ' ') "
+          gh api --paginate "repos/$REPO/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | select(.ref | startswith("refs/pull/")) | "\(.id) \(.ref)"' |
+          while read -r id ref; do
+            number=$(echo "$ref" | cut -d/ -f3)
+            case "$open" in
+              *" $number "*) ;;
+              *) gh api --method DELETE "repos/$REPO/actions/caches/$id" >/dev/null && echo "deleted cache $id ($ref)" ;;
+            esac
+          done

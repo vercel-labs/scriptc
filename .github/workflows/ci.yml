@@ -539,6 +539,8 @@ jobs:
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
     name: test (tsgo and tsc-ts give the same IR)
     runs-on: ubuntu-24.04
+    # The two corpus compiles run back to back and take close to 30 minutes on a
+    # slow hosted runner, so a 30-minute limit cancels otherwise healthy runs.
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -633,8 +635,9 @@ jobs:
     # Shard 1 additionally runs package/install and link-parity contracts
     # before its LLVM differential slice. The slice itself can take ~10
     # minutes on a cold hosted runner, so 20 minutes cancels an otherwise
-    # healthy job before the differential completes.
-    timeout-minutes: 35
+    # healthy job before the differential completes. Slow runners need more
+    # headroom than that, so the limit is 50 minutes.
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:

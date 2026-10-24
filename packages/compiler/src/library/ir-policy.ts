@@ -179,6 +179,7 @@ export function moduleLibAsyncSurface(mod: IrModule): { surface: string; loc: Sr
     [features.dynAsync, "the checked-dynamic async surface"],
     [features.dc, "the diagnostics_channel surface"],
     [features.perfLoop, "the perf_hooks event-loop metrics"],
+    [features.nodeIsland, "calls into Node.js (@scriptc/node)"],
   ];
   for (const [on, surface] of coarse) {
     if (on) return { surface, loc: entryLoc };

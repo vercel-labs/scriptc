@@ -112,8 +112,12 @@ import {
   ffiNativeBuildDiag,
   iceDiag,
   nativeCodegenDiag,
+  nodeIslandNodeDiag,
+  nodeIslandModuleDiag,
   type ScrDiagnostic,
 } from "./diagnostics/diagnostic.js";
+import { libnodeCacheKey, libnodeRecord } from "./node-islands/libnode.js";
+import { placeNodeIslandModules, readNodeIslandModules } from "./node-islands/modules.js";
 import { loadLibraryProfile, type LibraryProfile } from "./library/library-profile.js";
 import { clearFenceEvalCaches, decorateLibraryRefusals } from "./library/fence-eval.js";
 import {
@@ -595,6 +599,7 @@ async function compileExecutableNative(
     ...(features.wasm ? { wasm: true } : {}),
     ...(features.warningReplace ? { warningReplace: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
+    ...(features.nodeIsland ? { nodeIsland: true } : {}),
     zlib: features.zlib,
     ...(features.brotli ? { brotli: true } : {}),
     assert: features.assert,
@@ -777,6 +782,44 @@ async function prepareExecutableInput(
   );
   if (!prepared.ok) return prepared;
   const { mod, sourceTexts } = prepared;
+  // Calls into Node record the libnode pack an executable loads at run
+  // time. IR, LLVM and object outputs need no pack: their record stays
+  // empty, and SCRIPTC_LIBNODE supplies the pack when such a program runs.
+  if (mod.nodeIsland !== undefined) {
+    if (!moduleRuntimeFeatures(mod).nodeIsland) {
+      delete mod.nodeIsland;
+    } else if (outputKind === "exe") {
+      const recorded = libnodeRecord(opts.libnode, opts.outPath);
+      if (typeof recorded === "string")
+        return { ok: false, diagnostics: [nodeIslandNodeDiag(recorded, entryPath)], sourceTexts };
+      mod.nodeIsland = { ...mod.nodeIsland, ...recorded };
+    }
+  }
+  // The island module tree ships with the program: beside the executable
+  // with --libnode=beside, else inside it (node-islands/modules.ts).
+  let nodeIslandModuleData: Uint8Array | undefined;
+  const islandModules = mod.nodeIsland?.modules;
+  if (islandModules !== undefined && outputKind !== "ir") {
+    if (outputKind === "exe" && opts.libnode === "beside") {
+      const problem = placeNodeIslandModules(islandModules, `${opts.outPath}.libnode/modules`);
+      if (problem !== null)
+        return {
+          ok: false,
+          diagnostics: [nodeIslandModuleDiag(problem, { file: entryPath, start: 0, end: 0 })],
+          sourceTexts,
+        };
+      islandModules.location = `$ORIGIN/${basename(opts.outPath)}.libnode/modules`;
+    } else {
+      const data = readNodeIslandModules(islandModules);
+      if (typeof data === "string")
+        return {
+          ok: false,
+          diagnostics: [nodeIslandModuleDiag(data, { file: entryPath, start: 0, end: 0 })],
+          sourceTexts,
+        };
+      nodeIslandModuleData = data;
+    }
+  }
   if (warningSink !== undefined && prepared.warnings.length > 0) {
     warningSink.warnings = prepared.warnings;
     warningSink.sourceTexts = sourceTexts;
@@ -809,6 +852,7 @@ async function prepareExecutableInput(
         lowRegion: lowRegionTarget(buildPlatform, opts.sanitize === true),
         ...(opts.sanitize === true ? { wasmBoundsChecks: true } : {}),
         ...inlineRcOption(opts.optimization, opts.sanitize === true),
+        ...(nodeIslandModuleData === undefined ? {} : { nodeIslandModuleData }),
         ...targetCpuField(opts.targetCpu),
       });
     } catch (err) {
@@ -880,6 +924,7 @@ async function prepareExecutableInput(
       ...(opts.sanitize === true ? { wasmBoundsChecks: true } : {}),
       ...inlineRcOption(opts.optimization, opts.sanitize === true),
       ...(opts.detachedExit === true ? { detachedExit: true } : {}),
+      ...(nodeIslandModuleData === undefined ? {} : { nodeIslandModuleData }),
       ...targetCpuField(opts.targetCpu),
     });
   } catch (err) {
@@ -1515,6 +1560,9 @@ async function compileTracked(
       ...(opts.strip ? { strip: true as const } : {}),
       ...(opts.windowsSubsystem === "gui" ? { windowsSubsystem: "gui" as const } : {}),
       ...(opts.detachedExit === true ? { detachedExit: true as const } : {}),
+      // Calls into Node record the libnode pack; their entries record its
+      // identity (node-islands/libnode.ts) and a hit requires it unchanged.
+      libnodeIdentity: () => libnodeCacheKey(opts.libnode),
       ...targetCpuField(opts.targetCpu),
       ...(profile === undefined ? {} : { profile: nativeProfileKey(profile) }),
       ...checkerField(),
@@ -1561,10 +1609,17 @@ async function compileTracked(
       implementationDependencies: implementation.dependencies,
     };
   }
-  const earlyHit =
+  const cachedHit =
     earlyCacheOptions === null
       ? null
       : await readEarlyExecutableCache(cacheRoot, earlyCacheOptions);
+  // A --libnode=beside build that calls into Node places its island modules
+  // next to the executable from the lowered module, which a cache hit does
+  // not have: such builds take the full path.
+  const earlyHit =
+    cachedHit !== null && cachedHit.native.nodeIsland === true && opts.libnode === "beside"
+      ? null
+      : cachedHit;
   if (earlyHit !== null) {
     timing("executable-cache-hit");
     if (earlyCacheOptions === null) {

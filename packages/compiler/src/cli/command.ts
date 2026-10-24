@@ -524,6 +524,14 @@ async function main(args: string[], host: CliHost): Promise<number> {
       ...(values.strip ? { strip: true } : {}),
       ...(windowsSubsystem !== undefined ? { windowsSubsystem } : {}),
       ...(values["detached-exit"] ? { detachedExit: true } : {}),
+      ...(values.libnode !== undefined
+        ? {
+            libnode:
+              values.libnode === "beside" || values.libnode.startsWith("$ORIGIN/")
+                ? values.libnode
+                : resolve(values.libnode),
+          }
+        : {}),
       ...targetCpuField(targetCpu),
       // The instrumented program resolves a relative pattern against its own
       // working directory; resolve it here, where the user wrote it.

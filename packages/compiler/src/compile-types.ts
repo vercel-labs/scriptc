@@ -37,6 +37,12 @@ export interface CompileBaseOptions {
    * executable mapped and the memory charged for up to ~100 ms after exit.
    * Executables only; no effect on other platforms. */
   detachedExit?: boolean;
+  /** Where a program that calls into Node.js (@scriptc/node) loads Node
+   * from: a libnode pack directory recorded into the executable, or
+   * "beside" to copy the pack next to the executable. Default: the pack in
+   * SCRIPTC_LIBNODE at build time. SCRIPTC_LIBNODE overrides the recorded
+   * directory at run time (node-islands/libnode.ts). */
+  libnode?: string;
   /** The x86-64 microarchitecture level the executable's code may require
    * (`x86-64-v2` to `x86-64-v4`). The program's functions are compiled for
    * that level, and the executable then runs only on CPUs that support it.

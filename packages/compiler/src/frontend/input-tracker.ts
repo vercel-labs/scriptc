@@ -13,6 +13,8 @@ import { observeSourceText } from "./ts7/ast-node.js";
  */
 export type FrontendInputProbe =
   | { op: "file"; path: string; digest: string }
+  /** A read of the file's raw bytes (files that need not be text). */
+  | { op: "bytes"; path: string; digest: string }
   | { op: "read-error"; path: string }
   | { op: "kind"; path: string; kind: "file" | "directory" | "other" | "missing" }
   | { op: "entries"; path: string; files: string[]; directories: string[] }
@@ -208,6 +210,21 @@ export function trackedReadFile(path: string): string | null {
   }
 }
 
+/** A file's raw bytes, recorded by their digest. */
+export function trackedReadBytes(path: string): Uint8Array | null {
+  path = resolve(path);
+  const virtual = virtualSources.get(path);
+  if (virtual !== undefined) return new TextEncoder().encode(virtual);
+  try {
+    const bytes = new Uint8Array(readFileSync(path));
+    record({ op: "bytes", path, digest: createHash("sha256").update(bytes).digest("hex") });
+    return bytes;
+  } catch {
+    record({ op: "read-error", path });
+    return null;
+  }
+}
+
 export function trackedFileExists(path: string): boolean {
   path = resolve(path);
   if (virtualSources.has(path)) return true;
@@ -339,6 +356,15 @@ export function frontendInputsStillMatch(
       case "file": {
         try {
           return frontendSourceDigest(readFileSync(probe.path, "utf8")) === probe.digest;
+        } catch {
+          return false;
+        }
+      }
+      case "bytes": {
+        try {
+          return (
+            createHash("sha256").update(readFileSync(probe.path)).digest("hex") === probe.digest
+          );
         } catch {
           return false;
         }
@@ -488,6 +514,7 @@ export function validFrontendInputSnapshot(snapshot: unknown): snapshot is Front
     if (typeof value.path !== "string" || typeof value.op !== "string") return false;
     switch (value.op) {
       case "file":
+      case "bytes":
         return typeof value.digest === "string" && /^[0-9a-f]{64}$/.test(value.digest);
       case "read-error":
         return true;

@@ -52,6 +52,7 @@ import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import ts5 from "typescript";
 import { compile } from "@scriptc/compiler";
+import { requiresLibnode } from "./libnode.js";
 import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
 
 const execFileAsync = promisify(execFile);
@@ -266,6 +267,9 @@ const files = enabled
     ])
       .sort()
       .filter((f) => filter === undefined || new RegExp(filter).test(f))
+      // Calls into Node load a libnode pack for the host, not for this
+      // cross target (libnode.ts).
+      .filter((f) => !requiresLibnode(f))
   : [];
 
 if (enabled) {

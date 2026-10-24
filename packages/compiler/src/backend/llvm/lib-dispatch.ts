@@ -1055,6 +1055,8 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "constants":
     case "promise":
       return host.emitGenericLibCall(e);
+    case "nodeIsland":
+      return host.emitGenericLibCall(e);
     case "test":
       return emitTestLibCall(host, e);
     case "tls":

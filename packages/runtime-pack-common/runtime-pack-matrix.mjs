@@ -167,6 +167,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // WebCrypto's AES ciphers run over the cipher feature's mbedTLS archive.
   ["scr_webcrypto_aes.c", all("cipher", "webcrypto")],
   ["scr_fetch.c", "nativeFetch"],
+  // Node islands: libnode loaded on first use (explicit @scriptc/node calls),
+  // over the SCR_NODE_ISLANDS build of scr_async.c.
+  ["scr_node_island.c", "nodeIsland"],
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
 ];
 
@@ -200,6 +203,15 @@ export function variantsFor(source) {
       id: "stdio-extended",
       when: { stdioExtended: true },
       defines: ["SCR_STDIO_EXTENDED"],
+    });
+  }
+  // Programs with Node islands link the event loop with the Node island slot;
+  // every other program keeps the default object, byte for byte.
+  if (source === "scr_async.c") {
+    variants.push({
+      id: "node-island",
+      when: { nodeIsland: true },
+      defines: ["SCR_NODE_ISLANDS"],
     });
   }
   if (source === "scr_cycle.c") {

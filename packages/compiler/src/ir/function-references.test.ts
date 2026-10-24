@@ -222,6 +222,14 @@ const MODULE_FIELDS: Record<StringFields<Omit<IrModule, "functions">>, Role> = {
   "wasmUntranslated[].reason": "other",
   "threadSlotKeys[]": "other",
   "freezableArrays[]": "other",
+  "nodeIsland.libnode": "other",
+  "nodeIsland.nodeVersion": "other",
+  "nodeIsland.modules.root": "other",
+  "nodeIsland.modules.location": "other",
+  "nodeIsland.modules.files[].path": "other",
+  "nodeIsland.modules.files[].sha256": "other",
+  "nodeIsland.modules.links[].path": "other",
+  "nodeIsland.modules.links[].target": "other",
 };
 
 const loc = { file: "references.ts", start: 0, end: 0 };

@@ -388,6 +388,17 @@ export function dynamicTierSymbols(names) {
     .sort();
 }
 
+/** The Node island runtime (scr_node_island*.c, scope-B design §2.15): no
+ * program without a call into Node.js may define any of these. */
+export const NODE_ISLAND_PREFIXES = ["scr_node_island", "scr_loop_set_node_island"];
+
+/** The Node island symbols among `names`, sorted. */
+export function nodeIslandSymbols(names) {
+  return [...new Set(names)]
+    .filter((name) => NODE_ISLAND_PREFIXES.some((prefix) => name.startsWith(prefix)))
+    .sort();
+}
+
 /* Bench workloads whose release binaries link dynamic-tier symbols on
  * b14377864: JSON.parse trees, worker messages, regex exec metadata
  * (two-tier §3.3 L5), and a shared scr_dyn_call/scr_dyn_define_property core

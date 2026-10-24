@@ -387,7 +387,7 @@ jobs:
       - name: Check version sync
         run: |
           VERSION="${{ needs.check-release.outputs.version }}"
-          for pkg in packages/runtime packages/runtime-* packages/llvm-* packages/compiler packages/experimental packages/threads packages/types packages/cli packages/cli-*; do
+          for pkg in packages/runtime packages/runtime-* packages/llvm-* packages/compiler packages/experimental packages/node packages/threads packages/types packages/cli packages/cli-*; do
             if [ "$(node -p "require('./$pkg/package.json').private === true")" = "true" ]; then
               continue
             fi
@@ -485,6 +485,7 @@ jobs:
           for pkg in packages/cli-*; do publish_dir "$pkg"; done
           publish_dir packages/compiler
           publish_dir packages/experimental
+          publish_dir packages/node
           publish_dir packages/threads
           publish_dir packages/types
           publish_dir packages/cli

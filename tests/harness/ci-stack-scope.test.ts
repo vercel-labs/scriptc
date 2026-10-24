@@ -62,6 +62,22 @@ test.each([
   ["bottom layer", "pull_request", stacked("main", 1), true],
   ["new bottom after a merge", "pull_request", stacked("main", 2), true],
   ["upper layer", "pull_request", upper, false],
+  [
+    "a PR into the default branch whose stack names another base",
+    "pull_request",
+    {
+      ...stacked("main"),
+      repository: { full_name: repository, default_branch: "main" },
+      pull_request: { ...stacked("main").pull_request, stack: { base: { ref: "ni/base" } } },
+    },
+    true,
+  ],
+  [
+    "upper layer with the default branch known",
+    "pull_request",
+    { ...upper, repository: { full_name: repository, default_branch: "main" } },
+    false,
+  ],
   ["main push", "push", {}, true],
   ["push with stack metadata", "push", upper, true],
   ["merge queue group", "merge_group", upper, true],

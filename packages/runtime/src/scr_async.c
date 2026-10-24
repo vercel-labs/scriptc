@@ -4322,6 +4322,29 @@ void scr_loop_set_watch(bool (*pending)(void), void (*dispatch)(void), int (*pol
   scr_watch_pollfd_fn = pollfd;
 }
 
+#ifdef SCR_NODE_ISLANDS
+/* The Node island hook (scr_node_island.c): the watch hook's shape plus a
+ * sleep bound, in the SCR_NODE_ISLANDS build of this unit only, so
+ * programs without Node islands link the plain object byte for byte. Once
+ * Node is loaded, `pending` keeps the loop alive while Node's own loop has
+ * ref'd work, `dispatch` runs one non-blocking turn of it at every turn
+ * top, `pollfd` is its backend fd for the idle poll(2) sleep and `timeout`
+ * the milliseconds to its next timer (-1: none). NI-3 replaces this with
+ * the runtime's queues hosted on Node's loop. */
+static SCR_TL bool (*scr_node_island_pending_fn)(void) = NULL;
+static SCR_TL void (*scr_node_island_dispatch_fn)(void) = NULL;
+static SCR_TL int (*scr_node_island_pollfd_fn)(void) = NULL;
+static SCR_TL int (*scr_node_island_timeout_fn)(void) = NULL;
+
+void scr_loop_set_node_island(bool (*pending)(void), void (*dispatch)(void), int (*pollfd)(void),
+                              int (*timeout)(void)) {
+  scr_node_island_pending_fn = pending;
+  scr_node_island_dispatch_fn = dispatch;
+  scr_node_island_pollfd_fn = pollfd;
+  scr_node_island_timeout_fn = timeout;
+}
+#endif
+
 /* The child-process hook (scr_child.c, installed with the first spawned
  * child or IPC channel). Programs that never create one keep it NULL and
  * do not link the child unit; WASI never links it. */
@@ -4591,6 +4614,16 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       if (scr_exc_pending()) return false; /* uncaught throw in a listener */
       if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
     }
+#ifdef SCR_NODE_ISLANDS
+    /* Node island dispatch (scr_node_island.c): one non-blocking turn of
+     * Node's loop, whose callbacks may settle calls into Node — the watch
+     * hook's station. */
+    if (scr_node_island_dispatch_fn != NULL) {
+      scr_node_island_dispatch_fn();
+      if (scr_exc_pending()) return false;
+      if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
+    }
+#endif
     /* Reap spawned children and fire their listeners (before timers,
      * like Node's nextTick-ish spawn-failure "error"). A callback may
      * enqueue microtasks or spawn again — restart the turn if so.
@@ -4615,7 +4648,11 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
           (scr_watch_pending_fn != NULL && scr_watch_pending_fn()) ||
           (scr_ffi_pending_fn != NULL && scr_ffi_pending_fn()) ||
           scr_fs_renames_pending() || scr_crypto_bytes_pending() || scr_loop_deferred_pending() ||
-          scr_workers_pending();
+          scr_workers_pending()
+#ifdef SCR_NODE_ISLANDS
+          || (scr_node_island_pending_fn != NULL && scr_node_island_pending_fn())
+#endif
+          ;
       if (held) {
         scr_loop_children->poll();
         if (scr_exc_pending()) return false; /* uncaught throw in a listener */
@@ -4641,13 +4678,20 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     bool renames = scr_fs_renames_pending();
     bool crypto = scr_crypto_bytes_pending() || scr_loop_deferred_pending();
     bool workers = scr_workers_pending();
+#ifdef SCR_NODE_ISLANDS
+    bool node_island = scr_node_island_pending_fn != NULL && scr_node_island_pending_fn();
+#endif
     /* Timer liveness counts only REF'd timers: an unref'd timer stays in
      * the heap (and fires if the loop runs on for other reasons) but does
      * not by itself keep the process alive — Node's unref semantics.
      * Children follow the same rule: an unref'd child is still REAPED
      * while the loop runs (kids drives the sweeps and sleeps above) but
      * only reffed ones keep the process alive. */
-    if (scr_reffed_timers == 0 && scr_reffed_immediates == 0 && !kids_reffed && !events && !net && !dgram && !watch && !ffi && !renames && !crypto && !workers) break;
+    if (scr_reffed_timers == 0 && scr_reffed_immediates == 0 && !kids_reffed && !events && !net && !dgram && !watch && !ffi && !renames && !crypto && !workers
+#ifdef SCR_NODE_ISLANDS
+        && !node_island
+#endif
+        ) break;
     /* Sleep to the earliest deadline, then run every due timer (each may
      * enqueue microtasks, which the next iteration drains first). Who
      * sleeps depends on what is pending:
@@ -4705,12 +4749,20 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
 #endif
     bool evw = scr_events_watching_fn != NULL && scr_events_watching_fn();
 #ifdef SCR_WORKERS
-    if (workers && scr_workers_wait_fn && !kids && !evw && !net_io && !dgram && !watch && !ffi && !renames && !crypto) {
+    if (workers && scr_workers_wait_fn && !kids && !evw && !net_io && !dgram && !watch && !ffi && !renames && !crypto
+#ifdef SCR_NODE_ISLANDS
+        && !node_island
+#endif
+        ) {
       scr_workers_wait_fn(due > now ? due - now : 0);
       now = scr_now_ms();
     } else
 #endif
-    if (evw || net_io || dgram || watch || ffi || workers || renames_fd >= 0) {
+    if (evw || net_io || dgram || watch || ffi || workers || renames_fd >= 0
+#ifdef SCR_NODE_ISLANDS
+        || node_island
+#endif
+        ) {
 #if defined(_WIN32) || defined(__wasi__)
       /* The win32 arm, and WASI hosts whose poll_oneoff adapters do not
        * reliably wake for a closed inherited stdin pipe: the sleep is a capped nanosleep and
@@ -4726,6 +4778,9 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       if (evw && due > now + SCR_SIGNAL_POLL_MS) due = now + SCR_SIGNAL_POLL_MS;
       if ((net_io || dgram || watch) && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
       if ((ffi || workers) && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
+#ifdef SCR_NODE_ISLANDS
+      if (node_island && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
+#endif
       if (kids && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
       if (due > now) {
         double wait = due - now;
@@ -4819,6 +4874,22 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
         fds[nfds].events = POLLIN;
         fds[nfds++].revents = 0;
       }
+#ifdef SCR_NODE_ISLANDS
+      if (node_island) {
+        /* Node's backend fd ends the sleep on its I/O; its next timer
+         * bounds the sleep. */
+        int left = scr_node_island_timeout_fn != NULL ? scr_node_island_timeout_fn() : -1;
+        if (left >= 0 && due > now + left) due = now + left;
+        int ifd = scr_node_island_pollfd_fn != NULL ? scr_node_island_pollfd_fn() : -1;
+        if (ifd >= 0) {
+          fds[nfds].fd = ifd;
+          fds[nfds].events = POLLIN;
+          fds[nfds++].revents = 0;
+        } else if (due > now + SCR_CHILD_POLL_MS) {
+          due = now + SCR_CHILD_POLL_MS;
+        }
+      }
+#endif
       if (workers) {
         int worker_fd = scr_workers_pollfd();
         if (worker_fd >= 0) {

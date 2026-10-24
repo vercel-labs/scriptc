@@ -179,6 +179,15 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "json.parseReviver": { argTypes: [STRING, DYN], result: DYN },
   "json.stringifyReplacer": { argTypes: [DYN, DYN, STRING], result: DYN },
   "json.stringifyValue": { argTypes: [DYN, DYN, DYN], result: DYN },
+  /** @scriptc/node calls into Node loaded into the program (scr_node_island.c):
+   * the calling module's path, the specifier, the export name and the
+   * boxed argument array, copied as JSON. callSync answers the result's
+   * JSON copy or throws the copied error; call answers a promise of it. */
+  "nodeIsland.callSync": { argTypes: [STRING, STRING, STRING, DYN], result: DYN },
+  "nodeIsland.call": {
+    argTypes: [STRING, STRING, STRING, DYN],
+    result: { kind: "promise", inner: DYN },
+  },
   /** Keyed WRITE on a dyn value — `h.onDone = cb` / `h["k"] = v` on a
    * checked-dynamic object (args: receiver, key string, value — all
    * borrowed; the runtime copies the key and retains the value in). An

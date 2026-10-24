@@ -1046,6 +1046,9 @@ const RUNTIME_FEATURE_RULES = {
       "secureCtx",
     ],
   }),
+  /** Calls into Node.js (@scriptc/node): scr_node_island.c and the
+   * SCR_NODE_ISLANDS build of the event loop unit. */
+  nodeIsland: rule({ prefixes: ["nodeIsland."] }),
   nodeTest: rule({ prefixes: ["test."], types: ["testCtx"] }),
   /** scr_util_callable.c reads options through the parseArgs unit's
    * descriptors. */
@@ -1168,6 +1171,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     mockTimers: false,
     net: false,
     netLookup: false,
+    nodeIsland: false,
     nodeTest: false,
     parseArgs: false,
     perfLoop: false,

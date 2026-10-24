@@ -68,6 +68,7 @@ import {
 import { dirname } from "node:path";
 import { funcTypeFromParamShapes } from "../call-signatures.js";
 import { threadsImportOf } from "../../threads-import.js";
+import { nodeApiBindingOf } from "../../node-api-import.js";
 import { experimentalImportOf } from "../../experimental-import.js";
 import { lowerWorkerMetadata } from "../builtins/workers.js";
 import { esmImportBindingKind } from "../builtins/module-bindings.js";
@@ -488,6 +489,19 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         "publish (@scriptc/threads) as a value",
         expr,
         "call publish(value) directly",
+      );
+    const nodeApi = nodeApiBindingOf(lowerer.program, expr);
+    if (nodeApi === "namespace")
+      lowerer.noLowering(
+        "the @scriptc/node namespace as a value",
+        expr,
+        "call its call and callSync members directly",
+      );
+    if (nodeApi !== null)
+      lowerer.noLowering(
+        `${nodeApi} (@scriptc/node) as a value`,
+        expr,
+        `call ${nodeApi}(specifier, name, ...args) directly`,
       );
     if (experimentalImportOf(lowerer.program, expr) === "LifetimeRegion")
       lowerer.noLowering(

@@ -37,6 +37,7 @@ import {
   definedFunctionNames,
   dynamicTierSymbols,
   median,
+  nodeIslandSymbols,
   nmOutput,
   programVerdict,
   timeRatio,
@@ -323,6 +324,10 @@ function dynamicTierCheck(program, baseline, candidate, artifacts, allowed) {
     : dynamicTierSymbols(definedFunctions(baseline.exe));
   const added = after.filter((name) => !before.includes(name));
   const failures = [];
+  // No good-code program calls into Node.js, so none may link its runtime.
+  const nodeIsland = nodeIslandSymbols(definedFunctions(candidate.exe));
+  if (nodeIsland.length > 0 && !allowed)
+    failures.push(`links Node island symbols: ${nodeIsland.slice(0, 5).join(", ")}`);
   if (typed && after.length > 0)
     failures.push(
       `fully typed program links dynamic-tier symbols: ${after.slice(0, 5).join(", ")}`,

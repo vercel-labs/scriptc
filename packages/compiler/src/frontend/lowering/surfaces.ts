@@ -1713,7 +1713,8 @@ export const BUILTIN_MODULE_FNS: Record<
   // lowerVarDecl / collectGlobals BEFORE any call lowering runs — and
   // inspect/format/formatWithOptions plus parseArgs through the util spoke
   // (lower-inspect.ts: per-type synthesized traversal helpers,
-  // compile-time format strings, checked-dynamic config/result for
+  // compile-time format strings and the runtime formatter for the others,
+  // checked-dynamic config/result for
   // parseArgs), which both dispatch paths try before the generic table.
   // parseArgs is tabled as well so the generated surface manifest records
   // the dedicated static member; the spoke owns its optional arity and

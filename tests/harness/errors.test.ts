@@ -2100,6 +2100,53 @@ console.log("unreachable");
   });
 });
 
+// The runtime formatter (format strings known only at run time, spread
+// arguments, options objects) throws a coded SC2020 error for renderings
+// it has no lowering for.
+describe("runtime format refusals", () => {
+  test("%s of a class instance with toString, %o of objects, colored errors and options", async () => {
+    const r = await compileAndRun(
+      "format-runtime-refusals",
+      `import * as util from "node:util";
+class Named {
+  name = "n";
+  toString(): string {
+    return this.name;
+  }
+}
+const s: string = process.argv.length > 99 ? "" : "%s";
+const o: string = process.argv.length > 99 ? "" : "%o";
+const attempts: Array<() => string> = [
+  () => util.format(s, new Named()),
+  () => util.format(o, { a: 1 }),
+  () => util.formatWithOptions({ colors: true }, s, "x", new Error("e")),
+  () => util.formatWithOptions({ maxArrayLength: 1 }, [1, 2]),
+  () => util.formatWithOptions({ compact: true }, [1, 2]),
+];
+for (const attempt of attempts) {
+  try {
+    console.log(attempt());
+  } catch (error) {
+    const e = error as Error & { code?: string };
+    console.log(e.name, e.code, e.message);
+  }
+}
+console.log(util.format(s, { a: 1 }), util.formatWithOptions({ maxArrayLength: 100 }, [1, 2]));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "Error SC2020 util.format %s of a class instance whose class defines toString has no lowering\n" +
+        "Error SC2020 util.format %o of objects renders hidden properties, which have no lowering; use %O\n" +
+        "Error SC2020 colored inspect output of Error values has no lowering\n" +
+        "Error SC2020 util.formatWithOptions with the maxArrayLength option has no lowering\n" +
+        "Error SC2020 util.formatWithOptions with this compact option has no lowering (compact must be false or a number)\n" +
+        "{ a: 1 } [ 1, 2 ]\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+});
+
 describe("numeric properties of native arrays", () => {
   // A native array keeps its numeric properties ("-1", "1.5") in a property
   // table that holds values without attributes, so defining one with a

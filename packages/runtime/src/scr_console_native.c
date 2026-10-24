@@ -523,7 +523,11 @@ ScrStr *scr_console_dir_dyn(ScrDyn *value, double depth) {
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
     return scr_str_new("", 0);
   }
-  return scr_insp_dyn(value, 0, depth);
+  /* console.dir is inspect with customInspect: false. */
+  bool custom = scr_insp_custom_inspect(false);
+  ScrStr *out = scr_insp_dyn(value, 0, depth);
+  scr_insp_custom_inspect(custom);
+  return out;
 }
 
 /* ── console.table ───────────────────────────────────────────────────

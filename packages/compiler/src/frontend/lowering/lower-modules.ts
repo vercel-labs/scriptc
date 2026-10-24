@@ -97,6 +97,7 @@ import {
   createRequireProgramModuleDecl,
 } from "./builtins/module-bindings.js";
 import { isPromisifyCall, registerBuiltinCallableAlias } from "./builtins/callable-aliases.js";
+import { customInspectRegistrations } from "./lower-inspect.js";
 import { registerBuiltinClassAlias } from "./builtins/class-values.js";
 import { stripTypeCasts } from "./builtins/arguments.js";
 import { isWebCryptoMemberType } from "./builtins/webcrypto.js";
@@ -1966,18 +1967,21 @@ export function collectGlobals(
       // symbol registers HERE, before any use site can lower, and the
       // statement lowering skips the declaration by the same check. A
       // bad promisify target reports here (recorded once; the statement
-      // lowering poisons too, like every collectGlobals failure).
+      // lowering poisons too, like every collectGlobals failure). Targets
+      // that promisify to a function value (typed callback-last functions
+      // and untyped functions) keep an ordinary global.
       if (
         ts.isIdentifier(decl.name) &&
         decl.initializer &&
         isPromisifyCall(lowerer, decl.initializer)
       ) {
+        let registered = true;
         try {
-          lowerer.registerPromisifiedBuiltinDecl(decl.name, decl.initializer);
+          registered = lowerer.registerPromisifiedBuiltinDecl(decl.name, decl.initializer);
         } catch (e) {
           if (!(e instanceof PoisonError)) throw e;
         }
-        continue;
+        if (registered) continue;
       }
       // `const inspect = require("util").inspect` at file scope: a
       // named import in const clothing (builtinImportOf resolves uses)
@@ -3542,6 +3546,9 @@ export function buildMain(lowerer: Lowerer): IrFunction {
       loc,
     });
   }
+  // Classes with custom inspect methods register their compiled calls for
+  // the runtime's inspect walk before any module runs, in every thread.
+  body.unshift(...customInspectRegistrations(lowerer, loc));
   // Node's startup refusal (a resolution the graph carries that Node
   // rejects — preflight's Node-order resolution walk — or a module-LINK
   // SyntaxError from either named-import checker): the graph is refused

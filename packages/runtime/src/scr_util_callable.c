@@ -9,8 +9,8 @@
  * and reported on the next tick (scr_warning_emit_deferred), which also
  * applies process.noDeprecation and process.throwDeprecation. debuglog
  * matches sections against NODE_DEBUG as the process started and writes
- * Node's "SECTION PID: message" lines to stderr. All arguments are
- * borrowed. */
+ * Node's "SECTION PID: message" lines, formatted by scr_insp_format, to
+ * stderr. All arguments are borrowed. */
 #include "scr_runtime.h"
 
 #include <stdio.h>
@@ -513,163 +513,6 @@ ScrDyn *scr_util_callbackify(ScrDyn *original) {
   return callbackified;
 }
 
-/* ── util.format over dyn arguments ────────────────────────────────────
- * formatWithOptionsInternal for debuglog's lines: the %-substitutions
- * (%s %d %i %f %j %o %O %c %%) with Node's argument cursor, then the
- * remaining arguments space-joined, strings verbatim and everything else
- * inspected. With terminal colors, primitives take inspect's default
- * styles; colored object renderings have no lowering. */
-static bool uc_primitive(const ScrDyn *value) {
-  return !uc_object(value);
-}
-
-static ScrStr *uc_inspect(ScrDyn *value, double depth, bool colors) {
-  if (!colors) return scr_insp_dyn(value, 0, depth);
-  if (!uc_primitive(value)) {
-    uc_fence("util.debuglog output of objects on a color terminal has no lowering");
-    return NULL;
-  }
-  const char *open = "\x1b[33m", *close = "\x1b[39m";
-  if (value->kind == SCR_DYN_UNDEF) open = "\x1b[90m";
-  else if (value->kind == SCR_DYN_NULL) open = "\x1b[1m", close = "\x1b[22m";
-  else if (value->kind == SCR_DYN_STR || value->kind == SCR_DYN_SYMBOL) open = "\x1b[32m";
-  ScrStr *text = scr_insp_dyn(value, 0, depth);
-  ScrJsonBuf b;
-  scr_jb_init(&b);
-  scr_jb_puts(&b, open);
-  scr_jb_put_str(&b, text);
-  scr_jb_puts(&b, close);
-  scr_str_release(text);
-  return scr_jb_finish(&b);
-}
-
-/* hasBuiltInToString's negative answer for checked objects: an own or
- * inherited toString the program defined. Symbol-keyed members (where
- * Symbol.toPrimitive would also count) are reported as unknown. */
-static int uc_custom_to_string(const ScrDyn *value) {
-  for (const ScrDyn *current = value; current && current->kind == SCR_DYN_OBJ; current = current->prototype) {
-    if (current->symbol_properties) return -1;
-    const ScrDyn *member = scr_dyn_obj_get(current, "toString", 8);
-    if (member) return member->kind == SCR_DYN_FUNC;
-  }
-  return 0;
-}
-
-static ScrStr *uc_format_s(ScrDyn *value) {
-  if (value->kind == SCR_DYN_STR) return scr_str_retain(value->v.str);
-  if (value->kind == SCR_DYN_NUM) return scr_insp_f64(value->v.num);
-  if (value->kind == SCR_DYN_FUNC) {
-    uc_fence("util.debuglog %s of a function prints its source text, which a compiled binary does not keep");
-    return NULL;
-  }
-  if (value->kind == SCR_DYN_OBJ && scr_dyn_obj_get(value, "%error", 6) == NULL) {
-    int custom = uc_custom_to_string(value);
-    if (custom < 0) {
-      uc_fence("util.debuglog %s of objects with symbol-keyed members has no lowering");
-      return NULL;
-    }
-    if (custom) return scr_dyn_string_coerce_js(value);
-  }
-  return scr_insp_dyn_s(value, 0);
-}
-
-static ScrStr *uc_format_number(ScrDyn *value, int spec) {
-  if (value->kind == SCR_DYN_BIGINT && spec != 'f') return scr_bigint_inspect(value->v.bigint);
-  if (value->kind == SCR_DYN_SYMBOL) return scr_str_new("NaN", 3);
-  double number;
-  if (spec == 'd') {
-    if (value->kind == SCR_DYN_BIGINT) return scr_bigint_inspect(value->v.bigint);
-    if (!scr_dyn_number_coerce_js(value, &number)) return NULL;
-  } else {
-    ScrStr *text = scr_dyn_string_coerce_js(value);
-    if (!text) return NULL;
-    number = spec == 'i' ? scr_parse_int(text, 0) : scr_parse_float(text);
-    scr_str_release(text);
-  }
-  return scr_insp_f64(number);
-}
-
-static ScrStr *uc_format(ScrDyn *const *args, size_t argc, bool colors) {
-  if (argc == 0) return scr_str_new("", 0);
-  ScrJsonBuf out;
-  scr_jb_init(&out);
-  size_t a = 0;
-  const char *join = "";
-  if (args[0]->kind == SCR_DYN_STR) {
-    const ScrStr *first = args[0]->v.str;
-    if (argc == 1) {
-      scr_str_release(scr_jb_finish(&out));
-      return scr_str_retain((ScrStr *)first);
-    }
-    const char *text = first->data;
-    size_t last = 0;
-    for (size_t i = 0; first->len > 0 && i < first->len - 1; i++) {
-      if (text[i] != '%') continue;
-      int next = (unsigned char)text[++i];
-      if (a + 1 != argc) {
-        ScrStr *piece = NULL;
-        switch (next) {
-        case 's': piece = uc_format_s(args[++a]); break;
-        case 'j': piece = scr_util_format_j(args[++a]); break;
-        case 'd':
-        case 'i':
-        case 'f': piece = uc_format_number(args[++a], next); break;
-        case 'O': piece = uc_inspect(args[++a], 2, colors); break;
-        case 'o':
-          if (!uc_primitive(args[a + 1])) {
-            uc_fence("util.debuglog %o of objects renders hidden properties, which have no lowering; use %O");
-            break;
-          }
-          piece = uc_inspect(args[++a], 4, colors);
-          break;
-        case 'c':
-          a += 1;
-          piece = scr_str_new("", 0);
-          break;
-        case '%':
-          scr_jb_write(&out, text + last, i - last);
-          last = i + 1;
-          continue;
-        default:
-          continue;
-        }
-        if (!piece) {
-          scr_str_release(scr_jb_finish(&out));
-          return NULL;
-        }
-        if (last != i - 1) scr_jb_write(&out, text + last, i - 1 - last);
-        scr_jb_put_str(&out, piece);
-        scr_str_release(piece);
-        last = i + 1;
-      } else if (next == '%') {
-        scr_jb_write(&out, text + last, i - last);
-        last = i + 1;
-      }
-    }
-    if (last != 0) {
-      a++;
-      join = " ";
-      if (last < first->len) scr_jb_write(&out, text + last, first->len - last);
-    }
-  }
-  for (; a < argc; a++) {
-    scr_jb_puts(&out, join);
-    if (args[a]->kind == SCR_DYN_STR) {
-      scr_jb_put_str(&out, args[a]->v.str);
-    } else {
-      ScrStr *piece = uc_inspect(args[a], 2, colors);
-      if (!piece) {
-        scr_str_release(scr_jb_finish(&out));
-        return NULL;
-      }
-      scr_jb_put_str(&out, piece);
-      scr_str_release(piece);
-    }
-    join = " ";
-  }
-  return scr_jb_finish(&out);
-}
-
 /* ── util.debuglog ─────────────────────────────────────────────────────
  * The logger defers its NODE_DEBUG test to its first call or `enabled`
  * read. The first call also selects the section's shared implementation
@@ -735,7 +578,10 @@ static bool uc_debug_test(const ScrStr *section) {
 static ScrDyn *uc_debug_write(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   bool colors = scr_getenv("FORCE_COLOR") ? scr_util_terminal_colors()
                                           : scr_process_is_tty(2) && scr_util_terminal_colors();
-  ScrStr *message = uc_format(args, argc, colors);
+  ScrInspFormatOptions options;
+  scr_insp_format_defaults(&options, "util.debuglog");
+  options.colors = colors;
+  ScrStr *message = scr_insp_format(args, argc, &options);
   if (!message) return NULL;
   ScrDyn *set = uc_cap(closure, 0);
   char pid[64];

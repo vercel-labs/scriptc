@@ -101420,6 +101420,13 @@
           "tests/corpus/5835-util-format-integer-specifiers.ts",
           "tests/corpus/5884-inspect-layout-options.ts",
           "tests/corpus/6428-promisify-callback-functions.ts",
+          "tests/corpus/7520-util-format-runtime.ts",
+          "tests/corpus/7521-util-format-runtime.cjs",
+          "tests/corpus/7522-promisify-untyped.cjs",
+          "tests/corpus/7523-promisify-untyped.ts",
+          "tests/corpus/7524-inspect-custom.ts",
+          "tests/corpus/7525-inspect-custom.cjs",
+          "tests/corpus/7526-inspect-options-runtime.ts",
           "tests/corpus/7747-text-codec-untyped-slot.js",
           "tests/corpus/node24-deep-equality-properties.js",
           "tests/corpus/node24-deep-equality.cjs",
@@ -102529,7 +102536,9 @@
         "tests": [
           "tests/corpus/1636-util-format.ts",
           "tests/corpus/2440-console-inspect-args.ts",
-          "tests/corpus/5835-util-format-integer-specifiers.ts"
+          "tests/corpus/5835-util-format-integer-specifiers.ts",
+          "tests/corpus/7520-util-format-runtime.ts",
+          "tests/corpus/7521-util-format-runtime.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -102557,7 +102566,9 @@
         "tests": [
           "tests/corpus/1636-util-format.ts",
           "tests/corpus/2440-console-inspect-args.ts",
-          "tests/corpus/5835-util-format-integer-specifiers.ts"
+          "tests/corpus/5835-util-format-integer-specifiers.ts",
+          "tests/corpus/7520-util-format-runtime.ts",
+          "tests/corpus/7521-util-format-runtime.cjs"
         ]
       },
       "anchorSource": "exact"
@@ -102748,7 +102759,8 @@
           "tests/corpus/1632-inspect-records.ts",
           "tests/corpus/1637-inspect-dyn.ts",
           "tests/corpus/2485-inspect-circular-refs.ts",
-          "tests/corpus/5884-inspect-layout-options.ts"
+          "tests/corpus/5884-inspect-layout-options.ts",
+          "tests/corpus/7526-inspect-options-runtime.ts"
         ]
       },
       "anchorSource": "exact"
@@ -102771,8 +102783,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.util.inspect",
+        "tests": [
+          "tests/corpus/7526-inspect-options-runtime.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -102794,8 +102809,12 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:util"
+        "status": "partial",
+        "evidence": "compiler-feature:util.custom",
+        "tests": [
+          "tests/corpus/7524-inspect-custom.ts",
+          "tests/corpus/7525-inspect-custom.cjs"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -103112,6 +103131,8 @@
           "tests/fixtures/node-types/promisify-dns.ts",
           "tests/corpus/6428-promisify-callback-functions.ts",
           "tests/fixtures/node-types/promisify-callback-functions.ts",
+          "tests/corpus/7522-promisify-untyped.cjs",
+          "tests/corpus/7523-promisify-untyped.ts",
           "tests/harness/project-config.test.ts"
         ]
       },

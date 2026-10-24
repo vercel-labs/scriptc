@@ -4475,12 +4475,53 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "insp.errorCause": { argTypes: [null, F64, F64], result: STRING },
   "insp.dyn": { argTypes: [DYN, F64, F64], result: STRING },
   "insp.dynS": { argTypes: [DYN, F64], result: STRING },
+  /** util.format over a dyn array of its arguments, and
+   * util.formatWithOptions(options, pack): the runtime formatter for format
+   * strings known at run time and spread arguments. */
+  "insp.format": { argTypes: [DYN], result: STRING },
+  /** insp.format over arguments that are all strings, numbers, booleans,
+   * null or undefined, without the checked-dynamic walk. */
+  "insp.formatPrimitives": { argTypes: [arrayOf(DYN)], result: STRING },
+  "insp.formatList": { argTypes: [arrayOf(DYN)], result: STRING },
+  "insp.formatWithOptions": { argTypes: [DYN, DYN], result: STRING },
+  /** util.inspect(value, options, depth, colors) with the call's argument
+   * count: the runtime reads the options and renders the checked-dynamic
+   * view. */
+  "insp.inspect": { argTypes: [DYN, DYN, DYN, DYN, F64], result: STRING },
+  /** A [util.inspect.custom] method's call: whether ctx.customInspect is
+   * set, its depth argument (the remaining depth at recursion r of depth
+   * d), its options object and util.inspect, then its result rendered: a
+   * string re-indented at the current level, or a checked-dynamic value
+   * (customIsSelf tests for the instance itself). customInspect sets the
+   * flag for the renders that follow and answers the previous value, and
+   * depthKind does the same for how an unbounded depth was given (0
+   * Infinity, 1 null, 2 undefined). */
+  "insp.customEnabled": { argTypes: [], result: BOOL },
+  /** Registers a class's compiled custom inspect function under its
+   * instances' typed-ref type key, for the checked-dynamic walk. */
+  "insp.registerCustom": { argTypes: [STRING, DYN], result: VOID },
+  "insp.customInspect": { argTypes: [BOOL], result: BOOL },
+  "insp.depthKind": { argTypes: [F64], result: F64 },
+  "insp.customDepth": { argTypes: [F64, F64], result: DYN },
+  "insp.customOptions": { argTypes: [F64], result: DYN },
+  "insp.inspectFunction": { argTypes: [], result: DYN },
+  "insp.customText": { argTypes: [STRING], result: STRING },
+  "insp.customIsSelf": { argTypes: [DYN, DYN], result: BOOL },
+  "insp.customResult": { argTypes: [DYN, F64, F64], result: STRING },
+  /** Around the method's call: the inspect and format calls it makes run
+   * in a fresh inspect context with the default options. begin answers the
+   * token end takes; end also discards what a call that threw left. */
+  "insp.customCallBegin": { argTypes: [], result: F64 },
+  "insp.customCallEnd": { argTypes: [F64], result: VOID },
+  /** Whether a runtime format string has a '%' before its last character. */
+  "insp.formatSpecifies": { argTypes: [STRING], result: BOOL },
+  "insp.formatSpecifiesDyn": { argTypes: [DYN], result: BOOL },
   /** util.format's %o over a checked-dynamic value: inspect with
    * showHidden. Kinds whose hidden entries have no rendering throw the
    * 'not supported yet' Error. */
   "insp.dynHidden": { argTypes: [DYN, F64], result: STRING },
   "insp.begin": { argTypes: [F64], result: VOID },
-  /** util.inspect's breakLength, compact (0 for false) and sorted for the
+  /** util.inspect's breakLength, compact (-1 for false) and sorted for the
    * renders that follow; the call site restores 80, 3 and false afterwards. */
   "insp.layout": { argTypes: [F64, F64, BOOL], result: VOID },
   "insp.entry": { argTypes: [STRING, BOOL], result: VOID },

@@ -135,6 +135,11 @@ ScrSym *scr_sym_for(ScrStr *key) {
   s->reg_key = scr_str_retain(key);
   s->reg_next = g_sym_registry;
   g_sym_registry = scr_sym_retain(s);
+  if (key->len == 26 && !memcmp(key->data, "nodejs.util.inspect.custom", 26)) {
+    ScrDyn *custom = scr_dyn_new_symbol(s);
+    scr_dyn_install_inspect_custom_symbol(custom);
+    scr_dyn_release(custom);
+  }
   return s;
 }
 

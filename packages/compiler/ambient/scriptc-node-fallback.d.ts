@@ -3967,7 +3967,13 @@ declare module "util" {
   export type TextDecoder = globalThis.TextDecoder;
   export var TextEncoder: typeof globalThis.TextEncoder;
   export var TextDecoder: typeof globalThis.TextDecoder;
-  /* stream.pipeline's overload comes first: its __promisify__ member keeps
+  /* An untyped function: an `any` value, or a function whose parameters
+   * are untyped (JavaScript's `(value, callback) => ...`), the only
+   * parameters that accept this object type. The promisified function is
+   * untyped too. It comes first because such functions match every other
+   * overload. */
+  export function promisify(fn: (...args: { readonly "scriptc:untyped": true }[]) => unknown): any;
+  /* stream.pipeline's overload comes next: its __promisify__ member keeps
    * every other target out of it. */
   export function promisify(
     fn: typeof import("node:stream").pipeline,
@@ -4088,15 +4094,56 @@ declare module "util" {
   ): (address: string, port: number) => Promise<{ hostname: string; service: string }>;
   /* Declared surface without full lowering (the type-level tolerance
    * story: guarded/diagnostic-path code must TYPECHECK; a reached use
-   * without a lowering fences at its site). inspect's options carry the
-   * documented knobs through an index signature. */
+   * without a lowering fences at its site). */
+  export interface InspectOptions {
+    showHidden?: boolean | undefined;
+    depth?: number | null | undefined;
+    colors?: boolean | undefined;
+    customInspect?: boolean | undefined;
+    showProxy?: boolean | undefined;
+    maxArrayLength?: number | null | undefined;
+    maxStringLength?: number | null | undefined;
+    breakLength?: number | undefined;
+    compact?: boolean | number | undefined;
+    sorted?: boolean | ((a: string, b: string) => number) | undefined;
+    getters?: "get" | "set" | boolean | undefined;
+    numericSeparator?: boolean | undefined;
+  }
+  export type Style =
+    | "special"
+    | "number"
+    | "bigint"
+    | "boolean"
+    | "undefined"
+    | "null"
+    | "string"
+    | "symbol"
+    | "date"
+    | "regexp"
+    | "module";
+  export interface InspectOptionsStylized extends InspectOptions {
+    stylize(text: string, styleType: Style): string;
+  }
+  export type CustomInspectFunction = (
+    depth: number,
+    options: InspectOptionsStylized,
+    inspect: typeof import("node:util").inspect,
+  ) => any;
   export function inspect(
     object: unknown,
-    options?: { depth?: number | null; colors?: boolean; [k: string]: unknown },
+    showHidden?: boolean,
+    depth?: number | null,
+    color?: boolean,
   ): string;
+  export function inspect(object: unknown, options?: InspectOptions): string;
+  export namespace inspect {
+    /* The key of an object's custom inspect function:
+     * Symbol.for('nodejs.util.inspect.custom'). */
+    const custom: unique symbol;
+  }
   export function format(format?: unknown, ...args: unknown[]): string;
   export function formatWithOptions(
-    inspectOptions: { depth?: number | null; colors?: boolean; [k: string]: unknown },
+    inspectOptions: InspectOptions,
     format?: unknown,
     ...args: unknown[]
   ): string;

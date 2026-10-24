@@ -172,6 +172,24 @@ bool scr_dyn_is_async_dispose_symbol(const ScrDyn *key) {
          key->v.symbol.value == scr_async_dispose_symbol->v.symbol.value;
 }
 
+/* Symbol.for('nodejs.util.inspect.custom'), installed by the symbol unit
+ * when the program creates it: the key util.inspect reads custom inspect
+ * functions under. */
+static SCR_TL ScrDyn *scr_inspect_custom_symbol;
+
+static void scr_inspect_custom_symbol_cleanup(void) {
+  scr_dyn_release(scr_inspect_custom_symbol);
+  scr_inspect_custom_symbol = NULL;
+}
+
+void scr_dyn_install_inspect_custom_symbol(ScrDyn *key) {
+  if (scr_inspect_custom_symbol) return;
+  scr_inspect_custom_symbol = scr_dyn_retain(key);
+  scr_atexit(scr_inspect_custom_symbol_cleanup);
+}
+
+ScrDyn *scr_dyn_inspect_custom_symbol(void) { return scr_inspect_custom_symbol; }
+
 static void scr_to_primitive_symbol_cleanup(void) {
   scr_dyn_release(scr_to_primitive_symbol);
   scr_to_primitive_symbol = NULL;

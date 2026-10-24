@@ -33,7 +33,11 @@ import {
 } from "../../type-mapper.js";
 import { isSafeToRepeat } from "./evaluation-safety.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
-import { fenceSymbolFieldCopy } from "../symbol-fields.js";
+import {
+  classSymbolKeyOf,
+  fenceSymbolFieldCopy,
+  symbolFieldDisplayName,
+} from "../symbol-fields.js";
 import { planUnionRetag } from "../union-retag.js";
 import { jsHoldsDynObject, runtimeOptionalStorageOperand } from "../lower-exprs.js";
 import { builtinGlobalValue } from "./property-access.js";
@@ -195,7 +199,19 @@ function propNameText(lowerer: Lowerer, name: ts.PropertyName): string {
  * (NamedEvaluation): an identifier, string or numeric key, or a computed
  * key that folds to one string. Null for other keys. */
 function propertyFunctionName(lowerer: Lowerer, name: ts.PropertyName): string | null {
-  if (ts.isComputedPropertyName(name)) return literalComputedKey(lowerer, name);
+  if (ts.isComputedPropertyName(name)) {
+    const literal = literalComputedKey(lowerer, name);
+    if (literal !== null) return literal;
+    // A symbol key names the function `[description]`.
+    let key = name.expression;
+    while (ts.isParenthesizedExpression(key)) key = key.expression;
+    const symbol = classSymbolKeyOf(lowerer, key);
+    if (symbol) return `[${symbolFieldDisplayName(symbol.fieldName).slice("Symbol(".length, -1)}]`;
+    const wellKnown = ts.isPropertyAccessExpression(key)
+      ? lowerer.stdlibGlobalMember(key, "Symbol")
+      : null;
+    return wellKnown ? `[Symbol.${wellKnown}]` : null;
+  }
   if (ts.isNumericLiteral(name)) return String(Number(name.text));
   if (ts.isIdentifier(name) || ts.isStringLiteral(name)) return name.text;
   return null;

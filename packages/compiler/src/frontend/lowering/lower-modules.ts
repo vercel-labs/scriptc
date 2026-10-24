@@ -31,11 +31,13 @@ import {
   locOf,
   makeCycleAdmission,
   orderedImportsOf,
+  npmStaticDepSf7,
   requireSpecOf,
   resolveImport,
   resolveNpmImport,
 } from "../program.js";
-import type { CycleEdge } from "../program.js";
+import type { CycleEdge, StartupCrash } from "../program.js";
+import { isUnloadedPackage } from "../package-shims.js";
 import {
   markCycleEarlyBindings,
   withClassInitFlag,
@@ -171,6 +173,8 @@ export interface FileParts {
 export interface AppendGraph {
   edges?: ReadonlyMap<ts.SourceFile, readonly CycleEdge[]> | undefined;
   inlineCycleCalls?: Set<ts.Node>;
+  /** LoadResult.dynamicImportRejections: import() roots that never load. */
+  rejected?: ReadonlyMap<ts.SourceFile, StartupCrash> | undefined;
 }
 
 /** An appended module's edges: its import and export declarations, then
@@ -421,7 +425,8 @@ export function appendDynamicImportModules(
     if (scan.length === 0) break;
     for (const sf of scan) {
       scanned.add(sf);
-      for (const dep of dynamicProgramImportsOf(program, sf)) visit(dep);
+      for (const dep of dynamicProgramImportsOf(program, sf))
+        if (graph?.rejected?.has(dep) !== true) visit(dep);
     }
   }
   if (added.length > 0) order.splice(order.length - 1, 0, ...added);
@@ -698,6 +703,27 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
  * specifiers are skipped — the lowering owns that fence (the module
  * graph is a build-time artifact; there is nothing to embed for a
  * runtime-computed name). */
+/** The refusal a literal import() rejects with, or null when it loads:
+ * Node's ERR_MODULE_NOT_FOUND for a package the project marks never loaded
+ * (package-shims.ts), or the first refusal in the static graph of a module
+ * only import() loads (LoadResult.dynamicImportRejections). */
+function dynamicImportRejectionOf(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  spec: string,
+  call: ts.CallExpression,
+): StartupCrash | null {
+  if (isUnloadedPackage(spec)) {
+    const refusal = probeNodeImportRefusal(sf.fileName, spec);
+    if (refusal === null) return null;
+    return { message: refusal.message, className: "%Error", code: refusal.code, loc: locOf(call) };
+  }
+  if (lowerer.dynamicImportRejections.size === 0) return null;
+  const root =
+    resolveImport(lowerer.program, sf, spec) ?? npmStaticDepSf7(lowerer.program, sf, spec);
+  return root === null ? null : (lowerer.dynamicImportRejections.get(root) ?? null);
+}
+
 function collectDynamicImports(lowerer: Lowerer, sf: ts.SourceFile): void {
   ts.walkPreorder(sf, (node) => {
     if (
@@ -718,6 +744,13 @@ function collectDynamicImports(lowerer: Lowerer, sf: ts.SourceFile): void {
         // module has no runtime namespace object — the per-site fence
         // says so. Only non-declaration source files count; a sibling
         // .d.mts typing shipped JS is the EMBED case, not this one.
+        // A package the project marks never loaded, or a module whose
+        // static graph Node's resolution refuses: the import() rejects.
+        const rejection = dynamicImportRejectionOf(lowerer, sf, spec, node);
+        if (rejection !== null) {
+          lowerer.dynImports.set(mapKey, { kind: "rejected", crash: rejection });
+          return undefined;
+        }
         const modSym = lowerer.checker.getSymbolAtLocation(node.arguments.nodes[0]);
         const ownModule =
           modSym !== undefined &&

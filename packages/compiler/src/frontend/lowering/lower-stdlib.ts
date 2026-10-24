@@ -31,7 +31,13 @@ import {
   unsupportedNativeApiDiag,
   unsupportedPackageValueDiag,
 } from "../../diagnostics/diagnostic.js";
-import { esmNamedImportLinkCrash, isCjsJsFile, locOf, npmPackageNameOf } from "../program.js";
+import {
+  esmNamedImportLinkCrash,
+  isCjsJsFile,
+  locOf,
+  npmPackageNameOf,
+  type StartupCrash,
+} from "../program.js";
 import { foldedStringKeyOf, lowerDynObjectLiteral } from "./expressions/object-literals.js";
 import { noteEventListeners } from "./lower-event-target.js";
 import { PoisonError, newFnCtx, own } from "./lowerer.js";
@@ -2223,6 +2229,7 @@ export function lowerDynamicImportCall(lowerer: Lowerer, call: ts.CallExpression
   }
   const res = lowerer.dynImports.get(`${ts.getSourceFileOfNode(call).fileName}\u0000${arg.text}`);
   if (res === undefined) lowerer.refuseUnsupportedApi("'import()'", call);
+  if (res.kind === "rejected") return lowerRejectedImport(lowerer, call, res.crash);
   if (res.kind === "program-module") {
     return lowerOwnStaticModuleImport(lowerer, call, arg);
   }
@@ -2230,6 +2237,69 @@ export function lowerDynamicImportCall(lowerer: Lowerer, call: ts.CallExpression
     kind: "moduleNs",
     moduleId: `builtin:${res.module}`,
   });
+}
+
+/** An import() Node rejects before any module of its graph evaluates
+ * (a package marked never loaded, a refused edge in the module's static
+ * graph): the promise rejects on a microtask with Node's error, and the
+ * module never joins the compiled graph. Its namespace is never produced,
+ * so the result is typed dynamically. */
+function lowerRejectedImport(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  crash: StartupCrash,
+): IrExpr {
+  const loc = locOf(call);
+  const resultT: IrType & { kind: "promise" } = { kind: "promise", inner: DYN };
+  const fnName = `%fn${lowerer.lambdaCounter++}_rejectedImport`;
+  const fnType: IrType & { kind: "func" } = { kind: "func", params: [], ret: resultT };
+  const fnCtx = newFnCtx(true, null, fnType, DYN);
+  fnCtx.isAsync = true;
+  lowerer.fnStack.push(fnCtx);
+  try {
+    const hop: IrExpr = {
+      kind: "awaitExpr",
+      value: {
+        kind: "intrinsic",
+        name: "promise.resolve",
+        args: [],
+        type: { kind: "promise", inner: VOID },
+        loc,
+      },
+      type: VOID,
+      loc,
+    };
+    const errorKind = crash.className === "%TypeError" ? 1 : 0;
+    const body: IrStmt[] = [
+      { kind: "exprStmt", expr: hop, loc },
+      {
+        kind: "exprStmt",
+        expr: nodeThrowExpr(errorKind, crash.code ?? "", crash.message, VOID, loc),
+        loc,
+      },
+      { kind: "return", value: dynUndefinedExpr(loc), loc },
+    ];
+    const ctx = lowerer.ctx;
+    lowerer.liftedFns.push({
+      name: fnName,
+      params: [],
+      returnType: DYN,
+      locals: ctx.locals,
+      captures: ctx.captures ?? [],
+      body,
+      async: true,
+      loc,
+    });
+  } finally {
+    lowerer.fnStack.pop();
+  }
+  return {
+    kind: "callValue",
+    callee: { kind: "closure", fnName, captures: [], type: fnType, loc },
+    args: [],
+    type: resultT,
+    loc,
+  };
 }
 
 /** The checker-resolved program source behind one literal import(). */

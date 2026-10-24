@@ -849,6 +849,8 @@ export interface LowerOptions {
   inlineRequireCycleCalls?: ReadonlySet<ts.Node> | undefined;
   /** LoadResult.moduleEdges. */
   moduleEdges?: ReadonlyMap<ts.SourceFile, readonly CycleEdge[]> | undefined;
+  /** LoadResult.dynamicImportRejections. */
+  dynamicImportRejections?: ReadonlyMap<ts.SourceFile, StartupCrash> | undefined;
   /** LIBRARY mode's reachability roots: the profile-mapped exports of the
    * entry module. Executable builds root at the entry's top level alone
    * (an unreferenced export dead-strips); a library's exports are called from
@@ -948,6 +950,8 @@ export interface LowererMode {
   dynNodeStreams?: boolean;
   /** LoadResult.inlineRequireCycleCalls. */
   inlineRequireCycleCalls?: ReadonlySet<ts.Node> | undefined;
+  /** LoadResult.dynamicImportRejections. */
+  dynamicImportRejections?: ReadonlyMap<ts.SourceFile, StartupCrash> | undefined;
   /** LowerOptions.libraryCallbacks (see there). */
   libraryCallbacks?: boolean;
   projectCheckJs?: boolean;
@@ -1081,7 +1085,11 @@ export function lowerToIr(
   // Inline require() calls closing a cycle inside the appended subgraphs
   // join preflight's set (the same run-time refusal by name).
   const inlineRequireCycleCalls = new Set<ts.Node>(options.inlineRequireCycleCalls ?? []);
-  const graph = { edges: options.moduleEdges, inlineCycleCalls: inlineRequireCycleCalls };
+  const graph = {
+    edges: options.moduleEdges,
+    inlineCycleCalls: inlineRequireCycleCalls,
+    rejected: options.dynamicImportRejections,
+  };
   for (let pass = 0; pass < 32; pass++) {
     const before = moduleOrder.length;
     appendDynamicImportModules(program, moduleOrder, onExtraCycle, graph);
@@ -1102,6 +1110,7 @@ export function lowerToIr(
     targetPlatform,
     startupCrash,
     inlineRequireCycleCalls,
+    dynamicImportRejections: options.dynamicImportRejections,
     ffiImports,
     libraryCallbacks,
     forkTargets,
@@ -1126,6 +1135,7 @@ export function lowerToIr(
           targetPlatform,
           startupCrash,
           inlineRequireCycleCalls,
+          dynamicImportRejections: options.dynamicImportRejections,
           ffiImports,
           libraryCallbacks,
           forkTargets,
@@ -1158,6 +1168,7 @@ export function lowerToIr(
       targetPlatform,
       startupCrash,
       inlineRequireCycleCalls,
+      dynamicImportRejections: options.dynamicImportRejections,
       ffiImports,
       libraryCallbacks,
       forkTargets,
@@ -1202,6 +1213,7 @@ export function lowerToIr(
       targetPlatform,
       startupCrash,
       inlineRequireCycleCalls,
+      dynamicImportRejections: options.dynamicImportRejections,
       ffiImports,
       libraryCallbacks,
       forkTargets,
@@ -1317,6 +1329,7 @@ export function lowerToIr(
       remainder: true,
       alreadyFlushed: resultLowerer.flushedSymbols,
       inlineRequireCycleCalls,
+      dynamicImportRejections: options.dynamicImportRejections,
       targetPlatform,
       ffiImports,
       libraryCallbacks,
@@ -1919,6 +1932,8 @@ export class Lowerer {
   /** Inline require() calls whose module edge closes a require cycle
    * (LoadResult.inlineRequireCycleCalls). */
   readonly inlineRequireCycleCalls: ReadonlySet<ts.Node>;
+  /** LoadResult.dynamicImportRejections. */
+  readonly dynamicImportRejections: ReadonlyMap<ts.SourceFile, StartupCrash>;
   /** Immutable callable aliases and compiler-generated adapters. The map
    * is symbol-keyed, so shadowing and cross-module imports keep the same
    * exact binding discipline as globals/functions. */
@@ -3143,7 +3158,9 @@ export class Lowerer {
    * collection; lowerDynamicImportCall reads it per site). */
   readonly dynImports = new Map<
     string,
-    { kind: "program-module" } | { kind: "static-builtin"; module: string }
+    | { kind: "program-module" }
+    | { kind: "static-builtin"; module: string }
+    | { kind: "rejected"; crash: StartupCrash }
   >();
 
   readonly createRequireImports = new Map<
@@ -3731,6 +3748,7 @@ export class Lowerer {
     this.forkTargets = mode.forkTargets ?? [];
     this.frontendServices = mode.frontendServices;
     this.inlineRequireCycleCalls = mode.inlineRequireCycleCalls ?? new Set();
+    this.dynamicImportRejections = mode.dynamicImportRejections ?? new Map();
     this.libraryCallbacks = mode.libraryCallbacks ?? false;
     this.projectCheckJs = mode.projectCheckJs ?? false;
     this.reachable = mode.reachable ?? null;

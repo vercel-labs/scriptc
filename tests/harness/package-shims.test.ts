@@ -4,6 +4,9 @@
  * - a package the project marks unloaded stays unloaded when it IS
  *   installed: the native program prints what Node prints without the
  *   package, and the package's code never runs;
+ * - the same behind import(): an unloaded workspace package, and a module
+ *   only import() loads that imports an unloaded package, reject with
+ *   Node's ERR_MODULE_NOT_FOUND;
  * - a polyfill package with a builtin alias that the project marks unloaded
  *   stays unloaded: its require throws MODULE_NOT_FOUND;
  * - a shimmed package that is not installed, or whose major version has no
@@ -21,7 +24,15 @@
  *   Node running the real package.
  */
 import { execFile, spawn } from "node:child_process";
-import { copyFileSync, cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -104,6 +115,56 @@ describe("package shims", () => {
     installEncoding(dir);
     // Control: Node loads the installed package.
     expect(await run(process.execPath, [join(dir, "main.ts")], dir)).toContain("encoding loaded");
+
+    const out = join(dir, ".scriptc");
+    const result = await compile(join(dir, "main.ts"), {
+      outPath: join(out, "program"),
+      outDir: out,
+      sanitize,
+    });
+    if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+    expect(await run(result.binaryPath, [], dir)).toBe(expected);
+  }, 180_000);
+
+  test("unloaded packages behind import() stay unloaded, even when installed", async () => {
+    const original = join(casesRoot, "unloaded-dynamic-import");
+    const expected = await run(process.execPath, [join(original, "main.ts")], original);
+    expect(expected).toContain("parser: ERR_MODULE_NOT_FOUND");
+    expect(expected).toContain("lazy: ERR_MODULE_NOT_FOUND");
+
+    const dir = copyCase("unloaded-dynamic-import", "unloaded-dynamic-installed");
+    const write = (path: string, text: string) => {
+      mkdirSync(join(dir, path, ".."), { recursive: true });
+      writeFileSync(join(dir, path), text);
+    };
+    // A workspace package (linked into node_modules from outside it) and an
+    // installed ES module package.
+    write(
+      "workspace/parser/package.json",
+      '{ "name": "wsunloadedparser", "version": "1.0.0", "type": "module", "main": "./index.ts" }\n',
+    );
+    write(
+      "workspace/parser/index.ts",
+      'console.log("parser loaded");\nexport function parse(text: string): string {\n  return `parsed:${text}`;\n}\n',
+    );
+    mkdirSync(join(dir, "node_modules"), { recursive: true });
+    symlinkSync("../workspace/parser", join(dir, "node_modules/wsunloadedparser"));
+    write(
+      "node_modules/gtunloadedheavy/package.json",
+      '{ "name": "gtunloadedheavy", "version": "1.0.0", "type": "module", "main": "index.js", "types": "index.d.ts" }\n',
+    );
+    write(
+      "node_modules/gtunloadedheavy/index.js",
+      'console.log("heavy loaded");\nexport function heavy(text) {\n  return `heavy:${text}`;\n}\n',
+    );
+    write(
+      "node_modules/gtunloadedheavy/index.d.ts",
+      "export declare function heavy(text: string): string;\n",
+    );
+    // Control: Node loads both.
+    const loaded = await run(process.execPath, [join(dir, "main.ts")], dir);
+    expect(loaded).toContain("parsed parsed:a");
+    expect(loaded).toContain("heavy:b");
 
     const out = join(dir, ".scriptc");
     const result = await compile(join(dir, "main.ts"), {

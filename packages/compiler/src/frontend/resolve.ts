@@ -24,6 +24,7 @@ import {
 } from "./npm-static.js";
 import {
   clearPackageShimCaches,
+  isUnloadedPackage,
   packageShimFor,
   throughBundledShimForwarder,
 } from "./package-shims.js";
@@ -1018,6 +1019,9 @@ export function resolveWorkspaceSourceModule(
   ) {
     return null;
   }
+  // A workspace package the project marks never loaded (package-shims.ts)
+  // resolves like a missing one.
+  if (isUnloadedPackage(specifier)) return null;
   const source = resolveBareModule(fromFile, specifier, "runtime-source");
   if (
     source?.workspaceDir === undefined ||

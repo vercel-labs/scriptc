@@ -331,8 +331,8 @@ export function openNativeExecutableCache(
       join(toolchain.helperPackageRoot, "package.json"),
       join(toolchain.runtimePackRoot, "package.json"),
       join(toolchain.runtimePackRoot, "runtime-pack.json"),
-      ...[...pack.selected.runtime, ...pack.selected.archives, ...pack.manifest.licenses].map(
-        (artifact) => join(pack.root, artifact.path),
+      ...[...pack.selected.runtime, ...pack.selected.archives, ...pack.licenses].map((artifact) =>
+        join(pack.root, artifact.path),
       ),
     ];
     if (platform === "linux") paths.push(join(pack.root, "runtime-pack.json"));

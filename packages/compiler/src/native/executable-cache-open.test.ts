@@ -52,7 +52,7 @@ function fixture(platform: string, driver: string) {
   } as unknown as NativeToolchain;
   const pack = {
     root: runtime,
-    manifest: { licenses: [] },
+    licenses: [],
     packageText: "{}",
     manifestText: "{}",
     selected: { runtime: [], archives: [] },

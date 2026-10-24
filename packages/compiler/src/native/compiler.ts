@@ -31,7 +31,9 @@ import {
 } from "../backend/native-tools.js";
 import {
   selectNativeRuntimePack,
+  runtimePackManifest,
   stageNativeRuntimeSelection,
+  type RuntimePackStore,
 } from "../backend/runtime-pack-native.js";
 import { RuntimePackError } from "../backend/runtime-pack-core.js";
 import {
@@ -158,6 +160,17 @@ export class NativeCompiler {
       () => this.analyze(entry, options),
     );
     return result;
+  }
+
+  /** Runtime pack selections and verified artifact identities, kept in the
+   * cache. */
+  private runtimePackStore(): RuntimePackStore | undefined {
+    const cache = this.cache;
+    if (cache === null) return undefined;
+    return {
+      read: (key) => cache.read("runtime-pack", key)?.toString("utf8") ?? null,
+      write: (key, text) => cache.write("runtime-pack", key, text),
+    };
   }
 
   private emitObject(
@@ -394,6 +407,8 @@ export class NativeCompiler {
               toolchain.compilerVersion,
               features,
               optimization,
+              "executable",
+              this.runtimePackStore(),
             )
           : null;
       const executableCache =
@@ -449,16 +464,24 @@ export class NativeCompiler {
                   toolchain.compilerVersion,
                   features,
                   optimization,
+                  "executable",
+                  this.runtimePackStore(),
                 )
               : null;
-          if (pack !== null) stageNativeRuntimeSelection(pack, join(stage, "runtime"));
+          if (pack !== null)
+            stageNativeRuntimeSelection(pack, join(stage, "runtime"), this.runtimePackStore());
           const info =
             pack === null
               ? undefined
               : formatNativeLinkInfo(
                   { programObject: output, target, ffi },
                   toolchain.compilerVersion,
-                  pack,
+                  {
+                    root: pack.root,
+                    manifest: runtimePackManifest(pack),
+                    selected: pack.selected,
+                    flavor: pack.flavor,
+                  },
                 );
           renameSync(stagedOutput, output);
           return {
@@ -473,7 +496,7 @@ export class NativeCompiler {
         const pack = executablePack!;
         const runtime = options.sanitize
           ? buildSanitizedRuntime(toolchain, pack, join(stage, "runtime"), "executable", this.cache)
-          : stageNativeRuntimeSelection(pack, join(stage, "runtime"));
+          : stageNativeRuntimeSelection(pack, join(stage, "runtime"), this.runtimePackStore());
         timing("runtime-stage");
         const plan = executableLinkInputs({
           target,
@@ -617,6 +640,7 @@ export class NativeCompiler {
         features,
         profile.optimization,
         profile.instancePerThread ? "library-thread" : "library",
+        this.runtimePackStore(),
       );
       const runtime = options.sanitize
         ? buildSanitizedRuntime(
@@ -626,7 +650,7 @@ export class NativeCompiler {
             profile.instancePerThread ? "library-thread" : "library",
             this.cache,
           )
-        : stageNativeRuntimeSelection(pack, join(stage, "runtime"));
+        : stageNativeRuntimeSelection(pack, join(stage, "runtime"), this.runtimePackStore());
       timing("runtime-stage");
       const stagedArchive = join(stage, wasm ? "output.wasm" : "output.a");
       const localizeSymbols = libraryLocalizeSymbols(profile);

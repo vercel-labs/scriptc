@@ -3,6 +3,7 @@
   Independent concrete uses have no specialization-count limit; recursively expanding demands and type layouts produce diagnostics.
   Other generic calls compile when the target resolves statically.
   Generic function values require a concrete signature at use and a binding that is never reassigned.
+  A generic function stored by name in an object literal (`{ object: objectOf }`) holds its erased instance, with every type parameter bound to `unknown`.
 - **Variadic wrappers:** A generic higher-order wrapper is specialized to each wrapped function's exact signature.
   `Parameters<F>`, `ReturnType<F>`, and rest parameters typed as fixed tuples become that signature's parameter list.
   A function expression with no parameters that reads `arguments` compiles only when its value is asserted to, or contextually typed as, one fixed-arity signature; `arguments` is then that signature's tuple.

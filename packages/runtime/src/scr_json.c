@@ -16150,26 +16150,97 @@ typedef struct ScrWeakEntry {
   unsigned kind;
   ScrDyn *value;
   ScrWeakMap *owner;
+  /* next chains the owner's bucket; all_next chains the bucket of the
+   * thread's index of every entry, which key disposal searches. */
   struct ScrWeakEntry *next, *all_next;
 } ScrWeakEntry;
 
-struct ScrWeakMap { size_t rc; ScrWeakEntry *entries; bool is_set; };
+/* buckets is NULL until the first entry; mask + 1 is its power-of-two
+ * length. */
+struct ScrWeakMap { size_t rc; ScrWeakEntry **buckets; size_t mask, count; bool is_set; };
 /* Weak observers borrow key identities. Values are traced strong edges;
- * value-to-key cycles require explicit deletion or container disposal. */
+ * value-to-key cycles require explicit deletion or container disposal.
+ * Both indexes keep at most one entry per bucket on average, doubling when
+ * they fill, so get, set, has and delete take expected constant time however
+ * many entries there are, and disposing a key takes time in the number of
+ * collections holding it. */
 #define SCR_WEAK_BUCKETS 1024
-static SCR_TL ScrWeakEntry *scr_weak_entries[SCR_WEAK_BUCKETS];
-static size_t scr_weak_bucket(void *key) {
-  uintptr_t bits = (uintptr_t)key;
-  return ((bits >> 4) ^ (bits >> 14)) & (SCR_WEAK_BUCKETS - 1);
+#define SCR_WEAK_MAP_MIN_BUCKETS 8
+/* The thread's index of every entry: the static table until the entries
+ * outnumber its buckets, then a heap table, freed with the last entry. */
+static SCR_TL ScrWeakEntry *scr_weak_initial[SCR_WEAK_BUCKETS];
+static SCR_TL ScrWeakEntry **scr_weak_grown;
+static SCR_TL size_t scr_weak_grown_mask, scr_weak_count;
+
+static size_t scr_weak_hash(const void *key) {
+  uint64_t bits = (uint64_t)(uintptr_t)key >> 4;
+  bits *= UINT64_C(0x9e3779b97f4a7c15);
+  return (size_t)(bits ^ (bits >> 32));
+}
+
+static ScrWeakEntry **scr_weak_all_slot(const void *key) {
+  if (scr_weak_grown) return &scr_weak_grown[scr_weak_hash(key) & scr_weak_grown_mask];
+  return &scr_weak_initial[scr_weak_hash(key) & (SCR_WEAK_BUCKETS - 1)];
+}
+
+static ScrWeakEntry **scr_weak_map_slot(ScrWeakMap *map, const void *key) {
+  return &map->buckets[scr_weak_hash(key) & map->mask];
+}
+
+static void scr_weak_grow_all(void) {
+  ScrWeakEntry **old = scr_weak_grown ? scr_weak_grown : scr_weak_initial;
+  size_t old_len = scr_weak_grown ? scr_weak_grown_mask + 1 : SCR_WEAK_BUCKETS;
+  if (old_len > SIZE_MAX / 2 / sizeof *old) scr_json_oom();
+  size_t len = old_len * 2;
+  ScrWeakEntry **grown = calloc(len, sizeof *grown);
+  if (!grown) scr_json_oom();
+  for (size_t i = 0; i < old_len; i++) {
+    for (ScrWeakEntry *entry = old[i], *next; entry; entry = next) {
+      next = entry->all_next;
+      ScrWeakEntry **slot = &grown[scr_weak_hash(entry->key) & (len - 1)];
+      entry->all_next = *slot;
+      *slot = entry;
+    }
+  }
+  if (scr_weak_grown) free(scr_weak_grown);
+  else memset(scr_weak_initial, 0, sizeof scr_weak_initial);
+  scr_weak_grown = grown;
+  scr_weak_grown_mask = len - 1;
+}
+
+static void scr_weak_grow_map(ScrWeakMap *map) {
+  size_t old_len = map->buckets ? map->mask + 1 : 0;
+  if (old_len > SIZE_MAX / 2 / sizeof *map->buckets) scr_json_oom();
+  size_t len = old_len ? old_len * 2 : SCR_WEAK_MAP_MIN_BUCKETS;
+  ScrWeakEntry **buckets = calloc(len, sizeof *buckets);
+  if (!buckets) scr_json_oom();
+  for (size_t i = 0; i < old_len; i++) {
+    for (ScrWeakEntry *entry = map->buckets[i], *next; entry; entry = next) {
+      next = entry->next;
+      ScrWeakEntry **slot = &buckets[scr_weak_hash(entry->key) & (len - 1)];
+      entry->next = *slot;
+      *slot = entry;
+    }
+  }
+  free(map->buckets);
+  map->buckets = buckets;
+  map->mask = len - 1;
 }
 
 static void scr_weak_remove_impl(ScrWeakEntry *entry, bool collected) {
-  ScrWeakEntry **slot = &entry->owner->entries;
+  ScrWeakMap *map = entry->owner;
+  ScrWeakEntry **slot = scr_weak_map_slot(map, entry->key);
   while (*slot != entry) slot = &(*slot)->next;
   *slot = entry->next;
-  slot = &scr_weak_entries[scr_weak_bucket(entry->key)];
+  map->count--;
+  slot = scr_weak_all_slot(entry->key);
   while (*slot != entry) slot = &(*slot)->all_next;
   *slot = entry->all_next;
+  if (--scr_weak_count == 0 && scr_weak_grown) {
+    free(scr_weak_grown);
+    scr_weak_grown = NULL;
+    scr_weak_grown_mask = 0;
+  }
   ScrDyn *value = entry->value;
   free(entry);
   /* Unlink before release: releasing a value can dispose another key. */
@@ -16181,19 +16252,37 @@ static void scr_weak_remove(ScrWeakEntry *entry) {
 }
 
 static void scr_weak_map_trace(void *ptr, ScrTraceVisit visit, void *ctx) {
-  for (ScrWeakEntry *entry = ((ScrWeakMap *)ptr)->entries; entry; entry = entry->next)
-    visit(entry->value, ctx);
+  ScrWeakMap *map = ptr;
+  if (!map->buckets) return;
+  for (size_t i = 0; i <= map->mask; i++)
+    for (ScrWeakEntry *entry = map->buckets[i]; entry; entry = entry->next)
+      visit(entry->value, ctx);
+}
+
+/* Remove every entry, then the index. Releasing one entry's value can
+ * dispose a key that removes another entry of this map, but never adds
+ * one: the map is unreachable. */
+static void scr_weak_map_clear(ScrWeakMap *map, bool collected) {
+  for (size_t i = 0; map->count && i <= map->mask; i++) {
+    while (map->buckets[i]) {
+      if (collected) scr_weak_remove_impl(map->buckets[i], true);
+      else scr_weak_remove(map->buckets[i]);
+    }
+  }
+  free(map->buckets);
+  map->buckets = NULL;
+  map->mask = 0;
 }
 
 static void scr_weak_map_gcfree(void *ptr) {
   ScrWeakMap *map = ptr;
-  while (map->entries) scr_weak_remove_impl(map->entries, true);
+  scr_weak_map_clear(map, true);
   scr_cyc_free(map);
 }
 
 static void scr_weak_disposed(void *key) {
-  for (;;) {
-    ScrWeakEntry *entry = scr_weak_entries[scr_weak_bucket(key)];
+  while (scr_weak_count) {
+    ScrWeakEntry *entry = *scr_weak_all_slot(key);
     while (entry && entry->key != key) entry = entry->all_next;
     if (!entry) return;
     scr_weak_remove(entry);
@@ -16210,7 +16299,7 @@ static void scr_weak_map_release(void *ptr) {
   if (--map->rc) { scr_cyc_released(map); return; }
   scr_cyc_dead(map);
   scr_weak_dispose(map);
-  while (map->entries) scr_weak_remove(map->entries);
+  scr_weak_map_clear(map, false);
   scr_cyc_free(map);
 }
 
@@ -16255,7 +16344,8 @@ static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
 }
 
 static ScrWeakEntry *scr_weak_find(ScrWeakMap *map, void *ptr, unsigned kind) {
-  for (ScrWeakEntry *entry = map->entries; entry; entry = entry->next)
+  if (!map->buckets) return NULL;
+  for (ScrWeakEntry *entry = *scr_weak_map_slot(map, ptr); entry; entry = entry->next)
     if (entry->key == ptr && entry->kind == kind) return entry;
   return NULL;
 }
@@ -16287,11 +16377,17 @@ static bool scr_weak_set(ScrWeakMap *map, ScrDyn *key, ScrDyn *value) {
   entry->kind = kind;
   entry->value = scr_dyn_retain(value);
   entry->owner = map;
-  entry->next = map->entries;
-  map->entries = entry;
-  size_t bucket = scr_weak_bucket(ptr);
-  entry->all_next = scr_weak_entries[bucket];
-  scr_weak_entries[bucket] = entry;
+  if (!map->buckets || map->count > map->mask) scr_weak_grow_map(map);
+  ScrWeakEntry **slot = scr_weak_map_slot(map, ptr);
+  entry->next = *slot;
+  *slot = entry;
+  map->count++;
+  if (scr_weak_count >= (scr_weak_grown ? scr_weak_grown_mask + 1 : SCR_WEAK_BUCKETS))
+    scr_weak_grow_all();
+  slot = scr_weak_all_slot(ptr);
+  entry->all_next = *slot;
+  *slot = entry;
+  scr_weak_count++;
   return true;
 }
 

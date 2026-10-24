@@ -2519,12 +2519,29 @@ export function isCreateRequireBinding7(program: ts.Program, callee: ts.Identifi
   );
 }
 
-/** Only literal calls and literal resolution queries can erase the loader
- * value. In particular, assignments, exported aliases, shorthand properties,
- * optional calls, and passing the loader to user code cannot pass this test. */
-function staticCreateRequireUse7(expr: ts.Expression): boolean {
+/** How a use of a createRequire loader lowers:
+ * - "static": a literal call or a literal resolution query, which erases
+ *   the loader value.
+ * - "runtime": in JavaScript source, a call with a computed specifier, a
+ *   require.resolve call with a computed request, or `resolve` read as a
+ *   value. The runtime resolves the specifier like Node
+ *   (module-resolution.ts, scr_require.c).
+ * - "computed": the same uses in TypeScript source.
+ * - "escaping": the loader itself as a value, writes, optional calls,
+ *   spread arguments, `resolve.paths` with a computed request or as a
+ *   value, and other members. */
+type CreateRequireUse7 = "static" | "runtime" | "computed" | "escaping";
+
+function createRequireUse7(expr: ts.Expression): CreateRequireUse7 {
+  const use = createRequireUseShape7(expr);
+  return use === "runtime" && !isJsSourceFile(ts.getSourceFileOfNode(expr)) ? "computed" : use;
+}
+
+function createRequireUseShape7(expr: ts.Expression): CreateRequireUse7 {
   let use: ts.Node = expr;
   while (ts.isParenthesizedExpression(use.parent)) use = use.parent;
+  let member = false;
+  let paths = false;
   if (
     ts.isPropertyAccessExpression(use.parent) &&
     use.parent.expression === use &&
@@ -2532,21 +2549,35 @@ function staticCreateRequireUse7(expr: ts.Expression): boolean {
     !use.parent.questionDotToken
   ) {
     use = use.parent;
+    member = true;
     if (
       ts.isPropertyAccessExpression(use.parent) &&
       use.parent.expression === use &&
       use.parent.name.text === "paths" &&
       !use.parent.questionDotToken
-    )
+    ) {
       use = use.parent;
+      paths = true;
+    }
   }
   const call = use.parent;
+  if (ts.isCallExpression(call) && call.expression === use) {
+    if (call.questionDotToken) return "escaping";
+    const args = call.arguments.nodes;
+    if (args.length === 1 && ts.isStringLiteralLike(args[0]!)) return "static";
+    if (paths || args.some((arg) => ts.isSpreadElement(arg))) return "escaping";
+    return member && (args.length === 0 || args.length > 2) ? "escaping" : "runtime";
+  }
+  return member && !paths && !isAssignmentTarget7(use) ? "runtime" : "escaping";
+}
+
+function isAssignmentTarget7(node: ts.Node): boolean {
+  const parent = node.parent;
   return (
-    ts.isCallExpression(call) &&
-    call.expression === use &&
-    !call.questionDotToken &&
-    call.arguments.nodes.length === 1 &&
-    ts.isStringLiteralLike(call.arguments.nodes[0]!)
+    ts.isBinaryExpression(parent) &&
+    parent.left === node &&
+    parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+    parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
   );
 }
 
@@ -2582,9 +2613,11 @@ function stableCreateRequireBindingReason7(
         : checker.getSymbolAtLocation(ref);
       if (target && (target.flags & ts.SymbolFlags.Alias) !== 0)
         target = checker.getAliasedSymbol(target);
-      if (target === symbol && !staticCreateRequireUse7(ref)) {
+      if (target !== symbol) continue;
+      const use = createRequireUse7(ref);
+      if (use === "computed")
         return "its createRequire binding is reassigned, escapes, or uses a computed specifier";
-      }
+      if (use === "escaping") return "its createRequire binding is reassigned or escapes";
     }
     const preceding = stmt.declarationList.declarations.nodes.slice(
       0,
@@ -2647,10 +2680,12 @@ function npmStaticModuleImportReason7(
     checker.prefetchSymbolNodesExact(identifierOccurrences7(sf, specifier.name.text));
     let reason: string | null = null;
     const checkUse = (expr: ts.Expression): void => {
-      if (!staticCreateRequireUse7(expr)) {
+      const use = createRequireUse7(expr);
+      if (use === "computed")
         reason =
           "its createRequire result escapes or is used with a computed specifier (static requires need literal specifiers)";
-      }
+      else if (use === "escaping")
+        reason = "its createRequire result escapes (static requires need literal specifiers)";
     };
     ts.walkPreorder(sf, (node) => {
       if (

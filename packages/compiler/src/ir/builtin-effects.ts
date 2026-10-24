@@ -679,6 +679,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.builtinId",
   "process.builtinModule",
   "process.builtinUnsupported",
+  "module.requireComputed",
+  "module.resolveComputed",
   "fs.callbackValue",
   "fs.callbackCall",
   "dyn.keyDelete",

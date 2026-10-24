@@ -776,6 +776,21 @@ export function nativeAddonDiag(specifier: string, loc: SrcLoc): ScrDiagnostic {
   };
 }
 
+/** A createRequire require or require.resolve call whose specifier is
+ * computed at run time, where the runtime resolves it like Node
+ * (scr_require.c). Coverage lists the call as deferred: a require whose
+ * specifier resolves to a module ends the program with this code, because
+ * the module graph is fixed at build time. */
+export function computedRequireDiag(surface: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC2020",
+    message: `${surface} with a computed specifier resolves at run time; a require of a specifier that resolves to a module, such as a native addon, ends the program`,
+    loc,
+    milestone: "later",
+    hint: 'require("<static string literal>") compiles the module into the program; native addons need a replacement through native FFI (https://scriptc.dev/ffi#replacing-a-node-api-addon)',
+  };
+}
+
 /** Records are monomorphic structs, so a value's shape must match the
  * expected shape exactly OR narrow through the width-copy family
  * (recordWidthPlan / the overflow capture: target fields copied off the

@@ -378,6 +378,18 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "module.parent": { argTypes: [F64], result: F64 },
   "module.loaded": { argTypes: [F64], result: BOOL },
   "module.cacheGet": { argTypes: [STRING], result: F64 },
+  /** createRequire's require(id) and require.resolve(request, options)
+   * with a specifier computed at run time (scr_require.c): the arguments,
+   * then the requiring file, the call's "file:line" and the builtin ids.
+   * Both resolve like Node at run time. requireComputed always throws
+   * (Node's argument errors or MODULE_NOT_FOUND), or ends the program with
+   * an SC2020 refusal when the specifier resolves; resolveComputed answers
+   * the resolved id or real path. */
+  "module.requireComputed": { argTypes: [DYN, STRING, STRING, arrayOf(STRING)], result: DYN },
+  "module.resolveComputed": {
+    argTypes: [DYN, DYN, STRING, STRING, arrayOf(STRING)],
+    result: STRING,
+  },
   "module.cacheHas": { argTypes: [STRING], result: BOOL },
   "module.cacheKeys": { argTypes: [], result: arrayOf(STRING) },
   "timers.setTimeout": { argTypes: [{ kind: "func", params: [], ret: VOID }, F64], result: VOID },

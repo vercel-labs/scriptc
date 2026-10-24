@@ -64,6 +64,9 @@ export interface NativeLinkFeatures {
   /** Builtin functions read as values (Buffer.byteLength, Buffer.alloc,
    * fs.realpathSync) link scr_builtin_values.c; absent (false) otherwise. */
   builtinValues?: boolean;
+  /** createRequire's computed require and require.resolve link
+   * scr_require.c; absent (false) otherwise. */
+  computedRequire?: boolean;
   events: boolean;
   emitter: boolean;
   symbol: boolean;

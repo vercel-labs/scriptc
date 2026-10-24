@@ -270,6 +270,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "module.id": "scr_module_id",
   "module.path": "scr_module_path",
   "module.paths": "scr_module_paths",
+  "module.requireComputed": "scr_require_computed",
+  "module.resolveComputed": "scr_require_resolve",
   "module.children": "scr_module_children",
   "module.parent": "scr_module_parent",
   "module.loaded": "scr_module_loaded",

@@ -88,7 +88,7 @@ import { lowerGlobalValue } from "../lower-global-value.js";
 import { fenceEnumObjectValue } from "../lower-enums.js";
 import { mixinFnOfCallee } from "../lower-mixins.js";
 import { isNavigatorGlobal, refuseNavigator } from "../builtins/navigator.js";
-import { wasiGuestPath } from "../../../wasi-paths.js";
+import { moduleFileName } from "../import-meta.js";
 
 export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: SrcLoc): IrExpr {
   if (lowerer.isStdlibGlobal(expr, "console")) {
@@ -1012,12 +1012,6 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     expr,
     `the reference to '${expr.text}' (a binding form with no lowering)`,
   );
-}
-
-function moduleFileName(lowerer: Lowerer, sf: ts.SourceFile): string {
-  return lowerer.targetPlatform === "wasi"
-    ? (wasiGuestPath(sf.fileName) ?? sf.fileName.replace(/\\/g, "/"))
-    : sf.fileName;
 }
 
 /** A computed-key access (`value[key]` after `typeof value === "object"`)

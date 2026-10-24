@@ -2,5 +2,15 @@ Node-API (N-API) and V8 `.node` addons depend on Node.js itself, so compiled pro
 Direct `createRequire` calls to local addons are rejected at compile time.
 A package that requires an addon needs a JavaScript implementation that compiles, or a replacement through native FFI.
 
+A package that looks for an optional addon at run time compiles with `--npm-static`.
+In JavaScript dependencies, a `createRequire` require call with a computed specifier, and `require.resolve` called with a computed request or read as a value, resolve the specifier with the Node.js algorithm when the program runs.
+`require.resolve` returns the path Node.js returns.
+When nothing resolves, both throw the `MODULE_NOT_FOUND` error that Node.js throws, so a package that probes for a missing addon takes the same branch as in Node.js.
+When the specifier of a require call resolves to a native addon, a builtin, or a file that is not part of the compiled program, the program prints an SC2020 error that names it and exits with status 1, because Node.js would load that module.
+A `catch` clause around the call does not run in that case.
+Resolution steps that the runtime does not reproduce, such as package `imports` specifiers, `require.resolve` options, and subpaths that a package does not export, end the program the same way.
+Coverage lists these calls as deferred to runtime.
+This applies until compiled programs can load addons through Node.js.
+
 Use [Native FFI](/docs/ffi#replacing-a-node-api-addon) to call a plain C ABI function linked from an object or static archive.
 The guide includes a replacement for a small Node-API helper.

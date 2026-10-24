@@ -950,6 +950,9 @@ const RUNTIME_FEATURE_RULES = {
     fns: ["buffer.prototypeMember"],
     expr: (node, _tables) => node.kind === "dynInvoke" && DYN_BUFFER_METHODS.has(node.method),
   }),
+  /** createRequire's require and require.resolve with specifiers computed
+   * at run time (scr_require.c). */
+  computedRequire: rule({ fns: ["module.requireComputed", "module.resolveComputed"] }),
   /** Builtin functions read as values (scr_builtin_values.c). */
   builtinValues: rule({
     fns: [
@@ -1195,6 +1198,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynForAwait: false,
     dynBuffer: false,
     builtinValues: false,
+    computedRequire: false,
     symbol: false,
     tls: false,
     tlsCa: false,

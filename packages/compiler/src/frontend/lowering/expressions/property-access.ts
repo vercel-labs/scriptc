@@ -146,6 +146,8 @@ import { nullishGenericBindingUnitOf } from "../binding-analysis.js";
 import { blockedBindingUseDiag } from "../../../diagnostics/diagnostic.js";
 import { npmStaticPackageOfPath } from "../../npm-static.js";
 import { importMetaField, isImportMeta } from "../import-meta.js";
+import { createRequireCalleeFileOf } from "../builtins/module-bindings.js";
+import { createRequireResolveValue } from "../builtins/module-resolution.js";
 import {
   builtinPrototypeMethod,
   lowerArrayIsArrayValue,
@@ -285,6 +287,14 @@ const DGRAM_METHOD_VALUES = new Set([
   "ref",
   "unref",
 ]);
+
+function isCreateRequireResolveValue(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
+  return (
+    expr.name.text === "resolve" &&
+    !expr.questionDotToken &&
+    createRequireCalleeFileOf(lowerer, expr.expression) !== null
+  );
+}
 
 export function lowerPropertyAccessExpr(
   lowerer: Lowerer,
@@ -1275,6 +1285,10 @@ export function lowerPropertyAccessExpr(
       return declared && declared.kind !== "void" ? lowerer.coerceToExpected(read, declared) : read;
     }
   }
+  // A createRequire loader's resolve read as a value (passed on, or
+  // picked by `??`): a function that resolves its request at run time.
+  if (isCreateRequireResolveValue(lowerer, expr))
+    return createRequireResolveValue(lowerer, expr, loc);
   // The lib fence's PROPERTY chokepoint: a stdlib-declared member that
   // no lowering above claimed ([1,2].entries, Math.SQRT2, Promise.all,
   // re.exec as a value, ...) reports SC2020 here.

@@ -91,6 +91,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   eventsOnceSignal: boolean;
   dynBuffer: boolean;
   builtinValues: boolean;
+  computedRequire: boolean;
   warningReplace: boolean;
   stdioExtended: boolean;
   brotli: boolean;
@@ -290,6 +291,7 @@ export function effectiveRuntimeFeatures(
     eventsOnceSignal: features.eventsOnceSignal === true,
     dynBuffer: features.dynBuffer === true,
     builtinValues: features.builtinValues === true,
+    computedRequire: features.computedRequire === true,
     warningReplace: features.warningReplace === true,
     stdioExtended: features.stdioExtended === true,
     brotli: features.brotli === true,

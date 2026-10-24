@@ -423,13 +423,99 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     },
   );
 
+  test.each(["llvm"] as const)(
+    "a package probing for optional addons through createRequire resolves at run time (%s)",
+    async (backend) => {
+      const entry = join(pilotRoot, "addon-probe-cli.ts");
+      const { coverage } = analyze(entry, { npmStatic: "auto" });
+      expect(coverage.npmStatic).toEqual([{ package: "addon-probe", status: "static" }]);
+      expect(coverage.diagnostics).toHaveLength(0);
+      expect(
+        (coverage.runtimeFences ?? []).filter((f) => f.code === "SC2020").map((f) => f.message),
+      ).toEqual([
+        expect.stringContaining(
+          "createRequire's require with a computed specifier resolves at run time",
+        ),
+        expect.stringContaining(
+          "createRequire's require.resolve with a computed specifier resolves at run time",
+        ),
+      ]);
+      const outDir = join(cacheDir, "addon-probe", sanitize ? "san" : "plain", backend);
+      const result = await compile(entry, {
+        backend,
+        npmStatic: "auto",
+        sanitize,
+        outDir,
+        outPath: join(outDir, "program"),
+      });
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      const [nodeRes, nativeRes] = await Promise.all([
+        runBinary(process.execPath, [entry]),
+        runBinary(result.binaryPath, []),
+      ]);
+      expect(nativeRes.stdout.toString()).toBe("a/b absent,absent,unresolved\ncustom:other\n");
+      expect(nativeRes.stdout).toEqual(nodeRes.stdout);
+      expect(comparableStderr(nativeRes.stderr)).toEqual(nodeRes.stderr);
+      expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+    },
+  );
+
+  // Node would load the installed file, which the compiled program cannot:
+  // the require ends the program with the refusal instead of throwing, so
+  // the package's catch clause does not take its fallback.
   test.each([
     [
-      "computed specifier",
-      'const spec = "node:path"; const path = load(spec);',
-      "computed specifier",
+      "addon",
+      /^scriptc: native addon '.*[\\/]native[\\/]installed\.node' requires Node's addon runtime, which is unavailable in scriptc \[SC2020 at .*index\.js:\d+\]\n$/,
     ],
+    [
+      "module",
+      /^scriptc: createRequire's require of '.*[\\/]installed\.js' resolves to '.*[\\/]installed\.js', which is not part of the compiled program: the module graph is fixed at build time \[SC2020 at .*index\.js:\d+\]\n$/,
+    ],
+  ] as const)(
+    "a computed require of an installed %s ends the program with a refusal",
+    async (kind, stderr) => {
+      const entry = join(pilotRoot, "addon-probe-installed-cli.ts");
+      const outDir = join(cacheDir, "addon-probe-installed", sanitize ? "san" : "plain");
+      const result = await compile(entry, {
+        backend: "llvm",
+        npmStatic: "auto",
+        sanitize,
+        outDir,
+        outPath: join(outDir, "program"),
+      });
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      const nativeRes = await runBinary(result.binaryPath, [kind]);
+      expect(nativeRes.stdout.toString()).toBe("before\n");
+      expect(comparableStderr(nativeRes.stderr).toString()).toMatch(stderr);
+      expect(nativeRes.exitCode).toBe(1);
+    },
+  );
+
+  test.each([
     ["escaped require", 'const alias = load; const path = alias("node:path");', "escapes"],
+    [
+      "escaped require in a try block",
+      'try { const alias = load; alias("node:path"); } catch {} const path = load("node:path");',
+      "escapes",
+    ],
+    [
+      "computed resolve.paths request",
+      'const spec = "node:path"; load.resolve.paths(spec); const path = load("node:path");',
+      "escapes",
+    ],
+    [
+      "resolve.paths value",
+      'const paths = load.resolve.paths; const path = load("node:path");',
+      "escapes",
+    ],
+    [
+      "spread require arguments",
+      'const specs = ["node:path"]; load(...specs); const path = load("node:path");',
+      "escapes",
+    ],
     [
       "reassigned require",
       'let load = createLoader(import.meta.url); load = () => ({}); const path = load("node:path");',

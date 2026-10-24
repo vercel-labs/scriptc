@@ -2914,6 +2914,8 @@ declare module "crypto" {
   export interface AsymmetricKeyExportOptions<T extends KeyFormat> {
     type: "pkcs1" | "spki" | "pkcs8" | "sec1";
     format: T;
+    cipher?: string | undefined;
+    passphrase?: string | Buffer | undefined;
   }
   export interface AsymmetricKeyDetails {
     modulusLength?: number;
@@ -2938,6 +2940,7 @@ declare module "crypto" {
     format?: "pem" | "der" | undefined;
     type?: "pkcs1" | "pkcs8" | "sec1" | undefined;
     encoding?: string | undefined;
+    passphrase?: string | Buffer | undefined;
   }
   export interface PublicKeyInput {
     key: string | Buffer;
@@ -2974,12 +2977,22 @@ declare module "crypto" {
     modulusLength: number;
     publicExponent?: number | undefined;
     publicKeyEncoding: { type: "pkcs1" | "spki"; format: PubF };
-    privateKeyEncoding: { type: "pkcs1" | "pkcs8"; format: PrivF };
+    privateKeyEncoding: {
+      type: "pkcs1" | "pkcs8";
+      format: PrivF;
+      cipher?: string | undefined;
+      passphrase?: string | undefined;
+    };
   }
   export interface ECKeyPairOptions<PubF extends KeyFormat, PrivF extends KeyFormat> {
     namedCurve: string;
     publicKeyEncoding: { type: "pkcs1" | "spki"; format: PubF };
-    privateKeyEncoding: { type: "sec1" | "pkcs8"; format: PrivF };
+    privateKeyEncoding: {
+      type: "sec1" | "pkcs8";
+      format: PrivF;
+      cipher?: string | undefined;
+      passphrase?: string | undefined;
+    };
   }
   export function generateKeyPairSync(
     type: "rsa",
@@ -3007,7 +3020,12 @@ declare module "crypto" {
   ): KeyPairKeyObjectResult;
   export interface ED25519KeyPairOptions<PubF extends KeyFormat, PrivF extends KeyFormat> {
     publicKeyEncoding: { type: "spki"; format: PubF };
-    privateKeyEncoding: { type: "pkcs8"; format: PrivF };
+    privateKeyEncoding: {
+      type: "pkcs8";
+      format: PrivF;
+      cipher?: string | undefined;
+      passphrase?: string | undefined;
+    };
   }
   export function generateKeyPairSync(
     type: "ed25519",
@@ -3020,7 +3038,12 @@ declare module "crypto" {
   export function generateKeyPairSync(type: "ed25519", options?: {}): KeyPairKeyObjectResult;
   export interface X25519KeyPairOptions<PubF extends KeyFormat, PrivF extends KeyFormat> {
     publicKeyEncoding: { type: "spki"; format: PubF };
-    privateKeyEncoding: { type: "pkcs8"; format: PrivF };
+    privateKeyEncoding: {
+      type: "pkcs8";
+      format: PrivF;
+      cipher?: string | undefined;
+      passphrase?: string | undefined;
+    };
   }
   export function generateKeyPairSync(
     type: "x25519",

@@ -31,18 +31,21 @@
   `checkPrime`, `checkPrimeSync`, `generatePrime`, and `generatePrimeSync` support bigint, ArrayBuffer, typed-array, Buffer, and DataView values and the `checks`, `safe`, `add`, `rem`, and `bigint` options on native targets, with Node's errors; the callback forms compute before they return and call back in a later macrotask.
   Candidates and sizes longer than 262144 bits throw a coded SC2020 error, and wasm32-wasi builds are refused.
   Node calls their callbacks with `undefined` as the error, which a callback whose error parameter is typed `Error | null`, as @types/node declares it, receives as `null`.
-  RSA, EC, Ed25519, and X25519 private and public KeyObjects come from `generateKeyPairSync`, `generateKeyPair`, `createPrivateKey`, and `createPublicKey`, on native targets.
+  RSA, RSA-PSS, EC, Ed25519, and X25519 private and public KeyObjects come from `generateKeyPairSync`, `generateKeyPair`, `createPrivateKey`, and `createPublicKey`, on native targets.
   `generateKeyPairSync` and `generateKeyPair` check their arguments in Node's order, with Node's errors, including the OpenSSL errors for RSA modulus lengths below 512 or above 2147483647 bits and for public exponents of 0, 1, or an even number, which `generateKeyPair` passes to its callback.
-  RSA keys generate with even modulus lengths from 1024 to 8192 bits and public exponents up to 2147483647; other lengths and exponents that Node accepts, and `paramEncoding: 'explicit'`, throw a coded SC2020 error.
+  RSA keys generate with modulus lengths from 512 to 8192 bits, an odd length from 2048 bits yielding one bit less as in Node, and odd public exponents up to 4294967295; longer moduli that Node accepts, and `paramEncoding: 'explicit'`, throw a coded SC2020 error.
   The EC curves are prime256v1 (P-256), secp384r1 (P-384), secp521r1 (P-521), and secp256k1.
   Keys read and write PEM and DER as PKCS#1, SEC1, PKCS#8, and SubjectPublicKeyInfo, and JWK (Ed25519 and X25519 keys use PKCS#8, SubjectPublicKeyInfo, and JWK); `createPublicKey` also takes a private key or an X.509 certificate.
   EC, Ed25519, and X25519 keys also read and write the `raw-public` and `raw-private` formats, including compressed EC points.
   Raw X448, Ed448, and post-quantum keys, EC scalars of 0 or at least the curve order, and the EC point at infinity, which Node accepts, throw a coded SC2020 error.
   They support `type`, `asymmetricKeyType`, `asymmetricKeyDetails`, `export()`, `equals()`, and `instanceof KeyObject`.
   `crypto.sign`, `crypto.verify`, `createSign`, and `createVerify` support RSA PKCS#1 v1.5 and PSS padding and ECDSA with DER and IEEE P1363 encodings over SHA-1 and SHA-2 digests, and Ed25519 through `crypto.sign` and `crypto.verify` with a `null` or `undefined` algorithm.
+  RSA-PSS keys follow their RSASSA-PSS-params as Node does: PSS padding only, the key's digest and MGF1 digest, and salts of at least the key's length, with OpenSSL's errors; their details name the parameters, they export as PKCS#8 and SubjectPublicKeyInfo only, and digests other than SHA-1 and SHA-2 in their options throw a coded SC2020 error.
   Ed25519 signing, verification, and private keys link when a string literal in the program names `ed25519` (in any case); without one they throw a coded SC2020 error, while Ed25519 public keys still import and export.
   Sign and Verify values accumulate `update()` data and are not writable streams.
-  Encrypted private keys (`passphrase`, `cipher`), the other key types (`rsa-pss`, `dsa`, `ed448`, `x448`, and the rest), and wasm32-wasi builds throw a coded SC2020 error or are refused.
+  Private keys export encrypted (`cipher`, `passphrase`) with aes-128, aes-192, and aes-256 in CBC and ECB modes and with des-ede3-cbc, PKCS#8 as PBES2 with PBKDF2-HMAC-SHA256 and PKCS#1 and SEC1 as traditional PEM, and the ciphers OpenSSL refuses for a form throw its errors; a cipher option can also be an OID; other ciphers Node encrypts with throw a coded SC2020 error.
+  Encrypted private keys import with a `passphrase` from PBES2 with HMAC-SHA PRFs and the CBC and ECB ciphers, and from traditional PEM with the CBC ciphers, with Node's errors for a missing or wrong passphrase; other schemes and ciphers throw a coded SC2020 error once a passphrase is given.
+  The other key types (`dsa`, `ed448`, `x448`, and the rest) and wasm32-wasi builds throw a coded SC2020 error or are refused.
   Comparing keys of different types with `equals()` answers false; Node also leaves an OpenSSL error queued, which a later key operation can report.
   `publicEncrypt`/`privateDecrypt` remain unsupported.
   The WebCrypto `crypto` global, which node:crypto also exports as `webcrypto`, supports `randomUUID()` and `getRandomValues()`, also read as values from untyped JavaScript.

@@ -63,6 +63,9 @@ bool scr_lib_fork_info(double *target, uintptr_t *read_handle,
  * direct startup never filters user arguments. */
 bool scr_lib_should_collapse_reexec_arg(ScrStr *cmd, ScrArr *args);
 ScrStr *scr_process_platform(void); /* +1 interned ("darwin", "linux", ...) */
+/* Whether OpenSSL, as Node 24 links it, names a digest `name` (its names,
+ * aliases and object identifiers, case-insensitively). */
+bool scr_digest_known(const char *name, size_t len);
 ScrStr *scr_process_cwd(void);      /* +1 fresh (getcwd) */
 
 bool scr_stdio_write(int fd, const void *data, size_t len);

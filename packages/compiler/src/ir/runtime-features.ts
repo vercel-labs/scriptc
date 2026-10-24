@@ -875,10 +875,11 @@ const RUNTIME_FEATURE_RULES = {
       mod.functions.some(
         (fn) => fn.async === true && fn.generator === undefined && fn.returnType.kind === "dyn",
       ),
-    // The legacy url functions, crypto.createCipheriv and
-    // ecdh.setPublicKey emit their deprecation warnings through the
-    // dyn-async unit (WebCrypto's encrypt and decrypt link scr_cipher.c
-    // too); scr_wasm.c boxes its handles and promises through it.
+    // The legacy url functions, crypto.createCipheriv,
+    // ecdh.setPublicKey and generateKeyPair's rsa-pss options emit their
+    // deprecation warnings through the dyn-async unit (WebCrypto's
+    // encrypt and decrypt link scr_cipher.c too); scr_wasm.c boxes its
+    // handles and promises through it.
     fns: [
       ...DYN_ASYNC_LIB_FNS,
       ...READABLE_DYN_ASYNC_LIB_FNS,
@@ -889,6 +890,8 @@ const RUNTIME_FEATURE_RULES = {
       "webcrypto.wrapKey",
       "webcrypto.unwrapKey",
       "crypto.ecdhNew",
+      "crypto.generateKeyPairCb",
+      "crypto.generateKeyPairSync",
     ],
     prefixes: [...READABLE_DYN_ASYNC_PREFIXES, "wasm."],
     expr: (node, tables) =>

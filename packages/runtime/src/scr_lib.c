@@ -8137,6 +8137,11 @@ static bool scr_digest_alg(const char *name, size_t len, ScrDigestAlg *out) {
   return false;
 }
 
+bool scr_digest_known(const char *name, size_t len) {
+  ScrDigestAlg alg;
+  return scr_digest_alg(name, len, &alg);
+}
+
 /* createHash() and crypto.hash() also accept "dss1" in any case. */
 static bool scr_hash_alg(const char *name, size_t len, ScrDigestAlg *out) {
   if (scr_digest_alg(name, len, out)) return true;

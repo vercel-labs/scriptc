@@ -10,6 +10,7 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `atomics-contended` | cpu | four worker threads updating `SharedArrayBuffer` counters with `Atomics`: one shared counter, one counter per worker, a `compareExchange` loop, and `Atomics.wait`/`notify` handoffs |
 | `channel-messages` | cpu | 200,000 MessageChannel messages in one thread, half numbers and half small objects, all posted before the port delivers any |
 | `csv-numbers` | cpu | `split`, `Number`, `parseInt`, `toFixed` |
+| `date-math` | cpu | schedules built with Date setters (local and UTC), weekday and month-end rules through the getters, Dates sorted by time value |
 | `cyclic-graphs` | cpu | object graphs with back references built and dropped: trees with parent and sibling links, rings of records sharing a long-lived registry, closures capturing their owner |
 | `dictionary-walks` | cpu | `Record<string, number>` dictionaries walked with for-in and `Object.keys`/`values`/`entries` while entries are added, updated and deleted |
 | `dynamic-methods` | cpu | untyped JavaScript calling builtin methods on values it does not type: string `slice`/`indexOf`/`toUpperCase`/`padStart`, array `push`/`pop`/`includes`, `Map` and `Set`, and an object's own methods |

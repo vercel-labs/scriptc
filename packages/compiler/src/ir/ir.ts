@@ -855,9 +855,8 @@ export function funcOf(params: IrType[], ret: IrType): IrType {
  * promises nullable-only; declared maybe-promise unions are admitted by
  * maybePromiseUnionArmsOk. */
 export function unionContainerArmsOk(arms: IrType[]): boolean {
-  return (
-    arms.every((a, i) => a.kind !== "promise" || arms.every((b, j) => j === i || isUnitType(b))) &&
-    dateUnionArmsOk(arms)
+  return arms.every(
+    (a, i) => a.kind !== "promise" || arms.every((b, j) => j === i || isUnitType(b)),
   );
 }
 
@@ -868,13 +867,7 @@ export function unionContainerArmsOk(arms: IrType[]): boolean {
  * non-thenable path). Data arms must not be thenable; the type mapper
  * checks that against the checker types before minting such a union. */
 export function maybePromiseUnionArmsOk(arms: IrType[]): boolean {
-  return arms.filter((a) => a.kind === "promise").length <= 1 && dateUnionArmsOk(arms);
-}
-
-/** A Date arm has a union home beside undefined and null arms only: no
- * narrowing contract tells it from other data arms yet. */
-function dateUnionArmsOk(arms: IrType[]): boolean {
-  return arms.every((a, i) => a.kind !== "date" || arms.every((b, j) => j === i || isUnitType(b)));
+  return arms.filter((a) => a.kind === "promise").length <= 1;
 }
 
 /** Canonical, injective text form of an IrType — the building block of

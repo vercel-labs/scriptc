@@ -2,7 +2,13 @@ import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { type ClassInfo } from "../lower-classes.js";
-import { DATE_METHOD_HINT, dateJsonType, dateValueMethod } from "./dates.js";
+import {
+  DATE_METHOD_HINT,
+  dateJsonType,
+  dateSetterTime,
+  dateValueMethod,
+  isDateSetter,
+} from "./dates.js";
 import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
 import {
   BOOL,
@@ -248,6 +254,22 @@ export function lowerInheritedDateMethodCall(
     type: result.type,
     loc,
   });
+  if (isDateSetter(name) && name !== "setTime") {
+    // The field setters change the Date the class's time slot holds once
+    // the arguments are evaluated: an argument that calls setTime on the
+    // instance gives the slot a new Date.
+    const date = lowerer.declareHiddenLocal("%dateTime", DATE_T);
+    const current = varRef(date.id, DATE_T, loc);
+    const time: IrExpr = { kind: "libCall", fn: "date.getTime", args: [current], type: F64, loc };
+    const next = dateSetterTime(lowerer, call, name, stmts, time);
+    stmts.push({
+      kind: "varDecl",
+      localId: date.id,
+      init: timeOf(lowerer, value, root, loc),
+      loc,
+    });
+    return done({ kind: "libCall", fn: "date.store", args: [current, next], type: F64, loc });
+  }
   if (name === "setTime") {
     // Every argument is evaluated before setTime converts the first one.
     let ms: IrExpr = { kind: "numLit", value: Number.NaN, type: F64, loc };

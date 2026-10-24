@@ -239,7 +239,7 @@ test("optional union widening keeps refused and missing contracts current", () =
     unionId: lowerer.unions.recursiveRef(recursive, () => "Recursive"),
   };
   expect(lowerer.withUndefinedArmOf(pending)).not.toBeNull();
-  lowerer.unions.finalizeRecursive(recursive, [{ kind: "date" }, STRING]);
+  lowerer.unions.finalizeRecursive(recursive, [{ kind: "promise", inner: F64 }, STRING]);
   expect(lowerer.withUndefinedArmOf(pending)).toBeNull();
   expect(lowerer.withUndefinedArmOf(pending)).toBeNull();
 

@@ -288,6 +288,16 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   if (!target) {
     const date = lowerer.isStdlibGlobal(expr.right, "Date");
     const url = lowerer.isStdlibGlobal(expr.right, "URL");
+    // A catch binding holds a thrown Date as its checked-dynamic handle.
+    const caughtDate = date ? lowerer.caughtLocalOf(expr.left) : null;
+    if (caughtDate)
+      return {
+        kind: "libCall",
+        fn: "dyn.nativeDateIs",
+        args: [{ kind: "caughtToDyn", value: varRef(caughtDate.id, CAUGHT, loc), type: DYN, loc }],
+        type: BOOL,
+        loc,
+      };
     if ((date || url) && !lowerer.caughtLocalOf(expr.left)) {
       const value = lowerer.lowerExpr(expr.left);
       if (value.type.kind === "dyn")

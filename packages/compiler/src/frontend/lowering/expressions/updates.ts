@@ -120,6 +120,11 @@ function coercedUnion(lowerer: Lowerer, type: IrType): boolean {
   return arms.some((arm) => arm.kind !== "f64" && !isUnitType(arm));
 }
 
+/** ToNumber of a Date: its time value (valueOf, the number hint). */
+function dateTimeValue(date: IrExpr, loc: SrcLoc): IrExpr {
+  return { kind: "libCall", fn: "date.valueOf", args: [date], type: F64, loc };
+}
+
 /** ToNumber of a boolean: 1 for true, 0 for false. */
 function booleanToNumber(value: IrExpr, loc: SrcLoc): IrExpr {
   return {
@@ -145,23 +150,25 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       const operand =
         raw.type.kind === "bool"
           ? booleanToNumber(raw, loc)
-          : coercedUnion(lowerer, raw.type)
-            ? ({
-                kind: "libCall",
-                fn: "dyn.toNumberCoerce",
-                args: [{ kind: "dynFrom", value: raw, type: DYN, loc }],
-                type: F64,
-                loc,
-              } satisfies IrExpr)
-            : raw.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr))
+          : raw.type.kind === "date"
+            ? dateTimeValue(raw, loc)
+            : coercedUnion(lowerer, raw.type)
               ? ({
                   kind: "libCall",
                   fn: "dyn.toNumberCoerce",
-                  args: [raw],
+                  args: [{ kind: "dynFrom", value: raw, type: DYN, loc }],
                   type: F64,
                   loc,
                 } satisfies IrExpr)
-              : lowerOptionalNumber(lowerer, raw, loc, expr.operand);
+              : raw.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr))
+                ? ({
+                    kind: "libCall",
+                    fn: "dyn.toNumberCoerce",
+                    args: [raw],
+                    type: F64,
+                    loc,
+                  } satisfies IrExpr)
+                : lowerOptionalNumber(lowerer, raw, loc, expr.operand);
       if (operand.type.kind !== "f64") operatorUnsupported(lowerer, expr, "-", [raw.type]);
       if (operand.kind === "numLit") return { ...operand, value: -operand.value, loc };
       return { kind: "unary", op: "-", operand, type: F64, loc };
@@ -185,6 +192,8 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
         return { kind: "libCall", fn: "num.fromString", args: [raw], type: F64, loc };
       }
       if (raw.type.kind === "bool") return booleanToNumber(raw, loc);
+      // A Date's number hint answers its time value.
+      if (raw.type.kind === "date") return dateTimeValue(raw, loc);
       const classNumber = classToNumberConversion(lowerer, raw, expr.operand, "unary plus");
       if (classNumber) return classNumber;
       const operand = lowerOptionalNumber(lowerer, raw, loc, expr.operand);

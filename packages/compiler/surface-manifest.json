@@ -4230,6 +4230,13 @@
       "note": "one date string, using V8's date parser shared with new Date(dateString)"
     },
     {
+      "id": "stdlib.date.setters",
+      "kind": "stdlib",
+      "name": "Date.prototype setters",
+      "status": "static",
+      "note": "setTime and the local and UTC field setters, with their optional arguments"
+    },
+    {
       "id": "stdlib.date.toDateString",
       "kind": "stdlib",
       "name": "Date.prototype.toDateString",

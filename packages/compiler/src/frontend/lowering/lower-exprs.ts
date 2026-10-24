@@ -2339,6 +2339,7 @@ export function typeofAnswer(arm: IrType): string | null {
     case "set":
     case "generator":
     case "regex":
+    case "date":
     case "bytes":
     case "url":
     case "searchParams":

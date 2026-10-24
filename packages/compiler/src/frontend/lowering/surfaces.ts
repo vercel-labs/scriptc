@@ -2339,6 +2339,13 @@ export const AMBIENT_SURFACE_FNS: readonly AmbientSurfaceRow[] = [
     note: "zero arguments, one milliseconds/date-string argument, or local-time year/month fields; values are the read-only TimeClip scalar slice",
   },
   {
+    id: "stdlib.date.setters",
+    kind: "stdlib",
+    name: "Date.prototype setters",
+    fns: ["date.setFields", "date.timeClip", "date.store"],
+    note: "setTime and the local and UTC field setters, with their optional arguments",
+  },
+  {
     id: "stdlib.date.UTC",
     kind: "stdlib",
     name: "Date.UTC",

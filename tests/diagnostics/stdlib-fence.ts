@@ -21,8 +21,6 @@ const fmt = new Intl.NumberFormat();
 
 // Constructors.
 const d = new Date(...([2024, 0] as const)); // spread field arguments stay fenced
-const mutableDate = new Date(0);
-mutableDate.setUTCFullYear(2024); // mutation is outside the read-only Date slice
 const wr = new WeakRef({});
 const px = new Proxy({ a: 1 }, {});
 const buf = new ArrayBuffer(8);
@@ -73,14 +71,6 @@ function pick(a: string | number, b: number | boolean): boolean {
 }
 const picked = pick(1, 2);
 
-function throwDate(): void {
-  throw new Date(0); // the exception cell cannot preserve Date's object kind
-}
-throwDate();
-function* dateGenerator(): Generator<number, void, unknown> {
-  yield 1;
-}
-dateGenerator().throw(new Date(0));
 // Related classes may store one object under different union tags. A
 // structural arm beside them leaves no identity-preserving comparison.
 class FenceBase {

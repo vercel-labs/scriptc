@@ -4873,6 +4873,15 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * lib-call argument passes the time value itself, and any other use
    * creates the Date. */
   "date.fromTime": { argTypes: [F64], result: DATE_T },
+  /** Date.prototype's field setters over a time value
+   * (scr_date_set_fields): time value, setter code, argument count and four
+   * arguments; answers the new time value. */
+  "date.setFields": { argTypes: [F64, F64, F64, F64, F64, F64, F64], result: F64 },
+  /** TimeClip of a number (setTime's argument). */
+  "date.timeClip": { argTypes: [F64], result: F64 },
+  /** Stores a time value into a Date object and answers it (a setter's
+   * write). */
+  "date.store": { argTypes: [DATE_T, F64], result: F64 },
   /** Date.prototype.toString / toDateString / toTimeString and String(date):
    * V8's local-time formats with the host zone's long name, "Invalid Date"
    * for an invalid date. Owned (+1) string; never throws. */

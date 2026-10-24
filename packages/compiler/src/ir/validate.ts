@@ -55,7 +55,6 @@ import {
   typeEquals,
   typeKey,
   maybePromiseUnionArmsOk,
-  unionContainerArmsOk,
   VOID,
 } from "./ir.js";
 import { DYN_CLASS_PROPERTIES, callSiteReturnType, classValueConstructor } from "./ir.js";
@@ -832,9 +831,6 @@ export function validateModule(mod: IrModule): IrValidationError[] {
           message: `union ${u.id}: ${arm.kind} arm ${i} beside another promise arm`,
           loc: noLoc,
         });
-      }
-      if (arm.kind === "date" && !unionContainerArmsOk(u.arms)) {
-        errors.push({ message: `union ${u.id}: date arm ${i} beside non-unit arms`, loc: noLoc });
       }
       if (arm.kind === "record" && !recordsById.has(arm.shapeId)) {
         errors.push({
@@ -6353,15 +6349,10 @@ function validateFunction(
           }
         } else {
           // throw: any exception-representable payload (the throw
-          // statement's rule). Date cannot retain its object kind in the
-          // untyped exception cell.
+          // statement's rule).
           if (e.arg === null) {
             err("genResume throw with no payload", e.loc);
-          } else if (
-            e.arg.type.kind === "void" ||
-            e.arg.type.kind === "caught" ||
-            e.arg.type.kind === "date"
-          ) {
+          } else if (e.arg.type.kind === "void" || e.arg.type.kind === "caught") {
             err(`genResume throw of a ${e.arg.type.kind} value`, e.loc);
           }
         }
@@ -6802,11 +6793,7 @@ function validateFunction(
         checkExpr(s.value);
         // dyn throws are allowed: the dyn node rides the REF cell arm by
         // reference (the JS-lane `throw err` of a dyn argument).
-        if (
-          s.value.type.kind === "void" ||
-          s.value.type.kind === "caught" ||
-          s.value.type.kind === "date"
-        ) {
+        if (s.value.type.kind === "void" || s.value.type.kind === "caught") {
           err(`throw of a ${s.value.type.kind} value`, s.loc);
         }
         break;

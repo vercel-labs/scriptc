@@ -12,14 +12,14 @@ tuples.ts:12:6 - error SC1090: tuple indexing with a non-literal index (tuples a
      |      ^
   13 | 
 
-tuples.ts:15:7 - error SC2001: values of type '[string, (number | undefined)?]' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, read-only Date values, functions, classes, records, unions of those, and 'unknown')
+tuples.ts:15:7 - error SC2001: values of type '[string, (number | undefined)?]' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
 
   14 | // Optional and rest elements have no fixed arity/shape.
   15 | const opt: [string, number?] = ["x"];
      |       ^~~
   16 | const rest: [string, ...number[]] = ["y", 1, 2];
 
-tuples.ts:16:7 - error SC2001: values of type '[string, ...number[]]' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, read-only Date values, functions, classes, records, unions of those, and 'unknown')
+tuples.ts:16:7 - error SC2001: values of type '[string, ...number[]]' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
 
   15 | const opt: [string, number?] = ["x"];
   16 | const rest: [string, ...number[]] = ["y", 1, 2];

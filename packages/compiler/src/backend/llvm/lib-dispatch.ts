@@ -649,6 +649,15 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
   if (MAY_THROW_LIB_FNS.has(e.fn) && LIB_FN_SYMS[e.fn] === undefined) {
     throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
   }
+  // A setter's write: the time value into the Date object (ScrDate.ms).
+  if (e.fn === "date.store") {
+    const date = emitBorrowedInput(host, e.args[0]!).name;
+    const ms = host.emitExpr(e.args[1]!).name;
+    const field = B.tmp();
+    B.line(`${field} = getelementptr inbounds i8, ptr ${date}, i64 8 ; ->ms`);
+    B.line(`store double ${ms}, ptr ${field}`);
+    return { name: ms, type: e.type };
+  }
   // queueMicrotask's checked-dynamic form carries the AsyncLocalStorage
   // context like the static one (lib-process.ts).
   const sym =

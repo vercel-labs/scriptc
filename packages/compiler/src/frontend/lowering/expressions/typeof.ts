@@ -281,6 +281,7 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
     promise: "object",
     bytes: "object",
     regex: "object",
+    date: "object",
     generator: "object",
     classval: "function",
     moduleNs: "object",

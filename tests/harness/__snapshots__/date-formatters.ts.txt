@@ -5,7 +5,7 @@ date-formatters.ts:4:1 - error SC2020: 'Date.prototype.toLocaleTimeString' is pa
     | ^~~~~~~~~~~~~~~~~~~~~~~~~
   5 | date.toLocaleString();
 
-  hint: getTime(), valueOf(), toISOString(), toUTCString(), toJSON(), toString(), toDateString(), toTimeString(), the local/UTC calendar getters, and getTimezoneOffset() are supported; Date setters and locale formatters have no lowering
+  hint: getTime(), valueOf(), toISOString(), toUTCString(), toJSON(), toString(), toDateString(), toTimeString(), the local/UTC calendar getters and setters, setTime(), and getTimezoneOffset() are supported; locale formatters have no lowering
 
 date-formatters.ts:5:1 - error SC2020: 'Date.prototype.toLocaleString' is part of the standard library types but has no scriptc lowering yet
 
@@ -14,4 +14,4 @@ date-formatters.ts:5:1 - error SC2020: 'Date.prototype.toLocaleString' is part o
     | ^~~~~~~~~~~~~~~~~~~~~
   6 | 
 
-  hint: getTime(), valueOf(), toISOString(), toUTCString(), toJSON(), toString(), toDateString(), toTimeString(), the local/UTC calendar getters, and getTimezoneOffset() are supported; Date setters and locale formatters have no lowering
+  hint: getTime(), valueOf(), toISOString(), toUTCString(), toJSON(), toString(), toDateString(), toTimeString(), the local/UTC calendar getters and setters, setTime(), and getTimezoneOffset() are supported; locale formatters have no lowering

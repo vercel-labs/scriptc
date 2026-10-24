@@ -563,6 +563,7 @@ describe("library profile fences", () => {
       "stdlib.date.getUTCSeconds",
       "stdlib.date.now",
       "stdlib.date.parse",
+      "stdlib.date.setters",
       "stdlib.date.toDateString",
       "stdlib.date.toISOString",
       "stdlib.date.toString",

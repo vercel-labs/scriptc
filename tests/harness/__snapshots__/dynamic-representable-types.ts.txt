@@ -1,4 +1,4 @@
-dynamic-representable-types.ts:7:7 - error SC2001: values of type '[number, (string | undefined)?]' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, read-only Date values, functions, classes, records, unions of those, and 'unknown')
+dynamic-representable-types.ts:7:7 - error SC2001: values of type '[number, (string | undefined)?]' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
 
   6 | const bare: any = 41;
   7 | const optTuple: [number, string?] = [1];

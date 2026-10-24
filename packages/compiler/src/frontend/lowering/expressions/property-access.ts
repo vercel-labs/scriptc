@@ -112,6 +112,7 @@ import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../.
 import { typedArrayLacksMember } from "../builtins/typed-array-members.js";
 import { TEMPORAL_GLOBAL } from "../../builtin-modules.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
+import { DATE_METHOD_HINT } from "../builtins/dates.js";
 import {
   cjsClassExprWholeExportOf,
   cjsExportAssignmentOf,
@@ -2055,6 +2056,9 @@ export function lowerIntrinsicProperty(
     );
   }
   if (kind === "date") {
+    // A Date held as a checked-dynamic value (a Date a JavaScript file
+    // constructs) answers its method values at run time.
+    if (tryLowerExpression(lowerer, expr.expression)?.type.kind === "dyn") return null;
     const methods = new Set([
       "getTime",
       "valueOf",
@@ -2083,7 +2087,7 @@ export function lowerIntrinsicProperty(
     lowerer.noLowering(
       `Date.prototype.${name}`,
       expr,
-      "getTime(), valueOf(), toISOString(), the local/UTC calendar getters, and getTimezoneOffset() are supported; Date setters and locale/string formatters have no lowering",
+      DATE_METHOD_HINT,
       lowerer.checker.getSymbolAtLocation(expr.name),
     );
   }

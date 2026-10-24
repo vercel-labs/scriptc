@@ -2362,6 +2362,9 @@ export class Lowerer {
    * Date's time value instead of a Date object (date-values.ts). */
   readonly timeValueDateDecisions = new Map<ts.Node, boolean>();
   readonly timeValueDateLocals = new Set<IrLocal>();
+  /** Declarations of those locals that a setter call writes
+   * (date-values.ts). */
+  readonly timeValueDateWrites = new Set<ts.VariableDeclaration>();
   /** Record bindings whose flow class reaches storage outside the class:
    * they keep the declared layout, so an initializer from unchecked reads
    * converts once instead of the binding adopting the widened variant. */

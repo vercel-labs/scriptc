@@ -10437,6 +10437,29 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         const time: IrExpr = { kind: "libCall", fn: "date.getTime", args: [arg], type: F64, loc };
         return { kind: "libCall", fn: "date.newMs", args: [time], type: DATE_T, loc };
       }
+      // A union (`Date | string | number`) or checked-dynamic value: the
+      // runtime's constructor reads a Date's time value, parses a string
+      // and converts anything else to a primitive and a number.
+      if (
+        (arg.type.kind === "union" || arg.type.kind === "dyn") &&
+        lowerer.dynConvertible(arg.type)
+      ) {
+        const value: IrExpr = {
+          kind: "libCall",
+          fn: "date.nativeNewValue",
+          args: [
+            {
+              kind: "dynArrLit",
+              elems: [lowerer.coerceToExpected(arg, DYN)],
+              type: DYN,
+              loc,
+            },
+          ],
+          type: DYN,
+          loc,
+        };
+        return { kind: "libCall", fn: "date.checkedValue", args: [value], type: DATE_T, loc };
+      }
       lowerer.noLowering(
         `new Date of '${lowerer.fmt(arg.type)}' values`,
         args[0]!,

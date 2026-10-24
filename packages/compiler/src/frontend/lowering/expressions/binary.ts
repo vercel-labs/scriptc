@@ -1600,6 +1600,19 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           loc,
         };
       }
+      // A Date against an untyped value: the same Date object, whose
+      // checked-dynamic handle the untyped value would hold.
+      if (dynSide.type.kind === "dyn" && scalarSide.type.kind === "date") {
+        const boxed = lowerer.coerceToExpected(scalarSide, DYN);
+        return {
+          kind: "dynScalarEq",
+          left: scalarSide === left ? boxed : left,
+          right: scalarSide === right ? boxed : right,
+          ...(negated ? { negated: true as const } : {}),
+          type: BOOL,
+          loc,
+        };
+      }
       if (
         dynSide.type.kind === "dyn" &&
         (scalarSide.type.kind === "f64" ||
@@ -2024,6 +2037,28 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           loc,
         };
       if (left.type.kind === "string" || right.type.kind === "string") {
+        // A Date on the left converts after the right operand is
+        // evaluated, which can run its setters.
+        if (left.type.kind === "date" && !isSafeToRepeat(right)) {
+          const date = lowerer.declareHiddenLocal("%plus", left.type);
+          const other = lowerer.declareHiddenLocal("%plus", right.type);
+          return {
+            kind: "seqExpr",
+            stmts: [
+              { kind: "varDecl", localId: date.id, init: left, loc },
+              { kind: "varDecl", localId: other.id, init: right, loc },
+            ],
+            result: {
+              kind: "strConcat",
+              left: concatOperand(lowerer, varRef(date.id, left.type, loc), expr.left),
+              right: concatOperand(lowerer, varRef(other.id, right.type, loc), expr.right),
+              type: STRING,
+              loc,
+            },
+            type: STRING,
+            loc,
+          };
+        }
         return {
           kind: "strConcat",
           left: concatOperand(lowerer, left, expr.left),

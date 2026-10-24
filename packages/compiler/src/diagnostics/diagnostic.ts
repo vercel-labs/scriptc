@@ -622,7 +622,7 @@ export function unsupportedTypeDiag(typeText: string, loc: SrcLoc): ScrDiagnosti
     code: "SC2001",
     message:
       `values of type '${typeText}' cannot be compiled yet ` +
-      `(supported: number, string, boolean, arrays, Maps, Sets, RegExp, read-only Date values, functions, classes, records, unions of those, and 'unknown')`,
+      `(supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')`,
     loc,
     milestone: "M2",
   };

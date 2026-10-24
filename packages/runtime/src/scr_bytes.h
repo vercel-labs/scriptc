@@ -65,7 +65,15 @@ typedef struct ScrBytes {
   bool is_data_view; /* DataView is distinct from a numeric typed array. */
   bool external; /* Root aliases foreign memory; releasing it never frees data. */
   bool untransferable; /* A Buffer pool slab: its ArrayBuffer cannot be transferred. */
+  /* The cycle collector's last trace of `properties` from the one checked
+   * value that held this view (see scr_dyn_trace_v). In padding, so the
+   * offsets compiled code uses hold. */
+  bool properties_traced;
   ScrSharedBytes *shared; /* Neutral backing, borrowed by views from their local owner. */
+  /* Named properties a program adds to the view (`ta.foo = 1`,
+   * Object.defineProperty): a checked object, NULL until the first one.
+   * Runtime-only and last, so compiled code's field indices hold. */
+  struct ScrDyn *properties;
 } ScrBytes;
 
 /* Copies out of and into shared storage, made of relaxed atomic accesses

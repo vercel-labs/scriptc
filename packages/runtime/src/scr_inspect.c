@@ -794,6 +794,52 @@ ScrStr *scr_insp_regex(ScrRegex *re) {
   return ib_take(&out);
 }
 
+/* Named properties of a typed array, Buffer or DataView (its
+ * ScrBytes.properties table): slot k is the k-th string-keyed entry, then
+ * the k-th symbol key. */
+static size_t insp_view_property_slots(const ScrDyn *props) {
+  if (!props) return 0;
+  return props->v.obj.len + (props->symbol_keys ? props->symbol_keys->v.arr.len : 0);
+}
+
+static ScrStr *insp_accessor_tag(const ScrDynEntry *ent);
+static void insp_key_into(InspBuf *b, const char *key, size_t len);
+
+/* Slot k's `key: value` entry when it is enumerable, else NULL. */
+static ScrStr *insp_view_property(ScrDyn *props, size_t k, double recurse, double depth) {
+  const ScrDynEntry *ent;
+  ScrStr *key = NULL;
+  if (k < props->v.obj.len) {
+    ent = &props->v.obj.entries[k];
+  } else {
+    ScrDyn *symbol = props->symbol_keys->v.arr.items[k - props->v.obj.len];
+    ent = scr_dyn_own_symbol_entry(props, symbol);
+    if (ent && ent->enumerable) key = scr_insp_dyn(symbol, recurse, depth);
+  }
+  if (!ent || !ent->enumerable) return NULL;
+  ScrStr *val = ent->accessor ? insp_accessor_tag(ent) : scr_insp_dyn(ent->value, recurse, depth);
+  InspBuf eb = {0};
+  if (key) ib_bytes(&eb, key->data, key->len);
+  else insp_key_into(&eb, ent->key, ent->key_len);
+  ib_cstr(&eb, ": ");
+  ib_bytes(&eb, val->data, val->len);
+  scr_str_release(key);
+  scr_str_release(val);
+  return ib_take(&eb);
+}
+
+static size_t insp_view_property_count(ScrDyn *props) {
+  size_t count = 0;
+  for (size_t k = 0; k < insp_view_property_slots(props); k++) {
+    if (k < props->v.obj.len) count += props->v.obj.entries[k].enumerable;
+    else {
+      const ScrDynEntry *ent = scr_dyn_own_symbol_entry(props, props->symbol_keys->v.arr.items[k - props->v.obj.len]);
+      count += ent && ent->enumerable;
+    }
+  }
+  return count;
+}
+
 /* Buffer: the custom-inspect hex form `<Buffer aa bb ...>`, capped at
  * INSPECT_MAX_BYTES (50); renders fully at any depth (custom inspection
  * runs before the depth check in Node). u8 element kind only (the
@@ -815,6 +861,17 @@ ScrStr *scr_insp_buffer(ScrBytes *b) {
     int n = snprintf(more, sizeof more, " ... %zu more byte%s", remaining,
                      remaining > 1 ? "s" : "");
     ib_bytes(&out, more, (size_t)n);
+  }
+  /* Named properties follow as `, key: value`, rendered as the members of
+   * an object at depth 0 (Buffer's custom inspect). */
+  bool first = true;
+  for (size_t k = 0; k < insp_view_property_slots(b->properties); k++) {
+    ScrStr *entry = insp_view_property(b->properties, k, 1, 2);
+    if (!entry) continue;
+    if (!first || b->len) ib_cstr(&out, ", ");
+    first = false;
+    ib_bytes(&out, entry->data, entry->len);
+    scr_str_release(entry);
   }
   ib_char(&out, '>');
   return ib_take(&out);
@@ -899,6 +956,12 @@ static ScrStr *scr_insp_data_view(const ScrBytes *b, double recurse, double dept
   entry = ib_take(&eb);
   scr_insp_entry(entry, false);
   scr_str_release(entry);
+  for (size_t k = 0; k < insp_view_property_slots(b->properties); k++) {
+    entry = insp_view_property(b->properties, k, recurse + 1, depth);
+    if (!entry) continue;
+    scr_insp_entry(entry, false);
+    scr_str_release(entry);
+  }
   ScrStr *base = scr_str_new("", 0);
   ScrStr *b0 = scr_str_new("DataView {", 10);
   ScrStr *b1 = scr_str_new("}", 1);
@@ -1537,7 +1600,10 @@ static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char 
 ScrStr *scr_insp_typed_array(ScrBytes *b, double recurse, double depth) {
   char prefix[48];
   int pn = snprintf(prefix, sizeof prefix, "%s(%zu) [", scr_bytes_elem_name(b->elem), b->len);
-  if (b->len == 0) {
+  /* Named properties follow the elements as `key: value` entries. */
+  ScrDyn *props = b->properties;
+  size_t nprops = insp_view_property_count(props);
+  if (b->len == 0 && nprops == 0) {
     InspBuf out = {0};
     ib_bytes(&out, prefix, (size_t)pn);
     ib_char(&out, ']');
@@ -1561,10 +1627,19 @@ ScrStr *scr_insp_typed_array(ScrBytes *b, double recurse, double depth) {
     scr_insp_entry(m, true);
     scr_str_release(m);
   }
+  size_t entries = shown + (more ? 1 : 0);
+  for (size_t k = 0; nprops && k < insp_view_property_slots(props); k++) {
+    ScrStr *entry = insp_view_property(props, k, recurse + 1, depth);
+    if (!entry) continue;
+    /* Node's grouping pads by the element at the entry's output position. */
+    scr_insp_entry(entry, entries < b->len);
+    scr_str_release(entry);
+    entries++;
+  }
   ScrStr *base = scr_str_new("", 0);
   ScrStr *b0 = scr_str_new(prefix, (size_t)pn);
   ScrStr *b1 = scr_str_new("]", 1);
-  ScrStr *out = scr_insp_end(base, b0, b1, recurse + 1, true, more);
+  ScrStr *out = scr_insp_end(base, b0, b1, recurse + 1, true, nprops ? entries > 100 : more);
   scr_str_release(base);
   scr_str_release(b0);
   scr_str_release(b1);

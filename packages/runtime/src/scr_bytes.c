@@ -190,6 +190,8 @@ ScrBytes *scr_bytes_take_data(uint8_t *data, size_t len) {
   b->external = false;
   b->untransferable = false;
   b->shared = NULL;
+  b->properties = NULL;
+  b->properties_traced = false;
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif
@@ -304,6 +306,7 @@ void scr_bytes_release(ScrBytes *b) {
   if (!b || b->rc == SIZE_MAX) return; /* NULL: an uninitialized `let` local */
   if (--b->rc == 0) {
     scr_weak_dispose_inline(b);
+    if (b->properties) scr_dyn_release(b->properties);
     if (b->backing) {
       scr_bytes_release(b->backing); /* a view: data points into the owner */
     } else if (b->shared) {
@@ -740,6 +743,8 @@ ScrBytes *scr_bytes_subarray(ScrBytes *b, double start, double end) {
   v->external = false;
   v->untransferable = false;
   v->shared = owner->shared;
+  v->properties = NULL;
+  v->properties_traced = false;
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif
@@ -866,7 +871,9 @@ ScrBytes *scr_bytes_from_dyn(ScrBytesElem elem, const ScrDyn *value, bool from) 
   if (value->kind == SCR_DYN_BYTES) return scr_bytes_convert(elem, value->v.bytes);
   if (!from && scr_buffer_storage_is(value)) return scr_array_buffer_view(elem, value, scr_dyn_undefined(), scr_dyn_undefined());
   if (!from && (value->kind == SCR_DYN_NUM || value->kind == SCR_DYN_BOOL ||
-                value->kind == SCR_DYN_STR || value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF)) {
+                value->kind == SCR_DYN_STR || value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF ||
+                value->kind == SCR_DYN_SYMBOL || value->kind == SCR_DYN_BIGINT)) {
+    /* ToIndex: a Symbol or BigInt length throws ToNumber's TypeError. */
     double number;
     if (!scr_dyn_number_coerce_js(value, &number)) return NULL;
     return scr_bytes_new(elem, number);
@@ -992,6 +999,8 @@ ScrBytes *scr_dataview_new(ScrBytes *src, double byte_off, bool has_len, double 
   v->external = false;
   v->untransferable = false;
   v->shared = owner->shared;
+  v->properties = NULL;
+  v->properties_traced = false;
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif
@@ -2883,6 +2892,8 @@ static ScrBytes *scr_pool_take(size_t len) {
   v->external = false;
   v->untransferable = false;
   v->shared = NULL;
+  v->properties = NULL;
+  v->properties_traced = false;
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif

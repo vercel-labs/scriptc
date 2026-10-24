@@ -202,6 +202,33 @@ void scr_dyn_install_has_instance_symbol(ScrDyn *key) {
   scr_atexit(scr_has_instance_symbol_cleanup);
 }
 
+/* Symbol.species, installed when the program first evaluates it: no
+ * constructor names a species before then. */
+static SCR_TL ScrDyn *scr_species_symbol;
+static void scr_species_symbol_cleanup(void) {
+  scr_dyn_release(scr_species_symbol);
+  scr_species_symbol = NULL;
+}
+void scr_dyn_install_species_symbol(ScrDyn *key) {
+  if (scr_species_symbol) return;
+  scr_species_symbol = scr_dyn_retain(key);
+  scr_atexit(scr_species_symbol_cleanup);
+}
+
+/* The well-known symbols the program has created. They live until exit,
+ * so their identities are compared without a reference. */
+static SCR_TL const ScrSym *scr_well_known_symbols[24];
+static SCR_TL size_t scr_well_known_count;
+void scr_dyn_install_well_known_symbol(ScrDyn *key) {
+  if (scr_well_known_count < sizeof scr_well_known_symbols / sizeof scr_well_known_symbols[0])
+    scr_well_known_symbols[scr_well_known_count++] = key->v.symbol.value;
+}
+static bool scr_dyn_well_known_symbol(const ScrDyn *key) {
+  for (size_t i = 0; i < scr_well_known_count; i++)
+    if (scr_well_known_symbols[i] == key->v.symbol.value) return true;
+  return false;
+}
+
 /* Symbol.toStringTag, installed when the program first evaluates it: no
  * object holds the key before then. */
 static SCR_TL ScrDyn *scr_to_string_tag_symbol;
@@ -893,6 +920,17 @@ void scr_dyn_trace_v(void *ptr, ScrTraceVisit visit, void *ctx) {
     }
     break;
   case SCR_DYN_FUNC: visit(d->v.fn.clo, ctx); break;
+  case SCR_DYN_BYTES: {
+    /* A view's named properties belong to its ScrBytes. Only a view this
+     * value alone holds owns that edge; a shared view's table stays out of
+     * trial deletion. Teardown reads the snapshot, not the count. */
+    ScrBytes *bytes = d->v.bytes;
+    if (bytes->properties) {
+      bytes->properties_traced = bytes->rc == 1;
+      if (bytes->properties_traced) visit(bytes->properties, ctx);
+    }
+    break;
+  }
   case SCR_DYN_PROXY:
     visit(d->v.proxy.target, ctx);
     visit(d->v.proxy.handler, ctx);
@@ -1157,6 +1195,8 @@ static void scr_dyn_dispose(ScrDyn *d, bool collected) {
     scr_str_release(d->v.str);
     break;
   case SCR_DYN_BYTES:
+    /* The collector frees a traced table itself. */
+    if (collected && d->v.bytes->properties && d->v.bytes->properties_traced) d->v.bytes->properties = NULL;
     scr_bytes_release(d->v.bytes);
     break;
   case SCR_DYN_ARR:
@@ -2457,8 +2497,25 @@ static bool scr_dyn_typed_ref_view_answer(ScrDyn *object, bool (*query)(const Sc
   return true;
 }
 
+static ScrDyn *scr_bytes_properties(const ScrDyn *v);
 static bool scr_dyn_is_extensible_view(const ScrDyn *view) {
+  if (view->kind == SCR_DYN_BYTES) return !view->v.bytes->properties || !view->v.bytes->properties->non_extensible;
   return (view->kind == SCR_DYN_OBJ || view->kind == SCR_DYN_ARR) && !view->non_extensible;
+}
+
+/* A view's integrity state lives on its named-property table. A typed array
+ * with elements cannot be frozen, and cannot be sealed while extensible: as
+ * in V8, the named properties are sealed or frozen and the view made
+ * non-extensible before the TypeError. */
+static bool scr_bytes_integrity_fence(const ScrDyn *view, const char *verb) {
+  if (view->v.bytes->is_data_view || view->v.bytes->len == 0) return false;
+  ScrJsonBuf message;
+  scr_jb_init(&message);
+  scr_jb_puts(&message, "Cannot ");
+  scr_jb_puts(&message, verb);
+  scr_jb_puts(&message, " array buffer views with elements");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
+  return true;
 }
 
 /* A plain function's own properties (name, length, prototype, and the ones
@@ -2507,6 +2564,7 @@ ScrDyn *scr_dyn_prevent_extensions(ScrDyn *object) {
     if (object->kind == SCR_DYN_ARR && object->v.arr.properties)
       object->v.arr.properties->non_extensible = true;
   }
+  if (object->kind == SCR_DYN_BYTES) scr_bytes_properties(object)->non_extensible = true;
   return scr_dyn_retain(object);
 }
 
@@ -2535,6 +2593,12 @@ ScrDyn *scr_dyn_seal(ScrDyn *object) {
     return scr_dyn_retain(object);
   }
   if (scr_dyn_class_integrity_fence(object, "Object.seal")) return NULL;
+  if (object->kind == SCR_DYN_BYTES) {
+    bool extensible = scr_dyn_is_extensible_view(object);
+    scr_dyn_release(scr_dyn_seal(scr_bytes_properties(object)));
+    if (extensible && scr_bytes_integrity_fence(object, "seal")) return NULL;
+    return scr_dyn_retain(object);
+  }
   if (object->symbol_properties) scr_dyn_release(scr_dyn_seal(object->symbol_properties));
   ScrDyn *table = scr_dyn_fn_integrity_table(object);
   if (table) {
@@ -2570,6 +2634,8 @@ bool scr_dyn_is_sealed(const ScrDyn *object) {
   if (object->kind == SCR_DYN_ARR)
     return object->non_extensible && (object->v.arr.len == 0 || object->v.arr.sealed) &&
       (!object->v.arr.properties || scr_dyn_is_sealed(object->v.arr.properties));
+  /* V8 answers from a typed array's named properties alone. */
+  if (object->kind == SCR_DYN_BYTES) return object->v.bytes->properties && scr_dyn_is_sealed(object->v.bytes->properties);
   if (object->kind != SCR_DYN_OBJ) return true;
   if (!object->non_extensible) return false;
   for (size_t i = 0; i < object->v.obj.len; i++) if (object->v.obj.entries[i].configurable) return false;
@@ -2776,6 +2842,65 @@ static bool scr_dyn_data_view_proto_name(const ScrStr *key) {
   return scr_dyn_name_in(key, names, sizeof names / sizeof names[0]);
 }
 
+/* A canonical numeric string ("1", "-0", "1.5", "Infinity"): typed arrays
+ * answer those keys as element indices, never as named properties. */
+static bool scr_bytes_numeric_key(const ScrStr *key, double *index) {
+  if (key->len == 2 && memcmp(key->data, "-0", 2) == 0) { *index = -0.0; return true; }
+  *index = scr_string_to_number(key);
+  char spelling[32];
+  size_t length = scr_f64_to_str(*index, spelling);
+  return length == key->len && memcmp(spelling, key->data, length) == 0;
+}
+
+/* Whether the view has an own named property `key`. */
+static bool scr_bytes_has_named(const ScrDyn *v, const ScrStr *key) {
+  const ScrDyn *properties = v->v.bytes->properties;
+  return properties && scr_dyn_obj_get(properties, key->data, key->len);
+}
+
+/* The view's own named property `key` read with the view as a getter's
+ * `this` (+1), or NULL without an exception when the view has none. Only
+ * reads the table, so callers do not link the typed array methods. */
+ScrDyn *scr_bytes_named_get(const ScrDyn *view, const char *key, size_t key_len) {
+  const ScrDyn *properties = view->v.bytes->properties;
+  if (!properties || !scr_dyn_obj_get(properties, key, key_len)) return NULL;
+  return scr_dyn_obj_read_receiver(properties, key, key_len, view);
+}
+
+/* The view's named-property table, created on first use. Borrowed. The
+ * table belongs to the ScrBytes, which several checked values can wrap. */
+static ScrDyn *scr_bytes_properties(const ScrDyn *v) {
+  ScrBytes *bytes = v->v.bytes;
+  if (!bytes->properties) bytes->properties = scr_dyn_new_obj_null_proto();
+  return bytes->properties;
+}
+
+/* Accessors without a setter on the view's prototype chain: writing one
+ * that the view does not own throws V8's strict-mode TypeError. */
+static bool scr_bytes_getter_name(const ScrDyn *v, const ScrStr *key) {
+  static const char *const names[] = { "byteLength", "byteOffset", "buffer", "length", "parent", "offset" };
+  size_t count = v->v.bytes->is_data_view ? 3 : v->buffer ? 6 : 4;
+  return scr_dyn_name_in(key, names, count);
+}
+
+/* Keys that the runtime's conversions, iteration and printing of a view
+ * read from its prototype without consulting its own properties. */
+static bool scr_bytes_protocol_name(const ScrStr *key) {
+  static const char *const names[] = { "toString", "valueOf", "toLocaleString", "toJSON", "join" };
+  return scr_dyn_name_in(key, names, sizeof names / sizeof names[0]);
+}
+
+static void scr_bytes_protocol_fence(const char *key, size_t key_len) {
+  ScrJsonBuf message;
+  scr_jb_init(&message);
+  scr_jb_puts(&message, "defining ");
+  scr_jb_write(&message, key, key_len);
+  scr_jb_puts(&message, " on a typed array, Buffer or DataView is not supported yet");
+  ScrStr *text = scr_jb_finish(&message);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, text->data, text->len, "SC2020");
+  scr_str_release(text);
+}
+
 /* `in` on a typed array, Buffer or DataView. On a typed array, a canonical
  * numeric key (one that ToString(ToNumber(key)) reproduces, or "-0")
  * answers by bounds alone: an integral index, not -0, below the length.
@@ -2783,6 +2908,7 @@ static bool scr_dyn_data_view_proto_name(const ScrStr *key) {
  * Buffer, or Object.prototype. A DataView has no indexed elements: its keys
  * name members of DataView.prototype or Object.prototype. */
 static bool scr_dyn_bytes_in(const ScrDyn *v, const ScrStr *key) {
+  if (scr_bytes_has_named(v, key)) return true;
   if (v->v.bytes->is_data_view) return scr_dyn_data_view_proto_name(key) || scr_dyn_object_proto_name(key);
   if (key->len == 2 && memcmp(key->data, "-0", 2) == 0) return false;
   double index = scr_string_to_number(key);
@@ -2896,6 +3022,19 @@ ScrDyn *scr_dyn_own_descriptor(const ScrDyn *value, const ScrStr *key) {
     scr_dyn_obj_set(out, "writable", 8, scr_dyn_new_bool(!value->v.arr.frozen));
     scr_dyn_obj_set(out, "enumerable", 10, scr_dyn_new_bool(false));
     scr_dyn_obj_set(out, "configurable", 12, scr_dyn_new_bool(false));
+    return out;
+  }
+  if (value->kind == SCR_DYN_BYTES && scr_bytes_has_named(value, key))
+    return scr_dyn_own_descriptor(value->v.bytes->properties, key);
+  if (value->kind == SCR_DYN_BYTES && !value->v.bytes->is_data_view) {
+    if (!scr_dyn_canonical_own_index(key, value->v.bytes->len)) return scr_dyn_retain(scr_dyn_undefined());
+    size_t index = 0;
+    for (size_t i = 0; i < key->len; i++) index = index * 10 + (size_t)(key->data[i] - '0');
+    ScrDyn *out = scr_dyn_new_obj();
+    scr_dyn_obj_set(out, "value", 5, scr_dyn_new_num(scr_bytes_get(value->v.bytes, (double)index)));
+    scr_dyn_obj_set(out, "writable", 8, scr_dyn_new_bool(true));
+    scr_dyn_obj_set(out, "enumerable", 10, scr_dyn_new_bool(true));
+    scr_dyn_obj_set(out, "configurable", 12, scr_dyn_new_bool(true));
     return out;
   }
   if (value->kind == SCR_DYN_ARR) {
@@ -4907,6 +5046,55 @@ static double *dyn_bytes_values(const ScrBytes *b, size_t n) {
   return values;
 }
 
+/* SpeciesConstructor of a typed array: NULL (and no exception) for the
+ * default constructor of its kind, else the species constructor (+1).
+ * Only a `constructor` the program set on the view can differ. */
+static ScrDyn *scr_bytes_species(ScrDyn *recv, bool *failed) {
+  *failed = false;
+  ScrStr *name = scr_str_new("constructor", 11);
+  bool own = scr_bytes_has_named(recv, name);
+  ScrDyn *constructor = own ? scr_dyn_obj_read_receiver(recv->v.bytes->properties, name->data, name->len, recv) : NULL;
+  scr_str_release(name);
+  if (!own) return NULL;
+  if (!constructor) { *failed = true; return NULL; }
+  if (constructor->kind == SCR_DYN_UNDEF) { scr_dyn_release(constructor); return NULL; }
+  if (constructor->kind != SCR_DYN_OBJ && constructor->kind != SCR_DYN_FUNC) {
+    scr_dyn_release(constructor);
+    static const char message[] = "object.constructor is not an object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    *failed = true;
+    return NULL;
+  }
+  ScrDyn *species = scr_species_symbol ? scr_dyn_symbol_key_get(constructor, scr_species_symbol, true) : NULL;
+  scr_dyn_release(constructor);
+  if (scr_exc_pending()) { scr_dyn_release(species); *failed = true; return NULL; }
+  if (!species || species->kind == SCR_DYN_UNDEF || species->kind == SCR_DYN_NULL ||
+      scr_bytes_ctor_elem(species) == (int)recv->v.bytes->elem) {
+    scr_dyn_release(species);
+    return NULL;
+  }
+  if (!scr_dyn_is_callable(species)) {
+    scr_dyn_release(species);
+    static const char message[] = "object.constructor[Symbol.species] is not a constructor";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    *failed = true;
+    return NULL;
+  }
+  return species;
+}
+
+/* TypedArraySpeciesCreate(recv, [n]): a new array of the receiver's kind
+ * (and Buffer flavor), or the species constructor's checked result. */
+static ScrDyn *scr_bytes_species_create(ScrDyn *recv, size_t n) {
+  bool failed;
+  ScrDyn *species = scr_bytes_species(recv, &failed);
+  if (failed) return NULL;
+  if (!species) return dyn_bytes_wrap(recv, scr_bytes_new(recv->v.bytes->elem, (double)n));
+  ScrDyn *result = scr_bytes_static_create(species, n);
+  scr_dyn_release(species);
+  return result;
+}
+
 ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *args, size_t argc, bool *handled) {
   ScrBytes *bytes = recv->v.bytes;
   size_t len = bytes->len;
@@ -4926,11 +5114,41 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
     if (scr_exc_pending()) return NULL;
     double endD = scr_dyn_bytes_index_arg(args, argc, 1, (double)blen);
     if (scr_exc_pending()) return NULL;
-    ScrBytes *out = recv->buffer || scr_dyn_bytes_named(method, "subarray")
-      ? scr_bytes_subarray(bytes, startD, endD) : scr_bytes_slice(bytes, startD, endD);
-    ScrDyn *d = recv->buffer ? scr_dyn_new_buffer(out) : scr_dyn_new_bytes(out);
+    const bool subarray = recv->buffer || scr_dyn_bytes_named(method, "subarray");
+    bool failed;
+    ScrDyn *species = recv->buffer ? NULL : scr_bytes_species(recv, &failed);
+    if (!recv->buffer && failed) return NULL;
+    ScrBytes *out = subarray ? scr_bytes_subarray(bytes, startD, endD) : scr_bytes_slice(bytes, startD, endD);
+    if (!species) {
+      ScrDyn *d = recv->buffer ? scr_dyn_new_buffer(out) : scr_dyn_new_bytes(out);
+      scr_bytes_release(out);
+      return d;
+    }
+    ScrDyn *result;
+    if (subarray) {
+      /* The species constructor views the same buffer. */
+      ScrDyn *ctor_args = scr_dyn_new_arr();
+      scr_dyn_arr_push(ctor_args, scr_array_buffer_from_bytes(bytes));
+      scr_dyn_arr_push(ctor_args, scr_dyn_new_num(scr_bytes_byte_offset(out)));
+      scr_dyn_arr_push(ctor_args, scr_dyn_new_num((double)out->len));
+      ScrStr *what = scr_str_new("TypedArray species", 18);
+      result = scr_dyn_construct(species, ctor_args, what);
+      scr_str_release(what);
+      scr_dyn_release(ctor_args);
+      if (result && (result->kind != SCR_DYN_BYTES || result->v.bytes->is_data_view)) {
+        scr_dyn_release(result);
+        result = NULL;
+        static const char message[] = "this is not a typed array.";
+        scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+      }
+    } else {
+      result = scr_bytes_static_create(species, out->len);
+      for (size_t i = 0; result && i < out->len; i++)
+        scr_bytes_set(result->v.bytes, (double)i, scr_bytes_get(out, (double)i));
+    }
+    scr_dyn_release(species);
     scr_bytes_release(out);
-    return d;
+    return result;
   }
   if (scr_dyn_bytes_named(method, "set")) {
     double offset = scr_dyn_bytes_index_arg(args, argc, 1, 0);
@@ -4964,6 +5182,22 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
     if (scr_exc_pending()) { scr_str_release(separator); return NULL; }
     ScrStr *joined = scr_bytes_join(bytes, separator);
     scr_str_release(separator);
+    ScrDyn *out = scr_dyn_new_str(joined);
+    scr_str_release(joined);
+    return out;
+  }
+  if (scr_dyn_bytes_named(method, "toLocaleString")) {
+    /* Each element's Number.prototype.toLocaleString, joined by ",". */
+    ScrJsonBuf b;
+    scr_jb_init(&b);
+    for (size_t i = 0; i < len; i++) {
+      if (i > 0) scr_jb_putc(&b, ',');
+      if (i >= bytes->len) continue;
+      ScrStr *text = scr_intl_num_format_en_us(scr_bytes_get(bytes, (double)i));
+      scr_jb_write(&b, text->data, text->len);
+      scr_str_release(text);
+    }
+    ScrStr *joined = scr_jb_finish(&b);
     ScrDyn *out = scr_dyn_new_str(joined);
     scr_str_release(joined);
     return out;
@@ -5006,7 +5240,8 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
     if (!scr_dyn_bytes_cb_check(args, argc)) return NULL;
     ScrDyn *cb = args[0], *this_arg = argc > 1 ? args[1] : scr_dyn_undefined();
     const bool backward = scr_dyn_bytes_named(method, "findLast") || scr_dyn_bytes_named(method, "findLastIndex");
-    ScrBytes *mapped = scr_dyn_bytes_named(method, "map") ? scr_bytes_new(bytes->elem, (double)len) : NULL;
+    ScrDyn *mapped = NULL;
+    if (scr_dyn_bytes_named(method, "map") && !(mapped = scr_bytes_species_create(recv, len))) return NULL;
     double *kept = scr_dyn_bytes_named(method, "filter") ? malloc((len ? len : 1) * sizeof *kept) : NULL;
     size_t nkept = 0;
     for (size_t step = 0; step < len; step++) {
@@ -5017,7 +5252,7 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
       scr_dyn_release(index);
       if (!r) {
         scr_dyn_release(item);
-        if (mapped) scr_bytes_release(mapped);
+        scr_dyn_release(mapped);
         free(kept);
         return NULL;
       }
@@ -5026,8 +5261,8 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
         bool converted = scr_dyn_number_coerce_js(r, &v);
         scr_dyn_release(r);
         scr_dyn_release(item);
-        if (!converted) { scr_bytes_release(mapped); return NULL; }
-        if (k < mapped->len) scr_bytes_set(mapped, (double)k, v);
+        if (!converted) { scr_dyn_release(mapped); return NULL; }
+        if (k < mapped->v.bytes->len) scr_bytes_set(mapped->v.bytes, (double)k, v);
         continue;
       }
       bool truthy = scr_dyn_truthy(r);
@@ -5048,12 +5283,12 @@ ScrDyn *scr_dyn_bytes_method(ScrDyn *recv, const char *method, ScrDyn *const *ar
       }
       scr_dyn_release(item);
     }
-    if (mapped) return dyn_bytes_wrap(recv, mapped);
+    if (mapped) return mapped;
     if (kept) {
-      ScrBytes *out = scr_bytes_new(bytes->elem, (double)nkept);
-      for (size_t i = 0; i < nkept; i++) scr_bytes_set(out, (double)i, kept[i]);
+      ScrDyn *out = scr_bytes_species_create(recv, nkept);
+      for (size_t i = 0; out && i < nkept; i++) scr_bytes_set(out->v.bytes, (double)i, kept[i]);
       free(kept);
-      return dyn_bytes_wrap(recv, out);
+      return out;
     }
     if (scr_dyn_bytes_named(method, "some")) return scr_dyn_new_bool(false);
     if (scr_dyn_bytes_named(method, "every")) return scr_dyn_new_bool(true);
@@ -5180,6 +5415,8 @@ static ScrDyn *scr_dyn_bytes_method_value(const ScrStr *name, size_t arity) {
 /* Shared view metadata and indexed reads for both compiler backends. */
 ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key) {
   ScrBytes *bytes = value->v.bytes;
+  /* Own named properties first; a getter sees the view as `this`. */
+  if (scr_bytes_has_named(value, key)) return scr_bytes_named_get(value, key->data, key->len);
   if (key->len == 10 && memcmp(key->data, "byteLength", 10) == 0) return scr_dyn_new_num(scr_bytes_byte_len(bytes));
   if (key->len == 10 && memcmp(key->data, "byteOffset", 10) == 0) return scr_dyn_new_num(scr_bytes_byte_offset(bytes));
   if (key->len == 6 && memcmp(key->data, "buffer", 6) == 0) return scr_array_buffer_from_bytes(bytes);
@@ -6455,6 +6692,10 @@ static ScrDyn *scr_dyn_symbol_receiver(const ScrDyn *value) {
   if (value->kind == SCR_DYN_FUNC) return scr_dyn_fn_properties(value);
   if (value->kind == SCR_DYN_OBJ || value->kind == SCR_DYN_ARR || value->kind == SCR_DYN_HANDLE)
     return scr_dyn_retain((ScrDyn *)value);
+  /* A view keeps its symbol properties on its named-property table, which
+   * writes create first (scr_bytes_symbol_write). */
+  if (value->kind == SCR_DYN_BYTES)
+    return value->v.bytes->properties ? scr_dyn_retain(value->v.bytes->properties) : NULL;
   if (value->kind == SCR_DYN_PROXY) {
     static const char message[] = "Symbol properties on this native value have no lowering";
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
@@ -7868,8 +8109,46 @@ void scr_dyn_symbol_key_placeholder(ScrDyn *value, ScrDyn *key) {
   entry->value = scr_dyn_retain(scr_dyn_undefined());
 }
 
+/* Symbol keys that the runtime reads from a view's prototype without
+ * consulting its own properties: the well-known symbols and
+ * util.inspect.custom. */
+static bool scr_bytes_protocol_symbol(const ScrDyn *key) {
+  if (scr_dyn_well_known_symbol(key)) return true;
+  ScrStr *description = key->v.symbol.description(key->v.symbol.value);
+  bool custom = description && description->len == 26 && !memcmp(description->data, "nodejs.util.inspect.custom", 26);
+  scr_str_release(description);
+  return custom;
+}
+
+/* Before a symbol-keyed write or definition on a view: false with an
+ * exception pending for a key the view cannot own, else true with the
+ * view's table created. Symbol.toStringTag is an accessor without a setter
+ * on %TypedArray%.prototype, so assigning it throws V8's TypeError. */
+static bool scr_bytes_symbol_write(ScrDyn *value, const ScrDyn *key, bool assign) {
+  ScrDyn *receiver = scr_dyn_symbol_receiver(value);
+  bool own = receiver && scr_dyn_symbol_entry(receiver, key, true);
+  scr_dyn_release(receiver);
+  if (own) return true;
+  ScrStr *description = key->v.symbol.description(key->v.symbol.value);
+  bool tag = assign && !value->v.bytes->is_data_view && scr_dyn_well_known_symbol(key) && description &&
+    description->len == 18 && !memcmp(description->data, "Symbol.toStringTag", 18);
+  if (tag) {
+    static const char message[] = "Cannot set property Symbol(Symbol.toStringTag) of [object Object] which has only a getter";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+  } else if (scr_bytes_protocol_symbol(key)) {
+    ScrStr *name = key->v.symbol.render(key->v.symbol.value);
+    scr_bytes_protocol_fence(name->data, name->len);
+    scr_str_release(name);
+  }
+  scr_str_release(description);
+  if (scr_exc_pending()) return false;
+  scr_bytes_properties(value);
+  return true;
+}
+
 void scr_dyn_symbol_key_set(ScrDyn *value, ScrDyn *key, ScrDyn *stored) {
   if (scr_dyn_error_prototype_fence(value)) return;
+  if (value->kind == SCR_DYN_BYTES && !scr_bytes_symbol_write(value, key, true)) return;
   ScrDyn *receiver = scr_dyn_symbol_receiver(value);
   if (!receiver) {
     if (!scr_exc_pending()) {
@@ -7892,6 +8171,18 @@ void scr_dyn_symbol_key_set(ScrDyn *value, ScrDyn *key, ScrDyn *stored) {
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
   } else {
     bool present = scr_dyn_symbol_entry(receiver, key, true) != NULL;
+    if (!present && receiver->non_extensible) {
+      ScrStr *rendered = key->v.symbol.render(key->v.symbol.value);
+      ScrJsonBuf message;
+      scr_jb_init(&message);
+      scr_jb_puts(&message, "Cannot add property ");
+      scr_jb_write(&message, rendered->data, rendered->len);
+      scr_jb_puts(&message, ", object is not extensible");
+      scr_str_release(rendered);
+      scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
+      scr_dyn_release(receiver);
+      return;
+    }
     scr_dyn_symbol_table(receiver);
     ScrStr *name = scr_dyn_symbol_storage_key(key);
     scr_dyn_key_set(receiver->symbol_properties, name, stored);
@@ -7902,6 +8193,7 @@ void scr_dyn_symbol_key_set(ScrDyn *value, ScrDyn *key, ScrDyn *stored) {
 }
 
 static ScrDyn *scr_dyn_define_symbol(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor) {
+  if (target->kind == SCR_DYN_BYTES && !scr_bytes_symbol_write(target, key, false)) return NULL;
   ScrDyn *receiver = scr_dyn_symbol_receiver(target);
   if (!receiver) {
     if (!scr_exc_pending()) {
@@ -8096,6 +8388,53 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
     scr_dyn_release(defined);
     return scr_dyn_retain(target);
   }
+  if (target->kind == SCR_DYN_BYTES) {
+    ScrStr *name = scr_dyn_property_key(key);
+    if (!name) return NULL;
+    double index;
+    bool numeric = !target->v.bytes->is_data_view && scr_bytes_numeric_key(name, &index);
+    if (numeric) {
+      /* [[DefineOwnProperty]] of an element: a valid index and a data
+       * descriptor that keeps it writable, enumerable and configurable. */
+      bool valid = !signbit(index) && trunc(index) == index && index < (double)target->v.bytes->len;
+      const ScrDyn *configurable = scr_dyn_obj_get(descriptor, "configurable", 12);
+      const ScrDyn *enumerable = scr_dyn_obj_get(descriptor, "enumerable", 10);
+      const ScrDyn *writable = scr_dyn_obj_get(descriptor, "writable", 8);
+      bool accessor = scr_dyn_obj_get(descriptor, "get", 3) || scr_dyn_obj_get(descriptor, "set", 3);
+      if (!valid) {
+        scr_str_release(name);
+        static const char message[] = "Invalid typed array index";
+        scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+        return NULL;
+      }
+      if (accessor || (configurable && !scr_dyn_truthy(configurable)) ||
+          (enumerable && !scr_dyn_truthy(enumerable)) || (writable && !scr_dyn_truthy(writable))) {
+        ScrJsonBuf message;
+        scr_jb_init(&message);
+        scr_jb_puts(&message, "Cannot redefine property: ");
+        scr_jb_write(&message, name->data, name->len);
+        scr_str_release(name);
+        scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
+        return NULL;
+      }
+      scr_str_release(name);
+      const ScrDyn *value = scr_dyn_obj_get(descriptor, "value", 5);
+      double number;
+      if (value) {
+        if (!scr_dyn_number_coerce_js(value, &number)) return NULL;
+        scr_bytes_set(target->v.bytes, index, number);
+      }
+      return scr_dyn_retain(target);
+    }
+    bool fenced = scr_bytes_protocol_name(name) && !scr_bytes_has_named(target, name);
+    if (fenced) scr_bytes_protocol_fence(name->data, name->len);
+    scr_str_release(name);
+    if (fenced) return NULL;
+    ScrDyn *defined = scr_dyn_define_property(scr_bytes_properties(target), key, descriptor);
+    if (!defined) return NULL;
+    scr_dyn_release(defined);
+    return scr_dyn_retain(target);
+  }
   if (target->kind != SCR_DYN_OBJ) {
     static const char msg[] = "Object.defineProperty called on non-object";
     scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
@@ -8243,7 +8582,7 @@ ScrDyn *scr_dyn_get_own_property_descriptor(ScrDyn *target, ScrDyn *key) {
     scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
     return NULL;
   }
-  if (target->kind != SCR_DYN_OBJ && target->kind != SCR_DYN_PROXY && target->kind != SCR_DYN_FUNC && target->kind != SCR_DYN_ARR && target->kind != SCR_DYN_STR && target->kind != SCR_DYN_BOOL && target->kind != SCR_DYN_NUM && target->kind != SCR_DYN_TYPED_REF) {
+  if (target->kind != SCR_DYN_OBJ && target->kind != SCR_DYN_PROXY && target->kind != SCR_DYN_FUNC && target->kind != SCR_DYN_ARR && target->kind != SCR_DYN_STR && target->kind != SCR_DYN_BOOL && target->kind != SCR_DYN_NUM && target->kind != SCR_DYN_TYPED_REF && target->kind != SCR_DYN_BYTES) {
     static const char msg[] = "Object.getOwnPropertyDescriptor on this value is not supported yet";
     scr_throw_error_msg(SCR_ERR_ERROR, msg, sizeof msg - 1);
     return NULL;
@@ -8602,7 +8941,8 @@ static bool scr_dyn_json_write(ScrJsonBuf *b, const ScrDyn *d) {
     const ScrBytes *bytes = d->v.bytes;
     if (d->buffer) scr_jb_puts(b, "{\"type\":\"Buffer\",\"data\":[");
     else scr_jb_putc(b, '{');
-    for (size_t i = 0; i < bytes->len; i++) {
+    size_t count = bytes->is_data_view ? 0 : bytes->len;
+    for (size_t i = 0; i < count; i++) {
       if (i > 0) scr_jb_putc(b, ',');
       if (!d->buffer) {
         char idx[32];
@@ -8611,6 +8951,32 @@ static bool scr_dyn_json_write(ScrJsonBuf *b, const ScrDyn *d) {
       }
       scr_jb_put_f64(b, scr_bytes_get(bytes, (double)i));
     }
+    /* Named properties follow the elements; a Buffer's toJSON leaves them
+     * out. */
+    ScrDyn *named = d->buffer || !bytes->properties ? NULL : scr_dyn_obj_keys(bytes->properties);
+    bool first = count == 0;
+    for (size_t i = 0; named && i < named->v.arr.len; i++) {
+      const ScrStr *key = named->v.arr.items[i]->v.str;
+      ScrDyn *value = scr_dyn_obj_read_receiver(bytes->properties, key->data, key->len, d);
+      if (!value) { scr_dyn_release(named); return false; }
+      ScrJsonBuf probe;
+      scr_jb_init(&probe);
+      bool present = scr_dyn_json_write(&probe, value);
+      scr_dyn_release(value);
+      if (!present) {
+        scr_jb_dispose(&probe);
+        if (scr_exc_pending()) { scr_dyn_release(named); return false; }
+        continue;
+      }
+      if (!first) scr_jb_putc(b, ',');
+      first = false;
+      scr_jb_put_json_str(b, key);
+      scr_jb_putc(b, ':');
+      ScrStr *body = scr_jb_finish(&probe);
+      scr_jb_write(b, body->data, body->len);
+      scr_str_release(body);
+    }
+    scr_dyn_release(named);
     scr_jb_puts(b, d->buffer ? "]}" : "}");
     return true;
   }
@@ -10382,6 +10748,7 @@ bool scr_dyn_has_key(const ScrDyn *v, const ScrStr *key) {
   }
   if (v->kind == SCR_DYN_STR)
     return scr_dyn_canonical_own_index(key, (size_t)scr_str_utf16_len(v->v.str));
+  if (v->kind == SCR_DYN_BYTES) return scr_dyn_bytes_in(v, key);
   return false;
 }
 
@@ -10444,7 +10811,13 @@ static void scr_dyn_throw_property(const ScrDyn *object, const char *key, size_t
   scr_jb_puts(&buffer, deleting ? "Cannot delete property '" : "Cannot assign to read only property '");
   scr_jb_write(&buffer, key, key_len);
   scr_jb_puts(&buffer, deleting ? "' of " : "' of object '");
-  if (object->null_proto) scr_jb_puts(&buffer, "[object Object]");
+  if (object->kind == SCR_DYN_BYTES) {
+    /* V8 names a typed array by its tag and a DataView by its class. */
+    const char *kind = object->v.bytes->is_data_view ? "DataView" : scr_bytes_elem_name(object->v.bytes->elem);
+    scr_jb_puts(&buffer, object->v.bytes->is_data_view ? "#<" : "[object ");
+    scr_jb_puts(&buffer, kind);
+    scr_jb_puts(&buffer, object->v.bytes->is_data_view ? ">" : "]");
+  } else if (object->null_proto) scr_jb_puts(&buffer, "[object Object]");
   else {
     scr_jb_puts(&buffer, "#<");
     scr_jb_puts(&buffer, name ? name : "Object");
@@ -10658,19 +11031,36 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
   }
   if (recv->kind == SCR_DYN_BYTES) {
     /* Integer-indexed exotic writes coerce even for an invalid canonical
-     * numeric index, then ignore an out-of-range index without an error. */
-    double index = scr_string_to_number(key);
-    char spelling[32];
-    size_t length = scr_f64_to_str(index, spelling);
-    bool negative_zero = key->len == 2 && memcmp(key->data, "-0", 2) == 0;
-    if (negative_zero || (length == key->len && memcmp(spelling, key->data, length) == 0)) {
+     * numeric index, then ignore an out-of-range index without an error.
+     * A DataView has no elements: its numeric keys are named properties. */
+    double index;
+    if (!recv->v.bytes->is_data_view && scr_bytes_numeric_key(key, &index)) {
       double number;
       if (!scr_dyn_number_coerce_js(value, &number)) return;
-      if (!negative_zero && index >= 0 && index < (double)recv->v.bytes->len && trunc(index) == index) {
+      if (!signbit(index) && index < (double)recv->v.bytes->len && trunc(index) == index) {
         scr_bytes_set(recv->v.bytes, index, number);
       }
       return;
     }
+    /* Any other key is a named property of the view. */
+    if (!scr_bytes_has_named(recv, key)) {
+      if (scr_bytes_getter_name(recv, key)) {
+        ScrJsonBuf message;
+        scr_jb_init(&message);
+        scr_jb_puts(&message, "Cannot set property ");
+        scr_jb_write(&message, key->data, key->len);
+        scr_jb_puts(&message, recv->v.bytes->is_data_view ? " of #<DataView> which has only a getter"
+                                                          : " of [object Object] which has only a getter");
+        scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
+        return;
+      }
+      if (scr_bytes_protocol_name(key)) {
+        scr_bytes_protocol_fence(key->data, key->len);
+        return;
+      }
+    }
+    scr_dyn_object_key_set(scr_bytes_properties(recv), key, value, recv);
+    return;
   }
 
   ScrJsonBuf b;
@@ -12342,6 +12732,11 @@ static ScrDyn *scr_json_member(const ScrDyn *holder, const ScrStr *key) {
     scr_dyn_release(view);
     return member;
   }
+  /* A view's named properties, getters included, read through the view. */
+  if (holder->kind == SCR_DYN_BYTES && (holder->v.bytes->is_data_view || scr_bytes_has_named(holder, key))) {
+    ScrDyn *named = scr_bytes_named_get(holder, key->data, key->len);
+    return named || scr_exc_pending() ? named : scr_dyn_retain(scr_dyn_undefined());
+  }
   if (holder->kind == SCR_DYN_ARR || holder->kind == SCR_DYN_BYTES) {
     size_t index = 0;
     for (size_t i = 0; i < key->len; i++) index = index * 10 + (size_t)(key->data[i] - '0');
@@ -12483,6 +12878,23 @@ void scr_dyn_key_delete(ScrDyn *recv, const ScrStr *key, bool strict) {
   if (recv->kind == SCR_DYN_ARR && recv->v.arr.properties &&
       scr_dyn_obj_get(recv->v.arr.properties, key->data, key->len)) {
     scr_dyn_key_delete(recv->v.arr.properties, key, strict);
+    return;
+  }
+  if (recv->kind == SCR_DYN_BYTES) {
+    /* A typed array's elements cannot be deleted; other numeric keys name
+     * no property. Named properties follow their configurability. */
+    double index;
+    if (!recv->v.bytes->is_data_view && scr_bytes_numeric_key(key, &index)) {
+      if (strict && !signbit(index) && trunc(index) == index && index < (double)recv->v.bytes->len)
+        scr_dyn_throw_property(recv, key->data, key->len, true);
+      return;
+    }
+    ScrDynEntry *entry = recv->v.bytes->properties ? scr_dyn_entry(recv->v.bytes->properties, key) : NULL;
+    if (entry && !entry->configurable) {
+      if (strict) scr_dyn_throw_property(recv, key->data, key->len, true);
+      return;
+    }
+    if (entry) scr_json_delete_member(recv->v.bytes->properties, key);
     return;
   }
   if (recv->kind == SCR_DYN_UNDEF || recv->kind == SCR_DYN_NULL) {
@@ -14164,7 +14576,7 @@ ScrDyn *scr_dyn_get_own_property_names(const ScrDyn *value) {
   if (value->kind == SCR_DYN_ARR || value->kind == SCR_DYN_STR || value->kind == SCR_DYN_BYTES) {
     ScrDyn *keys = scr_dyn_new_arr();
     size_t length = value->kind == SCR_DYN_ARR ? value->v.arr.len :
-                    value->kind == SCR_DYN_BYTES ? value->v.bytes->len :
+                    value->kind == SCR_DYN_BYTES ? (value->v.bytes->is_data_view ? 0 : value->v.bytes->len) :
                     (size_t)scr_str_utf16_len(value->v.str);
     for (size_t i = 0; i < length; i++) {
       if (value->kind == SCR_DYN_ARR && !scr_dyn_arr_has_index(value, i)) continue;
@@ -14176,8 +14588,10 @@ ScrDyn *scr_dyn_get_own_property_names(const ScrDyn *value) {
       scr_dyn_arr_push(keys, scr_dyn_objwalk_key("length", 6));
     bool array_prototype = value == scr_builtin_array_prototype;
     if (array_prototype) scr_dyn_arr_push(keys, scr_dyn_objwalk_key("constructor", 11));
-    if (value->kind == SCR_DYN_ARR && value->v.arr.properties) {
-      ScrDyn *properties = scr_dyn_obj_own_keys(value->v.arr.properties);
+    ScrDyn *named = value->kind == SCR_DYN_ARR ? value->v.arr.properties
+                  : value->kind == SCR_DYN_BYTES ? value->v.bytes->properties : NULL;
+    if (named) {
+      ScrDyn *properties = scr_dyn_obj_own_keys(named);
       for (size_t i = 0; i < properties->v.arr.len; i++) {
         ScrDyn *name = properties->v.arr.items[i];
         /* A constructor stored on Array.prototype keeps the position above. */
@@ -14448,7 +14862,7 @@ static ScrDyn *scr_dyn_objwalk(const ScrDyn *v, ScrObjWalk mode) {
     return out;
   }
   if (v->kind == SCR_DYN_ARR || v->kind == SCR_DYN_BYTES) {
-    size_t n = v->kind == SCR_DYN_ARR ? v->v.arr.len : v->v.bytes->len;
+    size_t n = v->kind == SCR_DYN_ARR ? v->v.arr.len : v->v.bytes->is_data_view ? 0 : v->v.bytes->len;
     for (size_t i = 0; i < n; i++) {
       if (v->kind == SCR_DYN_ARR && !scr_dyn_arr_has_index(v, i)) continue;
       char key[24];
@@ -14469,10 +14883,11 @@ static ScrDyn *scr_dyn_objwalk(const ScrDyn *v, ScrObjWalk mode) {
         scr_dyn_arr_push(out, pair);
       }
     }
-    if (v->kind == SCR_DYN_ARR && v->v.arr.properties) {
-      ScrDyn *names = scr_dyn_obj_own_keys(v->v.arr.properties);
+    ScrDyn *named = v->kind == SCR_DYN_ARR ? v->v.arr.properties : v->v.bytes->properties;
+    if (named) {
+      ScrDyn *names = scr_dyn_obj_own_keys(named);
       for (size_t i = 0; i < names->v.arr.len; i++) {
-        if (!scr_dyn_objwalk_entry(out, v->v.arr.properties, mode, names->v.arr.items[i]->v.str, v)) {
+        if (!scr_dyn_objwalk_entry(out, named, mode, names->v.arr.items[i]->v.str, v)) {
           scr_dyn_release(names);
           scr_dyn_release(out);
           return NULL;
@@ -14576,6 +14991,7 @@ ScrDyn *scr_dyn_for_in_keys(const ScrDyn *v) {
     return keys;
   }
   case SCR_DYN_ARR:
+  case SCR_DYN_BYTES:
     return scr_dyn_obj_keys(v);
   case SCR_DYN_STR: {
     ScrDyn *keys = scr_dyn_new_arr();
@@ -14829,7 +15245,7 @@ static void scr_dyn_assign_strings_from(ScrDyn *target, const ScrDyn *src, bool 
     scr_dyn_proxy_unsupported("Object.assign");
     return;
   }
-  if (target->kind != SCR_DYN_OBJ && target->kind != SCR_DYN_FUNC) return;
+  if (target->kind != SCR_DYN_OBJ && target->kind != SCR_DYN_FUNC && target->kind != SCR_DYN_BYTES) return;
   if (src->kind == SCR_DYN_TYPED_REF) {
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(src);
     if (materialized) scr_dyn_assign_strings_from(target, materialized, define);
@@ -14892,13 +15308,15 @@ static void scr_dyn_assign_from(ScrDyn *target, const ScrDyn *src, bool define) 
     return;
   }
   ScrDyn *view = src->kind == SCR_DYN_FUNC ? scr_dyn_fn_properties(src) : scr_dyn_retain((ScrDyn *)src);
+  /* A view's symbol properties live on its named-property table. */
+  const ScrDyn *holder = src->kind == SCR_DYN_BYTES ? src->v.bytes->properties : view;
   ScrDyn *symbols = scr_dyn_new_arr();
-  if (view->symbol_keys) for (size_t i = 0; i < view->symbol_keys->v.arr.len; i++)
-    scr_dyn_arr_push(symbols, scr_dyn_retain(view->symbol_keys->v.arr.items[i]));
+  if (holder && holder->symbol_keys) for (size_t i = 0; i < holder->symbol_keys->v.arr.len; i++)
+    scr_dyn_arr_push(symbols, scr_dyn_retain(holder->symbol_keys->v.arr.items[i]));
   scr_dyn_assign_strings_from(target, view, define);
   for (size_t i = 0; i < symbols->v.arr.len && !scr_exc_pending(); i++) {
     ScrDyn *key = symbols->v.arr.items[i];
-    ScrDynEntry *entry = scr_dyn_symbol_entry(view, key, true);
+    ScrDynEntry *entry = scr_dyn_symbol_entry(holder, key, true);
     if (!entry || !entry->enumerable) continue;
     ScrDyn *value = scr_dyn_symbol_key_get(src, key, false);
     if (!value) break;
@@ -15289,7 +15707,7 @@ bool scr_dyn_has_own(const ScrDyn *v, const ScrStr *key) {
     return scr_dyn_canonical_own_index(key, (size_t)scr_str_utf16_len(v->v.str));
   }
   if (v->kind == SCR_DYN_BYTES) {
-    return scr_dyn_canonical_own_index(key, v->v.bytes->len);
+    return (!v->v.bytes->is_data_view && scr_dyn_canonical_own_index(key, v->v.bytes->len)) || scr_bytes_has_named(v, key);
   }
   if (v->kind == SCR_DYN_FUNC) {
     ScrDyn *desc = scr_dyn_own_descriptor(v, key);
@@ -15326,7 +15744,8 @@ bool scr_dyn_property_is_enumerable(const ScrDyn *value, const ScrStr *key) {
     return (scr_dyn_canonical_own_index(key, value->v.arr.len) && scr_dyn_has_own(value, key)) ||
       (value->v.arr.properties && scr_dyn_obj_enumerable(value->v.arr.properties, key->data, key->len));
   if (value->kind == SCR_DYN_BYTES)
-    return scr_dyn_canonical_own_index(key, value->v.bytes->len);
+    return (!value->v.bytes->is_data_view && scr_dyn_canonical_own_index(key, value->v.bytes->len)) ||
+      (value->v.bytes->properties && scr_dyn_obj_enumerable(value->v.bytes->properties, key->data, key->len));
   return false;
 }
 ScrDyn *scr_dyn_obj_values(const ScrDyn *v) { return scr_dyn_objwalk(v, SCR_OBJWALK_VALUES); }
@@ -17030,6 +17449,11 @@ ScrDyn *scr_dyn_freeze_data(ScrDyn *value) {
   ScrDyn *native = scr_dyn_freeze_native(value);
   if (native) return native;
   if (scr_dyn_class_integrity_fence(value, "Object.freeze")) return NULL;
+  if (value->kind == SCR_DYN_BYTES) {
+    scr_dyn_release(scr_dyn_freeze_data(scr_bytes_properties(value)));
+    if (scr_bytes_integrity_fence(value, "freeze")) return NULL;
+    return scr_dyn_retain(value);
+  }
   if (value->symbol_properties) scr_dyn_release(scr_dyn_freeze_data(value->symbol_properties));
   if (value->kind == SCR_DYN_ARR) {
     value->non_extensible = true;
@@ -17071,6 +17495,9 @@ bool scr_dyn_is_frozen(const ScrDyn *value) {
   if (value->kind == SCR_DYN_ARR)
     return scr_dyn_is_sealed(value) && (value->v.arr.len == 0 || value->v.arr.frozen) &&
       (!value->v.arr.properties || scr_dyn_is_frozen(value->v.arr.properties));
+  if (value->kind == SCR_DYN_BYTES)
+    return (value->v.bytes->is_data_view || value->v.bytes->len == 0) && value->v.bytes->properties &&
+      scr_dyn_is_frozen(value->v.bytes->properties);
   if (value->kind == SCR_DYN_OBJ && !value->copied_from_native) {
     if (!value->non_extensible) return false;
     for (size_t i = 0; i < value->v.obj.len; i++) {

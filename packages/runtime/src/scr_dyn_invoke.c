@@ -1606,6 +1606,20 @@ static ScrDyn *scr_dyn_invoke_impl(
 
   if (recv->kind == SCR_DYN_BYTES) {
     ScrBytes *bytes = recv->v.bytes;
+    /* An own property of the view shadows the prototype's method. */
+    ScrDyn *member = bytes->properties ? scr_bytes_named_get(recv, method, strlen(method)) : NULL;
+    if (!member && scr_exc_pending()) return NULL;
+    if (member) {
+      ScrDyn *result = NULL;
+      if (!scr_dyn_is_callable(member)) dyn_throw_not_fn(what);
+      else {
+        scr_dyn_this_push_dyn(recv);
+        result = scr_dyn_call(member, args, argc, what);
+        scr_dyn_this_pop();
+      }
+      scr_dyn_release(member);
+      return result;
+    }
     if (bytes->is_data_view) {
       static const char *const kinds[] = { "Uint8", "Int8", "Uint16", "Int16", "Uint32", "Int32", "Float32", "Float64", "BigUint64", "BigInt64", "Float16" };
       const bool get = !strncmp(method, "get", 3);

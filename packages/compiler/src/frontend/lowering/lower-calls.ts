@@ -1087,7 +1087,10 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
       if (!argNode || (ts.isIdentifier(argNode) && argNode.text === "undefined")) {
         return { kind: "libCall", fn: "sym.newAnon", args: [], type: SYMBOL_T, loc };
       }
-      const desc = lowerer.lowerExpr(argNode);
+      let desc = lowerer.lowerExpr(argNode);
+      // A number or boolean description is its ToString.
+      if (desc.type.kind === "f64" || desc.type.kind === "bool")
+        desc = lowerer.ensureString(desc, argNode);
       if (desc.type.kind !== "string") {
         lowerer.noLowering(
           `Symbol with a '${lowerer.fmt(desc.type)}' description`,

@@ -1781,16 +1781,32 @@ export function recordTextCodecClass(shape: IrRecordShape): "TextEncoder" | "Tex
   return null;
 }
 
-/** The codec class of a TextEncoder or TextDecoder record type, else null.
- * Such a record crosses an `unknown` slot as a native handle that holds the
- * record itself (scr_text_codec_dyn.c), never as a copy or a field view. */
+/** The class of a record that crosses checked-dynamic slots as a native
+ * handle: the codecs, and a StringDecoder (type-mapper.ts: its canonical
+ * encoding and the packing of its pending bytes). */
+export function recordHandleCodecClass(
+  shape: IrRecordShape,
+): "TextEncoder" | "TextDecoder" | "StringDecoder" | null {
+  const codec = recordTextCodecClass(shape);
+  if (codec !== null) return codec;
+  return shape.fields.length === 2 &&
+    shape.fields[0]!.name === "%enc" &&
+    shape.fields[1]!.name === "%pending"
+    ? "StringDecoder"
+    : null;
+}
+
+/** The codec class of a TextEncoder, TextDecoder or StringDecoder record
+ * type, else null. Such a record crosses an `unknown` slot as a native
+ * handle that holds the record itself (scr_text_codec_dyn.c), never as a
+ * copy or a field view. */
 export function textCodecRecordClass(
   t: IrType,
   getRecord: (shapeId: string) => IrRecordShape | undefined,
-): "TextEncoder" | "TextDecoder" | null {
+): "TextEncoder" | "TextDecoder" | "StringDecoder" | null {
   if (t.kind !== "record") return null;
   const shape = getRecord(t.shapeId);
-  return shape ? recordTextCodecClass(shape) : null;
+  return shape ? recordHandleCodecClass(shape) : null;
 }
 
 /** Object-literal ACCESSOR properties (`{ get x() {...}, set x(v) {...} }`)

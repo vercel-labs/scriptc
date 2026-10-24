@@ -369,6 +369,12 @@ ScrDyn *scr_text_decoder_to_dyn(void *rec, void *(*retain)(void *), void (*relea
 void *scr_text_codec_from_dyn(const ScrDyn *d, bool decoder, const struct ScrDynPath *path,
                               const char *want);
 bool scr_text_codec_is(const ScrDyn *d, bool decoder);
+/* StringDecoder records as checked-dynamic handles (the same unit): the
+ * byte offsets of the encoding (string) and pending (f64) fields. */
+ScrDyn *scr_string_decoder_to_dyn(void *rec, void *(*retain)(void *), void (*release)(void *),
+                                  size_t encoding, size_t pending);
+void *scr_string_decoder_from_dyn(const ScrDyn *d, const struct ScrDynPath *path,
+                                  const char *want);
 bool scr_buffer_is_ascii(const ScrDyn *input);
 bool scr_buffer_is_utf8(const ScrDyn *input);
 ScrBytes *scr_buffer_transcode(const ScrDyn *source, const ScrDyn *from, const ScrDyn *to);

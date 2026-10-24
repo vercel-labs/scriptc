@@ -1,9 +1,10 @@
-/* WHATWG TextEncoder and TextDecoder instances as checked-dynamic values
- * (SCR_DYNH_TEXT_ENCODER, SCR_DYNH_TEXT_DECODER). A codec is a compiled
+/* WHATWG TextEncoder and TextDecoder instances, and node:string_decoder
+ * StringDecoder instances, as checked-dynamic values (SCR_DYNH_TEXT_ENCODER,
+ * SCR_DYNH_TEXT_DECODER, SCR_DYNH_STRING_DECODER). A codec is a compiled
  * record (type-mapper.ts): the handle holds that record by reference, so
  * a codec stored in an untyped slot and read back keeps its identity and
  * a decoder keeps its streaming state. The compiler passes the record's
- * reference-count entry points and, for decoders, the byte offsets of the
+ * reference-count entry points and, for a TextDecoder, the byte offsets of the
  * encoding, fatal, ignoreBOM and state fields when it boxes one. A unit
  * of its own so programs that never box a codec link none of it
  * (native-toolchain gating: the textCodecDyn runtime feature). */
@@ -212,4 +213,125 @@ void *scr_text_codec_from_dyn(const ScrDyn *d, bool decoder, const ScrDynPath *p
 bool scr_text_codec_is(const ScrDyn *d, bool decoder) {
   return d->kind == SCR_DYN_HANDLE &&
          d->v.handle.tag == (decoder ? SCR_DYNH_TEXT_DECODER : SCR_DYNH_TEXT_ENCODER);
+}
+
+/* node:string_decoder StringDecoder instances (SCR_DYNH_STRING_DECODER).
+ * The decoder is a compiled record of its canonical encoding (a string)
+ * and its pending partial sequence (an f64 packing, scr_bytes.c's
+ * scr_strdec_* helpers); the compiler passes both fields' byte offsets
+ * when it boxes one. */
+typedef struct {
+  void *(*retain)(void *);
+  void (*release)(void *);
+  size_t encoding, pending;
+} ScrStringDecoderLayout;
+
+static SCR_TL ScrStringDecoderLayout scr_sdd_layout;
+
+static void *scr_sdd_retain(void *rec) { return scr_sdd_layout.retain(rec); }
+static void scr_sdd_release(void *rec) { scr_sdd_layout.release(rec); }
+
+static ScrStr *scr_sdd_encoding(const void *rec) {
+  ScrStr *encoding;
+  memcpy(&encoding, (const char *)rec + scr_sdd_layout.encoding, sizeof encoding);
+  return encoding;
+}
+
+static double scr_sdd_pending(const void *rec) {
+  double pending;
+  memcpy(&pending, (const char *)rec + scr_sdd_layout.pending, sizeof pending);
+  return pending;
+}
+
+static void scr_sdd_set_pending(void *rec, double pending) {
+  memcpy((char *)rec + scr_sdd_layout.pending, &pending, sizeof pending);
+}
+
+/* write(buf): a string answers itself; an ArrayBuffer view decodes with
+ * the pending bytes before it; other values throw Node's
+ * ERR_INVALID_ARG_TYPE. +1 or NULL. */
+static ScrStr *scr_sdd_write(void *rec, const ScrDyn *buf) {
+  if (buf->kind == SCR_DYN_STR) return scr_str_retain(buf->v.str);
+  if (buf->kind != SCR_DYN_BYTES) {
+    scr_dyn_arg_type_fail("buf", "an instance of Buffer, TypedArray, or DataView", buf);
+    return NULL;
+  }
+  ScrBytes *bytes = scr_bytes_raw_view(buf->v.bytes);
+  ScrStr *encoding = scr_sdd_encoding(rec);
+  double pending = scr_sdd_pending(rec);
+  ScrStr *text = scr_strdec_write(encoding, pending, bytes);
+  scr_sdd_set_pending(rec, scr_strdec_next(encoding, pending, bytes));
+  scr_bytes_release(bytes);
+  return text;
+}
+
+static ScrDyn *scr_sdd_invoke(void *rec, ScrDyn *self, const char *method, ScrDyn *const *args,
+                              size_t argc, const char *what) {
+  (void)self;
+  ScrDyn *buf = scr_tcd_codec_arg(args, argc, 0);
+  if (strcmp(method, "write") == 0) {
+    ScrStr *text = scr_sdd_write(rec, buf);
+    return text ? scr_tcd_str(text) : NULL;
+  }
+  if (strcmp(method, "end") == 0) {
+    /* end(buf): write(buf) when buf is not undefined, then the pending
+     * bytes' replacement text. */
+    ScrStr *head = buf->kind == SCR_DYN_UNDEF ? scr_str_new("", 0) : scr_sdd_write(rec, buf);
+    if (!head) return NULL;
+    ScrStr *tail = scr_strdec_end(scr_sdd_encoding(rec), scr_sdd_pending(rec));
+    scr_sdd_set_pending(rec, 0);
+    ScrStr *text = scr_str_concat(head, tail);
+    scr_str_release(head);
+    scr_str_release(tail);
+    return scr_tcd_str(text);
+  }
+  if (strcmp(method, "text") == 0) {
+    static const char message[] = "StringDecoder.prototype.text is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return NULL;
+  }
+  scr_tcd_codec_not_a_function(what);
+  return NULL;
+}
+
+static ScrDyn *scr_sdd_get(void *rec, const char *key, size_t len) {
+  if (len == 8 && memcmp(key, "encoding", 8) == 0)
+    return scr_dyn_new_str(scr_sdd_encoding(rec));
+  if ((len == 8 && memcmp(key, "lastChar", 8) == 0) ||
+      (len == 8 && memcmp(key, "lastNeed", 8) == 0) ||
+      (len == 9 && memcmp(key, "lastTotal", 9) == 0)) {
+    static const char message[] = "StringDecoder lastChar, lastNeed and lastTotal are not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+  }
+  return NULL;
+}
+
+static const ScrDynHandleMethod scr_sdd_methods[] = {
+    {.name = "write", .length = 1},
+    {.name = "end", .length = 1},
+    {.name = "text", .length = 2},
+    {.name = NULL},
+};
+
+static const ScrDynHandleOps scr_sdd_ops = {
+    .cls = "StringDecoder",
+    .retain = scr_sdd_retain,
+    .release = scr_sdd_release,
+    .invoke = scr_sdd_invoke,
+    .get = scr_sdd_get,
+    .set = scr_tcd_codec_set,
+    .methods = scr_sdd_methods,
+};
+
+ScrDyn *scr_string_decoder_to_dyn(void *rec, void *(*retain)(void *), void (*release)(void *),
+                                  size_t encoding, size_t pending) {
+  if (!scr_sdd_layout.retain) {
+    scr_sdd_layout = (ScrStringDecoderLayout){retain, release, encoding, pending};
+    scr_dyn_handle_install(SCR_DYNH_STRING_DECODER, &scr_sdd_ops);
+  }
+  return scr_dyn_new_handle(rec, SCR_DYNH_STRING_DECODER);
+}
+
+void *scr_string_decoder_from_dyn(const ScrDyn *d, const ScrDynPath *path, const char *want) {
+  return scr_dyn_handle_unbox(d, SCR_DYNH_STRING_DECODER, path, want);
 }

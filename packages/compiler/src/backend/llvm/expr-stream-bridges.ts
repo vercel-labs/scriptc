@@ -1,7 +1,7 @@
 import { typedRefConstructor } from "./shapes.js";
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
-import { streamTypedRefEligible, undefinedArmTag } from "../../ir/analysis.js";
+import { streamRooted, streamTypedRefEligible, undefinedArmTag } from "../../ir/analysis.js";
 import {
   type IrRecordShape,
   type IrType,
@@ -843,8 +843,7 @@ export function streamTypedRefMaterializeAdapter(
       host.declare(`declare ptr @scr_error_dyn_fields(ptr)`);
       B.line(`${out} = call ptr @scr_error_dyn_fields(ptr %p)`);
     } else if (
-      meta.def.runtime &&
-      RUNTIME_STREAM_CLASSES.has(t.className) &&
+      ((meta.def.runtime && RUNTIME_STREAM_CLASSES.has(t.className)) || streamRooted(meta)) &&
       !meta.def.instancePrototypeHelper &&
       !meta.def.prototypeDataHelper
     ) {

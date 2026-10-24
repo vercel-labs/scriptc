@@ -2,6 +2,7 @@ import type { IrClassDef, IrExpr, IrModule, IrRecordShape, IrType, IrUnionDef } 
 import type { IrLibFn } from "./builtin-signatures.js";
 import {
   isDirentShape,
+  recordHandleCodecClass,
   recordTextCodecClass,
   RUNTIME_EMITTER_CLASS,
   RUNTIME_EVENT_CLASS,
@@ -586,7 +587,7 @@ function mentionsDgramSocket(t: IrType, tables: TypeTables): boolean {
 const textCodecLeaf: CarrierLeaf = (t, tables) => {
   if (t.kind !== "record") return false;
   const shape = tables.records.get(t.shapeId);
-  return shape !== undefined && recordTextCodecClass(shape) !== null;
+  return shape !== undefined && recordHandleCodecClass(shape) !== null;
 };
 
 const textDecoderLeaf: CarrierLeaf = (t, tables) => {
@@ -596,7 +597,7 @@ const textDecoderLeaf: CarrierLeaf = (t, tables) => {
 };
 
 /** Whether converting a value of type `t` to or from dyn converts a
- * TextEncoder or TextDecoder record, which boxes it as a handle of
+ * TextEncoder, TextDecoder or StringDecoder record, which boxes it as a handle of
  * scr_text_codec_dyn.c (the same carrier walk as dgram sockets). */
 function mentionsTextCodec(t: IrType, tables: TypeTables): boolean {
   tables.textCodecCarriers ??= leafCarriers(tables, textCodecLeaf);
@@ -858,7 +859,7 @@ const RUNTIME_FEATURE_RULES = {
       (node.kind === "dynFrom" && mentionsDgramSocket(node.value.type, tables())) ||
       (node.kind === "dynCheck" && mentionsDgramSocket(node.type, tables())),
   }),
-  /** A TextEncoder or TextDecoder record converts to or from an untyped
+  /** A TextEncoder, TextDecoder or StringDecoder record converts to or from an untyped
    * value (its handle box, or a boxed function, record or collection that
    * carries one): scr_text_codec_dyn.c. */
   textCodecDyn: rule({

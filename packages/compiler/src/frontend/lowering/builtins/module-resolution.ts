@@ -2,7 +2,7 @@ import { nodeThrowExpr, boolLit, strLit, varRef } from "../../../ir/build.js";
 import { dirname, isAbsolute, resolve } from "node:path";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, PoisonError } from "../lowerer.js";
-import { canonicalBuiltinModule, isNodeEsmFile, locOf } from "../../program.js";
+import { canonicalBuiltinModule, isJsSourceFile, isNodeEsmFile, locOf } from "../../program.js";
 import { isRelativeSpecifier } from "../../workspace-registry.js";
 import { probeNodeRequireRefusal } from "../../npm.js";
 import { isNpmStaticPackage } from "../../npm-static.js";
@@ -17,6 +17,7 @@ import {
 import {
   invalidJsonModuleDiag,
   nativeAddonDiag,
+  noLoweringDiag,
   unsupportedPackageImportDiag,
 } from "../../../diagnostics/diagnostic.js";
 import { NODE_BUILTIN_MODULES_V24 } from "../surfaces.js";
@@ -24,12 +25,14 @@ import {
   BOOL,
   DYN,
   type IrExpr,
+  type IrStmt,
   type IrType,
   NULL_T,
   STRING,
   type SrcLoc,
   UNDEFINED_T,
   arrayOf,
+  funcOf,
 } from "../../../ir/ir.js";
 import { lowerFfiMemoryModule } from "../native-ffi.js";
 import {
@@ -38,6 +41,7 @@ import {
   createRequireCalleeFileOf,
 } from "./module-bindings.js";
 import { stripTypeCasts } from "./arguments.js";
+import { keyedHelperName } from "../stable-names.js";
 
 /** node:module's two compiler-only calls. isBuiltin compares one evaluated
  * string against the pinned Node 24 list (bare builtins also accept their
@@ -134,6 +138,61 @@ export function lowerNodeModuleCall(
   };
 }
 
+/** The fence a createRequire use with no build-time lowering throws in
+ * JavaScript source, where preflight admits it inside a try block
+ * (createRequireUse7 in program.ts). The diagnostic joins the runtime-fence
+ * ledger, so coverage lists the use as deferred to runtime. */
+function createRequireFence(
+  lowerer: Lowerer,
+  surface: string,
+  node: ts.Node,
+  hint: string,
+): IrStmt & { kind: "runtimeFence" } {
+  const loc = locOf(node);
+  const d = noLoweringDiag(surface, loc, hint);
+  lowerer.runtimeFences.push(d);
+  const line = ts.getLineAndCharacterOfPosition(ts.getSourceFileOfNode(node), loc.start).line + 1;
+  return {
+    kind: "runtimeFence",
+    code: d.code,
+    message: `${d.message} [${d.code} at ${loc.file}:${line}]`,
+    loc,
+  };
+}
+
+/** A createRequire loader's `resolve` (or `resolve.paths`) read as a value
+ * in JavaScript source: a function that throws the fence when called, so
+ * `(options.resolve ?? require.resolve)(id)` still calls the option when
+ * one is given. */
+export function createRequireResolveFenceValue(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+  loc: SrcLoc,
+): IrExpr {
+  const surface = "createRequire's require.resolve as a value";
+  const hint =
+    'call it with a string literal (require.resolve("<specifier>")), which resolves at build time';
+  if (!isJsSourceFile(ts.getSourceFileOfNode(access))) lowerer.noLowering(surface, access, hint);
+  const name = keyedHelperName(lowerer, "%createRequire.fence", `${loc.file}:${loc.start}`);
+  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+    lowerer.liftedFns.push({
+      name,
+      params: [],
+      locals: [],
+      returnType: DYN,
+      body: [createRequireFence(lowerer, surface, access, hint)],
+      loc,
+    });
+  }
+  return {
+    kind: "dynFrom",
+    value: { kind: "closure", fnName: name, captures: [], type: funcOf([], DYN), loc },
+    fnName: access.name.text,
+    type: DYN,
+    loc,
+  };
+}
+
 export function lowerCreateRequireCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -142,11 +201,31 @@ export function lowerCreateRequireCall(
   const cr = createRequireSpecOf(lowerer, call);
   if (cr === null) return null;
   if (cr.spec === null) {
-    lowerer.noLowering(
-      "createRequire's require with this argument shape",
-      call,
-      'the compiled module graph is fixed at build time — the one lowered form is require("<static string literal>")',
+    const surface = "createRequire's require with a computed specifier or this argument shape";
+    const hint =
+      'the compiled module graph is fixed at build time — the one lowered form is require("<static string literal>"); native addons are not loaded';
+    if (!isJsSourceFile(ts.getSourceFileOfNode(call))) lowerer.noLowering(surface, call, hint);
+    // Node evaluates the arguments, then the require throws.
+    const stmts: IrStmt[] = call.arguments.nodes.map((arg) => ({
+      kind: "exprStmt",
+      expr: lowerer.lowerExpr(arg),
+      loc: locOf(arg),
+    }));
+    const type = lowerer.irTypeOf(call);
+    const slot = lowerer.declareHiddenLocal("%never", type);
+    slot.mutable = true;
+    stmts.push(
+      { kind: "varDecl", localId: slot.id, init: null, loc },
+      createRequireFence(lowerer, surface, call, hint),
     );
+    return {
+      kind: "seqExpr",
+      stmts,
+      result: varRef(slot.id, type, loc),
+      diverges: true,
+      type,
+      loc,
+    };
   }
   const spec = cr.spec;
   if (spec === "node:ffi") {

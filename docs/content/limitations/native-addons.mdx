@@ -2,5 +2,11 @@ Node-API (N-API) and V8 `.node` addons depend on Node.js itself, so compiled pro
 Direct `createRequire` calls to local addons are rejected at compile time.
 A package that requires an addon needs a JavaScript implementation that compiles, or a replacement through native FFI.
 
+A package that looks for an optional addon at run time compiles with `--npm-static` when the lookup is inside a `try` block.
+There, a `createRequire` require call with a computed specifier throws an error where it runs, and its `require.resolve` read as a value is a function that throws when called.
+Coverage lists both as deferred to runtime.
+The package's `catch` clause then runs as it does in Node.js when the addon is missing.
+Outside a `try` block, the same uses keep the package refused.
+
 Use [Native FFI](/docs/ffi#replacing-a-node-api-addon) to call a plain C ABI function linked from an object or static archive.
 The guide includes a replacement for a small Node-API helper.

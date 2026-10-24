@@ -2519,12 +2519,27 @@ export function isCreateRequireBinding7(program: ts.Program, callee: ts.Identifi
   );
 }
 
-/** Only literal calls and literal resolution queries can erase the loader
- * value. In particular, assignments, exported aliases, shorthand properties,
- * optional calls, and passing the loader to user code cannot pass this test. */
-function staticCreateRequireUse7(expr: ts.Expression): boolean {
+/** How a use of a createRequire loader lowers:
+ * - "static": a literal call or a literal resolution query, which erases
+ *   the loader value.
+ * - "deferred": a call with a computed specifier or another argument shape,
+ *   or `resolve` / `resolve.paths` read as a value, inside the try block
+ *   of a try statement in the same function. The call throws a runtime
+ *   fence, and the resolve value is a function that throws one when called
+ *   (module-resolution.ts), so the statement's catch clause handles them
+ *   (packages that look for optional native addons).
+ * - "computed": the same shapes outside a try block.
+ * - "escaping": the loader itself as a value, writes, optional calls, and
+ *   other members. */
+const COMPUTED_CREATE_REQUIRE_REASON =
+  "its createRequire result is used with a computed specifier, or its resolve as a value, outside a try block (static requires need literal specifiers)";
+
+type CreateRequireUse7 = "static" | "deferred" | "computed" | "escaping";
+
+function createRequireUse7(expr: ts.Expression): CreateRequireUse7 {
   let use: ts.Node = expr;
   while (ts.isParenthesizedExpression(use.parent)) use = use.parent;
+  let member = false;
   if (
     ts.isPropertyAccessExpression(use.parent) &&
     use.parent.expression === use &&
@@ -2532,6 +2547,7 @@ function staticCreateRequireUse7(expr: ts.Expression): boolean {
     !use.parent.questionDotToken
   ) {
     use = use.parent;
+    member = true;
     if (
       ts.isPropertyAccessExpression(use.parent) &&
       use.parent.expression === use &&
@@ -2541,13 +2557,40 @@ function staticCreateRequireUse7(expr: ts.Expression): boolean {
       use = use.parent;
   }
   const call = use.parent;
+  if (ts.isCallExpression(call) && call.expression === use) {
+    if (call.questionDotToken) return "escaping";
+    if (call.arguments.nodes.length === 1 && ts.isStringLiteralLike(call.arguments.nodes[0]!))
+      return "static";
+  } else if (!member || isAssignmentTarget7(use)) {
+    return "escaping";
+  }
+  return insideTryBlock7(use) ? "deferred" : "computed";
+}
+
+function isAssignmentTarget7(node: ts.Node): boolean {
+  const parent = node.parent;
   return (
-    ts.isCallExpression(call) &&
-    call.expression === use &&
-    !call.questionDotToken &&
-    call.arguments.nodes.length === 1 &&
-    ts.isStringLiteralLike(call.arguments.nodes[0]!)
+    ts.isBinaryExpression(parent) &&
+    parent.left === node &&
+    parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+    parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
   );
+}
+
+/** True when `node` is inside the try block of a try statement in the same
+ * function (a catch clause or finally block does not count). A class field
+ * initializer runs when the class is instantiated, so it is a boundary too. */
+function insideTryBlock7(node: ts.Node): boolean {
+  for (let child = node, parent = node.parent; parent; child = parent, parent = parent.parent) {
+    if (ts.isTryStatement(parent) && parent.tryBlock === child) return true;
+    if (
+      ts.isFunctionLike(parent) ||
+      ts.isClassStaticBlockDeclaration(parent) ||
+      ts.isPropertyDeclaration(parent)
+    )
+      return false;
+  }
+  return false;
 }
 
 function stableCreateRequireBindingReason7(
@@ -2582,9 +2625,10 @@ function stableCreateRequireBindingReason7(
         : checker.getSymbolAtLocation(ref);
       if (target && (target.flags & ts.SymbolFlags.Alias) !== 0)
         target = checker.getAliasedSymbol(target);
-      if (target === symbol && !staticCreateRequireUse7(ref)) {
-        return "its createRequire binding is reassigned, escapes, or uses a computed specifier";
-      }
+      if (target !== symbol) continue;
+      const use = createRequireUse7(ref);
+      if (use === "computed") return COMPUTED_CREATE_REQUIRE_REASON;
+      if (use === "escaping") return "its createRequire binding is reassigned or escapes";
     }
     const preceding = stmt.declarationList.declarations.nodes.slice(
       0,
@@ -2647,10 +2691,10 @@ function npmStaticModuleImportReason7(
     checker.prefetchSymbolNodesExact(identifierOccurrences7(sf, specifier.name.text));
     let reason: string | null = null;
     const checkUse = (expr: ts.Expression): void => {
-      if (!staticCreateRequireUse7(expr)) {
-        reason =
-          "its createRequire result escapes or is used with a computed specifier (static requires need literal specifiers)";
-      }
+      const use = createRequireUse7(expr);
+      if (use === "computed") reason = COMPUTED_CREATE_REQUIRE_REASON;
+      else if (use === "escaping")
+        reason = "its createRequire result escapes (static requires need literal specifiers)";
     };
     ts.walkPreorder(sf, (node) => {
       if (

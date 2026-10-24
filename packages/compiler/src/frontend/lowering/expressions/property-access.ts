@@ -146,6 +146,8 @@ import { nullishGenericBindingUnitOf } from "../binding-analysis.js";
 import { blockedBindingUseDiag } from "../../../diagnostics/diagnostic.js";
 import { npmStaticPackageOfPath } from "../../npm-static.js";
 import { importMetaField, isImportMeta } from "../import-meta.js";
+import { createRequireCalleeFileOf } from "../builtins/module-bindings.js";
+import { createRequireResolveFenceValue } from "../builtins/module-resolution.js";
 import {
   builtinPrototypeMethod,
   lowerArrayIsArrayValue,
@@ -285,6 +287,21 @@ const DGRAM_METHOD_VALUES = new Set([
   "ref",
   "unref",
 ]);
+
+function isCreateRequireResolveValue(lowerer: Lowerer, expr: ts.PropertyAccessExpression): boolean {
+  let resolve: ts.Expression = expr;
+  if (
+    expr.name.text === "paths" &&
+    ts.isPropertyAccessExpression(expr.expression) &&
+    !expr.expression.questionDotToken
+  )
+    resolve = expr.expression;
+  return (
+    ts.isPropertyAccessExpression(resolve) &&
+    resolve.name.text === "resolve" &&
+    createRequireCalleeFileOf(lowerer, resolve.expression) !== null
+  );
+}
 
 export function lowerPropertyAccessExpr(
   lowerer: Lowerer,
@@ -1275,6 +1292,11 @@ export function lowerPropertyAccessExpr(
       return declared && declared.kind !== "void" ? lowerer.coerceToExpected(read, declared) : read;
     }
   }
+  // A createRequire loader's resolve read as a value (passed on, or
+  // picked by `??`): resolution happens at build time, so only calls
+  // with a literal specifier lower.
+  if (isCreateRequireResolveValue(lowerer, expr))
+    return createRequireResolveFenceValue(lowerer, expr, loc);
   // The lib fence's PROPERTY chokepoint: a stdlib-declared member that
   // no lowering above claimed ([1,2].entries, Math.SQRT2, Promise.all,
   // re.exec as a value, ...) reports SC2020 here.

@@ -6,3 +6,4 @@
   The constructors `Object`, `Function`, `Date`, `RegExp`, `Map`, `Set`, `WeakMap`, `WeakSet`, and `Promise` read as function values; through a stored value only `Object` can be called.
   `new` through a stored `Object`, `Date`, `Map`, `Set`, `WeakMap`, or `WeakSet` builds the same value as the `new` expression.
   `new` through a stored `RegExp` or `Promise`, `new` of a stored `Object` with a primitive argument, and `instanceof` against these constructors are unsupported.
+  `instanceof Object` and `instanceof Function` on untyped values follow the prototype chain as in Node, so an object built with `Object.create(null)` is not an `Object`.

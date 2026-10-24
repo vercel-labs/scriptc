@@ -5,8 +5,8 @@
 // (typed arrays, class instances), namespace-object calls, unsupported
 // throws/rejects expectations (properties outside the static error
 // surface, empty shapes, non-literal objects, doesNotReject shapes —
-// Node's own TypeError), ifError over uncomparable types, and assert
-// functions as values. Every reached site terminates in a named
+// Node's own TypeError), ifError over uncomparable types, and assert.throws
+// as a value. Every reached site terminates in a named
 // diagnostic — never a miscompare, never silence.
 import assert from "node:assert";
 import * as assertNs from "node:assert";
@@ -47,8 +47,8 @@ assert.throws(() => { throw new Error("x"); }, {}); // Node rejects the empty sh
 void assert.doesNotReject(async () => {}, { name: "TypeError" }); // Node's own TypeError (function or RegExp only)
 assert.ifError(new Map<string, number>()); // no honest ifError rendering for this type
 
-const eq = assert.strictEqual; // assert functions as values
-eq(1, 1);
+const throwsFn = assert.throws; // assert.throws as a value: it takes the function to run
+throwsFn(() => {});
 
 interface Tree { label: string; kids: Tree[] }
 const tree: Tree = { label: "t", kids: [] };

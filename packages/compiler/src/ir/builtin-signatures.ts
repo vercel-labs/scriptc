@@ -4410,6 +4410,12 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   // The equality quartet over checked-dynamic operands (the frontend
   // boxes a static side into the checked-dynamic tree first).
   "assert.eqDyn": { argTypes: [DYN, DYN, BOOL, BOOL, STRING, BOOL], result: VOID },
+  /** A message argument that is not a string, registered for the next
+   * failing assertion (scr_assert_message_value). */
+  "assert.messageValue": { argTypes: [DYN, BOOL], result: VOID },
+  /** An assert method as a function value, by canonical name. */
+  "assert.methodValue": { argTypes: [STRING], result: DYN },
+  "assert.messageClear": { argTypes: [], result: VOID },
   "assert.looseResult": { argTypes: [BOOL, BOOL, STRING, STRING, STRING, BOOL], result: VOID },
   // The throws(fn, {shape}) accumulator: begin/slot calls never throw;
   // shapeEnd throws the Comparison diff. The error slot is the
@@ -4435,6 +4441,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * against the caught value's; a mismatch throws the deep-equal
    * AssertionError (scr_assert.c). MAY THROW by design. */
   "assert.expectsErrDyn": { argTypes: [DYN, DYN, STRING, BOOL], result: VOID },
+  /** A validation function against the caught value (Node's expectedException). */
+  "assert.throwsValidate": { argTypes: [DYN, DYN, STRING, STRING, BOOL], result: VOID },
   // assert.ifError's typed entries (always throw; unit args never
   // lower). The error slot is program-dependent — any %Error-hierarchy
   // class, root or subclass (the insp.error precedent, null slot).

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8066-object-hasown-delete.cjs"
+ ],
+ "diags": []
+}

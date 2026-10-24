@@ -37,6 +37,7 @@ export const ASSERT_VERDICT_LIB_FNS: ReadonlyMap<string, number | null> = new Ma
 
 export const LIB_FN_SYMS: Record<string, string> = {
   "assert.expectsErrDyn": "scr_assert_expects_err_dyn",
+  "assert.throwsValidate": "scr_assert_throws_validate",
   "insp.jsonDyn": "scr_util_format_j",
   "http.reqH2StreamOrThrow": "scr_http_req_h2_stream_or_throw",
   "intl.segmenterNew": "scr_intl_segmenter_new",
@@ -399,6 +400,9 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "assert.eqBool": "scr_assert_eq_bool",
   "assert.eqSym": "scr_assert_eq_sym",
   "assert.eqDyn": "scr_assert_eq_dyn",
+  "assert.messageValue": "scr_assert_message_value",
+  "assert.methodValue": "scr_assert_method_value",
+  "assert.messageClear": "scr_assert_message_clear",
   "assert.looseResult": "scr_assert_loose_result",
   "assert.deepResult": "scr_assert_deep_result",
   "assert.looseDeepResult": "scr_assert_loose_deep_result",

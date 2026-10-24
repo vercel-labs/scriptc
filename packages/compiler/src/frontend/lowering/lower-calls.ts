@@ -1,3 +1,4 @@
+import { assertFunctionAliasOf } from "./lower-assert.js";
 import { keyedHelperName } from "./stable-names.js";
 import { perKeyOrder } from "./key-order-witness.js";
 import { isForwardedTupleSpread, lowerForwardingApply } from "./typed-arguments.js";
@@ -1052,6 +1053,13 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     }
     const bi = lowerer.builtinImportOf(expr.expression);
     if (bi) return lowerBuiltinCall(lowerer, expr, bi, loc);
+    // A constant bound to an assert method (`const ok = assert.ok`) called
+    // directly is that assertion, with the message Node quotes the call for.
+    {
+      const alias = assertFunctionAliasOf(lowerer, expr.expression);
+      const served = alias ? lowerer.lowerAssertModuleCall(expr, alias, loc) : null;
+      if (served) return served;
+    }
     // The assert module binding called DIRECTLY (`assert(x)` — a default
     // import or the CJS `const assert = require("assert")`): Node's
     // module object IS assert.ok; namespace-import bindings fence inside
@@ -8703,7 +8711,12 @@ function lowerObjectStaticCall(
       (probed && isDynTypedRefType(probed.type)) ||
       (probed?.type.kind === "object" && lowerer.errorHierarchyClassOf(probed.type.className)) ||
       (probed && constructor && (constructor.callableBase || hasRuntimeStatics(constructor))) ||
-      (probed?.type.kind === "func" && lowerer.dynConvertible(probed.type))
+      (probed?.type.kind === "func" && lowerer.dynConvertible(probed.type)) ||
+      // null, undefined and unions of untyped JavaScript values: the same
+      // probe, whose ToObject throws Node's TypeError on nullish.
+      (probed &&
+        (isUnitType(probed.type) || probed.type.kind === "union") &&
+        lowerer.dynConvertible(probed.type))
     ) {
       const loc = locOf(call);
       const receiver = lowerer.coerceToExpected(probed, DYN);

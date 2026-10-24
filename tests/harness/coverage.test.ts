@@ -221,10 +221,10 @@ test("deferred fences in a module's top-level code report as running at startup"
   ]);
   const out = report(fixture("startup-fences.js"));
   expect(out).toMatch(
-    /runs at startup {3}1 site .*\n.*instanceof against this native constructor\n\s+at tests\/coverage-fixtures\/startup-fences\.js:5:13/,
+    /runs at startup {3}1 site .*\n.*'instanceof' right-hand sides other than classes declared in the program\n\s+at tests\/coverage-fixtures\/startup-fences\.js:5:30/,
   );
   expect(out).toMatch(
-    /deferred to runtime {3}1 site .*\n.*instanceof against this native constructor\n\s+at tests\/coverage-fixtures\/startup-fences\.js:7:10/,
+    /deferred to runtime {3}1 site .*\n.*'instanceof' right-hand sides other than classes declared in the program\n\s+at tests\/coverage-fixtures\/startup-fences\.js:7:27/,
   );
   const envelope = coverageEnvelope(coverage, { compilerVersion: "test", sourceTexts });
   expect(envelope.diagnostics.map((d) => [d.scope, d.line, d.startup])).toEqual([

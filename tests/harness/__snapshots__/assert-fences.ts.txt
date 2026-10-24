@@ -104,12 +104,12 @@ assert-fences.ts:48:16 - error SC2020: 'assert.ifError over 'Map<string, number>
 
   hint: numbers, strings, booleans, Errors, null/undefined, and unions of those are the lowered forms
 
-assert-fences.ts:50:12 - error SC2020: 'assert.strictEqual' is part of the standard library types but has no scriptc lowering yet
+assert-fences.ts:50:18 - error SC2020: 'assert.throws' is part of the standard library types but has no scriptc lowering yet
 
   49 | 
-  50 | const eq = assert.strictEqual; // assert functions as values
-     |            ^~~~~~~~~~~~~~~~~~
-  51 | eq(1, 1);
+  50 | const throwsFn = assert.throws; // assert.throws as a value: it takes the function to run
+     |                  ^~~~~~~~~~~~~
+  51 | throwsFn(() => {});
 
   hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
 

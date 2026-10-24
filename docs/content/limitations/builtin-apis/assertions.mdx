@@ -3,6 +3,8 @@
   When `strictEqual` compares function values, `actual` and `expected` read as `undefined`; when `assert.throws` or `assert.rejects` reports an error that is not an instance of the expected class, or that does not match an expected object, `expected` reads as `undefined`.
   Values whose type can be cyclic, such as recursive records, also read as `undefined`.
   `assert.AssertionError` used as a value outside `instanceof` throws `SC2020`.
+  The comparison methods, `ok`, `fail` and `ifError` are function values that assert as the methods do; called through a stored value, `ok` without a message reports `value == true`, where Node quotes the call, and `fail` takes at most one argument.
+  `throws`, `rejects`, `doesNotThrow`, `doesNotReject`, `match` and `doesNotMatch` as values throw `SC2020`.
   `assert.deepEqual` and `assert.notDeepEqual` follow Node's loose comparison, including Maps, Sets, Dates, regular expressions, typed arrays, and errors; operands whose type can be cyclic or holds functions inside a structure are refused.
   `assert.partialDeepStrictEqual` follows Node's partial comparison over the same values, with the same refusals.
   Checked-dynamic values compared deeply have no cycle detection.

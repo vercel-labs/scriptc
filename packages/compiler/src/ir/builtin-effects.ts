@@ -976,6 +976,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "assert.noErrorPredicate",
   "assert.regexDynTest",
   "assert.expectsErrDyn",
+  "assert.throwsValidate",
   "assert.ifErrorErr",
   "assert.ifErrorF64",
   "assert.ifErrorStr",

@@ -2178,23 +2178,10 @@ function lowerRuntimeKeyIn(
   return { kind: "call", callee: helper, args: [keyIr, recv], type: BOOL, loc };
 }
 
-/** Standard-library constructors the untyped instanceof helper has no
- * instance test for: an untyped `x instanceof Object` always refuses. */
-const DYN_INSTANCEOF_REFUSED: ReadonlySet<string> = new Set(["Object", "Function"]);
-
 /** The SC1090 message `x instanceof C` throws, with the site's position,
- * when `C` is a runtime constructor with no instance test. A right-hand
- * side that names one of DYN_INSTANCEOF_REFUSED always reaches that
- * refusal, so the site is listed with the runtime fences. */
+ * when `C` is a runtime constructor with no instance test. */
 function dynInstanceOfRefusal(lowerer: Lowerer, expr: ts.BinaryExpression): string {
   const diag = unsupportedDiag("SC1090", locOf(expr), "instanceof against this native constructor");
-  const symbol = lowerer.checker.getSymbolAtLocation(expr.right);
-  if (
-    symbol !== undefined &&
-    lowerer.isStdlibSymbol(symbol) &&
-    DYN_INSTANCEOF_REFUSED.has(ts.symbolName(symbol))
-  )
-    lowerer.runtimeFences.push(diag);
   const sf = ts.getSourceFileOfNode(expr);
   const line = ts.getLineAndCharacterOfPosition(sf, diag.loc.start).line + 1;
   return `${diag.message} [${diag.code} at ${diag.loc.file}:${line}]`;

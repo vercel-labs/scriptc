@@ -132,6 +132,10 @@ export const JS_RELAXED_TSC_CODES: ReadonlySet<number> = new Set([
   // binding types as any and reached uses fence instead of passing unchecked
   2307,
   2792,
+  // `delete` of a property the inference typed required (2790): JS deletes
+  // any configurable property, and the lowering checks each delete's
+  // receiver itself
+  2790,
   // useUnknownInCatchVariables' annotation demand ("'e' is of type
   // 'unknown'", "Object is of type 'unknown'"): a JS catch clause CANNOT
   // annotate its variable, so the demand is unsatisfiable in source —

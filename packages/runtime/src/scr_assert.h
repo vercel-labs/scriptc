@@ -24,6 +24,19 @@ void scr_assert_fail(ScrStr *message, bool generated); /* takes ownership; alway
  * consumes them; a passing call clears them. */
 void scr_assert_set_options(int options);
 void scr_assert_clear_options(void);
+/* A message argument that is not a string, for the next assertion that
+ * fails with SCR_ASSERT_VALUE_MESSAGE as its message (scr_assert.c): an
+ * Error (`error`) is thrown as it is, anything else reports String(value).
+ * Borrows value; clear drops a registration the call did not consume. */
+#define SCR_ASSERT_VALUE_MESSAGE "\x01scriptc:assert-message-value"
+void scr_assert_message_value(struct ScrDyn *value, bool error);
+void scr_assert_message_clear(void);
+/* An assert method as a function value, by canonical name (+1). */
+struct ScrDyn *scr_assert_method_value(ScrStr *name);
+/* assert.throws/rejects with a validation function: its result must be
+ * true (Node's expectedException), else the AssertionError. Borrows all. */
+void scr_assert_throws_validate(struct ScrDyn *actual, struct ScrDyn *validate, ScrStr *op,
+                                ScrStr *msg, bool has_msg);
 bool scr_assert_diff_full(void);
 bool scr_assert_skip_prototype(void);
 void scr_assert_record(ScrDyn *actual, ScrDyn *expected, const char *op); /* values move in */

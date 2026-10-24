@@ -4680,6 +4680,71 @@ int scr_dyn_has_instance_hook(const ScrDyn *value, const ScrDyn *callee) {
   return truthy ? 1 : 0;
 }
 
+/* `value instanceof Object`: whether Object.prototype is on the value's
+ * prototype chain. Primitives answer false, and so does an object whose
+ * chain ends in null first (Object.create(null), a null-prototype record).
+ * Objects without a chain the runtime walks (class instances, native
+ * handles, errors, promises) inherit Object.prototype. False with the
+ * exception pending when a prototype read throws. */
+static bool scr_dyn_instanceof_object(const ScrDyn *value) {
+  switch (value->kind) {
+  case SCR_DYN_UNDEF:
+  case SCR_DYN_NULL:
+  case SCR_DYN_BOOL:
+  case SCR_DYN_NUM:
+  case SCR_DYN_STR:
+  case SCR_DYN_BIGINT:
+  case SCR_DYN_SYMBOL:
+    return false;
+  default:
+    break;
+  }
+  ScrDyn *current = scr_dyn_retain((ScrDyn *)value);
+  for (;;) {
+    if (current == scr_builtin_object_prototype) {
+      scr_dyn_release(current);
+      return true;
+    }
+    ScrDyn *next = NULL;
+    if (current->kind == SCR_DYN_FUNC) {
+      /* A function's prototype is Function.prototype, whose own is
+       * Object.prototype, unless the program set it. */
+      if (scr_closure_identity(current->v.fn.clo)->props) {
+        ScrDyn *table = scr_dyn_fn_properties(current);
+        next = table->prototype ? scr_dyn_retain(table->prototype)
+             : table->null_proto ? scr_dyn_new_null() : NULL;
+        scr_dyn_release(table);
+      }
+    } else if (current->kind == SCR_DYN_OBJ || current->kind == SCR_DYN_ARR ||
+               (current->kind == SCR_DYN_TYPED_REF &&
+                strncmp(current->v.typed_ref.type_key, "object:", 7) != 0)) {
+      next = scr_dyn_get_prototype(current);
+      if (!next) {
+        scr_dyn_release(current);
+        return false; /* the read threw: pending */
+      }
+    }
+    scr_dyn_release(current);
+    if (!next) return true;
+    if (next->kind == SCR_DYN_NULL) {
+      scr_dyn_release(next);
+      return false;
+    }
+    current = next;
+  }
+}
+
+/* `value instanceof Function`: every function, unless the program set its
+ * prototype to null or to a non-function. */
+static bool scr_dyn_instanceof_function(const ScrDyn *value) {
+  if (value->kind != SCR_DYN_FUNC) return false;
+  if (!scr_closure_identity(value->v.fn.clo)->props) return true;
+  ScrDyn *table = scr_dyn_fn_properties((ScrDyn *)value);
+  bool result = table->prototype ? scr_dyn_instanceof_function(table->prototype) : !table->null_proto;
+  scr_dyn_release(table);
+  return result;
+}
+
 bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const ScrStr *refusal) {
   if (!callee || callee->kind != SCR_DYN_FUNC) {
     static const char message[] = "Right-hand side of 'instanceof' is not callable";
@@ -4688,6 +4753,13 @@ bool scr_bytes_instanceof_at(const ScrDyn *value, const ScrDyn *callee, const Sc
   }
   int hooked = scr_dyn_has_instance_hook(value, callee);
   if (hooked >= 0) return hooked == 1;
+  if (callee->v.fn.sig && callee->v.fn.name) {
+    if (strcmp(callee->v.fn.sig, "native:constructor") == 0 && strcmp(callee->v.fn.name, "Object") == 0)
+      return scr_dyn_instanceof_object(value);
+    if (strcmp(callee->v.fn.sig, "native:function-constructor") == 0 &&
+        strcmp(callee->v.fn.name, "Function") == 0)
+      return scr_dyn_instanceof_function(value);
+  }
   /* An error constructor held as a value (`inst instanceof params.Parent`
    * with Parent === Error): the error kind's interval, and for Error itself
    * objects inheriting Error.prototype. */

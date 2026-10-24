@@ -873,6 +873,12 @@ export const OBJECT_CALLABLE_VALUES: Record<string, BuiltinModuleFn | undefined>
     result: DYN,
     valueParams: exactValueParams(DYN, DYN),
   },
+  hasOwn: {
+    fn: "dyn.hasOwnComputed",
+    params: [DYN, DYN],
+    result: BOOL,
+    valueParams: exactValueParams(DYN, DYN),
+  },
   keys: { fn: "dyn.objKeys", params: [DYN], result: DYN, valueParams: exactValueParams(DYN) },
   values: { fn: "dyn.objValues", params: [DYN], result: DYN, valueParams: exactValueParams(DYN) },
   entries: { fn: "dyn.objEntries", params: [DYN], result: DYN, valueParams: exactValueParams(DYN) },

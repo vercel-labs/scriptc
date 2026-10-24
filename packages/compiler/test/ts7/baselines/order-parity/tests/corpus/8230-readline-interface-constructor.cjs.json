@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8230-readline-interface-constructor.cjs"
+ ],
+ "diags": []
+}

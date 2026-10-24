@@ -302,6 +302,15 @@ function interfaceClassModule(lowerer: Lowerer, node: ts.Expression): string | n
     : null;
 }
 
+/** `new readline.Interface(...)` and `new readlinePromises.Interface(...)`:
+ * the constructor createInterface calls, with the same arguments. Null for
+ * other constructors. */
+export function lowerReadlineInterfaceNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
+  const module = interfaceClassModule(lowerer, expr.expression);
+  if (module === null) return null;
+  return lowerReadlineCreateCall(lowerer, expr, locOf(expr), module === "readline/promises");
+}
+
 /** `rl instanceof readline.Interface` and `rl instanceof
  * readlinePromises.Interface` over a readline Interface: an interface is
  * an instance of the class of the module that created it (Node's
@@ -1059,10 +1068,12 @@ function lowerOutput(lowerer: Lowerer, node: ts.Expression): IrExpr | "stdout" |
  * goes through rl.terminal with the completer. */
 export function lowerReadlineCreateCall(
   lowerer: Lowerer,
-  expr: ts.CallExpression,
+  expr: ts.CallExpression | ts.NewExpression,
   loc: SrcLoc,
   promises: boolean,
 ): IrExpr {
+  const argNodes = expr.arguments?.nodes ?? [];
+  const what = ts.isNewExpression(expr) ? "new Interface" : "createInterface";
   let input: IrExpr | null = null;
   let output: IrExpr | "stdout" | "none" = "none";
   let crlf: IrExpr = numLit(0, loc);
@@ -1112,39 +1123,38 @@ export function lowerReadlineCreateCall(
     });
     terminal = { kind: "varRef", localId: local.id, type: BOOL, loc };
   };
-  const optsNode = expr.arguments.nodes[0];
+  const optsNode = argNodes[0];
   if (optsNode === undefined) {
     lowerer.noLowering(
-      "createInterface without arguments",
+      `${what} without arguments`,
       expr,
       "pass { input: process.stdin, output: process.stdout } or createInterface(input, output)",
     );
   }
   if (!ts.isObjectLiteralExpression(optsNode)) {
     // createInterface(input, output?, completer?, terminal?)
-    if (expr.arguments.nodes.length > 4) {
+    if (argNodes.length > 4) {
       lowerer.noLowering(
-        `createInterface with ${expr.arguments.nodes.length} arguments`,
-        expr.arguments.nodes[4]!,
+        `${what} with ${argNodes.length} arguments`,
+        argNodes[4]!,
         "pass createInterface(input, output, completer, terminal) or one options object",
       );
     }
     input = lowerInput(lowerer, optsNode);
-    if (expr.arguments.nodes[1] !== undefined)
-      output = lowerOutput(lowerer, expr.arguments.nodes[1]);
-    const completerNode = expr.arguments.nodes[2];
+    if (argNodes[1] !== undefined) output = lowerOutput(lowerer, argNodes[1]);
+    const completerNode = argNodes[2];
     if (
       completerNode !== undefined &&
       !(ts.isIdentifier(completerNode) && completerNode.text === "undefined")
     ) {
       setCompleter(completerNode);
     }
-    if (expr.arguments.nodes[3] !== undefined) setTerminal(expr.arguments.nodes[3]);
+    if (argNodes[3] !== undefined) setTerminal(argNodes[3]);
   } else {
-    if (expr.arguments.nodes.length > 1) {
+    if (argNodes.length > 1) {
       lowerer.noLowering(
-        "createInterface with more than one argument",
-        expr.arguments.nodes[1]!,
+        `${what} with more than one argument`,
+        argNodes[1]!,
         "pass every option in the one options object",
       );
     }

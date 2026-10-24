@@ -185,6 +185,32 @@ export function builtinMemberRequireDecl(
   return spec !== null && canonicalBuiltinModule(spec) !== null;
 }
 
+/** The member's own symbol for a variable bound to a builtin module's
+ * member (`const SD = require("string_decoder").StringDecoder`,
+ * builtinMemberRequireDecl) when the member is a class, so the variable
+ * resolves as a named import of the class does. The symbol itself
+ * otherwise. */
+export function builtinMemberBindingTarget(
+  lowerer: Lowerer,
+  symbol: ts.Symbol | null,
+): ts.Symbol | null {
+  const decl = symbol?.valueDeclaration;
+  if (
+    decl === undefined ||
+    !ts.isVariableDeclaration(decl) ||
+    !builtinMemberRequireDecl(decl.name, decl.initializer)
+  )
+    return symbol;
+  const init = decl.initializer as ts.PropertyAccessExpression;
+  let member = lowerer.checker.getSymbolAtLocation(init.name);
+  if (member && member.flags & ts.SymbolFlags.Alias)
+    member = lowerer.checker.getAliasedSymbol(member);
+  // Only a class member: `require("events").EventEmitter` is a static
+  // property of the exported class, which builtinEmitterInfoOf follows
+  // from the variable itself.
+  return member?.declarations.some(ts.isClassDeclaration) ? member : symbol;
+}
+
 /** The supported builtin module when `decl` destructures a builtin
  * NAMESPACE binding (`const crypto = require('crypto'); const {
  * createSign, sign: mySign } = crypto;` — test/common/crypto.js's

@@ -18,8 +18,11 @@ import {
   superIntoResultSlot,
 } from "./constructor-returns.js";
 import { checkedIterableSpread } from "./checked-iterable-spread.js";
-import { lowerReadlineUiNew } from "./builtins/readline.js";
-import { builtinMemberRequireDecl } from "./builtins/module-bindings.js";
+import { lowerReadlineInterfaceNew, lowerReadlineUiNew } from "./builtins/readline.js";
+import {
+  builtinMemberBindingTarget,
+  builtinMemberRequireDecl,
+} from "./builtins/module-bindings.js";
 import { checkedClassUnionAssertion } from "./class-assertions.js";
 import { collectClassMethodMutations } from "./class-method-mutations.js";
 import { InternalCompilerError } from "../../errors.js";
@@ -9819,7 +9822,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   }
   const worker = lowerWorkerNew(lowerer, expr);
   if (worker) return worker;
-  const readlineUi = lowerReadlineUiNew(lowerer, expr);
+  const readlineUi = lowerReadlineUiNew(lowerer, expr) ?? lowerReadlineInterfaceNew(lowerer, expr);
   if (readlineUi) return readlineUi;
   const channel = lowerMessageChannelNew(lowerer, expr) ?? lowerBroadcastChannelNew(lowerer, expr);
   if (channel) return channel;
@@ -10132,7 +10135,12 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     // (a no-op for every non-import= binding).
     if (ts.isIdentifier(expr.expression)) fenceEarlyAliasUse(lowerer, expr.expression, expr);
     const identifier = ts.isIdentifier(expr.expression) ? expr.expression : expr.expression.name;
-    const symbol = ts.isIdentifier(identifier) ? lowerer.resolveValueSymbol(identifier) : null;
+    // `const SD = require("string_decoder").StringDecoder; new SD()`
+    // constructs the member, as a named import of it does.
+    const symbol = builtinMemberBindingTarget(
+      lowerer,
+      ts.isIdentifier(identifier) ? lowerer.resolveValueSymbol(identifier) : null,
+    );
     if (ts.isIdentifier(identifier) && lowerer.isStdlibGlobal(identifier, "Array")) {
       return lowerArrayConstructor(lowerer, expr, expr.arguments?.nodes ?? []);
     }

@@ -76,8 +76,8 @@ function malformedReply(): never {
 
 /** The index after the JSON value that starts at `start`: an object, an
  * array, a string or a bare literal. Strings are skipped with their escapes,
- * so brackets inside them do not count. */
-function jsonValueEnd(bytes: Uint8Array, start: number): number {
+ * so brackets inside them do not count. Throws when the value is unclosed. */
+export function jsonValueEnd(bytes: Uint8Array, start: number): number {
   let depth = 0;
   let index = start;
   while (index < bytes.length) {
@@ -101,6 +101,22 @@ function jsonValueEnd(bytes: Uint8Array, start: number): number {
   }
   if (depth !== 0) malformedReply();
   return index;
+}
+
+/** The scanner the decoders find value ends with: jsonValueEnd, or the
+ * native compiler's scanner (useNativeJsonValueEnd). */
+let valueEnd: (bytes: Uint8Array, start: number) => number = jsonValueEnd;
+
+/** Has the decoders find value ends with `scan`, which returns what
+ * jsonValueEnd returns, or -1 where jsonValueEnd throws. The native compiler
+ * installs its C scanner (native/ts7-process.c), which skips the strings that
+ * make up most reply bytes with memchr. */
+export function useNativeJsonValueEnd(scan: (bytes: Uint8Array, start: number) => number): void {
+  valueEnd = (bytes, start) => {
+    const end = scan(bytes, start);
+    if (end < 0) malformedReply();
+    return end;
+  };
 }
 
 /** The id an object reply starts with (`{"id":N`), or -1 when it starts
@@ -158,7 +174,7 @@ export function decodeSemanticObject<T extends { id: number }, R>(
 ): R | null {
   const start = skipJsonSpace(bytes, 0);
   if (start === bytes.length) return null;
-  const end = jsonValueEnd(bytes, start);
+  const end = valueEnd(bytes, start);
   if (skipJsonSpace(bytes, end) !== bytes.length) malformedReply();
   return replyElement(bytes, start, end, cached, build);
 }
@@ -174,7 +190,7 @@ export function decodeSemanticObjects<T extends { id: number }, R>(
   let index = skipJsonSpace(bytes, 0);
   if (index === bytes.length) return null;
   if (bytes[index] !== OPEN_BRACKET) {
-    const end = jsonValueEnd(bytes, index);
+    const end = valueEnd(bytes, index);
     if (
       skipJsonSpace(bytes, end) !== bytes.length ||
       parseJsonSlice<null>(bytes, index, end) !== null
@@ -189,7 +205,7 @@ export function decodeSemanticObjects<T extends { id: number }, R>(
     return result;
   }
   for (;;) {
-    const end = jsonValueEnd(bytes, index);
+    const end = valueEnd(bytes, index);
     if (end === index) malformedReply();
     result.push(replyElement(bytes, index, end, cached, build));
     index = skipJsonSpace(bytes, end);

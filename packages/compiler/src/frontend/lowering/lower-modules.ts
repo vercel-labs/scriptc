@@ -350,24 +350,28 @@ function dynamicImportProgramTargetOf(
 }
 
 /** Every distinct program module a file's `import("literal")` sites name
- * (source order, deduped). */
+ * (source order, deduped). The parser lists the specifier of every such call
+ * in the file's module references, in source order after the static imports,
+ * so the file's nodes need no walk. */
 function dynamicProgramImportsOf(program: ts.Program, sf: ts.SourceFile): ts.SourceFile[] {
   const out: ts.SourceFile[] = [];
   const seen = new Set<ts.SourceFile>();
-  ts.walkPreorder(sf, (node) => {
+  for (const specifier of sf.imports) {
+    const call = specifier.parent;
     if (
-      ts.isCallExpression(node) &&
-      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-      node.arguments.nodes[0] !== undefined &&
-      ts.isStringLiteralLike(node.arguments.nodes[0])
-    ) {
-      const dep = dynamicImportProgramTargetOf(program, sf, node.arguments.nodes[0].text);
-      if (dep && !seen.has(dep)) {
-        seen.add(dep);
-        out.push(dep);
-      }
+      call === undefined ||
+      !ts.isCallExpression(call) ||
+      call.expression.kind !== ts.SyntaxKind.ImportKeyword ||
+      call.arguments.nodes[0] !== specifier ||
+      !ts.isStringLiteralLike(specifier)
+    )
+      continue;
+    const dep = dynamicImportProgramTargetOf(program, sf, specifier.text);
+    if (dep && !seen.has(dep)) {
+      seen.add(dep);
+      out.push(dep);
     }
-  });
+  }
   return out;
 }
 

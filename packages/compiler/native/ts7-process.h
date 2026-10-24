@@ -21,5 +21,9 @@ uint32_t scriptc_ts7_pid(uint32_t handle);
 void scriptc_ts7_close(uint32_t handle);
 void scriptc_ts7_close_all(void);
 int32_t scriptc_ts7_error(uint8_t *bytes, size_t size);
+/* The index after the JSON value that starts at `start` in a checker reply,
+ * as jsonValueEnd in semantic-json.ts computes it, or -1 when the reply is
+ * malformed there. */
+int32_t scriptc_ts7_json_value_end(const uint8_t *bytes, size_t size, uint32_t start);
 
 #endif

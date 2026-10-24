@@ -405,3 +405,45 @@ void scriptc_ts7_close(uint32_t handle) {
 void scriptc_ts7_close_all(void) {
   while (processes != NULL) scriptc_ts7_close(processes->id);
 }
+
+static int json_space(uint8_t byte) {
+  return byte == ' ' || byte == '\n' || byte == '\r' || byte == '\t';
+}
+
+int32_t scriptc_ts7_json_value_end(const uint8_t *bytes, size_t size, uint32_t start) {
+  if (size > INT32_MAX) return -1;
+  size_t depth = 0;
+  size_t index = start;
+  while (index < size) {
+    uint8_t byte = bytes[index];
+    if (byte == '"') {
+      index++;
+      for (;;) {
+        if (index >= size) return -1;
+        const uint8_t *quote = memchr(bytes + index, '"', size - index);
+        if (quote == NULL) return -1;
+        const uint8_t *escape = memchr(bytes + index, '\\', (size_t)(quote - (bytes + index)));
+        if (escape == NULL) {
+          index = (size_t)(quote - bytes);
+          break;
+        }
+        index = (size_t)(escape - bytes) + 2;
+      }
+      index++;
+      if (depth == 0) return (int32_t)index;
+      continue;
+    }
+    if (byte == '{' || byte == '[') {
+      depth++;
+    } else if (byte == '}' || byte == ']') {
+      if (depth == 0) return (int32_t)index;
+      depth--;
+      if (depth == 0) return (int32_t)(index + 1);
+    } else if (depth == 0 && (byte == ',' || json_space(byte))) {
+      return (int32_t)index;
+    }
+    index++;
+  }
+  if (depth != 0) return -1;
+  return (int32_t)index;
+}

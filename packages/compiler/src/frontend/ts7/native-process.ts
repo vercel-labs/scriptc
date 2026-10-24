@@ -1,5 +1,6 @@
 import { Ts7Wire, type Ts7WireIo } from "./rpc-wire.js";
 import { TS7_FILE_SYSTEM_CALLBACKS } from "./rpc-filesystem.js";
+import { useNativeJsonValueEnd } from "./semantic-json.js";
 
 // Bound by native/ts7-process.ffi.json. This module is a native entry point;
 // the Node host continues to use rpc-process.ts's public spawn boundary.
@@ -25,6 +26,11 @@ declare function ts7NativePid(handle: number): number;
 declare function ts7NativeClose(handle: number): void;
 declare function ts7NativeCloseAll(): void;
 declare function ts7NativeError(bytes: Uint8Array): number;
+declare function ts7NativeJsonValueEnd(bytes: Uint8Array, start: number): number;
+
+// Reply decoding finds element ends with the C scanner. FFI functions can
+// only be called, not passed as values, so an arrow function calls it.
+useNativeJsonValueEnd((bytes, start) => ts7NativeJsonValueEnd(bytes, start));
 
 // process.exit skips C atexit handlers. Its ordinary exit listener closes
 // servers too, while the C atexit sweep covers normal native termination.

@@ -1,5 +1,6 @@
 import { keyedHelperName } from "./stable-names.js";
 import { perKeyOrder } from "./key-order-witness.js";
+import { classPrototypeView } from "./class-prototypes.js";
 import {
   dynUndefinedExpr,
   boolLit,
@@ -3527,8 +3528,14 @@ function lowerUtilCallableCall(
     member === "inherits" && expr.arguments.nodes[1] !== undefined
       ? builtinClassKindOf(lowerer, expr.arguments.nodes[1])
       : null;
+  // A superCtor class whose prototype has a complete view (a module-level
+  // JavaScript class named directly) passes that view to the runtime.
+  const superView =
+    member === "inherits" && builtinBase === null && expr.arguments.nodes[1] !== undefined
+      ? classPrototypeView(lowerer, expr.arguments.nodes[1], loc)
+      : null;
   for (const [index, arg] of expr.arguments.nodes.slice(0, classArgs).entries()) {
-    if (index === 1 && builtinBase !== null) continue;
+    if (index === 1 && (builtinBase !== null || superView !== null)) continue;
     if (lowerer.mapTypeOf(lowerer.typeOf(arg))?.kind === "classval")
       lowerer.noLowering(
         `util.${member} over a class constructor`,
@@ -3560,7 +3567,9 @@ function lowerUtilCallableCall(
   for (const arg of expr.arguments.nodes.slice(arity))
     stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(arg), loc });
   const type = fn === "util.inherits" ? VOID : DYN;
-  const result: IrExpr = { kind: "libCall", fn, args, type, loc };
+  const result: IrExpr = superView
+    ? { kind: "libCall", fn: "util.inheritsPrototype", args: [...args, superView], type, loc }
+    : { kind: "libCall", fn, args, type, loc };
   return { kind: "seqExpr", stmts, result, type: result.type, loc };
 }
 

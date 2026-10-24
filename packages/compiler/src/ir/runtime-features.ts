@@ -144,6 +144,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.debuglog",
   "util.deprecate",
   "util.inherits",
+  "util.inheritsPrototype",
   "util.styleText",
 ]);
 
@@ -173,6 +174,7 @@ const UTIL_CALLABLE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.debuglog",
   "util.deprecate",
   "util.inherits",
+  "util.inheritsPrototype",
 ]);
 
 /** Entry points that link the regex unit: the regex and glob matchers (fs.glob's walk compiles its patterns with the glob matcher), and readline's terminal unit (scr_readline_tty.c), which measures with the regex unit's stripVTControlCharacters. */

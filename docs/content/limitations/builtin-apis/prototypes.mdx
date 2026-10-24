@@ -1,5 +1,10 @@
 - **Prototypes:** Named properties and methods on program class prototypes support replacement, inheritance, and deletion.
-  Bare prototype reflection, accessor replacement, and prototype storage on local, generic, mixin, or runtime-provided classes are unsupported.
+  A module-level JavaScript class's prototype can become the prototype of other objects: `Object.create(C.prototype)`, `Object.setPrototypeOf(F.prototype, C.prototype)`, `Object.setPrototypeOf(object, C.prototype)`, and `util.inherits(F, C)` with an ordinary constructor `F`.
+  The inherited methods and accessors run with the inheriting object as `this`.
+  Methods that use `#private` members or `super` throw a TypeError for a receiver that is not an instance of the class.
+  `C.prototype` also reads as a value for `Object.getPrototypeOf` and for `===` and `!==` comparisons.
+  Changing the prototype of a class prototype (`Object.setPrototypeOf(C.prototype, X)`, `util.inherits(C, F)`, or `Object.setPrototypeOf` on a class prototype reached through an instance) is unsupported.
+  Other bare prototype reflection, TypeScript class prototypes as values, accessor replacement, and prototype storage on local, generic, mixin, or runtime-provided classes are unsupported.
   Plain objects, arrays, functions, class instances, and Date, RegExp, Map, Set, WeakMap, WeakSet, and Promise values inherit `constructor`, `valueOf`, `toString`, `hasOwnProperty`, and `propertyIsEnumerable` from `Object.prototype` as in Node, so `value.constructor === Object` and `value.valueOf === Object.prototype.valueOf` compare identities exactly.
   Named reads such as `value.valueOf` answer these inherited members; computed-key reads such as `value[key]` do not.
   `Object.prototype`'s own members read as values; its mutation and other reflection, such as `isPrototypeOf` and `__proto__`, are unsupported.

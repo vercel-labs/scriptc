@@ -2190,3 +2190,33 @@ for (const run of runs) {
     );
   });
 });
+
+describe("class prototype relinks (JS lane)", () => {
+  test("relinking a class prototype reached through an instance throws", async () => {
+    // Compiled code binds a class's inherited methods, so its prototype's
+    // [[Prototype]] cannot change at run time. Node would print "other";
+    // the native program refuses instead of answering A's method.
+    const r = await compileAndRun(
+      "class-prototype-relink",
+      `'use strict';
+class A {
+  a() {
+    return 'A.a';
+  }
+}
+class B extends A {}
+const prototype = Object.getPrototypeOf(new B());
+Object.setPrototypeOf(prototype, Object.getPrototypeOf(prototype));
+console.log('same prototype', new B().a());
+Object.setPrototypeOf(prototype, { a: () => 'other' });
+console.log(new B().a());
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("same prototype A.a\n");
+    expect(r.stderr).toBe(
+      "Uncaught Error: Object.setPrototypeOf with this value is not supported yet\n",
+    );
+  });
+});

@@ -1146,6 +1146,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * arguments (scr_util_callable.c). The function results are native dyn
    * wrappers; call sites with a static function type check them back. */
   "util.inherits": { argTypes: [DYN, DYN], result: VOID },
+  "util.inheritsPrototype": { argTypes: [DYN, DYN, DYN], result: VOID },
   "util.deprecate": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
   "util.callbackify": { argTypes: [DYN], result: DYN },
   /** util.promisify over an untyped function value: a native dyn function

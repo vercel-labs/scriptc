@@ -481,6 +481,10 @@ export interface ClassInfo {
   localPrototypeData?: true;
   prototypeMethodValues?: Map<string, IrExpr>;
   prototypeReflectionReady?: true;
+  /** The global that records at run time that the prototype view was
+   * populated by reflection, so it holds its own `constructor` until the
+   * program deletes it (prototypeReflectedFlag). */
+  prototypeReflectedFlag?: string;
   prototypeObservedMethodsReady?: true;
   /** The globals holding each observed method's original prototype value
    * (set when the prototype data is built), by method name. A typed call

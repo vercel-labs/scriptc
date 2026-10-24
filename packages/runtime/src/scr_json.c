@@ -2204,6 +2204,40 @@ static bool scr_dyn_prototype_valid(const ScrDyn *prototype) {
 }
 
 /* A valid receiver or prototype whose kind this operation does not handle. */
+/* Compiled class prototypes. Compiled code binds a class's methods, its
+ * base chain and its instanceof answers when it compiles, so the
+ * prototype's own [[Prototype]] is fixed: scr_dyn_set_prototype refuses to
+ * change it. Each module-level class prototype registers when it is
+ * created (scr_dyn_name_class_prototype) and stays alive until its thread
+ * exits, as the class does. */
+static SCR_TL ScrDyn **scr_dyn_fixed_prototypes;
+static SCR_TL size_t scr_dyn_fixed_count, scr_dyn_fixed_cap;
+
+static void scr_dyn_fixed_prototypes_cleanup(void) {
+  for (size_t i = 0; i < scr_dyn_fixed_count; i++) scr_dyn_release(scr_dyn_fixed_prototypes[i]);
+  free(scr_dyn_fixed_prototypes);
+  scr_dyn_fixed_prototypes = NULL;
+  scr_dyn_fixed_count = scr_dyn_fixed_cap = 0;
+}
+
+static void scr_dyn_fix_prototype(ScrDyn *prototype) {
+  if (scr_dyn_fixed_count == scr_dyn_fixed_cap) {
+    if (scr_dyn_fixed_cap == 0) scr_atexit(scr_dyn_fixed_prototypes_cleanup);
+    size_t cap = scr_dyn_fixed_cap ? scr_dyn_fixed_cap * 2 : 8;
+    ScrDyn **grown = realloc(scr_dyn_fixed_prototypes, cap * sizeof *grown);
+    if (!grown) scr_json_oom();
+    scr_dyn_fixed_prototypes = grown;
+    scr_dyn_fixed_cap = cap;
+  }
+  scr_dyn_fixed_prototypes[scr_dyn_fixed_count++] = scr_dyn_retain(prototype);
+}
+
+static bool scr_dyn_prototype_fixed(const ScrDyn *object) {
+  for (size_t i = 0; i < scr_dyn_fixed_count; i++)
+    if (scr_dyn_fixed_prototypes[i] == object) return true;
+  return false;
+}
+
 static void scr_dyn_prototype_unsupported(const char *operation) {
   ScrJsonBuf b;
   scr_jb_init(&b);
@@ -2323,6 +2357,11 @@ ScrDyn *scr_dyn_set_prototype(ScrDyn *object, ScrDyn *prototype) {
     return NULL;
   }
   if (!scr_dyn_prototype_valid(prototype)) return NULL;
+  if (object->kind == SCR_DYN_OBJ && scr_dyn_fixed_count && scr_dyn_prototype_fixed(object) &&
+      !(prototype->kind == SCR_DYN_NULL ? object->null_proto : prototype == object->prototype)) {
+    scr_dyn_prototype_unsupported("Object.setPrototypeOf");
+    return NULL;
+  }
   bool typed = scr_dyn_typed_ref_prototype(prototype);
   if (scr_exc_pending()) return NULL;
   if ((object->kind != SCR_DYN_OBJ && object->kind != SCR_DYN_ARR) ||
@@ -6411,7 +6450,9 @@ static void scr_dyn_name_prototype_chain(const ScrDyn *object) {
 }
 
 void scr_dyn_name_class_prototype(ScrDyn *prototype, const ScrStr *name) {
-  if (prototype->kind != SCR_DYN_OBJ || prototype->v.obj.class_name || name->len == 0) return;
+  if (prototype->kind != SCR_DYN_OBJ) return;
+  if (!scr_dyn_prototype_fixed(prototype)) scr_dyn_fix_prototype(prototype);
+  if (prototype->v.obj.class_name || name->len == 0) return;
   scr_dyn_stamp_prototype_name(prototype, name->data, name->len);
 }
 

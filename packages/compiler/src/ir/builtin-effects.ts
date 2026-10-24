@@ -591,6 +591,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.styleText",
   "util.toUSVString",
   "util.inherits",
+  "util.inheritsPrototype",
   "util.deprecate",
   "util.callbackify",
   "util.promisifyDyn",

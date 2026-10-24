@@ -62,6 +62,8 @@ bool scr_util_terminal_colors(void);
  * (scr_util_promisify.c). Arguments are borrowed; function results are +1
  * native dyn functions, or NULL with Node's TypeError pending. */
 void scr_util_inherits(struct ScrDyn *ctor, struct ScrDyn *super_ctor);
+void scr_util_inherits_prototype(struct ScrDyn *ctor, struct ScrDyn *super_ctor,
+                                 struct ScrDyn *super_prototype);
 struct ScrDyn *scr_util_deprecate(struct ScrDyn *fn, struct ScrDyn *msg, struct ScrDyn *code,
                                   struct ScrDyn *options);
 struct ScrDyn *scr_util_callbackify(struct ScrDyn *original);

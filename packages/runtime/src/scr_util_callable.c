@@ -149,23 +149,9 @@ static bool uc_define(ScrDyn *target, const char *key, ScrDyn *descriptor) {
  * Node 24's lib/util.js: nullish arguments and an undefined
  * superCtor.prototype throw ERR_INVALID_ARG_TYPE; then super_ becomes a
  * writable, configurable, non-enumerable own property and
- * ctor.prototype's prototype becomes superCtor.prototype. */
-void scr_util_inherits(ScrDyn *ctor, ScrDyn *super_ctor) {
-  if (uc_nullish(ctor)) {
-    scr_dyn_arg_type_fail("ctor", "of type function", ctor);
-    return;
-  }
-  if (uc_nullish(super_ctor)) {
-    scr_dyn_arg_type_fail("superCtor", "of type function", super_ctor);
-    return;
-  }
-  if ((ctor->kind == SCR_DYN_FUNC && ctor->v.fn.class_obj) ||
-      (super_ctor->kind == SCR_DYN_FUNC && super_ctor->v.fn.class_obj)) {
-    uc_fence("util.inherits over class constructors has no lowering; declare the subclass with extends");
-    return;
-  }
-  ScrDyn *super_prototype = uc_get(super_ctor, "prototype");
-  if (!super_prototype) return;
+ * ctor.prototype's prototype becomes superCtor.prototype. super_prototype
+ * is superCtor.prototype (owned), or NULL when superCtor is no object. */
+static void uc_inherits(ScrDyn *ctor, ScrDyn *super_ctor, ScrDyn *super_prototype) {
   if (super_prototype->kind == SCR_DYN_UNDEF) {
     scr_dyn_prop_type_fail("superCtor.prototype", "of type object", super_prototype);
     scr_dyn_release(super_prototype);
@@ -196,6 +182,40 @@ void scr_util_inherits(ScrDyn *ctor, ScrDyn *super_ctor) {
     scr_dyn_release(prototype);
   }
   scr_dyn_release(super_prototype);
+}
+
+void scr_util_inherits(ScrDyn *ctor, ScrDyn *super_ctor) {
+  if (uc_nullish(ctor)) {
+    scr_dyn_arg_type_fail("ctor", "of type function", ctor);
+    return;
+  }
+  if (uc_nullish(super_ctor)) {
+    scr_dyn_arg_type_fail("superCtor", "of type function", super_ctor);
+    return;
+  }
+  if ((ctor->kind == SCR_DYN_FUNC && ctor->v.fn.class_obj) ||
+      (super_ctor->kind == SCR_DYN_FUNC && super_ctor->v.fn.class_obj)) {
+    uc_fence("util.inherits over class constructors has no lowering; declare the subclass with extends");
+    return;
+  }
+  ScrDyn *super_prototype = uc_get(super_ctor, "prototype");
+  if (!super_prototype) return;
+  uc_inherits(ctor, super_ctor, super_prototype);
+}
+
+/* util.inherits(ctor, C) where C is a compiled class whose prototype the
+ * compiler exposes as super_prototype (borrowed): the class value's own
+ * properties do not hold it. ctor itself may not be a class. */
+void scr_util_inherits_prototype(ScrDyn *ctor, ScrDyn *super_ctor, ScrDyn *super_prototype) {
+  if (uc_nullish(ctor)) {
+    scr_dyn_arg_type_fail("ctor", "of type function", ctor);
+    return;
+  }
+  if (ctor->kind == SCR_DYN_FUNC && ctor->v.fn.class_obj) {
+    uc_fence("util.inherits over class constructors has no lowering; declare the subclass with extends");
+    return;
+  }
+  uc_inherits(ctor, super_ctor, scr_dyn_retain(super_prototype));
 }
 
 /* ── util.deprecate ────────────────────────────────────────────────────

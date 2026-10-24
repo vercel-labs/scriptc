@@ -82,6 +82,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "util.isDeepStrictEqual": "scr_util_is_deep_strict_equal",
   "util.styleText": "scr_util_style_text",
   "util.inherits": "scr_util_inherits",
+  "util.inheritsPrototype": "scr_util_inherits_prototype",
   "util.deprecate": "scr_util_deprecate",
   "util.callbackify": "scr_util_callbackify",
   "util.promisifyDyn": "scr_util_promisify",

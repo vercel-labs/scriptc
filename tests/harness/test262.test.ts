@@ -237,6 +237,47 @@ assert.notSameValue(1, "1");
     status: "fail",
     source: "assert.throws(TypeError, () => { throw 1; });",
   },
+  {
+    name: "identical references",
+    status: "pass",
+    source: `
+const object = {};
+const list = [1];
+const fn = function () {};
+assert.sameValue(object, object);
+assert.sameValue(list, list);
+assert.sameValue(fn, fn);
+assert.compareArray([object, fn], [object, fn]);
+`,
+  },
+  {
+    name: "a reference is not a primitive",
+    status: "pass",
+    source:
+      "assert.notSameValue({}, 1); assert.notSameValue([], undefined); assert.notSameValue(null, {});",
+  },
+  { name: "reference and primitive mismatch", status: "fail", source: "assert.sameValue([], 0);" },
+  {
+    name: "identical references are not different",
+    status: "fail",
+    source: "const object = {}; assert.notSameValue(object, object);",
+  },
+  {
+    name: "array element reference and primitive mismatch",
+    status: "fail",
+    source: "assert.compareArray([{}], [1]);",
+  },
+  {
+    name: "non-string messages",
+    status: "pass",
+    source:
+      "assert.sameValue(1, 1, false); assert.notSameValue(1, 2, 0); assert(true, null); assert.compareArray([], [], 1);",
+  },
+  {
+    name: "failure with a non-string message",
+    status: "fail",
+    source: "assert.sameValue(1, 2, false);",
+  },
 ];
 
 describe(`Test262 host assertion contract${shardSuffix()}`, () => {
@@ -259,8 +300,8 @@ describe(`Test262 host assertion contract${shardSuffix()}`, () => {
     ["{}", "[1]", "function () {}"],
     (value) => `reference:${value}`,
   )) {
-    test(`reference assertions are explicitly refused: ${value}`, async () => {
-      const source = `const value = ${value}; try { assert.sameValue(value, value); } catch { }`;
+    test(`distinct reference assertions are explicitly refused: ${value}`, async () => {
+      const source = `try { assert.sameValue(${value}, ${value}); } catch { } try { assert.notSameValue(${value}, ${value}); } catch { }`;
       expect(() => runUpstream(source)).not.toThrow();
       const result = await runSource(source, { sanitize });
       expect(result, JSON.stringify(result)).toMatchObject({
@@ -270,8 +311,8 @@ describe(`Test262 host assertion contract${shardSuffix()}`, () => {
     });
   }
 
-  test("array element identity assertions are refused", async () => {
-    const source = "const value = {}; try { assert.compareArray([value], [value]); } catch { }";
+  test("distinct array element references are refused", async () => {
+    const source = "try { assert.compareArray([{}], [{}]); } catch { }";
     expect(() => runUpstream(source)).not.toThrow();
     const result = await runSource(source, { sanitize });
     expect(result, JSON.stringify(result)).toMatchObject({
@@ -359,8 +400,14 @@ const propertyControls = shardSelect(
     },
     {
       name: "reference value",
-      status: "harness-refusal",
+      status: "pass",
       source: "const f = function() {}; const o = { a: f }; verifyProperty(o, 'a', { value: f });",
+    },
+    {
+      name: "distinct reference value",
+      status: "harness-refusal",
+      source:
+        "const o = { a: function() {} }; try { verifyProperty(o, 'a', { value: function() {} }); } catch { }",
     },
   ],
   (item) => `property:${item.name}`,

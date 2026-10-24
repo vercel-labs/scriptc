@@ -8191,31 +8191,83 @@ export function classMemberNameOf(lowerer: Lowerer, name: ts.PropertyName): stri
 export interface ClassIteratorInfo {
   /** The `[Symbol.iterator]()` call's receiver class + its declarer. */
   className: string;
-  /** The iterator object's type (the method's return). */
-  iterT: IrType & { kind: "object" };
+  /** The iterator's type (the method's return): a class instance, or a
+   * record (an object literal) whose `next` field is a function. */
+  iterT: IrType & ({ kind: "object" } | { kind: "record" });
   /** next()'s result record type. */
   resultT: IrType & { kind: "record" };
   valueT: IrType;
   /** False: no done field — the protocol never terminates. */
   hasDone: boolean;
+  /** The iterator declares a zero-parameter return(), which a consumer
+   * that stops before the end calls (IteratorClose). Only consumers that
+   * ask for `close` see such iterators. */
+  hasReturn: boolean;
 }
-export function classIteratorOf(lowerer: Lowerer, t: IrType): ClassIteratorInfo | null {
+/** A return() result type that is always an object: IteratorClose after a
+ * break throws a TypeError for any other result, which these desugars do
+ * not model. */
+function objectResult(t: IrType): boolean {
+  return t.kind === "record" || t.kind === "object";
+}
+
+/** What a class iterable's consumer handles: `records` accepts an
+ * object-literal iterator; `close` accepts an iterator with return(),
+ * which the consumer calls when it stops early (or never stops early). */
+export interface ClassIteratorOptions {
+  records?: boolean;
+  close?: boolean;
+}
+export function classIteratorOf(
+  lowerer: Lowerer,
+  t: IrType,
+  options: ClassIteratorOptions = {},
+): ClassIteratorInfo | null {
   if (t.kind !== "object") return null;
   const info = lowerer.classes.get(t.className);
   if (!info) return null;
   const iter = findMethodOn(lowerer, info, "sym:iterator");
   if (!iter || iter.sig.params.length !== 0 || iter.sig.abstract === true) return null;
   const iterT = iter.sig.ret;
-  if (iterT.kind !== "object") return null;
-  const itInfo = lowerer.classes.get(iterT.className);
-  if (!itInfo) return null;
-  // IteratorClose honesty: a declared return()/throw() would be called
-  // by JS on abrupt completion; these desugars never close.
-  if (findMethodOn(lowerer, itInfo, "return") || findMethodOn(lowerer, itInfo, "throw"))
-    return null;
-  const next = findMethodOn(lowerer, itInfo, "next");
-  if (!next || next.sig.params.length !== 0 || next.sig.abstract === true) return null;
-  const resultT = next.sig.ret;
+  let resultT: IrType;
+  let hasReturn: boolean;
+  if (iterT.kind === "object") {
+    const itInfo = lowerer.classes.get(iterT.className);
+    if (!itInfo) return null;
+    // IteratorClose honesty: a declared return() would be called by JS on
+    // abrupt completion, so only a consumer that closes takes it; for-of
+    // never calls throw(), the other consumers refuse it.
+    const close = findMethodOn(lowerer, itInfo, "return");
+    if (
+      close &&
+      (!options.close ||
+        close.sig.abstract === true ||
+        close.sig.params.length !== 0 ||
+        !objectResult(close.sig.ret))
+    )
+      return null;
+    if (findMethodOn(lowerer, itInfo, "throw") && !options.close) return null;
+    const next = findMethodOn(lowerer, itInfo, "next");
+    if (!next || next.sig.params.length !== 0 || next.sig.abstract === true) return null;
+    resultT = next.sig.ret;
+    hasReturn = !!close;
+  } else if (iterT.kind === "record" && options.records) {
+    const fields = lowerer.shapes.get(iterT.shapeId)?.fields;
+    const next = fields?.find((f) => f.name === "next")?.type;
+    if (!next || next.kind !== "func" || next.params.length !== 0 || next.rest) return null;
+    const close = fields?.find((f) => f.name === "return")?.type;
+    if (
+      close &&
+      (!options.close ||
+        close.kind !== "func" ||
+        close.params.length !== 0 ||
+        close.rest ||
+        !objectResult(close.ret))
+    )
+      return null;
+    resultT = next.ret;
+    hasReturn = close !== undefined;
+  } else return null;
   if (resultT.kind !== "record") return null;
   const shape = lowerer.shapes.get(resultT.shapeId);
   const value = shape?.fields.find((f) => f.name === "value");
@@ -8228,6 +8280,7 @@ export function classIteratorOf(lowerer: Lowerer, t: IrType): ClassIteratorInfo 
     resultT,
     valueT: value.type,
     hasDone: done !== undefined,
+    hasReturn,
   };
 }
 
@@ -8239,7 +8292,43 @@ export function classIteratorNextCall(
   itRef: IrExpr,
   loc: SrcLoc,
 ): IrExpr {
-  return accessorCall(lowerer, cit.iterT.className, "next", itRef, [], cit.resultT, loc);
+  return classIteratorMethodCall(lowerer, cit, "next", itRef, loc);
+}
+
+/** `it.next()` or `it.return()` of a class iterator: a (possibly virtual)
+ * method call of an iterator class, or the call of an object-literal
+ * iterator's function field. */
+export function classIteratorMethodCall(
+  lowerer: Lowerer,
+  cit: ClassIteratorInfo,
+  method: "next" | "return",
+  itRef: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const iterT = cit.iterT;
+  if (iterT.kind === "object") {
+    const ret =
+      method === "next"
+        ? cit.resultT
+        : findMethodOn(lowerer, lowerer.classes.get(iterT.className)!, "return")!.sig.ret;
+    return accessorCall(lowerer, iterT.className, method, itRef, [], ret, loc);
+  }
+  const field = lowerer.shapes.get(iterT.shapeId)!.fields.find((f) => f.name === method)!;
+  const fnT = field.type as IrType & { kind: "func" };
+  return {
+    kind: "callValue",
+    callee: {
+      kind: "recordGet",
+      obj: itRef,
+      shapeId: iterT.shapeId,
+      field: method,
+      type: fnT,
+      loc,
+    },
+    args: [],
+    type: fnT.ret,
+    loc,
+  };
 }
 
 /** `recv[Symbol.iterator]()` as an ordinary method call. */
@@ -8267,12 +8356,15 @@ export function classIteratorDrainCall(
   loc: SrcLoc,
   elemT?: IrType,
 ): IrExpr | null {
-  const cit = classIteratorOf(lowerer, src.type);
+  // A spread takes every value, so it never closes the iterator.
+  const cit = classIteratorOf(lowerer, src.type, { records: true, close: true });
   if (!cit) return null;
   const outElem = elemT ?? cit.valueT;
   // Probe the element coercion purely: identical types, or an arm of a
   // union destination (the wrap coerceToExpected applies below).
-  if (!typeEquals(outElem, cit.valueT)) {
+  // A checked-dynamic value (`IteratorResult<T>`'s value is `T | any`)
+  // converts to the destination element with a check.
+  if (!typeEquals(outElem, cit.valueT) && cit.valueT.kind !== "dyn") {
     if (outElem.kind !== "union" || lowerer.armTag(outElem.unionId, cit.valueT) < 0) return null;
   }
   const outT = arrayOf(outElem);
@@ -8390,7 +8482,7 @@ export function classIteratorRestDrainCall(
   loc: SrcLoc,
 ): IrExpr {
   const outT = arrayOf(cit.valueT);
-  const key = `it:${cit.iterT.className}`;
+  const key = `it:${cit.iterT.kind === "object" ? cit.iterT.className : typeKey(cit.iterT)}`;
   let name = lowerer.iterDrainHelpers.get(key);
   if (!name) {
     name = keyedHelperName(lowerer, "%iter.drain", key);

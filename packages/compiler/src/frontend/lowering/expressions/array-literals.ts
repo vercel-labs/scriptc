@@ -482,6 +482,14 @@ export function lowerArrayLiteral(
       if (src.type.kind === "object") {
         const drained = lowerer.classIteratorDrainCall(src, locOf(el), type.elem);
         if (drained) src = drained;
+        // In JavaScript an iterable class whose inferred iterator shape has
+        // no static protocol spreads through the runtime's iterator walk.
+        else if (
+          isJsSourceFile(ts.getSourceFileOfNode(el)) &&
+          lowerer.classes.get(src.type.className) &&
+          lowerer.findMethodOn(lowerer.classes.get(src.type.className)!, "sym:iterator")
+        )
+          src = lowerer.coerceInto(el.expression, src, DYN);
       }
       // `[...s]` on a STRING spreads its code-point characters (the
       // string iterator's walk — astral chars whole) through the same

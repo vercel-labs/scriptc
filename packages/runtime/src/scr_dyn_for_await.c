@@ -44,7 +44,11 @@ void scr_dyn_async_iterator_set_sync(bool sync) {
 }
 
 /* Whether the iterator the last scr_dyn_async_iterator_open returned is a
- * synchronous one. Read immediately after the open. */
+ * synchronous one. Read immediately after the open; the read clears it, so
+ * an iterator a class's [Symbol.asyncIterator]() returned (opened without
+ * the runtime) reads false. */
 bool scr_dyn_async_iterator_was_sync(void) {
-  return scr_for_await_sync;
+  bool sync = scr_for_await_sync;
+  scr_for_await_sync = false;
+  return sync;
 }

@@ -2542,7 +2542,7 @@ function classIteratorObject(
   iter: IrExpr,
   loc: SrcLoc,
 ): IrExpr {
-  const key = `streamFromIter:${cit.iterT.className}`;
+  const key = `streamFromIter:${cit.iterT.kind === "object" ? cit.iterT.className : typeKey(cit.iterT)}`;
   let name = lowerer.valueHelpers.get(key);
   if (!name) {
     name = keyedHelperName(lowerer, "%stream.fromIter", key);

@@ -2928,15 +2928,19 @@ export class ClassDynamicDispatch {
           }
           const iterator =
             expr.kind === "libCall" &&
-            (expr.fn === "dyn.iterator" || expr.fn === "dyn.arrayFromIterator")
+            (expr.fn === "dyn.iterator" ||
+              expr.fn === "dyn.arrayFromIterator" ||
+              expr.fn === "dyn.asyncIteratorOpen")
               ? expr
               : null;
+          // `for await` opens a class instance's [Symbol.asyncIterator]().
+          const asyncOpen = iterator?.fn === "dyn.asyncIteratorOpen";
           const invoke: Invoke | null = iterator
             ? {
                 kind: "dynInvoke",
                 recv: iterator.args[0]!,
-                method: "sym:iterator",
-                calleeName: "value[Symbol.iterator]",
+                method: asyncOpen ? "sym:asyncIterator" : "sym:iterator",
+                calleeName: asyncOpen ? "value[Symbol.asyncIterator]" : "value[Symbol.iterator]",
                 args: [],
                 type: DYN,
                 loc: iterator.loc,

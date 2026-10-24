@@ -13,13 +13,14 @@ import { emitStringInputs } from "./string-lifetimes.js";
 import { emitStringParts, numberPart, stringParts } from "./string-construction.js";
 import { emitBorrowedInputs } from "./borrowed-inputs.js";
 import {
-  alwaysExactInteger,
+  exactCompareOperands,
   exactInteger,
   int32Number,
   integerNumber,
   narrowInteger,
   wideArithmetic,
   widenInteger,
+  type LlInteger,
 } from "./integer-values.js";
 import {
   bitwiseIdentityOperand,
@@ -45,7 +46,7 @@ import {
   slotWidth,
   type ArrayAccess,
 } from "./dense-array-access.js";
-import { emitWrappingSum, markWrappingOperands } from "./wrapping-sums.js";
+import { emitWrappingSum, integerOrNaNRange, markWrappingOperands } from "./wrapping-sums.js";
 import { emitPowerOfTwoQuotient, isPowerOfTwoCall } from "./lib-filesystem.js";
 
 /** The signed integer predicates of the number compares. */
@@ -57,6 +58,63 @@ const INTEGER_COMPARES: Record<string, string> = {
   "===": "eq",
   "!==": "ne",
 };
+
+const UNSIGNED_COMPARES: Record<string, string> = {
+  "<": "ult",
+  "<=": "ule",
+  ">": "ugt",
+  ">=": "uge",
+  "===": "eq",
+  "!==": "ne",
+};
+
+/** A number compare of operands that are each an exact integer or an
+ * integer-or-NaN value (integerOrNaNRange: integer typed-array elements,
+ * `charCodeAt` results, sums of those), all within int32 or all within
+ * uint32: their 32-bit views compared, and NaN comparing false (unequal for
+ * `!==`). The 32-bit view is the value's ToUint32, which holds its bits
+ * whenever it is not NaN. Null when an operand has no such view. */
+function emitIntegerOrNaNCompare(
+  host: LlvmEmitterContext,
+  e: ExprOf<"bin">,
+  l: LlValue,
+  li: LlInteger | null,
+  r: LlValue,
+  ri: LlInteger | null,
+): string | null {
+  const lr = li?.range ?? integerOrNaNRange(host, e.left),
+    rr = ri?.range ?? integerOrNaNRange(host, e.right);
+  if (!lr || !rr) return null;
+  const signed = withinInt32(lr) && withinInt32(rr);
+  if (!signed && !(withinUint32(lr) && withinUint32(rr))) return null;
+  const bits = (value: LlValue, integer: LlInteger | null): string | undefined =>
+    integer ? narrowInteger(host, integer) : value.uint32;
+  const left = bits(l, li),
+    right = bits(r, ri);
+  if (left === undefined || right === undefined) return null;
+  const B = host.B;
+  const compare = B.tmp();
+  B.line(
+    `${compare} = icmp ${(signed ? INTEGER_COMPARES : UNSIGNED_COMPARES)[e.op]} i32 ${left}, ${right}`,
+  );
+  let result = compare;
+  for (const [value, integer] of [
+    [l, li],
+    [r, ri],
+  ] as const) {
+    if (integer) continue;
+    const ordered = B.tmp(),
+      combined = B.tmp();
+    B.line(`${ordered} = fcmp ord double ${value.name}, 0.0`);
+    if (e.op === "!==") {
+      const unordered = B.tmp();
+      B.line(`${unordered} = xor i1 ${ordered}, true`);
+      B.line(`${combined} = or i1 ${result}, ${unordered}`);
+    } else B.line(`${combined} = and i1 ${result}, ${ordered}`);
+    result = combined;
+  }
+  return result;
+}
 
 export function emitLiteralExpr(
   host: LlvmEmitterContext,
@@ -363,14 +421,16 @@ export function emitOperatorExpr(
             return value;
           }
         } else {
-          // An operand with only a wide view, such as `i + 1` of a speculated
-          // counter: compare the integers when both always equal the doubles.
-          const left = alwaysExactInteger(host, l, li),
-            right = left === null ? null : alwaysExactInteger(host, r, ri);
-          if (left !== null && right !== null) {
-            B.line(`${t} = icmp ${INTEGER_COMPARES[e.op]} i64 ${left}, ${right}`);
+          // An operand with only a wide view, such as `i + 1` or `2 * i + 1`
+          // of a speculated counter: compare the integers when that gives the
+          // doubles' result.
+          const operands = exactCompareOperands(host, l, li, r, ri);
+          if (operands) {
+            B.line(`${t} = icmp ${INTEGER_COMPARES[e.op]} i64 ${operands[0]}, ${operands[1]}`);
             return { name: t, type: e.type };
           }
+          const nanCoded = emitIntegerOrNaNCompare(host, e, l, li, r, ri);
+          if (nanCoded) return { name: nanCoded, type: e.type };
           B.line(`${t} = fcmp ${cmp[e.op]} double ${l.name}, ${r.name}`);
         }
       } else if (bit[e.op] !== undefined) {

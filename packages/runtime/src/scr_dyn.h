@@ -324,6 +324,9 @@ typedef struct {
    * must not inspect the value: an earlier cycle member may already be freed.
    * Ordinary mutations need not maintain this collector-only decision. */
   bool value_traced : 1;
+  /* A namespace object's function member (scr_dyn_namespace_define), which
+   * static member calls bypass: a change to its value fences instead. */
+  bool fenced : 1;
   /* Ordinary object insertion sets all three attributes true. */
   bool writable;
   bool enumerable;
@@ -897,6 +900,19 @@ ScrDyn *scr_dyn_error_constructor(const char *name);
 /* A builtin global function (setTimeout, setImmediate, process.nextTick, ...)
  * as an interned dynamic function value: +1. */
 ScrDyn *scr_dyn_builtin_function(const ScrStr *name);
+/* A standard namespace object (Math, JSON, Reflect read as a JavaScript
+ * value): an ordinary object whose Symbol.toStringTag is `tag` (+1).
+ * `tag_key` is the Symbol.toStringTag key (borrowed), which the compiler
+ * passes so this unit needs no symbol entry points. */
+ScrDyn *scr_dyn_namespace_new(const ScrStr *tag, ScrDyn *tag_key);
+/* Defines the own data property `key` of a namespace object. `attributes`
+ * has bits 1 writable, 2 enumerable, 4 configurable; a function value
+ * takes `length` as its length when it is not negative. */
+void scr_dyn_namespace_define(ScrDyn *object, const ScrStr *key, ScrDyn *value, double attributes,
+                              double length);
+/* Marks the own property `key` of `object` as a fenced namespace member
+ * (ScrDynEntry.fenced). */
+void scr_dyn_fence_member(ScrDyn *object, const ScrStr *key);
 /* A constant-key read of an Object.prototype member name: takes the
  * ordinary read's +1 result and answers the inherited member in place of
  * an undefined one (scr_dyn_invoke.c). */
@@ -1443,6 +1459,9 @@ ScrDyn *scr_dyn_new_func(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, con
 /* Gives a function box made with thunk its typed message entry (an
  * EventEmitter listener registered from it keeps the entry). */
 void scr_dyn_func_set_message(ScrDyn *fn, ScrDynThunk thunk, ScrDynMessageListener listener);
+/* Sets a freshly boxed function's `length` (a builtin function value whose
+ * length is not its adapter's parameter count). */
+void scr_dyn_function_set_length(ScrDyn *fn, uint32_t length);
 ScrDyn *scr_dyn_new_class(ScrClassObj *cls, const char *type_key);
 /* EventEmitter and the stream constructors as untyped constructor values,
  * and instanceof over untyped constructor functions

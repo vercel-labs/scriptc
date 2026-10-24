@@ -268,7 +268,7 @@ static bool scr_js_error_synced_key(const ScrStr *key) {
 
 static bool scr_js_replace(ScrDyn *receiver, size_t slot, ScrDyn *value) {
   ScrDynEntry *found = &receiver->v.obj.entries[slot];
-  if (found->accessor || !found->writable) return false;
+  if (found->accessor || !found->writable || found->fenced) return false;
   scr_dyn_region_store(receiver, value);
   ScrDyn *old = found->value;
   found->value = scr_dyn_retain(value);
@@ -313,7 +313,7 @@ bool scr_js_store_probe(ScrDyn *receiver, const ScrStr *key, ScrDyn *value, ScrJ
   size_t slot = scr_js_shape_find(shape, key->data, key->len);
   if (slot != SIZE_MAX) {
     const ScrDynEntry *found = &receiver->v.obj.entries[slot];
-    if (found->accessor || !found->writable) return false;
+    if (found->accessor || !found->writable || found->fenced) return false;
     scr_js_ic_add(ic, stale, (ScrJsIcEntry){shape, shape, NULL, NULL, slot});
     return scr_js_replace(receiver, slot, value);
   }

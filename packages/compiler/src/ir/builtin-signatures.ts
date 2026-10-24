@@ -312,6 +312,8 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * timer APIs (it pulls in the event loop). The name is a compiler-chosen
    * literal. */
   "dyn.builtinFunction": { argTypes: [STRING], result: DYN },
+  "dyn.namespaceNew": { argTypes: [STRING, DYN], result: DYN },
+  "dyn.namespaceDefine": { argTypes: [DYN, STRING, DYN, F64, F64], result: VOID },
   "date.nativeNew": { argTypes: [DYN], result: DYN },
   /** `new Date(year, monthIndex, ...)` in JavaScript: the argument array's
    * first seven values pass through ToNumber in order (later ones are

@@ -2182,6 +2182,35 @@ ScrDyn *scr_dyn_builtin_function(const ScrStr *name) {
   return scr_dyn_retain(value);
 }
 
+/* An own data property of a namespace object. Attribute bits: 1 writable,
+ * 2 enumerable, 4 configurable. */
+static void dyn_namespace_put(ScrDyn *object, ScrDyn *key, ScrDyn *value, unsigned attributes) {
+  ScrDyn *descriptor = scr_dyn_new_obj();
+  scr_dyn_obj_set(descriptor, "value", 5, scr_dyn_retain(value));
+  scr_dyn_obj_set(descriptor, "writable", 8, scr_dyn_new_bool((attributes & 1) != 0));
+  scr_dyn_obj_set(descriptor, "enumerable", 10, scr_dyn_new_bool((attributes & 2) != 0));
+  scr_dyn_obj_set(descriptor, "configurable", 12, scr_dyn_new_bool((attributes & 4) != 0));
+  scr_dyn_release(scr_dyn_define_property(object, key, descriptor));
+  scr_dyn_release(descriptor);
+}
+
+ScrDyn *scr_dyn_namespace_new(const ScrStr *tag, ScrDyn *tag_key) {
+  ScrDyn *object = scr_dyn_new_obj();
+  ScrDyn *value = scr_dyn_new_str((ScrStr *)tag);
+  dyn_namespace_put(object, tag_key, value, 4);
+  scr_dyn_release(value);
+  return object;
+}
+
+void scr_dyn_namespace_define(ScrDyn *object, const ScrStr *key, ScrDyn *value, double attributes,
+                              double length) {
+  if (length >= 0 && value->kind == SCR_DYN_FUNC) value->v.fn.arity = (uint32_t)length;
+  ScrDyn *name = scr_dyn_new_str((ScrStr *)key);
+  dyn_namespace_put(object, name, value, (unsigned)attributes);
+  scr_dyn_release(name);
+  if (length >= 0) scr_dyn_fence_member(object, key);
+}
+
 ScrDyn *scr_dyn_array_prototype(void) {
   static SCR_TL bool initialized;
   ScrDyn *prototype = scr_dyn_array_prototype_base();

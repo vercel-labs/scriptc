@@ -819,6 +819,9 @@ export interface BuiltinModuleFn {
    * direct-call row's `fn` (a direct call picks an arity-specific entry
    * point; the value accepts every arity through one). */
   valueFn?: IrLibFn;
+  /** The function value's `length` when it is not the count of its
+   * required value parameters (`Math.max`'s 2 over its rest pack). */
+  valueLength?: number;
 }
 
 export type BuiltinValueParam =

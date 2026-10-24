@@ -606,8 +606,15 @@ export function lowerJsonProperty(
 ): IrExpr | null {
   const member = lowerer.stdlibGlobalMember(expr, "JSON");
   if (member === null) return null;
+  const value = jsonMemberValue(lowerer, member, locOf(expr));
+  if (value !== null) return value;
+  lowerer.unsupported("SC1090", expr, `JSON methods as values (call '${member}' directly)`);
+}
+
+/** The function value of the JSON member `member` (stringify and parse),
+ * or null for members without one. */
+export function jsonMemberValue(lowerer: Lowerer, member: string, loc: SrcLoc): IrExpr | null {
   if (member === "stringify") {
-    const loc = locOf(expr);
     const name = "%builtin.JSON.stringify";
     if (!lowerer.builtinCallableValueFns.has(name)) {
       lowerer.builtinCallableValueFns.set(name, name);
@@ -654,7 +661,6 @@ export function lowerJsonProperty(
   if (member === "parse") {
     // JSON.parse as a value: ToString of the text, then the reviver form
     // (a reviver that is not a function is ignored, as in Node).
-    const loc = locOf(expr);
     const name = "%builtin.JSON.parse";
     if (!lowerer.builtinCallableValueFns.has(name)) {
       lowerer.builtinCallableValueFns.set(name, name);
@@ -703,5 +709,5 @@ export function lowerJsonProperty(
       loc,
     };
   }
-  lowerer.unsupported("SC1090", expr, `JSON methods as values (call '${member}' directly)`);
+  return null;
 }

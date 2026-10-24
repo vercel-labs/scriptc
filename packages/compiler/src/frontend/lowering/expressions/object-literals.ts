@@ -38,6 +38,7 @@ import { planUnionRetag } from "../union-retag.js";
 import { jsHoldsDynObject, runtimeOptionalStorageOperand } from "../lower-exprs.js";
 import { builtinGlobalValue } from "./property-access.js";
 import { holdsEvolvingArray } from "../lower-stmts.js";
+import { builtinNamespaceValue } from "../builtin-namespaces.js";
 
 /** `{ a: 1, b: "x" }` → recordLit. The record type comes from the
  * contextual type when tsc has one (annotated declarations, arguments,
@@ -3262,7 +3263,11 @@ function shorthandBuiltinValue(
   const symbol = lowerer.checker.getShorthandAssignmentValueSymbol(prop);
   if (!symbol || !lowerer.isStdlibSymbol(symbol)) return null;
   const js = isJsSourceFile(ts.getSourceFileOfNode(prop));
-  return builtinGlobalValue(ts.symbolName(symbol), locOf(prop.name), js);
+  const name = ts.symbolName(symbol);
+  return (
+    (js ? builtinNamespaceValue(lowerer, name, locOf(prop.name)) : null) ??
+    builtinGlobalValue(name, locOf(prop.name), js)
+  );
 }
 
 export function lowerShorthandValue(

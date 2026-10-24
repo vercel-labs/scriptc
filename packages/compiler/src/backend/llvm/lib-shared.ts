@@ -1052,6 +1052,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.nativeDateHandleIs": "scr_dyn_native_date_is",
   "dyn.globalConstructor": "scr_dyn_global_constructor",
   "dyn.builtinFunction": "scr_dyn_builtin_function",
+  "dyn.namespaceNew": "scr_dyn_namespace_new",
+  "dyn.namespaceDefine": "scr_dyn_namespace_define",
   "date.nativeNew": "scr_dyn_native_date_new",
   "date.nativeNewFields": "scr_dyn_native_date_new_fields",
   "date.nativeNewValue": "scr_dyn_native_date_new_value",

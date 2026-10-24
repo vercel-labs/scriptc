@@ -1,5 +1,6 @@
 /* Element reads and writes (`a[i]`, `a[i] = v`), compound element updates, and keyed record reads. */
 import * as ts from "../../ts7/adapter.js";
+import { isArrayLikeObjectType } from "../../type-mapper.js";
 import {
   lowerOptionalIndex,
   splitUndefinedIndex,
@@ -807,7 +808,10 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
   // An alias or container of an evolving array whose reads disagree
   // (`rows[0]` after `const rows = [xs]`) holds elements the checker's type
   // does not list, so its element read stays checked-dynamic.
-  const heldEvolving = arr.type.kind === "dyn" && readsHeldEvolvingArray(lowerer, expr.expression);
+  const heldEvolving =
+    arr.type.kind === "dyn" &&
+    (readsHeldEvolvingArray(lowerer, expr.expression) ||
+      readsArrayLikeUnionBinding(lowerer, expr.expression));
   // The checker sees an array but the VALUE lowered checked-dynamic (a
   // jsdoc-typed default export from a .js module — signature 14): the
   // read rides the dynCheck boundary when the array shape is one the checked-dynamic tree
@@ -2436,4 +2440,21 @@ export function lowerEnvironmentKey(lowerer: Lowerer, node: ts.Expression): IrEx
   if (key.type.kind === "dyn")
     return { kind: "libCall", fn: "dyn.toStringCoerce", args: [key], type: STRING, loc: key.loc };
   return lowerRecordPropertyKey(lowerer, key, node);
+}
+
+/** A binding declared with a union that has an array-like object arm
+ * (`string[] | { length: number; [i: number]: number }`), held
+ * checked-dynamic (mapTypeInner's array-like collapse). The arm holds
+ * arrays of any element type, so a read through the checker's narrowing
+ * (`Array.isArray(s)` narrows to `string[]`) keeps the element the array
+ * holds. */
+function readsArrayLikeUnionBinding(lowerer: Lowerer, expr: ts.Expression): boolean {
+  let node: ts.Expression = expr;
+  while (ts.isParenthesizedExpression(node)) node = node.expression;
+  if (!ts.isIdentifier(node)) return false;
+  const declaration = lowerer.resolveValueSymbol(node)?.valueDeclaration;
+  if (declaration === undefined) return false;
+  const declared = lowerer.typeOf(declaration);
+  if (!declared.isUnionType() || lowerer.mapTypeOf(declared)?.kind !== "dyn") return false;
+  return ts.constituentTypes(declared).some((part) => isArrayLikeObjectType(part, lowerer.checker));
 }

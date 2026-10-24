@@ -94,6 +94,25 @@ function emptyNeverLiteral(lowerer: Lowerer, expr: ts.ArrayLiteralExpression): b
   );
 }
 
+/** The literal's own type is assignable to a non-array member of its
+ * contextual union and to none of its array members. */
+function fitsOnlyNonArrayArm(
+  lowerer: Lowerer,
+  expr: ts.ArrayLiteralExpression,
+  ctxType: ts.Type | undefined,
+): boolean {
+  if (ctxType === undefined || !ctxType.isUnionType()) return false;
+  const own = lowerer.typeOf(expr);
+  let array = false;
+  let other = false;
+  for (const part of ts.constituentTypes(ctxType)) {
+    if (!lowerer.checker.isTypeAssignableTo(own, part)) continue;
+    if (lowerer.checker.isArrayType(part)) array = true;
+    else other = true;
+  }
+  return other && !array;
+}
+
 /** `[a, b, c]`. The element type comes from the contextual type when tsc
  * has one (`const a: number[] = []`, arguments, nested literals) and from
  * the literal's own inferred type otherwise. A bare `[]` with no context
@@ -247,8 +266,15 @@ export function lowerArrayLiteral(
     // from the arm, so its object literals lower as the arm's elements,
     // and the literal's own element type (`number | { n: boolean }`)
     // cannot hold them. Build it as the arm; its value only flows into the
-    // union slot.
-    if (ctxUnion && expr.elements.nodes.length > 0 && mapped?.kind === "array") {
+    // union slot. A literal that only a non-array arm accepts keeps its
+    // own type: `[3, 4, 5]` in `string[] | { length: number; [i: number]:
+    // number }` fits the record arm, not `string[]`.
+    if (
+      ctxUnion &&
+      expr.elements.nodes.length > 0 &&
+      mapped?.kind === "array" &&
+      !fitsOnlyNonArrayArm(lowerer, expr, ctxType)
+    ) {
       const def = lowerer.unions.get(ctxUnion.unionId);
       const arrayArms = def?.arms.filter((a) => a.kind === "array") ?? [];
       const tupleArms =

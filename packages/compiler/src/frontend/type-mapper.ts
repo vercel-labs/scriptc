@@ -5064,6 +5064,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ) {
         return DYN;
       }
+      // An array-like object arm (`{ length: number; [i: number]: T }`)
+      // also holds arrays that no array arm of the union holds (`number[]`
+      // in `string[] | { length: number; [i: number]: number }`), and the
+      // checker narrows such a value to the union's array arms by
+      // `Array.isArray`. The checked-dynamic representation holds the
+      // array itself, so its reads, its `Array.isArray` answer and its
+      // identity are the array's. A union with a `T[]` arm beside the
+      // `[i: number]: T` arm keeps its typed arms.
+      if (
+        recordParts.some((part) => arrayLikeRecordArm(part.source, part.mapped, arms, ctx)) &&
+        arms.every((a) => dynSubsumableUnionArm(a, ctx)) &&
+        !unions.recursivePending(widened)
+      ) {
+        return DYN;
+      }
       if (
         arms.some(
           (a) =>
@@ -8199,6 +8214,40 @@ const STDLIB_CONTAINERS: Record<string, { role: (i: number) => string }> = {
   Generator: { role: (i) => ["yield", "return", "next"][i] ?? "channel" },
   AsyncGenerator: { role: (i) => ["yield", "return", "next"][i] ?? "channel" },
 };
+
+/** An object type an array is assignable to: no property but `length`,
+ * and either a `length` property or a number index signature as its only
+ * index signature (`{ length: number }`, `{ [i: number]: T }`,
+ * `ArrayLike<T>`). A string index signature also covers the array's
+ * methods, so arrays fit only the number-keyed form. */
+export function isArrayLikeObjectType(type: ts.Type, checker: ts.TypeChecker): boolean {
+  if (!(type.flags & ts.TypeFlags.Object) || checker.isArrayType(type) || checker.isTupleType(type))
+    return false;
+  if (checker.getCallSignatures(type).length > 0 || checker.getConstructSignatures(type).length > 0)
+    return false;
+  const properties = checker.getPropertiesOfType(type);
+  if (properties.some((property) => ts.symbolName(property) !== "length")) return false;
+  const infos = checker.getIndexInfosOfType(type);
+  if (infos.some((info) => !(info.keyType.flags & ts.TypeFlags.Number))) return false;
+  return properties.length === 1 || infos.length === 1;
+}
+
+/** A record arm that holds arrays the union's array arms do not: an
+ * array-like object type (isArrayLikeObjectType) with only `length`, or
+ * whose index value type is no array arm's element type. */
+function arrayLikeRecordArm(
+  source: ts.Type,
+  arm: IrType & { kind: "record" },
+  arms: readonly IrType[],
+  ctx: TypeMapperCtx,
+): boolean {
+  if (!isArrayLikeObjectType(source, ctx.checker)) return false;
+  const value = ctx.shapes.get(arm.shapeId)?.indexValue;
+  return (
+    value === undefined ||
+    !arms.some((other) => other.kind === "array" && typeEquals(other.elem, value))
+  );
+}
 
 /** The `string | object`-family collapse domain (mapTypeInner's union
  * rule): arms the checked-dynamic representation holds FAITHFULLY, so a

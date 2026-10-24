@@ -1,0 +1,8 @@
+array-like-record-arms.ts:18:21 - error SC2003: union conversion has no unambiguous layout mapping: expected 'Box | { length: number; [key: string]: number }', got 'number[]' (each source arm needs an identical destination arm, a unique compatible record/array layout, or a shared literal discriminant selecting compatible layouts)
+
+  17 | const numbers = [1, 2];
+  18 | const bound: Slot = numbers;
+     |                     ^~~~~~~
+  19 | console.log(describe(bound), describe(new Box(3)));
+
+  hint: narrow the value to a SINGLE arm first (a discriminant check, or '!== undefined'/'!== null' for unit arms); a plain arm value widens into any union that contains it, and a whole union widens into any union whose arms include the source's

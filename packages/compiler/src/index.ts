@@ -875,6 +875,7 @@ async function prepareExecutableInput(
       pointerBits: buildPlatform === "wasi" ? 32 : 64,
       wasi: buildPlatform === "wasi",
       runtimeAbiMarker: useRuntimePack,
+      unwindAbi: buildPlatform === "linux",
       objectAudit: opts.sanitize === true,
       lowRegion: lowRegionTarget(buildPlatform, opts.sanitize === true),
       ...(opts.sanitize === true ? { wasmBoundsChecks: true } : {}),

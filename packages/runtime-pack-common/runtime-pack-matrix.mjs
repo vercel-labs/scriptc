@@ -30,6 +30,7 @@ export const BASE_RUNTIME_SOURCES = [
   "scr_object.c",
   "scr_union.c",
   "scr_exception.c",
+  "scr_unwind.c",
   "scr_error.c",
   "scr_console.c",
   "scr_lib.c",

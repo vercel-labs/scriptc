@@ -123,6 +123,11 @@ static inline ScrExcCell *scr_exc_swap_cell_inline(ScrExcCell *cell) {
 _Static_assert(offsetof(ScrExcCell, kind) == 0 && sizeof(ScrExcKind) == 4 && SCR_EXC_NONE == 0,
                "the LLVM emitter's inline pending check loads an i32 kind at offset 0");
 
+/* Unwinds the native stack to the nearest landing pad of emitted code with
+ * the exception pending in the active cell (the unwinding ABI of emitted
+ * functions, unwind-abi.ts). Linux (glibc and musl) only; it never
+ * returns. */
+SCR_COLD _Noreturn void scr_unwind_raise(void);
 SCR_COLD void scr_throw_f64(double v);
 SCR_COLD void scr_throw_bool(bool v);
 SCR_COLD void scr_throw_str(ScrStr *v); /* takes ownership */

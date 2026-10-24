@@ -9,6 +9,7 @@
  * code after it); here the lines are DROPPED instead, and emitStmts skips
  * whole statements once the current block is terminated, so no dropped
  * definition can leak into a later block. */
+import { UNWIND_RESUME, UNWIND_SLOT } from "./unwind-abi.js";
 
 export class BlockBuilder {
   private readonly blocks: { label: string; lines: string[]; term: string | null }[] = [];
@@ -86,7 +87,18 @@ export class BlockBuilder {
 
   terminate(s: string): void {
     if (this.cur.term === null) {
-      if (this.returnEpilogue && s.startsWith("ret ")) this.line(this.returnEpilogue);
+      if (
+        this.returnEpilogue &&
+        (s.startsWith("ret ") ||
+          s.startsWith("call void @scr_unwind_raise()") ||
+          s === UNWIND_RESUME)
+      )
+        this.line(this.returnEpilogue);
+      if (s === UNWIND_RESUME) {
+        const exception = this.tmp();
+        this.line(`${exception} = load { ptr, i32 }, ptr ${UNWIND_SLOT}`);
+        s = `resume { ptr, i32 } ${exception}`;
+      }
       this.cur.term = `  ${this.withDebugLocation(s)}`;
     }
   }

@@ -57,6 +57,7 @@ import {
   contextualUndefReadType,
   fenceEarlyAliasUse,
   isTemporalGlobalRoot,
+  cjsNamespaceImportDep,
   lowerNsIdentifierValue,
   nsUndefRead,
 } from "../lower-namespaces.js";
@@ -958,6 +959,37 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // representation (ambient namespaces compile to Node's
   // ReferenceError instead — the object never exists at runtime).
   {
+    // `ns.name` through a namespace import of a CommonJS module, where Node's
+    // namespace has no `name` property (its lexer does not detect it), or
+    // `ns.default` (module.exports itself).
+    const cjsNamespace = cjsNamespaceImportDep(lowerer, expr);
+    if (
+      cjsNamespace !== null &&
+      ts.isPropertyAccessExpression(expr.parent) &&
+      expr.parent.expression === expr &&
+      ts.isIdentifier(expr.parent.name)
+    ) {
+      const name = expr.parent.name.text;
+      const { names, assignedLater } = lowerer.cjsNamespaceOf(cjsNamespace);
+      if (name === "default")
+        lowerer.unsupported(
+          "SC1090",
+          expr.parent,
+          `reads of 'default' through namespace imports of CommonJS modules (module.exports itself: read it through a default import)`,
+        );
+      if (!names.has(name))
+        lowerer.unsupported(
+          "SC1090",
+          expr.parent,
+          `reads of '${name}' through namespace imports of CommonJS modules (Node's lexer does not detect '${name}' among the module's exports, so Node reads undefined)`,
+        );
+      if (assignedLater === "all" || assignedLater.has(name))
+        lowerer.unsupported(
+          "SC1090",
+          expr.parent,
+          `reads of '${name}' through namespace imports of CommonJS modules whose functions assign exports (Node's namespace keeps the values from the end of the module's evaluation)`,
+        );
+    }
     const moduleNs = lowerer.mapTypeOf(lowerer.typeOf(expr));
     if (moduleNs?.kind === "moduleNs") {
       return { kind: "moduleNsRef", moduleId: moduleNs.moduleId, type: moduleNs, loc };

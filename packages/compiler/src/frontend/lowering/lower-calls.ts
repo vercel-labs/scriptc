@@ -8464,7 +8464,17 @@ function lowerObjectStaticCall(
         ...(fnName !== null ? { fnName } : {}),
       };
     }
-    if (target && isUnitType(target.type)) {
+    // A class value whose statics are runtime properties of its constructor
+    // boxes to that constructor function, as for Object.defineProperty above.
+    const runtimeStaticClass =
+      target?.type.kind === "classval" ? lowerer.classes.get(target.type.className) : undefined;
+    if (
+      target &&
+      (isUnitType(target.type) ||
+        (runtimeStaticClass !== undefined &&
+          hasRuntimeStatics(runtimeStaticClass) &&
+          lowerer.dynConvertible(target.type)))
+    ) {
       target = { kind: "dynFrom", value: target, type: DYN, loc: locOf(call.arguments.nodes[0]!) };
     }
     if (target?.type.kind === "dyn") {

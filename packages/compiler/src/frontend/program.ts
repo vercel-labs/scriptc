@@ -96,8 +96,8 @@ import type {
 import {
   configurePackageShims,
   isPackageShimFile,
-  isPackageShimName,
   isShimmedImport,
+  npmStaticOmitsPackage,
 } from "./package-shims.js";
 import { provenanceEntryFor, provenancePaths } from "./provenance-registry.js";
 import { cjsLexedExportsOfFile, cjsVisibleNames } from "./cjs-syntax.js";
@@ -1072,12 +1072,13 @@ export function loadProgram(
     }
     externalTypes.set(specifier, declarationPath);
   }
-  // Packages scriptc implements itself or the project marks never loaded
-  // (package-shims.ts) never compile their published JavaScript, even when
-  // named.
+  // Packages scriptc implements itself, and packages the project marks
+  // never loaded (package-shims.ts), never compile their published
+  // JavaScript, even when named. A registry entry's `sourceVersions`
+  // (chalk 6) compile from their own source.
   configurePackageShims(entryPath);
   const npmStaticPackages = [...new Set(opts?.npmStatic ?? [])].filter(
-    (name) => !isPackageShimName(name),
+    (name) => !npmStaticOmitsPackage(entryPath, name),
   );
   // Resolve authored declaration entries before enabling the JS-only
   // package resolver. Safe overload metadata binds through the runtime
@@ -5941,9 +5942,15 @@ function preflight7(load: LoadResult): {
             // to Node's no-op, the module still evaluates through its
             // ordinary init edge, and no member is ever read through the
             // lexer facade (self-imports of a CJS module included — the
-            // partially-built exports are never observed). Any OTHER use
-            // keeps the fence.
-            if (!nsBindingUsesAreBareStatements7(program, sf, clause.namedBindings.name)) {
+            // partially-built exports are never observed). In JavaScript
+            // sources every use passes here: member reads lower through the
+            // names Node's lexer detects, and the other reads refuse at
+            // their site (lower-namespaces.ts, cjsNamespaceImportDep). Any
+            // OTHER use in TypeScript keeps the fence.
+            if (
+              !isJsSourceFileName(sf.fileName) &&
+              !nsBindingUsesAreBareStatements7(program, sf, clause.namedBindings.name)
+            ) {
               diags.push(
                 unsupportedDiag(
                   "SC1013",
@@ -6372,6 +6379,89 @@ function preflight7(load: LoadResult): {
  * Node refuses the program). This walk asks Node's question at compile
  * time, in Node's exact ORDER, and answers with Node's exact message. */
 
+/** The CommonJS program file a re-export (`module.exports = require(spec)`)
+ * of `from` resolves to, or null: reexport targets union in only when they
+ * resolve to CommonJS program files (Node's cjsPreparseModuleExports rule). */
+function cjsReexportDep7(program: ts.Program) {
+  return (from: ts.SourceFile, spec: string): ts.SourceFile | null => {
+    const dep =
+      resolveImport7(program, from, spec, "require") ??
+      npmStaticDepSf7(program, from, spec, "require");
+    return dep !== null && isCjsJsFile7(dep, program) ? dep : null;
+  };
+}
+
+/** Node's lexer analysis of a CommonJS file. A bundler rewrite spells some
+ * lexer-visible names as accessors. */
+function lexWithAccessorNames(sf: ts.SourceFile): ReturnType<typeof cjsLexedExportsOfFile> {
+  const lexed = cjsLexedExportsOfFile(sf);
+  for (const name of npmStaticLexerVisibleNames(sf.fileName)) lexed.exports.add(name);
+  return lexed;
+}
+
+/** The property names of Node's namespace object for the CommonJS module
+ * `dep`: the names its lexer detects, CommonJS re-exports included (the
+ * rule of the named-import link check), plus `default` and
+ * `module.exports`. */
+export function cjsNamespaceExportNames(program: ts.Program, dep: ts.SourceFile): Set<string> {
+  const names = cjsVisibleNames(dep, lexWithAccessorNames, cjsReexportDep7(program), new Map());
+  return new Set([...names, "default", "module.exports"]);
+}
+
+/** The export names a CommonJS module assigns inside functions
+ * (`exports.current = value` in a function body), or "all" when such code
+ * writes a computed name, replaces module.exports or redefines exports
+ * through Object.defineProperty. Node's namespace object of the module
+ * holds the values the exports had when the module finished evaluating,
+ * so it does not see those writes. */
+export function cjsExportsAssignedInFunctions(sf: ts.SourceFile): ReadonlySet<string> | "all" {
+  const names = new Set<string>();
+  let all = false;
+  const exportsObject = (e: ts.Expression): boolean =>
+    (ts.isIdentifier(e) && e.text === "exports") || isModuleExportsAccess(e);
+  const target = (e: ts.Expression): void => {
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (isModuleExportsAccess(e)) all = true;
+    else if (ts.isPropertyAccessExpression(e) && exportsObject(e.expression))
+      names.add(e.name.text);
+    else if (ts.isElementAccessExpression(e) && exportsObject(e.expression)) {
+      if (ts.isStringLiteralLike(e.argumentExpression)) names.add(e.argumentExpression.text);
+      else all = true;
+    }
+  };
+  const visit = (node: ts.Node, inFunction: boolean): void => {
+    if (all) return;
+    const nested = inFunction || ts.isFunctionLike(node);
+    if (nested) {
+      if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+      )
+        target(node.left);
+      else if (
+        (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) &&
+        (node.operator === ts.SyntaxKind.PlusPlusToken ||
+          node.operator === ts.SyntaxKind.MinusMinusToken)
+      )
+        target(node.operand);
+      else if (ts.isDeleteExpression(node)) target(node.expression);
+      else if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        ts.isIdentifier(node.expression.expression) &&
+        node.expression.expression.text === "Object" &&
+        node.arguments.nodes[0] !== undefined &&
+        exportsObject(node.arguments.nodes[0])
+      )
+        all = true;
+    }
+    ts.forEachChild(node, (child) => visit(child, nested));
+  };
+  visit(sf, false);
+  return all ? "all" : names;
+}
+
 interface BadCjsImport {
   /** The export name requested from the CJS module. */
   exportName: string;
@@ -6412,20 +6502,7 @@ function cjsNamedImportLinkCheck(
     const npmStatic = npmStaticDepSf7(program, from, spec);
     return npmStatic;
   };
-  // Reexport targets union in only when they resolve to CommonJS program
-  // files (Node's cjsPreparseModuleExports rule).
-  const resolveCjsDep = (from: ts.SourceFile, spec: string): ts.SourceFile | null => {
-    const dep =
-      resolveImport7(program, from, spec, "require") ??
-      npmStaticDepSf7(program, from, spec, "require");
-    return dep !== null && isCjsJsFile7(dep, program) ? dep : null;
-  };
-  // A bundler rewrite spells some lexer-visible names as accessors.
-  const lexWithAccessorNames = (sf: ts.SourceFile): ReturnType<typeof cjsLexedExportsOfFile> => {
-    const lexed = cjsLexedExportsOfFile(sf);
-    for (const name of npmStaticLexerVisibleNames(sf.fileName)) lexed.exports.add(name);
-    return lexed;
-  };
+  const resolveCjsDep = cjsReexportDep7(program);
   const visible = (dep: ts.SourceFile, name: string): boolean =>
     // `default` is the module.exports binding itself — always provided.
     // The program already owns native source ASTs; reuse them without

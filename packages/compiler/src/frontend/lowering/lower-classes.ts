@@ -11,7 +11,7 @@ import { lowerDateStaticCall } from "./builtins/dates.js";
 import { keyedHelperName } from "./stable-names.js";
 import { lowerValueReturningConstructorNew } from "./js-dynamic-objects.js";
 import { adaptPromiseExecutor } from "./promise-executor-adapter.js";
-import { dynUndefinedExpr, nodeThrowExpr, varRef } from "../../ir/build.js";
+import { dynUndefinedExpr, nodeThrowExpr, strLit, varRef } from "../../ir/build.js";
 import {
   constructedFromValue,
   constructedValue,
@@ -124,6 +124,7 @@ import {
   lowerWorkerNew,
 } from "./builtins/workers.js";
 import {
+  noLoweringDiag,
   unsupportedPackageValueDiag,
   unsupportedDiag,
   type ScrDiagnostic,
@@ -5687,15 +5688,22 @@ export function lowerStaticFieldRead(
 ): IrExpr | null {
   if (expr.name.text === "prototype") return null;
   if (expr.questionDotToken) return null;
+  const info = staticReceiverClass(lowerer, expr.expression);
+  if (!info) return null;
+  return lowerClassStaticRead(lowerer, info, expr.name.text, expr.expression, expr);
+}
+
+/** The class a static member read through `receiver` reads exactly: the
+ * class a name binds (directly, through a require binding, or through a
+ * const alias), or null. */
+export function staticReceiverClass(lowerer: Lowerer, receiver: ts.Expression): ClassInfo | null {
   if (
-    !ts.isIdentifier(expr.expression) &&
-    expr.expression.kind !== ts.SyntaxKind.ThisKeyword &&
-    exactClassOfReceiver(lowerer, expr.expression) === null
+    !ts.isIdentifier(receiver) &&
+    receiver.kind !== ts.SyntaxKind.ThisKeyword &&
+    exactClassOfReceiver(lowerer, receiver) === null
   )
     return null;
-  const symbol = ts.isIdentifier(expr.expression)
-    ? lowerer.resolveValueSymbol(expr.expression)
-    : null;
+  const symbol = ts.isIdentifier(receiver) ? lowerer.resolveValueSymbol(receiver) : null;
   const info =
     (symbol ? lowerer.classBySymbol.get(symbol) : undefined) ??
     // A require binding over `module.exports = class {…}` (the alias
@@ -5703,7 +5711,7 @@ export function lowerStaticFieldRead(
     // or `C.name` below would fall through to paths that answer for
     // stdlib globals instead of this class.
     propertyAssignedClassInfoOf(lowerer, symbol) ??
-    exactClassOfReceiver(lowerer, expr.expression) ??
+    exactClassOfReceiver(lowerer, receiver) ??
     undefined;
   if (!info) return null;
   // A decorated name that can REBIND (a replacing decorator): the
@@ -5712,22 +5720,36 @@ export function lowerStaticFieldRead(
   // whose devirtualization and .name rules answer for every legal
   // runtime value.
   if (info.classDecorators?.valueGlobalId !== undefined) return null;
-  const loc = locOf(expr);
-  const found = findStaticOn(lowerer, info, expr.name.text);
+  return info;
+}
+
+/** The static member `name` of `info` read through `receiver` (an exact
+ * reference to the class, see staticReceiverClass): `C.name` for the
+ * property access `site`, or a destructuring element over `C` whose
+ * initializer is `site`. Null when the class has no such member. */
+export function lowerClassStaticRead(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  name: string,
+  receiver: ts.Expression,
+  site: ts.Expression,
+): IrExpr | null {
+  const loc = locOf(site);
+  const found = findStaticOn(lowerer, info, name);
   // A Date static read as a value through a class declared `extends Date`:
   // the statics lower only as calls.
   if (
     !found &&
     dateRootOf(info) &&
-    ["now", "parse", "UTC"].includes(expr.name.text) &&
-    !(ts.isCallExpression(expr.parent) && expr.parent.expression === expr)
+    ["now", "parse", "UTC"].includes(name) &&
+    !(ts.isCallExpression(site.parent) && site.parent.expression === site)
   )
-    lowerer.noLowering(`Date.${expr.name.text} read through a class that extends Date`, expr);
+    lowerer.noLowering(`Date.${name} read through a class that extends Date`, site);
   if (hasRuntimeStatics(info) && !found?.field)
     return {
       kind: "dynKeyGet",
-      value: lowerer.coerceToExpected(classValueRef(lowerer, info, expr.expression), DYN),
-      key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+      value: lowerer.coerceToExpected(classValueRef(lowerer, info, receiver), DYN),
+      key: { kind: "strLit", value: name, type: STRING, loc },
       type: DYN,
       loc,
     };
@@ -5735,11 +5757,11 @@ export function lowerStaticFieldRead(
   // name: in JS the brand lives on that one constructor object, so
   // `D.#s` (a subclass receiver) throws Node's TypeError instead of
   // reaching up the chain — reported as SC1090 instead of resolved.
-  if (found && expr.name.text.startsWith("#") && found.declarer !== info) {
+  if (found && name.startsWith("#") && found.declarer !== info) {
     lowerer.unsupported(
       "SC1090",
-      expr,
-      `reading the private static '${expr.name.text}' through the subclass '${info.def.name.replace(/^%|^%m\d+\./, "")}' (JS brands the declaring class object alone — Node throws a TypeError here; spell the declaring class's name)`,
+      site,
+      `reading the private static '${name}' through the subclass '${info.def.name.replace(/^%|^%m\d+\./, "")}' (JS brands the declaring class object alone — Node throws a TypeError here; spell the declaring class's name)`,
     );
   }
   if (found?.field !== undefined) {
@@ -5749,29 +5771,31 @@ export function lowerStaticFieldRead(
       type: found.field.type,
       loc,
     };
-    return found.field.runtimeOptional ? value : lowerer.maybeNarrow(value, expr);
+    return found.field.runtimeOptional || !ts.isPropertyAccessExpression(site)
+      ? value
+      : lowerer.maybeNarrow(value, site);
   }
   if (found) {
-    return staticMethodValue(lowerer, found.declarer, expr.name.text, found.method, expr, loc);
+    return staticMethodValue(lowerer, found.declarer, name, found.method, site, loc);
   }
   // A GENERIC static method as a VALUE: the pinned-value rule verbatim
   // (lowerGenericFnValue) — a slot spelling one concrete signature names
   // an instance, an unpinned reference fences by name.
   {
-    const gfound = findGenericStaticOn(lowerer, info, expr.name.text);
-    if (gfound) return lowerer.lowerGenericFnValue(expr, gfound.info);
+    const gfound = findGenericStaticOn(lowerer, info, name);
+    if (gfound) return lowerer.lowerGenericFnValue(site, gfound.info);
   }
   // `C.name` — the JS-observable class name, a compile-time constant on
   // the direct spelling (tsc rejects user statics named `name`, so the
   // chain above can never shadow it in TypeScript sources). A class of an
   // import cycle reads it from its class object instead, whose reference
   // checks the class's initialization (checkCycleBindingAccesses).
-  if (expr.name.text === "name" && info.def.jsName !== undefined) {
+  if (name === "name" && info.def.jsName !== undefined) {
     if (lowerer.classInitFlags.get(info.def.name)?.cycle === true)
       return {
         kind: "libCall",
         fn: "class.name",
-        args: [classValueRef(lowerer, info, expr.expression)],
+        args: [classValueRef(lowerer, info, receiver)],
         type: STRING,
         loc,
       };
@@ -5780,26 +5804,26 @@ export function lowerStaticFieldRead(
   if (info.callableBase)
     return {
       kind: "dynKeyGet",
-      value: lowerer.coerceToExpected(classValueRef(lowerer, info, expr.expression), DYN),
-      key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+      value: lowerer.coerceToExpected(classValueRef(lowerer, info, receiver), DYN),
+      key: { kind: "strLit", value: name, type: STRING, loc },
       type: DYN,
       loc,
     };
-  const data = classStaticDataFor(lowerer, info, expr.name.text, loc);
+  const data = classStaticDataFor(lowerer, info, name, loc);
   if (data) {
     const value: IrExpr = {
       kind: "dynKeyGet",
       value: data,
-      key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+      key: { kind: "strLit", value: name, type: STRING, loc },
       type: DYN,
       loc,
     };
     // JavaScript often assigns public statics after the class declaration.
     // Their storage stays mutable and checked, while reads retain the
     // checker's concrete type instead of losing the method receiver.
-    const type = isJsSourceFile(ts.getSourceFileOfNode(expr))
+    const type = isJsSourceFile(ts.getSourceFileOfNode(site))
       ? null
-      : lowerer.mapTypeOf(lowerer.typeOf(expr));
+      : lowerer.mapTypeOf(lowerer.typeOf(site));
     return type ? lowerer.coerceToExpected(value, type) : value;
   }
   return null;
@@ -6625,7 +6649,7 @@ function staticCallOn(
       kind: "dynInvoke",
       recv: lowerer.lowerExprExpecting(access.expression, DYN),
       method: access.name.text,
-      calleeName: access.name.text,
+      calleeName: ts.getTextOfNode(access),
       args: call.arguments.nodes.map((argument) => lowerer.lowerExprExpecting(argument, DYN)),
       type: DYN,
       loc,
@@ -9902,34 +9926,47 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     const args = expr.arguments?.nodes ?? [];
     const undefinedArg = (arg: ts.Expression): boolean =>
       (lowerer.typeOf(arg).flags & ts.TypeFlags.Undefined) !== 0;
-    if (args.length > 2 || (args[0] && !undefinedArg(args[0]))) {
+    // A literal language tag: Unicode grapheme clusters have no locale
+    // tailoring. Only tags of the form language[-script][-region] are
+    // accepted; each is well-formed, so Node constructs the segmenter
+    // without the RangeError a malformed tag throws.
+    const literalLocale = (arg: ts.Expression): boolean =>
+      ts.isStringLiteralLike(arg) &&
+      /^[A-Za-z]{2,3}(-[A-Za-z]{4})?(-([A-Za-z]{2}|[0-9]{3}))?$/.test(arg.text);
+    if (args.length > 2 || (args[0] && !undefinedArg(args[0]) && !literalLocale(args[0]))) {
       lowerer.noLowering(
         "Intl.Segmenter locale negotiation",
         expr,
-        "omit the locale or pass undefined for default Unicode grapheme segmentation",
+        "omit the locale, pass undefined, or pass one language tag as a string literal",
       );
     }
+    // JavaScript dependencies may construct word and sentence segmenters
+    // that they use only on some paths (pi-tui's shared word segmenter):
+    // the construction compiles and their segment() throws SC2020.
+    // TypeScript sources keep the build-time refusal.
+    const granularities = isJsSourceFile(ts.getSourceFileOfNode(expr))
+      ? ["grapheme", "word", "sentence"]
+      : ["grapheme"];
     const options = args[1];
-    if (
-      options &&
-      !undefinedArg(options) &&
-      !(
-        ts.isObjectLiteralExpression(options) &&
-        options.properties.nodes.every(
-          (property) =>
-            ts.isPropertyAssignment(property) &&
-            (ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) &&
-            property.name.text === "granularity" &&
-            ts.isStringLiteral(property.initializer) &&
-            property.initializer.text === "grapheme",
-        )
-      )
-    ) {
-      lowerer.noLowering(
-        "Intl.Segmenter options",
-        options,
-        'the native segmenter supports default options and { granularity: "grapheme" }; word and sentence segmentation remain unsupported',
-      );
+    let granularity = "grapheme";
+    if (options && !undefinedArg(options)) {
+      const properties = ts.isObjectLiteralExpression(options) ? options.properties.nodes : null;
+      const property = properties?.length === 1 ? properties[0] : undefined;
+      if (
+        property === undefined ||
+        !ts.isPropertyAssignment(property) ||
+        !(ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)) ||
+        property.name.text !== "granularity" ||
+        !ts.isStringLiteral(property.initializer) ||
+        !granularities.includes(property.initializer.text)
+      ) {
+        lowerer.noLowering(
+          "Intl.Segmenter options",
+          options,
+          'the native segmenter supports default options and { granularity: "grapheme" }; word and sentence segmentation remain unsupported',
+        );
+      }
+      granularity = property.initializer.text;
     }
     // Explicit undefined expressions can carry effects; retain argument order.
     const stmts: IrStmt[] = args.map((arg) => {
@@ -9940,7 +9977,28 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         loc: locOf(arg),
       };
     });
-    const result: IrExpr = { kind: "libCall", fn: "intl.segmenterNew", args: [], type: DYN, loc };
+    let result: IrExpr = { kind: "libCall", fn: "intl.segmenterNew", args: [], type: DYN, loc };
+    // A word or sentence segmenter carries its segment() refusal, which
+    // coverage lists as deferred to runtime.
+    if (granularity !== "grapheme") {
+      const surface = `Intl.Segmenter segmentation with granularity '${granularity}'`;
+      lowerer.runtimeFences.push(
+        noLoweringDiag(
+          surface,
+          loc,
+          "only grapheme segmenters segment; word and sentence segmenters construct",
+        ),
+      );
+      const line = ts.getLineAndCharacterOfPosition(ts.getSourceFileOfNode(expr), loc.start).line;
+      const refusal = `${surface} is not supported yet [SC2020 at ${loc.file}:${line + 1}]`;
+      result = {
+        kind: "libCall",
+        fn: "intl.segmenterRefusing",
+        args: [strLit(refusal, loc)],
+        type: DYN,
+        loc,
+      };
+    }
     return stmts.length ? { kind: "seqExpr", stmts, result, type: DYN, loc } : result;
   }
   // A package declaration without a compiled constructor cannot provide
@@ -11266,13 +11324,18 @@ function genericFieldFnNodeOf(
 }
 
 /** Whether a JavaScript class's own binding is the target of
- * `Object.defineProperty`/`defineProperties` in its file
- * (`Object.defineProperty(Definition, "name", { value })`): its constructor
+ * `Object.defineProperty`/`defineProperties` or `Reflect.deleteProperty` in
+ * its file (`Object.defineProperty(Definition, "name", { value })`,
+ * `Reflect.deleteProperty(Response, "getResponseState")`): its constructor
  * then needs a live own-property table. */
 function definedThroughReflection(lowerer: Lowerer, decl: ts.ClassLikeDeclaration): boolean {
   const name = decl.name;
   const sf = ts.getSourceFileOfNode(decl);
-  if (name === undefined || !sf.text.includes("definePropert")) return false;
+  if (
+    name === undefined ||
+    (!sf.text.includes("definePropert") && !sf.text.includes("deleteProperty"))
+  )
+    return false;
   const symbol = lowerer.checker.getSymbolAtLocation(name);
   if (symbol === undefined) return false;
   let found = false;
@@ -11281,9 +11344,11 @@ function definedThroughReflection(lowerer: Lowerer, decl: ts.ClassLikeDeclaratio
     if (
       ts.isCallExpression(node) &&
       ts.isPropertyAccessExpression(node.expression) &&
-      (node.expression.name.text === "defineProperty" ||
+      (((node.expression.name.text === "defineProperty" ||
         node.expression.name.text === "defineProperties") &&
-      lowerer.stdlibGlobalMember(node.expression, "Object") !== null
+        lowerer.stdlibGlobalMember(node.expression, "Object") !== null) ||
+        (node.expression.name.text === "deleteProperty" &&
+          lowerer.stdlibGlobalMember(node.expression, "Reflect") !== null))
     ) {
       const target = node.arguments.nodes[0];
       if (

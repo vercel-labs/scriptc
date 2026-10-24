@@ -1,15 +1,15 @@
 intl-segmenter.ts:2:1 - error SC2020: 'Intl.Segmenter locale negotiation' is part of the standard library types but has no scriptc lowering yet
 
-  1 | // The native implementation covers default Unicode grapheme segmentation.
-  2 | new Intl.Segmenter("en-US");
-    | ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+  1 | // The native implementation covers Unicode grapheme segmentation.
+  2 | new Intl.Segmenter(["en-US", "de"]);
+    | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   3 | new Intl.Segmenter(undefined, { granularity: "word" });
 
-  hint: omit the locale or pass undefined for default Unicode grapheme segmentation
+  hint: omit the locale, pass undefined, or pass one language tag as a string literal
 
 intl-segmenter.ts:3:31 - error SC2020: 'Intl.Segmenter options' is part of the standard library types but has no scriptc lowering yet
 
-  2 | new Intl.Segmenter("en-US");
+  2 | new Intl.Segmenter(["en-US", "de"]);
   3 | new Intl.Segmenter(undefined, { granularity: "word" });
     |                               ^~~~~~~~~~~~~~~~~~~~~~~
   4 | new Intl.Segmenter(undefined, { granularity: "sentence" });

@@ -523,6 +523,28 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     }
   });
 
+  test("a word segmenter in a package constructs, and its segment() throws SC2020", async () => {
+    const entry = join(pilotRoot, "word-segments-cli.ts");
+    const { coverage } = analyze(entry, { npmStatic: "auto" });
+    expect(coverage.npmStatic).toEqual([{ package: "word-segments", status: "static" }]);
+    expect(coverage.diagnostics).toHaveLength(0);
+    const outDir = join(cacheDir, "word-segments", sanitize ? "san" : "plain");
+    const result = await compile(entry, {
+      backend: "llvm",
+      npmStatic: "auto",
+      sanitize,
+      outDir,
+      outPath: join(outDir, "program"),
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const nativeRes = await runBinary(result.binaryPath, []);
+    expect(nativeRes.stdout.toString()).toMatch(
+      /^SC2020: Intl\.Segmenter segmentation with granularity 'word' is not supported yet \[SC2020 at .*index\.js:1\]\n$/,
+    );
+    expect(nativeRes.exitCode).toBe(0);
+  });
+
   test.each([
     'import { Console as Logger } from "node:console"; new Logger({ stdout: process.stdout }).dir(1);',
     'import * as output from "console"; new output.Console(process.stdout).table([1, 2]);',

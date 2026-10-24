@@ -543,6 +543,16 @@ test("settled generic rest-order fences count each source statement once", () =>
   expect(coverage.stats.statementsFailed).toBe(2);
 });
 
+test("CommonJS var and let exports that can change after the export keep their refusal", () => {
+  // JavaScript refusals defer to run time: they are the runtime fences.
+  const { coverage } = analyze(fixture("cjs-mutable-exports/main.js"));
+  const refused = [...coverage.diagnostics, ...(coverage.runtimeFences ?? [])]
+    .map((d) => /exporting the mutable 'let' binding '(\w+)'/.exec(d.message)?.[1])
+    .filter((name) => name !== undefined)
+    .sort();
+  expect(refused).toEqual(["counter", "tab", "twice"]);
+});
+
 test("inferred JavaScript compiles natively", async () => {
   // The js-gap fixture turns noImplicitAny off. Its inferred parameter
   // uses checked native values alongside the JSDoc-typed neighbor.

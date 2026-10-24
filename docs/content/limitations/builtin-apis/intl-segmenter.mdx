@@ -1,2 +1,3 @@
-- **Intl.Segmenter:** Default Unicode grapheme segmentation, iteration, and `containing()` compile.
-  Locale negotiation, word and sentence segmentation, `resolvedOptions()`, and detached methods are unsupported.
+- **Intl.Segmenter:** Unicode grapheme segmentation, iteration, and `containing()` compile, with the default locale or one language tag of the form language[-script][-region] written as a string literal (grapheme clusters do not depend on the locale).
+  In JavaScript dependencies, word and sentence segmenters construct, and their `segment()` throws an SC2020 error.
+  Locale negotiation over several locales, word and sentence segmentation, `resolvedOptions()`, and detached methods are unsupported.

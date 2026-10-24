@@ -8,7 +8,8 @@
  *   stays unloaded: its require throws MODULE_NOT_FOUND;
  * - a shimmed package that is not installed, or whose major version has no
  *   shim, resolves exactly as before (here: refused like any missing or
- *   uncompiled package);
+ *   uncompiled package), and `--npm-static` does not compile a version the
+ *   registry entry does not list in `sourceVersions`;
  * - the undici shims keep memory bounded against a peer that sends endless
  *   chunk-size lines and large or compressed bodies, and the 5.x profile
  *   rejects a Host value with CR or LF as undici 5.29 does (the vendored
@@ -251,6 +252,33 @@ describe("package shims", () => {
     } else {
       expect(result.diagnostics.map((d) => d.message).join("\n")).not.toContain("shims/undici");
     }
+  }, 180_000);
+
+  test("--npm-static leaves out an implemented package at a version it does not list", async () => {
+    const dir = join(scratch, "undici-v6-npm-static");
+    const pkg = join(dir, "node_modules/undici");
+    mkdirSync(pkg, { recursive: true });
+    writeFileSync(
+      join(pkg, "package.json"),
+      '{ "name": "undici", "version": "6.21.0", "main": "index.js" }\n',
+    );
+    writeFileSync(join(pkg, "index.js"), "exports.version = 6;\n");
+    writeFileSync(
+      join(dir, "main.mjs"),
+      'import { version } from "undici";\nconsole.log(version);\n',
+    );
+    const result = await compile(join(dir, "main.mjs"), {
+      outPath: join(dir, ".scriptc/program"),
+      outDir: join(dir, ".scriptc"),
+      npmStatic: ["undici"],
+      sanitize,
+    });
+    // The package's JavaScript is not part of the program, so the import
+    // has no declarations.
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics.map((d) => d.message).join("\n")).toContain(
+      "Could not find a declaration file for module 'undici'",
+    );
   }, 180_000);
 
   for (const name of ["undici7", "undici5"]) {

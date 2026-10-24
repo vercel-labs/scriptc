@@ -8017,6 +8017,45 @@ void scr_dyn_key_delete_computed(ScrDyn *value, const ScrDyn *raw_key, bool stri
   scr_dyn_release(key);
 }
 
+/* Reflect.deleteProperty(target, key): a TypeError for a primitive target,
+ * then the key's ToPropertyKey and a sloppy-mode delete. Answers whether
+ * the property is absent afterwards (false when it is non-configurable).
+ * A Proxy would observe the own-property check through its traps, and a
+ * compiled object's native fields keep their values after a delete through
+ * its checked-dynamic view, so both refuse. */
+bool scr_dyn_reflect_delete_property(ScrDyn *target, const ScrDyn *raw_key) {
+  switch (target->kind) {
+  case SCR_DYN_NULL:
+  case SCR_DYN_UNDEF:
+  case SCR_DYN_BOOL:
+  case SCR_DYN_NUM:
+  case SCR_DYN_STR:
+  case SCR_DYN_BIGINT:
+  case SCR_DYN_SYMBOL: {
+    static const char message[] = "Reflect.deleteProperty called on non-object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return false;
+  }
+  default:
+    break;
+  }
+  if (target->kind == SCR_DYN_PROXY) {
+    scr_dyn_proxy_unsupported("Reflect.deleteProperty");
+    return false;
+  }
+  if (target->kind == SCR_DYN_TYPED_REF) {
+    static const char message[] = "Reflect.deleteProperty on a compiled object is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+    return false;
+  }
+  ScrDyn *key = scr_dyn_property_key_value(raw_key);
+  if (!key) return false;
+  scr_dyn_key_delete_computed(target, key, false);
+  bool deleted = !scr_exc_pending() && !scr_dyn_has_own_computed(target, key);
+  scr_dyn_release(key);
+  return deleted;
+}
+
 /* Native call/apply/bind lowering still owns these prototype operations.
  * Refuse overrides until every typed call site observes the property table. */
 static bool scr_dyn_fn_property_fence(const ScrStr *key) {

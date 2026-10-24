@@ -194,6 +194,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.dynTier, "scr_js_value.c", "scr_js_object.c"),
   unit((u) => u.opts.eventTarget || u.nativeFetch, "scr_event_target.c"),
   unit((u) => u.opts.wasm, "scr_wasm.c"),
+  // Module namespace objects as checked-dynamic values.
+  unit((u) => u.opts.moduleNamespace === true, "scr_module_namespace.c"),
   unit(
     (u) =>
       u.opts.dynAsync ||

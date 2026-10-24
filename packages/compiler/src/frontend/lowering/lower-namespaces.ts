@@ -42,7 +42,7 @@ import { isPackageShimFile, isShimIntrinsicName, packageShimFor } from "../packa
 import type { Lowerer } from "./lowerer.js";
 import { boundIdentifiersOf } from "./lowerer.js";
 import type { FileParts } from "./lower-modules.js";
-import { locOf, resolveImport } from "../program.js";
+import { isCjsJsFile, isJsSourceFile, locOf, resolveImport } from "../program.js";
 import { F64, type IrExpr, type IrStmt, type IrType, STRING } from "../../ir/ir.js";
 import { TEMPORAL_GLOBAL } from "../builtin-modules.js";
 
@@ -311,6 +311,30 @@ function moduleNsSourceFileOf(lowerer: Lowerer, e: ts.Expression): ts.SourceFile
   return null;
 }
 
+/** The CommonJS module a JavaScript namespace import binding names
+ * (`import * as ns from "./m.cjs"`, `ns`), or null. */
+export function cjsNamespaceImportDep(lowerer: Lowerer, e: ts.Expression): ts.SourceFile | null {
+  if (!ts.isIdentifier(e)) return null;
+  const decl = lowerer.checker.getSymbolAtLocation(e)?.declarations.find(ts.isNamespaceImport);
+  const stmt = decl?.parent?.parent;
+  if (
+    decl === undefined ||
+    stmt === undefined ||
+    !ts.isImportDeclaration(stmt) ||
+    !ts.isStringLiteral(stmt.moduleSpecifier)
+  )
+    return null;
+  const from = ts.getSourceFileOfNode(decl);
+  if (!isJsSourceFile(from)) return null;
+  const dep = resolveImport(lowerer.program, from, stmt.moduleSpecifier.text);
+  return dep !== null &&
+    !dep.isDeclarationFile &&
+    lowerer.fileTag.has(dep) &&
+    isCjsJsFile(dep, lowerer.program)
+    ? dep
+    : null;
+}
+
 /** The member identifier of a qualified namespace reference, when `access`
  * reads a member declared in a lowered (or type-only) namespace block —
  * or an EXPORT of a program module read through its namespace-import
@@ -330,6 +354,21 @@ export function nsMemberIdentOf(
   if (!ts.isIdentifier(access.name)) return null;
   const memberSym = lowerer.checker.getSymbolAtLocation(access.name);
   if (!memberSym) return null;
+  // A CommonJS module's namespace has the names Node's lexer detects, with
+  // the values they had when the module finished evaluating; the member
+  // then reads like the named import `import { name }`. `default` is
+  // module.exports itself.
+  const cjs = cjsNamespaceImportDep(lowerer, access.expression);
+  if (cjs !== null) {
+    const { names, assignedLater } = lowerer.cjsNamespaceOf(cjs);
+    const name = access.name.text;
+    return name !== "default" &&
+      names.has(name) &&
+      assignedLater !== "all" &&
+      !assignedLater.has(name)
+      ? access.name
+      : null;
+  }
   if (nsBlockKindOfSymbol(lowerer, memberSym) !== null) return access.name;
   if (moduleNsSourceFileOf(lowerer, access.expression) !== null) return access.name;
   return null;
@@ -857,6 +896,15 @@ export function nsWritableTarget(
   const nsMember = nsMemberIdentOf(lowerer, access);
   if (!nsMember) return null;
   const memberSym = lowerer.checker.getSymbolAtLocation(nsMember);
+  // An export read through a module namespace object (`import * as ns`):
+  // the object is read-only, and Node's assignment throws a TypeError.
+  if (memberSym && nsBlockKindOfSymbol(lowerer, memberSym) === null) {
+    lowerer.unsupported(
+      "SC1090",
+      access,
+      `assignment to the module namespace member '${nsMember.text}' (module namespace objects are read-only: Node throws a TypeError)`,
+    );
+  }
   if (memberSym) fenceEarlyNsMemberRef(lowerer, access, memberSym);
   const resolved = lowerer.resolveValueSymbol(nsMember);
   const g = resolved ? lowerer.globalsBySymbol.get(resolved) : undefined;

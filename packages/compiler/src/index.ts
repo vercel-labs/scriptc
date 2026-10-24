@@ -595,6 +595,7 @@ async function compileExecutableNative(
     ...(features.wasm ? { wasm: true } : {}),
     ...(features.warningReplace ? { warningReplace: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
+    ...(features.moduleNamespace ? { moduleNamespace: true } : {}),
     zlib: features.zlib,
     ...(features.brotli ? { brotli: true } : {}),
     assert: features.assert,

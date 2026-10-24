@@ -683,6 +683,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.callbackCall",
   "dyn.keyDelete",
   "dyn.keyDeleteComputed",
+  "dyn.reflectDeleteProperty",
   "dyn.hasKeyComputed",
   "dyn.hasOwnComputed",
   "dyn.propertyIsEnumerableComputed",

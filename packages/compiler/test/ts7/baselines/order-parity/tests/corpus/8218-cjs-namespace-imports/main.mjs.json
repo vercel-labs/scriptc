@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8218-cjs-namespace-imports/table.cjs",
+  "<repo>/tests/corpus/8218-cjs-namespace-imports/client/transport.js",
+  "<repo>/tests/corpus/8218-cjs-namespace-imports/client/index.mjs",
+  "<repo>/tests/corpus/8218-cjs-namespace-imports/main.mjs"
+ ],
+ "diags": []
+}

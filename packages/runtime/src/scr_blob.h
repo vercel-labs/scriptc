@@ -1,5 +1,6 @@
-/* scriptc runtime — Blob and File (scr_blob.c). Included by scr_runtime.h,
- * which says where new declarations go. */
+/* scriptc runtime — Blob and File (scr_blob.c), and module namespace
+ * objects as checked-dynamic values (scr_module_namespace.c). Included by
+ * scr_runtime.h, which says where new declarations go. */
 #ifndef SCR_BLOB_H
 #define SCR_BLOB_H
 
@@ -23,9 +24,16 @@ ScrPromise *scr_blob_array_buffer(ScrDyn *self);
 bool scr_blob_is(const ScrDyn *value, double kind);
 
 ScrDyn *scr_intl_segmenter_new(void);
+/* A word or sentence Intl.Segmenter whose segment() throws `refusal`
+ * (borrowed), the compiler's SC2020 message. */
+ScrDyn *scr_intl_segmenter_refusing(ScrStr *refusal);
 ScrStr *scr_process_builtin_id(ScrDyn *id, ScrArr *known);
 ScrDyn *scr_process_builtin_module(ScrStr *id, ScrDyn *getter);
 ScrDyn *scr_process_builtin_unsupported(ScrStr *id, ScrStr *member);
+/* A module namespace object as a checked-dynamic value (scr_module_namespace.c):
+ * one handle per module `id`, whose reads call `getter` with the export
+ * name when `keys` lists it. Borrows all three; +1 handle. */
+ScrDyn *scr_module_namespace_value(ScrStr *id, ScrArr *keys, ScrDyn *getter);
 ScrDyn *scr_global_native(ScrArr *known);
 ScrDyn *scr_global_native_init(ScrArr *known, ScrDyn *(*console_get)(void));
 ScrDyn *scr_console_native(void);

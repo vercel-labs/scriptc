@@ -34,6 +34,9 @@ export interface NativeLinkFeatures {
   /** The program uses process.stdin.setEncoding, string 'data' listeners
    * or stdio 'resize' events: links the SCR_STDIO_EXTENDED events unit. */
   stdioExtended?: boolean;
+  /** Module namespace objects as checked-dynamic values link
+   * scr_module_namespace.c; absent (false) otherwise. */
+  moduleNamespace?: boolean;
   zlib: boolean;
   /** node:zlib's Brotli forms: scr_brotli.c and the vendored brotli archive. */
   brotli?: boolean;

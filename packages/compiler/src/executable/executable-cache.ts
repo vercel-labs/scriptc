@@ -62,6 +62,7 @@ export interface EarlyExecutableNativeFeatures {
   wasm?: boolean;
   warningReplace?: boolean;
   stdioExtended?: boolean;
+  moduleNamespace?: boolean;
   zlib: boolean;
   brotli?: boolean;
   assert: boolean;

@@ -3,7 +3,8 @@ import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { builtinModuleFnOf } from "../surfaces.js";
-import { BOOL, DYN, type IrExpr, STRING, arrayOf } from "../../../ir/ir.js";
+import { hasRuntimeStatics } from "../class-runtime-statics.js";
+import { BOOL, DYN, type IrExpr, STRING, arrayOf, isUnitType } from "../../../ir/ir.js";
 
 /** Reflect.ownKeys uses native computed-key reflection. Reflect.apply(target,
  * thisArg, argsList) where the TARGET is a builtin
@@ -59,6 +60,37 @@ export function lowerReflectCall(
         },
       ],
       result: { kind: "boolLit", value: true, type: BOOL, loc },
+      type: BOOL,
+      loc,
+    };
+  }
+  // Reflect.deleteProperty over a value with a live property table: a
+  // checked-dynamic value, or a JavaScript class whose statics are runtime
+  // properties of its constructor
+  // (`Reflect.deleteProperty(Response, "getResponseState")`).
+  if (
+    reflectMember === "deleteProperty" &&
+    call.arguments.nodes.length === 2 &&
+    !call.arguments.nodes.some(ts.isSpreadElement)
+  ) {
+    const loc = locOf(call);
+    let target = lowerer.lowerExpr(call.arguments.nodes[0]!);
+    const info =
+      target.type.kind === "classval" ? lowerer.classes.get(target.type.className) : undefined;
+    // A primitive target throws the TypeError, so it boxes as is.
+    const primitive =
+      isUnitType(target.type) ||
+      ["bool", "f64", "string", "bigint", "symbol"].includes(target.type.kind);
+    if (
+      primitive ||
+      (info !== undefined && hasRuntimeStatics(info) && lowerer.dynConvertible(target.type))
+    )
+      target = lowerer.coerceToExpected(target, DYN);
+    if (target.type.kind !== "dyn") return null;
+    return {
+      kind: "libCall",
+      fn: "dyn.reflectDeleteProperty",
+      args: [target, lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN)],
       type: BOOL,
       loc,
     };

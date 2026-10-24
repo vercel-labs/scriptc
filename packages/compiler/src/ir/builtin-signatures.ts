@@ -196,6 +196,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * arguments; other receiver representations retain a runtime refusal. */
   "dyn.keyDelete": { argTypes: [DYN, STRING, BOOL], result: VOID },
   "dyn.keyDeleteComputed": { argTypes: [DYN, DYN, BOOL], result: VOID },
+  "dyn.reflectDeleteProperty": { argTypes: [DYN, DYN], result: BOOL },
   "dyn.hasKeyComputed": { argTypes: [DYN, DYN], result: BOOL },
   "dyn.hasOwnComputed": { argTypes: [DYN, DYN], result: BOOL },
   "dyn.propertyIsEnumerableComputed": { argTypes: [DYN, DYN], result: BOOL },
@@ -3425,6 +3426,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "process.builtinId": { argTypes: [DYN, arrayOf(STRING)], result: STRING },
   "process.builtinModule": { argTypes: [STRING, DYN], result: DYN },
   "process.builtinUnsupported": { argTypes: [STRING, STRING], result: DYN },
+  /** A module namespace object as a checked-dynamic value
+   * (scr_module_namespace_value): the module id, its sorted export names
+   * and the compiled getter. One object per module. Never throws. */
+  "module.namespaceValue": { argTypes: [STRING, arrayOf(STRING), DYN], result: DYN },
   "fs.callbackValue": { argTypes: [STRING], result: DYN },
   "fs.callbackCall": { argTypes: [STRING, DYN], result: DYN },
   "process.hrtimeValue": { argTypes: [], result: DYN },
@@ -3710,6 +3715,7 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "ffi.argument": { argTypes: [DYN, STRING], result: DYN },
   "ffi.memoryModule": { argTypes: [DYN], result: DYN },
   "intl.segmenterNew": { argTypes: [], result: DYN },
+  "intl.segmenterRefusing": { argTypes: [STRING], result: DYN },
   "arrayBuffer.is": { argTypes: [DYN], result: BOOL },
   "arrayBuffer.isView": { argTypes: [DYN], result: BOOL },
   "arrayBuffer.byteLengthGetter": { argTypes: [], result: F64 },

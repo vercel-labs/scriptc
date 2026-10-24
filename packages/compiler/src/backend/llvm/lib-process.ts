@@ -489,7 +489,7 @@ function boundCallbackThunk(host: LlvmEmitterContext, cbT: IrType & { kind: "fun
   const key = `alsbound:${typeKey(cbT)}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return sym;
-  sym = `sc_alsbound_${host.resolveThunks.size}`;
+  sym = host.contentSymbol("sc_alsbound_", key);
   host.resolveThunks.set(key, sym);
   host.declare("declare ptr @scr_als_bound_target(ptr)");
   host.declare("declare ptr @scr_als_bound_enter(ptr)");

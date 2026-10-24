@@ -589,7 +589,7 @@ export function regexLiteralTemplate(
   let re = host.regexInstances.get(key);
   if (!re) {
     re = {
-      sym: `sc_re_${host.regexInstances.size}`,
+      sym: host.contentSymbol("sc_re_", key),
       src: host.internLiteral(e.pattern),
       fl: host.internLiteral(e.flags),
       pattern: e.pattern,

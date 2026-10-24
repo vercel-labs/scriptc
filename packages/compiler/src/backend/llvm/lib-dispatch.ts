@@ -1085,7 +1085,7 @@ function emitPromiseAllTuple(host: LlvmEmitterContext, e: LibCallExpr): LlValue 
   const key = `allTuple:${build.fnName}`;
   let adapter = host.resolveThunks.get(key);
   if (adapter === undefined) {
-    adapter = `sc_all_tuple_${host.resolveThunks.size}`;
+    adapter = host.contentSymbol("sc_all_tuple_", key);
     host.resolveThunks.set(key, adapter);
     const rc = vAdapters(host.shapeHost, tuple);
     host.declare(`declare ptr @scr_promise_payload_ref(ptr)`);

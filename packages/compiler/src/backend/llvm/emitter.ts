@@ -2746,12 +2746,13 @@ export class LlEmitter {
 
   // ── plumbing (frame and scope ownership) ──────
 
-  /** A symbol derived from the constant's text rather than its first-use
-   * index, so an edit that interns one more string leaves every other
-   * constant's symbol, and the code referencing it, unchanged. This lets
-   * native builds reuse the compiled partitions an edit does not touch. A
-   * collision retries with a counter, still in first-use order. */
-  private contentSymbol(prefix: string, text: string): string {
+  /** A symbol derived from a constant's text, or a helper's key, rather
+   * than its first-use index, so an edit that interns one more string or
+   * helper leaves every other symbol, and the code referencing it,
+   * unchanged. This lets native builds reuse the compiled partitions an
+   * edit does not touch. A collision retries with a counter, still in
+   * first-use order. */
+  contentSymbol(prefix: string, text: string): string {
     for (let attempt = 0; ; attempt++) {
       const digest = createHash("sha256")
         .update(attempt === 0 ? text : `${attempt}\0${text}`)
@@ -2877,7 +2878,7 @@ export class LlEmitter {
     const key = `${unionId}:${tag}`;
     let sym = this.unitInstances.get(key);
     if (!sym) {
-      sym = `sc_unit_${this.unitInstances.size}`;
+      sym = this.contentSymbol("sc_unit_", key);
       this.unitInstances.set(key, sym);
     }
     this.journal?.entry("unit", key, sym);
@@ -4997,8 +4998,15 @@ export class LlEmitter {
       case "retainWrapper":
         addEntry(this.nullableUnions.retainWrappers, key, value as string);
         return;
-      case "unit":
-        return addNumbered(this.unitInstances, key, value as string, "sc_unit_", names);
+      case "unit": {
+        let own = this.unitInstances.get(key);
+        if (own === undefined) {
+          own = this.contentSymbol("sc_unit_", key);
+          this.unitInstances.set(key, own);
+        }
+        if (own !== value) names.set(value as string, own);
+        return;
+      }
       case "absent":
         return addNumbered(this.absentInstances, key, value as string, "sc_absent_", names);
       case "retype":
@@ -5006,7 +5014,7 @@ export class LlEmitter {
       case "slots":
         return addNumbered(this.threadSlotsBlocks, key, value as string, "@sc_slots_", names);
       case "regex":
-        return addNumberedSymbol(this.regexInstances, key, value as never, "sc_re_", names);
+        return this.addContentEntry(this.regexInstances, key, value as never, "sc_re_", names);
       case "templateStrings":
         return addNumberedSymbol(
           this.templateStringsInstances,

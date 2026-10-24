@@ -21,7 +21,7 @@ function sniAnswer(host: LlvmEmitterContext, type: IrType): string {
   const key = "sni:" + typeKey(type);
   const previous = host.resolveThunks.get(key);
   if (previous !== undefined) return previous;
-  const symbol = `sc_sni_answer_${host.resolveThunks.size}`;
+  const symbol = host.contentSymbol("sc_sni_answer_", key);
   host.resolveThunks.set(key, symbol);
   host.journal?.allocated(symbol, "sniAnswer", [type]);
   const params = ["ptr %self"],

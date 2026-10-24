@@ -17,7 +17,7 @@ function connectAdapter(host: LlvmEmitterContext, cb: LlValue, h2: boolean): str
   const key = `connect:${h2}:${typeKey(type)}`;
   const previous = host.resolveThunks.get(key);
   if (previous !== undefined) return previous;
-  const symbol = `sc_connect_${host.resolveThunks.size}`;
+  const symbol = host.contentSymbol("sc_connect_", key);
   host.resolveThunks.set(key, symbol);
   host.journal?.allocated(symbol, "connectAdapter", [cb, h2]);
   const retain = h2 ? "scr_http_res_retain_v" : "scr_net_sock_retain_v";

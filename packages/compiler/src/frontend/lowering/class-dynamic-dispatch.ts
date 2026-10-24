@@ -80,6 +80,7 @@ import { isClassCallback } from "./class-callbacks.js";
 import { CaughtValueDispatch } from "./caught-value-dispatch.js";
 import { refreshDescriptorGuards } from "./class-descriptors.js";
 import { ClassConstructionDispatch } from "./class-construction.js";
+import { keyedHelperName } from "./stable-names.js";
 import { DispatchSites } from "./dispatch-sites.js";
 import {
   emitterRooted,
@@ -3909,7 +3910,7 @@ export class ClassDynamicDispatch {
         if (!dispatch.fn.params.some((param) => param.localId === dispatch.keyLocal))
           params.push({ localId: dispatch.keyLocal, name: "key", type: STRING });
         const helper: IrFunction = {
-          name: `%dyn.class.keys.${lowerer.liftedFns.length}`,
+          name: keyedHelperName(lowerer, "%dyn.class.keys", helperKey),
           params,
           returnType: dispatch.fn.returnType,
           locals: params.map((p) => ({

@@ -3,7 +3,6 @@ import { arraySearchHelperName, arraySearchKind } from "./array-search.js";
 import { InternalCompilerError } from "../../errors.js";
 import { isStableReceiverOperand, undefinedArmTag } from "../../ir/analysis.js";
 import { F64, type IrExpr, type IrType, isRefCounted, typeEquals, typeKey } from "../../ir/ir.js";
-import { mangleResolveThunk } from "../mangle.js";
 import {
   arrOps,
   elemAccess,
@@ -71,7 +70,7 @@ export function resolveThunkFor(host: LlvmEmitterContext, inner: IrType): string
   const key = typeKey(inner);
   let sym = host.resolveThunks.get(key);
   if (!sym) {
-    sym = mangleResolveThunk(host.resolveThunks.size);
+    sym = host.contentSymbol("sc_rslv_", key);
     host.resolveThunks.set(key, sym);
     host.journal?.allocated(sym, "resolveThunkFor", [inner]);
     const v = vAdapters(host.shapeHost, inner);

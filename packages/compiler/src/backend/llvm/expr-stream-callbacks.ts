@@ -13,7 +13,7 @@ export function streamDataAdapter(
   const key = `eed:${typeKey(cbT)}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return sym;
-  sym = `sc_ee_dad_${host.resolveThunks.size}`;
+  sym = host.contentSymbol("sc_ee_dad_", key);
   host.resolveThunks.set(key, sym);
   host.journal?.allocated(sym, "streamDataAdapter", [cbT]);
   const p = cbT.params[0];
@@ -221,7 +221,7 @@ export function streamDoneFnFor(
   const key = `sd:${kind}:${typeKey(doneT)}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return sym;
-  sym = `sc_sd_${host.resolveThunks.size}`;
+  sym = host.contentSymbol("sc_sd_", key);
   host.resolveThunks.set(key, sym);
   host.journal?.allocated(sym, "streamDoneFnFor", [kind, doneT]);
   const errT = doneT.params[0];
@@ -365,7 +365,7 @@ export function fsRenameThunkFor(host: LlvmEmitterContext, cbT: IrType & { kind:
   const key = `fsren:${typeKey(cbT)}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return sym;
-  sym = `sc_fsren_${host.resolveThunks.size}`;
+  sym = host.contentSymbol("sc_fsren_", key);
   host.resolveThunks.set(key, sym);
   host.journal?.allocated(sym, "fsRenameThunkFor", [cbT]);
   const param = cbT.params[0]!;
@@ -454,7 +454,7 @@ export function cryptoIntThunkFor(
   const key = `cryptoint:${typeKey(cbT)}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return sym;
-  sym = `sc_cryptoint_${host.resolveThunks.size}`;
+  sym = host.contentSymbol("sc_cryptoint_", key);
   host.resolveThunks.set(key, sym);
   host.journal?.allocated(sym, "cryptoIntThunkFor", [cbT]);
   const d: string[] = [
@@ -516,7 +516,7 @@ export function zlibBytesThunkFor(
   const key = `${family}bytes:${arrayBuffer ? "arraybuffer:" : ""}${mode}${typeKey(cbT)}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return sym;
-  sym = `sc_${family}bytes_${host.resolveThunks.size}`;
+  sym = host.contentSymbol(`sc_${family}bytes_`, key);
   host.resolveThunks.set(key, sym);
   host.journal?.allocated(sym, "zlibBytesThunkFor", [cbT, arrayBuffer, family, valueMode]);
   const d: string[] = [
@@ -644,7 +644,7 @@ export function streamCbThunkFor(
   const key = `scb:${kind}:${typeKey(cbT)}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return sym;
-  sym = `sc_scb_${host.resolveThunks.size}`;
+  sym = host.contentSymbol("sc_scb_", key);
   host.resolveThunks.set(key, sym);
   host.journal?.allocated(sym, "streamCbThunkFor", [kind, cbT]);
   const runtimeParams =

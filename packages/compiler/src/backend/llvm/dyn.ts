@@ -1808,6 +1808,24 @@ export class LlDyn {
     const B = new BlockBuilder();
     if (t.kind === "classval") {
       host.declare(`declare ptr @scr_dyn_class_check(ptr, ptr, ptr)`);
+      // A subclass's class value checks into the base class's slot.
+      const subclasses = host.classSubtypes(t.className).filter((name) => name !== t.className);
+      if (subclasses.length > 0) {
+        host.declare(`declare zeroext i1 @scr_dyn_class_is(ptr, ptr)`);
+        for (const className of subclasses) {
+          const subKey = host.cstr(typeKey({ kind: "classval", className }));
+          const matched = B.tmp();
+          B.line(`${matched} = call zeroext i1 @scr_dyn_class_is(ptr %d, ptr ${subKey})`);
+          const yes = B.newLabel("sub.yes");
+          const no = B.newLabel("sub.no");
+          B.condBr(matched, yes, no);
+          B.startBlock(yes);
+          const sub = B.tmp();
+          B.line(`${sub} = call ptr @scr_dyn_class_check(ptr %d, ptr ${subKey}, ptr %path)`);
+          B.terminate(`ret ptr ${sub}`);
+          B.startBlock(no);
+        }
+      }
       const checked = B.tmp();
       B.line(
         `${checked} = call ptr @scr_dyn_class_check(ptr %d, ptr ${host.cstr(key)}, ptr %path)`,

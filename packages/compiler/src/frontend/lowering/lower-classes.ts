@@ -11043,8 +11043,99 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           "constructing through a class value of an uninstantiated generic type (annotate the slot with a concrete instantiation — e.g. 'new (v: number) => Box<number>')",
         );
       }
-      const callee = lowerer.lowerExpr(expr.expression);
+      let callee = lowerer.lowerExpr(expr.expression);
       if (callee.type.kind === "dyn") return lowerCheckedConstructor(lowerer, expr, callee);
+      // An array element read (`new T[0]()` over `[Dog, Animal]`, whose
+      // checker type is the common base) keeps the undefined an index past
+      // the end reads: the class value is narrowed out with a check, which
+      // throws a TypeError for undefined.
+      if (callee.type.kind === "union") {
+        const arms = lowerer.unions.get(callee.type.unionId)?.arms ?? [];
+        const classArms = arms.filter((arm) => arm.kind === "classval");
+        if (
+          classArms.length === 1 &&
+          classArms[0]!.kind === "classval" &&
+          classArms[0]!.className === calleeT.className &&
+          arms.every((arm) => arm.kind === "classval" || arm.kind === "undefinedT")
+        ) {
+          const unionT = callee.type;
+          const helper = lowerer.narrowedArmHelper(unionT.unionId, calleeT, callee.loc);
+          if (helper) {
+            const loc = callee.loc;
+            const name = `%new.callee:${unionT.unionId}`;
+            if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+              const undefinedTag = lowerer.armTag(unionT.unionId, UNDEFINED_T);
+              const value: IrExpr = { kind: "varRef", localId: "value", type: unionT, loc };
+              lowerer.liftedFns.push({
+                name,
+                params: [
+                  { localId: "value", name: "value", type: unionT },
+                  { localId: "message", name: "message", type: STRING },
+                ],
+                locals: [
+                  { id: "value", name: "value", type: unionT, mutable: false },
+                  { id: "message", name: "message", type: STRING, mutable: false },
+                ],
+                returnType: calleeT,
+                body: [
+                  ...(undefinedTag >= 0
+                    ? [
+                        {
+                          kind: "if",
+                          cond: {
+                            kind: "unionIsTag",
+                            unionId: unionT.unionId,
+                            tag: undefinedTag,
+                            negated: false,
+                            value,
+                            type: BOOL,
+                            loc,
+                          },
+                          then: [
+                            {
+                              kind: "throw",
+                              value: {
+                                kind: "libCall",
+                                fn: "error.new",
+                                args: [{ kind: "varRef", localId: "message", type: STRING, loc }],
+                                type: { kind: "object", className: "%TypeError" },
+                                loc,
+                              },
+                              loc,
+                            },
+                          ],
+                          else_: null,
+                          loc,
+                        } satisfies IrStmt,
+                      ]
+                    : []),
+                  {
+                    kind: "return",
+                    value: lowerer.checkedNarrowCall(helper, value, calleeT, loc),
+                    loc,
+                  },
+                ],
+                loc,
+              });
+            }
+            callee = {
+              kind: "call",
+              callee: name,
+              args: [
+                callee,
+                {
+                  kind: "strLit",
+                  value: `${expr.expression.getText()} is not a constructor`,
+                  type: STRING,
+                  loc,
+                },
+              ],
+              type: calleeT,
+              loc,
+            };
+          }
+        }
+      }
       if (callee.type.kind !== "classval")
         lowerer.badType(expr.expression, lowerer.typeOf(expr.expression));
       lowerer.noteEdge(classValueConstructor(info.def).fn);

@@ -4007,8 +4007,13 @@ export class LlDyn {
     const text = this.payloadOf(B, key, "ptr");
     const value = B.tmp();
     B.line(`${value} = call ptr @${stringHelper}(ptr %d, ptr ${text}, i1 %opt)`);
+    // A key naming an Object.prototype member answers the inherited member
+    // in place of an undefined read, as a constant key does.
+    host.declare(`declare ptr @scr_dyn_inherited_read(ptr, ptr, ptr)`);
+    const inherited = B.tmp();
+    B.line(`${inherited} = call ptr @scr_dyn_inherited_read(ptr %d, ptr ${text}, ptr ${value})`);
     B.line(`call void @scr_dyn_release(ptr ${key})`);
-    B.terminate(`ret ptr ${value}`);
+    B.terminate(`ret ptr ${inherited}`);
     this.defs.push(
       `define internal ptr @${name}(ptr %d, ptr %key, i1 zeroext %opt) ${FN_ATTRS} {`,
       B.render(),

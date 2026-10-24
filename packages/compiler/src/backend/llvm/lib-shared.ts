@@ -485,6 +485,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "buffer.deprecationCount": "scr_buffer_deprecation_count",
   "buffer.constructor": "scr_buffer_constructor_value",
   "buffer.installValue": "scr_buffer_install_value",
+  "dyn.globalConstructInstall": "scr_dyn_global_construct_install",
   "buffer.staticValue": "scr_buffer_static_value",
   "buffer.prototypeMember": "scr_buffer_prototype_member",
   "fs.toUnixTimestamp": "scr_fs_to_unix_timestamp",

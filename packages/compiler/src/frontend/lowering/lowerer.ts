@@ -159,6 +159,7 @@ import { guardClassAttributeWrites } from "./class-attributes.js";
 import { guardFrozenWrites, markSloppyRecordWrites } from "./frozen-records.js";
 import { applyHandleProperties } from "./handle-properties.js";
 import { installBufferValue } from "./containers/bytes.js";
+import { installGlobalConstruct } from "./class-construction.js";
 import { ClassProtocols } from "./class-protocols.js";
 import { earlyReadVarSymbols } from "./var-hoisting.js";
 import { recordTextCodecClass } from "../../ir/ir.js";
@@ -7779,6 +7780,7 @@ export class Lowerer {
     guardFrozenWrites(this, functions);
     applyHandleProperties(this, functions);
     installBufferValue(functions);
+    installGlobalConstruct(functions);
 
     // Globals typed by a class that never REGISTERED (a JS class whose
     // collection fenced — Symbol-keyed fields, an unsupported base): the

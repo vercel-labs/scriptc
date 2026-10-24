@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8113-computed-inherited-member-reads.js"
+ ],
+ "diags": []
+}

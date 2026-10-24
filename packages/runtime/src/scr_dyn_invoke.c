@@ -1698,57 +1698,36 @@ static ScrDyn *dyn_builtin_method_call(ScrClosure *closure, ScrDyn *const *args,
   ScrStr *method = scr_box_get_ref(closure->caps[1]);
   ScrDyn *receiver = scr_dyn_this_get();
   ScrDyn *result = NULL;
-  if (!strcmp(prototype->data, "Object")) {
-    ScrDyn *key = argc ? args[0] : scr_dyn_undefined();
-    if (!strcmp(method->data, "toString")) {
-      ScrStr *tag = scr_dyn_object_tag_of(receiver);
-      if (tag) { result = scr_dyn_new_str(tag); scr_str_release(tag); }
-    } else if (!strcmp(method->data, "hasOwnProperty")) {
-      bool own = scr_dyn_has_own_computed(receiver, key);
-      if (!scr_exc_pending()) result = scr_dyn_new_bool(own);
-    } else if (!strcmp(method->data, "propertyIsEnumerable")) {
-      bool enumerable = scr_dyn_property_is_enumerable_computed(receiver, key);
-      if (!scr_exc_pending()) result = scr_dyn_new_bool(enumerable);
-    } else if (receiver->kind == SCR_DYN_NULL || receiver->kind == SCR_DYN_UNDEF) {
-      static const char message[] = "Cannot convert undefined or null to object";
-      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
-    } else if (receiver->kind == SCR_DYN_OBJ || receiver->kind == SCR_DYN_ARR ||
-        receiver->kind == SCR_DYN_FUNC || receiver->kind == SCR_DYN_HANDLE ||
-        receiver->kind == SCR_DYN_TYPED_REF || receiver->kind == SCR_DYN_PROXY ||
-        receiver->kind == SCR_DYN_PROMISE || receiver->kind == SCR_DYN_BYTES) result = scr_dyn_retain(receiver);
-    else dyn_throw_unsupported("Object", method->data);
-  } else {
-    bool compatible = false;
-    if (!strcmp(prototype->data, "String")) compatible = receiver->kind != SCR_DYN_UNDEF && receiver->kind != SCR_DYN_NULL;
-    else if (!strcmp(prototype->data, "Number")) compatible = receiver->kind == SCR_DYN_NUM;
-    else if (receiver->kind == SCR_DYN_HANDLE) {
-      const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(receiver);
-      compatible = !strcmp(ops->cls, prototype->data);
-    }
-    if (!compatible) {
-      static const char message[] = "Builtin prototype method called on incompatible receiver";
-      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
-    } else if (!strcmp(method->data, "toString") && receiver->kind == SCR_DYN_NUM) {
-      ScrStr *value = scr_dyn_to_string_argument(receiver, argc ? args[0] : scr_dyn_undefined(), method);
-      if (value) { result = scr_dyn_new_str(value); scr_str_release(value); }
-    } else if (!strcmp(prototype->data, "String")) {
-      bool strict = !strcmp(method->data, "toString") || !strcmp(method->data, "valueOf");
-      if (strict && receiver->kind != SCR_DYN_STR) {
-        static const char message[] = "String.prototype method requires a string receiver";
-        scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
-      } else if (strict) result = scr_dyn_retain(receiver);
-      else {
-        ScrStr *text = scr_dyn_string_coerce_js(receiver);
-        if (text) {
-          ScrDyn *string = scr_dyn_new_str(text);
-          scr_str_release(text);
-          if (!strcmp(method->data, "slice")) result = scr_dyn_invoke(string, method->data, args, argc, method->data);
-          else dyn_throw_unsupported("String", method->data);
-          scr_dyn_release(string);
-        }
-      }
-    } else result = scr_dyn_invoke(receiver, method->data, args, argc, method->data);
+  bool compatible = false;
+  if (!strcmp(prototype->data, "String")) compatible = receiver->kind != SCR_DYN_UNDEF && receiver->kind != SCR_DYN_NULL;
+  else if (!strcmp(prototype->data, "Number")) compatible = receiver->kind == SCR_DYN_NUM;
+  else if (receiver->kind == SCR_DYN_HANDLE) {
+    const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(receiver);
+    compatible = !strcmp(ops->cls, prototype->data);
   }
+  if (!compatible) {
+    static const char message[] = "Builtin prototype method called on incompatible receiver";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+  } else if (!strcmp(method->data, "toString") && receiver->kind == SCR_DYN_NUM) {
+    ScrStr *value = scr_dyn_to_string_argument(receiver, argc ? args[0] : scr_dyn_undefined(), method);
+    if (value) { result = scr_dyn_new_str(value); scr_str_release(value); }
+  } else if (!strcmp(prototype->data, "String")) {
+    bool strict = !strcmp(method->data, "toString") || !strcmp(method->data, "valueOf");
+    if (strict && receiver->kind != SCR_DYN_STR) {
+      static const char message[] = "String.prototype method requires a string receiver";
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    } else if (strict) result = scr_dyn_retain(receiver);
+    else {
+      ScrStr *text = scr_dyn_string_coerce_js(receiver);
+      if (text) {
+        ScrDyn *string = scr_dyn_new_str(text);
+        scr_str_release(text);
+        if (!strcmp(method->data, "slice")) result = scr_dyn_invoke(string, method->data, args, argc, method->data);
+        else dyn_throw_unsupported("String", method->data);
+        scr_dyn_release(string);
+      }
+    }
+  } else result = scr_dyn_invoke(receiver, method->data, args, argc, method->data);
   scr_dyn_release(receiver);
   scr_str_release(prototype);
   scr_str_release(method);
@@ -1756,6 +1735,9 @@ static ScrDyn *dyn_builtin_method_call(ScrClosure *closure, ScrDyn *const *args,
 }
 
 ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method) {
+  /* Object.prototype's members live with the inherited-member fallback
+   * (scr_dyn_inherited.c), which answers the same values for them. */
+  if (!strcmp(prototype->data, "Object")) return scr_dyn_object_prototype_method(method);
   if (!dyn_builtin_methods) {
     dyn_builtin_methods = scr_dyn_new_obj_null_proto();
     scr_atexit(dyn_builtin_methods_cleanup);
@@ -1788,19 +1770,11 @@ ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method) {
   return scr_dyn_retain(value);
 }
 
-/* ── Builtin constructors, inherited Object.prototype members and builtin
- * functions as dynamic values ──────────────────────────────────────────
- * This unit links only into programs that use them (the frontend marks
- * dyn.globalConstructor, dyn.builtinFunction and constant-key reads of the
- * inherited names), so programs that never read them keep their exact
- * executables.
- *
- * JavaScript reads `Object`, `Date`, `RegExp`, `Map`, `Set`, `Promise`,
- * `WeakMap` and `WeakSet` as interned functions, and the same functions
- * answer `.constructor` on the matching dynamic values, so
- * `o.constructor === Object` and `a.constructor === b.constructor` are
- * exact identity tests. `Object(v)` works through the stored value; calling
- * the others through it is fenced. */
+/* ── Builtin constructors and builtin functions as dynamic values ──────
+ * The interned constructor functions (`Object`, `Date`, `Map`, ...) and
+ * Object.prototype's members live with the inherited-member fallback in
+ * scr_dyn_inherited.c, which links whenever this unit does; this unit adds
+ * the Function and error constructors and the builtin functions. */
 /* String constants live in named arrays in their own section rather than
  * in the unit's merged string pool (the explicit section also keeps the
  * compiler from folding the unit's existing literals into them), so
@@ -1812,16 +1786,10 @@ ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method) {
 #else
 #define SCR_DYN_COMPAT_STR __attribute__((section(".rodata.scr_dyn_compat")))
 #endif
-static const char dyn_s_error_tag[] SCR_DYN_COMPAT_STR = "[object Error]";
-static const char dyn_s0[] SCR_DYN_COMPAT_STR = "calling the %s constructor%s through a stored value is not supported yet";
 static const char dyn_s1[] SCR_DYN_COMPAT_STR = "calling '%s' through a stored value is not supported yet";
 static const char dyn_s3[] SCR_DYN_COMPAT_STR = "scriptc: invalid global constructor name\n";
-static const char dyn_s4[] SCR_DYN_COMPAT_STR = "propertyIsEnumerable";
 static const char dyn_s5[] SCR_DYN_COMPAT_STR = "ERR_INVALID_ARG_TYPE";
-static const char dyn_s6[] SCR_DYN_COMPAT_STR = "native:constructor";
 static const char dyn_s7[] SCR_DYN_COMPAT_STR = "process.nextTick";
-static const char dyn_s8[] SCR_DYN_COMPAT_STR = " on a primitive";
-static const char dyn_s9[] SCR_DYN_COMPAT_STR = "hasOwnProperty";
 static const char dyn_s10[] SCR_DYN_COMPAT_STR = "native:builtin";
 static const char dyn_s11[] SCR_DYN_COMPAT_STR = "queueMicrotask";
 static const char dyn_s12[] SCR_DYN_COMPAT_STR = "clearImmediate";
@@ -1830,105 +1798,9 @@ static const char dyn_s14[] SCR_DYN_COMPAT_STR = "constructor";
 static const char dyn_s15[] SCR_DYN_COMPAT_STR = "setInterval";
 static const char dyn_s16[] SCR_DYN_COMPAT_STR = "setTimeout";
 static const char dyn_s17[] SCR_DYN_COMPAT_STR = "callback";
-static const char dyn_s18[] SCR_DYN_COMPAT_STR = "toString";
 static const char dyn_s20[] SCR_DYN_COMPAT_STR = "Function";
-static const char dyn_s21[] SCR_DYN_COMPAT_STR = "Promise";
-static const char dyn_s22[] SCR_DYN_COMPAT_STR = "WeakMap";
-static const char dyn_s23[] SCR_DYN_COMPAT_STR = "valueOf";
-static const char dyn_s24[] SCR_DYN_COMPAT_STR = "WeakSet";
-static const char dyn_s25[] SCR_DYN_COMPAT_STR = "RegExp";
-static const char dyn_s26[] SCR_DYN_COMPAT_STR = "Object";
 static const char dyn_s27[] SCR_DYN_COMPAT_STR = "SC2020";
 static const char dyn_s28[] SCR_DYN_COMPAT_STR = "clear";
-static const char dyn_s29[] SCR_DYN_COMPAT_STR = "Date";
-static const char dyn_s30[] SCR_DYN_COMPAT_STR = "Map";
-static const char dyn_s31[] SCR_DYN_COMPAT_STR = "Set";
-static const char dyn_s32[] SCR_DYN_COMPAT_STR = "";
-static const char dyn_s33[] SCR_DYN_COMPAT_STR = "constructing %s%s through a stored value is not supported yet";
-static const char dyn_s34[] SCR_DYN_COMPAT_STR = " from a primitive";
-static const char dyn_s35[] SCR_DYN_COMPAT_STR = "FinalizationRegistry";
-
-static const char *const dyn_global_ctor_names[] = {
-  dyn_s26, dyn_s29, dyn_s25, dyn_s30, dyn_s31, dyn_s21, dyn_s22, dyn_s24, dyn_s35,
-};
-#define DYN_GLOBAL_CTORS (sizeof dyn_global_ctor_names / sizeof dyn_global_ctor_names[0])
-static SCR_TL ScrDyn *dyn_global_ctors[DYN_GLOBAL_CTORS];
-static SCR_TL bool dyn_global_ctors_registered;
-
-static void dyn_global_ctors_cleanup(void) {
-  for (size_t i = 0; i < DYN_GLOBAL_CTORS; i++) {
-    scr_dyn_release(dyn_global_ctors[i]);
-    dyn_global_ctors[i] = NULL;
-  }
-}
-
-static ScrDyn *dyn_global_ctor_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
-  const char *name = closure->fn;
-  bool object = strcmp(name, dyn_s26) == 0;
-  if (object) {
-    const ScrDyn *value = argc ? args[0] : scr_dyn_undefined();
-    if (value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL) return scr_dyn_new_obj();
-    if (value->kind != SCR_DYN_NUM && value->kind != SCR_DYN_STR && value->kind != SCR_DYN_BOOL &&
-        value->kind != SCR_DYN_BIGINT && value->kind != SCR_DYN_SYMBOL) {
-      return scr_dyn_retain((ScrDyn *)value);
-    }
-  }
-  char message[128];
-  int length = snprintf(message, sizeof message, dyn_s0,
-                        name, object ? dyn_s8 : dyn_s32);
-  scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)length, dyn_s27);
-  return NULL;
-}
-
-/* `new C(...args)` through a stored Object, Date, Map, Set, WeakMap or
- * WeakSet builds what the `new` expression builds. RegExp, Promise, and
- * Object over a primitive (a wrapper object) are fenced. */
-static bool dyn_global_construct(const ScrDyn *callee, const ScrDyn *args, ScrDyn **result) {
-  if (callee->kind != SCR_DYN_FUNC || callee->v.fn.thunk != dyn_global_ctor_call) return false;
-  const char *name = callee->v.fn.clo->fn;
-  ScrDyn *const *items = args->v.arr.items;
-  size_t argc = args->v.arr.len;
-  const ScrDyn *first = argc ? items[0] : scr_dyn_undefined();
-  bool primitive = first->kind == SCR_DYN_NUM || first->kind == SCR_DYN_STR || first->kind == SCR_DYN_BOOL ||
-                   first->kind == SCR_DYN_BIGINT || first->kind == SCR_DYN_SYMBOL;
-  if (strcmp(name, dyn_s26) == 0 && !primitive) *result = dyn_global_ctor_call(callee->v.fn.clo, items, argc);
-  else if (strcmp(name, dyn_s29) == 0)
-    *result = argc == 0 ? scr_dyn_native_date_new(args)
-            : argc == 1 ? scr_dyn_native_date_new_value(args)
-            : scr_dyn_native_date_new_fields(args);
-  else if (strcmp(name, dyn_s30) == 0) *result = scr_dyn_native_map_new(first);
-  else if (strcmp(name, dyn_s31) == 0) *result = scr_dyn_native_set_new(first);
-  else if (strcmp(name, dyn_s22) == 0) *result = scr_weak_map_new((ScrDyn *)first);
-  else if (strcmp(name, dyn_s24) == 0) *result = scr_weak_set_new((ScrDyn *)first);
-  else {
-    char message[128];
-    int length = snprintf(message, sizeof message, dyn_s33, name, strcmp(name, dyn_s26) == 0 ? dyn_s34 : dyn_s32);
-    scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)length, dyn_s27);
-    *result = NULL;
-  }
-  return true;
-}
-
-static ScrDyn *dyn_global_ctor(const char *name) {
-  for (size_t i = 0; i < DYN_GLOBAL_CTORS; i++) {
-    if (dyn_global_ctor_names[i][0] != name[0] || strcmp(dyn_global_ctor_names[i], name) != 0) continue;
-    if (!dyn_global_ctors_registered) {
-      dyn_global_ctors_registered = true;
-      scr_atexit(dyn_global_ctors_cleanup);
-      scr_dyn_global_construct_fn = dyn_global_construct;
-    }
-    if (!dyn_global_ctors[i]) {
-      /* Each constructor's own length: Object 1, Date 7, RegExp 2, Promise 1,
-       * the collections 0, FinalizationRegistry 1. */
-      uint32_t length = i == 0 || i == 5 || i == 8 ? 1 : i == 1 ? 7 : i == 2 ? 2 : 0;
-      dyn_global_ctors[i] = scr_dyn_new_func(scr_closure_new((void *)dyn_global_ctor_names[i], 0),
-                                             dyn_global_ctor_call, length, dyn_s6,
-                                             dyn_global_ctor_names[i]);
-    }
-    return scr_dyn_retain(dyn_global_ctors[i]);
-  }
-  return NULL;
-}
 
 static ScrDyn *dyn_function_probe_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   (void)closure; (void)args; (void)argc;
@@ -1948,116 +1820,10 @@ ScrDyn *scr_dyn_global_constructor(const ScrStr *name) {
   if (strcmp(name->data, dyn_s20) == 0) return dyn_function_constructor();
   ScrDyn *error = scr_dyn_error_constructor(name->data);
   if (error) return error;
-  ScrDyn *ctor = dyn_global_ctor(name->data);
+  scr_dyn_global_construct_install();
+  ScrDyn *ctor = scr_dyn_global_ctor(name->data);
   if (!ctor) scr_trap(dyn_s3);
   return ctor;
-}
-
-/* Object.prototype.toString's tag: errors answer "[object Error]" (the
- * shared tag walk in scr_json.c answers "[object Object]" for them). */
-ScrStr *scr_dyn_object_tag_of(const ScrDyn *d) {
-  if (d->kind == SCR_DYN_OBJ && scr_dyn_err_instanceof(d, 0)) return scr_str_new(dyn_s_error_tag, sizeof dyn_s_error_tag - 1);
-  return scr_dyn_object_tag(d);
-}
-
-/* Which Object.prototype members a value inherits when no nearer prototype
- * defines them: types with their own toString or valueOf keep theirs. */
-enum { DYN_INHERIT_VALUE_OF = 1, DYN_INHERIT_TO_STRING = 2, DYN_INHERIT_OWN = 4, DYN_INHERIT_ALL = 7 };
-
-static ScrDyn *dyn_inherited_from(const char *ctor, int methods, const ScrStr *key) {
-  if (strcmp(key->data, dyn_s14) == 0) return ctor ? dyn_global_ctor(ctor) : NULL;
-  bool applies = (strcmp(key->data, dyn_s23) == 0 && (methods & DYN_INHERIT_VALUE_OF)) ||
-                 (strcmp(key->data, dyn_s18) == 0 && (methods & DYN_INHERIT_TO_STRING)) ||
-                 ((strcmp(key->data, dyn_s9) == 0 || strcmp(key->data, dyn_s4) == 0) &&
-                  (methods & DYN_INHERIT_OWN));
-  if (!applies) return NULL;
-  ScrStr *prototype = scr_str_new(dyn_s26, 6);
-  ScrDyn *method = scr_dyn_builtin_method(prototype, key);
-  scr_str_release(prototype);
-  return method;
-}
-
-/* The inherited member `key` of `d` when its own chain does not define it,
- * or NULL (the read's undefined stands). */
-static ScrDyn *dyn_inherited_member(const ScrDyn *d, const ScrStr *key) {
-  switch (d->kind) {
-  case SCR_DYN_TYPED_REF: {
-    ScrDyn *view = scr_dyn_typed_ref_materialize(d);
-    ScrDyn *member = view && !scr_exc_pending() ? dyn_inherited_member(view, key) : NULL;
-    scr_dyn_release(view);
-    return member;
-  }
-  case SCR_DYN_OBJ: {
-    /* A plain object, or an Object.create chain ending in Object.prototype;
-     * a member present anywhere on the chain (even as undefined) stands. */
-    ScrDyn *object_prototype = scr_dyn_object_prototype();
-    const ScrDyn *tail = d;
-    bool present = false;
-    for (const ScrDyn *link = d; link; link = link->prototype) {
-      tail = link;
-      if (link == object_prototype) break;
-      if (link->kind != SCR_DYN_OBJ || scr_dyn_has_own(link, key)) {
-        present = true;
-        break;
-      }
-    }
-    scr_dyn_release(object_prototype);
-    if (present || (tail != object_prototype && tail->null_proto)) return NULL;
-    /* Errors keep Error.prototype.toString and their constructor values. */
-    if (scr_dyn_err_instanceof(d, 0)) return dyn_inherited_from(NULL, DYN_INHERIT_VALUE_OF | DYN_INHERIT_OWN, key);
-    return dyn_inherited_from(dyn_s26, DYN_INHERIT_ALL, key);
-  }
-  case SCR_DYN_ARR:
-    /* Array.prototype defines toString and answers constructor itself. */
-    if (d->null_proto || d->prototype || scr_dyn_has_own(d, key)) return NULL;
-    return dyn_inherited_from(NULL, DYN_INHERIT_VALUE_OF | DYN_INHERIT_OWN, key);
-  case SCR_DYN_FUNC:
-    /* Function.prototype defines toString and answers constructor itself. */
-    if (scr_dyn_has_own(d, key)) return NULL;
-    return dyn_inherited_from(NULL, DYN_INHERIT_VALUE_OF | DYN_INHERIT_OWN, key);
-  case SCR_DYN_PROMISE:
-    return dyn_inherited_from(dyn_s21, DYN_INHERIT_ALL, key);
-  case SCR_DYN_HANDLE:
-    switch (d->v.handle.tag) {
-    case SCR_DYNH_DATE: return dyn_inherited_from(dyn_s29, DYN_INHERIT_OWN, key);
-    case SCR_DYNH_REGEXP: return dyn_inherited_from(dyn_s25, DYN_INHERIT_VALUE_OF | DYN_INHERIT_OWN, key);
-    case SCR_DYNH_MAP: return dyn_inherited_from(dyn_s30, DYN_INHERIT_ALL, key);
-    case SCR_DYNH_SET: return dyn_inherited_from(dyn_s31, DYN_INHERIT_ALL, key);
-    case SCR_DYNH_WEAK_MAP: return dyn_inherited_from(dyn_s22, DYN_INHERIT_ALL, key);
-    case SCR_DYNH_WEAK_SET: return dyn_inherited_from(dyn_s24, DYN_INHERIT_ALL, key);
-    default: return NULL;
-    }
-  default:
-    return NULL;
-  }
-}
-
-/* Object.prototype's own constructor and shared methods, read on the
- * prototype itself (`const { hasOwnProperty } = Object.prototype`, the
- * `proto.constructor` of an isPlainObject check): the member, or NULL when
- * `d` is another value and the ordinary read applies. */
-ScrDyn *scr_dyn_object_prototype_member(const ScrDyn *d, const ScrStr *key) {
-  ScrDyn *object_prototype = scr_dyn_object_prototype();
-  bool prototype = d == object_prototype;
-  scr_dyn_release(object_prototype);
-  return prototype ? dyn_inherited_from(dyn_s26, DYN_INHERIT_ALL, key) : NULL;
-}
-
-/* A constant-key read of constructor/valueOf/toString/hasOwnProperty/
- * propertyIsEnumerable: `read` is the ordinary read's +1 result (NULL when
- * it threw). Takes it; answers the inherited member in place of an
- * undefined read, the read otherwise. */
-ScrDyn *scr_dyn_inherited_read(const ScrDyn *d, const ScrStr *key, ScrDyn *read) {
-  if (!read || read->kind != SCR_DYN_UNDEF) return read;
-  ScrDyn *member = dyn_inherited_member(d, key);
-  if (scr_exc_pending()) {
-    scr_dyn_release(member);
-    scr_dyn_release(read);
-    return NULL;
-  }
-  if (!member) return read;
-  scr_dyn_release(read);
-  return member;
 }
 
 /* Builtin global functions stored in JavaScript (the `var nextTick = typeof

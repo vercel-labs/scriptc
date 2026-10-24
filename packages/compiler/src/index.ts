@@ -599,6 +599,8 @@ async function compileExecutableNative(
     assert: features.assert,
     inspect: features.inspect,
     dynInvoke: features.dynInvoke,
+    ...(features.dynInherited ? { dynInherited: true } : {}),
+    ...(features.dynGlobalConstruct ? { dynGlobalConstruct: true } : {}),
     dc: features.dc,
     dynAsync: features.dynAsync,
     ...(features.dynTier ? { dynTier: true } : {}),
@@ -1887,7 +1889,8 @@ function libraryNativeFeatures(mod: IrModule, backend: "llvm"): EarlyLibraryNati
     zlib: features.zlib,
     copying: features.copying,
     textDecoderLegacy: features.legacyTextDecoder,
-    dynInvoke: features.dynInvoke,
+    // Library archives link the inherited-member unit with the dyn-invoke one.
+    dynInvoke: features.dynInvoke || features.dynInherited,
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.dynTier ? { dynTier: true } : {}),
     ...(mod.lib?.identity !== undefined ? { buildId: mod.lib.identity.buildId } : {}),

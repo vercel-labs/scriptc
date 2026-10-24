@@ -182,6 +182,18 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.assert || u.regex || u.opts.symbol, "scr_assert.c"),
   unit((u) => u.opts.inspect, "scr_inspect.c", "scr_console_native.c"),
   unit((u) => u.opts.dynInvoke || u.opts.workers || u.nativeFetch, "scr_dyn_invoke.c"),
+  // Inherited Object.prototype members on dynamic values, which the
+  // dyn-invoke unit reads too.
+  unit(
+    (u) => u.opts.dynInherited === true || u.opts.dynInvoke || u.opts.workers || u.nativeFetch,
+    "scr_dyn_inherited.c",
+  ),
+  // `new` through those constructors, which builds dates and collections.
+  unit(
+    (u) =>
+      u.opts.dynGlobalConstruct === true || u.opts.dynInvoke || u.opts.workers || u.nativeFetch,
+    "scr_dyn_global_construct.c",
+  ),
   // Buffer.prototype methods called on checked-dynamic values.
   unit((u) => u.opts.dynBuffer === true && u.opts.dynInvoke, "scr_bytes_dyn.c"),
   // Builtin functions read as values in JavaScript dependencies.

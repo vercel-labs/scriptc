@@ -7,15 +7,16 @@ import {
   STRING,
   typeEquals,
   typeKey,
+  VOID,
   type IrExpr,
   type IrFunction,
   type IrStmt,
   type IrType,
   type SrcLoc,
 } from "../../ir/ir.js";
-import { transformExpr, transformStmtList } from "../../ir/traverse.js";
+import { everyStmt, transformExpr, transformStmtList } from "../../ir/traverse.js";
 import type { DispatchSites } from "./dispatch-sites.js";
-import type { Lowerer } from "./lowerer.js";
+import { ENTRY_NAME, type Lowerer } from "./lowerer.js";
 import type { ParamShape } from "./call-signatures.js";
 import { classPrototypeData } from "./class-prototypes.js";
 import { classInstanceOf } from "./class-dynamic-dispatch.js";
@@ -475,3 +476,44 @@ export class ClassConstructionDispatch {
     return changed;
   }
 }
+
+/** Programs that construct dynamic values and read members a value may
+ * inherit (`new (o[key])()`, `new o.constructor()`) install `new` through the
+ * builtin constructors those reads answer, in %main
+ * (scr_dyn_global_construct.c). Every other program lowers as before. */
+export function installGlobalConstruct(functions: IrFunction[]): void {
+  let constructs = false;
+  let inherits = false;
+  const visitor = {
+    expr: (e: IrExpr): boolean => {
+      if (e.kind === "libCall" && e.fn === "dyn.construct") constructs = true;
+      else if (
+        e.kind === "dynKeyGet" &&
+        (e.key.kind !== "strLit" || INHERITED_CONSTRUCT_KEYS.has(e.key.value))
+      )
+        inherits = true;
+      return !(constructs && inherits);
+    },
+    stmt: (): boolean => !(constructs && inherits),
+  };
+  for (const fn of functions) {
+    for (const s of fn.body) everyStmt(s, visitor);
+    if (constructs && inherits) break;
+  }
+  const main = functions.find((fn) => fn.name === ENTRY_NAME);
+  if (!constructs || !inherits || !main) return;
+  main.body.unshift({
+    kind: "exprStmt",
+    expr: {
+      kind: "libCall",
+      fn: "dyn.globalConstructInstall",
+      args: [],
+      type: VOID,
+      loc: main.loc,
+    },
+    loc: main.loc,
+  });
+}
+
+/** The constant keys whose reads may answer a builtin constructor. */
+const INHERITED_CONSTRUCT_KEYS: ReadonlySet<string> = new Set(["constructor"]);

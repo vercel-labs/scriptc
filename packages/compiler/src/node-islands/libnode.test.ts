@@ -11,7 +11,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { USES_TIMERS_LIB_FNS } from "../backend/llvm/lib-shared.js";
-import { libnodeCacheKey, libnodeRecord, NODE_BRIDGE_ABI } from "./libnode.js";
+import { libnodeCacheKey, libnodeRecord, libnodeTarget, NODE_BRIDGE_ABI } from "./libnode.js";
+import { libnodePackPackage } from "./libnode-pack.js";
+import { findInstalledLibnodePack, hostLibnodeTarget } from "./libnode-pack.js";
 
 function pack(nodeVersion: string, bridgeAbi = NODE_BRIDGE_ABI): string {
   const dir = mkdtempSync(join(tmpdir(), "scriptc-libnode-"));
@@ -39,7 +41,21 @@ describe("the recorded libnode pack", () => {
   });
 
   test("refuses a missing, too old or incompatible pack", () => {
-    expect(libnodeRecord(undefined, "/out/app", {})).toMatch(/no libnode pack is installed/);
+    // Unless a workspace build of the host's @scriptc/libnode-<platform>
+    // resolves next to the compiler, which libnodeRecord then uses.
+    const installed = findInstalledLibnodePack({
+      targetName: hostLibnodeTarget(),
+      projectDir: "/nonexistent",
+    });
+    if (installed === null) {
+      expect(libnodeRecord(undefined, "/out/app", {}, "/nonexistent")).toMatch(
+        /no libnode pack is installed/,
+      );
+    } else {
+      expect(libnodeRecord(undefined, "/out/app", {}, "/nonexistent")).toMatchObject({
+        libnode: installed,
+      });
+    }
     expect(libnodeRecord("/nonexistent", "/out/app", {})).toBe(
       "no libnode pack at /nonexistent (manifest.json is missing or unreadable)",
     );
@@ -143,9 +159,36 @@ describe("the recorded libnode pack", () => {
   });
 });
 
-describe("the libnode pack in an executable's cache key", () => {
-  test("is absent without --libnode or SCRIPTC_LIBNODE", () => {
-    expect(libnodeCacheKey(undefined, {})).toBeUndefined();
+describe("the libnode pack identity a cached build keeps", () => {
+  // A workspace build of the target's @scriptc/libnode-<platform> that
+  // resolves next to the compiler (CI assembles one) is installed for every
+  // project, so without a pack in the project the identity names it.
+  const nextToCompiler = findInstalledLibnodePack({
+    targetName: libnodeTarget({}),
+    projectDir: "/nonexistent",
+  });
+  const withoutProjectPack = (key: string | undefined): void => {
+    if (nextToCompiler === null) expect(key).toBeUndefined();
+    else expect(key).toContain(`|${nextToCompiler}|`);
+  };
+
+  test("is absent when no pack is named or installed", () => {
+    withoutProjectPack(libnodeCacheKey(undefined, {}, "/nonexistent"));
+  });
+
+  test("names the installed pack, and changes with it", () => {
+    const project = mkdtempSync(join(tmpdir(), "scriptc-libnode-project-"));
+    const name = libnodePackPackage(libnodeTarget({}));
+    if (name === null) return;
+    const installed = join(project, "node_modules", name);
+    mkdirSync(installed, { recursive: true });
+    writeFileSync(join(installed, "manifest.json"), JSON.stringify({ nodeVersion: "24.22.0" }));
+    const before = libnodeCacheKey(undefined, {}, project);
+    expect(before).toContain(installed);
+    writeFileSync(join(installed, "manifest.json"), JSON.stringify({ nodeVersion: "24.23.0" }));
+    expect(libnodeCacheKey(undefined, {}, project)).not.toBe(before);
+    rmSync(installed, { recursive: true, force: true });
+    withoutProjectPack(libnodeCacheKey(undefined, {}, project));
   });
 
   test("changes when the pack in the same directory is upgraded", () => {

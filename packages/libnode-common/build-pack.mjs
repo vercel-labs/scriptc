@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 /* Assembles a libnode pack: the directory a scriptc program with Node
- * islands loads Node from (scope-B design §2.16.3). Until the pack CI
- * matrix (NI-13) publishes @scriptc/libnode-<platform> packages, packs are
- * assembled by hand from a Node `--shared` build and the matching headers:
+ * islands loads Node from (scope-B design §2.16.3), from a Node `--shared`
+ * build and the headers of the same release:
  *
  *   node packages/libnode-common/build-pack.mjs \
  *     --libnode <path to libnode.so.<ABI> or libnode.<ABI>.dylib> \
@@ -10,21 +9,32 @@
  *     --out <pack directory> [--license <Node's LICENSE>] [--cxx <compiler>]
  *
  * The pack holds libnode, the bridge (bridge/scr_node_bridge.cc) compiled
- * against those headers, Node's license and manifest.json, which the build
- * of a program with Node islands reads (packages/compiler/src/node-islands/
- * libnode.ts). Programs find a pack through SCRIPTC_LIBNODE or --libnode. */
+ * against those headers and linked to libnode through $ORIGIN /
+ * @loader_path (so the directory can move), Node's license and
+ * manifest.json, which the build of a program with Node islands reads
+ * (packages/compiler/src/node-islands/libnode.ts). Programs find a pack
+ * through --libnode, SCRIPTC_LIBNODE, or the installed
+ * @scriptc/libnode-<platform> package.
+ *
+ * The @scriptc/libnode-<platform> packs call buildPack() from
+ * scripts/build.mjs after building libnode from the pinned release; run by
+ * hand, this is the bridge-only rebuild path (seconds) and the way a
+ * self-builder pairs the bridge with a compatible Node build of their own. */
 import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const runtimeSrc = join(here, "../runtime/src");
 
+/** The manifest schema; the compiler's pack reader accepts exactly this. */
+export const LIBNODE_PACK_SCHEMA = "scriptc.libnode-pack.v1";
+
 /** The bridge ABI the runtime expects (scr_node_bridge.h). */
-function bridgeAbi() {
+export function bridgeAbi() {
   const header = readFileSync(join(runtimeSrc, "scr_node_bridge.h"), "utf8");
   return Number(/#define SCR_NODE_BRIDGE_ABI (\d+)u/.exec(header)[1]);
 }
@@ -46,38 +56,41 @@ function fileEntry(path) {
   };
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const { values } = parseArgs({
-    options: {
-      libnode: { type: "string" },
-      headers: { type: "string" },
-      out: { type: "string" },
-      license: { type: "string" },
-      cxx: { type: "string", default: process.platform === "darwin" ? "clang++" : "g++" },
-    },
-  });
-  if (!values.libnode || !values.headers || !values.out) {
-    console.error("usage: build-pack.mjs --libnode <lib> --headers <include/node> --out <dir>");
-    process.exit(2);
-  }
-  const out = resolve(values.out);
-  const headers = resolve(values.headers);
-  mkdirSync(out, { recursive: true });
-  const libnodeName = basename(values.libnode);
-  copyFileSync(values.libnode, join(out, libnodeName));
-  const bridgeName =
-    process.platform === "darwin" ? "libscr_node_bridge.dylib" : "libscr_node_bridge.so";
-  const link =
-    process.platform === "darwin"
-      ? ["-dynamiclib", join(out, libnodeName), "-Wl,-rpath,@loader_path"]
-      : ["-shared", `-L${out}`, `-l:${libnodeName}`, "-Wl,-rpath,$ORIGIN"];
+/** The bridge library name on a platform. */
+export function bridgeName(os = process.platform) {
+  return os === "darwin" ? "libscr_node_bridge.dylib" : "libscr_node_bridge.so";
+}
+
+/** Compiles the bridge against `headers` (an include/node directory) and
+ * links it to `libnode`, which must already sit in the bridge's directory. */
+export function buildBridge({ headers, libnode, out, cxx }) {
+  const darwin = process.platform === "darwin";
+  const compiler = cxx ?? process.env.CXX ?? (darwin ? "clang++" : "g++");
+  const link = darwin
+    ? [
+        "-dynamiclib",
+        libnode,
+        "-Wl,-rpath,@loader_path",
+        `-Wl,-install_name,@rpath/${basename(out)}`,
+      ]
+    : [
+        "-shared",
+        `-L${dirname(libnode)}`,
+        `-l:${basename(libnode)}`,
+        "-Wl,-rpath,$ORIGIN",
+        "-Wl,-z,defs",
+        "-Wl,--as-needed",
+        "-ldl",
+        "-pthread",
+      ];
   execFileSync(
-    values.cxx,
+    compiler,
     [
       "-std=c++20",
       "-O2",
       "-fPIC",
       "-fvisibility=hidden",
+      "-fno-rtti",
       "-I",
       runtimeSrc,
       "-I",
@@ -85,24 +98,79 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       join(here, "bridge/scr_node_bridge.cc"),
       ...link,
       "-o",
-      join(out, bridgeName),
+      out,
     ],
     { stdio: "inherit" },
   );
-  if (values.license) copyFileSync(values.license, join(out, "LICENSE"));
+  if (darwin) {
+    execFileSync("strip", ["-x", out], { stdio: "inherit" });
+    // Stripping invalidated the linker's ad-hoc signature, which arm64
+    // macOS requires to map the library.
+    execFileSync("codesign", ["--force", "--sign", "-", out], { stdio: "inherit" });
+  } else {
+    execFileSync("strip", ["--strip-unneeded", out], { stdio: "inherit" });
+  }
+}
+
+/**
+ * Assembles the pack in `out` and returns its manifest. `extra` adds fields
+ * to manifest.json (the published packs record their package, target and
+ * build inputs); schema, nodeVersion, moduleVersion, bridgeAbi, platform,
+ * arch, libnode, bridge and files are always present.
+ *
+ * @param {{ libnode: string, headers: string, out: string, license?: string,
+ *   cxx?: string, extra?: Record<string, unknown> }} options
+ */
+export function buildPack(options) {
+  const out = resolve(options.out);
+  const headers = resolve(options.headers);
+  mkdirSync(out, { recursive: true });
+  const libnodeName = basename(options.libnode);
+  const libnode = join(out, libnodeName);
+  if (resolve(options.libnode) !== libnode) copyFileSync(options.libnode, libnode);
+  const bridge = join(out, bridgeName());
+  buildBridge({ headers, libnode, out: bridge, cxx: options.cxx });
+  if (options.license) copyFileSync(options.license, join(out, "LICENSE"));
   const { nodeVersion, moduleVersion } = nodeVersionOf(headers);
   const manifest = {
-    schema: "scriptc.libnode-pack.v1",
+    schema: LIBNODE_PACK_SCHEMA,
     nodeVersion,
     moduleVersion,
     bridgeAbi: bridgeAbi(),
     platform: process.platform,
     arch: process.arch,
+    libnode: libnodeName,
+    bridge: bridgeName(),
+    ...options.extra,
     files: {
-      [libnodeName]: fileEntry(join(out, libnodeName)),
-      [bridgeName]: fileEntry(join(out, bridgeName)),
+      [libnodeName]: fileEntry(libnode),
+      [bridgeName()]: fileEntry(bridge),
     },
   };
   writeFileSync(join(out, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
-  console.log(`libnode pack for Node ${nodeVersion} in ${out}`);
+  return manifest;
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const { values } = parseArgs({
+    options: {
+      libnode: { type: "string" },
+      headers: { type: "string" },
+      out: { type: "string" },
+      license: { type: "string" },
+      cxx: { type: "string" },
+    },
+  });
+  if (!values.libnode || !values.headers || !values.out) {
+    console.error("usage: build-pack.mjs --libnode <lib> --headers <include/node> --out <dir>");
+    process.exit(2);
+  }
+  const manifest = buildPack({
+    libnode: values.libnode,
+    headers: values.headers,
+    out: values.out,
+    license: values.license,
+    cxx: values.cxx,
+  });
+  console.log(`libnode pack for Node ${manifest.nodeVersion} in ${resolve(values.out)}`);
 }

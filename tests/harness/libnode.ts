@@ -1,7 +1,8 @@
 /* Node island tests need a libnode pack (SCRIPTC_LIBNODE). The Linux x64 CI
- * test lanes provide one (.github/actions/libnode-dev-pack) and must run
+ * test lanes provide one (.github/actions/libnode-linux) and must run
  * these tests, so there a missing pack is a failure, never a skip. Other
- * platforms have no pack yet (NI-13), and a local run without a pack skips. */
+ * CI platforms do not provision a pack yet, and a local run without a pack
+ * skips. */
 import { readFileSync } from "node:fs";
 
 /** `// @requires-libnode` in a corpus program's two-line directive head. */
@@ -25,7 +26,7 @@ export function libnodePack(): string | null {
   if (pack !== undefined && pack !== "") return pack;
   if (libnodeRequired)
     throw new Error(
-      "Node island tests need a libnode pack in this CI lane, and SCRIPTC_LIBNODE is not set (.github/actions/libnode-dev-pack provides it)",
+      "Node island tests need a libnode pack in this CI lane, and SCRIPTC_LIBNODE is not set (.github/actions/libnode-linux provides it)",
     );
   return null;
 }

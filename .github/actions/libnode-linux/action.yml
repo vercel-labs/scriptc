@@ -1,0 +1,53 @@
+name: libnode pack (Linux x64)
+description: >-
+  Provide the linux-x64 libnode pack for the Node island tests and export
+  SCRIPTC_LIBNODE. Restores the libnode build that the libnode-packs
+  workflow cached and assembles @scriptc/libnode-linux-x64-gnu from it (the
+  bridge compiles in seconds; Node is never built here). Until that cache
+  exists for this ref, it falls back to the pinned, checksum-verified
+  development pack (packages/libnode-common/dev-pack.json). Fails the job if
+  no pack results: the island tests must never skip in CI.
+runs:
+  using: composite
+  steps:
+    - name: Compute the libnode cache key
+      id: key
+      shell: bash
+      env:
+        SCRIPTC_LIBNODE_TOOLCHAIN: manylinux_2_28-gcc-toolset-14
+      run: node packages/libnode-common/scripts/cache-key.mjs --platform linux-x64-gnu >> "$GITHUB_OUTPUT"
+    - uses: actions/cache/restore@v4
+      id: libnode
+      with:
+        path: .libnode-cache/${{ steps.key.outputs.path }}
+        key: ${{ steps.key.outputs.key }}
+    - name: Assemble @scriptc/libnode-linux-x64-gnu
+      if: steps.libnode.outputs.cache-hit == 'true'
+      shell: bash
+      env:
+        SCRIPTC_LIBNODE_TOOLCHAIN: manylinux_2_28-gcc-toolset-14
+        SCRIPTC_LIBNODE_CACHE: ${{ github.workspace }}/.libnode-cache
+      run: |
+        node packages/libnode-linux-x64-gnu/scripts/build.mjs --from-cache
+        node packages/libnode-common/scripts/verify.mjs packages/libnode-linux-x64-gnu
+        echo "SCRIPTC_LIBNODE=$GITHUB_WORKSPACE/packages/libnode-linux-x64-gnu" >> "$GITHUB_ENV"
+    - uses: actions/cache@v4
+      if: steps.libnode.outputs.cache-hit != 'true'
+      id: devpack
+      with:
+        path: ${{ runner.temp }}/libnode-dev-pack
+        key: libnode-dev-pack-linux-x64-${{ hashFiles('packages/libnode-common/dev-pack.json', 'packages/libnode-common/build-pack.mjs', 'packages/libnode-common/fetch-dev-pack.mjs', 'packages/libnode-common/bridge/**', 'packages/runtime/src/scr_node_bridge.h') }}
+    - name: Assemble the development pack
+      if: steps.libnode.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        echo "::notice::no cached libnode-packs build for ${{ steps.key.outputs.key }}; using the development pack"
+        if [ "${{ steps.devpack.outputs.cache-hit }}" != true ]; then
+          node packages/libnode-common/fetch-dev-pack.mjs --out "$RUNNER_TEMP/libnode-dev-pack"
+        fi
+        echo "SCRIPTC_LIBNODE=$RUNNER_TEMP/libnode-dev-pack" >> "$GITHUB_ENV"
+    - name: Check the pack
+      shell: bash
+      run: |
+        test -f "$SCRIPTC_LIBNODE/manifest.json"
+        test -f "$SCRIPTC_LIBNODE/libscr_node_bridge.so"

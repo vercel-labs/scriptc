@@ -1,0 +1,38 @@
+{
+  "name": "@scriptc/libnode-linux-arm64-gnu",
+  "version": "0.4.4",
+  "private": true,
+  "description": "Prebuilt Node.js shared library and scriptc bridge for Node islands on Linux arm64 glibc",
+  "license": "SEE LICENSE IN LICENSE",
+  "homepage": "https://scriptc.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vercel-labs/scriptc.git",
+    "directory": "packages/libnode-linux-arm64-gnu"
+  },
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "libc": [
+    "glibc"
+  ],
+  "files": [
+    "libnode.so.137",
+    "libscr_node_bridge.so",
+    "manifest.json",
+    "LICENSE",
+    "SCRIPTC_LICENSE",
+    "THIRD_PARTY_NOTICES"
+  ],
+  "scripts": {
+    "build": "true",
+    "build:native": "node scripts/build.mjs",
+    "prepack": "node ../libnode-common/scripts/verify.mjs ."
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

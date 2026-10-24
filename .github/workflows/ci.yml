@@ -213,7 +213,7 @@ jobs:
       # Node island tests (`// @requires-libnode` corpus programs and
       # node-island.test.ts) load Node from a libnode pack, and fail rather
       # than skip in this lane when none is configured.
-      - uses: ./.github/actions/libnode-dev-pack
+      - uses: ./.github/actions/libnode-linux
       # Ubuntu pipes core dumps to apport, and RLIMIT_CORE does not limit a
       # piped dump. The kernel then streams every page of the runtime's
       # reserved allocator address space through the pipe, so each expected

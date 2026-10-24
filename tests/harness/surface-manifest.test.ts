@@ -62,6 +62,9 @@ describe("surface manifest generation", () => {
     expect(readJson("packages/llvm-linux-x64-musl/package.json").version).toBe(releaseVersion);
     expect(readJson("packages/llvm-linux-arm64-musl/package.json").version).toBe(releaseVersion);
     expect(readJson("packages/llvm-win32-x64-msvc/package.json").version).toBe(releaseVersion);
+    for (const platform of ["linux-x64-gnu", "linux-arm64-gnu", "darwin-arm64", "darwin-x64"]) {
+      expect(readJson(`packages/libnode-${platform}/package.json`).version).toBe(releaseVersion);
+    }
   });
 
   test("schema: ids unique and sorted, enums valid, codes on every non-static entry", () => {

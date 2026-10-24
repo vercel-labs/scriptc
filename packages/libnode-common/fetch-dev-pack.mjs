@@ -2,8 +2,9 @@
 /* Assembles a development libnode pack from the pinned, checksum-verified
  * inputs in dev-pack.json: a prebuilt libnode of the repository's Node
  * release and Node's official headers, with the bridge built against them
- * by build-pack.mjs. CI's Linux test lanes use it (.github/actions/
- * libnode-dev-pack) until the NI-13 packs are published.
+ * by build-pack.mjs. CI's Linux test lanes fall back to it
+ * (.github/actions/libnode-linux) until the libnode-packs workflow has
+ * cached a build of @scriptc/libnode-linux-x64-gnu for their ref.
  *
  *   node packages/libnode-common/fetch-dev-pack.mjs --out <pack directory> */
 import { execFileSync } from "node:child_process";

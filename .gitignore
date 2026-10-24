@@ -32,6 +32,12 @@ output/
 /packages/runtime-*/artifacts/
 /packages/runtime-*/runtime-pack.json
 /packages/runtime-*/.runtime-pack-*
+# libnode packs: built by build:native, never committed
+/packages/libnode-*/libnode.so.*
+/packages/libnode-*/libnode.*.dylib
+/packages/libnode-*/libscr_node_bridge.*
+/packages/libnode-*/manifest.json
+/packages/libnode-*/LICENSE
 !tests/fixtures/npm/node_modules/*/dist/
 !tests/fixtures/npm/node_modules/@*/*/dist/
 !tests/fixtures/npm/workspace/*/dist/

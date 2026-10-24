@@ -552,3 +552,71 @@ test("counters stepped beside the tested one run as integers", () => {
     { startGuarded: true, tripGuarded: true },
   ]);
 });
+
+/** `counted(limit)` with the body `x = ((i + k) * (i + k + 1)) >>> 1`
+ * inside a nested `for (let j = 0; j < 4; j++)` loop. */
+function productLoop(limit: IrExpr, start: IrExpr = number(0)): IrStmt & { kind: "for" } {
+  const s = counted(limit);
+  if (s.init?.kind === "varDecl") s.init.init = start;
+  const sum = (extra: number): IrExpr => {
+    const base: IrExpr = { kind: "bin", op: "+", left: ref("i"), right: ref("k"), type: F64, loc };
+    return extra === 0
+      ? base
+      : { kind: "bin", op: "+", left: base, right: number(extra), type: F64, loc };
+  };
+  const product: IrExpr = { kind: "bin", op: "*", left: sum(0), right: sum(1), type: F64, loc };
+  const inner = counted(number(4));
+  if (inner.init?.kind === "varDecl") inner.init.localId = "j";
+  if (inner.cond?.kind === "bin") inner.cond.left = ref("j");
+  if (inner.update?.kind === "assign") {
+    inner.update.localId = "j";
+    if (inner.update.value.kind === "bin") inner.update.value.left = ref("j");
+  }
+  inner.body = [
+    {
+      kind: "assign",
+      localId: "x",
+      value: { kind: "bin", op: ">>>", left: product, right: number(1), type: F64, loc },
+      loc,
+    },
+  ];
+  s.body = [inner];
+  return s;
+}
+
+test("guarded counted loops whose products the counter bound proves exact may hold nested loops", () => {
+  const scope = new Map(locals);
+  for (const id of ["limit", "start", "k", "x", "j"])
+    scope.set(id, { id, name: id, type: F64, mutable: true });
+  const tight = matchIntegerCountedForLoop(productLoop(ref("limit"), ref("start")), scope);
+  expect(tight).toMatchObject({
+    guarded: true,
+    limitGuarded: true,
+    startGuarded: true,
+    startBound: 2 ** 25,
+    guardLimit: 2 ** 25,
+    range: { min: -(2 ** 25), max: 2 ** 25 - 1 },
+  });
+  // A literal trip count past the bound keeps the safe-integer bound, and
+  // a guarded loop under that bound holds no nested loop.
+  expect(matchIntegerCountedForLoop(productLoop(number(1e9), ref("start")), scope)).toBeNull();
+  const plain = counted(ref("limit"));
+  plain.body = [productLoop(number(4)).body[0]!];
+  const inner = plain.body[0] as IrStmt & { kind: "for" };
+  inner.body = [
+    {
+      kind: "assign",
+      localId: "x",
+      value: { kind: "bin", op: "|", left: ref("i"), right: number(0), type: F64, loc },
+      loc,
+    },
+  ];
+  expect(matchIntegerCountedForLoop(plain, scope)).toBeNull();
+  // Without a nested loop the product bound still applies to the limit.
+  const flat = productLoop(ref("limit"), ref("start"));
+  flat.body = (flat.body[0] as IrStmt & { kind: "for" }).body;
+  expect(matchIntegerCountedForLoop(flat, scope)).toMatchObject({
+    startBound: 2 ** 25,
+    guardLimit: 2 ** 25,
+  });
+});

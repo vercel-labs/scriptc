@@ -80,6 +80,7 @@ import {
 } from "./emit-journal.js";
 import { specializeNumericCalls } from "../../ir/numeric-call-specialization.js";
 import { versionLoopBoundParameters } from "../../ir/parameter-versions.js";
+import { inlineExpressionFunctions } from "../../ir/expression-inlining.js";
 import {
   allocatedLiteral,
   fillAllocationLength,
@@ -562,13 +563,15 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
               scalarizeNumericRecords(
                 specializeCallbackCalls(
                   specializeNumericCalls(
-                    foldConstantGlobals(
-                      copyStableCaptures(
-                        resolveSelfCaptures(
-                          hoistFinalFieldReads(
-                            freezeInitOnlyGlobals(
-                              holdCharLocalsAsUnits(
-                                dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
+                    inlineExpressionFunctions(
+                      foldConstantGlobals(
+                        copyStableCaptures(
+                          resolveSelfCaptures(
+                            hoistFinalFieldReads(
+                              freezeInitOnlyGlobals(
+                                holdCharLocalsAsUnits(
+                                  dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
+                                ),
                               ),
                             ),
                           ),

@@ -50,8 +50,8 @@ export function emitCountedLoopLimit(
 }
 
 /** The run-time test of a guarded counted loop: an unproven limit is within
- * the integer form's finite range and an unproven start is an exact safe
- * integer. Returns `true` when nothing needs testing. */
+ * the integer form's finite range and an unproven start is an exact integer
+ * within the loop's start bound. Returns `true` when nothing needs testing. */
 export function emitCountedLoopSafety(
   host: LlvmEmitterContext,
   loop: IntegerCountedForLoop,
@@ -65,7 +65,11 @@ export function emitCountedLoopSafety(
       `${safe} = fcmp ${loop.step > 0 ? "ole" : "oge"} double ${bound.name}, ${f64Lit(loop.guardLimit)}`,
     );
   }
-  if (loop.startGuarded) safe = andSafe(host, safe, emitExactStart(host, loop.start));
+  if (loop.startGuarded) {
+    const start = host.emitExpr(loop.start);
+    const bound = loop.startBound;
+    safe = andSafe(host, safe, emitExactIntegerTest(host, start.name, -bound, bound).ok);
+  }
   for (const follower of loop.followers) {
     if (follower.startGuarded) safe = andSafe(host, safe, emitExactStart(host, follower.start));
     if (follower.tripGuarded) safe = andSafe(host, safe, emitFollowerReach(host, loop, follower));

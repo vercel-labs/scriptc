@@ -4,13 +4,15 @@ import { integerArithmeticRange, type IntegerRange } from "../../ir/integer-rang
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
 import type { LlInteger } from "./integer-values.js";
 
-/** Marks the `+` and `-` operands whose number only reaches ToInt32/ToUint32
- * consumers (`| 0`, the other bitwise operators, `Math.imul`, `Math.clz32`),
- * directly or through further sums, in the emitter's `wrappingSums`. Called
- * by the consumer before its operands emit. */
+/** Marks the `+`, `-` and `*` operands whose number only reaches
+ * ToInt32/ToUint32 consumers (`| 0`, the other bitwise operators,
+ * `Math.imul`, `Math.clz32`), directly or through further sums and
+ * products, in the emitter's `wrappingSums`. Called by the consumer before
+ * its operands emit. */
 export function markWrappingOperands(host: LlvmEmitterContext, ...operands: IrExpr[]): void {
   for (const operand of operands) {
-    if (operand.kind !== "bin" || (operand.op !== "+" && operand.op !== "-")) continue;
+    if (operand.kind !== "bin" || (operand.op !== "+" && operand.op !== "-" && operand.op !== "*"))
+      continue;
     if (operand.type.kind !== "f64" || host.wrappingSums.has(operand)) continue;
     host.wrappingSums.add(operand);
     markWrappingOperands(host, operand.left, operand.right);
@@ -128,12 +130,15 @@ function wrappingOperand(
   return { low, valid };
 }
 
-/** ToUint32 of `left op right` (`+` or `-`) in 32-bit arithmetic when the
- * expression only reaches ToInt32/ToUint32 consumers and both operands are
- * exact integers or NaN with an exact result. Both conversions are
- * arithmetic mod 2^32, so the wrapping i32 sum of the operands' low halves
- * is the converted exact sum; a NaN operand makes the sum NaN, which
- * converts to 0. Returns undefined, emitting nothing, for any other sum. */
+/** ToUint32 of `left op right` (`+`, `-` or `*`) in 32-bit arithmetic when
+ * the expression only reaches ToInt32/ToUint32 consumers and both operands
+ * are exact integers or NaN with an exact result. Both conversions are
+ * arithmetic mod 2^32, so the wrapping i32 sum or product of the operands'
+ * low halves is the converted exact result; a NaN operand makes the result
+ * NaN, which converts to 0. A product is exact when the operands' magnitude
+ * bounds multiply to at most 2^53; it may be -0 (`0 * -1`), which converts
+ * to 0 like the integer 0. Returns undefined, emitting nothing, for any
+ * other expression. */
 export function emitWrappingSum(
   host: LlvmEmitterContext,
   e: IrExpr & { kind: "bin" },
@@ -142,15 +147,23 @@ export function emitWrappingSum(
   li: LlInteger | null,
   ri: LlInteger | null,
 ): string | undefined {
-  if ((e.op !== "+" && e.op !== "-") || !host.wrappingSums.has(e)) return undefined;
+  if ((e.op !== "+" && e.op !== "-" && e.op !== "*") || !host.wrappingSums.has(e)) return undefined;
   const leftRange = li ? li.range : integerOrNaNRange(host, e.left);
   const rightRange = leftRange && (ri ? ri.range : integerOrNaNRange(host, e.right));
-  if (!rightRange || !integerArithmeticRange(e.op, leftRange!, rightRange)) return undefined;
+  if (!rightRange) return undefined;
+  if (
+    e.op === "*"
+      ? !exactProduct(leftRange!, rightRange)
+      : !integerArithmeticRange(e.op, leftRange!, rightRange)
+  )
+    return undefined;
   const B = host.B;
   const left = wrappingOperand(host, l, li, leftRange!);
   const right = wrappingOperand(host, r, ri, rightRange);
   const sum = B.tmp();
-  B.line(`${sum} = ${e.op === "+" ? "add" : "sub"} i32 ${left.low}, ${right.low}`);
+  B.line(
+    `${sum} = ${e.op === "+" ? "add" : e.op === "-" ? "sub" : "mul"} i32 ${left.low}, ${right.low}`,
+  );
   let valid = left.valid ?? right.valid;
   if (valid === null) return sum;
   if (left.valid && right.valid) {
@@ -160,6 +173,15 @@ export function emitWrappingSum(
   const out = B.tmp();
   B.line(`${out} = select i1 ${valid}, i32 ${sum}, i32 0`);
   return out;
+}
+
+/** Whether every product of a value in `left` and one in `right` is an
+ * integer of magnitude at most 2^53, which the double product holds
+ * exactly. */
+function exactProduct(left: IntegerRange, right: IntegerRange): boolean {
+  const magnitude = (range: IntegerRange): number =>
+    Math.max(Math.abs(range.min), Math.abs(range.max));
+  return magnitude(left) * magnitude(right) <= 2 ** 53;
 }
 
 /** The number locals of `fn` that only hold exact integers (never -0) or NaN, with the range of

@@ -16135,26 +16135,173 @@ typedef struct ScrWeakEntry {
   unsigned kind;
   ScrDyn *value;
   ScrWeakMap *owner;
-  struct ScrWeakEntry *next, *all_next;
+  /* The owner's entries, and every collection's entries for the same key
+   * pointer (whatever their kind): both doubly linked, so an entry leaves
+   * either list in constant time. */
+  struct ScrWeakEntry *next, *prev, *key_next, *key_prev;
 } ScrWeakEntry;
 
 struct ScrWeakMap { size_t rc; ScrWeakEntry *entries; bool is_set; };
 /* Weak observers borrow key identities. Values are traced strong edges;
- * value-to-key cycles require explicit deletion or container disposal. */
-#define SCR_WEAK_BUCKETS 1024
-static SCR_TL ScrWeakEntry *scr_weak_entries[SCR_WEAK_BUCKETS];
-static size_t scr_weak_bucket(void *key) {
-  uintptr_t bits = (uintptr_t)key;
-  return ((bits >> 4) ^ (bits >> 14)) & (SCR_WEAK_BUCKETS - 1);
+ * value-to-key cycles require explicit deletion or container disposal.
+ *
+ * Two open-addressing indexes per thread find entries in expected constant
+ * time: scr_weak_index by (collection, key, kind), for get/set/has/delete,
+ * and scr_weak_keys by key pointer, the head of that key's entries, for a
+ * disposal, which ends the key's entries in every collection. Both use
+ * linear probing with backward-shift deletion, grow at half load, and are
+ * freed when their last entry goes. */
+static SCR_TL ScrWeakEntry **scr_weak_index;
+static SCR_TL size_t scr_weak_index_mask, scr_weak_index_used;
+typedef struct { void *key; ScrWeakEntry *head; } ScrWeakKeySlot;
+static SCR_TL ScrWeakKeySlot *scr_weak_keys;
+static SCR_TL size_t scr_weak_keys_mask, scr_weak_keys_used;
+
+static inline size_t scr_weak_mix(uintptr_t bits) {
+  bits ^= bits >> 33;
+  bits *= 0xff51afd7ed558ccdull;
+  bits ^= bits >> 29;
+  return (size_t)bits;
+}
+static inline size_t scr_weak_entry_hash(const ScrWeakMap *owner, const void *key, unsigned kind) {
+  return scr_weak_mix((uintptr_t)key ^ ((uintptr_t)owner * 0x9E3779B97F4A7C15ull) ^ ((uintptr_t)kind << 56));
+}
+static inline size_t scr_weak_key_hash(const void *key) { return scr_weak_mix((uintptr_t)key); }
+
+static void scr_weak_index_put(ScrWeakEntry *entry) {
+  size_t j = scr_weak_entry_hash(entry->owner, entry->key, entry->kind) & scr_weak_index_mask;
+  while (scr_weak_index[j]) j = (j + 1) & scr_weak_index_mask;
+  scr_weak_index[j] = entry;
+}
+static void scr_weak_index_reserve(void) {
+  if (scr_weak_index && (scr_weak_index_used + 1) * 2 <= scr_weak_index_mask + 1) return;
+  ScrWeakEntry **old = scr_weak_index;
+  size_t n = old ? scr_weak_index_mask + 1 : 0, cap = n ? n * 2 : 64;
+  scr_weak_index = calloc(cap, sizeof *scr_weak_index);
+  if (!scr_weak_index) scr_json_oom();
+  scr_weak_index_mask = cap - 1;
+  for (size_t i = 0; i < n; i++)
+    if (old[i]) scr_weak_index_put(old[i]);
+  free(old);
+}
+static ScrWeakEntry *scr_weak_find(ScrWeakMap *map, void *ptr, unsigned kind) {
+  if (!scr_weak_index) return NULL;
+  for (size_t j = scr_weak_entry_hash(map, ptr, kind) & scr_weak_index_mask;; j = (j + 1) & scr_weak_index_mask) {
+    ScrWeakEntry *entry = scr_weak_index[j];
+    if (!entry) return NULL;
+    if (entry->owner == map && entry->key == ptr && entry->kind == kind) return entry;
+  }
+}
+static void scr_weak_index_delete(ScrWeakEntry *entry) {
+  size_t mask = scr_weak_index_mask;
+  size_t i = scr_weak_entry_hash(entry->owner, entry->key, entry->kind) & mask;
+  while (scr_weak_index[i] != entry) i = (i + 1) & mask;
+  if (--scr_weak_index_used == 0) {
+    /* Empty: give the table back, so a thread that exits leaves none. */
+    free(scr_weak_index);
+    scr_weak_index = NULL;
+    return;
+  }
+  for (size_t k = i;;) {
+    scr_weak_index[i] = NULL;
+    for (;;) {
+      k = (k + 1) & mask;
+      ScrWeakEntry *e = scr_weak_index[k];
+      if (!e) return;
+      size_t home = scr_weak_entry_hash(e->owner, e->key, e->kind) & mask;
+      /* e stays unless its home lies cyclically outside (i, k]. */
+      if (i <= k ? (i < home && home <= k) : (i < home || home <= k)) continue;
+      scr_weak_index[i] = e;
+      i = k;
+      break;
+    }
+  }
+}
+
+static ScrWeakKeySlot *scr_weak_key_slot(const void *key) {
+  if (!scr_weak_keys) return NULL;
+  for (size_t j = scr_weak_key_hash(key) & scr_weak_keys_mask;; j = (j + 1) & scr_weak_keys_mask) {
+    if (scr_weak_keys[j].key == key) return &scr_weak_keys[j];
+    if (!scr_weak_keys[j].key) return NULL;
+  }
+}
+static ScrWeakKeySlot *scr_weak_key_slot_put(void *key) {
+  if (!scr_weak_keys || (scr_weak_keys_used + 1) * 2 > scr_weak_keys_mask + 1) {
+    ScrWeakKeySlot *old = scr_weak_keys;
+    size_t n = old ? scr_weak_keys_mask + 1 : 0, cap = n ? n * 2 : 64;
+    scr_weak_keys = calloc(cap, sizeof *scr_weak_keys);
+    if (!scr_weak_keys) scr_json_oom();
+    scr_weak_keys_mask = cap - 1;
+    for (size_t i = 0; i < n; i++) {
+      if (!old[i].key) continue;
+      size_t j = scr_weak_key_hash(old[i].key) & scr_weak_keys_mask;
+      while (scr_weak_keys[j].key) j = (j + 1) & scr_weak_keys_mask;
+      scr_weak_keys[j] = old[i];
+    }
+    free(old);
+  }
+  size_t j = scr_weak_key_hash(key) & scr_weak_keys_mask;
+  while (scr_weak_keys[j].key && scr_weak_keys[j].key != key) j = (j + 1) & scr_weak_keys_mask;
+  if (!scr_weak_keys[j].key) {
+    scr_weak_keys[j].key = key;
+    scr_weak_keys[j].head = NULL;
+    scr_weak_keys_used++;
+  }
+  return &scr_weak_keys[j];
+}
+static void scr_weak_key_slot_delete(ScrWeakKeySlot *slot) {
+  size_t mask = scr_weak_keys_mask;
+  size_t i = (size_t)(slot - scr_weak_keys);
+  if (--scr_weak_keys_used == 0) {
+    free(scr_weak_keys);
+    scr_weak_keys = NULL;
+    return;
+  }
+  for (size_t k = i;;) {
+    scr_weak_keys[i].key = NULL;
+    scr_weak_keys[i].head = NULL;
+    for (;;) {
+      k = (k + 1) & mask;
+      if (!scr_weak_keys[k].key) return;
+      size_t home = scr_weak_key_hash(scr_weak_keys[k].key) & mask;
+      if (i <= k ? (i < home && home <= k) : (i < home || home <= k)) continue;
+      scr_weak_keys[i] = scr_weak_keys[k];
+      i = k;
+      break;
+    }
+  }
+}
+
+/* Indexes a new entry (its key, kind and owner set) under its key. */
+static void scr_weak_link(ScrWeakEntry *entry) {
+  scr_weak_index_reserve();
+  scr_weak_index_put(entry);
+  scr_weak_index_used++;
+  ScrWeakKeySlot *slot = scr_weak_key_slot_put(entry->key);
+  entry->key_prev = NULL;
+  entry->key_next = slot->head;
+  if (slot->head) slot->head->key_prev = entry;
+  slot->head = entry;
+}
+
+/* Takes an entry out of both indexes (it stays in its owner's list). */
+static void scr_weak_unlink(ScrWeakEntry *entry) {
+  scr_weak_index_delete(entry);
+  if (entry->key_next) entry->key_next->key_prev = entry->key_prev;
+  if (entry->key_prev) entry->key_prev->key_next = entry->key_next;
+  else {
+    ScrWeakKeySlot *slot = scr_weak_key_slot(entry->key);
+    if (entry->key_next) slot->head = entry->key_next;
+    else scr_weak_key_slot_delete(slot);
+  }
 }
 
 static void scr_weak_remove_impl(ScrWeakEntry *entry, bool collected) {
-  ScrWeakEntry **slot = &entry->owner->entries;
-  while (*slot != entry) slot = &(*slot)->next;
-  *slot = entry->next;
-  slot = &scr_weak_entries[scr_weak_bucket(entry->key)];
-  while (*slot != entry) slot = &(*slot)->all_next;
-  *slot = entry->all_next;
+  ScrWeakMap *owner = entry->owner;
+  if (entry->next) entry->next->prev = entry->prev;
+  if (entry->prev) entry->prev->next = entry->next;
+  else owner->entries = entry->next;
+  scr_weak_unlink(entry);
   ScrDyn *value = entry->value;
   free(entry);
   /* Unlink before release: releasing a value can dispose another key. */
@@ -16178,10 +16325,9 @@ static void scr_weak_map_gcfree(void *ptr) {
 
 static void scr_weak_disposed(void *key) {
   for (;;) {
-    ScrWeakEntry *entry = scr_weak_entries[scr_weak_bucket(key)];
-    while (entry && entry->key != key) entry = entry->all_next;
-    if (!entry) return;
-    scr_weak_remove(entry);
+    ScrWeakKeySlot *slot = scr_weak_key_slot(key);
+    if (!slot) return;
+    scr_weak_remove(slot->head);
   }
 }
 
@@ -16239,12 +16385,6 @@ static int scr_weak_key(const ScrDyn *key, void **ptr, unsigned *kind) {
   }
 }
 
-static ScrWeakEntry *scr_weak_find(ScrWeakMap *map, void *ptr, unsigned kind) {
-  for (ScrWeakEntry *entry = map->entries; entry; entry = entry->next)
-    if (entry->key == ptr && entry->kind == kind) return entry;
-  return NULL;
-}
-
 static bool scr_weak_set(ScrWeakMap *map, ScrDyn *key, ScrDyn *value) {
   void *ptr = NULL;
   unsigned kind = 0;
@@ -16273,10 +16413,9 @@ static bool scr_weak_set(ScrWeakMap *map, ScrDyn *key, ScrDyn *value) {
   entry->value = scr_dyn_retain(value);
   entry->owner = map;
   entry->next = map->entries;
+  if (map->entries) map->entries->prev = entry;
   map->entries = entry;
-  size_t bucket = scr_weak_bucket(ptr);
-  entry->all_next = scr_weak_entries[bucket];
-  scr_weak_entries[bucket] = entry;
+  scr_weak_link(entry);
   return true;
 }
 
@@ -17513,16 +17652,14 @@ static bool scr_dyn_decl_rekey(ScrDyn *node, void *ptr) {
   bool moved = false;
   if (!scr_weak_observing) return false;
   for (;;) {
-    ScrWeakEntry **slot = &scr_weak_entries[scr_weak_bucket(node)];
-    while (*slot && !((*slot)->key == (void *)node && (*slot)->kind == 0)) slot = &(*slot)->all_next;
-    ScrWeakEntry *entry = *slot;
+    ScrWeakKeySlot *slot = scr_weak_key_slot(node);
+    ScrWeakEntry *entry = slot ? slot->head : NULL;
+    while (entry && entry->kind != 0) entry = entry->key_next;
     if (!entry) return moved;
-    *slot = entry->all_next;
+    scr_weak_unlink(entry);
     entry->key = ptr;
     entry->kind = 32;
-    ScrWeakEntry **head = &scr_weak_entries[scr_weak_bucket(ptr)];
-    entry->all_next = *head;
-    *head = entry;
+    scr_weak_link(entry);
     moved = true;
   }
 }

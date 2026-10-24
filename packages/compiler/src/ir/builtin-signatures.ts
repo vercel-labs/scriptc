@@ -2786,6 +2786,10 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
     argTypes: [DYN, STRING],
     result: { kind: "object", className: "%Duplex" },
   },
+  /** Whether pipeline() pumps a checked-dynamic first stage as an
+   * iterable (a string, or a value with an iterator method that is not a
+   * stream with pipe() and on()) instead of piping it as a stream. */
+  "stream.dynIterableSource": { argTypes: [DYN], result: BOOL },
   /** The Transform a Cipheriv or Decipheriv reads and writes as a stream
    * (+1, created on first use and owned by the cipher). */
   "stream.handleStream": {

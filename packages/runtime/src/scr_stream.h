@@ -145,6 +145,10 @@ ScrStream *scr_stream_pipe_general(ScrStream *src, ScrStream *dst, bool end);
 /* A boxed native stream out of a checked-dynamic pipeline stage (+1), or
  * NULL with `message` thrown as the not-supported Error. */
 ScrStream *scr_stream_unbox_dyn(const struct ScrDyn *value, const ScrStr *message);
+/* Whether pipeline() keeps a checked-dynamic first stage as an iterable
+ * to pump rather than as a stream (false with an exception pending when
+ * reading the value's members throws). */
+bool scr_stream_dyn_iterable_source(const struct ScrDyn *value);
 /* Handles that are Transforms (ScrDynHandleOps.transform: Cipheriv and
  * Decipheriv). scr_stream_of_handle: the handle's Transform (+1), built on
  * first use, or NULL when the value is not such a handle.

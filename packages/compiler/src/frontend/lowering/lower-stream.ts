@@ -2837,6 +2837,107 @@ export function streamClassAliasDecl(
 const PIPELINE_STAGE_EXPECTED =
   "of type function or an instance of Blob, ReadableStream, WritableStream, Stream, Iterable, AsyncIterable, or Promise or { readable, writable } pair";
 
+/** A checked-dynamic pipeline stage (an untyped source or destination):
+ * a boxed native stream unwraps at run time; other values (functions,
+ * pairs) throw the not-supported Error there. */
+function unboxDynStage(lowerer: Lowerer, v: IrExpr, node: ts.Expression): IrExpr {
+  noteUntypedStreamFlow(lowerer, null);
+  return {
+    kind: "libCall",
+    fn: "stream.unboxDyn",
+    args: [
+      v,
+      strLit(
+        lowerer.dynNodeStreams
+          ? "pipeline stages other than native streams (JavaScript stream objects, iterables, generators, plain functions, and { readable, writable } pairs) are not supported yet"
+          : "pipeline stages other than native streams (iterables, generators, plain functions, and { readable, writable } pairs) are not supported yet",
+        locOf(node),
+      ),
+    ],
+    type: { kind: "object", className: "%Duplex" },
+    loc: locOf(node),
+  };
+}
+
+/** A pipeline whose first stage is checked-dynamic, lowered with that
+ * stage already evaluated: `expr` is the stream it unboxes to, or, when
+ * `iterable` is set, the value to pump as an iterable source. */
+interface DynPipelineSource {
+  expr: IrExpr;
+  iterable: boolean;
+}
+
+/** pipeline() whose first stage is a stream argument (not a function
+ * stage, an iterable of a static type, or a cipher value), lowered here.
+ * When the value is checked-dynamic, Node keeps a stream there and pipes
+ * it, and keeps an iterable (a string, an array, a generator, any value
+ * with an iterator method) and pumps it into the next stage. The value is
+ * evaluated once, and stream.dynIterableSource picks the lowering at run
+ * time. Null when the first stage is not such an argument. */
+function lowerDynSourcePipeline(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  loc: SrcLoc,
+  build: (source: DynPipelineSource) => IrExpr,
+): IrExpr | null {
+  if (pipelineStageFunction(lowerer, node) !== null) return null;
+  if (iterableSourceType(lowerer, node) !== null || isValueStream(lowerer, node)) return null;
+  let value = lowerer.lowerExpr(node);
+  // A Set, a Map or a generator object is iterated through its
+  // checked-dynamic value.
+  if (BOXED_SOURCE_KINDS.has(value.type.kind) && lowerer.dynConvertible(value.type)) {
+    value = { kind: "dynFrom", value, type: DYN, loc: value.loc };
+  }
+  if (value.type.kind !== "dyn") {
+    let stream: IrExpr;
+    try {
+      stream = streamArgOf(lowerer, node, value, "pipeline");
+    } catch (e) {
+      if (e instanceof StreamArgTypeThrow) return e.expr;
+      throw e;
+    }
+    return build({ expr: stream, iterable: false });
+  }
+  const local = lowerer.declareHiddenLocal("%pipelineSource", DYN);
+  const ref = varRef(local.id, DYN, loc);
+  const stream = build({ expr: unboxDynStage(lowerer, ref, node), iterable: false });
+  const iterable = build({ expr: ref, iterable: true });
+  const type = stream.type;
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: local.id, init: value, loc }],
+    result: {
+      kind: "ternary",
+      cond: { kind: "libCall", fn: "stream.dynIterableSource", args: [ref], type: BOOL, loc },
+      then: lowerer.coerceToExpected(iterable, type),
+      else_: stream,
+      type,
+      loc,
+    },
+    type,
+    loc,
+  };
+}
+
+/** The static types of a pipeline source that lowerDynSourcePipeline boxes
+ * as checked-dynamic values. An array or a string reaches it when the
+ * checker types the argument as any while its value keeps a static type. */
+const BOXED_SOURCE_KINDS: ReadonlySet<IrType["kind"]> = new Set([
+  "set",
+  "map",
+  "generator",
+  "array",
+  "string",
+]);
+
+/** lowerPipelineStages' source arguments for a checked-dynamic first stage. */
+function stagesSource(
+  src: DynPipelineSource | null,
+): [ReadonlyMap<number, IrExpr> | undefined, IrExpr | undefined] {
+  if (src === null) return [undefined, undefined];
+  return src.iterable ? [undefined, src.expr] : [new Map([[0, src.expr]]), undefined];
+}
+
 /** A stream-rooted argument, lowered — or the pointed fence (pipeline's
  * iterable/generator/function stages have no lowering yet). `what` picks
  * the validation ladder: finished() rejects EVERY non-stream through
@@ -2848,7 +2949,16 @@ function lowerStreamArg(
   node: ts.Expression,
   what: "finished" | "pipeline" | "addAbortSignal" | "compose",
 ): IrExpr {
-  const lowered = lowerer.lowerExpr(node);
+  return streamArgOf(lowerer, node, lowerer.lowerExpr(node), what);
+}
+
+/** lowerStreamArg over the argument's lowered value. */
+function streamArgOf(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  lowered: IrExpr,
+  what: "finished" | "pipeline" | "addAbortSignal" | "compose",
+): IrExpr {
   // A Hash, Hmac, Cipheriv or Decipheriv stage is its Transform; pipeline
   // and compose stages keep the value alive until the stream settles.
   const v = isValueStream(lowerer, node)
@@ -2857,24 +2967,7 @@ function lowerStreamArg(
   // A checked-dynamic pipeline stage (an untyped source or destination):
   // a boxed native stream unwraps at run time; other values (iterables,
   // functions) throw the not-supported Error there.
-  if (v.type.kind === "dyn" && what === "pipeline") {
-    noteUntypedStreamFlow(lowerer, null);
-    return {
-      kind: "libCall",
-      fn: "stream.unboxDyn",
-      args: [
-        v,
-        strLit(
-          lowerer.dynNodeStreams
-            ? "pipeline stages other than native streams (JavaScript stream objects, iterables, generators, plain functions, and { readable, writable } pairs) are not supported yet"
-            : "pipeline stages other than native streams (iterables, generators, plain functions, and { readable, writable } pairs) are not supported yet",
-          locOf(node),
-        ),
-      ],
-      type: { kind: "object", className: "%Duplex" },
-      loc: locOf(node),
-    };
-  }
+  if (v.type.kind === "dyn" && what === "pipeline") return unboxDynStage(lowerer, v, node);
   const info = v.type.kind === "object" ? lowerer.classes.get(v.type.className) : undefined;
   if (!streamSidesOf(lowerer, info)) {
     // A provably-non-stream value in a JS source (the invalid-input
@@ -3210,57 +3303,82 @@ export function lowerStreamModuleCall(
           ? pipelineOptions(lowerer, lastArg)
           : null;
       const stageArgs = opts ? args.slice(0, -1) : args;
-      if (hasPipelineFunctionStage(lowerer, stageArgs)) {
-        const staged = lowerPipelineStages(lowerer, stageArgs, loc);
-        const type = staged.destPromise ?? { kind: "promise", inner: VOID };
-        // A promise destination's value settles the result (same type).
-        if (!opts) {
-          return staged.wrap({
-            kind: "libCall",
-            fn: "sp.pipelineStages",
-            args: staged.args,
-            type,
-            loc,
-          });
-        }
-        // the options: end, and the signal (flags bit 6)
-        const flagsArg = staged.args[3]!;
-        if (flagsArg.kind !== "numLit")
-          throw new InternalCompilerError("pipeline flags not a literal");
-        const args = [...staged.args, boolLit(opts.end, loc)];
-        if (opts.signal) {
-          args[3] = numLit(flagsArg.value | 64, loc);
-          args.push(opts.signal);
-        }
-        return staged.wrap({ kind: "libCall", fn: "sp.pipelineStagesOpts", args, type, loc });
-      }
-      let streams: IrExpr[];
-      try {
-        streams = stageArgs.map((a) => lowerStreamArg(lowerer, a, "pipeline"));
-      } catch (e) {
-        if (e instanceof StreamArgTypeThrow) return e.expr;
-        throw e;
-      }
-      if (opts) {
-        const head = [numLit(streams.length, loc), ...streams, boolLit(opts.end, loc)];
-        return {
-          kind: "libCall",
-          fn: opts.signal ? "sp.pipelineOptsSignal" : "sp.pipelineOpts",
-          args: opts.signal ? [...head, opts.signal] : head,
-          type: { kind: "promise", inner: VOID },
-          loc,
-        };
-      }
-      return {
-        kind: "libCall",
-        fn: "sp.pipeline",
-        args: [numLit(streams.length, loc), ...streams],
-        type: { kind: "promise", inner: VOID },
-        loc,
-      };
+      const build = (src: DynPipelineSource | null): IrExpr =>
+        lowerPromisePipeline(lowerer, stageArgs, opts, src, loc);
+      return lowerDynSourcePipeline(lowerer, stageArgs[0]!, loc, build) ?? build(null);
     }
     return null;
   }
+  return lowerStreamModuleCallbackCall(lowerer, call, bi, loc);
+}
+
+/** stream/promises pipeline(...stages[, options]), with the first stage
+ * pre-lowered when it is checked-dynamic (lowerDynSourcePipeline). */
+function lowerPromisePipeline(
+  lowerer: Lowerer,
+  stageArgs: readonly ts.Expression[],
+  opts: ReturnType<typeof pipelineOptions> | null,
+  src: DynPipelineSource | null,
+  loc: SrcLoc,
+): IrExpr {
+  if (src?.iterable === true || hasPipelineFunctionStage(lowerer, stageArgs)) {
+    const staged = lowerPipelineStages(lowerer, stageArgs, loc, ...stagesSource(src));
+    const type = staged.destPromise ?? { kind: "promise", inner: VOID };
+    // A promise destination's value settles the result (same type).
+    if (!opts) {
+      return staged.wrap({
+        kind: "libCall",
+        fn: "sp.pipelineStages",
+        args: staged.args,
+        type,
+        loc,
+      });
+    }
+    // the options: end, and the signal (flags bit 6)
+    const flagsArg = staged.args[3]!;
+    if (flagsArg.kind !== "numLit") throw new InternalCompilerError("pipeline flags not a literal");
+    const args = [...staged.args, boolLit(opts.end, loc)];
+    if (opts.signal) {
+      args[3] = numLit(flagsArg.value | 64, loc);
+      args.push(opts.signal);
+    }
+    return staged.wrap({ kind: "libCall", fn: "sp.pipelineStagesOpts", args, type, loc });
+  }
+  let streams: IrExpr[];
+  try {
+    streams = stageArgs.map((a, i) =>
+      i === 0 && src !== null ? src.expr : lowerStreamArg(lowerer, a, "pipeline"),
+    );
+  } catch (e) {
+    if (e instanceof StreamArgTypeThrow) return e.expr;
+    throw e;
+  }
+  if (opts) {
+    const head = [numLit(streams.length, loc), ...streams, boolLit(opts.end, loc)];
+    return {
+      kind: "libCall",
+      fn: opts.signal ? "sp.pipelineOptsSignal" : "sp.pipelineOpts",
+      args: opts.signal ? [...head, opts.signal] : head,
+      type: { kind: "promise", inner: VOID },
+      loc,
+    };
+  }
+  return {
+    kind: "libCall",
+    fn: "sp.pipeline",
+    args: [numLit(streams.length, loc), ...streams],
+    type: { kind: "promise", inner: VOID },
+    loc,
+  };
+}
+
+/** The node:stream and stream/consumers members of lowerStreamModuleCall. */
+function lowerStreamModuleCallbackCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  bi: { module: string; member: string },
+  loc: SrcLoc,
+): IrExpr | null {
   if (bi.module === "stream/consumers") {
     const args = call.arguments.nodes;
     // text/json/buffer/arrayBuffer(stream) → a pending promise the
@@ -3411,67 +3529,9 @@ export function lowerStreamModuleCall(
         "the supported form is pipeline(source, ...streams, callback)",
       );
     }
-    if (hasPipelineFunctionStage(lowerer, args.slice(0, -1))) {
-      const staged = lowerPipelineStages(lowerer, args.slice(0, -1), loc);
-      const cbNode = args[args.length - 1]!;
-      const cbParams =
-        ts.isArrowFunction(cbNode) || ts.isFunctionExpression(cbNode)
-          ? cbNode.parameters.nodes.length
-          : 0;
-      if (staged.dest === 2 || (staged.dest === 1 && cbParams > 1)) {
-        // callback(err, value): the destination's value (undefined for
-        // an async generator) reaches the callback through the
-        // checked-dynamic path.
-        const cb = lowerer.lowerExprExpecting(args[args.length - 1]!, DYN);
-        // SCR_PIPE_TYPED_CB: a typed callback whose error parameter cannot
-        // hold undefined takes null for no error; others take undefined.
-        const stagedArgs = [...staged.args];
-        const flagsArg = stagedArgs[3]!;
-        if (flagsArg.kind !== "numLit")
-          throw new InternalCompilerError("pipeline flags not a literal");
-        if (
-          !isJsSourceFile(ts.getSourceFileOfNode(call)) &&
-          !callbackErrorAdmitsUndefined(lowerer, cb)
-        )
-          stagedArgs[3] = numLit(flagsArg.value | 128, loc);
-        return staged.wrap({
-          kind: "libCall",
-          fn: "stream.pipelineStagesDyn",
-          args: [...stagedArgs, cb],
-          type: staged.last,
-          loc,
-        });
-      }
-      const { cb, dyn } = lowerEosCallback(
-        lowerer,
-        "pipeline",
-        args[args.length - 1]!,
-        staged.last,
-      );
-      return staged.wrap({
-        kind: "libCall",
-        fn: dyn ? "stream.pipelineStagesDyn" : "stream.pipelineStages",
-        args: [...staged.args, cb],
-        type: staged.last,
-        loc,
-      });
-    }
-    let streams: IrExpr[];
-    try {
-      streams = args.slice(0, -1).map((a) => lowerStreamArg(lowerer, a, "pipeline"));
-    } catch (e) {
-      if (e instanceof StreamArgTypeThrow) return e.expr;
-      throw e;
-    }
-    const last = streams[streams.length - 1]!;
-    const { cb, dyn } = lowerEosCallback(lowerer, "pipeline", args[args.length - 1]!, last.type);
-    return {
-      kind: "libCall",
-      fn: dyn ? "stream.pipelineDyn" : "stream.pipeline",
-      args: [numLit(streams.length, loc), ...streams, cb],
-      type: last.type,
-      loc,
-    };
+    const build = (src: DynPipelineSource | null): IrExpr =>
+      lowerCallbackPipeline(lowerer, call, args, src, loc);
+    return lowerDynSourcePipeline(lowerer, args[0]!, loc, build) ?? build(null);
   }
 
   if (bi.member === "compose") {
@@ -3482,6 +3542,75 @@ export function lowerStreamModuleCall(
   }
 
   return null;
+}
+
+/** pipeline(...stages, callback), with the first stage pre-lowered when it
+ * is checked-dynamic (lowerDynSourcePipeline). */
+function lowerCallbackPipeline(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  args: readonly ts.Expression[],
+  src: DynPipelineSource | null,
+  loc: SrcLoc,
+): IrExpr {
+  if (src?.iterable === true || hasPipelineFunctionStage(lowerer, args.slice(0, -1))) {
+    const staged = lowerPipelineStages(lowerer, args.slice(0, -1), loc, ...stagesSource(src));
+    const cbNode = args[args.length - 1]!;
+    const cbParams =
+      ts.isArrowFunction(cbNode) || ts.isFunctionExpression(cbNode)
+        ? cbNode.parameters.nodes.length
+        : 0;
+    if (staged.dest === 2 || (staged.dest === 1 && cbParams > 1)) {
+      // callback(err, value): the destination's value (undefined for
+      // an async generator) reaches the callback through the
+      // checked-dynamic path.
+      const cb = lowerer.lowerExprExpecting(args[args.length - 1]!, DYN);
+      // SCR_PIPE_TYPED_CB: a typed callback whose error parameter cannot
+      // hold undefined takes null for no error; others take undefined.
+      const stagedArgs = [...staged.args];
+      const flagsArg = stagedArgs[3]!;
+      if (flagsArg.kind !== "numLit")
+        throw new InternalCompilerError("pipeline flags not a literal");
+      if (
+        !isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+        !callbackErrorAdmitsUndefined(lowerer, cb)
+      )
+        stagedArgs[3] = numLit(flagsArg.value | 128, loc);
+      return staged.wrap({
+        kind: "libCall",
+        fn: "stream.pipelineStagesDyn",
+        args: [...stagedArgs, cb],
+        type: staged.last,
+        loc,
+      });
+    }
+    const { cb, dyn } = lowerEosCallback(lowerer, "pipeline", args[args.length - 1]!, staged.last);
+    return staged.wrap({
+      kind: "libCall",
+      fn: dyn ? "stream.pipelineStagesDyn" : "stream.pipelineStages",
+      args: [...staged.args, cb],
+      type: staged.last,
+      loc,
+    });
+  }
+  let streams: IrExpr[];
+  try {
+    streams = args
+      .slice(0, -1)
+      .map((a, i) => (i === 0 && src !== null ? src.expr : lowerStreamArg(lowerer, a, "pipeline")));
+  } catch (e) {
+    if (e instanceof StreamArgTypeThrow) return e.expr;
+    throw e;
+  }
+  const last = streams[streams.length - 1]!;
+  const { cb, dyn } = lowerEosCallback(lowerer, "pipeline", args[args.length - 1]!, last.type);
+  return {
+    kind: "libCall",
+    fn: dyn ? "stream.pipelineDyn" : "stream.pipeline",
+    args: [numLit(streams.length, loc), ...streams, cb],
+    type: last.type,
+    loc,
+  };
 }
 
 /** A pipeline() function stage: an inline function or arrow function, or
@@ -3788,6 +3917,237 @@ function lowerWebStreamSource(
   };
 }
 
+/** A checked-dynamic pipeline source that is an iterable at run time
+ * (stream.dynIterableSource), as an async generator closure that iterates
+ * it as Node's pipeline does with `for await`: the value's async iterator,
+ * or its sync iterator stepped like the typed iterable sources. Each value
+ * is yielded; leaving early closes the iterator through its return(). */
+function lowerDynIterableSource(
+  lowerer: Lowerer,
+  value: IrExpr,
+  loc: SrcLoc,
+): { closure: IrExpr; out: SyncGenType } | null {
+  const out: SyncGenType = {
+    kind: "generator",
+    async: true,
+    yieldT: DYN,
+    retT: VOID,
+    nextT: UNDEFINED_T,
+  };
+  const genResultT = genResultRecord(DYN, VOID, lowerer.shapes, lowerer.unions);
+  if (!genResultT) return null;
+  const key = "dynIterableSource";
+  let maker = lowerer.valueHelpers.get(key);
+  if (!maker) {
+    maker = `%stream.dynIterableSource.${lowerer.valueHelpers.size}`;
+    const genName = `${maker}.gen`;
+    const frame = new LiftedFrame(loc);
+    const srcId = frame.local("src", DYN, false);
+    const itId = frame.local("it", DYN, false);
+    const syncId = frame.local("sync", BOOL, false);
+    const nextId = frame.local("next", DYN, false);
+    const stepId = frame.local("step", DYN, true);
+    const activeId = frame.local("active", BOOL, true);
+    const closeId = frame.local("close", DYN, false);
+    const it = (): IrExpr => varRef(itId, DYN, loc);
+    const sync = (): IrExpr => varRef(syncId, BOOL, loc);
+    const step = (): IrExpr => varRef(stepId, DYN, loc);
+    const get = (obj: IrExpr, name: string): IrExpr => ({
+      kind: "dynKeyGet",
+      value: obj,
+      key: strLit(name, loc),
+      type: DYN,
+      loc,
+    });
+    const awaitDyn = (v: IrExpr): IrExpr => ({
+      kind: "libCall",
+      fn: "async.awaitDyn",
+      args: [v],
+      type: DYN,
+      loc,
+    });
+    const call = (callee: IrExpr, calleeName: string): IrExpr => ({
+      kind: "dynCall",
+      callee,
+      receiver: it(),
+      calleeName,
+      args: [],
+      type: DYN,
+      loc,
+    });
+    const setActive = (on: boolean): IrStmt => ({
+      kind: "assign",
+      localId: activeId,
+      value: boolLit(on, loc),
+      loc,
+    });
+    const nextCall = (): IrExpr => call(varRef(nextId, DYN, loc), "iterator method");
+    const body: IrStmt[] = [
+      {
+        kind: "varDecl",
+        localId: itId,
+        init: {
+          kind: "libCall",
+          fn: "dyn.iteratorResult",
+          args: [
+            {
+              kind: "libCall",
+              fn: "dyn.asyncIteratorOpen",
+              args: [varRef(srcId, DYN, loc), strLit("", loc)],
+              type: DYN,
+              loc,
+            },
+          ],
+          type: DYN,
+          loc,
+        },
+        loc,
+      },
+      {
+        kind: "varDecl",
+        localId: syncId,
+        init: { kind: "libCall", fn: "dyn.asyncIteratorWasSync", args: [], type: BOOL, loc },
+        loc,
+      },
+      { kind: "varDecl", localId: nextId, init: get(it(), "next"), loc },
+      { kind: "varDecl", localId: stepId, init: dynUndefinedExpr(loc), loc },
+      { kind: "varDecl", localId: activeId, init: boolLit(false, loc), loc },
+      {
+        kind: "tryCatch",
+        tryBody: [
+          {
+            kind: "while",
+            cond: boolLit(true, loc),
+            body: [
+              setActive(false),
+              {
+                kind: "assign",
+                localId: stepId,
+                value: {
+                  kind: "libCall",
+                  fn: "dyn.iteratorResult",
+                  args: [
+                    {
+                      kind: "ternary",
+                      cond: sync(),
+                      then: nextCall(),
+                      else_: awaitDyn(nextCall()),
+                      type: DYN,
+                      loc,
+                    },
+                  ],
+                  type: DYN,
+                  loc,
+                },
+                loc,
+              },
+              {
+                kind: "if",
+                cond: {
+                  kind: "dynTest",
+                  test: "truthy",
+                  value: get(step(), "done"),
+                  type: BOOL,
+                  loc,
+                },
+                then: [{ kind: "break", loc }],
+                else_: null,
+                loc,
+              },
+              setActive(true),
+              {
+                kind: "exprStmt",
+                expr: { kind: "yieldExpr", value: get(step(), "value"), type: VOID, loc },
+                loc,
+              },
+            ],
+            loc,
+          },
+        ],
+        catchBody: null,
+        catchLocalId: null,
+        finallyBody: [
+          {
+            kind: "if",
+            cond: varRef(activeId, BOOL, loc),
+            then: [
+              { kind: "varDecl", localId: closeId, init: get(it(), "return"), loc },
+              {
+                kind: "if",
+                cond: {
+                  kind: "unary",
+                  op: "!",
+                  operand: {
+                    kind: "dynTest",
+                    test: "nullish",
+                    value: varRef(closeId, DYN, loc),
+                    type: BOOL,
+                    loc,
+                  },
+                  type: BOOL,
+                  loc,
+                },
+                then: [
+                  {
+                    kind: "exprStmt",
+                    expr: awaitDyn(call(varRef(closeId, DYN, loc), "iterator return")),
+                    loc,
+                  },
+                ],
+                else_: null,
+                loc,
+              },
+            ],
+            else_: null,
+            loc,
+          },
+        ],
+        loc,
+      },
+      { kind: "return", value: null, loc },
+    ];
+    const srcLocal = frame.locals.find((l) => l.id === srcId)!;
+    srcLocal.boxed = true;
+    lowerer.valueHelpers.set(key, maker);
+    lowerer.liftedFns.push({
+      name: genName,
+      params: [],
+      returnType: VOID,
+      async: true,
+      captures: [{ localId: srcId, name: "src", type: DYN }],
+      locals: frame.locals,
+      body,
+      generator: { yieldT: DYN, nextT: UNDEFINED_T, resultType: genResultT },
+      loc,
+    });
+    const makerSrc: IrLocal = { id: "src.0", name: "src", type: DYN, mutable: false, boxed: true };
+    lowerer.liftedFns.push({
+      name: maker,
+      params: [{ localId: makerSrc.id, name: makerSrc.name, type: DYN }],
+      returnType: funcOf([], out),
+      locals: [makerSrc],
+      body: [
+        {
+          kind: "return",
+          value: {
+            kind: "closure",
+            fnName: genName,
+            captures: [makerSrc.id],
+            type: funcOf([], out),
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  return {
+    closure: { kind: "call", callee: maker, args: [value], type: funcOf([], out), loc },
+    out,
+  };
+}
+
 function lowerIterableSource(
   lowerer: Lowerer,
   node: ts.Expression,
@@ -3951,6 +4311,7 @@ function lowerPipelineStages(
   stageArgs: readonly ts.Expression[],
   loc: SrcLoc,
   preLowered?: ReadonlyMap<number, IrExpr>,
+  dynSource?: IrExpr,
 ): PipelineStagesLowering {
   if (stageArgs.length > 52) {
     lowerer.noLowering(
@@ -3975,6 +4336,15 @@ function lowerPipelineStages(
   const argOrder: { list: IrExpr[]; index: number }[] = [];
   for (let j = 0; j < stageArgs.length; j++) {
     const arg = stageArgs[j]!;
+    if (j === 0 && dynSource !== undefined) {
+      const source = lowerDynIterableSource(lowerer, dynSource, loc);
+      if (source === null) lowerer.noLowering("pipeline over this source", arg);
+      positions += 1;
+      argOrder.push({ list: stages, index: stages.length });
+      stages.push(source!.closure);
+      srcT = source!.out;
+      continue;
+    }
     // compose's head and tail functions arrive as Duplex.from streams
     const fn = preLowered?.has(j) ? null : pipelineStageFunction(lowerer, arg);
     const syncSourceFn =

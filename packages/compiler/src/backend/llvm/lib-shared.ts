@@ -795,6 +795,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "procStream.write": "scr_proc_stream_write",
   "stream.stdioWritable": "scr_stream_stdio_writable",
   "stream.unboxDyn": "scr_stream_unbox_dyn",
+  "stream.dynIterableSource": "scr_stream_dyn_iterable_source",
   "stream.handleStream": "scr_stream_handle",
   "stream.pipeDyn": "scr_stream_pipe_dyn",
   "stream.unpipeDyn": "scr_stream_unpipe_dyn",

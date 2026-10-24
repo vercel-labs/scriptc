@@ -3,7 +3,8 @@
   `readable.pipe(process.stdout)` and `readable.pipe(process.stderr)` compile and, as in Node, do not end the process stream.
   When an untyped value reaches `NodeJS.ReadableStream` or `NodeJS.WritableStream`, those two interfaces hold any value, so JavaScript stream objects (constructor-function streams, plain objects with `on` and `pipe`) pass through TypeScript functions typed with them and come back to JavaScript as the same objects.
   Member calls on such a value use the native stream when it is one and call the object's own members otherwise; `readable.pipe()` into a JavaScript destination follows Node's pipe protocol.
-  A `pipeline` stage and a `for await` source that arrive as untyped values must be native streams, or `Cipheriv` and `Decipheriv` values, at run time; other values throw a not-supported error.
+  The first `pipeline` stage may arrive as an untyped value that is a native stream, a `Cipheriv` or `Decipheriv` value, or an iterable: a string, an array, a generator object, or any value with a `Symbol.asyncIterator` or `Symbol.iterator` method, which the pipeline pumps into the next stage as Node does.
+  Later `pipeline` stages and `for await` sources that arrive as untyped values must be native streams, or `Cipheriv` and `Decipheriv` values, at run time; other values throw a not-supported error.
   Native streams expose no `emit` to JavaScript, so a JavaScript stream whose own `pipe()` emits on its destination (the legacy `Stream` pipe) cannot pipe into one.
   `Readable.from` accepts strings, Buffers, arrays, Sets, Maps, Map and Set iterators, generators, async generators, and class iterables and async iterables, and in JavaScript any iterable or async iterable.
   In JavaScript, a sync iterator value with a `then` method that is not a promise, and an object whose `[Symbol.asyncIterator]` or `[Symbol.iterator]` method is a generator method, are unsupported.
@@ -14,7 +15,7 @@
   `node:stream/consumers` and readline interfaces read object-mode streams of strings and Buffers; other values throw a not-supported error.
   `pipeline` accepts function stages anywhere among its streams: async generator functions (`async function* (source)`, iterating `source` with `for await`), an async generator source function (`async function* ({ signal })`), an async generator function as the destination, and an async function destination whose value resolves the promise form and reaches the callback's second argument.
   A stage is written inline, or named by a function declaration or a `const` bound to a function expression that nothing reassigns.
-  The source may also be an array, a string, a synchronous generator object, or a synchronous generator function without parameters; their elements reach the next stage on the same ticks as in Node.
+  The source may also be an array, a string, a `Set`, a `Map`, a generator or async generator object, or a synchronous generator function without parameters; their elements reach the next stage on the same ticks as in Node.
   Stages may take the `{ signal }` argument.
   With a function destination, `pipeline()` returns an object-mode PassThrough that receives an async generator destination's values, or an async function destination's value unless it is `null` or `undefined`.
   `@types/node` types that result as `NodeJS.WritableStream`, so `for await` over it needs the `PassThrough` type (`pipeline(...) as PassThrough`, or a JSDoc `@type`).

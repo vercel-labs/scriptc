@@ -6866,10 +6866,12 @@ static bool scr_stream_write_chunk_enc(ScrStream *s, ScrBytes *chunk /*borrowed*
     scr_stream_do_write(s, scr_stream_wchunk_retain(st, chunk), cb, enc);
   }
   /* Node computes the answer AFTER the (possibly synchronous) write:
-   * a sync completion has already drained its bytes from length. */
-  bool ret = st->w.length < st->w.hwm && !st->destroyed && !st->errored;
-  if (!ret) st->w.need_drain = true;
-  return ret;
+   * a sync completion has already drained its bytes from length. Only
+   * the length sets needDrain; an errored or destroyed stream answers
+   * false without waiting for 'drain'. */
+  bool below = st->w.length < st->w.hwm;
+  if (!below) st->w.need_drain = true;
+  return below && !st->destroyed && !st->errored;
 }
 
 static bool scr_stream_write_chunk(ScrStream *s, ScrBytes *chunk /*borrowed*/, ScrClosure *cb /*moves*/) {
@@ -8406,4 +8408,32 @@ ScrStream *scr_stream_unbox_dyn(const ScrDyn *value, const ScrStr *message) {
   if (stream) return stream;
   scr_throw_error_msg_code(SCR_ERR_ERROR, message->data, message->len, "SC2020");
   return NULL;
+}
+
+/* pipeline.js's first stage: a value with pipe() and on() methods is a
+ * readable node stream, which the stage ladder tests before isIterable;
+ * a string, or a value with a Symbol.asyncIterator or Symbol.iterator
+ * method, is an iterable the pipeline pumps into the next stage. */
+bool scr_stream_dyn_iterable_source(const ScrDyn *value) {
+  ScrStream *stream = scr_stream_of_handle(value);
+  if (!stream) stream = scr_stream_boxed(value);
+  if (stream) {
+    scr_stream_release(stream);
+    return false;
+  }
+  if (value->kind == SCR_DYN_STR) return true;
+  if (value->kind == SCR_DYN_OBJ) {
+    ScrDyn *pipe = scr_dyn_obj_read(value, "pipe", 4);
+    if (!pipe) return false;
+    bool streamish = pipe->kind == SCR_DYN_FUNC;
+    scr_dyn_release(pipe);
+    if (streamish) {
+      ScrDyn *on = scr_dyn_obj_read(value, "on", 2);
+      if (!on) return false;
+      streamish = on->kind == SCR_DYN_FUNC;
+      scr_dyn_release(on);
+      if (streamish) return false;
+    }
+  }
+  return scr_dyn_iterable_kind(value) > 0;
 }

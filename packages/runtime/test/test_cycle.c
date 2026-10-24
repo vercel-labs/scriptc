@@ -1242,6 +1242,32 @@ static void check_limited_pass(void) {
   check(freed - before == 4 * RING, "the live ring was not collected once dead");
 }
 
+/* A limited pass can reach a live candidate that keeps its buffer slot. */
+static void check_limited_pass_spares_buffered_survivor(void) {
+  enum { RING = 16 };
+  if (configured_nursery_threshold() < 8) return;
+  scr_collect_cycles();
+  size_t before = freed;
+  Node *kept = make_ring(RING);
+  kept->rc++;
+  release_live(kept); /* buffered, still externally owned */
+  Node *root = make_ring(RING);
+  root->other = kept;
+  kept->rc++;
+  release_live(root);
+  take(root);
+
+  check(scr_cyc_collect_set(&taken, SCR_CYC_NURSERY) == RING,
+        "limited pass did not free exactly the taken ring");
+  memset(taken_slots, 0, sizeof taken_slots);
+  check(scr_cyc_gen(scr_cyc_hdr(kept)) == SCR_CYC_NURSERY,
+        "a spared candidate was promoted out of the buffer that holds it");
+
+  release_live(kept);
+  scr_collect_cycles();
+  check(freed - before == 2 * RING, "the spared ring was not collected once dead");
+}
+
 /* A full pass whose fullest candidate buffer is the old generation's (more
  * entries than a pass keeps between passes), with nursery candidates
  * beside it: every dead ring in either buffer is reclaimed, the live rings
@@ -1518,6 +1544,7 @@ int main(void) {
   check_allocation_growth_runs_passes();
   check_publication_takes_candidates();
   check_limited_pass();
+  check_limited_pass_spares_buffered_survivor();
   check_large_old_buffer_with_nursery_candidates();
   check_unjudged_backlog_follows_growth();
   check_acyclic_objects();

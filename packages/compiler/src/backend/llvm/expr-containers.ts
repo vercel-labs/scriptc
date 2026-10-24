@@ -53,6 +53,7 @@ import {
   STRING_CHAR_CODE_AT_INT_MARKER,
   emitAsciiChar,
   emitAsciiCharCode,
+  emitUnitCharCode,
   STRING_UTF16_LEN_DECL,
 } from "./string-reads.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
@@ -322,6 +323,15 @@ export function charAtUnitRead(
   return read;
 }
 
+/** The UTF-16 units an enclosing loop version proved the index of `e`
+ * below the count of (string-unit-versions.ts). */
+function provenUnitsRead(host: LlvmEmitterContext, e: IrExpr): string | null {
+  const units = host.stringUnitReads.get(e);
+  if (units !== undefined) return units;
+  const origin = host.charAtUnitReads.get(e);
+  return origin !== undefined ? (host.stringUnitReads.get(origin) ?? null) : null;
+}
+
 /** An enclosing loop version proved the string of `e` ASCII and its index
  * below the length (bytes-loop-versions.ts). */
 function provenStringRead(host: LlvmEmitterContext, e: IrExpr): boolean {
@@ -364,9 +374,14 @@ export function emitStrIntrinsic(
   const method = e.method;
   switch (method) {
     case "length": {
+      const t = B.tmp();
+      const length = host.stringLengthReads.get(e);
+      if (length !== undefined) {
+        B.line(`${t} = sitofp i64 ${length} to double`);
+        return { name: t, type: e.type };
+      }
       // sc_str_utf16_len (string-reads.ts) answers proven-ASCII strings inline.
       host.declare(STRING_UTF16_LEN_DECL);
-      const t = B.tmp();
       B.line(`${t} = call double @sc_str_utf16_len(ptr ${r.name})`);
       return { name: t, type: e.type };
     }
@@ -376,6 +391,8 @@ export function emitStrIntrinsic(
       const index = e.args[0] ? exactInteger(host, args[0]!, e.args[0]) : null;
       if (index) {
         const wide = widenInteger(host, index);
+        const units = provenUnitsRead(host, e);
+        if (units !== null) return { name: emitUnitCharCode(host, units, wide), type: e.type };
         if (provenStringRead(host, e))
           return { name: emitAsciiCharCode(host, r.name, wide), type: e.type };
         host.declare(STRING_CHAR_CODE_AT_INT_MARKER);

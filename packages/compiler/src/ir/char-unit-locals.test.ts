@@ -96,3 +96,26 @@ console.log(escapes("a b", 1), rebound("  x", 0), wide("ab", 0), against("a", "b
     expect(fn(after, name)).toBe(fn(before, name));
   }
 });
+
+test("charAt tests in place compare charCodeAt", async () => {
+  const mod = holdCharLocalsAsUnits(
+    await lower(`
+function tests(s: string, i: number): number {
+  let n = 0;
+  if (s.charAt(i) === " ") n += 1;
+  if ("a" <= s.charAt(i) && s.charAt(i) < "n") n += 2;
+  if (s.charAt(i) === "ab") n += 4;
+  return n;
+}
+console.log(tests("a b", 1), tests("abc", 0), tests("", 2));
+`),
+  );
+  // The two-unit literal keeps its string comparison.
+  expect(reads(fn(mod, "tests"))).toEqual([
+    "charCodeAt",
+    "charCodeAt",
+    "charCodeAt",
+    "strEq",
+    "charAt",
+  ]);
+});

@@ -580,7 +580,9 @@ test("the guard tests a string's ASCII bit and the fast copy reads bytes", () =>
   const body = /^define internal [^\n]*@sc_bf_kernel[^]*?^}/m.exec(emitLlvmModule(mod))![0];
   const guard = body.slice(0, body.search(/^bytes\.version\.slow\d*:/m));
   expect(guard).toMatch(/load i32, ptr %\S+\n\s+%\S+ = icmp slt i32 %\S+, 0/);
-  const fast = body.slice(body.lastIndexOf("bytes.version.fast"));
+  // The byte copy, up to the units copy that follows it.
+  const units = body.search(/^bytes\.version\.fast\.units\d+:/m);
+  const fast = body.slice(body.search(/^bytes\.version\.fast\d+:/m), units < 0 ? undefined : units);
   expect(fast).toMatch(/load i8, ptr %\S+\n\s+%\S+ = uitofp i8/);
   expect(fast).not.toContain("@sc_str_char_code_at_int");
   // The checked copy keeps the inline helper and its fallback.

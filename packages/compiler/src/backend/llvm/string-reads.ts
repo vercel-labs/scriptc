@@ -75,6 +75,19 @@ export function emitAsciiCharCode(host: LlvmEmitterContext, s: string, index: st
   return code;
 }
 
+/** Unit `index` (an i64, below their count) of a string's UTF-16 `units`
+ * (ScrStrScan): one 16-bit load, as a double. */
+export function emitUnitCharCode(host: LlvmEmitterContext, units: string, index: string): string {
+  const B = host.B;
+  const pointer = B.tmp(),
+    unit = B.tmp(),
+    code = B.tmp();
+  B.line(`${pointer} = getelementptr inbounds i16, ptr ${units}, i64 ${index}`);
+  B.line(`${unit} = load i16, ptr ${pointer}`);
+  B.line(`${code} = uitofp i16 ${unit} to double`);
+  return code;
+}
+
 /** The one-character string of unit `index` (an i64) of a proven-ASCII
  * string `s` whose length covers it: the immortal `@sc_ascii_chars` entry
  * for its byte, as the inline charAt helpers answer. */
@@ -112,6 +125,15 @@ function loadLength(sz: string): string[] {
     `  %len.p = getelementptr inbounds %ScrStr, ptr %s, i32 0, i32 1`,
     `  %len = load ${sz}, ptr %len.p`,
   ];
+}
+
+/** Whether emitted reads use the runtime's scan receiver: from ordinary
+ * global storage, or, in worker executables, from the thread's static TLS
+ * block (executableTls). */
+export function stringScanInline(host: LlvmEmitterContext): boolean {
+  return (
+    host.executableTls || (host.mod.workers !== true && host.mod.lib?.threadInstances !== true)
+  );
 }
 
 /** The runtime's ScrStrScan record and the declaration naming it. */

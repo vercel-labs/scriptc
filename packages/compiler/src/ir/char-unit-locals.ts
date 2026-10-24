@@ -12,6 +12,8 @@ import { mapExprChildren, mapStmtChildren } from "./traverse.js";
 type CharAt = IrExpr & { kind: "strIntrinsic" };
 type UnitUse = IrExpr & { kind: "strEq" | "strCmp" };
 
+const FLIPPED = { "<": ">", "<=": ">=", ">": "<", ">=": "<=" } as const;
+
 /** Character locals held as their code unit.
  *
  * `const c = s[i]` (or `s.charAt(i)`) followed only by tests such as
@@ -28,7 +30,8 @@ type UnitUse = IrExpr & { kind: "strEq" | "strCmp" };
  *
  * Only immutable unboxed string locals qualify, with one declaration whose
  * initializer is a one-argument charAt, and with no other mention of the
- * local. */
+ * local. The same tests of `s.charAt(i)` in place compare
+ * `s.charCodeAt(i)`, so a loop version sees one kind of read. */
 export function holdCharLocalsAsUnits(mod: IrModule): IrModule {
   let changed = false;
   const functions = mod.functions.map((fn) => {
@@ -43,7 +46,6 @@ function rewriteFunction(fn: IrFunction): IrFunction {
   const candidates = new Set(
     fn.locals.filter((l) => !l.mutable && !l.boxed && l.type.kind === "string").map((l) => l.id),
   );
-  if (candidates.size === 0) return fn;
   // Every mention of a candidate, in any field, against the mentions the
   // rewrite understands.
   const mentions = new Map<string, number>();
@@ -67,7 +69,7 @@ function rewriteFunction(fn: IrFunction): IrFunction {
       for (const key in node) if (key !== "loc") count(node[key]);
     }
   };
-  count(fn.body);
+  if (candidates.size > 0) count(fn.body);
   const held = new Set<string>();
   for (const id of candidates)
     if (
@@ -76,7 +78,7 @@ function rewriteFunction(fn: IrFunction): IrFunction {
       mentions.get(id) === understood.get(id)
     )
       held.add(id);
-  if (held.size === 0) return fn;
+  let changed = false;
 
   const unitRef = (id: string, loc: IrExpr["loc"]): IrExpr => ({
     kind: "varRef",
@@ -88,38 +90,28 @@ function rewriteFunction(fn: IrFunction): IrFunction {
     if (e.kind === "strEq" || e.kind === "strCmp") {
       const use = unitUse(e);
       if (use && held.has(use.id)) {
-        const code: IrExpr = { kind: "numLit", value: use.code, type: F64, loc: e.loc };
-        const c = unitRef(use.id, e.loc);
-        if (e.kind === "strEq")
-          return {
-            kind: "bin",
-            op: e.negated ? "!==" : "===",
-            left: c,
-            right: code,
-            type: BOOL,
-            loc: e.loc,
-          };
-        // The comparison with the local on the left.
-        const op = use.left
-          ? e.op
-          : ({ "<": ">", "<=": ">=", ">": "<", ">=": "<=" } as const)[e.op];
-        if (op === ">" || op === ">=")
-          return { kind: "bin", op, left: c, right: code, type: BOOL, loc: e.loc };
-        const negation: IrExpr = {
-          kind: "bin",
-          op: op === "<" ? ">=" : ">",
-          left: c,
-          right: code,
-          type: BOOL,
-          loc: e.loc,
+        changed = true;
+        return charUnitTest(e, unitRef(use.id, e.loc), use.code, use.left);
+      }
+      // `s.charAt(i)` in place: its unit read, `s.charCodeAt(i)`.
+      const direct = charAtTest(e);
+      if (direct) {
+        changed = true;
+        const read: IrExpr = {
+          ...direct.charAt,
+          method: "charCodeAt",
+          receiver: rewriteExpr(direct.charAt.receiver),
+          args: direct.charAt.args.map(rewriteExpr),
+          type: F64,
         };
-        return { kind: "unary", op: "!", operand: negation, type: BOOL, loc: e.loc };
+        return charUnitTest(e, read, direct.code, direct.left);
       }
     }
     return mapExprChildren(e, rewriteExpr, rewriteStmt);
   };
   const rewriteStmt = (s: IrStmt): IrStmt => {
-    if (s.kind === "varDecl" && held.has(s.localId) && s.init?.kind === "strIntrinsic")
+    if (s.kind === "varDecl" && held.has(s.localId) && s.init?.kind === "strIntrinsic") {
+      changed = true;
       return {
         ...s,
         init: {
@@ -130,7 +122,9 @@ function rewriteFunction(fn: IrFunction): IrFunction {
           type: F64,
         },
       };
-    if (s.kind === "switch" && s.disc.kind === "varRef" && held.has(s.disc.localId))
+    }
+    if (s.kind === "switch" && s.disc.kind === "varRef" && held.has(s.disc.localId)) {
+      changed = true;
       return {
         ...s,
         disc: unitRef(s.disc.localId, s.disc.loc),
@@ -143,11 +137,14 @@ function rewriteFunction(fn: IrFunction): IrFunction {
           body: c.body.map(rewriteStmt),
         })),
       };
+    }
     return mapStmtChildren(s, rewriteExpr, rewriteStmt);
   };
+  const body = fn.body.map(rewriteStmt);
+  if (!changed) return fn;
   return {
     ...fn,
-    body: fn.body.map(rewriteStmt),
+    body,
     locals: fn.locals.map((l) => (held.has(l.id) ? unitLocal(l) : l)),
   };
 }
@@ -177,6 +174,45 @@ function understoodMention(node: Record<string, unknown>): string | null {
     return units ? n.disc.localId : null;
   }
   return null;
+}
+
+/** A one-unit test of a string that reads one character or "" (charAt),
+ * on its unit `unit`, which reads NaN for "": an equality, or an ordered
+ * comparison with the unit on the left when `unitLeft`. "" is below every
+ * one-unit literal, and NaN fails every ordered comparison, so `c < "x"`
+ * becomes `!(c >= 120)`. */
+function charUnitTest(e: UnitUse, unit: IrExpr, code: number, unitLeft: boolean): IrExpr {
+  const literal: IrExpr = { kind: "numLit", value: code, type: F64, loc: e.loc };
+  if (e.kind === "strEq")
+    return {
+      kind: "bin",
+      op: e.negated ? "!==" : "===",
+      left: unit,
+      right: literal,
+      type: BOOL,
+      loc: e.loc,
+    };
+  const op = unitLeft ? e.op : FLIPPED[e.op];
+  if (op === ">" || op === ">=")
+    return { kind: "bin", op, left: unit, right: literal, type: BOOL, loc: e.loc };
+  const negation: IrExpr = {
+    kind: "bin",
+    op: op === "<" ? ">=" : ">",
+    left: unit,
+    right: literal,
+    type: BOOL,
+    loc: e.loc,
+  };
+  return { kind: "unary", op: "!", operand: negation, type: BOOL, loc: e.loc };
+}
+
+/** A test between `s.charAt(i)` and a literal of one code unit. */
+function charAtTest(e: UnitUse): { charAt: CharAt; code: number; left: boolean } | null {
+  const literalRight = e.right.kind === "strLit";
+  const literal = literalRight ? e.right : e.left;
+  const other = literalRight ? e.left : e.right;
+  if (literal.kind !== "strLit" || literal.value.length !== 1 || !isCharAt(other)) return null;
+  return { charAt: other, code: literal.value.charCodeAt(0), left: literalRight };
 }
 
 function isCharAt(e: IrExpr): e is CharAt {

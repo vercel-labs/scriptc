@@ -104,6 +104,8 @@ import { dropUnwrittenPropertyBags } from "../../ir/property-bags.js";
 import { freezeInitOnlyGlobals } from "../../ir/init-only-globals.js";
 import { hoistFinalFieldReads } from "../../ir/field-values.js";
 import { holdCharLocalsAsUnits } from "../../ir/char-unit-locals.js";
+import { unitSafeFunctions } from "./string-unit-versions.js";
+import { stringScanInline } from "./string-reads.js";
 import {
   findInt32Abis,
   INT32_ABI_SUFFIX,
@@ -1477,6 +1479,12 @@ export class LlEmitter {
    * (one-unit tests and switches, charAtUnitRead), with the charAt each
    * stands for: a loop version's proof for the charAt covers its read. */
   readonly charAtUnitReads = new Map<IrExpr, IrExpr>();
+  /** String reads a loop version proved in bounds of a string's UTF-16
+   * units, with the units pointer to read (string-unit-versions.ts). */
+  stringUnitReads: ReadonlyMap<IrExpr | IrStmt, string> = new Map();
+  /** `length` reads of a loop version's string, with the i64 UTF-16
+   * length its guard took (bytes-loop-versions.ts). */
+  stringLengthReads: ReadonlyMap<IrExpr, string> = new Map();
   /** Worker programs: typed-array accesses whose views an enclosing version
    * guard proved thread-owned. */
   bytesOwned: ReadonlySet<IrExpr | IrStmt> = new Set();
@@ -4311,9 +4319,19 @@ export class LlEmitter {
         workers: this.mod.workers === true,
         owned: this.bytesOwned,
         scalarStrings: new Set(this.stringSlices.keys()),
+        unitSafeFunctions: this.unitSafeFunctions(),
       },
       paired,
     );
+  }
+
+  private unitSafe: ReadonlySet<string> | null | undefined;
+  /** The functions a loop over a string's UTF-16 units may call, or null
+   * where emitted reads do not use the runtime's scan receiver. */
+  private unitSafeFunctions(): ReadonlySet<string> | null {
+    if (this.unitSafe === undefined)
+      this.unitSafe = stringScanInline(this) ? unitSafeFunctions(this.mod) : null;
+    return this.unitSafe;
   }
 
   /** The alias tag of a whole-slot load of a binding (module globals only). */

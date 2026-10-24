@@ -36,6 +36,7 @@ import { writeTextParts } from "../text-parts.js";
 
 import {
   NativeCodegenError,
+  inlineThresholdArgs,
   nativePartitionPaths,
   validateNativeCodegenVersion as validateHelperVersion,
   type NativeCodegenVersion,
@@ -113,6 +114,9 @@ export interface NativeCodegenOptions {
   partitions?: number;
   /** Profile-guided optimization: instrumentation or an indexed profile. */
   profile?: NativeProfileOptions;
+  /** The optimization pipelines' inliner threshold (nativeInlineThreshold);
+   * absent: the level's default. */
+  inlineThreshold?: number;
 }
 
 /** Writes LLVM text in large batches; see `writeTextParts`. */
@@ -338,6 +342,7 @@ function cacheKey(
     .update(options.sourcePath)
     .update((options.partitions ?? 1) > 1 ? `\0partitions:${options.partitions}` : "")
     .update(options.profile === undefined ? "" : `\0${nativeProfileKey(options.profile)}`)
+    .update(options.inlineThreshold === undefined ? "" : `\0inline:${options.inlineThreshold}`)
     .digest("hex");
 }
 
@@ -477,6 +482,7 @@ export async function emitNativeArtifact(
       options.sourcePath,
       ...(partitionCache === null ? [] : ["--cache-dir", partitionCache]),
       ...nativeProfileHelperArgs(options.profile),
+      ...inlineThresholdArgs(options.inlineThreshold),
     ]);
     for (const stage of stages) {
       const emitted = await stat(stage).catch(() => null);

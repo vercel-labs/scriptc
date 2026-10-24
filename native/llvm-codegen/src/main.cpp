@@ -90,7 +90,8 @@ int main(int Argc, char **Argv) {
           "--filetype <obj|asm> --target <triple> --opt-level <0|1|2|3|s|z> "
           "--relocation-model pic --diagnostic-format json "
           "--source-path <path> --import-bitcode <file> --cache-dir <dir> "
-          "--profile-generate <pattern> --profile-use <file.profdata>");
+          "--profile-generate <pattern> --profile-use <file.profdata> "
+          "--inline-threshold <n>");
     return scriptc::emit(*Options);
   }
   return scriptc::reportError("usage",

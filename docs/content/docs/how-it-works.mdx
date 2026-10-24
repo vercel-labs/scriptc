@@ -71,6 +71,8 @@ How partitions are compiled depends on `--optimization`:
 
 Reading the LLVM text and dividing it into partitions, and the import step, run on one thread.
 
+`release` builds of 16 or more partitions (over 32 MiB of LLVM text) inline less than `-O2` does: an inlining threshold of 100 instead of 225. For these programs, that makes the machine code 20% to 40% smaller and the optimization and code generation 20% to 40% faster. `speed` builds keep the `-O2` threshold at every size.
+
 ### Rebuilds
 
 With two or more partitions, the helper keeps each partition's summary and object in the build cache (see `SCRIPTC_CACHE_DIR` in the [CLI reference](/docs/cli#environment-variables)). A rebuild after an edit compiles again only the partitions whose functions changed and, in `release` and `speed` builds, the partitions that import a changed function; the others come from the cache. Dividing the program, the import step, and linking run on every build. A cold build, with nothing cached, compiles every partition.

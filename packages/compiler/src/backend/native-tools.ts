@@ -4,9 +4,11 @@ import { execFileSync } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
 import type { NativeHelperSpec, NativeTargetSpec } from "./targets.js";
 import {
+  inlineThresholdArgs,
+  nativeInlineThreshold,
   nativePartitionPaths,
-  validateNativeCodegenVersion,
   type NativeCodegenOutputKind,
+  validateNativeCodegenVersion,
 } from "./native-codegen-core.js";
 import { nativeProfileHelperArgs, type NativeProfileOptions } from "./native-profile.js";
 
@@ -72,6 +74,7 @@ export function emitNativeObject(options: {
       ? []
       : ["--cache-dir", options.partitionCache]),
     ...nativeProfileHelperArgs(options.profile),
+    ...inlineThresholdArgs(nativeInlineThreshold(options.optimization, outputs.length)),
   ]);
   for (const output of outputs) requireNativeArtifact(output);
   return outputs;

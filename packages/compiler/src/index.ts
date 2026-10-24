@@ -84,7 +84,11 @@ import {
   NativeCodegenError,
   writeLlvmSource,
 } from "./backend/native-codegen.js";
-import { nativePartitionPaths, nativeProgramPartitions } from "./backend/native-codegen-core.js";
+import {
+  nativeInlineThreshold,
+  nativePartitionPaths,
+  nativeProgramPartitions,
+} from "./backend/native-codegen-core.js";
 import { privateSiblingPath } from "./backend/build-cache.js";
 import { nativeCodegenTarget, nativeCodegenTargetRefusal } from "./backend/targets.js";
 import { windowsSubsystemLinkerArgs, type WindowsSubsystem } from "./backend/targets.js";
@@ -688,6 +692,7 @@ async function emitNativeProgramObject(
       ...(opts.sanitize === undefined ? {} : { sanitize: opts.sanitize }),
       partitions,
       ...(profile === undefined ? {} : { profile }),
+      ...inlineThresholdField(nativeInlineThreshold(opts.optimization, partitions)),
     });
     return {
       linkPath,
@@ -727,6 +732,10 @@ async function readNativeProfile(
     );
   }
   return { use: { path, digest: createHash("sha256").update(bytes).digest("hex") } };
+}
+
+function inlineThresholdField(threshold: number | undefined): { inlineThreshold?: number } {
+  return threshold === undefined ? {} : { inlineThreshold: threshold };
 }
 
 function usesPrecompiledRuntimePack(opts: CompileRequestOptions, backend: "llvm"): boolean {

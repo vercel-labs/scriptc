@@ -94,7 +94,11 @@ std::optional<EmitOptions> parseEmitOptions(int Argc, char **Argv) {
       Options.ProfileGenerate = Value.str();
     else if (Arg == "--profile-use")
       Options.ProfileUse = Value.str();
-    else
+    else if (Arg == "--inline-threshold") {
+      if (Value.getAsInteger(10, Options.InlineThreshold) ||
+          Options.InlineThreshold == 0)
+        return std::nullopt;
+    } else
       return std::nullopt;
   }
   if (Options.Input.empty() || Options.Outputs.empty())
@@ -128,13 +132,17 @@ struct EmitFailure {
 
 // Library defaults leave SLP vectorization disabled. Enable both
 // vectorizers for speed builds, without permitting floating-point
-// reassociation or changing the size/debug optimization policies.
-PipelineTuningOptions tuningFor(OptimizationLevel Level) {
+// reassociation or changing the size/debug optimization policies. A nonzero
+// InlineThreshold replaces the level's inliner threshold.
+PipelineTuningOptions tuningFor(OptimizationLevel Level,
+                                unsigned InlineThreshold) {
   PipelineTuningOptions Tuning;
   if (Level == OptimizationLevel::O2 || Level == OptimizationLevel::O3) {
     Tuning.LoopVectorization = true;
     Tuning.SLPVectorization = true;
   }
+  if (InlineThreshold != 0)
+    Tuning.InlinerThreshold = static_cast<int>(InlineThreshold);
   return Tuning;
 }
 
@@ -198,8 +206,9 @@ struct Pipeline {
   PassBuilder PB;
 
   Pipeline(TargetMachine &Machine, OptimizationLevel Level,
-           std::optional<PGOOptions> Profile = std::nullopt)
-      : PB(&Machine, tuningFor(Level), std::move(Profile)) {
+           std::optional<PGOOptions> Profile = std::nullopt,
+           unsigned InlineThreshold = 0)
+      : PB(&Machine, tuningFor(Level, InlineThreshold), std::move(Profile)) {
     PB.registerModuleAnalyses(MAM);
     PB.registerCGSCCAnalyses(CGAM);
     PB.registerFunctionAnalyses(FAM);
@@ -386,9 +395,10 @@ std::optional<EmitFailure> publish(StringRef TemporaryPath,
 
 std::optional<EmitFailure>
 emitModule(Module &M, TargetMachine &Machine, OptimizationLevel Level,
-           std::optional<PGOOptions> Profile, CodeGenFileType Type,
-           StringRef OutputPath, std::vector<SmallString<256>> &Temporaries) {
-  Pipeline P(Machine, Level, std::move(Profile));
+           std::optional<PGOOptions> Profile, unsigned InlineThreshold,
+           CodeGenFileType Type, StringRef OutputPath,
+           std::vector<SmallString<256>> &Temporaries) {
+  Pipeline P(Machine, Level, std::move(Profile), InlineThreshold);
   P.PB.buildPerModuleDefaultPipeline(Level).run(M, P.MAM);
   if (std::optional<EmitFailure> Failure =
           verify(M, "post_optimization_verification_failed"))
@@ -591,7 +601,8 @@ compileOptimizedPartitions(const EmitOptions &Options,
       raw_svector_ostream Stream(Bitcode);
       // Profile instrumentation or annotation happens here, before the thin
       // link; the post-link optimization reads the annotated weights.
-      Pipeline P(*Machine, Level, profileOptions(Options));
+      Pipeline P(*Machine, Level, profileOptions(Options),
+                 Options.InlineThreshold);
       ModulePassManager MPM = P.PB.buildThinLTOPreLinkDefaultPipeline(Level);
       MPM.addPass(BitcodeWriterPass(Stream, /*ShouldPreserveUseListOrder=*/false,
                                     /*EmitSummaryIndex=*/true,
@@ -615,7 +626,7 @@ compileOptimizedPartitions(const EmitOptions &Options,
   Config.OptLevel = Level == OptimizationLevel::O1   ? 1
                     : Level == OptimizationLevel::O3 ? 3
                                                      : 2;
-  Config.PTO = tuningFor(Level);
+  Config.PTO = tuningFor(Level, Options.InlineThreshold);
   Config.CGFileType = CodeGenFileType::ObjectFile;
   Config.DefaultTriple = Options.Target;
   Config.DiagHandler = [&](const DiagnosticInfo &Info) {
@@ -751,7 +762,9 @@ compilePartitions(const EmitOptions &Options, const PartitionPlan &Plan,
   std::string Salt = hashParts({"scriptc-partition-v1", LLVM_VERSION_STRING,
                                 Options.Target, Options.OptLevel,
                                 Options.RelocationModel, Options.SourcePath,
-                                "profile-generate", Options.ProfileGenerate});
+                                "profile-generate", Options.ProfileGenerate,
+                                "inline-threshold",
+                                std::to_string(Options.InlineThreshold)});
   // A profile changes every partition it describes, so its bytes key them.
   if (!Options.ProfileUse.empty()) {
     ErrorOr<std::unique_ptr<MemoryBuffer>> Profile =
@@ -958,8 +971,9 @@ int emit(const EmitOptions &Options) {
                              : CodeGenFileType::AssemblyFile;
   std::vector<SmallString<256>> Temporaries;
   std::optional<EmitFailure> Failure =
-      emitModule(*Mod, *Machine, Level, profileOptions(Options), Type,
-                 Options.Outputs[0], Temporaries);
+      emitModule(*Mod, *Machine, Level, profileOptions(Options),
+                 Options.InlineThreshold, Type, Options.Outputs[0],
+                 Temporaries);
   if (!Failure)
     Failure = publish(Temporaries[0], Options.Outputs[0]);
   if (Failure) {

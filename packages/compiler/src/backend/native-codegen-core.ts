@@ -32,6 +32,31 @@ export function nativeProgramPartitions(llvmBytes: number): number {
   return Math.min(MAX_PROGRAM_PARTITIONS, 2 ** Math.ceil(Math.log2(required)));
 }
 
+/** Programs divided into at least this many partitions (more than 32 MiB of
+ * LLVM text) build with a lower inliner threshold in the release posture. At
+ * the -O2 default, inlining in such a program grows its machine code by up to
+ * two thirds, and code generation, the larger half of the build, follows code
+ * size; at this threshold optimization and code generation take 20% to 40%
+ * less time. Speed builds keep the default, as do smaller programs. */
+const REDUCED_INLINING_PARTITIONS = 16;
+const REDUCED_INLINE_THRESHOLD = 100;
+
+/** The helper's --inline-threshold for a program build, or undefined for the
+ * optimization level's default. */
+export function nativeInlineThreshold(
+  optimization: "release" | "dev" | "speed" | undefined,
+  partitions: number,
+): number | undefined {
+  return (optimization ?? "release") === "release" && partitions >= REDUCED_INLINING_PARTITIONS
+    ? REDUCED_INLINE_THRESHOLD
+    : undefined;
+}
+
+/** The helper arguments for an inliner threshold. */
+export function inlineThresholdArgs(threshold: number | undefined): string[] {
+  return threshold === undefined ? [] : ["--inline-threshold", String(threshold)];
+}
+
 /** Output paths for each partition; the first is the requested path. */
 export function nativePartitionPaths(path: string, count: number): string[] {
   const dot = path.lastIndexOf(".");

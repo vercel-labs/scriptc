@@ -26,6 +26,9 @@ struct EmitOptions {
   std::string ProfileGenerate;
   // Indexed profile (.profdata) that guides optimization. Empty: none.
   std::string ProfileUse;
+  // The inliner's threshold for the optimization pipelines. 0: the default
+  // for the optimization level.
+  unsigned InlineThreshold = 0;
 };
 
 std::optional<EmitOptions> parseEmitOptions(int Argc, char **Argv);

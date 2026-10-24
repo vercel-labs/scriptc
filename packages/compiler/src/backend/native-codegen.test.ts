@@ -8,7 +8,12 @@ import {
   NativeCodegenError,
   validateNativeCodegenVersion,
 } from "./native-codegen.js";
-import { nativePartitionPaths, nativeProgramPartitions } from "./native-codegen-core.js";
+import {
+  inlineThresholdArgs,
+  nativeInlineThreshold,
+  nativePartitionPaths,
+  nativeProgramPartitions,
+} from "./native-codegen-core.js";
 import { nativeArtifactDependenciesStillMatch } from "./native-toolchain.js";
 import { LINUX_X64_GNU_TARGET, MACOS_ARM64_TARGET, WASM32_WASI_TARGET } from "./targets.js";
 import { compilerReleaseVersion } from "../library/sidecar.js";
@@ -405,6 +410,32 @@ test("partitioned objects are emitted, cached and restored together", async () =
   const all = (await readFile(pkg.log, "utf8")).trim().split("\n");
   expect(all).toHaveLength(2);
   expect(all[1]).not.toContain("--cache-dir");
+});
+
+test("large release programs inline less, and speed and dev builds keep the default", () => {
+  expect(nativeInlineThreshold("release", 16)).toBe(100);
+  expect(nativeInlineThreshold(undefined, 64)).toBe(100);
+  expect(nativeInlineThreshold("release", 8)).toBeUndefined();
+  expect(nativeInlineThreshold("release", 1)).toBeUndefined();
+  expect(nativeInlineThreshold("speed", 64)).toBeUndefined();
+  expect(nativeInlineThreshold("dev", 64)).toBeUndefined();
+  expect(inlineThresholdArgs(100)).toEqual(["--inline-threshold", "100"]);
+  expect(inlineThresholdArgs(undefined)).toEqual([]);
+});
+
+test("the inline threshold reaches the helper and keys the native cache", async () => {
+  const pkg = await fakePackage();
+  const base = request(pkg.root, pkg.packageJson, join(pkg.root, "default", "program.o"));
+  await emitNativeArtifact({ ...base, partitions: 16 });
+  await emitNativeArtifact({
+    ...request(pkg.root, pkg.packageJson, join(pkg.root, "reduced", "program.o")),
+    partitions: 16,
+    inlineThreshold: 100,
+  });
+  const calls = (await readFile(pkg.log, "utf8")).trim().split("\n");
+  expect(calls).toHaveLength(2);
+  expect(calls[0]).not.toContain("--inline-threshold");
+  expect(calls[1]).toContain("--inline-threshold 100");
 });
 
 test("LLVM text parts are written as one file and the helper reads a private copy", async () => {

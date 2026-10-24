@@ -2136,6 +2136,7 @@ export function emitLoopCopies(
             );
           },
           (id) => emitter.speculativeLocal(id) || emitter.speculativeInvariantGlobal(id),
+          emitter.speculationContext(),
         )
       : null;
   if (!plan) {
@@ -2193,6 +2194,20 @@ export function emitLoopCopies(
     B.line(`${both} = and i1 ${ok}, ${trying}`);
     ok = both;
   }
+  // Hoisted leaves live in locals of their own, which the resume copy of
+  // their write reads (see SpeculativeValue).
+  for (const { leaves } of plan.values.values())
+    for (const leaf of leaves) {
+      emitter.currentLocals.set(leaf.localId, {
+        id: leaf.localId,
+        name: "speculated leaf",
+        type: leaf.expr.type,
+        mutable: true,
+      });
+      B.entryAllocas.push(
+        `${emitter.binding(leaf.localId).slot} = alloca double ; speculated leaf`,
+      );
+    }
   const fast = B.newLabel("spec.fast"),
     slow = B.newLabel("spec.slow");
   B.condBr(ok, fast, slow);
@@ -2218,6 +2233,7 @@ export function emitLoopCopies(
     throw new InternalCompilerError("llvm emitter bug: speculative loop copy without a header");
   B.startBlock(B.newLabel("spec.tail"));
   emitter.speculationResume = resume;
+  emitter.speculationResumeValues = plan.values;
   emitter.speculationHeader = () => {
     B.br(header!);
     B.startBlock(B.newLabel("spec.unused"));
@@ -2226,6 +2242,7 @@ export function emitLoopCopies(
     emitCopy(exit);
   } finally {
     emitter.speculationResume = null;
+    emitter.speculationResumeValues = null;
     emitter.speculationHeader = null;
   }
   B.startBlock(fast);
@@ -2274,6 +2291,7 @@ export function emitLoopCopies(
     deferred,
     bails,
     ran,
+    values: plan.values,
   };
   try {
     const leave = B.newLabel("spec.leave");
@@ -2531,9 +2549,22 @@ export function emitSpeculativeWrite(
   // at once: a bailing path then owns nothing, and reads have no effect
   // whose reordering before the arithmetic could be observed.
   const reads = new Map<IrExpr, LlValue>();
-  if (target.value !== null) {
+  const rewritten = emitter.speculation!.values?.get(s);
+  const value = rewritten?.value ?? target.value;
+  if (rewritten !== undefined) {
+    // Hoisted leaves run first, in the write's order, and keep their
+    // doubles for the resume copy.
     emitter.frames.push([]);
-    for (const read of speculativeReads(target.value)) reads.set(read, emitter.emitExpr(read));
+    for (const leaf of rewritten.leaves) {
+      const evaluated = emitter.emitExpr(leaf.expr);
+      B.line(`store double ${evaluated.name}, ptr ${emitter.binding(leaf.localId).slot}`);
+      reads.set(leaf.ref, evaluated);
+    }
+    emitter.releaseTemps(emitter.frames.pop()!);
+  }
+  if (value !== null) {
+    emitter.frames.push([]);
+    for (const read of speculativeReads(value)) reads.set(read, emitter.emitExpr(read));
     emitter.releaseTemps(emitter.frames.pop()!);
   }
   emitter.frames.push([]);
@@ -2548,7 +2579,7 @@ export function emitSpeculativeWrite(
     B.line(`${biased} = add i64 ${result}, ${Number.MAX_SAFE_INTEGER}`);
     B.line(`${outside} = icmp ugt i64 ${biased}, ${2 * Number.MAX_SAFE_INTEGER}`);
     bail(outside);
-  } else result = emitSpeculativeInteger(emitter, target.value, bail, reads, resume === undefined);
+  } else result = emitSpeculativeInteger(emitter, value!, bail, reads, resume === undefined);
   // Speculable values read only numbers past this point.
   if (emitter.frames.pop()!.length > 0)
     throw new InternalCompilerError("llvm emitter bug: speculative write owns a temporary");

@@ -400,7 +400,10 @@ export function reflectClassPrototype(
       writable,
     ]),
   );
+  // The members lower on top of whatever frames requested the view (a
+  // `super` call in a subclass's method); their `this` is their own receiver.
   const context = newFnCtx(false, null, null, DYN);
+  context.thisBoundary = true;
   lowerer.fnStack.push(context);
   try {
     for (const member of info.decl.members.nodes) {

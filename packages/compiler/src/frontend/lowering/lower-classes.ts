@@ -185,7 +185,7 @@ import {
 import { lowerObjectFactoryNew } from "./object-factory-new.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { lowerInstanceConstructorNew } from "./class-instance-constructor.js";
-import { classPrototypeData } from "./class-prototypes.js";
+import { classPrototypeData, reflectClassPrototype } from "./class-prototypes.js";
 import { constructionEscape } from "./construction-escapes.js";
 import { checkedClassConstruction, checkedClassConstructionPacked } from "./class-construction.js";
 import { initializeRuntimeStatics, hasRuntimeStatics } from "./class-runtime-statics.js";
@@ -9398,8 +9398,16 @@ export function lowerSuperMethodCall(
   if (!thisLocal) lowerer.unsupported("SC1080", access);
   const loc = locOf(call);
   const thisRef: IrExpr = { kind: "varRef", localId: thisLocal.id, type: thisLocal.type, loc };
-  if (lowerer.prototypeMethodAccesses.has(access.name.text)) {
-    const prototype = classPrototypeData(lowerer, cls.base, loc);
+  // A method whose `this` is the call-site receiver (a JavaScript class's
+  // receiver-independent method value, reflectedClassMethodValue) looks the
+  // method up on the base class's complete prototype, as `super` reads
+  // [[HomeObject]].[[Prototype]], and calls it with that receiver.
+  const dynamicThis = thisRef.type.kind === "dyn";
+  if (dynamicThis || lowerer.prototypeMethodAccesses.has(access.name.text)) {
+    const prototype =
+      dynamicThis && cls.base.decl
+        ? reflectClassPrototype(lowerer, cls.base, loc, classValueRef(lowerer, cls.base, access))
+        : classPrototypeData(lowerer, cls.base, loc);
     if (prototype) {
       const callee: IrExpr = {
         kind: "dynKeyGet",

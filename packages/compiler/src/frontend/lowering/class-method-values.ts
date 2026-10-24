@@ -378,9 +378,17 @@ function reflectedMethodValue(
     !isJsSourceFile(ts.getSourceFileOfNode(declaration)) ||
     info.localClass !== undefined ||
     lowerer.errorHierarchyClassOf(info.def.name);
+  // `super.m(...)` in a prototype method reads the base class's prototype,
+  // which lowerSuperMethodCall answers over the call-site receiver when the
+  // base has a prototype object. Other uses of `super` keep the native
+  // receiver.
+  const superCalls = !staticMethod && info.base !== null && prototypeChainViewable(info.base);
   ts.walkPreorder(member, (node) => {
-    if (ts.isPrivateIdentifier(node) || node.kind === ts.SyntaxKind.SuperKeyword)
+    if (node.kind === ts.SyntaxKind.SuperKeyword && !(superCalls && isSuperMethodCallee(node)))
       needsNativeReceiver = true;
+    // Private members on a static method's receiver (the class value) keep
+    // the native receiver; prototype methods brand-check theirs.
+    if (staticMethod && ts.isPrivateIdentifier(node)) needsNativeReceiver = true;
   });
   if (needsNativeReceiver) return null;
   // The method reads itself as a value inside its own body: it is the
@@ -403,7 +411,11 @@ function reflectedMethodValue(
       loc: locOf(member),
     };
   }
+  // The method may be lowered on top of an unrelated caller's frames (a
+  // `super` call in another class's method reflects this class): its `this`
+  // is its own receiver, never an enclosing function's.
   const context = newFnCtx(false, null, null, DYN);
+  context.thisBoundary = true;
   const previousClass = lowerer.currentClass;
   lowerer.currentClass = info;
   lowerer.fnStack.push(context);
@@ -439,6 +451,42 @@ function reflectedMethodValue(
     lowerer.fnStack.pop();
     lowerer.currentClass = previousClass;
   }
+}
+
+/** Whether `base` and every class above it have a complete prototype object
+ * (reflectClassPrototype): module-level program classes that neither extend
+ * Date nor a runtime-provided class. */
+function prototypeChainViewable(base: ClassInfo): boolean {
+  for (let c: ClassInfo | null = base; c; c = c.base)
+    if (
+      c.decl === null ||
+      c.localClass !== undefined ||
+      c.generic !== undefined ||
+      c.genericInstance !== undefined ||
+      c.mixinInstance !== undefined ||
+      c.callableBase !== undefined ||
+      c.extendsDate !== undefined ||
+      c.def.runtime ||
+      c.builtinEmitter ||
+      c.builtinStream ||
+      c.builtinError ||
+      c.builtinEventTarget
+    )
+      return false;
+  return true;
+}
+
+/** `super` as the receiver of a called member: `super.m(...)`. */
+function isSuperMethodCallee(node: ts.Node): boolean {
+  const access = node.parent;
+  return (
+    access !== undefined &&
+    ts.isPropertyAccessExpression(access) &&
+    access.expression === node &&
+    access.parent !== undefined &&
+    ts.isCallExpression(access.parent) &&
+    access.parent.expression === access
+  );
 }
 
 /** Complete adapters after all native class bodies and instantiations exist. */

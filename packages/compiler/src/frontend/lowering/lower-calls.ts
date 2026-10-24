@@ -1,3 +1,4 @@
+import { checkedPrivateMethodReceiver, privateNameClass } from "./private-brands.js";
 import { keyedHelperName } from "./stable-names.js";
 import { perKeyOrder } from "./key-order-witness.js";
 import { isForwardedTupleSpread, lowerForwardingApply } from "./typed-arguments.js";
@@ -586,6 +587,17 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     expr.expression.expression.kind === ts.SyntaxKind.SuperKeyword
   ) {
     return lowerer.lowerSuperMethodCall(expr, expr.expression);
+  }
+  // `value.#m(...)` on a checked-dynamic value (`this` in a JavaScript
+  // class's receiver-independent method): the private method of the
+  // brand-checked receiver.
+  if (
+    ts.isPropertyAccessExpression(expr.expression) &&
+    ts.isPrivateIdentifier(expr.expression.name) &&
+    !expr.expression.questionDotToken
+  ) {
+    const privateCall = lowerCheckedPrivateMethodCall(lowerer, expr, expr.expression);
+    if (privateCall) return privateCall;
   }
 
   const consoleMember = lowerer.consoleCallMember(expr);
@@ -11400,4 +11412,36 @@ function lowerShimIntrinsicCall(
     lowerer.lowerExprExpecting(arg, intrinsic.args[i]!),
   );
   return { kind: "libCall", fn: intrinsic.fn, args, type: intrinsic.ret, loc };
+}
+
+/** `value.#m(args)` where `value` lowers to a checked-dynamic value and the
+ * declaration-level class whose body declares `#m` declares it as a method:
+ * the method called on the brand-checked receiver
+ * (checkedPrivateMethodReceiver). Null for any other private member call. */
+function lowerCheckedPrivateMethodCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (!ts.isPrivateIdentifier(access.name)) return null;
+  const name = access.name.text;
+  const owner = privateNameClass(lowerer, access.name);
+  const found = owner ? lowerer.findMethodOn(owner, name) : null;
+  if (!owner || !found || found.declarer !== owner || found.sig.abstract === true) return null;
+  const probed = tryLowerExpression(lowerer, access.expression);
+  if (!probed || !checkedDynamicOperand(probed)) return null;
+  const value = checkedDynamicOperand(lowerer.lowerExpr(access.expression));
+  if (!value) return null;
+  const loc = locOf(call);
+  const callee = `%${owner.def.name}.${name}`;
+  lowerer.noteEdge(callee);
+  const receiver = checkedPrivateMethodReceiver(lowerer, owner, name, value, loc);
+  const args = lowerer.completeArgs(call.arguments.nodes, found.sig.params, loc, call);
+  return { kind: "call", callee, args: [receiver, ...args], type: found.sig.ret, loc };
+}
+
+/** A checked-dynamic value, or the dynamic value under a checked extraction. */
+function checkedDynamicOperand(expr: IrExpr): IrExpr | null {
+  if (expr.type.kind === "dyn") return expr;
+  return expr.kind === "dynCheck" && expr.value.type.kind === "dyn" ? expr.value : null;
 }

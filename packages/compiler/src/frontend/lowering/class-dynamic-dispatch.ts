@@ -4179,6 +4179,94 @@ export class ClassDynamicDispatch {
     return { kind: "call", callee: name, args: [bag, key], type: BOOL, loc };
   }
 
+  /** `%dyn.class.bagHasOwn[OrPrototype]`: whether an instance's property bag
+   * holds `key` as its own property, or, with `prototype`, whether the bag's
+   * prototype object does. False before the instance has a bag. */
+  private readBagHasOwn(
+    lowerer: Lowerer,
+    bag: IrExpr,
+    key: IrExpr,
+    prototype: boolean,
+    loc: SrcLoc,
+  ): IrExpr {
+    const name = prototype ? "%dyn.class.bagHasOwnOrPrototype" : "%dyn.class.bagHasOwn";
+    let helper = lowerer.liftedFnNamed(name);
+    if (!helper) {
+      const value = varRef("p.0", DYN, loc);
+      const keyRef = varRef("p.1", STRING, loc);
+      const proto = varRef("proto", DYN, loc);
+      const hasOwn = (target: IrExpr): IrExpr => ({
+        kind: "libCall",
+        fn: "dyn.hasOwn",
+        args: [target, keyRef],
+        type: BOOL,
+        loc,
+      });
+      const returnFalse: IrStmt = {
+        kind: "return",
+        value: { kind: "boolLit", value: false, type: BOOL, loc },
+        loc,
+      };
+      helper = {
+        name,
+        params: [
+          { localId: "p.0", name: "bag", type: DYN },
+          { localId: "p.1", name: "key", type: STRING },
+        ],
+        returnType: BOOL,
+        locals: [
+          { id: "p.0", name: "bag", type: DYN, mutable: false },
+          { id: "p.1", name: "key", type: STRING, mutable: false },
+          ...(prototype ? [{ id: "proto", name: "proto", type: DYN, mutable: false }] : []),
+        ],
+        body: [
+          {
+            kind: "if",
+            cond: { kind: "dynTest", test: "undefined", value, type: BOOL, loc },
+            then: [returnFalse],
+            else_: null,
+            loc,
+          },
+          ...(prototype
+            ? ([
+                {
+                  kind: "if",
+                  cond: hasOwn(value),
+                  then: [
+                    {
+                      kind: "return",
+                      value: { kind: "boolLit", value: true, type: BOOL, loc },
+                      loc,
+                    },
+                  ],
+                  else_: null,
+                  loc,
+                },
+                {
+                  kind: "varDecl",
+                  localId: "proto",
+                  init: { kind: "libCall", fn: "dyn.getPrototype", args: [value], type: DYN, loc },
+                  loc,
+                },
+                {
+                  kind: "if",
+                  cond: { kind: "dynTest", test: "nullish", value: proto, type: BOOL, loc },
+                  then: [returnFalse],
+                  else_: null,
+                  loc,
+                },
+                { kind: "return", value: hasOwn(proto), loc },
+              ] satisfies IrStmt[])
+            : [{ kind: "return", value: hasOwn(value), loc } satisfies IrStmt]),
+        ],
+        loc,
+      };
+      lowerer.liftedFns.push(helper);
+    }
+    this.generated.add(helper);
+    return { kind: "call", callee: name, args: [bag, key], type: BOOL, loc };
+  }
+
   /** The hints for which some boxed class declares a conversion method. A
    * string conversion calls toString first, so without a declared toString
    * or Symbol.toPrimitive it answers Object.prototype.toString's
@@ -5940,12 +6028,18 @@ export class ClassDynamicDispatch {
         const cls = lowerer.coerceToExpected(classValueRef(lowerer, info, info.decl), DYN);
         const bag = this.branchPropertyBag(lowerer, info, receiver, false, loc);
         const key: IrExpr = { kind: "strLit", value: name, type: STRING, loc };
+        // `constructor` is an own property of every class prototype, so an
+        // ancestor's prototype never answers for an instance of this class:
+        // the instance's own property answers, then one this class's
+        // prototype object defines (a reflected prototype, or a write to
+        // `C.prototype.constructor`), and otherwise the class itself.
+        const answered = this.readBagHasOwn(lowerer, bag, key, hasClassPrototypeData(info), loc);
         return [
           {
             kind: "return",
             value: {
               kind: "ternary",
-              cond: this.readBagHas(lowerer, "dyn.hasKey", bag, key, loc),
+              cond: answered,
               then: {
                 kind: "libCall",
                 fn: "dyn.bagGet",

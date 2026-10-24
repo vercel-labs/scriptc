@@ -7,6 +7,7 @@ import { lowerHistogramProperty } from "../builtins/performance.js";
 import { staticFunctionNameRead } from "../static-function-names.js";
 import { typedArgumentsArity } from "../typed-arguments.js";
 import { isThisParameter } from "../call-signatures.js";
+import { argumentCountSlot, contextualCallCount, usedAsValue } from "../argument-counts.js";
 import {
   checkedPrivateValue,
   localPrivateBrandClass,
@@ -689,7 +690,31 @@ export function lowerPropertyAccessExpr(
         const declared = (fn as ts.FunctionLikeDeclaration).parameters.nodes.filter(
           (p) => !isThisParameter(p),
         ).length;
-        const count = Math.max(declared, contextualArgumentCount(lowerer, fn) ?? 0);
+        const contextual = contextualArgumentCount(lowerer, fn);
+        if (contextual === "varies") {
+          lowerer.unsupported(
+            "SC1090",
+            expr,
+            "'arguments.length' in function expressions passed where the expected function type has optional or rest parameters (the count varies per call)",
+          );
+        }
+        // A top-level declaration also used as a value reads the count its
+        // caller stored (argument-counts.ts).
+        if (ts.isFunctionDeclaration(fn) && lowerer.ctx.argumentCount !== undefined)
+          return varRef(lowerer.ctx.argumentCount.id, F64, loc);
+        if (
+          (ts.isFunctionDeclaration(fn) || ts.isMethodDeclaration(fn)) &&
+          usedAsValue(lowerer, fn)
+        ) {
+          lowerer.unsupported(
+            "SC1090",
+            expr,
+            ts.isFunctionDeclaration(fn) && argumentCountSlot(lowerer, fn) !== null
+              ? "'arguments.length' in an arrow function inside a function that is also used as a value"
+              : "'arguments.length' in methods, nested, async and generator functions used as values (a caller of the value can pass more arguments than the function declares)",
+          );
+        }
+        const count = Math.max(declared, contextual ?? 0);
         // Calls through the expression's own name pass the declared count,
         // calls through the wider slot pass more: no constant answers both.
         if (count > declared && referencesOwnName(lowerer, fn)) {
@@ -4558,26 +4583,9 @@ function referencesOwnName(lowerer: Lowerer, fn: ts.Node): boolean {
 }
 
 /** The argument count every caller passes a function expression whose
- * value flows into one fixed-arity function type, an array method's
- * callback or an annotated slot: that type's parameter count. Null when
- * there is no such type or its arity varies. */
-function contextualArgumentCount(lowerer: Lowerer, fn: ts.Node): number | null {
-  if (!ts.isFunctionExpression(fn)) return null;
-  const contextual = lowerer.checker.getContextualType(fn);
-  if (contextual === undefined) return null;
-  const signatures = lowerer.checker.getCallSignatures(
-    lowerer.checker.getNonNullableType(contextual),
-  );
-  if (signatures.length !== 1) return null;
-  const declaration = signatures[0]!.declaration;
-  if (declaration === undefined) return null;
-  let count = 0;
-  for (const parameter of (declaration.parameters?.nodes ?? []) as ts.ParameterDeclaration[]) {
-    if (isThisParameter(parameter)) continue;
-    if (parameter.questionToken || parameter.initializer || parameter.dotDotDotToken) return null;
-    count++;
-  }
-  return count;
+ * value flows into a function type (argument-counts.ts contextualCallCount). */
+function contextualArgumentCount(lowerer: Lowerer, fn: ts.Node): number | "varies" | null {
+  return ts.isFunctionExpression(fn) ? contextualCallCount(lowerer, fn) : null;
 }
 
 /** The property names the program assigns on the global object, through

@@ -32,6 +32,7 @@ import {
 } from "../cjs-inline-require.js";
 import { captureContextArguments } from "../function-context.js";
 import { argumentsOwner, typedArgumentsCandidate } from "../typed-arguments.js";
+import { argumentCountValue } from "../argument-counts.js";
 import {
   isCjsExportTableLiteral,
   isCjsJsFile,
@@ -448,7 +449,17 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     // semantics); the rest marker carries the trailing dyn-array ABI.
     const funcType: IrType = funcTypeFromParamShapes(sig.params, sig.returnType);
     lowerer.requireExactArityValue(expr, expr, sig.params, funcType);
-    return { kind: "closure", fnName: sig.name, captures: [], type: funcType, loc };
+    const closure = {
+      kind: "closure" as const,
+      fnName: sig.name,
+      captures: [],
+      type: funcType,
+      loc,
+    };
+    const decl = lowerer.resolveValueSymbol(expr)?.valueDeclaration;
+    return decl && ts.isFunctionDeclaration(decl) && funcType.kind === "func"
+      ? argumentCountValue(lowerer, decl, expr, { ...closure, type: funcType })
+      : closure;
   }
   {
     // A generic function as a VALUE: monomorphized by flow — the

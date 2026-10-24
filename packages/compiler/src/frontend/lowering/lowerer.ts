@@ -2370,6 +2370,9 @@ export class Lowerer {
    * every name destructured from a present source optional. */
   readonly runtimeOptionalPatternTypes = new Map<ts.Node, IrType>();
   readonly runtimeOptionalReduceTypes = new Map<ts.CallExpression, IrType>();
+  /** Each function declaration's `arguments.length` count slot, or null
+   * (argument-counts.ts argumentCountSlot). */
+  readonly argumentCountSlots = new Map<ts.FunctionDeclaration, string | null>();
   /** Non-null assertions whose value is forwarded into a slot promoted to
    * hold undefined. `x!` has no runtime effect, so these keep the stored
    * undefined state instead of trapping before any dereference. */

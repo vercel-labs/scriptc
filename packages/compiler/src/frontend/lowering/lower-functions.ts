@@ -1,5 +1,6 @@
 import type { ScrDiagnostic } from "../../diagnostics/diagnostic.js";
 import { declareTypedArguments } from "./typed-arguments.js";
+import { declareArgumentCount } from "./argument-counts.js";
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
 import { everyStmtList, transformStmtList } from "../../ir/traverse.js";
 import { bindingNeverReassigned } from "./binding-analysis.js";
@@ -551,6 +552,7 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
         (sig.params[sig.params.length - 1]!.mode === "dynRest" ||
           sig.params[sig.params.length - 1]!.mode === "arguments"),
     );
+    declareArgumentCount(lowerer, decl, prologue);
     const bodyBlock = blockBodyOf(decl);
     if (!bodyBlock) {
       lowerer.unsupported(

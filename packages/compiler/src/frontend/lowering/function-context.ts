@@ -46,6 +46,9 @@ export interface FnCtx {
    * rest param): the synthetic trailing dyn-array param `arguments`
    * reads resolve to. */
   argumentsLocal?: IrLocal | null;
+  /** The count `arguments.length` reads in a top-level function declaration
+   * that is also used as a value (argument-counts.ts). */
+  argumentCount?: IrLocal;
   /** Arrows inherit the nearest ordinary function's arguments binding. */
   inheritsArguments?: boolean;
   /** A function lowered on demand on top of an unrelated caller's frames

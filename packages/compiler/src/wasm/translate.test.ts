@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { runInNewContext } from "node:vm";
 import { describe, expect, test } from "vitest";
 import { analyzeWasm } from "./binary.js";
 import { decodeBase64, encodeBase64 } from "./base64.js";
@@ -41,6 +42,75 @@ function topLevelLines(text: string[]): string[] {
 }
 
 describe("translateWasmModule", () => {
+  test("translates a function with more instructions than a JavaScript call can spread", () => {
+    const additions = 100_000;
+    const body = new Uint8Array(3 + additions * 7 + 3);
+    body.set([1, 1, 0x7f]); // one i32 local, initially zero
+    for (let i = 0; i < additions; i++) {
+      body.set([0x20, 0, 0x41, 1, 0x6a, 0x21, 0], 3 + i * 7);
+    }
+    body.set([0x20, 0, 0x0b], body.length - 3);
+    const u32 = (value: number): number[] => {
+      const bytes: number[] = [];
+      do {
+        const byte = value & 0x7f;
+        value >>>= 7;
+        bytes.push(byte | (value === 0 ? 0 : 0x80));
+      } while (value !== 0);
+      return bytes;
+    };
+    const bodyLength = u32(body.length);
+    const codeLength = u32(1 + bodyLength.length + body.length);
+    const prefix = [
+      0,
+      97,
+      115,
+      109,
+      1,
+      0,
+      0,
+      0,
+      1,
+      5,
+      1,
+      0x60,
+      0,
+      1,
+      0x7f,
+      3,
+      2,
+      1,
+      0,
+      7,
+      7,
+      1,
+      3,
+      115,
+      117,
+      109,
+      0,
+      0,
+      10,
+      ...codeLength,
+      1,
+      ...bodyLength,
+    ];
+    const bytes = new Uint8Array(prefix.length + body.length);
+    bytes.set(prefix);
+    bytes.set(body, prefix.length);
+    const sum: unknown = runInNewContext(
+      'new WebAssembly.Instance(new WebAssembly.Module(bytes)).exports["sum"]()',
+      { bytes },
+    );
+    expect(sum).toBe(additions);
+
+    const translated = translateWasmModule(bytes, SHA, { boundsChecks: false });
+    const text = translated.text.join("\n");
+    expect(text).toContain(`define internal i32 @${wasmSymbolPrefix(SHA)}_f0(ptr %inst)`);
+    expect([...text.matchAll(/ = add i32 /g)]).toHaveLength(additions);
+    expect(text).toContain("ret i32");
+  });
+
   test("emits functions, thunks, data and the descriptor in the helper's grammar", () => {
     const out = translateWasmModule(ADD, SHA, { boundsChecks: false });
     const prefix = wasmSymbolPrefix(SHA);

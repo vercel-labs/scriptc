@@ -1263,7 +1263,7 @@ class FunctionTranslator {
       out.push(`  br label %body`);
     }
     out.push(`body:`);
-    out.push(...this.lines.lines);
+    for (const line of this.lines.lines) out.push(line);
     for (const [code2, label] of this.trapLabels) {
       out.push(`${label}:`);
       out.push(`  call void @scr_wasm_trap(i32 ${code2})`);

@@ -1,3 +1,4 @@
+import { widensReducedRecords } from "../function-returns.js";
 import { keyedHelperName } from "../stable-names.js";
 import { isDateJsonSource } from "./dates.js";
 import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
@@ -96,7 +97,14 @@ export function lowerJsonMethodCall(
       !isDateJsonSource(lowerer, argNode)
     ) {
       const narrowed = lowerer.mapTypeOf(lowerer.typeOf(argNode));
-      if (narrowed && !isUnitType(narrowed) && narrowed.kind !== "void") {
+      // A union of record types the checker's subtype reduction spelled as
+      // one of them serializes each value by its own layout.
+      if (
+        narrowed &&
+        !isUnitType(narrowed) &&
+        narrowed.kind !== "void" &&
+        !widensReducedRecords(lowerer, narrowed, value.type)
+      ) {
         const helper =
           narrowed.kind === "union"
             ? lowerer.narrowedRetagHelper(argNode, value.type.unionId, narrowed.unionId, loc)

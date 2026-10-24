@@ -421,6 +421,46 @@ export function narrowedArmHelper(
   return name;
 }
 
+/** Interned `%union.narrow.width.<n>(u)`: the checked extraction of a
+ * record arm from a union that also holds records whose fields strictly
+ * include the arm's (a function's widened inferred return, see
+ * widenReducedReturn). Those arms convert like any record width coercion;
+ * every other arm throws like narrowedArmHelper's. */
+export function widthNarrowHelper(
+  lowerer: Lowerer,
+  fromId: string,
+  target: IrType,
+  loc: SrcLoc,
+): string | null {
+  const from = lowerer.unions.get(fromId);
+  if (!from || target.kind !== "record") return null;
+  const tag = lowerer.armTag(fromId, target);
+  if (tag < 0) return null;
+  const key = `${fromId}:${tag}`;
+  const existing = lowerer.coercions.widthNarrows.get(key);
+  if (existing) return existing;
+  const name = keyedHelperName(lowerer, "%union.narrow.width", key);
+  lowerer.coercions.widthNarrows.set(key, name);
+  const fn = buildUnionNarrow(
+    name,
+    from,
+    target,
+    loc,
+    (type) => lowerer.fmt(type),
+    null,
+    (armTag, payload) => widthSubtypeConversion(lowerer, from.arms[armTag]!, target, payload, loc),
+  );
+  if (!fn) throw new InternalCompilerError("lowerer bug: invalid checked union extraction");
+  lowerer.coercions.checkedNarrowArms.set(name, {
+    unionId: fromId,
+    tag,
+    target: from.arms[tag]!,
+    widens: true,
+  });
+  lowerer.liftedFns.push(fn);
+  return name;
+}
+
 /** A checked extraction at its use. A plain read tests the stored tag in
  * place and projects the payload directly, so member reads can borrow it;
  * every other arm throws the helper's TypeError with the same message.
@@ -442,7 +482,8 @@ export function checkedNarrowCall(
     value.type.kind !== "union" ||
     value.type.unionId !== arm.unionId ||
     !typeEquals(type, arm.target) ||
-    !isSafeToRepeat(value)
+    !isSafeToRepeat(value) ||
+    arm.widens === true
   )
     return call;
   const unionId = arm.unionId;
@@ -598,4 +639,32 @@ export function deferredReadHelper(
   if (!fn) throw new InternalCompilerError("lowerer bug: invalid deferred union extraction");
   lowerer.liftedFns.push(fn);
   return name;
+}
+
+/** Whether `arm` is a record whose fields strictly include those of the
+ * record `target`: a value of the target type under TypeScript's structural
+ * typing, which the checker's subtype reduction may have spelled as the
+ * target (`{ status } | { status, value }` infers `{ status }`). */
+export function isWidthSubtypeRecord(lowerer: Lowerer, arm: IrType, target: IrType): boolean {
+  if (arm.kind !== "record" || target.kind !== "record") return false;
+  const own = lowerer.shapes.get(arm.shapeId);
+  const want = lowerer.shapes.get(target.shapeId);
+  if (!own || !want || own.tuple || want.tuple || own.indexValue || want.indexValue) return false;
+  if (want.fields.length >= own.fields.length) return false;
+  const names = new Set(own.fields.map((f) => f.name));
+  return want.fields.every((f) => names.has(f.name));
+}
+
+/** A checked narrow that meets a width-subtype record arm converts it like
+ * any record width coercion instead of reporting a lying narrowing. */
+function widthSubtypeConversion(
+  lowerer: Lowerer,
+  arm: IrType,
+  target: IrType,
+  payload: IrExpr,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (!isWidthSubtypeRecord(lowerer, arm, target)) return null;
+  const lift = lowerer.widthLiftPlan(arm, target);
+  return lift === null ? null : lowerer.applyWidthLift(lift, payload, target, loc);
 }

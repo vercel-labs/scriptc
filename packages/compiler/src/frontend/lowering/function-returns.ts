@@ -11,12 +11,14 @@ import {
   VOID,
   isUnitType,
   typeEquals,
+  typeKey,
 } from "../../ir/ir.js";
 import { isJsSourceFile } from "../program.js";
 import { PoisonError, dynFallbackType } from "./lowerer.js";
 import { functionCanReturnUndefined } from "../function-completion.js";
 import { jsBindingAppendsOnly, jsBindingHasOpenWrites } from "./lower-stmts.js";
 import type { FnCtx } from "./function-context.js";
+import { constituentTypes } from "../ts7/checker.js";
 import { returnsGuessedOverloadValue } from "./overload-choice.js";
 
 /** Keep the conservative completion rule shared by return construction
@@ -176,6 +178,8 @@ export function declaredReturnType(
   // (`.action(() => { throw ... })`). `never` VALUES stay unmapped.
   if (retTsType.flags & ts.TypeFlags.Never) return VOID;
   let mappedReturn = lowerer.mapTypeOf(retTsType);
+  if (mappedReturn !== null)
+    mappedReturn = widenReducedReturn(lowerer, decl, retTsType, mappedReturn);
   // A generator declared to return Iterable<T> returns a generator over T.
   if (mappedReturn && decl.asteriskToken)
     mappedReturn = iterableGeneratorArm(lowerer, mappedReturn);
@@ -538,4 +542,176 @@ export function blockBodyOf(decl: ts.FunctionLikeDeclaration): ts.Block | null {
   if (body === undefined) return null;
   if (ts.isBlock(body)) return body;
   return ts.forEachChild(decl, (c) => (ts.isBlock(c) ? c : undefined)) ?? null;
+}
+
+const widening = new Set<ts.Node>();
+/** How many times widenReducedReturn answered a declaration it was still
+ * widening with its unwidened type. A result computed while that happened
+ * may lack arms, so it is not kept. */
+let wideningCuts = 0;
+
+/** An inferred return type is the checker's SUBTYPE-REDUCED union of the
+ * returned values' types: `return aborted` (`{ status }`) beside `return
+ * { status, value }` infers just `{ status }`, because the second is a
+ * subtype of the first. Records have fixed layouts, so that type cannot
+ * hold the second value: the return would drop `value` or fail the union
+ * wrap. A function whose return type is inferred therefore returns the
+ * union of the record types it actually returns. Declared return types keep
+ * their meaning. */
+function widenReducedReturn(
+  lowerer: Lowerer,
+  decl: ts.SignatureDeclaration,
+  retTsType: ts.Type,
+  mapped: IrType,
+): IrType {
+  if (decl.type !== undefined || hasExplicitJsDocReturn(decl)) return mapped;
+  const body = (decl as { body?: ts.Node }).body;
+  if (body === undefined || decl.asteriskToken !== undefined) return mapped;
+  if (decl.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) return mapped;
+  // A function expression with a contextual signature returns that
+  // signature's type; only free-standing inference is widened.
+  if (
+    (ts.isFunctionExpression(decl) || ts.isArrowFunction(decl)) &&
+    lowerer.checker.getContextualType(decl) !== undefined
+  )
+    return mapped;
+  const arms =
+    mapped.kind === "union" ? (lowerer.unions.get(mapped.unionId)?.arms ?? []) : [mapped];
+  const recordArms = arms.filter((a) => a.kind === "record");
+  if (recordArms.length === 0) return mapped;
+  if (widening.has(decl)) {
+    wideningCuts++;
+    return mapped;
+  }
+  // Functions that forward to the same callees along several return
+  // branches read each callee's widened type once.
+  const known = lowerer.coercions.widenedReturnTypes.get(decl)?.get(retTsType);
+  if (known !== undefined) return known;
+  const cutsBefore = wideningCuts;
+  const widened = widenReturnArms(lowerer, decl, retTsType, mapped, arms, recordArms);
+  if (wideningCuts === cutsBefore) {
+    let byType = lowerer.coercions.widenedReturnTypes.get(decl);
+    if (byType === undefined) lowerer.coercions.widenedReturnTypes.set(decl, (byType = new Map()));
+    byType.set(retTsType, widened);
+  }
+  return widened;
+}
+
+/** widenReducedReturn's scan of the returned values, for a declaration not
+ * already being widened. */
+function widenReturnArms(
+  lowerer: Lowerer,
+  decl: ts.SignatureDeclaration,
+  retTsType: ts.Type,
+  mapped: IrType,
+  arms: readonly IrType[],
+  recordArms: readonly IrType[],
+): IrType {
+  const body = (decl as { body?: ts.Node }).body!;
+  const checkerArms = new Set<ts.Type>(
+    retTsType.flags & ts.TypeFlags.Union ? constituentTypes(retTsType) : [retTsType],
+  );
+  const fieldsOf = (t: IrType): readonly string[] | null => {
+    if (t.kind !== "record") return null;
+    const shape = lowerer.shapes.get(t.shapeId);
+    return shape === undefined || shape.tuple || shape.indexValue !== undefined
+      ? null
+      : shape.fields.map((f) => f.name);
+  };
+  const narrower = (part: IrType): boolean => {
+    const own = fieldsOf(part);
+    if (own === null || arms.some((a) => typeKey(a) === typeKey(part))) return false;
+    return recordArms.some((arm) => {
+      const fields = fieldsOf(arm);
+      return fields !== null && fields.length < own.length && fields.every((f) => own.includes(f));
+    });
+  };
+  const extra = new Map<string, IrType>();
+  const returned = (expr: ts.Expression): void => {
+    // A call of another inferred function returns ITS widened type.
+    const callee = ts.isCallExpression(expr)
+      ? lowerer.checker.getResolvedSignature(expr)?.declaration
+      : undefined;
+    if (
+      callee !== undefined &&
+      ts.isFunctionLike(callee) &&
+      (callee as { body?: ts.Node }).body !== undefined &&
+      callee.type === undefined
+    ) {
+      let t: IrType | null = null;
+      widening.add(decl);
+      try {
+        t = declaredReturnType(lowerer, callee, expr);
+      } catch {
+        t = null;
+      } finally {
+        widening.delete(decl);
+      }
+      if (t === null) return;
+      const parts = t.kind === "union" ? (lowerer.unions.get(t.unionId)?.arms ?? []) : [t];
+      for (const part of parts) if (narrower(part)) extra.set(typeKey(part), part);
+      return;
+    }
+    // Only a value type the checker's reduction dropped from the inferred
+    // union is a candidate; a constituent of the inferred type is already
+    // represented by it.
+    const valueType = lowerer.typeOf(expr);
+    const valueArms =
+      valueType.flags & ts.TypeFlags.Union ? constituentTypes(valueType) : [valueType];
+    for (const part of valueArms) {
+      if (checkerArms.has(part) || !(part.flags & ts.TypeFlags.Object)) continue;
+      if (!lowerer.checker.isTypeAssignableTo(part, retTsType)) continue;
+      const t = lowerer.mapTypeOf(part);
+      if (t !== null && narrower(t)) extra.set(typeKey(t), t);
+    }
+  };
+  const scan = (node: ts.Node): void => {
+    if (node !== decl && ts.isFunctionLike(node)) return;
+    if (ts.isReturnStatement(node) && node.expression !== undefined) returned(node.expression);
+    ts.forEachChild(node, scan);
+  };
+  if (ts.isArrowFunction(decl) && !ts.isBlock(body)) returned(body as ts.Expression);
+  else scan(body);
+  if (extra.size === 0) return mapped;
+  const joined = new Map<string, IrType>();
+  for (const a of [...arms, ...extra.values()]) joined.set(typeKey(a), a);
+  const sorted = [...joined.values()].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  const unionId = lowerer.unions.intern(sorted);
+  lowerer.coercions.widenedReturns.add(unionId);
+  return { kind: "union", unionId };
+}
+
+/** Whether `wide` is a widened inferred return that holds `narrow`'s arms plus records that are width
+ * subtypes of `narrow`'s record arms: the shape a subtype-reduced inferred
+ * type takes next to the values it was inferred from. */
+export function widensReducedRecords(lowerer: Lowerer, narrow: IrType, wide: IrType): boolean {
+  if (wide.kind !== "union" || typeKey(narrow) === typeKey(wide)) return false;
+  if (!lowerer.coercions.widenedReturns.has(wide.unionId)) return false;
+  const narrowArms =
+    narrow.kind === "union" ? (lowerer.unions.get(narrow.unionId)?.arms ?? []) : [narrow];
+  const wideArms = lowerer.unions.get(wide.unionId)?.arms ?? [];
+  const keys = new Set(wideArms.map(typeKey));
+  if (!narrowArms.every((a) => keys.has(typeKey(a)))) return false;
+  const fieldsOf = (t: IrType): readonly string[] | null => {
+    if (t.kind !== "record") return null;
+    const shape = lowerer.shapes.get(t.shapeId);
+    return shape === undefined || shape.tuple || shape.indexValue !== undefined
+      ? null
+      : shape.fields.map((f) => f.name);
+  };
+  const narrowKeys = new Set(narrowArms.map(typeKey));
+  const extras = wideArms.filter((a) => !narrowKeys.has(typeKey(a)));
+  return (
+    extras.length > 0 &&
+    extras.every((extra) => {
+      const own = fieldsOf(extra);
+      return (
+        own !== null &&
+        narrowArms.some((arm) => {
+          const f = fieldsOf(arm);
+          return f !== null && f.length < own.length && f.every((x) => own.includes(x));
+        })
+      );
+    })
+  );
 }

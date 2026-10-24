@@ -31,11 +31,13 @@ Options:
                      (native-link-info implies --emit=obj and never links;
                      diagnostics prints the versioned JSON diagnostics
                      envelope for build and coverage)
-      --fail-on <blockers|divergences|dynamic>
+      --fail-on <blockers|divergences|dynamic|node-islands|eager-node-islands|island-gaps>
                      coverage only: exit 1 when the entry path has blockers
                      (a build would fail), or also when it has Node
-                     divergences, or also when it has likely-hot functions
-                     that use untyped values (SC6101)
+                     divergences, likely-hot functions that use untyped
+                     values (SC6101), any Node island (eager-node-islands is
+                     the same until deferred evaluation lands), or a gap
+                     island (a package scriptc should compile but cannot yet)
       --backend <b>  code generator (llvm)
       --optimization <release|dev|speed>
                      native optimization posture (default: release/-O2). dev
@@ -110,6 +112,28 @@ Options:
       --no-dynamic-tier-warning
                      build and coverage: leave out SC6101, the warning that
                      names likely-hot functions that use untyped values
+      --node-islands <auto|explicit|off>
+                     Node island policy (default: auto): npm packages outside
+                     the native subset run in Node automatically; explicit
+                     allows only marked islands; off allows none. REPORT-ONLY
+                     in this version: coverage reports the islands a build
+                     would choose; builds compile as before
+      --node-island <pkg-or-path>
+                     mark an npm package or one of your modules (a path or
+                     glob) to run in a Node island (repeatable, comma lists;
+                     report-only)
+      --native <pkg> require an npm package to compile natively; outside the
+                     native subset it is SC8003 (repeatable; report-only)
+      --node <path>  the node executable Node islands use (report-only)
+      --explain-island <pkg>
+                     coverage only: why a package would run in a Node island,
+                     with the first reason per module, the native import
+                     sites and the packages inside its closure
+      --strict-user-js
+                     coverage only: report constructor functions, prototype
+                     and shape mutation, sloppy-mode semantics and builtin
+                     patching in your own .js/.cjs/.mjs modules as
+                     SC8101–SC8105 blockers
       --wasm <file.wasm>
                      coverage only: report a WebAssembly module the program
                      loads whose path its sources do not spell (repeatable;
@@ -144,6 +168,12 @@ export const CLI_OPTIONS = {
   "explain-dynamic": { type: "string" },
   "dynamic-tier-warning": { type: "boolean", default: true },
   wasm: { type: "string", multiple: true },
+  "node-islands": { type: "string" },
+  "node-island": { type: "string", multiple: true },
+  native: { type: "string", multiple: true },
+  node: { type: "string" },
+  "explain-island": { type: "string" },
+  "strict-user-js": { type: "boolean", default: false },
   lib: { type: "boolean", default: false },
   profile: { type: "string" },
   help: { type: "boolean", short: "h", default: false },

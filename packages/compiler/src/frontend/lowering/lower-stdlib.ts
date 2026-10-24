@@ -2216,6 +2216,8 @@ export function lowerDynamicImportCall(lowerer: Lowerer, call: ts.CallExpression
       call,
       "dynamic import() of computed specifiers (the module graph resolves at " +
         "build time — the specifier must be a string literal)",
+      undefined,
+      "dynamic-import",
     );
   }
   if (call.arguments.nodes.length !== 1) {

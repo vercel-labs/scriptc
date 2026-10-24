@@ -830,7 +830,17 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
           "deref()-after-collect exposes GC timing — genuinely dynamic; hold a strong reference instead",
         eval: "runtime code evaluation cannot be compiled ahead of time",
       };
-      lowerer.noLowering(expr.text, expr, globalHints[expr.text], sym ?? undefined);
+      lowerer.noLowering(
+        expr.text,
+        expr,
+        globalHints[expr.text],
+        sym ?? undefined,
+        expr.text === "WeakRef" || expr.text === "FinalizationRegistry"
+          ? "weak-ref"
+          : expr.text === "eval"
+            ? "code-from-string"
+            : undefined,
+      );
     }
   }
   // An ambient global nothing defines compiles to exactly what Node does

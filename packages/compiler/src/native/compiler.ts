@@ -108,7 +108,7 @@ export class NativeCompiler {
     private readonly cache: NativeCache | null = null,
   ) {
     const evaluator = toolchain.comptimeExecutable;
-    this.frontend = (entry, npmStatic, externalTypes, libraryNpmStatic) =>
+    this.frontend = (entry, npmStatic, externalTypes, libraryNpmStatic, options) =>
       runNativeFrontend(
         entry,
         toolchain.ts7Executable,
@@ -119,6 +119,7 @@ export class NativeCompiler {
           : (source, timeout) =>
               evaluateNativeComptime(source, timeout, toolchain.ts7Executable, evaluator),
         libraryNpmStatic,
+        options,
       );
   }
 

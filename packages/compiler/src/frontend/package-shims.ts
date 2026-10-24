@@ -42,6 +42,7 @@
 import { dirname, join, resolve } from "node:path";
 import { packageShimRoot, tsgoPath } from "./dts-paths.js";
 import { trackedDirectoryExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
+import { readProjectConfig } from "../project-config.js";
 import { packageNameOfSpecifier } from "./workspace-registry.js";
 import {
   BUILTIN_ALIAS_PACKAGES,
@@ -199,36 +200,12 @@ export function packageShimEntries(): string[] {
 let unloadedPackages: ReadonlySet<string> = new Set();
 
 /** Reads the project's package-shim configuration: the `scriptc.packages`
- * map of the entry's nearest package.json. Called once per program load. */
+ * entries marked "unloaded" in the entry's nearest package.json
+ * (project-config.ts validates the rest). Called once per program load. */
 export function configurePackageShims(entryPath: string): void {
   const packages = new Set<string>();
-  for (let dir = dirname(resolve(entryPath)); ;) {
-    const text = trackedReadFile(join(dir, "package.json"));
-    if (text !== null) {
-      let parsed: unknown = null;
-      try {
-        parsed = JSON.parse(text);
-      } catch {
-        parsed = null;
-      }
-      const config =
-        parsed !== null && typeof parsed === "object"
-          ? (parsed as Record<string, unknown>)["scriptc"]
-          : undefined;
-      const map =
-        config !== null && typeof config === "object"
-          ? (config as Record<string, unknown>)["packages"]
-          : undefined;
-      if (map !== null && typeof map === "object") {
-        for (const [name, kind] of Object.entries(map as Record<string, unknown>)) {
-          if (kind === "unloaded") packages.add(name);
-        }
-      }
-      break;
-    }
-    const parent = dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
+  for (const [name, setting] of readProjectConfig(entryPath).packages) {
+    if (setting.unloaded) packages.add(name);
   }
   unloadedPackages = packages;
 }

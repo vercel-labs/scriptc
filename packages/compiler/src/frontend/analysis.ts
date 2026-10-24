@@ -4,6 +4,10 @@ import type { AnalyzeOptions, AnalyzeResult } from "../compile-types.js";
 import { loadFfiProfile, type FfiProfile } from "../ffi/ffi-manifest.js";
 import { provenanceSources } from "./provenance-registry.js";
 import type { FrontendFactory } from "./pipeline.js";
+import { readProjectConfig } from "../project-config.js";
+import { nodeIslandPolicy } from "../node-islands/policy.js";
+import { buildNodeIslandReport } from "../node-islands/report.js";
+import { hasNodeIslandFindings } from "../node-islands/summary.js";
 
 /** Analysis without codegen: how much of the program compiles statically.
  * Unlike compile(), lowering diagnostics are data here, not failure. */
@@ -34,7 +38,9 @@ export function analyzeWithFrontend(
     }
     ffi = loaded.profile;
   }
-  const fe = createFrontend(entryPath, opts.npmStatic, opts.externalTypes);
+  const fe = createFrontend(entryPath, opts.npmStatic, opts.externalTypes, undefined, {
+    nodeIslands: true,
+  });
   try {
     const emptyStats = {
       statementsTotal: 0,
@@ -96,6 +102,23 @@ export function analyzeWithFrontend(
       ...(opts.wasm !== undefined && opts.wasm.length > 0 ? { wasmFiles: opts.wasm } : {}),
     });
     const provenance = provenanceSources();
+    // Node islands, report-only: which packages and modules would run in
+    // Node, from the detector's scan and the policy. Code generation does
+    // not depend on it.
+    const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
+    const islandReport =
+      fe.nodeIslandScan === undefined
+        ? null
+        : buildNodeIslandReport({
+            entry: entryPath,
+            scan: fe.nodeIslandScan({ userJs: policy.strictUserJs }),
+            npm: fe.npmStatic,
+            diagnostics: [...lowered.diagnostics, ...(lowered.unreached?.diagnostics ?? [])],
+            fences: [...lowered.runtimeFences, ...(lowered.unreached?.runtimeFences ?? [])],
+            policy,
+          });
+    const nodeIslands =
+      islandReport !== null && hasNodeIslandFindings(islandReport) ? islandReport : null;
     return {
       coverage: {
         file: entryPath,
@@ -103,7 +126,9 @@ export function analyzeWithFrontend(
         // The import fences report as blockers alongside the statement-level
         // ones (use sites of the fenced bindings emit matching diagnostics,
         // which the report groups with these).
-        diagnostics: [...preflight, ...lowered.diagnostics],
+        // --strict-user-js: R2 constructs in user JavaScript are blockers
+        // (SC8101–SC8105), as scope B's builds will make them errors.
+        diagnostics: [...preflight, ...lowered.diagnostics, ...(nodeIslands?.userJs ?? [])],
         ...(lowered.runtimeFences.length > 0 ? { runtimeFences: lowered.runtimeFences } : {}),
         ...(lowered.divergences !== undefined ? { divergences: lowered.divergences } : {}),
         ...(lowered.performance !== undefined ? { performance: lowered.performance } : {}),
@@ -116,6 +141,7 @@ export function analyzeWithFrontend(
         ...(lowered.provenanceElided ? { provenanceElided: lowered.provenanceElided } : {}),
         ...(lowered.tiers !== undefined ? { tiers: lowered.tiers } : {}),
         ...(lowered.wasmModules !== undefined ? { wasmModules: lowered.wasmModules } : {}),
+        ...(nodeIslands !== null ? { nodeIslands } : {}),
         preflightFailed: false,
       },
       sourceTexts: fe.sourceTexts(),

@@ -209,11 +209,14 @@ export {
 export {
   renderCoverage,
   renderExplainDynamic,
+  renderExplainIsland,
   coverageEnvelope,
   coveragePasses,
   type CoverageInput,
   type CoverageFailOn,
 } from "./coverage/report.js";
+export type { NodeIslandReport, NodeIslandEntry } from "./node-islands/summary.js";
+export type { NodeIslandOptions, NodeIslandsMode } from "./node-islands/policy.js";
 export {
   TIER_MODES,
   type DemotedUnit,
@@ -411,8 +414,13 @@ export async function analyzeCached(
   return result;
 }
 
-const nodeFrontend: FrontendFactory = (entry, npmStatic, externalTypes, libraryNpmStatic) =>
-  runFrontend(entry, loadProgram, npmStatic, externalTypes, libraryNpmStatic);
+const nodeFrontend: FrontendFactory = (
+  entry,
+  npmStatic,
+  externalTypes,
+  libraryNpmStatic,
+  options,
+) => runFrontend(entry, loadProgram, npmStatic, externalTypes, libraryNpmStatic, options);
 
 /** The checker's part of the executable cache key (`checkerCacheIdentity`), as the CLI's startup route computes it. */
 function checkerField(): { checker?: string } {

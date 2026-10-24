@@ -532,6 +532,8 @@ export function lowerUncompiledRequireCall(
       "SC1090",
       call,
       'require() with a computed specifier (the compiled module graph is fixed at build time: require("<string literal>") lowers)',
+      undefined,
+      "dynamic-require",
     );
   }
   if (canonicalBuiltinModule(spec) !== null) return null;

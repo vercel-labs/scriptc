@@ -146,6 +146,8 @@ export function lowerCreateRequireCall(
       "createRequire's require with this argument shape",
       call,
       'the compiled module graph is fixed at build time — the one lowered form is require("<static string literal>")',
+      undefined,
+      "dynamic-require",
     );
   }
   const spec = cr.spec;

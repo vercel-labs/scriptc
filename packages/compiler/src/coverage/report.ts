@@ -17,6 +17,7 @@ import {
   type DiagnosticsEnvelope,
   type LocatedDiagnostic,
   type SourcePosition,
+  type NodeIslandsEnvelope,
   type TierUnitPosition,
   type TiersEnvelope,
 } from "../diagnostics/envelope.js";
@@ -25,6 +26,14 @@ import type { LowerStats } from "../frontend/lowering/lowerer.js";
 import type { ProvenanceSources } from "../frontend/provenance-registry.js";
 import type { DemotionUnit, TierReport } from "../frontend/tier-analysis.js";
 import type { WasmModuleReport } from "../wasm/discover.js";
+import {
+  describe as describeReason,
+  hasNodeIslandDecisions,
+  type NodeIslandEntry,
+  type NodeIslandReport,
+} from "../node-islands/summary.js";
+import { classDescription } from "../node-islands/rules.js";
+import type { SrcLoc } from "../ir/ir.js";
 
 export interface CoverageInput {
   file: string;
@@ -65,6 +74,10 @@ export interface CoverageInput {
   /** The WebAssembly modules the build can see (wasm/discover.ts): their
    * size, validity and the proposals they use. */
   wasmModules?: WasmModuleReport[];
+  /** Node islands, report-only: the packages and user modules that would
+   * run in a Node island, and why. Present when there is something to
+   * report. */
+  nodeIslands?: NodeIslandReport;
   /** True when tsc preflight failed — no coverage can be computed. */
   preflightFailed: boolean;
 }
@@ -148,6 +161,19 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
       out.push(`  ${c(RED, "not analyzable")}: ${config[0]!.message}`);
       return out.join("\n");
     }
+    const projectConfig = input.diagnostics.filter((d) => d.code === "SC8004");
+    if (projectConfig.length > 0) {
+      out.push(
+        `  ${c(RED, "not analyzable")}: the project's scriptc configuration has ${projectConfig.length} unknown setting${projectConfig.length === 1 ? "" : "s"}`,
+      );
+      for (const d of projectConfig) {
+        const p = locator.position(d.loc.file, d.loc.start);
+        out.push(`    ${c(DIM, "SC8004")}  ${d.message}`);
+        out.push(`          ${c(DIM, `at ${where({ file: d.loc.file, ...p })}`)}`);
+        if (d.hint !== undefined) out.push(`          ${c(DIM, `hint: ${d.hint}`)}`);
+      }
+      return out.join("\n");
+    }
     const tsc = input.diagnostics.filter((d) => d.code === "SC0001");
     if (tsc.length > 0) {
       const world = tsc.filter((d) => d.typeWorld === true).length;
@@ -222,6 +248,22 @@ export function renderCoverage(input: CoverageInput, opts: CoverageRenderOptions
           : c(RED, "refused") + (s.detail !== undefined ? ` ${c(DIM, `(${s.detail})`)}` : "");
       out.push(`    ${s.package.padEnd(widestP)}  ${status}`);
     }
+    out.push("");
+  }
+
+  // Node islands (report-only): what would run in Node, gap islands
+  // first (DESIGN.md §1.3: a gap island is compiler work an island hides).
+  if (input.nodeIslands !== undefined && hasNodeIslandDecisions(input.nodeIslands)) {
+    renderNodeIslands(
+      input.nodeIslands,
+      out,
+      c,
+      (loc) => {
+        const p = locator.position(loc.file, loc.start);
+        return where({ file: loc.file, ...p });
+      },
+      opts.root,
+    );
     out.push("");
   }
 
@@ -477,9 +519,24 @@ function displayPath(file: string, root: string | undefined): string {
 }
 
 /** What `coverage --fail-on` checks: reached blockers (they fail a build)
- * and, optionally, divergences or the performance warning. Unreached
- * blockers never fail. */
-export type CoverageFailOn = "blockers" | "divergences" | "dynamic";
+ * and, optionally, divergences, the performance warning or Node islands.
+ * Unreached blockers never fail. */
+export type CoverageFailOn =
+  | "blockers"
+  | "divergences"
+  | "dynamic"
+  | "node-islands"
+  | "eager-node-islands"
+  | "island-gaps";
+
+export const COVERAGE_FAIL_ON: readonly CoverageFailOn[] = [
+  "blockers",
+  "divergences",
+  "dynamic",
+  "node-islands",
+  "eager-node-islands",
+  "island-gaps",
+];
 
 /** Whether the analysis passes the selected gate. Preflight failures
  * always fail; `failOn` undefined means only preflight fails (the report's
@@ -492,6 +549,16 @@ export function coveragePasses(input: CoverageInput, failOn?: CoverageFailOn): b
   if (input.diagnostics.length > 0) return false;
   if (failOn === "divergences" && (input.divergences?.length ?? 0) > 0) return false;
   if (failOn === "dynamic" && (input.performance?.length ?? 0) > 0) return false;
+  // The Node island gates (report-only islands count: they are what a
+  // build would choose). Every island evaluates eagerly until deferred
+  // evaluation lands, so eager-node-islands equals node-islands for now.
+  // Would-be policy errors (SC8002, SC8003) fail every island gate.
+  const islands = input.nodeIslands;
+  if (islands === undefined) return true;
+  const anyIsland = failOn === "node-islands" || failOn === "eager-node-islands";
+  if ((anyIsland || failOn === "island-gaps") && islands.violations.length > 0) return false;
+  if (anyIsland && (islands.islands.length > 0 || islands.userModules.length > 0)) return false;
+  if (failOn === "island-gaps" && islands.islands.some((i) => i.class === "gap")) return false;
   return true;
 }
 
@@ -555,6 +622,9 @@ export function coverageEnvelope(
         }),
     ...(input.tiers !== undefined ? { tiers: tiersEnvelope(input.tiers, locator) } : {}),
     ...(input.wasmModules !== undefined ? { wasmModules: input.wasmModules } : {}),
+    ...(input.nodeIslands !== undefined
+      ? { nodeIslands: nodeIslandsEnvelope(input.nodeIslands, locator) }
+      : {}),
     groups,
     diagnostics: located,
   };
@@ -691,4 +761,212 @@ export function renderExplainDynamic(
     }
   }
   return out.join("\n");
+}
+
+/* ── Node islands (report-only) ───────────────────────────────────────── */
+
+const ISLAND_REASONS_SHOWN = 1;
+
+function islandName(i: { package: string; version: string | null }): string {
+  return i.version === null ? i.package : `${i.package}@${i.version}`;
+}
+
+function renderNodeIslands(
+  report: NodeIslandReport,
+  out: string[],
+  c: (code: string, s: string) => string,
+  at: (loc: SrcLoc) => string,
+  root: string | undefined,
+): void {
+  const n = report.islands.length + report.userModules.length;
+  out.push(
+    `  ${c(BOLD, "Node islands")}   ${c(DIM, `(would-be, report-only: the build is unchanged; --node-islands=${report.policy})`)}`,
+  );
+  if (n === 0) out.push(`    ${c(DIM, "none")}`);
+  const widest = Math.max(0, ...report.islands.map((i) => i.class.length));
+  for (const island of report.islands) {
+    const tone = island.class === "gap" ? RED : YELLOW;
+    const decided =
+      island.decision === "auto"
+        ? ""
+        : c(
+            DIM,
+            ` (marked by ${island.decision === "cli" ? "--node-island" : "scriptc.packages"})`,
+          );
+    out.push(`    ${c(tone, island.class.padEnd(widest))}  ${islandName(island)}${decided}`);
+    for (const r of island.reasons.slice(0, ISLAND_REASONS_SHOWN)) {
+      const where = r.loc === null ? "" : `${at(r.loc)}: `;
+      out.push(`          ${c(DIM, capMessage(`${where}${describeReason(r)}`))}`);
+    }
+    const more = island.reasons.length - ISLAND_REASONS_SHOWN;
+    const details = [
+      more > 0
+        ? `+${more} more reason${more === 1 ? "" : "s"} in ${counted(island.modules, "module")}`
+        : "",
+      island.carries.length > 0 ? `carries ${island.carries.join(", ")}` : "",
+    ].filter((t) => t !== "");
+    if (details.length > 0) out.push(`          ${c(DIM, details.join("; "))}`);
+  }
+  for (const m of report.userModules) {
+    out.push(
+      `    ${c(YELLOW, "marked".padEnd(widest))}  ${displayPath(m.file, root)} ${c(DIM, `(user module, marked by ${m.source === "cli" ? "--node-island" : "nodeIslands.modules"})`)}`,
+    );
+  }
+  for (const v of report.violations) {
+    out.push(`    ${c(RED, v.code)}  ${capMessage(v.message)}`);
+  }
+  const shared = report.packages.filter((p) => p.status === "shared");
+  if (shared.length > 0) {
+    out.push(
+      `    ${c(DIM, `reached from native code and from an island: ${shared.map((p) => p.package).join(", ")}`)}`,
+    );
+  }
+  const native = report.packages.filter((p) => p.status === "native");
+  if (native.length > 0) {
+    out.push(
+      `    ${c(DIM, `${counted(native.length, "package")} stay${native.length === 1 ? "s" : ""} native: ${native.map((p) => p.package).join(", ")}`)}`,
+    );
+  }
+  if (report.unknownPackages.length > 0) {
+    out.push(
+      `    ${c(YELLOW, "note")}  not imported by the program: ${report.unknownPackages.join(", ")}`,
+    );
+  }
+  if (report.islands.length > 0) {
+    out.push(
+      `    ${c(DIM, "hint: scriptc coverage --explain-island=<package> lists every reason")}`,
+    );
+  }
+}
+
+/** `scriptc coverage --explain-island=<package>`: why a package would run
+ * in a Node island — every module's first reason, the native import sites
+ * (the boundary), the packages inside its closure, and what later
+ * milestones decide. */
+export function renderExplainIsland(
+  report: NodeIslandReport | undefined,
+  query: string,
+  opts: CoverageRenderOptions = {},
+): string {
+  const c = (code: string, s: string) => (opts.color ? code + s + RESET : s);
+  const locator = new SourceLocator(opts.sourceTexts);
+  const at = (loc: SrcLoc) => {
+    const p = locator.position(loc.file, loc.start);
+    return `${displayPath(loc.file, opts.root)}:${p.line}:${p.column}`;
+  };
+  const out: string[] = [];
+  const matches = (report?.islands ?? []).filter(
+    (i) => i.package === query || islandName(i) === query,
+  );
+  if (matches.length === 0) {
+    const pkg = (report?.packages ?? []).find((p) => p.package === query);
+    if (pkg === undefined) {
+      out.push(`  '${query}' is not a Node island: no npm package of that name is in the program`);
+    } else if (pkg.status === "inside") {
+      out.push(
+        `  '${query}' is not a Node island of its own: only ${pkg.islands.join(", ")} import${pkg.islands.length === 1 ? "s" : ""} it, so it would run inside that island`,
+      );
+    } else if (pkg.status === "shared") {
+      out.push(
+        `  '${query}' compiles natively and is also reached from the Node island${pkg.islands.length === 1 ? "" : "s"} ${pkg.islands.join(", ")}`,
+      );
+    } else {
+      out.push(`  '${query}' is not a Node island: it compiles natively`);
+    }
+    return out.join("\n");
+  }
+  for (const island of matches) {
+    out.push(
+      `  ${c(BOLD, "Node island")} ${islandName(island)}   ${c(DIM, "(would-be, report-only)")}`,
+    );
+    if (island.path !== null) out.push(`    path        ${displayPath(island.path, opts.root)}`);
+    out.push(`    class       ${island.class}: ${classDescription(island.class)}`);
+    out.push(
+      `    decision    ${island.decision === "auto" ? "automatic (npm code outside the native subset)" : island.decision === "cli" ? "marked with --node-island" : 'marked "node" in scriptc.packages'}`,
+    );
+    out.push(
+      `    evaluation  eager at its module position ${c(DIM, "(deferred evaluation is decided by a later milestone)")}`,
+    );
+    if (island.reasons.length > 0) {
+      out.push(`    reasons     ${c(DIM, "(first per module; decisive class first)")}`);
+      const shown = new Set<string>();
+      for (const r of island.reasons) {
+        const key = r.loc === null ? "" : r.loc.file;
+        if (shown.has(key)) continue;
+        shown.add(key);
+        const where = r.loc === null ? "package" : at(r.loc);
+        out.push(`      ${r.class.padEnd(12)}  ${where}`);
+        out.push(`        ${c(DIM, capMessage(describeReason(r)))}`);
+      }
+      const counts = new Map<string, number>();
+      for (const r of island.reasons) counts.set(r.class, (counts.get(r.class) ?? 0) + 1);
+      const summary = [...counts].map(([cls, k]) => `${k} ${cls}`).join(", ");
+      out.push(`    all reasons ${island.reasons.length} (${summary})`);
+    }
+    if (island.importedFrom.length > 0) {
+      out.push(`    boundary    ${counted(island.importedFrom.length, "native import site")}:`);
+      for (const loc of island.importedFrom.slice(0, SITES_SHOWN)) out.push(`      ${at(loc)}`);
+      if (island.importedFrom.length > SITES_SHOWN)
+        out.push(`      ${c(DIM, `+${island.importedFrom.length - SITES_SHOWN} more`)}`);
+      out.push(
+        `      ${c(DIM, "copy and handle decisions per boundary site come with compiler-managed islands")}`,
+      );
+    } else {
+      out.push(
+        `    boundary    ${c(DIM, "no native import site (reached only from other islands)")}`,
+      );
+    }
+    if (island.carries.length > 0) out.push(`    carries     ${island.carries.join(", ")}`);
+  }
+  return out.join("\n");
+}
+
+function nodeIslandsEnvelope(
+  report: NodeIslandReport,
+  locator: SourceLocator,
+): NodeIslandsEnvelope {
+  const pos = (loc: SrcLoc): SourcePosition => ({
+    file: loc.file,
+    ...locator.position(loc.file, loc.start),
+  });
+  const entry = (i: NodeIslandEntry) => {
+    const first = i.reasons[0];
+    return {
+      package: i.package,
+      version: i.version,
+      path: i.path,
+      class: i.class,
+      reason: i.reason,
+      diagnostic: i.diagnostic,
+      decision: i.decision,
+      evaluation: i.evaluation,
+      ...(first !== undefined && first.loc !== null ? { at: pos(first.loc) } : {}),
+      reasons: i.reasons.map((r) => ({
+        class: r.class,
+        rule: r.rule,
+        reason: r.reason,
+        code: r.code,
+        message: r.message,
+        source: r.source,
+        ...(r.loc !== null ? { at: pos(r.loc) } : {}),
+      })),
+      carries: i.carries,
+      importedFrom: i.importedFrom.map(pos),
+    };
+  };
+  return {
+    mode: report.mode,
+    policy: report.policy,
+    islands: report.islands.map(entry),
+    userModules: report.userModules.map((m) => ({ file: m.file, decision: m.source })),
+    npmPackages: report.packages.map((p) => ({
+      package: p.package,
+      version: p.version,
+      path: p.path,
+      status: p.status,
+      islands: p.islands,
+    })),
+    violations: report.violations.map((v) => ({ code: v.code, message: v.message, ...pos(v.loc) })),
+    unknownPackages: report.unknownPackages,
+  };
 }

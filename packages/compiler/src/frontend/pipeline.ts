@@ -46,6 +46,14 @@ import { CONTRACT_TYPES_MODULE } from "./contract-types.js";
 import { THREADS_MODULE } from "./threads-import.js";
 import { erasedTypeOnlyImport } from "./type-only-imports.js";
 import { EXPERIMENTAL_MODULE } from "./experimental-import.js";
+import { readProjectConfig } from "../project-config.js";
+import { packageDirOf } from "../node-islands/origin.js";
+import {
+  scanFiles,
+  type NodeIslandScan,
+  type RefusalKind,
+  type RefusalRecord,
+} from "../node-islands/scan.js";
 
 /** Where a package-anchored preflight diagnostic sits, as
  * `<package path>:<line>` — the SC2013 refusal that drops the package
@@ -104,17 +112,33 @@ export interface Frontend {
   npmStatic: NpmStaticStatus[];
   /** Each judged npm package's first import site, used to anchor refusals. */
   npmImportSites: ReadonlyMap<string, SrcLoc>;
+  /** The Node island detector's input (report-only): the program's
+   * modules with their pre-scan markers, package import edges, and how
+   * each refused package was refused. Call before dispose. */
+  nodeIslandScan?: ((opts: { userJs: boolean }) => NodeIslandScan) | undefined;
+  /** Diagnostics that do not fail a build: unknown settings in the
+   * project's scriptc configuration (SC8004), which builds do not use. */
+  warnings?: ScrDiagnostic[];
   /** Releases the frontend's resources (the spawned tsgo server). Call
    * exactly once, after the last lower(). */
   dispose: () => void;
 }
 
 /** Hosts own transport lifetimes; shared compiler stages own the frontend. */
+/** What a frontend computes beyond the build's own needs. */
+export interface FrontendOptions {
+  /** The Node island report (coverage): the project's scriptc settings and
+   * the detector's scan of the program and its npm packages. Builds do not
+   * read either. */
+  nodeIslands?: boolean;
+}
+
 export type FrontendFactory = (
   entryPath: string,
   npmStatic?: readonly string[] | "auto" | "lib",
   externalTypes?: Readonly<Record<string, string>>,
   libraryNpmStatic?: readonly string[],
+  options?: FrontendOptions,
 ) => Frontend;
 
 /** Adds the program modules a literal `import()` reaches to `scanned`,
@@ -385,12 +409,37 @@ function packagesNamedByDiag(message: string, optedIn: ReadonlySet<string>): Set
   return hits;
 }
 
+/** The modules of packages the drop-and-reload loop is about to remove,
+ * scanned on the program that still holds them. Report-only: a detector
+ * failure here never changes the build's outcome. */
+function scanDroppedPackages(
+  load: LoadResult,
+  packages: readonly string[],
+  into: { modules: NodeIslandScan["modules"]; edges: NodeIslandScan["edges"] },
+): void {
+  if (packages.length === 0) return;
+  try {
+    const wanted = new Set(packages);
+    const files = load.program.getImplementationSourceFiles().filter((sf) => {
+      if (sf.isDeclarationFile) return false;
+      const at = packageDirOf(sf.fileName);
+      return at !== null && wanted.has(at.name);
+    });
+    const scanned = scanFiles(load.program, files, { userJs: false, dropped: true, edges: true });
+    into.modules.push(...scanned.modules);
+    into.edges.push(...scanned.edges);
+  } catch {
+    /* report-only detection */
+  }
+}
+
 export function runFrontend(
   entryPath: string,
   loadProgram: ProgramLoader,
   npmStatic?: readonly string[] | "auto" | "lib",
   externalTypes?: Readonly<Record<string, string>>,
   libraryNpmStatic: readonly string[] = [],
+  options: FrontendOptions = {},
 ): Frontend {
   // A preflight or package probe may throw after its host has opened. Track
   // only live loads, releasing each immediately on normal fallback; this
@@ -430,6 +479,7 @@ export function runFrontend(
       externalTypes,
       [...new Set(names)],
       transitive,
+      options,
     );
   } catch (error) {
     for (const load of active) {
@@ -451,6 +501,7 @@ function loadFrontend(
   externalTypes?: Readonly<Record<string, string>>,
   libraryNpmStatic: readonly string[] = [],
   transitive: Set<string> = new Set(),
+  options: FrontendOptions = {},
 ): Frontend {
   // Resolver package/workspace metadata is intentionally shared across the
   // several load attempts of ONE auto-detection fixpoint, but never across
@@ -459,6 +510,16 @@ function loadFrontend(
   clearResolveCaches();
   const statuses: NpmStaticStatus[] = [];
   const npmSites = new Map<string, SrcLoc>();
+  // Node island detection (report-only): how each package was refused, and
+  // the modules of packages removed from the program.
+  const refusals: RefusalRecord[] = [];
+  const droppedScan: { modules: NodeIslandScan["modules"]; edges: NodeIslandScan["edges"] } = {
+    modules: [],
+    edges: [],
+  };
+  const recordRefusal = (pkg: string, kind: RefusalKind, diag: ScrDiagnostic | null): void => {
+    refusals.push({ package: pkg, kind, diag });
+  };
   // Explicit library attempts bypass only the auto-selection heuristics.
   // The shared preflight/lowering refusal and dependency-closure checks remain.
   const judged = new Set<string>(libraryNpmStatic);
@@ -514,6 +575,7 @@ function loadFrontend(
         status: "refused",
         detail: `mapped as an external host module by --external-types (${specs.map((s) => JSON.stringify(s)).join(", ")})`,
       });
+      recordRefusal(pkg, "external", null);
       return false;
     });
   }
@@ -547,19 +609,25 @@ function loadFrontend(
   const typecheckRefused = new Set<string>();
   while (effective.size > 0) {
     const reasons = new Map<string, string>(npmStaticOffenders());
+    const kinds = new Map<string, { kind: RefusalKind; diag: ScrDiagnostic | null }>();
+    for (const pkg of reasons.keys()) kinds.set(pkg, { kind: "offender", diag: null });
     // Bundler interop the rewrite could not finish refuses its package
     // only where the compiled program can load the file.
     if (npmStaticFileDegrades().size > 0) {
       const loadable = npmStaticLoadableFiles(load.program, load.moduleOrder);
       for (const [file, { pkg, reason }] of npmStaticFileDegrades()) {
-        if (!reasons.has(pkg) && (loadable === null || loadable.has(file)))
+        if (!reasons.has(pkg) && (loadable === null || loadable.has(file))) {
           reasons.set(pkg, reason);
+          kinds.set(pkg, { kind: "degrade", diag: null });
+        }
       }
     }
     for (const d of preflight) {
       const pkg = npmStaticPackageOfPath(d.loc.file);
-      if (pkg !== null && !reasons.has(pkg))
+      if (pkg !== null && !reasons.has(pkg)) {
         reasons.set(pkg, `${d.code} at ${packageDiagWhere(load, d.loc)}: ${d.message}`);
+        kinds.set(pkg, { kind: "preflight", diag: d });
+      }
     }
     if (![...reasons.keys()].some((p) => effective.has(p))) {
       const named = new Map<string, number>();
@@ -571,6 +639,7 @@ function loadFrontend(
       }
       for (const [pkg, count] of named) {
         typecheckRefused.add(pkg);
+        kinds.set(pkg, { kind: "typecheck", diag: null });
         reasons.set(
           pkg,
           `its inferred export surface breaks ${count} import site${count === 1 ? "" : "s"} in program files (bundler-emitted surfaces type only as far as inference reaches)`,
@@ -579,9 +648,12 @@ function loadFrontend(
     }
     const dropping = [...reasons.keys()].filter((p) => effective.has(p));
     if (dropping.length === 0) break;
+    if (options.nodeIslands === true) scanDroppedPackages(load, dropping, droppedScan);
     for (const p of dropping) {
       effective.delete(p);
       statuses.push({ package: p, status: "refused", detail: reasons.get(p)! });
+      const kind = kinds.get(p);
+      recordRefusal(p, kind?.kind ?? "offender", kind?.diag ?? null);
     }
     load.dispose();
     load = loadProgram(entryPath, { npmStatic: [...effective], externalTypes });
@@ -601,9 +673,12 @@ function loadFrontend(
   // graceful per-package degradation, never a failed gate the user cannot
   // act on (the note carries the why).
   if (effective.size > 0 && preflight.some((d) => d.code === "SC0001")) {
+    const lastResortDropped: string[] = [];
     const dropWithNote = (p: string): void => {
       effective.delete(p);
       typecheckRefused.add(p);
+      lastResortDropped.push(p);
+      recordRefusal(p, "typecheck", null);
       statuses.push({
         package: p,
         status: "refused",
@@ -625,11 +700,15 @@ function loadFrontend(
       probe.dispose();
       if (probeDiags.some((d) => d.code === "SC0001")) dropWithNote(p);
     }
+    if (options.nodeIslands === true)
+      scanDroppedPackages(load, lastResortDropped.splice(0), droppedScan);
     load.dispose();
     load = loadProgram(entryPath, { npmStatic: [...effective], externalTypes });
     preflight = checkPreflight(load);
     if (preflight.some((d) => d.code === "SC0001") && effective.size > 0) {
       for (const p of [...effective]) dropWithNote(p);
+      if (options.nodeIslands === true)
+        scanDroppedPackages(load, lastResortDropped.splice(0), droppedScan);
       load.dispose();
       load = loadProgram(entryPath, { npmStatic: [...effective], externalTypes });
       preflight = checkPreflight(load);
@@ -650,8 +729,16 @@ function loadFrontend(
   }
 
   const finalLoad = load;
+  // An unknown key or value in the project's scriptc configuration makes
+  // the Node island report unavailable (SC8004). The settings configure
+  // only that report: a build warns about them and goes on.
+  const projectConfig = readProjectConfig(entryPath);
+  const configDiagnostics = projectConfig.diagnostics;
+  const report = options.nodeIslands === true;
   return {
-    preflight,
+    preflight:
+      report && configDiagnostics.length > 0 ? [...configDiagnostics, ...preflight] : preflight,
+    ...(!report && configDiagnostics.length > 0 ? { warnings: configDiagnostics } : {}),
     entryText: () => finalLoad.entry.text,
     entryExports: () => entryFunctionExports(finalLoad.entry),
     // The contract scans the PROGRAM's source files, not the runtime
@@ -678,14 +765,23 @@ function loadFrontend(
     // are in moduleOrder like any program module, so their bytes join the
     // library identity hashes (source_hash/build_id) — compiled code is
     // identity, whatever directory it came from.
-    sourceTexts: () =>
-      new Map<string, string>(
+    sourceTexts: () => {
+      const texts = new Map<string, string>(
         [
           finalLoad.entry,
           ...finalLoad.moduleOrder,
           ...finalLoad.program.getImplementationSourceFiles().filter((sf) => !sf.isDeclarationFile),
         ].map((sf) => [sf.fileName, sf.text]),
-      ),
+      );
+      // SC8004 diagnostics point into the project's package.json.
+      if (
+        configDiagnostics.length > 0 &&
+        projectConfig.manifest !== null &&
+        projectConfig.manifestText !== null
+      )
+        texts.set(projectConfig.manifest, projectConfig.manifestText);
+      return texts;
+    },
     lower: (opts) => {
       const lowered = lowerToIr(finalLoad.program, finalLoad.entry, finalLoad.moduleOrder, {
         ...opts,
@@ -705,6 +801,29 @@ function loadFrontend(
     },
     npmStatic: statuses,
     npmImportSites: npmSites,
+    nodeIslandScan:
+      options.nodeIslands !== true
+        ? undefined
+        : ({ userJs }) => {
+            const files = new Set<SourceFile>([finalLoad.entry, ...finalLoad.moduleOrder]);
+            addDynamicImportGraph(finalLoad, files);
+            // Package edges matter only when the program has npm packages: one
+            // that loads, one that was refused, or one judged and dropped.
+            const npm =
+              statuses.length > 0 ||
+              droppedScan.modules.length > 0 ||
+              [...files].some((sf) => sf.fileName.includes("/node_modules/"));
+            const scanned = scanFiles(finalLoad.program, [...files], {
+              userJs,
+              dropped: false,
+              edges: npm,
+            });
+            return {
+              modules: [...droppedScan.modules, ...scanned.modules],
+              edges: [...droppedScan.edges, ...scanned.edges],
+              refusals,
+            };
+          },
     dispose: finalLoad.dispose,
   };
 }

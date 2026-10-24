@@ -245,7 +245,7 @@ $ scriptc build scale.ts
 1 error.
 ```
 
-A copy such as `slice()` or a spread is checked as if it were the same array as its source. The results of callbacks are not followed, so an array built by `map` or `Array.from` with a mapping function cannot be `Int32[]`; build it with a loop that stores `value | 0`. scriptc refuses an `Int32[]` slot whose array can come from code it cannot see, such as `JSON.parse`, dynamic values or the callers of a function used as a value, and an array that can reach one and escapes to such code, such as a call through a function value (SC7003).
+A copy such as `slice()` or a spread is checked as if it were the same array as its source. The results of a callback are followed only when scriptc copies it into the loop that runs the array method: a callback written at a `map` or `filter` call whose captured variables are not reassigned, such as `xs.map((x) => (x * 2) | 0)`. Other callback results are not followed, so for example an array built by `Array.from` with a mapping function cannot be `Int32[]`; build it with a loop that stores `value | 0`. scriptc refuses an `Int32[]` slot whose array can come from code it cannot see, such as `JSON.parse`, dynamic values or the callers of a function used as a value, and an array that can reach one and escapes to such code, such as a call through a function value (SC7003).
 
 ## Immutable
 

@@ -108,5 +108,49 @@ const kept = rows.filter((r) => r.value > 3);
 console.log(kept.map((r) => r.id).length, kept.length);
 ${postlude}`);
   expect(init(mod).locals.some((l) => l.name === "kept")).toBe(true);
-  expect(helperCalls(init(mod))).toEqual(["%arr.filter", "%arr.fused"]);
+  expect(helperCalls(init(mod))).toEqual(["%arr.fused", "%arr.loop"]);
+});
+
+test("a lone call with a stable closure-literal callback runs as a loop", async () => {
+  const mod = await lowerSource(`${prelude}
+const scale = 3;
+const scaled = rows.map((r) => r.value * scale);
+let total = 0;
+rows.forEach((r) => { total += r.value; });
+const big = rows.filter((r) => r.value > scale);
+const sum = scaled.reduce((acc, v) => acc + v, 0);
+console.log(scaled.length, total, big.length, sum, rows.some((r) => r.id === scale));
+${postlude}`);
+  // forEach assigns \`total\`, a binding of \`run\`: it keeps its helper.
+  expect(helperCalls(init(mod))).toEqual([
+    "%arr.forEach",
+    "%arr.loop",
+    "%arr.loop",
+    "%arr.loop",
+    "%arr.loop",
+  ]);
+  const loops = mod.functions.filter((f) => f.name.startsWith("%arr.loop."));
+  expect(loops).toHaveLength(4);
+  // The callback bodies are copied into the loops: no closure value is
+  // created or called, and the captured \`scale\` is a plain parameter.
+  for (const fn of loops) {
+    expect(count(fn, "callValue")).toBe(0);
+    expect(count(fn, "closure")).toBe(0);
+  }
+  expect(count(init(mod), "closure")).toBe(1);
+  // No closure captures \`scale\` any more, so it needs no box.
+  expect(init(mod).locals.find((l) => l.name === "scale")?.boxed).toBeUndefined();
+});
+
+test("a lone call keeps its helper when a capture can change while it runs", async () => {
+  const mod = await lowerSource(`${prelude}
+let limit = 2;
+const bump = (): void => { limit++; };
+const a = rows.filter((r) => { bump(); return r.id < limit; });
+let step = 1;
+step = 2;
+const b = rows.map((r) => r.id * step);
+console.log(a.length, b.length, limit);
+${postlude}`);
+  expect(helperCalls(init(mod))).toEqual(["%arr.filter", "%arr.map"]);
 });

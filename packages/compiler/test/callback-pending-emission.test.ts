@@ -9,7 +9,9 @@ import { emitLlvmModule } from "../src/backend/llvm/emitter.js";
 // A specialized array helper calls its known callback directly after
 // checking the closure's entry. A callback that cannot throw skips the
 // pending test on that path, and the fallback through the closure's own
-// entry keeps it; a callback that can throw keeps it on both paths.
+// entry keeps it; a callback that can throw keeps it on both paths. The
+// callbacks are passed through bindings: a closure literal at the call
+// would run as a loop with its body copied in (array-pipelines.ts).
 test("known callbacks outside the may-throw set test the pending flag only on the fallback", async () => {
   const dir = mkdtempSync(join(tmpdir(), "scriptc-callback-pending-"));
   try {
@@ -18,13 +20,16 @@ test("known callbacks outside the may-throw set test the pending flag only on th
     writeFileSync(
       entry,
       `const values = [1, 2, 3, 4];
-console.log(values.every((v) => v > 0));
-console.log(values.map((v) => v * 2).join(","));
+const positive = (v: number): boolean => v > 0;
+const double = (v: number): number => v * 2;
+const stopAtThree = (v: number): boolean => {
+  if (v > 2) throw new Error("stop at " + v);
+  return true;
+};
+console.log(values.every(positive));
+console.log(values.map(double).join(","));
 try {
-  console.log(values.every((v) => {
-    if (v > 2) throw new Error("stop at " + v);
-    return true;
-  }));
+  console.log(values.every(stopAtThree));
 } catch (error) {
   console.log("caught", (error as Error).message);
 }

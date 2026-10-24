@@ -1,4 +1,6 @@
 import { keyedHelperName } from "../stable-names.js";
+import { writtenLocals } from "../../../ir/callback-specialization.js";
+import { AmbientReceiverReaders } from "../../../ir/receiver-readers.js";
 import { boolLit, countedFor, numLit, varRef } from "../../../ir/build.js";
 import {
   BOOL,
@@ -16,9 +18,12 @@ import {
   typeKey,
 } from "../../../ir/ir.js";
 import {
+  everyExpr,
   everyExprChild,
+  everyStmt,
   everyStmtChild,
   everyStmtList,
+  transformExpr,
   transformStmtList,
 } from "../../../ir/traverse.js";
 import {
@@ -537,6 +542,65 @@ function matchChain(lowerer: Lowerer, e: IrExpr): Chain | null {
   };
 }
 
+/** The outermost array-HOF call of `e` on its own, over its receiver. */
+function loneChain(lowerer: Lowerer, e: IrExpr): Chain | null {
+  const top = stageOf(lowerer, e);
+  if (!top) return null;
+  const { stage, receiver } = top;
+  if (receiver.type.kind !== "array") return null;
+  const stages: Stage[] = [];
+  let terminal: Terminal;
+  if (TERMINALS.has(stage.info.method)) {
+    const init =
+      stage.info.method === "reduce" && stage.info.hasInit && e.kind === "call" ? e.args[2]! : null;
+    terminal = { kind: "call", stage, init };
+  } else if (PRODUCERS.has(stage.info.method)) {
+    terminal = { kind: "collect" };
+    stages.push(stage);
+  } else return null;
+  return {
+    source: receiver,
+    sourceType: receiver.type,
+    slice: null,
+    stages,
+    terminal,
+    type: e.type,
+    loc: e.loc,
+  };
+}
+
+/** The callbacks of `chain` in order, or null when its stages cannot run
+ * in one loop: element types that do not line up, an array argument past
+ * the first stage, reduce without a seed, or findIndex over holes. */
+function chainCallbacks(chain: Chain): Stage[] | null {
+  const { stages, terminal } = chain;
+  const terminalStage = terminal.kind === "call" ? terminal.stage : null;
+  const callbacks = terminalStage ? [...stages, terminalStage] : stages;
+  // Element types must line up stage to stage.
+  let elem = chain.sourceType.elem;
+  for (const stage of callbacks) {
+    if (!typeEquals(stage.info.elem, elem)) return null;
+    if (stage.info.method === "filter" && !typeEquals(stage.info.outElem, stage.info.elem))
+      return null;
+    if (
+      (stage.info.method === "map" || stage.info.method === "flatMap") &&
+      !typeEquals(stage.info.outElem, stage.info.fnRet)
+    )
+      return null;
+    elem = stage.info.outElem;
+  }
+  // Index arguments are reproduced; an array argument only names the source.
+  for (let k = 0; k < callbacks.length; k++) {
+    const stage = callbacks[k]!;
+    const lead = stage.info.method === "reduce" ? 1 : 0;
+    if (stage.info.arity > lead + 3) return null;
+    if (stage.info.arity === lead + 3 && (k !== 0 || chain.slice)) return null;
+  }
+  if (terminalStage?.info.method === "reduce" && !terminalStage.info.hasInit) return null;
+  if (terminalStage?.info.method === "findIndex" && holeCarrying(chain)) return null;
+  return callbacks;
+}
+
 /* ── the fusion pass ─────────────────────────────────────────────────── */
 
 /** The values a fused loop hands from one stage to the next: a local of a
@@ -550,6 +614,10 @@ interface Plan {
   writes: Set<string>;
   /** Some callback may throw or loop; at most one does. */
   risky: boolean;
+  /** How the loop inlines callbacks, when not by their effect summaries. */
+  inline?: InlineTarget;
+  /** Stack frame name of the loop: the inlined callback's, for a lone call. */
+  frame?: string;
 }
 
 /** Fuse chains of array-HOF helper calls into one loop.
@@ -596,12 +664,22 @@ class PipelineFusion {
   readonly added: IrFunction[] = [];
   private readonly effects: CallbackEffects;
   private readonly helpers = new Map<string, string>();
+  /** Bindings each function, or a closure it creates, writes after their
+   * declaration. */
+  private readonly written: Map<string, Set<string>>;
+  /** Bindings of the function being fused that inlined callbacks captured. */
+  private inlinedCaptures = new Set<string>();
+  /** The helper calls each callback with an undefined receiver; a copied
+   * body runs under the receiver around the array call instead. */
+  private readonly receivers: AmbientReceiverReaders;
 
   constructor(
     private readonly lowerer: Lowerer,
     functions: readonly IrFunction[],
   ) {
     this.effects = new CallbackEffects(functions, lowerer.globalsList);
+    this.written = writtenLocals({ functions });
+    this.receivers = new AmbientReceiverReaders(new Map(functions.map((fn) => [fn.name, fn])));
   }
 
   run(fn: IrFunction): void {
@@ -612,6 +690,7 @@ class PipelineFusion {
     });
     if (!candidate) return;
     const removed = new Set<string>();
+    this.inlinedCaptures = new Set();
     let body = this.lists(fn.body, fn, removed);
     body = transformStmtList(body, {
       stmt: (s) => s,
@@ -619,6 +698,7 @@ class PipelineFusion {
     });
     fn.body = body;
     if (removed.size > 0) fn.locals = fn.locals.filter((l) => !removed.has(l.id));
+    if (this.inlinedCaptures.size > 0) unboxUncaptured(fn, this.inlinedCaptures);
   }
 
   /* ── statement lists: fold single-use chain bindings ── */
@@ -733,40 +813,51 @@ class PipelineFusion {
   /* ── expressions ── */
 
   private fuse(e: IrExpr, fn: IrFunction): IrExpr | null {
-    const plan = this.plan(e, fn);
+    const plan = this.plan(e, fn) ?? this.lonePlan(e, fn);
     return plan ? this.emit(plan) : null;
+  }
+
+  /** One array-HOF call on its own (or the last call of a chain that does
+   * not fuse), when every callback is a closure literal whose body can be
+   * copied into the loop. A single stage reorders nothing, so the
+   * callbacks' effects need no model; their captured bindings must keep
+   * one value while the loop runs (stableTarget), since the loop reads
+   * them once, when it starts. The loop keeps the helper's order: the
+   * length read once, each element read when it is visited, holes
+   * skipped (and kept by map). */
+  private lonePlan(e: IrExpr, fn: IrFunction): Plan | null {
+    const chain = loneChain(this.lowerer, e);
+    if (!chain) return null;
+    const callbacks = chainCallbacks(chain);
+    if (!callbacks) return null;
+    const inline = this.stableTarget(fn);
+    let frame: string | undefined;
+    for (const stage of callbacks) {
+      for (const arg of [stage.slow, stage.fast]) {
+        if (!arg) continue;
+        const target = inline(arg);
+        if (!target) return null;
+        frame ??= target.sourceName;
+      }
+    }
+    return {
+      chain,
+      callbacks,
+      writes: new Set(),
+      risky: true,
+      inline,
+      ...(frame === undefined ? {} : { frame }),
+    };
   }
 
   /** Decide whether `e` is a fusable chain; null when it is not. */
   private plan(e: IrExpr, fn: IrFunction): Plan | null {
     const chain = matchChain(this.lowerer, e);
     if (!chain) return null;
+    const callbacks = chainCallbacks(chain);
+    if (!callbacks) return null;
     const { stages, terminal } = chain;
     const terminalStage = terminal.kind === "call" ? terminal.stage : null;
-    const callbacks = terminalStage ? [...stages, terminalStage] : stages;
-    // Element types must line up stage to stage.
-    let elem = chain.sourceType.elem;
-    for (const stage of callbacks) {
-      if (!typeEquals(stage.info.elem, elem)) return null;
-      if (stage.info.method === "filter" && !typeEquals(stage.info.outElem, stage.info.elem))
-        return null;
-      if (
-        (stage.info.method === "map" || stage.info.method === "flatMap") &&
-        !typeEquals(stage.info.outElem, stage.info.fnRet)
-      )
-        return null;
-      elem = stage.info.outElem;
-    }
-    // Index arguments are reproduced; an array argument only names the source.
-    for (let k = 0; k < callbacks.length; k++) {
-      const stage = callbacks[k]!;
-      const lead = stage.info.method === "reduce" ? 1 : 0;
-      if (stage.info.arity > lead + 3) return null;
-      if (stage.info.arity === lead + 3 && (k !== 0 || chain.slice)) return null;
-    }
-    if (terminalStage?.info.method === "reduce" && !terminalStage.info.hasInit) return null;
-    const holes = holeCarrying(chain);
-    if (terminalStage?.info.method === "findIndex" && holes) return null;
     // Effects of each callback, in chain order.
     const scope = this.effects.scope(fn, true);
     const summaries: Effects[] = [];
@@ -831,30 +922,62 @@ class PipelineFusion {
    * are passed in by value, read when the fused call starts; no callback
    * in the chain assigns a binding another one reads). */
   private readonly inlineTarget: InlineTarget = (arg) => {
+    const fn = this.closureTarget(arg);
+    if (!fn) return null;
+    const captures = new Set((fn.captures ?? []).map((c) => c.localId));
+    const effects = this.effects.ofFunction(fn);
+    if (!effects || intersects(effects.writes, captures)) return null;
+    return inlinableBody(fn, captures) ? fn : null;
+  };
+
+  /** inlineTarget for a callback created in `fn` whose captured bindings
+   * nothing assigns after their declaration: `fn`'s own locals and
+   * parameters, written neither by `fn` nor by any closure that shares
+   * them, and not by the callback body. The callback must not observe the
+   * ambient receiver (AmbientReceiverReaders). */
+  private stableTarget(fn: IrFunction): InlineTarget {
+    const locals = new Map(fn.locals.map((l) => [l.id, l]));
+    const inherited = new Set((fn.captures ?? []).map((c) => c.localId));
+    const written = this.written.get(fn.name);
+    return (arg) => {
+      const target = this.closureTarget(arg);
+      if (!target || !written || arg.kind !== "closure") return null;
+      if (!this.receivers.ignores(target)) return null;
+      for (const id of arg.captures) {
+        const local = locals.get(id);
+        if (!local || local.tdz || inherited.has(id) || written.has(id)) return null;
+      }
+      const captures = new Set((target.captures ?? []).map((c) => c.localId));
+      const assigns = !everyStmtList(target.body, {
+        stmt: (st) => !((st.kind === "assign" || st.kind === "forOf") && captures.has(st.localId)),
+        expr: (ex) =>
+          !((ex.kind === "assignExpr" || ex.kind === "incDec") && captures.has(ex.localId)),
+      });
+      return !assigns && inlinableBody(target, captures) ? target : null;
+    };
+  }
+
+  /** The function behind a closure-literal callback the loop can inline. */
+  private closureTarget(arg: IrExpr): IrFunction | null {
     if (arg.kind !== "closure" || arg.adapts) return null;
     const fn = this.effects.fn(arg.fnName);
     if (!fn || fn.async || fn.generator || fn.classCaptures?.length) return null;
-    const captures = new Set((fn.captures ?? []).map((c) => c.localId));
-    if (captures.size !== arg.captures.length) return null;
-    const effects = this.effects.ofFunction(fn);
-    if (!effects || intersects(effects.writes, captures)) return null;
-    if (fn.locals.some((l) => l.tdz || (l.boxed && !captures.has(l.id)))) return null;
-    let size = 0;
-    const small = everyStmtList(fn.body, {
-      expr: (e) => ++size <= MAX_INLINE_NODES && e.kind !== "closure" && e.kind !== "selfRef",
-      stmt: (s) => ++size <= MAX_INLINE_NODES && s.kind !== "tryCatch",
-    });
-    return small ? fn : null;
-  };
+    if ((fn.captures ?? []).length !== arg.captures.length) return null;
+    return fn;
+  }
 
   private emit(plan: Plan): IrExpr | null {
-    const built = new FusedLoop(this.lowerer, plan.chain, this.inlineTarget).build();
+    const built = new FusedLoop(this.lowerer, plan.chain, plan.inline ?? this.inlineTarget).build();
     if (!built) return null;
+    for (const id of built.inlinedCaptures) this.inlinedCaptures.add(id);
     let name = this.helpers.get(built.key);
     if (!name) {
-      name = keyedHelperName(this.lowerer, "%arr.fused", built.key);
+      name = keyedHelperName(this.lowerer, plan.inline ? "%arr.loop" : "%arr.fused", built.key);
       this.helpers.set(built.key, name);
-      this.added.push({ ...built.fn, name });
+      const helper: IrFunction = { ...built.fn, name };
+      // A lone call's loop stands in the inlined callback's stack frame.
+      if (plan.frame !== undefined) helper.sourceName = plan.frame;
+      this.added.push(helper);
     }
     return {
       kind: "call",
@@ -864,6 +987,48 @@ class PipelineFusion {
       loc: plan.chain.loc,
     };
   }
+}
+
+/** Whether a statement inside `e` (a sequence expression's) returns. */
+function returns(e: IrExpr): boolean {
+  return !everyExpr(e, { expr: () => true, stmt: (s) => s.kind !== "return" });
+}
+
+/** Drops the box of each binding in `inlined` that no closure or class
+ * created in `fn` captures any more: the callbacks that captured it were
+ * copied into loops, which receive its value. A dead-zone binding keeps the
+ * box that represents its uninitialized state, and bindings `fn` itself
+ * captures keep theirs. */
+function unboxUncaptured(fn: IrFunction, inlined: ReadonlySet<string>): void {
+  const captured = new Set<string>();
+  everyStmtList(fn.body, {
+    expr: (e) => {
+      if (e.kind === "closure" || e.kind === "classRef")
+        for (const id of e.captures ?? []) captured.add(id);
+      return true;
+    },
+    stmt: () => true,
+  });
+  const inherited = new Set(
+    [...(fn.captures ?? []), ...(fn.classCaptures ?? [])].map((c) => c.localId),
+  );
+  fn.locals = fn.locals.map((local): IrLocal => {
+    if (local.boxed !== true || local.tdz === true || !inlined.has(local.id)) return local;
+    if (captured.has(local.id) || inherited.has(local.id)) return local;
+    const { boxed: _boxed, ...plain } = local;
+    return plain;
+  });
+}
+
+/** A callback body the loop can copy: small, no nested closures, recursion
+ * or try statements, and no boxed locals besides its captures. */
+function inlinableBody(fn: IrFunction, captures: ReadonlySet<string>): boolean {
+  if (fn.locals.some((l) => l.tdz || (l.boxed && !captures.has(l.id)))) return false;
+  let size = 0;
+  return everyStmtList(fn.body, {
+    expr: (e) => ++size <= MAX_INLINE_NODES && e.kind !== "closure" && e.kind !== "selfRef",
+    stmt: (s) => ++size <= MAX_INLINE_NODES && s.kind !== "tryCatch",
+  });
 }
 
 function intersects(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
@@ -1082,8 +1247,23 @@ class FusedLoop {
       const id = this.local(l.name, l.type, true);
       renamed.set(l.id, id);
     }
+    const rename = (id: string): string => renamed.get(id) ?? id;
+    const renameExpr = (e: IrExpr): IrExpr => {
+      switch (e.kind) {
+        case "varRef":
+        case "incDec":
+        case "assignExpr":
+          return { ...e, localId: rename(e.localId) };
+        default:
+          return e;
+      }
+    };
+    const bind: IrStmt[] = fn.params.flatMap((p, index): IrStmt[] =>
+      aliased.has(p.localId)
+        ? []
+        : [{ kind: "varDecl", localId: rename(p.localId), init: args[index]!, loc }],
+    );
     const labels = new Map<string, string>();
-    const exit = this.fresh("%fused.exit");
     const label = (name: string): string => {
       let id = labels.get(name);
       if (!id) {
@@ -1092,19 +1272,48 @@ class FusedLoop {
       }
       return id;
     };
+    /** Locals and labels of a copied statement; returns are the caller's. */
+    const renameStmt = (st: IrStmt): IrStmt => {
+      switch (st.kind) {
+        case "varDecl":
+        case "assign":
+          return { ...st, localId: rename(st.localId) };
+        case "break":
+        case "continue":
+          return st.label ? { ...st, label: label(st.label) } : st;
+        case "while":
+        case "doWhile":
+        case "for":
+        case "block":
+          return st.labels ? { ...st, labels: st.labels.map(label) } : st;
+        default:
+          return st;
+      }
+    };
+    // A body whose only return is its last statement (`(x) => x * k`,
+    // `{ const y = x * 2; return y > 4; }`) needs no exit block: its other
+    // statements run after the bindings, and the call's value is the
+    // returned expression.
+    const last = fn.body[fn.body.length - 1];
+    const prefix = fn.body.slice(0, -1);
+    if (
+      last !== undefined &&
+      last.kind === "return" &&
+      last.value !== null &&
+      typeEquals(last.value.type, fn.returnType) &&
+      !returns(last.value) &&
+      prefix.every((st) => everyStmt(st, { expr: () => true, stmt: (x) => x.kind !== "return" }))
+    ) {
+      const copy = { expr: renameExpr, stmt: renameStmt };
+      return {
+        pre: [...bind, ...transformStmtList(prefix, copy)],
+        value: transformExpr(last.value, copy),
+      };
+    }
+    const exit = this.fresh("%fused.exit");
     const result = fn.returnType.kind === "void" ? null : this.local("ret", fn.returnType, true);
-    const rename = (id: string): string => renamed.get(id) ?? id;
     const body = transformStmtList(fn.body, {
-      expr: (e) => {
-        switch (e.kind) {
-          case "varRef":
-          case "incDec":
-          case "assignExpr":
-            return { ...e, localId: rename(e.localId) };
-          default:
-            return e;
-        }
-      },
+      expr: renameExpr,
       stmt: (s): IrStmt => {
         switch (s.kind) {
           case "return": {
@@ -1124,27 +1333,14 @@ class FusedLoop {
               loc: s.loc,
             };
           }
-          case "varDecl":
-          case "assign":
-            return { ...s, localId: rename(s.localId) };
           case "break":
           case "continue":
             return s.label && s.label !== exit ? { ...s, label: label(s.label) } : s;
-          case "while":
-          case "doWhile":
-          case "for":
-          case "block":
-            return s.labels ? { ...s, labels: s.labels.map(label) } : s;
           default:
-            return s;
+            return renameStmt(s);
         }
       },
     });
-    const bind: IrStmt[] = fn.params.flatMap((p, index): IrStmt[] =>
-      aliased.has(p.localId)
-        ? []
-        : [{ kind: "varDecl", localId: rename(p.localId), init: args[index]!, loc }],
-    );
     const pre: IrStmt[] = [];
     if (result !== null) pre.push({ kind: "varDecl", localId: result, init: null, loc });
     pre.push({ kind: "block", labels: [exit], body: [...bind, ...body], loc });
@@ -1157,7 +1353,13 @@ class FusedLoop {
     };
   }
 
-  build(): { fn: Omit<IrFunction, "name">; args: IrExpr[]; key: string } | null {
+  build(): {
+    fn: Omit<IrFunction, "name">;
+    args: IrExpr[];
+    key: string;
+    /** Bindings the callbacks copied into the loop captured at this site. */
+    inlinedCaptures: string[];
+  } | null {
     const { chain, loc } = this;
     const arrT = chain.sourceType;
     const a = this.param("a", chain.source, "src");
@@ -1642,7 +1844,10 @@ class FusedLoop {
     };
     foldKnownUnions(fn);
     scalarizeRecordTemporaries(this.lowerer, fn);
-    return { fn, args: this.args, key: this.keyParts.join("|") };
+    const inlinedCaptures = this.callees.flatMap((c) =>
+      c.inline && c.arg.kind === "closure" ? c.arg.captures : [],
+    );
+    return { fn, args: this.args, key: this.keyParts.join("|"), inlinedCaptures };
   }
 }
 

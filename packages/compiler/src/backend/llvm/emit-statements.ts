@@ -464,6 +464,9 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         emitter.publishedTypes?.containerGuarded(s.arr.type) !== true
       )
         break;
+      // The literal it follows was constructed with this capacity
+      // (reservedArrayLength).
+      if (emitter.consumedReserves.delete(s)) break;
       const arr = emitBorrowedInput(emitter, s.arr);
       const length = emitter.emitExpr(s.length);
       if (s.arr.type.kind !== "array")

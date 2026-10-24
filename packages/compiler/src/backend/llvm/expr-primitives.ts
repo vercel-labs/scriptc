@@ -886,6 +886,34 @@ export function emitStringExpr(
   }
 }
 
+/** scr_arr_reserve_len reserves dense storage only up to this many slots
+ * (SCR_ARR_DENSE_LIMIT, scr_array.c). */
+const RESERVE_LIMIT = 2 ** 20;
+
+/** Elements the inline slots of a small array construction
+ * (scr_arr_new_small, scr_arr_new_ops_small) hold at least
+ * (SCR_ARR_SMALL_SLOTS, scr_array.c). */
+const SMALL_ARRAY_SLOTS = 3;
+
+/** The capacity scr_arr_reserve_len would reserve for `length` on an empty
+ * array: the length truncated when it is at least 1 and at most
+ * RESERVE_LIMIT, else 0. */
+function reservedCapacity(host: LlvmEmitterContext, length: IrExpr): string {
+  const B = host.B;
+  const n = host.emitExpr(length);
+  const atLeastOne = B.tmp(),
+    withinLimit = B.tmp(),
+    reserves = B.tmp(),
+    slots = B.tmp(),
+    capacity = B.tmp();
+  B.line(`${atLeastOne} = fcmp oge double ${n.name}, ${f64Lit(1)}`);
+  B.line(`${withinLimit} = fcmp ole double ${n.name}, ${f64Lit(RESERVE_LIMIT)}`);
+  B.line(`${reserves} = and i1 ${atLeastOne}, ${withinLimit}`);
+  B.line(`${slots} = select i1 ${reserves}, double ${n.name}, double ${f64Lit(0)}`);
+  B.line(`${capacity} = fptoui double ${slots} to ${host.sizeType}`);
+  return capacity;
+}
+
 export function emitContainerExpr(
   host: LlvmEmitterContext,
   e: ExprOf<
@@ -957,7 +985,34 @@ export function emitContainerExpr(
             ? `${arr} = call ptr @scr_arr_new_small(i32 ${SCR_ELEM_I32})`
             : `${arr} = call ptr @scr_arr_new(i32 ${SCR_ELEM_I32}, ${host.sizeType} ${capacity})`,
         );
-      } else B.line(`${arr} = ${arrNewCall(host.shapeHost, elem, String(capacity), small)}`);
+      } else {
+        const hint = host.reservedArrayLengths.get(e);
+        if (hint !== undefined) {
+          host.reservedArrayLengths.delete(e);
+          host.consumedReserves.add(hint);
+          const capacity = reservedCapacity(host, hint.length);
+          // The small construction's inline slots hold at least
+          // SMALL_ARRAY_SLOTS elements; larger capacities are sized.
+          const fits = B.tmp(),
+            smallArr = B.tmp(),
+            sizedArr = B.tmp();
+          const smallLabel = B.newLabel("arr.cap.small"),
+            sizedLabel = B.newLabel("arr.cap.sized"),
+            joined = B.newLabel("arr.cap.j");
+          B.line(`${fits} = icmp ule ${host.sizeType} ${capacity}, ${SMALL_ARRAY_SLOTS}`);
+          B.condBr(fits, smallLabel, sizedLabel);
+          B.startBlock(smallLabel);
+          B.line(`${smallArr} = ${arrNewCall(host.shapeHost, elem, "0", true)}`);
+          B.br(joined);
+          B.startBlock(sizedLabel);
+          B.line(`${sizedArr} = ${arrNewCall(host.shapeHost, elem, capacity)}`);
+          B.br(joined);
+          B.startBlock(joined);
+          B.line(
+            `${arr} = phi ptr [ ${smallArr}, %${smallLabel} ], [ ${sizedArr}, %${sizedLabel} ]`,
+          );
+        } else B.line(`${arr} = ${arrNewCall(host.shapeHost, elem, String(capacity), small)}`);
+      }
       const out = host.own({ name: arr, type: e.type });
       const acc: ArrayAccess = int32 ? "i32" : elemAccess(elem);
       let pending: LlValue[] = [];

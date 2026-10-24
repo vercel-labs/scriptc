@@ -16,7 +16,10 @@ const COPIED_NODE_FRACTION = 0.25;
  * closure it creates writes through its environment (and transitively the
  * closures those create). A parameter or capture absent from its function's
  * set holds the value it entered with for the whole call. */
-export function writtenLocals(mod: IrModule, nodes?: IrNodeIndex): Map<string, Set<string>> {
+export function writtenLocals(
+  mod: { readonly functions: readonly IrFunction[] },
+  nodes?: IrNodeIndex,
+): Map<string, Set<string>> {
   return rebindings(mod, nodes).written;
 }
 
@@ -31,7 +34,7 @@ const REBINDING_KINDS: readonly IrNodeKind[] = [
 ];
 
 function rebindings(
-  mod: IrModule,
+  mod: { readonly functions: readonly IrFunction[] },
   nodes?: IrNodeIndex,
 ): {
   written: Map<string, Set<string>>;

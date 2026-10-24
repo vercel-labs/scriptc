@@ -827,15 +827,16 @@ function buildArrayHofFn(
     );
     returnType = outT;
     body = [
+      readLen,
       {
         kind: "varDecl",
         localId: "out.0",
         init: { kind: "arrayLit", elems: [], type: outT, loc },
         loc,
       },
-      readLen,
       // map's result has the receiver's length, holes where the receiver
-      // has them. Storage for it is reserved first and the length is set
+      // has them. Storage for it is reserved first (with the result's
+      // construction, which directly precedes it) and the length is set
       // after the loop, so a result without holes is filled by appends and
       // gets no state bytes.
       ...(method === "map"

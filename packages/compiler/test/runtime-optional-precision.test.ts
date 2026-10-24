@@ -158,7 +158,9 @@ test("an unchanged captured parameter is borrowed and boxed only where a closure
   const module = await lower(`${ITEM}
 function heavier(item: Item, limits: number[]): boolean {
   if (limits.length === 0) return false;
-  return limits.some((limit) => weigh(item) > limit);
+  // A closure value: a closure literal at the call would run as a loop.
+  const over = (limit: number): boolean => weigh(item) > limit;
+  return limits.some(over);
 }
 function replaced(item: Item, other: Item): number {
   const read = () => item.weight;

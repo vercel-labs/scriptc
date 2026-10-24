@@ -69,7 +69,7 @@ void scr_http2_server_on_session(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrH
  * reject_unauthorized false disables the verify gate — the local-CA
  * self-connect shapes); throws catchably on bad input */
 ScrH2Session *scr_http2_connect(ScrStr *url /*borrowed*/, bool reject_unauthorized,
-                                 const char *ca /*borrowed, len 0 = none*/, size_t ca_len,
+                                 const char *ca /*borrowed, NULL = none*/, size_t ca_len,
                                  ScrClosure *cb /*moves, nullable*/,
                                  ScrH2ConnectFn fn); /* +1 */
 /* end_stream: -1 = the method's payload-meaningless default, 0/1 explicit */
@@ -173,7 +173,7 @@ ScrHttpClientReq *scr_https_request(ScrStr *host /*borrowed*/, double port,
                                      ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
                                      double timeout_ms, ScrArr *header_pairs /*borrowed*/,
                                      bool auto_end, bool reject_unauthorized,
-                                     const char *ca /*borrowed, len 0 = none*/, size_t ca_len,
+                                     const char *ca /*borrowed, NULL = none*/, size_t ca_len,
                                      ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn); /* +1 */
 /* The URL-string form (https.get('https://host/path')): scr_http.c's
  * shared parse, then the options form's dial with Node's no-options
@@ -187,7 +187,7 @@ ScrHttpClientReq *scr_https_request_agent(ScrStr *host /*borrowed*/, double port
                                            ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
                                            double timeout_ms, ScrArr *header_pairs /*borrowed*/,
                                            bool auto_end, bool reject_unauthorized,
-                                           const char *ca /*borrowed, len 0 = none*/, size_t ca_len,
+                                           const char *ca /*borrowed, NULL = none*/, size_t ca_len,
                                            const struct ScrDyn *agent /*borrowed*/,
                                            ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn); /* +1 */
 /* The fetch unit's https leg (defined in scr_tls.c): a client transport

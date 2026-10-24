@@ -325,6 +325,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.webcrypto, "scr_webcrypto.c"),
   unit((u) => u.opts.webcrypto === true && u.opts.pki === true, "scr_webcrypto_pki.c"),
   unit((u) => u.opts.pki === true && u.opts.ed25519 === true, "scr_ed25519.c"),
+  unit((u) => u.opts.x509 === true, "scr_x509.c"),
+  // The TLS socket certificate accessors read scr_tls.c and build with scr_x509.c.
+  unit((u) => u.tls && u.opts.x509 === true, "scr_tls_x509.c"),
   // The crypto global's object extends scr_async_dyn.c's.
   unit((u) => u.opts.webcrypto && u.opts.dynAsync, "scr_webcrypto_object.c"),
   // The CA-store unit rides its own gate OR the tls one: scr_tls.c

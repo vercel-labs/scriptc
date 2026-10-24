@@ -52,6 +52,7 @@ const features: NativeLinkFeatures = {
   dh: false,
   pki: false,
   ed25519: false,
+  x509: false,
   webcrypto: false,
   perfLoop: false,
 };

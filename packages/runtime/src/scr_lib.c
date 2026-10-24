@@ -10526,10 +10526,29 @@ static bool scr_x509_der(const uint8_t *in, size_t n, const uint8_t **der, size_
   *der = NULL;
   *der_len = 0;
   *decoded = NULL;
+  /* One whole DER SEQUENCE is the certificate itself: these members read
+   * the DER the constructor already decoded, whose extensions can carry
+   * PEM armor as text. */
+  if (n >= 2 && in[0] == 0x30) {
+    size_t len = in[1], head = 2;
+    if (len & 0x80) {
+      size_t k = len & 0x7f;
+      len = 0;
+      head = 2 + k;
+      for (size_t i = 0; i < k && k <= 4 && head <= n; i++) len = (len << 8) | in[2 + i];
+      if (k == 0 || k > 4) head = n + 1;
+    }
+    if (head <= n && len == n - head) {
+      *der = in;
+      *der_len = n;
+      return true;
+    }
+  }
   /* PEM: base64-decode the armor's body. */
   const uint8_t *b = NULL;
+  /* OpenSSL's PEM reader looks for the armor at the start of a line. */
   for (size_t i = 0; i + sizeof begin - 1 <= n; i++) {
-    if (memcmp(in + i, begin, sizeof begin - 1) == 0) {
+    if ((i == 0 || in[i - 1] == '\n') && memcmp(in + i, begin, sizeof begin - 1) == 0) {
       b = in + i + sizeof begin - 1;
       break;
     }

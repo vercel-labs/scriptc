@@ -58,6 +58,7 @@ import { fenceNodeModuleMutation, lowerRequireCacheHas } from "../lower-node-mod
 import { errorToStringCall } from "../error-methods.js";
 import { classToStringConversion, classUnionToString } from "../class-to-primitive.js";
 import { isPerfEntryType, perfEntryTag } from "../builtins/performance.js";
+import { isX509Type, x509ToString } from "../builtins/x509.js";
 import { guardNullProto, nullProtoRecordShape } from "../null-prototype.js";
 import { numLit, varRef } from "../../../ir/build.js";
 import { lowerUrlAssignment } from "../builtins/url.js";
@@ -799,6 +800,7 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
     // other record is Object.prototype.toString's constant.
     const shape = lowerer.shapes.get(e.type.shapeId);
     if (isPerfEntryType(lowerer, e.type)) return perfEntryTag(lowerer, e, e.type, e.loc);
+    if (isX509Type(lowerer, e.type)) return x509ToString(e, e.loc);
     if (shape && !shape.tuple && !shape.fields.some((f) => f.name === "toString")) {
       // A null-prototype record (Object.groupBy) has no toString or
       // valueOf: ToPrimitive throws Node's TypeError.

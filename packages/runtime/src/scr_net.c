@@ -451,6 +451,9 @@ struct ScrNetServer {
   ScrStr *unix_path;   /* listen(path): the bound socket file, removed at close */
   size_t nconns;
   ScrNetLs conn_ls, err_ls, close_ls, listening_cbs, timeout_ls;
+  /* tls/https servers: 'tlsClientError' (err, tlsSocket), fired by the
+   * TLS unit for a handshake that fails */
+  ScrNetLs client_error_ls;
   /* server.maxConnections (unset = undefined) and its 'drop' listeners */
   bool max_conns_set;
   double max_conns;
@@ -2132,6 +2135,53 @@ void scr_net_server_get_connections(ScrNetServer *s, const ScrDyn *callback /*bo
 void scr_net_server_set_close_override(ScrNetServer *s, ScrClosure *ov /*moves*/) {
   scr_closure_release(s->close_override);
   s->close_override = ov;
+}
+
+void scr_net_server_on_client_error(ScrNetServer *s, ScrClosure *cb /*moves*/, void *fn, bool once) {
+  if (s->close_emitted) {
+    scr_closure_release(cb);
+    return;
+  }
+  scr_net_ls_add(&s->client_error_ls, cb, fn, once);
+}
+
+typedef void (*ScrNetClientErrorFn)(ScrClosure *, ScrError *, ScrNetSocket *);
+
+/* Node emits 'tlsClientError' from the accepted connection's handshake,
+ * which has no AsyncLocalStorage store, not from the server's listen()
+ * context the connection's other events run in. */
+void scr_net_server_fire_client_error(ScrNetServer *s, ScrError *err /*borrowed*/,
+                                      ScrNetSocket *sock /*borrowed*/) {
+  if (s->client_error_ls.n == 0) return;
+  ScrNetL *snap;
+  size_t n = scr_net_ls_snapshot(&s->client_error_ls, &snap);
+  ScrAlsCtx *prev = scr_als_dispatch_enter(NULL);
+  scr_dyn_this_push(s, SCR_DYNH_NET_SERVER);
+  for (size_t i = 0; i < n; i++) {
+    if (!scr_exc_pending()) ((ScrNetClientErrorFn)snap[i].fn)(snap[i].cb, err, sock);
+    scr_closure_release(snap[i].cb);
+  }
+  scr_dyn_this_pop();
+  scr_als_dispatch_leave(prev);
+  free(snap);
+}
+
+/* The 'tlsClientError' listener adapters by arity; the arguments arrive
+ * borrowed and the listener takes them +1. */
+void scr_net_client_error_thunk0(ScrClosure *cb, ScrError *err, ScrNetSocket *sock) {
+  (void)err;
+  (void)sock;
+  ((void (*)(ScrClosure *))cb->fn)(cb);
+}
+
+void scr_net_client_error_thunk1(ScrClosure *cb, ScrError *err, ScrNetSocket *sock) {
+  (void)sock;
+  ((void (*)(ScrClosure *, ScrError *))cb->fn)(cb, scr_error_retain(err));
+}
+
+void scr_net_client_error_thunk2(ScrClosure *cb, ScrError *err, ScrNetSocket *sock) {
+  ((void (*)(ScrClosure *, ScrError *, ScrNetSocket *))cb->fn)(cb, scr_error_retain(err),
+                                                              scr_net_sock_retain(sock));
 }
 
 void scr_net_server_on_error(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrChildErrFn fn,
@@ -5318,6 +5368,17 @@ void scr_net_sock_transport_error_code(ScrNetSocket *s, const char *msg, const c
   scr_net_sock_transport_error(s, msg);
 }
 
+void scr_net_sock_transport_report(ScrNetSocket *s, const char *msg, const char *code) {
+  if (s->pending_err) return;
+  s->pending_err = scr_str_new(msg, strlen(msg));
+  s->pending_code = code;
+}
+
+void scr_net_sock_transport_ended(ScrNetSocket *s) {
+  s->rd_eof = true;
+  scr_net_fire0_this(&s->end_ls, s, SCR_DYNH_NET_SOCKET);
+}
+
 void scr_net_sock_transport_error(ScrNetSocket *s, const char *msg) {
   if (msg != NULL) {
     if (!s->pending_err) s->pending_err = scr_str_new(msg, strlen(msg));
@@ -5405,6 +5466,7 @@ static void scr_net_server_settle(ScrNetServer *srv) {
   scr_net_ls_drop(&srv->close_ls);
   scr_net_ls_drop(&srv->listening_cbs);
   scr_net_ls_drop(&srv->timeout_ls);
+  scr_net_ls_drop(&srv->client_error_ls);
   if (srv->proto_settle && srv->http_ctx) srv->proto_settle(srv->http_ctx);
   scr_net_server_unregister(srv);
 }
@@ -5450,6 +5512,9 @@ static bool scr_net_sock_settle(ScrNetSocket *sock) {
     scr_net_fire_arg_this(&sock->close_ls, had_error, sock, SCR_DYNH_NET_SOCKET);
     scr_dyn_release(had_error);
   }
+  /* the transport settles first: a listener its last events add (a TLS
+   * server's 'tlsClientError') drops with the rest */
+  if (sock->tops && sock->tops->settle) sock->tops->settle(sock->tctx);
   /* settle: listeners drop (cycle story) */
   scr_net_ls_drop(&sock->data_ls);
   scr_net_ls_drop(&sock->end_ls);
@@ -5462,7 +5527,6 @@ static bool scr_net_sock_settle(ScrNetSocket *sock) {
   scr_net_ls_drop(&sock->wcb_ls);
   scr_net_ls_drop(&sock->ready_ls);
   scr_net_ls_drop(&sock->lookup_ls);
-  if (sock->tops && sock->tops->settle) sock->tops->settle(sock->tctx);
   if (sock->pipe_dst) {
     scr_net_sock_release(sock->pipe_dst);
     sock->pipe_dst = NULL;
@@ -5716,6 +5780,7 @@ static bool scr_net_sock_event(ScrNetSocket *s, unsigned events) {
       if (!scr_exc_pending() && s->fd >= 0) scr_net_sock_update_write(s);
     } else {
       s->t_want_write = false;
+      if (s->tops && s->tops->drain) s->tops->drain(s->tctx);
       scr_net_sock_flush(s);
     }
   }

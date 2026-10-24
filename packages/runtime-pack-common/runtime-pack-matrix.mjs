@@ -164,6 +164,9 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_webcrypto.c", "webcrypto"],
   ["scr_webcrypto_pki.c", all("webcrypto", "pki")],
   ["scr_ed25519.c", all("pki", "ed25519")],
+  ["scr_x509.c", "x509"],
+  // The TLS socket certificate accessors read scr_tls.c and build with scr_x509.c.
+  ["scr_tls_x509.c", all("tlsEffective", "x509")],
   // WebCrypto's AES ciphers run over the cipher feature's mbedTLS archive.
   ["scr_webcrypto_aes.c", all("cipher", "webcrypto")],
   ["scr_fetch.c", "nativeFetch"],

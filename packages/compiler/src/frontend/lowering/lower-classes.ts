@@ -43,6 +43,7 @@ import type { FnCtx, Lowerer } from "./lowerer.js";
 import { inlineNamespaceRequireOf, lowerWithInlineRequireInit } from "./cjs-inline-require.js";
 import {
   BOOL,
+  BYTES_U8,
   canDynCheckTo,
   DATE_T,
   DYN,
@@ -99,6 +100,7 @@ import {
   jsOpenObjectType,
   typeKey,
   withUnitArm,
+  X509_PUBLIC_KEY_FIELD,
 } from "../type-mapper.js";
 import {
   canonicalBuiltinModule,
@@ -10119,6 +10121,52 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     const agent = lowerHttpAgentNew(lowerer, expr);
     if (agent) return agent;
   }
+  // `new crypto.X509Certificate(data)` — the Dirent-style data record:
+  // the certificate's lowered members (fingerprint — the SHA-1 of the
+  // DER, uppercase colon-separated — plus the validFrom/validTo
+  // validity window in Node's ASN1_TIME_print shape) compute AT
+  // CONSTRUCTION, when Node parses too, so unparseable input throws
+  // Node's exact PEM error here (ERR_OSSL_PEM_NO_START_LINE) and the
+  // handle never exists. Both import forms (`crypto.X509Certificate`
+  // through the namespace, named `X509Certificate`); Buffer input only
+  // — the readFileSync idiom. mapType interns the matching record, so
+  // locals and the composed member reads all flow. The data argument
+  // feeds THREE field computations, so construction goes through an
+  // interned helper whose parameter evaluates it exactly once.
+  {
+    const callee = expr.expression;
+    const isX509 =
+      (ts.isPropertyAccessExpression(callee) &&
+        callee.name.text === "X509Certificate" &&
+        lowerer.builtinNamespaceModuleOf(callee.expression) === "crypto") ||
+      (ts.isIdentifier(callee) &&
+        (() => {
+          const bi = lowerer.builtinImportOf(callee);
+          return bi?.module === "crypto" && bi.member === "X509Certificate";
+        })());
+    if (isX509) {
+      const args: readonly ts.Expression[] = expr.arguments?.nodes ?? [];
+      if (args.length !== 1) {
+        lowerer.noLowering(
+          "X509Certificate with this argument shape",
+          expr,
+          "the supported form is new X509Certificate(readFileSync(path))",
+        );
+      }
+      const data = lowerer.lowerExpr(args[0]!);
+      const isBytes = data.type.kind === "bytes" && data.type.elem === "u8";
+      if (!isBytes && data.type.kind !== "string") {
+        lowerer.noLowering(
+          `X509Certificate over '${lowerer.fmt(data.type)}' data`,
+          args[0]!,
+          "pass the certificate Buffer or PEM string (an fs.readFileSync result)",
+        );
+      }
+      const t = lowerer.mapTypeOf(lowerer.typeOf(expr));
+      if (t?.kind !== "record") lowerer.badType(expr, lowerer.typeOf(expr));
+      return x509RecordCall(lowerer, data, t, loc);
+    }
+  }
   if (
     ts.isIdentifier(expr.expression) ||
     (ts.isPropertyAccessExpression(expr.expression) &&
@@ -10899,99 +10947,6 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       );
     }
   }
-  // `new crypto.X509Certificate(data)` — the Dirent-style data record:
-  // the certificate's lowered members (fingerprint — the SHA-1 of the
-  // DER, uppercase colon-separated — plus the validFrom/validTo
-  // validity window in Node's ASN1_TIME_print shape) compute AT
-  // CONSTRUCTION, when Node parses too, so unparseable input throws
-  // Node's exact PEM error here (ERR_OSSL_PEM_NO_START_LINE) and the
-  // handle never exists. Both import forms (`crypto.X509Certificate`
-  // through the namespace, named `X509Certificate`); Buffer input only
-  // — the readFileSync idiom. mapType interns the matching record, so
-  // locals and the composed member reads all flow. The data argument
-  // feeds THREE field computations, so construction goes through an
-  // interned helper whose parameter evaluates it exactly once.
-  {
-    const callee = expr.expression;
-    const isX509 =
-      (ts.isPropertyAccessExpression(callee) &&
-        callee.name.text === "X509Certificate" &&
-        lowerer.builtinNamespaceModuleOf(callee.expression) === "crypto") ||
-      (ts.isIdentifier(callee) &&
-        (() => {
-          const bi = lowerer.builtinImportOf(callee);
-          return bi?.module === "crypto" && bi.member === "X509Certificate";
-        })());
-    if (isX509) {
-      const args: readonly ts.Expression[] = expr.arguments?.nodes ?? [];
-      if (args.length !== 1) {
-        lowerer.noLowering(
-          "X509Certificate with this argument shape",
-          expr,
-          "the supported form is new X509Certificate(readFileSync(path))",
-        );
-      }
-      const data = lowerer.lowerExpr(args[0]!);
-      const isBytes = data.type.kind === "bytes" && data.type.elem === "u8";
-      if (!isBytes && data.type.kind !== "string") {
-        lowerer.noLowering(
-          `X509Certificate over '${lowerer.fmt(data.type)}' data`,
-          args[0]!,
-          "pass the certificate Buffer or PEM string (an fs.readFileSync result)",
-        );
-      }
-      const t = lowerer.mapTypeOf(lowerer.typeOf(expr));
-      if (t?.kind !== "record") lowerer.badType(expr, lowerer.typeOf(expr));
-      const key = `x509.record:${isBytes ? "bytes" : "str"}`;
-      let helper = lowerer.valueHelpers.get(key);
-      if (!helper) {
-        helper = keyedHelperName(lowerer, "%x509.record", key);
-        lowerer.valueHelpers.set(key, helper);
-        const dataT = data.type;
-        const dRef: IrExpr = { kind: "varRef", localId: "d.0", type: dataT, loc };
-        const field = (
-          name: string,
-          fn:
-            | "crypto.x509Fingerprint"
-            | "crypto.x509FingerprintStr"
-            | "crypto.x509ValidFrom"
-            | "crypto.x509ValidFromStr"
-            | "crypto.x509ValidTo"
-            | "crypto.x509ValidToStr",
-        ): { name: string; value: IrExpr } => ({
-          name,
-          value: { kind: "libCall", fn, args: [dRef], type: STRING, loc },
-        });
-        lowerer.liftedFns.push({
-          name: helper,
-          params: [{ localId: "d.0", name: "d", type: dataT }],
-          returnType: t,
-          locals: [{ id: "d.0", name: "d", type: dataT, mutable: false }],
-          body: [
-            {
-              kind: "return",
-              value: {
-                kind: "recordLit",
-                fields: [
-                  field(
-                    "fingerprint",
-                    isBytes ? "crypto.x509Fingerprint" : "crypto.x509FingerprintStr",
-                  ),
-                  field("validFrom", isBytes ? "crypto.x509ValidFrom" : "crypto.x509ValidFromStr"),
-                  field("validTo", isBytes ? "crypto.x509ValidTo" : "crypto.x509ValidToStr"),
-                ],
-                type: t,
-                loc,
-              },
-              loc,
-            },
-          ],
-          loc,
-        });
-      }
-      return { kind: "call", callee: helper, args: [data], type: t, loc };
-    }
-  }
   // `new X(...)` through a class VALUE (a classval-typed binding, array
   // element, map read, param): the newValue dispatch through the class
   // object's construct thunk. Arguments complete against the STATIC
@@ -11263,6 +11218,151 @@ function genericFieldFnNodeOf(
     return init;
   }
   return null;
+}
+
+/** The lifted `new crypto.X509Certificate(d)` constructor: raw decodes the
+ * input once (Node's PEM error throws here), and every other field reads
+ * raw. subjectAltName, infoAccess and signatureAlgorithm hold undefined
+ * where the runtime answers "". */
+/** The X509Certificate record `t` built from `data`, a certificate Buffer
+ * (PEM or DER) or PEM string, through the interned constructor helper.
+ * `der` marks a Buffer known to hold a certificate's DER (a TLS socket's),
+ * which is read without looking for PEM armor inside it. */
+export function x509RecordCall(
+  lowerer: Lowerer,
+  data: IrExpr,
+  t: IrType & { kind: "record" },
+  loc: SrcLoc,
+  der = false,
+): IrExpr {
+  const isBytes = data.type.kind === "bytes" && data.type.elem === "u8";
+  const key = `x509.record:${der ? "der" : isBytes ? "bytes" : "str"}`;
+  let helper = lowerer.valueHelpers.get(key);
+  if (!helper) {
+    helper = keyedHelperName(lowerer, "%x509.record", key);
+    lowerer.valueHelpers.set(key, helper);
+    lowerer.liftedFns.push(x509RecordHelper(lowerer, helper, data.type, t, isBytes, der, loc));
+  }
+  return { kind: "call", callee: helper, args: [data], type: t, loc };
+}
+
+function x509RecordHelper(
+  lowerer: Lowerer,
+  name: string,
+  dataT: IrType,
+  t: IrType & { kind: "record" },
+  isBytes: boolean,
+  der: boolean,
+  loc: SrcLoc,
+): IrFunction {
+  const shape = lowerer.shapes.get(t.shapeId);
+  if (!shape) throw new InternalCompilerError("lowerer bug: X509Certificate shape unregistered");
+  const raw: IrExpr = { kind: "varRef", localId: "raw.0", type: BYTES_U8, loc };
+  const call = (fn: IrLibFn, type: IrType): IrExpr => ({
+    kind: "libCall",
+    fn,
+    args: [raw],
+    type,
+    loc,
+  });
+  const locals: IrLocal[] = [
+    { id: "d.0", name: "d", type: dataT, mutable: false },
+    { id: "raw.0", name: "raw", type: BYTES_U8, mutable: false },
+  ];
+  const decls: IrStmt[] = [
+    {
+      kind: "varDecl",
+      localId: "raw.0",
+      init: {
+        kind: "libCall",
+        fn: der ? "crypto.x509RawDer" : isBytes ? "crypto.x509Raw" : "crypto.x509RawStr",
+        args: [{ kind: "varRef", localId: "d.0", type: dataT, loc }],
+        type: BYTES_U8,
+        loc,
+      },
+      loc,
+    },
+  ];
+  const validTime = (fn: IrLibFn): IrExpr => ({
+    kind: "libCall",
+    fn: "date.newString",
+    args: [call(fn, STRING)],
+    type: DATE_T,
+    loc,
+  });
+  const values: Record<string, (type: IrType) => IrExpr> = {
+    ca: () => call("crypto.x509Ca", BOOL),
+    fingerprint: () => call("crypto.x509Fingerprint", STRING),
+    fingerprint256: () => call("crypto.x509Fingerprint256", STRING),
+    fingerprint512: () => call("crypto.x509Fingerprint512", STRING),
+    subject: () => call("crypto.x509Subject", STRING),
+    subjectAltName: (type) => optionalText("san", "crypto.x509SubjectAltName", type),
+    infoAccess: (type) => optionalText("access", "crypto.x509InfoAccess", type),
+    issuer: () => call("crypto.x509Issuer", STRING),
+    raw: () => raw,
+    serialNumber: () => call("crypto.x509SerialNumber", STRING),
+    signatureAlgorithm: (type) => optionalText("sigalg", "crypto.x509SignatureAlgorithm", type),
+    signatureAlgorithmOid: () => call("crypto.x509SignatureAlgorithmOid", STRING),
+    validFrom: () => call("crypto.x509ValidFrom", STRING),
+    validFromDate: () => validTime("crypto.x509ValidFrom"),
+    validTo: () => call("crypto.x509ValidTo", STRING),
+    validToDate: () => validTime("crypto.x509ValidTo"),
+    [X509_PUBLIC_KEY_FIELD]: () => ({
+      kind: "dynFrom",
+      value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+      type: DYN,
+      loc,
+    }),
+  };
+  /** A string | undefined field: the runtime's text, or undefined for "". */
+  function optionalText(local: string, fn: IrLibFn, type: IrType): IrExpr {
+    if (type.kind !== "union")
+      throw new InternalCompilerError("lowerer bug: X509Certificate optional field type");
+    const def = lowerer.unions.get(type.unionId);
+    const stringTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
+    const undefinedTag = def ? def.arms.findIndex((a) => a.kind === "undefinedT") : -1;
+    if (stringTag < 0 || undefinedTag < 0)
+      throw new InternalCompilerError("lowerer bug: X509Certificate optional field arms");
+    const id = `${local}.0`;
+    locals.push({ id, name: local, type: STRING, mutable: false });
+    decls.push({ kind: "varDecl", localId: id, init: call(fn, STRING), loc });
+    const text: IrExpr = { kind: "varRef", localId: id, type: STRING, loc };
+    return {
+      kind: "ternary",
+      cond: {
+        kind: "strEq",
+        negated: false,
+        left: text,
+        right: { kind: "strLit", value: "", type: STRING, loc },
+        type: BOOL,
+        loc,
+      },
+      then: {
+        kind: "unionWrap",
+        unionId: type.unionId,
+        tag: undefinedTag,
+        value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+        type,
+        loc,
+      },
+      else_: { kind: "unionWrap", unionId: type.unionId, tag: stringTag, value: text, type, loc },
+      type,
+      loc,
+    };
+  }
+  const fields = shape.fields.map((f) => {
+    const value = values[f.name];
+    if (!value) throw new InternalCompilerError(`lowerer bug: X509Certificate field ${f.name}`);
+    return { name: f.name, value: value(f.type) };
+  });
+  return {
+    name,
+    params: [{ localId: "d.0", name: "d", type: dataT }],
+    returnType: t,
+    locals,
+    body: [...decls, { kind: "return", value: { kind: "recordLit", fields, type: t, loc }, loc }],
+    loc,
+  };
 }
 
 /** Whether a JavaScript class's own binding is the target of

@@ -983,8 +983,8 @@ listener.listen(0, () => {
 });
 
 // With a secureContext, the TLSSocket's own options still apply: a truthy
-// requestCert, which asks for client certificates this runtime does not
-// verify, and SNICallback throw the fence instead of being dropped.
+// requestCert (which lowers with cert and key, whose ca the runtime reads)
+// and SNICallback throw the fence instead of being dropped.
 describe("tls.TLSSocket socket options beside a secureContext", () => {
   test("requestCert and SNICallback throw the fence", async () => {
     const r = await compileAndRun(
@@ -1019,10 +1019,97 @@ listener.listen(0, () => {
     );
     expect(r.stderr).toBe("");
     expect(r.stdout).toBe(
-      "requestCert new tls.TLSSocket option 'requestCert' has no static lowering — client-certificate handshakes are not modeled (SEMANTICS.md divergence 55) — requestCert stays at Node's false default\n" +
+      "requestCert new tls.TLSSocket option 'requestCert' has no static lowering — requestCert lowers with cert and key options, not beside a secureContext\n" +
         "SNICallback new tls.TLSSocket option 'SNICallback' has no static lowering — isServer, cert, key, secureContext, ALPNProtocols, minVersion and maxVersion are the implemented members\n" +
         "requestCert false no error\n" +
         "client closed\n",
+    );
+  });
+});
+
+// A client certificate lowers as a cert and key pair; one without the
+// other throws the fence before any connection is made.
+describe("client certificates without both cert and key", () => {
+  test("tls.connect and https.request throw the fence", async () => {
+    const r = await compileAndRun(
+      "tls-client-certificate-fences",
+      `import { readFileSync } from "node:fs";
+import * as https from "node:https";
+import * as tls from "node:tls";
+const certs = "tests/fixtures/server/certs";
+const cert = readFileSync(\`\${certs}/client.pem\`);
+const key = readFileSync(\`\${certs}/client-key.pem\`);
+function report(label: string, run: () => void): void {
+  try {
+    run();
+    console.log(label, "no error");
+  } catch (error) {
+    console.log(label, (error as Error).message);
+  }
+}
+report("connect cert only", () => tls.connect({ port: 1, host: "127.0.0.1", cert }));
+report("connect key only", () => tls.connect({ port: 1, host: "127.0.0.1", key }));
+report("request key only", () => https.request({ host: "127.0.0.1", port: 1, path: "/", key }));
+`,
+    );
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe(
+      "connect cert only tls.connect option 'cert' has no static lowering — a client certificate lowers with both cert and key\n" +
+        "connect key only tls.connect option 'key' has no static lowering — a client certificate lowers with both cert and key\n" +
+        "request key only https.request option 'key' has no static lowering — a client certificate lowers with both cert and key\n",
+    );
+  });
+});
+
+// server.addContext and setSecureContext answer on tls and https servers;
+// a plain net server, a servername Node's RegExp would read as groups or
+// alternation, and one outside ASCII throw the fence. A handshake failure
+// whose OpenSSL reason the runtime does not know reaches 'tlsClientError'
+// as a coded SC2020 error.
+describe("tls.Server contexts and client errors without a lowering", () => {
+  test("addContext and setSecureContext fences, and an unknown handshake failure", async () => {
+    const r = await compileAndRun(
+      "tls-server-context-fences",
+      `import { readFileSync } from "node:fs";
+import * as net from "node:net";
+import type { AddressInfo } from "node:net";
+import * as tls from "node:tls";
+const certs = "tests/fixtures/server/certs";
+const cert = readFileSync(\`\${certs}/localhost.pem\`);
+const key = readFileSync(\`\${certs}/localhost-key.pem\`);
+function report(label: string, run: () => void): void {
+  try {
+    run();
+    console.log(label, "no error");
+  } catch (error) {
+    console.log(label, (error as Error).message);
+  }
+}
+const plain = net.createServer() as unknown as tls.Server;
+report("net addContext", () => plain.addContext("a.test", { cert, key }));
+report("net setSecureContext", () => plain.setSecureContext({ cert, key }));
+const server = tls.createServer({ cert, key });
+report("alternation", () => server.addContext("a.test|b.test", { cert, key }));
+report("group", () => server.addContext("(a).test", { cert, key }));
+report("non-ASCII", () => server.addContext("\u00e9.test", { cert, key }));
+server.on("tlsClientError", (err: Error) => console.log("tlsClientError", (err as NodeJS.ErrnoException).code, err.message));
+server.listen(0, "127.0.0.1", () => {
+  const raw = net.connect((server.address() as AddressInfo).port, "127.0.0.1", () => {
+    raw.write(Buffer.from([0x16, 0x03, 0x01, 0x00, 0x04, 0x01, 0x00, 0x00, 0x00]));
+  });
+  raw.on("data", () => {});
+  raw.on("close", () => server.close());
+});
+`,
+    );
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe(
+      "net addContext server.addContext on a server that is not a tls or https server is not supported yet\n" +
+        "net setSecureContext server.setSecureContext on a server that is not a tls or https server is not supported yet\n" +
+        "alternation server.addContext option 'servername' has no static lowering — a servername with regular-expression groups or alternation has no lowering\n" +
+        "group server.addContext option 'servername' has no static lowering — a servername with regular-expression groups or alternation has no lowering\n" +
+        "non-ASCII server.addContext option 'servername' has no static lowering — a servername outside ASCII has no lowering\n" +
+        "tlsClientError SC2020 a TLS handshake failure (mbedTLS error -0x7300) without the reason OpenSSL gives is not supported yet\n",
     );
   });
 });
@@ -2014,6 +2101,70 @@ await attempt("subtle verify", () => crypto.subtle.verify(name, raw, new Uint8Ar
         `generateKey ${refusal}\n` +
         `importKey ${refusal}\n` +
         `subtle verify ${refusal}\n`,
+    );
+  });
+});
+
+// An X509Certificate's Ed25519 key needs the same unit: without it the
+// certificate's public key, issuer and names still read, while verify
+// rejects with the coded SC2020 Error. 7091 pins the linked path.
+describe("X509Certificate Ed25519 keys without the Ed25519 unit", () => {
+  test("verify refuses with SC2020 in a program that never names Ed25519", async () => {
+    const r = await compileAndRun(
+      "x509-ed25519-unit-not-linked",
+      `import { X509Certificate } from "node:crypto";
+const cert = new X509Certificate("-----BEGIN CERTIFICATE-----\\nMIIBljCCAUigAwIBAgIUNFuRt3zKS19UAUMdLWewqHrGBigwBQYDK2VwMC8xFDAS\\nBgNVBAoMC0V4YW1wbGUgT3JnMRcwFQYDVQQDDA5lZC5leGFtcGxlLm5ldDAgFw0y\\nNjEwMjIxMDEwMTJaGA8yMTI2MDkyODEwMTAxMlowLzEUMBIGA1UECgwLRXhhbXBs\\nZSBPcmcxFzAVBgNVBAMMDmVkLmV4YW1wbGUubmV0MCowBQYDK2VwAyEAOCSLKkel\\nkOH/5aqUwI3PNJVUUNyhgu2s19LFC254fNCjdDByMB0GA1UdDgQWBBR+50zUcqL8\\n739jh6/rEYojULDmlTAfBgNVHSMEGDAWgBR+50zUcqL8739jh6/rEYojULDmlTAP\\nBgNVHRMBAf8EBTADAQH/MB8GA1UdEQQYMBaCDmVkLmV4YW1wbGUubmV0hwTAAAIH\\nMAUGAytlcANBAC/c0Bi0SVUnHCg/1pn7MaCgVivSHuoISi2SCq/0EnLefRdgsIir\\n0QxjVnxeuKN2Y1yfEO/R1W8Nwovo1l2M1gQ=\\n-----END CERTIFICATE-----\\n");
+console.log(cert.publicKey.asymmetricKeyType?.length, cert.checkIssued(cert), cert.checkHost("ed.example.net"));
+try {
+  console.log(cert.verify(cert.publicKey));
+} catch (e) {
+  const err = e as NodeJS.ErrnoException;
+  console.log(err.name, err.code, err.message);
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe(
+      "7 true ed.example.net\n" +
+        "Error SC2020 Ed25519 keys are supported when a string literal in the program names 'ed25519'\n",
+    );
+  });
+});
+
+// A TLS socket held in an untyped JavaScript value has no lowering for its
+// certificate accessors (they link the X.509 unit, which a dynamic call
+// cannot ask for), so the call throws the fence; a socket whose type is
+// known runs them (corpus 7095, 7096).
+describe("tlsSocket.getPeerCertificate on a dynamic value (JS lane)", () => {
+  test("throws the fence", async () => {
+    const r = await compileAndRun(
+      "tls-peer-certificate-dynamic",
+      `import * as tls from "node:tls";
+import { readFileSync } from "node:fs";
+const certs = "tests/fixtures/server/certs";
+const server = tls.createServer({ cert: readFileSync(\`\${certs}/localhost.pem\`), key: readFileSync(\`\${certs}/localhost-key.pem\`) }, (s) => s.end());
+function peer(socket) {
+  try {
+    return socket.getPeerCertificate().subject.CN;
+  } catch (e) {
+    return e.message;
+  }
+}
+server.listen(0, () => {
+  const c = tls.connect({ port: server.address().port, ca: readFileSync(\`\${certs}/ca.pem\`), servername: "localhost" }, () => {
+    console.log(peer(c));
+    c.destroy();
+    server.close();
+  });
+});
+`,
+      "mjs",
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stderr).toBe("");
+    expect(r.stdout).toBe(
+      "'TLSSocket.prototype.getPeerCertificate' on a dynamic value is not supported yet\n",
     );
   });
 });

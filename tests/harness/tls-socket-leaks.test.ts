@@ -3,7 +3,9 @@
  * every socket that closes, including one whose handshake fails, must drop
  * them. The sanitized lanes otherwise run with detect_leaks=0, so this runs
  * the TLSSocket programs with LeakSanitizer explicitly on. 7094's
- * handshakes all fail. Linux only (Apple's ASan has no LeakSanitizer);
+ * handshakes all fail; 7095's detailed certificates link roots to
+ * themselves; 7097 and 7098 hold client certificates and the chains a ca
+ * completes. Linux only (Apple's ASan has no LeakSanitizer);
  * runs in the SCRIPTC_SAN=1 lane. */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -22,6 +24,12 @@ const programs = [
   "tests/corpus/7087-tls-socket-wrap.ts",
   "tests/corpus/7088-tls-socket-connect-tunnel.ts",
   "tests/corpus/7094-tls-socket-failed-handshakes.ts",
+  "tests/corpus/7095-tls-peer-certificates.ts",
+  "tests/corpus/7097-tls-client-certificates.ts",
+  "tests/corpus/7098-tls-client-certificates-paths.ts",
+  "tests/corpus/7440-tls-server-add-context.ts",
+  "tests/corpus/7441-tls-client-error.ts",
+  "tests/corpus/7443-tls-final-flight.ts",
 ];
 
 describe.skipIf(!sanitize || process.platform !== "linux")(

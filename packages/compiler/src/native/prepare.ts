@@ -251,6 +251,7 @@ function validFeatures(value: unknown): value is NativeLinkFeatures {
     "dh",
     "pki",
     "ed25519",
+    "x509",
     "webcrypto",
     "perfLoop",
   ].every((name) => typeof features[name] === "boolean");

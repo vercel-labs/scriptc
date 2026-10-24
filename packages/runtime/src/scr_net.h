@@ -186,6 +186,14 @@ void scr_net_server_close_direct(ScrNetServer *s, ScrClosure *cb /*moves, nullab
  * zero-arg wrapper); reassignment releases the old one. */
 void scr_net_server_set_close_override(ScrNetServer *s, ScrClosure *ov /*moves*/);
 void scr_net_server_on_error(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrChildErrFn fn, bool once);
+/* tls/https servers' 'tlsClientError': registration (fn is one of the
+ * thunks below, by the listener's arity) and the TLS unit's fire. */
+void scr_net_server_on_client_error(ScrNetServer *s, ScrClosure *cb /*moves*/, void *fn, bool once);
+void scr_net_server_fire_client_error(ScrNetServer *s, ScrError *err /*borrowed*/,
+                                      ScrNetSocket *sock /*borrowed*/);
+void scr_net_client_error_thunk0(ScrClosure *cb, ScrError *err, ScrNetSocket *sock);
+void scr_net_client_error_thunk1(ScrClosure *cb, ScrError *err, ScrNetSocket *sock);
+void scr_net_client_error_thunk2(ScrClosure *cb, ScrError *err, ScrNetSocket *sock);
 void scr_net_server_on_close(ScrNetServer *s, ScrClosure *cb /*moves*/, bool once);
 /* server.on('listening', cb): the deferred 'listening' list listen(port,
  * cb) rides — fires once per successful bind; late registrations on an
@@ -362,6 +370,9 @@ typedef struct ScrNetTransportOps {
   /* nullable: runs when the closed socket settles, after its own
    * listeners drop; the transport drops the listeners it holds */
   void (*settle)(void *tctx);
+  /* nullable: the established socket's fd is writable; the transport
+   * writes what it holds back (TLS holds its final handshake flight) */
+  void (*drain)(void *tctx);
 } ScrNetTransportOps;
 void scr_net_sock_set_transport(ScrNetSocket *s, const ScrNetTransportOps *ops, void *tctx);
 /* new tls.TLSSocket(socket) and tls.connect({ socket }): a fresh socket
@@ -406,7 +417,14 @@ void scr_net_sock_replay(ScrNetSocket *s, const char *data, size_t len);
 /* Transport-level failure: msg (borrowed, Node's message shape) defers
  * 'error' + teardown to the sweep; NULL tears down without an 'error'
  * event, Node's default for an unhandled server-side handshake failure. */
+/* The peer ended the stream before the transport's handshake finished:
+ * 'end' fires now, ahead of the failure the transport reports next. */
+void scr_net_sock_transport_ended(ScrNetSocket *s);
 void scr_net_sock_transport_error(ScrNetSocket *s, const char *msg);
+/* An error that leaves the socket open: 'error' fires from the sweep with
+ * `code` (static storage), and the socket ends when the peer closes, as
+ * Node's TLS socket reports a fatal alert after its handshake. */
+void scr_net_sock_transport_report(ScrNetSocket *s, const char *msg, const char *code);
 /* The same with the error's code given (static storage), for messages
  * whose text does not name it. */
 void scr_net_sock_transport_error_code(ScrNetSocket *s, const char *msg, const char *code);

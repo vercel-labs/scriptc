@@ -62,6 +62,7 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     dh: features.dh,
     pki: features.pki,
     ed25519: features.ed25519,
+    x509: features.x509,
     webcrypto: features.webcrypto,
     perfLoop: features.perfLoop,
   };

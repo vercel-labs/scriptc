@@ -22,7 +22,7 @@ import {
 } from "./lib-shared.js";
 import { isDynUndefined } from "../../ir/runtime-features.js";
 import { DYN_KIND } from "./dyn.js";
-import { rawBytes } from "./lib-abi.js";
+import { caBytes } from "./lib-abi.js";
 import { emitInlineAtomicsOp } from "./expr-bytes.js";
 import { regexLiteralCaptures } from "./regex-matchers.js";
 
@@ -595,7 +595,8 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     // The https URL row is the http one with the TLS entry point — same
     // three arguments, same response-callback adapter. The https options
     // row is wider: rejectUnauthorized stays an i1, while its ScrStr or
-    // ScrBytes CA value expands to the runtime's raw pointer + length.
+    // ScrBytes CA value expands to the runtime's raw pointer + length
+    // (caBytes: a null pointer for none).
     const isTls = e.fn.startsWith("https.");
     const isUrl = e.fn.includes("requestUrl");
     const isTlsOptions = isTls && !isUrl;
@@ -629,7 +630,7 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     if (isTlsOptions) {
       callArgs = [
         ...callArgs.slice(0, 8),
-        ...rawBytes(host, args[8]!).map((arg) => `${arg.type} ${arg.name}`),
+        ...caBytes(host, args[8]!).map((arg) => `${arg.type} ${arg.name}`),
       ];
       host.declare(
         `declare ptr @scr_https_request(ptr, double, ptr, ptr, double, ptr, i1 zeroext, i1 zeroext, ptr, ${host.sizeType}, ptr, ptr)`,

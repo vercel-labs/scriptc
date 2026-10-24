@@ -2804,3 +2804,220 @@ bool scr_pki_verify(ScrPkiKey *key, const char *hash, bool pss, int salt, const 
   SpSigKey k = {.key = key, .padding = pss ? 6 : 1, .salt = salt, .p1363 = true};
   return sp_verify_hash(&k, md, digest, mbedtls_md_get_size(info), signature, signature_len);
 }
+
+/* ── X509Certificate members over keys ───────────────────────────────── */
+
+/* The certificate's public key, +1; NULL with the error pending. */
+static SpKey *sp_x509_key(ScrBytes *der) {
+  ScrBytes *view = der;
+  SCR_BYTES_SNAPSHOT(view);
+  const unsigned char *spki;
+  size_t spki_len;
+  if (!sp_cert_spki(view->data, (size_t)scr_bytes_byte_len(view), &spki, &spki_len)) {
+    sp_unsupported_input();
+    return NULL;
+  }
+  return sp_parse(spki, spki_len, false);
+}
+
+/* x509.publicKey: the certificate's public key as a new KeyObject. */
+ScrDyn *scr_crypto_x509_public_key(ScrBytes *der) {
+  SpKey *k = sp_x509_key(der);
+  return k ? sp_key_box(k) : NULL;
+}
+
+/* The pkey argument of verify (a public key) and checkPrivateKey (a
+ * private key), borrowed; NULL with Node's TypeError pending. */
+static SpKey *sp_x509_pkey(const ScrDyn *value, bool private_key) {
+  SpKey *k = sp_key_of(value);
+  size_t len;
+  if (!k && !scr_key_object_bytes(value, &len)) {
+    scr_dyn_arg_type_fail("pkey", "an instance of KeyObject", value);
+    return NULL;
+  }
+  if (!k || k->private_key != private_key) {
+    const char *cls = !k ? "SecretKeyObject" : k->private_key ? "PrivateKeyObject" : "PublicKeyObject";
+    scr_pki_throw_fmt(SCR_ERR_TYPE, "ERR_INVALID_ARG_VALUE", "The argument 'pkey' is invalid. Received %s [KeyObject] {}",
+                      cls);
+    return NULL;
+  }
+  return k;
+}
+
+/* The digest of a signature algorithm OID's last arc (RSA and ECDSA). */
+static mbedtls_md_type_t sp_x509_rsa_md(unsigned char arc) {
+  switch (arc) {
+    case 5: return MBEDTLS_MD_SHA1;
+    case 11: return MBEDTLS_MD_SHA256;
+    case 12: return MBEDTLS_MD_SHA384;
+    case 13: return MBEDTLS_MD_SHA512;
+    case 14: return MBEDTLS_MD_SHA224;
+    default: return MBEDTLS_MD_NONE;
+  }
+}
+
+/* A hash AlgorithmIdentifier inside RSASSA-PSS-params. */
+static mbedtls_md_type_t sp_x509_hash_alg(unsigned char *p, const unsigned char *end) {
+  size_t n;
+  if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0)
+    return MBEDTLS_MD_NONE;
+  mbedtls_asn1_buf oid = {0};
+  oid.tag = MBEDTLS_ASN1_OID;
+  if (mbedtls_asn1_get_tag(&p, end, &oid.len, MBEDTLS_ASN1_OID) != 0) return MBEDTLS_MD_NONE;
+  oid.p = p;
+  mbedtls_md_type_t md;
+  return mbedtls_oid_get_md_alg(&oid, &md) == 0 ? md : MBEDTLS_MD_NONE;
+}
+
+/* x509.verify(publicKey): whether publicKey verifies the certificate's
+ * signature. An algorithm the key cannot verify answers false. */
+bool scr_crypto_x509_verify(ScrBytes *der, ScrDyn *key) {
+  SpKey *k = sp_x509_pkey(key, false);
+  if (!k) return false;
+  ScrBytes *view = der;
+  SCR_BYTES_SNAPSHOT(view);
+  unsigned char *p = view->data;
+  const unsigned char *end = p + (size_t)scr_bytes_byte_len(view);
+  size_t n;
+  if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0)
+    return false;
+  end = p + n;
+  const unsigned char *tbs = p;
+  if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0)
+    return false;
+  p += n;
+  size_t tbs_len = (size_t)(p - tbs);
+  const unsigned char *outer_alg = p;
+  if (mbedtls_asn1_get_tag(&p, end, &n, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0)
+    return false;
+  const unsigned char *alg_end = p + n;
+  /* As in OpenSSL's X509_verify, the TBSCertificate's signature field must
+   * be the same AlgorithmIdentifier as the outer one. */
+  {
+    unsigned char *q = (unsigned char *)tbs;
+    const unsigned char *tbs_end = tbs + tbs_len;
+    size_t len;
+    if (mbedtls_asn1_get_tag(&q, tbs_end, &len, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0)
+      return false;
+    if (q < tbs_end && *q == (MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_ASN1_CONSTRUCTED | 0)) {
+      if (mbedtls_asn1_get_tag(&q, tbs_end, &len, MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_ASN1_CONSTRUCTED | 0) != 0)
+        return false;
+      q += len;
+    }
+    if (mbedtls_asn1_get_tag(&q, tbs_end, &len, MBEDTLS_ASN1_INTEGER) != 0) return false;
+    q += len;
+    const unsigned char *inner_alg = q;
+    if (mbedtls_asn1_get_tag(&q, tbs_end, &len, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0)
+      return false;
+    size_t inner_len = (size_t)(q + len - inner_alg);
+    if (inner_len != (size_t)(alg_end - outer_alg) || memcmp(inner_alg, outer_alg, inner_len) != 0) return false;
+  }
+  size_t oid_len;
+  if (mbedtls_asn1_get_tag(&p, alg_end, &oid_len, MBEDTLS_ASN1_OID) != 0) return false;
+  const unsigned char *oid = p;
+  unsigned char *params = p + oid_len;
+  p = (unsigned char *)alg_end;
+  size_t sig_len;
+  if (mbedtls_asn1_get_tag(&p, end, &sig_len, MBEDTLS_ASN1_BIT_STRING) != 0 || sig_len < 1 || *p != 0)
+    return false;
+  const unsigned char *sig = p + 1;
+  sig_len -= 1;
+  static const unsigned char rsa_prefix[] = {0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01};
+  static const unsigned char ecdsa_prefix[] = {0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04};
+  static const unsigned char ed25519_oid[] = {0x2B, 0x65, 0x70};
+  if (oid_len == sizeof ed25519_oid && memcmp(oid, ed25519_oid, oid_len) == 0) {
+    if (!sp_is_ed(k)) return false;
+    const ScrPkiEd25519 *ed = sp_ed();
+    return ed != NULL && sp_ed_verify(ed, k->ed_pub, tbs, tbs_len, sig, sig_len);
+  }
+  if (sp_is_ed(k)) return false;
+  unsigned char hash[MBEDTLS_MD_MAX_SIZE];
+  if (oid_len == sizeof rsa_prefix + 1 && memcmp(oid, rsa_prefix, sizeof rsa_prefix) == 0) {
+    if (!sp_is_rsa(k)) return false;
+    mbedtls_rsa_context *rsa = mbedtls_pk_rsa(k->pk);
+    if (oid[sizeof rsa_prefix] == 10) { /* RSASSA-PSS with its parameters */
+      mbedtls_md_type_t md = MBEDTLS_MD_SHA1, mgf = MBEDTLS_MD_SHA1;
+      int salt = 20;
+      unsigned char *q = params;
+      size_t plen;
+      if (mbedtls_asn1_get_tag(&q, alg_end, &plen, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) == 0) {
+        const unsigned char *pend = q + plen;
+        while (q < pend) {
+          unsigned char tag = *q;
+          size_t len;
+          if (mbedtls_asn1_get_tag(&q, pend, &len, tag) != 0) return false;
+          unsigned char *field = q;
+          q += len;
+          if (tag == (MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_ASN1_CONSTRUCTED | 0)) {
+            md = sp_x509_hash_alg(field, q);
+          } else if (tag == (MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_ASN1_CONSTRUCTED | 1)) {
+            /* MGF1 with its hash: SEQUENCE { id-mgf1, AlgorithmIdentifier } */
+            size_t mlen, ilen;
+            unsigned char *m = field;
+            if (mbedtls_asn1_get_tag(&m, q, &mlen, MBEDTLS_ASN1_CONSTRUCTED | MBEDTLS_ASN1_SEQUENCE) != 0 ||
+                mbedtls_asn1_get_tag(&m, q, &ilen, MBEDTLS_ASN1_OID) != 0)
+              return false;
+            mgf = sp_x509_hash_alg(m + ilen, q);
+          } else if (tag == (MBEDTLS_ASN1_CONTEXT_SPECIFIC | MBEDTLS_ASN1_CONSTRUCTED | 2)) {
+            if (mbedtls_asn1_get_int(&field, q, &salt) != 0) return false;
+          }
+        }
+      }
+      if (md == MBEDTLS_MD_NONE || mgf == MBEDTLS_MD_NONE || sig_len != mbedtls_rsa_get_len(rsa))
+        return false;
+      const mbedtls_md_info_t *info = mbedtls_md_info_from_type(md);
+      mbedtls_md(info, tbs, tbs_len, hash);
+      return mbedtls_rsa_rsassa_pss_verify_ext(rsa, md, mbedtls_md_get_size(info), hash, mgf, salt,
+                                               sig) == 0;
+    }
+    mbedtls_md_type_t md = sp_x509_rsa_md(oid[sizeof rsa_prefix]);
+    if (md == MBEDTLS_MD_NONE) return false;
+    const mbedtls_md_info_t *info = mbedtls_md_info_from_type(md);
+    mbedtls_md(info, tbs, tbs_len, hash);
+    /* PKCS#1 v1.5, whatever padding the key's last signature used */
+    if (mbedtls_rsa_set_padding(rsa, MBEDTLS_RSA_PKCS_V15, MBEDTLS_MD_NONE) != 0) return false;
+    return mbedtls_pk_verify(&k->pk, md, hash, mbedtls_md_get_size(info), sig, sig_len) == 0;
+  }
+  if (oid_len >= sizeof ecdsa_prefix + 1 && memcmp(oid, ecdsa_prefix, sizeof ecdsa_prefix) == 0) {
+    if (!sp_is_ec(k)) return false;
+    mbedtls_md_type_t md = MBEDTLS_MD_NONE;
+    if (oid_len == 7 && oid[6] == 0x01) md = MBEDTLS_MD_SHA1;
+    else if (oid_len == 8 && oid[6] == 0x03) {
+      static const mbedtls_md_type_t sha2[] = {MBEDTLS_MD_NONE, MBEDTLS_MD_SHA224, MBEDTLS_MD_SHA256,
+                                               MBEDTLS_MD_SHA384, MBEDTLS_MD_SHA512};
+      if (oid[7] >= 1 && oid[7] <= 4) md = sha2[oid[7]];
+    }
+    if (md == MBEDTLS_MD_NONE) return false;
+    const mbedtls_md_info_t *info = mbedtls_md_info_from_type(md);
+    mbedtls_md(info, tbs, tbs_len, hash);
+    return mbedtls_pk_verify(&k->pk, md, hash, mbedtls_md_get_size(info), sig, sig_len) == 0;
+  }
+  return false;
+}
+
+/* x509.checkPrivateKey(privateKey): whether privateKey is the private half
+ * of the certificate's public key. */
+bool scr_crypto_x509_check_private_key(ScrBytes *der, ScrDyn *key) {
+  SpKey *k = sp_x509_pkey(key, true);
+  if (!k) return false;
+  SpKey *cert = sp_x509_key(der);
+  if (!cert) return false;
+  bool same = false;
+  if (sp_is_ed(k) || sp_is_ed(cert)) {
+    same = sp_is_ed(k) && sp_is_ed(cert) && memcmp(k->ed_pub, cert->ed_pub, 32) == 0;
+  } else if (mbedtls_pk_get_type(&k->pk) == mbedtls_pk_get_type(&cert->pk)) {
+    SpKey *pub = sp_public_of(k);
+    if (pub) {
+      unsigned char *a = malloc(SP_DER_MAX), *b = malloc(SP_DER_MAX);
+      if (!a || !b) scr_trap("scriptc: out of memory\n");
+      int na = sp_write_spki_der(pub, a, SP_DER_MAX);
+      int nb = sp_write_spki_der(cert, b, SP_DER_MAX);
+      same = na > 0 && na == nb && memcmp(a + SP_DER_MAX - na, b + SP_DER_MAX - nb, (size_t)na) == 0;
+      free(a);
+      free(b);
+      sp_key_release(pub);
+    }
+  }
+  sp_key_release(cert);
+  return same;
+}

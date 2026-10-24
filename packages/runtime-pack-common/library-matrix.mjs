@@ -13,6 +13,7 @@ export function withLibraryRuntimeFlavors(matrix) {
     "scr_events_emitter.c",
     "scr_dyn_handle.c",
     "scr_zlib.c",
+    "scr_x509.c",
     "scr_copying.c",
     "scr_dyn_invoke.c",
     "scr_bytes_dyn.c",

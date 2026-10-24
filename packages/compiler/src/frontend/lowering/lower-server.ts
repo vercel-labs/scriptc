@@ -1,4 +1,5 @@
 import { keyedHelperName } from "./stable-names.js";
+import { lowerTlsCertificateCall } from "./builtins/x509.js";
 import {
   dynUndefinedExpr,
   nodeThrowExpr,
@@ -1765,12 +1766,82 @@ function lowerNetServerMethodCall(
     );
     return { kind: "libCall", fn: "net.serverCloseCb", args: [receiver, cb], type: VOID, loc };
   }
+  if (name === "addContext" || name === "setSecureContext") {
+    // tls.Server's SNI table and default context (scr_tls.c): addContext
+    // takes a SecureContext or createSecureContext's options; the runtime
+    // throws Node's errors and the fence on a non-TLS server.
+    requireStatementPosition(lowerer, call, `server.${name}(...)`);
+    const want = name === "addContext" ? 2 : 1;
+    if (args.length !== want || args.some(ts.isSpreadElement)) {
+      lowerer.noLowering(
+        `${name} with ${args.length} arguments`,
+        call,
+        name === "addContext"
+          ? "the form is addContext(servername, context)"
+          : "the form is setSecureContext(options)",
+      );
+    }
+    const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
+    if (name === "setSecureContext") {
+      const options = lowerer.lowerExprExpecting(args[0]!, DYN);
+      return {
+        kind: "libCall",
+        fn: "tls.serverSetSecureContext",
+        args: [receiver, options],
+        type: VOID,
+        loc,
+      };
+    }
+    const servername = lowerer.lowerExprExpecting(args[0]!, DYN);
+    const context = lowerer.lowerExpr(args[1]!);
+    if (context.type.kind === "secureCtx") {
+      return {
+        kind: "libCall",
+        fn: "tls.serverAddContextCtx",
+        args: [receiver, servername, context],
+        type: VOID,
+        loc,
+      };
+    }
+    return {
+      kind: "libCall",
+      fn: "tls.serverAddContext",
+      args: [receiver, servername, lowerer.coerceInto(args[1]!, context, DYN)],
+      type: VOID,
+      loc,
+    };
+  }
   if ((name === "on" || name === "once" || name === "addListener") && args.length === 2) {
     requireStatementPosition(lowerer, call, `server.${name}(...)`);
     const once = boolLit(name === "once", loc);
     const evT = lowerer.typeOf(args[0]!);
     const event = evT.isStringLiteralType() ? evT.value : null;
     const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
+    if (event === "tlsClientError") {
+      // A failed handshake on a tls or https server: (err, tlsSocket).
+      const listener = args[1]!;
+      const { cb } = lowerCallbackArgShared(
+        lowerer,
+        listener,
+        "tlsClientError listeners",
+        2,
+        (p, i) =>
+          i === 0 ? p.kind === "object" && p.className === "%Error" : p.kind === "netSocket",
+        "use (err, tlsSocket), (err) or ()",
+        {
+          dynTuple: [ERROR_T, NETSOCKET_T],
+          checkAllParams: true,
+          adapt: (c) => voidizedCallback(lowerer, c, locOf(listener)),
+        },
+      );
+      return {
+        kind: "libCall",
+        fn: "tls.serverOnClientError",
+        args: [receiver, cb, once],
+        type: VOID,
+        loc,
+      };
+    }
     if (event === "connection" || event === "secureConnection") {
       // 'secureConnection' rides the same list: a TLS server's
       // 'connection' listeners are DEFERRED to handshake completion
@@ -2631,6 +2702,12 @@ function lowerNetSocketMethodCall(
     return declared === null || declared.kind === "dyn"
       ? value
       : lowerer.coerceInto(call, value, declared);
+  }
+  {
+    const certificate = lowerTlsCertificateCall(lowerer, call, name, () =>
+      coerceToHandle(lowerer, access.expression, NETSOCKET_T),
+    );
+    if (certificate) return certificate;
   }
   if (name === "isSessionReused" && args.length === 0) {
     // TLSSocket.isSessionReused(): the client never offers a cached
@@ -4941,18 +5018,11 @@ function lowerTlsServerOptions(
     }
     if (k !== "cert" && k !== "key") {
       const init = ts.isPropertyAssignment(prop) ? prop.initializer : null;
-      if (
-        (k === "ca" || k === "rejectUnauthorized") &&
-        (init === null || sideEffectFreeOptionValue(init))
-      ) {
-        // Both are inert without requestCert (which fences): the server's
-        // `ca` verifies CLIENT certificates and rejectUnauthorized only
-        // gates that verification — Node-observably droppable, matching
+      if (k === "rejectUnauthorized" && (init === null || sideEffectFreeOptionValue(init))) {
+        // Without requestCert (a literal with requestCert or ca rides the
+        // runtime walk) rejectUnauthorized gates nothing — droppable, like
         // the runtime walk's split (effectful values keep the fence).
         continue;
-      }
-      if (k === "requestCert" && (init === null || init.kind === ts.SyntaxKind.FalseKeyword)) {
-        continue; // Node's false default, spelled out
       }
       fenceOrDropOptionKey(
         lowerer,
@@ -4964,8 +5034,6 @@ function lowerTlsServerOptions(
         {
           SNICallback:
             "SNICallback lowers on tls.createServer and http2.createSecureServer({ allowHTTP1: true, ... }) — serve one cert/key pair here",
-          requestCert:
-            "client-certificate handshakes are not modeled (SEMANTICS.md divergence 55) — requestCert: false is the lowered value",
         },
       );
       continue; // an undocumented key, dropped like Node drops it
@@ -5063,12 +5131,19 @@ function tlsLiteralNeedsRuntimeWalk(
   );
 }
 
+/** The client-certificate options (requestCert, and ca, which also
+ * completes the server's own chain): the runtime walk implements them for
+ * tls.createServer and https.createServer, and the literal cert/key
+ * lowering does not. */
+const TLS_CLIENT_AUTH_OPTIONS: ReadonlySet<string> = new Set(["requestCert", "ca"]);
+
 /** tls.createServer options the runtime walk implements and the literal
  * cert/key lowering does not. */
 const TLS_SERVER_RUNTIME_OPTIONS: ReadonlySet<string> = new Set([
   "ALPNProtocols",
   "minVersion",
   "maxVersion",
+  ...TLS_CLIENT_AUTH_OPTIONS,
 ]);
 
 function lowerTlsServerOptionsOrDyn(
@@ -5092,7 +5167,7 @@ function lowerTlsServerOptionsOrDyn(
       lowerer.noLowering(
         `${what} with SNICallback and options the runtime walk reads`,
         sniOption,
-        "SNICallback lowers with cert and key; ALPNProtocols, minVersion, maxVersion and the validated options are not combined with it yet",
+        "SNICallback lowers with cert and key; ALPNProtocols, minVersion, maxVersion, requestCert, ca and the validated options are not combined with it yet",
       );
     }
   }
@@ -5124,14 +5199,14 @@ function lowerTlsServerOptionsOrDyn(
  * connect(options[, cb]) and connect(port[, host][, options][, cb]) with
  * a RUNTIME options record (the checked-dynamic JS lane's shape — a dyn
  * value, or a record that converts): the runtime walk implements
- * port/host/socket/rejectUnauthorized/ca/servername/ALPNProtocols/minVersion/maxVersion/timeout and throws the catchable
+ * port/host/socket/rejectUnauthorized/ca/cert/key/servername/ALPNProtocols/minVersion/maxVersion/timeout and throws the catchable
  * fence for other documented members (the divergence-66 stance). The
  * callback (and 'secureConnect'/'connect' listeners) fires
  * post-handshake — Node's secureConnect timing. */
 function lowerTlsConnectCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
   const args = expr.arguments.nodes;
   const FORMS_HINT =
-    "the supported forms are connect(options[, cb]) and connect(port[, host][, options][, cb]) — options implement port/host/socket/rejectUnauthorized/ca/servername/ALPNProtocols/minVersion/maxVersion/timeout";
+    "the supported forms are connect(options[, cb]) and connect(port[, host][, options][, cb]) — options implement port/host/socket/rejectUnauthorized/ca/cert/key/servername/ALPNProtocols/minVersion/maxVersion/timeout";
   if (args.length < 1 || args.length > 4 || args.some(ts.isSpreadElement)) {
     lowerer.noLowering(`tls.connect with ${args.length} arguments`, expr, FORMS_HINT);
   }
@@ -5368,7 +5443,13 @@ function lowerTlsModuleCall(
         "the supported form is createSecureContext({ cert, key })",
       );
     }
-    const opts = lowerTlsServerOptionsOrDyn(lowerer, args[0]!, "tls.createSecureContext");
+    const opts = lowerTlsServerOptionsOrDyn(
+      lowerer,
+      args[0]!,
+      "tls.createSecureContext",
+      false,
+      TLS_CLIENT_AUTH_OPTIONS,
+    );
     if (opts.dyn !== undefined) {
       return {
         kind: "libCall",
@@ -5625,7 +5706,13 @@ function lowerHttpsModuleCall(
         "the supported form is createServer({ cert, key }, (req, res) => ...)",
       );
     }
-    const opts = lowerTlsServerOptionsOrDyn(lowerer, args[0]!, "https.createServer", true);
+    const opts = lowerTlsServerOptionsOrDyn(
+      lowerer,
+      args[0]!,
+      "https.createServer",
+      true,
+      TLS_CLIENT_AUTH_OPTIONS,
+    );
     if (args.length === 1) {
       // The handler-less form: 'request' listeners arrive later via
       // server.on("request", ...) — the createSecureServer emission's
@@ -6281,7 +6368,9 @@ function runtimeRequestOptions(
       return (
         (ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop)) &&
         (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)) &&
-        prop.name.text === "socketPath"
+        (prop.name.text === "socketPath" ||
+          // a client certificate: the runtime request walk reads cert and key
+          (secureish && (prop.name.text === "cert" || prop.name.text === "key")))
       );
     });
     if (!needsRuntime) return null;

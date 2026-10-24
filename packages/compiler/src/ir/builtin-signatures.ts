@@ -1228,6 +1228,38 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "crypto.x509ValidFromStr": { argTypes: [STRING], result: STRING },
   "crypto.x509ValidTo": { argTypes: [BYTES_U8], result: STRING },
   "crypto.x509ValidToStr": { argTypes: [STRING], result: STRING },
+  /** The certificate's DER as a fresh Buffer (the raw field), decoded
+   * once from the constructor's input; the same PEM error (may-throw). */
+  "crypto.x509Raw": { argTypes: [BYTES_U8], result: BYTES_U8 },
+  "crypto.x509RawDer": { argTypes: [BYTES_U8], result: BYTES_U8 },
+  "crypto.x509RawStr": { argTypes: [STRING], result: BYTES_U8 },
+  /** The remaining X509Certificate fields over that DER, in Node's
+   * renderings (scr_lib.c). subjectAltName, infoAccess and
+   * signatureAlgorithm answer "" where Node answers undefined. Borrowed;
+   * never throw. */
+  "crypto.x509Subject": { argTypes: [BYTES_U8], result: STRING },
+  "crypto.x509Issuer": { argTypes: [BYTES_U8], result: STRING },
+  "crypto.x509SubjectAltName": { argTypes: [BYTES_U8], result: STRING },
+  "crypto.x509InfoAccess": { argTypes: [BYTES_U8], result: STRING },
+  "crypto.x509SerialNumber": { argTypes: [BYTES_U8], result: STRING },
+  "crypto.x509Fingerprint256": { argTypes: [BYTES_U8], result: STRING },
+  "crypto.x509Fingerprint512": { argTypes: [BYTES_U8], result: STRING },
+  "crypto.x509Ca": { argTypes: [BYTES_U8], result: BOOL },
+  "crypto.x509SignatureAlgorithm": { argTypes: [BYTES_U8], result: STRING },
+  "crypto.x509SignatureAlgorithmOid": { argTypes: [BYTES_U8], result: STRING },
+  /** X509Certificate methods over its raw DER. checkHost/checkEmail/checkIP
+   * answer the matching name or "" (undefined), checkIssued compares two
+   * certificates, x509Pem is toString's PEM (scr_x509.c); publicKey,
+   * verify and checkPrivateKey read keys (scr_pki.c). */
+  "crypto.x509CheckHost": { argTypes: [BYTES_U8, DYN, DYN], result: STRING },
+  "crypto.x509CheckEmail": { argTypes: [BYTES_U8, DYN, DYN], result: STRING },
+  "crypto.x509CheckIP": { argTypes: [BYTES_U8, DYN, DYN], result: STRING },
+  "crypto.x509CheckIssued": { argTypes: [BYTES_U8, BYTES_U8], result: BOOL },
+  "crypto.x509LegacyObject": { argTypes: [BYTES_U8], result: DYN },
+  "crypto.x509Pem": { argTypes: [BYTES_U8], result: STRING },
+  "crypto.x509PublicKey": { argTypes: [BYTES_U8], result: DYN },
+  "crypto.x509Verify": { argTypes: [BYTES_U8, DYN], result: BOOL },
+  "crypto.x509CheckPrivateKey": { argTypes: [BYTES_U8, DYN], result: BOOL },
   "fs.closeSync": { argTypes: [F64], result: VOID },
   "stats.isFile": { argTypes: [STATS_T], result: BOOL },
   "stats.isDirectory": { argTypes: [STATS_T], result: BOOL },
@@ -2230,6 +2262,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
   "tls.sockGetProtocol": { argTypes: [NETSOCKET_T], result: DYN },
   "tls.sockGetCipher": { argTypes: [NETSOCKET_T], result: DYN },
   "tls.sockAlpnProtocol": { argTypes: [NETSOCKET_T], result: DYN },
+  /** getPeerCertificate(detailed) and getCertificate() (the legacy object,
+   * {} or null; scr_tls_x509.c), and the DER behind getPeerX509Certificate()
+   * and getX509Certificate() (a Buffer, empty without a certificate). */
+  "tls.sockGetPeerCertificate": { argTypes: [NETSOCKET_T, DYN], result: DYN },
+  "tls.sockGetCertificate": { argTypes: [NETSOCKET_T], result: DYN },
+  "tls.sockPeerCertDer": { argTypes: [NETSOCKET_T], result: BYTES_U8 },
+  "tls.sockOwnCertDer": { argTypes: [NETSOCKET_T], result: BYTES_U8 },
   "tls.sockAuthError": { argTypes: [NETSOCKET_T], result: VOID },
   "tls.sockOnSecureConnect": {
     argTypes: [NETSOCKET_T, { kind: "func", params: [], ret: VOID }, BOOL],
@@ -2261,6 +2300,13 @@ export const LIB_FN_SIGS = defineLibFnSignatures({
    * walk — a validated { cert, key } bag builds the real context.
    * May-throw. */
   "tls.createSecureContextDyn": { argTypes: [DYN], result: SECURECTX_T },
+  /** server.addContext(servername, options | SecureContext),
+   * server.setSecureContext(options) and the 'tlsClientError' listener of
+   * a tls or https server (scr_tls.c). */
+  "tls.serverAddContext": { argTypes: [NETSERVER_T, DYN, DYN], result: VOID },
+  "tls.serverAddContextCtx": { argTypes: [NETSERVER_T, DYN, SECURECTX_T], result: VOID },
+  "tls.serverSetSecureContext": { argTypes: [NETSERVER_T, DYN], result: VOID },
+  "tls.serverOnClientError": { argTypes: [NETSERVER_T, null, BOOL], result: VOID },
   /** tls.getCACertificates(type): validateString + the documented name
    * set, then the trailing compiler-rendered fence — ALWAYS THROWS (the
    * error.nodeThrow polymorphic-result carve-out). May-throw seed. */

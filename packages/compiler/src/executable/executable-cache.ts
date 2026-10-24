@@ -104,6 +104,7 @@ export interface EarlyExecutableNativeFeatures {
   dh: boolean;
   pki: boolean;
   ed25519: boolean;
+  x509: boolean;
   perfLoop: boolean;
   tlsCa: boolean;
   webcrypto: boolean;
@@ -251,6 +252,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "dh",
   "pki",
   "ed25519",
+  "x509",
   "webcrypto",
   "perfLoop",
 ] as const satisfies readonly (keyof EarlyExecutableNativeFeatures)[];

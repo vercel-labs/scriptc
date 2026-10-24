@@ -59,6 +59,7 @@ import {
   BYTES_ELEMENT_SIZE,
 } from "../../../ir/ir.js";
 import { lowerNavigatorMember } from "../builtins/navigator.js";
+import { lowerX509PublicKey } from "../builtins/x509.js";
 import { NODE_COMPAT_VERSION } from "../builtins/process.js";
 import {
   inlineNamespaceRequireOf,
@@ -347,6 +348,11 @@ export function lowerPropertyAccessExpr(
   {
     const reading = lowerHistogramProperty(lowerer, expr);
     if (reading) return reading;
+  }
+  // An X509Certificate's publicKey KeyObject.
+  {
+    const publicKey = lowerX509PublicKey(lowerer, expr);
+    if (publicKey) return publicKey;
   }
   // `.length` of a forwarded fixed tuple (a typed `arguments`, a tuple
   // rest parameter, an alias of either): the signature's arity.

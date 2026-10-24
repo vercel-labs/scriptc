@@ -73,7 +73,7 @@ import { CacheInputsChangedError } from "./session.js";
  * async_free refusal already guarantees nothing references them — and
  * scr_library.c (sink, arena, reset registry, library funnel) joins. The gated
  * units a library may reach are the pure-data ones (regex + the vendored matcher, assert,
- * inspect, symbol, searchParams, emitter+dyn_handle, zlib); every
+ * inspect, symbol, searchParams, emitter+dyn_handle, zlib, x509); every
  * loop-hooked or ambient unit was refused at SC4005 before emission.
  * External-symbol contract: undefined references only to the target's C/math
  * runtime and system APIs. Windows embedders additionally link advapi32,
@@ -115,6 +115,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     ...(opts.dynInvoke && opts.dynBuffer ? ["scr_bytes_dyn.c"] : []),
     ...(opts.dynTier === true ? ["scr_js_value.c", "scr_js_object.c"] : []),
     ...(opts.zlib ? ["scr_zlib.c"] : []),
+    ...(opts.x509 ? ["scr_x509.c"] : []),
     ...(opts.copying ? ["scr_copying.c"] : []),
   ];
   const cflags = [

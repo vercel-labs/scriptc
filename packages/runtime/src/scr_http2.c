@@ -2617,11 +2617,11 @@ static void scr_h2_on_established(void *ctx) {
  * TLS client transport with ALPN ["h2"] (scr_tls.c — linked whenever
  * this unit is): the same preface/SETTINGS buffer through the handshake
  * and everything after establishment is protocol-identical. `ca`
- * replaces the client trust anchors (len 0 = none) and
+ * replaces the client trust anchors (NULL = none) and
  * reject_unauthorized false disables the verify gate — the local-CA
  * self-connect shapes. Throws catchably on unparsable input. */
 ScrH2Session *scr_http2_connect(ScrStr *url /*borrowed*/, bool reject_unauthorized,
-                                 const char *ca /*borrowed, len 0 = none*/, size_t ca_len,
+                                 const char *ca /*borrowed, NULL = none*/, size_t ca_len,
                                  ScrClosure *cb /*moves, nullable*/, ScrH2ConnectFn fn) {
   const char *p = url->data;
   const char *sep = strstr(p, "://");

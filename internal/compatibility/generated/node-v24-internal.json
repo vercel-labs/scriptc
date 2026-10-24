@@ -19394,6 +19394,8 @@
         "tests": [
           "tests/corpus/1358-crypto-random.ts",
           "tests/corpus/1534-crypto-hash-chain.ts",
+          "tests/corpus/1568-x509-fingerprint.ts",
+          "tests/corpus/1572-x509-validity-date-gettime.ts",
           "tests/corpus/2556-crypto-introspection.ts",
           "tests/corpus/2890-crypto-static-utility.ts",
           "tests/corpus/5250-cipher-aes-gcm.ts",
@@ -19436,6 +19438,7 @@
           "tests/corpus/6709-dh-generate.ts",
           "tests/corpus/6710-dh-encodings.cjs",
           "tests/corpus/6711-dh-handles.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts",
           "tests/corpus/7055-cipher-streams.ts",
           "tests/corpus/7056-cipher-stream-errors.ts",
           "tests/corpus/7057-cipher-streams.mjs",
@@ -19443,6 +19446,10 @@
           "tests/corpus/7082-crypto-key-objects.ts",
           "tests/corpus/7083-crypto-sign-verify.ts",
           "tests/corpus/7084-crypto-key-pairs.cjs",
+          "tests/corpus/7090-x509-check-names.ts",
+          "tests/corpus/7091-x509-certificate-keys.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/7093-x509-methods-js.mjs",
           "tests/corpus/7122-webcrypto-node-crypto.ts",
           "tests/corpus/7123-webcrypto-node-crypto.cjs",
           "tests/corpus/7150-cipher-legacy-modes.ts",
@@ -19461,6 +19468,7 @@
           "tests/fixtures/node-types/dh.ts",
           "tests/fixtures/node-types/ecdh.ts",
           "tests/fixtures/node-types/keys.ts",
+          "tests/fixtures/node-types/x509-methods.ts",
           "tests/harness/npm-static.test.ts"
         ]
       },
@@ -23784,8 +23792,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:X509Certificate",
+        "tests": [
+          "tests/corpus/1568-x509-fingerprint.ts",
+          "tests/corpus/1572-x509-validity-date-gettime.ts",
+          "tests/corpus/6936-x509-certificate-fields.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -23807,8 +23820,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:x509.checkEmail",
+        "tests": [
+          "tests/corpus/7090-x509-check-names.ts",
+          "tests/corpus/7091-x509-certificate-keys.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/7093-x509-methods-js.mjs",
+          "tests/fixtures/node-types/x509-methods.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -23830,8 +23850,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:x509.checkHost",
+        "tests": [
+          "tests/corpus/7090-x509-check-names.ts",
+          "tests/corpus/7091-x509-certificate-keys.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/7093-x509-methods-js.mjs",
+          "tests/fixtures/node-types/x509-methods.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -23853,8 +23880,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:x509.checkIP",
+        "tests": [
+          "tests/corpus/7090-x509-check-names.ts",
+          "tests/corpus/7091-x509-certificate-keys.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/7093-x509-methods-js.mjs",
+          "tests/fixtures/node-types/x509-methods.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -23876,8 +23910,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:x509.checkIssued",
+        "tests": [
+          "tests/corpus/7090-x509-check-names.ts",
+          "tests/corpus/7091-x509-certificate-keys.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/7093-x509-methods-js.mjs",
+          "tests/fixtures/node-types/x509-methods.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -23899,8 +23940,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:x509.checkPrivateKey",
+        "tests": [
+          "tests/corpus/7090-x509-check-names.ts",
+          "tests/corpus/7091-x509-certificate-keys.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/7093-x509-methods-js.mjs",
+          "tests/fixtures/node-types/x509-methods.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -23922,8 +23970,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:x509.toJSON",
+        "tests": [
+          "tests/corpus/7090-x509-check-names.ts",
+          "tests/corpus/7091-x509-certificate-keys.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/7093-x509-methods-js.mjs",
+          "tests/fixtures/node-types/x509-methods.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -23945,8 +24000,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:x509.toLegacyObject",
+        "tests": [
+          "tests/corpus/7090-x509-check-names.ts",
+          "tests/corpus/7091-x509-certificate-keys.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/7093-x509-methods-js.mjs",
+          "tests/fixtures/node-types/x509-methods.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -23968,8 +24030,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:x509.toString",
+        "tests": [
+          "tests/corpus/7090-x509-check-names.ts",
+          "tests/corpus/7091-x509-certificate-keys.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/7093-x509-methods-js.mjs",
+          "tests/fixtures/node-types/x509-methods.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -23991,8 +24060,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-dedicated:x509.verify",
+        "tests": [
+          "tests/corpus/7090-x509-check-names.ts",
+          "tests/corpus/7091-x509-certificate-keys.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/7093-x509-methods-js.mjs",
+          "tests/fixtures/node-types/x509-methods.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -24198,8 +24274,15 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:crypto"
+        "status": "partial",
+        "evidence": "compiler-feature:crypto.publicKey",
+        "tests": [
+          "tests/corpus/7090-x509-check-names.ts",
+          "tests/corpus/7091-x509-certificate-keys.ts",
+          "tests/corpus/7092-x509-legacy-object.ts",
+          "tests/corpus/7093-x509-methods-js.mjs",
+          "tests/fixtures/node-types/x509-methods.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },
@@ -32679,6 +32762,7 @@
         "tests": [
           "tests/corpus/6702-ecdh-errors.js",
           "tests/corpus/6708-dh-errors.js",
+          "tests/corpus/7440-tls-server-add-context.ts",
           "tests/corpus/7714-zlib-brotli-compress.cjs",
           "tests/corpus/caught-system-error-fields.ts",
           "tests/corpus/error-stack-frames.ts",
@@ -39012,8 +39096,11 @@
       "anchor": "err_tls_required_server_name",
       "nodeStability": null,
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:errors"
+        "status": "partial",
+        "evidence": "compiler-dedicated:ERR_TLS_REQUIRED_SERVER_NAME",
+        "tests": [
+          "tests/corpus/7440-tls-server-add-context.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -95877,6 +95964,17 @@
           "tests/corpus/6722-tls-min-max-version.ts",
           "tests/corpus/7087-tls-socket-wrap.ts",
           "tests/corpus/7088-tls-socket-connect-tunnel.ts",
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/corpus/7097-tls-client-certificates.ts",
+          "tests/corpus/7098-tls-client-certificates-paths.ts",
+          "tests/corpus/7099-tls-client-certificates.mjs",
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/fixtures/node-types/tls-client-certificates.ts",
+          "tests/fixtures/node-types/tls-peer-certificates.ts",
+          "tests/fixtures/node-types/tls-server-contexts.ts",
           "tests/fixtures/node-types/tls-socket-wrap.ts"
         ]
       },
@@ -96245,8 +96343,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-dedicated:server.addContext",
+        "tests": [
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/fixtures/node-types/tls-server-contexts.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -96372,8 +96476,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-dedicated:server.setSecureContext",
+        "tests": [
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/fixtures/node-types/tls-server-contexts.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -96556,8 +96666,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-dedicated:'tlsClientError'",
+        "tests": [
+          "tests/corpus/7440-tls-server-add-context.ts",
+          "tests/corpus/7441-tls-client-error.ts",
+          "tests/corpus/7442-tls-server-contexts.mjs",
+          "tests/fixtures/node-types/tls-server-contexts.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -96699,8 +96815,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-dedicated:tlsSocket.getCertificate",
+        "tests": [
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/fixtures/node-types/tls-peer-certificates.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -96791,8 +96912,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-dedicated:tlsSocket.getPeerCertificate",
+        "tests": [
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/fixtures/node-types/tls-peer-certificates.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -96860,8 +96986,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-dedicated:tlsSocket.getPeerX509Certificate",
+        "tests": [
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/fixtures/node-types/tls-peer-certificates.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -96978,8 +97109,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-dedicated:tlsSocket.getX509Certificate",
+        "tests": [
+          "tests/corpus/7095-tls-peer-certificates.ts",
+          "tests/corpus/7096-tls-peer-certificates.mjs",
+          "tests/fixtures/node-types/tls-peer-certificates.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -97119,8 +97255,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-dedicated:tlsSocket.authorizationError",
+        "tests": [
+          "tests/corpus/7097-tls-client-certificates.ts",
+          "tests/corpus/7098-tls-client-certificates-paths.ts",
+          "tests/corpus/7099-tls-client-certificates.mjs",
+          "tests/fixtures/node-types/tls-client-certificates.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -97142,8 +97284,14 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:tls"
+        "status": "partial",
+        "evidence": "compiler-feature:tls.authorized",
+        "tests": [
+          "tests/corpus/7097-tls-client-certificates.ts",
+          "tests/corpus/7098-tls-client-certificates-paths.ts",
+          "tests/corpus/7099-tls-client-certificates.mjs",
+          "tests/fixtures/node-types/tls-client-certificates.ts"
+        ]
       },
       "anchorSource": "ancestor"
     },

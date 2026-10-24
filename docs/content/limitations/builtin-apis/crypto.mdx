@@ -41,6 +41,10 @@
   They support `type`, `asymmetricKeyType`, `asymmetricKeyDetails`, `export()`, `equals()`, and `instanceof KeyObject`.
   `crypto.sign`, `crypto.verify`, `createSign`, and `createVerify` support RSA PKCS#1 v1.5 and PSS padding and ECDSA with DER and IEEE P1363 encodings over SHA-1 and SHA-2 digests, and Ed25519 through `crypto.sign` and `crypto.verify` with a `null` or `undefined` algorithm.
   Ed25519 signing, verification, and private keys link when a string literal in the program names `ed25519` (in any case); without one they throw a coded SC2020 error, while Ed25519 public keys still import and export.
+  X509Certificate supports `publicKey`, `verify()`, `checkIssued()`, `checkPrivateKey()`, `checkHost()`, `checkEmail()`, `checkIP()`, `toLegacyObject()`, `toString()`, and `toJSON()`, and `String()`, template literals, and `+` give its PEM text as `toString()` does.
+  `publicKey`, `verify()`, and `checkPrivateKey()` are refused in wasm32-wasi builds, and an Ed25519 certificate's `verify()` needs the `ed25519` literal like the other Ed25519 operations.
+  Own-key walks over a certificate (`Object.keys()`, `Object.entries()`, spread, `for...in`, and `hasOwnProperty`) are refused, since Node keeps its fields as prototype getters.
+  `JSON.stringify()` and `console.log()` of a certificate, a certificate stored in an `unknown` or `any` slot, and its methods on a union-typed value are also refused.
   Sign and Verify values accumulate `update()` data and are not writable streams.
   Encrypted private keys (`passphrase`, `cipher`), the other key types (`rsa-pss`, `dsa`, `ed448`, `x448`, and the rest), and wasm32-wasi builds throw a coded SC2020 error or are refused.
   Comparing keys of different types with `equals()` answers false; Node also leaves an OpenSSL error queued, which a later key operation can report.

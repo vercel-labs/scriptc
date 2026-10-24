@@ -28,6 +28,7 @@ import type { IndexMergeContributor } from "../containers/indexed-objects.js";
 import type { KeyOrderSegment } from "../key-order-witness.js";
 import {
   PERF_ENTRY_MARKER,
+  X509_PUBLIC_KEY_FIELD,
   isGenericCallableMemberType,
   jsOpenObjectType,
 } from "../../type-mapper.js";
@@ -499,6 +500,13 @@ function fenceAccessorSpreadSource(
       "SC1090",
       prop,
       "object spread over performance entries (Node keeps their fields as prototype getters, so own-key walks see none; read the fields or call toJSON())",
+    );
+  }
+  if (srcShape && srcShape.fields.some((f) => f.name === X509_PUBLIC_KEY_FIELD)) {
+    lowerer.unsupported(
+      "SC1090",
+      prop,
+      "object spread over X509Certificate values (Node keeps their fields as prototype getters, so own-key walks see none; read the fields)",
     );
   }
   if (srcShape && shapeHasAccessorSlots(srcShape)) {

@@ -254,6 +254,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "tls.connectCb",
   "tls.wrapSocket",
   "tls.wrapSocketCtx",
+  // addContext's ERR_TLS_REQUIRED_SERVER_NAME and the context's errors,
+  // setSecureContext's validateObject.
+  "tls.serverAddContext",
+  "tls.serverAddContextCtx",
+  "tls.serverSetSecureContext",
   // The CA-store surface: an unknown getCACertificates type throws
   // Node's ERR_INVALID_ARG_VALUE TypeError; setDefaultCACertificates
   // throws Node's ERR_CRYPTO_OPERATION_FAILED on a certificate-free
@@ -1048,6 +1053,16 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.diffieHellman",
   "crypto.createSign",
   "crypto.createVerify",
+  "crypto.x509Raw",
+  "crypto.x509RawDer",
+  "crypto.x509RawStr",
+  // Node's argument errors (name, options, pkey) and the key parse.
+  "crypto.x509CheckHost",
+  "crypto.x509CheckEmail",
+  "crypto.x509CheckIP",
+  "crypto.x509PublicKey",
+  "crypto.x509Verify",
+  "crypto.x509CheckPrivateKey",
 ]);
 
 /** libCall members that always throw. Their result type is the replaced

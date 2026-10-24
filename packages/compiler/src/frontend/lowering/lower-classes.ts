@@ -113,6 +113,7 @@ import { PoisonError, dynFallbackType, jsFuncNameOf, newFnCtx, own } from "./low
 import { isAssertClassNew } from "./assert-instances.js";
 import { isCjsRequireGlobal } from "./lower-node-module.js";
 import { lowerArrayConstructor } from "./containers/array-construction.js";
+import { initializedCollectionType } from "./js-collection-types.js";
 import { lowerMapSeedNew, lowerSetSeedNew } from "./containers/collection-methods.js";
 import { lowerObjectConstructor } from "./containers/indexed-objects.js";
 import { knownBufEncoding, lowerBufferConstruct } from "./containers/bytes.js";
@@ -10568,7 +10569,11 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       // expression). The CONTEXTUAL type carries the annotation — adopt
       // it when it is a supported map. TS type arguments keep winning:
       // their expression type already maps.
-      if (mapped?.kind !== "map" || contextualSeed) {
+      const inferred = initializedCollectionType(lowerer, expr);
+      if (inferred) {
+        tsType = inferred;
+        mapped = lowerer.mapTypeOf(inferred);
+      } else if (mapped?.kind !== "map" || contextualSeed) {
         const ctx = lowerer.checker.getContextualType(expr);
         const ctxMapped = ctx ? lowerer.mapTypeOf(ctx) : null;
         if (ctx && ctxMapped?.kind === "map") {
@@ -10708,7 +10713,8 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     // `new Set<T>()`: construct + bulk add from supported values,
     // including live collection cursors. Duplicates collapse in insertion order.
     if (ts.isIdentifier(identifier) && lowerer.isStdlibGlobal(identifier, "Set")) {
-      const tsType = lowerer.typeOf(expr);
+      const inferred = initializedCollectionType(lowerer, expr);
+      const tsType = inferred ?? lowerer.typeOf(expr);
       let mapped = lowerer.mapTypeOf(tsType);
       const fieldType = assignedThisFieldType(lowerer, expr);
       if (mapped?.kind !== "set" && fieldType?.kind === "set") mapped = fieldType;

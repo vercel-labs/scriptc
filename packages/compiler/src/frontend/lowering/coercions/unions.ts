@@ -217,6 +217,11 @@ export function strandedCoercionTrap(
         lowerer.widthLiftPlan(src, arm) !== null,
     );
     if (candidates.length !== 0) return null;
+    // An array also fits an object arm that only an array-like value
+    // satisfies (`{ length: number; [i: number]: number }`): the flow is
+    // honest, and the missing array-to-record conversion stays a fence.
+    if (src.kind === "array" && def.arms.some((arm) => arrayLikeRecordArm(lowerer, arm)))
+      return null;
     what = `a '${lowerer.fmt(src)}' value`;
   } else {
     return null;
@@ -598,4 +603,16 @@ export function deferredReadHelper(
   if (!fn) throw new InternalCompilerError("lowerer bug: invalid deferred union extraction");
   lowerer.liftedFns.push(fn);
   return name;
+}
+
+/** A record arm an array value is assignable to: an index-signature record,
+ * or one whose only declared field is `length`. */
+function arrayLikeRecordArm(lowerer: Lowerer, arm: IrType): boolean {
+  if (arm.kind !== "record") return false;
+  const shape = lowerer.shapes.get(arm.shapeId);
+  if (!shape || shape.tuple) return false;
+  return (
+    shape.indexValue !== undefined ||
+    (shape.fields.length === 1 && shape.fields[0]!.name === "length")
+  );
 }

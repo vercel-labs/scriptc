@@ -104,6 +104,12 @@ Options:
                      "pkg..." also names every package pkg depends on).
                      Packages that fail preflight are refused with a
                      diagnostic. Eligible dependencies compile automatically.
+      --define <process.env.NAME=value>
+                     run the executable with the environment variable set to
+                     the value, a JSON string, whatever its environment holds
+                     (repeatable): --define='process.env.NODE_ENV="production"'.
+                     JavaScript if statements it decides compile only their
+                     taken branch
       --provenance-sources
                      EXPERIMENTAL: compile npm dependencies from their
                      provenance-attested SOURCE (fetched at the attested
@@ -180,6 +186,7 @@ export const CLI_OPTIONS = {
   sanitize: { type: "boolean", default: false },
   ffi: { type: "string" },
   "npm-static": { type: "string", multiple: true },
+  define: { type: "string", multiple: true },
   "provenance-sources": { type: "boolean", default: false },
   "external-types": { type: "string", multiple: true },
   tier: { type: "string" },

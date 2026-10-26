@@ -1,0 +1,19 @@
+{
+ "order": [
+  "<repo>/tests/corpus/define-node-env/local.production.cjs",
+  "<repo>/tests/corpus/define-node-env/wrap.cjs",
+  "<repo>/tests/corpus/define-node-env/flags.mjs",
+  "<repo>/tests/corpus/define-node-env/main.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Variable 'esmLabel' is used before being assigned.",
+   "loc": {
+    "file": "<repo>/tests/corpus/define-node-env/flags.mjs",
+    "start": 166,
+    "end": 174
+   }
+  }
+ ]
+}

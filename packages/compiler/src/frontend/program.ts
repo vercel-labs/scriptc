@@ -70,6 +70,8 @@ import {
   npmStaticFsShadow,
   programBuiltinAliasSource,
   clearProgramBuiltinAliasCache,
+  definedSource,
+  setProgramDefines,
   npmStaticLexerVisibleNames,
   npmStaticLiveExportTable,
   npmStaticPackageOfPath,
@@ -78,6 +80,7 @@ import {
   setNpmStaticPackages,
   setNpmStaticTypeExports,
 } from "./npm-static.js";
+import type { Defines } from "./defines.js";
 import { isPrunedNpmReexport, planNpmStaticReexports } from "./npm-static-prune.js";
 import { npmStaticTypeExportPlan } from "./npm-static-type-exports-host.js";
 import { isNpmStaticSubclassArgument } from "./npm-static-subtyping.js";
@@ -1048,6 +1051,9 @@ export interface ProgramLoadOptions {
   npmStatic?: readonly string[];
   /** Exact host module specifiers paired with their declaration paths. */
   externalTypes?: readonly (readonly [string, string])[];
+  /** `--define` values: JavaScript files' `if` statements they decide
+   * resolve to their taken branches. */
+  define?: Defines | undefined;
 }
 
 export function loadProgram(
@@ -1216,9 +1222,13 @@ export function loadProgram(
   // resolve.ts answers the same sibling for scriptc's own edges).
   const npmShadow = npmStaticFsShadow(services);
   clearProgramBuiltinAliasCache();
+  setProgramDefines(opts?.define);
   const fsShadow = {
     readFile: (path: string) =>
-      npmShadow?.readFile(path) ?? programBuiltinAliasSource(services, path),
+      npmShadow?.readFile(path) ??
+      programBuiltinAliasSource(services, path) ??
+      definedSource(services, path) ??
+      undefined,
     hideFile: (path: string) =>
       (npmShadow?.hideFile(path) ?? false) || projectDtsRuntimeSibling(path) !== null,
   };

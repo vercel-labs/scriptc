@@ -14,6 +14,7 @@ import ts5 from "typescript";
 import { compile } from "@scriptc/compiler";
 import { corpusSelect, shardSuffix } from "./shard.js";
 import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
+import { programDefines } from "./define-directive.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -66,7 +67,13 @@ function expectedExitCode(file: string): number {
   return 0;
 }
 
-async function runBinary(cmd: string, args: string[], cpuLevel?: string): Promise<RunResult> {
+/** `env` adds variables to the inherited environment (the oracle's
+ * `// @define` variables, the executable's SCRIPTC_CPU_LEVEL). */
+async function runBinary(
+  cmd: string,
+  args: string[],
+  env?: Record<string, string>,
+): Promise<RunResult> {
   // Linux fork/exec race (observed on the sandbox lane): a sibling
   // worker's fork can inherit the freshly-linked binary's write fd across
   // its own spawn window, and exec answers ETXTBSY until that fd closes.
@@ -75,7 +82,7 @@ async function runBinary(cmd: string, args: string[], cpuLevel?: string): Promis
   for (let attempt = 0; ; attempt++) {
     const pending = execFileAsync(cmd, args, {
       encoding: "buffer",
-      ...(cpuLevel === undefined ? {} : { env: { ...process.env, SCRIPTC_CPU_LEVEL: cpuLevel } }),
+      ...(env ? { env: { ...process.env, ...env } } : {}),
     });
     pending.child.stdin?.end();
     try {
@@ -181,6 +188,7 @@ function programInputs(file: string): string[] {
 }
 
 async function build(file: string, optimization: "release" | "dev") {
+  const defines = programDefines(directiveHead(file));
   const hash = createHash("sha256");
   for (const f of programInputs(file)) hash.update(f).update(readFileSync(f));
   const key = hash
@@ -197,6 +205,7 @@ async function build(file: string, optimization: "release" | "dev") {
     sanitize,
     optimization,
     ...(cpuDispatch ? { cpuDispatch } : {}),
+    ...(defines ? { define: defines.define } : {}),
   });
 }
 
@@ -204,7 +213,11 @@ describe(`llvm differential corpus (${files.length} programs, ${optimizationMode
   test.for(files.map((f) => [f.slice(corpusDir.length + 1), f] as const))(
     "%s",
     async ([rel, file]) => {
-      const oracle = await runBinary(process.execPath, nodeOracleArgs(file));
+      const oracle = await runBinary(
+        process.execPath,
+        nodeOracleArgs(file),
+        programDefines(directiveHead(file))?.env,
+      );
       const expectedExit = expectedExitCode(file);
       expect(oracle.exitCode).toBe(expectedExit);
       for (const optimization of optimizationModes) {
@@ -217,7 +230,11 @@ describe(`llvm differential corpus (${files.length} programs, ${optimizationMode
         expect(result.backend).toBe("llvm");
         expect(result.llvmPath.endsWith(".ll")).toBe(true);
         for (const level of cpuLevels) {
-          const actual = await runBinary(result.binaryPath, [], level);
+          const actual = await runBinary(
+            result.binaryPath,
+            [],
+            level === undefined ? undefined : { SCRIPTC_CPU_LEVEL: level },
+          );
           const lane = level === undefined ? optimization : `${optimization} level ${level}`;
           expect(actual.stdout, `${lane} stdout`).toEqual(oracle.stdout);
           if (expectedExit === 0)

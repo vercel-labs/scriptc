@@ -40,6 +40,7 @@ export function analyzeWithFrontend(
   }
   const fe = createFrontend(entryPath, opts.npmStatic, opts.externalTypes, undefined, {
     nodeIslands: true,
+    ...(opts.define !== undefined ? { define: opts.define } : {}),
   });
   try {
     const emptyStats = {

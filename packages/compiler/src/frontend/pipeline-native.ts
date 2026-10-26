@@ -28,6 +28,7 @@ export function runNativeFrontend(
         loadProgram(path, services, {
           npmStatic: options.npmStatic ?? [],
           externalTypes: Object.entries(options.externalTypes ?? {}),
+          define: options.define,
         }),
       npmStatic,
       externalTypes,

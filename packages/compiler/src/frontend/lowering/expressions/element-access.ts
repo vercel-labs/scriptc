@@ -84,6 +84,7 @@ import {
   lowerIndexedUnionWrite,
 } from "../indexed-unions.js";
 import { lowerBufferPrototypeMember } from "../containers/bytes.js";
+import { refuseDefinedEnvWrite } from "../builtins/environment.js";
 
 /** `a[i]` reads. Only f64 indices into array receivers are modeled; JS
  * string-key element access (`a["length"]`) and string indexing (`s[0]`
@@ -1871,6 +1872,7 @@ export function lowerElementWrite(lowerer: Lowerer, expr: ts.BinaryExpression): 
         "indexing process.env with non-string keys",
       );
     }
+    refuseDefinedEnvWrite(lowerer, key, target);
     const value = lowerer.lowerExpr(expr.right);
     if (value.type.kind !== "string") {
       lowerer.unsupported(

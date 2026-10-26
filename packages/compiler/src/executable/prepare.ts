@@ -39,7 +39,13 @@ export function prepareExecutableModule(
   createFrontend: FrontendFactory,
   timing: CompilationTiming = () => {},
 ): PreparedExecutableModule | CompileFailure {
-  const fe = createFrontend(entryPath, opts.npmStatic);
+  const fe = createFrontend(
+    entryPath,
+    opts.npmStatic,
+    undefined,
+    undefined,
+    opts.define !== undefined ? { define: opts.define } : undefined,
+  );
   timing("frontend-load");
   let lowered: LowerResult;
   let sourceTexts: Map<string, string>;

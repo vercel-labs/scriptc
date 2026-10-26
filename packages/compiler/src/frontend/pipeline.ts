@@ -49,6 +49,7 @@ import { EXPERIMENTAL_MODULE } from "./experimental-import.js";
 import { readProjectConfig } from "../project-config.js";
 import { typePatchDiagnostics } from "./type-patches/layer.js";
 import { packageDirOf } from "../node-islands/origin.js";
+import type { Defines } from "./defines.js";
 import {
   scanFiles,
   type NodeIslandScan,
@@ -74,6 +75,7 @@ function packageDiagWhere(load: LoadResult, loc: SrcLoc): string {
 export interface ProgramLoadOptions {
   npmStatic?: readonly string[];
   externalTypes?: Readonly<Record<string, string>> | undefined;
+  define?: Defines | undefined;
 }
 
 /** A load owns its program resources until LoadResult.dispose(). Host
@@ -132,6 +134,9 @@ export interface FrontendOptions {
    * the detector's scan of the program and its npm packages. Builds do not
    * read either. */
   nodeIslands?: boolean;
+  /** `--define` values: every program load resolves the JavaScript `if`
+   * statements they decide, and lowering sets the variables at startup. */
+  define?: Defines;
 }
 
 export type FrontendFactory = (
@@ -446,8 +451,8 @@ export function runFrontend(
   // only live loads, releasing each immediately on normal fallback; this
   // also closes both the current program and a failed temporary probe.
   const active: ReturnType<ProgramLoader>[] = [];
-  const trackedLoader: ProgramLoader = (path, options) => {
-    const load = loadProgram(path, options);
+  const trackedLoader: ProgramLoader = (path, loadOptions) => {
+    const load = loadProgram(path, { ...loadOptions, define: options.define });
     active.push(load);
     return {
       ...load,
@@ -791,6 +796,7 @@ function loadFrontend(
     lower: (opts) => {
       const lowered = lowerToIr(finalLoad.program, finalLoad.entry, finalLoad.moduleOrder, {
         ...opts,
+        define: options.define,
         frontendServices: finalLoad.services,
         startupCrash: finalLoad.startupCrash ?? null,
         inlineRequireCycleCalls: finalLoad.inlineRequireCycleCalls,

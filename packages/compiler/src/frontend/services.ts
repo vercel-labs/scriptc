@@ -22,6 +22,8 @@ import { mayHoldTscBuiltinImport, unwrapTscBuiltinImports } from "./npm-static-t
 import { builtinPackageAliasFor } from "./package-shims.js";
 import * as syntax from "./npm-static-declaration-syntax.js";
 import { normalizeCjsExportsVar } from "./npm-static-cjs-exports-var.js";
+import { mayReadDefine, resolveDefinedBranches } from "./define-branches.js";
+import type { Defines } from "./defines.js";
 import type { SourceFile } from "./ts7/ast-types.js";
 
 /** Whether the source can contain `word` as a keyword or identifier: it
@@ -159,6 +161,13 @@ export class FrontendServices {
     return rewriteBuiltinAliasRequires(this.parse(path, source, "js"), (specifier) =>
       builtinPackageAliasFor(path, specifier),
     );
+  }
+  /** A JavaScript module with the `if` statements `--define` decides
+   * resolved to their taken branches (null: none). */
+  definedBranches(source: string, path: string, defines: Defines): string | null {
+    this.ensureOpen();
+    if (!mayReadDefine(source, defines)) return null;
+    return resolveDefinedBranches(this.parse(path, source, "js"), defines);
   }
   /** A CommonJS module that names its export object through a variable
    * (`var ip = exports`), its member accesses respelled through `exports`

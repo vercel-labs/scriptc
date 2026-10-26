@@ -78,7 +78,7 @@ Different output kinds accumulate in `.scriptc/`; rebuilding a kind updates its 
 
 ### Library mode
 
-`scriptc build --lib --profile <profile.json>` compiles the entry module named in a library profile into a static archive (`<name>.lib.a`) that a host application links, or into a Wasm reactor (`<name>.wasm`) on `wasm32-wasi`. The profile declares the exported functions and their symbols. Library builds take no input file and don't accept `--emit`, `--print`, `--optimization`, `--strip`, `--ffi`, or `--npm-static`; the profile controls emission and optimization. See [WebAssembly Modules](/docs/wasm) for a complete profile and [iOS and Android](/docs/platforms#ios-and-android-arm64-library-mode) for mobile targets.
+`scriptc build --lib --profile <profile.json>` compiles the entry module named in a library profile into a static archive (`<name>.lib.a`) that a host application links, or into a Wasm reactor (`<name>.wasm`) on `wasm32-wasi`. The profile declares the exported functions and their symbols. Library builds take no input file and don't accept `--emit`, `--print`, `--optimization`, `--strip`, `--ffi`, `--npm-static`, or `--define`; the profile controls emission and optimization. See [WebAssembly Modules](/docs/wasm) for a complete profile and [iOS and Android](/docs/platforms#ios-and-android-arm64-library-mode) for mobile targets.
 
 ## scriptc run
 
@@ -174,6 +174,9 @@ With `--sparse`, the profile leaves out the functions the runs never reached. Th
 
   <dt><code>--npm-static &lt;pkg[,pkg…]|auto&gt;</code></dt>
   <dd>Name npm packages to compile even if they don't ship their own type declarations (repeatable). A trailing <code>...</code>, as in <code>fs-extra...</code>, also names every package that package depends on. <code>auto</code> uses the default automatic selection. Packages that can't compile produce diagnostics. See <a href="/docs/dependencies#explicit-package-selection">npm Dependencies</a>.</dd>
+
+  <dt><code>--define &lt;process.env.NAME=value&gt;</code></dt>
+  <dd>Build the executable to run with the environment variable <code>NAME</code> set to the value, a JSON string, whatever its environment holds (repeatable): <code>--define='process.env.NODE_ENV="production"'</code>. JavaScript <code>if</code> statements the value decides compile only their taken branch, so a package entry that requires its production or development build by <code>NODE_ENV</code>, as React's do, compiles only the build it selects. See <a href="/docs/limitations#defined-environment-variables">Defined environment variables</a>.</dd>
 
   <dt><code>--provenance-sources</code></dt>
   <dd>Experimental. Compile npm dependencies from the source at the commit their provenance attestation names. Packages without a usable attestation compile from their installed files.</dd>

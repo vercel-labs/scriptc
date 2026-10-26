@@ -10,6 +10,7 @@ import { npmCases } from "./npm-cases.js";
 import { normalizeNodeTestOutput } from "./node-test-normalize.js";
 import { eventLoopCases, type StdinScript } from "./event-loop-cases.js";
 import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
+import { programDefines } from "./define-directive.js";
 
 const execFileAsync = promisify(execFile);
 const enabled = process.env["SCRIPTC_LINUX"] === "1";
@@ -193,22 +194,25 @@ function inContainer(hostPath: string): string {
 }
 
 async function runLinuxNode(file: string): Promise<RunResult> {
-  return runInContainer([
-    "node",
-    ...(wantsTransformTypes(file)
-      ? ["--experimental-transform-types", "--disable-warning=ExperimentalWarning"]
-      : []),
-    ...(directiveHead(file).some((l) => /^\/\/ @no-deprecation\s*$/.test(l))
-      ? ["--no-deprecation"]
-      : []),
-    ...(directiveHead(file).some((l) => /^\/\/ @disallow-code-generation\s*$/.test(l))
-      ? ["--disallow-code-generation-from-strings"]
-      : []),
-    ...(directiveHead(file).includes("// @no-node-shims")
-      ? []
-      : ["--import", inContainer(join(repoRoot, "tests/harness/comptime-shim.mjs")), "--import"]),
-    inContainer(nodeOracleFile(file)),
-  ]);
+  return runInContainer(
+    [
+      "node",
+      ...(wantsTransformTypes(file)
+        ? ["--experimental-transform-types", "--disable-warning=ExperimentalWarning"]
+        : []),
+      ...(directiveHead(file).some((l) => /^\/\/ @no-deprecation\s*$/.test(l))
+        ? ["--no-deprecation"]
+        : []),
+      ...(directiveHead(file).some((l) => /^\/\/ @disallow-code-generation\s*$/.test(l))
+        ? ["--disallow-code-generation-from-strings"]
+        : []),
+      ...(directiveHead(file).includes("// @no-node-shims")
+        ? []
+        : ["--import", inContainer(join(repoRoot, "tests/harness/comptime-shim.mjs")), "--import"]),
+      inContainer(nodeOracleFile(file)),
+    ],
+    programDefines(directiveHead(file))?.env,
+  );
 }
 
 function programInputs(file: string): string[] {
@@ -221,6 +225,7 @@ function programInputs(file: string): string[] {
 }
 
 async function crossCompileAndRun(file: string): Promise<RunResult> {
+  const defines = programDefines(directiveHead(file));
   const hash = createHash("sha256");
   for (const f of programInputs(file)) hash.update(f).update(readFileSync(f));
   const key = hash.update("linux\0").update(target).digest("hex").slice(0, 16);
@@ -230,6 +235,7 @@ async function crossCompileAndRun(file: string): Promise<RunResult> {
     outPath: join(outDir, "program"),
     outDir,
     backend: "llvm",
+    ...(defines ? { define: defines.define } : {}),
   });
   if (!result.ok) {
     throw new Error(

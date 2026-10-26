@@ -24,6 +24,7 @@ import { compile } from "@scriptc/compiler";
 import { corpusSelect, shardSuffix } from "./shard.js";
 import { oracleEnvKey } from "./oracle-env.js";
 import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
+import { programDefines } from "./define-directive.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -185,8 +186,13 @@ function nodeOracleArgs(file: string): string[] {
  * child's stdin closes immediately: corpus programs may read fd 0 to EOF
  * (readFileSync(0)), and the default open pipe would block both sides
  * forever — this way Node and the native binary see the same empty,
- * closed stream. */
-async function runBinary(cmd: string, args: string[]): Promise<RunResult> {
+ * closed stream. `env` adds variables to the inherited environment (the
+ * oracle's `// @define` variables). */
+async function runBinary(
+  cmd: string,
+  args: string[],
+  env?: Record<string, string>,
+): Promise<RunResult> {
   // Linux fork/exec race (observed on the sandbox lane, llvm flavor): a
   // sibling worker's fork can inherit the freshly-linked binary's write
   // fd across its own spawn window, and exec answers ETXTBSY until that
@@ -194,7 +200,10 @@ async function runBinary(cmd: string, args: string[]): Promise<RunResult> {
   // briefly, the npm/cargo stance. (No-op on macOS: exec there never
   // answers ETXTBSY.)
   for (let attempt = 0; ; attempt++) {
-    const pending = execFileAsync(cmd, args, { encoding: "buffer" });
+    const pending = execFileAsync(cmd, args, {
+      encoding: "buffer",
+      ...(env ? { env: { ...process.env, ...env } } : {}),
+    });
     pending.child.stdin?.end();
     try {
       const { stdout, stderr } = await pending;
@@ -348,7 +357,11 @@ async function runNode(file: string): Promise<RunResult> {
   // Node 24 strips types natively; the supported subset is erasable by
   // construction — except `// @transform-types` programs (namespaces),
   // which run under Node's transform mode.
-  const res = await runBinary("node", nodeOracleArgs(file));
+  const res = await runBinary(
+    "node",
+    nodeOracleArgs(file),
+    programDefines(directiveHead(file))?.env,
+  );
   if (cachePath !== null) {
     try {
       const tmp = `${cachePath}.${process.pid}.${Math.random().toString(36).slice(2)}`;
@@ -373,6 +386,7 @@ async function compileAndRun(file: string): Promise<RunResult> {
   // Directory tests hash every sibling file so edits to imports bust the cache.
   const inputs = programInputs(file);
   const speed = wantsSpeed(file);
+  const defines = programDefines(directiveHead(file));
   const hash = createHash("sha256");
   for (const f of inputs) hash.update(f).update(readFileSync(f));
   const key = hash
@@ -388,6 +402,7 @@ async function compileAndRun(file: string): Promise<RunResult> {
     sanitize,
     backend: "llvm",
     ...(speed ? { optimization: "speed" as const } : {}),
+    ...(defines ? { define: defines.define } : {}),
   });
   if (!result.ok) {
     throw new Error(

@@ -53,6 +53,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import ts5 from "typescript";
 import { compile } from "@scriptc/compiler";
 import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
+import { programDefines } from "./define-directive.js";
 
 const execFileAsync = promisify(execFile);
 const enabled = process.env["SCRIPTC_WIN"] === "1";
@@ -363,7 +364,10 @@ async function runWindowsNode(file: string): Promise<RunResult> {
   const shims = directiveHead(file).includes("// @no-node-shims")
     ? ""
     : "--import ./comptime-shim.mjs ";
-  return runOnBox(`node ${transform}${nodep}${codegen}${shims}${entry}`);
+  return runOnBox(
+    `node ${transform}${nodep}${codegen}${shims}${entry}`,
+    programDefines(directiveHead(file))?.env,
+  );
 }
 
 function programInputs(file: string): string[] {
@@ -382,10 +386,12 @@ async function crossCompile(file: string): Promise<string> {
   const outDir = join(cacheDir, key);
   mkdirSync(outDir, { recursive: true });
   const outPath = join(outDir, `${laneName(file)}.exe`);
+  const defines = programDefines(directiveHead(file));
   const result = await compile(file, {
     outPath,
     outDir,
     backend: "llvm",
+    ...(defines ? { define: defines.define } : {}),
   });
   if (!result.ok) {
     throw new Error(

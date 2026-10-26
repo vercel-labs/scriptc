@@ -41,6 +41,7 @@ import type { CliHost, NativeCacheWarmProfile } from "./host.js";
 import { resolveOutputOptions } from "./output-options.js";
 import { selectOutputPaths } from "./paths.js";
 import { CLI_OPTIONS, USAGE } from "./usage.js";
+import type { Defines } from "../frontend/defines.js";
 
 /* The exit discipline: NEVER process.exit() after writing output. stdout/
  * stderr to a PIPE are async streams — process.exit() drops whatever libuv
@@ -58,6 +59,37 @@ class CliExit extends Error {
 function fail(msg: string): never {
   process.stderr.write(msg + "\n");
   throw new CliExit(1);
+}
+
+/** `--define` arguments: `process.env.NAME=<JSON string>`. */
+function parseDefines(args: readonly string[]): Defines | undefined {
+  if (args.length === 0) return undefined;
+  const define: Record<string, string> = {};
+  for (const arg of args) {
+    const at = arg.indexOf("=");
+    if (at < 0) fail(`--define=${arg}: expected <name>=<value>`);
+    const key = arg.slice(0, at);
+    const text = arg.slice(at + 1);
+    if (!/^process\.env\.[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      fail(`--define=${arg}: defining '${key}' is not supported yet (only process.env.NAME)`);
+    }
+    let value: unknown;
+    try {
+      value = JSON.parse(text);
+    } catch {
+      value = undefined;
+    }
+    if (typeof value !== "string") {
+      fail(
+        `--define=${arg}: ${key} is a string, so its value must be a JSON string: --define='${key}=${JSON.stringify(text)}'`,
+      );
+    }
+    if (define[key] !== undefined && define[key] !== value) {
+      fail(`--define: ${key} is defined twice with different values`);
+    }
+    define[key] = value;
+  }
+  return define;
 }
 
 /** parseArgs, with its throw turned into the CLI's own one-line error.
@@ -123,6 +155,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       values["profile-use"] !== undefined ||
       values.sparse ||
       (values["npm-static"] ?? []).length > 0 ||
+      (values.define ?? []).length > 0 ||
       values["provenance-sources"] ||
       externalTypeArgs.length > 0 ||
       values.out !== undefined ||
@@ -183,6 +216,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
       values["profile-generate"] !== undefined ||
       values["profile-use"] !== undefined ||
       (values["npm-static"] ?? []).length > 0 ||
+      (values.define ?? []).length > 0 ||
       values["provenance-sources"] ||
       externalTypeArgs.length > 0 ||
       (values.wasm ?? []).length > 0 ||
@@ -275,13 +309,14 @@ async function main(args: string[], host: CliHost): Promise<number> {
       values["profile-generate"] !== undefined ||
       values["profile-use"] !== undefined ||
       (values["npm-static"] ?? []).length > 0 ||
+      (values.define ?? []).length > 0 ||
       externalTypeArgs.length > 0 ||
       values.tier !== undefined ||
       values["explain-dynamic"] !== undefined ||
       hasNodeIslandFlags(values)
     ) {
       fail(
-        "scriptc build --lib takes no --backend/--emit/--print/--optimization/--strip/--windows-subsystem/--detached-exit/--target-cpu/--cpu-dispatch/--profile-generate/--profile-use/--npm-static/--ffi/--external-types/--tier/--explain-dynamic: the profile pins the emission and optimization, npm imports are judged automatically, outbound FFI belongs to executable builds, external type mappings belong to coverage, and library artifacts are static-tier only",
+        "scriptc build --lib takes no --backend/--emit/--print/--optimization/--strip/--windows-subsystem/--detached-exit/--target-cpu/--cpu-dispatch/--profile-generate/--profile-use/--npm-static/--define/--ffi/--external-types/--tier/--explain-dynamic: the profile pins the emission and optimization, npm imports are judged automatically, --define and outbound FFI belong to executable builds, external type mappings belong to coverage, and library artifacts are static-tier only",
       );
     }
     const profilePath = resolve(profileArg);
@@ -536,6 +571,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
   } else if (npmStaticRaw.length > 0) {
     npmStatic = npmStaticRaw;
   }
+  const define = parseDefines(values.define ?? []);
 
   // --provenance-sources resolves BEFORE the program loads (tsgo needs the
   // source "paths" at creation): attestations and source trees fetch (or
@@ -557,6 +593,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
   if (command === "coverage") {
     const { coverage, sourceTexts } = await host.analyze(input, {
       ...(npmStatic !== undefined ? { npmStatic } : {}),
+      ...(define !== undefined ? { define } : {}),
       ...(ffiProfilePath !== undefined ? { ffiProfilePath } : {}),
       ...(Object.keys(externalTypes).length > 0 ? { externalTypes } : {}),
       ...(tier !== undefined ? { tier } : {}),
@@ -641,6 +678,7 @@ async function main(args: string[], host: CliHost): Promise<number> {
         ? {}
         : { profileUse: resolve(values["profile-use"]) }),
       ...(npmStatic !== undefined ? { npmStatic } : {}),
+      ...(define !== undefined ? { define } : {}),
       ...(ffiProfilePath !== undefined ? { ffiProfilePath } : {}),
       ...(printNativeLinkInfo ? { nativeLinkInfo: true } : {}),
       ...(tier !== undefined ? { tier } : {}),

@@ -73,6 +73,8 @@ async function tryFastPath(): Promise<number | null> {
     // The full compiler resolves `native` against the build host.
     values["target-cpu"] !== undefined ||
     (values["external-types"] ?? []).length > 0 ||
+    // The full CLI keys these builds by the --define values.
+    (values.define ?? []).length > 0 ||
     // The full CLI validates the Node island policy flags.
     hasNodeIslandFlags(values)
   )
@@ -232,6 +234,7 @@ async function coverageFastPath(
     values["emit-ir"] ||
     (values["npm-static"] ?? []).length > 0 ||
     (values["external-types"] ?? []).length > 0 ||
+    (values.define ?? []).length > 0 ||
     // The replay covers the default Node island policy only.
     hasNodeIslandFlags(values)
   )

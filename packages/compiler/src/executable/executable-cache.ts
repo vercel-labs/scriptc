@@ -163,6 +163,8 @@ export interface EarlyExecutableCacheOptions {
   /** Omitted unless SCRIPTC_YOUNG_NURSERY=1 (backend/young-nursery.ts). */
   youngNursery?: true;
   npmStatic: readonly string[] | "auto" | null;
+  /** Omitted without --define; otherwise its values as JSON. */
+  define?: string;
   /** Raw manifest identity: path and bytes. Native archives remain under the
    * stricter native cache's independent dependency validation. */
   ffiProfile: { path: string; bytes: Uint8Array } | null;
@@ -318,6 +320,7 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
       : options.npmStatic === "auto"
         ? "<npm-static-auto>"
         : JSON.stringify(options.npmStatic),
+    ...(options.define !== undefined ? [`define:${options.define}`] : []),
     options.target,
     options.compiler.join("\x1f"),
     options.nativeEnvironment,
@@ -365,7 +368,9 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
           ? "<npm-static-auto>"
           : JSON.stringify(options.npmStatic),
     )
-    .update("\0")
+    .update("\0");
+  if (options.define !== undefined) hash.update(`define:${options.define}\0`);
+  hash
     .update(options.target)
     .update("\0")
     .update(options.compiler.join("\x1f"))

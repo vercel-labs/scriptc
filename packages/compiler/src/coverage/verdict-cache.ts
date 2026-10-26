@@ -137,6 +137,7 @@ export function verdictKey(
       ...(opts.nodeIslands !== undefined
         ? [`node-islands=${nodeIslandOptionsKey(opts.nodeIslands)}`]
         : []),
+      ...(opts.define !== undefined ? [`define=${JSON.stringify(opts.define)}`] : []),
     ].join("\0"),
   );
 }

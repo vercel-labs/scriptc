@@ -3524,6 +3524,28 @@ export function buildMain(lowerer: Lowerer): IrFunction {
       loc,
     });
   }
+  // `--define`: the program runs as if started with the defined variables
+  // set, so every read of the environment, and each child process, agrees
+  // with the `if` statements the values decided at build time. Set on the
+  // main thread before any module runs, so no thread reads the environment meanwhile.
+  if (lowerer.define !== undefined) {
+    body.unshift(
+      ...Object.entries(lowerer.define).map(([key, value]): IrStmt => ({
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "process.envSet",
+          args: [
+            { kind: "strLit", value: key.slice("process.env.".length), type: STRING, loc },
+            { kind: "strLit", value, type: STRING, loc },
+          ],
+          type: VOID,
+          loc,
+        },
+        loc,
+      })),
+    );
+  }
   if (lowerer.workerTargets.length > 0) {
     const mainBody = body.splice(0);
     let workerBody: IrStmt[] | null = null;

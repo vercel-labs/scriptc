@@ -549,6 +549,35 @@ console.log(direct, wrapped);
     );
   });
 
+  test.for([
+    [
+      "exports call after the replacement",
+      'module.exports = require("./lib.cjs");\nconsole.log("before");\nconsole.log(exports.hello());\n',
+      "method calls like 'exports.hello'",
+    ],
+    [
+      "exports call before the replacement",
+      'const lib = require("./lib.cjs");\nconsole.log("before");\nconsole.log(exports.hello());\nmodule.exports = lib;\n',
+      "method calls like 'exports.hello'",
+    ],
+    [
+      "module.exports read before the replacement",
+      'const lib = require("./lib.cjs");\nconsole.log("before");\nconsole.log(module.exports.n);\nmodule.exports = lib;\n',
+      "the CommonJS 'module' object in this position",
+    ],
+  ])(
+    "members of a replaced exports object keep a named refusal: %s",
+    async ([, source, message]) => {
+      const r = await compileAndRun("replaced-exports-members", source!, "cjs", {
+        "lib.cjs": 'exports.hello = function () { return "hi"; };\nexports.n = 7;\n',
+      });
+      expect(r.exitCode).toBe(1);
+      expect(r.stdout).toBe("before\n");
+      expect(r.stderr).toContain(`Uncaught Error: ${message}`);
+      expect(r.stderr).toMatch(/\[SC1090 at .*replaced-exports-members\.cjs:3\]\n$/);
+    },
+  );
+
   test("an EFFECTFUL surplus argument is a named deferred fence (JS lane)", async () => {
     // Effect-free surplus args drop at compile time, JS-exact (corpus
     // 1760 — the test-string-decoder writeSequences shape). An effectful

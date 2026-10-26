@@ -96,11 +96,35 @@ export function cjsInFileExportGlobalOf(
     sym !== undefined && sym.flags & ts.SymbolFlags.Alias
       ? lowerer.checker.getAliasedSymbol(sym)
       : sym;
-  return (
+  const g =
     (sym ? lowerer.globalsBySymbol.get(sym) : undefined) ??
     (resolved ? lowerer.globalsBySymbol.get(resolved) : undefined) ??
-    null
+    null;
+  if (g === null || sym === undefined || !declaredOnlyOutside(sym, sf)) return g;
+  return replacementExportsAccess(access, sf) ? g : null;
+}
+
+/** True when every declaration of `sym` is in a file other than `sf`. */
+function declaredOnlyOutside(sym: ts.Symbol, sf: ts.SourceFile): boolean {
+  return (
+    sym.declarations.length > 0 && sym.declarations.every((d) => ts.getSourceFileOfNode(d) !== sf)
   );
+}
+
+/** Whether `access` reads `module.exports` after the module replaced it with
+ * another module's exports. The checker gives members of `module.exports` and
+ * `exports` the replacement's symbols everywhere in the file, but `exports`
+ * keeps the original object, and so does `module.exports` before the
+ * replacement runs. Only top-level code after the `module.exports = ...`
+ * statement is known to run after it. */
+function replacementExportsAccess(access: ts.PropertyAccessExpression, sf: ts.SourceFile): boolean {
+  if (!isModuleExportsAccess(access.expression)) return false;
+  const whole = cjsWholeExportValueOf(sf);
+  if (whole === null || ts.tokenStartOfNode(access) < whole.assign.end) return false;
+  for (let p: ts.Node | undefined = access.parent; p !== undefined && p !== sf; p = p.parent) {
+    if (ts.isFunctionLike(p) || ts.isClassDeclaration(p) || ts.isClassExpression(p)) return false;
+  }
+  return true;
 }
 
 /** Whether `node` is an operand of an equality operator: only its identity

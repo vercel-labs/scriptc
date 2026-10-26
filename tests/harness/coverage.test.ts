@@ -587,7 +587,14 @@ test("runtime-optional refined unions report blockers without crashing", () => {
 });
 
 test("a rejected class reached only through a receiver probe reports its own diagnostic once", () => {
-  const { coverage } = analyze(join(repoRoot, "tests/diagnostics/deferred-class-receiver/main.ts"));
+  // The diagnostics corpus pins today's refusals (--tier=static-only):
+  // localized failure would register the class with a dynamic field.
+  const { coverage } = analyze(
+    join(repoRoot, "tests/diagnostics/deferred-class-receiver/main.ts"),
+    {
+      tier: "static-only",
+    },
+  );
   const messages = coverage.diagnostics.map((d) => d.message);
   expect(
     messages.filter((m) => m.startsWith("'MapIterator<string>'-typed class fields")),

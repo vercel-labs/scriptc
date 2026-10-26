@@ -3888,7 +3888,8 @@ export class Lowerer {
   ) {
     // The mode's options, sorted by name; the values derived from them follow.
     this.alreadyFlushed = mode.alreadyFlushed ?? new Set();
-    for (const [id, degraded] of mode.degradedTypes ?? []) this.degradedTypes.set(id, degraded);
+    if (mode.degradedTypes !== undefined)
+      for (const [id, degraded] of mode.degradedTypes) this.degradedTypes.set(id, degraded);
     this.priorRetriedSymbols = mode.retriedSymbols ?? new Set();
     this.externalTypes = mode.externalTypes ?? new Map();
     this.ffiBindingSymbols = mode.ffiBindingSymbols ?? null;

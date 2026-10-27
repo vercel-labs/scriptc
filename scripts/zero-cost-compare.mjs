@@ -401,7 +401,8 @@ export function dynamicTierSymbols(names) {
  * bench/dynamic-properties are untyped JavaScript. bench/regex-replacers,
  * also added later, passes checked-dynamic values to replace callbacks
  * whose parameters the lib types `any`: captures a match can leave unset
- * and results the checker types `any`. Every other bench workload is fully typed and must link none. The gate and
+ * and results the checker types `any`. bench/record-untyped-writes writes typed records
+ * through `unknown` views on purpose. Every other bench workload is fully typed and must link none. The gate and
  * tests/harness/bench-dynamic-tier.test.ts enforce that, and the test also
  * fails when a listed workload stops linking them, so remove a workload here
  * when a leak fix makes its binary clean. */
@@ -417,6 +418,7 @@ export const DYNAMIC_WORKLOADS = new Set([
   "bench/channel-messages",
   "bench/dynamic-methods",
   "bench/dynamic-properties",
+  "bench/record-untyped-writes",
   "bench/worker-messages",
   "bench/typed-array-scan-workers",
   "bench/log-summary",

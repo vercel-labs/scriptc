@@ -8724,7 +8724,13 @@ function lowerObjectStaticCall(
       return { kind: "libCall", fn: "dyn.freeze", args: [value], type: DYN, loc: locOf(call) };
     }
     if (ts.isObjectLiteralExpression(inner) || ts.isArrayLiteralExpression(inner)) {
-      return value; // fresh — freeze is identity here, honestly
+      // A fresh literal can still reach untyped code, which observes and
+      // must honor its frozen state: records and arrays keep the bit.
+      if (freezableRecordType(lowerer, value.type))
+        return lowerNativeFreeze(lowerer, "record.freeze", value, locOf(call));
+      if (value.type.kind === "array")
+        return lowerNativeFreeze(lowerer, "array.freeze", value, locOf(call));
+      return value;
     }
     if (
       value.type.kind === "string" ||

@@ -38,6 +38,7 @@ import {
 import { streamTypedRefEligible } from "../../ir/analysis.js";
 import { everyStmtList, transformExpr, transformStmtList } from "../../ir/traverse.js";
 import { PoisonError, type Lowerer } from "./lowerer.js";
+import { isSloppyAt } from "./frozen-records.js";
 import { erasedGenericInstance, implicitDefaultInstance } from "./generic-functions.js";
 import { type ParamShape } from "./call-signatures.js";
 import {
@@ -2418,6 +2419,11 @@ export class ClassDynamicDispatch {
               computedRead.key.operand.type.kind === "f64"
                 ? computedRead.key
                 : null;
+            // A sloppy-mode write ignores a refused assignment
+            // (sloppyDynamicWrites), so its sites share their own helper,
+            // whose write takes the first such site's source range.
+            const sloppyWrite =
+              !!computedWrite && !reflect && isSloppyAt(lowerer, computedWrite.loc);
             const key = JSON.stringify([
               !!computedWrite,
               computedRead?.optional ?? false,
@@ -2426,6 +2432,7 @@ export class ClassDynamicDispatch {
               numericKey,
               reflect,
               !!indexKey,
+              ...(sloppyWrite ? ["sloppy"] : []),
             ]);
             let dispatch = this.computed.get(key);
             if (!dispatch) {

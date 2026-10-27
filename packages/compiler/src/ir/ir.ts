@@ -1089,6 +1089,11 @@ export interface IrModule {
    * (frontend frozen-records.ts): their writes test the array's frozen bit
    * (SCR_ARR_FROZEN) and throw Node's TypeError when it is set. */
   freezableArrays?: string[];
+  /** Source ranges ("file\0start\0end") of untyped property writes in
+   * sloppy-mode code (frontend frozen-records.ts sloppyDynamicWrites):
+   * their dyn.keySet/keySetComputed calls ignore an assignment that strict
+   * mode refuses with a TypeError. */
+  sloppyDynWrites?: string[];
   /** The program freezes, seals or prevents extensions of untyped values
    * (frontend frozen-records.ts noteUntypedIntegrity). Class hierarchies
    * that can be held there carry an integrity word, which the runtime sets

@@ -362,3 +362,37 @@ export function freezableRecordType(lowerer: Lowerer, type: IrType): type is Rec
   const shape = lowerer.shapes.get(type.shapeId);
   return shape !== undefined && !shapeHasAccessorSlots(shape);
 }
+
+/** The source ranges (writeKey) of untyped property writes in sloppy-mode
+ * code (IrModule.sloppyDynWrites): an assignment there that strict mode
+ * refuses with a TypeError (a frozen or non-extensible object, a read-only
+ * property) leaves the object unchanged instead. Only programs with such
+ * writes list any; the backend calls the sloppy entry points for them. */
+export function sloppyDynamicWrites(lowerer: Lowerer, functions: readonly IrFunction[]): string[] {
+  const keys = new Set<string>();
+  const strictness = new Map<string, boolean>();
+  for (const fn of functions) {
+    everyStmtList(fn.body, {
+      stmt: () => true,
+      expr: (e) => {
+        if (e.kind !== "libCall" || (e.fn !== "dyn.keySet" && e.fn !== "dyn.keySetComputed"))
+          return true;
+        const key = writeKey(e.loc);
+        let sloppy = strictness.get(key);
+        if (sloppy === undefined) {
+          sloppy = isSloppyAt(lowerer, e.loc);
+          strictness.set(key, sloppy);
+        }
+        if (sloppy) keys.add(key);
+        return true;
+      },
+    });
+  }
+  return [...keys].sort();
+}
+
+/** Whether the source at `loc` is sloppy-mode code (isStrictCode). */
+export function isSloppyAt(lowerer: Lowerer, loc: SrcLoc): boolean {
+  const node = lowerer.nodeAtLoc(loc);
+  return node !== null && !isStrictCode(node);
+}

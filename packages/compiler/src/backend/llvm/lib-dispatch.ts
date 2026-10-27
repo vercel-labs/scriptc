@@ -755,7 +755,10 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
             // stream behind it (scr_dyn_for_await_stream.c)
             e.fn === "dyn.asyncIteratorOpen" && host.dynForAwaitStreams
             ? "scr_stream_dyn_async_iterator_open"
-            : LIB_FN_SYMS[e.fn]);
+            : (e.fn === "dyn.keySet" || e.fn === "dyn.keySetComputed") &&
+                host.sloppyDynWrites.has(`${e.loc.file}\0${e.loc.start}\0${e.loc.end}`)
+              ? `${LIB_FN_SYMS[e.fn]}_sloppy`
+              : LIB_FN_SYMS[e.fn]);
   if (sym === undefined) throw new LlvmUnsupportedError(`libCall:${e.fn}`, e.loc);
   // The runtime's Date functions take and answer time values: a Date
   // operand passes its time value, read at once from the borrowed object,

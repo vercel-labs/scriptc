@@ -11830,6 +11830,25 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
 /* Node's TypeErrors for assigning a read-only property and deleting a
  * non-configurable one of a checked object: the object reads as
  * #<Constructor>, or [object Object] without a prototype. */
+/* Failed assignments. Sloppy-mode code ignores an assignment that strict
+ * mode refuses with a TypeError (a read-only or getter-only property, a
+ * non-extensible object, a frozen array element). The write paths raise
+ * the strict TypeError and note its payload here; the sloppy entry points
+ * (scr_dyn_key_set_sloppy) drop exactly that exception when it reaches
+ * them, while any other exception (a setter's) keeps propagating. */
+static SCR_TL void *scr_dyn_assign_failure;
+
+static void scr_dyn_note_assign_failure(void) {
+  if (scr_exc_pending()) scr_dyn_assign_failure = scr_exc_current_cell()->payload;
+}
+
+static void scr_dyn_sloppy_settle(void) {
+  if (scr_dyn_assign_failure && scr_exc_pending() &&
+      scr_exc_current_cell()->payload == scr_dyn_assign_failure)
+    scr_exc_clear();
+  scr_dyn_assign_failure = NULL;
+}
+
 static void scr_dyn_throw_property(const ScrDyn *object, const char *key, size_t key_len, bool deleting) {
   const char *name = scr_dyn_class_name(object);
   ScrJsonBuf buffer;
@@ -11851,6 +11870,7 @@ static void scr_dyn_throw_property(const ScrDyn *object, const char *key, size_t
   }
   if (!deleting) scr_jb_puts(&buffer, "'");
   scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&buffer));
+  if (!deleting) scr_dyn_note_assign_failure();
 }
 
 /* One lookup of the own property decides the assignment: an own property
@@ -11940,6 +11960,7 @@ static void scr_dyn_object_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value, con
     scr_jb_write(&buffer, key->data, key->len);
     scr_jb_puts(&buffer, ", object is not extensible");
     scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&buffer));
+    scr_dyn_note_assign_failure();
     return;
   }
   scr_dyn_obj_set(recv, key->data, key->len, scr_dyn_retain(value));
@@ -12006,6 +12027,7 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
     if (key->len == 6 && memcmp(key->data, "length", 6) == 0) {
       if (recv->v.arr.frozen) {
         scr_array_frozen_error(3, recv->v.arr.len, 0, 0, 0);
+        scr_dyn_note_assign_failure();
         return;
       }
       double number;
@@ -12025,6 +12047,7 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
       while (recv->v.arr.len > length) {
         if (recv->v.arr.sealed && scr_dyn_arr_has_index(recv, recv->v.arr.len - 1)) {
           scr_array_frozen_error(5, recv->v.arr.len, (double)(recv->v.arr.len - 1), 0, 0);
+          scr_dyn_note_assign_failure();
           return;
         }
         scr_dyn_release(recv->v.arr.items[--recv->v.arr.len]);
@@ -12044,11 +12067,13 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
       if (scr_dyn_array_prototype_element_fence(recv)) return;
       if (recv->v.arr.frozen && idx < recv->v.arr.len && scr_dyn_arr_has_index(recv, idx)) {
         scr_array_frozen_error(0, recv->v.arr.len, (double)idx, 0, 0);
+        scr_dyn_note_assign_failure();
         return;
       }
       if (recv->non_extensible && !scr_dyn_arr_has_index(recv, idx)) {
         /* An absent index, a hole included, is a property to add. */
         scr_array_frozen_error(0, 0, (double)idx, 0, 0);
+        scr_dyn_note_assign_failure();
         return;
       }
       if (idx > recv->v.arr.len + 1000000) {
@@ -12143,6 +12168,19 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
     }
   }
   scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+}
+
+/* Sloppy-mode assignments (the compiler's IrModule.sloppyDynWrites). */
+void scr_dyn_key_set_sloppy(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
+  scr_dyn_assign_failure = NULL;
+  scr_dyn_key_set(recv, key, value);
+  scr_dyn_sloppy_settle();
+}
+
+void scr_dyn_key_set_computed_sloppy(ScrDyn *recv, ScrDyn *key, ScrDyn *value) {
+  scr_dyn_assign_failure = NULL;
+  scr_dyn_key_set_computed(recv, key, value);
+  scr_dyn_sloppy_settle();
 }
 
 void scr_dyn_key_set_computed(ScrDyn *recv, ScrDyn *key, ScrDyn *value) {

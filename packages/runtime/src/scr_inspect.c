@@ -1283,8 +1283,8 @@ ScrStr *scr_insp_error(ScrError *e, double recurse, double depth) {
 /* util.inspect's text for an accessor property: [Getter], [Setter] or
  * [Getter/Setter], by which of the two are functions. +1. */
 static ScrStr *insp_accessor_tag(const ScrDynEntry *ent) {
-  bool get = ent->getter && ent->getter->kind == SCR_DYN_FUNC;
-  bool set = ent->setter && ent->setter->kind == SCR_DYN_FUNC;
+  bool get = SCR_DYN_ENTRY_GETTER(ent) && SCR_DYN_ENTRY_GETTER(ent)->kind == SCR_DYN_FUNC;
+  bool set = SCR_DYN_ENTRY_SETTER(ent) && SCR_DYN_ENTRY_SETTER(ent)->kind == SCR_DYN_FUNC;
   const char *text = get && set ? "[Getter/Setter]" : get ? "[Getter]" : set ? "[Setter]" : "undefined";
   return scr_str_new(text, strlen(text));
 }

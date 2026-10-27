@@ -951,6 +951,44 @@ Also: overlapping 8-byte key compares for keys of 9–16 bytes, and `scr_dyn_pro
 - **Upper bound for a nursery:** freeing is 17% and cycle collection about 3.5%, so a scheme where dead objects cost nothing removes at most about 25–30%. Exact reference counting in compiled code plus a young generation needs either deferred counting (the LXR design: no counts for young objects, plus finding every reference to them from the stack and old objects) or batched deaths. Batched deaths visit each dead object two or three times and may not win.
 - **A per-record pointer to its capsule** (instead of the identity table): about 2%. Record capsules are created on several runtime paths that would all have to use it, or one record could get two capsules.
 
+## Plan: matching and beating Node without changing React (Oct 27)
+
+React stays unmodified; the work is in scriptc, and each step is general, so every library like React benefits. Node's advantage comes from three things we pay for: cheap objects (one block, properties inline, bump allocation), free death (a young generation that never visits dead objects), and single-load property access. The plan attacks them in the order that is most efficient and least risky:
+
+1. **V8-style objects in the runtime.**
+   - **Layout:** a small checked-dynamic object stores its properties inside its own allocation, and its keys come from its shape instead of per-entry key pointers. Large or growing objects spill to a separate store.
+   - **Effect:** this halves allocations and frees for props, config and children objects, removes per-entry key bookkeeping, and makes reads one load at a known offset.
+   - **Scope:** internal to the runtime's object layer; the ownership model stays as it is.
+2. **Escape analysis in the compiler.** Objects proven not to outlive a call are allocated on the stack or split into locals: no counts, no free. This builds on the existing borrow, move and record-scalarization analyses, and applies to static code too.
+3. **Whole-program shape inference for untyped code.** Stable shapes for the app's objects and React's `mixed`/`any` paths, such as one component's props, become plain records with fixed layouts, with a checked-dynamic fallback where inference fails.
+4. **Regions or a nursery, measured again after 1–3.** With far fewer short-lived checked-dynamic objects left, the remaining teardown may no longer justify rewriting the memory model. A request region proven by escape analysis is the compile-time option; a nursery with write barriers and stack maps is the runtime one.
+
+Expected outcome: 1 and 2 should bring `/large` close to Node's 3.6 ms; beating it most likely needs 3 as well.
+
+## Part 27: step 1, cheaper checked objects (Oct 27)
+
+`/large` went from about 6.45 to about 6.3 ms; HTML is identical on every route.
+
+**A microbenchmark that isolates the gap.** Node against scriptc on plain object work (`/tmp/mb/obj.mjs`, and `/tmp/mb/tree2.mjs` with the work inside a function, as module initializers take no caches):
+
+| Test | Node | scriptc (start) | scriptc (now) |
+|---|---|---|---|
+| create-drop: `{a, b, c}` read and dropped | 0.7 ns | 1.4 ns | — |
+| create-keep: two million objects pushed, then freed | 12.4 ns | 100 ns | — |
+| read-poly: `.a` across five shapes | 3.0 ns | 11.3 ns | — |
+| tree: arrays of `{k, p: {v}}` built and dropped | 7.7 ns | 79.8 ns | 54 ns |
+
+Objects that die at once cost about the same in both. Objects that are kept and freed later cost 8–13 times more in scriptc, which is the per-object cost of creating, storing and freeing them.
+
+**Changes:**
+- **Compact entries:** an object entry is 32 bytes instead of 48. The key length is 32-bit, and an accessor's getter and setter live in a separate `ScrDynAccessorPair`, so data properties carry no two empty pointer fields. The value stays at offset 16, the stride and flag offsets moved in `js-ic.ts` and `dyn.ts`, and every getter/setter use goes through `SCR_DYN_ENTRY_GETTER`/`SETTER` and the slot helpers. Neutral on React; it halves entry memory.
+- **Moves into containers:** a statement `push` and a constant-key object literal take over their values' references (`scr_dyn_invoke_discard_move_id`, `scr_js_new_literal`). A fresh object stored into a container no longer takes a retain and a release, and that release, leaving a count of 1, made it a cycle candidate that its death then removed. The tree microbenchmark went from 79.8 to 61.7 ns, and React's `/large` gained 2.8%.
+- **No calls for absent side tables:** disposal skipped `free(NULL)` for an object's index, presence map and accessor pair, which went through the dynamic-linker stub each time.
+- **One-pass literal fill:** a cached literal writes all its entries in one loop (`scr_dyn_tier_fill`) instead of an append per member.
+- **Exact key bytes per object:** each object keeps the key bytes its slots hold (`slot_key_bytes`), updated wherever a slot's key changes, so disposal counts them into the pool's budget without a scan. Pooled nodes that alternate between literal shapes never matched the earlier "untouched keys" shortcut.
+
+**What the microbenchmark says next:** at 54 against 7.7 ns, the remaining cost is generic per-object work spread over allocation, the fill, releases, the destroy guard and disposal. That is what steps 2 and 3 remove: objects that are never heap-allocated (escape analysis) or that are records instead of checked objects (shape inference).
+
 ## Known scriptc gaps found along the way (not fixed)
 
 - **Dynamic stores and reads on functions:**

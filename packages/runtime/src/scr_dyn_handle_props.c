@@ -80,8 +80,8 @@ static bool hp_has(const ScrDyn *props, const char *key, size_t key_len) {
 static ScrDyn *hp_read(ScrDyn *props, ScrDyn *self, const char *key, size_t key_len) {
   ScrDynEntry *e = hp_entry(props, key, key_len);
   if (!e || !e->accessor) return scr_dyn_obj_read(props, key, key_len);
-  if (!e->getter) return scr_dyn_retain(scr_dyn_undefined());
-  ScrDyn *getter = scr_dyn_retain(e->getter);
+  if (!SCR_DYN_ENTRY_GETTER(e)) return scr_dyn_retain(scr_dyn_undefined());
+  ScrDyn *getter = scr_dyn_retain(SCR_DYN_ENTRY_GETTER(e));
   scr_dyn_this_push_dyn(self);
   ScrDyn *result = scr_dyn_call(getter, NULL, 0, "getter");
   scr_dyn_this_pop();
@@ -136,7 +136,7 @@ static bool hp_set(void *h, const char *key, size_t key_len, const ScrDyn *value
   if (entry && entry->accessor) {
     /* An accessor's setter runs on the child. Without one the write throws
      * the strict-mode TypeError, as the other handle getters do. */
-    if (!entry->setter) {
+    if (!SCR_DYN_ENTRY_SETTER(entry)) {
       /* Built at its exact length: a property name has no length limit. */
       static const char head[] = "Cannot set property ";
       static const char tail[] = " of #<ChildProcess> which has only a getter";
@@ -150,7 +150,7 @@ static bool hp_set(void *h, const char *key, size_t key_len, const ScrDyn *value
       free(msg);
       return true;
     }
-    ScrDyn *setter = scr_dyn_retain(entry->setter);
+    ScrDyn *setter = scr_dyn_retain(SCR_DYN_ENTRY_SETTER(entry));
     ScrDyn *self = scr_dyn_new_handle(h, SCR_DYNH_CHILD);
     ScrDyn *arg = (ScrDyn *)value;
     scr_dyn_this_push_dyn(self);

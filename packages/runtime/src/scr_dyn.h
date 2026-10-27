@@ -6,6 +6,8 @@
 #ifndef SCR_DYN_H
 #define SCR_DYN_H
 
+#include <stdint.h>
+#include <stdlib.h>
 #include "scr_regex.h"
 #include "scr_url.h"
 #include "scr_symbol.h"
@@ -318,12 +320,16 @@ bool scr_message_fields(const struct ScrMessage *message, size_t node, const cha
 /* Object member. Keys own shared immutable UTF-8 bytes (NUL-terminated for
  * convenience; key_len excludes the NUL) — duplicate keys were already
  * collapsed at parse time (later wins, like JS JSON.parse). */
+/* An accessor property's functions (owned), apart from its entry: most
+ * properties are data, and the entry stays one compact record. */
+typedef struct ScrDynAccessorPair {
+  ScrDyn *getter;
+  ScrDyn *setter;
+} ScrDynAccessorPair;
+
 typedef struct {
   char *key;
-  size_t key_len;
-  ScrDyn *value; /* owned */
-  ScrDyn *getter; /* owned when this is an accessor property */
-  ScrDyn *setter; /* owned when this is an accessor property */
+  uint32_t key_len;
   bool accessor : 1;
   /* Snapshot written by trace before visiting children. Collected teardown
    * must not inspect the value: an earlier cycle member may already be freed.
@@ -336,12 +342,30 @@ typedef struct {
   bool writable;
   bool enumerable;
   bool configurable;
+  ScrDyn *value; /* owned */
+  /* An accessor property's getter and setter, NULL while it has none. */
+  ScrDynAccessorPair *pair;
 } ScrDynEntry;
 
-_Static_assert(sizeof(ScrDynEntry) == (sizeof(void *) == 8 ? 48 : 24),
+_Static_assert(sizeof(ScrDynEntry) == (sizeof(void *) == 8 ? 32 : 20),
                "LLVM checked-object readers use the target entry stride");
-_Static_assert(offsetof(ScrDynEntry, value) == 2 * sizeof(void *),
-               "LLVM checked-object readers use the third pointer-sized field");
+_Static_assert(offsetof(ScrDynEntry, value) == (sizeof(void *) == 8 ? 16 : 12),
+               "LLVM checked-object readers read the value here");
+_Static_assert(offsetof(ScrDynEntry, key_len) == sizeof(void *),
+               "LLVM checked-object readers read the key length here");
+
+#define SCR_DYN_ENTRY_GETTER(e) ((e)->pair ? (e)->pair->getter : NULL)
+#define SCR_DYN_ENTRY_SETTER(e) ((e)->pair ? (e)->pair->setter : NULL)
+
+/* The slot of an entry's getter or setter, creating the pair. */
+ScrDyn **scr_dyn_entry_getter_slot(ScrDynEntry *e);
+ScrDyn **scr_dyn_entry_setter_slot(ScrDynEntry *e);
+/* Frees the pair (its functions already released or moved). */
+static inline void scr_dyn_entry_free_pair(ScrDynEntry *e) {
+  if (!e->pair) return;
+  free(e->pair);
+  e->pair = NULL;
+}
 
 /* Element access for a live typed reference to a native ScrArr, emitted per
  * array type by the compiler. The runtime decides presence and length from
@@ -516,10 +540,10 @@ struct ScrDyn {
       /* Every entry slot from here up holds no key bytes, across the
        * node's pooled lives: disposal scans only the slots below it. */
       uint32_t key_slots;
-      /* The key bytes the node kept when it left the pool, while no slot's
-       * key has changed since (SCR_DYN_KEYS_TOUCHED once one has): its
-       * disposal returns them to the pool's budget without a scan. */
-      uint32_t untouched_key_bytes;
+      /* The key bytes its slots hold (sizeof(ScrDynKey) + length + 1
+       * each): disposal counts them into the pool's budget without a
+       * scan. */
+      uint32_t slot_key_bytes;
     } obj; /* owned */
     /* SCR_DYN_FUNC: the boxed closure (owned) + its call descriptor. `sig`
      * and `name` are static compiler-emitted literals (never freed); name
@@ -2027,13 +2051,17 @@ ScrDyn *scr_dyn_tier_unshaped_get(const ScrDyn *receiver, const ScrStr *key);
 /* Shared key bytes for `key` (+1, NUL-terminated), and their release. */
 char *scr_dyn_tier_key_copy(const char *key, size_t key_len);
 void scr_dyn_tier_key_release(char *key, size_t key_len);
-/* Records that a slot's key of `obj` changed (v.obj.untouched_key_bytes). */
-void scr_dyn_tier_keys_touched(ScrDyn *obj);
+/* Records that a slot of `obj` no longer holds a key of `key_len` bytes
+ * (v.obj.slot_key_bytes). */
+void scr_dyn_tier_slot_key_out(ScrDyn *obj, size_t key_len);
 /* Appends an own data property (writable, enumerable, configurable) that
  * `obj` does not have, sharing `key`'s bytes and taking ownership of
  * `value`, exactly as an ordinary insertion would; leaves the shape reset. */
 void scr_dyn_tier_append(ScrDyn *obj, char *key, size_t key_len, ScrDyn *value);
 bool scr_dyn_tier_clone_entries(ScrDyn *dst, ScrDyn *src);
+/* Fills an empty object with `n` (at most 32) data properties of distinct
+ * shared keys, taking over the values; leaves the shape reset. */
+void scr_dyn_tier_fill(ScrDyn *obj, size_t n, char *const *keys, const size_t *lens, ScrDyn *const *values);
 /* Swaps the entries of an empty ordinary object `dst` and an ordinary
  * object `src` nothing else references or watches weakly; false, both
  * untouched, otherwise. */

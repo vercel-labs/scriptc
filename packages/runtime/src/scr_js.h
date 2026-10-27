@@ -251,7 +251,7 @@ bool scr_js_keyed_store_probe(ScrDyn *receiver, const ScrDyn *key, ScrDyn *value
 bool scr_js_keyed_store_probe_str(ScrDyn *receiver, const ScrStr *name, ScrDyn *value);
 bool scr_js_copy_own_except(ScrDyn *dst, ScrDyn *src, const ScrStr *excluded);
 /* An object literal of distinct constant keys at a cached site
- * (scr_js_object.c): +1. */
+ * (scr_js_object.c), taking over the values: +1. */
 ScrDyn *scr_js_new_literal(ScrJsIc *ic, size_t n, ScrStr *const *keys, ScrDyn *const *values);
 /* The same copy from an owned parameter the function never reads again
  * (ir/for-in-copies.ts): it may move the source's entries instead. True

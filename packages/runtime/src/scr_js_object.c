@@ -29,8 +29,8 @@ _Static_assert(offsetof(ScrDyn, v.obj.len) == 16 && offsetof(ScrDyn, v.obj.entri
 _Static_assert(offsetof(ScrDyn, v.arr.len) == 16 && offsetof(ScrDyn, v.arr.items) == 32 &&
                offsetof(ScrDyn, v.arr.presence) == 56, "array element offsets");
 _Static_assert(offsetof(ScrDyn, prototype) == 96, "prototype offset");
-_Static_assert(sizeof(ScrDynEntry) == 48 && offsetof(ScrDynEntry, value) == 16 &&
-               offsetof(ScrDynEntry, writable) == 41, "entry layout");
+_Static_assert(sizeof(ScrDynEntry) == 32 && offsetof(ScrDynEntry, value) == 16 &&
+               offsetof(ScrDynEntry, writable) == 13, "entry layout");
 _Static_assert(sizeof(ScrJsIcEntry) == 40 && sizeof(ScrJsIc) == 168, "cache layout");
 #endif
 
@@ -499,27 +499,34 @@ static __attribute__((noinline)) ScrDyn *scr_js_probe_load(ScrDyn *receiver, con
 /* ── object literals ───────────────────────────────────────────────────── */
 
 /* An object literal whose members all have distinct constant keys (a
- * compiled literal site): a fresh ordinary object with `values` (borrowed)
- * under `keys`, in order. The site remembers the literal's shape, so a
+ * compiled literal site): a fresh ordinary object with `values` (each +1,
+ * taken over) under `keys`, in order. The site remembers the literal's shape, so a
  * repeat appends each value under the key bytes the shape holds and sets
  * the shape, with no transition lookup. +1. */
 ScrDyn *scr_js_new_literal(ScrJsIc *ic, size_t n, ScrStr *const *keys, ScrDyn *const *values) {
   ScrDyn *obj = scr_dyn_new_obj();
   const ScrJsShape *shape = ic->count ? ic->entry[0].target : NULL;
-  const ScrJsShape *path[SCR_JS_SHAPE_MAX];
   if (shape && shape->count == n) {
+    char *names[16];
+    size_t lens[16];
     const ScrJsShape *s = shape;
-    for (size_t i = n; i-- > 0; s = s->parent) path[i] = s;
-    for (size_t i = 0; i < n; i++)
-      scr_dyn_tier_append(obj, path[i]->key, path[i]->key_len, scr_dyn_retain(values[i]));
+    for (size_t i = n; i-- > 0; s = s->parent) {
+      names[i] = s->key;
+      lens[i] = s->key_len;
+    }
+    scr_dyn_tier_fill(obj, n, names, lens, values);
     obj->v.obj.shape = (ScrJsShape *)shape;
     return obj;
   }
   const ScrJsShape *s = &scr_js_root;
   for (size_t i = 0; i < n; i++) {
     if (s) s = scr_js_transition(s, keys[i]->data, keys[i]->len);
-    if (s) scr_dyn_tier_append(obj, s->key, s->key_len, scr_dyn_retain(values[i]));
-    else scr_dyn_key_set(obj, keys[i], values[i]);
+    if (s) {
+      scr_dyn_tier_append(obj, s->key, s->key_len, values[i]);
+    } else {
+      scr_dyn_key_set(obj, keys[i], values[i]);
+      scr_dyn_release(values[i]);
+    }
   }
   if (s) {
     obj->v.obj.shape = (ScrJsShape *)s;
@@ -843,7 +850,6 @@ bool scr_js_adopt_own_except(ScrDyn *dst, ScrDyn *src, const ScrStr *excluded) {
   if (!scr_dyn_tier_adopt_entries(dst, src)) return scr_js_copy_own_except(dst, src, excluded);
   uint64_t drop = memo->drop;
   if (drop) {
-    scr_dyn_tier_keys_touched(dst);
     ScrDynEntry *entries = dst->v.obj.entries;
     size_t kept = 0;
     for (size_t i = 0; i < count; i++) {
@@ -852,6 +858,7 @@ bool scr_js_adopt_own_except(ScrDyn *dst, ScrDyn *src, const ScrStr *excluded) {
         entries[kept++] = entry;
         continue;
       }
+      scr_dyn_tier_slot_key_out(dst, entry.key_len);
       scr_dyn_tier_key_release(entry.key, entry.key_len);
       scr_dyn_release(entry.value);
     }

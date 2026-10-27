@@ -267,7 +267,9 @@ export function emitDynamicExpr(
       }
       host.own({ name: prepared, type: { kind: "dyn" } });
       host.emitPendingCheck();
-      const args = e.args.map((a) => emitBorrowedInput(host, a));
+      // A statement-position push takes over its arguments' references.
+      const movesArgs = discarded && e.method === "push" && !DYN_BUFFER_METHODS.has(e.method);
+      const args = e.args.map((a) => (movesArgs ? host.emitExpr(a) : emitBorrowedInput(host, a)));
       // A closure registered as a 'message' listener gets a typed message
       // entry: ports deliver messages of its parameter's layout without
       // decoding them to checked-dynamic values first.
@@ -301,12 +303,13 @@ export function emitDynamicExpr(
       const invoke = DYN_BUFFER_METHODS.get(e.method) ?? "scr_dyn_invoke_prepared_id";
       // A statement-position push drops the new length, so its entry
       // need not box it.
-      if (discarded && e.method === "push" && invoke === "scr_dyn_invoke_prepared_id") {
+      if (movesArgs && invoke === "scr_dyn_invoke_prepared_id") {
+        for (const a of args) host.toHeap(a);
         host.declare(
-          `declare void @scr_dyn_invoke_discard_id(ptr, ptr, ptr, ptr, ptr, ${host.sizeType}, ptr)`,
+          `declare void @scr_dyn_invoke_discard_move_id(ptr, ptr, ptr, ptr, ptr, ${host.sizeType}, ptr)`,
         );
         B.line(
-          `call void @scr_dyn_invoke_discard_id(ptr ${recv.name}, ptr ${prepared}, ptr ${host.cstr(e.method)}, ptr ${host.methodIdSlot(e.method)}, ptr ${argsPtr}, ${host.sizeType} ${args.length}, ptr ${host.cstr(e.calleeName)})`,
+          `call void @scr_dyn_invoke_discard_move_id(ptr ${recv.name}, ptr ${prepared}, ptr ${host.cstr(e.method)}, ptr ${host.methodIdSlot(e.method)}, ptr ${argsPtr}, ${host.sizeType} ${args.length}, ptr ${host.cstr(e.calleeName)})`,
         );
         host.emitPendingCheck();
         return { name: "", type: VOID };
@@ -360,22 +363,26 @@ export function emitDynamicExpr(
       ) {
         // Every member a distinct constant key: the values in order, then
         // one call that fills the object through the site's shape (no
-        // member can observe the object before it exists).
+        // member can observe the object before it exists). The call takes
+        // over each value's reference, so a fresh member object moves in
+        // without a retain and release.
         const n = fields.length;
         const keys = B.slot(),
           values = B.slot();
         B.entryAllocas.push(`${keys} = alloca [${n} x ptr]`);
         B.entryAllocas.push(`${values} = alloca [${n} x ptr]`);
-        fields.forEach((f, i) => {
+        const owned = fields.map((f, i) => {
           const k = emitBorrowedInput(host, f.key);
-          const v = emitBorrowedInput(host, f.value);
+          const v = host.emitExpr(f.value);
           const kAt = B.tmp(),
             vAt = B.tmp();
           B.line(`${kAt} = getelementptr inbounds [${n} x ptr], ptr ${keys}, i64 0, i64 ${i}`);
           B.line(`store ptr ${k.name}, ptr ${kAt}`);
           B.line(`${vAt} = getelementptr inbounds [${n} x ptr], ptr ${values}, i64 0, i64 ${i}`);
           B.line(`store ptr ${v.name}, ptr ${vAt}`);
+          return v;
         });
+        for (const v of owned) host.toHeap(v);
         host.declare(`declare ptr @scr_js_new_literal(ptr, ${host.sizeType}, ptr, ptr)`);
         const built = B.tmp();
         B.line(

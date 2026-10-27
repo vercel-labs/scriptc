@@ -861,8 +861,8 @@ static void scr_rgn_walk_dyn(ScrRgnWalk *w, ScrDyn *d) {
     for (size_t i = 0; i < d->v.obj.len; i++) {
       const ScrDynEntry *e = &d->v.obj.entries[i];
       if (e->accessor) {
-        scr_rgn_enter(w, e->getter, SCR_RGN_W_DYN, NULL);
-        scr_rgn_enter(w, e->setter, SCR_RGN_W_DYN, NULL);
+        scr_rgn_enter(w, SCR_DYN_ENTRY_GETTER(e), SCR_RGN_W_DYN, NULL);
+        scr_rgn_enter(w, SCR_DYN_ENTRY_SETTER(e), SCR_RGN_W_DYN, NULL);
       } else scr_rgn_enter(w, e->value, SCR_RGN_W_DYN, NULL);
     }
     break;

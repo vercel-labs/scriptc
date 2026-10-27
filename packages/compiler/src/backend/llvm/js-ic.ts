@@ -25,7 +25,7 @@
  *   ScrDyn       kind +8; v.obj {len +16, entries +32, region +72,
  *                shape +80}; v.arr {len +16, items +32, presence +56};
  *                v.num +16
- *   ScrDynEntry  48 bytes: value +16, accessor bit 0 of +40, writable +41
+ *   ScrDynEntry  32 bytes: value +16, accessor bit 0 of +12, writable +13
  *   ScrJsIc      entries of 40 bytes {shape, target, holder, holder_shape,
  *                slot}; 168 bytes in all */
 import { BOOL, DYN, F64, STRING, type IrExpr, type IrFunction } from "../../ir/ir.js";
@@ -42,7 +42,7 @@ type Host = LlvmEmitterContext;
 /** Words of one ScrJsIc record. */
 export const JS_IC_WORDS = 21;
 
-const ENTRY_STRIDE = 48;
+const ENTRY_STRIDE = 32;
 
 /** The cache site a call is, when it is emitted in a dynamic-tier function
  * of a 64-bit target. */
@@ -106,7 +106,7 @@ function entryAt(host: Host, d: string, slot: string): string {
 /** Branches to `miss` when the entry at `entry` is an accessor. */
 function dataEntry(host: Host, entry: string, miss: string): void {
   const B = host.B;
-  const flags = load(host, "i8", entry, 40);
+  const flags = load(host, "i8", entry, 12);
   const accessor = B.tmp();
   const isAccessor = B.tmp();
   B.line(`${accessor} = and i8 ${flags}, 1`);
@@ -231,8 +231,8 @@ function inlineReplace(
     B.startBlock(matched);
     const slot = load(host, "i64", ic, base + 32);
     const entry = entryAt(host, d, slot);
-    const flags = load(host, "i8", entry, 40);
-    const writable = load(host, "i8", entry, 41);
+    const flags = load(host, "i8", entry, 12);
+    const writable = load(host, "i8", entry, 13);
     const accessor = B.tmp();
     const data = B.tmp();
     const canWrite = B.tmp();

@@ -924,6 +924,19 @@ void scr_dyn_invoke_discard_id(ScrDyn *recv, ScrDyn *callee, const char *method,
   scr_dyn_release(scr_dyn_invoke_prepared_id(recv, callee, method, mid_slot, args, argc, what));
 }
 
+/* The same push, taking over each argument's reference: a plain array's
+ * push moves them in. */
+void scr_dyn_invoke_discard_move_id(ScrDyn *recv, ScrDyn *callee, const char *method,
+                                    int32_t *mid_slot, ScrDyn *const *args, size_t argc,
+                                    const char *what) {
+  if (!callee && dyn_arr_plain(recv) && dyn_site_method(method, mid_slot) == DYN_M_push) {
+    for (size_t i = 0; i < argc; i++) scr_dyn_arr_push(recv, args[i]);
+    return;
+  }
+  scr_dyn_release(scr_dyn_invoke_prepared_id(recv, callee, method, mid_slot, args, argc, what));
+  for (size_t i = 0; i < argc; i++) scr_dyn_release(args[i]);
+}
+
 static ScrDyn *scr_dyn_invoke_impl(
     ScrDyn *recv, const char *method, int mid, ScrDyn *const *args, size_t argc,
     const char *what, ScrDyn *callback_recv) {

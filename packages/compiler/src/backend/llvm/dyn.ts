@@ -27,8 +27,9 @@ import { InternalCompilerError } from "../../errors.js";
  *            v.arr { len +16, cap +24, items +32 };
  *            v.obj { len +16, cap +24, entries +32 };
  *            v.fn  { clo +16, thunk +24, sig +32, name +40, arity +48 }.
- *   ScrDynEntry { key, key_len, value, getter, setter, accessor, writable,
- *                 enumerable, configurable } — 48 bytes on 64-bit, 24 on 32-bit.
+ *   ScrDynEntry { key, key_len (u32), flags (accessor, writable,
+ *                 enumerable, configurable), value, pair } — 32 bytes on
+ *                 64-bit, 20 on 32-bit.
  *   ScrDynKind: NULL=0 BOOL=1 NUM=2 STR=3 ARR=4 OBJ=5 UNDEF=6 BYTES=7
  *               FUNC=8 HANDLE=9.
  *   ScrBytes { rc +0; len +8; elem +16; data +24 }.
@@ -845,7 +846,8 @@ export class LlDyn {
   }
 
   /** Object entry field addresses: entries + i*sizeof(ScrDynEntry), with
-   * key, key_len, and value at offsets 0, 8, and 16 on 64-bit targets. */
+   * key, key_len (32-bit), and value at offsets 0, 8, and 16 on 64-bit
+   * targets. */
   private entryAt(
     B: BlockBuilder,
     entries: string,
@@ -853,17 +855,23 @@ export class LlDyn {
   ): { key: string; keyLen: string; value: string } {
     const off = B.tmp();
     const base = B.tmp();
-    B.line(`${off} = mul ${this.S} ${i}, ${this.abiOffset(48, 24)} ; sizeof(ScrDynEntry)`);
+    B.line(`${off} = mul ${this.S} ${i}, ${this.abiOffset(32, 20)} ; sizeof(ScrDynEntry)`);
     B.line(`${base} = getelementptr inbounds i8, ptr ${entries}, ${this.S} ${off}`);
     const key = B.tmp();
     B.line(`${key} = load ptr, ptr ${base}`);
     const klp = B.tmp();
     const keyLen = B.tmp();
     B.line(`${klp} = getelementptr inbounds i8, ptr ${base}, i64 ${this.abiOffset(8, 4)}`);
-    B.line(`${keyLen} = load ${this.S}, ptr ${klp}`);
+    const keyLen32 = B.tmp();
+    B.line(`${keyLen32} = load i32, ptr ${klp}`);
+    B.line(
+      this.S === "i32"
+        ? `${keyLen} = add i32 ${keyLen32}, 0`
+        : `${keyLen} = zext i32 ${keyLen32} to ${this.S}`,
+    );
     const vp = B.tmp();
     const value = B.tmp();
-    B.line(`${vp} = getelementptr inbounds i8, ptr ${base}, i64 ${this.abiOffset(16, 8)}`);
+    B.line(`${vp} = getelementptr inbounds i8, ptr ${base}, i64 ${this.abiOffset(16, 12)}`);
     B.line(`${value} = load ptr, ptr ${vp}`);
     return { key, keyLen, value };
   }

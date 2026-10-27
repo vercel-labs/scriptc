@@ -1,1 +1,7 @@
-`eval`, `new Function`, and other ways of running JavaScript source at runtime are unsupported, in application code and in packages. Rewrite code that depends on them, or replace the package. To compute a value from code at build time instead, use `comptime`. See [npm Dependencies](/docs/dependencies#which-packages-compile) for which packages compile.
+A compiled program embeds no JavaScript engine, so it cannot run JavaScript source at runtime.
+`eval`, indirect `eval`, `new Function`, and `Function` behave as they do under `node --disallow-code-generation-from-strings`, a deliberate difference from default Node.js: every call throws a catchable `EvalError` with the message `Code generation from strings disallowed for this context`.
+The arguments are evaluated first, and the Function constructor converts them to strings before it throws, as Node.js does.
+Packages that test for code generation before using it, such as zod 4, take their interpreted path.
+Code that needs to evaluate source at runtime must be rewritten; to compute a value from code at build time, use `comptime`.
+The `vm` module is refused for the same reason.
+See [npm Dependencies](/docs/dependencies#which-packages-compile) for which packages compile.

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6042-regex-match-object-destructuring.ts"
+ ],
+ "diags": []
+}

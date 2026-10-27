@@ -24,6 +24,8 @@
  * `len`, it returns the capture count (whole match included) so the runtime
  * can check it against the compiled bytecode. */
 
+import { InternalCompilerError } from "../../errors.js";
+
 const ASCII = 128;
 const INF = -1;
 /** Larger patterns keep the interpreter (binary size). */
@@ -589,6 +591,90 @@ function firstOf(node: RxNode): FirstInfo {
   }
 }
 
+/** Positions the start filter tests and alternatives it keeps. */
+const PREFIX_LENGTH = 8;
+const PREFIX_ALTERNATIVES = 8;
+
+/** The character sets a match's first characters must belong to: every
+ * match of the node begins with the characters of some entry of `alts`,
+ * one set per character. `complete` means every match is exactly as long as
+ * its entry (so a following node continues the sequences). Null when the
+ * node gives no usable condition (an alternative that can start with
+ * anything, or too many alternatives). Assertions add no characters: the
+ * result stays a necessary condition. */
+interface Prefix {
+  alts: CharSet[][];
+  complete: boolean;
+}
+
+/** Each head followed by each tail, cut to PREFIX_LENGTH sets; null past
+ * PREFIX_ALTERNATIVES entries. */
+function crossPrefixes(heads: CharSet[][], tails: CharSet[][]): CharSet[][] | null {
+  if (heads.length * tails.length > PREFIX_ALTERNATIVES) return null;
+  const out: CharSet[][] = [];
+  for (const head of heads)
+    for (const tail of tails) out.push([...head, ...tail].slice(0, PREFIX_LENGTH));
+  return out;
+}
+
+/** Whether no entry was cut at PREFIX_LENGTH. */
+function uncut(alts: CharSet[][]): boolean {
+  return alts.every((alt) => alt.length < PREFIX_LENGTH);
+}
+
+function prefixOf(node: RxNode): Prefix | null {
+  switch (node.kind) {
+    case "set":
+      return { alts: [[node.set]], complete: true };
+    case "assert":
+      return { alts: [[]], complete: true };
+    case "cap":
+      return prefixOf(node.body);
+    case "alt": {
+      const alts: CharSet[][] = [];
+      let complete = true;
+      for (const alt of node.alts) {
+        const p = prefixOf(alt);
+        if (p === null) return null;
+        alts.push(...p.alts);
+        complete &&= p.complete;
+      }
+      return alts.length <= PREFIX_ALTERNATIVES ? { alts, complete } : null;
+    }
+    case "seq": {
+      let alts: CharSet[][] = [[]];
+      for (const item of node.items) {
+        const p = prefixOf(item);
+        if (p === null) return { alts, complete: false };
+        const joined = crossPrefixes(alts, p.alts);
+        if (joined === null) return { alts, complete: false };
+        alts = joined;
+        if (!p.complete || !uncut(alts)) return { alts, complete: false };
+      }
+      return { alts, complete: true };
+    }
+    case "rep": {
+      if (node.max === 0) return { alts: [[]], complete: true };
+      if (node.min === 0) return { alts: [[]], complete: false };
+      const body = prefixOf(node.body);
+      if (body === null) return null;
+      // The first `min` iterations are required; they extend the sequences
+      // while the body has a fixed length.
+      let alts = body.alts;
+      let covered = 1;
+      while (covered < node.min && body.complete && uncut(alts)) {
+        const joined = crossPrefixes(alts, body.alts);
+        if (joined === null) break;
+        alts = joined;
+        covered++;
+      }
+      const complete =
+        body.complete && covered === node.min && node.min === node.max && uncut(alts);
+      return { alts, complete };
+    }
+  }
+}
+
 /** Whether a node can match without consuming (assertions included). */
 function canMatchEmpty(node: RxNode): boolean {
   switch (node.kind) {
@@ -721,16 +807,74 @@ class RxGen {
     return wide;
   }
 
+  /** The vector plans of a start filter (prefixOf): per alternative, the
+   * plans of its first sets up to the first set without one. Null unless
+   * every alternative keeps at least two positions, where the filter is
+   * more selective than the first character alone. */
+  prefixPlans(prefix: Prefix | null): { ranges: number[][]; negate: boolean }[][] | null {
+    if (prefix === null || !this.vector) return null;
+    const plans: { ranges: number[][]; negate: boolean }[][] = [];
+    for (const alt of prefix.alts) {
+      const row: { ranges: number[][]; negate: boolean }[] = [];
+      for (const set of alt) {
+        const plan = this.vectorPlan(set);
+        if (plan === null) break;
+        row.push(plan);
+      }
+      if (row.length < 2) return null;
+      plans.push(row);
+    }
+    return plans.length === 0 ? null : plans;
+  }
+
+  /** Start positions s[index..index+16) where some alternative of the
+   * filter matches its first sets: an i16 mask. */
+  testPrefix(plans: { ranges: number[][]; negate: boolean }[][], index: string): string {
+    let any = "";
+    for (const row of plans) {
+      let all = "";
+      for (let k = 0; k < row.length; k++) {
+        let at = index;
+        if (k > 0) {
+          at = this.tmp();
+          this.line(`${at} = add i32 ${index}, ${k}`);
+        }
+        const bits = this.testVector(row[k]!, at);
+        if (all === "") all = bits;
+        else {
+          const both = this.tmp();
+          this.line(`${both} = and i16 ${all}, ${bits}`);
+          all = both;
+        }
+      }
+      if (any === "") any = all;
+      else {
+        const either = this.tmp();
+        this.line(`${either} = or i16 ${any}, ${all}`);
+        any = either;
+      }
+    }
+    return any;
+  }
+
   /** The first-character search: from %at, store the next position whose
-   * character is in `set` and branch to %attempt, or branch to %nomatch. */
-  emitSeek(set: CharSet): void {
+   * character is in `set` and branch to %attempt, or branch to %nomatch.
+   * With a start filter (`prefix`), the vector loop tests the filter's
+   * first sets of each alternative at 16 start positions at once and stops
+   * only where one of them matches all of its sets; a match can start
+   * nowhere else, so the attempts that remain are the ones that can
+   * succeed, in the same order. */
+  emitSeek(set: CharSet, prefix: Prefix | null = null): void {
     this.block("seek");
     const a = this.tmp();
     this.line(`${a} = load i32, ptr %at`);
+    const filter = this.prefixPlans(prefix);
     const plan = this.vectorPlan(set);
+    // The filter reads s[i + reach + 15] at its farthest.
+    const reach = filter === null ? 0 : Math.max(...filter.map((row) => row.length)) - 1;
     let from = "seek",
       start = a;
-    if (plan !== null) {
+    if (plan !== null || filter !== null) {
       const head = this.label("vsh"),
         load = this.label("vsl"),
         next = this.label("vsn"),
@@ -740,17 +884,21 @@ class RxGen {
       this.block(head);
       const i = this.tmp(),
         i16 = this.tmp(),
+        rest = this.tmp(),
         fits = this.tmp();
       this.line(`${i} = phi i32 [ ${a}, %seek ], [ ${i16}, %${next} ]`);
-      this.line(`${i16} = add i32 ${i}, 16`);
-      this.line(`${fits} = icmp sle i32 ${i16}, %len`);
+      // The characters left (0 <= i <= len, so this cannot wrap; i + 16
+      // can for subjects near 2^31 characters).
+      this.line(`${rest} = sub i32 %len, ${i}`);
+      this.line(`${fits} = icmp sge i32 ${rest}, ${16 + reach}`);
       this.line(`br i1 ${fits}, label %${load}, label %${tail}`);
       this.block(load);
-      const mask = this.testVector(plan, i),
+      const mask = filter !== null ? this.testPrefix(filter, i) : this.testVector(plan!, i),
         any = this.tmp();
       this.line(`${any} = icmp ne i16 ${mask}, 0`);
       this.line(`br i1 ${any}, label %${hit}, label %${next}`);
       this.block(next);
+      this.line(`${i16} = add i32 ${i}, 16`);
       this.line(`br label %${head}`);
       this.block(hit);
       const k = this.lowestBit(mask),
@@ -1001,10 +1149,10 @@ class RxGen {
       check = this.label("chk");
     this.block(entry);
     const p = this.loadPos(),
-      end = this.tmp(),
+      rest = this.tmp(),
       inb = this.tmp();
-    this.line(`${end} = add i32 ${p}, ${sets.length}`);
-    this.line(`${inb} = icmp sle i32 ${end}, %len`);
+    this.line(`${rest} = sub i32 %len, ${p}`);
+    this.line(`${inb} = icmp sge i32 ${rest}, ${sets.length}`);
     this.line(`br i1 ${inb}, label %${check}, label %fail`);
     this.block(check);
     let acc = "";
@@ -1023,6 +1171,8 @@ class RxGen {
         acc = both;
       }
     }
+    const end = this.tmp();
+    this.line(`${end} = add i32 ${p}, ${sets.length}`);
     // Storing before the branch is safe: every resume sets the position.
     this.storePos(end);
     this.line(`br i1 ${acc}, label %${succ}, label %fail`);
@@ -1229,10 +1379,11 @@ class RxGen {
       this.block(vhead);
       const kv = this.tmp(),
         kv16 = this.tmp(),
+        left = this.tmp(),
         fits = this.tmp();
       this.line(`${kv} = phi i32 [ 0, %${entry} ], [ ${kv16}, %${vnext} ]`);
-      this.line(`${kv16} = add i32 ${kv}, 16`);
-      this.line(`${fits} = icmp sle i32 ${kv16}, ${lim}`);
+      this.line(`${left} = sub i32 ${lim}, ${kv}`);
+      this.line(`${fits} = icmp sge i32 ${left}, 16`);
       this.line(`br i1 ${fits}, label %${vload}, label %${tail}`);
       this.block(vload);
       const vat = this.tmp();
@@ -1242,6 +1393,7 @@ class RxGen {
       this.line(`${all} = icmp eq i16 ${mask}, -1`);
       this.line(`br i1 ${all}, label %${vnext}, label %${vexit}`);
       this.block(vnext);
+      this.line(`${kv16} = add i32 ${kv}, 16`);
       this.line(`br label %${vhead}`);
       this.block(vexit);
       const missing = this.tmp();
@@ -1639,6 +1791,40 @@ function parseSubset(pattern: string, flags: string): { root: RxNode; ncap: numb
   }
 }
 
+/** The capture count of a regex literal (the whole match included) and,
+ * per capture, whether every match sets it: no alternation of several
+ * branches and no repetition that can run zero times encloses it. Null
+ * when the pattern is outside the parsed subset. */
+export function regexLiteralCaptures(
+  pattern: string,
+  flags: string,
+): { count: number; always: boolean[] } | null {
+  const parsed = parseSubset(pattern, flags);
+  if (!parsed) return null;
+  const always = Array.from({ length: parsed.ncap }, (_, i) => i === 0);
+  const walk = (node: RxNode, sure: boolean): void => {
+    switch (node.kind) {
+      case "cap":
+        always[node.index] = sure;
+        walk(node.body, sure);
+        return;
+      case "seq":
+        for (const item of node.items) walk(item, sure);
+        return;
+      case "alt":
+        for (const alt of node.alts) walk(alt, sure && node.alts.length === 1);
+        return;
+      case "rep":
+        walk(node.body, sure && node.min > 0);
+        return;
+      default:
+        return;
+    }
+  };
+  walk(parsed.root, true);
+  return { count: parsed.ncap, always };
+}
+
 /** Whether a literal compiles to a native matcher (tests and size caps). */
 export function regexLiteralCompiles(pattern: string, flags: string): boolean {
   return parseSubset(pattern, flags) !== null;
@@ -1669,10 +1855,13 @@ export function compileRegexMatcher(
   flags: string,
   sizeType: string,
   vector: boolean,
+  replacement: string | null = null,
 ): RegexMatcherCode | null {
   const parsed = parseSubset(pattern, flags);
   if (parsed === null) return null;
   const sticky = flags.includes("y");
+  if (replacement !== null && !canReplaceWith(pattern, flags, replacement))
+    throw new InternalCompilerError(`llvm emitter bug: no replacer for /${pattern}/${flags}`);
   const { root, ncap } = parsed;
   const gen = new RxGen(sym, ncap, vector);
   const end: FirstInfo = { set: emptySet(), nullable: true, bol: false, uncond: true };
@@ -1689,6 +1878,12 @@ export function compileRegexMatcher(
   fn.push(`  %stk = alloca ptr`);
   fn.push(`  %sbuf = alloca [64 x i32]`);
   for (let r = 0; r < gen.regs; r++) fn.push(`  %r${r} = alloca i32`);
+  if (replacement !== null) {
+    fn.push(`  %next = alloca i32`);
+    fn.push(`  %nfound = alloca i32`);
+    fn.push(`  store i32 0, ptr %next`);
+    fn.push(`  store i32 0, ptr %nfound`);
+  }
   fn.push(`  store ptr %sbuf, ptr %stk`);
   fn.push(`  store i32 64, ptr %scap`);
   fn.push(`  store i32 %start, ptr %at`);
@@ -1716,7 +1911,9 @@ export function compileRegexMatcher(
     } else {
       fn.push(`  br label %seek`);
     }
-    if (firstCount === 1) {
+    // A replacer seeks again after every match, often a few bytes on: the
+    // 16-byte scan avoids a memchr call per match.
+    if (firstCount === 1 && replacement === null) {
       fn.push(`seek:`);
       const byte = intervals(first.set)[0]![0]!;
       fn.push(`  %rest = sub i32 %len, %a`);
@@ -1735,7 +1932,10 @@ export function compileRegexMatcher(
       fn.push(`  store i32 %off.n, ptr %at`);
       fn.push(`  br label %attempt`);
     } else {
-      gen.emitSeek(first.set);
+      // A start filter over the first few characters (a single first byte
+      // keeps memchr).
+      const prefix = prefixOf(root);
+      gen.emitSeek(first.set, gen.prefixPlans(prefix) === null ? null : prefix);
     }
   }
 
@@ -1757,6 +1957,98 @@ export function compileRegexMatcher(
     fn.push(`  br i1 %over, label %nomatch, label %scan`);
   }
 
+  if (replacement !== null) {
+    emitReplaceMatch(fn, sym, replacement, vector);
+  } else {
+    emitReturnMatch(fn, ncap);
+  }
+
+  const result = replacement !== null ? "%n.found" : "0";
+  fn.push(`nomatch:`);
+  if (replacement !== null) {
+    fn.push(`  %n.next = load i32, ptr %next`);
+    fn.push(`  %n.nextp = getelementptr inbounds i8, ptr %out, i64 16`);
+    fn.push(`  %n.nextw = sext i32 %n.next to i64`);
+    fn.push(`  store i64 %n.nextw, ptr %n.nextp`);
+    fn.push(`  %n.found = load i32, ptr %nfound`);
+  }
+  fn.push(`  %n.stk = load ptr, ptr %stk`);
+  fn.push(`  %n.heap = icmp ne ptr %n.stk, %sbuf`);
+  fn.push(`  br i1 %n.heap, label %n.free, label %n.ret`);
+  fn.push(`n.free:`);
+  fn.push(`  call void @scr_regex_stack_free(ptr %n.stk)`);
+  fn.push(`  br label %n.ret`);
+  fn.push(`n.ret:`);
+  fn.push(`  ret i32 ${result}`);
+
+  gen.emitTail();
+  for (const l of gen.body) fn.push(l);
+  fn.push(`}`);
+
+  const decls = REGEX_MATCHER_DECLS.slice();
+  if (gen.body.some((l) => l.includes("@llvm.cttz.i16")))
+    decls.push(`declare i16 @llvm.cttz.i16(i16, i1 immarg)`);
+  if (!sticky && !first.nullable && firstCount === 1 && replacement === null)
+    decls.push(`declare ptr @memchr(ptr, i32, ${sizeType})`);
+  if (replacement !== null) {
+    decls.push(`declare void @scr_re_replace_out_reserve(ptr, i64)`);
+    decls.push(`declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1 immarg)`);
+  }
+  const globals = [...gen.globals];
+  if (replacement !== null && replacement.length > 0)
+    globals.push(
+      `@${sym}.rep = private unnamed_addr constant [${replacement.length} x i8] c"${llvmBytes(replacement)}"`,
+    );
+  return { lines: [...globals, ...fn], decls };
+}
+
+/** Whether a substitution can run through a build-time replacer: a global,
+ * non-sticky pattern that is not plain text (the runtime searches those as
+ * strings) and an ASCII replacement without `$` patterns. */
+export function canReplaceWith(pattern: string, flags: string, replacement: string): boolean {
+  if (!flags.includes("g") || flags.includes("y") || isPlainTextPattern(pattern, flags))
+    return false;
+  for (let i = 0; i < replacement.length; i++) {
+    const c = replacement.charCodeAt(i);
+    if (c >= ASCII || c === 0x24) return false;
+  }
+  return true;
+}
+
+/** scr_regex_plain_text's rule: a pattern of literal characters and escaped
+ * metacharacters (no letters under `i`) that the runtime searches as text. */
+function isPlainTextPattern(pattern: string, flags: string): boolean {
+  const fold = flags.includes("i");
+  if (pattern.length === 0 || pattern.length > 256) return false;
+  for (let i = 0; i < pattern.length; i++) {
+    let c = pattern[i]!;
+    if (c === "\\") {
+      if (i + 1 >= pattern.length) return false;
+      c = pattern[++i]!;
+      if (!"^$\\.*+?()[]{}|/".includes(c)) return false;
+    } else {
+      const code = c.charCodeAt(0);
+      if (code < 0x20 || code >= 0x7f || "^$.*+?()[]{}|".includes(c)) return false;
+    }
+    if (fold && /[a-z]/i.test(c)) return false;
+  }
+  return true;
+}
+
+function llvmBytes(text: string): string {
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    out +=
+      c >= 0x20 && c < 0x7f && c !== 0x22 && c !== 0x5c
+        ? text[i]
+        : `\\${c.toString(16).toUpperCase().padStart(2, "0")}`;
+  }
+  return out;
+}
+
+/** The match block of a matcher: store the capture pointers, return 1. */
+function emitReturnMatch(fn: string[], ncap: number): void {
   fn.push(`match:`);
   fn.push(`  %m.end = load i32, ptr %pos`);
   fn.push(`  %m.start = load i32, ptr %at`);
@@ -1782,25 +2074,72 @@ export function compileRegexMatcher(
   fn.push(`  br label %m.ret`);
   fn.push(`m.ret:`);
   fn.push(`  ret i32 1`);
+}
 
-  fn.push(`nomatch:`);
-  fn.push(`  %n.stk = load ptr, ptr %stk`);
-  fn.push(`  %n.heap = icmp ne ptr %n.stk, %sbuf`);
-  fn.push(`  br i1 %n.heap, label %n.free, label %n.ret`);
-  fn.push(`n.free:`);
-  fn.push(`  call void @scr_regex_stack_free(ptr %n.stk)`);
-  fn.push(`  br label %n.ret`);
-  fn.push(`n.ret:`);
-  fn.push(`  ret i32 0`);
-
-  gen.emitTail();
-  for (const l of gen.body) fn.push(l);
-  fn.push(`}`);
-
-  const decls = REGEX_MATCHER_DECLS.slice();
-  if (gen.body.some((l) => l.includes("@llvm.cttz.i16")))
-    decls.push(`declare i16 @llvm.cttz.i16(i16, i1 immarg)`);
-  if (!sticky && !first.nullable && firstCount === 1)
-    decls.push(`declare ptr @memchr(ptr, i32, ${sizeType})`);
-  return { lines: [...gen.globals, ...fn], decls };
+/** The match block of a replacer: append the gap since the previous match
+ * and the replacement to the output (ScrReReplaceOut: len, cap, next at
+ * 0, 8 and 16, then data), and continue the search at the match end, or one past it for an
+ * empty match, as the runtime's replace loop does. */
+function emitReplaceMatch(fn: string[], sym: string, replacement: string, vector: boolean): void {
+  const n = replacement.length;
+  fn.push(`match:`);
+  fn.push(`  %m.end = load i32, ptr %pos`);
+  fn.push(`  %m.start = load i32, ptr %at`);
+  fn.push(`  %m.next = load i32, ptr %next`);
+  fn.push(`  %m.gap = sub i32 %m.start, %m.next`);
+  fn.push(`  %m.gapw = zext i32 %m.gap to i64`);
+  fn.push(`  %m.lenp = getelementptr inbounds i8, ptr %out, i64 0`);
+  fn.push(`  %m.capp = getelementptr inbounds i8, ptr %out, i64 8`);
+  fn.push(`  %m.datap = getelementptr inbounds i8, ptr %out, i64 24`);
+  fn.push(`  %m.len0 = load i64, ptr %m.lenp`);
+  fn.push(`  %m.cap = load i64, ptr %m.capp`);
+  fn.push(`  %m.room = sub i64 %m.cap, %m.len0`);
+  // 16 bytes of slack past the gap and the replacement for the 16-byte copy.
+  fn.push(`  %m.need = add i64 %m.gapw, ${n + 32}`);
+  fn.push(`  %m.fits = icmp uge i64 %m.room, %m.need`);
+  fn.push(`  br i1 %m.fits, label %m.put, label %m.grow`);
+  fn.push(`m.grow:`);
+  fn.push(`  call void @scr_re_replace_out_reserve(ptr %out, i64 %m.need)`);
+  fn.push(`  br label %m.put`);
+  fn.push(`m.put:`);
+  fn.push(`  %m.data = load ptr, ptr %m.datap`);
+  fn.push(`  %m.len = load i64, ptr %m.lenp`);
+  fn.push(`  %m.dst = getelementptr inbounds i8, ptr %m.data, i64 %m.len`);
+  fn.push(`  %m.nextw = sext i32 %m.next to i64`);
+  fn.push(`  %m.src = getelementptr inbounds i8, ptr %s, i64 %m.nextw`);
+  if (vector) {
+    // A gap of at most 16 bytes with 16 readable subject bytes is one
+    // unaligned 16-byte copy.
+    fn.push(`  %m.small = icmp ule i32 %m.gap, 16`);
+    fn.push(`  %m.rest = sub i32 %len, %m.next`);
+    fn.push(`  %m.readable = icmp sge i32 %m.rest, 16`);
+    fn.push(`  %m.fast = and i1 %m.small, %m.readable`);
+    fn.push(`  br i1 %m.fast, label %m.copy16, label %m.copy`);
+    fn.push(`m.copy16:`);
+    fn.push(`  %m.v = load <16 x i8>, ptr %m.src, align 1`);
+    fn.push(`  store <16 x i8> %m.v, ptr %m.dst, align 1`);
+    fn.push(`  br label %m.rep`);
+  } else {
+    fn.push(`  br label %m.copy`);
+  }
+  fn.push(`m.copy:`);
+  fn.push(`  call void @llvm.memcpy.p0.p0.i64(ptr %m.dst, ptr %m.src, i64 %m.gapw, i1 false)`);
+  fn.push(`  br label %m.rep`);
+  fn.push(`m.rep:`);
+  fn.push(`  %m.rdst = getelementptr inbounds i8, ptr %m.dst, i64 %m.gapw`);
+  if (n > 0)
+    fn.push(`  call void @llvm.memcpy.p0.p0.i64(ptr %m.rdst, ptr @${sym}.rep, i64 ${n}, i1 false)`);
+  fn.push(`  %m.len1 = add i64 %m.len, %m.gapw`);
+  fn.push(`  %m.len2 = add i64 %m.len1, ${n}`);
+  fn.push(`  store i64 %m.len2, ptr %m.lenp`);
+  fn.push(`  store i32 %m.end, ptr %next`);
+  fn.push(`  %m.found0 = load i32, ptr %nfound`);
+  fn.push(`  %m.found1 = add i32 %m.found0, 1`);
+  fn.push(`  store i32 %m.found1, ptr %nfound`);
+  fn.push(`  %m.empty = icmp eq i32 %m.end, %m.start`);
+  fn.push(`  %m.after = add i32 %m.end, 1`);
+  fn.push(`  %m.at = select i1 %m.empty, i32 %m.after, i32 %m.end`);
+  fn.push(`  store i32 %m.at, ptr %at`);
+  fn.push(`  %m.past = icmp sgt i32 %m.at, %len`);
+  fn.push(`  br i1 %m.past, label %nomatch, label %scan`);
 }

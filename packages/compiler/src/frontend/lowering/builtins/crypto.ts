@@ -1,11 +1,14 @@
 import { lowerBuiltinByteInput, errorFirstBytesCallback, errorFirstCallback } from "./arguments.js";
 import { isKeyObjectValue } from "./key-object.js";
-import { boolLit, dynUndefinedExpr, varRef } from "../../../ir/build.js";
+import { lowerCreateEcdh } from "./ecdh.js";
+import { lowerCreateDiffieHellman, lowerGetDiffieHellman } from "./dh.js";
+import { boolLit, dynUndefinedExpr, nodeThrowExpr, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, own } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { CIPHER_TYPE_NAMES } from "../../type-mapper.js";
 import { CRYPTO_CIPHERS, CRYPTO_CURVES, CRYPTO_HASHES } from "../crypto-tables.js";
+import { stdlibGlobalNameOf } from "../surfaces.js";
 import {
   BOOL,
   BYTES_U8,
@@ -15,6 +18,7 @@ import {
   F64,
   type IrExpr,
   type IrLibFn,
+  type IrType,
   type IrStmt,
   STRING,
   type SrcLoc,
@@ -46,17 +50,17 @@ export function lowerCryptoComposedCall(
   // "hex"/"base64" encoding. Anything else falls through (null): bare
   // randomBytes lowers to a real Buffer through the crypto table, and
   // the .toString rides the ordinary Buffer method lowering.
-  if (recv.arguments.length !== 1) return null;
-  const encNode = call.arguments[0];
+  if (recv.arguments.nodes.length !== 1) return null;
+  const encNode = call.arguments.nodes[0];
   const encT = encNode ? lowerer.typeOf(encNode) : undefined;
   if (
-    call.arguments.length !== 1 ||
+    call.arguments.nodes.length !== 1 ||
     !encT?.isStringLiteralType() ||
     (encT.value !== "hex" && encT.value !== "base64")
   ) {
     return null;
   }
-  const size = lowerer.lowerExprExpecting(recv.arguments[0]!, F64);
+  const size = lowerer.lowerExprExpecting(recv.arguments.nodes[0]!, F64);
   const enc = lowerer.lowerExprExpecting(encNode!, STRING);
   return {
     kind: "libCall",
@@ -95,28 +99,30 @@ function lowerHashDigestChain(
       : null;
   if (!bi || bi.module !== "crypto" || bi.member !== "createHash") return null;
   const loc = locOf(call);
-  const algT = chCall.arguments.length === 1 ? lowerer.typeOf(chCall.arguments[0]!) : undefined;
+  const algT =
+    chCall.arguments.nodes.length === 1 ? lowerer.typeOf(chCall.arguments.nodes[0]!) : undefined;
   if (!algT?.isStringLiteralType() || (algT.value !== "sha256" && algT.value !== "sha1"))
     return null;
-  if (updateCall.arguments.length !== 1) {
+  if (updateCall.arguments.nodes.length !== 1) {
     return null;
   }
-  const encT = call.arguments.length === 1 ? lowerer.typeOf(call.arguments[0]!) : undefined;
+  const encT =
+    call.arguments.nodes.length === 1 ? lowerer.typeOf(call.arguments.nodes[0]!) : undefined;
   if (!encT?.isStringLiteralType() || (encT.value !== "hex" && encT.value !== "base64")) {
     return null;
   }
   // alg and enc are proven literals (fenced above), so lowering them
   // out of source position observes nothing; the data lowers between
   // them in its own source order.
-  const alg = lowerer.lowerExprExpecting(chCall.arguments[0]!, STRING);
+  const alg = lowerer.lowerExprExpecting(chCall.arguments.nodes[0]!, STRING);
   // The data picks the runtime entry by its static type, the
   // fileURLToPath convention: strings hash their UTF-8 bytes (Node's
   // default input encoding), Buffers/typed arrays hash their bytes.
-  const dataNode = updateCall.arguments[0]!;
+  const dataNode = updateCall.arguments.nodes[0]!;
   const dataIr = lowerer.mapTypeOf(lowerer.typeOf(dataNode));
   if (dataIr?.kind === "bytes") {
     const data = cryptoByteView(lowerer, dataNode, lowerer.lowerExpr(dataNode));
-    const enc = lowerer.lowerExprExpecting(call.arguments[0]!, STRING);
+    const enc = lowerer.lowerExprExpecting(call.arguments.nodes[0]!, STRING);
     return {
       kind: "libCall",
       fn: "crypto.hashDigestBytes",
@@ -127,7 +133,7 @@ function lowerHashDigestChain(
   }
   if (dataIr?.kind === "string") {
     const data = lowerer.lowerExprExpecting(dataNode, STRING);
-    const enc = lowerer.lowerExprExpecting(call.arguments[0]!, STRING);
+    const enc = lowerer.lowerExprExpecting(call.arguments.nodes[0]!, STRING);
     return {
       kind: "libCall",
       fn: "crypto.hashDigestStr",
@@ -237,7 +243,9 @@ function cryptoKdfInput(lowerer: Lowerer, node: ts.Expression): IrExpr {
   const symbol = lowerer.typeOf(node).getSymbol();
   if (
     type?.kind === "bytes" ||
-    (symbol?.name === "ArrayBuffer" && lowerer.isStdlibSymbol(symbol))
+    (symbol !== undefined &&
+      ts.symbolName(symbol) === "ArrayBuffer" &&
+      lowerer.isStdlibSymbol(symbol))
   ) {
     const value = lowerer.coerceInto(node, lowerer.lowerExpr(node), DYN);
     return { kind: "libCall", fn: "bytes.bufferSource", args: [value], type: BYTES_U8, loc };
@@ -256,10 +264,11 @@ export function lowerCryptoModuleCall(
   loc: SrcLoc,
 ): IrExpr | null {
   if (bi.module !== "crypto") return null;
-  const args = expr.arguments;
+  const args = expr.arguments.nodes;
   if (args.some(ts.isSpreadElement)) {
     lowerer.noLowering(`crypto.${bi.member} with spread arguments`, expr);
   }
+  if (bi.member === "getRandomValues") return lowerCryptoGetRandomValues(lowerer, expr);
   if (bi.member === "randomBytes") {
     if (args.length === 1) return null;
     if (args.length !== 2) {
@@ -402,6 +411,10 @@ export function lowerCryptoModuleCall(
       loc,
     };
   }
+  if (bi.member === "createECDH") return lowerCreateEcdh(lowerer, expr);
+  if (bi.member === "createDiffieHellman") return lowerCreateDiffieHellman(lowerer, expr);
+  if (bi.member === "getDiffieHellman" || bi.member === "createDiffieHellmanGroup")
+    return lowerGetDiffieHellman(lowerer, expr);
   if (bi.member === "createHmac") {
     if (args.length < 1 || args.length > 3 || args.some(ts.isSpreadElement)) {
       lowerer.noLowering(
@@ -464,8 +477,8 @@ export function lowerCryptoModuleCall(
     let options = args[2];
     // An options literal holding only a literal string-digest
     // outputEncoding is that encoding; evaluating it observes nothing.
-    if (options && ts.isObjectLiteralExpression(options) && options.properties.length === 1) {
-      const property = options.properties[0]!;
+    if (options && ts.isObjectLiteralExpression(options) && options.properties.nodes.length === 1) {
+      const property = options.properties.nodes[0]!;
       if (
         ts.isPropertyAssignment(property) &&
         ts.isIdentifier(property.name) &&
@@ -687,6 +700,10 @@ export function lowerCryptoModuleCall(
       loc,
     };
   }
+  const pki = lowerPkiCall(lowerer, expr, bi.member, args, loc);
+  if (pki) return pki;
+  const prime = lowerPrimeCall(lowerer, expr, bi.member, args, loc);
+  if (prime) return prime;
   if (bi.member === "createSecretKey") {
     if (args.length < 1 || args.length > 2 || args.some(ts.isSpreadElement))
       lowerer.noLowering(
@@ -819,8 +836,8 @@ export function lowerCryptoModuleCall(
   };
   const list = own(LISTS, bi.member);
   if (bi.member !== "getFips" && list === undefined) return null;
-  if (expr.arguments.length !== 0) {
-    lowerer.noLowering(`crypto.${bi.member} with ${expr.arguments.length} arguments`, expr);
+  if (expr.arguments.nodes.length !== 0) {
+    lowerer.noLowering(`crypto.${bi.member} with ${expr.arguments.nodes.length} arguments`, expr);
   }
   if (bi.member === "getFips") {
     return { kind: "numLit", value: 0, type: F64, loc };
@@ -852,11 +869,38 @@ const IMPLEMENTED_CIPHERS = new Set([
   "id-aes192-gcm",
   "id-aes256-gcm",
   "chacha20-poly1305",
+  ...["128", "192", "256"].flatMap((bits) => [
+    ...["ecb", "cfb", "cfb8", "cfb1", "ofb", "ccm"].map((mode) => `aes-${bits}-${mode}`),
+    `id-aes${bits}-ccm`,
+    ...["wrap", "wrap-pad"].flatMap((wrap) => [
+      `aes-${bits}-${wrap}`,
+      `aes${bits}-${wrap}`,
+      `id-aes${bits}-${wrap}`,
+      `aes-${bits}-${wrap}-inv`,
+      `aes${bits}-${wrap}-inv`,
+    ]),
+  ]),
+  "des-ede3-cbc",
+  "des3",
+  "des-ede3",
+  "des-ede3-ecb",
+  "des-ede3-cfb",
+  "des-ede3-cfb8",
+  "des-ede3-cfb1",
+  "des-ede3-ofb",
+  "des-ede-cbc",
+  "des-ede",
+  "des-ede-ecb",
+  "des-ede-cfb",
+  "des-ede-ofb",
+  "chacha20",
 ]);
 
 const SUPPORTED_CIPHERS_HINT =
-  "the supported ciphers are aes-128-cbc, aes-192-cbc, aes-256-cbc, aes-128-ctr, aes-192-ctr, " +
-  "aes-256-ctr, aes-128-gcm, aes-192-gcm, aes-256-gcm, and chacha20-poly1305";
+  "the supported ciphers are aes-128, aes-192 and aes-256 in cbc, ctr, gcm, ccm, ecb, cfb, cfb8, " +
+  "cfb1 and ofb modes and their wrap, wrap-pad, wrap-inv and wrap-pad-inv key wraps, des-ede3 in " +
+  "cbc, ecb, cfb, cfb8, cfb1 and ofb modes, des-ede in cbc, ecb, cfb and ofb modes, chacha20, and " +
+  "chacha20-poly1305";
 
 /** A literal cipher name that Node knows but the runtime does not
  * implement is refused at compile time. Unknown literal names keep Node's
@@ -874,8 +918,8 @@ export function isCipherType(lowerer: Lowerer, type: ts.Type): boolean {
   const symbol = type.getAliasSymbol() ?? type.getSymbol();
   return (
     !!symbol &&
-    CIPHER_TYPE_NAMES.has(symbol.name) &&
-    lowerer.checker.declarationsOf(symbol).some((d) => lowerer.isStdlibFile(d.getSourceFile()))
+    CIPHER_TYPE_NAMES.has(ts.symbolName(symbol)) &&
+    symbol.declarations.some((d) => lowerer.isStdlibFile(ts.getSourceFileOfNode(d)))
   );
 }
 
@@ -890,16 +934,17 @@ const CIPHER_METHODS = new Set([
 
 /** V8's spelling of a callee in "is not a function" messages: call
  * arguments render as "(...)". */
-function v8CalleeText(node: ts.Expression): string {
+export function v8CalleeText(node: ts.Expression): string {
   if (ts.isPropertyAccessExpression(node))
     return `${v8CalleeText(node.expression)}.${node.name.text}`;
   if (ts.isCallExpression(node)) return `${v8CalleeText(node.expression)}(...)`;
-  return node.getText();
+  return ts.getTextOfNode(node);
 }
 
 /** Calls on native Cipheriv/Decipheriv handles dispatch through the
  * handle's methods with checked-dynamic arguments. The stream.Transform
- * members the classes inherit are refused. */
+ * members the classes inherit lower over the cipher's Transform
+ * (lowerHashStreamCall, which runs first); other members are refused. */
 export function lowerCipherMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -912,10 +957,10 @@ export function lowerCipherMethodCall(
     lowerer.noLowering(
       `Cipheriv/Decipheriv.${name}`,
       call,
-      "update(), final(), setAAD(), setAutoPadding(), getAuthTag(), and setAuthTag() are supported; cipher streams are not",
+      "update(), final(), setAAD(), setAutoPadding(), getAuthTag(), setAuthTag(), and the stream members are supported",
     );
   }
-  if (call.arguments.some(ts.isSpreadElement))
+  if (call.arguments.nodes.some(ts.isSpreadElement))
     lowerer.noLowering(`Cipheriv/Decipheriv.${name} with spread arguments`, call);
   const loc = locOf(call);
   return {
@@ -923,7 +968,7 @@ export function lowerCipherMethodCall(
     recv: lowerer.lowerExprExpecting(access.expression, DYN),
     method: name,
     calleeName: v8CalleeText(access),
-    args: call.arguments.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+    args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
     type: DYN,
     loc,
   };
@@ -940,25 +985,43 @@ export function lowerCryptoHashMethodCall(
   if (call.questionDotToken || access.questionDotToken) return null;
   const receiverType = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
   if (receiverType?.kind !== "cryptoHash" && receiverType?.kind !== "cryptoHmac") return null;
-  if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
+  // Hmac has no copy(): Node reads the member as undefined and throws a
+  // TypeError once the arguments are evaluated.
+  if (receiverType.kind === "cryptoHmac" && name === "copy") {
+    if (call.arguments.nodes.some(ts.isSpreadElement))
+      lowerer.noLowering("Hmac.copy with spread arguments", call);
+    const evaluated = [access.expression, ...call.arguments.nodes].map((node): IrStmt => ({
+      kind: "exprStmt",
+      expr: lowerer.lowerExpr(node),
+      loc,
+    }));
+    return {
+      kind: "seqExpr",
+      stmts: evaluated,
+      result: nodeThrowExpr(1, "", `${ts.getTextOfNode(access)} is not a function`, DYN, loc),
+      type: DYN,
+      loc,
+    };
+  }
+  if (!lowerer.isStdlibMember(access)) return null;
   const receiver = (): IrExpr => lowerer.lowerExprExpecting(access.expression, receiverType);
   const hash = receiverType.kind === "cryptoHash";
   const label = hash ? "Hash" : "Hmac";
-  if (call.arguments.some(ts.isSpreadElement))
+  if (call.arguments.nodes.some(ts.isSpreadElement))
     lowerer.noLowering(`${label}.${name} with spread arguments`, call);
   if (name === "update") {
-    if (call.arguments.length < 1 || call.arguments.length > 2) {
+    if (call.arguments.nodes.length < 1 || call.arguments.nodes.length > 2) {
       lowerer.noLowering(
-        `${label}.update with ${call.arguments.length} arguments`,
+        `${label}.update with ${call.arguments.nodes.length} arguments`,
         call,
         "update(data[, inputEncoding]) is supported",
       );
     }
     const target = receiver();
-    const dataNode = call.arguments[0]!;
-    const encodingNode = call.arguments[1];
+    const dataNode = call.arguments.nodes[0]!;
+    const encodingNode = call.arguments.nodes[1];
     const dataType = lowerer.mapTypeOf(lowerer.typeOf(dataNode));
     // Indexed reads can retain optional storage after a nullish fallback
     // or narrowing. Use the proven argument type through a checked coercion.
@@ -1013,14 +1076,14 @@ export function lowerCryptoHashMethodCall(
     };
   }
   if (name === "digest") {
-    if (call.arguments.length > 1) {
+    if (call.arguments.nodes.length > 1) {
       lowerer.noLowering(
-        `${label}.digest with ${call.arguments.length} arguments`,
+        `${label}.digest with ${call.arguments.nodes.length} arguments`,
         call,
         "digest([outputEncoding]) is supported",
       );
     }
-    const encodingNode = call.arguments[0];
+    const encodingNode = call.arguments.nodes[0];
     if (encodingNode === undefined) {
       return {
         kind: "libCall",
@@ -1059,13 +1122,13 @@ export function lowerCryptoHashMethodCall(
     };
   }
   if (name === "copy" && hash) {
-    if (call.arguments.length > 1)
+    if (call.arguments.nodes.length > 1)
       lowerer.noLowering(
-        `Hash.copy with ${call.arguments.length} arguments`,
+        `Hash.copy with ${call.arguments.nodes.length} arguments`,
         call,
         "copy([options]) is supported",
       );
-    if (call.arguments.length === 0)
+    if (call.arguments.nodes.length === 0)
       return {
         kind: "libCall",
         fn: "crypto.hashCopy",
@@ -1076,7 +1139,7 @@ export function lowerCryptoHashMethodCall(
     return {
       kind: "libCall",
       fn: "crypto.hashCopyOpts",
-      args: [receiver(), lowerer.lowerExprExpecting(call.arguments[0]!, DYN)],
+      args: [receiver(), lowerer.lowerExprExpecting(call.arguments.nodes[0]!, DYN)],
       type: CRYPTOHASH_T,
       loc,
     };
@@ -1089,4 +1152,330 @@ export function lowerCryptoHashMethodCall(
       : "update() and digest() are supported",
     lowerer.checker.getSymbolAtLocation(access.name),
   );
+}
+
+/** The crypto callback functions util.promisify converts. */
+const PROMISIFIED_CRYPTO_ARITY: Readonly<Record<string, readonly [number, number] | undefined>> = {
+  randomBytes: [1, 1],
+  pbkdf2: [5, 5],
+  scrypt: [3, 4],
+  hkdf: [5, 5],
+  randomFill: [1, 3],
+  randomInt: [1, 2],
+  generateKey: [1, 2],
+};
+
+export function isPromisifiedCryptoMember(member: string): boolean {
+  return PROMISIFIED_CRYPTO_ARITY[member] !== undefined;
+}
+
+/** A call through `promisify(crypto.randomBytes)` and the other callback
+ * functions: the callback form runs with a callback that settles the
+ * returned promise, so the value or error arrives where the callback
+ * would run. An argument error rejects the promise instead of throwing,
+ * as the throw inside Node's promisify wrapper does. The promise's value
+ * type follows the declared result: a Buffer or the filled view, or a
+ * checked-dynamic value where the declarations give `unknown`. */
+export function lowerPromisifiedCryptoCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  member: string,
+  loc: SrcLoc,
+): IrExpr {
+  const args = expr.arguments.nodes;
+  if (args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(`the promisified crypto.${member} with spread arguments`, expr);
+  }
+  const [min, max] = PROMISIFIED_CRYPTO_ARITY[member]!;
+  if (args.length < min || args.length > max) {
+    lowerer.noLowering(
+      `the promisified crypto.${member} with ${args.length} arguments`,
+      expr,
+      `the promisified form takes the callback form's arguments without the callback`,
+    );
+  }
+  const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  const inner = declared?.kind === "promise" ? declared.inner : null;
+  const promise = (
+    fn: IrLibFn,
+    values: IrExpr[],
+    accepts: (t: IrType) => boolean,
+    what: string,
+  ): IrExpr => {
+    if (inner === null || !accepts(inner)) {
+      lowerer.noLowering(
+        `the promisified crypto.${member} with a '${declared ? lowerer.fmt(declared) : "?"}' result`,
+        expr,
+        `the promise's value type must be ${what} or unknown`,
+      );
+    }
+    return { kind: "libCall", fn, args: values, type: { kind: "promise", inner }, loc };
+  };
+  const bufferOrDyn = (t: IrType) => t.kind === "dyn" || (t.kind === "bytes" && t.elem === "u8");
+  if (member === "randomBytes") {
+    return promise(
+      "crypto.randomBytesPromise",
+      [lowerer.lowerExprExpecting(args[0]!, F64)],
+      bufferOrDyn,
+      "Buffer",
+    );
+  }
+  if (member === "pbkdf2") {
+    return promise(
+      "crypto.pbkdf2Promise",
+      [
+        lowerBuiltinByteInput(lowerer, args[0]!, locOf(args[0]!), "crypto"),
+        lowerBuiltinByteInput(lowerer, args[1]!, locOf(args[1]!), "crypto"),
+        lowerer.lowerExprExpecting(args[2]!, F64),
+        lowerer.lowerExprExpecting(args[3]!, F64),
+        cryptoAlgorithm(lowerer, args[4]!),
+      ],
+      bufferOrDyn,
+      "Buffer",
+    );
+  }
+  if (member === "scrypt") {
+    return promise(
+      "crypto.scryptPromise",
+      [
+        cryptoKdfInput(lowerer, args[0]!),
+        cryptoKdfInput(lowerer, args[1]!),
+        lowerer.lowerExprExpecting(args[2]!, F64),
+        args[3]
+          ? lowerer.coerceInto(args[3], lowerer.lowerExpr(args[3]), DYN)
+          : dynUndefinedExpr(loc),
+      ],
+      bufferOrDyn,
+      "Buffer",
+    );
+  }
+  if (member === "hkdf") {
+    return promise(
+      "crypto.hkdfPromise",
+      [
+        cryptoAlgorithm(lowerer, args[0]!),
+        isKeyObjectValue(lowerer, args[1]!)
+          ? {
+              kind: "libCall",
+              fn: "crypto.keyObjectInput",
+              args: [lowerer.lowerExprExpecting(args[1]!, DYN)],
+              type: BYTES_U8,
+              loc,
+            }
+          : cryptoKdfInput(lowerer, args[1]!),
+        cryptoKdfInput(lowerer, args[2]!),
+        cryptoKdfInput(lowerer, args[3]!),
+        lowerer.lowerExprExpecting(args[4]!, F64),
+      ],
+      (t) => t.kind === "dyn",
+      "ArrayBuffer",
+    );
+  }
+  if (member === "randomFill") {
+    // Node's randomFill counts the arguments before the callback.
+    const form: IrExpr = { kind: "numLit", value: args.length, type: F64, loc };
+    const buffer = lowerer.lowerExpr(args[0]!);
+    if (buffer.type.kind === "bytes" && cryptoNumberArgs(lowerer, args.slice(1))) {
+      const view = buffer.type;
+      return promise(
+        "crypto.randomFillPromise",
+        [
+          buffer,
+          args.length >= 2
+            ? lowerer.lowerExprExpecting(args[1]!, F64)
+            : { kind: "numLit", value: 0, type: F64, loc },
+          args.length === 3
+            ? lowerer.lowerExprExpecting(args[2]!, F64)
+            : { kind: "numLit", value: 0, type: F64, loc },
+          form,
+        ],
+        (t) => t.kind === "dyn" || (t.kind === "bytes" && t.elem === view.elem),
+        "the buffer's own view",
+      );
+    }
+    return promise(
+      "crypto.randomFillPromiseDyn",
+      [
+        lowerer.coerceInto(args[0]!, buffer, DYN),
+        dynArg(lowerer, args[1], loc),
+        dynArg(lowerer, args[2], loc),
+        form,
+      ],
+      (t) => t.kind === "dyn",
+      "the buffer's own type",
+    );
+  }
+  if (member === "randomInt") {
+    return promise(
+      "crypto.randomIntPromise",
+      [
+        args.length === 2
+          ? lowerer.lowerExprExpecting(args[0]!, F64)
+          : { kind: "numLit", value: 0, type: F64, loc },
+        lowerer.lowerExprExpecting(args[args.length - 1]!, F64),
+        { kind: "numLit", value: args.length === 2 ? 1 : 0, type: F64, loc },
+      ],
+      (t) => t.kind === "dyn" || t.kind === "f64",
+      "number",
+    );
+  }
+  return promise(
+    "crypto.generateKeyPromise",
+    [lowerer.lowerExprExpecting(args[0]!, DYN), dynArg(lowerer, args[1], loc)],
+    (t) => t.kind === "dyn",
+    "KeyObject",
+  );
+}
+
+/** `crypto.getRandomValues(view)` — the WebCrypto global, node:crypto's
+ * export and `webcrypto.getRandomValues`: a typed view fills in place and
+ * returns itself at its own type (float views, DataViews and views over
+ * 65536 bytes throw Node's DOMExceptions at run time); any other value
+ * takes the checked form. Null for other arities (the member fence keeps
+ * them). */
+export function lowerCryptoGetRandomValues(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+): IrExpr | null {
+  if (call.arguments.nodes.length !== 1 || ts.isSpreadElement(call.arguments.nodes[0]!))
+    return null;
+  const loc = locOf(call);
+  const value = lowerer.lowerExpr(call.arguments.nodes[0]!);
+  if (value.type.kind === "bytes")
+    return { kind: "libCall", fn: "crypto.getRandomValues", args: [value], type: value.type, loc };
+  return {
+    kind: "libCall",
+    fn: "crypto.getRandomValuesDyn",
+    args: [lowerer.coerceInto(call.arguments.nodes[0]!, value, DYN)],
+    type: DYN,
+    loc,
+  };
+}
+
+/** Whether `receiver` names a WebCrypto Crypto object: the `crypto`
+ * global (also through globalThis or an alias of it) or node:crypto's
+ * `webcrypto`. */
+export function isWebCryptoReceiver(lowerer: Lowerer, receiver: ts.Expression): boolean {
+  if (stdlibGlobalNameOf(lowerer, receiver) === "crypto") return true;
+  if (ts.isIdentifier(receiver)) {
+    if (receiver.text === "crypto" && lowerer.isStdlibGlobal(receiver, "crypto")) return true;
+    const imported = lowerer.builtinImportOf(receiver);
+    return imported?.module === "crypto" && imported.member === "webcrypto";
+  }
+  if (ts.isPropertyAccessExpression(receiver) && !receiver.questionDotToken) {
+    if (
+      receiver.name.text === "crypto" &&
+      ts.isIdentifier(receiver.expression) &&
+      lowerer.isStdlibGlobal(receiver.expression, "globalThis")
+    )
+      return true;
+    const member = lowerer.builtinMemberOf(receiver);
+    return member?.module === "crypto" && member.member === "webcrypto";
+  }
+  return false;
+}
+
+/** Node calls checkPrime's and generatePrime's callbacks with undefined as
+ * the error, where @types/node declares Error | null: whether this
+ * callback's error parameter can hold undefined. One that cannot receives
+ * null instead. */
+function takesUndefinedError(lowerer: Lowerer, callback: ts.Expression): boolean {
+  const type = lowerer.irTypeOf(callback);
+  if (type.kind !== "func") return true;
+  const error = type.params[0];
+  if (error === undefined || error.kind === "dyn" || error.kind === "undefinedT") return true;
+  if (error.kind !== "union") return false;
+  return !!lowerer.unions.get(error.unionId)?.arms.some((arm) => arm.kind === "undefinedT");
+}
+
+/** checkPrime, checkPrimeSync, generatePrime and generatePrimeSync
+ * (scr_dh.c), and getCipherInfo (scr_cipher_info.c): checked-dynamic
+ * arguments, which the runtime checks as Node does (a function in the
+ * options position is the callback), and the sync forms' boolean,
+ * ArrayBuffer, bigint or info object converted to the call site's type.
+ * Null for other members. */
+function lowerPrimeCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  member: string,
+  args: readonly ts.Expression[],
+  loc: SrcLoc,
+): IrExpr | null {
+  const forms: Readonly<Record<string, readonly [IrLibFn, number, number, string]>> = {
+    checkPrimeSync: ["crypto.checkPrimeSync", 1, 2, "checkPrimeSync(candidate[, options])"],
+    checkPrime: ["crypto.checkPrimeCb", 1, 3, "checkPrime(candidate[, options], callback)"],
+    generatePrimeSync: ["crypto.generatePrimeSync", 1, 2, "generatePrimeSync(size[, options])"],
+    getCipherInfo: ["crypto.getCipherInfo", 0, 2, "getCipherInfo(nameOrNid[, options])"],
+    generatePrime: ["crypto.generatePrimeCb", 1, 3, "generatePrime(size[, options], callback)"],
+  };
+  const form = forms[member];
+  if (!form) return null;
+  const [fn, min, max, supported] = form;
+  if (args.length < min || args.length > max || args.some(ts.isSpreadElement))
+    lowerer.noLowering(
+      `crypto.${member} with ${args.length} arguments`,
+      expr,
+      `${supported} is supported`,
+    );
+  const values = Array.from({ length: max }, (_, i) => dynArg(lowerer, args[i], loc));
+  if (fn === "crypto.checkPrimeCb" || fn === "crypto.generatePrimeCb") {
+    const callback = args[args.length - 1];
+    const nullError = callback !== undefined && !takesUndefinedError(lowerer, callback);
+    values.push({ kind: "boolLit", value: nullError, type: BOOL, loc });
+    return { kind: "libCall", fn, args: values, type: VOID, loc };
+  }
+  const call: IrExpr = { kind: "libCall", fn, args: values, type: DYN, loc };
+  const result = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (result === null || result.kind === "dyn") return call;
+  return lowerer.coerceInto(expr, call, result);
+}
+
+/** The asymmetric-key and signature members (scr_pki.c): checked-dynamic
+ * arguments, and the result converted to the call site's type
+ * (KeyObject, Sign and Verify are checked-dynamic handles; key pairs,
+ * signatures and verdicts convert to their records, Buffers and
+ * booleans). Null for other members. */
+function lowerPkiCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  member: string,
+  args: readonly ts.Expression[],
+  loc: SrcLoc,
+): IrExpr | null {
+  const forms: Readonly<Record<string, readonly [IrLibFn, number, number, string]>> = {
+    createPrivateKey: ["crypto.createPrivateKey", 1, 1, "createPrivateKey(key)"],
+    createPublicKey: ["crypto.createPublicKey", 1, 1, "createPublicKey(key)"],
+    generateKeyPairSync: ["crypto.generateKeyPairSync", 1, 2, "generateKeyPairSync(type, options)"],
+    generateKeyPair: [
+      "crypto.generateKeyPairCb",
+      2,
+      3,
+      "generateKeyPair(type, [options,] callback)",
+    ],
+    sign: ["crypto.signOneshot", 3, 3, "sign(algorithm, data, key)"],
+    verify: ["crypto.verifyOneshot", 4, 4, "verify(algorithm, data, key, signature)"],
+    diffieHellman: ["crypto.diffieHellman", 1, 2, "diffieHellman(options[, callback])"],
+    createSign: ["crypto.createSign", 1, 1, "createSign(algorithm)"],
+    createVerify: ["crypto.createVerify", 1, 1, "createVerify(algorithm)"],
+  };
+  const form = forms[member];
+  if (!form) return null;
+  const [fn, min, max, supported] = form;
+  if (args.length < min || args.length > max)
+    lowerer.noLowering(
+      `crypto.${member} with ${args.length} arguments`,
+      expr,
+      `${supported} is supported`,
+    );
+  // generateKeyPair(type, callback): the runtime reads a function in the
+  // options position as the callback, as Node does.
+  const values: IrExpr[] = [];
+  for (let i = 0; i < max; i++) values.push(dynArg(lowerer, args[i], loc));
+  if (fn === "crypto.generateKeyPairCb")
+    return { kind: "libCall", fn, args: values, type: VOID, loc };
+  const call: IrExpr = { kind: "libCall", fn, args: values, type: DYN, loc };
+  const result = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  // diffieHellman's callback form answers undefined.
+  if (result === null || result.kind === "dyn" || result.kind === "void") return call;
+  return lowerer.coerceInto(expr, call, result);
 }

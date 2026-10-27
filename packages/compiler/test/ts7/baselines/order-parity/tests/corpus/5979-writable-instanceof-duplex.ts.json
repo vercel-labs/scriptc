@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5979-writable-instanceof-duplex.ts"
+ ],
+ "diags": []
+}

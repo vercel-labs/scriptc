@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7300-callback-captured-scalars.ts"
+ ],
+ "diags": []
+}

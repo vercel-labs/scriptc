@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6333-fluent-this-declaration-js/main.mjs"
+ ],
+ "diags": []
+}

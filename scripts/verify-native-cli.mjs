@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { verifyLinuxAbi } from "./verify-linux-abi.mjs";
 
@@ -26,10 +27,30 @@ const within = (path) => {
   if (child === ".." || child.startsWith(".." + sep) || isAbsolute(child))
     throw new Error(`distribution references external asset: ${path}`);
 };
+// An npm platform package depends on its LLVM helper and runtime pack
+// packages at its own version instead of bundling them.
+const platformPackages = toolchain.llvm_package === undefined;
+const dependencies = identity.dependencies ?? {};
+const dependency = (prefix) => {
+  const name = Object.keys(dependencies).find((key) => key.startsWith(prefix));
+  if (name === undefined || ![identity.version, "workspace:*"].includes(dependencies[name]))
+    throw new Error(
+      `${identity.name} must depend on its ${prefix}* package at ${identity.version}`,
+    );
+  return dirname(createRequire(join(root, "package.json")).resolve(`${name}/package.json`));
+};
+if (platformPackages && (toolchain.runtime_pack !== undefined || toolchain.runtime_packs))
+  throw new Error("a platform package's runtime pack is its dependency");
+const helperRoot = platformPackages
+  ? dependency("@scriptc/llvm-")
+  : resolve(dirname(binary), hostPath(toolchain.llvm_package));
+const runtimeRoot = platformPackages
+  ? dependency("@scriptc/runtime-")
+  : resolve(dirname(binary), hostPath(toolchain.runtime_pack));
 for (const name of [
   "ts7",
-  "llvm_package",
-  "runtime_pack",
+  "tsc_ts",
+  ...(platformPackages ? [] : ["llvm_package", "runtime_pack"]),
   "runtime_sources",
   "declarations",
   "comptime",
@@ -40,14 +61,18 @@ for (const name of [
     throw new Error(`native toolchain needs a relative ${name}`);
   within(resolve(dirname(binary), hostPath(value)));
 }
-const pack = JSON.parse(
-  readFileSync(
-    resolve(dirname(binary), hostPath(toolchain.runtime_pack), "runtime-pack.json"),
-    "utf8",
-  ),
-);
+// Optional: a compiler this host could not run while building ships without it.
+if (toolchain.lib_diagnostics !== undefined) {
+  const value = toolchain.lib_diagnostics;
+  if (typeof value !== "string" || absolutePath(value))
+    throw new Error("native toolchain needs a relative lib_diagnostics");
+  within(resolve(dirname(binary), hostPath(value)));
+}
+const pack = JSON.parse(readFileSync(join(runtimeRoot, "runtime-pack.json"), "utf8"));
 if (pack.version !== identity.version || pack.target.name !== toolchain.target)
   throw new Error("native compiler runtime identity mismatch");
+if (JSON.parse(readFileSync(join(helperRoot, "package.json"), "utf8")).version !== identity.version)
+  throw new Error("native compiler LLVM helper version mismatch");
 const seen = new Set();
 for (const runtime of toolchain.runtime_packs ?? []) {
   if (seen.has(runtime.target)) throw new Error(`duplicate runtime target: ${runtime.target}`);
@@ -83,9 +108,7 @@ if (process.argv.includes("--run")) {
     ]) {
       verifyLinuxAbi(executable, { staticOnly: target.endsWith("-musl") });
     }
-    verifyLinuxAbi(resolve(dirname(binary), toolchain.llvm_package, "bin/scriptc-llvm-codegen"), {
-      staticOnly: true,
-    });
+    verifyLinuxAbi(join(helperRoot, "bin/scriptc-llvm-codegen"), { staticOnly: true });
   }
   const version = execFileSync(binary, ["--version"], {
     encoding: "utf8",
@@ -93,5 +116,22 @@ if (process.argv.includes("--run")) {
   }).trim();
   if (version !== identity.version)
     throw new Error(`native command reported ${version}, expected ${identity.version}`);
+  // tsc-ts, the default checker, runs on the distribution's own platform.
+  const tscTs = resolve(dirname(binary), hostPath(toolchain.tsc_ts));
+  if (windows && !tscTs.endsWith("tsc-ts.exe"))
+    throw new Error(`tsc_ts is not tsc-ts.exe: ${tscTs}`);
+  const tscTsVersion = execFileSync(tscTs, ["--version"], {
+    encoding: "utf8",
+    env: { ...process.env, PATH: "" },
+  }).trim();
+  if (!tscTsVersion.startsWith("Version "))
+    throw new Error(`the distribution's tsc-ts reported ${JSON.stringify(tscTsVersion)}`);
+  // The release strips tsc-ts and the comptime evaluator; arm64 macOS runs
+  // only executables whose linker-generated code signature matches their
+  // contents.
+  if (process.platform === "darwin" && process.arch === "arm64") {
+    for (const executable of [binary, tscTs, resolve(dirname(binary), toolchain.comptime)])
+      execFileSync("codesign", ["--verify", "--strict", executable], { stdio: "inherit" });
+  }
 }
 console.log(`${identity.name}@${identity.version}: native distribution verified`);

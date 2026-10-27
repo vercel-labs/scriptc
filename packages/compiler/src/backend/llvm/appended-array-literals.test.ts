@@ -22,7 +22,7 @@ const push = (receiver: IrExpr): IrStmt => ({
 
 function module(body: IrStmt[], locals: string[]): IrModule {
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "__main",
     functions: [
@@ -57,10 +57,11 @@ test("only empty literals stored where the module appends construct small", () =
   expect(found.has(idle)).toBe(false);
   expect(found.has(returned)).toBe(false);
 
-  // Only `fill` builds arrays.
+  // Only `fill` builds arrays. They may hold int32 slots (element kind 7),
+  // which does not change the choice of constructor.
   const llvm = emitLlvmModule(module(body, ["xs", "ys"]));
-  expect(llvm.match(/call ptr @scr_arr_new_small\(i32 0\)/g)).toHaveLength(2);
-  expect(llvm.match(/call ptr @scr_arr_new\(i32 0, i64 0\)/g)).toHaveLength(2);
+  expect(llvm.match(/call ptr @scr_arr_new_small\(i32 [07]\)/g)).toHaveLength(2);
+  expect(llvm.match(/call ptr @scr_arr_new\(i32 [07], i64 0\)/g)).toHaveLength(2);
 });
 
 test("a binding with the same id in another function does not count", () => {

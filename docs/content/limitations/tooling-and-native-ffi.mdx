@@ -1,5 +1,10 @@
-`scriptc run` does not forward extra CLI arguments to the program. Build an executable and invoke it directly to pass arguments.
+`scriptc run` does not forward extra CLI arguments to the program.
+Build an executable and invoke it directly to pass arguments.
 
-Native FFI links C functions declared in a manifest. Formats 2–5 support call-scoped callbacks, copied string/byte callback parameters, explicitly released retained callbacks, and asynchronous foreign-thread delivery. Format 6 adds single-precision floats, signed 8-bit and signed/unsigned 16-bit integers, and borrowed writable byte spans. Variadic calls, structs by value, owned pointer/string/byte returns, runtime dynamic-library loading, and library-mode builds are unsupported. See [Native FFI](/docs/ffi).
+Native FFI links C functions declared in a manifest.
+Formats 2–5 support call-scoped callbacks, copied string/byte callback parameters, explicitly released retained callbacks, and asynchronous foreign-thread delivery.
+Format 6 adds single-precision floats, signed 8-bit and signed/unsigned 16-bit integers, and borrowed writable byte spans.
+Variadic calls, structs by value, owned pointer/string/byte returns, runtime dynamic-library loading, and library-mode builds are unsupported.
+See [Native FFI](/docs/ffi).
 
 Numbers follow JavaScript's double-precision semantics.

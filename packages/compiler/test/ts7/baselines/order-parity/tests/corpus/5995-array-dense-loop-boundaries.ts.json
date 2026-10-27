@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5995-array-dense-loop-boundaries.ts"
+ ],
+ "diags": []
+}

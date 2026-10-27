@@ -1,9 +1,10 @@
 import { InternalCompilerError } from "../../errors.js";
-import { typeKey } from "../../ir/ir.js";
+import { type IrType, typeKey } from "../../ir/ir.js";
 import { mangleRecordRelease, mangleRecordStruct } from "../mangle.js";
 import type { LibCallExpr, LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { abiValue, callbackType, finishRuntimeCall, ptr } from "./lib-abi.js";
 import { FN_ATTRS } from "./shapes.js";
+import { registerReplay } from "./emit-journal.js";
 
 export function emitLookupConnect(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const args = e.args.map((arg) => host.emitExpr(arg)),
@@ -12,6 +13,18 @@ export function emitLookupConnect(host: LlvmEmitterContext, e: LibCallExpr): LlV
     answer = lookup.params[2];
   if (answer?.kind !== "func" || answer.params.length !== 2)
     throw new InternalCompilerError("lookup answer must have two parameters");
+  const symbol = lookupAnswer(host, answer);
+  host.usesTimers = true;
+  host.toHeap(cb);
+  return finishRuntimeCall(host, e, "scr_net_connect_lookup", [
+    ...args.map((arg) => abiValue(host, arg)),
+    ptr("@" + symbol),
+  ]);
+}
+
+/** The thunk that hands a lookup's answer (error, addresses) to the
+ * runtime, one per answer signature. */
+function lookupAnswer(host: LlvmEmitterContext, answer: IrType & { kind: "func" }): string {
   const error = answer.params[0]!,
     addresses = answer.params[1]!;
   if (error.kind !== "union" || addresses.kind !== "array" || addresses.elem.kind !== "record")
@@ -24,8 +37,9 @@ export function emitLookupConnect(host: LlvmEmitterContext, e: LibCallExpr): LlV
   const key = "lookup:" + typeKey(answer);
   let symbol = host.resolveThunks.get(key);
   if (symbol === undefined) {
-    symbol = `sc_lookup_answer_${host.resolveThunks.size}`;
+    symbol = host.contentSymbol("sc_lookup_answer_", key);
     host.resolveThunks.set(key, symbol);
+    host.journal?.allocated(symbol, "lookupAnswer", [answer]);
     for (const declaration of [
       "declare ptr @scr_str_retain_v(ptr)",
       "declare void @scr_str_release(ptr)",
@@ -65,7 +79,7 @@ export function emitLookupConnect(host: LlvmEmitterContext, e: LibCallExpr): LlV
       "  br i1 %more, label %body, label %finish",
       "body:",
       "  %record = call ptr @scr_arr_get_ref(ptr %addresses, double %index)",
-      `  %addressp = getelementptr inbounds %${struct}, ptr %record, i64 0, i32 ${field + 1}`,
+      `  %addressp = getelementptr inbounds %${struct}, ptr %record, i64 0, i32 ${field + host.nullableUnions.fieldBase(addresses.elem.shapeId)}`,
       "  %address = load ptr, ptr %addressp",
       "  %owned.address = call ptr @scr_str_retain_v(ptr %address)",
       "  call double @scr_arr_push_ref(ptr %ips, ptr %owned.address)",
@@ -84,11 +98,11 @@ export function emitLookupConnect(host: LlvmEmitterContext, e: LibCallExpr): LlV
       "}",
       "",
     );
+    host.journal?.built();
   }
-  host.usesTimers = true;
-  host.moveTemp(cb);
-  return finishRuntimeCall(host, e, "scr_net_connect_lookup", [
-    ...args.map((arg) => abiValue(host, arg)),
-    ptr("@" + symbol),
-  ]);
+  return symbol;
 }
+
+registerReplay("lookupAnswer", (host, args) =>
+  lookupAnswer(host, args[0] as IrType & { kind: "func" }),
+);

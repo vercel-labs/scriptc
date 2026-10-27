@@ -43,6 +43,9 @@ export interface NanCodedHost {
   declarationOf(symbol: ts.Symbol): ts.Node | undefined;
   /** The element kind of a typed-array receiver, or null. */
   bytesElemOf(receiver: ts.Expression): IrBytesElem | null;
+  /** The read is a keyed read of a record's `number` index signature,
+   * which answers undefined for a missing key. */
+  isNumberRecordRead(read: ts.ElementAccessExpression): boolean;
   /** The static IR type of the node is a plain number. */
   isNumber(node: ts.Node): boolean;
   isString(node: ts.Expression): boolean;
@@ -191,6 +194,7 @@ const TYPED_ARRAYS = new Set([
   "Uint16Array",
   "Int32Array",
   "Uint32Array",
+  "Float16Array",
   "Float32Array",
   "Float64Array",
 ]);
@@ -209,15 +213,15 @@ function adjacentDeclarations(a: ts.VariableDeclaration, b: ts.VariableDeclarati
   const lb = b.parent;
   if (!ts.isVariableDeclarationList(la) || !ts.isVariableDeclarationList(lb)) return false;
   if (la === lb) {
-    const ia = la.declarations.indexOf(a);
-    const ib = la.declarations.indexOf(b);
+    const ia = la.declarations.nodes.indexOf(a);
+    const ib = la.declarations.nodes.indexOf(b);
     return Math.abs(ia - ib) === 1;
   }
   const sa = la.parent;
   const sb = lb.parent;
   if (!ts.isVariableStatement(sa) || !ts.isVariableStatement(sb) || sa.parent !== sb.parent)
     return false;
-  if (la.declarations.length !== 1 || lb.declarations.length !== 1) return false;
+  if (la.declarations.nodes.length !== 1 || lb.declarations.nodes.length !== 1) return false;
   const list = sa.parent;
   if (
     !ts.isBlock(list) &&
@@ -226,7 +230,7 @@ function adjacentDeclarations(a: ts.VariableDeclaration, b: ts.VariableDeclarati
     !ts.isDefaultClause(list)
   )
     return false;
-  const statements = (list as { statements: ts.NodeArray<ts.Statement> }).statements;
+  const statements = (list as { statements: ts.NodeArray<ts.Statement> }).statements.nodes;
   return Math.abs(statements.indexOf(sa) - statements.indexOf(sb)) === 1;
 }
 
@@ -245,6 +249,10 @@ export class NanCodedReads {
   private readonly returns = new Map<ts.Symbol, ReturnSlot>();
   /** Identifiers by text across the analyzed files. */
   private readonly names = new Map<string, ts.Identifier[]>();
+  /** The identifiers of each name, grouped by the symbol they resolve to
+   * (referencesOf), once `names` is complete. */
+  private readonly references = new Map<string, Map<ts.Symbol, ts.Identifier[]>>();
+  private named = false;
   private readonly symbolCache = new Map<ts.Node, ts.Symbol | null>();
   private readonly pneCache = new Map<ts.Node, ValueInfo | null>();
   private readonly pneReturnCache = new Map<ts.Symbol, ValueInfo | null>();
@@ -314,11 +322,15 @@ export class NanCodedReads {
           return;
         }
         if (ts.isElementAccessExpression(node) && this.isReadCandidate(node)) {
-          const elem = this.host.bytesElemOf(node.expression);
+          // A record's number values may hold a genuine NaN, like f64 elements.
+          const elem =
+            this.host.bytesElemOf(node.expression) ??
+            (this.host.isNumberRecordRead(node) ? "f64" : null);
           if (elem) candidates.set(node, elem);
         }
       });
     }
+    this.named = true;
     // A proven-present read is a plain number; only the rest may be
     // undefined. The proof needs every reference, so it runs after the walk.
     for (const [read, elem] of candidates)
@@ -358,20 +370,22 @@ export class NanCodedReads {
   private removalReason(slot: Slot): string {
     const badSource = slot.sources.find((s) => s === null || this.sourceInfo(s) === null);
     if (badSource !== undefined)
-      return `source ${badSource ? badSource.getText().slice(0, 60) : "<unknown>"}`;
+      return `source ${badSource ? ts.getTextOfNode(badSource).slice(0, 60) : "<unknown>"}`;
     const nan = this.genuineNaN.has(slot);
     const badUse = slot.uses.find((u) => !this.useSafe(u) && (nan || !this.reboxConsumer(u)));
-    if (badUse)
-      return `${nan ? "nan-use" : "use"} ${transparentParent(badUse).parent?.getText().slice(0, 80) ?? "?"}`;
+    if (badUse) {
+      const parent = transparentParent(badUse).parent;
+      return `${nan ? "nan-use" : "use"} ${parent === undefined ? "?" : ts.getTextOfNode(parent).slice(0, 80)}`;
+    }
     return "?";
   }
 
   private debugReport(reached: Set<Slot>): void {
     const name = (slot: Slot): string => {
       const decl = this.host.declarationOf(slot.symbol);
-      const sf = decl?.getSourceFile();
-      const where = sf && decl ? `${sf.fileName}:${decl.getStart()}` : "?";
-      return `${slot.kind} ${slot.symbol.name} @ ${where}`;
+      const sf = decl === undefined ? undefined : ts.getSourceFileOfNode(decl);
+      const where = sf && decl ? `${sf.fileName}:${ts.tokenStartOfNode(decl)}` : "?";
+      return `${slot.kind} ${ts.symbolName(slot.symbol)} @ ${where}`;
     };
     for (const slot of reached) {
       const ok = this.eligible.has(slot);
@@ -392,7 +406,13 @@ export class NanCodedReads {
     // native build of the compiler.
     const cached = this.symbolCache.get(node);
     if (cached !== undefined) return cached;
-    const symbol = this.host.symbolOf(node);
+    let symbol = this.host.symbolOf(node);
+    // A method read through an instance (`h.get`) can resolve to another
+    // symbol than its declaration name; slots and call sites key on the
+    // declaration's own symbol.
+    const decl = symbol ? this.host.declarationOf(symbol) : undefined;
+    if (decl && ts.isMethodDeclaration(decl) && decl.name !== node && ts.isIdentifier(decl.name))
+      symbol = this.symbolOf(decl.name) ?? symbol;
     this.symbolCache.set(node, symbol);
     return symbol;
   }
@@ -430,6 +450,19 @@ export class NanCodedReads {
   }
 
   // ---- present reads ------------------------------------------------------
+
+  /** `xs[i]` whose index is a non-negative integer counter of the reading
+   * function and that a dominating `i < xs.length` guard bounds by the
+   * length: the read names an existing index. */
+  counterIndexInBounds(read: ts.ElementAccessExpression): boolean {
+    const index = peelTransparent(read.argumentExpression);
+    if (!ts.isIdentifier(index)) return false;
+    const symbol = this.symbolOf(index);
+    if (!symbol || !this.nonNegativeCounter(symbol)) return false;
+    const decl = this.host.declarationOf(symbol);
+    if (!decl || this.containingFunction(decl) !== this.containingFunction(read)) return false;
+    return indexReadInBounds(read);
+  }
 
   /** `t[i]` names an existing element: `i` is a non-negative integer
    * counter and a dominating guard bounds it by `t.length` (or by the
@@ -470,7 +503,11 @@ export class NanCodedReads {
       return true;
     }
     const decl = this.host.declarationOf(symbol);
-    if (!decl || isJsSourceFile(decl.getSourceFile()) || decl.getSourceFile().isDeclarationFile)
+    if (
+      !decl ||
+      isJsSourceFile(ts.getSourceFileOfNode(decl)) ||
+      ts.getSourceFileOfNode(decl).isDeclarationFile
+    )
       return false;
     let name: ts.Identifier;
     if (ts.isParameter(decl)) {
@@ -552,7 +589,7 @@ export class NanCodedReads {
       !nonNegativeIntegerLiteral(decl.initializer) ||
       !ts.isVariableDeclarationList(decl.parent) ||
       !(decl.parent.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const)) ||
-      isJsSourceFile(decl.getSourceFile())
+      isJsSourceFile(ts.getSourceFileOfNode(decl))
     )
       return false;
     const name = decl.name;
@@ -596,8 +633,8 @@ export class NanCodedReads {
     const na = this.fixedLength(sa);
     const nb = this.fixedLength(sb);
     if (!na || !nb) return false;
-    const la = na.arguments![0]!;
-    const lb = nb.arguments![0]!;
+    const la = na.arguments!.nodes[0]!;
+    const lb = nb.arguments!.nodes[0]!;
     // The same literal length.
     const literal = (e: ts.Expression): number | null => {
       const x = peelTransparent(e);
@@ -672,7 +709,7 @@ export class NanCodedReads {
       !(decl.parent.flags & ts.NodeFlags.Const) ||
       // A module binding can escape through an export.
       (ts.isVariableStatement(decl.parent.parent) && ts.isSourceFile(decl.parent.parent.parent)) ||
-      isJsSourceFile(decl.getSourceFile()) ||
+      isJsSourceFile(ts.getSourceFileOfNode(decl)) ||
       this.host.bytesElemOf(decl.name) === null
     )
       return null;
@@ -682,10 +719,10 @@ export class NanCodedReads {
       !ts.isIdentifier(init.expression) ||
       !TYPED_ARRAYS.has(init.expression.text) ||
       !this.host.isStdlibGlobal(init.expression, init.expression.text) ||
-      init.typeArguments ||
-      init.arguments?.length !== 1 ||
-      ts.isSpreadElement(init.arguments[0]!) ||
-      !this.host.isNumber(init.arguments[0]!)
+      init.typeArguments?.nodes ||
+      init.arguments?.nodes.length !== 1 ||
+      ts.isSpreadElement(init.arguments.nodes[0]!) ||
+      !this.host.isNumber(init.arguments.nodes[0]!)
     )
       return null;
     const name = decl.name;
@@ -740,16 +777,16 @@ export class NanCodedReads {
     this.fnEligibility.set(symbol, null);
     const decl = this.host.declarationOf(symbol);
     if (!decl || (!ts.isFunctionDeclaration(decl) && !ts.isMethodDeclaration(decl))) return null;
-    if (!decl.body || decl.asteriskToken || decl.typeParameters || !decl.name) return null;
+    if (!decl.body || decl.asteriskToken || decl.typeParameters?.nodes || !decl.name) return null;
     if (!ts.isIdentifier(decl.name)) return null;
-    const sf = decl.getSourceFile();
+    const sf = ts.getSourceFileOfNode(decl);
     if (isJsSourceFile(sf) || sf.isDeclarationFile) return null;
     const flags = ts.getCombinedModifierFlags(decl);
     if (flags & (ts.ModifierFlags.Async | ts.ModifierFlags.Abstract | ts.ModifierFlags.Ambient))
       return null;
     if (ts.isMethodDeclaration(decl)) {
       const cls = decl.parent;
-      if (!ts.isClassDeclaration(cls) || (cls.heritageClauses?.length ?? 0) > 0) return null;
+      if (!ts.isClassDeclaration(cls) || (cls.heritageClauses?.nodes.length ?? 0) > 0) return null;
       if (this.host.methodOverridden(symbol)) return null;
     }
     // Sloppy-mode `arguments` aliases parameters.
@@ -793,7 +830,7 @@ export class NanCodedReads {
         !ts.isCallExpression(call) ||
         call.expression !== callee ||
         call.questionDotToken ||
-        call.arguments.some((a) => ts.isSpreadElement(a))
+        call.arguments.nodes.some((a) => ts.isSpreadElement(a))
       ) {
         ok = false;
         break;
@@ -818,7 +855,7 @@ export class NanCodedReads {
   private scanBindingSlot(symbol: ts.Symbol): BindingSlot | null {
     const decl = this.host.declarationOf(symbol);
     if (!decl) return null;
-    const sf = decl.getSourceFile();
+    const sf = ts.getSourceFileOfNode(decl);
     if (isJsSourceFile(sf) || sf.isDeclarationFile) return null;
     let nameNode: ts.Identifier;
     const slot: BindingSlot = {
@@ -850,18 +887,18 @@ export class NanCodedReads {
       if (!ts.isFunctionDeclaration(fn) && !ts.isMethodDeclaration(fn)) return null;
       const fnSymbol = fn.name ? this.symbolOf(fn.name) : null;
       if (!fnSymbol || !this.eligibleFunction(fnSymbol)) return null;
-      const index = fn.parameters.indexOf(decl);
+      const index = fn.parameters.nodes.indexOf(decl);
       if (index < 0 || !this.host.paramIsNumber(fnSymbol, index)) return null;
       nameNode = decl.name;
       if (decl.initializer) slot.sources.push(decl.initializer);
       for (const call of this.callSites.get(fnSymbol) ?? []) {
-        const arg = call.arguments[index];
+        const arg = call.arguments.nodes[index];
         if (arg) slot.sources.push(arg);
         else if (!decl.initializer) slot.sources.push(null);
       }
     } else return null;
-    for (const id of this.names.get(nameNode.text) ?? []) {
-      if (id === nameNode || this.symbolOf(id) !== symbol) continue;
+    for (const id of this.referencesOf(symbol, nameNode.text)) {
+      if (id === nameNode) continue;
       const write = this.writeOf(id);
       if (write !== "read") slot.reassigned = true;
       if (write === "read") slot.uses.push(id);
@@ -874,6 +911,26 @@ export class NanCodedReads {
     }
     for (const use of slot.uses) this.useNodes.add(use);
     return slot;
+  }
+
+  /** The identifiers named `text` that resolve to `symbol`, in walk order.
+   * Each name's identifiers are resolved once, not once per binding. */
+  private referencesOf(symbol: ts.Symbol, text: string): readonly ts.Identifier[] {
+    const ids = this.names.get(text) ?? [];
+    if (!this.named) return ids.filter((id) => this.symbolOf(id) === symbol);
+    let bySymbol = this.references.get(text);
+    if (bySymbol === undefined) {
+      bySymbol = new Map();
+      for (const id of ids) {
+        const resolved = this.symbolOf(id);
+        if (resolved === null) continue;
+        const list = bySymbol.get(resolved);
+        if (list === undefined) bySymbol.set(resolved, [id]);
+        else list.push(id);
+      }
+      this.references.set(text, bySymbol);
+    }
+    return bySymbol.get(symbol) ?? [];
   }
 
   /** How an identifier reference touches its binding. */
@@ -1007,11 +1064,11 @@ export class NanCodedReads {
       return symbol ? this.returnSlot(symbol) : null;
     }
     if (ts.isCallExpression(p) && p.expression !== e) {
-      const index = p.arguments.indexOf(e);
+      const index = p.arguments.nodes.indexOf(e);
       const fn = this.calleeSymbol(p);
       if (index < 0 || !fn) return null;
       const decl = this.eligibleFunction(fn);
-      const param = decl?.parameters[index];
+      const param = decl?.parameters?.nodes[index];
       if (!param || !ts.isIdentifier(param.name)) return null;
       const symbol = this.symbolOf(param.name);
       return symbol ? this.bindingSlot(symbol) : null;
@@ -1349,7 +1406,7 @@ export class NanCodedReads {
         decl.initializer &&
         ts.isVariableDeclarationList(decl.parent) &&
         decl.parent.flags & ts.NodeFlags.Const &&
-        !isJsSourceFile(decl.getSourceFile())
+        !isJsSourceFile(ts.getSourceFileOfNode(decl))
       )
         return this.plainNumber(decl.initializer, depth + 1);
       return null;
@@ -1480,7 +1537,7 @@ export class NanCodedReads {
     )
       return true;
     if (ts.isSwitchStatement(p)) {
-      return p.caseBlock.clauses.every(
+      return p.caseBlock.clauses.nodes.every(
         (clause) => !ts.isCaseClause(clause) || this.plainNumber(clause.expression, 0) !== null,
       );
     }

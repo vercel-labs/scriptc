@@ -1,7 +1,16 @@
-Typed-array reads at an index that is not an integer in the array's range return `undefined`, as in Node.js, and invalid numeric indexed writes are ignored, while the assignment expression retains its original value. A non-null assertion on such a read (`bytes[i]!`) yields `NaN` instead of `undefined`.
+Typed-array reads at an index that is not an integer in the array's range return `undefined`, as in Node.js, and invalid numeric indexed writes are ignored, while the assignment expression retains its original value.
+A non-null assertion on such a read (`bytes[i]!`) yields `NaN` instead of `undefined`.
 
-Ordinary arrays track holes separately from present `undefined` values. Missing reads and empty `pop()`/`shift()` return `undefined`, indexed writes can grow the array, and length growth creates holes.
+Ordinary arrays track holes separately from present `undefined` values.
+Missing reads and empty `pop()`/`shift()` return `undefined`, indexed writes can grow the array, and length growth creates holes.
 
-Runtime traps cannot be caught. User-thrown values and supported exceptions, including JSON parse, checked-cast, filesystem, regex, and `String.prototype.repeat` count errors, can be caught; hard traps such as out-of-range reads of statically typed ordinary arrays terminate the process.
+Keyed reads of a `Record` or an index signature return `undefined` for a missing key, as in Node.js, with or without `noUncheckedIndexedAccess`.
+A missing array element or key that reaches storage that cannot hold `undefined`, such as a class field typed `number`, throws a `TypeError`.
 
-Deep recursion in Linux and macOS executables throws Node's catchable `RangeError: Maximum call stack size exceeded`, on the main thread, in worker threads, and inside async functions and generators. The depth at which it is thrown differs from Node: the main thread uses the process stack limit (usually 8 MiB), worker threads get an 8 MiB stack, and async functions and generators run on 512 KiB stacks, so native code usually recurses deeper than Node on threads and somewhat less deeply inside async bodies. Recursion inside runtime library operations, such as serializing deeply nested data, is not checked. Windows executables, WASI builds and library builds do not check the stack, and exhausting it there terminates the process.
+Runtime traps cannot be caught.
+User-thrown values and supported exceptions, including JSON parse, checked-cast, filesystem, regex, and `String.prototype.repeat` count errors, can be caught; hard traps such as out-of-range reads of statically typed ordinary arrays terminate the process.
+
+Deep recursion in Linux and macOS executables throws Node's catchable `RangeError: Maximum call stack size exceeded`, on the main thread, in worker threads, and inside async functions and generators.
+The depth at which it is thrown differs from Node: the main thread uses the process stack limit (usually 8 MiB), worker threads get an 8 MiB stack, async functions and generators that keep a fiber run on 512 KiB stacks, and stackless ones run on the stack that resumes them, so native code usually recurses deeper than Node on threads and somewhat less deeply inside fiber bodies.
+Recursion inside runtime library operations, such as serializing deeply nested data, is not checked.
+Windows executables, WASI builds and library builds do not check the stack, and exhausting it there terminates the process.

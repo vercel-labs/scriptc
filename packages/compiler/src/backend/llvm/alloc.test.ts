@@ -1,5 +1,11 @@
 import { describe, expect, test } from "vitest";
-import { type AllocHost, emitObjectAlloc, emitObjectFree, inlineAllocSupported } from "./alloc.js";
+import {
+  type AllocHost,
+  disposeHookLoadLines,
+  emitObjectAlloc,
+  emitObjectFree,
+  inlineAllocSupported,
+} from "./alloc.js";
 
 function host(inlineAlloc: boolean): AllocHost & { decls: Set<string>; oom: boolean } {
   const h = {
@@ -63,7 +69,12 @@ describe("emitted object allocation", () => {
     ]);
     expect(emitObjectFree(h, false)).toEqual([
       "  call void @scr_obj_free_note()",
+      "  %sf.obs = load i1, ptr @sc_weak_keys",
+      "  br i1 %sf.obs, label %sf.observe, label %sf.block",
+      "sf.observe:",
       "  call void @scr_weak_dispose(ptr %o)",
+      "  br label %sf.block",
+      "sf.block:",
       "  call void @scr_rt_free(ptr %o)",
     ]);
     expect([...h.decls].some((d) => d.includes("@scr_sa"))).toBe(false);
@@ -166,5 +177,31 @@ describe("emitted object allocation", () => {
       }
       expect(lines.at(-1)).toBe("sf.done:");
     }
+  });
+
+  test("frees test the dispose hook only where the program can observe them", () => {
+    const h = host(true);
+    const weak = emitObjectFree(h, false);
+    expectSingleDefinitions(weak);
+    expect(weak.slice(0, 2)).toEqual([
+      "  %sf.obs = load i1, ptr @sc_weak_keys",
+      "  br i1 %sf.obs, label %sf.hooked, label %sf.block",
+    ]);
+    const records = emitObjectFree(h, true, "weak-or-source");
+    expectSingleDefinitions(records);
+    expect(records.slice(0, 4)).toEqual([
+      "  %sf.obsw = load i1, ptr @sc_weak_keys",
+      "  %sf.obss = load i1, ptr @sc_record_sources",
+      "  %sf.obs = or i1 %sf.obsw, %sf.obss",
+      "  br i1 %sf.obs, label %sf.hooked, label %sf.block",
+    ]);
+    expect(records).toContain("  call void %sf.hook(ptr %o)");
+  });
+
+  test("loads the dispose hook from emitted code only with the inline allocator", () => {
+    expect(disposeHookLoadLines(host(false), "%t1")).toBeNull();
+    expect(disposeHookLoadLines(host(true), "%t1")).toEqual([
+      "  %t1 = load ptr, ptr @scr_weak_dispose_hook",
+    ]);
   });
 });

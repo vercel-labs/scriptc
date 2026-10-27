@@ -71,7 +71,7 @@ function fixture(value: IrType = record, key: IrType = F64): IrModule {
     ],
   };
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     records: [{ id: "cell", fields: [{ name: "x", type: F64 }] }],
@@ -120,7 +120,12 @@ test("local map results keep scalar and owned reference payloads without heap wr
           expect(ir).toContain("call ptr @sc_map_entry_str(");
           expect(ir).not.toContain("@scr_map_get_");
         }
-        if (value === STRING) expect(ir).toContain("@scr_str_release");
+        // Nothing can change the map before the tag test, so a reference
+        // result is the entry's own (findMapReadBorrows): no retain or release.
+        if (value === STRING) {
+          expect(ir).not.toContain("@scr_str_retain");
+          expect(ir).not.toContain("@scr_str_release");
+        }
       }
     }
 });
@@ -132,7 +137,8 @@ test("nullable record results are the looked-up pointer itself on both ABIs", ()
     expect(ir).not.toContain("%ScrUnion");
     expect(ir).not.toContain("@scr_union_");
     expect(ir).toMatch(/icmp (?:eq|ne) ptr %\w+, null/);
-    expect(ir).toContain("@sc_rrelease_");
+    // The pointer is the entry's own reference until the tag test.
+    expect(ir).not.toContain("@sc_rrelease_");
   }
 });
 
@@ -401,7 +407,7 @@ test("a number-key write after a read stores into the found entry and appends th
     ],
   };
   const mod: IrModule = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     records: [],

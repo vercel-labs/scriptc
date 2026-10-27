@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6999-typed-array-callback-loops.ts"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/key-order-late-optional.ts"
+ ],
+ "diags": []
+}

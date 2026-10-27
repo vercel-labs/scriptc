@@ -7,7 +7,7 @@
  "diags": [
   {
    "code": "SC1016",
-   "message": "circular imports (<repo>/tests/diagnostics/cjs-require-cycle/a.js → <repo>/tests/diagnostics/cjs-require-cycle/b.js → <repo>/tests/diagnostics/cjs-require-cycle/a.js; the cycle closes through a require() edge) are not supported yet",
+   "message": "circular imports (<repo>/tests/diagnostics/cjs-require-cycle/a.js → <repo>/tests/diagnostics/cjs-require-cycle/b.js → <repo>/tests/diagnostics/cjs-require-cycle/a.js; the cycle closes through a require() edge: <repo>/tests/diagnostics/cjs-require-cycle/a.js uses its exports at <repo>/tests/diagnostics/cjs-require-cycle/a.js:6 outside the export statements that precede its first require, so a module of the cycle can observe them before they settle) are not supported yet",
    "loc": {
     "file": "<repo>/tests/diagnostics/cjs-require-cycle/a.js",
     "start": 0,

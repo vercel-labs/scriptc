@@ -7,12 +7,21 @@ import { tsgoPath } from "./session-path.js";
 export type Ts7SourceKind = "js" | "jsx" | "ts" | "tsx";
 export type Ts7SourceApiFactory = (options: { cwd: string; fs: Ts7FileSystem }) => Ts7Api;
 
+/** The source text, in UTF-16 code units, one parser server parses before a
+ * new server replaces it. tsc-ts keeps the syntax trees it builds for the
+ * life of its process, so a server that parses many files grows with them; a
+ * new one starts empty. Results are detached ASTs and outlive the server that
+ * made them. */
+const SERVER_SOURCE_BUDGET = 256 * 1024;
+
 /** A syntax-only session with a closed, in-memory filesystem. Parsing a
  * source string never reads imports, project configuration, or libraries
  * from disk. The returned AST owns its wire data and outlives the session.
  * Only one project and one input are retained between requests. */
 export class Ts7SourceParser {
-  private readonly api: Ts7Api;
+  private api: Ts7Api;
+  private readonly createApi: Ts7SourceApiFactory;
+  private parsedSource = 0;
   private readonly files = new Map<string, string>();
   private readonly configPath: string;
   private previousPath: string | undefined;
@@ -21,10 +30,21 @@ export class Ts7SourceParser {
   private closed = false;
   private readonly cwd: string;
 
-  constructor(createApi: Ts7SourceApiFactory, cwd = process.cwd()) {
+  constructor(
+    createApi: Ts7SourceApiFactory,
+    cwd = process.cwd(),
+    private readonly sourceBudget = SERVER_SOURCE_BUDGET,
+  ) {
     this.cwd = resolve(cwd);
     this.configPath = tsgoPath(resolve(this.cwd, "__scriptc-source-parser.tsconfig.json"));
-    this.api = createApi({
+    this.createApi = createApi;
+    this.api = this.connect();
+  }
+
+  private connect(): Ts7Api {
+    // Called as a plain function: the instance is not its receiver.
+    const createApi = this.createApi;
+    return createApi({
       cwd: this.cwd,
       fs: {
         readFile: (path) => this.files.get(tsgoPath(path)) ?? null,
@@ -61,7 +81,14 @@ export class Ts7SourceParser {
       this.previousFile !== undefined
     )
       return this.previousFile;
-    const previousPath = this.previousPath;
+    let previousPath = this.previousPath;
+    if (this.parsedSource >= this.sourceBudget) {
+      this.api.close();
+      this.api = this.connect();
+      this.parsedSource = 0;
+      previousPath = undefined;
+    }
+    this.parsedSource += source.length;
     this.files.clear();
     this.files.set(path, source);
     this.files.set(

@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { expect } from "vitest";
-import { ts7Executable } from "../../packages/compiler/src/frontend/ts7/rpc-api.js";
+import { tsgoExecutable } from "../../packages/compiler/src/frontend/ts7/rpc-api.js";
 import { TS7_FILE_SYSTEM_CALLBACKS } from "../../packages/compiler/src/frontend/ts7/rpc-filesystem.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
@@ -40,8 +40,10 @@ export async function runClient(
   directory: string,
   report: string,
 ): Promise<string> {
+  // The protocol cases echo bytes that are not UTF-8 text, which tsc-ts 0.0.3
+  // returns decoded, so the transport is checked against tsgo.
   const server = spawn(
-    ts7Executable(),
+    tsgoExecutable(),
     ["--api", "--timing", "--cwd", directory, `--callbacks=${TS7_FILE_SYSTEM_CALLBACKS}`],
     {
       stdio: ["pipe", "pipe", "pipe"],

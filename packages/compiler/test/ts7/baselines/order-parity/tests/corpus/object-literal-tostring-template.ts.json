@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/object-literal-tostring-template.ts"
+ ],
+ "diags": []
+}

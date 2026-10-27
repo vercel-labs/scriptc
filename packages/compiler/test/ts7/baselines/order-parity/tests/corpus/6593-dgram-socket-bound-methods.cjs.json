@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6593-dgram-socket-bound-methods.cjs"
+ ],
+ "diags": []
+}

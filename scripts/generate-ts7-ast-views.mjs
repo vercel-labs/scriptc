@@ -63,6 +63,10 @@ export function generateAstViews(root, packageRoot, version, check) {
       // The pinned native wire and RemoteNode getter encode one tag, despite
       // the SDK factory-oriented interface declaring an array of tags.
       if (key === "jsdocPropertyTags") type = "JSDocPropertyTag";
+      // A list's children are a node list, as every other list field.
+      if (name === "SyntaxList" && key === "children") type = "NodeArray<Node>";
+      // A declaration's modifiers are a modifier list, with their flags.
+      if (key === "modifiers") type = type.replace("NodeArray<", "ModifierArray<");
       if (member.questionToken) type += " | undefined";
       fields.set(key, `  readonly ${key}: ${type};`);
     }
@@ -72,7 +76,7 @@ export function generateAstViews(root, packageRoot, version, check) {
     ...header,
     "",
     'import type { AstNode } from "./ast-node.js";',
-    'import type { JsxTagNamePropertyAccess, NodeArray } from "./ast-types.js";',
+    'import type { JsxTagNamePropertyAccess, ModifierArray, NodeArray } from "./ast-types.js";',
     'import { SyntaxKind, NodeFlags, ModifierFlags, TokenFlags } from "./enums.js";',
     "type Node = AstNode;",
   ];
@@ -97,6 +101,9 @@ export function generateAstViews(root, packageRoot, version, check) {
       ? `<${node.typeParameters.map((param) => param.getText(generated)).join(", ")}>`
       : "";
     const fields = members(node.name.text);
+    // A default clause has no expression; the declaration shares the case clause's.
+    if (node.name.text === "DefaultClause" && fields.has("expression"))
+      fields.set("expression", "  readonly expression: undefined;");
     if (!fields.has("kind")) {
       const kinds = new Set();
       for (const [name, child] of interfaces) {
@@ -129,6 +136,7 @@ export function generateAstViews(root, packageRoot, version, check) {
     ...header,
     "",
     'import { SyntaxKind, NodeFlags, ScriptKind, OuterExpressionKinds } from "./enums.js";',
+    'import { getSourceFileOfNode } from "./node-functions.js";',
   ];
   for (const stem of ["is.generated", "is"]) {
     const declarations = parse(`${stem}.d.ts`);
@@ -171,10 +179,9 @@ export function generateAstViews(root, packageRoot, version, check) {
       }
       let body = fn.body.getText(source);
       if (name === "isJSDocTypeAssertion")
-        body = body.replace(
-          "expression.kind !==",
-          "expression === undefined || expression.kind !==",
-        );
+        body = body
+          .replace("expression.kind !==", "expression === undefined || expression.kind !==")
+          .replace("node.getSourceFile()", "getSourceFileOfNode(node)");
       if (head.includes("node: Node") && name.startsWith("is")) {
         head = head.replace("node: Node", "node: Node | undefined");
         body = body.replace("{", "{\n    if (node === undefined) return false;");

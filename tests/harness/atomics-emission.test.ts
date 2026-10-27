@@ -59,5 +59,34 @@ console.log(work(new Int32Array(buffer), new Uint8Array(buffer), new Int16Array(
   // Every runtime call is the cold path for an index out of range.
   const calls = work.match(/call double @scr_atomics_op\([^\n]*/g) ?? [];
   expect(calls).toHaveLength(9);
-  for (const call of calls) expect(call).toMatch(/\) cold$/);
+  for (const call of calls) expect(call).toMatch(/\)(?: nounwind)? cold$/);
+});
+
+test("an unchanged local array is borrowed across Atomics operations", async () => {
+  const llvm = await emittedLlvm(
+    "borrow",
+    `function count(buffer: SharedArrayBuffer, n: number): number {
+  const cells = new Int32Array(buffer);
+  for (let i = 0; i < n; i++) {
+    Atomics.add(cells, 0, 1);
+    Atomics.compareExchange(cells, 1, Atomics.load(cells, 1), i);
+  }
+  return Atomics.load(cells, 0);
+}
+function swap(buffer: SharedArrayBuffer, other: SharedArrayBuffer): number {
+  let cells = new Int32Array(buffer);
+  return Atomics.add(cells, ((cells = new Int32Array(other)), 0), 1);
+}
+const buffer = new SharedArrayBuffer(16);
+console.log(count(buffer, 3), swap(buffer, new SharedArrayBuffer(16)));
+`,
+  );
+  // The local owns the array across each operation: no reference count
+  // operations around the atomic instructions.
+  const counted = body(llvm, "sc_bf_count");
+  expect(counted).toMatch(/atomicrmw add ptr/);
+  expect(counted).not.toMatch(/call ptr @scr_bytes_retain_v/);
+  // An operand that reassigns the binding releases the old array, so the
+  // operation keeps its own reference.
+  expect(body(llvm, "sc_bf_swap")).toMatch(/call ptr @scr_bytes_retain_v/);
 });

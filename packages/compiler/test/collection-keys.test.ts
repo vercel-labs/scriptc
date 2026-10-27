@@ -90,7 +90,7 @@ test("mixed-value unions select value equality while unsupported arms remain fen
     expect(mapKeyKindNum(union, [reference, scalar])).toBe(7);
     expect(isSupportedSetElem(union, [reference, scalar])).toBe(true);
   }
-  for (const unsupported of [{ kind: "date" } as IrType, mapOf(STRING, F64), setOf(STRING)]) {
+  for (const unsupported of [{ kind: "regex" } as IrType, mapOf(STRING, F64), setOf(STRING)]) {
     expect(isSupportedMapKey(unsupported)).toBe(false);
   }
 });
@@ -171,7 +171,7 @@ test.each(["map", "set"] as const)("validator checks the arms behind a %s key un
   expect(validateModule(mod)).toEqual([]);
   mod.unions![0]!.arms = [reference, F64];
   expect(validateModule(mod)).toEqual([]);
-  mod.unions![0]!.arms = [reference, { kind: "date" }];
+  mod.unions![0]!.arms = [reference, { kind: "regex" }];
   expect(
     validateModule(mod).some((error) =>
       error.message.includes(

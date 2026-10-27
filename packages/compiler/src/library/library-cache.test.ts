@@ -85,6 +85,7 @@ test("early library cache restores generated artifacts and metadata", async () =
     searchParams: false,
     emitter: false,
     zlib: false,
+    x509: false,
     copying: false,
     textDecoderLegacy: false,
     dynInvoke: false,
@@ -138,6 +139,7 @@ test("early library cache publishes after creating a fresh output directory", as
       searchParams: false,
       emitter: false,
       zlib: false,
+      x509: false,
       copying: false,
       textDecoderLegacy: false,
       dynInvoke: false,
@@ -168,6 +170,7 @@ test("early library cache hits refresh every payload's LRU time", async () => {
       searchParams: false,
       emitter: false,
       zlib: false,
+      x509: false,
       copying: false,
       textDecoderLegacy: false,
       dynInvoke: false,
@@ -213,6 +216,7 @@ test("early library cache misses on source edits and newly-resolved candidates",
       searchParams: false,
       emitter: false,
       zlib: false,
+      x509: false,
       copying: false,
       textDecoderLegacy: false,
       dynInvoke: false,
@@ -242,6 +246,7 @@ test("early library cache misses on source edits and newly-resolved candidates",
       searchParams: false,
       emitter: false,
       zlib: false,
+      x509: false,
       copying: false,
       textDecoderLegacy: false,
       dynInvoke: false,
@@ -261,7 +266,7 @@ test("semantic library cache restores and rebases IR after a comment-only edit",
   const sourceBefore = await readFile(f.source, "utf8");
   const returnStart = sourceBefore.indexOf("return");
   const semanticMod = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: f.source,
     functions: [
       {
@@ -291,6 +296,7 @@ test("semantic library cache restores and rebases IR after a comment-only edit",
       searchParams: false,
       emitter: false,
       zlib: false,
+      x509: false,
       copying: false,
       textDecoderLegacy: false,
       dynInvoke: false,
@@ -324,7 +330,7 @@ test("semantic library cache refuses token and directive edits", async () => {
   const f = await fixture();
   const sourceBefore = await readFile(f.source, "utf8");
   const semanticMod = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: f.source,
     functions: [
       {
@@ -354,6 +360,7 @@ test("semantic library cache refuses token and directive edits", async () => {
       searchParams: false,
       emitter: false,
       zlib: false,
+      x509: false,
       copying: false,
       textDecoderLegacy: false,
       dynInvoke: false,
@@ -372,7 +379,7 @@ test("semantic LLVM cache accepts comment edits that shift source lines", async 
   const f = await fixture();
   const sourceBefore = await readFile(f.source, "utf8");
   const semanticMod = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: f.source,
     functions: [
       {
@@ -402,6 +409,7 @@ test("semantic LLVM cache accepts comment edits that shift source lines", async 
       searchParams: false,
       emitter: false,
       zlib: false,
+      x509: false,
       copying: false,
       textDecoderLegacy: false,
       dynInvoke: false,
@@ -440,6 +448,7 @@ test("semantic LLVM cache accepts line separator normalization", async () => {
         searchParams: false,
         emitter: false,
         zlib: false,
+        x509: false,
         copying: false,
         textDecoderLegacy: false,
         dynInvoke: false,
@@ -447,7 +456,7 @@ test("semantic LLVM cache accepts line separator normalization", async () => {
       frontend: tracker.snapshot(),
       semantic: {
         mod: {
-          irVersion: 16,
+          irVersion: 17,
           sourceFile: f.source,
           functions: [],
           entry: "__main",
@@ -468,7 +477,7 @@ test("semantic LLVM cache rebases comment edits in multi-source graphs", async (
   const importedSource = "export function helper(): number { return 1; }\n";
   await writeFile(imported, importedSource);
   const semanticMod = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: f.source,
     functions: [
       {
@@ -501,6 +510,7 @@ test("semantic LLVM cache rebases comment edits in multi-source graphs", async (
       searchParams: false,
       emitter: false,
       zlib: false,
+      x509: false,
       copying: false,
       textDecoderLegacy: false,
       dynInvoke: false,
@@ -540,6 +550,7 @@ test("early library cache is separated by the host Node version", async () => {
       searchParams: false,
       emitter: false,
       zlib: false,
+      x509: false,
       copying: false,
       textDecoderLegacy: false,
       dynInvoke: false,
@@ -571,6 +582,7 @@ test("early library cache rejects corrupted artifacts and metadata", async () =>
       searchParams: false,
       emitter: false,
       zlib: false,
+      x509: false,
       copying: false,
       textDecoderLegacy: false,
       dynInvoke: false,
@@ -605,6 +617,7 @@ test("disabled early library cache performs no reads or writes", async () => {
       searchParams: false,
       emitter: false,
       zlib: false,
+      x509: false,
       copying: false,
       textDecoderLegacy: false,
       dynInvoke: false,

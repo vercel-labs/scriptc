@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6819-caught-instanceof-dynamic-payloads.ts"
+ ],
+ "diags": []
+}

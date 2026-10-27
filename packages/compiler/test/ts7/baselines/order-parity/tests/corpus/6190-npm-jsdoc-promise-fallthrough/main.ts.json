@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6190-npm-jsdoc-promise-fallthrough/main.ts"
+ ],
+ "diags": []
+}

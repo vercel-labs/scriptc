@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7528-buffer-from-array-buffer.cjs"
+ ],
+ "diags": []
+}

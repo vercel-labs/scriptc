@@ -654,3 +654,163 @@ size_t scr_f64_to_fixed(double x, int f, char *buf) {
   *o = '\0';
   return (size_t)(o - buf);
 }
+
+/* ── toPrecision / toExponential(fractionDigits) digit engine ──────────
+ * The spec's n and e for p significant digits: the integer n with
+ * 10^(p-1) <= n < 10^p for which n × 10^(e-p+1) - x is closest to zero,
+ * ties picking the LARGER n (half-up on the exact binary value). Exact
+ * big-integer arithmetic over the double's mantissa: the value scaled by
+ * 10^(p-1-e) is mantissa × 2^(binary_exp + f) × 5^f, and
+ * round_half_up(v) = floor((floor(2v) + 1) / 2) composes from floor
+ * divisions alone. Values reach ~1100 bits (5e-324 at 100 digits and
+ * 1.8e308), so the limbs are wider than toFixed's. Nothing on an existing
+ * path calls this. */
+#define SCR_PREC_LIMBS 40
+typedef struct {
+  uint32_t limb[SCR_PREC_LIMBS]; /* little-endian */
+  int len;
+} ScrPrecInt;
+
+static void scr_prec_normalize(ScrPrecInt *v) {
+  while (v->len > 1 && v->limb[v->len - 1] == 0) v->len--;
+}
+
+static void scr_prec_mul_small(ScrPrecInt *v, uint32_t m) {
+  uint64_t carry = 0;
+  for (int i = 0; i < v->len; i++) {
+    uint64_t p = (uint64_t)v->limb[i] * m + carry;
+    v->limb[i] = (uint32_t)p;
+    carry = p >> 32;
+  }
+  if (carry != 0) v->limb[v->len++] = (uint32_t)carry;
+}
+
+static uint32_t scr_prec_div_small(ScrPrecInt *v, uint32_t d) {
+  uint64_t rem = 0;
+  for (int i = v->len - 1; i >= 0; i--) {
+    uint64_t cur = (rem << 32) | v->limb[i];
+    v->limb[i] = (uint32_t)(cur / d);
+    rem = cur % d;
+  }
+  scr_prec_normalize(v);
+  return (uint32_t)rem;
+}
+
+static void scr_prec_shl(ScrPrecInt *v, int bits) {
+  uint32_t out[SCR_PREC_LIMBS] = {0};
+  int words = bits / 32;
+  int rem = bits % 32;
+  for (int i = 0; i < v->len; i++) {
+    int at = i + words;
+    out[at] |= v->limb[i] << rem;
+    if (rem != 0 && at + 1 < SCR_PREC_LIMBS) out[at + 1] |= v->limb[i] >> (32 - rem);
+  }
+  int n = v->len + words + 1;
+  if (n > SCR_PREC_LIMBS) n = SCR_PREC_LIMBS;
+  memcpy(v->limb, out, sizeof out);
+  v->len = n;
+  scr_prec_normalize(v);
+}
+
+static void scr_prec_shr(ScrPrecInt *v, int bits) {
+  int words = bits / 32;
+  int rem = bits % 32;
+  if (words >= v->len) {
+    v->limb[0] = 0;
+    v->len = 1;
+    return;
+  }
+  int n = v->len - words;
+  for (int i = 0; i < n; i++) {
+    uint32_t lo = v->limb[i + words] >> rem;
+    uint32_t hi = rem != 0 && i + words + 1 < v->len ? v->limb[i + words + 1] << (32 - rem) : 0;
+    v->limb[i] = lo | hi;
+  }
+  v->len = n;
+  scr_prec_normalize(v);
+}
+
+/* round_half_up(a × 10^f) for positive finite a, as a decimal digit
+ * string written right-aligned ending at `end`; returns the first digit. */
+static char *scr_prec_scaled_digits(double a, int f, char *end) {
+  uint64_t bits;
+  memcpy(&bits, &a, sizeof bits);
+  uint64_t mantissa = bits & ((UINT64_C(1) << 52) - 1);
+  int ieee_exp = (int)((bits >> 52) & 0x7ffu);
+  int binary_exp;
+  if (ieee_exp == 0) {
+    binary_exp = -1074;
+  } else {
+    mantissa |= UINT64_C(1) << 52;
+    binary_exp = ieee_exp - 1023 - 52;
+  }
+  ScrPrecInt v = {{(uint32_t)mantissa, (uint32_t)(mantissa >> 32)}, 2};
+  scr_prec_normalize(&v);
+  for (int i = 0; i < f; i++) scr_prec_mul_small(&v, 5);
+  int twos = binary_exp + f + 1; /* the +1 doubles: floor(2v) */
+  if (twos > 0) scr_prec_shl(&v, twos);
+  for (int i = 0; i < -f; i++) scr_prec_div_small(&v, 5);
+  if (twos < 0) scr_prec_shr(&v, -twos);
+  /* (floor(2v) + 1) / 2 */
+  uint64_t carry = 1;
+  for (int i = 0; i < v.len && carry != 0; i++) {
+    uint64_t s = (uint64_t)v.limb[i] + carry;
+    v.limb[i] = (uint32_t)s;
+    carry = s >> 32;
+  }
+  if (carry != 0) v.limb[v.len++] = (uint32_t)carry;
+  scr_prec_shr(&v, 1);
+  char *p = end;
+  for (;;) {
+    uint32_t chunk = scr_prec_div_small(&v, 1000000000u);
+    bool last = v.len == 1 && v.limb[0] == 0;
+    for (int i = 0; i < 9 && (chunk != 0 || !last || p == end); i++) {
+      *--p = (char)('0' + chunk % 10);
+      chunk /= 10;
+    }
+    if (last) break;
+  }
+  return p;
+}
+
+int scr_f64_precision_digits(double a, int p, char *digits, int *e_out) {
+  char shortest[18];
+  int n;
+  scr_f64_digits(a, shortest, &n);
+  int e = n - 1;
+  char buf[400];
+  char *end = buf + sizeof buf;
+  for (int attempt = 0; attempt < 3; attempt++) {
+    char *first = scr_prec_scaled_digits(a, p - 1 - e, end);
+    int len = (int)(end - first);
+    if (len == p) {
+      memcpy(digits, first, (size_t)p);
+      digits[p] = '\0';
+      *e_out = e;
+      return p;
+    }
+    if (len > p) {
+      /* Rounding carried into a new digit (or the estimate was low). */
+      if (len == p + 1 && first[0] == '1') {
+        bool zeros = true;
+        for (int i = 1; i < len; i++) zeros = zeros && first[i] == '0';
+        if (zeros) {
+          digits[0] = '1';
+          memset(digits + 1, '0', (size_t)(p - 1));
+          digits[p] = '\0';
+          *e_out = e + 1;
+          return p;
+        }
+      }
+      e++;
+    } else {
+      e--;
+    }
+  }
+  /* Unreachable for finite positive doubles: the estimate is off by at
+   * most one decade. */
+  memset(digits, '0', (size_t)p);
+  digits[p] = '\0';
+  *e_out = e;
+  return p;
+}

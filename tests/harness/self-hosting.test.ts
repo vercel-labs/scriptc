@@ -12,6 +12,7 @@ import {
   emitLlvmModule,
   validateModule,
 } from "@scriptc/compiler";
+import { moduleLinkFeatures } from "./link-features.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -137,6 +138,7 @@ for (const [fixture, backend] of ["ir-build", "contextual-ir", "coercion-builder
           outPath,
           sanitize,
           cacheIdentity: "scriptc-generated-v1",
+          ...moduleLinkFeatures(mod),
         });
         const program = spawnSync(outPath, [], options);
         expect(program.error).toBeUndefined();

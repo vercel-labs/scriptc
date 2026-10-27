@@ -94,7 +94,7 @@ function fixture(
     body: body(ref("map", map), ref("key", key), ref("other", map)),
   };
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     unions: [{ id: "optional", arms: [value, UNDEFINED_T] }],
@@ -137,12 +137,20 @@ test("a read followed by a write of the same map pairs, and the write reuses the
   }
 });
 
-test("number keys keep the write-after-read lookup instead of pairing", () => {
-  // findReadNumberMapWrites stores such writes into the found entry through
-  // a read-only probe that LLVM merges with the read's.
-  const mod = fixture((map, k) => [declare(map, k), set(map, k, increment(F64))], F64, F64);
-  expect(pairs(mod)).toBe(0);
-  expect(body(mod)).not.toContain("mapfuse.hit");
+test("number keys pair, and the write compares the key's bits with the read's", () => {
+  for (const value of [F64, BOOL]) {
+    const mod = fixture((map, k) => [declare(map, k), set(map, k, increment(value))], F64, value);
+    expect(pairs(mod)).toBe(1);
+    for (const bits of [32, 64] as const) {
+      const ir = body(mod, bits);
+      expect(ir).toContain("mapfuse.hit");
+      expect(ir).toContain("alloca double ; fused map read: key");
+      expect(ir).toMatch(/icmp eq i64 %t\d+, %t\d+/);
+      // The miss still inserts through the runtime.
+      expect(ir).toMatch(/call void @scr_map_set_f64_(?:f64|bool)\(/);
+      expect(ir).toContain("@sc_map_entry_f64(");
+    }
+  }
 });
 
 test("the single-statement form pairs an unconditional nested read", () => {

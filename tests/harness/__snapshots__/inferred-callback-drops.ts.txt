@@ -1,0 +1,6 @@
+inferred-callback-drops.ts:11:10 - error SC1090: returning '{ extra: boolean; n: number; name: string }[]' from a callback whose result the checker infers as the narrower '{ n: number; name: string }[]' (the conversion would drop 'extra', which the object keeps at run time — annotate the callback's return type or the call's type argument with a type that declares them) is not supported yet
+
+  10 |   if (plain.length === 0) return plain;
+  11 |   return plain.map((x) => ({ ...x, extra: true }));
+     |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  12 | });

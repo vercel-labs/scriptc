@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6469-node-stdio-writable-js-pipe/pipe.js",
+  "<repo>/tests/corpus/6469-node-stdio-writable-js-pipe/main.ts"
+ ],
+ "diags": []
+}

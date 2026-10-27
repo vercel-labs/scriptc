@@ -31,10 +31,10 @@ export function rejectStaticThis(
       const keyword = node.kind === ts.SyntaxKind.ThisKeyword ? "this" : "super";
       lowerer.unsupported("SC1090", node, message(keyword));
     }
-    node.forEachChild(visit);
+    ts.forEachChild(node, visit);
   };
   if (includeRoot) visit(root);
-  else root.forEachChild(visit);
+  else ts.forEachChild(root, visit);
 }
 
 export function hasStaticThis(root: ts.Node): boolean {
@@ -47,9 +47,9 @@ export function hasStaticThis(root: ts.Node): boolean {
       ts.isClassExpression(node)
     )
       return;
-    node.forEachChild(visit);
+    ts.forEachChild(node, visit);
   };
-  root.forEachChild(visit);
+  ts.forEachChild(root, visit);
   return found;
 }
 
@@ -60,8 +60,8 @@ export function hasLexicalPrivateReference(root: ts.Node): boolean {
   const visit = (node: ts.Node): void => {
     if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) return;
     if (ts.isPrivateIdentifier(node)) found = true;
-    node.forEachChild(visit);
+    ts.forEachChild(node, visit);
   };
-  root.forEachChild(visit);
+  ts.forEachChild(root, visit);
   return found;
 }

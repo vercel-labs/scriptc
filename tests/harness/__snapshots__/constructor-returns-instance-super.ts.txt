@@ -1,0 +1,6 @@
+constructor-returns-instance-super.ts:11:3 - error SC1090: extending a class whose constructor can return an existing instance ('super()' would rebind 'this' to the instance 'Shared' returns) is not supported yet
+
+  10 | class Derived extends Shared {
+  11 |   constructor() {
+     |   ^~~~~~~~~~~~~~~
+  12 |     super();

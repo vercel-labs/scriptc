@@ -21,7 +21,7 @@ function classes(source: string): {
   const symbolFor = (name: string): ts.Symbol => {
     let symbol = symbols.get(name);
     if (!symbol) {
-      symbol = { name, declarations: [] } as unknown as ts.Symbol;
+      symbol = { escapedName: name, declarations: [] } as unknown as ts.Symbol;
       symbols.set(name, symbol);
     }
     return symbol;
@@ -53,6 +53,8 @@ function classes(source: string): {
         : null,
     declarationOf: (symbol) => declarations.get(symbol),
     recordShape: (node) => {
+      // Field slots: a binding's field read where a record is expected.
+      if (ts.isPropertyAccessExpression(node)) return "R";
       const declaration = node.parent;
       if (!declaration) return null;
       if (ts.isParameter(declaration)) return annotated(declaration.type);
@@ -182,4 +184,20 @@ test("assignments join their target and a foreign value opens it", () => {
   expect(flows.classOf("other")).toBe(flows.classOf("target"));
   expect(flows.closed("target")).toBe(true);
   expect(flows.closed("foreign")).toBe(false);
+});
+
+test("a binding's record field joins the slots it reaches and widens with its owner", () => {
+  const flows = classes(`
+    function fill(into: R): void { into.v = 1; }
+    const state = { parsed: { v: 0 } };
+    fill(state.parsed);
+    function mark(m: R): void { m.v = 2; }
+    const spread = { parsed: { v: 0 } };
+    mark(spread.parsed);
+    console.log({ ...spread });
+  `);
+  expect(flows.closed("into")).toBe(true);
+  expect(flows.closed("state")).toBe(true);
+  // A spread copies the field out of its owner, so the record keeps its layout.
+  expect(flows.closed("m")).toBe(false);
 });

@@ -33,8 +33,8 @@ export class RuntimeOptionalProvenance {
 
 function describe(node: ts.Node | undefined): string {
   if (!node) return "?";
-  const sf = node.getSourceFile();
-  const start = node.getStart();
+  const sf = ts.getSourceFileOfNode(node);
+  const start = ts.tokenStartOfNode(node);
   const pos = ts.getLineAndCharacterOfPosition(sf, start);
   const text = sf.text.slice(start, node.end).replace(/\s+/g, " ");
   const short = text.length > 60 ? `${text.slice(0, 57)}...` : text;

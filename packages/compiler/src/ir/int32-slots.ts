@@ -1,4 +1,4 @@
-import type { IrClassDef, IrExpr, IrFunction, IrModule, IrStmt, IrType } from "./ir.js";
+import type { IrClassDef, IrExpr, IrFunction, IrGlobal, IrModule, IrStmt, IrType } from "./ir.js";
 import {
   analyzeIntegerRanges,
   INT32_RANGE,
@@ -8,8 +8,25 @@ import {
   type IntegerRanges,
   type IntegerSlotFacts,
 } from "./integer-ranges.js";
-import { exprFunctionReference, moduleFunctionReferences } from "./function-references.js";
+import {
+  exprFunctionReference,
+  FUNCTION_REFERENCE_KINDS,
+  moduleFunctionReferences,
+} from "./function-references.js";
+import {
+  eachNodeOfKinds,
+  type IrKindScan,
+  type IrNodeIndex,
+  type IrNodeKind,
+} from "./node-index.js";
 import { findInitializerBindings, withInitializerBindings } from "./initializer-bindings.js";
+import {
+  checkableInt32Allocations,
+  int32ArrayGroups,
+  int32ArrayKey,
+  int32ArraySlot,
+  int32ArrayStores,
+} from "./int32-arrays.js";
 import { everyExprChild, everyStmtChild, everyStmtList, everyTypeChild } from "./traverse.js";
 
 /** The storage slot an array-valued expression reads, as an
@@ -169,7 +186,10 @@ export class Int32Slots {
         this.int32Locals.has(`${fnName}\0${localId}`) || this.int32Locals.has(`\0${localId}`)
           ? INT32_RANGE
           : null;
-    if (this.int32Elements.size > 0) result.elements = (arr) => this.hasInt32Elements(fnName, arr);
+    if (this.int32Elements.size > 0) {
+      result.elements = (arr) => this.hasInt32Elements(fnName, arr);
+      if (this.narrowedReads) result.narrowedReads = true;
+    }
     const params = this.paramFacts.get(fnName);
     if (params)
       result.params =
@@ -234,6 +254,29 @@ export class Int32Slots {
   addInt32Elements(key: string): void {
     this.int32Elements.add(key);
   }
+  dropInt32Elements(key: string): boolean {
+    return this.int32Elements.delete(key);
+  }
+  hasInt32ElementSlot(key: string): boolean {
+    return this.int32Elements.has(key);
+  }
+  /** Whether the module has int32 array candidates (the narrowedReads
+   * range fact). */
+  narrowedReads = false;
+  /** Number arrays stored as int32 slots (int32ArrayKey keys: locals and
+   * parameters as `function\0local`, globals as `\0global`): the module's
+   * int32 array candidates whose every stored element, through every
+   * binding that can hold the same array, the fixpoint proved an int32. */
+  readonly int32Arrays = new Set<string>();
+  /** Local number arrays that may hold int32 slots with checked stores: the
+   * candidates whose element stores the fixpoint proved exact integers but
+   * not int32s, allocated only by fills that may be long. A fill of at least
+   * CHECKED_INT32_MIN_LENGTH elements creates one with int32 slots and a
+   * shorter one with doubles. Their elements give no int32 facts; compiled
+   * accesses test the array's kind (once per innermost loop where they can,
+   * backend/llvm/int32-kind-loops.ts), and a store that is not an int32
+   * widens it first (scr_arr_widen_i32). */
+  readonly checkedInt32Arrays = new Set<string>();
   /** Whether every present element of the number array `arr` evaluates to
    * (read inside `fnName`) is an int32. */
   hasInt32Elements(fnName: string, arr: IrExpr): boolean {
@@ -309,9 +352,126 @@ export class Int32Slots {
     for (const params of this.paramFacts.values()) count += params.size;
     return count;
   }
+
+  /** The analysis as JSON, for a process that shares this module and its
+   * node index (a forked one). Proven writes are numbered by their position
+   * in `nodes`. Null when a proven write is not in the index. */
+  encode(nodes: IrNodeIndex): string | null {
+    const proven = nodes.expressionPositions(this.provenWrites);
+    if (proven === null) return null;
+    const data: Int32SlotsData = {
+      fields: [...this.fields],
+      familyOf: [...this.familyOf],
+      paramFacts: [...this.paramFacts].map(([fn, params]) => [fn, [...params]]),
+      returns: [...this.returns],
+      returnRanges: [...this.returnRanges],
+      boxes: [...this.boxes],
+      boxGroupOf: [...this.boxGroupOf],
+      provenWrites: proven,
+      called: [...this.called],
+      reasons: [...this.reasons],
+      pinned: [...this.pinned],
+      int32Locals: [...this.int32Locals],
+      int32Elements: [...this.int32Elements],
+      pinViolations: this.pinViolations,
+      nonNegative: [...this.nonNegative],
+      narrowedReads: this.narrowedReads,
+      int32Arrays: [...this.int32Arrays],
+      checkedInt32Arrays: [...this.checkedInt32Arrays],
+    };
+    return JSON.stringify(data);
+  }
+
+  /** The analysis `encode` wrote for `mod`, whose node index is `nodes`. */
+  static decode(text: string, mod: IrModule, nodes: IrNodeIndex): Int32Slots {
+    const data = JSON.parse(text) as Int32SlotsData;
+    const slots = new Int32Slots(new Map((mod.classes ?? []).map((c) => [c.name, c])));
+    for (const family of data.fields) slots.fields.add(family);
+    for (const [key, family] of data.familyOf) slots.familyOf.set(key, family);
+    for (const [fn, params] of data.paramFacts) slots.paramFacts.set(fn, new Map(params));
+    for (const fn of data.returns) slots.returns.add(fn);
+    for (const [fn, range] of data.returnRanges) slots.returnRanges.set(fn, range);
+    for (const group of data.boxes) slots.boxes.add(group);
+    for (const [member, group] of data.boxGroupOf) slots.boxGroupOf.set(member, group);
+    for (const node of nodes.expressionsAt(data.provenWrites)) slots.provenWrites.add(node);
+    for (const fn of data.called) slots.called.add(fn);
+    for (const [key, why] of data.reasons) slots.reasons.set(key, why);
+    for (const key of data.pinned) slots.pinned.add(key);
+    for (const key of data.int32Locals) slots.int32Locals.add(key);
+    for (const key of data.int32Elements) slots.int32Elements.add(key);
+    slots.pinViolations.push(...data.pinViolations);
+    for (const key of data.nonNegative) slots.nonNegative.add(key);
+    slots.narrowedReads = data.narrowedReads;
+    for (const key of data.int32Arrays) slots.int32Arrays.add(key);
+    for (const key of data.checkedInt32Arrays) slots.checkedInt32Arrays.add(key);
+    return slots;
+  }
+
+  /** Every fact, in a canonical order, with each proven write as its
+   * position in `mod` (function index, then walk order): two analyses of
+   * equal modules hold the same facts when their summaries are equal. */
+  summary(mod: IrModule): string {
+    const sorted = (values: Iterable<string>): string => [...values].sort().join(",");
+    const lines = [
+      `fields ${sorted(this.fields)}`,
+      `params ${sorted([...this.paramFacts].flatMap(([fn, params]) => [...params].map(([id, r]) => `${fn}\0${id}=${r.min}:${r.max}`)))}`,
+      `returns ${sorted(this.returns)}`,
+      `returnRanges ${sorted([...this.returnRanges].map(([fn, r]) => `${fn}=${r.min}:${r.max}`))}`,
+      `boxes ${sorted(this.boxes)}`,
+      `boxGroups ${sorted([...this.boxGroupOf].map(([member, group]) => `${member}=${group}`))}`,
+      `called ${sorted(this.called)}`,
+      `pinned ${sorted(this.pinned)}`,
+      `int32Locals ${sorted(this.int32Locals)}`,
+      `int32Elements ${sorted(this.int32Elements)}`,
+      `nonNegative ${sorted(this.nonNegative)}`,
+      `pinViolations ${sorted(this.pinViolations)}`,
+      `narrowedReads ${this.narrowedReads}`,
+      `int32Arrays ${sorted(this.int32Arrays)}`,
+      `checkedInt32Arrays ${sorted(this.checkedInt32Arrays)}`,
+    ];
+    const positions: string[] = [];
+    mod.functions.forEach((fn, f) => {
+      let at = 0;
+      everyStmtList(fn.body, {
+        expr: (e) => {
+          if (this.provenWrites.has(e)) positions.push(`${f}:${at}`);
+          at++;
+          return true;
+        },
+        stmt: () => {
+          at++;
+          return true;
+        },
+      });
+    });
+    lines.push(`provenWrites ${this.provenWrites.size} ${positions.join(",")}`);
+    return lines.join("\n");
+  }
 }
 
-const DYN_KINDS = new Set<IrType["kind"]>(["dyn", "caught"]);
+/** Int32Slots as plain data (Int32Slots.encode). */
+interface Int32SlotsData {
+  fields: string[];
+  familyOf: [string, string | null][];
+  paramFacts: [string, [string, IntegerRange][]][];
+  returns: string[];
+  returnRanges: [string, IntegerRange][];
+  boxes: string[];
+  boxGroupOf: [string, string][];
+  provenWrites: number[];
+  called: string[];
+  reasons: [string, string][];
+  pinned: string[];
+  int32Locals: string[];
+  int32Elements: string[];
+  pinViolations: string[];
+  nonNegative: string[];
+  narrowedReads: boolean;
+  int32Arrays: string[];
+  checkedInt32Arrays: string[];
+}
+
+const DYN_KINDS = new Set<IrType["kind"]>(["dyn", "jsval", "caught"]);
 /** Expressions that hand their operands (or produce results) to runtime
  * helpers, reflection, promises or other code the IR does not show. */
 const BOUNDARY_KINDS = new Set<IrExpr["kind"]>([
@@ -336,6 +496,7 @@ const BOUNDARY_KINDS = new Set<IrExpr["kind"]>([
  * property, except literal-keyed `dyn.keySet`/`dyn.keyDelete`. */
 const DYN_READ_ONLY = new Set<string>([
   "arrayBuffer.new",
+  "arrayBuffer.viewF16",
   "arrayBuffer.viewF32",
   "arrayBuffer.viewF64",
   "arrayBuffer.viewI16",
@@ -346,6 +507,9 @@ const DYN_READ_ONLY = new Set<string>([
   "arrayBuffer.viewU8",
   "arrayBuffer.viewU8C",
   "date.nativeNew",
+  "date.nativeNewFields",
+  "date.nativeNewValue",
+  "date.argumentsTime",
   // The dynamic operators run the ToPrimitive and coercion helpers of
   // dyn.compare, dyn.numberConstructor and dyn.toStringCoerce, then build a
   // fresh number, string or bigint. dyn.increment steps dyn.toNumeric's result.
@@ -356,11 +520,16 @@ const DYN_READ_ONLY = new Set<string>([
   "dyn.bagGet",
   "dyn.bitwise",
   "dyn.compare",
+  // Adoption reads the native value it was built into and turns shared
+  // source nodes into capsules of it; it stores no property into a capsule.
+  "dyn.declAdopt",
+  "dyn.adoptShared",
   "dyn.forInKeyStrings",
   "dyn.forInKeys",
   "dyn.forInStable",
   "dyn.getOwnPropertyNames",
   "dyn.getPrototype",
+  "dyn.getPrototypeForIdentity",
   "dyn.hasKey",
   "dyn.hasOwn",
   "dyn.in",
@@ -370,8 +539,10 @@ const DYN_READ_ONLY = new Set<string>([
   "dyn.iteratorResult",
   "dyn.iteratorStep",
   "dyn.iteratorStepDone",
+  "dyn.collectionIteratorIndex",
   "dyn.mapSeedEntries",
   "dyn.mapSeedEntry",
+  "dyn.nameClassPrototype",
   "dyn.numberConstructor",
   "dyn.objCreate",
   "dyn.objEntries",
@@ -399,8 +570,42 @@ const DYN_READ_ONLY = new Set<string>([
   "error.new",
   "error.newOptions",
   "fs.utimesSync",
+  // Buffer.prototype members read as values: a lookup by key.
+  "buffer.prototypeMember",
+  // Buffer.from(value, offset[, length]) over checked values: an
+  // ArrayBuffer's view after Node's offset and length conversions, or a copy
+  // of a string, array-like or typed array's values.
+  "buffer.poolFromDynOffset",
+  "buffer.poolFromDynRange",
   "insp.dyn",
   "insp.dynS",
+  // util.format and util.inspect over checked values: the inspect walk and
+  // the format conversions read them; insp.registerCustom keeps a class's
+  // custom inspect thunk in the runtime's registry.
+  "insp.customIsSelf",
+  "insp.customResult",
+  "insp.format",
+  "insp.formatList",
+  "insp.formatPrimitives",
+  "insp.formatSpecifiesDyn",
+  "insp.formatWithOptions",
+  "insp.inspect",
+  "insp.registerCustom",
+  "insp.dynFormatS",
+  "insp.dynHidden",
+  // The dynamic-tier operators run their dyn twins (scr_js_value.c); the
+  // conversions move a value between dyn and jsval, and js.toF64 is
+  // dynCheck's number check.
+  "js.add",
+  "js.arithmetic",
+  "js.bitwise",
+  "js.compare",
+  "js.fromDyn",
+  "js.increment",
+  "js.toDyn",
+  "js.toF64",
+  "js.toNumberCoerce",
+  "js.toNumeric",
   "json.stringifyReplacer",
   "json.stringifyValue",
   "num.toStringRadix",
@@ -421,10 +626,61 @@ const DYN_READ_ONLY = new Set<string>([
   "text.decodeStream",
   "worker.new",
 ]);
+/** The node kinds each walk below reads. */
+const LIB_CALL_KINDS: readonly IrNodeKind[] = ["libCall"];
+const CALL_FACT_KINDS: readonly IrNodeKind[] = [
+  ...FUNCTION_REFERENCE_KINDS,
+  "virtualCall",
+  "instanceOfValue",
+  "varRef",
+  "assignExpr",
+  "incDec",
+  "classRef",
+  "varDecl",
+  "assign",
+  "forOf",
+];
+const CENSUS_KINDS: readonly IrNodeKind[] = [
+  "call",
+  "new",
+  "varRef",
+  "fieldGet",
+  "fieldIncDec",
+  "closure",
+  "classRef",
+  "incDec",
+  "forOf",
+  "tryCatch",
+];
+const DECLARATION_KINDS: readonly IrNodeKind[] = ["varDecl"];
+const CANDIDATE_WRITE_KINDS: readonly IrNodeKind[] = [
+  "assign",
+  "varDecl",
+  "fieldSet",
+  "return",
+  "call",
+  "new",
+  "assignExpr",
+];
+const CALL_KINDS: readonly IrNodeKind[] = ["call", "new"];
+const SLOT_WRITE_KINDS: readonly IrNodeKind[] = ["return", "call", "new"];
+const NARROW_WRITE_KINDS: readonly IrNodeKind[] = ["assign", "varDecl", "fieldSet", "assignExpr"];
+
+/** Visits the nodes of `fn` in walk order; with `scan`, only those of its
+ * kinds, read from the module's node index (the visitors must ignore the
+ * other kinds). */
 function walkFunction(
   fn: IrFunction,
+  scan: IrKindScan | undefined,
   visit: { expr?: (e: IrExpr) => void; stmt?: (s: IrStmt) => void },
 ): void {
+  if (scan !== undefined) {
+    eachNodeOfKinds(fn, scan, (node, statement) => {
+      if (statement) visit.stmt?.(node as IrStmt);
+      else visit.expr?.(node as IrExpr);
+    });
+    return;
+  }
   const expr = (e: IrExpr): boolean => {
     visit.expr?.(e);
     return everyExprChild(e, expr, stmt);
@@ -441,11 +697,19 @@ function walkFunction(
  * whose key is not a literal), otherwise the
  * literal keys of `dyn.keySet`/`dyn.keyDelete`. A view commits a store back
  * into the instance's native field slots, which the IR does not show. */
+export interface DynamicFieldStores {
+  all: boolean;
+  names: Set<string>;
+}
+
+/** Computes DynamicFieldStores with one walk of every function. Analyses of
+ * the same module accept the result so the emitter walks the module once. */
 export function dynamicFieldStores(
   mod: IrModule,
   records = new Map((mod.records ?? []).map((r) => [r.id, r])),
   unions = new Map((mod.unions ?? []).map((u) => [u.id, u])),
-): { all: boolean; names: Set<string> } {
+  nodes?: IrNodeIndex,
+): DynamicFieldStores {
   const dynTypes = new Map<IrType, boolean>();
   const dynNamed = new Map<string, boolean>();
   const dynish = (type: IrType): boolean => {
@@ -482,8 +746,12 @@ export function dynamicFieldStores(
   };
   const dynWritten = new Set<string>();
   let dynWritesAll = false;
-  for (const fn of mod.functions)
-    walkFunction(fn, {
+  // A store whose key is not a literal names every field: later stores add
+  // nothing, so the walk stops there.
+  const scan = nodes?.scan(LIB_CALL_KINDS);
+  for (const fn of mod.functions) {
+    if (dynWritesAll) break;
+    walkFunction(fn, scan, {
       expr: (e) => {
         if (dynWritesAll) return;
         if (
@@ -498,6 +766,7 @@ export function dynamicFieldStores(
         }
       },
     });
+  }
   return { all: dynWritesAll, names: dynWritten };
 }
 
@@ -505,7 +774,27 @@ export function dynamicFieldStores(
  * can write: the class reaches checked-dynamic code (directly or through
  * another exposed type), and some dynamic store in the program can name the
  * field. */
-export function dynamicallyStoredFamilies(mod: IrModule, slots: Int32Slots): Set<string> {
+export function dynamicallyStoredFamilies(
+  mod: IrModule,
+  slots: Int32Slots,
+  stores?: DynamicFieldStores,
+): Set<string> {
+  const records = new Map((mod.records ?? []).map((r) => [r.id, r]));
+  const unions = new Map((mod.unions ?? []).map((u) => [u.id, u]));
+  // A live dyn view (typed-ref capsule) of an instance writes back into
+  // its fields only after a runtime store into the capsule; the commit then
+  // writes every field from the view, which holds the exact snapshot value
+  // of any property no store named. So reaching dynamic code disqualifies
+  // exactly the field names some dynamic store in the program can name.
+  const { all: dynWritesAll, names: dynWritten } =
+    stores ?? dynamicFieldStores(mod, records, unions);
+  const storable = (field: { name: string; type: IrType }): boolean =>
+    field.type.kind === "f64" &&
+    !field.name.startsWith("%") &&
+    (dynWritesAll || dynWritten.has(field.name));
+  const families = new Set<string>();
+  // Without a field some store can name, no class is worth exposing.
+  if (!(mod.classes ?? []).some((cls) => cls.fields.some(storable))) return families;
   const classes = new Map((mod.classes ?? []).map((c) => [c.name, c]));
   const children = new Map<string, string[]>();
   for (const cls of classes.values())
@@ -524,8 +813,6 @@ export function dynamicallyStoredFamilies(mod: IrModule, slots: Int32Slots): Set
     }
     return out;
   };
-  const records = new Map((mod.records ?? []).map((r) => [r.id, r]));
-  const unions = new Map((mod.unions ?? []).map((u) => [u.id, u]));
   const exposedClasses = new Set<string>();
   const seenNamed = new Set<string>();
   let exposeAll = false;
@@ -566,14 +853,8 @@ export function dynamicallyStoredFamilies(mod: IrModule, slots: Int32Slots): Set
         });
     }
   };
-  // A live dyn view (typed-ref capsule) of an instance writes back into
-  // its fields only after a runtime store into the capsule; the commit then
-  // writes every field from the view, which holds the exact snapshot value
-  // of any property no store named. So reaching dynamic code disqualifies
-  // exactly the field names some dynamic store in the program can name.
-  const { all: dynWritesAll, names: dynWritten } = dynamicFieldStores(mod, records, unions);
   for (const fn of mod.functions)
-    walkFunction(fn, {
+    walkFunction(fn, undefined, {
       expr: (e) => {
         const dynResult = DYN_KINDS.has(e.type.kind);
         const boundary = BOUNDARY_KINDS.has(e.kind);
@@ -597,16 +878,10 @@ export function dynamicallyStoredFamilies(mod: IrModule, slots: Int32Slots): Set
         if (s.kind === "throw") expose(s.value.type);
       },
     });
-  const families = new Set<string>();
   for (const cls of classes.values()) {
     if (!exposeAll && !exposedClasses.has(cls.name)) continue;
     for (const field of cls.fields)
-      if (
-        field.type.kind === "f64" &&
-        !field.name.startsWith("%") &&
-        (dynWritesAll || dynWritten.has(field.name))
-      )
-        families.add(slots.family(cls.name, field.name)!);
+      if (storable(field)) families.add(slots.family(cls.name, field.name)!);
   }
   return families;
 }
@@ -619,6 +894,7 @@ export function functionCallFacts(
   mod: IrModule,
   classes: ReadonlyMap<string, IrClassDef>,
   subtree: (className: string) => string[],
+  nodes?: IrNodeIndex,
 ): {
   valueEscaped: Set<string>;
   virtualTargets: Set<string>;
@@ -638,20 +914,11 @@ export function functionCallFacts(
   const runtimePrefixes: string[] = [];
   for (const cls of classes.values())
     if (runtimeRooted(cls.name)) runtimePrefixes.push(`%${cls.name}.`);
-  for (const fn of mod.functions)
-    walkFunction(fn, {
-      expr: (e) => {
-        const referenced = exprFunctionReference(e);
-        if (referenced !== undefined) escaped.add(referenced);
-        if (e.kind !== "virtualCall") return;
-        for (const name of subtree(e.className)) virtualTargets.add(`%${name}.${e.method}`);
-        for (let c = classes.get(e.className); c; c = c.base ? classes.get(c.base) : undefined)
-          virtualTargets.add(`%${c.name}.${e.method}`);
-      },
-    });
   // A class value can reach `new` through its construct thunk; one that
-  // only feeds an instanceof interval check cannot.
+  // only feeds an instanceof interval check cannot. Class references are
+  // checked once every function has contributed its tested-only ones.
   const testedOnly = new Set<IrExpr>();
+  const classRefs: (IrExpr & { kind: "classRef" })[] = [];
   for (const fn of mod.functions) {
     // Direct operands, and unboxed locals bound once to a class reference
     // and read only as instanceof operands (the lowering's temporary).
@@ -662,13 +929,20 @@ export function functionCallFacts(
     const count = (map: Map<string, number>, id: string): void => {
       map.set(id, (map.get(id) ?? 0) + 1);
     };
-    walkFunction(fn, {
+    walkFunction(fn, nodes?.scan(CALL_FACT_KINDS), {
       expr: (e) => {
-        if (e.kind === "instanceOfValue") {
+        const referenced = exprFunctionReference(e);
+        if (referenced !== undefined) escaped.add(referenced);
+        if (e.kind === "virtualCall") {
+          for (const name of subtree(e.className)) virtualTargets.add(`%${name}.${e.method}`);
+          for (let c = classes.get(e.className); c; c = c.base ? classes.get(c.base) : undefined)
+            virtualTargets.add(`%${c.name}.${e.method}`);
+        } else if (e.kind === "instanceOfValue") {
           if (e.classValue.kind === "classRef") testedOnly.add(e.classValue);
           else if (e.classValue.kind === "varRef") count(tests, e.classValue.localId);
         } else if (e.kind === "varRef") count(reads, e.localId);
         else if (e.kind === "assignExpr" || e.kind === "incDec") count(writes, e.localId);
+        else if (e.kind === "classRef") classRefs.push(e);
       },
       stmt: (s) => {
         if (s.kind === "varDecl" && s.init?.kind === "classRef") bound.set(s.localId, s.init);
@@ -681,18 +955,111 @@ export function functionCallFacts(
       if (!boxed.has(id) && writes.get(id) === 1 && reads.get(id) === tests.get(id))
         testedOnly.add(ref);
   }
-  for (const fn of mod.functions)
-    walkFunction(fn, {
-      expr: (e) => {
-        if (e.kind === "classRef" && !testedOnly.has(e)) escaped.add(`%${e.className}.constructor`);
-      },
-    });
+  for (const e of classRefs) if (!testedOnly.has(e)) escaped.add(`%${e.className}.constructor`);
   const runtimeVirtual = (name: string): boolean =>
     runtimePrefixes.some((prefix) => name.startsWith(prefix));
   return { valueEscaped: escaped, virtualTargets, runtimeVirtual };
 }
 
-export function analyzeInt32Slots(mod: IrModule): Int32Slots {
+/** Facts about the same module that a caller has already computed. */
+export interface Int32SlotInputs {
+  dynamicStores?: DynamicFieldStores;
+  initializerBindings?: ReadonlyMap<string, IrGlobal[]>;
+  /** The module's node index, read instead of walking the bodies. */
+  nodes?: IrNodeIndex;
+  /** Revises a function of a module marked for int32 array candidates when
+   * candidates drop (int32-arrays.ts Int32ArrayRevision): the function
+   * marked without the `dropped` candidates. With it, a candidate that drops
+   * (and keeps no checked stores) takes its sites back to the element-reader
+   * calls the marking inlined, and the fixpoint goes on over the revised
+   * functions, so its result is the analysis of the module marked for the
+   * candidates it keeps. A revision that changes more of a function than
+   * those sites throws Int32RevisionConflict. */
+  revise?: (fnName: string, dropped: ReadonlySet<string>) => IrFunction;
+}
+
+/** A revision (Int32SlotInputs.revise) changed a function in a way the
+ * fixpoint cannot follow: a call of a function no other call reaches, or
+ * any change besides element-reader calls taking the place of their
+ * inlined reads. The module needs an analysis of its own. */
+export class Int32RevisionConflict extends Error {}
+
+/** What the analysis's setup reads from a function body, besides direct
+ * calls: a revision must leave all of it unchanged. */
+function revisionStructure(fn: IrFunction): {
+  calls: { callee: string; args: number }[];
+  rest: string;
+} {
+  const calls: { callee: string; args: number }[] = [];
+  const rest: string[] = [];
+  const boxed = new Set(fn.locals.filter((local) => local.boxed).map((local) => local.id));
+  const expr = (e: IrExpr): boolean => {
+    const referenced = exprFunctionReference(e);
+    if (referenced !== undefined) rest.push(`ref:${referenced}`);
+    switch (e.kind) {
+      case "call":
+        calls.push({ callee: e.callee, args: e.args.length });
+        break;
+      case "new":
+        rest.push(`new:${e.className}:${e.args.length}`);
+        break;
+      case "varRef":
+        if (boxed.has(e.localId)) rest.push(`read:${e.localId}`);
+        break;
+      case "assignExpr":
+      case "incDec":
+        rest.push(`${e.kind}:${e.localId}`);
+        break;
+      case "fieldGet":
+      case "fieldIncDec":
+        rest.push(`${e.kind}:${e.className}\0${e.field}`);
+        break;
+      case "closure":
+        rest.push(`closure:${e.fnName}:${e.captures.join(",")}`);
+        break;
+      case "classRef":
+        rest.push(`classRef:${e.className}:${(e.captures ?? []).join(",")}`);
+        break;
+      case "virtualCall":
+        rest.push(`virtualCall:${e.className}.${e.method}`);
+        break;
+      case "instanceOfValue":
+        rest.push(`instanceOf:${e.classValue.kind}`);
+        break;
+    }
+    if (BOUNDARY_KINDS.has(e.kind)) rest.push(`boundary:${e.kind}`);
+    return everyExprChild(e, expr, stmt);
+  };
+  const stmt = (s: IrStmt): boolean => {
+    switch (s.kind) {
+      case "forOf":
+        rest.push(`forOf:${s.localId}`);
+        break;
+      case "tryCatch":
+        if (s.catchLocalId) rest.push(`catch:${s.catchLocalId}`);
+        break;
+      case "assign":
+      case "varDecl":
+        if (boxed.has(s.localId)) rest.push(`${s.kind}:${s.localId}`);
+        break;
+      case "throw":
+        rest.push("throw");
+        break;
+    }
+    return everyStmtChild(s, expr, stmt);
+  };
+  for (const s of fn.body) stmt(s);
+  rest.sort();
+  for (const local of fn.locals)
+    if (local.boxed || local.tdz)
+      rest.push(`local:${local.id}:${local.boxed === true}:${local.tdz === true}`);
+  for (const capture of fn.captures ?? []) rest.push(`capture:${capture.localId}`);
+  for (const capture of fn.classCaptures ?? []) rest.push(`classCapture:${capture.localId}`);
+  return { calls, rest: rest.join("\n") };
+}
+
+export function analyzeInt32Slots(mod: IrModule, inputs: Int32SlotInputs = {}): Int32Slots {
+  const nodes = inputs.nodes;
   const classes = new Map((mod.classes ?? []).map((c) => [c.name, c]));
   const slots = new Int32Slots(classes);
   if (mod.lib) return slots;
@@ -717,6 +1084,30 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
   }
   for (const key of contracts?.int32Locals ?? []) slots.addInt32Local(key);
   for (const key of contracts?.int32Elements ?? []) slots.addInt32Elements(key);
+  // Int32 array candidates (ir/int32-arrays.ts): assumed to hold int32
+  // elements until a store the fixpoint cannot prove drops one, with every
+  // candidate the same array can reach (its group).
+  const arrayCandidates = new Map<string, Set<string>>();
+  const globalArrays = new Set<string>();
+  const arrayKeys = new Set(mod.int32ArrayCandidates ?? []);
+  slots.narrowedReads = arrayKeys.size > 0;
+  for (const key of arrayKeys) {
+    const cut = key.indexOf("\0");
+    if (cut === 0) globalArrays.add(key.slice(1));
+    else {
+      const fnName = key.slice(0, cut);
+      const set = arrayCandidates.get(fnName) ?? new Set<string>();
+      set.add(key.slice(cut + 1));
+      arrayCandidates.set(fnName, set);
+    }
+    slots.addInt32Elements(int32ArraySlot(key));
+  }
+  const arrayGroups = arrayKeys.size > 0 ? int32ArrayGroups(mod, arrayKeys) : null;
+  // Functions that read or write a candidate global.
+  const globalArrayFunctions = new Set<string>();
+  if (arrayGroups)
+    for (const names of arrayGroups.globalReaders.values())
+      for (const name of names) globalArrayFunctions.add(name);
 
   /* ── candidate fields ── */
   const children = new Map<string, string[]>();
@@ -763,14 +1154,14 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
     }
 
   /* ── dynamic, reflective and runtime exposure ── */
-  for (const family of dynamicallyStoredFamilies(mod, slots)) {
+  for (const family of dynamicallyStoredFamilies(mod, slots, inputs.dynamicStores)) {
     if (slots.isPinnedField(family)) continue;
     dropFamily(family, "dynamic stores can name the field");
   }
 
   /* ── functions: escapes, parameter and return candidates ── */
   const functions = new Map(mod.functions.map((fn) => [fn.name, fn]));
-  const calls = functionCallFacts(mod, classes, subtree);
+  const calls = functionCallFacts(mod, classes, subtree, nodes);
   const escaped = new Set([...calls.valueEscaped, ...calls.virtualTargets]);
   const virtual = calls.runtimeVirtual;
 
@@ -782,56 +1173,16 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
   const dropAllParams = (fn: IrFunction, why: string): void => {
     for (const param of fn.params) dropParam(fn.name, param.localId, why);
   };
-  // Only functions some IR call reaches directly get parameter facts: one
-  // the backend invokes by convention has no call site to prove against.
+  // One walk of every function collects what the steps below need: the
+  // functions IR calls reach directly, calls whose arity differs from their
+  // callee's, the captured bindings' boxes, and which functions read which
+  // slot facts. Facts that depend on earlier steps are applied in walk order
+  // where those steps complete.
   const called = slots.called;
-  for (const fn of mod.functions)
-    walkFunction(fn, {
-      expr: (e) => {
-        if (e.kind === "call") called.add(e.callee);
-        else if (e.kind === "new") called.add(`%${e.className}.constructor`);
-      },
-    });
-  for (const fn of mod.functions) {
-    if (fn.returnType.kind === "f64" && !fn.async && !fn.generator) {
-      slots.addReturn(fn.name);
-      slots.assumeNonNegative(`ret:${fn.name}`);
-    }
-    if (
-      fn.async ||
-      fn.generator ||
-      !called.has(fn.name) ||
-      escaped.has(fn.name) ||
-      virtual(fn.name)
-    )
-      continue;
-    for (const param of fn.params)
-      if (param.type.kind === "f64" && !slots.isPinned(paramKey(fn.name, param.localId))) {
-        slots.addParam(fn.name, param.localId);
-        slots.assumeNonNegative(paramKey(fn.name, param.localId));
-      }
-  }
+  const arityMismatches: IrFunction[] = [];
   const arityChecked = (fn: IrFunction | undefined, args: number, offset: number): void => {
-    if (fn && fn.params.length !== args + offset) dropAllParams(fn, "call arity differs");
+    if (fn && fn.params.length !== args + offset) arityMismatches.push(fn);
   };
-  for (const fn of mod.functions)
-    walkFunction(fn, {
-      expr: (e) => {
-        if (e.kind === "call") arityChecked(functions.get(e.callee), e.args.length, 0);
-        else if (e.kind === "new")
-          arityChecked(functions.get(`%${e.className}.constructor`), e.args.length, 1);
-      },
-    });
-
-  // Candidates the fixpoint may drop; rangedParameters retries some.
-  const candidates = new Map<string, string[]>();
-  const retry = new Set<string>();
-  for (const fn of mod.functions) {
-    const ids = fn.params.filter((p) => slots.hasParam(fn.name, p.localId)).map((p) => p.localId);
-    if (ids.length > 0) candidates.set(fn.name, ids);
-  }
-
-  /* ── captured bindings ── */
   // A captured local lives in one box shared by its declaring function and
   // every closure that captures it (closure.captures[i] is the lifted
   // function's captures[i]). The box holds an int32 when every write to it
@@ -847,6 +1198,16 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
   const boxKey = (fnName: string, localId: string): string => `${fnName}\0${localId}`;
   const boxMembers = new Set<string>();
   const unstableBoxes = new Set<string>();
+  // Readers: which functions depend on which slot facts. Reads of a boxed
+  // local resolve to its box once the boxes are known.
+  const readers = new Map<string, Set<string>>();
+  const reads = (slot: string, fnName: string): void => {
+    const set = readers.get(slot);
+    if (set) set.add(fnName);
+    else readers.set(slot, new Set([fnName]));
+  };
+  const boxedReads: [IrFunction, Set<string>][] = [];
+  const incrementedFamilies: string[] = [];
   for (const fn of mod.functions) {
     for (const local of fn.locals)
       if (local.boxed) {
@@ -856,9 +1217,27 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
       }
     for (const capture of fn.classCaptures ?? [])
       unstableBoxes.add(boxKey(fn.name, capture.localId));
-    walkFunction(fn, {
+    const read = new Set<string>();
+    walkFunction(fn, nodes?.scan(CENSUS_KINDS), {
       expr: (e) => {
-        if (e.kind === "closure") {
+        if (e.kind === "call") {
+          called.add(e.callee);
+          arityChecked(functions.get(e.callee), e.args.length, 0);
+          reads(`ret:${e.callee}`, fn.name);
+        } else if (e.kind === "new") {
+          const constructor = `%${e.className}.constructor`;
+          called.add(constructor);
+          arityChecked(functions.get(constructor), e.args.length, 1);
+          // Constructors return nothing: this only records their callers.
+          reads(`ret:${constructor}`, fn.name);
+        } else if (e.kind === "varRef") read.add(e.localId);
+        else if (e.kind === "fieldGet") {
+          const family = slots.family(e.className, e.field);
+          if (family) reads(`field:${family}`, fn.name);
+        } else if (e.kind === "fieldIncDec") {
+          const family = slots.family(e.className, e.field);
+          if (family) incrementedFamilies.push(family);
+        } else if (e.kind === "closure") {
           const lifted = functions.get(e.fnName);
           e.captures.forEach((id, i) => {
             const inner = lifted?.captures?.[i];
@@ -880,7 +1259,41 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
           unstableBoxes.add(boxKey(fn.name, s.catchLocalId));
       },
     });
+    if (read.size > 0) boxedReads.push([fn, read]);
   }
+
+  // Only functions some IR call reaches directly get parameter facts: one
+  // the backend invokes by convention has no call site to prove against.
+  for (const fn of mod.functions) {
+    if (fn.returnType.kind === "f64" && !fn.async && !fn.generator) {
+      slots.addReturn(fn.name);
+      slots.assumeNonNegative(`ret:${fn.name}`);
+    }
+    if (
+      fn.async ||
+      fn.generator ||
+      !called.has(fn.name) ||
+      escaped.has(fn.name) ||
+      virtual(fn.name)
+    )
+      continue;
+    for (const param of fn.params)
+      if (param.type.kind === "f64" && !slots.isPinned(paramKey(fn.name, param.localId))) {
+        slots.addParam(fn.name, param.localId);
+        slots.assumeNonNegative(paramKey(fn.name, param.localId));
+      }
+  }
+  for (const fn of arityMismatches) dropAllParams(fn, "call arity differs");
+
+  // Candidates the fixpoint may drop; rangedParameters retries some.
+  const candidates = new Map<string, string[]>();
+  const retry = new Set<string>();
+  for (const fn of mod.functions) {
+    const ids = fn.params.filter((p) => slots.hasParam(fn.name, p.localId)).map((p) => p.localId);
+    if (ids.length > 0) candidates.set(fn.name, ids);
+  }
+
+  /* ── captured bindings ── */
   const groups = new Map<string, string[]>();
   for (const key of boxMembers) {
     const root = boxRoot(key);
@@ -889,27 +1302,44 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
     else groups.set(root, [key]);
   }
   const boxOrigin = new Map<string, string>();
+  // Per function, computed on first use: its capture ids and the locals an
+  // initialized declaration binds (one body walk each, not one per box).
+  const captureIds = new Map<string, Set<string>>();
+  const capturedIn = (fnName: string, localId: string): boolean => {
+    let ids = captureIds.get(fnName);
+    if (ids === undefined) {
+      ids = new Set((functions.get(fnName)?.captures ?? []).map((c) => c.localId));
+      captureIds.set(fnName, ids);
+    }
+    return ids.has(localId);
+  };
+  const initializedDeclarations = new Map<string, Set<string>>();
+  const initializedIn = (fn: IrFunction, localId: string): boolean => {
+    let ids = initializedDeclarations.get(fn.name);
+    if (ids === undefined) {
+      const found = new Set<string>();
+      walkFunction(fn, nodes?.scan(DECLARATION_KINDS), {
+        stmt: (s) => {
+          if (s.kind === "varDecl" && s.init) found.add(s.localId);
+        },
+      });
+      initializedDeclarations.set(fn.name, (ids = found));
+    }
+    return ids.has(localId);
+  };
   for (const [group, members] of groups) {
     if (members.some((key) => unstableBoxes.has(key))) continue;
     // The origin is the one member that is not a capture of its function.
     const origins = members.filter((key) => {
       const [fnName, localId] = key.split("\0") as [string, string];
-      return !functions.get(fnName)?.captures?.some((c) => c.localId === localId);
+      return !capturedIn(fnName, localId);
     });
     if (origins.length !== 1) continue;
     const [fnName, localId] = origins[0]!.split("\0") as [string, string];
     const origin = functions.get(fnName)!;
     if (origin.params.some((p) => p.localId === localId)) {
       if (!slots.hasParam(fnName, localId)) continue;
-    } else {
-      let initialized = false;
-      walkFunction(origin, {
-        stmt: (s) => {
-          if (s.kind === "varDecl" && s.localId === localId && s.init) initialized = true;
-        },
-      });
-      if (!initialized) continue;
-    }
+    } else if (!initializedIn(origin, localId)) continue;
     boxOrigin.set(`param:${fnName}\0${localId}`, group);
     slots.addBox(group, members);
     // A box starts from its origin parameter's value: it can only be
@@ -926,34 +1356,15 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
     return slots.dropBox(group);
   };
 
-  /* ── readers: which functions depend on which slot facts ── */
-  const readers = new Map<string, Set<string>>();
-  const reads = (slot: string, fnName: string): void => {
-    const set = readers.get(slot);
-    if (set) set.add(fnName);
-    else readers.set(slot, new Set([fnName]));
-  };
-  for (const fn of mod.functions)
-    walkFunction(fn, {
-      expr: (e) => {
-        if (e.kind === "fieldGet") {
-          const family = slots.family(e.className, e.field);
-          if (family) reads(`field:${family}`, fn.name);
-        } else if (e.kind === "call") reads(`ret:${e.callee}`, fn.name);
-        // Constructors return nothing: this only records their callers.
-        else if (e.kind === "new") reads(`ret:%${e.className}.constructor`, fn.name);
-        else if (e.kind === "varRef") {
-          const group = slots.boxGroup(fn.name, e.localId);
-          if (group !== null) reads(`box:${group}`, fn.name);
-        } else if (e.kind === "fieldIncDec") {
-          const family = slots.family(e.className, e.field);
-          if (family) dropFamily(family, "++/-- on the field");
-        }
-      },
-    });
+  for (const [fn, read] of boxedReads)
+    for (const localId of read) {
+      const group = slots.boxGroup(fn.name, localId);
+      if (group !== null) reads(`box:${group}`, fn.name);
+    }
+  for (const family of incrementedFamilies) dropFamily(family, "++/-- on the field");
 
   /* ── the optimistic fixpoint ── */
-  const bindings = findInitializerBindings(mod);
+  const bindings = inputs.initializerBindings ?? findInitializerBindings(mod);
   const numeric = (fn: IrFunction): IrFunction =>
     withInitializerBindings(fn, bindings.get(fn.name) ?? []);
   const queue: string[] = mod.functions.map((fn) => fn.name);
@@ -975,46 +1386,221 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
     }
     return false;
   };
+  const candidateWrites = nodes?.scan(CANDIDATE_WRITE_KINDS);
   const hasCandidateWrite = (fn: IrFunction): boolean => {
+    if (arrayCandidates.has(fn.name)) return true;
+    if (globalArrayFunctions.has(fn.name)) return true;
     const box = (localId: string): boolean => slots.hasBox(slots.boxGroup(fn.name, localId));
     const returns = slots.hasReturn(fn.name);
-    return !everyStmtList(fn.body, {
-      stmt: (s) => {
-        if (s.kind === "assign") return !box(s.localId);
-        if (s.kind === "varDecl") return s.init === null || !box(s.localId);
-        if (s.kind === "fieldSet") {
-          const family = slots.family(s.className, s.field);
-          return !family || !slots.hasFamily(family);
+    let found = false;
+    eachNodeOfKinds(fn, candidateWrites, (node) => {
+      switch (node.kind) {
+        case "assign":
+          found = box(node.localId);
+          break;
+        case "varDecl":
+          found = node.init !== null && box(node.localId);
+          break;
+        case "fieldSet": {
+          const family = slots.family(node.className, node.field);
+          found = !!family && slots.hasFamily(family);
+          break;
         }
-        return !(s.kind === "return" && returns);
-      },
-      expr: (e) => {
-        if (e.kind === "call") return !candidateArgs(functions.get(e.callee), e.args.length, 0);
-        if (e.kind === "new")
-          return !candidateArgs(functions.get(`%${e.className}.constructor`), e.args.length, 1);
-        if (e.kind === "assignExpr") return !box(e.localId);
-        return true;
-      },
+        case "return":
+          found = returns;
+          break;
+        case "call":
+          found = candidateArgs(functions.get(node.callee), node.args.length, 0);
+          break;
+        case "new":
+          found = candidateArgs(
+            functions.get(`%${node.className}.constructor`),
+            node.args.length,
+            1,
+          );
+          break;
+        case "assignExpr":
+          found = box(node.localId);
+          break;
+      }
+      return !found;
     });
+    return found;
+  };
+  // Candidates dropped without checked stores, and the revision of the
+  // functions that hold them (Int32SlotInputs.revise).
+  const dropped = new Set<string>();
+  const revise = (names: ReadonlySet<string>): void => {
+    for (const name of names) {
+      const previous = functions.get(name)!;
+      const next = inputs.revise!(name, dropped);
+      if (next === previous) continue;
+      const before = revisionStructure(previous);
+      const after = revisionStructure(next);
+      if (before.rest !== after.rest) throw new Int32RevisionConflict(name);
+      // The revision adds the element-reader calls back: each must be of a
+      // function other calls already reach, with its arity.
+      const counts = new Map<string, number>();
+      for (const { callee } of before.calls) counts.set(callee, (counts.get(callee) ?? 0) + 1);
+      for (const { callee, args } of after.calls) {
+        const left = counts.get(callee) ?? 0;
+        if (left > 0) {
+          counts.set(callee, left - 1);
+          continue;
+        }
+        const target = functions.get(callee);
+        if (!called.has(callee) || target === undefined || target.params.length !== args)
+          throw new Int32RevisionConflict(name);
+        reads(`ret:${callee}`, name);
+      }
+      for (const left of counts.values()) if (left > 0) throw new Int32RevisionConflict(name);
+      functions.set(name, next);
+    }
   };
   const provenByFunction = new Map<string, IrExpr[]>();
   // Each function's parameter and result writes under its latest analysis:
   // at the fixpoint, the ranges of every write under the final facts.
   const lastWrites = new Map<string, Map<string, IntegerRange | null>>();
-  while (queue.length) {
-    const fn = functions.get(queue.pop()!)!;
+  // First in, first out: a function whose slots change while others wait
+  // goes after them, so a caller of many callees is analyzed again once
+  // for all of their changes, not once for each.
+  for (let head = 0; head < queue.length; head++) {
+    const fn = functions.get(queue[head]!)!;
     queued.delete(fn.name);
     const params = slots.facts(fn.name).params;
     if (params) for (const id of params.keys()) reads(`param:${fn.name}\0${id}`, fn.name);
     // Range facts are consulted only at writes into candidate slots; slots
     // are only ever dropped, so a body without such a write needs none.
-    const ranges: IntegerRanges = hasCandidateWrite(fn)
+    const candidate = hasCandidateWrite(fn);
+    const ranges: IntegerRanges = candidate
       ? analyzeIntegerRanges(numeric(fn), slots.facts(fn.name))
       : new Map();
-    if (ranges.size > 0) lastWrites.set(fn.name, slotWrites(fn, ranges, functions));
+    if (ranges.size > 0) lastWrites.set(fn.name, slotWrites(fn, ranges, functions, nodes));
     else lastWrites.delete(fn.name);
     const proven: IrExpr[] = [];
+    // The walk below acts only at writes into candidate slots.
+    if (!candidate) {
+      provenByFunction.set(fn.name, proven);
+      continue;
+    }
     const int32 = (e: IrExpr): boolean => withinInt32(ranges.get(e));
+    // The range of an exact integer that may also be NaN: an element read
+    // of a candidate through `getNumber` (`a[k]!` in arithmetic, NaN for a
+    // missing element), and `+`, `-` and `*` over such values and integers.
+    // A checked store widens the array at a NaN like at any value that is
+    // not an int32.
+    const integerOrNaN = (e: IrExpr): IntegerRange | null => {
+      const range = ranges.get(e);
+      if (range) return range;
+      if (e.kind === "numLit")
+        return Number.isInteger(e.value) ? { min: e.value, max: e.value } : null;
+      if (e.kind === "arrIntrinsic" && e.method === "getNumber" && e.receiver.kind === "varRef")
+        return slots.hasInt32ElementSlot(int32ArraySlot(int32ArrayKey(fn.name, e.receiver.localId)))
+          ? INT32_RANGE
+          : null;
+      if (e.kind !== "bin" || (e.op !== "+" && e.op !== "-" && e.op !== "*")) return null;
+      const left = integerOrNaN(e.left);
+      const right = left && integerOrNaN(e.right);
+      if (!left || !right) return null;
+      const bounds =
+        e.op === "+"
+          ? [left.min + right.min, left.max + right.max]
+          : e.op === "-"
+            ? [left.min - right.max, left.max - right.min]
+            : [
+                left.min * right.min,
+                left.min * right.max,
+                left.max * right.min,
+                left.max * right.max,
+              ];
+      const min = Math.min(...bounds);
+      const max = Math.max(...bounds);
+      return Math.abs(min) < 2 ** 53 && Math.abs(max) < 2 ** 53 ? { min, max } : null;
+    };
+    // Every element stored into an int32 array candidate must be an int32
+    // under the facts that assume the candidates' own elements are; a
+    // failing store drops its array's element facts, and the function is
+    // analyzed again without them. When every failing store is still an
+    // exact integer under those facts (a counter, `a[i]! + 1`) and the array
+    // is only ever allocated by a fill that may be long
+    // (checkableInt32Allocations), it keeps int32 slots with checked stores
+    // (checkedInt32Arrays), which widen it to doubles in place at the first
+    // store that is not an int32.
+    const locals = arrayCandidates.get(fn.name);
+    let arrays = locals;
+    if (globalArrayFunctions.has(fn.name)) {
+      const both = new Set<string>();
+      if (locals) for (const id of locals) both.add(id);
+      for (const id of globalArrays) both.add(id);
+      arrays = both;
+    }
+    // Functions whose candidates this visit drops, revised after it.
+    const revised = new Set<string>();
+    if (arrays && arrayGroups) {
+      const requeue = (name: string): void => {
+        if (queued.has(name)) return;
+        queued.add(name);
+        queue.push(name);
+      };
+      const params = new Set(fn.params.map((param) => param.localId));
+      for (const [id, values] of int32ArrayStores(fn, arrays)) {
+        const key = int32ArrayKey(fn.name, id);
+        if (!slots.hasInt32ElementSlot(int32ArraySlot(key)) || values.every(int32)) continue;
+        // Checked stores serve a lone local: its allocations are the only
+        // arrays it holds. Its stores are judged under the element facts
+        // the ranges were computed with.
+        const checkable = values.every((value) => int32(value) || integerOrNaN(value) !== null);
+        // The array's group drops together: every function reading a
+        // member is analyzed again without its facts.
+        const group = arrayGroups.group.get(key) ?? [key];
+        for (const member of group) {
+          slots.dropInt32Elements(int32ArraySlot(member));
+          if (member.startsWith("\0")) {
+            const names = arrayGroups.globalReaders.get(member);
+            if (names) for (const name of names) requeue(name);
+          } else requeue(member.slice(0, member.indexOf("\0")));
+        }
+        if (
+          group.length === 1 &&
+          !key.startsWith("\0") &&
+          !params.has(id) &&
+          checkable &&
+          checkableInt32Allocations(fn, id)
+        )
+          slots.checkedInt32Arrays.add(key);
+        else {
+          for (const member of group) reason(`array:${member}`, "an element store is not int32");
+          if (inputs.revise !== undefined) {
+            // The revised module no longer marks the group: its functions
+            // leave the candidate sets the visits below consult.
+            for (const member of group) {
+              dropped.add(member);
+              if (member.startsWith("\0")) {
+                globalArrays.delete(member.slice(1));
+                const names = arrayGroups.globalReaders.get(member);
+                if (names) for (const name of names) revised.add(name);
+              } else {
+                const cut = member.indexOf("\0");
+                const owner = member.slice(0, cut);
+                const ids = arrayCandidates.get(owner);
+                ids?.delete(member.slice(cut + 1));
+                if (ids?.size === 0) arrayCandidates.delete(owner);
+                revised.add(owner);
+              }
+            }
+            globalArrayFunctions.clear();
+            for (const [member, names] of arrayGroups.globalReaders)
+              if (!dropped.has(member)) for (const name of names) globalArrayFunctions.add(name);
+          }
+        }
+      }
+    }
+    if (revised.size > 0) {
+      revise(revised);
+      // A revised body is analyzed again (it was queued with its readers);
+      // the writes of the body it replaces no longer count.
+      if (functions.get(fn.name) !== fn) continue;
+    }
     // An int32 written into a slot still assumed non-negative: widen the
     // assumption when the value may be negative, and reanalyze its readers.
     const settle = (slot: string, e: IrExpr): void => {
@@ -1051,7 +1637,7 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
       if (int32(value)) settle(`box:${group}`, value);
       else if (dropBox(group, `write in ${fn.name} is not int32`)) invalidate(`box:${group}`);
     };
-    walkFunction(fn, {
+    walkFunction(fn, nodes?.scan(CANDIDATE_WRITE_KINDS), {
       stmt: (s) => {
         if (s.kind === "assign") boxWrite(s.localId, s.value);
         else if (s.kind === "varDecl" && s.init) boxWrite(s.localId, s.init);
@@ -1083,10 +1669,25 @@ export function analyzeInt32Slots(mod: IrModule): Int32Slots {
   }
   for (const proven of provenByFunction.values())
     for (const value of proven) slots.provenWrites.add(value);
-  const ranged = rangedParameters(slots, functions, retry, numeric, (callee) =>
-    readers.get(`ret:${callee}`),
+  for (const key of arrayKeys)
+    if (slots.hasInt32ElementSlot(int32ArraySlot(key))) slots.int32Arrays.add(key);
+  const ranged = rangedParameters(
+    slots,
+    functions,
+    retry,
+    numeric,
+    (callee) => readers.get(`ret:${callee}`),
+    nodes,
   );
-  narrowSlotRanges(slots, functions, numeric, lastWrites, ranged, (slot) => readers.get(slot));
+  narrowSlotRanges(
+    slots,
+    functions,
+    numeric,
+    lastWrites,
+    ranged,
+    (slot) => readers.get(slot),
+    nodes,
+  );
   return slots;
 }
 
@@ -1121,6 +1722,7 @@ function rangedParameters(
   retry: ReadonlySet<string>,
   numeric: (fn: IrFunction) => IrFunction,
   callersOf: (callee: string) => ReadonlySet<string> | undefined,
+  nodes: IrNodeIndex | undefined,
 ): Set<string> {
   const changed = new Set<string>();
   if (retry.size === 0) return changed;
@@ -1190,7 +1792,7 @@ function rangedParameters(
           contribute(callee, param.localId, ranges.get(arg) ?? null);
       });
     };
-    walkFunction(fn, {
+    walkFunction(fn, nodes?.scan(CALL_KINDS), {
       expr: (e) => {
         if (e.kind === "call") args(functions.get(e.callee), e.args, 0);
         else if (e.kind === "new") args(functions.get(`%${e.className}.constructor`), e.args, 1);
@@ -1236,6 +1838,7 @@ function slotWrites(
   fn: IrFunction,
   ranges: IntegerRanges,
   functions: ReadonlyMap<string, IrFunction>,
+  nodes: IrNodeIndex | undefined,
 ): Map<string, IntegerRange | null> {
   const writes = new Map<string, IntegerRange | null>();
   const write = (key: string, value: IrExpr | null): void => {
@@ -1250,7 +1853,7 @@ function slotWrites(
       if (param) write(`param:${callee.name}\0${param.localId}`, arg);
     });
   };
-  walkFunction(fn, {
+  walkFunction(fn, nodes?.scan(SLOT_WRITE_KINDS), {
     stmt: (s) => {
       if (s.kind === "return") write(`ret:${fn.name}`, s.value);
     },
@@ -1293,6 +1896,7 @@ function narrowSlotRanges(
   lastWrites: ReadonlyMap<string, ReadonlyMap<string, IntegerRange | null>>,
   changed: ReadonlySet<string>,
   readersOf: (slot: string) => ReadonlySet<string> | undefined,
+  nodes: IrNodeIndex | undefined,
 ): void {
   // Every parameter and result slot with a fact, and that fact.
   const proven = new Map<string, IntegerRange>();
@@ -1351,7 +1955,7 @@ function narrowSlotRanges(
       const level = slots.isNonNegative(`box:${group}`) ? NON_NEGATIVE_INT32_RANGE : INT32_RANGE;
       if (!rangeWithin(range, level)) sound = false;
     };
-    walkFunction(fn, {
+    walkFunction(fn, nodes?.scan(NARROW_WRITE_KINDS), {
       stmt: (s) => {
         if (s.kind === "assign") box(s.localId, s.value);
         else if (s.kind === "varDecl" && s.init) box(s.localId, s.init);
@@ -1362,7 +1966,7 @@ function narrowSlotRanges(
         if (e.kind === "assignExpr") box(e.localId, e.value);
       },
     });
-    return { writes: slotWrites(fn, ranges, functions), sound };
+    return { writes: slotWrites(fn, ranges, functions, nodes), sound };
   };
   const writesByFunction = new Map(lastWrites);
   const join = (): Map<string, IntegerRange | null> => {
@@ -1378,8 +1982,14 @@ function narrowSlotRanges(
   // The ranges every function was last analyzed under.
   let analyzed: Map<string, IntegerRange> = new Map(proven);
   let verified: Map<string, IntegerRange> = new Map(proven);
-  // Functions whose recorded writes predate their current facts.
+  // Functions whose recorded writes predate their current facts: those
+  // whose parameters rangedParameters proved, and their callers, which
+  // wrote nothing into those parameters while they had no fact.
   const dirty = new Set(changed);
+  for (const name of changed) {
+    const callers = readersOf(`ret:${name}`);
+    if (callers) for (const caller of callers) dirty.add(caller);
+  }
   // The narrowing operator: a bound moves at most once from its proven
   // value (a revived result's from int32), so recursion that shifts its
   // argument (`f(d - 1)`) cannot walk a bound down one step per round.

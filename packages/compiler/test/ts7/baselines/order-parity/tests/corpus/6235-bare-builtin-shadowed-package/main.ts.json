@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6235-bare-builtin-shadowed-package/helper.cjs",
+  "<repo>/tests/corpus/6235-bare-builtin-shadowed-package/main.ts"
+ ],
+ "diags": []
+}

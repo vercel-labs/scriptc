@@ -17,11 +17,12 @@ import {
 } from "../ir/ir.js";
 import { computeTraced, explainCycle } from "./cycle-analysis.js";
 import { computeTraced as llvmTraced } from "./llvm/shapes.js";
+import { addRecordResultEntries } from "./llvm/record-results.js";
 
 const loc = { file: "cycles.ts", start: 0, end: 1 };
 function module(): IrModule {
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     functions: [{ name: "main", locals: [], params: [], returnType: VOID, body: [], loc }],
@@ -404,6 +405,61 @@ test("a later write through any alias makes the edge mutable", () => {
   checkExact(record, ["record:list"]);
 });
 
+test("a result-slot entry's stores into its destination are not writes", () => {
+  const next: IrType = { kind: "union", unionId: "next" };
+  const listModule = (): IrModule => {
+    const mod = module();
+    mod.records = [shape("list", [next, F64])];
+    mod.unions = [{ id: "next", arms: [ref("list"), { kind: "nullT" }] }];
+    mod.functions.push({
+      name: "cell",
+      params: [{ localId: "rest", name: "rest", type: next }],
+      locals: [],
+      returnType: ref("list"),
+      body: [
+        {
+          kind: "return",
+          value: {
+            kind: "recordLit",
+            fields: [
+              { name: "field0", value: { kind: "varRef", localId: "rest", type: next, loc } },
+              { name: "field1", value: { kind: "numLit", value: 1, type: F64, loc } },
+            ],
+            type: ref("list"),
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+    return addRecordResultEntries(mod);
+  };
+  // The entry stores the literal's fields into caller frame storage that
+  // nothing can point to: the list stays acyclic.
+  const entries = listModule();
+  expect(entries.functions.map((fn) => fn.name)).toContain("%into.cell");
+  checkExact(entries, []);
+  // The same store into the destination's local id outside an entry, and a
+  // store into any other binding of the shape inside one, are writes.
+  const store = (localId: string): IrStmt => ({
+    kind: "recordSet",
+    obj: { kind: "varRef", localId, type: ref("list"), loc },
+    shapeId: "list",
+    field: "field0",
+    value: value(next),
+    loc,
+  });
+  for (const [fn, localId] of [
+    ["main", "%into.dst"],
+    ["%into.cell", "v"],
+  ] as const) {
+    const written = listModule();
+    written.functions.find((f) => f.name === fn)!.body.unshift(store(localId));
+    checkExact(written, ["record:list"], ["next"]);
+  }
+});
+
 test("field increments count as writes", () => {
   const mod = tree();
   mod.functions[0]!.body.push({
@@ -511,6 +567,19 @@ test("a subclass constructor runs after its base constructor's escape", () => {
     ctor("Sub", [superCall, setThis("Sub", "other", link)]),
   );
   checkExact(mod, ["object:Base", "object:Sub"], ["link"]);
+});
+
+test("a base without a constructor function lets nothing escape", () => {
+  // Instantiations of a generic class name the generic class as their base,
+  // which has no constructor function of its own.
+  const mod = module();
+  mod.classes = [
+    { name: "Chain", fields: [{ name: "next", type: link }], loc },
+    { name: "Chain%0", base: "Chain", fields: [{ name: "next", type: link }], loc },
+  ];
+  mod.unions = [{ id: "link", arms: [obj("Chain%0"), { kind: "nullT" }] }];
+  mod.functions.push(ctor("Chain%0", [setThis("Chain%0", "next", link)]));
+  checkExact(mod, []);
 });
 
 test("field reads of this inside the constructor do not escape", () => {

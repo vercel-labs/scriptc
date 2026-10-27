@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/tls-socket-fences.ts"
+ ],
+ "diags": []
+}

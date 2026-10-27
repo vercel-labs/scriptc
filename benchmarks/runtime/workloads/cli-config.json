@@ -1,0 +1,12 @@
+{
+  "entry": "workloads/cli-config.ts",
+  "input": "cli-config",
+  "launches": 20,
+  "args": [
+    "{input}",
+    "--env",
+    "production",
+    "--max-wave",
+    "12"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6494-default-export-class-members/lib/date.js",
+  "<repo>/tests/corpus/6494-default-export-class-members/lib/error.js",
+  "<repo>/tests/corpus/6494-default-export-class-members/lib/index.js",
+  "<repo>/tests/corpus/6494-default-export-class-members/main.ts"
+ ],
+ "diags": []
+}

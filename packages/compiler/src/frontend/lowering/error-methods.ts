@@ -24,6 +24,7 @@ export function errorPropertyRead(
 ): IrExpr {
   const name = `%error.${property}.read`,
     loc = receiver.loc;
+  lowerer.shareHelper(name);
   if (!lowerer.liftedFns.some((fn) => fn.name === name))
     lowerer.liftedFns.push({
       name,
@@ -50,6 +51,7 @@ export function errorPropertyWrite(
 ): IrStmt {
   const name = `%error.${property}.write`,
     loc = receiver.loc;
+  lowerer.shareHelper(name);
   if (!lowerer.liftedFns.some((fn) => fn.name === name))
     lowerer.liftedFns.push({
       name,
@@ -92,12 +94,15 @@ export function refreshErrorPropertyDispatch(
       lowerer.isSubclassOf(info.def.name, "%Error"),
   );
   const properties: ("name" | "message")[] = ["name", "message"];
+  // Test lowerers built from partial objects leave the location undefined.
+  const accessors = Boolean(lowerer.errorAccessorReflection);
   for (const property of properties) {
     if (
-      overrides.length &&
+      (overrides.length || accessors) &&
       !lowerer.liftedFns.some((fn) => fn.name === `%error.${property}.read`)
     ) {
-      errorPropertyRead(lowerer, varRef("error.0", errorType, overrides[0]!.def.loc), property);
+      const loc = overrides[0]?.def.loc ?? lowerer.errorAccessorReflection!;
+      errorPropertyRead(lowerer, varRef("error.0", errorType, loc), property);
       return true;
     }
   }
@@ -113,6 +118,7 @@ export function refreshErrorPropertyDispatch(
   const revision = JSON.stringify([
     readers.map((fn) => fn.name),
     overrides.map((info) => [info.def.name, hasClassPrototypeData(info)]),
+    accessors,
   ]);
   if (lowerer.errorPropertyDispatchRevision === revision) return false;
   lowerer.errorPropertyDispatchRevision = revision;
@@ -181,6 +187,50 @@ export function refreshErrorPropertyDispatch(
           },
         ];
     const body: IrStmt[] = [{ kind: "if", cond: own, then: fallback, else_: null, loc }];
+    // An own accessor a reflective definition installed (the slot reads as
+    // absent then): the read calls its getter, the write its setter.
+    if (accessors)
+      body.push({
+        kind: "if",
+        cond: { kind: "libCall", fn: "error.ownAccessor", args: [receiver, key], type: BOOL, loc },
+        then: write
+          ? [
+              {
+                kind: "exprStmt",
+                expr: {
+                  kind: "libCall",
+                  fn: "error.accessorSet",
+                  args: [
+                    receiver,
+                    key,
+                    lowerer.coerceToExpected(varRef("value", STRING, loc), DYN),
+                  ],
+                  type: VOID,
+                  loc,
+                },
+                loc,
+              },
+              { kind: "return", value: null, loc },
+            ]
+          : [
+              {
+                kind: "return",
+                value: lowerer.coerceToExpected(
+                  {
+                    kind: "libCall",
+                    fn: "error.accessorGet",
+                    args: [receiver, key],
+                    type: DYN,
+                    loc,
+                  },
+                  STRING,
+                ),
+                loc,
+              },
+            ],
+        else_: null,
+        loc,
+      });
     helper.locals = helper.locals.filter((local) => !local.id.startsWith("descriptor."));
     for (const info of overrides) {
       const member = `${write ? "set" : "get"}:${property}`;
@@ -315,7 +365,13 @@ export function refreshErrorPropertyDispatch(
                       info.def.name,
                       member,
                       value,
-                      [varRef("value", STRING, loc)],
+                      [
+                        // A JavaScript setter takes its value untyped.
+                        lowerer.coerceToExpected(
+                          varRef("value", STRING, loc),
+                          accessor.sig.params[0]?.type ?? STRING,
+                        ),
+                      ],
                       VOID,
                       loc,
                     ),
@@ -386,6 +442,7 @@ export function errorToStringMethod(
   receiver: IrExpr,
 ): Extract<IrExpr, { kind: "call" }> {
   const loc = receiver.loc;
+  lowerer.shareHelper(helperName);
   if (!lowerer.liftedFns.some((fn) => fn.name === helperName)) {
     lowerer.liftedFns.push({
       name: helperName,
@@ -409,6 +466,7 @@ export function errorToStringCall(lowerer: Lowerer, receiver: IrExpr): IrExpr {
   const loc = receiver.loc;
   const method = errorToStringMethod(lowerer, receiver);
   const name = "%error.toString.virtual";
+  lowerer.shareHelper(name);
   if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
     const value = varRef("error.0", errorType, loc);
     lowerer.liftedFns.push({

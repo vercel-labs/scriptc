@@ -7,6 +7,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
+import { readWorkloads } from "../runtime/workloads.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const suite = resolve(here, "../runtime");
@@ -18,7 +19,7 @@ const { values } = parseArgs({
   },
 });
 mkdirSync(values.out, { recursive: true });
-const { workloads } = JSON.parse(readFileSync(join(suite, "workloads.json"), "utf8"));
+const workloads = readWorkloads(suite);
 const cli = join(values.scriptc, "packages/cli/dist/bootstrap.js");
 // Same inputs as scripts/bench-runtime.mjs generates.
 function input(kind) {

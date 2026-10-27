@@ -1,0 +1,22 @@
+{
+ "order": [
+  "<repo>/packages/compiler/shims/undici/core/errors.ts",
+  "<repo>/packages/compiler/shims/undici/core/connector.ts",
+  "<repo>/packages/compiler/shims/undici/core/diagnostics.ts",
+  "<repo>/packages/compiler/shims/undici/core/readable.ts",
+  "<repo>/packages/compiler/shims/undici/core/util.ts",
+  "<repo>/packages/compiler/shims/undici/core/dispatcher.ts",
+  "<repo>/packages/compiler/shims/undici/core/request.ts",
+  "<repo>/packages/compiler/shims/undici/core/timers.ts",
+  "<repo>/packages/compiler/shims/undici/core/client.ts",
+  "<repo>/packages/compiler/shims/undici/core/pool.ts",
+  "<repo>/packages/compiler/shims/undici/core/agent.ts",
+  "<repo>/packages/compiler/shims/undici/core/api.ts",
+  "<repo>/packages/compiler/shims/undici/core/fetch.ts",
+  "<repo>/packages/compiler/shims/undici/core/errors-v7.ts",
+  "<repo>/packages/compiler/shims/undici/v7.ts",
+  "<repo>/tests/fixtures/npm/cases/undici7/peers.ts",
+  "<repo>/tests/fixtures/npm/cases/undici7/main.ts"
+ ],
+ "diags": []
+}

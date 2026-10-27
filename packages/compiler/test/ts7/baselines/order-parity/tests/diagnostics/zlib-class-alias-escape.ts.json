@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/zlib-class-alias-escape.ts"
+ ],
+ "diags": []
+}

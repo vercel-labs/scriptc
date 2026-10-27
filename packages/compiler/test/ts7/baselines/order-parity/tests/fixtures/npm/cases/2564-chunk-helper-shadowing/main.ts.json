@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/2564-chunk-helper-shadowing/main.ts"
+ ],
+ "diags": []
+}

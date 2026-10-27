@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6997-typed-array-invariant-index-terms.ts"
+ ],
+ "diags": []
+}

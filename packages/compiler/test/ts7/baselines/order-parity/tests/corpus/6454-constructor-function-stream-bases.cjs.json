@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6454-constructor-function-stream-bases.cjs"
+ ],
+ "diags": []
+}

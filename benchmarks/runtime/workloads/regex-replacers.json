@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/regex-replacers.ts",
+  "args": [
+    "1"
+  ]
+}

@@ -1,0 +1,17 @@
+nested-member-blocker-path.ts:16:10 - error SC2009: values of type 'Provider' cannot be compiled: the record shape is supported, but its member 'poll().jobs[].handle' has type 'Promise<number> & { cancel(): void; }', which does not compile
+
+  15 | }
+  16 | function makeProvider(): Provider {
+     |          ^~~~~~~~~~~~
+  17 |   return { name: "p", poll: async () => undefined };
+
+  hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
+
+nested-member-blocker-path.ts:19:13 - error SC2004: uses of 'makeProvider' inherit the blocker on its declaration
+
+  18 | }
+  19 | console.log(makeProvider().name);
+     |             ^~~~~~~~~~~~
+  20 | 
+
+  hint: the declaration of 'makeProvider' did not compile — fix the diagnostic reported there and these sites clear with it

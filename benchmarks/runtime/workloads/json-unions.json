@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/json-unions.ts",
+  "args": [
+    "6"
+  ]
+}

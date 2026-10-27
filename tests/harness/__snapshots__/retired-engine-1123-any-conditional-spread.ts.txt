@@ -1,6 +1,0 @@
-retired-engine-1123-any-conditional-spread.ts:21:21 - error SC1090: conditional spreads beyond `...(c ? { field: v } : {})` (exactly one property against an empty arm — spell other shapes as optional fields) is not supported yet
-
-  20 | function multi(on: boolean): any {
-  21 |   return { base: 1, ...(on ? { x: "X", y: "Y" } : {}) };
-     |                     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  22 | }

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6862-readline-chained-listeners.cjs"
+ ],
+ "diags": []
+}

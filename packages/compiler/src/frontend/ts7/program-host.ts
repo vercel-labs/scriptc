@@ -21,11 +21,16 @@ import { dirname, join, resolve } from "node:path";
 import { Ts7Api } from "./api.js";
 import type { Ts7TimingInfo } from "./session-timing.js";
 import type { Ts7FileSystem } from "./rpc-filesystem.js";
-import type { CompilerOptions, Diagnostic } from "./semantic-types.js";
+import type { Diagnostic, SourceFileMetadata } from "./semantic-types.js";
 import type { SourceFile } from "./ast-types.js";
-import type { Ts7SessionProject as Project, Ts7SessionSnapshot as Snapshot } from "./session.js";
+import type {
+  Ts7ProjectCompilerOptions,
+  Ts7SessionProject as Project,
+  Ts7SessionSnapshot as Snapshot,
+} from "./session.js";
 import { CheckerFacade } from "./checker.js";
 import {
+  jsxOptionName,
   moduleDetectionKindName,
   moduleKindName,
   moduleResolutionKindName,
@@ -40,12 +45,19 @@ import {
   trackedReadFile,
   trackedRealpath,
 } from "../input-tracker.js";
+import { packageShimDeclarationText } from "../package-shims.js";
+import { typePatchedText, typePatchFileExists } from "../type-patches/layer.js";
+import { ambientDtsPath, isFallbackDtsPath, overridesDtsPath } from "../dts-paths.js";
+import { inFileOrder, reusedKeptLibDiagnostics, reusedLibDiagnostics } from "./lib-diagnostics.js";
+import { ts7Diagnostic } from "./diagnostic.js";
+import type { Ts7DiagnosticData } from "./session-schema.generated.js";
 
 /** The compiler options our createProgram accepts: TS7's CompilerOptions
  * shape (numeric enums for target/module/moduleResolution — the enums module
  * generates them from the pinned SDK) with the 5.9.3 "lib.es2025.d.ts" lib
- * spelling also accepted. */
-export type Ts7CompilerOptions = CompilerOptions;
+ * spelling also accepted, plus the project options scriptc adopts that the
+ * TS7 schema no longer declares (Ts7ProjectCompilerOptions). */
+export type Ts7CompilerOptions = Ts7ProjectCompilerOptions;
 
 /* tsconfig JSON wants enum NAMES; the options object carries TS7's numeric
  * enum values. Generated name lookups preserve the SDK's reverse mappings
@@ -75,6 +87,9 @@ function serializeOptions(options: Ts7CompilerOptions): Record<string, unknown> 
         break;
       case "moduleDetection":
         out[key] = moduleDetectionKindName(value as number)?.toLowerCase() ?? value;
+        break;
+      case "jsx":
+        out[key] = typeof value === "number" ? (jsxOptionName(value) ?? value) : value;
         break;
       case "lib":
         // 5.9.3 spells lib entries "lib.es2025.d.ts"; tsconfig wants "es2025".
@@ -108,6 +123,9 @@ export interface Ts7ApiOptions {
   cwd: string;
   fs: Ts7FileSystem;
   collectTiming: boolean;
+  /** False for a connection that should not use the shared checker server
+   * (`SCRIPTC_CHECKER_SERVER`), such as the syntax-only source parser's. */
+  shared?: boolean;
 }
 
 export type Ts7ApiFactory = (options: Ts7ApiOptions) => Ts7Api;
@@ -135,32 +153,44 @@ export class Ts7Host {
   private readonly virtualChanges = new Map<string, "created" | "changed">();
   private readonly closingProjects = new Set<string>();
   private readonly api: Ts7Api;
+  /** The text the server reads for a file (its readFile hook). */
+  private readonly readSource: (fileName: string) => string | null;
   private closed = false;
 
   constructor(createApi: Ts7ApiFactory, options?: Ts7HostOptions) {
     const virtualFiles = this.virtualFiles;
     const shadow = options?.fsShadow ?? null;
+    // A virtual file, a shadow's replacement, a package shim's declaration
+    // entry, a type-patched package file or the file on disk; null when shadowed out of existence or
+    // missing.
+    this.readSource = (fileName) => {
+      const virtual = virtualFiles.get(tsgoPath(fileName));
+      if (virtual !== undefined) return stripSourceBom(virtual);
+      if (shadow !== null) {
+        if (shadow.hideFile(fileName)) return null;
+        const replacement = shadow.readFile(fileName);
+        if (replacement !== undefined) return stripSourceBom(replacement);
+      }
+      // A package scriptc implements itself (package-shims.ts): its
+      // installed declaration entry re-exports the shim module, in every
+      // program the host creates.
+      const shim = packageShimDeclarationText(fileName);
+      if (shim !== undefined) return shim;
+      // A package file a project type patch edits (type-patches/layer.ts).
+      const patched = typePatchedText(fileName);
+      if (patched !== undefined) return stripSourceBom(patched);
+      const source = trackedReadFile(fileName);
+      return source === null ? null : stripSourceBom(source);
+    };
     this.api = createApi({
       cwd: options?.cwd ?? process.cwd(),
       collectTiming: options?.collectTiming ?? false,
       fs: {
-        // string => virtual (or shadowed) hit; null => shadowed out of
-        // existence; undefined => real-FS fallthrough.
-        readFile: (fileName) => {
-          const virtual = virtualFiles.get(tsgoPath(fileName));
-          if (virtual !== undefined) return stripSourceBom(virtual);
-          if (shadow !== null) {
-            if (shadow.hideFile(fileName)) return null;
-            const replacement = shadow.readFile(fileName);
-            if (replacement !== undefined) return stripSourceBom(replacement);
-          }
-          const source = trackedReadFile(fileName);
-          return source === null ? null : stripSourceBom(source);
-        },
+        readFile: this.readSource,
         fileExists: (fileName) => {
           if (virtualFiles.has(tsgoPath(fileName))) return true;
           if (shadow !== null && shadow.hideFile(fileName)) return false;
-          return trackedFileExists(fileName);
+          return trackedFileExists(fileName) || typePatchFileExists(fileName);
         },
         directoryExists: (path) => trackedDirectoryExists(path),
         realpath: (path) =>
@@ -171,13 +201,22 @@ export class Ts7Host {
     });
   }
 
+  /** The text this host serves for a file (null when it serves none),
+   * without asking the server for its syntax tree. */
+  sourceText(fileName: string): string | null {
+    return this.readSource(fileName);
+  }
+
   /** Registers an in-memory file served to tsgo by the virtual-FS hooks. */
   addVirtualFile(path: string, content: string): void {
     this.ensureOpen();
     const key = tsgoPath(path);
     if (this.virtualFiles.get(key) === content) return;
     if (!this.virtualChanges.has(key))
-      this.virtualChanges.set(key, this.virtualFiles.has(key) ? "changed" : "created");
+      this.virtualChanges.set(
+        key,
+        this.virtualFiles.has(key) || trackedFileExists(path) ? "changed" : "created",
+      );
     this.virtualFiles.set(key, content);
   }
 
@@ -282,12 +321,18 @@ export class Ts7Program {
     private readonly configPath: string,
   ) {}
 
-  getCompilerOptions(): CompilerOptions {
+  getCompilerOptions(): Ts7CompilerOptions {
     return this.project.program.getCompilerOptions();
   }
 
   getSourceFile(fileName: string): SourceFile | undefined {
     return this.project.program.getSourceFile(resolve(fileName));
+  }
+
+  /** A file's text as the host serves it, without fetching its syntax
+   * tree (Ts7Host.sourceText). */
+  getSourceText(fileName: string): string | null {
+    return this.host.sourceText(fileName);
   }
 
   getSourceFileNames(): readonly string[] {
@@ -343,8 +388,20 @@ export class Ts7Program {
     return this.project.program.getSyntacticDiagnostics(sourceFile?.fileName);
   }
 
+  getBindDiagnostics(sourceFile?: SourceFile): readonly Diagnostic[] {
+    return this.project.program.getBindDiagnostics(sourceFile?.fileName);
+  }
+
   getSemanticDiagnostics(sourceFile?: SourceFile): readonly Diagnostic[] {
     return this.project.program.getSemanticDiagnostics(sourceFile?.fileName);
+  }
+
+  getSuggestionDiagnostics(sourceFile?: SourceFile): readonly Diagnostic[] {
+    return this.project.program.getSuggestionDiagnostics(sourceFile?.fileName);
+  }
+
+  getDeclarationDiagnostics(sourceFile?: SourceFile): readonly Diagnostic[] {
+    return this.project.program.getDeclarationDiagnostics(sourceFile?.fileName);
   }
 
   getGlobalDiagnostics(): readonly Diagnostic[] {
@@ -357,6 +414,41 @@ export class Ts7Program {
 
   getConfigFileParsingDiagnostics(): readonly Diagnostic[] {
     return this.project.program.getConfigFileParsingDiagnostics();
+  }
+
+  getSourceFileMetadata(fileName: string): SourceFileMetadata | undefined {
+    return this.project.program.getSourceFileMetadata(resolve(fileName));
+  }
+
+  /** The semantic and global diagnostics with the stored diagnostics of the
+   * declaration files scriptc supplies (lib-diagnostics.ts), or null. */
+  reusedLibDiagnostics(): { semantic: Ts7DiagnosticData[]; global: Ts7DiagnosticData[] } | null {
+    return this.libDiagnostics(null);
+  }
+
+  /** reusedLibDiagnostics for the `kept` files only: null without a stored
+   * answer. */
+  reusedKeptLibDiagnostics(
+    kept: ReadonlySet<string>,
+  ): { semantic: Ts7DiagnosticData[]; global: Ts7DiagnosticData[] } | null {
+    return this.libDiagnostics(kept);
+  }
+
+  private libDiagnostics(
+    kept: ReadonlySet<string> | null,
+  ): { semantic: Ts7DiagnosticData[]; global: Ts7DiagnosticData[] } | null {
+    this.snapshot.ensureActive();
+    const program = this.project.program;
+    const declarations = new Set([ambientDtsPath(), overridesDtsPath()]);
+    const names = this.getSourceFileNames();
+    const supplied = (name: string): boolean =>
+      declarations.has(tsgoPath(name)) ||
+      isFallbackDtsPath(name) ||
+      program.getSourceFileMetadataByPath(name)?.isDefaultLibrary === true;
+    const sourceFile = (name: string): SourceFile | undefined => this.getSourceFile(name);
+    return kept === null
+      ? reusedLibDiagnostics(program, names, supplied, sourceFile)
+      : reusedKeptLibDiagnostics(program, names, supplied, sourceFile, kept);
   }
 
   isSourceFileDefaultLibrary(file: SourceFile): boolean {
@@ -387,15 +479,64 @@ export class Ts7Program {
 
 /** 5.9.3's getPreEmitDiagnostics, composed from 7.0.2's split surface (the
  * package dropped the aggregate). Order mirrors 5.9.3: config, options/
- * program, global, syntactic, semantic. */
-export function getPreEmitDiagnostics(program: Ts7Program): readonly Diagnostic[] {
+ * program, global, syntactic, semantic.
+ *
+ * With `keep`, a caller that discards every diagnostic of the other files
+ * asks for semantic diagnostics of the kept files only: the server checks
+ * only those (getDiagnosticsOfCheckedFiles), or only those not answered by
+ * stored diagnostics of the supplied declaration files, and their
+ * diagnostics come in the full check's order. A global diagnostic can come
+ * from checking any file, so when that partial check reports one, the full
+ * check answers. */
+export function getPreEmitDiagnostics(
+  program: Ts7Program,
+  keep?: (fileName: string) => boolean,
+): readonly Diagnostic[] {
+  const config = program.getConfigFileParsingDiagnostics();
+  const options = program.getProgramDiagnostics();
+  if (keep !== undefined) {
+    const kept = program.getSourceFileNames().filter((name) => keep(name));
+    if (kept.length < program.getSourceFileNames().length) {
+      const partial =
+        program.reusedKeptLibDiagnostics(new Set(kept)) ?? keptFileDiagnostics(program, kept);
+      if (partial !== null && partial.global.length === 0)
+        return [
+          ...config,
+          ...options,
+          ...program.getSyntacticDiagnostics(),
+          ...partial.semantic.map(ts7Diagnostic),
+        ];
+    }
+  }
+  const reused = program.reusedLibDiagnostics();
+  if (reused !== null)
+    return [
+      ...config,
+      ...options,
+      ...reused.global.map(ts7Diagnostic),
+      ...program.getSyntacticDiagnostics(),
+      ...reused.semantic.map(ts7Diagnostic),
+    ];
   return [
-    ...program.getConfigFileParsingDiagnostics(),
-    ...program.getProgramDiagnostics(),
+    ...config,
+    ...options,
     ...program.getGlobalDiagnostics(),
     ...program.getSyntacticDiagnostics(),
     ...program.getSemanticDiagnostics(),
   ];
+}
+
+/** The semantic diagnostics of the kept files, in the full check's order,
+ * and the global diagnostics of checking them; null when the server cannot
+ * check only some files. */
+function keptFileDiagnostics(
+  program: Ts7Program,
+  kept: readonly string[],
+): { semantic: Ts7DiagnosticData[]; global: Ts7DiagnosticData[] } | null {
+  const checked = program.project.program.checkedFileDiagnosticData(kept);
+  if (checked === null) return null;
+  const byFile = new Map(kept.map((name, index) => [name, checked.files[index] ?? []]));
+  return { semantic: inFileOrder(byFile), global: checked.global };
 }
 
 /** ts.findConfigFile: nearest configName walking up from searchPath. */

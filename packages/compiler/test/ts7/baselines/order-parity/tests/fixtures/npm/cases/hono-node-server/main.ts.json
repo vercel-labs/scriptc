@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/packages/compiler/shims/hono-node-server/v2.ts",
+  "<repo>/tests/fixtures/npm/cases/hono-node-server/main.ts"
+ ],
+ "diags": []
+}

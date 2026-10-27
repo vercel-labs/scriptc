@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/fresh-spread-exported/items.ts",
+  "<repo>/tests/diagnostics/fresh-spread-exported/main.ts"
+ ],
+ "diags": []
+}

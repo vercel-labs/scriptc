@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/global-detection-typeof.cjs"
+ ],
+ "diags": []
+}

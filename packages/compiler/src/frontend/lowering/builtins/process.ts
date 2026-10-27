@@ -1,8 +1,10 @@
+import { keyedHelperName } from "../stable-names.js";
 import { stdinKeypressListener } from "./readline.js";
 import { envSnapshotHelper, lowerProcessLoadEnvFile } from "./environment.js";
 import { dynUndefinedExpr, boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
 import { timerStyleCallback } from "../lower-timers.js";
 import * as ts from "../../ts7/adapter.js";
+import { requestGeneralStreamSurface } from "../general-streams.js";
 import { type Lowerer, own } from "../lowerer.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
@@ -17,6 +19,7 @@ import {
   type IrExpr,
   type IrLibFn,
   type IrStmt,
+  type IrType,
   STRING,
   type SrcLoc,
   UNDEFINED_T,
@@ -26,8 +29,148 @@ import {
   funcOf,
 } from "../../../ir/ir.js";
 import { lowerBuiltinLoaderValue } from "../lower-builtin-values.js";
+import { builtinFunctionValue } from "../lower-exprs.js";
+import { canonicalBuiltinModule } from "../../builtin-modules.js";
 import { lowerProcessIpcSend, ipcMessageListener, ipcDisconnectListener } from "./ipc.js";
 import { lowerDiagnosticsSubscriber, lowerTracingArguments } from "./async-context.js";
+
+/** Whether the process has an IPC channel, Node's test for defining
+ * process.send and process.disconnect: a channel this fork child opened
+ * (programs with fork targets only), or a non-empty NODE_CHANNEL_FD from a
+ * Node.js parent, the variable Node itself tests at startup. Built from the
+ * existing environment read, so the presence test links no runtime code. */
+export function processHasIpc(lowerer: Lowerer, loc: SrcLoc): IrExpr {
+  const envT = lowerer.envValueType();
+  const unionId = (envT as IrType & { kind: "union" }).unionId;
+  const stringTag = lowerer.armTag(unionId, STRING);
+  const value = lowerer.declareHiddenLocal("%channelFd", envT);
+  const fromNode: IrExpr = {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "varDecl",
+        localId: value.id,
+        init: {
+          kind: "libCall",
+          fn: "process.envGet",
+          args: [strLit("NODE_CHANNEL_FD", loc)],
+          type: envT,
+          loc,
+        },
+        loc,
+      },
+    ],
+    result: {
+      kind: "logical",
+      op: "&&",
+      left: {
+        kind: "unionIsTag",
+        unionId,
+        tag: stringTag,
+        negated: false,
+        value: varRef(value.id, envT, loc),
+        type: BOOL,
+        loc,
+      },
+      right: {
+        kind: "toBool",
+        operand: {
+          kind: "unionNarrow",
+          unionId,
+          tag: stringTag,
+          value: varRef(value.id, envT, loc),
+          type: STRING,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      },
+      type: BOOL,
+      loc,
+    },
+    type: BOOL,
+    loc,
+  };
+  if (lowerer.forkTargets.length === 0) return fromNode;
+  return {
+    kind: "logical",
+    op: "||",
+    left: { kind: "libCall", fn: "process.ipcOpen", args: [], type: BOOL, loc },
+    right: fromNode,
+    type: BOOL,
+    loc,
+  };
+}
+
+/** True when the value of `node` is consumed only by ToBoolean: a
+ * condition, the operand of `!`, `Boolean(node)`, or an operand of `&&` /
+ * `||` whose own value is consumed that way (or discarded, for the left
+ * operand). */
+export function isTruthinessOnlyRead(lowerer: Lowerer, node: ts.Expression): boolean {
+  let child: ts.Node = node;
+  let parent = node.parent;
+  while (parent !== undefined && ts.isParenthesizedExpression(parent)) {
+    child = parent;
+    parent = parent.parent;
+  }
+  if (parent === undefined) return false;
+  if (ts.isIfStatement(parent) || ts.isWhileStatement(parent) || ts.isDoStatement(parent))
+    return parent.expression === child;
+  if (ts.isForStatement(parent)) return parent.condition === child;
+  if (ts.isConditionalExpression(parent)) return parent.condition === child;
+  if (ts.isPrefixUnaryExpression(parent)) return parent.operator === ts.SyntaxKind.ExclamationToken;
+  if (ts.isCallExpression(parent)) {
+    return (
+      !parent.questionDotToken &&
+      parent.arguments.nodes.length === 1 &&
+      parent.arguments.nodes[0] === child &&
+      lowerer.isStdlibGlobal(parent.expression, "Boolean")
+    );
+  }
+  if (ts.isBinaryExpression(parent)) {
+    const op = parent.operatorToken.kind;
+    if (op !== ts.SyntaxKind.AmpersandAmpersandToken && op !== ts.SyntaxKind.BarBarToken)
+      return false;
+    if (isTruthinessOnlyRead(lowerer, parent)) return true;
+    let outer: ts.Node | undefined = parent.parent;
+    while (outer !== undefined && ts.isParenthesizedExpression(outer)) outer = outer.parent;
+    return parent.left === child && outer !== undefined && ts.isExpressionStatement(outer);
+  }
+  return false;
+}
+
+/** Whether a program source reads process.exitCode. Such a program
+ * records its exit-code assignments (process.setExitCodeTracked), so a
+ * read can tell an unset code from 0; other programs keep the untracked
+ * write. Computed once per lowering pass. */
+export function programReadsExitCode(lowerer: Lowerer): boolean {
+  if (lowerer.readsExitCode !== null) return lowerer.readsExitCode;
+  let found = false;
+  const walk = (node: ts.Node): void => {
+    if (found) return;
+    if (
+      ts.isPropertyAccessExpression(node) &&
+      node.name.text === "exitCode" &&
+      !(
+        ts.isBinaryExpression(node.parent) &&
+        node.parent.left === node &&
+        node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      ) &&
+      lowerer.stdlibGlobalMember(node, "process") === "exitCode"
+    ) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, walk);
+  };
+  for (const sf of lowerer.program.getImplementationSourceFiles()) {
+    if (sf.isDeclarationFile) continue;
+    walk(sf);
+    if (found) break;
+  }
+  lowerer.readsExitCode = found;
+  return found;
+}
 
 /** The pinned Node release the runtime reports as process.versions.node
  * (packages/runtime/src/scr_lib.c SCR_NODE_COMPAT_VERSION, kept equal to
@@ -50,21 +193,21 @@ export function lowerProcStreamMethodCall(
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
-  if (isJsSourceFile(call.getSourceFile())) {
+  if (isJsSourceFile(ts.getSourceFileOfNode(call))) {
     const receiver = lowerer.lowerExpr(access.expression);
     if (receiver.type.kind === "dyn") {
       return {
         kind: "dynInvoke",
         recv: receiver,
         method: name,
-        calleeName: call.expression.getText(),
-        args: call.arguments.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+        calleeName: ts.getTextOfNode(call.expression),
+        args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
         type: DYN,
         loc,
       };
     }
   }
-  if (name === "getWindowSize" && call.arguments.length === 0) {
+  if (name === "getWindowSize" && call.arguments.nodes.length === 0) {
     const receiver = lowerer.coerceToExpected(lowerer.lowerExpr(access.expression), DYN);
     return lowerer.coerceInto(
       call,
@@ -72,7 +215,7 @@ export function lowerProcStreamMethodCall(
         kind: "dynInvoke",
         recv: receiver,
         method: name,
-        calleeName: call.expression.getText(),
+        calleeName: ts.getTextOfNode(call.expression),
         args: [],
         type: DYN,
         loc,
@@ -80,18 +223,20 @@ export function lowerProcStreamMethodCall(
       lowerer.irTypeOf(call),
     );
   }
-  if (name === "write" && call.arguments.length === 1) {
+  if (name === "write" && call.arguments.nodes.length === 1) {
     const receiver = lowerer.lowerExpr(access.expression);
-    const data = lowerer.lowerExpr(call.arguments[0]!);
+    const data = lowerer.lowerExpr(call.arguments.nodes[0]!);
     if (data.type.kind !== "string") {
+      requestGeneralStreamSurface(lowerer, access.expression);
       lowerer.noLowering(
         `write of '${lowerer.fmt(data.type)}' data on a stream value`,
-        call.arguments[0]!,
+        call.arguments.nodes[0]!,
         "one string is the supported form here — narrow unions first",
       );
     }
     return { kind: "libCall", fn: "procStream.write", args: [receiver, data], type: BOOL, loc };
   }
+  requestGeneralStreamSurface(lowerer, access.expression);
   lowerer.noLowering(
     `WritableStream.${name}`,
     call,
@@ -122,6 +267,53 @@ export function isOptionalProcessStreamProperty(
   return lowerer.mapTypeOf(lowerer.typeOf(expr.expression))?.kind === "procStream";
 }
 
+/** The process.versions entries @types/node declares as plain strings
+ * that the runtime's versions object (node and openssl only) lacks. */
+const ABSENT_DECLARED_VERSIONS: ReadonlySet<string> = new Set([
+  "http_parser",
+  "v8",
+  "ares",
+  "uv",
+  "zlib",
+  "modules",
+]);
+
+/** A process.versions member read whose declaration promises a string the
+ * runtime does not have. @types/node declares the entries above as plain
+ * strings, so a checked string read would throw on the absent entry and
+ * equality with undefined would fold to false. These reads keep the
+ * undefined arm, like the optional stream properties. The shipped fallback
+ * types declare other entries `string | undefined` and never reach this.
+ * An element read with a computed key qualifies when the checker types it
+ * as a plain string. */
+export function isOptionalProcessVersionsRead(lowerer: Lowerer, node: ts.Node): boolean {
+  let key: string | null;
+  if (ts.isPropertyAccessExpression(node)) key = node.name.text;
+  else if (ts.isElementAccessExpression(node))
+    key = ts.isStringLiteralLike(node.argumentExpression) ? node.argumentExpression.text : null;
+  else return false;
+  if (key !== null && !ABSENT_DECLARED_VERSIONS.has(key)) return false;
+  if (!programMentionsVersions(lowerer)) return false;
+  const symbol = lowerer.typeOf(node.expression).getSymbol();
+  return (
+    symbol !== undefined &&
+    ts.symbolName(symbol) === "ProcessVersions" &&
+    symbol.declarations.some(
+      (d) => ts.isInterfaceDeclaration(d) && lowerer.isStdlibFile(d.getSourceFile()),
+    ) &&
+    lowerer.mapTypeOf(lowerer.typeOf(node))?.kind === "string"
+  );
+}
+
+/** Whether any implementation source spells `versions`. Programs that
+ * never do skip the per-read checker queries above entirely. */
+function programMentionsVersions(lowerer: Lowerer): boolean {
+  lowerer.mentionsProcessVersions ??= lowerer.program
+    .getImplementationSourceFiles()
+    .some((sf) => !sf.isDeclarationFile && sf.text.includes("versions"));
+  return lowerer.mentionsProcessVersions;
+}
+
 export function lowerProcessStreamProperty(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
@@ -132,7 +324,7 @@ export function lowerProcessStreamProperty(
     ? lowerer.stdlibGlobalMember(expr.expression, "process")
     : null;
   if (
-    isJsSourceFile(expr.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
     (direct === "stdin" ||
       direct === "stdout" ||
       direct === "stderr" ||
@@ -147,6 +339,18 @@ export function lowerProcessStreamProperty(
         type: DYN,
         loc: locOf(expr),
       };
+  }
+  // `if (process.stdin.setRawMode)`: Node's stdin has the method only
+  // when it is a TTY. The runtime's stream object answers the same
+  // presence (the method or undefined); calls keep their direct lowering.
+  if (direct === "stdin" && member === "setRawMode") {
+    return {
+      kind: "dynKeyGet",
+      value: lowerer.lowerExpr(expr.expression),
+      key: strLit(member, locOf(expr.name)),
+      type: DYN,
+      loc: locOf(expr),
+    };
   }
   if (member !== "isTTY" && member !== "columns" && member !== "rows") return null;
   let recv: ts.Expression = expr.expression;
@@ -233,6 +437,41 @@ export function lowerProcessStreamProperty(
  * read in source order). Method members referenced without a call are
  * rejected specifically. Null for non-process receivers (the chain keeps
  * trying other property lowerings). */
+/** The value of a DATA member of the process global taken off by
+ * destructuring (`const { env, argv } = process` in JavaScript, the
+ * supports-color opening): the same values the spelled `process.env` /
+ * `process.argv` reads produce, typed by the binding. Null for members
+ * this does not cover (methods keep the destructuring fence). */
+export function processDataMemberValue(
+  lowerer: Lowerer,
+  member: string,
+  binding: ts.Node,
+  loc: SrcLoc,
+): IrExpr | null {
+  switch (member) {
+    case "env": {
+      const mapped = lowerer.mapTypeOf(lowerer.typeOf(binding));
+      if (mapped?.kind !== "record") return null;
+      const helper = envSnapshotHelper(lowerer, mapped.shapeId, loc);
+      return helper === null ? null : { kind: "call", callee: helper, args: [], type: mapped, loc };
+    }
+    case "argv":
+      return { kind: "libCall", fn: "process.argv", args: [], type: arrayOf(STRING), loc };
+    case "platform":
+      return { kind: "libCall", fn: "process.platform", args: [], type: STRING, loc };
+    case "arch":
+      return { kind: "libCall", fn: "process.arch", args: [], type: STRING, loc };
+    case "pid":
+      return { kind: "libCall", fn: "process.pid", args: [], type: F64, loc };
+    case "execPath":
+      return { kind: "libCall", fn: "process.execPath", args: [], type: STRING, loc };
+    case "versions":
+      return { kind: "libCall", fn: "process.versions", args: [], type: DYN, loc };
+    default:
+      return null;
+  }
+}
+
 export function lowerProcessProperty(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
@@ -326,8 +565,49 @@ export function lowerProcessProperty(
   const member = lowerer.stdlibGlobalMember(expr, "process");
   if (member === null) return null;
   const loc = locOf(expr);
+  // `if (process.send)`: Node defines process.send and process.disconnect
+  // only when the process has an IPC channel. A read whose value only
+  // feeds a truthiness test answers that presence; other value uses keep
+  // the member fence.
+  if (
+    (member === "send" || member === "disconnect") &&
+    !expr.questionDotToken &&
+    isTruthinessOnlyRead(lowerer, expr)
+  ) {
+    return processHasIpc(lowerer, loc);
+  }
   if (member === "versions") {
     return { kind: "libCall", fn: "process.versions", args: [], type: DYN, loc };
+  }
+  // process.exitCode: undefined until something assigns it, then the
+  // assigned code. A read the checker narrowed to number follows an
+  // assignment, so the code is set.
+  if (member === "exitCode" && !expr.questionDotToken) {
+    const current: IrExpr = {
+      kind: "libCall",
+      fn: "process.currentExitCode",
+      args: [],
+      type: F64,
+      loc,
+    };
+    if (lowerer.mapTypeOf(lowerer.typeOf(expr))?.kind === "f64") return current;
+    const type: IrType = { kind: "union", unionId: lowerer.unions.intern([F64, UNDEFINED_T]) };
+    return {
+      kind: "ternary",
+      cond: { kind: "libCall", fn: "process.hasExitCode", args: [], type: BOOL, loc },
+      then: lowerer.coerceToExpected(current, type),
+      else_: lowerer.coerceToExpected(
+        { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+        type,
+      ),
+      type,
+      loc,
+    };
+  }
+  // process.features as a value (`"sea" in process.features`): an object
+  // holding none of the flags, consistent with the member reads above.
+  if (member === "features") {
+    return { kind: "dynObjLit", type: DYN, loc };
   }
   // process.noDeprecation / process.throwDeprecation: the values the
   // program assigned (undefined before that — no Node flags reach a
@@ -350,6 +630,11 @@ export function lowerProcessProperty(
   if (member === "hrtime") {
     return { kind: "libCall", fn: "process.hrtimeValue", args: [], type: DYN, loc };
   }
+  // A stored process.nextTick in JavaScript (`cond ? setImmediate :
+  // process.nextTick`): the interned builtin function value.
+  if (member === "nextTick" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    return builtinFunctionValue("process.nextTick", loc);
+  }
   if (member === "getBuiltinModule") {
     // Keep the native loader's argument validation when the function is
     // stored. The declaration's string signature must not insert a checked
@@ -362,10 +647,10 @@ export function lowerProcessProperty(
   if (member === "connected") {
     return { kind: "libCall", fn: "process.connected", args: [], type: BOOL, loc };
   }
-  // process.execArgv: the extra CLI arguments Node itself consumed — a
-  // compiled binary consumed none, so the honest answer is a fresh [].
+  // process.execArgv: the Node runtime flags kept out of process.argv —
+  // a leading --test-update-snapshots in node:test programs, else [].
   if (member === "execArgv") {
-    return { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
+    return { kind: "libCall", fn: "process.execArgv", args: [], type: arrayOf(STRING), loc };
   }
   // process._exiting — the runtime's exit-sequence flag (true while
   // 'exit' listeners run), Node's own undocumented member.
@@ -430,7 +715,7 @@ export function lowerProcessProperty(
   // OUTER expressions dispatch first.
   if (
     member === "stdin" ||
-    ((member === "stdout" || member === "stderr") && isJsSourceFile(expr.getSourceFile()))
+    ((member === "stdout" || member === "stderr") && isJsSourceFile(ts.getSourceFileOfNode(expr)))
   ) {
     return {
       kind: "libCall",
@@ -460,17 +745,20 @@ export function lowerProcessMethodCall(
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (call.questionDotToken) return null;
-  if (isJsSourceFile(call.getSourceFile()) && ts.isPropertyAccessExpression(access.expression)) {
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+    ts.isPropertyAccessExpression(access.expression)
+  ) {
     const stream = lowerer.stdlibGlobalMember(access.expression, "process");
     if (stream === "stdin" || stream === "stdout" || stream === "stderr") {
-      if (call.arguments.some(ts.isSpreadElement))
+      if (call.arguments.nodes.some(ts.isSpreadElement))
         lowerer.noLowering("process stream spread arguments", call);
       return {
         kind: "dynInvoke",
         recv: lowerer.lowerExpr(access.expression),
         method: access.name.text,
-        calleeName: access.getText(),
-        args: call.arguments.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+        calleeName: ts.getTextOfNode(access),
+        args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
         type: DYN,
         loc: locOf(call),
       };
@@ -479,31 +767,31 @@ export function lowerProcessMethodCall(
   const directProcessMember = lowerer.stdlibGlobalMember(access, "process");
   if (directProcessMember === "loadEnvFile") return lowerProcessLoadEnvFile(lowerer, call);
   if (directProcessMember === "hrtime") {
-    if (call.arguments.some(ts.isSpreadElement))
+    if (call.arguments.nodes.some(ts.isSpreadElement))
       lowerer.noLowering("process.hrtime with spread arguments", call);
     const loc = locOf(call);
     return {
       kind: "dynCall",
       callee: { kind: "libCall", fn: "process.hrtimeValue", args: [], type: DYN, loc },
-      args: call.arguments.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+      args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
       calleeName: "process.hrtime",
       type: DYN,
       loc,
     };
   }
   if (directProcessMember === "getBuiltinModule") {
-    if (call.arguments.some(ts.isSpreadElement))
+    if (call.arguments.nodes.some(ts.isSpreadElement))
       lowerer.noLowering("process.getBuiltinModule with spread arguments", call);
     const loc = locOf(call);
-    const id = call.arguments[0]
-      ? lowerer.lowerExprExpecting(call.arguments[0], DYN)
+    const id = call.arguments.nodes[0]
+      ? lowerer.lowerExprExpecting(call.arguments.nodes[0], DYN)
       : (dynUndefinedExpr(loc) satisfies IrExpr);
     const binding = lowerer.declareHiddenLocal("%builtinId", DYN);
     return {
       kind: "seqExpr",
       stmts: [
         { kind: "varDecl", localId: binding.id, init: id, loc },
-        ...call.arguments.slice(1).map((arg): IrStmt => ({
+        ...call.arguments.nodes.slice(1).map((arg): IrStmt => ({
           kind: "exprStmt",
           expr: lowerer.lowerExpr(arg),
           loc: locOf(arg),
@@ -522,8 +810,8 @@ export function lowerProcessMethodCall(
   }
   if (directProcessMember === "send") return lowerProcessIpcSend(lowerer, call);
   if (directProcessMember === "disconnect") {
-    if (call.arguments.length !== 0) {
-      lowerer.noLowering(`process.disconnect with ${call.arguments.length} arguments`, call);
+    if (call.arguments.nodes.length !== 0) {
+      lowerer.noLowering(`process.disconnect with ${call.arguments.nodes.length} arguments`, call);
     }
     if (!ts.isExpressionStatement(call.parent)) {
       lowerer.unsupported(
@@ -549,7 +837,7 @@ export function lowerProcessMethodCall(
     ts.isPropertyAccessExpression(access.expression) &&
     lowerer.stdlibGlobalMember(access.expression, "process") === "stdin"
   ) {
-    if (call.arguments.length !== 0) {
+    if (call.arguments.nodes.length !== 0) {
       lowerer.noLowering("stdin.destroy with arguments", call);
     }
     return { kind: "libCall", fn: "process.stdinDestroy", args: [], type: VOID, loc: locOf(call) };
@@ -575,22 +863,89 @@ export function lowerProcessMethodCall(
         "using the result of stdin.setRawMode(...) (the ReadStream chain — call it as its own statement)",
       );
     }
-    if (call.arguments.length !== 1) {
+    if (call.arguments.nodes.length !== 1) {
       lowerer.noLowering(
-        `stdin.setRawMode with ${call.arguments.length} arguments`,
+        `stdin.setRawMode with ${call.arguments.nodes.length} arguments`,
         call,
         "the supported form is setRawMode(mode) with one boolean",
       );
     }
-    const mode = lowerer.lowerExpr(call.arguments[0]!);
+    const mode = lowerer.lowerExpr(call.arguments.nodes[0]!);
     if (mode.type.kind !== "bool") {
       lowerer.noLowering(
         `stdin.setRawMode of '${lowerer.fmt(mode.type)}' modes`,
-        call.arguments[0]!,
+        call.arguments.nodes[0]!,
         "the mode is a boolean here — narrow unions first",
       );
     }
     return { kind: "libCall", fn: "process.stdinSetRawMode", args: [mode], type: VOID, loc };
+  }
+  // process.stdout.on("resize", cb) (and once/off/removeListener/
+  // addListener, stderr too): the terminal resize event, registered on the
+  // runtime's process stream object (a SIGWINCH listener that emits when a
+  // TTY's size changed; it never keeps the loop alive). Statement position:
+  // Node returns the stream.
+  if (
+    ["on", "once", "off", "removeListener", "addListener"].includes(access.name.text) &&
+    ts.isPropertyAccessExpression(access.expression) &&
+    call.arguments.nodes.length === 2 &&
+    !call.arguments.nodes.some(ts.isSpreadElement) &&
+    ts.isExpressionStatement(call.parent)
+  ) {
+    const stream = lowerer.stdlibGlobalMember(access.expression, "process");
+    const evT = lowerer.typeOf(call.arguments.nodes[0]!);
+    if (
+      (stream === "stdout" || stream === "stderr") &&
+      evT.isStringLiteralType() &&
+      evT.value === "resize"
+    ) {
+      const loc = locOf(call);
+      const receiverLocal = lowerer.declareHiddenLocal("%stdioReceiver", DYN);
+      const receiver = varRef(receiverLocal.id, DYN, loc);
+      const method =
+        access.name.text === "off"
+          ? "removeListener"
+          : access.name.text === "addListener"
+            ? "on"
+            : access.name.text;
+      return {
+        kind: "seqExpr",
+        stmts: [
+          {
+            kind: "varDecl",
+            localId: receiverLocal.id,
+            init: {
+              kind: "libCall",
+              fn: "process.stdio",
+              args: [numLit(stream === "stdout" ? 1 : 2, loc)],
+              type: DYN,
+              loc,
+            },
+            loc,
+          },
+        ],
+        result: {
+          kind: "dynCall",
+          callee: {
+            kind: "dynKeyGet",
+            value: receiver,
+            key: strLit(method, locOf(access.name)),
+            type: DYN,
+            loc,
+          },
+          receiver,
+          calleeName: ts.getTextOfNode(access),
+          args: [
+            lowerer.lowerExprExpecting(call.arguments.nodes[0]!, DYN),
+            lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN),
+          ],
+          type: DYN,
+          loc,
+        },
+        type: DYN,
+        loc,
+      };
+    }
   }
   // process.stdin.on/once("data" | "end" | "error", cb): the piped-stdin
   // event slice. A 'data' listener keeps the event loop alive until EOF
@@ -604,15 +959,18 @@ export function lowerProcessMethodCall(
   ) {
     const loc = locOf(call);
     const once = access.name.text === "once";
-    if (call.arguments.length !== 2) {
-      lowerer.noLowering(`stdin.${access.name.text} with ${call.arguments.length} arguments`, call);
+    if (call.arguments.nodes.length !== 2) {
+      lowerer.noLowering(
+        `stdin.${access.name.text} with ${call.arguments.nodes.length} arguments`,
+        call,
+      );
     }
-    const evT = lowerer.typeOf(call.arguments[0]!);
+    const evT = lowerer.typeOf(call.arguments.nodes[0]!);
     const event = evT.isStringLiteralType() ? evT.value : null;
     if (event !== "data" && event !== "end" && event !== "error" && event !== "keypress") {
       lowerer.noLowering(
         `stdin.${access.name.text}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
-        call.arguments[0]!,
+        call.arguments.nodes[0]!,
         '"data", "end", "error", and "keypress" are the supported stdin events (as literals)',
       );
     }
@@ -625,40 +983,51 @@ export function lowerProcessMethodCall(
     }
     if (event === "keypress") {
       // readline.emitKeypressEvents' (str, key) events
-      const listener = stdinKeypressListener(lowerer, call.arguments[1]!);
+      const listener = stdinKeypressListener(lowerer, call.arguments.nodes[1]!);
       const onceKp: IrExpr = { kind: "boolLit", value: once, type: BOOL, loc };
       return { kind: "libCall", fn: "stdin.onKeypress", args: [listener, onceKp], type: VOID, loc };
     }
-    const cb = lowerer.lowerExpr(call.arguments[1]!);
+    const cb = lowerer.lowerExpr(call.arguments.nodes[1]!);
     if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > 1) {
       lowerer.unsupported(
         "SC1090",
-        call.arguments[1]!,
+        call.arguments.nodes[1]!,
         "stdin listeners with more than one parameter or a return value",
       );
     }
     const param = cb.type.params[0];
     const onceArg: IrExpr = { kind: "boolLit", value: once, type: BOOL, loc };
     if (event === "data") {
-      if (param !== undefined && !(param.kind === "bytes" && param.elem === "u8")) {
+      // A string parameter receives the chunks process.stdin.setEncoding
+      // decodes (pi-tui's terminal input); the runtime refuses a delivery
+      // while no encoding is set, where Node would pass a Buffer.
+      if (
+        param !== undefined &&
+        !(param.kind === "bytes" && param.elem === "u8") &&
+        param.kind !== "string"
+      ) {
         lowerer.unsupported(
           "SC1090",
-          call.arguments[1]!,
-          `data listeners whose parameter is not 'Uint8Array' (got '${lowerer.fmt(param)}')`,
+          call.arguments.nodes[1]!,
+          `data listeners whose parameter is not 'Uint8Array' or 'string' (got '${lowerer.fmt(param)}')`,
         );
       }
       return { kind: "libCall", fn: "stdin.onData", args: [cb, onceArg], type: VOID, loc };
     }
     if (event === "end") {
       if (param !== undefined) {
-        lowerer.unsupported("SC1090", call.arguments[1]!, "end listeners with parameters (use ())");
+        lowerer.unsupported(
+          "SC1090",
+          call.arguments.nodes[1]!,
+          "end listeners with parameters (use ())",
+        );
       }
       return { kind: "libCall", fn: "stdin.onEnd", args: [cb, onceArg], type: VOID, loc };
     }
     if (param !== undefined && !(param.kind === "object" && param.className === "%Error")) {
       lowerer.unsupported(
         "SC1090",
-        call.arguments[1]!,
+        call.arguments.nodes[1]!,
         `error listeners whose parameter is not 'Error' (got '${lowerer.fmt(param)}')`,
       );
     }
@@ -668,7 +1037,7 @@ export function lowerProcessMethodCall(
     const stream = lowerer.stdlibGlobalMember(access.expression, "process");
     if (stream === "stdout" || stream === "stderr") {
       const loc = locOf(call);
-      const args = call.arguments;
+      const args = call.arguments.nodes;
       if (args.length < 1 || args.length > 3 || args.some(ts.isSpreadElement)) {
         lowerer.noLowering(
           `process.${stream}.write with ${args.length} arguments`,
@@ -762,7 +1131,7 @@ export function lowerProcessMethodCall(
       // `writeOut: (str) => process.stdout.write(str)` — str untyped):
       // a runtime string writes; anything else throws the dynCheck's
       // honest TypeError at the call.
-      if (data.type.kind === "dyn" && isJsSourceFile(call.getSourceFile())) {
+      if (data.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(call))) {
         data = { kind: "dynCheck", value: data, type: STRING, loc };
       }
       const isBytes = data.type.kind === "bytes" && data.type.elem === "u8";
@@ -777,7 +1146,7 @@ export function lowerProcessMethodCall(
       let callback: IrExpr | undefined;
       if (callbackNode) {
         callback = lowerer.lowerExpr(callbackNode);
-        if (callback.type.kind === "dyn" && isJsSourceFile(call.getSourceFile())) {
+        if (callback.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(call))) {
           callback = {
             kind: "dynCheck",
             value: callback,
@@ -882,8 +1251,11 @@ export function lowerProcessMethodCall(
     ts.isPropertyAccessExpression(access.expression) &&
     lowerer.stdlibGlobalMember(access.expression, "process") === "memoryUsage"
   ) {
-    if (call.arguments.length !== 0) {
-      lowerer.noLowering(`process.memoryUsage.rss with ${call.arguments.length} arguments`, call);
+    if (call.arguments.nodes.length !== 0) {
+      lowerer.noLowering(
+        `process.memoryUsage.rss with ${call.arguments.nodes.length} arguments`,
+        call,
+      );
     }
     return { kind: "libCall", fn: "process.rss", args: [], type: F64, loc: locOf(call) };
   }
@@ -901,10 +1273,10 @@ export function lowerProcessMethodCall(
   // `removeListener` IS `off` — Node aliases them.
   const isOff = member === "off" || member === "removeListener";
   if (member === "on" || member === "once" || isOff) {
-    if (call.arguments.length !== 2) {
-      lowerer.noLowering(`process.${member} with ${call.arguments.length} arguments`, call);
+    if (call.arguments.nodes.length !== 2) {
+      lowerer.noLowering(`process.${member} with ${call.arguments.nodes.length} arguments`, call);
     }
-    const evT = lowerer.typeOf(call.arguments[0]!);
+    const evT = lowerer.typeOf(call.arguments.nodes[0]!);
     const event = evT.isStringLiteralType() ? evT.value : null;
     if ((event === "message" || event === "disconnect") && !isOff) {
       if (!ts.isExpressionStatement(call.parent)) {
@@ -916,8 +1288,8 @@ export function lowerProcessMethodCall(
       }
       const callback =
         event === "message"
-          ? ipcMessageListener(lowerer, call.arguments[1]!)
-          : ipcDisconnectListener(lowerer, call.arguments[1]!);
+          ? ipcMessageListener(lowerer, call.arguments.nodes[1]!)
+          : ipcDisconnectListener(lowerer, call.arguments.nodes[1]!);
       return {
         kind: "libCall",
         fn: event === "message" ? "process.onMessage" : "process.onDisconnect",
@@ -930,7 +1302,7 @@ export function lowerProcessMethodCall(
       if (!ts.isExpressionStatement(call.parent)) {
         lowerer.unsupported("SC1090", call, "chaining process exception listener registration");
       }
-      const cb = lowerDiagnosticsSubscriber(lowerer, call.arguments[1]!);
+      const cb = lowerDiagnosticsSubscriber(lowerer, call.arguments.nodes[1]!);
       const monitor = boolLit(event === "uncaughtExceptionMonitor", loc);
       return {
         kind: "libCall",
@@ -956,7 +1328,7 @@ export function lowerProcessMethodCall(
           "chaining process listener registration (the result is void here — register each listener as its own statement)",
         );
       }
-      const cb = lowerDiagnosticsSubscriber(lowerer, call.arguments[1]!);
+      const cb = lowerDiagnosticsSubscriber(lowerer, call.arguments.nodes[1]!);
       const onceArg: IrExpr = { kind: "boolLit", value: member === "once", type: BOOL, loc };
       const fn: IrLibFn =
         event === "unhandledRejection"
@@ -979,7 +1351,7 @@ export function lowerProcessMethodCall(
           "chaining process listener registration (the result is void here — register each listener as its own statement)",
         );
       }
-      const cb = lowerDiagnosticsSubscriber(lowerer, call.arguments[1]!);
+      const cb = lowerDiagnosticsSubscriber(lowerer, call.arguments.nodes[1]!);
       return {
         kind: "libCall",
         fn: isOff ? "process.offWarning" : "process.onWarning",
@@ -992,15 +1364,18 @@ export function lowerProcessMethodCall(
       if (!ts.isExpressionStatement(call.parent)) {
         lowerer.unsupported("SC1090", call, "chaining process signal listener registration");
       }
-      const name = lowerer.coerceToExpected(lowerer.lowerExpr(call.arguments[0]!), STRING);
+      const name = lowerer.coerceToExpected(lowerer.lowerExpr(call.arguments.nodes[0]!), STRING);
       if (name.type.kind !== "string" && name.type.kind !== "dyn") {
-        lowerer.noLowering("process signal event name that is not a string", call.arguments[0]!);
+        lowerer.noLowering(
+          "process signal event name that is not a string",
+          call.arguments.nodes[0]!,
+        );
       }
       const signal =
         name.type.kind === "string"
           ? name
           : { kind: "dynCheck" as const, value: name, type: STRING, loc };
-      const cb = lowerDiagnosticsSubscriber(lowerer, call.arguments[1]!);
+      const cb = lowerDiagnosticsSubscriber(lowerer, call.arguments.nodes[1]!);
       return {
         kind: "libCall",
         fn: isOff ? "process.offSignal" : "process.onSignal",
@@ -1010,7 +1385,7 @@ export function lowerProcessMethodCall(
       };
     }
     if (event !== "exit") {
-      lowerer.noLowering(`process.${member}("${event}", ...)`, call.arguments[0]!);
+      lowerer.noLowering(`process.${member}("${event}", ...)`, call.arguments.nodes[0]!);
     }
     if (!ts.isExpressionStatement(call.parent)) {
       lowerer.unsupported(
@@ -1019,7 +1394,7 @@ export function lowerProcessMethodCall(
         "chaining process listener registration (the result is void here — register each listener as its own statement)",
       );
     }
-    let cb = lowerer.lowerExpr(call.arguments[1]!);
+    let cb = lowerer.lowerExpr(call.arguments.nodes[1]!);
     // The checked-dynamic listener (test/common's `process.on('exit',
     // runCallChecks)` — an implicit-any JS function, func(dyn)=>dyn, or
     // a dyn VALUE that rode an untyped binding): adapt through the dyn
@@ -1058,7 +1433,7 @@ export function lowerProcessMethodCall(
     if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > 1) {
       lowerer.unsupported(
         "SC1090",
-        call.arguments[1]!,
+        call.arguments.nodes[1]!,
         "process listeners with more than one parameter or a return value",
       );
     }
@@ -1067,7 +1442,7 @@ export function lowerProcessMethodCall(
     if (param !== undefined && param.kind !== "f64") {
       lowerer.unsupported(
         "SC1090",
-        call.arguments[1]!,
+        call.arguments.nodes[1]!,
         `exit listeners whose parameter is not 'number' (got '${lowerer.fmt(param)}')`,
       );
     }
@@ -1084,19 +1459,19 @@ export function lowerProcessMethodCall(
   // shape: `.forEach((args) => process.emitWarning(...args))`).
   if (member === "emitWarning") {
     let argsArr: IrExpr | null = null;
-    if (call.arguments.length === 1 && ts.isSpreadElement(call.arguments[0]!)) {
-      const spread = lowerer.lowerExpr(call.arguments[0]!.expression);
+    if (call.arguments.nodes.length === 1 && ts.isSpreadElement(call.arguments.nodes[0]!)) {
+      const spread = lowerer.lowerExpr(call.arguments.nodes[0]!.expression);
       if (spread.type.kind === "dyn") {
         argsArr = spread;
       } else {
         lowerer.noLowering(
           "process.emitWarning with a typed spread argument",
-          call.arguments[0]!,
+          call.arguments.nodes[0]!,
           "spread an untyped (checked-dynamic) array, or write the arguments positionally",
         );
       }
     } else {
-      argsArr = lowerTracingArguments(lowerer, call.arguments, loc);
+      argsArr = lowerTracingArguments(lowerer, call.arguments.nodes, loc);
     }
     return { kind: "libCall", fn: "process.emitWarning", args: [argsArr], type: VOID, loc };
   }
@@ -1111,21 +1486,21 @@ export function lowerProcessMethodCall(
   // through, boxable parameterized shapes ride the checked-dynamic
   // boundary, trailing call arguments ride the interned dyn thunk.
   if (member === "nextTick") {
-    if (call.arguments.length === 0) {
+    if (call.arguments.nodes.length === 0) {
       lowerer.noLowering(
         "process.nextTick with 0 arguments",
         call,
         "the supported form is process.nextTick(callback, ...args)",
       );
     }
-    const cb = timerStyleCallback(lowerer, call.arguments, "process.nextTick", loc);
+    const cb = timerStyleCallback(lowerer, call.arguments.nodes, "process.nextTick", loc);
     return { kind: "libCall", fn: "process.nextTick", args: [cb], type: VOID, loc };
   }
   // The process introspection statics — plain reads of the process's
   // own clocks and counters, Node's shapes exactly.
   if (member === "uptime" || member === "availableMemory" || member === "constrainedMemory") {
-    if (call.arguments.length !== 0) {
-      lowerer.noLowering(`process.${member} with ${call.arguments.length} arguments`, call);
+    if (call.arguments.nodes.length !== 0) {
+      lowerer.noLowering(`process.${member} with ${call.arguments.nodes.length} arguments`, call);
     }
     const fn =
       member === "uptime"
@@ -1157,7 +1532,7 @@ export function lowerProcessMethodCall(
       type: F64,
       loc,
     });
-    if (call.arguments.length === 0) {
+    if (call.arguments.nodes.length === 0) {
       return {
         kind: "recordLit",
         fields: shape.fields.map((f) => ({ name: f.name, value: sampleField(f.name) })),
@@ -1165,10 +1540,10 @@ export function lowerProcessMethodCall(
         loc,
       };
     }
-    if (call.arguments.length !== 1) {
-      lowerer.noLowering(`process.${member} with ${call.arguments.length} arguments`, call);
+    if (call.arguments.nodes.length !== 1) {
+      lowerer.noLowering(`process.${member} with ${call.arguments.nodes.length} arguments`, call);
     }
-    const prev = lowerer.lowerExpr(call.arguments[0]!);
+    const prev = lowerer.lowerExpr(call.arguments.nodes[0]!);
     const prevShape =
       prev.type.kind === "record" ? lowerer.shapes.get(prev.type.shapeId) : undefined;
     const prevOk =
@@ -1179,7 +1554,7 @@ export function lowerProcessMethodCall(
     if (prev.type.kind !== "record" || !prevOk) {
       lowerer.noLowering(
         `process.${member} of a '${lowerer.fmt(prev.type)}' previous value`,
-        call.arguments[0]!,
+        call.arguments.nodes[0]!,
         "the previous value is the record a prior call answered ({ user, system } numbers) — Node's ERR_INVALID_ARG_TYPE shapes have no lowering",
       );
     }
@@ -1187,7 +1562,7 @@ export function lowerProcessMethodCall(
     const key = `${prefix}usage.diff:${prevT.shapeId}:${t.shapeId}`;
     let helper = lowerer.valueHelpers.get(key);
     if (!helper) {
-      helper = `%${prefix}usage.diff.${lowerer.valueHelpers.size}`;
+      helper = keyedHelperName(lowerer, `%${prefix}usage.diff`, key);
       lowerer.valueHelpers.set(key, helper);
       const pRef: IrExpr = { kind: "varRef", localId: "p.0", type: prevT, loc };
       const fieldOf = (name: string): IrExpr => ({
@@ -1247,8 +1622,8 @@ export function lowerProcessMethodCall(
   // storage lives in the same heap). One sample per call: the interned
   // helper takes it, then the record reads it field by field.
   if (member === "memoryUsage") {
-    if (call.arguments.length !== 0) {
-      lowerer.noLowering(`process.memoryUsage with ${call.arguments.length} arguments`, call);
+    if (call.arguments.nodes.length !== 0) {
+      lowerer.noLowering(`process.memoryUsage with ${call.arguments.nodes.length} arguments`, call);
     }
     const t = lowerer.mapTypeOf(lowerer.typeOf(call));
     if (t?.kind !== "record") lowerer.badType(call, lowerer.typeOf(call));
@@ -1262,7 +1637,7 @@ export function lowerProcessMethodCall(
     const key = `process.memoryUsage:${t.shapeId}`;
     let helper = lowerer.valueHelpers.get(key);
     if (!helper) {
-      helper = `%process.memoryUsage.${lowerer.valueHelpers.size}`;
+      helper = keyedHelperName(lowerer, "%process.memoryUsage", key);
       lowerer.valueHelpers.set(key, helper);
       lowerer.liftedFns.push({
         name: helper,
@@ -1303,8 +1678,11 @@ export function lowerProcessMethodCall(
   // process.resourceUsage() — getrusage's 16 fields in Node's names and
   // units (CPU times in microseconds, maxRSS in kilobytes).
   if (member === "resourceUsage") {
-    if (call.arguments.length !== 0) {
-      lowerer.noLowering(`process.resourceUsage with ${call.arguments.length} arguments`, call);
+    if (call.arguments.nodes.length !== 0) {
+      lowerer.noLowering(
+        `process.resourceUsage with ${call.arguments.nodes.length} arguments`,
+        call,
+      );
     }
     const t = lowerer.mapTypeOf(lowerer.typeOf(call));
     if (t?.kind !== "record") lowerer.badType(call, lowerer.typeOf(call));
@@ -1355,9 +1733,9 @@ export function lowerProcessMethodCall(
   // DIVERGENCE (SEMANTICS.md): resources this runtime does not model
   // as loop handles (TCP wraps, FS requests) are absent from the answer.
   if (member === "getActiveResourcesInfo") {
-    if (call.arguments.length !== 0) {
+    if (call.arguments.nodes.length !== 0) {
       lowerer.noLowering(
-        `process.getActiveResourcesInfo with ${call.arguments.length} arguments`,
+        `process.getActiveResourcesInfo with ${call.arguments.nodes.length} arguments`,
         call,
       );
     }
@@ -1367,26 +1745,26 @@ export function lowerProcessMethodCall(
   // completes it to the -1 read sentinel); umask(mask) sets and answers
   // the previous mask, Node's shape either way.
   if (member === "umask") {
-    if (call.arguments.length > 1) {
-      lowerer.noLowering(`process.umask with ${call.arguments.length} arguments`, call);
+    if (call.arguments.nodes.length > 1) {
+      lowerer.noLowering(`process.umask with ${call.arguments.nodes.length} arguments`, call);
     }
     const mask: IrExpr =
-      call.arguments.length === 1
-        ? lowerer.lowerExpr(call.arguments[0]!)
+      call.arguments.nodes.length === 1
+        ? lowerer.lowerExpr(call.arguments.nodes[0]!)
         : { kind: "numLit", value: -1, type: F64, loc };
     if (mask.type.kind !== "f64") {
-      lowerer.noLowering("process.umask of non-number masks", call.arguments[0]!);
+      lowerer.noLowering("process.umask of non-number masks", call.arguments.nodes[0]!);
     }
     return { kind: "libCall", fn: "process.umask", args: [mask], type: F64, loc };
   }
   // chdir(2) — throws Node's fs-shaped error on failure.
   if (member === "chdir") {
-    if (call.arguments.length !== 1) {
-      lowerer.noLowering(`process.chdir with ${call.arguments.length} arguments`, call);
+    if (call.arguments.nodes.length !== 1) {
+      lowerer.noLowering(`process.chdir with ${call.arguments.nodes.length} arguments`, call);
     }
-    const dir = lowerer.lowerExpr(call.arguments[0]!);
+    const dir = lowerer.lowerExpr(call.arguments.nodes[0]!);
     if (dir.type.kind !== "string") {
-      lowerer.noLowering("process.chdir of non-string paths", call.arguments[0]!);
+      lowerer.noLowering("process.chdir of non-string paths", call.arguments.nodes[0]!);
     }
     return { kind: "libCall", fn: "process.chdir", args: [dir], type: VOID, loc };
   }
@@ -1395,8 +1773,8 @@ export function lowerProcessMethodCall(
   // the member optional (that optionality covers Windows). The `?.()`
   // spelling routes here through lowerProcessOptionalMethodCall.
   if (PROCESS_CREDENTIAL_FNS.has(member)) {
-    if (call.arguments.length !== 0) {
-      lowerer.noLowering(`process.${member} with ${call.arguments.length} arguments`, call);
+    if (call.arguments.nodes.length !== 0) {
+      lowerer.noLowering(`process.${member} with ${call.arguments.nodes.length} arguments`, call);
     }
     return processCredentialCall(member, loc);
   }
@@ -1408,11 +1786,11 @@ export function lowerProcessMethodCall(
   // Node's `kill ESRCH`/`kill EPERM` Error. The result is Node's
   // constant true.
   if (member === "kill") {
-    if (call.arguments.length < 1 || call.arguments.length > 2) {
-      lowerer.noLowering(`process.kill with ${call.arguments.length} arguments`, call);
+    if (call.arguments.nodes.length < 1 || call.arguments.nodes.length > 2) {
+      lowerer.noLowering(`process.kill with ${call.arguments.nodes.length} arguments`, call);
     }
-    const pid = lowerer.lowerExprExpecting(call.arguments[0]!, F64);
-    const sigNode = call.arguments[1];
+    const pid = lowerer.lowerExprExpecting(call.arguments.nodes[0]!, F64);
+    const sigNode = call.arguments.nodes[1];
     if (!sigNode) {
       const dflt: IrExpr = { kind: "strLit", value: "SIGTERM", type: STRING, loc };
       return { kind: "libCall", fn: "process.kill", args: [pid, dflt], type: BOOL, loc };
@@ -1431,11 +1809,37 @@ export function lowerProcessMethodCall(
     );
   }
   if (member === "exit") {
-    const arg = call.arguments[0];
-    const code: IrExpr =
+    const arg = call.arguments.nodes[0];
+    let code: IrExpr =
       arg !== undefined
         ? lowerer.lowerExprExpecting(arg, F64)
         : { kind: "libCall", fn: "process.currentExitCode", args: [], type: F64, loc };
+    // process.exit(code) assigns process.exitCode before the 'exit'
+    // listeners run. Only a program that reads the property can observe
+    // that, so only such a program records the assignment.
+    if (arg !== undefined && programReadsExitCode(lowerer)) {
+      const binding = lowerer.declareHiddenLocal("%exitCode", F64);
+      code = {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: binding.id, init: code, loc },
+          {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "process.setExitCodeTracked",
+              args: [varRef(binding.id, F64, loc)],
+              type: VOID,
+              loc,
+            },
+            loc,
+          },
+        ],
+        result: varRef(binding.id, F64, loc),
+        type: F64,
+        loc,
+      };
+    }
     return { kind: "libCall", fn: "process.exit", args: [code], type: VOID, loc };
   }
   return null; // process.argv(...) etc. are tsc errors before lowering
@@ -1451,13 +1855,23 @@ export function lowerProcessOptionalMethodCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
 ): IrExpr | null {
+  // `process.send!(message)`: the asserted direct call of the optional
+  // member (the @types/node spelling under strict null checks).
+  if (
+    !expr.questionDotToken &&
+    ts.isNonNullExpression(expr.expression) &&
+    ts.isPropertyAccessExpression(expr.expression.expression) &&
+    !expr.expression.expression.questionDotToken &&
+    lowerer.stdlibGlobalMember(expr.expression.expression, "process") === "send"
+  )
+    return lowerProcessIpcSend(lowerer, expr);
   if (!expr.questionDotToken) return null;
   if (!ts.isPropertyAccessExpression(expr.expression)) return null;
   const member = lowerer.stdlibGlobalMember(expr.expression, "process");
   if (member === "send") return lowerProcessIpcSend(lowerer, expr);
   if (member === null || !PROCESS_CREDENTIAL_FNS.has(member)) return null;
-  if (expr.arguments.length !== 0) {
-    lowerer.noLowering(`process.${member} with ${expr.arguments.length} arguments`, expr);
+  if (expr.arguments.nodes.length !== 0) {
+    lowerer.noLowering(`process.${member} with ${expr.arguments.nodes.length} arguments`, expr);
   }
   return processCredentialCall(member, locOf(expr));
 }
@@ -1485,4 +1899,37 @@ function processCredentialCall(member: string, loc: SrcLoc): IrExpr {
     type: member === "getgroups" ? arrayOf(F64) : F64,
     loc,
   };
+}
+
+/** `process.getBuiltinModule("node:os")`: a string-literal id naming a
+ * supported builtin whose call the checker types as that module's
+ * namespace (@types/node's BuiltInModule map) answers the namespace value
+ * `import * as ns` binds, so its members key the builtin tables at their
+ * use sites. The receiver may be cast (`(process as P)`) and the call
+ * optional: Node 24's process always has the member, and the cast changes
+ * no runtime value. Other ids keep the dynamic loader (undefined for
+ * unknown ids, Node's argument errors). */
+export function lowerProcessBuiltinModuleNamespace(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+): IrExpr | null {
+  const callee = call.expression;
+  if (!ts.isPropertyAccessExpression(callee) || callee.name.text !== "getBuiltinModule")
+    return null;
+  const id = call.arguments.nodes[0];
+  if (call.arguments.nodes.length !== 1 || !id || !ts.isStringLiteralLike(id)) return null;
+  let receiver: ts.Expression = callee.expression;
+  while (
+    ts.isParenthesizedExpression(receiver) ||
+    ts.isAsExpression(receiver) ||
+    ts.isSatisfiesExpression(receiver) ||
+    ts.isNonNullExpression(receiver)
+  )
+    receiver = receiver.expression;
+  if (!lowerer.isStdlibGlobal(receiver, "process")) return null;
+  const module = canonicalBuiltinModule(id.text);
+  if (module === null) return null;
+  const type = lowerer.mapTypeOf(lowerer.checker.getNonNullableType(lowerer.typeOf(call)));
+  if (type?.kind !== "moduleNs" || type.moduleId !== `builtin:${module}`) return null;
+  return { kind: "moduleNsRef", moduleId: type.moduleId, type, loc: locOf(call) };
 }

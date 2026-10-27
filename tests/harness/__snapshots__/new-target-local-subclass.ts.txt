@@ -1,0 +1,6 @@
+new-target-local-subclass.ts:3:39 - error SC1090: 'new.target' where 'Local' is a function-local class (each evaluation creates a new class) is not supported yet
+
+  2 | // base constructor's new.target has no static dispatch.
+  3 | class A { constructor() { console.log(new.target.name); } }
+    |                                       ^~~~~~~~~~
+  4 | function make() { class Local extends A {} return new Local(); }

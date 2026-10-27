@@ -2,7 +2,7 @@ import { AstNode } from "../../../packages/compiler/src/frontend/ts7/ast-node.js
 import type { SourceFile } from "../../../packages/compiler/src/frontend/ts7/ast-types.js";
 import { CheckerFacade, constituentTypes } from "../../../packages/compiler/src/frontend/ts7/checker.js";
 import { SemanticChecker } from "../../../packages/compiler/src/frontend/ts7/semantic-checker.js";
-import { SemanticType } from "../../../packages/compiler/src/frontend/ts7/semantic-model.js";
+import { SemanticType, symbolName, symbolNameOf } from "../../../packages/compiler/src/frontend/ts7/semantic-model.js";
 import { SyntaxKind, TypeFlags } from "../../../packages/compiler/src/frontend/ts7/enums.js";
 
 export function checkerSource(): string {
@@ -21,9 +21,9 @@ function check(value: boolean, message: string): void {
 }
 
 function declaration(root: SourceFile, name: string): AstNode {
-  for (const statement of root.statements) {
+  for (const statement of root.statements.nodes) {
     if (statement.name?.text === name) return statement;
-    for (const variable of statement.declarationList?.declarations ?? []) {
+    for (const variable of statement.declarationList?.declarations?.nodes ?? []) {
       if (variable.name?.text === name) return variable;
     }
   }
@@ -50,8 +50,8 @@ export function checkCheckerFacade(raw: SemanticChecker, root: SourceFile, reque
   check(facade.getBaseTypeOfLiteralType(answerType) === number, "number literal base");
   check(facade.getTypeOfSymbol(answerSymbol) === answerType, "symbol type");
   check(facade.getTypeOfSymbolAtLocation(answerSymbol, answerName) === answerType, "location type");
-  check(facade.declarationsOf(answerSymbol)[0] === answer, "declaration identity");
-  check(facade.valueDeclarationOf(answerSymbol) === answer, "value declaration");
+  check(answerSymbol.declarations[0] === answer, "declaration identity");
+  check(answerSymbol.valueDeclaration === answer, "value declaration");
   check(facade.getContextualType(answerName) === undefined, "absent contextual type");
   check(facade.getSymbolAtLocation(root.endOfFileToken) === undefined, "absent symbol");
   check(facade.getUnknownType().flags === TypeFlags.Unknown, "unknown intrinsic");
@@ -67,8 +67,8 @@ export function checkCheckerFacade(raw: SemanticChecker, root: SourceFile, reque
   const box = declaration(root, "Box");
   const boxSymbol = facade.getSymbolAtLocation(box.name!)!;
   const boxType = facade.getDeclaredTypeOfSymbol(boxSymbol);
-  check(facade.getPropertyOfType(boxType, "value")!.name === "value", "property lookup");
-  check(facade.getPropertiesOfType(boxType).some((property) => property.name === "method"), "property list");
+  check(symbolName(facade.getPropertyOfType(boxType, "value")!) === "value", "property lookup");
+  check(facade.getPropertiesOfType(boxType).some((property) => symbolName(property) === "method"), "property list");
   check(facade.getBaseTypes(boxType).length === 0, "empty class bases");
   const child = facade.getDeclaredTypeOfSymbol(facade.getSymbolAtLocation(declaration(root, "Child").name!)!);
   check(facade.getBaseTypes(child)[0] === boxType, "class base identity");
@@ -77,22 +77,22 @@ export function checkCheckerFacade(raw: SemanticChecker, root: SourceFile, reque
   const identityType = facade.getTypeAtLocation(identity.name!);
   const signature = facade.getSignatureFromDeclaration(identity)!;
   check(facade.getCallSignatures(identityType)[0] === signature, "call signature identity");
-  check(facade.signatureDeclaration(signature) === identity, "signature declaration identity");
+  check(signature.declaration === identity, "signature declaration identity");
   check(facade.typeToString(facade.getReturnTypeOfSignature(signature)) === "T", "generic return type");
   check(facade.getTypePredicateOfSignature(signature) === undefined, "absent predicate");
   const isBox = facade.getSignatureFromDeclaration(declaration(root, "isBox"))!;
   check(facade.getTypePredicateOfSignature(isBox)!.type === boxType, "predicate type identity");
   const call = declaration(root, "called").initializer!;
   const resolved = facade.getResolvedSignature(call)!;
-  check(facade.signatureDeclaration(resolved) === identity, "instantiated signature declaration");
+  check(resolved.declaration === identity, "instantiated signature declaration");
   check(facade.typeToString(facade.getReturnTypeOfSignature(resolved)).includes("n: number"), "instantiated return type");
 
-  const ref = declaration(root, "ref").initializer!.properties![0]!;
+  const ref = declaration(root, "ref").initializer!.properties?.nodes[0]!;
   check(facade.getShorthandAssignmentValueSymbol(ref) === answerSymbol, "shorthand value symbol");
-  const renamed = root.statements.find((statement) => statement.kind === SyntaxKind.ExportDeclaration)!.exportClause!.elements![0]!;
+  const renamed = root.statements.nodes.find((statement) => statement.kind === SyntaxKind.ExportDeclaration)!.exportClause!.elements?.nodes[0]!;
   const alias = facade.getSymbolAtLocation(renamed.name!)!;
   check(facade.getAliasedSymbol(alias) === answerSymbol, "export alias");
-  const member = declaration(root, "Mode").members![0]!;
+  const member = declaration(root, "Mode").members?.nodes[0]!;
   check(facade.getConstantValue(member) === 3, "enum constant");
   check(facade.getConstantValue(answer) === undefined, "absent constant");
   const contextual = declaration(root, "contextual").initializer!;
@@ -123,7 +123,7 @@ export function checkCheckerFacade(raw: SemanticChecker, root: SourceFile, reque
   check(facade.getTypeArguments(number).length === 0, "nonreference arguments");
   const dict = facade.getDeclaredTypeOfSymbol(facade.getSymbolAtLocation(declaration(root, "Dict").name!)!);
   const index = facade.getIndexInfosOfType(dict)[0]!;
-  check(index.keyType === string && index.valueType === number && index.isReadonly, "index signature");
+  check(index.keyType === string && index.type === number && index.isReadonly, "index signature");
   check(facade.getAwaitedType(aliasType(facade, root, "Promised")) === number, "await promise");
   check(facade.getAwaitedType(aliasType(facade, root, "MaybePromised")) === number, "await collapsed union");
   check(facade.getAwaitedType(aliasType(facade, root, "DifferentPromises")) === undefined, "await distinct union refusal");
@@ -140,11 +140,11 @@ export function checkCheckerFacade(raw: SemanticChecker, root: SourceFile, reque
     check(facade.getTypeOfSymbol(answerSymbol) === answerType, "warm symbol type");
     check(facade.getDeclaredTypeOfSymbol(boxSymbol) === boxType, "warm declared type");
     check(facade.getAliasedSymbol(alias) === answerSymbol, "warm alias");
-    check(facade.declarationsOf(answerSymbol)[0] === answer, "warm declarations");
-    check(facade.valueDeclarationOf(answerSymbol) === answer, "warm value declaration");
+    check(answerSymbol.declarations[0] === answer, "warm declarations");
+    check(answerSymbol.valueDeclaration === answer, "warm value declaration");
     check(facade.getResolvedSignature(call) === resolved, "warm resolved signature");
     check(facade.getSignatureFromDeclaration(identity) === signature, "warm signature");
-    check(facade.signatureDeclaration(signature) === identity, "warm signature declaration");
+    check(signature.declaration === identity, "warm signature declaration");
     check(facade.getTypePredicateOfSignature(signature) === undefined, "warm absent predicate");
     check(facade.getTypePredicateOfSignature(isBox)!.type === boxType, "warm predicate");
     check(facade.getCallSignatures(identityType)[0] === signature, "warm call signatures");
@@ -173,7 +173,7 @@ export function checkCheckerFacade(raw: SemanticChecker, root: SourceFile, reque
   batch.prefetchSymbolRoots([identity, identity]);
   batch.prefetchSymbolNodesExact([answerName, answerName]);
   batch.prefetchCollectionTypes([call, call]);
-  batch.prefetchClassCollection([box.members![0]!.initializer!], [box]);
+  batch.prefetchClassCollection([box.members?.nodes[0]!.initializer!], [box]);
   batch.prefetchRoots([identity.body!, identity.body!]);
   batch.prefetchSourceFile(root);
   check(batch.getTypeAtLocation(answerName) === answerType && batch.getSymbolAtLocation(answerName) === answerSymbol, "prefetched semantic identity");

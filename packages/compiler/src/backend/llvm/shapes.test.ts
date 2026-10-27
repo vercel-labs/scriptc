@@ -6,13 +6,15 @@ import {
   emitRecordShapes,
   inlineRcDecls,
   INLINE_DYN_RELEASES_PER_FUNCTION,
+  INLINE_STR_RELEASES_PER_FUNCTION,
   inlineRcOption,
-  limitInlineDynReleases,
+  limitInlineReleases,
   releaseSym,
   retainSym,
   type ShapeHost,
   vAdapters,
 } from "./shapes.js";
+import { mangleRecordRelease } from "../mangle.js";
 import { NullableUnions } from "./nullable-unions.js";
 import { InlineUnionFields } from "./inline-unions.js";
 
@@ -32,7 +34,7 @@ function declarationHost(
     tracedShapes: new Set(),
     tracedUnions: new Set(),
     nullableUnions: new NullableUnions({
-      irVersion: 16,
+      irVersion: 17,
       sourceFile: "test.ts",
       functions: [],
       entry: "main",
@@ -108,10 +110,9 @@ describe("LLVM runtime RC symbols", () => {
     expect(releaseSym(host, { kind: "union", unionId: "u0" } as never)).toBe(
       "@sc_rc_release_union",
     );
-    // Array retains inline; array releases stay calls.
     const array = { kind: "array", elem: { kind: "string" } } as never;
     expect(retainSym(host, array)).toBe("@sc_rc_retain_arr");
-    expect(releaseSym(host, array)).toBe("@scr_arr_release");
+    expect(releaseSym(host, array)).toBe("@sc_rc_release_arr");
     expect(retainSym(host, { kind: "dyn" })).toBe("@sc_rc_retain_dyn");
     expect(releaseSym(host, { kind: "dyn" })).toBe("@sc_rc_release_dyn");
     // Unmirrored families and caught snapshots keep their runtime entry points.
@@ -123,6 +124,7 @@ describe("LLVM runtime RC symbols", () => {
     expect(declarations).toContain("declare void @scr_str_release(ptr)");
     expect(declarations).toContain("declare void @scr_cyc_on_release(ptr)");
     expect(inlineRcDecls(host).sort()).toEqual([
+      "declare void @scr_arr_release(ptr)",
       "declare void @scr_cyc_on_release(ptr)",
       "declare void @scr_dyn_release(ptr)",
       "declare void @scr_dyn_release_survivor(ptr)",
@@ -132,10 +134,10 @@ describe("LLVM runtime RC symbols", () => {
     ]);
   });
 
-  test("release builds inline only string retains and dyn retains and releases", () => {
+  test("release builds inline only string and dyn retains and releases and Map retains", () => {
     const { host } = declarationHost(64, "release");
     expect(retainSym(host, { kind: "string" })).toBe("@sc_rc_retain_str");
-    expect(releaseSym(host, { kind: "string" })).toBe("@scr_str_release");
+    expect(releaseSym(host, { kind: "string" })).toBe("@sc_rc_release_str");
     expect(retainSym(host, { kind: "dyn" })).toBe("@sc_rc_retain_dyn");
     expect(releaseSym(host, { kind: "dyn" })).toBe("@sc_rc_release_dyn");
     expect(releaseSym(host, { kind: "union", unionId: "u0" } as never)).toBe("@scr_union_release");
@@ -144,11 +146,19 @@ describe("LLVM runtime RC symbols", () => {
     // The dyn fast path buffers surviving values by kind, as scr_dyn_release does.
     const ir = emitInlineRcHelpers(host).join("\n");
     expect(ir).toContain("call void @scr_dyn_release_survivor(ptr %o)");
-    expect(ir).toMatch(
-      /switch i32 %kind, label %done \[ i32 4, label %container i32 5, label %container i32 8, label %root/,
+    // Every kind that can be a candidate takes one path; scalars stay inline.
+    expect(ir).toContain(
+      "switch i32 %kind, label %done [ i32 4, label %candidate i32 5, label %candidate i32 8, label %candidate i32 9, label %candidate i32 12, label %candidate i32 13, label %candidate ]",
     );
-    // Arrays and objects not yet buffered ask the runtime, which skips intact documents.
+    // Values not yet buffered ask the runtime, which decides per value.
     expect(ir).toMatch(/br i1 %cqueued, label %done, label %survivor/);
+    // The runtime buffers dyn candidates, so the dyn helper has no inline append.
+    const dynHelper = ir.slice(
+      ir.indexOf("@sc_rc_release_dyn("),
+      ir.indexOf("\n}", ir.indexOf("@sc_rc_release_dyn(")),
+    );
+    expect(dynHelper).not.toContain("sc_cyc_append");
+    expect(dynHelper).not.toContain("scr_cyc_on_release");
   });
 
   test("sanitized builds call the fast-path helpers out of line", () => {
@@ -205,6 +215,49 @@ describe("LLVM runtime RC symbols", () => {
     expect(fn("sc_rc_retain_promise")).not.toContain("store i32");
   });
 
+  test("optimized builds buffer candidates through the module's append helper", () => {
+    const emit = (inlineRc: true | "release", extra: Partial<ShapeHost>, kind: "union" | "dyn") => {
+      const { host } = declarationHost(64, inlineRc);
+      const configured: ShapeHost = { ...host, inlineAlloc: true, ...extra };
+      releaseSym(configured, kind === "union" ? ({ kind, unionId: "u0" } as never) : { kind });
+      return {
+        ir: emitInlineRcHelpers(configured).join("\n"),
+        decls: inlineRcDecls(configured),
+      };
+    };
+    const { ir, decls } = emit(true, {}, "union");
+    expect(ir).toContain("call preserve_mostcc void @sc_cyc_append(ptr %o)");
+    expect(ir).toContain("define internal preserve_mostcc void @sc_cyc_append(ptr %o) noinline");
+    // The young test reads the generation byte at obj-5; the append fills
+    // scr_cyc_buffers' nursery buffer and the header's position at obj-4.
+    expect(ir).toContain("getelementptr i8, ptr %o, i64 -5");
+    expect(ir).toContain("getelementptr inbounds i8, ptr @scr_cyc_buffers, i64 96");
+    expect(ir).toContain("getelementptr inbounds i8, ptr @scr_cyc_buffers, i64 104");
+    expect(ir).toContain("load i64, ptr @scr_cyc_live");
+    expect(ir).toContain("or i32 %i, -2147483648");
+    expect(ir).toContain("call void @scr_cyc_on_release(ptr %o)");
+    expect(decls).toContain(
+      "@scr_cyc_buffers = external global { [3 x { ptr, i64, i64, i64 }], i64, i64 }",
+    );
+    expect(decls).toContain("@scr_cyc_live = external global i64");
+    // The dyn release buffers through scr_dyn_release_survivor, so a module
+    // whose only headered release is dyn's has no append helper.
+    for (const mode of [true, "release"] as const) {
+      const dyn = emit(mode, {}, "dyn");
+      expect(dyn.ir).not.toContain("sc_cyc_append");
+      expect(dyn.ir).not.toContain("scr_cyc_on_release");
+      expect(dyn.decls.join("\n")).not.toContain("scr_cyc_buffers");
+    }
+    // Worker executables and targets without inline allocation call
+    // scr_cyc_on_release, which tries the same append first.
+    for (const extra of [{ threadLocalAlloc: true }, { inlineAlloc: false }]) {
+      const { ir, decls } = emit(true, extra, "union");
+      expect(ir).not.toContain("sc_cyc_append");
+      expect(ir).toContain("call void @scr_cyc_on_release(ptr %o)");
+      expect(decls.join("\n")).not.toContain("scr_cyc_buffers");
+    }
+  });
+
   test("uses the wasm32 header offsets", () => {
     const { host } = declarationHost(32, true);
     releaseSym(host, { kind: "union", unionId: "u0" } as never);
@@ -214,12 +267,12 @@ describe("LLVM runtime RC symbols", () => {
   });
 });
 
-describe("inline dyn release budget", () => {
-  const body = (name: string, sites: number): string =>
+describe("inline release budgets", () => {
+  const body = (name: string, sites: number, family = "dyn"): string =>
     [
       `define internal void @${name}(ptr %v) #0 {`,
       "entry:",
-      ...Array.from({ length: sites }, () => "  call void @sc_rc_release_dyn(ptr %v)"),
+      ...Array.from({ length: sites }, () => `  call void @sc_rc_release_${family}(ptr %v)`),
       "  ret void",
       "}",
       "",
@@ -229,7 +282,9 @@ describe("inline dyn release budget", () => {
     const small = body("small", INLINE_DYN_RELEASES_PER_FUNCTION);
     const large = body("large", INLINE_DYN_RELEASES_PER_FUNCTION + 1);
     // main's lines are separate parts.
-    const limited = limitInlineDynReleases([`; header\n${small}`, ...large.split("\n")]).join("\n");
+    const limited = limitInlineReleases([`; header\n${small}`, ...large.split("\n")], "speed").join(
+      "\n",
+    );
     expect(limited.startsWith("; header\n")).toBe(true);
     expect(limited).toContain(small);
     const out = limited.slice(limited.indexOf("@large("));
@@ -238,12 +293,42 @@ describe("inline dyn release budget", () => {
       INLINE_DYN_RELEASES_PER_FUNCTION + 1,
     );
   });
+
+  test("each family's budget applies to its own sites in a function that has both", () => {
+    const strings = body("mixed", INLINE_STR_RELEASES_PER_FUNCTION + 1, "str");
+    // One function: string sites over their budget, dyn sites within theirs.
+    const mixed = strings.replace(
+      "  ret void",
+      `  call void @sc_rc_release_dyn(ptr %v)\n  call void @sc_rc_release_other(ptr %v)\n  ret void`,
+    );
+    const other = body("other", 2, "str");
+    const limited = limitInlineReleases([mixed, other], "release").join("\n");
+    const out = limited.slice(0, limited.indexOf("@other("));
+    expect(out).not.toContain("@sc_rc_release_str(");
+    expect(out).toContain("call void @sc_rc_release_dyn(ptr %v)");
+    expect(out).toContain("call void @sc_rc_release_other(ptr %v)");
+    expect(limited).toContain(other);
+  });
+
+  test("a function over the string budget calls the runtime string release at every site", () => {
+    const small = body("small", INLINE_STR_RELEASES_PER_FUNCTION, "str");
+    const large = body("large", INLINE_STR_RELEASES_PER_FUNCTION + 1, "str");
+    const limited = limitInlineReleases([small, large], "release").join("\n");
+    expect(limited).toContain(small);
+    // Speed emission keeps every inline string release.
+    expect(limitInlineReleases([small, large], "speed").join("\n")).toBe([small, large].join("\n"));
+    const out = limited.slice(limited.indexOf("@large("));
+    expect(out).not.toContain("@sc_rc_release_str(");
+    expect(out.split("call void @scr_str_release(ptr %v)").length - 1).toBe(
+      INLINE_STR_RELEASES_PER_FUNCTION + 1,
+    );
+  });
 });
 
 describe("emitted object releases", () => {
   test("a surviving headered record enqueues only when not already buffered", () => {
     const mod: IrModule = {
-      irVersion: 16,
+      irVersion: 17,
       sourceFile: "cycle.ts",
       entry: "main",
       functions: [],
@@ -261,11 +346,47 @@ describe("emitted object releases", () => {
       root.indexOf("call void @scr_cyc_on_release(ptr %o)"),
     );
   });
+
+  test("freezable records count their references without the frozen bit", () => {
+    const mod: IrModule = {
+      irVersion: 17,
+      sourceFile: "frozen.ts",
+      entry: "main",
+      functions: [],
+      records: [
+        { id: "plain", fields: [{ name: "n", type: F64 }] },
+        { id: "frozen", fields: [{ name: "n", type: F64 }], freezable: true },
+      ],
+    };
+    const body = (defs: string, name: string): string =>
+      new RegExp(`^define internal void @${name}\\([^]*?^}`, "m").exec(defs)?.[0] ?? "";
+    for (const [pointerBits, notFrozen, sharedBelow] of [
+      [64, "-4611686018427387905", "-4611686018427387907"],
+      [32, "-1073741825", "-1073741827"],
+    ] as const) {
+      const { host } = declarationHost(pointerBits);
+      const defs = emitRecordShapes({ ...host, objectAudit: false }, mod).defs.join("\n");
+      const S = pointerBits === 64 ? "i64" : "i32";
+      const plain = body(defs, mangleRecordRelease("plain"));
+      expect(plain).toContain(`%shared = icmp ult ${S} %rcm2, -3`);
+      expect(plain).not.toContain("%refs");
+      // The immortal word's count is ~FROZEN, which the compare sends to the
+      // immortal test, like counts 0 and 1.
+      const fast = body(defs, mangleRecordRelease("frozen"));
+      expect(fast).toContain(`%refs = and ${S} %rc, ${notFrozen}`);
+      expect(fast).toContain(`%rcm2 = sub ${S} %refs, 2`);
+      expect(fast).toContain(`%shared = icmp ult ${S} %rcm2, ${sharedBelow}`);
+      expect(fast).toContain(`%imm = icmp eq ${S} %rc, -1`);
+      const slow = body(defs, `${mangleRecordRelease("frozen")}_slow`);
+      expect(slow).toContain(`%refs = and ${S} %n, ${notFrozen}`);
+      expect(slow).toContain(`%dead = icmp eq ${S} %refs, 0`);
+    }
+  });
 });
 
 describe("live-object audit notes", () => {
   const mod: IrModule = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: "audit.ts",
     entry: "main",
     functions: [],

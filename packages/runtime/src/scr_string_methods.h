@@ -27,7 +27,8 @@ double scr_str_utf16_len(ScrStr *s);
  * holds (scr_string.c), published so emitted length and charCodeAt reads of
  * that string are a compare and a load. Cleared whenever its entry drops
  * the units (release, append, eviction); all fields zero otherwise. Emitted
- * code reads it only where SCR_TL is empty. */
+ * code reads it where SCR_TL is empty, and in worker executables on ELF
+ * targets, whose thread-locals live in the executable's static TLS block. */
 typedef struct ScrStrScan {
   const ScrStr *s;
   const uint16_t *units;
@@ -40,6 +41,13 @@ extern SCR_TL ScrStrScan scr_str_scan;
  * which half i addresses. NaN when ToIntegerOrInfinity(i) is outside
  * [0, length) — note charCodeAt(1.5) is index 1, matching Node. */
 double scr_str_char_code_at(ScrStr *s, double i);
+
+/* Converts a non-ASCII s up to the units cap to UTF-16 at once and
+ * publishes it in scr_str_scan, for a loop about to read it between the
+ * indexes `from` and `to` (NaN: no bound), when that range has at least
+ * one unit per 16 bytes. A shorter loop counts as one indexed read. Leaves
+ * scr_str_scan unchanged for any other s. */
+void scr_str_scan_units_for(ScrStr *s, double from, double to);
 
 /* indexOf(needle, fromIndex): UTF-16 index of the first occurrence at or
  * after fromIndex (clamped to [0, length]), or -1. Empty needle returns the
@@ -73,6 +81,10 @@ bool scr_str_ends_with_from(ScrStr *s, ScrStr *needle, double end_position);
 ScrStr *scr_str_slice(ScrStr *s, double start, double end);
 /* substring: clamp-and-swap (negatives clamp to 0, start > end swaps). */
 ScrStr *scr_str_substring(ScrStr *s, double start, double end);
+/* Annex B substr(start, length): start already ToNumber'd (NaN → 0), a
+ * negative start counts from the end, length absent (has_length false)
+ * runs to the end. Returns +1. */
+ScrStr *scr_str_substr(ScrStr *s, double start, double length, bool has_length);
 
 /* Scalar-only local slices retain their original owner without copying.
  * Bounds and split-surrogate replacements are snapshotted at construction. */
@@ -83,6 +95,16 @@ typedef struct ScrStringSlice {
 void scr_str_slice_range(ScrStr *s, double start, double end, bool substring,
                          ScrStringSlice *out);
 double scr_str_slice_char_code_at(ScrStr *s, const ScrStringSlice *range, double index);
+/* A slice that only borrowing consumers read (string-slices.ts) is written
+ * into the caller's `bytes`-sized stack buffer as an immortal ASCII string,
+ * whose header marks it as a scratch copy (scr_str_is_scratch). Results
+ * that do not fit, are not ASCII, or are interned statics are returned as
+ * the ordinary +1 slice. Releasing either result is correct. */
+ScrStr *scr_str_slice_scratch(ScrStr *s, double start, double end, bool substring,
+                              ScrStr *scratch, size_t bytes);
+/* The owning reference a container stores for `s`: a heap copy of a scratch
+ * string, else `s` retained. */
+ScrStr *scr_str_scratch_keep(ScrStr *s);
 
 /* repeat(count): count < 0 or Infinity is a JS RangeError; scriptc has no
  * exceptions, so it prints "scriptc: RangeError: Invalid count value" to
@@ -101,6 +123,13 @@ ScrStr *scr_str_trim(ScrStr *s);
 ScrStr *scr_str_to_lower(const ScrStr *s);
 ScrStr *scr_str_to_upper(const ScrStr *s);
 ScrStr *scr_str_normalize(const ScrStr *s, const ScrStr *form);
+/* toLocaleLowerCase/toLocaleUpperCase(locales) (scr_regex.c): undefined,
+ * empty lists, and primitives other than strings use the default case
+ * conversion; the first requested tag selects the Turkic (tr, az) rules or
+ * the default ones. Lithuanian, Greek uppercasing and tags outside the
+ * structural grammar throw a 'not supported yet' Error; null throws Node's
+ * TypeError. Borrows both; +1 or NULL with an exception pending. */
+ScrStr *scr_str_locale_case(const ScrStr *s, struct ScrDyn *locales, bool upper);
 /* NFC over a code point buffer (scr_regex.c, beside normalize): a fresh
  * malloc'd buffer the caller frees, its length in *out_len. Borrows input. */
 uint32_t *scr_nfc_code_points(const uint32_t *input, size_t length, size_t *out_len);
@@ -121,6 +150,15 @@ ScrStr *scr_str_char_at(ScrStr *s, double i);
  * (two units); the consuming loop advances by the result's length.
  * Out of range → empty string. Returns +1. */
 ScrStr *scr_str_cp_at(ScrStr *s, double i);
+/* The string iterator's step over the WTF-8 bytes: the code-point
+ * character whose encoding starts at byte offset b, a character start
+ * below s->len (a lone surrogate is its own three-byte character). The
+ * compiler answers ASCII bytes inline and calls this for the rest.
+ * Returns +1. */
+ScrStr *scr_str_cp_at_byte(ScrStr *s, uint64_t b);
+/* [...s] and Array.from(s): the code-point characters of s in order, as a
+ * fresh string array of exactly that length. Returns +1. */
+struct ScrArr *scr_str_code_points(ScrStr *s);
 
 /* trimStart()/trimEnd(): the one-sided halves of trim. Returns +1. */
 ScrStr *scr_str_trim_start(ScrStr *s);

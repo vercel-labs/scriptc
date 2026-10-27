@@ -1,0 +1,35 @@
+overloaded-members.ts:15:7 - error SC2007: values of type '{ (event: "a", handler: (x: number) => void): void; (event: "b", handler: (x: string) => void): void; }' cannot be compiled: the type declares multiple call signatures (overloads), and a compiled function value is always one concrete signature
+
+  14 | api.on("a", (x) => console.log(x + 1));
+  15 | const detached = api.on;
+     |       ^~~~~~~~
+  16 | console.log(typeof detached);
+
+  hint: annotate the slot with the ONE signature the program actually calls (e.g. '(x: number) => string'), or wrap the overloaded function in a single-signature arrow
+
+overloaded-members.ts:16:20 - error SC2004: uses of 'detached' inherit the blocker on its declaration
+
+  15 | const detached = api.on;
+  16 | console.log(typeof detached);
+     |                    ^~~~~~~~
+  17 | 
+
+  hint: the declaration of 'detached' did not compile — fix the diagnostic reported there and these sites clear with it
+
+overloaded-members.ts:22:15 - error SC2009: values of type 'Emitter' cannot be compiled: the record shape is supported, but its member 'emit' is an overload set, and its overload 'emit(event: "many", ...values: number[]): void' has a rest parameter (an overload set stores one fixed-arity function)
+
+  21 | }
+  22 | function fire(e: Emitter): void {
+     |               ^
+  23 |   e.emit("many", 1, 2);
+
+  hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
+
+overloaded-members.ts:25:20 - error SC2004: uses of 'fire' inherit the blocker on its declaration
+
+  24 | }
+  25 | console.log(typeof fire);
+     |                    ^~~~
+  26 | 
+
+  hint: the declaration of 'fire' did not compile — fix the diagnostic reported there and these sites clear with it

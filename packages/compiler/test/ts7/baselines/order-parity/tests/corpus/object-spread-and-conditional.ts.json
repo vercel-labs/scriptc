@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/object-spread-and-conditional.ts"
+ ],
+ "diags": []
+}

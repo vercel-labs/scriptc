@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6451-builtin-base-class-expressions.cjs"
+ ],
+ "diags": []
+}

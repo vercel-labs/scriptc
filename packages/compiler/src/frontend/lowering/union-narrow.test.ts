@@ -97,3 +97,22 @@ test("a deferred read requires a real undefined tag", () => {
   const value: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc };
   expect(buildUnionNarrow("bad", from, BOOL, loc, () => "", value)).toBeNull();
 });
+
+test("a failure message replaces every other tag's TypeError", () => {
+  const fn = buildUnionNarrow(
+    "call",
+    union,
+    STRING,
+    loc,
+    (type) => type.kind,
+    null,
+    "f is not a function",
+  )!;
+  const thrown = branches(fn).flatMap((branch) => {
+    const statement = branch.then[0]!;
+    return statement.kind === "throw" ? [statement.value] : [];
+  });
+  expect(thrown).toHaveLength(4);
+  for (const value of thrown)
+    expect(value).toMatchObject({ kind: "libCall", args: [{ value: "f is not a function" }] });
+});

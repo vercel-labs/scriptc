@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6869-atomics-untyped-arrays.cjs"
+ ],
+ "diags": []
+}

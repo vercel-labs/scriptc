@@ -478,8 +478,8 @@ ScrDyn *scr_qs_parse_dyn(const ScrStr *qs) {
 /* ── stringify ───────────────────────────────────────────────────────── */
 
 /* Node's encodeStringified over one dyn value: strings escape, finite
- * numbers render then escape, booleans are bare, everything else is the
- * empty value. Appends to b. */
+ * numbers render then escape, bigints and booleans are bare, everything
+ * else is the empty value. Appends to b. */
 static void qs_stringify_value(QsBuf *b, const ScrDyn *v) {
   switch (v->kind) {
     case SCR_DYN_STR: {
@@ -497,12 +497,18 @@ static void qs_stringify_value(QsBuf *b, const ScrDyn *v) {
       scr_str_release(num);
       return;
     }
+    case SCR_DYN_BIGINT: {
+      ScrStr *text = scr_bigint_to_string(v->v.bigint, 10);
+      qb_append_str(b, text);
+      scr_str_release(text);
+      return;
+    }
     case SCR_DYN_BOOL:
       if (v->v.b) qb_append(b, "true", 4);
       else qb_append(b, "false", 5);
       return;
     default:
-      return; /* null/undefined/objects/arrays/functions → '' */
+      return; /* null/undefined/symbols/objects/arrays/functions → '' */
   }
 }
 

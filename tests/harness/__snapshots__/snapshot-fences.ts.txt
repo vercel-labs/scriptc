@@ -1,0 +1,26 @@
+snapshot-fences.ts:14:24 - error SC2020: 't.assert.snapshot options that are not an object literal' is part of the standard library types but has no scriptc lowering yet
+
+  13 |   const options = { serializers: [(v: unknown) => String(v)] };
+  14 |   t.assert.snapshot(1, options); // options that are not an object literal
+     |                        ^~~~~~~
+  15 | 
+
+  hint: pass the options as an object literal: { serializers: [(value) => ...] }
+
+snapshot-fences.ts:17:26 - error SC2020: 't.assert.snapshot with a non-literal serializers list' is part of the standard library types but has no scriptc lowering yet
+
+  16 |   const serializers = [(v: unknown) => String(v)];
+  17 |   t.assert.snapshot(1, { serializers }); // a serializers list that is not an array literal
+     |                          ^~~~~~~~~~~
+  18 |   t.assert.fileSnapshot(1, "out.txt", { serializers: [...serializers] }); // a spread serializer
+
+  hint: pass the options as an object literal: { serializers: [(value) => ...] }
+
+snapshot-fences.ts:18:55 - error SC2020: 't.assert.fileSnapshot with a spread serializer' is part of the standard library types but has no scriptc lowering yet
+
+  17 |   t.assert.snapshot(1, { serializers }); // a serializers list that is not an array literal
+  18 |   t.assert.fileSnapshot(1, "out.txt", { serializers: [...serializers] }); // a spread serializer
+     |                                                       ^~~~~~~~~~~~~~
+  19 | });
+
+  hint: pass the options as an object literal: { serializers: [(value) => ...] }

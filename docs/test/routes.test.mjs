@@ -151,8 +151,11 @@ test("compatibility page and data endpoints keep their existing contracts", asyn
   const response = await get("/compatibility/data");
   assert.equal(response.status, 200);
   const dataset = await response.json();
-  const metadata = JSON.parse(await readFile(new URL("../src/generated/node-v24-compatibility-meta.json", import.meta.url), "utf8"));
-  assert.equal(dataset.rows.length, metadata.rowCount);
+  const artifact = JSON.parse(await readFile(new URL("../src/generated/node-v24-compatibility.json", import.meta.url), "utf8"));
+  assert.equal(dataset.rows.length, artifact.rows.length);
+  // The row count next.config.mjs derives reaches the page (React separates
+  // adjacent text nodes with empty comments).
+  assert.ok(html.replaceAll("<!-- -->", "").includes(`Loading ${artifact.rows.length.toLocaleString()} Node.js API rows`));
   assert.equal((await get("/node-compatibility")).status, 308);
   assert.equal((await get("/node-compatibility/data")).status, 308);
 });

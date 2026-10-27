@@ -1,7 +1,8 @@
 import { dynUndefinedExpr, boolLit, numLit, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
-import { locOf } from "../../program.js";
+import { lowerFsPath } from "./fs-paths.js";
+import { isJsSourceFile, locOf } from "../../program.js";
 import {
   type BuiltinModuleFn,
   FS_WRITE_FILE_DOCUMENTED_OPTIONS,
@@ -23,6 +24,7 @@ import {
   VOID,
   arrayOf,
   funcOf,
+  typeEquals,
 } from "../../../ir/ir.js";
 import { lowerBuiltinOptionalDefault, optionMember, literalBoolOptions } from "./arguments.js";
 import {
@@ -37,12 +39,12 @@ export function lowerFsCallbackCall(
   bi: { module: string; member: string },
   loc: SrcLoc,
 ): IrExpr {
-  if (expr.arguments.some(ts.isSpreadElement))
+  if (expr.arguments.nodes.some(ts.isSpreadElement))
     lowerer.noLowering("filesystem callback call with spread arguments", expr);
   const timestamp = ["utimes", "futimes", "lutimes"].includes(bi.member);
   const args: IrExpr = {
     kind: "dynArrLit",
-    elems: expr.arguments.map((arg, index) =>
+    elems: expr.arguments.nodes.map((arg, index) =>
       timestamp && (index === 1 || index === 2)
         ? lowerFsTimestampValue(lowerer, arg, loc)
         : lowerer.lowerExprExpecting(arg, DYN),
@@ -70,11 +72,11 @@ export function lowerFsLinkOrStatfsCall(
   const symbolic = bi.member === "symlinkSync" || bi.member === "symlink";
   const reading = bi.member === "readlinkSync" || bi.member === "readlink";
   const arity = symbolic ? 3 : 2;
-  if (expr.arguments.length > arity || expr.arguments.some(ts.isSpreadElement))
+  if (expr.arguments.nodes.length > arity || expr.arguments.nodes.some(ts.isSpreadElement))
     lowerer.noLowering(`${name} with this argument shape`, expr);
   const args = Array.from({ length: arity }, (_, index) =>
-    expr.arguments[index]
-      ? lowerer.lowerExprExpecting(expr.arguments[index]!, DYN)
+    expr.arguments.nodes[index]
+      ? lowerer.lowerExprExpecting(expr.arguments.nodes[index]!, DYN)
       : dynUndefinedExpr(loc),
   );
   if (reading) {
@@ -116,11 +118,11 @@ export function lowerFsCpCall(
   loc: SrcLoc,
   name: string,
 ): IrExpr {
-  if (expr.arguments.length > 3 || expr.arguments.some(ts.isSpreadElement))
+  if (expr.arguments.nodes.length > 3 || expr.arguments.nodes.some(ts.isSpreadElement))
     lowerer.noLowering(`${name} with this argument shape`, expr);
   const args = [0, 1, 2].map((index) =>
-    expr.arguments[index]
-      ? lowerer.lowerExprExpecting(expr.arguments[index]!, DYN)
+    expr.arguments.nodes[index]
+      ? lowerer.lowerExprExpecting(expr.arguments.nodes[index]!, DYN)
       : dynUndefinedExpr(loc),
   );
   return { kind: "libCall", fn: fn.fn, args, type: fn.result, loc };
@@ -133,18 +135,18 @@ export function lowerFsTimestampCall(
   loc: SrcLoc,
   name: string,
 ): IrExpr {
-  if (expr.arguments.length > 3 || expr.arguments.some(ts.isSpreadElement))
+  if (expr.arguments.nodes.length > 3 || expr.arguments.nodes.some(ts.isSpreadElement))
     lowerer.noLowering(`${name} with this argument shape`, expr);
-  const path = expr.arguments[0]
-    ? lowerer.lowerExprExpecting(expr.arguments[0], DYN)
+  const path = expr.arguments.nodes[0]
+    ? lowerer.lowerExprExpecting(expr.arguments.nodes[0], DYN)
     : dynUndefinedExpr(loc);
   return {
     kind: "libCall",
     fn: fn.fn,
     args: [
       path,
-      lowerFsTimestampValue(lowerer, expr.arguments[1], loc),
-      lowerFsTimestampValue(lowerer, expr.arguments[2], loc),
+      lowerFsTimestampValue(lowerer, expr.arguments.nodes[1], loc),
+      lowerFsTimestampValue(lowerer, expr.arguments.nodes[2], loc),
     ],
     type: fn.result,
     loc,
@@ -162,14 +164,14 @@ export function lowerFsVectorOrTruncateCall(
   const vector = bi.member !== "ftruncateSync";
   const required = vector ? 2 : 1;
   if (
-    expr.arguments.length < required ||
-    expr.arguments.length > required + 1 ||
-    expr.arguments.some(ts.isSpreadElement)
+    expr.arguments.nodes.length < required ||
+    expr.arguments.nodes.length > required + 1 ||
+    expr.arguments.nodes.some(ts.isSpreadElement)
   )
     lowerer.noLowering(`${name} with this argument shape`, expr);
-  const args = [lowerer.lowerExprExpecting(expr.arguments[0]!, F64)];
-  if (vector) args.push(lowerer.lowerExprExpecting(expr.arguments[1]!, arrayOf(BYTES_U8)));
-  const optional = expr.arguments[required];
+  const args = [lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, F64)];
+  if (vector) args.push(lowerer.lowerExprExpecting(expr.arguments.nodes[1]!, arrayOf(BYTES_U8)));
+  const optional = expr.arguments.nodes[required];
   args.push(
     optional
       ? lowerBuiltinOptionalDefault(lowerer, optional, F64, numLit(vector ? -1 : 0, loc), vector)
@@ -186,7 +188,7 @@ export function lowerFsNumericOpenCall(
   expr: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
-  if (expr.arguments.length > 3 || expr.arguments.some(ts.isSpreadElement)) {
+  if (expr.arguments.nodes.length > 3 || expr.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering("openSync with numeric flags and this argument shape", expr);
   }
   const bits: Record<string, number | undefined> = {
@@ -222,17 +224,17 @@ export function lowerFsNumericOpenCall(
     }
     return null;
   };
-  const mask = flagsOf(expr.arguments[1]!);
+  const mask = flagsOf(expr.arguments.nodes[1]!);
   if (mask === null) {
     lowerer.noLowering(
       "openSync with computed numeric flags",
-      expr.arguments[1]!,
+      expr.arguments.nodes[1]!,
       "use an inline bitwise OR of fs.constants.O_RDONLY/O_WRONLY/O_RDWR/O_CREAT/O_EXCL/O_NOFOLLOW/O_NONBLOCK/O_TRUNC/O_APPEND",
     );
   }
-  const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
-  const mode = expr.arguments[2]
-    ? lowerer.lowerExprExpecting(expr.arguments[2]!, F64)
+  const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
+  const mode = expr.arguments.nodes[2]
+    ? lowerer.lowerExprExpecting(expr.arguments.nodes[2]!, F64)
     : ({ kind: "numLit", value: 0o666, type: F64, loc } satisfies IrExpr);
   return {
     kind: "libCall",
@@ -253,24 +255,24 @@ export function lowerFsPromisesOpenCall(
   loc: SrcLoc,
 ): IrExpr {
   if (
-    expr.arguments.length < 1 ||
-    expr.arguments.length > 3 ||
-    expr.arguments.some(ts.isSpreadElement)
+    expr.arguments.nodes.length < 1 ||
+    expr.arguments.nodes.length > 3 ||
+    expr.arguments.nodes.some(ts.isSpreadElement)
   ) {
     lowerer.noLowering(
-      `fs.promises.open with ${expr.arguments.length} arguments`,
+      `fs.promises.open with ${expr.arguments.nodes.length} arguments`,
       expr,
       "use open(path[, stringFlags[, numericMode]])",
     );
   }
-  const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
+  const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
   const defaultFlags: IrExpr = { kind: "strLit", value: "r", type: STRING, loc };
   const defaultMode: IrExpr = { kind: "numLit", value: 0o666, type: F64, loc };
-  const flags = expr.arguments[1]
-    ? lowerBuiltinOptionalDefault(lowerer, expr.arguments[1]!, STRING, defaultFlags)
+  const flags = expr.arguments.nodes[1]
+    ? lowerBuiltinOptionalDefault(lowerer, expr.arguments.nodes[1]!, STRING, defaultFlags)
     : defaultFlags;
-  const mode = expr.arguments[2]
-    ? lowerBuiltinOptionalDefault(lowerer, expr.arguments[2]!, F64, defaultMode)
+  const mode = expr.arguments.nodes[2]
+    ? lowerBuiltinOptionalDefault(lowerer, expr.arguments.nodes[2]!, F64, defaultMode)
     : defaultMode;
   return {
     kind: "libCall",
@@ -291,16 +293,16 @@ export function lowerFsRenameCallbackCall(
   expr: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
-  if (expr.arguments.length !== 3 || expr.arguments.some(ts.isSpreadElement)) {
+  if (expr.arguments.nodes.length !== 3 || expr.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering(
-      `rename with ${expr.arguments.length} argument${expr.arguments.length === 1 ? "" : "s"}`,
+      `rename with ${expr.arguments.nodes.length} argument${expr.arguments.nodes.length === 1 ? "" : "s"}`,
       expr,
       "the supported form is rename(oldPath, newPath, callback)",
     );
   }
-  const oldPath = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
-  const newPath = lowerer.lowerExprExpecting(expr.arguments[1]!, STRING);
-  let callback = lowerer.lowerExpr(expr.arguments[2]!);
+  const oldPath = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, STRING);
+  const newPath = lowerer.lowerExprExpecting(expr.arguments.nodes[1]!, STRING);
+  let callback = lowerer.lowerExpr(expr.arguments.nodes[2]!);
   // JS/checkJs callback values may arrive as checked-dynamic callables.
   // Adapt them to the one error-first slot; the runtime passes a dyn
   // Error on failure and null on success through the emitted thunk.
@@ -309,7 +311,7 @@ export function lowerFsRenameCallbackCall(
       kind: "dynCheck",
       value: callback,
       type: funcOf([DYN], VOID),
-      loc: locOf(expr.arguments[2]!),
+      loc: locOf(expr.arguments.nodes[2]!),
     };
   }
   let callbackOk = callback.type.kind === "func" && callback.type.params.length <= 1;
@@ -336,7 +338,7 @@ export function lowerFsRenameCallbackCall(
   if (!callbackOk) {
     lowerer.unsupported(
       "SC1090",
-      expr.arguments[2]!,
+      expr.arguments.nodes[2]!,
       "fs.rename callbacks must accept at most one Error | null parameter",
     );
   }
@@ -344,7 +346,7 @@ export function lowerFsRenameCallbackCall(
   // void callback is expected; Node ignores that value. Normalize the
   // closure to the runtime's void callback ABI after validating its
   // error-first parameter shape.
-  callback = voidizedCallback(lowerer, callback, locOf(expr.arguments[2]!));
+  callback = voidizedCallback(lowerer, callback, locOf(expr.arguments.nodes[2]!));
   return {
     kind: "libCall",
     fn: "fs.renameCb",
@@ -365,17 +367,17 @@ export function lowerFsReadSyncCall(
   const supported =
     "use readSync(fd, buffer), readSync(fd, buffer, { offset?, length?, position? }), or readSync(fd, buffer, offset, length[, position]); bigint positions and non-literal options objects have no lowering";
   if (
-    expr.arguments.length < 2 ||
-    expr.arguments.length > 5 ||
-    expr.arguments.some(ts.isSpreadElement)
+    expr.arguments.nodes.length < 2 ||
+    expr.arguments.nodes.length > 5 ||
+    expr.arguments.nodes.some(ts.isSpreadElement)
   ) {
     lowerer.noLowering(
-      `readSync with ${expr.arguments.length} argument${expr.arguments.length === 1 ? "" : "s"}`,
+      `readSync with ${expr.arguments.nodes.length} argument${expr.arguments.nodes.length === 1 ? "" : "s"}`,
       expr,
       supported,
     );
   }
-  if (expr.arguments.length === 2) {
+  if (expr.arguments.nodes.length === 2) {
     return lowerFsSyncBufferWindow(
       lowerer,
       expr,
@@ -385,8 +387,8 @@ export function lowerFsReadSyncCall(
       supported,
     );
   }
-  if (expr.arguments.length === 3) {
-    const optionsNode = expr.arguments[2]!;
+  if (expr.arguments.nodes.length === 3) {
+    const optionsNode = expr.arguments.nodes[2]!;
     let valueNode = optionsNode;
     while (ts.isParenthesizedExpression(valueNode)) valueNode = valueNode.expression;
     if (ts.isObjectLiteralExpression(valueNode) || valueNode.kind === ts.SyntaxKind.NullKeyword) {
@@ -401,13 +403,35 @@ export function lowerFsReadSyncCall(
     }
     lowerer.noLowering("readSync with a non-literal options argument", optionsNode, supported);
   }
+  // JavaScript arguments outside the typed signature (an untyped fd or
+  // buffer, a bigint or untyped position) take Node's argument checks at
+  // run time, then the same read.
+  if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    const nodes = expr.arguments.nodes;
+    const typed = [F64, BYTES_U8, F64, F64, F64].every((want, i) => {
+      const node = nodes[i];
+      if (node === undefined) return true;
+      let value: ts.Expression = node;
+      while (ts.isParenthesizedExpression(value)) value = value.expression;
+      if (i === 4 && value.kind === ts.SyntaxKind.NullKeyword) return true;
+      const t = lowerer.mapTypeOf(lowerer.typeOf(node));
+      return t !== null && (want.kind === "bytes" ? t.kind === "bytes" : t.kind === "f64");
+    });
+    if (!typed) {
+      const args = [0, 1, 2, 3, 4].map((i): IrExpr => {
+        const node = nodes[i];
+        return node === undefined ? dynUndefinedExpr(loc) : lowerer.lowerExprExpecting(node, DYN);
+      });
+      return { kind: "libCall", fn: "fs.readSyncDyn", args, type: F64, loc };
+    }
+  }
   const args: IrExpr[] = [
-    lowerer.lowerExprExpecting(expr.arguments[0]!, F64),
-    lowerer.lowerExprExpecting(expr.arguments[1]!, BYTES_U8),
-    lowerer.lowerExprExpecting(expr.arguments[2]!, F64),
-    lowerer.lowerExprExpecting(expr.arguments[3]!, F64),
+    lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, F64),
+    lowerer.lowerExprExpecting(expr.arguments.nodes[1]!, BYTES_U8),
+    lowerer.lowerExprExpecting(expr.arguments.nodes[2]!, F64),
+    lowerer.lowerExprExpecting(expr.arguments.nodes[3]!, F64),
   ];
-  const positionNode = expr.arguments[4];
+  const positionNode = expr.arguments.nodes[4];
   let positionValueNode = positionNode;
   while (positionValueNode && ts.isParenthesizedExpression(positionValueNode)) {
     positionValueNode = positionValueNode.expression;
@@ -440,14 +464,14 @@ export function lowerFsWriteSyncCall(
 ): IrExpr {
   const supported =
     'use writeSync(fd, buffer[, offset[, length[, position]]]), writeSync(fd, buffer, { offset?, length?, position? }), or writeSync(fd, string[, position[, "utf8"]]); non-literal options objects, bigint positions, and other encodings have no lowering';
-  if (expr.arguments.some(ts.isSpreadElement) || expr.arguments.length < 2) {
+  if (expr.arguments.nodes.some(ts.isSpreadElement) || expr.arguments.nodes.length < 2) {
     lowerer.noLowering(
-      `writeSync with ${expr.arguments.length} argument${expr.arguments.length === 1 ? "" : "s"}`,
+      `writeSync with ${expr.arguments.nodes.length} argument${expr.arguments.nodes.length === 1 ? "" : "s"}`,
       expr,
       supported,
     );
   }
-  const dataNode = expr.arguments[1]!;
+  const dataNode = expr.arguments.nodes[1]!;
   const dataType = lowerer.mapTypeOf(lowerer.typeOf(dataNode));
   const position = (node: ts.Expression | undefined): IrExpr => {
     let valueNode = node;
@@ -473,7 +497,7 @@ export function lowerFsWriteSyncCall(
         "byte writes take Uint8Array/Buffer data",
       );
     }
-    if (expr.arguments.length === 2) {
+    if (expr.arguments.nodes.length === 2) {
       return lowerFsSyncBufferWindow(
         lowerer,
         expr,
@@ -483,8 +507,8 @@ export function lowerFsWriteSyncCall(
         supported,
       );
     }
-    if (expr.arguments.length === 3) {
-      const thirdNode = expr.arguments[2]!;
+    if (expr.arguments.nodes.length === 3) {
+      const thirdNode = expr.arguments.nodes[2]!;
       let valueNode = thirdNode;
       while (ts.isParenthesizedExpression(valueNode)) valueNode = valueNode.expression;
       if (ts.isObjectLiteralExpression(valueNode) || valueNode.kind === ts.SyntaxKind.NullKeyword) {
@@ -513,37 +537,37 @@ export function lowerFsWriteSyncCall(
         supported,
       );
     }
-    if (expr.arguments.length !== 4 && expr.arguments.length !== 5) {
+    if (expr.arguments.nodes.length !== 4 && expr.arguments.nodes.length !== 5) {
       lowerer.noLowering(
-        `writeSync of Buffer data with ${expr.arguments.length} arguments`,
+        `writeSync of Buffer data with ${expr.arguments.nodes.length} arguments`,
         expr,
         supported,
       );
     }
-    const fd = lowerer.lowerExprExpecting(expr.arguments[0]!, F64);
+    const fd = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, F64);
     return {
       kind: "libCall",
       fn: "fs.writeSync",
       args: [
         fd,
         lowerer.lowerExprExpecting(dataNode, BYTES_U8),
-        lowerer.lowerExprExpecting(expr.arguments[2]!, F64),
-        lowerer.lowerExprExpecting(expr.arguments[3]!, F64),
-        position(expr.arguments[4]),
+        lowerer.lowerExprExpecting(expr.arguments.nodes[2]!, F64),
+        lowerer.lowerExprExpecting(expr.arguments.nodes[3]!, F64),
+        position(expr.arguments.nodes[4]),
       ],
       type: F64,
       loc,
     };
   }
   if (dataType?.kind === "string") {
-    if (expr.arguments.length > 4) {
+    if (expr.arguments.nodes.length > 4) {
       lowerer.noLowering(
-        `writeSync of string data with ${expr.arguments.length} arguments`,
+        `writeSync of string data with ${expr.arguments.nodes.length} arguments`,
         expr,
         supported,
       );
     }
-    const encNode = expr.arguments[3];
+    const encNode = expr.arguments.nodes[3];
     let enc: IrExpr = { kind: "strLit", value: "utf8", type: STRING, loc };
     if (encNode !== undefined) {
       const encType = lowerer.typeOf(encNode);
@@ -558,11 +582,16 @@ export function lowerFsWriteSyncCall(
       // a call/getter whose type is the accepted literal cannot vanish.
       enc = lowerer.lowerExprExpecting(encNode, STRING);
     }
-    const fd = lowerer.lowerExprExpecting(expr.arguments[0]!, F64);
+    const fd = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, F64);
     return {
       kind: "libCall",
       fn: "fs.writeStrSync",
-      args: [fd, lowerer.lowerExprExpecting(dataNode, STRING), position(expr.arguments[2]), enc],
+      args: [
+        fd,
+        lowerer.lowerExprExpecting(dataNode, STRING),
+        position(expr.arguments.nodes[2]),
+        enc,
+      ],
       type: F64,
       loc,
     };
@@ -584,23 +613,31 @@ export function lowerFsReadDescriptorCall(
   expr: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
-  const fd = lowerer.lowerExprExpecting(expr.arguments[0]!, F64);
-  if (expr.arguments.length === 1) {
+  const fd = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, F64);
+  if (expr.arguments.nodes.length === 1) {
     return { kind: "libCall", fn: "fs.readFdSyncBytes", args: [fd], type: BYTES_U8, loc };
   }
-  const encT = lowerer.typeOf(expr.arguments[1]!);
+  const encT = lowerer.typeOf(expr.arguments.nodes[1]!);
   if (
-    expr.arguments.length !== 2 ||
+    expr.arguments.nodes.length !== 2 ||
     !(encT.isStringLiteralType() && (encT.value === "utf8" || encT.value === "utf-8"))
   ) {
     lowerer.noLowering(
       `readFileSync(fd) with a non-"utf8" encoding`,
-      expr.arguments[1] ?? expr,
+      expr.arguments.nodes[1] ?? expr,
       'only utf8 reads are supported: readFileSync(fd, "utf8")',
     );
   }
-  const enc = lowerer.lowerExprExpecting(expr.arguments[1]!, STRING);
+  const enc = lowerer.lowerExprExpecting(expr.arguments.nodes[1]!, STRING);
   return { kind: "libCall", fn: "fs.readFdSync", args: [fd, enc], type: STRING, loc };
+}
+
+/** The `{ encoding }` options record. A literal whose value is checked-
+ * dynamic (an encoding variable reassigned from an untyped source) lowers
+ * to a dynamic object: check it into the record the checker describes. */
+function encodingOptions(lowerer: Lowerer, options: ts.Expression, type: IrType): IrExpr {
+  const value = lowerer.lowerExpr(options);
+  return typeEquals(value.type, type) ? value : lowerer.coerceInto(options, value, type);
 }
 
 /** Encoding-bearing reads share Buffer's decoder and runtime alias checks.
@@ -611,8 +648,9 @@ export function lowerFsEncodedRead(
   descriptor: boolean,
   loc: SrcLoc,
 ): IrExpr | null {
-  if (expr.arguments.length !== 2 || expr.arguments.some(ts.isSpreadElement)) return null;
-  const options = expr.arguments[1]!;
+  if (expr.arguments.nodes.length !== 2 || expr.arguments.nodes.some(ts.isSpreadElement))
+    return null;
+  const options = expr.arguments.nodes[1]!;
   const optionsType = lowerer.mapTypeOf(lowerer.typeOf(options));
   if (optionsType?.kind !== "string" && optionsType?.kind !== "record") return null;
   if (optionsType.kind === "record") {
@@ -625,13 +663,15 @@ export function lowerFsEncodedRead(
       return null;
   }
   const sourceType = descriptor ? F64 : STRING;
-  const source = lowerer.lowerExprExpecting(expr.arguments[0]!, sourceType);
+  const source = descriptor
+    ? lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, sourceType)
+    : lowerFsPath(lowerer, expr.arguments.nodes[0]!);
   const encoding: IrExpr =
     optionsType.kind === "string"
       ? lowerer.lowerExprExpecting(options, STRING)
       : {
           kind: "recordGet",
-          obj: lowerer.lowerExpr(options),
+          obj: encodingOptions(lowerer, options, optionsType),
           shapeId: optionsType.shapeId,
           field: "encoding",
           type: STRING,
@@ -665,10 +705,11 @@ export function lowerFsPromisesEncodedRead(
   expr: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr | null {
-  if (expr.arguments.length !== 2 || expr.arguments.some(ts.isSpreadElement)) return null;
+  if (expr.arguments.nodes.length !== 2 || expr.arguments.nodes.some(ts.isSpreadElement))
+    return null;
   const result = lowerer.mapTypeOf(lowerer.typeOf(expr));
   if (result?.kind !== "promise" || result.inner.kind !== "string") return null;
-  const options = expr.arguments[1]!;
+  const options = expr.arguments.nodes[1]!;
   const optionsTsType = lowerer.typeOf(options);
   if (
     optionsTsType.isStringLiteralType() &&
@@ -686,13 +727,13 @@ export function lowerFsPromisesEncodedRead(
     )
       return null;
   }
-  const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
+  const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
   const encoding: IrExpr =
     optionsType.kind === "string"
       ? lowerer.lowerExprExpecting(options, STRING)
       : {
           kind: "recordGet",
-          obj: lowerer.lowerExpr(options),
+          obj: encodingOptions(lowerer, options, optionsType),
           shapeId: optionsType.shapeId,
           field: "encoding",
           type: STRING,
@@ -720,15 +761,15 @@ export function lowerFsOpendirCall(
   loc: SrcLoc,
 ): IrExpr {
   if (
-    expr.arguments.length < 1 ||
-    expr.arguments.length > 2 ||
-    expr.arguments.some(ts.isSpreadElement)
+    expr.arguments.nodes.length < 1 ||
+    expr.arguments.nodes.length > 2 ||
+    expr.arguments.nodes.some(ts.isSpreadElement)
   ) {
-    lowerer.noLowering(`${member} with ${expr.arguments.length} arguments`, expr);
+    lowerer.noLowering(`${member} with ${expr.arguments.nodes.length} arguments`, expr);
   }
-  const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
+  const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
   let bufferSize: IrExpr = { kind: "numLit", value: 32, type: F64, loc };
-  const optsNode = expr.arguments[1];
+  const optsNode = expr.arguments.nodes[1];
   if (optsNode && !(ts.isIdentifier(optsNode) && optsNode.text === "undefined")) {
     const fence = (): never =>
       lowerer.noLowering(
@@ -737,7 +778,7 @@ export function lowerFsOpendirCall(
         "pass an object literal with a numeric bufferSize and a utf8 encoding; recursive walks and other encodings have no lowering",
       );
     if (!ts.isObjectLiteralExpression(optsNode)) fence();
-    for (const property of (optsNode as ts.ObjectLiteralExpression).properties) {
+    for (const property of (optsNode as ts.ObjectLiteralExpression).properties.nodes) {
       const option = optionMember(property);
       if (!option) fence();
       else if (option.name === "bufferSize")
@@ -766,7 +807,7 @@ export function lowerFsStreamCreate(
 ): IrExpr {
   return fsStreamCreateExpr(
     lowerer,
-    expr.arguments,
+    expr.arguments.nodes,
     member === "createReadStream",
     `fs.${member}`,
     expr,
@@ -786,7 +827,7 @@ export function lowerFsMkdirSyncCall(
   expr: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
-  const optsNode = expr.arguments[1]!;
+  const optsNode = expr.arguments.nodes[1]!;
   const options = parseMkdirOptions(optsNode);
   if (!options) {
     lowerer.noLowering(
@@ -796,7 +837,7 @@ export function lowerFsMkdirSyncCall(
     );
   }
   const { recursive, modeNode } = options;
-  const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
+  const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
   const mode: IrExpr | null = modeNode ? lowerer.lowerExprExpecting(modeNode, F64) : null;
   if (!recursive) {
     return mode
@@ -824,7 +865,7 @@ export function lowerFsPromisesMkdirCall(
   expr: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
-  const optsNode = expr.arguments[1]!;
+  const optsNode = expr.arguments.nodes[1]!;
   const options = parseMkdirOptions(optsNode);
   if (!options) {
     lowerer.noLowering(
@@ -834,7 +875,7 @@ export function lowerFsPromisesMkdirCall(
     );
   }
   const { recursive, modeNode } = options;
-  const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
+  const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
   const mode: IrExpr | null = modeNode ? lowerer.lowerExprExpecting(modeNode, F64) : null;
   const type: IrType = { kind: "promise", inner: VOID };
   if (!recursive) {
@@ -847,37 +888,45 @@ export function lowerFsPromisesMkdirCall(
     : { kind: "libCall", fn: "fsp.mkdirRecursive", args: [path], type, loc };
 }
 
-// rmSync(p, options): literal { recursive?, force? } booleans — the
-// cleanup shape rmSync(dir, { recursive: true, force: true }) —
-// plus the maxRetries/retryDelay numbers (the tmpdir-harness shape
+// rmSync(p, options) and fs.promises.rm(p, options): literal
+// { recursive?, force? } booleans — the cleanup shape
+// rmSync(dir, { recursive: true, force: true }) — plus the
+// maxRetries/retryDelay numbers (the tmpdir-harness shape
 // rmSync(p, { maxRetries: 3, recursive: true, force: true })): those
 // lower as ordinary number expressions into the retry libCall, whose
 // runtime implements Node's linear-backoff retry on
 // EBUSY/EMFILE/ENFILE/ENOTEMPTY/EPERM. The retry-free shape keeps the
-// historical rmOptsSync lowering unchanged.
-export function lowerFsRemoveCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+// historical rmOptsSync lowering unchanged. The promise form runs the same
+// removal and rejects with its error.
+export function lowerFsRemoveCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  loc: SrcLoc,
+  promise: boolean,
+): IrExpr {
   const opts = literalBoolOptions(
-    expr.arguments[1]!,
+    expr.arguments.nodes[1]!,
     ["recursive", "force"],
     ["maxRetries", "retryDelay"],
   );
   if (opts === null) {
     lowerer.noLowering(
-      "rmSync with an options argument beyond { recursive, force, maxRetries, retryDelay }",
-      expr.arguments[1]!,
+      `${promise ? "fs.promises.rm" : "rmSync"} with an options argument beyond { recursive, force, maxRetries, retryDelay }`,
+      expr.arguments.nodes[1]!,
       "the recursive/force flags must be boolean literals; maxRetries/retryDelay are numbers; other options have no lowering",
     );
   }
-  const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
+  const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
 
   const recursive = boolLit(opts.bools["recursive"] === true, loc);
   const force = boolLit(opts.bools["force"] === true, loc);
+  const type: IrType = promise ? { kind: "promise", inner: VOID } : VOID;
   if (opts.exprs["maxRetries"] === undefined && opts.exprs["retryDelay"] === undefined) {
     return {
       kind: "libCall",
-      fn: "fs.rmOptsSync",
+      fn: promise ? "fsp.rmOpts" : "fs.rmOptsSync",
       args: [path, recursive, force],
-      type: VOID,
+      type,
       loc,
     };
   }
@@ -888,7 +937,7 @@ export function lowerFsRemoveCall(lowerer: Lowerer, expr: ts.CallExpression, loc
     node ? lowerer.lowerExprExpecting(node, F64) : { kind: "numLit", value: dflt, type: F64, loc };
   return {
     kind: "libCall",
-    fn: "fs.rmRetrySync",
+    fn: promise ? "fsp.rmRetry" : "fs.rmRetrySync",
     args: [
       path,
       recursive,
@@ -896,7 +945,7 @@ export function lowerFsRemoveCall(lowerer: Lowerer, expr: ts.CallExpression, loc
       num(opts.exprs["maxRetries"], 0),
       num(opts.exprs["retryDelay"], 100),
     ],
-    type: VOID,
+    type,
     loc,
   };
 }
@@ -907,7 +956,7 @@ export function lowerFsWriteBytesCall(
   bi: { module: string; member: string },
   loc: SrcLoc,
 ): IrExpr | null {
-  const dataIr = lowerer.mapTypeOf(lowerer.typeOf(expr.arguments[1]!));
+  const dataIr = lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[1]!));
   if (dataIr?.kind === "union") {
     const arms = lowerer.unions.get(dataIr.unionId)?.arms;
     if (
@@ -921,12 +970,12 @@ export function lowerFsWriteBytesCall(
     if (dataIr.elem !== "u8") {
       lowerer.noLowering(
         `${bi.member} of '${lowerer.fmt(dataIr)}' data`,
-        expr.arguments[1]!,
+        expr.arguments.nodes[1]!,
         "byte writes take Uint8Array/Buffer data",
       );
     }
-    const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
-    const data = lowerer.lowerExprExpecting(expr.arguments[1]!, BYTES_U8);
+    const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
+    const data = lowerer.lowerExprExpecting(expr.arguments.nodes[1]!, BYTES_U8);
     if (bi.module === "fs/promises") {
       return {
         kind: "libCall",
@@ -954,7 +1003,7 @@ export function lowerFsWriteOptionsCall(
   loc: SrcLoc,
   promiseWriteOptions: boolean,
 ): IrExpr {
-  const optsNode = expr.arguments[2]!;
+  const optsNode = expr.arguments.nodes[2]!;
   const operation = promiseWriteOptions ? "fs.promises.writeFile" : "writeFileSync";
   const plainFn: IrLibFn = promiseWriteOptions ? "fsp.writeFile" : "fs.writeFileSync";
   const modeFn: IrLibFn = promiseWriteOptions ? "fsp.writeFileMode" : "fs.writeFileModeSync";
@@ -965,8 +1014,8 @@ export function lowerFsWriteOptionsCall(
   // values in object-literal order before issuing the write; otherwise a
   // call/getter statically typed as the accepted utf8 literal can vanish.
   const finishWrite = (optionValues: WriteOptionValue[]): IrExpr => {
-    const path = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
-    const data = lowerer.lowerExprExpecting(expr.arguments[1]!, STRING);
+    const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
+    const data = lowerer.lowerExprExpecting(expr.arguments.nodes[1]!, STRING);
     const pathLocal = lowerer.declareHiddenLocal("%writePath", STRING);
     const dataLocal = lowerer.declareHiddenLocal("%writeData", STRING);
     const stmts: IrStmt[] = [
@@ -1012,7 +1061,7 @@ export function lowerFsWriteOptionsCall(
     if (
       t.isStringLiteralType() &&
       (t.value === "utf8" || t.value === "utf-8") &&
-      lowerer.mapTypeOf(lowerer.typeOf(expr.arguments[1]!))?.kind === "string"
+      lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[1]!))?.kind === "string"
     ) {
       return finishWrite([{ kind: "effect", value: lowerer.lowerExprExpecting(optsNode, STRING) }]);
     }
@@ -1020,7 +1069,7 @@ export function lowerFsWriteOptionsCall(
   const optionValues: WriteOptionValue[] = [];
   let ok = ts.isObjectLiteralExpression(optsNode);
   if (ok) {
-    for (const p of (optsNode as ts.ObjectLiteralExpression).properties) {
+    for (const p of (optsNode as ts.ObjectLiteralExpression).properties.nodes) {
       const m = optionMember(p);
       if (!m) {
         ok = false;
@@ -1057,7 +1106,7 @@ export function lowerFsWriteOptionsCall(
       }
     }
   }
-  if (!ok || lowerer.mapTypeOf(lowerer.typeOf(expr.arguments[1]!))?.kind !== "string") {
+  if (!ok || lowerer.mapTypeOf(lowerer.typeOf(expr.arguments.nodes[1]!))?.kind !== "string") {
     lowerer.noLowering(
       `${operation} with 3 arguments`,
       optsNode,
@@ -1080,20 +1129,20 @@ export function lowerFsReadPathCall(
   // non-string paths throw ERR_INVALID_ARG_TYPE where the dynCheck
   // throws its path-annotated TypeError. The fd forms (a number
   // argument) and literal-utf8 reads keep their existing lowerings.
-  const pathV = lowerer.lowerExpr(expr.arguments[0]!);
+  const pathV = lowerer.lowerExpr(expr.arguments.nodes[0]!);
   if (pathV.type.kind === "string" || pathV.type.kind === "dyn") {
     const pathArg: IrExpr =
       pathV.type.kind === "dyn" ? { kind: "dynCheck", value: pathV, type: STRING, loc } : pathV;
-    if (expr.arguments.length === 1) {
+    if (expr.arguments.nodes.length === 1) {
       return { kind: "libCall", fn: "fs.readFileSyncBuf", args: [pathArg], type: BYTES_U8, loc };
     }
     // Runtime nullish and empty encodings read Buffers, supported names
     // read strings, and invalid names throw ERR_INVALID_ARG_VALUE. A
     // non-dyn encoding falls through to the literal-utf8 lowering
     // below (the discarded probe IR never emits).
-    const encT = lowerer.typeOf(expr.arguments[1]!);
+    const encT = lowerer.typeOf(expr.arguments.nodes[1]!);
     if (!(encT.isStringLiteralType() && (encT.value === "utf8" || encT.value === "utf-8"))) {
-      const enc = lowerer.lowerExpr(expr.arguments[1]!);
+      const enc = lowerer.lowerExpr(expr.arguments.nodes[1]!);
       if (enc.type.kind === "dyn") {
         return {
           kind: "libCall",
@@ -1116,7 +1165,7 @@ function parseMkdirOptions(
   if (!ts.isObjectLiteralExpression(node)) return null;
   let recursive = false;
   let modeNode: ts.Expression | null = null;
-  for (const property of node.properties) {
+  for (const property of node.properties.nodes) {
     const member = optionMember(property);
     if (!member) return null;
     if (member.name === "recursive") {

@@ -1,0 +1,6 @@
+{
+  "type": "module",
+  "imports": {
+    "#dev/jsx-dev-runtime": "./runtime/jsx-dev-runtime.ts"
+  }
+}

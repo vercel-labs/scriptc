@@ -1,7 +1,7 @@
-import { planRecordUnionWrap } from "../union-retag.js";
+import { planRecordUnionLift, planRecordUnionWrap } from "../union-retag.js";
 import type { WidthLift } from "../width-lift.js";
-import type { IrType } from "../../../ir/ir.js";
-import { isUnitType, typeEquals, UNDEFINED_T } from "../../../ir/ir.js";
+import type { IrRecordShape, IrType } from "../../../ir/ir.js";
+import { canDynCheckTo, isUnitType, typeEquals, UNDEFINED_T } from "../../../ir/ir.js";
 import { type ClassInfo, findMethodOn, findGenericMethodOn } from "../lower-classes.js";
 import type { Lowerer } from "../lowerer.js";
 
@@ -21,9 +21,37 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
   if (dst.kind === "dyn" && src.kind !== "dyn" && lowerer.dynConvertible(src)) {
     return { how: "dynIn" };
   }
+  // An 'unknown' (dyn) SOURCE field into a typed slot — a field TypeScript
+  // types `any` (a JSON.parse read), which the checker lets into any
+  // declared field type: the checked extraction, the same dynCheck a
+  // typed binding initialized from that value applies.
+  if (
+    src.kind === "dyn" &&
+    dst.kind !== "dyn" &&
+    dst.kind !== "union" &&
+    canDynCheckTo(
+      dst,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  ) {
+    return { how: "dynOut" };
+  }
   if (dst.kind === "union") {
     if (src.kind === "union") {
-      return lowerer.unionRetagMappable(src.unionId, dst.unionId) ? { how: "retag" } : null;
+      if (lowerer.unionRetagMappable(src.unionId, dst.unionId)) return { how: "retag" };
+      // A field the checker types `undefined` alone (an object literal's
+      // omitted member, normalized to `?: undefined` across a union of
+      // literal types) carries the unit-only union. Into a slot with an
+      // undefined arm it lifts as that arm; its null arm cannot occur.
+      const srcArms = lowerer.unions.get(src.unionId)?.arms ?? [];
+      if (
+        srcArms.length > 0 &&
+        srcArms.every(isUnitType) &&
+        lowerer.armTag(dst.unionId, UNDEFINED_T) >= 0
+      )
+        return { how: "unitRetag" };
+      return null;
     }
     // A unit-typed source can't wrap here (unionWrap requires the
     // LITERAL unit — and no lowered shape carries a bare unit field).
@@ -76,7 +104,54 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
           })
         );
       });
-      if (absentOnly.length === 1) selected = absentOnly;
+      // That layout does not win when it holds the record only by dropping
+      // fields and another arm keeps every field (`{ kind; type }` beside
+      // `{ kind; name; adapts?: true; type }`): the value is not its variant.
+      const dropsFields = (arm: IrType): boolean => !keepsEveryField(lowerer, source, arm);
+      if (
+        absentOnly.length === 1 &&
+        !(dropsFields(absentOnly[0]!.arm) && selected.some(({ arm }) => !dropsFields(arm)))
+      )
+        selected = absentOnly;
+    }
+    // A record that fits several arms of a discriminated union selects one
+    // by its discriminant at run time. Without this, an arm that a nested
+    // field could reach only ambiguously dropped out of the candidates, and
+    // an arm reached by dropping fields could win alone.
+    if (selected.length !== 1 && src.kind === "record") {
+      const source = lowerer.shapes.get(src.shapeId);
+      if (
+        source &&
+        planRecordUnionLift(
+          source,
+          def,
+          (id) => lowerer.shapes.get(id),
+          (from, to) => lowerer.widthLiftPlan(from, to),
+        )
+      ) {
+        return { how: "discriminantRoute" };
+      }
+    }
+    if (selected.length === 2 && src.kind === "record") {
+      const route = presenceRoute(lowerer, src.shapeId, selected[0]!, selected[1]!);
+      if (route) return route;
+    }
+    // A record whose fields some arm keeps EVERY one of, each lifting
+    // (`{ id; limit; opts?: A | B }` into `{ id; limit; opts?: A | B | C } |
+    // { id; opts?: C }`): that arm is the value's own layout, widened; the
+    // others hold it only by dropping fields. Prefer the unique lossless arm
+    // with the record's own fields, then the unique one that also declares
+    // optional fields the record lacks, which complete as absent.
+    if (selected.length > 1 && src.kind === "record") {
+      const source = lowerer.shapes.get(src.shapeId);
+      const lossless = selected.filter(({ arm }) => keepsEveryField(lowerer, source, arm));
+      const exact = lossless.filter(
+        ({ arm }) =>
+          arm.kind === "record" &&
+          lowerer.shapes.get(arm.shapeId)?.fields.length === source?.fields.length,
+      );
+      if (exact.length === 1) selected = exact;
+      else if (exact.length === 0 && lossless.length === 1) selected = lossless;
     }
     if (selected.length !== 1) return null;
     return { how: "liftWrap", tag: selected[0]!.tag, arm: selected[0]!.arm };
@@ -168,6 +243,59 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
       return { how: "tupleArr" };
     }
     return null;
+  }
+  return null;
+}
+
+/** True when the record arm `arm` has a field of every name the record
+ * `source` has. Tuples keep their own positional layouts. */
+function keepsEveryField(
+  lowerer: Lowerer,
+  source: IrRecordShape | undefined,
+  arm: IrType,
+): boolean {
+  const target = arm.kind === "record" ? lowerer.shapes.get(arm.shapeId) : undefined;
+  return (
+    source !== undefined &&
+    target !== undefined &&
+    !source.tuple &&
+    !target.tuple &&
+    source.fields.every((field) => target.fields.some((kept) => kept.name === field.name))
+  );
+}
+
+/** Two record arms a source record fits, where one arm declares a field
+ * the other lacks and the source types that field `T | undefined`
+ * (`{ count, errors: errs.length ? errs : undefined }` into `{ count;
+ * errors: string[] } | { count }`): the field's value picks the arm at
+ * run time. Null for any other pair. */
+function presenceRoute(
+  lowerer: Lowerer,
+  sourceId: string,
+  a: { tag: number; arm: IrType },
+  b: { tag: number; arm: IrType },
+): WidthLift | null {
+  const source = lowerer.shapes.get(sourceId);
+  if (!source || source.tuple || source.indexValue || a.arm.kind !== "record") return null;
+  if (b.arm.kind !== "record") return null;
+  const shapeA = lowerer.shapes.get(a.arm.shapeId);
+  const shapeB = lowerer.shapes.get(b.arm.shapeId);
+  if (!shapeA || !shapeB) return null;
+  const optional = (t: IrType): boolean =>
+    t.kind === "union" && lowerer.armTag(t.unionId, UNDEFINED_T) >= 0;
+  for (const [present, absent, presentShape, absentShape] of [
+    [a, b, shapeA, shapeB],
+    [b, a, shapeB, shapeA],
+  ] as const) {
+    const extra = presentShape.fields.filter(
+      (f) => !absentShape.fields.some((g) => g.name === f.name),
+    );
+    if (extra.length !== 1 || optional(extra[0]!.type)) continue;
+    if (absentShape.fields.some((g) => !presentShape.fields.some((f) => f.name === g.name)))
+      continue;
+    const field = source.fields.find((f) => f.name === extra[0]!.name);
+    if (!field || !optional(field.type)) continue;
+    return { how: "presenceRoute", field: field.name, present, absent };
   }
   return null;
 }
@@ -407,7 +535,7 @@ export function recordToClassPlan(
       return null;
     }
   }
-  if (!info.ctor || info.ctor.body === undefined || info.ctor.body.statements.length > 0)
+  if (!info.ctor || info.ctor.body === undefined || info.ctor.body.statements.nodes.length > 0)
     return null;
   const props = info.paramProps ?? [];
   if (props.length !== info.ctorParams.length) return null;

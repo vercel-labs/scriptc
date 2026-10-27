@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 // Case-sharded harnesses run in every job without Vitest file sharding.
 export const effectFiles = ["tests/harness/effect.test.ts", "tests/harness/effect4.test.ts"];
@@ -41,22 +42,38 @@ export const testCosts = JSON.parse(
   readFileSync(new URL("./ci-test-costs.json", import.meta.url), "utf8"),
 );
 
+// Side-queue files whose process tree, run alone, peaks far above a plain
+// vitest run (about 1 GB): megabytes at the peak, measured with CI's settings.
+// They run beside the corpus task's three workers, so no two of them share a
+// shard while there are shards without one.
+export const memoryHeavyFiles = {
+  "tests/harness/decl-boundary.test.ts": 1838,
+};
+
 // The shard (1-based) of each measured side-queue file and isolated suite:
 // longest first to the shard with the least work so far, counting about a
 // second per file for vitest to import it. Ties go to the highest shard, so the
 // longest files start from the last shard while the cost-balanced corpus and
 // three.js cases (tests/harness/shard.ts) place their longest from the first.
-// An isolated suite without a measurement weighs as much as the median
-// measured file. Files without a measurement are left to vitest's --shard,
-// which splits them by count.
+// An isolated suite or memory-heavy file without a measurement weighs as much
+// as the median measured file. Memory-heavy files are placed after the others,
+// each on the shard with the least memory-heavy work so far and, among those,
+// the least work. Files without a
+// measurement are left to vitest's --shard, which splits them by count.
 export function sideOwners(flavor, count) {
   const costs = testCosts[flavor];
   const known = Object.values(costs).sort((a, b) => a - b);
   const median = known.length === 0 ? 0 : known[Math.floor(known.length / 2)];
   const weight = (file) => (costs[file] ?? median) + 1000;
-  const files = [...new Set([...Object.keys(costs), ...isolatedFiles.map(([, file]) => file)])];
+  const heavy = Object.keys(memoryHeavyFiles).sort(
+    (a, b) => memoryHeavyFiles[b] - memoryHeavyFiles[a] || (a < b ? -1 : a > b ? 1 : 0),
+  );
+  const files = [
+    ...new Set([...Object.keys(costs), ...isolatedFiles.map(([, file]) => file)]),
+  ].filter((file) => !(file in memoryHeavyFiles));
   files.sort((a, b) => weight(b) - weight(a) || (a < b ? -1 : a > b ? 1 : 0));
   const loads = new Array(count).fill(0);
+  const memory = new Array(count).fill(0);
   const owners = new Map();
   for (const file of files) {
     let lightest = count - 1;
@@ -65,16 +82,29 @@ export function sideOwners(flavor, count) {
     loads[lightest] += weight(file);
     owners.set(file, lightest + 1);
   }
+  for (const file of heavy) {
+    let lightest = count - 1;
+    for (let shard = count - 2; shard >= 0; shard--)
+      if (
+        memory[shard] < memory[lightest] ||
+        (memory[shard] === memory[lightest] && loads[shard] < loads[lightest])
+      )
+        lightest = shard;
+    memory[lightest] += memoryHeavyFiles[file];
+    loads[lightest] += weight(file);
+    owners.set(file, lightest + 1);
+  }
   return owners;
 }
 
-// Pull requests and pushes to main run the full suite on Linux. Their macOS
-// lane runs the darwin suite, which keeps the darwin clang/libc/kqueue
-// oracles: the Node differential corpus, plus every file whose assertions run
-// only on darwin or take darwin-specific branches (including the Mach-O
-// library localization arm and the arm64 runtime string oracle).
-// The nightly schedule and manual runs with macos_full run the full suite on
-// macOS.
+// Pull requests and pushes to main run the full suite on Linux. Pull requests
+// that change darwin code (scripts/ci-lanes.mjs) also run the darwin suite on
+// macOS, which keeps the darwin clang/libc/kqueue oracles: the Node
+// differential corpus, plus every file whose assertions run only on darwin or
+// take darwin-specific branches (including the Mach-O library localization arm
+// and the arm64 runtime string oracle). Pushes to main run no macOS jobs. The
+// nightly schedule and manual runs run the full suite on macOS, or the darwin
+// suite with macos_suite set to darwin.
 export const darwinCorpusFiles = ["tests/harness/differential.test.ts"];
 export const darwinFiles = [
   "packages/cli/test/bootstrap.test.ts",
@@ -97,7 +127,37 @@ export const darwinFiles = [
   "tests/harness/terminal-geometry.test.ts",
 ];
 
-export function ciTestPlan({ shard, flavor, workers = 4, suite = "full" }) {
+// LeakSanitizer over the sanitized corpus on Linux (macOS ASan has none, and
+// the workflow keeps it off everywhere else): a leak fails its program. The
+// suppressions file lists intentional leaks, with the reason for each.
+export const leakSuppressions = fileURLToPath(
+  new URL("../tests/harness/lsan.supp", import.meta.url),
+);
+
+// The sanitized three.js nodes build runs in its own Linux job
+// (three_nodes_san in .github/workflows/ci.yml). Beside the corpus's other
+// workers it took 860 to more than 1200 seconds, past its test timeout.
+export const sanitizedNodesJobEnv = { SCRIPTC_THREE_SANITIZED_NODES_JOB: "1" };
+
+function corpusThreeEnv(flavor, platform) {
+  return flavor === "san" && platform === "linux" ? sanitizedNodesJobEnv : {};
+}
+
+function corpusLeakEnv(flavor, platform) {
+  if (flavor !== "san" || platform !== "linux") return {};
+  return {
+    ASAN_OPTIONS: "detect_leaks=1",
+    LSAN_OPTIONS: `suppressions=${leakSuppressions}:print_suppressions=0`,
+  };
+}
+
+export function ciTestPlan({
+  shard,
+  flavor,
+  workers = 4,
+  suite = "full",
+  platform = process.platform,
+}) {
   const match = /^([1-9]\d*)\/([1-9]\d*)$/.exec(shard);
   if (
     !match ||
@@ -194,6 +254,8 @@ export function ciTestPlan({ shard, flavor, workers = 4, suite = "full" }) {
       args: ["test", ...corpusFiles],
       env: {
         ...env,
+        ...corpusLeakEnv(flavor, platform),
+        ...corpusThreeEnv(flavor, platform),
         SCRIPTC_TEST_WORKERS: String(workers - sideWorkers),
         SCRIPTC_LLVM_TEST_MODE: "dev",
       },

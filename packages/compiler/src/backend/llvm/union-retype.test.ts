@@ -89,7 +89,7 @@ function fixture(): IrModule {
     loc,
   };
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     records: [{ id: "cell", fields: [{ name: "x", type: F64 }] }],
@@ -183,7 +183,9 @@ test("a nullable-pointer source rebuilds the target box", () => {
   expect(retag).not.toContain("retype.share");
 });
 
-async function llvmFor(source: string): Promise<{ module: IrModule; ir: string }> {
+/** `boxed`: keep every union a tagged box (record unions otherwise become
+ * shape unions, which retype without any box). */
+async function llvmFor(source: string, boxed = true): Promise<{ module: IrModule; ir: string }> {
   const dir = await mkdtemp(join(tmpdir(), "scriptc-union-retype-"));
   try {
     const entry = join(dir, "main.ts"),
@@ -194,7 +196,7 @@ async function llvmFor(source: string): Promise<{ module: IrModule; ir: string }
       throw new Error(result.diagnostics.map((item) => `${item.code}: ${item.message}`).join("\n"));
     const module = deserializeModule(await readFile(output, "utf8"));
     expect(validateModule(module)).toEqual([]);
-    return { module, ir: emitLlvmModule(module) };
+    return { module, ir: emitLlvmModule(boxed ? keepUnionsBoxed(module) : module) };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -252,4 +254,17 @@ console.log(leafValue(parsed));
   const stored = /store i8 1, ptr (@sc_retype_guard_\d+)/.exec(ir);
   expect(stored).not.toBeNull();
   expect(ir).toContain(`load i8, ptr ${stored![1]}`);
+});
+
+test("record unions retype as the record pointer itself", async () => {
+  const { module, ir } = await llvmFor(VISITOR, false);
+  const helpers = module.functions.filter((fn) => fn.name.startsWith("%union.retag."));
+  expect(helpers.length).toBeGreaterThan(0);
+  for (const helper of helpers) {
+    const symbol = `sc_bf__x25_union_retag_${helper.name.slice("%union.retag.".length)}`;
+    const retag = body(ir, symbol);
+    expect(retag).not.toMatch(/@scr_union_new|retype\.share|sc_retype_guard/);
+  }
+  // No record of the visitor is ever boxed.
+  expect(ir).not.toMatch(/call ptr @scr_union_new_ref/);
 });

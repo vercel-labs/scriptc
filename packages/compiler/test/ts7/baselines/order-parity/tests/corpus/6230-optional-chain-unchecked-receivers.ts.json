@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6230-optional-chain-unchecked-receivers.ts"
+ ],
+ "diags": []
+}

@@ -28,6 +28,8 @@ export interface NativeLinkPlan {
   programObjectDependencies: NativeArtifactDependency[];
   runtimePack: RuntimePackSelection;
   darwinDebugSymbols?: boolean;
+  /** Linked with `--static`: the linked executable is checked before use. */
+  staticLink?: boolean;
 }
 
 export async function createNativeLinkPlan(options: {
@@ -39,7 +41,9 @@ export async function createNativeLinkPlan(options: {
   ffi: FfiProfile | null;
   optimization: NativeOptimization;
   strip?: boolean;
+  staticLink?: boolean;
   windowsSubsystem?: WindowsSubsystem;
+  profileGenerate?: boolean;
   programObjectDependencies?: readonly NativeArtifactDependency[];
   env?: NodeJS.ProcessEnv;
   resolver?: (specifier: string) => string;
@@ -69,12 +73,15 @@ export async function createNativeLinkPlan(options: {
       runtimeSystemLibraries: runtimePack.systemLibraries,
       optimization: options.optimization,
       ...(options.strip === undefined ? {} : { strip: options.strip }),
+      ...(options.staticLink === true ? { staticLink: true } : {}),
       ...(options.windowsSubsystem === undefined
         ? {}
         : { windowsSubsystem: options.windowsSubsystem }),
+      ...(options.profileGenerate === true ? { profileGenerate: true } : {}),
     }),
     dependencyPaths: [...runtimePack.dependencyPaths, ...(options.ffi?.libraries ?? [])],
     programObjectDependencies: [...(options.programObjectDependencies ?? [])],
     runtimePack,
+    ...(options.staticLink === true ? { staticLink: true } : {}),
   };
 }

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6521-tuple-spread-into-array.ts"
+ ],
+ "diags": []
+}

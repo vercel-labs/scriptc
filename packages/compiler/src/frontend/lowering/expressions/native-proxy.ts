@@ -21,12 +21,12 @@ export function isNativeProxyInitializer(
 
 export function lowerNativeProxy(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   const loc = locOf(expr);
-  const args = expr.arguments ?? [];
+  const args = expr.arguments?.nodes ?? [];
   if (args.length !== 2 || args.some(ts.isSpreadElement))
     lowerer.noLowering("new Proxy with this argument list", expr);
   const handler = args[1]!;
-  if (isJsSourceFile(expr.getSourceFile()) && ts.isObjectLiteralExpression(handler)) {
-    for (const prop of handler.properties) {
+  if (isJsSourceFile(ts.getSourceFileOfNode(expr)) && ts.isObjectLiteralExpression(handler)) {
+    for (const prop of handler.properties.nodes) {
       const callback = ts.isMethodDeclaration(prop)
         ? prop
         : ts.isPropertyAssignment(prop) &&
@@ -39,7 +39,7 @@ export function lowerNativeProxy(lowerer: Lowerer, expr: ts.NewExpression): IrEx
       // ProxyHandler types include symbols, which this boundary
       // explicitly refuses; they must not force a copying record
       // parameter or an unboxable string|symbol closure signature.
-      for (const param of callback.parameters) {
+      for (const param of callback.parameters.nodes) {
         if (ts.isIdentifier(param.name) && !param.type && !param.dotDotDotToken)
           lowerer.checkedCallbackParams.add(param);
       }

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/2584-cjs-conditional-exports/main.ts"
+ ],
+ "diags": []
+}

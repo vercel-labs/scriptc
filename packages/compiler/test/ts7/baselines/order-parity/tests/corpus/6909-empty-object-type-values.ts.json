@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6909-empty-object-type-values.ts"
+ ],
+ "diags": []
+}

@@ -8,8 +8,8 @@ import { SyntaxKind } from "../../../packages/compiler/src/frontend/ts7/enums.js
 function check(value: boolean, message: string): void { if (!value) throw new Error(message); }
 
 function checkStatements(nodes: NodeArray<Statement>, source: SourceFile): void {
-  check(nodes === source.statements, "typed statement array identity");
-  for (const statement of nodes) {
+  check(nodes.nodes === source.statements.nodes, "typed statement list nodes identity");
+  for (const statement of nodes.nodes) {
     check(statement.parent === source && statement.getSourceFile() === source, "typed source identity");
     check(ts.isStatement(statement), "statement kind predicate");
   }
@@ -38,14 +38,14 @@ export function checkAstViews(file: AstFile): void {
     // one AstNode; reads must use its original lazy getters and caches.
     const body = (node as { body?: Node }).body;
     const name = (node as { name?: Node })["name"];
-    const flags = (node as { modifiers?: readonly Node[] }).modifiers;
+    const flags = (node as { modifiers?: NodeArray<Node> }).modifiers;
     check(body === node.body && name === node.name, "structural child getter identity");
-    check(flags === node.modifiers, "structural list getter identity");
+    check(flags?.nodes === node.modifiers?.nodes, "structural list getter nodes identity");
     if (body !== undefined) { bodies++; check(body.parent === node, "structural body parent"); }
     if (name !== undefined) { names++; check(name.parent === node, "structural name parent"); }
     if (flags !== undefined) {
-      modifiers += flags.length;
-      for (const modifier of flags) check(modifier.parent === node, "structural modifier parent");
+      modifiers += flags.nodes.length;
+      for (const modifier of flags.nodes) check(modifier.parent === node, "structural modifier parent");
     }
     if (ts.isIdentifier(node)) {
       identifiers += node.text.length;
@@ -54,16 +54,16 @@ export function checkAstViews(file: AstFile): void {
     }
     if (ts.isStringLiteral(node)) strings += node.text.toUpperCase().length;
     if (ts.isVariableDeclarationList(node)) {
-      declarations += node.declarations.length;
-      for (const declaration of node.declarations) check(declaration.parent === node, "declaration identity");
+      declarations += node.declarations.nodes.length;
+      for (const declaration of node.declarations.nodes) check(declaration.parent === node, "declaration identity");
     }
     if (ts.isClassDeclaration(node)) {
-      for (const member of node.members) {
-        if (ts.isMethodDeclaration(member)) methods += member.parameters.length;
+      for (const member of node.members.nodes) {
+        if (ts.isMethodDeclaration(member)) methods += member.parameters.nodes.length;
       }
     }
     if (ts.isCallExpression(node)) {
-      calls += node.arguments.length;
+      calls += node.arguments.nodes.length;
       check(node.expression.parent === node, "call callee identity");
     }
     if (ts.isBinaryExpression(node)) {

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8117-scalar-slice-bounds.ts"
+ ],
+ "diags": []
+}

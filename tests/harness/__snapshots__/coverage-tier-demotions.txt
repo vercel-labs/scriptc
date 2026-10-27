@@ -1,0 +1,13 @@
+scriptc coverage tests/coverage-fixtures/tier-demotions.ts
+
+  statements analyzed   5
+  compile statically    3  (60%)
+    in dynamic tier     1  (operate on values typed only at runtime; --explain-dynamic lists them)
+
+  blockers:
+      ×1  SC1090  assignment to non-variables
+          at tests/coverage-fixtures/tier-demotions.ts:10:1
+          hint: this form is valid TypeScript but does not compile yet — rewrite it with a supported equivalent of the construct the message names (https://scriptc.dev/limitations lists the boundary)
+      ×1  SC2020  'Number.prototype.toLocaleString without a locale' is part of the standard library types but has no scriptc lowering yet
+          at tests/coverage-fixtures/tier-demotions.ts:22:10
+          hint: the default locale is the host environment's, which a compiled binary cannot carry — pass it explicitly: x.toLocaleString("en-US")

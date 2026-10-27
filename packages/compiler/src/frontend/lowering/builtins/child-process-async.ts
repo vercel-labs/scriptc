@@ -1,3 +1,4 @@
+import { keyedHelperName } from "../stable-names.js";
 import { recordToEnvPairs } from "./environment.js";
 import { lowerChildArgsArg } from "./child-process.js";
 import { boolLit, numLit, varRef } from "../../../ir/build.js";
@@ -42,9 +43,9 @@ export function lowerExecFileAsyncCall(
 ): IrExpr {
   const what = shell ? "the promisified exec" : "the promisified execFile";
   if (
-    expr.arguments.length < 1 ||
-    expr.arguments.length > (shell ? 2 : 3) ||
-    expr.arguments.some(ts.isSpreadElement)
+    expr.arguments.nodes.length < 1 ||
+    expr.arguments.nodes.length > (shell ? 2 : 3) ||
+    expr.arguments.nodes.some(ts.isSpreadElement)
   ) {
     lowerer.noLowering(
       `${what} with this argument shape`,
@@ -54,7 +55,7 @@ export function lowerExecFileAsyncCall(
         : "the supported form is execFileAsync(file, args?, options?)",
     );
   }
-  const command = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
+  const command = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, STRING);
   // exec: /bin/sh -c <command>, execSync's lowering (the command string
   // rides as the argv[1] the failure display reads); execFile: file + its
   // args list.
@@ -66,8 +67,8 @@ export function lowerExecFileAsyncCall(
         type: arrayOf(STRING),
         loc,
       }
-    : lowerChildArgsArg(lowerer, expr.arguments[1], loc);
-  const optsNode = expr.arguments[shell ? 1 : 2];
+    : lowerChildArgsArg(lowerer, expr.arguments.nodes[1], loc);
+  const optsNode = expr.arguments.nodes[shell ? 1 : 2];
 
   const emptyStr: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
   const helper = execFileAsyncHelper(lowerer, loc, shell);
@@ -93,7 +94,7 @@ export function lowerExecFileAsyncCall(
         "pass the options inline so each member can be checked",
       );
     }
-    for (const p of optsNode.properties) {
+    for (const p of optsNode.properties.nodes) {
       // The conditional-spread idiom carrying `env` — the portless
       // opensslAsync shape: `...(c ? { env: { ...process.env, ...extra
       // } } : {})` (either orientation). The condition evaluates ONCE
@@ -218,7 +219,7 @@ function execFileAsyncHelper(
   const key = shell ? "execAsync" : "execFileAsync";
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return { name: existing, shapeId, envShapeId };
-  const name = `%${key}.${lowerer.valueHelpers.size}`;
+  const name = keyedHelperName(lowerer, `%${key}`, key);
   lowerer.valueHelpers.set(key, name);
   const recT: IrType = { kind: "record", shapeId };
   const envRecT: IrType = { kind: "record", shapeId: envShapeId };

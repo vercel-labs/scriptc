@@ -1,17 +1,8 @@
-arrow-bind.ts:2:16 - error SC1100: passing 'unknown' values where '((null | undefined)[]) => number' is expected is not supported yet
+arrow-bind.ts:4:14 - error SC1100: passing 'unknown' values where '(number[]) => number' is expected is not supported yet
 
-  1 | // Typed preset and rest signatures still exceed the callable adapter.
-  2 | const preset = ((value: number) => value).bind(null, 1);
-    |                ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  3 | const rest = ((...values: number[]) => values.length).bind(null);
-
-  hint: validate with 'as <type>' first — the cast checks the dynamic value at runtime and throws on mismatch
-
-arrow-bind.ts:3:14 - error SC1100: passing 'unknown' values where '(number[]) => number' is expected is not supported yet
-
-  2 | const preset = ((value: number) => value).bind(null, 1);
-  3 | const rest = ((...values: number[]) => values.length).bind(null);
+  3 | const preset = ((value: number) => value).bind(null, 1);
+  4 | const rest = ((...values: number[]) => values.length).bind(null);
     |              ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  4 | export {};
+  5 | export {};
 
   hint: validate with 'as <type>' first — the cast checks the dynamic value at runtime and throws on mismatch

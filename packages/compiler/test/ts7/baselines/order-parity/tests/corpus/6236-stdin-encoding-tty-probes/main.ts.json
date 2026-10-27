@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6236-stdin-encoding-tty-probes/main.ts"
+ ],
+ "diags": []
+}

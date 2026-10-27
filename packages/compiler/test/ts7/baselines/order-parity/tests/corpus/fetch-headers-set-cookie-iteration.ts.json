@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/fetch-headers-set-cookie-iteration.ts"
+ ],
+ "diags": []
+}

@@ -63,7 +63,7 @@ function fixture(targets: string[]): IrModule {
     loc,
   };
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     functions: [...new Set(targets)].map(predicate).concat([consumer, entry]),

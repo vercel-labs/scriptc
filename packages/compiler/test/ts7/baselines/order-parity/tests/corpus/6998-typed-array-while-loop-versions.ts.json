@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6998-typed-array-while-loop-versions.ts"
+ ],
+ "diags": []
+}

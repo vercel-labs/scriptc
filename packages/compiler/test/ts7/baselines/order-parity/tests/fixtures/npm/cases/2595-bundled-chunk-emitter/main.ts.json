@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/2595-bundled-chunk-emitter/main.ts"
+ ],
+ "diags": []
+}

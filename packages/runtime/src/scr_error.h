@@ -48,6 +48,12 @@ typedef struct ScrClassObj {
   size_t length;
   struct ScrBox *prototype_data;
   struct ScrBox *static_data;
+  /* The base class's name, which util.inspect prints as
+   * `[class C extends B]`; NULL without a named base. */
+  const ScrStr *base_name;
+  /* Nonzero when the class declares public static fields, which the
+   * class object does not carry without static_data. */
+  size_t own_static_fields;
   struct ScrBox *caps[];
 } ScrClassObj;
 
@@ -252,6 +258,9 @@ void scr_error_install_message_reader(ScrStr *(*reader)(ScrError *));
 void scr_error_install_name_reader(ScrStr *(*reader)(ScrError *));
 ScrStr *scr_error_default_name(const ScrError *e);
 ScrStr *scr_error_stack(ScrError *e);
+/* Replaces the error's stack string, as an assignment to `stack` does.
+ * Borrowed operands. */
+void scr_error_set_stack(ScrError *e, ScrStr *stack);
 
 ScrError *scr_error_retain(ScrError *e);
 void scr_error_release(ScrError *e); /* dispatches through e->vt */
@@ -279,6 +288,24 @@ SCR_COLD void scr_undef_global_read(ScrStr *name);
  * +1 or NULL when absent (the compiler's undefined arm). The _msg_code
  * thrower is scr_throw_error_msg with the code stamped on the payload. */
 void scr_error_set_code(ScrError *e, const char *code);
+/* The program's `err.code = s` write into the same slot (and the error's
+ * checked-dynamic node, when it has one). Borrows both (scr_json.c). */
+void scr_error_set_code_value(ScrError *e, ScrStr *code);
+/* `err.code = v` with a value that is not statically a string: a string
+ * takes the slot as above; anything else clears the slot and lands on the
+ * error's checked-dynamic node, as a dynamic property write would.
+ * Borrows both (scr_json.c). */
+void scr_error_set_code_dyn(ScrError *e, struct ScrDyn *value);
+/* Object.assign(err, ...sources): the copy onto the error's checked-dynamic
+ * node, then the typed slots re-read from it. Borrows both (scr_json.c). */
+void scr_error_assign_dyn(ScrError *e, const struct ScrDyn *sources);
+/* `key in err` for a key no compiled class declares: a runtime-set own
+ * property or an Object.prototype member. Borrows both (scr_json.c). */
+bool scr_error_has_key(ScrError *e, const ScrStr *key);
+bool scr_error_own_accessor(ScrError *e, const ScrStr *key);
+struct ScrDyn *scr_error_accessor_get(ScrError *e, const ScrStr *key);
+void scr_error_accessor_set(ScrError *e, const ScrStr *key, struct ScrDyn *value);
+bool scr_error_has_code(ScrError *e);
 const char *scr_error_message_code(const ScrStr *msg);
 ScrStr *scr_error_code(ScrError *e);
 SCR_COLD void scr_throw_error_msg_code(int kind, const char *message, size_t len, const char *code);

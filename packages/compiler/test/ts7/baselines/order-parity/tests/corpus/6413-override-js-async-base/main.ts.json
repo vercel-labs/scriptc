@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6413-override-js-async-base/lock.js",
+  "<repo>/tests/corpus/6413-override-js-async-base/main.ts"
+ ],
+ "diags": []
+}

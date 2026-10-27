@@ -32,7 +32,7 @@ export function runSourceParser(parser: Ts7SourceParser, input: string, output: 
       nodes,
       optional,
       declaration: file.isDeclarationFile,
-      statements: file.statements.map((statement) => ({
+      statements: file.statements.nodes.map((statement) => ({
         text: statement.getText(), start: statement.getStart(), end: statement.end,
       })),
       imports: moduleSpecifiersOfFile(file),
@@ -98,7 +98,7 @@ export function runSourceParser(parser: Ts7SourceParser, input: string, output: 
   }
   parser.close();
   parser.close();
-  const versions = [original.statements[0]!.getText(), updated.statements[0]!.getText()];
+  const versions = [original.statements.nodes[0]!.getText(), updated.statements.nodes[0]!.getText()];
   let closed = false;
   try { parser.parse("late.ts", "", "ts"); } catch { closed = true; }
   writeFileSync(output, JSON.stringify({ files, packages, versions, closed }));

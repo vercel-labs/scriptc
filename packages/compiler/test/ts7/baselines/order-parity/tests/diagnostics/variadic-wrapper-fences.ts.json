@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/variadic-wrapper-fences.ts"
+ ],
+ "diags": []
+}

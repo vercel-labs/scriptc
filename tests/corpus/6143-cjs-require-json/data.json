@@ -1,0 +1,7 @@
+{
+  "name": "fixture-data",
+  "version": "1.2.3",
+  "count": 41,
+  "tags": ["native", "json"],
+  "nested": { "flag": true, "ratio": 0.5 }
+}

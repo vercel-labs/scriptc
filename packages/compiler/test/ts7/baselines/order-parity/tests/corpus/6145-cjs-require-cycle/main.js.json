@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6145-cjs-require-cycle/range.js",
+  "<repo>/tests/corpus/6145-cjs-require-cycle/util.js",
+  "<repo>/tests/corpus/6145-cjs-require-cycle/comparator.js",
+  "<repo>/tests/corpus/6145-cjs-require-cycle/main.js"
+ ],
+ "diags": []
+}

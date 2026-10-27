@@ -1,3 +1,4 @@
+import { keyedHelperName } from "../stable-names.js";
 import {
   BYTES_U8,
   BOOL,
@@ -20,6 +21,7 @@ import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
 import { lowerAbsenceProbe } from "../lower-exprs.js";
+import { bodyReadsArguments } from "../../arguments-usage.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "../optional-arguments.js";
 import { voidizedCallback } from "../lower-server.js";
 export function optionalStringTags(
@@ -71,7 +73,7 @@ export function lowerOptionalNumberPredicate(
   const key = `number.optionalPredicate:${fn}:${typeKey(widened)}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = `%number.optionalPredicate.${lowerer.valueHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%number.optionalPredicate", key);
     lowerer.valueHelpers.set(key, helper);
     const input = varRef("value.0", widened, loc);
     lowerer.liftedFns.push({
@@ -192,7 +194,7 @@ export function literalBoolOptions(
   if (!ts.isObjectLiteralExpression(node)) return null;
   const bools: Record<string, boolean> = {};
   const exprs: Record<string, ts.Expression> = {};
-  for (const p of node.properties) {
+  for (const p of node.properties.nodes) {
     if (!ts.isPropertyAssignment(p) || !ts.isIdentifier(p.name)) return null;
     if (exprKeys.includes(p.name.text)) {
       exprs[p.name.text] = p.initializer;
@@ -238,6 +240,25 @@ export function errorFirstBytesCallback(
   );
 }
 
+/** Whether `type` is an error-first callback's error parameter type:
+ * Error | null, optionally with undefined, or dyn. */
+export function isErrorFirstErrorType(lowerer: Lowerer, type: IrType): boolean {
+  if (type.kind === "dyn") return true;
+  if (type.kind !== "union") return false;
+  const def = lowerer.unions.get(type.unionId);
+  return (
+    !!def &&
+    def.arms.some((arm) => arm.kind === "nullT") &&
+    def.arms.some((arm) => arm.kind === "object" && arm.className === "%Error") &&
+    def.arms.every(
+      (arm) =>
+        arm.kind === "nullT" ||
+        arm.kind === "undefinedT" ||
+        (arm.kind === "object" && arm.className === "%Error"),
+    )
+  );
+}
+
 /** An error-first callback (error, value) whose error parameter is
  * Error | null or dyn and whose value parameter is dyn or accepted by
  * `acceptValue`; `values` names the accepted values in the refusal. */
@@ -248,6 +269,17 @@ export function errorFirstCallback(
   acceptValue: (value: IrType) => boolean,
   values: string,
 ): IrExpr {
+  // A literal here is called only by the callback adapter, which passes
+  // null as the error whenever it passes a result (lowerUndefinedResultBody).
+  // A named function expression can also call itself, and a function
+  // expression can reach itself through `arguments.callee`.
+  let literal: ts.Expression = node;
+  while (ts.isParenthesizedExpression(literal)) literal = literal.expression;
+  if (
+    ts.isArrowFunction(literal) ||
+    (ts.isFunctionExpression(literal) && literal.name === undefined && !bodyReadsArguments(literal))
+  )
+    lowerer.errorFirstLiterals.add(literal);
   let callback = lowerer.lowerExpr(node);
   if (callback.type.kind === "dyn") {
     callback = {
@@ -261,24 +293,8 @@ export function errorFirstCallback(
     lowerer.unsupported("SC1090", node, `${api} callbacks must accept at most (error, buffer)`);
   }
   const error = callback.type.params[0];
-  if (error !== undefined && error.kind !== "dyn") {
-    if (error.kind !== "union") {
-      lowerer.unsupported("SC1090", node, `${api} callback error parameters must be Error | null`);
-    }
-    const def = lowerer.unions.get(error.unionId);
-    const valid =
-      !!def &&
-      def.arms.some((arm) => arm.kind === "nullT") &&
-      def.arms.some((arm) => arm.kind === "object" && arm.className === "%Error") &&
-      def.arms.every(
-        (arm) =>
-          arm.kind === "nullT" ||
-          arm.kind === "undefinedT" ||
-          (arm.kind === "object" && arm.className === "%Error"),
-      );
-    if (!valid)
-      lowerer.unsupported("SC1090", node, `${api} callback error parameters must be Error | null`);
-  }
+  if (error !== undefined && !isErrorFirstErrorType(lowerer, error))
+    lowerer.unsupported("SC1090", node, `${api} callback error parameters must be Error | null`);
   const value = callback.type.params[1];
   if (value !== undefined && value.kind !== "dyn" && !acceptValue(value)) {
     lowerer.unsupported(

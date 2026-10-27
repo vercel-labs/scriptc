@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/globalthis-buffer-alias-values.ts"
+ ],
+ "diags": []
+}

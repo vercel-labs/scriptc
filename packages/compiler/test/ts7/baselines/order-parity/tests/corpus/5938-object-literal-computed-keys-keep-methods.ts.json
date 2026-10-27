@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5938-object-literal-computed-keys-keep-methods.ts"
+ ],
+ "diags": []
+}

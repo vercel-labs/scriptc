@@ -20,7 +20,7 @@ import {
   VOID,
 } from "../../ir/ir.js";
 import { locOf } from "../program.js";
-import { extractIteratorValue } from "./lower-generators.js";
+import { extractIteratorValue, type GenType } from "./lower-generators.js";
 import { streamSidesOf } from "./lower-stream.js";
 import { staticReadableStreamElementType } from "./lower-stdlib.js";
 import { genResultRecord } from "../type-mapper.js";
@@ -81,10 +81,10 @@ function literalBooleanOption(
   fallback: boolean,
   api: string,
 ): boolean {
-  if (call.arguments.length === 0) return fallback;
-  const argumentNode = call.arguments[0];
+  if (call.arguments.nodes.length === 0) return fallback;
+  const argumentNode = call.arguments.nodes[0];
   if (
-    call.arguments.length !== 1 ||
+    call.arguments.nodes.length !== 1 ||
     argumentNode === undefined ||
     ts.isSpreadElement(argumentNode)
   ) {
@@ -101,7 +101,7 @@ function literalBooleanOption(
     return fallback;
   }
   let answer = fallback;
-  for (const member of argument.properties) {
+  for (const member of argument.properties.nodes) {
     const name = propertyName(member);
     if (name !== option) {
       const value = ts.isPropertyAssignment(member) ? member.initializer : null;
@@ -137,7 +137,9 @@ function literalBooleanOption(
 
 function nodeReadablePlan(lowerer: Lowerer, expression: ts.Expression): NodeReadablePlan | null {
   const direct =
-    lowerer.stageSourceType(expression) ?? lowerer.mapTypeOf(lowerer.typeOf(expression));
+    lowerer.receiverTypeOverrides.get(expression) ??
+    lowerer.stageSourceType(expression) ??
+    lowerer.mapTypeOf(lowerer.typeOf(expression));
   if (direct?.kind === "object") {
     const sides = streamSidesOf(lowerer, lowerer.classes.get(direct.className));
     if (sides === "r" || sides === "rw") {
@@ -282,6 +284,43 @@ function classAsyncIteratorPlan(
   };
 }
 
+/** `for await (const x of obj)` where obj's class declares (or inherits)
+ * `async *[Symbol.asyncIterator]()`: the loop opens the iterator with that
+ * method call, evaluated once, and then drives the async generator it
+ * returns exactly like `for await (const x of obj[Symbol.asyncIterator]())`
+ * (pi's EventStream). Null for other sources. */
+export function classAsyncGeneratorIterator(
+  lowerer: Lowerer,
+  expression: ts.Expression,
+): (IrExpr & { type: GenType }) | null {
+  const sourceType = lowerer.mapTypeOf(lowerer.typeOf(expression));
+  if (sourceType?.kind !== "object") return null;
+  const info = lowerer.classes.get(sourceType.className);
+  const open = info ? lowerer.findMethodOn(info, "sym:asyncIterator") : null;
+  if (
+    !open ||
+    open.sig.abstract === true ||
+    open.sig.params.length !== 0 ||
+    open.sig.ret.kind !== "generator" ||
+    !open.sig.ret.async
+  )
+    return null;
+  const retT = open.sig.ret;
+  const source = lowerer.lowerExpr(expression);
+  if (source.type.kind !== "object") return null;
+  return {
+    ...lowerer.accessorCall(
+      sourceType.className,
+      "sym:asyncIterator",
+      source,
+      [],
+      retT,
+      locOf(expression),
+    ),
+    type: retT,
+  };
+}
+
 export function checkForAwaitBinding(
   lowerer: Lowerer,
   stmt: ts.ForOfStatement,
@@ -305,7 +344,7 @@ export function checkForAwaitBinding(
   if (!isConst && !isLet) {
     lowerer.unsupported("SC1030", list, "'var' loop bindings in 'for await' (use const)");
   }
-  const declaration = list.declarations[0];
+  const declaration = list.declarations.nodes[0];
   if (!declaration) throw new InternalCompilerError("for-await declaration list has no binding");
   if (!ts.isIdentifier(declaration.name)) lowerer.unsupported("SC1031", declaration.name);
   return {
@@ -320,13 +359,15 @@ function boolRef(localId: string, loc: ReturnType<typeof locOf>): IrExpr {
 
 /** The loop's stream: a JavaScript value typed as a stream can arrive as a
  * checked-dynamic value (returned through an untyped function), which
- * checks back into the stream class. */
+ * checks back into the stream class, or as a union with it (an element
+ * read), which narrows to it. */
 function streamSource(
   lowerer: Lowerer,
   plan: NodeReadablePlan,
   loc: ReturnType<typeof locOf>,
 ): IrExpr {
   const v = lowerer.lowerExpr(plan.source);
+  if (v.type.kind === "union") return lowerer.coerceToExpected(v, plan.type);
   if (v.type.kind !== "dyn") return v;
   return { kind: "dynCheck", value: v, type: plan.type, loc };
 }
@@ -389,7 +430,9 @@ function lowerNodeReadable(
         },
         {
           kind: "if",
-          cond: { kind: "dynTest", test: "undefined", value: chunkRef, type: BOOL, loc },
+          // the end is the done marker: an object-mode stream can yield
+          // undefined
+          cond: { kind: "libCall", fn: "stream.chunkDone", args: [chunkRef], type: BOOL, loc },
           then: [{ kind: "break", loc }],
           else_: null,
           loc,

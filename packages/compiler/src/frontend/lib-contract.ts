@@ -115,7 +115,7 @@ const CONTRACT_GLOBAL_TYPES = new Set(["Array", "ReadonlyArray", "Uint8Array"]);
 type TypeBindings = Map<ts.SourceFile, Set<string>>;
 
 function locOf(file: ts.SourceFile, node: ts.Node): SrcLoc {
-  return { file: file.fileName, start: node.getStart(), end: node.end };
+  return { file: file.fileName, start: ts.tokenStartOfNode(node), end: node.end };
 }
 
 function isExported(stmt: ts.Node): boolean {
@@ -141,7 +141,7 @@ function localTypeBindings(file: ts.SourceFile, bindings: TypeBindings): Set<str
   const add = (name: ts.Identifier | undefined): void => {
     if (name !== undefined && CONTRACT_GLOBAL_TYPES.has(name.text)) names.add(name.text);
   };
-  for (const stmt of file.statements) {
+  for (const stmt of file.statements.nodes) {
     if (
       ts.isInterfaceDeclaration(stmt) ||
       ts.isTypeAliasDeclaration(stmt) ||
@@ -160,7 +160,7 @@ function localTypeBindings(file: ts.SourceFile, bindings: TypeBindings): Set<str
     add(clause.name);
     if (clause.namedBindings === undefined) continue;
     if (ts.isNamespaceImport(clause.namedBindings)) add(clause.namedBindings.name);
-    else for (const el of clause.namedBindings.elements) add(el.name);
+    else for (const el of clause.namedBindings.elements.nodes) add(el.name);
   }
   bindings.set(file, names);
   return names;
@@ -176,7 +176,7 @@ function isUnshadowedGlobalType(
 ): boolean {
   if (localTypeBindings(file, bindings).has(name)) return false;
   for (let scope = node.parent; scope !== undefined && scope !== file; scope = scope.parent) {
-    const params = scope.typeParameters;
+    const params = scope.typeParameters?.nodes;
     if (params?.some((p) => ts.isTypeParameterDeclaration(p) && p.name.text === name) === true)
       return false;
   }
@@ -248,13 +248,13 @@ function typeShape(
     const lit = node.literal;
     if (ts.isStringLiteral(lit)) return { k: "stringLit", text: lit.text };
     if (lit.kind === ts.SyntaxKind.NullKeyword) return { k: "absent", unit: "null" };
-    return { k: "unsupported", text: node.getText(file) };
+    return { k: "unsupported", text: ts.getTextOfNode(node) };
   }
   if (ts.isArrayTypeNode(node))
     return { k: "array", elem: typeShape(file, node.elementType, bindings) };
   if (ts.isTupleTypeNode(node)) {
     const elems: ContractTypeShape[] = [];
-    for (const e of node.elements) {
+    for (const e of node.elements.nodes) {
       // Named tuple members carry the type under `.type`.
       const t = ts.isNamedTupleMember(e) ? e.type : (e as ts.TypeNode);
       elems.push(typeShape(file, t, bindings));
@@ -262,13 +262,13 @@ function typeShape(
     return { k: "tuple", elems };
   }
   if (ts.isUnionTypeNode(node)) {
-    return { k: "union", parts: node.types.map((t) => typeShape(file, t, bindings)) };
+    return { k: "union", parts: node.types.nodes.map((t) => typeShape(file, t, bindings)) };
   }
   if (ts.isTypeLiteralNode(node)) {
     let bad: string | null = null;
     const fields = shapeOfMembers(
       file,
-      node.members,
+      node.members.nodes,
       (text) => {
         bad = text;
       },
@@ -280,32 +280,36 @@ function typeShape(
   if (ts.isConditionalTypeNode(node)) {
     return {
       k: "unsupported",
-      text: `a conditional type (${node.getText(file)})`,
+      text: `a conditional type (${ts.getTextOfNode(node)})`,
       computed: "conditional",
     };
   }
   if (ts.isMappedTypeNode(node)) {
-    return { k: "unsupported", text: `a mapped type (${node.getText(file)})`, computed: "mapped" };
+    return {
+      k: "unsupported",
+      text: `a mapped type (${ts.getTextOfNode(node)})`,
+      computed: "mapped",
+    };
   }
   if (ts.isTypeReferenceNode(node)) {
-    if (!ts.isIdentifier(node.typeName)) return { k: "unsupported", text: node.getText(file) };
+    if (!ts.isIdentifier(node.typeName)) return { k: "unsupported", text: ts.getTextOfNode(node) };
     const name = node.typeName.text;
     const global =
       CONTRACT_GLOBAL_TYPES.has(name) && isUnshadowedGlobalType(file, node, name, bindings);
-    if (global && name === "Uint8Array" && (node.typeArguments?.length ?? 0) === 0)
+    if (global && name === "Uint8Array" && (node.typeArguments?.nodes.length ?? 0) === 0)
       return { k: "bytes" };
     if (
       global &&
       (name === "Array" || name === "ReadonlyArray") &&
-      node.typeArguments?.length === 1
+      node.typeArguments?.nodes.length === 1
     ) {
-      return { k: "array", elem: typeShape(file, node.typeArguments[0]!, bindings) };
+      return { k: "array", elem: typeShape(file, node.typeArguments.nodes[0]!, bindings) };
     }
-    if ((node.typeArguments?.length ?? 0) > 0)
-      return { k: "unsupported", text: node.getText(file) };
+    if ((node.typeArguments?.nodes.length ?? 0) > 0)
+      return { k: "unsupported", text: ts.getTextOfNode(node) };
     return { k: "ref", name };
   }
-  return { k: "unsupported", text: node.getText(file) };
+  return { k: "unsupported", text: ts.getTextOfNode(node) };
 }
 
 /** Unwrap `expr as const` / parenthesized initializers. */
@@ -328,7 +332,7 @@ function stringArray(expr: ts.Expression): string[] | null {
   const e = unwrapConst(expr);
   if (!ts.isArrayLiteralExpression(e)) return null;
   const out: string[] = [];
-  for (const el of e.elements) {
+  for (const el of e.elements.nodes) {
     const v = unwrapConst(el as ts.Expression);
     if (!ts.isStringLiteral(v)) return null;
     out.push(v.text);
@@ -340,12 +344,12 @@ function envMsgArray(expr: ts.Expression): { env: string; msg: string }[] | null
   const e = unwrapConst(expr);
   if (!ts.isArrayLiteralExpression(e)) return null;
   const out: { env: string; msg: string }[] = [];
-  for (const el of e.elements) {
+  for (const el of e.elements.nodes) {
     const v = unwrapConst(el as ts.Expression);
     if (!ts.isObjectLiteralExpression(v)) return null;
     let env: string | null = null;
     let msg: string | null = null;
-    for (const prop of v.properties) {
+    for (const prop of v.properties.nodes) {
       if (!ts.isPropertyAssignment(prop)) return null;
       const name = propName(prop.name);
       const val = unwrapConst(prop.initializer);
@@ -362,7 +366,7 @@ function envMsgArray(expr: ts.Expression): { env: string; msg: string }[] | null
 
 /** One mergeable declaration site, `file:line` (1-based line). */
 function siteOf(file: ts.SourceFile, node: ts.Node): string {
-  return `${file.fileName}:${ts.getLineAndCharacterOfPosition(file, node.getStart()).line + 1}`;
+  return `${file.fileName}:${ts.getLineAndCharacterOfPosition(file, ts.tokenStartOfNode(node)).line + 1}`;
 }
 
 /** Everything the sidecar projection needs from the program's syntax
@@ -410,7 +414,7 @@ export function entryContractFacts(
    * and the refusal names every site. */
   const collectTypes = (file: ts.SourceFile): void => {
     const exportedHere = new Set<string>();
-    for (const stmt of file.statements) {
+    for (const stmt of file.statements.nodes) {
       if (
         (ts.isInterfaceDeclaration(stmt) || ts.isTypeAliasDeclaration(stmt)) &&
         isExported(stmt)
@@ -418,7 +422,7 @@ export function entryContractFacts(
         exportedHere.add(stmt.name.text);
       }
     }
-    for (const stmt of file.statements) {
+    for (const stmt of file.statements.nodes) {
       if (ts.isInterfaceDeclaration(stmt) || ts.isTypeAliasDeclaration(stmt)) {
         const name = stmt.name.text;
         const exported = isExported(stmt);
@@ -433,14 +437,14 @@ export function entryContractFacts(
           let bad: string | null = null;
           const fields = shapeOfMembers(
             file,
-            stmt.members,
+            stmt.members.nodes,
             (text) => {
               bad = text;
             },
             bindings,
           );
-          const generic = (stmt.typeParameters?.length ?? 0) > 0;
-          const heritage = (stmt.heritageClauses?.length ?? 0) > 0;
+          const generic = (stmt.typeParameters?.nodes.length ?? 0) > 0;
+          const heritage = (stmt.heritageClauses?.nodes.length ?? 0) > 0;
           facts.types.push({
             name,
             form: "interface",
@@ -455,7 +459,7 @@ export function entryContractFacts(
             loc: locOf(file, stmt),
           });
         } else {
-          const generic = (stmt.typeParameters?.length ?? 0) > 0;
+          const generic = (stmt.typeParameters?.nodes.length ?? 0) > 0;
           facts.types.push({
             name,
             form: "alias",
@@ -473,7 +477,7 @@ export function entryContractFacts(
         stmt.body !== undefined &&
         ts.isModuleBlock(stmt.body)
       ) {
-        for (const inner of stmt.body.statements) {
+        for (const inner of stmt.body.statements.nodes) {
           if (ts.isInterfaceDeclaration(inner) || ts.isTypeAliasDeclaration(inner)) {
             addSite(inner.name.text, siteOf(file, inner));
           }
@@ -494,25 +498,25 @@ export function entryContractFacts(
     if (list.length > 1) facts.multiSiteTypes.push({ name, sites: list });
   }
 
-  for (const stmt of entry.statements) {
+  for (const stmt of entry.statements.nodes) {
     if (ts.isFunctionDeclaration(stmt) && stmt.name !== undefined) {
       if (!isExported(stmt)) continue;
       if (stmt.body === undefined && facts.functions.some((f) => f.name === stmt.name!.text))
         continue; // overload signature
       facts.functions.push({
         name: stmt.name.text,
-        params: stmt.parameters.map((p) => ({
+        params: stmt.parameters.nodes.map((p) => ({
           name: ts.isIdentifier(p.name) ? p.name.text : "<pattern>",
           shape: p.type !== undefined ? typeShape(entry, p.type, bindings) : null,
         })),
         returns: stmt.type !== undefined ? typeShape(entry, stmt.type, bindings) : null,
-        generic: (stmt.typeParameters?.length ?? 0) > 0,
+        generic: (stmt.typeParameters?.nodes.length ?? 0) > 0,
         loc: locOf(entry, stmt),
       });
       continue;
     }
     if (ts.isVariableStatement(stmt) && isExported(stmt)) {
-      for (const decl of stmt.declarationList.declarations) {
+      for (const decl of stmt.declarationList.declarations.nodes) {
         if (!ts.isIdentifier(decl.name)) continue;
         const name = decl.name.text;
         if (!CONVENTION_CONSTS.has(name)) continue;

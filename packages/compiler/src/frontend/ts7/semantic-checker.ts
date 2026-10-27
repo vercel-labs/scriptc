@@ -1,9 +1,7 @@
 import type {
   SemanticIndexInfoData as IndexInfoResponse,
-  SemanticSignatureData as SignatureResponse,
   SemanticSymbolData as SymbolResponse,
   SemanticTypePredicateData as TypePredicateResponse,
-  SemanticTypeData as TypeResponse,
 } from "./semantic-schema.generated.js";
 import { AstFile, AstNode } from "./ast-node.js";
 import {
@@ -14,18 +12,37 @@ import {
   SemanticType,
   type SemanticDocument,
   type SemanticQuery,
+  type Ts71SymbolData,
+  type Ts71TypeData,
+  present,
 } from "./semantic-model.js";
 import { SemanticSymbolFlags } from "./semantic-schema.generated.js";
+import type { TypePredicateKind } from "./enums.generated.js";
 
-export interface SemanticIndexInfo {
-  keyType: SemanticType;
-  valueType: SemanticType;
-  isReadonly: boolean;
-  declaration: SemanticNodeHandle | undefined;
+/** An index signature of a type. Its declaration resolves on first read: most queries only count a
+ * type's index infos. */
+export class SemanticIndexInfo {
+  private declarationNode: AstNode | undefined;
+  private declarationResolved = false;
+
+  constructor(
+    readonly keyType: SemanticType,
+    readonly type: SemanticType,
+    readonly isReadonly: boolean,
+    private readonly declarationHandle: SemanticNodeHandle | undefined,
+  ) {}
+
+  get declaration(): AstNode | undefined {
+    if (!this.declarationResolved) {
+      this.declarationNode = this.declarationHandle?.resolve();
+      this.declarationResolved = true;
+    }
+    return this.declarationNode;
+  }
 }
 
 export interface SemanticTypePredicate {
-  kind: number;
+  kind: TypePredicateKind;
   parameterIndex: number;
   parameterName: string | undefined;
   type: SemanticType | undefined;
@@ -57,7 +74,8 @@ export interface SemanticCompletionOptions {
   triggerCharacter?: string;
   includeSymbol?: boolean;
 }
-interface CompletionResponse {
+/** `S` is TypeScript 7.0's SymbolResponse or 7.1's Ts71SymbolData. */
+interface CompletionResponse<S> {
   isIncomplete: boolean;
   entries: {
     name: string;
@@ -67,8 +85,35 @@ interface CompletionResponse {
     filterText?: string;
     detail?: string;
     labelDetails?: { detail?: string; description?: string };
-    symbol?: SymbolResponse;
+    symbol?: S;
   }[];
+}
+
+/** TypeScript 7.1's type predicate and index info replies. */
+interface TypePredicateResponse71 {
+  kind: number;
+  parameterIndex: number;
+  parameterName?: string;
+  type?: Ts71TypeData;
+}
+interface IndexInfoResponse71 {
+  keyType: Ts71TypeData;
+  valueType: Ts71TypeData;
+  isReadonly?: boolean;
+  declaration?: string;
+}
+
+/** TypeScript 7.1's getConstantValue answer: the value, with a number's
+ * non-finite values written as "+Infinity", "-Infinity" and "NaN". */
+interface ConstantValueResponse71 {
+  isNumber: boolean;
+  value?: string | number | boolean | null;
+}
+
+interface ReferencedSymbolResponse<S> {
+  definition: string;
+  symbol?: S;
+  references?: string[];
 }
 export interface SemanticCompletion {
   name: string;
@@ -81,6 +126,13 @@ export interface SemanticCompletion {
   symbol: SemanticSymbol | undefined;
 }
 
+/** Whether lowering asks the checker for contextual types and resolved
+ * signatures in batches (`getContextualTypes`, `getResolvedSignatures`,
+ * answered from tsc-ts 0.0.7 on). Off, the batch prefetches (checker.ts) do
+ * nothing and lowering asks node by node. A server without a batch method
+ * (tsgo) answers it as unknown once, and the facade stops asking. */
+export const NODE_BATCH_QUERIES = true;
+
 /** The pinned checker's request surface over native objects. Every query
  * converges on the same snapshot/project registries, including batch and
  * lazy-object queries. No SDK object is constructed or consulted here. */
@@ -90,32 +142,25 @@ export class SemanticChecker {
   constructor(readonly project: SemanticProject) {}
 
   private type(method: string, query: SemanticQuery): SemanticType | undefined {
-    const data = this.project.request<TypeResponse | null>(method, query);
-    return data === null ? undefined : this.project.type(data);
+    return this.project.requestType(method, query);
   }
   private symbol(method: string, query: SemanticQuery): SemanticSymbol | undefined {
-    const data = this.project.request<SymbolResponse | null>(method, query);
-    return data === null ? undefined : this.project.symbol(data);
+    return this.project.requestSymbol(method, query);
   }
   private signature(method: string, query: SemanticQuery): SemanticSignature | undefined {
-    const data = this.project.request<SignatureResponse | null>(method, query);
-    return data === null ? undefined : this.project.signature(data);
+    return this.project.requestSignature(method, query);
   }
   private types(method: string, query: SemanticQuery): SemanticType[] {
-    const data = this.project.request<TypeResponse[] | null>(method, query);
-    return (data ?? []).map((item) => this.project.type(item));
+    return present(this.project.requestTypes(method, query), method);
   }
   private symbols(method: string, query: SemanticQuery): SemanticSymbol[] {
-    const data = this.project.request<SymbolResponse[] | null>(method, query);
-    return (data ?? []).map((item) => this.project.symbol(item));
+    return present(this.project.requestSymbols(method, query), method);
   }
   private optionalTypes(method: string, query: SemanticQuery): (SemanticType | undefined)[] {
-    const data = this.project.request<(TypeResponse | null)[]>(method, query);
-    return data.map((item) => (item === null ? undefined : this.project.type(item)));
+    return this.project.requestTypes(method, query);
   }
   private optionalSymbols(method: string, query: SemanticQuery): (SemanticSymbol | undefined)[] {
-    const data = this.project.request<(SymbolResponse | null)[]>(method, query);
-    return data.map((item) => (item === null ? undefined : this.project.symbol(item)));
+    return this.project.requestSymbols(method, query);
   }
 
   getTypeAtLocation(node: AstNode): SemanticType | undefined;
@@ -193,6 +238,10 @@ export class SemanticChecker {
   getContextualType(node: AstNode): SemanticType | undefined {
     return this.type("getContextualType", { location: node.id });
   }
+  /** getContextualType for each node. */
+  getContextualTypes(nodes: readonly AstNode[]): (SemanticType | undefined)[] {
+    return this.optionalTypes("getContextualTypes", { locations: nodes.map((node) => node.id) });
+  }
   getTypeFromTypeNode(node: AstNode): SemanticType | undefined {
     return this.type("getTypeFromTypeNode", { location: node.id });
   }
@@ -204,6 +253,12 @@ export class SemanticChecker {
   }
   getResolvedSignature(node: AstNode): SemanticSignature | undefined {
     return this.signature("getResolvedSignature", { location: node.id });
+  }
+  /** getResolvedSignature for each node. */
+  getResolvedSignatures(nodes: readonly AstNode[]): (SemanticSignature | undefined)[] {
+    return this.project.requestSignatures("getResolvedSignatures", {
+      locations: nodes.map((node) => node.id),
+    });
   }
   getSignatureFromDeclaration(node: AstNode): SemanticSignature | undefined {
     return this.signature("getSignatureFromDeclaration", { location: node.id });
@@ -344,6 +399,7 @@ export class SemanticChecker {
     return this.project.request<boolean>("isArrayLikeType", { type: type.id });
   }
   isTupleType(type: SemanticType): boolean {
+    if (this.project.ts71()) return this.project.isTupleType71(type.id);
     return this.project.request<boolean>("isTupleType", { type: type.id });
   }
   isTypeAssignableTo(source: SemanticType, target: SemanticType): boolean {
@@ -353,19 +409,42 @@ export class SemanticChecker {
     });
   }
   getConstantValue(node: AstNode): string | number | undefined {
+    if (this.project.ts71()) {
+      const data = this.project.request<ConstantValueResponse71 | null>("getConstantValue", {
+        location: node.id,
+      });
+      const value = data?.value;
+      if (typeof value === "number") return value;
+      if (typeof value !== "string") return undefined;
+      if (!data!.isNumber) return value;
+      return value === "+Infinity" ? Infinity : value === "-Infinity" ? -Infinity : NaN;
+    }
     return (
       this.project.request<string | number | null>("getConstantValue", { location: node.id }) ??
       undefined
     );
   }
   getSignaturesOfType(type: SemanticType, kind: number): SemanticSignature[] {
-    const data = this.project.request<SignatureResponse[]>("getSignaturesOfType", {
-      type: type.id,
-      kind,
-    });
-    return data.map((item) => this.project.signature(item));
+    return present(
+      this.project.requestSignatures("getSignaturesOfType", { type: type.id, kind }),
+      "getSignaturesOfType",
+    );
   }
   getTypePredicateOfSignature(signature: SemanticSignature): SemanticTypePredicate | undefined {
+    if (this.project.ts71()) {
+      const data = this.project.request<TypePredicateResponse71 | null>(
+        "getTypePredicateOfSignature",
+        { signature: signature.id },
+      );
+      return data === null
+        ? undefined
+        : {
+            kind: data.kind,
+            parameterIndex: data.parameterIndex,
+            parameterName: data.parameterName,
+            type: data.type === undefined ? undefined : this.project.type71(data.type),
+          };
+    }
     const data = this.project.request<TypePredicateResponse | null>("getTypePredicateOfSignature", {
       signature: signature.id,
     });
@@ -379,23 +458,47 @@ export class SemanticChecker {
         };
   }
   getIndexInfosOfType(type: SemanticType): SemanticIndexInfo[] {
+    if (this.project.ts71()) {
+      const data = this.project.request<IndexInfoResponse71[] | null>("getIndexInfosOfType", {
+        type: type.id,
+      });
+      return (data ?? []).map(
+        (item) =>
+          new SemanticIndexInfo(
+            this.project.type71(item.keyType),
+            this.project.type71(item.valueType),
+            item.isReadonly ?? false,
+            item.declaration === undefined
+              ? undefined
+              : new SemanticNodeHandle(item.declaration, this.project),
+          ),
+      );
+    }
     const data = this.project.request<IndexInfoResponse[] | null>("getIndexInfosOfType", {
       type: type.id,
     });
-    return (data ?? []).map((item) => ({
-      keyType: this.project.type(item.keyType),
-      valueType: this.project.type(item.valueType),
-      isReadonly: item.isReadonly ?? false,
-      declaration:
-        item.declaration === undefined
-          ? undefined
-          : new SemanticNodeHandle(item.declaration, this.project),
-    }));
+    return (data ?? []).map(
+      (item) =>
+        new SemanticIndexInfo(
+          this.project.type(item.keyType),
+          this.project.type(item.valueType),
+          item.isReadonly ?? false,
+          item.declaration === undefined
+            ? undefined
+            : new SemanticNodeHandle(item.declaration, this.project),
+        ),
+    );
   }
   private getWellKnownSymbols(): WellKnownSymbols {
     this.project.ensureActive();
-    if (this.wellKnown === undefined)
-      this.wellKnown = this.project.request<WellKnownSymbols>("getWellKnownSymbols");
+    if (this.wellKnown === undefined) {
+      const ids = this.project.request<WellKnownSymbols>("getWellKnownSymbols");
+      this.wellKnown = {
+        unknown: this.project.snapshotSymbolId(ids.unknown),
+        undefined: this.project.snapshotSymbolId(ids.undefined),
+        arguments: this.project.snapshotSymbolId(ids.arguments),
+      };
+    }
     return this.wellKnown;
   }
   isUnknownSymbol(symbol: SemanticSymbol): boolean {
@@ -419,9 +522,24 @@ export class SemanticChecker {
     return (data ?? []).map((handle) => new SemanticNodeHandle(handle, this.project));
   }
   getReferencedSymbolsForNode(node: AstNode, position: number): SemanticReferencedSymbol[] {
-    const data = this.project.request<
-      { definition: string; symbol?: SymbolResponse; references?: string[] }[] | null
-    >("getReferencedSymbolsForNode", { node: node.id, position });
+    const query = { node: node.id, position };
+    if (this.project.ts71()) {
+      const data = this.project.request<ReferencedSymbolResponse<Ts71SymbolData>[] | null>(
+        "getReferencedSymbolsForNode",
+        query,
+      );
+      return (data ?? []).map((item) => ({
+        definition: new SemanticNodeHandle(item.definition, this.project),
+        symbol: item.symbol === undefined ? undefined : this.project.symbol71(item.symbol),
+        references: (item.references ?? []).map(
+          (handle) => new SemanticNodeHandle(handle, this.project),
+        ),
+      }));
+    }
+    const data = this.project.request<ReferencedSymbolResponse<SymbolResponse>[] | null>(
+      "getReferencedSymbolsForNode",
+      query,
+    );
     return (data ?? []).map((item) => ({
       definition: new SemanticNodeHandle(item.definition, this.project),
       symbol: item.symbol === undefined ? undefined : this.project.symbol(item.symbol),
@@ -453,12 +571,36 @@ export class SemanticChecker {
     position: number,
     options?: SemanticCompletionOptions,
   ): { isIncomplete: boolean; entries: SemanticCompletion[] } | undefined {
-    const data = this.project.request<CompletionResponse | null>("getCompletionsAtPosition", {
+    const query = {
       file,
       position,
       triggerCharacter: options?.triggerCharacter,
       includeSymbol: options?.includeSymbol,
-    });
+    };
+    if (this.project.ts71()) {
+      const data = this.project.request<CompletionResponse<Ts71SymbolData> | null>(
+        "getCompletionsAtPosition",
+        query,
+      );
+      if (data === null) return undefined;
+      return {
+        isIncomplete: data.isIncomplete,
+        entries: data.entries.map((item) => ({
+          name: item.name,
+          kind: item.kind,
+          sortText: item.sortText,
+          insertText: item.insertText,
+          filterText: item.filterText,
+          detail: item.detail,
+          labelDetails: item.labelDetails,
+          symbol: item.symbol === undefined ? undefined : this.project.symbol71(item.symbol),
+        })),
+      };
+    }
+    const data = this.project.request<CompletionResponse<SymbolResponse> | null>(
+      "getCompletionsAtPosition",
+      query,
+    );
     if (data === null) return undefined;
     return {
       isIncomplete: data.isIncomplete,

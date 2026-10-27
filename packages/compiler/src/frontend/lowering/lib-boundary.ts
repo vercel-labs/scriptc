@@ -57,7 +57,7 @@ import {
   isUnitType,
   typeEquals,
 } from "../../ir/ir.js";
-import { LIB_FN_SIGS } from "../../ir/builtin-signatures.js";
+import { libFnSignatures } from "../../ir/builtin-signatures.js";
 import { REGEX_INTRINSIC_SIGS, STR_INTRINSIC_SIGS } from "../../ir/intrinsic-signatures.js";
 import { unionMismatchDiag, unsupportedDiag } from "../../diagnostics/diagnostic.js";
 
@@ -162,7 +162,7 @@ function enforceExprBoundary(lowerer: Lowerer, node: IrExpr): void {
   const kind = node.kind;
   if (kind === "libCall") {
     const e = node;
-    const sig = LIB_FN_SIGS[e.fn];
+    const sig = libFnSignatures()[e.fn];
     if (!sig) return;
     e.args.forEach((a, i) => {
       const want = sig.argTypes[i];

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6234-object-prototype-values.cjs"
+ ],
+ "diags": []
+}

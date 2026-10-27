@@ -62,6 +62,7 @@
 #include "scr_platform.h"
 #include "scr_runtime.h"
 #include "scr_system_errors.h"
+#include "scr_dgram_private.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -266,16 +267,6 @@ static const char *scr_dgram_errname(int err) {
 /* ── listener lists (the scr_net.c snapshot discipline, restated so this
  * unit links without scr_net.c) ─────────────────────────────────────── */
 
-typedef struct {
-  ScrClosure *cb;
-  void *fn;
-  bool once;
-} ScrDgramL;
-
-typedef struct {
-  ScrDgramL *ls;
-  size_t n, cap;
-} ScrDgramLs;
 
 static void scr_dgram_ls_add(ScrDgramLs *l, ScrClosure *cb, void *fn, bool once) {
   if (l->n == l->cap) {
@@ -352,23 +343,6 @@ static void scr_dgram_fire_err(ScrDgramLs *l, ScrStr *msg) {
 
 /* ── the handle ──────────────────────────────────────────────────────── */
 
-struct ScrDgramSocket {
-  size_t rc;
-  int fd; /* -1 until bound/connected, -1 again once closed */
-  bool reuse_addr;
-  bool bound;
-  bool connected;
-  bool closing;       /* close() called; 'close' fires at the next sweep */
-  bool close_emitted; /* settled: off the registry, listeners dropped */
-  bool unrefed;       /* waives loop liveness, Node's unref */
-  bool read_armed;
-  bool emit_listening;
-  bool emit_connect;
-  ScrStr *pending_err; /* deferred bind/connect/send failure */
-  ScrDgramLs msg_ls, err_ls, listening_ls, close_ls, conn_ls;
-  bool in_registry;
-  struct ScrDgramSocket *next;
-};
 
 #ifdef SCR_RC_AUDIT
 static SCR_TL long scr_dgram_live = 0;
@@ -1297,9 +1271,9 @@ static ScrDyn *scr_dns_exception(int rc, const char *syscall, const ScrStr *host
   scr_error_set_code(e, code);
   e->system_call = scr_str_new(syscall, strlen(syscall));
   e->system_errno = errnum;
+  scr_error_set_prop(e, "hostname", 8, scr_dyn_new_str((ScrStr *)host));
   ScrDyn *d = scr_dyn_from_error(e);
   scr_error_release(e);
-  scr_dyn_obj_set(d, "hostname", 8, scr_dyn_new_str((ScrStr *)host));
   return d;
 }
 
@@ -1394,6 +1368,7 @@ static void scr_dns_lookup_plain(const ScrDyn *hostname, const ScrDyn *options, 
   double family = 0;
   bool all = false;
   int order = scr_dns_default_order;
+  int ai_flags = 0;
   if (options->kind == SCR_DYN_NUM) {
     double f = options->v.num;
     if (f != 0 && f != 4 && f != 6) {
@@ -1412,10 +1387,15 @@ static void scr_dns_lookup_plain(const ScrDyn *hostname, const ScrDyn *options, 
         scr_dyn_prop_type_fail("options.hints", "of type number", v);
         return;
       }
-      if (v->v.num != 0) {
-        scr_throw_error_msg_code(SCR_ERR_ERROR, "dns.lookup hints are not supported yet", 38, "SC2020");
+      /* Node's validateHints: only dns.ADDRCONFIG, dns.V4MAPPED and
+       * dns.ALL (getaddrinfo's own flags), which then reach getaddrinfo */
+      double h = v->v.num;
+      int allowed = AI_ADDRCONFIG | AI_V4MAPPED | AI_ALL;
+      if (!(h == h && trunc(h) == h && h >= 0 && h <= 0x7fffffff) || ((int)h & ~allowed) != 0) {
+        scr_dyn_arg_value_fail("hints", "is invalid", v);
         return;
       }
+      ai_flags = (int)h;
     }
     v = scr_dyn_obj_get(options, "family", 6);
     if (v != NULL && v->kind != SCR_DYN_UNDEF && v->kind != SCR_DYN_NULL) {
@@ -1519,6 +1499,7 @@ static void scr_dns_lookup_plain(const ScrDyn *hostname, const ScrDyn *options, 
   memset(&hints, 0, sizeof hints);
   hints.ai_family = family == 4 ? AF_INET : family == 6 ? AF_INET6 : AF_UNSPEC;
   hints.ai_socktype = SOCK_STREAM;
+  hints.ai_flags = ai_flags;
   struct addrinfo *res = NULL;
   int rc = getaddrinfo(host->data, NULL, &hints, &res);
   if (rc != 0 || res == NULL) {
@@ -1634,6 +1615,66 @@ void scr_dns_lookup_service(const ScrDyn *address, const ScrDyn *port, const Scr
   scr_str_release(h);
   scr_str_release(sv);
   scr_dns_call_later(callback, args, 3, false);
+}
+
+/* util.promisify(dns.lookup) and util.promisify(dns.lookupService): the
+ * callback forms with a callback that settles the returned promise. An
+ * error rejects it; otherwise it fulfills with { address, family } (the
+ * address array with options.all) or { hostname, service }, the objects
+ * Node's custom promisified forms build. An argument error rejects the
+ * promise instead of throwing. */
+static ScrDyn *scr_dns_promise_settle(ScrClosure *clo, ScrDyn *const *args, size_t argc,
+                                      const char *first, const char *second) {
+  ScrPromise *p;
+  memcpy(&p, &clo->caps[0]->slot, sizeof p);
+  if (argc >= 1 && !scr_dyn_is_nullish(args[0])) {
+    scr_dyn_throw(scr_dyn_retain(args[0]));
+    scr_promise_reject_pending(p);
+    return scr_dyn_undefined();
+  }
+  ScrDyn *value;
+  if (argc == 2) {
+    value = scr_dyn_retain(args[1]);
+  } else {
+    value = scr_dyn_new_obj();
+    scr_dyn_obj_set(value, first, strlen(first), argc >= 2 ? scr_dyn_retain(args[1]) : scr_dyn_undefined());
+    scr_dyn_obj_set(value, second, strlen(second), argc >= 3 ? scr_dyn_retain(args[2]) : scr_dyn_undefined());
+  }
+  scr_promise_fulfill_ref(p, value, scr_dyn_retain_v, scr_dyn_release_v, NULL);
+  return scr_dyn_undefined();
+}
+
+static ScrDyn *scr_dns_lookup_settle(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  return scr_dns_promise_settle(clo, args, argc, "address", "family");
+}
+
+static ScrDyn *scr_dns_service_settle(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  return scr_dns_promise_settle(clo, args, argc, "hostname", "service");
+}
+
+static ScrDyn *scr_dns_promise_callback(ScrPromise *p, ScrDynThunk thunk) {
+  ScrClosure *clo = scr_closure_new((void *)thunk, 1);
+  clo->caps[0] = scr_box_new_obj(scr_promise_retain_v, scr_promise_release_v, NULL);
+  scr_box_set_ref(clo->caps[0], scr_promise_retain(p));
+  return scr_dyn_new_func(clo, thunk, 3, "(err,a,b)", "callback");
+}
+
+ScrPromise *scr_dns_lookup_promise(const ScrDyn *hostname, const ScrDyn *options) {
+  ScrPromise *p = scr_promise_new();
+  ScrDyn *callback = scr_dns_promise_callback(p, scr_dns_lookup_settle);
+  scr_dns_lookup_dyn(hostname, options, callback, false);
+  scr_dyn_release(callback);
+  if (scr_exc_pending()) scr_promise_reject_pending(p);
+  return p;
+}
+
+ScrPromise *scr_dns_lookup_service_promise(const ScrDyn *address, const ScrDyn *port) {
+  ScrPromise *p = scr_promise_new();
+  ScrDyn *callback = scr_dns_promise_callback(p, scr_dns_service_settle);
+  scr_dns_lookup_service(address, port, callback, false);
+  scr_dyn_release(callback);
+  if (scr_exc_pending()) scr_promise_reject_pending(p);
+  return p;
 }
 
 /* dns.getServers(): the nameserver lines of /etc/resolv.conf, as c-ares
@@ -1845,9 +1886,10 @@ void scr_dgram_install(void) {
  * (ERR_SOCKET_BAD_PORT, > 0 and < 65536 with the specific-type tail and
  * Node's trailing period) and the address's string contract; a send with
  * a port or address on a connected socket answers ERR_SOCKET_DGRAM_IS_
- * CONNECTED. A fully-validated unconnected single-payload send RUNS —
- * the callback form and the connected sends keep the compiler-rendered
- * fence. All dyn arguments borrowed. */
+ * CONNECTED. A validated send then runs: a list goes out as one
+ * datagram, a connected socket sends to its peer, and a completion
+ * callback receives (null, bytes) or the send failure after this turn
+ * (scr_dgram_send_out). All dyn arguments borrowed. */
 
 static bool scr_dgram_dyn_truthy(const ScrDyn *v) {
   switch (v->kind) {
@@ -1873,11 +1915,89 @@ static uint32_t scr_dgram_to_u32(const ScrDyn *v) {
 static const char SCR_DGRAM_BUF_EXPECTED[] =
     "of type string or an instance of Buffer, TypedArray, or DataView";
 
+/* A send failure as the Error Node hands a send callback: the message
+ * ("send ECONNREFUSED 127.0.0.1:41234", "getaddrinfo ENOTFOUND nohost")
+ * with the code its second word names. +1. */
+static ScrDyn *scr_dgram_send_error(const char *msg) {
+  ScrStr *text = scr_str_new(msg, strlen(msg));
+  ScrError *e = scr_error_new(0 /* Error */, text);
+  scr_str_release(text);
+  const char *sp = strchr(msg, ' ');
+  if (sp != NULL) {
+    char code[48];
+    size_t n = 0;
+    while (sp[1 + n] != '\0' && sp[1 + n] != ' ') n++;
+    if (n > 0 && n < sizeof code) {
+      memcpy(code, sp + 1, n);
+      code[n] = '\0';
+      scr_error_set_code(e, code);
+    }
+  }
+  ScrDyn *d = scr_dyn_from_error(e);
+  scr_error_release(e);
+  return d;
+}
+
+/* The ladder's send: Node's healthCheck, then one datagram — to the
+ * connected peer when host is NULL, else to host:port (an empty host is
+ * Node's 127.0.0.1). With a completion callback the result defers to the
+ * pending queue the dns deliveries share: (null, bytes) on success, the
+ * failure (which has no 'error' event then) otherwise; without one a
+ * failure is the deferred 'error', as scr_dgram_send_raw has it. */
+static void scr_dgram_send_out(ScrDgramSocket *s, const char *data, size_t len, double port,
+                               const ScrStr *host, const ScrDyn *callback) {
+  if (s->closing || s->close_emitted) {
+    scr_dgram_throw("Not running");
+    return;
+  }
+  bool has_cb = callback->kind == SCR_DYN_FUNC;
+  char msg[192];
+  msg[0] = '\0';
+  struct sockaddr_in a4;
+  const char *h = host == NULL ? NULL : host->len > 0 ? host->data : "127.0.0.1";
+  if (h != NULL && !scr_dgram_host4(h, (uint16_t)(int)port, &a4)) {
+    snprintf(msg, sizeof msg, "getaddrinfo ENOTFOUND %s", h);
+  } else {
+    scr_dgram_ensure_fd(s);
+    if (!s->bound) {
+      /* Implicit ephemeral bind — Node's send-before-bind emits
+       * 'listening' for it. */
+      s->bound = true;
+      s->emit_listening = true;
+    }
+    scr_dgram_register(s); /* an open sender holds the loop, like Node */
+    ssize_t sent = h != NULL ? sendto(s->fd, data, len, 0, (struct sockaddr *)&a4, sizeof a4)
+                             : send(s->fd, data, len, 0);
+    if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+      const char *code = scr_dgram_errname(errno);
+      char ip[64] = "";
+      if (h != NULL) inet_ntop(AF_INET, &a4.sin_addr, ip, sizeof ip);
+      snprintf(msg, sizeof msg, "send %s %s:%d", code, ip, (int)port);
+      /* A connected send names no address ("send ECONNREFUSED"): cut the
+       * message after the code (one format string keeps the unit's
+       * constant data unchanged). */
+      if (h == NULL) msg[5 + strlen(code)] = '\0';
+    }
+    scr_dgram_update_read(s);
+  }
+  if (!has_cb) {
+    if (msg[0] != '\0') scr_dgram_defer_err(s, msg);
+    return;
+  }
+  if (msg[0] != '\0') {
+    ScrDyn *args[1] = { scr_dgram_send_error(msg) };
+    scr_dns_call_later(callback, args, 1, false);
+  } else {
+    ScrDyn *args[2] = { scr_dyn_new_null(), scr_dyn_new_num((double)len) };
+    scr_dns_call_later(callback, args, 2, false);
+  }
+}
+
 void scr_dgram_send_chk(ScrDgramSocket *s, const ScrDyn *buffer, const ScrDyn *a1,
                         const ScrDyn *a2, const ScrDyn *a3, const ScrDyn *a4,
-                        const ScrStr *fence) {
+                        const ScrDyn *a5) {
   const ScrDyn *offset = a1, *length = a2, *port = a3, *address = a4;
-  const ScrDyn *callback = scr_dyn_undefined();
+  const ScrDyn *callback = a5;
   bool connected = s->connected;
   bool sliced = false;
   if (!connected) {
@@ -1892,11 +2012,12 @@ void scr_dgram_send_chk(ScrDgramSocket *s, const ScrDyn *buffer, const ScrDyn *a
   } else {
     if (length->kind == SCR_DYN_NUM) {
       sliced = true;
-      if (port->kind == SCR_DYN_FUNC) callback = port;
+      if (port->kind == SCR_DYN_FUNC) {
+        callback = port;
+        port = scr_dyn_undefined();
+      }
     } else {
       callback = offset;
-      port = a3;
-      address = a4;
     }
   }
   size_t slice_off = 0, slice_len = 0;
@@ -1934,19 +2055,16 @@ void scr_dgram_send_chk(ScrDgramSocket *s, const ScrDyn *buffer, const ScrDyn *a
     scr_dyn_arg_type_fail("buffer", SCR_DGRAM_BUF_EXPECTED, buffer);
     return;
   }
+  double portnum = 0;
   if (connected) {
     if (scr_dgram_dyn_truthy(port) || scr_dgram_dyn_truthy(address)) {
       scr_dgram_throw("Already connected");
       return;
     }
-    scr_throw_lowering_fence(fence); /* connected sends have no lowering yet */
-    return;
-  }
-  /* validatePort(port, 'Port', false): integers (or numeric strings)
-   * strictly between 0 and 65536; everything else renders the specific
-   * type with Node's trailing period. */
-  double portnum = -1;
-  {
+  } else {
+    /* validatePort(port, 'Port', false): integers (or numeric strings)
+     * strictly between 0 and 65536; everything else renders the specific
+     * type with Node's trailing period. */
     bool ok = false;
     if (port->kind == SCR_DYN_NUM && trunc(port->v.num) == port->v.num &&
         port->v.num > 0 && port->v.num < 65536) {
@@ -1969,6 +2087,7 @@ void scr_dgram_send_chk(ScrDgramSocket *s, const ScrDyn *buffer, const ScrDyn *a
       return;
     }
   }
+  if (callback->kind != SCR_DYN_FUNC) callback = scr_dyn_undefined();
   if (address->kind == SCR_DYN_FUNC) {
     callback = address;
     address = scr_dyn_undefined();
@@ -1978,26 +2097,134 @@ void scr_dgram_send_chk(ScrDgramSocket *s, const ScrDyn *buffer, const ScrDyn *a
     scr_dyn_arg_type_fail("address", "of type string", address);
     return;
   }
-  if (callback->kind == SCR_DYN_FUNC || buffer->kind == SCR_DYN_ARR) {
-    /* completion callbacks and list concatenation have no lowering yet —
-     * throw the SC2020 fence text after the full validation ladder */
-    scr_throw_lowering_fence(fence);
-    return;
-  }
-  const ScrBytes *byte_input = buffer->kind == SCR_DYN_BYTES ? buffer->v.bytes : NULL;
-  SCR_BYTES_SNAPSHOT(byte_input);
+  /* The payload: a list concatenates into one datagram (sendmsg's
+   * gather), a slice narrows the single payload. */
+  char *joined = NULL;
   char *owned = NULL;
-  const char *data = buffer->kind == SCR_DYN_STR ? scr_str_utf8(buffer->v.str, &owned)
-                                                 : (const char *)byte_input->data;
-  size_t datalen = buffer->kind == SCR_DYN_STR ? buffer->v.str->len
-                                               : (size_t)scr_bytes_byte_len(buffer->v.bytes);
-  if (sliced) {
-    data += slice_off;
-    datalen = slice_len;
+  const char *data;
+  size_t datalen;
+  if (buffer->kind == SCR_DYN_ARR) {
+    size_t total = 0;
+    for (size_t i = 0; i < buffer->v.arr.len; i++) {
+      const ScrDyn *e = buffer->v.arr.items[i];
+      total += e->kind == SCR_DYN_STR ? e->v.str->len : (size_t)scr_bytes_byte_len(e->v.bytes);
+    }
+    joined = malloc(total ? total : 1);
+    if (!joined) scr_dgram_oom();
+    size_t at = 0;
+    for (size_t i = 0; i < buffer->v.arr.len; i++) {
+      const ScrDyn *e = buffer->v.arr.items[i];
+      if (e->kind == SCR_DYN_STR) {
+        char *part_owned;
+        const char *part = scr_str_utf8(e->v.str, &part_owned);
+        memcpy(joined + at, part, e->v.str->len);
+        at += e->v.str->len;
+        scr_str_utf8_end(part_owned);
+      } else {
+        const ScrBytes *b = e->v.bytes;
+        SCR_BYTES_SNAPSHOT(b);
+        size_t n = (size_t)scr_bytes_byte_len(b);
+        if (n) memcpy(joined + at, b->data, n);
+        at += n;
+      }
+    }
+    data = joined;
+    datalen = total;
+  } else {
+    const ScrBytes *byte_input = buffer->kind == SCR_DYN_BYTES ? buffer->v.bytes : NULL;
+    SCR_BYTES_SNAPSHOT(byte_input);
+    data = buffer->kind == SCR_DYN_STR ? scr_str_utf8(buffer->v.str, &owned)
+                                       : (const char *)byte_input->data;
+    datalen = buffer->kind == SCR_DYN_STR ? buffer->v.str->len
+                                          : (size_t)scr_bytes_byte_len(buffer->v.bytes);
+    if (sliced) {
+      data += slice_off;
+      datalen = slice_len;
+    }
   }
-  ScrStr *host = address->kind == SCR_DYN_STR ? scr_str_retain(address->v.str)
-                                              : scr_str_new("127.0.0.1", 9);
-  scr_dgram_send_raw(s, data, datalen, portnum, host);
+  if (connected) {
+    scr_dgram_send_out(s, data, datalen, 0, NULL, callback);
+  } else {
+    ScrStr *host = address->kind == SCR_DYN_STR ? scr_str_retain(address->v.str)
+                                                : scr_str_new("127.0.0.1", 9);
+    scr_dgram_send_out(s, data, datalen, portnum, host, callback);
+    scr_str_release(host);
+  }
   scr_str_utf8_end(owned);
-  scr_str_release(host);
+  free(joined);
+}
+
+/* The read arming for the checked-dynamic unit (scr_dgram_dyn.c), after
+ * it removes a 'message' listener. Defined last so the functions above
+ * keep their emission order. */
+void scr_dgram_rearm(ScrDgramSocket *s) { scr_dgram_update_read(s); }
+
+/* ── Unix datagram sockets for the hot-shots package shim ──────────────
+ * The unix-dgram addon's surface, which hot-shots' uds transport uses: a
+ * non-blocking AF_UNIX datagram socket connected to a path. Each call
+ * answers its result (fd, 0) or a negative errno, as the addon's binding
+ * does; send answers 1 when the socket would block (the addon's
+ * "congestion"). Defined after the functions above so their emission
+ * order is unchanged. */
+#ifndef _WIN32
+#include <sys/un.h>
+#endif
+
+double scr_dgram_unix_socket(void) {
+#ifdef _WIN32
+  return -(double)ENOSYS;
+#else
+  int fd = socket(AF_UNIX, SOCK_DGRAM, 0);
+  if (fd < 0) return -(double)errno;
+  int flags = fcntl(fd, F_GETFL, 0);
+  if (flags >= 0) (void)fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+  (void)fcntl(fd, F_SETFD, FD_CLOEXEC);
+  return (double)fd;
+#endif
+}
+
+double scr_dgram_unix_connect(double fd, ScrStr *path) {
+#ifdef _WIN32
+  (void)fd;
+  (void)path;
+  return -(double)ENOSYS;
+#else
+  struct sockaddr_un addr;
+  memset(&addr, 0, sizeof addr);
+  addr.sun_family = AF_UNIX;
+  char *owned;
+  const char *bytes = scr_str_utf8(path, &owned);
+  size_t n = strlen(bytes);
+  if (n > sizeof addr.sun_path - 1) n = sizeof addr.sun_path - 1;
+  memcpy(addr.sun_path, bytes, n);
+  scr_str_utf8_end(owned);
+  if (connect((int)fd, (struct sockaddr *)&addr, sizeof addr) != 0) return -(double)errno;
+  return 0;
+#endif
+}
+
+double scr_dgram_unix_send(double fd, ScrBytes *data) {
+#ifdef _WIN32
+  (void)fd;
+  (void)data;
+  return -(double)ENOSYS;
+#else
+  SCR_BYTES_SNAPSHOT(data);
+  ssize_t sent;
+  do {
+    sent = send((int)fd, data->data, data->len, 0);
+  } while (sent < 0 && errno == EINTR);
+  if (sent >= 0) return 0;
+  if (errno == EAGAIN || errno == EWOULDBLOCK) return 1;
+  return -(double)errno;
+#endif
+}
+
+double scr_dgram_unix_close(double fd) {
+#ifdef _WIN32
+  (void)fd;
+  return -(double)ENOSYS;
+#else
+  return close((int)fd) != 0 ? -(double)errno : 0;
+#endif
 }

@@ -245,7 +245,7 @@ $ scriptc build scale.ts
 1 error.
 ```
 
-A copy such as `slice()` or a spread is checked as if it were the same array as its source. The results of callbacks are not followed, so an array built by `map` or `Array.from` with a mapping function cannot be `Int32[]`; build it with a loop that stores `value | 0`. scriptc refuses an `Int32[]` slot whose array can come from code it cannot see, such as `JSON.parse`, dynamic values or the callers of a function used as a value, and an array that can reach one and escapes to such code, such as a call through a function value (SC7003).
+A copy such as `slice()` or a spread is checked as if it were the same array as its source. The results of a callback are followed only when scriptc copies it into the loop that runs the array method: a callback written at a `map` or `filter` call whose captured variables are not reassigned, such as `xs.map((x) => (x * 2) | 0)`. Other callback results are not followed, so for example an array built by `Array.from` with a mapping function cannot be `Int32[]`; build it with a loop that stores `value | 0`. scriptc refuses an `Int32[]` slot whose array can come from code it cannot see, such as `JSON.parse`, dynamic values or the callers of a function used as a value, and an array that can reach one and escapes to such code, such as a call through a function value (SC7003).
 
 ## Immutable
 
@@ -331,7 +331,7 @@ $ scriptc build graph.ts
 
 ## ProgramLifetime
 
-`ProgramLifetime` marks a class whose instances a program keeps until it exits, such as the nodes of a syntax tree, the symbols of a symbol table or interned types. scriptc then never reference counts, collects or frees instances of the class and of its subclasses: they are never freed, every retain and release on them compiles to nothing, and the cycle collector neither walks them nor needs to trace the objects that point to them. Node.js behavior is unchanged; only memory use differs, because an instance the program drops is never reclaimed.
+`ProgramLifetime` marks a class whose instances a program keeps until it exits, such as the nodes of a syntax tree, the symbols of a symbol table or interned types. scriptc then never reference counts, collects or frees instances of the class and of its subclasses: they are never freed, every retain and release on them compiles to nothing, and the cycle collector neither walks them nor needs to trace the objects that point to them. Node.js behavior is unchanged; only memory use differs, because an instance the program drops is never reclaimed. On Linux, the instances a worker thread creates are returned with the rest of its memory after it exits, unless the worker shared objects with other threads (see [cost](/docs/threads#cost)).
 
 ```ts:tree.ts
 import type { ProgramLifetime } from "@scriptc/types";
@@ -349,6 +349,8 @@ class Identifier extends SyntaxNode {
 }
 ```
 
+On Linux, except in builds with sanitizers, the instances also take less memory. An executable keeps them in one address range below 32 GiB that it reserves at startup (only the pages in use take memory), and a field typed `C`, `C | undefined` or `C | null`, where `C` is a program-lifetime class, stores the instance's address in 4 bytes instead of 8, as does each element of an array of such a type and each value of a `Map` with `string` keys and such a value type. In the example, `parent` takes 4 bytes.
+
 scriptc checks that the promise cannot change what the program computes (SC7008):
 
 - the class is the root of its hierarchy, so every value of any class type in the hierarchy is program-lifetime; built-in bases such as `Error`, `EventEmitter` and streams are refused because they hold runtime state that is released with the object;
@@ -358,7 +360,7 @@ A class can be both `ProgramLifetime` and `Acyclic`. `Acyclic` is still checked 
 
 Instances can be published to other threads with `@scriptc/threads` like other class instances: `publish()` makes them immutable and shares them by reference, writes to a published instance throw the same `TypeError` as under Node.js, and instances that were not published stay writable and are cloned by `postMessage` and `workerData`.
 
-Static code has no `WeakRef` or `FinalizationRegistry`, and a `WeakMap` or `WeakSet` entry whose key is never freed is never observable as removed, so nothing else can tell the difference.
+Static code has no `WeakRef`, a `FinalizationRegistry` never runs its cleanup callbacks, and a `WeakMap` or `WeakSet` entry whose key is never freed is never observable as removed, so nothing else can tell the difference.
 
 ### Lifetime regions
 

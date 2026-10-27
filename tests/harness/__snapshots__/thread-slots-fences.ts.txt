@@ -1,0 +1,71 @@
+thread-slots-fences.ts:19:43 - error SC1090: ThreadSlots names other than string literals are not supported yet
+
+  18 | const name = "dynamic";
+  19 | const named = new ThreadSlots<Key, State>(name);
+     |                                           ^~~~
+  20 | const first = new ThreadSlots<Key, State>("fences.shared");
+
+  hint: name the slots with a string literal: every construction of the name opens the same slots
+
+thread-slots-fences.ts:21:16 - error SC1090: opening ThreadSlots "fences.shared" with different type arguments than its first construction is not supported yet
+
+  20 | const first = new ThreadSlots<Key, State>("fences.shared");
+  21 | const second = new ThreadSlots<Key, Key>("fences.shared");
+     |                ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  22 | const shaped = new ThreadSlots<Shape, State>("fences.shaped");
+
+  hint: every construction of one slots name must use the same key and value types
+
+thread-slots-fences.ts:22:16 - error SC1090: 'Shape' as a ThreadSlots key type is not supported yet
+
+  21 | const second = new ThreadSlots<Key, Key>("fences.shared");
+  22 | const shaped = new ThreadSlots<Shape, State>("fences.shaped");
+     |                ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  23 | const callbacks = new ThreadSlots<Key, () => number>("fences.callbacks");
+
+  hint: key the slots by instances of a class declared in the program
+
+thread-slots-fences.ts:23:19 - error SC1090: '() => number' as a ThreadSlots value type is not supported yet
+
+  22 | const shaped = new ThreadSlots<Shape, State>("fences.shaped");
+  23 | const callbacks = new ThreadSlots<Key, () => number>("fences.callbacks");
+     |                   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  24 | function local(slots: ThreadSlots<Key, State>, key: Key): State | undefined {
+
+  hint: store class instances, objects, arrays, Maps or Sets
+
+thread-slots-fences.ts:25:10 - error SC1090: ThreadSlots calls through a value other than a module-level const is not supported yet
+
+  24 | function local(slots: ThreadSlots<Key, State>, key: Key): State | undefined {
+  25 |   return slots.get(key);
+     |          ^~~~~
+  26 | }
+
+  hint: call the methods through `const slots = new ThreadSlots<K, V>("name")` declared at module scope
+
+thread-slots-fences.ts:27:14 - error SC2020: 'ThreadSlots (@scriptc/experimental) as a value' is part of the standard library types but has no scriptc lowering yet
+
+  26 | }
+  27 | const ctor = ThreadSlots;
+     |              ^~~~~~~~~~~
+  28 | const getter = first.get;
+
+  hint: open slots with new ThreadSlots("name")
+
+thread-slots-fences.ts:28:16 - error SC2020: 'ThreadSlots.get (@scriptc/experimental) as a value' is part of the standard library types but has no scriptc lowering yet
+
+  27 | const ctor = ThreadSlots;
+  28 | const getter = first.get;
+     |                ^~~~~~~~~
+  29 | console.log(named, second, shaped, callbacks, local(first, new Key()), ctor, getter);
+
+  hint: call slots.get(...) directly
+
+thread-slots-fences.ts:34:13 - error SC2003: union conversion has no unambiguous layout mapping: expected 'State | undefined', got '{ count: number } | undefined' (each source arm needs an identical destination arm, a unique compatible record/array layout, or a shared literal discriminant selecting compatible layouts)
+
+  33 | const records: ThreadSlots<Key, State> = new ThreadSlots<Key, { count: number }>("fences.records");
+  34 | console.log(records.get(new Key()));
+     |             ^~~~~~~~~~~~~~~~~~~~~~
+  35 | 
+
+  hint: narrow the value to a SINGLE arm first (a discriminant check, or '!== undefined'/'!== null' for unit arms); a plain arm value widens into any union that contains it, and a whole union widens into any union whose arms include the source's

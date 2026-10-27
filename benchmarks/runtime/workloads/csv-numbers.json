@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/csv-numbers.ts",
+  "args": [
+    "1"
+  ]
+}

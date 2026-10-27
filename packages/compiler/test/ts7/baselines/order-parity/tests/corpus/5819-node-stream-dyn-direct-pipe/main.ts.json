@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5819-node-stream-dyn-direct-pipe/sources.js",
+  "<repo>/tests/corpus/5819-node-stream-dyn-direct-pipe/main.ts"
+ ],
+ "diags": []
+}

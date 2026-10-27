@@ -1,3 +1,4 @@
+import { keyedHelperName } from "./stable-names.js";
 import {
   arrayOf,
   BOOL,
@@ -49,7 +50,7 @@ export function pairsSnapshotHelper(
   const key = `${options.keyPrefix}.snapshot:${shapeId}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = `%${options.keyPrefix}.snapshot.${lowerer.valueHelpers.size}`;
+  const name = keyedHelperName(lowerer, `%${options.keyPrefix}.snapshot`, key);
   lowerer.valueHelpers.set(key, name);
   const recordType: IrType = { kind: "record", shapeId };
   const pairsType = arrayOf(STRING);

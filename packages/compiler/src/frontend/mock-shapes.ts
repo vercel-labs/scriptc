@@ -12,10 +12,11 @@
  *                                       object; empty for mock.fn
  *
  * A MockFunctionCall<F> is { arguments, error, result, this }: the
- * arguments as a tuple of F's parameters, the result as F's return type or
- * undefined (a checked-dynamic value for functions returning void or
- * undefined, since a record field cannot have a unit type), and error and
- * this as checked-dynamic values. */
+ * arguments as a tuple of F's parameters (a checked-dynamic array for
+ * mock.fn()'s `(...args: any[]) => undefined`), the result as F's return
+ * type or undefined (a checked-dynamic value for functions returning void
+ * or undefined, since a record field cannot have a unit type), and error
+ * and this as checked-dynamic values. */
 import { DYN, F64, NULL_T, UNDEFINED_T, VOID, typeKey, type IrType } from "../ir/ir.js";
 import type { TypeMapperCtx } from "./type-mapper.js";
 
@@ -34,11 +35,17 @@ function orUndefined(t: IrType, reg: MockShapeRegistries): IrType {
 }
 
 /** The arguments type of a call record: a tuple of the parameters, or the
- * rest array itself for a function whose only parameter is a rest array.
- * Null for other rest shapes. A function without parameters records the
+ * rest array itself for a function whose only parameter is a rest array,
+ * or a checked-dynamic array for a function returning nothing whose only
+ * parameter is a checked-dynamic rest (mock.fn()'s default, `(...args:
+ * any[]) => undefined`). Null for other rest shapes. A function without parameters records the
  * empty tuple, which maps to an array of the unit-only union, as
  * type-mapper.ts maps `[]`. */
 function mockArgumentsType(fn: IrType & { kind: "func" }, reg: MockShapeRegistries): IrType | null {
+  if (fn.rest && fn.restAbi === undefined) {
+    const returnsNothing = fn.ret.kind === "void" || fn.ret.kind === "undefinedT";
+    return fn.params.length === 0 && returnsNothing ? DYN : null;
+  }
   if (fn.rest) {
     if (fn.params.length !== 1 || fn.params[0]!.kind !== "array") return null;
     return fn.params[0]!;

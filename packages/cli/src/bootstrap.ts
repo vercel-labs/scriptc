@@ -66,7 +66,19 @@ async function tryFastPath(): Promise<number | null> {
     values["emit-ir"] ||
     values.lib ||
     values["provenance-sources"] ||
-    (values["external-types"] ?? []).length > 0
+    // The full compiler keys these builds by the profile's bytes.
+    values["profile-generate"] !== undefined ||
+    values["profile-use"] !== undefined ||
+    values.sparse ||
+    // The full compiler resolves `native` against the build host.
+    values["target-cpu"] !== undefined ||
+    (values["external-types"] ?? []).length > 0 ||
+    // The full CLI validates the Node island policy flags.
+    hasNodeIslandFlags(values) ||
+    // The full compiler writes the representation report and keys the heap
+    // census build (backend/llvm/repr-report.ts, heap-census.ts).
+    (process.env["SCRIPTC_REPR_REPORT"] ?? "") !== "" ||
+    (process.env["SCRIPTC_HEAP_CENSUS"] ?? "") !== ""
   )
     return null;
   const backend = values.backend;
@@ -116,6 +128,13 @@ async function tryFastPath(): Promise<number | null> {
   // the whole compiler graph to rediscover it.
   const helperRuntimePackTarget = !values.sanitize ? startup.precompiledRuntimePackTarget() : null;
   const helperObjectRoute = helperRuntimePackTarget !== null;
+  // The full compiler reports a checker it cannot find.
+  let checker: string | undefined;
+  try {
+    checker = startup.checkerCacheIdentity();
+  } catch {
+    return null;
+  }
   const hit = await startup.readRoutedExecutableCache(root, {
     entryPath: input,
     outDir,
@@ -125,8 +144,17 @@ async function tryFastPath(): Promise<number | null> {
     backend: "llvm",
     ...(optimization === "dev" || optimization === "speed" ? { optimization } : {}),
     ...(values.strip ? { strip: true as const } : {}),
+    ...(values.static ? { staticLink: true as const } : {}),
     ...(values["detached-exit"] ? { detachedExit: true as const } : {}),
+    ...(values["large-pages"] ? { largePages: true as const } : {}),
+    ...(values["cpu-dispatch"] === true ? { cpuDispatch: true as const } : {}),
+    ...(checker === undefined ? {} : { checker }),
     npmStatic,
+    // Mirrors the full compiler's key: shape inference's overlay is opt-in
+    // (SCRIPTC_SHAPE_OVERLAY=1) and --no-shape-overlay turns it off.
+    ...(process.env["SCRIPTC_SHAPE_OVERLAY"] === "1" && values["shape-overlay"] !== false
+      ? { shapeOverlay: true as const }
+      : {}),
     ffiProfile: ffiPath === null ? null : { path: ffiPath, bytes: ffiBytes! },
     target: `${process.env["SCRIPTC_TARGET"] ?? "native"}:${buildPlatform}:${process.arch}:${
       helperObjectRoute ? "runtime-pack" : "driver-tu"
@@ -148,6 +176,10 @@ async function tryFastPath(): Promise<number | null> {
   if (hit === null) return null;
   if (!values["keep-llvm"]) await rm(hit.llvmPath, { force: true });
   if (command === "build") {
+    // A cached build repeats its performance warning (SC6101).
+    const performance = hit.performance ?? [];
+    if (performance.length > 0 && values["dynamic-tier-warning"] !== false)
+      process.stderr.write(startup.renderPerformanceWarnings(performance) + "\n");
     process.stdout.write(`${outPath}\n`);
     return 0;
   }
@@ -162,6 +194,21 @@ async function tryFastPath(): Promise<number | null> {
       }
     });
   });
+}
+
+function hasNodeIslandFlags(
+  values: ReturnType<
+    typeof parseArgs<{ options: typeof CLI_OPTIONS; allowPositionals: true; allowNegative: true }>
+  >["values"],
+): boolean {
+  return (
+    values["node-islands"] !== undefined ||
+    (values["node-island"] ?? []).length > 0 ||
+    (values.native ?? []).length > 0 ||
+    values.node !== undefined ||
+    values["explain-island"] !== undefined ||
+    values["strict-user-js"]
+  );
 }
 
 /** An unchanged program's coverage verdict replays from the verdict cache
@@ -183,7 +230,11 @@ async function coverageFastPath(
     (failOn !== undefined && failOn !== "blockers" && failOn !== "divergences") ||
     values.emit !== undefined ||
     values.strip ||
+    values.static ||
     values["detached-exit"] ||
+    values["large-pages"] ||
+    values["target-cpu"] !== undefined ||
+    values["cpu-dispatch"] !== undefined ||
     values.lib ||
     values.profile !== undefined ||
     values.ffi !== undefined ||
@@ -193,7 +244,10 @@ async function coverageFastPath(
     values["provenance-sources"] ||
     values["emit-ir"] ||
     (values["npm-static"] ?? []).length > 0 ||
-    (values["external-types"] ?? []).length > 0
+    values["shape-overlay"] === false ||
+    (values["external-types"] ?? []).length > 0 ||
+    // The replay covers the default Node island policy only.
+    hasNodeIslandFlags(values)
   )
     return null;
   let startup: typeof import("@scriptc/compiler/startup-cache");
@@ -205,6 +259,7 @@ async function coverageFastPath(
   const hit = await startup.readCoverageVerdict(resolve(inputArg), {}).catch(() => null);
   if (hit === null) return null;
   const { coverage, sourceTexts } = hit;
+  if (values["dynamic-tier-warning"] === false) delete coverage.performance;
   if (print === "diagnostics") {
     const envelope = startup.coverageEnvelope(coverage, {
       compilerVersion: packageVersion(),

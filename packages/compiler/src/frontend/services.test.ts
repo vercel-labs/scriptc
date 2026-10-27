@@ -7,6 +7,7 @@ import { Ts7Api } from "./ts7/rpc-api.js";
 import { checkPreflight, isNodeEsmFile, loadProgram } from "./program.js";
 import { clearResolveCaches } from "./resolve.js";
 import type { Ts7ApiOptions } from "./ts7/program-host.js";
+import { getTextOfNode } from "./ts7/node-functions.js";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -80,7 +81,7 @@ test("syntax sessions reuse one connection and returned ASTs survive edits and c
   services.close();
   services.close();
   expect(connections[0]!.close).toHaveBeenCalledTimes(1);
-  expect(before.statements[0]!.getText()).toBe(before.text);
+  expect(getTextOfNode(before.statements.nodes[0]!)).toBe(before.text);
 });
 
 test("program hosts remain usable after their creating services close", () => {

@@ -4,10 +4,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   analyzeCached,
+  collectGarbageUnderHeapPressure,
   compile,
   compileLibrary,
+  mergeProfiles,
   resolveProvenanceSources,
   sourceTargetPlatform,
+  typePatches,
   warmNativeCaches,
 } from "@scriptc/compiler";
 import { runCli } from "./command.js";
@@ -25,6 +28,9 @@ function version(): string {
   return manifest.version ?? "unknown";
 }
 
+// The compiler process collects its heap as lowering and LLVM emission grow it.
+collectGarbageUnderHeapPressure();
+
 process.exitCode = await runCli(process.argv.slice(2), {
   version,
   analyze: analyzeCached,
@@ -33,6 +39,8 @@ process.exitCode = await runCli(process.argv.slice(2), {
   resolveProvenanceSources,
   sourceTargetPlatform,
   warmNativeCaches,
+  mergeProfiles,
+  typePatches,
   run: (binary) =>
     new Promise<number>((resolveExit) => {
       let child;

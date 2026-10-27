@@ -8,16 +8,15 @@ import {
 
 function harness() {
   const members = new Map<number, SemanticTypeData[]>();
-  const snapshot = new SemanticSnapshot(1, {
-    text(method, payload) {
-      const query = JSON.parse(payload) as { objectId: number };
-      if (method !== "getTypesOfType" || !members.has(query.objectId))
-        throw new Error(`unexpected request: ${method}`);
-      return JSON.stringify(members.get(query.objectId));
-    },
-    binary(method) {
+  const reply = (method: string, payload: string) => {
+    const query = JSON.parse(payload) as { objectId: number };
+    if (method !== "getTypesOfType" || !members.has(query.objectId))
       throw new Error(`unexpected request: ${method}`);
-    },
+    return JSON.stringify(members.get(query.objectId));
+  };
+  const snapshot = new SemanticSnapshot(1, {
+    text: reply,
+    binary: (method, payload) => new TextEncoder().encode(reply(method, payload)),
   });
   const project = snapshot.addProject("literal-values", () => undefined);
   let id = 0;

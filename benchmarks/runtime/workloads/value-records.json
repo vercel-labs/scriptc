@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/value-records.ts",
+  "args": [
+    "1"
+  ]
+}

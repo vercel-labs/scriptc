@@ -1,7 +1,9 @@
 // http.request's `signal` option: aborting destroys the request with an
 // AbortError (code ABORT_ERR, the signal's reason as `cause`), including a
 // signal that is already aborted, and an abort after the response has no
-// effect. req.destroy(err) reports err as the request's 'error'.
+// effect. req.destroy(err) reports err as the request's 'error'. A value
+// that is not an AbortSignal throws from http.request before any request
+// is made.
 import * as http from "node:http";
 
 const server = http.createServer((req, res) => {
@@ -70,6 +72,13 @@ server.listen(0, "127.0.0.1", async () => {
       });
     });
   });
+  try {
+    http.request({ host: "127.0.0.1", port, path: "/", signal: {} as AbortSignal });
+    console.log("no throw");
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    console.log("not a signal", err.code, err.message);
+  }
   server.close();
   server.closeAllConnections();
 });

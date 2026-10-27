@@ -11,7 +11,7 @@ const COMBINATOR_LIB_CALLS = {
 
 /** `value.then` through the program's own property dispatch, so a class
  * instance's `then` method is visible to the runtime's thenable check. */
-function thenReader(lowerer: Lowerer, loc: SrcLoc): IrExpr {
+export function thenReader(lowerer: Lowerer, loc: SrcLoc): IrExpr {
   const name = "%promise.thenOf";
   const type = funcOf([DYN], DYN);
   if (!lowerer.liftedFns.some((fn) => fn.name === name)) {

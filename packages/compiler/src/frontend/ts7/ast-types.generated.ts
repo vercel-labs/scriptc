@@ -3,7 +3,7 @@
 // Regenerate when changing the TypeScript pin; do not edit by hand.
 
 import type { AstNode } from "./ast-node.js";
-import type { JsxTagNamePropertyAccess, NodeArray } from "./ast-types.js";
+import type { JsxTagNamePropertyAccess, ModifierArray, NodeArray } from "./ast-types.js";
 import { SyntaxKind, NodeFlags, ModifierFlags, TokenFlags } from "./enums.js";
 type Node = AstNode;
 
@@ -142,7 +142,7 @@ export interface DeclarationBase extends Node {
 }
 
 export interface ModifiersBase extends Node {
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly kind: SyntaxKind.VariableStatement | SyntaxKind.Parameter | SyntaxKind.MissingDeclaration | SyntaxKind.FunctionDeclaration | SyntaxKind.ClassDeclaration | SyntaxKind.ClassExpression | SyntaxKind.InterfaceDeclaration | SyntaxKind.TypeAliasDeclaration | SyntaxKind.EnumMember | SyntaxKind.EnumDeclaration | SyntaxKind.ImportDeclaration | SyntaxKind.ExportAssignment | SyntaxKind.NamespaceExportDeclaration | SyntaxKind.Constructor | SyntaxKind.GetAccessor | SyntaxKind.SetAccessor | SyntaxKind.IndexSignature | SyntaxKind.MethodSignature | SyntaxKind.MethodDeclaration | SyntaxKind.PropertySignature | SyntaxKind.PropertyDeclaration | SyntaxKind.ClassStaticBlockDeclaration | SyntaxKind.BinaryExpression | SyntaxKind.ArrowFunction | SyntaxKind.FunctionExpression | SyntaxKind.PropertyAssignment | SyntaxKind.ShorthandPropertyAssignment | SyntaxKind.FunctionType | SyntaxKind.ConstructorType | SyntaxKind.ModuleDeclaration | SyntaxKind.ImportEqualsDeclaration | SyntaxKind.ExportDeclaration | SyntaxKind.TypeParameter;
 }
@@ -170,7 +170,7 @@ export interface FunctionLikeWithBodyBase extends Node {
 }
 
 export interface ClassLikeBase extends Node {
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly name: Identifier | undefined;
   readonly typeParameters: NodeArray<TypeParameterDeclaration> | undefined;
@@ -209,7 +209,7 @@ export interface ClassElementBase extends Node {
 }
 
 export interface NamedMemberBase extends Node {
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly name: PropertyName;
   readonly postfixToken: QuestionToken | ExclamationToken | undefined;
@@ -397,7 +397,7 @@ export interface Block extends Node {
 
 export interface VariableStatement extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly kind: SyntaxKind.VariableStatement;
   readonly declarationList: VariableDeclarationList;
@@ -420,7 +420,7 @@ export interface VariableDeclarationList extends Node {
 
 export interface ParameterDeclaration extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly kind: SyntaxKind.Parameter;
   readonly dotDotDotToken: DotDotDotToken | undefined;
@@ -441,14 +441,14 @@ export interface BindingElement extends Node {
 
 export interface MissingDeclaration extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly kind: SyntaxKind.MissingDeclaration;
 }
 
 export interface FunctionDeclaration extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly typeParameters: NodeArray<TypeParameterDeclaration> | undefined;
   readonly parameters: NodeArray<ParameterDeclaration>;
@@ -461,7 +461,7 @@ export interface FunctionDeclaration extends Node {
 
 export interface ClassDeclaration extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly name: Identifier | undefined;
   readonly typeParameters: NodeArray<TypeParameterDeclaration> | undefined;
@@ -472,7 +472,7 @@ export interface ClassDeclaration extends Node {
 
 export interface ClassExpression extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly name: Identifier | undefined;
   readonly typeParameters: NodeArray<TypeParameterDeclaration> | undefined;
@@ -490,7 +490,7 @@ export interface HeritageClause extends Node {
 
 export interface InterfaceDeclaration extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly kind: SyntaxKind.InterfaceDeclaration;
   readonly name: Identifier;
@@ -501,7 +501,7 @@ export interface InterfaceDeclaration extends Node {
 
 export interface TypeAliasDeclaration extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly kind: SyntaxKind.TypeAliasDeclaration;
   readonly name: Identifier;
@@ -511,7 +511,7 @@ export interface TypeAliasDeclaration extends Node {
 
 export interface EnumMember extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly name: PropertyName;
   readonly postfixToken: QuestionToken | ExclamationToken | undefined;
@@ -521,7 +521,7 @@ export interface EnumMember extends Node {
 
 export interface EnumDeclaration extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly kind: SyntaxKind.EnumDeclaration;
   readonly name: Identifier;
@@ -546,7 +546,7 @@ export interface NotEmittedTypeElement extends Node {
 
 export interface ImportDeclaration extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly kind: SyntaxKind.ImportDeclaration;
   readonly importClause: ImportClause | undefined;
@@ -574,7 +574,7 @@ export interface NamedImports extends Node {
 
 export interface ExportAssignment extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly kind: SyntaxKind.ExportAssignment;
   readonly isExportEquals: boolean;
@@ -584,7 +584,7 @@ export interface ExportAssignment extends Node {
 
 export interface NamespaceExportDeclaration extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly kind: SyntaxKind.NamespaceExportDeclaration;
   readonly name: Identifier;
@@ -628,7 +628,7 @@ export interface ConstructSignatureDeclaration extends Node {
 
 export interface ConstructorDeclaration extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly typeParameters: NodeArray<TypeParameterDeclaration> | undefined;
   readonly parameters: NodeArray<ParameterDeclaration>;
@@ -639,7 +639,7 @@ export interface ConstructorDeclaration extends Node {
 }
 
 export interface GetAccessorDeclaration extends Node {
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly name: PropertyName;
   readonly postfixToken: QuestionToken | ExclamationToken | undefined;
@@ -653,7 +653,7 @@ export interface GetAccessorDeclaration extends Node {
 }
 
 export interface SetAccessorDeclaration extends Node {
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly name: PropertyName;
   readonly postfixToken: QuestionToken | ExclamationToken | undefined;
@@ -668,7 +668,7 @@ export interface SetAccessorDeclaration extends Node {
 
 export interface IndexSignatureDeclaration extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly typeParameters: NodeArray<TypeParameterDeclaration> | undefined;
   readonly parameters: NodeArray<ParameterDeclaration>;
@@ -678,7 +678,7 @@ export interface IndexSignatureDeclaration extends Node {
 
 export interface MethodSignatureDeclaration extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly name: PropertyName;
   readonly postfixToken: QuestionToken | ExclamationToken | undefined;
@@ -690,7 +690,7 @@ export interface MethodSignatureDeclaration extends Node {
 
 export interface MethodDeclaration extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly name: PropertyName;
   readonly postfixToken: QuestionToken | ExclamationToken | undefined;
@@ -704,7 +704,7 @@ export interface MethodDeclaration extends Node {
 
 export interface PropertySignatureDeclaration extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly name: PropertyName;
   readonly postfixToken: QuestionToken | ExclamationToken | undefined;
@@ -715,7 +715,7 @@ export interface PropertySignatureDeclaration extends Node {
 
 export interface PropertyDeclaration extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly name: PropertyName;
   readonly postfixToken: QuestionToken | ExclamationToken | undefined;
@@ -731,7 +731,7 @@ export interface SemicolonClassElement extends Node {
 
 export interface ClassStaticBlockDeclaration extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly kind: SyntaxKind.ClassStaticBlockDeclaration;
   readonly body: Block;
@@ -786,7 +786,7 @@ export interface NoSubstitutionTemplateLiteral extends Node {
 
 export interface BinaryExpression extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly kind: SyntaxKind.BinaryExpression;
   readonly left: Expression;
@@ -818,7 +818,7 @@ export interface YieldExpression extends Node {
 
 export interface ArrowFunction extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly typeParameters: NodeArray<TypeParameterDeclaration> | undefined;
   readonly parameters: NodeArray<ParameterDeclaration>;
@@ -831,7 +831,7 @@ export interface ArrowFunction extends Node {
 
 export interface FunctionExpression extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly typeParameters: NodeArray<TypeParameterDeclaration> | undefined;
   readonly parameters: NodeArray<ParameterDeclaration>;
@@ -969,7 +969,7 @@ export interface SpreadAssignment extends Node {
 
 export interface PropertyAssignment extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly name: PropertyName;
   readonly postfixToken: QuestionToken | ExclamationToken | undefined;
@@ -980,7 +980,7 @@ export interface PropertyAssignment extends Node {
 
 export interface ShorthandPropertyAssignment extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly name: PropertyName;
   readonly postfixToken: QuestionToken | ExclamationToken | undefined;
@@ -1180,7 +1180,7 @@ export interface ParenthesizedTypeNode extends Node {
 
 export interface FunctionTypeNode extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly typeParameters: NodeArray<TypeParameterDeclaration> | undefined;
   readonly parameters: NodeArray<ParameterDeclaration>;
@@ -1190,7 +1190,7 @@ export interface FunctionTypeNode extends Node {
 
 export interface ConstructorTypeNode extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly typeParameters: NodeArray<TypeParameterDeclaration> | undefined;
   readonly parameters: NodeArray<ParameterDeclaration>;
@@ -1343,7 +1343,7 @@ export interface JsxText extends Node {
 export interface SyntaxList extends Node {
   readonly flags: NodeFlags;
   readonly kind: SyntaxKind.SyntaxList;
-  readonly children: readonly Node[];
+  readonly children: NodeArray<Node>;
 }
 
 export interface JSDoc extends Node {
@@ -1562,7 +1562,7 @@ export interface JSDocNameReference extends Node {
 
 export interface ModuleDeclaration extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly asteriskToken: AsteriskToken | undefined;
   readonly body: ModuleBody | undefined;
@@ -1573,7 +1573,7 @@ export interface ModuleDeclaration extends Node {
 
 export interface ImportEqualsDeclaration extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly kind: SyntaxKind.ImportEqualsDeclaration;
   readonly isTypeOnly: boolean;
@@ -1583,7 +1583,7 @@ export interface ImportEqualsDeclaration extends Node {
 
 export interface ExportDeclaration extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly kind: SyntaxKind.ExportDeclaration;
   readonly isTypeOnly: boolean;
@@ -1647,7 +1647,7 @@ export interface JSDocLinkCode extends Node {
 
 export interface TypeParameterDeclaration extends Node {
   readonly flags: NodeFlags;
-  readonly modifiers: NodeArray<ModifierLike> | undefined;
+  readonly modifiers: ModifierArray<ModifierLike> | undefined;
   readonly modifierFlags: ModifierFlags;
   readonly kind: SyntaxKind.TypeParameter;
   readonly name: Identifier;
@@ -1842,7 +1842,7 @@ export interface CaseClause extends Node {
 export interface DefaultClause extends Node {
   readonly flags: NodeFlags;
   readonly kind: SyntaxKind.DefaultClause;
-  readonly expression: Expression;
+  readonly expression: undefined;
   readonly statements: NodeArray<Statement>;
 }
 

@@ -54,7 +54,7 @@ let level: Type[] = [new Type(id++, undefined)];
 while (id < typeCount) {
   const next: Type[] = [];
   for (const t of level) for (let k = 0; k < 4 && id < typeCount; k++) next.push(new Type(id++, t));
-  roots.push(...next);
+  for (const t of next) roots.push(t);
   level = next;
 }
 

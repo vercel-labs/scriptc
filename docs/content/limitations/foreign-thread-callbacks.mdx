@@ -1,3 +1,6 @@
-FFI format 5 accepts retained, context-bearing `void` callbacks invoked by library-owned threads. The native callback copies arguments and queues work; the script closure runs on the event loop at least one turn later. These callbacks are not suitable for real-time execution.
+FFI format 5 accepts retained, context-bearing `void` callbacks invoked by library-owned threads.
+The native callback copies arguments and queues work; the script closure runs on the event loop at least one turn later.
+These callbacks are not suitable for real-time execution.
 
-Value-returning callbacks and direct script execution on foreign threads are unsupported. Reference counting and exception state belong to the script thread, and waiting for the event loop can deadlock.
+Value-returning callbacks and direct script execution on foreign threads are unsupported.
+Reference counting and exception state belong to the script thread, and waiting for the event loop can deadlock.

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/node-types/fs-url-fallible.ts"
+ ],
+ "diags": []
+}

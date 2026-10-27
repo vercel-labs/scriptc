@@ -8,6 +8,7 @@ import type { Ts7FileSystem } from "./rpc-filesystem.js";
 import { Ts7SourceParser, type Ts7SourceKind } from "./source-parser.js";
 import { closeSourceParser, parseSourceFile } from "./source-parser-node.js";
 import * as ts from "./syntax.js";
+import { getTextOfNode, tokenStartOfNode } from "./node-functions.js";
 
 const parsers: Ts7SourceParser[] = [];
 const directories: string[] = [];
@@ -41,14 +42,14 @@ test("each parse owns its text and nodes across same-path edits, deletion and cl
   expect(second).not.toBe(first);
   const other = parser.parse("other.js", "exports.third = 3;", "js");
   const empty = parser.parse("input.ts", "", "ts");
-  expect(empty.statements).toEqual([]);
+  expect(empty.statements.nodes).toEqual([]);
   const restored = parser.parse("input.ts", first.text, "ts");
   expect(restored.text).toBe(first.text);
   parser.close();
   parser.close();
-  expect(first.statements[0]!.getText()).toBe("export const first = 1;");
-  expect(second.statements[0]!.parent).toBe(second);
-  expect(other.statements[0]!.getText()).toBe("exports.third = 3;");
+  expect(getTextOfNode(first.statements.nodes[0]!)).toBe("export const first = 1;");
+  expect(second.statements.nodes[0]!.parent).toBe(second);
+  expect(getTextOfNode(other.statements.nodes[0]!)).toBe("exports.third = 3;");
   expect(() => parser.parse("late.ts", "", "ts")).toThrow("closed");
 });
 
@@ -113,10 +114,10 @@ for (const { name, kind, source } of syntaxCases) {
     expect(file.text).toBe(source);
     expect(file.isDeclarationFile).toBe(oracle.isDeclarationFile);
     expect(
-      file.statements.map((statement) => ({
-        start: statement.getStart(),
+      file.statements.nodes.map((statement) => ({
+        start: tokenStartOfNode(statement),
         end: statement.end,
-        text: statement.getText(),
+        text: getTextOfNode(statement),
       })),
     ).toEqual(
       oracle.statements.map((statement) => ({
@@ -152,14 +153,16 @@ test("optional declarations expose question tokens without confusing definite as
     "class A { optional?: number; definite!: number; method?(): void; } type M<T> = { [K in keyof T]-?: T[K] };",
     "ts",
   );
-  const declaration = file.statements[0]!;
+  const declaration = file.statements.nodes[0]!;
   if (!ts.isClassDeclaration(declaration)) throw new Error("expected class");
-  expect(declaration.members[0]!.questionToken?.kind).toBe(ts.SyntaxKind.QuestionToken);
-  expect(declaration.members[0]!.questionToken).toBe(declaration.members[0]!.postfixToken);
-  expect(declaration.members[1]!.questionToken).toBeUndefined();
-  expect(declaration.members[1]!.postfixToken?.kind).toBe(ts.SyntaxKind.ExclamationToken);
-  expect(declaration.members[2]!.questionToken?.kind).toBe(ts.SyntaxKind.QuestionToken);
-  const alias = file.statements[1]!;
+  expect(declaration.members.nodes[0]!.questionToken?.kind).toBe(ts.SyntaxKind.QuestionToken);
+  expect(declaration.members.nodes[0]!.questionToken).toBe(
+    declaration.members.nodes[0]!.postfixToken,
+  );
+  expect(declaration.members.nodes[1]!.questionToken).toBeUndefined();
+  expect(declaration.members.nodes[1]!.postfixToken?.kind).toBe(ts.SyntaxKind.ExclamationToken);
+  expect(declaration.members.nodes[2]!.questionToken?.kind).toBe(ts.SyntaxKind.QuestionToken);
+  const alias = file.statements.nodes[1]!;
   if (!ts.isTypeAliasDeclaration(alias) || !ts.isMappedTypeNode(alias.type))
     throw new Error("expected mapped type");
   expect(alias.type.questionToken?.kind).toBe(ts.SyntaxKind.MinusToken);
@@ -192,17 +195,48 @@ test("JSDoc callable types cannot replace method body views", () => {
     true,
     ts5.ScriptKind.JS,
   );
-  const native = file.statements[0]!;
+  const native = file.statements.nodes[0]!;
   const expected = oracle.statements[0]!;
   if (!ts.isClassDeclaration(native) || !ts5.isClassDeclaration(expected))
     throw new Error("expected class");
-  expect(native.members.map((member) => member.body?.getText())).toEqual(
+  expect(
+    native.members.nodes.map((member) =>
+      member.body === undefined ? undefined : getTextOfNode(member.body),
+    ),
+  ).toEqual(
     expected.members.map((member) =>
       ts5.isMethodDeclaration(member) ? member.body?.getText() : undefined,
     ),
   );
-  for (const member of native.members) {
+  for (const member of native.members.nodes) {
     expect(member.body?.kind).toBe(ts.SyntaxKind.Block);
     expect(member.body?.parent).toBe(member);
   }
+});
+
+test("a parser starts a new server once it has parsed its source budget, and earlier results stay usable", () => {
+  const directory = mkdtempSync(
+    join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-source-parser-"),
+  );
+  directories.push(directory);
+  const servers: Ts7Api[] = [];
+  const parser = new Ts7SourceParser(
+    (options) => {
+      const api = new Ts7Api(options);
+      servers.push(api);
+      return api;
+    },
+    directory,
+    64,
+  );
+  parsers.push(parser);
+  const first = parser.parse("a.ts", `export const a = ${"1 + ".repeat(20)}1;`, "ts");
+  expect(servers).toHaveLength(1);
+  const second = parser.parse("b.ts", "export const b = 2;", "ts");
+  expect(servers).toHaveLength(2);
+  const third = parser.parse("b.ts", "export const b = 3;", "ts");
+  expect(servers).toHaveLength(2);
+  expect(getTextOfNode(first.statements.nodes[0]!)).toBe(`export const a = ${"1 + ".repeat(20)}1;`);
+  expect(getTextOfNode(second.statements.nodes[0]!)).toBe("export const b = 2;");
+  expect(getTextOfNode(third.statements.nodes[0]!)).toBe("export const b = 3;");
 });

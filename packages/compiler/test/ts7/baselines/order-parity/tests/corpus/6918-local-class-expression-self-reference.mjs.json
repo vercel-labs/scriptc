@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6918-local-class-expression-self-reference.mjs"
+ ],
+ "diags": []
+}

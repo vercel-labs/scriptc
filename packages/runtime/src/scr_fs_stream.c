@@ -79,6 +79,9 @@ typedef struct ScrFssOp {
   int64_t result;     /* answer or -errno */
   int retries;        /* WRITE: zero-byte retries */
   ScrError *carry;    /* FSYNC/CLOSE: the error to pass on (+1) */
+  /* The AsyncLocalStorage context the step was started in (+1): its
+   * continuation runs in it, as Node runs an fs request's callback. */
+  ScrAlsCtx *ctx;
 } ScrFssOp;
 
 static void scr_fss_work(void *p) {
@@ -101,6 +104,7 @@ static void scr_fss_op_destroy(void *p) {
   free(op->buf);
   if (op->chunk) scr_bytes_release(op->chunk);
   if (op->carry) scr_error_release(op->carry);
+  scr_als_ctx_release(op->ctx);
   free(op);
 }
 
@@ -111,13 +115,20 @@ static ScrFssOp *scr_fss_op_new(ScrStream *s, ScrFssOpKind kind, int fd) {
   op->kind = kind;
   op->fd = fd;
   op->pos = -1;
+  op->ctx = scr_als_capture();
   return op;
 }
 
 static void scr_fss_after(void *p);
 
+static void scr_fss_after_in_context(void *p) {
+  ScrAlsCtx *prev = scr_als_dispatch_enter(((ScrFssOp *)p)->ctx);
+  scr_fss_after(p);
+  scr_als_dispatch_leave(prev);
+}
+
 static void scr_fss_submit(ScrFssOp *op) {
-  scr_work_submit(op, &scr_fss_work, &scr_fss_after, &scr_fss_op_destroy);
+  scr_work_submit(op, &scr_fss_work, &scr_fss_after_in_context, &scr_fss_op_destroy);
 }
 
 /* ── close (Node's close/_close) ──────────────────────────────────────── */
@@ -562,6 +573,7 @@ static ScrStream *scr_fss_new(const ScrDyn *path, const ScrDyn *opts_in, bool re
     scr_dyn_release(eo);
   }
   if (!s) goto fail;
+  s->cls = readable ? "ReadStream" : "WriteStream";
   bool unknown_encoding = false;
   if (!readable) {
     /* setDefaultEncoding(options.encoding) after the Writable constructor:

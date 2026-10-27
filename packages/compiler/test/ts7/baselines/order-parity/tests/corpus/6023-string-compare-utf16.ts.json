@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6023-string-compare-utf16.ts"
+ ],
+ "diags": []
+}

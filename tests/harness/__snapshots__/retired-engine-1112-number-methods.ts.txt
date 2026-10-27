@@ -1,8 +1,0 @@
-retired-engine-1112-number-methods.ts:9:13 - error SC2012: '.toPrecision()' on numbers cannot compile statically
-
-   8 | console.log((1e21).toFixed(2), (0 / 0).toFixed(2));
-   9 | console.log(n.toPrecision(2), n.toPrecision(8), (0.000123).toPrecision(2));
-     |             ^~~~~~~~~~~~~~~~
-  10 | console.log((255).toString(16), (255).toString(2), (511).toString(8), (12345).toString(36));
-
-  hint: use a supported API or rewrite this operation for native compilation

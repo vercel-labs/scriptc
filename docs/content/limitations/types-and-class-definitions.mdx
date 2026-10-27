@@ -1,4 +1,6 @@
-`Promise.all([work(1), work(2)])` infers a tuple. Some tuple operations, such as `.join()`, are unsupported. If you need array operations on the result, declare the input as an array:
+`Promise.all([work(1), work(2)])` infers a tuple.
+Some tuple operations, such as `.join()`, are unsupported.
+If you need array operations on the result, declare the input as an array:
 
 ```ts
 const jobs: Promise<number>[] = [work(1), work(2), work(3)];

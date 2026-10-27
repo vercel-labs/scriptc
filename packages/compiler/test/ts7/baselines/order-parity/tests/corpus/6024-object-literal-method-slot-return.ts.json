@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6024-object-literal-method-slot-return.ts"
+ ],
+ "diags": []
+}

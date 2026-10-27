@@ -1,0 +1,8 @@
+stream-byte-mode-chunk-fences.ts:10:5 - error SC2020: 'a '_write' method whose parameter 0 is 'number' where Node passes 'Uint8Array'' is part of the standard library types but has no scriptc lowering yet
+
+   9 |   constructor() {
+  10 |     super(undefined);
+     |     ^~~~~~~~~~~~~~~~
+  11 |   }
+
+  hint: annotate the parameter with the Node signature's type or a supertype of it (chunks are Buffers here)

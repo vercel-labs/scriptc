@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6186-js-fs-encoding-dynamic-option.cjs"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8126-inspect-custom-throws.cjs"
+ ],
+ "diags": []
+}

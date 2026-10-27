@@ -1,0 +1,6 @@
+new-target-late-local-subclass.ts:7:18 - error SC1090: 'new.target' where 'Local' is a function-local class (each evaluation creates a new class) is not supported yet
+
+  6 |   constructor() {
+  7 |     this.label = new.target.name;
+    |                  ^~~~~~~~~~
+  8 |   }

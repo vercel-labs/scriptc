@@ -14,10 +14,20 @@ import {
 import { varRef } from "../../../ir/build.js";
 import { locOf } from "../../program.js";
 import type { Lowerer } from "../lowerer.js";
-import { arrayNumberRead, arrayValueRead, arrayValueStore } from "../array-values.js";
+import {
+  arrayNumberRead,
+  arrayValueRead,
+  arrayValueStore,
+  elementMayBeForeign,
+} from "../array-values.js";
 import { fenceNodeModuleMutation } from "../lower-node-module.js";
 import { globalSymbolKey } from "./global-symbols.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
+import {
+  type KeyedFieldTarget,
+  keyedFieldTarget,
+  saveKeyedFieldKey,
+} from "./keyed-field-targets.js";
 import {
   eventAccessorRead,
   eventAccessorWrite,
@@ -95,7 +105,9 @@ export function lowerShortCircuitAssignment(lowerer: Lowerer, expr: ts.BinaryExp
       write = (value) => eventAccessorWrite(receiver, name, value, lowerer, loc);
     } else if (ts.isPropertyAccessExpression(target)) {
       const probed = tryLowerExpression(lowerer, target.expression);
-      if (probed?.type.kind === "dyn") {
+      // `value.#x ??= v` on a checked-dynamic value names the brand-checked
+      // field (fieldTarget), never a property called "#x".
+      if (probed?.type.kind === "dyn" && !ts.isPrivateIdentifier(target.name)) {
         const receiver = save(probed, "%shortCircuitReceiver");
         const key: IrExpr = { kind: "strLit", value: target.name.text, type: STRING, loc };
         storage = DYN;
@@ -147,6 +159,7 @@ export function lowerShortCircuitAssignment(lowerer: Lowerer, expr: ts.BinaryExp
     } else {
       const receiver = save(lowerer.lowerExpr(target.expression), "%shortCircuitReceiver");
       let key = lowerer.lowerExpr(target.argumentExpression);
+      let keyed: KeyedFieldTarget | null = null;
       if (receiver.type.kind === "dyn") {
         key = save(
           {
@@ -177,7 +190,12 @@ export function lowerShortCircuitAssignment(lowerer: Lowerer, expr: ts.BinaryExp
         const element = storage;
         write = (value) => arrayValueStore(lowerer, receiver, key, value, element, loc);
         const elementLoc = locOf(target);
-        if (nullish && NON_NULLISH_ELEMENTS.has(element.kind)) {
+        // A foreign element can be any value, nullish or not.
+        if (
+          nullish &&
+          NON_NULLISH_ELEMENTS.has(element.kind) &&
+          !elementMayBeForeign(lowerer, element)
+        ) {
           // Only a missing element is nullish: keep the present value or
           // store the right side, without the optional element value.
           rhs = lowerer.lowerExprExpecting(expr.right, element);
@@ -214,6 +232,48 @@ export function lowerShortCircuitAssignment(lowerer: Lowerer, expr: ts.BinaryExp
           !nullish && !and && element.kind === "f64"
             ? arrayNumberRead(receiver, key, elementLoc)
             : arrayValueRead(lowerer, receiver, key, element, elementLoc);
+      } else if (
+        receiver.type.kind === "record" &&
+        key.type.kind === "string" &&
+        pureIndexShapeOf(lowerer, receiver.type.shapeId) !== null
+      ) {
+        // `timings[phase] ??= v` over a pure index-signature record
+        // (`Record<string, number>`): the keyed read answers the value or
+        // undefined for a missing key, and the write inserts or replaces
+        // the key, exactly the two halves `o[k]` and `o[k] = v` lower to.
+        const shapeId = receiver.type.shapeId;
+        const indexValue = pureIndexShapeOf(lowerer, shapeId)!;
+        key = save(key, "%shortCircuitKey");
+        const readType =
+          indexValue.kind === "dyn" ? indexValue : lowerer.withUndefinedArmOf(indexValue);
+        if (!readType) {
+          lowerer.unsupported(
+            "SC1090",
+            target,
+            "short-circuit assignment through this indexed receiver",
+          );
+        }
+        storage = indexValue;
+        read = { kind: "recordKeyGet", obj: receiver, shapeId, key, type: readType, loc };
+        write = (value) => ({
+          kind: "recordKeySet",
+          obj: receiver,
+          shapeId,
+          key,
+          value: lowerer.coerceToExpected(value, indexValue),
+          loc,
+        });
+      } else if (
+        receiver.type.kind === "record" &&
+        (keyed = keyedFieldTarget(lowerer, target, false, { obj: receiver, key }))
+      ) {
+        // `totals[side] ??= v` through a literal-union key: the read and
+        // the write dispatch over the declared fields the key can name.
+        const field = keyed;
+        saveKeyedFieldKey(field, save);
+        storage = field.fieldType;
+        read = lowerer.fieldGetExpr(field, locOf(target), target);
+        write = (value) => lowerer.fieldSetStmt(field, value, loc, target);
       } else {
         lowerer.unsupported(
           "SC1090",
@@ -264,4 +324,12 @@ export function lowerShortCircuitAssignment(lowerer: Lowerer, expr: ts.BinaryExp
     return finish(right);
   }
   return finish({ kind: "nullish", left: read, right, type: read.type, loc });
+}
+
+/** The value type of a pure index-signature record shape (no declared
+ * fields, not a tuple), or null. */
+function pureIndexShapeOf(lowerer: Lowerer, shapeId: string): IrType | null {
+  const shape = lowerer.shapes.get(shapeId);
+  if (!shape || shape.tuple || shape.fields.length > 0 || !shape.indexValue) return null;
+  return shape.indexValue;
 }

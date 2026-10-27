@@ -1,1 +1,10 @@
-- **EventEmitter:** Literal event names use fixed argument tuples. Computed string names require a constant prefix or suffix that excludes `error`, meta events, and stream-internal events; their arguments must match the exact arity and support checked conversion. Unrestricted names, symbols, names that may reach internal events, and typed `listeners()`/`rawListeners()` results for names with possible computed registrations are unsupported.
+- **EventEmitter:** Literal event names use fixed argument tuples.
+  Computed string names require a constant prefix or suffix that excludes `error`, meta events, and stream-internal events; their arguments must match the exact arity and support checked conversion.
+  Unrestricted names, symbols, names that may reach internal events, and typed `listeners()`/`rawListeners()` results for names with possible computed registrations are unsupported.
+  An emitter reached through an untyped value shares one listener list with its typed uses, so untyped registrations and emits reach typed listeners and typed emits reach untyped listeners.
+  An untyped `emit` of an event that has a listener with typed parameters converts its arguments to the event's typed tuple before any listener runs, and throws a `TypeError` when they do not convert.
+  Through an untyped value, `listeners()` and `rawListeners()` of an event with a listener that has typed parameters are unsupported, and `emit('error')` of an object that is not an Error with no `error` listener is unsupported.
+  Untyped `newListener` and `removeListener` listeners receive `undefined` in place of a listener registered with typed parameters.
+  Reading EventEmitter methods as properties through an untyped value (`typeof emitter.listeners`) answers `undefined`.
+  `events.once` accepts EventEmitter and stream instances with a literal event name and an optional object-literal `{ signal }`; a stream's `data` event, other options values, and EventTarget emitters are unsupported.
+  Reading `defaultMaxListeners` through a CommonJS destructured or member binding (`const { defaultMaxListeners } = require("events")`) is unsupported.

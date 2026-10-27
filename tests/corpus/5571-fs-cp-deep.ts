@@ -9,7 +9,7 @@ function tail(path: string): string {
   while (i >= 0 && path.charAt(i) !== "/" && path.charAt(i) !== "\\") i = i - 1;
   return path.slice(i + 1);
 }
-const root = `/tmp/scr-cp-deep-${tail(process.argv[1] === undefined ? "x" : process.argv[1])}`;
+const root = `/tmp/scr-cp-deep-${tail(process.argv[1] === undefined ? "x" : process.argv[1])}-${process.pid}`;
 if (fs.existsSync(root)) fs.rmSync(root, { recursive: true, force: true });
 fs.mkdirSync(root);
 const home = process.cwd();

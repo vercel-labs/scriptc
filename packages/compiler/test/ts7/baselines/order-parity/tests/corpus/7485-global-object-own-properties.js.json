@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7485-global-object-own-properties.js"
+ ],
+ "diags": []
+}

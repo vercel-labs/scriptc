@@ -1,0 +1,5 @@
+- **V8 heap statistics:** `node:v8` can be imported.
+  `v8.getHeapStatistics()` returns Node's fields in Node's order, computed from the runtime allocator like `process.memoryUsage()`: `total_heap_size` and `total_physical_size` are the bytes the heap holds, `used_heap_size` the bytes allocated, `heap_size_limit` the machine's memory (the heap has no fixed ceiling), and `total_available_size` the limit minus the used bytes.
+  Fields that describe V8 itself (`total_heap_size_executable`, `malloced_memory`, `peak_malloced_memory`, the global handle sizes, `external_memory`, and `does_zap_garbage`) are `0`, and `number_of_native_contexts` is `1`.
+  The values are approximate and are not V8 heap figures.
+  The other `node:v8` members observe the V8 engine, such as heap snapshots, profiles, flags, and serialization, and throw `SC2020` where they are used.

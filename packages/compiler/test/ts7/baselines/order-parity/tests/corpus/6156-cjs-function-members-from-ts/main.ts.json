@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6156-cjs-function-members-from-ts/status.cjs",
+  "<repo>/tests/corpus/6156-cjs-function-members-from-ts/consumer.cjs",
+  "<repo>/tests/corpus/6156-cjs-function-members-from-ts/main.ts"
+ ],
+ "diags": []
+}

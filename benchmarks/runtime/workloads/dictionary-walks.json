@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/dictionary-walks.ts",
+  "args": [
+    "1"
+  ]
+}

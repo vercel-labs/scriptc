@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6106-esm-top-level-this.mjs"
+ ],
+ "diags": []
+}

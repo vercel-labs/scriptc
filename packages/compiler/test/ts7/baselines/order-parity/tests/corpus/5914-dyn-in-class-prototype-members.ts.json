@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5914-dyn-in-class-prototype-members.ts"
+ ],
+ "diags": []
+}

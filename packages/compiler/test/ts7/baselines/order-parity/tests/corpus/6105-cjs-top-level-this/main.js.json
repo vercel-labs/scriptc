@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6105-cjs-top-level-this/lib.js",
+  "<repo>/tests/corpus/6105-cjs-top-level-this/main.js"
+ ],
+ "diags": []
+}

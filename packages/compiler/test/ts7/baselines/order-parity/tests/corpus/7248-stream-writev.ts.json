@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7248-stream-writev.ts"
+ ],
+ "diags": []
+}

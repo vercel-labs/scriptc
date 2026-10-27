@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7743-transform-stream-identity.ts"
+ ],
+ "diags": []
+}

@@ -1,5 +1,8 @@
 #ifndef _WIN32
 #define _POSIX_C_SOURCE 200809L
+/* flock(2), for the checker server's lock file, and syscall(2). */
+#define _DEFAULT_SOURCE
+#define _DARWIN_C_SOURCE
 #endif
 #include "ts7-process.h"
 #include <errno.h>
@@ -16,7 +19,13 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <spawn.h>
+#include <sys/file.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#ifdef __linux__
+#include <sys/syscall.h>
+#endif
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -38,6 +47,9 @@ typedef struct Ts7Process {
   HANDLE output;
 #else
   int socket;
+  /* The checker server's lock file, held while connected to the server
+   * (scriptc_ts7_attach); -1 for a server this process started. */
+  int lock;
 #endif
 } Ts7Process;
 
@@ -149,7 +161,7 @@ static wchar_t *command_line(wchar_t **arguments, size_t count) {
 }
 
 static int start_process(Ts7Process *p, char **args, size_t argc) {
-  wchar_t *wide[6] = {0};
+  wchar_t *wide[7] = {0};
   wchar_t *line = NULL;
   HANDLE child_input = NULL, child_output = NULL, child_error = NULL;
   LPPROC_THREAD_ATTRIBUTE_LIST attributes = NULL;
@@ -283,7 +295,7 @@ static int start_process(Ts7Process *p, char **args, size_t argc) {
   if (error == 0) error = posix_spawn(&pid, args[0], &actions, NULL, args, environment);
   posix_spawn_file_actions_destroy(&actions);
   if (error == 0) {
-    p->socket = sockets[0]; p->pid = (uint32_t)pid;
+    p->socket = sockets[0]; p->pid = (uint32_t)pid; p->lock = -1;
   }
 done:
   close(sockets[1]);
@@ -293,15 +305,21 @@ done:
 
 static void stop_process(Ts7Process *p) {
   close(p->socket);
+  // A shared checker server keeps running; closing the connection ends this
+  // build's session, and closing the lock file lets another build connect.
+  if (p->lock >= 0) { close(p->lock); return; }
   int status;
   pid_t pid = (pid_t)p->pid;
-  for (int attempt = 0; attempt < 5; attempt++) {
+  // A server exits within a fraction of a millisecond of reading EOF, so the
+  // checks start 0.1 ms apart and double: 51.1 ms in all before the kill.
+  for (int attempt = 0; attempt < 10; attempt++) {
     pid_t result;
     do { result = waitpid(pid, &status, WNOHANG); } while (result < 0 && errno == EINTR);
     // ECHILD also means the PID no longer belongs to us. Never signal a
     // potentially recycled PID after somebody else has reaped the child.
     if (result == pid || (result < 0 && errno == ECHILD)) return;
-    struct timespec delay = {0, 10000000};
+    if (attempt == 9) break;
+    struct timespec delay = {0, 100000L << attempt};
     while (nanosleep(&delay, &delay) != 0 && errno == EINTR) {}
   }
   (void)kill(pid, SIGKILL);
@@ -312,7 +330,7 @@ static void stop_process(Ts7Process *p) {
 uint32_t scriptc_ts7_open(const uint8_t *executable, size_t executable_size,
                          const uint8_t *cwd, size_t cwd_size,
                          const uint8_t *callbacks, size_t callbacks_size,
-                         uint8_t timing) {
+                         uint8_t timing, uint8_t libraries_from_disk) {
   if (next_id == 0) { error_text("server handle IDs are exhausted"); return 0; }
   char *exe = copy_argument(executable, executable_size, "");
   if (exe == NULL) return 0;
@@ -328,8 +346,12 @@ uint32_t scriptc_ts7_open(const uint8_t *executable, size_t executable_size,
     }
     exit_registered = 1;
   }
-  char *args[] = {exe, "--api", "--cwd", directory, callback_flag, timing ? "--timing" : NULL, NULL};
-  int started = start_process(p, args, timing ? 6 : 5);
+  char *args[8] = {exe, "--api", "--cwd", directory, callback_flag};
+  size_t argc = 5;
+  if (timing) args[argc++] = "--timing";
+  if (libraries_from_disk) args[argc++] = "--default-libraries-from-disk";
+  args[argc] = NULL;
+  int started = start_process(p, args, argc);
   free(exe); free(directory); free(callback_flag);
   if (!started) { free(p); return 0; }
   p->id = next_id++;
@@ -337,6 +359,184 @@ uint32_t scriptc_ts7_open(const uint8_t *executable, size_t executable_size,
   processes = p;
   return p->id;
 }
+
+#ifdef _WIN32
+uint32_t scriptc_ts7_attach(const uint8_t *name, size_t name_size,
+                           const uint8_t *executable, size_t executable_size,
+                           const uint8_t *cwd, size_t cwd_size,
+                           const uint8_t *callbacks, size_t callbacks_size,
+                           uint8_t timing, uint8_t libraries_from_disk, uint32_t idle_exit,
+                           uint32_t memory) {
+  (void)name; (void)name_size; (void)executable; (void)executable_size; (void)cwd; (void)cwd_size;
+  (void)callbacks; (void)callbacks_size; (void)timing; (void)libraries_from_disk; (void)idle_exit; (void)memory;
+  error_text("a shared checker server needs Unix sockets");
+  return 0;
+}
+#else
+/* This user's checker server directory: $XDG_RUNTIME_DIR/scriptc, or
+ * /tmp/scriptc-<uid>. It must be a directory this user owns with no access
+ * for others; one that exists otherwise is not used. */
+static int server_directory(char *path, size_t size) {
+  const char *runtime = getenv("XDG_RUNTIME_DIR");
+  int count = runtime != NULL && runtime[0] == '/'
+                  ? snprintf(path, size, "%s/scriptc", runtime)
+                  : snprintf(path, size, "/tmp/scriptc-%lu", (unsigned long)geteuid());
+  if (count < 0 || (size_t)count >= size) { error_text("checker server directory path is too long"); return 0; }
+  if (mkdir(path, 0700) != 0 && errno != EEXIST) { system_error(errno); return 0; }
+  struct stat info;
+  if (lstat(path, &info) != 0) { system_error(errno); return 0; }
+  if (!S_ISDIR(info.st_mode) || info.st_uid != geteuid() || (info.st_mode & 077) != 0) {
+    error_text("checker server directory is not private to this user");
+    return 0;
+  }
+  return 1;
+}
+
+/* A connection to the server listening at `path`, or -1. */
+static int connect_server(const char *path) {
+  struct sockaddr_un address;
+  memset(&address, 0, sizeof(address));
+  address.sun_family = AF_UNIX;
+  memcpy(address.sun_path, path, strlen(path) + 1);
+  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) return -1;
+  if (fcntl(fd, F_SETFD, FD_CLOEXEC) < 0) { close(fd); return -1; }
+#ifdef SO_NOSIGPIPE
+  int no_sigpipe = 1;
+  if (setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, sizeof(no_sigpipe)) != 0) { close(fd); return -1; }
+#endif
+  int status;
+  do { status = connect(fd, (const struct sockaddr *)&address, sizeof(address)); } while (status != 0 && errno == EINTR);
+  if (status != 0) { close(fd); return -1; }
+  return fd;
+}
+
+/* Starts the server in its own process group, so that a terminal's signals
+ * to the build do not reach it, with its standard streams on /dev/null and
+ * no other descriptor of this process, so that it holds no pipe a caller of
+ * the build waits on. `limit` (TSC_TS_LISTEN_MEMORY=...) is added to the
+ * environment unless it sets TSC_TS_LISTEN_MEMORY. */
+static pid_t start_server(char **args, char *limit) {
+#ifdef __APPLE__
+  char **inherited = *_NSGetEnviron();
+#else
+  char **inherited = environ;
+#endif
+  size_t count = 0;
+  int has_limit = 0;
+  for (; inherited[count] != NULL; count++)
+    if (strncmp(inherited[count], "TSC_TS_LISTEN_MEMORY=", 21) == 0) has_limit = 1;
+  char **environment = malloc((count + 2) * sizeof(char *));
+  if (environment == NULL) { error_text("out of memory"); return -1; }
+  memcpy(environment, inherited, count * sizeof(char *));
+  environment[count] = has_limit ? NULL : limit;
+  environment[count + 1] = NULL;
+  long descriptors = sysconf(_SC_OPEN_MAX);
+  if (descriptors < 0 || descriptors > 65536) descriptors = 65536;
+  sigset_t signals;
+  sigemptyset(&signals);
+  pid_t pid = fork();
+  if (pid == 0) {
+    // Only async-signal-safe calls until exec.
+    int null = open("/dev/null", O_RDWR);
+    if (setpgid(0, 0) != 0 || null < 0 || dup2(null, STDIN_FILENO) < 0 || dup2(null, STDOUT_FILENO) < 0 ||
+        dup2(null, STDERR_FILENO) < 0)
+      _exit(127);
+#if defined(__linux__) && defined(SYS_close_range)
+    if (syscall(SYS_close_range, 3U, ~0U, 0U) != 0)
+#endif
+      for (long fd = 3; fd < descriptors; fd++) close((int)fd);
+    sigprocmask(SIG_SETMASK, &signals, NULL);
+    execve(args[0], args, environment);
+    _exit(127);
+  }
+  int error = errno;
+  free(environment);
+  if (pid < 0) { system_error(error); return -1; }
+  return pid;
+}
+
+uint32_t scriptc_ts7_attach(const uint8_t *name, size_t name_size,
+                           const uint8_t *executable, size_t executable_size,
+                           const uint8_t *cwd, size_t cwd_size,
+                           const uint8_t *callbacks, size_t callbacks_size,
+                           uint8_t timing, uint8_t libraries_from_disk, uint32_t idle_exit,
+                           uint32_t memory) {
+  if (next_id == 0) { error_text("server handle IDs are exhausted"); return 0; }
+  char *server = copy_argument(name, name_size, "");
+  if (server == NULL) return 0;
+  char directory[256], socket_path[sizeof(((struct sockaddr_un *)0)->sun_path)], lock_path[512];
+  int named = strchr(server, '/') == NULL;
+  if (!named) error_text("checker server names cannot contain '/'");
+  if (named) named = server_directory(directory, sizeof(directory));
+  if (named) {
+    int count = snprintf(socket_path, sizeof(socket_path), "%s/%s.sock", directory, server);
+    named = count > 0 && (size_t)count < sizeof(socket_path);
+    if (!named) error_text("checker server socket path is too long");
+    else (void)snprintf(lock_path, sizeof(lock_path), "%s.lock", socket_path);
+  }
+  free(server);
+  if (!named) return 0;
+  // One build at a time uses the server; a build that finds it in use
+  // starts its own server instead of waiting.
+  int lock = open(lock_path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+  if (lock < 0) { system_error(errno); return 0; }
+  if (flock(lock, LOCK_EX | LOCK_NB) != 0) {
+    if (errno == EWOULDBLOCK) error_text("the checker server is in use");
+    else system_error(errno);
+    close(lock);
+    return 0;
+  }
+  int fd = connect_server(socket_path);
+  if (fd < 0) {
+    char *exe = copy_argument(executable, executable_size, "");
+    char *dir = exe == NULL ? NULL : copy_argument(cwd, cwd_size, "");
+    char *callback_flag = dir == NULL ? NULL : copy_argument(callbacks, callbacks_size, "--callbacks=");
+    char idle[16], limit[48];
+    (void)snprintf(idle, sizeof(idle), "%lu", (unsigned long)idle_exit);
+    (void)snprintf(limit, sizeof(limit), "TSC_TS_LISTEN_MEMORY=%lu", (unsigned long)memory);
+    pid_t pid = -1;
+    if (callback_flag != NULL) {
+      char *args[12] = {exe, "--api", "--cwd", dir, callback_flag, "--listen", socket_path, "--idle-exit", idle};
+      size_t argc = 9;
+      if (timing) args[argc++] = "--timing";
+      if (libraries_from_disk) args[argc++] = "--default-libraries-from-disk";
+      args[argc] = NULL;
+      pid = start_server(args, limit);
+    }
+    free(exe); free(dir); free(callback_flag);
+    // The server listens as it starts. One that exits first, such as a
+    // tsc-ts without --listen, or one that is not listening within 2 s,
+    // leaves this build to start its own server.
+    for (int attempt = 0; pid > 0; attempt++) {
+      fd = connect_server(socket_path);
+      if (fd >= 0) break;
+      int status;
+      pid_t result;
+      do { result = waitpid(pid, &status, WNOHANG); } while (result < 0 && errno == EINTR);
+      if (result != 0) { error_text("the checker server exited as it started"); break; }
+      if (attempt == 1000) { error_text("the checker server did not start listening"); break; }
+      struct timespec delay = {0, 2000000};
+      while (nanosleep(&delay, &delay) != 0 && errno == EINTR) {}
+    }
+  }
+  if (fd < 0) { close(lock); return 0; }
+  Ts7Process *p = calloc(1, sizeof(*p));
+  if (p == NULL) { error_text("out of memory"); close(fd); close(lock); return 0; }
+  if (!exit_registered) {
+    if (atexit(scriptc_ts7_close_all) != 0) {
+      error_text("could not register server cleanup"); free(p); close(fd); close(lock); return 0;
+    }
+    exit_registered = 1;
+  }
+  p->socket = fd;
+  p->lock = lock;
+  p->id = next_id++;
+  p->next = processes;
+  processes = p;
+  return p->id;
+}
+#endif
 
 uint32_t scriptc_ts7_pid(uint32_t handle) {
   Ts7Process *p = find_process(handle);
@@ -404,4 +604,48 @@ void scriptc_ts7_close(uint32_t handle) {
 
 void scriptc_ts7_close_all(void) {
   while (processes != NULL) scriptc_ts7_close(processes->id);
+}
+
+static int json_space(uint8_t byte) {
+  return byte == ' ' || byte == '\n' || byte == '\r' || byte == '\t';
+}
+
+int32_t scriptc_ts7_json_value_end(const uint8_t *bytes, size_t size, uint32_t start) {
+  if (size > INT32_MAX) return -1;
+  size_t depth = 0;
+  size_t index = start;
+  while (index < size) {
+    uint8_t byte = bytes[index];
+    if (byte == '"') {
+      index++;
+      // The quote found stays the candidate end until an escape skips it, so
+      // every byte of the string is scanned once by each search.
+      const uint8_t *quote = index < size ? memchr(bytes + index, '"', size - index) : NULL;
+      for (;;) {
+        if (quote == NULL) return -1;
+        const uint8_t *escape = memchr(bytes + index, '\\', (size_t)(quote - (bytes + index)));
+        if (escape == NULL) {
+          index = (size_t)(quote - bytes);
+          break;
+        }
+        index = (size_t)(escape - bytes) + 2;
+        if (bytes + index > quote) quote = index < size ? memchr(bytes + index, '"', size - index) : NULL;
+      }
+      index++;
+      if (depth == 0) return (int32_t)index;
+      continue;
+    }
+    if (byte == '{' || byte == '[') {
+      depth++;
+    } else if (byte == '}' || byte == ']') {
+      if (depth == 0) return (int32_t)index;
+      depth--;
+      if (depth == 0) return (int32_t)(index + 1);
+    } else if (depth == 0 && (byte == ',' || json_space(byte))) {
+      return (int32_t)index;
+    }
+    index++;
+  }
+  if (depth != 0) return -1;
+  return (int32_t)index;
 }

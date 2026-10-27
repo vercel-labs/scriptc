@@ -6,9 +6,11 @@
  *
  * A binding settles at the first statement of its hoisting scope (the
  * function body or the source file) that stores it unconditionally: a
- * direct `var x = e`, `x = e;`, or a loop declaring it (`for (var i = 0;
- * ...)`, `for (var k in o)`), whose own condition, update and body run
- * after the store. A read settles when it runs after that statement:
+ * direct `var x = e`, `x = e;`, or a `for` loop declaring it (`for (var
+ * i = 0; ...)`), whose own condition, update and body run after the store.
+ * A `for (var k in o)` or `for (var v of xs)` loop stores the binding only
+ * when it iterates, so it settles the reads in its body and no others. A
+ * read settles when it runs after the settling statement:
  * - a read in the scope's own code, in a TypeScript file: tsc's
  *   definite-assignment analysis rejects any earlier one;
  * - a read in the scope's own code, in a JavaScript file: its statement
@@ -41,7 +43,10 @@ export function earlyReadVarSymbols(
     if (sf.isDeclarationFile) continue;
     const bindings = new Map<ts.Symbol, Binding>();
     const names = new Set<string>();
+    const functionNames = new Set<string>();
     ts.walkPreorder(sf, (node) => {
+      if (ts.isFunctionDeclaration(node) && node.name !== undefined)
+        functionNames.add(node.name.text);
       if (!ts.isVariableDeclarationList(node)) return undefined;
       if ((node.flags & (ts.NodeFlags.Let | ts.NodeFlags.Const | ts.NodeFlags.Using)) !== 0)
         return undefined;
@@ -52,7 +57,7 @@ export function earlyReadVarSymbols(
         ts.getModifiers(statement)?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword)
       )
         return undefined;
-      for (const declaration of node.declarations) {
+      for (const declaration of node.declarations.nodes) {
         for (const name of boundIdentifiersOf(declaration.name)) {
           const symbol = checker.getSymbolAtLocation(name);
           if (symbol === undefined || !excludesUndefined(lowerer, name)) continue;
@@ -66,7 +71,7 @@ export function earlyReadVarSymbols(
     });
     if (bindings.size === 0) continue;
     const refs = referencesByName(lowerer, sf, names);
-    const analysis = new ScopeAnalysis(lowerer, sf);
+    const analysis = new ScopeAnalysis(lowerer, sf, functionNames);
     for (const [symbol, binding] of bindings) {
       const settle = analysis.settleIndex(binding.scope, symbol);
       const early = (refs.get(symbol) ?? []).some(
@@ -97,13 +102,13 @@ function hoistingScopeOf(node: ts.Node): Scope {
     )
       return p;
   }
-  return node.getSourceFile();
+  return ts.getSourceFileOfNode(node);
 }
 
 function statementsOf(scope: Scope): readonly ts.Statement[] {
-  if (ts.isSourceFile(scope)) return scope.statements;
+  if (ts.isSourceFile(scope)) return scope.statements.nodes;
   const body = scope.body;
-  return body !== undefined && ts.isBlock(body) ? body.statements : [];
+  return body !== undefined && ts.isBlock(body) ? body.statements.nodes : [];
 }
 
 /** Whether the binding's declared type has no undefined value. */
@@ -151,6 +156,31 @@ function referencesByName(
     if (ts.isIdentifier(node) && names.has(node.text)) idents.push(node);
     return undefined;
   });
+  return referencesBySymbol(lowerer, idents);
+}
+
+/** The identifiers of `sf` named in `names`, by name, each list in source
+ * order. */
+function identifiersByName(
+  sf: ts.SourceFile,
+  names: ReadonlySet<string>,
+): Map<string, ts.Identifier[]> {
+  const out = new Map<string, ts.Identifier[]>();
+  ts.walkPreorder(sf, (node) => {
+    if (!ts.isIdentifier(node) || !names.has(node.text)) return undefined;
+    const list = out.get(node.text);
+    if (list) list.push(node);
+    else out.set(node.text, [node]);
+    return undefined;
+  });
+  return out;
+}
+
+/** `idents` by resolved symbol, each list in the order of `idents`. */
+function referencesBySymbol(
+  lowerer: Lowerer,
+  idents: readonly ts.Identifier[],
+): Map<ts.Symbol, ts.Identifier[]> {
   lowerer.checker.prefetchSymbolNodesExact(idents);
   const out = new Map<ts.Symbol, ts.Identifier[]>();
   for (const id of idents) {
@@ -166,6 +196,18 @@ function referencesByName(
   return out;
 }
 
+/** Where a binding is first stored unconditionally: the scope statement's
+ * index, and for a declarator of a `var` statement or a `for` initializer,
+ * the list and the declarator's end. */
+interface Settle {
+  index: number;
+  list: ts.VariableDeclarationList | null;
+  end: number;
+  /** The first for-in/of loop declaring the binding before `index`, whose
+   * body runs after its store, or -1. */
+  loop: number;
+}
+
 class ScopeAnalysis {
   private readonly js: boolean;
   /** Whether a function declaration's references all settle, by scope
@@ -173,19 +215,26 @@ class ScopeAnalysis {
    * its own body names is never called through that name). */
   private readonly functionMemo = new Map<string, boolean>();
   private readonly functionRefs = new Map<ts.Node, ts.Identifier[]>();
+  /** The file's identifiers named like one of its function declarations,
+   * by name, collected in one walk on first use. */
+  private functionNameIdents: Map<string, ts.Identifier[]> | null = null;
 
   constructor(
     private readonly lowerer: Lowerer,
     private readonly sf: ts.SourceFile,
+    private readonly functionNames: ReadonlySet<string>,
   ) {
     this.js = isJsSourceFile(sf);
   }
 
   /** The index of the scope statement that first stores `symbol`
-   * unconditionally, or Infinity. */
-  settleIndex(scope: Scope, symbol: ts.Symbol): number {
+   * unconditionally (Infinity when none does), and, when that statement
+   * declares it in a `var` statement or a `for` initializer, the end of the
+   * storing declarator: later declarators of the list run after it. */
+  settleIndex(scope: Scope, symbol: ts.Symbol): Settle {
     const statements = statementsOf(scope);
     const checker = this.lowerer.checker;
+    let loopIndex = -1;
     for (let i = 0; i < statements.length; i++) {
       const s = statements[i]!;
       const list = ts.isVariableStatement(s)
@@ -197,12 +246,14 @@ class ScopeAnalysis {
           : null;
       if (list !== null) {
         const loop = !ts.isVariableStatement(s) && !ts.isForStatement(s);
-        for (const d of list.declarations) {
+        for (const d of list.declarations.nodes) {
           if (
             (d.initializer !== undefined || loop) &&
             boundIdentifiersOf(d.name).some((n) => checker.getSymbolAtLocation(n) === symbol)
-          )
-            return i;
+          ) {
+            if (!loop) return { index: i, list, end: d.end, loop: loopIndex };
+            if (loopIndex < 0) loopIndex = i;
+          }
         }
       } else if (
         ts.isExpressionStatement(s) &&
@@ -211,20 +262,21 @@ class ScopeAnalysis {
         ts.isIdentifier(s.expression.left) &&
         checker.getSymbolAtLocation(s.expression.left) === symbol
       ) {
-        return i;
+        return { index: i, list: null, end: -1, loop: loopIndex };
       }
     }
-    return Infinity;
+    return { index: Infinity, list: null, end: -1, loop: loopIndex };
   }
 
   /** Whether `ref` (inside `scope`, or in another module) runs only after
-   * the statement at index `settle`. `read`: `ref` reads the binding
-   * itself, so tsc vouches for one in the scope's own code. */
-  settles(scope: Scope, settle: number, ref: ts.Identifier, read = true): boolean {
-    if (ref.getSourceFile() !== this.sf) return true;
+   * the store `settle` describes. `read`: `ref` reads the binding itself,
+   * so tsc vouches for one in the scope's own code. */
+  settles(scope: Scope, settle: Settle, ref: ts.Identifier, read = true): boolean {
+    if (ts.getSourceFileOfNode(ref) !== this.sf) return true;
     const statements = statementsOf(scope);
     let deferred: ts.Node | null = null;
     let top: ts.Node | null = null;
+    const container: ts.Node | undefined = ts.isSourceFile(scope) ? scope : scope.body;
     for (let n: ts.Node = ref; n.parent !== undefined && n !== scope; n = n.parent) {
       if (
         ts.isFunctionLike(n) ||
@@ -233,18 +285,26 @@ class ScopeAnalysis {
         ts.isClassStaticBlockDeclaration(n)
       )
         deferred = n;
-      if (n.parent === scope || (!ts.isSourceFile(scope) && n.parent === scope.body)) top = n;
+      // The scope's own statement, not the function body that holds it.
+      if (n.parent === container) top = n;
     }
     if (top === null) return false;
     if (deferred === null && read && !this.js) return true;
     if (deferred !== null && ts.isFunctionDeclaration(deferred) && deferred.name !== undefined)
       return this.functionSettles(scope, settle, deferred);
     const index = statements.indexOf(top as ts.Statement);
-    return index > settle || (index === settle && settlesWithin(top, ref));
+    return (
+      index > settle.index ||
+      (index === settle.index &&
+        (settlesWithin(top, ref) ||
+          // A later declarator of the storing list (`var a = {}, b = { ...a }`).
+          (settle.list !== null && isInside(ref, settle.list) && ref.pos >= settle.end))) ||
+      (index === settle.loop && settlesWithin(top, ref))
+    );
   }
 
-  private functionSettles(scope: Scope, settle: number, fn: ts.FunctionDeclaration): boolean {
-    const key = `${fn.pos}:${settle}`;
+  private functionSettles(scope: Scope, settle: Settle, fn: ts.FunctionDeclaration): boolean {
+    const key = `${fn.pos}:${settle.index}:${settle.end}:${settle.loop}`;
     const known = this.functionMemo.get(key);
     if (known !== undefined) return known;
     this.functionMemo.set(key, true);
@@ -263,11 +323,18 @@ class ScopeAnalysis {
     const refs =
       symbol === undefined
         ? []
-        : (referencesByName(this.lowerer, this.sf, new Set([name.text])).get(symbol) ?? []).filter(
-            (ref) => ref !== name,
-          );
+        : (
+            referencesBySymbol(this.lowerer, this.identifiersNamed(name.text)).get(symbol) ?? []
+          ).filter((ref) => ref !== name);
     this.functionRefs.set(fn, refs);
     return refs;
+  }
+
+  /** The identifiers named `text`, the name of a function declaration of
+   * the file. */
+  private identifiersNamed(text: string): readonly ts.Identifier[] {
+    this.functionNameIdents ??= identifiersByName(this.sf, this.functionNames);
+    return this.functionNameIdents.get(text) ?? [];
   }
 }
 

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7259-promises-pipeline-stage-options.cjs"
+ ],
+ "diags": []
+}

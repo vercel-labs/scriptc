@@ -94,7 +94,7 @@ export function moduleSpecifiersOfFile(sf: ts.SourceFile): ModuleSpecifiers {
         ts.isImportDeclaration(n) &&
         n.importClause?.namedBindings !== undefined &&
         ts.isNamedImports(n.importClause.namedBindings) &&
-        n.importClause.namedBindings.elements.some((el) => el.name.text === "__require")
+        n.importClause.namedBindings.elements.nodes.some((el) => el.name.text === "__require")
       ) {
         requireHelperImport = n.moduleSpecifier.text;
       }
@@ -102,12 +102,14 @@ export function moduleSpecifiersOfFile(sf: ts.SourceFile): ModuleSpecifiers {
         ts.isExportDeclaration(n) &&
         n.exportClause !== undefined &&
         ts.isNamedExports(n.exportClause) &&
-        n.exportClause.elements.some((el) => (el.propertyName ?? el.name).text === "__require")
+        n.exportClause.elements.nodes.some(
+          (el) => (el.propertyName ?? el.name).text === "__require",
+        )
       ) {
         requireHelperReexport = n.moduleSpecifier.text;
       }
     } else if (ts.isCallExpression(n)) {
-      const arg = n.arguments[0];
+      const arg = n.arguments.nodes[0];
       if (
         n.expression.kind === ts.SyntaxKind.ImportKeyword &&
         arg !== undefined &&
@@ -119,7 +121,7 @@ export function moduleSpecifiersOfFile(sf: ts.SourceFile): ModuleSpecifiers {
         n.expression.name.text === "resolve" &&
         ts.isMetaProperty(n.expression.expression) &&
         n.expression.expression.keywordToken === ts.SyntaxKind.ImportKeyword &&
-        n.arguments.length >= 1 &&
+        n.arguments.nodes.length >= 1 &&
         arg !== undefined &&
         ts.isStringLiteralLike(arg)
       ) {
@@ -132,7 +134,7 @@ export function moduleSpecifiersOfFile(sf: ts.SourceFile): ModuleSpecifiers {
             n.expression.argumentExpression.text === "require")) &&
         ts.isIdentifier(n.expression.expression) &&
         n.expression.expression.text === "module" &&
-        n.arguments.length === 1 &&
+        n.arguments.nodes.length === 1 &&
         arg !== undefined &&
         ts.isStringLiteralLike(arg)
       ) {
@@ -140,7 +142,7 @@ export function moduleSpecifiersOfFile(sf: ts.SourceFile): ModuleSpecifiers {
       } else if (
         ts.isIdentifier(n.expression) &&
         (n.expression.text === "require" || n.expression.text === "__require") &&
-        n.arguments.length === 1 &&
+        n.arguments.nodes.length === 1 &&
         arg !== undefined &&
         ts.isStringLiteralLike(arg)
       ) {
@@ -177,14 +179,14 @@ export function sourceImportsOfFile(sf: ts.SourceFile): { spec: string; typeOnly
         : n.isTypeOnly;
       out.push({ spec: n.moduleSpecifier.text, typeOnly });
     } else if (ts.isCallExpression(n)) {
-      const arg = n.arguments[0];
+      const arg = n.arguments.nodes[0];
       if (
         arg !== undefined &&
         ts.isStringLiteralLike(arg) &&
         (n.expression.kind === ts.SyntaxKind.ImportKeyword ||
           (ts.isIdentifier(n.expression) &&
             n.expression.text === "require" &&
-            n.arguments.length === 1))
+            n.arguments.nodes.length === 1))
       ) {
         out.push({ spec: arg.text, typeOnly: false });
       }

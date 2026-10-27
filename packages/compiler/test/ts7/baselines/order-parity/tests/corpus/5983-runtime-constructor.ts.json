@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5983-runtime-constructor.ts"
+ ],
+ "diags": []
+}

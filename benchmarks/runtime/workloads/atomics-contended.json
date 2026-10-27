@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/atomics-contended.ts",
+  "args": [
+    "2"
+  ]
+}

@@ -26,7 +26,7 @@ function freshDir(dir: string): void {
   }
   mkdirSync(dir);
 }
-const scratch = "tmp-993-" + tail(process.argv[1]);
+const scratch = "tmp-993-" + tail(process.argv[1]) + "-" + process.pid;
 freshDir(scratch);
 
 console.log(readdirSync(scratch).length); // fresh dir is empty

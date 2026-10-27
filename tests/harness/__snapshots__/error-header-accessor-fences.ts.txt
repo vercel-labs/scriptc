@@ -1,0 +1,15 @@
+error-header-accessor-fences.ts:14:26 - error SC2020: 'util.inspect of 'Named' values' is part of the standard library types but has no scriptc lowering yet
+
+  13 | 
+  14 | console.log(util.inspect(new Named("accessor")));
+     |                          ^~~~~~~~~~~~~~~~~~~~~
+  15 | console.log(new Deeper("inherited accessor"));
+
+  hint: error subclasses whose name, message or stack is an accessor or a prototype property have no inspect lowering yet
+
+error-header-accessor-fences.ts:15:13 - error SC1090: console.log of 'Deeper' values (error subclasses whose name, message or stack is an accessor or a prototype property have no inspect lowering yet) are not supported yet
+
+  14 | console.log(util.inspect(new Named("accessor")));
+  15 | console.log(new Deeper("inherited accessor"));
+     |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  16 | 

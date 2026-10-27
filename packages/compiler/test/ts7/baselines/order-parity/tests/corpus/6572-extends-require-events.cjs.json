@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6572-extends-require-events.cjs"
+ ],
+ "diags": []
+}

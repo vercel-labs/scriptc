@@ -43,6 +43,7 @@ export function findInitializedByteLoopBindings(
         if (stmt.init) list([stmt.init], inner);
         list(stmt.body, inner);
       }
+      if (stmt.kind === "while") entries.set(stmt, new Set(known));
       if (stmt.kind === "while" || stmt.kind === "doWhile") list(stmt.body, new Set(known));
     }
   }

@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6481-node-stream-dyn-writable/sources.js",
+  "<repo>/tests/corpus/6481-node-stream-dyn-writable/main.ts"
+ ],
+ "diags": []
+}

@@ -48,7 +48,7 @@ function fn(name: string, params: string[], body: IrStmt[], returnType = F64): I
 
 function module(): IrModule {
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     functions: [
@@ -158,7 +158,7 @@ function unionModule(): IrModule {
     loc,
   };
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     unions: [{ id: "optional", arms: [F64, UNDEFINED_T] }],

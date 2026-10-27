@@ -6,8 +6,13 @@ export class ClassProtocols {
   private implemented: Set<ts.Symbol> | null = null;
   private readonly methods = new Map<string, ts.ClassLikeDeclaration[]>();
   private readonly answers = new Map<ts.Type, boolean>();
+  /** The program classes each Pick or Omit view accepts (classesAcceptedBy). */
+  private readonly accepted = new Map<ts.Type, ts.Symbol[]>();
   /** What markIdentityFlows learned about the program, while it runs. */
   private facts: FlowFacts | null = null;
+  /** The value types of the string-keyed dictionaries that keep checked
+   * identity (see markDictionaryViews). */
+  private readonly dictionaryViews = new Set<ts.Type>();
 
   constructor(
     private readonly checker: ts.TypeChecker,
@@ -29,32 +34,31 @@ export class ClassProtocols {
       node.kind === ts.SyntaxKind.ThisKeyword || ts.forEachChild(node, usesReceiver) === true;
     const visit = (node: ts.Node): void => {
       if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
-        for (const clause of node.heritageClauses ?? [])
+        for (const clause of node.heritageClauses?.nodes ?? [])
           if (clause.token === ts.SyntaxKind.ImplementsKeyword)
-            for (const protocol of clause.types) add(this.checker.getTypeAtLocation(protocol));
+            for (const protocol of clause.types.nodes)
+              add(this.checker.getTypeAtLocation(protocol));
         const symbol = node.name ? this.checker.getSymbolAtLocation(node.name) : undefined;
         const instance = symbol ? this.checker.getDeclaredTypeOfSymbol(symbol) : undefined;
         for (const property of instance ? this.checker.getPropertiesOfType(instance) : []) {
           if (
-            !this.checker
-              .declarationsOf(property)
-              .some(
-                (member) =>
-                  ts.isMethodDeclaration(member) &&
-                  !member.modifiers?.some(
-                    (modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword,
-                  ),
-              )
+            !property.declarations.some(
+              (member) =>
+                ts.isMethodDeclaration(member) &&
+                !member.modifiers?.nodes.some(
+                  (modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword,
+                ),
+            )
           )
             continue;
-          const entries = this.methods.get(property.name) ?? [];
+          const entries = this.methods.get(ts.symbolName(property)) ?? [];
           entries.push(node);
-          this.methods.set(property.name, entries);
+          this.methods.set(ts.symbolName(property), entries);
         }
       }
       if (
         ts.isObjectLiteralExpression(node) &&
-        node.properties.some(
+        node.properties.nodes.some(
           (property) =>
             (ts.isMethodDeclaration(property) ||
               ts.isGetAccessorDeclaration(property) ||
@@ -97,7 +101,13 @@ export class ClassProtocols {
    * could read a stale value. A view of readonly data that nothing
    * observes stays a native record. */
   private markIdentityFlows(protocols: Set<ts.Symbol>): void {
-    const sites: { source: ts.Expression; target: () => ts.Type | undefined }[] = [];
+    const sites: {
+      source: ts.Expression;
+      target: () => ts.Type | undefined;
+      /** The node whose contextual type `target` answers. */
+      contextual?: ts.Expression;
+      assertion?: true;
+    }[] = [];
     /** Expressions whose values are observed as whole objects. */
     const observed: ts.Expression[] = [];
     /** Receivers whose type arguments or elements are observed (Set and Map
@@ -117,7 +127,8 @@ export class ClassProtocols {
     const callbackParams: { fn: ts.SignatureDeclaration; index: number; name: ts.Node }[] = [];
     const contextual = (expr: ts.Expression) => () => this.checker.getContextualType(expr);
     const flow = (expr: ts.Expression | undefined): void => {
-      if (expr !== undefined) sites.push({ source: expr, target: contextual(expr) });
+      if (expr !== undefined)
+        sites.push({ source: expr, target: contextual(expr), contextual: expr });
     };
     const write = (target: ts.Expression): void => {
       while (ts.isParenthesizedExpression(target) || ts.isNonNullExpression(target))
@@ -167,14 +178,14 @@ export class ClassProtocols {
         observed.push(node.expression);
       } else if (ts.isSwitchStatement(node)) {
         // `switch` matches its cases with ===.
-        const cases = node.caseBlock.clauses
+        const cases = node.caseBlock.clauses.nodes
           .filter(ts.isCaseClause)
           .map((clause) => clause.expression)
           .filter((expr) => !isNullishLiteral(expr) && !isPrimitiveLiteral(expr));
         if (cases.length > 0) observed.push(node.expression, ...cases);
       } else if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
         const callee = node.expression;
-        const args = node.arguments ?? [];
+        const args = node.arguments?.nodes ?? [];
         const member = ts.isPropertyAccessExpression(callee) ? callee.name.text : null;
         const owner =
           ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)
@@ -204,7 +215,8 @@ export class ClassProtocols {
     };
     const visit = (node: ts.Node): void => {
       observe(node);
-      if (ts.isCallExpression(node) || ts.isNewExpression(node)) node.arguments?.forEach(flow);
+      if (ts.isCallExpression(node) || ts.isNewExpression(node))
+        node.arguments?.nodes.forEach(flow);
       else if (ts.isVariableDeclaration(node) && node.type !== undefined) flow(node.initializer);
       else if (ts.isPropertyDeclaration(node) && node.type !== undefined) flow(node.initializer);
       else if (ts.isParameter(node) && node.type !== undefined) flow(node.initializer);
@@ -212,7 +224,7 @@ export class ClassProtocols {
       else if (ts.isArrowFunction(node) && !ts.isBlock(node.body)) flow(node.body);
       else if (ts.isYieldExpression(node)) flow(node.expression);
       else if (ts.isArrayLiteralExpression(node))
-        node.elements.forEach((element) => {
+        node.elements.nodes.forEach((element) => {
           if (!ts.isSpreadElement(element) && !ts.isOmittedExpression(element)) flow(element);
         });
       else if (ts.isPropertyAssignment(node)) flow(node.initializer);
@@ -231,10 +243,11 @@ export class ClassProtocols {
         sites.push({
           source: node.expression,
           target: () => this.checker.getTypeFromTypeNode(typeNode),
+          assertion: true,
         });
       }
       if (ts.isArrowFunction(node) || ts.isFunctionExpression(node))
-        node.parameters.forEach((param, index) => {
+        node.parameters.nodes.forEach((param, index) => {
           if (param.type !== undefined) callbackParams.push({ fn: node, index, name: param.name });
         });
       ts.forEachChild(node, visit);
@@ -287,7 +300,7 @@ export class ClassProtocols {
       for (const part of parts) {
         if ((part.flags & ts.TypeFlags.TypeParameter) === 0) continue;
         const symbol = part.getSymbol();
-        for (const declaration of symbol ? this.checker.declarationsOf(symbol) : [])
+        for (const declaration of symbol ? symbol.declarations : [])
           if (ts.isTypeParameterDeclaration(declaration) && declaration.parent !== undefined)
             facts.genericObservers.add(declaration.parent);
       }
@@ -313,6 +326,7 @@ export class ClassProtocols {
         else if (names !== "all") names.add(name);
       }
     }
+    this.markDictionaryViews(sites, sourceNodes, observedNodes, writeNodes);
     for (let i = 0; i < looseArguments.length; i++) {
       const type = typeOf(looseNodes[i]!);
       if (type === undefined) continue;
@@ -322,12 +336,38 @@ export class ClassProtocols {
         facts.loose.push({ node: looseArguments[i]!, call: looseCalls[i]!, symbols });
     }
     this.facts = facts;
-    const pending: { sourceType: ts.Type; target: () => ts.Type | undefined }[] = [];
+    const pending: {
+      sourceType: ts.Type;
+      target: () => ts.Type | undefined;
+      contextual?: ts.Expression;
+    }[] = [];
+    /** Views a value of unknown origin is asserted to and that expose a
+     * method of a class the view accepts (see methodViewSources). */
+    const methodViews = new Set<ts.Symbol>();
     for (let i = 0; i < sites.length; i++) {
       const site = sites[i]!;
       const source = sourceNodes[i]!;
       const sourceType = attempt(() => this.checker.getTypeAtLocation(source));
-      if (sourceType !== undefined) pending.push({ sourceType, target: site.target });
+      if (sourceType === undefined) continue;
+      if (
+        site.assertion &&
+        (sourceType.flags & (ts.TypeFlags.Unknown | ts.TypeFlags.Any)) !== 0 &&
+        this.methods.size > 0
+      ) {
+        const target = attempt(site.target);
+        if (target !== undefined)
+          for (const { classType, view } of attempt(() => this.methodViewSources(target)) ?? []) {
+            pending.push({ sourceType: classType, target: () => view });
+            const symbol = view.getSymbol();
+            if (symbol !== undefined) methodViews.add(symbol);
+          }
+        continue;
+      }
+      pending.push(
+        site.contextual === undefined
+          ? { sourceType, target: site.target }
+          : { sourceType, target: site.target, contextual: site.contextual },
+      );
     }
     for (const { fn, index, name } of callbackParams) {
       attempt(() => {
@@ -352,6 +392,19 @@ export class ClassProtocols {
     // flows and origins are complete.
     const before = new Set(marked);
     const targets = new Map<number, ts.Type | undefined>();
+    // The fixpoint asks the target of each site whose source carries
+    // identity: one batch asks those of the sites that carry it now, and a
+    // site that starts to as marks grow asks its own.
+    attempt(() =>
+      this.checker.prefetchContextualTypes(
+        pending.flatMap((entry) =>
+          entry.contextual !== undefined &&
+          attempt(() => this.carriesIdentity(entry.sourceType, marked)) === true
+            ? [entry.contextual]
+            : [],
+        ),
+      ),
+    );
     let changed = true;
     while (changed) {
       changed = false;
@@ -370,7 +423,12 @@ export class ClassProtocols {
     // Keep the marks a copy would be told apart from, and the marks whose
     // values flow into a kept view or another live protocol.
     const added = [...marked].filter((symbol) => !before.has(symbol));
-    const kept = new Set(added.filter((symbol) => this.needsView(symbol, marked, facts)));
+    // A copy of an instance drops the methods its class defines, so a view
+    // that exposes one of them stays live wherever such an instance may
+    // arrive.
+    const kept = new Set(
+      added.filter((symbol) => methodViews.has(symbol) || this.needsView(symbol, marked, facts)),
+    );
     let grew = true;
     while (grew) {
       grew = false;
@@ -387,6 +445,33 @@ export class ClassProtocols {
     }
     for (const symbol of added) if (!kept.has(symbol)) marked.delete(symbol);
     this.facts = null;
+  }
+
+  /** The program classes a value asserted from `unknown` or `any` to
+   * `target` may be an instance of while `target` exposes one of their
+   * methods: for each structural part of `target` with a callable member,
+   * the instance type of every class that declares a method of that name
+   * and is assignable to the part. A record copy of such an instance would
+   * drop the method, which Node reads from the instance's prototype. */
+  private methodViewSources(target: ts.Type): { classType: ts.Type; view: ts.Type }[] {
+    const parts = target.isUnionType() ? ts.constituentTypes(target) : [target];
+    const out: { classType: ts.Type; view: ts.Type }[] = [];
+    for (const part of parts) {
+      if (!this.isStructuralTarget(part)) continue;
+      for (const property of this.checker.getPropertiesOfType(part)) {
+        const memberType = this.checker.getNonNullableType(this.checker.getTypeOfSymbol(property));
+        if (this.checker.getCallSignatures(memberType).length === 0) continue;
+        for (const declaration of this.methods.get(ts.symbolName(property)) ?? []) {
+          const classSymbol = declaration.name
+            ? this.checker.getSymbolAtLocation(declaration.name)
+            : undefined;
+          if (classSymbol === undefined) continue;
+          const classType = this.checker.getDeclaredTypeOfSymbol(classSymbol);
+          if (this.checker.isTypeAssignableTo(classType, part)) out.push({ classType, view: part });
+        }
+      }
+    }
+    return out;
   }
 
   /** The symbols of `type`'s object parts: union and intersection members,
@@ -414,6 +499,14 @@ export class ClassProtocols {
         for (const part of ts.constituentTypes(type)) add(part);
         return;
       }
+      // A Pick or Omit view's values are instances of the class it views,
+      // or of any other program class that has the view's members.
+      if (this.pickOfProgramClass(type)) {
+        add(type.getAliasTypeArguments()[0]!);
+        for (const other of this.classesAcceptedBy(type))
+          for (const related of this.classFamily(other, facts)) out.add(related);
+        return;
+      }
       const symbol = type.getSymbol();
       if (symbol === undefined) return;
       if (this.isProgramClassInstance(type)) {
@@ -427,6 +520,30 @@ export class ClassProtocols {
       if (element !== undefined) add(element);
     } else add(source);
     return out;
+  }
+
+  /** The program classes with methods whose instances are assignable to
+   * `type`. */
+  private classesAcceptedBy(type: ts.Type): ts.Symbol[] {
+    const known = this.accepted.get(type);
+    if (known !== undefined) return known;
+    this.index();
+    const found = new Set<ts.Symbol>();
+    for (const entries of this.methods.values())
+      for (const declaration of entries) {
+        const symbol = declaration.name
+          ? this.checker.getSymbolAtLocation(declaration.name)
+          : undefined;
+        if (
+          symbol !== undefined &&
+          !found.has(symbol) &&
+          this.checker.isTypeAssignableTo(this.checker.getDeclaredTypeOfSymbol(symbol), type)
+        )
+          found.add(symbol);
+      }
+    const result = [...found];
+    this.accepted.set(type, result);
+    return result;
   }
 
   /** A class symbol with its base classes and the program classes that
@@ -472,7 +589,7 @@ export class ClassProtocols {
     if (facts.observed.has(symbol) || facts.written.has(symbol)) return true;
     const target = facts.targets.get(symbol);
     if (target === undefined) return true;
-    const names = new Set(this.checker.getPropertiesOfType(target).map((p) => p.name));
+    const names = new Set(this.checker.getPropertiesOfType(target).map((p) => ts.symbolName(p)));
     const origins = facts.origins.get(symbol) ?? new Set<ts.Symbol>();
     const writesNames = (written: Set<string> | "all"): boolean =>
       written === "all" || [...written].some((name) => names.has(name));
@@ -499,7 +616,7 @@ export class ClassProtocols {
           if (context !== undefined && this.acceptsAnyValue(context)) return true;
           if (facts.genericObservers.size === 0) return false;
           const signature = this.checker.getResolvedSignature(arg.call);
-          const declaration = signature && this.checker.signatureDeclaration(signature);
+          const declaration = signature && signature.declaration;
           return (
             declaration !== undefined &&
             (facts.genericObservers.has(declaration) ||
@@ -517,14 +634,11 @@ export class ClassProtocols {
       .getPropertiesOfType(declared)
       .some(
         (property) =>
-          names.has(property.name) &&
-          this.checker
-            .declarationsOf(property)
-            .some(
-              (declaration) =>
-                ts.isGetAccessorDeclaration(declaration) ||
-                ts.isSetAccessorDeclaration(declaration),
-            ),
+          names.has(ts.symbolName(property)) &&
+          property.declarations.some(
+            (declaration) =>
+              ts.isGetAccessorDeclaration(declaration) || ts.isSetAccessorDeclaration(declaration),
+          ),
       );
   }
 
@@ -573,14 +687,185 @@ export class ClassProtocols {
     }
   }
 
+  /** `Pick<C, K>` or `Omit<C, K>` over a program class instance type: a
+   * view of the class's own members, spelled inline instead of as an
+   * interface. Like an interface the class matches, a view that exposes a
+   * method needs a live receiver (see protocol). */
+  private pickOfProgramClass(type: ts.Type): boolean {
+    const alias = type.getAliasSymbol();
+    if (alias === undefined || (ts.symbolName(alias) !== "Pick" && ts.symbolName(alias) !== "Omit"))
+      return false;
+    if (!alias.declarations.every((declaration) => declaration.getSourceFile().isDeclarationFile))
+      return false;
+    const source = type.getAliasTypeArguments()[0];
+    return source !== undefined && this.isProgramClassInstance(source);
+  }
+
+  /** String-keyed dictionaries (`Record<string, V>`, `{ [key: string]: V }`)
+   * that receive an existing record or class instance. Natively a
+   * dictionary is a key/value record, and converting another object into
+   * one copies its fields, so writes through the dictionary and identity
+   * checks would miss the original. When the program writes through, or
+   * observes, a value of such a dictionary type, every dictionary with that
+   * value type keeps checked identity instead (records with the same value
+   * type share one native layout, so values pass between them). A source
+   * counts when it is an existing object (a binding, member, element or
+   * `this`, not a fresh literal or call result) whose type is a program
+   * class instance or a record with declared properties, or a constant
+   * `{}`, `object` or `unknown` binding initialized with one. */
+  private markDictionaryViews(
+    sites: readonly {
+      source: ts.Expression;
+      target: () => ts.Type | undefined;
+      contextual?: ts.Expression;
+    }[],
+    sourceNodes: readonly ts.Expression[],
+    observedNodes: readonly ts.Expression[],
+    writeNodes: readonly ts.Expression[],
+  ): void {
+    // The calls the sites' arguments belong to, by callee name, built on
+    // first use.
+    let calls: Map<string, (ts.CallExpression | ts.NewExpression)[]> | null = null;
+    const callsNamed = (name: string): readonly (ts.CallExpression | ts.NewExpression)[] => {
+      if (calls === null) {
+        calls = new Map();
+        for (const site of sites) {
+          const call = site.contextual?.parent;
+          if (call === undefined || (!ts.isCallExpression(call) && !ts.isNewExpression(call)))
+            continue;
+          const callee = call.expression;
+          const named = ts.isIdentifier(callee)
+            ? callee.text
+            : ts.isPropertyAccessExpression(callee)
+              ? callee.name.text
+              : undefined;
+          if (named === undefined) continue;
+          const list = calls.get(named) ?? [];
+          if (!list.includes(call)) list.push(call);
+          calls.set(named, list);
+        }
+      }
+      return calls.get(name) ?? [];
+    };
+    const candidates: { index: number; sourceType: ts.Type }[] = [];
+    for (let i = 0; i < sites.length; i++) {
+      const source = sourceNodes[i]!;
+      if (!isExistingObject(source)) continue;
+      const sourceType = attempt(() => this.checker.getTypeAtLocation(source));
+      if (sourceType !== undefined && this.dictionarySource(source, sourceType, callsNamed))
+        candidates.push({ index: i, sourceType });
+    }
+    if (candidates.length === 0) return;
+    // One batch for the contextual targets of the candidate sites.
+    attempt(() =>
+      this.checker.prefetchContextualTypes(
+        candidates.flatMap(({ index }) => {
+          const contextual = sites[index]!.contextual;
+          return contextual === undefined ? [] : [contextual];
+        }),
+      ),
+    );
+    const received = new Set<ts.Type>();
+    for (const { index, sourceType } of candidates) {
+      const target = attempt(sites[index]!.target);
+      const parts =
+        target === undefined ? [] : target.isUnionType() ? ts.constituentTypes(target) : [target];
+      for (const part of parts) {
+        const value = this.dictionaryValueType(part);
+        // A dictionary of `unknown` or `any` values is checked-dynamic already.
+        if (
+          value !== undefined &&
+          (value.flags & (ts.TypeFlags.Unknown | ts.TypeFlags.Any)) === 0 &&
+          this.dictionaryValueType(sourceType) !== value
+        )
+          received.add(value);
+      }
+    }
+    if (received.size === 0) return;
+    // The dictionary values the program writes through or observes.
+    const seen = new Set<ts.Type>();
+    for (const node of [...writeNodes, ...observedNodes]) {
+      const type = attempt(() => this.checker.getTypeAtLocation(node));
+      const parts =
+        type === undefined ? [] : type.isUnionType() ? ts.constituentTypes(type) : [type];
+      for (const part of parts) {
+        const value = this.dictionaryValueType(part);
+        if (value !== undefined) seen.add(value);
+      }
+    }
+    for (const value of received) if (seen.has(value)) this.dictionaryViews.add(value);
+  }
+
+  /** Whether `source` holds an existing object that a dictionary
+   * conversion would copy. */
+  private dictionarySource(
+    source: ts.Expression,
+    type: ts.Type,
+    callsNamed: (name: string) => readonly (ts.CallExpression | ts.NewExpression)[],
+  ): boolean {
+    if (this.isProgramClassInstance(type) || this.isRecordWithFields(type)) return true;
+    if (!isDynamicView(this.checker, type) || !ts.isIdentifier(source)) return false;
+    const decl = attempt(() => this.checker.getSymbolAtLocation(source))?.valueDeclaration;
+    if (decl === undefined) return false;
+    const holdsObject = (expr: ts.Expression): boolean => {
+      const held = attempt(() => this.checker.getTypeAtLocation(this.flowSourceNode(expr)));
+      return (
+        held !== undefined && (this.isProgramClassInstance(held) || this.isRecordWithFields(held))
+      );
+    };
+    if (ts.isParameter(decl)) {
+      // A parameter holds what its callers pass: the calls of the function
+      // by name whose signature resolves to it.
+      const fn = decl.parent;
+      if (fn === undefined || !ts.isFunctionLike(fn)) return false;
+      const index = fn.parameters.nodes.indexOf(decl);
+      const name = functionName(fn);
+      if (name === undefined || index < 0) return false;
+      return callsNamed(name).some((call) => {
+        const argument = call.arguments?.nodes[index];
+        return (
+          argument !== undefined &&
+          !ts.isSpreadElement(argument) &&
+          attempt(() => this.checker.getResolvedSignature(call)?.declaration) === fn &&
+          holdsObject(argument)
+        );
+      });
+    }
+    return (
+      ts.isVariableDeclaration(decl) &&
+      decl.initializer !== undefined &&
+      ts.isVariableDeclarationList(decl.parent) &&
+      (decl.parent.flags & ts.NodeFlags.Const) !== 0 &&
+      holdsObject(decl.initializer)
+    );
+  }
+
+  /** A program object type with declared properties that is not a class
+   * instance, array, tuple, function or library type. */
+  private isRecordWithFields(type: ts.Type): boolean {
+    return this.isStructuralTarget(type) && this.checker.getPropertiesOfType(type).length > 0;
+  }
+
+  /** The value type of a string-keyed dictionary with no declared
+   * properties, or undefined for any other type. */
+  private dictionaryValueType(type: ts.Type): ts.Type | undefined {
+    if ((type.flags & ts.TypeFlags.Object) === 0) return undefined;
+    if (this.checker.isArrayType(type) || this.checker.isTupleType(type)) return undefined;
+    if (this.checker.getCallSignatures(type).length > 0) return undefined;
+    if (this.checker.getPropertiesOfType(type).length > 0) return undefined;
+    return this.checker
+      .getIndexInfosOfType(type)
+      .find((index) => (index.keyType.flags & ts.TypeFlags.String) !== 0)?.type;
+  }
+
   private isProgramClassInstance(type: ts.Type): boolean {
     const symbol = type.getSymbol();
     return (
       symbol !== undefined &&
       (symbol.flags & ts.SymbolFlags.Class) !== 0 &&
-      this.checker
-        .declarationsOf(symbol)
-        .some((declaration) => !declaration.getSourceFile().isDeclarationFile) &&
+      symbol.declarations.some(
+        (declaration) => !ts.getSourceFileOfNode(declaration).isDeclarationFile,
+      ) &&
       // `typeof C` (the class value) shares the class symbol.
       this.checker.getConstructSignatures(type).length === 0
     );
@@ -595,19 +880,19 @@ export class ClassProtocols {
       return element !== undefined && this.carriesIdentity(element, marked);
     }
     if (this.isProgramClassInstance(type)) return true;
+    // A live Pick or Omit view of a program class holds the instance itself.
+    if (this.pickOfProgramClass(type) && this.usesCheckedIdentity(type)) return true;
     const symbol = type.getSymbol();
     if (symbol === undefined) return false;
     if (marked.has(symbol)) return true;
     // A program interface a class matches by its methods (protocol below).
     return (
       this.methods.size > 0 &&
-      this.checker
-        .declarationsOf(symbol)
-        .some(
-          (declaration) =>
-            ts.isInterfaceDeclaration(declaration) &&
-            !declaration.getSourceFile().isDeclarationFile,
-        ) &&
+      symbol.declarations.some(
+        (declaration) =>
+          ts.isInterfaceDeclaration(declaration) &&
+          !ts.getSourceFileOfNode(declaration).isDeclarationFile,
+      ) &&
       this.protocol(type)
     );
   }
@@ -622,10 +907,10 @@ export class ClassProtocols {
     if (this.checker.getConstructSignatures(type).length > 0) return false;
     const symbol = type.getSymbol();
     if (symbol === undefined || (symbol.flags & ts.SymbolFlags.Class) !== 0) return false;
-    const declarations = this.checker.declarationsOf(symbol);
+    const declarations = symbol.declarations;
     return (
       declarations.length > 0 &&
-      declarations.every((declaration) => !declaration.getSourceFile().isDeclarationFile)
+      declarations.every((declaration) => !ts.getSourceFileOfNode(declaration).isDeclarationFile)
     );
   }
 
@@ -698,7 +983,13 @@ export class ClassProtocols {
     if ((type.flags & ts.TypeFlags.Object) === 0) return false;
     const previous = this.answers.get(type);
     if (previous !== undefined) return previous;
-    const answer = this.protocol(type);
+    // A dictionary keeps checked identity when the protocols already mark
+    // it (a literal whose methods read `this`) or when it receives existing
+    // objects (markDictionaryViews).
+    const dictionaryValue = this.dictionaryValueType(type);
+    const answer =
+      this.protocol(type) ||
+      (dictionaryValue !== undefined && this.dictionaryViews.has(dictionaryValue));
     this.answers.set(type, answer);
     return answer;
   }
@@ -709,20 +1000,19 @@ export class ClassProtocols {
     const properties = this.checker.getPropertiesOfType(type);
     if (symbol && protocols.has(symbol)) return true;
     if (
-      !symbol ||
-      !this.checker
-        .declarationsOf(symbol)
-        .some(
+      !this.pickOfProgramClass(type) &&
+      (!symbol ||
+        !symbol.declarations.some(
           (declaration) =>
             ts.isInterfaceDeclaration(declaration) &&
-            !declaration.getSourceFile().isDeclarationFile,
-        )
+            !ts.getSourceFileOfNode(declaration).isDeclarationFile,
+        ))
     )
       return false;
     for (const property of properties) {
       const memberType = this.checker.getTypeOfSymbol(property);
       if (this.checker.getCallSignatures(memberType).length === 0) continue;
-      for (const declaration of this.methods.get(property.name) ?? []) {
+      for (const declaration of this.methods.get(ts.symbolName(property)) ?? []) {
         const classSymbol = declaration.name
           ? this.checker.getSymbolAtLocation(declaration.name)
           : undefined;
@@ -798,6 +1088,44 @@ const IDENTITY_METHODS = new Set([
   "lastIndexOf",
   "includes",
 ]);
+
+/** An expression that denotes an object that already exists, not a fresh
+ * literal or call result. */
+function isExistingObject(node: ts.Expression): boolean {
+  return (
+    ts.isIdentifier(node) ||
+    ts.isPropertyAccessExpression(node) ||
+    ts.isElementAccessExpression(node) ||
+    node.kind === ts.SyntaxKind.ThisKeyword
+  );
+}
+
+/** `{}`, `object` and `unknown`: types whose values are checked-dynamic
+ * and keep the original object. */
+function isDynamicView(checker: ts.TypeChecker, type: ts.Type): boolean {
+  if (type.flags & (ts.TypeFlags.Unknown | ts.TypeFlags.NonPrimitive)) return true;
+  return (
+    (type.flags & ts.TypeFlags.Object) !== 0 &&
+    checker.getPropertiesOfType(type).length === 0 &&
+    checker.getIndexInfosOfType(type).length === 0 &&
+    checker.getCallSignatures(type).length === 0 &&
+    checker.getConstructSignatures(type).length === 0
+  );
+}
+
+/** The name calls use for a function, method or function-valued binding. */
+function functionName(fn: ts.Node): string | undefined {
+  if ((ts.isFunctionDeclaration(fn) || ts.isMethodDeclaration(fn)) && fn.name !== undefined)
+    return ts.isIdentifier(fn.name) ? fn.name.text : undefined;
+  if (
+    (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) &&
+    fn.parent !== undefined &&
+    ts.isVariableDeclaration(fn.parent) &&
+    ts.isIdentifier(fn.parent.name)
+  )
+    return fn.parent.name.text;
+  return undefined;
+}
 
 function isNullishLiteral(node: ts.Expression): boolean {
   while (ts.isParenthesizedExpression(node)) node = node.expression;

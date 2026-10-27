@@ -42,6 +42,19 @@ bool scr_zlib_engine_error(const ScrZlibEngine *e, ScrZlibError *out);
 bool scr_zlib_engine_reset(ScrZlibEngine *e, ScrZlibError *out);
 bool scr_zlib_engine_params(ScrZlibEngine *e, int level, int strategy, ScrZlibError *out);
 void scr_zlib_engine_free(ScrZlibEngine *e);
+/* Another codec behind the same engine (Brotli, scr_brotli.c): the engine
+ * entries above call these on its state. work runs on a worker thread and
+ * reports the unused input and output; error and reset fill *out as the
+ * zlib entries do. free releases the state. */
+typedef struct {
+  void (*work)(void *state, int flush, const unsigned char *in, uint32_t in_len, unsigned char *out,
+               uint32_t out_len, uint32_t *avail_in, uint32_t *avail_out);
+  bool (*error)(const void *state, ScrZlibError *out);
+  bool (*reset)(void *state, ScrZlibError *out);
+  void (*free)(void *state);
+} ScrZlibCodec;
+ScrZlibEngine *scr_zlib_engine_codec(int mode, const ScrZlibCodec *codec, void *state /* moves */,
+                                     bool reject_garbage);
 /* Node's Zlib() and ZlibBase() option ladder, shared by the stream classes
  * and the one-shot forms with options: false with Node's error pending.
  * `dict` is a +1 view (or NULL) that scr_zlib_options_drop releases.
@@ -52,12 +65,32 @@ typedef struct {
   ScrBytes *dict;
   bool reject_garbage, info;
   double chunk_size, flush, finish_flush, max_output;
+  /* Another codec's prepared state (a Brotli instance with its parameters
+   * set), which scr_zlib_engine_from_options moves into the engine and
+   * scr_zlib_options_drop frees otherwise. */
+  void *codec_state;
+  void (*codec_state_free)(void *state);
 } ScrZlibOptions;
 bool scr_zlib_options_parse(int mode, const ScrDyn *opts, ScrZlibOptions *out);
 void scr_zlib_options_drop(ScrZlibOptions *o);
+/* ZlibBase's reads over a truthy options object, after the codec's own:
+ * chunkSize, flush and finishFlush (within 0..flush_max), maxOutputLength,
+ * rejectGarbageAfterEnd and info. False with Node's error pending, *out
+ * dropped. */
+bool scr_zlib_base_options(const ScrDyn *opts, double flush_max, ScrZlibOptions *out);
+/* Brotli's option ladder and engine (scr_brotli.c), installed when the
+ * program uses Brotli: scr_zlib_options_parse and
+ * scr_zlib_engine_from_options call them for Node's BROTLI_DECODE (8) and
+ * BROTLI_ENCODE (9) modes. */
+typedef struct {
+  bool (*options)(int mode, const ScrDyn *opts, ScrZlibOptions *out);
+  ScrZlibEngine *(*engine)(int mode, ScrZlibOptions *o);
+} ScrZlibBrotliHooks;
+extern const ScrZlibBrotliHooks *scr_zlib_brotli_hooks;
+void scr_brotli_install(void);
 bool scr_zlib_check_range(const ScrDyn *v, const char *name, bool prop, double lower, double upper,
                           double def, double *out);
-ScrZlibEngine *scr_zlib_engine_from_options(int mode, const ScrZlibOptions *o);
+ScrZlibEngine *scr_zlib_engine_from_options(int mode, ScrZlibOptions *o);
 ScrError *scr_zlib_error_new(const ScrZlibError *ze); /* +1 */
 /* deflateSync(data, options) and the other one-shot forms with an options
  * value (undefined for none): Node's processChunkSync over the engine,
@@ -90,6 +123,9 @@ ScrPromise *scr_zlib_codec_promise_dyn(ScrDyn *data, double mode, ScrDyn *opts);
  * with Node's ladder. The callbacks MOVE in and may be NULL. */
 ScrStream *scr_zlib_stream_new(double mode, ScrDyn *opts);
 double scr_zlib_stream_bytes_written(ScrStream *s);
+/* `s instanceof zlib.Gzip` (and the other classes): true when s is a zlib
+ * stream built with that mode. s is borrowed. */
+bool scr_zlib_stream_is(ScrStream *s, double mode);
 void scr_zlib_stream_flush(ScrStream *s, ScrDyn *kind, ScrClosure *cb);
 void scr_zlib_stream_params(ScrStream *s, ScrDyn *level, ScrDyn *strategy, ScrClosure *cb);
 void scr_zlib_stream_close(ScrStream *s, ScrClosure *cb);

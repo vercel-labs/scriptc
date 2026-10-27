@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/evolving-local-arrays.ts"
+ ],
+ "diags": []
+}

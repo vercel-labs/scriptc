@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6440-cycle-class-late-use/stats.ts",
+  "<repo>/tests/corpus/6440-cycle-class-late-use/log.ts",
+  "<repo>/tests/corpus/6440-cycle-class-late-use/main.ts"
+ ],
+ "diags": []
+}

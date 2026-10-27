@@ -26,7 +26,7 @@ export interface EntryExportInfo {
  * Overload signatures collapse onto one entry (same name, one body). */
 export function entryFunctionExports(entry: ts.SourceFile): Map<string, EntryExportInfo> {
   const out = new Map<string, EntryExportInfo>();
-  for (const stmt of entry.statements) {
+  for (const stmt of entry.statements.nodes) {
     if (!ts.isFunctionDeclaration(stmt) || stmt.name === undefined) continue;
     const mods = ts.canHaveModifiers(stmt) ? ts.getModifiers(stmt) : undefined;
     const exported = mods?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) === true;
@@ -35,8 +35,8 @@ export function entryFunctionExports(entry: ts.SourceFile): Map<string, EntryExp
     if (out.has(name) && stmt.body === undefined) continue; // overload signature
     out.set(name, {
       name,
-      loc: { file: entry.fileName, start: stmt.getStart(), end: stmt.end },
-      generic: (stmt.typeParameters?.length ?? 0) > 0,
+      loc: { file: entry.fileName, start: ts.tokenStartOfNode(stmt), end: stmt.end },
+      generic: (stmt.typeParameters?.nodes.length ?? 0) > 0,
       async: mods?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) === true,
       generator: stmt.asteriskToken !== undefined,
     });

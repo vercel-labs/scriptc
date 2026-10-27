@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/error-js-accessor-name-message.js"
+ ],
+ "diags": []
+}

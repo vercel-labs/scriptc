@@ -1,0 +1,8 @@
+error-header-prototype-fences.ts:9:26 - error SC2020: 'util.inspect of 'Prototyped' values' is part of the standard library types but has no scriptc lowering yet
+
+   8 | 
+   9 | console.log(util.inspect(new Prototyped("prototype name")));
+     |                          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  10 | 
+
+  hint: error subclasses whose name, message or stack is an accessor or a prototype property have no inspect lowering yet

@@ -1,0 +1,6 @@
+object-assign-class-copy.ts:10:32 - error SC1090: Object.assign copying a 'Config' instance into a fresh object typed as the class (the copy is a plain object holding the instance's own fields, not an instance — build the object literal from the fields you need) is not supported yet
+
+   9 | const config = new Config();
+  10 | const copy = Object.assign({}, config);
+     |                                ^~~~~~
+  11 | console.log(JSON.stringify(copy), Object.keys(copy).join(","));

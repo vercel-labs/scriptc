@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6152-cjs-tsc-interop/plain.js",
+  "<repo>/tests/corpus/6152-cjs-tsc-interop/stamped.js",
+  "<repo>/tests/corpus/6152-cjs-tsc-interop/fn.js",
+  "<repo>/tests/corpus/6152-cjs-tsc-interop/main.js"
+ ],
+ "diags": []
+}

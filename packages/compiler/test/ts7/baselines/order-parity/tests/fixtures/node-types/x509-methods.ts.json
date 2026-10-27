@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/node-types/x509-methods.ts"
+ ],
+ "diags": []
+}

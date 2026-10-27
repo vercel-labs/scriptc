@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7101-promise-all-inline-sync-throw.ts"
+ ],
+ "diags": []
+}

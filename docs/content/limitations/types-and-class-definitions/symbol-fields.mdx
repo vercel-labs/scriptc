@@ -1,1 +1,7 @@
-- **Symbol fields:** Instance fields require a stable module-level `Symbol()` or `Symbol.for()` binding with a literal description or constant string binding. Reassigned keys, runtime-computed descriptions, distinct symbols with the same description in one class, and copying symbol fields with rest bindings or `Object.assign` are unsupported. JavaScript object spreads copy represented own symbol fields. Equal registry keys share a field across modules. Uninitialized JavaScript fields start as `undefined`; TypeScript fields require an initializer or unconditional constructor assignment. Represented symbol fields and methods, including inherited members, remain accessible through checked values.
+- **Symbol fields:** Instance fields require a stable module-level `Symbol()` or `Symbol.for()` binding with a literal description or constant string binding.
+  A `[Symbol.toStringTag]` field or getter with a string value sets the tag that `String()`, `Object.prototype.toString` and `util.inspect` print; fields keyed by other well-known symbols are unsupported.
+  Reassigned keys, runtime-computed descriptions, distinct symbols with the same description in one class, and copying symbol fields with rest bindings or `Object.assign` are unsupported.
+  JavaScript object spreads copy represented own symbol fields.
+  Equal registry keys share a field across modules.
+  Uninitialized JavaScript fields start as `undefined`; TypeScript fields require an initializer or unconditional constructor assignment.
+  Represented symbol fields and methods, including inherited members, remain accessible through checked values.

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6562-constructor-function-transform.cjs"
+ ],
+ "diags": []
+}

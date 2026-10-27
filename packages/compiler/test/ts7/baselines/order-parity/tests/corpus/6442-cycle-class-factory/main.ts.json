@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6442-cycle-class-factory/pets.ts",
+  "<repo>/tests/corpus/6442-cycle-class-factory/dogs.ts",
+  "<repo>/tests/corpus/6442-cycle-class-factory/main.ts"
+ ],
+ "diags": []
+}

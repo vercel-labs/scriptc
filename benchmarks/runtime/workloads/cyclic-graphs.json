@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/cyclic-graphs.ts",
+  "args": [
+    "3"
+  ]
+}

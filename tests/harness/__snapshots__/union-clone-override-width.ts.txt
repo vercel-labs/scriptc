@@ -1,4 +1,4 @@
-union-clone-override-width.ts:8:18 - error SC2001: values of type '{ kind: "left"; left: number; payload: WiderPayload; } | { kind: "right"; right: number; payload: WiderPayload; }' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, read-only Date values, functions, classes, records, unions of those, and 'unknown')
+union-clone-override-width.ts:8:18 - error SC2001: values of type '{ kind: "left"; left: number; payload: WiderPayload; } | { kind: "right"; right: number; payload: WiderPayload; }' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
 
   7 |   // copy its record. The inferred spread result keeps the wider payload.
   8 |   const result = { ...source, payload };

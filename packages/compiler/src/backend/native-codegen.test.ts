@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -8,7 +8,11 @@ import {
   NativeCodegenError,
   validateNativeCodegenVersion,
 } from "./native-codegen.js";
-import { nativePartitionPaths, nativeProgramPartitions } from "./native-codegen-core.js";
+import {
+  nativeCodegenParts,
+  nativePartitionPaths,
+  nativeProgramPartitions,
+} from "./native-codegen-core.js";
 import { nativeArtifactDependenciesStillMatch } from "./native-toolchain.js";
 import { LINUX_X64_GNU_TARGET, MACOS_ARM64_TARGET, WASM32_WASI_TARGET } from "./targets.js";
 import { compilerReleaseVersion } from "../library/sidecar.js";
@@ -26,6 +30,7 @@ async function fakePackage(
     emptyOutput?: boolean;
     missingOutput?: boolean;
     changePackageDuringEmit?: boolean;
+    profileReport?: string;
   } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), "scriptc-native-helper-test-"));
@@ -72,6 +77,7 @@ ${
         ? ":"
         : 'for each in $outputs; do cp "$input" "$each"; done'
 }
+${options.profileReport === undefined ? "" : `printf '%s\\n' '${options.profileReport}'`}
 `,
   );
   await chmod(bin, 0o755);
@@ -168,28 +174,67 @@ test("resolves a package helper, emits atomically, and caches by all native inpu
   expect(secondArtifact.dependencies).toEqual(firstArtifact.dependencies);
 });
 
-test("runtime bitcode imports reach the helper and key the native cache", async () => {
+test("profiles reach the helper and key the native cache by their bytes", async () => {
   const pkg = await fakePackage();
   const base = request(pkg.root, pkg.packageJson, join(pkg.root, "plain.o"));
   await emitNativeArtifact(base);
-  const imported = {
-    ...request(pkg.root, pkg.packageJson, join(pkg.root, "imported.o")),
-    importBitcode: {
-      paths: ["/pack/a.bc", "/pack/b.bc"],
-      digests: ["a".repeat(64), "b".repeat(64)],
-    },
-  };
-  await emitNativeArtifact(imported);
   await emitNativeArtifact({
-    ...imported,
-    outputPath: join(pkg.root, "changed.o"),
-    importBitcode: { ...imported.importBitcode, digests: ["a".repeat(64), "c".repeat(64)] },
+    ...base,
+    outputPath: join(pkg.root, "instrumented.o"),
+    profile: { generate: "/profiles/%p.profraw" },
   });
-  await emitNativeArtifact({ ...imported, outputPath: join(pkg.root, "again.o") });
+  const used = {
+    ...base,
+    outputPath: join(pkg.root, "used.o"),
+    profile: { use: { path: "/profiles/a.profdata", digest: "a".repeat(64) } },
+  };
+  await emitNativeArtifact(used);
+  await emitNativeArtifact({
+    ...used,
+    outputPath: join(pkg.root, "changed.o"),
+    profile: { use: { path: "/profiles/a.profdata", digest: "b".repeat(64) } },
+  });
+  await emitNativeArtifact({ ...used, outputPath: join(pkg.root, "again.o") });
   const calls = (await readFile(pkg.log, "utf8")).trim().split("\n");
-  expect(calls).toHaveLength(3);
-  expect(calls[0]).not.toContain("--import-bitcode");
-  expect(calls[1]).toContain("--import-bitcode /pack/a.bc --import-bitcode /pack/b.bc");
+  expect(calls).toHaveLength(4);
+  expect(calls[0]).not.toContain("--profile-");
+  expect(calls[1]).toContain("--profile-generate /profiles/%p.profraw");
+  expect(calls[2]).toContain("--profile-use /profiles/a.profdata");
+});
+
+test("a cached artifact keeps the profile match of the build that produced it", async () => {
+  const pkg = await fakePackage({
+    profileReport:
+      '{"ok":true,"profile":{"annotated":120,"mismatched":7,"missing":40,"unknown_partitions":0}}',
+  });
+  const used = {
+    ...request(pkg.root, pkg.packageJson, join(pkg.root, "used.o")),
+    profile: { use: { path: "/profiles/a.profdata", digest: "a".repeat(64) } },
+  };
+  const match = { annotated: 120, mismatched: 7, missing: 40, unknownPartitions: 0 };
+  expect((await emitNativeArtifact(used)).profileMatch).toEqual(match);
+  const again = await emitNativeArtifact({ ...used, outputPath: join(pkg.root, "again.o") });
+  expect(again.profileMatch).toEqual(match);
+  expect((await readFile(pkg.log, "utf8")).trim().split("\n")).toHaveLength(1);
+  // Without the cached match, the cached partition's counts are unknown.
+  const cache = join(pkg.root, "cache", "native-codegen-v1");
+  const [shard] = await readdir(cache);
+  for (const name of await readdir(join(cache, shard!)))
+    if (name.includes(".profile-match")) await rm(join(cache, shard!, name));
+  const unknown = await emitNativeArtifact({ ...used, outputPath: join(pkg.root, "unknown.o") });
+  expect(unknown.profileMatch).toEqual({
+    annotated: 0,
+    mismatched: 0,
+    missing: 0,
+    unknownPartitions: 1,
+  });
+  // Builds without a profile carry no match, from the helper or the cache.
+  const plain = request(pkg.root, pkg.packageJson, join(pkg.root, "plain.o"));
+  expect((await emitNativeArtifact(plain)).profileMatch).toBeUndefined();
+  expect(
+    (await emitNativeArtifact({ ...plain, outputPath: join(pkg.root, "plain-again.o") }))
+      .profileMatch,
+  ).toBeUndefined();
 });
 
 test("chunked LLVM input preserves emitted bytes and the native cache identity", async () => {
@@ -348,11 +393,13 @@ test("sanitized native artifacts fail before helper resolution", async () => {
 
 test("program partitions depend only on module size", () => {
   const megabyte = 1024 * 1024;
-  expect(nativeProgramPartitions(4 * megabyte)).toBe(1);
-  expect(nativeProgramPartitions(4 * megabyte + 1)).toBe(2);
+  expect(nativeProgramPartitions(megabyte)).toBe(1);
+  expect(nativeProgramPartitions(megabyte + 1)).toBe(4);
+  expect(nativeProgramPartitions(2 * megabyte)).toBe(4);
+  expect(nativeProgramPartitions(2 * megabyte + 1)).toBe(8);
+  expect(nativeProgramPartitions(32 * megabyte)).toBe(8);
   // Powers of two keep every function in its partition across small edits.
-  expect(nativeProgramPartitions(13 * megabyte)).toBe(4);
-  expect(nativeProgramPartitions(16 * megabyte)).toBe(4);
+  expect(nativeProgramPartitions(32 * megabyte + 1)).toBe(16);
   expect(nativeProgramPartitions(100 * megabyte)).toBe(32);
   expect(nativeProgramPartitions(1024 * megabyte)).toBe(64);
   expect(nativePartitionPaths("/build.d/program.o", 3)).toEqual([
@@ -364,6 +411,41 @@ test("program partitions depend only on module size", () => {
     "C:\\build.d\\program",
     "C:\\build.d\\program.part1",
   ]);
+});
+
+test("code generation parts depend only on module size", () => {
+  const kilobyte = 1024;
+  expect(nativeCodegenParts(128 * kilobyte)).toBe(1);
+  expect(nativeCodegenParts(128 * kilobyte + 1)).toBe(4);
+  expect(nativeCodegenParts(256 * kilobyte)).toBe(4);
+  expect(nativeCodegenParts(256 * kilobyte + 1)).toBe(8);
+  expect(nativeCodegenParts(1024 * kilobyte)).toBe(8);
+  // Partitioned modules already compile their partitions concurrently.
+  expect(nativeCodegenParts(1024 * kilobyte + 1)).toBe(1);
+});
+
+test("split code generation passes --split codegen and no partition cache", async () => {
+  const pkg = await fakePackage();
+  const output = join(pkg.root, "split", "program.o");
+  const artifact = await emitNativeArtifact({
+    ...request(pkg.root, pkg.packageJson, output),
+    partitions: 4,
+    splitCodegen: true,
+  });
+  expect(artifact.outputPaths).toEqual(nativePartitionPaths(output, 4));
+  const args = (await readFile(pkg.log, "utf8")).trim().split(" ");
+  expect(args.filter((arg) => arg === "--output")).toHaveLength(4);
+  expect(args.join(" ")).toContain("--split codegen");
+  expect(args).not.toContain("--cache-dir");
+
+  // Partitions of the same module are a distinct artifact.
+  await emitNativeArtifact({
+    ...request(pkg.root, pkg.packageJson, join(pkg.root, "partitions", "program.o")),
+    partitions: 4,
+  });
+  const calls = (await readFile(pkg.log, "utf8")).trim().split("\n");
+  expect(calls).toHaveLength(2);
+  expect(calls[1]).not.toContain("--split");
 });
 
 test("partitioned objects are emitted, cached and restored together", async () => {

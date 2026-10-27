@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6464-node-writable-stream-producers.ts"
+ ],
+ "diags": []
+}

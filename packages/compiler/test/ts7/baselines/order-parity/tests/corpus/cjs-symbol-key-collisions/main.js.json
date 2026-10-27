@@ -1,0 +1,10 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-symbol-key-collisions/core-symbols.js",
+  "<repo>/tests/corpus/cjs-symbol-key-collisions/client.js",
+  "<repo>/tests/corpus/cjs-symbol-key-collisions/mock-symbols.js",
+  "<repo>/tests/corpus/cjs-symbol-key-collisions/mock-client.js",
+  "<repo>/tests/corpus/cjs-symbol-key-collisions/main.js"
+ ],
+ "diags": []
+}

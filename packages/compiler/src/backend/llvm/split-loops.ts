@@ -102,8 +102,8 @@ export function storeSplitSnapshot(
   host.B.line(`store ptr ${snapshot.source}, ptr ${sourceSlot}`);
   host.B.line(`store ptr ${snapshot.separator}, ptr ${separatorSlot}`);
   host.B.line(`store i32 ${snapshot.limit}, ptr ${limitSlot}`);
-  host.moveTemp({ name: snapshot.source, type: STRING });
-  host.moveTemp({ name: snapshot.separator, type: STRING });
+  host.toFrame({ name: snapshot.source, type: STRING });
+  host.toFrame({ name: snapshot.separator, type: STRING });
   return { sourceSlot, separatorSlot, limitSlot };
 }
 

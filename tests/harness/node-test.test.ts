@@ -11,10 +11,12 @@
  * NORMALIZATIONS (both lanes):
  *   - "(1.234ms)" duration parentheticals → "(Xms)"
  *   - the "ℹ duration_ms N" summary line → "ℹ duration_ms X"
- *   - stack frames ("    at ...") and the inspect property block a frame
- *     opens ("... {" through its closing "}") are dropped — Node prints
- *     its runner-internal frames and an error-property dump the compiled
- *     runtime deliberately omits (SEMANTICS.md).
+ *   - stack frames ("    at ..."), the "... N lines matching cause stack
+ *     trace ..." line that folds an error cause's shared frames, and the
+ *     inspect property block a frame opens ("... {" through its closing
+ *     "}") are dropped — Node prints its runner-internal frames and an
+ *     error-property dump the compiled runtime deliberately omits
+ *     (SEMANTICS.md).
  *
  * Fixtures never console.log inside test bodies or hooks: Node's
  * reporter stream lags console output RACILY (its ordering varies run to
@@ -25,7 +27,8 @@
  * the RC audit over every case. */
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { globSync, mkdirSync, readFileSync } from "node:fs";
+import { copyFileSync, globSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { compile } from "@scriptc/compiler";
@@ -41,11 +44,12 @@ interface ProgramRun {
   exitCode: number;
 }
 
-function runLane(cmd: string, args: string[]): Promise<ProgramRun> {
+function runLane(cmd: string, args: string[], cwd = repoRoot): Promise<ProgramRun> {
   return new Promise((resolve, reject) => {
-    // cwd pinned to the repo root: both reporters render "test at" paths
-    // relative to the working directory, so the lanes must share one.
-    const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], cwd: repoRoot });
+    // cwd pinned to the repo root by default: both reporters render "test
+    // at" paths relative to the working directory, so the lanes must share
+    // one.
+    const child = spawn(cmd, args, { stdio: ["ignore", "pipe", "pipe"], cwd });
     const out: Buffer[] = [];
     let errText = "";
     const timer = setTimeout(() => {
@@ -124,4 +128,49 @@ describe(`node:test differential (${cases.length} programs${sanitize ? ", saniti
     },
     120_000,
   );
+});
+
+/* Snapshot update mode: Node's --test-update-snapshots flag, which the
+ * compiled binary takes as its leading argument. Each lane runs the
+ * fixture from its own temporary copy (the snapshot file sits beside the
+ * entry file and fileSnapshot paths resolve against the working
+ * directory), writes the snapshot files, and then passes in compare mode
+ * against them. The written files and the printed argv/execArgv match. */
+describe(`node:test snapshot update mode${sanitize ? " (sanitized)" : ""}`, () => {
+  test("--test-update-snapshots writes the files Node writes", async () => {
+    const fixture = join(fixturesRoot, "update/snapshot-update.ts");
+    const lanes = await Promise.all(
+      (["node", "native"] as const).map(async (lane) => {
+        const dir = mkdtempSync(join(tmpdir(), `scriptc-snapshot-${lane}-`));
+        const entry = join(dir, "snapshot-update.ts");
+        copyFileSync(fixture, entry);
+        const binary = lane === "native" ? await build(entry) : null;
+        const run = (update: boolean) =>
+          binary
+            ? runLane(binary, [...(update ? ["--test-update-snapshots"] : []), "one", "two"], dir)
+            : runLane(
+                "node",
+                [...(update ? ["--test-update-snapshots"] : []), entry, "one", "two"],
+                dir,
+              );
+        const update = await run(true);
+        const compare = await run(false);
+        return {
+          update,
+          compare,
+          snapshot: readFileSync(`${entry}.snapshot`, "utf8"),
+          file: readFileSync(join(dir, "out/value.json"), "utf8"),
+        };
+      }),
+    );
+    const [node, native] = lanes as [(typeof lanes)[number], (typeof lanes)[number]];
+    expect(native.snapshot).toBe(node.snapshot);
+    expect(native.file).toBe(node.file);
+    expect(normalize(native.update.stdout)).toBe(normalize(node.update.stdout));
+    expect(normalize(native.compare.stdout)).toBe(normalize(node.compare.stdout));
+    for (const lane of lanes) {
+      expect(lane.update.exitCode).toBe(0);
+      expect(lane.compare.exitCode).toBe(0);
+    }
+  }, 120_000);
 });

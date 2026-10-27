@@ -1,8 +1,8 @@
-dynamic-surface.ts:12:15 - error SC2012: '.toPrecision()' on numbers cannot compile statically
+dynamic-surface.ts:13:15 - error SC2020: 'Number.prototype.toLocaleString without a locale' is part of the standard library types but has no scriptc lowering yet
 
-  11 | const tau = Math.PI * 2;
-  12 | const price = (19.99).toPrecision(4);
-     |               ^~~~~~~~~~~~~~~~~~~~~~
-  13 | const n = Number.parseFloat("3.14");
+  12 | const tau = Math.PI * 2;
+  13 | const price = (19.99).toLocaleString();
+     |               ^~~~~~~~~~~~~~~~~~~~~~~~
+  14 | const n = Number.parseFloat("3.14");
 
-  hint: use a supported API or rewrite this operation for native compilation
+  hint: the default locale is the host environment's, which a compiled binary cannot carry — pass it explicitly: x.toLocaleString("en-US")

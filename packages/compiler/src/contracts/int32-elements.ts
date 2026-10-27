@@ -40,6 +40,7 @@
  * Holes, present undefined, out-of-range reads and `length` changes keep
  * their JavaScript behavior: the contract constrains the values stored, not
  * the array's shape. */
+import type { DiagnosticCode } from "../diagnostics/codes.js";
 import type { ContractNote, ContractAnnotations } from "../frontend/contract-types.js";
 import type {
   IrClassDef,
@@ -61,7 +62,7 @@ export interface ElementContractHost {
   readonly notes: ContractAnnotations;
   readonly functions: ReadonlyMap<string, IrFunction>;
   readonly classes: ReadonlyMap<string, IrClassDef>;
-  report(code: `SC${number}`, loc: SrcLoc, message: string, hint: string): void;
+  report(code: DiagnosticCode, loc: SrcLoc, message: string, hint: string): void;
   text(loc: SrcLoc, max?: number): string;
   where(loc: SrcLoc | null): string;
   displayName(fnName: string): string;
@@ -122,7 +123,8 @@ const COPIES = new Set([
 const COPY_IN = new Set(["pushSpread", "unshiftSpread", "spliceInsert"]);
 
 /** Library calls that only read array arguments. */
-const READ_ONLY_LIB = /^(console\.|inspect\.|json\.stringify|math\.|insp\.)/;
+const READ_ONLY_LIB =
+  /^(console\.|inspect\.|json\.stringify|math\.|insp\.|array\.(hasProperties|namedKeys|hasNamedKey)$)/;
 
 /** Library calls that always throw (the value they stand for never exists). */
 const THROWING_LIB = /^error\.\w*Throw$/;
@@ -708,7 +710,8 @@ export class Int32ElementContracts {
     const findChainsIn = (st: IrStmt): boolean => everyStmtChild(st, findChains, findChainsIn);
     for (const st of fn.body) findChainsIn(st);
     // Parameters whose callers are not all visible hold opaque arrays.
-    if (this.valueEscaped.has(fn.name) || this.runtimeVirtual(fn.name))
+    const runtimeVirtual = this.runtimeVirtual;
+    if (this.valueEscaped.has(fn.name) || runtimeVirtual(fn.name))
       for (const p of fn.params)
         if (this.holds(p.type)) {
           const why = this.valueEscaped.has(fn.name)
@@ -872,6 +875,9 @@ export class Int32ElementContracts {
     };
     const isNumberArray = (t: IrType): boolean => t.kind === "array" && t.elem.kind === "f64";
 
+    // Live views handed straight to a read-only library call (util.inspect
+    // of an array with properties) are only read through.
+    const readOnlyViews = new Set<IrExpr>();
     const expr = (e: IrExpr): void => {
       switch (e.kind) {
         case "assignExpr":
@@ -1000,6 +1006,7 @@ export class Int32ElementContracts {
         case "libCall":
           if (!READ_ONLY_LIB.test(e.fn))
             for (const a of e.args) escape(a, a.loc, `the library call ${e.fn}`);
+          else for (const a of e.args) if (a.kind === "dynFrom") readOnlyViews.add(a);
           break;
         case "callValue":
           for (const a of e.args) escape(a, a.loc, "a call through a function value");
@@ -1008,7 +1015,10 @@ export class Int32ElementContracts {
         case "dynFrom":
           // Plain arrays and records cross into dynamic code as deep copies;
           // class instances and live references stay connected.
-          if (e.liveRef === true || this.containsObject(e.value.type, new Set()))
+          if (
+            !readOnlyViews.has(e) &&
+            (e.liveRef === true || this.containsObject(e.value.type, new Set()))
+          )
             escape(e.value, e.loc, "dynamic (any or unknown) code");
           break;
         default:

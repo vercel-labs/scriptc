@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5024-lifetime-region-await-forms.ts"
+ ],
+ "diags": []
+}

@@ -11,6 +11,7 @@
  * 'warning' listeners + Node's stderr report). */
 #include "scr_runtime.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,17 +29,22 @@ static void scr_ad_oom(void) {
   abort();
 }
 
-/* Fresh snapshot storage (the layout lives in scr_runtime.h; the RC pair
- * in scr_async.c — spawn/destroy touch it). */
-static ScrAlsCtx *scr_als_ctx_alloc(size_t len) {
-  ScrAlsCtx *c = malloc(sizeof *c + len * sizeof(ScrAlsEntry));
-  if (!c) scr_ad_oom();
-  c->rc = 1;
-  c->len = len;
-  return c;
-}
-
 static SCR_TL double scr_als_counter = 0;
+
+/* The constructor options of each store, indexed by id - 1: the default
+ * value getStore() answers where the store has no entry, and the name.
+ * NULL until a store with options exists. */
+typedef struct {
+  ScrDyn *default_value; /* NULL: no default */
+  ScrDyn *name;          /* NULL: "" */
+} ScrAlsOptions;
+static SCR_TL ScrAlsOptions *scr_als_options = NULL;
+static SCR_TL size_t scr_als_options_len = 0;
+
+static const ScrAlsOptions *scr_als_options_of(double id) {
+  size_t i = (size_t)id - 1;
+  return id >= 1 && i < scr_als_options_len ? &scr_als_options[i] : NULL;
+}
 
 /* Main-slot teardown (atexit, LIFO after scr_init's audit registration —
  * the dc-registry precedent): a top-level enterWith leaves a context in
@@ -47,6 +53,13 @@ static void scr_als_teardown(void) {
   /* atexit runs on the main context — the active slot IS main's. */
   scr_als_ctx_release(*SCR_ALS_SLOT());
   *SCR_ALS_SLOT() = NULL;
+  for (size_t i = 0; i < scr_als_options_len; i++) {
+    scr_dyn_release(scr_als_options[i].default_value);
+    scr_dyn_release(scr_als_options[i].name);
+  }
+  free(scr_als_options);
+  scr_als_options = NULL;
+  scr_als_options_len = 0;
 }
 
 double scr_als_new(void) {
@@ -58,6 +71,89 @@ double scr_als_new(void) {
   return ++scr_als_counter;
 }
 
+/* options[key] as JavaScript reads it (+1, or NULL with the exception
+ * pending): inherited properties and getters included. A class instance
+ * reads its own fields through its snapshot; a member its class declares
+ * (a getter or a method) has no runtime view here and is refused. */
+static ScrDyn *scr_als_option(ScrDyn *options, const char *key, size_t key_len) {
+  ScrStr *name = scr_str_new(key, key_len);
+  if (options->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_class_has(options, name)) {
+    char message[160];
+    snprintf(message, sizeof message,
+             "AsyncLocalStorage options whose class declares '%s' are not supported yet", key);
+    scr_str_release(name);
+    scr_throw_error_msg(SCR_ERR_ERROR, message, strlen(message));
+    return NULL;
+  }
+  ScrDyn *key_value = scr_dyn_new_str(name);
+  scr_str_release(name);
+  ScrDyn *value = scr_dyn_reflect_get(options, key_value, options);
+  scr_dyn_release(key_value);
+  if (value == NULL && !scr_exc_pending()) value = scr_dyn_retain(scr_dyn_undefined());
+  return value;
+}
+
+/* new AsyncLocalStorage(options): Node validates that options is an
+ * object, then reads options.defaultValue once and options.name twice
+ * (whether it is defined, then its value), keeping String(name). NaN with
+ * the exception pending when options is not an object or a read throws. */
+double scr_als_new_options(const ScrDyn *options) {
+  if (options->kind == SCR_DYN_UNDEF) return scr_als_new();
+  if (options->kind != SCR_DYN_OBJ && options->kind != SCR_DYN_TYPED_REF && options->kind != SCR_DYN_PROXY) {
+    scr_dyn_arg_type_fail("options", "of type object", options);
+    return NAN;
+  }
+  ScrDyn *value = scr_als_option((ScrDyn *)options, "defaultValue", 12);
+  if (!value) return NAN;
+  ScrDyn *name = scr_als_option((ScrDyn *)options, "name", 4);
+  if (name && name->kind != SCR_DYN_UNDEF) {
+    scr_dyn_release(name);
+    name = scr_als_option((ScrDyn *)options, "name", 4);
+    if (name && name->kind == SCR_DYN_SYMBOL) {
+      static const char message[] = "Cannot convert a Symbol value to a string";
+      scr_dyn_release(name);
+      name = NULL;
+      scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    } else if (name) {
+      ScrStr *text = scr_dyn_string_coerce_js(name);
+      scr_dyn_release(name);
+      name = text ? scr_dyn_new_str(text) : NULL;
+      scr_str_release(text);
+    }
+  } else {
+    scr_dyn_release(name);
+    name = scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
+  }
+  if (!name) {
+    scr_dyn_release(value);
+    return NAN;
+  }
+  double id = scr_als_new();
+  size_t index = (size_t)id - 1;
+  if (index >= scr_als_options_len) {
+    size_t len = index + 1;
+    ScrAlsOptions *grown = realloc(scr_als_options, len * sizeof *grown);
+    if (!grown) scr_ad_oom();
+    for (size_t i = scr_als_options_len; i < len; i++) grown[i] = (ScrAlsOptions){NULL, NULL};
+    scr_als_options = grown;
+    scr_als_options_len = len;
+  }
+  scr_als_options[index].default_value = value; /* the read's +1 moves */
+  scr_als_options[index].name = name->kind != SCR_DYN_UNDEF ? name : NULL;
+  if (name->kind == SCR_DYN_UNDEF) scr_dyn_release(name);
+  return id;
+}
+
+/* asyncLocalStorage.name (+1): the constructor's name option, or "". */
+ScrDyn *scr_als_name(double id) {
+  const ScrAlsOptions *options = scr_als_options_of(id);
+  if (options && options->name) return scr_dyn_retain(options->name);
+  ScrStr *empty = scr_str_new("", 0);
+  ScrDyn *result = scr_dyn_new_str(empty);
+  scr_str_release(empty);
+  return result;
+}
+
 ScrDyn *scr_als_get(double id) {
   const ScrAlsCtx *c = *SCR_ALS_SLOT();
   if (c) {
@@ -65,31 +161,9 @@ ScrDyn *scr_als_get(double id) {
       if (c->entries[i].id == id) return scr_dyn_retain(c->entries[i].value);
     }
   }
+  const ScrAlsOptions *options = scr_als_options_of(id);
+  if (options && options->default_value) return scr_dyn_retain(options->default_value);
   return scr_dyn_retain(scr_dyn_undefined());
-}
-
-/* Fresh snapshot with (id → value) replaced-or-appended (value borrowed,
- * retained in), installed as the active context; the PREVIOUS snapshot
- * returns (ownership moves out) for scr_als_restore. */
-ScrAlsCtx *scr_als_enter(double id, ScrDyn *value) {
-  ScrAlsCtx *prev = *SCR_ALS_SLOT();
-  size_t n = prev ? prev->len : 0;
-  bool have = false;
-  for (size_t i = 0; i < n; i++) {
-    if (prev->entries[i].id == id) { have = true; break; }
-  }
-  ScrAlsCtx *next = scr_als_ctx_alloc(have ? n : n + 1);
-  size_t w = 0;
-  for (size_t i = 0; i < n; i++) {
-    if (prev->entries[i].id == id) continue;
-    next->entries[w].id = prev->entries[i].id;
-    next->entries[w].value = scr_dyn_retain(prev->entries[i].value);
-    w++;
-  }
-  next->entries[w].id = id;
-  next->entries[w].value = scr_dyn_retain(value);
-  *SCR_ALS_SLOT() = next;
-  return prev; /* ownership moves to the caller */
 }
 
 /* The exit() arm: the id REMOVED from the snapshot. */
@@ -112,14 +186,10 @@ ScrAlsCtx *scr_als_enter_absent(double id) {
   return prev;
 }
 
-void scr_als_restore(ScrAlsCtx *prev) {
-  scr_als_ctx_release(*SCR_ALS_SLOT());
-  *SCR_ALS_SLOT() = prev; /* ownership moves back in */
-}
-
 void scr_als_enter_with(double id, ScrDyn *value) {
   ScrAlsCtx *prev = scr_als_enter(id, value);
   scr_als_ctx_release(prev); /* no restore point — Node's enterWith */
+  scr_als_entered_with();
 }
 
 void scr_als_disable(double id) {
@@ -142,8 +212,80 @@ ScrDyn *scr_als_run(double id, ScrDyn *value, ScrDyn *fn, ScrDyn *args) {
   return scr_als_call_in(scr_als_enter(id, value), fn, args);
 }
 
+/* exit() runs fn with the store undefined: a store with a default value
+ * holds an undefined entry for the call (getStore() answers undefined,
+ * not the default, as in Node); other stores drop their entry. */
 ScrDyn *scr_als_exit_run(double id, ScrDyn *fn, ScrDyn *args) {
-  return scr_als_call_in(scr_als_enter_absent(id), fn, args);
+  const ScrAlsOptions *options = scr_als_options_of(id);
+  ScrAlsCtx *prev = options && options->default_value
+                        ? scr_als_enter(id, scr_dyn_undefined())
+                        : scr_als_enter_absent(id);
+  return scr_als_call_in(prev, fn, args);
+}
+
+/* AsyncLocalStorage.bind(fn) and the dyn completion callbacks of
+ * callback-style APIs: a function that calls fn in the context active
+ * when it was bound, with its own arguments and receiver. caps[0] holds
+ * fn, caps[1] the context, as scr_als_bind_closure lays them out. */
+static void *scr_als_ctx_retain_v(void *c) { return scr_als_ctx_retain(c); }
+static void scr_als_ctx_release_v(void *c) { scr_als_ctx_release(c); }
+
+static ScrDyn *scr_als_bound_dyn_call(ScrClosure *self, ScrDyn *const *args, size_t argc) {
+  ScrDyn *fn = scr_box_get_ref(self->caps[0]);
+  ScrAlsCtx *prev = scr_als_bound_enter(self);
+  ScrDyn *result = scr_dyn_call(fn, args, argc, "callback");
+  scr_als_restore(prev);
+  scr_dyn_release(fn);
+  return result;
+}
+
+static ScrClosure *scr_als_context_closure(void *fn, size_t ncaps) {
+  ScrClosure *closure = scr_closure_new(fn, ncaps);
+  closure->caps[ncaps - 1] = scr_box_new_obj(scr_als_ctx_retain_v, scr_als_ctx_release_v, NULL);
+  scr_box_set_ref(closure->caps[ncaps - 1], scr_als_ctx_retain(*SCR_ALS_SLOT()));
+  return closure;
+}
+
+/* fn borrowed; +1. With `always` false an empty context answers fn
+ * itself (the completion-callback form). AsyncLocalStorage.bind throws
+ * Node's ERR_INVALID_ARG_TYPE for a non-function. */
+ScrDyn *scr_als_bind_dyn(ScrDyn *fn, bool always) {
+  if (fn->kind != SCR_DYN_FUNC) {
+    if (always) {
+      scr_dyn_arg_type_fail("fn", "of type function", fn);
+      return NULL;
+    }
+    return scr_dyn_retain(fn);
+  }
+  if (!always && *SCR_ALS_SLOT() == NULL) return scr_dyn_retain(fn);
+  ScrClosure *closure = scr_als_context_closure(NULL, 2);
+  closure->caps[0] = scr_box_new_obj(scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  scr_box_set_ref(closure->caps[0], scr_dyn_retain(fn));
+  return scr_dyn_new_func(closure, scr_als_bound_dyn_call, fn->v.fn.arity, "(...args)", "bound");
+}
+
+/* AsyncLocalStorage.snapshot(): a function (cb, ...args) that calls cb
+ * with args in the context active at the snapshot. */
+static ScrDyn *scr_als_snapshot_call(ScrClosure *self, ScrDyn *const *args, size_t argc) {
+  const ScrDyn *cb = argc > 0 ? args[0] : scr_dyn_undefined();
+  if (cb->kind != SCR_DYN_FUNC) {
+    static const char message[] = "cb is not a function";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  ScrAlsCtx **slot = SCR_ALS_SLOT();
+  ScrAlsCtx *prev = *slot;
+  *slot = scr_box_get_ref(self->caps[0]); /* the slot owns this reference */
+  /* Node applies cb to an undefined receiver, whatever the runner's own. */
+  scr_dyn_this_push_dyn(scr_dyn_undefined());
+  ScrDyn *result = scr_dyn_call(cb, args + 1, argc - 1, "callback");
+  scr_dyn_this_pop();
+  scr_als_restore(prev);
+  return result;
+}
+
+ScrDyn *scr_als_snapshot(void) {
+  return scr_dyn_new_func(scr_als_context_closure(NULL, 1), scr_als_snapshot_call, 1, "(cb, ...args)", "bound");
 }
 
 /* The two rejection-event registries share one shape: listeners with a
@@ -341,9 +483,100 @@ void scr_process_off_uncaught_exception(ScrDyn *fn, bool monitor) {
   scr_uncaught_sync_hook();
 }
 
+/* V8's side-effect-free string of a value, which Node's
+ * UnhandledPromiseRejection message quotes: primitives as String() gives
+ * them, a symbol as Symbol(description), an array as [object Array], an
+ * object with its own toString as [object Object], and other objects as
+ * #<Constructor>. */
+static bool scr_rejection_custom_to_string(const ScrDyn *value) {
+  if (value->kind == SCR_DYN_TYPED_REF) {
+    ScrStr *key = scr_str_new("toString", 8);
+    bool found = scr_dyn_typed_ref_class_has(value, key);
+    scr_str_release(key);
+    return found;
+  }
+  for (const ScrDyn *p = value; p; p = p->prototype)
+    if (p->kind == SCR_DYN_OBJ && scr_dyn_obj_get(p, "toString", 8)) return true;
+  return false;
+}
+
+static ScrStr *scr_rejection_reason_text(const ScrDyn *reason, const ScrDyn *view) {
+  switch (view->kind) {
+  case SCR_DYN_UNDEF: return scr_str_new("undefined", 9);
+  case SCR_DYN_NULL: return scr_str_new("null", 4);
+  case SCR_DYN_SYMBOL: return reason->v.symbol.render(reason->v.symbol.value);
+  case SCR_DYN_ARR: return scr_str_new("[object Array]", 14);
+  case SCR_DYN_PROMISE: return scr_str_new("#<Promise>", 10);
+  case SCR_DYN_OBJ: {
+    if (scr_rejection_custom_to_string(reason) || scr_rejection_custom_to_string(view))
+      return scr_str_new("[object Object]", 15);
+    const char *name = reason->kind == SCR_DYN_OBJ ? scr_dyn_class_name(reason) : NULL;
+    const ScrStr *typed = reason->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_class_name(reason) : NULL;
+    ScrStr *parts[3] = {
+      scr_str_new("#<", 2),
+      typed ? scr_str_new(typed->data, typed->len) : scr_str_new(name ? name : "Object", name ? strlen(name) : 6),
+      scr_str_new(">", 1),
+    };
+    ScrStr *text = scr_str_concat_parts(parts, 3);
+    for (size_t i = 0; i < 3; i++) scr_str_release(parts[i]);
+    return text;
+  }
+  default: return scr_dyn_to_string(view, NULL);
+  }
+}
+
+ScrDyn *scr_unhandled_rejection_error(ScrDyn *reason) {
+  ScrError *error = scr_errdyn_err_of(reason);
+  ScrDyn *view = reason->kind == SCR_DYN_TYPED_REF ? scr_dyn_typed_ref_materialize(reason) : scr_dyn_retain(reason);
+  if (!view || scr_exc_pending()) {
+    scr_error_release(error);
+    scr_dyn_release(view);
+    return NULL;
+  }
+  ScrStr *stack = scr_str_new("stack", 5);
+  bool error_like = error || (view->kind == SCR_DYN_OBJ && scr_dyn_has_own(view, stack));
+  scr_str_release(stack);
+  if (error_like) {
+    scr_error_release(error);
+    scr_dyn_release(view);
+    return scr_dyn_retain(reason);
+  }
+  ScrStr *text = scr_rejection_reason_text(reason, view);
+  scr_dyn_release(view);
+  if (!text || scr_exc_pending()) {
+    scr_str_release(text);
+    return NULL;
+  }
+  static const char head[] = "This error originated either by throwing inside of an async function without a "
+                             "catch block, or by rejecting a promise which was not handled with .catch(). The "
+                             "promise rejected with the reason \"";
+  ScrStr *parts[3] = {scr_str_new(head, sizeof head - 1), text, scr_str_new("\".", 2)};
+  ScrStr *message = scr_str_concat_parts(parts, 3);
+  for (size_t i = 0; i < 3; i++) scr_str_release(parts[i]);
+  error = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(message);
+  scr_str_release(error->name);
+  error->name = scr_str_new("UnhandledPromiseRejection", 25);
+  error->code = scr_str_new("ERR_UNHANDLED_REJECTION", 23);
+  ScrDyn *value = scr_dyn_from_error(error);
+  /* Node's class fields: code, then name, both own and enumerable */
+  scr_dyn_obj_set(value, "name", 4, scr_dyn_new_str(error->name));
+  scr_error_release(error);
+  return value;
+}
+
 static int scr_uncaught_dispatch(bool from_promise) {
   ScrCaught *caught = scr_exc_take();
   ScrDyn *error = scr_caught_to_dyn(caught);
+  if (from_promise) {
+    ScrDyn *wrapped = scr_unhandled_rejection_error(error);
+    scr_dyn_release(error);
+    if (!wrapped) {
+      scr_caught_release(caught);
+      return -1;
+    }
+    error = wrapped;
+  }
   const char *origin = from_promise ? "unhandledRejection" : "uncaughtException";
   ScrStr *text = scr_str_new(origin, strlen(origin));
   ScrDyn *args[2] = {error, scr_dyn_new_str(text)};
@@ -594,6 +827,19 @@ ScrDyn *scr_await_dyn_value_settled(ScrDyn *value) {
   return value->kind == SCR_DYN_PROMISE ? scr_await_dyn(value->v.promise) : scr_dyn_retain(value);
 }
 
+static ScrDyn *scr_dyn_promise_payload(ScrPromise *p);
+
+/* The same for a native stackless body: the suspension has taken the turn
+ * scr_await_dyn would take, so the extraction takes none. */
+ScrDyn *scr_coro_await_dyn_value(ScrDyn *value) {
+  if (value->kind != SCR_DYN_PROMISE) return scr_dyn_retain(value);
+  ScrPromise *p = value->v.promise;
+  if (!scr_promise_settled_now(p))
+    scr_trap("scriptc: internal error: resumed before awaited promise settled\n");
+  if (scr_promise_is_rejected(p)) return NULL;
+  return scr_dyn_promise_payload(p);
+}
+
 /* ── process warnings (emitWarning + the 'warning' event) ─────────────
  * Gated with the rest of this TU (a deprecation-emitting unit's gate
  * must imply the dynAsync link). Listeners are dyn functions; the
@@ -769,10 +1015,59 @@ ScrDyn *scr_warning_new(ScrStr *message, const char *type, const ScrStr *code) {
   return w;
 }
 
+#ifdef SCR_WARNING_REPLACE
+/* The program's process.emitWarning replacement, or NULL while the
+ * property holds Node's own function. Compiled only into the
+ * SCR_WARNING_REPLACE variant, which programs assigning process.emitWarning
+ * link: every other executable keeps the plain warning paths. */
+static SCR_TL ScrDyn *scr_emit_warning_override = NULL;
+
+static void scr_emit_warning_override_teardown(void) {
+  scr_dyn_release(scr_emit_warning_override);
+  scr_emit_warning_override = NULL;
+}
+
+void scr_process_set_emit_warning(ScrDyn *fn) {
+  if (scr_emit_warning_override == NULL) scr_atexit(scr_emit_warning_override_teardown);
+  ScrDyn *previous = scr_emit_warning_override;
+  scr_emit_warning_override = scr_dyn_retain(fn);
+  scr_dyn_release(previous);
+  /* Units that report their own warnings without a listener route them
+   * here once a replacement exists. */
+  scr_warning_emit_hook = scr_emit_warning;
+}
+
+/* A runtime-built warning while a replacement is installed: Node's modules
+ * call process.emitWarning(message, type, code), so the replacement sees
+ * those arguments; nothing is reported. A throw stays pending. */
+static void scr_emit_warning_replaced(ScrStr *message, ScrStr *type, ScrStr *code) {
+  ScrDyn *args[3];
+  size_t argc = 0;
+  args[argc++] = scr_dyn_new_str(message);
+  ScrStr *fallback = type ? NULL : scr_str_new("Warning", 7);
+  args[argc++] = scr_dyn_new_str(type ? type : fallback);
+  scr_str_release(fallback);
+  if (code) args[argc++] = scr_dyn_new_str(code);
+  ScrDyn *r = scr_dyn_call(scr_emit_warning_override, args, argc, "process.emitWarning");
+  scr_dyn_release(r);
+  for (size_t i = 0; i < argc; i++) scr_dyn_release(args[i]);
+}
+#endif /* SCR_WARNING_REPLACE */
+
 /* A warning built from C parts (the runtime deprecation sites): name
  * defaults to "Warning"; code/detail optional. Reported synchronously.
  * Borrows message. */
 void scr_emit_warning(const char *name, const char *code, ScrStr *message) {
+#ifdef SCR_WARNING_REPLACE
+  if (scr_emit_warning_override != NULL) {
+    ScrStr *type_text = scr_str_new(name ? name : "Warning", strlen(name ? name : "Warning"));
+    ScrStr *code_text = code ? scr_str_new(code, strlen(code)) : NULL;
+    scr_emit_warning_replaced(message, type_text, code_text);
+    scr_str_release(type_text);
+    scr_str_release(code_text);
+    return;
+  }
+#endif
   ScrStr *code_text = code ? scr_str_new(code, strlen(code)) : NULL;
   ScrDyn *w = scr_warning_new(message, name ? name : "Warning", code_text);
   scr_str_release(code_text);
@@ -803,6 +1098,18 @@ static void scr_warning_defer(ScrDyn *w, void (*fire)(ScrClosure *)) {
 }
 
 void scr_warning_emit_deferred(ScrDyn *w) {
+#ifdef SCR_WARNING_REPLACE
+  if (scr_emit_warning_override != NULL) {
+    const ScrDyn *em = scr_dyn_obj_get(w, "message", 7);
+    const ScrDyn *ec = scr_dyn_obj_get(w, "code", 4);
+    ScrStr *name = scr_warning_name(w);
+    ScrStr *message = em && em->kind == SCR_DYN_STR ? scr_str_retain(em->v.str) : scr_str_new("", 0);
+    scr_emit_warning_replaced(message, name, ec && ec->kind == SCR_DYN_STR ? ec->v.str : NULL);
+    scr_str_release(message);
+    scr_str_release(name);
+    return;
+  }
+#endif
   if (scr_warning_is_deprecation(w)) {
     if (scr_process_deprecation_flag_on(0)) return;
     if (scr_process_deprecation_flag_on(1)) {
@@ -811,6 +1118,43 @@ void scr_warning_emit_deferred(ScrDyn *w) {
     }
   }
   scr_warning_defer(w, scr_warning_tick);
+}
+
+static SCR_TL bool scr_punycode_loaded = false;
+
+void scr_punycode_warn(bool immediate, bool report) {
+  if (scr_punycode_loaded) return;
+  scr_punycode_loaded = true;
+  if (!report) return;
+  static const char text[] =
+      "The `punycode` module is deprecated. Please use a userland alternative instead.";
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  ScrStr *code = scr_str_new("DEP0040", 7);
+  ScrDyn *w = scr_warning_new(message, "DeprecationWarning", code);
+  if (immediate) {
+    if (!scr_process_deprecation_flag_on(0)) scr_warning_dispatch(w);
+  } else {
+    scr_warning_emit_deferred(w);
+  }
+  scr_dyn_release(w);
+  scr_str_release(code);
+  scr_str_release(message);
+}
+
+void scr_buffer_deprecation(void) {
+  /* Node's showFlaggedDeprecation: after 10000 calls the check stops. */
+  if (scr_buffer_ctor_warned || ++scr_buffer_ctor_checks > 10000) return;
+  static const char text[] =
+      "Buffer() is deprecated due to security and usability issues. Please use the "
+      "Buffer.alloc(), Buffer.allocUnsafe(), or Buffer.from() methods instead.";
+  ScrStr *message = scr_str_new(text, sizeof text - 1);
+  ScrStr *code = scr_str_new("DEP0005", 7);
+  ScrDyn *w = scr_warning_new(message, "DeprecationWarning", code);
+  scr_warning_emit_deferred(w);
+  scr_dyn_release(w);
+  scr_str_release(code);
+  scr_str_release(message);
+  scr_buffer_ctor_warned = true;
 }
 
 /* The console members' warnings. Node's emitWarning emits on
@@ -868,6 +1212,13 @@ static void scr_warn_bad_arg(const char *arg, const char *want) {
  * ERR_INVALID_ARG_TYPE TypeErrors at the call; non-string details are
  * ignored. The warning itself is emitted on the next tick. */
 void scr_process_emit_warning(ScrDyn *args) {
+#ifdef SCR_WARNING_REPLACE
+  if (scr_emit_warning_override != NULL) {
+    ScrDyn *r = scr_dyn_apply(scr_emit_warning_override, args, "process.emitWarning");
+    scr_dyn_release(r);
+    return;
+  }
+#endif
   size_t argc = args->kind == SCR_DYN_ARR ? args->v.arr.len : 0;
   ScrDyn *const *items = args->kind == SCR_DYN_ARR ? args->v.arr.items : NULL;
   ScrDyn *warning = argc >= 1 ? items[0] : NULL;
@@ -924,11 +1275,9 @@ void scr_process_emit_warning(ScrDyn *args) {
   e->name = type ? scr_str_retain((ScrStr *)type) : scr_str_new("Warning", 7);
   e->name_present = true;
   if (code) e->code = scr_str_retain((ScrStr *)code);
+  if (detail) scr_error_set_prop(e, "detail", 6, scr_dyn_new_str((ScrStr *)detail)); /* retains */
   ScrDyn *w = scr_dyn_from_error(e);
   scr_error_release(e);
-  if (detail) {
-    scr_dyn_obj_set(w, "detail", 6, scr_dyn_new_str((ScrStr *)detail)); /* retains */
-  }
   scr_warning_emit_deferred(w);
   scr_dyn_release(w);
 }
@@ -1134,7 +1483,7 @@ static void scr_dyn_all_result(ScrPromise *destination, ScrPromise *source) {
   scr_promise_fulfill_ref(destination, result, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
 }
 
-static const ScrArrOps scr_dyn_arr_ops = { scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v };
+static ScrArrOps scr_dyn_arr_ops = { scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v };
 
 /* ── Thenable adoption (PromiseResolve over a checked-dynamic value) ──
  * A non-promise object whose `then` is callable resolves through
@@ -1297,22 +1646,27 @@ static void scr_dyn_thenable_schedule(ScrPromise *target, const ScrDyn *thenable
  * a thenable gets a fresh promise and its resolve job, anything else a
  * fulfilled promise (a throwing `then` read rejects it). The element
  * joins the combinator right after, so a thenable's job sits between
- * the jobs of the entries around it, exactly Node's iteration. */
-static ScrPromise *scr_dyn_promise_entry(ScrCombine *c, ScrDyn *value, const ScrDyn *reader) {
+ * the jobs of the entries around it, exactly Node's iteration. Without a
+ * combinator (`c` NULL) this is PromiseResolve for one value. */
+static ScrPromise *scr_dyn_promise_entry(ScrCombine *c, const ScrDyn *value, const ScrDyn *reader) {
   if (value->kind == SCR_DYN_PROMISE) return scr_promise_retain(value->v.promise);
   ScrPromise *source = scr_promise_new();
   ScrDyn *then = scr_dyn_then_of(value, reader);
   if (scr_exc_pending()) {
     scr_promise_reject_pending(source);
   } else if (then) {
-    scr_promise_combine_flush(c);
+    if (c) scr_promise_combine_flush(c);
     scr_dyn_thenable_schedule(source, value, then, reader);
   } else {
-    scr_promise_fulfill_ref(source, scr_dyn_retain(value), scr_dyn_retain_v, scr_dyn_release_v,
-                            scr_dyn_trace_v);
+    scr_promise_fulfill_ref(source, scr_dyn_retain((ScrDyn *)value), scr_dyn_retain_v,
+                            scr_dyn_release_v, scr_dyn_trace_v);
   }
   scr_dyn_release(then);
   return source;
+}
+
+ScrPromise *scr_dyn_promise_resolve(const ScrDyn *value, const ScrDyn *reader) {
+  return scr_dyn_promise_entry(NULL, value, reader);
 }
 
 static void scr_dyn_settled_store(ScrArr *a, double i, ScrPromise *src) {

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7181-generic-module-binding-tdz.ts"
+ ],
+ "diags": []
+}

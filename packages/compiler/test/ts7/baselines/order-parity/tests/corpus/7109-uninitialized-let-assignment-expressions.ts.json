@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7109-uninitialized-let-assignment-expressions.ts"
+ ],
+ "diags": []
+}

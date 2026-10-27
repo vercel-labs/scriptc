@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6490-js-named-promise-executor/main.ts"
+ ],
+ "diags": []
+}

@@ -1,4 +1,5 @@
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
+import { constructedValue } from "./constructor-returns.js";
 import {
   BOOL,
   DYN,
@@ -12,26 +13,33 @@ import {
   type IrType,
   type SrcLoc,
 } from "../../ir/ir.js";
-import { everyStmtList, transformExpr, transformStmtList } from "../../ir/traverse.js";
+import { transformExpr, transformStmtList } from "../../ir/traverse.js";
+import type { DispatchSites } from "./dispatch-sites.js";
 import type { Lowerer } from "./lowerer.js";
 import type { ParamShape } from "./call-signatures.js";
 import { classPrototypeData } from "./class-prototypes.js";
 import { classInstanceOf } from "./class-dynamic-dispatch.js";
+import { inheritedBuiltinCtorFence } from "./lower-classes.js";
 
 const PREFIX = "%class.construct:";
 const PACKED = `${PREFIX}packed`;
 const INSTANCEOF = "%class.instanceof:dynamic";
 
+/** `value instanceof callee` for an untyped constructor value, through one
+ * shared helper. `refusal` is the site's message for a runtime
+ * constructor with no instance test. */
 export function checkedClassInstanceOf(
   lowerer: Lowerer,
   value: IrExpr,
   callee: IrExpr,
+  refusal: string,
   loc: SrcLoc,
 ): IrExpr {
   if (!lowerer.liftedFns.some((fn) => fn.name === INSTANCEOF)) {
     const params = [
       { localId: "value", name: "value", type: DYN },
       { localId: "callee", name: "callee", type: DYN },
+      { localId: "refusal", name: "refusal", type: STRING },
     ];
     lowerer.liftedFns.push({
       name: INSTANCEOF,
@@ -44,7 +52,11 @@ export function checkedClassInstanceOf(
           value: {
             kind: "libCall",
             fn: "bytes.instanceOf",
-            args: [varRef("value", DYN, loc), varRef("callee", DYN, loc)],
+            args: [
+              varRef("value", DYN, loc),
+              varRef("callee", DYN, loc),
+              varRef("refusal", STRING, loc),
+            ],
             type: BOOL,
             loc,
           },
@@ -54,7 +66,13 @@ export function checkedClassInstanceOf(
       loc,
     });
   }
-  return { kind: "call", callee: INSTANCEOF, args: [value, callee], type: BOOL, loc };
+  return {
+    kind: "call",
+    callee: INSTANCEOF,
+    args: [value, callee, { kind: "strLit", value: refusal, type: STRING, loc }],
+    type: BOOL,
+    loc,
+  };
 }
 
 /** Checked construction dispatches to emitted native constructor thunks. */
@@ -252,22 +270,17 @@ export class ClassConstructionDispatch {
   private prototypeHelper: IrFunction | null = null;
   private readonly prototypes = new Set<string>();
 
-  process(lowerer: Lowerer, functions: readonly IrFunction[]): boolean {
+  process(lowerer: Lowerer, functions: readonly IrFunction[], sites: DispatchSites): boolean {
     const discover = (type: IrType): void => {
       if (type.kind === "classval") this.constructors.add(type.className);
       else if (type.kind === "union") lowerer.unions.get(type.unionId)?.arms.forEach(discover);
     };
     const prototypeReads = new Set<IrFunction>();
-    for (const fn of functions)
-      everyStmtList(fn.body, {
-        stmt: () => true,
-        expr: (expr) => {
-          if (expr.kind === "dynFrom") discover(expr.value.type);
-          if (expr.kind === "libCall" && expr.fn === "dyn.classBasePrototype")
-            prototypeReads.add(fn);
-          return true;
-        },
-      });
+    for (const fn of functions) {
+      const found = sites.of(fn);
+      found.values.forEach(discover);
+      if (found.basePrototypes) prototypeReads.add(fn);
+    }
     let changed = false;
     for (const fn of functions) {
       if (fn === this.prototypeHelper || !prototypeReads.has(fn)) continue;
@@ -379,6 +392,29 @@ export class ClassConstructionDispatch {
           changed = true;
           continue;
         }
+        const type: IrType = { kind: "classval", className: name };
+        const callee = varRef("p.0", DYN, loc);
+        // A constructor inherited from a runtime stream or EventEmitter
+        // takes no arguments here: arguments report at run time, as they do
+        // at compile time for typed construction.
+        const fence = inheritedBuiltinCtorFence(lowerer, info, loc);
+        if (fence !== null && fn.name !== PACKED && fn.params.length > 1) {
+          fn.body.unshift({
+            kind: "if",
+            cond: {
+              kind: "libCall",
+              fn: "dyn.classIs",
+              args: [callee, { kind: "strLit", value: typeKey(type), type: STRING, loc }],
+              type: BOOL,
+              loc,
+            },
+            then: [fence],
+            else_: null,
+            loc,
+          });
+          changed = true;
+          continue;
+        }
         const args = constructorArguments(
           lowerer,
           info.ctorParams,
@@ -387,18 +423,38 @@ export class ClassConstructionDispatch {
           fn.name === PACKED ? varRef("p.1", DYN, loc) : undefined,
         );
         if (!args) continue;
-        const type: IrType = { kind: "classval", className: name };
-        const callee = varRef("p.0", DYN, loc);
-        const value: IrExpr = {
+        const value = constructedValue(lowerer, info, {
           kind: "newValue",
           callee: { kind: "dynCheck", value: callee, type, loc },
           args,
           type: { kind: "object", className: name },
           loc,
-        };
+        });
         const body: IrStmt[] = [
           { kind: "return", value: lowerer.coerceToExpected(value, DYN), loc },
         ];
+        // A spread call's argument count is known only at run time.
+        if (fence !== null && fn.name === PACKED)
+          body.unshift({
+            kind: "if",
+            cond: {
+              kind: "bin",
+              op: ">",
+              left: {
+                kind: "libCall",
+                fn: "dyn.arrLen",
+                args: [varRef("p.1", DYN, loc)],
+                type: F64,
+                loc,
+              },
+              right: { kind: "numLit", value: 0, type: F64, loc },
+              type: BOOL,
+              loc,
+            },
+            then: [fence],
+            else_: null,
+            loc,
+          });
         fn.body.unshift({
           kind: "if",
           cond: {

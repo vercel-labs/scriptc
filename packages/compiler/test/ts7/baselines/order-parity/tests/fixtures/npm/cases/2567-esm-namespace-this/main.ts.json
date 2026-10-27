@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/2567-esm-namespace-this/main.ts"
+ ],
+ "diags": []
+}

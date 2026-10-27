@@ -81,7 +81,7 @@ void scr_init(void);
 /* Program objects emitted by the bundled LLVM helper reference this symbol.
  * Its versioned spelling makes a mismatched manual runtime link fail before
  * the program can start. */
-void scr_runtime_abi_v22(void);
+void scr_runtime_abi_v47(void);
 void scr_runtime_workers_v8(void);
 
 /* ── the trap funnel (scr_console.c; scr_library.c under -DSCR_LIB) ──────
@@ -294,6 +294,15 @@ double scr_library_i64_in(int64_t v, const char *trap_msg);
 double scr_library_u64_in(uint64_t v, const char *trap_msg);
 void scr_library_str_out(ScrStr *s, const uint8_t **out, size_t *out_len);
 void scr_library_bytes_out(ScrBytes *b, const uint8_t **out, size_t *out_len);
+/* The cstring class (a NUL-terminated `const char *`). Inbound: a copy
+ * decoded as UTF-8 with U+FFFD replacement; NULL delivers trap_msg (the
+ * assembled SC4012 message). Outbound results move into the arena and
+ * return their data; callback arguments return the string's own data,
+ * borrowed for the call. A string containing U+0000 cannot be a C string:
+ * both outbound forms trap instead of truncating. */
+ScrStr *scr_library_cstr_in(const char *p, const char *trap_msg); /* +1 */
+const char *scr_library_cstr_out(ScrStr *s);
+const char *scr_library_cstr_arg(const ScrStr *s);
 
 #define scr_atexit(fn) scr_library_register_reset(fn)
 #elif defined(SCR_WORKERS)
@@ -332,6 +341,8 @@ void scr_exc_alert_add(int delta); /* worker.terminate() references */
 void scr_exc_alert_thread_exit(void);
 void scr_loop_context_shutdown(void);
 extern SCR_TL void (*scr_context_report_error)(void);
+/* Set while scr_context_report_error reports an unhandled rejection. */
+extern SCR_TL bool scr_context_report_rejection;
 typedef struct ScrContextEnv ScrContextEnv;
 ScrContextEnv *scr_context_env_capture(void);
 void scr_context_env_free(ScrContextEnv *environment);

@@ -44,6 +44,7 @@ const enumNames = [
   "ModuleDetectionKind",
   "OuterExpressionKinds",
   "LanguageVariant",
+  "JsxEmit",
 ];
 const enumLines = [
   "/* eslint-disable @typescript-eslint/no-duplicate-enum-values -- TypeScript aliases are part of the protocol. */",
@@ -67,6 +68,7 @@ for (const name of enumNames) {
       "ModuleKind",
       "ModuleResolutionKind",
       "ModuleDetectionKind",
+      "JsxEmit",
     ].includes(name)
   ) {
     const values = require(join(packageRoot, "dist/enums", `${basename}.js`))[name];
@@ -268,25 +270,61 @@ if (process.argv.includes("--check")) {
 // declarations, and require every wire property to have a declared getter.
 const declarations = readFileSync(join(packageRoot, "dist/api/node/node.generated.d.ts"), "utf8");
 const names = [...new Set(Object.values(protocol.childProperties).flat())].sort();
-// These views adapt TS7's shared postfix slot and reparsed JSDoc bodies.
-// Their implementations live outside the generated region in AstNode.
-const adaptedGetters = new Set(["body", "questionToken"]);
+// These views adapt TS7's shared postfix slot and reparsed JSDoc bodies,
+// return modifiers as a modifier list, and return write targets without their
+// wrappers. Their implementations live outside the generated region in
+// AstNode.
+const adaptedGetters = new Set([
+  "body",
+  "initializer",
+  "left",
+  "modifiers",
+  "operand",
+  "questionToken",
+]);
+// A getter selects its child's wire slot by kind directly: an integer
+// switch, without astChildOrder's switch on the child's name. `answer`
+// maps a slot to the returned expression; `missing` is returned for kinds
+// without the child.
+const slotCases = (name, answer, missing) => {
+  const kindsBySlot = new Map();
+  for (const [kind, childNames] of Object.entries(protocol.childProperties)) {
+    const slot = childNames.indexOf(name);
+    if (slot < 0) continue;
+    if (!kindsBySlot.has(slot)) kindsBySlot.set(slot, []);
+    kindsBySlot.get(slot).push(kind);
+  }
+  const lines = ["    switch (this.kind) {"];
+  for (const [slot, kinds] of [...kindsBySlot].sort((a, b) => a[0] - b[0])) {
+    for (const kind of kinds) lines.push(`      case ${kind}:`);
+    lines.push(`        return ${answer(slot)};`);
+  }
+  lines.push("      default:", `        return ${missing};`, "    }");
+  return lines.join("\n");
+};
 const getters = names
   .filter((name) => !adaptedGetters.has(name))
   .map((name) => {
     const match = declarations.match(new RegExp(`get ${name}\\(\\): ([^;]+);`));
     if (!match) throw new Error(`Missing AST child declaration: ${name}`);
     const type = match[1]
-      .replaceAll("RemoteNodeList", "readonly AstNode[]")
+      .replaceAll("RemoteNodeList", "AstNodeList")
       .replaceAll("RemoteNode", "AstNode");
     const method =
-      type.includes("AstNode |") && type.includes("AstNode[]")
-        ? "child"
-        : type.includes("AstNode[]")
-          ? "childList"
-          : "childNode";
-    return `  get ${name}(): ${type} {\n    return this.${method}(${JSON.stringify(name)});\n  }`;
+      type.includes("AstNode |") && type.includes("AstNodeList")
+        ? "childAt"
+        : type.includes("AstNodeList")
+          ? "childListAt"
+          : "childNodeAt";
+    return `  get ${name}(): ${type} {\n${slotCases(name, (slot) => `this.${method}(${slot})`, "undefined")}\n  }`;
   });
+// The adapted getters read their raw child through the same slot switch.
+const adaptedSlots = [...adaptedGetters]
+  .sort()
+  .map(
+    (name) =>
+      `  private ${name}Slot(): number {\n${slotCases(name, (slot) => String(slot), "-1")}\n  }`,
+  );
 const nodeTarget = join(root, "packages/compiler/src/frontend/ts7/ast-node.ts");
 const before = readFileSync(nodeTarget, "utf8");
 if (
@@ -300,6 +338,7 @@ const after = before.replace(
     "  // BEGIN GENERATED CHILD GETTERS",
     `  // Generated from typescript@${version}; run scripts/generate-ts7-ast-schema.mjs.`,
     ...getters,
+    ...adaptedSlots,
     "  // END GENERATED CHILD GETTERS",
   ].join("\n"),
 );

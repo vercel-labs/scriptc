@@ -83,6 +83,9 @@ static inline void scr_str_hash_forget(ScrStr *s) {
 /* True only when every byte is proven below 0x80 (see above). */
 static inline bool scr_str_known_ascii(const ScrStr *s) { return s->ascii; }
 
+/* Record the UTF-16 length a string's producer counted (scr_string.c). */
+void scr_str_note_utf16_len(ScrStr *s, size_t units);
+
 /* Record a proven-ASCII fact. Immortal strings may live in read-only
  * memory and are shared across threads, so they are never written. */
 static inline void scr_str_note_ascii(ScrStr *s) {
@@ -184,6 +187,14 @@ static inline ScrStr *scr_str_retain(ScrStr *s) {
 
 void scr_str_release(ScrStr *s); /* NULL-tolerant (uninitialized locals) */
 
+/* A transient stack copy of a slice (scr_str_slice_scratch): immortal for
+ * retain and release, and valid only while its borrowing consumer runs. No
+ * other string has a capacity below its length. Containers that keep a
+ * string they were lent store scr_str_scratch_keep's copy instead. */
+static inline bool scr_str_is_scratch(const ScrStr *s) {
+  return s->rc == SIZE_MAX && s->cap < s->len;
+}
+
 /* ── lone surrogates: canonical WTF-8 storage ─────────────────────────
  * String storage is UTF-8 extended to lone UTF-16 surrogates: an unpaired
  * surrogate is its generalized 3-byte encoding ED A0..BF 80..BF, while a
@@ -282,16 +293,19 @@ ScrStr *scr_str_concat_f64(ScrStr *a, double x);
 
 bool scr_str_eq(ScrStr *a, ScrStr *b);
 
-/* memcmp byte order == code-point order (see SEMANTICS.md: diverges from
- * JS UTF-16 code-unit order only for non-BMP vs U+E000..U+FFFF). Returns
- * <0, 0, >0. */
+/* memcmp byte order == code-point order, which differs from JS UTF-16
+ * code-unit order for non-BMP characters against U+E000..U+FFFF and for
+ * lone surrogates. Returns <0, 0, >0. Relational string operators use
+ * scr_str_cmp_u16. */
 int scr_str_cmp(ScrStr *a, ScrStr *b);
 /* a.localeCompare(b) with no locales/options: Node's root-locale order for
  * Latin-script text, code-point order outside it (scr_string.c). */
 double scr_str_locale_compare(ScrStr *a, ScrStr *b);
 
-/* ECMAScript string-list ordering: compare UTF-16 code units even though
- * ScrStr stores WTF-8. Returns <0, 0, >0. */
+/* ECMAScript string ordering: compare UTF-16 code units even though ScrStr
+ * stores WTF-8. Returns <0, 0, >0. */
 int scr_str_cmp_u16(ScrStr *a, ScrStr *b);
+/* scr_str_cmp_u16 for two distinct strings that are not proven ASCII. */
+int scr_str_cmp_u16_bytes(const ScrStr *a, const ScrStr *b);
 
 #endif /* SCR_STRING_H */

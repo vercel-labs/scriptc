@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/string-iteration.ts",
+  "args": [
+    "1"
+  ]
+}

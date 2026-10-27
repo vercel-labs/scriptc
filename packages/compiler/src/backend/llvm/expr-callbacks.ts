@@ -1,12 +1,20 @@
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
-import { type IrType, isRefCounted, isUnitType, typeEquals, typeKey } from "../../ir/ir.js";
-import { mangleGenResThunk, mangleRecordNew, mangleRecordStruct } from "../mangle.js";
+import {
+  type IrType,
+  UNDEFINED_T,
+  isRefCounted,
+  isUnitType,
+  typeEquals,
+  typeKey,
+} from "../../ir/ir.js";
+import { mangleRecordNew, mangleRecordStruct } from "../mangle.js";
 import { FN_ATTRS, llFieldType, releaseSym, retainSym, traceArg, vAdapters } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext } from "./expr-context.js";
 import { unionPeekLines, unionTagLines } from "./union-repr.js";
 import { inlineUnionCopyLines } from "./inline-unions.js";
+import { registerReplay } from "./emit-journal.js";
 
 /** Text-template union construction around an owned (+1) reference payload:
  * a fresh box, or the payload itself for a nullable union. */
@@ -46,8 +54,27 @@ export function raceAdapterFor(host: LlvmEmitterContext, from: IrType, to: IrTyp
   const key = `race:${typeKey(from)}=>${typeKey(to)}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return sym;
-  sym = `sc_race_${host.resolveThunks.size}`;
+  sym = host.contentSymbol("sc_race_", key);
   host.resolveThunks.set(key, sym);
+  host.journal?.allocated(sym, "raceAdapterFor", [from, to]);
+  const toArms = to.kind === "union" ? (host.unionsById.get(to.unionId)?.arms ?? []) : [];
+  if (from.kind === "void" && !toArms.some((a) => a.kind === "undefinedT")) {
+    // A Promise<never> entry (the frontend admits void entries without an
+    // undefined result arm only for those): it can only reject, so its
+    // fulfillment adapter never runs.
+    host.declare(`declare void @scr_trap(ptr)`);
+    const msg = host.cstr("scriptc: a Promise<never> race entry fulfilled\n");
+    host.resolveThunkDefs.push(
+      `define internal void @${sym}(ptr %dst, ptr %src) ${FN_ATTRS} { ; race ${key}`,
+      `entry:`,
+      `  call void @scr_trap(ptr ${msg})`,
+      `  unreachable`,
+      `}`,
+      ``,
+    );
+    host.journal?.built();
+    return sym;
+  }
   if (to.kind !== "union")
     throw new InternalCompilerError("llvm emitter bug: race adapter to a non-union");
   const toDef = host.unionsById.get(to.unionId);
@@ -68,6 +95,15 @@ export function raceAdapterFor(host: LlvmEmitterContext, from: IrType, to: IrTyp
     `define internal void @${sym}(ptr %dst, ptr %src) ${FN_ATTRS} { ; race ${key}`,
     `entry:`,
   ];
+  if (from.kind === "void") {
+    // A Promise<void> entry fulfills with undefined: the result's
+    // undefined arm, whatever the entry's payload slot holds.
+    const tag = tagOf(UNDEFINED_T);
+    d.push(`  ${fulfill(host.unitInstanceRef(to.unionId, tag))}`, `  ret void`, `}`, ``);
+    host.resolveThunkDefs.push(...d);
+    host.journal?.built();
+    return sym;
+  }
   if (from.kind !== "union") {
     // One arm wrap, straight off the payload accessors.
     const tag = tagOf(from);
@@ -106,6 +142,7 @@ export function raceAdapterFor(host: LlvmEmitterContext, from: IrType, to: IrTyp
     }
     d.push(`  ${fulfill("%u")}`, `  ret void`, `}`, ``);
     host.resolveThunkDefs.push(...d);
+    host.journal?.built();
     return sym;
   }
   // Sub-union re-tag: switch over the entry's arms, rebuild under the
@@ -168,6 +205,7 @@ export function raceAdapterFor(host: LlvmEmitterContext, from: IrType, to: IrTyp
     ``,
   );
   host.resolveThunkDefs.push(...d);
+  host.journal?.built();
   return sym;
 }
 
@@ -179,9 +217,11 @@ export function genResultThunkFor(
   const key = `gr:${typeKey(genT)}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return sym;
-  sym = mangleGenResThunk(host.resolveThunks.size);
+  sym = host.contentSymbol("sc_gres_", key);
   host.resolveThunks.set(key, sym);
+  host.journal?.allocated(sym, "genResultThunkFor", [genT, recT]);
   const shape = host.recordsById.get(recT.shapeId);
+  const base = host.nullableUnions.fieldBase(recT.shapeId);
   const valueT = shape?.fields.find((f) => f.name === "value")?.type;
   if (!shape || !valueT)
     throw new InternalCompilerError("llvm emitter bug: genResume record lacks its value field");
@@ -242,7 +282,7 @@ export function genResultThunkFor(
       `  %r = call ptr @${mangleRecordNew(recT.shapeId)}()`,
       `  %d = call zeroext i1 @scr_gen_done(ptr %g)`,
       `  %dz = zext i1 %d to i8`,
-      `  %dp = getelementptr inbounds %${mangleRecordStruct(recT.shapeId)}, ptr %r, i64 0, i32 ${doneIdxD + 1}`,
+      `  %dp = getelementptr inbounds %${mangleRecordStruct(recT.shapeId)}, ptr %r, i64 0, i32 ${doneIdxD + base}`,
       `  store i8 %dz, ptr %dp`,
       `  %has = call zeroext i1 @scr_gen_out_has(ptr %g)`,
       `  br i1 %has, label %take, label %undefv`,
@@ -259,13 +299,14 @@ export function genResultThunkFor(
       `  br label %join`,
       `join:`,
       `  %v = load ptr, ptr %vslot`,
-      `  %vp = getelementptr inbounds %${mangleRecordStruct(recT.shapeId)}, ptr %r, i64 0, i32 ${valueIdxD + 1}`,
+      `  %vp = getelementptr inbounds %${mangleRecordStruct(recT.shapeId)}, ptr %r, i64 0, i32 ${valueIdxD + base}`,
       `  store ptr %v, ptr %vp`,
       `  ret ptr %r`,
       `}`,
       ``,
     ];
     host.resolveThunkDefs.push(...d);
+    host.journal?.built();
     return sym;
   }
   if (valueT.kind !== "union") throw new LlvmUnsupportedError(`genResume:${valueT.kind}`);
@@ -293,7 +334,7 @@ export function genResultThunkFor(
     `  %r = call ptr @${mangleRecordNew(recT.shapeId)}()`,
     `  %d = call zeroext i1 @scr_gen_done(ptr %g)`,
     `  %dz = zext i1 %d to i8`,
-    `  %dp = getelementptr inbounds %${mangleRecordStruct(recT.shapeId)}, ptr %r, i64 0, i32 ${doneIdx + 1}`,
+    `  %dp = getelementptr inbounds %${mangleRecordStruct(recT.shapeId)}, ptr %r, i64 0, i32 ${doneIdx + base}`,
     `  store i8 %dz, ptr %dp`,
     `  br i1 %d, label %doneb, label %susp`,
   ];
@@ -410,7 +451,7 @@ export function genResultThunkFor(
     `  br label %join`,
     `join:`,
     `  %v = load ptr, ptr %vslot`,
-    `  %vp = getelementptr inbounds %${mangleRecordStruct(recT.shapeId)}, ptr %r, i64 0, i32 ${valueIdx + 1}`,
+    `  %vp = getelementptr inbounds %${mangleRecordStruct(recT.shapeId)}, ptr %r, i64 0, i32 ${valueIdx + base}`,
     // An inline value field copies the box's bits and drops the box.
     ...(host.inlineUnions.record(valueT)
       ? [
@@ -423,6 +464,7 @@ export function genResultThunkFor(
     ``,
   );
   host.resolveThunkDefs.push(...d);
+  host.journal?.built();
   return sym;
 }
 
@@ -432,8 +474,9 @@ export function childExitThunkFor(host: LlvmEmitterContext, param: IrType): stri
   const key = `cx:${param.unionId}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return sym;
-  sym = `sc_cx_${host.resolveThunks.size}`;
+  sym = host.contentSymbol("sc_cx_", key);
   host.resolveThunks.set(key, sym);
+  host.journal?.allocated(sym, "childExitThunkFor", [param]);
   const def = host.unionsById.get(param.unionId);
   const f64Tag = def ? def.arms.findIndex((a) => a.kind === "f64") : -1;
   const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
@@ -461,6 +504,7 @@ export function childExitThunkFor(host: LlvmEmitterContext, param: IrType): stri
     `}`,
     ``,
   );
+  host.journal?.built();
   return sym;
 }
 
@@ -475,8 +519,9 @@ export function childExitSignalThunkFor(
   const key = `cx2:${codeParam.unionId}+${sigParam.unionId}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return sym;
-  sym = `sc_cx_${host.resolveThunks.size}`;
+  sym = host.contentSymbol("sc_cx_", key);
   host.resolveThunks.set(key, sym);
+  host.journal?.allocated(sym, "childExitSignalThunkFor", [codeParam, sigParam]);
   const codeDef = host.unionsById.get(codeParam.unionId);
   const f64Tag = codeDef ? codeDef.arms.findIndex((a) => a.kind === "f64") : -1;
   const codeNullTag = codeDef ? codeDef.arms.findIndex((a) => a.kind === "nullT") : -1;
@@ -527,6 +572,7 @@ export function childExitSignalThunkFor(
     `}`,
     ``,
   );
+  host.journal?.built();
   return sym;
 }
 
@@ -534,8 +580,9 @@ export function execFileThunkFor(host: LlvmEmitterContext, cbT: IrType & { kind:
   const key = `exec:${typeKey(cbT)}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return sym;
-  sym = `sc_exec_${host.resolveThunks.size}`;
+  sym = host.contentSymbol("sc_exec_", key);
   host.resolveThunks.set(key, sym);
+  host.journal?.allocated(sym, "execFileThunkFor", [cbT]);
   const errorParam = cbT.params[0];
   let errorTag = -1;
   let nullTag = -1;
@@ -594,6 +641,7 @@ export function execFileThunkFor(host: LlvmEmitterContext, cbT: IrType & { kind:
     ``,
   );
   host.resolveThunkDefs.push(...d);
+  host.journal?.built();
   return sym;
 }
 
@@ -604,8 +652,9 @@ export function ipcMessageThunkFor(
   const key = `ipcmsg:${typeKey(cbT)}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return sym;
-  sym = `sc_ipc_msg_${host.resolveThunks.size}`;
+  sym = host.contentSymbol("sc_ipc_msg_", key);
   host.resolveThunks.set(key, sym);
+  host.journal?.allocated(sym, "ipcMessageThunkFor", [cbT]);
   const param = cbT.params[0];
   const d: string[] = [
     `define internal void @${sym}(ptr %cb, ptr %message) ${FN_ATTRS} { ; IPC message ${typeKey(cbT)}`,
@@ -646,6 +695,7 @@ export function ipcMessageThunkFor(
   }
   d.push(`  ret void`, `}`, ``);
   host.resolveThunkDefs.push(...d);
+  host.journal?.built();
   return sym;
 }
 
@@ -653,8 +703,9 @@ export function ipcSendThunkFor(host: LlvmEmitterContext, cbT: IrType & { kind: 
   const key = `ipcsend:${typeKey(cbT)}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return sym;
-  sym = `sc_ipc_send_${host.resolveThunks.size}`;
+  sym = host.contentSymbol("sc_ipc_send_", key);
   host.resolveThunks.set(key, sym);
+  host.journal?.allocated(sym, "ipcSendThunkFor", [cbT]);
   const param = cbT.params[0];
   const d: string[] = [
     `define internal void @${sym}(ptr %cb, ptr %error) ${FN_ATTRS} { ; IPC send callback ${typeKey(cbT)}`,
@@ -703,6 +754,7 @@ export function ipcSendThunkFor(host: LlvmEmitterContext, cbT: IrType & { kind: 
   }
   d.push(`  ret void`, `}`, ``);
   host.resolveThunkDefs.push(...d);
+  host.journal?.built();
   return sym;
 }
 
@@ -712,8 +764,9 @@ export function childDataThunkFor(host: LlvmEmitterContext, param: IrType): stri
   const key = `cd:${param.unionId}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return sym;
-  sym = `sc_cd_${host.resolveThunks.size}`;
+  sym = host.contentSymbol("sc_cd_", key);
   host.resolveThunks.set(key, sym);
+  host.journal?.allocated(sym, "childDataThunkFor", [param]);
   const def = host.unionsById.get(param.unionId);
   const bytesTag = def ? def.arms.findIndex((a) => a.kind === "bytes" && a.elem === "u8") : -1;
   if (bytesTag < 0)
@@ -735,6 +788,34 @@ export function childDataThunkFor(host: LlvmEmitterContext, param: IrType): stri
     `}`,
     ``,
   );
+  host.journal?.built();
+  return sym;
+}
+
+/** The child-stream 'data' thunk for an unknown/any chunk parameter: the
+ * runtime's Buffer (or, after setEncoding, string) chunk boxes into a
+ * checked-dynamic value the listener owns. */
+export function childDataDynThunkFor(host: LlvmEmitterContext, chunk: "bytes" | "str"): string {
+  const key = `cdd:${chunk}`;
+  let sym = host.resolveThunks.get(key);
+  if (sym) return sym;
+  sym = host.contentSymbol("sc_cdd_", key);
+  host.resolveThunks.set(key, sym);
+  host.journal?.allocated(sym, "childDataDynThunkFor", [chunk]);
+  const box = chunk === "bytes" ? "scr_dyn_new_buffer" : "scr_dyn_new_str";
+  host.declare(`declare ptr @${box}(ptr)`);
+  host.resolveThunkDefs.push(
+    `define internal void @${sym}(ptr %cb, ptr %chunk) ${FN_ATTRS} { ; child 'data' → dyn (${chunk})`,
+    `entry:`,
+    `  %d = call ptr @${box}(ptr %chunk)`,
+    `  %fnp = getelementptr inbounds %ScrClosure, ptr %cb, i64 0, i32 1`,
+    `  %fn = load ptr, ptr %fnp`,
+    `  call void %fn(ptr %cb, ptr %d)`,
+    `  ret void`,
+    `}`,
+    ``,
+  );
+  host.journal?.built();
   return sym;
 }
 
@@ -753,8 +834,9 @@ export function emitterFixedAdapter(
   const key = `ee:${typeKey(cbT)}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return { fn: sym, shim };
-  sym = `sc_ee_ad_${host.resolveThunks.size}`;
+  sym = host.contentSymbol("sc_ee_ad_", key);
   host.resolveThunks.set(key, sym);
+  host.journal?.allocated(sym, "emitterFixedAdapter", [cbT]);
   host.declare(`declare ptr @scr_box_get_ref(ptr)`);
   host.declare(`declare void @scr_closure_release(ptr)`);
   const params = cursor ? "ptr %args" : cbT.params.map((_, i) => `ptr %a${i}`).join(", ");
@@ -799,6 +881,7 @@ export function emitterFixedAdapter(
   }
   d.push(`  call void @scr_closure_release(ptr %orig)`, `  ret void`, `}`, ``);
   host.resolveThunkDefs.push(...d);
+  host.journal?.built();
   return { fn: sym, shim };
 }
 
@@ -806,23 +889,28 @@ export function emitterFixedAdapter(
  * (the event's tuple to any[]): the runtime-built listener closure holds
  * the boxer in caps[0], so the adapter calls it with the event's typed
  * arguments, as emitterFixedAdapter calls a listener, and hands the array
- * to scr_events_once_fire. */
+ * to scr_events_once_fire (or `fire`, the signal form's entry). */
 export function emitterOnceAdapter(
   host: LlvmEmitterContext,
   boxerT: IrType & { kind: "func" },
+  fire = "scr_events_once_fire",
 ): { fn: string; shim: string } {
   const cursor = boxerT.params.length > 4;
   const shim = cursor ? "scr_ee_inv_args" : `scr_ee_inv_fixed${boxerT.params.length}`;
   if (cursor) host.declare("declare ptr @scr_ee_arg_next(ptr)");
   host.declare(`declare void @${shim}(ptr, ptr)`);
-  const key = `eeOnce:${typeKey(boxerT)}`;
+  const key =
+    fire === "scr_events_once_fire"
+      ? `eeOnce:${typeKey(boxerT)}`
+      : `eeOnce:${fire}:${typeKey(boxerT)}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return { fn: sym, shim };
-  sym = `sc_ee_once_${host.resolveThunks.size}`;
+  sym = host.contentSymbol("sc_ee_once_", key);
   host.resolveThunks.set(key, sym);
+  host.journal?.allocated(sym, "emitterOnceAdapter", [boxerT, fire]);
   host.declare(`declare ptr @scr_box_get_ref(ptr)`);
   host.declare(`declare void @scr_closure_release(ptr)`);
-  host.declare(`declare void @scr_events_once_fire(ptr, ptr)`);
+  host.declare(`declare void @${fire}(ptr, ptr)`);
   const params = cursor ? "ptr %args" : boxerT.params.map((_, i) => `ptr %a${i}`).join(", ");
   const d: string[] = [
     `define internal void @${sym}(ptr %cb${params ? ", " + params : ""}) ${FN_ATTRS} { ; events.once adapter ${typeKey(boxerT)}`,
@@ -853,12 +941,13 @@ export function emitterOnceAdapter(
     `  %fn = load ptr, ptr %fnp`,
     `  %arr = call ptr %fn(${passed.join(", ")}) ; the boxed arguments, +1`,
     `  call void @scr_closure_release(ptr %boxer)`,
-    `  call void @scr_events_once_fire(ptr %cb, ptr %arr) ; moves %arr`,
+    `  call void @${fire}(ptr %cb, ptr %arr) ; moves %arr`,
     `  ret void`,
     `}`,
     ``,
   );
   host.resolveThunkDefs.push(...d);
+  host.journal?.built();
   return { fn: sym, shim };
 }
 
@@ -885,10 +974,20 @@ export function wrapEmitterListener(
 export function unwrapNullableClosure(
   host: LlvmEmitterContext,
   u: string,
+  unionId: string,
   funcTag: number,
 ): string {
   const B = host.B;
   host.declare(`declare ptr @scr_closure_retain_v(ptr)`);
+  const nullable = host.nullableUnions.get(unionId);
+  if (nullable !== null) {
+    // The union is the closure pointer itself (NULL for the unit arm).
+    if (nullable.repr !== "single" || nullable.nullTag >= 0 || nullable.refTag !== funcTag)
+      throw new InternalCompilerError("llvm emitter bug: nullable callback union shape");
+    const r = B.tmp();
+    B.line(`${r} = call ptr ${retainSym(host.shapeHost, { kind: "union", unionId })}(ptr ${u})`);
+    return r;
+  }
   const slot = B.slot();
   B.entryAllocas.push(`${slot} = alloca ptr`);
   B.line(`store ptr null, ptr ${slot}`);
@@ -926,8 +1025,9 @@ export function closeBindThunkFor(
   const key = `ncb:${cbUnion.unionId}:${retServer ? "srv" : "void"}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return sym;
-  sym = `sc_ncb_${host.resolveThunks.size}`;
+  sym = host.contentSymbol("sc_ncb_", key);
   host.resolveThunks.set(key, sym);
+  host.journal?.allocated(sym, "closeBindThunkFor", [cbUnion, retServer]);
   const def = host.unionsById.get(cbUnion.unionId);
   const funcTag = def ? def.arms.findIndex((a) => a.kind === "func") : -1;
   const funcArm = funcTag >= 0 ? (def!.arms[funcTag] as IrType & { kind: "func" }) : null;
@@ -936,9 +1036,9 @@ export function closeBindThunkFor(
       "llvm emitter bug: bound-close callback union lacks its func arm",
     );
   const oneParam = funcArm.params.length === 1;
+  const cbNullable = host.nullableUnions.get(cbUnion.unionId);
   host.declare(`declare ptr @scr_box_get_ref(ptr)`);
   host.declare(`declare void @scr_closure_release(ptr)`);
-  host.declare(`declare void @scr_union_release(ptr)`);
   host.declare(`declare ptr @scr_closure_retain_v(ptr)`);
   host.declare(`declare void @scr_net_server_close_direct(ptr, ptr)`);
   let trampoline: string | null = null;
@@ -982,13 +1082,11 @@ export function closeBindThunkFor(
     `  %capsp = getelementptr inbounds %ScrClosure, ptr %self, i64 1`,
     `  %bx = load ptr, ptr %capsp`,
     `  %srv = call ptr @scr_box_get_ref(ptr %bx) ; +1`,
-    `  %tagp = getelementptr inbounds %ScrUnion, ptr %cbu, i64 0, i32 1`,
-    `  %tag = load i32, ptr %tagp`,
+    ...unionTagLines(cbNullable, "%cbu", "%tag"),
     `  %isfn = icmp eq i32 %tag, ${funcTag}`,
     `  br i1 %isfn, label %fn, label %go`,
     `fn:`,
-    `  %pp = getelementptr inbounds %ScrUnion, ptr %cbu, i64 0, i32 5`,
-    `  %pv = load ptr, ptr %pp`,
+    ...unionPeekLines(cbNullable, "%cbu", "%pv"),
   ];
   if (oneParam) {
     d.push(
@@ -1007,7 +1105,7 @@ export function closeBindThunkFor(
     `  br label %go`,
     `go:`,
     `  %regv = load ptr, ptr %regslot`,
-    `  call void @scr_union_release(ptr %cbu) ; the callee owns its +1 param`,
+    `  call void ${releaseSym(host.shapeHost, cbUnion)}(ptr %cbu) ; the callee owns its +1 param`,
     `  call void @scr_net_server_close_direct(ptr %srv, ptr %regv) ; reg moves`,
   );
   if (retServer) {
@@ -1017,6 +1115,7 @@ export function closeBindThunkFor(
   }
   d.push(`}`, ``);
   host.resolveThunkDefs.push(...d);
+  host.journal?.built();
   return sym;
 }
 
@@ -1030,8 +1129,9 @@ export function closeOverrideWrapFor(
   const key = `ncw:${cbUnion.unionId}:${retServer ? "srv" : "void"}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return sym;
-  sym = `sc_ncw_${host.resolveThunks.size}`;
+  sym = host.contentSymbol("sc_ncw_", key);
   host.resolveThunks.set(key, sym);
+  host.journal?.allocated(sym, "closeOverrideWrapFor", [cbUnion, retServer]);
   const def = host.unionsById.get(cbUnion.unionId);
   const undefTag = def ? def.arms.findIndex((a) => a.kind === "undefinedT") : -1;
   if (undefTag < 0)
@@ -1060,6 +1160,7 @@ export function closeOverrideWrapFor(
     `}`,
     ``,
   );
+  host.journal?.built();
   return sym;
 }
 
@@ -1076,8 +1177,9 @@ export function settledStoreFor(
   const key = `settled:${typeKey(from)}=>${typeKey(to)}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return sym;
-  sym = `sc_settled_${host.resolveThunks.size}`;
+  sym = host.contentSymbol("sc_settled_", key);
   host.resolveThunks.set(key, sym);
+  host.journal?.allocated(sym, "settledStoreFor", [from, to]);
   const def = host.unionsById.get(to.unionId);
   if (!def) throw new InternalCompilerError("llvm emitter bug: settled store to an unknown union");
   const armOf = (field: string): { tag: number; arm: IrType & { kind: "record" } } => {
@@ -1092,7 +1194,8 @@ export function settledStoreFor(
     return { tag, arm };
   };
   const fieldIndex = (arm: IrType & { kind: "record" }, field: string): number =>
-    host.recordsById.get(arm.shapeId)!.fields.findIndex((f) => f.name === field) + 1;
+    host.recordsById.get(arm.shapeId)!.fields.findIndex((f) => f.name === field) +
+    host.nullableUnions.fieldBase(arm.shapeId);
   const fulfilled = armOf("value");
   const rejected = armOf("reason");
   const valueT = host.recordsById
@@ -1167,5 +1270,52 @@ export function settledStoreFor(
     `}`,
     ``,
   );
+  host.journal?.built();
   return sym;
 }
+
+registerReplay("raceAdapterFor", (host, args) =>
+  raceAdapterFor(host, args[0] as IrType, args[1] as IrType),
+);
+registerReplay("genResultThunkFor", (host, args) =>
+  genResultThunkFor(
+    host,
+    args[0] as IrType & { kind: "generator" },
+    args[1] as IrType & { kind: "record" },
+  ),
+);
+registerReplay("childExitThunkFor", (host, args) => childExitThunkFor(host, args[0] as IrType));
+registerReplay("childExitSignalThunkFor", (host, args) =>
+  childExitSignalThunkFor(host, args[0] as IrType, args[1] as IrType),
+);
+registerReplay("execFileThunkFor", (host, args) =>
+  execFileThunkFor(host, args[0] as IrType & { kind: "func" }),
+);
+registerReplay("ipcMessageThunkFor", (host, args) =>
+  ipcMessageThunkFor(host, args[0] as IrType & { kind: "func" }),
+);
+registerReplay("ipcSendThunkFor", (host, args) =>
+  ipcSendThunkFor(host, args[0] as IrType & { kind: "func" }),
+);
+registerReplay("childDataThunkFor", (host, args) => childDataThunkFor(host, args[0] as IrType));
+registerReplay("childDataDynThunkFor", (host, args) =>
+  childDataDynThunkFor(host, args[0] as "bytes" | "str"),
+);
+registerReplay("closeBindThunkFor", (host, args) =>
+  closeBindThunkFor(host, args[0] as IrType, args[1] as boolean),
+);
+registerReplay("closeOverrideWrapFor", (host, args) =>
+  closeOverrideWrapFor(host, args[0] as IrType, args[1] as boolean),
+);
+registerReplay("settledStoreFor", (host, args) =>
+  settledStoreFor(host, args[0] as IrType, args[1] as IrType & { kind: "union" }),
+);
+registerReplay(
+  "emitterFixedAdapter",
+  (host, args) => emitterFixedAdapter(host, args[0] as IrType & { kind: "func" }).fn,
+);
+registerReplay(
+  "emitterOnceAdapter",
+  (host, args) =>
+    emitterOnceAdapter(host, args[0] as IrType & { kind: "func" }, args[1] as string).fn,
+);

@@ -1,0 +1,23 @@
+(module
+  (import "env" "make" (func $make (result externref)))
+  (table $slots 1 externref)
+  (global $slot (mut externref) (ref.null extern))
+  (memory 1)
+  (func (export "put") (param externref)
+    (table.set $slots (i32.const 0) (local.get 0)))
+  (func (export "take") (result externref) (local externref)
+    (local.set 0 (table.get $slots (i32.const 0)))
+    (table.set $slots (i32.const 0) (ref.null extern))
+    (local.get 0))
+  (func (export "putg") (param externref)
+    (global.set $slot (local.get 0)))
+  (func (export "takeg") (result externref)
+    (global.get $slot)
+    (global.set $slot (ref.null extern)))
+  (func (export "fresh") (result externref)
+    (call $make))
+  ;; i32.load with the memory index written out (memarg flags 0x42, memory
+  ;; 0, offset 8).
+  (func (export "load") (result i32)
+    (i32.load 0 offset=8 (i32.const 0)))
+  (data (i32.const 8) "abcd"))

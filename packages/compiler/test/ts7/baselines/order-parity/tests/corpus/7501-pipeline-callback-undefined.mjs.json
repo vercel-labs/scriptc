@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7501-pipeline-callback-undefined.mjs"
+ ],
+ "diags": []
+}

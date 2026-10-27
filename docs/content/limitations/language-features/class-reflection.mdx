@@ -1,1 +1,4 @@
-- **Class reflection:** `JSON.stringify` and `Object.keys` require every declared field to have a representation that can pass through runtime-checked storage. They raise an error for classes with opaque fields such as native Maps. Class fields, inherited accessors, and added properties retain identity through untyped values.
+- **Class reflection:** `JSON.stringify` and `Object.keys` require every declared field to have a representation that can pass through runtime-checked storage.
+  `JSON.stringify` writes Date fields as their ISO text and Map and Set fields as `{}`, as Node.js does, and refuses classes with RegExp or Promise fields with `SC1090`.
+  `Object.keys` raises an error for classes with opaque fields such as native Maps.
+  Class fields, inherited accessors, and added properties retain identity through untyped values.

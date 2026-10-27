@@ -1,4 +1,4 @@
-import type { AstNode } from "./ast-node.js";
+import type { AstModifierList, AstNode, AstNodeList } from "./ast-node.js";
 import { SyntaxKind } from "./enums.js";
 import type {
   EndOfFile,
@@ -11,9 +11,14 @@ import type {
 
 export * from "./ast-types.generated.js";
 export type Node = AstNode;
-export type NodeArray<T extends Node> = readonly T[];
+/** A node list. The type is the list class itself, not a structural shape:
+ * native code represents a class and a record type differently. */
+export type NodeArray<T extends Node> = AstNodeList<T>;
+/** A declaration's modifiers: a node list with the flags of all of them. */
+export type ModifierArray<T extends Node> = AstModifierList<T>;
 export type Path = string;
-export type __String = string;
+/** An escaped symbol name, the key of member and export tables (TypeScript 7's `__String`). */
+export type __String = string & { readonly __escapedIdentifier: void };
 export interface TextRange {
   pos: number;
   end: number;

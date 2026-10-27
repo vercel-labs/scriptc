@@ -375,7 +375,8 @@ export function integerRangeCases(): RangeCase[] {
         ],
       },
     ],
-    [proof(cursor, 0, 80), proof(decoded, 0, 4294967295), proof(head, 0, 124)],
+    // Passes enter at 0, 24, 48, 72 and 96 (at most 99), so the failing test reads at most 123.
+    [proof(cursor, 0, 80), proof(decoded, 0, 4294967295), proof(head, 0, 123)],
     (func) => {
       for (const id of ["cursor", "decoded"])
         func.locals.push({ id, name: id, type: F64, mutable: true });

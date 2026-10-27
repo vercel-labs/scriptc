@@ -26,14 +26,19 @@
  *   count was already given up (which would over-decrement and free live
  *   data).
  *
- * The main graph phases keep a bounded depth-first walk and defer deeper
- * traces to reusable worklists. Ordinary RC destruction and cross-generation
- * releases are separate paths. White candidates are recorded during scan
- * and filtered after outside roots settle, avoiding a separate gather walk.
- * markGray also records the objects it grays and counts those still
- * externally referenced (rc > 0 after the trial decrements). When none is,
- * every gray object is garbage, which is what scan would find, so the pass
- * whitens the recorded set and skips scan.
+ * The graph phases keep a bounded depth-first walk and defer deeper traces
+ * to reusable worklists. Ordinary RC destruction and cross-generation
+ * releases are separate paths. markGray records the objects it grays (up
+ * to SCR_CYC_GRAY_LIST_MAX) and counts those still externally referenced
+ * (rc > 0 after the trial decrements), per pass and per component: the
+ * objects first reached from one candidate. A component with none is
+ * garbage, which is what scan would find, so the pass dooms it at once.
+ * For the others, scan blackens from each recorded object that is still
+ * externally referenced, which restores exactly the survivors, and what
+ * stays gray is the garbage: no walk whitens it. Only a pass too large to
+ * record walks scan from the candidates, whitening as it goes, and then
+ * filters the white set after outside roots settle, avoiding a separate
+ * gather walk.
  *
  * ── generations ──────────────────────────────────────────────────────
  * A pass costs O(objects reachable from its candidates), and a candidate
@@ -94,10 +99,35 @@
  *                  objects that are not garbage. A pass that frees almost
  *                  nothing therefore doubles this fraction, and a productive
  *                  one restores it.
+ *   full, death    live objects have died outside passes since the last
+ *                  full pass (the live count fell between passes, by at
+ *                  least 1/32 of the heap that pass left) and have stopped
+ *                  dying, and the heap has grown the base fraction since.
+ *                  Growth alone cannot tell a heap that keeps live data
+ *                  from one that keeps garbage, and once full passes stop
+ *                  finding anything the fraction widens to the cap. A
+ *                  program that drops a large structure and builds another
+ *                  (a compiler rebuilding in watch mode) would then hold
+ *                  the dead structures' cyclic parts until the heap had
+ *                  grown to the cap. The acyclic parts of such a structure
+ *                  go by reference counting, which shows as the fall. One
+ *                  that finds fewer older objects than had died doubles the
+ *                  fall the next one needs, and a productive one restores
+ *                  it. Like every full pass the growth rule did not choose
+ *                  (backlog, scheduled age), it can raise the levels'
+ *                  growth baselines but not lower them: the heap regrowing
+ *                  to where it was before such a pass reclaimed a dropped
+ *                  structure is a rebuild, not growth.
+ *                  Once the thread's event loop runs, the pass waits for
+ *                  the loop's next idle moment (scr_cyc_collect_idle), or
+ *                  until the heap has grown the base fraction past where
+ *                  it was asked for.
  *   mature         the same two rules one level down: a growth fraction
  *                  measured from the last mature-or-full pass and scheduled
  *                  by everything mature passes free, and a backlog rule over
- *                  the mature buffer.
+ *                  the mature buffer. Until a mature pass has had
+ *                  candidates, the backlog threshold widens with the growth
+ *                  fraction (scr_cyc_backlog_threshold).
  *   scheduled age  a mature or old candidate has waited through a nursery's
  *                  worth of event-loop checkpoints. Candidate COUNT cannot
  *                  bound the garbage behind one root, and an idle heap does
@@ -139,8 +169,10 @@ void scr_weak_dispose(void *object) {
 #include <stdlib.h>
 #include <string.h>
 
-/* Every heap object's first member is `size_t rc`. */
-#define SCR_RC(obj) (*(size_t *)(obj))
+/* Every heap object's first member is `size_t rc`; the collector works on
+ * its count (SCR_RC_COUNT), and tests it without a frozen record's bit
+ * (SCR_RC_REFS). */
+#define SCR_RC(obj) SCR_RC_COUNT(obj)
 
 static void scr_cyc_oom(void) {
   scr_trap("scriptc: out of memory\n");
@@ -151,14 +183,11 @@ static void scr_cyc_oom(void) {
  * struct on purpose: buffering a candidate is the hot path, and splitting
  * them across three arrays indexed by generation would touch three cache
  * lines per release where the original single buffer touched one. */
-typedef struct {
-  void **v;
-  size_t n, cap;
-  /* The most entries a pass held, for the work vectors a pass fills
-   * (scr_cyc_push_work); scr_cyc_pass_done frees a large vector that the
-   * pass used little of. */
-  size_t used;
-} ScrVec;
+/* Its layout is scr_rc.h's ScrCycBuffer (the candidate buffers are part of
+ * the inline buffering ABI). `used`: the most entries a pass held, for the
+ * work vectors a pass fills (scr_cyc_push_work); scr_cyc_pass_done frees a
+ * large vector that the pass used little of. */
+typedef ScrCycBuffer ScrVec;
 
 typedef struct {
   void *object;
@@ -170,6 +199,8 @@ typedef struct {
  * depth budget covers every participating destructor. Queued zero-count
  * objects still own their children until their callback runs. */
 #define SCR_DESTROY_DEPTH 64
+/* How deep the collector's walks recurse (see "the walks" below). */
+#define SCR_CYC_WALK_DEPTH 64
 #ifdef SCR_WORKERS
 /* Worker executables keep the collector's per-thread state in one
  * thread-local block: on Darwin every distinct thread-local costs a call
@@ -189,17 +220,28 @@ typedef struct {
   ScrVec white;
   ScrVec xgen;
   ScrVec xgen_edges;
-  void *gray_holder;
+  void *gray_holders[SCR_CYC_WALK_DEPTH];
   ScrVec pub_holes[SCR_CYC_NGENS];
   unsigned gen_limit;
   size_t live_after[SCR_CYC_NGENS];
   unsigned char growth_shift[SCR_CYC_NGENS];
   unsigned char growth_streak[SCR_CYC_NGENS];
   unsigned backlog_shift[SCR_CYC_NGENS];
-  size_t nbuffered;
+  bool backlog_judged[SCR_CYC_NGENS];
+  size_t fallen;
+  size_t live_seen;
+  size_t full_after;
+  unsigned char death_shift;
+  bool falling;
+  bool idle_points;
+  size_t death_due_live;
+  bool keep_base;
   size_t trigger;
   size_t alloc_trigger;
   size_t gray_referenced;
+  size_t comp_referenced;
+  uint32_t gray_comp;
+  ScrVec live_ranges;
   size_t scheduled_mature_age;
   size_t xg_freed;
   size_t mature_dead;
@@ -220,20 +262,31 @@ static _Thread_local ScrCycThread scr_cyc_thread = {.gen_limit = SCR_CYC_OLD};
 #define scr_white (scr_cyc_thread.white)
 #define scr_xgen (scr_cyc_thread.xgen)
 #define scr_xgen_edges (scr_cyc_thread.xgen_edges)
-#define scr_gray_holder (scr_cyc_thread.gray_holder)
+#define scr_gray_holders (scr_cyc_thread.gray_holders)
 #define scr_pub_holes (scr_cyc_thread.pub_holes)
 #define scr_gen_limit (scr_cyc_thread.gen_limit)
 #define scr_cyc_live_after (scr_cyc_thread.live_after)
 #define scr_cyc_growth_shift (scr_cyc_thread.growth_shift)
 #define scr_cyc_growth_streak (scr_cyc_thread.growth_streak)
 #define scr_cyc_backlog_shift (scr_cyc_thread.backlog_shift)
-#define scr_cyc_nbuffered (scr_cyc_thread.nbuffered)
+#define scr_cyc_backlog_judged (scr_cyc_thread.backlog_judged)
 #define scr_cyc_trigger (scr_cyc_thread.trigger)
 #define scr_cyc_alloc_trigger (scr_cyc_thread.alloc_trigger)
 #define scr_gray_referenced (scr_cyc_thread.gray_referenced)
+#define scr_comp_referenced (scr_cyc_thread.comp_referenced)
+#define scr_gray_comp (scr_cyc_thread.gray_comp)
+#define scr_live_ranges (scr_cyc_thread.live_ranges)
 #define scr_cyc_scheduled_mature_age (scr_cyc_thread.scheduled_mature_age)
 #define scr_xg_freed (scr_cyc_thread.xg_freed)
 #define scr_cyc_mature_dead (scr_cyc_thread.mature_dead)
+#define scr_cyc_fallen (scr_cyc_thread.fallen)
+#define scr_cyc_live_seen (scr_cyc_thread.live_seen)
+#define scr_cyc_full_after (scr_cyc_thread.full_after)
+#define scr_cyc_death_shift (scr_cyc_thread.death_shift)
+#define scr_cyc_falling (scr_cyc_thread.falling)
+#define scr_cyc_idle_points (scr_cyc_thread.idle_points)
+#define scr_cyc_death_due_live (scr_cyc_thread.death_due_live)
+#define scr_cyc_keep_base (scr_cyc_thread.keep_base)
 #define scr_cyc_kinds (scr_cyc_thread.kinds)
 #define scr_cyc_kinds_cap (scr_cyc_thread.kinds_cap)
 #endif
@@ -243,24 +296,22 @@ static SCR_TL ScrDestroyEntry *scr_destroy_pending;
 static SCR_TL size_t scr_destroy_count, scr_destroy_capacity;
 #endif
 
-void scr_rc_destroy(void *obj, void (*destroy)(void *)) {
-  if (scr_destroy_depth == SCR_DESTROY_DEPTH) {
-    if (scr_destroy_count == scr_destroy_capacity) {
-      size_t capacity = scr_destroy_capacity ? scr_destroy_capacity * 2 : 64;
-      if (capacity < scr_destroy_capacity || capacity > SIZE_MAX / sizeof(ScrDestroyEntry))
-        scr_cyc_oom();
-      ScrDestroyEntry *entries = realloc(scr_destroy_pending, capacity * sizeof(*entries));
-      if (!entries) scr_cyc_oom();
-      scr_destroy_pending = entries;
-      scr_destroy_capacity = capacity;
-    }
-    scr_destroy_pending[scr_destroy_count++] = (ScrDestroyEntry){ obj, destroy };
-    return;
+/* Queues a disposal past the depth budget; the outermost disposal runs it. */
+static void scr_rc_destroy_defer(void *obj, void (*destroy)(void *)) {
+  if (scr_destroy_count == scr_destroy_capacity) {
+    size_t capacity = scr_destroy_capacity ? scr_destroy_capacity * 2 : 64;
+    if (capacity < scr_destroy_capacity || capacity > SIZE_MAX / sizeof(ScrDestroyEntry))
+      scr_cyc_oom();
+    ScrDestroyEntry *entries = realloc(scr_destroy_pending, capacity * sizeof(*entries));
+    if (!entries) scr_cyc_oom();
+    scr_destroy_pending = entries;
+    scr_destroy_capacity = capacity;
   }
-  scr_destroy_depth++;
-  destroy(obj);
-  scr_destroy_depth--;
-  if (scr_destroy_depth) return;
+  scr_destroy_pending[scr_destroy_count++] = (ScrDestroyEntry){ obj, destroy };
+}
+
+/* Runs the queued disposals once the outermost one has returned. */
+static void scr_rc_destroy_drain(void) {
   while (scr_destroy_count) {
     ScrDestroyEntry entry = scr_destroy_pending[--scr_destroy_count];
     scr_destroy_depth = 1;
@@ -274,6 +325,30 @@ void scr_rc_destroy(void *obj, void (*destroy)(void *)) {
     scr_destroy_pending = NULL;
     scr_destroy_capacity = 0;
   }
+}
+
+void scr_rc_destroy(void *obj, void (*destroy)(void *)) {
+  if (scr_destroy_depth == SCR_DESTROY_DEPTH) {
+    scr_rc_destroy_defer(obj, destroy);
+    return;
+  }
+  scr_destroy_depth++;
+  destroy(obj);
+  scr_destroy_depth--;
+  if (scr_destroy_depth == 0) scr_rc_destroy_drain();
+}
+
+void *scr_rc_destroy_seg(void *obj, void *(*destroy_seg)(void *, void *),
+                         void (*destroy)(void *), void *tail) {
+  if (scr_destroy_depth == SCR_DESTROY_DEPTH) {
+    scr_rc_destroy_defer(obj, destroy);
+    return tail;
+  }
+  scr_destroy_depth++;
+  tail = destroy_seg(obj, tail);
+  scr_destroy_depth--;
+  if (scr_destroy_depth == 0) scr_rc_destroy_drain();
+  return tail;
 }
 
 /* Live cycle-headered objects and the running count of OLD objects freed.
@@ -311,12 +386,20 @@ uint32_t scr_cyc_register(ScrCycType *type) {
 }
 
 void *scr_cyc_alloc(size_t size, ScrCycType *type) {
-  return scr_cyc_alloc_inline(size, type);
+  void *obj = scr_cyc_alloc_inline(size, type);
+  if (type->trace == scr_cyc_no_children) scr_cyc_hdr(obj)->buf = SCR_CYC_ACYCLIC;
+  return obj;
+}
+
+void scr_cyc_no_children(void *obj, ScrTraceVisit visit, void *ctx) {
+  (void)obj;
+  (void)visit;
+  (void)ctx;
 }
 
 void scr_cyc_free(void *obj) { scr_cyc_free_inline(obj); }
 
-static void scr_cyc_grow(ScrVec *vec) {
+static __attribute__((noinline, cold)) void scr_cyc_grow(ScrVec *vec) {
   /* Candidate positions are 31-bit (ScrCycHdr.buf). */
   if (vec->cap > (size_t)(SCR_CYC_BUFFERED_BIT - 1) / 2) scr_cyc_oom();
   vec->cap = vec->cap ? vec->cap * 2 : 64;
@@ -337,10 +420,29 @@ static inline void scr_cyc_push_work(ScrVec *vec, void *obj) {
   if (vec->n > vec->used) vec->used = vec->n;
 }
 
+/* The same push inline, for the gray list markGray fills once per object;
+ * the pass records the list's high-water mark itself (scr_cyc_note_used). */
+static inline void scr_cyc_push_gray(ScrVec *vec, void *obj) {
+  if (__builtin_expect(vec->n == vec->cap, 0)) scr_cyc_grow(vec);
+  vec->v[vec->n++] = obj;
+}
+static inline void scr_cyc_note_used(ScrVec *vec) {
+  if (vec->n > vec->used) vec->used = vec->n;
+}
+
 /* ── the candidate-root buffers (one per generation) ──────────────────── */
 
 #ifndef SCR_WORKERS
-static SCR_TL ScrVec scr_roots[SCR_CYC_NGENS];
+/* Emitted and inline releases append nursery candidates to these buffers
+ * directly where the build allows it (scr_rc.h). Explicitly initialized so
+ * library localization can demote it (see scr_cyc_types). */
+#if SCR_CYC_INLINE_BUFFERING
+ScrCycBuffers scr_cyc_buffers = {0};
+#else
+static SCR_TL ScrCycBuffers scr_cyc_buffers;
+#endif
+#define scr_roots (scr_cyc_buffers.roots)
+#define scr_cyc_alloc_trigger (scr_cyc_buffers.alloc_trigger)
 static SCR_TL bool scr_collecting = false;
 #endif
 
@@ -361,7 +463,6 @@ static SCR_TL ScrVec scr_promote;
 static SCR_TL ScrVec scr_pending;
 static SCR_TL ScrVec scr_restore_pending;
 #endif
-#define SCR_CYC_WALK_DEPTH 64
 
 /* The gathered white set (freed after the walk completes). */
 #ifndef SCR_WORKERS
@@ -376,11 +477,13 @@ static SCR_TL ScrVec scr_xgen;
 
 /* Edges from a gray object into a generation the pass does not walk, as
  * (holder, target) pairs, recorded by markGray (each gray object is traced
- * there exactly once, so each edge appears once), and the object markGray is
- * tracing. */
+ * there exactly once, so each edge appears once), and the objects markGray is
+ * tracing, by walk depth: an edge's holder is the entry one level above the
+ * depth its visit sees. Nothing is restored after an object's children are
+ * traced, so markGray ends in a tail call to the trace. */
 #ifndef SCR_WORKERS
 static SCR_TL ScrVec scr_xgen_edges;
-static SCR_TL void *scr_gray_holder;
+static SCR_TL void *scr_gray_holders[SCR_CYC_WALK_DEPTH];
 #endif
 
 /* Objects above this generation are invisible to the pass in flight. */
@@ -389,6 +492,23 @@ static SCR_TL unsigned scr_gen_limit = SCR_CYC_OLD;
 #endif
 
 static size_t scr_cyc_pass(unsigned gen_limit);
+#ifdef SCR_YIN
+/* The young-in nursery's state (see "young-in nursery" below): the nursery
+ * itself (scr_rc.h), every live young object at the index its header
+ * records; a collection's mark worklist, dead set and deferred releases;
+ * per-object counts of references from other young objects, valid during a
+ * collection. */
+SCR_TL ScrYin scr_yin = {0};
+static SCR_TL ScrVec scr_yin_stack;
+static SCR_TL ScrVec scr_yin_dead;
+static SCR_TL ScrVec scr_yin_xrel;
+static SCR_TL uint32_t *scr_yin_counts;
+static SCR_TL size_t scr_yin_counts_cap;
+static SCR_TL bool scr_yin_busy;
+static void scr_yin_leave(ScrCycHdr *h, void *obj);
+static size_t scr_yin_collect(void);
+#endif
+static void scr_cyc_route_bypassed(void);
 /* A limited pass (scr_cyc_collect_set) takes only the candidates in this
  * set from the buffers up to `scr_cyc_take_gen`; NULL takes them all. */
 static SCR_TL const ScrCycSet *scr_cyc_take = NULL;
@@ -436,7 +556,8 @@ static SCR_TL size_t scr_cyc_live_after[SCR_CYC_NGENS];
  * large program, say) those walks dominate collection time. The cap trades
  * that walking for memory only when passes find nothing: while they find
  * garbage, the yield keeps the fraction narrow. SCR_CYCLE_GROWTH_CAP lowers
- * the cap for memory-sensitive programs: a power of two from 1 to 16, with
+ * the cap for memory-sensitive programs, as scr_cyc_set_growth_cap does for
+ * a program that sets its own: a power of two from 1 to 16, with
  * other positive values rounded down to a power of two and larger ones read
  * as 16. At 1 the heap may at most double past its size after the last pass
  * at a level before the next. */
@@ -446,63 +567,181 @@ static SCR_TL unsigned char scr_cyc_growth_shift[SCR_CYC_NGENS];
 static SCR_TL unsigned char scr_cyc_growth_streak[SCR_CYC_NGENS];
 #endif
 
+/* The growth cap a program sets for itself (scr_cyc_set_growth_cap), 0 for
+ * the default; SCR_CYCLE_GROWTH_CAP takes precedence over it. */
+static long scr_cyc_growth_cap_set = 0;
+static SCR_TL unsigned char scr_cyc_growth_max_shift_cached = 0;
+
 /* Shift of the configured growth cap: 2 + log2(cap), since the base
  * fraction is 1/4. */
 static unsigned scr_cyc_growth_max_shift(void) {
-  static SCR_TL unsigned char cached = 0;
-  if (cached == 0) {
+  if (scr_cyc_growth_max_shift_cached == 0) {
     const char *env = scr_getenv("SCR_CYCLE_GROWTH_CAP");
     long v = env ? strtol(env, NULL, 10) : 0;
+    if (v <= 0) v = scr_cyc_growth_cap_set;
     unsigned shift = SCR_CYC_GROWTH_MAX_SHIFT;
     if (v > 0)
       for (shift = 2; shift < SCR_CYC_GROWTH_MAX_SHIFT && (2L << (shift - 2)) <= v;)
         shift++;
-    cached = (unsigned char)shift;
+    scr_cyc_growth_max_shift_cached = (unsigned char)shift;
   }
-  return cached;
+  return scr_cyc_growth_max_shift_cached;
+}
+
+void scr_cyc_set_growth_cap(long cap) {
+  scr_cyc_growth_cap_set = cap;
+  scr_cyc_growth_max_shift_cached = 0;
+  /* Fractions already widened past the new cap start at it. */
+  unsigned max = scr_cyc_growth_max_shift();
+  for (unsigned gen = 0; gen < SCR_CYC_NGENS; gen++)
+    if (scr_cyc_growth_shift[gen] > max) scr_cyc_growth_shift[gen] = (unsigned char)max;
 }
 
 /* Doublings of each generation's backlog threshold earned by consecutive
- * passes that found almost nothing to free (see scr_cyc_backlog_threshold).
+ * passes that found almost nothing to free (see scr_cyc_backlog_threshold),
+ * and whether a pass at that level has had candidates to judge them by.
  * Only the mature and old entries are used. */
 #define SCR_CYC_BACKLOG_MAX_SHIFT 8
 #ifndef SCR_WORKERS
 static SCR_TL unsigned scr_cyc_backlog_shift[SCR_CYC_NGENS];
+static SCR_TL bool scr_cyc_backlog_judged[SCR_CYC_NGENS];
 #endif
 
-/* Mature objects in the last full pass's dead set (scr_cyc_adapt_growth). */
+/* Mature objects in the last pass's dead set (scr_cyc_adapt_growth,
+ * scr_cyc_adapt_nursery). */
 #ifndef SCR_WORKERS
 static SCR_TL size_t scr_cyc_mature_dead = 0;
 #endif
 
-static size_t scr_cyc_nursery_threshold(void) {
-  static SCR_TL size_t cached = 0;
-  if (cached == 0) {
+/* The death rule (see the scheduling notes above). `fallen`: how far the
+ * live count fell between passes since the last full pass; `live_seen`: the
+ * live count at the end of the last pass or check; `full_after`: the live
+ * count after the last full pass; `falling`: whether it fell since the
+ * previous check; `death_shift`: doublings of the fall a pass needs, earned
+ * by passes that found less than had died; `keep_base`: the pass running
+ * is a full pass the growth rule did not choose, which may raise the
+ * levels' growth baselines but not lower them. */
+#define SCR_CYC_DEATH_DIV 32
+#define SCR_CYC_DEATH_MAX_SHIFT 8
+#ifndef SCR_WORKERS
+static SCR_TL size_t scr_cyc_fallen = 0, scr_cyc_live_seen = 0, scr_cyc_full_after = 0;
+static SCR_TL unsigned char scr_cyc_death_shift = 0;
+static SCR_TL bool scr_cyc_falling = false, scr_cyc_keep_base = false;
+#endif
+
+/* A death pass waits for an idle moment of the thread's event loop
+ * (scr_cyc_collect_idle) once the loop runs (`idle_points`): the dropped
+ * structure it reclaims is not urgent, and a program that drops one in the
+ * middle of its work (a compiler starting a rebuild in watch mode) would
+ * otherwise walk its whole heap on the way. `death_due_live`: the live
+ * count when the death rule first asked for the pass that waits, 0 when
+ * none does. If the heap grows the base fraction past that before an idle
+ * moment comes, the pass runs where it is due. */
+#ifndef SCR_WORKERS
+static SCR_TL bool scr_cyc_idle_points = false;
+static SCR_TL size_t scr_cyc_death_due_live = 0;
+#endif
+
+/* The nursery trigger a program sets for itself
+ * (scr_cyc_set_nursery_threshold), 0 for the default; SCR_CYCLE_THRESHOLD
+ * takes precedence over it. Either pins the trigger. */
+static long scr_cyc_nursery_threshold_set = 0;
+static SCR_TL size_t scr_cyc_nursery_threshold_cached = 0;
+#define SCR_CYC_NURSERY_ADAPTIVE SIZE_MAX
+
+/* An unpinned trigger follows where cyclic garbage dies. Garbage that
+ * outlives the nursery window survives its nursery pass and is promoted,
+ * and then only a mature or full pass finds it, after walking that level's
+ * live candidates. So after each scheduled mature or full pass whose dead
+ * set held more mature and old objects than 1/SCR_CYC_NURSERY_RATIO of what
+ * the nursery passes since the previous one freed, the window doubles, up
+ * to SCR_CYC_NURSERY_MAX_SHIFT doublings (4096 candidates); after one that
+ * held less than a quarter of that share, it halves, down to
+ * SCR_CYC_NURSERY_CANDIDATES.
+ * `nursery_freed`: what the nursery passes freed since the last scheduled
+ * mature or full pass. */
+#define SCR_CYC_NURSERY_RATIO 8
+#define SCR_CYC_NURSERY_MAX_SHIFT 4
+static SCR_TL unsigned char scr_cyc_nursery_shift = 0;
+static SCR_TL size_t scr_cyc_nursery_freed = 0;
+
+static size_t scr_cyc_nursery_pinned(void) {
+  if (scr_cyc_nursery_threshold_cached == 0) {
     const char *env = scr_getenv("SCR_CYCLE_THRESHOLD");
     long v = env ? strtol(env, NULL, 10) : 0;
-    cached = v > 0 ? (size_t)v : SCR_CYC_NURSERY_CANDIDATES;
+    if (v <= 0) v = scr_cyc_nursery_threshold_set;
+    scr_cyc_nursery_threshold_cached = v > 0 ? (size_t)v : SCR_CYC_NURSERY_ADAPTIVE;
   }
-  return cached;
+  return scr_cyc_nursery_threshold_cached;
 }
 
-/* Buffered candidates across every generation, and the count at which the
- * release path next collects. Keeping a running total (rather than summing
- * the buffers) is what holds the hot path to one load and one compare, as
- * it was when there was a single buffer. The trigger is re-armed at the end
- * of every pass to "whatever survived, plus a nursery's worth": without that
+/* The pinned trigger, or the default one. The scheduled-age rule counts
+ * collection points in it, so the adaptation does not lengthen how long an
+ * older backlog waits at them. */
+static size_t scr_cyc_nursery_base(void) {
+  size_t pinned = scr_cyc_nursery_pinned();
+  return pinned != SCR_CYC_NURSERY_ADAPTIVE ? pinned : SCR_CYC_NURSERY_CANDIDATES;
+}
+
+static size_t scr_cyc_nursery_threshold(void) {
+  size_t pinned = scr_cyc_nursery_pinned();
+  if (pinned != SCR_CYC_NURSERY_ADAPTIVE) return pinned;
+  return (size_t)SCR_CYC_NURSERY_CANDIDATES << scr_cyc_nursery_shift;
+}
+
+/* Adapts an unpinned trigger to the mature and old objects a scheduled
+ * mature or full pass reclaimed; returns whether the trigger changed. */
+static SCR_CYC_SCHEDULING bool scr_cyc_adapt_nursery(size_t older_freed) {
+  size_t nursery_freed = scr_cyc_nursery_freed;
+  scr_cyc_nursery_freed = 0;
+  if (scr_cyc_nursery_pinned() != SCR_CYC_NURSERY_ADAPTIVE) return false;
+  if (older_freed * SCR_CYC_NURSERY_RATIO > nursery_freed) {
+    if (scr_cyc_nursery_shift == SCR_CYC_NURSERY_MAX_SHIFT) return false;
+    scr_cyc_nursery_shift++;
+    return true;
+  }
+  if (older_freed * SCR_CYC_NURSERY_RATIO * 4 < nursery_freed && scr_cyc_nursery_shift > 0) {
+    scr_cyc_nursery_shift--;
+    return true;
+  }
+  return false;
+}
+
+void scr_cyc_set_nursery_threshold(long threshold) {
+  scr_cyc_nursery_threshold_set = threshold;
+  scr_cyc_nursery_threshold_cached = 0;
+  scr_cyc_nursery_shift = 0;
+  scr_cyc_nursery_freed = 0;
+}
+
+/* The number of buffered candidates (across every generation) at which the
+ * release path next collects, and the live count at which it collects
+ * however few candidates there are. The trigger is re-armed at the end of
+ * every pass to "whatever survived, plus a nursery's worth": without that
  * hysteresis a large older buffer — which a nursery pass cannot drain —
  * would re-arm on every single release. Both start at zero, so the first
- * release runs one trivial pass that arms them properly. */
+ * release runs one trivial pass that arms them properly. The inline
+ * appends (scr_rc.h) compare against the window scr_cyc_window_update
+ * derives from these, so the slow path sums the buffers when it needs the
+ * total. */
 #ifndef SCR_WORKERS
-static SCR_TL size_t scr_cyc_nbuffered = 0;
 static SCR_TL size_t scr_cyc_trigger = 0;
-static SCR_TL size_t scr_cyc_alloc_trigger = 0;
 #endif
 /* Gray objects whose count is above zero after the trial decrements so far
  * (see scr_mg_visit). markGray records the gray objects in scr_white while
- * there are fewer than SCR_CYC_GRAY_LIST_MAX; a larger walk runs scan. */
+ * there are fewer than SCR_CYC_GRAY_LIST_MAX; a larger walk runs scan.
+ *
+ * The same count is kept per component (see "components" at scr_cyc_pass):
+ * the objects one candidate's walk grays first carry that walk's number in
+ * `buf` (gray objects are never buffered during a pass), and
+ * scr_comp_referenced counts those still externally referenced.
+ * scr_live_ranges holds (start, end) ranges of scr_white whose component
+ * was externally referenced and is left to scan. */
 #ifndef SCR_WORKERS
 static SCR_TL size_t scr_gray_referenced = 0;
+static SCR_TL size_t scr_comp_referenced = 0;
+static SCR_TL uint32_t scr_gray_comp = 0;
+static SCR_TL ScrVec scr_live_ranges;
 #endif
 #define SCR_CYC_GRAY_LIST_MAX 65536
 
@@ -517,6 +756,34 @@ static SCR_TL size_t scr_cyc_scheduled_mature_age = 0;
 static size_t scr_cyc_buffered(void) {
   return scr_roots[SCR_CYC_NURSERY].n + scr_roots[SCR_CYC_MATURE].n
          + scr_roots[SCR_CYC_OLD].n;
+}
+
+/* The inline buffering window (scr_rc.h): how many entries the nursery
+ * buffer may hold before an append would bring the buffered total to the
+ * trigger or would need the buffer to grow. While a pass runs, every
+ * release takes the call. Recomputed wherever the buffers, the nursery
+ * buffer's capacity or the trigger change in bulk; the release and death
+ * paths adjust it by one (scr_cyc_window_shrink). */
+static inline void scr_cyc_window_update(void) {
+#if SCR_CYC_INLINE_BUFFERING
+  size_t window = 0;
+  if (!scr_collecting) {
+    size_t older = scr_roots[SCR_CYC_MATURE].n + scr_roots[SCR_CYC_OLD].n;
+    if (scr_cyc_trigger > older + 1) window = scr_cyc_trigger - older - 1;
+    if (window > scr_roots[SCR_CYC_NURSERY].cap) window = scr_roots[SCR_CYC_NURSERY].cap;
+  }
+  scr_cyc_buffers.window = window;
+#endif
+}
+
+/* One step of the window's formula going down by one: an older candidate
+ * was buffered, or a nursery death lowered the trigger. A window below the
+ * formula only sends more releases through the call, so the clamp to the
+ * capacity can stay where it is. */
+static inline void scr_cyc_window_shrink(void) {
+#if SCR_CYC_INLINE_BUFFERING
+  if (scr_cyc_buffers.window) scr_cyc_buffers.window--;
+#endif
 }
 
 static bool scr_cyc_older_backlog(void) {
@@ -558,11 +825,21 @@ static SCR_CYC_SCHEDULING bool scr_cyc_grown(unsigned gen) {
  * this trigger rests, leaving heap growth, the scheduled age and exit to
  * collect. That only delays garbage made from existing data: replacing it
  * requires allocation, which grows the heap and trips a growth trigger. The
- * first productive pass at that level restores the original fraction. */
+ * first productive pass at that level restores the original fraction.
+ *
+ * Only passes that had candidates adapt the threshold. Until one has, the
+ * level uses its growth fraction's doublings instead (scr_cyc_adapt_growth),
+ * which every growth-triggered pass at the level adapts, candidates or not.
+ * A program can keep a level's buffer empty while its heap grows, so that
+ * growth passes there find nothing and widen, and then fill the buffer with
+ * live objects (a structure it builds and reads as it builds it); at the
+ * base threshold, the first backlog pass would walk a quarter of the live
+ * heap to find nothing. */
 static size_t scr_cyc_backlog_threshold(unsigned gen) {
   size_t t = scr_cyc_live / SCR_CYC_GROWTH_DIV;
   if (t < SCR_CYC_NURSERY_CANDIDATES) t = SCR_CYC_NURSERY_CANDIDATES;
-  unsigned shift = scr_cyc_backlog_shift[gen];
+  unsigned shift =
+      scr_cyc_backlog_judged[gen] ? scr_cyc_backlog_shift[gen] : scr_cyc_growth_shift[gen];
   return t > (SIZE_MAX >> shift) ? SIZE_MAX : t << shift;
 }
 
@@ -621,6 +898,27 @@ static void scr_cyc_adapt_growth(unsigned gen, size_t growth,
   }
 }
 
+/* How far the live count fell since the last check: what died outside
+ * passes, less what was allocated meanwhile. Every pass ends with a fresh
+ * reading, so what passes free does not count. */
+static void scr_cyc_note_fall(void) {
+  scr_cyc_falling = scr_cyc_live < scr_cyc_live_seen;
+  if (scr_cyc_falling) scr_cyc_fallen += scr_cyc_live_seen - scr_cyc_live;
+  scr_cyc_live_seen = scr_cyc_live;
+}
+
+/* The death rule: enough has died since the last full pass, it has stopped
+ * dying (a structure torn down by reference counting falls over several
+ * checks, and a pass in the middle would find its rest still referenced),
+ * and the heap has grown the base fraction since. */
+static SCR_CYC_SCHEDULING bool scr_cyc_died(void) {
+  if (scr_cyc_falling) return false;
+  size_t base = scr_cyc_growth_base(scr_cyc_full_after);
+  size_t need = base / SCR_CYC_DEATH_DIV;
+  need = need > (SIZE_MAX >> scr_cyc_death_shift) ? SIZE_MAX : need << scr_cyc_death_shift;
+  return scr_cyc_fallen >= need && scr_cyc_live > base + base / SCR_CYC_GROWTH_DIV;
+}
+
 /* One scheduled pass at `gen`. A mature or old pass adapts that level's
  * backlog threshold to its yield; the explicit sweep (scr_collect_cycles) is
  * not a scheduling decision and leaves the thresholds alone. Productive means
@@ -630,20 +928,34 @@ static void scr_cyc_adapt_growth(unsigned gen, size_t growth,
  *
  * Every level shares this one body, so a program that links the collector
  * carries a single copy of the scheduling logic. */
-static SCR_CYC_SCHEDULING void scr_cyc_scheduled_pass(unsigned gen, bool by_growth) {
+static SCR_CYC_SCHEDULING void scr_cyc_scheduled_pass(unsigned gen, bool by_growth, bool by_death) {
   size_t base = scr_cyc_growth_base(scr_cyc_live_after[gen]);
   size_t growth = scr_cyc_live > base ? scr_cyc_live - base : 0;
+  size_t fallen = scr_cyc_fallen;
   size_t old_freed_before = scr_cyc_old_freed;
+  scr_cyc_keep_base = gen == SCR_CYC_OLD && !by_growth;
   size_t freed = scr_cyc_pass(gen);
+  scr_cyc_keep_base = false;
   size_t old_reclaimed = scr_cyc_old_freed - old_freed_before + scr_cyc_mature_dead;
-  if (gen == SCR_CYC_NURSERY) return;
+  if (gen == SCR_CYC_NURSERY) {
+    scr_cyc_nursery_freed += freed;
+    return;
+  }
+  if (scr_cyc_adapt_nursery(old_reclaimed)) {
+    scr_cyc_trigger = scr_cyc_buffered() + scr_cyc_nursery_threshold();
+    scr_cyc_window_update();
+  }
   if (scr_cands.n != 0) {
+    scr_cyc_backlog_judged[gen] = true;
     if (freed * SCR_CYC_GROWTH_DIV >= scr_cands.n)
       scr_cyc_backlog_shift[gen] = 0;
     else if (scr_cyc_backlog_shift[gen] < SCR_CYC_BACKLOG_MAX_SHIFT)
       scr_cyc_backlog_shift[gen]++;
   }
-  if (by_growth)
+  if (by_death) {
+    if (old_reclaimed >= fallen) scr_cyc_death_shift = 0;
+    else if (scr_cyc_death_shift < SCR_CYC_DEATH_MAX_SHIFT) scr_cyc_death_shift++;
+  } else if (by_growth)
     scr_cyc_adapt_growth(gen, growth,
                          gen == SCR_CYC_OLD ? old_reclaimed : freed);
 }
@@ -652,15 +964,22 @@ static SCR_CYC_SCHEDULING void scr_cyc_scheduled_pass(unsigned gen, bool by_grow
  * per pass, so it is kept out of line and built for size, which leaves the
  * hot buffering path in scr_cyc_on_release small. */
 static SCR_CYC_SCHEDULING void scr_cyc_collect_due(void) {
+  scr_cyc_route_bypassed();
+  scr_cyc_note_fall();
   unsigned gen = SCR_CYC_OLD;
   bool by_growth = scr_cyc_grown(SCR_CYC_OLD);
-  if (!by_growth && scr_roots[SCR_CYC_OLD].n < scr_cyc_backlog_threshold(SCR_CYC_OLD)) {
+  bool by_death = !by_growth && scr_cyc_died();
+  if (by_death && scr_cyc_idle_points) {
+    if (!scr_cyc_death_due_live) scr_cyc_death_due_live = scr_cyc_live;
+    by_death = scr_cyc_live > scr_cyc_death_due_live + scr_cyc_death_due_live / SCR_CYC_GROWTH_DIV;
+  }
+  if (!by_growth && !by_death && scr_roots[SCR_CYC_OLD].n < scr_cyc_backlog_threshold(SCR_CYC_OLD)) {
     gen = SCR_CYC_MATURE;
     by_growth = scr_cyc_grown(SCR_CYC_MATURE);
     if (!by_growth && scr_roots[SCR_CYC_MATURE].n < scr_cyc_backlog_threshold(SCR_CYC_MATURE))
       gen = SCR_CYC_NURSERY;
   }
-  scr_cyc_scheduled_pass(gen, by_growth);
+  scr_cyc_scheduled_pass(gen, by_growth, by_death);
 }
 
 /* One scheduled pass, for callers that reach a natural collection point
@@ -669,6 +988,14 @@ static SCR_CYC_SCHEDULING void scr_cyc_collect_due(void) {
  * per turn would walk the whole live heap every turn — which is exactly the
  * cost the generations exist to avoid. */
 void scr_cyc_collect_scheduled(void) {
+#ifdef SCR_YIN
+  /* A collection point also collects the nursery when anything entered it
+   * since its last collection, so young garbage does not wait for the
+   * allocation trigger in a program that has gone idle. */
+  if (scr_yin.n != 0) scr_yin_collect();
+#endif
+  scr_cyc_route_bypassed();
+  scr_cyc_note_fall();
   if (scr_cyc_buffered() == 0) {
     scr_cyc_scheduled_mature_age = 0;
     return;
@@ -676,11 +1003,24 @@ void scr_cyc_collect_scheduled(void) {
   if (!scr_cyc_older_backlog()) {
     scr_cyc_scheduled_mature_age = 0;
   } else if (++scr_cyc_scheduled_mature_age
-             >= scr_cyc_nursery_threshold()) {
-    scr_cyc_scheduled_pass(SCR_CYC_OLD, false);
+             >= scr_cyc_nursery_base()) {
+    scr_cyc_scheduled_pass(SCR_CYC_OLD, false, false);
     return;
   }
   scr_cyc_collect_due();
+}
+
+void scr_cyc_note_event_loop(void) { scr_cyc_idle_points = true; }
+
+/* The death rule held when it asked for the waiting pass, and nothing
+ * dies while the loop waits, so the pass runs without checking the rule
+ * again: a heap that kept shrinking since would fail its size test, and
+ * the dead structure it was asked for would stay buffered. */
+bool scr_cyc_collect_idle(void) {
+  if (!scr_cyc_death_due_live || scr_collecting) return false;
+  scr_cyc_note_fall();
+  scr_cyc_scheduled_pass(SCR_CYC_OLD, false, true);
+  return true;
 }
 
 /* ── level bypass ─────────────────────────────────────────────────────── */
@@ -748,6 +1088,10 @@ typedef struct ScrCycKind {
 static SCR_TL ScrCycKind *scr_cyc_kinds;
 static SCR_TL size_t scr_cyc_kinds_cap;
 #endif
+#if SCR_CYC_INLINE_BUFFERING
+/* Types that bypass the nursery right now (scr_cyc_route_bypassed). */
+static size_t scr_cyc_nursery_bypassing = 0;
+#endif
 
 /* The statistics of `kind` (nonzero), growing the table to cover it. */
 static SCR_CYC_COMPACT ScrCycKind *scr_cyc_kind_grow(uint32_t kind) {
@@ -767,18 +1111,26 @@ static inline ScrCycKind *scr_cyc_kind(uint32_t kind) {
 /* Whether a candidate of this type at level `gen` (nursery or mature)
  * skips that level's passes (see above). The last candidate a bypass sends
  * past the level opens a probe window, with fresh counts. */
-static inline bool scr_cyc_bypassed(const ScrCycType *type, unsigned gen) {
+static inline __attribute__((always_inline)) bool scr_cyc_bypassed(const ScrCycType *type,
+                                                                  unsigned gen) {
   uint32_t kind = type->kind;
   if (kind >= scr_cyc_kinds_cap) return false;
   ScrCycLevelStat *k = &scr_cyc_kinds[kind].level[gen];
   if (k->bypass == 0) return false;
-  if (--k->bypass == 0) k->walked = k->freed = 0;
+  if (--k->bypass == 0) {
+    k->walked = k->freed = 0;
+#if SCR_CYC_INLINE_BUFFERING
+    if (gen == SCR_CYC_NURSERY) scr_cyc_nursery_bypassing--;
+#endif
+  }
   return true;
 }
 
 /* The generation a release buffers an object into: its own, or past the
- * levels its type bypasses. */
-static inline unsigned scr_cyc_buffer_gen(const ScrCycType *type, unsigned gen) {
+ * levels its type bypasses. Both run once per candidate that the routing
+ * below moves, so they are inlined there too. */
+static inline __attribute__((always_inline)) unsigned scr_cyc_buffer_gen(const ScrCycType *type,
+                                                                 unsigned gen) {
   if (gen == SCR_CYC_NURSERY && scr_cyc_bypassed(type, SCR_CYC_NURSERY)) gen = SCR_CYC_MATURE;
   if (gen == SCR_CYC_MATURE && scr_cyc_bypassed(type, SCR_CYC_MATURE)) gen = SCR_CYC_OLD;
   return gen;
@@ -790,9 +1142,16 @@ static inline void scr_cyc_walked(const ScrCycType *type, unsigned gen) {
   if (!type->kind) return;
   ScrCycLevelStat *k = &scr_cyc_kind(type->kind)->level[gen];
   if (++k->walked == SCR_CYC_BYPASS_WINDOW) {
+#if SCR_CYC_INLINE_BUFFERING
+    bool before = k->bypass != 0;
+#endif
     k->bypass = k->freed * SCR_CYC_BYPASS_RATIO < SCR_CYC_BYPASS_WINDOW
                     ? SCR_CYC_BYPASS_WINDOW * SCR_CYC_BYPASS_PROBE
                     : 0;
+#if SCR_CYC_INLINE_BUFFERING
+    if (gen == SCR_CYC_NURSERY && before != (k->bypass != 0))
+      scr_cyc_nursery_bypassing += before ? (size_t)-1 : 1;
+#endif
     k->walked = k->freed = 0;
   }
 }
@@ -801,9 +1160,50 @@ static inline void scr_cyc_freed(const ScrCycType *type, unsigned gen) {
   if (type->kind) scr_cyc_kind(type->kind)->level[gen].freed++;
 }
 
+/* An inline append (scr_rc.h) leaves every nursery candidate in the nursery
+ * buffer, including one whose type bypasses the nursery, which
+ * scr_cyc_on_release would have buffered past it. Where a candidate waits
+ * matters only once something reads the buffers, so every scheduling
+ * decision and every pass first moves such candidates to the generation
+ * scr_cyc_on_release would have chosen, consuming the bypass counts as it
+ * would have, in buffer order. Candidates that scr_cyc_on_release buffered
+ * already passed the same test with the counts unchanged since (they only
+ * change during passes), so they stay. */
+static SCR_CYC_COMPACT void scr_cyc_route_bypassed(void) {
+#if SCR_CYC_INLINE_BUFFERING
+  if (scr_cyc_nursery_bypassing == 0) return;
+  ScrVec *nursery = &scr_roots[SCR_CYC_NURSERY];
+  for (size_t i = 0; i < nursery->n;) {
+    void *obj = nursery->v[i];
+    ScrCycHdr *h = scr_cyc_hdr(obj);
+    unsigned gen = scr_cyc_buffer_gen(scr_cyc_type(h), SCR_CYC_NURSERY);
+    if (gen == SCR_CYC_NURSERY) {
+      i++;
+      continue;
+    }
+    void *last = nursery->v[--nursery->n];
+    nursery->v[i] = last;
+    if (last != obj) scr_cyc_set_buffered(scr_cyc_hdr(last), (uint32_t)i);
+    scr_cyc_set_gen(h, gen);
+    ScrVec *b = &scr_roots[gen];
+    if (b->n == b->cap) scr_cyc_grow(b);
+    scr_cyc_set_buffered(h, (uint32_t)b->n);
+    b->v[b->n++] = obj;
+  }
+  scr_cyc_window_update();
+#endif
+}
+
 void scr_cyc_on_dead(void *obj) {
   ScrCycHdr *h = scr_cyc_hdr(obj);
   if (!scr_cyc_is_buffered(h)) return;
+#ifdef SCR_YIN
+  /* A young object leaves the nursery; nothing else lists it. */
+  if (scr_cyc_gen(h) == SCR_CYC_YOUNG) {
+    scr_yin_leave(h, obj);
+    return;
+  }
+#endif
   /* O(1) removal: swap the last entry into the hole. A buffered object's
    * generation never changes (promotion runs only on objects the pass has
    * already drained from the buffers), so `gen` names the right one. */
@@ -813,11 +1213,12 @@ void scr_cyc_on_dead(void *obj) {
   b->v[i] = last;
   if (last != obj) scr_cyc_set_buffered(scr_cyc_hdr(last), (uint32_t)i);
   scr_cyc_clear_buffered(h);
-  scr_cyc_nbuffered--;
   /* A death must not consume room reserved for a future candidate. */
   scr_cyc_trigger--;
-  if (scr_cyc_gen(h) != SCR_CYC_NURSERY && !scr_cyc_older_backlog())
-    scr_cyc_scheduled_mature_age = 0;
+  /* An older death lowers the older count with the trigger: the window
+   * stays. A nursery death lowers only the trigger. */
+  if (scr_cyc_gen(h) == SCR_CYC_NURSERY) scr_cyc_window_shrink();
+  else if (!scr_cyc_older_backlog()) scr_cyc_scheduled_mature_age = 0;
 }
 
 /* Publication (scr_publish.c) takes buffered objects out of their candidate
@@ -833,6 +1234,18 @@ static SCR_TL ScrVec scr_pub_holes[SCR_CYC_NGENS];
 
 uint32_t scr_cyc_pub_take(void *obj) {
   ScrCycHdr *h = scr_cyc_hdr(obj);
+#ifdef SCR_YIN
+  /* A young object (its header reads as buffered) leaves the nursery,
+   * unbuffered: young objects never become immortal in the nursery, and so
+   * never reach another thread from it. The answer UINT32_MAX makes
+   * scr_pub_mark's recorded position 0 ("not taken"), so a refused publish
+   * leaves it out of every buffer, as it was. It is reachable from the
+   * graph being published, so it needs no candidate. */
+  if (scr_cyc_gen(h) == SCR_CYC_YOUNG) {
+    scr_yin_leave(h, obj);
+    return UINT32_MAX;
+  }
+#endif
   unsigned gen = scr_cyc_gen(h);
   uint32_t index = scr_cyc_buf_index(h);
   scr_roots[gen].v[index] = NULL;
@@ -866,31 +1279,45 @@ void scr_cyc_pub_fill(void) {
     }
     holes->n = 0;
     size_t closed = before - b->n;
-    scr_cyc_nbuffered -= closed;
     /* A death must not consume room reserved for a future candidate. */
     scr_cyc_trigger -= closed;
     if (closed && gen != SCR_CYC_NURSERY) older = true;
   }
   if (older && !scr_cyc_older_backlog()) scr_cyc_scheduled_mature_age = 0;
+  scr_cyc_window_update();
 }
 
 /* Every release that leaves an unbuffered object alive lands here (the
- * emitted and inline release paths test `buffered` first), so it stays what
- * it has always been: buffer inline, then one compare. */
+ * emitted and inline release paths test `buffered` first) unless the window
+ * let it append a nursery candidate on its own fast path (scr_rc.h), so it
+ * stays what it has always been: the same append, then buffer and compare. */
 void scr_cyc_on_release(void *obj) {
   ScrCycHdr *h = scr_cyc_hdr(obj);
   /* Releasing an existing candidate cannot advance the trigger. A pass
    * always re-arms after its teardowns, including any candidates they add. */
-  if (scr_cyc_is_buffered(h)) return;
+  if (scr_cyc_release_done(h)) return;
+  /* An object without cycle-capable children whose SCR_CYC_ACYCLIC a pass
+   * or the young-in nursery replaced gets it back. */
+  if (scr_cyc_type(h)->trace == scr_cyc_no_children) {
+    h->buf = SCR_CYC_ACYCLIC;
+    return;
+  }
+#if SCR_CYC_INLINE_BUFFERING
+  if (scr_cyc_append(h, obj)) return;
+#endif
   if (scr_cyc_gen(h) < SCR_CYC_OLD) scr_cyc_set_gen(h, scr_cyc_buffer_gen(scr_cyc_type(h), scr_cyc_gen(h)));
-  ScrVec *b = &scr_roots[scr_cyc_gen(h)];
-  if (b->n == b->cap) scr_cyc_grow(b);
+  unsigned gen = scr_cyc_gen(h);
+  ScrVec *b = &scr_roots[gen];
+  if (b->n == b->cap) {
+    scr_cyc_grow(b);
+    scr_cyc_window_update();
+  }
   scr_cyc_set_buffered(h, (uint32_t)b->n);
   b->v[b->n++] = obj;
-  scr_cyc_nbuffered++;
+  if (gen != SCR_CYC_NURSERY) scr_cyc_window_shrink();
   /* Never re-entered: a teardown's releases of untraced children can buffer
    * new candidates mid-collection, but they only wait for the next pass. */
-  if (!scr_collecting && (scr_cyc_nbuffered >= scr_cyc_trigger || scr_cyc_live >= scr_cyc_alloc_trigger))
+  if (!scr_collecting && (scr_cyc_buffered() >= scr_cyc_trigger || scr_cyc_live >= scr_cyc_alloc_trigger))
     scr_cyc_collect_due();
 }
 
@@ -901,43 +1328,139 @@ void scr_cyc_on_release(void *obj) {
  * two must agree on which edges are internal. Nothing to do for NULL
  * (unassigned slots), immortal (interned statics have no header at all), or
  * a generation this pass does not collect. */
+#ifdef SCR_YIN
+/* Trial deletion walks a young object as a nursery-level one: structures
+ * that mix young objects with families that are not young (arrays,
+ * closures) are found by the candidates of the latter, exactly as before.
+ * A young survivor stays young (scan_black promotes only below OLD) and a
+ * young member of the dead set leaves the nursery before its teardown. */
+#define SCR_CYC_WALK_GEN(h) (scr_cyc_gen(h) == SCR_CYC_YOUNG ? SCR_CYC_NURSERY : scr_cyc_gen(h))
+#else
+#define SCR_CYC_WALK_GEN(h) scr_cyc_gen(h)
+#endif
 #define SCR_CYC_SKIP(child)                     \
-  ((child) == NULL || SCR_RC(child) == SIZE_MAX \
-   || scr_cyc_gen(scr_cyc_hdr(child)) > scr_gen_limit)
+  ((child) == NULL || SCR_RC(child) == SCR_RC_IMMORTAL \
+   || SCR_CYC_WALK_GEN(scr_cyc_hdr(child)) > scr_gen_limit)
 
-/* Trace callbacks forward an integer depth through their opaque context;
- * it is never dereferenced. The ABI already carries it through every edge. */
-static void scr_mark_gray(void *obj, uintptr_t depth);
-static void scr_mg_visit(void *child, void *ctx) {
-  if (child == NULL || SCR_RC(child) == SIZE_MAX) return;
-  if (scr_cyc_gen(scr_cyc_hdr(child)) > scr_gen_limit) {
-    scr_cyc_push_work(&scr_xgen_edges, scr_gray_holder);
-    scr_cyc_push_work(&scr_xgen_edges, child);
-    return;
+/* The walks are depth-first and recursive up to SCR_CYC_WALK_DEPTH (defined
+ * with the per-thread state, which it sizes), where an object is queued
+ * instead (scr_pending, or scr_restore_pending for the restoration, which
+ * can run inside scan) and traced from the queue. Trace callbacks forward
+ * that integer depth through their opaque context; it is never
+ * dereferenced. */
+
+/* A walk visits a dense cycle-capable array's children itself: the present
+ * dense elements, which are all scr_arr_trace_v visits when the array has
+ * no sparse entries, properties or metadata (no `ext`). Each walk gets its
+ * own copy, out of line, so the per-edge visitors stay small. */
+#define SCR_CYC_ARRAY_WALK(name, visit)                                  \
+  static __attribute__((noinline)) void name(const ScrArr *arr, void *ctx) { \
+    size_t end = arr->len < arr->cap ? arr->len : arr->cap;               \
+    const uint8_t *states = scr_arr_scan_states(arr);                     \
+    size_t filled = !states || arr->filled > end ? end : arr->filled;     \
+    for (size_t i = 0; i < filled; i++) visit((void *)(uintptr_t)arr->data[i], ctx); \
+    for (size_t i = filled; i < end; i++)                                 \
+      if (*scr_arr_state_in(states, i) == SCR_ARR_VALUE)                   \
+        visit((void *)(uintptr_t)arr->data[i], ctx);                      \
   }
-  size_t rc = --SCR_RC(child);
-  if (scr_cyc_color(scr_cyc_hdr(child)) == SCR_CYC_GRAY) {
-    if (rc == 0) scr_gray_referenced--;
-    return;
-  }
+
+/* Visit every child of `obj` with VISIT, through ARRAY_WALK for a dense
+ * cycle-capable array and through the type's trace otherwise. An empty
+ * dense array has no children to visit, and ARRAY_WALK is not called. */
+#define SCR_CYC_CHILDREN(obj, type, ARRAY_WALK, VISIT, depth)                         \
+  do {                                                                                \
+    if ((type)->kind == SCR_CYC_KIND_ARRAY &&                                         \
+        !(((const ScrArr *)(obj))->spare & SCR_ARR_HAS_EXT)) {                        \
+      if (((const ScrArr *)(obj))->len != 0)                                          \
+        ARRAY_WALK((const ScrArr *)(obj), (void *)(depth));                           \
+    } else {                                                                          \
+      (type)->trace((obj), (VISIT), (void *)(depth));                                 \
+    }                                                                                 \
+  } while (0)
+
+static void scr_mg_visit(void *child, void *ctx);
+static void scr_sb_visit(void *child, void *ctx);
+static void scr_scan_visit(void *child, void *ctx);
+SCR_CYC_ARRAY_WALK(scr_mg_array, scr_mg_visit)
+SCR_CYC_ARRAY_WALK(scr_sb_array, scr_sb_visit)
+SCR_CYC_ARRAY_WALK(scr_scan_array, scr_scan_visit)
+
+static inline __attribute__((always_inline)) void scr_mark_gray(void *obj, uintptr_t depth);
+/* An edge into a generation this pass does not walk, for settle, seen at
+ * `depth`. */
+static __attribute__((noinline)) void scr_mg_skip_edge(void *child, uintptr_t depth) {
+  scr_cyc_push_work(&scr_xgen_edges, scr_gray_holders[depth - 1]);
+  scr_cyc_push_work(&scr_xgen_edges, child);
+}
+/* The first visit of an object: gray it and walk its children. */
+static __attribute__((noinline)) void scr_mg_first(void *child, void *ctx) {
   scr_mark_gray(child, (uintptr_t)ctx);
 }
-static void scr_mark_gray(void *obj, uintptr_t depth) {
+/* Most edges end at an object that is skipped or gray already. Those
+ * return without a stack frame; the other two cases tail-call out of
+ * line. */
+static void scr_mg_visit(void *child, void *ctx) {
+  if (child == NULL || SCR_RC(child) == SCR_RC_IMMORTAL) return;
+  ScrCycHdr *h = scr_cyc_hdr(child);
+  if (SCR_CYC_WALK_GEN(h) > scr_gen_limit) {
+    scr_mg_skip_edge(child, (uintptr_t)ctx);
+    return;
+  }
+  --SCR_RC(child);
+  size_t rc = SCR_RC_REFS(child);
+  if (scr_cyc_color(h) == SCR_CYC_GRAY) {
+    if (rc == 0) {
+      scr_gray_referenced--;
+      if (h->buf == scr_gray_comp) scr_comp_referenced--;
+    }
+    return;
+  }
+  scr_mg_first(child, ctx);
+}
+/* markGray reaches `obj` (its count already trial-decremented): gray it,
+ * number it with the walk's component, record it, count it while it is
+ * externally referenced, and walk its children. */
+static inline __attribute__((always_inline)) void scr_mark_gray(void *obj, uintptr_t depth) {
   ScrCycHdr *h = scr_cyc_hdr(obj);
-  if (scr_cyc_color(h) == SCR_CYC_GRAY) return;
   scr_cyc_set_color(h, SCR_CYC_GRAY);
-  if (scr_white.n < SCR_CYC_GRAY_LIST_MAX) scr_cyc_push_work(&scr_white, obj);
-  if (SCR_RC(obj) > 0) scr_gray_referenced++;
+  /* A full pass takes every buffer, so each buffered object it reaches
+   * leaves its buffer here, in the header write that numbers it anyway. A
+   * limited pass can gray candidates it did not take; they keep their
+   * buffer position and are simply never counted as members. */
+  if (!scr_cyc_is_buffered(h) || (scr_gen_limit == SCR_CYC_OLD && !scr_cyc_take
+#ifdef SCR_YIN
+                                    /* a young object's `buf` is its nursery index */
+                                    && scr_cyc_gen(h) != SCR_CYC_YOUNG
+#endif
+                                    ))
+    h->buf = scr_gray_comp;
+  if (scr_white.n < SCR_CYC_GRAY_LIST_MAX) scr_cyc_push_gray(&scr_white, obj);
+  if (SCR_RC_REFS(obj) > 0) {
+    scr_gray_referenced++;
+    scr_comp_referenced++;
+  }
   if (depth == SCR_CYC_WALK_DEPTH) {
     scr_cyc_push_work(&scr_pending, obj);
     return;
   }
-  void *holder = scr_gray_holder;
-  scr_gray_holder = obj;
-  scr_cyc_type(h)->trace(obj, scr_mg_visit, (void *)(depth + 1));
-  scr_gray_holder = holder;
+  scr_gray_holders[depth] = obj;
+  const ScrCycType *type = scr_cyc_type(h);
+  SCR_CYC_CHILDREN(obj, type, scr_mg_array, scr_mg_visit, depth + 1);
+}
+/* markGray from one (black) candidate, through the queue. */
+static void scr_mark_gray_from(void *root) {
+  scr_mark_gray(root, 0);
+  while (scr_pending.n) {
+    void *obj = scr_pending.v[--scr_pending.n];
+    const ScrCycType *type = scr_cyc_type(scr_cyc_hdr(obj));
+    scr_gray_holders[0] = obj;
+    SCR_CYC_CHILDREN(obj, type, scr_mg_array, scr_mg_visit, 1);
+  }
 }
 
+/* scan's restoration: blacken an externally referenced object and
+ * everything it reaches that is not black yet, giving back the trial
+ * decrements of the edges it follows. */
 static void scr_scan_black(void *obj, uintptr_t depth);
 static void scr_sb_visit(void *child, void *ctx) {
   if (SCR_CYC_SKIP(child)) return;
@@ -948,14 +1471,35 @@ static void scr_sb_visit(void *child, void *ctx) {
 static void scr_scan_black(void *obj, uintptr_t depth) {
   ScrCycHdr *h = scr_cyc_hdr(obj);
   scr_cyc_set_color(h, SCR_CYC_BLACK);
-  if (scr_cyc_gen(h) < SCR_CYC_OLD) scr_cyc_push_work(&scr_promote, obj);
+  /* Drop markGray's component number: a survivor leaves the pass unbuffered
+   * unless it is a candidate that a limited pass did not take, and one
+   * without cycle-capable children leaves it SCR_CYC_ACYCLIC again. */
+  const ScrCycType *type = scr_cyc_type(h);
+  bool acyclic = type->trace == scr_cyc_no_children;
+  if (!scr_cyc_is_buffered(h)) h->buf = acyclic ? SCR_CYC_ACYCLIC : 0;
+  /* Such a candidate also keeps its generation: the generation names the
+   * buffer its slot is in (scr_cyc_on_dead), so it is promoted only once a
+   * pass takes it. */
+  if (scr_cyc_gen(h) < SCR_CYC_OLD && !scr_cyc_is_buffered(h)) scr_cyc_push_work(&scr_promote, obj);
+  if (acyclic) return;
   if (depth == SCR_CYC_WALK_DEPTH) {
     scr_cyc_push_work(&scr_restore_pending, obj);
     return;
   }
-  scr_cyc_type(h)->trace(obj, scr_sb_visit, (void *)(depth + 1));
+  SCR_CYC_CHILDREN(obj, type, scr_sb_array, scr_sb_visit, depth + 1);
+}
+static void scr_restore_from(void *root) {
+  scr_scan_black(root, 0);
+  while (scr_restore_pending.n) {
+    void *obj = scr_restore_pending.v[--scr_restore_pending.n];
+    const ScrCycType *type = scr_cyc_type(scr_cyc_hdr(obj));
+    SCR_CYC_CHILDREN(obj, type, scr_sb_array, scr_sb_visit, 1);
+  }
 }
 
+/* scan, walking: restore a gray object that is externally referenced, else
+ * whiten it, record it once (a later outside root can still restore it;
+ * settle filters the list) and walk its children. */
 static void scr_scan(void *obj, uintptr_t depth);
 static void scr_scan_visit(void *child, void *ctx) {
   if (SCR_CYC_SKIP(child)) return;
@@ -964,23 +1508,18 @@ static void scr_scan_visit(void *child, void *ctx) {
 static void scr_scan(void *obj, uintptr_t depth) {
   ScrCycHdr *h = scr_cyc_hdr(obj);
   if (scr_cyc_color(h) != SCR_CYC_GRAY) return;
-  if (SCR_RC(obj) > 0) {
-    scr_scan_black(obj, 0);
-    while (scr_restore_pending.n) {
-      void *next = scr_restore_pending.v[--scr_restore_pending.n];
-      scr_cyc_type(scr_cyc_hdr(next))->trace(next, scr_sb_visit, NULL);
-    }
+  if (SCR_RC_REFS(obj) > 0) {
+    scr_restore_from(obj);
     return;
   }
   scr_cyc_set_color(h, SCR_CYC_WHITE);
-  /* Record each whitened object once. A later outside root can restore it;
-   * filter the list only after every scan finishes. No gather trace needed. */
   scr_cyc_push_work(&scr_white, obj);
   if (depth == SCR_CYC_WALK_DEPTH) {
     scr_cyc_push_work(&scr_pending, obj);
     return;
   }
-  scr_cyc_type(h)->trace(obj, scr_scan_visit, (void *)(depth + 1));
+  const ScrCycType *type = scr_cyc_type(h);
+  SCR_CYC_CHILDREN(obj, type, scr_scan_array, scr_scan_visit, depth + 1);
 }
 
 /* ── cross-generation edges ───────────────────────────────────────────── */
@@ -1024,7 +1563,7 @@ static SCR_TL size_t scr_xg_freed = 0;
 static void scr_xg_release(void *obj);
 static void scr_xg_child_visit(void *child, void *ctx) {
   (void)ctx;
-  if (child == NULL || SCR_RC(child) == SIZE_MAX) return;
+  if (child == NULL || SCR_RC(child) == SCR_RC_IMMORTAL) return;
   scr_xg_release(child);
 }
 
@@ -1037,7 +1576,7 @@ static void scr_xg_destroy(void *obj) {
 }
 
 static SCR_CYC_COMPACT void scr_xg_release(void *obj) {
-  if (SCR_RC(obj) > 1) {
+  if (SCR_RC_REFS(obj) > 1) {
     SCR_RC(obj) -= 1;
     scr_cyc_on_release(obj); /* lost a reference: a possible cycle root */
     return;
@@ -1047,6 +1586,362 @@ static SCR_CYC_COMPACT void scr_xg_release(void *obj) {
   scr_rc_destroy(obj, scr_xg_destroy);
 }
 
+/* A work vector that holds more than this many entries is freed at the end
+ * of a pass that used less than a quarter of it, so a spike in one pass
+ * does not keep its buffers for the rest of the program, while passes of a
+ * steady size keep reusing theirs. */
+#define SCR_CYC_KEEP_VECTOR 65536
+
+static SCR_CYC_COMPACT void scr_cyc_trim_free(ScrVec *vec) {
+  free(vec->v);
+  vec->v = NULL;
+  vec->cap = 0;
+}
+/* Every pass ends by trimming its work vectors, and most of them stay
+ * small: only the capacity test runs inline. */
+static inline void scr_cyc_trim(ScrVec *vec) {
+  if (vec->cap > SCR_CYC_KEEP_VECTOR && vec->n == 0 && vec->used < vec->cap / 4)
+    scr_cyc_trim_free(vec);
+  vec->used = 0;
+}
+
+#ifdef SCR_YIN
+/* ── young-in nursery ─────────────────────────────────────────────────── */
+
+/* Programs built with the young-in nursery (SCRIPTC_YOUNG_NURSERY=1, which
+ * links this unit built with SCR_YIN) allocate compiled class and record
+ * instances YOUNG: the emitted constructor hands each new object to
+ * scr_yin_enter, which lists it in the nursery and marks its header
+ * SCR_CYC_YOUNG with its nursery index in `buf`, under the buffered bit.
+ * The bit makes every release path treat the object as an existing
+ * candidate: a release that leaves it alive makes no call, and its death
+ * calls scr_cyc_on_dead, which takes it out of the nursery
+ * (scr_yin_leave) before the teardown runs. Young objects are never
+ * candidates, but trial deletion walks them as nursery-level objects when
+ * a candidate reaches them (SCR_CYC_WALK_GEN).
+ *
+ * Whenever the nursery holds SCR_YOUNG_NURSERY_SIZE live objects (4096 by
+ * default), at collection points and before every full sweep, the nursery
+ * is collected on its own, in time proportional to its size and without
+ * walking anything older:
+ *   count    for every young object, the references to it from traced
+ *            fields of other young objects (one trace per young object);
+ *   mark     an object whose count is below its reference count is
+ *            referenced from outside the nursery (a stack, a global, an
+ *            older object, a runtime structure, FFI, a fiber or a coroutine
+ *            frame: every one of them holds a counted reference); mark
+ *            from each such object through young edges;
+ *   sweep    what is unmarked is referenced only from unmarked young
+ *            objects, which is garbage. Marked objects join trial
+ *            deletion's nursery generation, unbuffered; dead ones are torn
+ *            down, giving up only the edges that leave the dead set (like
+ *            the white set's cross-generation edges, after every teardown).
+ * Survivors go to trial deletion's nursery rather than past it because the
+ * structures that survive are mostly held by families that are not young
+ * (arrays, closures, maps): a dead tree whose nodes are young and whose
+ * child arrays are not survives the nursery collection through the
+ * arrays, and the arrays' own candidates reach it there.
+ * Soundness rests on the two invariants trial deletion already needs: every
+ * strong reference is counted, and a trace visits exactly the counted
+ * references to headered children. The counts are recomputed at every
+ * collection, so no store barrier is needed and none can be missed.
+ *
+ * Candidates. A release of a young object never buffers it, so a structure
+ * whose last outside reference was dropped while its root was young has no
+ * candidate, and when the structure reaches beyond the nursery (a young
+ * node in an array that is not young, say), the nursery collection sees
+ * the outside edge as a root and keeps it. So every outside root a
+ * collection finds (count below the reference count) becomes a candidate
+ * as it is promoted. That suffices: every survivor is reachable from such
+ * a root, so if a survivor was already garbage, so was its root, and trial
+ * deletion reaches the survivor from the root's candidate; garbage formed
+ * after the promotion has a candidate from the release that formed it,
+ * since survivors are no longer young. */
+#define SCR_YIN_DEFAULT_SIZE 4096
+#define SCR_CYC_YIN_PROMOTED SCR_CYC_NURSERY
+
+/* Pushes onto the collection's work vectors, inline. */
+static inline __attribute__((always_inline)) void scr_yin_push(ScrVec *vec, void *obj) {
+  if (__builtin_expect(vec->n == vec->cap, 0)) scr_cyc_grow(vec);
+  vec->v[vec->n++] = obj;
+  if (vec->n > vec->used) vec->used = vec->n;
+}
+#define SCR_YIN_MAX_SIZE ((size_t)1 << 30)
+
+static size_t scr_yin_size(void) {
+  static SCR_TL size_t cached = 0;
+  if (cached == 0) {
+    const char *env = scr_getenv("SCR_YOUNG_NURSERY_SIZE");
+    long v = env ? strtol(env, NULL, 10) : 0;
+    cached = v > 0 ? ((size_t)v < SCR_YIN_MAX_SIZE ? (size_t)v : SCR_YIN_MAX_SIZE)
+                   : SCR_YIN_DEFAULT_SIZE;
+  }
+  return cached;
+}
+
+/* Collections, survivors and dead objects, printed at exit with
+ * SCR_YOUNG_NURSERY_STATS=1 (measurement). */
+static SCR_TL size_t scr_yin_stat[3];
+static void scr_yin_stats_print(void) {
+  fprintf(stderr, "scriptc young nursery: %zu collections, %zu survivors, %zu dead\n",
+          scr_yin_stat[0], scr_yin_stat[1], scr_yin_stat[2]);
+}
+
+/* Types that do not die in young cycles. Only a young object that dies in
+ * a nursery collection gains anything there; every other one costs: one
+ * that dies by reference counting makes a call to leave the nursery (where
+ * it made none before), one that is published is moved out of it, and one
+ * that survives a collection is kept by it, and becomes a trial-deletion
+ * candidate when an outside reference holds it. Structures held by
+ * families that are not young (tree nodes in child arrays, objects
+ * captured by closures) survive, and plain data dies by reference counting.
+ * So each thread keeps, per registry id, how many of the type's young
+ * objects left the nursery (by a collection or otherwise) and how many of
+ * them a collection freed, and after SCR_YIN_WINDOW of them a type freed
+ * for fewer than one in SCR_YIN_RATIO is allocated as before (trial
+ * deletion's nursery) for its next SCR_YIN_PROBE allocations, then
+ * enters again for a fresh window: the same bypass-and-probe scheme as the
+ * levels' bypass above. The countdown
+ * (scr_yin_skip, an ABI: emitted constructors test and decrement it
+ * inline) only steers which objects enter the nursery. */
+#define SCR_YIN_WINDOW 1024
+#define SCR_YIN_RATIO 4
+#define SCR_YIN_PROBE (64 * SCR_YIN_WINDOW)
+#ifdef SCR_WORKERS
+static _Thread_local uint32_t *scr_yin_skip_tl;
+static uint32_t *scr_yin_skip_table(void) {
+  if (!scr_yin_skip_tl) {
+    scr_yin_skip_tl = calloc(SCR_CYC_MAX_TYPES, sizeof *scr_yin_skip_tl);
+    if (!scr_yin_skip_tl) scr_cyc_oom();
+  }
+  return scr_yin_skip_tl;
+}
+#else
+uint32_t scr_yin_skip[SCR_CYC_MAX_TYPES] = {0};
+static uint32_t *scr_yin_skip_table(void) { return scr_yin_skip; }
+#endif
+typedef struct {
+  uint32_t met, freed;
+} ScrYinType;
+/* SCR_YOUNG_NURSERY_ALL=1 keeps every type young (test lanes). */
+static bool scr_yin_all(void) {
+  static SCR_TL int cached = -1;
+  if (cached < 0) {
+    const char *env = scr_getenv("SCR_YOUNG_NURSERY_ALL");
+    cached = env != NULL && env[0] == '1';
+  }
+  return cached != 0;
+}
+static SCR_TL ScrYinType *scr_yin_types;
+
+static __attribute__((noinline, cold)) void scr_yin_decide(uint16_t id, ScrYinType *t) {
+  if (t->freed * SCR_YIN_RATIO < t->met && !scr_yin_all()) scr_yin_skip_table()[id] = SCR_YIN_PROBE;
+  t->met = t->freed = 0;
+}
+static inline __attribute__((always_inline)) void scr_yin_met(uint16_t id, bool dead) {
+  ScrYinType *t = &scr_yin_types[id];
+  t->freed += dead;
+  if (__builtin_expect(++t->met >= SCR_YIN_WINDOW, 0)) scr_yin_decide(id, t);
+}
+
+void scr_yin_enter_slow(void *obj);
+
+/* The whole nursery entry, for targets whose constructors call it. */
+void scr_yin_enter(void *obj) {
+  uint32_t *skip = &scr_yin_skip_table()[scr_cyc_hdr(obj)->id];
+  if (*skip != 0) {
+    --*skip;
+    return;
+  }
+  scr_yin_enter_slow(obj);
+}
+
+/* The slow half of the nursery entry (the emitted constructors inline the
+ * rest: skip, or append while n < lim). The nursery holds at most
+ * SCR_YOUNG_NURSERY_SIZE live young objects: the object that would exceed
+ * that collects the nursery first, then enters. */
+void scr_yin_enter_slow(void *obj) {
+  size_t size = scr_yin_size();
+  if (!scr_yin_types) {
+    scr_yin_types = calloc(SCR_CYC_MAX_TYPES, sizeof *scr_yin_types);
+    if (!scr_yin_types) scr_cyc_oom();
+  }
+  if (scr_yin.n >= size) {
+    static SCR_TL bool stats_checked = false;
+    if (!stats_checked) {
+      stats_checked = true;
+      const char *env = scr_getenv("SCR_YOUNG_NURSERY_STATS");
+      if (env && env[0] == '1') atexit(scr_yin_stats_print);
+    }
+    scr_yin_collect();
+  }
+  if (scr_yin.n == scr_yin.cap) {
+    /* Positions are 31-bit (ScrCycHdr.buf); the size is capped below. */
+    size_t cap = scr_yin.cap ? scr_yin.cap * 2 : 1024;
+    void **grown = realloc(scr_yin.v, cap * sizeof *grown);
+    if (!grown) scr_cyc_oom();
+    scr_yin.v = grown;
+    scr_yin.cap = cap;
+  }
+  scr_yin.lim = scr_yin.cap < size ? scr_yin.cap : size;
+  ScrCycHdr *h = scr_cyc_hdr(obj);
+  scr_cyc_set_gen(h, SCR_CYC_YOUNG);
+  scr_cyc_set_buffered(h, (uint32_t)scr_yin.n);
+  scr_yin.v[scr_yin.n++] = obj;
+}
+
+/* O(1) removal: the last young object takes the hole. */
+static void scr_yin_leave(ScrCycHdr *h, void *obj) {
+  size_t i = scr_cyc_buf_index(h);
+#ifdef SCR_RC_AUDIT
+  if (i >= scr_yin.n || scr_yin.v[i] != obj) scr_trap("scriptc: young object outside the nursery\n");
+#endif
+  void *last = scr_yin.v[--scr_yin.n];
+  scr_yin.v[i] = last;
+  if (last != obj) scr_cyc_set_buffered(scr_cyc_hdr(last), (uint32_t)i);
+  scr_cyc_clear_buffered(h);
+  scr_cyc_set_gen(h, SCR_CYC_NURSERY);
+  scr_yin_met(h->id, false);
+}
+
+static void scr_yin_count_visit(void *child, void *ctx) {
+  (void)ctx;
+  if (child == NULL || SCR_RC(child) == SCR_RC_IMMORTAL) return;
+  ScrCycHdr *h = scr_cyc_hdr(child);
+  if (scr_cyc_gen(h) == SCR_CYC_YOUNG) scr_yin_counts[scr_cyc_buf_index(h)]++;
+}
+
+/* Marked young objects are GRAY (young objects are otherwise BLACK). */
+static void scr_yin_mark_visit(void *child, void *ctx) {
+  (void)ctx;
+  if (child == NULL || SCR_RC(child) == SCR_RC_IMMORTAL) return;
+  ScrCycHdr *h = scr_cyc_hdr(child);
+  if (scr_cyc_gen(h) != SCR_CYC_YOUNG || scr_cyc_color(h) == SCR_CYC_GRAY) return;
+  scr_cyc_set_color(h, SCR_CYC_GRAY);
+  scr_yin_push(&scr_yin_stack, child);
+}
+
+/* A dead object's edge: young and unmarked is dead too (nothing to give
+ * up); a marked young object (promoted now or soon) or an older one keeps
+ * the count until every teardown has run. */
+static void scr_yin_dead_visit(void *child, void *ctx) {
+  (void)ctx;
+  if (child == NULL || SCR_RC(child) == SCR_RC_IMMORTAL) return;
+  ScrCycHdr *h = scr_cyc_hdr(child);
+  if (scr_cyc_gen(h) == SCR_CYC_YOUNG && scr_cyc_color(h) != SCR_CYC_GRAY) return;
+  scr_yin_push(&scr_yin_xrel, child);
+}
+
+/* Fully optimized, unlike trial deletion's per-pass bookkeeping: its loops
+ * run once per young object. */
+static __attribute__((noinline)) size_t scr_yin_collect(void) {
+  if (scr_yin_busy || scr_collecting) return 0;
+  size_t n = scr_yin.n;
+  if (n == 0) return 0;
+  /* What died outside passes so far counts toward the death rule; what this
+   * collection frees does not (the reading is refreshed at its end). */
+  scr_cyc_note_fall();
+  scr_yin_busy = true;
+  /* Releases made by teardowns below buffer candidates but must not start
+   * a trial-deletion pass while the dead set is half torn down, and take
+   * the call, as during a pass (scr_cyc_window_update). */
+  scr_collecting = true;
+  scr_cyc_window_update();
+  if (n > scr_yin_counts_cap) {
+    size_t cap = scr_yin_counts_cap ? scr_yin_counts_cap * 2 : 1024;
+    while (cap < n) cap *= 2;
+    uint32_t *counts = realloc(scr_yin_counts, cap * sizeof *counts);
+    if (!counts) scr_cyc_oom();
+    scr_yin_counts = counts;
+    scr_yin_counts_cap = cap;
+  }
+  memset(scr_yin_counts, 0, n * sizeof *scr_yin_counts);
+  void **v = scr_yin.v;
+  for (size_t k = 0; k < n; k++)
+    scr_cyc_type(scr_cyc_hdr(v[k]))->trace(v[k], scr_yin_count_visit, NULL);
+#ifdef SCR_RC_AUDIT
+  /* Membership and counts: every listed object is young at its index and
+   * alive, and holds at least the references young objects make to it
+   * (fewer would mean an uncounted reference). */
+  for (size_t k = 0; k < n; k++) {
+    ScrCycHdr *h = scr_cyc_hdr(v[k]);
+    if (scr_cyc_gen(h) != SCR_CYC_YOUNG || !scr_cyc_is_buffered(h) || scr_cyc_buf_index(h) != k ||
+        scr_cyc_color(h) != SCR_CYC_BLACK)
+      scr_trap("scriptc: corrupt young nursery entry\n");
+    if (SCR_RC_REFS(v[k]) == 0 || SCR_RC_REFS(v[k]) < scr_yin_counts[k])
+      scr_trap("scriptc: young object with uncounted references\n");
+  }
+#endif
+  for (size_t k = 0; k < n; k++) {
+    void *obj = v[k];
+    ScrCycHdr *h = scr_cyc_hdr(obj);
+    if (scr_cyc_color(h) == SCR_CYC_GRAY || SCR_RC_REFS(obj) <= scr_yin_counts[k]) continue;
+    scr_cyc_set_color(h, SCR_CYC_GRAY);
+    scr_yin_push(&scr_yin_stack, obj);
+    while (scr_yin_stack.n) {
+      void *x = scr_yin_stack.v[--scr_yin_stack.n];
+      scr_cyc_type(scr_cyc_hdr(x))->trace(x, scr_yin_mark_visit, NULL);
+    }
+  }
+  /* Split: promote the marked objects; record the dead ones and their
+   * edges to survivors and older objects, which are given up after every
+   * teardown (until then each holds the count it was made with, so no
+   * teardown's releases can free a target early). Edges between dead
+   * objects need nothing: both go. No block is freed before every dead
+   * object has been traced. */
+  scr_yin_dead.n = 0;
+  scr_yin_xrel.n = 0;
+  for (size_t k = 0; k < n; k++) {
+    void *obj = v[k];
+    ScrCycHdr *h = scr_cyc_hdr(obj);
+    if (scr_cyc_color(h) == SCR_CYC_GRAY) {
+      scr_cyc_set_color(h, SCR_CYC_BLACK);
+      scr_cyc_set_gen(h, SCR_CYC_YIN_PROMOTED);
+      scr_cyc_clear_buffered(h);
+      /* An outside root becomes a candidate (see "candidates" above). */
+      if (SCR_RC_REFS(obj) > scr_yin_counts[k]) scr_cyc_on_release(obj);
+      scr_yin_met(h->id, false);
+    } else {
+      scr_yin_met(h->id, true);
+      scr_cyc_set_color(h, SCR_CYC_DOOMED);
+      scr_yin_push(&scr_yin_dead, obj);
+      scr_cyc_type(h)->trace(obj, scr_yin_dead_visit, NULL);
+    }
+  }
+  scr_yin.n = 0;
+  scr_yin_stat[0]++;
+  scr_yin_stat[1] += n - scr_yin_dead.n;
+  scr_yin_stat[2] += scr_yin_dead.n;
+  size_t freed = scr_yin_dead.n;
+  for (size_t i = 0; i < scr_yin_dead.n; i++) {
+    void *obj = scr_yin_dead.v[i];
+    scr_cyc_type(scr_cyc_hdr(obj))->free_fn(obj);
+  }
+  scr_yin_dead.n = 0;
+  scr_xg_freed = 0;
+  for (size_t i = 0; i < scr_yin_xrel.n; i++) scr_xg_release(scr_yin_xrel.v[i]);
+  freed += scr_xg_freed;
+  scr_yin_xrel.n = 0;
+  scr_cyc_trim(&scr_yin_stack);
+  scr_cyc_trim(&scr_yin_dead);
+  scr_cyc_trim(&scr_yin_xrel);
+  scr_cyc_live_seen = scr_cyc_live;
+  scr_collecting = false;
+  scr_cyc_window_update();
+  scr_yin_busy = false;
+  /* The candidates buffered above count toward trial deletion's trigger,
+   * which only a release checks; a program whose releases are all of
+   * young objects would otherwise never reach it. */
+  if (scr_cyc_buffered() >= scr_cyc_trigger || scr_cyc_live >= scr_cyc_alloc_trigger)
+    scr_cyc_collect_due();
+  return freed;
+}
+#endif
+
+/* Dead sets at least this large are torn down in address order. Smaller
+ * ones mostly stay in cache, where ordering them costs more than it saves. */
+#define SCR_CYC_ORDER_MIN 16384
+
 /* One pass over every candidate at or below `gen_limit`; returns how many
  * objects it freed. */
 /* The second half of a pass: settle the white set, promote, re-buffer,
@@ -1054,29 +1949,37 @@ static SCR_CYC_COMPACT void scr_xg_release(void *obj) {
  * spend their time in the trace and teardown calls they make, so this half is
  * built for size; the graph walk above it stays fully optimized. Returns how
  * many objects the pass freed. */
-static SCR_CYC_COMPACT size_t scr_cyc_settle(unsigned gen_limit) {
+static SCR_CYC_COMPACT size_t scr_cyc_settle(unsigned gen_limit, bool doomed) {
   size_t dead = 0;
   scr_cyc_mature_dead = 0;
-  for (size_t i = 0; i < scr_white.n; i++) {
+  scr_cyc_note_used(&scr_white);
+  /* The list holds the dead set: doomed components, and what scan whitened
+   * (black once a later outside root restored it), or, when the pass found
+   * nothing externally referenced, every gray object. `doomed` says that
+   * every entry is a doomed component's: every candidate and every holder
+   * of a recorded edge is about to be freed, and the entries can still be
+   * gray (see "Components" in scr_cyc_pass). */
+  for (size_t i = 0; i < scr_white.n && !doomed; i++) {
     void *obj = scr_white.v[i];
     ScrCycHdr *h = scr_cyc_hdr(obj);
-    if (scr_cyc_color(h) != SCR_CYC_WHITE) continue;
-    /* A limited pass can reach candidates it did not take: out of their
-     * buffers before they are freed. */
-    if (scr_cyc_take && scr_cyc_is_buffered(h)) scr_cyc_on_dead(obj);
-    scr_cyc_set_color(h, SCR_CYC_DOOMED);
-    if (gen_limit < SCR_CYC_OLD) scr_cyc_freed(scr_cyc_type(h), gen_limit);
-    else scr_cyc_mature_dead += scr_cyc_gen(h) == SCR_CYC_MATURE;
+    unsigned color = scr_cyc_color(h);
+    if (color == SCR_CYC_BLACK) continue;
+    if (color != SCR_CYC_DOOMED) {
+      /* A limited pass can reach candidates it did not take: out of their
+       * buffers before they are freed. */
+      if (scr_cyc_take && scr_cyc_is_buffered(h)) scr_cyc_on_dead(obj);
+      scr_cyc_set_color(h, SCR_CYC_DOOMED);
+    }
     scr_white.v[dead++] = obj;
   }
-  scr_white.n = dead;
+  if (!doomed) scr_white.n = dead;
 
   /* Pin the cross-generation targets of everything about to be freed, while
    * `gen` still holds the values the walk filtered on (promotion below is
    * what changes them). A full pass skips no edge, so it pins nothing. */
   scr_xgen.n = 0;
   for (size_t i = 0; i < scr_xgen_edges.n; i += 2) {
-    if (scr_cyc_color(scr_cyc_hdr(scr_xgen_edges.v[i])) != SCR_CYC_DOOMED) continue;
+    if (!doomed && scr_cyc_color(scr_cyc_hdr(scr_xgen_edges.v[i])) != SCR_CYC_DOOMED) continue;
     void *target = scr_xgen_edges.v[i + 1];
     SCR_RC(target) += 1; /* pin across the teardowns */
     scr_cyc_push_work(&scr_xgen, target);
@@ -1107,12 +2010,13 @@ static SCR_CYC_COMPACT size_t scr_cyc_settle(unsigned gen_limit) {
    * genuine outside reference and Bacon-Rajan's own reasoning retires the
    * candidate. Re-buffering costs a walk, never correctness: an object that
    * is truly live survives the next pass at its level and is dropped then. */
-  if (gen_limit < SCR_CYC_OLD) {
+  if (gen_limit < SCR_CYC_OLD && !doomed) {
     for (size_t i = 0; i < scr_cands.n; i++) {
       void *obj = scr_cands.v[i];
       ScrCycHdr *h = scr_cyc_hdr(obj);
       if (scr_cyc_color(h) == SCR_CYC_DOOMED) continue; /* being freed below */
-      if (!scr_cyc_is_buffered(h)) {
+      /* A candidate without cycle-capable children was never on a cycle. */
+      if (!scr_cyc_is_buffered(h) && h->buf != SCR_CYC_ACYCLIC) {
         /* A survivor promoted into a level its type bypasses moves past
          * it, as a release would buffer it. */
         if (scr_cyc_gen(h) == SCR_CYC_MATURE && scr_cyc_bypassed(scr_cyc_type(h), SCR_CYC_MATURE))
@@ -1125,11 +2029,30 @@ static SCR_CYC_COMPACT size_t scr_cyc_settle(unsigned gen_limit) {
 
   /* Teardowns run after the full walk. They may release untraced children
    * (plain RC) — which can re-buffer survivors for the NEXT pass — but
-   * never touch traced (white, already-accounted) edges. */
+   * never touch traced (white, already-accounted) edges.
+   *
+   * A large dead set is torn down in address order, highest address first
+   * (scr_mem_order_for_free). The walk leaves it in graph order, in which
+   * the free lists would hand its blocks to the next allocations scattered
+   * over every page the dead structure used, and the structures built from
+   * them, and every later walk over those, would miss the cache on most
+   * objects. In address order the blocks come back in the order the bump
+   * pointers hand out fresh memory. Teardown order is not observable. The
+   * level statistics are counted here, where the teardown reads the type
+   * anyway; they only steer later passes. */
   size_t freed = scr_white.n;
+  if (scr_white.n >= SCR_CYC_ORDER_MIN)
+    scr_mem_order_for_free(scr_white.v, scr_white.n, sizeof(ScrCycHdr));
   for (size_t i = 0; i < scr_white.n; i++) {
     void *obj = scr_white.v[i];
-    scr_cyc_type(scr_cyc_hdr(obj))->free_fn(obj);
+    ScrCycHdr *h = scr_cyc_hdr(obj);
+    const ScrCycType *type = scr_cyc_type(h);
+    if (gen_limit < SCR_CYC_OLD) scr_cyc_freed(type, gen_limit);
+    scr_cyc_mature_dead += scr_cyc_gen(h) == SCR_CYC_MATURE;
+#ifdef SCR_YIN
+    if (scr_cyc_gen(h) == SCR_CYC_YOUNG) scr_yin_leave(h, obj);
+#endif
+    type->free_fn(obj);
   }
   scr_white.n = 0;
 
@@ -1150,35 +2073,30 @@ static SCR_CYC_COMPACT size_t scr_cyc_settle(unsigned gen_limit) {
 
   /* A limited pass walked only some of the candidates: the schedule's
    * baselines stay those of the last pass over them all. */
+  scr_cyc_live_seen = scr_cyc_live;
   if (scr_cyc_take == NULL) {
-    if (gen_limit >= SCR_CYC_MATURE) scr_cyc_live_after[SCR_CYC_MATURE] = scr_cyc_live;
+    /* A full pass the growth rule did not choose (death, backlog, scheduled
+     * age) may raise the growth baselines but not lower them. After it
+     * reclaims a dropped structure, the heap regrowing to where it was is
+     * the program rebuilding what it had, not growth: from the low point,
+     * the next growth passes would walk the rebuilt live heap for nothing,
+     * at both levels. */
+    for (unsigned g = SCR_CYC_MATURE; g <= gen_limit; g++)
+      if (!scr_cyc_keep_base || scr_cyc_live > scr_cyc_live_after[g]) scr_cyc_live_after[g] = scr_cyc_live;
     if (gen_limit >= SCR_CYC_OLD) {
-      scr_cyc_live_after[SCR_CYC_OLD] = scr_cyc_live;
       scr_cyc_scheduled_mature_age = 0;
+      scr_cyc_fallen = 0;
+      scr_cyc_death_due_live = 0;
+      scr_cyc_full_after = scr_cyc_live;
     }
   }
   /* markRoots drained buffers in bulk and teardowns moved the count around;
    * resync from the buffers themselves and re-arm. */
-  scr_cyc_nbuffered = scr_cyc_buffered();
-  scr_cyc_trigger = scr_cyc_nbuffered + scr_cyc_nursery_threshold();
+  scr_cyc_trigger = scr_cyc_buffered() + scr_cyc_nursery_threshold();
   scr_cyc_alloc_trigger = scr_cyc_live + SCR_CYC_NURSERY_ALLOCATIONS;
   scr_collecting = false;
+  scr_cyc_window_update();
   return freed;
-}
-
-/* A work vector that holds more than this many entries is freed at the end
- * of a pass that used less than a quarter of it, so a spike in one pass
- * does not keep its buffers for the rest of the program, while passes of a
- * steady size keep reusing theirs. */
-#define SCR_CYC_KEEP_VECTOR 65536
-
-static SCR_CYC_COMPACT void scr_cyc_trim(ScrVec *vec) {
-  if (vec->n == 0 && vec->cap > SCR_CYC_KEEP_VECTOR && vec->used < vec->cap / 4) {
-    free(vec->v);
-    vec->v = NULL;
-    vec->cap = 0;
-  }
-  vec->used = 0;
 }
 
 /* The end of every pass. The candidate list keeps its count, which the
@@ -1196,12 +2114,26 @@ static size_t scr_cyc_pass_done(size_t freed) {
   scr_cyc_trim(&scr_restore_pending);
   scr_cyc_trim(&scr_xgen);
   scr_cyc_trim(&scr_xgen_edges);
+  scr_cyc_trim(&scr_live_ranges);
   return freed;
+}
+
+/* Color the doomed components' entries of the gray list: every entry
+ * outside the referenced components' ranges. */
+static SCR_CYC_COMPACT void scr_cyc_doom_components(void) {
+  size_t from = 0;
+  for (size_t k = 0; k <= scr_live_ranges.n; k += 2) {
+    size_t end = k < scr_live_ranges.n ? (uintptr_t)scr_live_ranges.v[k] : scr_white.n;
+    for (size_t j = from; j < end; j++) scr_cyc_set_color(scr_cyc_hdr(scr_white.v[j]), SCR_CYC_DOOMED);
+    if (k < scr_live_ranges.n) from = (uintptr_t)scr_live_ranges.v[k + 1];
+  }
 }
 
 static size_t scr_cyc_pass(unsigned gen_limit) {
   if (scr_collecting) return 0;
+  scr_cyc_route_bypassed();
   scr_collecting = true;
+  scr_cyc_window_update();
   scr_gen_limit = gen_limit;
 
   /* markRoots: every buffered entry is a candidate (retains do not mark
@@ -1242,18 +2174,23 @@ static size_t scr_cyc_pass(unsigned gen_limit) {
     scr_cands = scr_roots[largest];
     scr_roots[largest] = previous;
     scr_roots[largest].n = 0;
-    for (size_t i = 0; i < scr_cands.n; i++) {
-      ScrCycHdr *h = scr_cyc_hdr(scr_cands.v[i]);
-      scr_cyc_clear_buffered(h);
-      if (gen_limit < SCR_CYC_OLD) scr_cyc_walked(scr_cyc_type(h), gen_limit);
-    }
+    /* A full pass clears the buffered marks as markGray reaches the
+     * candidates, so only a limited level's candidates are touched here. */
+    if (gen_limit < SCR_CYC_OLD)
+      for (size_t i = 0; i < scr_cands.n; i++) {
+        ScrCycHdr *h = scr_cyc_hdr(scr_cands.v[i]);
+        scr_cyc_clear_buffered(h);
+        scr_cyc_walked(scr_cyc_type(h), gen_limit);
+      }
   }
   for (unsigned g = 0; g <= gen_limit && !scr_cyc_take; g++) {
     for (size_t i = 0; i < scr_roots[g].n; i++) {
       void *obj = scr_roots[g].v[i];
-      ScrCycHdr *h = scr_cyc_hdr(obj);
-      scr_cyc_clear_buffered(h);
-      if (gen_limit < SCR_CYC_OLD) scr_cyc_walked(scr_cyc_type(h), gen_limit);
+      if (gen_limit < SCR_CYC_OLD) {
+        ScrCycHdr *h = scr_cyc_hdr(obj);
+        scr_cyc_clear_buffered(h);
+        scr_cyc_walked(scr_cyc_type(h), gen_limit);
+      }
       scr_cyc_push(&scr_cands, obj);
     }
     scr_roots[g].n = 0;
@@ -1261,40 +2198,159 @@ static size_t scr_cyc_pass(unsigned gen_limit) {
   scr_xgen_edges.n = 0;
   scr_white.n = 0;
   scr_gray_referenced = 0;
-  for (size_t i = 0; i < scr_cands.n; i++) scr_mark_gray(scr_cands.v[i], 0);
-  while (scr_pending.n) {
-    void *obj = scr_pending.v[--scr_pending.n];
-    scr_gray_holder = obj;
-    scr_cyc_type(scr_cyc_hdr(obj))->trace(obj, scr_mg_visit, NULL);
+  scr_live_ranges.n = 0;
+  /* Components. Each candidate that no earlier walk reached starts a walk
+   * of its own, and the objects that walk grays first form its component.
+   * A component whose objects all end the walk at count zero is garbage:
+   * a count of zero means every reference to the object was trial-deleted,
+   * i.e. came from an object grayed so far. An earlier component cannot
+   * hold one (the walk that grayed it would have grayed the target too),
+   * so every reference comes from inside the component, and a later walk
+   * cannot add one: its objects would be referencing this component, and
+   * those references are still counted. scan would whiten exactly this
+   * set, so it is doomed at once and scan runs only over the components
+   * that are externally referenced, if any. A doomed component's entries
+   * stay gray, outside the referenced components' ranges, until something
+   * reads their color: settle colors them while it filters the list, and
+   * needs no colors when every component is doomed; a scan from the
+   * candidates colors them first (scr_cyc_doom_components); and with a
+   * dispose observer installed they are colored here, because a weak map's
+   * teardown tells a collected owner by its color. A limited pass keeps
+   * the single whole-pass decision below (its untaken candidates cannot
+   * carry the component number). */
+  bool split = scr_cyc_take == NULL;
+  uint32_t comp = 0;
+  for (size_t i = 0; i < scr_cands.n; i++) {
+    void *obj = scr_cands.v[i];
+    if (scr_cyc_color(scr_cyc_hdr(obj)) != SCR_CYC_BLACK) continue; /* walked already */
+    size_t start = scr_white.n;
+    scr_gray_comp = split ? ++comp : 0;
+    scr_comp_referenced = 0;
+    scr_mark_gray_from(obj);
+    if (!split) continue;
+    size_t end = scr_white.n;
+    if (scr_comp_referenced == 0 && end < SCR_CYC_GRAY_LIST_MAX) {
+      if (scr_weak_dispose_hook)
+        for (size_t j = start; j < end; j++) scr_cyc_set_color(scr_cyc_hdr(scr_white.v[j]), SCR_CYC_DOOMED);
+      continue;
+    }
+    if (scr_live_ranges.n && (uintptr_t)scr_live_ranges.v[scr_live_ranges.n - 1] == start) {
+      scr_live_ranges.v[scr_live_ranges.n - 1] = (void *)(uintptr_t)end;
+    } else {
+      scr_cyc_push_work(&scr_live_ranges, (void *)(uintptr_t)start);
+      scr_cyc_push_work(&scr_live_ranges, (void *)(uintptr_t)end);
+    }
   }
-  if (scr_gray_referenced == 0 && scr_white.n < SCR_CYC_GRAY_LIST_MAX) {
-    for (size_t i = 0; i < scr_white.n; i++) scr_cyc_set_color(scr_cyc_hdr(scr_white.v[i]), SCR_CYC_WHITE);
-    return scr_cyc_pass_done(scr_cyc_settle(gen_limit));
+  scr_cyc_note_used(&scr_white);
+  /* Nothing externally referenced at all: every gray object is garbage,
+   * including components that looked referenced only because a later
+   * component held them. settle dooms the recorded set. */
+  if (scr_gray_referenced == 0 && scr_white.n < SCR_CYC_GRAY_LIST_MAX)
+    return scr_cyc_pass_done(scr_cyc_settle(gen_limit, split && scr_live_ranges.n == 0));
+
+  /* scan, from the recorded set when markGray recorded every gray object:
+   * the survivors are exactly what the externally referenced gray objects
+   * reach, so blackening from each of them in turn leaves the garbage gray
+   * without walking it again, and settle dooms what is still gray. Only
+   * the referenced components' entries need looking at; the doomed ones
+   * are settled already. */
+  if (scr_white.n < SCR_CYC_GRAY_LIST_MAX) {
+    /* One sweep over the list, keeping the doomed components' entries and,
+     * of the referenced components', only those still gray: a survivor
+     * leaves the list as soon as it is seen black, and an object kept here
+     * that a later restoration blackens is skipped by settle. */
+    size_t kept = 0, from = 0;
+    size_t nranges = split ? scr_live_ranges.n : 2;
+    for (size_t k = 0; k < nranges; k += 2) {
+      size_t start = split ? (uintptr_t)scr_live_ranges.v[k] : 0;
+      size_t end = split ? (uintptr_t)scr_live_ranges.v[k + 1] : scr_white.n;
+      if (start > from) memmove(scr_white.v + kept, scr_white.v + from, (start - from) * sizeof *scr_white.v);
+      kept += start - from;
+      for (size_t j = start; j < end; j++) {
+        void *obj = scr_white.v[j];
+        if (scr_cyc_color(scr_cyc_hdr(obj)) != SCR_CYC_GRAY) continue;
+        if (SCR_RC_REFS(obj) > 0) scr_restore_from(obj);
+        else scr_white.v[kept++] = obj;
+      }
+      from = end;
+    }
+    if (scr_white.n > from) memmove(scr_white.v + kept, scr_white.v + from, (scr_white.n - from) * sizeof *scr_white.v);
+    scr_white.n = kept + (scr_white.n - from);
+    return scr_cyc_pass_done(scr_cyc_settle(gen_limit, false));
   }
 
-  scr_white.n = 0;
-  for (size_t i = 0; i < scr_cands.n; i++) scr_scan(scr_cands.v[i], 0);
+  /* Otherwise scan walks from the candidates. Keep only the doomed
+   * components' entries, colored first so that scan passes over them; scan
+   * appends what it whitens. */
+  if (split) scr_cyc_doom_components();
+  if (!split) {
+    scr_white.n = 0;
+  } else if (scr_live_ranges.n) {
+    size_t kept = 0, from = 0;
+    for (size_t k = 0; k < scr_live_ranges.n; k += 2) {
+      size_t start = (uintptr_t)scr_live_ranges.v[k], end = (uintptr_t)scr_live_ranges.v[k + 1];
+      memmove(scr_white.v + kept, scr_white.v + from, (start - from) * sizeof *scr_white.v);
+      kept += start - from;
+      from = end;
+    }
+    memmove(scr_white.v + kept, scr_white.v + from, (scr_white.n - from) * sizeof *scr_white.v);
+    scr_white.n = kept + (scr_white.n - from);
+  }
+  /* Externally referenced candidates first: what they restore is never
+   * whitened only to be restored again. */
+  for (size_t i = 0; i < scr_cands.n; i++) {
+    void *obj = scr_cands.v[i];
+    if (scr_cyc_color(scr_cyc_hdr(obj)) == SCR_CYC_GRAY && SCR_RC_REFS(obj) > 0) scr_restore_from(obj);
+  }
+  for (size_t i = 0; i < scr_cands.n; i++) {
+    void *obj = scr_cands.v[i];
+    if (scr_cyc_color(scr_cyc_hdr(obj)) == SCR_CYC_GRAY) scr_scan(obj, 0);
+  }
   while (scr_pending.n) {
     void *obj = scr_pending.v[--scr_pending.n];
-    /* A later outside root may have restored this deferred white node and
-     * its descendants already. Never scan a black node's edges again. */
-    if (scr_cyc_color(scr_cyc_hdr(obj)) == SCR_CYC_WHITE)
-      scr_cyc_type(scr_cyc_hdr(obj))->trace(obj, scr_scan_visit, NULL);
+    /* A later outside root may have restored this deferred white object and
+     * its descendants already. Never scan a black object's edges again. */
+    ScrCycHdr *h = scr_cyc_hdr(obj);
+    if (scr_cyc_color(h) != SCR_CYC_WHITE) continue;
+    const ScrCycType *type = scr_cyc_type(h);
+    SCR_CYC_CHILDREN(obj, type, scr_scan_array, scr_scan_visit, 1);
   }
 
-  return scr_cyc_pass_done(scr_cyc_settle(gen_limit));
+  return scr_cyc_pass_done(scr_cyc_settle(gen_limit, false));
 }
 
 #ifdef SCR_CYC_TESTING
 /* Tests only: one pass at exactly `gen`, outside the schedule. */
 size_t scr_cyc_pass_at(unsigned gen) { return scr_cyc_pass(gen); }
+/* Tests only: route appended candidates of bypassing types, as the next
+ * scheduling decision or pass would. */
+void scr_cyc_route_bypassed_at(void) { scr_cyc_route_bypassed(); }
+/* Tests only: the backlog threshold at `gen`, and forgetting what passes
+ * there have taught it, as on a thread that has not collected yet. */
+size_t scr_cyc_backlog_threshold_at(unsigned gen) { return scr_cyc_backlog_threshold(gen); }
+void scr_cyc_forget_backlog_at(unsigned gen) {
+  scr_cyc_backlog_shift[gen] = 0;
+  scr_cyc_backlog_judged[gen] = false;
+}
+/* Tests only: the thread's event loop stops counting as running. */
+void scr_cyc_forget_event_loop_at(void) {
+  scr_cyc_idle_points = false;
+  scr_cyc_death_due_live = 0;
+}
 #endif
 
 size_t scr_cyc_collect_set(const ScrCycSet *set, unsigned gen) {
   if (scr_collecting) return 0;
+#ifdef SCR_YIN
+  /* Young objects are invisible to trial deletion: collect them first, so
+   * survivors are promoted where the limited pass can walk them. */
+  size_t young = scr_yin_collect();
+#else
+  size_t young = 0;
+#endif
   scr_cyc_take = set;
   scr_cyc_take_gen = gen;
-  size_t freed = scr_cyc_pass(SCR_CYC_OLD);
+  size_t freed = young + scr_cyc_pass(SCR_CYC_OLD);
   scr_cyc_take = NULL;
   return freed;
 }
@@ -1308,8 +2364,33 @@ void scr_collect_cycles(void) {
    * can have buffered anything new, so a pass that comes up empty ends
    * this; and since each repeat needs a strictly smaller live heap to
    * continue, it terminates. */
+#ifdef SCR_YIN
+  /* The nursery first: afterwards no young object is left (a teardown
+   * never allocates one), so the passes see every object. */
+  scr_yin_collect();
+#endif
   while (scr_cyc_pass(SCR_CYC_OLD) && scr_cyc_buffered()) {
   }
+}
+
+/* The full sweep, for a caller that knows a phase's data has just died (a
+ * compiler dropping its frontend). Such data is mostly cyclic, so reference
+ * counting frees little of it and the schedule cannot see it die. The
+ * growth fractions the phase widened, while its live data kept passes from
+ * finding anything, and the death rule's backoff then start over from the
+ * heap the sweep leaves, as after a productive pass. Otherwise the next
+ * phase's garbage would accumulate until the heap grew to that widened
+ * fraction. The freed memory then goes back to the system (scr_heap_trim):
+ * the next phase allocates other sizes than the dead data held, so it would
+ * reuse little of it and grow its resident memory on top. */
+void scr_collect_cycles_phase(void) {
+  scr_collect_cycles();
+  for (unsigned gen = SCR_CYC_MATURE; gen < SCR_CYC_NGENS; gen++) {
+    scr_cyc_growth_shift[gen] = 0;
+    scr_cyc_growth_streak[gen] = 0;
+  }
+  scr_cyc_death_shift = 0;
+  scr_heap_trim();
 }
 
 /* Worker TLS becomes unreachable when its OS thread returns. Release the
@@ -1317,7 +2398,7 @@ void scr_collect_cycles(void) {
 void scr_cyc_context_cleanup(void) {
   scr_collect_cycles();
   ScrVec *vectors[] = {&scr_roots[SCR_CYC_NURSERY], &scr_roots[SCR_CYC_MATURE],
-    &scr_roots[SCR_CYC_OLD], &scr_cands, &scr_promote, &scr_pending, &scr_restore_pending, &scr_white, &scr_xgen, &scr_xgen_edges,
+    &scr_roots[SCR_CYC_OLD], &scr_cands, &scr_promote, &scr_pending, &scr_restore_pending, &scr_white, &scr_xgen, &scr_xgen_edges, &scr_live_ranges,
     &scr_pub_holes[SCR_CYC_NURSERY], &scr_pub_holes[SCR_CYC_MATURE], &scr_pub_holes[SCR_CYC_OLD]};
   for (size_t i = 0; i < sizeof vectors / sizeof vectors[0]; i++) {
     free(vectors[i]->v);
@@ -1326,4 +2407,26 @@ void scr_cyc_context_cleanup(void) {
   free(scr_cyc_kinds);
   scr_cyc_kinds = NULL;
   scr_cyc_kinds_cap = 0;
+#ifdef SCR_YIN
+  ScrVec *young[] = {&scr_yin_stack, &scr_yin_dead, &scr_yin_xrel};
+  for (size_t i = 0; i < sizeof young / sizeof young[0]; i++) {
+    free(young[i]->v);
+    *young[i] = (ScrVec){0};
+  }
+  free(scr_yin.v);
+  scr_yin = (ScrYin){0};
+  free(scr_yin_types);
+  scr_yin_types = NULL;
+#ifdef SCR_WORKERS
+  free(scr_yin_skip_tl);
+  scr_yin_skip_tl = NULL;
+#endif
+  free(scr_yin_counts);
+  scr_yin_counts = NULL;
+  scr_yin_counts_cap = 0;
+#endif
+#if SCR_CYC_INLINE_BUFFERING
+  scr_cyc_nursery_bypassing = 0;
+#endif
+  scr_cyc_window_update();
 }

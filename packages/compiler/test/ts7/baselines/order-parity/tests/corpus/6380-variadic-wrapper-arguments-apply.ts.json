@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6380-variadic-wrapper-arguments-apply.ts"
+ ],
+ "diags": []
+}

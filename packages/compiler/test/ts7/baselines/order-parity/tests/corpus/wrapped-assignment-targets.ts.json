@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/wrapped-assignment-targets.ts"
+ ],
+ "diags": []
+}

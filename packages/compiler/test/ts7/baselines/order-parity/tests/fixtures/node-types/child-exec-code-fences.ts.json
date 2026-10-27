@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/node-types/child-exec-code-fences.ts"
+ ],
+ "diags": []
+}

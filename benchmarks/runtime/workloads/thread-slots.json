@@ -1,0 +1,9 @@
+{
+  "entry": "workloads/thread-slots.ts",
+  "args": [
+    "slots",
+    "8",
+    "50000",
+    "20"
+  ]
+}

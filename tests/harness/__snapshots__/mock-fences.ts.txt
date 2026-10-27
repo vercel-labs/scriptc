@@ -1,62 +1,62 @@
-mock-fences.ts:14:15 - error SC2020: 'mock.fn of this function type' is part of the standard library types but has no scriptc lowering yet
+mock-fences.ts:18:17 - error SC2020: 'mock.fn() of a function returning 'number'' is part of the standard library types but has no scriptc lowering yet
 
-  13 | 
-  14 | const empty = mock.fn(); // no original function
-     |               ^~~~~~~~~
-  15 | empty();
+  17 | 
+  18 | const counted = mock.fn<() => number>(); // no original, returns number
+     |                 ^~~~~~~~~~~~~~~~~~~~~~~
+  19 | counted();
 
-  hint: mock functions lower for functions with fixed parameters, or a single rest array parameter, and an implementation of the same type
+  hint: mock.fn() without an original returns undefined: pass an original, or use a function type whose return type includes undefined
 
-mock-fences.ts:27:13 - error SC2020: 'mock.method on 'Counter'' is part of the standard library types but has no scriptc lowering yet
+mock-fences.ts:31:13 - error SC2020: 'mock.method on 'Counter'' is part of the standard library types but has no scriptc lowering yet
 
-  26 | }
-  27 | mock.method(new Counter(), "count"); // class instance
+  30 | }
+  31 | mock.method(new Counter(), "count"); // class instance
      |             ^~~~~~~~~~~~~
-  28 | mock.method(console, "log"); // builtin object
+  32 | mock.method(console, "log"); // builtin object
 
   hint: mock.method lowers for objects whose type maps to a record (object literals and interface-typed objects) and a function-valued field named by a string literal
 
-mock-fences.ts:28:13 - error SC2020: 'mock.method on this object' is part of the standard library types but has no scriptc lowering yet
+mock-fences.ts:32:13 - error SC2020: 'mock.method on this object' is part of the standard library types but has no scriptc lowering yet
 
-  27 | mock.method(new Counter(), "count"); // class instance
-  28 | mock.method(console, "log"); // builtin object
+  31 | mock.method(new Counter(), "count"); // class instance
+  32 | mock.method(console, "log"); // builtin object
      |             ^~~~~~~
-  29 | mock.method(obj, "value", { times: 1 }); // options
+  33 | mock.method(obj, "value", { times: 1 }); // options
 
   hint: mock.method lowers for objects whose type maps to a record (object literals and interface-typed objects) and a function-valued field named by a string literal
 
-mock-fences.ts:29:27 - error SC2020: 'mock.method with an options object' is part of the standard library types but has no scriptc lowering yet
+mock-fences.ts:33:27 - error SC2020: 'mock.method with an options object' is part of the standard library types but has no scriptc lowering yet
 
-  28 | mock.method(console, "log"); // builtin object
-  29 | mock.method(obj, "value", { times: 1 }); // options
+  32 | mock.method(console, "log"); // builtin object
+  33 | mock.method(obj, "value", { times: 1 }); // options
      |                           ^~~~~~~~~~~~
-  30 | const other = mock.method(obj, "value", () => "one"); // implementation of another type
+  34 | const other = mock.method(obj, "value", () => "one"); // implementation of another type
 
   hint: mock options (times, getter and setter) have no lowering
 
-mock-fences.ts:30:41 - error SC2020: 'mock.method with an implementation of another type' is part of the standard library types but has no scriptc lowering yet
+mock-fences.ts:34:41 - error SC2020: 'mock.method with an implementation of another type' is part of the standard library types but has no scriptc lowering yet
 
-  29 | mock.method(obj, "value", { times: 1 }); // options
-  30 | const other = mock.method(obj, "value", () => "one"); // implementation of another type
+  33 | mock.method(obj, "value", { times: 1 }); // options
+  34 | const other = mock.method(obj, "value", () => "one"); // implementation of another type
      |                                         ^~~~~~~~~~~
-  31 | other();
+  35 | other();
 
   hint: give the implementation the method's parameter and return types, or discard the result
 
-mock-fences.ts:35:31 - error SC2020: 't.mock.method with an options object' is part of the standard library types but has no scriptc lowering yet
+mock-fences.ts:39:31 - error SC2020: 't.mock.method with an options object' is part of the standard library types but has no scriptc lowering yet
 
-  34 |   t.mock.method(obj, "value"); // lowers
-  35 |   t.mock.method(obj, "value", { times: 2 }); // options
+  38 |   t.mock.method(obj, "value"); // lowers
+  39 |   t.mock.method(obj, "value", { times: 2 }); // options
      |                               ^~~~~~~~~~~~
-  36 | });
+  40 | });
 
   hint: mock options (times, getter and setter) have no lowering
 
-mock-fences.ts:38:14 - error SC2020: 'mock.fn of a function returning 'number | string'' is part of the standard library types but has no scriptc lowering yet
+mock-fences.ts:42:14 - error SC2020: 'mock.fn of a function returning 'number | string'' is part of the standard library types but has no scriptc lowering yet
 
-  37 | 
-  38 | const pick = mock.fn((flag: boolean): number | string => (flag ? 1 : "one")); // union without undefined
+  41 | 
+  42 | const pick = mock.fn((flag: boolean): number | string => (flag ? 1 : "one")); // union without undefined
      |              ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  39 | pick(true);
+  43 | pick(true);
 
   hint: a union return type needs an undefined arm here (the calls log records undefined for calls that throw)

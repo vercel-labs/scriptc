@@ -32,7 +32,7 @@ function freshDir(dir: string): void {
   }
   mkdirSync(dir);
 }
-const scratch = "tmp-992-" + tail(process.argv[1]);
+const scratch = "tmp-992-" + tail(process.argv[1]) + "-" + process.pid;
 freshDir(scratch);
 
 const file = scratch + "/notes.txt";

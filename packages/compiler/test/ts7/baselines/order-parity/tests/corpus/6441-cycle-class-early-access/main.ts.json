@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6441-cycle-class-early-access/stats.ts",
+  "<repo>/tests/corpus/6441-cycle-class-early-access/log.ts",
+  "<repo>/tests/corpus/6441-cycle-class-early-access/main.ts"
+ ],
+ "diags": []
+}

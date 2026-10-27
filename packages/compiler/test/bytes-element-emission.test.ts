@@ -75,7 +75,7 @@ function fixture(): IrModule {
   );
 
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "__main",
     functions: [{ name: "__main", params: [], returnType: VOID, locals, body, loc }],
@@ -145,7 +145,7 @@ function receiverReassignmentFixture(): IrModule {
   ];
 
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "__main",
     functions: [{ name: "__main", params: [], returnType: VOID, locals, body, loc }],
@@ -212,7 +212,7 @@ function integerLoopFixture(mutatesIndex = false): IrModule {
     { kind: "bytesSet", arr: bytesRef(), index: indexRef(), value: ref("sum"), loc },
   );
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "__main",
     functions: [
@@ -335,11 +335,17 @@ test("a body mutation keeps the byte loop on the general f64 path", () => {
 
 test("worker programs read and write shared views at the checked integer index", () => {
   const ll = emitLlvmModule({ ...fixture(), workers: true });
-  // The shared path receives the index the inline path checked, as an integer,
-  // and integer elements come back as 32-bit values.
-  expect(ll).toMatch(/call i32 @scr_bytes_shared_get_int\(ptr %\w+, i64 %?\w+\) cold/);
-  expect(ll).toMatch(/call double @scr_bytes_shared_get_f64\(ptr %\w+, i64 %?\w+\) cold/);
-  expect(ll).toMatch(/call void @scr_bytes_shared_set\(ptr %\w+, i64 %?\w+, double %?[\w.]+\)/);
+  // The shared path uses the index the inline path checked, as an integer:
+  // each element is one relaxed atomic access of its width, aligned to it.
+  expect(ll).toMatch(/load atomic i8, ptr %\w+ monotonic, align 1/);
+  expect(ll).toMatch(/load atomic i32, ptr %\w+ monotonic, align 4/);
+  expect(ll).toMatch(/load atomic float, ptr %\w+ monotonic, align 4/);
+  expect(ll).toMatch(/store atomic i8 [%\w.]+, ptr %\w+ monotonic, align 1/);
+  expect(ll).toMatch(/store atomic i32 [%\w.]+, ptr %\w+ monotonic, align 4/);
+  expect(ll).toMatch(/store atomic float [%\w.]+, ptr %\w+ monotonic, align 4/);
+  expect(ll).not.toContain("@scr_bytes_shared_get_int");
+  expect(ll).not.toContain("@scr_bytes_shared_get_f64");
+  expect(ll).not.toContain("@scr_bytes_shared_set");
   expect(ll).not.toContain("@scr_bytes_get_or_nan");
   expect(ll).not.toContain("@scr_bytes_set(");
   // Both paths join as one integer, which converts to a number after the join.
@@ -365,7 +371,7 @@ test("large record clones stay outlined while small clones remain inlineable", (
     const fields = Array.from({ length: count }, (_, i) => ({ name: `f${i}`, type: F64 }));
     const type = { kind: "record", shapeId: id } as const;
     return {
-      irVersion: 16,
+      irVersion: 17,
       sourceFile: "record-clone.ts",
       entry: "__main",
       records: [{ id, fields }],
@@ -398,5 +404,47 @@ test("large record clones stay outlined while small clones remain inlineable", (
   expect(small).toContain("define internal ptr @sc_rclone_small(ptr %src) #0");
   expect(small).not.toContain("attributes #2");
   expect(large).toContain("define internal ptr @sc_rclone_large(ptr %src) #2");
-  expect(large).toContain("attributes #2 = { noinline sanitize_address }");
+  expect(large).toContain("attributes #2 = { noinline sanitize_address uwtable }");
+});
+
+test("Uint8ClampedArray stores clamp and round without a runtime call", () => {
+  const type = bytesOf("u8c");
+  const mod: IrModule = {
+    irVersion: 17,
+    sourceFile: loc.file,
+    entry: "__main",
+    functions: [
+      { name: "__main", params: [], returnType: VOID, locals: [], body: [], loc },
+      {
+        name: "store",
+        params: [
+          { localId: "px", name: "px", type },
+          { localId: "v", name: "v", type: F64 },
+        ],
+        returnType: VOID,
+        locals: [
+          { id: "px", name: "px", type, mutable: false },
+          { id: "v", name: "v", type: F64, mutable: false },
+        ],
+        body: [
+          {
+            kind: "bytesSet",
+            arr: { kind: "varRef", localId: "px", type, loc },
+            index: { kind: "numLit", value: 0, type: F64, loc },
+            value: { kind: "varRef", localId: "v", type: F64, loc },
+            loc,
+          },
+        ],
+        loc,
+      },
+    ],
+  };
+  expect(validateModule(mod)).toEqual([]);
+  const body = /^define internal [^\n]*@sc_bf_store[^]*?^}/m.exec(emitLlvmModule(mod))![0];
+  expect(body).not.toContain("scr_bytes_to_u8_clamp");
+  expect(body).toMatch(/fcmp ogt double %\S+, 0\.0/);
+  expect(body).toMatch(/fcmp oge double %\S+, 255\.0/);
+  expect(body).toMatch(/fadd double %\S+, 0x4330000000000000/);
+  expect(body).toMatch(/fsub double %\S+, 0x4330000000000000/);
+  expect(body).toMatch(/store i8 [^\n]*, align 1/);
 });

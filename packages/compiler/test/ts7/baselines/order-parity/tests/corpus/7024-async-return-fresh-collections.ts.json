@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7024-async-return-fresh-collections.ts"
+ ],
+ "diags": []
+}

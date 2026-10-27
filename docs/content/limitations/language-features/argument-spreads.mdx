@@ -1,1 +1,5 @@
-- **Argument spreads:** Non-empty fixed tuples can spread into fixed signatures; arrays, Sets, and compiled class iterables can spread into typed rest parameters. Runtime-length spreads into fixed or rest parameters require types that support checked `unknown` conversion. Other JavaScript calls use the checked-value path; unsupported static forms produce a diagnostic. Calls with no native parameter slot are unsupported for runtime-length spreads. Arguments evaluate once, in source order, before defaults run, including surplus arguments.
+- **Argument spreads:** Non-empty fixed tuples can spread into fixed signatures; arrays, Sets, and compiled class iterables can spread into typed rest parameters.
+  Runtime-length spreads into fixed or rest parameters require types that support checked `unknown` conversion.
+  Other JavaScript calls use the checked-value path; unsupported static forms produce a diagnostic.
+  Calls with no native parameter slot are unsupported for runtime-length spreads.
+  Arguments evaluate once, in source order, before defaults run, including surplus arguments.

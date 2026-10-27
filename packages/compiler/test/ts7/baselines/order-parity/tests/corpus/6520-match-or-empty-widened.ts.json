@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6520-match-or-empty-widened.ts"
+ ],
+ "diags": []
+}

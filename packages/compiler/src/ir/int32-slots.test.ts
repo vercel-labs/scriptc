@@ -105,7 +105,7 @@ const newOf = (className: string, args: IrExpr[]): IrExpr => ({
   type: obj(className),
 });
 const mod = (classes: IrClassDef[], functions: IrFunction[]): IrModule => ({
-  irVersion: 16,
+  irVersion: 17,
   sourceFile: "test.ts",
   entry: "%main",
   classes,
@@ -262,7 +262,8 @@ test("dynamic stores disqualify the field names they can reach", () => {
   expect([readOnly.isField("C", "a"), readOnly.isField("C", "b")]).toEqual([true, true]);
   // Reflection that only reads the view (Object.keys/values/entries, for-in,
   // own-key lists, typeof, toString and inspection) stores nothing, nor does
-  // creating an object from a prototype or reading a prototype.
+  // creating an object from a prototype, reading a prototype or naming a
+  // class prototype for inspection.
   for (const reader of [
     "dyn.objKeys",
     "dyn.objKeyStrings",
@@ -280,8 +281,10 @@ test("dynamic stores disqualify the field names they can reach", () => {
     "dyn.typeof",
     "insp.dyn",
     "insp.dynS",
+    "insp.dynHidden",
     "dyn.objCreate",
     "dyn.getPrototype",
+    "dyn.nameClassPrototype",
     // Registering or removing a process event listener stores nothing either.
     "process.onSignal",
     "process.offSignal",
@@ -347,6 +350,52 @@ test("an Error subclass constructor forwarding dynamic arguments stores no class
             ref("e", obj("E")),
             ref("message", DYN),
             ref("options", DYN),
+          ]),
+        ],
+      ),
+    ]),
+  );
+  expect(slots.isField("C", "a")).toBe(true);
+});
+
+test("Buffer.from over an ArrayBuffer range and Buffer as a value keep class fields int32", () => {
+  // `Buffer.from(view.buffer, offset, length)` passes its operands as
+  // checked values, and a program that reads the Buffer function's value
+  // installs it in %main; neither stores into a class instance.
+  const classes = [cls("C", ["a"])];
+  const view: IrExpr = { loc, kind: "dynFrom", value: ref("o", obj("C")), type: DYN };
+  const libCall = (fnName: string, args: IrExpr[], type: IrType = VOID): IrStmt =>
+    stmt({ loc, kind: "libCall", fn: fnName, args, type } as IrExpr);
+  const slots = analyzeInt32Slots(
+    mod(classes, [
+      fn(
+        "load",
+        [
+          { id: "o", type: obj("C") },
+          { id: "storage", type: DYN },
+        ],
+        [
+          set(ref("o", obj("C")), "C", "a", num(1)),
+          libCall("dyn.typedRefIs", [
+            view,
+            { loc, kind: "strLit", value: "object:C", type: STRING },
+          ]),
+          libCall("buffer.installValue", []),
+          libCall("buffer.constructor", [], DYN),
+          libCall(
+            "buffer.poolFromDynRange",
+            [ref("storage", DYN), num(2), num(4)].map((arg): IrExpr =>
+              arg.type.kind === "dyn" ? arg : { loc, kind: "dynFrom", value: arg, type: DYN },
+            ),
+          ),
+          libCall("buffer.poolFromDynOffset", [
+            ref("storage", DYN),
+            {
+              loc,
+              kind: "dynFrom",
+              value: num(2),
+              type: DYN,
+            },
           ]),
         ],
       ),
@@ -474,6 +523,12 @@ test("counting-down recursion proves its parameter from the call-site ranges", (
   );
   const rising = analyzeInt32Slots(mod([], [up, fn("user", [], [stmt(call("up", [num(-18)]))])]));
   expect(rising.facts("up").params?.get("d")).toEqual({ min: -18, max: 0 });
+  // The same with the caller first, so the fixpoint analyzes it after the
+  // parameter dropped: the narrowing still sees its argument.
+  const callerFirst = analyzeInt32Slots(
+    mod([], [fn("user", [], [stmt(call("up", [num(-18)]))]), up]),
+  );
+  expect(callerFirst.facts("up").params?.get("d")).toEqual({ min: -18, max: 0 });
 
   // A negative start counts down past the smallest int32.
   const negative = analyzeInt32Slots(mod([], [count, even, odd, user([18, -1])]));

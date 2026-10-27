@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6155-cjs-export-table-methods/more.js",
+  "<repo>/tests/corpus/6155-cjs-export-table-methods/lib.js",
+  "<repo>/tests/corpus/6155-cjs-export-table-methods/main.js"
+ ],
+ "diags": []
+}

@@ -1,6 +1,6 @@
 {
   "name": "@scriptc/compiler",
-  "version": "0.3.6",
+  "version": "0.4.5",
   "description": "The scriptc compiler — TypeScript/JavaScript frontend, typed IR, LLVM backend",
   "license": "Apache-2.0",
   "homepage": "https://scriptc.dev",
@@ -29,6 +29,7 @@
   "files": [
     "dist",
     "ambient",
+    "shims",
     "surface-manifest.json"
   ],
   "publishConfig": {
@@ -39,8 +40,12 @@
   },
   "dependencies": {
     "@scriptc/runtime": "workspace:*",
+    "tsc-ts": "0.0.10",
     "typescript": "7.0.2",
     "typescript5": "npm:typescript@5.9.3"
+  },
+  "devDependencies": {
+    "typescript-7.1": "npm:typescript@7.1.0-beta"
   },
   "optionalDependencies": {
     "@scriptc/llvm-darwin-arm64": "workspace:*",

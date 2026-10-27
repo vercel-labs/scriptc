@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/2585-builtin-polyfill-aliases/main.ts"
+ ],
+ "diags": []
+}

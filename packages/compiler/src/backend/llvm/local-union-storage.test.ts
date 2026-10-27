@@ -82,7 +82,7 @@ function fixture(): IrModule {
     ],
   };
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     unions: [{ id: "optional", arms: [STRING, UNDEFINED_T] }],
@@ -113,7 +113,8 @@ test("conditional and reassigned locals own payload snapshots without heap wrapp
   expect(facts(mod).get("item")?.ownerType).toEqual(STRING);
   for (const bits of [32, 64] as const) {
     const ir = body(mod, bits);
-    expect(ir).toContain("call ptr @sc_map_entry_f64("); // inline number-key read
+    // The inline number-key read, on the integer view of the literal key.
+    expect(ir).toMatch(/call ptr @sc_map_entry_f64_int\(ptr %\S+, i64 \d+, double /);
     expect(ir).toContain("@scr_str_release");
     expect(ir).not.toMatch(/@scr_union_(?:new|retain|release)/);
     expect(ir).toContain("store i64 0");
@@ -359,7 +360,7 @@ test("number bindings of optional reads and `??` chains stay in stack storage", 
   });
   const zero: IrExpr = { kind: "numLit", value: 0, type: F64, loc };
   const mod: IrModule = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     unions: [{ id: "maybe", arms: [F64, UNDEFINED_T] }],

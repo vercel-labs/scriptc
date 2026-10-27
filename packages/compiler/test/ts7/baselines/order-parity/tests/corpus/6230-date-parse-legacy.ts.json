@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6230-date-parse-legacy.ts"
+ ],
+ "diags": []
+}

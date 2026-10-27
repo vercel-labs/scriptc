@@ -4,9 +4,10 @@
  * direct index in the runtime (scr_map.c). Reads go through the internal
  * sc_map_entry_f64 helper (emitter.ts helperDefs), which LLVM inlines: it
  * resolves directly indexed maps without a call and other maps through
- * the internal sc_map_entry_f64_hashed probe, which hashes the key as the
- * runtime does and defers to scr_map_entry_f64 only for wide bucket
- * tables. Both only read memory. The generated code then reads the entry's
+ * the internal sc_map_entry_f64_hashed probe (sc_map_entry_f64_hashed_int
+ * for a key with an integer view), which hashes the key as the runtime
+ * does and defers to scr_map_entry_f64 only for wide bucket tables. Both
+ * only read memory. The generated code then reads the entry's
  * value slot itself and retains a reference value with the value type's own
  * retain, which is the adapter the collection was constructed with.
  * String-keyed reads use the same entry contract through the internal
@@ -15,6 +16,12 @@
  * retain inline rather than through the runtime's indirect adapter call,
  * and scalar reads and has() share the one lookup.
  *
+ * A string-key map whose values are compact class instances
+ * (SCR_MAP_VAL_CREF, LlEmitter.compactArrayElem of the value type) keeps
+ * 16-byte { key, hash, val } entries with the value as an address over 8:
+ * its reads go through sc_map_entry_str_c and sc_map_iter_entry_c, and
+ * decode the 4-byte value.
+ *
  * The iteration steps behind for-of, forEach and the other entry walks read
  * the entries array through the internal sc_map_iter_entry and
  * sc_map_iter_count helpers: a live entry's key or value loads in place,
@@ -22,20 +29,50 @@
  * guard excludes. for-of starts at scr_map_iter_start, past a deleted
  * prefix.
  */
-import type { IrType } from "../../ir/ir.js";
-import type { LlvmEmitterContext } from "./expr-context.js";
+import type { IrExpr, IrType } from "../../ir/ir.js";
+import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
+import { exactInteger, widenInteger } from "./integer-values.js";
+import { mapKeyAccess } from "./shapes.js";
 
 export const NUMBER_MAP_ENTRY_DECL = "declare ptr @scr_map_entry_f64(ptr, double)";
+/** Record the integer view of a number Map/Set key operand for the entry
+ * lookups of that key, when the view needs no instruction of its own: the
+ * value's integer or uint32 view, defined with the value, or an integral
+ * literal. A view exactInteger converts at this lookup is not recorded: the
+ * key cache spans the function, and a later lookup of the same operand (a
+ * constant, say) can be in a block the conversion does not dominate. */
+export function noteNumberMapKey(host: LlvmEmitterContext, key: LlValue, expr: IrExpr): void {
+  if (key.type.kind !== "f64" || host.numberMapKeyIntegers.has(key.name)) return;
+  if (!key.integer && key.uint32 === undefined && expr.kind !== "numLit") return;
+  const integer = exactInteger(host, key, expr);
+  if (!integer) return;
+  const defined =
+    integer.name === key.integer?.name ||
+    integer.name === key.uint32 ||
+    /^-?\d+$/.test(integer.name);
+  if (defined) host.numberMapKeyIntegers.set(key.name, integer);
+}
 
-/** The entry for `key`, or null when absent. Valid until the next mutation. */
+/** The entry for `key`, or null when absent. Valid until the next mutation.
+ * A key with an integer view (noteNumberMapKey) tests the direct index on
+ * that integer instead of converting the double back. */
 export function emitNumberMapEntry(host: LlvmEmitterContext, map: string, key: string): string {
   host.declare(NUMBER_MAP_ENTRY_DECL);
   const entry = host.B.tmp();
+  const integer = host.numberMapKeyIntegers.get(key);
+  if (integer) {
+    const wide = widenInteger(host, integer);
+    host.B.line(
+      `${entry} = call ptr @sc_map_entry_f64_int(ptr ${map}, i64 ${wide}, double ${key})`,
+    );
+    return entry;
+  }
   host.B.line(`${entry} = call ptr @sc_map_entry_f64(ptr ${map}, double ${key})`);
   return entry;
 }
 
-/** Load a found entry's value slot as `type` (double, i64 or ptr). */
+/** Load a found entry's value slot as `type` (double, i64 or ptr). The value
+ * is at byte 8 in both entry layouts (%ScrMapEntry, %ScrMapNumEntry). */
 export function emitNumberMapSlot(host: LlvmEmitterContext, entry: string, type: string): string {
   const B = host.B;
   const slot = B.tmp(),
@@ -46,18 +83,59 @@ export function emitNumberMapSlot(host: LlvmEmitterContext, entry: string, type:
 }
 
 export const STRING_MAP_ENTRY_DECL = "declare ptr @scr_map_entry_str(ptr, ptr)";
+/** Declared by reads of a compact-value map; its presence makes the emitter
+ * define sc_map_entry_str_c and sc_map_iter_entry_c (emit-module.ts). */
+export const STRING_MAP_ENTRY_C_DECL = "declare ptr @scr_map_entry_str_c(ptr, ptr)";
 
-/** The entry for a string `key`, or null when absent. Valid until the next mutation. */
-export function emitStringMapEntry(host: LlvmEmitterContext, map: string, key: string): string {
-  host.declare(STRING_MAP_ENTRY_DECL);
+/** Whether a Map with key type `key` and value type `value` keeps compact
+ * values (SCR_MAP_VAL_CREF): string keys and a value type whose instances
+ * are compact (LlEmitter.compactArrayElem). */
+export function compactMapValues(host: LlvmEmitterContext, key: IrType, value: IrType): boolean {
+  // SCR_MAP_KEY_STR (shapes.ts mapKeyKindNum 1): string access, not a union.
+  return key.kind !== "union" && mapKeyAccess(key) === "str" && host.compactArrayElem(value);
+}
+
+/** The entry for a string `key`, or null when absent. Valid until the next
+ * mutation. `compact`: the map keeps compact values (a %ScrMapCEntry). */
+export function emitStringMapEntry(
+  host: LlvmEmitterContext,
+  map: string,
+  key: string,
+  compact = false,
+): string {
+  host.declare(compact ? STRING_MAP_ENTRY_C_DECL : STRING_MAP_ENTRY_DECL);
   const entry = host.B.tmp();
-  host.B.line(`${entry} = call ptr @sc_map_entry_str(ptr ${map}, ptr ${key})`);
+  host.B.line(
+    `${entry} = call ptr @${compact ? "sc_map_entry_str_c" : "sc_map_entry_str"}(ptr ${map}, ptr ${key})`,
+  );
   return entry;
 }
 
+/** A found compact-value entry's value as a pointer: its 4-byte form, an
+ * address over 8 (scr_map.h ScrMapCEntry). */
+export function emitCompactMapSlot(host: LlvmEmitterContext, entry: string): string {
+  const B = host.B;
+  const slot = B.tmp(),
+    ref = B.tmp(),
+    wide = B.tmp(),
+    addr = B.tmp(),
+    value = B.tmp();
+  B.line(`${slot} = getelementptr inbounds %ScrMapCEntry, ptr ${entry}, i32 0, i32 2`);
+  B.line(`${ref} = load i32, ptr ${slot}`);
+  B.line(`${wide} = zext i32 ${ref} to i64`);
+  B.line(`${addr} = shl nuw nsw i64 ${wide}, 3`);
+  B.line(`${value} = inttoptr i64 ${addr} to ptr`);
+  return value;
+}
+
 /** Map.has / Set.has under a string key. */
-export function emitStringMapHas(host: LlvmEmitterContext, map: string, key: string): string {
-  const entry = emitStringMapEntry(host, map, key);
+export function emitStringMapHas(
+  host: LlvmEmitterContext,
+  map: string,
+  key: string,
+  compact = false,
+): string {
+  const entry = emitStringMapEntry(host, map, key, compact);
   const found = host.B.tmp();
   host.B.line(`${found} = icmp ne ptr ${entry}, null`);
   return found;
@@ -73,14 +151,16 @@ export function emitStringMapGetScalar(
 }
 
 /** Map.get of a reference value: a +1 value, or null when absent — the
- * contract of scr_map_get_f64_ref. */
+ * contract of scr_map_get_f64_ref. `borrow`: the entry's own reference,
+ * without a retain, for a reader that finishes before the map can change. */
 export function emitNumberMapGetRef(
   host: LlvmEmitterContext,
   map: string,
   key: string,
   value: IrType,
+  borrow = false,
 ): string {
-  return emitMapEntryGetRef(host, emitNumberMapEntry(host, map, key), value);
+  return emitMapEntryGetRef(host, emitNumberMapEntry(host, map, key), value, false, borrow);
 }
 
 /** Map.get of a reference value under a string key, with scr_map_get_str_ref's
@@ -91,12 +171,27 @@ export function emitStringMapGetRef(
   map: string,
   key: string,
   value: IrType,
+  compact = false,
+  borrow = false,
 ): string {
-  return emitMapEntryGetRef(host, emitStringMapEntry(host, map, key), value);
+  return emitMapEntryGetRef(
+    host,
+    emitStringMapEntry(host, map, key, compact),
+    value,
+    compact,
+    borrow,
+  );
 }
 
-/** The +1 value of a found entry, or null for a missing (null) entry. */
-function emitMapEntryGetRef(host: LlvmEmitterContext, entry: string, value: IrType): string {
+/** The +1 value of a found entry (its own reference when `borrow`), or
+ * null for a missing (null) entry. */
+function emitMapEntryGetRef(
+  host: LlvmEmitterContext,
+  entry: string,
+  value: IrType,
+  compact = false,
+  borrow = false,
+): string {
   const B = host.B;
   const found = B.tmp();
   B.line(`${found} = icmp ne ptr ${entry}, null`);
@@ -105,7 +200,8 @@ function emitMapEntryGetRef(host: LlvmEmitterContext, entry: string, value: IrTy
     join = B.newLabel("mapn.join");
   B.condBr(found, hit, miss);
   B.startBlock(hit);
-  const retained = host.retainValue(emitNumberMapSlot(host, entry, "ptr"), value);
+  const loaded = compact ? emitCompactMapSlot(host, entry) : emitNumberMapSlot(host, entry, "ptr");
+  const retained = borrow ? loaded : host.retainFrame(loaded, value);
   B.br(join);
   B.startBlock(miss);
   B.br(join);
@@ -190,13 +286,91 @@ export function emitNumberMapSetScalar(
 /** Declared by the inline Map/Set iteration steps; its presence makes the
  * emitter define sc_map_iter_entry and sc_map_iter_count (emitter.ts). */
 export const MAP_ITER_DECL = "declare zeroext i1 @scr_map_iter_live(ptr, double)";
+/** Declared by the iteration steps over a number-key Map/Set; its presence
+ * makes the emitter define sc_map_iter_entry_num and sc_map_iter_count. */
+export const MAP_ITER_NUM_DECL = "declare double @scr_map_iter_count(ptr)";
+/** scr_map.h SCR_MAP_NUM_DEAD: a dead number-key entry's key word. */
+export const SCR_MAP_NUM_DEAD = "9218868437227405313";
+
+/** The entry layout a Map or Set of key type `key` stores:
+ * - "num": number keys, whose entries are { key, val } (scr_map.h ScrMapNumEntry);
+ * - "centry": string keys with compact values (compactMapValues), whose
+ *   entries are { key, hash, val } (ScrMapCEntry);
+ * - "entry": every other typed key, whose entries are { key, val, hash };
+ * - "either": checked (`unknown`) keys. A `Map<unknown, unknown>` or
+ *   `Set<unknown>` cast from a checked value keeps the collection's own
+ *   storage (scr_dyn_native_collection_check), which can have number keys
+ *   or compact values. */
+export type MapEntryLayout = "num" | "centry" | "entry" | "either";
+
+export function mapEntryLayout(key: IrType, compact = false): MapEntryLayout {
+  if (compact) return "centry";
+  return key.kind === "f64" ? "num" : key.kind === "dyn" ? "either" : "entry";
+}
 
 /** The entry at an iteration index, or null for a tombstone or an index at
- * or past the entry count (the scr_map_iter_live test). */
-export function emitMapIterEntry(host: LlvmEmitterContext, map: string, index: string): string {
+ * or past the entry count (the scr_map_iter_live test). With the "either"
+ * layout, the map's key kind (%ScrMapIx field 1, SCR_MAP_KEY_F64 = 0) picks
+ * the step at run time; in a program with compact class instances, so does
+ * its value kind (field 2, SCR_MAP_VAL_CREF = 3). */
+export function emitMapIterEntry(
+  host: LlvmEmitterContext,
+  map: string,
+  index: string,
+  layout: MapEntryLayout,
+): string {
+  const B = host.B;
+  const step = (kind: "num" | "centry" | "entry"): string => {
+    host.declare(kind === "num" ? MAP_ITER_NUM_DECL : MAP_ITER_DECL);
+    if (kind === "centry") host.declare(STRING_MAP_ENTRY_C_DECL);
+    const entry = B.tmp();
+    const helper =
+      kind === "num"
+        ? "sc_map_iter_entry_num"
+        : kind === "centry"
+          ? "sc_map_iter_entry_c"
+          : "sc_map_iter_entry";
+    B.line(`${entry} = call ptr @${helper}(ptr ${map}, double ${index})`);
+    return entry;
+  };
+  if (layout !== "either") return step(layout);
   host.declare(MAP_ITER_DECL);
-  const entry = host.B.tmp();
-  host.B.line(`${entry} = call ptr @sc_map_iter_entry(ptr ${map}, double ${index})`);
+  const kindPtr = B.tmp(),
+    kind = B.tmp(),
+    isNum = B.tmp();
+  B.line(`${kindPtr} = getelementptr inbounds %ScrMapIx, ptr ${map}, i32 0, i32 1`);
+  B.line(`${kind} = load i8, ptr ${kindPtr}`);
+  B.line(`${isNum} = icmp eq i8 ${kind}, 0`);
+  const numLabel = B.newLabel("mapit.num"),
+    entryLabel = B.newLabel("mapit.entry"),
+    join = B.newLabel("mapit.layout");
+  B.condBr(isNum, numLabel, entryLabel);
+  B.startBlock(numLabel);
+  const numEntry = step("num");
+  const numEnd = B.currentLabel();
+  B.br(join);
+  B.startBlock(entryLabel);
+  const arms: { value: string; label: string }[] = [{ value: numEntry, label: numEnd }];
+  if (host.shapeHost.compactRegion?.() === true) {
+    const valPtr = B.tmp(),
+      valKind = B.tmp(),
+      isCompact = B.tmp();
+    B.line(`${valPtr} = getelementptr inbounds %ScrMapIx, ptr ${map}, i32 0, i32 2`);
+    B.line(`${valKind} = load i8, ptr ${valPtr}`);
+    B.line(`${isCompact} = icmp eq i8 ${valKind}, 3`);
+    const compactLabel = B.newLabel("mapit.centry"),
+      wideLabel = B.newLabel("mapit.wide");
+    B.condBr(isCompact, compactLabel, wideLabel);
+    B.startBlock(compactLabel);
+    arms.push({ value: step("centry"), label: B.currentLabel() });
+    B.br(join);
+    B.startBlock(wideLabel);
+  }
+  arms.push({ value: step("entry"), label: B.currentLabel() });
+  B.br(join);
+  B.startBlock(join);
+  const entry = B.tmp();
+  B.line(`${entry} = phi ptr ${arms.map((a) => `[ ${a.value}, %${a.label} ]`).join(", ")}`);
   return entry;
 }
 
@@ -217,6 +391,16 @@ export function emitMapIterCount(host: LlvmEmitterContext, map: string): string 
   return count;
 }
 
+export const MAP_SIZE_DECL = "declare double @scr_map_size(ptr)";
+
+/** Map.size / Set.size: the live entry count, read inline (sc_map_size). */
+export function emitMapSize(host: LlvmEmitterContext, map: string): string {
+  host.declare(MAP_SIZE_DECL);
+  const size = host.B.tmp();
+  host.B.line(`${size} = call double @sc_map_size(ptr ${map})`);
+  return size;
+}
+
 /** The key (field 0) or value (field 1) of the live entry at an iteration
  * index, read inline: a number as double, a boolean as i1, and a string or
  * reference retained with `type`'s retain (+1), the adapter the collection
@@ -230,9 +414,10 @@ export function emitMapIterSlot(
   access: "f64" | "bool" | "ref",
   type: IrType,
   runtime: { decl: string; symbol: string },
+  layout: MapEntryLayout,
 ): string {
   const B = host.B;
-  const entry = emitMapIterEntry(host, map, index);
+  const entry = emitMapIterEntry(host, map, index, layout);
   const found = B.tmp();
   B.line(`${found} = icmp ne ptr ${entry}, null`);
   const hit = B.newLabel("mapit.hit"),
@@ -240,18 +425,24 @@ export function emitMapIterSlot(
     join = B.newLabel("mapit.join");
   B.condBr(found, hit, miss);
   B.startBlock(hit);
-  const slot = B.tmp();
-  B.line(`${slot} = getelementptr inbounds %ScrMapEntry, ptr ${entry}, i32 0, i32 ${field}`);
   const llTy = access === "f64" ? "double" : access === "bool" ? "i1" : "ptr";
-  let loaded = B.tmp();
-  if (access === "bool") {
-    const bits = loaded;
-    B.line(`${bits} = load i64, ptr ${slot}`);
-    loaded = B.tmp();
-    B.line(`${loaded} = icmp ne i64 ${bits}, 0`);
+  let loaded: string;
+  if (layout === "centry" && field === 1) {
+    // A compact value; its type's retain emits no counting.
+    loaded = host.retainFrame(emitCompactMapSlot(host, entry), type);
   } else {
-    B.line(`${loaded} = load ${llTy}, ptr ${slot}`);
-    if (access === "ref") loaded = host.retainValue(loaded, type);
+    const slot = B.tmp();
+    B.line(`${slot} = getelementptr inbounds %ScrMapEntry, ptr ${entry}, i32 0, i32 ${field}`);
+    loaded = B.tmp();
+    if (access === "bool") {
+      const bits = loaded;
+      B.line(`${bits} = load i64, ptr ${slot}`);
+      loaded = B.tmp();
+      B.line(`${loaded} = icmp ne i64 ${bits}, 0`);
+    } else {
+      B.line(`${loaded} = load ${llTy}, ptr ${slot}`);
+      if (access === "ref") loaded = host.retainFrame(loaded, type);
+    }
   }
   const hitEnd = B.currentLabel();
   B.br(join);

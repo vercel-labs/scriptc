@@ -1,0 +1,5 @@
+- **JSX:** JSX in `.tsx`, `.jsx` and JavaScript files compiles with the project's `jsx` setting: `"react"` with `jsxFactory`, `jsxFragmentFactory` or `reactNamespace`, and `"react-jsx"` or `"react-jsxdev"` with `jsxImportSource`, as well as the `@jsx`, `@jsxFrag`, `@jsxImportSource` and `@jsxRuntime` pragmas.
+  The checker types JSX with these settings, and each element becomes the call TypeScript emits for it, importing the automatic runtime's functions from `<jsxImportSource>/jsx-runtime` or `jsx-dev-runtime`.
+  `"jsx": "preserve"` and `"react-native"`, which keep JSX in the output, are refused.
+  The call an element becomes must type-check: a factory or runtime function whose parameters do not accept what an element passes is reported at the element.
+  With `"react-jsxdev"`, `jsxDEV` receives `undefined` as `self` where `this` has no declared type (in a function that is not a method), which is the value such a function observes when called without a receiver.

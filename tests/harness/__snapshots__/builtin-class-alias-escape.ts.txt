@@ -1,0 +1,6 @@
+builtin-class-alias-escape.ts:6:24 - error SC1090: a builtin class alias as an escaping value (use 'M' with new, instanceof, typeof or .name) is not supported yet
+
+  5 | const M = Map;
+  6 | const boxed: unknown = M;
+    |                        ^
+  7 | console.log(boxed !== undefined);

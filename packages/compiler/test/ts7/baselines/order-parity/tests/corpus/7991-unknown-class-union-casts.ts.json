@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7991-unknown-class-union-casts.ts"
+ ],
+ "diags": []
+}

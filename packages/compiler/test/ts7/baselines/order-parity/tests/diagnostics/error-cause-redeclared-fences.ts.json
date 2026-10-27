@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/error-cause-redeclared-fences.ts"
+ ],
+ "diags": []
+}

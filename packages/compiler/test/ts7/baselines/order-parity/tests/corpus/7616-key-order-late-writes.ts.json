@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7616-key-order-late-writes.ts"
+ ],
+ "diags": []
+}

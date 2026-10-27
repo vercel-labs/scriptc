@@ -2,7 +2,7 @@ import { isBuiltinClassInstance } from "./receiver-types.js";
 import { dynUndefinedExpr } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
-import { locOf } from "../../program.js";
+import { isJsSourceFile, locOf } from "../../program.js";
 import {
   BOOL,
   DYN,
@@ -34,8 +34,8 @@ export function lowerDiagnosticsSubscriber(lowerer: Lowerer, node: ts.Expression
   // has no other first-class story.
   if (ts.isIdentifier(node) && node.text === "setImmediate") {
     const sym = lowerer.checker.getSymbolAtLocation(node);
-    const decls = sym ? lowerer.checker.declarationsOf(sym) : [];
-    if (decls.length > 0 && decls.every((d) => lowerer.isStdlibFile(d.getSourceFile()))) {
+    const decls = sym ? sym.declarations : [];
+    if (decls.length > 0 && decls.every((d) => lowerer.isStdlibFile(ts.getSourceFileOfNode(d)))) {
       return {
         kind: "libCall",
         fn: "timers.setImmediateFnValue",
@@ -106,14 +106,14 @@ export function lowerDiagnosticsChannelMethodCall(
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
-  if (name === "publish" && call.arguments.length === 1) {
+  if (name === "publish" && call.arguments.nodes.length === 1) {
     const receiver = lowerer.lowerExprExpecting(access.expression, F64);
-    const msg = lowerDiagnosticsMessage(lowerer, call.arguments[0]!);
+    const msg = lowerDiagnosticsMessage(lowerer, call.arguments.nodes[0]!);
     return { kind: "libCall", fn: "dc.publish", args: [receiver, msg], type: VOID, loc };
   }
-  if ((name === "subscribe" || name === "unsubscribe") && call.arguments.length === 1) {
+  if ((name === "subscribe" || name === "unsubscribe") && call.arguments.nodes.length === 1) {
     const receiver = lowerer.lowerExprExpecting(access.expression, F64);
-    const cb = lowerDiagnosticsSubscriber(lowerer, call.arguments[0]!);
+    const cb = lowerDiagnosticsSubscriber(lowerer, call.arguments.nodes[0]!);
     return name === "subscribe"
       ? { kind: "libCall", fn: "dc.chanSubscribe", args: [receiver, cb], type: VOID, loc }
       : { kind: "libCall", fn: "dc.chanUnsubscribe", args: [receiver, cb], type: BOOL, loc };
@@ -126,18 +126,18 @@ export function lowerDiagnosticsChannelMethodCall(
   // this/arguments to fn exactly like the trace calls.
   if (
     (name === "bindStore" || name === "unbindStore") &&
-    call.arguments.length >= 1 &&
-    call.arguments.length <= (name === "bindStore" ? 2 : 1)
+    call.arguments.nodes.length >= 1 &&
+    call.arguments.nodes.length <= (name === "bindStore" ? 2 : 1)
   ) {
-    if (!isBuiltinClassInstance(lowerer, call.arguments[0]!, "AsyncLocalStorage")) {
+    if (!isBuiltinClassInstance(lowerer, call.arguments.nodes[0]!, "AsyncLocalStorage")) {
       lowerer.noLowering(
         `Channel.${name} with this store argument`,
-        call.arguments[0]!,
+        call.arguments.nodes[0]!,
         "an AsyncLocalStorage instance (node:async_hooks) is the supported store",
       );
     }
     const receiver = lowerer.lowerExprExpecting(access.expression, F64);
-    const store = lowerer.lowerExprExpecting(call.arguments[0]!, F64);
+    const store = lowerer.lowerExprExpecting(call.arguments.nodes[0]!, F64);
     if (name === "unbindStore") {
       return {
         kind: "libCall",
@@ -148,8 +148,8 @@ export function lowerDiagnosticsChannelMethodCall(
       };
     }
     const transform: IrExpr =
-      call.arguments[1] !== undefined
-        ? lowerDiagnosticsSubscriber(lowerer, call.arguments[1]!)
+      call.arguments.nodes[1] !== undefined
+        ? lowerDiagnosticsSubscriber(lowerer, call.arguments.nodes[1]!)
         : dynUndefinedExpr(loc);
     return {
       kind: "libCall",
@@ -159,15 +159,15 @@ export function lowerDiagnosticsChannelMethodCall(
       loc,
     };
   }
-  if (name === "runStores" && call.arguments.length >= 2) {
+  if (name === "runStores" && call.arguments.nodes.length >= 2) {
     const receiver = lowerer.lowerExprExpecting(access.expression, F64);
-    const data = lowerDiagnosticsMessage(lowerer, call.arguments[0]!);
-    const fn = lowerDiagnosticsSubscriber(lowerer, call.arguments[1]!);
+    const data = lowerDiagnosticsMessage(lowerer, call.arguments.nodes[0]!);
+    const fn = lowerDiagnosticsSubscriber(lowerer, call.arguments.nodes[1]!);
     const thisArg: IrExpr =
-      call.arguments[2] !== undefined
-        ? lowerDiagnosticsMessage(lowerer, call.arguments[2]!)
+      call.arguments.nodes[2] !== undefined
+        ? lowerDiagnosticsMessage(lowerer, call.arguments.nodes[2]!)
         : dynUndefinedExpr(loc);
-    const rest = lowerTracingArguments(lowerer, call.arguments.slice(3), loc);
+    const rest = lowerTracingArguments(lowerer, call.arguments.nodes.slice(3), loc);
     return {
       kind: "libCall",
       fn: "dc.chanRunStores",
@@ -184,21 +184,94 @@ export function lowerDiagnosticsChannelMethodCall(
   );
 }
 
+/** Whether `node` names the AsyncLocalStorage class itself. */
+function isAsyncLocalStorageClass(lowerer: Lowerer, node: ts.Expression): boolean {
+  if (!ts.isIdentifier(node)) return false;
+  const symbol = lowerer.resolveValueSymbol(node);
+  return (
+    symbol !== null &&
+    lowerer.isStdlibSymbol(symbol) &&
+    ts.symbolName(symbol) === "AsyncLocalStorage"
+  );
+}
+
+/** The static AsyncLocalStorage members: bind(fn) answers fn bound to the
+ * active context (its own type for a typed function; a dyn function in
+ * JavaScript files, where the bound function's name and receiver are
+ * observable, and for dyn values); snapshot() answers a dyn function
+ * (cb, ...args) that runs cb in the context active at the snapshot. */
+function lowerAsyncLocalStorageStaticCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr {
+  const name = access.name.text;
+  const loc = locOf(call);
+  const always: IrExpr = { kind: "boolLit", value: true, type: BOOL, loc };
+  if (name === "bind" && call.arguments.nodes.length === 1) {
+    const arg = call.arguments.nodes[0]!;
+    if (!isJsSourceFile(ts.getSourceFileOfNode(call))) {
+      const fn = lowerer.lowerExpr(arg);
+      if (fn.type.kind === "func")
+        return { kind: "libCall", fn: "als.bindCallback", args: [fn, always], type: fn.type, loc };
+    }
+    return asyncLocalStorageResult(lowerer, call, {
+      kind: "libCall",
+      fn: "als.bindCallbackDyn",
+      args: [lowerDiagnosticsMessage(lowerer, arg), always],
+      type: DYN,
+      loc,
+    });
+  }
+  if (name === "snapshot" && call.arguments.nodes.length === 0)
+    return { kind: "libCall", fn: "als.snapshot", args: [], type: DYN, loc };
+  lowerer.noLowering(
+    `AsyncLocalStorage.${name}`,
+    call,
+    "AsyncLocalStorage.bind(fn) and AsyncLocalStorage.snapshot() are the supported static members",
+    lowerer.checker.getSymbolAtLocation(access.name),
+  );
+}
+
+/** new AsyncLocalStorage(options): the options object as a dyn value
+ * (plain property literals build it member by member). */
+export function lowerAsyncLocalStorageOptions(lowerer: Lowerer, node: ts.Expression): IrExpr {
+  return lowerTracingHandlers(lowerer, node);
+}
+
+/** `.name` on AsyncLocalStorage receivers: the constructor's name option
+ * (als.name), converted to the property's type. Null otherwise. */
+export function lowerAsyncLocalStorageProperty(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (access.questionDotToken || access.name.text !== "name") return null;
+  if (!isBuiltinClassInstance(lowerer, access.expression, "AsyncLocalStorage")) return null;
+  if (!lowerer.isStdlibMember(access)) return null;
+  const loc = locOf(access);
+  const receiver = lowerer.lowerExprExpecting(access.expression, F64);
+  const value: IrExpr = { kind: "libCall", fn: "als.name", args: [receiver], type: DYN, loc };
+  const expected = lowerer.mapTypeOf(lowerer.typeOf(access));
+  return !expected || expected.kind === "dyn" ? value : lowerer.coerceInto(access, value, expected);
+}
+
 /** Method calls on AsyncLocalStorage receivers: run(store, fn, ...args),
  * exit(fn, ...args), getStore(), enterWith(store), disable() — over the
- * f64 store handle (als.* libCalls; values cross as dyn values). Null
- * for non-ALS receivers. */
+ * f64 store handle (als.* libCalls; values cross as dyn values) — and the
+ * static bind/snapshot members. Null for other receivers. */
 export function lowerAsyncLocalStorageMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (call.questionDotToken || access.questionDotToken) return null;
+  if (isAsyncLocalStorageClass(lowerer, access.expression))
+    return lowerAsyncLocalStorageStaticCall(lowerer, call, access);
   if (!isBuiltinClassInstance(lowerer, access.expression, "AsyncLocalStorage")) return null;
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
-  if (name === "getStore" && call.arguments.length === 0) {
+  if (name === "getStore" && call.arguments.nodes.length === 0) {
     const receiver = lowerer.lowerExprExpecting(access.expression, F64);
     return asyncLocalStorageResult(lowerer, call, {
       kind: "libCall",
@@ -208,11 +281,11 @@ export function lowerAsyncLocalStorageMethodCall(
       loc,
     });
   }
-  if (name === "run" && call.arguments.length >= 2) {
+  if (name === "run" && call.arguments.nodes.length >= 2) {
     const receiver = lowerer.lowerExprExpecting(access.expression, F64);
-    const value = lowerDiagnosticsMessage(lowerer, call.arguments[0]!);
-    const fn = lowerDiagnosticsSubscriber(lowerer, call.arguments[1]!);
-    const rest = lowerTracingArguments(lowerer, call.arguments.slice(2), loc);
+    const value = lowerDiagnosticsMessage(lowerer, call.arguments.nodes[0]!);
+    const fn = lowerDiagnosticsSubscriber(lowerer, call.arguments.nodes[1]!);
+    const rest = lowerTracingArguments(lowerer, call.arguments.nodes.slice(2), loc);
     return asyncLocalStorageResult(lowerer, call, {
       kind: "libCall",
       fn: "als.run",
@@ -221,10 +294,10 @@ export function lowerAsyncLocalStorageMethodCall(
       loc,
     });
   }
-  if (name === "exit" && call.arguments.length >= 1) {
+  if (name === "exit" && call.arguments.nodes.length >= 1) {
     const receiver = lowerer.lowerExprExpecting(access.expression, F64);
-    const fn = lowerDiagnosticsSubscriber(lowerer, call.arguments[0]!);
-    const rest = lowerTracingArguments(lowerer, call.arguments.slice(1), loc);
+    const fn = lowerDiagnosticsSubscriber(lowerer, call.arguments.nodes[0]!);
+    const rest = lowerTracingArguments(lowerer, call.arguments.nodes.slice(1), loc);
     return asyncLocalStorageResult(lowerer, call, {
       kind: "libCall",
       fn: "als.exitRun",
@@ -233,12 +306,12 @@ export function lowerAsyncLocalStorageMethodCall(
       loc,
     });
   }
-  if (name === "enterWith" && call.arguments.length === 1) {
+  if (name === "enterWith" && call.arguments.nodes.length === 1) {
     const receiver = lowerer.lowerExprExpecting(access.expression, F64);
-    const value = lowerDiagnosticsMessage(lowerer, call.arguments[0]!);
+    const value = lowerDiagnosticsMessage(lowerer, call.arguments.nodes[0]!);
     return { kind: "libCall", fn: "als.enterWith", args: [receiver, value], type: VOID, loc };
   }
-  if (name === "disable" && call.arguments.length === 0) {
+  if (name === "disable" && call.arguments.nodes.length === 0) {
     const receiver = lowerer.lowerExprExpecting(access.expression, F64);
     return { kind: "libCall", fn: "als.disable", args: [receiver], type: VOID, loc };
   }
@@ -301,13 +374,13 @@ function lowerTracingHandlers(lowerer: Lowerer, node: ts.Expression): IrExpr {
   if (
     ts.isObjectLiteralExpression(e) &&
     lowerer.mapTypeOf(lowerer.typeOf(e))?.kind === "record" &&
-    e.properties.length > 0 &&
-    e.properties.every((p) => ts.isPropertyAssignment(p) && ts.isIdentifier(p.name))
+    e.properties.nodes.length > 0 &&
+    e.properties.nodes.every((p) => ts.isPropertyAssignment(p) && ts.isIdentifier(p.name))
   ) {
     const loc = locOf(e);
     return {
       kind: "dynObjLit",
-      fields: e.properties.map((p) => {
+      fields: e.properties.nodes.map((p) => {
         const pa = p as ts.PropertyAssignment;
         return {
           key: {
@@ -366,32 +439,32 @@ export function lowerTracingChannelMethodCall(
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;
   const loc = locOf(call);
-  if ((name === "subscribe" || name === "unsubscribe") && call.arguments.length === 1) {
+  if ((name === "subscribe" || name === "unsubscribe") && call.arguments.nodes.length === 1) {
     const receiver = lowerer.lowerExprExpecting(access.expression, F64);
-    const handlers = lowerTracingHandlers(lowerer, call.arguments[0]!);
+    const handlers = lowerTracingHandlers(lowerer, call.arguments.nodes[0]!);
     return name === "subscribe"
       ? { kind: "libCall", fn: "dc.tcSubscribe", args: [receiver, handlers], type: VOID, loc }
       : { kind: "libCall", fn: "dc.tcUnsubscribe", args: [receiver, handlers], type: BOOL, loc };
   }
   if (
     (name === "traceSync" || name === "traceCallback" || name === "tracePromise") &&
-    call.arguments.length >= 1
+    call.arguments.nodes.length >= 1
   ) {
     const receiver = lowerer.lowerExprExpecting(access.expression, F64);
-    const fn = lowerDiagnosticsSubscriber(lowerer, call.arguments[0]!);
+    const fn = lowerDiagnosticsSubscriber(lowerer, call.arguments.nodes[0]!);
     // traceSync(fn, context?, thisArg?, ...args) /
     // tracePromise(fn, context?, thisArg?, ...args) /
     // traceCallback(fn, position?, context?, thisArg?, ...args)
     const shift = name === "traceCallback" ? 1 : 0;
-    const ctxNode = call.arguments[1 + shift];
-    const thisNode = call.arguments[2 + shift];
+    const ctxNode = call.arguments.nodes[1 + shift];
+    const thisNode = call.arguments.nodes[2 + shift];
     const ctx: IrExpr =
       ctxNode !== undefined
         ? lowerDiagnosticsMessage(lowerer, ctxNode)
         : { kind: "dynObjLit", fields: [], type: DYN, loc };
     const thisArg: IrExpr =
       thisNode !== undefined ? lowerDiagnosticsMessage(lowerer, thisNode) : dynUndefinedExpr(loc);
-    const rest = lowerTracingArguments(lowerer, call.arguments.slice(3 + shift), loc);
+    const rest = lowerTracingArguments(lowerer, call.arguments.nodes.slice(3 + shift), loc);
     if (name === "traceSync") {
       return {
         kind: "libCall",
@@ -416,8 +489,8 @@ export function lowerTracingChannelMethodCall(
       };
     }
     const pos: IrExpr =
-      call.arguments[1] !== undefined
-        ? lowerer.lowerExprExpecting(call.arguments[1]!, F64)
+      call.arguments.nodes[1] !== undefined
+        ? lowerer.lowerExprExpecting(call.arguments.nodes[1]!, F64)
         : { kind: "numLit", value: -1, type: F64, loc };
     return {
       kind: "libCall",
@@ -473,29 +546,32 @@ export function lowerDiagnosticsChannelCall(
   bi: { module: string; member: string },
   loc: SrcLoc,
 ): IrExpr | null {
-  if (bi.member === "channel" && expr.arguments.length === 1) {
-    const name = diagnosticsChannelNameArgument(lowerer, expr.arguments[0]!);
+  if (bi.member === "channel" && expr.arguments.nodes.length === 1) {
+    const name = diagnosticsChannelNameArgument(lowerer, expr.arguments.nodes[0]!);
     return { kind: "libCall", fn: "dc.channel", args: [name], type: F64, loc };
   }
-  if ((bi.member === "subscribe" || bi.member === "unsubscribe") && expr.arguments.length === 2) {
-    const name = diagnosticsChannelNameArgument(lowerer, expr.arguments[0]!);
-    const cb = lowerDiagnosticsSubscriber(lowerer, expr.arguments[1]!);
+  if (
+    (bi.member === "subscribe" || bi.member === "unsubscribe") &&
+    expr.arguments.nodes.length === 2
+  ) {
+    const name = diagnosticsChannelNameArgument(lowerer, expr.arguments.nodes[0]!);
+    const cb = lowerDiagnosticsSubscriber(lowerer, expr.arguments.nodes[1]!);
     return bi.member === "subscribe"
       ? { kind: "libCall", fn: "dc.subscribe", args: [name, cb], type: VOID, loc }
       : { kind: "libCall", fn: "dc.unsubscribe", args: [name, cb], type: BOOL, loc };
   }
-  if (bi.member === "hasSubscribers" && expr.arguments.length === 1) {
-    const name = diagnosticsChannelNameArgument(lowerer, expr.arguments[0]!);
+  if (bi.member === "hasSubscribers" && expr.arguments.nodes.length === 1) {
+    const name = diagnosticsChannelNameArgument(lowerer, expr.arguments.nodes[0]!);
     return { kind: "libCall", fn: "dc.hasSubscribers", args: [name], type: BOOL, loc };
   }
   // tracingChannel: the string form interns the five tracing:<name>:*
   // channels; the collection form takes an object literal whose five
   // event members are Channel-typed values (Node's TracingChannelCollection).
-  if (bi.member === "tracingChannel" && expr.arguments.length === 1) {
-    const a = expr.arguments[0]!;
+  if (bi.member === "tracingChannel" && expr.arguments.nodes.length === 1) {
+    const a = expr.arguments.nodes[0]!;
     if (ts.isObjectLiteralExpression(a)) {
       const byEvent = new Map<string, IrExpr>();
-      for (const p of a.properties) {
+      for (const p of a.properties.nodes) {
         if (
           !ts.isPropertyAssignment(p) ||
           !ts.isIdentifier(p.name) ||

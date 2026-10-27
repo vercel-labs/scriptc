@@ -1,0 +1,26 @@
+stream-runtime-option-order.ts:16:3 - error SC2020: 'the Writable option 'defaultEncoding' with a runtime value that an earlier option value could observe or change' is part of the standard library types but has no scriptc lowering yet
+
+  15 |   highWaterMark: bump(),
+  16 |   defaultEncoding: encoding,
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~
+  17 |   write(_chunk, _encoding, done) {
+
+  hint: compute the option values into consts before the options object (the runtime value is read before the other options run)
+
+stream-runtime-option-order.ts:23:3 - error SC2020: 'the Writable option 'decodeStrings' with a runtime value that an earlier option value could observe or change' is part of the standard library types but has no scriptc lowering yet
+
+  22 |   highWaterMark: bump(),
+  23 |   decodeStrings: decode,
+     |   ^~~~~~~~~~~~~~~~~~~~~
+  24 |   write(_chunk, _encoding, done) {
+
+  hint: compute the option values into consts before the options object (the runtime value is read before the other options run)
+
+stream-runtime-option-order.ts:35:3 - error SC2020: 'the Writable option 'defaultEncoding' with a runtime value that an earlier option value could observe or change' is part of the standard library types but has no scriptc lowering yet
+
+  34 |   highWaterMark: sizes.hwm,
+  35 |   defaultEncoding: pickEncoding(),
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  36 |   write(_chunk, _encoding, done) {
+
+  hint: compute the option values into consts before the options object (the runtime value is read before the other options run)

@@ -36,7 +36,10 @@ When a program has unsupported operations, the report adds a group for each root
   <tbody>
     <tr><td><code>statements analyzed</code></td><td>Executable statements in application code, excluding dependency implementation code.</td></tr>
     <tr><td><code>compile statically</code></td><td>Statements that compile to native instructions.</td></tr>
+    <tr><td><code>in dynamic tier</code></td><td>Of those, the statements in functions that operate on values typed only at runtime, such as <code>any</code> values and untyped JavaScript. Shown when there are any. See <a href="#dynamic-tier">Dynamic tier</a>.</td></tr>
     <tr><td><code>blockers</code></td><td>Unsupported operations with counts, diagnostic codes, reasons, locations, and hints.</td></tr>
+    <tr><td><code>runs at startup</code></td><td>Deferred operations in a JavaScript module's top-level code, which runs when the module loads: at startup for a module the program imports.</td></tr>
+    <tr><td><code>deferred to runtime</code></td><td>Other deferred operations in JavaScript code. Each throws only if it runs.</td></tr>
     <tr><td><code>in unreached code</code></td><td>Blockers in code the entry never reaches. A build never compiles that code, so these cannot fail it.</td></tr>
     <tr><td><code>differs from Node</code></td><td>Sites that compile but can behave differently from Node.js. See <a href="#node-divergences">Node divergences</a>.</td></tr>
     <tr><td><code>npm package compilation</code></td><td>Native package compilation outcomes and refusal reasons.</td></tr>
@@ -45,11 +48,73 @@ When a program has unsupported operations, the report adds a group for each root
 
 Blockers in unreached code and deferred operations in JavaScript packages are listed separately because they don't fail a build. A deferred operation throws a runtime error if it runs, so a successful build doesn't mean every API of a package works; see [unsupported code inside a package](/docs/dependencies#unsupported-code-inside-a-package).
 
-If a function's signature can't compile, the statements in its body count as not compiling, so the percentage reflects how much of the program compiles.
+If a function's signature can't compile, the statements in its body count as not compiling, so the percentage reflects how much of the program compiles. The report still lists the diagnostics of those statements; a use of a parameter whose type can't compile reports `SC2004` back to the signature.
 
 <span id="programs-that-require-dynamic-execution" />
 <span id="analyze-with-dynamic" />
 <span id="embedded-nodejs-builtins" />
+
+<span id="dynamic-tier" />
+
+## Dynamic tier
+
+Code that operates on values whose types are known only at runtime, such as `any` values, the result of an untyped `JSON.parse`, or untyped JavaScript, compiles into dynamic-tier functions. They are native code too, but they check types and look up properties at runtime, so they are slower than code with static types. The report's `in dynamic tier` line counts their statements.
+
+`--explain-dynamic` lists those functions and the operation that makes each one dynamic. It also lists the units an unsupported construct would move to the dynamic tier: the binding, field, class, function, or module that has no static representation for the construct, with the diagnostic behind each one. These are the constructs the dynamic tier is planned to compile; today they remain blockers in TypeScript and deferred runtime errors in JavaScript. Add a name, such as `--explain-dynamic=Point`, to show only the matching units. With `--print=diagnostics`, the document gains a `tiers` object with the same information.
+
+`--tier=static-only` keeps every unsupported construct a blocker instead of moving it to the dynamic tier; code that already operates on runtime-typed values compiles as before. Today `auto`, the default, behaves the same way.
+
+### Untyped code that likely runs often
+
+When functions of the program's own files use untyped values and likely run often, `scriptc build` and coverage report them as an `SC6101` warning. For the Benchmarks Game n-body program in plain JavaScript:
+
+```console
+$ scriptc build nbody.js -o nbody
+warning SC6101: 3 functions that likely run often use untyped values, which runs slower than typed code:
+  advance (nbody.js:22): untyped JavaScript file, in a loop
+  energy (nbody.js:40): untyped JavaScript file, in a loop
+  offsetMomentum (nbody.js:12): untyped JavaScript file, in a loop
+  hint: add types to compile these statically; see scriptc coverage --explain-dynamic
+
+The program compiled. Adding types to these functions lets scriptc compile them to faster code.
+```
+
+Without a profile, a dynamic-tier function counts as likely to run often when a dynamic operation runs on every iteration of one of its loops (a `for` loop's initializer and a `for...of` loop's iterable run once), when a loop calls it, or when it calls itself. A function is named only when its source says why its values are untyped: a value typed `any` (for a `for...of` variable, the value it iterates), an untyped `JSON.parse` result, or an untyped JavaScript file. Dynamic code that runs once, such as setup code that reads an `any` configuration, is not reported, and neither are functions that are dynamic for an operation with no static lowering, which more types would not change.
+
+The warning names at most five functions, most likely to run often first, and gives the total. A function expression is named by its own name, else by the variable, property or class field it is assigned to, else as `anonymous function`. Dynamic-tier code in npm packages is summarized on one line with each package's function count. A build that comes from the cache repeats the warning. `--no-dynamic-tier-warning` leaves it out, and `--fail-on=dynamic` fails a coverage run on it.
+
+## Dynamic slots
+
+A declared type that has no native representation does not fail the build. The field, parameter, return value, variable or expression that holds it becomes a checked dynamic slot: the parts of the type that compile keep their native layout, and the failing parts hold checked-dynamic values. Coverage lists the slots under the statement counts, and `scriptc build` prints one `SC6104` warning per slot.
+
+```console
+$ cat plugins.ts
+type Hook = (() => void) | AbortSignal | Map<string, (x: number) => string>;
+
+interface Plugin {
+  name: string;
+  hook: Hook;
+}
+
+const plugins: Plugin[] = [{ name: "log", hook: () => console.log("hook ran") }];
+for (const p of plugins) {
+  const hook = p.hook;
+  if (typeof hook === "function") hook();
+  console.log(p.name);
+}
+
+$ scriptc coverage plugins.ts
+
+  statements analyzed   6
+  compile statically    6  (100%)
+    in dynamic tier     1  (operate on values typed only at runtime; --explain-dynamic lists them)
+    dynamic slots       1  (declared types with no static lowering, held as checked-dynamic values; SC6104)
+      module global 'plugins' (declared 'Plugin[]') (dynamic pieces)  plugins.ts:8:7
+
+  fully static — all analyzed statements compile to native code.
+```
+
+Here `Plugin` keeps its native `name` field, and only `hook` is checked-dynamic. Reading a dynamic value into typed code checks it against the type that reads it, so data that contradicts the declaration still throws a `TypeError`. Slots with the most dynamic operations are listed first. `--fail-on=dynamic-slots` fails a coverage run when any slot exists, and `--tier=static-only` reports the original errors instead.
 
 ## Diagnostic codes
 
@@ -65,10 +130,9 @@ Coverage and `scriptc build` report the same diagnostic codes. Common ones inclu
 Some code compiles but can behave differently than under Node.js. Coverage reports the cases it can detect as `SC6xxx` warnings, and `scriptc build` prints the same warnings after a successful build. They never fail a build, but `--fail-on=divergences` can fail a CI job on them.
 
 - `SC6001`: a record passed to, stored as, asserted as, or stored as an array element of a record type with different properties is copied, and the program then writes through the copy or compares it by identity.
-- `SC6002`: an object literal's key order differs from its type's declaration order, and the program observes the order through `JSON.stringify`, `Object.keys`, `Object.values`, `Object.entries`, `for...in`, or console output.
+- `SC6002`: values of one record type are built in key orders scriptc cannot track per value, so the type keeps its declaration order, an object literal's key order differs from it, and the program observes the order through `JSON.stringify`, `Object.keys`, `Object.values`, `Object.entries`, `for...in`, or console output.
 - `SC6003`: `localeCompare` compares a string literal outside the built-in Latin-script collation.
 - `SC6004`: a call passes a class instance to a function that casts it to an unrelated class.
-- `SC6005`: a `Date` string literal uses a form the native parser does not accept.
 
 ## Gating builds and CI
 
@@ -78,7 +142,7 @@ By default, `scriptc coverage` exits with status 0 whenever the program type-che
 $ scriptc coverage src/main.ts --fail-on=blockers
 ```
 
-`--fail-on=blockers` exits with status 1 when the program has blockers that would fail `scriptc build`. Blockers in unreached code and deferred operations don't count. `--fail-on=divergences` also fails on Node divergences. A program that doesn't type-check always exits with status 1.
+`--fail-on=blockers` exits with status 1 when the program has blockers that would fail `scriptc build`. Blockers in unreached code and deferred operations don't count. `--fail-on=divergences` also fails on Node divergences, `--fail-on=dynamic` also fails on the `SC6101` warning for [untyped code that likely runs often](#untyped-code-that-likely-runs-often), and `--fail-on=dynamic-slots` also fails on [dynamic slots](#dynamic-slots). A program that doesn't type-check always exits with status 1.
 
 Coverage caches its result. Running it again on an unchanged program, or after edits that only touch comments, reuses the previous verdict. Set `SCRIPTC_NO_CACHE=1` to turn the cache off.
 
@@ -160,11 +224,11 @@ For editors, CI annotations, and other tools, `scriptc coverage --print=diagnost
     </tr>
     <tr>
       <td><code>stats</code></td>
-      <td>Coverage only, absent after a preflight failure: the report's statement counts. <code>statementsDynamic</code> is always 0 and remains for schema compatibility.</td>
+      <td>Coverage only, absent after a preflight failure: the report's statement counts. <code>statementsStatic</code> counts every statement that compiles to native code; <code>statementsDynamic</code> is the part of those in dynamic-tier functions.</td>
     </tr>
     <tr>
       <td><code>category</code></td>
-      <td><code>invalid-source</code> (the program has a TypeScript or JSON error), <code>unsupported</code> (valid code scriptc cannot compile yet), <code>divergence</code> (compiles, but can behave differently from Node.js), <code>environment</code> (project configuration, scriptc's type world, toolchain, or target), or <code>internal</code> (a compiler bug).</td>
+      <td><code>invalid-source</code> (the program has a TypeScript or JSON error), <code>unsupported</code> (valid code scriptc cannot compile yet), <code>divergence</code> (compiles, but can behave differently from Node.js), <code>performance</code> (compiles and behaves as under Node.js, but runs slower than typed code would), <code>environment</code> (project configuration, scriptc's type world, toolchain, or target), or <code>internal</code> (a compiler bug).</td>
     </tr>
     <tr>
       <td><code>severity</code></td>
@@ -181,6 +245,10 @@ For editors, CI annotations, and other tools, `scriptc coverage --print=diagnost
     <tr>
       <td><code>group</code></td>
       <td>The <code>id</code> of the root-cause group the diagnostic belongs to. A group's <code>primary</code> site is its first in source order.</td>
+    </tr>
+    <tr>
+      <td><code>startup</code></td>
+      <td><code>true</code> on a <code>deferred</code> diagnostic in a module's top-level code, which runs when the module loads. Absent otherwise.</td>
     </tr>
   </tbody>
 </table>

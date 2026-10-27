@@ -1,0 +1,17 @@
+stream-completion-callback-error.ts:10:17 - error SC2020: 'write completion callbacks taking the error argument' is part of the standard library types but has no scriptc lowering yet
+
+   9 | });
+  10 | sink.write("a", (err) => console.log("written", err));
+     |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  11 | sink.end((err?: Error | null) => console.log("ended", err));
+
+  hint: () => void callbacks are supported (listen for 'error' to observe failures)
+
+stream-completion-callback-error.ts:11:10 - error SC2020: 'end callbacks with parameters' is part of the standard library types but has no scriptc lowering yet
+
+  10 | sink.write("a", (err) => console.log("written", err));
+  11 | sink.end((err?: Error | null) => console.log("ended", err));
+     |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  12 | 
+
+  hint: () => void callbacks are supported

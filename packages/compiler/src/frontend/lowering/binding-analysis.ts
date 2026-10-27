@@ -10,15 +10,33 @@ import { isGenericCallableMemberType } from "../type-mapper.js";
  * Sound file-locally for module-scope bindings because ESM import
  * bindings are read-only — no other file can write one. Cached per
  * symbol (the scan walks the whole file once). */
-export function bindingNeverReassigned(lowerer: Lowerer, sym: ts.Symbol, decl: ts.Node): boolean {
+export function bindingNeverReassigned(
+  lowerer: Lowerer,
+  sym: ts.Symbol,
+  decl: ts.Node,
+  resolve: (ident: ts.Identifier) => ts.Symbol | null | undefined = (ident) =>
+    lowerer.resolveValueSymbol(ident),
+): boolean {
   const cached = lowerer.neverReassignedCache.get(sym);
   if (cached !== undefined) return cached;
+  const written = fileWritesBinding(sym, ts.getSourceFileOfNode(decl), resolve);
+  lowerer.neverReassignedCache.set(sym, !written);
+  return !written;
+}
+
+/** True when something in `file` writes `sym` (the writes
+ * bindingNeverReassigned counts), resolving identifiers with `resolve`. */
+export function fileWritesBinding(
+  sym: ts.Symbol,
+  file: ts.SourceFile,
+  resolve: (ident: ts.Identifier) => ts.Symbol | null | undefined,
+): boolean {
   let written = false;
   // Text pre-check keeps the file walk cheap: only same-named
   // identifiers pay a symbol resolution.
-  const symText = sym.name;
+  const symText = ts.symbolName(sym);
   const namesSym = (e: ts.Node): boolean =>
-    ts.isIdentifier(e) && e.text === symText && lowerer.resolveValueSymbol(e) === sym;
+    ts.isIdentifier(e) && e.text === symText && resolve(e) === sym;
   const scanTarget = (t: ts.Expression): void => {
     let e: ts.Expression = t;
     while (ts.isParenthesizedExpression(e)) e = e.expression;
@@ -31,7 +49,7 @@ export function bindingNeverReassigned(lowerer: Lowerer, sym: ts.Symbol, decl: t
     if (ts.isArrayLiteralExpression(e) || ts.isObjectLiteralExpression(e)) {
       const walk = (n: ts.Node): void => {
         if (namesSym(n)) written = true;
-        else n.forEachChild(walk);
+        else ts.forEachChild(n, walk);
       };
       walk(e);
     }
@@ -54,11 +72,10 @@ export function bindingNeverReassigned(lowerer: Lowerer, sym: ts.Symbol, decl: t
     ) {
       scanTarget(n.initializer as ts.Expression);
     }
-    n.forEachChild(visit);
+    ts.forEachChild(n, visit);
   };
-  decl.getSourceFile().forEachChild(visit);
-  lowerer.neverReassignedCache.set(sym, !written);
-  return !written;
+  ts.forEachChild(file, visit);
+  return written;
 }
 
 /** Strips the value-preserving wrappers off an expression: parens,
@@ -114,7 +131,7 @@ export function nullishValueUnitOf(
   const cached = lowerer.nullishBindings.get(sym);
   if (cached !== undefined) return cached;
   lowerer.nullishBindings.set(sym, null); // cycle guard: self-referential probes answer non-qualifying
-  const decl = lowerer.checker.valueDeclarationOf(sym);
+  const decl = sym.valueDeclaration;
   // Statement-position declarators only: a for-loop head (`for (let x =
   // null as any; ...)`) declares a LOCAL with per-iteration semantics —
   // lowerVarDeclList's contract requires a lowered statement for it, so
@@ -123,7 +140,7 @@ export function nullishValueUnitOf(
     !decl ||
     !ts.isVariableDeclaration(decl) ||
     !ts.isIdentifier(decl.name) ||
-    decl.getSourceFile().isDeclarationFile ||
+    ts.getSourceFileOfNode(decl).isDeclarationFile ||
     decl.initializer === undefined ||
     !ts.isVariableStatement(decl.parent?.parent)
   ) {
@@ -154,7 +171,7 @@ export function nullishValueUnitOf(
 /** True when any identifier resolving to `sym` sits inside a class
  * heritage clause anywhere in the program. */
 function usedInHeritageClause(lowerer: Lowerer, sym: ts.Symbol): boolean {
-  const symText = sym.name;
+  const symText = ts.symbolName(sym);
   let found = false;
   const visit = (n: ts.Node): void => {
     if (found) return;
@@ -171,12 +188,12 @@ function usedInHeritageClause(lowerer: Lowerer, sym: ts.Symbol): boolean {
       }
       return;
     }
-    n.forEachChild(visit);
+    ts.forEachChild(n, visit);
   };
   for (const file of lowerer.program.getImplementationSourceFiles()) {
     if (found) break;
     if (file.isDeclarationFile) continue;
-    file.forEachChild(visit);
+    ts.forEachChild(file, visit);
   }
   return found;
 }
@@ -236,7 +253,7 @@ export function nullishGenericBindingUnitOf(
  * value knowable. Compound assignments, ++/--, for-in/of cursors, and
  * destructuring targets all disqualify. */
 function allWritesNullish(lowerer: Lowerer, sym: ts.Symbol, decl: ts.Node): boolean {
-  const symText = sym.name;
+  const symText = ts.symbolName(sym);
   const namesSym = (e: ts.Node): boolean =>
     ts.isIdentifier(e) && e.text === symText && lowerer.resolveValueSymbol(e) === sym;
   let ok = true;
@@ -253,7 +270,7 @@ function allWritesNullish(lowerer: Lowerer, sym: ts.Symbol, decl: ts.Node): bool
         } else if (ts.isArrayLiteralExpression(lhs) || ts.isObjectLiteralExpression(lhs)) {
           const walk = (m: ts.Node): void => {
             if (namesSym(m)) ok = false;
-            else m.forEachChild(walk);
+            else ts.forEachChild(m, walk);
           };
           walk(lhs);
         }
@@ -274,9 +291,9 @@ function allWritesNullish(lowerer: Lowerer, sym: ts.Symbol, decl: ts.Node): bool
         t = (t as ts.ParenthesizedExpression).expression;
       if (namesSym(t)) ok = false;
     }
-    n.forEachChild(visit);
+    ts.forEachChild(n, visit);
   };
-  decl.getSourceFile().forEachChild(visit);
+  ts.forEachChild(ts.getSourceFileOfNode(decl), visit);
   return ok;
 }
 
@@ -332,7 +349,7 @@ export function deadUnmappableBinding(
   // the no-storage family never claims it (catch bindings sit outside a
   // variable statement too and stay out the same way).
   if (!ts.isVariableStatement(decl.parent?.parent)) return false;
-  const sf = decl.getSourceFile();
+  const sf = ts.getSourceFileOfNode(decl);
   if (sf.isDeclarationFile || isJsSourceFile(sf)) return false;
   if (decl.initializer !== undefined && !sideEffectFreeValueExpr(lowerer, decl.initializer))
     return false;
@@ -344,7 +361,7 @@ export function deadUnmappableBinding(
   // bug), so only survivors of the syntactic filters pay it. Mappable
   // types keep their real storage.
   if (lowerer.mapTypeOf(lowerer.checker.getTypeOfSymbol(sym)) !== null) return false;
-  const symText = sym.name;
+  const symText = ts.symbolName(sym);
   const namesSym = (e: ts.Node): boolean =>
     ts.isIdentifier(e) && e.text === symText && lowerer.resolveValueSymbol(e) === sym;
   let dead = true;
@@ -353,7 +370,7 @@ export function deadUnmappableBinding(
     if (ts.isIdentifier(n) && n.text === symText) {
       // Declaration-name occurrences are not reads.
       if (n.parent !== undefined && ts.isVariableDeclaration(n.parent) && n.parent.name === n) {
-        n.forEachChild(visit);
+        ts.forEachChild(n, visit);
         return;
       }
       // A plain-assignment LHS is a WRITE — dead only when the RHS
@@ -375,12 +392,12 @@ export function deadUnmappableBinding(
       if (namesSym(n)) dead = false;
       return;
     }
-    n.forEachChild(visit);
+    ts.forEachChild(n, visit);
   };
   for (const file of lowerer.program.getImplementationSourceFiles()) {
     if (!dead) break;
     if (file.isDeclarationFile) continue;
-    file.forEachChild(visit);
+    ts.forEachChild(file, visit);
   }
   if (dead) lowerer.deadBindings.add(sym);
   return dead;

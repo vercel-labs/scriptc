@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/webcrypto-refusals.ts"
+ ],
+ "diags": []
+}

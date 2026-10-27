@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7381-cycle-deferred-reached-tdz/beta.ts",
+  "<repo>/tests/corpus/7381-cycle-deferred-reached-tdz/alpha.ts",
+  "<repo>/tests/corpus/7381-cycle-deferred-reached-tdz/main.ts"
+ ],
+ "diags": []
+}

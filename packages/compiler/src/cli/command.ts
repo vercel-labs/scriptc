@@ -1,17 +1,41 @@
+import type { TypePatchCommandRequest } from "../frontend/type-patches/command.js";
 import { rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { isExactExternalTypeSpecifier } from "../frontend/program.js";
 import { renderDiagnostics } from "../diagnostics/render.js";
 import {
+  COVERAGE_FAIL_ON,
   coverageEnvelope,
   coveragePasses,
   renderCoverage,
+  renderExplainDynamic,
+  renderExplainIsland,
   type CoverageFailOn,
 } from "../coverage/report.js";
+import {
+  NODE_ISLANDS_MODES,
+  type NodeIslandOptions,
+  type NodeIslandsMode,
+} from "../node-islands/policy.js";
+import { TIER_MODES, type TierMode } from "../frontend/tier-analysis.js";
 import { buildEnvelope } from "../diagnostics/envelope.js";
-import { renderWarnings } from "../diagnostics/render.js";
+import {
+  renderConfigWarnings,
+  renderTypePatchWarnings,
+  renderWarnings,
+} from "../diagnostics/render.js";
+import { isTypePatchCode } from "../diagnostics/diagnostic.js";
+import { isPerformanceCode, renderPerformanceWarnings } from "../diagnostics/dynamic-tier.js";
 import { isNativeOptimization } from "../backend/optimization.js";
+import { renderNativeProfileMatch } from "../backend/native-profile.js";
+import {
+  hostTargetCpu,
+  isTargetCpuOption,
+  TARGET_CPU_OPTIONS,
+  targetCpuField,
+  type TargetCpu,
+} from "../backend/target-cpu.js";
 import { setProvenanceSources } from "../frontend/provenance-registry.js";
 import type { CliHost, NativeCacheWarmProfile } from "./host.js";
 import { resolveOutputOptions } from "./output-options.js";
@@ -45,8 +69,15 @@ function parseCli(
 ): ReturnType<
   typeof parseArgs<{ options: typeof CLI_OPTIONS; allowPositionals: true; allowNegative: true }>
 > {
+  // `--explain-dynamic` takes an optional value: alone it lists every unit.
+  const normalized = args.map((arg) => (arg === "--explain-dynamic" ? "--explain-dynamic=" : arg));
   try {
-    return parseArgs({ args, options: CLI_OPTIONS, allowPositionals: true, allowNegative: true });
+    return parseArgs({
+      args: normalized,
+      options: CLI_OPTIONS,
+      allowPositionals: true,
+      allowNegative: true,
+    });
   } catch (err) {
     // parseArgs appends a paragraph about `--` and positionals to the
     // unknown-option message; the first sentence is the part that names
@@ -84,13 +115,23 @@ async function main(args: string[], host: CliHost): Promise<number> {
       values.ffi !== undefined ||
       values.profile !== undefined ||
       values.strip ||
+      values.static ||
       values["windows-subsystem"] !== undefined ||
       values["detached-exit"] ||
+      values["large-pages"] ||
+      values["target-cpu"] !== undefined ||
+      values["cpu-dispatch"] !== undefined ||
+      values["profile-generate"] !== undefined ||
+      values["profile-use"] !== undefined ||
+      values.sparse ||
       (values["npm-static"] ?? []).length > 0 ||
       values["provenance-sources"] ||
       externalTypeArgs.length > 0 ||
       values.out !== undefined ||
       values["emit-ir"] ||
+      values.tier !== undefined ||
+      values["explain-dynamic"] !== undefined ||
+      hasNodeIslandFlags(values) ||
       !values["keep-llvm"]
     ) {
       fail(
@@ -124,6 +165,88 @@ async function main(args: string[], host: CliHost): Promise<number> {
     }
     return 0;
   }
+  if (command === "merge-profiles") {
+    const inputs = positionals.slice(1);
+    const others =
+      values.lib ||
+      values.backend !== undefined ||
+      values.emit !== undefined ||
+      values.print !== undefined ||
+      values["fail-on"] !== undefined ||
+      values.optimization !== undefined ||
+      values.ffi !== undefined ||
+      values.profile !== undefined ||
+      values.strip ||
+      values.static ||
+      values.sanitize ||
+      values["windows-subsystem"] !== undefined ||
+      values["detached-exit"] ||
+      values["large-pages"] ||
+      values["target-cpu"] !== undefined ||
+      values["cpu-dispatch"] !== undefined ||
+      values["profile-generate"] !== undefined ||
+      values["profile-use"] !== undefined ||
+      (values["npm-static"] ?? []).length > 0 ||
+      values["provenance-sources"] ||
+      externalTypeArgs.length > 0 ||
+      (values.wasm ?? []).length > 0 ||
+      values["emit-ir"] ||
+      values.tier !== undefined ||
+      values["explain-dynamic"] !== undefined ||
+      hasNodeIslandFlags(values) ||
+      !values["keep-llvm"];
+    if (values.out === undefined || inputs.length === 0 || others) {
+      fail(
+        `scriptc merge-profiles takes -o <out.profdata>, optionally --sparse, and one or more profiles\n\n${USAGE}`,
+      );
+    }
+    const outputPath = resolve(values.out);
+    try {
+      await host.mergeProfiles(
+        outputPath,
+        inputs.map((input) => resolve(input)),
+        values.sparse,
+      );
+    } catch (error) {
+      fail(`scriptc: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    process.stdout.write(`${outputPath}\n`);
+    return 0;
+  }
+  if (command === "types") {
+    const sub = positionals[1];
+    const rest = positionals.slice(2);
+    let request: TypePatchCommandRequest;
+    if (sub === "patch" && rest.length === 3) {
+      request = {
+        action: "patch",
+        cwd: process.cwd(),
+        pkg: rest[0]!,
+        selector: rest[1]!,
+        type: rest[2]!,
+        range: values.range ?? null,
+        dryRun: values["dry-run"],
+      };
+    } else if (
+      sub === "list" &&
+      rest.length === 0 &&
+      values.range === undefined &&
+      !values["dry-run"]
+    ) {
+      request = { action: "list", cwd: process.cwd() };
+    } else {
+      fail(
+        `scriptc types takes "patch <package> <selector> <type>" (with --range or --dry-run) or "list"\n\n${USAGE}`,
+      );
+    }
+    const result = await host.typePatches(request);
+    process.stdout.write(result.stdout);
+    process.stderr.write(result.stderr);
+    return result.exitCode;
+  }
+  if (values.range !== undefined || values["dry-run"])
+    fail(`--range and --dry-run are scriptc types patch options\n\n${USAGE}`);
+  if (values.sparse) fail(`--sparse is a merge-profiles option\n\n${USAGE}`);
   if (command !== "build" && command !== "run" && command !== "coverage") {
     fail(`unknown command "${command}"\n\n${USAGE}`);
   }
@@ -148,14 +271,23 @@ async function main(args: string[], host: CliHost): Promise<number> {
       values["fail-on"] !== undefined ||
       values.optimization !== undefined ||
       values.strip ||
+      values.static ||
       values.ffi !== undefined ||
       values["windows-subsystem"] !== undefined ||
       values["detached-exit"] ||
+      values["large-pages"] ||
+      values["target-cpu"] !== undefined ||
+      values["cpu-dispatch"] !== undefined ||
+      values["profile-generate"] !== undefined ||
+      values["profile-use"] !== undefined ||
       (values["npm-static"] ?? []).length > 0 ||
-      externalTypeArgs.length > 0
+      externalTypeArgs.length > 0 ||
+      values.tier !== undefined ||
+      values["explain-dynamic"] !== undefined ||
+      hasNodeIslandFlags(values)
     ) {
       fail(
-        "scriptc build --lib takes no --backend/--emit/--print/--optimization/--strip/--windows-subsystem/--detached-exit/--npm-static/--ffi/--external-types: the profile pins the emission and optimization, npm imports are judged automatically, outbound FFI belongs to executable builds, and external type mappings belong to coverage",
+        "scriptc build --lib takes no --backend/--emit/--print/--optimization/--strip/--static/--windows-subsystem/--detached-exit/--large-pages/--target-cpu/--cpu-dispatch/--profile-generate/--profile-use/--npm-static/--ffi/--external-types/--tier/--explain-dynamic: the profile pins the emission and optimization, npm imports are judged automatically, outbound FFI belongs to executable builds, external type mappings belong to coverage, and library artifacts are static-tier only",
       );
     }
     const profilePath = resolve(profileArg);
@@ -198,8 +330,26 @@ async function main(args: string[], host: CliHost): Promise<number> {
   if (command === "coverage" && values.strip) {
     fail(`--strip is a build/run option\n\n${USAGE}`);
   }
+  if (command === "coverage" && values.static) {
+    fail(`--static is a build/run option\n\n${USAGE}`);
+  }
+  if (command === "coverage" && values["target-cpu"] !== undefined) {
+    fail(`--target-cpu is a build/run option\n\n${USAGE}`);
+  }
+  if (command === "coverage" && values["cpu-dispatch"] !== undefined) {
+    fail(`--cpu-dispatch is a build/run option\n\n${USAGE}`);
+  }
   if (command === "coverage" && values["detached-exit"]) {
     fail(`--detached-exit is a build/run option\n\n${USAGE}`);
+  }
+  if (command === "coverage" && values["large-pages"]) {
+    fail(`--large-pages is a build/run option\n\n${USAGE}`);
+  }
+  if (command === "coverage" && values["profile-generate"] !== undefined) {
+    fail(`--profile-generate is a build/run option\n\n${USAGE}`);
+  }
+  if (command === "coverage" && values["profile-use"] !== undefined) {
+    fail(`--profile-use is a build/run option\n\n${USAGE}`);
   }
   if (
     values.print !== undefined &&
@@ -216,13 +366,71 @@ async function main(args: string[], host: CliHost): Promise<number> {
     fail(`--print=diagnostics is a build/coverage option\n\n${USAGE}`);
   }
   const failOnRaw = values["fail-on"];
-  if (failOnRaw !== undefined && failOnRaw !== "blockers" && failOnRaw !== "divergences") {
-    fail(`unknown --fail-on value "${failOnRaw}" (supported: blockers, divergences)\n\n${USAGE}`);
+  if (failOnRaw !== undefined && !(COVERAGE_FAIL_ON as readonly string[]).includes(failOnRaw)) {
+    fail(
+      `unknown --fail-on value "${failOnRaw}" (supported: ${COVERAGE_FAIL_ON.join(", ")})\n\n${USAGE}`,
+    );
+  }
+  // --no-dynamic-tier-warning leaves out SC6101 (diagnostics/dynamic-tier.ts).
+  const dynamicTierWarning = values["dynamic-tier-warning"] !== false;
+  if (failOnRaw === "dynamic" && !dynamicTierWarning) {
+    fail(`--fail-on=dynamic checks the warning --no-dynamic-tier-warning leaves out\n\n${USAGE}`);
   }
   if (failOnRaw !== undefined && command !== "coverage") {
     fail(`--fail-on is a coverage option (a build already fails on blockers)\n\n${USAGE}`);
   }
   const failOn = failOnRaw as CoverageFailOn | undefined;
+  const tierRaw = values.tier;
+  if (tierRaw !== undefined && !(TIER_MODES as readonly string[]).includes(tierRaw)) {
+    fail(`unknown --tier value "${tierRaw}" (supported: ${TIER_MODES.join(", ")})\n\n${USAGE}`);
+  }
+  const tier = tierRaw as TierMode | undefined;
+  const explainDynamic = values["explain-dynamic"];
+  if (explainDynamic !== undefined && command !== "coverage") {
+    fail(`--explain-dynamic is a coverage option\n\n${USAGE}`);
+  }
+  const explainIsland = values["explain-island"];
+  if (explainIsland !== undefined && command !== "coverage") {
+    fail(`--explain-island is a coverage option\n\n${USAGE}`);
+  }
+  if (explainIsland === "") fail(`--explain-island needs a package name\n\n${USAGE}`);
+  if (values["strict-user-js"] && command !== "coverage") {
+    fail(`--strict-user-js is a coverage option\n\n${USAGE}`);
+  }
+  // The Node island policy's command-line half. Report-only: build and run
+  // validate it, coverage reports the islands it would choose.
+  const islandMode = values["node-islands"];
+  if (islandMode !== undefined && !(NODE_ISLANDS_MODES as readonly string[]).includes(islandMode)) {
+    fail(
+      `unknown --node-islands value "${islandMode}" (supported: ${NODE_ISLANDS_MODES.join(", ")})\n\n${USAGE}`,
+    );
+  }
+  const listValues = (raw: string[] | undefined): string[] =>
+    (raw ?? [])
+      .flatMap((v) => v.split(","))
+      .map((v) => v.trim())
+      .filter((v) => v !== "");
+  const islandArgs = listValues(values["node-island"]);
+  const nativeArgs = listValues(values.native);
+  for (const name of nativeArgs) {
+    if (islandArgs.includes(name))
+      fail(`--native=${name} and --node-island=${name} contradict each other\n\n${USAGE}`);
+  }
+  if (values.node === "") fail(`--node needs the path of a node executable\n\n${USAGE}`);
+  const nodeIslands: NodeIslandOptions | undefined =
+    islandMode === undefined &&
+    islandArgs.length === 0 &&
+    nativeArgs.length === 0 &&
+    values.node === undefined &&
+    !values["strict-user-js"]
+      ? undefined
+      : {
+          ...(islandMode !== undefined ? { mode: islandMode as NodeIslandsMode } : {}),
+          ...(islandArgs.length > 0 ? { islands: islandArgs } : {}),
+          ...(nativeArgs.length > 0 ? { native: nativeArgs } : {}),
+          ...(values.node !== undefined ? { node: resolve(values.node) } : {}),
+          ...(values["strict-user-js"] ? { strictUserJs: true } : {}),
+        };
   if (printNativeLinkInfo && command !== "build") {
     fail(`--print=native-link-info is a build option\n\n${USAGE}`);
   }
@@ -263,6 +471,11 @@ async function main(args: string[], host: CliHost): Promise<number> {
     }
     externalTypes[specifier] = declarationPath;
   }
+  const wasmArgs = values.wasm ?? [];
+  if (wasmArgs.length > 0 && command !== "coverage") {
+    fail(`--wasm is a coverage-only option\n\n${USAGE}`);
+  }
+  const wasmFiles = wasmArgs.map((file) => resolve(file));
   const ffiProfilePath = values.ffi !== undefined ? resolve(values.ffi) : undefined;
   if (values.backend !== undefined && values.backend !== "llvm") {
     fail(`unknown backend "${values.backend}" (supported: llvm)\n\n${USAGE}`);
@@ -282,6 +495,19 @@ async function main(args: string[], host: CliHost): Promise<number> {
   if (windowsSubsystem !== undefined && command === "coverage") {
     fail(`--windows-subsystem is only supported for executable builds\n\n${USAGE}`);
   }
+  const targetCpuOption = values["target-cpu"];
+  if (targetCpuOption !== undefined && !isTargetCpuOption(targetCpuOption)) {
+    fail(
+      `unknown target CPU "${targetCpuOption}" (supported: ${TARGET_CPU_OPTIONS.join(", ")})\n\n${USAGE}`,
+    );
+  }
+  let targetCpu: TargetCpu | undefined = targetCpuOption === "native" ? undefined : targetCpuOption;
+  if (targetCpuOption === "native") {
+    const level = hostTargetCpu();
+    if (level === null)
+      fail(`--target-cpu=native needs an x86-64 Linux or macOS build host; name a level instead`);
+    targetCpu = level;
+  }
   const output =
     command === "coverage"
       ? null
@@ -295,7 +521,14 @@ async function main(args: string[], host: CliHost): Promise<number> {
           sanitize: values.sanitize,
           ...(values.optimization === undefined ? {} : { optimization: values.optimization }),
           strip: values.strip,
+          staticLink: values.static,
           detachedExit: values["detached-exit"],
+          largePages: values["large-pages"],
+          ...(values["cpu-dispatch"] === undefined ? {} : { cpuDispatch: values["cpu-dispatch"] }),
+          ...(values["profile-generate"] === undefined
+            ? {}
+            : { profileGenerate: values["profile-generate"] }),
+          ...(values["profile-use"] === undefined ? {} : { profileUse: values["profile-use"] }),
           ...(windowsSubsystem === undefined ? {} : { windowsSubsystem }),
           ...(values.ffi === undefined ? {} : { ffi: values.ffi }),
         });
@@ -340,7 +573,12 @@ async function main(args: string[], host: CliHost): Promise<number> {
       ...(npmStatic !== undefined ? { npmStatic } : {}),
       ...(ffiProfilePath !== undefined ? { ffiProfilePath } : {}),
       ...(Object.keys(externalTypes).length > 0 ? { externalTypes } : {}),
+      ...(tier !== undefined ? { tier } : {}),
+      ...(explainDynamic !== undefined ? { explainDynamic: true } : {}),
+      ...(wasmFiles.length > 0 ? { wasm: wasmFiles } : {}),
+      ...(nodeIslands !== undefined ? { nodeIslands } : {}),
     });
+    if (!dynamicTierWarning) delete coverage.performance;
     if (printDiagnostics) {
       // Keep stdout pure JSON for tooling.
       const envelope = coverageEnvelope(coverage, {
@@ -354,6 +592,29 @@ async function main(args: string[], host: CliHost): Promise<number> {
       process.stdout.write(
         renderCoverage(coverage, { color, sourceTexts, root: process.cwd() }) + "\n",
       );
+      if (explainIsland !== undefined) {
+        process.stdout.write(
+          "\n" +
+            renderExplainIsland(coverage.nodeIslands, explainIsland, {
+              color,
+              sourceTexts,
+              root: process.cwd(),
+            }) +
+            "\n",
+        );
+      }
+      if (explainDynamic !== undefined && coverage.tiers !== undefined) {
+        process.stdout.write(
+          "\n" +
+            renderExplainDynamic(coverage.tiers, {
+              color,
+              sourceTexts,
+              root: process.cwd(),
+              query: explainDynamic,
+            }) +
+            "\n",
+        );
+      }
     }
     return coveragePasses(coverage, failOn) ? 0 : 1;
   }
@@ -381,11 +642,25 @@ async function main(args: string[], host: CliHost): Promise<number> {
       ...(backend !== undefined ? { backend } : {}),
       ...(optimization !== undefined ? { optimization } : {}),
       ...(values.strip ? { strip: true } : {}),
+      ...(values.static ? { staticLink: true } : {}),
       ...(windowsSubsystem !== undefined ? { windowsSubsystem } : {}),
       ...(values["detached-exit"] ? { detachedExit: true } : {}),
+      ...(values["large-pages"] ? { largePages: true } : {}),
+      ...targetCpuField(targetCpu),
+      ...(values["cpu-dispatch"] === undefined ? {} : { cpuDispatch: values["cpu-dispatch"] }),
+      // The instrumented program resolves a relative pattern against its own
+      // working directory; resolve it here, where the user wrote it.
+      ...(values["profile-generate"] === undefined
+        ? {}
+        : { profileGenerate: resolve(values["profile-generate"]) }),
+      ...(values["profile-use"] === undefined
+        ? {}
+        : { profileUse: resolve(values["profile-use"]) }),
       ...(npmStatic !== undefined ? { npmStatic } : {}),
+      ...(values["shape-overlay"] === false ? { shapeOverlay: false } : {}),
       ...(ffiProfilePath !== undefined ? { ffiProfilePath } : {}),
       ...(printNativeLinkInfo ? { nativeLinkInfo: true } : {}),
+      ...(tier !== undefined ? { tier } : {}),
     });
     if (!result.ok) {
       if (printDiagnostics) {
@@ -407,7 +682,9 @@ async function main(args: string[], host: CliHost): Promise<number> {
       process.stderr.write(`\n${n} error${n === 1 ? "" : "s"}.\n`);
       throw new CliExit(1);
     }
-    const warnings = result.warnings ?? [];
+    const warnings = (result.warnings ?? []).filter(
+      (d) => dynamicTierWarning || !isPerformanceCode(d.code),
+    );
     if (printDiagnostics) {
       diagnosticsEnvelope = buildEnvelope({
         compilerVersion: host.version(),
@@ -420,14 +697,48 @@ async function main(args: string[], host: CliHost): Promise<number> {
       });
     } else if (warnings.length > 0 && command === "build") {
       // Divergence warnings never fail a build; they explain where the
-      // native program can behave differently from Node. `run` keeps
-      // stderr for the program's own output.
+      // native program can behave differently from Node. The performance
+      // warning names likely-hot functions that use untyped values. `run`
+      // keeps stderr for the program's own output.
       const color = process.stderr.isTTY ?? false;
-      process.stderr.write(
-        renderWarnings(warnings, result.sourceTexts ?? new Map(), { color }) + "\n",
+      const config = warnings.filter((d) => d.code === "SC8004");
+      const patches = warnings.filter((d) => isTypePatchCode(d.code));
+      const divergences = warnings.filter(
+        (d) => !isPerformanceCode(d.code) && d.code !== "SC8004" && !isTypePatchCode(d.code),
       );
+      const performance = warnings.filter((d) => isPerformanceCode(d.code));
+      if (config.length > 0)
+        process.stderr.write(
+          renderConfigWarnings(config, result.sourceTexts ?? new Map(), { color }) + "\n",
+        );
+      if (patches.length > 0) {
+        if (config.length > 0) process.stderr.write("\n");
+        process.stderr.write(
+          renderTypePatchWarnings(patches, result.sourceTexts ?? new Map(), { color }) + "\n",
+        );
+      }
+      if (divergences.length > 0) {
+        if (config.length > 0 || patches.length > 0) process.stderr.write("\n");
+        process.stderr.write(
+          renderWarnings(divergences, result.sourceTexts ?? new Map(), { color }) + "\n",
+        );
+      }
+      if (performance.length > 0) {
+        if (divergences.length > 0 || config.length > 0 || patches.length > 0)
+          process.stderr.write("\n");
+        process.stderr.write(renderPerformanceWarnings(performance) + "\n");
+      }
     }
     if (result.artifact.kind === "exe") {
+      // How the profile matched the program's functions; `run` keeps stderr
+      // for the program's own output.
+      const profileUse = values["profile-use"];
+      if (
+        command === "build" &&
+        profileUse !== undefined &&
+        result.artifact.profileMatch !== undefined
+      )
+        process.stderr.write(renderNativeProfileMatch(profileUse, result.artifact.profileMatch));
       if (!values["keep-llvm"]) rmSync(result.artifact.translationUnitPath, { force: true });
     } else if (result.artifact.kind === "obj") {
       nativeLinkInfo = result.artifact.nativeLinkInfo;
@@ -452,6 +763,19 @@ async function main(args: string[], host: CliHost): Promise<number> {
     process.stdout.write(`${binary}\n`);
   }
   return 0;
+}
+
+/** Whether any Node island flag is present (they belong to build, run and
+ * coverage). */
+function hasNodeIslandFlags(values: ReturnType<typeof parseCli>["values"]): boolean {
+  return (
+    values["node-islands"] !== undefined ||
+    (values["node-island"] ?? []).length > 0 ||
+    (values.native ?? []).length > 0 ||
+    values.node !== undefined ||
+    values["explain-island"] !== undefined ||
+    values["strict-user-js"]
+  );
 }
 
 /** Both installed and seed commands use this argument and diagnostic contract. */

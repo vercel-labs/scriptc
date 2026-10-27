@@ -8,9 +8,9 @@
  * materializes the complete document as a single string. */
 import type { IrExpr, IrFunction, IrModule, IrStmt } from "./ir.js";
 
-// Version 16 removes embedded-engine types, operations, and module metadata.
-// Older modules can require runtime support that no longer exists.
-export const IR_VERSION = 16 as const;
+// Version 17 adds the dynamic tier's jsval type and js.* builtins (two-tier
+// design stage S3) and serializes each function's execution tier.
+export const IR_VERSION = 17 as const;
 
 /** IR artifacts are plain data. Scan each function once before deciding
  * whether its JSON encoding needs the complete-number-domain replacer. */
@@ -42,11 +42,45 @@ function encodeNumber(_key: string, value: unknown): unknown {
   return value;
 }
 
+function encodeFunction(fn: IrFunction): string | undefined {
+  return ordinaryNumbers(fn) ? JSON.stringify(fn) : JSON.stringify(fn, encodeNumber);
+}
+
+/** A directory whose source location files an IR artifact names by a
+ * prefix of its own: a location file `from + rest` serializes as
+ * `to + rest`. */
+export interface SerializedFileRoot {
+  from: string;
+  to: string;
+}
+
+/** Respells the source location files under `roots` in serialized parts.
+ * A location's file is the first member of its JSON object, and the
+ * escaped spelling of a path prefix is the prefix of the escaped path. */
+function relocateFiles(parts: string[], roots: readonly SerializedFileRoot[]): string[] {
+  const needles = roots.map(({ from, to }) => ({
+    from: `"file":${JSON.stringify(from).slice(0, -1)}`,
+    to: `"file":${JSON.stringify(to).slice(0, -1)}`,
+  }));
+  return parts.map((part) =>
+    needles.reduce(
+      (text, { from, to }) => (text.includes(from) ? text.replaceAll(from, to) : text),
+      part,
+    ),
+  );
+}
+
 /** The compact encoding as ordered parts: the module header up to the
  * function array, one part per function (with separate comma parts), and the
  * header's remainder. Concatenating the parts yields exactly
- * `serializeModule(mod, true)`; writers stream them to disk in batches. */
-export function serializeModuleParts(mod: IrModule): string[] {
+ * `serializeModule(mod, true)`; writers stream them to disk in batches.
+ * `fileRoots` respells the source locations in those directories, so
+ * artifacts do not depend on where the compiler that wrote them is
+ * installed. */
+export function serializeModuleParts(
+  mod: IrModule,
+  fileRoots: readonly SerializedFileRoot[] = [],
+): string[] {
   // A replacer reads through live native views. Serializing the complete
   // function array through one view refreshes every function capsule for
   // each element, making large compiler artifacts quadratic. The sentinel
@@ -58,12 +92,10 @@ export function serializeModuleParts(mod: IrModule): string[] {
   for (let index = 0; index < mod.functions.length; index++) {
     const fn = mod.functions[index]!;
     if (index > 0) parts.push(",");
-    parts.push(
-      (ordinaryNumbers(fn) ? JSON.stringify(fn) : JSON.stringify(fn, encodeNumber)) ?? "null",
-    );
+    parts.push(encodeFunction(fn) ?? "null");
   }
   parts.push("]" + header.slice(offset + slot.length));
-  return parts;
+  return fileRoots.length === 0 ? parts : relocateFiles(parts, fileRoots);
 }
 
 /** Compiler artifacts use compact JSON; API consumers can retain the

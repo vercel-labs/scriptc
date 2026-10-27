@@ -1,0 +1,13 @@
+zlib-class-alias-escape.ts:7:18 - error SC1090: a builtin class alias as an escaping value (use 'Gz' with new, instanceof, typeof or .name) is not supported yet
+
+  6 | const Gz = zlib.Gzip;
+  7 | const classes = [Gz];
+    |                  ^~
+  8 | console.log(classes.length);
+
+zlib-class-alias-escape.ts:11:13 - error SC1090: 'instanceof zlib.Gzip' on an untyped or union value (give the operand a stream type first) is not supported yet
+
+  10 | const parsed: unknown = JSON.parse("{}");
+  11 | console.log(parsed instanceof Gz);
+     |             ^~~~~~~~~~~~~~~~~~~~
+  12 | 

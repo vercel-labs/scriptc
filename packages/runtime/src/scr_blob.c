@@ -44,7 +44,7 @@ static void *scr_blob_retain_v(void *h) {
 static void scr_blob_release_v(void *h) {
   ScrBlob *b = h;
   if (--b->rc) return;
-  scr_weak_dispose(b);
+  scr_weak_dispose_inline(b);
   scr_blob_store_release(b->store);
   free(b->parts);
   scr_str_release(b->type);

@@ -14,6 +14,7 @@
  * Any other use of the class or its methods as values is refused. The
  * module is marked lifetimeRegions, which moves every ProgramLifetime
  * class into counted regions. */
+import { keyedHelperName } from "./stable-names.js";
 import { F64, VOID, funcOf, typeKey } from "../../ir/ir.js";
 import type { IrExpr, IrFunction, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
 import { experimentalImportOf, lifetimeRegionMemberOf } from "../experimental-import.js";
@@ -77,8 +78,8 @@ export function lifetimeRegionType(lowerer: Lowerer): IrType {
 export function lowerLifetimeRegionNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
   if (!ts.isIdentifier(expr.expression)) return null;
   if (experimentalImportOf(lowerer.program, expr.expression) !== "LifetimeRegion") return null;
-  if ((expr.arguments?.length ?? 0) !== 0)
-    lowerer.noLowering(`new LifetimeRegion with ${expr.arguments!.length} arguments`, expr);
+  if ((expr.arguments?.nodes.length ?? 0) !== 0)
+    lowerer.noLowering(`new LifetimeRegion with ${expr.arguments!.nodes.length} arguments`, expr);
   const type = lifetimeRegionType(lowerer);
   return { kind: "new", className: LIFETIME_REGION_CLASS, args: [], type, loc: locOf(expr) };
 }
@@ -102,8 +103,11 @@ export function lowerLifetimeRegionCall(lowerer: Lowerer, expr: ts.CallExpressio
     );
   const region = lowerer.coerceInto(callee.expression, lowerer.lowerExpr(callee.expression), type);
   if (member === "release") {
-    if (expr.arguments.length !== 0)
-      lowerer.noLowering(`LifetimeRegion.release with ${expr.arguments.length} arguments`, expr);
+    if (expr.arguments.nodes.length !== 0)
+      lowerer.noLowering(
+        `LifetimeRegion.release with ${expr.arguments.nodes.length} arguments`,
+        expr,
+      );
     return {
       kind: "intrinsic",
       name: "region.release",
@@ -121,9 +125,9 @@ export function lowerLifetimeRegionCall(lowerer: Lowerer, expr: ts.CallExpressio
       loc,
     };
   }
-  const arg = expr.arguments[0];
-  if (expr.arguments.length !== 1 || arg === undefined || ts.isSpreadElement(arg))
-    lowerer.noLowering(`LifetimeRegion.run with ${expr.arguments.length} arguments`, expr);
+  const arg = expr.arguments.nodes[0];
+  if (expr.arguments.nodes.length !== 1 || arg === undefined || ts.isSpreadElement(arg))
+    lowerer.noLowering(`LifetimeRegion.run with ${expr.arguments.nodes.length} arguments`, expr);
   const resultTs = lowerer.typeOf(expr);
   const mapped = resultTs.flags & ts.TypeFlags.Void ? VOID : lowerer.mapTypeOf(resultTs);
   if (mapped === null) lowerer.badType(expr, resultTs);
@@ -149,7 +153,7 @@ function runHelper(lowerer: Lowerer, fnType: IrType & { kind: "func" }, loc: Src
   const key = typeKey(fnType);
   const known = lowerer.regionRunHelpers.get(key);
   if (known !== undefined) return known;
-  const name = `%${LIFETIME_REGION_CLASS}.run.${lowerer.regionRunHelpers.size}`;
+  const name = keyedHelperName(lowerer, `%${LIFETIME_REGION_CLASS}.run`, key);
   lowerer.regionRunHelpers.set(key, name);
   const regionT = lifetimeRegionType(lowerer);
   const ret = fnType.ret;

@@ -1,0 +1,13 @@
+fresh-spread-repeated.ts:9:42 - error SC1090: pushing a spread of '{ file: null | undefined; message: string; noisy: boolean }[]' onto a '{ file: { path: string } | undefined; message: string; noisy: boolean }[]' array (only a same-element-type array spreads) is not supported yet
+
+   8 | const looped = [{ message: "loop", file: undefined, noisy: false }];
+   9 | for (let i = 0; i < 2; i++) results.push(...looped);
+     |                                          ^~~~~~~~~
+  10 | const called = [{ message: "call", file: undefined, noisy: true }];
+
+fresh-spread-repeated.ts:12:19 - error SC1090: unshifting a spread of '{ file: null | undefined; message: string; noisy: boolean }[]' onto a '{ file: { path: string } | undefined; message: string; noisy: boolean }[]' array (only a same-element-type array spreads) is not supported yet
+
+  11 | function addCalled(): void {
+  12 |   results.unshift(...called);
+     |                   ^~~~~~~~~
+  13 | }

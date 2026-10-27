@@ -1,3 +1,4 @@
+import { emitPerKeyOrder } from "./key-orders.js";
 import { f64Lit } from "./common.js";
 import { InternalCompilerError } from "../../errors.js";
 /* Structure-walking helper EMITTERS for the LLVM backend — the .ll mirror
@@ -25,9 +26,11 @@ import {
   llFieldType,
   loadStructField,
   releaseSym,
+  retainSym,
   traceAdapter,
   type ShapeHost,
 } from "./shapes.js";
+import { disposeHookLoadLines, RECORD_SOURCES_GATE } from "./alloc.js";
 import { recordMayKeepSource, recordSourceFieldOrder } from "./record-sources.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
@@ -39,6 +42,8 @@ import { undefinedArmTag } from "../../ir/analysis.js";
  * scr_error-style label texts). */
 export interface WalkerHost extends ShapeHost {
   readonly unionsById: Map<string, IrUnionDef>;
+  /** Arrays of this element type can hold SCR_ARR_FOREIGN elements. */
+  mayHoldForeign(elem: IrType): boolean;
   /** `@`-ref of an interned immortal ScrStr literal. */
   internLiteral(text: string): string;
   /** `@`-ref of an interned NUL-terminated byte-array constant. */
@@ -61,11 +66,23 @@ export class LlWalkers {
 
   constructor(private readonly host: WalkerHost) {}
 
+  /** Journal replay (emit-journal.ts): builds or finds the helper a chunk
+   * emitter recorded, and answers its name. */
+  replayHelper(op: string, args: readonly unknown[]): string {
+    switch (op) {
+      case "walkers.jsonWriteHelper":
+        return this.jsonWriteHelper(args[0] as IrType);
+      case "walkers.recordFieldWriter":
+        return this.recordFieldWriter(args[0] as string);
+      case "walkers.unionJoinHelper":
+        return this.unionJoinHelper(args[0] as string);
+      default:
+        throw new InternalCompilerError(`llvm emitter bug: no walker replay ${op}`);
+    }
+  }
+
   private get S(): "i32" | "i64" {
     return this.host.sizeType;
-  }
-  private abiOffset(native64: number, wasm32: number): number {
-    return this.S === "i32" ? wasm32 : native64;
   }
 
   /** The value-parameter LLVM type of a writer for `t`. */
@@ -193,6 +210,7 @@ export class LlWalkers {
     if (existing) return existing;
     const name = `sc_jw_${this.jsonWriters.size}`;
     this.jsonWriters.set(key, name);
+    this.host.journalAllocated?.(name, "walkers.jsonWriteHelper", [t]);
     const B = new BlockBuilder();
     switch (t.kind) {
       case "f64":
@@ -219,11 +237,15 @@ export class LlWalkers {
         this.host.declare(`declare void @scr_jb_put_json_str(ptr, ptr)`);
         B.line(`call void @scr_jb_put_json_str(ptr %b, ptr %v)`);
         break;
+      case "date":
+        this.host.declare(`declare void @scr_jb_put_date(ptr, ptr)`);
+        B.line(`call void @scr_jb_put_date(ptr %b, ptr %v) ; toJSON(): ISO text, null if invalid`);
+        break;
       case "dyn":
-        // Overflow values under an `unknown` index signature: the checked-dynamic tree
-        // serializes itself (runtime walker). Bare stringify of dyn stays
-        // frontend-fenced; this writer is reachable only through overflow
-        // entries.
+        // A checked-dynamic value serializes itself (runtime walker).
+        // Bare stringify of dyn stays frontend-fenced, and overflow
+        // entries under an `unknown` index signature go through
+        // scr_jb_put_dyn_entry, which also runs the value's toJSON.
         this.host.declare(`declare void @scr_jb_put_dyn(ptr, ptr)`);
         B.line(`call void @scr_jb_put_dyn(ptr %b, ptr %v)`);
         break;
@@ -246,6 +268,7 @@ export class LlWalkers {
       `}`,
       ``,
     );
+    this.host.journalBuilt?.();
     return name;
   }
 
@@ -287,7 +310,8 @@ export class LlWalkers {
       throw new InternalCompilerError(
         `llvm emitter bug: jsonStringify of unknown shape ${shapeId}`,
       );
-    const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + 1]));
+    const fieldBase = this.host.nullableUnions.fieldBase(shapeId);
+    const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + fieldBase]));
     if (recordMayKeepSource(shape)) this.emitRecordSourceWriter(B, shapeId);
     // CYCLE-CAPABLE shapes bracket the walk with the circular-detection
     // stack; edge labels stamp before members whose walk can re-enter —
@@ -304,86 +328,82 @@ export class LlWalkers {
         if (i > 0) this.putc(B, "%b", "44"); // ','
         if (edgeable(f.type)) this.jbEdgeIdx(B, String(i));
         const v = this.loadField(B, "%v", shapeId, fieldIndex.get(f.name)!, f.type);
-        B.line(
-          `call void @${this.jsonWriteHelper(f.type)}(ptr %b, ${this.valTy(f.type)} ${v}) ; [${llvmCommentText(f.name)}]`,
-        );
+        this.writeField(B, v, f.type, `[${llvmCommentText(f.name)}]`);
       });
       this.putc(B, "%b", "93"); // ']'
       if (cyclic) this.jbLeave(B);
       return;
     }
-    // Fields serialize in DECLARED order (JS insertion order); internal
+    // Fields serialize in DECLARED order (JS insertion order), or in the
+    // value's own order for a shape with orderVariants; internal
     // '%'-fields stay hidden — jsonWriteHelper's contract, ported comment
     // and all.
-    const order = shape.declaredOrder ?? shape.fields.map((f) => f.name);
-    const inOrder = new Set(order);
-    if (shape.fields.some((f) => !inOrder.has(f.name) && !f.name.startsWith("%"))) {
-      throw new InternalCompilerError(
-        `llvm emitter bug: declaredOrder of shape ${shapeId} omits a non-internal field`,
-      );
-    }
-    const byName = new Map(shape.fields.map((f) => [f.name, f]));
-    // Function-valued properties are omitted, as JSON.stringify omits them.
-    const emitFields = order
-      .map((n) => byName.get(n))
-      .filter((f) => f !== undefined)
-      .filter((f) => f.type.kind !== "func");
-    const droppable =
-      emitFields.some((f) => undefinedArmTag(f.type, this.host.unionsById) >= 0) ||
-      !!shape.indexValue;
-    this.putc(B, "%b", "123"); // '{'
-    if (!droppable) {
-      emitFields.forEach((f, i) => {
-        this.puts(B, "%b", `${i > 0 ? "," : ""}${jsonObjectKeyLabel(f.name)}`);
-        if (edgeable(f.type)) this.jbEdgeProp(B, f.name);
-        const v = this.loadField(B, "%v", shapeId, fieldIndex.get(f.name)!, f.type);
-        B.line(
-          `call void @${this.jsonWriteHelper(f.type)}(ptr %b, ${this.valTy(f.type)} ${v}) ; ${llvmCommentText(f.name)}`,
+    emitPerKeyOrder(B, shape, fieldBase, "%v", (order) => {
+      const inOrder = new Set(order);
+      if (shape.fields.some((f) => !inOrder.has(f.name) && !f.name.startsWith("%"))) {
+        throw new InternalCompilerError(
+          `llvm emitter bug: declaredOrder of shape ${shapeId} omits a non-internal field`,
         );
-      });
-    } else {
-      const first = B.slot();
-      B.entryAllocas.push(`${first} = alloca i1`);
-      B.line(`store i1 true, ptr ${first}`);
-      const comma = (): void => {
-        const isf = B.tmp();
-        const lc = B.newLabel("jwc.c");
-        const lj = B.newLabel("jwc.j");
-        B.line(`${isf} = load i1, ptr ${first}`);
-        B.condBr(isf, lj, lc);
-        B.startBlock(lc);
-        this.putc(B, "%b", "44"); // ','
-        B.br(lj);
-        B.startBlock(lj);
-        B.line(`store i1 false, ptr ${first}`);
-      };
-      for (const f of emitFields) {
-        const utag = undefinedArmTag(f.type, this.host.unionsById);
-        const v = this.loadField(B, "%v", shapeId, fieldIndex.get(f.name)!, f.type);
-        let skip: string | null = null;
-        if (utag >= 0 && f.type.kind === "union") {
-          // Undefined-valued field: dropped, like Node.
-          const tag = this.unionTag(B, v, f.type.unionId);
-          const isu = B.tmp();
-          B.line(`${isu} = icmp eq i32 ${tag}, ${utag}`);
-          const lw = B.newLabel("jwf.w");
-          skip = B.newLabel("jwf.s");
-          B.condBr(isu, skip, lw);
-          B.startBlock(lw);
-        }
-        comma();
-        this.puts(B, "%b", jsonObjectKeyLabel(f.name));
-        if (edgeable(f.type)) this.jbEdgeProp(B, f.name);
-        B.line(
-          `call void @${this.jsonWriteHelper(f.type)}(ptr %b, ${this.valTy(f.type)} ${v}) ; ${llvmCommentText(f.name)}`,
-        );
-        if (skip !== null) {
-          B.br(skip);
-          B.startBlock(skip);
-        }
       }
-      if (shape.indexValue) this.emitOverflowEntries(B, shape, first, edgeable(shape.indexValue));
-    }
+      const byName = new Map(shape.fields.map((f) => [f.name, f]));
+      // Function-valued properties are omitted, as JSON.stringify omits them.
+      const emitFields = order
+        .map((n) => byName.get(n))
+        .filter((f) => f !== undefined)
+        .filter((f) => f.type.kind !== "func");
+      const droppable =
+        emitFields.some((f) => undefinedArmTag(f.type, this.host.unionsById) >= 0) ||
+        !!shape.indexValue;
+      this.putc(B, "%b", "123"); // '{'
+      if (!droppable) {
+        emitFields.forEach((f, i) => {
+          this.puts(B, "%b", `${i > 0 ? "," : ""}${jsonObjectKeyLabel(f.name)}`);
+          if (edgeable(f.type)) this.jbEdgeProp(B, f.name);
+          const v = this.loadField(B, "%v", shapeId, fieldIndex.get(f.name)!, f.type);
+          this.writeField(B, v, f.type, `${llvmCommentText(f.name)}`);
+        });
+      } else {
+        const first = B.slot();
+        B.entryAllocas.push(`${first} = alloca i1`);
+        B.line(`store i1 true, ptr ${first}`);
+        const comma = (): void => {
+          const isf = B.tmp();
+          const lc = B.newLabel("jwc.c");
+          const lj = B.newLabel("jwc.j");
+          B.line(`${isf} = load i1, ptr ${first}`);
+          B.condBr(isf, lj, lc);
+          B.startBlock(lc);
+          this.putc(B, "%b", "44"); // ','
+          B.br(lj);
+          B.startBlock(lj);
+          B.line(`store i1 false, ptr ${first}`);
+        };
+        for (const f of emitFields) {
+          const utag = undefinedArmTag(f.type, this.host.unionsById);
+          const v = this.loadField(B, "%v", shapeId, fieldIndex.get(f.name)!, f.type);
+          let skip: string | null = null;
+          if (utag >= 0 && f.type.kind === "union") {
+            // Undefined-valued field: dropped, like Node.
+            const tag = this.unionTag(B, v, f.type.unionId);
+            const isu = B.tmp();
+            B.line(`${isu} = icmp eq i32 ${tag}, ${utag}`);
+            const lw = B.newLabel("jwf.w");
+            skip = B.newLabel("jwf.s");
+            B.condBr(isu, skip, lw);
+            B.startBlock(lw);
+          }
+          comma();
+          this.puts(B, "%b", jsonObjectKeyLabel(f.name));
+          if (edgeable(f.type)) this.jbEdgeProp(B, f.name);
+          this.writeField(B, v, f.type, `${llvmCommentText(f.name)}`);
+          if (skip !== null) {
+            B.br(skip);
+            B.startBlock(skip);
+          }
+        }
+        if (shape.indexValue) this.emitOverflowEntries(B, shape, first, edgeable(shape.indexValue));
+      }
+    });
     this.putc(B, "%b", "125"); // '}'
     if (cyclic) this.jbLeave(B);
   }
@@ -399,6 +419,24 @@ export class LlWalkers {
     const writer = this.recordFieldWriter(shapeId);
     const lSource = B.newLabel("jw.source");
     const lNative = B.newLabel("jw.native");
+    // Only a program that can keep record sources looks one up (the gate
+    // folds to a constant), and only once one was kept: keeping a source
+    // installs the dispose hook, so a NULL hook means the table is empty.
+    const lHooked = B.newLabel("jw.hooked");
+    const kept = B.tmp();
+    B.line(`${kept} = load i1, ptr ${RECORD_SOURCES_GATE}`);
+    B.condBr(kept, lHooked, lNative);
+    B.startBlock(lHooked);
+    const hook = B.tmp();
+    const hookLines = disposeHookLoadLines(host, hook);
+    if (hookLines !== null) {
+      const lProbe = B.newLabel("jw.probe");
+      for (const line of hookLines) B.line(line.trimStart());
+      const installed = B.tmp();
+      B.line(`${installed} = icmp ne ptr ${hook}, null`);
+      B.condBr(installed, lProbe, lNative);
+      B.startBlock(lProbe);
+    }
     if (traceAdapter(host, { kind: "record", shapeId }) === null) {
       // One lookup: the runtime writes the record when it kept a source.
       host.declare(`declare zeroext i1 @scr_jb_try_record_source(ptr, ptr, ptr)`);
@@ -440,7 +478,9 @@ export class LlWalkers {
       throw new InternalCompilerError(`llvm emitter bug: field writer of unknown shape ${shapeId}`);
     const name = `sc_jwf_${this.recordFieldWriters.size}`;
     this.recordFieldWriters.set(shapeId, name);
-    const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + 1]));
+    this.host.journalAllocated?.(name, "walkers.recordFieldWriter", [shapeId]);
+    const fieldBase = this.host.nullableUnions.fieldBase(shapeId);
+    const fieldIndex = new Map(shape.fields.map((f, i) => [f.name, i + fieldBase]));
     const byName = new Map(shape.fields.map((f) => [f.name, f]));
     const cyclic = traceAdapter(this.host, { kind: "record", shapeId }) !== null;
     const order = recordSourceFieldOrder(shape);
@@ -477,9 +517,7 @@ export class LlWalkers {
       B.startBlock(lKey);
       this.puts(B, "%b", jsonObjectKeyLabel(fieldName));
       if (cyclic && traceAdapter(this.host, f.type) !== null) this.jbEdgeProp(B, fieldName);
-      B.line(
-        `call void @${this.jsonWriteHelper(f.type)}(ptr %b, ${this.valTy(f.type)} ${v}) ; ${llvmCommentText(fieldName)}`,
-      );
+      this.writeField(B, v, f.type, `${llvmCommentText(fieldName)}`);
       B.terminate("ret i1 true");
     });
     B.startBlock(lSkip);
@@ -490,16 +528,21 @@ export class LlWalkers {
       `}`,
       ``,
     );
+    this.host.journalBuilt?.();
     return name;
   }
 
   /** Whether the walker for `t` can leave an exception pending: cyclic
-   * values, and records serialized through a kept checked source. */
+   * values, records serialized through a kept checked source, and
+   * checked-dynamic values (toJSON methods, getters, BigInts), including
+   * the foreign elements of arrays that can hold them. */
   jsonWriteMayThrow(t: IrType, seen = new Set<string>()): boolean {
     if (traceAdapter(this.host, t) !== null) return true;
     switch (t.kind) {
+      case "dyn":
+        return true;
       case "array":
-        return this.jsonWriteMayThrow(t.elem, seen);
+        return this.host.mayHoldForeign(t.elem) || this.jsonWriteMayThrow(t.elem, seen);
       case "union":
         return (this.host.unionsById.get(t.unionId)?.arms ?? []).some((arm) =>
           this.jsonWriteMayThrow(arm, seen),
@@ -534,9 +577,18 @@ export class LlWalkers {
     const ovfp = B.tmp();
     const ovf = B.tmp();
     B.line(
-      `${ovfp} = getelementptr inbounds %${mangleRecordStruct(shape.id)}, ptr %v, i64 0, i32 ${shape.fields.length + 1}`,
+      `${ovfp} = getelementptr inbounds %${mangleRecordStruct(shape.id)}, ptr %v, i64 0, i32 ${shape.fields.length + this.host.nullableUnions.fieldBase(shape.id)}`,
     );
     B.line(`${ovf} = load ptr, ptr ${ovfp} ; overflow map`);
+    if (iv.kind === "dyn") {
+      // The runtime writes every entry with JSON.stringify's member rules:
+      // each value's toJSON runs with its key before the entry is dropped
+      // or written, and containers below it join the circular-structure
+      // stack. It may leave an exception pending.
+      host.declare(`declare void @scr_jb_put_dyn_entries(ptr, ptr, ptr, ptr)`);
+      B.line(`call void @scr_jb_put_dyn_entries(ptr %b, ptr %v, ptr ${ovf}, ptr ${first})`);
+      return;
+    }
     host.declare(`declare ptr @scr_map_keys_js_order(ptr)`);
     host.declare(`declare double @scr_arr_len(ptr)`);
     host.declare(`declare ptr @scr_arr_get_ref(ptr, double)`);
@@ -576,23 +628,9 @@ export class LlWalkers {
         B.line(`${val} = call ptr @scr_map_get_str_ref(ptr ${ovf}, ptr ${k}) ; value (+1)`);
       }
       // Undefined-valued entries drop, exactly the optional-field rule: a
-      // dyn value whose dyn kind follows its size_t RC word (enum
-      // member 6 — scr_runtime.h's ScrDynKind), or a union holding its
-      // undefined arm.
+      // union holding its undefined arm.
       let skipUndef: string | null = null;
-      if (iv.kind === "dyn") {
-        const kp = B.tmp();
-        const kd = B.tmp();
-        const isu = B.tmp();
-        B.line(
-          `${kp} = getelementptr inbounds i8, ptr ${val}, i64 ${this.abiOffset(8, 4)} ; ->kind`,
-        );
-        B.line(`${kd} = load i32, ptr ${kp}`);
-        B.line(
-          `${isu} = icmp eq i32 ${kd}, 6 ; SCR_DYN_UNDEF (NULL is 0 — null members DO serialize)`,
-        );
-        skipUndef = isu;
-      } else if (iv.kind === "union" && undefinedArmTag(iv, this.host.unionsById) >= 0) {
+      if (iv.kind === "union" && undefinedArmTag(iv, this.host.unionsById) >= 0) {
         const tag = this.unionTag(B, val, iv.unionId);
         const isu = B.tmp();
         B.line(`${isu} = icmp eq i32 ${tag}, ${undefinedArmTag(iv, this.host.unionsById)}`);
@@ -636,6 +674,47 @@ export class LlWalkers {
     B.line(`call void @scr_arr_release(ptr ${ks})`);
   }
 
+  /** Serializing a value of `t` can call user code that changes the
+   * arrays or records holding it: it reaches an array that can hold
+   * foreign elements (their toJSON and getters), or a value whose own
+   * serialization may (a class instance, a checked-dynamic value), in a
+   * program that has foreign elements at all. */
+  private serializationMayCallUserCode(t: IrType, seen = new Set<string>()): boolean {
+    const host = this.host;
+    if (!host.mayHoldForeign({ kind: "f64" }) && !host.mayHoldForeign({ kind: "string" }))
+      return false;
+    const key = typeKey(t);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    switch (t.kind) {
+      case "dyn":
+      case "object":
+        return true;
+      case "array":
+        return host.mayHoldForeign(t.elem) || this.serializationMayCallUserCode(t.elem, seen);
+      case "record":
+        return (host.recordsById.get(t.shapeId)?.fields ?? []).some((field) =>
+          this.serializationMayCallUserCode(field.type, seen),
+        );
+      case "union":
+        return (host.unionsById.get(t.unionId)?.arms ?? []).some((arm) =>
+          this.serializationMayCallUserCode(arm, seen),
+        );
+      default:
+        return false;
+    }
+  }
+
+  /** Write a field value loaded borrowed from its record. When its
+   * serialization can call user code that replaces the field, the value
+   * is held across the write. */
+  private writeField(B: BlockBuilder, v: string, t: IrType, comment: string): void {
+    const held = isRefCounted(t) && this.serializationMayCallUserCode(t);
+    if (held) B.line(`call ptr ${retainSym(this.host, t)}(ptr ${v})`);
+    B.line(`call void @${this.jsonWriteHelper(t)}(ptr %b, ${this.valTy(t)} ${v}) ; ${comment}`);
+    if (held) B.line(`call void ${releaseSym(this.host, t)}(ptr ${v})`);
+  }
+
   private emitArrayWriter(B: BlockBuilder, elem: IrType, cyclic: boolean): void {
     const host = this.host;
     const w = this.jsonWriteHelper(elem);
@@ -645,7 +724,12 @@ export class LlWalkers {
     if (cyclic) this.jbEnter(B, true);
     this.putc(B, "%b", "91"); // '['
     const finish = B.newLabel("jwa.end");
-    if (elem.kind !== "bool") this.emitDenseArrayElements(B, elem, w, cyclic, finish);
+    // The dense walk borrows the storage and each element. When an
+    // element's serialization can call user code, which can grow or
+    // shrink the array or replace the element, the general walk below
+    // reads each index afresh and holds its element instead.
+    if (elem.kind !== "bool" && !this.serializationMayCallUserCode(elem))
+      this.emitDenseArrayElements(B, elem, w, cyclic, finish);
     const len = B.tmp();
     B.line(`${len} = call double @scr_arr_len(ptr %v)`);
     B.countedLoop(len, (i) => {
@@ -668,6 +752,25 @@ export class LlWalkers {
       B.line(`${present} = fcmp oeq double ${state}, ${f64Lit(1)}`);
       B.condBr(present, valueBlock, missingBlock);
       B.startBlock(missingBlock);
+      if (host.mayHoldForeign(elem)) {
+        // A foreign element (SCR_ARR_FOREIGN) serializes its own value,
+        // after its toJSON runs with the index as its key.
+        const foreign = B.tmp();
+        const foreignBlock = B.newLabel("jwa.foreign");
+        const nullBlock = B.newLabel("jwa.null");
+        B.line(`${foreign} = fcmp oeq double ${state}, ${f64Lit(3)}`);
+        B.condBr(foreign, foreignBlock, nullBlock);
+        B.startBlock(foreignBlock);
+        host.declare(`declare ptr @scr_arr_get_foreign(ptr, double)`);
+        host.declare(`declare void @scr_dyn_release(ptr)`);
+        const payload = B.tmp();
+        B.line(`${payload} = call ptr @scr_arr_get_foreign(ptr %v, double ${i}) ; +1`);
+        host.declare(`declare void @scr_jb_put_dyn_element(ptr, ptr, double)`);
+        B.line(`call void @scr_jb_put_dyn_element(ptr %b, ptr ${payload}, double ${i})`);
+        B.line(`call void @scr_dyn_release(ptr ${payload})`);
+        B.br(doneBlock);
+        B.startBlock(nullBlock);
+      }
       host.declare(`declare void @scr_jb_puts(ptr, ptr)`);
       B.line(`call void @scr_jb_puts(ptr %b, ptr ${host.cstr("null")})`);
       B.br(doneBlock);
@@ -836,6 +939,7 @@ export class LlWalkers {
     if (!def) throw new InternalCompilerError(`llvm emitter bug: join of unknown union ${unionId}`);
     const name = `sc_uj_${this.unionJoinFns.size}`;
     this.unionJoinFns.set(unionId, name);
+    this.host.journalAllocated?.(name, "walkers.unionJoinHelper", [unionId]);
 
     const host = this.host;
     host.declare(`declare void @scr_jb_init(ptr)`);
@@ -868,7 +972,28 @@ export class LlWalkers {
       const lvalue = B.newLabel("uj.p");
       B.line(`${state} = call double @scr_arr_state(ptr %a, double ${i})`);
       B.line(`${isValue} = fcmp oeq double ${state}, ${f64Lit(1)}`);
-      B.condBr(isValue, lvalue, next);
+      if (host.mayHoldForeign({ kind: "union", unionId })) {
+        // A foreign element (SCR_ARR_FOREIGN) joins as its ToString, like
+        // every element but undefined and null.
+        const notValue = B.newLabel("uj.f");
+        const foreignLabel = B.newLabel("uj.foreign");
+        B.condBr(isValue, lvalue, notValue);
+        B.startBlock(notValue);
+        const foreign = B.tmp();
+        B.line(`${foreign} = fcmp oeq double ${state}, ${f64Lit(3)}`);
+        B.condBr(foreign, foreignLabel, next);
+        B.startBlock(foreignLabel);
+        host.declare(`declare ptr @scr_arr_get_foreign(ptr, double)`);
+        host.declare(`declare void @scr_dyn_release(ptr)`);
+        const payload = B.tmp();
+        B.line(`${payload} = call ptr @scr_arr_get_foreign(ptr %a, double ${i}) ; +1`);
+        host.declare(`declare void @scr_jb_join_dyn(ptr, ptr)`);
+        B.line(`call void @scr_jb_join_dyn(ptr ${buf}, ptr ${payload})`);
+        B.line(`call void @scr_dyn_release(ptr ${payload})`);
+        B.br(next);
+      } else {
+        B.condBr(isValue, lvalue, next);
+      }
       B.startBlock(lvalue);
       const u = B.tmp();
       B.line(`${u} = call ptr @scr_arr_peek_ref(ptr %a, double ${i}) ; borrowed scalar union`);
@@ -888,6 +1013,17 @@ export class LlWalkers {
           case "string":
             this.putScrStr(B, buf, this.unionPeek(B, u, unionId));
             break;
+          case "date": {
+            host.declare(`declare ptr @scr_date_object_to_string(ptr)`);
+            host.declare(`declare void @scr_str_release(ptr)`);
+            const text = B.tmp();
+            B.line(
+              `${text} = call ptr @scr_date_object_to_string(ptr ${this.unionPeek(B, u, unionId)})`,
+            );
+            this.putScrStr(B, buf, text);
+            B.line(`call void @scr_str_release(ptr ${text})`);
+            break;
+          }
           case "f64": {
             host.declare(`declare double @scr_union_get_f64(ptr)`);
             host.declare(`declare void @scr_jb_put_number(ptr, double)`);
@@ -930,6 +1066,7 @@ export class LlWalkers {
       `}`,
       ``,
     );
+    this.host.journalBuilt?.();
     return name;
   }
 }

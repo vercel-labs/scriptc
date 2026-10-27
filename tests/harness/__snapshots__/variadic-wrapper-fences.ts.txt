@@ -1,0 +1,29 @@
+variadic-wrapper-fences.ts:6:7 - error SC2009: values of type '() => any' cannot be compiled: the function shape is supported, but its signature is variadic ('arguments'-reading), and a compiled signature is fixed-arity
+
+  5 | // `arguments` with no fixed signature to lower against.
+  6 | const loose = function () {
+    |       ^~~~~
+  7 |   return arguments[0];
+
+  hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
+
+variadic-wrapper-fences.ts:7:10 - error SC1090: 'arguments' in a function expression whose value is not asserted to one fixed-arity signature (assert it, as in `function () { … } as F`, and the function lowers against that signature) is not supported yet
+
+  6 | const loose = function () {
+  7 |   return arguments[0];
+    |          ^~~~~~~~~
+  8 | };
+
+variadic-wrapper-fences.ts:12:10 - error SC1090: reading 'fn.name' when the call passes a function whose name is only known at run time (generic wrappers fold the name of a function declaration, a const-bound function, or a wrapper call's result) is not supported yet (instantiating 'named' with <() => number>)
+
+  11 | function named<F extends AnyFn>(fn: F): string {
+  12 |   return fn.name;
+     |          ^~~~~~~
+  13 | }
+
+variadic-wrapper-fences.ts:25:10 - error SC1090: forwarding a fixed argument tuple through 'apply' to a variadic function value is not supported yet (instantiating 'forward' with <[number, number]>)
+
+  24 | function forward<A extends number[]>(sink: (...xs: number[]) => number, ...args: A): number {
+  25 |   return sink.apply(null, args);
+     |          ^~~~~~~~~~~~~~~~~~~~~~
+  26 | }

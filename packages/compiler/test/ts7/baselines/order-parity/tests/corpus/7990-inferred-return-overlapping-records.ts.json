@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7990-inferred-return-overlapping-records.ts"
+ ],
+ "diags": []
+}

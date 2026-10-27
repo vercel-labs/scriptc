@@ -39,6 +39,8 @@ const CONFIGS = [
   { name: "compiler-one-shot", program: "compiler.ts", args: ["400", "60", "1"] },
   // Per-file emit regions next to a large live heap of ordinary objects.
   { name: "emit-files", program: "emit.ts", args: ["400000", "200", "2000"] },
+  // Concurrent async request handlers, one region per request across its awaits.
+  { name: "requests-async", program: "requests.ts", args: ["4000", "16", "100"] },
 ];
 
 const work = join(tmpdir(), `scriptc-region-bench-${process.pid}`);
@@ -93,7 +95,7 @@ for (const config of CONFIGS) {
       const lines = r.stdout.trim().split("\n");
       outputs.set(name, lines[0].replace(/ gen0 .*/, ""));
       const metrics = {};
-      for (const [, key, value] of lines.at(-1).matchAll(/([a-z0-9-]+) ([0-9.]+) (?:ms|MB)/g))
+      for (const [, key, value] of lines.at(-1).matchAll(/([a-z0-9-]+) ([0-9.]+) (?:ms|us|MB)/g))
         metrics[key] = Number(value);
       samples[name].push(metrics);
     }

@@ -69,7 +69,7 @@ test("retains source-file BOM stripping", () => {
 
   const load = loadProgram(entry);
   try {
-    expect(load.entry.statements[0]?.getStart(load.entry)).toBe(0);
+    expect(load.entry.statements.nodes[0]?.getStart(load.entry)).toBe(0);
     expect(load.entry.text).toBe("const value = 1;\n");
   } finally {
     load.dispose();
@@ -119,7 +119,7 @@ ${uses}
   return required.value + value;
 }
 before();
-const required = require("./dep.cjs");
+var required = require("./dep.cjs");
 console.log(required.value);
 `,
   );
@@ -144,6 +144,8 @@ console.log(required.value);
     }) as Checker;
     program.checkerFacade = new CheckerFacade(proxy, { project: program.project.checker.project });
 
+    // A var binding keeps the SC1013 fence (Node reads undefined there); a
+    // const would compile with initialization checks from the same scan.
     expect(checkPreflight(load).map((diag) => diag.code)).toContain("SC1013");
     expect(calls.some(([arg]) => Array.isArray(arg) && arg.length > 24)).toBe(true);
     expect(calls.some(([arg]) => !Array.isArray(arg))).toBe(false);

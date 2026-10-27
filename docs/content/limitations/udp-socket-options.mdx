@@ -1,1 +1,9 @@
-`socket.addMembership()` and `socket.dropMembership()` on a `dgram` socket that is not bound yet throw `SC2020`; Node binds such a socket to an ephemeral port first, so bind the socket before joining a group. The `SystemError` that the buffer size methods throw (`ERR_SOCKET_BUFFER_SIZE`, for example from `getRecvBufferSize()` before `bind()`) has Node's `message`, `code`, `errno` and `syscall`, but no `info` object.
+`socket.addMembership()` and `socket.dropMembership()` on a `dgram` socket that is not bound yet throw `SC2020`; Node binds such a socket to an ephemeral port first, so bind the socket before joining a group.
+The `SystemError` that the buffer size methods throw (`ERR_SOCKET_BUFFER_SIZE`, for example from `getRecvBufferSize()` before `bind()`) has Node's `message`, `code`, `errno` and `syscall`, but no `info` object.
+
+In JavaScript, `socket.send()` also accepts lists of buffers, sends on a connected socket, and takes a completion callback, which receives `null` and the byte count, or the send's failure instead of an `'error'` event.
+The callback runs after the socket's pending events, where Node runs it on the next tick.
+In TypeScript, `send()` with a callback, a list, or on a connected socket fails to compile with `SC2020`.
+JavaScript can read a socket's `on`, `once`, `addListener`, `removeListener`, `off`, `emit`, `send`, `close`, `bind`, `connect`, `disconnect`, `address`, `ref`, and `unref` as function values, for example `socket.emit.bind(socket)`; reading other members as values is refused with `SC1090`.
+Listeners registered that way, or with untyped parameters, take only the `message`, `error`, `close`, `listening`, and `connect` events.
+When a socket closes, listeners registered from TypeScript are released, so an `emit()` from JavaScript after `'close'` reaches only listeners registered from JavaScript.

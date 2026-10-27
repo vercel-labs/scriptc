@@ -1,31 +1,31 @@
-module-out-of-scope.ts:6:1 - error SC1010: the 'node:v8' module (it observes V8 engine internals — heap statistics and snapshots, GC and CPU profiles, serialize/deserialize — and a compiled binary embeds no V8 engine to observe) is not supported yet
+module-out-of-scope.ts:6:1 - error SC1010: the 'node:vm' module (it compiles and runs JavaScript source at runtime, and a compiled binary embeds no JavaScript engine to run it) is not supported yet
 
-  5 | // (stream/web here) keeps the plain not-yet wording.
-  6 | import { getHeapStatistics } from "node:v8";
-    | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  5 | // surface (repl here) keeps the plain not-yet wording.
+  6 | import { runInNewContext } from "node:vm";
+    | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   7 | import { create } from "domain";
 
-  hint: relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported
+  hint: relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported
 
-module-out-of-scope.ts:6:35 - error SC0001: Cannot find name 'node:v8'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+module-out-of-scope.ts:6:33 - error SC0001: Cannot find name 'node:vm'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
 
-  5 | // (stream/web here) keeps the plain not-yet wording.
-  6 | import { getHeapStatistics } from "node:v8";
-    |                                   ^~~~~~~~~
+  5 | // surface (repl here) keeps the plain not-yet wording.
+  6 | import { runInNewContext } from "node:vm";
+    |                                 ^~~~~~~~~
   7 | import { create } from "domain";
 
 module-out-of-scope.ts:7:1 - error SC1010: the 'domain' module (deprecated in Node and slated for removal; its implicit error interception hooks every async callback at engine level, which is not modeled) is not supported yet
 
-  6 | import { getHeapStatistics } from "node:v8";
+  6 | import { runInNewContext } from "node:vm";
   7 | import { create } from "domain";
     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   8 | import { DatabaseSync } from "node:sqlite";
 
-  hint: relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported
+  hint: relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported
 
 module-out-of-scope.ts:7:24 - error SC0001: Cannot find name 'domain'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
 
-  6 | import { getHeapStatistics } from "node:v8";
+  6 | import { runInNewContext } from "node:vm";
   7 | import { create } from "domain";
     |                        ^~~~~~~~
   8 | import { DatabaseSync } from "node:sqlite";
@@ -37,7 +37,7 @@ module-out-of-scope.ts:8:1 - error SC1010: the 'node:sqlite' module (it wraps th
     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   9 | import { HTTPParser } from "_http_common";
 
-  hint: relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported
+  hint: relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported
 
 module-out-of-scope.ts:8:30 - error SC0001: Cannot find name 'node:sqlite'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
 
@@ -53,7 +53,7 @@ module-out-of-scope.ts:9:1 - error SC1010: the '_http_common' module (a Node-int
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   10 | import { open } from "node:inspector";
 
-  hint: relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported
+  hint: relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported
 
 module-out-of-scope.ts:9:28 - error SC0001: Cannot find module '_http_common' or its corresponding type declarations.
 
@@ -67,29 +67,29 @@ module-out-of-scope.ts:10:1 - error SC1010: the 'node:inspector' module (it driv
    9 | import { HTTPParser } from "_http_common";
   10 | import { open } from "node:inspector";
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  11 | import { ReadableStream } from "node:stream/web";
+  11 | import { start } from "node:repl";
 
-  hint: relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported
+  hint: relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported
 
 module-out-of-scope.ts:10:22 - error SC0001: Cannot find name 'node:inspector'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
 
    9 | import { HTTPParser } from "_http_common";
   10 | import { open } from "node:inspector";
      |                      ^~~~~~~~~~~~~~~~
-  11 | import { ReadableStream } from "node:stream/web";
+  11 | import { start } from "node:repl";
 
-module-out-of-scope.ts:11:1 - error SC1010: the 'node:stream/web' module is not supported yet
+module-out-of-scope.ts:11:1 - error SC1010: the 'node:repl' module is not supported yet
 
   10 | import { open } from "node:inspector";
-  11 | import { ReadableStream } from "node:stream/web";
-     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  11 | import { start } from "node:repl";
+     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   12 | 
 
-  hint: relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported
+  hint: relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported
 
-module-out-of-scope.ts:11:32 - error SC0001: Cannot find name 'node:stream/web'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
+module-out-of-scope.ts:11:23 - error SC0001: Cannot find name 'node:repl'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.
 
   10 | import { open } from "node:inspector";
-  11 | import { ReadableStream } from "node:stream/web";
-     |                                ^~~~~~~~~~~~~~~~~
+  11 | import { start } from "node:repl";
+     |                       ^~~~~~~~~~~
   12 | 

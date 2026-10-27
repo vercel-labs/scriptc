@@ -172,6 +172,242 @@ static void check_documents(void) {
   scr_message_free(message);
 }
 
+/* A message larger than the encoder's inline arrays (nodes, properties,
+ * identities and the visit stack) keeps its key order, shared values and
+ * text, and an encode started from a getter during another encode
+ * produces its own message. */
+static SCR_TL ScrMessage *nested_message;
+static ScrDyn *nested_getter(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  (void)closure; (void)args; (void)argc;
+  ScrDyn *inner = scr_dyn_new_arr();
+  scr_dyn_arr_push(inner, scr_dyn_new_num(41));
+  nested_message = scr_message_encode(inner);
+  scr_dyn_release(inner);
+  return scr_dyn_new_num(42);
+}
+
+static void check_large(void) {
+  ScrDyn *root = scr_dyn_new_obj();
+  ScrDyn *shared = scr_dyn_new_obj();
+  put_number(shared, "shared", 1);
+  ScrDyn *chain = root;
+  char key[32];
+  for (int i = 0; i < 40; i++) {
+    ScrDyn *item = scr_dyn_new_obj();
+    put_number(item, "index", i);
+    snprintf(key, sizeof key, "label-%d", i);
+    ScrStr *text = scr_str_new(key, strlen(key));
+    scr_dyn_obj_set(item, "label", 5, scr_dyn_new_str(text));
+    scr_str_release(text);
+    scr_dyn_obj_set(item, "shared", 6, scr_dyn_retain(shared));
+    snprintf(key, sizeof key, "item%d", i);
+    scr_dyn_obj_set(root, key, strlen(key), item);
+    /* A chain 40 objects deep grows the visit stack. */
+    ScrDyn *next = scr_dyn_new_obj();
+    scr_dyn_obj_set(chain, "next", 4, next);
+    chain = next;
+  }
+  scr_dyn_release(shared);
+  ScrClosure *closure = scr_closure_new(NULL, 0);
+  ScrDyn *descriptor = scr_dyn_new_obj();
+  scr_dyn_obj_set(descriptor, "get", 3, scr_dyn_new_func(closure, nested_getter, 0, "", ""));
+  scr_dyn_obj_set(descriptor, "enumerable", 10, scr_dyn_new_bool(true));
+  ScrStr *name = scr_str_new("nested", 6);
+  ScrDyn *name_value = scr_dyn_new_str(name);
+  scr_dyn_release(scr_dyn_define_property(root, name_value, descriptor));
+  scr_dyn_release(name_value);
+  scr_dyn_release(descriptor);
+  scr_str_release(name);
+  ScrMessage *message = scr_message_encode(root);
+  assert(message && !scr_exc_pending() && nested_message);
+  scr_dyn_release(root);
+  scr_collect_cycles();
+  ScrDyn *decoded = scr_message_decode(message);
+  assert(decoded && !scr_exc_pending());
+  assert(decoded->v.obj.len == 42);
+  size_t member_len;
+  const char *member = scr_dyn_obj_key_at(decoded, 0, &member_len);
+  assert(member_len == 5 && !memcmp(member, "item0", 5));
+  member = scr_dyn_obj_key_at(decoded, 41, &member_len);
+  assert(member_len == 6 && !memcmp(member, "nested", 6));
+  assert(scr_dyn_obj_get(decoded, "nested", 6)->v.num == 42);
+  ScrDyn *first = scr_dyn_obj_get(decoded, "item0", 5);
+  for (int i = 0; i < 40; i++) {
+    snprintf(key, sizeof key, "item%d", i);
+    ScrDyn *item = scr_dyn_obj_get(decoded, key, strlen(key));
+    assert(item && scr_dyn_obj_get(item, "index", 5)->v.num == i);
+    assert(scr_dyn_obj_get(item, "shared", 6) == scr_dyn_obj_get(first, "shared", 6));
+    snprintf(key, sizeof key, "label-%d", i);
+    ScrStr *label = scr_dyn_obj_get(item, "label", 5)->v.str;
+    assert(label->len == strlen(key) && !memcmp(label->data, key, label->len));
+  }
+  ScrDyn *link = decoded;
+  for (int i = 0; i < 40; i++) link = scr_dyn_obj_get(link, "next", 4);
+  assert(link && link->kind == SCR_DYN_OBJ && link->v.obj.len == 0);
+  scr_dyn_release(decoded);
+  ScrDyn *inner = scr_message_decode(nested_message);
+  assert(inner && inner->v.arr.len == 1 && inner->v.arr.items[0]->v.num == 41);
+  scr_dyn_release(inner);
+  scr_collect_cycles();
+  scr_message_free(nested_message);
+  scr_message_free(message);
+}
+
+/* The readers compiled 'message' listeners use: node kinds and values, a
+ * record's keys in order, and which messages they may read. */
+static void check_readers(void) {
+  ScrDyn *root = scr_dyn_new_obj();
+  put_number(root, "id", 7);
+  ScrStr *text = scr_str_new("seven", 5);
+  scr_dyn_obj_set(root, "name", 4, scr_dyn_new_str(text));
+  scr_str_release(text);
+  scr_dyn_obj_set(root, "done", 4, scr_dyn_new_bool(true));
+  ScrMessage *message = scr_message_encode(root);
+  assert(message && scr_message_readable(message));
+  assert(scr_message_kind(message, 0) == SCR_MESSAGE_OBJECT);
+  static const char *const names[] = {"id", "name", "done"};
+  static const size_t lengths[] = {2, 4, 4};
+  size_t values[3];
+  assert(scr_message_fields(message, 0, names, lengths, 3, values));
+  assert(scr_message_kind(message, values[0]) == SCR_MESSAGE_NUMBER);
+  assert(scr_message_number(message, values[0]) == 7);
+  assert(scr_message_kind(message, values[1]) == SCR_MESSAGE_STRING);
+  ScrStr *name = scr_message_string(message, values[1]);
+  assert(name->len == 5 && !memcmp(name->data, "seven", 5));
+  scr_str_release(name);
+  assert(scr_message_kind(message, values[2]) == SCR_MESSAGE_BOOL);
+  assert(scr_message_number(message, values[2]) == 1);
+  /* Another order, a missing key or an extra key does not match. */
+  static const char *const reordered[] = {"name", "id", "done"};
+  static const size_t reordered_lengths[] = {4, 2, 4};
+  assert(!scr_message_fields(message, 0, reordered, reordered_lengths, 3, values));
+  assert(!scr_message_fields(message, 0, names, lengths, 2, values));
+  assert(!scr_message_fields(message, values[0], names, lengths, 3, values));
+  scr_message_free(message);
+  put_number(root, "extra", 1);
+  message = scr_message_encode(root);
+  assert(!scr_message_fields(message, 0, names, lengths, 3, values));
+  scr_message_free(message);
+  /* A value reached twice makes the message unreadable. */
+  ScrDyn *shared = scr_dyn_new_obj();
+  scr_dyn_obj_set(root, "first", 5, scr_dyn_retain(shared));
+  scr_dyn_obj_set(root, "second", 6, shared);
+  message = scr_message_encode(root);
+  assert(message && !scr_message_readable(message));
+  scr_message_free(message);
+  scr_dyn_release(root);
+  scr_collect_cycles();
+}
+
+/* A link-gated unit's handle crosses threads through the transfer hooks in
+ * its ops: share on the sender, adopt on the receiver, drop with the
+ * message. The test borrows the last capacity slot, which no unit uses, so
+ * it also proves that slots past the tags in use work. */
+#define TRANSFER_TAG ((ScrDynHandleTag)(SCR_DYNH_CAPACITY - 1))
+typedef struct {
+  _Atomic size_t rc;
+  int value;
+} TransferBox;
+static _Atomic int transfer_shares, transfer_adopts, transfer_drops;
+static void *transfer_retain(void *h) {
+  ((TransferBox *)h)->rc++;
+  return h;
+}
+static void transfer_release(void *h) {
+  if (--((TransferBox *)h)->rc == 0) free(h);
+}
+static void *transfer_share(void *h) {
+  TransferBox *source = h;
+  if (source->value < 0) return NULL;
+  transfer_shares++;
+  TransferBox *copy = malloc(sizeof *copy);
+  copy->rc = 1;
+  copy->value = source->value;
+  return copy;
+}
+static ScrDyn *transfer_adopt(void *payload) {
+  transfer_adopts++;
+  return scr_dyn_new_handle(payload, TRANSFER_TAG);
+}
+static void transfer_drop(void *payload) {
+  transfer_drops++;
+  transfer_release(payload);
+}
+static const ScrDynHandleTransfer transfer_hooks = {transfer_share, transfer_adopt, transfer_drop};
+static const ScrDynHandleOps transfer_ops = {
+    .cls = "Transferable",
+    .retain = transfer_retain,
+    .release = transfer_release,
+    .transfer = &transfer_hooks,
+};
+static const ScrDynHandleOps opaque_ops = {
+    .cls = "Opaque",
+    .retain = transfer_retain,
+    .release = transfer_release,
+};
+
+static void *receive_handles(void *data) {
+  scr_context_enter(1);
+  scr_init();
+  scr_lib_init(0, NULL);
+  scr_dyn_handle_install(TRANSFER_TAG, &transfer_ops);
+  ScrDyn *root = scr_message_decode(data);
+  assert(root && !scr_exc_pending());
+  ScrDyn *first = scr_dyn_obj_get(root, "first", 5);
+  assert(first->kind == SCR_DYN_HANDLE && first->v.handle.tag == TRANSFER_TAG);
+  assert(((TransferBox *)first->v.handle.ptr)->value == 7);
+  /* One handle reached twice decodes to one box. */
+  assert(first == scr_dyn_obj_get(root, "again", 5));
+  assert(transfer_adopts == 1);
+  scr_dyn_release(root);
+  scr_collect_cycles();
+  scr_context_cleanup();
+  return NULL;
+}
+
+static ScrDyn *transfer_handle(int value, const ScrDynHandleOps *ops) {
+  scr_dyn_handle_install(TRANSFER_TAG, ops);
+  TransferBox *box = malloc(sizeof *box);
+  box->rc = 1;
+  box->value = value;
+  ScrDyn *handle = scr_dyn_new_handle(box, TRANSFER_TAG);
+  transfer_release(box);
+  return handle;
+}
+
+static void check_handle_transfer(void) {
+  ScrDyn *root = scr_dyn_new_obj();
+  ScrDyn *handle = transfer_handle(7, &transfer_ops);
+  scr_dyn_obj_set(root, "first", 5, scr_dyn_retain(handle));
+  scr_dyn_obj_set(root, "again", 5, handle);
+  ScrMessage *message = scr_message_encode(root);
+  assert(message && !scr_exc_pending());
+  assert(transfer_shares == 1);
+  scr_dyn_release(root);
+  pthread_t receiver;
+  assert(pthread_create(&receiver, NULL, receive_handles, message) == 0);
+  assert(pthread_join(receiver, NULL) == 0);
+  assert(transfer_drops == 0);
+  scr_message_free(message);
+  assert(transfer_drops == 1);
+
+  /* A handle whose unit declines (share answers NULL) and a handle with no
+   * transfer hooks both throw DataCloneError, releasing what was shared. */
+  root = scr_dyn_new_arr();
+  scr_dyn_arr_push(root, transfer_handle(1, &transfer_ops));
+  scr_dyn_arr_push(root, transfer_handle(-1, &transfer_ops));
+  assert(!scr_message_encode(root) && scr_exc_pending());
+  scr_exc_clear();
+  assert(transfer_shares == 2 && transfer_drops == 2);
+  scr_dyn_release(root);
+  root = transfer_handle(3, &opaque_ops);
+  assert(!scr_message_encode(root) && scr_exc_pending());
+  scr_exc_clear();
+  assert(transfer_shares == 2);
+  scr_dyn_release(root);
+  scr_collect_cycles();
+}
+
 int main(void) {
   scr_init();
   scr_lib_init(0, NULL);
@@ -188,6 +424,10 @@ int main(void) {
   check_getters();
   check_rejection();
   check_documents();
+  check_large();
+  check_readers();
+  check_handle_transfer();
   scr_context_cleanup();
   puts("message graphs preserve identity, sparse values, byte aliases and getter order");
+  puts("native handles cross threads through their transfer hooks");
 }

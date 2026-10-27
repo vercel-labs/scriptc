@@ -1,0 +1,44 @@
+mock-timers-fences.ts:20:22 - error SC2020: 'mock.timers.enable with a non-literal apis list' is part of the standard library types but has no scriptc lowering yet
+
+  19 | const apis: ("setTimeout" | "setInterval")[] = ["setTimeout"];
+  20 | mock.timers.enable({ apis }); // apis list that is not a literal
+     |                      ^~~~
+  21 | 
+
+  hint: list the mocked APIs as string literals: enable({ apis: ['setTimeout', 'Date'] })
+
+mock-timers-fences.ts:23:20 - error SC2020: 'mock.timers.enable with a non-literal options object' is part of the standard library types but has no scriptc lowering yet
+
+  22 | const options = { apis: ["setTimeout"] as const };
+  23 | mock.timers.enable(options); // options object that is not a literal
+     |                    ^~~~~~~
+  24 | 
+
+  hint: list the mocked APIs as string literals: enable({ apis: ['setTimeout', 'Date'] })
+
+mock-timers-fences.ts:25:7 - error SC2020: 'MockTimers' is part of the standard library types but has no scriptc lowering yet
+
+  24 | 
+  25 | const timers = mock.timers; // the object as a value
+     |       ^~~~~~
+  26 | timers.tick(1);
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+mock-timers-fences.ts:25:16 - error SC2020: 'MockTracker.timers' is part of the standard library types but has no scriptc lowering yet
+
+  24 | 
+  25 | const timers = mock.timers; // the object as a value
+     |                ^~~~~~~~~~~
+  26 | timers.tick(1);
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+mock-timers-fences.ts:26:1 - error SC2020: 'MockTimers.tick' is part of the standard library types but has no scriptc lowering yet
+
+  25 | const timers = mock.timers; // the object as a value
+  26 | timers.tick(1);
+     | ^~~~~~~~~~~
+  27 | 
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)

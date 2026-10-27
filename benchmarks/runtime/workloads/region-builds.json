@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/region-builds.ts",
+  "args": [
+    "1"
+  ]
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6904-typedarray-of-loose.mjs"
+ ],
+ "diags": []
+}

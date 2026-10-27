@@ -20,3 +20,14 @@ const nested = comptime(() => comptime(() => 1));
 const eventually = comptime(async () => 1);
 
 const lied = comptime(() => 1 as unknown as string);
+
+// A record type reachable from its own fields has no literal form.
+interface Chain {
+  value: number;
+  next: Chain | null;
+}
+const chain: Chain = comptime(() => ({ value: 1, next: null }) as Chain);
+
+// A union reachable from itself through an array has no literal form either.
+type Tree = number | Tree[];
+const tree: Tree = comptime((): Tree => [1, [2, [3]]]);

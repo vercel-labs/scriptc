@@ -16,7 +16,7 @@ export function inferredJsDiagnosticSuppressed(
   const checker = program.getTypeChecker();
   let suppressed = false;
   ts.walkPreorder(file, (node) => {
-    if (node.getEnd() < diagnostic.pos || node.getStart(file) > diagnostic.end) return "skip";
+    if (node.end < diagnostic.pos || ts.tokenStartOfNode(node) > diagnostic.end) return "skip";
     if (
       diagnostic.code === 2565 &&
       isJsSourceFileName(file.fileName) &&
@@ -25,15 +25,13 @@ export function inferredJsDiagnosticSuppressed(
       const symbol = checker.getSymbolAtLocation(node.name);
       if (
         symbol &&
-        checker
-          .declarationsOf(symbol)
-          .some(
-            (decl) =>
-              ts.isPropertyDeclaration(decl) &&
-              !decl.type &&
-              !decl.initializer &&
-              !/@type\b/.test(file.text.slice(decl.pos, decl.getStart(file))),
-          )
+        symbol.declarations.some(
+          (decl) =>
+            ts.isPropertyDeclaration(decl) &&
+            !decl.type &&
+            !decl.initializer &&
+            !/@type\b/.test(file.text.slice(decl.pos, ts.tokenStartOfNode(decl))),
+        )
       ) {
         // Bare JS fields exist with value undefined before the first write;
         // native storage includes that arm even when inference omits it.
@@ -43,16 +41,17 @@ export function inferredJsDiagnosticSuppressed(
     }
     if (diagnostic.code === 2554 && ts.isCallExpression(node)) {
       const signature = checker.getResolvedSignature(node);
-      const declaration = signature && checker.signatureDeclaration(signature);
+      const declaration = signature && signature.declaration;
       if (
         declaration &&
-        isJsSourceFileName(declaration.getSourceFile().fileName) &&
+        isJsSourceFileName(ts.getSourceFileOfNode(declaration).fileName) &&
         (ts.isFunctionDeclaration(declaration) ||
           ts.isFunctionExpression(declaration) ||
           ts.isMethodDeclaration(declaration)) &&
-        node.arguments.length > declaration.parameters.length &&
-        node.arguments[declaration.parameters.length]?.getStart(file) === diagnostic.pos &&
-        node.arguments[node.arguments.length - 1]?.getEnd() === diagnostic.end &&
+        node.arguments.nodes.length > declaration.parameters.nodes.length &&
+        ts.tokenStartOfNode(node.arguments.nodes[declaration.parameters.nodes.length]!) ===
+          diagnostic.pos &&
+        node.arguments.nodes[node.arguments.nodes.length - 1]!.end === diagnostic.end &&
         bodyReadsArguments(declaration)
       ) {
         suppressed = true;
@@ -69,7 +68,7 @@ export function inferredJsDiagnosticSuppressed(
       const iterable = checker.getTypeAtLocation(node.expression);
       const iterator = checker
         .getPropertiesOfType(iterable)
-        .find((property) => property.name.startsWith("__@iterator@"));
+        .find((property) => ts.symbolName(property).startsWith("__@iterator@"));
       if (!iterator) return undefined;
       const signatures = checker.getCallSignatures(
         checker.getTypeOfSymbolAtLocation(iterator, node.expression),
@@ -82,18 +81,16 @@ export function inferredJsDiagnosticSuppressed(
         checker.getTypeOfSymbolAtLocation(throwMethod, node.expression),
       );
       const declaration =
-        throwSignatures.length === 1
-          ? checker.signatureDeclaration(throwSignatures[0]!)
-          : undefined;
+        throwSignatures.length === 1 ? throwSignatures[0]!.declaration : undefined;
       // A sole throw cannot return an invalid IteratorResult. Avoid inferring
       // termination through arbitrary control flow or explicit return types.
       if (
         declaration &&
         ts.isMethodDeclaration(declaration) &&
         declaration.type === undefined &&
-        isJsSourceFileName(declaration.getSourceFile().fileName) &&
-        declaration.body?.statements.length === 1 &&
-        ts.isThrowStatement(declaration.body.statements[0]!)
+        isJsSourceFileName(ts.getSourceFileOfNode(declaration).fileName) &&
+        declaration.body?.statements?.nodes.length === 1 &&
+        ts.isThrowStatement(declaration.body.statements.nodes[0]!)
       ) {
         suppressed = true;
         return "stop";

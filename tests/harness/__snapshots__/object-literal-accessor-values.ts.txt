@@ -1,0 +1,6 @@
+object-literal-accessor-values.ts:13:28 - error SC1090: JSON.stringify of '{ get doubled(): number; count: number }' values (only number, string, boolean, records, arrays, unions of those, and 'unknown' stringify) are not supported yet
+
+  12 | // JSON.stringify of the typed value would omit the getter's property.
+  13 | console.log(JSON.stringify(counter));
+     |                            ^~~~~~~
+  14 | 

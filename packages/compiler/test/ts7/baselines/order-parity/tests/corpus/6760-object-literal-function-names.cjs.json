@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6760-object-literal-function-names.cjs"
+ ],
+ "diags": []
+}

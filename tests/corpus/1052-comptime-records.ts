@@ -43,3 +43,20 @@ const meta = comptime(() => {
   return { kind: "meta", tags, count: tags.length };
 });
 console.log(meta.kind, meta.tags.join("|"), meta.count);
+
+// A discriminated union whose arms both fit a "labeled" value without a
+// label: the discriminant picks the arm.
+type Item = { kind: "plain"; v: number } | { kind: "labeled"; v: number; label?: string };
+const items: Item[] = comptime(
+  () =>
+    [
+      { kind: "plain", v: 1 },
+      { kind: "labeled", v: 2 },
+      { kind: "labeled", v: 3, label: "x" },
+    ] as Item[],
+);
+for (const item of items) {
+  if (item.kind === "labeled") console.log("labeled", item.v, item.label);
+  else console.log("plain", item.v);
+}
+console.log(JSON.stringify(items));

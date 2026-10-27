@@ -1,7 +1,17 @@
-Strings are stored as UTF-8, with lone surrogates kept as their own code units. Length and string methods use UTF-16 semantics, including for lone surrogates, but relational comparisons such as `<` and `>` use code-point order. `split` with a string separator and `replace` or `replaceAll` with a string pattern don't match a lone surrogate against half of a surrogate pair; regular-expression patterns do. Output, file contents, and other encoded text write each lone surrogate as U+FFFD, as Node does. File system paths and network host names that contain a lone surrogate reach the operating system unconverted.
+Strings are stored as UTF-8, with lone surrogates kept as their own code units.
+Length, string methods and relational comparisons such as `<` and `>` use UTF-16 semantics, including for lone surrogates.
+`split` with a string separator and `replace` or `replaceAll` with a string pattern don't match a lone surrogate against half of a surrogate pair; regular-expression patterns do.
+Output, file contents, and other encoded text write each lone surrogate as U+FFFD, as Node does.
+File system paths and network host names that contain a lone surrogate reach the operating system unconverted.
 
-One-argument `localeCompare` follows Node's default root-locale collation for Latin-script text (ASCII, Latin-1 Supplement, Latin Extended-A, combining diacritical marks, and U+2044 FRACTION SLASH): letters order before case and accents, so `"a".localeCompare("B")` is `-1`. Strings containing other characters compare by code point, which can differ from Node's ICU collation; `SC6003` reports such string literals. The locales and options arguments are unsupported.
+One-argument `localeCompare` follows Node's default root-locale collation for Latin-script text (ASCII, Latin-1 Supplement, Latin Extended-A, combining diacritical marks, and U+2044 FRACTION SLASH): letters order before case and accents, so `"a".localeCompare("B")` is `-1`.
+Strings containing other characters compare by code point, which can differ from Node's ICU collation; `SC6003` reports such string literals.
+The locales and options arguments are unsupported.
 
-`sort` and `toSorted` use stable natural merge sort. Default ordering supports string, number, and boolean arrays, comparing their string forms in UTF-16 order; for example, `[2, 10, 1].sort()` produces `[1, 10, 2]`. `sort` preserves holes at the end, while `toSorted` produces a fresh array with holes filled by `undefined`. With an explicit comparator, consistent comparators produce the same sorted results as Node, but callback order and count can differ.
+`sort` and `toSorted` use stable natural merge sort.
+Default ordering supports string, number, and boolean arrays, comparing their string forms in UTF-16 order; for example, `[2, 10, 1].sort()` produces `[1, 10, 2]`.
+`sort` preserves holes at the end, while `toSorted` produces a fresh array with holes filled by `undefined`.
+With an explicit comparator, consistent comparators produce the same sorted results as Node, but callback order and count can differ.
 
-Typed-array `sort` and `toSorted` order numbers by default, with `-0` before `0` and `NaN` last. With a comparator, they call it in the same order as Node and write the sorted values back after the last call.
+Typed-array `sort` and `toSorted` order numbers by default, with `-0` before `0` and `NaN` last.
+With a comparator, they call it in the same order as Node and write the sorted values back after the last call.

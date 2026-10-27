@@ -10,7 +10,7 @@ import {
   type IrStmt,
   type IrType,
 } from "./ir.js";
-import { scalarizeNumericRecords } from "./scalar-records.js";
+import { scalarizeLiteralResults, scalarizeNumericRecords } from "./scalar-records.js";
 import { validateModule } from "./validate.js";
 
 const loc = { file: "scalar-records.ts", start: 0, end: 0 };
@@ -40,7 +40,7 @@ const read = (localId: string, field = "a"): IrExpr => ({
 
 function fixture(): IrModule {
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     records: [
@@ -283,4 +283,190 @@ test("bounds expansion in callers with many eligible calls", () => {
   const remaining = nodes(out.body, "call").filter((n) => n["callee"] === "pair").length;
   expect(remaining).toBeGreaterThan(0);
   expect(remaining).toBeLessThan(300);
+});
+
+const tuple: IrType = { kind: "record", shapeId: "t0" };
+const strRef = (localId: string): IrExpr => ref(localId, STRING);
+const element = (localId: string, field: string, type: IrType): IrStmt => ({
+  kind: "varDecl",
+  localId,
+  init: { kind: "recordGet", obj: ref("result", tuple), shapeId: "t0", field, type, loc },
+  loc,
+});
+
+/** `split(text, at)` returning `[text.slice(0, at), text.slice(at), at > 0]`,
+ * and a `main` destructuring it. */
+function literalFixture(after: IrStmt[]): IrModule {
+  const slice = (args: IrExpr[]): IrExpr => ({
+    kind: "strIntrinsic",
+    method: "slice",
+    receiver: strRef("text"),
+    args,
+    type: STRING,
+    loc,
+  });
+  return {
+    irVersion: 17,
+    sourceFile: loc.file,
+    entry: "main",
+    records: [
+      {
+        id: "t0",
+        fields: [
+          { name: "0", type: STRING },
+          { name: "1", type: STRING },
+          { name: "2", type: BOOL },
+        ],
+        tuple: true,
+      },
+    ],
+    functions: [
+      {
+        name: "split",
+        params: [
+          { localId: "text", name: "text", type: STRING },
+          { localId: "at", name: "at", type: F64 },
+        ],
+        returnType: tuple,
+        locals: [
+          { id: "text", name: "text", type: STRING, mutable: false },
+          { id: "at", name: "at", type: F64, mutable: false },
+        ],
+        body: [
+          {
+            kind: "return",
+            value: {
+              kind: "recordLit",
+              type: tuple,
+              fields: [
+                { name: "0", value: slice([num(0), ref("at")]) },
+                { name: "1", value: slice([ref("at")]) },
+                {
+                  name: "2",
+                  value: { kind: "bin", op: ">", left: ref("at"), right: num(0), type: BOOL, loc },
+                },
+              ],
+              loc,
+            },
+            loc,
+          },
+        ],
+        loc,
+      },
+      {
+        name: "main",
+        params: [{ localId: "source", name: "source", type: STRING }],
+        returnType: VOID,
+        locals: [
+          { id: "source", name: "source", type: STRING, mutable: false },
+          { id: "result", name: "result", type: tuple, mutable: false },
+          { id: "head", name: "head", type: STRING, mutable: false },
+          { id: "tail", name: "tail", type: STRING, mutable: true },
+        ],
+        body: [
+          {
+            kind: "varDecl",
+            localId: "result",
+            init: call("split", [strRef("source"), call("effect", [num(1)])], tuple),
+            loc,
+          },
+          ...after,
+        ],
+        loc,
+      },
+      {
+        name: "effect",
+        params: [{ localId: "x", name: "x", type: F64 }],
+        returnType: F64,
+        locals: [{ id: "x", name: "x", type: F64, mutable: true }],
+        body: [{ kind: "return", value: ref("x"), loc }],
+        loc,
+      },
+    ],
+  };
+}
+
+function literalTransformed(mod: IrModule): IrModule {
+  expect(validateModule(mod)).toEqual([]);
+  const out = scalarizeLiteralResults(mod);
+  expect(validateModule(out)).toEqual([]);
+  return out;
+}
+
+test("declares destructured elements from a literal producer's fields in evaluation order", () => {
+  const mod = literalFixture([element("head", "0", STRING), element("tail", "1", STRING)]);
+  const snapshot = structuredClone(mod);
+  const out = literalTransformed(mod);
+  expect(mod).toEqual(snapshot);
+  const caller = main(out);
+  expect(nodes(caller.body, "recordGet")).toEqual([]);
+  expect(nodes(caller.body, "call").map((c) => c["callee"])).toEqual(["effect"]);
+  const declared = caller.body.map((s) => (s.kind === "varDecl" ? s.localId : s.kind));
+  // Parameters, then every field in the literal's order: the unread third
+  // field still evaluates, into a binding of its own.
+  expect(declared.slice(2)).toEqual(["head", "tail", declared[4]]);
+  expect(caller.locals.find((l) => l.id === declared[4])?.type).toEqual(BOOL);
+  expect(caller.locals.some((l) => l.id === "result")).toBe(false);
+  // Slices stay slices of the renamed parameter.
+  expect(nodes(caller.body, "strIntrinsic").map((n) => (n["receiver"] as IrExpr).kind)).toEqual([
+    "varRef",
+    "varRef",
+  ]);
+});
+
+test("keeps the call when the result is read other than by adjacent element declarations", () => {
+  const escaped = literalFixture([
+    element("head", "0", STRING),
+    { kind: "exprStmt", expr: ref("result", tuple), loc },
+  ]);
+  expect(literalTransformed(escaped)).toBe(escaped);
+  const apart = literalFixture([
+    element("head", "0", STRING),
+    { kind: "exprStmt", expr: num(0), loc },
+    element("tail", "1", STRING),
+  ]);
+  expect(literalTransformed(apart)).toBe(apart);
+});
+
+test("keeps the call when an argument holds a counted temporary of its own", () => {
+  const mod = literalFixture([element("head", "0", STRING)]);
+  const decl = main(mod).body[0] as IrStmt & { kind: "varDecl" };
+  const length: IrExpr = {
+    kind: "strIntrinsic",
+    method: "length",
+    receiver: { kind: "strLit", value: "abc", type: STRING, loc },
+    args: [],
+    type: F64,
+    loc,
+  };
+  (decl.init as IrExpr & { kind: "call" }).args[1] = length;
+  expect(literalTransformed(mod)).toBe(mod);
+});
+
+test("renames a producer's parameter where its literal writes it", () => {
+  const mod = literalFixture([element("head", "0", STRING), element("tail", "1", STRING)]);
+  const split = mod.functions.find((fn) => fn.name === "split")!;
+  // Lowering declares every parameter mutable.
+  for (const l of split.locals) l.mutable = true;
+  const ret = split.body[0] as IrStmt & { kind: "return" };
+  const literal = ret.value as IrExpr & { kind: "recordLit" };
+  // `at++ > (at = 0)`
+  literal.fields[2]!.value = {
+    kind: "bin",
+    op: ">",
+    left: { kind: "incDec", op: "+", prefix: false, localId: "at", type: F64, loc },
+    right: { kind: "assignExpr", localId: "at", value: num(0), type: F64, loc },
+    type: BOOL,
+    loc,
+  };
+  const caller = main(literalTransformed(mod));
+  const [text, at] = caller.body
+    .slice(0, 2)
+    .map((s) => (s as IrStmt & { kind: "varDecl" }).localId);
+  expect(at).not.toBe("at");
+  const writes = [...nodes(caller.body, "incDec"), ...nodes(caller.body, "assignExpr")];
+  expect(writes.map((w) => w["localId"])).toEqual([at, at]);
+  // Only the written parameter's binding is mutable.
+  expect(caller.locals.find((l) => l.id === at)?.mutable).toBe(true);
+  expect(caller.locals.find((l) => l.id === text)?.mutable).toBe(false);
 });

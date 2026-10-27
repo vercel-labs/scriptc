@@ -1,7 +1,48 @@
-`node:worker_threads` runs workers as native threads. Worker entry points must resolve at build time: use a source-relative `new URL("./worker.ts", import.meta.url)`, the current module URL, an absolute path, or CommonJS `__filename`. Each worker initializes its own module state, event loop, environment snapshot, and reference-counted heap. Nested workers inherit their parent's environment snapshot. Supported constructor options are `workerData`, `argv`, and a `transferList` of MessagePorts; runtime paths, `eval`, loaders, custom stdio, shared environments, and resource limits are unsupported. Worker argument strings containing null bytes are also unsupported.
+`node:worker_threads` runs workers as native threads.
+Worker entry points must resolve at build time: use a source-relative `new URL("./worker.ts", import.meta.url)`, the current module URL, an absolute path, or CommonJS `__filename`.
+Each worker initializes its own module state, event loop, environment snapshot, and reference-counted heap.
+Nested workers inherit their parent's environment snapshot.
+Supported constructor options are `workerData`, `argv`, a `transferList` of MessagePorts, `name` (reported by `threadName` and `worker.threadName`), `stdout`, `stderr` and `stdin`, and `resourceLimits.stackSizeMb`, which sets the worker thread's stack size (at least 192 KiB; without it a worker's stack is 8 MiB, where Node's is 4 MiB).
+The `resourceLimits` heap limits (`maxOldGenerationSizeMb`, `maxYoungGenerationSizeMb`, and `codeRangeSizeMb`), `worker.resourceLimits` while the worker runs, and `resourceLimits` read inside a worker are refused; in the main thread `resourceLimits` is `{}`, and after a worker exits `worker.resourceLimits` is `{}`, as in Node.
+With the `stdout` or `stderr` option, the worker's writes to that stream reach `worker.stdout` or `worker.stderr`, a Readable that ends after the worker's `'exit'` event; its chunks arrive in order with the worker's other events.
+Without the option a worker writes to the process's own output, and reading `worker.stdout` or `worker.stderr` is refused.
+With the `stdin` option, `worker.stdin` is a Writable whose chunks the worker reads from `process.stdin`, in order with the worker's other events, and `process.stdin` ends when `worker.stdin` ends; without it `worker.stdin` is `null` and the worker's `process.stdin` ends without data, as in Node.
+Runtime paths, `eval`, loaders, and shared environments are unsupported.
+`setEnvironmentData` and `getEnvironmentData` keep a map per thread with SameValueZero keys; each new Worker starts from a clone of its parent's entries taken by the constructor, which throws `DataCloneError` when an entry cannot be cloned.
+Worker argument strings containing null bytes are also unsupported.
 
-Workers support `online`, `message`, `error`, and `exit` events, `postMessage`, `terminate`, `ref`, and `unref`. `new MessageChannel()` from `node:worker_threads` makes two entangled MessagePorts, in one thread or across threads once a port is transferred, with `receiveMessageOnPort`. Port messages arrive in Node's order: each port's queued messages as one batch before `setImmediate` callbacks, a port's own `'close'` after the poll phase, and the other port's `'close'` after its queued messages while the loop keeps running. A port's `onmessage` property, `addEventListener`, `receiveMessageOnPort(parentPort)`, and `BroadcastChannel` are unsupported. The parent port supports message listeners, `postMessage`, `close`, `start`, `ref`, `unref`, and `hasRef`. Messages clone primitives, plain object graphs, arrays, errors, ArrayBuffers, typed arrays, and DataViews, preserving cycles and aliases. Program class instances arrive as plain objects with their own data properties, without their prototype, methods, accessors, or private fields, as in Node. A MessagePort travels with a message when the message's transfer list (an array or `{ transfer }`) names it, and the sending port is unusable afterwards; a port in a message without that listing throws `DataCloneError`. Other transferable values, functions, proxies, and other native handles are refused. SharedArrayBuffers share their backing storage while retaining separate wrappers in each thread. Graphs made immutable with `@scriptc/threads` are passed by reference instead of cloned; see [Sharing Data Between Workers](/docs/threads).
+Workers support `online`, `message`, `error`, and `exit` events, `postMessage`, `terminate`, `ref`, and `unref`.
+`worker[Symbol.asyncDispose]()` terminates the worker and resolves with `undefined` after its `exit` event, so `await using` disposes a Worker at the end of its block.
+A worker's uncaught exception reaches its `error` listeners as Node's error serializer sends it: an Error keeps the nearest of `Error` and its six native subclasses (an `AggregateError` arrives as an `Error` named `AggregateError`) along with its name, message, cause, and other data properties and their enumerability, and other thrown values clone as messages do.
+An unhandled rejection whose reason is not error-like arrives as an `UnhandledPromiseRejection` Error with code `ERR_UNHANDLED_REJECTION` quoting the reason.
+A thrown value that does not clone, such as a function, arrives as an `ERR_WORKER_UNSERIALIZABLE_ERROR` Error, where Node sends its `util.inspect` string.
+`new MessageChannel()` from `node:worker_threads` makes two entangled MessagePorts, in one thread or across threads once a port is transferred, with `receiveMessageOnPort`.
+Port messages arrive in Node's order: each port's queued messages as one batch before `setImmediate` callbacks, a port's own `'close'` after the poll phase, and the other port's `'close'` after its queued messages while the loop keeps running.
+A worker's messages to its parent, and the parent's messages in the worker, also arrive as one batch before `setImmediate` callbacks, each followed by its microtasks, as in Node: the messages queued when delivery starts, and those that arrive meanwhile until the batch holds 1000.
+`receiveMessageOnPort(parentPort)` in a worker takes the parent's next message.
+A port's `onmessage` property and `addEventListener` are unsupported.
+`BroadcastChannel` delivers each message to every other open channel with the same name, in any thread, as a `'message'` `MessageEvent` through `onmessage` and `addEventListener`; an open channel keeps the process alive until `close()` or `unref()`.
+A `messageerror` event is never dispatched.
+The parent port supports message listeners, `postMessage`, `close`, `start`, `ref`, `unref`, and `hasRef`.
+Messages clone primitives, plain object graphs, arrays, errors, ArrayBuffers, typed arrays, and DataViews, preserving cycles and aliases.
+Program class instances arrive as plain objects with their own data properties, without their prototype, methods, accessors, or private fields, as in Node.
+`markAsUntransferable` marks objects for the current thread, and a marked ArrayBuffer or MessagePort in a transfer list throws `DataCloneError`, as does the ArrayBuffer of a pooled Buffer; marked objects other than ArrayBuffers stay alive until their thread exits.
+`markAsUncloneable` marks a plain object, an error, or a class instance, and `structuredClone` and `postMessage` then throw `DataCloneError` for it, also where it is nested; as in Node, the mark has no effect on primitives, arrays, typed arrays, and ArrayBuffers.
+A plain object that the compiler copies into a container with a fixed element type, such as an array literal whose elements all have one shape, is a separate object in the copy, which is not marked.
+Marked objects stay alive until their thread exits.
+A MessagePort travels with a message when the message's transfer list (an array or `{ transfer }`) names it, and the sending port is unusable afterwards; a port in a message without that listing throws `DataCloneError`.
+Other transferable values, functions, proxies, and other native handles are refused.
+SharedArrayBuffers share their backing storage while retaining separate wrappers in each thread.
+Graphs made immutable with `@scriptc/threads` are passed by reference instead of cloned; see [Sharing Data Between Workers](/docs/threads).
 
-SharedArrayBuffer storage is fixed-length. Atomics supports integer `load`, `store`, `exchange`, `compareExchange`, `add`, `sub`, `and`, `or`, and `xor` over 8-, 16-, and 32-bit integer arrays. `wait` and `notify` use Int32Array views; BigInt atomics, `waitAsync`, and growable buffers are unsupported. Atomics operations run as sequentially consistent atomic instructions and take no lock. Other reads and writes of shared storage access each element atomically; a copy, fill, or conversion that runs while another thread writes the same storage can observe some of those writes, as in Node. `terminate` unwinds at runtime checkpoints, including loops and parked atomic waits, without running JavaScript catch or finally blocks. Blocking native calls finish before the next checkpoint.
+SharedArrayBuffer storage is fixed-length.
+Atomics supports integer `load`, `store`, `exchange`, `compareExchange`, `add`, `sub`, `and`, `or`, and `xor` over 8-, 16-, and 32-bit integer arrays.
+`wait` and `notify` use Int32Array views; BigInt atomics, `waitAsync`, and growable buffers are unsupported.
+Atomics operations run as sequentially consistent atomic instructions and take no lock.
+Other reads and writes of shared storage access each element atomically; a copy, fill, or conversion that runs while another thread writes the same storage can observe some of those writes, as in Node.
+`terminate` unwinds at runtime checkpoints, including loops and parked atomic waits, without running JavaScript catch or finally blocks.
+Blocking native calls finish before the next checkpoint.
 
-Workers are unsupported in WASI, compiled libraries, and executables that use foreign-thread native callbacks. Ordinary callbacks that run on their owning script thread remain supported. Shared byte storage cannot expose unmanaged FFI pointers; copy it into an ordinary Buffer before passing it to native code.
+Workers are unsupported in WASI, compiled libraries, and executables that use foreign-thread native callbacks.
+Ordinary callbacks that run on their owning script thread remain supported.
+Shared byte storage cannot expose unmanaged FFI pointers; copy it into an ordinary Buffer before passing it to native code.

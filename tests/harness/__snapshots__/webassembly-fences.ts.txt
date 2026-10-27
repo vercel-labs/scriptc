@@ -1,0 +1,26 @@
+webassembly-fences.ts:9:26 - error SC2020: 'WebAssembly.instantiateStreaming' is not supported yet: scriptc implements WebAssembly.compile, instantiate, validate, the Module, Instance, Memory, Table and Global constructors, Module.imports, exports and customSections, and the error classes over modules translated at build time, but not this part of the API
+
+   8 |   console.log(WebAssembly.Module.imports(module).length);
+   9 |   const streamed = await WebAssembly.instantiateStreaming(fetch("https://example.com/x.wasm"));
+     |                          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  10 |   console.log(streamed.instance);
+
+  hint: the streaming functions, Tag and Exception, and the classes used as values other than with new and instanceof are planned; 'scriptc coverage' lists the modules this program loads (https://scriptc.dev/limitations)
+
+webassembly-fences.ts:11:16 - error SC2020: 'WebAssembly.Module' is not supported yet: scriptc implements WebAssembly.compile, instantiate, validate, the Module, Instance, Memory, Table and Global constructors, Module.imports, exports and customSections, and the error classes over modules translated at build time, but not this part of the API
+
+  10 |   console.log(streamed.instance);
+  11 |   const Ctor = WebAssembly.Module;
+     |                ^~~~~~~~~~~~~~~~~~
+  12 |   console.log(Ctor);
+
+  hint: the streaming functions, Tag and Exception, and the classes used as values other than with new and instanceof are planned; 'scriptc coverage' lists the modules this program loads (https://scriptc.dev/limitations)
+
+webassembly-fences.ts:13:18 - error SC2020: 'WebAssembly.Memory' is not supported yet: scriptc implements WebAssembly.compile, instantiate, validate, the Module, Instance, Memory, Table and Global constructors, Module.imports, exports and customSections, and the error classes over modules translated at build time, but not this part of the API
+
+  12 |   console.log(Ctor);
+  13 |   const Memory = WebAssembly.Memory;
+     |                  ^~~~~~~~~~~~~~~~~~
+  14 |   console.log(new Memory({ initial: 1 }));
+
+  hint: the streaming functions, Tag and Exception, and the classes used as values other than with new and instanceof are planned; 'scriptc coverage' lists the modules this program loads (https://scriptc.dev/limitations)

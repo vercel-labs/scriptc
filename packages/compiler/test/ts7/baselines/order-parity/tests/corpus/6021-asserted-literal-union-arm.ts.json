@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6021-asserted-literal-union-arm.ts"
+ ],
+ "diags": []
+}

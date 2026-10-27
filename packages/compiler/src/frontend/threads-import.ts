@@ -11,7 +11,7 @@ export type ThreadsMember = "publish" | "sharesPublishedGraphs";
 export function threadsImportOf(program: ts.Program, ident: ts.Identifier): ThreadsMember | null {
   const checker = program.getTypeChecker();
   const symbol = checker.getSymbolAtLocation(ident);
-  const decl = symbol ? checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (decl === undefined || !ts.isImportSpecifier(decl)) return null;
   const importDecl = decl.parent?.parent?.parent;
   if (

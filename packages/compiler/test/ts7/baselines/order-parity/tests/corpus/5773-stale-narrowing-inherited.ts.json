@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5773-stale-narrowing-inherited.ts"
+ ],
+ "diags": []
+}

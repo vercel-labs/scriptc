@@ -60,10 +60,10 @@ export function runProgramHost(createHost: (options: Ts7HostOptions) => Ts7Host,
       check(program.getSourceFiles() === program.getSourceFiles(), "source file cache");
       const checker = program.getTypeChecker();
       check(checker === program.getTypeChecker(), "checker cache");
-      const statement = source.statements[1]!;
+      const statement = source.statements.nodes[1]!;
       check(isVariableStatement(statement), "variable statement");
       if (isVariableStatement(statement)) {
-        const name = statement.declarationList.declarations[0]!.name;
+        const name = statement.declarationList.declarations.nodes[0]!.name;
         check(name !== undefined && isIdentifier(name), "variable identifier");
         if (name !== undefined && isIdentifier(name)) {
           const type = checker.getTypeAtLocation(name);

@@ -1,3 +1,6 @@
-scriptc checks programs against the `es2025` standard library, the ESNext declarations for `Array.fromAsync`, explicit resource management and `Error.isError`, and its own ambient declarations. Some declarations differ from TypeScript's standard library or `@types/node`: `JSON.parse` returns `unknown`, and a Promise executor's reject reason is typed as `Error`.
+scriptc checks programs against the `es2025` standard library, the ESNext declarations for `Array.fromAsync`, explicit resource management and `Error.isError`, and its own ambient declarations.
+Some declarations differ from TypeScript's standard library or `@types/node`: `JSON.parse` returns `unknown`, and a Promise executor's reject reason is typed as `Error`.
 
-A program that passes its project's TypeScript check may still use unsupported operations. A second preflight using the project's declarations distinguishes those sites from ordinary type errors and reports scriptc diagnostics with rewrite hints. Declared APIs without a compiler implementation, such as unsupported console members, produce `SC2020`.
+A program that passes its project's TypeScript check may still use unsupported operations.
+A second preflight using the project's declarations distinguishes those sites from ordinary type errors and reports scriptc diagnostics with rewrite hints.
+Declared APIs without a compiler implementation, such as unsupported console members, produce `SC2020`.

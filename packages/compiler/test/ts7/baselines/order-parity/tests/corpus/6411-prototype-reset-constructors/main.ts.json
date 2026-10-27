@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6411-prototype-reset-constructors/issues.js",
+  "<repo>/tests/corpus/6411-prototype-reset-constructors/main.ts"
+ ],
+ "diags": []
+}

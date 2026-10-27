@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6141-cjs-require-tdz-checked/lib.js",
+  "<repo>/tests/corpus/6141-cjs-require-tdz-checked/counter.js",
+  "<repo>/tests/corpus/6141-cjs-require-tdz-checked/main.js"
+ ],
+ "diags": []
+}

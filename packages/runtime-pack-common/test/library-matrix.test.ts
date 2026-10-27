@@ -61,6 +61,26 @@ test("library pack modes preserve pure runtime features and exclude ambient even
   expect(matrix.runtime_units.some((unit) => unit.source === "scr_library.c")).toBe(false);
 });
 
+test("the young-in nursery collector is an executable-only variant of scr_cycle.c", () => {
+  const ids = (units: { source: string; variants: { id: string }[] }[]) =>
+    units.find((unit) => unit.source === "scr_cycle.c")!.variants.map((variant) => variant.id);
+  expect(ids(matrix.runtime_units)).toEqual([
+    "default",
+    "default-workers",
+    "young-nursery",
+    "young-nursery-workers",
+  ]);
+  const young = matrix.runtime_units
+    .find((unit) => unit.source === "scr_cycle.c")
+    .variants.find((variant) => variant.id === "young-nursery");
+  expect(young).toMatchObject({
+    when: { youngNursery: true, workers: false },
+    defines: ["SCR_YIN"],
+  });
+  for (const mode of ["library-release", "library-thread-release"])
+    expect(ids(matrix.flavors[mode].runtime_units)).toEqual(["default"]);
+});
+
 test("mobile packs ship only library modes and their permitted vendor archives", () => {
   const mobile = createRuntimePackMatrix({
     target: { object_format: "elf" },

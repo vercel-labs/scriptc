@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/unloaded-optional-dependency/main.ts"
+ ],
+ "diags": []
+}

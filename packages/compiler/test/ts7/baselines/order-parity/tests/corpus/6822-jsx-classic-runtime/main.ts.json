@@ -1,0 +1,11 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6822-jsx-classic-runtime/html.ts",
+  "<repo>/tests/corpus/6822-jsx-classic-runtime/list.jsx",
+  "<repo>/tests/corpus/6822-jsx-classic-runtime/page.tsx",
+  "<repo>/tests/corpus/6822-jsx-classic-runtime/factory.ts",
+  "<repo>/tests/corpus/6822-jsx-classic-runtime/pragma.tsx",
+  "<repo>/tests/corpus/6822-jsx-classic-runtime/main.ts"
+ ],
+ "diags": []
+}

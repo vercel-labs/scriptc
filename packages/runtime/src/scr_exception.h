@@ -84,6 +84,10 @@ typedef struct ScrExcCell {
   ScrTraceFn trace_fn;
   ScrStackFrame *stack; /* execution state; never moves with an exception */
 } ScrExcCell;
+/* Executables push and pop source frames inline (emitter.ts, stack-trace
+ * mode) at this offset on 64-bit targets. */
+_Static_assert(sizeof(void *) != 8 || offsetof(ScrExcCell, stack) == 56,
+               "ScrExcCell.stack moved: update the emitter's inline frame push");
 
 /* Runtime-internal (fiber machinery in scr_async.c) — never emitted. */
 ScrExcCell *scr_exc_swap_cell(ScrExcCell *cell); /* NULL = main's cell */
@@ -119,6 +123,11 @@ static inline ScrExcCell *scr_exc_swap_cell_inline(ScrExcCell *cell) {
 _Static_assert(offsetof(ScrExcCell, kind) == 0 && sizeof(ScrExcKind) == 4 && SCR_EXC_NONE == 0,
                "the LLVM emitter's inline pending check loads an i32 kind at offset 0");
 
+/* Unwinds the native stack to the nearest landing pad of emitted code with
+ * the exception pending in the active cell (the unwinding ABI of emitted
+ * functions, unwind-abi.ts). Linux (glibc and musl) only; it never
+ * returns. */
+SCR_COLD _Noreturn void scr_unwind_raise(void);
 SCR_COLD void scr_throw_f64(double v);
 SCR_COLD void scr_throw_bool(bool v);
 SCR_COLD void scr_throw_str(ScrStr *v); /* takes ownership */
@@ -172,6 +181,10 @@ void scr_caught_trace_v(void *c, ScrTraceVisit visit, void *ctx);
  * when scr_json.c builds its dyn view, and scr_exc_suppressed_forget
  * releases them. */
 void scr_exc_suppress(ScrCaught *suppressed);
+/* An iterator close that threw while `first` was propagating: the close's
+ * error is dropped and `first` is raised again (consumed). A generator
+ * .return() in flight is replaced by the close's error instead. */
+void scr_exc_keep_first(ScrCaught *first);
 bool scr_exc_suppressed_values(const void *error_object, const ScrCaught **error,
                                const ScrCaught **suppressed);
 void scr_exc_suppressed_forget(const void *error_object);
@@ -187,9 +200,10 @@ bool scr_caught_is_object(const ScrCaught *c);
 /* `String(e)` / `${e}` on a catch binding: JS's String() over the snapshot
  * — numbers/booleans/strings by value, Error payloads via
  * scr_error_to_string ("name: message" — String(e) carries no stack in
- * Node either), every other ref payload "[object Object]" (exact for
- * records and toString-less class instances; a documented approximation
- * for thrown arrays/closures/union boxes). Borrows the box; returns +1. */
+ * Node either), checked-dynamic payloads (thrown records, arrays and
+ * unions over them) by String() over the value, every other ref payload
+ * "[object Object]" (exact for toString-less class instances; an
+ * approximation for closures and union boxes). Borrows the box; returns +1. */
 ScrStr *scr_caught_to_string(const ScrCaught *c);
 /* `e as C` on a catch binding (scr_lib.c): an OBJ payload inside C's
  * preorder interval extracts (retained, +1); every other payload THROWS a
@@ -213,5 +227,10 @@ extern SCR_TL int (*scr_uncaught_exception_hook)(bool from_promise);
 bool scr_exc_handle_uncaught(bool from_promise);
 void scr_process_on_uncaught_exception(ScrDyn *fn, bool once, bool monitor);
 void scr_process_off_uncaught_exception(ScrDyn *fn, bool monitor);
+/* The value Node reports for an unhandled rejection (scr_async_dyn.c): an
+ * error-like reason itself, otherwise an UnhandledPromiseRejection Error
+ * (code ERR_UNHANDLED_REJECTION) quoting the reason. Borrows; +1, NULL
+ * after a throw. */
+ScrDyn *scr_unhandled_rejection_error(ScrDyn *reason);
 
 #endif /* SCR_EXCEPTION_H */

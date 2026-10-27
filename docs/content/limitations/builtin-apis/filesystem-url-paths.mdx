@@ -1,0 +1,3 @@
+- **Filesystem URL paths:** `fs` and `fs.promises` functions accept `file:` URL paths and convert them as `fileURLToPath` does; `existsSync` answers `false` and the `fs.promises` functions reject for a URL that does not convert.
+  A URL path with options that are not literals is refused where Node checks those options before it converts the URL, except a `readFileSync` encoding.
+  `fs.promises` functions also refuse a string path before a URL path; pass `fileURLToPath(url)` instead.

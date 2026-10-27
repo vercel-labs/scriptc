@@ -114,6 +114,32 @@ describe(`dynamic-boundary checks (scriptc-only${sanitize ? ", sanitized" : ""})
     expect(r.stderr).toBe("");
   });
 
+  test("assertions narrowing record members or union arms check the value", async () => {
+    const r = await compileAndRun(
+      "narrowing-record-assertions",
+      `
+      interface AlphaOpts { fast?: boolean }
+      interface Item<K extends string> { id: string; kind: K; opts?: K extends "alpha" ? AlphaOpts : never }
+      const items: Item<"alpha" | "gamma">[] = [{ id: "g1", kind: "gamma" }, { id: "a1", kind: "alpha", opts: { fast: true } }];
+      try { const all = items as Item<"gamma">[]; console.log(all.length); }
+      catch (error) { console.log(error instanceof TypeError, (error as Error).message); }
+      try { const one = items[1]! as Item<"gamma">; console.log(one.id); }
+      catch (error) { console.log(error instanceof TypeError, (error as Error).message); }
+      interface S { stream: () => string }
+      function keys(u: S | { a?: S }): string[] { const m = u as Partial<Record<string, S>>; return Object.keys(m); }
+      try { console.log(keys({ a: { stream: () => "a" } }).join()); console.log(keys({ stream: () => "s" })); }
+      catch (error) { console.log(error instanceof TypeError); }
+    `,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "true expected null | undefined at $[1].opts, got object\n" +
+        "true expected null | undefined at $.opts, got object\n" +
+        "a\ntrue\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+
   test("typed Promise exits validate fulfillment and preserve rejection", async () => {
     const result = await compileAndRun(
       "promise-exit-payload",
@@ -141,6 +167,33 @@ describe(`dynamic-boundary checks (scriptc-only${sanitize ? ", sanitized" : ""})
         )
         .join("\n"),
     ).toBe("");
+  });
+
+  test("a boxed native value cast to another layout is copied (decision D3)", async () => {
+    // Node's `as` is a no-op, so these writes would show through every
+    // holder. scriptc copies a boxed native value into a cast's different
+    // layout for now (the object model's decision D3: copy, throw, or
+    // share storage); the copy keeps one identity per boxed value.
+    const r = await compileAndRun(
+      "native-layout-casts",
+      `type Point = { x: number; y: number };
+const dict: Record<string, number> = { x: 1, y: 2 };
+const v: unknown = dict;
+const p = v as Point;
+p.x = 5;
+console.log(dict.x, p.x, (v as Point) === p);
+const nums: number[] = [1, 2];
+const u: unknown = nums;
+console.log((u as number[]) === nums);
+const wide = u as (number | string)[];
+wide.push("s");
+console.log(nums.length, wide.length);
+console.log(JSON.stringify({ ...(v as Record<string, number>) }));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(["1 5 true", "true", "2 3", '{"x":1,"y":2}', ""].join("\n"));
+    expect(r.stderr).toBe("");
   });
 
   test("wrong-typed field throws with the path", async () => {
@@ -191,11 +244,11 @@ for (const text of inputs) {
     expect(r.stderr).toBe("");
     expect(r.stdout.split("\n")).toEqual([
       "SyntaxError: Unexpected end of JSON input (same)",
-      "SyntaxError: Expected ',' or '}' after property value in JSON at position 19 (same)",
-      "SyntaxError: Bad escaped character in JSON at position 11 (same)",
-      "SyntaxError: Unexpected non-whitespace character after JSON at position 22 (same)",
-      'SyntaxError: Unexpected token \']\', ...","x":[1,],"qty":"... is not valid JSON (same)',
-      "SyntaxError: Bad Unicode escape in JSON at position 21 (same)",
+      "SyntaxError: Unexpected number in JSON at position 19 (line 1 column 20) (same)",
+      "SyntaxError: Bad escaped character in JSON at position 11 (line 1 column 12) (same)",
+      "SyntaxError: Unexpected non-whitespace character after JSON at position 22 (line 1 column 23) (same)",
+      'SyntaxError: Unexpected token \']\', ..."a","x":[1,],"qty":1}"... is not valid JSON (same)',
+      "SyntaxError: Bad Unicode escape in JSON at position 21 (line 1 column 22) (same)",
       "RangeError: Maximum call stack size exceeded (same)",
       "TypeError: expected number at $[0].qty, got undefined (plain ok)",
       "TypeError: expected number at $[1].qty, got boolean (plain ok)",
@@ -268,7 +321,7 @@ try {
       "err TypeError: expected number at $.id, got undefined",
       "err TypeError: expected number at $.id, got null",
       "err TypeError: expected object at $, got array",
-      "err SyntaxError: Unexpected end of JSON input",
+      "err SyntaxError: Expected ',' or '}' after property value in JSON at position 39 (line 1 column 40)",
       "ok Infinity \uFFFD 0  ",
       "ok 7 reordered 0  ",
       "err expected number at $[1].qty, got string",
@@ -302,6 +355,46 @@ console.log("unreachable", c.host);
     expect(r.exitCode).toBe(1);
     expect(r.stderr).toContain(
       "Uncaught TypeError: expected number | undefined at $.port, got string",
+    );
+  });
+
+  test("optional record member: the failure names the deepest path inside it", async () => {
+    // `Partial<T>` makes every member an `X | undefined` union. A present
+    // object that fails X used to report only the union's own path
+    // ("expected object | undefined at $.order, got object"); the record
+    // arm's builder now reports where inside it the value fails.
+    const r = await compileAndRun(
+      "optional-record-deep",
+      `interface Order {
+  owner: { id: string; plan: { tier: string } };
+  total: number;
+}
+interface Envelope { order: Order; tags?: string[] }
+const texts = [
+  '{"order":{"owner":{"id":"u1"},"total":3}}',
+  '{"order":{"owner":{"id":7,"plan":{"tier":"pro"}},"total":3}}',
+  '{"order":{"owner":{"id":"u1","plan":{"tier":"pro"}},"total":3},"tags":["a",2]}',
+  '{"order":5}',
+];
+for (const text of texts) {
+  try {
+    const e = JSON.parse(text) as Partial<Envelope>;
+    console.log("ok", e.order?.owner.id);
+  } catch (err) {
+    if (err instanceof TypeError) console.log(err.message);
+  }
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "expected object at $.order.owner.plan, got undefined",
+        "expected string at $.order.owner.id, got number",
+        "expected string at $.tags[1], got number",
+        "expected object | undefined at $.order, got number",
+        "",
+      ].join("\n"),
     );
   });
 
@@ -356,6 +449,95 @@ console.log("unreachable", s.kind);
     expect(r.stderr).toContain("Uncaught TypeError: expected object | object at $, got object");
   });
 
+  test("a union read by its discriminant fails with every arm named, as arm-by-arm tests do", async () => {
+    // Five record arms with six literals, plus string and number arms: the
+    // check reads `kind` once and tests only the arm it names and the
+    // arms that are not records.
+    const r = await compileAndRun(
+      "union-discriminant-dispatch",
+      `type Expr =
+  | { kind: "num"; value: number }
+  | { kind: "str"; text: string }
+  | { kind: "neg"; operand: Expr }
+  | { kind: "add" | "mul"; left: Expr; right: Expr }
+  | { items: Expr[]; kind: "list" }
+  | string
+  | number;
+const inputs = [
+  '{"kind":"num"}',
+  '{"kind":"nope","value":1}',
+  '{"kind":7,"value":1}',
+  '{"value":1}',
+  '{"kind":"neg","operand":{"kind":"add","left":{"kind":"num","value":1},"right":{"kind":"str","text":5}}}',
+  'true',
+  '{"items":["a",3,{"kind":"mul","left":"x","right":2}],"kind":"list"}',
+];
+for (const input of inputs) {
+  try {
+    console.log(JSON.stringify(JSON.parse(input) as Expr));
+  } catch (error) {
+    console.log((error as Error).message);
+  }
+}
+`,
+    );
+    const any = "number | object | object | object | object | object | string";
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        `expected ${any} at $, got object`,
+        `expected ${any} at $, got object`,
+        `expected ${any} at $, got object`,
+        `expected ${any} at $, got object`,
+        `expected ${any} at $, got object`,
+        `expected ${any} at $, got boolean`,
+        '{"items":["a",3,{"kind":"mul","left":"x","right":2}],"kind":"list"}',
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("a getter that changes the discriminant during an arm's check continues with the later arms", async () => {
+    // Each getter sets `kind` and fails its arm's check: to a later arm's
+    // literal (that arm matches), to an earlier arm's literal (arm-by-arm
+    // tests do not go back), and to a literal no arm holds.
+    const r = await compileAndRun(
+      "union-discriminant-getter",
+      `type Shape =
+  | { kind: "circle"; radius: number }
+  | { kind: "square"; side: number }
+  | { kind: "rect"; height: number; width: number }
+  | { kind: "tri"; a: number; b: number; c: number };
+const flip = (value: any, to: string): string => {
+  value.kind = to;
+  return "none";
+};
+const later: any = { kind: "circle", get radius() { return flip(later, "square"); }, side: 3 };
+const earlier: any = { kind: "square", radius: 2, get side() { return flip(earlier, "circle"); } };
+const unknown: any = { kind: "square", get side() { return flip(unknown, "hexagon"); } };
+const inputs = [later, earlier, unknown];
+for (const input of inputs) {
+  try {
+    const shape = input as Shape;
+    console.log("matched", shape.kind);
+  } catch (error) {
+    console.log((error as Error).message);
+  }
+}
+`,
+    );
+    const any = "object | object | object | object";
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "matched square",
+        `expected ${any} at $, got object`,
+        `expected ${any} at $, got object`,
+        "",
+      ].join("\n"),
+    );
+  });
+
   test("nested paths point at the offending element", async () => {
     const r = await compileAndRun(
       "nested-path",
@@ -385,6 +567,216 @@ console.log("unreachable", t.label);
     expect(r.stderr).toContain(
       "Uncaught TypeError: expected string at $.children[0].children[0].label, got number",
     );
+  });
+
+  test("nested unions: a failure inside a matched arm names the union that holds it", async () => {
+    // A union's builder converts the arm that matched; the unions nested in
+    // it pick their arms by literal or by the kind of value only one arm
+    // takes. A value that fails anywhere below fails its outermost union,
+    // whose arms the message names.
+    const r = await compileAndRun(
+      "deep-discriminated",
+      `type Expr =
+  | { kind: "num"; value: number }
+  | { kind: "str"; text: string }
+  | { kind: "add"; left: Expr; right: Expr }
+  | { kind: "call"; callee: string; args: Expr[] }
+  | { kind: "neg"; operand: Expr }
+  | { kind: "opt"; inner: Expr | undefined; label?: string };
+type Stmt =
+  | { kind: "expr"; expr: Expr }
+  | { kind: "ret"; value: Expr | null }
+  | { kind: "block"; body: Stmt[] };
+type Fn = { name: string; body: Stmt[] };
+
+function attempt(label: string, text: string, as: "expr" | "stmt" | "fn" | "list"): void {
+  try {
+    if (as === "expr") {
+      const e = JSON.parse(text) as Expr;
+      console.log(label, "ok", e.kind);
+    } else if (as === "stmt") {
+      const s = JSON.parse(text) as Stmt;
+      console.log(label, "ok", s.kind);
+    } else if (as === "fn") {
+      const f = JSON.parse(text) as Fn;
+      console.log(label, "ok", f.name, f.body.length);
+    } else {
+      const l = JSON.parse(text) as Expr[];
+      console.log(label, "ok", l.length);
+    }
+  } catch (e) {
+    console.log(label, "error", (e as Error).message);
+  }
+}
+
+const deep = (leaf: string, depth: number): string => {
+  let s = leaf;
+  for (let i = 0; i < depth; i++) s = \`{"kind":"neg","operand":\${s}}\`;
+  return s;
+};
+attempt("valid", deep('{"kind":"num","value":1}', 20), "expr");
+attempt("deep wrong field", deep('{"kind":"num","value":"x"}', 5), "expr");
+attempt("deep unknown kind", deep('{"kind":"nope","value":1}', 5), "expr");
+attempt("deep string node", deep('"text"', 5), "expr");
+attempt("deep missing field", deep('{"kind":"add","left":{"kind":"num","value":1}}', 4), "expr");
+attempt("deep array arg", deep('{"kind":"call","callee":"f","args":[{"kind":"num","value":1},{"kind":"str","text":2}]}', 3), "expr");
+attempt("optional inner", deep('{"kind":"opt","inner":{"kind":"num","value":true}}', 3), "expr");
+attempt("optional label", deep('{"kind":"opt","inner":{"kind":"num","value":1},"label":3}', 3), "expr");
+attempt("stmt deep", '{"kind":"block","body":[{"kind":"expr","expr":' + deep('{"kind":"num","value":null}', 3) + '}]}', "stmt");
+attempt("ret null", '{"kind":"ret","value":null}', "stmt");
+attempt("fn deep", '{"name":"f","body":[{"kind":"ret","value":' + deep('{"kind":"str","text":5}', 4) + '}]}', "fn");
+attempt("list element", '[{"kind":"num","value":1},' + deep('{"kind":"num"}', 2) + "]", "list");
+attempt("kind not string", deep('{"kind":3,"value":1}', 2), "expr");
+attempt("valid list", '[' + deep('{"kind":"num","value":1}', 3) + ',{"kind":"str","text":"t"}]', "list");
+
+type Box = { value: number; child?: Box; rest: Box[] | null };
+function box(label: string, text: string): void {
+  try {
+    const b = JSON.parse(text) as Box;
+    console.log(label, "ok", b.value);
+  } catch (e) {
+    console.log(label, "error", (e as Error).message);
+  }
+}
+box("box valid", '{"value":1,"rest":null,"child":{"value":2,"rest":[{"value":3,"rest":null}]}}');
+box("box deep child", '{"value":1,"rest":null,"child":{"value":2,"rest":null,"child":{"value":"x","rest":null}}}');
+box("box deep rest", '{"value":1,"rest":[{"value":2,"rest":[{"value":3,"rest":[1]}]}]}');
+box("box child array", '{"value":1,"rest":null,"child":[]}');
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.trimEnd().split("\n")).toEqual([
+      "valid ok neg",
+      "deep wrong field error expected object | object | object | object | object | object at $, got object",
+      "deep unknown kind error expected object | object | object | object | object | object at $, got object",
+      "deep string node error expected object | object | object | object | object | object at $, got object",
+      "deep missing field error expected object | object | object | object | object | object at $, got object",
+      "deep array arg error expected object | object | object | object | object | object at $, got object",
+      "optional inner error expected object | object | object | object | object | object at $, got object",
+      "optional label error expected object | object | object | object | object | object at $, got object",
+      "stmt deep error expected object | object | object at $, got object",
+      "ret null ok ret",
+      "fn deep error expected object | object | object at $.body[0], got object",
+      "list element error expected object | object | object | object | object | object at $[1], got object",
+      "kind not string error expected object | object | object | object | object | object at $, got object",
+      "valid list ok 2",
+      "box valid ok 1",
+      "box deep child error expected number at $.child.child.value, got string",
+      "box deep rest error expected object at $.rest[0].rest[0].rest[0], got number",
+      "box child array error expected object | undefined at $.child, got array",
+    ]);
+  });
+
+  test("nested unions: a value a getter returns while building is matched in full", async () => {
+    // The getter answers a valid node while the arm matches and a wrong one
+    // while it builds. The builder matches the second answer in full, so the
+    // failure names the union that holds it, as without the arm's match.
+    const r = await compileAndRun(
+      "deep-discriminated-getter",
+      `type Expr =
+  | { kind: "num"; value: number }
+  | { kind: "str"; text: string }
+  | { kind: "neg"; operand: Expr }
+  | { kind: "add"; left: Expr; right: Expr };
+const v = JSON.parse('{"kind":"neg"}') as unknown;
+let calls = 0;
+Object.defineProperty(v, "operand", {
+  enumerable: true,
+  get() {
+    calls++;
+    return calls === 1 ? JSON.parse('{"kind":"num","value":1}') : JSON.parse('{"kind":"num","value":"x"}');
+  },
+});
+try {
+  const e = v as Expr;
+  console.log("ok", JSON.stringify(e));
+} catch (err) {
+  console.log((err as Error).message);
+}
+console.log("getter calls", calls);
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.trimEnd().split("\n")).toEqual([
+      "expected object | object | object | object at $.operand, got object",
+      "getter calls 2",
+    ]);
+  });
+
+  test("nested unions: a getter's value in a non-recursive union's build is matched in full", async () => {
+    // A union without recursion builds without a visit session. The getter
+    // still runs user code during the trusted build, so the nested union
+    // matches its second answer in full, and the failure names that union.
+    const r = await compileAndRun(
+      "flat-discriminated-getter",
+      `type Inner = { tag: "x"; n: number } | { tag: "y"; s: string };
+type Outer = { kind: "a"; inner: Inner } | { kind: "b"; other: number };
+const v = JSON.parse('{"kind":"a"}') as unknown;
+let calls = 0;
+Object.defineProperty(v, "inner", {
+  enumerable: true,
+  get() {
+    calls++;
+    return calls === 1 ? JSON.parse('{"tag":"x","n":1}') : JSON.parse('{"tag":"x","n":"bad"}');
+  },
+});
+try {
+  const o = v as Outer;
+  console.log("ok", JSON.stringify(o));
+} catch (err) {
+  console.log((err as Error).message);
+}
+console.log("getter calls", calls);
+const plain = JSON.parse('{"kind":"a","inner":{"tag":"y","s":"z"}}') as Outer;
+console.log(JSON.stringify(plain));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.trimEnd().split("\n")).toEqual([
+      "expected object | object at $.inner, got object",
+      "getter calls 2",
+      '{"kind":"a","inner":{"tag":"y","s":"z"}}',
+    ]);
+  });
+
+  test("nested unions: a getter that converts a recursive union keeps a non-recursive build untrusted", async () => {
+    // The getter converts a recursive union, which opens and ends a visit
+    // session of its own, before it answers. The outer build still matches
+    // the getter's second answer in full, and the failure names that union.
+    const r = await compileAndRun(
+      "flat-discriminated-getter-session",
+      `type Tree = { kind: "leaf"; n: number } | { kind: "node"; left: Tree; right: Tree };
+type Inner = { tag: "x"; n: number } | { tag: "y"; s: string };
+type Outer = { kind: "a"; inner: Inner } | { kind: "b"; other: number };
+const v = JSON.parse('{"kind":"a"}') as unknown;
+let calls = 0;
+let leaves = 0;
+Object.defineProperty(v, "inner", {
+  enumerable: true,
+  get() {
+    calls++;
+    const t = JSON.parse('{"kind":"node","left":{"kind":"leaf","n":1},"right":{"kind":"leaf","n":2}}') as Tree;
+    if (t.kind === "node") leaves += 2;
+    return calls === 1 ? JSON.parse('{"tag":"x","n":1}') : JSON.parse('{"tag":"x","n":"bad"}');
+  },
+});
+try {
+  const o = v as Outer;
+  console.log("ok", JSON.stringify(o));
+} catch (err) {
+  console.log((err as Error).message);
+}
+console.log("getter calls", calls, "leaves", leaves);
+const plain = JSON.parse('{"kind":"a","inner":{"tag":"y","s":"z"}}') as Outer;
+console.log(JSON.stringify(plain));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout.trimEnd().split("\n")).toEqual([
+      "expected object | object at $.inner, got object",
+      "getter calls 2 leaves 4",
+      '{"kind":"a","inner":{"tag":"y","s":"z"}}',
+    ]);
   });
 
   test("array where a record is expected names the mismatch at the root", async () => {
@@ -762,6 +1154,38 @@ console.log("recovered");
     );
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe("TypeError true\narray: TypeError\nfunc: TypeError\nrecovered\n");
+  });
+
+  test("a non-null assertion on a null object result throws at the assertion, even when the binding is never read", async () => {
+    // Node lets the null ride until a member read; the compiled program
+    // throws the stranded TypeError where `!` extracts the object.
+    const r = await compileAndRun(
+      "asserted-null-object-result",
+      `interface Info {
+  name: string;
+  base: Info | null;
+  callable: boolean;
+}
+function baseOf(info: Info): Info | null {
+  return info.base;
+}
+function describe(info: Info): string {
+  const base = baseOf(info)!;
+  if (info.callable) return info.name + ": callable base";
+  return info.name + " extends " + base.name;
+}
+const root: Info = { name: "Root", base: null, callable: false };
+console.log(describe({ name: "Child", base: root, callable: false }));
+try {
+  console.log("unreachable", describe({ name: "Wrapped", base: null, callable: true }));
+} catch (e) {
+  console.log((e as Error).name, (e as Error).message.includes("not representable in the target union"));
+}
+console.log("recovered");
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe("Child extends Root\nTypeError true\nrecovered\n");
   });
 
   test("a checker-approved function mismatch strands per piece: mismatched params compile at the flow, void results trap after the call", async () => {
@@ -1205,5 +1629,194 @@ console.log("done", caught);
     );
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe("done 100\n");
+  });
+
+  test("an inspection refusal throws before console.log writes", async () => {
+    // A promise reached through `unknown` has no dynamic rendering; the
+    // refusal must stop the call, not print a partial line and continue.
+    const r = await compileAndRun(
+      "inspect-refusal-unwind",
+      `import { inspect } from "node:util";
+const p: unknown = Promise.resolve(3);
+function attempt(label: string, f: () => void): void {
+  try {
+    f();
+    console.log(label, "returned");
+  } catch (e) {
+    console.log(label, (e as Error).message);
+  }
+}
+attempt("log", () => console.log("x", p));
+attempt("inspect", () => console.log(inspect(p).length));
+attempt("record", () => console.log({ a: p }));
+attempt("array", () => console.log([p]));
+console.log("before");
+console.log(p);
+console.log("after");
+`,
+    );
+    const refusal = "util.inspect of a promise value is not supported yet";
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe(
+      ["log", "inspect", "record", "array"].map((l) => `${l} ${refusal}\n`).join("") + "before\n",
+    );
+    expect(r.stderr).toContain(`Uncaught Error: ${refusal}`);
+  });
+
+  test("a refusal in a record's kept source properties closes the inspector's frames", async () => {
+    // A record converted from an object with undeclared properties renders
+    // them through its checked view; a refusal there, inside an enclosing
+    // record or array, must not leave that render's frames open.
+    const r = await compileAndRun(
+      "inspect-refusal-kept-source",
+      `import { inspect } from "node:util";
+type P = { a: number };
+const src = JSON.parse('{"a":1}');
+src.p = Promise.resolve(3);
+const r: P = src;
+function attempt(label: string, f: () => void): void {
+  try {
+    f();
+    console.log(label, "returned");
+  } catch (e) {
+    console.log(label, (e as Error).message);
+  }
+}
+attempt("record", () => console.log(inspect({ outer: r, n: [1, 2] })));
+console.log(inspect({ b: [1, { c: 2 }], long: "x".repeat(70) }));
+attempt("array", () => console.log(inspect([r, r])));
+console.log([3, 4], { d: 5 });
+`,
+    );
+    const refusal = "util.inspect of a promise value is not supported yet";
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      `record ${refusal}\n` +
+        `{\n  b: [ 1, { c: 2 } ],\n  long: '${"x".repeat(70)}'\n}\n` +
+        `array ${refusal}\n` +
+        "[ 3, 4 ] { d: 5 }\n",
+    );
+  });
+
+  test("accessors reached through unknown render as Node's accessor tags", async () => {
+    const r = await compileAndRun(
+      "inspect-accessor-tags",
+      `import { format } from "node:util";
+const o: unknown = JSON.parse('{"x":1}');
+Object.defineProperty(o, "g", { get: () => 2, enumerable: true });
+Object.defineProperty(o, "h", { get: () => 3, enumerable: false });
+Object.defineProperty(o, "gs", { get: () => 4, set: (_v: number) => {}, enumerable: false });
+Object.defineProperty(o, "s", { set: (_v: number) => {}, enumerable: true });
+console.log(o);
+console.log(format("%o", o));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "{ x: 1, g: [Getter], s: [Setter] }",
+        "{",
+        "  x: 1,",
+        "  g: [Getter],",
+        "  [h]: [Getter],",
+        "  [gs]: [Getter/Setter],",
+        "  s: [Setter]",
+        "}",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("a refused inspection leaves later renders at the default layout", async () => {
+    // The refusal's Error skips the call site's layout restore and the
+    // render's own exits; later renders must not keep the custom layout,
+    // the indentation, showHidden or open frames of the abandoned one.
+    const r = await compileAndRun(
+      "inspect-refusal-state",
+      `import { format, inspect } from "node:util";
+const p: unknown = Promise.resolve(1);
+const rec: unknown = { a: [1], b: p };
+try {
+  inspect({ a: [1, 2, 3, 4, 5, 6, 7, 8], b: p }, { breakLength: 20 });
+} catch {}
+try {
+  format("%o", rec);
+} catch {}
+const long: unknown = JSON.parse(JSON.stringify(Array.from({ length: 12 }, (_, i) => "item" + i)));
+console.log(long);
+console.log(format("%O", [1]));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "[",
+        "  'item0',  'item1',",
+        "  'item2',  'item3',",
+        "  'item4',  'item5',",
+        "  'item6',  'item7',",
+        "  'item8',  'item9',",
+        "  'item10', 'item11'",
+        "]",
+        "[ 1 ]",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  test("inspecting a compiled class with static fields through unknown refuses", async () => {
+    // Node prints `[class S] { count: 3 }`; the class object does not
+    // carry compiled static fields, so the inspector refuses rather than
+    // print `[class S]`. A class without static fields still prints.
+    const r = await compileAndRun(
+      "inspect-class-statics",
+      `class Plain {}
+class S extends Plain {
+  static count = 3;
+}
+const plain: unknown = Plain;
+const s: unknown = S;
+console.log(plain);
+try {
+  console.log(s);
+} catch (e) {
+  console.log((e as Error).message);
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "[class Plain]\nutil.inspect of a class with static fields through unknown is not supported yet\n",
+    );
+  });
+
+  test("%o refuses the dynamic kinds whose hidden entries have no rendering", async () => {
+    // Node's showHidden adds a function's length/name/prototype, an
+    // error's stack and a typed array's byte fields; %o throws the 'not
+    // supported yet' Error for them instead of printing without them.
+    const r = await compileAndRun(
+      "format-o-hidden-refusals",
+      `import { format } from "node:util";
+function f(): void {}
+const values: [string, unknown][] = [["fn", f], ["err", new Error("e")], ["u8", new Uint8Array(1)], ["arr", [1]]];
+for (const [label, value] of values) {
+  try {
+    console.log(label, format("%o", value));
+  } catch (e) {
+    console.log(label, (e as Error).message);
+  }
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "fn util.format %o of function values is not supported yet",
+        "err util.format %o of Error values is not supported yet",
+        "u8 util.format %o of typed array values is not supported yet",
+        "arr [ 1, [length]: 1 ]",
+        "",
+      ].join("\n"),
+    );
   });
 });

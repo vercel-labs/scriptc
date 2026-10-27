@@ -1,0 +1,6 @@
+class-field-accessor-descriptor.ts:9:1 - error SC2020: Object.defineProperty with an accessor descriptor for the declared field 'x' is not supported yet
+
+   8 | const value = new Value();
+   9 | Object.defineProperty(value, "x", {
+     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  10 |   get() {

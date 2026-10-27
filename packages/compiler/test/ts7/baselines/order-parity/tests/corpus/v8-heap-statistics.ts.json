@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/v8-heap-statistics.ts"
+ ],
+ "diags": []
+}

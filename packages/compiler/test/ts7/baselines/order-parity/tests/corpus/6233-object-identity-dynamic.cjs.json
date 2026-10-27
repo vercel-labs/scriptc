@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6233-object-identity-dynamic.cjs"
+ ],
+ "diags": []
+}

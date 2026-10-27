@@ -19,13 +19,22 @@ console.log(typeof stored);
 const flipAlias = flip;
 console.log(flipAlias(5));
 
-// Declared inside a function: instances are module functions and cannot
-// capture the enclosing frame.
-function outer(): number {
-  const inner = <T>(x: T): T => x;
-  return inner(3);
+// Declared inside a function and reading its parameter: instances are
+// module functions and cannot capture the enclosing frame.
+function outer(base: number): number {
+  const inner = <T>(x: T): [T, number] => [x, base];
+  return inner(3)[1];
 }
-console.log(outer());
+console.log(outer(4));
+
+// Used as a value inside a function: each call of the enclosing function
+// makes a new function object (`make() !== make()`), and the compiled
+// instances are shared module functions.
+function make(): (x: number) => number {
+  const same = <T>(x: T): T => x;
+  return same<number>;
+}
+console.log(make() === make());
 
 // An ambient binding of generic function type now compiles to Node's exact
 // ReferenceError at the access (the declare-erasure stance — no diagnostic
@@ -51,3 +60,15 @@ function throughParam(a: Amb): void {
   console.log(a.m(4));
 }
 throughParam(amb);
+
+// A `var` binding inside a function, declared in a branch and called from
+// a closure: when the branch does not run, Node finds the binding undefined.
+// The compiled instances have no per-call flag for that, so the call fences.
+function branchVar(flag: boolean): number {
+  if (flag) {
+    var picked = <T>(x: T): T => x;
+  }
+  const invoke = (): number => picked(1);
+  return invoke();
+}
+console.log(branchVar(true));

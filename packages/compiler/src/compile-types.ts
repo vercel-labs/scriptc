@@ -1,8 +1,12 @@
+import type { TargetCpu } from "./backend/target-cpu.js";
 import type { WindowsSubsystem } from "./backend/targets.js";
 import type { NativeLinkInfo } from "./backend/native-link-info.js";
 import type { NativeOptimization } from "./backend/optimization.js";
+import type { NativeProfileMatch } from "./backend/native-profile.js";
 import type { ScrDiagnostic } from "./diagnostics/diagnostic.js";
 import type { CoverageInput } from "./coverage/report.js";
+import type { TierMode } from "./frontend/tier-analysis.js";
+import type { NodeIslandOptions } from "./node-islands/policy.js";
 
 export type CompileOutputKind = "ir" | "llvm" | "asm" | "obj" | "exe";
 
@@ -27,6 +31,11 @@ export interface CompileBaseOptions {
   optimization?: NativeOptimization;
   /** Remove symbol/debug payload from an executable at link time. */
   strip?: boolean;
+  /** Link the C library and the other system libraries into the executable
+   * (`--static`). glibc executables link as static PIE and need the C
+   * library's static archives on the build host; musl executables are always
+   * static. Linux executables only. */
+  staticLink?: boolean;
   /** Windows PE executable subsystem. Console is the default; GUI suppresses
    * automatic console-window creation. Only valid for Windows executables. */
   windowsSubsystem?: WindowsSubsystem;
@@ -35,9 +44,42 @@ export interface CompileBaseOptions {
    * executable mapped and the memory charged for up to ~100 ms after exit.
    * Executables only; no effect on other platforms. */
   detachedExit?: boolean;
+  /** On Linux, move the executable's code onto 2 MiB transparent huge pages
+   * at startup when the system allows them. The moved code stays resident.
+   * Executables only; no effect on other platforms. */
+  largePages?: boolean;
+  /** The x86-64 microarchitecture level the executable's code may require
+   * (`x86-64-v2` to `x86-64-v4`). The program's functions are compiled for
+   * that level, and the executable then runs only on CPUs that support it.
+   * Unset or `baseline`, the code runs on any x86-64 CPU. x86-64 targets
+   * only; the runtime pack keeps its baseline code. */
+  targetCpu?: TargetCpu;
+  /** Give the executable an x86-64-v3 copy of each program function, which
+   * it runs instead of the baseline code on CPUs that support that level
+   * (`SCRIPTC_CPU_LEVEL` caps the level at run time). Executables for x86-64
+   * targets without a `targetCpu` only; off by default. */
+  cpuDispatch?: boolean;
+  /** Instrument the executable for profile-guided optimization. Each run
+   * writes a raw profile to this path pattern (`%p` expands to the process
+   * id; `LLVM_PROFILE_FILE` overrides the pattern at run time). Linux
+   * executables only. */
+  profileGenerate?: string;
+  /** Optimize the executable with this indexed profile (`scriptc
+   * merge-profiles`). Code the profile does not describe, or describes
+   * from an older version of the program, is optimized as without one. */
+  profileUse?: string;
+  /** A function layout (scripts/refresh-cli-layout.mjs; gzip-compressed when
+   * the name ends in .gz): the listed functions are written first, by tier,
+   * so the code that runs together sits together in the executable. The
+   * native compiler's build uses it. Executables and LLVM output. */
+  functionLayout?: string;
 
   /** Eligible packages compile automatically. Explicit names override automatic selection heuristics. */
   npmStatic?: readonly string[] | "auto";
+  /** Shape inference's typed overlay for opted-in packages' JavaScript.
+   * False disables it (`--no-shape-overlay`); a package opts out with
+   * `"scriptc": { "packages": { "<name>": { "shapes": false } } }`. */
+  shapeOverlay?: boolean;
   /** Outbound native FFI manifest. Its signature-only TypeScript bindings
    * lower to direct C ABI calls. Source outputs retain those declarations;
    * archive/system-library inputs join only an executable link. */
@@ -45,6 +87,10 @@ export interface CompileBaseOptions {
   /** Attach the machine-readable external link recipe to an object result.
    * Valid only with outputKind "obj"; it never invokes a linker. */
   nativeLinkInfo?: boolean;
+  /** `--tier` (frontend/tier-analysis.ts). "static-only" keeps every demotion
+   * request a refusal (design invariant I2). Until demotion lands both modes
+   * compile exactly as before. */
+  tier?: TierMode;
 }
 
 /** Executable compile options. This remains the compatibility type for the
@@ -79,6 +125,8 @@ export type CompileArtifact =
       path: string;
       translationUnitPath: string;
       backend: "llvm";
+      /** How a `profileUse` build's profile matched the program's functions. */
+      profileMatch?: NativeProfileMatch;
     };
 
 export type CompileFailure = {
@@ -161,6 +209,17 @@ export interface AnalyzeOptions {
    * to analyze project code, but imported runtime values remain explicit
    * SC1010 blockers rather than being counted as executable. */
   externalTypes?: Readonly<Record<string, string>>;
+  /** `--tier` (see CompileBaseOptions.tier). */
+  tier?: TierMode;
+  /** `--explain-dynamic`: attach the tier-assignment report
+   * (CoverageInput.tiers). Such analyses bypass the verdict cache. */
+  explainDynamic?: boolean;
+  /** `--wasm <file>`: WebAssembly module files the program loads that its
+   * sources do not name (absolute paths); reported with the discovered ones. */
+  wasm?: readonly string[];
+  /** The Node island policy's command-line half (report-only: coverage
+   * reports which packages and modules would run in a Node island). */
+  nodeIslands?: NodeIslandOptions;
 }
 
 export interface AnalyzeResult {

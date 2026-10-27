@@ -1,1 +1,7 @@
-- **Function values:** Immutable aliases of overloaded program functions retain per-call overload resolution and identity. A function stored in a slot with a different signature remains the same function for equality, array searches, `length`, and own properties. Typed rest-parameter functions can be stored and called indirectly. Builtin function values have API-specific restrictions; see [Builtin function values](#builtin-function-values).
+- **Function values:** Immutable aliases of overloaded program functions retain per-call overload resolution and identity.
+  A function stored in a slot with a different signature remains the same function for equality, array searches, `length`, and own properties.
+  Typed rest-parameter functions can be stored and called indirectly, including through a slot with fixed parameters, where the slot's arguments arrive in the rest array.
+  Builtin function values have API-specific restrictions; see [Builtin function values](#builtin-function-values).
+- **JavaScript parameters:** In a JavaScript file TypeScript does not check, a prototype method (`C.prototype.m = function (...) {}`) takes whatever values its callers pass; its JSDoc types document the usual values without constraining them.
+  A sloppy-mode function with named parameters may read `arguments` only where the aliasing of its parameters cannot show: it reads `arguments.length`, or reads elements and never writes a parameter or an element.
+  Other uses of `arguments` in such a function are refused with `SC1090`; ES modules, `'use strict'` code, classes, and functions with default, rest, or destructured parameters have no such restriction.

@@ -14,7 +14,7 @@ child-process.ts:27:14 - error SC1090: listeners returning a value (make the cal
      |              ^~~~~~~~~~~~~~~
   28 | // Methods have no bound-value form — call on directly.
 
-child-process.ts:29:7 - error SC2007: values of type '{ (event: "spawn", listener: () => void): void; (event: "exit", listener: (code: number | null, signal: string | null) => void): void; (event: "close", listener: (code: number | null, signal: string | null) => void): void; (event: "error", listener: (err: Error) => void): void; (event: "message", listener: (message:...' cannot be compiled: the type declares multiple call signatures (overloads), and a compiled function value is always one concrete signature
+child-process.ts:29:7 - error SC2007: values of type '{ (event: "spawn", listener: () => void): ChildProcess; (event: "exit", listener: (code: number | null, signal: string | null) => void): ChildProcess; (event: "close", listener: (code: number | null, signal: string | null) => void): ChildProcess; (event: "error", listener: (err: Error) => void): ChildProcess; (event...' cannot be compiled: the type declares multiple call signatures (overloads), and a compiled function value is always one concrete signature
 
   28 | // Methods have no bound-value form — call on directly.
   29 | const f = c.on;
@@ -92,3 +92,17 @@ child-process.ts:43:64 - error SC2020: 'fork without a fourth-slot IPC channel' 
   44 | // Keep each fence on its own statement so diagnostics remain site-specific.
 
   hint: the fourth stdio entry must be "ipc"
+
+child-process.ts:48:21 - error SC1090: untyped child-stream 'data' listeners whose setEncoding state is unclear at their registration sites (declare the chunk as 'Buffer' or 'string') are not supported yet
+
+  47 | const pipedOut = piped.stdout!;
+  48 | pipedOut.on("data", (chunk: unknown) => console.log(String(chunk)));
+     |                     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  49 | pipedOut.setEncoding("utf8");
+
+child-process.ts:54:26 - error SC1090: untyped child-stream 'data' listeners whose setEncoding state is unclear at their registration sites (declare the chunk as 'Buffer' or 'string') are not supported yet
+
+  53 | pipedErr.setEncoding("utf8");
+  54 | piped.stderr!.on("data", (chunk: unknown) => console.log(String(chunk)));
+     |                          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  55 | 

@@ -28,7 +28,7 @@ function freshDir(dir: string): void {
   }
   mkdirSync(dir);
 }
-const scratch = "tmp-996-" + tail(process.argv[1]);
+const scratch = "tmp-996-" + tail(process.argv[1]) + "-" + process.pid;
 freshDir(scratch);
 
 // Contents into an array, back through map/filter/join.

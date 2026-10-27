@@ -1,0 +1,28 @@
+scriptc coverage tests/coverage-fixtures/wasm/main.ts
+
+  statements analyzed   9
+  compile statically    9  (100%)
+    in dynamic tier     4  (operate on values typed only at runtime; --explain-dynamic lists them)
+
+  npm package compilation:
+    wasm-fixture-pkg  static
+
+  WebAssembly modules: (found at build time; valid ones compile to native code)
+    inline module  39 bytes  valid
+      1 function, 0 imports, 1 export
+      found: inline at tests/coverage-fixtures/wasm/glue.js:5
+    tests/coverage-fixtures/wasm/add.wasm  41 bytes  valid
+      1 function, 0 imports, 1 export
+      found: path at tests/coverage-fixtures/wasm/glue.js:8
+    tests/coverage-fixtures/wasm/ext.so  36 bytes  valid
+      1 function, 0 imports, 1 export
+      found: path at tests/coverage-fixtures/wasm/glue.js:15
+    tests/coverage-fixtures/wasm/node_modules/wasm-fixture-pkg/lib/core.wasm  27 bytes  invalid: type mismatch (at byte 27)
+      1 function, 0 imports, 0 exports
+      found: shipped by the package at tests/coverage-fixtures/wasm/node_modules/wasm-fixture-pkg
+    tests/coverage-fixtures/wasm/build/generated.wasm  43 bytes  uses simd
+      1 function, 0 imports, 0 exports
+      features: simd
+      found: configured by tests/coverage-fixtures/wasm/package.json
+
+  fully static — all analyzed statements compile to native code.

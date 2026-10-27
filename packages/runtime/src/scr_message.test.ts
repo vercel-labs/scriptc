@@ -34,7 +34,8 @@ test.skipIf(process.platform === "win32")(
         env: { ...process.env, UBSAN_OPTIONS: "halt_on_error=1" },
       });
       expect(result.stdout).toBe(
-        "message graphs preserve identity, sparse values, byte aliases and getter order\n",
+        "message graphs preserve identity, sparse values, byte aliases and getter order\n" +
+          "native handles cross threads through their transfer hooks\n",
       );
       expect(result.stderr).toBe("");
     } finally {

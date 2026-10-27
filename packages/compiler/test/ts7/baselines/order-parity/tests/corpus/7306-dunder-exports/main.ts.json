@@ -1,0 +1,10 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7306-dunder-exports/dep.ts",
+  "<repo>/tests/corpus/7306-dunder-exports/star.ts",
+  "<repo>/tests/corpus/7306-dunder-exports/facade.ts",
+  "<repo>/tests/corpus/7306-dunder-exports/table.cjs",
+  "<repo>/tests/corpus/7306-dunder-exports/main.ts"
+ ],
+ "diags": []
+}

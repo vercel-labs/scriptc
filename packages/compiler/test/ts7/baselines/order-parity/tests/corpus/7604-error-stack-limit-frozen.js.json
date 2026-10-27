@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7604-error-stack-limit-frozen.js"
+ ],
+ "diags": []
+}

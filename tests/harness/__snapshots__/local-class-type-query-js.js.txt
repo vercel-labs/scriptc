@@ -1,0 +1,6 @@
+local-class-type-query-js.js:14:9 - error SC1090: fields assigned outside the constructor's top level ('this.missingFilesMap' would be undefined until the first assignment runs — assign it unconditionally at the top of the constructor) is not supported yet
+
+  13 |         this.missingFilesMap.clear();
+  14 |         this.missingFilesMap = void 0;
+     |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  15 |       }

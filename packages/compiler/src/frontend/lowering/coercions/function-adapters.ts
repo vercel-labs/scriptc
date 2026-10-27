@@ -1,9 +1,11 @@
+import { keyedHelperName } from "../stable-names.js";
 import { dynUndefinedExpr } from "../../../ir/build.js";
 import { buildFunctionAdapter } from "./builders.js";
 import { InternalCompilerError } from "../../../errors.js";
 import type { IrExpr, IrParam, IrStmt, IrType, SrcLoc } from "../../../ir/ir.js";
 import {
   canAdaptDynFuncTo,
+  canDynCheckTo,
   DYN,
   F64,
   isUnitType,
@@ -12,7 +14,9 @@ import {
   UNDEFINED_T,
 } from "../../../ir/ir.js";
 import { typeKey } from "../../type-mapper.js";
+import { newFnCtx } from "../function-context.js";
 import type { Lowerer } from "../lowerer.js";
+import { maybePromiseUnionOf } from "../maybe-promise.js";
 
 /** Wrap a zero-argument function whose array result needs an element
  * conversion. Each invocation creates a fresh converted array; the factory
@@ -30,7 +34,7 @@ export function funcReturnWidthAdapter(
   const key = `fn:${typeKey(fromT.ret.elem)}:${typeKey(toT.ret.elem)}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = `%fn.width.${lowerer.valueHelpers.size}`;
+  const name = keyedHelperName(lowerer, "%fn.width", key);
   lowerer.valueHelpers.set(key, name);
   lowerer.freshClosureAdapters.add(name);
   // The returned closure's body: call the captured original, width-map.
@@ -96,6 +100,11 @@ export function coercibleValue(lowerer: Lowerer, src: IrType, dst: IrType): bool
   if (dst.kind === "union") {
     if (src.kind === "union") return lowerer.unionRetagMappable(src.unionId, dst.unionId);
     if (src.kind === "void") return lowerer.armTag(dst.unionId, UNDEFINED_T) >= 0;
+    if (src.kind === "promise") {
+      // A maybe-promise union's promise arm accepts payload widening.
+      const mp = maybePromiseUnionOf(lowerer, dst);
+      if (mp) return lowerer.promisePayloadWidens(src, mp.promise);
+    }
     return !isUnitType(src) && lowerer.armTag(dst.unionId, src) >= 0;
   }
   if (src.kind === "union") {
@@ -105,12 +114,15 @@ export function coercibleValue(lowerer: Lowerer, src: IrType, dst: IrType): bool
 }
 
 /** Whether all parameters and the result adapt without a trap-only path.
- * Rest signatures are excluded; extra destination parameters are ignored. */
+ * Rest signatures are excluded, except a typed-rest source in a slot with
+ * fixed parameters (the rest packing adapter); extra destination
+ * parameters are ignored. */
 export function cleanFuncAdaptable(
   lowerer: Lowerer,
   src: IrType & { kind: "func" },
   dst: IrType & { kind: "func" },
 ): boolean {
+  if (restPackingAdapterFits(lowerer, src, dst)) return true;
   if (src.rest === true || dst.rest === true) return false;
   if (src.params.length > dst.params.length) return false;
   for (let i = 0; i < src.params.length; i++) {
@@ -121,15 +133,145 @@ export function cleanFuncAdaptable(
   return src.ret.kind === "void" && dst.ret.kind === "dyn";
 }
 
+/** Whether a typed-rest function (`(...m: T[]) => R`) can serve a slot
+ * with fixed parameters (`(m: T) => void`): the slot's parameters convert
+ * to the function's fixed parameters, then to the rest element type. */
+export function restPackingAdapterFits(
+  lowerer: Lowerer,
+  fromT: IrType & { kind: "func" },
+  toT: IrType & { kind: "func" },
+): boolean {
+  if (fromT.rest !== true || fromT.restAbi !== "typed" || toT.rest === true) return false;
+  const fixed = fromT.params.length - 1;
+  const restT = fromT.params[fixed];
+  if (restT?.kind !== "array" || toT.params.length < fixed) return false;
+  for (let i = 0; i < toT.params.length; i++) {
+    if (!lowerer.coercibleValue(toT.params[i]!, i < fixed ? fromT.params[i]! : restT.elem))
+      return false;
+  }
+  return toT.ret.kind === "void" || lowerer.coercibleValue(fromT.ret, toT.ret);
+}
+
+/** The adapter for restPackingAdapterFits: forwards the fixed arguments and
+ * packs the remaining ones into the rest array, as a JavaScript call of the
+ * function with those arguments does. */
+function restPackingAdapter(
+  lowerer: Lowerer,
+  fromT: IrType & { kind: "func" },
+  toT: IrType & { kind: "func" },
+  loc: SrcLoc,
+): string {
+  const key = `fnrestadapt:${typeKey(fromT)}:${typeKey(toT)}`;
+  const existing = lowerer.coercions.retags.get(key);
+  if (existing) return existing;
+  const name = keyedHelperName(lowerer, "%fn.adapt", key);
+  lowerer.coercions.retags.set(key, name);
+  lowerer.freshClosureAdapters.add(name);
+  const fixed = fromT.params.length - 1;
+  const restT = fromT.params[fixed] as IrType & { kind: "array" };
+  const params: IrParam[] = toT.params.map((t, i) => ({
+    localId: `a.${i}`,
+    name: `a${i}`,
+    type: t,
+  }));
+  const arg = (i: number, want: IrType): IrExpr =>
+    lowerer.coerceToExpected(
+      { kind: "varRef", localId: `a.${i}`, type: toT.params[i]!, loc },
+      want,
+    );
+  const args: IrExpr[] = [];
+  for (let i = 0; i < fixed; i++) args.push(arg(i, fromT.params[i]!));
+  const packed: IrExpr[] = [];
+  for (let i = fixed; i < toT.params.length; i++) packed.push(arg(i, restT.elem));
+  args.push({ kind: "arrayLit", elems: packed, type: restT, loc });
+  const call: IrExpr = {
+    kind: "callValue",
+    callee: { kind: "varRef", localId: "f.0", type: fromT, loc },
+    receiver: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
+    args,
+    type: fromT.ret,
+    loc,
+  };
+  const body: IrStmt[] =
+    toT.ret.kind === "void"
+      ? [
+          { kind: "exprStmt", expr: call, loc },
+          { kind: "return", value: null, loc },
+        ]
+      : [{ kind: "return", value: lowerer.coerceToExpected(call, toT.ret), loc }];
+  lowerer.liftedFns.push(...buildFunctionAdapter(name, fromT, toT, params, [], body, loc));
+  return name;
+}
+
+/** Adapt a fixed-parameter function to a checked-dynamic rest signature
+ * without fixed parameters (`() => {}` into mock.fn()'s `(...args: any[])
+ * => undefined`): the adapter receives the hidden argument array and
+ * passes its element i as parameter i, undefined when the caller passed
+ * fewer arguments, as JS does. Null unless every parameter is
+ * checked-dynamic, which holds a missing argument as undefined, and the
+ * result is discarded or converts. */
+function funcIntoDynRestAdapter(
+  lowerer: Lowerer,
+  fromT: IrType & { kind: "func" },
+  toT: IrType & { kind: "func" },
+  loc: SrcLoc,
+): string | null {
+  if (fromT.rest === true || fromT.params.some((p) => p.kind !== "dyn")) return null;
+  if (toT.ret.kind !== "void" && !lowerer.coercibleValue(fromT.ret, toT.ret)) return null;
+  const key = `fnadapt:${typeKey(fromT)}:${typeKey(toT)}`;
+  const existing = lowerer.coercions.retags.get(key);
+  if (existing) return existing;
+  const name = keyedHelperName(lowerer, "%fn.adapt", key);
+  lowerer.coercions.retags.set(key, name);
+  lowerer.freshClosureAdapters.add(name);
+  const params: IrParam[] = [{ localId: "rest.0", name: "args", type: DYN }];
+  const call: IrExpr = {
+    kind: "callValue",
+    callee: { kind: "varRef", localId: "f.0", type: fromT, loc },
+    receiver: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
+    args: fromT.params.map((_, i): IrExpr => ({
+      kind: "dynKeyGet",
+      value: { kind: "varRef", localId: "rest.0", type: DYN, loc },
+      key: { kind: "strLit", value: String(i), type: STRING, loc },
+      type: DYN,
+      loc,
+    })),
+    type: fromT.ret,
+    loc,
+  };
+  let body: IrStmt[];
+  if (toT.ret.kind === "void") {
+    body = [
+      { kind: "exprStmt", expr: call, loc },
+      { kind: "return", value: null, loc },
+    ];
+  } else {
+    const result = lowerer.coerceToExpected(call, toT.ret);
+    if (!typeEquals(result.type, toT.ret))
+      throw new InternalCompilerError("lowerer bug: probed fn-adapter return stopped coercing");
+    body = [{ kind: "return", value: result, loc }];
+  }
+  lowerer.liftedFns.push(...buildFunctionAdapter(name, fromT, toT, params, [], body, loc));
+  return name;
+}
+
 /** Adapt a function value to a destination signature, forwarding and
  * converting its arguments and result. Unsupported parameter/result pairs
- * produce checked traps when called; rest signatures remain refused. */
+ * produce checked traps when called. Rest signatures are refused, except a
+ * typed-rest source in a slot with fixed parameters, which the rest
+ * packing adapter serves, and a fixed-parameter function into a
+ * checked-dynamic rest signature without fixed parameters
+ * (funcIntoDynRestAdapter). */
 export function funcCoerceAdapter(
   lowerer: Lowerer,
   fromT: IrType & { kind: "func" },
   toT: IrType & { kind: "func" },
   loc: SrcLoc,
 ): string | null {
+  if (restPackingAdapterFits(lowerer, fromT, toT))
+    return restPackingAdapter(lowerer, fromT, toT, loc);
+  if (toT.rest === true && toT.restAbi === undefined && toT.params.length === 0)
+    return funcIntoDynRestAdapter(lowerer, fromT, toT, loc);
   if (fromT.rest === true || toT.rest === true) return null;
   if (fromT.params.length > toT.params.length) return null;
   // Piece dispositions beyond coercibleValue, all CHECKER-APPROVED
@@ -152,6 +294,10 @@ export function funcCoerceAdapter(
     const actual = toT.params[i]!;
     const expected = fromT.params[i]!;
     if (lowerer.coercibleValue(actual, expected)) continue;
+    // A record argument the parameter's shape is a structural width of
+    // (members missing from the argument are optional there): the
+    // record width conversion.
+    if (lowerer.widthLiftPlan(actual, expected)) continue;
     if (actual.kind === "union" && expected.kind === "dyn") {
       const arms =
         lowerer.unions.get(actual.unionId)?.arms.filter((arm) => lowerer.dynConvertible(arm)) ?? [];
@@ -202,10 +348,36 @@ export function funcCoerceAdapter(
       voidRet = toT.ret.kind === "dyn" ? "dyn" : "strand";
     }
   }
+  // An untyped result (a generic wrapper's `any` handed back `as F`) takes
+  // the checked-dynamic extraction to the slot's result: a record checks
+  // its shape, a Promise keeps its identity and checks its payload when it
+  // settles.
+  const checkedRet =
+    strandRet &&
+    fromT.ret.kind === "dyn" &&
+    canDynCheckTo(
+      toT.ret,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    );
+  if (checkedRet) strandRet = false;
+  // A Promise result whose payload widens into the slot's (a record with
+  // extra, optional or nested members, `Promise<Narrow>` into
+  // `Promise<Wide>`): the result keeps its identity and converts its
+  // payload when it settles (coerceToExpected's boxed-settlement rule).
+  if (
+    strandRet &&
+    fromT.ret.kind === "promise" &&
+    toT.ret.kind === "promise" &&
+    lowerer.promisePayloadWidens(fromT.ret, toT.ret)
+  )
+    strandRet = false;
+  // A record result the slot's result is a structural width of.
+  if (strandRet && lowerer.widthLiftPlan(fromT.ret, toT.ret)) strandRet = false;
   const key = `fnadapt:${typeKey(fromT)}:${typeKey(toT)}`;
   const existing = lowerer.coercions.retags.get(key);
   if (existing) return existing;
-  const name = `%fn.adapt.${lowerer.coercions.retags.size}`;
+  const name = keyedHelperName(lowerer, "%fn.adapt", key);
   lowerer.coercions.retags.set(key, name);
   lowerer.freshClosureAdapters.add(name);
   const params: IrParam[] = toT.params.map((t, i) => ({
@@ -224,91 +396,107 @@ export function funcCoerceAdapter(
     },
     loc,
   });
+  // The body lowers in the adapter's own function context: conversions
+  // that need scratch locals (a union of record results lifted into one
+  // record slot) declare them in the adapter, not in the function that
+  // asked for it.
+  const context = newFnCtx(false, null, null, toT.ret);
   let body: IrStmt[];
-  if (strandParams) {
-    body = [
-      strandThrow(
-        `a '${lowerer.fmt(fromT)}' function invoked through a '${lowerer.fmt(toT)}' slot (the parameter types cannot convert — the checker's loose function compatibility admitted the assignment, but the call has no exact lowering)`,
-      ),
-    ];
-  } else {
-    const args = fromT.params.map((pt, i) => {
-      const aRef: IrExpr = { kind: "varRef", localId: `a.${i}`, type: toT.params[i]!, loc };
-      const partial = partialDynParams.get(i);
-      if (partial && aRef.type.kind === "union") {
-        const source = lowerer.unions.get(aRef.type.unionId)!;
-        const supported =
-          partial.kind === "union" ? lowerer.unions.get(partial.unionId)!.arms : [partial];
-        const rejected = new Set(
-          source.arms.flatMap((arm, tag) =>
-            supported.some((accepted) => typeEquals(accepted, arm)) ? [] : [tag],
-          ),
-        );
-        const narrow =
-          partial.kind === "union"
-            ? lowerer.unionRetagHelper(aRef.type.unionId, partial.unionId, loc, rejected)
-            : lowerer.narrowedArmHelper(aRef.type.unionId, partial, loc);
-        if (!narrow)
-          throw new InternalCompilerError(
-            "lowerer bug: partial callable parameter stopped narrowing",
-          );
-        return lowerer.coerceToExpected(
-          { kind: "call", callee: narrow, args: [aRef], type: partial, loc },
-          pt,
-        );
-      }
-      const narrowed = narrowedParams.get(i);
-      const helper =
-        narrowed && aRef.type.kind === "union" && pt.kind === "union"
-          ? lowerer.unionRetagHelper(aRef.type.unionId, pt.unionId, loc, narrowed)
-          : null;
-      const converted: IrExpr = helper
-        ? { kind: "call", callee: helper, args: [aRef], type: pt, loc }
-        : lowerer.coerceToExpected(aRef, pt);
-      if (!typeEquals(converted.type, pt))
-        throw new InternalCompilerError("lowerer bug: probed fn-adapter param stopped coercing");
-      return converted;
-    });
-    const call: IrExpr = {
-      kind: "callValue",
-      callee: { kind: "varRef", localId: "f.0", type: fromT, loc },
-      receiver: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
-      args,
-      type: fromT.ret,
-      loc,
-    };
-    if (toT.ret.kind === "void") {
+  lowerer.fnStack.push(context);
+  try {
+    if (strandParams) {
       body = [
-        { kind: "exprStmt", expr: call, loc },
-        { kind: "return", value: null, loc },
-      ];
-    } else if (voidRet === "dyn") {
-      body = [
-        { kind: "exprStmt", expr: call, loc },
-        { kind: "return", value: dynUndefinedExpr(loc), loc },
-      ];
-    } else if (voidRet === "strand") {
-      body = [
-        { kind: "exprStmt", expr: call, loc },
         strandThrow(
-          `a void result where the '${lowerer.fmt(toT)}' slot promises '${lowerer.fmt(toT.ret)}' (a thrower typed 'never' never reaches this; a genuinely void function has no result to hand over)`,
-        ),
-      ];
-    } else if (strandRet) {
-      body = [
-        { kind: "exprStmt", expr: call, loc },
-        strandThrow(
-          `a '${lowerer.fmt(fromT)}' function invoked through a '${lowerer.fmt(toT)}' slot (the result cannot convert to '${lowerer.fmt(toT.ret)}' — the checker's loose function compatibility admitted the assignment, but the call has no exact lowering)`,
+          `a '${lowerer.fmt(fromT)}' function invoked through a '${lowerer.fmt(toT)}' slot (the parameter types cannot convert — the checker's loose function compatibility admitted the assignment, but the call has no exact lowering)`,
         ),
       ];
     } else {
-      const result = lowerer.coerceToExpected(call, toT.ret);
-      if (!typeEquals(result.type, toT.ret))
-        throw new InternalCompilerError("lowerer bug: probed fn-adapter return stopped coercing");
-      body = [{ kind: "return", value: result, loc }];
+      const args = fromT.params.map((pt, i) => {
+        const aRef: IrExpr = { kind: "varRef", localId: `a.${i}`, type: toT.params[i]!, loc };
+        const partial = partialDynParams.get(i);
+        if (partial && aRef.type.kind === "union") {
+          const source = lowerer.unions.get(aRef.type.unionId)!;
+          const supported =
+            partial.kind === "union" ? lowerer.unions.get(partial.unionId)!.arms : [partial];
+          const rejected = new Set(
+            source.arms.flatMap((arm, tag) =>
+              supported.some((accepted) => typeEquals(accepted, arm)) ? [] : [tag],
+            ),
+          );
+          const narrow =
+            partial.kind === "union"
+              ? lowerer.unionRetagHelper(aRef.type.unionId, partial.unionId, loc, rejected)
+              : lowerer.narrowedArmHelper(aRef.type.unionId, partial, loc);
+          if (!narrow)
+            throw new InternalCompilerError(
+              "lowerer bug: partial callable parameter stopped narrowing",
+            );
+          return lowerer.coerceToExpected(
+            { kind: "call", callee: narrow, args: [aRef], type: partial, loc },
+            pt,
+          );
+        }
+        const narrowed = narrowedParams.get(i);
+        const helper =
+          narrowed && aRef.type.kind === "union" && pt.kind === "union"
+            ? lowerer.unionRetagHelper(aRef.type.unionId, pt.unionId, loc, narrowed)
+            : null;
+        const converted: IrExpr = helper
+          ? { kind: "call", callee: helper, args: [aRef], type: pt, loc }
+          : lowerer.coerceToExpected(aRef, pt);
+        if (!typeEquals(converted.type, pt))
+          throw new InternalCompilerError("lowerer bug: probed fn-adapter param stopped coercing");
+        return converted;
+      });
+      const call: IrExpr = {
+        kind: "callValue",
+        callee: { kind: "varRef", localId: "f.0", type: fromT, loc },
+        receiver: { kind: "libCall", fn: "dyn.this", args: [], type: DYN, loc },
+        args,
+        type: fromT.ret,
+        loc,
+      };
+      if (toT.ret.kind === "void") {
+        body = [
+          { kind: "exprStmt", expr: call, loc },
+          { kind: "return", value: null, loc },
+        ];
+      } else if (voidRet === "dyn") {
+        body = [
+          { kind: "exprStmt", expr: call, loc },
+          { kind: "return", value: dynUndefinedExpr(loc), loc },
+        ];
+      } else if (voidRet === "strand") {
+        body = [
+          { kind: "exprStmt", expr: call, loc },
+          strandThrow(
+            `a void result where the '${lowerer.fmt(toT)}' slot promises '${lowerer.fmt(toT.ret)}' (a thrower typed 'never' never reaches this; a genuinely void function has no result to hand over)`,
+          ),
+        ];
+      } else if (strandRet) {
+        body = [
+          { kind: "exprStmt", expr: call, loc },
+          strandThrow(
+            `a '${lowerer.fmt(fromT)}' function invoked through a '${lowerer.fmt(toT)}' slot (the result cannot convert to '${lowerer.fmt(toT.ret)}' — the checker's loose function compatibility admitted the assignment, but the call has no exact lowering)`,
+          ),
+        ];
+      } else if (checkedRet) {
+        body = [
+          { kind: "return", value: { kind: "dynCheck", value: call, type: toT.ret, loc }, loc },
+        ];
+      } else {
+        const result = lowerer.coerceToExpected(call, toT.ret);
+        if (!typeEquals(result.type, toT.ret))
+          throw new InternalCompilerError("lowerer bug: probed fn-adapter return stopped coercing");
+        body = [{ kind: "return", value: result, loc }];
+      }
     }
+  } finally {
+    lowerer.fnStack.pop();
   }
-  lowerer.liftedFns.push(...buildFunctionAdapter(name, fromT, toT, params, [], body, loc));
+  lowerer.liftedFns.push(
+    ...buildFunctionAdapter(name, fromT, toT, params, context.locals, body, loc),
+  );
   return name;
 }
 
@@ -417,7 +605,7 @@ export function spawnResFnAdapter(
   const key = `fnspawn:${typeKey(fromT)}:${typeKey(toT)}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = `%fnval.spawnres.${lowerer.valueHelpers.size}`;
+  const name = keyedHelperName(lowerer, "%fnval.spawnres", key);
   lowerer.valueHelpers.set(key, name);
   lowerer.freshClosureAdapters.add(name);
   const params: IrParam[] = toT.params.map((p, i) => ({

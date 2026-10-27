@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6590-sloppy-arguments-unobservable.cjs"
+ ],
+ "diags": []
+}

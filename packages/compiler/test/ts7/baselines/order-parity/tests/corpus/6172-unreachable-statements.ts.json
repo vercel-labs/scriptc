@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6172-unreachable-statements.ts"
+ ],
+ "diags": []
+}

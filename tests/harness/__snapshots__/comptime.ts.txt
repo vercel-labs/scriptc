@@ -46,3 +46,17 @@ comptime.ts:22:23 - error SC1110: comptime evaluation failed: expected 'string' 
   22 | const lied = comptime(() => 1 as unknown as string);
      |                       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
   23 | 
+
+comptime.ts:29:22 - error SC1090: baking comptime results of type '{ next: null | ...; value: number }' into the binary (number, string, boolean, and arrays, records and unions of those lower to literals; a record or union type reachable from itself does not) is not supported yet
+
+  28 | }
+  29 | const chain: Chain = comptime(() => ({ value: 1, next: null }) as Chain);
+     |                      ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  30 | 
+
+comptime.ts:33:20 - error SC1090: baking comptime results of type '(...)[] | number' into the binary (number, string, boolean, and arrays, records and unions of those lower to literals; a record or union type reachable from itself does not) is not supported yet
+
+  32 | type Tree = number | Tree[];
+  33 | const tree: Tree = comptime((): Tree => [1, [2, [3]]]);
+     |                    ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  34 | 

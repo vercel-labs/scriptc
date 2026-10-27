@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/class-call-shadowed-static.ts"
+ ],
+ "diags": []
+}

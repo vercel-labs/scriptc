@@ -1,3 +1,4 @@
+import { keyedHelperName } from "./stable-names.js";
 import { boolLit, varRef } from "../../ir/build.js";
 import {
   BOOL,
@@ -135,7 +136,7 @@ export function lowerUnionEquality(
       loc,
     );
     if (!result) return null;
-    name = `%value.eq.${lowerer.equalityHelpers.size}`;
+    name = keyedHelperName(lowerer, "%value.eq", key);
     lowerer.equalityHelpers.set(key, name);
     lowerer.liftedFns.push({
       name,

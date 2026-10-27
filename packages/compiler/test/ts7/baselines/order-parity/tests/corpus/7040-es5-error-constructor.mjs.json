@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7040-es5-error-constructor.mjs"
+ ],
+ "diags": []
+}

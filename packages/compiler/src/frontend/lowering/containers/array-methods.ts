@@ -1,3 +1,5 @@
+import { keyedHelperName } from "../stable-names.js";
+import { liftedFreshSpread } from "../coercions/fresh-spread.js";
 import { lowerArrayIteratorValue } from "../iterator-adapters.js";
 import { identityPreservingWidening } from "../coercions/identity.js";
 import { arrayConcatHelper } from "./array-concat.js";
@@ -30,6 +32,10 @@ import {
   arrayValueRead,
   arrayValueStore,
   arrayValueType,
+  elementPlaceholder,
+  insertedValues,
+  optionalElementValue,
+  primitiveElement,
 } from "../array-values.js";
 import { typeKey } from "../../type-mapper.js";
 import {
@@ -121,6 +127,14 @@ function lowerOptionalArrayPush(
     }
   }
   return { kind: "seqExpr", stmts, result: length(), type: F64, loc };
+}
+
+/** The checker type of `node` admits undefined. */
+function checkerTypeAdmitsUndefined(lowerer: Lowerer, node: ts.Expression): boolean {
+  const type = lowerer.typeOf(node);
+  return (type.isUnionType() ? ts.constituentTypes(type) : [type]).some(
+    (part) => (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0,
+  );
 }
 
 /** `a.splice(start, count, v)` where v may hold undefined at run time.
@@ -318,7 +332,8 @@ export function lowerArrayMethodCall(
   if (lowerer.chainBlocked(access, call)) return null;
   const name = access.name.text;
   const iteratorMethod =
-    (name === "values" || name === "keys" || name === "entries") && call.arguments.length === 0;
+    (name === "values" || name === "keys" || name === "entries") &&
+    call.arguments.nodes.length === 0;
   if (
     !ARRAY_METHODS.has(name) &&
     name !== "sort" &&
@@ -352,12 +367,27 @@ export function lowerArrayMethodCall(
       // machinery answered string[]): same rule, any-typed spelling.
       ((lowerer.typeOf(access.expression).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !==
         0 &&
-        isJsSourceFile(access.getSourceFile())))
+        isJsSourceFile(ts.getSourceFileOfNode(access))))
   ) {
     const probe = lowerer.lowerExpr(access.expression);
     if (probe.type.kind === "array") {
       receiverIr = probe.type;
       probedUntyped = true;
+    } else if (
+      probe.type.kind === "dyn" &&
+      !isJsSourceFile(ts.getSourceFileOfNode(access)) &&
+      lowerer.isStdlibMember(access)
+    ) {
+      // An `unknown[]` (or `any[]`) array stored checked-dynamic — a
+      // generic body instantiated at `unknown`, a spread of unknown
+      // elements: the method runs on the runtime array (dynInvoke, JS
+      // exact), and a typed result is checked like any member read.
+      const dispatched = lowerDynDispatchMethodCall(lowerer, call, access, probe, true);
+      if (!dispatched) return null;
+      const result = lowerer.mapTypeOf(lowerer.typeOf(call));
+      return result && result.kind !== "void" && result.kind !== "dyn"
+        ? lowerer.coerceInto(call, dispatched, result)
+        : dispatched;
     }
   }
   if (receiverIr?.kind === "union") {
@@ -446,8 +476,8 @@ export function lowerArrayMethodCall(
     return lowerArraySortCall(lowerer, call, access, elem, receiverIr);
   }
   if (name === "toReversed") {
-    if (call.arguments.length !== 0) {
-      lowerer.noLowering(`.toReversed with ${call.arguments.length} arguments`, call);
+    if (call.arguments.nodes.length !== 0) {
+      lowerer.noLowering(`.toReversed with ${call.arguments.nodes.length} arguments`, call);
     }
     return {
       kind: "arrIntrinsic",
@@ -459,8 +489,8 @@ export function lowerArrayMethodCall(
     };
   }
   if (name === "reverse") {
-    if (call.arguments.length !== 0) {
-      lowerer.noLowering(`.reverse with ${call.arguments.length} arguments`, call);
+    if (call.arguments.nodes.length !== 0) {
+      lowerer.noLowering(`.reverse with ${call.arguments.nodes.length} arguments`, call);
     }
     return {
       kind: "arrIntrinsic",
@@ -472,10 +502,10 @@ export function lowerArrayMethodCall(
     };
   }
   if (name === "fill") {
-    if (call.arguments.length > 3 || call.arguments.some(ts.isSpreadElement)) {
-      lowerer.noLowering(`.fill with ${call.arguments.length} arguments`, call);
+    if (call.arguments.nodes.length > 3 || call.arguments.nodes.some(ts.isSpreadElement)) {
+      lowerer.noLowering(`.fill with ${call.arguments.nodes.length} arguments`, call);
     }
-    const value = call.arguments[0] ? lowerer.lowerExpr(call.arguments[0]) : null;
+    const value = call.arguments.nodes[0] ? lowerer.lowerExpr(call.arguments.nodes[0]) : null;
     if (
       value &&
       value.type.kind === "dyn" &&
@@ -485,7 +515,7 @@ export function lowerArrayMethodCall(
     ) {
       lowerer.noLowering(
         ".fill of a checked-dynamic reference into a static array",
-        call.arguments[0]!,
+        call.arguments.nodes[0]!,
       );
     }
     const writeUndefined =
@@ -495,35 +525,53 @@ export function lowerArrayMethodCall(
       lowerer.lowerExpr(access.expression),
       value,
       writeUndefined,
-      lowerArrayPosition(lowerer, call.arguments[1], numLit(0, loc), "array fill start"),
-      lowerArrayPosition(lowerer, call.arguments[2], numLit(Infinity, loc), "array fill end"),
+      lowerArrayPosition(lowerer, call.arguments.nodes[1], numLit(0, loc), "array fill start"),
+      lowerArrayPosition(lowerer, call.arguments.nodes[2], numLit(Infinity, loc), "array fill end"),
       receiverIr,
       loc,
     );
   }
   if (name === "copyWithin") {
-    if (call.arguments.length > 3 || call.arguments.some(ts.isSpreadElement)) {
-      lowerer.noLowering(`.copyWithin with ${call.arguments.length} arguments`, call);
+    if (call.arguments.nodes.length > 3 || call.arguments.nodes.some(ts.isSpreadElement)) {
+      lowerer.noLowering(`.copyWithin with ${call.arguments.nodes.length} arguments`, call);
     }
     return lowerArrayCopyWithin(
       lowerer.lowerExpr(access.expression),
-      lowerArrayPosition(lowerer, call.arguments[0], numLit(0, loc), "array copyWithin target"),
-      lowerArrayPosition(lowerer, call.arguments[1], numLit(0, loc), "array copyWithin start"),
-      lowerArrayPosition(lowerer, call.arguments[2], numLit(Infinity, loc), "array copyWithin end"),
+      lowerArrayPosition(
+        lowerer,
+        call.arguments.nodes[0],
+        numLit(0, loc),
+        "array copyWithin target",
+      ),
+      lowerArrayPosition(
+        lowerer,
+        call.arguments.nodes[1],
+        numLit(0, loc),
+        "array copyWithin start",
+      ),
+      lowerArrayPosition(
+        lowerer,
+        call.arguments.nodes[2],
+        numLit(Infinity, loc),
+        "array copyWithin end",
+      ),
       receiverIr,
       loc,
     );
   }
   if (name === "with") {
-    if (call.arguments.length !== 2 || call.arguments.some(ts.isSpreadElement)) {
-      lowerer.noLowering(`.with with ${call.arguments.length} arguments`, call);
+    if (call.arguments.nodes.length !== 2 || call.arguments.nodes.some(ts.isSpreadElement)) {
+      lowerer.noLowering(`.with with ${call.arguments.nodes.length} arguments`, call);
     }
     const receiver = lowerer.lowerExpr(access.expression);
-    const index = lowerPositionArgument(lowerer, call.arguments[0]!, numLit(0, loc));
+    const index = lowerPositionArgument(lowerer, call.arguments.nodes[0]!, numLit(0, loc));
     if (!primitivePositionType(lowerer, index.type)) {
-      lowerer.noLowering(`.with index of '${lowerer.fmt(index.type)}' values`, call.arguments[0]!);
+      lowerer.noLowering(
+        `.with index of '${lowerer.fmt(index.type)}' values`,
+        call.arguments.nodes[0]!,
+      );
     }
-    const value = lowerer.lowerExpr(call.arguments[1]!);
+    const value = lowerer.lowerExpr(call.arguments.nodes[1]!);
     const receiverLocal = lowerer.declareHiddenLocal("%withRecv", receiverIr);
     const indexLocal = lowerer.declareHiddenLocal("%withIndex", index.type);
     const valueLocal = lowerer.declareHiddenLocal("%withValue", value.type);
@@ -534,7 +582,7 @@ export function lowerArrayMethodCall(
       lowerer,
       indexRef,
       numLit(0, loc),
-      call.arguments[0]!,
+      call.arguments.nodes[0]!,
       "array with index",
     );
     const stmts: IrStmt[] = [
@@ -588,7 +636,7 @@ export function lowerArrayMethodCall(
         loc,
       };
     }
-    const coercedValue = lowerer.coerceInto(call.arguments[1]!, valueRef, elem);
+    const coercedValue = lowerer.coerceInto(call.arguments.nodes[1]!, valueRef, elem);
     return {
       kind: "seqExpr",
       stmts,
@@ -608,21 +656,24 @@ export function lowerArrayMethodCall(
     const receiver = lowerer.lowerExpr(access.expression);
     const start = lowerArrayPosition(
       lowerer,
-      call.arguments[0],
+      call.arguments.nodes[0],
       numLit(0, loc),
       "array toSpliced start",
     );
     const deleteCount = lowerArrayPosition(
       lowerer,
-      call.arguments[1],
-      numLit(call.arguments.length === 1 ? Infinity : 0, loc),
+      call.arguments.nodes[1],
+      numLit(call.arguments.nodes.length === 1 ? Infinity : 0, loc),
       "array toSpliced deleteCount",
     );
-    const itemNodes = call.arguments.slice(2);
+    const itemNodes = call.arguments.nodes.slice(2);
     const hasSpread = itemNodes.some(ts.isSpreadElement);
     const itemProbes = hasSpread ? [] : itemNodes.map((arg) => tryLowerExpression(lowerer, arg));
     const statefulItems = itemProbes.some(
-      (probe) => probe !== null && lowerer.runtimeOptionalWidening(probe.type, elem) !== null,
+      (probe) =>
+        probe !== null &&
+        (lowerer.runtimeOptionalWidening(probe.type, elem) !== null ||
+          optionalElementValue(lowerer, probe, elem)),
     );
     const items: IrExpr = hasSpread
       ? lowerArraySpreadItems(lowerer, itemNodes, elem, receiverIr, loc)
@@ -709,7 +760,7 @@ export function lowerArrayMethodCall(
       | "reduce"
       | "reduceRight"
   ];
-  if (call.arguments.length < arity[0]! || call.arguments.length > arity[1]!) {
+  if (call.arguments.nodes.length < arity[0]! || call.arguments.nodes.length > arity[1]!) {
     const hint =
       name === "map" ||
       name === "filter" ||
@@ -721,7 +772,7 @@ export function lowerArrayMethodCall(
         ? "the thisArg parameter has no lowering — use an arrow function"
         : undefined;
     lowerer.noLowering(
-      `.${name} with ${call.arguments.length} argument${call.arguments.length === 1 ? "" : "s"}`,
+      `.${name} with ${call.arguments.nodes.length} argument${call.arguments.nodes.length === 1 ? "" : "s"}`,
       call,
       hint,
     );
@@ -742,8 +793,8 @@ export function lowerArrayMethodCall(
     // order (count snapshotted first, so the self-spread forms duplicate
     // like JS) and return the new length.
     const spreadArg =
-      call.arguments.length === 1 && ts.isSpreadElement(call.arguments[0]!)
-        ? call.arguments[0]!
+      call.arguments.nodes.length === 1 && ts.isSpreadElement(call.arguments.nodes[0]!)
+        ? call.arguments.nodes[0]!
         : null;
     if ((name === "push" || name === "unshift") && spreadArg && ts.isSpreadElement(spreadArg)) {
       let src = lowerer.lowerExpr(spreadArg.expression);
@@ -775,6 +826,10 @@ export function lowerArrayMethodCall(
         };
       }
       if (!typeEquals(src.type, receiverIr)) {
+        // Fresh elements (an array literal) convert into the element layout.
+        src = liftedFreshSpread(lowerer, spreadArg.expression, src, receiverIr, loc) ?? src;
+      }
+      if (!typeEquals(src.type, receiverIr)) {
         lowerer.unsupported(
           "SC1090",
           spreadArg,
@@ -790,11 +845,11 @@ export function lowerArrayMethodCall(
         loc,
       };
     }
-    if (call.arguments.some(ts.isSpreadElement)) {
+    if (call.arguments.nodes.some(ts.isSpreadElement)) {
       // Finish argument evaluation before mutating the receiver. Each
       // spread snapshots its elements immediately, so a later argument
       // can mutate that source without changing already-collected values.
-      const items = lowerArraySpreadItems(lowerer, call.arguments, elem, receiverIr, loc);
+      const items = lowerArraySpreadItems(lowerer, call.arguments.nodes, elem, receiverIr, loc);
       return {
         kind: "arrIntrinsic",
         method: name === "push" ? "pushSpread" : "unshiftSpread",
@@ -804,7 +859,7 @@ export function lowerArrayMethodCall(
         loc,
       };
     }
-    const valueProbes = call.arguments.map((arg) => tryLowerExpression(lowerer, arg));
+    const valueProbes = call.arguments.nodes.map((arg) => tryLowerExpression(lowerer, arg));
     if (
       valueProbes.some(
         (probe) => probe !== null && lowerer.runtimeOptionalWidening(probe.type, elem) !== null,
@@ -814,14 +869,14 @@ export function lowerArrayMethodCall(
         return lowerOptionalArrayPush(
           lowerer,
           receiver,
-          call.arguments.map((arg) => lowerer.lowerExpr(arg)),
+          call.arguments.nodes.map((arg) => lowerer.lowerExpr(arg)),
           elem,
           loc,
         );
       }
       const items = lowerArrayValueItems(
         lowerer,
-        call.arguments.map((arg) => lowerer.lowerExpr(arg)),
+        call.arguments.nodes.map((arg) => lowerer.lowerExpr(arg)),
         elem,
         receiverIr,
         loc,
@@ -835,10 +890,69 @@ export function lowerArrayMethodCall(
         loc,
       };
     }
+    // A `(T | undefined)[]` (primitiveElement) takes undefined values as
+    // present undefined elements, stored after the insertion.
+    if (
+      (name === "push" || name === "unshift") &&
+      primitiveElement(elem) &&
+      call.arguments.nodes.some((a) => checkerTypeAdmitsUndefined(lowerer, a))
+    ) {
+      const nodes = call.arguments.nodes;
+      const values = nodes.map((a) => lowerer.lowerExpr(a));
+      const inserted = insertedValues(
+        lowerer,
+        values,
+        elem,
+        (value, i) => lowerer.coerceInto(nodes[i]!, value, elem),
+        loc,
+      );
+      if (inserted.optional) {
+        const array = lowerer.declareHiddenLocal("%insertInto", receiver.type);
+        const arr = varRef(array.id, array.type, loc);
+        const length = lowerer.declareHiddenLocal("%insertLength", F64);
+        const count: IrExpr = numLit(values.length, loc);
+        const first: IrExpr =
+          name === "push"
+            ? {
+                kind: "bin",
+                op: "-",
+                left: varRef(length.id, F64, loc),
+                right: count,
+                type: F64,
+                loc,
+              }
+            : numLit(0, loc);
+        return {
+          kind: "seqExpr",
+          stmts: [
+            { kind: "varDecl", localId: array.id, init: receiver, loc },
+            ...inserted.stmts,
+            {
+              kind: "varDecl",
+              localId: length.id,
+              init: {
+                kind: "arrIntrinsic",
+                method: name,
+                receiver: arr,
+                args: inserted.args,
+                type: F64,
+                loc,
+              },
+              loc,
+            },
+            ...inserted.fill(arr, first),
+          ],
+          result: varRef(length.id, F64, loc),
+          type: F64,
+          loc,
+        };
+      }
+      return { kind: "arrIntrinsic", method: name, receiver, args: inserted.args, type: F64, loc };
+    }
     // Inserted values flow into the element slot like an assignment would:
     // union-element arrays wrap plain arm values (coerceInto is inert
     // when the types already agree).
-    const args = call.arguments.map((a) =>
+    const args = call.arguments.nodes.map((a) =>
       name === "push" || name === "unshift"
         ? lowerer.lowerExprExpecting(a, elem)
         : lowerer.lowerExpr(a),
@@ -886,7 +1000,7 @@ export function lowerArrayMethodCall(
     const receiver = lowerer.lowerExpr(access.expression);
     const shape: (IrType | null)[] = [];
     const args: IrExpr[] = [];
-    for (const argNode of call.arguments) {
+    for (const argNode of call.arguments.nodes) {
       if (ts.isSpreadElement(argNode)) {
         lowerer.unsupported(
           "SC1090",
@@ -928,32 +1042,40 @@ export function lowerArrayMethodCall(
   if (name === "slice") {
     const receiver = lowerer.lowerExpr(access.expression);
     const args = [
-      lowerArrayPosition(lowerer, call.arguments[0], numLit(0, loc), "array slice start"),
-      lowerArrayPosition(lowerer, call.arguments[1], numLit(Infinity, loc), "array slice end"),
+      lowerArrayPosition(lowerer, call.arguments.nodes[0], numLit(0, loc), "array slice start"),
+      lowerArrayPosition(
+        lowerer,
+        call.arguments.nodes[1],
+        numLit(Infinity, loc),
+        "array slice end",
+      ),
     ];
     return { kind: "arrIntrinsic", method: "slice", receiver, args, type: receiverIr, loc };
   }
   if (name === "splice") {
     const receiver = lowerer.lowerExpr(access.expression);
     const args: IrExpr[] = [
-      lowerArrayPosition(lowerer, call.arguments[0], numLit(0, loc), "array splice start"),
+      lowerArrayPosition(lowerer, call.arguments.nodes[0], numLit(0, loc), "array splice start"),
       lowerArrayPosition(
         lowerer,
-        call.arguments[1],
-        numLit(call.arguments.length === 1 ? Infinity : 0, loc),
+        call.arguments.nodes[1],
+        numLit(call.arguments.nodes.length === 1 ? Infinity : 0, loc),
         "array splice deleteCount",
       ),
     ];
-    if (call.arguments.length <= 2) {
+    if (call.arguments.nodes.length <= 2) {
       return { kind: "arrIntrinsic", method: "splice", receiver, args, type: receiverIr, loc };
     }
-    const itemNodes = call.arguments.slice(2);
+    const itemNodes = call.arguments.nodes.slice(2);
     const hasSpread = itemNodes.some(ts.isSpreadElement);
     const itemProbes = hasSpread ? [] : itemNodes.map((arg) => tryLowerExpression(lowerer, arg));
     const statefulItems = itemProbes.some(
-      (probe) => probe !== null && lowerer.runtimeOptionalWidening(probe.type, elem) !== null,
+      (probe) =>
+        probe !== null &&
+        (lowerer.runtimeOptionalWidening(probe.type, elem) !== null ||
+          optionalElementValue(lowerer, probe, elem)),
     );
-    if (statefulItems && itemNodes.length === 1) {
+    if (statefulItems && itemNodes.length === 1 && itemProbes[0]?.type.kind === "union") {
       return lowerOptionalSpliceItem(
         lowerer,
         receiver,
@@ -1007,15 +1129,15 @@ export function lowerArrayMethodCall(
   if (name === "join") {
     if (elem.kind === "dyn") {
       const receiver = lowerer.coerceToExpected(lowerer.lowerExpr(access.expression), DYN);
-      const args = call.arguments.length
-        ? [lowerer.lowerExprExpecting(call.arguments[0]!, DYN)]
+      const args = call.arguments.nodes.length
+        ? [lowerer.lowerExprExpecting(call.arguments.nodes[0]!, DYN)]
         : [];
       return lowerer.coerceToExpected(
         {
           kind: "dynInvoke",
           recv: receiver,
           method: "join",
-          calleeName: access.getText(),
+          calleeName: ts.getTextOfNode(access),
           args,
           type: DYN,
           loc,
@@ -1036,18 +1158,29 @@ export function lowerArrayMethodCall(
       (lowerer.unions
         .get(elem.unionId)
         ?.arms.every(
-          (a) => a.kind === "f64" || a.kind === "string" || a.kind === "bool" || isUnitType(a),
+          (a) =>
+            a.kind === "f64" ||
+            a.kind === "string" ||
+            a.kind === "bool" ||
+            a.kind === "date" ||
+            isUnitType(a),
         ) ??
         false);
-    if (elem.kind !== "f64" && elem.kind !== "string" && elem.kind !== "bool" && !joinableUnion) {
+    if (
+      elem.kind !== "f64" &&
+      elem.kind !== "string" &&
+      elem.kind !== "bool" &&
+      elem.kind !== "date" &&
+      !joinableUnion
+    ) {
       lowerer.unsupported(
         "SC1090",
         call,
-        "'.join()' on arrays of this element type (number, string, and boolean arrays join — unions of those with undefined/null arms too, the units printing empty like JS)",
+        "'.join()' on arrays of this element type (number, string, boolean and Date arrays join — unions of those with undefined/null arms too, the units printing empty like JS)",
       );
     }
     const receiver = lowerer.lowerExpr(access.expression);
-    const sep = lowerArrayJoinSeparator(lowerer, call.arguments[0], loc);
+    const sep = lowerArrayJoinSeparator(lowerer, call.arguments.nodes[0], loc);
     return { kind: "arrIntrinsic", method: "join", receiver, args: [sep], type: STRING, loc };
   }
   if (name === "map" || name === "filter" || name === "forEach") {
@@ -1247,8 +1380,8 @@ function lowerArrayFlatCall(
   receiverType: IrType & { kind: "array" },
 ): IrExpr {
   const loc = locOf(call);
-  if (call.arguments.length > 1 || call.arguments.some(ts.isSpreadElement)) {
-    lowerer.noLowering(`.flat with ${call.arguments.length} arguments`, call);
+  if (call.arguments.nodes.length > 1 || call.arguments.nodes.some(ts.isSpreadElement)) {
+    lowerer.noLowering(`.flat with ${call.arguments.nodes.length} arguments`, call);
   }
   const elemCouldNest = (elem: IrType): boolean =>
     elem.kind === "array" ||
@@ -1258,11 +1391,11 @@ function lowerArrayFlatCall(
         .get(elem.unionId)
         ?.arms.some((arm) => arm.kind === "array" || arm.kind === "dyn") ??
         true));
-  if (!elemCouldNest(receiverType.elem) && call.arguments[0]) {
+  if (!elemCouldNest(receiverType.elem) && call.arguments.nodes[0]) {
     const receiver = lowerer.lowerExpr(access.expression);
     const depth = lowerArrayPosition(
       lowerer,
-      call.arguments[0],
+      call.arguments.nodes[0],
       numLit(1, loc),
       "array flat depth",
     );
@@ -1286,7 +1419,9 @@ function lowerArrayFlatCall(
       loc,
     };
   }
-  const depth = call.arguments[0] ? literalFlatDepth(lowerer.lowerExpr(call.arguments[0])) : 1;
+  const depth = call.arguments.nodes[0]
+    ? literalFlatDepth(lowerer.lowerExpr(call.arguments.nodes[0]))
+    : 1;
   if (depth === null) lowerer.noLowering(".flat with a nonconstant depth", call);
   let remaining = Number.isNaN(depth) || depth <= 0 ? 0 : Math.trunc(depth);
   let result: IrExpr = lowerer.lowerExpr(access.expression);
@@ -1338,13 +1473,13 @@ function lowerArraySearchCall(
 ): IrExpr {
   const loc = locOf(call);
   const receiver = lowerer.lowerExpr(access.expression);
-  if (call.arguments.some(ts.isSpreadElement))
+  if (call.arguments.nodes.some(ts.isSpreadElement))
     lowerer.noLowering(`.${method} with spread arguments`, call);
-  const needle: IrExpr = call.arguments[0]
-    ? lowerer.lowerExpr(call.arguments[0])
+  const needle: IrExpr = call.arguments.nodes[0]
+    ? lowerer.lowerExpr(call.arguments.nodes[0])
     : { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc };
-  const fromIndex: IrExpr = call.arguments[1]
-    ? lowerPositionArgument(lowerer, call.arguments[1], numLit(0, loc))
+  const fromIndex: IrExpr = call.arguments.nodes[1]
+    ? lowerPositionArgument(lowerer, call.arguments.nodes[1], numLit(0, loc))
     : method === "lastIndexOf"
       ? { kind: "bin", op: "/", left: numLit(1, loc), right: numLit(0, loc), type: F64, loc }
       : numLit(0, loc);
@@ -1361,7 +1496,7 @@ function lowerArraySearchValues(
   fromIndex: IrExpr,
 ): IrExpr {
   const loc = locOf(call);
-  const argNode = call.arguments[0] ?? call;
+  const argNode = call.arguments.nodes[0] ?? call;
   // A derived CLASS VALUE against a base-classval element widens (the same
   // pointer — identity search is exact); the coercion path owns the ABI gate.
   if (
@@ -1376,7 +1511,7 @@ function lowerArraySearchValues(
   // runtime implementation already has exact primitive/reference equality.
   if (
     method !== "lastIndexOf" &&
-    call.arguments.length === 1 &&
+    call.arguments.nodes.length === 1 &&
     elem.kind !== "union" &&
     elem.kind !== "bigint" &&
     typeEquals(needle.type, elem)
@@ -1398,7 +1533,7 @@ function lowerArraySearchValues(
   if (valueT.kind !== "union") {
     if (method === "lastIndexOf")
       lowerer.noLowering(".lastIndexOf on an array of checked values", call);
-    if (call.arguments.length > 1)
+    if (call.arguments.nodes.length > 1)
       lowerer.noLowering(`.${method} with fromIndex on '${lowerer.fmt(elem)}' elements`, call);
     if (!typeEquals(needle.type, elem)) lowerer.badType(argNode, lowerer.typeOf(argNode));
     return {
@@ -1456,7 +1591,7 @@ function lowerArraySearchValues(
     searchNeedle.type,
     directNeedle,
     fromIndex.type,
-    call.arguments[1] ?? call,
+    call.arguments.nodes[1] ?? call,
     loc,
   );
   return {
@@ -1585,7 +1720,7 @@ function arraySearchHelper(
   const key = `${method}:${typeKey(elem)}:${typeKey(valueT)}:${typeKey(needleT)}:${directNeedle}:${typeKey(fromT)}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
-  const name = `%arr.${method}.${lowerer.arrHofHelpers.size}`;
+  const name = keyedHelperName(lowerer, `%arr.${method}`, key);
   lowerer.arrHofHelpers.set(key, name);
   const arrT = arrayOf(elem);
   const resultT = method === "includes" ? BOOL : F64;
@@ -1676,7 +1811,28 @@ function arraySearchHelper(
     type: valueT,
     loc,
   };
-  const value = directNeedle ? rawRead : optionalValue;
+  // A direct needle matches only a present value (`match` tests the state
+  // first); a present undefined of a `(T | undefined)[]` (primitiveElement)
+  // must not be read as T.
+  const value = !directNeedle
+    ? optionalValue
+    : primitiveElement(elem)
+      ? {
+          kind: "ternary" as const,
+          cond: {
+            kind: "bin" as const,
+            op: "===" as const,
+            left: stateRef,
+            right: numLit(1, loc),
+            type: BOOL,
+            loc,
+          },
+          then: rawRead,
+          else_: elementPlaceholder(elem, loc),
+          type: elem,
+          loc,
+        }
+      : rawRead;
   const readT = directNeedle ? elem : valueT;
   const equal = arraySearchEquality(
     lowerer,
@@ -1730,17 +1886,27 @@ function arraySearchHelper(
     },
     loc,
   };
-  const visitPresent: IrStmt[] = [
-    { kind: "varDecl", localId: "value.0", init: value, loc },
-    {
-      kind: "if",
-      cond: match,
-      then: [{ kind: "return", value: method === "includes" ? boolLit(true, loc) : indexRef, loc }],
-      else_: null,
-      loc,
-    },
-    advance,
-  ];
+  const found: IrStmt = {
+    kind: "if",
+    cond: directNeedle ? equal : match,
+    then: [{ kind: "return", value: method === "includes" ? boolLit(true, loc) : indexRef, loc }],
+    else_: null,
+    loc,
+  };
+  // A direct needle reads only value slots: an undefined or foreign
+  // element written through a dynamic view has no element-typed payload.
+  const visitPresent: IrStmt[] = directNeedle
+    ? [
+        {
+          kind: "if",
+          cond: { kind: "bin", op: "===", left: stateRef, right: numLit(1, loc), type: BOOL, loc },
+          then: [{ kind: "varDecl", localId: "value.0", init: value, loc }, found],
+          else_: null,
+          loc,
+        },
+        advance,
+      ]
+    : [{ kind: "varDecl", localId: "value.0", init: value, loc }, found, advance];
   const skipHole: IrStmt[] =
     method === "lastIndexOf"
       ? [advance]
@@ -1919,10 +2085,10 @@ export function lowerTupleReadMethodCall(
       elem,
     );
   if (search) {
-    if (call.arguments.length > 2 || call.arguments.some(ts.isSpreadElement)) {
+    if (call.arguments.nodes.length > 2 || call.arguments.nodes.some(ts.isSpreadElement)) {
       return lowerer.noLowering(`tuple .${method} with spread or extra arguments`, call);
     }
-    const arg = call.arguments[0];
+    const arg = call.arguments.nodes[0];
     const undefinedArg = arg ? lowerStaticallyUndefinedArgument(lowerer, arg) : null;
     let needle = arg ? (undefinedArg ?? lowerer.lowerExpr(arg)) : null;
     if (!needle || isUnitType(needle.type) || needle.type.kind === "void") {
@@ -1934,14 +2100,14 @@ export function lowerTupleReadMethodCall(
       if (!wrapped) return lowerer.noLowering(`tuple .${method} missing search value`, call);
       needle = needle ? defaultAfterUndefined(needle, wrapped) : wrapped;
     }
-    const from = call.arguments[1]
-      ? lowerPositionArgument(lowerer, call.arguments[1], numLit(0, loc))
+    const from = call.arguments.nodes[1]
+      ? lowerPositionArgument(lowerer, call.arguments.nodes[1], numLit(0, loc))
       : numLit(method === "lastIndexOf" ? Infinity : 0, loc);
-    const key = `tuple.${method}:${typeKey(receiver.type)}:${typeKey(needle.type)}:${typeKey(from.type)}:${call.arguments.length}`;
+    const key = `tuple.${method}:${typeKey(receiver.type)}:${typeKey(needle.type)}:${typeKey(from.type)}:${call.arguments.nodes.length}`;
     let helper = lowerer.arrHofHelpers.get(key);
     const resultType = method === "includes" ? BOOL : F64;
     if (!helper) {
-      helper = `%tuple.${method}.${lowerer.arrHofHelpers.size}`;
+      helper = keyedHelperName(lowerer, `%tuple.${method}`, key);
       lowerer.arrHofHelpers.set(key, helper);
       const params = [
         { localId: "a.0", name: "a", type: receiver.type },
@@ -1978,7 +2144,7 @@ export function lowerTupleReadMethodCall(
               lowerer,
               varRef("from.0", from.type, loc),
               numLit(0, loc),
-              call.arguments[1] ?? call,
+              call.arguments.nodes[1] ?? call,
               "tuple search position",
             ),
             loc,
@@ -1991,19 +2157,19 @@ export function lowerTupleReadMethodCall(
     return { kind: "call", callee: helper, args: [receiver, needle, from], type: resultType, loc };
   }
   if (method === "slice") {
-    if (call.arguments.length > 2 || call.arguments.some(ts.isSpreadElement)) {
-      lowerer.noLowering(`.slice with ${call.arguments.length} arguments`, call);
+    if (call.arguments.nodes.length > 2 || call.arguments.nodes.some(ts.isSpreadElement)) {
+      lowerer.noLowering(`.slice with ${call.arguments.nodes.length} arguments`, call);
     }
-    const args = call.arguments.map((arg) => lowerer.lowerExpr(arg));
+    const args = call.arguments.nodes.map((arg) => lowerer.lowerExpr(arg));
     args.forEach((arg, i) => {
       if (arg.type.kind !== "f64")
-        lowerer.badType(call.arguments[i]!, lowerer.typeOf(call.arguments[i]!));
+        lowerer.badType(call.arguments.nodes[i]!, lowerer.typeOf(call.arguments.nodes[i]!));
     });
     const resultType = arrayOf(elem);
     const key = `tuple.slice:${typeKey(receiver.type)}:${args.length}`;
     let helper = lowerer.arrHofHelpers.get(key);
     if (!helper) {
-      helper = `%tuple.slice.${lowerer.arrHofHelpers.size}`;
+      helper = keyedHelperName(lowerer, "%tuple.slice", key);
       lowerer.arrHofHelpers.set(key, helper);
       const params = [receiver, ...args].map((arg, i) => ({
         localId: i === 0 ? "a.0" : `arg.${i}`,
@@ -2039,14 +2205,14 @@ export function lowerTupleReadMethodCall(
     }
     return { kind: "call", callee: helper, args: [receiver, ...args], type: resultType, loc };
   }
-  if (call.arguments.length !== 1 || call.arguments.some(ts.isSpreadElement)) {
+  if (call.arguments.nodes.length !== 1 || call.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering(
-      `.${method} with ${call.arguments.length} arguments`,
+      `.${method} with ${call.arguments.nodes.length} arguments`,
       call,
       "the thisArg parameter has no lowering — use an arrow function",
     );
   }
-  const callback = call.arguments[0]!;
+  const callback = call.arguments.nodes[0]!;
   // Check before the array HOF adapter can create a tuple-to-array copy.
   const signatures = lowerer.checker.getCallSignatures(lowerer.typeOf(callback));
   if (signatures.some((signature) => signature.getParameters().length > 2)) {
@@ -2070,7 +2236,7 @@ export function lowerTupleReadMethodCall(
       kind: "dynInvoke",
       recv: { kind: "dynFrom", value: receiver, type: DYN, loc },
       method: "flatMap",
-      calleeName: access.getText(),
+      calleeName: ts.getTextOfNode(access),
       args: [{ kind: "dynFrom", value: fnArg, type: DYN, loc }],
       type: DYN,
       loc,
@@ -2094,7 +2260,7 @@ export function lowerTupleReadMethodCall(
   const key = `tuple.${method}:${typeKey(receiver.type)}:${typeKey(fnArg.type)}:${typeKey(outElem)}`;
   let helper = lowerer.arrHofHelpers.get(key);
   if (!helper) {
-    helper = `%tuple.${method}.${lowerer.arrHofHelpers.size}`;
+    helper = keyedHelperName(lowerer, `%tuple.${method}`, key);
     lowerer.arrHofHelpers.set(key, helper);
     const out = varRef("out.0", outType, loc);
     const result = varRef("r.0", ret, loc);
@@ -2210,10 +2376,10 @@ function lowerArrayAtCall(
   elem: IrType,
 ): IrExpr {
   const loc = locOf(call);
-  if (call.arguments.some(ts.isSpreadElement))
+  if (call.arguments.nodes.some(ts.isSpreadElement))
     lowerer.noLowering(".at with spread arguments", call);
   const receiver = lowerer.lowerExpr(access.expression);
-  const indexNode = call.arguments[0];
+  const indexNode = call.arguments.nodes[0];
   const index = lowerPositionArgument(lowerer, indexNode, numLit(0, loc));
   const resultT = lowerer.irTypeOf(call);
   if (resultT.kind !== "union") lowerer.badType(call, lowerer.typeOf(call)); // defensive: T | undefined always maps to a union
@@ -2222,7 +2388,7 @@ function lowerArrayAtCall(
   const key = `at:${typeKey(elem)}:${typeKey(resultT)}:${typeKey(index.type)}`;
   let name = lowerer.arrHofHelpers.get(key);
   if (!name) {
-    name = `%arr.at.${lowerer.arrHofHelpers.size}`;
+    name = keyedHelperName(lowerer, "%arr.at", key);
     lowerer.arrHofHelpers.set(key, name);
     const arrT = arrayOf(elem);
 

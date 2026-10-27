@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7102-promise-all-inline-kinds.ts"
+ ],
+ "diags": []
+}

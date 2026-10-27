@@ -73,6 +73,21 @@ describe("async_free detection over the IR", () => {
     );
   });
 
+  test("the event-loop metrics refuse", async () => {
+    expect(
+      await surfaceOf(
+        "eld",
+        `import { monitorEventLoopDelay } from "node:perf_hooks";\nconst h = monitorEventLoopDelay();\nconsole.log(h.enable());\n`,
+      ),
+    ).toContain("monitorEventLoopDelay");
+    expect(
+      await surfaceOf(
+        "elu",
+        `import { performance } from "node:perf_hooks";\nconsole.log(performance.eventLoopUtilization().idle >= 0);\n`,
+      ),
+    ).toContain("eventLoopUtilization");
+  });
+
   test("child_process refuses even in its synchronous spelling", async () => {
     expect(
       await surfaceOf(
@@ -80,6 +95,24 @@ describe("async_free detection over the IR", () => {
         `import { spawnSync } from "node:child_process";\nconst r = spawnSync("true", []);\nconsole.log(r.status === null ? -1 : r.status);\n`,
       ),
     ).toContain("child_process");
+  });
+
+  test("asymmetric keys and signatures refuse", async () => {
+    expect(
+      await surfaceOf(
+        "pki",
+        `import * as crypto from "node:crypto";\nconst { privateKey } = crypto.generateKeyPairSync("ec", { namedCurve: "P-256" });\nconsole.log(crypto.sign("sha256", Buffer.from("x"), privateKey).length > 0);\n`,
+      ),
+    ).toContain("asymmetric KeyObjects");
+  });
+
+  test("X509Certificate's key members refuse", async () => {
+    expect(
+      await surfaceOf(
+        "x509-key",
+        `import { X509Certificate } from "node:crypto";\nimport { readFileSync } from "node:fs";\nconst cert = new X509Certificate(readFileSync("cert.pem"));\nconsole.log(cert.verify(cert.publicKey));\n`,
+      ),
+    ).toContain("X509Certificate publicKey, verify and checkPrivateKey");
   });
 
   test("process signal listeners refuse", async () => {

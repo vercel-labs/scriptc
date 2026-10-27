@@ -1,0 +1,32 @@
+scriptc translates WebAssembly modules to native code when it builds the program; there is no interpreter or JIT in the executable.
+A build translates every module whose bytes it can see: files at paths the compiler resolves (`require.resolve`, `createRequire(...).resolve`, `import.meta.resolve`, `new URL("./x.wasm", import.meta.url)`, `path.join(__dirname, ...)`), including `.so` WebAssembly shared libraries such as quickjs-wasi's extensions, modules inlined as base64 or byte-array literals, `.wasm` files shipped by packages whose code uses WebAssembly, and files listed in a `scriptc.wasm` array in `package.json`.
+At run time `WebAssembly.compile`, `instantiate`, `validate` and `new WebAssembly.Module` find the translated module by the SHA-256 of the bytes they are given.
+Bytes the build did not see, including bytes produced at run time, reject with a `CompileError` that says the module was not translated, and `WebAssembly.validate` answers `false` for them.
+`scriptc coverage` lists the modules a build finds, with their size, whether they validate, and the WebAssembly proposals they use.
+
+Translated modules can use the WebAssembly 2.0 feature set: the MVP plus sign-extension operators, non-trapping float-to-int conversions, bulk memory, multi-value, mutable globals, reference types, and extended constant expressions.
+Modules that use SIMD, threads, exception handling, tail calls, typed function references or GC, memory64, or multiple memories are not translated, so loading them rejects with a `CompileError` that names the proposal the module uses, and `WebAssembly.validate` answers `false` for them; packages that fall back to a scalar build when that happens, such as undici and es-module-lexer, take their fallback.
+Invalid modules the build finds reject with a `CompileError` that includes the validation error.
+
+Supported: `WebAssembly.compile`, `instantiate` (with bytes or a `Module`), `validate`, `new WebAssembly.Module`, `new WebAssembly.Instance`, `new WebAssembly.Memory`, `new WebAssembly.Table`, `new WebAssembly.Global`, `WebAssembly.Module.imports`, `exports` and `customSections`, and `instanceof` for every class; the error classes `CompileError`, `LinkError` and `RuntimeError`, constructed with or without `new`; `globalThis.WebAssembly` and its `compile`, `instantiate` and `validate` functions as values.
+Instances expose exported functions, memories (`buffer`, `grow`), tables (`get`, `set`, `grow`, `length`) and globals (`value`, `valueOf`).
+Imports can be functions, numbers or BigInts for immutable globals, and memories, tables and globals that the program constructs or other instances export; their limits, types and mutability are checked with Node.js's `LinkError` messages.
+Function references from a table or global reach JavaScript as callable functions, and exported functions can be stored in tables and globals, which is what dynamic linkers such as quickjs-wasi's extension loader do.
+Traps throw `WebAssembly.RuntimeError` with Node.js's messages, unbounded recursion throws `RangeError`, and an exception thrown by an imported function propagates through the WebAssembly frames unchanged.
+A `WebAssembly.Module` can be sent to a worker through `workerData` or `postMessage`.
+
+Not supported yet: the `Tag` and `Exception` constructors, shared memories (`new WebAssembly.Memory({ shared: true, ... })` throws a `TypeError`), `compileStreaming` and `instantiateStreaming`, and the classes used as values other than with `new`, `instanceof` and `WebAssembly.Module`'s static functions.
+TypeScript sources fail to build with SC2020 at each such use, and JavaScript sources throw that diagnostic when the statement runs.
+Programs built for `wasm32-wasi` can't use the WebAssembly API.
+
+Differences from Node.js:
+
+- Growing a memory, from JavaScript or inside the module, does not detach the previous `ArrayBuffer`.
+  The memory never moves, so views created before the growth stay valid but keep their old length; code that reads `memory.buffer` again after growing, as WebAssembly glue code does, behaves as in Node.js.
+- `valueOf()` answers a `WebAssembly.Global`'s value only when the receiver's static type is `WebAssembly.Global`; through an untyped value it answers the object, and converting a `Global` to a primitive uses the object rather than its value.
+- Instances are never freed, together with their memories, imports and exports.
+- A load whose result the module never uses may be removed instead of trapping when its address is out of bounds.
+  Loads whose result is dropped explicitly still trap.
+- NaN payloads may differ, for example when a signaling NaN passes through arithmetic or a JavaScript number.
+- `WebAssembly.compile` and `instantiate` with bytes settle after the current microtasks, as in Node.js, but can settle after `setImmediate` callbacks that Node.js would run later.
+- The executable reads `.wasm` files at run time from the paths they had when it was built.

@@ -1,6 +1,6 @@
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
 import * as ts from "../ts7/adapter.js";
-import { BOOL, DYN, STRING, type IrExpr, type IrStmt } from "../../ir/ir.js";
+import { BOOL, DYN, STRING, type IrExpr, type IrLocal, type IrStmt } from "../../ir/ir.js";
 import { locOf } from "../program.js";
 import type { Lowerer } from "./lowerer.js";
 import { classValueRef, type ClassInfo } from "./lower-classes.js";
@@ -15,9 +15,29 @@ export function hasRuntimeStatics(info: ClassInfo): boolean {
 
 /** Constructor descriptors preserve inherited getter receivers and static
  * initialization order. Factory evaluations additionally own independent
- * fields and closures when the same factory is called repeatedly. */
-export function initializeRuntimeStatics(lowerer: Lowerer, info: ClassInfo, value: IrExpr): IrExpr {
-  if (!info.runtimeStatics && !info.runtimePrototypeMembers) return value;
+ * fields and closures when the same factory is called repeatedly.
+ *
+ * `binding` is the local that holds the class under its own name (a
+ * function-local class declaration's binding, or the inner name of a
+ * function-local class expression whose body names itself), declared
+ * without a value. It is assigned before any static member is defined, so
+ * static initializers and methods read the class through it. */
+export function initializeRuntimeStatics(
+  lowerer: Lowerer,
+  info: ClassInfo,
+  value: IrExpr,
+  binding?: IrLocal,
+): IrExpr {
+  if (!info.runtimeStatics && !info.runtimePrototypeMembers) {
+    if (!binding) return value;
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "assign", localId: binding.id, value, loc: value.loc }],
+      result: varRef(binding.id, binding.type, value.loc),
+      type: binding.type,
+      loc: value.loc,
+    };
+  }
   const loc = value.loc;
   const local = lowerer.declareHiddenLocal("%staticClass", value.type);
   const receiver = varRef(local.id, value.type, loc);
@@ -28,6 +48,16 @@ export function initializeRuntimeStatics(lowerer: Lowerer, info: ClassInfo, valu
       : dynUndefinedExpr(loc);
   const statements: IrStmt[] = [
     { kind: "varDecl", localId: local.id, init: value, loc },
+    ...(binding
+      ? [
+          {
+            kind: "assign" as const,
+            localId: binding.id,
+            value: lowerer.coerceToExpected(receiver, binding.type),
+            loc,
+          },
+        ]
+      : []),
     {
       kind: "exprStmt",
       expr: { kind: "libCall", fn: "dyn.classInherit", args: [boxed, base], type: DYN, loc },
@@ -65,7 +95,7 @@ export function initializeRuntimeStatics(lowerer: Lowerer, info: ClassInfo, valu
     );
     for (const member of [...definitions, ...initializers]) {
       if (ts.isClassStaticBlockDeclaration(member)) {
-        statements.push(...lowerer.lowerStmts(member.body.statements));
+        statements.push(...lowerer.lowerStmts(member.body.statements.nodes));
         continue;
       }
       if (!member.name) continue;

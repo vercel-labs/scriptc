@@ -1,7 +1,12 @@
 import { describe, expect, test } from "vitest";
 import { BOOL, F64, NULL_T, STRING, UNDEFINED_T, typeEquals, typeKey } from "../../ir/ir.js";
 import type { IrRecordShape, IrType, IrUnionDef, SrcLoc } from "../../ir/ir.js";
-import { planUnionRetag, buildUnionRetag, planRecordUnionWrap } from "./union-retag.js";
+import {
+  planUnionRetag,
+  buildUnionRetag,
+  planRecordUnionLift,
+  planRecordUnionWrap,
+} from "./union-retag.js";
 import type { UnionRetagArm } from "./union-retag.js";
 import type { WidthLift } from "./width-lift.js";
 
@@ -125,6 +130,30 @@ describe("record conversion with shared layouts", () => {
     f.to.discriminant!.cases[1]!.values = ["right"];
     f.shapes[2]!.fields.reverse();
     expect(planRecordUnionWrap(f.shapes[1]!, f.to, f.shapeOf)).toBeNull();
+  });
+
+  test("routes a record that fits several arms by its discriminant", () => {
+    const f = fixture();
+    expect(planRecordUnionLift(f.shapes[0]!, f.to, f.shapeOf, f.lift)).toEqual({
+      field: "kind",
+      fieldType: STRING,
+      routes: [
+        { tag: 0, lift: { how: "width" }, values: ["left"] },
+        { tag: 1, lift: { how: "width" }, values: ["right"] },
+      ],
+    });
+    // Without the discriminant field, or without an arm it converts into,
+    // there is no route.
+    const unnamed: IrRecordShape = { id: "r3", fields: f.shapes[0]!.fields.slice(1) };
+    expect(planRecordUnionLift(unnamed, f.to, f.shapeOf, f.lift)).toBeNull();
+    const unrelated: IrRecordShape = {
+      id: "r4",
+      fields: [
+        { name: "kind", type: STRING },
+        { name: "other", type: F64 },
+      ],
+    };
+    expect(planRecordUnionLift(unrelated, f.to, f.shapeOf, f.lift)).toBeNull();
   });
 });
 

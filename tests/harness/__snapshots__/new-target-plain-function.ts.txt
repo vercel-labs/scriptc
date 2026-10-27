@@ -1,0 +1,6 @@
+new-target-plain-function.ts:2:41 - error SC1090: 'new.target' in a plain function (a constructible function's invocation record does not exist in compiled code; use a class constructor) is not supported yet
+
+  1 | // new.target in a plain function has no invocation record to read.
+  2 | function F(this: unknown) { console.log(new.target === undefined); }
+    |                                         ^~~~~~~~~~
+  3 | F.call(null);

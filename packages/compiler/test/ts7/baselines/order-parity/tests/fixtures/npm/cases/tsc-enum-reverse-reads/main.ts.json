@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/tsc-enum-reverse-reads/main.ts"
+ ],
+ "diags": []
+}

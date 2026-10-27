@@ -21,6 +21,7 @@ What the fixture pins (see tests/harness/project-config.test.ts):
   (process.uptime, Buffer.from, setInterval) reports the SC2020-family
   fence naming @types/node, instead of typechecking its way into a broken
   binary — and never a raw "Cannot find name" error.
+- `event-loop-metrics.ts` and `timeout-type.ts` — performance.eventLoopUtilization, monitorEventLoopDelay's IntervalHistogram and NodeJS.Timeout as declared types lower under @types/node exactly as under the fallback declarations.
 - `source-import/` — an imported TypeScript source may use the `RequestInfo` global supplied by TypeScript's default DOM lib while scriptc adopts the project's @types/node declarations.
 
 Projects WITHOUT @types/node (every other fixture and the whole corpus) keep

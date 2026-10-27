@@ -3,15 +3,18 @@ import type { IrType } from "../../ir/ir.js";
 import { typeKey } from "../../ir/ir.js";
 import type { LibCallExpr, LlValue, LlvmEmitterContext } from "./expr-context.js";
 import {
+  type AbiArgument,
   abiValue,
   callbackAdapter,
   callbackType,
   finishRuntimeCall,
   ptr,
+  caBytes,
   rawBytes,
   requestHandler,
 } from "./lib-abi.js";
 import { FN_ATTRS } from "./shapes.js";
+import { registerReplay } from "./emit-journal.js";
 
 /** The runtime owns the answer closure; its arguments arrive owned from the caller. */
 function sniAnswer(host: LlvmEmitterContext, type: IrType): string {
@@ -19,8 +22,9 @@ function sniAnswer(host: LlvmEmitterContext, type: IrType): string {
   const key = "sni:" + typeKey(type);
   const previous = host.resolveThunks.get(key);
   if (previous !== undefined) return previous;
-  const symbol = `sc_sni_answer_${host.resolveThunks.size}`;
+  const symbol = host.contentSymbol("sc_sni_answer_", key);
   host.resolveThunks.set(key, symbol);
+  host.journal?.allocated(symbol, "sniAnswer", [type]);
   const params = ["ptr %self"],
     body: string[] = [];
   let hasError = "false",
@@ -81,7 +85,26 @@ function sniAnswer(host: LlvmEmitterContext, type: IrType): string {
     "}",
     "",
   );
+  host.journal?.built();
   return symbol;
+}
+
+/** The (closure, answer thunk) pair of an SNICallback argument: a function,
+ * or a function | undefined union whose undefined arm passes no callback. */
+export function sniCallbackArgs(host: LlvmEmitterContext, cb: LlValue): AbiArgument[] {
+  let type = cb.type,
+    value = cb.name;
+  if (type.kind === "union") {
+    const unionId = type.unionId;
+    const arms = host.unionsById.get(unionId)?.arms ?? [];
+    const tag = arms.findIndex((arm) => arm.kind === "func");
+    if (tag < 0) throw new InternalCompilerError("SNI callback union lacks its function arm");
+    type = arms[tag]!;
+    value = host.unwrapNullableClosure(value, unionId, tag);
+  } else host.toHeap(cb);
+  if (type.kind !== "func" || type.params[1] === undefined)
+    throw new InternalCompilerError("SNI callback lacks its answer function");
+  return [ptr(value), ptr("@" + sniAnswer(host, type.params[1]))];
 }
 
 export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
@@ -160,21 +183,7 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
       let handler = [ptr(), ptr()],
         sni = [ptr(), ptr()];
       if (e.fn === "http2.createSecureServerReq") handler = requestHandler(host, args[2]!);
-      if (e.fn === "http2.createSecureServerSni") {
-        const cb = args[2]!;
-        let type = cb.type,
-          value = cb.name;
-        if (type.kind === "union") {
-          const arms = host.unionsById.get(type.unionId)?.arms ?? [];
-          const tag = arms.findIndex((arm) => arm.kind === "func");
-          if (tag < 0) throw new InternalCompilerError("SNI callback union lacks its function arm");
-          type = arms[tag]!;
-          value = host.unwrapNullableClosure(value, tag);
-        } else host.moveTemp(cb);
-        if (type.kind !== "func" || type.params[1] === undefined)
-          throw new InternalCompilerError("SNI callback lacks its answer function");
-        sni = [ptr(value), ptr("@" + sniAnswer(host, type.params[1]))];
-      }
+      if (e.fn === "http2.createSecureServerSni") sni = sniCallbackArgs(host, args[2]!);
       return finishRuntimeCall(host, e, "scr_http2_create_secure_server_allow_http1", [
         ...rawBytes(host, args[0]!),
         ...rawBytes(host, args[1]!),
@@ -197,7 +206,7 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
             );
       return finishRuntimeCall(host, e, "scr_http2_connect", [
         ...a.slice(0, 2),
-        ...rawBytes(host, args[2]!),
+        ...caBytes(host, args[2]!),
         ...handler,
       ]);
     }
@@ -207,7 +216,7 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
     case "http2.streamCloseCb": {
       const stream = e.fn.startsWith("http2.stream"),
         cbIndex = stream ? 2 : 1;
-      if (args[cbIndex] !== undefined) host.moveTemp(args[cbIndex]!);
+      if (args[cbIndex] !== undefined) host.toHeap(args[cbIndex]!);
       return finishRuntimeCall(
         host,
         e,
@@ -310,7 +319,9 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
     default:
       throw new InternalCompilerError(`unhandled HTTP/2 listener ${e.fn}`);
   }
-  if (thunk === null) host.moveTemp(cb);
+  if (thunk === null) host.toHeap(cb);
   const handler = thunk === null ? [a[1]!] : callbackAdapter(host, cb, thunk, params);
   return finishRuntimeCall(host, e, runtime, [a[0]!, ...handler, ...a.slice(2)]);
 }
+
+registerReplay("sniAnswer", (host, args) => sniAnswer(host, args[0] as IrType));

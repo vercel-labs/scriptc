@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/function-local-private-fields.js"
+ ],
+ "diags": []
+}

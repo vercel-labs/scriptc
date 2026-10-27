@@ -55,7 +55,7 @@ const d: Record<string, number> = {};
 d["a"] = 1;
 console.log(has(d, "a"), has(d, "b"));
 `);
-  const helper = body(llvm, /sc_b?f__x25_rec_haskey_\d+/);
+  const helper = body(llvm, /sc_b?f__x25_rec_haskey_[0-9a-f]+/);
   expect(helper).toContain("@scr_map_has_str(");
   // Not a scan over a fresh key snapshot per probe.
   expect(helper).not.toContain("@scr_map_keys_js_order(");

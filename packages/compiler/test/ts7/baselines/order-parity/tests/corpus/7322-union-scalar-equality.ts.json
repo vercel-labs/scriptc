@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7322-union-scalar-equality.ts"
+ ],
+ "diags": []
+}

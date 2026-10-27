@@ -20,10 +20,7 @@ const parsedMs = Date.parse;
 const fmt = new Intl.NumberFormat();
 
 // Constructors.
-const d = new Date(2024, 0); // the local-time year/month field constructor stays fenced
-const mutableDate = new Date(0);
-mutableDate.setUTCFullYear(2024); // mutation is outside the read-only Date slice
-const sameDate = mutableDate === mutableDate; // scalar storage must not fake object identity
+const d = new Date(...([2024, 0] as const)); // spread field arguments stay fenced
 const wr = new WeakRef({});
 const px = new Proxy({ a: 1 }, {});
 const buf = new ArrayBuffer(8);
@@ -34,9 +31,8 @@ const st = new Set(new Set([1, 2])); // string and array seeds lower; Set-valued
 const stack = new Error("boom").stack;
 // Unlowered members on lowered containers.
 const sinhMethod = Math.sinh; // fixed-arity Math function values now lower
-// (n-ary Math.min/max LOWER now — the variadic battery lives in the
-// corpus; the mixed spread/positional list is the form that stays fenced.)
-const clamped = Math.min(1, ...[2, 3]);
+// (n-ary Math.min/max, with spreads among the arguments, LOWER now — the
+// variadic battery lives in the corpus.)
 const entries = [1, 2].entries(); // array iterators lower now
 const arrAt = [1, 2].at(0);
 const norm = "abc".normalize();
@@ -75,21 +71,6 @@ function pick(a: string | number, b: number | boolean): boolean {
 }
 const picked = pick(1, 2);
 
-// Date values deliberately have no tagged-union payload yet. Nullable
-// Date positions must fence in the frontend instead of reaching a backend
-// scalar/ref mismatch.
-function optionalDate(value: Date | undefined): number {
-  return value === undefined ? -1 : value.getTime();
-}
-optionalDate(undefined);
-function throwDate(): void {
-  throw new Date(0); // the exception cell cannot preserve Date's object kind
-}
-throwDate();
-function* dateGenerator(): Generator<number, void, unknown> {
-  yield 1;
-}
-dateGenerator().throw(new Date(0));
 // Related classes may store one object under different union tags. A
 // structural arm beside them leaves no identity-preserving comparison.
 class FenceBase {

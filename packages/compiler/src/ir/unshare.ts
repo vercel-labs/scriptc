@@ -42,14 +42,15 @@ export function unshareNodes(mod: IrModule): IrModule {
   }
   if (affected.size === 0) return mod;
   // Rebuilding a function copies every node that has children; a repeated
-  // childless node reads back as a fresh object at each of its sites there.
+  // childless node gets its own shallow copy at each of its sites there.
+  // Both kinds of copy keep sharing the type and location objects.
   const expr = (node: IrExpr): IrExpr => {
     const copy = mapExprChildren(node, expr, stmt);
-    return copy !== node || !repeated.has(node) ? copy : reparseExpr(node);
+    return copy !== node || !repeated.has(node) ? copy : copyChildlessExpr(node);
   };
   const stmt = (node: IrStmt): IrStmt => {
     const copy = mapStmtChildren(node, expr, stmt);
-    return copy !== node || !repeated.has(node) ? copy : reparseStmt(node);
+    return copy !== node || !repeated.has(node) ? copy : copyChildlessStmt(node);
   };
   return {
     ...mod,
@@ -57,4 +58,67 @@ export function unshareNodes(mod: IrModule): IrModule {
       affected.has(fn) ? { ...fn, body: fn.body.map(stmt) } : fn,
     ),
   };
+}
+
+/** A shallow copy of a node that mapExprChildren returns unchanged. Each
+ * case spreads one node kind, so the copy is a plain record copy of that
+ * kind. Any other kind is copied through the encoding. */
+function copyChildlessExpr(node: IrExpr): IrExpr {
+  switch (node.kind) {
+    case "varRef":
+      return { ...node };
+    case "strLit":
+      return { ...node };
+    case "numLit":
+      return { ...node };
+    case "boolLit":
+      return { ...node };
+    case "unitLit":
+      return { ...node };
+    case "closure":
+      return { ...node };
+    case "moduleNsRef":
+      return { ...node };
+    case "incDec":
+      return { ...node };
+    case "chainRecv":
+      return { ...node };
+    case "regexLit":
+      return { ...node };
+    case "templateStrings":
+      return { ...node };
+    case "setNew":
+      return { ...node };
+    case "mapNew":
+      return { ...node };
+    case "dynObjLit":
+      return { ...node };
+    case "selfRef":
+      return { ...node };
+    case "promiseWithResolvers":
+      return { ...node };
+    case "classRef":
+      return { ...node };
+    case "fieldAbsent":
+      return { ...node };
+    default:
+      return reparseExpr(node);
+  }
+}
+
+/** A shallow copy of a statement that mapStmtChildren returns unchanged,
+ * one case per kind as in copyChildlessExpr. */
+function copyChildlessStmt(node: IrStmt): IrStmt {
+  switch (node.kind) {
+    case "break":
+      return { ...node };
+    case "continue":
+      return { ...node };
+    case "runtimeFence":
+      return { ...node };
+    case "rethrow":
+      return { ...node };
+    default:
+      return reparseStmt(node);
+  }
 }

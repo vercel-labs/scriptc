@@ -1,5 +1,13 @@
-Casts from values whose type is only known at runtime validate the value. For example, `JSON.parse(s) as Config` throws a catchable error if the data does not match `Config`, identifying the offending path, such as `expected number at $.port, got string`. A TypeScript assertion alone does not perform this validation when run under Node.js.
+Casts from values whose type is only known at runtime validate the value.
+For example, `JSON.parse(s) as Config` throws a catchable error if the data does not match `Config`, identifying the offending path, such as `expected number at $.port, got string`.
+A TypeScript assertion alone does not perform this validation when run under Node.js.
 
-Casts between program classes are checked too: casting an instance to a class it does not extend throws a `TypeError`, where Node.js reads the members structurally. `SC6004` reports calls that pass such an instance to a function that casts it.
+Casts between program classes are checked too: casting an instance to a class it does not extend throws a `TypeError`, where Node.js reads the members structurally.
+`SC6004` reports calls that pass such an instance to a function that casts it.
 
-A Promise converted from `unknown` to a typed result validates its fulfilled value. A mismatch rejects with a `TypeError`. Rejection reasons and reference equality are preserved across conversions.
+A Promise converted from `unknown` to a typed result validates its fulfilled value.
+A mismatch rejects with a `TypeError`.
+Rejection reasons and reference equality are preserved across conversions.
+
+A non-null assertion (`value!`) checks the value when it extracts an object, array or other non-nullable member from a union.
+If the value holds `null` or `undefined`, the assertion throws a `TypeError`, even when the result is never used; Node.js continues until a property of the value is read.

@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/template-render.ts",
+  "args": [
+    "1"
+  ]
+}

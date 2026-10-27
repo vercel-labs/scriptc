@@ -1,1 +1,11 @@
-- **Generics:** Generic functions declared inside other functions, generic class expressions, and generic methods requiring dynamic dispatch are unsupported. Generic classes can extend generic bases when each specialization has a concrete layout. Independent concrete uses have no specialization-count limit; recursively expanding demands and type layouts produce diagnostics. Other generic calls compile when the target resolves statically. Generic function values require a concrete signature at use and a binding that is never reassigned.
+- **Generics:** Generic functions declared inside other functions, generic class expressions, and generic methods requiring dynamic dispatch are unsupported.
+  Generic classes can extend generic bases when each specialization has a concrete layout.
+  Independent concrete uses have no specialization-count limit; recursively expanding demands and type layouts produce diagnostics.
+  Other generic calls compile when the target resolves statically.
+  Generic function values require a concrete signature at use and a binding that is never reassigned.
+- **Variadic wrappers:** A generic higher-order wrapper is specialized to each wrapped function's exact signature.
+  `Parameters<F>`, `ReturnType<F>`, and rest parameters typed as fixed tuples become that signature's parameter list.
+  A function expression with no parameters that reads `arguments` compiles only when its value is asserted to, or contextually typed as, one fixed-arity signature; `arguments` is then that signature's tuple.
+  Forwarding it with `fn.apply(this, arguments)` passes `this` through.
+  Reading `fn.name` on a wrapped function requires its name to be known where the wrapper is called, such as a function declaration or a `const`-bound function.
+  `Parameters<F>` over a signature with optional or array-typed rest parameters is unsupported, because that tuple has no fixed length.

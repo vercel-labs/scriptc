@@ -1,5 +1,6 @@
 #include "diagnostics.h"
 #include "emit.h"
+#include "profile.h"
 #include "runtime-unit.h"
 #include "target.h"
 
@@ -77,6 +78,8 @@ int main(int Argc, char **Argv) {
     return scriptc::runtimeUnit(Argc, Argv);
   if (Argc >= 2 && StringRef(Argv[1]) == "prune-import")
     return scriptc::pruneImport(Argc, Argv);
+  if (Argc >= 2 && StringRef(Argv[1]) == "merge-profiles")
+    return scriptc::mergeProfiles(Argc, Argv);
   if (Argc >= 2 && StringRef(Argv[1]) == "emit") {
     std::optional<scriptc::EmitOptions> Options =
         scriptc::parseEmitOptions(Argc, Argv);
@@ -86,10 +89,11 @@ int main(int Argc, char **Argv) {
           "emit requires --input <file> --output <file> and accepts "
           "--filetype <obj|asm> --target <triple> --opt-level <0|1|2|3|s|z> "
           "--relocation-model pic --diagnostic-format json "
-          "--source-path <path> --import-bitcode <file> --cache-dir <dir>");
+          "--source-path <path> --import-bitcode <file> --cache-dir <dir> "
+          "--profile-generate <pattern> --profile-use <file.profdata>");
     return scriptc::emit(*Options);
   }
   return scriptc::reportError("usage",
-                              "expected 'version --format=json', 'emit', 'runtime-unit', or "
-                              "'prune-import'");
+                              "expected 'version --format=json', 'emit', 'runtime-unit', "
+                              "'prune-import', or 'merge-profiles'");
 }

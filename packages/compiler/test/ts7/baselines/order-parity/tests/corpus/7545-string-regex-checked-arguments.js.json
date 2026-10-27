@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7545-string-regex-checked-arguments.js"
+ ],
+ "diags": []
+}

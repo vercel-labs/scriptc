@@ -36,7 +36,7 @@ export function moduleSourceCandidates(
       }
       if (ts.isCallExpression(node)) {
         result.calls.push(node);
-        const arg = node.arguments[0];
+        const arg = node.arguments.nodes[0];
         if (
           (node.expression.kind === ts.SyntaxKind.ImportKeyword ||
             (ts.isIdentifier(node.expression) && node.expression.text === "require")) &&

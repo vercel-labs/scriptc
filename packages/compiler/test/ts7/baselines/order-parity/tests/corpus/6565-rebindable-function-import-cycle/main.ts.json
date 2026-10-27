@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6565-rebindable-function-import-cycle/main.ts"
+ ],
+ "diags": []
+}

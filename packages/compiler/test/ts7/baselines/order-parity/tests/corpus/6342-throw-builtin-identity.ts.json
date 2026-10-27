@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6342-throw-builtin-identity.ts"
+ ],
+ "diags": []
+}

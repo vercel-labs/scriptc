@@ -4,6 +4,7 @@ import {
   BYTES_ELEMENT_NAME,
   DYN_HANDLE_KINDS,
   RUNTIME_STREAM_CLASSES,
+  recordTextCodecClass,
   typeEquals,
   type IrExpr,
   type IrLibFn,
@@ -11,6 +12,7 @@ import {
   type IrStmt,
   type IrType,
   type IrUnionDef,
+  classValueConstructor,
 } from "./ir.js";
 
 /** Destination tags for a union widening that preserves every payload's
@@ -140,8 +142,10 @@ export function dynDesc(
       return "string";
     case "bool":
       return "boolean";
-    case "record":
-      return recordsById.get(t.shapeId)?.tuple ? "array" : "object";
+    case "record": {
+      const shape = recordsById.get(t.shapeId);
+      return shape?.tuple ? "array" : ((shape && recordTextCodecClass(shape)) ?? "object");
+    }
     case "array":
       return "array";
     case "nullT":
@@ -149,6 +153,7 @@ export function dynDesc(
     case "undefinedT":
       return "undefined";
     case "dyn":
+    case "jsval":
       return "unknown";
     case "promise":
       return "Promise";
@@ -219,6 +224,7 @@ const BORROW_SAFE_MATH = new Set<IrLibFn>([
   "math.sign",
   "math.exp",
   "math.expm1",
+  "math.f16round",
   "math.fround",
   "math.log",
   "math.log1p",
@@ -312,7 +318,7 @@ export function newValueMayThrow(
   if (!meta)
     throw new InternalCompilerError(`IR analysis bug: newValue on unknown class ${className}`);
   const any = (node: IrClassGraphNode): boolean =>
-    mayThrow.has(`%${node.def.name}.constructor`) || node.children.some(any);
+    mayThrow.has(classValueConstructor(node.def).fn) || node.children.some(any);
   return any(meta);
 }
 

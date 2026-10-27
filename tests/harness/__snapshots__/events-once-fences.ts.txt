@@ -1,17 +1,26 @@
-events-once-fences.ts:8:27 - error SC2020: 'events.once with options' is part of the standard library types but has no scriptc lowering yet
+events-once-fences.ts:10:27 - error SC2020: 'events.once options that are not an object literal' is part of the standard library types but has no scriptc lowering yet
 
-  7 | async function main(): Promise<void> {
-  8 |   await once(ee, "ready", { signal: AbortSignal.timeout(5) }); // options
-    |                           ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  9 |   await once(ee, name); // computed event name
+   9 | async function main(): Promise<void> {
+  10 |   await once(ee, "ready", options); // options that are not an object literal
+     |                           ^~~~~~~
+  11 |   await once(ee, name); // computed event name
 
-  hint: the lowered form is events.once(emitter, name); AbortSignal options are not supported yet
+  hint: pass the options as an object literal: { signal }
 
-events-once-fences.ts:9:18 - error SC2020: 'events.once with a computed or meta event name' is part of the standard library types but has no scriptc lowering yet
+events-once-fences.ts:11:18 - error SC2020: 'events.once with a computed or meta event name' is part of the standard library types but has no scriptc lowering yet
 
-   8 |   await once(ee, "ready", { signal: AbortSignal.timeout(5) }); // options
-   9 |   await once(ee, name); // computed event name
+  10 |   await once(ee, "ready", options); // options that are not an object literal
+  11 |   await once(ee, name); // computed event name
      |                  ^~~~
-  10 | }
+  12 |   await once(new PassThrough(), "data"); // a stream's 'data' event
 
   hint: name the awaited event with a string literal
+
+events-once-fences.ts:12:33 - error SC2020: 'events.once of a stream's 'data' event' is part of the standard library types but has no scriptc lowering yet
+
+  11 |   await once(ee, name); // computed event name
+  12 |   await once(new PassThrough(), "data"); // a stream's 'data' event
+     |                                 ^~~~~~
+  13 | }
+
+  hint: the chunk has no checked-dynamic boxing here; register stream.once('data', listener) instead

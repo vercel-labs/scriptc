@@ -243,7 +243,11 @@ export function emissionCases(): EmissionCase[] {
   const forest = structuredClone(hierarchy);
   forest.classes!.push(cls("Unrelated"), cls("Leaf", "Child"));
   forest.classes![3]!.fields = [...child.fields];
-  add("class forest numbering", forest, ["class Leaf (vt at 1)", "class Unrelated { value }"]);
+  add("class forest numbering", forest, [
+    "class Leaf (class id in rc)",
+    "class Unrelated { value }",
+    "@sc_vta_Base",
+  ]);
 
   const abstract = emissionModule();
   const abstractRoot = cls("Abstract");

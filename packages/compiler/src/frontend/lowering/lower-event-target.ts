@@ -274,13 +274,13 @@ export function lowerEventTargetMethodCall(
 ): IrExpr {
   const member = access.name.text;
   const loc = locOf(call);
-  if (call.arguments.some(ts.isSpreadElement)) {
+  if (call.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering(`${member} with spread arguments`, call);
   }
   const target = eventTargetRootOf(info) === "target";
   if (target) noteEventListeners(lowerer, loc);
   const { stmts, ref } = singleReceiver(lowerer, receiverExpr, loc);
-  const args = call.arguments.map((arg, index) =>
+  const args = call.arguments.nodes.map((arg, index) =>
     target && index === 1 && member !== "dispatchEvent"
       ? lowerer.lowerLiveWebValue(arg)
       : lowerer.lowerExprExpecting(arg, DYN),

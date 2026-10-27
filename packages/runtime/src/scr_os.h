@@ -23,10 +23,17 @@ ScrStr *scr_os_hostname(void);
 ScrStr *scr_os_endianness(void);
 double scr_os_freemem(void);
 double scr_os_uptime(void);
+/* util.convertProcessSignalToExitCode: 128 plus the signal number, or NaN
+ * with ERR_INVALID_ARG_VALUE pending (scr_os.c). */
+double scr_util_signal_exit_code(const struct ScrDyn *code);
 ScrArr *scr_os_loadavg(void);
 /* os.getPriority(pid): validateInt32, then the scheduling priority;
  * failures throw Node's RangeError or SystemError (ERR_SYSTEM_ERROR). */
 double scr_os_get_priority(double pid);
+/* os.setPriority(pid, priority): validateInt32 for both (priority within
+ * -20..19), then the scheduling priority; failures throw Node's RangeError
+ * or SystemError (ERR_SYSTEM_ERROR). */
+void scr_os_set_priority(double pid, double priority);
 /* os.cpus(): take answers the CPU count of a fresh snapshot; model and
  * field (0 speed, 1 user, 2 nice, 3 sys, 4 idle, 5 irq) read it. */
 double scr_os_cpus_take(void);
@@ -34,6 +41,12 @@ ScrStr *scr_os_cpus_model(double i);
 double scr_os_cpus_field(double i, double field);
 /* os.constants: the per-thread null-prototype constants object (+1). */
 ScrDyn *scr_os_constants(void);
+/* fs.constants: the target's null-prototype constants object (cached, +1). */
+ScrDyn *scr_fs_constants_object(void);
+/* The deprecated node:constants module object (scr_os.c): the os groups,
+ * fs.constants and the crypto table the borrowed function answers, merged
+ * and frozen (+1). */
+ScrDyn *scr_node_constants(const ScrDyn *crypto_table);
 double scr_os_available_parallelism(void); /* uv_available_parallelism: CPUs this process may use, >= 1 */
 /* os.userInfo()'s field trio (pw_name / pw_shell / pw_dir — the passwd
  * home, not the $HOME cascade). +1 fresh; abort on lookup failure. */

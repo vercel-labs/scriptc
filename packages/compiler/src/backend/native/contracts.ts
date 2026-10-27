@@ -6,6 +6,10 @@ export interface CcOptions {
    * LLVM backend's .ll — clang compiles IR text natively on the same
    * command line, so both ride this one seat. */
   cPath: string;
+  /** Where the program TU's bytes are read from, when that is not `cPath`: an invocation-private
+   * copy that a concurrent build of another program cannot replace. `cPath` stays the spelling
+   * clang sees (`__FILE__`, debug file names) and the one cache keys name. */
+  cSourcePath?: string;
   /** Path of the native executable to produce. */
   outPath: string;
   /** Additional identity for a translation unit whose complete non-system
@@ -25,7 +29,7 @@ export interface CcOptions {
   windowsSubsystem?: WindowsSubsystem;
   /** Optional equivalent LLVM modules for dev compilation. Unsupported
    * targets or merge failures fall back to the canonical cPath TU. */
-  programShards?: readonly { name: string; source: string }[];
+  programShards?: readonly { name: string; source: () => string }[];
   /** Canonical externally visible definitions retained while shard merging
    * demotes generated cross-shard linkage back to local symbols. */
   programPublicSymbols?: readonly string[];
@@ -46,6 +50,8 @@ export interface CcOptions {
   frameworks?: readonly string[];
   /** Isolated native Worker contexts; every runtime object must use TLS. */
   workers?: boolean;
+  /** Compile the runtime with SCR_YIN (backend/young-nursery.ts). */
+  youngNursery?: boolean;
 
   regex?: boolean;
   /** The program uses one of the copying/typed-array bridge intrinsics
@@ -70,15 +76,13 @@ export interface CcOptions {
   fetch?: boolean;
   /** The program uses zlib (index.ts detects zlib.* libCalls on the IR):
    * compiles scr_zlib.c — the regex gating precedent, so zlib-free
-   * binaries keep their exact link line. The default host-clang build links
-   * the SYSTEM libz (macOS ships it), byte-identical to the historical line;
-   * every Zig build compiles the vendored zlib with the selected driver instead
-   * (ensureZlibObjects — zig has no libz in its sysroots). Compressed bytes may
-   * differ between the
-   * system and vendored libraries, which is why the corpus only ever
-   * compares round-trips and fixed-blob inflation, never raw deflate
-   * output. */
+   * binaries keep their exact link line. Every driver compiles the vendored
+   * zlib, the copy Node bundles (ensureZlibObjects), so compressed bytes match
+   * Node's. */
   zlib?: boolean;
+  /** The program uses node:zlib's Brotli forms (with zlib): compiles
+   * scr_brotli.c and links the vendored brotli archive. */
+  brotli?: boolean;
   /** The program uses node:assert (index.ts detects assert.* libCalls on
    * the IR): compiles scr_assert.c — the zlib gating precedent, so
    * assert-free binaries keep their exact size class. scr_regex.c calls
@@ -107,11 +111,50 @@ export interface CcOptions {
    * reactions, AsyncLocalStorage, the unhandledRejection/warning
    * process events. */
   dynAsync?: boolean;
+  /** The program has dynamic-tier jsval operations (moduleUsesDynTier on
+   * the IR): compiles the scr_js_* units (two-tier design I3). Programs
+   * without them link no scr_js_ symbol. */
+  dynTier?: boolean;
+  /** Checked-dynamic stream slots (stream.dynNative / stream.pipeDyn):
+   * compiles scr_stream_dyn.c. */
+  streamDyn?: boolean;
+  /** Own properties JavaScript adds to children: compiles scr_dyn_handle_props.c. */
+  handleProps?: boolean;
+  declAdopt?: boolean;
+  typeOrigins?: boolean;
+  /** for await over checked-dynamic values: compiles scr_dyn_for_await.c. */
+  dynForAwait?: boolean;
+  /** events.once with options (events.onceSignal): compiles
+   * scr_events_once_signal.c. */
+  eventsOnceSignal?: boolean;
+  /** util.MIMEType and util.MIMEParams: compiles scr_mime.c. */
+  mime?: boolean;
+  /** `--large-pages`: compiles scr_text_pages.c. */
+  largePages?: boolean;
+  /** util.debounce and util.throttle: compiles scr_util_timing.c. */
+  utilTiming?: boolean;
+  /** Buffer.prototype methods called on checked-dynamic values:
+   * compiles scr_bytes_dyn.c. */
+  dynBuffer?: boolean;
+  /** createRequire's computed require and require.resolve: compiles
+   * scr_require.c. */
+  computedRequire?: boolean;
+  /** Builtin functions read as values: compiles scr_builtin_values.c. */
+  builtinValues?: boolean;
   /** The program constructs EventTarget/Event/CustomEvent values or
    * calls events.addAbortListener (the event.* libCalls), or uses the
    * native fetch AbortSignal built on the same engine: compiles
    * scr_event_target.c. */
   eventTarget?: boolean;
+  /** The WebAssembly API: compiles scr_wasm.c. */
+  wasm?: boolean;
+  /** SCR_WARNING_REPLACE: process.emitWarning replacement support. */
+  warningReplace?: boolean;
+  /** SCR_STDIO_EXTENDED: stdin encoding, string data listeners, resize. */
+  stdioExtended?: boolean;
+  /** Module namespace objects as checked-dynamic values: compiles
+   * scr_module_namespace.c. */
+  moduleNamespace?: boolean;
   /** The program uses the process-events surface (signal/exit listeners,
    * stdin events, for-await over stdin — moduleUsesProcessEvents on the
    * IR): compiles scr_events.c into the binary. Event-free binaries keep
@@ -140,6 +183,19 @@ export interface CcOptions {
    * line (escape-only programs ride the always-linked component encoder
    * and never flip this). */
   qs?: boolean;
+  /** The program promisifies an untyped function (util.promisify over
+   * `any`): compiles scr_util_promisify.c, which also references the
+   * dyn-async and dyn-invoke units. */
+  utilPromisify?: boolean;
+  /** The program uses EventEmitter or a stream class as an untyped
+   * constructor value (a constructor function's base): compiles
+   * scr_dyn_builtin_class.c, which also references the inspection,
+   * dyn-invoke and symbol units. */
+  dynBuiltinClass?: boolean;
+  /** The program uses a stream class as an untyped constructor value:
+   * compiles scr_dyn_builtin_stream.c, the constructors' stream half, which
+   * also references the stream unit. */
+  dynBuiltinStream?: boolean;
   /** The program uses native util parsing, comparison, or styling. Optional
    * utility units also require their symbol, inspection, and warning features. */
   parseArgs?: boolean;
@@ -167,6 +223,19 @@ export interface CcOptions {
    * on the IR): compiles scr_dgram.c into the binary — the net gating
    * precedent, so dgram-free binaries keep their exact link line. */
   dgram?: boolean;
+  /** The program uses node:dns/promises (the dns.promisesLookup libCalls):
+   * compiles scr_dns_promises.c over the dgram unit, so callback-only
+   * binaries keep their exact link line. */
+  dnsPromises?: boolean;
+  /** A dgram socket converts to or from an untyped value: compiles
+   * scr_dgram_dyn.c over the dgram unit, so typed dgram binaries keep
+   * their exact link line. */
+  dgramDyn?: boolean;
+  /** A TextEncoder or TextDecoder record converts to or from an untyped
+   * value: compiles scr_text_codec_dyn.c, so typed codec binaries keep
+   * their exact link line. */
+  textCodecDyn?: boolean;
+
   /** The program uses fs.watch (moduleUsesFsWatch on the IR): compiles
    * scr_watch.c into the binary — the net gating precedent, so watch-free
    * binaries keep their exact link line. */
@@ -194,9 +263,29 @@ export interface CcOptions {
    * The unit also compiles whenever `tls` does — scr_tls.c consults its
    * default-set override and shared Windows-certificate enumerator. */
   tlsCa?: boolean;
-  /** crypto.createCipheriv/createDecipheriv: compiles scr_cipher.c and links
-   * the mbedTLS archive (shared with tls). */
+  /** crypto.createCipheriv/createDecipheriv and WebCrypto's encrypt and
+   * decrypt: compiles scr_cipher.c (and, with webcrypto,
+   * scr_webcrypto_aes.c) and links the mbedTLS archive (shared with tls). */
   cipher?: boolean;
+  /** crypto.createECDH and ECDH.convertKey: compiles scr_ecdh.c and links
+   * the mbedTLS archive (shared with tls). */
+  ecdh?: boolean;
+  /** crypto.createDiffieHellman, getDiffieHellman and
+   * createDiffieHellmanGroup: compiles scr_dh.c and links the mbedTLS
+   * archive (shared with tls). */
+  dh?: boolean;
+  /** Asymmetric KeyObjects and signatures: compiles scr_pki.c and links
+   * the mbedTLS archive. */
+  pki?: boolean;
+  /** Ed25519 with pki: compiles scr_ed25519.c (the vendored libsodium
+   * Ed25519). */
+  ed25519?: boolean;
+  /** X509Certificate fields: compiles scr_x509.c. */
+  x509?: boolean;
+  /** crypto.subtle importKey/sign/verify/digest: compiles scr_webcrypto.c. */
+  webcrypto?: boolean;
+  /** perf_hooks event-loop metrics: compiles scr_perf_loop.c. */
+  perfLoop?: boolean;
   /** Internal compiler hook: called only after a strict native artifact hit
    * or a successful stable build has installed `outPath`. The executable
    * frontend cache uses it to publish its stamp after native dependencies
@@ -222,7 +311,7 @@ export interface LibArchiveOptions {
    * `programSource` remains the canonical TU/cache identity; these stable
    * shards compile independently and are relocatably merged into one program
    * object before archive assembly. */
-  programShards?: readonly { name: string; source: string }[];
+  programShards?: readonly { name: string; source: () => string }[];
   /** Canonical externally visible definitions retained while the shard merge
    * demotes generated cross-shard linkage back to local symbols. */
   programPublicSymbols?: readonly string[];
@@ -265,6 +354,11 @@ export interface LibArchiveOptions {
   threadInstances?: boolean;
   /** IR-detected link gates (the compileC precedent, refusal-narrowed). */
   dynInvoke?: boolean;
+  /** Buffer.prototype methods on checked-dynamic values: scr_bytes_dyn.c,
+   * with dynInvoke. */
+  dynBuffer?: boolean;
+  /** See CompileOptions.dynTier: the scr_js_* units. */
+  dynTier?: boolean;
   regex?: boolean;
   assert?: boolean;
   inspect?: boolean;
@@ -273,6 +367,8 @@ export interface LibArchiveOptions {
   searchParams?: boolean;
   emitter?: boolean;
   zlib?: boolean;
+  /** X509Certificate fields: scr_x509.c. */
+  x509?: boolean;
   copying?: boolean;
   textDecoderLegacy?: boolean;
 }

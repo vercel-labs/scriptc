@@ -9,6 +9,7 @@
  * code after it); here the lines are DROPPED instead, and emitStmts skips
  * whole statements once the current block is terminated, so no dropped
  * definition can leak into a later block. */
+import { UNWIND_RESUME, UNWIND_SLOT } from "./unwind-abi.js";
 
 export class BlockBuilder {
   private readonly blocks: { label: string; lines: string[]; term: string | null }[] = [];
@@ -31,6 +32,9 @@ export class BlockBuilder {
   /** Temps known to hold immortal values (temp names are only unique
    * within one builder). */
   readonly immortalTemps = new Set<string>();
+  /** Entry slots whose loads and stores render volatile, so no LLVM pass
+   * promotes them to SSA values (see volatileSlotAccess). */
+  volatileSlots: ReadonlySet<string> | null = null;
 
   constructor() {
     this.cur = { label: "entry", lines: [], term: null };
@@ -83,17 +87,28 @@ export class BlockBuilder {
 
   terminate(s: string): void {
     if (this.cur.term === null) {
-      if (this.returnEpilogue && s.startsWith("ret ")) this.line(this.returnEpilogue);
+      if (
+        this.returnEpilogue &&
+        (s.startsWith("ret ") ||
+          s.startsWith("call void @scr_unwind_raise()") ||
+          s === UNWIND_RESUME)
+      )
+        this.line(this.returnEpilogue);
+      if (s === UNWIND_RESUME) {
+        const exception = this.tmp();
+        this.line(`${exception} = load { ptr, i32 }, ptr ${UNWIND_SLOT}`);
+        s = `resume { ptr, i32 } ${exception}`;
+      }
       this.cur.term = `  ${this.withDebugLocation(s)}`;
     }
   }
 
-  br(label: string): void {
-    this.terminate(`br label %${label}`);
+  br(label: string, attachment = ""): void {
+    this.terminate(`br label %${label}${attachment}`);
   }
 
-  condBr(v: string, t: string, f: string): void {
-    this.terminate(`br i1 ${v}, label %${t}, label %${f}`);
+  condBr(v: string, t: string, f: string, attachment = ""): void {
+    this.terminate(`br i1 ${v}, label %${t}, label %${f}${attachment}`);
   }
 
   /** Emit a double-indexed `for (i = 0; i < len; i++)` loop. `next` is
@@ -130,9 +145,14 @@ export class BlockBuilder {
   }
 
   render(): string {
+    const slots = this.volatileSlots;
     return this.blocks
       .map((b, i) => {
-        const lines = i === 0 ? [...this.entryAllocas.map((l) => `  ${l}`), ...b.lines] : b.lines;
+        const body =
+          slots === null || slots.size === 0
+            ? b.lines
+            : b.lines.map((line) => volatileSlotAccess(line, slots));
+        const lines = i === 0 ? [...this.entryAllocas.map((l) => `  ${l}`), ...body] : body;
         // A block left unterminated is a structurally unreachable join
         // (every predecessor jumped elsewhere); the verifier still wants a
         // terminator.
@@ -141,4 +161,37 @@ export class BlockBuilder {
       })
       .join("\n");
   }
+}
+
+/** `line` with its load or store made volatile when the address operand is
+ * one of `slots`. Lines are this builder's own instruction text, where the
+ * address is the first `ptr %name` operand after the opcode (a stored value
+ * precedes it without a comma). */
+export function volatileSlotAccess(line: string, slots: ReadonlySet<string>): string {
+  let op = 0;
+  while (line.charCodeAt(op) === 32) op++;
+  if (line.charCodeAt(op) === 37) {
+    const assign = line.indexOf(" = ", op);
+    if (assign < 0) return line;
+    op = assign + 3;
+  }
+  const kind = line.startsWith("load ", op) ? 5 : line.startsWith("store ", op) ? 6 : 0;
+  if (kind === 0 || line.startsWith("volatile ", op + kind)) return line;
+  const address = line.indexOf(", ptr %", op + kind);
+  if (address < 0) return line;
+  const start = address + 6;
+  let end = start + 1;
+  while (end < line.length && isNameCode(line.charCodeAt(end))) end++;
+  if (!slots.has(line.slice(start, end))) return line;
+  return `${line.slice(0, op + kind)}volatile ${line.slice(op + kind)}`;
+}
+
+function isNameCode(code: number): boolean {
+  return (
+    (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    code === 95 ||
+    code === 46
+  );
 }

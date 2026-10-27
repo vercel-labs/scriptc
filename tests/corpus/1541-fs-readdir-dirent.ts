@@ -15,7 +15,7 @@ function tail(path: string): string {
   }
   return path.slice(i + 1);
 }
-const dir = `/tmp/scr-dirent-${tail(process.argv[1] === undefined ? "x" : process.argv[1])}`;
+const dir = `/tmp/scr-dirent-${tail(process.argv[1] === undefined ? "x" : process.argv[1])}-${process.pid}`;
 if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
 fs.mkdirSync(dir);
 fs.mkdirSync(`${dir}/sub-a`);

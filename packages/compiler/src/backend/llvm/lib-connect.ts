@@ -3,6 +3,7 @@ import { typeKey } from "../../ir/ir.js";
 import type { LibCallExpr, LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { abiValue, callbackType, finishRuntimeCall, ptr } from "./lib-abi.js";
 import { FN_ATTRS } from "./shapes.js";
+import { registerReplay } from "./emit-journal.js";
 
 /** CONNECT transfers owned request/socket/response values to the listener. */
 function connectAdapter(host: LlvmEmitterContext, cb: LlValue, h2: boolean): string {
@@ -16,8 +17,9 @@ function connectAdapter(host: LlvmEmitterContext, cb: LlValue, h2: boolean): str
   const key = `connect:${h2}:${typeKey(type)}`;
   const previous = host.resolveThunks.get(key);
   if (previous !== undefined) return previous;
-  const symbol = `sc_connect_${host.resolveThunks.size}`;
+  const symbol = host.contentSymbol("sc_connect_", key);
   host.resolveThunks.set(key, symbol);
+  host.journal?.allocated(symbol, "connectAdapter", [cb, h2]);
   const retain = h2 ? "scr_http_res_retain_v" : "scr_net_sock_retain_v";
   const release = h2 ? "scr_http_res_release_v" : "scr_net_sock_release_v";
   host.declare(`declare ptr @${retain}(ptr)`);
@@ -37,6 +39,7 @@ function connectAdapter(host: LlvmEmitterContext, cb: LlValue, h2: boolean): str
     "}",
     "",
   );
+  host.journal?.built();
   return symbol;
 }
 
@@ -47,7 +50,7 @@ export function emitConnectListener(host: LlvmEmitterContext, e: LibCallExpr): L
     type = callbackType(cb),
     arity = type.params.length,
     second = type.params[1];
-  host.moveTemp(cb);
+  host.toHeap(cb);
   let h1: string,
     h2 = "null";
   if (second?.kind === "union") {
@@ -70,3 +73,7 @@ export function emitConnectListener(host: LlvmEmitterContext, e: LibCallExpr): L
     a[2]!,
   ]);
 }
+
+registerReplay("connectAdapter", (host, args) =>
+  connectAdapter(host, args[0] as LlValue, args[1] as boolean),
+);

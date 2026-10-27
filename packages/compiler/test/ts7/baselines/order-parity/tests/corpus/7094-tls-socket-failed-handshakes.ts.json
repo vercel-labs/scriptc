@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7094-tls-socket-failed-handshakes.ts"
+ ],
+ "diags": []
+}

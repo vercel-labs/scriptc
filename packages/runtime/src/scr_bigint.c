@@ -215,30 +215,89 @@ static int bi_cmp_limbs(const bi_limb *a, size_t an, const bi_limb *b, size_t bn
   return 0;
 }
 
-/* r = a + b over n limbs; returns the carry. r may alias a or b. */
+/* x + y + carry_in (0 or 1), with the carry out in *carry: the add-with-
+ * carry builtins compile to one adc chain. */
+#if defined(__has_builtin)
+#if __has_builtin(__builtin_addcll) && __has_builtin(__builtin_subcll) && \
+    __has_builtin(__builtin_addc) && __has_builtin(__builtin_subc)
+#define BI_HAVE_ADDC 1
+#endif
+#endif
+static inline bi_limb bi_addc(bi_limb x, bi_limb y, bi_limb *carry) {
+#if defined(BI_HAVE_ADDC) && BI_LIMB_BITS == 64
+  unsigned long long c;
+  bi_limb s = __builtin_addcll(x, y, *carry, &c);
+  *carry = c;
+  return s;
+#elif defined(BI_HAVE_ADDC)
+  unsigned c;
+  bi_limb s = __builtin_addc(x, y, *carry, &c);
+  *carry = c;
+  return s;
+#else
+  bi_limb s = x + y;
+  bi_limb c1 = s < x;
+  bi_limb t = s + *carry;
+  *carry = c1 | (t < s);
+  return t;
+#endif
+}
+
+/* x - y - borrow_in (0 or 1), with the borrow out in *borrow. */
+static inline bi_limb bi_subc(bi_limb x, bi_limb y, bi_limb *borrow) {
+#if defined(BI_HAVE_ADDC) && BI_LIMB_BITS == 64
+  unsigned long long b;
+  bi_limb d = __builtin_subcll(x, y, *borrow, &b);
+  *borrow = b;
+  return d;
+#elif defined(BI_HAVE_ADDC)
+  unsigned b;
+  bi_limb d = __builtin_subc(x, y, *borrow, &b);
+  *borrow = b;
+  return d;
+#else
+  bi_limb d = x - y;
+  bi_limb b1 = x < y;
+  bi_limb t = d - *borrow;
+  *borrow = b1 | (d < *borrow);
+  return t;
+#endif
+}
+
+/* r = a + b over n limbs; returns the carry. r may alias a or b. Four
+ * limbs a pass keep the carry in one chain. */
 static bi_limb bi_add_n(bi_limb *r, const bi_limb *a, const bi_limb *b, size_t n) {
   bi_limb carry = 0;
-  for (size_t i = 0; i < n; i++) {
-    bi_limb x = a[i], s = x + b[i];
-    bi_limb c1 = s < x;
-    bi_limb t = s + carry;
-    carry = c1 | (t < s);
-    r[i] = t;
+  size_t i = 0;
+  for (; i + 8 <= n; i += 8) {
+    r[i] = bi_addc(a[i], b[i], &carry);
+    r[i + 1] = bi_addc(a[i + 1], b[i + 1], &carry);
+    r[i + 2] = bi_addc(a[i + 2], b[i + 2], &carry);
+    r[i + 3] = bi_addc(a[i + 3], b[i + 3], &carry);
+    r[i + 4] = bi_addc(a[i + 4], b[i + 4], &carry);
+    r[i + 5] = bi_addc(a[i + 5], b[i + 5], &carry);
+    r[i + 6] = bi_addc(a[i + 6], b[i + 6], &carry);
+    r[i + 7] = bi_addc(a[i + 7], b[i + 7], &carry);
   }
+  for (; i < n; i++) r[i] = bi_addc(a[i], b[i], &carry);
   return carry;
 }
 
 /* r = a - b over n limbs; returns the borrow. r may alias a or b. */
 static bi_limb bi_sub_n(bi_limb *r, const bi_limb *a, const bi_limb *b, size_t n) {
   bi_limb borrow = 0;
-  for (size_t i = 0; i < n; i++) {
-    bi_limb x = a[i], y = b[i];
-    bi_limb d = x - y;
-    bi_limb b1 = x < y;
-    bi_limb t = d - borrow;
-    borrow = b1 | (d < borrow);
-    r[i] = t;
+  size_t i = 0;
+  for (; i + 8 <= n; i += 8) {
+    r[i] = bi_subc(a[i], b[i], &borrow);
+    r[i + 1] = bi_subc(a[i + 1], b[i + 1], &borrow);
+    r[i + 2] = bi_subc(a[i + 2], b[i + 2], &borrow);
+    r[i + 3] = bi_subc(a[i + 3], b[i + 3], &borrow);
+    r[i + 4] = bi_subc(a[i + 4], b[i + 4], &borrow);
+    r[i + 5] = bi_subc(a[i + 5], b[i + 5], &borrow);
+    r[i + 6] = bi_subc(a[i + 6], b[i + 6], &borrow);
+    r[i + 7] = bi_subc(a[i + 7], b[i + 7], &borrow);
   }
+  for (; i < n; i++) r[i] = bi_subc(a[i], b[i], &borrow);
   return borrow;
 }
 
@@ -277,9 +336,22 @@ static bi_limb bi_sub_into(bi_limb *r, size_t rn, const bi_limb *a, size_t an) {
   return borrow;
 }
 
-/* r = a * m + carry over n limbs; returns the high limb. r may alias a. */
+/* r = a * m + carry over n limbs; returns the high limb. r may alias a.
+ * Four limbs a pass: the four products, then one carry chain adding each
+ * product's high limb into the next low limb. */
 static bi_limb bi_mul1(bi_limb *r, const bi_limb *a, size_t n, bi_limb m, bi_limb carry) {
-  for (size_t i = 0; i < n; i++) {
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4) {
+    bi_wide p0 = (bi_wide)a[i] * m, p1 = (bi_wide)a[i + 1] * m;
+    bi_wide p2 = (bi_wide)a[i + 2] * m, p3 = (bi_wide)a[i + 3] * m;
+    bi_limb c = 0;
+    r[i] = bi_addc((bi_limb)p0, carry, &c);
+    r[i + 1] = bi_addc((bi_limb)p1, (bi_limb)(p0 >> BI_LIMB_BITS), &c);
+    r[i + 2] = bi_addc((bi_limb)p2, (bi_limb)(p1 >> BI_LIMB_BITS), &c);
+    r[i + 3] = bi_addc((bi_limb)p3, (bi_limb)(p2 >> BI_LIMB_BITS), &c);
+    carry = (bi_limb)(p3 >> BI_LIMB_BITS) + c;
+  }
+  for (; i < n; i++) {
     bi_wide p = (bi_wide)a[i] * m + carry;
     r[i] = (bi_limb)p;
     carry = (bi_limb)(p >> BI_LIMB_BITS);
@@ -287,10 +359,27 @@ static bi_limb bi_mul1(bi_limb *r, const bi_limb *a, size_t n, bi_limb m, bi_lim
   return carry;
 }
 
-/* r += a * m over n limbs; returns the high limb. */
+/* r += a * m over n limbs; returns the high limb. Four limbs a pass: one
+ * carry chain forms the four product limbs, a second adds them to r. */
 static bi_limb bi_addmul1(bi_limb *r, const bi_limb *a, size_t n, bi_limb m) {
   bi_limb carry = 0;
-  for (size_t i = 0; i < n; i++) {
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4) {
+    bi_wide p0 = (bi_wide)a[i] * m, p1 = (bi_wide)a[i + 1] * m;
+    bi_wide p2 = (bi_wide)a[i + 2] * m, p3 = (bi_wide)a[i + 3] * m;
+    bi_limb c = 0, k = 0;
+    bi_limb t0 = bi_addc((bi_limb)p0, carry, &c);
+    bi_limb t1 = bi_addc((bi_limb)p1, (bi_limb)(p0 >> BI_LIMB_BITS), &c);
+    bi_limb t2 = bi_addc((bi_limb)p2, (bi_limb)(p1 >> BI_LIMB_BITS), &c);
+    bi_limb t3 = bi_addc((bi_limb)p3, (bi_limb)(p2 >> BI_LIMB_BITS), &c);
+    r[i] = bi_addc(r[i], t0, &k);
+    r[i + 1] = bi_addc(r[i + 1], t1, &k);
+    r[i + 2] = bi_addc(r[i + 2], t2, &k);
+    r[i + 3] = bi_addc(r[i + 3], t3, &k);
+    /* r + a * m over these limbs stays below B^5, so this cannot wrap */
+    carry = (bi_limb)(p3 >> BI_LIMB_BITS) + c + k;
+  }
+  for (; i < n; i++) {
     bi_wide p = (bi_wide)a[i] * m + r[i] + carry;
     r[i] = (bi_limb)p;
     carry = (bi_limb)(p >> BI_LIMB_BITS);
@@ -301,7 +390,23 @@ static bi_limb bi_addmul1(bi_limb *r, const bi_limb *a, size_t n, bi_limb m) {
 /* r -= a * m over n limbs; returns the borrow limb. */
 static bi_limb bi_submul1(bi_limb *r, const bi_limb *a, size_t n, bi_limb m) {
   bi_limb carry = 0;
-  for (size_t i = 0; i < n; i++) {
+  size_t i = 0;
+  for (; i + 4 <= n; i += 4) {
+    bi_wide p0 = (bi_wide)a[i] * m, p1 = (bi_wide)a[i + 1] * m;
+    bi_wide p2 = (bi_wide)a[i + 2] * m, p3 = (bi_wide)a[i + 3] * m;
+    bi_limb c = 0, k = 0;
+    bi_limb t0 = bi_addc((bi_limb)p0, carry, &c);
+    bi_limb t1 = bi_addc((bi_limb)p1, (bi_limb)(p0 >> BI_LIMB_BITS), &c);
+    bi_limb t2 = bi_addc((bi_limb)p2, (bi_limb)(p1 >> BI_LIMB_BITS), &c);
+    bi_limb t3 = bi_addc((bi_limb)p3, (bi_limb)(p2 >> BI_LIMB_BITS), &c);
+    r[i] = bi_subc(r[i], t0, &k);
+    r[i + 1] = bi_subc(r[i + 1], t1, &k);
+    r[i + 2] = bi_subc(r[i + 2], t2, &k);
+    r[i + 3] = bi_subc(r[i + 3], t3, &k);
+    /* a * m + carry over these limbs stays below B^5: the borrow fits */
+    carry = (bi_limb)(p3 >> BI_LIMB_BITS) + c + k;
+  }
+  for (; i < n; i++) {
     bi_wide p = (bi_wide)a[i] * m + carry;
     bi_limb lo = (bi_limb)p;
     carry = (bi_limb)(p >> BI_LIMB_BITS);
@@ -310,6 +415,23 @@ static bi_limb bi_submul1(bi_limb *r, const bi_limb *a, size_t n, bi_limb m) {
     carry += x < lo;
   }
   return carry;
+}
+
+/* y[0..n) = the low n limbs of x << shift, for 0 < shift < BI_LIMB_BITS
+ * and y disjoint from x. Each limb is formed from two source limbs with no
+ * dependency between limbs, so the loop vectorizes. */
+static void bi_lshift(bi_limb *restrict y, const bi_limb *restrict x, size_t n, unsigned shift) {
+  unsigned back = BI_LIMB_BITS - shift;
+  y[0] = x[0] << shift;
+  for (size_t i = 1; i < n; i++) y[i] = (x[i] << shift) | (x[i - 1] >> back);
+}
+
+/* y[0..n) = x[0..n) >> shift, for 0 < shift < BI_LIMB_BITS and y disjoint
+ * from x; like bi_lshift, each limb reads two source limbs. */
+static void bi_rshift(bi_limb *restrict y, const bi_limb *restrict x, size_t n, unsigned shift) {
+  unsigned back = BI_LIMB_BITS - shift;
+  for (size_t i = 0; i + 1 < n; i++) y[i] = (x[i] >> shift) | (x[i + 1] << back);
+  y[n - 1] = x[n - 1] >> shift;
 }
 
 /* Schoolbook product: r[0..an+bn) = a * b, r disjoint from a and b. */
@@ -492,11 +614,9 @@ static void bi_divmod_knuth(bi_limb *q, bi_limb *r, const bi_limb *a, size_t an,
   bi_limb *un = bi_limbs(an + 1 + bn);
   bi_limb *vn = un + an + 1;
   if (s) {
-    for (size_t i = bn - 1; i > 0; i--) vn[i] = (b[i] << s) | (b[i - 1] >> (BI_LIMB_BITS - s));
-    vn[0] = b[0] << s;
+    bi_lshift(vn, b, bn, s);
+    bi_lshift(un, a, an, s);
     un[an] = a[an - 1] >> (BI_LIMB_BITS - s);
-    for (size_t i = an - 1; i > 0; i--) un[i] = (a[i] << s) | (a[i - 1] >> (BI_LIMB_BITS - s));
-    un[0] = a[0] << s;
   } else {
     memcpy(vn, b, bn * sizeof(bi_limb));
     memcpy(un, a, an * sizeof(bi_limb));
@@ -534,13 +654,71 @@ static void bi_divmod_knuth(bi_limb *q, bi_limb *r, const bi_limb *a, size_t an,
   }
   if (r) {
     if (s) {
-      for (size_t i = 0; i + 1 < bn; i++) r[i] = (un[i] >> s) | (un[i + 1] << (BI_LIMB_BITS - s));
-      r[bn - 1] = un[bn - 1] >> s;
+      bi_rshift(r, un, bn, s);
     } else {
       memcpy(r, un, bn * sizeof(bi_limb));
     }
   }
   free(un);
+}
+
+/* a / b for a and b of n >= 2 limbs each, b's top limb nonzero: the
+ * quotient is one limb. Knuth's estimate comes from the top limbs as
+ * they read normalized (three of a, two of b) and is the quotient or one
+ * more, which one pass of a - qhat * b over the operands as they are
+ * settles, with no normalized copies. r, unless NULL, receives the n
+ * limbs of a % b. */
+static bi_limb bi_div_qlimb(bi_limb *r, const bi_limb *a, const bi_limb *b, size_t n) {
+  unsigned s = bi_clz(b[n - 1]);
+  bi_limb d1 = b[n - 1], d0 = b[n - 2], u2 = 0, u1 = a[n - 1], u0 = a[n - 2];
+  if (s) {
+    unsigned t = BI_LIMB_BITS - s;
+    bi_limb b3 = n >= 3 ? b[n - 3] : 0, a3 = n >= 3 ? a[n - 3] : 0;
+    d1 = (d1 << s) | (d0 >> t);
+    d0 = (d0 << s) | (b3 >> t);
+    u2 = u1 >> t;
+    u1 = (u1 << s) | (u0 >> t);
+    u0 = (u0 << s) | (a3 >> t);
+  }
+  bi_limb qhat, rhat;
+  bool rhat_big; /* rhat >= B: the estimate needs no further test */
+  if (u2 >= d1) {
+    qhat = BI_LIMB_MAX;
+    rhat = u1 + d1;
+    rhat_big = rhat < d1;
+  } else {
+    bi_divisor top = bi_divisor_of(d1);
+    qhat = bi_div21(u2, u1, top.d, top.v, &rhat);
+    rhat_big = false;
+  }
+  while (!rhat_big && (bi_wide)qhat * d0 > (((bi_wide)rhat << BI_LIMB_BITS) | u0)) {
+    qhat--;
+    rhat += d1;
+    rhat_big = rhat < d1;
+  }
+  /* Without a remainder, the top limbs decide when they leave room:
+   * a - qhat * b >= (rhat * B + u0 - qhat * d0) * B^(n-2) - qhat * B^(n-2)
+   * as normalized, so a margin of at least qhat proves qhat. */
+  if (!r && !rhat_big) {
+    bi_wide top = ((bi_wide)rhat << BI_LIMB_BITS) | u0, sub = (bi_wide)qhat * d0;
+    if (top - sub >= qhat) return qhat;
+  } else if (!r) {
+    return qhat; /* rhat >= B: the remainder exceeds B^(n-1) >= qhat * b's low part */
+  }
+  /* a - qhat * b: negative when the product's high limb or the borrow
+   * reaches past a's n limbs */
+  bi_limb carry = 0, borrow = 0;
+  for (size_t i = 0; i < n; i++) {
+    bi_wide p = (bi_wide)b[i] * qhat + carry;
+    carry = (bi_limb)(p >> BI_LIMB_BITS);
+    bi_limb d = bi_subc(a[i], (bi_limb)p, &borrow);
+    if (r) r[i] = d;
+  }
+  if (carry || borrow) {
+    qhat--;
+    if (r) bi_add_n(r, r, b, n);
+  }
+  return qhat;
 }
 
 /* ---- comparisons and hashing ----------------------------------------- */
@@ -709,6 +887,13 @@ static void bi_divmod_abs(const ScrBigInt *a, const ScrBigInt *b, ScrBigInt **qo
     if (rout) *rout = bi_u64_signed(rem, 1);
     return;
   }
+  if (an == bn) {
+    ScrBigInt *r = rout ? bi_alloc(bn) : NULL;
+    bi_limb q = bi_div_qlimb(r ? r->limb : NULL, a->limb, b->limb, bn);
+    if (qout) *qout = bi_u64_signed(q, 1);
+    if (rout) *rout = bi_finish(r, bn, 1);
+    return;
+  }
   size_t qn = an - bn + 1;
   ScrBigInt *q = bi_alloc(qn);
   ScrBigInt *r = rout ? bi_alloc(bn) : NULL;
@@ -772,13 +957,8 @@ static ScrBigInt *bi_shl_abs(const ScrBigInt *a, size_t count, int sign) {
   if (!shift) {
     memcpy(r->limb + words, a->limb, a->len * sizeof(bi_limb));
   } else {
-    bi_limb carry = 0;
-    for (size_t i = 0; i < a->len; i++) {
-      bi_limb v = a->limb[i];
-      r->limb[i + words] = (v << shift) | carry;
-      carry = v >> (BI_LIMB_BITS - shift);
-    }
-    if (grow) r->limb[n] = carry;
+    bi_lshift(r->limb + words, a->limb, a->len, shift);
+    if (grow) r->limb[n] = a->limb[a->len - 1] >> (BI_LIMB_BITS - shift);
   }
   r->len = n + grow;
   r->sign = sign;
@@ -801,9 +981,7 @@ static ScrBigInt *bi_shr_abs(const ScrBigInt *a, size_t count, int sign, bool *d
   if (!shift) {
     memcpy(r->limb, a->limb + words, n * sizeof(bi_limb));
   } else {
-    for (size_t i = 0; i + 1 < n; i++)
-      r->limb[i] = (a->limb[i + words] >> shift) | (a->limb[i + words + 1] << (BI_LIMB_BITS - shift));
-    r->limb[n - 1] = a->limb[a->len - 1] >> shift;
+    bi_rshift(r->limb, a->limb + words, n, shift);
   }
   return bi_finish(r, n, sign);
 }

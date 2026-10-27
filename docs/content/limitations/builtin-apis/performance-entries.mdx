@@ -1,1 +1,4 @@
-- **Performance entries:** `performance.mark()`, `measure()`, and the `getEntries` methods return entries with Node's fields, `toJSON()`, inspection, and identity. `Object.keys`, `for...in`, object spread, and `hasOwnProperty` on an entry are unsupported, and an entry stored in an `unknown` slot prints as a plain object.
+- **Performance entries:** `performance.mark()`, `measure()`, and the `getEntries` methods return entries with Node's fields, `toJSON()`, inspection, and identity.
+  `Object.keys`, `for...in`, object spread, and `hasOwnProperty` on an entry are unsupported, and an entry stored in an `unknown` slot prints as a plain object.
+- **Event-loop metrics:** `performance.eventLoopUtilization()` counts the main thread's CPU time since the event loop started as active time, so blocking system calls count as idle where Node counts them as active.
+  `monitorEventLoopDelay()` supports `enable()`, `disable()`, `reset()`, `percentile()`, and the `min`, `max`, `mean`, `stddev`, `count`, and `exceeds` readings; the BigInt readings, `percentiles`, and non-literal option objects are unsupported.

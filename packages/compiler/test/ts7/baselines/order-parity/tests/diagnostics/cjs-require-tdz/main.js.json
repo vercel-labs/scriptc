@@ -5,11 +5,11 @@
  "diags": [
   {
    "code": "SC1013",
-   "message": "require() below code that can reach its binding 'greet' (Node initializes the binding AT the require and throws ReferenceError on any earlier access, which is not modeled — move the require above the code that can run first) is not supported yet",
+   "message": "var require() binding 'lib' below code that can reach it (Node reads undefined before the require runs, which is not modeled — declare it with const or let, or move the require above the code that can run first) is not supported yet",
    "loc": {
     "file": "<repo>/tests/diagnostics/cjs-require-tdz/main.js",
-    "start": 336,
-    "end": 367
+    "start": 402,
+    "end": 427
    },
    "milestone": "later"
   }

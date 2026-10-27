@@ -17,6 +17,7 @@
  * writes the original back on restore(). Each mock registers a closure
  * that calls its restore() with its tracker (scr_test.c): the module's
  * `mock`, or the test's t.mock, which is reset when the test ends. */
+import { keyedHelperName } from "./stable-names.js";
 import * as ts from "../ts7/adapter.js";
 import {
   BOOL,
@@ -32,7 +33,8 @@ import {
   type IrType,
   type SrcLoc,
 } from "../../ir/ir.js";
-import { countedFor, dynUndefinedExpr, numLit, varRef } from "../../ir/build.js";
+import { countedFor, dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/build.js";
+import type { IrLibFn } from "../../ir/builtin-signatures.js";
 import { mockType as mockHybridType } from "../mock-shapes.js";
 import { locOf } from "../program.js";
 import { resultIsDiscarded } from "./call-position.js";
@@ -135,7 +137,7 @@ function liftOnce(
   const key = `mock.${role}:${owner}`;
   const existing = lowerer.assertHelpers.get(key);
   if (existing) return existing;
-  const name = `%mock.${role}.${lowerer.assertHelpers.size}`;
+  const name = keyedHelperName(lowerer, `%mock.${role}`, key);
   lowerer.assertHelpers.set(key, name);
   build(name);
   return name;
@@ -153,7 +155,12 @@ function mockWrapperFactory(
     const { fn, call, calls, once, onceEntry, result, args } = mockContextFields(lowerer, ctxType)!;
     const impl = `${name}.impl`;
     const ctx = () => varRef("ctx.0", ctxType, loc);
+    // A checked-dynamic rest function (mock.fn()'s default type) takes its
+    // arguments as one trailing dyn array, recorded as the call's arguments
+    // and spread into the implementation.
+    const dynRest = fn.rest === true && fn.restAbi === undefined;
     const params = fn.params.map((type, i) => ({ localId: `p${i}.0`, name: `p${i}`, type }));
+    if (dynRest) params.push({ localId: "rest.0", name: "args", type: DYN });
     const paramRefs = () => params.map((p) => varRef(p.localId, p.type, loc));
     const argumentsValue = (): IrExpr =>
       fn.rest
@@ -218,13 +225,23 @@ function mockWrapperFactory(
         loc,
       };
     };
-    const invoke: IrExpr = {
-      kind: "callValue",
-      callee: varRef("f.0", fn, loc),
-      args: paramRefs(),
-      type: fn.ret,
-      loc,
-    };
+    const invoke: IrExpr = dynRest
+      ? {
+          kind: "dynCall",
+          callee: { kind: "dynFrom", value: varRef("f.0", fn, loc), type: DYN, loc },
+          calleeName: "implementation",
+          args: paramRefs(),
+          spreads: [{ arg: 0, what: "args" }],
+          type: DYN,
+          loc,
+        }
+      : {
+          kind: "callValue",
+          callee: varRef("f.0", fn, loc),
+          args: paramRefs(),
+          type: fn.ret,
+          loc,
+        };
     const tryBody: IrStmt[] = voidReturn
       ? [
           { kind: "exprStmt", expr: invoke, loc },
@@ -628,7 +645,37 @@ function requireUndefinedResultArm(
   }
 }
 
-/** mock.fn(original, implementation?) and t.mock.fn(...). */
+/** `%mock.noop.N`: mock.fn()'s original, Node's `function () {}` — it
+ * returns undefined. Null when the function type's return type cannot hold
+ * undefined. */
+function mockNoopOriginal(
+  lowerer: Lowerer,
+  ctxType: IrType,
+  fn: FuncType,
+  loc: SrcLoc,
+): IrExpr | null {
+  const voidReturn = fn.ret.kind === "void" || fn.ret.kind === "undefinedT";
+  const undefinedValue = voidReturn ? null : lowerer.wrappedUndefined(fn.ret, loc);
+  if (!voidReturn && !undefinedValue) return null;
+  const name = liftOnce(lowerer, ctxType, "noop", (name) => {
+    const params = fn.params.map((type, i) => ({ localId: `p${i}.0`, name: `p${i}`, type }));
+    if (fn.rest === true && fn.restAbi === undefined)
+      params.push({ localId: "rest.0", name: "args", type: DYN });
+    lowerer.liftedFns.push({
+      name,
+      params,
+      returnType: fn.ret,
+      locals: params.map((p) => local(p.localId, p.name, p.type)),
+      body: [{ kind: "return", value: undefinedValue, loc }],
+      loc,
+    });
+  });
+  return { kind: "closure", fnName: name, captures: [], type: fn, loc };
+}
+
+/** mock.fn(original?, implementation?) and t.mock.fn(...). Without an
+ * original, the mock's original and implementation are a function that
+ * returns undefined, as in Node. */
 export function lowerMockFn(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -656,12 +703,20 @@ export function lowerMockFn(
   const fields = mockContextFields(lowerer, ctxType!)!;
   const { fn } = fields;
   requireUndefinedResultArm(lowerer, fields, call, what);
-  const args = call.arguments;
-  if (args.length === 0 || args.length > 2 || args.some(ts.isSpreadElement)) {
+  const args = call.arguments.nodes;
+  if (args.length > 2 || args.some(ts.isSpreadElement)) {
     lowerer.noLowering(
       `${what} with ${args.length} arguments`,
       call,
-      "the supported forms are mock.fn(original) and mock.fn(original, implementation); mock.fn() and mock options have no lowering",
+      "the supported forms are mock.fn(), mock.fn(original) and mock.fn(original, implementation); mock options have no lowering",
+    );
+  }
+  const noop = args.length === 0 ? mockNoopOriginal(lowerer, ctxType!, fn, loc) : null;
+  if (args.length === 0 && !noop) {
+    lowerer.noLowering(
+      `${what}() of a function returning '${lowerer.fmt(fn.ret)}'`,
+      call,
+      "mock.fn() without an original returns undefined: pass an original, or use a function type whose return type includes undefined",
     );
   }
   const stmts: IrStmt[] = [];
@@ -669,7 +724,7 @@ export function lowerMockFn(
   stmts.push({
     kind: "varDecl",
     localId: originalLocal.id,
-    init: lowerer.lowerExprExpecting(args[0]!, fn),
+    init: noop ?? lowerer.lowerExprExpecting(args[0]!, fn),
     loc,
   });
   const implementation =
@@ -716,7 +771,7 @@ export function lowerMockMethod(
   tracker: MockTracker,
 ): IrExpr {
   const loc = locOf(call);
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   if (args.length < 2 || args.length > 3 || args.some(ts.isSpreadElement)) {
     lowerer.noLowering(
       `${what} with ${args.length} arguments`,
@@ -743,7 +798,7 @@ export function lowerMockMethod(
   const objShape = objType?.kind === "record" ? lowerer.shapes.get(objType.shapeId) : undefined;
   const fn = objShape?.fields.find((f) => f.name === field)?.type;
   if (!objType || !objShape || fn?.kind !== "func") {
-    const typeName = lowerer.typeOf(args[0]!).getSymbol()?.name;
+    const typeName = ts.symbolNameOf(lowerer.typeOf(args[0]!).getSymbol());
     lowerer.noLowering(
       typeName && !typeName.startsWith("__")
         ? `${what} on '${typeName}'`
@@ -843,8 +898,8 @@ export function lowerMockTrackerCall(
   member: "restoreAll" | "reset",
   tracker: MockTracker,
 ): IrExpr {
-  if (call.arguments.length > 0) {
-    lowerer.noLowering(`MockTracker.${member} with ${call.arguments.length} arguments`, call);
+  if (call.arguments.nodes.length > 0) {
+    lowerer.noLowering(`MockTracker.${member} with ${call.arguments.nodes.length} arguments`, call);
   }
   const fn = tracker
     ? member === "reset"
@@ -860,6 +915,157 @@ export function lowerMockTrackerCall(
     type: VOID,
     loc: locOf(call),
   };
+}
+
+const MOCK_TIMERS_HINT =
+  "enable, tick, runAll, reset and setTime are the supported mock.timers members";
+const MOCK_TIMERS_APIS_HINT =
+  "list the mocked APIs as string literals: enable({ apis: ['setTimeout', 'Date'] })";
+/** The codes scr_test.c reads for the APIs enable() mocks, in Node's
+ * SUPPORTED_APIS order. */
+const MOCK_TIMERS_API_CODES: Readonly<Record<string, string>> = {
+  setTimeout: "T",
+  setInterval: "I",
+  setImmediate: "M",
+  Date: "D",
+  "scheduler.wait": "W",
+  "AbortSignal.timeout": "A",
+};
+/** enable() and enable({ now }) without `apis` mock every API. */
+const MOCK_TIMERS_ALL_APIS = "TIMDWA";
+
+/** `mock.timers.enable(...)` and the other MockTimers members, on the
+ * module's `mock` (tracker null) and t.mock. enable() takes no options or
+ * an object literal whose `apis`, when given, is an array literal of API
+ * names. */
+export function lowerMockTimersCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  member: string,
+  what: string,
+  tracker: () => MockTracker,
+  sym: ts.Symbol | null,
+): IrExpr {
+  const loc = locOf(call);
+  const args = call.arguments.nodes;
+  const optionalNumber = (fallback: number): IrExpr[] => {
+    if (args.length > 1)
+      lowerer.noLowering(`${what}.${member} with ${args.length} arguments`, call);
+    return [args.length === 1 ? lowerer.lowerExprExpecting(args[0]!, F64) : numLit(fallback, loc)];
+  };
+  if (!["enable", "tick", "setTime", "runAll", "reset"].includes(member)) {
+    lowerer.noLowering(`${what}.${member}`, call, MOCK_TIMERS_HINT, sym);
+  }
+  // The receiver evaluates before the arguments.
+  const t = tracker();
+  let rest: IrExpr[];
+  switch (member) {
+    case "enable":
+      rest = lowerMockTimersOptions(lowerer, call, what);
+      break;
+    case "tick":
+      rest = optionalNumber(1);
+      break;
+    case "setTime":
+      rest = optionalNumber(0);
+      break;
+    default:
+      if (args.length > 0) {
+        lowerer.noLowering(`${what}.${member} with ${args.length} arguments`, call);
+      }
+      rest = [];
+  }
+  const name = member[0]!.toUpperCase() + member.slice(1);
+  return {
+    kind: "libCall",
+    fn: (t ? `test.ctxMockTimers${name}` : `test.mockTimers${name}`) as IrLibFn,
+    args: t ? [t, ...rest] : rest,
+    type: VOID,
+    loc,
+  };
+}
+
+/** enable()'s { apis, now } as the libCall's API codes, `now` and flags
+ * (1 = `now` given, 2 = it is a Date). */
+function lowerMockTimersOptions(lowerer: Lowerer, call: ts.CallExpression, what: string): IrExpr[] {
+  const loc = locOf(call);
+  const options = call.arguments.nodes[0];
+  if (call.arguments.nodes.length > 1) {
+    lowerer.noLowering(`${what}.enable with ${call.arguments.nodes.length} arguments`, call);
+  }
+  if (options === undefined) {
+    return [strLit(MOCK_TIMERS_ALL_APIS, loc), numLit(0, loc), numLit(0, loc)];
+  }
+  if (!ts.isObjectLiteralExpression(options)) {
+    lowerer.noLowering(
+      `${what}.enable with a non-literal options object`,
+      options,
+      MOCK_TIMERS_APIS_HINT,
+    );
+  }
+  let codes = "";
+  let listed = false;
+  let now: IrExpr = numLit(0, loc);
+  let flags = 0;
+  for (const prop of options.properties.nodes) {
+    // `{ apis: [...] }`, `{ "now": n }` and the `{ now }` shorthand.
+    const init = ts.isPropertyAssignment(prop)
+      ? prop.initializer
+      : ts.isShorthandPropertyAssignment(prop) && ts.isIdentifier(prop.name)
+        ? prop.name
+        : null;
+    const key =
+      init && prop.name && (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name))
+        ? prop.name.text
+        : null;
+    if (key === "apis") {
+      const list = init!;
+      if (!ts.isArrayLiteralExpression(list)) {
+        lowerer.noLowering(
+          `${what}.enable with a non-literal apis list`,
+          list,
+          MOCK_TIMERS_APIS_HINT,
+        );
+      }
+      listed = true;
+      for (const el of list.elements.nodes) {
+        if (!ts.isStringLiteralLike(el)) {
+          lowerer.noLowering(
+            `${what}.enable with a non-literal API name`,
+            el,
+            MOCK_TIMERS_APIS_HINT,
+          );
+        }
+        const code = MOCK_TIMERS_API_CODES[el.text] ?? "";
+        if (code === "") {
+          lowerer.noLowering(`${what}.enable with the ${el.text} API`, el, MOCK_TIMERS_APIS_HINT);
+        }
+        codes += code;
+      }
+    } else if (key === "now") {
+      const value = lowerer.lowerExpr(init!);
+      if (value.type.kind === "date") {
+        now = { kind: "libCall", fn: "date.getTime", args: [value], type: F64, loc };
+        flags = 3;
+      } else if (value.type.kind === "f64") {
+        now = value;
+        flags = 1;
+      } else {
+        lowerer.noLowering(
+          `${what}.enable with a now value of this type`,
+          prop,
+          "now takes a number or a Date",
+        );
+      }
+    } else {
+      lowerer.noLowering(
+        `${what}.enable with this option`,
+        prop,
+        "apis and now are the supported enable options",
+      );
+    }
+  }
+  return [strLit(listed ? codes : MOCK_TIMERS_ALL_APIS, loc), now, numLit(flags, loc)];
 }
 
 /** `fn.mock.calls`: a copy of the log, as Node's getter returns. Null for
@@ -894,7 +1100,7 @@ export function lowerMockContextCall(
   const { fn, calls, once, onceEntry } = mockContextFields(lowerer, ctxType)!;
   const loc = locOf(call);
   const member = access.name.text;
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   const arity = (min: number, max: number = min) => {
     if (args.length < min || args.length > max || args.some(ts.isSpreadElement))
       lowerer.noLowering(`MockFunctionContext.${member} with ${args.length} arguments`, call);

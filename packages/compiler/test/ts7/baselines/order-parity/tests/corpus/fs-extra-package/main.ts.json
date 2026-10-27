@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/packages/compiler/shims/fs-extra/core/api.ts",
+  "<repo>/packages/compiler/shims/fs-extra/index.ts",
+  "<repo>/tests/corpus/fs-extra-package/main.ts"
+ ],
+ "diags": []
+}

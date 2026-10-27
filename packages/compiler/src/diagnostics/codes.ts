@@ -1,0 +1,162 @@
+/* Every SC diagnostic code, in one table.
+ *
+ * A code is claimed by adding its row here, in numeric order, before any
+ * site uses it. Two changes that claim the same code then either edit the
+ * same line (a merge conflict) or add the same key twice (TypeScript error
+ * TS1117), and codes.test.ts fails when a source file uses a code that has
+ * no row, uses a retired code, or when a row is out of order. The band of a
+ * code (its first digit) says what kind of diagnostic it is; diagnostic.ts
+ * documents the bands.
+ *
+ * Codes are part of scriptc's user-facing output and never change meaning:
+ * when a construct ships, its code moves to RETIRED_DIAGNOSTIC_CODES instead
+ * of being reused. RESERVED_DIAGNOSTIC_CODES holds codes that open work
+ * already uses, so other changes do not take them. */
+
+/** The active codes, with a short summary of what each reports. */
+export const DIAGNOSTIC_CODES = {
+  SC0001: "TypeScript error passed through",
+  SC0002: "project configuration incompatible with scriptc",
+  SC0003: "malformed imported JSON module",
+  SC0004: "TypeScript checker panic",
+  SC1010: "package imports outside the supported set",
+  SC1012: "default exports/imports (residual edges)",
+  SC1013: "namespace imports (residual edges)",
+  SC1014: "re-exports and export lists",
+  SC1015: "dynamic import()",
+  SC1016: "circular imports",
+  SC1020: "class expressions",
+  SC1030: "var declarations (residual forms)",
+  SC1031: "destructuring",
+  SC1040: "loose equality (== and !=)",
+  SC1042: "logical operators on mixed operand types",
+  SC1043: "comparing non-number, non-string values",
+  SC1045: "increment/decrement in expression position",
+  SC1050: "labeled break/continue",
+  SC1052: "for-in loops",
+  SC1062: "destructuring catch clause bindings",
+  SC1063: "this use of a catch binding",
+  SC1070: "async/await",
+  SC1071: "generators",
+  SC1080: "'this' outside a class method",
+  SC1090: "this syntax (generic construct fence)",
+  SC1100: "operations on 'unknown' values",
+  SC1101: "converting typed values to 'unknown'",
+  SC1110: "comptime evaluation failure",
+  SC1120: "regex feature outside the native engine",
+  SC2001: "type outside the compilable set",
+  SC2002: "record shape flow outside the width-copy rules",
+  SC2003: "union-to-union conversion outside the re-tagging rule",
+  SC2004: "use of a binding whose declaration did not compile",
+  SC2005: "generic call signature in a value's type",
+  SC2006: "index-signature object type outside the supported shape",
+  SC2007: "overloaded function type as a value",
+  SC2008: "intersection type with no lowering",
+  SC2009: "component type outside its container or function slot",
+  SC2010: "runtime JavaScript execution",
+  SC2011: "'any'-typed values and their operations",
+  SC2012: "standard-library form without native lowering",
+  SC2013: "npm package import or value without native lowering",
+  SC2020: "standard-library or @types/node surface with no lowering",
+  SC3001: "LLVM IR tier refusal",
+  SC3002: "target or capability refusal",
+  SC3003: "native helper installation or version failure",
+  SC3004: "native helper code-generation failure",
+  SC4001: "library profile malformed",
+  SC4002: "library export unresolved",
+  SC4003: "library export signature not mappable",
+  SC4004: "async or generator library export",
+  SC4005: "library graph reaches the event loop or ambient process state",
+  SC4007: "generic library export signature",
+  SC4008: "profile-fenced surface reached by a library",
+  SC4009: "contract sidecar projection failure",
+  SC4010: "tabled type declared at several sites",
+  SC4011: "conditional or mapped type producing a tabled type",
+  SC4012: "library inbound-bytes trap (runtime)",
+  SC4013: "library escaped exception trap (runtime)",
+  SC4014: "library range trap (runtime)",
+  SC4015: "library type trap (runtime)",
+  SC4016: "library syntax trap (runtime)",
+  SC4017: "library out-of-memory trap (runtime)",
+  SC4018: "library internal invariant trap (runtime)",
+  SC4019: "library other detected trap (runtime)",
+  SC4020: "npm package imported by a library is not statically eligible",
+  SC4021: "integer boundary: literal not representable",
+  SC4022: "integer boundary: value may not be whole",
+  SC4023: "integer boundary: value out of range",
+  SC4024: "host callback reference the profile cannot serve",
+  SC4025: "host callback invoked before registration (runtime)",
+  SC4026: "library re-entered from a host callback (runtime)",
+  SC5001: "FFI manifest malformed",
+  SC5002: "FFI binding is not an ambient function declaration",
+  SC5003: "FFI signature does not match its native ABI",
+  SC5004: "FFI native build failure",
+  SC6001: "divergence: width copy written or compared through",
+  SC6002: "divergence: observed object key order",
+  SC6003: "divergence: localeCompare outside the built-in collation",
+  SC6004: "divergence: cast to an unrelated class",
+  SC6101: "performance: likely-hot function with untyped values",
+  SC6102: "performance: declaration-typed boundary note",
+  SC6103: "performance: shape inference overlay report",
+  SC6104: "localized failure: slot held as a checked-dynamic value",
+  SC7001: "NoThrow contract on an async function or generator",
+  SC7002: "Int32 contract value not provably int32",
+  SC7003: "Int32 contract cannot be checked",
+  SC7004: "Immutable contract value may be referenced elsewhere",
+  SC7005: "Immutable contract cannot be checked",
+  SC7006: "Acyclic contract in an unchecked position",
+  SC7007: "Acyclic type can lie on a reference cycle",
+  SC7008: "ProgramLifetime class extends another class",
+  SC8002: "Node islands off for a package or module outside the native subset",
+  SC8003: "package marked native is outside the native subset",
+  SC8004: "unknown scriptc.packages or scriptc.nodeIslands configuration",
+  SC8030: "type patch: no range covers the installed copy",
+  SC8031: "type patch: selector matches nothing",
+  SC8032: "type patch: declaration already has the type",
+  SC8033: "type patch: selector ambiguous or not patchable",
+  SC8101: "user JavaScript: constructor function",
+  SC8102: "user JavaScript: prototype mutation",
+  SC8103: "user JavaScript: shape mutation outside the checker's view",
+  SC8104: "user JavaScript: sloppy-mode semantics",
+  SC8105: "user JavaScript: builtin and global patching",
+  SC9001: "internal compiler error",
+  SC9002: "internal error trap in generated code",
+} as const satisfies Record<`SC${number}`, string>;
+
+/** Codes whose construct shipped or whose diagnostic was removed. Never
+ * reuse one: old output and documentation still name it. */
+export const RETIRED_DIAGNOSTIC_CODES = {
+  SC1011: "exports (shipped)",
+  SC1021: "arrow functions and closures (shipped)",
+  SC1022: "nested function declarations (shipped)",
+  SC1023: "object literals (shipped as records)",
+  SC1024: "arrays (shipped)",
+  SC1032: "multiple declarations in one statement (shipped)",
+  SC1033: "let without an initializer (shipped)",
+  SC1041: "bitwise operators (shipped)",
+  SC1051: "do-while loops (shipped)",
+  SC1060: "switch statements (shipped)",
+  SC1061: "exceptions (shipped)",
+  SC1121: "stateful g/y regex tests (shipped)",
+  SC2030: "npm embedding failure",
+  SC4006: "library export refusal (removed)",
+  SC6005: "Date strings outside the native parser's grammar",
+} as const satisfies Record<`SC${number}`, string>;
+
+/** Codes that open work already uses, so no other change claims them. When
+ * that work lands it moves its codes into DIAGNOSTIC_CODES; when it is
+ * abandoned, delete them here. */
+export const RESERVED_DIAGNOSTIC_CODES = {
+  SC8001: "Node islands (ni/* branches)",
+  SC8005: "Node islands (ni/* branches)",
+  SC8006: "Node islands (ni/* branches)",
+  SC8010: "Node islands (ni/* branches)",
+  SC8011: "Node islands (ni/* branches)",
+  SC8012: "Node islands (ni/* branches)",
+  SC8020: "Node islands (ni/* branches)",
+  SC8021: "Node islands (ni/* branches)",
+  SC8022: "Node islands (ni/* branches)",
+  SC8023: "Node islands (ni/* branches)",
+} as const satisfies Record<`SC${number}`, string>;
+
+export type DiagnosticCode = keyof typeof DIAGNOSTIC_CODES;

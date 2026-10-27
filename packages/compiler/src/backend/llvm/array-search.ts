@@ -10,6 +10,8 @@
  *   SameValueZero are both pointer identity (class instances, records,
  *   arrays, maps, sets, typed arrays): 64-bit compares, four slots per
  *   branch.
+ * - sc_arr_index_of_cref, the same over the 4-byte slots of compact class
+ *   references (SCR_ELEM_CREF), against the needle's 32-bit reference.
  * - sc_arr_index_of_str, for strings: pointer identity, then the length,
  *   then the bytes. Strings of up to 16 bytes compare as two words; a short
  *   string's word is the eight bytes ending at its last byte, which start
@@ -23,12 +25,15 @@
  * is little-endian, which the short-string words assume.
  */
 import type { IrType } from "../../ir/ir.js";
+import { SCR_ARR_FIELD } from "./common.js";
 import { FN_ATTRS } from "./shapes.js";
 
-export type ArraySearchKind = "ptr" | "str";
+export type ArraySearchKind = "ptr" | "cref" | "str";
 
-/** The inline search for arrays of `elem`, or null for the runtime search. */
-export function arraySearchKind(elem: IrType): ArraySearchKind | null {
+/** The inline search for arrays of `elem`, or null for the runtime search.
+ * `compact`: the arrays hold compact class references (SCR_ELEM_CREF). */
+export function arraySearchKind(elem: IrType, compact: boolean): ArraySearchKind | null {
+  if (compact) return elem.kind === "object" ? "cref" : null;
   switch (elem.kind) {
     case "object":
     case "record":
@@ -45,7 +50,7 @@ export function arraySearchKind(elem: IrType): ArraySearchKind | null {
 }
 
 export function arraySearchHelperName(kind: ArraySearchKind): string {
-  return kind === "ptr" ? "sc_arr_index_of_ptr" : "sc_arr_index_of_str";
+  return `sc_arr_index_of_${kind}`;
 }
 
 /** The definitions of the helpers in `kinds`; they declare their slow paths
@@ -63,19 +68,30 @@ export function emitArraySearchHelpers(
       `define internal double @${arraySearchHelperName(kind)}(ptr %a, ptr %v) ${FN_ATTRS} {`,
       `entry:`,
       `  %lenp = getelementptr inbounds %ScrArr, ptr %a, i32 0, i32 1`,
-      `  %len = load ${sz}, ptr %lenp${sz === "i64" ? ", !range !{i64 0, i64 4294967296}" : ""}`,
+      ...(sz === "i64"
+        ? [`  %len32 = load i32, ptr %lenp`, `  %len = zext i32 %len32 to i64`]
+        : [`  %len = load i32, ptr %lenp`]),
       `  %fp = getelementptr inbounds %ScrArr, ptr %a, i32 0, i32 6`,
       `  %f32 = load i32, ptr %fp`,
       widen,
       `  %dense = icmp eq ${sz} %f, %len`,
       `  br i1 %dense, label %scan, label %slow`,
       `scan:`,
-      `  %dp = getelementptr inbounds %ScrArr, ptr %a, i32 0, i32 8`,
+      `  %dp = getelementptr inbounds %ScrArr, ptr %a, i32 0, i32 ${SCR_ARR_FIELD.data}`,
       `  %data = load ptr, ptr %dp`,
     );
-    if (kind === "ptr") {
+    if (kind === "ptr" || kind === "cref") {
+      // A compact reference is the address over 8 (classes.ts
+      // compactRefLoadLines).
+      const slot = kind === "ptr" ? "i64" : "i32";
       defs.push(
-        `  %needle = ptrtoint ptr %v to i64`,
+        ...(kind === "ptr"
+          ? [`  %needle = ptrtoint ptr %v to i64`]
+          : [
+              `  %vaddr = ptrtoint ptr %v to i64`,
+              `  %vref = lshr i64 %vaddr, 3`,
+              `  %needle = trunc i64 %vref to i32`,
+            ]),
         // Four slots per step with one branch, then one at a time.
         `  br label %quad`,
         `quad:`,
@@ -86,9 +102,9 @@ export function emitArraySearchHelpers(
         `quadbody:`,
         ...[0, 1, 2, 3].flatMap((k) => [
           `  %qi${k} = add ${sz} %q, ${k}`,
-          `  %qp${k} = getelementptr inbounds i64, ptr %data, ${sz} %qi${k}`,
-          `  %qs${k} = load i64, ptr %qp${k}`,
-          `  %qh${k} = icmp eq i64 %qs${k}, %needle`,
+          `  %qp${k} = getelementptr inbounds ${slot}, ptr %data, ${sz} %qi${k}`,
+          `  %qs${k} = load ${slot}, ptr %qp${k}`,
+          `  %qh${k} = icmp eq ${slot} %qs${k}, %needle`,
         ]),
         `  %qh01 = or i1 %qh0, %qh1`,
         `  %qh23 = or i1 %qh2, %qh3`,
@@ -104,9 +120,9 @@ export function emitArraySearchHelpers(
         `  %done = icmp eq ${sz} %i, %len`,
         `  br i1 %done, label %miss, label %body`,
         `body:`,
-        `  %sp = getelementptr inbounds i64, ptr %data, ${sz} %i`,
-        `  %s = load i64, ptr %sp`,
-        `  %hit = icmp eq i64 %s, %needle`,
+        `  %sp = getelementptr inbounds ${slot}, ptr %data, ${sz} %i`,
+        `  %s = load ${slot}, ptr %sp`,
+        `  %hit = icmp eq ${slot} %s, %needle`,
         `  br i1 %hit, label %found, label %cont`,
       );
     } else {

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6232-process-builtin-module-typed/main.ts"
+ ],
+ "diags": []
+}

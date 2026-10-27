@@ -1,0 +1,10 @@
+(module
+  (table $t (export "refs") 1 10 externref)
+  (global (export "slot") (mut externref) (ref.null extern))
+  (func (export "keep") (param externref) (result externref) (local.get 0))
+  (func (export "store") (param i32 externref) (table.set $t (local.get 0) (local.get 1)))
+  (func (export "load") (param i32) (result externref) (table.get $t (local.get 0)))
+  (func (export "isNull") (param externref) (result i32) (ref.is_null (local.get 0)))
+  (func (export "grow") (param externref i32) (result i32) (table.grow $t (local.get 0) (local.get 1)))
+  (func (export "size") (result i32) (table.size $t))
+)

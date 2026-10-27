@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5982-runtime-class-value-modules/kinds.ts",
+  "<repo>/tests/corpus/5982-runtime-class-value-modules/main.ts"
+ ],
+ "diags": []
+}

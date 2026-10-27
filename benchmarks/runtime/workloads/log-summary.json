@@ -1,0 +1,11 @@
+{
+  "entry": "../builds/log-summary/main.ts",
+  "input": "log-summary",
+  "args": [
+    "{input}",
+    "--min-status",
+    "200",
+    "--limit",
+    "12"
+  ]
+}

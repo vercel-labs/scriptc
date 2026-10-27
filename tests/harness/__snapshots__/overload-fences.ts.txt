@@ -1,6 +1,0 @@
-overload-fences.ts:12:13 - error SC1090: calls selecting an overload signature of a generic function (only the implementation signature monomorphizes) is not supported yet
-
-  11 | }
-  12 | console.log(twice("q").length);
-     |             ^~~~~~~~~~
-  13 | function pick(x: "a"): string;

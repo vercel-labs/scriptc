@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/workspace-dynamic-import/main.ts"
+ ],
+ "diags": []
+}

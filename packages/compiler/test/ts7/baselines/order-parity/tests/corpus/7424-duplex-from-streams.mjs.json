@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7424-duplex-from-streams.mjs"
+ ],
+ "diags": []
+}

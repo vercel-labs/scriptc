@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/overloaded-members.ts"
+ ],
+ "diags": []
+}

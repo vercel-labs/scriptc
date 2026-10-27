@@ -73,7 +73,7 @@ function fn(name: string, names: string[], value: IrExpr): IrFunction {
 }
 function mod(...functions: IrFunction[]): IrModule {
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     functions: [
@@ -311,7 +311,8 @@ const methodCases: {
   // enters through the double ABI.
   { method: "charCodeAt", args: [num(1)], result: F64, target: "char_code_at_int", inline: true },
   { method: "charCodeAt", args: [num(1.5)], result: F64, target: "char_code_at", inline: true },
-  { method: "charAt", args: [num(1)], result: STRING, target: "char_at" },
+  { method: "charAt", args: [num(1)], result: STRING, target: "char_at_int", inline: true },
+  { method: "charAt", args: [num(1.5)], result: STRING, target: "char_at", inline: true },
   { method: "indexOf", args: [ref("argument"), num(1)], result: F64, target: "index_of" },
   { method: "includes", args: [ref("argument")], result: BOOL, target: "includes" },
   {
@@ -340,7 +341,7 @@ const methodCases: {
   { method: "normalize", args: [ref("argument")], result: STRING, target: "normalize" },
   { method: "isWellFormed", args: [], result: BOOL, target: "is_well_formed" },
   { method: "toWellFormed", args: [], result: STRING, target: "to_well_formed" },
-  { method: "cpAt", args: [num(1)], result: STRING, target: "cp_at" },
+  { method: "cpAtByte", args: [num(1)], result: STRING, target: "cp_at_byte", inline: true },
 ];
 
 test.each(methodCases)(
@@ -432,7 +433,6 @@ test("borrowed literals keep UTF-16 string comparison without temporary owners",
     op: "<",
     left: str("a"),
     right: str("b"),
-    utf16: true,
     type: BOOL,
     loc,
   });
@@ -443,16 +443,14 @@ test("borrowed literals keep UTF-16 string comparison without temporary owners",
 });
 
 test("string comparisons decide identity, lengths and leading bytes before the runtime", () => {
-  const order = (utf16: boolean) =>
-    fn(`order${utf16 ? 16 : 8}`, [], {
-      kind: "strCmp",
-      op: "<",
-      left: str("apple"),
-      right: str("apricot"),
-      utf16,
-      type: BOOL,
-      loc,
-    });
+  const order = fn("order", [], {
+    kind: "strCmp",
+    op: "<",
+    left: str("apple"),
+    right: str("apricot"),
+    type: BOOL,
+    loc,
+  });
   const same = fn("same", ["a", "b"], {
     kind: "strEq",
     left: { kind: "varRef", localId: "a", type: STRING, loc },
@@ -462,23 +460,30 @@ test("string comparisons decide identity, lengths and leading bytes before the r
     loc,
   });
   for (const bits of [32, 64] as const) {
-    const ir = emitLlvmModule(mod(order(false), order(true), same), { pointerBits: bits });
+    const ir = emitLlvmModule(mod(order, same), { pointerBits: bits });
     const helper = (name: string) =>
       new RegExp(`^define internal [^\\n]*@${name}(?:\\.i32)?\\([^]*?^}`, "m").exec(ir)![0];
     const eq = helper("sc_str_eq");
     expect(eq).toContain("icmp eq ptr %a, %b");
     expect(eq).toMatch(/icmp eq i(32|64) %alen, %blen/);
     expect(eq).toContain("call zeroext i1 @scr_str_eq(ptr %a, ptr %b)");
-    const bytes = helper("sc_str_cmp");
-    expect(bytes).toContain("@llvm.bswap.i64");
-    expect(bytes).not.toContain("%ascii");
-    expect(bytes).toContain("call i32 @scr_str_cmp(ptr %a, ptr %b)");
     const units = helper("sc_str_cmp_u16");
-    expect(units).toContain("%wascii = icmp eq i64 %whigh, 0");
-    expect(units).toContain("%tascii = icmp eq i64 %thigh, 0");
-    expect(bytes).toContain("%tailable = and i1 %samelen, %short");
-    expect(units).toContain("%ascii = icmp sge i8 %bits, 0");
-    expect(units).toContain("call i32 @scr_str_cmp_u16(ptr %a, ptr %b)");
+    expect(units).toContain("%dx = phi i64 [ %aw, %word ], [ %at, %tail ]");
+    expect(units).toContain("%dlow = icmp eq i64 %whigh, 0");
+    expect(units).toContain("@llvm.bswap.i64");
+    expect(units).toContain("%dtz = call i64 @llvm.cttz.i64(i64 %dxor, i1 true)");
+    expect(units).toContain("%bx = phi i8 [ %x, %first ], [ %dxb, %locate ]");
+    expect(units).toContain("%blow = icmp ult i8 %bmin, -19");
+    expect(units).toContain("%kbelow = icmp ult i8 %xk, %yk");
+    expect(units).toContain("%below = icmp ult i8 %bx, %by");
+    expect(units).toContain("%tailable = and i1 %samelen, %short");
+    expect(units).toContain("%anyascii = icmp slt i32 %cws, 0");
+    expect(units).toContain(
+      "call i32 @scr_str_cmp(ptr %a, ptr %b) nounwind willreturn memory(argmem: read)",
+    );
+    expect(units).toContain(
+      "call i32 @scr_str_cmp_u16_bytes(ptr %a, ptr %b) nounwind willreturn memory(argmem: read)",
+    );
   }
 });
 

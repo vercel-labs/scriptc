@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7021-promise-all-uniform-tuple.ts"
+ ],
+ "diags": []
+}

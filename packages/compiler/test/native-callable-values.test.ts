@@ -102,19 +102,19 @@ test.each(["llvm"] as const)(
       writeFileSync(
         join(pkg, "index.js"),
         `
-const inspect = (value) => eval(value);
+const inspect = (value) => process.on("__proto__", value);
 function stopped(value) {
-  eval(value);
+  process.on("__proto__", value);
   return { done() { return "wrong"; } };
 }
-try { console.log(stopped("0").done()); }
-catch (error) { console.log(String(error).includes("SC2009")); }
+try { console.log(stopped(() => {}).done()); }
+catch (error) { console.log(String(error).includes("SC2020")); }
 const first = { inspect };
 const second = { inspect };
 console.log(typeof first.inspect, first.inspect === second.inspect);
 for (const callback of [first.inspect, second.inspect]) {
-  try { callback({}); }
-  catch (error) { console.log(String(error).includes("SC2009")); }
+  try { callback(() => {}); }
+  catch (error) { console.log(String(error).includes("SC2020")); }
 }
 `,
       );

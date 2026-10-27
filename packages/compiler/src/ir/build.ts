@@ -58,10 +58,10 @@ export function dynUndefinedExpr(loc: SrcLoc): IrExpr {
 }
 
 /** An always-throwing Node error with the replaced expression's type.
- * Kinds: 0 Error, 1 TypeError, 2 RangeError, 5 ReferenceError. An empty
+ * Kinds: 0 Error, 1 TypeError, 2 RangeError, 5 ReferenceError, 6 EvalError. An empty
  * code omits the error code property. */
 export function nodeThrowExpr(
-  kind: 0 | 1 | 2 | 5,
+  kind: 0 | 1 | 2 | 5 | 6,
   code: string,
   message: string,
   type: IrType,

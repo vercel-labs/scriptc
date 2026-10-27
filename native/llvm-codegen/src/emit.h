@@ -20,6 +20,15 @@ struct EmitOptions {
   std::vector<std::string> ImportBitcode;
   // Private directory for reusable partition artifacts; empty disables reuse.
   std::string CacheDirectory;
+  // Instruments the program for IR profiling. The instrumented executable
+  // writes raw profiles to this path pattern (LLVM_PROFILE_FILE overrides it
+  // at run time). Empty: no instrumentation.
+  std::string ProfileGenerate;
+  // Indexed profile (.profdata) that guides optimization. Empty: none.
+  std::string ProfileUse;
+  // With several outputs: optimize the module whole and divide only its code
+  // generation among the outputs.
+  bool SplitCodegen = false;
 };
 
 std::optional<EmitOptions> parseEmitOptions(int Argc, char **Argv);

@@ -1,10 +1,14 @@
-import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
+import { fieldOrigin } from "../decl-origin.js";
+import { keyedHelperName } from "../stable-names.js";
+import { constructedValue } from "../constructor-returns.js";
+import { countedFor, dynUndefinedExpr, varRef } from "../../../ir/build.js";
 import type { FieldLift } from "./structural-plans.js";
 import { buildArrayConversion } from "./builders.js";
+import { arrayValueRead, arrayValueStore, primitiveElement } from "../array-values.js";
 import type { WidthLift } from "../width-lift.js";
 import { InternalCompilerError } from "../../../errors.js";
 import type { IrExpr, IrFunction, IrRecordShape, IrStmt, IrType, SrcLoc } from "../../../ir/ir.js";
-import { BOOL, DYN, F64, STRING } from "../../../ir/ir.js";
+import { BOOL, DYN, F64, STRING, UNDEFINED_T, typeEquals } from "../../../ir/ir.js";
 import { typeKey } from "../../type-mapper.js";
 import { findStaticOn, findGenericStaticOn } from "../lower-classes.js";
 import { lowerRecordOvfCaptureHelper } from "../containers/indexed-objects.js";
@@ -52,6 +56,9 @@ export function widthCoerce(lowerer: Lowerer, expr: IrExpr, expected: IrType): I
     return lowerer.classStaticsProjection(expr.type.className, expected.shapeId, expr.loc);
   }
   if (expected.kind === "array" && expr.type.kind === "array") {
+    const optional = optionalArrayHelper(lowerer, expr.type, expected, expr.loc);
+    if (optional)
+      return { kind: "call", callee: optional, args: [expr], type: expected, loc: expr.loc };
     const helper = lowerer.arrayWidthHelper(expr.type, expected, expr.loc);
     if (helper)
       return { kind: "call", callee: helper, args: [expr], type: expected, loc: expr.loc };
@@ -106,12 +113,35 @@ export function applyWidthLift(
         );
       return { kind: "call", callee: helper, args: [value], type: dst, loc };
     }
+    case "discriminantRoute": {
+      if (dst.kind !== "union" || value.type.kind !== "record")
+        throw new InternalCompilerError("lowerer bug: record discriminant route shape");
+      const helper = lowerer.recordUnionRouteHelper(value.type, dst.unionId, loc);
+      if (!helper)
+        throw new InternalCompilerError(
+          "lowerer bug: planned record discriminant route failed to intern",
+        );
+      return { kind: "call", callee: helper, args: [value], type: dst, loc };
+    }
     case "retag": {
       if (dst.kind !== "union" || value.type.kind !== "union")
         throw new InternalCompilerError("lowerer bug: retag lift shape");
       const retag = lowerer.unionRetagHelper(value.type.unionId, dst.unionId, loc);
       if (!retag)
         throw new InternalCompilerError("lowerer bug: planned retag lift failed to intern");
+      return { kind: "call", callee: retag, args: [value], type: dst, loc };
+    }
+    case "unitRetag": {
+      if (dst.kind !== "union" || value.type.kind !== "union")
+        throw new InternalCompilerError("lowerer bug: unit retag lift shape");
+      const fromId = value.type.unionId;
+      const trappable = new Set<number>();
+      (lowerer.unions.get(fromId)?.arms ?? []).forEach((arm, tag) => {
+        if (lowerer.armTag(dst.unionId, arm) < 0) trappable.add(tag);
+      });
+      const retag = lowerer.unionRetagHelper(fromId, dst.unionId, loc, trappable);
+      if (!retag)
+        throw new InternalCompilerError("lowerer bug: planned unit retag lift failed to intern");
       return { kind: "call", callee: retag, args: [value], type: dst, loc };
     }
     case "liftWrap": {
@@ -129,6 +159,76 @@ export function applyWidthLift(
         type: dst,
         loc,
       };
+    }
+    case "presenceRoute": {
+      if (dst.kind !== "union" || value.type.kind !== "record")
+        throw new InternalCompilerError("lowerer bug: presenceRoute lift shape");
+      const sourceType = value.type;
+      const fieldType = lowerer.shapes
+        .get(sourceType.shapeId)
+        ?.fields.find((f) => f.name === lift.field)?.type;
+      if (fieldType?.kind !== "union")
+        throw new InternalCompilerError("lowerer bug: presenceRoute field shape");
+      // One helper per pair: the conversion reads the source twice.
+      const key = `presence:${typeKey(sourceType)}:${dst.unionId}:${lift.field}`;
+      let helper = lowerer.valueHelpers.get(key);
+      if (!helper) {
+        helper = `%union.presence.${lowerer.valueHelpers.size}`;
+        lowerer.valueHelpers.set(key, helper);
+        const source = (): IrExpr => varRef("v.0", sourceType, loc);
+        const arm = (route: { tag: number; arm: IrType }): IrExpr => {
+          const inner = lowerer.widthLiftPlan(sourceType, route.arm);
+          if (!inner)
+            throw new InternalCompilerError(
+              "lowerer bug: planned presenceRoute arm stopped lifting",
+            );
+          return {
+            kind: "unionWrap",
+            unionId: dst.unionId,
+            tag: route.tag,
+            value: lowerer.applyWidthLift(inner, source(), route.arm, loc),
+            type: dst,
+            loc,
+          };
+        };
+        lowerer.liftedFns.push({
+          name: helper,
+          params: [{ localId: "v.0", name: "v", type: sourceType }],
+          returnType: dst,
+          locals: [{ id: "v.0", name: "v", type: sourceType, mutable: false }],
+          body: [
+            {
+              kind: "return",
+              value: {
+                kind: "ternary",
+                cond: {
+                  kind: "unionIsTag",
+                  unionId: fieldType.unionId,
+                  tag: lowerer.armTag(fieldType.unionId, UNDEFINED_T),
+                  value: {
+                    kind: "recordGet",
+                    obj: source(),
+                    shapeId: sourceType.shapeId,
+                    field: lift.field,
+                    type: fieldType,
+                    loc,
+                  },
+                  negated: false,
+                  type: BOOL,
+                  loc,
+                },
+                then: arm(lift.absent),
+                else_: arm(lift.present),
+                type: dst,
+                loc,
+              },
+              loc,
+            },
+          ],
+          loc,
+        });
+      }
+      return { kind: "call", callee: helper, args: [value], type: dst, loc };
     }
     case "width": {
       if (dst.kind !== "record" || value.type.kind !== "record")
@@ -193,8 +293,18 @@ export function applyWidthLift(
     case "dynIn": {
       if (dst.kind !== "dyn")
         throw new InternalCompilerError("lowerer bug: dynIn lift against a non-dyn slot");
+      // The declaration-typed boundary keeps user values' identity when
+      // they cross into package code (decl-projection.ts).
+      if (
+        lowerer.declBoundary &&
+        !/[\\/]node_modules[\\/]/.test(loc.file) &&
+        liveBoxable(lowerer, value.type)
+      )
+        return { kind: "dynFrom", value, liveRef: true, type: DYN, loc };
       return { kind: "dynFrom", value, type: DYN, loc };
     }
+    case "dynOut":
+      return { kind: "dynCheck", value, type: dst, loc };
     case "upcast": {
       if (dst.kind !== "object" || value.type.kind !== "object")
         throw new InternalCompilerError("lowerer bug: upcast lift shape");
@@ -229,7 +339,7 @@ export function unionRecordWidthHelper(
   const key = `unionWidth:${fromId}:${target.shapeId}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = `%union.record.${lowerer.valueHelpers.size}`;
+  const name = keyedHelperName(lowerer, "%union.record", key);
   lowerer.valueHelpers.set(key, name);
   const type: IrType = { kind: "union", unionId: fromId };
   const value = varRef("value.0", type, loc);
@@ -285,15 +395,37 @@ export function recordWidthHelper(
   // orphan one).
   const plan = lowerer.recordWidthPlan(fromId, toId);
   if (!plan) return null;
-  const key = `rec:${fromId}:${toId}`;
+  // Package code converting into a package-declared record type (an
+  // object literal returned under `@returns {HelpContext}`): its field
+  // extractions name the declared fields (decl-origin.ts), so the helper
+  // is keyed by that type's declaration too (two packages may declare
+  // records of the same name and shape). Every other projection is shared
+  // as before.
+  const declared = lowerer.coercionRecordOrigin();
+  const key =
+    declared === null ? `rec:${fromId}:${toId}` : `rec:${fromId}:${toId}:origin:${declared.key}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = `%rec.width.${lowerer.valueHelpers.size}`;
+  const name = keyedHelperName(lowerer, "%rec.width", key);
   // Interned BEFORE the body builds: a recursive nested-width field
   // (self-referential shapes) resolves to this helper itself.
   lowerer.valueHelpers.set(key, name);
   const fromT: IrType = { kind: "record", shapeId: fromId };
-  lowerer.liftedFns.push(buildRecordProjection(lowerer, name, fromT, to, plan, loc));
+  const outerNode = lowerer.coercionOriginNode;
+  const outerField = lowerer.coercionFieldOrigin;
+  // Nested conversions see only their own field's origin.
+  lowerer.coercionOriginNode = null;
+  lowerer.coercionFieldOrigin = null;
+  try {
+    lowerer.liftedFns.push(
+      buildRecordProjection(lowerer, name, fromT, to, plan, loc, (field) =>
+        declared === null ? null : fieldOrigin(lowerer.checker, declared, field),
+      ),
+    );
+  } finally {
+    lowerer.coercionOriginNode = outerNode;
+    lowerer.coercionFieldOrigin = outerField;
+  }
   return name;
 }
 
@@ -317,7 +449,7 @@ export function tupleArrayWidthHelper(
   const key = `tuparr:${fromId}:${typeKey(toT.elem)}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = `%tup.arr.${lowerer.valueHelpers.size}`;
+  const name = keyedHelperName(lowerer, "%tup.arr", key);
   lowerer.valueHelpers.set(key, name);
   const fromT: IrType = { kind: "record", shapeId: fromId };
   const t: IrExpr = { kind: "varRef", localId: "t.0", type: fromT, loc };
@@ -364,7 +496,7 @@ export function emptyArrayLiftHelper(
   const key = `emptyarr:${typeKey(fromT.elem)}:${typeKey(toT.elem)}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = `%arr.empty.${lowerer.valueHelpers.size}`;
+  const name = keyedHelperName(lowerer, "%arr.empty", key);
   lowerer.valueHelpers.set(key, name);
   const a: IrExpr = { kind: "varRef", localId: "a.0", type: fromT, loc };
   lowerer.liftedFns.push({
@@ -413,6 +545,69 @@ export function emptyArrayLiftHelper(
   return name;
 }
 
+/** Copy an array of `T | undefined` unions (a collection's values, an
+ * iterator drain) into a `(T | undefined)[]` of a number, string or
+ * boolean T, which stores T elements: undefined values become present
+ * undefined elements. Null for other element types. */
+function optionalArrayHelper(
+  lowerer: Lowerer,
+  fromT: IrType & { kind: "array" },
+  toT: IrType & { kind: "array" },
+  loc: SrcLoc,
+): string | null {
+  const from = fromT.elem;
+  const to = toT.elem;
+  if (
+    !primitiveElement(to) ||
+    from.kind !== "union" ||
+    lowerer.armTag(from.unionId, UNDEFINED_T) < 0 ||
+    !typeEquals(lowerer.stripUndefinedArm(from), to)
+  )
+    return null;
+  const key = `arrOptional:${typeKey(from)}:${typeKey(to)}`;
+  const existing = lowerer.valueHelpers.get(key);
+  if (existing) return existing;
+  const name = keyedHelperName(lowerer, "%arr.width", key);
+  lowerer.valueHelpers.set(key, name);
+  const input = varRef("a.0", fromT, loc);
+  const out = varRef("out.0", toT, loc);
+  lowerer.liftedFns.push({
+    name,
+    params: [{ localId: "a.0", name: "a", type: fromT }],
+    returnType: toT,
+    locals: [
+      { id: "a.0", name: "a", type: fromT, mutable: true },
+      { id: "out.0", name: "out", type: toT, mutable: false },
+      { id: "i.0", name: "i", type: F64, mutable: true },
+      { id: "v.0", name: "v", type: from, mutable: false },
+    ],
+    body: [
+      {
+        kind: "varDecl",
+        localId: "out.0",
+        init: { kind: "arrayLit", elems: [], type: toT, loc },
+        loc,
+      },
+      countedFor(
+        loc,
+        { kind: "arrIntrinsic", method: "length", receiver: input, args: [], type: F64, loc },
+        (index) => [
+          {
+            kind: "varDecl",
+            localId: "v.0",
+            init: arrayValueRead(lowerer, input, index, from, loc),
+            loc,
+          },
+          arrayValueStore(lowerer, out, index, varRef("v.0", from, loc), to, loc),
+        ],
+      ),
+      { kind: "return", value: out, loc },
+    ],
+    loc,
+  });
+  return name;
+}
+
 /** Copy an array through its validated element conversion. Intern before
  * building the body so recursive element conversions can reuse this helper. */
 export function arrayWidthHelper(
@@ -428,7 +623,7 @@ export function arrayWidthHelper(
   const key = `arr:${typeKey(fromElem)}:${typeKey(toElem)}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = `%arr.width.${lowerer.valueHelpers.size}`;
+  const name = keyedHelperName(lowerer, "%arr.width", key);
   lowerer.valueHelpers.set(key, name);
   const arrT: IrType = { kind: "array", elem: fromElem };
   const outT: IrType = { kind: "array", elem: toElem };
@@ -437,14 +632,37 @@ export function arrayWidthHelper(
       name,
       arrT,
       { kind: "arrayLit", elems: [], type: outT, loc },
-      (element, _index, result) => ({
-        kind: "arrIntrinsic",
-        method: "push",
-        receiver: result,
-        args: [lowerer.applyWidthLift(elemLift, element, toElem, loc)],
-        type: F64,
-        loc,
-      }),
+      (element, index, result) => {
+        let value = lowerer.applyWidthLift(elemLift, element, toElem, loc);
+        // A number, string or boolean array can hold present undefined
+        // elements (`(T | undefined)[]` stores T): they, and holes, copy
+        // as the target's undefined.
+        const missing = primitiveElement(fromElem) ? lowerer.wrappedUndefined(toElem, loc) : null;
+        if (missing !== null)
+          value = {
+            kind: "ternary",
+            cond: {
+              kind: "bin",
+              op: "===",
+              left: { kind: "arrayState", arr: varRef("a.0", arrT, loc), index, type: F64, loc },
+              right: { kind: "numLit", value: 1, type: F64, loc },
+              type: BOOL,
+              loc,
+            },
+            then: value,
+            else_: missing,
+            type: toElem,
+            loc,
+          };
+        return {
+          kind: "arrIntrinsic",
+          method: "push",
+          receiver: result,
+          args: [value],
+          type: F64,
+          loc,
+        };
+      },
       loc,
     ),
   );
@@ -468,7 +686,7 @@ export function objRecordWidthHelper(
   const key = `obj:${className}:${toId}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = `%obj.width.${lowerer.valueHelpers.size}`;
+  const name = keyedHelperName(lowerer, "%obj.width", key);
   lowerer.valueHelpers.set(key, name);
   const fromT: IrType = { kind: "object", className };
   lowerer.liftedFns.push(buildRecordProjection(lowerer, name, fromT, to, plan, loc));
@@ -493,7 +711,7 @@ export function recordClassWidthHelper(
   const key = `cls:${fromId}:${className}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
-  const name = `%cls.width.${lowerer.valueHelpers.size}`;
+  const name = keyedHelperName(lowerer, "%cls.width", key);
   lowerer.valueHelpers.set(key, name);
   lowerer.noteEdge(`%${className}.constructor`);
   const fromT: IrType = { kind: "record", shapeId: fromId };
@@ -524,7 +742,13 @@ export function recordClassWidthHelper(
     params: [{ localId: "r.0", name: "r", type: fromT }],
     returnType: toT,
     locals: [{ id: "r.0", name: "r", type: fromT, mutable: true }],
-    body: [{ kind: "return", value: { kind: "new", className, args, type: toT, loc }, loc }],
+    body: [
+      {
+        kind: "return",
+        value: constructedValue(lowerer, info, { kind: "new", className, args, type: toT, loc }),
+        loc,
+      },
+    ],
     loc,
   });
   return name;
@@ -598,11 +822,16 @@ function buildRecordProjection(
   target: IrRecordShape,
   plan: Map<string, FieldLift>,
   loc: SrcLoc,
+  originOf: (field: string) => string | null = () => null,
 ): IrFunction {
   const parameter = source.kind === "record" ? "r" : "o";
   const localId = parameter + ".0";
   const receiver = varRef(localId, source, loc);
   const result: IrType = { kind: "record", shapeId: target.id };
+  // A record source's copy keeps the source's key order; a class
+  // instance's fields keep today's table.
+  const copyOf = (node: IrExpr): IrExpr =>
+    source.kind === "record" ? lowerer.keyOrder.copy(node, source.shapeId) : node;
   return {
     name,
     params: [{ localId, name: parameter, type: source }],
@@ -611,7 +840,7 @@ function buildRecordProjection(
     body: [
       {
         kind: "return",
-        value: {
+        value: copyOf({
           kind: "recordLit",
           fields: target.fields.map((field) => {
             const conversion = plan.get(field.name)!;
@@ -650,7 +879,12 @@ function buildRecordProjection(
                     type: conversion.src,
                     loc,
                   };
+            // Only the field's own extraction (a plain narrow) carries the
+            // declared field's origin; nested conversions are shared.
+            lowerer.coercionFieldOrigin =
+              conversion.lift.how === "narrow" ? originOf(field.name) : null;
             const lifted = lowerer.applyWidthLift(conversion.lift, read, field.type, loc);
+            lowerer.coercionFieldOrigin = null;
             return {
               name: field.name,
               value:
@@ -661,10 +895,25 @@ function buildRecordProjection(
           }),
           type: result,
           loc,
-        },
+        }),
         loc,
       },
     ],
     loc,
   };
+}
+
+/** Records and arrays (and unions holding them), whose identity a live
+ * capsule keeps. */
+function liveBoxable(lowerer: Lowerer, t: IrType, seen = new Set<string>()): boolean {
+  if (t.kind === "record") {
+    const shape = lowerer.shapes.get(t.shapeId);
+    return shape !== undefined && !shape.tuple;
+  }
+  if (t.kind === "array") return true;
+  if (t.kind !== "union" || seen.has(t.unionId)) return false;
+  seen.add(t.unionId);
+  return (
+    lowerer.unions.get(t.unionId)?.arms.some((arm) => liveBoxable(lowerer, arm, seen)) ?? false
+  );
 }

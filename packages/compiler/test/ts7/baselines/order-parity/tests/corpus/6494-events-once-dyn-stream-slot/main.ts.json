@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6494-events-once-dyn-stream-slot/sources.js",
+  "<repo>/tests/corpus/6494-events-once-dyn-stream-slot/main.ts"
+ ],
+ "diags": []
+}

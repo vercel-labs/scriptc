@@ -21,10 +21,4 @@ function unusedCorner(bag: Bag, pairs: Map<string, number>): void {
   }
 }
 
-// Never referenced and its body uses the remaining async-generator
-// delegation fence: deferred — only a reference would fail a build.
-async function* counter(limit: number): AsyncGenerator<number> {
-  yield* [limit];
-}
-
 console.log(used(41));

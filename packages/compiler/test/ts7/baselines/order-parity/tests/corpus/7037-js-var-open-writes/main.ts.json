@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7037-js-var-open-writes/main.ts"
+ ],
+ "diags": []
+}

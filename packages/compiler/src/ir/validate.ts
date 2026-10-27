@@ -18,6 +18,7 @@ import type {
 } from "./ir.js";
 import {
   arrayOf,
+  iterableArmsElem,
   BYTES_ELEMENT_NAME,
   BOOL,
   BYTES_U8,
@@ -53,13 +54,32 @@ import {
   STRING,
   typeEquals,
   typeKey,
-  unionContainerArmsOk,
+  maybePromiseUnionArmsOk,
   VOID,
 } from "./ir.js";
-import { DYN_CLASS_PROPERTIES } from "./ir.js";
+import {
+  DYN_CLASS_PROPERTIES,
+  callSiteReturnType,
+  classValueAbiEquals,
+  classValueConstructor,
+} from "./ir.js";
 import { unionWideningTags } from "./analysis.js";
 import { alwaysReturns } from "./control-flow.js";
-import { LIB_FN_SIGS } from "./builtin-signatures.js";
+import { dynamicOperationOf, functionTier } from "./tiers.js";
+import { libFnSignatures, pipelinePumpedRuns } from "./builtin-signatures.js";
+import { ALWAYS_THROW_LIB_FNS } from "./builtin-effects.js";
+
+/** The promisified crypto calls' value kinds besides checked-dynamic. */
+const CRYPTO_PROMISE_VALUES: Readonly<Record<string, "buffer" | "view" | "number" | "dyn">> = {
+  "crypto.randomBytesPromise": "buffer",
+  "crypto.pbkdf2Promise": "buffer",
+  "crypto.scryptPromise": "buffer",
+  "crypto.hkdfPromise": "dyn",
+  "crypto.randomFillPromise": "view",
+  "crypto.randomFillPromiseDyn": "dyn",
+  "crypto.randomIntPromise": "number",
+  "crypto.generateKeyPromise": "dyn",
+};
 import { REGEX_INTRINSIC_SIGS, STR_INTRINSIC_SIGS } from "./intrinsic-signatures.js";
 
 /** True for an object type naming a runtime-provided error class. */
@@ -70,33 +90,6 @@ function isBuiltinErrorObject(t: IrType): boolean {
 export interface IrValidationError {
   message: string;
   loc: SrcLoc;
-}
-
-/** The type a CALL SITE (or function value) receives from a module
- * function: an async body's returnType is the promise's INNER type, so
- * calls and closures over it see Promise<T>; a generator body's is the
- * TReturn channel, so call sites see the generator type. The one place
- * the body/call-site split is spelled out in the validator. */
-function callSiteReturnType(fn: IrFunction): IrType {
-  if (fn.async && fn.generator !== undefined) {
-    return {
-      kind: "generator",
-      async: true,
-      yieldT: fn.generator.yieldT,
-      retT: fn.returnType,
-      nextT: fn.generator.nextT,
-    };
-  }
-  if (fn.async) return { kind: "promise", inner: fn.returnType };
-  if (fn.generator !== undefined) {
-    return {
-      kind: "generator",
-      yieldT: fn.generator.yieldT,
-      retT: fn.returnType,
-      nextT: fn.generator.nextT,
-    };
-  }
-  return fn.returnType;
 }
 
 interface VirtualCallInfo {
@@ -132,6 +125,16 @@ export function validateModule(mod: IrModule): IrValidationError[] {
   const moduleLoc: SrcLoc = { file: mod.sourceFile, start: 0, end: 0 };
   if (mod.workers !== undefined && typeof mod.workers !== "boolean")
     errors.push({ message: "worker execution mode must be a boolean", loc: moduleLoc });
+  if (mod.declBoundary !== undefined && mod.declBoundary !== true)
+    errors.push({ message: "declBoundary must be true when present", loc: moduleLoc });
+  const declOrigins = mod.declOrigins;
+  if (
+    declOrigins !== undefined &&
+    (!Array.isArray(declOrigins) || declOrigins.some((o) => typeof o !== "string"))
+  )
+    errors.push({ message: "declOrigins must be an array of strings", loc: moduleLoc });
+  if (mod.untypedIntegrity !== undefined && mod.untypedIntegrity !== true)
+    errors.push({ message: "untypedIntegrity must be true when present", loc: moduleLoc });
   if (mod.lifetimeRegions !== undefined && mod.lifetimeRegions !== true)
     errors.push({ message: "lifetimeRegions must be true when present", loc: moduleLoc });
   if (mod.workers && mod.lib !== undefined)
@@ -357,7 +360,7 @@ export function validateModule(mod: IrModule): IrValidationError[] {
       const fits = (cls: string, t: IrType): boolean =>
         cls === "bool"
           ? t.kind === "bool"
-          : cls === "string"
+          : cls === "string" || cls === "cstring"
             ? t.kind === "string"
             : cls === "bytes"
               ? t.kind === "bytes" && t.elem === "u8"
@@ -511,10 +514,29 @@ export function validateModule(mod: IrModule): IrValidationError[] {
         });
       }
     }
-    for (const symbol of cls.symbolFields ?? []) {
-      const global = mod.globals?.find((global) => global.id === symbol.globalId);
+    if (cls.stringTagHelper !== undefined) {
+      const helper = functionsByName.get(cls.stringTagHelper);
+      const receiver = helper?.params[0]?.type;
       if (
-        global?.type.kind !== "symbol" ||
+        !helper ||
+        helper.params.length !== 1 ||
+        receiver?.kind !== "object" ||
+        receiver.className !== cls.name ||
+        helper.returnType.kind !== "string" ||
+        helper.captures !== undefined ||
+        helper.classCaptures !== undefined
+      ) {
+        errors.push({
+          message: `class ${cls.name}: string tag helper must be a noncapturing (instance) => string function`,
+          loc: cls.loc,
+        });
+      }
+    }
+    for (const symbol of cls.symbolFields ?? []) {
+      const global =
+        "globalId" in symbol ? mod.globals?.find((global) => global.id === symbol.globalId) : null;
+      if (
+        ("globalId" in symbol ? global?.type.kind !== "symbol" : symbol.wellKnown === "") ||
         !cls.fields.some((field) => field.name === symbol.field)
       ) {
         errors.push({ message: `class ${cls.name}: invalid symbol field metadata`, loc: cls.loc });
@@ -808,19 +830,18 @@ export function validateModule(mod: IrModule): IrValidationError[] {
     u.arms.forEach((arm, i) => {
       // The unit kinds (undefinedT/nullT) are valid arms — union membership
       // is the ONLY place they may appear. Container payloads preserve
-      // identity; promise data siblings retain their separate fence.
+      // identity; a union carries at most one promise arm (maybe-promise).
       if (
         arm.kind === "void" ||
         arm.kind === "union" ||
         arm.kind === "dyn" ||
-        arm.kind === "date" ||
-        arm.kind === "generator"
+        (arm.kind === "generator" && iterableArmsElem(u.arms) === null)
       ) {
         errors.push({ message: `union ${u.id}: arm ${i} is ${arm.kind}`, loc: noLoc });
       }
-      if (arm.kind === "promise" && !unionContainerArmsOk(u.arms)) {
+      if (arm.kind === "promise" && !maybePromiseUnionArmsOk(u.arms)) {
         errors.push({
-          message: `union ${u.id}: ${arm.kind} arm ${i} beside non-unit arms`,
+          message: `union ${u.id}: ${arm.kind} arm ${i} beside another promise arm`,
           loc: noLoc,
         });
       }
@@ -985,6 +1006,8 @@ export function validateModule(mod: IrModule): IrValidationError[] {
       errors,
       mod.workers === true,
       mod.lifetimeRegions === true,
+      new Set(mod.threadSlotKeys ?? []),
+      mod.declOrigins?.length ?? 0,
     );
   }
   return errors;
@@ -1003,10 +1026,20 @@ function validateFunction(
   errors: IrValidationError[],
   workers: boolean,
   lifetimeRegions: boolean,
+  threadSlotKeys: ReadonlySet<string>,
+  declOriginCount: number,
 ): void {
   const locals = new Map(fn.locals.map((l) => [l.id, l]));
   const err = (message: string, loc: SrcLoc) =>
     errors.push({ message: `in ${fn.name}: ${message}`, loc });
+  // Invariant I1 (ir/tiers.ts): a static function reaches dynamic values
+  // only through boundary operations and moves.
+  const staticTier = functionTier(fn) === "static";
+  const checkTier = (e: IrExpr): void => {
+    const operation = dynamicOperationOf(e);
+    if (operation !== null)
+      err(`static-tier function performs the dynamic operation ${operation}`, e.loc);
+  };
 
   const asyncCaches = [
     ["asyncCacheGlobal", fn.asyncCacheGlobal],
@@ -1121,7 +1154,7 @@ function validateFunction(
   // helpers. They are not source-level types and never return as values.
   if (fn.returnType.kind === "caught") err("return type is caught", fn.loc);
   for (const p of fn.params) {
-    if (p.type.kind === "caught" && fn.name !== "%caught.dynamicValue")
+    if (p.type.kind === "caught" && !fn.name.startsWith("%caught."))
       err(`param "${p.name}" is caught-typed`, fn.loc);
     if (!locals.has(p.localId)) {
       err(`param "${p.name}" has no local entry "${p.localId}"`, fn.loc);
@@ -1251,6 +1284,8 @@ function validateFunction(
         continue;
       }
       if (e.kind === "logical") {
+        // checkExpr already checked the root's tier.
+        if (staticTier && e !== root) checkTier(e);
         if (
           e.type.kind !== "f64" &&
           e.type.kind !== "string" &&
@@ -1294,6 +1329,7 @@ function validateFunction(
   }
 
   function checkExpr(e: IrExpr): void {
+    if (staticTier) checkTier(e);
     switch (e.kind) {
       case "numLit":
       case "strLit":
@@ -1504,6 +1540,7 @@ function validateFunction(
             e.left.type.kind === "map" ||
             e.left.type.kind === "set" ||
             e.left.type.kind === "regex" ||
+            e.left.type.kind === "date" ||
             e.left.type.kind === "url" ||
             e.left.type.kind === "object" ||
             e.left.type.kind === "record" ||
@@ -1623,10 +1660,10 @@ function validateFunction(
           "while",
         ]);
         if (e.generatorDelegate) {
-          if (!fn.generator || fn.async)
-            err("delegation sequence outside a synchronous generator", e.loc);
+          if (!fn.generator) err("delegation sequence outside a generator", e.loc);
           allowed.add("return");
           allowed.add("throw");
+          allowed.add("rethrow");
           allowed.add("runtimeFence");
           allowed.add("tryCatch");
         }
@@ -1932,8 +1969,8 @@ function validateFunction(
       }
       case "regexLit": {
         if (e.type.kind !== "regex") err("regexLit must be regex-typed", e.loc);
-        if (!/^[gimsuy]*$/.test(e.flags)) {
-          err(`regexLit flags "${e.flags}" outside the supported alphabet (gimsuy)`, e.loc);
+        if (!/^[gimsuvy]*$/.test(e.flags)) {
+          err(`regexLit flags "${e.flags}" outside the supported alphabet (gimsuvy)`, e.loc);
         }
         if (new Set(e.flags).size !== e.flags.length) {
           err(`regexLit flags "${e.flags}" contain a duplicate`, e.loc);
@@ -2043,12 +2080,18 @@ function validateFunction(
       }
       case "arrayNewLen": {
         // Mapper-less Array.from({length: n}): absent-slot fill exists
-        // only for refcounted element kinds (frontend fences scalars).
+        // only for refcounted element kinds. Number and boolean slots are
+        // filled with present undefined values right after
+        // (`(T | undefined)[]`); the frontend fences other scalar uses.
         if (e.type.kind !== "array") {
           err(`arrayNewLen must be array-typed, got ${e.type.kind}`, e.loc);
           break;
         }
-        if (!isRefCounted(e.type.elem)) {
+        if (
+          !isRefCounted(e.type.elem) &&
+          e.type.elem.kind !== "f64" &&
+          e.type.elem.kind !== "bool"
+        ) {
           err(
             `arrayNewLen with non-refcounted ${e.type.elem.kind} elements (no absent value)`,
             e.loc,
@@ -2189,6 +2232,9 @@ function validateFunction(
           indexOfNum: { argTypes: [F64, F64], minArgs: 1, result: F64 },
           lastIndexOfNum: { argTypes: [F64, F64], minArgs: 1, result: F64 },
           includesNum: { argTypes: [F64, F64], minArgs: 1, result: BOOL },
+          indexOfElem: { argTypes: [F64, F64], minArgs: 2, result: F64 },
+          lastIndexOfElem: { argTypes: [F64, F64], minArgs: 2, result: F64 },
+          includesElem: { argTypes: [F64, F64], minArgs: 2, result: BOOL },
           fill: { argTypes: [BYTES_U8, F64, F64], minArgs: 1, result: BYTES_U8 },
           fillNum: { argTypes: [F64, F64, F64], minArgs: 1, result: BYTES_U8 },
           // Per-element TypedArray fill (any elem — the non-u8 fill path).
@@ -2369,9 +2415,13 @@ function validateFunction(
           (e.method === "sortPrimitive" || e.method === "toSortedPrimitive") &&
           elem.kind !== "string" &&
           elem.kind !== "f64" &&
-          elem.kind !== "bool"
+          elem.kind !== "bool" &&
+          elem.kind !== "date"
         ) {
-          err(`arrIntrinsic ${e.method} requires primitive elements, got ${elem.kind}`, e.loc);
+          err(
+            `arrIntrinsic ${e.method} requires primitive or Date elements, got ${elem.kind}`,
+            e.loc,
+          );
         }
         if (e.method === "sortValues" || e.method === "sortDense") {
           const arms = elem.kind === "union" ? unions.get(elem.unionId)?.arms : undefined;
@@ -2389,27 +2439,46 @@ function validateFunction(
           if (e.method === "sortDense" && e.args[1]?.kind !== "boolLit")
             err("arrIntrinsic sortDense owned flag must be a boolean literal", e.loc);
           // A recognized comparator's key order: [order] for numbers,
-          // [order, key reader] for record and class elements.
+          // [order, key reader] for record and class elements. An order
+          // from 2 carries several keys (sortKeysOrder): the key count
+          // (2..8) in the low byte, a descending bit per key from bit 8, and
+          // a reader that also takes the key's index.
           const order = e.args[2];
           if (order) {
-            if (order.kind !== "numLit" || (order.value !== 1 && order.value !== -1))
-              err(`arrIntrinsic ${e.method} key order must be the literal 1 or -1`, e.loc);
+            const count = order.kind === "numLit" && order.value >= 2 ? order.value & 0xff : 1;
+            if (
+              order.kind !== "numLit" ||
+              (order.value !== 1 &&
+                order.value !== -1 &&
+                !(
+                  Number.isInteger(order.value) &&
+                  count >= 2 &&
+                  count <= 8 &&
+                  (order.value >> 8) >> count === 0
+                ))
+            )
+              err(`arrIntrinsic ${e.method} key order must be 1, -1 or a key-chain order`, e.loc);
             const key = e.args[3]?.type;
             if (
               elem.kind === "f64"
-                ? key !== undefined
+                ? key !== undefined || count > 1
                 : elem.kind !== "record" && elem.kind !== "object"
             )
               err(`arrIntrinsic ${e.method} key order on ${elem.kind} elements`, e.loc);
+            const params = count > 1 ? 2 : 1;
             if (
               elem.kind !== "f64" &&
               (!key ||
                 key.kind !== "func" ||
-                key.params.length !== 1 ||
+                key.params.length !== params ||
                 !typeEquals(key.params[0]!, elem) ||
+                (params === 2 && key.params[1]!.kind !== "f64") ||
                 key.ret.kind !== "f64")
             )
-              err(`arrIntrinsic ${e.method} key reader must be (elem) => number`, e.loc);
+              err(
+                `arrIntrinsic ${e.method} key reader must be (elem${params === 2 ? ", number" : ""}) => number`,
+                e.loc,
+              );
           }
         }
         if (e.method === "getNumber" && elem.kind !== "f64") {
@@ -2434,13 +2503,18 @@ function validateFunction(
           elem.kind !== "f64" &&
           elem.kind !== "string" &&
           elem.kind !== "bool" &&
+          elem.kind !== "date" &&
           !(
             elem.kind === "union" &&
             (unions
               .get(elem.unionId)
               ?.arms.every(
                 (a) =>
-                  a.kind === "f64" || a.kind === "string" || a.kind === "bool" || isUnitType(a),
+                  a.kind === "f64" ||
+                  a.kind === "string" ||
+                  a.kind === "bool" ||
+                  a.kind === "date" ||
+                  isUnitType(a),
               ) ??
               false)
           )
@@ -2907,7 +2981,7 @@ function validateFunction(
       case "downcast": {
         // A pointer reinterpret is sound exactly between hierarchy
         // relatives: upcast widens a STRICT descendant to an ancestor,
-        // downcast (checker-trusted) narrows an ancestor to a STRICT
+        // downcast (verified at run time) narrows an ancestor to a STRICT
         // descendant. Upcast additionally widens CLASS VALUES
         // (classval:D → classval:C): the same pointer, type-only — legal
         // exactly when D strictly descends from C AND the two completed
@@ -2938,19 +3012,31 @@ function validateFunction(
             err(`upcast: "${sub}" does not extend "${sup}"`, e.loc);
             break;
           }
-          const subCtor = functions.get(`%${sub}.constructor`);
-          const supCtor = functions.get(`%${sup}.constructor`);
-          if (!subCtor || !supCtor) {
+          const subClass = classes.get(sub);
+          const supClass = classes.get(sup);
+          const subCtor = subClass ? functions.get(classValueConstructor(subClass).fn) : undefined;
+          const supCtor = supClass ? functions.get(classValueConstructor(supClass).fn) : undefined;
+          if (!subClass || !supClass || !subCtor || !supCtor) {
             err(`classval upcast: "${sub}"/"${sup}" lack constructor functions`, e.loc);
             break;
           }
-          const abiEqual =
-            subCtor.params.length === supCtor.params.length &&
-            subCtor.params.every((p, i) => i === 0 || typeEquals(p.type, supCtor.params[i]!.type));
+          const abiEqual = classValueAbiEquals(subClass, supClass, functions);
           if (!abiEqual) {
             err(`classval upcast: "${sub}" and "${sup}" constructor ABIs differ`, e.loc);
           }
           break;
+        }
+        // An instance of a class declared `extends Array` and its array
+        // are the same object: upcast to the array, downcast back.
+        {
+          const instance = e.kind === "upcast" ? e.value.type : e.type;
+          const array = e.kind === "upcast" ? e.type : e.value.type;
+          if (instance.kind === "object" && array.kind === "array") {
+            const elem = classes.get(instance.className)?.arrayElem;
+            if (elem === undefined || !typeEquals(elem, array.elem))
+              err(`${e.kind}: "${instance.className}" is not an array of that element type`, e.loc);
+            break;
+          }
         }
         if (e.type.kind !== "object" || e.value.type.kind !== "object") {
           err(`${e.kind} between non-class types`, e.loc);
@@ -2971,16 +3057,13 @@ function validateFunction(
           err(`classRef to undeclared class "${e.className}"`, e.loc);
           break;
         }
-        if (cls.runtime) {
-          err(`classRef to runtime-provided class "${e.className}"`, e.loc);
-        }
-        if (cls.jsName === undefined) {
+        if (cls.jsName === undefined && !cls.runtime) {
           err(`classRef to "${e.className}" without a jsName (the class object's .name)`, e.loc);
         }
         // A class value can always be constructed through — the frontend
         // notes the constructor edge at every classRef, so the emitted
         // thunk has a body to call.
-        if (!functions.has(`%${e.className}.constructor`)) {
+        if (!functions.has(classValueConstructor(cls).fn)) {
           err(`classRef to "${e.className}" without its constructor function`, e.loc);
         }
         if (!typeEquals(e.type, { kind: "classval", className: e.className })) {
@@ -3009,21 +3092,24 @@ function validateFunction(
           break;
         }
         const cls = e.callee.type.className;
-        const ctor = functions.get(`%${cls}.constructor`);
-        if (!ctor) {
+        const calleeClass = classes.get(cls);
+        const valueCtor = calleeClass ? classValueConstructor(calleeClass) : null;
+        const ctor = valueCtor ? functions.get(valueCtor.fn) : undefined;
+        if (!ctor || !valueCtor) {
           err(`newValue on "${cls}": missing constructor function`, e.loc);
           break;
         }
         // Count-exact against the static class's completed ABI (every
         // value legally in the slot shares it — the upcast rule).
-        if (ctor.params.length !== e.args.length + 1) {
+        const first = valueCtor.firstArg;
+        if (ctor.params.length !== e.args.length + first) {
           err(
-            `newValue on "${cls}": ${e.args.length} args, ctor expects ${ctor.params.length - 1}`,
+            `newValue on "${cls}": ${e.args.length} args, ctor expects ${ctor.params.length - first}`,
             e.loc,
           );
         }
         e.args.forEach((a, i) => {
-          const p = ctor.params[i + 1];
+          const p = ctor.params[i + first];
           if (p) expectType(a, p.type, `newValue on "${cls}" arg ${i}`);
         });
         if (!typeEquals(e.type, { kind: "object", className: cls })) {
@@ -3059,6 +3145,15 @@ function validateFunction(
       case "instanceOf": {
         checkExpr(e.value);
         if (e.type.kind !== "bool") err("instanceOf must be bool", e.loc);
+        // An array against a class declared `extends Array` (its ext).
+        if (e.value.type.kind === "array") {
+          if (classes.get(e.className)?.arrayElem === undefined)
+            err(
+              `instanceOf of an array against "${e.className}", which does not extend Array`,
+              e.loc,
+            );
+          break;
+        }
         if (!hierarchy.has(e.className)) {
           err(`instanceOf against non-hierarchy class "${e.className}"`, e.loc);
         }
@@ -3870,6 +3965,44 @@ function validateFunction(
       } else if (e.type.kind !== "f64") err(`${e.name} has type f64`, e.loc);
       return;
     }
+    if (
+      e.name === "slots.get" ||
+      e.name === "slots.has" ||
+      e.name === "slots.set" ||
+      e.name === "slots.delete"
+    ) {
+      for (const a of e.args) checkExpr(a);
+      const [name, slots, key, value] = e.args;
+      const arity = e.name === "slots.set" ? 4 : 3;
+      const isSlots = (t: IrType): boolean => t.kind === "object" && t.className === "%ThreadSlots";
+      // The key's class or one of its bases is a declared key.
+      const keyed = (className: string): boolean => {
+        for (let c: string | undefined = className; c !== undefined; c = classes.get(c)?.base)
+          if (threadSlotKeys.has(c)) return true;
+        return false;
+      };
+      if (e.args.length !== arity) err(`${e.name} takes ${arity} arguments`, e.loc);
+      else if (name!.kind !== "strLit" || !isSlots(slots!.type))
+        err(`${e.name} takes a name literal and a %ThreadSlots value`, e.loc);
+      else if (key!.type.kind !== "object" || !keyed(key!.type.className))
+        err(`${e.name} key ${typeKey(key!.type)} is not a ThreadSlots key class`, e.loc);
+      else if (e.name === "slots.set") {
+        const kind = value!.type.kind;
+        if (
+          kind !== "object" &&
+          kind !== "record" &&
+          kind !== "array" &&
+          kind !== "map" &&
+          kind !== "set"
+        )
+          err(`slots.set value ${typeKey(value!.type)} is not a ThreadSlots value type`, e.loc);
+        if (e.type.kind !== "void" && !isSlots(e.type))
+          err("slots.set has type void or %ThreadSlots", e.loc);
+      } else if (e.name === "slots.get") {
+        if (e.type.kind !== "union") err("slots.get has a V | undefined union type", e.loc);
+      } else if (e.type.kind !== "bool") err(`${e.name} has type bool`, e.loc);
+      return;
+    }
     if (e.name === "threads.publish") {
       if (e.args.length !== 1) err("threads.publish takes exactly one argument", e.loc);
       for (const a of e.args) {
@@ -4006,7 +4139,7 @@ function validateFunction(
     }
     if (e.fn === "worker.new" && !workers)
       errors.push({ message: "Worker construction requires worker execution mode", loc: e.loc });
-    const sig = LIB_FN_SIGS[e.fn];
+    const sig = libFnSignatures()[e.fn];
     if (!sig) {
       err(`libCall of unknown library function "${e.fn as string}"`, e.loc);
       return;
@@ -4018,6 +4151,8 @@ function validateFunction(
     const variadic =
       e.fn === "emitter.emit" ||
       e.fn === "emitter.emitFlex" ||
+      e.fn === "emitter.emitAny" ||
+      e.fn === "emitter.emitMixed" ||
       e.fn === "readable.new" ||
       e.fn === "writable.new" ||
       e.fn === "duplex.new" ||
@@ -4037,14 +4172,17 @@ function validateFunction(
       e.fn === "stream.pipelineDyn" ||
       e.fn === "stream.compose" ||
       e.fn === "stream.pipelineStages" ||
+      e.fn === "stream.composeStages" ||
       e.fn === "stream.pipelineStagesDyn" ||
       e.fn === "sp.pipelineStages" ||
+      e.fn === "sp.pipelineStagesOpts" ||
       e.fn === "sp.pipeline" ||
       e.fn === "sp.pipelineOpts" ||
       e.fn === "sp.pipelineOptsSignal" ||
       e.fn === "writable.write" ||
       e.fn === "writable.writeStr" ||
       e.fn === "writable.writeU" ||
+      e.fn === "writable.writeEnc" ||
       e.fn === "writable.end" ||
       e.fn === "readable.unpipe" ||
       e.fn === "rl.create" ||
@@ -4066,9 +4204,18 @@ function validateFunction(
     if (checkLibEmitterCall(e, sig.result)) return;
     if (
       e.fn === "error.stack" ||
+      e.fn === "error.setStack" ||
       e.fn === "error.cause" ||
       e.fn === "error.hasCause" ||
       e.fn === "error.setCause" ||
+      e.fn === "error.setCode" ||
+      e.fn === "error.setCodeDyn" ||
+      e.fn === "error.assign" ||
+      e.fn === "error.hasKey" ||
+      e.fn === "error.hasCode" ||
+      e.fn === "error.ownAccessor" ||
+      e.fn === "error.accessorGet" ||
+      e.fn === "error.accessorSet" ||
       e.fn === "error.defineCause" ||
       e.fn === "error.deleteCause"
     ) {
@@ -4097,7 +4244,55 @@ function validateFunction(
   }
 
   function checkLibValueCall(e: IrExpr & { kind: "libCall" }): boolean {
-    if (e.fn === "events.once") {
+    // ArraySpeciesCreate over an Array method's result, and Array.of /
+    // Array.from on a class that extends Array: the result has the plain
+    // result's array type.
+    if (e.fn === "array.dynIsClass") {
+      const cls = e.args[1]?.kind === "strLit" ? classes.get(e.args[1].value) : undefined;
+      if (cls?.arrayElem === undefined)
+        err("libCall array.dynIsClass must name a class that extends Array", e.loc);
+      return false;
+    }
+    if (e.fn === "array.speciesCreate") {
+      if (e.args[0]?.type.kind !== "array" || !typeEquals(e.type, e.args[0].type))
+        err("libCall array.speciesCreate must have its receiver's array type", e.loc);
+      return true;
+    }
+    if (e.fn === "array.speciesFinish") {
+      const plain = e.args[1];
+      if (plain?.type.kind !== "array" || !typeEquals(e.type, plain.type))
+        err("libCall array.speciesFinish must have its array argument's type", e.loc);
+      if (e.args[0]?.type.kind !== "array")
+        err("libCall array.speciesFinish instance must be an array", e.loc);
+      return true;
+    }
+    if (e.fn === "array.speciesAdopt" || e.fn === "array.classConstructAdopt") {
+      const plain = e.args[1];
+      if (plain?.type.kind !== "array" || !typeEquals(e.type, plain.type))
+        err(`libCall ${e.fn} must have its array argument's type`, e.loc);
+      if (e.fn === "array.speciesAdopt" && e.args[0]?.type.kind !== "array")
+        err("libCall array.speciesAdopt receiver must be an array", e.loc);
+      if (e.fn === "array.classConstructAdopt") {
+        const cls = e.args[0]?.kind === "strLit" ? classes.get(e.args[0].value) : undefined;
+        if (cls?.arrayElem === undefined)
+          err("libCall array.classConstructAdopt must name a class that extends Array", e.loc);
+      }
+      return true;
+    }
+    const cryptoPromise = CRYPTO_PROMISE_VALUES[e.fn];
+    if (cryptoPromise) {
+      const inner = e.type.kind === "promise" ? e.type.inner : undefined;
+      const view = e.fn === "crypto.randomFillPromise" ? e.args[0]?.type : undefined;
+      const ok =
+        inner !== undefined &&
+        (inner.kind === "dyn" ||
+          (cryptoPromise === "buffer" && inner.kind === "bytes" && inner.elem === "u8") ||
+          (cryptoPromise === "view" && view !== undefined && typeEquals(inner, view)) ||
+          (cryptoPromise === "number" && inner.kind === "f64"));
+      if (!ok) err(`libCall ${e.fn} must be a promise of its ${cryptoPromise} value`, e.loc);
+      return true;
+    }
+    if (e.fn === "events.once" || e.fn === "events.onceSignal") {
       const [recv, , boxer, errorBoxer] = e.args;
       const arrayT = e.type.kind === "promise" ? e.type.inner : null;
       const boxes = (b: IrExpr | undefined) =>
@@ -4108,7 +4303,7 @@ function validateFunction(
         !boxes(boxer) ||
         !boxes(errorBoxer)
       ) {
-        err(`libCall events.once must box its event tuples into the promised array`, e.loc);
+        err(`libCall ${e.fn} must box its event tuples into the promised array`, e.loc);
       }
       return true;
     }
@@ -4116,9 +4311,12 @@ function validateFunction(
       e.fn === "tp.setTimeoutValue" ||
       e.fn === "tp.setImmediateValue" ||
       e.fn === "tp.setTimeoutSignal" ||
-      e.fn === "tp.setImmediateSignal"
+      e.fn === "tp.setImmediateSignal" ||
+      e.fn === "tp.schedulerWaitValue" ||
+      e.fn === "tp.schedulerWaitSignal"
     ) {
-      const value = e.args[e.fn === "tp.setTimeoutValue" || e.fn === "tp.setTimeoutSignal" ? 1 : 0];
+      const value =
+        e.args[e.fn === "tp.setImmediateValue" || e.fn === "tp.setImmediateSignal" ? 0 : 1];
       if (value?.type.kind !== "promise" || !typeEquals(e.type, value.type)) {
         err(`libCall ${e.fn} must be the value's promise type`, e.loc);
       }
@@ -4176,6 +4374,18 @@ function validateFunction(
       if (!ok) err(`libCall dyn.objEntryPairs must return a [string, any] tuple array`, e.loc);
       return true;
     }
+    if (
+      e.fn === "array.namedKeys" ||
+      e.fn === "array.hasNamedKey" ||
+      e.fn === "array.hasProperties" ||
+      e.fn === "array.foreign" ||
+      e.fn === "array.foreignThrow"
+    ) {
+      if (e.args[0]?.type.kind !== "array") {
+        err(`libCall ${e.fn} arg 0: expected an array, got ${e.args[0]?.type.kind}`, e.loc);
+      }
+      return true;
+    }
     if (e.fn === "fetch.streamFrom") {
       const t = e.args[0]?.type;
       const ok =
@@ -4191,6 +4401,22 @@ function validateFunction(
       if (!ok) {
         err(`libCall fetch.streamFrom arg 0: expected a supported iterable, got ${t?.kind}`, e.loc);
       }
+      return true;
+    }
+    if (e.fn === "fetch.readableFromWeb") {
+      // Readable.fromWeb: (stream, objectMode, highWaterMark, encoding) → a Readable.
+      if (
+        e.args.length !== 4 ||
+        e.args[0]?.type.kind !== "dyn" ||
+        e.args[1]?.type.kind !== "bool" ||
+        e.args[2]?.type.kind !== "f64" ||
+        e.args[3]?.type.kind !== "string" ||
+        e.type.kind !== "object"
+      )
+        err(
+          `libCall ${e.fn} must take (stream, objectMode, highWaterMark, encoding) and return a Readable`,
+          e.loc,
+        );
       return true;
     }
     if (e.fn === "fetch.readerRead") {
@@ -4367,7 +4593,9 @@ function validateFunction(
       e.fn === "http.clientOnResponse" ||
       e.fn === "http.requestAgentCb" ||
       e.fn === "https.requestAgentCb" ||
-      e.fn === "https.requestUrlCb"
+      e.fn === "https.requestUrlCb" ||
+      e.fn === "http.requestDynCb" ||
+      e.fn === "https.requestDynCb"
     ) {
       // The response listener: void, no params or exactly (res: httpReq).
       const cbT =
@@ -4378,11 +4606,13 @@ function validateFunction(
               ? 9
               : e.fn === "http.requestUrlCb" || e.fn === "https.requestUrlCb"
                 ? 3
-                : e.fn === "http.requestAgentCb"
-                  ? 8
-                  : e.fn === "https.requestAgentCb"
-                    ? 10
-                    : 1
+                : e.fn === "http.requestDynCb" || e.fn === "https.requestDynCb"
+                  ? 2
+                  : e.fn === "http.requestAgentCb"
+                    ? 8
+                    : e.fn === "https.requestAgentCb"
+                      ? 10
+                      : 1
         ]?.type;
       let ok = cbT?.kind === "func" && cbT.ret.kind === "void" && cbT.params.length <= 1;
       if (ok && cbT?.kind === "func" && cbT.params.length === 1) {
@@ -5044,7 +5274,8 @@ function validateFunction(
       let ok = cbT?.kind === "func" && cbT.ret.kind === "void" && cbT.params.length <= 1;
       if (ok && cbT?.kind === "func" && cbT.params.length === 1) {
         const p = cbT.params[0]!;
-        if (e.fn === "stdin.onData") ok = p.kind === "bytes" && p.elem === "u8";
+        if (e.fn === "stdin.onData")
+          ok = (p.kind === "bytes" && p.elem === "u8") || p.kind === "string";
         else if (e.fn === "stdin.onError") ok = p.kind === "object" && p.className === "%Error";
         else ok = p.kind === "f64";
       }
@@ -5163,6 +5394,35 @@ function validateFunction(
       }
       return true;
     }
+    if (e.fn === "stream.dynNative" || e.fn === "stream.dynNativePipe") {
+      const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+      const side = e.args[1];
+      const className =
+        side?.kind === "numLit" ? (side.value === 1 ? "%Readable" : "%Writable") : null;
+      const ok =
+        def &&
+        className !== null &&
+        e.args[0]?.type.kind === "dyn" &&
+        def.arms.length === 2 &&
+        def.arms.some((a) => a.kind === "object" && a.className === className) &&
+        def.arms.some((a) => a.kind === "nullT");
+      if (!ok) err(`libCall ${e.fn} must return its side's stream class or null`, e.loc);
+      return true;
+    }
+    if (e.fn === "child.stdioStream") {
+      const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+      const slot = e.args[1];
+      const className =
+        slot?.kind === "numLit" ? (slot.value === 0 ? "%Writable" : "%Readable") : null;
+      const ok =
+        def &&
+        className !== null &&
+        def.arms.length === 2 &&
+        def.arms.some((a) => a.kind === "object" && a.className === className) &&
+        def.arms.some((a) => a.kind === "nullT");
+      if (!ok) err(`libCall ${e.fn} must return the stream class of its stdio slot or null`, e.loc);
+      return true;
+    }
     if (e.fn === "child.stdin" || e.fn === "child.stdout" || e.fn === "child.stderr") {
       const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
       const handleKind = e.fn === "child.stdin" ? "childWriter" : "childStream";
@@ -5183,7 +5443,44 @@ function validateFunction(
   }
 
   function checkLibSpecialCall(e: IrExpr & { kind: "libCall" }): boolean {
-    if (e.fn === "crypto.randomFillView" || e.fn === "crypto.randomFillViewRest") {
+    if (e.fn === "promise.fulfilledValue") {
+      const promise = e.args[0]?.type;
+      if (
+        promise?.kind !== "promise" ||
+        e.type.kind === "void" ||
+        isUnitType(e.type) ||
+        promise.inner.kind !== "void"
+      )
+        err(`libCall ${e.fn} must read a Promise<void> entry at a non-void type`, e.loc);
+      return true;
+    }
+    if (e.fn === "promise.allTuple") {
+      const [entries, build] = e.args;
+      if (
+        entries?.type.kind !== "array" ||
+        entries.type.elem.kind !== "promise" ||
+        entries.type.elem.inner.kind !== "void" ||
+        build?.kind !== "closure" ||
+        build.captures.length > 0 ||
+        build.type.kind !== "func" ||
+        e.type.kind !== "promise" ||
+        !typeEquals(build.type.ret, e.type.inner)
+      )
+        err(`libCall ${e.fn} must join Promise<void> entries into its builder's tuple`, e.loc);
+      return true;
+    }
+    if (e.fn === "als.bindCallback") {
+      // The bound function, at its closure argument's own type.
+      const fn = e.args[0]?.type;
+      if (fn?.kind !== "func" || !typeEquals(e.type, fn))
+        err(`libCall ${e.fn} must return its function argument's type`, e.loc);
+      return true;
+    }
+    if (
+      e.fn === "crypto.randomFillView" ||
+      e.fn === "crypto.randomFillViewRest" ||
+      e.fn === "crypto.getRandomValues"
+    ) {
       // The filled view is the result, at its own element type.
       const view = e.args[0]?.type;
       if (view?.kind !== "bytes" || !typeEquals(e.type, view)) {
@@ -5214,32 +5511,8 @@ function validateFunction(
       const callback = e.args[e.args.length - 1]?.type;
       if (callback?.kind !== "func") err(`libCall ${e.fn} callback must be a function`, e.loc);
     }
-    if (e.fn === "global.undefRead") {
-      // Always throws — the result type is whatever the declared type
-      // of the undefined global mapped to (never materialized).
-      return true;
-    }
-    if (
-      e.fn === "error.nodeThrow" ||
-      e.fn === "error.argTypeThrow" ||
-      e.fn === "error.propTypeThrow" ||
-      e.fn === "fs.mkdtempChk" ||
-      e.fn === "fs.readFileChk" ||
-      e.fn === "fs.opendirChk" ||
-      e.fn === "fs.watchFileChk" ||
-      e.fn === "fs.lchmodChk" ||
-      e.fn === "fs.readChk" ||
-      e.fn === "fs.streamOptsChk" ||
-      e.fn === "net.connectOptsChk" ||
-      e.fn === "tls.caCertsChk"
-    ) {
-      // Always throws — the result type is the replaced expression's
-      // own (never materialized; the global.undefRead pattern). The
-      // fs Chk ladders qualify: every validation failure throws
-      // Node's typed error, and a full pass throws the trailing
-      // compiler-rendered fence.
-      return true;
-    }
+    // Always throws: the result type is never materialized.
+    if (ALWAYS_THROW_LIB_FNS.has(e.fn)) return true;
     if (e.fn === "error.new" || e.fn === "error.newOptions") {
       // Which builtin the runtime constructs is named by the result type.
       if (!isBuiltinErrorObject(e.type)) {
@@ -5362,6 +5635,22 @@ function validateFunction(
       e.fn.startsWith("passthrough.") ||
       e.fn === "stream.destroy" ||
       e.fn === "stream.destroyErr" ||
+      e.fn === "stream.objectMode" ||
+      e.fn === "stream.decodeStrings" ||
+      e.fn === "stream.optionValues" ||
+      e.fn === "stream.duplexFromGen" ||
+      e.fn === "stream.duplexFromDyn" ||
+      e.fn === "stream.duplexifyReadable" ||
+      e.fn === "stream.duplexifyWritable" ||
+      e.fn === "stream.duplexifyPair" ||
+      e.fn === "stream.duplexFromPromise" ||
+      e.fn === "stream.duplexFromAsyncFn" ||
+      e.fn === "stream.duplexFromGenSignal" ||
+      e.fn === "stream.duplexFromAsyncFnSignal" ||
+      e.fn === "stream.setConstruct" ||
+      e.fn === "stream.replaceConstruct" ||
+      e.fn === "stream.setWritev" ||
+      e.fn === "stream.setWritevDefault" ||
       e.fn === "stream.iteratorClose" ||
       e.fn === "stream.prop" ||
       e.fn === "stream.errored" ||
@@ -5371,8 +5660,10 @@ function validateFunction(
       e.fn === "stream.pipelineDyn" ||
       e.fn === "stream.compose" ||
       e.fn === "stream.pipelineStages" ||
+      e.fn === "stream.composeStages" ||
       e.fn === "stream.pipelineStagesDyn" ||
       e.fn === "sp.pipelineStages" ||
+      e.fn === "sp.pipelineStagesOpts" ||
       e.fn === "stream.addAbortSignal" ||
       e.fn === "stream.addAbortSignalFn" ||
       e.fn === "stream.finishedOpts" ||
@@ -5409,6 +5700,38 @@ function validateFunction(
           if (e.args[i]!.type.kind !== "func") {
             err(`libCall ${e.fn} option callback ${i} must be a func`, e.loc);
           }
+        }
+        return true;
+      }
+      if (e.fn === "stream.duplexFromPromise") {
+        // Duplex.from(promise): (promise, box) → a Duplex.
+        if (e.args[0]?.type.kind !== "promise" || e.args[1]?.type.kind !== "func")
+          err(`libCall ${e.fn} takes a promise and its box helper`, e.loc);
+        if (!isStreamObject(e.type)) err(`libCall ${e.fn} must return a stream class`, e.loc);
+        return true;
+      }
+      if (
+        e.fn === "stream.duplexifyReadable" ||
+        e.fn === "stream.duplexifyWritable" ||
+        e.fn === "stream.duplexifyPair"
+      ) {
+        // Duplex.from over streams: (r), (w) or (r, w) → a Duplex.
+        const want = e.fn === "stream.duplexifyPair" ? 2 : 1;
+        if (e.args.length !== want || !e.args.every((a) => isStreamObject(a.type)))
+          err(`libCall ${e.fn} takes ${want} stream argument(s)`, e.loc);
+        if (!isStreamObject(e.type)) err(`libCall ${e.fn} must return a stream class`, e.loc);
+        return true;
+      }
+      if (
+        e.fn === "stream.duplexFromGen" ||
+        e.fn === "stream.duplexFromDyn" ||
+        e.fn === "stream.duplexFromAsyncFn" ||
+        e.fn === "stream.duplexFromGenSignal" ||
+        e.fn === "stream.duplexFromAsyncFnSignal"
+      ) {
+        // Duplex.from: (stage, source, helpers...) or (body) → a Duplex.
+        if (!isStreamObject(e.type)) {
+          err(`libCall ${e.fn} must return a stream class, got ${e.type.kind}`, e.loc);
         }
         return true;
       }
@@ -5482,25 +5805,44 @@ function validateFunction(
       if (
         e.fn === "stream.pipelineStages" ||
         e.fn === "stream.pipelineStagesDyn" ||
-        e.fn === "sp.pipelineStages"
+        e.fn === "sp.pipelineStages" ||
+        e.fn === "sp.pipelineStagesOpts" ||
+        e.fn === "stream.composeStages"
       ) {
-        // (n, at, k, flags, mask, s1..sn, stage1..stagek, (next, read,
-        // return)?, box?, (signal, abort)?[, cb]): flags bit 0 a source
-        // function, bits 1-2 the destination, bits 3/4/5 the groups.
-        const [n, at, k, flags] = e.args
+        // (n, k, positions, flags, mask, s1..sn, stage1..stagek,
+        // helpers..., box?, (signal, abort)?[, cb | end, signal?]):
+        // positions bit j marks stage j a function, flags bits 1-2 the
+        // destination, bit 5 the signal group, bit 6 the options' signal;
+        // helpers are three per pumped function run.
+        const [n, k, positions, flags] = e.args
           .slice(0, 4)
           .map((a) => (a?.kind === "numLit" ? a.value : -1));
-        const source = (flags! & 1) !== 0;
+        const total = n! + k!;
         const destKind = (flags! >> 1) & 3;
-        const groups = (flags! & 8 ? 3 : 0) + (flags! & 16 ? 1 : 0) + (flags! & 32 ? 2 : 0);
-        const cbArgs = e.fn === "sp.pipelineStages" ? 0 : 1;
+        let functions = 0;
+        for (let j = 0; j < total && j < 53; j++) {
+          if (Math.floor(positions! / 2 ** j) % 2 === 1) functions++;
+        }
+        const lastIsFunction = Math.floor(positions! / 2 ** (total - 1)) % 2 === 1;
+        const helperCount = 3 * pipelinePumpedRuns(total, positions!, flags!);
+        const groups = helperCount + (destKind >= 2 ? 1 : 0) + (flags! & 32 ? 2 : 0);
+        const cbArgs =
+          e.fn === "sp.pipelineStagesOpts"
+            ? 1 + (flags! & 64 ? 1 : 0)
+            : e.fn === "sp.pipelineStages" || e.fn === "stream.composeStages"
+              ? 0
+              : 1;
         if (
           flags! < 0 ||
           n! < 0 ||
           k! < 1 ||
-          (source ? at !== 0 : at! < 1) ||
-          (destKind === 0 ? at! + 0 >= n! : at! !== n!) ||
-          n! + k! < 2 ||
+          positions! < 1 ||
+          total > 52 ||
+          positions! >= 2 ** total ||
+          functions !== k ||
+          (destKind === 3 && e.fn === "stream.composeStages") ||
+          (destKind !== 0) !== lastIsFunction ||
+          total < 2 ||
           e.args.length !== 5 + n! + k! + groups + cbArgs
         ) {
           err(`libCall ${e.fn} count/arity mismatch`, e.loc);
@@ -5517,7 +5859,7 @@ function validateFunction(
             err(`libCall ${e.fn} stage function ${i} must be a func`, e.loc);
         }
         at2 += k!;
-        const helpers = (flags! & 8 ? 3 : 0) + (flags! & 16 ? 1 : 0);
+        const helpers = helperCount + (destKind >= 2 ? 1 : 0);
         for (let i = at2; i < at2 + helpers; i++) {
           if (e.args[i]?.type.kind !== "func")
             err(`libCall ${e.fn} helper ${i} must be a func`, e.loc);
@@ -5527,11 +5869,18 @@ function validateFunction(
           if (e.args[at2]?.type.kind !== "dyn" || e.args[at2 + 1]?.type.kind !== "func")
             err(`libCall ${e.fn} signal and abort must be a dyn and a func`, e.loc);
         }
-        if (cbArgs) {
+        if (e.fn === "sp.pipelineStagesOpts") {
+          const tail = e.args.slice(e.args.length - cbArgs);
+          if (tail[0]?.type.kind !== "bool" || (cbArgs > 1 && tail[1]?.type.kind !== "dyn"))
+            err(`libCall ${e.fn} end and signal must be a bool and a dyn`, e.loc);
+          if (e.type.kind !== "promise") err(`libCall ${e.fn} must return a promise`, e.loc);
+        } else if (cbArgs) {
           const cbK = e.args[e.args.length - 1]?.type.kind;
           if (e.fn === "stream.pipelineStages" ? cbK !== "func" : cbK !== "dyn") {
             err(`libCall ${e.fn} callback has the wrong kind`, e.loc);
           }
+          if (!isStreamObject(e.type)) err(`libCall ${e.fn} must return a stream`, e.loc);
+        } else if (e.fn === "stream.composeStages") {
           if (!isStreamObject(e.type)) err(`libCall ${e.fn} must return a stream`, e.loc);
         } else if (e.type.kind !== "promise") {
           err(`libCall ${e.fn} must return a promise`, e.loc);
@@ -5567,6 +5916,8 @@ function validateFunction(
         e.fn === "readable.opMap" ||
         e.fn === "readable.opFilter" ||
         e.fn === "readable.opFlatMap" ||
+        e.fn === "readable.opFlatMapAsyncGen" ||
+        e.fn === "readable.opFlatMapSyncGen" ||
         e.fn === "readable.opDrop" ||
         e.fn === "readable.opTake"
       ) {
@@ -5575,13 +5926,30 @@ function validateFunction(
         }
         return true;
       }
-      if (e.fn === "readable.opReduce") {
+      if (e.fn === "readable.opReduce" || e.fn === "readable.opReduceSignal") {
         const inner = e.type.kind === "promise" ? e.type.inner : null;
         const kind = e.args[5]?.kind === "numLit" ? e.args[5].value : -1;
         const want = [DYN, F64, BOOL, STRING][kind];
         if (!isStreamObject(e.args[0]?.type) || !inner || !want || !typeEquals(inner, want)) {
           err(`libCall readable.opReduce must return the promise its kind names`, e.loc);
         }
+        if (e.fn === "readable.opReduceSignal" && e.args[6]?.type.kind !== "func")
+          err(`libCall ${e.fn} takes ac.abort() as a closure`, e.loc);
+        return true;
+      }
+      if (e.fn === "readable.opOnceOptions") {
+        if (e.args.length !== 0 || e.type.kind !== "dyn")
+          err(`libCall ${e.fn} takes no arguments`, e.loc);
+        return true;
+      }
+      if (
+        e.fn === "readable.opSignalList" ||
+        e.fn === "readable.opSignalOpts" ||
+        e.fn === "readable.opSignalOf"
+      ) {
+        // The operator callbacks' { signal }: (dyn) → dyn.
+        if (e.args.length !== 1 || e.args[0]?.type.kind !== "dyn" || e.type.kind !== "dyn")
+          err(`libCall ${e.fn} takes and returns a checked-dynamic value`, e.loc);
         return true;
       }
       if (e.fn === "readable.fromDone") {
@@ -5641,6 +6009,11 @@ function validateFunction(
         e.fn === "writable.end" ||
         e.fn === "readable.setEncoding" ||
         e.fn === "readable.pushEncoding" ||
+        e.fn === "stream.objectMode" ||
+        e.fn === "stream.decodeStrings" ||
+        e.fn === "stream.optionValues" ||
+        e.fn === "writable.writeEncoding" ||
+        e.fn === "writable.setDefaultEncoding" ||
         e.fn === "stream.destroy" ||
         e.fn === "stream.destroyErr" ||
         e.fn === "stream.iteratorClose"
@@ -5650,9 +6023,9 @@ function validateFunction(
         }
         return true;
       }
-      if (e.fn === "readable.pipe") {
+      if (e.fn === "readable.pipe" || e.fn === "readable.pipeGeneral") {
         if (!isStreamObject(e.args[1]?.type) || !typeEquals(e.type, e.args[1]!.type)) {
-          err(`libCall readable.pipe must return its destination's type`, e.loc);
+          err(`libCall ${e.fn} must return its destination's type`, e.loc);
         }
         return true;
       }
@@ -5692,6 +6065,8 @@ function validateFunction(
       e.fn !== "emitter.setDefaultMax" &&
       e.fn !== "emitter.setDefaultMaxChk" &&
       e.fn !== "emitter.getDefaultMax" &&
+      e.fn !== "emitter.esmDefaultMax" &&
+      e.fn !== "emitter.esmSync" &&
       e.fn !== "emitter.errorMonitor" &&
       e.fn !== "emitter.checkListener"
     ) {
@@ -5723,6 +6098,7 @@ function validateFunction(
         e.fn === "emitter.off" ||
         e.fn === "emitter.onDyn" ||
         e.fn === "emitter.onFlex" ||
+        e.fn === "emitter.onAny" ||
         e.fn === "stream.onDyn" ||
         e.fn === "emitter.offDyn" ||
         e.fn === "emitter.onData" ||
@@ -5754,8 +6130,10 @@ function validateFunction(
         const chunkT = e.args[2]?.type;
         const ok =
           chunkT !== undefined &&
-          ((chunkT.kind === "bytes" && chunkT.elem === "u8") || chunkT.kind === "string");
-        if (!ok) err(`libCall emitter.emitData chunk must be bytes<u8> or string`, e.loc);
+          ((chunkT.kind === "bytes" && chunkT.elem === "u8") ||
+            chunkT.kind === "string" ||
+            chunkT.kind === "dyn");
+        if (!ok) err(`libCall emitter.emitData chunk must be bytes<u8>, string or dyn`, e.loc);
         if (e.type.kind !== "bool") err(`libCall emitter.emitData must be bool`, e.loc);
         return true;
       }
@@ -5777,14 +6155,27 @@ function validateFunction(
         if (!ok) err(`libCall emitter.listeners must return a func array`, e.loc);
         return true;
       }
-      if (e.fn === "emitter.emitFlex") {
+      if (e.fn === "emitter.emitFlex" || e.fn === "emitter.emitAny") {
         if (e.args.slice(2).some((arg) => arg.type.kind !== "dyn")) {
-          err("libCall emitter.emitFlex payloads must be checked-dynamic", e.loc);
+          err(`libCall ${e.fn} payloads must be checked-dynamic`, e.loc);
+        }
+      }
+      if (e.fn === "emitter.emitMixed") {
+        const count = e.args[2];
+        const k = count?.kind === "numLit" ? count.value : -1;
+        if (!Number.isInteger(k) || k < 0 || e.args.length < 3 + k) {
+          err("libCall emitter.emitMixed needs a literal argument count", e.loc);
+        } else if (e.args.slice(3, 3 + k).some((arg) => arg.type.kind !== "dyn")) {
+          err("libCall emitter.emitMixed untyped arguments must be checked-dynamic", e.loc);
         }
       }
       if (
         e.fn === "emitter.emit" ||
         e.fn === "emitter.emitFlex" ||
+        e.fn === "emitter.emitAny" ||
+        e.fn === "emitter.emitMixed" ||
+        e.fn === "emitter.hasTyped" ||
+        e.fn === "emitter.listenersDyn" ||
         e.fn === "emitter.count" ||
         e.fn === "emitter.getMax" ||
         e.fn === "emitter.ctor" ||
@@ -5827,6 +6218,11 @@ function validateFunction(
       case "dynCheck": {
         checkExpr(e.value);
         expectType(e.value, DYN, "dynCheck operand");
+        if (
+          e.origin !== undefined &&
+          (!Number.isInteger(e.origin) || e.origin < 0 || e.origin >= declOriginCount)
+        )
+          err(`dynCheck origin ${e.origin} is not an index of declOrigins`, e.loc);
         // The target drives the emitted validator/builder: non-dyn,
         // non-void, JSON-representable (closures/class instances can never
         // be found inside a JSON dyn — the frontend rejects those casts).
@@ -6031,15 +6427,10 @@ function validateFunction(
           }
         } else {
           // throw: any exception-representable payload (the throw
-          // statement's rule). Date cannot retain its object kind in the
-          // untyped exception cell.
+          // statement's rule).
           if (e.arg === null) {
             err("genResume throw with no payload", e.loc);
-          } else if (
-            e.arg.type.kind === "void" ||
-            e.arg.type.kind === "caught" ||
-            e.arg.type.kind === "date"
-          ) {
+          } else if (e.arg.type.kind === "void" || e.arg.type.kind === "caught") {
             err(`genResume throw of a ${e.arg.type.kind} value`, e.loc);
           }
         }
@@ -6133,7 +6524,10 @@ function validateFunction(
           if (expectsArg && (rp.params.length !== 1 || !typeEquals(rp.params[0]!, inner))) {
             err(`newPromise resolve param must be (${inner.kind}) => void`, e.loc);
           }
-          if (!expectsArg && rp.params.length !== 0) {
+          // A Promise<never> executor types resolve as `(value: never) =>
+          // void` (one parameter over a void inner): the void resolve never
+          // reads an argument, and a never value cannot be produced.
+          if (!expectsArg && rp.params.length > 1) {
             err("newPromise<void> resolve takes no argument", e.loc);
           }
         }
@@ -6477,11 +6871,7 @@ function validateFunction(
         checkExpr(s.value);
         // dyn throws are allowed: the dyn node rides the REF cell arm by
         // reference (the JS-lane `throw err` of a dyn argument).
-        if (
-          s.value.type.kind === "void" ||
-          s.value.type.kind === "caught" ||
-          s.value.type.kind === "date"
-        ) {
+        if (s.value.type.kind === "void" || s.value.type.kind === "caught") {
           err(`throw of a ${s.value.type.kind} value`, s.loc);
         }
         break;

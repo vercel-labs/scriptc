@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { MBEDTLS_VERSION, QJS_COMMIT, ZLIB_VERSION } from "../vendor-inputs.js";
+import { BROTLI_VERSION, MBEDTLS_VERSION, QJS_COMMIT, ZLIB_VERSION } from "../vendor-inputs.js";
 import { stableTestMemo } from "./session.js";
 
 const implementationPath = fileURLToPath(import.meta.url);
@@ -53,6 +53,7 @@ export const EXECUTABLE_RUNTIME_SOURCES = [
   "scr_object.c",
   "scr_union.c",
   "scr_exception.c",
+  "scr_unwind.c",
   "scr_error.c",
   "scr_console.c",
   "scr_lib.c",
@@ -69,8 +70,13 @@ export const EXECUTABLE_RUNTIME_SOURCES = [
   "scr_cycle.c",
   "scr_publish.c",
   "scr_region.c",
+  "scr_arena.c",
   "scr_itable.c",
+  "scr_slots.c",
   "scr_alloc.c",
+  "scr_cipher_info.c",
+  "scr_ieee754.c",
+  "scr_glibc_math.c",
 ] as const;
 
 export function runtimeSrcDir(): string {
@@ -132,6 +138,7 @@ async function runtimeFingerprintFresh(rtDir: string): Promise<string> {
     .update(QJS_COMMIT)
     .update(MBEDTLS_VERSION)
     .update(ZLIB_VERSION)
+    .update(BROTLI_VERSION)
     .update("\0backend-recipe\0");
   for (const path of NATIVE_RECIPE_IMPLEMENTATION_PATHS) {
     h.update(basename(path))
@@ -162,6 +169,7 @@ async function runtimeFingerprintInputGroups(
       { label: "quickjs-ng", dir: join(rtDir, "..", "vendor", "quickjs-ng") },
       { label: "mbedtls", dir: join(rtDir, "..", "vendor", "mbedtls") },
       { label: "zlib", dir: join(rtDir, "..", "vendor", "zlib") },
+      { label: "brotli", dir: join(rtDir, "..", "vendor", "brotli", "c") },
       { label: "curl", dir: join(rtDir, "..", "vendor", "curl") },
     ].map(async (group) => {
       const names = (await nativeSourceFiles(group.dir, true))

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/checked-union-record-assertions.ts"
+ ],
+ "diags": []
+}

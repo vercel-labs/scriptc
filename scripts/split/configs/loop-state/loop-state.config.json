@@ -1,0 +1,29 @@
+{
+  "module": "packages/compiler/src/backend/llvm/emitter.ts",
+  "class": "LlEmitter",
+  "dir": "packages/compiler/src/backend/llvm",
+  "create": {
+    "emitter-state.ts": "emitter-state.template",
+    "loop-state.ts": "loop-state.template"
+  },
+  "groups": [
+    {
+      "file": "loop-state.ts",
+      "key": "LOOPS",
+      "interfaceName": "LoopState",
+      "fields": ["unaliasedArrays", "denseLoopsEnabled", "denseLoopEntries", "denseLoop", "countedLoopsEnabled", "byteWindowsEnabled", "byteWindowEntries", "bytesLoopVersionsEnabled", "bytesLoopVersioning", "bytesLoopEntries", "bytesLoopFunction", "provenCountedGuards"]
+    }
+  ],
+  "replacements": [
+    { "file": "emitter.ts", "find": "export class LlEmitter {\n", "replace": "export class LlEmitter {\n  /** Per-feature state (emitter-state.ts), indexed by each key's slot. */\n  readonly moduleStates: unknown[] = [];\n" },
+    { "file": "emitter.ts", "find": "import { type DenseArrayLoop } from \"./dense-array-loops.js\";\n", "replace": "" },
+    { "file": "emitter.ts", "find": "    const initialized = LOOPS.of(this).bytesLoopEntries.get(s);\n", "replace": "    const initialized = LOOPS.of(this).bytesLoopEntries!.get(s);\n" },
+    { "file": "emit-statements.ts", "find": "              ? LOOPS.of(emitter).denseLoop.range\n", "replace": "              ? LOOPS.of(emitter).denseLoop!.range\n", "count": 2 },
+    { "file": "emit-function.ts", "find": "  LOOPS.of(emitter).unaliasedArrays = findUnaliasedLocalArrays(fn);\n", "replace": "" },
+    { "file": "emit-function.ts", "find": "  LOOPS.of(emitter).countedLoopsEnabled = emitter.debug === null && !fn.async && !fn.generator;\n", "replace": "  beginFunctionLoops(emitter, fn, numericFn);\n" },
+    { "file": "emit-function.ts", "find": "  LOOPS.of(emitter).byteWindowsEnabled = LOOPS.of(emitter).countedLoopsEnabled;\n  LOOPS.of(emitter).bytesLoopVersionsEnabled = LOOPS.of(emitter).countedLoopsEnabled;\n  LOOPS.of(emitter).bytesLoopEntries = null;\n  LOOPS.of(emitter).bytesLoopFunction = fn;\n  LOOPS.of(emitter).denseLoopsEnabled = LOOPS.of(emitter).countedLoopsEnabled;\n  LOOPS.of(emitter).denseLoop = null;\n  LOOPS.of(emitter).denseLoopEntries =\n    LOOPS.of(emitter).denseLoopsEnabled && numericFn.locals.some((l) => l.type.kind === \"array\")\n      ? findInitializedByteLoopBindings(fn)\n      : new Map();\n  LOOPS.of(emitter).byteWindowEntries =\n    LOOPS.of(emitter).byteWindowsEnabled && numericFn.locals.some((l) => l.type.kind === \"bytes\")\n      ? findInitializedByteLoopBindings(fn)\n      : new Map();\n", "replace": "" },
+    { "file": "emit-function.ts", "find": "import { LOOPS } from \"./loop-state.js\";\n", "replace": "import { beginFunctionLoops, LOOPS } from \"./loop-state.js\";\n" },
+    { "file": "emit-function.ts", "find": "import { findUnaliasedLocalArrays } from \"../../ir/array-length-stability.js\";\n", "replace": "" },
+    { "file": "emit-function.ts", "find": "import { findInitializedByteLoopBindings } from \"./byte-windows.js\";\n", "replace": "" }
+  ]
+}

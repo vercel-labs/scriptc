@@ -1,0 +1,9 @@
+{
+  "private": true,
+  "type": "module",
+  "scriptc": {
+    "packages": {
+      "encoding": "unloaded"
+    }
+  }
+}

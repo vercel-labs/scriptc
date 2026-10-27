@@ -9,6 +9,7 @@ import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 import {
   sandboxBootstrapCommand,
+  sandboxNativeReference,
   sandboxTestSourceConfig,
   sandboxRunnerConfig,
   sandboxEffectWorkerAllocation,
@@ -112,6 +113,38 @@ const hostInvariantFiles = [
   "packages/runtime/test/tonumber.test.ts",
   "packages/runtime/test/url.test.ts",
 ];
+// Native artifacts a lane needs and every source path their builds read.
+// Output paths are excluded from the input comparison by these names.
+const NATIVE_OUTPUT_NAMES = [
+  "bin",
+  "artifacts",
+  "runtime-pack.json",
+  ".runtime-pack-*",
+  "node_modules",
+  "dist",
+  "build",
+  ".cache",
+];
+const LLVM_HELPER_INPUTS = ["native/llvm-codegen", "packages/llvm-linux-x64-gnu"];
+const NATIVE_ARTIFACTS = {
+  llvm: {
+    inputs: LLVM_HELPER_INPUTS,
+    outputs: ["packages/llvm-linux-x64-gnu/bin/scriptc-llvm-codegen"],
+  },
+  runtime: {
+    inputs: [
+      ...LLVM_HELPER_INPUTS,
+      "packages/runtime",
+      "packages/runtime-pack-common",
+      "packages/runtime-linux-x64-gnu",
+      "packages/runtime-darwin-arm64/scripts",
+    ],
+    outputs: [
+      "packages/runtime-linux-x64-gnu/artifacts",
+      "packages/runtime-linux-x64-gnu/runtime-pack.json",
+    ],
+  },
+};
 const hostSchedule = sandboxHostSchedule(process.platform, hostInvariantFiles);
 const nativeHostInvariantFiles = hostSchedule.localInvariantFiles;
 const remoteWorkspaceReset = workspaceResetCommand("/workspace");
@@ -188,6 +221,8 @@ Environment:
   VERCEL_TOKEN              Access-token fallback; also set VERCEL_TEAM_ID + VERCEL_PROJECT_ID
   SCRIPTC_SANDBOX_IMAGE     Optional fully qualified VCR image (default: vercel/sandbox/universal)
   SCRIPTC_SANDBOX_SNAPSHOT  Optional prepared snapshot with the pinned toolchain (exclusive with IMAGE)
+  SCRIPTC_SANDBOX_NATIVE_REFERENCE  Optional built checkout inside the snapshot; its LLVM helper
+                            and runtime pack are reused when their inputs are identical
   SCRIPTC_SANDBOX_VCPUS     vCPUs per sandbox (default: 8)
   SCRIPTC_SANDBOX_TIMEOUT   sandbox and command timeout (default: 45m)
   SCRIPTC_TEST_WORKERS      Vitest workers per sandbox (default: 4)
@@ -197,6 +232,7 @@ Environment:
 }
 
 const sourceConfig = sandboxTestSourceConfig();
+const nativeReference = sandboxNativeReference();
 const bootstrapCommand = sandboxBootstrapCommand(sourceConfig.prepared);
 const vercelConfig = sandboxVercelConfig();
 const vercelProcessEnv = sandboxVercelEnvironment(vercelConfig);
@@ -496,6 +532,42 @@ const execIn = async (
   }
 };
 
+/** The command that provides one native artifact (`llvm`: the Linux LLVM
+ * helper, `runtime`: the Linux runtime pack). It builds the artifact unless
+ * SCRIPTC_SANDBOX_NATIVE_REFERENCE names a built checkout inside the Sandbox
+ * (a prepared snapshot's) whose inputs for that artifact are identical; then
+ * it copies the reference's artifact. The runtime build runs the helper, so
+ * its inputs include the helper's. */
+function nativeArtifactCommand(artifact) {
+  const pkg =
+    artifact === "llvm" ? "@scriptc/llvm-linux-x64-gnu" : "@scriptc/runtime-linux-x64-gnu";
+  if (nativeReference === undefined) return ["pnpm", ["--filter", pkg, "build:native"]];
+  const build = `pnpm --filter ${pkg} build:native`;
+  const { inputs, outputs } = NATIVE_ARTIFACTS[artifact];
+  const excludes = NATIVE_OUTPUT_NAMES.map((name) => `-x '${name}'`).join(" ");
+  const ref = nativeReference;
+  const script = [
+    "set -eu",
+    `ref='${ref}'`,
+    "same=1",
+    ...outputs.map((output) => `[ -e "$ref/${output}" ] || same=0`),
+    ...inputs.map(
+      (input) =>
+        `[ "$same" = 0 ] || diff -rq ${excludes} "$ref/${input}" "${input}" >/dev/null 2>&1 || same=0`,
+    ),
+    'if [ "$same" = 1 ]; then',
+    ...outputs.map(
+      (output) =>
+        `  rm -rf "${output}" && mkdir -p "$(dirname "${output}")" && cp -R "$ref/${output}" "${output}"`,
+    ),
+    `  echo "reused the ${artifact} artifact from $ref: identical inputs"`,
+    "else",
+    `  ${build}`,
+    "fi",
+  ].join("\n");
+  return ["sh", ["-c", script]];
+}
+
 async function preflight() {
   console.log("Sandbox preflight:");
   console.log(`  auth:  ${vercelConfig.authSource}`);
@@ -582,7 +654,10 @@ async function createWorker(worker) {
     vcpus,
     "--non-persistent",
   ];
-  for (let attempt = 1; attempt <= 2; attempt++) {
+  // Sandbox creation is rate limited per team in vCPUs per minute, so a
+  // large fan-out (many shards, large Sandboxes) retries with backoff.
+  const attempts = 6;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
       await vercel(args, {
         idleTimeoutMs: 60_000,
@@ -598,8 +673,12 @@ async function createWorker(worker) {
         await execIn(worker, "true", [], {}, "create status", 60_000, "/");
         return;
       } catch (error) {
-        if (attempt === 2) throw error;
-        console.warn(`[${worker.label}] Sandbox is not reachable; retrying creation once...`);
+        if (attempt === attempts) throw error;
+        const delay = 15_000 * attempt;
+        console.warn(
+          `[${worker.label}] Sandbox is not reachable; retrying creation in ${delay / 1000}s...`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
       }
     }
   }
@@ -781,19 +860,13 @@ try {
         // including TypeScript's incremental metadata. Rebuild both together.
         await execIn(worker, "pnpm", ["build:fresh"], {}, "", 2 * 60_000);
         // Workspace builds deliberately do not rebuild packaged native artifacts.
-        // Every remote lane needs the Linux helper and runtime from this worktree.
+        // Every remote lane needs the Linux helper and runtime from this worktree,
+        // built from its sources or reused from a reference checkout whose
+        // native inputs are identical.
+        await execIn(worker, ...nativeArtifactCommand("llvm"), {}, "LLVM helper", 5 * 60_000);
         await execIn(
           worker,
-          "pnpm",
-          ["--filter", "@scriptc/llvm-linux-x64-gnu", "build:native"],
-          {},
-          "LLVM helper",
-          5 * 60_000,
-        );
-        await execIn(
-          worker,
-          "pnpm",
-          ["--filter", "@scriptc/runtime-linux-x64-gnu", "build:native"],
+          ...nativeArtifactCommand("runtime"),
           { CC: "zig", AR: "zig" },
           "runtime pack",
           5 * 60_000,

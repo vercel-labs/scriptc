@@ -1,0 +1,8 @@
+jsx-preserve/view.tsx:9:21 - error SC1090: JSX with "jsx": "preserve" is not supported: that setting keeps JSX in the output instead of lowering it to calls
+
+   8 | }
+   9 | export const view = <p>kept as JSX</p>;
+     |                     ^~~~~~~~~~~~~~~~~~
+  10 | 
+
+  hint: set "jsx" to "react", "react-jsx" or "react-jsxdev" in the project tsconfig

@@ -760,3 +760,154 @@ test("a parameter stored as its last use takes the owned convention", () => {
   const passed = ctor([{ kind: "exprStmt", expr: call("use", [ref("item", cell)]), loc }]);
   expect(analyze(passed).borrowed.get("%Box.constructor")).toEqual(new Set([0, 1]));
 });
+
+test("a wrap into a pointer union forwards the wrapped binding to the callee's parameter", () => {
+  const wrap = (id: string): IrExpr => ({
+    kind: "unionWrap",
+    unionId: "optional",
+    tag: 0,
+    value: ref(id, record),
+    type: optional,
+    loc,
+  });
+  const leaf = helper("leaf");
+  const outer = helper("outer");
+  outer.params[0]!.type = outer.locals[0]!.type = record;
+  outer.locals.push(local("cell", record));
+  outer.body = [
+    {
+      kind: "varDecl",
+      localId: "cell",
+      init: { kind: "recordLit", fields: [], type: record, loc },
+      loc,
+    },
+    { kind: "exprStmt", expr: call("leaf", [wrap("value")]), loc },
+    ret(call("leaf", [wrap("cell")])),
+  ];
+  const functions = new Map([leaf, outer].map((fn) => [fn.name, fn]));
+  const analyzeWith = (pointer: boolean) =>
+    analyzeCallLifetimes(
+      functions,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => pointer,
+    );
+  // A boxed union builds a new box around the payload: a whole-value use.
+  expect(analyzeWith(false).parameters.get("outer")).toBeUndefined();
+  expect(analyzeWith(false).locals.get("outer")).toEqual(new Set());
+  // A pointer union passes the payload pointer itself.
+  expect(analyzeWith(true).parameters.get("outer")).toEqual(new Set([0]));
+  expect(analyzeWith(true).locals.get("outer")).toEqual(new Set(["cell"]));
+  // A callee that keeps its parameter keeps the wrapped binding too.
+  leaf.body.push(ret(ref("value")));
+  expect(analyzeWith(true).parameters.get("outer")).toBeUndefined();
+  expect(analyzeWith(true).locals.get("outer")).toEqual(new Set());
+});
+
+test("a pointer-wrapped binding needs a callee that keeps the narrowed payload in place", () => {
+  const wrapCell: IrExpr = {
+    kind: "unionWrap",
+    unionId: "optional",
+    tag: 0,
+    value: ref("cell", record),
+    type: optional,
+    loc,
+  };
+  const outer = helper("outer", []);
+  outer.locals.push(local("cell", record));
+  outer.body = [
+    {
+      kind: "varDecl",
+      localId: "cell",
+      init: { kind: "recordLit", fields: [], type: record, loc },
+      loc,
+    },
+    ret(call("leaf", [wrapCell])),
+  ];
+  const read = (value: IrExpr): IrExpr => ({
+    kind: "recordGet",
+    obj: value,
+    shapeId: "cell",
+    field: "x",
+    type: F64,
+    loc,
+  });
+  const keeps = (leaf: IrFunction, ...more: IrFunction[]): boolean => {
+    const result = analyzeCallLifetimes(
+      new Map([outer, leaf, ...more].map((fn) => [fn.name, fn])),
+      (className) => className === "Node",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      () => true,
+    );
+    return result.locals.get("outer")?.has("cell") !== true;
+  };
+  const leafWith = (body: IrStmt[]): IrFunction => ({ ...helper("leaf"), body });
+  // Tag tests and field reads of the narrowed payload leave it in place.
+  expect(keeps(leafWith([{ kind: "exprStmt", expr: tag("value"), loc }]))).toBe(false);
+  expect(keeps(leafWith([ret(read(narrow("value")))]))).toBe(false);
+  // So do field reads through a checked narrowing, which throws on the
+  // other arm (`value.x` of a `T | undefined` parameter).
+  const checked: IrExpr = {
+    kind: "ternary",
+    cond: tag("value"),
+    then: { kind: "libCall", fn: "error.nodeThrow", args: [], type: record, loc },
+    else_: narrow("value"),
+    type: record,
+    loc,
+  };
+  expect(keeps(leafWith([ret(read(checked))]))).toBe(false);
+  // Returning it keeps the payload.
+  const returnsChecked = leafWith([ret(checked)]);
+  returnsChecked.returnType = record;
+  expect(keeps(returnsChecked)).toBe(true);
+  // Returning the narrowed payload, or a narrowed nullish read, keeps it,
+  // although the union itself is only projected.
+  const returned = leafWith([ret(narrow("value"))]);
+  returned.returnType = record;
+  expect(analyze(returned).parameters.get("leaf")).toEqual(new Set([0]));
+  expect(keeps(returned)).toBe(true);
+  const defaulted = leafWith([
+    ret({ kind: "nullish", left: ref("value"), right: ref("other", record), type: record, loc }),
+  ]);
+  defaulted.locals.push(local("other", record));
+  expect(keeps(defaulted)).toBe(true);
+  // So does a nullable-pointer field store of the union.
+  const self: IrType = { kind: "object", className: "Node" };
+  const stored = leafWith([
+    {
+      kind: "fieldSet",
+      obj: ref("this", self),
+      className: "Node",
+      field: "next",
+      value: ref("value"),
+      loc,
+    },
+  ]);
+  stored.params = [{ localId: "value", name: "value", type: optional }];
+  stored.locals.push(local("this", self));
+  expect(keeps(stored)).toBe(true);
+  // A narrowed payload passed on, or the union passed on, is in place when
+  // the next callee keeps it in place.
+  const inner = (body: IrStmt[], type: IrType = record): IrFunction => {
+    const fn = helper("inner");
+    fn.params[0]!.type = fn.locals[0]!.type = type;
+    fn.body = body;
+    return fn;
+  };
+  const passNarrowed = leafWith([ret(call("inner", [narrow("value")]))]);
+  expect(keeps(passNarrowed, inner([ret(read(ref("value", record)))]))).toBe(false);
+  const returnsRecord = inner([ret(ref("value", record))]);
+  returnsRecord.returnType = record;
+  expect(keeps(passNarrowed, returnsRecord)).toBe(true);
+  const passUnion = leafWith([ret(call("inner", [ref("value")]))]);
+  expect(keeps(passUnion, inner([ret(read(narrow("value")))], optional))).toBe(false);
+  const innerReturned = inner([ret(narrow("value"))], optional);
+  innerReturned.returnType = record;
+  expect(keeps(passUnion, innerReturned)).toBe(true);
+});

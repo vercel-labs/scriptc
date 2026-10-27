@@ -1,0 +1,8 @@
+tls-sni-callback-fences.ts:13:54 - error SC2020: 'tls.createServer with SNICallback and options the runtime walk reads' is part of the standard library types but has no scriptc lowering yet
+
+  12 | // SNICallback with options the runtime options walk reads.
+  13 | tls.createServer({ cert, key, ALPNProtocols: ["h2"], SNICallback: makeSni });
+     |                                                      ^~~~~~~~~~~~~~~~~~~~
+  14 | 
+
+  hint: SNICallback lowers with cert and key; ALPNProtocols, minVersion, maxVersion, requestCert, ca and the validated options are not combined with it yet

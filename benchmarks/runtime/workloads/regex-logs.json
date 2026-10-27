@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/regex-logs.ts",
+  "args": [
+    "1"
+  ]
+}

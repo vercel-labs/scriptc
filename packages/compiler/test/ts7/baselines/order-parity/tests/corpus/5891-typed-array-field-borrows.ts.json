@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5891-typed-array-field-borrows.ts"
+ ],
+ "diags": []
+}

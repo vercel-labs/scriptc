@@ -1,3 +1,5 @@
+import { iterableGeneratorArm } from "./iterable-values.js";
+import { mapAsyncGeneratorAnnotation } from "../type-mapper.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
@@ -9,11 +11,15 @@ import {
   VOID,
   isUnitType,
   typeEquals,
+  typeKey,
 } from "../../ir/ir.js";
 import { isJsSourceFile } from "../program.js";
 import { PoisonError, dynFallbackType } from "./lowerer.js";
 import { functionCanReturnUndefined } from "../function-completion.js";
+import { jsBindingAppendsOnly, jsBindingHasOpenWrites } from "./lower-stmts.js";
 import type { FnCtx } from "./function-context.js";
+import { constituentTypes } from "../ts7/checker.js";
+import { returnsGuessedOverloadValue } from "./overload-choice.js";
 
 /** Keep the conservative completion rule shared by return construction
  * and inference. Nested control flow may still make completion unreachable. */
@@ -59,6 +65,11 @@ export function appendImplicitUndefinedReturn(
 ): void {
   if (bodyReturn.kind === "void") return;
   if (!bodyMayFallThrough(body)) return;
+  // An async generator that falls off its end completes without awaiting
+  // anything: its request settles as the body returns, where `return x`
+  // takes a turn to await x.
+  let settled = false;
+  if (lowerer.ctx.isAsync === true && lowerer.ctx.generator) settled = true;
   // A DYN body that can complete without returning (a JS function whose
   // guarded return may not run — mustSucceed's `if (typeof fn ===
   // 'function') return fn.apply(...)`): JS completes with undefined —
@@ -67,6 +78,7 @@ export function appendImplicitUndefinedReturn(
     body.push({
       kind: "return",
       value: dynUndefinedExpr(loc),
+      ...(settled ? { awaited: true as const } : {}),
       loc,
     });
     return;
@@ -74,7 +86,7 @@ export function appendImplicitUndefinedReturn(
   if (bodyReturn.kind === "union") {
     const value = lowerer.wrappedUndefined(bodyReturn, loc);
     if (value) {
-      body.push({ kind: "return", value, loc });
+      body.push({ kind: "return", value, ...(settled ? { awaited: true as const } : {}), loc });
       return;
     }
     // no undefined arm: the trap below stands in, exactly like non-unions
@@ -91,8 +103,8 @@ export function appendImplicitUndefinedReturn(
 
 /** Whether the source explicitly documents a return contract. */
 export function hasExplicitJsDocReturn(decl: ts.SignatureDeclaration): boolean {
-  const sourceFile = decl.getSourceFile();
-  return /@returns?\b/.test(sourceFile.text.slice(decl.pos, decl.getStart(sourceFile)));
+  const sourceFile = ts.getSourceFileOfNode(decl);
+  return /@returns?\b/.test(sourceFile.text.slice(decl.pos, ts.tokenStartOfNode(decl)));
 }
 
 export function promiseCarriesDyn(lowerer: Lowerer, type: IrType): boolean {
@@ -116,6 +128,32 @@ export function producesConstructor(lowerer: Lowerer, type: ts.Type): boolean {
   return false;
 }
 
+/** Whether a return of `decl` itself (not of a nested function) is a bare
+ * read of a JavaScript variable whose writes the checker does not
+ * constrain. A string that is only appended to stays a string. */
+function returnsOpenJsBinding(lowerer: Lowerer, decl: ts.SignatureDeclaration): boolean {
+  let open = false;
+  const opens = (value: ts.Expression | undefined): boolean => {
+    while (value && ts.isParenthesizedExpression(value)) value = value.expression;
+    if (!value || !ts.isIdentifier(value)) return false;
+    const binding = lowerer.resolveValueSymbol(value)?.valueDeclaration;
+    return (
+      binding !== undefined &&
+      ts.isVariableDeclaration(binding) &&
+      jsBindingHasOpenWrites(lowerer, binding) &&
+      !jsBindingAppendsOnly(lowerer, binding)
+    );
+  };
+  const scan = (node: ts.Node): void => {
+    if (open || (node !== decl && ts.isFunctionLike(node))) return;
+    if (ts.isReturnStatement(node) && opens(node.expression)) open = true;
+    ts.forEachChild(node, scan);
+  };
+  if (ts.isArrowFunction(decl) && decl.body && !ts.isBlock(decl.body)) open = opens(decl.body);
+  else scan(decl);
+  return open;
+}
+
 /** Map a declaration's return contract while retaining JavaScript
  * inference fallbacks. Diagnostics preserve the caller's blame node. */
 export function declaredReturnType(
@@ -123,14 +161,14 @@ export function declaredReturnType(
   decl: ts.SignatureDeclaration,
   blame: ts.Node,
 ): IrType {
-  if (isJsSourceFile(decl.getSourceFile()) && ts.isGetAccessorDeclaration(decl)) return DYN;
+  if (isJsSourceFile(ts.getSourceFileOfNode(decl)) && ts.isGetAccessorDeclaration(decl)) return DYN;
   const sig = lowerer.checker.getSignatureFromDeclaration(decl);
   if (!sig) lowerer.unsupported("SC1090", decl, "this function form");
   const retTsType = lowerer.checker.getReturnTypeOfSignature(sig);
   // An inferred null/undefined return in JS can read a mutable checked-value
   // field. Keep the actual value instead of restricting it to the initializer.
   if (
-    isJsSourceFile(decl.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
     (retTsType.flags & (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !== 0
   )
     return DYN;
@@ -139,55 +177,127 @@ export function declaredReturnType(
   // `() => void`), and throw-only callbacks are ordinary code
   // (`.action(() => { throw ... })`). `never` VALUES stay unmapped.
   if (retTsType.flags & ts.TypeFlags.Never) return VOID;
-  let mappedReturn = lowerer.mapTypeOf(retTsType);
+  // A JS generator whose result the checker cannot infer (mutually
+  // recursive methods returning `yield*` of each other, as in yaml's
+  // Parser) has the return type `any`: a generator over untyped values.
   if (
-    isJsSourceFile(decl.getSourceFile()) &&
-    decl.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) &&
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    decl.asteriskToken &&
+    retTsType.flags & ts.TypeFlags.Any
+  )
+    return {
+      kind: "generator",
+      ...(decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
+        ? { async: true as const }
+        : {}),
+      yieldT: DYN,
+      retT: DYN,
+      nextT: DYN,
+    };
+  let mappedReturn = lowerer.mapTypeOf(retTsType);
+  if (mappedReturn !== null)
+    mappedReturn = widenReducedReturn(lowerer, decl, retTsType, mappedReturn);
+  // A generator declared to return Iterable<T> returns a generator over T.
+  if (mappedReturn && decl.asteriskToken)
+    mappedReturn = iterableGeneratorArm(lowerer, mappedReturn);
+  if (
+    mappedReturn === null &&
+    decl.asteriskToken &&
+    decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
+  )
+    mappedReturn = mapAsyncGeneratorAnnotation(retTsType, lowerer.typeCtx);
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) &&
     !decl.asteriskToken &&
     mappedReturn?.kind !== "promise"
   ) {
     const fallback = dynFallbackType(lowerer, decl, retTsType);
     return fallback?.kind === "promise" ? fallback : { kind: "promise", inner: DYN };
   }
-  if (mappedReturn && isJsSourceFile(decl.getSourceFile()) && functionCanReturnUndefined(decl))
+  if (
+    mappedReturn &&
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    functionCanReturnUndefined(decl)
+  )
     mappedReturn = lowerer.withUndefinedArmOf(mappedReturn) ?? mappedReturn;
-  if (isJsSourceFile(decl.getSourceFile()) && mappedReturn?.kind === "void") {
+  // A generic-class method body that can return an indexed read that
+  // misses returns undefined there, whatever the declared result says.
+  if (mappedReturn && lowerer.runtimeOptionalGenericReturns.has(decl))
+    mappedReturn =
+      mappedReturn.kind === "promise"
+        ? { kind: "promise", inner: lowerer.runtimeOptionalType(mappedReturn.inner) }
+        : lowerer.runtimeOptionalType(mappedReturn);
+  if (isJsSourceFile(ts.getSourceFileOfNode(decl)) && mappedReturn?.kind === "void") {
     let returnsValue = false;
     const scan = (node: ts.Node): void => {
       if (node !== decl && ts.isFunctionLike(node)) return;
       if (ts.isReturnStatement(node) && node.expression) returnsValue = true;
-      node.forEachChild(scan);
+      ts.forEachChild(node, scan);
     };
     scan(decl);
     if (returnsValue) return DYN;
   }
-  if (isJsSourceFile(decl.getSourceFile()) && mappedReturn?.kind === "array") return DYN;
+  if (isJsSourceFile(ts.getSourceFileOfNode(decl)) && mappedReturn?.kind === "array") return DYN;
   if (
-    isJsSourceFile(decl.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
     !decl.type &&
     !hasExplicitJsDocReturn(decl) &&
     mappedReturn?.kind === "record"
   )
     return DYN;
   if (
-    isJsSourceFile(decl.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
     !decl.type &&
     !hasExplicitJsDocReturn(decl) &&
     mappedReturn?.kind === "date"
   )
     return DYN;
   if (
-    isJsSourceFile(decl.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
     !decl.type &&
     !hasExplicitJsDocReturn(decl) &&
     mappedReturn?.kind === "union" &&
     lowerer.unions.get(mappedReturn.unionId)?.arms.some((arm) => arm.kind === "func")
   )
     return DYN;
+  // A JS function returning a local that holds whatever its writes store
+  // (jsBindingHasOpenWrites): the inferred result is the initializer's
+  // type, which the returned value need not have.
+  // An async function's promise fulfills with that value.
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    !decl.type &&
+    !decl.asteriskToken &&
+    !hasExplicitJsDocReturn(decl) &&
+    mappedReturn !== null &&
+    mappedReturn.kind !== "dyn" &&
+    !(mappedReturn.kind === "promise" && mappedReturn.inner.kind === "dyn") &&
+    returnsOpenJsBinding(lowerer, decl)
+  )
+    return decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
+      ? { kind: "promise", inner: DYN }
+      : DYN;
+  // A JS function returning a value whose type rests on an undecided
+  // overload (guessedOverloadValue): the inferred result is the first
+  // overload's, which the returned value need not have.
+  if (
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    !decl.type &&
+    !decl.asteriskToken &&
+    !hasExplicitJsDocReturn(decl) &&
+    mappedReturn !== null &&
+    mappedReturn.kind !== "dyn" &&
+    !(mappedReturn.kind === "promise" && mappedReturn.inner.kind === "dyn") &&
+    returnsGuessedOverloadValue(lowerer, decl)
+  )
+    return decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
+      ? { kind: "promise", inner: DYN }
+      : DYN;
   // JS inference assigns Number to arithmetic over any, although the
   // runtime operands can both be BigInts. Preserve that native result.
   if (
-    isJsSourceFile(decl.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
     !decl.type &&
     !hasExplicitJsDocReturn(decl) &&
     mappedReturn?.kind === "f64"
@@ -217,18 +327,18 @@ export function declaredReturnType(
         )
       )
         numericAnyReturn = true;
-      node.forEachChild(check);
+      ts.forEachChild(node, check);
     };
     check(decl);
     if (numericAnyReturn) return DYN;
   }
   if (
-    isJsSourceFile(decl.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
     !hasExplicitJsDocReturn(decl) &&
     mappedReturn !== null &&
     promiseCarriesDyn(lowerer, mappedReturn) &&
-    !decl.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) &&
-    decl.parameters.some((param) => {
+    !decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) &&
+    decl.parameters.nodes.some((param) => {
       const mapped = lowerer.mapTypeOf(lowerer.typeOf(param.name));
       return mapped === null || mapped.kind === "dyn";
     })
@@ -244,7 +354,7 @@ export function declaredReturnType(
   // value rides its own box, calls go through the boxed thunk (JS
   // arity), and typed slots re-check with dynCheck as usual.
   if (
-    isJsSourceFile(decl.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
     decl.type === undefined &&
     lowerer.mapTypeOf(retTsType)?.kind === "func"
   ) {
@@ -265,7 +375,7 @@ export function declaredReturnType(
   // Native-only members (such as Int32Array layout offsets) cannot cross
   // that boundary; their factories keep the native record ABI.
   const asyncReturn =
-    decl.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) &&
+    decl.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword) &&
     mappedReturn?.kind === "promise";
   const recordReturn =
     asyncReturn && mappedReturn?.kind === "promise" ? mappedReturn.inner : mappedReturn;
@@ -284,13 +394,13 @@ export function declaredReturnType(
         (arm.kind === "object" && !hasExplicitJsDocReturn(decl)),
     );
   if (
-    isJsSourceFile(decl.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
     decl.type === undefined &&
     recordReturn !== null &&
     recordReturn !== undefined &&
     inferredRecordReturn &&
     lowerer.dynConvertible(recordReturn) &&
-    decl.parameters.every((p) => {
+    decl.parameters.nodes.every((p) => {
       const mt = lowerer.mapTypeOf(lowerer.typeOf(p));
       return mt === null || mt.kind === "dyn";
     })
@@ -423,11 +533,14 @@ export function resolveInferredReturn(
       if (ice.length > 0) lowerer.diags.push(...ice);
       lowerer.runtimeFences.push(...captured.filter((d) => d.code !== "SC9001"));
       const first = captured.find((d) => d.code !== "SC9001");
+      // Property writes, not literal element writes: the class method
+      // census reads `x["kind"] = …` as a possible write to every method
+      // named `kind`, which would make those methods dynamic in native builds.
       const mutable = e.stmt as unknown as Record<string, unknown>;
-      delete mutable["value"];
-      mutable["kind"] = "runtimeFence";
-      mutable["code"] = first?.code ?? "SC1090";
-      mutable["message"] = first
+      delete mutable.value;
+      mutable.kind = "runtimeFence";
+      mutable.code = first?.code ?? "SC1090";
+      mutable.message = first
         ? `${first.message} [${first.code}]`
         : "this return value has no lowering onto the instance's settled return type [SC1090]";
     }
@@ -445,5 +558,196 @@ export function blockBodyOf(decl: ts.FunctionLikeDeclaration): ts.Block | null {
   const body = decl.body;
   if (body === undefined) return null;
   if (ts.isBlock(body)) return body;
-  return decl.forEachChild((c) => (ts.isBlock(c) ? c : undefined)) ?? null;
+  return ts.forEachChild(decl, (c) => (ts.isBlock(c) ? c : undefined)) ?? null;
+}
+
+const widening = new Set<ts.Node>();
+/** How many times widenReducedReturn answered a declaration it was still
+ * widening with its unwidened type. A result computed while that happened
+ * may lack arms, so it is not kept. */
+let wideningCuts = 0;
+
+/** An inferred return type is the checker's SUBTYPE-REDUCED union of the
+ * returned values' types: `return aborted` (`{ status }`) beside `return
+ * { status, value }` infers just `{ status }`, because the second is a
+ * subtype of the first. Records have fixed layouts, so that type cannot
+ * hold the second value: the return would drop `value` or fail the union
+ * wrap. A function whose return type is inferred therefore returns the
+ * union of the record types it actually returns. Declared return types keep
+ * their meaning. */
+function widenReducedReturn(
+  lowerer: Lowerer,
+  decl: ts.SignatureDeclaration,
+  retTsType: ts.Type,
+  mapped: IrType,
+): IrType {
+  if (decl.type !== undefined || hasExplicitJsDocReturn(decl)) return mapped;
+  const body = (decl as { body?: ts.Node }).body;
+  if (body === undefined || decl.asteriskToken !== undefined) return mapped;
+  if (decl.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) return mapped;
+  // A function expression with a contextual signature returns that
+  // signature's type; only free-standing inference is widened.
+  if (
+    (ts.isFunctionExpression(decl) || ts.isArrowFunction(decl)) &&
+    lowerer.checker.getContextualType(decl) !== undefined
+  )
+    return mapped;
+  const arms =
+    mapped.kind === "union" ? (lowerer.unions.get(mapped.unionId)?.arms ?? []) : [mapped];
+  const recordArms = arms.filter((a) => a.kind === "record");
+  if (recordArms.length === 0) return mapped;
+  if (widening.has(decl)) {
+    wideningCuts++;
+    return mapped;
+  }
+  // Functions that forward to the same callees along several return
+  // branches read each callee's widened type once. A nested function
+  // lowered under other type-parameter bindings maps its returns again.
+  const known = lowerer.coercions.widenedReturnTypes.get(decl)?.get(retTsType);
+  const erasing = lowerer.erasingDepth > 0;
+  if (
+    known !== undefined &&
+    known.bindings === lowerer.typeParamBindings &&
+    known.tsBindings === lowerer.typeParamTsBindings &&
+    known.implicit === lowerer.implicitParamTypes &&
+    known.erasing === erasing
+  )
+    return known.type;
+  const cutsBefore = wideningCuts;
+  const widened = widenReturnArms(lowerer, decl, retTsType, mapped, arms, recordArms);
+  if (wideningCuts === cutsBefore) {
+    let byType = lowerer.coercions.widenedReturnTypes.get(decl);
+    if (byType === undefined) lowerer.coercions.widenedReturnTypes.set(decl, (byType = new Map()));
+    byType.set(retTsType, {
+      type: widened,
+      bindings: lowerer.typeParamBindings,
+      tsBindings: lowerer.typeParamTsBindings,
+      implicit: lowerer.implicitParamTypes,
+      erasing,
+    });
+  }
+  return widened;
+}
+
+/** widenReducedReturn's scan of the returned values, for a declaration not
+ * already being widened. */
+function widenReturnArms(
+  lowerer: Lowerer,
+  decl: ts.SignatureDeclaration,
+  retTsType: ts.Type,
+  mapped: IrType,
+  arms: readonly IrType[],
+  recordArms: readonly IrType[],
+): IrType {
+  const body = (decl as { body?: ts.Node }).body!;
+  const checkerArms = new Set<ts.Type>(
+    retTsType.flags & ts.TypeFlags.Union ? constituentTypes(retTsType) : [retTsType],
+  );
+  const fieldsOf = (t: IrType): readonly string[] | null => {
+    if (t.kind !== "record") return null;
+    const shape = lowerer.shapes.get(t.shapeId);
+    return shape === undefined || shape.tuple || shape.indexValue !== undefined
+      ? null
+      : shape.fields.map((f) => f.name);
+  };
+  const narrower = (part: IrType): boolean => {
+    const own = fieldsOf(part);
+    if (own === null || arms.some((a) => typeKey(a) === typeKey(part))) return false;
+    return recordArms.some((arm) => {
+      const fields = fieldsOf(arm);
+      return fields !== null && fields.length < own.length && fields.every((f) => own.includes(f));
+    });
+  };
+  const extra = new Map<string, IrType>();
+  const returned = (expr: ts.Expression): void => {
+    // A call of another inferred function returns ITS widened type.
+    const callee = ts.isCallExpression(expr)
+      ? lowerer.checker.getResolvedSignature(expr)?.declaration
+      : undefined;
+    if (
+      callee !== undefined &&
+      ts.isFunctionLike(callee) &&
+      (callee as { body?: ts.Node }).body !== undefined &&
+      callee.type === undefined
+    ) {
+      // A call of the function itself returns its own type, whose arms
+      // add nothing. Reading it would cut the widening and keep this
+      // result from being reused.
+      if (callee === decl) return;
+      let t: IrType | null = null;
+      widening.add(decl);
+      try {
+        t = declaredReturnType(lowerer, callee, expr);
+      } catch {
+        t = null;
+      } finally {
+        widening.delete(decl);
+      }
+      if (t === null) return;
+      const parts = t.kind === "union" ? (lowerer.unions.get(t.unionId)?.arms ?? []) : [t];
+      for (const part of parts) if (narrower(part)) extra.set(typeKey(part), part);
+      return;
+    }
+    // Only a value type the checker's reduction dropped from the inferred
+    // union is a candidate; a constituent of the inferred type is already
+    // represented by it.
+    const valueType = lowerer.typeOf(expr);
+    const valueArms =
+      valueType.flags & ts.TypeFlags.Union ? constituentTypes(valueType) : [valueType];
+    for (const part of valueArms) {
+      if (checkerArms.has(part) || !(part.flags & ts.TypeFlags.Object)) continue;
+      if (!lowerer.checker.isTypeAssignableTo(part, retTsType)) continue;
+      const t = lowerer.mapTypeOf(part);
+      if (t !== null && narrower(t)) extra.set(typeKey(t), t);
+    }
+  };
+  const scan = (node: ts.Node): void => {
+    if (node !== decl && ts.isFunctionLike(node)) return;
+    if (ts.isReturnStatement(node) && node.expression !== undefined) returned(node.expression);
+    ts.forEachChild(node, scan);
+  };
+  if (ts.isArrowFunction(decl) && !ts.isBlock(body)) returned(body as ts.Expression);
+  else scan(body);
+  if (extra.size === 0) return mapped;
+  const joined = new Map<string, IrType>();
+  for (const a of [...arms, ...extra.values()]) joined.set(typeKey(a), a);
+  const sorted = [...joined.values()].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  const unionId = lowerer.unions.intern(sorted);
+  lowerer.coercions.widenedReturns.add(unionId);
+  return { kind: "union", unionId };
+}
+
+/** Whether `wide` is a widened inferred return that holds `narrow`'s arms plus records that are width
+ * subtypes of `narrow`'s record arms: the shape a subtype-reduced inferred
+ * type takes next to the values it was inferred from. */
+export function widensReducedRecords(lowerer: Lowerer, narrow: IrType, wide: IrType): boolean {
+  if (wide.kind !== "union" || typeKey(narrow) === typeKey(wide)) return false;
+  if (!lowerer.coercions.widenedReturns.has(wide.unionId)) return false;
+  const narrowArms =
+    narrow.kind === "union" ? (lowerer.unions.get(narrow.unionId)?.arms ?? []) : [narrow];
+  const wideArms = lowerer.unions.get(wide.unionId)?.arms ?? [];
+  const keys = new Set(wideArms.map(typeKey));
+  if (!narrowArms.every((a) => keys.has(typeKey(a)))) return false;
+  const fieldsOf = (t: IrType): readonly string[] | null => {
+    if (t.kind !== "record") return null;
+    const shape = lowerer.shapes.get(t.shapeId);
+    return shape === undefined || shape.tuple || shape.indexValue !== undefined
+      ? null
+      : shape.fields.map((f) => f.name);
+  };
+  const narrowKeys = new Set(narrowArms.map(typeKey));
+  const extras = wideArms.filter((a) => !narrowKeys.has(typeKey(a)));
+  return (
+    extras.length > 0 &&
+    extras.every((extra) => {
+      const own = fieldsOf(extra);
+      return (
+        own !== null &&
+        narrowArms.some((arm) => {
+          const f = fieldsOf(arm);
+          return f !== null && f.length < own.length && f.every((x) => own.includes(x));
+        })
+      );
+    })
+  );
 }

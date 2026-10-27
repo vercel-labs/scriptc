@@ -101,6 +101,51 @@ delete loose.label;
   expect(layout(deleted, "Shape").tracks).toBe(true);
 });
 
+test("freezing values other than class instances keeps JavaScript class layouts fixed", async () => {
+  const module = await lower(`${SHAPES}
+/** @param {{ value: any }} data */
+function settle(data) {
+  data.value = Object.freeze(data.value);
+  Object.seal(data);
+  return Object.preventExtensions(data.value);
+}
+settle({ value: { sides: 1 } });
+const square = new Square();
+Object.freeze(square);
+`);
+  expect(layout(module, "Shape").tracks).toBe(false);
+  expect(layout(module, "Square").tracks).toBe(false);
+});
+
+test("accessors that share no field's name keep JavaScript class layouts fixed", async () => {
+  const module = await lower(`
+class Path {
+  constructor(key) {
+    this.cache = [];
+    this.key = key;
+  }
+  get path() {
+    if (!this.cache.length) this.cache.push(this.key);
+    return this.cache;
+  }
+}
+class Named extends Path {
+  constructor(key) {
+    super(key);
+    this.label = "named";
+  }
+  /** @param {string} value */
+  set label2(value) {
+    this.label = value;
+  }
+}
+console.log(new Named("k").path.length);
+`);
+  expect(layout(module, "Path")).toEqual({ fields: "cache:dyn key:dyn", tracks: false });
+  expect(layout(module, "Named").tracks).toBe(false);
+  expect(layout(module, "Named").fields).toBe("cache:dyn key:dyn label:string");
+});
+
 test("JavaScript subclass fields keep their types when the base constructor only assigns fields", async () => {
   const module = await lower(`
 class Base {
@@ -175,4 +220,22 @@ test("a JavaScript file TypeScript checks uses its JSDoc types for class layouts
   const unchecked = await lower(ACCOUNTS);
   expect(layout(unchecked, "Account").fields).toBe("owner:dyn balance:dyn");
   expect(params(unchecked, "%Account.constructor")).toBe("(object, dyn, dyn): void");
+});
+
+test("instances of a class with subclasses box at their exact class", async () => {
+  const module = await lower(`${SHAPES}
+/** @param {any} value */
+function keep(value) {
+  return value;
+}
+/** @param {Shape} shape */
+function cross(shape) {
+  return keep(shape);
+}
+console.log(cross(new Square()).size, cross(new Shape()).label);
+`);
+  const helper = module.functions.find((fn) => fn.name === "%dyn.class.boxExact:Shape");
+  expect(helper).toBeDefined();
+  expect(calls(module, "cross")).toContain("%dyn.class.boxExact:Shape");
+  expect(JSON.stringify(helper!.body)).toContain('"className":"Square"');
 });

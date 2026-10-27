@@ -7,7 +7,7 @@ const loc = { file: "intern-tables.ts", start: 0, end: 1 };
 
 function module(body: IrExpr[]): IrModule {
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     functions: [

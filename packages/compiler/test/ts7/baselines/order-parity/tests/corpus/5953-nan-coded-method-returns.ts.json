@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5953-nan-coded-method-returns.ts"
+ ],
+ "diags": []
+}

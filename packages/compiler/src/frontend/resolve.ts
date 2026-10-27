@@ -18,9 +18,15 @@
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import {
   isNpmStaticPackage,
+  npmStaticActive,
   npmStaticPackageOfPath,
   npmStaticTransformPkgJson,
 } from "./npm-static.js";
+import {
+  clearPackageShimCaches,
+  packageShimFor,
+  throughBundledShimForwarder,
+} from "./package-shims.js";
 import { provenanceEntryFor } from "./provenance-registry.js";
 import {
   trackedAccessibleEntries,
@@ -31,9 +37,11 @@ import {
   trackedRealpath,
 } from "./input-tracker.js";
 import { isRelativeSpecifier, packageNameOfSpecifier } from "./workspace-registry.js";
+import { typePatchFileExists } from "./type-patches/layer.js";
 
 function isFile(path: string): boolean {
-  return trackedFileExists(path);
+  // A declaration entry a project type patch supplies (type-patches/layer.ts).
+  return trackedFileExists(path) || typePatchFileExists(path);
 }
 
 function isDirectory(path: string): boolean {
@@ -556,6 +564,12 @@ export function nearestPkgJsonPath(fromFile: string): string | null {
   return dir === null ? null : join(dir, "package.json");
 }
 
+/** The nearest package scope's "imports" field (undefined without one). */
+export function nearestPackageImports(fromFile: string): unknown {
+  const dir = nearestPkgDir(dirname(resolve(fromFile)));
+  return dir === null ? undefined : pkgJsonOf(dir)?.imports;
+}
+
 /** The target the nearest package scope's "imports" field maps a '#'
  * specifier to under Node's ESM runtime conditions: a './' path inside the
  * package or another package's specifier. Null when no entry maps it. */
@@ -608,6 +622,10 @@ export function resolveProjectImport(fromFile: string, specifier: string): strin
   if (provenance !== null) return normalizeResolvedPath(provenance);
   const viaPaths = resolveViaProjectPaths(specifier);
   if (viaPaths !== null) return normalizeResolvedPath(viaPaths);
+  // A package scriptc implements itself (package-shims.ts): the installed
+  // version's shim module compiles in the package's place.
+  const shim = packageShimFor(fromFile, specifier);
+  if (shim !== null) return normalizeResolvedPath(shim);
   const pkgDir = nearestPkgDir(dirname(resolve(fromFile)));
   if (pkgDir === null) return null;
   const pkg = pkgJsonOf(pkgDir);
@@ -617,6 +635,18 @@ export function resolveProjectImport(fromFile: string, specifier: string): strin
     // Node's validity rule: only the bare "#" is never resolvable ("#/..."
     // matches "#/*"-pattern keys on current Node).
     if (specifier === "#") return null;
+    // Inside an opted-in --npm-static package, an imports entry resolves
+    // the way the tsgo host's fs shadow does: the transformed document
+    // (the "node" condition hoisted), the runtime JS conditions, and the
+    // shipped JS rather than a declaration twin (see resolveRelativeModule).
+    if (npmStaticPackageOfPath(resolve(fromFile)) !== null) {
+      const transformed = JSON.parse(JSON.stringify(pkg)) as PkgJson & Record<string, unknown>;
+      npmStaticTransformPkgJson(transformed);
+      const jsTarget = resolvePackageImports(transformed.imports, specifier, JS_ONLY_CONDITIONS);
+      if (jsTarget === null || !jsTarget.startsWith("./")) return null;
+      const jsPath = join(pkgDir, jsTarget);
+      return normalizeResolvedAnswer(loadAsJsFile(jsPath) ?? loadAsJsDirectory(jsPath));
+    }
     target = resolvePackageImports(pkg.imports, specifier, EXPORT_CONDITIONS);
     // An imports target that is not "./"-relative is PACKAGE_RESOLVE'd as
     // a bare specifier (Node's PACKAGE_IMPORTS_EXPORTS_RESOLVE): the
@@ -649,6 +679,11 @@ export function resolveProjectImport(fromFile: string, specifier: string): strin
  * answer null for their dedicated callers. */
 export function resolveProjectModule(fromFile: string, specifier: string): string | null {
   if (isRelativeSpecifier(specifier) || isAbsolute(specifier)) {
+    // A bundled copy's forwarder (a virtual declaration module) answers
+    // the shim it forwards to.
+    const forwarder = join(dirname(resolve(fromFile)), `${specifier}.d.ts`);
+    const forwarded = throughBundledShimForwarder(forwarder);
+    if (forwarded !== forwarder) return forwarded;
     return resolveRelativeModule(fromFile, specifier);
   }
   if (specifier.startsWith("node:")) return null;
@@ -856,7 +891,11 @@ export function resolveBareModule(
   // never consulted — mirroring the shadowed world the tsgo host serves.
   const runtimeImport = mode === "runtime-js" || mode === "runtime-source";
   const npmStatic =
-    mode === "js-only" || (!runtimeImport && mode !== "types-only" && isNpmStaticPackage(pkgName));
+    mode === "js-only" ||
+    (!runtimeImport &&
+      mode !== "types-only" &&
+      (isNpmStaticPackage(pkgName) ||
+        (npmStaticActive() && isNpmStaticPackage(aliasedPackageOf(fromFile, pkgName)))));
   const conditions = runtimeImport
     ? RUNTIME_IMPORT_CONDITIONS
     : npmStatic
@@ -958,6 +997,23 @@ export function resolveBareModule(
   return npmStatic ? passOnce("js") : (passOnce("types") ?? passOnce("js"));
 }
 
+/** The package an npm alias directory installs (`"x-updated":
+ * "npm:x@6.3.0"` puts package x under node_modules/x-updated): the name
+ * the nearest node_modules/<dirName>/package.json declares when it
+ * differs from the directory name, else null. */
+function aliasedPackageOf(fromFile: string, dirName: string): string | null {
+  for (let dir = dirname(resolve(fromFile)); ;) {
+    const pkgDir = join(dir, "node_modules", dirName);
+    if (isDirectory(pkgDir)) {
+      const name = pkgJsonOf(pkgDir)?.name;
+      return typeof name === "string" && name !== dirName ? name : null;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
 export function resolveWorkspaceSourceModule(
   fromFile: string,
   specifier: string,
@@ -1017,6 +1073,7 @@ export function resolveTypeDirective(name: string, fromFile: string): string | n
 /** Resolver metadata and the active project realm are shared within one
  * compile, never across compiles in a long-lived process. */
 export function clearResolveCaches(): void {
+  clearPackageShimCaches();
   pkgJsonCache.clear();
   workspaceMembersCache.clear();
   projectRealmPkgJson = null;

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/2562-subpath-leaf/main.ts"
+ ],
+ "diags": []
+}

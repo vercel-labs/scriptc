@@ -4,9 +4,17 @@ import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { NativeCodegenError } from "../backend/native-codegen-core.js";
 import { requireNativeArtifact, runNativeTool } from "../backend/native-tools.js";
-import type { NativeRuntimePack, NativeRuntimeSelection } from "../backend/runtime-pack-native.js";
-import { runtimePackFlavorKey, type RuntimePackMode } from "../backend/runtime-pack-core.js";
-import { LRE_SOURCES, ZLIB_SOURCES } from "../backend/vendor-inputs.js";
+import {
+  runtimePackManifest,
+  type NativeRuntimePack,
+  type NativeRuntimeSelection,
+} from "../backend/runtime-pack-native.js";
+import {
+  runtimePackFlavorKey,
+  selectedRuntimeUnits,
+  type RuntimePackMode,
+} from "../backend/runtime-pack-core.js";
+import { LRE_SOURCES, zlibInputs } from "../backend/vendor-inputs.js";
 import { contentDigest, type NativeCache } from "./cache.js";
 import type { NativeToolchain } from "./toolchain.js";
 
@@ -94,6 +102,7 @@ export function buildSanitizedRuntime(
   const quickjs = join(vendor, "quickjs-ng");
   const zlib = join(vendor, "zlib");
   const mbedtls = join(vendor, "mbedtls");
+  const brotli = join(vendor, "brotli", "c");
   const cacheIdentity = contentDigest(
     JSON.stringify({
       schema: 1,
@@ -118,10 +127,10 @@ export function buildSanitizedRuntime(
     }
     return output;
   };
-  const key = runtimePackFlavorKey(selection.manifest, selection.flavor, mode);
-  const flavor = selection.manifest.flavors[key];
+  const manifest = runtimePackManifest(selection);
+  const key = runtimePackFlavorKey(manifest, selection.flavor, mode);
+  const flavor = manifest.flavors[key];
   if (flavor === undefined) throw new NativeCodegenError("SC3003", `runtime pack lacks ${key}`);
-  const wanted = new Set(selection.selected.runtime.map((artifact) => artifact.path));
   const common = [
     "-std=c11",
     "-pthread",
@@ -137,20 +146,18 @@ export function buildSanitizedRuntime(
     zlib,
     "-I",
     join(mbedtls, "include"),
+    "-I",
+    join(brotli, "include"),
     ...(toolchain.target.platform === "linux" ? ["-ffunction-sections", "-fdata-sections"] : []),
   ];
-  const runtimeObjects: string[] = [];
-  for (const unit of flavor.runtime_units) {
-    for (const variant of unit.variants) {
-      if (wanted.has(variant.path))
-        runtimeObjects.push(
-          compile(join(src, unit.source), unit.source.replace(/\.c$/, ".o"), [
-            ...common,
-            ...variant.defines.map((define) => "-D" + define),
-          ]),
-        );
-    }
-  }
+  // The units and variants the pack selection chose, compiled from source.
+  const runtimeObjects = selectedRuntimeUnits(flavor, selection.selected.features).map(
+    ({ source, variant }) =>
+      compile(join(src, source), source.replace(/\.c$/, ".o"), [
+        ...common,
+        ...variant.defines.map((define) => "-D" + define),
+      ]),
+  );
   const archives: string[] = [];
   for (const archive of selection.selected.archives) {
     const name = basename(archive.path)
@@ -164,18 +171,33 @@ export function buildSanitizedRuntime(
       directory = quickjs;
       args = ["-std=c11", "-I", quickjs];
     } else if (name === "zlib") {
-      sources = ZLIB_SOURCES;
+      const inputs = zlibInputs(toolchain.target.llvmTriple);
+      sources = inputs.sources;
       directory = zlib;
-      args = ["-std=c11", "-I", zlib];
+      args = ["-std=c11", ...inputs.defines.map((define) => "-D" + define), "-I", zlib];
     } else if (name === "mbedtls") {
       directory = join(mbedtls, "library");
       sources = readdirSync(directory)
         .filter((file) => file.endsWith(".c") && !file.startsWith("."))
         .sort();
       args = ["-std=c11", "-I", join(mbedtls, "include"), "-I", directory];
+    } else if (name === "brotli") {
+      directory = brotli;
+      sources = ["common", "dec", "enc"]
+        .flatMap((dir) =>
+          readdirSync(join(brotli, dir))
+            .filter((file) => file.endsWith(".c") && !file.startsWith("."))
+            .map((file) => `${dir}/${file}`),
+        )
+        .sort();
+      args = ["-std=c11", "-I", join(brotli, "include")];
     } else throw new NativeCodegenError("SC3003", `unsupported runtime vendor archive: ${name}`);
     const objects = sources.map((source) =>
-      compile(join(directory, source), name + "-" + source.replace(/\.c$/, ".o"), args),
+      compile(
+        join(directory, source),
+        name + "-" + source.replaceAll("/", "-").replace(/\.c$/, ".o"),
+        args,
+      ),
     );
     const output = join(stage, "libscriptc-" + name + ".a");
     runNativeTool(

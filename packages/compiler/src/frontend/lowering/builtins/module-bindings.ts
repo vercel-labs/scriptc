@@ -24,31 +24,69 @@ export function builtinImportOf(
   lowerer: Lowerer,
   ident: ts.Identifier,
 ): { module: string; member: string } | null {
+  const binding = builtinModuleBindingOf(lowerer, ident);
+  // node:stream/web's exports ARE the web stream globals: its bindings
+  // lower through the globals' own paths (stdlibGlobalNameOf resolves the
+  // alias to the same name), not through module-member tables.
+  return binding?.module === "stream/web" ? null : binding;
+}
+
+function builtinModuleBindingOf(
+  lowerer: Lowerer,
+  ident: ts.Identifier,
+): { module: string; member: string } | null {
   const symbol =
     ts.isShorthandPropertyAssignment(ident.parent) && ident.parent.name === ident
       ? lowerer.checker.getShorthandAssignmentValueSymbol(ident.parent)
       : lowerer.checker.getSymbolAtLocation(ident);
-  const decl = symbol ? lowerer.checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (!decl) return null;
   // The CommonJS twin of the named import: a destructured require
   // binding (`const { readFileSync } = require("fs")`, renames via
   // `{ readFileSync: rf }`) keys the same tables.
   if (ts.isBindingElement(decl) && decl.name !== undefined && ts.isIdentifier(decl.name)) {
-    const varDecl = decl.parent?.parent;
+    // A NESTED pattern names a member of a sub-module (`const { types: {
+    // isPromise } } = require("util")`): util.types IS the util/types
+    // module object, so each level composes the module name.
+    const path: string[] = [];
+    let pattern: ts.Node | undefined = decl.parent;
+    let varDecl = pattern?.parent;
+    while (
+      pattern !== undefined &&
+      ts.isObjectBindingPattern(pattern) &&
+      varDecl !== undefined &&
+      ts.isBindingElement(varDecl)
+    ) {
+      const key = varDecl.propertyName;
+      if (varDecl.initializer !== undefined || key === undefined || !ts.isIdentifier(key)) {
+        return null;
+      }
+      path.unshift(key.text);
+      pattern = varDecl.parent;
+      varDecl = pattern?.parent;
+    }
     if (
-      ts.isObjectBindingPattern(decl.parent) &&
+      pattern !== undefined &&
+      ts.isObjectBindingPattern(pattern) &&
+      varDecl !== undefined &&
       ts.isVariableDeclaration(varDecl) &&
       varDecl.initializer !== undefined
     ) {
       const spec = requireSpecOf(varDecl.initializer);
-      const module =
+      let module =
         spec !== null
           ? canonicalBuiltinModule(spec)
-          : // The one-hop alias twin: `const crypto = require('crypto');
-            // const { createSign } = crypto;` — test/common's idiom. The
-            // destructure re-binds module members under local names, so the
-            // bindings key the same tables as the direct-require form.
-            builtinNamespaceDestructureModuleOf(lowerer, varDecl);
+          : path.length > 0
+            ? null
+            : // The one-hop alias twin: `const crypto = require('crypto');
+              // const { createSign } = crypto;` — test/common's idiom. The
+              // destructure re-binds module members under local names, so the
+              // bindings key the same tables as the direct-require form.
+              builtinNamespaceDestructureModuleOf(lowerer, varDecl);
+      for (const key of path) {
+        if (module === null) break;
+        module = canonicalBuiltinModule(`${module}/${key}`);
+      }
       if (module === null) return null;
       const member =
         decl.propertyName && ts.isIdentifier(decl.propertyName)
@@ -96,8 +134,8 @@ export function builtinImportOf(
   // keys the same tables under the builtin's own member name.
   if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0) {
     const target = lowerer.checker.getAliasedSymbol(symbol);
-    const tdecl = lowerer.checker.declarationsOf(target)[0];
-    if (tdecl !== undefined && tdecl.getSourceFile().isDeclarationFile) {
+    const tdecl = target.declarations[0];
+    if (tdecl !== undefined && ts.getSourceFileOfNode(tdecl).isDeclarationFile) {
       for (
         let p: ts.Node | undefined = tdecl.parent;
         p !== undefined && !ts.isSourceFile(p);
@@ -105,13 +143,31 @@ export function builtinImportOf(
       ) {
         if (ts.isModuleDeclaration(p) && ts.isStringLiteral(p.name)) {
           const module = canonicalBuiltinModule(p.name.text);
-          if (module !== null) return { module, member: target.name };
+          if (module !== null) return { module, member: ts.symbolName(target) };
           break;
         }
       }
     }
   }
   return null;
+}
+
+/** The ES module binding kind of `ident`: "namespace" for a namespace
+ * import (`import * as events from "node:events"`), "named" for a named
+ * import (`import { defaultMaxListeners } from "node:events"`, also through
+ * a re-exporting module), null otherwise. Namespace members and named
+ * imports of a builtin read its ES module namespace, which holds copies of
+ * the module's exports (module.syncBuiltinESMExports refreshes them), where
+ * default imports and CommonJS bindings read the module object itself. */
+export function esmImportBindingKind(
+  lowerer: Lowerer,
+  ident: ts.Identifier,
+): "namespace" | "named" | null {
+  const symbol = lowerer.checker.getSymbolAtLocation(ident);
+  const decl = symbol ? symbol.declarations[0] : undefined;
+  if (decl === undefined) return null;
+  if (ts.isNamespaceImport(decl)) return "namespace";
+  return ts.isImportSpecifier(decl) ? "named" : null;
 }
 
 /** True for `const <name> = require("<builtin>").<member>` — the
@@ -127,6 +183,32 @@ export function builtinMemberRequireDecl(
   if (!ts.isPropertyAccessExpression(init) || init.questionDotToken) return false;
   const spec = requireSpecOf(init.expression);
   return spec !== null && canonicalBuiltinModule(spec) !== null;
+}
+
+/** The member's own symbol for a variable bound to a builtin module's
+ * member (`const SD = require("string_decoder").StringDecoder`,
+ * builtinMemberRequireDecl) when the member is a class, so the variable
+ * resolves as a named import of the class does. The symbol itself
+ * otherwise. */
+export function builtinMemberBindingTarget(
+  lowerer: Lowerer,
+  symbol: ts.Symbol | null,
+): ts.Symbol | null {
+  const decl = symbol?.valueDeclaration;
+  if (
+    decl === undefined ||
+    !ts.isVariableDeclaration(decl) ||
+    !builtinMemberRequireDecl(decl.name, decl.initializer)
+  )
+    return symbol;
+  const init = decl.initializer as ts.PropertyAccessExpression;
+  let member = lowerer.checker.getSymbolAtLocation(init.name);
+  if (member && member.flags & ts.SymbolFlags.Alias)
+    member = lowerer.checker.getAliasedSymbol(member);
+  // Only a class member: `require("events").EventEmitter` is a static
+  // property of the exported class, which builtinEmitterInfoOf follows
+  // from the variable itself.
+  return member?.declarations.some(ts.isClassDeclaration) ? member : symbol;
 }
 
 /** The supported builtin module when `decl` destructures a builtin
@@ -157,11 +239,13 @@ export function builtinNamespaceDestructureModuleOf(
   if (ts.isCallExpression(init)) {
     const cr = createRequireSpecOf(lowerer, init);
     module = cr !== null && cr.spec !== null ? canonicalBuiltinModule(cr.spec) : null;
-  } else if (ts.isIdentifier(init)) {
+  } else if (ts.isIdentifier(init) || ts.isPropertyAccessExpression(init)) {
+    // `const { open } = fs.promises` / `= require("fs").promises`: a member
+    // that is itself a supported module.
     module = lowerer.builtinNamespaceModuleOf(init);
   }
   if (module === null) return null;
-  for (const el of decl.name.elements) {
+  for (const el of decl.name.elements.nodes) {
     if (
       el.dotDotDotToken ||
       el.initializer !== undefined ||
@@ -186,8 +270,8 @@ function createRequireBaseCallOf(lowerer: Lowerer, expr: ts.Expression): ts.Call
   if (!ts.isIdentifier(e.expression)) return null;
   const bi = builtinImportOf(lowerer, e.expression);
   if (!bi || bi.module !== "module" || bi.member !== "createRequire") return null;
-  if (e.arguments.length !== 1) return null;
-  const base = stripTypeCasts(e.arguments[0]!);
+  if (e.arguments.nodes.length !== 1) return null;
+  const base = stripTypeCasts(e.arguments.nodes[0]!);
   if (ts.isIdentifier(base) && lowerer.isStdlibGlobal(base, "__filename")) return e;
   if (
     ts.isPropertyAccessExpression(base) &&
@@ -241,14 +325,14 @@ export function createRequireCalleeFileOf(
 ): ts.SourceFile | null {
   const e = stripTypeCasts(callee);
   if (ts.isCallExpression(e)) {
-    return createRequireBaseCallOf(lowerer, e) !== null ? e.getSourceFile() : null;
+    return createRequireBaseCallOf(lowerer, e) !== null ? ts.getSourceFileOfNode(e) : null;
   }
   if (!ts.isIdentifier(e)) return null;
   const symbol = lowerer.checker.getSymbolAtLocation(e);
-  const decl = symbol ? lowerer.checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (!decl || !ts.isVariableDeclaration(decl) || decl.initializer === undefined) return null;
   return createRequireBindingDecl(lowerer, decl.name, decl.initializer)
-    ? decl.getSourceFile()
+    ? ts.getSourceFileOfNode(decl)
     : null;
 }
 
@@ -265,8 +349,8 @@ export function createRequireSpecOf(
   if (call.questionDotToken) return null;
   const baseFile = createRequireCalleeFileOf(lowerer, call.expression);
   if (baseFile === null) return null;
-  if (call.arguments.length !== 1) return { spec: null, baseFile };
-  const a = call.arguments[0]!;
+  if (call.arguments.nodes.length !== 1) return { spec: null, baseFile };
+  const a = call.arguments.nodes[0]!;
   return { spec: ts.isStringLiteralLike(a) ? a.text : null, baseFile };
 }
 
@@ -327,7 +411,7 @@ export function createRequireProgramModuleDecl(
   if (createRequireProgramModuleOf(lowerer, init) === null) return false;
   if (ts.isIdentifier(nameNode)) return true;
   if (!ts.isObjectBindingPattern(nameNode)) return false;
-  return nameNode.elements.every(
+  return nameNode.elements.nodes.every(
     (element) =>
       element.name !== undefined &&
       element.dotDotDotToken === undefined &&
@@ -346,7 +430,7 @@ export function createRequireProgramModuleDecl(
  * binding poison with the same module-naming diagnostic. */
 export function fencedBuiltinImportOf(lowerer: Lowerer, ident: ts.Identifier): string | null {
   const symbol = lowerer.checker.getSymbolAtLocation(ident);
-  const decl = symbol ? lowerer.checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (!decl) return null;
   // The CommonJS twins: `const x = require("net")` and
   // `const { createServer } = require("net")` — the require statement

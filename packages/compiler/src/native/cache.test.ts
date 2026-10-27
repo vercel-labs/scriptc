@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
-import { contentDigest, NativeCache, openNativeCache } from "./cache.js";
+import { contentDigest, fileDigest, NativeCache, openNativeCache } from "./cache.js";
 
 const directories: string[] = [];
 function directory(): string {
@@ -19,9 +19,22 @@ function directory(): string {
   directories.push(path);
   return path;
 }
+function* generate(parts: readonly string[]): Generator<string> {
+  yield* parts;
+}
 afterEach(() => {
   vi.unstubAllEnvs();
   for (const path of directories.splice(0)) rmSync(path, { recursive: true, force: true });
+});
+
+test("a file's digest read in blocks is the digest of its bytes", () => {
+  const path = join(directory(), "module.ll");
+  const bytes = Buffer.alloc(3 * 1024 * 1024 + 17);
+  for (let index = 0; index < bytes.length; index++) bytes[index] = (index * 31) & 0xff;
+  writeFileSync(path, bytes);
+  expect(fileDigest(path)).toBe(contentDigest(bytes));
+  writeFileSync(path, "");
+  expect(fileDigest(path)).toBe(contentDigest(""));
 });
 
 test("cache hits require an intact payload and digest", () => {
@@ -42,7 +55,8 @@ test("text parts publish one digest-checked entry and oversized reads are misses
   const cache = new NativeCache(directory());
   const key = contentDigest("parts identity");
   const parts = ['{"a":', '"\u00e9é😀"', ",", "", '"b":1}'];
-  cache.writeParts("frontend", key, parts);
+  // Parts are generated while they are written, and hashed in the same pass.
+  cache.writeParts("frontend", key, generate(parts));
   const bytes = cache.read("frontend", key);
   expect(bytes?.toString("utf8")).toBe(parts.join(""));
   expect(readFileSync(join(cache.root, "frontend", key + ".sha256"), "utf8").trim()).toBe(

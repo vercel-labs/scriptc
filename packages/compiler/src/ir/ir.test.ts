@@ -10,6 +10,7 @@ import {
   canDynCheckTo,
   type IrBytesElem,
   isJsonSafeType,
+  iterableArmsElem,
   isJsonStringifySafeType,
   isJsonStringifyDynamicType,
   type IrRecordShape,
@@ -22,6 +23,29 @@ import {
   typeKey,
 } from "./ir.js";
 
+describe("iterable unions", () => {
+  const gen = (yieldT: IrType): IrType => ({
+    kind: "generator",
+    yieldT,
+    retT: { kind: "void" },
+    nextT: { kind: "undefinedT" },
+  });
+
+  test("names the element type of an Iterable<T> union", () => {
+    expect(iterableArmsElem([arrayOf(F64), gen(F64), { kind: "set", elem: F64 }])).toEqual(F64);
+    expect(iterableArmsElem([arrayOf(STRING), gen(STRING), STRING])).toEqual(STRING);
+    expect(iterableArmsElem([arrayOf(F64), gen(F64), { kind: "undefinedT" }])).toEqual(F64);
+  });
+
+  test("rejects unions without exactly one plain generator arm over the same element", () => {
+    expect(iterableArmsElem([arrayOf(F64), STRING])).toBeNull();
+    expect(iterableArmsElem([arrayOf(STRING), gen(F64)])).toBeNull();
+    expect(iterableArmsElem([arrayOf(F64), gen(F64), gen(STRING)])).toBeNull();
+    expect(iterableArmsElem([gen(F64), STRING])).toBeNull();
+    expect(iterableArmsElem([arrayOf(F64), { ...gen(F64), nextT: F64 } as IrType])).toBeNull();
+  });
+});
+
 describe("IR kind sets", () => {
   test("keeps procStream as the scalar handle exception", () => {
     expect(HANDLE_KINDS.has("procStream")).toBe(true);
@@ -33,7 +57,8 @@ describe("IR kind sets", () => {
 
   test("distinguishes pointer values from object-like scalars", () => {
     expect(POINTER_KINDS.has("record")).toBe(true);
-    expect(POINTER_KINDS.has("date")).toBe(false);
+    expect(POINTER_KINDS.has("date")).toBe(true);
+    expect(POINTER_KINDS.has("procStream")).toBe(false);
   });
 
   test("distinguishes typed-rest closure ABIs", () => {
@@ -158,6 +183,17 @@ describe("checked records with opaque payloads", () => {
     expect(
       isJsonStringifyDynamicType(arrayOf({ kind: "union", unionId: "optional" }), record, union),
     ).toBe(true);
+  });
+
+  test("class instances stringify through the runtime JSON traversal only", () => {
+    const point: IrType = { kind: "object", className: "Point" };
+    const failure: IrType = { kind: "object", className: "%Error" };
+    expect(isJsonStringifyDynamicType(point, record, union)).toBe(true);
+    expect(isJsonStringifyDynamicType(arrayOf(point), record, union)).toBe(true);
+    expect(isJsonStringifyDynamicType(failure, record, union)).toBe(false);
+    expect(isJsonStringifySafeType(point, record, union)).toBe(false);
+    expect(isJsonSafeType(point, record, union)).toBe(false);
+    expect(canDynCheckTo(arrayOf(point), record, union)).toBe(true);
   });
 });
 

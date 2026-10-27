@@ -14,6 +14,7 @@
     { "export": "bump", "symbol": "kr_bump", "params": [], "returns": "f64" },
     { "export": "note", "symbol": "kr_note", "params": ["string"], "returns": "f64" },
     { "export": "recall", "symbol": "kr_recall", "params": [], "returns": "string" },
-    { "export": "indexedUnicode", "symbol": "kr_indexed_unicode", "params": [], "returns": "f64" }
+    { "export": "indexedUnicode", "symbol": "kr_indexed_unicode", "params": [], "returns": "f64" },
+    { "export": "globalFences", "symbol": "kr_global_fences", "params": [], "returns": "string" }
   ]
 }

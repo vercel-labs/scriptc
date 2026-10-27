@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <string>
 
 using namespace llvm;
 
@@ -36,6 +37,9 @@ struct Symbol {
   std::string PromotedHeader;
   std::vector<unsigned> Refs;
   std::vector<unsigned> Metadata;
+  // The source-module group the emitter wrote before this definition, or
+  // empty.
+  StringRef Group;
   unsigned Partition = NoPartition;
 };
 
@@ -68,6 +72,85 @@ uint32_t stableHash(StringRef Name) {
     Hash *= 0x01000193u;
   }
   return Hash;
+}
+
+// Places the functions whose root carries a source-module group by group: a
+// module's functions call each other most, so keeping them together leaves
+// fewer calls for the thin link to import across partitions. A group larger
+// than the mean partition, or than MaxChunkBytes, is divided into a power of
+// two of chunks by the hash of each root's name, so the division changes only
+// when the group's size doubles. Chunks are placed largest first, each in the
+// lighter of two partitions chosen by hashes of its key, after the functions
+// placed by name. The placement depends only on the module text and the
+// partition count. Modules with fewer than MinGroupedPartitions partitions
+// keep the placement by name: with few partitions per core, the balance of
+// the largest partitions decides the build time more than the imports.
+void placeGroups(std::vector<Symbol> &Symbols, ArrayRef<unsigned> Roots,
+                 unsigned Count) {
+  constexpr unsigned MinGroupedPartitions = 32;
+  if (Count < MinGroupedPartitions)
+    return;
+  auto Bytes = [](const Symbol &S) -> uint64_t {
+    return S.Header.size() + S.Body.size();
+  };
+  std::vector<uint64_t> Load(Count, 0);
+  uint64_t Total = 0;
+  StringMap<uint64_t> GroupBytes;
+  for (unsigned I = 0; I < Symbols.size(); ++I) {
+    const Symbol &S = Symbols[I];
+    if (S.Kind != SymbolKind::Function || S.Partition == NoPartition)
+      continue;
+    Total += Bytes(S);
+    StringRef Group = Symbols[Roots[I]].Group;
+    if (Group.empty())
+      Load[S.Partition] += Bytes(S);
+    else
+      GroupBytes[Group] += Bytes(S);
+  }
+  if (GroupBytes.empty())
+    return;
+  // A chunk is at most MaxChunkBytes, so the code a partition optimizes
+  // together, and the inlining within it, does not grow when a program has
+  // fewer partitions.
+  constexpr uint64_t MaxChunkBytes = 1024 * 1024;
+  uint64_t Chunk =
+      std::min(MaxChunkBytes, std::max<uint64_t>(1, Total / Count));
+  std::vector<std::string> Keys(Symbols.size());
+  StringMap<uint64_t> KeyBytes;
+  for (unsigned I = 0; I < Symbols.size(); ++I) {
+    const Symbol &S = Symbols[I];
+    if (S.Kind != SymbolKind::Function || S.Partition == NoPartition)
+      continue;
+    StringRef Group = Symbols[Roots[I]].Group;
+    if (Group.empty())
+      continue;
+    uint64_t Chunks = 1;
+    while (Chunks * Chunk < GroupBytes[Group])
+      Chunks *= 2;
+    Keys[I] = Chunks == 1
+                  ? Group.str()
+                  : (Group + "#" +
+                     Twine(stableHash(Symbols[Roots[I]].Name) % Chunks))
+                        .str();
+    KeyBytes[Keys[I]] += Bytes(S);
+  }
+  std::vector<std::pair<StringRef, uint64_t>> Order;
+  for (const auto &Entry : KeyBytes)
+    Order.push_back({Entry.getKey(), Entry.getValue()});
+  llvm::sort(Order, [](const auto &A, const auto &B) {
+    return A.second != B.second ? A.second > B.second : A.first < B.first;
+  });
+  StringMap<unsigned> Where;
+  for (const auto &[Key, Size] : Order) {
+    unsigned First = stableHash(Key) % Count;
+    unsigned Second = stableHash((Key + "/2").str()) % Count;
+    unsigned Chosen = Load[Second] < Load[First] ? Second : First;
+    Load[Chosen] += Size;
+    Where[Key] = Chosen;
+  }
+  for (unsigned I = 0; I < Symbols.size(); ++I)
+    if (!Keys[I].empty())
+      Symbols[I].Partition = Where[Keys[I]];
 }
 
 bool startsWithLinkage(StringRef Rest) {
@@ -326,6 +409,11 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
     return true;
   };
 
+  // The emitter writes "; scriptc-group <key>" before the definitions of each
+  // source function; the group applies until the next such line, and an
+  // empty key ends it.
+  constexpr StringRef GroupLine = "; scriptc-group";
+  StringRef Group;
   size_t Pos = 0;
   while (Pos < Text.size()) {
     size_t End = Text.find('\n', Pos);
@@ -335,10 +423,15 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
     size_t Next = End + 1;
     if (Line.empty() || Line.trim().empty()) {
       // Blank separator.
+    } else if (Line.starts_with(GroupLine) &&
+               (Line.size() == GroupLine.size() ||
+                Line[GroupLine.size()] == ' ')) {
+      Group = Line.drop_front(GroupLine.size()).trim();
     } else if (Line.starts_with("define ")) {
       Symbol S;
       S.Kind = SymbolKind::Function;
       S.Header = Line;
+      S.Group = Group;
       if (!parseFunctionHeader(Line, S))
         return std::nullopt;
       // The emitter indents every body line, so the first line that is
@@ -359,7 +452,34 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
     } else if (Line.front() == '@') {
       Symbol S;
       S.Header = Line;
-      if (!parseGlobal(Line, S) || !Add(std::move(S)))
+      if (!parseGlobal(Line, S))
+        return std::nullopt;
+      // The emitter writes an interface dispatch table one element per
+      // line: the definition opens its aggregate initializer at the end of
+      // the line, and a line that is only the closing bracket ends it.
+      StringRef Opening = Line.rtrim();
+      if (S.Kind == SymbolKind::Variable &&
+          (Opening.ends_with(" [") || Opening.ends_with(" {"))) {
+        StringRef Close = Opening.back() == '[' ? "]" : "}";
+        size_t Cursor = Next;
+        while (true) {
+          if (Cursor >= Text.size())
+            return std::nullopt;
+          size_t LineEnd = Text.find('\n', Cursor);
+          if (LineEnd == StringRef::npos)
+            LineEnd = Text.size();
+          StringRef Element = Text.slice(Cursor, LineEnd);
+          if (Element == Close) {
+            S.Body = Text.slice(Next, LineEnd);
+            Next = LineEnd + 1;
+            break;
+          }
+          if (!Element.starts_with("  "))
+            return std::nullopt;
+          Cursor = LineEnd + 1;
+        }
+      }
+      if (!Add(std::move(S)))
         return std::nullopt;
     } else if (Line.starts_with("declare ")) {
       Symbol S;
@@ -416,55 +536,6 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
     }
   }
 
-  // An internal function referenced by exactly one other function, and by
-  // no global, is a whole-program inlining candidate; keep it with that
-  // function so its partition can inline it without importing.
-  constexpr unsigned Shared = ~1u;
-  std::vector<unsigned> Referrer(Symbols.size(), NoPartition);
-  for (unsigned I = 0; I < Symbols.size(); ++I) {
-    const Symbol &S = Symbols[I];
-    if (S.Kind == SymbolKind::Declaration)
-      continue;
-    for (unsigned Ref : S.Refs) {
-      if (Ref == I)
-        continue;
-      if (S.Kind == SymbolKind::Variable || Referrer[Ref] != NoPartition)
-        Referrer[Ref] = Shared;
-      else
-        Referrer[Ref] = I;
-    }
-  }
-  for (unsigned I = 0; I < Symbols.size(); ++I) {
-    if (Symbols[I].Kind != SymbolKind::Function)
-      continue;
-    unsigned Root = I;
-    for (unsigned Steps = 0; Steps < 1024; ++Steps) {
-      const Symbol &S = Symbols[Root];
-      unsigned Parent = Referrer[Root];
-      if (!S.Local || Parent == NoPartition || Parent == Shared ||
-          Symbols[Parent].Kind != SymbolKind::Function || Parent == I)
-        break;
-      Root = Parent;
-    }
-    Symbols[I].Partition = stableHash(Symbols[Root].Name) % Count;
-  }
-  for (const Symbol &S : Symbols) {
-    if (S.Kind != SymbolKind::Function)
-      continue;
-    for (unsigned Ref : S.Refs)
-      if (Symbols[Ref].Kind == SymbolKind::Variable &&
-          Symbols[Ref].Partition == NoPartition)
-        Symbols[Ref].Partition = S.Partition;
-  }
-  for (Symbol &S : Symbols)
-    if (S.Kind == SymbolKind::Variable && S.Partition == NoPartition)
-      S.Partition = stableHash(S.Name) % Count;
-
-  ProgramPartitions Result;
-  for (const Symbol &S : Symbols)
-    if (S.Kind != SymbolKind::Declaration && !S.Local)
-      Result.PublicSymbols.insert(S.Name);
-
   // Metadata nodes are numbered in the emitter's global order, so one added
   // node would renumber the references in every partition. Each partition
   // instead numbers the nodes it uses in order of first use, which keeps an
@@ -479,10 +550,122 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
   for (StringRef Line : NamedMetadata)
     scanReferences(Line, Index, NamedSymbols, NamedRoots);
 
+  // An internal definition that no other definition reaches is left out of
+  // every partition: the optimizer would delete it, and the emitter writes
+  // variants of helpers that the program never calls. Leaving them out
+  // shortens every partition's parse, summary and optimization, and since
+  // placement ignores them too, an edit that adds one changes no partition.
+  std::vector<char> Live(Symbols.size(), 0);
+  {
+    std::vector<unsigned> Work;
+    auto Reach = [&](unsigned I) {
+      if (!Live[I]) {
+        Live[I] = 1;
+        Work.push_back(I);
+      }
+    };
+    for (unsigned I = 0; I < Symbols.size(); ++I)
+      if (Symbols[I].Kind != SymbolKind::Declaration && !Symbols[I].Local)
+        Reach(I);
+    for (unsigned I : NamedSymbols)
+      Reach(I);
+    for (auto &Entry : Metadata)
+      for (unsigned I : Entry.second.Symbols)
+        Reach(I);
+    while (!Work.empty()) {
+      unsigned I = Work.back();
+      Work.pop_back();
+      for (unsigned Ref : Symbols[I].Refs)
+        Reach(Ref);
+    }
+  }
+
+  // An internal definition reached from exactly one other definition is an
+  // inlining candidate of it, or data only it uses; keep it with that
+  // definition so its partition can inline it without importing, and so a
+  // helper an edit adds lands in the partition of the code that uses it. A
+  // chain through a global continues to the function that uses the global.
+  // A function body larger than this is past LLVM's inline cost limit even
+  // for the only call to a local function, so it is placed by its own name.
+  // A chain stops where it would leave a function's source-module group:
+  // module initializers, which only the entry point calls, keep their own
+  // partitions instead of all sharing the entry point's.
+  constexpr size_t MaxInlinedBodyBytes = 256 * 1024;
+  constexpr unsigned Shared = ~1u;
+  std::vector<unsigned> Referrer(Symbols.size(), NoPartition);
+  for (unsigned I = 0; I < Symbols.size(); ++I) {
+    const Symbol &S = Symbols[I];
+    if (S.Kind == SymbolKind::Declaration || !Live[I])
+      continue;
+    for (unsigned Ref : S.Refs) {
+      if (Ref == I)
+        continue;
+      Referrer[Ref] = Referrer[Ref] == NoPartition ? I : Shared;
+    }
+  }
+  auto Follows = [&](unsigned Child, unsigned Parent) {
+    const Symbol &S = Symbols[Child];
+    if (!S.Local || Parent == NoPartition || Parent == Shared ||
+        Symbols[Parent].Kind == SymbolKind::Declaration)
+      return false;
+    if (S.Kind == SymbolKind::Function &&
+        (S.Body.size() > MaxInlinedBodyBytes ||
+         (Symbols[Parent].Kind == SymbolKind::Function && !S.Group.empty() &&
+          S.Group != Symbols[Parent].Group)))
+      return false;
+    return true;
+  };
+  std::vector<unsigned> Roots(Symbols.size());
+  for (unsigned I = 0; I < Symbols.size(); ++I) {
+    if (Symbols[I].Kind == SymbolKind::Declaration || !Live[I])
+      continue;
+    unsigned Root = I;
+    for (unsigned Steps = 0; Steps < 1024; ++Steps) {
+      unsigned Parent = Referrer[Root];
+      if (!Follows(Root, Parent) || Parent == I)
+        break;
+      Root = Parent;
+    }
+    // A function whose chain ends at a global that is not itself placed
+    // with a function (a table many functions use) is placed by its own
+    // name, so the functions of one table spread over the partitions.
+    if (Symbols[I].Kind == SymbolKind::Function &&
+        Symbols[Root].Kind != SymbolKind::Function)
+      Root = I;
+    Roots[I] = Root;
+    if (Symbols[I].Kind == SymbolKind::Function)
+      Symbols[I].Partition = stableHash(Symbols[Root].Name) % Count;
+  }
+  placeGroups(Symbols, Roots, Count);
+  // A global follows the function its chain ends at, then the first
+  // function that references it, then its own name.
+  for (unsigned I = 0; I < Symbols.size(); ++I)
+    if (Symbols[I].Kind == SymbolKind::Variable && Live[I] &&
+        Symbols[Roots[I]].Kind == SymbolKind::Function)
+      Symbols[I].Partition = Symbols[Roots[I]].Partition;
+  for (unsigned I = 0; I < Symbols.size(); ++I) {
+    const Symbol &S = Symbols[I];
+    if (S.Kind != SymbolKind::Function || !Live[I])
+      continue;
+    for (unsigned Ref : S.Refs)
+      if (Symbols[Ref].Kind == SymbolKind::Variable &&
+          Symbols[Ref].Partition == NoPartition)
+        Symbols[Ref].Partition = S.Partition;
+  }
+  for (unsigned I = 0; I < Symbols.size(); ++I)
+    if (Symbols[I].Kind == SymbolKind::Variable && Live[I] &&
+        Symbols[I].Partition == NoPartition)
+      Symbols[I].Partition = stableHash(Symbols[I].Name) % Count;
+
+  ProgramPartitions Result;
+  for (const Symbol &S : Symbols)
+    if (S.Kind != SymbolKind::Declaration && !S.Local)
+      Result.PublicSymbols.insert(S.Name);
+
   Result.Sources.resize(Count);
   std::vector<std::vector<unsigned>> Owned(Count);
   for (unsigned I = 0; I < Symbols.size(); ++I)
-    if (Symbols[I].Kind != SymbolKind::Declaration)
+    if (Symbols[I].Kind != SymbolKind::Declaration && Live[I])
       Owned[Symbols[I].Partition].push_back(I);
 
   auto Assemble = [&](unsigned P) {

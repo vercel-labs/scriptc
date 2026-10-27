@@ -1,3 +1,4 @@
+import { keyedHelperName } from "../stable-names.js";
 import { countedFor, numLit, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import type { Lowerer } from "../lowerer.js";
@@ -48,23 +49,26 @@ export function lowerGroupByStaticCall(
   if (!lowerer.isStdlibMember(access)) return null;
   const what = isMap ? "Map.groupBy" : "Object.groupBy";
   const loc = locOf(call);
-  if (call.arguments.length !== 2 || call.arguments.some((a) => ts.isSpreadElement(a))) {
-    lowerer.noLowering(`${what} with ${call.arguments.length} arguments`, call);
+  if (
+    call.arguments.nodes.length !== 2 ||
+    call.arguments.nodes.some((a) => ts.isSpreadElement(a))
+  ) {
+    lowerer.noLowering(`${what} with ${call.arguments.nodes.length} arguments`, call);
   }
-  const items = lowerer.lowerExpr(call.arguments[0]!);
+  const items = lowerer.lowerExpr(call.arguments.nodes[0]!);
   const elem = groupedElement(lowerer, items.type);
   if (elem === null) {
     lowerer.noLowering(
-      `${what} over an iterable of type '${lowerer.checker.typeToString(lowerer.typeOf(call.arguments[0]!))}'`,
-      call.arguments[0]!,
+      `${what} over an iterable of type '${lowerer.checker.typeToString(lowerer.typeOf(call.arguments.nodes[0]!))}'`,
+      call.arguments.nodes[0]!,
       "arrays, Sets, Maps and generators are the supported items forms — spread other iterables first: [...items]",
     );
   }
   const groupT = arrayOf(elem);
-  const fNode = call.arguments[1]!;
+  const fNode = call.arguments.nodes[1]!;
   // An unannotated JavaScript callback parameter takes the element.
   const f =
-    isJsSourceFile(fNode.getSourceFile()) &&
+    isJsSourceFile(ts.getSourceFileOfNode(fNode)) &&
     (ts.isArrowFunction(fNode) || ts.isFunctionExpression(fNode))
       ? lowerArrayCallback(lowerer, fNode, [elem], groupT, true).fnArg
       : lowerer.lowerExpr(fNode);
@@ -74,7 +78,7 @@ export function lowerGroupByStaticCall(
     (f.type.params.length >= 1 && !typeEquals(f.type.params[0]!, elem)) ||
     (f.type.params.length === 2 && f.type.params[1]!.kind !== "f64")
   ) {
-    lowerer.badType(call.arguments[1]!, lowerer.typeOf(call.arguments[1]!));
+    lowerer.badType(call.arguments.nodes[1]!, lowerer.typeOf(call.arguments.nodes[1]!));
   }
   const keyT = f.type.ret;
   // The call's own type keeps the callback's literal-union key type
@@ -101,7 +105,7 @@ export function lowerGroupByStaticCall(
     const key = `map.groupBy:${typeKey(items.type)}:${typeKey(f.type)}`;
     let helper = lowerer.mapHofHelpers.get(key);
     if (!helper) {
-      helper = `%map.groupBy.${lowerer.mapHofHelpers.size}`;
+      helper = keyedHelperName(lowerer, "%map.groupBy", key);
       lowerer.mapHofHelpers.set(key, helper);
       lowerer.liftedFns.push(buildGroupByFn(lowerer, helper, items.type, f.type, resultT, loc));
     }
@@ -138,7 +142,7 @@ export function lowerGroupByStaticCall(
   const key = `object.groupBy:${typeKey(items.type)}:${typeKey(f.type)}`;
   let helper = lowerer.mapHofHelpers.get(key);
   if (!helper) {
-    helper = `%object.groupBy.${lowerer.mapHofHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%object.groupBy", key);
     lowerer.mapHofHelpers.set(key, helper);
     lowerer.liftedFns.push(buildGroupByFn(lowerer, helper, items.type, f.type, resultT, loc));
   }

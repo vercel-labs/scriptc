@@ -13,10 +13,3 @@ json-dyn.ts:46:7 - error SC2007: values of type '{ (text: string, reviver?: ((th
   47 | // The exact `string | undefined` root now lowers: strings serialize while
 
   hint: annotate the slot with the ONE signature the program actually calls (e.g. '(x: number) => string'), or wrap the overloaded function in a single-signature arrow
-
-json-dyn.ts:46:18 - error SC1090: JSON methods as values (call 'parse' directly) are not supported yet
-
-  45 | const dynArray: unknown[] = []; // unknown[] IS the dyn array now — no fence (corpus 2585)
-  46 | const parseRef = JSON.parse;
-     |                  ^~~~~~~~~~
-  47 | // The exact `string | undefined` root now lowers: strings serialize while

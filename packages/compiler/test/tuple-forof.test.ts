@@ -25,7 +25,12 @@ console.log(total, calls);
     const mod = deserializeModule(await readFile(outPath, "utf8"));
     expect(validateModule(mod)).toEqual([]);
     const llvm = emitLlvmModule(mod);
-    expect(llvm.match(/call ptr @sc_f_pair\(/g)).toHaveLength(1);
+    // The receiver is computed once: an ordinary call, or (when the loop
+    // only reads elements) the result-slot entry filling frame storage.
+    const calls =
+      (llvm.match(/call ptr @sc_f_pair\(/g) ?? []).length +
+      (llvm.match(/call void @sc_\w*into_pair\(ptr %s\d+\)/g) ?? []).length;
+    expect(calls).toBe(1);
     expect(llvm).not.toContain("@scr_arr_new");
   } finally {
     await rm(dir, { recursive: true, force: true });

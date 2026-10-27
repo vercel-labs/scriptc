@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6466-node-stdio-stream-surface.ts"
+ ],
+ "diags": []
+}

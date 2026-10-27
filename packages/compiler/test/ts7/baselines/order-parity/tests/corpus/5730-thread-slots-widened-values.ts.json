@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5730-thread-slots-widened-values.ts"
+ ],
+ "diags": []
+}

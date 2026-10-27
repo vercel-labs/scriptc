@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/constructor-returns-instance-super.ts"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/number-maps.ts",
+  "args": [
+    "4"
+  ]
+}

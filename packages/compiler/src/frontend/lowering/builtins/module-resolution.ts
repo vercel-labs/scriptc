@@ -1,8 +1,8 @@
-import { nodeThrowExpr, boolLit, strLit, varRef } from "../../../ir/build.js";
+import { dynUndefinedExpr, nodeThrowExpr, boolLit, strLit, varRef } from "../../../ir/build.js";
 import { dirname, isAbsolute, resolve } from "node:path";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, PoisonError } from "../lowerer.js";
-import { canonicalBuiltinModule, isNodeEsmFile, locOf } from "../../program.js";
+import { canonicalBuiltinModule, isJsSourceFile, isNodeEsmFile, locOf } from "../../program.js";
 import { isRelativeSpecifier } from "../../workspace-registry.js";
 import { probeNodeRequireRefusal } from "../../npm.js";
 import { isNpmStaticPackage } from "../../npm-static.js";
@@ -15,21 +15,26 @@ import {
   type RuntimeResolveResult,
 } from "../../runtime-resolve.js";
 import {
+  computedRequireDiag,
   invalidJsonModuleDiag,
   nativeAddonDiag,
+  noLoweringDiag,
   unsupportedPackageImportDiag,
 } from "../../../diagnostics/diagnostic.js";
-import { NODE_BUILTIN_MODULES_V24 } from "../surfaces.js";
+import { NODE_BUILTIN_MODULES_V24, builtinModulesArrayLit } from "../surfaces.js";
+import { moduleFileName } from "../import-meta.js";
 import {
   BOOL,
   DYN,
   type IrExpr,
+  type IrStmt,
   type IrType,
   NULL_T,
   STRING,
   type SrcLoc,
   UNDEFINED_T,
   arrayOf,
+  funcOf,
 } from "../../../ir/ir.js";
 import { lowerFfiMemoryModule } from "../native-ffi.js";
 import {
@@ -38,13 +43,15 @@ import {
   createRequireCalleeFileOf,
 } from "./module-bindings.js";
 import { stripTypeCasts } from "./arguments.js";
+import { keyedHelperName } from "../stable-names.js";
 
 /** node:module's two compiler-only calls. isBuiltin compares one evaluated
  * string against the pinned Node 24 list (bare builtins also accept their
  * node: spelling; prefix-only entries do not gain a bare alias).
- * syncBuiltinESMExports is observably a no-op inside the static surface:
- * builtin exports cannot be mutated, so its only supported behavior is
- * evaluating no arguments and returning undefined. */
+ * syncBuiltinESMExports takes no arguments and returns undefined; as a
+ * statement it refreshes the events module's ES module namespace copy of
+ * defaultMaxListeners (lowerExprStatement), the one builtin export a program
+ * can change. */
 export function lowerNodeModuleCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
@@ -53,9 +60,9 @@ export function lowerNodeModuleCall(
 ): IrExpr | null {
   if (bi.module !== "module") return null;
   if (bi.member === "syncBuiltinESMExports") {
-    if (expr.arguments.length !== 0 || expr.arguments.some(ts.isSpreadElement)) {
+    if (expr.arguments.nodes.length !== 0 || expr.arguments.nodes.some(ts.isSpreadElement)) {
       lowerer.noLowering(
-        `module.syncBuiltinESMExports with ${expr.arguments.length} arguments`,
+        `module.syncBuiltinESMExports with ${expr.arguments.nodes.length} arguments`,
         expr,
         "syncBuiltinESMExports() takes no arguments",
       );
@@ -64,20 +71,20 @@ export function lowerNodeModuleCall(
       lowerer.noLowering(
         "module.syncBuiltinESMExports used as a value",
         expr,
-        "call syncBuiltinESMExports() as its own statement; the supported static effect is a no-op",
+        "call syncBuiltinESMExports() as its own statement",
       );
     }
     return { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc };
   }
   if (bi.member !== "isBuiltin") return null;
-  if (expr.arguments.length !== 1 || expr.arguments.some(ts.isSpreadElement)) {
+  if (expr.arguments.nodes.length !== 1 || expr.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering(
-      `module.isBuiltin with ${expr.arguments.length} arguments`,
+      `module.isBuiltin with ${expr.arguments.nodes.length} arguments`,
       expr,
       "isBuiltin(moduleName) takes one string",
     );
   }
-  const argumentNode = expr.arguments[0]!;
+  const argumentNode = expr.arguments.nodes[0]!;
   const argument = lowerer.lowerExpr(argumentNode);
   if (argument.type.kind !== "string") {
     if (argument.type.kind === "dyn" || argument.type.kind === "union") {
@@ -133,6 +140,188 @@ export function lowerNodeModuleCall(
   };
 }
 
+/** The run-time arguments of scr_require.c's computed require and
+ * require.resolve after the specifier: the requiring file (Node's require
+ * stack names it), the call's "file:line" for the SC2020 refusal, and the
+ * builtin ids. The call joins the runtime-fence ledger, so coverage lists
+ * it as deferred to runtime. */
+function computedRequireArgs(
+  lowerer: Lowerer,
+  surface: string,
+  node: ts.Node,
+  baseFile: ts.SourceFile,
+): IrExpr[] {
+  const loc = locOf(node);
+  lowerer.runtimeFences.push(computedRequireDiag(surface, loc));
+  const line = ts.getLineAndCharacterOfPosition(ts.getSourceFileOfNode(node), loc.start).line + 1;
+  return [
+    strLit(moduleFileName(lowerer, baseFile), loc),
+    strLit(`${loc.file}:${line}`, loc),
+    builtinModulesArrayLit(loc),
+  ];
+}
+
+/** A createRequire loader's require.resolve with a computed request, in
+ * JavaScript source: Node's resolution at run time (scr_require.c), with
+ * the options argument checked there. */
+function computedResolveCall(
+  lowerer: Lowerer,
+  node: ts.Node,
+  baseFile: ts.SourceFile,
+  request: IrExpr,
+  options: IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  return {
+    kind: "libCall",
+    fn: "module.resolveComputed",
+    args: [
+      request,
+      options,
+      ...computedRequireArgs(lowerer, "createRequire's require.resolve", node, baseFile),
+    ],
+    type: STRING,
+    loc,
+  };
+}
+
+/** The fence a createRequire use with no build-time lowering throws in
+ * JavaScript source, where preflight admits it inside a try block
+ * (createRequireUse7 in program.ts). The diagnostic joins the runtime-fence
+ * ledger, so coverage lists the use as deferred to runtime. */
+function createRequireFence(
+  lowerer: Lowerer,
+  surface: string,
+  node: ts.Node,
+  hint: string,
+): IrStmt & { kind: "runtimeFence" } {
+  const loc = locOf(node);
+  const d = noLoweringDiag(surface, loc, hint);
+  lowerer.runtimeFences.push(d);
+  const line = ts.getLineAndCharacterOfPosition(ts.getSourceFileOfNode(node), loc.start).line + 1;
+  return {
+    kind: "runtimeFence",
+    code: d.code,
+    message: `${d.message} [${d.code} at ${loc.file}:${line}]`,
+    loc,
+  };
+}
+
+/** A createRequire loader's `resolve` read as a value in JavaScript source
+ * (passed on, or picked by `??`): a function that resolves its request at
+ * run time, so `(options.resolve ?? require.resolve)(id)` behaves as in
+ * Node. */
+export function createRequireResolveValue(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+  loc: SrcLoc,
+): IrExpr {
+  const baseFile = createRequireCalleeFileOf(lowerer, access.expression);
+  if (baseFile === null || !isJsSourceFile(ts.getSourceFileOfNode(access))) {
+    lowerer.noLowering(
+      "createRequire's require.resolve as a value",
+      access,
+      'call it with a string literal (require.resolve("<specifier>")), which resolves at build time',
+    );
+  }
+  const name = keyedHelperName(lowerer, "%createRequire.resolve", `${loc.file}:${loc.start}`);
+  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+    const call = computedResolveCall(
+      lowerer,
+      access,
+      baseFile,
+      varRef("request", DYN, loc),
+      varRef("options", DYN, loc),
+      loc,
+    );
+    lowerer.liftedFns.push({
+      name,
+      params: [
+        { localId: "request", name: "request", type: DYN },
+        { localId: "options", name: "options", type: DYN },
+      ],
+      locals: [
+        { id: "request", name: "request", type: DYN, mutable: false },
+        { id: "options", name: "options", type: DYN, mutable: false },
+      ],
+      returnType: STRING,
+      body: [{ kind: "return", value: call, loc }],
+      loc,
+    });
+  }
+  return {
+    kind: "dynFrom",
+    value: { kind: "closure", fnName: name, captures: [], type: funcOf([DYN, DYN], STRING), loc },
+    fnName: access.name.text,
+    type: DYN,
+    loc,
+  };
+}
+
+/** A createRequire loader's `resolve.paths` read as a value in JavaScript
+ * source: a function that throws the fence when called. */
+export function createRequireResolveFenceValue(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+  loc: SrcLoc,
+): IrExpr {
+  const surface = "createRequire's require.resolve.paths as a value";
+  const hint =
+    'call it with a string literal (require.resolve.paths("<specifier>")), which resolves at build time';
+  if (!isJsSourceFile(ts.getSourceFileOfNode(access))) lowerer.noLowering(surface, access, hint);
+  const name = keyedHelperName(lowerer, "%createRequire.fence", `${loc.file}:${loc.start}`);
+  if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
+    lowerer.liftedFns.push({
+      name,
+      params: [],
+      locals: [],
+      returnType: DYN,
+      body: [createRequireFence(lowerer, surface, access, hint)],
+      loc,
+    });
+  }
+  return {
+    kind: "dynFrom",
+    value: { kind: "closure", fnName: name, captures: [], type: funcOf([], DYN), loc },
+    fnName: access.name.text,
+    type: DYN,
+    loc,
+  };
+}
+
+/** A createRequire use deferred to run time in JavaScript source: as in
+ * Node, the call's arguments are evaluated in order, then the call throws
+ * (here, the fence). Code before the call in the same statement runs, and
+ * the expression diverges, so nothing after it does. */
+function deferredCreateRequireThrow(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  surface: string,
+  hint: string,
+  loc: SrcLoc,
+): IrExpr {
+  const stmts: IrStmt[] = call.arguments.nodes.map((arg) => ({
+    kind: "exprStmt",
+    expr: lowerer.lowerExpr(arg),
+    loc: locOf(arg),
+  }));
+  const type = lowerer.irTypeOf(call);
+  const slot = lowerer.declareHiddenLocal("%never", type);
+  slot.mutable = true;
+  stmts.push(
+    { kind: "varDecl", localId: slot.id, init: null, loc },
+    createRequireFence(lowerer, surface, call, hint),
+  );
+  return {
+    kind: "seqExpr",
+    stmts,
+    result: varRef(slot.id, type, loc),
+    diverges: true,
+    type,
+    loc,
+  };
+}
+
 export function lowerCreateRequireCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -141,10 +330,37 @@ export function lowerCreateRequireCall(
   const cr = createRequireSpecOf(lowerer, call);
   if (cr === null) return null;
   if (cr.spec === null) {
-    lowerer.noLowering(
-      "createRequire's require with this argument shape",
+    const args = call.arguments.nodes;
+    const surface = "createRequire's require with a computed specifier or this argument shape";
+    const hint =
+      'the compiled module graph is fixed at build time — the one lowered form is require("<static string literal>"); native addons are not loaded';
+    if (!isJsSourceFile(ts.getSourceFileOfNode(call)))
+      lowerer.noLowering(surface, call, hint, undefined, "dynamic-require");
+    // Spread arguments have no run-time resolution: they run, then the
+    // call throws the fence.
+    if (args.some((a) => ts.isSpreadElement(a)))
+      return deferredCreateRequireThrow(lowerer, call, surface, hint, loc);
+    // Node evaluates every argument, then requires the first.
+    const stmts: IrStmt[] = [];
+    let id = args.length > 0 ? lowerer.lowerExprExpecting(args[0]!, DYN) : dynUndefinedExpr(loc);
+    if (args.length > 1) {
+      const slot = lowerer.declareHiddenLocal("%require.id", DYN);
+      stmts.push({ kind: "varDecl", localId: slot.id, init: id, loc });
+      for (const arg of args.slice(1))
+        stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(arg), loc: locOf(arg) });
+      id = varRef(slot.id, DYN, loc);
+    }
+    const require: IrExpr = {
+      kind: "libCall",
+      fn: "module.requireComputed",
+      args: [id, ...computedRequireArgs(lowerer, "createRequire's require", call, cr.baseFile)],
+      type: DYN,
+      loc,
+    };
+    return lowerer.coerceInto(
       call,
-      'the compiled module graph is fixed at build time — the one lowered form is require("<static string literal>")',
+      stmts.length === 0 ? require : { kind: "seqExpr", stmts, result: require, type: DYN, loc },
+      lowerer.irTypeOf(call),
     );
   }
   const spec = cr.spec;
@@ -275,23 +491,23 @@ export function lowerImportMetaResolveCall(
   ) {
     return null;
   }
-  if (call.questionDotToken !== undefined || call.arguments.length !== 1) {
+  if (call.questionDotToken !== undefined || call.arguments.nodes.length !== 1) {
     lowerer.noLowering(
       "import.meta.resolve with this argument shape",
       call,
       'the lowered form is import.meta.resolve("<static specifier>") using the containing module as its parent',
     );
   }
-  const specifier = staticString(call.arguments[0]);
+  const specifier = staticString(call.arguments.nodes[0]);
   if (specifier === null) {
     lowerer.noLowering(
       "import.meta.resolve with a runtime-computed specifier",
-      call.arguments[0]!,
+      call.arguments.nodes[0]!,
       "a compiled binary has a fixed module graph — pass a string literal",
     );
   }
   const result = resolveImportMetaRuntime(
-    call.getSourceFile().fileName,
+    ts.getSourceFileOfNode(call).fileName,
     specifier,
     lowerer.targetPlatform,
     lowerer.frontendServices,
@@ -313,8 +529,8 @@ function requireResolverBaseFile(lowerer: Lowerer, receiver: ts.Expression): ts.
   const created = createRequireCalleeFileOf(lowerer, receiver);
   if (created !== null) return created;
   return lowerer.isStdlibGlobal(receiver, "require") &&
-    !isNodeEsmFile(receiver.getSourceFile(), lowerer.program)
-    ? receiver.getSourceFile()
+    !isNodeEsmFile(ts.getSourceFileOfNode(receiver), lowerer.program)
+    ? ts.getSourceFileOfNode(receiver)
     : null;
 }
 
@@ -326,7 +542,7 @@ function staticResolveOptionPaths(
   if (ts.isIdentifier(value) && value.text === "undefined") return undefined;
   if (!ts.isObjectLiteralExpression(value)) return null;
   let paths: readonly string[] | undefined;
-  for (const prop of value.properties) {
+  for (const prop of value.properties.nodes) {
     if (!ts.isPropertyAssignment(prop)) return null;
     const name =
       ts.isIdentifier(prop.name) || ts.isStringLiteralLike(prop.name) ? prop.name.text : null;
@@ -334,7 +550,7 @@ function staticResolveOptionPaths(
     const init = stripTypeCasts(prop.initializer);
     if (!ts.isArrayLiteralExpression(init)) return null;
     const entries: string[] = [];
-    for (const item of init.elements) {
+    for (const item of init.elements.nodes) {
       if (!ts.isStringLiteralLike(item)) return null;
       entries.push(item.text);
     }
@@ -366,11 +582,30 @@ export function lowerRequireResolveCall(lowerer: Lowerer, call: ts.CallExpressio
   }
   const baseFile = requireResolverBaseFile(lowerer, receiver);
   if (baseFile === null) return null;
+  const surface = pathsCall ? "require.resolve.paths" : "require.resolve";
+  // A createRequire loader's query that resolves only at run time, in
+  // JavaScript source: preflight admits it inside a try block
+  // (createRequireUse7 in program.ts). Its arguments run, then it throws.
+  const deferred = (what: string, hint: string): IrExpr | null =>
+    call.questionDotToken === undefined &&
+    createRequireCalleeFileOf(lowerer, receiver) !== null &&
+    isJsSourceFile(ts.getSourceFileOfNode(call))
+      ? deferredCreateRequireThrow(
+          lowerer,
+          call,
+          `createRequire's ${surface} ${what}`,
+          hint,
+          locOf(call),
+        )
+      : null;
+  const resolveHint = `call it with a string literal (${surface}("<specifier>")), which resolves at build time`;
   if (
     call.questionDotToken !== undefined ||
-    call.arguments.length < 1 ||
-    call.arguments.length > (pathsCall ? 1 : 2)
+    call.arguments.nodes.length < 1 ||
+    call.arguments.nodes.length > (pathsCall ? 1 : 2)
   ) {
+    const fenced = deferred("with this argument shape", resolveHint);
+    if (fenced) return fenced;
     lowerer.noLowering(
       pathsCall
         ? "require.resolve.paths with this argument shape"
@@ -378,11 +613,33 @@ export function lowerRequireResolveCall(lowerer: Lowerer, call: ts.CallExpressio
       call,
     );
   }
-  const specifier = staticString(call.arguments[0]);
+  const specifier = staticString(call.arguments.nodes[0]);
+  // A computed request (or options) through a createRequire loader in
+  // JavaScript source resolves at run time.
+  if (
+    (specifier === null || staticResolveOptionPaths(call.arguments.nodes[1]) === null) &&
+    !pathsCall &&
+    createRequireCalleeFileOf(lowerer, receiver) !== null &&
+    isJsSourceFile(ts.getSourceFileOfNode(call))
+  ) {
+    const [request, options] = call.arguments.nodes;
+    return computedResolveCall(
+      lowerer,
+      call,
+      baseFile,
+      lowerer.lowerExprExpecting(request!, DYN),
+      options === undefined
+        ? dynUndefinedExpr(locOf(call))
+        : lowerer.lowerExprExpecting(options, DYN),
+      locOf(call),
+    );
+  }
   if (specifier === null) {
+    const fenced = deferred("with a computed request", resolveHint);
+    if (fenced) return fenced;
     lowerer.noLowering(
       `${pathsCall ? "require.resolve.paths" : "require.resolve"} with a runtime-computed request`,
-      call.arguments[0]!,
+      call.arguments.nodes[0]!,
       "a compiled binary has a fixed module graph — pass a string literal",
     );
   }
@@ -413,11 +670,16 @@ export function lowerRequireResolveCall(lowerer: Lowerer, call: ts.CallExpressio
           };
     return lowerer.coerceInto(call, raw, lowerer.irTypeOf(call));
   }
-  const paths = staticResolveOptionPaths(call.arguments[1]);
+  const paths = staticResolveOptionPaths(call.arguments.nodes[1]);
   if (paths === null) {
+    const fenced = deferred(
+      "with runtime-computed options",
+      'omit options or pass { paths: ["<static directory>", ...] }',
+    );
+    if (fenced) return fenced;
     lowerer.noLowering(
       "require.resolve with runtime-computed options",
-      call.arguments[1]!,
+      call.arguments.nodes[1]!,
       'omit options or pass { paths: ["<static directory>", ...] }',
     );
   }

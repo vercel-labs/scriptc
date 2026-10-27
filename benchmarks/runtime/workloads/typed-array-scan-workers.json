@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/typed-array-scan-workers.ts",
+  "args": [
+    "3"
+  ]
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/native-worker-discarded-heaps.ts"
+ ],
+ "diags": []
+}

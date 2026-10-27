@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5770-guarded-union-narrows.ts"
+ ],
+ "diags": []
+}

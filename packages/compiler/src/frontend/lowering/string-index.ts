@@ -1,4 +1,15 @@
-import { BOOL, F64, STRING, type IrExpr, type IrType, type SrcLoc } from "../../ir/ir.js";
+import type * as ts from "../ts7/adapter.js";
+import {
+  BOOL,
+  DYN,
+  F64,
+  STRING,
+  isUnitType,
+  type IrExpr,
+  type IrStmt,
+  type IrType,
+  type SrcLoc,
+} from "../../ir/ir.js";
 import { numLit, varRef } from "../../ir/build.js";
 import type { Lowerer } from "./lowerer.js";
 
@@ -65,4 +76,78 @@ export function lowerOptionalStringIndex(
     type,
     loc,
   };
+}
+
+/** A number-keyed read of a receiver the checker narrowed to string whose
+ * stored value is still a union: an array-derived binding keeps its
+ * undefined arm (`const t = tokens[i]`), and a `typeof t === "string"`
+ * guard narrows the checker's type without retagging the storage. Both
+ * operands are captured first, as for a plain string receiver. A unit arm
+ * performs the checked-dynamic keyed read on that unit, which throws Node's
+ * "Cannot read properties of undefined (reading '<key>')"; another value
+ * arm, which the checker has excluded, fails the checked extraction; the
+ * string arm reads like any string receiver. Null when the union has no
+ * string arm. */
+export function lowerUnionStringIndex(
+  lowerer: Lowerer,
+  receiver: IrExpr,
+  index: IrExpr,
+  keyNode: ts.Node,
+  type: IrType,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (receiver.type.kind !== "union") return null;
+  const unionType = receiver.type;
+  const unionId = unionType.unionId;
+  const def = lowerer.unions.get(unionId);
+  const stringTag = lowerer.armTag(unionId, STRING);
+  if (!def || stringTag < 0) return null;
+  const receiverLocal = lowerer.declareHiddenLocal("%indexedUnion", unionType);
+  const indexLocal = lowerer.declareHiddenLocal("%unionStringIndex", F64);
+  const stored = (): IrExpr => varRef(receiverLocal.id, unionType, loc);
+  const key = (): IrExpr => varRef(indexLocal.id, F64, loc);
+  const stmts: IrStmt[] = [
+    { kind: "varDecl", localId: receiverLocal.id, init: receiver, loc },
+    { kind: "varDecl", localId: indexLocal.id, init: index, loc },
+  ];
+  let text: IrExpr;
+  if (def.arms.every((arm, tag) => tag === stringTag || isUnitType(arm))) {
+    text = { kind: "unionNarrow", unionId, tag: stringTag, value: stored(), type: STRING, loc };
+  } else {
+    const helper = lowerer.narrowedArmHelper(unionId, STRING, loc);
+    if (helper === null) return null;
+    text = lowerer.checkedNarrowCall(helper, stored(), STRING, loc);
+  }
+  let result = lowerOptionalStringIndex(lowerer, text, key(), type, loc);
+  for (let tag = def.arms.length - 1; tag >= 0; tag--) {
+    const arm = def.arms[tag]!;
+    if (!isUnitType(arm)) continue;
+    const unit = arm.kind === "nullT" ? "null" : "undefined";
+    const thrown: IrExpr = {
+      kind: "dynCheck",
+      value: {
+        kind: "dynKeyGet",
+        value: {
+          kind: "dynFrom",
+          value: { kind: "unitLit", unit, type: arm, loc },
+          type: DYN,
+          loc,
+        },
+        key: lowerer.ensureString(key(), keyNode),
+        type: DYN,
+        loc,
+      },
+      type: STRING,
+      loc,
+    };
+    result = {
+      kind: "ternary",
+      cond: { kind: "unionIsTag", unionId, tag, negated: false, value: stored(), type: BOOL, loc },
+      then: lowerer.coerceToExpected(thrown, type),
+      else_: result,
+      type,
+      loc,
+    };
+  }
+  return { kind: "seqExpr", stmts, result, type, loc };
 }

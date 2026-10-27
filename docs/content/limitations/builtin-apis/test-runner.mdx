@@ -1,1 +1,31 @@
-- **Concurrent tests:** with `{ concurrency }` above 1, subtests run on their own fibers, and results are reported in declaration order, as in Node. Concurrent bodies resume in Node's order around `beforeEach` hooks and nested suites. Other runner steps, such as `afterEach` and `after` hooks, take no microtask turns between bodies, so code that observes the interleaving of concurrent bodies across those steps can see a different order than Node.
+- **Concurrent tests:** with `{ concurrency }` above 1, subtests run on their own fibers, and results are reported in declaration order, as in Node.
+  Concurrent bodies resume in Node's order around `beforeEach` hooks and nested suites.
+  Other runner steps, such as `afterEach` and `after` hooks, take no microtask turns between bodies, so code that observes the interleaving of concurrent bodies across those steps can see a different order than Node.
+- **Snapshots:** `t.assert.snapshot` and `t.assert.fileSnapshot` compile, with Node's default serializer, `JSON.stringify(value, null, 2)`, or an `options.serializers` array literal.
+  A compiled test reads the snapshot file Node writes beside the entry file, `<entry file>.snapshot`, at the entry file's path when the program was compiled.
+  Running the binary with Node's flag `--test-update-snapshots` as its first argument writes the snapshot files instead; as in Node, the flag is kept out of `process.argv` and appears in `process.execArgv`.
+  Snapshot files are read in the form Node writes them, `` exports[`key`] = `value`; `` statements.
+  The `snapshot.setDefaultSnapshotSerializers` and `snapshot.setResolveSnapshotPath` module functions throw `SC2020`.
+- **TestContext values:** `t.filePath` is the entry file's path when the program was compiled.
+  `t.attempt` is `0`, since a test runs once.
+  `t.passed` is `false` while the body runs and the test's outcome in its `afterEach` and `t.after` hooks.
+  `t.workerId` is `Number(process.env.NODE_TEST_WORKER_ID) || undefined`, as in Node.
+  `t.tags` is `[]`, since the `tags` test option throws `SC2020`; the array is not frozen as Node's is.
+- **Suite and hook contexts:** a `describe` body may take its `SuiteContext`, which has `name`, `fullName`, `filePath`, `attempt`, `passed` and `diagnostic`.
+  Hooks may take their context, as in Node: the suite's for `before` and `after`, the test's for `beforeEach`, `afterEach`, `t.before` and `t.after`.
+  The `SuiteContext` `signal` and `log` members, and hook `done` callbacks, throw `SC2020`.
+- **Module-level hooks:** `before` hooks outside any suite run at their `before()` call, and the first top-level test waits for the async ones; `after` hooks outside any suite run after the last top-level test.
+  Both get the root's context, named `<root>`.
+  As in Node, a throwing root `before` fails each top-level test with its error, without running its body, and cancels the tests and suites inside each top-level suite.
+  A throwing root `after` reports the entry file as a failed result, and the exit code is unchanged.
+- **Timeouts:** when a test's `{ timeout }` elapses, its running subtests are cancelled, as in Node.
+  Subtests do not take their parent's `timeout` as their own, where Node's do, and the subtests of a timed-out test with `{ concurrency }` above 1 run to completion before the test reports.
+  A body that keeps running after its timeout and calls `t.test` again runs that subtest, where Node reports it as not started.
+- **Thrown values:** a test that throws a value that is not an `Error` reports it in the failing section as `util.inspect` renders it, as Node does, for strings, numbers, booleans, objects, arrays, `null` and `undefined`.
+  A thrown class instance that is not an `Error`, such as `throw new Point(1, 2)`, reports `[object Object]`, where Node prints `Point { x: 1, y: 2 }`.
+- **Test names:** a test without a name, or with an empty one, takes its function's name or `<anonymous>`, as in Node, when the function's name is known at compile time: a function expression, a function declaration, or a `const` bound to an arrow or anonymous function.
+  A name computed at run time, with a function the program received as a parameter, is used as given, so an empty one stays empty where Node uses the function's name.
+  `test(fn)` and `test("", fn)` with such a function throw `SC2020`.
+- **Current context:** `getTestContext()` returns the context of the test, suite or hook whose code is running, as in Node: `undefined` at module top level, the root's context in module-level hooks, the suite's in a suite body and in the suite's hooks, and the test's in its body, in the code it awaits, and in the timers, immediates, `process.nextTick` and `queueMicrotask` callbacks it schedules.
+  Node returns, for a suite, a `TestContext` that is a different object from the `SuiteContext` passed to the suite body and its `before` and `after` hooks; in a compiled program they are the same object, so comparing them with `===` gives `true`.
+  Completion callbacks of callback-style I/O APIs, such as `fs.readFile`, get `undefined`, as AsyncLocalStorage stores do.

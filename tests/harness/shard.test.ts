@@ -3,19 +3,20 @@
  * depends only on the item's key (list growth never moves an existing item),
  * and no spec means everything. differential/llvm-differential/npm/server
  * lean on these properties for CI sharding — see shard.ts. */
-import { globSync } from "node:fs";
+import { globSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import {
   balancedShardSelect,
+  corpusCostFiles,
   corpusSelect,
+  loadCorpusCosts,
   parseShardSpec,
   shardOf,
   shardSelect,
   shardSuffix,
   skipUnownedTest,
 } from "./shard.js";
-import corpusCosts from "./corpus-costs.json";
 import fixtureCosts from "./effect4-costs.json";
 import effectCosts from "./effect-costs.json";
 
@@ -268,7 +269,7 @@ describe("corpusSelect", () => {
   );
 
   test("measured costs cover the corpus and balance the shards", () => {
-    const costs = corpusCosts.plain as Record<string, number>;
+    const costs = loadCorpusCosts().plain;
     const measured = programs.filter((k) => costs[k] !== undefined).length;
     expect(measured / programs.length).toBeGreaterThan(0.9);
     const loads = Array.from({ length: 10 }, (_, i) =>
@@ -278,5 +279,31 @@ describe("corpusSelect", () => {
       ),
     );
     expect(Math.max(...loads) / Math.min(...loads)).toBeLessThan(1.1);
+  });
+
+  test("every per-program cost file names a corpus program", () => {
+    const known = new Set(programs);
+    for (const key of corpusCostFiles().keys())
+      expect(known, `corpus-costs/${key}.json`).toContain(key);
+  });
+
+  test("per-program cost files override the table, and invalid ones throw", () => {
+    const dir = join(
+      import.meta.dirname,
+      "../../node_modules/.cache/scriptc-tests/corpus-costs-files",
+    );
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(join(dir, "200-dir"), { recursive: true });
+    writeFileSync(join(dir, "100-flat.ts.json"), '{ "plain": 2500, "san": 4000 }\n');
+    writeFileSync(join(dir, "200-dir/main.ts.json"), '{ "san": 900 }\n');
+    expect([...corpusCostFiles(dir)]).toEqual([
+      ["100-flat.ts", { plain: 2500, san: 4000 }],
+      ["200-dir/main.ts", { san: 900 }],
+    ]);
+    for (const bad of ['{ "plian": 1 }', '{ "plain": 0 }', '{ "san": "9" }']) {
+      writeFileSync(join(dir, "100-flat.ts.json"), bad);
+      expect(() => corpusCostFiles(dir)).toThrow(/plain|san/);
+    }
+    rmSync(dir, { recursive: true, force: true });
   });
 });

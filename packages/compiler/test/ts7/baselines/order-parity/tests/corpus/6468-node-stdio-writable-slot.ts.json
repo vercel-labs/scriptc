@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6468-node-stdio-writable-slot.ts"
+ ],
+ "diags": []
+}

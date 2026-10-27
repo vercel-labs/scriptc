@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/json-stringify-unknown-undefined-root.ts"
+ ],
+ "diags": []
+}

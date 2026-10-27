@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6070-iterator-helpers-untyped.js"
+ ],
+ "diags": []
+}

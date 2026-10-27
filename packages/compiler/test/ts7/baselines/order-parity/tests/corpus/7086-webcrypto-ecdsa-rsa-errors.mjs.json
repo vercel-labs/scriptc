@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7086-webcrypto-ecdsa-rsa-errors.mjs"
+ ],
+ "diags": []
+}

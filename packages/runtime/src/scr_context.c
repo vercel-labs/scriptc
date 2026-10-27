@@ -23,6 +23,7 @@ static const atomic_bool scr_context_raised = true;
 static SCR_TL const atomic_bool *scr_context_signal = &scr_context_unsignaled;
 static SCR_TL bool scr_context_stopped;
 SCR_TL void (*scr_context_report_error)(void);
+SCR_TL bool scr_context_report_rejection;
 
 typedef struct { char *name; char *value; } ScrContextEnvEntry;
 struct ScrContextEnv { size_t count; ScrContextEnvEntry *entries; };
@@ -196,6 +197,13 @@ double scr_context_thread_number(void) { return 0; }
 double scr_worker_root(void) { return -1; }
 ScrDyn *scr_worker_data(void) { return scr_dyn_new_null(); }
 ScrDyn *scr_worker_parent_port(void) { return scr_dyn_new_null(); }
+ScrDyn *scr_worker_resource_limits(void) { return scr_dyn_new_obj(); }
+ScrDyn *scr_worker_thread_name_current(void) {
+  ScrStr *empty = scr_str_new("", 0);
+  ScrDyn *name = scr_dyn_new_str(empty);
+  scr_str_release(empty);
+  return name;
+}
 #endif
 
 /* ── native stack guard ─────────────────────────────────────────────────

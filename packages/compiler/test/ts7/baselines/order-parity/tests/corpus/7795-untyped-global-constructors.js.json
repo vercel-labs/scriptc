@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7795-untyped-global-constructors.js"
+ ],
+ "diags": []
+}

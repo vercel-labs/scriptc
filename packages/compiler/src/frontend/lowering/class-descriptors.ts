@@ -23,7 +23,7 @@ function bagOnlyProperty(owner: ClassInfo, name: string): boolean {
   return !owner.fields.has(name) && owner.subclasses.every((child) => bagOnlyProperty(child, name));
 }
 
-function runtimeRooted(info: ClassInfo): boolean {
+export function runtimeRooted(info: ClassInfo): boolean {
   for (let current: ClassInfo | null = info; current; current = current.base) {
     if (
       current.def.runtime ||
@@ -45,7 +45,7 @@ export function lowerClassDescriptorRead(
 ): IrExpr | null {
   if (!isDynTypedRefType(target.type)) return null;
   const info = lowerer.classes.get(target.type.className);
-  const key = call.arguments[1]!;
+  const key = call.arguments.nodes[1]!;
   if (!info || runtimeRooted(info) || !ts.isStringLiteral(key) || !bagOnlyProperty(info, key.text))
     return null;
   const loc = locOf(call);
@@ -79,7 +79,7 @@ export function lowerClassDataDescriptor(
   const safeName = (owner: ClassInfo, name: string): boolean => bagOnlyProperty(owner, name);
   const descriptor = (node: ts.Expression): boolean =>
     ts.isObjectLiteralExpression(node) &&
-    node.properties.every(
+    node.properties.nodes.every(
       (p) =>
         (ts.isPropertyAssignment(p) ||
           ts.isShorthandPropertyAssignment(p) ||
@@ -88,15 +88,15 @@ export function lowerClassDataDescriptor(
           literalName(p.name) ?? "",
         ),
     );
-  const descriptors = call.arguments[member === "defineProperty" ? 2 : 1]!;
+  const descriptors = call.arguments.nodes[member === "defineProperty" ? 2 : 1]!;
   if (member === "defineProperty") {
-    const key = call.arguments[1]!;
+    const key = call.arguments.nodes[1]!;
     if ((ts.isStringLiteral(key) && !safeName(info, key.text)) || !descriptor(descriptors))
       return null;
   } else {
     if (
       !ts.isObjectLiteralExpression(descriptors) ||
-      !descriptors.properties.every((p) => {
+      !descriptors.properties.nodes.every((p) => {
         if (!ts.isPropertyAssignment(p)) return false;
         const name = literalName(p.name);
         return (
@@ -127,13 +127,13 @@ export function lowerClassDataDescriptor(
           {
             kind: "varDecl" as const,
             localId: key.id,
-            init: lowerer.lowerExprExpecting(call.arguments[1]!, DYN),
+            init: lowerer.lowerExprExpecting(call.arguments.nodes[1]!, DYN),
             loc,
           },
         ]
       : []),
     { kind: "varDecl", localId: desc.id, init: lowerer.lowerExprExpecting(descriptors, DYN), loc },
-    ...(key && !ts.isStringLiteral(call.arguments[1]!)
+    ...(key && !ts.isStringLiteral(call.arguments.nodes[1]!)
       ? [
           {
             kind: "assign" as const,
@@ -177,7 +177,7 @@ export function lowerClassDataDescriptor(
 
 function descriptorGuard(lowerer: Lowerer, info: ClassInfo, loc: SrcLoc): string {
   const name = `%descriptorGuard:${info.def.name}`;
-  const existing = lowerer.liftedFns.find((fn) => fn.name === name);
+  const existing = lowerer.liftedFnNamed(name);
   const key = varRef("key", DYN, loc);
   const fields = new Set<string>();
   const collect = (owner: ClassInfo): void => {

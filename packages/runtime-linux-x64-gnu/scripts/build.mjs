@@ -24,6 +24,10 @@ process.env.SCRIPTC_RUNTIME_PACK_CONFIG = JSON.stringify({
   },
   ...toolchain,
   compileFlags: ["-ffunction-sections", "-fdata-sections"],
-  systemLibraries: [{ name: "m", predicate: true }],
+  // scr_unwind_raise: the static libgcc_eh, which loads no shared library.
+  systemLibraries: [
+    { name: "m", predicate: true },
+    { name: "gcc_eh", predicate: true },
+  ],
 });
 await import("../../runtime-pack-common/scripts/build.mjs");

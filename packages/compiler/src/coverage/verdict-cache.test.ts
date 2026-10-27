@@ -11,7 +11,8 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 test("unchanged and comment-only reruns replay the verdict; code edits relower", () => {
   const entry = join(dir, "main.ts");
-  const program = `const pairs: [number, number][] = [[1, 2]];\nconst [[a, b]] = pairs;\nconsole.log(a + b);\nconst { length } = [1, 2] as number[];\nconsole.log(length);\n`;
+  // The blocker: an object pattern over a union source (arrays alone compile).
+  const program = `const pairs: [number, number][] = [[1, 2]];\nconst [[a, b]] = pairs;\nconsole.log(a + b);\nconst { length } = (a > 9 ? [1, 2] : "ab") as number[] | string;\nconsole.log(length);\n`;
   writeFileSync(entry, program);
   const entries = new Map<string, string>();
   const store: VerdictStore = {

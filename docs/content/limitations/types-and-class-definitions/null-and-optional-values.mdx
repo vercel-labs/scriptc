@@ -1,1 +1,4 @@
-- **Null and optional values:** `undefined` and `null` compile as standalone values and union members. Optional record and class fields and optional, default, and rest parameters also compile.
+- **Null and optional values:** `undefined` and `null` compile as standalone values and union members.
+  Optional record and class fields and optional, default, and rest parameters also compile, including rest parameters typed `unknown[]` or `any[]`, whose functions take any number of arguments.
+  A function value whose fixed parameters are all `unknown` or `any`, or that has none, can be stored where such a variadic function type without fixed parameters is expected: each call passes the arguments in order, `undefined` for the ones the caller left out.
+  Other function values with fixed parameters cannot be stored there.

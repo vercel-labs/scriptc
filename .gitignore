@@ -8,8 +8,14 @@ node_modules/
 !tests/fixtures/npm/node_modules/
 !tests/corpus/*/node_modules/
 !tests/fixtures/npm-static/node_modules/
+!tests/coverage-fixtures/wasm/node_modules/
+!tests/coverage-fixtures/node-islands*/node_modules/
+!tests/coverage-fixtures/dynamic-tier/package/node_modules/
 !tests/fixtures/npm-static/nested/inner/node_modules/
+!tests/fixtures/npm-static/node_modules/*/node_modules/
 !tests/fixtures/npm/store/*/node_modules/
+!tests/fixtures/npm/node_modules/*/node_modules/
+!tests/fixtures/npm/workspace/*/node_modules/
 !tests/fixtures/npm/cases/*/node_modules/
 !tests/library-mode/*/node_modules/
 !tests/fixtures/provenance/node_modules/
@@ -28,10 +34,13 @@ output/
 /packages/runtime-*/runtime-pack.json
 /packages/runtime-*/.runtime-pack-*
 !tests/fixtures/npm/node_modules/*/dist/
+!tests/fixtures/npm/node_modules/@*/*/dist/
 !tests/fixtures/npm/workspace/*/dist/
 !tests/fixtures/npm/cases/workspace-copied/members/*/dist/
 !tests/fixtures/npm/cases/workspace-copied/node_modules/*/dist/
 !tests/fixtures/provenance/node_modules/*/dist/
+!tests/fixtures/npm-static/node_modules/*/dist/
+!tests/corpus/*/node_modules/*/dist/
 .scriptc/
 *.log
 .DS_Store
@@ -45,3 +54,6 @@ tmp-*/
 .env.local
 .env*
 .env*.local
+# the vendored fs-extra corpus package: its lib/output module and jsonfile's own universalify
+!tests/corpus/fs-extra-package/node_modules/fs-extra/lib/output/
+!tests/corpus/fs-extra-package/node_modules/jsonfile/node_modules/

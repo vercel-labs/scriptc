@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5769-crypto-hash-unknown.cjs"
+ ],
+ "diags": []
+}

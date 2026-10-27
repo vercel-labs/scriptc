@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6341-throw-array-identity.ts"
+ ],
+ "diags": []
+}

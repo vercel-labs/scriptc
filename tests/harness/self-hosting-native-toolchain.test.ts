@@ -9,6 +9,10 @@ import { nativeCodegenTarget } from "../../packages/compiler/src/backend/targets
 import type { NativeLinkFeatures } from "../../packages/compiler/src/backend/native-link-info.js";
 import type { RuntimePackManifest } from "../../packages/compiler/src/backend/runtime-pack-core.js";
 import type { NativeToolchainManifest } from "../../packages/compiler/src/native/toolchain.js";
+import {
+  RUNTIME_ABI_MARKER,
+  RUNTIME_ABI_VERSION,
+} from "../../packages/compiler/src/backend/runtime-abi.js";
 
 const root = join(import.meta.dirname, "../..");
 const entry = join(root, "tests/fixtures/self-hosting/native-toolchain.ts");
@@ -30,18 +34,31 @@ const features: NativeLinkFeatures = {
   bigint: false,
   searchParams: false,
   qs: false,
+  utilPromisify: false,
+  dynBuiltinClass: false,
+  dynBuiltinStream: false,
   parseArgs: false,
   stream: false,
   net: false,
   http: false,
   http2: false,
   dgram: false,
+  dnsPromises: false,
+  dgramDyn: false,
+  textCodecDyn: false,
   watch: false,
   foreignFfi: false,
   nodeTest: false,
   tls: false,
   tlsCa: false,
   cipher: false,
+  ecdh: false,
+  dh: false,
+  pki: false,
+  ed25519: false,
+  x509: false,
+  webcrypto: false,
+  perfLoop: false,
 };
 
 test("native toolchain configuration, staging and helper validation are static", async () => {
@@ -97,7 +114,7 @@ for (const backend of ["llvm"] as const) {
           object_format: target.objectFormat,
           minimum_os: target.minimumOs,
         },
-        runtime_abi: { version: 22, marker: "scr_runtime_abi_v22" },
+        runtime_abi: { version: RUNTIME_ABI_VERSION, marker: RUNTIME_ABI_MARKER },
         compiler: { command: "fixture", identity: "fixture", target: target.llvmTriple },
         macros: { executable: [], excluded: [], sanitizer: "external-toolchain-required" },
         flavors: {
@@ -120,6 +137,7 @@ for (const backend of ["llvm"] as const) {
         compiler_version: manifest.version,
         target: target.name,
         ts7: "ts7",
+        tsc_ts: "tsc-ts",
         llvm_package: "llvm",
         runtime_pack: "pack",
         linker: "ld",

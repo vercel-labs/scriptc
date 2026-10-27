@@ -1,0 +1,10 @@
+{
+  "name": "wsdynamic",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./index.ts",
+  "types": "./index.ts",
+  "dependencies": {
+    "gtshout": "1.0.0"
+  }
+}

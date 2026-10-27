@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6600-npm-await-mixed-array/main.ts"
+ ],
+ "diags": []
+}

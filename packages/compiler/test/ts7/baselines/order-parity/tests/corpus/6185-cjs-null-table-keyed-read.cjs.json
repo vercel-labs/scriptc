@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6185-cjs-null-table-keyed-read.cjs"
+ ],
+ "diags": []
+}

@@ -1,1 +1,4 @@
-Before the handshake Node's `tlsSocket.getCipher()` returns `undefined`, and after close `null`. Its declared result is the `{ name, standardName, version }` record, so a typed read there throws a TypeError instead. After the handshake the record matches Node, with OpenSSL's suite name in `name`. The suite itself is the one the bundled mbedTLS negotiates, which can differ from OpenSSL's choice for the same peers.
+Before the handshake Node's `tlsSocket.getCipher()` returns `undefined`, and after close `null`.
+Its declared result is the `{ name, standardName, version }` record, so a typed read there throws a TypeError instead.
+After the handshake the record matches Node, with OpenSSL's suite name in `name`.
+The suite itself is the one the bundled mbedTLS negotiates, which can differ from OpenSSL's choice for the same peers.

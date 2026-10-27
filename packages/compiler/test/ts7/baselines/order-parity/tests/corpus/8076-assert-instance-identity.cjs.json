@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8076-assert-instance-identity.cjs"
+ ],
+ "diags": []
+}

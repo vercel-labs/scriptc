@@ -1,0 +1,4 @@
+`__dirname` and `__filename` are compile-time constants: the absolute path of the module's source directory and file at build time, the same strings as `import.meta.dirname` and `import.meta.filename`.
+A `.ts` or `.tsx` file keeps them even when it uses `import` syntax, which Node.js would load as an ES module without these globals, because TypeScript projects are commonly shipped as CommonJS bundles where they exist.
+In such a file `typeof __dirname` is `"string"`, where Node.js running the source directly reports `"undefined"`.
+JavaScript ES modules (`.mjs`, or `.js` in a `"type": "module"` package) do not have them, as in Node.js.

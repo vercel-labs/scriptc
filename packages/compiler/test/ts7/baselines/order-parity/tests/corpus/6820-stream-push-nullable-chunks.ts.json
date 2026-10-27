@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6820-stream-push-nullable-chunks.ts"
+ ],
+ "diags": []
+}

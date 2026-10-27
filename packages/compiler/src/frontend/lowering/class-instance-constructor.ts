@@ -43,7 +43,7 @@ export function lowerInstanceConstructorNew(
   const result = checkedClassConstruction(
     lowerer,
     constructor,
-    (expr.arguments ?? []).map((argument) => lowerer.lowerExprExpecting(argument, DYN)),
+    (expr.arguments?.nodes ?? []).map((argument) => lowerer.lowerExprExpecting(argument, DYN)),
     loc,
   );
   return {

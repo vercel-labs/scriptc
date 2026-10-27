@@ -2,6 +2,7 @@ scriptc coverage tests/corpus/native-npm-imports/main.ts
 
   statements analyzed   14
   compile statically    14  (100%)
+    in dynamic tier     1  (operate on values typed only at runtime; --explain-dynamic lists them)
 
   npm package compilation:
     mathkit      static

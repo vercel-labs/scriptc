@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6180-interface-overload-events.ts"
+ ],
+ "diags": []
+}

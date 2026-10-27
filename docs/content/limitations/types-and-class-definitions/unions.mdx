@@ -1,1 +1,6 @@
-- **Unions:** Narrow a union before an operation whose members require incompatible native representations, such as reading `u.length` on `string | string[]`. Some union-to-union widening and unions combining function and data members are unsupported. Same-representation methods on class unions, `map` and `forEach` on array unions, and shared or joinable field reads compile. `console.log(u)` supports printing a whole union.
+- **Unions:** Narrow a union before an operation whose members require incompatible native representations, such as reading `u.length` on `string | string[]`.
+  Some union-to-union widening and unions combining function and data members are unsupported.
+  Same-representation methods on class unions, `map` and `forEach` on array unions, and shared or joinable field reads compile.
+  `console.log(u)` supports printing a whole union.
+  A union may hold one promise beside other members, such as `T | Promise<T>` or `Promise<R | void> | R | void`: `await`, an async function's `return`, `Promise.resolve`, and `instanceof Promise` act on the member it holds, with Node's microtask timing.
+  A promise member beside a member that declares `then`, two promise members in one union, and `console.log` of a union holding a promise are unsupported.

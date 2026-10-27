@@ -37,27 +37,50 @@ export interface CycleInitFlag {
   /** The declaring module. */
   module: ts.SourceFile;
   settled: ReadonlySet<ts.SourceFile>;
+  /** Local names other files import the binding under, by file name. */
+  localNames?: ReadonlyMap<string, string>;
   /** True for a binding of an import cycle. A binding flagged only for its
    * own module's early calls is checked opportunistically: whatever cannot
    * be checked keeps the unchecked behavior instead of refusing. */
   cycle: boolean;
-  /** A class binding: its references are the class's own IR forms and its
-   * static field storage (`global` is the flag itself). */
+  /** A pointer-guarded binding declared without an initializer: its
+   * declaration initializes it (to undefined, which the pointer cannot
+   * hold), so the flag alone decides its writes (markUninitializedWrites). */
+  uninitialized?: true;
+  /** A class binding: its references are the class's own IR forms and the
+   * static members it reaches, its own and its bases' (`global` is the flag
+   * itself). */
   className?: string;
+  /** The class and its base classes, whose `%C.static:` functions a static
+   * member access through the class can name. */
+  staticOwners?: readonly string[];
   staticGlobals?: ReadonlySet<string>;
-  /** The source references to the class outside its own body. Only IR
-   * built for one of them is checked: compiler-generated dispatch (error
-   * property helpers, prototype data, reflection) also names the class
-   * and must keep working before the class statement ran. */
-  references?: readonly SrcLoc[];
+  /** The source references to the class outside its own body, with the
+   * local name each one spells (an import can rename the class; Node's
+   * ReferenceError names that binding). Only IR built for one of them is
+   * checked: compiler-generated dispatch (error property helpers,
+   * prototype data, reflection) also names the class and must keep
+   * working before the class statement ran. */
+  references?: readonly ClassReference[];
 }
+
+/** A source reference to a flagged class and the local name it spells. */
+interface ClassReference {
+  loc: SrcLoc;
+  name: string;
+}
+
+/** The static field storage of a flag without a class. */
+const NO_STATIC_GLOBALS: ReadonlySet<string> = new Set();
 
 /** Registers the initialization flags after global collection. Bindings
  * whose early access has no exact representation are refused: a `var`
  * (Node reads `undefined` there, but module storage only starts when the
- * declaring module's body starts), a class (its references are static), a
- * binding without module storage, or one with a use the lowering resolves
- * from the binding's type (a property key, a `typeof` operand). */
+ * declaring module's body starts), a binding without module storage, a
+ * class that another module's `extends` clause can reach early (the
+ * subclass is static), or one with a use the lowering resolves from the
+ * binding's type (a property key, a `typeof` operand). Other classes get a
+ * flag like their module's early-reached classes. */
 export function markCycleEarlyBindings(lowerer: Lowerer): void {
   const early = cycleEarlyBindings(
     lowerer.program,
@@ -76,7 +99,14 @@ export function markCycleEarlyBindings(lowerer: Lowerer): void {
       continue;
     }
     if (binding.kind === "class") {
-      refuse(binding.reference, `the class ${where}`);
+      // The class's references from code that can run before its
+      // statement check its initialization flag: Node's ReferenceError
+      // only when the class is actually reached early.
+      const info = lowerer.classBySymbol.get(binding.symbol);
+      const heritage = earlyHeritageReference(lowerer, binding);
+      if (info !== undefined && !info.generic && heritage === null)
+        registerClassInitFlag(lowerer, binding, info, true);
+      else refuse(heritage ?? binding.reference, `the class ${where}`);
       continue;
     }
     const global = lowerer.globalsBySymbol.get(binding.symbol);
@@ -99,13 +129,37 @@ export function markCycleEarlyBindings(lowerer: Lowerer): void {
   for (const binding of moduleEarlyBindings(lowerer.program, lowerer.moduleOrder)) {
     if (binding.kind === "class") {
       const info = lowerer.classBySymbol.get(binding.symbol);
-      if (info !== undefined) registerClassInitFlag(lowerer, binding, info);
+      if (info !== undefined) registerClassInitFlag(lowerer, binding, info, false);
       continue;
     }
     const global = lowerer.globalsBySymbol.get(binding.symbol);
     if (global !== undefined && binding.folded === undefined) {
       registerInitFlag(lowerer, binding, global, false);
     }
+  }
+  // `let f: T;` with a pointer-guarded slot: once the declaration ran the
+  // binding is initialized while the slot is still empty, so a write
+  // checks the flag (where code can run before the declaration) instead of
+  // the empty pointer. `f = () => f(...)` is the shape.
+  for (const [id, entry] of lowerer.uninitializedLexicalGlobals) {
+    const global = lowerer.globalsList.find((g) => g.id === id);
+    if (global === undefined) continue;
+    if (!lowerer.cycleInitFlags.has(id)) {
+      registerInitFlag(
+        lowerer,
+        {
+          symbol: entry.symbol,
+          name: entry.name,
+          kind: "lexical",
+          module: entry.module,
+          reference: entry.name,
+          settled: new Set(),
+        },
+        global,
+        false,
+      );
+    }
+    lowerer.cycleInitFlags.get(id)!.uninitialized = true;
   }
 }
 
@@ -118,51 +172,183 @@ function registerClassInitFlag(
   lowerer: Lowerer,
   binding: CycleEarlyBinding,
   info: ClassInfo,
+  cycle: boolean,
 ): void {
   const className = info.def.name;
   if (lowerer.classInitFlags.has(className)) return;
   const flagId = `%g.class.${className}%initialized`;
   const global: IrGlobal = { id: flagId, name: "%initialized", type: BOOL, mutable: true };
   lowerer.globalsList.push(global);
+  const staticOwners: string[] = [];
+  const staticGlobals = new Set<string>();
+  for (let c: ClassInfo | null = info; c; c = c.base) {
+    staticOwners.push(c.def.name);
+    for (const field of c.staticFields) staticGlobals.add(field.globalId);
+  }
   lowerer.classInitFlags.set(className, {
     global,
     flagId,
     name: binding.name.text,
     module: binding.module,
     settled: binding.settled,
-    cycle: false,
+    cycle,
     className,
-    staticGlobals: new Set(info.staticFields.map((f) => f.globalId)),
-    references: classReferences(lowerer, binding.symbol, binding.name),
+    staticOwners,
+    staticGlobals,
+    references: classReferences(lowerer, binding.symbol, binding.name, cycle),
   });
 }
 
-/** The source spans of the identifiers naming the class outside its own
- * declaration, in every program file. */
-function classReferences(lowerer: Lowerer, symbol: ts.Symbol, name: ts.Identifier): SrcLoc[] {
-  const declaration = name.parent;
-  const out: SrcLoc[] = [];
+/** A reference to a cycle class in another class's `extends` clause, in a
+ * module that can run before the class statement: Node evaluates the clause
+ * when that module's class statement runs, but the compiled subclass is
+ * static and has no access to check. Null when there is none. */
+function earlyHeritageReference(lowerer: Lowerer, binding: CycleEarlyBinding): ts.Node | null {
+  const declaration = binding.name.parent;
   for (const sf of lowerer.program.getImplementationSourceFiles()) {
-    if (sf.isDeclarationFile || !sf.text.includes(name.text)) continue;
+    if (sf.isDeclarationFile || sf === binding.module || binding.settled.has(sf)) continue;
+    const names = classLocalNames(lowerer, sf, binding.symbol, binding.name.text, true);
+    if (names.size === 0) continue;
+    let found: ts.Node | null = null;
     ts.walkPreorder(sf, (node) => {
-      if (node === declaration) return "skip";
-      if (
-        ts.isIdentifier(node) &&
-        node.text === name.text &&
-        lowerer.checker.getSymbolAtLocation(node) === symbol
-      )
-        out.push(locOf(node));
-      return undefined;
+      if (found !== null || node === declaration) return "skip";
+      if (!ts.isHeritageClause(node)) return undefined;
+      // Node evaluates the whole clause when the class statement runs:
+      // any reference inside it (parenthesized, a factory argument)
+      // reaches the class.
+      ts.walkPreorder(node, (inner) => {
+        if (found !== null) return "skip";
+        if (
+          ts.isIdentifier(inner) &&
+          names.has(inner.text) &&
+          resolvesTo(lowerer, inner, binding.symbol, true)
+        )
+          found = inner;
+        return undefined;
+      });
+      return "skip";
     });
+    if (found !== null) return found;
+  }
+  return null;
+}
+
+/** The identifiers of `sf` by text, each with its position in the file's
+ * preorder walk: one walk per file serves every class's reference scan. */
+function fileIdentifiers(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+): ReadonlyMap<string, readonly { order: number; node: ts.Identifier }[]> {
+  const memo = lowerer.program.analysis.fileIdentifiers;
+  const known = memo.get(sf);
+  if (known !== undefined) return known;
+  const byText = new Map<string, { order: number; node: ts.Identifier }[]>();
+  let order = 0;
+  ts.walkPreorder(sf, (node) => {
+    order++;
+    if (!ts.isIdentifier(node)) return undefined;
+    const list = byText.get(node.text);
+    if (list === undefined) byText.set(node.text, [{ order, node }]);
+    else list.push({ order, node });
+    return undefined;
+  });
+  memo.set(sf, byText);
+  return byText;
+}
+
+/** Whether `node` lies inside `ancestor` (or is it): the reference scans
+ * skip the class's own declaration. */
+function within(node: ts.Node, ancestor: ts.Node | undefined): boolean {
+  if (ancestor === undefined) return false;
+  for (let current: ts.Node | undefined = node; current !== undefined; current = current.parent)
+    if (current === ancestor) return true;
+  return false;
+}
+
+/** Whether `node` names `symbol`, through import aliases when `aliases`. */
+function resolvesTo(
+  lowerer: Lowerer,
+  node: ts.Identifier,
+  symbol: ts.Symbol,
+  aliases: boolean,
+): boolean {
+  let referenced = lowerer.checker.getSymbolAtLocation(node);
+  if (aliases && referenced !== undefined && referenced.flags & ts.SymbolFlags.Alias)
+    referenced = lowerer.checker.getAliasedSymbol(referenced);
+  return referenced === symbol;
+}
+
+/** The local names under which `sf` can spell the class: its declared name
+ * (when the file's text contains it) and, with `aliases`, the local names
+ * of the file's imports that resolve to it (`import { Sink as Alias }`, a
+ * default import, a re-exported name). */
+function classLocalNames(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  symbol: ts.Symbol,
+  declared: string,
+  aliases: boolean,
+): Set<string> {
+  const names = new Set<string>();
+  if (sf.text.includes(declared)) names.add(declared);
+  if (!aliases) return names;
+  for (const statement of sf.statements.nodes) {
+    if (!ts.isImportDeclaration(statement)) continue;
+    const clause = statement.importClause;
+    if (clause === undefined) continue;
+    const locals: ts.Identifier[] = [];
+    if (clause.name !== undefined) locals.push(clause.name);
+    const bindings = clause.namedBindings;
+    if (bindings !== undefined && ts.isNamedImports(bindings))
+      for (const element of bindings.elements.nodes) locals.push(element.name);
+    for (const local of locals)
+      if (!names.has(local.text) && resolvesTo(lowerer, local, symbol, true)) names.add(local.text);
+  }
+  return names;
+}
+
+/** The source spans of the identifiers naming the class outside its own
+ * declaration, in every program file. For a class of an import cycle that
+ * includes other modules' import bindings; another module's references to a
+ * class flagged only for its own module's early calls always run after the
+ * class statement. */
+function classReferences(
+  lowerer: Lowerer,
+  symbol: ts.Symbol,
+  name: ts.Identifier,
+  cycle: boolean,
+): ClassReference[] {
+  const declaration = name.parent;
+  const out: ClassReference[] = [];
+  for (const sf of lowerer.program.getImplementationSourceFiles()) {
+    if (sf.isDeclarationFile) continue;
+    // Another module names the class through its import bindings, under
+    // the class's name or a local one.
+    const names = classLocalNames(lowerer, sf, symbol, name.text, cycle);
+    if (names.size === 0) continue;
+    // The file's identifiers under those names, in walk order.
+    const identifiers = fileIdentifiers(lowerer, sf);
+    const named: { order: number; node: ts.Identifier }[] = [];
+    for (const text of names) for (const entry of identifiers.get(text) ?? []) named.push(entry);
+    if (names.size > 1) named.sort((a, b) => a.order - b.order);
+    for (const { node } of named)
+      if (!within(node, declaration) && resolvesTo(lowerer, node, symbol, cycle))
+        out.push({ loc: locOf(node), name: node.text });
   }
   return out;
 }
 
+/** The source reference to the flagged class that `loc`'s IR was built
+ * for, or undefined. */
+function coveredReference(flag: CycleInitFlag, loc: SrcLoc): ClassReference | undefined {
+  return (flag.references ?? []).find(
+    (r) => r.loc.file === loc.file && loc.start <= r.loc.start && r.loc.end <= loc.end,
+  );
+}
+
 /** Whether `loc` is the IR of a source reference to the flagged class. */
 function coversReference(flag: CycleInitFlag, loc: SrcLoc): boolean {
-  return (flag.references ?? []).some(
-    (r) => r.file === loc.file && loc.start <= r.start && r.end <= loc.end,
-  );
+  return coveredReference(flag, loc) !== undefined;
 }
 
 /** The class statement's static initialization, followed by the store of
@@ -190,6 +376,7 @@ function registerInitFlag(
     name: binding.name.text,
     module: binding.module,
     settled: binding.settled,
+    ...(binding.localNames ? { localNames: binding.localNames } : {}),
     cycle,
   };
   lowerer.cycleInitFlags.set(global.id, flag);
@@ -304,6 +491,44 @@ export function checkCycleBindingAccesses(lowerer: Lowerer, mod: IrModule): void
   const fileOfInit = new Map<string, ts.SourceFile>();
   for (const [sf, name] of lowerer.initNameOf) fileOfInit.set(name, sf);
   for (const fn of mod.functions) rewriteFunction(lowerer, fn, fileOfInit.get(fn.name));
+  markUninitializedWrites(lowerer, mod);
+}
+
+/** Writes to a binding declared without an initializer that run after its
+ * declaration store into an initialized binding whose slot may still be
+ * empty: the pointer guard must not refuse them. Writes that can run
+ * earlier carry the flag check rewriteFunction inserted. An assignment in
+ * expression position (`(f = v)`) becomes an initializing `assign` whose
+ * value a temp holds and yields. */
+function markUninitializedWrites(lowerer: Lowerer, mod: IrModule): void {
+  const ids = new Set<string>();
+  for (const [id, flag] of lowerer.cycleInitFlags) if (flag.uninitialized) ids.add(id);
+  if (ids.size === 0) return;
+  const mark = (s: IrStmt): IrStmt =>
+    s.kind === "assign" && !s.initializes && ids.has(s.localId) ? { ...s, initializes: true } : s;
+  for (const fn of mod.functions) {
+    let temps = 0;
+    const markExpr = (e: IrExpr): IrExpr => {
+      if (e.kind !== "assignExpr" || !ids.has(e.localId)) return e;
+      const t = `%uninitWrite.${temps++}`;
+      fn.locals.push({ id: t, name: "%uninitWrite", type: e.value.type, mutable: false });
+      const value: IrExpr = { kind: "varRef", localId: t, type: e.value.type, loc: e.loc };
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: t, init: e.value, loc: e.loc },
+          { kind: "assign", localId: e.localId, value, initializes: true, loc: e.loc },
+        ],
+        result: value,
+        type: e.type,
+        loc: e.loc,
+      };
+    };
+    const rewriteExpr = (e: IrExpr): IrExpr =>
+      markExpr(mapExprChildren(e, rewriteExpr, rewriteStmt));
+    const rewriteStmt = (s: IrStmt): IrStmt => mark(mapStmtChildren(s, rewriteExpr, rewriteStmt));
+    fn.body = fn.body.map(rewriteStmt);
+  }
 }
 
 function rewriteFunction(
@@ -317,16 +542,23 @@ function rewriteFunction(
   for (const [id, flag] of lowerer.cycleInitFlags) {
     if (runsEarly(flag)) active.set(id, flag);
   }
-  // Classes, by name; their static field storage joins `active`. A class's
-  // own members run only once the class exists, or inside its own
-  // definition, where the inner binding is initialized.
+  // Classes, by name, and the static field storage each reaches (a base
+  // class's statics through a subclass too). A class's own members run only
+  // once the class exists, or inside its own definition, where the inner
+  // binding is initialized.
   const classes = new Map<string, CycleInitFlag>();
+  const statics = new Map<string, CycleInitFlag[]>();
   for (const [className, flag] of lowerer.classInitFlags) {
     if (!runsEarly(flag) || fn.name.startsWith(`%${className}.`)) continue;
     classes.set(className, flag);
-    if (flag.staticGlobals) for (const id of flag.staticGlobals) active.set(id, flag);
+    for (const id of flag.staticGlobals ?? NO_STATIC_GLOBALS)
+      statics.set(id, [...(statics.get(id) ?? []), flag]);
   }
   if (active.size === 0 && classes.size === 0) return;
+  const flagOf = (localId: string, loc: SrcLoc): CycleInitFlag | undefined =>
+    active.get(localId) ?? statics.get(localId)?.find((flag) => coversReference(flag, loc));
+  const namesStatic = (flag: CycleInitFlag, fnName: string): boolean =>
+    (flag.staticOwners ?? []).some((owner) => fnName.startsWith(`%${owner}.static:`));
   const classFlagOf = (e: IrExpr): CycleInitFlag | undefined => {
     if (classes.size === 0) return undefined;
     switch (e.kind) {
@@ -340,12 +572,16 @@ function rewriteFunction(
       case "call":
         for (const [className, flag] of classes) {
           if (
-            (e.callee.startsWith(`%${className}.static:`) ||
-              e.callee === `%dyn.class.instanceof:${className}`) &&
+            (namesStatic(flag, e.callee) || e.callee === `%dyn.class.instanceof:${className}`) &&
             coversReference(flag, e.loc)
           )
             return flag;
         }
+        return undefined;
+      case "closure":
+        // A static method read as a value (`const f = K.m`) reads K.
+        for (const flag of classes.values())
+          if (namesStatic(flag, e.fnName) && coversReference(flag, e.loc)) return flag;
         return undefined;
       default:
         return undefined;
@@ -353,12 +589,17 @@ function rewriteFunction(
   };
   let temps = 0;
   const check = (flag: CycleInitFlag, loc: SrcLoc): IrStmt => {
+    // Node's ReferenceError names the binding the reference spells.
+    const name =
+      flag.className !== undefined
+        ? (coveredReference(flag, loc)?.name ?? flag.name)
+        : (flag.localNames?.get(loc.file) ?? flag.name);
     const expr: IrExpr = {
       kind: "intrinsic",
       name: "module.tdzCheck",
       args: [
         { kind: "varRef", localId: flag.flagId, type: BOOL, loc },
-        { kind: "strLit", value: flag.name, type: STRING, loc },
+        { kind: "strLit", value: name, type: STRING, loc },
       ],
       type: VOID,
       loc,
@@ -413,9 +654,8 @@ function rewriteFunction(
         };
       }
       if (e.kind !== "varRef" && e.kind !== "incDec" && e.kind !== "assignExpr") return e;
-      const flag = active.get(e.localId);
+      const flag = flagOf(e.localId, e.loc);
       if (flag === undefined) return e;
-      if (flag.className !== undefined && !coversReference(flag, e.loc)) return e;
       // `K.x = v` reads K before it evaluates v.
       if (e.kind === "assignExpr" && flag.className === undefined) {
         const t = temp(e.value.type);
@@ -433,9 +673,8 @@ function rewriteFunction(
     },
     stmt: (s: IrStmt): IrStmt => {
       if (s.kind !== "assign" || s.initializes) return s;
-      const flag = active.get(s.localId);
+      const flag = flagOf(s.localId, s.loc);
       if (flag === undefined) return s;
-      if (flag.className !== undefined && !coversReference(flag, s.loc)) return s;
       // `K.x = v` reads K before it evaluates v.
       if (flag.className !== undefined)
         return { kind: "block", body: [check(flag, s.loc), s], loc: s.loc };
@@ -444,6 +683,7 @@ function rewriteFunction(
         kind: "assign",
         localId: s.localId,
         value: { kind: "varRef", localId: t, type: s.value.type, loc: s.loc },
+        ...(flag.uninitialized ? { initializes: true as const } : {}),
         loc: s.loc,
       };
       return {
@@ -480,7 +720,11 @@ function rewriteFunction(
     for (const [className, flag] of [...classes]) {
       if (flag.module !== initOf || !setsFlag(s, flag)) continue;
       classes.delete(className);
-      if (flag.staticGlobals) for (const id of flag.staticGlobals) active.delete(id);
+      for (const id of flag.staticGlobals ?? NO_STATIC_GLOBALS) {
+        const rest = statics.get(id)!.filter((other) => other !== flag);
+        if (rest.length > 0) statics.set(id, rest);
+        else statics.delete(id);
+      }
     }
     const out = rewriteStmt(s);
     for (const [id, flag] of [...active]) {
@@ -497,11 +741,17 @@ function rewriteFunction(
  * unchecked. */
 export function refuseUncheckedCycleReads(
   lowerer: Lowerer,
-  classes: readonly { baseValueGlobal?: string; symbolFields?: { globalId: string }[] }[],
+  classes: readonly {
+    baseValueGlobal?: string;
+    symbolFields?: readonly ({ globalId: string } | { wellKnown: string })[];
+  }[],
 ): void {
   if (lowerer.cycleInitFlags.size === 0) return;
   for (const cls of classes) {
-    const ids = [cls.baseValueGlobal, ...(cls.symbolFields ?? []).map((f) => f.globalId)];
+    const ids = [
+      cls.baseValueGlobal,
+      ...(cls.symbolFields ?? []).map((f) => ("globalId" in f ? f.globalId : undefined)),
+    ];
     for (const id of ids) {
       const flag = id === undefined ? undefined : lowerer.cycleInitFlags.get(id);
       if (flag === undefined) continue;

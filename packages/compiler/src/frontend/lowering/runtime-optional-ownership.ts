@@ -226,13 +226,13 @@ export class ArrayOwnership {
       const arrayAt = ARRAY_ARGUMENT_AT.get(method);
       if (arrayAt !== undefined) {
         // An inline callback that cannot see its array argument.
-        const callback = call.arguments[0];
+        const callback = call.arguments.nodes[0];
         return (
           callback !== undefined &&
           (ts.isArrowFunction(callback) ||
             (ts.isFunctionExpression(callback) && !usesArguments(callback))) &&
-          callback.parameters.length <= arrayAt &&
-          !callback.parameters.some((parameter) => parameter.dotDotDotToken)
+          callback.parameters.nodes.length <= arrayAt &&
+          !callback.parameters.nodes.some((parameter) => parameter.dotDotDotToken)
         );
       }
       return this.host.isArray(user.expression);
@@ -243,14 +243,14 @@ export class ArrayOwnership {
       user.operatorToken.kind === ts.SyntaxKind.EqualsToken
     )
       return this.isFreshArray(user.right);
-    if (ts.isCallExpression(user) && user.arguments[0] === use) {
+    if (ts.isCallExpression(user) && user.arguments.nodes[0] === use) {
       const callee = peel(user.expression);
       return (
         ts.isPropertyAccessExpression(callee) &&
         ((callee.name.text === "hasOwn" && this.host.isGlobal(callee.expression, "Object")) ||
           (callee.name.text === "isArray" && this.host.isGlobal(callee.expression, "Array")) ||
           (callee.name.text === "from" &&
-            user.arguments.length === 1 &&
+            user.arguments.nodes.length === 1 &&
             this.host.isGlobal(callee.expression, "Array")))
       );
     }
@@ -348,10 +348,10 @@ export class ArrayOwnership {
               this.host.isGlobal(callee.expression, "Reflect"));
           const clone = ts.isIdentifier(callee) && this.host.isGlobal(callee, "structuredClone");
           if (walker || clone)
-            for (const arg of node.arguments)
+            for (const arg of node.arguments.nodes)
               this.reflected.push(ts.isSpreadElement(arg) ? arg.expression : arg);
         } else if (ts.isObjectBindingPattern(node)) {
-          for (const element of node.elements) {
+          for (const element of node.elements.nodes) {
             const name = element.propertyName ?? element.name;
             // A rest element copies every remaining field.
             const key =
@@ -378,9 +378,9 @@ function usesArguments(fn: ts.FunctionExpression): boolean {
     if (found) return;
     if (ts.isIdentifier(node) && node.text === "arguments") found = true;
     else if (!ts.isFunctionDeclaration(node) && !ts.isFunctionExpression(node))
-      node.forEachChild(visit);
+      ts.forEachChild(node, visit);
   };
-  fn.body?.forEachChild(visit);
+  if (fn.body !== undefined) ts.forEachChild(fn.body, visit);
   return found;
 }
 

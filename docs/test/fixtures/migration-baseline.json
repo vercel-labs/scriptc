@@ -274,6 +274,10 @@
         "id": "when-a-region-is-freed"
       },
       {
+        "text": "Async work",
+        "id": "async-work"
+      },
+      {
         "text": "Threads",
         "id": "threads"
       },
@@ -296,6 +300,22 @@
       {
         "text": "Memory",
         "id": "memory"
+      },
+      {
+        "text": "ThreadSlots",
+        "id": "threadslots"
+      },
+      {
+        "text": "Slot methods",
+        "id": "slot-methods"
+      },
+      {
+        "text": "Keys and values",
+        "id": "keys-and-values"
+      },
+      {
+        "text": "Slot cost",
+        "id": "slot-cost"
       }
     ]
   },

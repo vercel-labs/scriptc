@@ -10,6 +10,7 @@
  * too; inferred checked values validate at the ordinary return boundary. */
 
 import * as ts from "./ts7/syntax.js";
+import { getTextOfNode, tokenStartOfNode } from "./ts7/node-functions.js";
 
 export interface NpmStaticOverloadParameter {
   name: string;
@@ -53,14 +54,14 @@ export function applyNpmStaticJsDocNamepaths(
   const replacements = new Map<number, number>();
   const visit = (node: ts.Node): void => {
     for (const doc of node.jsDoc ?? [])
-      for (const tag of doc.tags ?? []) {
+      for (const tag of doc.tags?.nodes ?? []) {
         const expression = tag.typeExpression;
         if (expression?.kind !== ts.SyntaxKind.JSDocTypeExpression) continue;
-        const start = expression.getStart(sourceFile);
+        const start = tokenStartOfNode(expression);
         if (source[start] !== "{") continue;
         let depth = 1;
         let quote = "";
-        for (let i = start + 1; i < tag.getEnd() && depth > 0; i++) {
+        for (let i = start + 1; i < tag.end && depth > 0; i++) {
           const char = source[i]!;
           if (quote !== "") {
             if (char === "\\") i++;
@@ -80,7 +81,7 @@ export function applyNpmStaticJsDocNamepaths(
             continue;
           }
           const name = /^[$A-Z_a-z][$\w]*(?:[.#~][$A-Z_a-z][$\w]*)*/.exec(
-            source.slice(i, tag.getEnd()),
+            source.slice(i, tag.end),
           )?.[0];
           if (!name) continue;
           if (name.includes("~") || name.includes("#")) replacements.set(i, name.length);
@@ -108,13 +109,13 @@ export function applyNpmStaticNullableClassFields(
   source: string,
 ): NpmStaticOverloadRewrite | null {
   const constructors = new Set<string>();
-  for (const statement of sourceFile.statements) {
+  for (const statement of sourceFile.statements.nodes) {
     if (ts.isClassDeclaration(statement) && statement.name) constructors.add(statement.name.text);
     if (ts.isImportDeclaration(statement) && !statement.importClause?.isTypeOnly) {
       const clause = statement.importClause;
       if (clause?.name) constructors.add(clause.name.text);
       if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings)) {
-        for (const binding of clause.namedBindings.elements) {
+        for (const binding of clause.namedBindings.elements.nodes) {
           if (!binding.isTypeOnly) constructors.add(binding.name.text);
         }
       }
@@ -128,9 +129,9 @@ export function applyNpmStaticNullableClassFields(
   const rejectAssignedName = (node: ts.Node): void => {
     if (ts.isIdentifier(node)) constructors.delete(node.text);
     else if (ts.isArrayLiteralExpression(node))
-      for (const item of node.elements) rejectAssignedName(item);
+      for (const item of node.elements.nodes) rejectAssignedName(item);
     else if (ts.isObjectLiteralExpression(node))
-      for (const item of node.properties) {
+      for (const item of node.properties.nodes) {
         if (ts.isPropertyAssignment(item)) rejectAssignedName(item.initializer);
         else if (ts.isShorthandPropertyAssignment(item)) rejectAssignedName(item.name);
         else if (ts.isSpreadAssignment(item)) rejectAssignedName(item.expression);
@@ -157,13 +158,13 @@ export function applyNpmStaticNullableClassFields(
   };
   rejectMutable(sourceFile);
   const inserts: { offset: number; text: string }[] = [];
-  for (const statement of sourceFile.statements) {
+  for (const statement of sourceFile.statements.nodes) {
     if (!ts.isClassDeclaration(statement)) continue;
     const fields = new Map<
       string,
       { member: ts.PropertyDeclaration; className?: string; invalid: boolean }
     >();
-    for (const member of statement.members) {
+    for (const member of statement.members.nodes) {
       if (
         !ts.isPropertyDeclaration(member) ||
         !ts.isIdentifier(member.name) ||
@@ -171,7 +172,7 @@ export function applyNpmStaticNullableClassFields(
         hasModifier(member, ts.SyntaxKind.StaticKeyword)
       )
         continue;
-      const leading = source.slice(member.getFullStart(), member.getStart(sourceFile));
+      const leading = source.slice(member.pos, tokenStartOfNode(member));
       if (jsDocTypeOf(member) !== undefined || leading.includes("@type")) continue;
       fields.set(member.name.text, { member, invalid: false });
     }
@@ -182,7 +183,7 @@ export function applyNpmStaticNullableClassFields(
     const bindingNames = (name: ts.BindingName): void => {
       if (ts.isIdentifier(name)) shadowed.add(name.text);
       else
-        for (const element of name.elements)
+        for (const element of name.elements.nodes)
           if (ts.isBindingElement(element) && element.name !== undefined)
             bindingNames(element.name);
     };
@@ -199,7 +200,7 @@ export function applyNpmStaticNullableClassFields(
         shadowed.add(node.name.text);
       ts.forEachChild(node, collectBindings);
     };
-    for (const member of statement.members) collectBindings(member);
+    for (const member of statement.members.nodes) collectBindings(member);
     const targetField = (node: ts.Node): string | null => {
       if (ts.isPropertyAccessExpression(node) && node.expression.kind === ts.SyntaxKind.ThisKeyword)
         return node.name.text;
@@ -271,7 +272,7 @@ export function applyNpmStaticNullableClassFields(
       if (ts.isDeleteExpression(node)) invalidate(node.expression);
       ts.forEachChild(node, visit);
     };
-    for (const member of statement.members) {
+    for (const member of statement.members.nodes) {
       if (hasModifier(member, ts.SyntaxKind.StaticKeyword)) continue;
       if (
         (ts.isConstructorDeclaration(member) ||
@@ -285,7 +286,7 @@ export function applyNpmStaticNullableClassFields(
     for (const field of fields.values()) {
       if (field.invalid || field.className === undefined) continue;
       inserts.push({
-        offset: field.member.getStart(sourceFile),
+        offset: tokenStartOfNode(field.member),
         text: `/** @type {${field.className} | null} */ `,
       });
     }
@@ -308,15 +309,15 @@ export function applyNpmStaticFindReturnWidening(
   source: string,
 ): NpmStaticOverloadRewrite | null {
   const insertions: { offset: number; length: number }[] = [];
-  for (const statement of sourceFile.statements) {
+  for (const statement of sourceFile.statements.nodes) {
     if (!ts.isClassDeclaration(statement)) continue;
-    const constructor = statement.members.find(
+    const constructor = statement.members.nodes.find(
       (member): member is ts.ConstructorDeclaration =>
         ts.isConstructorDeclaration(member) && member.body !== undefined,
     );
     if (constructor?.body === undefined) continue;
     const arrayFields = new Set<string>();
-    for (const bodyStatement of constructor.body.statements) {
+    for (const bodyStatement of constructor.body.statements.nodes) {
       if (
         !ts.isExpressionStatement(bodyStatement) ||
         !ts.isBinaryExpression(bodyStatement.expression)
@@ -331,9 +332,9 @@ export function applyNpmStaticFindReturnWidening(
       )
         arrayFields.add(left.name.text);
     }
-    for (const member of statement.members) {
-      if (!ts.isMethodDeclaration(member) || member.body?.statements.length !== 1) continue;
-      const returned = member.body.statements[0];
+    for (const member of statement.members.nodes) {
+      if (!ts.isMethodDeclaration(member) || member.body?.statements?.nodes.length !== 1) continue;
+      const returned = member.body.statements.nodes[0];
       if (
         !returned ||
         !ts.isReturnStatement(returned) ||
@@ -355,10 +356,10 @@ export function applyNpmStaticFindReturnWidening(
         returnType === undefined ||
         !ts.isTypeReferenceNode(returnType) ||
         !ts.isIdentifier(returnType.typeName) ||
-        (returnType.typeArguments?.length ?? 0) !== 0
+        (returnType.typeArguments?.nodes.length ?? 0) !== 0
       )
         continue;
-      insertions.push({ offset: returnType.getEnd(), length: " | undefined".length });
+      insertions.push({ offset: returnType.end, length: " | undefined".length });
     }
   }
   if (insertions.length === 0) return null;
@@ -384,7 +385,7 @@ const SAFE_KEYWORD_TYPES = new Set<ts.SyntaxKind>([
 function lastJsDocTag(node: ts.Node, kind: ts.SyntaxKind): ts.Node | undefined {
   const docs = node.jsDoc;
   if (docs === undefined || docs.length === 0) return undefined;
-  for (const tag of docs[docs.length - 1]!.tags ?? []) {
+  for (const tag of docs[docs.length - 1]!.tags?.nodes ?? []) {
     if (tag.kind === kind) return tag;
   }
   return undefined;
@@ -416,7 +417,7 @@ function jsDocReturnTypeOf(node: ts.Node): ts.TypeNode | undefined {
   const type = jsDocTypeOf(node);
   if (type === undefined) return undefined;
   if (ts.isTypeLiteralNode(type)) {
-    return type.members.find(ts.isCallSignatureDeclaration)?.type;
+    return type.members.nodes.find(ts.isCallSignatureDeclaration)?.type;
   }
   return ts.isFunctionTypeNode(type) ? type.type : undefined;
 }
@@ -428,42 +429,38 @@ function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
   );
 }
 
-function safeTypeText(
-  node: ts.TypeNode,
-  sourceFile: ts.SourceFile,
-  className: string,
-): string | null {
-  if (SAFE_KEYWORD_TYPES.has(node.kind) || ts.isThisTypeNode(node)) return node.getText(sourceFile);
+function safeTypeText(node: ts.TypeNode, className: string): string | null {
+  if (SAFE_KEYWORD_TYPES.has(node.kind) || ts.isThisTypeNode(node)) return getTextOfNode(node);
   if (ts.isLiteralTypeNode(node) && node.literal.kind === ts.SyntaxKind.NullKeyword) return "null";
   if (ts.isParenthesizedTypeNode(node)) {
-    const inner = safeTypeText(node.type, sourceFile, className);
+    const inner = safeTypeText(node.type, className);
     return inner === null ? null : `(${inner})`;
   }
   if (ts.isArrayTypeNode(node)) {
-    const element = safeTypeText(node.elementType, sourceFile, className);
+    const element = safeTypeText(node.elementType, className);
     return element === null ? null : `${element}[]`;
   }
   if (ts.isTypeOperatorNode(node) && node.operator === ts.SyntaxKind.ReadonlyKeyword) {
-    return safeTypeText(node.type, sourceFile, className);
+    return safeTypeText(node.type, className);
   }
   if (ts.isUnionTypeNode(node)) {
-    const arms = node.types.map((type) => safeTypeText(type, sourceFile, className));
+    const arms = node.types.nodes.map((type) => safeTypeText(type, className));
     return arms.some((arm) => arm === null) ? null : arms.join(" | ");
   }
   if (
     ts.isTypeReferenceNode(node) &&
     ts.isIdentifier(node.typeName) &&
     node.typeName.text === "Record" &&
-    node.typeArguments?.length === 2 &&
-    node.typeArguments[0]?.kind === ts.SyntaxKind.StringKeyword &&
-    node.typeArguments[1]?.kind === ts.SyntaxKind.StringKeyword
+    node.typeArguments?.nodes.length === 2 &&
+    node.typeArguments.nodes[0]?.kind === ts.SyntaxKind.StringKeyword &&
+    node.typeArguments.nodes[1]?.kind === ts.SyntaxKind.StringKeyword
   ) {
     return "Record<string, string>";
   }
   return ts.isTypeReferenceNode(node) &&
     ts.isIdentifier(node.typeName) &&
     node.typeName.text === className &&
-    (node.typeArguments?.length ?? 0) === 0
+    (node.typeArguments?.nodes.length ?? 0) === 0
     ? className
     : null;
 }
@@ -476,17 +473,17 @@ function overloadSignature(
   if (
     !ts.isIdentifier(method.name) ||
     method.type === undefined ||
-    (method.typeParameters?.length ?? 0) !== 0 ||
+    (method.typeParameters?.nodes.length ?? 0) !== 0 ||
     hasModifier(method, ts.SyntaxKind.StaticKeyword) ||
     hasModifier(method, ts.SyntaxKind.PrivateKeyword) ||
     hasModifier(method, ts.SyntaxKind.ProtectedKeyword)
   ) {
     return null;
   }
-  const returnType = safeTypeText(method.type, sourceFile, className);
+  const returnType = safeTypeText(method.type, className);
   if (returnType === null) return null;
   const parameters: NpmStaticOverloadParameter[] = [];
-  for (const parameter of method.parameters) {
+  for (const parameter of method.parameters.nodes) {
     if (
       !ts.isIdentifier(parameter.name) ||
       parameter.name.text === "this" ||
@@ -496,7 +493,7 @@ function overloadSignature(
     ) {
       return null;
     }
-    const type = safeTypeText(parameter.type, sourceFile, className);
+    const type = safeTypeText(parameter.type, className);
     if (type === null) return null;
     parameters.push({
       name: parameter.name.text,
@@ -513,11 +510,11 @@ export function parseNpmStaticDeclarationOverloads(
   sourceFile: ts.SourceFile,
 ): NpmStaticDeclarationOverloads {
   const classes = new Map<string, ReadonlyMap<string, readonly NpmStaticOverloadSignature[]>>();
-  for (const statement of sourceFile.statements) {
+  for (const statement of sourceFile.statements.nodes) {
     if (
       !ts.isClassDeclaration(statement) ||
       statement.name === undefined ||
-      (statement.typeParameters?.length ?? 0) !== 0 ||
+      (statement.typeParameters?.nodes.length ?? 0) !== 0 ||
       !hasModifier(statement, ts.SyntaxKind.ExportKeyword) ||
       hasModifier(statement, ts.SyntaxKind.DefaultKeyword)
     ) {
@@ -525,7 +522,7 @@ export function parseNpmStaticDeclarationOverloads(
     }
     const className = statement.name.text;
     const groups = new Map<string, ts.MethodDeclaration[]>();
-    for (const member of statement.members) {
+    for (const member of statement.members.nodes) {
       if (!ts.isMethodDeclaration(member) || !ts.isIdentifier(member.name)) continue;
       const group = groups.get(member.name.text) ?? [];
       group.push(member);
@@ -553,28 +550,24 @@ export function parseNpmStaticDeclarationOverloads(
   return classes;
 }
 
-function nullableSelfType(
-  node: ts.TypeNode,
-  sourceFile: ts.SourceFile,
-  className: string,
-): string | null {
-  if (!ts.isUnionTypeNode(node) || node.types.length !== 2) return null;
-  const arms = node.types.map((type) => safeTypeText(type, sourceFile, className));
+function nullableSelfType(node: ts.TypeNode, className: string): string | null {
+  if (!ts.isUnionTypeNode(node) || node.types.nodes.length !== 2) return null;
+  const arms = node.types.nodes.map((type) => safeTypeText(type, className));
   return arms.includes(className) && arms.includes("null") ? `${className} | null` : null;
 }
 
 function nullableVoidCallbackType(node: ts.TypeNode): string | null {
-  if (!ts.isUnionTypeNode(node) || node.types.length !== 2) return null;
+  if (!ts.isUnionTypeNode(node) || node.types.nodes.length !== 2) return null;
   let callback = false;
   let nullable = false;
-  for (let arm of node.types) {
+  for (let arm of node.types.nodes) {
     while (ts.isParenthesizedTypeNode(arm)) arm = arm.type;
     if (ts.isLiteralTypeNode(arm) && arm.literal.kind === ts.SyntaxKind.NullKeyword)
       nullable = true;
     else if (
       ts.isFunctionTypeNode(arm) &&
-      arm.parameters.length === 0 &&
-      (arm.typeParameters?.length ?? 0) === 0 &&
+      arm.parameters.nodes.length === 0 &&
+      (arm.typeParameters?.nodes.length ?? 0) === 0 &&
       arm.type?.kind === ts.SyntaxKind.VoidKeyword
     )
       callback = true;
@@ -588,11 +581,11 @@ export function parseNpmStaticDeclarationProperties(
   sourceFile: ts.SourceFile,
 ): NpmStaticDeclarationProperties {
   const classes = new Map<string, ReadonlyMap<string, string>>();
-  for (const statement of sourceFile.statements) {
+  for (const statement of sourceFile.statements.nodes) {
     if (
       !ts.isClassDeclaration(statement) ||
       statement.name === undefined ||
-      (statement.typeParameters?.length ?? 0) !== 0 ||
+      (statement.typeParameters?.nodes.length ?? 0) !== 0 ||
       !hasModifier(statement, ts.SyntaxKind.ExportKeyword) ||
       hasModifier(statement, ts.SyntaxKind.DefaultKeyword)
     ) {
@@ -600,7 +593,7 @@ export function parseNpmStaticDeclarationProperties(
     }
     const className = statement.name.text;
     const properties = new Map<string, string>();
-    for (const member of statement.members) {
+    for (const member of statement.members.nodes) {
       if (
         !ts.isPropertyDeclaration(member) ||
         !ts.isIdentifier(member.name) ||
@@ -613,8 +606,7 @@ export function parseNpmStaticDeclarationProperties(
         continue;
       }
       const type =
-        nullableSelfType(member.type, sourceFile, className) ??
-        nullableVoidCallbackType(member.type);
+        nullableSelfType(member.type, className) ?? nullableVoidCallbackType(member.type);
       if (type !== null) properties.set(member.name.text, type);
     }
     if (properties.size > 0) classes.set(className, properties);
@@ -626,7 +618,7 @@ export function parseNpmStaticDeclarationProperties(
  * caller's package-bounded resolution. Bare type dependencies deliberately
  * do not inherit the opted package's declaration trust. */
 export function npmStaticDeclarationReexports(sourceFile: ts.SourceFile): readonly string[] {
-  return sourceFile.statements.flatMap((statement) =>
+  return sourceFile.statements.nodes.flatMap((statement) =>
     ts.isExportDeclaration(statement) &&
     statement.moduleSpecifier !== undefined &&
     ts.isStringLiteral(statement.moduleSpecifier) &&
@@ -639,13 +631,13 @@ export function npmStaticDeclarationReexports(sourceFile: ts.SourceFile): readon
 function requireSpecifier(expression: ts.Expression | undefined): string | null {
   const argument =
     expression !== undefined && ts.isCallExpression(expression)
-      ? expression.arguments[0]
+      ? expression.arguments.nodes[0]
       : undefined;
   return expression !== undefined &&
     ts.isCallExpression(expression) &&
     ts.isIdentifier(expression.expression) &&
     expression.expression.text === "require" &&
-    expression.arguments.length === 1 &&
+    expression.arguments.nodes.length === 1 &&
     argument !== undefined &&
     ts.isStringLiteralLike(argument)
     ? argument.text
@@ -661,14 +653,14 @@ export function npmStaticRuntimeClassTargets(
   classNames: ReadonlySet<string>,
 ): ReadonlyMap<string, NpmStaticRuntimeClassTarget> {
   const localClasses = new Set(
-    sourceFile.statements.flatMap((statement) =>
+    sourceFile.statements.nodes.flatMap((statement) =>
       ts.isClassDeclaration(statement) && statement.name !== undefined ? [statement.name.text] : [],
     ),
   );
   const linked = new Map<string, { imported: string; specifier: string; esm?: true }>();
-  for (const statement of sourceFile.statements) {
+  for (const statement of sourceFile.statements.nodes) {
     if (ts.isVariableStatement(statement)) {
-      for (const declaration of statement.declarationList.declarations) {
+      for (const declaration of statement.declarationList.declarations.nodes) {
         const specifier = requireSpecifier(declaration.initializer);
         if (
           specifier === null ||
@@ -676,7 +668,7 @@ export function npmStaticRuntimeClassTargets(
           !ts.isObjectBindingPattern(declaration.name)
         )
           continue;
-        for (const element of declaration.name.elements) {
+        for (const element of declaration.name.elements.nodes) {
           if (element.dotDotDotToken !== undefined || !ts.isIdentifier(element.name)) continue;
           const imported =
             element.propertyName !== undefined && ts.isIdentifier(element.propertyName)
@@ -695,7 +687,7 @@ export function npmStaticRuntimeClassTargets(
       statement.importClause?.namedBindings !== undefined &&
       ts.isNamedImports(statement.importClause.namedBindings)
     ) {
-      for (const element of statement.importClause.namedBindings.elements) {
+      for (const element of statement.importClause.namedBindings.elements.nodes) {
         if (element.isTypeOnly) continue;
         linked.set(element.name.text, {
           imported: element.propertyName?.text ?? element.name.text,
@@ -719,7 +711,7 @@ export function npmStaticRuntimeClassTargets(
     } else if (localClasses.has(local))
       targets.set(exported, { specifier: null, localName: local });
   };
-  for (const statement of sourceFile.statements) {
+  for (const statement of sourceFile.statements.nodes) {
     if (
       ts.isClassDeclaration(statement) &&
       statement.name !== undefined &&
@@ -738,7 +730,7 @@ export function npmStaticRuntimeClassTargets(
           ? statement.moduleSpecifier.text
           : undefined;
       if (specifier !== undefined && !specifier.startsWith(".")) continue;
-      for (const element of statement.exportClause.elements) {
+      for (const element of statement.exportClause.elements.nodes) {
         if (!statement.isTypeOnly && !element.isTypeOnly) {
           record(
             element.name.text,
@@ -773,7 +765,7 @@ export function npmStaticRuntimeClassTargets(
       left.name.text === "exports" &&
       ts.isObjectLiteralExpression(right)
     ) {
-      for (const property of right.properties) {
+      for (const property of right.properties.nodes) {
         if (ts.isShorthandPropertyAssignment(property) && ts.isIdentifier(property.name))
           record(property.name.text, property.name.text);
         else if (
@@ -791,7 +783,7 @@ export function npmStaticRuntimeClassTargets(
 
 function exportedClassNames(sourceFile: ts.SourceFile): ReadonlySet<string> {
   const names = new Set<string>();
-  for (const statement of sourceFile.statements) {
+  for (const statement of sourceFile.statements.nodes) {
     if (
       ts.isClassDeclaration(statement) &&
       statement.name !== undefined &&
@@ -805,7 +797,7 @@ function exportedClassNames(sourceFile: ts.SourceFile): ReadonlySet<string> {
       statement.exportClause !== undefined &&
       ts.isNamedExports(statement.exportClause)
     ) {
-      for (const element of statement.exportClause.elements)
+      for (const element of statement.exportClause.elements.nodes)
         names.add(element.propertyName?.text ?? element.name.text);
       continue;
     }
@@ -833,7 +825,7 @@ function exportedClassNames(sourceFile: ts.SourceFile): ReadonlySet<string> {
       left.name.text === "exports" &&
       ts.isObjectLiteralExpression(right)
     ) {
-      for (const property of right.properties) {
+      for (const property of right.properties.nodes) {
         if (ts.isShorthandPropertyAssignment(property) && ts.isIdentifier(property.name))
           names.add(property.name.text);
         else if (
@@ -864,13 +856,13 @@ function implementationComment(
   signatures: readonly NpmStaticOverloadSignature[],
 ): string | null {
   if (
-    method.parameters.some(
+    method.parameters.nodes.some(
       (parameter) => !ts.isIdentifier(parameter.name) || parameter.dotDotDotToken !== undefined,
     )
   )
     return null;
   const maxParams = Math.max(...signatures.map((signature) => signature.parameters.length));
-  if (method.parameters.length !== maxParams) return null;
+  if (method.parameters.nodes.length !== maxParams) return null;
   const params: string[] = [];
   for (let index = 0; index < maxParams; index++) {
     const types = [
@@ -882,7 +874,7 @@ function implementationComment(
       ),
     ];
     if (types.length === 0) return null;
-    const parameter = method.parameters[index];
+    const parameter = method.parameters.nodes[index];
     if (parameter === undefined || !ts.isIdentifier(parameter.name)) return null;
     const name = parameter.name.text;
     const optional = signatures.some((signature) => {
@@ -900,9 +892,9 @@ function implementationComment(
 function directReturn(statement: ts.Statement): ts.ReturnStatement | null {
   if (ts.isReturnStatement(statement)) return statement;
   return ts.isBlock(statement) &&
-    statement.statements.length === 1 &&
-    ts.isReturnStatement(statement.statements[0]!)
-    ? statement.statements[0]!
+    statement.statements.nodes.length === 1 &&
+    ts.isReturnStatement(statement.statements.nodes[0]!)
+    ? statement.statements.nodes[0]!
     : null;
 }
 
@@ -926,16 +918,16 @@ function overloadArrayBackingField(
 ): { field: string; type: string } | null {
   if (
     method.body === undefined ||
-    method.parameters.length !== 1 ||
-    !ts.isIdentifier(method.parameters[0]!.name)
+    method.parameters.nodes.length !== 1 ||
+    !ts.isIdentifier(method.parameters.nodes[0]!.name)
   )
     return null;
   const getters = signatures.filter(
     (signature) => signature.parameters.length === 0 && signature.returnType.endsWith("[]"),
   );
   if (getters.length !== 1) return null;
-  const parameter = method.parameters[0]!.name.text;
-  for (const statement of method.body.statements) {
+  const parameter = method.parameters.nodes[0]!.name.text;
+  for (const statement of method.body.statements.nodes) {
     if (!ts.isIfStatement(statement) || !undefinedParameterTest(statement.expression, parameter))
       continue;
     const returned = directReturn(statement.thenStatement);
@@ -960,7 +952,7 @@ export function applyNpmStaticDeclarationOverloads(
   if (declarations.size === 0) return null;
   const exported = exportedClassNames(sourceFile);
   const inserts: { offset: number; text: string }[] = [];
-  for (const statement of sourceFile.statements) {
+  for (const statement of sourceFile.statements.nodes) {
     if (
       !ts.isClassDeclaration(statement) ||
       statement.name === undefined ||
@@ -969,12 +961,12 @@ export function applyNpmStaticDeclarationOverloads(
       continue;
     const classOverloads = declarations.get(statement.name.text);
     if (classOverloads === undefined) continue;
-    const constructor = statement.members.find(
+    const constructor = statement.members.nodes.find(
       (member): member is ts.ConstructorDeclaration =>
         ts.isConstructorDeclaration(member) && member.body !== undefined,
     );
     const projectedFields = new Set<string>();
-    for (const member of statement.members) {
+    for (const member of statement.members.nodes) {
       if (
         !ts.isMethodDeclaration(member) ||
         !ts.isIdentifier(member.name) ||
@@ -995,7 +987,7 @@ export function applyNpmStaticDeclarationOverloads(
         constructor?.body !== undefined &&
         !projectedFields.has(backing.field)
       ) {
-        for (const bodyStatement of constructor.body.statements) {
+        for (const bodyStatement of constructor.body.statements.nodes) {
           if (
             !ts.isExpressionStatement(bodyStatement) ||
             !ts.isBinaryExpression(bodyStatement.expression)
@@ -1005,20 +997,17 @@ export function applyNpmStaticDeclarationOverloads(
           if (
             operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
             !ts.isArrayLiteralExpression(right) ||
-            right.elements.length !== 0 ||
+            right.elements.nodes.length !== 0 ||
             !ts.isPropertyAccessExpression(left) ||
             left.expression.kind !== ts.SyntaxKind.ThisKeyword ||
             left.name.text !== backing.field
           ) {
             continue;
           }
-          const leading = source.slice(
-            bodyStatement.getFullStart(),
-            bodyStatement.getStart(sourceFile),
-          );
+          const leading = source.slice(bodyStatement.pos, tokenStartOfNode(bodyStatement));
           if (!leading.includes("@type")) {
             inserts.push({
-              offset: bodyStatement.getStart(sourceFile),
+              offset: tokenStartOfNode(bodyStatement),
               text: `/** @type {${backing.type}} */ `,
             });
           }
@@ -1036,13 +1025,13 @@ export function applyNpmStaticDeclarationOverloads(
             (parameter) => parameter.optional && !existing.includes(`[${parameter.name}]`),
           );
           if (missingOptional)
-            inserts.push({ offset: member.getStart(sourceFile), text: `${implementation} ` });
+            inserts.push({ offset: tokenStartOfNode(member), text: `${implementation} ` });
           else if (
             jsDocs.length === 0 &&
-            member.parameters.length === 0 &&
+            member.parameters.nodes.length === 0 &&
             SCALAR_METHOD_RETURNS.has(signatures[0]!.returnType)
           ) {
-            inserts.push({ offset: member.getStart(sourceFile), text: `${implementation} ` });
+            inserts.push({ offset: tokenStartOfNode(member), text: `${implementation} ` });
           }
         }
         continue;
@@ -1050,7 +1039,9 @@ export function applyNpmStaticDeclarationOverloads(
       const implementation =
         jsDocs.length === 0 ? implementationComment(statement.name.text, member, signatures) : null;
       if (jsDocs.length === 0 && implementation === null) continue;
-      const offset = jsDocs[0]?.getStart(sourceFile) ?? member.getStart(sourceFile);
+      const offset =
+        (jsDocs[0] === undefined ? undefined : tokenStartOfNode(jsDocs[0])) ??
+        tokenStartOfNode(member);
       const text = `${signatures.map(overloadComment).join(" ")} ${implementation === null ? "" : implementation + " "}`;
       inserts.push({ offset, text });
     }
@@ -1088,7 +1079,7 @@ export function applyNpmStaticDeclarationProperties(
   const exported = exportedClassNames(sourceFile);
   const inserts: { offset: number; text: string }[] = [];
   const classes = new Map<string, ts.ClassDeclaration>();
-  for (const statement of sourceFile.statements) {
+  for (const statement of sourceFile.statements.nodes) {
     if (ts.isClassDeclaration(statement) && statement.name !== undefined)
       classes.set(statement.name.text, statement);
   }
@@ -1100,9 +1091,9 @@ export function applyNpmStaticDeclarationProperties(
     if (collecting.has(name)) return new Map();
     collecting.add(name);
     const statement = classes.get(name);
-    const base = statement?.heritageClauses?.find(
+    const base = statement?.heritageClauses?.nodes.find(
       (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
-    )?.types[0]?.expression;
+    )?.types?.nodes[0]?.expression;
     const properties = new Map<string, string>();
     if (base && ts.isIdentifier(base) && classes.has(base.text)) {
       // Self-link types belong to their own class. Only the callback ABI
@@ -1122,8 +1113,8 @@ export function applyNpmStaticDeclarationProperties(
   const callbackInitializer = (node: ts.Expression): boolean => {
     if (
       !ts.isArrowFunction(node) ||
-      node.parameters.length !== 0 ||
-      (node.typeParameters?.length ?? 0) !== 0 ||
+      node.parameters.nodes.length !== 0 ||
+      (node.typeParameters?.nodes.length ?? 0) !== 0 ||
       hasModifier(node, ts.SyntaxKind.AsyncKeyword) ||
       !ts.isBlock(node.body)
     )
@@ -1139,11 +1130,11 @@ export function applyNpmStaticDeclarationProperties(
     };
     return returnsValue(node.body) !== true;
   };
-  for (const statement of sourceFile.statements) {
+  for (const statement of sourceFile.statements.nodes) {
     if (!ts.isClassDeclaration(statement) || statement.name === undefined) continue;
     const properties = propertiesOf(statement.name.text);
     if (properties.size === 0) continue;
-    for (const member of statement.members) {
+    for (const member of statement.members.nodes) {
       if (
         !ts.isPropertyDeclaration(member) ||
         !ts.isIdentifier(member.name) ||
@@ -1158,16 +1149,16 @@ export function applyNpmStaticDeclarationProperties(
           !callbackInitializer(member.initializer))
       )
         continue;
-      const leading = source.slice(member.getFullStart(), member.getStart(sourceFile));
+      const leading = source.slice(member.pos, tokenStartOfNode(member));
       if (jsDocTypeOf(member) !== undefined || leading.includes("@type")) continue;
-      inserts.push({ offset: member.getStart(sourceFile), text: `/** @type {${type}} */ ` });
+      inserts.push({ offset: tokenStartOfNode(member), text: `/** @type {${type}} */ ` });
     }
-    const constructor = statement.members.find(
+    const constructor = statement.members.nodes.find(
       (member): member is ts.ConstructorDeclaration =>
         ts.isConstructorDeclaration(member) && member.body !== undefined,
     );
     if (constructor?.body === undefined) continue;
-    for (const bodyStatement of constructor.body.statements) {
+    for (const bodyStatement of constructor.body.statements.nodes) {
       if (
         !ts.isExpressionStatement(bodyStatement) ||
         !ts.isBinaryExpression(bodyStatement.expression)
@@ -1184,12 +1175,9 @@ export function applyNpmStaticDeclarationProperties(
       }
       const type = properties.get(left.name.text);
       if (type === undefined) continue;
-      const leading = source.slice(
-        bodyStatement.getFullStart(),
-        bodyStatement.getStart(sourceFile),
-      );
+      const leading = source.slice(bodyStatement.pos, tokenStartOfNode(bodyStatement));
       if (leading.includes("@type")) continue;
-      inserts.push({ offset: bodyStatement.getStart(sourceFile), text: `/** @type {${type}} */ ` });
+      inserts.push({ offset: tokenStartOfNode(bodyStatement), text: `/** @type {${type}} */ ` });
     }
   }
   if (inserts.length === 0) return null;

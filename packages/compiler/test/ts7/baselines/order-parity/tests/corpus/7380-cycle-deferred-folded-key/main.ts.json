@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7380-cycle-deferred-folded-key/util.ts",
+  "<repo>/tests/corpus/7380-cycle-deferred-folded-key/core.ts",
+  "<repo>/tests/corpus/7380-cycle-deferred-folded-key/main.ts"
+ ],
+ "diags": []
+}

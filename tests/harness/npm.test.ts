@@ -38,34 +38,31 @@ const KNOWN: Record<string, Known> = {
   "assert-shims": { run: "SC1043" },
   "buffer-shims": { run: "SC2020" },
   "bytes-exit": { build: "SC2004" },
-  "cjs-esm-named": { build: "SC2013" },
-  "cjs-lexer-aligned": { build: "SC2013" },
-  "cjs-lexer-invisible": { build: "SC2013" },
+  "cjs-esm-named": { run: "SC1090" },
+  "cjs-lexer-aligned": { run: "SC1090" },
   "commander-calc": { run: "SC1090", argvs: [["--help"]] },
   "commander-calc-async": { run: "SC1090", argvs: [["--help"]] },
-  "create-require": { run: "SC2009" },
-  "dotfolder": { run: "SC2009" },
+  "create-require": { run: "SC1090" },
+  "dotfolder": { run: "SC1090" },
   "dual-package-kinds": { build: "SC2013" },
   "dynamic-import": { build: "SC2012" },
   "dynamic-import-local": { build: "SC2012" },
   "esbuild-require": { build: "SC2013" },
   "esm-missing-default": { build: "SC1090" },
   "esm-missing-export": { build: "SC1090" },
-  "fetch-destructure": { build: "SC1090" },
-  "fs-shims": { run: "SC2020" },
-  "hoisted-workspace": { build: "SC2013" },
+  "fs-shims": { run: "SC1101" },
   "import-refusal": { build: "SC2020" },
   "island-registry": { build: "SC2011" },
   "island-timers": {
     divergence:
       "Timeout handles are numbers (typeof) and lose their ref flag once fired or cleared",
   },
-  "island-web-plumbing": { build: "SC2013" },
+  "island-web-plumbing": { run: "SC1090" },
   "lazy-traps": { build: "SC2013" },
-  "misc-shims": { build: "SC2013" },
+  "misc-shims": { run: "SC1090" },
   "namespace": { build: "SC1013" },
   "node24-async-events": { run: "SC2020" },
-  "node24-commonjs-metadata": { run: "SC1090" },
+  "node24-commonjs-metadata": { run: "SC2020" },
   "node24-crypto-kdf": { run: "SC2020" },
   "node24-deep-equality": { run: "SC2020" },
   "node24-diagnostics-async": { run: "SC1090" },
@@ -74,9 +71,9 @@ const KNOWN: Record<string, Known> = {
   "node24-esm-metadata": { run: "SC1090" },
   "node24-event-emitter": { run: "SC2020" },
   "node24-file-url-conversion": { build: "SC1090" },
-  "node24-fs-descriptors": { run: "SC1090" },
+  "node24-fs-descriptors": { run: "SC2020" },
   "node24-mime": { run: "SC2020" },
-  "node24-mime-errors": { run: "SC1090" },
+  "node24-mime-errors": { run: "SC2020" },
   "node24-no-error-assertions": { run: "SC2020" },
   "node24-parseargs": { run: "SC1090" },
   "node24-promise-timers": { run: "SC2020" },
@@ -88,31 +85,52 @@ const KNOWN: Record<string, Known> = {
   "node24-timers-unref": { run: "SC2020" },
   "node24-url-factories": { run: "SC2020" },
   "node24-url-mutation": { run: "SC1090" },
-  "node24-util-adapters": { run: "SC2020" },
-  "node24-util-types": { run: "SC2009" },
-  "node24-web-stream-encoding": { build: "SC2013" },
-  "node24-web-stream-errors": { build: "SC2013" },
-  "node24-web-stream-lifecycle": { build: "SC2013" },
-  "node24-web-stream-pipe-abort": { build: "SC2013" },
-  "node24-web-stream-pipe-errors": { build: "SC2013" },
-  "node24-web-stream-pipes": { build: "SC2013" },
-  "node24-web-stream-queues": { build: "SC2013" },
-  "node24-web-stream-readable-lifecycle": { build: "SC2013" },
-  "node24-web-stream-readers": { build: "SC2013" },
-  "node24-web-stream-tee": { build: "SC2013" },
-  "node24-web-stream-transforms": { build: "SC2013" },
+  "node24-util-adapters": { run: "Object.create with this value is not supported yet" },
+  "node24-util-types": { run: "SC1090" },
+  "node24-web-stream-encoding": { run: "SC1090" },
+  "node24-web-stream-errors": { run: "SC1090" },
+  "node24-web-stream-lifecycle": { run: "SC1090" },
+  "node24-web-stream-pipe-abort": { run: "SC2020" },
+  "node24-web-stream-pipe-errors": { run: "SC1090" },
+  "node24-web-stream-pipes": { run: "SC1090" },
+  "node24-web-stream-queues": { run: "SC1090" },
+  "node24-web-stream-readable-lifecycle": { run: "SC2020" },
+  "node24-web-stream-readers": { run: "SC1090" },
+  "node24-web-stream-tee": { run: "SC2020" },
+  "node24-web-stream-transforms": { run: "SC1090" },
   "package-imports": { build: "SC2013" },
   "promise-bridge": { build: "SC1090" },
   "self-name": { build: "SC2013" },
-  "stream-shims": { build: "SC1090" },
+  "stream-shims": { run: "SC2020" },
   "util-shims": { run: "SC2020" },
-  "web-streams": { build: "SC2013" },
+  // The package redeclares the var it exported: Node copies the first value.
+  "var-export-redeclared": { run: "SC1090" },
+  "web-streams": { run: "SC1090" },
   "workspace-copied": { build: "SC2013" },
   "workspace-unclean": { build: "SC2013" },
-  "zlib-shims": { run: "SC2020" },
 };
 
 const cases = shardSelect(npmCases(fixturesRoot), (c) => c.name);
+
+/** Per-case timeouts past the default 120 s: the undici cases compile the
+ * built-in undici implementation's module graph, the zod 3 cases (zod3,
+ * zod3-adoption, zod3-boundary, zod3-infer) compile zod 3's 3,700-line
+ * types module, and the zod 4 cases (zod4-boundary, zod4-record,
+ * hono-zod-validator, hono-zod-default-hook)
+ * compile zod 4's core, classic API and locales. A sanitized build of any
+ * of them takes minutes on a CI runner. */
+const TIMEOUTS: Record<string, number> = {
+  "hono-zod-default-hook": 900_000,
+  "hono-zod-validator": 900_000,
+  undici5: 600_000,
+  undici7: 600_000,
+  "zod4-boundary": 900_000,
+  "zod4-record": 900_000,
+  zod3: 600_000,
+  "zod3-adoption": 600_000,
+  "zod3-boundary": 600_000,
+  "zod3-infer": 600_000,
+};
 
 interface RunResult {
   stdout: Buffer;
@@ -236,7 +254,7 @@ describe(`npm native (${cases.length} programs${sanitize ? ", sanitized" : ""}${
         }
         await expectMatchesNode(c, built.binary);
       },
-      120_000,
+      TIMEOUTS[c.name] ?? 120_000,
     );
   }
 });

@@ -1,0 +1,4 @@
+The `graceful-fs` package compiles as `node:fs`.
+Its imports and `require("graceful-fs")` calls resolve to the builtin module, so the package's JavaScript is not compiled, and `gracefulify(fs)` as a statement does nothing.
+Programs behave as with the package except under file-descriptor exhaustion: graceful-fs queues operations that fail with `EMFILE` or `ENFILE` and retries them when a descriptor closes, while a compiled program reports the error to its caller, as `fs` does.
+In a compiled program, `require("graceful-fs") === require("fs")` is `true`.

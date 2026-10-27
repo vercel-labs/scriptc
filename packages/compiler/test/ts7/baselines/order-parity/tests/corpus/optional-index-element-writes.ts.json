@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/optional-index-element-writes.ts"
+ ],
+ "diags": []
+}

@@ -34,7 +34,7 @@ test("retains dependencies from function storage, captures, generator channels a
   const completed = record("completed");
   const body = record("body");
   const global = record("global", record("nested"));
-  const wanted = lowerer.shapes.shapes.map((shape) => shape.id);
+  const wanted = lowerer.shapes.shapes.map((shape) => shape.id).sort();
   record("unused");
   const unionId = lowerer.unions.intern([body, UNDEFINED_T]);
   const unusedUnion = lowerer.unions.intern([F64, UNDEFINED_T]);
@@ -162,7 +162,7 @@ test("closes nested structural types and index-signature values", () => {
     sent = record("sent"),
     indexed = record("indexed");
   const containerId = lowerer.shapes.intern([], false, indexed);
-  const wanted = lowerer.shapes.shapes.map((shape) => shape.id);
+  const wanted = lowerer.shapes.shapes.map((shape) => shape.id).sort();
   record("unused");
   const nested: IrType = {
     kind: "func",

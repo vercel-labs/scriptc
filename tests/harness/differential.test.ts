@@ -22,6 +22,8 @@ import { describe, expect, test } from "vitest";
 import ts5 from "typescript";
 import { compile } from "@scriptc/compiler";
 import { corpusSelect, shardSuffix } from "./shard.js";
+import { oracleEnvKey } from "./oracle-env.js";
+import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -35,7 +37,7 @@ const cacheDir = join(repoRoot, "node_modules/.cache/scriptc-tests");
 // SCRIPTC_TEST_SHARD="i/n" (CI's matrix) keeps only this shard's slice of
 // the corpus — the file is this suite's wall-time monster, so vitest's
 // file-granular --shard alone cannot split it. Slices are balanced by each
-// program's measured cost (corpus-costs.json). Unset = everything.
+// program's measured cost (corpus-costs.json and corpus-costs/). Unset = everything.
 const ENTRY_EXTS = ["ts", "js", "mjs", "cjs"];
 const files = corpusSelect(
   ENTRY_EXTS.flatMap((ext) => [
@@ -121,6 +123,7 @@ function wantsTscDecorators(file: string): boolean {
  * test cache — a pure function of the program bytes and the typescript
  * version (both in the oracle cache key). */
 function nodeOracleFile(file: string): string {
+  if (wantsTscJsx(directiveHead(file))) return tscJsxOracleEntry(file, cacheDir);
   if (!wantsTscDecorators(file)) return file;
   const src = readFileSync(file, "utf8");
   const out = ts5.transpileModule(src, {
@@ -145,24 +148,36 @@ function nodeOracleFile(file: string): string {
 }
 
 /** `// @no-deprecation` in the directive head: the Node oracle runs with
- * --no-deprecation — for programs exercising deprecated-API ERROR paths
- * (new Buffer's ctor ladder) whose DEP warnings carry a pid and can never
- * byte-compare; the compiled runtime emits no process warnings at all. */
+ * --no-deprecation, for programs whose DEP warnings carry a pid and cannot
+ * compare. The compiled program does not read the directive; a program
+ * whose compiled form reports the warning sets process.noDeprecation. */
 function wantsNoDeprecation(file: string): boolean {
   return directiveHead(file).some((l) => /^\/\/ @no-deprecation\s*$/.test(l));
 }
 
 /** The Node oracle's argv for a corpus entry (shims + the per-program
  * transform flag). */
+/** `// @disallow-code-generation` in the directive head: the Node oracle
+ * runs with --disallow-code-generation-from-strings — the mode compiled
+ * programs match for eval and the Function constructor, which throw its
+ * EvalError (code-generation.ts). Programs that never generate code
+ * behave identically either way. */
+function wantsDisallowCodeGeneration(file: string): boolean {
+  return directiveHead(file).some((l) => /^\/\/ @disallow-code-generation\s*$/.test(l));
+}
+
 function nodeOracleArgs(file: string): string[] {
   const transform = wantsTransformTypes(file)
     ? ["--experimental-transform-types", "--disable-warning=ExperimentalWarning"]
     : [];
   const nodep = wantsNoDeprecation(file) ? ["--no-deprecation"] : [];
+  const codegen = wantsDisallowCodeGeneration(file)
+    ? ["--disallow-code-generation-from-strings"]
+    : [];
   // --import makes Node load even a CJS entry through its ESM loader,
   // changing an entry throw's uncaughtException origin to unhandledRejection.
   const shims = directiveHead(file).includes("// @no-node-shims") ? [] : ["--import", comptimeShim];
-  return [...transform, ...nodep, ...shims, nodeOracleFile(file)];
+  return [...transform, ...nodep, ...codegen, ...shims, nodeOracleFile(file)];
 }
 
 /** Runs a binary, tolerating an expected nonzero exit (execFile rejects on
@@ -228,7 +243,7 @@ const comptimeShim = pathToFileURL(join(import.meta.dirname, "comptime-shim.mjs"
 function programInputs(file: string): string[] {
   if (!/\/main\.(ts|js|mjs|cjs)$/.test(file)) return [file];
   return [
-    ...ENTRY_EXTS.flatMap((ext) => globSync(join(file, `../**/*.${ext}`))),
+    ...[...ENTRY_EXTS, "tsx", "jsx"].flatMap((ext) => globSync(join(file, `../**/*.${ext}`))),
     ...globSync(join(file, "../**/tsconfig.json")),
     ...globSync(join(file, "../**/package.json")),
   ].sort();
@@ -238,8 +253,8 @@ function programInputs(file: string): string[] {
 // Node's verdict for a corpus program is a pure function of the program bytes,
 // the shims, and the Node build (corpus stdout is deterministic by
 // construction — it must be identical to a non-Node native binary's output). So
-// cache it, keyed by all of those plus the invocation shape (SCRIPTC_TEST_ENV
-// and the cwd). Only the SPAWN is skipped: the native side always runs live
+// cache it, keyed by all of those plus the invocation shape (the inherited
+// environment, see oracle-env.ts, and the cwd). Only the SPAWN is skipped: the native side always runs live
 // and the comparison itself never changes. SCRIPTC_NO_CACHE=1 (or an unset
 // SCRIPTC_CACHE_DIR) disables the cache in both directions — no reads, no writes.
 // Storage shares the compile cache's root and its LRU sweep (see native-toolchain.ts).
@@ -265,7 +280,7 @@ function oracleKeyBase(): Promise<string> {
       .update(readFileSync(fileURLToPath(comptimeShim)))
       .update("\0")
       .update("\0")
-      .update(process.env["SCRIPTC_TEST_ENV"] ?? "")
+      .update(oracleEnvKey(process.env))
       .update("\0")
       .update(process.cwd())
       .update("\0")

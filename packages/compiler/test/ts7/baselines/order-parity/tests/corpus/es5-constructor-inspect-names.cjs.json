@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/es5-constructor-inspect-names.cjs"
+ ],
+ "diags": []
+}

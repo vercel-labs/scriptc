@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/new-target-value-generic-subclass.ts"
+ ],
+ "diags": []
+}

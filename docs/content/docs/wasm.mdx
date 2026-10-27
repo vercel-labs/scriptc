@@ -96,11 +96,13 @@ After initialization, <code>counter_step(2)</code> returns <code>2</code>, and a
     <tr><td><code>i64</code>, <code>u64</code></td><td>JavaScript BigInt. The existing library integer checks and proofs restrict values to the exact JavaScript number range.</td></tr>
     <tr><td><code>string</code>, <code>bytes</code> parameters</td><td>Two i32 arguments: byte offset and byte length. Strings use UTF-8. Entry parameters are copied into runtime-owned values.</td></tr>
     <tr><td><code>string</code>, <code>bytes</code> results</td><td>Two extra i32 arguments identify writable four-byte output slots. The function writes the result pointer and byte length there, in little-endian order.</td></tr>
+    <tr><td><code>cstring</code> parameters</td><td>One i32 argument: the byte offset of NUL-terminated UTF-8 text. The text is copied into a runtime-owned string; malformed UTF-8 becomes U+FFFD. A zero pointer traps with <code>SC4012</code>.</td></tr>
+    <tr><td><code>cstring</code> results</td><td>An i32 result: the byte offset of NUL-terminated UTF-8 text in the result arena. A result containing U+0000 traps with <code>SC4015</code> instead of being truncated.</td></tr>
     <tr><td><code>void</code></td><td>No result.</td></tr>
   </tbody>
 </table>
 
-The native library rules about directions still apply: u8/u32/i32 are export parameters and callback scalars; i64/u64 are export-only. Callback results must be scalars or void. Callback string/byte parameters are borrowed only for the duration of that callback; copy them before retaining them in the host.
+The native library rules about directions still apply: u8/u32/i32 are export parameters and callback scalars; i64/u64 are export-only. Callback results must be scalars or void. Callback string/byte parameters are borrowed only for the duration of that callback; copy them before retaining them in the host. A <code>cstring</code> callback parameter is one i32 pointer to NUL-terminated text, borrowed the same way; a value containing U+0000 traps with <code>SC4015</code>. The <code>cstring</code> class requires <code>"profile_format": 2</code>. In native libraries it is a <code>const char *</code> with the same rules.
 
 Allocate host input buffers and output slots with <code>scriptc_alloc(size)</code>; a zero result indicates allocation failure. Release each allocation exactly once with <code>scriptc_free(pointer)</code>. Only free pointers returned by <code>scriptc_alloc</code>. These allocations remain live across application calls, initialization, and collection until freed.
 

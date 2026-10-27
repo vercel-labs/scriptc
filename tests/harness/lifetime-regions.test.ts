@@ -145,15 +145,45 @@ describe.skipIf(process.platform === "win32")("lifetime regions", { timeout: 240
   });
 
   test("async work, nesting, holders the walk does not inspect and handles", async () => {
-    // Objects allocated after an await live in the default region and keep
-    // the regions they refer into.
-    expect((await run("5013-lifetime-region-async.ts")).summaries).toEqual([summary(7, 2)]);
+    // Work that resumes after an await allocates in its region, which is
+    // freed once that work has finished.
+    expect((await run("5013-lifetime-region-async.ts")).summaries).toEqual([summary(7, 7)]);
     const nesting = await run("5014-lifetime-region-nesting.ts");
     expect(nesting.summaries).toEqual([summary(4, 2)]);
     const opaque = await run("5021-lifetime-region-opaque-holders.ts");
     expect(opaque.summaries).toEqual([summary(2, 2)]);
     keptThenFreed(opaque.attempts, [1]);
     expect((await run("5019-lifetime-region-values.ts")).summaries).toEqual([summary(2, 0)]);
+  });
+
+  test("regions carried across await by concurrent requests are freed", async () => {
+    const stats = await run("5023-lifetime-region-await.ts");
+    expect(stats.summaries).toEqual([summary(15, 15)]);
+    // Each request's region (eight interleaved ones, then a later one) is
+    // freed when the request releases it; a region released while its work
+    // is pending, or while work it started is still running, is freed once
+    // that work ends, without an attempt that keeps it.
+    for (const id of [1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 13, 15])
+      expect(
+        stats.attempts.filter((a) => a.startsWith(`${id} `)),
+        `region ${id}`,
+      ).toEqual([`${id} freed`]);
+    // The nested region is referenced by the outer one until that is freed;
+    // the escaping result keeps its region until the cache lets go.
+    keptThenFreed(stats.attempts, [10, 14]);
+  });
+
+  test("regions are carried by stackless and fiber async bodies alike", async () => {
+    // Stackless coroutine bodies and a fiber body (for await) spawn and
+    // await each other inside each region; whatever resumes allocates in
+    // the region, so each one is freed on its single release attempt.
+    const stats = await run("5024-lifetime-region-await-forms.ts");
+    expect(stats.summaries).toEqual([summary(7, 7)]);
+    for (let id = 1; id <= 7; id++)
+      expect(
+        stats.attempts.filter((a) => a.startsWith(`${id} `)),
+        `region ${id}`,
+      ).toEqual([`${id} freed`]);
   });
 
   test("weak keys of freed regions do not survive", async () => {

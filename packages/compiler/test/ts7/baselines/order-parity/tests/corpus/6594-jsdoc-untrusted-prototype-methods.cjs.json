@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6594-jsdoc-untrusted-prototype-methods.cjs"
+ ],
+ "diags": []
+}

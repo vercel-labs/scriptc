@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6124-punycode-require-warnings.cjs"
+ ],
+ "diags": []
+}

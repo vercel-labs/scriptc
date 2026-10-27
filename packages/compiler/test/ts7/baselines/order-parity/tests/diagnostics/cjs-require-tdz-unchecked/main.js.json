@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/cjs-require-tdz-unchecked/lib.js",
+  "<repo>/tests/diagnostics/cjs-require-tdz-unchecked/main.js"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7734-caught-instanceof-class-binding.js"
+ ],
+ "diags": []
+}

@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6061-type-only-class-fields/holder.ts",
+  "<repo>/tests/corpus/6061-type-only-class-fields/main.ts"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+local-class-type-query.ts:6:3 - error SC1090: function-local classes with statics, decorators, or generic members are not supported yet
+
+  5 | function make() {
+  6 |   class Box {
+    |   ^~~~~~~~~~~
+  7 |     static count = 0;

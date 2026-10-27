@@ -36,7 +36,7 @@ import {
   mangleRecordStruct,
 } from "../mangle.js";
 import { threadHotAddressLines } from "./alloc.js";
-import type { LlClassMeta } from "./classes.js";
+import { classFieldBase, classPreLines, type LlClassMeta } from "./classes.js";
 import { llvmCommentText } from "./common.js";
 import type { NullableRefFields } from "./nullable-fields.js";
 import { FN_ATTRS, rcMembers, releaseSym, vAdapters, type ShapeHost } from "./shapes.js";
@@ -84,7 +84,7 @@ export class LifetimeRegions {
 
   /** The reference-holding fields; inline scalar unions own nothing. */
   private classFields(def: IrClassDef, meta: LlClassMeta): Field[] {
-    const base = meta.hierarchy ? 2 : 1;
+    const base = classFieldBase(meta);
     return def.fields.flatMap((f, i) =>
       this.host.inlineUnions.classField(def.name, f.name)
         ? []
@@ -101,8 +101,8 @@ export class LifetimeRegions {
   /** Can a value of type `t` hold (or own something that holds) a
    * reference to a ProgramLifetime instance the walk can explain? */
   private reaches(t: IrType): boolean {
-    const arm = this.host.nullableUnions.of(t)?.arm;
-    if (arm !== undefined) return this.reaches(arm);
+    const nullable = this.host.nullableUnions.of(t);
+    if (nullable?.repr === "single") return this.reaches(nullable.arm);
     switch (t.kind) {
       case "object":
         return this.isLifetime(t.className) || this.reach.get(`object:${t.className}`) === true;
@@ -120,6 +120,7 @@ export class LifetimeRegions {
       // Closures capture anything, and dyn values box class instances.
       case "func":
       case "dyn":
+      case "jsval":
         return true;
       default:
         return false;
@@ -287,7 +288,8 @@ export class LifetimeRegions {
    * ProgramLifetime instance). */
   private reportLines(struct: string, f: Field, i: number): string[] {
     if (!isRefCounted(f.type) || !this.reaches(f.type)) return [];
-    const arm = this.host.nullableUnions.of(f.type)?.arm ?? f.type;
+    const nullable = this.host.nullableUnions.of(f.type);
+    const arm = nullable?.repr === "single" ? nullable.arm : f.type;
     const load = [
       `  %f${i} = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${f.index}`,
       `  %v${i} = load ptr, ptr %f${i}`,
@@ -387,9 +389,7 @@ export class LifetimeRegions {
         out.push(
           `define internal void ${walk}(ptr %o, ptr %w) ${FN_ATTRS} { ; region walk ${llvmCommentText(cls.name)} and its subclasses`,
           `entry:`,
-          `  %vtp = getelementptr inbounds ptr, ptr %o, i64 1`,
-          `  %vt = load ptr, ptr %vtp`,
-          `  %pre = load ${S}, ptr %vt`,
+          ...classPreLines(meta, mangleClassStruct(cls.name), "%o", "%pre", S),
           `  switch ${S} %pre, label %done [ ${members.map((m) => `${S} ${m.pre}, label %c${m.pre}`).join(" ")} ]`,
           ...members.flatMap((m) => [
             `c${m.pre}: ; ${llvmCommentText(m.def.name)}`,
@@ -411,7 +411,7 @@ export class LifetimeRegions {
         ...this.reportBody(
           `define internal void ${walk}(ptr %o, ptr %w) ${FN_ATTRS} { ; region walk record ${shape.id}`,
           mangleRecordStruct(shape.id),
-          rcMembers(shape, this.host.inlineUnions),
+          rcMembers(shape, this.host.inlineUnions, this.host.nullableUnions.fieldBase(shape.id)),
         ),
       );
       rows.push(`{ ptr, ptr } { ptr @${mangleRecordRelease(shape.id)}, ptr ${walk} }`);

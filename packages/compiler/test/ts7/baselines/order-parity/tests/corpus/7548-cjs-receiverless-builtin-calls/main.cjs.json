@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7548-cjs-receiverless-builtin-calls/lib.cjs",
+  "<repo>/tests/corpus/7548-cjs-receiverless-builtin-calls/main.cjs"
+ ],
+ "diags": []
+}

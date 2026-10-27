@@ -21,7 +21,7 @@ export function reassignedBindings(
     else if (ts.isArrayLiteralExpression(e) || ts.isObjectLiteralExpression(e)) {
       const walk = (n: ts.Node): void => {
         if (ts.isIdentifier(n)) mark(n);
-        else n.forEachChild(walk);
+        else ts.forEachChild(n, walk);
       };
       walk(e);
     }
@@ -54,7 +54,7 @@ export function reassignedBindings(
       } else if (js && ts.isIdentifier(node) && node.text === "arguments") {
         for (let owner = node.parent; owner; owner = owner.parent) {
           if (!ts.isFunctionLike(owner) || ts.isArrowFunction(owner)) continue;
-          for (const parameter of owner.parameters)
+          for (const parameter of owner.parameters.nodes)
             for (const bound of boundNames(parameter.name)) mark(bound);
           break;
         }
@@ -68,7 +68,7 @@ export function reassignedBindings(
 function boundNames(name: ts.BindingName): ts.Identifier[] {
   if (ts.isIdentifier(name)) return [name];
   const names: ts.Identifier[] = [];
-  for (const element of name.elements)
+  for (const element of name.elements.nodes)
     if (!ts.isOmittedExpression(element) && element.name) names.push(...boundNames(element.name));
   return names;
 }
@@ -137,7 +137,7 @@ export function presentAtUse(use: ts.Identifier, bindings: PresenceBindings): bo
       if (condition && implies(condition, true, bindings)) return true;
     } else if (ts.isCallExpression(parent) || ts.isNewExpression(parent)) {
       // Arguments evaluate after the callee and earlier arguments.
-      const args = parent.arguments ?? [];
+      const args = parent.arguments?.nodes ?? [];
       const index = args.indexOf(child as ts.Expression);
       if (index >= 0 && !isOptionalChainMember(parent)) {
         if (dereferences(parent.expression, bindings)) return true;
@@ -145,7 +145,7 @@ export function presentAtUse(use: ts.Identifier, bindings: PresenceBindings): bo
       }
     }
     if (isStatementList(parent) && !ts.isFunctionDeclaration(child)) {
-      const statements = (parent as { statements: ts.NodeArray<ts.Statement> }).statements;
+      const statements = (parent as { statements: ts.NodeArray<ts.Statement> }).statements.nodes;
       const index = statements.indexOf(child as ts.Statement);
       for (let i = index - 1; i >= 0; i--) {
         if (statementProvesPresence(statements[i]!, bindings)) return true;
@@ -278,7 +278,7 @@ function statementProvesPresence(statement: ts.Statement, bindings: PresenceBind
   }
   if (ts.isExpressionStatement(statement)) return dereferences(statement.expression, bindings);
   if (ts.isVariableStatement(statement)) {
-    for (const declaration of statement.declarationList.declarations) {
+    for (const declaration of statement.declarationList.declarations.nodes) {
       if (declaration.initializer && dereferences(declaration.initializer, bindings)) return true;
     }
     return false;
@@ -300,7 +300,7 @@ function exitsAbruptly(statement: ts.Statement): boolean {
   if (ts.isBlock(statement)) {
     // A labeled statement inside could be the target of an inner break,
     // which resumes after it; only plain trailing exits count.
-    const last = statement.statements[statement.statements.length - 1];
+    const last = statement.statements.nodes[statement.statements.nodes.length - 1];
     return last !== undefined && exitsAbruptly(last);
   }
   if (ts.isIfStatement(statement))
@@ -342,11 +342,11 @@ export function dereferences(expression: ts.Expression, bindings: PresenceBindin
     if (!e.questionDotToken && isBinding(e.expression, bindings)) return true;
     if (dereferences(e.expression, bindings)) return true;
     if (isOptionalChainMember(e)) return false;
-    return e.arguments.some((arg) => !ts.isSpreadElement(arg) && dereferences(arg, bindings));
+    return e.arguments.nodes.some((arg) => !ts.isSpreadElement(arg) && dereferences(arg, bindings));
   }
   if (ts.isNewExpression(e)) {
     if (dereferences(e.expression, bindings)) return true;
-    return (e.arguments ?? []).some(
+    return (e.arguments?.nodes ?? []).some(
       (arg) => !ts.isSpreadElement(arg) && dereferences(arg, bindings),
     );
   }
@@ -381,6 +381,6 @@ export function dereferences(expression: ts.Expression, bindings: PresenceBindin
   }
   if (ts.isConditionalExpression(e)) return dereferences(e.condition, bindings);
   if (ts.isTemplateExpression(e))
-    return e.templateSpans.some((span) => dereferences(span.expression, bindings));
+    return e.templateSpans.nodes.some((span) => dereferences(span.expression, bindings));
   return false;
 }

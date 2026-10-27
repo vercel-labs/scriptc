@@ -39,9 +39,9 @@ typedef struct ScrEvent {
   size_t rc;
   ScrStr *type;
   ScrDyn *target;  /* +1, NULL until dispatched */
-  ScrDyn *detail;  /* CustomEvent's detail (+1); NULL for Event */
+  ScrDyn *detail;  /* CustomEvent's detail, MessageEvent's data (+1); NULL for Event */
   double time_stamp;
-  bool custom, bubbles, cancelable, composed, trusted;
+  bool custom, message, bubbles, cancelable, composed, trusted;
   bool default_prevented, propagation_stopped, stop, dispatching, in_passive;
   bool tracked;
   struct ScrEvent *tracked_prev, *tracked_next;
@@ -56,6 +56,11 @@ void scr_et_core_drop(ScrEventTargetCore *core);
 ScrDyn *scr_et_add_listener(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc);
 ScrDyn *scr_et_remove_listener(ScrEventTargetCore *core, ScrDyn *const *args, size_t argc);
 ScrDyn *scr_et_dispatch_event(ScrEventTargetCore *core, ScrDyn *self, ScrDyn *const *args, size_t argc);
+/* EventTarget.prototype's method `key` (addEventListener,
+ * removeEventListener, dispatchEvent) as a function value (+1), the one
+ * every EventTarget answers, AbortSignal included: it runs on any target
+ * its `this` is. NULL for another name. */
+ScrDyn *scr_event_target_method_value(const char *key, size_t len);
 /* Dispatches an event handle (borrowed) without the argument checks. */
 void scr_et_dispatch(ScrEventTargetCore *core, ScrDyn *self, ScrDyn *event);
 /* `on<type>` attributes (Node's defineEventHandler): get answers +1 (null
@@ -82,6 +87,27 @@ extern SCR_TL ScrEventTargetCore *(*scr_et_signal_core_fn)(const ScrDyn *d, bool
  * which reaches the class's compiled methods. Without it a capsule's own
  * view answers. */
 void scr_event_handle_event_reader(ScrDyn *reader);
+/* BroadcastChannel's EventTarget side, which the worker events unit
+ * reaches through this table (that unit links without this one): a core
+ * of its own, dispatching a 'message' MessageEvent with the data, the
+ * EventTarget methods (false: not one of them), and the on<type>
+ * attributes. scr_et_broadcast_install sets the table (defined in
+ * scr_json.c, which every program links). */
+typedef struct {
+  ScrEventTargetCore *(*core_new)(const char *cls);
+  void (*core_free)(ScrEventTargetCore *core);
+  void (*dispatch_message)(ScrEventTargetCore *core, ScrDyn *self, ScrDyn *data);
+  bool (*method)(ScrEventTargetCore *core, ScrDyn *self, const char *method, ScrDyn *const *args,
+                 size_t argc, ScrDyn **out);
+  ScrDyn *(*method_value)(const char *name, size_t length);
+  ScrDyn *(*handler_get)(ScrEventTargetCore *core, const char *type);
+  void (*handler_set)(ScrEventTargetCore *core, const char *type, const ScrDyn *value);
+} ScrEtBroadcastOps;
+extern SCR_TL const ScrEtBroadcastOps *scr_et_broadcast_ops;
+void scr_et_broadcast_install(void);
+
+/* util.aborted(signal, resource): +1 dyn promise; argument errors reject it. */
+ScrDyn *scr_util_aborted(ScrDyn *signal, ScrDyn *resource);
 /* events.addAbortListener(signal, listener): +1 disposable, or NULL. */
 ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener);
 /* timers/promises setTimeout(delay, value, options) and setImmediate(value,
@@ -89,6 +115,11 @@ ScrDyn *scr_events_add_abort_listener(ScrDyn *signal, ScrDyn *listener);
  * `value` is the already-resolved promise of the resolve value, borrowed.
  * Never throw; +1. */
 ScrPromise *scr_tp_set_timeout_signal(double ms, ScrPromise *value, bool ref, ScrDyn *signal);
+/* scheduler.wait(delay, { signal }) in a program that uses mock.timers:
+ * scr_tp_set_timeout_signal, except that it throws Node's ERR_INVALID_THIS
+ * once a reset restored the real scheduler.wait, and SC2020 while
+ * mock.timers mocks it. NULL after a throw. */
+ScrPromise *scr_tp_scheduler_wait_signal(double ms, ScrPromise *value, bool ref, ScrDyn *signal);
 ScrPromise *scr_tp_set_immediate_signal(ScrPromise *value, bool ref, ScrDyn *signal);
 
 /* Compiled subclasses (`class Bus extends EventTarget`, `class Ping

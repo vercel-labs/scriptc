@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6480-catch-typeof-untyped-throws.ts"
+ ],
+ "diags": []
+}

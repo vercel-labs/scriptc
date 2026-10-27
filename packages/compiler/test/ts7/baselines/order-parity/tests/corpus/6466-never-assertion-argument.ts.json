@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6466-never-assertion-argument.ts"
+ ],
+ "diags": []
+}

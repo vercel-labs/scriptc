@@ -45,9 +45,9 @@ export function lowerAtomicsCall(
           : 3;
   const maximum = member === "wait" ? 4 : member === "notify" ? 3 : minimum;
   if (
-    call.arguments.length < minimum ||
-    call.arguments.length > maximum ||
-    call.arguments.some(ts.isSpreadElement)
+    call.arguments.nodes.length < minimum ||
+    call.arguments.nodes.length > maximum ||
+    call.arguments.nodes.some(ts.isSpreadElement)
   ) {
     lowerer.noLowering(
       `Atomics.${member} arguments`,
@@ -55,15 +55,19 @@ export function lowerAtomicsCall(
       `use ${minimum}${maximum > minimum ? `–${maximum}` : ""} arguments`,
     );
   }
-  const source = call.arguments[0]!;
+  const source = call.arguments.nodes[0]!;
   // Generic constraints can remain unions in the checker while this body
   // has a concrete typed-array binding. Validate the actual lowered storage.
   const array = lowerer.lowerExpr(source);
   const type = array.type;
+  // An untyped array (a JavaScript `workerData` or field): the runtime
+  // checks its kind and throws Node's TypeError for any other value.
+  const dynamic = type?.kind === "dyn";
   if (
-    type?.kind !== "bytes" ||
-    !["i8", "u8", "i16", "u16", "i32", "u32"].includes(type.elem) ||
-    ((member === "wait" || member === "notify") && type.elem !== "i32")
+    !dynamic &&
+    (type?.kind !== "bytes" ||
+      !["i8", "u8", "i16", "u16", "i32", "u32"].includes(type.elem) ||
+      ((member === "wait" || member === "notify") && type.elem !== "i32"))
   ) {
     lowerer.noLowering(
       `Atomics.${member} over this array`,
@@ -75,14 +79,14 @@ export function lowerAtomicsCall(
   }
   const number = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
   const arg = (index: number, fallback: number): IrExpr =>
-    call.arguments[index]
-      ? lowerOptionalArgument(lowerer, call.arguments[index]!, F64, number(fallback))
+    call.arguments.nodes[index]
+      ? lowerOptionalArgument(lowerer, call.arguments.nodes[index]!, F64, number(fallback))
       : number(fallback);
   const index = arg(1, 0);
   if (member === "wait")
     return {
       kind: "libCall",
-      fn: "atomics.wait",
+      fn: dynamic ? "atomics.waitDyn" : "atomics.wait",
       args: [array, index, arg(2, 0), arg(3, Infinity)],
       type: STRING,
       loc,
@@ -90,14 +94,14 @@ export function lowerAtomicsCall(
   if (member === "notify")
     return {
       kind: "libCall",
-      fn: "atomics.notify",
+      fn: dynamic ? "atomics.notifyDyn" : "atomics.notify",
       args: [array, index, arg(2, Infinity)],
       type: F64,
       loc,
     };
   return {
     kind: "libCall",
-    fn: "atomics.op",
+    fn: dynamic ? "atomics.opDyn" : "atomics.op",
     args: [array, index, arg(2, 0), arg(3, 0), number(operation)],
     type: F64,
     loc,

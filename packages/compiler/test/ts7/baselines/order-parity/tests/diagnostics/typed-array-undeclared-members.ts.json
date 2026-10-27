@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/typed-array-undeclared-members.ts"
+ ],
+ "diags": []
+}

@@ -1,0 +1,82 @@
+exports[`counts toward the plan 1`] = `
+1
+`;
+
+exports[`differs from the stored snapshot 1`] = `
+{
+  "count": 1
+}
+`;
+
+exports[`name with \`backticks\` and \${braces} 1`] = `
+{
+  "ok": true
+}
+`;
+
+exports[`serializers > run in order 1`] = `
+n is 10
+`;
+
+exports[`serializers > run in order 2`] = `
+X
+`;
+
+exports[`serializers > run in order 3`] = `
+8
+`;
+
+exports[`values > records and arrays 1`] = `
+{
+  "zeta": 1,
+  "alpha": [
+    1,
+    "two",
+    {
+      "b": true,
+      "a": null
+    }
+  ]
+}
+`;
+
+exports[`values > records and arrays 2`] = `
+[
+  {
+    "id": 3,
+    "name": "n"
+  }
+]
+`;
+
+exports[`values > scalars 1`] = `
+42
+`;
+
+exports[`values > scalars 2`] = `
+-0.5
+`;
+
+exports[`values > scalars 3`] = `
+true
+`;
+
+exports[`values > scalars 4`] = `
+null
+`;
+
+exports[`values > scalars 5`] = `
+undefined
+`;
+
+exports[`values > strings 1`] = `
+"plain"
+`;
+
+exports[`values > strings 2`] = `
+"tick \` dollar \${x} backslash \\\\ newline \\n tab \\t"
+`;
+
+exports[`values > strings 3`] = `
+"unicode é 漢 😀"
+`;

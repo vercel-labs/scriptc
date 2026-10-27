@@ -1,5 +1,13 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, expect, test, vi } from "vitest";
@@ -7,7 +15,7 @@ import { NativeCompiler } from "./compiler.js";
 import type { NativeToolchain } from "./toolchain.js";
 import { runNativeFrontend } from "../frontend/pipeline-native.js";
 import { emitNativeObject } from "../backend/native-tools.js";
-import { MACOS_ARM64_TARGET } from "../backend/targets.js";
+import { LINUX_X64_GNU_TARGET, MACOS_ARM64_TARGET } from "../backend/targets.js";
 import { VOID, type IrModule } from "../ir/ir.js";
 import { contentDigest, NativeCache } from "./cache.js";
 import { NativeExecutableCache, openNativeExecutableCache } from "./executable-cache.js";
@@ -60,7 +68,7 @@ test.each([
   writeFileSync(output, "previous executable");
   writeFileSync(llvmPath, "previous LLVM");
   const module: IrModule = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: entry,
     entry: "%main",
     functions: [
@@ -99,7 +107,7 @@ test.each([
   });
   vi.mocked(emitNativeObject).mockImplementation((options) => {
     writeFileSync(options.outputPath, "object");
-    return [options.outputPath];
+    return { outputs: [options.outputPath], profileMatch: null };
   });
   const cache = new NativeCache(join(directory, "cache"));
   const key = contentDigest("executable link");
@@ -197,7 +205,7 @@ test.each([false, true])(
     writeFileSync(output, "previous object");
     writeFileSync(llvmPath, "previous LLVM");
     const module: IrModule = {
-      irVersion: 16,
+      irVersion: 17,
       sourceFile: entry,
       entry: "%main",
       functions: [
@@ -242,7 +250,7 @@ test.each([false, true])(
       expect(emitted).toContain("define i32 @main");
       if (fail) throw new Error("codegen failed");
       writeFileSync(options.outputPath, "new object");
-      return [options.outputPath];
+      return { outputs: [options.outputPath], profileMatch: null };
     });
     const target = MACOS_ARM64_TARGET;
     const toolchain: NativeToolchain = {
@@ -281,5 +289,173 @@ test.each([false, true])(
     }
     expect(dispose).toHaveBeenCalledTimes(1);
     expect(readdirSync(directory).sort()).toEqual(["output.o", "output.o.ll"]);
+  },
+);
+
+test.skipIf(process.platform === "win32").each([false, true])(
+  "Linux links use lld when the driver finds it, and the default linker when lld fails (%s)",
+  (lldFails) => {
+    const directory = mkdtempSync(join("/tmp", "scriptc-native-lld-"));
+    directories.push(directory);
+    const bin = join(directory, "bin");
+    mkdirSync(bin);
+    const clang = join(bin, "clang");
+    writeFileSync(clang, "#!/bin/sh\n");
+    chmodSync(clang, 0o755);
+    writeFileSync(join(bin, "ld.lld"), "#!/bin/sh\n");
+    chmodSync(join(bin, "ld.lld"), 0o755);
+    const entry = join(directory, "entry.ts");
+    const output = join(directory, "program");
+    const module: IrModule = {
+      irVersion: 17,
+      sourceFile: entry,
+      entry: "%main",
+      functions: [
+        {
+          name: "%main",
+          params: [],
+          locals: [],
+          body: [],
+          returnType: VOID,
+          loc: { file: entry, start: 0, end: 0 },
+        },
+      ],
+    };
+    vi.mocked(runNativeFrontend).mockReturnValue({
+      preflight: [],
+      entryText: () => "",
+      entryExports: () => new Map(),
+      entryContract: () => {
+        throw new Error("unexpected contract request");
+      },
+      sourceTexts: () => new Map(),
+      npmStatic: [],
+      npmImportSites: new Map(),
+      dispose: () => {},
+      lower: () => ({
+        module,
+        diagnostics: [],
+        runtimeFences: [],
+        stats: { statementsTotal: 0, statementsFailed: 0, functionsSkipped: 0 },
+      }),
+    });
+    vi.mocked(emitNativeObject).mockImplementation((options) => {
+      writeFileSync(options.outputPath, "object");
+      return { outputs: [options.outputPath], profileMatch: null };
+    });
+    vi.mocked(openNativeExecutableCache).mockReturnValue(null);
+    const links: string[][] = [];
+    vi.mocked(execFileSync).mockImplementation((_command, args) => {
+      const list = args as string[];
+      links.push(list);
+      if (lldFails && list.includes("-fuse-ld=lld")) throw new Error("lld failed");
+      writeFileSync(list[list.indexOf("-o") + 1]!, "executable");
+      return "";
+    });
+    const target = LINUX_X64_GNU_TARGET;
+    const compiler = new NativeCompiler({
+      compilerVersion: "0.0.0",
+      target,
+      helper: target.helper,
+      ts7Executable: "unused",
+      helperExecutable: "unused",
+      helperPackageRoot: "unused",
+      runtimePackRoot: "unused",
+      linker: clang,
+      linkerArgs: [],
+      dsymutil: "unused",
+    });
+    const result = compiler.compile(entry, {
+      outDir: directory,
+      outPath: output,
+      backend: "llvm",
+      optimization: "release",
+      strip: true,
+    });
+    expect(result).toMatchObject({ ok: true, binaryPath: output });
+    expect(links[0]).toContain("-fuse-ld=lld");
+    expect(links.length).toBe(lldFails ? 2 : 1);
+    if (lldFails) expect(links[1]).not.toContain("-fuse-ld=lld");
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "a --profile-use executable reports the helper's profile match",
+  () => {
+    const directory = mkdtempSync(join("/tmp", "scriptc-native-profile-"));
+    directories.push(directory);
+    const clang = join(directory, "clang");
+    writeFileSync(clang, "#!/bin/sh\n");
+    chmodSync(clang, 0o755);
+    const entry = join(directory, "entry.ts");
+    const output = join(directory, "program");
+    const profile = join(directory, "app.profdata");
+    writeFileSync(profile, "indexed profile");
+    const module: IrModule = {
+      irVersion: 17,
+      sourceFile: entry,
+      entry: "%main",
+      functions: [
+        {
+          name: "%main",
+          params: [],
+          locals: [],
+          body: [],
+          returnType: VOID,
+          loc: { file: entry, start: 0, end: 0 },
+        },
+      ],
+    };
+    vi.mocked(runNativeFrontend).mockReturnValue({
+      preflight: [],
+      entryText: () => "",
+      entryExports: () => new Map(),
+      entryContract: () => {
+        throw new Error("unexpected contract request");
+      },
+      sourceTexts: () => new Map(),
+      npmStatic: [],
+      npmImportSites: new Map(),
+      dispose: () => {},
+      lower: () => ({
+        module,
+        diagnostics: [],
+        runtimeFences: [],
+        stats: { statementsTotal: 0, statementsFailed: 0, functionsSkipped: 0 },
+      }),
+    });
+    const match = { annotated: 120, mismatched: 7, missing: 40, unknownPartitions: 0 };
+    vi.mocked(emitNativeObject).mockImplementation((options) => {
+      expect(options.profile?.use?.path).toBe(profile);
+      writeFileSync(options.outputPath, "object");
+      return { outputs: [options.outputPath], profileMatch: match };
+    });
+    vi.mocked(openNativeExecutableCache).mockReturnValue(null);
+    vi.mocked(execFileSync).mockImplementation((_command, args) => {
+      const list = args as string[];
+      writeFileSync(list[list.indexOf("-o") + 1]!, "executable");
+      return "";
+    });
+    const target = LINUX_X64_GNU_TARGET;
+    const compiler = new NativeCompiler({
+      compilerVersion: "0.0.0",
+      target,
+      helper: target.helper,
+      ts7Executable: "unused",
+      helperExecutable: "unused",
+      helperPackageRoot: "unused",
+      runtimePackRoot: "unused",
+      linker: clang,
+      linkerArgs: [],
+      dsymutil: "unused",
+    });
+    const result = compiler.compile(entry, {
+      outDir: directory,
+      outPath: output,
+      backend: "llvm",
+      optimization: "speed",
+      profileUse: profile,
+    });
+    expect(result).toMatchObject({ ok: true, artifact: { kind: "exe", profileMatch: match } });
   },
 );

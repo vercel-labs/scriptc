@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5772-guarded-catch-narrows.ts"
+ ],
+ "diags": []
+}

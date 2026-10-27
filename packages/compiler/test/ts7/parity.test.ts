@@ -1,4 +1,5 @@
 import { Ts7Host } from "../../src/frontend/ts7/program-adapter.js";
+import { symbolName, symbolNameOf } from "../../src/frontend/ts7/semantic-model.js";
 /* The two-world agreement battery: every fixture program is parsed and
  * checked through BOTH worlds — typescript@5.9.3 in-process and the TS7
  * adapter over tsgo — and the worlds must agree on structure (walk order,
@@ -331,7 +332,7 @@ for (const battery of ALL_BATTERIES) {
         if (s5[a] !== undefined && isFixtureSymbol(w(), s5[a]!) && s5[a]!.name !== "export=") {
           // finding 5: the module.exports receiver's symbol NAME differs in
           // JS files (5.9.3 "export=", tsgo "module") — pinned separately.
-          expect(s7[a]!.name, `${file}#${ids[a]} symbol name`).toBe(s5[a]!.name);
+          expect(symbolName(s7[a]!), `${file}#${ids[a]} symbol name`).toBe(s5[a]!.name);
         }
         for (let b = a + 1; b < ids.length; b++) {
           if (s5[a] === undefined || s5[b] === undefined) continue;
@@ -432,7 +433,7 @@ test("finding pinned: tsgo does not synthesize CJS expando members; module resol
   const moduleIdx = n5.findIndex((n) => ts5.isIdentifier(n) && n.getText() === "module");
   expect(moduleIdx).toBeGreaterThanOrEqual(0);
   expect(w.c5.getSymbolAtLocation(n5[moduleIdx]!)?.name).toBe("export=");
-  expect(w.c7.getSymbolAtLocation(n7[moduleIdx]!)?.name).toBe("module");
+  expect(symbolNameOf(w.c7.getSymbolAtLocation(n7[moduleIdx]!))).toBe("module");
 });
 
 test("getAwaitedType shim agrees with 5.9.3 across the async battery (pinned limitation aside)", () => {
@@ -487,8 +488,8 @@ test("symbol declarations resolve back into the same client AST", () => {
   const sym7 = w.c7.getSymbolAtLocation(n7[i]!);
   expect(sym7).toBeDefined();
   const aliased = w.c7.getAliasedSymbol(sym7!);
-  expect(aliased.name).toBe("answer");
-  const declHandle = aliased.declarations[0];
+  expect(symbolName(aliased)).toBe("answer");
+  const declHandle = aliased.declarationHandles[0];
   expect(declHandle).toBeDefined();
   const decl = declHandle!.resolve(w.p7.project);
   expect(decl).toBeDefined();

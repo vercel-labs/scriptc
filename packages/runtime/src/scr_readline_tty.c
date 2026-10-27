@@ -2255,7 +2255,7 @@ static void tty_prompt(ScrRl *rl, bool preserve) {
   bool dumb = term && term->len == 4 && memcmp(term->data, "dumb", 4) == 0;
   if (term) scr_str_release(term);
   if (dumb) {
-    scr_rl_write_out(rl, rl->prompt);
+    if (scr_rl_prompt_writable(rl)) scr_rl_write_out(rl, rl->prompt);
     return;
   }
   if (!preserve) t->cursor = 0;
@@ -2333,6 +2333,12 @@ double scr_rl_cursor_pos(double id, double which) {
   if (rl->tty) {
     pos = tty_cursor_pos(rl);
   } else {
+    if (rl->prompt_value && !scr_rl_primitive_prompt(rl->prompt_value)) {
+      static const char m[] =
+          "rl.getCursorPos() with a prompt that is an object or a symbol has no lowering";
+      scr_throw_error_msg_code(SCR_ERR_ERROR, m, sizeof m - 1, "SC2020");
+      return 0;
+    }
     ScrRlTty probe = {0};
     probe.columns = INFINITY;
     rl->tty = &probe;

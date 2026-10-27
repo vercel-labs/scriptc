@@ -205,6 +205,72 @@ ${[0, 1, 2, 3, 4, 5].map((index) => `  call void @add${index}(i64 ${index + 2})`
     });
   });
 
+  test("WebAssembly emission gives irreducible loops a single entry", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-helper-irreducible-"));
+    dirs.push(dir);
+    const input = join(dir, "loops.ll");
+    // @irreducible enters its loop at %a or %b; @reducible has one loop entry.
+    await writeFile(
+      input,
+      `declare void @step(i32)
+
+define i32 @irreducible(i32 %n, i1 %c) {
+entry:
+  br i1 %c, label %a, label %b
+a:
+  %ia = phi i32 [ 0, %entry ], [ %ib1, %b ]
+  call void @step(i32 %ia)
+  %ia1 = add i32 %ia, 1
+  %da = icmp slt i32 %ia1, %n
+  br i1 %da, label %b, label %done
+b:
+  %ib = phi i32 [ 0, %entry ], [ %ia1, %a ]
+  call void @step(i32 %ib)
+  %ib1 = add i32 %ib, 2
+  %db = icmp slt i32 %ib1, %n
+  br i1 %db, label %a, label %done
+done:
+  %r = phi i32 [ %ia1, %a ], [ %ib1, %b ]
+  ret i32 %r
+}
+
+define i32 @reducible(i32 %n) {
+entry:
+  br label %loop
+loop:
+  %i = phi i32 [ 0, %entry ], [ %i1, %loop ]
+  call void @step(i32 %i)
+  %i1 = add i32 %i, 1
+  %d = icmp slt i32 %i1, %n
+  br i1 %d, label %loop, label %done
+done:
+  ret i32 %i1
+}
+`,
+    );
+    const wasm = "wasm32-unknown-wasi";
+    const assemblyPath = join(dir, "loops.s");
+    const assemblyArgs = helperArgs(input, assemblyPath, wasm);
+    assemblyArgs[assemblyArgs.indexOf("--filetype") + 1] = "asm";
+    expect((await run(helper, assemblyArgs)).exitCode).toBe(0);
+    const assembly = await readFile(assemblyPath, "utf8");
+    const body = (name: string) =>
+      assembly.slice(assembly.indexOf(`\n${name}:\n`)).split("end_function")[0]!;
+    // The dispatch block that replaces the second loop entry.
+    expect(body("irreducible")).toMatch(/\bbr_table\b/);
+    expect(body("reducible")).not.toMatch(/\bbr_table\b/);
+
+    const unoptimized = helperArgs(input, join(dir, "dev.o"), wasm);
+    unoptimized[unoptimized.indexOf("--opt-level") + 1] = "0";
+    expect((await run(helper, unoptimized)).exitCode).toBe(0);
+    const partitioned = [
+      ...helperArgs(input, join(dir, "a.o"), wasm),
+      "--output",
+      join(dir, "b.o"),
+    ];
+    expect((await run(helper, partitioned)).exitCode).toBe(0);
+  });
+
   test("LLVM fatal diagnostics remain process-isolated JSON", async () => {
     const result = await execFileAsync(helper, ["version", "--format=json"], {
       encoding: "utf8",
@@ -312,7 +378,7 @@ ${[0, 1, 2, 3, 4, 5].map((index) => `  call void @add${index}(i64 ${index + 2})`
     expect(await symbols(helperObject, ["-u"])).toEqual(await symbols(clangObject, ["-u"]));
     expect(await symbols(helperObject, ["-gU"])).toEqual(await symbols(clangObject, ["-gU"]));
     expect(await symbols(helperObject, ["-gU"])).toEqual(["0000000000000000 T _main"]);
-    expect(await symbols(helperObject, ["-u"])).toContain("_scr_runtime_abi_v22");
+    expect(await symbols(helperObject, ["-u"])).toContain("_scr_runtime_abi_v47");
 
     const clangExe = join(dir, "clang-program");
     const linkDriver = join(dir, "clang-driver.c");
@@ -646,7 +712,7 @@ ${[0, 1, 2, 3, 4, 5].map((index) => `  call void @add${index}(i64 ${index + 2})`
       .split("\n");
     expect(undefinedSymbols).toContain("_sf_scale");
     expect(undefinedSymbols).toContain("_sf_callback_mix");
-    expect(undefinedSymbols).toContain("_scr_runtime_abi_v22");
+    expect(undefinedSymbols).toContain("_scr_runtime_abi_v47");
   });
 
   test("helper and clang object paths retain the same outbound FFI C ABI", async () => {

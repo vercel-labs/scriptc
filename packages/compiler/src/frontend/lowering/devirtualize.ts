@@ -1,5 +1,11 @@
 import * as ts from "../ts7/adapter.js";
-import type { IrExpr, IrFunction } from "../../ir/ir.js";
+import {
+  type IrExpr,
+  type IrFunction,
+  type IrType,
+  callSiteReturnType,
+  typeEquals,
+} from "../../ir/ir.js";
 import { everyStmtList, transformStmtList } from "../../ir/traverse.js";
 import type { ClassInfo } from "./lower-classes.js";
 import type { Lowerer } from "./lowerer.js";
@@ -56,6 +62,9 @@ export function devirtualizeVirtualCalls(
 
 class ConstructedClasses {
   private readonly lowered = new Set<string>();
+  /** Lowered bodies' return types: an override may return a subclass
+   * (`set(): this` resolves per declaring class). */
+  private readonly returnTypes = new Map<string, IrType>();
   /** Classes some retained IR allocates or exposes as a class value. */
   private readonly allocated = new Set<string>();
   private readonly exportedNames: ReadonlySet<string>;
@@ -74,6 +83,7 @@ class ConstructedClasses {
     };
     for (const fn of functions) {
       this.lowered.add(fn.name);
+      this.returnTypes.set(fn.name, callSiteReturnType(fn));
       everyStmtList(fn.body, {
         stmt: () => true,
         expr: (e) => {
@@ -102,7 +112,7 @@ class ConstructedClasses {
           this.facts.reachable.has(`%${candidate.def.name}.${e.method}`),
       )
     )
-      return this.direct(e, info, nearest.declarer);
+      return this.direct(e, info, nearest.declarer) ?? e;
     if (this.open(info)) return e;
     const targets: ClassInfo[] = [];
     for (const candidate of this.descendants(info)) {
@@ -117,7 +127,7 @@ class ConstructedClasses {
       const callee = `%${target.def.name}.${e.method}`;
       if (!this.facts.reachable.has(callee) || !this.lowered.has(callee)) return e;
     }
-    if (targets.length === 1) return this.direct(e, info, targets[0]!);
+    if (targets.length === 1) return this.direct(e, info, targets[0]!) ?? e;
     // A small closed set: the backend tests the loaded slot against each
     // implementation and calls it directly (no indirect fallback; every
     // instance that can reach this site resolves to one of them).
@@ -125,7 +135,19 @@ class ConstructedClasses {
     return { ...e, targets: targets.map((t) => t.def.name) };
   }
 
-  private direct(e: VirtualCall, info: ClassInfo, target: ClassInfo): IrExpr {
+  /** The direct call, or null when the target's return type cannot stand
+   * for the site's: an override returning a subclass object (a polymorphic
+   * `this` return) upcasts to the site's class; any other mismatch keeps
+   * the virtual call. */
+  private direct(e: VirtualCall, info: ClassInfo, target: ClassInfo): IrExpr | null {
+    const callee = `%${target.def.name}.${e.method}`;
+    const ret = this.returnTypes.get(callee) ?? e.type;
+    const upcast =
+      !typeEquals(ret, e.type) &&
+      ret.kind === "object" &&
+      e.type.kind === "object" &&
+      this.lowerer.isSubclassOf(ret.className, e.type.className);
+    if (!typeEquals(ret, e.type) && !upcast) return null;
     const receiver = e.args[0]!;
     const typed: IrExpr =
       target === info || this.lowerer.isSubclassOf(info.def.name, target.def.name)
@@ -139,13 +161,16 @@ class ConstructedClasses {
             type: { kind: "object", className: target.def.name },
             loc: receiver.loc,
           };
-    return {
+    const call: IrExpr = {
       kind: "call",
-      callee: `%${target.def.name}.${e.method}`,
+      callee,
       args: [typed, ...e.args.slice(1)],
-      type: e.type,
+      type: ret,
       loc: e.loc,
     };
+    return upcast && e.type.kind === "object"
+      ? this.lowerer.upcastTo(call, e.type.className)
+      : call;
   }
 
   /** The class and every class below it, in the isSubclassOf sense
@@ -224,14 +249,14 @@ function runtimeProvided(info: ClassInfo): boolean {
 function exportedNames(files: readonly ts.SourceFile[]): ReadonlySet<string> {
   const names = new Set<string>();
   for (const sf of files)
-    for (const statement of sf.statements) {
+    for (const statement of sf.statements.nodes) {
       if (
         ts.isExportDeclaration(statement) &&
         statement.moduleSpecifier === undefined &&
         statement.exportClause &&
         ts.isNamedExports(statement.exportClause)
       ) {
-        for (const element of statement.exportClause.elements)
+        for (const element of statement.exportClause.elements.nodes)
           names.add((element.propertyName ?? element.name).text);
       } else if (ts.isExportAssignment(statement) && ts.isIdentifier(statement.expression)) {
         names.add(statement.expression.text);

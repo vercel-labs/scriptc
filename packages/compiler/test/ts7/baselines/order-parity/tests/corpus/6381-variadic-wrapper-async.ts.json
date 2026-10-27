@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6381-variadic-wrapper-async.ts"
+ ],
+ "diags": []
+}

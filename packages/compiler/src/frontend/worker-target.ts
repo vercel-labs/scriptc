@@ -17,15 +17,15 @@ function workerNamespace(program: ts.Program, expression: ts.Expression): boolea
     ts.isIdentifier(expression.expression) &&
     expression.expression.text === "require" &&
     isNodeGlobal(program, expression.expression) &&
-    expression.arguments.length === 1 &&
-    ts.isStringLiteralLike(expression.arguments[0]!)
+    expression.arguments.nodes.length === 1 &&
+    ts.isStringLiteralLike(expression.arguments.nodes[0]!)
   )
-    return canonicalBuiltinModule(expression.arguments[0]!.text) === "worker_threads";
+    return canonicalBuiltinModule(expression.arguments.nodes[0]!.text) === "worker_threads";
   if (!ts.isIdentifier(expression)) return false;
   if (isBuiltinNamespaceImport(program, expression, "worker_threads")) return true;
   const checker = program.getTypeChecker(),
     symbol = checker.getSymbolAtLocation(expression);
-  const declaration = symbol ? checker.declarationsOf(symbol)[0] : undefined;
+  const declaration = symbol ? symbol.declarations[0] : undefined;
   return (
     declaration !== undefined &&
     ts.isVariableDeclaration(declaration) &&
@@ -53,7 +53,7 @@ export function isWorkerConstructor(program: ts.Program, expression: ts.Expressi
   if (isBuiltinMemberImport(program, expression, "worker_threads", "Worker")) return true;
   const checker = program.getTypeChecker(),
     symbol = checker.getSymbolAtLocation(expression);
-  const declaration = symbol ? checker.declarationsOf(symbol)[0] : undefined;
+  const declaration = symbol ? symbol.declarations[0] : undefined;
   if (
     declaration &&
     ts.isBindingElement(declaration) &&
@@ -84,7 +84,8 @@ export function isWorkerConstructor(program: ts.Program, expression: ts.Expressi
 
 export function workerModulePath(program: ts.Program, expression: ts.Expression): string | null {
   if (ts.isIdentifier(expression) && expression.text === "__filename") {
-    if (isNodeGlobal(program, expression)) return resolve(expression.getSourceFile().fileName);
+    if (isNodeGlobal(program, expression))
+      return resolve(ts.getSourceFileOfNode(expression).fileName);
   }
   const value = staticForkString(program, expression);
   if (value === null) return null;
@@ -122,8 +123,8 @@ export function workerTargetPaths(program: ts.Program, files: readonly ts.Source
     );
     for (const construction of constructions) {
       const expression = construction.expression;
-      if (!isWorkerConstructor(program, expression) || !construction.arguments?.[0]) continue;
-      const path = workerModulePath(program, construction.arguments[0]);
+      if (!isWorkerConstructor(program, expression) || !construction.arguments?.nodes[0]) continue;
+      const path = workerModulePath(program, construction.arguments.nodes[0]);
       if (path !== null) targets.add(workerSourcePath(path));
     }
   }

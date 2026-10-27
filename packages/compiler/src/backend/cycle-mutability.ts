@@ -1,7 +1,8 @@
 import type { IrExpr, IrFunction, IrModule, IrStmt, IrType } from "../ir/ir.js";
 import { RUNTIME_EMITTER_CLASS, RUNTIME_STREAM_CLASSES, typeKey } from "../ir/ir.js";
-import { dynamicFieldStores } from "../ir/int32-slots.js";
+import { dynamicFieldStores, type DynamicFieldStores } from "../ir/int32-slots.js";
 import { everyExprChild, everyStmtChild, everyTypeChild } from "../ir/traverse.js";
+import { resultSlotStore } from "./result-slots.js";
 
 /** Which shape fields can be written after their object escapes.
  *
@@ -17,6 +18,10 @@ import { everyExprChild, everyStmtChild, everyTypeChild } from "../ir/traverse.j
  * - every `fieldSet` outside a constructor's own `this`, `fieldIncDec`, and
  *   `recordSet` makes its (unit, field) mutable; `recordKeySet` on declared
  *   fields and `recordKeyDelete` make the whole record mutable;
+ * - a result-slot entry's stores into its destination (result-slots.ts) are
+ *   not writes: the destination is frame storage of a caller that only
+ *   projects the value, so no object can point to it and its fields cannot
+ *   lie on a cycle;
  * - a constructor's stores into its own `this` are construction-only up to
  *   the first top-level statement in which `this` escapes (any use other
  *   than a field store target, a field read, or the receiver of the direct
@@ -69,9 +74,26 @@ export function fieldKey(unit: string, field: string): string {
   return `${unit}\0${field}`;
 }
 
+/** The cycle unit of a class: `object:<root>`, the root of its hierarchy,
+ * as computeImmutableFields and computeTraced group classes. */
+export function hierarchyUnitOfClass(mod: IrModule): (className: string) => string {
+  const baseOf = new Map((mod.classes ?? []).map((c) => [c.name, c.base ?? null] as const));
+  const roots = new Map<string, string>();
+  return (name) => {
+    const known = roots.get(name);
+    if (known !== undefined) return `object:${known}`;
+    let cur = name;
+    for (let base = baseOf.get(cur); base !== null && base !== undefined; base = baseOf.get(cur))
+      cur = base;
+    roots.set(name, cur);
+    return `object:${cur}`;
+  };
+}
+
 export function computeCycleMutability(
   mod: IrModule,
   unitOfClass: (className: string) => string,
+  stores?: DynamicFieldStores,
 ): CycleMutability {
   const result: CycleMutability = {
     all: false,
@@ -97,16 +119,20 @@ export function computeCycleMutability(
   // can store; a commit rewrites every field, reference fields possibly
   // with fresh conversions). Without any such store in the program,
   // crossing into checked-dynamic code writes nothing. FFI calls and
-  // intrinsics other than publish (which only marks objects immortal) and
-  // the intern-table operations (which store published values) stay
-  // conservative.
-  const dynStores = dynamicFieldStores(mod);
+  // intrinsics other than publish (which only marks objects immortal), the
+  // intern-table operations (which store published values) and ThreadSlots
+  // reads stay conservative.
+  const dynStores = stores ?? dynamicFieldStores(mod);
   const dynamicStores = dynStores.all || dynStores.names.size > 0;
   result.emptyPropertyBags = !dynamicStores;
   const boundaryWrites = (e: IrExpr): boolean =>
     dynamicStores ||
     e.kind === "ffiCall" ||
-    (e.kind === "intrinsic" && e.name !== "threads.publish" && !e.name.startsWith("itable."));
+    (e.kind === "intrinsic" &&
+      e.name !== "threads.publish" &&
+      !e.name.startsWith("itable.") &&
+      e.name !== "slots.get" &&
+      e.name !== "slots.has");
 
   // Types that can become checked-dynamic values: mark their whole closure.
   const exposedTypes = new Set<string>();
@@ -216,8 +242,13 @@ export function computeCycleMutability(
     escapePoints.set(name, point);
     return point;
   };
-  const escapes = (name: string): boolean =>
-    escapePoint(name) < (fnByName.get(`%${name}.constructor`)?.body.length ?? 1);
+  const escapes = (name: string): boolean => {
+    const fn = fnByName.get(`%${name}.constructor`);
+    // A program class without a constructor function runs no code at construction. Generic
+    // classes are such bases: their instantiations name them as their base.
+    if (fn === undefined && classByName.get(name)?.runtime !== true) return false;
+    return escapePoint(name) < (fn?.body.length ?? 1);
+  };
   const ancestorEscaped = (name: string): boolean => {
     for (let c = classByName.get(name)?.base; c !== undefined; c = classByName.get(c)?.base)
       if (escapes(c)) return true;
@@ -286,7 +317,8 @@ export function computeCycleMutability(
             result.fields.add(fieldKey(unitOfClass(s.className), s.field));
           break;
         case "recordSet":
-          result.fields.add(fieldKey(`record:${s.shapeId}`, s.field));
+          if (!resultSlotStore(fn.name, s))
+            result.fields.add(fieldKey(`record:${s.shapeId}`, s.field));
           break;
         case "recordKeySet":
           if (s.overflowOnly !== true) result.units.add(`record:${s.shapeId}`);

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7080-crypto-ed25519.mjs"
+ ],
+ "diags": []
+}

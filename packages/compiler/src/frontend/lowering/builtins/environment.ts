@@ -78,12 +78,12 @@ export function lowerProcessEnvGet(
 }
 
 export function lowerProcessLoadEnvFile(lowerer: Lowerer, call: ts.CallExpression): IrExpr {
-  if (call.arguments.length > 1 || call.arguments.some(ts.isSpreadElement)) {
+  if (call.arguments.nodes.length > 1 || call.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering("process.loadEnvFile with spread or extra arguments", call);
   }
   const loc = locOf(call);
-  const path: IrExpr = call.arguments[0]
-    ? lowerer.lowerExprExpecting(call.arguments[0], DYN)
+  const path: IrExpr = call.arguments.nodes[0]
+    ? lowerer.lowerExprExpecting(call.arguments.nodes[0], DYN)
     : dynUndefinedExpr(loc);
   const load: IrExpr = {
     kind: "libCall",

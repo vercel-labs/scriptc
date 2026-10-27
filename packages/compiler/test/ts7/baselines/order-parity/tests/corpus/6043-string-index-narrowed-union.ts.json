@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6043-string-index-narrowed-union.ts"
+ ],
+ "diags": []
+}

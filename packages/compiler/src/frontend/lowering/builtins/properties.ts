@@ -1,5 +1,5 @@
 import { isBuiltinClassInstance } from "./receiver-types.js";
-import { strLit } from "../../../ir/build.js";
+import { numLit, strLit } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
@@ -192,6 +192,25 @@ export function lowerBuiltinExtraProperty(
   // +1-or-NULL runtime pair.
   if (kind === "child" && (name === "stdin" || name === "stdout" || name === "stderr")) {
     const receiver = lowerer.lowerExpr(expr.expression);
+    // Under the general stream representation (general-streams.ts) the
+    // declared stream type maps to a runtime stream class: the read
+    // answers the child's bridged stream (one per stdio slot, so repeated
+    // reads keep identity), fed by the same pipe.
+    const general = lowerer.generalNodeStreams ? generalChildStdioType(lowerer, expr, name) : null;
+    if (general) {
+      const type: IrType = {
+        kind: "union",
+        unionId: lowerer.unions.intern([general, { kind: "nullT" }]),
+      };
+      const read: IrExpr = {
+        kind: "libCall",
+        fn: "child.stdioStream",
+        args: [receiver, numLit(name === "stdin" ? 0 : name === "stdout" ? 1 : 2, loc)],
+        type,
+        loc,
+      };
+      return lowerer.maybeNarrow(read, expr);
+    }
     const streamType = name === "stdin" ? CHILDWRITER_T : CHILDSTREAM_T;
     const type: IrType = {
       kind: "union",
@@ -258,4 +277,25 @@ export function lowerBuiltinExtraProperty(
     return lowerer.maybeNarrow(read, expr);
   }
   return null;
+}
+
+/** The runtime stream class a child stdio read produces under the general
+ * stream representation, or null when the declared type keeps the stdio
+ * handle (the fallback declarations' ChildStdin). */
+function generalChildStdioType(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+  name: "stdin" | "stdout" | "stderr",
+): IrType | null {
+  const className = name === "stdin" ? "%Writable" : "%Readable";
+  const mapped = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (!mapped) return null;
+  // Checked-dynamic stream slots: the declared stream type maps to dyn
+  // (dyn-streams.ts); the read still produces the bridged stream.
+  if (lowerer.dynNodeStreams && mapped.kind === "dyn") return { kind: "object", className };
+  const arms =
+    mapped.kind === "union" ? (lowerer.unions.get(mapped.unionId)?.arms ?? []) : [mapped];
+  return arms.some((arm) => arm.kind === "object" && arm.className === className)
+    ? { kind: "object", className }
+    : null;
 }

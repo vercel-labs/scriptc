@@ -3,6 +3,7 @@ import {
   BOOL,
   F64,
   STRING,
+  UNDEFINED_T,
   VOID,
   arrayOf,
   type IrExpr,
@@ -23,11 +24,17 @@ const ref = (localId: string, type: IrExpr["type"]): IrExpr => ({
 });
 const index = ref("i", F64);
 
-function module(name: string, returnType: IrExpr["type"], body: IrStmt[]): IrModule {
+function module(
+  name: string,
+  returnType: IrExpr["type"],
+  body: IrStmt[],
+  unions: IrModule["unions"] = [],
+): IrModule {
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "__main",
+    unions,
     functions: [
       { name: "__main", params: [], returnType: VOID, locals: [], body: [], loc },
       {
@@ -163,6 +170,10 @@ test.each([32, 64] as const)(
     expect(fn.match(new RegExp(`icmp ult ${size} `, "g"))).toHaveLength(3);
     expect(fn).toMatch(/store double 0x4004000000000000, ptr /);
     expect(fn).toMatch(/zext i1 .* to i8/);
+    // Per push: data + (cap - len), then the state byte `width * cap - 1`
+    // past it; plus the boolean value slot.
+    expect(fn.match(/getelementptr inbounds \[8 x i8\], ptr .* -1$/gm)).toHaveLength(2);
+    expect(fn.match(/getelementptr inbounds \[1 x i8\], ptr .* -1$/gm)).toHaveLength(1);
     expect(fn.match(/getelementptr inbounds i8, ptr /g)).toHaveLength(4);
     expect(fn.match(/store i8 1, ptr /g)).toHaveLength(3);
     expect(fn.match(new RegExp(`add nuw ${size} .*, 1$`, "gm"))).toHaveLength(3);
@@ -173,6 +184,76 @@ test.each([32, 64] as const)(
     }
   },
 );
+
+test.each([32, 64] as const)(
+  "pop removes the last element of a packed array inline and keeps a cold runtime pop (%i-bit)",
+  (bits) => {
+    const maybe = { kind: "union", unionId: "maybe" } as const;
+    const pop: IrExpr = {
+      kind: "arrIntrinsic",
+      method: "pop",
+      receiver: ref("a", nums),
+      args: [],
+      type: maybe,
+      loc,
+    };
+    const llvm = emitLlvmModule(
+      module(
+        "take",
+        maybe,
+        [{ kind: "return", value: pop, loc }],
+        [{ id: "maybe", arms: [F64, UNDEFINED_T] }],
+      ),
+      { pointerBits: bits },
+    );
+    const fn = body(llvm, "take");
+    const size = bits === 32 ? "i32" : "i64";
+    // An empty array answers undefined without a call.
+    expect(fn).toMatch(new RegExp(`icmp eq ${size} %t\\d+, 0\\n  br i1 %t\\d+, label %remove\\.a`));
+    expect(fn).toMatch(new RegExp(`sub nuw ${size} %t\\d+, 1`));
+    expect(fn).toMatch(/store i64 0, ptr /);
+    expect(fn).toMatch(/store i8 0, ptr /);
+    expect(fn).toMatch(/phi i64 /);
+    expect(fn).toMatch(/call zeroext i8 @scr_arr_pop_state\(.*\) cold$/m);
+  },
+);
+
+test("a discarded pop releases the removed element inline", () => {
+  const words = ref("s", arrayOf(STRING));
+  const length: IrExpr = {
+    kind: "arrIntrinsic",
+    method: "length",
+    receiver: words,
+    args: [],
+    type: F64,
+    loc,
+  };
+  const llvm = emitLlvmModule(
+    module("drop", VOID, [
+      {
+        kind: "arraySetLength",
+        arr: words,
+        length: {
+          kind: "bin",
+          op: "-",
+          left: length,
+          right: { kind: "numLit", value: 1, type: F64, loc },
+          type: F64,
+          loc,
+        },
+        loc,
+        pop: true,
+      },
+    ]),
+  );
+  const fn = body(llvm, "drop");
+  expect(fn).toMatch(/fsub double %t\d+, 1\.0/);
+  expect(fn).toMatch(/load i64, ptr .*\n(?:.*\n)*?  store i64 0, ptr /);
+  expect(fn).toMatch(/inttoptr i64 %t\d+ to ptr/);
+  expect(fn).toContain("call void @scr_str_release(");
+  // Holes, sparse storage, and every other length keep the runtime call.
+  expect(fn).toContain("call void @scr_arr_set_len(");
+});
 
 test.each([32, 64] as const)(
   "indices below the hole-free prefix bound skip the state bytes (%i-bit)",
@@ -234,6 +315,55 @@ test.each([32, 64] as const)(
     }
   },
 );
+
+test("arrays without state bytes skip the state stores", () => {
+  const read: IrExpr = { kind: "arrayGet", arr: ref("s", words), index, type: STRING, loc };
+  const write: IrStmt = {
+    kind: "arraySet",
+    arr: ref("s", words),
+    index,
+    value: { kind: "strLit", value: "x", type: STRING, loc },
+    loc,
+  };
+  const push: IrStmt = {
+    kind: "exprStmt",
+    expr: {
+      kind: "arrIntrinsic",
+      method: "push",
+      receiver: ref("a", nums),
+      args: [{ kind: "numLit", value: 2.5, type: F64, loc }],
+      type: F64,
+      loc,
+    },
+    loc,
+  };
+  const llvm = emitLlvmModule(
+    module("plain", STRING, [push, write, { kind: "return", value: read, loc }]),
+  );
+  const fn = body(llvm, "plain");
+  // SCR_ARR_STATES (16) in `spare`, field 5.
+  const flag = String.raw`getelementptr inbounds %ScrArr, ptr %t\d+, i32 0, i32 5\n  %t\d+ = load i16, ptr %t\d+, !tbaa !\d+\n  %t\d+ = and i16 %t\d+, 16\n  %t\d+ = icmp ne i16 %t\d+, 0\n`;
+  // A push marks the state only when the array has states.
+  expect(fn).toMatch(
+    new RegExp(
+      `${flag}  br i1 %t\\d+, label %arr\\.push\\.state\\d+, label %arr\\.push\\.marked\\d+\\narr\\.push\\.state\\d+:\\n  store i8 1, ptr `,
+    ),
+  );
+  // Above the prefix, an array without states has no elements (its prefix
+  // is its length): a store there appends at the length and replaces no
+  // value.
+  expect(fn).toMatch(
+    new RegExp(
+      `${flag}  br i1 %t\\d+, label %arr\\.set\\.states\\d+, label %arr\\.set\\.plain\\d+`,
+    ),
+  );
+  expect(fn).toMatch(
+    /^arr\.set\.plain\d+:\n  %t\d+ = icmp eq i64 .*\n  br i1 %t\d+, label %arr\.set\.values\d+, label %arr\.set\.slow\d+$/m,
+  );
+  expect(fn).toMatch(/phi i1 \[ %t\d+, %arr\.set\.states\d+ \], \[ false, %arr\.set\.values\d+ \]/);
+  // Reads test no flag: they reach the state check only above the prefix.
+  expect(fn).not.toMatch(/label %arr\.get\.state\d+/);
+});
 
 test("state and presence queries answer dense slots inline", () => {
   const state: IrExpr = { kind: "arrayState", arr: ref("b", flags), index, type: F64, loc };

@@ -35,6 +35,7 @@ beforeAll(async () => {
     join(testDir, "../src/scr_path.c"),
     join(testDir, "../src/scr_string.c"),
     join(testDir, "../src/scr_array.c"),
+    join(testDir, "../src/scr_arena.c"),
     join(testDir, "../src/scr_map.c"),
     join(testDir, "../src/scr_exception.c"),
     join(testDir, "../src/scr_error.c"),
@@ -62,7 +63,8 @@ afterAll(async () => {
 // fs failure through scr_exc_print_uncaught. fs failures are Error
 // INSTANCES whose messages carry Node's exact shape ("<ERRNO>: <text>,
 // <syscall> '<path>'"), so the uncaught line renders "Error: <message>" —
-// the same first line Node prints for an uncaught fs error. Typed catches
+// the same first line Node prints for an uncaught fs error (rm on a
+// directory is Node's ERR_FS_EISDIR SystemError instead). Typed catches
 // observe the message itself (`e.message`, corpus-covered differentially);
 // these lines pin OUR uncaught rendering.
 test("process + fs library: checks pass, error messages match Node's shape", async () => {
@@ -76,7 +78,7 @@ test("process + fs library: checks pass, error messages match Node's shape", asy
       `Uncaught Error: ENOENT: no such file or directory, scandir '${scratch}/missing.txt'`,
       `Uncaught Error: EEXIST: file already exists, mkdir '${scratch}/sub'`,
       `Uncaught Error: ENOENT: no such file or directory, mkdir '${scratch}/nope/deep'`,
-      `Uncaught Error: EISDIR: illegal operation on a directory, rm '${scratch}/sub'`,
+      `Uncaught SystemError [ERR_FS_EISDIR]: Path is a directory: rm returned EISDIR (is a directory) ${scratch}/sub`,
       ``,
     ].join("\n"),
   );

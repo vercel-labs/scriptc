@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7052-date-subclass-dynamic.mjs"
+ ],
+ "diags": []
+}

@@ -1,4 +1,5 @@
 import * as ts from "../ts7/adapter.js";
+import { heritageElementTarget } from "../heritage-elements.js";
 import { InternalCompilerError } from "../../errors.js";
 import { typeEquals } from "../../ir/ir.js";
 import type { IrType } from "../../ir/ir.js";
@@ -11,9 +12,10 @@ import type { Lowerer } from "./lowerer.js";
  * after assignments and tests, and keeps that narrowing across calls: a
  * callback, method or getter that clears or replaces the property (or a
  * closure that reassigns the binding) leaves the reference typed by its old
- * value. Lowering bridges a narrowed union read with an UNCHECKED payload
- * extraction and folds `?.`, truthiness and `typeof` by the narrowed type,
- * so such a read would interpret the wrong arm. This analysis decides when
+ * value. Lowering bridges a narrowed union read with a payload extraction
+ * that traps on the wrong arm and folds `?.`, truthiness and `typeof` by the
+ * narrowed type, so such a read would abort or fold to the old value instead
+ * of throwing the catchable TypeError. This analysis decides when
  * the narrowing is provably current:
  *
  * - every property in the reference is construction-only (no store to its
@@ -30,6 +32,10 @@ import type { Lowerer } from "./lowerer.js";
  *   A loop around the use that starts inside that span contributes its
  *   whole body, since its back edge reaches the use again.
  *
+ * A binding initialized or assigned from a read whose narrowing may be
+ * stale inherits that narrowing (`const held: Expr = current` keeps the arm
+ * `current` was typed with), so its narrowed reads are never trusted.
+ *
  * TypeScript never carries a property narrowing into a nested function,
  * and every narrowing (an assignment, test, predicate or assertion of the
  * reference) is an occurrence of the reference, so a narrowed use always
@@ -42,6 +48,7 @@ export class NarrowingStability {
   private readonly verdicts = new Map<ts.Node, boolean>();
   private readonly effects = new Map<ts.Node, boolean>();
   private readonly capturedMutable = new Map<ts.Symbol, boolean>();
+  private readonly staleBindings = new Map<ts.Symbol, boolean>();
   private readonly identifierWrites = new Map<ts.SourceFile, Map<string, ts.Identifier[]>>();
   private readonly widened = new Map<ts.Node, ts.Type | null>();
   private readonly plainContainers = new Map<ts.Node, boolean>();
@@ -61,13 +68,12 @@ export class NarrowingStability {
     // Program-level queries before the program's files are split concern
     // declarations, never narrowed reads in function bodies.
     if (this.files === null) return null;
-    const position = widePosition(node);
-    if (position === null) return null;
     const cached = this.widened.get(node);
     if (cached !== undefined) return cached;
+    const position = widePosition(node);
     let result: ts.Type | null = null;
     try {
-      result = this.computeWidened(node, position);
+      if (position !== null) result = this.computeWidened(node, position);
     } finally {
       this.widened.set(node, result);
     }
@@ -90,7 +96,7 @@ export class NarrowingStability {
     }
     if (ts.isIdentifier(node)) {
       const symbol = this.bindingOf(node);
-      if (!symbol || !this.isCapturedMutable(symbol)) return false;
+      if (!symbol || !this.mayHoldStaleNarrowing(symbol)) return false;
       return !this.trusted(node);
     }
     return false;
@@ -113,7 +119,8 @@ export class NarrowingStability {
       declared = this.declaredPropertyType(node);
     } else {
       const symbol = this.bindingOf(node);
-      declared = symbol && this.isCapturedMutable(symbol) ? checker.getTypeOfSymbol(symbol) : null;
+      declared =
+        symbol && this.mayHoldStaleNarrowing(symbol) ? checker.getTypeOfSymbol(symbol) : null;
     }
     if (declared === null) return null;
     const narrowedTs = checker.getTypeAtLocation(node);
@@ -183,16 +190,17 @@ export class NarrowingStability {
     const { call, argument } = slot;
     const checker = this.lowerer.checker;
     const signature = checker.getResolvedSignature(call);
-    const declaration = signature ? checker.signatureDeclaration(signature) : undefined;
-    if (!declaration || !this.lowerer.isStdlibFile(declaration.getSourceFile())) return true;
+    const declaration = signature ? signature.declaration : undefined;
+    if (!declaration || !this.lowerer.isStdlibFile(ts.getSourceFileOfNode(declaration)))
+      return true;
     const callee = skipOuter(call.expression);
     if (
       ts.isPropertyAccessExpression(callee) &&
       this.lowerer.isStdlibGlobal(skipOuter(callee.expression), "console")
     )
       return true;
-    const index = call.arguments?.indexOf(argument) ?? -1;
-    const params = declaration.parameters ?? [];
+    const index = call.arguments?.nodes.indexOf(argument) ?? -1;
+    const params = declaration.parameters?.nodes ?? [];
     if (index < 0 || params.length === 0) return false;
     const param = params[Math.min(index, params.length - 1)]!;
     if (index >= params.length && param.dotDotDotToken === undefined) return false;
@@ -245,6 +253,10 @@ export class NarrowingStability {
       )
         return false;
     }
+    if (ts.isIdentifier(chain.root)) {
+      const root = this.bindingOf(chain.root);
+      if (root !== null && this.inheritsStaleNarrowing(root)) return false;
+    }
     const rootStable =
       chain.root.kind === ts.SyntaxKind.ThisKeyword ||
       (ts.isIdentifier(chain.root) && !this.rootCapturedMutable(chain.root));
@@ -276,11 +288,11 @@ export class NarrowingStability {
     const last = chain.links[chain.links.length - 1];
     const refKey = last ? `.${last.name}` : (chain.root as ts.Identifier).text;
     const candidates = facts.refs.get(refKey) ?? [];
-    const useStart = node.getStart();
+    const useStart = ts.tokenStartOfNode(node);
     let start = -1;
     for (const candidate of candidates) {
       if (candidate === node) continue;
-      const candidateStart = candidate.getStart();
+      const candidateStart = ts.tokenStartOfNode(candidate);
       if (candidateStart >= useStart) break;
       if (referenceKey(candidate) !== chain.key) continue;
       start = candidateStart;
@@ -302,7 +314,7 @@ export class NarrowingStability {
     // between.
     let end = useStart;
     for (const loop of facts.loops) {
-      const loopStart = loop.getStart();
+      const loopStart = ts.tokenStartOfNode(loop);
       if (loopStart >= start && loopStart <= useStart && loop.end >= node.end)
         end = Math.max(end, loop.end);
     }
@@ -346,6 +358,65 @@ export class NarrowingStability {
     return !program.wildcard && !program.mutable.has(name) && !program.accessors.has(name);
   }
 
+  /** A binding whose narrowed reads may observe a narrowing that no longer
+   * holds: another function assigns it, or it inherits a stale narrowing. */
+  private mayHoldStaleNarrowing(symbol: ts.Symbol): boolean {
+    return this.isCapturedMutable(symbol) || this.inheritsStaleNarrowing(symbol);
+  }
+
+  /** The binding is initialized or assigned from a narrowed read that may be
+   * stale, so TypeScript's narrowing of the binding may be stale too. */
+  private inheritsStaleNarrowing(symbol: ts.Symbol): boolean {
+    const cached = this.staleBindings.get(symbol);
+    if (cached !== undefined) return cached;
+    // A cycle of bindings assigned from each other contributes nothing.
+    this.staleBindings.set(symbol, false);
+    let result = false;
+    try {
+      const decl = symbol.valueDeclaration;
+      if (decl !== undefined && ts.isVariableDeclaration(decl)) {
+        if (decl.initializer !== undefined && this.mayBeStale(decl.initializer)) result = true;
+        else {
+          for (const write of this.writesIn(ts.getSourceFileOfNode(decl)).get(
+            ts.symbolName(symbol),
+          ) ?? []) {
+            const assignment = write.parent;
+            if (
+              ts.isBinaryExpression(assignment) &&
+              assignment.left === write &&
+              assignment.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+              this.lowerer.resolveValueSymbol(write) === symbol &&
+              this.mayBeStale(assignment.right)
+            ) {
+              result = true;
+              break;
+            }
+          }
+        }
+      }
+    } finally {
+      this.staleBindings.set(symbol, result);
+    }
+    return result;
+  }
+
+  /** A reference TypeScript narrows below its declared type where the
+   * narrowing may no longer hold. */
+  private mayBeStale(expression: ts.Expression): boolean {
+    let e = expression;
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    if (!ts.isIdentifier(e) && !ts.isPropertyAccessExpression(e)) return false;
+    const checker = this.lowerer.checker;
+    let declared: ts.Type | null;
+    if (ts.isPropertyAccessExpression(e)) declared = this.declaredPropertyType(e);
+    else {
+      const symbol = this.bindingOf(e);
+      declared = symbol === null ? null : checker.getTypeOfSymbol(symbol);
+    }
+    if (declared === null || checker.getTypeAtLocation(e) === declared) return false;
+    return !this.trusted(e);
+  }
+
   /** A `let`/`var`/parameter binding assigned from a function other than
    * the one that declares it: any call may change it. */
   private isCapturedMutable(symbol: ts.Symbol): boolean {
@@ -353,7 +424,7 @@ export class NarrowingStability {
     if (cached !== undefined) return cached;
     let result = false;
     try {
-      const decl = this.lowerer.checker.valueDeclarationOf(symbol);
+      const decl = symbol.valueDeclaration;
       const mutableBinding =
         decl !== undefined &&
         ((ts.isVariableDeclaration(decl) &&
@@ -362,7 +433,7 @@ export class NarrowingStability {
           ts.isParameter(decl));
       if (decl && mutableBinding) {
         const home = flowBoundary(decl);
-        const writes = this.writesIn(decl.getSourceFile()).get(symbol.name) ?? [];
+        const writes = this.writesIn(ts.getSourceFileOfNode(decl)).get(ts.symbolName(symbol)) ?? [];
         for (const write of writes) {
           if (flowBoundary(write) === home) continue;
           if (this.lowerer.resolveValueSymbol(write) === symbol) {
@@ -383,6 +454,10 @@ export class NarrowingStability {
     const found = new Map<string, ts.Identifier[]>();
     writes = found;
     this.identifierWrites.set(file, found);
+    // A declaration file holds no code that runs, so none of its writes
+    // happen. Its bindings (`console`, `JSON`) are read in most programs,
+    // and the walk would read every node of the file.
+    if (file.isDeclarationFile) return writes;
     const add = (target: ts.Node): void => {
       forEachWriteTarget(target, (t) => {
         if (!ts.isIdentifier(t)) return;
@@ -429,7 +504,7 @@ export class NarrowingStability {
           if (name === "toString" || name === "valueOf" || name === "toJSON")
             facts.conversion = true;
           if (ts.isComputedPropertyName(node.name)) {
-            const text = node.name.expression.getText();
+            const text = ts.getTextOfNode(node.name.expression);
             if (text.includes("toPrimitive")) facts.conversion = true;
             if (text.includes("iterator") || text.includes("asyncIterator")) facts.iteration = true;
           }
@@ -597,21 +672,22 @@ export class NarrowingStability {
       );
     }
     if (ts.isClassLikeDeclaration(node)) {
-      if (node.modifiers?.some((m) => m.kind === ts.SyntaxKind.Decorator)) return true;
-      for (const clause of node.heritageClauses ?? []) {
-        for (const heritage of clause.types) {
-          const e = heritage.expression;
-          if (!ts.isIdentifier(e) && !ts.isPropertyAccessExpression(e)) return true;
+      if (node.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.Decorator)) return true;
+      for (const clause of node.heritageClauses?.nodes ?? []) {
+        for (const heritage of clause.types.nodes) {
+          const e = heritageElementTarget(heritage);
+          if (!ts.isIdentifier(e) && !ts.isPropertyAccessExpression(e) && !ts.isQualifiedName(e))
+            return true;
         }
       }
-      return node.members.some(
+      return node.members.nodes.some(
         (member) =>
           ts.isClassStaticBlockDeclaration(member) ||
           (member.name !== undefined && ts.isComputedPropertyName(member.name)) ||
-          member.modifiers?.some((m) => m.kind === ts.SyntaxKind.Decorator) === true ||
+          member.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.Decorator) === true ||
           (ts.isPropertyDeclaration(member) &&
             member.initializer !== undefined &&
-            member.modifiers?.some((m) => m.kind === ts.SyntaxKind.StaticKeyword) === true),
+            member.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.StaticKeyword) === true),
       );
     }
     return true;
@@ -620,12 +696,12 @@ export class NarrowingStability {
   private isInertLibraryCall(call: ts.CallExpression): boolean {
     if (call.expression.kind === ts.SyntaxKind.SuperKeyword) return false;
     if (call.expression.kind === ts.SyntaxKind.ImportKeyword) return false;
-    if (!this.inertArguments(call.arguments)) return false;
+    if (!this.inertArguments(call.arguments.nodes)) return false;
     const callee = skipOuter(call.expression);
     if (ts.isIdentifier(callee)) {
       if (!INERT_GLOBAL_FUNCTIONS.has(callee.text)) return false;
       if (!this.lowerer.isStdlibGlobal(callee, callee.text)) return false;
-      return call.arguments.every((arg) => this.isPrimitive(arg));
+      return call.arguments.nodes.every((arg) => this.isPrimitive(arg));
     }
     if (!ts.isPropertyAccessExpression(callee)) return false;
     const method = callee.name.text;
@@ -643,7 +719,7 @@ export class NarrowingStability {
     const symbol = type.getSymbol();
     return (
       symbol !== undefined &&
-      BUILTIN_COLLECTIONS.has(symbol.name) &&
+      BUILTIN_COLLECTIONS.has(ts.symbolName(symbol)) &&
       this.lowerer.isStdlibSymbol(symbol)
     );
   }
@@ -652,7 +728,7 @@ export class NarrowingStability {
     const callee = skipOuter(node.expression);
     if (!ts.isIdentifier(callee) || !INERT_CONSTRUCTORS.has(callee.text)) return false;
     if (!this.lowerer.isStdlibGlobal(callee, callee.text)) return false;
-    const args = node.arguments ?? [];
+    const args = node.arguments?.nodes ?? [];
     if (!this.inertArguments(args)) return false;
     return args.every((arg) => this.isPrimitive(arg) || this.isBuiltinIterable(arg));
   }
@@ -834,11 +910,21 @@ const INERT_CONSTRUCTORS = new Set([
   "Int16Array",
   "Uint32Array",
   "Int32Array",
+  "Float16Array",
   "Float32Array",
   "Float64Array",
   "BigInt64Array",
   "BigUint64Array",
 ]);
+
+/** The receiver whose type widenedType reads for `node`: a property read in
+ * a slot that accepts its declared type (an argument, a return, a typed
+ * binding or literal). Whole-program analyses batch these receivers. */
+export function widenedReceiver(node: ts.Node): ts.Expression | null {
+  return ts.isPropertyAccessExpression(node) && widePosition(node) === "context"
+    ? node.expression
+    : null;
+}
 
 /** Where a stale narrowed read can keep its declared representation: the
  * receiver of `?.`, an absence/type/truthiness test, or a slot whose
@@ -890,7 +976,7 @@ function widePosition(node: ts.Expression): WidePosition | null {
   if (ts.isForStatement(parent) && parent.condition === child) return "test";
   if (
     (ts.isCallExpression(parent) || ts.isNewExpression(parent)) &&
-    parent.arguments?.some((arg) => arg === child)
+    parent.arguments?.nodes.some((arg) => arg === child)
   )
     return "context";
   // Only slots whose type IS the contextual type: an array or object
@@ -928,7 +1014,7 @@ function enclosingArgument(
     parent = parent.parent;
   }
   if (!(ts.isCallExpression(parent) || ts.isNewExpression(parent))) return null;
-  const argument = parent.arguments?.find((arg) => arg === child);
+  const argument = parent.arguments?.nodes.find((arg) => arg === child);
   return argument ? { call: parent, argument } : null;
 }
 
@@ -947,7 +1033,7 @@ function typedLiteral(
     if (!slot) return false;
     if (ts.isVariableDeclaration(slot)) return slot.initializer === literal && !!slot.type;
     if (ts.isCallExpression(slot) || ts.isNewExpression(slot))
-      return slot.arguments?.some((arg) => arg === literal) ?? false;
+      return slot.arguments?.nodes.some((arg) => arg === literal) ?? false;
     if (ts.isBinaryExpression(slot))
       return slot.operatorToken.kind === ts.SyntaxKind.EqualsToken && slot.right === literal;
     if (ts.isReturnStatement(slot)) {
@@ -993,7 +1079,7 @@ function memberUse(
 function flowBoundary(node: ts.Node): ts.Node {
   let n: ts.Node | undefined = node.parent;
   while (n && !isFlowBoundary(n)) n = n.parent;
-  return n ?? node.getSourceFile();
+  return n ?? ts.getSourceFileOfNode(node);
 }
 
 function isFlowBoundary(node: ts.Node): boolean {
@@ -1111,13 +1197,13 @@ function forEachWriteTarget(target: ts.Node, visit: (target: ts.Expression) => v
     return;
   }
   if (ts.isArrayLiteralExpression(e)) {
-    for (const element of e.elements) {
+    for (const element of e.elements.nodes) {
       forEachWriteTarget(ts.isSpreadElement(element) ? element.expression : element, visit);
     }
     return;
   }
   if (ts.isObjectLiteralExpression(e)) {
-    for (const property of e.properties) {
+    for (const property of e.properties.nodes) {
       if (ts.isPropertyAssignment(property)) forEachWriteTarget(property.initializer, visit);
       else if (ts.isShorthandPropertyAssignment(property) && ts.isIdentifier(property.name))
         visit(property.name);
@@ -1158,7 +1244,7 @@ function reflectiveStore(call: ts.CallExpression): boolean {
         method === "deleteProperty" ||
         method === "setPrototypeOf"));
   if (!reflective) return false;
-  const target = call.arguments[0];
+  const target = call.arguments.nodes[0];
   return target === undefined || !ts.isObjectLiteralExpression(skipOuter(target));
 }
 

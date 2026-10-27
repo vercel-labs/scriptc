@@ -1,0 +1,13 @@
+jsx-type-errors/view.tsx:15:30 - error SC0001: Type 'number' is not assignable to type 'string'.
+
+  14 | }
+  15 | export const view = h("p", { title: 1 }, "text ", h(Count, { count: "two" }));
+     |                              ^~~~~~~
+  16 | 
+
+jsx-type-errors/view.tsx:15:62 - error SC0001: Type 'string' is not assignable to type 'number'.
+
+  14 | }
+  15 | export const view = h("p", { title: 1 }, "text ", h(Count, { count: "two" }));
+     |                                                              ^~~~~~~
+  16 | 

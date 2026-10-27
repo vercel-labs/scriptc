@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6384-variadic-wrapper-nested.ts"
+ ],
+ "diags": []
+}

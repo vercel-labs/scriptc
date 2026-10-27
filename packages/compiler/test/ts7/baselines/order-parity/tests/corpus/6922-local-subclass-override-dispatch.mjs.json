@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6922-local-subclass-override-dispatch.mjs"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5842-qs-parse-null-prototype.ts"
+ ],
+ "diags": []
+}

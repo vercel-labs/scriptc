@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/7546-minified-esm-rules/main.ts"
+ ],
+ "diags": []
+}

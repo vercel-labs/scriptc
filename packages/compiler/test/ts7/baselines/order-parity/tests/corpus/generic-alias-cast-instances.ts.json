@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/generic-alias-cast-instances.ts"
+ ],
+ "diags": []
+}

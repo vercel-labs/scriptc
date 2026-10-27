@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5990-worker-uncloneable.mjs"
+ ],
+ "diags": []
+}

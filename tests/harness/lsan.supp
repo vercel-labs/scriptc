@@ -1,0 +1,4 @@
+# LeakSanitizer suppressions for the sanitized corpus on Linux CI
+# (scripts/ci-test-plan.mjs). One `leak:<function>` line per intentional
+# leak, under a comment that gives the reason. Empty: no corpus program
+# leaks.

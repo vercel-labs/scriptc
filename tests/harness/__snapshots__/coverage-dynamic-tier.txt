@@ -1,0 +1,13 @@
+scriptc coverage tests/coverage-fixtures/dynamic-tier/hot.js
+
+  statements analyzed   18
+  compile statically    18  (100%)
+    in dynamic tier     14  (operate on values typed only at runtime; --explain-dynamic lists them)
+
+  fully static — all analyzed statements compile to native code.
+
+  untyped and likely hot   3 functions that likely run often use untyped values, which runs slower than typed code:
+    centroid (hot.js:7): untyped JavaScript file, in a loop
+    spread (hot.js:23): untyped JavaScript file, in a loop
+    distance (hot.js:17): untyped JavaScript file, called in a loop
+    hint: add types to compile these statically; see scriptc coverage --explain-dynamic

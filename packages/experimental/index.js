@@ -6,6 +6,8 @@
 // program no longer references. An InternTable is a Map per name and
 // thread: Node.js threads share no objects, so every thread has its own
 // tables, and stored values are published (deep-frozen) as in scriptc.
+// ThreadSlots is a WeakMap per name and thread: module state is per thread
+// under Node.js, so each thread sees only the values it set.
 
 import { publish } from "@scriptc/threads";
 
@@ -88,5 +90,41 @@ export class InternTable {
     if (entries.has(k)) return entries.get(k);
     entries.set(k, value);
     return value;
+  }
+}
+
+/** This thread's slot families, by name. */
+const families = new Map();
+
+export class ThreadSlots {
+  #values;
+
+  /** Opens the family called `name`. */
+  constructor(name) {
+    if (typeof name !== "string") throw new TypeError("The slots name must be a string");
+    let values = families.get(name);
+    if (values === undefined) families.set(name, (values = new WeakMap()));
+    this.#values = values;
+  }
+
+  /** This thread's value for `key`, or undefined. */
+  get(key) {
+    return this.#values.get(key);
+  }
+
+  /** Whether this thread has a value for `key`. */
+  has(key) {
+    return this.#values.has(key);
+  }
+
+  /** Sets this thread's value for `key`. Returns the slots. */
+  set(key, value) {
+    this.#values.set(key, value);
+    return this;
+  }
+
+  /** Removes this thread's value for `key`. Returns whether there was one. */
+  delete(key) {
+    return this.#values.delete(key);
   }
 }

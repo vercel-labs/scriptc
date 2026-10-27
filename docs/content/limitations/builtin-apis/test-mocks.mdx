@@ -1,1 +1,15 @@
-- **Test mocks:** `mock.fn`, `mock.method`, `mock.restoreAll` and `mock.reset` compile, on the module's `mock` and on `t.mock`. `mock.method` mocks a function-valued field of a record, such as an object literal or an interface-typed object. Class instances, builtin objects, and object literals whose methods use `this` throw `SC2020`. Calls through the object record it as `this`, including calls of a method read off the object and called on its own, where Node records `undefined`. `object.method === mock` is `false`, because the field holds a wrapper of the mock. `mock.fn()` without an original, `mock.getter`, `mock.setter`, `mock.property`, `mock.module`, `mock.timers` and mock options throw `SC2020`.
+- **Test mocks:** `mock.fn`, `mock.method`, `mock.restoreAll` and `mock.reset` compile, on the module's `mock` and on `t.mock`.
+  `mock.method` mocks a function-valued field of a record, such as an object literal or an interface-typed object.
+  Class instances, builtin objects, and object literals whose methods use `this` throw `SC2020`.
+  Calls through the object record it as `this`, including calls of a method read off the object and called on its own, where Node records `undefined`.
+  `object.method === mock` is `false`, because the field holds a wrapper of the mock.
+  `mock.fn()` without an original returns `undefined` and records the arguments of each call, as in Node; with a function type whose return type does not include `undefined`, such as `mock.fn<() => number>()`, it throws `SC2020`.
+  `mock.getter`, `mock.setter`, `mock.property`, `mock.module` and mock options throw `SC2020`.
+- **Mock timers:** `mock.timers.enable`, `tick`, `runAll`, `reset`, `setTime` and `[Symbol.dispose]()` compile, on the module's `mock` and on `t.mock`, for the `setTimeout`, `setInterval`, `setImmediate`, `Date`, `scheduler.wait` and `AbortSignal.timeout` APIs.
+  `enable()` takes no options or an object literal whose `apis`, when given, is an array literal.
+  Options and `apis` lists that are not literals, and the `MockTimers` object used as a value, throw `SC2020`.
+  As in Node, the global timer functions, `Date.now()`, `new Date()` and `scheduler.wait` are mocked, and other calls through named and namespace imports of `node:timers` and `node:timers/promises` use real timers.
+  As in Node, once a reset gives `scheduler.wait` back, calling it throws `ERR_INVALID_THIS`.
+  While `scheduler.wait` is mocked, calling it with a `signal` option throws an `SC2020` error.
+  A mock timer's handle converts to a negative number, where Node's mock `Timeout` converts to `NaN`.
+  When two trackers have timers enabled, clearing a timer through the tracker that did not create it leaves the timer queued, where Node removes the entry at the same queue position in the clearing tracker.

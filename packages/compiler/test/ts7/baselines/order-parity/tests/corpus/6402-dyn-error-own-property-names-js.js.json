@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6402-dyn-error-own-property-names-js.js"
+ ],
+ "diags": []
+}

@@ -42,3 +42,13 @@ const staticWorker = new URL("./child-process.ts", import.meta.url);
 fork(staticWorker, [], { serialization: "advanced" });
 fork(staticWorker, [], { stdio: ["ignore", "ignore", "ignore", "ignore"] });
 // Keep each fence on its own statement so diagnostics remain site-specific.
+// An unknown 'data' chunk takes the setEncoding state established before
+// the listener registers; a setEncoding placed elsewhere leaves it unclear.
+const pipedOut = piped.stdout!;
+pipedOut.on("data", (chunk: unknown) => console.log(String(chunk)));
+pipedOut.setEncoding("utf8");
+// A setEncoding through a copy that can hold the same stream (a `let`
+// binding here) leaves the state unclear as well.
+let pipedErr = piped.stderr!;
+pipedErr.setEncoding("utf8");
+piped.stderr!.on("data", (chunk: unknown) => console.log(String(chunk)));

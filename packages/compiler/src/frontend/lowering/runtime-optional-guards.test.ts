@@ -20,7 +20,7 @@ function proofs(body: string): boolean[] {
       ts.isIdentifier(node.expression) &&
       node.expression.text === "use"
     ) {
-      const arg = node.arguments[0];
+      const arg = node.arguments.nodes[0];
       if (arg && ts.isIdentifier(arg))
         results.push(
           presentAtUse(arg, {

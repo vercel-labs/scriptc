@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7041-error-called-without-new.mjs"
+ ],
+ "diags": []
+}

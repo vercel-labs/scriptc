@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/date-to-utc-string.ts"
+ ],
+ "diags": []
+}

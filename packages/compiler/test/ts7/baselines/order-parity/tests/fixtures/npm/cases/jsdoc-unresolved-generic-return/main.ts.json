@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/jsdoc-unresolved-generic-return/main.ts"
+ ],
+ "diags": []
+}

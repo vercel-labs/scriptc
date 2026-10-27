@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6352-globalthis-state-modules/boot.ts",
+  "<repo>/tests/corpus/6352-globalthis-state-modules/state.ts",
+  "<repo>/tests/corpus/6352-globalthis-state-modules/main.ts"
+ ],
+ "diags": []
+}

@@ -1,4 +1,4 @@
-deferred-class-binding/crate.ts:3:3 - error SC1090: 'unknown'-typed class fields are not supported yet
+deferred-class-binding/crate.ts:3:3 - error SC1090: 'any'-typed class fields are not supported yet
 
   2 |   readonly label: string;
   3 |   contents: any;

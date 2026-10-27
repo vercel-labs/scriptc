@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6994-uint8-clamped-store-rounding.ts"
+ ],
+ "diags": []
+}

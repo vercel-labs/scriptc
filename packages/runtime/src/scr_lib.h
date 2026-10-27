@@ -46,6 +46,13 @@ ScrArr *scr_module_cache_keys(void);
 
 int scr_lib_arg_count(void);
 const char *scr_lib_arg(int i);
+/* Takes a leading `flag` argument out of process.argv, as Node keeps its
+ * runtime flags out of it, and reports it in process.execArgv. Called
+ * right after scr_lib_init, before process.argv is first read. True when
+ * the flag was there. */
+bool scr_lib_take_flag(const char *flag);
+/* process.execArgv: the flag scr_lib_take_flag took, or [] (+1, fresh). */
+ScrArr *scr_process_exec_argv(void);
 /* Private self-reexec marker parsed and removed from process.argv by
  * scr_lib_init. False in an ordinary parent invocation. */
 bool scr_lib_fork_info(double *target, uintptr_t *read_handle,
@@ -56,6 +63,9 @@ bool scr_lib_fork_info(double *target, uintptr_t *read_handle,
  * direct startup never filters user arguments. */
 bool scr_lib_should_collapse_reexec_arg(ScrStr *cmd, ScrArr *args);
 ScrStr *scr_process_platform(void); /* +1 interned ("darwin", "linux", ...) */
+/* Whether OpenSSL, as Node 24 links it, names a digest `name` (its names,
+ * aliases and object identifiers, case-insensitively). */
+bool scr_digest_known(const char *name, size_t len);
 ScrStr *scr_process_cwd(void);      /* +1 fresh (getcwd) */
 
 bool scr_stdio_write(int fd, const void *data, size_t len);
@@ -64,6 +74,23 @@ int scr_stdio_write_raw(int fd, const void *data, size_t len);
 /* `wide` marks string bytes that may hold lone surrogates, which become
  * U+FFFD when they reach the stream itself. */
 extern SCR_TL bool (*scr_stdio_write_hook)(int fd, const void *data, size_t len, bool wide);
+/* A worker created with the stdout or stderr option: answers true when it
+ * took the bytes for fd 1 or 2 instead of the process descriptor. */
+extern SCR_TL bool (*scr_stdio_capture)(int fd, const void *data, size_t len);
+/* A worker created with the stdin option: process.stdin reads the chunks
+ * the parent writes to worker.stdin instead of fd 0. The worker's event
+ * dispatch queues them (scr_stdin_fed_push; NULL ends the input) and the
+ * stdin service takes them (+1, or NULL with *ended set once the input
+ * ended). scr_stdin_fed_attach (the worker unit) starts that dispatch
+ * when process.stdin is first used; scr_stdin_fed_waiting (the events
+ * unit) says whether process.stdin still wants data, which keeps the
+ * worker's loop waiting on its mailbox. */
+extern SCR_TL bool scr_stdin_fed;
+extern SCR_TL void (*scr_stdin_fed_attach)(void);
+extern SCR_TL bool (*scr_stdin_fed_waiting)(void);
+void scr_stdin_fed_push(struct ScrBytes *chunk /* moves; NULL ends the input */);
+struct ScrBytes *scr_stdin_fed_take(bool *ended);
+void scr_stdin_fed_clear(void);
 /* process.stdout/.stderr .write — raw bytes (no newline or formatting; data
  * borrowed), promptly visible and ordered with console output. Constantly
  * true (the synchronous runtime never queues backpressure). */
@@ -123,8 +150,17 @@ void scr_process_exit(double code);
  * helper process (Linux, `--detached-exit`). scr_lib.c defines a weak 0;
  * the program object of such an executable defines it as 1. */
 extern const unsigned char scr_detached_exit;
+/* The heap census writer of a program built with SCRIPTC_HEAP_CENSUS
+ * (heap-census.ts): that program's object defines it, and scr_lib.c calls
+ * it at exit through a weak reference (programs on Linux only). */
+void scr_census_write(void);
 void scr_process_set_exit_code(double code);
 double scr_process_exit_code_or_zero(void);
+/* The writer and the presence test of programs that read process.exitCode:
+ * the code reads undefined until an assignment (or a nonzero exit status
+ * the runtime chose, such as an uncaught exception's 1). */
+void scr_process_set_exit_code_tracked(double code);
+bool scr_process_has_exit_code(void);
 /* process._exiting: true once the exit sequence began (process.exit or
  * the exit-listener runner set the flag). Never throws. */
 extern SCR_TL bool scr_process_in_exit;
@@ -145,6 +181,21 @@ double scr_process_uptime(void);
 /* perf_hooks performance.now(): fractional ms since process start (the
  * uptime anchor — Node's timeOrigin for a compiled program). */
 double scr_perf_now(void);
+/* perf_hooks event-loop metrics (scr_perf_loop.c). loop_mark records the
+ * loop's start (the emitted main calls it before the loop runs, only in
+ * programs that read the metric); loop_start answers it (0 before) and
+ * idle_time the idle ms since. The eld_* family is monitorEventLoopDelay's
+ * IntervalHistogram over a handle; eld_percentile expects 0 < p <= 100; eld_stat which: 0 min, 1 max, 2 mean, 3 stddev,
+ * 4 count, 5 exceeds. */
+void scr_perf_loop_mark(void);
+double scr_perf_loop_start(void);
+double scr_perf_idle_time(void);
+double scr_eld_new(double resolution);
+bool scr_eld_enable(double handle);
+bool scr_eld_disable(double handle);
+void scr_eld_reset(double handle);
+double scr_eld_percentile(double handle, double percentile);
+double scr_eld_stat(double handle, double which);
 /* perf_hooks user timing (scr_perf.c): mark, measure, the getEntries
  * family and the clears take the call's dyn argument vector (borrowed)
  * and apply Node's validation and errors. mark and measure answer 1 and
@@ -194,7 +245,8 @@ double scr_process_memory_usage_field(double k);
 double scr_process_rss(void);
 /* The runtime heap's footprint (scr_alloc.c): bytes held from the system
  * and bytes in live allocations, for the calling thread's allocator plus
- * the system allocator where it reports them. */
+ * the system allocator where it reports them, plus the program-lifetime
+ * region's chunks (compact class instances). */
 void scr_heap_stats(double *total, double *used);
 /* process.ppid: the parent's pid at the time of the read. */
 double scr_process_ppid(void);
@@ -245,6 +297,7 @@ void scr_fs_mkdir(ScrStr *path);
 void scr_fs_rm(ScrStr *path);
 void scr_fs_rmdir(ScrStr *path);
 ScrArr *scr_fs_readdir(ScrStr *path); /* names (byte order on POSIX, as libuv sorts), no "."/".." */
+ScrArr *scr_fs_readdir_recursive(ScrStr *path); /* relative paths of every entry below path, Node's queue order */
 
 /* The fs option forms (same throw discipline). mkdir_recursive is Node's
  * recursive algorithm (existing-dir target is a no-op; errors report
@@ -262,6 +315,7 @@ void scr_fs_rm_opts(ScrStr *path, bool recursive, bool force);
  * EPERM failures up to maxRetries times with Node's linear backoff
  * (retryDelay ms longer per try); everything else throws immediately. */
 void scr_fs_rm_opts_retry(ScrStr *path, bool recursive, bool force, double max_retries, double retry_delay);
+bool scr_fs_rm_retry_options_ok(double max_retries, double retry_delay);
 ScrStr *scr_fs_mkdtemp(ScrStr *prefix);
 ScrStr *scr_fs_mkdtemp_async(ScrStr *prefix); /* the callback and promise error path */
 void scr_fs_access(ScrStr *path, double mode);
@@ -320,6 +374,9 @@ typedef struct ScrBytes ScrBytes;
 ScrStr *scr_atomics_wait(ScrBytes *, double, double, double);
 double scr_atomics_notify(ScrBytes *, double, double);
 double scr_atomics_op(ScrBytes *, double, double, double, double);
+double scr_atomics_op_dyn(const ScrDyn *, double, double, double, double);
+ScrStr *scr_atomics_wait_dyn(const ScrDyn *, double, double, double);
+double scr_atomics_notify_dyn(const ScrDyn *, double, double);
 
 /* isatty(3) over an fd (0/1/2): a real boolean — false where Node's
  * non-TTY streams expose undefined (SEMANTICS.md). stdin_destroy is a
@@ -360,6 +417,9 @@ void scr_fs_invalid_named_path(const ScrDyn *value, const ScrStr *path, const ch
 /* A string path argument: false after throwing Node's ERR_INVALID_ARG_VALUE
  * when it holds a null byte (`name` is the argument's name). */
 bool scr_fs_path_ok(const ScrStr *path, const char *name);
+/* scr_fs_path_ok as a statement: getValidatedPath's null-byte check on a
+ * path the call validates before converting a later URL path. */
+void scr_fs_check_path(ScrStr *path, ScrStr *name);
 void scr_fs_futimes(double fd, double atime, double mtime);
 void scr_fs_link(ScrStr *source, ScrStr *dest);
 void scr_fs_symlink(ScrStr *target, ScrStr *destination, int kind);
@@ -449,6 +509,9 @@ ScrPromise *scr_fsp_utimes(const ScrDyn *path, const ScrDyn *atime, const ScrDyn
 ScrPromise *scr_fsp_lutimes(const ScrDyn *path, const ScrDyn *atime, const ScrDyn *mtime);
 ScrPromise *scr_fsp_readdir(ScrStr *path);
 ScrPromise *scr_fsp_rm(ScrStr *path);
+ScrPromise *scr_fsp_rm_opts(ScrStr *path, bool recursive, bool force);
+ScrPromise *scr_fsp_rm_opts_retry(ScrStr *path, bool recursive, bool force, double max_retries,
+                                  double retry_delay);
 ScrPromise *scr_fsp_stat(ScrStr *path);
 ScrPromise *scr_fsp_realpath(ScrStr *path);
 ScrPromise *scr_fsp_lstat(ScrStr *path);

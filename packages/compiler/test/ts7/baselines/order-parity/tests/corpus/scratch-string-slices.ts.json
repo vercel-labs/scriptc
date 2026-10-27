@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/scratch-string-slices.ts"
+ ],
+ "diags": []
+}

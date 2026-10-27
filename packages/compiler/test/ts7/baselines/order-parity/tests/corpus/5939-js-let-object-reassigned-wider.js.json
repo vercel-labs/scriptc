@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5939-js-let-object-reassigned-wider.js"
+ ],
+ "diags": []
+}

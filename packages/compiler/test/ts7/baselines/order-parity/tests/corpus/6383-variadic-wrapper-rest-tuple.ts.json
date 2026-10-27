@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6383-variadic-wrapper-rest-tuple.ts"
+ ],
+ "diags": []
+}

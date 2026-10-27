@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6165-regex-replace-callback-throws.ts"
+ ],
+ "diags": []
+}

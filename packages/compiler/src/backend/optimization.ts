@@ -3,8 +3,8 @@
  * - `release` (default): -O2 program code against the release runtime flavor.
  * - `dev`: -O0, source line tables, and cached object shards.
  * - `speed`: -O2 plus optimizations that trade binary size and build time for
- *   run-time speed (a size-for-speed runtime flavor, runtime bitcode import,
- *   inline reference counting). Release output never depends on them.
+ *   run-time speed (a size-for-speed runtime flavor, inline reference
+ *   counting). Release output never depends on them.
  *
  * Speed is an optimized posture everywhere release is: it shares -O2, release
  * linker flags, and release-only program partitioning. Cache keys spell it

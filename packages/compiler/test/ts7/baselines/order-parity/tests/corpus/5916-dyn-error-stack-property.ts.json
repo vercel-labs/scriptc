@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5916-dyn-error-stack-property.ts"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+constructor-returns-object.ts:7:5 - error SC1090: returning an object other than an instance of the class from a constructor (Node's 'new Point()' answers the returned object, which has no representation as a 'Point' instance) is not supported yet
+
+  6 |   constructor() {
+  7 |     return { x: 2 };
+    |     ^~~~~~~~~~~~~~~~
+  8 |   }

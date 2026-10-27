@@ -1,6 +1,0 @@
-{
- "order": [
-  "<repo>/tests/fixtures/node-types/child-stdin-fences.ts"
- ],
- "diags": []
-}

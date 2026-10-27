@@ -2,7 +2,12 @@ import { everyModuleNode, everyStmtList, transformStmtList } from "../ir/travers
 import type { LlvmUnsupportedError } from "./llvm/emitter.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import { type IrModule, type SrcLoc } from "../ir/ir.js";
-import { moduleUsesFetch } from "../ir/runtime-features.js";
+import {
+  DH_LIB_FNS,
+  PKI_LIB_FNS,
+  moduleUsesFetch,
+  moduleUsesWebCryptoAsymmetric,
+} from "../ir/runtime-features.js";
 
 /** Reflection tables expose methods that the program never calls. On WASI,
  * keep their host-only implementations as explicit runtime refusals. Typed
@@ -129,6 +134,7 @@ const WASI_UNAVAILABLE_HOST_FACTS: ReadonlyMap<string, string> = new Map([
   ["os.loadavg", "system load averages (WASI Preview 1 has no load API)"],
   ["os.uptime", "system uptime (WASI Preview 1 has no boot-time API)"],
   ["os.getPriority", "process scheduling priority (WASI Preview 1 has no priority API)"],
+  ["os.setPriority", "process scheduling priority (WASI Preview 1 has no priority API)"],
   ["process.memoryUsageTake", "process memory statistics (WASI Preview 1 has no memory API)"],
   ["process.rss", "process memory statistics (WASI Preview 1 has no memory API)"],
   ["process.ppid", "the parent process id (WASI Preview 1 has no process API)"],
@@ -191,10 +197,56 @@ export function moduleWasiUnavailableSurface(
         found = { surface: "OS signals (WASI Preview 1 has no signal API)", loc };
         return false;
       }
+      if (node.fn.startsWith("wasm.")) {
+        found = {
+          surface:
+            "the WebAssembly API (a wasm32-wasi program cannot load translated modules into its own linear memory yet)",
+          loc,
+        };
+        return false;
+      }
       if (node.fn === "crypto.cipherNew") {
         found = {
           surface:
             "symmetric ciphers (the wasm32-wasi runtime does not include the mbedTLS library)",
+          loc,
+        };
+        return false;
+      }
+      if (
+        node.fn === "webcrypto.encrypt" ||
+        node.fn === "webcrypto.decrypt" ||
+        node.fn === "webcrypto.wrapKey" ||
+        node.fn === "webcrypto.unwrapKey"
+      ) {
+        found = {
+          surface:
+            "WebCrypto encrypt, decrypt, wrapKey and unwrapKey (the wasm32-wasi runtime does not include the mbedTLS library)",
+          loc,
+        };
+        return false;
+      }
+      if (node.fn === "crypto.ecdhNew" || node.fn === "crypto.ecdhConvertKey") {
+        found = {
+          surface: "ECDH (the wasm32-wasi runtime does not include the mbedTLS library)",
+          loc,
+        };
+        return false;
+      }
+      if (DH_LIB_FNS.has(node.fn)) {
+        found = {
+          surface:
+            node.fn === "crypto.dhNew" || node.fn === "crypto.dhGroupNew"
+              ? "DiffieHellman (the wasm32-wasi runtime does not include the mbedTLS library)"
+              : "checkPrime and generatePrime (the wasm32-wasi runtime does not include the mbedTLS library)",
+          loc,
+        };
+        return false;
+      }
+      if (PKI_LIB_FNS.has(node.fn)) {
+        found = {
+          surface:
+            "asymmetric keys and signatures (the wasm32-wasi runtime does not include the mbedTLS library)",
           loc,
         };
         return false;
@@ -224,6 +276,13 @@ export function moduleWasiUnavailableSurface(
 
   if (moduleUsesFetch(mod)) {
     return { surface: "network-backed fetch (WASI Preview 1 has no socket API)", loc: entryLoc };
+  }
+  if (moduleUsesWebCryptoAsymmetric(mod)) {
+    return {
+      surface:
+        "WebCrypto ECDSA and RSA (the wasm32-wasi runtime does not include the mbedTLS library)",
+      loc: entryLoc,
+    };
   }
   return null;
 }

@@ -31,7 +31,8 @@ export const STR_INTRINSIC_SIGS: Record<
   normalize: { argTypes: [STRING], minArgs: 1, result: STRING },
   isWellFormed: { argTypes: [], minArgs: 0, result: BOOL },
   toWellFormed: { argTypes: [], minArgs: 0, result: STRING },
-  cpAt: { argTypes: [F64], minArgs: 1, result: STRING },
+  byteLength: { argTypes: [], minArgs: 0, result: F64 },
+  cpAtByte: { argTypes: [F64], minArgs: 1, result: STRING },
 };
 
 /** Per-method signature for regexIntrinsic. test/source/flags take the
@@ -53,7 +54,13 @@ export const REGEX_INTRINSIC_SIGS: Record<
   matchGroups: { receiver: STRING, argTypes: [REGEX, F64, F64], result: VOID },
   lastIndex: { receiver: REGEX, argTypes: [], result: F64 },
   matchAll: { receiver: STRING, argTypes: [REGEX], result: arrayOf(arrayOf(STRING)) },
+  matchAllCaptures: { receiver: STRING, argTypes: [REGEX], result: arrayOf(arrayOf(STRING)) },
   matchAllInto: {
+    receiver: STRING,
+    argTypes: [REGEX, arrayOf(F64)],
+    result: arrayOf(arrayOf(STRING)),
+  },
+  matchAllCapturesInto: {
     receiver: STRING,
     argTypes: [REGEX, arrayOf(F64)],
     result: arrayOf(arrayOf(STRING)),

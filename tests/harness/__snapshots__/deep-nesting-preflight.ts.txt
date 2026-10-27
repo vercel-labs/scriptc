@@ -1,6 +1,6 @@
 deep-nesting-preflight.ts:2:1 - error SC1090: expressions nested deeper than 200 levels are not supported yet
 
-  1 | // A ~7000-term left-nested binary chain, the binderBinaryExpressionStress shape: deep enough that the whole-file walks (the checker facade prefetch sweep, the require scans, the nested-var collection) used to overflow the JS stack as a RangeError ICE before the expression-lowering fence could fire — the corpus pair crashed at ~6500 terms, and the bare statement sat within ~50 terms of the nested-var walk's limit. Every such walk is iterative now (walkPreorder), so the program survives to the same named SC1090 fence the ~300-term deep-binary-nesting fixture pins. A BARE expression statement (no initializer position) keeps tsgo's per-node query cost — and this suite — fast; one term per line keeps the snapshot code frame small. 5.9.3's parser (the resolver-parity island sweeps this directory) trampolines binary chains, so the shape parses in both worlds.
+  1 | // A ~7000-term left-nested binary chain, the binderBinaryExpressionStress shape: deep enough that the whole-file walks (the checker facade prefetch sweep, the require scans, the nested-var collection) used to overflow the JS stack as a RangeError ICE before the expression-lowering fence could fire — the corpus pair crashed at ~6500 terms, and the bare statement sat within ~50 terms of the nested-…
   2 | 1 +
     | ^~~
   3 | 1 +

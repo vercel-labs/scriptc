@@ -1,0 +1,6 @@
+arguments-length-self-call.ts:6:32 - error SC1090: 'arguments.length' in a function expression that is called both through its own name and through a function type with more parameters (the count varies per call) are not supported yet
+
+  5 | const count: (a: number, b: number) => number = function self(a: number): number {
+  6 |   return a > 0 ? self(a - 1) + arguments.length : arguments.length;
+    |                                ^~~~~~~~~~~~~~~~
+  7 | };

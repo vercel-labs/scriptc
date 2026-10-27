@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5635-error-extra-props-retry-loop.ts"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+pick-view-generic-methods.ts:16:13 - error SC1090: calling the generic method 'load' through a 'Pick' view of 'Store' that holds a 'Mirror' is not supported yet
+
+  15 | const view: Pick<Store, "load"> = new Mirror();
+  16 | console.log(view.load("k", (text) => text.length));
+     |             ^~~~~~~~~
+  17 | 

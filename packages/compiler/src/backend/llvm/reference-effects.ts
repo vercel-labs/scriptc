@@ -29,6 +29,7 @@ export function preservesRegexInputs(method: string): boolean {
     case "match":
     case "search":
     case "matchAll":
+    case "matchAllCaptures":
     case "replace":
     case "replaceAll":
     case "split":
@@ -147,6 +148,14 @@ function expressionPreservesEdges(
         // Class brand tests compare a capsule's key; they run no user code.
         e.fn === "dyn.typedRefKeyIs" ||
         e.fn === "dyn.typedRefIs" ||
+        // jsval conversions (ir/jsval.ts) answer as the dyn forms they
+        // replace: moving a value between dyn and jsval reads it, and a
+        // number, boolean or string crosses like its dynFrom box.
+        e.fn === "js.fromDyn" ||
+        e.fn === "js.toDyn" ||
+        e.fn === "js.fromF64" ||
+        e.fn === "js.fromBool" ||
+        e.fn === "js.fromStr" ||
         isStableReceiverOperand(e, "")
       );
     // An exact capsule's instance is one load (and a retain when owned).
@@ -172,6 +181,9 @@ function expressionPreservesEdges(
     case "bytesIntrinsic":
       return (
         e.method === "get" ||
+        e.method === "indexOfElem" ||
+        e.method === "lastIndexOfElem" ||
+        e.method === "includesElem" ||
         e.method === "length" ||
         e.method === "byteLength" ||
         e.method === "byteOffset" ||

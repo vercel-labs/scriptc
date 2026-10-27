@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/builtin-class-alias-escape.ts"
+ ],
+ "diags": []
+}

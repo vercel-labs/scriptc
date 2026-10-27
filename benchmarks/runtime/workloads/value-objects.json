@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/value-objects.ts",
+  "args": [
+    "2"
+  ]
+}

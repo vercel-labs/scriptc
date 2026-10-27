@@ -1,0 +1,8 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "module": "nodenext",
+    "jsx": "react-jsxdev",
+    "jsxImportSource": "#dev"
+  }
+}

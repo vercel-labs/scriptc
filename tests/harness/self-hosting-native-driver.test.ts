@@ -1,4 +1,4 @@
-import { verifyBootstrapSeed } from "../../scripts/bootstrap-seed.mjs";
+import { seedBuildEnvironment, verifyBootstrapSeed } from "../../scripts/bootstrap-seed.mjs";
 import { execFile, spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -26,6 +26,7 @@ import {
 } from "../../scripts/ci-native-bootstrap.mjs";
 import { withoutFirstLine } from "./large-artifacts.js";
 import { bootstrapStep } from "./self-hosting-timing.js";
+import { unbundlePlatformPackages } from "../../scripts/native-cli-bundle.mjs";
 
 const root = join(import.meta.dirname, "../..");
 const exec = promisify(execFile);
@@ -89,12 +90,7 @@ test(
               // seed avoids optimizing the huge compiler module before ASan can
               // exercise its complete traversal, serialization and LLVM emission.
               ...options,
-              env: {
-                ...process.env,
-                SCRIPTC_SAN: sanitize ? "1" : "",
-                SCRIPTC_NATIVE_EMIT_IR: "1",
-                SCRIPTC_NATIVE_OPTIMIZATION: sanitize ? "dev" : "release",
-              },
+              env: { ...process.env, ...seedBuildEnvironment(sanitize) },
             },
           ),
         );
@@ -110,6 +106,21 @@ test(
           join(packageDirectory, "package.json"),
         );
         cpSync(distribution, join(packageDirectory, "dist"), { recursive: true });
+        // The npm package depends on its LLVM helper and runtime pack. Link
+        // them into its node_modules, as pnpm links a workspace package's
+        // dependencies, so the package checks resolve them.
+        unbundlePlatformPackages(
+          join(packageDirectory, "dist"),
+          join(packageDirectory, "dist/bin/scriptc.json"),
+          "@scriptc/llvm-linux-x64-gnu",
+        );
+        mkdirSync(join(packageDirectory, "node_modules/@scriptc"), { recursive: true });
+        for (const name of ["llvm-linux-x64-gnu", "runtime-linux-x64-gnu"])
+          symlinkSync(
+            join(root, "packages", name),
+            join(packageDirectory, "node_modules/@scriptc", name),
+            "dir",
+          );
         writeFileSync(packageDirectory + ".ready", "ready\n");
       }
       // All compiler assets must survive moving the complete distribution.
@@ -185,6 +196,10 @@ test(
         return result.stdout;
       };
       const entry = join(root, "packages/compiler/src/native/cli.ts");
+      // The compiler's own source has untyped functions that SC6101 reports
+      // (diagnostics/dynamic-tier.ts). The contracts compare stderr exactly,
+      // so its self-builds leave that performance note out.
+      const quiet = "--no-dynamic-tier-warning";
       const ffi = join(directory, ".scriptc/distribution-seed/compiler.ffi.json");
       const rebuilt = executable("scriptc-rebuilt");
       const checkProgram = async (compiler: string, source: string, extra: string[] = []) => {
@@ -541,7 +556,18 @@ test(
         const self = await bootstrapStep("production CLI rebuilds itself", () =>
           invoke(
             seed,
-            ["build", entry, "-o", rebuilt, "--strip", "--keep-llvm", "--emit-ir", "--ffi", ffi],
+            [
+              "build",
+              entry,
+              "-o",
+              rebuilt,
+              "--strip",
+              "--keep-llvm",
+              "--emit-ir",
+              "--ffi",
+              ffi,
+              quiet,
+            ],
             "scriptc: warning: --emit-ir is deprecated; use --emit=ir for IR as the primary output\n",
           ),
         );
@@ -554,7 +580,16 @@ test(
           const seedLlvm = join(directory, "cli.ll");
           const rebuiltLlvm = join(directory, "rebuilt.ll");
           await bootstrapStep("rebuilt compiler emits itself", () =>
-            invoke(rebuilt, ["build", entry, "--emit=llvm", "-o", rebuiltLlvm, "--ffi", ffi]),
+            invoke(rebuilt, [
+              "build",
+              entry,
+              "--emit=llvm",
+              "-o",
+              rebuiltLlvm,
+              "--ffi",
+              ffi,
+              quiet,
+            ]),
           );
           // Executable output adds a runtime ABI check; textual LLVM emission
           // omits it. Compare all other output without changing either mode.
@@ -585,7 +620,7 @@ test(
       const rebuildFrontend = async () => {
         const lowered = join(directory, "cli.ir.json");
         const output = await bootstrapStep("sanitized native frontend lowers the compiler", () =>
-          invoke(seed, ["build", entry, "--emit=ir", "-o", lowered, "--ffi", ffi]),
+          invoke(seed, ["build", entry, "--emit=ir", "-o", lowered, "--ffi", ffi, quiet]),
         );
         expect(output.trim()).toBe(lowered);
         await compareArtifacts({ ir: true, llvm: false });
@@ -605,6 +640,7 @@ test(
               ffi,
               "--sanitize",
               "--optimization=dev",
+              quiet,
             ],
             "",
             { SCRIPTC_BOOTSTRAP_IR_INPUT: seedIr },

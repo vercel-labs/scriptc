@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6993-typed-array-length-loop-bindings.ts"
+ ],
+ "diags": []
+}

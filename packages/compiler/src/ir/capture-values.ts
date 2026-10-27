@@ -86,7 +86,12 @@ export function copyStableCaptures(mod: IrModule): IrModule {
   // A closure body whose every use became a direct call is only reachable
   // through its copy now.
   const referenced = new Set(moduleFunctionReferences(mod));
-  for (const fn of functions)
+  functions.forEach((fn, index) => {
+    // A body the rewrite kept names what the flow recorded of it.
+    if (fn === mod.functions[index]) {
+      for (const name of flow.references(fn)) referenced.add(name);
+      return;
+    }
     everyStmtList(fn.body, {
       stmt: () => true,
       expr: (e) => {
@@ -95,6 +100,7 @@ export function copyStableCaptures(mod: IrModule): IrModule {
         return true;
       },
     });
+  });
   const clones = flow.directClones();
   return {
     ...mod,
@@ -238,14 +244,22 @@ interface FunctionFacts {
   hoisted: Map<string, IrStmt>;
   /** Bindings called through `callValue` without a receiver. */
   callees: Set<string>;
-  /** Temporal-dead-zone bindings: the statement list holding both the
+  /** TDZ (temporal dead zone) bindings: the statement list holding both the
    * empty `varDecl` and the initializing `assign`, with their indexes. */
   tdzInits: Map<string, { body: readonly IrStmt[]; declared: number; initialized: number }>;
   classCaptured: Set<string>;
   reads: Map<string, number>;
   /** Closure capture edges: the creator's binding `source` flows into
-   * capture `local` of `target`. */
-  edges: { target: string; index: number; source: string }[];
+   * capture `local` of `target`, grouped by `source`. */
+  edges: Map<string, { target: string; index: number; source: string }[]>;
+  /** The function's own captures (first index of each id), class
+   * captures, and parameters, for constant-time membership tests. */
+  captureIndex: Map<string, number>;
+  classCaptures: Set<string>;
+  params: Set<string>;
+  /** Functions the body names: direct call callees and function values
+   * (exprFunctionReference). */
+  references: Set<string>;
 }
 
 interface CreationSite {
@@ -268,15 +282,24 @@ export class CaptureFlow {
   /** Environment-free bodies called directly, and their copies' names. */
   private readonly clones = new Map<string, string>();
 
-  constructor(functions: readonly IrFunction[]) {
+  /** With `scan` false, each body's facts are collected when a question
+   * first needs them, and only unchanged() may be asked: the other
+   * questions read creation sites, which come from scanning every body. */
+  constructor(functions: readonly IrFunction[], scan = true) {
     for (const fn of functions) this.functions.set(fn.name, fn);
     this.receivers = new AmbientReceiverReaders(this.functions);
     // Creation sites are collected while scanning each body.
-    for (const fn of functions) this.factsOf(fn);
+    if (scan) for (const fn of functions) this.factsOf(fn);
   }
 
   directClones(): ReadonlyMap<string, string> {
     return this.clones;
+  }
+
+  /** The functions the body of `fn`, one of the functions this flow was
+   * made from, names (FunctionFacts.references). */
+  references(fn: IrFunction): ReadonlySet<string> {
+    return this.factsOf(fn).references;
   }
 
   /** A lifted body that captures nothing and can be entered like a declared
@@ -317,7 +340,7 @@ export class CaptureFlow {
         ? value.fnName
         : null;
     }
-    const index = fn.captures?.findIndex((c) => c.localId === id) ?? -1;
+    const index = this.factsOf(fn).captureIndex.get(id) ?? -1;
     if (index < 0 || !this.stableCapture(fnName, id)) return null;
     let result: string | null = null;
     for (const site of this.sites.get(fnName) ?? []) {
@@ -399,7 +422,7 @@ export class CaptureFlow {
       return true;
     };
     everyStmtList(body.slice(declared + 1), { stmt: () => true, expr: count });
-    const edges = facts.edges.filter((edge) => edge.source === id).length;
+    const edges = facts.edges.get(id)?.length ?? 0;
     return nodes === edges && !facts.classCaptured.has(id);
   }
 
@@ -410,7 +433,7 @@ export class CaptureFlow {
     const local = facts.locals.get(id);
     const declaration = facts.declarations.get(id);
     if (local === undefined || local.boxed === true || local.tdz === true) return false;
-    if (fn.params.some((p) => p.localId === id) || declaration?.count !== 1) return false;
+    if (facts.params.has(id) || declaration?.count !== 1) return false;
     const writes = facts.writes.get(id) ?? 0;
     return declaration.initialized ? writes === 0 : facts.hoisted.has(id) && writes === 1;
   }
@@ -450,8 +473,15 @@ export class CaptureFlow {
       tdzInits: new Map(),
       classCaptured: new Set(),
       reads: new Map(),
-      edges: [],
+      edges: new Map(),
+      captureIndex: new Map(),
+      classCaptures: new Set((fn.classCaptures ?? []).map((c) => c.localId)),
+      params: new Set(fn.params.map((p) => p.localId)),
+      references: new Set(),
     };
+    (fn.captures ?? []).forEach((c, index) => {
+      if (!facts.captureIndex.has(c.localId)) facts.captureIndex.set(c.localId, index);
+    });
     this.facts.set(fn.name, facts);
     const capturesIn = (e: IrExpr): Set<string> => {
       const ids = new Set<string>();
@@ -464,19 +494,17 @@ export class CaptureFlow {
       visitExpr(e);
       return ids;
     };
+    // One pass over runs of empty declarations and closure assignments:
+    // each empty declaration pairs with the first later assignment of its
+    // binding in the same run.
     const findHoisted = (body: readonly IrStmt[]): void => {
-      body.forEach((s, i) => {
-        if (s.kind !== "varDecl" || s.init !== null) return;
-        for (let j = i + 1; j < body.length; j++) {
-          const next = body[j]!;
-          if (next.kind === "assign" && next.value.kind === "closure") {
-            if (next.localId === s.localId) {
-              facts.hoisted.set(s.localId, next);
-              return;
-            }
-          } else if (next.kind !== "varDecl" || next.init !== null) return;
-        }
-      });
+      const pending = new Set<string>();
+      for (const s of body) {
+        if (s.kind === "assign" && s.value.kind === "closure") {
+          if (pending.delete(s.localId)) facts.hoisted.set(s.localId, s);
+        } else if (s.kind === "varDecl" && s.init === null) pending.add(s.localId);
+        else pending.clear();
+      }
     };
     const declare = (s: IrStmt & { kind: "varDecl" }, splittable: boolean): void => {
       const entry = facts.declarations.get(s.localId);
@@ -502,6 +530,8 @@ export class CaptureFlow {
       facts.writes.set(id, (facts.writes.get(id) ?? 0) + 1);
     };
     const expr = (e: IrExpr): boolean => {
+      const referenced = e.kind === "call" ? e.callee : exprFunctionReference(e);
+      if (referenced !== undefined) facts.references.add(referenced);
       switch (e.kind) {
         case "varRef":
           facts.reads.set(e.localId, (facts.reads.get(e.localId) ?? 0) + 1);
@@ -514,9 +544,11 @@ export class CaptureFlow {
           let list = this.sites.get(e.fnName);
           if (list === undefined) this.sites.set(e.fnName, (list = []));
           list.push({ owner: fn.name, captures: e.captures, adapts: e.adapts === true });
-          e.captures.forEach((source, index) =>
-            facts.edges.push({ target: e.fnName, index, source }),
-          );
+          e.captures.forEach((source, index) => {
+            let edges = facts.edges.get(source);
+            if (edges === undefined) facts.edges.set(source, (edges = []));
+            edges.push({ target: e.fnName, index, source });
+          });
           break;
         }
         case "classRef":
@@ -527,7 +559,7 @@ export class CaptureFlow {
             facts.callees.add(e.callee.localId);
           break;
       }
-      return everyExprChild(e, expr, (s) => stmt(s, false));
+      return everyExprChild(e, expr, nested);
     };
     // `split` mirrors rewrite(): only statement lists reached through
     // ordinary nesting from the body are expanded. Switch cases share one
@@ -535,12 +567,15 @@ export class CaptureFlow {
     // iteration, and statement lists inside expressions release their
     // locals with the enclosing frame; declarations there stay as they are.
     const findTdzInits = (body: readonly IrStmt[]): void => {
+      // The first empty declaration of each binding in this list.
+      const empty = new Map<string, number>();
       body.forEach((s, j) => {
+        if (s.kind === "varDecl" && s.init === null && !empty.has(s.localId))
+          empty.set(s.localId, j);
         if (s.kind !== "assign" || s.initializes !== true) return;
-        const declared = body.findIndex(
-          (d, i) => i < j && d.kind === "varDecl" && d.localId === s.localId && d.init === null,
-        );
-        if (declared >= 0) facts.tdzInits.set(s.localId, { body, declared, initialized: j });
+        const declared = empty.get(s.localId);
+        if (declared !== undefined && declared < j)
+          facts.tdzInits.set(s.localId, { body, declared, initialized: j });
       });
     };
     const list = (body: readonly IrStmt[], split: boolean): boolean => {
@@ -585,14 +620,12 @@ export class CaptureFlow {
             list(s.body, split)
           );
       }
-      return everyStmtChild(s, expr, (child) => stmt(child, false));
+      return everyStmtChild(s, expr, nested);
     };
+    // Statements nested in expressions and in other statements' heads.
+    const nested = (s: IrStmt): boolean => stmt(s, false);
     list(fn.body, true);
     return facts;
-  }
-
-  private local(fn: IrFunction, id: string): IrLocal | undefined {
-    return this.factsOf(fn).locals.get(id);
   }
 
   /** Nothing rebinds `id` in `fnName` (declarations aside, and `ownWrites`
@@ -610,8 +643,7 @@ export class CaptureFlow {
       result =
         (facts.writes.get(id) ?? 0) === ownWrites &&
         !facts.classCaptured.has(id) &&
-        facts.edges.every((edge) => {
-          if (edge.source !== id) return true;
+        (facts.edges.get(id) ?? []).every((edge) => {
           const capture = this.functions.get(edge.target)?.captures?.[edge.index];
           return capture !== undefined && this.unchanged(edge.target, capture.localId);
         });
@@ -623,19 +655,18 @@ export class CaptureFlow {
   /** A boxed binding of `fn` itself (not a capture) whose box is filled
    * once, before any environment observes it, and never written again. */
   stableOrigin(fn: IrFunction, id: string): boolean {
-    const local = this.local(fn, id);
+    const facts = this.factsOf(fn);
+    const local = facts.locals.get(id);
     if (local?.boxed !== true) return false;
     if (local.tdz === true) {
-      if (fn.captures?.some((c) => c.localId === id)) return false;
-      if (this.factsOf(fn).declarations.get(id)?.count !== 1) return false;
+      if (facts.captureIndex.has(id)) return false;
+      if (facts.declarations.get(id)?.count !== 1) return false;
       return this.orderedTdz(fn, id) && this.unchanged(fn.name, id, 1);
     }
-    if (fn.captures?.some((c) => c.localId === id)) return false;
-    if (fn.classCaptures?.some((c) => c.localId === id)) return false;
-    const facts = this.factsOf(fn);
+    if (facts.captureIndex.has(id)) return false;
+    if (facts.classCaptures.has(id)) return false;
     const declaration = facts.declarations.get(id);
-    if (fn.params.some((p) => p.localId === id))
-      return declaration === undefined && this.unchanged(fn.name, id);
+    if (facts.params.has(id)) return declaration === undefined && this.unchanged(fn.name, id);
     if (declaration?.count !== 1) return false;
     if (declaration.initialized) return this.unchanged(fn.name, id);
     return facts.hoisted.has(id) && this.unchanged(fn.name, id, 1);
@@ -654,8 +685,8 @@ export class CaptureFlow {
 
   private computeStableCapture(fnName: string, id: string): boolean {
     const fn = this.functions.get(fnName);
-    const index = fn?.captures?.findIndex((c) => c.localId === id) ?? -1;
-    if (fn === undefined || index < 0) return false;
+    const index = fn === undefined ? undefined : this.factsOf(fn).captureIndex.get(id);
+    if (fn === undefined || index === undefined) return false;
     const sites = this.sites.get(fnName);
     if (sites === undefined || sites.length === 0) return false;
     for (const site of sites) {
@@ -679,7 +710,7 @@ export class CaptureFlow {
       const assign = init?.body[init.initialized];
       return assign?.kind === "assign" ? plainLiteral(constantNumber(assign.value)) : own.literal;
     }
-    const index = fn.captures?.findIndex((c) => c.localId === id) ?? -1;
+    const index = this.factsOf(fn).captureIndex.get(id) ?? -1;
     if (index < 0 || !this.stableCapture(fnName, id)) return null;
     let value: number | null = null;
     for (const site of this.sites.get(fnName) ?? []) {
@@ -697,8 +728,11 @@ export class CaptureFlow {
     const splits = new Map<string, string>();
     const entry: IrStmt[] = [];
     const locals: IrLocal[] = [];
-    const used = new Set(fn.locals.map((l) => l.id));
+    // The local ids a copy must avoid, collected for the first copy: most
+    // functions make none.
+    let used: Set<string> | null = null;
     const fresh = (local: IrLocal): IrLocal => {
+      used ??= new Set(fn.locals.map((l) => l.id));
       let k = 0;
       while (used.has(`${local.name}.${k}`)) k++;
       const id = `${local.name}.${k}`;
@@ -715,8 +749,8 @@ export class CaptureFlow {
     const immutable = new Set<string>();
     for (const local of fn.locals) {
       if (local.boxed !== true) continue;
-      const capture = fn.captures?.some((c) => c.localId === local.id) === true;
-      const param = fn.params.some((p) => p.localId === local.id);
+      const capture = facts.captureIndex.has(local.id);
+      const param = facts.params.has(local.id);
       if (capture && local.mutable && this.stableCapture(fn.name, local.id))
         immutable.add(local.id);
       if (!facts.reads.has(local.id)) continue;
@@ -871,10 +905,8 @@ export class CaptureFlow {
     );
     const pruned = dead.size === 0 ? body : prune(body, dead);
     const liveIds = new Set(live.map((s) => (s.kind === "varDecl" ? s.localId : "")));
-    const added = locals.filter(
-      (local) =>
-        liveIds.has(local.id) || !entry.some((s) => s.kind === "varDecl" && s.localId === local.id),
-    );
+    const entryIds = new Set(entry.map((s) => (s.kind === "varDecl" ? s.localId : "")));
+    const added = locals.filter((local) => liveIds.has(local.id) || !entryIds.has(local.id));
     return { ...fn, locals: [...kept, ...added], body: [...live, ...pruned] };
   }
 }

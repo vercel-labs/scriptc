@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7580-int32-arrays-across-calls.ts"
+ ],
+ "diags": []
+}

@@ -1,3 +1,4 @@
+import type { DynamicFieldStores } from "../ir/int32-slots.js";
 import type { IrModule, IrType } from "../ir/ir.js";
 import {
   DYN,
@@ -10,7 +11,7 @@ import {
   STRING,
   VOID,
 } from "../ir/ir.js";
-import { computeCycleMutability, fieldKey } from "./cycle-mutability.js";
+import { type CycleMutability, computeCycleMutability, fieldKey } from "./cycle-mutability.js";
 
 /** Cycle capability for native code generation.
  * Nodes are shape units and unions; edges are the references their fields
@@ -34,13 +35,18 @@ import { computeCycleMutability, fieldKey } from "./cycle-mutability.js";
  * subclass and retain touches the cycle header, so header presence must be
  * uniform across an extends tree): a unit is cycle-capable iff ANY member
  * is — every backend uses the same grouping. */
-export function computeTraced(mod: IrModule): { shapes: Set<string>; unions: Set<string> } {
-  const { shapes, unions } = analyzeCycles(mod, false);
+export function computeTraced(
+  mod: IrModule,
+  stores?: DynamicFieldStores,
+  /** computeCycleMutability's answer for this module, when the caller has it. */
+  precomputed?: CycleMutability,
+): { shapes: Set<string>; unions: Set<string> } {
+  const { shapes, unions } = analyzeCycles(mod, false, stores, precomputed);
   return { shapes, unions };
 }
 
 /** Values that can reference any object. */
-export type IntrinsicKind = "func" | "dyn" | "classval" | "promise" | "caught";
+export type IntrinsicKind = "func" | "dyn" | "jsval" | "classval" | "promise" | "caught";
 
 /** Why an edge of the cycle graph exists (explanations only). */
 export type CycleEdgeLabel =
@@ -88,6 +94,8 @@ export function explainCycle(mod: IrModule, key: string): CycleExplanation | nul
 function analyzeCycles(
   mod: IrModule,
   labels: boolean,
+  stores?: DynamicFieldStores,
+  precomputed?: CycleMutability,
 ): {
   shapes: Set<string>;
   unions: Set<string>;
@@ -120,7 +128,7 @@ function analyzeCycles(
   const lifetimeRoots = new Set(mod.contracts?.programLifetime ?? []);
   const programLifetime = (className: string): boolean =>
     lifetimeRoots.size > 0 && lifetimeRoots.has(rootOf(className));
-  const mutability = computeCycleMutability(mod, unitOfClass);
+  const mutability = precomputed ?? computeCycleMutability(mod, unitOfClass, stores);
   const shapeDefs = [
     ...classes.map((c) => ({
       key: `object:${c.name}`,
@@ -137,6 +145,10 @@ function analyzeCycles(
           : []),
         ...(c.localCaptures !== undefined
           ? [{ name: "<class>", type: { kind: "classval" as const, className: c.name } }]
+          : []),
+        // An instance of a class that extends Array holds its elements.
+        ...(c.arrayElem !== undefined
+          ? [{ name: "<elements>", type: { kind: "array" as const, elem: c.arrayElem } }]
           : []),
       ],
     })),
@@ -218,6 +230,7 @@ function analyzeCycles(
     switch (t.kind) {
       case "func":
       case "dyn":
+      case "jsval":
       case "classval":
       case "promise":
       case "caught":

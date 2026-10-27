@@ -1,3 +1,4 @@
+import { keyedHelperName } from "../stable-names.js";
 import { numLit, strLit, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
@@ -10,6 +11,7 @@ import {
   STRING,
   type SrcLoc,
   UNDEFINED_T,
+  VOID,
   arrayOf,
   typeKey,
 } from "../../../ir/ir.js";
@@ -27,7 +29,7 @@ export function lowerOsUserInfoCall(
   call: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
-  if (call.arguments.length !== 0) {
+  if (call.arguments.nodes.length !== 0) {
     lowerer.noLowering(
       "userInfo with options",
       call,
@@ -94,9 +96,9 @@ export function lowerOsNetworkInterfacesCall(
   call: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
-  if (call.arguments.length !== 0) {
+  if (call.arguments.nodes.length !== 0) {
     lowerer.noLowering(
-      `networkInterfaces with ${call.arguments.length} arguments`,
+      `networkInterfaces with ${call.arguments.nodes.length} arguments`,
       call,
       "networkInterfaces() takes no arguments",
     );
@@ -178,9 +180,9 @@ export function lowerOsNetworkInterfacesCall(
  * record per CPU from the snapshot accessors, in the mapped shapes' own
  * field order. Other result shapes fence. */
 export function lowerOsCpusCall(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
-  if (call.arguments.length !== 0) {
+  if (call.arguments.nodes.length !== 0) {
     lowerer.noLowering(
-      `cpus with ${call.arguments.length} arguments`,
+      `cpus with ${call.arguments.nodes.length} arguments`,
       call,
       "cpus() takes no arguments",
     );
@@ -218,7 +220,7 @@ export function lowerOsCpusCall(lowerer: Lowerer, call: ts.CallExpression, loc: 
   const key = `os.cpus:${typeKey(result)}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = `%os.cpus.${lowerer.valueHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%os.cpus", key);
     lowerer.valueHelpers.set(key, helper);
     const index = varRef("i.0", F64, loc);
     const field = (k: number): IrExpr => ({
@@ -321,8 +323,8 @@ export function lowerPathParseCall(
   win32: boolean,
   loc: SrcLoc,
 ): IrExpr {
-  const arg = call.arguments[0];
-  if (call.arguments.length !== 1 || !arg || ts.isSpreadElement(arg)) {
+  const arg = call.arguments.nodes[0];
+  if (call.arguments.nodes.length !== 1 || !arg || ts.isSpreadElement(arg)) {
     lowerer.noLowering("path.parse without exactly one path", call, "parse(path) takes one string");
   }
   const result = lowerer.mapTypeOf(lowerer.typeOf(call));
@@ -345,7 +347,7 @@ export function lowerPathParseCall(
   const key = `${fn}:${typeKey(result)}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = `%path.parse.${lowerer.valueHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%path.parse", key);
     lowerer.valueHelpers.set(key, helper);
     const parts = varRef("parts.0", arrayOf(STRING), loc);
     lowerer.liftedFns.push({
@@ -411,8 +413,8 @@ export function lowerPathFormatCall(
   win32: boolean,
   loc: SrcLoc,
 ): IrExpr {
-  const arg = call.arguments[0];
-  if (call.arguments.length !== 1 || !arg || ts.isSpreadElement(arg)) {
+  const arg = call.arguments.nodes[0];
+  if (call.arguments.nodes.length !== 1 || !arg || ts.isSpreadElement(arg)) {
     lowerer.noLowering(
       "path.format without exactly one object",
       call,
@@ -447,7 +449,7 @@ export function lowerPathFormatCall(
   const key = `${fn}:${typeKey(recordT)}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = `%path.format.${lowerer.valueHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%path.format", key);
     lowerer.valueHelpers.set(key, helper);
     const object = varRef("object.0", recordT, loc);
     const read = (name: string): IrExpr => {
@@ -511,6 +513,29 @@ export function lowerPathFormatCall(
   return { kind: "call", callee: helper, args: [value], type: STRING, loc };
 }
 
+/** `os.setPriority([pid, ]priority)` — the one-argument form is pid 0
+ * (Node's `if (priority === undefined) { priority = pid; pid = 0; }`);
+ * the runtime validates both. */
+export function lowerOsSetPriorityCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  loc: SrcLoc,
+): IrExpr {
+  const args = call.arguments.nodes;
+  if (args.length < 1 || args.length > 2 || args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(
+      "setPriority with these arguments",
+      call,
+      "setPriority(priority) or setPriority(pid, priority) takes numbers",
+    );
+  }
+  const [pid, priority] =
+    args.length === 1
+      ? [numLit(0, loc), lowerer.lowerExprExpecting(args[0]!, F64)]
+      : [lowerer.lowerExprExpecting(args[0]!, F64), lowerer.lowerExprExpecting(args[1]!, F64)];
+  return { kind: "libCall", fn: "os.setPriority", args: [pid, priority], type: VOID, loc };
+}
+
 /** `os.getPriority(pid?)` — an omitted or undefined pid is 0 (Node's
  * `if (pid === undefined) pid = 0`); the runtime validates the rest. */
 export function lowerOsGetPriorityCall(
@@ -518,8 +543,8 @@ export function lowerOsGetPriorityCall(
   call: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
-  const arg = call.arguments[0];
-  if (call.arguments.length > 1 || (arg && ts.isSpreadElement(arg))) {
+  const arg = call.arguments.nodes[0];
+  if (call.arguments.nodes.length > 1 || (arg && ts.isSpreadElement(arg))) {
     lowerer.noLowering(
       "getPriority with these arguments",
       call,

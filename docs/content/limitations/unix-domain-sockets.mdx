@@ -1,0 +1,7 @@
+`server.listen(path)` and the `socketPath` option of `http.request()` and `https.request()` use Unix domain sockets on Linux and macOS.
+On Windows, where Node maps these paths to named pipes, they fail with `ENOTSUP`.
+`server.address()` on a server listening on a Unix socket returns the socket path, as in Node, when the result is typed `string | AddressInfo | null` (the @types/node declaration).
+Where it is typed as the `{ address, family, port }` record alone, which cannot hold the path, the call throws an error for such a server.
+`listen(path, backlog, callback)` is refused at compile time; pass `listen(path, callback)`.
+When the options of `http.request()` come from a variable, or from an object literal that spreads one, they are read at run time with Node's validation errors.
+The `auth`, `createConnection`, `family`, `hints`, `insecureHTTPParser`, `joinDuplicateHeaders`, `localAddress`, `localPort`, `lookup` and `uniqueHeaders` options then throw a runtime error when they hold a value, and so do `setHost: false` and `setDefaultHeaders: false`.

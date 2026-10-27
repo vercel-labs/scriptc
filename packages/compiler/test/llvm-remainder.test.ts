@@ -90,7 +90,7 @@ console.log(remainder(5, 2.5), signed(-7.5), maybeZero(7.5, 2.5));
     expect(maybeZero).toContain("rem.float");
     expect(ll).not.toContain("@llvm.fptosi.sat");
     expect(ll).not.toContain("@fmod");
-    expect(ll).toContain("call double @pow(");
+    expect(ll).toContain("call double @scr_math_pow(");
 
     // Where truncation is an integer round trip, a dividend below 2^62 takes
     // the i64 remainder by the power of two and adds back its fraction; a

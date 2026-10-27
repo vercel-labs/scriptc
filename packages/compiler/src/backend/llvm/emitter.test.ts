@@ -1,7 +1,6 @@
 import { expect, test } from "vitest";
 import {
   BOOL,
-  DATE_T,
   F64,
   PROCSTREAM_T,
   STRING,
@@ -13,6 +12,7 @@ import {
   type IrType,
 } from "../../ir/ir.js";
 import { emitLlvmModule, emitLlvmModuleSource, LlEmitter } from "./emitter.js";
+import { INLINE_STR_RELEASES_PER_FUNCTION } from "./shapes.js";
 
 /** A pending-exception check: the inline active-cell test or a runtime call. */
 const PENDING_CHECK = /@scr_exc_(?:active|pending)\b/;
@@ -71,7 +71,7 @@ function moduleFor(
     loc,
   };
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     functions: [
@@ -126,6 +126,61 @@ test("the shared indexed-read helpers carry an inline hint", () => {
   expect(define("plain")).not.toContain("inlinehint");
 });
 
+test("bodies holding thousands of capture boxes compile unoptimized with boxes in memory", () => {
+  const number = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
+  const read = (localId: string): IrExpr => ({ kind: "varRef", localId, type: F64, loc });
+  // A declaring body with `count` boxed bindings, and a closure body that
+  // receives `count` of them through its environment.
+  const declaring = (name: string, count: number): IrFunction => {
+    const ids = Array.from({ length: count }, (_, i) => `${name}${i}`);
+    return {
+      name,
+      params: [],
+      returnType: F64,
+      locals: ids.map((id) => ({ id, name: id, type: F64, mutable: true, boxed: true as const })),
+      body: [
+        ...ids.map((id, i): IrStmt => ({ kind: "varDecl", localId: id, init: number(i), loc })),
+        { kind: "return", value: read(ids[count - 1]!), loc },
+      ],
+      loc,
+    };
+  };
+  const receiving = (name: string, count: number): IrFunction => {
+    const ids = Array.from({ length: count }, (_, i) => `${name}${i}`);
+    return {
+      name,
+      params: [],
+      returnType: F64,
+      captures: ids.map((id) => ({ localId: id, name: id, type: F64 })),
+      locals: ids.map((id) => ({ id, name: id, type: F64, mutable: true, boxed: true as const })),
+      body: [{ kind: "return", value: read(ids[0]!), loc }],
+      loc,
+    };
+  };
+  const module = moduleFor([]);
+  const llvm = emitLlvmModule({
+    ...module,
+    functions: [
+      ...module.functions,
+      declaring("wide", 512),
+      declaring("narrow", 511),
+      receiving("env", 512),
+    ],
+  });
+  const body = (name: string): string => {
+    const start = llvm.split("\n").findIndex((line) => line.endsWith(`{ ; ${name}`));
+    const lines = llvm.split("\n").slice(start);
+    return lines.slice(0, lines.indexOf("}")).join("\n");
+  };
+  expect(body("wide")).toMatch(/\) noinline optnone #0 \{/);
+  expect(body("wide")).toMatch(/store volatile ptr %[st]\d+, ptr %sc_l_wide0\b/);
+  expect(body("wide")).toMatch(/= load volatile ptr, ptr %sc_l_wide511\b/);
+  expect(body("env")).toMatch(/\) noinline optnone #0 \{/);
+  expect(body("env")).toMatch(/store volatile ptr %t\d+, ptr %sc_l_env0 ; captured env0/);
+  expect(body("narrow")).not.toContain("optnone");
+  expect(body("narrow")).not.toContain("volatile");
+});
+
 test("throwing-call count does not multiply identical scope cleanup", () => {
   for (const boxed of [false, true]) {
     const small = emitLlvmModule(moduleFor(Array.from({ length: 4 }, call), { boxed }));
@@ -146,17 +201,55 @@ test("detached exit defines the runtime opt-in symbol only when requested", () =
   expect(detached.replace("@scr_detached_exit = constant i8 1\n", "")).toBe(plain);
 });
 
-test("inline RC inlines every fast path at speed and keeps string and box releases as calls in release", () => {
+test("a target CPU level reaches every function attribute group and nothing else", () => {
+  const module = moduleFor([call()]);
+  const plain = emitLlvmModule(module);
+  expect(plain).not.toContain("target-cpu");
+  const v3 = emitLlvmModule(module, { targetCpu: "x86-64-v3" });
+  expect(v3).toMatch(/^attributes #0 = \{ sanitize_address uwtable "target-cpu"="x86-64-v3" \}$/m);
+  expect(v3.replaceAll(' "target-cpu"="x86-64-v3"', "")).toBe(plain);
+  expect(emitLlvmModule(module, { targetCpu: "baseline" })).toBe(plain);
+});
+
+test("only sanitized builds mark the emitted functions sanitize_address", () => {
+  const module = moduleFor([call()]);
+  const sanitized = emitLlvmModule(module);
+  expect(emitLlvmModule(module, { sanitizeAttributes: true })).toBe(sanitized);
+  expect(sanitized).toMatch(/^attributes #0 = \{ sanitize_address uwtable \}$/m);
+  const plain = emitLlvmModule(module, { sanitizeAttributes: false });
+  expect(plain).not.toContain("sanitize_address");
+  expect(plain).toMatch(/^attributes #0 = \{ uwtable \}$/m);
+  const v3 = emitLlvmModule(module, { sanitizeAttributes: false, targetCpu: "x86-64-v3" });
+  expect(v3).toMatch(/^attributes #0 = \{ uwtable "target-cpu"="x86-64-v3" \}$/m);
+});
+
+test("native functions get unwind tables and wasm32-wasi functions do not", () => {
+  const module = moduleFor([call()]);
+  expect(emitLlvmModule(module)).toMatch(/^attributes #0 = \{ sanitize_address uwtable \}$/m);
+  const wasi = emitLlvmModule(module, { wasi: true, pointerBits: 32, sanitizeAttributes: false });
+  expect(wasi).not.toContain("uwtable");
+  // A group needs an attribute: an ignored string attribute stands in.
+  expect(wasi).toMatch(/^attributes #0 = \{ "scriptc-function" \}$/m);
+});
+
+test("inline RC inlines every fast path at speed and keeps box releases as calls in release", () => {
   for (const boxed of [false, true]) {
     const module = moduleFor(Array.from({ length: 4 }, call), { boxed });
     const release = emitLlvmModule(module);
     expect(release).not.toContain("@sc_rc_");
     expect(release).not.toContain("%ScrMapRc");
-    // The release subset inlines string retains and dyn retains and releases
-    // only; these string and box releases stay runtime calls.
+    // The release subset inlines string and dyn retains and releases and Map
+    // retains only: box releases stay runtime calls, and so do the string
+    // releases of a function with more than INLINE_STR_RELEASES_PER_FUNCTION.
     const subset = emitLlvmModule(module, { inlineRc: "release" });
-    expect(subset).not.toContain("@sc_rc_release_str");
-    expect(subset).not.toContain("@sc_rc_release_box");
+    expect(subset).not.toContain("call void @sc_rc_release_box(");
+    const sites = (ir: string, fn: string): number => ir.split(`call void @${fn}(ptr`).length - 1;
+    if (!boxed) {
+      expect(sites(subset, "sc_rc_release_str")).toBe(0);
+      // Every site calls the runtime, and so does the unused helper's slow path.
+      expect(sites(subset, "scr_str_release")).toBe(sites(release, "scr_str_release") + 1);
+      expect(sites(release, "scr_str_release")).toBeGreaterThan(INLINE_STR_RELEASES_PER_FUNCTION);
+    }
     const speed = emitLlvmModule(module, { inlineRc: "speed" });
     const helper = boxed ? "sc_rc_release_box" : "sc_rc_release_str";
     const runtime = boxed ? "scr_box_release" : "scr_str_release";
@@ -224,7 +317,7 @@ test("shared exceptional exits preserve the function's scalar return ABI", () =>
 });
 
 test("exceptional exits use each scalar kind's LLVM return type", () => {
-  for (const type of [F64, DATE_T, BOOL, PROCSTREAM_T]) {
+  for (const type of [F64, BOOL, PROCSTREAM_T]) {
     for (const ownedLocals of [false, true]) {
       const module = moduleFor([call(), call(), { kind: "throw", value: literal("failed"), loc }]);
       const work = module.functions[1]!;
@@ -281,7 +374,7 @@ const text = (obj: IrExpr): IrExpr => ({
 
 function work(expr: IrExpr, parameter: IrType, boxed = false, tdz = false): string {
   const module: IrModule = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: receiverLoc.file,
     entry: "main",
     records: [
@@ -396,6 +489,33 @@ test("class brand probes borrow a local only across an inert literal key", () =>
   expect(computed).toContain("call ptr @scr_dyn_retain_v(");
 });
 
+test("class constructor probes test the function tag and borrow across a literal key", () => {
+  const dyn: IrType = { kind: "dyn" };
+  const key: IrExpr = { kind: "strLit", value: "classval:Example", type: STRING, loc: receiverLoc };
+  const probe: IrExpr = {
+    kind: "libCall",
+    fn: "dyn.classIs",
+    args: [ref(dyn), key],
+    type: BOOL,
+    loc: receiverLoc,
+  };
+  const borrowed = work(probe, dyn);
+  expect(borrowed).not.toContain("call ptr @scr_dyn_retain_v(");
+  expect(borrowed).toContain("icmp ne ptr");
+  expect(borrowed).toContain("icmp eq i32 %t");
+  expect(borrowed).toMatch(/icmp eq i32 %t\d+, 8\b/);
+  expect(borrowed).toContain("call zeroext i1 @scr_dyn_class_is_key(");
+  const computed = work(
+    {
+      ...probe,
+      args: [ref(dyn), { kind: "toString", operand: ref(dyn), type: STRING, loc: receiverLoc }],
+    },
+    dyn,
+  );
+  expect(computed).toContain("call ptr @scr_dyn_retain_v(");
+  expect(computed).toContain("call zeroext i1 @scr_dyn_class_is_key(");
+});
+
 test("class brand probes compare the program's key constant before the key text", () => {
   const dyn: IrType = { kind: "dyn" };
   const key: IrExpr = { kind: "strLit", value: "object:Example", type: STRING, loc: receiverLoc };
@@ -409,6 +529,27 @@ test("class brand probes compare the program's key constant before the key text"
   const named = work(probe("dyn.typedRefIs"), dyn);
   expect(named).toContain("; ->v.typed_ref.type_key");
   expect(named).toContain("@scr_dyn_typed_ref_is_key");
+  // Another key pointer is rejected on its length and last eight bytes
+  // ("Example" plus the prefix's ':') before the out-of-line comparison.
+  expect(named).toContain("; ->v.typed_ref.type_key_len");
+  expect(named).toContain("and i32 %t");
+  expect(named).toMatch(/icmp eq i32 %t\d+, 14\b/);
+  const tail = Buffer.from("object:Example").readBigInt64LE(6);
+  expect(named).toContain(`icmp eq i64 %t`);
+  expect(named).toContain(`, ${tail}`);
+  const shortKey: IrExpr = { kind: "strLit", value: "o:E", type: STRING, loc: receiverLoc };
+  const short = work(
+    {
+      kind: "libCall",
+      fn: "dyn.typedRefIs",
+      args: [ref(dyn), shortKey],
+      type: BOOL,
+      loc: receiverLoc,
+    },
+    dyn,
+  );
+  expect(short).toMatch(/icmp eq i32 %t\d+, 3\b/);
+  expect(short).not.toContain("load i64");
   // The key-pointer test answers false for capsules boxed elsewhere.
   const exact = work(probe("dyn.typedRefKeyIs"), dyn);
   expect(exact).toContain("; ->v.typed_ref.type_key");
@@ -492,7 +633,7 @@ function sharedFieldModule(prefixes: IrType[][], fieldType: IrType): IrModule {
     ],
   }));
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     records,

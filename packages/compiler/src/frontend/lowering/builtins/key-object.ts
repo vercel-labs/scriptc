@@ -4,10 +4,11 @@ import { locOf } from "../../program.js";
 import { BOOL, DYN, type IrExpr } from "../../../ir/ir.js";
 import { builtinImportOf } from "./module-bindings.js";
 
-/* node:crypto's secret KeyObject is a native checked-dynamic handle
- * (scr_lib.c): the KeyObject type maps to dyn, its getters and methods
- * dispatch through the handle, and these helpers lower the class's uses
- * that a dyn value cannot answer by itself. */
+/* node:crypto's KeyObject is a native checked-dynamic handle (secret keys
+ * in scr_lib.c, private and public keys in scr_pki.c), as are Sign and
+ * Verify: the types map to dyn, their getters and methods dispatch through
+ * the handle, and these helpers lower the uses that a dyn value cannot
+ * answer by itself. */
 
 /** Whether `node` names node:crypto's KeyObject class. */
 export function isKeyObjectClass(lowerer: Lowerer, node: ts.Expression): boolean {
@@ -23,7 +24,7 @@ export function isKeyObjectClass(lowerer: Lowerer, node: ts.Expression): boolean
 export function isKeyObjectValue(lowerer: Lowerer, node: ts.Expression): boolean {
   const type = lowerer.typeOf(node);
   const sym = type.getAliasSymbol() ?? type.getSymbol();
-  return !!sym && sym.name === "KeyObject" && lowerer.isStdlibSymbol(sym);
+  return !!sym && ts.symbolName(sym) === "KeyObject" && lowerer.isStdlibSymbol(sym);
 }
 
 /** `v instanceof KeyObject`. */
@@ -37,22 +38,38 @@ export function lowerKeyObjectInstanceof(
 }
 
 const KEY_OBJECT_METHODS = new Set(["export", "equals", "toCryptoKey"]);
+const SIGNER_METHODS = new Set(["update", "sign", "verify"]);
 
-/** `key.export(...)`, `key.equals(...)` and `key.toCryptoKey(...)`: the
+/** Whether a value's checker type is node:crypto's Sign or Verify. */
+function isSignerValue(lowerer: Lowerer, node: ts.Expression): boolean {
+  const type = lowerer.typeOf(node);
+  const sym = type.getAliasSymbol() ?? type.getSymbol();
+  return (
+    !!sym &&
+    (ts.symbolName(sym) === "Sign" || ts.symbolName(sym) === "Verify") &&
+    lowerer.isStdlibSymbol(sym)
+  );
+}
+
+/** `key.export(...)`, `key.equals(...)` and `key.toCryptoKey(...)`, and
+ * the update/sign/verify methods of Sign and Verify (scr_pki.c): the
  * handle answers them as methods, so they dispatch through dynInvoke
  * rather than as a member read and a call. */
 export function lowerKeyObjectCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
   if (call.questionDotToken || !ts.isPropertyAccessExpression(call.expression)) return null;
   const access = call.expression;
-  if (access.questionDotToken || !KEY_OBJECT_METHODS.has(access.name.text)) return null;
-  if (!isKeyObjectValue(lowerer, access.expression)) return null;
-  if (call.arguments.some(ts.isSpreadElement)) return null;
+  if (access.questionDotToken) return null;
+  const method = access.name.text;
+  const keyMethod = KEY_OBJECT_METHODS.has(method) && isKeyObjectValue(lowerer, access.expression);
+  if (!keyMethod && !(SIGNER_METHODS.has(method) && isSignerValue(lowerer, access.expression)))
+    return null;
+  if (call.arguments.nodes.some(ts.isSpreadElement)) return null;
   return {
     kind: "dynInvoke",
     recv: lowerer.lowerExprExpecting(access.expression, DYN),
     method: access.name.text,
-    calleeName: access.getText(),
-    args: call.arguments.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+    calleeName: ts.getTextOfNode(access),
+    args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
     type: DYN,
     loc: locOf(call),
   };

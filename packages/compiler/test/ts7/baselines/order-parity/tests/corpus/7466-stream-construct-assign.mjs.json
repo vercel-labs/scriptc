@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7466-stream-construct-assign.mjs"
+ ],
+ "diags": []
+}

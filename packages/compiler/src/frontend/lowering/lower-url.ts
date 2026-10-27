@@ -35,7 +35,7 @@ function lowerUrlOperation(
   expr: ts.NewExpression | ts.CallExpression,
   operation: "new" | "canParse" | "parse",
 ): IrExpr {
-  const args = expr.arguments ?? [];
+  const args = expr.arguments?.nodes ?? [];
   const loc = locOf(expr);
   const resultType = operation === "new" ? URL_T : operation === "canParse" ? BOOL : DYN;
   const checkedResult = (value: IrExpr): IrExpr => {

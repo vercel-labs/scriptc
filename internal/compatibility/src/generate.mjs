@@ -13,18 +13,26 @@
  *
  *   pnpm node-compat                fetch latest-v24.x and rewrite the snapshot
  *   pnpm node-compat --check        fetch and fail if the snapshot would change
+ *   pnpm node-compat --local        rewrite the snapshot without fetching: reclassify
+ *                                   the committed rows from the current sources
  *   pnpm node-compat:check          offline implementation/profile drift check
  */
 
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const internalOutputPath = `${packageRoot}generated/node-v24-internal.json`;
-const backlogOutputPath = `${packageRoot}generated/node-v24-backlog.json`;
 const publicOutputPath = `${root}docs/src/generated/node-v24-compatibility.json`;
-const publicMetaOutputPath = `${root}docs/src/generated/node-v24-compatibility-meta.json`;
+// Files derived from the ledger elsewhere: the docs build computes the
+// metadata from the public artifact, and `pnpm node-compat:backlog` builds
+// the backlog in memory. A merge that keeps a branch's copy would bring
+// back a file every compatibility change rewrites.
+const retiredOutputPaths = [
+  `${root}docs/src/generated/node-v24-compatibility-meta.json`,
+  `${packageRoot}generated/node-v24-backlog.json`,
+];
 const compilerManifestPath = `${root}packages/compiler/surface-manifest.json`;
 const compilerCompatPath = `${packageRoot}static-support.json`;
 const pinPath = `${packageRoot}node-v24.json`;
@@ -203,6 +211,10 @@ function featureOf(row, entries, parentSignature) {
 
 function symbolCandidates(row) {
   const result = new Set([row.apiSymbol]);
+  // A global's own row (`WebAssembly`) matches the compiler's
+  // `globalThis.<name>` entries.
+  if (row.chapter === "globals" && row.apiSymbol && !row.apiSymbol.includes("."))
+    result.add(`globalThis.${row.apiSymbol}`);
   const aliases = [
     ["fsPromises.", "fs/promises."],
     ["dnsPromises.", "dns/promises."],
@@ -440,12 +452,6 @@ function summarizeTier(rows, key, chapterPolicy) {
   return tier("unreviewed", "", { source: "derived:descendants" });
 }
 
-function statusCounts(rows, key) {
-  const counts = Object.fromEntries(STATUSES.map((status) => [status, 0]));
-  for (const row of rows) if (row.scope === "api") counts[row[key].status] += 1;
-  return counts;
-}
-
 function verifiedAnchorIds(html) {
   return new Set(
     [...html.matchAll(/<a class="mark" href="#[^"]+" id="([^"]+)">#/g)].map((match) => match[1]),
@@ -517,7 +523,6 @@ function buildSnapshot({ allJson, indexMarkdown, allSha256, indexSha256 }) {
       title: link.title,
       entries: chapterRows.length,
       apiEntries: chapterRows.filter((row) => row.scope === "api").length,
-      static: statusCounts(chapterRows, "static"),
     });
     rows.push(...chapterRows);
   }
@@ -577,13 +582,29 @@ function publicDetail(tier) {
   if (/^surface-manifest:node-builtin\.crypto\.create(?:Cipheriv|Decipheriv)$/.test(source)) {
     return "Supports aes-128/192/256 in cbc, ctr, and gcm modes and chacha20-poly1305 with Node's argument, IV, tag-length, and key-length errors; other OpenSSL ciphers and KeyObject keys are refused.";
   }
+  if (/^surface-manifest:node-builtin\.crypto\.createECDH$/.test(source)) {
+    return "Supports prime192v1, secp224r1, prime256v1, secp384r1, secp521r1, secp192k1, secp224k1, secp256k1, brainpoolP256r1, brainpoolP384r1 and brainpoolP512r1 with Node's curve, key, point, format and encoding errors; other curves Node knows are refused.";
+  }
+  if (
+    /^surface-manifest:node-builtin\.crypto\.(?:createDiffieHellman|createDiffieHellmanGroup|getDiffieHellman)$/.test(
+      source,
+    )
+  ) {
+    return "Supports the modp groups, explicit primes and generators, and generated safe primes up to 8192 bits with Node's argument, generator and modulus errors.";
+  }
   if (source.startsWith("surface-manifest:"))
     return "Implemented for the call shapes accepted by the compiler lowering.";
   if (/^compiler-dedicated:assert\.doesNot(?:Throw|Reject)$/.test(source)) {
     return "Supports callbacks or native promises with messages, Error classes, regular expressions, and validators accepting unknown values; object expectations and complete AssertionError metadata remain unsupported.";
   }
+  if (/^compiler-dedicated:(?:ECDH|ecdh\.)/.test(source)) {
+    return "Matches Node's key formats, point encodings, private-key range checks, key-pair checks and errors on the supported curves; ECDH.convertKey is supported, and property reads and writes are refused.";
+  }
+  if (/^compiler-dedicated:(?:DiffieHellman|diffieHellman\.)/.test(source)) {
+    return "Matches Node's private key lengths, DH_check results, public key range checks, secret padding and errors; primes longer than 8192 bits, property writes and property reads other than verifyError are refused.";
+  }
   if (/^compiler-dedicated:(?:Cipheriv|Decipheriv|cipher\.|decipher\.)/.test(source)) {
-    return "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers; the stream.Transform interface is refused.";
+    return "Matches Node's update() output lengths, padding, authentication tags, string encodings, and state errors for the supported ciphers, and its stream.Transform behavior: chunks written through update(), final() pushed at the end, and its errors reported through 'error'.";
   }
   if (source.startsWith("compiler-dedicated:"))
     return "Implemented by a dedicated static compiler/runtime path.";
@@ -631,7 +652,14 @@ function publicDetail(tier) {
         source,
       )
     ) {
-      return "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation; Brotli and Zstd streams remain unsupported.";
+      return "Deflate, Inflate, Gzip, Gunzip, DeflateRaw, InflateRaw, and Unzip are Transform streams with Node's output chunking, flush, params, reset, error codes, and option validation; Zstd streams remain unsupported.";
+    }
+    if (
+      /^compiler-feature:zlib\.(?:zlib\.(?:BrotliCompress|BrotliDecompress)|BrotliOptions)$/.test(
+        source,
+      )
+    ) {
+      return "BrotliCompress and BrotliDecompress are Transform streams over the brotli version Node bundles, with Node's parameters, dictionaries, flush, reset, error codes, and option validation; like Node's, they have no params().";
     }
     if (source === "compiler-feature:zlib.zlib.constants") {
       return "Each zlib.constants member and its module-level copy reads as Node's value; the constants object itself is not a runtime value.";
@@ -860,7 +888,7 @@ function backlogAction(tier) {
   return null;
 }
 
-function buildBacklog(snapshot) {
+export function buildBacklog(snapshot) {
   const tasks = [];
   const tierItems = { static: {} };
   const priorities = { high: 0, normal: 0, low: 0 };
@@ -956,7 +984,6 @@ function projectPublicMatrix(snapshot) {
       title: chapter.title,
       entries: chapterRows.length,
       apiEntries: chapterRows.length,
-      static: statusCounts(chapterRows, "static"),
     });
     rows.push(...chapterRows);
   }
@@ -1005,18 +1032,39 @@ function publicSnapshot(snapshot) {
   };
 }
 
-function publicMetadata(publicRendered, snapshot) {
-  const matrix = projectPublicMatrix(snapshot);
-  return {
-    schemaVersion: 3,
-    nodeVersion: snapshot.nodeVersion,
-    nodeCommit: snapshot.nodeCommit,
-    artifactVersion: sha(publicRendered).slice(0, 20),
-    rowCount: matrix.rows.length,
-  };
+/** The committed ledger with every row's classification recomputed from
+ * the current sources. The rows themselves come from the pinned Node docs,
+ * so while the pin is unchanged this is what a fetching run writes. */
+function reclassify(snapshot) {
+  if (snapshot.nodeVersion !== pin.version || snapshot.nodeCommit !== pin.commit) {
+    throw new Error(
+      `the ledger targets Node ${snapshot.nodeVersion}, the pin ${pin.version}; run 'pnpm node-compat' to fetch the new docs`,
+    );
+  }
+  const ctx = classificationContext();
+  const ancestors = [];
+  for (const row of snapshot.rows) {
+    ancestors.length = row.depth;
+    const parentSignature = ancestors[row.depth - 1]?.signature;
+    row.static = classifyStatic(row, null, ctx, parentSignature);
+    ancestors[row.depth] = row;
+  }
+  for (const chapter of snapshot.chapters) {
+    const chapterRows = snapshot.rows.filter((row) => row.chapter === chapter.slug);
+    chapterRows[0].static = summarizeTier(
+      chapterRows,
+      "static",
+      ctx.compilerCompat.chapterPolicies[chapter.slug],
+    );
+  }
+  return snapshot;
 }
 
 function checkLocal() {
+  for (const path of retiredOutputPaths) {
+    if (existsSync(path))
+      throw new Error(`${path.slice(root.length)} is no longer generated; delete it`);
+  }
   const snapshot = JSON.parse(readFileSync(internalOutputPath, "utf8"));
   if (snapshot.nodeVersion !== pin.version || snapshot.nodeCommit !== pin.commit) {
     throw new Error(
@@ -1064,14 +1112,8 @@ function checkLocal() {
       throw new Error(`${row.id} exposes a row that is not applicable to native compilation`);
     }
   }
-  if (readFileSync(backlogOutputPath, "utf8") !== render(buildBacklog(snapshot))) {
-    throw new Error("the Node compatibility backlog is stale; run 'pnpm node-compat'");
-  }
-  const publicRendered = render(publicSnapshot(snapshot));
-  if (
-    readFileSync(publicMetaOutputPath, "utf8") !== render(publicMetadata(publicRendered, snapshot))
-  ) {
-    throw new Error("the docs compatibility metadata is stale; run 'pnpm node-compat'");
+  if (readFileSync(publicOutputPath, "utf8") !== render(publicSnapshot(snapshot))) {
+    throw new Error("the docs compatibility artifact is stale; run 'pnpm node-compat'");
   }
   for (const row of snapshot.rows) {
     for (const key of ["static"]) {
@@ -1114,6 +1156,15 @@ async function fetchText(url) {
 async function main() {
   const args = new Set(process.argv.slice(2));
   if (args.has("--check-local")) return checkLocal();
+  if (args.has("--local")) {
+    const snapshot = reclassify(JSON.parse(readFileSync(internalOutputPath, "utf8")));
+    writeFileSync(internalOutputPath, render(snapshot));
+    writeFileSync(publicOutputPath, render(publicSnapshot(snapshot)));
+    console.log(
+      `reclassified the compatibility ledger and public artifact (${snapshot.rows.length} source rows, ${projectPublicMatrix(snapshot).rows.length} public matrix rows, ${pin.tag})`,
+    );
+    return;
+  }
 
   const [allText, indexMarkdown] = await Promise.all([
     fetchText(pin.allJsonUrl),
@@ -1135,31 +1186,24 @@ async function main() {
   );
   verifyAnchors(snapshot, htmlByChapter);
   const internalRendered = render(snapshot);
-  const backlogRendered = render(buildBacklog(snapshot));
   const publicRendered = render(publicSnapshot(snapshot));
-  const publicMetaRendered = render(publicMetadata(publicRendered, snapshot));
 
   if (args.has("--check")) {
     if (readFileSync(internalOutputPath, "utf8") !== internalRendered)
       throw new Error("internal Node compatibility snapshot is stale; run 'pnpm node-compat'");
-    if (readFileSync(backlogOutputPath, "utf8") !== backlogRendered)
-      throw new Error("Node compatibility backlog is stale; run 'pnpm node-compat'");
     if (readFileSync(publicOutputPath, "utf8") !== publicRendered)
       throw new Error("public Node compatibility snapshot is stale; run 'pnpm node-compat'");
-    if (readFileSync(publicMetaOutputPath, "utf8") !== publicMetaRendered)
-      throw new Error("public Node compatibility metadata is stale; run 'pnpm node-compat'");
     console.log(
       `Node compatibility snapshot matches ${pin.tag} (${snapshot.rows.length} API rows, commit ${pin.commit.slice(0, 12)})`,
     );
     return;
   }
   writeFileSync(internalOutputPath, internalRendered);
-  writeFileSync(backlogOutputPath, backlogRendered);
   writeFileSync(publicOutputPath, publicRendered);
-  writeFileSync(publicMetaOutputPath, publicMetaRendered);
   console.log(
-    `wrote compatibility ledger, backlog, and public artifact (${snapshot.rows.length} source rows, ${projectPublicMatrix(snapshot).rows.length} public matrix rows, ${pin.tag})`,
+    `wrote compatibility ledger and public artifact (${snapshot.rows.length} source rows, ${projectPublicMatrix(snapshot).rows.length} public matrix rows, ${pin.tag})`,
   );
 }
 
-await main();
+// backlog.mjs imports buildBacklog; only running this file generates.
+if (process.argv[1] === fileURLToPath(import.meta.url)) await main();

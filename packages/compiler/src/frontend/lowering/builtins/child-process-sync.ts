@@ -1,3 +1,4 @@
+import { keyedHelperName } from "../stable-names.js";
 import { recordToEnvPairs } from "./environment.js";
 import { lowerChildArgsArg } from "./child-process.js";
 import { boolLit, numLit, strLit, varRef } from "../../../ir/build.js";
@@ -48,15 +49,15 @@ export function lowerExecSyncCall(
   shell: boolean,
   loc: SrcLoc,
 ): IrExpr {
-  if (expr.arguments.some(ts.isSpreadElement)) {
+  if (expr.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering(`${shell ? "execSync" : "execFileSync"} with a spread call`, expr);
   }
-  const cmd = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
+  const cmd = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, STRING);
   // execSync: /bin/sh -c <command>; execFileSync: file + its args list.
   let argvExpr: IrExpr;
   let optsNode: ts.Expression | undefined;
   if (shell) {
-    if (expr.arguments.length > 2) {
+    if (expr.arguments.nodes.length > 2) {
       lowerer.noLowering(
         "execSync with this argument shape",
         expr,
@@ -69,17 +70,17 @@ export function lowerExecSyncCall(
       type: arrayOf(STRING),
       loc,
     };
-    optsNode = expr.arguments[1];
+    optsNode = expr.arguments.nodes[1];
   } else {
-    if (expr.arguments.length > 3) {
+    if (expr.arguments.nodes.length > 3) {
       lowerer.noLowering(
         "execFileSync with this argument shape",
         expr,
         "the supported form is execFileSync(file, args?, options?)",
       );
     }
-    argvExpr = lowerChildArgsArg(lowerer, expr.arguments[1], loc);
-    optsNode = expr.arguments[2];
+    argvExpr = lowerChildArgsArg(lowerer, expr.arguments.nodes[1], loc);
+    optsNode = expr.arguments.nodes[2];
   }
   // The shell command itself is /bin/sh; the "command" string rides as
   // the argv[1] the display formatter reads.
@@ -102,6 +103,8 @@ export function lowerExecSyncCall(
   let stdoutMode = 1;
   let stderrMode = 0;
   let stdinInherit = false;
+  // Without an encoding option, a failure's error carries Buffer outputs.
+  let encodingGiven = false;
   // A conditional env spread (`...(c ? { env: ... } : {})`): the call
   // itself splits into a ternary of the two env-nesses at the tail.
   let condEnvSpread: { cond: IrExpr; pairs: IrExpr; whenTrue: boolean } | null = null;
@@ -134,6 +137,8 @@ export function lowerExecSyncCall(
             runtime.timeout,
             runtime.stdoutMode,
             runtime.stderrMode,
+            // The runtime options carry a utf8 encoding (others throw).
+            boolLit(false, loc),
           ],
           type: STRING,
           loc,
@@ -182,8 +187,8 @@ export function lowerExecSyncCall(
         modeOf(t.value, 2);
         return;
       }
-      if (ts.isArrayLiteralExpression(node) && node.elements.length === 3) {
-        node.elements.forEach((el, i) => {
+      if (ts.isArrayLiteralExpression(node) && node.elements.nodes.length === 3) {
+        node.elements.nodes.forEach((el, i) => {
           const et = lowerer.typeOf(el);
           if (!et.isStringLiteralType()) {
             lowerer.noLowering(
@@ -202,7 +207,7 @@ export function lowerExecSyncCall(
       );
     };
 
-    for (const p of optsNode.properties) {
+    for (const p of optsNode.properties.nodes) {
       // The conditional-spread idiom carrying `env` — the openssl-runner
       // shape: `...(c ? { env: { ...process.env, ...extra } } : {})`
       // (either orientation). The condition evaluates ONCE and picks
@@ -251,6 +256,7 @@ export function lowerExecSyncCall(
               'outputs are captured as utf8 — pass { encoding: "utf8" }',
             );
           }
+          encodingGiven = true;
           break;
         }
         case "cwd":
@@ -395,6 +401,7 @@ export function lowerExecSyncCall(
       timeout,
       numLit(stdoutMode + (stdinInherit ? 4 : 0), loc),
       numLit(stderrMode, loc),
+      boolLit(!encodingGiven, loc),
     ],
     type: STRING,
     loc,
@@ -535,7 +542,7 @@ function execStdioModeHelper(
   const key = `cp.stdiomode:${shapeId}:${fd}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
-  const name = `%cp.stdioMode.${fd}.${lowerer.arrHofHelpers.size}`;
+  const name = keyedHelperName(lowerer, `%cp.stdioMode.${fd}`, key);
   lowerer.arrHofHelpers.set(key, name);
   const optsT: IrType = { kind: "record", shapeId };
 

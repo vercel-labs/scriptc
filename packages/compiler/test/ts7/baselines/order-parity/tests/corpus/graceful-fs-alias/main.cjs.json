@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/graceful-fs-alias/main.cjs"
+ ],
+ "diags": []
+}

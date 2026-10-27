@@ -241,6 +241,7 @@
         "packages/compiler/src/frontend/comptime-node.ts",
         "packages/compiler/src/frontend/ts7/world-check.ts",
         "packages/compiler/src/frontend/ts7/source-parser.test.ts",
+        "packages/compiler/src/frontend/jsx-source.test.ts",
         "packages/compiler/src/frontend/npm-static-rewrite.ts",
         "packages/compiler/src/frontend/npm-static-bundled-cjs.ts",
         "packages/compiler/src/library/semantic-source.ts",
@@ -270,6 +271,7 @@
         "packages/compiler/src/backend/llvm/**",
         "packages/compiler/src/backend/loop-polls.test.ts",
         "packages/compiler/src/backend/may-throw.test.ts",
+        "packages/compiler/src/backend/stack-observations.test.ts",
         "packages/compiler/src/ir/**",
         "packages/compiler/src/library/*.test.ts",
         "packages/compiler/test/**",
@@ -281,9 +283,21 @@
     },
     {
       // Ambient declarations describe an existing constructor and its prototype methods.
-      "files": ["packages/compiler/ambient/scriptc-node-fallback.d.ts"],
+      "files": [
+        "packages/compiler/ambient/scriptc-node-fallback.d.ts",
+        "packages/compiler/ambient/node-fallback/*.d.ts",
+      ],
       "rules": {
         "typescript/no-unsafe-declaration-merging": "off",
+      },
+    },
+    {
+      // Each module's fallback declarations are a script that declares the
+      // module ambiently; it names the files of the modules it uses by
+      // reference, since a script cannot import them.
+      "files": ["packages/compiler/ambient/node-fallback/*.d.ts"],
+      "rules": {
+        "typescript/triple-slash-reference": "off",
       },
     },
   ],

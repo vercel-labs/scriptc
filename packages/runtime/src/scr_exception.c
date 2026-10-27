@@ -389,6 +389,17 @@ void scr_exc_suppressed_forget(const void *error_object) {
   }
 }
 
+void scr_exc_keep_first(ScrCaught *first) {
+  if (first->kind == SCR_EXC_GENRET) {
+    scr_caught_release(first);
+    return;
+  }
+  ScrCaught *dropped = scr_exc_take();
+  if (dropped) scr_caught_release(dropped);
+  scr_rethrow(first);
+  scr_caught_release(first);
+}
+
 void scr_exc_suppress(ScrCaught *suppressed) {
   if (suppressed->kind == SCR_EXC_GENRET) {
     /* A generator .return() is a return completion, not a thrown error.
@@ -448,9 +459,10 @@ ScrStr *scr_caught_to_string(const ScrCaught *c) {
   case SCR_EXC_REF:
   case SCR_EXC_PRIMITIVE_REF:
     if (c->retain_fn == scr_dyn_retain_v) return scr_dyn_string_constructor(c->payload);
-    /* Object.prototype.toString — exact for thrown records and class
-     * instances without a toString override; thrown arrays/closures/union
-     * boxes print this too where Node would vary (SEMANTICS.md). */
+    /* Object.prototype.toString — exact for thrown class instances
+     * without a toString override; thrown closures and union boxes print
+     * this too where Node would vary. Thrown records and arrays arrive as
+     * checked-dynamic values (above). */
     return scr_str_new("[object Object]", 15);
   case SCR_EXC_NONE:
   case SCR_EXC_TERMINATE:

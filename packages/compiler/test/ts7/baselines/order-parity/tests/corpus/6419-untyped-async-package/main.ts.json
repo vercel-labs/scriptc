@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6419-untyped-async-package/main.ts"
+ ],
+ "diags": []
+}

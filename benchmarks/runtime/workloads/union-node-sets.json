@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/union-node-sets.ts",
+  "args": [
+    "1"
+  ]
+}

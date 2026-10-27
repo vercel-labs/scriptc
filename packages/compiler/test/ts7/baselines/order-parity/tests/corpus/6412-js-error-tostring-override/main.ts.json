@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6412-js-error-tostring-override/errors.js",
+  "<repo>/tests/corpus/6412-js-error-tostring-override/main.ts"
+ ],
+ "diags": []
+}

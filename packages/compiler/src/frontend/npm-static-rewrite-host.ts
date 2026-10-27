@@ -2,10 +2,16 @@
 import { dirname, join, resolve as resolvePath } from "node:path";
 import { cjsLexedExportsOfFile, cjsVisibleNames } from "./cjs-syntax.js";
 import type { Ts7SourceParser } from "./ts7/source-parser.js";
-import { trackedDirectoryExists, trackedFileExists, trackedReadFile } from "./input-tracker.js";
+import {
+  isVirtualSource,
+  trackedDirectoryExists,
+  trackedFileExists,
+  trackedReadFile,
+} from "./input-tracker.js";
 import { resolveExports } from "./resolve.js";
 import { packageNameOfSpecifier } from "./workspace-registry.js";
 import { isBundlerCjsCandidate, rewriteBundlerCjsSyntax } from "./npm-static-rewrite-syntax.js";
+import { lowerBundledEsmInits } from "./npm-static-bundled-esm.js";
 
 const NODE_REQUIRE_CONDITIONS = new Set(["require", "node", "default"]);
 
@@ -134,7 +140,7 @@ function requireTargetEsModuleStamped(
   } catch {
     /* unlexable — keep probing */
   }
-  if (src.includes("__toCommonJS(")) return true;
+  if (/__toCommonJS\d*\(/.test(src)) return true;
   const fwd = /module\.exports\s*=\s*require\(\s*["']([^"']+)["']\s*\)/.exec(src);
   if (fwd !== null) return requireTargetEsModuleStamped(parser, file, fwd[1]!, depth + 1);
   return false;
@@ -159,13 +165,29 @@ function starTargetNames(parser: Ts7SourceParser, file: string): Set<string> {
   }
 }
 
-export function rewriteBundlerCjsWithParser(
+export function lowerEsmInitsWithParser(
   parser: Ts7SourceParser,
   source: string,
   filePath: string,
 ): string | { degrade: string } | null {
+  if (!source.includes("__esm")) return null;
+  return lowerBundledEsmInits(parser.parse(filePath, source, "js"), filePath, {
+    requireTargetEsModuleStamped: (from, spec) => requireTargetEsModuleStamped(parser, from, spec),
+  });
+}
+
+export function rewriteBundlerCjsWithParser(
+  parser: Ts7SourceParser,
+  source: string,
+  filePath: string,
+  liveExportTable?: (filePath: string) => void,
+  lexerVisibleNames?: (filePath: string, names: readonly string[]) => void,
+): string | { degrade: string } | null {
   if (!isBundlerCjsCandidate(source)) return null;
   return rewriteBundlerCjsSyntax(parser.parse(filePath, source, "js"), filePath, {
+    liveExportTable,
+    lexerVisibleNames,
+    requireOnly: isVirtualSource,
     requireTargetEsModuleStamped: (from, spec) => requireTargetEsModuleStamped(parser, from, spec),
     starTargetNames: (from, spec) => {
       const target = resolveRelativeCjs(from, spec);

@@ -42,6 +42,13 @@ void scr_run_exit_listeners(double code);
 void scr_exit_thunk0(ScrClosure *cb, double code);
 void scr_exit_thunk_code(ScrClosure *cb, double code);
 void scr_stdin_on_data(ScrClosure *cb, void (*fn)(ScrClosure *, ScrBytes *), bool once);
+/* A string 'data' listener (moves cb): receives each chunk decoded by the
+ * stdin's setEncoding decoder; with no encoding set, a delivery throws
+ * the setEncoding-state TypeError instead (Node would pass a Buffer). */
+void scr_stdin_on_data_str(ScrClosure *cb, void (*fn)(ScrClosure *, ScrStr *), bool once);
+/* process.stdin.setEncoding: the canonical encoding (borrowed). */
+void scr_stdin_set_encoding(ScrStr *enc);
+void scr_stdin_data_thunk_str(ScrClosure *cb, ScrStr *text);
 void scr_stdin_on_end(ScrClosure *cb, bool once);
 void scr_stdin_on_error(ScrClosure *cb, ScrChildErrFn fn, bool once);
 ScrPromise *scr_stdin_next_chunk(void); /* +1 */

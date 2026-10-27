@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "compilerVersion": "0.3.6",
+  "compilerVersion": "0.4.5",
   "coverage": [
     "Entries are projected mechanically from the compiler's own decision tables: the diagnostics registry, the unsupported-syntax dispatch tables, the stdlib and node-builtin lowering tables, and the supported-builtin-module list. Nothing is hand-maintained; the manifest regenerates byte-identically from the source tree at this version.",
     "Absence from this manifest means 'not projected', never 'unsupported'. Surfaces lowered through dedicated code paths rather than tables are not yet projected: console, JSON, Promise/async and the timer surface, the net/http/tls/https/dgram/dns/assert/test/stream/readline module member surfaces, template literals, the regex slice, global functions (parseInt, parseFloat, isNaN, isFinite), and the process surface outside its ambient slice.",
@@ -20,7 +20,7 @@
       "name": "package imports",
       "status": "unsupported",
       "code": "SC1010",
-      "note": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
+      "note": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
     },
     {
       "id": "diagnostic.sc1012",
@@ -192,7 +192,7 @@
       "name": "this regex feature",
       "status": "unsupported",
       "code": "SC1120",
-      "note": "supported: literal regexes with the g/i/m/s/u/y flags — .test(), .exec()/.match()/.matchAll(), named capture groups (.groups, $<name> templates, \\k<name>), .source/.flags, and string replace/replaceAll/split with string replacement templates"
+      "note": "supported: literal regexes with the g/i/m/s/u/v/y flags — .test(), .exec()/.match()/.matchAll(), named capture groups (.groups, $<name> templates, \\k<name>), .source/.flags, and string replace/replaceAll/split with string replacement templates"
     },
     {
       "id": "diagnostic.sc2001",
@@ -467,11 +467,30 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.constants",
+      "kind": "node-builtin",
+      "name": "constants",
+      "status": "static",
+      "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
       "id": "node-builtin.crypto",
       "kind": "node-builtin",
       "name": "crypto",
       "status": "static",
       "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
+      "id": "node-builtin.crypto.checkPrime",
+      "kind": "node-builtin",
+      "name": "crypto.checkPrime",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.crypto.checkPrimeSync",
+      "kind": "node-builtin",
+      "name": "crypto.checkPrimeSync",
+      "status": "static"
     },
     {
       "id": "node-builtin.crypto.createCipheriv",
@@ -489,25 +508,19 @@
       "id": "node-builtin.crypto.createDiffieHellman",
       "kind": "node-builtin",
       "name": "crypto.createDiffieHellman",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and public and private KeyObjects — neither exists in the static runtime, so no faithful lowering can be small; the lowered crypto surface is hashing, randomness, secret KeyObjects, and the introspection statics"
+      "status": "static"
     },
     {
       "id": "node-builtin.crypto.createDiffieHellmanGroup",
       "kind": "node-builtin",
       "name": "crypto.createDiffieHellmanGroup",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and public and private KeyObjects — neither exists in the static runtime, so no faithful lowering can be small; the lowered crypto surface is hashing, randomness, secret KeyObjects, and the introspection statics"
+      "status": "static"
     },
     {
       "id": "node-builtin.crypto.createECDH",
       "kind": "node-builtin",
       "name": "crypto.createECDH",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and public and private KeyObjects — neither exists in the static runtime, so no faithful lowering can be small; the lowered crypto surface is hashing, randomness, secret KeyObjects, and the introspection statics"
+      "status": "static"
     },
     {
       "id": "node-builtin.crypto.createHash",
@@ -525,17 +538,13 @@
       "id": "node-builtin.crypto.createPrivateKey",
       "kind": "node-builtin",
       "name": "crypto.createPrivateKey",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and public and private KeyObjects — neither exists in the static runtime, so no faithful lowering can be small; the lowered crypto surface is hashing, randomness, secret KeyObjects, and the introspection statics"
+      "status": "static"
     },
     {
       "id": "node-builtin.crypto.createPublicKey",
       "kind": "node-builtin",
       "name": "crypto.createPublicKey",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and public and private KeyObjects — neither exists in the static runtime, so no faithful lowering can be small; the lowered crypto surface is hashing, randomness, secret KeyObjects, and the introspection statics"
+      "status": "static"
     },
     {
       "id": "node-builtin.crypto.createSecretKey",
@@ -547,25 +556,19 @@
       "id": "node-builtin.crypto.createSign",
       "kind": "node-builtin",
       "name": "crypto.createSign",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and public and private KeyObjects — neither exists in the static runtime, so no faithful lowering can be small; the lowered crypto surface is hashing, randomness, secret KeyObjects, and the introspection statics"
+      "status": "static"
     },
     {
       "id": "node-builtin.crypto.createVerify",
       "kind": "node-builtin",
       "name": "crypto.createVerify",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and public and private KeyObjects — neither exists in the static runtime, so no faithful lowering can be small; the lowered crypto surface is hashing, randomness, secret KeyObjects, and the introspection statics"
+      "status": "static"
     },
     {
       "id": "node-builtin.crypto.diffieHellman",
       "kind": "node-builtin",
       "name": "crypto.diffieHellman",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and public and private KeyObjects — neither exists in the static runtime, so no faithful lowering can be small; the lowered crypto surface is hashing, randomness, secret KeyObjects, and the introspection statics"
+      "status": "static"
     },
     {
       "id": "node-builtin.crypto.generateKey",
@@ -577,17 +580,13 @@
       "id": "node-builtin.crypto.generateKeyPair",
       "kind": "node-builtin",
       "name": "crypto.generateKeyPair",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and public and private KeyObjects — neither exists in the static runtime, so no faithful lowering can be small; the lowered crypto surface is hashing, randomness, secret KeyObjects, and the introspection statics"
+      "status": "static"
     },
     {
       "id": "node-builtin.crypto.generateKeyPairSync",
       "kind": "node-builtin",
       "name": "crypto.generateKeyPairSync",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and public and private KeyObjects — neither exists in the static runtime, so no faithful lowering can be small; the lowered crypto surface is hashing, randomness, secret KeyObjects, and the introspection statics"
+      "status": "static"
     },
     {
       "id": "node-builtin.crypto.generateKeySync",
@@ -596,20 +595,34 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.crypto.generatePrime",
+      "kind": "node-builtin",
+      "name": "crypto.generatePrime",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.crypto.generatePrimeSync",
+      "kind": "node-builtin",
+      "name": "crypto.generatePrimeSync",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.crypto.getCipherInfo",
       "kind": "node-builtin",
       "name": "crypto.getCipherInfo",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "cipher metadata has no lowering — createCipheriv and createDecipheriv support aes-128/192/256 in cbc, ctr, and gcm modes and chacha20-poly1305"
+      "status": "static"
     },
     {
       "id": "node-builtin.crypto.getDiffieHellman",
       "kind": "node-builtin",
       "name": "crypto.getDiffieHellman",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and public and private KeyObjects — neither exists in the static runtime, so no faithful lowering can be small; the lowered crypto surface is hashing, randomness, secret KeyObjects, and the introspection statics"
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.crypto.getRandomValues",
+      "kind": "node-builtin",
+      "name": "crypto.getRandomValues",
+      "status": "static"
     },
     {
       "id": "node-builtin.crypto.hash",
@@ -647,7 +660,7 @@
       "name": "crypto.privateDecrypt",
       "status": "unsupported",
       "code": "SC2020",
-      "note": "asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and public and private KeyObjects — neither exists in the static runtime, so no faithful lowering can be small; the lowered crypto surface is hashing, randomness, secret KeyObjects, and the introspection statics"
+      "note": "RSA encryption has no lowering — the asymmetric crypto surface is RSA and EC KeyObjects (generateKeyPair, createPrivateKey, createPublicKey), sign, verify, createSign, createVerify, createECDH, and createDiffieHellman"
     },
     {
       "id": "node-builtin.crypto.privateEncrypt",
@@ -655,7 +668,7 @@
       "name": "crypto.privateEncrypt",
       "status": "unsupported",
       "code": "SC2020",
-      "note": "asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and public and private KeyObjects — neither exists in the static runtime, so no faithful lowering can be small; the lowered crypto surface is hashing, randomness, secret KeyObjects, and the introspection statics"
+      "note": "RSA encryption has no lowering — the asymmetric crypto surface is RSA and EC KeyObjects (generateKeyPair, createPrivateKey, createPublicKey), sign, verify, createSign, createVerify, createECDH, and createDiffieHellman"
     },
     {
       "id": "node-builtin.crypto.publicDecrypt",
@@ -663,7 +676,7 @@
       "name": "crypto.publicDecrypt",
       "status": "unsupported",
       "code": "SC2020",
-      "note": "asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and public and private KeyObjects — neither exists in the static runtime, so no faithful lowering can be small; the lowered crypto surface is hashing, randomness, secret KeyObjects, and the introspection statics"
+      "note": "RSA encryption has no lowering — the asymmetric crypto surface is RSA and EC KeyObjects (generateKeyPair, createPrivateKey, createPublicKey), sign, verify, createSign, createVerify, createECDH, and createDiffieHellman"
     },
     {
       "id": "node-builtin.crypto.publicEncrypt",
@@ -671,7 +684,7 @@
       "name": "crypto.publicEncrypt",
       "status": "unsupported",
       "code": "SC2020",
-      "note": "asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and public and private KeyObjects — neither exists in the static runtime, so no faithful lowering can be small; the lowered crypto surface is hashing, randomness, secret KeyObjects, and the introspection statics"
+      "note": "RSA encryption has no lowering — the asymmetric crypto surface is RSA and EC KeyObjects (generateKeyPair, createPrivateKey, createPublicKey), sign, verify, createSign, createVerify, createECDH, and createDiffieHellman"
     },
     {
       "id": "node-builtin.crypto.randomBytes",
@@ -733,9 +746,7 @@
       "id": "node-builtin.crypto.sign",
       "kind": "node-builtin",
       "name": "crypto.sign",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and public and private KeyObjects — neither exists in the static runtime, so no faithful lowering can be small; the lowered crypto surface is hashing, randomness, secret KeyObjects, and the introspection statics"
+      "status": "static"
     },
     {
       "id": "node-builtin.crypto.timingSafeEqual",
@@ -747,17 +758,7 @@
       "id": "node-builtin.crypto.verify",
       "kind": "node-builtin",
       "name": "crypto.verify",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "asymmetric-key operations need a public-key stack (bignum, RSA/EC/EdDSA math) and public and private KeyObjects — neither exists in the static runtime, so no faithful lowering can be small; the lowered crypto surface is hashing, randomness, secret KeyObjects, and the introspection statics"
-    },
-    {
-      "id": "node-builtin.crypto.webcrypto",
-      "kind": "node-builtin",
-      "name": "crypto.webcrypto",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "the WebCrypto object has no lowering — the lowered crypto surface is randomUUID, randomBytes, and the createHash chain"
+      "status": "static"
     },
     {
       "id": "node-builtin.dgram",
@@ -811,6 +812,13 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.dns.promises",
+      "kind": "node-builtin",
+      "name": "dns/promises",
+      "status": "static",
+      "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
       "id": "node-builtin.events",
       "kind": "node-builtin",
       "name": "events",
@@ -860,6 +868,13 @@
       "kind": "node-builtin",
       "name": "fs.closeSync",
       "status": "static"
+    },
+    {
+      "id": "node-builtin.fs.constants",
+      "kind": "node-builtin",
+      "name": "fs.constants",
+      "status": "static",
+      "note": "node_constants.cc's fs group under the target libc's macros; members a platform lacks read as undefined"
     },
     {
       "id": "node-builtin.fs.copyFileSync",
@@ -1367,7 +1382,7 @@
       "name": "module.syncBuiltinESMExports",
       "status": "unsupported",
       "code": "SC2020",
-      "note": "the direct zero-argument call is a no-op because compiled builtin exports are immutable and cannot become stale"
+      "note": "the direct zero-argument call statement refreshes the ES module namespace copy of events.defaultMaxListeners, the one builtin export a program can change"
     },
     {
       "id": "node-builtin.net",
@@ -1510,6 +1525,12 @@
       "id": "node-builtin.os.release",
       "kind": "node-builtin",
       "name": "os.release",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.os.setPriority",
+      "kind": "node-builtin",
+      "name": "os.setPriority",
       "status": "static"
     },
     {
@@ -1835,6 +1856,13 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.perf_hooks.monitorEventLoopDelay",
+      "kind": "node-builtin",
+      "name": "perf_hooks.monitorEventLoopDelay",
+      "status": "static",
+      "note": "an unref'd sampling interval records the delay histogram; enable, disable, reset, percentile and the min, max, mean, stddev, count and exceeds readings are supported"
+    },
+    {
       "id": "node-builtin.perf_hooks.performance.clearMarks",
       "kind": "node-builtin",
       "name": "perf_hooks.performance.clearMarks",
@@ -1845,6 +1873,13 @@
       "kind": "node-builtin",
       "name": "perf_hooks.performance.clearMeasures",
       "status": "static"
+    },
+    {
+      "id": "node-builtin.perf_hooks.performance.eventLoopUtilization",
+      "kind": "node-builtin",
+      "name": "perf_hooks.performance.eventLoopUtilization",
+      "status": "static",
+      "note": "active time is the main thread's CPU time since the loop started; the one- and two-argument difference forms are supported"
     },
     {
       "id": "node-builtin.perf_hooks.performance.getEntries",
@@ -1939,6 +1974,12 @@
       "note": "reads, writes, deletes, and enumeration of the process environment (the process global)"
     },
     {
+      "id": "node-builtin.process.execArgv",
+      "kind": "node-builtin",
+      "name": "process.execArgv",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.process.execPath",
       "kind": "node-builtin",
       "name": "process.execPath",
@@ -1956,7 +1997,7 @@
       "kind": "node-builtin",
       "name": "process.exitCode",
       "status": "static",
-      "note": "numeric writes in statement position set the implicit exit status; process.exit() reads it"
+      "note": "numeric writes in statement position set the implicit exit status; reads answer the assigned code or undefined; process.exit() reads it"
     },
     {
       "id": "node-builtin.process.getBuiltinModule",
@@ -2096,6 +2137,56 @@
       "note": "shared version dictionary containing node and openssl; other components are absent unless defined by the program"
     },
     {
+      "id": "node-builtin.punycode",
+      "kind": "node-builtin",
+      "name": "punycode",
+      "status": "static",
+      "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
+      "id": "node-builtin.punycode.decode",
+      "kind": "node-builtin",
+      "name": "punycode.decode",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.punycode.encode",
+      "kind": "node-builtin",
+      "name": "punycode.encode",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.punycode.toASCII",
+      "kind": "node-builtin",
+      "name": "punycode.toASCII",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.punycode.toUnicode",
+      "kind": "node-builtin",
+      "name": "punycode.toUnicode",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.punycode.ucs2.decode",
+      "kind": "node-builtin",
+      "name": "punycode.ucs2.decode",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.punycode.ucs2.encode",
+      "kind": "node-builtin",
+      "name": "punycode.ucs2.encode",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.punycode.version",
+      "kind": "node-builtin",
+      "name": "punycode.version",
+      "status": "static",
+      "note": "constant value read"
+    },
+    {
       "id": "node-builtin.querystring",
       "kind": "node-builtin",
       "name": "querystring",
@@ -2190,6 +2281,13 @@
       "id": "node-builtin.stream.promises",
       "kind": "node-builtin",
       "name": "stream/promises",
+      "status": "static",
+      "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
+      "id": "node-builtin.stream.web",
+      "kind": "node-builtin",
+      "name": "stream/web",
       "status": "static",
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
@@ -2372,6 +2470,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.url.urlToHttpOptions",
+      "kind": "node-builtin",
+      "name": "url.urlToHttpOptions",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.util",
       "kind": "node-builtin",
       "name": "util",
@@ -2379,9 +2483,33 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.util._extend",
+      "kind": "node-builtin",
+      "name": "util._extend",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.aborted",
+      "kind": "node-builtin",
+      "name": "util.aborted",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.util.callbackify",
       "kind": "node-builtin",
       "name": "util.callbackify",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.convertProcessSignalToExitCode",
+      "kind": "node-builtin",
+      "name": "util.convertProcessSignalToExitCode",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.debounce",
+      "kind": "node-builtin",
+      "name": "util.debounce",
       "status": "static"
     },
     {
@@ -2400,6 +2528,12 @@
       "id": "node-builtin.util.deprecate",
       "kind": "node-builtin",
       "name": "util.deprecate",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.diff",
+      "kind": "node-builtin",
+      "name": "util.diff",
       "status": "static"
     },
     {
@@ -2427,6 +2561,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.util.isArray",
+      "kind": "node-builtin",
+      "name": "util.isArray",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.util.isDeepStrictEqual",
       "kind": "node-builtin",
       "name": "util.isDeepStrictEqual",
@@ -2450,7 +2590,7 @@
       "name": "util.promisify",
       "status": "unsupported",
       "code": "SC2020",
-      "note": "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots and the fs callback functions with an fs/promises counterpart; call the bound function directly"
+      "note": "the lowered shapes are const bindings over child_process.execFile, child_process.exec, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions, dns.lookup, dns.lookupService and the fs callback functions with an fs/promises counterpart, plus typed callback-last function values whose callback takes (error?: Error | null, value?); call the bound function directly"
     },
     {
       "id": "node-builtin.util.stripVTControlCharacters",
@@ -2462,6 +2602,12 @@
       "id": "node-builtin.util.styleText",
       "kind": "node-builtin",
       "name": "util.styleText",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.throttle",
+      "kind": "node-builtin",
+      "name": "util.throttle",
       "status": "static"
     },
     {
@@ -2502,9 +2648,63 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.util.types.isBigInt64Array",
+      "kind": "node-builtin",
+      "name": "util/types.isBigInt64Array",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isBigIntObject",
+      "kind": "node-builtin",
+      "name": "util/types.isBigIntObject",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isBigUint64Array",
+      "kind": "node-builtin",
+      "name": "util/types.isBigUint64Array",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isBooleanObject",
+      "kind": "node-builtin",
+      "name": "util/types.isBooleanObject",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isBoxedPrimitive",
+      "kind": "node-builtin",
+      "name": "util/types.isBoxedPrimitive",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isCryptoKey",
+      "kind": "node-builtin",
+      "name": "util/types.isCryptoKey",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.util.types.isDataView",
       "kind": "node-builtin",
       "name": "util/types.isDataView",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isDate",
+      "kind": "node-builtin",
+      "name": "util/types.isDate",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isExternal",
+      "kind": "node-builtin",
+      "name": "util/types.isExternal",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isFloat16Array",
+      "kind": "node-builtin",
+      "name": "util/types.isFloat16Array",
       "status": "static"
     },
     {
@@ -2550,15 +2750,33 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.util.types.isKeyObject",
+      "kind": "node-builtin",
+      "name": "util/types.isKeyObject",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.util.types.isMap",
       "kind": "node-builtin",
       "name": "util/types.isMap",
       "status": "static"
     },
     {
+      "id": "node-builtin.util.types.isMapIterator",
+      "kind": "node-builtin",
+      "name": "util/types.isMapIterator",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.util.types.isNativeError",
       "kind": "node-builtin",
       "name": "util/types.isNativeError",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isNumberObject",
+      "kind": "node-builtin",
+      "name": "util/types.isNumberObject",
       "status": "static"
     },
     {
@@ -2583,6 +2801,30 @@
       "id": "node-builtin.util.types.isSet",
       "kind": "node-builtin",
       "name": "util/types.isSet",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isSetIterator",
+      "kind": "node-builtin",
+      "name": "util/types.isSetIterator",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isSharedArrayBuffer",
+      "kind": "node-builtin",
+      "name": "util/types.isSharedArrayBuffer",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isStringObject",
+      "kind": "node-builtin",
+      "name": "util/types.isStringObject",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.types.isSymbolObject",
+      "kind": "node-builtin",
+      "name": "util/types.isSymbolObject",
       "status": "static"
     },
     {
@@ -2628,6 +2870,19 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.v8",
+      "kind": "node-builtin",
+      "name": "v8",
+      "status": "static",
+      "note": "recognized module (bare and node:-prefixed specifiers)"
+    },
+    {
+      "id": "node-builtin.v8.getHeapStatistics",
+      "kind": "node-builtin",
+      "name": "v8.getHeapStatistics",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.worker_threads",
       "kind": "node-builtin",
       "name": "worker_threads",
@@ -2668,22 +2923,6 @@
       "name": "zlib",
       "status": "static",
       "note": "recognized module (bare and node:-prefixed specifiers)"
-    },
-    {
-      "id": "node-builtin.zlib.BrotliCompress",
-      "kind": "node-builtin",
-      "name": "zlib.BrotliCompress",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
-    },
-    {
-      "id": "node-builtin.zlib.BrotliDecompress",
-      "kind": "node-builtin",
-      "name": "zlib.BrotliDecompress",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
     },
     {
       "id": "node-builtin.zlib.DEFLATE",
@@ -3438,33 +3677,25 @@
       "id": "node-builtin.zlib.brotliCompress",
       "kind": "node-builtin",
       "name": "zlib.brotliCompress",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
+      "status": "static"
     },
     {
       "id": "node-builtin.zlib.brotliCompressSync",
       "kind": "node-builtin",
       "name": "zlib.brotliCompressSync",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
+      "status": "static"
     },
     {
       "id": "node-builtin.zlib.brotliDecompress",
       "kind": "node-builtin",
       "name": "zlib.brotliDecompress",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
+      "status": "static"
     },
     {
       "id": "node-builtin.zlib.brotliDecompressSync",
       "kind": "node-builtin",
       "name": "zlib.brotliDecompressSync",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
+      "status": "static"
     },
     {
       "id": "node-builtin.zlib.crc32",
@@ -3476,17 +3707,13 @@
       "id": "node-builtin.zlib.createBrotliCompress",
       "kind": "node-builtin",
       "name": "zlib.createBrotliCompress",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
+      "status": "static"
     },
     {
       "id": "node-builtin.zlib.createBrotliDecompress",
       "kind": "node-builtin",
       "name": "zlib.createBrotliDecompress",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
+      "status": "static"
     },
     {
       "id": "node-builtin.zlib.createDeflate",
@@ -3919,7 +4146,7 @@
       "kind": "stdlib",
       "name": "Date constructor",
       "status": "static",
-      "note": "zero arguments, or one milliseconds/date-string argument; values are the read-only TimeClip scalar slice"
+      "note": "zero arguments, one milliseconds/date-string argument, or local-time year/month fields; values are the read-only TimeClip scalar slice"
     },
     {
       "id": "stdlib.date.getDate",
@@ -4042,7 +4269,20 @@
       "kind": "stdlib",
       "name": "Date.parse",
       "status": "static",
-      "note": "one date string, using the bounded parser shared with new Date(dateString).getTime()"
+      "note": "one date string, using V8's date parser shared with new Date(dateString)"
+    },
+    {
+      "id": "stdlib.date.setters",
+      "kind": "stdlib",
+      "name": "Date.prototype setters",
+      "status": "static",
+      "note": "setTime and the local and UTC field setters, with their optional arguments"
+    },
+    {
+      "id": "stdlib.date.toDateString",
+      "kind": "stdlib",
+      "name": "Date.prototype.toDateString",
+      "status": "static"
     },
     {
       "id": "stdlib.date.toISOString",
@@ -4050,6 +4290,26 @@
       "name": "Date.prototype.toISOString",
       "status": "static",
       "note": "UTC ISO formatting over constructed and stored Date values"
+    },
+    {
+      "id": "stdlib.date.toString",
+      "kind": "stdlib",
+      "name": "Date.prototype.toString",
+      "status": "static",
+      "note": "local time with the host zone's long English name; String(date) and template literals use it"
+    },
+    {
+      "id": "stdlib.date.toTimeString",
+      "kind": "stdlib",
+      "name": "Date.prototype.toTimeString",
+      "status": "static"
+    },
+    {
+      "id": "stdlib.date.toUTCString",
+      "kind": "stdlib",
+      "name": "Date.prototype.toUTCString",
+      "status": "static",
+      "note": "RFC 7231 IMF-fixdate formatting over stored Date values"
     },
     {
       "id": "stdlib.date.valueOf",
@@ -4299,7 +4559,7 @@
       "kind": "stdlib",
       "name": "Map.prototype.entries",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.map.forEach",
@@ -4324,7 +4584,7 @@
       "kind": "stdlib",
       "name": "Map.prototype.keys",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.map.set",
@@ -4337,7 +4597,7 @@
       "kind": "stdlib",
       "name": "Map.prototype.values",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.math.E",
@@ -4501,6 +4761,13 @@
       "note": "compiles statically at arity 1; other declared call shapes are refused with SC2012"
     },
     {
+      "id": "stdlib.math.f16round",
+      "kind": "stdlib",
+      "name": "Math.f16round",
+      "status": "static",
+      "note": "compiles statically at arity 1; other declared call shapes are refused with SC2012"
+    },
+    {
       "id": "stdlib.math.floor",
       "kind": "stdlib",
       "name": "Math.floor",
@@ -4651,8 +4918,8 @@
       "id": "stdlib.number.toPrecision",
       "kind": "stdlib",
       "name": "number.prototype.toPrecision",
-      "status": "unsupported",
-      "code": "SC2012"
+      "status": "static",
+      "note": "the lowered call form takes 0 to 1 arguments"
     },
     {
       "id": "stdlib.number.toString",
@@ -5121,9 +5388,8 @@
       "id": "stdlib.response.static.json",
       "kind": "stdlib",
       "name": "Response.json",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.0 / Undici 7.29.1; Response static constructor-object operations have no compiler lowering"
+      "status": "static",
+      "note": "Node 24.22.0 / Undici 7.29.1; facets: webidl-conversion, error-shape; supported scope: data that crosses the checked-dynamic boundary, serialized with JSON.stringify (toJSON hooks included); ResponseInit as for the constructor; differential evidence: fixture:static-response-json"
     },
     {
       "id": "stdlib.response.static.redirect",
@@ -5199,7 +5465,7 @@
       "kind": "stdlib",
       "name": "Set.prototype.entries",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.set.forEach",
@@ -5246,7 +5512,7 @@
       "kind": "stdlib",
       "name": "Set.prototype.keys",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.set.symmetricDifference",
@@ -5267,7 +5533,7 @@
       "kind": "stdlib",
       "name": "Set.prototype.values",
       "status": "static",
-      "note": "live native iterators support next(), for...of, and drains; iterator helper methods are refused"
+      "note": "live native iterators support next(), for...of, drains, and the iterator helper methods"
     },
     {
       "id": "stdlib.sharedArrayBuffer",
@@ -5457,6 +5723,27 @@
       "name": "string.prototype.trimStart",
       "status": "static",
       "note": "the lowered call form takes no arguments"
+    },
+    {
+      "id": "stdlib.webassembly",
+      "kind": "stdlib",
+      "name": "globalThis.WebAssembly",
+      "status": "static",
+      "note": "compile, instantiate, validate, the Module, Instance, Memory, Table and Global constructors, Module.imports, exports and customSections, instanceof, the error classes, exports, imports and Module transfer to workers, over the modules translated at build time; the rest refuses with SC2020 (the streaming functions, Tag and Exception, and the classes used as values other than with new and instanceof are planned; 'scriptc coverage' lists the modules this program loads (https://scriptc.dev/limitations))"
+    },
+    {
+      "id": "stdlib.webcrypto.CryptoKey",
+      "kind": "stdlib",
+      "name": "CryptoKey",
+      "status": "static",
+      "note": "secret HMAC, AES, PBKDF2 and HKDF keys with type, extractable, algorithm and usages, and instanceof CryptoKey"
+    },
+    {
+      "id": "stdlib.webcrypto.subtle",
+      "kind": "stdlib",
+      "name": "globalThis.crypto.subtle",
+      "status": "static",
+      "note": "importKey, generateKey and exportKey (raw and jwk) for HMAC and AES keys, importKey for PBKDF2 and HKDF keys, AES-GCM, AES-CBC and AES-CTR encrypt and decrypt, wrapKey and unwrapKey of secret keys with AES-KW or those ciphers, PBKDF2 and HKDF deriveBits and deriveKey, HMAC sign and verify, generateKey, importKey, exportKey, sign and verify for ECDSA, Ed25519, RSASSA-PKCS1-v1_5 and RSA-PSS, and SHA-1/SHA-2 digest; other methods, algorithms and key formats are refused"
     },
     {
       "id": "syntax.async-generators",

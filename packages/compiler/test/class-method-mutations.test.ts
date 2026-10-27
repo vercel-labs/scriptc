@@ -87,3 +87,127 @@ test("an asserted string key keeps checked dispatch", async () => {
   );
   expect(await callersOf(source, "%dyn.class.properties")).not.toEqual([]);
 });
+
+const tally = `
+class Tally {
+  n = 0;
+  add(): void { this.n++; }
+}
+function entry(target: object, key: string, value: number): TYPE {
+  return LITERAL;
+}
+const tally = new Tally();
+tally.add();
+console.log(tally.n, Object.keys(entry(tally, String(tally.n), 2)));
+`;
+
+test("a computed key in an object literal leaves method calls direct", async () => {
+  const source = tally
+    .replace("TYPE", "Record<string, number>")
+    .replace("LITERAL", "{ [key]: value }");
+  expect(await callersOf(source, "%dyn.class.properties")).toEqual([]);
+});
+
+test("a computed key in an Object.assign source keeps checked dispatch", async () => {
+  const source = tally
+    .replace("TYPE", "object")
+    .replace("LITERAL", "Object.assign(target, { [key]: value })");
+  expect(await callersOf(source, "%dyn.class.properties")).not.toEqual([]);
+});
+
+const range = `
+class Range {
+  hi: number;
+  constructor(hi: number) { this.hi = hi; }
+  *[Symbol.iterator](): Generator<number> { for (let i = 0; i < this.hi; i++) yield i; }
+}
+const r = new Range(3);
+console.log(r[Symbol.iterator]().next().value);
+`;
+
+test("a well-known symbol method call lowers to the class's method", async () => {
+  expect(await callersOf(range, "%Range.sym:iterator")).not.toEqual([]);
+});
+
+test("a reflection call with a well-known symbol key keeps checked dispatch", async () => {
+  const write = "Object.defineProperty(r, Symbol.iterator, { value: function* () {} });\n";
+  // The checked path reads the declared method through its value thunk.
+  const callers = await callersOf(`${range}${write}`, "%Range.sym:iterator");
+  expect(callers.filter((name) => !name.startsWith("%method.value:"))).toEqual([]);
+});
+
+const dictionaries = `
+class Counter {
+  n = 0;
+  add(): number { return ++this.n; }
+}
+interface Settings { groups: Record<string, Record<string, string>> }
+interface Tree { [key: string]: Tree }
+function addGroup(settings: Settings, name: string): void {
+  settings.groups[name] = {};
+}
+function grow(tree: Tree, name: string): void {
+  tree[name] = {};
+}
+const settings: Settings = { groups: {} };
+addGroup(settings, "colours");
+grow({}, "a");
+const counter = new Counter();
+console.log(counter.add(), Object.keys(settings.groups));
+`;
+
+test("a store into a dictionary of dictionaries leaves method calls direct", async () => {
+  expect(await callersOf(dictionaries, "%dyn.class.properties")).toEqual([]);
+});
+
+test("a store into a dictionary whose values can be functions keeps checked dispatch", async () => {
+  const source = dictionaries.replace(
+    "Record<string, Record<string, string>>",
+    "Record<string, Record<string, string> | (() => number)>",
+  );
+  expect(await callersOf(source, "%dyn.class.properties")).not.toEqual([]);
+});
+
+test("a store into a generic dictionary of dictionaries keeps checked dispatch", async () => {
+  const source = dictionaries
+    .replace(
+      "interface Settings { groups: Record<string, Record<string, string>> }",
+      "interface Settings<T> { groups: Record<string, Record<string, T>> }",
+    )
+    .replace("function addGroup(settings: Settings,", "function addGroup<T>(settings: Settings<T>,")
+    .replace("const settings: Settings =", "const settings: Settings<string> =");
+  expect(await callersOf(source, "%dyn.class.properties")).not.toEqual([]);
+});
+
+test("a runtime-key store into a dictionary view of a class instance keeps checked dispatch", async () => {
+  const source = `
+class Counter {
+  n = 0;
+  tick(): number { return ++this.n; }
+}
+const counter = new Counter();
+const view: {} = counter;
+const slots: Record<string, string> = view;
+const key: string = String(process.argv.length);
+slots[key] = "replaced";
+console.log(counter.tick());
+`;
+  // The method has a slot the write can replace, which calls consult.
+  expect(await callersOf(source, "%Counter.tick")).toContain("%method.value:%Counter.tick");
+});
+
+test("a dot store into a dictionary view of a class instance keeps checked dispatch", async () => {
+  const source = `
+class Lamp {
+  on = false;
+  toggle(): boolean { this.on = !this.on; return this.on; }
+}
+const lamp = new Lamp();
+const view: {} = lamp;
+const slots: Record<string, string> = view;
+slots.toggle = "replaced";
+console.log(lamp.toggle());
+`;
+  // The method has a slot the write can replace, which calls consult.
+  expect(await callersOf(source, "%Lamp.toggle")).toContain("%method.value:%Lamp.toggle");
+});

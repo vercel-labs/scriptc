@@ -21,6 +21,6 @@ contract-int32-escapes.ts:16:1 - error SC7002: the value stored into 'Box.size' 
   15 | const loose: any = box;
   16 | loose.size = 0.5;
      | ^~~~~~~~~~~~~~~~
-  17 | console.log([1.5, 2].map(double).join(","), box.size);
+  17 | const pick: (x: number) => number = double;
 
   hint: make the int32 conversion explicit, for example 'loose.size = 0.5 | 0', so Node computes the same value

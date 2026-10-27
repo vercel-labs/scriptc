@@ -12,6 +12,12 @@ ScrMessage *scr_message_encode(const ScrDyn *value);
  * message (a port in the value that is not listed throws DataCloneError);
  * transfer is NULL or a dyn array. */
 ScrMessage *scr_message_encode_transfer(const ScrDyn *value, const ScrDyn *transfer);
+/* A worker's uncaught exception, as Node's error serializer sends it: an
+ * Error keeps the nearest of Error and its six native subclasses, and its
+ * name, message and other data properties (functions and symbols aside)
+ * with their enumerability, own or inherited; its cause encodes the same
+ * way. Other values encode as scr_message_encode encodes them. */
+ScrMessage *scr_message_encode_uncaught(const ScrDyn *value);
 
 /* MessagePort transfer, installed by the worker events unit: channel_of
  * answers a channel port's end (+1 channel; NULL for other values, side

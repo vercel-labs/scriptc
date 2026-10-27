@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/webassembly-type-mentions.ts"
+ ],
+ "diags": []
+}

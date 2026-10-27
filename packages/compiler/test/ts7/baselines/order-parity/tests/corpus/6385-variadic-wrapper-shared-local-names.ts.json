@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6385-variadic-wrapper-shared-local-names.ts"
+ ],
+ "diags": []
+}

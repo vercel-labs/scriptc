@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5993-array-length-loop-resizing.ts"
+ ],
+ "diags": []
+}

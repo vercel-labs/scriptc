@@ -29,4 +29,22 @@ export function indexedUnicode(): number {
   return s.length + s.charCodeAt(n) + s.slice(n - 1, n + 2).length;
 }
 
+// A symbol-keyed global access creates the global object before any read of
+// `globalThis` in a session: the builtin names must still be fenced on the
+// stored global object, in every session.
+const probeKey = Symbol.for("scriptc.reinit");
+function stored(global: typeof globalThis): any {
+  return global;
+}
+export function globalFences(): string {
+  // @ts-expect-error: globalThis has no symbol index signature
+  const before: unknown = globalThis[probeKey];
+  const view = stored(globalThis);
+  try {
+    return `${typeof before} ${typeof view.Reflect}`;
+  } catch {
+    return `${typeof before} fenced`;
+  }
+}
+
 console.log(`session start counter=${counter}`);

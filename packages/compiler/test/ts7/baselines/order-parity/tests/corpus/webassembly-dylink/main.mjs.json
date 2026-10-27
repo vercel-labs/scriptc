@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/webassembly-dylink/extensions.js",
+  "<repo>/tests/corpus/webassembly-dylink/main.mjs"
+ ],
+ "diags": []
+}

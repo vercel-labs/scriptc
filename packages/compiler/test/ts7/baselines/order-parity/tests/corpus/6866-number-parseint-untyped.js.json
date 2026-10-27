@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6866-number-parseint-untyped.js"
+ ],
+ "diags": []
+}

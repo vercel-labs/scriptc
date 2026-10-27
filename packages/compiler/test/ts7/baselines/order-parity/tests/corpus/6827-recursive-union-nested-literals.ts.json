@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6827-recursive-union-nested-literals.ts"
+ ],
+ "diags": []
+}

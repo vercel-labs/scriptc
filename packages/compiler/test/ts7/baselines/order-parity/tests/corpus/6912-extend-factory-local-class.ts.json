@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6912-extend-factory-local-class.ts"
+ ],
+ "diags": []
+}

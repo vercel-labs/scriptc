@@ -1,3 +1,18 @@
-`WeakMap` and `WeakSet` accept checked native objects and arrays, functions, numeric typed arrays, ArrayBuffers, native weak collections, and typed records, arrays, tuples, and classes that preserve identity through checked storage. Copied values, other native handles, and symbol keys are unsupported. Constructor seeds support arrays; custom iterators and detached methods are unsupported. Weak collections do not retain their keys, but values that refer back to a key can keep it alive until deletion or collection release.
+`WeakMap` and `WeakSet` accept checked native objects and arrays, functions, numeric typed arrays, ArrayBuffers, native weak collections, and typed records, arrays, tuples, and classes that preserve identity through checked storage.
+Copied values, other native handles, and symbol keys are unsupported.
+Constructor seeds support arrays; custom iterators and detached methods are unsupported.
+Weak collections do not retain their keys, but values that refer back to a key can keep it alive until deletion or collection release.
 
-Memory uses reference counting. Acyclic values are freed deterministically, and cycles are collected at defined collection points. Native checked objects, arrays, Sets, and captured closures participate in cycle collection. Cycles through opaque native capsules can remain allocated.
+`FinalizationRegistry` keeps its registrations: `register` and `unregister` check their arguments and answer as in Node.js.
+Its cleanup callbacks never run, which the ECMAScript specification allows.
+Program output matches Node.js, which runs cleanup callbacks only when its garbage collector decides to.
+Memory that a package frees only from a cleanup callback is not reclaimed until the program exits.
+For example, a wasm-bindgen package frees the WebAssembly memory behind a wrapper object from its cleanup callback, so a long-running server that drops such wrappers without calling their `free()` method keeps that memory.
+Call `free()` on wrappers the program no longer needs.
+Symbol targets and unregister tokens are unsupported.
+`WeakRef` is unsupported.
+
+Memory uses reference counting.
+Acyclic values are freed deterministically, and cycles are collected at defined collection points.
+Native checked objects, arrays, Sets, and captured closures participate in cycle collection.
+Cycles through opaque native capsules can remain allocated.

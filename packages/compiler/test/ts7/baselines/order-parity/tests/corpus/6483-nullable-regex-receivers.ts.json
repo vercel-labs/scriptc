@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6483-nullable-regex-receivers.ts"
+ ],
+ "diags": []
+}

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, beforeAll, expect, test } from "vitest";
 import type { SourceFile, Node } from "typescript/unstable/ast";
-import { AstFile, AstNode } from "./ast-node.js";
+import { AstFile, AstNode, AstNodeList } from "./ast-node.js";
 import {
   AstKind,
   KIND_NODE_LIST,
@@ -20,7 +20,13 @@ import { walkPreorder } from "./ast.js";
 import { ts7Executable } from "./rpc-api.js";
 import { Ts7RpcClient } from "./rpc-client.js";
 import { spawnTs7Wire } from "./rpc-process.js";
-import { isJSDocTypeLiteral, isJSDocPropertyTag } from "./ast-guards.generated.js";
+import {
+  isArrayLiteralExpression,
+  isCallExpression,
+  isJSDocTypeLiteral,
+  isJSDocPropertyTag,
+} from "./ast-guards.generated.js";
+import { ModifierFlags, SyntaxKind } from "./enums.js";
 
 const require = createRequire(import.meta.url);
 const sdkRoot = dirname(require.resolve("typescript/package.json"));
@@ -95,6 +101,10 @@ const cases: Record<string, string> = {
     '/** @typedef {Object} Options\n * @property {string} name\n * @property {number} count\n */\n/** @type {Options} */ const options = { name: "x", count: 2 };',
   "missing.ts": "const incomplete = ;\nfunction f( {\n",
   "empty.ts": "",
+  "targets.ts":
+    "let x: number | undefined = 1;\nconst a = [1];\n(x) = 2;\nx! = 3;\na[0]! += 1;\n(a[0])!++;\n--(x!);\nfor ((x) of a) {}\nconst y = (x!) + 1;\n",
+  "lists.ts":
+    "const trailing = [1, 2 /* last */, ];\nconst plain = [1, 2];\nf(1, 2,);\nexport abstract class Flags { protected static readonly value = 1; }\n",
 };
 const decoded = new Map<string, { file: AstFile; oracle: OracleFile; bytes: Uint8Array }>();
 let directory: string;
@@ -158,6 +168,82 @@ function ids(
 ): (number | undefined)[] | undefined {
   return nodes?.map((n) => (n as OracleNode).index);
 }
+
+test("generated child getters select the child their name selects", () => {
+  // These getters adapt their raw child; their slot functions are compared instead.
+  const adapted = ["body", "initializer", "left", "modifiers", "operand", "questionToken"];
+  const names = [...new Set(Object.values(childProperties).flat())];
+  const lists = (value: unknown): unknown => (value instanceof AstNodeList ? value.nodes : value);
+  let compared = 0;
+  for (const { file } of decoded.values()) {
+    walkPreorder(file.root, (node) => {
+      const view = node as unknown as Record<string, unknown>;
+      for (const name of names) {
+        if (adapted.includes(name)) {
+          const slot = (view[`${name}Slot`] as () => number).call(node);
+          expect(slot, `${node.kind}.${name}`).toBe(astChildOrder(node.kind, name));
+        } else {
+          expect(lists(view[name]), `${node.kind}.${name}`).toBe(lists(node.child(name)));
+        }
+        compared++;
+      }
+      return undefined;
+    });
+  }
+  expect(compared).toBeGreaterThan(100_000);
+});
+
+test("the writeTargets option answers write targets without their wrappers", () => {
+  const { bytes, file: plain } = decoded.get("targets.ts")!;
+  const file = new AstFile(bytes, undefined, { writeTargets: true });
+  const statements = (root: AstNode) =>
+    (root.childList("statements") as AstNodeList).nodes.map((statement) =>
+      statement.kind === SyntaxKind.ExpressionStatement ? statement.expression : statement,
+    );
+  const text = (node: AstNode | undefined) => node?.getText();
+  const writes = statements(file.root);
+  const raw = statements(plain.root);
+  // Assignment left sides, update operands and a for-of head.
+  const targets = [writes[2]!.left, writes[3]!.left, writes[4]!.left, writes[5]!.operand];
+  expect(targets.map(text)).toEqual(["x", "x", "a[0]", "a[0]"]);
+  expect(text(writes[6]!.operand)).toBe("x");
+  expect(text(writes[7]!.initializer)).toBe("x");
+  for (const [index, target] of targets.entries())
+    expect(target!.parent, `target ${index}`).toBe(writes[index + 2]);
+  expect(writes[7]!.initializer!.parent).toBe(writes[7]);
+  // The reference keeps its own source span.
+  expect(writes[4]!.left!.getStart()).toBe(raw[4]!.left!.getStart());
+  expect(writes[4]!.left!.end).toBe(raw[4]!.left!.end - 1);
+  // A wrapper outside a write target is kept.
+  const init = (writes[8]!.childNode("declarationList")!.childList("declarations") as AstNodeList)
+    .nodes[0]!.initializer!;
+  expect(text(init.left)).toBe("(x!)");
+  expect(init.left!.kind).toBe(SyntaxKind.ParenthesizedExpression);
+  // Without the option, the file is TypeScript's exact tree.
+  expect(raw[3]!.left!.kind).toBe(SyntaxKind.NonNullExpression);
+  expect(raw[2]!.left!.kind).toBe(SyntaxKind.ParenthesizedExpression);
+  expect(raw[5]!.operand!.kind).toBe(SyntaxKind.NonNullExpression);
+});
+
+test("node lists report a trailing comma and modifier lists their flags", () => {
+  const { file } = decoded.get("lists.ts")!;
+  const lists: [SyntaxKind, boolean][] = [];
+  const modifiers: number[] = [];
+  walkPreorder(file.root, (node) => {
+    if (isArrayLiteralExpression(node)) lists.push([node.kind, node.elements.hasTrailingComma()]);
+    if (isCallExpression(node)) lists.push([node.kind, node.arguments.hasTrailingComma()]);
+    if (node.modifiers !== undefined) modifiers.push(node.modifiers.modifierFlags);
+  });
+  expect(lists).toEqual([
+    [SyntaxKind.ArrayLiteralExpression, true],
+    [SyntaxKind.ArrayLiteralExpression, false],
+    [SyntaxKind.CallExpression, true],
+  ]);
+  expect(modifiers).toEqual([
+    ModifierFlags.Export | ModifierFlags.Abstract,
+    ModifierFlags.Protected | ModifierFlags.Static | ModifierFlags.Readonly,
+  ]);
+});
 
 test("JSDoc property refinements describe the pinned native wire", () => {
   const { file, oracle } = decoded.get("properties.js")!;
@@ -229,11 +315,15 @@ for (const name of [...Object.keys(cases), "model.ts"]) {
       expect(node.getLeadingTriviaWidth()).toBe(expected.getLeadingTriviaWidth());
       expect(ids(node.jsDoc)).toEqual(ids(expected.jsDoc));
       for (const property of astChildNames(node.kind).split(",").filter(Boolean)) {
-        const actual = Reflect.get(node, property) as AstNode | AstNode[] | undefined;
+        const actual = Reflect.get(node, property) as AstNode | AstNodeList | undefined;
         const reference = Reflect.get(expected, property) as OracleNode | OracleNode[] | undefined;
         if (Array.isArray(reference)) {
-          expect(ids(actual as AstNode[]), `${name}:${index}.${property}`).toEqual(ids(reference));
-          expect(Reflect.get(node, property)).toBe(actual);
+          expect(ids((actual as AstNodeList).nodes), `${name}:${index}.${property}`).toEqual(
+            ids(reference),
+          );
+          expect((Reflect.get(node, property) as AstNodeList).nodes).toBe(
+            (actual as AstNodeList).nodes,
+          );
         } else {
           expect((actual as AstNode | undefined)?.index, `${name}:${index}.${property}`).toBe(
             reference?.index,
@@ -256,7 +346,7 @@ for (const name of [...Object.keys(cases), "model.ts"]) {
       node.forEachChild(
         () => 0,
         (list) => {
-          actualLists.push(list.map((n) => n.index));
+          actualLists.push(list.nodes.map((n) => n.index));
           return 0;
         },
       );
@@ -322,7 +412,7 @@ test("checker handles reject cross-file, wrong-kind and nil identities", () => {
 
 test("direct node slots preserve lazy parents, identity and invalid-index checks", () => {
   let materialized = 0;
-  const file = new AstFile(decoded.get("main.ts")!.bytes, undefined, () => {
+  const file = new AstFile(decoded.get("main.ts")!.bytes, () => {
     materialized++;
   });
   let index = file.wire.nodeCount - 1;
@@ -347,7 +437,7 @@ test("direct node slots preserve lazy parents, identity and invalid-index checks
 
 test("named child access shares node and list identities without materializing siblings", () => {
   let materialized = 0;
-  const file = new AstFile(decoded.get("main.ts")!.bytes, undefined, () => {
+  const file = new AstFile(decoded.get("main.ts")!.bytes, () => {
     materialized++;
   });
   let index = 1;
@@ -366,9 +456,11 @@ test("named child access shares node and list identities without materializing s
   expect(node.child("__proto__")).toBeUndefined();
   expect(node.childList("typeParameters")).toBeUndefined();
   const parameters = node.childList("parameters");
-  expect(parameters?.map((parameter) => parameter.index)).toEqual(file.wire.list(paramsIndex));
-  expect(node.child("parameters")).toBe(parameters);
-  expect(node.parameters).toBe(parameters);
+  expect(parameters?.nodes.map((parameter) => parameter.index)).toEqual(
+    file.wire.list(paramsIndex),
+  );
+  expect((node.child("parameters") as AstNodeList | undefined)?.nodes).toBe(parameters?.nodes);
+  expect(node.parameters?.nodes).toBe(parameters?.nodes);
   const body = node.childNode("body");
   expect(body?.index).toBe(bodyIndex);
   expect(node.child("body")).toBe(body);
@@ -379,6 +471,29 @@ test("named child access shares node and list identities without materializing s
   expect(another.name?.index).toBe(nameIndex);
   expect(another.name).not.toBe(name);
   expect(() => file.namedChild(another, "name")).toThrow("another source file");
+});
+
+test("named child getters and text keep answering the first read", () => {
+  let materialized = 0;
+  const file = new AstFile(decoded.get("main.ts")!.bytes, () => {
+    materialized++;
+  });
+  let index = 1;
+  while (file.wire.kind(index) !== AstKind.FunctionDeclaration) index++;
+  const node = file.node(index);
+  const name = node.name;
+  expect(name?.index).toBe(file.wire.namedChild(index, "name"));
+  const after = materialized;
+  expect(node.name).toBe(name);
+  expect(node.childNode("name")).toBe(name);
+  expect(file.node(name!.index)).toBe(name);
+  expect(node.typeParameters).toBeUndefined();
+  expect(materialized).toBe(after);
+  const text = name!.text;
+  expect(text).toBe(file.wire.text(name!.index));
+  expect(name!.text).toBe(text);
+  expect(node.text).toBeUndefined();
+  expect(node.text).toBeUndefined();
 });
 
 test("warming a named child preserves lazy failures in later malformed sibling links", () => {
@@ -414,7 +529,7 @@ test("a source view requires a source-file root", () => {
   const nodes = words.getUint32(HEADER_OFFSET_NODES, true);
   words.setUint32(nodes + NODE_LEN, AstKind.Identifier, true);
   expect(() => new AstFile(bytes).sourceFile).toThrow("expected a source file root");
-  expect(decoded.get("empty.ts")!.file.root.statements).toEqual([]);
+  expect(decoded.get("empty.ts")!.file.root.statements?.nodes).toEqual([]);
 });
 
 test("preorder traversal preserves depth, skipped subtrees and early termination", () => {
@@ -441,6 +556,40 @@ test("preorder traversal preserves depth, skipped subtrees and early termination
     return node.kind === AstKind.ClassDeclaration ? "skip" : undefined;
   });
   expect(prefix).toEqual(expected.slice(0, 7));
+});
+
+test("preorder walks from every node match a recursive visit of every file", () => {
+  const kinds = new Set<AstNode["kind"]>([AstKind.Identifier, AstKind.JSDocTypeLiteral]);
+  for (const [name, { file, oracle }] of decoded) {
+    expect(file.wire.preorder(), name).not.toBeNull();
+    for (let index = 1; index < file.wire.nodeCount; index++) {
+      if (file.wire.kind(index) === KIND_NODE_LIST) continue;
+      const expected: [number, number][] = [];
+      const selected: [number, number][] = [];
+      const visit = (node: OracleNode, depth: number): void => {
+        expected.push([node.index, depth]);
+        if (kinds.has(node.kind)) selected.push([node.index, depth]);
+        node.forEachChild((child) => {
+          visit(child as OracleNode, depth + 1);
+        });
+      };
+      visit(oracle.getOrCreateNodeAtIndex(index), 0);
+      const actual: [number, number][] = [];
+      walkPreorder(file.node(index), (node, depth) => {
+        actual.push([node.index, depth]);
+      });
+      expect(actual, `${name}:${index}`).toEqual(expected);
+      const actualSelected: [number, number][] = [];
+      walkPreorder(
+        file.node(index),
+        (node, depth) => {
+          actualSelected.push([node.index, depth]);
+        },
+        kinds,
+      );
+      expect(actualSelected, `${name}:${index}`).toEqual(selected);
+    }
+  }
 });
 
 test("child traversal still rejects a sibling belonging to another parent", () => {
@@ -483,7 +632,7 @@ test("selective preorder preserves semantic order and depth without materializin
   };
   visit(oracle.getOrCreateNodeAtIndex(1), 0);
   let materialized = 0;
-  const file = new AstFile(bytes, undefined, () => {
+  const file = new AstFile(bytes, () => {
     materialized++;
   });
   const actual: [number, number][] = [];

@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5978-builtin-class-alias-modules/classes.ts",
+  "<repo>/tests/corpus/5978-builtin-class-alias-modules/main.ts"
+ ],
+ "diags": []
+}

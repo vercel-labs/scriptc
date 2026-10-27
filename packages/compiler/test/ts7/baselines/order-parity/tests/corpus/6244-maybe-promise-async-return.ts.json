@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6244-maybe-promise-async-return.ts"
+ ],
+ "diags": []
+}

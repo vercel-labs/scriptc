@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/regex-match-destructuring-fences.ts"
+ ],
+ "diags": []
+}

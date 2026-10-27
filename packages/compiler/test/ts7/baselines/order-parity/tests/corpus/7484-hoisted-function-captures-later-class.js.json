@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7484-hoisted-function-captures-later-class.js"
+ ],
+ "diags": []
+}

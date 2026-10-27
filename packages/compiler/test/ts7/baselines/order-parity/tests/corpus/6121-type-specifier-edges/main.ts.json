@@ -1,0 +1,10 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6121-type-specifier-edges/config.ts",
+  "<repo>/tests/corpus/6121-type-specifier-edges/config-barrel.ts",
+  "<repo>/tests/corpus/6121-type-specifier-edges/b.ts",
+  "<repo>/tests/corpus/6121-type-specifier-edges/a.ts",
+  "<repo>/tests/corpus/6121-type-specifier-edges/main.ts"
+ ],
+ "diags": []
+}

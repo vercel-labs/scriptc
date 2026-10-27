@@ -18,8 +18,10 @@ class Unrelated {
   static tag = "unrelated";
 }
 
-// Builtin classes as values: their construction is libCall-shaped.
-const E = Error;
+// Builtin classes with their own construction as values (Error and its
+// standard subclasses are values; AggregateError is not).
+const E = AggregateError;
+const errorClasses = [E];
 
 // Classes extending builtin bases as values (the error-message completion
 // rule has no thunk ABI).

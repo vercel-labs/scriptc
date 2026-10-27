@@ -1,14 +1,15 @@
-// A require whose binding IS reachable from code above it: Node would
-// throw "Cannot access 'greet' before initialization" at the helper()
-// call (the const initializes AT the require), an ordering the compiled
-// aliasing does not model — the require keeps a named SC1013 fence.
+// A var require binding that code above the require can reach: Node reads
+// undefined there (the var is hoisted, the require has not run), a value
+// the compiled module alias cannot hold — the require keeps a named SC1013
+// fence. A const or let binding compiles with an initialization check
+// instead (tests/corpus/6141-cjs-require-tdz-checked).
 'use strict';
 
 console.log('boot', helper());
-const { greet } = require('./lib.js');
+var lib = require('./lib.js');
 
 function helper() {
-  return greet('early');
+  return lib.greet('early');
 }
 
 console.log(helper());

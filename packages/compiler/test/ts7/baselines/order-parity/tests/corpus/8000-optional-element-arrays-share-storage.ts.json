@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8000-optional-element-arrays-share-storage.ts"
+ ],
+ "diags": []
+}

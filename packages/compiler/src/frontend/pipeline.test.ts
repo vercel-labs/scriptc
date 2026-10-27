@@ -14,7 +14,7 @@ const loader: ProgramLoader = () => {
   // Resource-ownership tests inject only the load fields the orchestration
   // reads. Real program loading and native execution have integration tests.
   const load = {
-    entry: { fileName: "/main.ts", text: "", statements: [] },
+    entry: { fileName: "/main.ts", text: "", statements: { pos: 0, end: 0, nodes: [] } },
     moduleOrder: [],
     dispose: vi.fn(),
   } as unknown as ReturnType<ProgramLoader>;

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/truthy-object-logical.ts"
+ ],
+ "diags": []
+}

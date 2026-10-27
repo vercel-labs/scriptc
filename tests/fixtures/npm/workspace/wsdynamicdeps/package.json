@@ -1,0 +1,10 @@
+{
+  "name": "wsdynamicdeps",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./index.ts",
+  "types": "./index.ts",
+  "dependencies": {
+    "@gtdyn/estree": "1.0.0"
+  }
+}

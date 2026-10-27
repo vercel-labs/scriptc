@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/type-patch-types-twin/main.ts"
+ ],
+ "diags": []
+}

@@ -10,12 +10,7 @@ import { everyStmtList } from "../../packages/compiler/src/ir/traverse.js";
 import { type IrModule } from "../../packages/compiler/src/ir/ir.js";
 import { analyzeInChild, compileInChild } from "./self-hosting-compiler-process.js";
 import { spawnResult } from "./spawn-result.js";
-import {
-  moduleUsesCopying,
-  moduleUsesDynInvoke,
-  moduleUsesInspect,
-  moduleUsesRegex,
-} from "../../packages/compiler/src/ir/runtime-features.js";
+import { moduleLinkFeatures } from "./link-features.js";
 import {
   emissionCases,
   emissionModule,
@@ -64,7 +59,9 @@ test("the production layout and metadata stage lowers statically", async () => {
 });
 
 for (const backend of ["llvm"] as const) {
-  test(`native LLVM layout and metadata emission (${backend})`, async () => {
+  // The sanitized dev build of the stage takes 170 to 300 s of CI time beside
+  // its shard's other tests.
+  test(`native LLVM layout and metadata emission (${backend})`, { timeout: 600_000 }, async () => {
     const dir = mkdtempSync(
       join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-native-emission-"),
     );
@@ -258,10 +255,7 @@ for (const backend of ["llvm"] as const) {
           cPath: path,
           outPath,
           sanitize,
-          inspect: moduleUsesInspect(mod),
-          dynInvoke: moduleUsesDynInvoke(mod),
-          regex: moduleUsesRegex(mod),
-          copying: moduleUsesCopying(mod),
+          ...moduleLinkFeatures(mod),
         });
         const oracle = await spawnResult(process.execPath, [sourcePath], options);
         const program = await spawnResult(outPath, [], options);

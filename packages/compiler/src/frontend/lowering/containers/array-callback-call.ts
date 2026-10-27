@@ -1,10 +1,10 @@
 import * as ts from "../../ts7/adapter.js";
+import { lowerOptionalIndex } from "../undefined-index.js";
 import { locOf } from "../../program.js";
 import { varRef } from "../../../ir/build.js";
 import { DYN, type IrExpr, type IrStmt, isUnitType } from "../../../ir/ir.js";
 import type { Lowerer } from "../lowerer.js";
 import { completeFuncValueArgs } from "../call-arguments.js";
-import { lowerOptionalNumber } from "../lower-exprs.js";
 import { lowerSafeIndexRead } from "../array-values.js";
 
 /** Retain native function slots during indexed calls. The array remains
@@ -16,7 +16,7 @@ export function lowerArrayCallbackCall(
   access: ts.ElementAccessExpression,
   array: IrExpr,
 ): IrExpr | null {
-  if (array.type.kind !== "array" || call.arguments.some(ts.isSpreadElement)) return null;
+  if (array.type.kind !== "array" || call.arguments.nodes.some(ts.isSpreadElement)) return null;
   const elem = array.type.elem;
   const arms = elem.kind === "union" ? (lowerer.unions.get(elem.unionId)?.arms ?? []) : [elem];
   const functions = arms.filter((arm) => arm.kind === "func");
@@ -37,7 +37,7 @@ export function lowerArrayCallbackCall(
     return varRef(local.id, local.type, loc);
   };
   const receiver = store(array, "%callbackArray");
-  const index = lowerOptionalNumber(
+  const index = lowerOptionalIndex(
     lowerer,
     lowerer.lowerExpr(access.argumentExpression),
     locOf(access.argumentExpression),

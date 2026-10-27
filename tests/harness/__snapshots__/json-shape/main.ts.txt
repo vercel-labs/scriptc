@@ -1,6 +1,6 @@
-json-shape/main.ts:5:8 - error SC2001: values of type '{ name: string; deprecated: null; }' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, read-only Date values, functions, classes, records, unions of those, and 'unknown')
+json-shape/main.ts:5:8 - error SC1110: comptime evaluation failed: expected 'number' at $.limit, got Infinity (only finite numbers can be written as literals)
 
-  4 |  * engine) and uses of the binding poison. */
+  4 |  * field bakes as null.) */
   5 | import bad from "./nulled.json" with { type: "json" };
     |        ^~~
   6 | 

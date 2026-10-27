@@ -50,6 +50,16 @@ interface Point extends Acyclic {
 
 type Segment = Acyclic<{ readonly from: Point; readonly to: Point; readonly label: string }>;
 
+// A generic class is acyclic like any other class.
+class Chain<T> implements Acyclic {
+  readonly value: T;
+  readonly next: Chain<T> | undefined;
+  constructor(value: T, next: Chain<T> | undefined) {
+    this.value = value;
+    this.next = next;
+  }
+}
+
 function build(depth: number): Tree {
   return depth === 0 ? new Tree(null, null, 1) : new Tree(build(depth - 1), build(depth - 1), depth);
 }
@@ -74,3 +84,15 @@ const slots: Record<string, Slot> = { a: new Slot() };
 for (let i = 0; i < 3; i++) slots["a"]!.index = (slots["a"]!.index + 2) | 0;
 slots["b"] = new Slot();
 console.log(Object.keys(slots).join(","), slots["a"]!.index, slots["b"]!.index);
+
+let numbers: Chain<number> | undefined = undefined;
+let words: Chain<string> | undefined = undefined;
+for (let i = 0; i < 1000; i++) {
+  numbers = new Chain(i, numbers);
+  words = new Chain(`w${i % 7}`, words);
+}
+let chained = 0;
+for (let c = numbers; c !== undefined; c = c.next) chained += c.value;
+let longest = "";
+for (let c = words; c !== undefined; c = c.next) if (c.value > longest) longest = c.value;
+console.log(chained, longest);

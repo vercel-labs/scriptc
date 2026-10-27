@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6101-record-get-or-create-unchecked/main.ts"
+ ],
+ "diags": []
+}

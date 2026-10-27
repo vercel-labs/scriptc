@@ -1,0 +1,7 @@
+{
+  "entry": "workloads/line-reader.ts",
+  "input": "line-reader",
+  "args": [
+    "{input}"
+  ]
+}

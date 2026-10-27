@@ -142,7 +142,7 @@ export function dynStringReceiver(
     args: [
       recv,
       { kind: "strLit", value: access.name.text, type: STRING, loc },
-      { kind: "strLit", value: access.getText(), type: STRING, loc },
+      { kind: "strLit", value: ts.getTextOfNode(access), type: STRING, loc },
     ],
     type: STRING,
     loc,

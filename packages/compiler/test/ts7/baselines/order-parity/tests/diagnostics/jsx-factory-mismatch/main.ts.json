@@ -1,0 +1,17 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/jsx-factory-mismatch/view.tsx",
+  "<repo>/tests/diagnostics/jsx-factory-mismatch/main.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Argument of type 'number' is not assignable to parameter of type 'string'. (in the call this JSX lowers to)",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/jsx-factory-mismatch/view.tsx",
+    "start": 337,
+    "end": 342
+   }
+  }
+ ]
+}

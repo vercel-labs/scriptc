@@ -1,1 +1,3 @@
-Without `@types/node`, the bundled declarations type every `req.headers` value as a string. Reading `headers["set-cookie"]` is then refused, and a `{ ...req.headers }` copy holds `set-cookie` as one string joined with `", "`, where Node holds an array. Read `headersDistinct["set-cookie"]`, or install `@types/node`, whose `headers["set-cookie"]` is `string[]`.
+Without `@types/node`, the bundled declarations type every `req.headers` value as a string.
+Reading `headers["set-cookie"]` is then refused, and a `{ ...req.headers }` copy holds `set-cookie` as one string joined with `", "`, where Node holds an array.
+Read `headersDistinct["set-cookie"]`, or install `@types/node`, whose `headers["set-cookie"]` is `string[]`.

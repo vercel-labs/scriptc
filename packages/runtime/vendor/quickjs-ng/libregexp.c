@@ -1020,7 +1020,7 @@ static int parse_class_string_disjunction(REParseState *s, REStringList *cr,
     for(;;) {
         str.size = 0;
         while (*p != '}' && *p != '|') {
-            c = get_class_atom(s, NULL, &p, false);
+            c = get_class_atom(s, NULL, &p, true);
             if (c < 0)
                 goto fail;
             if (dbuf_put_u32(&str, c)) {
@@ -1193,7 +1193,7 @@ static int get_class_atom(REParseState *s, REStringList *cr,
     case '^':
     case '`':
     case '~':
-        if (s->unicode_sets && p[1] == c) {
+        if (s->unicode_sets && inclass && p[1] == c) {
             /* forbidden double characters */
             return re_parse_error(s, "invalid class set operation in regular expression");
         }
@@ -1208,7 +1208,7 @@ static int get_class_atom(REParseState *s, REStringList *cr,
     case '/':
     case '-':
     case '|':
-        if (s->unicode_sets) {
+        if (s->unicode_sets && inclass) {
             /* invalid characters in unicode sets */
             return re_parse_error(s, "invalid character in class in regular expression");
         }

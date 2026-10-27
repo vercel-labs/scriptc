@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/ast-interp.ts",
+  "args": [
+    "5"
+  ]
+}

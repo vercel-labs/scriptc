@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/class-devirtualized-this-return.ts"
+ ],
+ "diags": []
+}

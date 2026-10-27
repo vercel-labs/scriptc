@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5609-string-switch-optional.ts"
+ ],
+ "diags": []
+}

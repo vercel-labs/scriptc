@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5838-qs-stringify-bigint.ts"
+ ],
+ "diags": []
+}

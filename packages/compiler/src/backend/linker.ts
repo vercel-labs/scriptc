@@ -7,11 +7,13 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, realpathSync, statSync } from "node:fs";
-import { mkdtemp, rename, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, stat } from "node:fs/promises";
 import { delimiter } from "node:path";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { CcCompileError, subprocessFailureDetail } from "./native/process.js";
+import { NativeCodegenError } from "./native-codegen-core.js";
+import { staticExecutableRefusal, staticLinkFailureNote, staticLinkMapArgs } from "./targets.js";
 import { nativeArtifactDependenciesStillMatch } from "./native/artifact-stamps.js";
 import { parseLinkTraceFiles } from "./native/linker-fingerprint.js";
 import {
@@ -21,6 +23,8 @@ import {
 import { type NativeArtifactDependency } from "./native/contracts.js";
 import { RuntimePackError, stageRuntimePackArtifacts } from "./runtime-pack.js";
 import type { NativeLinkPlan } from "./link-plan.js";
+import { inputsWithoutLld, lldLinkerArgs } from "./lld.js";
+import { systemLibraryLinkerArgs } from "./link-plan-core.js";
 import {
   createDarwinDebugSymbols,
   installDarwinDebugSymbols,
@@ -236,18 +240,28 @@ export async function linkNativeExecutable(
     join(dirname(plan.outputPath), ".scriptc-runtime-pack-link-"),
   );
   const privateOut = join(privateOutRoot, basename(plan.outputPath));
+  const linkMap = join(privateOutRoot, "link.map");
+  const mapArgs = staticLinkMapArgs(plan.target, plan.staticLink === true, linkMap);
   let stagedRoot: string | null = null;
   try {
     const staged = await stageRuntimePackArtifacts(plan.runtimePack);
     stagedRoot = staged.root;
-    const args = [
-      ...(explicitLinker === undefined ? plan.target.defaultLinkerArgs : []),
-      ...plan.driverFlags,
-      ...plan.inputs.map((input) => staged.replacements.get(input) ?? input),
-      ...plan.systemLibraries.map((name) => `-l${name}`),
-      "-o",
-      privateOut,
-    ];
+    // Linux links with lld when the default driver finds it.
+    const lld = explicitLinker === undefined ? lldLinkerArgs(plan.target.platform, linker) : [];
+    const linkArgs = (withLld: boolean): string[] => {
+      const inputs = plan.inputs.map((input) => staged.replacements.get(input) ?? input);
+      return [
+        ...(explicitLinker === undefined ? plan.target.defaultLinkerArgs : []),
+        ...(withLld ? lld : []),
+        ...plan.driverFlags,
+        ...mapArgs,
+        ...(withLld ? inputs : inputsWithoutLld(plan.target.platform, inputs)),
+        ...systemLibraryLinkerArgs(plan.target, plan.systemLibraries),
+        "-o",
+        privateOut,
+      ];
+    };
+    const args = linkArgs(lld.length !== 0);
     // The pack snapshots bracket both verification passes and private staging;
     // the program-object snapshot begins before helper emission. Snapshot the
     // remaining cache-bearing inputs before the linker consumes them, then
@@ -276,9 +290,18 @@ export async function linkNativeExecutable(
               ...(await snapshotDependencies([...toolchain, ...additionalDependencyPaths])),
             ])
             .catch(() => null);
-    await execFileAsync(linker, args);
+    await execFileAsync(linker, args).catch(async (error: unknown) => {
+      // A failed link with lld runs again with the driver's default linker,
+      // whose error (if any) is the one reported.
+      if (lld.length === 0) throw error;
+      await execFileAsync(linker, linkArgs(false));
+    });
     const output = await stat(privateOut);
     if (!output.isFile() || output.size === 0) throw new Error("linker produced no executable");
+    if (mapArgs.length !== 0) {
+      const refusal = staticExecutableRefusal(plan.target, true, await readFile(linkMap, "utf8"));
+      if (refusal !== null) throw new NativeCodegenError("SC3002", refusal);
+    }
     if (plan.darwinDebugSymbols) {
       await createDarwinDebugSymbols(privateOut);
       await installDarwinDebugSymbols(await readDarwinDebugSymbols(privateOut), plan.outputPath);
@@ -298,12 +321,18 @@ export async function linkNativeExecutable(
       await options.onArtifactReady({ dependencies: preLinkDependencies }).catch(() => undefined);
     }
   } catch (error) {
-    if (error instanceof CcCompileError || error instanceof RuntimePackError) throw error;
+    if (
+      error instanceof CcCompileError ||
+      error instanceof RuntimePackError ||
+      error instanceof NativeCodegenError
+    )
+      throw error;
     const detail = subprocessFailureDetail(error);
     throw new CcCompileError(
       linker,
       detail,
-      `${linker} failed linking ${basename(plan.outputPath)} from the precompiled runtime pack.\n${detail}`,
+      `${linker} failed linking ${basename(plan.outputPath)} from the precompiled runtime pack.\n${detail}` +
+        staticLinkFailureNote(plan.target, plan.staticLink === true),
     );
   } finally {
     await Promise.all([

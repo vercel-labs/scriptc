@@ -69,7 +69,7 @@ void scr_http2_server_on_session(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrH
  * reject_unauthorized false disables the verify gate — the local-CA
  * self-connect shapes); throws catchably on bad input */
 ScrH2Session *scr_http2_connect(ScrStr *url /*borrowed*/, bool reject_unauthorized,
-                                 const char *ca /*borrowed, len 0 = none*/, size_t ca_len,
+                                 const char *ca /*borrowed, NULL = none*/, size_t ca_len,
                                  ScrClosure *cb /*moves, nullable*/,
                                  ScrH2ConnectFn fn); /* +1 */
 /* end_stream: -1 = the method's payload-meaningless default, 0/1 explicit */
@@ -166,14 +166,14 @@ long scr_http2_live_count(void);
 ScrNetServer *scr_https_create_server(const char *cert, size_t cert_len, const char *key, size_t key_len, ScrClosure *handler /*moves*/, ScrHttpReqFn fn); /* +1 */
 /* The runtime-options-record twin (the tls block's divergence-66 walk). */
 ScrNetServer *scr_https_create_server_dyn(const struct ScrDyn *opts /*borrowed*/, ScrClosure *handler /*moves, nullable*/, ScrHttpReqFn fn); /* +1 or NULL+pending */
-/* https.request's servername option (borrowed), applied before the
- * handshake starts. */
-void scr_https_client_servername(ScrHttpClientReq *c, ScrStr *name);
+/* https.request's servername option (borrowed), stored for the next
+ * https request construction call. */
+void scr_https_set_next_servername(ScrStr *name);
 ScrHttpClientReq *scr_https_request(ScrStr *host /*borrowed*/, double port,
                                      ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
                                      double timeout_ms, ScrArr *header_pairs /*borrowed*/,
                                      bool auto_end, bool reject_unauthorized,
-                                     const char *ca /*borrowed, len 0 = none*/, size_t ca_len,
+                                     const char *ca /*borrowed, NULL = none*/, size_t ca_len,
                                      ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn); /* +1 */
 /* The URL-string form (https.get('https://host/path')): scr_http.c's
  * shared parse, then the options form's dial with Node's no-options
@@ -187,7 +187,7 @@ ScrHttpClientReq *scr_https_request_agent(ScrStr *host /*borrowed*/, double port
                                            ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
                                            double timeout_ms, ScrArr *header_pairs /*borrowed*/,
                                            bool auto_end, bool reject_unauthorized,
-                                           const char *ca /*borrowed, len 0 = none*/, size_t ca_len,
+                                           const char *ca /*borrowed, NULL = none*/, size_t ca_len,
                                            const struct ScrDyn *agent /*borrowed*/,
                                            ScrClosure *cb /*moves, nullable*/, ScrHttpRespFn fn); /* +1 */
 /* The fetch unit's https leg (defined in scr_tls.c): a client transport

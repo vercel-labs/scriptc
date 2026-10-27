@@ -1,26 +1,17 @@
-promise-all-fences.ts:6:34 - error SC2020: 'Promise.all over this argument shape' is part of the standard library types but has no scriptc lowering yet
+promise-all-fences.ts:7:44 - error SC2020: 'Promise.allSettled over this argument shape' is part of the standard library types but has no scriptc lowering yet
 
-  5 | async function hetero(): Promise<void> {
-  6 |   const pair = await Promise.all([
-    |                                  ^
-  7 |     new Promise<string>((resolve) => resolve("s")),
-
-  hint: the entries must share ONE promise type — Promise.all([p, q]) lowers when p and q are the same Promise<T>
-
-promise-all-fences.ts:13:44 - error SC2020: 'Promise.allSettled over this argument shape' is part of the standard library types but has no scriptc lowering yet
-
-  12 | async function settled(): Promise<void> {
-  13 |   const results = await Promise.allSettled([
-     |                                            ^
-  14 |     new Promise<string>((resolve) => resolve("s")),
+  6 | async function settled(): Promise<void> {
+  7 |   const results = await Promise.allSettled([
+    |                                            ^
+  8 |     new Promise<string>((resolve) => resolve("s")),
 
   hint: the entries must share ONE promise type — Promise.allSettled([p, q]) lowers when p and q are the same Promise<T>
 
-promise-all-fences.ts:23:33 - error SC2020: 'Promise.any over this argument shape' is part of the standard library types but has no scriptc lowering yet
+promise-all-fences.ts:17:33 - error SC2020: 'Promise.any over this argument shape' is part of the standard library types but has no scriptc lowering yet
 
-  22 | async function anyOfGenerator(): Promise<void> {
-  23 |   console.log(await Promise.any(pending()));
+  16 | async function anyOfGenerator(): Promise<void> {
+  17 |   console.log(await Promise.any(pending()));
      |                                 ^~~~~~~~~
-  24 | }
+  18 | }
 
   hint: an array of promises (Promise<T>[]) is the supported form

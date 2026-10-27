@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/2583-cjs-function-exports/main.ts"
+ ],
+ "diags": []
+}

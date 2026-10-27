@@ -20,7 +20,8 @@
  * Elements are scalars only and the backing edge is acyclic by
  * construction (owners point at nothing): never part of a cycle, no
  * trace. Element reads widen to double; writes coerce JS-exactly (ToUint8
- * / ToUint32 modular truncation, double→float rounding for f32).
+ * / ToUint32 modular truncation, double→float rounding for f32, one
+ * double→binary16 rounding for f16).
  * Out-of-bounds typed ELEMENT reads trap like arrays; invalid writes are
  * ignored as in JavaScript. The Node-shaped operations
  * (construction lengths, set(), the read/write numeric families, the
@@ -37,7 +38,16 @@ typedef enum ScrBytesElem {
   SCR_BYTES_U16, /* Uint16Array */
   SCR_BYTES_I16, /* Int16Array */
   SCR_BYTES_U8C, /* Uint8ClampedArray */
+  SCR_BYTES_F16, /* Float16Array (IEEE 754 binary16 storage) */
 } ScrBytesElem;
+#define SCR_BYTES_ELEM_COUNT 10
+
+/* Float16Array's element conversions: one round-to-nearest-even step from
+ * the double (Float16Array stores, Math.f16round and DataView.setFloat16
+ * all round this way), and the exact widening back. NaN keeps its sign and
+ * top payload bits with the quiet bit set. */
+uint16_t scr_f16_from_f64(double value);
+double scr_f16_to_f64(uint16_t bits);
 
 typedef struct ScrSharedBytes ScrSharedBytes;
 
@@ -55,7 +65,15 @@ typedef struct ScrBytes {
   bool is_data_view; /* DataView is distinct from a numeric typed array. */
   bool external; /* Root aliases foreign memory; releasing it never frees data. */
   bool untransferable; /* A Buffer pool slab: its ArrayBuffer cannot be transferred. */
+  /* The cycle collector's last trace of `properties` from the one checked
+   * value that held this view (see scr_dyn_trace_v). In padding, so the
+   * offsets compiled code uses hold. */
+  bool properties_traced;
   ScrSharedBytes *shared; /* Neutral backing, borrowed by views from their local owner. */
+  /* Named properties a program adds to the view (`ta.foo = 1`,
+   * Object.defineProperty): a checked object, NULL until the first one.
+   * Runtime-only and last, so compiled code's field indices hold. */
+  struct ScrDyn *properties;
 } ScrBytes;
 
 /* Copies out of and into shared storage, made of relaxed atomic accesses
@@ -94,6 +112,26 @@ ScrDyn *scr_worker_parent_port(void);
  * (scr_worker_events.c). */
 ScrDyn *scr_worker_message_channel(void);
 ScrDyn *scr_worker_receive_message_on_port(ScrDyn *port);
+/* new BroadcastChannel(...args) (scr_worker_events.c): args is the argument
+ * vector as one array (borrowed); may throw. */
+ScrDyn *scr_worker_broadcast_channel(ScrDyn *args);
+/* setEnvironmentData(key, value) and getEnvironmentData(key) (+1); both
+ * borrow their arguments. */
+void scr_worker_set_environment_data(ScrDyn *key, ScrDyn *value);
+ScrDyn *scr_worker_get_environment_data(ScrDyn *key);
+ScrDyn *scr_worker_resource_limits(void);
+ScrDyn *scr_worker_thread_name_current(void);
+/* markAsUntransferable(value) and isMarkedAsUntransferable(value)
+ * (scr_worker_events.c); both borrow the value. */
+void scr_worker_mark_untransferable(ScrDyn *value);
+bool scr_worker_is_marked_untransferable(ScrDyn *value);
+/* worker.stdout, worker.stderr and worker.stdin streams: main installs the
+ * stream unit's operations and the Readable and Writable boxes (the
+ * Writable one may be NULL) when the program reads them. */
+struct ScrChildStreamOps;
+void scr_worker_stdio_install(const struct ScrChildStreamOps *ops, ScrDyn *(*readable_box)(void *),
+                              ScrDyn *(*writable_box)(void *));
+void scr_worker_stdio_default(const struct ScrChildStreamOps *ops, ScrDyn *(*view)(void *));
 ScrDyn *scr_worker_new(double root, ScrStr *filename, ScrDyn *options);
 bool scr_shared_array_buffer_is(const ScrDyn *);
 bool scr_buffer_storage_is(const ScrDyn *);
@@ -119,6 +157,11 @@ double scr_bytes_to_u8_clamp(double value);
 ScrStr *scr_strdec_write(const ScrStr *enc, double pending, const ScrBytes *chunk);
 double scr_strdec_next(const ScrStr *enc, double pending, const ScrBytes *chunk);
 ScrStr *scr_strdec_end(const ScrStr *enc, double pending);
+ScrStr *scr_strdec_encoding(const ScrDyn *enc); /* +1, or NULL with ERR_UNKNOWN_ENCODING pending */
+/* A Buffer encoding name known only at run time, Node's getEncodingOps: the
+ * canonical name of an encoding in any ASCII case (+1), or NULL with
+ * ERR_UNKNOWN_ENCODING ("Unknown encoding: <raw>") pending. Borrows raw. */
+ScrStr *scr_bytes_normalize_encoding(const ScrStr *raw);
 
 /* `new Uint8Array(n)` / Buffer.alloc(n): zero-filled. n goes through
  * ToIndex like JS (NaN → 0, truncate toward zero; negative or > 2^53-1
@@ -128,6 +171,11 @@ ScrBytes *scr_bytes_new(ScrBytesElem elem, double n); /* +1 */
 /* Shared u8 view over exactly the source view's raw bytes. Borrows; +1. */
 ScrBytes *scr_bytes_raw_view(ScrBytes *bytes);
 ScrBytes *scr_bytes_as_buffer(ScrBytes *bytes); /* borrows; +1, Buffer factory only */
+/* Buffer.isBuffer over a typed view: the view's Buffer brand. Borrows. */
+bool scr_bytes_is_buffer(const ScrBytes *bytes);
+/* A fresh Uint8Array result of a Buffer's map or filter takes the Buffer
+ * brand (Node's species). Borrows both. */
+void scr_bytes_copy_brand(ScrBytes *dst, const ScrBytes *src);
 /* Views retain the root allocation; offsets are relative to its complete
  * byte storage, including when src is itself a subarray. */
 ScrBytes *scr_bytes_buffer_view(ScrBytes *src, ScrBytesElem elem,
@@ -148,6 +196,7 @@ ScrBytes *scr_array_buffer_view_i16(ScrDyn *, ScrDyn *, ScrDyn *);
 ScrBytes *scr_array_buffer_view_u8(ScrDyn *, ScrDyn *, ScrDyn *);
 ScrBytes *scr_array_buffer_view_u32(ScrDyn *, ScrDyn *, ScrDyn *);
 ScrBytes *scr_array_buffer_view_i32(ScrDyn *, ScrDyn *, ScrDyn *);
+ScrBytes *scr_array_buffer_view_f16(ScrDyn *, ScrDyn *, ScrDyn *);
 ScrBytes *scr_array_buffer_view_f32(ScrDyn *, ScrDyn *, ScrDyn *);
 ScrBytes *scr_array_buffer_view_f64(ScrDyn *, ScrDyn *, ScrDyn *);
 ScrBytes *scr_array_buffer_view_dv(ScrDyn *, ScrDyn *, ScrDyn *);
@@ -205,7 +254,7 @@ ScrBytes *scr_dataview_new(ScrBytes *src, double byte_off, bool has_len, double 
  * with the exception pending). */
 typedef enum ScrDataViewGet {
   SCR_DV_U8, SCR_DV_I8, SCR_DV_U16, SCR_DV_I16, SCR_DV_U32, SCR_DV_I32,
-  SCR_DV_F32, SCR_DV_F64, SCR_DV_BIGU64, SCR_DV_BIGI64,
+  SCR_DV_F32, SCR_DV_F64, SCR_DV_BIGU64, SCR_DV_BIGI64, SCR_DV_F16,
 } ScrDataViewGet;
 double scr_dataview_get(const ScrBytes *b, double byte_off, ScrDataViewGet kind, bool le);
 
@@ -316,6 +365,24 @@ ScrStr *scr_text_decode(const ScrBytes *b);
 double scr_text_decoder_encoding(const ScrDyn *label);
 ScrStr *scr_text_decoder_name(double encoding);
 ScrDyn *scr_text_encode_into(const ScrDyn *source, const ScrDyn *destination);
+/* TextEncoder and TextDecoder records as checked-dynamic handles
+ * (scr_text_codec_dyn.c, linked by the textCodecDyn runtime feature). The
+ * boxes borrow the record and retain it through `retain`; a decoder also
+ * names the byte offsets of its encoding (f64), fatal and ignoreBOM (i8)
+ * and state (dyn) fields. from_dyn answers the retained record or throws
+ * the path-annotated TypeError and answers NULL. */
+ScrDyn *scr_text_encoder_to_dyn(void *rec, void *(*retain)(void *), void (*release)(void *));
+ScrDyn *scr_text_decoder_to_dyn(void *rec, void *(*retain)(void *), void (*release)(void *),
+                                size_t encoding, size_t fatal, size_t ignore_bom, size_t state);
+void *scr_text_codec_from_dyn(const ScrDyn *d, bool decoder, const struct ScrDynPath *path,
+                              const char *want);
+bool scr_text_codec_is(const ScrDyn *d, bool decoder);
+/* StringDecoder records as checked-dynamic handles (the same unit): the
+ * byte offsets of the encoding (string) and pending (f64) fields. */
+ScrDyn *scr_string_decoder_to_dyn(void *rec, void *(*retain)(void *), void (*release)(void *),
+                                  size_t encoding, size_t pending);
+void *scr_string_decoder_from_dyn(const ScrDyn *d, const struct ScrDynPath *path,
+                                  const char *want);
 bool scr_buffer_is_ascii(const ScrDyn *input);
 bool scr_buffer_is_utf8(const ScrDyn *input);
 ScrBytes *scr_buffer_transcode(const ScrDyn *source, const ScrDyn *from, const ScrDyn *to);
@@ -347,6 +414,13 @@ ScrBytes *scr_bytes_from_str(const ScrStr *s, const ScrStr *enc);
  * slab. A slab lives while any of its views does. All return +1 Buffers. */
 double scr_buffer_pool_size(void);
 void scr_buffer_set_pool_size(double size);
+/* The setting without publishing it (scr_buffer_pool_refresh_hook). */
+void scr_buffer_pool_apply(double size);
+/* Set while a Buffer function value exists (scr_builtin_values.c): its
+ * poolSize property is the setting, which the refresh hook reads before
+ * each pool decision and the publish hook receives from static writes. */
+extern SCR_TL void (*scr_buffer_pool_refresh_hook)(void);
+extern SCR_TL void (*scr_buffer_pool_publish_hook)(double size);
 ScrBytes *scr_buffer_alloc(double size);             /* zeroed, never pooled */
 ScrBytes *scr_buffer_alloc_unsafe(double size);      /* pooled */
 ScrBytes *scr_buffer_alloc_unsafe_slow(double size); /* never pooled */
@@ -355,8 +429,37 @@ ScrBytes *scr_buffer_from_str_checked(const ScrStr *s, const ScrStr *enc);
 ScrBytes *scr_buffer_from_bytes(const ScrBytes *src); /* a copy of any typed array's values */
 ScrBytes *scr_buffer_from_arr(const ScrArr *arr);     /* number[] */
 ScrBytes *scr_buffer_from_dyn_pooled(const ScrDyn *value, const ScrStr *encoding);
+ScrBytes *scr_buffer_from_dyn_ref_pooled(const ScrDyn *value, const ScrStr *encoding);
+ScrBytes *scr_buffer_from_dyn_offset_pooled(const ScrDyn *value, const ScrDyn *second);
+/* Buffer.from(value, byteOffset, length): an ArrayBuffer's view with
+ * Node's fromArrayBuffer checks; other values as the two-argument form. */
+ScrBytes *scr_buffer_from_dyn_range_pooled(const ScrDyn *value, const ScrDyn *second,
+                                           const ScrDyn *third);
+/* The deprecated Buffer constructor's DEP0005 state (scr_bytes_io.c): a
+ * call from node_modules counts toward Node's 10000-call check. */
+extern SCR_TL bool scr_buffer_ctor_warned;
+extern SCR_TL uint64_t scr_buffer_ctor_checks;
+void scr_buffer_deprecation_count(void);
 ScrBytes *scr_buffer_concat(const ScrArr *list);
 ScrBytes *scr_buffer_concat_len(const ScrArr *list, double total);
+/* The untyped-list forms: Node's ERR_INVALID_ARG_TYPE checks on the list
+ * and each element, then the typed concat. NULL with the exception pending. */
+ScrBytes *scr_buffer_concat_dyn(const struct ScrDyn *list);
+ScrBytes *scr_buffer_alloc_value(const struct ScrDyn *size, const struct ScrDyn *fill,
+                                 const struct ScrDyn *encoding);
+struct ScrDyn *scr_fs_realpath_value(const struct ScrDyn *path, const struct ScrDyn *options, bool native);
+/* The Buffer function as a value (scr_builtin_values.c), one per thread. +1. */
+struct ScrDyn *scr_buffer_constructor_value(void);
+/* Installs that function as a Buffer's `.constructor` (the program's
+ * %main calls it when it reads the value): scr_bytes_buffer_constructor_fn. */
+void scr_buffer_install_value(void);
+extern struct ScrDyn *(*scr_bytes_buffer_constructor_fn)(void);
+/* A static of that value by name (`Buffer.alloc` read as a value). +1. */
+struct ScrDyn *scr_buffer_static_value(const ScrStr *name);
+/* `Buffer.prototype[key]` (scr_bytes_dyn.c). +1, or NULL with the
+ * exception pending. */
+struct ScrDyn *scr_buffer_prototype_member(const struct ScrDyn *key);
+ScrBytes *scr_buffer_concat_len_dyn(const struct ScrDyn *list, double total);
 /* Drops the pool's slab reference and restores Buffer.poolSize (process
  * exit audits and library session resets). */
 void scr_buffer_pool_reset(void);
@@ -370,6 +473,7 @@ ScrBytes *scr_bytes_from_str_checked(const ScrStr *s, const ScrStr *enc);
  * Borrow; never throw. */
 double scr_bytes_byte_length_str(ScrStr *s, const ScrStr *enc);
 double scr_buffer_byte_length_dyn(ScrDyn *value, ScrStr *enc);
+double scr_buffer_byte_length_value(ScrDyn *value, ScrDyn *encoding);
 bool scr_bytes_is_encoding(const ScrStr *s);
 
 /* equals / compare / indexOf-lastIndexOf / fill / copy / swap / write on
@@ -434,6 +538,8 @@ ScrDyn *scr_fs_lchmod_sync_chk(const ScrDyn *path, const ScrDyn *mode);
 ScrPromise *scr_fsp_lchmod_chk(const ScrDyn *path, const ScrDyn *mode);
 void scr_fs_read_chk(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn *offset,
                      const ScrDyn *length, const ScrDyn *position, const ScrStr *fence);
+double scr_fs_read_sync_dyn(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn *offset,
+                            const ScrDyn *length, const ScrDyn *position);
 void scr_fs_stream_opts_chk(const ScrDyn *path, const ScrDyn *opts, const ScrStr *fence);
 /* The fs streams' option pieces (scr_fs_stream.c): the getOptions,
  * options.fd and path checks above without the fence; the checked path
@@ -448,6 +554,16 @@ ScrEmitter *scr_emitter_set_max_chk(ScrEmitter *em, const ScrDyn *n);
 void scr_emitter_set_default_max_chk(const ScrDyn *n, const ScrStr *name);
 double scr_bytes_index_of(const ScrBytes *b, const ScrBytes *needle, double off, double align, bool fwd);
 double scr_bytes_index_of_num(const ScrBytes *b, double v, double off, bool fwd);
+/* TypedArray indexOf (last false) and lastIndexOf (last true) over any
+ * element kind, with strict equality: NaN is never found and -0 matches 0.
+ * `from` is the fromIndex argument (ToIntegerOrInfinity applies); the
+ * caller passes 0, or +Infinity for lastIndexOf, when it is omitted. A
+ * Buffer (a Uint8Array receiver can be one) searches as Buffer's
+ * indexOf and lastIndexOf do. */
+double scr_bytes_index_of_elem(const ScrBytes *b, double x, double from, bool last);
+/* TypedArray includes: indexOf's search from `from` with SameValueZero,
+ * so NaN is found. A Buffer searches as Buffer's includes does. */
+bool scr_bytes_includes_elem(const ScrBytes *b, double x, double from);
 ScrBytes *scr_bytes_fill(ScrBytes *b, const ScrBytes *pattern, double nargs, double offset, double end);
 ScrBytes *scr_bytes_fill_num(ScrBytes *b, double v, double nargs, double offset, double end);
 ScrBytes *scr_bytes_fill_str(ScrBytes *b, const ScrStr *s, const ScrStr *enc,

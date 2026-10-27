@@ -16,12 +16,7 @@ import {
 } from "@scriptc/compiler";
 import { everyStmtList } from "../../packages/compiler/src/ir/traverse.js";
 import { type IrModule } from "../../packages/compiler/src/ir/ir.js";
-import {
-  moduleUsesInspect,
-  moduleUsesDynInvoke,
-  moduleUsesRegex,
-  moduleUsesCopying,
-} from "../../packages/compiler/src/ir/runtime-features.js";
+import { moduleLinkFeatures } from "./link-features.js";
 import { backendAnalysisCases } from "./self-hosting-backend-cases.js";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
@@ -174,10 +169,7 @@ for (const backend of ["llvm"] as const) {
           cPath: path,
           outPath,
           sanitize,
-          inspect: moduleUsesInspect(optimized),
-          dynInvoke: moduleUsesDynInvoke(optimized),
-          regex: moduleUsesRegex(optimized),
-          copying: moduleUsesCopying(optimized),
+          ...moduleLinkFeatures(optimized),
         });
         const oracle = spawnSync(process.execPath, [sourcePath], options);
         const program = spawnSync(outPath, [], options);

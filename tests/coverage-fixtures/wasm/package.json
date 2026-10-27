@@ -1,0 +1,8 @@
+{
+  "name": "wasm-coverage-fixture",
+  "private": true,
+  "type": "module",
+  "scriptc": {
+    "wasm": ["build/generated.wasm"]
+  }
+}

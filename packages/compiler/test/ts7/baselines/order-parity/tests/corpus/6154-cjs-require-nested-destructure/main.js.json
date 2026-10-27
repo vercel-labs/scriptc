@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6154-cjs-require-nested-destructure/errors.js",
+  "<repo>/tests/corpus/6154-cjs-require-nested-destructure/constants.js",
+  "<repo>/tests/corpus/6154-cjs-require-nested-destructure/main.js"
+ ],
+ "diags": []
+}

@@ -1,3 +1,4 @@
+import { keyedHelperName } from "../stable-names.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
@@ -18,6 +19,7 @@ import {
 } from "../../../ir/ir.js";
 import { PERF_ENTRY_FIELDS, PERF_ENTRY_MARKER, perfEntryJsonShape } from "../../type-mapper.js";
 import { builtinImportOf } from "./module-bindings.js";
+import { lowerOptionalArgument } from "../optional-arguments.js";
 import { checkedIterableSpread } from "../checked-iterable-spread.js";
 
 /** True for any spelling of node:perf_hooks' `performance` object — the
@@ -83,7 +85,7 @@ export function lowerPerfHooksCall(
   if (access.questionDotToken) return null;
   const loc = locOf(expr);
   if (access.name.text === "now" && isPerfHooksPerformanceExpr(lowerer, access.expression)) {
-    if (expr.arguments.length !== 0) {
+    if (expr.arguments.nodes.length !== 0) {
       lowerer.noLowering(
         "performance.now with arguments",
         expr,
@@ -99,7 +101,10 @@ export function lowerPerfHooksCall(
     access.expression.name.text === "now" &&
     isPerfHooksPerformanceExpr(lowerer, access.expression.expression)
   ) {
-    if (expr.arguments.length !== 1 || !isPerfHooksPerformanceExpr(lowerer, expr.arguments[0]!)) {
+    if (
+      expr.arguments.nodes.length !== 1 ||
+      !isPerfHooksPerformanceExpr(lowerer, expr.arguments.nodes[0]!)
+    ) {
       lowerer.noLowering(
         "this performance.now.bind form",
         expr,
@@ -118,7 +123,7 @@ export function lowerPerfHooksCall(
     access.name.text === "toJSON" &&
     isPerfEntryType(lowerer, lowerer.mapTypeOf(lowerer.typeOf(access.expression)))
   ) {
-    if (expr.arguments.length !== 0) {
+    if (expr.arguments.nodes.length !== 0) {
       lowerer.noLowering("PerformanceEntry toJSON with arguments", expr);
     }
     const entry = lowerer.lowerExpr(access.expression);
@@ -131,6 +136,12 @@ export function lowerPerfHooksCall(
       loc,
     };
   }
+  if (
+    access.name.text === "eventLoopUtilization" &&
+    isPerfHooksPerformanceExpr(lowerer, access.expression)
+  ) {
+    return lowerEventLoopUtilization(lowerer, expr);
+  }
   const timeline = PERF_TIMELINE_CALLS.get(access.name.text);
   if (timeline && isPerfHooksPerformanceExpr(lowerer, access.expression)) {
     return lowerPerfTimelineCall(lowerer, expr, access.name.text, timeline, loc);
@@ -139,7 +150,7 @@ export function lowerPerfHooksCall(
     lowerer.noLowering(
       `perf_hooks performance.${access.name.text}`,
       expr,
-      "performance.now() (and its .bind(performance) function value), mark, measure, the getEntries family, clearMarks and clearMeasures are the lowered surface",
+      "performance.now() (and its .bind(performance) function value), mark, measure, the getEntries family, clearMarks, clearMeasures and eventLoopUtilization are the lowered surface",
     );
   }
   return null;
@@ -241,10 +252,10 @@ function perfEntryRecord(
  * protocol), and a non-iterable spread throws V8's TypeError, so the
  * runtime always receives an array. */
 function lowerPerfArguments(lowerer: Lowerer, call: ts.CallExpression, loc: SrcLoc): IrExpr {
-  if (!call.arguments.some(ts.isSpreadElement)) {
+  if (!call.arguments.nodes.some(ts.isSpreadElement)) {
     return {
       kind: "dynArrLit",
-      elems: call.arguments.map((a) => lowerer.lowerExprExpecting(a, DYN)),
+      elems: call.arguments.nodes.map((a) => lowerer.lowerExprExpecting(a, DYN)),
       type: DYN,
       loc,
     };
@@ -259,7 +270,7 @@ function lowerPerfArguments(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
       loc,
     },
   ];
-  for (const arg of call.arguments) {
+  for (const arg of call.arguments.nodes) {
     if (!ts.isSpreadElement(arg)) {
       const value = lowerer.lowerExprExpecting(arg, DYN);
       stmts.push({
@@ -275,7 +286,7 @@ function lowerPerfArguments(lowerer: Lowerer, call: ts.CallExpression, loc: SrcL
       });
       continue;
     }
-    const spelling = arg.expression.getText();
+    const spelling = ts.getTextOfNode(arg.expression);
     const items = checkedIterableSpread(lowerer, lowerer.lowerExpr(arg.expression), spelling, loc);
     stmts.push({
       kind: "exprStmt",
@@ -320,7 +331,7 @@ function lowerPerfTimelineCall(
   const key = `perf.${many ? "entries" : timeline.fn}:${typeKey(result)}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = `%perf.${many ? "entries" : member}.${lowerer.valueHelpers.size}`;
+    helper = keyedHelperName(lowerer, `%perf.${many ? "entries" : member}`, key);
     lowerer.valueHelpers.set(key, helper);
     const argsRef = varRef("a.0", DYN, loc);
     const whichRef = varRef("w.0", F64, loc);
@@ -451,7 +462,7 @@ export function perfEntryTag(
   const key = `perf.tag:${entryT.shapeId}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = `%perf.tag.${lowerer.valueHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%perf.tag", key);
     lowerer.valueHelpers.set(key, helper);
     const e = varRef("e.0", entryT, loc);
     lowerer.liftedFns.push({
@@ -509,4 +520,310 @@ export function fencePerfEntryKeyWalk(
     node,
     `${what} over performance entries (Node keeps their fields as prototype getters, so own-key walks see none; read the fields or call toJSON())`,
   );
+}
+
+/* ── event-loop metrics: eventLoopUtilization and monitorEventLoopDelay ── */
+
+/** The stdlib IntervalHistogram (monitorEventLoopDelay's result), by the
+ * receiver's checker type. Its value is the runtime histogram handle. */
+function isIntervalHistogram(lowerer: Lowerer, node: ts.Expression): boolean {
+  const symbol = lowerer.typeOf(node).getSymbol();
+  return (
+    symbol !== undefined &&
+    ts.symbolName(symbol) === "IntervalHistogram" &&
+    lowerer.isStdlibSymbol(symbol)
+  );
+}
+
+/** IntervalHistogram's numeric members, as perf.eldStat selectors. */
+const HISTOGRAM_STATS: ReadonlyMap<string, number> = new Map([
+  ["min", 0],
+  ["max", 1],
+  ["mean", 2],
+  ["stddev", 3],
+  ["count", 4],
+  ["exceeds", 5],
+]);
+
+/** `h.min`, `h.max`, … on an IntervalHistogram: the runtime's current
+ * statistic (Node's hdr_histogram values; nanoseconds). Null for every
+ * other read. */
+export function lowerHistogramProperty(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): IrExpr | null {
+  const which = HISTOGRAM_STATS.get(expr.name.text);
+  if (
+    which === undefined ||
+    expr.questionDotToken ||
+    !isIntervalHistogram(lowerer, expr.expression)
+  )
+    return null;
+  const loc = locOf(expr);
+  return {
+    kind: "libCall",
+    fn: "perf.eldStat",
+    args: [lowerer.lowerExprExpecting(expr.expression, F64), numLit(which, loc)],
+    type: F64,
+    loc,
+  };
+}
+
+/** enable(), disable(), reset() and percentile(p) on an IntervalHistogram.
+ * Other members (the BigInt twins, the percentiles Map) fence by name. */
+export function lowerHistogramMethodCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (access.questionDotToken || !isIntervalHistogram(lowerer, access.expression)) return null;
+  const loc = locOf(expr);
+  const name = access.name.text;
+  const handle = (): IrExpr => lowerer.lowerExprExpecting(access.expression, F64);
+  const args = expr.arguments.nodes;
+  if ((name === "enable" || name === "disable" || name === "reset") && args.length === 0) {
+    const fn =
+      name === "enable"
+        ? "perf.eldEnable"
+        : name === "disable"
+          ? "perf.eldDisable"
+          : "perf.eldReset";
+    return { kind: "libCall", fn, args: [handle()], type: name === "reset" ? VOID : BOOL, loc };
+  }
+  if (name === "percentile" && args.length === 1 && !ts.isSpreadElement(args[0]!)) {
+    // Node validates first: NaN, p <= 0 and p > 100 throw ERR_OUT_OF_RANGE.
+    const h = lowerer.declareHiddenLocal("%histogram", F64);
+    const p = lowerer.declareHiddenLocal("%percentile", F64);
+    const pRef = (): IrExpr => varRef(p.id, F64, loc);
+    const cmp = (op: "!==" | "<=" | ">", left: IrExpr, right: IrExpr): IrExpr => ({
+      kind: "bin",
+      op,
+      left,
+      right,
+      type: BOOL,
+      loc,
+    });
+    const or = (left: IrExpr, right: IrExpr): IrExpr => ({
+      kind: "logical",
+      op: "||",
+      left,
+      right,
+      type: BOOL,
+      loc,
+    });
+    const outOfRange = or(
+      or(cmp("!==", pRef(), pRef()), cmp("<=", pRef(), numLit(0, loc))),
+      cmp(">", pRef(), numLit(100, loc)),
+    );
+    const message: IrExpr = {
+      kind: "strConcat",
+      left: {
+        kind: "strLit",
+        value: 'The value of "percentile" is out of range. It must be > 0 && <= 100. Received ',
+        type: STRING,
+        loc,
+      },
+      right: { kind: "toString", operand: pRef(), type: STRING, loc },
+      type: STRING,
+      loc,
+    };
+    const thrown: IrExpr = {
+      kind: "libCall",
+      fn: "error.nodeThrow",
+      args: [
+        numLit(2, loc),
+        { kind: "strLit", value: "ERR_OUT_OF_RANGE", type: STRING, loc },
+        message,
+      ],
+      type: F64,
+      loc,
+    };
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: h.id, init: handle(), loc },
+        { kind: "varDecl", localId: p.id, init: lowerer.lowerExprExpecting(args[0]!, F64), loc },
+      ],
+      result: {
+        kind: "ternary",
+        cond: outOfRange,
+        then: thrown,
+        else_: {
+          kind: "libCall",
+          fn: "perf.eldPercentile",
+          args: [varRef(h.id, F64, loc), pRef()],
+          type: F64,
+          loc,
+        },
+        type: F64,
+        loc,
+      },
+      type: F64,
+      loc,
+    };
+  }
+  lowerer.noLowering(
+    `IntervalHistogram.${name}`,
+    expr,
+    "enable(), disable(), reset(), percentile(p) and the min, max, mean, stddev, count and exceeds readings are the lowered surface",
+  );
+}
+
+/** `monitorEventLoopDelay(options?)` from node:perf_hooks, in any import
+ * spelling (`lowerBuiltinCall`): a new sampling histogram handle. The
+ * options are an inline object literal; the runtime validates the
+ * resolution as Node does (an integer of at least 1). */
+export function lowerMonitorEventLoopDelayCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
+  const loc = locOf(expr);
+  const args = expr.arguments.nodes;
+  let resolution: IrExpr = numLit(10, loc);
+  if (args.length > 1 || args.some(ts.isSpreadElement)) {
+    lowerer.noLowering(
+      "this monitorEventLoopDelay call form",
+      expr,
+      "pass at most one options object",
+    );
+  }
+  if (args.length === 1) {
+    const options = args[0]!;
+    if (!ts.isObjectLiteralExpression(options)) {
+      lowerer.noLowering(
+        "monitorEventLoopDelay with a non-literal options object",
+        options,
+        "spell the options inline: monitorEventLoopDelay({ resolution: 20 })",
+      );
+    }
+    for (const property of options.properties.nodes) {
+      const shorthand = ts.isShorthandPropertyAssignment(property);
+      if (
+        (!shorthand && !ts.isPropertyAssignment(property)) ||
+        !ts.isIdentifier(property.name) ||
+        property.name.text !== "resolution"
+      ) {
+        lowerer.noLowering(
+          "monitorEventLoopDelay options other than resolution",
+          property,
+          "resolution is the one option",
+        );
+      }
+      // An undefined resolution takes the default, as Node's destructuring.
+      resolution = lowerOptionalArgument(
+        lowerer,
+        shorthand ? property.name : property.initializer,
+        F64,
+        numLit(10, loc),
+      );
+    }
+  }
+  return { kind: "libCall", fn: "perf.eldNew", args: [resolution], type: F64, loc };
+}
+
+/** performance.eventLoopUtilization(u1?, u2?) — Node's
+ * lib/internal/perf/event_loop_utilization.js over the runtime's loop
+ * start and idle time, one lifted helper per arity. */
+function lowerEventLoopUtilization(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
+  const loc = locOf(expr);
+  const args = expr.arguments.nodes;
+  const resultT = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (resultT?.kind !== "record" || args.length > 2 || args.some(ts.isSpreadElement)) {
+    lowerer.noLowering("this performance.eventLoopUtilization call form", expr);
+  }
+  const helper = eluHelperOf(lowerer, args.length, resultT);
+  return {
+    kind: "call",
+    callee: helper,
+    args: args.map((arg) => lowerer.lowerExprExpecting(arg, resultT)),
+    type: resultT,
+    loc,
+  };
+}
+
+function eluHelperOf(lowerer: Lowerer, arity: number, recT: IrType & { kind: "record" }): string {
+  const name = `%perf.elu.${arity}`;
+  if (lowerer.liftedFns.some((f) => f.name === name)) return name;
+  const loc: SrcLoc = { file: "<builtin>", start: 0, end: 0 };
+  const f64Local = (id: string) => ({ id, name: id, type: F64, mutable: false });
+  const params = Array.from({ length: arity }, (_, i) => ({
+    localId: `u${i + 1}.0`,
+    name: `u${i + 1}`,
+    type: recT as IrType,
+  }));
+  const locals = [
+    ...params.map((p) => ({ id: p.localId, name: p.name, type: recT as IrType, mutable: false })),
+    f64Local("ls.0"),
+    f64Local("idle.0"),
+    f64Local("active.0"),
+  ];
+  const ref = (id: string): IrExpr => varRef(id, F64, loc);
+  const field = (param: string, f: string): IrExpr => ({
+    kind: "recordGet",
+    obj: varRef(param, recT, loc),
+    shapeId: recT.shapeId,
+    field: f,
+    type: F64,
+    loc,
+  });
+  const bin = (op: "+" | "-" | "/" | "<=", left: IrExpr, right: IrExpr): IrExpr => ({
+    kind: "bin",
+    op,
+    left,
+    right,
+    type: op === "<=" ? BOOL : F64,
+    loc,
+  });
+  const record = (idle: IrExpr, active: IrExpr, utilization: IrExpr): IrExpr => ({
+    kind: "recordLit",
+    fields: [
+      { name: "idle", value: idle },
+      { name: "active", value: active },
+      { name: "utilization", value: utilization },
+    ],
+    type: recT,
+    loc,
+  });
+  const result = (idle: IrExpr, active: IrExpr): IrStmt => ({
+    kind: "return",
+    value: record(idle, active, bin("/", active, bin("+", idle, active))),
+    loc,
+  });
+  const decl = (id: string, init: IrExpr): IrStmt => ({ kind: "varDecl", localId: id, init, loc });
+  const body: IrStmt[] = [
+    decl("ls.0", { kind: "libCall", fn: "perf.loopStart", args: [], type: F64, loc }),
+    {
+      kind: "if",
+      cond: bin("<=", ref("ls.0"), numLit(0, loc)),
+      then: [
+        { kind: "return", value: record(numLit(0, loc), numLit(0, loc), numLit(0, loc)), loc },
+      ],
+      else_: null,
+      loc,
+    },
+  ];
+  if (arity === 2) {
+    body.push(
+      decl("idle.0", bin("-", field("u1.0", "idle"), field("u2.0", "idle"))),
+      decl("active.0", bin("-", field("u1.0", "active"), field("u2.0", "active"))),
+      result(ref("idle.0"), ref("active.0")),
+    );
+  } else {
+    body.push(
+      decl("idle.0", { kind: "libCall", fn: "perf.idleTime", args: [], type: F64, loc }),
+      decl(
+        "active.0",
+        bin(
+          "-",
+          bin("-", { kind: "libCall", fn: "perf.now", args: [], type: F64, loc }, ref("ls.0")),
+          ref("idle.0"),
+        ),
+      ),
+      arity === 0
+        ? result(ref("idle.0"), ref("active.0"))
+        : result(
+            bin("-", ref("idle.0"), field("u1.0", "idle")),
+            bin("-", ref("active.0"), field("u1.0", "active")),
+          ),
+    );
+  }
+  lowerer.liftedFns.push({ name, params, returnType: recT, locals, body, loc });
+  return name;
 }

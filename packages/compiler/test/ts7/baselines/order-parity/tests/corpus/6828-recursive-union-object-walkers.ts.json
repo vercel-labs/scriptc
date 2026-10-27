@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6828-recursive-union-object-walkers.ts"
+ ],
+ "diags": []
+}

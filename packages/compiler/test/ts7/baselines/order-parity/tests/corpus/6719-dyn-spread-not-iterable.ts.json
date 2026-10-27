@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6719-dyn-spread-not-iterable.ts"
+ ],
+ "diags": []
+}

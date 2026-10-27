@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6189-cjs-void-preamble-class-exports/lib.js",
+  "<repo>/tests/corpus/6189-cjs-void-preamble-class-exports/main.js"
+ ],
+ "diags": []
+}

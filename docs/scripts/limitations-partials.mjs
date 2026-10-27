@@ -6,7 +6,9 @@
  *   introduction.mdx                  prose before the first heading
  *   <section>.mdx                     a section's prose (paragraphs, code
  *                                     blocks, unlabeled lists)
- *   <section>/<label>.mdx             one labeled bullet (`- **Label:** ...`)
+ *   <section>/<label>.mdx             one labeled bullet (`- **Label:** ...`),
+ *                                     one sentence per line, continuation
+ *                                     lines indented two spaces
  *
  * <section> is the slug of the nearest heading and <label> the slug of the
  * bullet's bold label. The page includes each partial with
@@ -19,7 +21,13 @@
  *   node scripts/limitations-partials.mjs split <file> [page]  write the page and partials from one file
  *   node scripts/limitations-partials.mjs merge <base> <theirs>
  *       three-way merge a branch's single-file page (<theirs>, forked from
- *       <base>) into the current partials, then split the result */
+ *       <base>) into the current partials, then split the result
+ *   node scripts/limitations-partials.mjs check   fail on a partial line that holds two sentences
+ *   node scripts/limitations-partials.mjs fix     put each such sentence on its own line
+ *
+ * One sentence per line keeps changes to different sentences on different
+ * lines, so concurrent edits merge. Markdown joins the lines with a space,
+ * so the rendered page is the same. */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -31,6 +39,7 @@ const defaultPage = join(docsRoot, "content/docs/limitations.mdx");
 const partialsDir = join(docsRoot, "content/limitations");
 const includeLine = /^<include>(\.\.\/limitations\/[\w/-]+\.mdx)<\/include>$/;
 const labeledBullet = /^- \*\*([^*]+?):\*\*/;
+const bulletContinuation = /^ {2}\S/;
 
 export function slug(text) {
   return text
@@ -51,7 +60,7 @@ export function joinPage(page = defaultPage) {
   let text = out.join("\n");
   for (let prev; prev !== text; ) {
     prev = text;
-    text = text.replace(/^(- \*\*[^\n]*)\n\n(?=- \*\*)/gm, "$1\n");
+    text = text.replace(/^(- \*\*[^\n]*(?:\n {2}\S[^\n]*)*)\n\n(?=- \*\*)/gm, "$1\n");
   }
   return text.replace(/\n*$/, "\n");
 }
@@ -81,15 +90,25 @@ export function splitPage(text) {
     page.push("", `<include>../limitations/${name}</include>`);
   };
   let inFence = false;
-  let afterBullet = false;
+  let bulletName = null;
+  let bulletLines = [];
+  const flushBullet = () => {
+    if (bulletName !== null) add(bulletName, bulletLines.join("\n"));
+    bulletName = null;
+    bulletLines = [];
+  };
   for (const line of lines.slice(fmEnd + 1)) {
-    if (afterBullet && line !== "" && !labeledBullet.test(line) && !/^#{2,6} /.test(line))
-      throw new Error(`a labeled bullet is followed by a line that is not a blank line, bullet or heading: ${line.slice(0, 60)}`);
+    if (bulletName !== null && bulletContinuation.test(line)) {
+      bulletLines.push(line);
+      continue;
+    }
+    if (bulletName !== null && line !== "" && !labeledBullet.test(line) && !/^#{2,6} /.test(line))
+      throw new Error(`a labeled bullet is followed by a line that is not a blank line, bullet, heading or indented continuation: ${line.slice(0, 60)}`);
+    flushBullet();
     if (/^(```|~~~)/.test(line)) inFence = !inFence;
     const heading = !inFence && line.match(/^#{2,6} (.*)$/);
     const anchor = !inFence && /^<span id="[\w-]+" \/>$/.test(line);
     const bullet = !inFence && line.match(labeledBullet);
-    afterBullet = Boolean(bullet);
     if (heading || anchor) {
       flushProse();
       page.push("", line);
@@ -99,11 +118,13 @@ export function splitPage(text) {
       }
     } else if (bullet) {
       flushProse();
-      add(`${section}/${slug(bullet[1])}.mdx`, line);
+      bulletName = `${section}/${slug(bullet[1])}.mdx`;
+      bulletLines = [line];
     } else {
       prose.push(line);
     }
   }
+  flushBullet();
   flushProse();
   // Collapse the blank-line runs the pushes above produce.
   const pageText = page.join("\n").replace(/\n{3,}/g, "\n\n") + "\n";
@@ -122,6 +143,41 @@ function write(text, page = defaultPage) {
   const roundTrip = joinPage(page);
   if (roundTrip !== text) throw new Error("joining the partials does not reproduce the input");
   console.error(`${relative(docsRoot, page)}: ${partials.size} partials in ${relative(docsRoot, partialsDir)}/`);
+}
+
+// A sentence ends at `.`, `!` or `?` (after any closing `)`, `"` or `*`)
+// followed by a space and a capital letter, a code span, a link or bold
+// text. Abbreviations don't end one.
+const sentenceEnd = /(?<!\b(?:e\.g|i\.e|etc|vs|cf))([.!?][)"*]*) (?=[A-Z`[*])/g;
+
+/** The partial text with each sentence of a prose line on its own line;
+ * a bullet's sentences continue with the two-space indent. Code fences,
+ * headings, tables, HTML and include lines are left alone, as are code
+ * spans and link targets. */
+export function splitSentences(text) {
+  let inFence = false;
+  const out = [];
+  for (const line of text.split("\n")) {
+    if (/^\s*(```|~~~)/.test(line)) inFence = !inFence;
+    if (inFence || /^\s*(```|~~~|#|<|\||$)/.test(line)) {
+      out.push(line);
+      continue;
+    }
+    const indent = /^\s*(?:[-*]|\d+\.) /.test(line) ? "  " : line.match(/^\s*/)[0];
+    // Mask code spans (all but the opening backtick, which can start a
+    // sentence) and link targets, so their periods never split.
+    const masked = line.replace(/`[^`]*`|\]\([^)]*\)/g, (m) => m[0] + "\0".repeat(m.length - 1));
+    const pieces = [];
+    let start = 0;
+    for (const match of masked.matchAll(sentenceEnd)) {
+      const end = match.index + match[1].length;
+      pieces.push(line.slice(start, end));
+      start = end + 1;
+    }
+    pieces.push(line.slice(start));
+    out.push(pieces[0], ...pieces.slice(1).map((piece) => indent + piece));
+  }
+  return out.join("\n");
 }
 
 function listPartials(dir = partialsDir) {
@@ -160,9 +216,20 @@ if (command === "join") {
   } finally {
     rmSync(work, { recursive: true, force: true });
   }
+} else if (command === "check" || command === "fix") {
+  let unsplit = 0;
+  for (const file of listPartials().sort()) {
+    const text = readFileSync(file, "utf8");
+    const split = splitSentences(text);
+    if (split === text) continue;
+    unsplit++;
+    if (command === "fix") writeFileSync(file, split);
+    else console.error(`${relative(docsRoot, file)}: put each sentence on its own line (node docs/scripts/limitations-partials.mjs fix)`);
+  }
+  if (command === "check" && unsplit > 0) process.exitCode = 1;
 } else if (command === "list") {
   for (const file of listPartials().sort()) console.log(relative(docsRoot, file));
 } else {
-  console.error("usage: limitations-partials.mjs join [page] | split <file> [page] | merge <base> <theirs> | list");
+  console.error("usage: limitations-partials.mjs join [page] | split <file> [page] | merge <base> <theirs> | check | fix | list");
   process.exitCode = 2;
 }

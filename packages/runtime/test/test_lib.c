@@ -22,7 +22,7 @@
 #include <sys/wait.h>
 
 /* Sparse entries live in the array's out-of-line storage. */
-static size_t arr_sparse_len(const ScrArr *a) { return a->ext ? a->ext->sparse_len : 0; }
+static size_t arr_sparse_len(const ScrArr *a) { return scr_arr_ext_of(a) ? scr_arr_ext_of(a)->sparse_len : 0; }
 #endif
 
 static int checks = 0;

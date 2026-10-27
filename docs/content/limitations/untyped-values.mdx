@@ -1,7 +1,20 @@
-Supported uses of `any` use native checked values. Operations without native lowering produce diagnostics such as `SC2011`. Use `unknown` with a checked cast where an operation needs a concrete type. Map and Set type arguments may use `any`, with the same checked storage as `unknown`.
+Supported uses of `any` use native checked values.
+Operations without native lowering produce diagnostics such as `SC2011`.
+Use `unknown` with a checked cast where an operation needs a concrete type.
+Map and Set type arguments may use `any`, with the same checked storage as `unknown`.
 
-Locals, parameters, and returns can carry untyped values; record and tuple fields can hold `unknown`. JavaScript instance fields and TypeScript class fields declared `unknown` or `object` (also with `null` or `undefined`, or as arrays of those) can also hold native checked values. Bare fields start as `undefined`, and redeclaring a field with the same checked-value type resets it in initialization order. Explicit TypeScript `any` class fields, other checked-value static fields, statically typed array elements, and union members are unsupported.
+Locals, parameters, and returns can carry untyped values; record and tuple fields can hold `unknown`.
+JavaScript instance fields and TypeScript class fields declared `unknown` or `object` (also with `null` or `undefined`, or as arrays of those) can also hold native checked values.
+Bare fields start as `undefined`, and redeclaring a field with the same checked-value type resets it in initialization order.
+Explicit TypeScript `any` class fields, other checked-value static fields, statically typed array elements, and union members are unsupported.
 
-Program class instances retain identity through `unknown` and casts back to their exact class or a base class, including classes with internal collections. Inspecting dynamic properties throws a catchable `TypeError` if the class's fields cannot pass through checked storage. Supported native handles also retain identity. JavaScript argument and return conversions preserve native array references; other JSON-shaped record and array conversions can copy values.
+Program class instances retain identity through `unknown` and casts back to their exact class or a base class, including classes with internal collections.
+Inspecting dynamic properties throws a catchable `TypeError` if the class's fields cannot pass through checked storage.
+Supported native handles also retain identity.
+JavaScript argument and return conversions preserve native array references; other JSON-shaped record and array conversions can copy values.
 
-Supported operations on `unknown` include truthiness, `typeof` narrowing, property access, `+`, `switch`, and `throw`. Cast before using other operations.
+Supported operations on `unknown` include truthiness, `typeof` narrowing, property access, `+`, `switch`, and `throw`.
+Cast before using other operations.
+
+In JavaScript, a call whose untyped argument could select an overload with another result type returns a checked value, whichever overload the type checker picks, and so do the unannotated bindings and functions that hold or return it.
+In TypeScript, an `any` argument keeps the overload the type checker picks, and a value that selects another overload at runtime throws a `TypeError` where the result is used.

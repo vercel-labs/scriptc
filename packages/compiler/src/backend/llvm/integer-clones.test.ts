@@ -85,7 +85,7 @@ const fib = fn(
 
 function module(): IrModule {
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     functions: [
@@ -265,7 +265,7 @@ test("sums the static integer ranges prove skip the overflow check", () => {
   // n is within [0, 10], so n - 1 cannot overflow; the accumulated sum is
   // still checked.
   const mod: IrModule = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     functions: [
@@ -330,7 +330,7 @@ test("borrowed number arrays: length and element reads qualify", () => {
     F64,
     [arr, F64],
   );
-  const mod: IrModule = { irVersion: 16, sourceFile: loc.file, entry: "sum", functions: [sum] };
+  const mod: IrModule = { irVersion: 17, sourceFile: loc.file, entry: "sum", functions: [sum] };
   expect(findIntegerClones(mod).members.has("sum")).toBe(false);
   expect(findIntegerClones(mod, () => false).members.has("sum")).toBe(false);
   const clones = findIntegerClones(mod, (name, index) => name === "sum" && index === 0);

@@ -60,6 +60,32 @@ void scr_gen_coro_finish(ScrFiber *self);
 ScrGen *scr_async_gen_new(void (*entry)(ScrFiber *, void *), void *argpack,
                           void (*drop_args)(void *),
                           void (*settle)(ScrGen *, ScrPromise *));
+/* An async generator whose body is a switched coroutine, as
+ * scr_gen_new_stackless's: its steps run on the resumer's stack (the loop's
+ * after an await), its awaits suspend through scr_coro_await_prepare and
+ * scr_coro_hop_prepare, and its yields store OUT through scr_coro_yield_*.
+ * Native targets only. */
+ScrGen *scr_async_gen_new_stackless(void (*entry)(ScrFiber *, void *), void *argpack,
+                                    void (*drop_args)(void *),
+                                    void (*settle)(ScrGen *, ScrPromise *));
+/* Runs when return() reaches the generator before its first resume, with
+ * the packed arguments still alive: an iterator helper closes its source. */
+void scr_gen_set_unstarted_return(ScrGen *g, void (*hook)(void *));
+/* The @@toStringTag that util.inspect and Object.prototype.toString print
+ * for the generator object: "Generator" (or "AsyncGenerator") unless set,
+ * as the compiler does for iterator helpers ("Iterator Helper") and for
+ * the array and string iterators it builds as generators. A tag that
+ * starts with '!' marks a generator standing in for an object of another
+ * class, which these refuse to print. */
+void scr_gen_set_tag(ScrGen *g, const char *tag);
+/* An adapter generator prints with the tag of the generator it adapts. */
+void scr_gen_copy_tag(ScrGen *g, const ScrGen *from);
+const char *scr_gen_tag(const ScrGen *g);
+/* scr_gen_tag for units that also link without the generator runtime (a
+ * library links none): the generator runtime sets it when it creates a
+ * generator, so it is set whenever a generator capsule exists. Read it with
+ * a relaxed atomic load. */
+extern const char *(*scr_gen_tag_reader)(const ScrGen *g);
 ScrGen *scr_gen_retain(ScrGen *g);
 void scr_gen_release(ScrGen *g); /* NULL-tolerant */
 void *scr_gen_retain_v(void *g);
@@ -133,6 +159,8 @@ void scr_gen_yield_f64(double v);
 void scr_gen_yield_bool(bool v);
 void scr_gen_yield_ref(void *v, void (*release)(void *)); /* moves */
 void scr_async_gen_hop_done(void);
+/* An async generator's `return x` whose completion turn awaits x. */
+void scr_async_gen_return_awaits(void);
 void scr_gen_out_f64(ScrGen *g, double v); /* trampoline completion stores */
 void scr_gen_out_bool(ScrGen *g, bool v);
 void scr_gen_out_ref(ScrGen *g, void *v, void (*release)(void *)); /* moves */
@@ -161,6 +189,8 @@ ScrDyn *scr_fetch_request_new(ScrDyn *input, ScrDyn *init);
 ScrDyn *scr_fetch_headers_new(ScrDyn *init);
 ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init); /* +1 promise<Response handle> */
 ScrDyn *scr_fetch_response_new(ScrDyn *body, ScrDyn *init); /* borrowed args; +1 Response handle or NULL pending */
+ScrDyn *scr_fetch_response_json_static(ScrDyn *data, ScrDyn *init); /* Response.json; borrowed args; +1 Response handle or NULL pending */
+ScrArr *scr_fetch_response_light(ScrDyn *response); /* @hono/node-server shim: borrowed; +1 string[] */
 ScrPromise *scr_fetch_response_json(ScrDyn *response); /* +1 promise<dyn> */
 ScrPromise *scr_fetch_response_text(ScrDyn *response); /* +1 promise<dyn> */
 ScrPromise *scr_fetch_response_array_buffer(ScrDyn *response); /* +1 promise<dyn> */
@@ -171,6 +201,7 @@ ScrDyn *scr_fetch_abort_timeout(ScrDyn *delay);
 ScrDyn *scr_fetch_abort_now(ScrDyn *reason); /* borrowed reason; +1 handle */
 ScrDyn *scr_fetch_abort_any(ScrDyn *signals); /* borrowed array; +1 handle or NULL pending */
 ScrDyn *scr_fetch_stream_new(ScrDyn *source); /* borrowed source; +1 handle or NULL pending */
+ScrDyn *scr_fetch_transform_new(void); /* +1 identity TransformStream handle */
 ScrDyn *scr_fetch_stream_from(ScrDyn *iterable); /* borrowed iterable; +1 handle or NULL pending */
 ScrDyn *scr_fetch_stream_from_array(
     ScrArr *iterable,
@@ -180,5 +211,17 @@ ScrDyn *scr_fetch_stream_from_bytes(
 ScrDyn *scr_fetch_stream_from_string(
     ScrStr *iterable); /* borrowed string; +1 handle */
 ScrPromise *scr_fetch_reader_read(ScrDyn *reader); /* borrowed handle; +1 */
+/* A read request served by callbacks instead of a promise (the streams
+ * spec's readableStreamDefaultReaderRead with a read request; Node's
+ * Readable.fromWeb adapter uses one). chunk and error borrow their value;
+ * error's reason is NULL when the reader was released. */
+typedef struct ScrFetchReadSink {
+  void (*chunk)(void *ctx, ScrDyn *value);
+  void (*close)(void *ctx);
+  void (*error)(void *ctx, ScrDyn *reason);
+} ScrFetchReadSink;
+/* Queue a sink read request on a reader handle (borrowed). false with a
+ * TypeError pending for a value that is not a reader or a released one. */
+bool scr_fetch_reader_read_into(ScrDyn *reader, const ScrFetchReadSink *sink, void *ctx);
 
 #endif /* SCR_GENERATOR_H */

@@ -12,9 +12,16 @@ import { everyStmtList } from "../../ir/traverse.js";
 import { analyzeCallLifetimes, type CallLifetimes } from "./call-lifetimes.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { ReferenceEffects } from "./reference-effects.js";
-import { SCR_ARR_FIELD, exactIndexLines } from "./common.js";
-import { exactInteger, widenInteger } from "./integer-values.js";
+import { SCR_ARR_FIELD, loadArrCount, scrArrStateAt } from "./common.js";
+import { indexInteger } from "./integer-values.js";
 import { READ_FALLBACK } from "./dense-array-access.js";
+import { compactRefLoadLines } from "./classes.js";
+
+/** The dense slot load of a reference read from an array of type
+ * `arrayType`: a pointer, or a compact class reference (SCR_ELEM_CREF). */
+function referenceLoad(host: LlvmEmitterContext, arrayType: IrType): "ptr" | "cref" {
+  return arrayType.kind === "array" && host.compactArrayElem(arrayType.elem) ? "cref" : "ptr";
+}
 
 export interface LocalArrayRead {
   type: IrType;
@@ -457,111 +464,136 @@ export function emitProjectedArrayRead(host: LlvmEmitterContext, read: LocalArra
 
 /** Share the checked dense lookup between optional stack boxes and strict
  * borrowed reads. Capacity, length, and presence guards precede every load;
- * sparse and noncanonical indices keep their runtime lookup semantics. */
+ * sparse and noncanonical indices keep their runtime lookup semantics.
+ * `induction` says `integerIndex` is a loop's induction variable. */
 function emitDenseReferenceArrayRead(
   host: LlvmEmitterContext,
   array: LlValue,
   index: LlValue,
   integerIndex: string | null,
+  induction: boolean,
   present: (value: string) => void,
   no: string,
   slow: string,
   join: string,
-  loadType: "ptr" | "i64" | "i8" = "ptr",
+  /** `i32`: an int32 array's slot, presented as the int32. */
+  loadType: "ptr" | "cref" | "i64" | "i8" | "i32" = "ptr",
 ): void {
   const B = host.B;
-  const range = B.newLabel("local.array.range"),
-    dense = B.newLabel("local.array.dense");
-  // The dense path uses the existing ScrArr ABI. Sparse indices and
-  // noncanonical numeric properties retain the runtime lookup semantics.
-  const capPtr = B.tmp(),
-    cap = B.tmp();
-  B.line(`${capPtr} = getelementptr inbounds %ScrArr, ptr ${array.name}, i32 0, i32 2`);
-  host.markMemoryPointer(capPtr, "array:header");
-  B.line(`${cap} = load ${host.sizeType}, ptr ${capPtr}${host.fieldAliasAttachment(capPtr)}`);
-  let offset: string, inRange: string;
+  const header = (field: number): string => {
+    const ptr = B.tmp();
+    B.line(`${ptr} = getelementptr inbounds %ScrArr, ptr ${array.name}, i32 0, i32 ${field}`);
+    host.markMemoryPointer(ptr, "array:header");
+    return ptr;
+  };
+  const valueLabel = B.newLabel("local.array.value");
+  // `key` is the index compared with the array's counts and `offset` the
+  // index that addresses its slots. A double index that is not an exact
+  // integer, like a sparse or noncanonical one, keeps the runtime lookup
+  // semantics; an exact one compares as i64, which a 32-bit target does
+  // before truncating it.
+  let key: string, keyType: string, offset: string;
   if (integerIndex) {
-    offset = integerIndex;
-    inRange = B.tmp();
-    B.line(`${inRange} = icmp ult ${host.sizeType} ${integerIndex}, ${cap}`);
+    key = offset = integerIndex;
+    keyType = host.sizeType;
   } else {
-    // Capacity bounds the dense slots; the length check below still decides presence.
-    const exact = exactIndexLines(index.name, cap, host.sizeType, () => B.tmp());
-    for (const line of exact.lines) B.line(line);
-    inRange = exact.ok;
-    offset = exact.wide;
+    const raw = B.tmp(),
+      back = B.tmp(),
+      integral = B.tmp(),
+      exact = B.newLabel("local.array.exact");
+    key = B.tmp();
+    keyType = "i64";
+    B.line(`${raw} = fptosi double ${index.name} to i64`);
+    B.line(`${key} = freeze i64 ${raw}`);
+    B.line(`${back} = sitofp i64 ${key} to double`);
+    B.line(`${integral} = fcmp oeq double ${back}, ${index.name}`);
+    B.condBr(integral, exact, slow);
+    B.startBlock(exact);
+    offset = key;
     if (host.sizeType !== "i64") {
       offset = B.tmp();
-      B.line(`${offset} = trunc i64 ${exact.wide} to ${host.sizeType}`);
+      B.line(`${offset} = trunc i64 ${key} to ${host.sizeType}`);
     }
   }
-  B.condBr(inRange, range, slow);
-  B.startBlock(range);
-  B.br(dense);
-  B.startBlock(dense);
-  // Below the hole-free prefix bound every state is a present value.
-  const filledPtr = B.tmp(),
-    filled = B.tmp(),
-    belowFilled = B.tmp(),
-    lenLabel = B.newLabel("local.array.len");
-  B.line(
-    `${filledPtr} = getelementptr inbounds %ScrArr, ptr ${array.name}, i32 0, i32 ${SCR_ARR_FIELD.filled}`,
-  );
-  host.markMemoryPointer(filledPtr, "array:header");
-  B.line(`${filled} = load i32, ptr ${filledPtr}${host.fieldAliasAttachment(filledPtr)}`);
-  let filledSized = filled;
-  if (host.sizeType !== "i32") {
-    filledSized = B.tmp();
-    B.line(`${filledSized} = zext i32 ${filled} to ${host.sizeType}`);
-  }
-  B.line(`${belowFilled} = icmp ult ${host.sizeType} ${offset}, ${filledSized}`);
-  const valueLabel = B.newLabel("local.array.value");
-  B.condBr(belowFilled, valueLabel, lenLabel);
-  B.startBlock(lenLabel);
-  const lenPtr = B.tmp(),
-    len = B.tmp(),
-    belowLen = B.tmp();
-  B.line(`${lenPtr} = getelementptr inbounds %ScrArr, ptr ${array.name}, i32 0, i32 1`);
-  host.markMemoryPointer(lenPtr, "array:header");
-  B.line(
-    `${len} = load ${host.sizeType}, ptr ${lenPtr}${host.fieldAliasAttachment(lenPtr)}${host.arrayLengthRange}`,
-  );
-  B.line(`${belowLen} = icmp ult ${host.sizeType} ${offset}, ${len}`);
-  const stateLabel = B.newLabel("local.array.state");
-  B.condBr(belowLen, stateLabel, no);
-  B.startBlock(stateLabel);
-  const statesPtr = B.tmp(),
-    states = B.tmp(),
-    statePtr = B.tmp(),
-    denseState = B.tmp(),
-    densePresent = B.tmp();
-  B.line(
-    `${statesPtr} = getelementptr inbounds %ScrArr, ptr ${array.name}, i32 0, i32 ${SCR_ARR_FIELD.present}`,
-  );
-  host.markMemoryPointer(statesPtr, "array:header");
-  B.line(`${states} = load ptr, ptr ${statesPtr}${host.fieldAliasAttachment(statesPtr)}`);
-  B.line(`${statePtr} = getelementptr inbounds i8, ptr ${states}, ${host.sizeType} ${offset}`);
-  host.markMemoryPointer(statePtr, "array:present");
-  B.line(`${denseState} = load i8, ptr ${statePtr}${host.fieldAliasAttachment(statePtr)}`);
-  B.line(`${densePresent} = icmp eq i8 ${denseState}, 1`);
-  B.condBr(densePresent, valueLabel, no);
-  B.startBlock(valueLabel);
-  const dataPtr = B.tmp(),
-    data = B.tmp(),
-    valuePtr = B.tmp(),
-    raw = B.tmp();
-  B.line(
-    `${dataPtr} = getelementptr inbounds %ScrArr, ptr ${array.name}, i32 0, i32 ${SCR_ARR_FIELD.data}`,
-  );
-  host.markMemoryPointer(dataPtr, "array:header");
+  const widen = (count: string, type: string): string => {
+    if (type === keyType) return count;
+    const wide = B.tmp();
+    B.line(`${wide} = zext ${type} ${count} to ${keyType}`);
+    return wide;
+  };
+  // The state and value paths both index from `data`: one load serves both.
+  const dataPtr = header(SCR_ARR_FIELD.data),
+    data = B.tmp();
   B.line(`${data} = load ptr, ptr ${dataPtr}${host.fieldAliasAttachment(dataPtr)}`);
-  // Boolean arrays store one byte per element; every other kind an 8-byte slot.
-  const slotType = loadType === "i8" ? "i8" : "i64";
+  // Below the hole-free prefix every state is a present value, and the
+  // prefix is at most the length and the capacity, so an index below it needs
+  // no other test before the value load.
+  const filledPtr = header(SCR_ARR_FIELD.filled),
+    filled = B.tmp(),
+    prefix = B.tmp();
+  B.line(`${filled} = load i32, ptr ${filledPtr}${host.fieldAliasAttachment(filledPtr)}`);
+  B.line(`${prefix} = icmp ult ${keyType} ${key}, ${widen(filled, "i32")}`);
+  if (induction) {
+    // The state of slot i is at data + cap * (width + 1) - 1 - i, and an
+    // inline state check makes LLVM keep -1 - i as a second induction
+    // variable in the loop; above the prefix the runtime reads the slot.
+    B.condBr(prefix, valueLabel, slow);
+  } else {
+    const range = B.newLabel("local.array.range"),
+      dense = B.newLabel("local.array.dense");
+    B.condBr(prefix, valueLabel, range);
+    B.startBlock(range);
+    const capPtr = header(SCR_ARR_FIELD.cap),
+      cap = B.tmp(),
+      inRange = B.tmp();
+    loadArrCount(host, cap, capPtr, host.fieldAliasAttachment(capPtr));
+    B.line(`${inRange} = icmp ult ${keyType} ${key}, ${widen(cap, host.sizeType)}`);
+    B.condBr(inRange, dense, slow);
+    // Within the capacity and above the prefix, a slot below the length is
+    // present when its state is.
+    B.startBlock(dense);
+    const lenPtr = header(SCR_ARR_FIELD.len),
+      len = B.tmp(),
+      belowLen = B.tmp();
+    loadArrCount(host, len, lenPtr, host.fieldAliasAttachment(lenPtr));
+    B.line(`${belowLen} = icmp ult ${host.sizeType} ${offset}, ${len}`);
+    const stateLabel = B.newLabel("local.array.state");
+    B.condBr(belowLen, stateLabel, no);
+    B.startBlock(stateLabel);
+    const statePtr = B.tmp(),
+      denseState = B.tmp(),
+      densePresent = B.tmp();
+    scrArrStateAt(
+      host,
+      statePtr,
+      data,
+      cap,
+      loadType === "i8" ? 1 : loadType === "cref" || loadType === "i32" ? 4 : 8,
+      offset,
+    );
+    host.markMemoryPointer(statePtr, "array:present");
+    B.line(`${denseState} = load i8, ptr ${statePtr}${host.fieldAliasAttachment(statePtr)}`);
+    B.line(`${densePresent} = icmp eq i8 ${denseState}, 1`);
+    B.condBr(densePresent, valueLabel, no);
+  }
+  B.startBlock(valueLabel);
+  const valuePtr = B.tmp(),
+    raw = B.tmp();
+  // Boolean arrays store one byte per element, compact references and int32
+  // arrays four, every other kind an 8-byte slot.
+  const slotType =
+    loadType === "i8" ? "i8" : loadType === "cref" || loadType === "i32" ? "i32" : "i64";
   B.line(
     `${valuePtr} = getelementptr inbounds ${slotType}, ptr ${data}, ${host.sizeType} ${offset}`,
   );
   host.markMemoryPointer(valuePtr, "array:elements");
-  B.line(`${raw} = load ${loadType}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+  if (loadType === "cref") {
+    const ref = B.tmp();
+    B.line(`${ref} = load i32, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+    for (const line of compactRefLoadLines(ref, raw, `${raw}.r`)) B.line(line.trimStart());
+  } else {
+    B.line(`${raw} = load ${loadType}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+  }
   present(raw);
   B.br(join);
 }
@@ -577,12 +609,42 @@ export function emitBorrowedArrayRead(
   const B = host.B;
   const array = host.emitStableReceiver(read.arr, [read.index]);
   const loopIndex = host.emitIntegerLoopIndex(read.index);
+  if (loopIndex !== null && host.provenDenseIndex(read.arr, read.index)) {
+    // In a dense array loop's fast copy, the entry test proved the counter
+    // below the array's hole-free prefix: the slot holds a present value.
+    const dataPtr = B.tmp(),
+      data = B.tmp(),
+      valuePtr = B.tmp(),
+      value = B.tmp();
+    B.line(
+      `${dataPtr} = getelementptr inbounds %ScrArr, ptr ${array.name}, i32 0, i32 ${SCR_ARR_FIELD.data}`,
+    );
+    host.markMemoryPointer(dataPtr, "array:header");
+    B.line(`${data} = load ptr, ptr ${dataPtr}${host.fieldAliasAttachment(dataPtr)}`);
+    if (referenceLoad(host, read.arr.type) === "cref") {
+      // Compact references: 4-byte slots holding the address over 8.
+      const ref = B.tmp();
+      B.line(
+        `${valuePtr} = getelementptr inbounds i32, ptr ${data}, ${host.sizeType} ${loopIndex}`,
+      );
+      host.markMemoryPointer(valuePtr, "array:elements");
+      B.line(`${ref} = load i32, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+      for (const line of compactRefLoadLines(ref, value, `${value}.r`)) B.line(line.trimStart());
+      B.line(`store ptr ${value}, ptr ${slot}`);
+      return;
+    }
+    B.line(`${valuePtr} = getelementptr inbounds i64, ptr ${data}, ${host.sizeType} ${loopIndex}`);
+    host.markMemoryPointer(valuePtr, "array:elements");
+    B.line(`${value} = load ptr, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+    B.line(`store ptr ${value}, ptr ${slot}`);
+    return;
+  }
   const index = host.emitExpr(read.index);
-  // A proven integer index (an int32 local, say) needs no double
-  // round-trip; a negative one compares above the capacity as unsigned.
-  const exact =
-    loopIndex === null && host.sizeType === "i64" ? exactInteger(host, index, read.index) : null;
-  const integerIndex = loopIndex ?? (exact ? widenInteger(host, exact) : null);
+  // A proven integer index (an int32 local, say), or a wide view exact at
+  // every index below the capacity, needs no double round-trip; a negative
+  // one compares above the capacity as unsigned.
+  const integerIndex =
+    loopIndex ?? (host.sizeType === "i64" ? indexInteger(host, index, read.index) : null);
   const slow = B.newLabel("borrow.array.slow"),
     join = B.newLabel("borrow.array.join");
   emitDenseReferenceArrayRead(
@@ -590,10 +652,12 @@ export function emitBorrowedArrayRead(
     array,
     index,
     integerIndex,
+    loopIndex !== null,
     (value) => B.line(`store ptr ${value}, ptr ${slot}`),
     slow,
     slow,
     join,
+    referenceLoad(host, read.arr.type),
   );
   B.startBlock(slow);
   host.declare("declare ptr @scr_arr_borrow_ref(ptr, double)");
@@ -616,8 +680,12 @@ export function emitLocalArrayRead(
 ): { slot: string; type: IrType } | null {
   const B = host.B;
   const array = host.emitStableReceiver(read.array, [read.index]);
-  const integerIndex = inline ? host.emitIntegerLoopIndex(read.index) : null;
+  const loopIndex = inline ? host.emitIntegerLoopIndex(read.index) : null;
   const index = host.emitExpr(read.index);
+  // As in emitBorrowedArrayRead: an exact integer or wide view needs no
+  // round trip, and only the loop's own counter is an induction variable.
+  const integerIndex =
+    loopIndex ?? (inline && host.sizeType === "i64" ? indexInteger(host, index, read.index) : null);
   const nullable = read.type.kind === "union" ? host.nullableUnions.get(read.type.unionId) : null;
   if (nullable) {
     // A nullable union is the element pointer itself: borrowed from an
@@ -629,10 +697,21 @@ export function emitLocalArrayRead(
     // A slot of a nullable-union array may hold NULL even when present.
     const owned = read.nullableElement ? read.type : read.element;
     const store = (value: string): void => {
-      B.line(`store ptr ${read.borrow ? value : host.retainValue(value, owned)}, ptr ${localSlot}`);
+      B.line(`store ptr ${read.borrow ? value : host.retainFrame(value, owned)}, ptr ${localSlot}`);
     };
     if (inline)
-      emitDenseReferenceArrayRead(host, array, index, integerIndex, store, no, slow, join, "ptr");
+      emitDenseReferenceArrayRead(
+        host,
+        array,
+        index,
+        integerIndex,
+        loopIndex !== null,
+        store,
+        no,
+        slow,
+        join,
+        referenceLoad(host, read.array.type),
+      );
     else B.br(slow);
     B.startBlock(slow);
     const present = B.newLabel("local.array.slow.value");
@@ -663,8 +742,15 @@ export function emitLocalArrayRead(
   const no = B.newLabel("local.array.missing"),
     join = B.newLabel("local.array.join");
   const scalar = isScalarElement(read.element);
+  // An int32 array's arms join on the int32 element, converted to the
+  // payload's double once at the join, so a consumer converting the payload
+  // back to an integer folds to the element.
+  const int32 = scalar && read.element.kind === "f64" && host.int32Array(read.array);
+  const element = int32 ? B.slot() : null;
+  if (element) B.entryAllocas.push(`${element} = alloca i32`);
   const storeValue = (value: string): void => {
-    if (scalar) {
+    if (element) B.line(`store i32 ${value}, ptr ${element}`);
+    else if (scalar) {
       // Slot bits for f64; a canonical 0/1 for bool, like scr_union_new_bool.
       let bits = value;
       if (read.element.kind === "bool") {
@@ -676,22 +762,85 @@ export function emitLocalArrayRead(
       B.line(`store i64 ${bits}, ptr ${payload}`);
     } else {
       B.line(
-        `store ptr ${read.borrow ? value : host.retainValue(value, read.element)}, ptr ${payload}`,
+        `store ptr ${read.borrow ? value : host.retainFrame(value, read.element)}, ptr ${payload}`,
       );
     }
     B.line(`store i32 ${read.presentTag}, ptr ${tag}`);
   };
-  if (inline)
+  if (inline && scalar && host.checkedInt32Array(read.array))
+    // An int32 array with checked stores: its int32 arm stores the element's
+    // double bits, as the double arm does.
+    host.emitByElementKind(array.name, null, (kind) => {
+      const present =
+        kind === "i32"
+          ? (value: string): void => {
+              const number = B.tmp(),
+                bits = B.tmp();
+              B.line(`${number} = sitofp i32 ${value} to double`);
+              B.line(`${bits} = bitcast double ${number} to i64`);
+              storeValue(bits);
+            }
+          : storeValue;
+      const loadType = kind === "i32" ? "i32" : "i64";
+      const induction = loopIndex !== null;
+      emitDenseReferenceArrayRead(
+        host,
+        array,
+        index,
+        integerIndex,
+        induction,
+        present,
+        no,
+        slow,
+        join,
+        loadType,
+      );
+      return null;
+    });
+  else if (
+    inline &&
+    loopIndex !== null &&
+    read.element.kind === "f64" &&
+    host.provenDenseIndex(read.array, read.index)
+  ) {
+    // In a dense array loop's fast copy, the entry test proved the counter
+    // below the array's hole-free prefix: the slot holds a present value,
+    // and the read has no missing arm.
+    const dataPtr = B.tmp(),
+      data = B.tmp(),
+      valuePtr = B.tmp(),
+      value = B.tmp(),
+      width = int32 ? "i32" : "i64";
+    B.line(
+      `${dataPtr} = getelementptr inbounds %ScrArr, ptr ${array.name}, i32 0, i32 ${SCR_ARR_FIELD.data}`,
+    );
+    host.markMemoryPointer(dataPtr, "array:header");
+    B.line(`${data} = load ptr, ptr ${dataPtr}${host.fieldAliasAttachment(dataPtr)}`);
+    B.line(
+      `${valuePtr} = getelementptr inbounds ${width}, ptr ${data}, ${host.sizeType} ${loopIndex}`,
+    );
+    host.markMemoryPointer(valuePtr, "array:elements");
+    B.line(`${value} = load ${width}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+    storeValue(value);
+    B.br(join);
+  } else if (inline)
     emitDenseReferenceArrayRead(
       host,
       array,
       index,
       integerIndex,
+      loopIndex !== null,
       storeValue,
       no,
       slow,
       join,
-      !scalar ? "ptr" : read.element.kind === "bool" ? "i8" : "i64",
+      !scalar
+        ? referenceLoad(host, read.array.type)
+        : read.element.kind === "bool"
+          ? "i8"
+          : int32
+            ? "i32"
+            : "i64",
     );
   else B.br(slow);
   B.startBlock(slow);
@@ -718,7 +867,8 @@ export function emitLocalArrayRead(
       B.line(
         `${value} = call double @scr_arr_get_f64(ptr ${array.name}, double ${index.name})${READ_FALLBACK}`,
       );
-      B.line(`${bits} = bitcast double ${value} to i64`);
+      if (element) B.line(`${bits} = fptosi double ${value} to i32`);
+      else B.line(`${bits} = bitcast double ${value} to i64`);
     } else {
       host.declare(`declare zeroext i1 @scr_arr_get_bool(ptr, double)`);
       B.line(
@@ -726,7 +876,8 @@ export function emitLocalArrayRead(
       );
       B.line(`${bits} = zext i1 ${value} to i64`);
     }
-    B.line(`store i64 ${bits}, ptr ${payload}`);
+    if (element) B.line(`store i32 ${bits}, ptr ${element}`);
+    else B.line(`store i64 ${bits}, ptr ${payload}`);
     B.line(`store i32 ${read.presentTag}, ptr ${tag}`);
   } else {
     const value = B.tmp(),
@@ -740,10 +891,20 @@ export function emitLocalArrayRead(
   }
   B.br(join);
   B.startBlock(no);
-  B.line(`store i64 0, ptr ${payload}`);
+  if (element) B.line(`store i32 0, ptr ${element}`);
+  else B.line(`store i64 0, ptr ${payload}`);
   B.line(`store i32 ${read.missingTag}, ptr ${tag}`);
   B.br(join);
   B.startBlock(join);
+  if (element) {
+    const value = B.tmp(),
+      number = B.tmp(),
+      bits = B.tmp();
+    B.line(`${value} = load i32, ptr ${element}`);
+    B.line(`${number} = sitofp i32 ${value} to double`);
+    B.line(`${bits} = bitcast double ${number} to i64`);
+    B.line(`store i64 ${bits}, ptr ${payload}`);
+  }
   B.line(`store ptr ${box}, ptr ${localSlot}`);
   return read.borrow || scalar ? null : { slot: payload, type: read.element };
 }

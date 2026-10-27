@@ -59,7 +59,7 @@ console-fences.ts:17:25 - error SC2020: 'console.dir with the 'showHidden' optio
      |                         ^~~~~~~~~~~~~~~~
   18 | 
 
-  hint: the lowered options are depth (numeric literal or null), colors: false, compact: 3, breakLength: 80, and customInspect: false
+  hint: the lowered options are depth (numeric literal or null), colors: false, compact (false or a number), breakLength, sorted (true or false), and customInspect: false
 
 console-fences.ts:22:35 - error SC2020: 'console.assert with a format string and computed arguments' is part of the standard library types but has no scriptc lowering yet
 

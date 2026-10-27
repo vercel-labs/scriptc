@@ -1,0 +1,39 @@
+scriptc coverage tests/coverage-fixtures/node-islands/main.ts
+
+  statements analyzed   29
+  compile statically    27  (93%)
+    in dynamic tier     17  (operate on values typed only at runtime; --explain-dynamic lists them)
+
+  npm package compilation:
+    ni-bundled  refused (its shipped JS carries build-transform markers (bundled/transpiled dist))
+    ni-gap      static
+    ni-eval     static
+    ni-ctor     static
+    ni-typed    static
+    ni-dep      static
+
+  Node islands   (would-be, report-only: the build is unchanged; --node-islands=auto)
+    gap           ni-gap@1.0.0
+          tests/coverage-fixtures/node-islands/node_modules/ni-gap/index.js:7:17: SC1090: a builtin function alias as an escaping value (call 'ext' directly) is not supported yet
+    runtime       ni-eval@1.0.0
+          tests/coverage-fixtures/node-islands/node_modules/ni-eval/index.js:4:10: R1.1 code from strings: new Function()
+    object-model  ni-ctor@1.0.0
+          tests/coverage-fixtures/node-islands/node_modules/ni-ctor/index.js:9:1: R2.1 constructor functions: a write of 'Counter.prototype.add'
+          +1 more reason in 1 module; carries ni-dep
+    packaging     ni-bundled@1.0.0
+          SC2013: its shipped JS carries build-transform markers (bundled/transpiled dist)
+    reached from native code and from an island: ni-typed
+    hint: scriptc coverage --explain-island=<package> lists every reason
+
+  deferred to runtime   1 site (JS statements that throw their fence if executed)
+      ×1  SC1090  a builtin function alias as an escaping value (call 'ext' directly)
+          at tests/coverage-fixtures/node-islands/node_modules/ni-gap/index.js:7:17
+          hint: this form is valid TypeScript but does not compile yet — rewrite it with a supported equivalent of the construct the message names (https://scriptc.dev/limitations lists the boundary)
+
+  blockers:
+      ×2  SC2013  cannot compile npm package 'ni-bundled' statically: its implementation is not part of the compiled module graph
+          at tests/coverage-fixtures/node-islands/main.ts:8:1, tests/coverage-fixtures/node-islands/main.ts:16:13
+          hint: use a dependency with supported source, or replace the unsupported operation; scriptc has no interpreter fallback
+      ×1  SC2013  cannot compile npm package 'ni-bundled' statically: its shipped JS carries build-transform markers (bundled/transpiled dist)
+          at tests/coverage-fixtures/node-islands/main.ts:8:1
+          hint: to compile it anyway, name it with --npm-static=ni-bundled (or --npm-static=ni-bundled... to include its dependencies)

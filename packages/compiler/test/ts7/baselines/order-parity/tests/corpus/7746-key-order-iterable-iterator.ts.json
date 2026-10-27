@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7746-key-order-iterable-iterator.ts"
+ ],
+ "diags": []
+}

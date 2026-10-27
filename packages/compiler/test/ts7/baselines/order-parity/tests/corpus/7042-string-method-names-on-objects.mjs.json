@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7042-string-method-names-on-objects.mjs"
+ ],
+ "diags": []
+}

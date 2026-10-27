@@ -13,6 +13,9 @@
  *    they MERGE as overloads instead of colliding — the Timeout handle maps
  *    to the numeric timer id either way, and .unref()/.ref()/.hasRef() are
  *    loop-liveness bookkeeping).
+ * 4. The WebAssembly namespace and BufferSource, which the DOM library
+ *    supplies in ordinary TypeScript projects (types only; every reached
+ *    use of the API is refused at its site).
  *
  * This file ships to EVERY program scriptc builds — the lowering program
  * and preflight's project-world second-chance program alike (a project
@@ -108,3 +111,134 @@ declare function clearTimeout(handle?: Timeout | number | null | undefined): voi
  * baked result is exactly what Node would compute at runtime (the
  * differential harness verifies this with a `comptime = (f) => f()` shim). */
 declare function comptime<T>(compute: () => T): T;
+
+/* The JavaScript WebAssembly API, as the DOM library declares it (scriptc's
+ * ES-only type world never loads lib.dom, and @types/node leaves it to
+ * lib.dom). Packages whose declarations name these types (quickjs-wasi,
+ * photon-node, ...) typecheck against them. These are types only: the
+ * type mapper gives every type declared here the checked-dynamic
+ * representation, and the lowerer refuses each reached use of the API with
+ * a located diagnostic (frontend/lowering/builtins/webassembly.ts).
+ * BufferSource admits every ArrayBufferView, as lib.dom did before
+ * TypeScript 5.7: Node's Buffer types are views over ArrayBufferLike. */
+type BufferSource = ArrayBufferView | ArrayBuffer;
+declare namespace WebAssembly {
+  interface CompileError extends Error {}
+  var CompileError: {
+    prototype: CompileError;
+    new (message?: string): CompileError;
+    (message?: string): CompileError;
+  };
+  interface Global<T extends ValueType = ValueType> {
+    value: ValueTypeMap[T];
+    valueOf(): ValueTypeMap[T];
+  }
+  var Global: {
+    prototype: Global;
+    new <T extends ValueType = ValueType>(
+      descriptor: GlobalDescriptor<T>,
+      v?: ValueTypeMap[T],
+    ): Global<T>;
+  };
+  interface Instance {
+    readonly exports: Exports;
+  }
+  var Instance: {
+    prototype: Instance;
+    new (module: Module, importObject?: Imports): Instance;
+  };
+  interface LinkError extends Error {}
+  var LinkError: {
+    prototype: LinkError;
+    new (message?: string): LinkError;
+    (message?: string): LinkError;
+  };
+  interface Memory {
+    readonly buffer: ArrayBuffer;
+    grow(delta: number): number;
+  }
+  var Memory: {
+    prototype: Memory;
+    new (descriptor: MemoryDescriptor): Memory;
+  };
+  interface Module {}
+  var Module: {
+    prototype: Module;
+    new (bytes: BufferSource): Module;
+    customSections(moduleObject: Module, sectionName: string): ArrayBuffer[];
+    exports(moduleObject: Module): ModuleExportDescriptor[];
+    imports(moduleObject: Module): ModuleImportDescriptor[];
+  };
+  interface RuntimeError extends Error {}
+  var RuntimeError: {
+    prototype: RuntimeError;
+    new (message?: string): RuntimeError;
+    (message?: string): RuntimeError;
+  };
+  interface Table {
+    readonly length: number;
+    get(index: number): any;
+    grow(delta: number, value?: any): number;
+    set(index: number, value?: any): void;
+  }
+  var Table: {
+    prototype: Table;
+    new (descriptor: TableDescriptor, value?: any): Table;
+  };
+  interface GlobalDescriptor<T extends ValueType = ValueType> {
+    mutable?: boolean;
+    value: T;
+  }
+  interface MemoryDescriptor {
+    initial: number;
+    maximum?: number;
+    shared?: boolean;
+  }
+  interface ModuleExportDescriptor {
+    kind: ImportExportKind;
+    name: string;
+  }
+  interface ModuleImportDescriptor {
+    kind: ImportExportKind;
+    module: string;
+    name: string;
+  }
+  interface TableDescriptor {
+    element: TableKind;
+    initial: number;
+    maximum?: number;
+  }
+  interface ValueTypeMap {
+    anyfunc: Function;
+    externref: any;
+    f32: number;
+    f64: number;
+    i32: number;
+    i64: bigint;
+    v128: never;
+  }
+  interface WebAssemblyInstantiatedSource {
+    instance: Instance;
+    module: Module;
+  }
+  type ImportExportKind = "function" | "global" | "memory" | "table";
+  type TableKind = "anyfunc" | "externref";
+  type ExportValue = Function | Global | Memory | Table;
+  type Exports = Record<string, ExportValue>;
+  type ImportValue = ExportValue | number;
+  type Imports = Record<string, ModuleImports>;
+  type ModuleImports = Record<string, ImportValue>;
+  type ValueType = keyof ValueTypeMap;
+  function compile(bytes: BufferSource): Promise<Module>;
+  function compileStreaming(source: Response | PromiseLike<Response>): Promise<Module>;
+  function instantiate(
+    bytes: BufferSource,
+    importObject?: Imports,
+  ): Promise<WebAssemblyInstantiatedSource>;
+  function instantiate(moduleObject: Module, importObject?: Imports): Promise<Instance>;
+  function instantiateStreaming(
+    source: Response | PromiseLike<Response>,
+    importObject?: Imports,
+  ): Promise<WebAssemblyInstantiatedSource>;
+  function validate(bytes: BufferSource): boolean;
+}

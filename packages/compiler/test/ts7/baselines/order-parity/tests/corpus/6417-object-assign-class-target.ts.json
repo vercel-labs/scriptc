@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6417-object-assign-class-target.ts"
+ ],
+ "diags": []
+}

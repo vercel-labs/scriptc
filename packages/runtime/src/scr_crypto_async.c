@@ -230,3 +230,83 @@ void scr_crypto_generate_key_async(ScrDyn *type, ScrDyn *options, ScrClosure *cb
   }
   scr_crypto_defer_dyn(key, NULL, cb, fn);
 }
+
+/* util.promisify over the callback forms above. The callback is a closure
+ * that owns the pending promise in caps[0], and each adapter below settles
+ * that promise where the callback would run: an error rejects it, and the
+ * value fulfills it in the representation the promise's type uses. */
+static ScrPromise *scr_crypto_promise_of(ScrClosure *cb) {
+  ScrPromise *p;
+  memcpy(&p, &cb->caps[0]->slot, sizeof p);
+  return p;
+}
+
+ScrClosure *scr_crypto_promise_callback(ScrPromise *promise) {
+  ScrClosure *cb = scr_closure_new(NULL, 1);
+  cb->caps[0] = scr_box_new_obj(scr_promise_retain_v, scr_promise_release_v, NULL);
+  scr_box_set_ref(cb->caps[0], scr_promise_retain(promise));
+  return cb;
+}
+
+/* An argument error thrown before the operation started rejects the
+ * promise, as the throw inside Node's promisify wrapper does. */
+void scr_crypto_promise_reject_thrown(ScrPromise *promise) {
+  if (scr_exc_pending()) scr_promise_reject_pending(promise);
+}
+
+static bool scr_crypto_promise_rejected(ScrPromise *p, ScrError *error) {
+  if (!error) return false;
+  scr_throw_obj(scr_error_retain(error), &scr_error_retain_v, &scr_error_release_v,
+                scr_error_trace_arg());
+  scr_promise_reject_pending(p);
+  return true;
+}
+
+static void scr_crypto_promise_fulfill_dyn(ScrPromise *p, ScrDyn *value /* moves */) {
+  scr_promise_fulfill_ref(p, value, scr_dyn_retain_v, scr_dyn_release_v, NULL);
+}
+
+void scr_crypto_promise_settle_bytes(ScrClosure *cb, ScrError *error, ScrBytes *value) {
+  ScrPromise *p = scr_crypto_promise_of(cb);
+  if (scr_crypto_promise_rejected(p, error)) return;
+  scr_promise_fulfill_ref(p, value, scr_bytes_retain_v, scr_bytes_release_v, NULL);
+}
+
+void scr_crypto_promise_settle_buffer_dyn(ScrClosure *cb, ScrError *error, ScrBytes *value) {
+  ScrPromise *p = scr_crypto_promise_of(cb);
+  if (scr_crypto_promise_rejected(p, error)) return;
+  ScrDyn *boxed = scr_dyn_new_buffer(value);
+  scr_bytes_release(value);
+  scr_crypto_promise_fulfill_dyn(p, boxed);
+}
+
+void scr_crypto_promise_settle_view_dyn(ScrClosure *cb, ScrError *error, ScrBytes *value) {
+  ScrPromise *p = scr_crypto_promise_of(cb);
+  if (scr_crypto_promise_rejected(p, error)) return;
+  ScrDyn *boxed = scr_dyn_new_bytes(value);
+  scr_bytes_release(value);
+  scr_crypto_promise_fulfill_dyn(p, boxed);
+}
+
+void scr_crypto_promise_settle_array_buffer(ScrClosure *cb, ScrError *error, ScrBytes *value) {
+  ScrPromise *p = scr_crypto_promise_of(cb);
+  if (scr_crypto_promise_rejected(p, error)) return;
+  ScrDyn *buffer = scr_array_buffer_from_bytes(value);
+  scr_bytes_release(value);
+  scr_crypto_promise_fulfill_dyn(p, buffer);
+}
+
+/* generateKey and the checked-dynamic randomFill pass a ScrDyn value. */
+void scr_crypto_promise_settle_dyn(ScrClosure *cb, ScrError *error, ScrBytes *value) {
+  ScrPromise *p = scr_crypto_promise_of(cb);
+  if (scr_crypto_promise_rejected(p, error)) return;
+  scr_crypto_promise_fulfill_dyn(p, (ScrDyn *)value);
+}
+
+void scr_crypto_promise_settle_number(ScrClosure *cb, double value) {
+  scr_promise_fulfill_f64(scr_crypto_promise_of(cb), value);
+}
+
+void scr_crypto_promise_settle_number_dyn(ScrClosure *cb, double value) {
+  scr_crypto_promise_fulfill_dyn(scr_crypto_promise_of(cb), scr_dyn_new_num(value));
+}

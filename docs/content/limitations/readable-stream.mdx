@@ -1,0 +1,6 @@
+`readable-stream` 2.x, 3.x and 4.x compile as Node.js's built-in `stream` module.
+For 2.x and 4.x, that is the package's own behavior when the `READABLE_STREAM` environment variable is `disable`.
+Without that variable, Node.js runs the package's JavaScript copy of the stream classes, so a native build can differ from Node.js wherever a program depends on that difference: `instanceof` checks against the built-in classes, class identity, error messages, and timing details.
+The package's `lib/_stream_*.js` files also compile as the matching built-in classes, although Node.js loads the package's own implementations through them in every environment.
+`readable-stream` 3.x is a copy of Node.js 10's streams.
+Its own `disable` mode throws on Node.js 24, so no setting makes Node.js run it against the built-in classes; a native build maps the members its entry exports (the stream classes, `Stream`, `finished` and `pipeline`) to the built-in ones.

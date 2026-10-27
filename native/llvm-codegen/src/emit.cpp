@@ -6,13 +6,23 @@
 #include "runtime-import.h"
 #include "target.h"
 
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/Analysis/RuntimeLibcallInfo.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/Bitcode/BitcodeWriterPass.h"
+#include "llvm/CodeGen/MachineDominators.h"
+#include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/CodeGen/MachineFunctionPass.h"
+#include "llvm/CodeGen/MachineModuleInfo.h"
+#include "llvm/IR/DiagnosticHandler.h"
 #include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/DiagnosticPrinter.h"
 #include "llvm/IR/LegacyPassManager.h"
@@ -20,7 +30,14 @@
 #include "llvm/IR/Verifier.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/LTO/LTO.h"
+#include "llvm/Pass.h"
+#include "llvm/PassInfo.h"
+#include "llvm/PassRegistry.h"
 #include "llvm/Passes/PassBuilder.h"
+#include "llvm/ProfileData/InstrProfReader.h"
+#include "llvm/Support/CommandLine.h"
+#include "llvm/Support/PGOOptions.h"
+#include "llvm/Support/VirtualFileSystem.h"
 #include "llvm/Support/Caching.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -28,11 +45,14 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ThreadPool.h"
 #include "llvm/Support/Threading.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/Utils/SplitModule.h"
 
+#include <algorithm>
+#include <atomic>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -44,6 +64,13 @@ using namespace llvm;
 namespace scriptc {
 
 static constexpr size_t MaxPartitions = 64;
+// The thin link's import allowance for hot and hottest call edges, as a
+// multiple of the usual size limit, in builds with a profile. See
+// limitProfileImports().
+static constexpr const char *ProfileImportMultiplier = "2";
+// The thin link's size limit, in instructions, for a callee it imports into
+// a partition that calls it. See limitImports().
+static constexpr const char *ImportInstructionLimit = "40";
 
 std::optional<EmitOptions> parseEmitOptions(int Argc, char **Argv) {
   EmitOptions Options;
@@ -73,10 +100,19 @@ std::optional<EmitOptions> parseEmitOptions(int Argc, char **Argv) {
       Options.ImportBitcode.push_back(Value.str());
     else if (Arg == "--cache-dir")
       Options.CacheDirectory = Value.str();
+    else if (Arg == "--profile-generate")
+      Options.ProfileGenerate = Value.str();
+    else if (Arg == "--profile-use")
+      Options.ProfileUse = Value.str();
+    else if (Arg == "--split" && Value == "codegen")
+      Options.SplitCodegen = true;
     else
       return std::nullopt;
   }
   if (Options.Input.empty() || Options.Outputs.empty())
+    return std::nullopt;
+  // A build either collects a profile or uses one.
+  if (!Options.ProfileGenerate.empty() && !Options.ProfileUse.empty())
     return std::nullopt;
   return Options;
 }
@@ -114,21 +150,222 @@ PipelineTuningOptions tuningFor(OptimizationLevel Level) {
   return Tuning;
 }
 
+// The profile-guided optimization a build asks for: IR instrumentation that
+// writes raw profiles to the ProfileGenerate pattern, or annotation from the
+// indexed ProfileUse profile. Functions the profile does not describe, or
+// whose control flow changed since it was collected, are optimized as without
+// one, so a stale profile loses only its gain.
+std::optional<PGOOptions> profileOptions(const EmitOptions &Options) {
+  if (!Options.ProfileGenerate.empty())
+    return PGOOptions(Options.ProfileGenerate, "", "", "",
+                      PGOOptions::IRInstr);
+  if (!Options.ProfileUse.empty())
+    return PGOOptions(Options.ProfileUse, "", "", "", PGOOptions::IRUse);
+  return std::nullopt;
+}
+
+// With a profile, the thin link imports the callees of hot call edges up to
+// 10 times, and of the hottest edges up to 100 times, the usual size limit,
+// into every partition that calls them. On large programs that triples the
+// build's time and memory for no measurable run-time gain over a much smaller
+// allowance, so profile builds use that one. The importer's limits are
+// process-wide options; the helper sets them once.
+void limitProfileImports() {
+  static const bool Limited = [] {
+    auto Registered = cl::getRegisteredOptions();
+    for (StringRef Name :
+         {"import-hot-multiplier", "import-critical-multiplier"})
+      if (cl::Option *Option = Registered.lookup(Name))
+        Option->addOccurrence(0, Name, ProfileImportMultiplier);
+    return true;
+  }();
+  (void)Limited;
+}
+
+// The thin link imports a callee of up to 100 instructions, LLVM's default,
+// into every partition that calls it, and each partition then optimizes and
+// compiles its imported copies again. On tsc-ts (64 partitions) a limit of 40
+// takes about 7% off the helper's time, and the program runs as fast; 30 and
+// below made it run 1-8% slower. The limit is a process-wide option; the
+// helper sets it once.
+void limitImports() {
+  static const bool Limited = [] {
+    if (cl::Option *Option =
+            cl::getRegisteredOptions().lookup("import-instr-limit"))
+      Option->addOccurrence(0, "import-instr-limit", ImportInstructionLimit);
+    return true;
+  }();
+  (void)Limited;
+}
+
+// Drops the names of a partition's struct types before its summary is
+// written. Every partition declares the program's types under the same
+// names, and a thin link loads the importing partition and the partitions
+// it imports from into one context, which tells same-named types apart by
+// appending a counter that runs across the whole link. An edit that adds a
+// type anywhere shifts the counter, so the module after importing, the
+// object cache key, changed in partitions whose code had not. Unnamed types
+// carry no such suffix; importing still matches them by their bodies.
+struct UnnameStructTypes : PassInfoMixin<UnnameStructTypes> {
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
+    for (StructType *Type : M.getIdentifiedStructTypes())
+      Type->setName("");
+    return PreservedAnalyses::all();
+  }
+  static bool isRequired() { return true; }
+};
+
+// How the --profile-use profile matched the functions it annotated, summed
+// over partitions: functions that received its counts, functions whose
+// control flow changed since it was collected (hash mismatch), and functions
+// it has no record of (new since it was collected, or never run in training
+// when the profile was merged with --sparse). A partition reused from the cache without its counts is counted
+// in Unknown.
+struct ProfileMatch {
+  std::atomic<uint64_t> Annotated{0};
+  std::atomic<uint64_t> Mismatched{0};
+  std::atomic<uint64_t> Missing{0};
+  std::atomic<uint64_t> Unknown{0};
+
+  void add(const ProfileMatch &Other) {
+    Annotated += Other.Annotated;
+    Mismatched += Other.Mismatched;
+    Missing += Other.Missing;
+  }
+
+  std::string serialize() const {
+    return formatv("{0} {1} {2}", Annotated.load(), Mismatched.load(),
+                   Missing.load())
+        .str();
+  }
+
+  bool deserialize(StringRef Text) {
+    SmallVector<StringRef, 3> Parts;
+    Text.split(Parts, ' ');
+    uint64_t Values[3];
+    if (Parts.size() != 3)
+      return false;
+    for (size_t I = 0; I < 3; ++I)
+      if (Parts[I].getAsInteger(10, Values[I]))
+        return false;
+    Annotated += Values[0];
+    Mismatched += Values[1];
+    Missing += Values[2];
+    return true;
+  }
+};
+
+// Counts the profile annotation's hash-mismatch and missing-function
+// warnings instead of printing them. Every other diagnostic takes the
+// context's default handling.
+class ProfileMatchHandler : public DiagnosticHandler {
+public:
+  explicit ProfileMatchHandler(ProfileMatch &Match) : Match(Match) {}
+
+  bool handleDiagnostics(const DiagnosticInfo &Info) override {
+    if (Info.getKind() != DK_PGOProfile)
+      return false;
+    std::string Message;
+    raw_string_ostream Stream(Message);
+    DiagnosticPrinterRawOStream Printer(Stream);
+    Info.print(Printer);
+    if (StringRef(Message).contains("hash mismatch"))
+      ++Match.Mismatched;
+    else if (StringRef(Message).contains_insensitive("no profile data"))
+      ++Match.Missing;
+    else
+      return false;
+    return true;
+  }
+
+private:
+  ProfileMatch &Match;
+};
+
+// The annotation warns about functions the profile does not describe only
+// when asked; the match counts need those warnings. Process-wide, set once.
+void reportMissingProfiles() {
+  static const bool Reported = [] {
+    if (cl::Option *Option =
+            cl::getRegisteredOptions().lookup("pgo-warn-missing-function"))
+      Option->addOccurrence(0, "pgo-warn-missing-function", "true");
+    return true;
+  }();
+  (void)Reported;
+}
+
+// Functions of `M` that the profile annotated with counts.
+uint64_t annotatedFunctions(const Module &M) {
+  uint64_t Count = 0;
+  for (const Function &F : M) {
+    if (F.isDeclaration())
+      continue;
+    std::optional<Function::ProfileCount> Entry = F.getEntryCount();
+    if (Entry && !Entry->isSynthetic())
+      ++Count;
+  }
+  return Count;
+}
+
+// Prints the profile match as the successful emit's one line of JSON.
+void reportProfileMatch(const ProfileMatch &Match) {
+  json::Object Profile{{"annotated", Match.Annotated.load()},
+                       {"mismatched", Match.Mismatched.load()},
+                       {"missing", Match.Missing.load()},
+                       {"unknown_partitions", Match.Unknown.load()}};
+  json::Object Response{{"ok", true}, {"profile", std::move(Profile)}};
+  outs() << formatv("{0}\n", json::Value(std::move(Response)));
+}
+
+// Reads the profile's header once, before any partition needs it: it must
+// hold IR-level counts.
+std::optional<EmitFailure> inspectProfile(const EmitOptions &Options) {
+  if (Options.ProfileUse.empty())
+    return std::nullopt;
+  Expected<std::unique_ptr<IndexedInstrProfReader>> Reader =
+      IndexedInstrProfReader::create(Options.ProfileUse,
+                                     *vfs::getRealFileSystem());
+  if (!Reader)
+    return EmitFailure{"profile_read_failed",
+                       Options.ProfileUse + ": " +
+                           toString(Reader.takeError())};
+  if (!(*Reader)->isIRLevelProfile())
+    return EmitFailure{"profile_read_failed",
+                       Options.ProfileUse +
+                           ": not an IR-level instrumentation profile"};
+  return std::nullopt;
+}
+
 // Owns the analysis managers a pipeline needs for one module.
 struct Pipeline {
+  PassInstrumentationCallbacks Callbacks;
   LoopAnalysisManager LAM;
   FunctionAnalysisManager FAM;
   CGSCCAnalysisManager CGAM;
   ModuleAnalysisManager MAM;
   PassBuilder PB;
 
-  Pipeline(TargetMachine &Machine, OptimizationLevel Level)
-      : PB(&Machine, tuningFor(Level)) {
+  Pipeline(TargetMachine &Machine, OptimizationLevel Level,
+           std::optional<PGOOptions> Profile = std::nullopt)
+      : PB(&Machine, tuningFor(Level), std::move(Profile), &Callbacks) {
     PB.registerModuleAnalyses(MAM);
     PB.registerCGSCCAnalyses(CGAM);
     PB.registerFunctionAnalyses(FAM);
     PB.registerLoopAnalyses(LAM);
     PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+  }
+
+  // Adds to Count the functions the profile annotation gave counts to, as
+  // soon as that pass has run: inlining and dead code elimination later in
+  // the pipeline delete annotated functions.
+  void countAnnotated(std::atomic<uint64_t> &Count) {
+    Callbacks.registerAfterPassCallback(
+        [&Count](StringRef PassID, Any IR, const PreservedAnalyses &) {
+          if (PassID != "PGOInstrumentationUse")
+            return;
+          if (const auto *M = llvm::any_cast<const Module *>(&IR))
+            Count += annotatedFunctions(**M);
+        });
   }
 };
 
@@ -139,6 +376,138 @@ std::optional<EmitFailure> verify(Module &M, StringRef Code) {
     return EmitFailure{Code.str(), Stream.str()};
   return std::nullopt;
 }
+
+// Runs WebAssembly's pass that gives multiple-entry loops a single entry only
+// on functions that have such a loop. The pass first records, for every
+// block, every block it can reach, so its time and memory grow with the
+// square of the block count even when it changes nothing: a module
+// initializer of 40,000 blocks took four minutes and 22 GB in it. It changes
+// a function only when two loop entries can reach each other, which a
+// reducible control flow graph never has, so skipping reducible functions
+// leaves the output unchanged.
+class IrreducibleControlFlowOnly final : public MachineFunctionPass {
+public:
+  static char ID;
+
+  explicit IrreducibleControlFlowOnly(FunctionPass *Fix)
+      : MachineFunctionPass(ID), Fix(Fix) {}
+
+  StringRef getPassName() const override { return Fix->getPassName(); }
+
+  bool doInitialization(Module &M) override {
+    MachineFunctionPass::doInitialization(M);
+    return Fix->doInitialization(M);
+  }
+
+  bool doFinalization(Module &M) override { return Fix->doFinalization(M); }
+
+  void getAnalysisUsage(AnalysisUsage &Usage) const override {
+    Fix->getAnalysisUsage(Usage);
+  }
+
+  bool runOnMachineFunction(MachineFunction &MF) override {
+    if (isReducible(MF))
+      return false;
+    // The wrapped pass reads the machine function through the module's
+    // machine code analysis, which this pass requires on its behalf.
+    if (Fix->getResolver() == nullptr) {
+      auto *Resolver = new AnalysisResolver(getResolver()->getPMDataManager());
+      Resolver->addAnalysisImplsPair(
+          &MachineModuleInfoWrapperPass::ID,
+          &getAnalysis<MachineModuleInfoWrapperPass>());
+      Fix->setResolver(Resolver);
+    }
+    return Fix->runOnFunction(MF.getFunction());
+  }
+
+private:
+  // A graph is reducible when every edge that a depth-first search finds
+  // going back to a block on its stack targets a block that dominates the
+  // edge's source. Blocks the entry cannot reach count as irreducible, since
+  // the wrapped pass also examines them.
+  static bool isReducible(MachineFunction &MF) {
+    MachineDominatorTree Dominators(MF);
+    enum class State : unsigned char { New, Active, Done };
+    std::vector<State> States(MF.getNumBlockIDs(), State::New);
+    SmallVector<std::pair<MachineBasicBlock *,
+                          MachineBasicBlock::succ_iterator>,
+                32>
+        Stack;
+    size_t Visited = 1;
+    MachineBasicBlock *Entry = &MF.front();
+    States[Entry->getNumber()] = State::Active;
+    Stack.push_back({Entry, Entry->succ_begin()});
+    while (!Stack.empty()) {
+      auto &[Block, Next] = Stack.back();
+      if (Next == Block->succ_end()) {
+        States[Block->getNumber()] = State::Done;
+        Stack.pop_back();
+        continue;
+      }
+      MachineBasicBlock *Successor = *Next++;
+      State &Seen = States[Successor->getNumber()];
+      if (Seen == State::Active) {
+        if (!Dominators.dominates(Successor, Block))
+          return false;
+      } else if (Seen == State::New) {
+        Seen = State::Active;
+        ++Visited;
+        Stack.push_back({Successor, Successor->succ_begin()});
+      }
+    }
+    return Visited == MF.size();
+  }
+
+  std::unique_ptr<FunctionPass> Fix;
+};
+
+char IrreducibleControlFlowOnly::ID = 0;
+
+// The code generation pipeline for one module, with two changes for
+// WebAssembly. The irreducible control flow pass runs only where it can
+// change the function (see IrreducibleControlFlowOnly). Object emission also
+// leaves out the last machine pass, a module pass that records the external
+// symbols every function uses so that assembly output can declare them
+// before the first function. A module pass in the middle of the pipeline
+// keeps the machine code of every function alive until all of them are
+// compiled. Object files do not contain those declarations, and the printer
+// creates each symbol when it lowers the first use, so without the pass each
+// function's machine code is freed once it is printed.
+class CodeGenPasses final : public legacy::PassManagerBase {
+public:
+  CodeGenPasses(const TargetMachine &Machine, CodeGenFileType Type)
+      : Wasm(Machine.getTargetTriple().isWasm()),
+        Object(Type == CodeGenFileType::ObjectFile) {}
+
+  void add(Pass *P) override {
+    if (Wasm) {
+      StringRef Argument = passArgument(*P);
+      if (Argument == "wasm-fix-irreducible-control-flow") {
+        Passes.add(
+            new IrreducibleControlFlowOnly(static_cast<FunctionPass *>(P)));
+        return;
+      }
+      if (Object && Argument == "wasm-mclower-prepass") {
+        delete P;
+        return;
+      }
+    }
+    Passes.add(P);
+  }
+
+  void run(Module &M) { Passes.run(M); }
+
+private:
+  static StringRef passArgument(const Pass &P) {
+    const PassInfo *Info =
+        PassRegistry::getPassRegistry()->getPassInfo(P.getPassID());
+    return Info == nullptr ? StringRef() : Info->getPassArgument();
+  }
+
+  bool Wasm;
+  bool Object;
+  legacy::PassManager Passes;
+};
 
 // Writes code for an optimized module to a unique sibling of OutputPath,
 // which is appended to Temporaries once it exists.
@@ -153,7 +522,7 @@ generateCode(Module &M, TargetMachine &Machine, CodeGenFileType Type,
     return EmitFailure{"output_open_failed", EC.message()};
   Temporaries.push_back(TemporaryPath);
   raw_fd_ostream Output(TemporaryFd, true);
-  legacy::PassManager CodeGeneration;
+  CodeGenPasses CodeGeneration(Machine, Type);
   if (Machine.addPassesToEmitFile(CodeGeneration, Output, nullptr, Type))
     return EmitFailure{"emission_not_supported",
                        "target does not support the requested file type"};
@@ -178,9 +547,16 @@ std::optional<EmitFailure> publish(StringRef TemporaryPath,
 
 std::optional<EmitFailure>
 emitModule(Module &M, TargetMachine &Machine, OptimizationLevel Level,
-           CodeGenFileType Type, StringRef OutputPath,
-           std::vector<SmallString<256>> &Temporaries) {
-  Pipeline P(Machine, Level);
+           std::optional<PGOOptions> Profile, CodeGenFileType Type,
+           StringRef OutputPath, std::vector<SmallString<256>> &Temporaries,
+           ProfileMatch &Match) {
+  bool Annotating = Profile && Profile->Action == PGOOptions::IRUse;
+  if (Annotating)
+    M.getContext().setDiagnosticHandler(
+        std::make_unique<ProfileMatchHandler>(Match));
+  Pipeline P(Machine, Level, std::move(Profile));
+  if (Annotating)
+    P.countAnnotated(Match.Annotated);
   P.PB.buildPerModuleDefaultPipeline(Level).run(M, P.MAM);
   if (std::optional<EmitFailure> Failure =
           verify(M, "post_optimization_verification_failed"))
@@ -321,11 +697,11 @@ compileUnoptimizedPartitions(const EmitOptions &Options,
     if (!Mod)
       return Failures.set({"partition_failed", toString(Mod.takeError())});
     // The O0 pipeline still lowers coroutines and always-inline calls.
-    Pipeline P(*Machine, OptimizationLevel::O0);
+    Pipeline P(*Machine, OptimizationLevel::O0, profileOptions(Options));
     P.PB.buildPerModuleDefaultPipeline(OptimizationLevel::O0)
         .run(**Mod, P.MAM);
     raw_svector_ostream Output(Objects[I]);
-    legacy::PassManager CodeGeneration;
+    CodeGenPasses CodeGeneration(*Machine, CodeGenFileType::ObjectFile);
     if (Machine->addPassesToEmitFile(CodeGeneration, Output, nullptr,
                                      CodeGenFileType::ObjectFile))
       return Failures.set({"emission_not_supported",
@@ -347,20 +723,32 @@ std::optional<EmitFailure>
 compileOptimizedPartitions(const EmitOptions &Options,
                            const PartitionPlan &Plan, OptimizationLevel Level,
                            StringRef Salt, const ArtifactCache &Cache,
-                           std::vector<SmallVector<char, 0>> &Objects) {
+                           std::vector<SmallVector<char, 0>> &Objects,
+                           ProfileMatch &Match) {
   size_t Count = Plan.Modules.size();
+  bool Annotating = !Options.ProfileUse.empty();
   std::vector<std::unique_ptr<MemoryBuffer>> Summaries(Count);
   SharedFailure Failures;
   forEachPartition(Count, [&](size_t I) {
     std::string Key = hashParts({Salt, "summary", Plan.Modules[I]});
-    if ((Summaries[I] = Cache.lookup(Key, "bc")))
+    if ((Summaries[I] = Cache.lookup(Key, "bc"))) {
+      if (Annotating) {
+        std::unique_ptr<MemoryBuffer> Counts = Cache.lookup(Key, "match");
+        if (!Counts || !Match.deserialize(Counts->getBuffer()))
+          ++Match.Unknown;
+      }
       return;
+    }
     std::string LookupError;
     std::unique_ptr<TargetMachine> Machine =
         createTargetMachine(Options.Target, Options.OptLevel, LookupError);
     if (!Machine)
       return Failures.set({"target_machine_failed", LookupError});
     LLVMContext Context;
+    ProfileMatch PartitionMatch;
+    if (Annotating)
+      Context.setDiagnosticHandler(
+          std::make_unique<ProfileMatchHandler>(PartitionMatch));
     Expected<std::unique_ptr<Module>> Loaded =
         loadPartition(Options, Plan.Modules[I], I, Context, *Machine);
     if (!Loaded)
@@ -381,12 +769,22 @@ compileOptimizedPartitions(const EmitOptions &Options,
     SmallVector<char, 0> Bitcode;
     {
       raw_svector_ostream Stream(Bitcode);
-      Pipeline P(*Machine, Level);
+      // Profile instrumentation or annotation happens here, before the thin
+      // link; the post-link optimization reads the annotated weights.
+      Pipeline P(*Machine, Level, profileOptions(Options));
+      if (Annotating)
+        P.countAnnotated(PartitionMatch.Annotated);
       ModulePassManager MPM = P.PB.buildThinLTOPreLinkDefaultPipeline(Level);
+      MPM.addPass(UnnameStructTypes());
       MPM.addPass(BitcodeWriterPass(Stream, /*ShouldPreserveUseListOrder=*/false,
                                     /*EmitSummaryIndex=*/true,
                                     /*EmitModuleHash=*/true));
       MPM.run(Mod, P.MAM);
+    }
+    if (Annotating) {
+      Match.add(PartitionMatch);
+      // Stored before the summary, so a reused summary finds its counts.
+      Cache.store(Key, "match", PartitionMatch.serialize());
     }
     StringRef Contents(Bitcode.data(), Bitcode.size());
     Cache.store(Key, "bc", Contents);
@@ -437,12 +835,57 @@ compileOptimizedPartitions(const EmitOptions &Options,
     return true;
   };
 
+  // The backend's own code generation cannot use CodeGenPasses, so
+  // WebAssembly partitions are compiled here with the passes it would add,
+  // and returning false skips it.
+  if (TargetTriple.isWasm())
+    Config.PreCodeGenModuleHook = [&](unsigned Task, const Module &Optimized) {
+      size_t I = Task - 1;
+      if (I >= Count)
+        return true;
+      std::string LookupError;
+      std::unique_ptr<TargetMachine> Machine =
+          createTargetMachine(Options.Target, Options.OptLevel, LookupError);
+      if (!Machine) {
+        Failures.set({"target_machine_failed", LookupError});
+        return false;
+      }
+      // The backend passes the module it owns; only the hook's signature is
+      // const.
+      Module &Mod = const_cast<Module &>(Optimized);
+      Objects[I].clear();
+      raw_svector_ostream Output(Objects[I]);
+      CodeGenPasses CodeGeneration(*Machine, CodeGenFileType::ObjectFile);
+      TargetLibraryInfoImpl LibraryInfo(Mod.getTargetTriple(),
+                                        Machine->Options.VecLib);
+      CodeGeneration.add(new TargetLibraryInfoWrapperPass(LibraryInfo));
+      CodeGeneration.add(new RuntimeLibraryInfoWrapper(
+          Mod.getTargetTriple(), Machine->Options.ExceptionModel,
+          Machine->Options.FloatABIType, Machine->Options.EABIVersion,
+          Machine->Options.MCOptions.ABIName, Machine->Options.VecLib));
+      if (Machine->addPassesToEmitFile(CodeGeneration, Output, nullptr,
+                                       CodeGenFileType::ObjectFile)) {
+        Failures.set({"emission_not_supported",
+                      "target does not support object emission"});
+        return false;
+      }
+      CodeGeneration.run(Mod);
+      return false;
+    };
+
   // The link refers to module identifiers for its whole lifetime.
   std::vector<std::string> Names(Count);
   for (size_t I = 0; I < Count; ++I)
     Names[I] = "partition-" + std::to_string(I);
+  limitImports();
+  if (!Options.ProfileUse.empty())
+    limitProfileImports();
   lto::LTO Link(std::move(Config),
                 lto::createInProcessThinBackend(hardware_concurrency()));
+  // Profile instrumentation gives every partition its own weak copy of the
+  // variables the profile runtime reads (the profile format and file name).
+  // One copy prevails and stays visible so the runtime's defaults do not.
+  StringSet<> ProfileSymbols;
   for (size_t I = 0; I < Count; ++I) {
     Expected<std::unique_ptr<lto::InputFile>> Input = lto::InputFile::create(
         MemoryBufferRef(Summaries[I]->getBuffer(), Names[I]));
@@ -456,7 +899,10 @@ compileOptimizedPartitions(const EmitOptions &Options,
         // external before partitioning are visible to the runtime objects
         // linked beside them; the rest may become internal again.
         bool Public = Plan.PublicSymbols.contains(Symbol.getIRName());
-        Resolution.Prevailing = true;
+        bool Profile = Symbol.getIRName().starts_with("__llvm_profile_");
+        if (Profile)
+          Public = ProfileSymbols.insert(Symbol.getIRName()).second;
+        Resolution.Prevailing = !Profile || Public;
         Resolution.VisibleToRegularObj = Public;
         Resolution.FinalDefinitionInLinkageUnit = !Public;
       }
@@ -487,13 +933,26 @@ compileOptimizedPartitions(const EmitOptions &Options,
 
 std::optional<EmitFailure>
 compilePartitions(const EmitOptions &Options, const PartitionPlan &Plan,
-                  std::vector<SmallVector<char, 0>> &Objects) {
+                  std::vector<SmallVector<char, 0>> &Objects,
+                  ProfileMatch &Match) {
   // Everything besides a partition's own bytes that determines its
   // artifacts. The caller's cache directory already identifies the exact
   // helper build; source content and partition count arrive per module.
   std::string Salt = hashParts({"scriptc-partition-v1", LLVM_VERSION_STRING,
                                 Options.Target, Options.OptLevel,
-                                Options.RelocationModel, Options.SourcePath});
+                                Options.RelocationModel, Options.SourcePath,
+                                "profile-generate", Options.ProfileGenerate});
+  // A profile changes every partition it describes, so its bytes key them.
+  if (!Options.ProfileUse.empty()) {
+    ErrorOr<std::unique_ptr<MemoryBuffer>> Profile =
+        MemoryBuffer::getFile(Options.ProfileUse, /*IsText=*/false,
+                              /*RequiresNullTerminator=*/false);
+    if (!Profile)
+      return EmitFailure{"profile_read_failed",
+                         Options.ProfileUse + ": " +
+                             Profile.getError().message()};
+    Salt = hashParts({Salt, "profile-use", (*Profile)->getBuffer()});
+  }
   for (const std::string &Path : Options.ImportBitcode) {
     ErrorOr<std::unique_ptr<MemoryBuffer>> Bitcode =
         MemoryBuffer::getFile(Path, /*IsText=*/false,
@@ -509,7 +968,7 @@ compilePartitions(const EmitOptions &Options, const PartitionPlan &Plan,
     return compileUnoptimizedPartitions(Options, Plan, Salt, Cache, Objects);
   return compileOptimizedPartitions(Options, Plan,
                                     optimizationLevel(Options.OptLevel), Salt,
-                                    Cache, Objects);
+                                    Cache, Objects, Match);
 }
 
 // Publishes in-memory partition objects through private sibling files.
@@ -550,6 +1009,8 @@ int emitPartitions(const EmitOptions &Options) {
   std::vector<SmallVector<char, 0>> Objects;
   std::optional<EmitFailure> Failure;
   bool Compiled = false;
+  // A failed attempt's counts are discarded with its objects.
+  auto Match = std::make_unique<ProfileMatch>();
   {
     ErrorOr<std::unique_ptr<MemoryBuffer>> Input =
         MemoryBuffer::getFile(Options.Input, /*IsText=*/false,
@@ -561,15 +1022,16 @@ int emitPartitions(const EmitOptions &Options) {
         Input->reset();
         PartitionPlan Plan{std::move(Text->Sources),
                            std::move(Text->PublicSymbols)};
-        Compiled = !compilePartitions(Options, Plan, Objects);
+        Compiled = !compilePartitions(Options, Plan, Objects, *Match);
       }
     }
   }
   if (!Compiled) {
+    Match = std::make_unique<ProfileMatch>();
     PartitionPlan Plan;
     Failure = splitParsedModule(Options, Plan);
     if (!Failure)
-      Failure = compilePartitions(Options, Plan, Objects);
+      Failure = compilePartitions(Options, Plan, Objects, *Match);
   }
   std::vector<SmallString<256>> Temporaries;
   if (!Failure)
@@ -582,7 +1044,254 @@ int emitPartitions(const EmitOptions &Options) {
     return reportError(Failure->Code, Failure->Message,
                        Options.DiagnosticFormat);
   }
+  if (!Options.ProfileUse.empty())
+    reportProfileMatch(*Match);
   return 0;
+}
+
+// An optimized module prepared for split code generation.
+struct CodegenSplit {
+  // The module as bitcode, with the order of every use list.
+  SmallVector<char, 0> Bitcode;
+  // The output that holds each definition, by name.
+  StringMap<size_t> PartOf;
+};
+
+// Divides an optimized module's definitions among Count outputs for code
+// generation. Functions are divided in module order into runs of about the
+// same instruction count, so linking the outputs in order lays the functions
+// out as one module would; a function that would take its run past an even
+// share starts the next run. A local definition that another output uses
+// becomes hidden so the outputs can reference each other; the others stay
+// local. Variables and aliases go with output 0 unless a comdat, an aliasee
+// or an ifunc resolver places them. When one run would hold more than three
+// quarters of the instructions, dividing cannot shorten code generation: the
+// result is empty and M is unchanged. Placement depends only on the module.
+std::optional<CodegenSplit> splitForCodegen(Module &M, size_t Count) {
+  uint64_t Total = 0;
+  for (const Function &F : M)
+    if (!F.isDeclaration())
+      Total += F.getInstructionCount() + 1;
+  DenseMap<const GlobalValue *, size_t> Part;
+  DenseMap<const Comdat *, size_t> ComdatPart;
+  std::vector<uint64_t> Load(Count, 0);
+  uint64_t Share = (Total + Count - 1) / Count;
+  size_t Current = 0;
+  uint64_t InRun = 0;
+  for (Function &F : M) {
+    if (F.isDeclaration())
+      continue;
+    uint64_t Size = F.getInstructionCount() + 1;
+    if (InRun > 0 && InRun + Size > Share && Current + 1 < Count) {
+      ++Current;
+      InRun = 0;
+    }
+    size_t Target = Current;
+    if (const Comdat *C = F.getComdat()) {
+      auto [It, Inserted] = ComdatPart.try_emplace(C, Target);
+      Target = It->second;
+    }
+    Part[&F] = Target;
+    Load[Target] += Size;
+    InRun += Size;
+  }
+  if (*std::max_element(Load.begin(), Load.end()) * 4 > Total * 3)
+    return std::nullopt;
+  auto PartOf = [&](const GlobalValue *GV) -> size_t {
+    if (const GlobalObject *Root = GV->getAliaseeObject()) {
+      if (const auto *IFunc = dyn_cast<GlobalIFunc>(Root))
+        Root = IFunc->getResolverFunction();
+      if (Root != nullptr && Root != GV)
+        GV = Root;
+    }
+    if (auto It = Part.find(GV); It != Part.end())
+      return It->second;
+    if (const auto *GO = dyn_cast<GlobalObject>(GV))
+      if (const Comdat *C = GO->getComdat())
+        if (auto It = ComdatPart.find(C); It != ComdatPart.end())
+          return It->second;
+    return 0;
+  };
+  // Whether a user of GV, through any constants, lies outside output Home.
+  auto UsedElsewhere = [&](const GlobalValue &GV, size_t Home) {
+    SmallVector<const User *, 8> Work(GV.users());
+    SmallPtrSet<const User *, 8> Seen;
+    while (!Work.empty()) {
+      const User *U = Work.pop_back_val();
+      if (!Seen.insert(U).second)
+        continue;
+      if (const auto *I = dyn_cast<Instruction>(U)) {
+        if (PartOf(I->getFunction()) != Home)
+          return true;
+      } else if (const auto *G = dyn_cast<GlobalValue>(U)) {
+        if (PartOf(G) != Home)
+          return true;
+      } else {
+        append_range(Work, U->users());
+      }
+    }
+    return false;
+  };
+  for (GlobalValue &GV : M.global_values()) {
+    if (GV.hasLocalLinkage() && UsedElsewhere(GV, PartOf(&GV))) {
+      GV.setLinkage(GlobalValue::ExternalLinkage);
+      GV.setVisibility(GlobalValue::HiddenVisibility);
+    }
+    if (!GV.hasName())
+      GV.setName("scr.split");
+  }
+  CodegenSplit Split;
+  for (const GlobalValue &GV : M.global_values())
+    if (!GV.isDeclaration())
+      Split.PartOf[GV.getName()] = PartOf(&GV);
+  raw_svector_ostream Stream(Split.Bitcode);
+  WriteBitcodeToFile(M, Stream, /*ShouldPreserveUseListOrder=*/true);
+  return Split;
+}
+
+// Reduces P, a copy of the split module, to the definitions of output I:
+// the other definitions become declarations, and declarations that nothing
+// uses are removed. A declaration nothing uses would still emit an untyped
+// undefined symbol for its visibility, which some linkers reject against a
+// thread-local definition. Removing definitions keeps the order of the
+// remaining uses, so each function of the output reaches code generation
+// as it would in the whole module.
+void keepCodegenPart(Module &P, const StringMap<size_t> &PartOf, size_t I) {
+  auto Elsewhere = [&](const GlobalValue &GV) {
+    auto It = PartOf.find(GV.getName());
+    return It != PartOf.end() && It->second != I;
+  };
+  // Aliases and ifuncs cannot be declarations, so a declaration replaces
+  // them.
+  SmallVector<GlobalValue *, 4> Indirect;
+  for (GlobalAlias &GA : P.aliases())
+    if (Elsewhere(GA))
+      Indirect.push_back(&GA);
+  for (GlobalIFunc &GI : P.ifuncs())
+    if (Elsewhere(GI))
+      Indirect.push_back(&GI);
+  for (GlobalValue *GV : Indirect) {
+    GlobalValue *Declaration;
+    if (auto *Type = dyn_cast<FunctionType>(GV->getValueType()))
+      Declaration = Function::Create(Type, GlobalValue::ExternalLinkage,
+                                     GV->getAddressSpace(), "", &P);
+    else
+      Declaration = new GlobalVariable(
+          P, GV->getValueType(), /*isConstant=*/false,
+          GlobalValue::ExternalLinkage, nullptr, "", nullptr,
+          GV->getThreadLocalMode(), GV->getAddressSpace());
+    Declaration->setVisibility(GV->getVisibility());
+    Declaration->setDSOLocal(GV->isDSOLocal());
+    Declaration->takeName(GV);
+    GV->replaceAllUsesWith(Declaration);
+    GV->eraseFromParent();
+  }
+  for (Function &F : P)
+    if (!F.isDeclaration() && Elsewhere(F)) {
+      F.deleteBody();
+      F.setComdat(nullptr);
+    }
+  for (GlobalVariable &GV : P.globals())
+    if (!GV.isDeclaration() && Elsewhere(GV)) {
+      GV.setInitializer(nullptr);
+      GV.setComdat(nullptr);
+      GV.setLinkage(GlobalValue::ExternalLinkage);
+    }
+  if (I != 0)
+    P.setModuleInlineAsm("");
+  // Constant expressions that only the removed bodies used remain as users.
+  for (GlobalVariable &GV : make_early_inc_range(P.globals()))
+    if (GV.isDeclaration()) {
+      GV.removeDeadConstantUsers();
+      if (GV.use_empty())
+        GV.eraseFromParent();
+    }
+  for (Function &F : make_early_inc_range(P))
+    if (F.isDeclaration()) {
+      F.removeDeadConstantUsers();
+      if (F.use_empty())
+        F.eraseFromParent();
+    }
+}
+
+// Optimizes M whole, as a single output would, then divides its definitions
+// among the outputs and generates code for each on its own thread. The first
+// output is generated from M with Machine; the others from copies of M read
+// back from bitcode, which keeps the order of every use list, so each
+// function's code matches a single-output build except where it refers to a
+// definition in another output. Placement depends only
+// on the optimized module and the output count. When splitForCodegen keeps
+// the module whole, the other outputs are empty objects.
+std::optional<EmitFailure>
+emitSplitCodegen(const EmitOptions &Options, Module &M, TargetMachine &Machine,
+                 OptimizationLevel Level, ProfileMatch &Match) {
+  bool Annotating = !Options.ProfileUse.empty();
+  if (Annotating)
+    M.getContext().setDiagnosticHandler(
+        std::make_unique<ProfileMatchHandler>(Match));
+  {
+    Pipeline P(Machine, Level, profileOptions(Options));
+    if (Annotating)
+      P.countAnnotated(Match.Annotated);
+    P.PB.buildPerModuleDefaultPipeline(Level).run(M, P.MAM);
+  }
+  if (std::optional<EmitFailure> Failure =
+          verify(M, "post_optimization_verification_failed"))
+    return Failure;
+  size_t Count = Options.Outputs.size();
+  std::optional<CodegenSplit> Split = splitForCodegen(M, Count);
+  std::string Identifier = M.getModuleIdentifier();
+  std::string SourceFileName = M.getSourceFileName();
+  Triple TargetTriple = M.getTargetTriple();
+  DataLayout Layout = M.getDataLayout();
+  std::vector<std::vector<SmallString<256>>> Temporaries(Count);
+  SharedFailure Failures;
+  forEachPartition(Count, [&](size_t I) {
+    if (I == 0) {
+      if (Split)
+        keepCodegenPart(M, Split->PartOf, 0);
+      if (std::optional<EmitFailure> Failure =
+              generateCode(M, Machine, CodeGenFileType::ObjectFile,
+                           Options.Outputs[0], Temporaries[0]))
+        Failures.set(std::move(*Failure));
+      return;
+    }
+    std::string LookupError;
+    std::unique_ptr<TargetMachine> PartMachine =
+        createTargetMachine(Options.Target, Options.OptLevel, LookupError);
+    if (!PartMachine)
+      return Failures.set({"target_machine_failed", LookupError});
+    LLVMContext Context;
+    std::unique_ptr<Module> Part;
+    if (Split) {
+      Expected<std::unique_ptr<Module>> Parsed = parseBitcodeFile(
+          MemoryBufferRef(
+              StringRef(Split->Bitcode.data(), Split->Bitcode.size()), "part"),
+          Context);
+      if (!Parsed)
+        return Failures.set(
+            {"partition_failed", toString(Parsed.takeError())});
+      Part = std::move(*Parsed);
+      keepCodegenPart(*Part, Split->PartOf, I);
+    } else {
+      Part = std::make_unique<Module>(Identifier, Context);
+      Part->setSourceFileName(SourceFileName);
+      Part->setTargetTriple(TargetTriple);
+      Part->setDataLayout(Layout);
+    }
+    if (std::optional<EmitFailure> Failure =
+            generateCode(*Part, *PartMachine, CodeGenFileType::ObjectFile,
+                         Options.Outputs[I], Temporaries[I]))
+      return Failures.set(std::move(*Failure));
+  });
+  std::optional<EmitFailure> Failure = Failures.take();
+  for (size_t I = 0; I < Count && !Failure; ++I)
+    Failure = publish(Temporaries[I][0], Options.Outputs[I]);
+  if (Failure)
+    for (const std::vector<SmallString<256>> &Paths : Temporaries)
+      for (const SmallString<256> &Temporary : Paths)
+        sys::fs::remove(Temporary);
+  return Failure;
 }
 
 } // namespace
@@ -626,7 +1335,19 @@ int emit(const EmitOptions &Options) {
     return reportError("invalid_import",
                        "runtime bitcode import requires an optimized build",
                        Options.DiagnosticFormat);
-  if (Options.Outputs.size() > 1)
+  if (!Options.ProfileUse.empty())
+    reportMissingProfiles();
+  if (std::optional<EmitFailure> Failure = inspectProfile(Options))
+    return reportError(Failure->Code, Failure->Message,
+                       Options.DiagnosticFormat);
+  if (Options.SplitCodegen && (Options.Outputs.size() < 2 ||
+                               Options.OptLevel == "0" ||
+                               !Options.CacheDirectory.empty()))
+    return reportError("invalid_split",
+                       "--split codegen requires several outputs, an "
+                       "optimized build, and no cache directory",
+                       Options.DiagnosticFormat);
+  if (Options.Outputs.size() > 1 && !Options.SplitCodegen)
     return emitPartitions(Options);
 
   SMDiagnostic ParseDiagnostic;
@@ -684,9 +1405,21 @@ int emit(const EmitOptions &Options) {
   CodeGenFileType Type = Options.FileType == "obj"
                              ? CodeGenFileType::ObjectFile
                              : CodeGenFileType::AssemblyFile;
+  if (Options.SplitCodegen) {
+    ProfileMatch Match;
+    if (std::optional<EmitFailure> Failure =
+            emitSplitCodegen(Options, *Mod, *Machine, Level, Match))
+      return reportError(Failure->Code, Failure->Message,
+                         Options.DiagnosticFormat);
+    if (!Options.ProfileUse.empty())
+      reportProfileMatch(Match);
+    return 0;
+  }
   std::vector<SmallString<256>> Temporaries;
-  std::optional<EmitFailure> Failure = emitModule(
-      *Mod, *Machine, Level, Type, Options.Outputs[0], Temporaries);
+  ProfileMatch Match;
+  std::optional<EmitFailure> Failure =
+      emitModule(*Mod, *Machine, Level, profileOptions(Options), Type,
+                 Options.Outputs[0], Temporaries, Match);
   if (!Failure)
     Failure = publish(Temporaries[0], Options.Outputs[0]);
   if (Failure) {
@@ -695,6 +1428,8 @@ int emit(const EmitOptions &Options) {
     return reportError(Failure->Code, Failure->Message,
                        Options.DiagnosticFormat);
   }
+  if (!Options.ProfileUse.empty())
+    reportProfileMatch(Match);
   return 0;
 }
 

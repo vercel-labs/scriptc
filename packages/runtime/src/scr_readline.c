@@ -185,11 +185,28 @@ void scr_rl_do_resume(ScrRl *rl) {
   }
 }
 
+bool scr_rl_prompt_writable(ScrRl *rl) {
+  if (!rl->prompt_value) return true;
+  scr_dyn_arg_type_fail("stringToWrite", "of type string", rl->prompt_value);
+  return false;
+}
+
 static void scr_rl_prompt_now(ScrRl *rl) {
   if (rl->paused) scr_rl_do_resume(rl);
   if (scr_exc_pending()) return;
   if (rl->tty) scr_rl_tty_ops->prompt(rl, false);
-  else scr_rl_write_out(rl, rl->prompt);
+  else if (scr_rl_prompt_writable(rl)) scr_rl_write_out(rl, rl->prompt);
+}
+
+/* setPrompt(this[kOldPrompt]) when a question is answered or cancelled */
+static void scr_rl_restore_prompt(ScrRl *rl) {
+  if (!rl->old_prompt) return;
+  scr_str_release(rl->prompt);
+  rl->prompt = rl->old_prompt;
+  rl->old_prompt = NULL;
+  if (rl->prompt_value) scr_dyn_release(rl->prompt_value);
+  rl->prompt_value = rl->old_prompt_value;
+  rl->old_prompt_value = NULL;
 }
 
 /* ── close ─────────────────────────────────────────────────────────── */
@@ -251,11 +268,7 @@ void scr_rl_on_line(ScrRl *rl, ScrStr *line) {
     ScrClosure *cb = rl->q_cb;
     ScrRlLineFn fn = rl->q_fn;
     rl->q_cb = NULL;
-    if (rl->old_prompt) {
-      scr_str_release(rl->prompt);
-      rl->prompt = rl->old_prompt;
-      rl->old_prompt = NULL;
-    }
+    scr_rl_restore_prompt(rl);
     fn(cb, line);
     scr_closure_release(cb);
     return;
@@ -270,7 +283,23 @@ static void scr_rl_buf_append(ScrRl *rl, const char *p, size_t n) {
   rl->line_len += n;
 }
 
-/* kNormalWrite over decoded UTF-8 text. */
+/* The end of the line starting at `i` in text without a CR: the next LF,
+ * or n when the text ends first. */
+static size_t scr_rl_next_lf(const char *p, size_t i, size_t n) {
+  const char *lf = memchr(p + i, '\n', n - i);
+  return lf ? (size_t)(lf - p) : n;
+}
+
+/* The end of the line starting at `i`: the next LF or CR, or n. */
+static size_t scr_rl_next_break(const char *p, size_t i, size_t n) {
+  while (i < n && p[i] != '\n' && p[i] != '\r') i++;
+  return i;
+}
+
+/* kNormalWrite over decoded UTF-8 text. The text is scanned once: LF-only
+ * text (no CR anywhere in it) moves from LF to LF with memchr, other text
+ * splits at LF, CR and CRLF. The unfinished line before the text only
+ * joins the first line, so the rest of the text is never copied whole. */
 static void scr_rl_feed_text(ScrRl *rl, const char *p, size_t n) {
   if (rl->tty) {
     scr_rl_tty_ops->feed(rl, p, n);
@@ -283,43 +312,31 @@ static void scr_rl_feed_text(ScrRl *rl, const char *p, size_t n) {
     }
     rl->saw_return_at = 0;
   }
-  bool ending = false;
-  for (size_t i = 0; i < n && !ending; i++) ending = p[i] == '\n' || p[i] == '\r';
-  if (!ending) {
+  bool cr = n > 0 && memchr(p, '\r', n) != NULL;
+  size_t end = n == 0 ? 0 : cr ? scr_rl_next_break(p, 0, n) : scr_rl_next_lf(p, 0, n);
+  if (end == n) {
     if (n > 0) scr_rl_buf_append(rl, p, n);
     return;
   }
-  /* The unfinished line joins the new text; the scan runs over both. */
-  char *text = p ? (char *)p : (char *)"";
-  size_t len = n;
-  char *joined = NULL;
-  if (rl->line_len > 0) {
-    joined = malloc(rl->line_len + n);
-    if (!joined) scr_rl_oom();
-    memcpy(joined, rl->line_buf, rl->line_len);
-    memcpy(joined + rl->line_len, p, n);
-    text = joined;
-    len = rl->line_len + n;
-  }
-  rl->line_len = 0;
-  rl->saw_return_at = len > 0 && text[len - 1] == '\r' ? scr_now_ms() : 0;
+  rl->saw_return_at = p[n - 1] == '\r' ? scr_now_ms() : 0;
   /* Split first (the remainder becomes the new unfinished line before any
    * line is delivered, as in Node), then deliver in order. */
   size_t n_lines = 0, cap_lines = 0;
   ScrStr **lines = NULL;
   size_t start = 0;
-  for (size_t i = 0; i < len; i++) {
-    size_t adv;
-    if (text[i] == '\n') adv = 1;
-    else if (text[i] == '\r') adv = i + 1 < len && text[i + 1] == '\n' ? 2 : 1;
-    else continue;
+  while (end < n) {
     lines = scr_rl_grow(lines, &cap_lines, n_lines + 1, sizeof *lines);
-    lines[n_lines++] = scr_str_new(text + start, i - start);
-    i += adv - 1;
-    start = i + 1;
+    if (n_lines == 0 && rl->line_len > 0) {
+      scr_rl_buf_append(rl, p, end);
+      lines[n_lines++] = scr_str_new(rl->line_buf, rl->line_len);
+    } else {
+      lines[n_lines++] = scr_str_new(p + start, end - start);
+    }
+    start = end + (p[end] == '\r' && end + 1 < n && p[end + 1] == '\n' ? 2 : 1);
+    end = start >= n ? n : cr ? scr_rl_next_break(p, start, n) : scr_rl_next_lf(p, start, n);
   }
-  if (start < len) scr_rl_buf_append(rl, text + start, len - start);
-  free(joined);
+  rl->line_len = 0;
+  if (start < n) scr_rl_buf_append(rl, p + start, n - start);
   for (size_t i = 0; i < n_lines; i++) {
     if (rl->closed || scr_exc_pending()) {
       scr_str_release(lines[i]);
@@ -351,6 +368,11 @@ static void scr_rl_feed_bytes(ScrRl *rl, const char *p, size_t n) {
     rl->parked = scr_rl_grow(rl->parked, &rl->parked_cap, rl->parked_len + n, 1);
     memcpy(rl->parked + rl->parked_len, p, n);
     rl->parked_len += n;
+    return;
+  }
+  /* ASCII with no held bytes decodes to itself: split it in place. */
+  if (rl->n_held == 0 && scr_bytes_ascii_span(p, n) == n) {
+    scr_rl_feed_text(rl, p, n);
     return;
   }
   size_t total = rl->n_held + n;
@@ -388,6 +410,12 @@ static void scr_rl_feed_end(ScrRl *rl) {
 void scr_rl_input_bytes(double id, ScrBytes *chunk) {
   ScrRl *rl = scr_rl_find(id);
   if (!rl || rl->closed) return;
+  /* The splitter copies every line it keeps before it delivers one, so it
+   * can read a chunk's own storage; shared memory is copied out first. */
+  if (!chunk->shared) {
+    scr_rl_feed_bytes(rl, (const char *)chunk->data, chunk->len);
+    return;
+  }
   char *p = malloc(chunk->len ? chunk->len : 1);
   if (!p) scr_rl_oom();
   scr_bytes_read(chunk, 0, p, chunk->len);
@@ -619,6 +647,8 @@ static void scr_rl_cleanup_atexit(void) {
     if (rl->out) rl->io->release(rl->out);
     scr_str_release(rl->prompt);
     if (rl->old_prompt) scr_str_release(rl->old_prompt);
+    if (rl->prompt_value) scr_dyn_release(rl->prompt_value);
+    if (rl->old_prompt_value) scr_dyn_release(rl->old_prompt_value);
     free(rl->line_buf);
     free(rl->parked);
     free(rl);
@@ -748,7 +778,58 @@ void scr_rl_question(double id, ScrStr *query, ScrClosure *cb /*moves*/, ScrRlLi
     return;
   }
   rl->old_prompt = rl->prompt;
+  rl->old_prompt_value = rl->prompt_value;
   rl->prompt = scr_str_retain(query);
+  rl->prompt_value = NULL;
+  rl->q_cb = cb;
+  rl->q_fn = fn;
+  scr_rl_prompt_now(rl);
+}
+
+/* A prompt that is not a string: String(value) for a primitive, which is
+ * what the terminal's line refresh and getCursorPos concatenate. An
+ * object's valueOf/toString would run on every refresh, and a symbol
+ * throws there, so a terminal interface refuses them (false, the refusal
+ * pending); another interface only writes the prompt, which throws for
+ * any value that is not a string, so it keeps ''. +1. */
+static bool scr_rl_prompt_text(ScrRl *rl, ScrDyn *value, ScrStr **out) {
+  if (scr_rl_primitive_prompt(value)) {
+    *out = scr_dyn_string_coerce(value);
+    return true;
+  }
+  if (!rl->tty) {
+    *out = scr_str_new("", 0);
+    return true;
+  }
+  static const char m[] =
+      "a terminal readline prompt that is an object or a symbol has no lowering";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, m, sizeof m - 1, "SC2020");
+  return false;
+}
+
+/* question(query, cb) with a checked-dynamic query: a string goes through
+ * scr_rl_question. Another value becomes the prompt, the callback is
+ * kept, and the prompt write throws ERR_INVALID_ARG_TYPE on an interface
+ * that is not a terminal (the question stays pending, as in Node). */
+void scr_rl_question_dyn(double id, ScrDyn *query, ScrClosure *cb /*moves*/, ScrRlLineFn fn) {
+  if (query->kind == SCR_DYN_STR) {
+    scr_rl_question(id, query->v.str, cb, fn);
+    return;
+  }
+  ScrRl *rl = scr_rl_find(id);
+  if (!rl || rl->closed || rl->q_cb) {
+    scr_rl_question(id, NULL, cb, fn); /* the closed throw, or the re-prompt */
+    return;
+  }
+  ScrStr *text;
+  if (!scr_rl_prompt_text(rl, query, &text)) {
+    scr_closure_release(cb);
+    return;
+  }
+  rl->old_prompt = rl->prompt;
+  rl->old_prompt_value = rl->prompt_value;
+  rl->prompt = text;
+  rl->prompt_value = scr_dyn_retain(query);
   rl->q_cb = cb;
   rl->q_fn = fn;
   scr_rl_prompt_now(rl);
@@ -857,11 +938,7 @@ static ScrDyn *scr_rl_ask_abort_thunk(ScrClosure *clo, ScrDyn *const *args, size
   if (rl && rl->q_cb) {
     scr_closure_release(rl->q_cb);
     rl->q_cb = NULL;
-    if (rl->old_prompt) {
-      scr_str_release(rl->prompt);
-      rl->prompt = rl->old_prompt;
-      rl->old_prompt = NULL;
-    }
+    scr_rl_restore_prompt(rl);
     if (rl->tty) {
       scr_rl_tty_ops->clear_line(rl);
     } else {
@@ -877,8 +954,11 @@ static ScrDyn *scr_rl_ask_abort_thunk(ScrClosure *clo, ScrDyn *const *args, size
 
 /* readline/promises question(query, { signal }): rejects with
  * ERR_USE_AFTER_CLOSE on a closed interface and with an AbortError when
- * the signal is (or becomes) aborted. */
-ScrPromise *scr_rl_question_promise(double id, ScrStr *query, ScrDyn *signal, ScrAbortAddFn add) {
+ * the signal is (or becomes) aborted. A checked-dynamic query (query_dyn,
+ * query NULL) that is not a string rejects with what question() throws,
+ * as Node's promise executor does. */
+static ScrPromise *scr_rl_ask(double id, ScrStr *query, ScrDyn *query_dyn, ScrDyn *signal,
+                              ScrAbortAddFn add) {
   RlAsk *a = calloc(1, sizeof *a);
   if (!a) scr_rl_oom();
   a->rc = 1;
@@ -928,8 +1008,27 @@ ScrPromise *scr_rl_question_promise(double id, ScrStr *query, ScrDyn *signal, Sc
   scr_box_set_ref(cb->caps[0], a); /* the creation reference moves here */
   cb->caps[1] = scr_box_new_obj(&scr_rl_dyn_retain_v, &scr_rl_dyn_release_v, NULL);
   scr_box_set_ref(cb->caps[1], dispose); /* moves (NULL without a signal) */
-  scr_rl_question(id, query, cb, &scr_rl_ask_answer);
+  if (!query_dyn) {
+    scr_rl_question(id, query, cb, &scr_rl_ask_answer);
+    return result;
+  }
+  scr_rl_ask_retain_v(a);
+  scr_rl_question_dyn(id, query_dyn, cb, &scr_rl_ask_answer);
+  if (scr_exc_pending() && !a->settled) {
+    a->settled = true;
+    scr_promise_reject_pending(a->p);
+  }
+  scr_rl_ask_release_v(a);
   return result;
+}
+
+ScrPromise *scr_rl_question_promise(double id, ScrStr *query, ScrDyn *signal, ScrAbortAddFn add) {
+  return scr_rl_ask(id, query, NULL, signal, add);
+}
+
+ScrPromise *scr_rl_question_promise_dyn(double id, ScrDyn *query, ScrDyn *signal,
+                                        ScrAbortAddFn add) {
+  return scr_rl_ask(id, NULL, query, signal, add);
 }
 
 void scr_rl_close(double id) {
@@ -985,11 +1084,46 @@ void scr_rl_set_prompt(double id, ScrStr *prompt) {
   if (!rl) return;
   scr_str_release(rl->prompt);
   rl->prompt = scr_str_retain(prompt);
+  if (rl->prompt_value) scr_dyn_release(rl->prompt_value);
+  rl->prompt_value = NULL;
+}
+
+/* setPrompt(value) with a checked-dynamic value; borrows. */
+void scr_rl_set_prompt_dyn(double id, ScrDyn *prompt) {
+  if (prompt->kind == SCR_DYN_STR) {
+    scr_rl_set_prompt(id, prompt->v.str);
+    return;
+  }
+  ScrRl *rl = scr_rl_find(id);
+  if (!rl) return;
+  ScrStr *text;
+  if (!scr_rl_prompt_text(rl, prompt, &text)) return;
+  scr_str_release(rl->prompt);
+  rl->prompt = text;
+  if (rl->prompt_value) scr_dyn_release(rl->prompt_value);
+  rl->prompt_value = scr_dyn_retain(prompt);
 }
 
 ScrStr *scr_rl_get_prompt(double id) {
   ScrRl *rl = scr_rl_find(id);
+  if (rl && rl->prompt_value) {
+    static const char m[] = "rl.getPrompt() of a prompt that is not a string has no lowering";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, m, sizeof m - 1, "SC2020");
+    return scr_str_new("", 0);
+  }
   return rl ? scr_str_retain(rl->prompt) : scr_str_new("", 0);
+}
+
+/* Called after a node:readline/promises interface opens: its Interface
+ * class is not node:readline's, which instanceof tells apart. */
+void scr_rl_mark_promises(double id) {
+  ScrRl *rl = scr_rl_find(id);
+  if (rl) rl->promises = true;
+}
+
+bool scr_rl_is_promises(double id) {
+  ScrRl *rl = scr_rl_find(id);
+  return rl && rl->promises;
 }
 
 bool scr_rl_is_terminal(double id) {

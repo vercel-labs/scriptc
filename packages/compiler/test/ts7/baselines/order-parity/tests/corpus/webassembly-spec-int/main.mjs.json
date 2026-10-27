@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/wasm-spec/runner.mjs",
+  "<repo>/tests/corpus/webassembly-spec-int/data.mjs",
+  "<repo>/tests/corpus/webassembly-spec-int/main.mjs"
+ ],
+ "diags": []
+}

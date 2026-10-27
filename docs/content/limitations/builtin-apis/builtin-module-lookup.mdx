@@ -1,1 +1,5 @@
-- **Builtin module lookup:** `process.getBuiltinModule()` exposes native subsets of `path`, `path/posix`, `path/win32`, `os`, and current-thread `worker_threads` metadata. Stored module references and functions retain identity. Other modules and exports, including stored `Worker` constructors, throw `SC2020`. Direct `Worker` imports use the native worker support described below. `process.versions` is a shared dictionary containing `node` and `openssl`; other component versions are absent unless defined by the program.
+- **Builtin module lookup:** `process.getBuiltinModule()` exposes native subsets of `path`, `path/posix`, `path/win32`, `os`, and current-thread `worker_threads` metadata.
+  Stored module references and functions retain identity.
+  Other modules and exports, including stored `Worker` constructors, throw `SC2020`.
+  Direct `Worker` imports use the native worker support described below.
+  `process.versions` is a shared dictionary containing `node` and `openssl`; other component versions are absent unless defined by the program.

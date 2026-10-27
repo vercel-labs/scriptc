@@ -17,7 +17,7 @@ const n = (localId: string): IrExpr => ({ kind: "varRef", localId, type: F64, lo
 const num = (value: number): IrExpr => ({ kind: "numLit", value, type: F64, loc });
 
 export const fibModule: IrModule = {
-  irVersion: 16,
+  irVersion: 17,
   sourceFile: "fib.ts",
   entry: "__main",
   functions: [

@@ -16,13 +16,14 @@ import { strLit, varRef } from "../../ir/build.js";
 import type { Lowerer } from "./lowerer.js";
 import {
   BUILTIN_MODULE_CONSTS,
-  BUILTIN_MODULE_FNS,
+  builtinModuleFns,
   OBJECT_CALLABLE_VALUES,
   builtinConstLit,
   builtinModuleConstOf,
   builtinModulesArrayLit,
   stdlibGlobalNameOf,
 } from "./surfaces.js";
+import { CRYPTO_CONSTANTS } from "./crypto-tables.js";
 
 const PROTOTYPE_METHODS: Record<string, readonly string[]> = {
   Date: ["getTime", "valueOf", "toISOString", "toJSON"],
@@ -115,6 +116,7 @@ export function isNativeBuiltinValueInitializer(
       ["parseInt", "parseFloat"].includes(lowerer.stdlibGlobalMember(expr, "Number") ?? "") ||
       lowerer.stdlibGlobalMember(expr, "Buffer") === "isBuffer" ||
       lowerer.stdlibGlobalMember(expr, "Array") === "prototype" ||
+      lowerer.stdlibGlobalMember(expr, "Promise") === "prototype" ||
       (ts.isPropertyAccessExpression(expr.expression) &&
         lowerer.stdlibGlobalMember(expr.expression, "Array") === "prototype") ||
       lowerer.stdlibGlobalMember(expr, "Object") === "assign" ||
@@ -131,13 +133,11 @@ export function isNativeBuiltinValueInitializer(
   const symbol = lowerer.resolveValueSymbol(expr);
   if (!symbol || seen.has(symbol)) return false;
   seen.add(symbol);
-  return lowerer.checker
-    .declarationsOf(symbol)
-    .some(
-      (decl) =>
-        ts.isVariableDeclaration(decl) &&
-        isNativeBuiltinValueInitializer(lowerer, decl.initializer, seen),
-    );
+  return symbol.declarations.some(
+    (decl) =>
+      ts.isVariableDeclaration(decl) &&
+      isNativeBuiltinValueInitializer(lowerer, decl.initializer, seen),
+  );
 }
 
 /** The stored Array.isArray function shares the direct call's native test. */
@@ -430,7 +430,7 @@ export function pathModuleValue(lowerer: Lowerer, module: string, loc: SrcLoc): 
   const add = (member: string, value: IrExpr): void => {
     fields.push({ key: strLit(member, loc), value: box(value) });
   };
-  for (const member of Object.keys(BUILTIN_MODULE_FNS[module] ?? {})) {
+  for (const member of Object.keys(builtinModuleFns()[module] ?? {})) {
     const value = lowerer.lowerBuiltinCallableValue({ module, member }, loc);
     if (value) add(member, value);
   }
@@ -512,7 +512,7 @@ function moduleValue(lowerer: Lowerer, module: string, loc: SrcLoc): IrExpr {
         loc,
       });
     };
-    for (const member of Object.keys(BUILTIN_MODULE_FNS[module] ?? {})) {
+    for (const member of Object.keys(builtinModuleFns()[module] ?? {})) {
       const callable = lowerer.lowerBuiltinCallableValue({ module, member }, loc);
       if (callable) add(member, callable);
     }
@@ -679,4 +679,35 @@ export function lowerBuiltinLoaderValue(lowerer: Lowerer, loc: SrcLoc): IrExpr {
     type: { kind: "func", params: [DYN], ret: DYN },
     loc,
   };
+}
+
+/** The deprecated node:constants module object: the runtime merges
+ * os.constants' groups and fs.constants with crypto.constants, which a
+ * lifted function answers from the baked table the first time the object
+ * is built. */
+export function builtinConstantsObject(lowerer: Lowerer, loc: SrcLoc): IrExpr {
+  const name = "%builtin.constants.crypto";
+  if (!lowerer.builtinCallableValueFns.has(name)) {
+    lowerer.builtinCallableValueFns.set(name, name);
+    const fields = Object.entries(CRYPTO_CONSTANTS).map(([key, value]) => ({
+      key: strLit(key, loc),
+      value: box(builtinConstLit(value, loc)),
+    }));
+    lowerer.liftedFns.push({
+      name,
+      params: [],
+      returnType: DYN,
+      locals: [],
+      body: [{ kind: "return", value: { kind: "dynObjLit", fields, type: DYN, loc }, loc }],
+      loc,
+    });
+  }
+  const table: IrExpr = {
+    kind: "closure",
+    fnName: name,
+    captures: [],
+    type: { kind: "func", params: [], ret: DYN },
+    loc,
+  };
+  return { kind: "libCall", fn: "constants.object", args: [box(table)], type: DYN, loc };
 }

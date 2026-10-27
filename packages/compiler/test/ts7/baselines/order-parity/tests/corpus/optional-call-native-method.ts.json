@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/optional-call-native-method.ts"
+ ],
+ "diags": []
+}

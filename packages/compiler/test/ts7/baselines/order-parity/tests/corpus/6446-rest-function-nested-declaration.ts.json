@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6446-rest-function-nested-declaration.ts"
+ ],
+ "diags": []
+}

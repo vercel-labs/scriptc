@@ -1,3 +1,13 @@
-String constructors and `Date.parse` accept ECMAScript date-only forms, date-times with an explicit `Z` or numeric offset, and GMT certificate-validity strings from the supported X509 APIs. Other V8-specific forms and offset-less local date-times produce an Invalid Date or `NaN`; `SC6005` reports string literals in those forms.
+String constructors and `Date.parse` use V8's date-string grammar: ECMAScript date-time strings and the legacy forms Node.js accepts, such as RFC 1123 HTTP dates (`Mon, 01 Jan 2024 00:00:00 GMT`), `Date#toString` output, and `Jan 2, 2024`.
+Strings without a timezone, and `new Date(year, monthIndex, ...)` fields, are local time.
 
-Local calendar getters use the operating system's timezone database. Historical results can differ from Node.js when timezone data differs. For valid extreme years outside a platform calendar API's range, scriptc uses a calendar-equivalent year in the 400-year Gregorian cycle to obtain the timezone rule.
+Local calendar getters and local-time conversions use the operating system's timezone database.
+Historical results can differ from Node.js when timezone data differs.
+For valid extreme years outside a platform calendar API's range, scriptc uses a calendar-equivalent year in the 400-year Gregorian cycle to obtain the timezone rule.
+
+`toString`, `toTimeString`, `String(date)` and template literals print the zone's long name after the GMT offset, as Node does (`GMT-0500 (Central Daylight Time)`). scriptc identifies the zone the way Node does, from `TZ` when it names a zone, else from `/etc/localtime`.
+Outside Windows, a write to `process.env.TZ` changes the zone for later conversions and getters.
+The names are the en-US names for the IANA zones; Node prints them in the language of the locale that `LC_ALL`, `LC_MESSAGES` or `LANG` selects, so with a non-English locale the name differs from Node's.
+A `TZ` value that is a file path or a POSIX rule string (such as `EST5EDT,M3.2.0,M11.1.0`) gives offsets and names that differ from Node's, which ignores those forms.
+On Windows, the name is the `GMT+hh:mm` form unless `TZ` names a zone.
+On `wasm32-wasi`, local time is UTC and the name is `Coordinated Universal Time`.

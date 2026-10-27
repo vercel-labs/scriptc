@@ -1,7 +1,115 @@
-import { BOOL, type IrExpr, type IrStmt, type IrType } from "../../ir/ir.js";
+import { keyedHelperName } from "./stable-names.js";
+import * as ts from "../ts7/adapter.js";
+import { BOOL, typeKey, type IrExpr, type IrStmt, type IrType } from "../../ir/ir.js";
 import { nodeThrowExpr, varRef } from "../../ir/build.js";
 import { checkedClassAssertion } from "./class-assertions.js";
 import type { Lowerer } from "./lowerer.js";
+
+/** The classes a narrowed read of a `staticClass` value can hold when the
+ * checker typed it as the subclass `narrowed`, as a class union, or null
+ * when `narrowed` is the only one.
+ *
+ * TypeScript reduces a union of type-parameter intersections by structural
+ * subtyping. With `<T extends Node>`, `node instanceof Identifier || node
+ * instanceof PrivateIdentifier` narrows `node` to `T & PrivateIdentifier`
+ * when Identifier has every member PrivateIdentifier has, so the narrowed
+ * read can hold an Identifier. Class identity is nominal in compiled code:
+ * such a read holds the narrowed class or any class under `staticClass`
+ * that is assignable to it without extending it. A narrowing outside a
+ * type-parameter intersection keeps every class it names. */
+export function structuralNarrowing(
+  lowerer: Lowerer,
+  node: ts.Node,
+  staticClass: string,
+  narrowed: IrType & { kind: "object" },
+): (IrType & { kind: "union" }) | null {
+  if (!intersectsTypeParameter(lowerer.checker.getTypeAtLocation(node))) return null;
+  const key = `${staticClass}:${narrowed.className}`;
+  let peers = lowerer.structuralClassPeers.get(key);
+  if (peers === undefined) {
+    peers = assignableClassPeers(lowerer, staticClass, narrowed.className);
+    lowerer.structuralClassPeers.set(key, peers);
+  }
+  if (peers.length === 0) return null;
+  const arms: IrType[] = [
+    narrowed,
+    ...peers.map((className) => ({ kind: "object" as const, className })),
+  ];
+  arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+  return { kind: "union", unionId: lowerer.unions.intern(arms) };
+}
+
+/** The type a member access dispatches on when its receiver `node` is a
+ * narrowed read of a type-parameter intersection, or null to use the
+ * checker's type: the class union structuralNarrowing reads, or the
+ * receiver's own class when this instantiation's class is unrelated to the
+ * narrowed one but assignable to it (with `T = Identifier`, the reduced
+ * `T & PrivateIdentifier` still holds an Identifier). */
+export function structuralReadType(lowerer: Lowerer, node: ts.Expression): IrType | null {
+  if (!ts.isIdentifier(node) && !ts.isPropertyAccessExpression(node)) return null;
+  if (!intersectsTypeParameter(lowerer.checker.getTypeAtLocation(node))) return null;
+  const narrowed = lowerer.mapTypeOf(lowerer.typeOf(node));
+  if (narrowed?.kind !== "object") return null;
+  const stored = ts.isIdentifier(node) ? lowerer.peekLocal(node)?.type : undefined;
+  const symbol = lowerer.checker.getSymbolAtLocation(ts.isIdentifier(node) ? node : node.name);
+  const declared =
+    stored ?? (symbol ? lowerer.mapTypeOf(lowerer.checker.getTypeOfSymbol(symbol)) : null);
+  if (declared?.kind !== "object" || declared.className === narrowed.className) return null;
+  if (lowerer.isSubclassOf(narrowed.className, declared.className))
+    return structuralNarrowing(lowerer, node, declared.className, narrowed);
+  if (lowerer.isSubclassOf(declared.className, narrowed.className)) return null;
+  const declaredType = classInstanceType(lowerer, declared.className);
+  const narrowedType = classInstanceType(lowerer, narrowed.className);
+  return declaredType !== null &&
+    narrowedType !== null &&
+    lowerer.checker.isTypeAssignableTo(declaredType, narrowedType)
+    ? declared
+    : null;
+}
+
+function classInstanceType(lowerer: Lowerer, className: string): ts.Type | null {
+  const decl = lowerer.classes.get(className)?.decl;
+  if (!decl?.name || decl.typeParameters?.nodes.length) return null;
+  const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
+  return symbol ? lowerer.checker.getDeclaredTypeOfSymbol(symbol) : null;
+}
+
+function intersectsTypeParameter(type: ts.Type): boolean {
+  try {
+    if (type.isUnionType()) return ts.constituentTypes(type).some(intersectsTypeParameter);
+    return (
+      (type.flags & ts.TypeFlags.Intersection) !== 0 &&
+      ts.constituentTypes(type).some((part) => (part.flags & ts.TypeFlags.TypeParameter) !== 0)
+    );
+  } catch (e) {
+    if (ts.isUnreadableConstituentsPanic(e)) return false;
+    throw e;
+  }
+}
+
+/** The outermost classes under `staticClass`, other than `target` and its
+ * subclasses, whose instance type is assignable to `target`'s. */
+function assignableClassPeers(lowerer: Lowerer, staticClass: string, target: string): string[] {
+  const targetType = classInstanceType(lowerer, target);
+  if (targetType === null) return [];
+  const assignable: string[] = [];
+  for (const className of lowerer.classes.keys()) {
+    if (
+      className === target ||
+      !lowerer.isSubclassOf(className, staticClass) ||
+      lowerer.isSubclassOf(className, target)
+    )
+      continue;
+    const type = classInstanceType(lowerer, className);
+    if (type !== null && lowerer.checker.isTypeAssignableTo(type, targetType))
+      assignable.push(className);
+  }
+  // A subclass of an assignable class is one of its instances already.
+  return assignable.filter(
+    (className) =>
+      !assignable.some((other) => other !== className && lowerer.isSubclassOf(className, other)),
+  );
+}
 
 /** A base-class slot stays one pointer after a guard selects several
  * subclasses. Recover the tagged view from runtime membership without
@@ -25,7 +133,7 @@ export function narrowClassUnion(
   const key = `classUnion:${source.className}:${target.unionId}`;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
-    helper = `%class.union.${lowerer.valueHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%class.union", key);
     lowerer.valueHelpers.set(key, helper);
     const input = varRef("value.0", source, loc);
     // Rank by ancestry before sorting: returning zero for unrelated pairs

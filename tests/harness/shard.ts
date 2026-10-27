@@ -16,7 +16,9 @@
  * everything: local runs are unchanged.
  */
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { globSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Suite, Test, TestContext } from "vitest";
 
 export interface ShardSpec {
@@ -94,10 +96,52 @@ export function balancedShardSelect<T>(
   return items.filter((_, index) => owners[index] === spec.index);
 }
 
-/** Measured milliseconds per corpus program and flavor (corpus-costs.json): its differential plus
- * llvm-differential case on a CI runner. */
-type CorpusCosts = { plain: Record<string, number>; san: Record<string, number> };
+/** Measured milliseconds per corpus program and flavor: its differential plus llvm-differential case on a CI
+ * runner. corpus-costs.json is the table scripts/ci-corpus-costs.mjs refreshes from CI logs. A change that adds
+ * or remeasures a program records its costs in corpus-costs/<program>.json instead (`{ "plain": ms, "san": ms }`,
+ * a directory program as corpus-costs/<dir>/main.ts.json), which overrides the table until the next refresh
+ * folds it in. One file per program keeps changes that add programs from editing the same lines. */
+export type CorpusCosts = { plain: Record<string, number>; san: Record<string, number> };
 let corpusCostTable: CorpusCosts | undefined;
+
+/** The per-program cost files: program key → its file's costs. Throws on a field other than plain/san or a
+ * cost that is not a positive finite number. */
+export function corpusCostFiles(
+  dir: string = fileURLToPath(new URL("./corpus-costs", import.meta.url)),
+): Map<string, Partial<Record<"plain" | "san", number>>> {
+  const files = new Map<string, Partial<Record<"plain" | "san", number>>>();
+  for (const rel of globSync("**/*.json", { cwd: dir })
+    .map((path) => path.replaceAll("\\", "/"))
+    .sort()) {
+    const key = rel.slice(0, -".json".length);
+    const entry = JSON.parse(readFileSync(join(dir, rel), "utf8")) as Record<string, unknown>;
+    for (const [flavor, cost] of Object.entries(entry)) {
+      if (
+        (flavor !== "plain" && flavor !== "san") ||
+        typeof cost !== "number" ||
+        !Number.isFinite(cost) ||
+        cost <= 0
+      )
+        throw new Error(
+          `corpus-costs/${rel}: ${flavor} must be "plain" or "san" with a positive cost`,
+        );
+    }
+    files.set(key, entry as Partial<Record<"plain" | "san", number>>);
+  }
+  return files;
+}
+
+/** corpus-costs.json with the per-program files applied. */
+export function loadCorpusCosts(): CorpusCosts {
+  const table = JSON.parse(
+    readFileSync(new URL("./corpus-costs.json", import.meta.url), "utf8"),
+  ) as CorpusCosts;
+  for (const [key, entry] of corpusCostFiles()) {
+    if (entry.plain !== undefined) table.plain[key] = entry.plain;
+    if (entry.san !== undefined) table.san[key] = entry.san;
+  }
+  return table;
+}
 
 /** The corpus programs this shard owns, balanced by measured cost. differential.test.ts and
  * llvm-differential.test.ts both select with this, so a shard owns the same programs in both lanes and their
@@ -109,9 +153,7 @@ export function corpusSelect<T>(
   sanitize: boolean,
   spec: ShardSpec | undefined = parseShardSpec(),
 ): T[] {
-  corpusCostTable ??= JSON.parse(
-    readFileSync(new URL("./corpus-costs.json", import.meta.url), "utf8"),
-  ) as CorpusCosts;
+  corpusCostTable ??= loadCorpusCosts();
   const costs = sanitize ? corpusCostTable.san : corpusCostTable.plain;
   const known = Object.values(costs).sort((a, b) => a - b);
   const median = known.length === 0 ? 1 : known[Math.floor(known.length / 2)]!;

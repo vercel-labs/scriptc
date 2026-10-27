@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5632-promisify-dns.ts"
+ ],
+ "diags": []
+}

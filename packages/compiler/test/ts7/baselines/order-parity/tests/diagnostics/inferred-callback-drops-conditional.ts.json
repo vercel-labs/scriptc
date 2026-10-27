@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/inferred-callback-drops-conditional.ts"
+ ],
+ "diags": []
+}

@@ -1,0 +1,26 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/jsx-type-errors/view.tsx",
+  "<repo>/tests/diagnostics/jsx-type-errors/main.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Type 'number' is not assignable to type 'string'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/jsx-type-errors/view.tsx",
+    "start": 488,
+    "end": 495
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Type 'string' is not assignable to type 'number'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/jsx-type-errors/view.tsx",
+    "start": 520,
+    "end": 527
+   }
+  }
+ ]
+}

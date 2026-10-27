@@ -267,18 +267,13 @@ static bool op_aborted(const ScrDyn *signal) {
   return r;
 }
 
-/* The callback argument: a function that does not read the options
- * argument. `max` is how many parameters Node's call passes before the
- * options. False with the error pending. */
+/* The callback argument: validateFunction. False with the error pending.
+ * (The options argument the callback may read is the operator's
+ * cb_opts.) */
 static bool op_check_fn(const ScrDyn *fn, const char *name, uint32_t max) {
+  (void)max;
   if (!fn || !scr_dyn_is_callable(fn)) {
     scr_dyn_arg_type_fail(name, "of type function", fn ? fn : scr_dyn_undefined());
-    return false;
-  }
-  if (fn->kind == SCR_DYN_FUNC && fn->v.fn.arity > max) {
-    static const char m[] =
-        "stream operator callbacks that read the options argument ({ signal }) are not supported yet";
-    scr_throw_error_msg(SCR_ERR_ERROR, m, sizeof m - 1);
     return false;
   }
   return true;
@@ -305,7 +300,7 @@ static ScrPromise *src_next(OpSrc *src) {
 }
 
 static bool src_done(const OpSrc *src, const ScrDyn *v) {
-  return src->s ? v->kind == SCR_DYN_UNDEF : v == op_k_done;
+  return src->s ? scr_stream_chunk_done(v) : v == op_k_done;
 }
 
 /* The Readable iterator's return(): the iterator generator resumes at its
@@ -610,8 +605,9 @@ enum { MODE_MAP, MODE_FILTER, MODE_FOREACH, MODE_EVERY };
 typedef struct {
   OpGen g;
   OpSrc src;
-  ScrDyn *fn;     /* +1 */
-  ScrDyn *signal; /* +1 or NULL */
+  ScrDyn *fn;      /* +1 */
+  ScrDyn *signal;  /* +1 or NULL */
+  ScrDyn *cb_opts; /* +1: the { signal } fn takes as its second argument, or NULL */
   int mode;
   double concurrency, hwm;
   ScrDyn **queue; /* +1 entries: dyn promises or kEof */
@@ -628,6 +624,7 @@ static void op_map_body_drop(OpGen *g) {
   src_release(&m->src);
   scr_dyn_release(m->fn);
   if (m->signal) scr_dyn_release(m->signal);
+  if (m->cb_opts) scr_dyn_release(m->cb_opts);
   for (size_t i = m->qh; i < m->qn; i++) scr_dyn_release(m->queue[i]);
   free(m->queue);
   if (m->next_p) scr_promise_release(m->next_p);
@@ -734,9 +731,11 @@ static void op_wrap_k(void *self, ScrDyn *v) {
 }
 
 /* Calls fn(chunk): +1 result, or NULL with the exception pending. */
-static ScrDyn *op_call(ScrDyn *fn, ScrDyn *chunk) {
-  ScrDyn *args[1] = {chunk};
-  return scr_dyn_call(fn, args, 1, "fn");
+/* Calls fn(chunk, signalOpt) — the second argument when the callback
+ * declares it. +1 result, or NULL with the exception pending. */
+static ScrDyn *op_call(OpMap *m, ScrDyn *chunk) {
+  ScrDyn *args[2] = {chunk, m->cb_opts};
+  return scr_dyn_call(m->fn, args, m->cb_opts ? 2 : 1, "fn");
 }
 
 /* An async wrapper body: `await fn(chunk)` then its transform. The
@@ -744,7 +743,7 @@ static ScrDyn *op_call(ScrDyn *fn, ScrDyn *chunk) {
 static ScrPromise *op_wrap_call(OpMap *m, ScrDyn *chunk, int mode, int stage) {
   OpWrap *w = op_wrap_new(mode, chunk, stage);
   ScrPromise *result = scr_promise_retain(w->p);
-  ScrDyn *r = op_call(m->fn, chunk);
+  ScrDyn *r = op_call(m, chunk);
   if (!r) {
     scr_promise_reject_pending(w->p);
   } else {
@@ -772,7 +771,7 @@ static ScrPromise *op_every_call(OpMap *m, ScrDyn *chunk) {
 static ScrDyn *map_item(OpMap *m, ScrDyn *chunk) {
   ScrPromise *p;
   if (m->mode == MODE_MAP) {
-    ScrDyn *r = op_call(m->fn, chunk);
+    ScrDyn *r = op_call(m, chunk);
     if (!r) {
       ScrCaught *c = scr_exc_take();
       ScrDyn *d = op_rejected_dyn(c);
@@ -981,7 +980,7 @@ static void map_thr(OpGen *g, ScrCaught *c) {
 }
 
 static OpMap *map_new(ScrStream *s, ScrDyn *fn, int mode, double concurrency, double hwm,
-                      ScrDyn *signal) {
+                      ScrDyn *signal, ScrDyn *cb_opts) {
   OpMap *m = op_alloc(sizeof *m);
   gen_init(&m->g, &op_map_body_drop);
   m->g.resume = &map_resume;
@@ -990,6 +989,7 @@ static OpMap *map_new(ScrStream *s, ScrDyn *fn, int mode, double concurrency, do
   m->src.s = scr_stream_retain(s);
   m->fn = scr_dyn_retain(fn);
   m->signal = signal ? scr_dyn_retain(signal) : NULL;
+  m->cb_opts = cb_opts && cb_opts->kind != SCR_DYN_UNDEF ? scr_dyn_retain(cb_opts) : NULL;
   m->mode = mode;
   m->concurrency = concurrency;
   m->hwm = hwm;
@@ -1137,27 +1137,137 @@ static void slice_thr(OpGen *g, ScrCaught *c) {
  * goes through the async-from-sync iterator: each step resolves after the
  * element's PromiseResolve job, and yield* awaits that result before
  * yielding without a further await. */
+/* yield* over the delegate: an array or string (its elements, through
+ * the async-from-sync iterator), another iterable's iterator (FLAT_SYNC
+ * through the async-from-sync iterator, FLAT_ASYNC awaiting next()), or a
+ * native Readable (FLAT_STREAM, its async iterator). */
+enum { FLAT_NONE, FLAT_SYNC, FLAT_ASYNC, FLAT_STREAM, FLAT_GEN_SYNC, FLAT_GEN_ASYNC };
+
+typedef ScrDyn *(*FromSyncFn)(ScrClosure *, ScrGen *);
+typedef ScrDyn *(*FromSyncThrowFn)(ScrClosure *, ScrGen *, ScrDyn *);
+typedef ScrPromise *(*FromAsyncFn)(ScrClosure *, ScrGen *);
+typedef ScrPromise *(*FromAsyncThrowFn)(ScrClosure *, ScrGen *, ScrDyn *);
+typedef ScrDyn *(*FromReadFn)(ScrClosure *, void *);
+static void op_await_gen(ScrPromise *p, ScrClosure *read, OpCont k, void *self);
+
 typedef struct {
   OpGen g;
   OpSrc values; /* the map generator */
   ScrDyn *inner; /* +1: the array or string being delegated to, or NULL */
   size_t idx;    /* element index, or the string's byte offset */
   ScrPromise *step; /* the async-from-sync iterator result being awaited */
+  ScrDyn *iter;      /* +1: the delegate's iterator (FLAT_SYNC / FLAT_ASYNC), or NULL */
+  ScrStream *stream; /* +1: the delegate stream (FLAT_STREAM), or NULL */
+  ScrGen *gen;       /* +1: a compiled generator delegate (FLAT_GEN_*), or NULL */
+  /* The compiler's helpers over the callback's generator type (+1 each,
+   * or NULL): next/return/throw, and read for an async generator. */
+  ScrClosure *gnext, *gread, *gret, *gthr;
+  bool gen_async;
+  int iter_kind;
   bool started;
 } OpFlat;
+
+/* A delegate's member (+1), read as the IR's keyed read does: a compiled
+ * value (a generator, its result record) through its typed ref, anything
+ * else through the iterator-result read. NULL with the error pending. */
+static ScrDyn *flat_get(const ScrDyn *v, const char *key) {
+  if (v->kind == SCR_DYN_TYPED_REF) {
+    ScrStr *k = scr_str_new(key, strlen(key));
+    ScrDyn *r = scr_dyn_typed_ref_key_get(v, k);
+    scr_str_release(k);
+    return r;
+  }
+  return scr_dyn_iterator_result_get(v, key, strlen(key));
+}
+
+/* iterator[name](...args) with the iterator as this: +1, or NULL with the
+ * error pending. */
+static ScrDyn *flat_call(const ScrDyn *iter, const char *name, ScrDyn *const *args, size_t argc) {
+  ScrDyn *m = flat_get(iter, name);
+  if (!m) return NULL;
+  scr_dyn_this_push_dyn(iter);
+  ScrDyn *r = scr_dyn_call(m, args, argc, name);
+  scr_dyn_this_pop();
+  scr_dyn_release(m);
+  return r;
+}
+
+/* `const { value, done } = result`: +1 value with *done set, or NULL with
+ * the error pending. */
+static ScrDyn *flat_result(const ScrDyn *r, bool *done) {
+  if (r->kind == SCR_DYN_UNDEF || r->kind == SCR_DYN_NULL || r->kind == SCR_DYN_NUM ||
+      r->kind == SCR_DYN_STR || r->kind == SCR_DYN_BOOL) {
+    ScrDyn *checked = scr_dyn_iterator_result((ScrDyn *)r); /* throws V8's TypeError */
+    if (checked) scr_dyn_release(checked);
+    return NULL;
+  }
+  ScrDyn *d = flat_get(r, "done");
+  if (!d) return NULL;
+  *done = scr_dyn_truthy(d);
+  scr_dyn_release(d);
+  return flat_get(r, "value");
+}
+
+static void flat_drop_delegate(OpFlat *f) {
+  if (f->inner) scr_dyn_release(f->inner);
+  if (f->iter) scr_dyn_release(f->iter);
+  if (f->stream) scr_stream_release(f->stream);
+  if (f->gen) scr_gen_release(f->gen);
+  f->inner = f->iter = NULL;
+  f->stream = NULL;
+  f->gen = NULL;
+  f->iter_kind = FLAT_NONE;
+}
 
 static void op_flat_body_drop(OpGen *g) {
   OpFlat *f = (OpFlat *)g;
   src_release(&f->values);
-  if (f->inner) scr_dyn_release(f->inner);
+  flat_drop_delegate(f);
   if (f->step) scr_promise_release(f->step);
+  if (f->gnext) scr_closure_release(f->gnext);
+  if (f->gread) scr_closure_release(f->gread);
+  if (f->gret) scr_closure_release(f->gret);
+  if (f->gthr) scr_closure_release(f->gthr);
   free(f);
 }
 
 static void flat_next_value(OpFlat *f);
 
-/* The next element (+1), or NULL when the delegate is exhausted. */
-static ScrDyn *flat_take_element(OpFlat *f) {
+/* The next element (+1), or NULL when the delegate is exhausted; for a
+ * sync iterator NULL with *failed set when next() threw (pending). */
+static ScrDyn *flat_take_element(OpFlat *f, bool *failed) {
+  *failed = false;
+  if (f->iter_kind == FLAT_GEN_SYNC) {
+    ScrDyn *v = ((FromSyncFn)f->gnext->fn)(f->gnext, scr_gen_retain(f->gen));
+    if (!v) {
+      *failed = true;
+      return NULL;
+    }
+    if (v == op_k_done) {
+      scr_dyn_release(v);
+      return NULL;
+    }
+    return v;
+  }
+  if (f->iter_kind == FLAT_SYNC) {
+    ScrDyn *r = flat_call(f->iter, "next", NULL, 0);
+    if (!r) {
+      *failed = true;
+      return NULL;
+    }
+    bool done = false;
+    ScrDyn *v = flat_result(r, &done);
+    scr_dyn_release(r);
+    if (!v) {
+      *failed = true;
+      return NULL;
+    }
+    if (done) {
+      scr_dyn_release(v);
+      return NULL;
+    }
+    return v;
+  }
   ScrDyn *in = f->inner;
   if (in->kind == SCR_DYN_ARR) {
     if (f->idx >= in->v.arr.len) return NULL;
@@ -1185,15 +1295,47 @@ static void flat_step_k(void *self, ScrDyn *v) {
     scr_promise_release(f->step);
     f->step = NULL;
   }
-  if (v == op_k_done || (v && v == op_k_eof)) {
+  if (!v) {
+    /* the delegate's next() threw: it leaves the for await */
+    flat_drop_delegate(f);
+    gen_close_source(&f->g, &f->values, scr_exc_take());
+    return;
+  }
+  if (v == op_k_done || v == op_k_eof) {
     scr_dyn_release(v);
-    scr_dyn_release(f->inner);
-    f->inner = NULL;
+    flat_drop_delegate(f);
     flat_next_value(f);
     return;
   }
   gen_yield_now(&f->g, v);
   scr_dyn_release(v);
+}
+
+/* Await(innerResult) for an async delegate: done ends it, else its value
+ * is yielded as it is. */
+static void flat_iter_k(void *self, ScrDyn *v) {
+  OpFlat *f = self;
+  if (!v) {
+    flat_drop_delegate(f);
+    gen_close_source(&f->g, &f->values, scr_exc_take());
+    return;
+  }
+  bool done = false;
+  ScrDyn *value = flat_result(v, &done);
+  scr_dyn_release(v);
+  if (!value) {
+    flat_drop_delegate(f);
+    gen_close_source(&f->g, &f->values, scr_exc_take());
+    return;
+  }
+  if (done) {
+    scr_dyn_release(value);
+    flat_drop_delegate(f);
+    flat_next_value(f);
+    return;
+  }
+  gen_yield_now(&f->g, value);
+  scr_dyn_release(value);
 }
 
 /* The async-from-sync continuation: PromiseResolve(value) then the result
@@ -1220,8 +1362,56 @@ static void op_flat_wrap_k(void *self, ScrDyn *v) {
   scr_dyn_release(v);
 }
 
+/* The awaited resume of an async compiled generator delegate, read to its
+ * value or the done marker: done ends it, else the value is yielded. */
+static void flat_gen_k(void *self, ScrDyn *v) {
+  OpFlat *f = self;
+  if (!v) {
+    flat_drop_delegate(f);
+    gen_close_source(&f->g, &f->values, scr_exc_take());
+    return;
+  }
+  if (v == op_k_done) {
+    scr_dyn_release(v);
+    flat_drop_delegate(f);
+    flat_next_value(f);
+    return;
+  }
+  gen_yield_now(&f->g, v);
+  scr_dyn_release(v);
+}
+
 static void flat_delegate_step(OpFlat *f) {
-  ScrDyn *e = flat_take_element(f);
+  if (f->iter_kind == FLAT_GEN_ASYNC) {
+    ScrPromise *p = ((FromAsyncFn)f->gnext->fn)(f->gnext, scr_gen_retain(f->gen));
+    op_await_gen(p, f->gread, &flat_gen_k, f);
+    scr_promise_release(p);
+    return;
+  }
+  if (f->iter_kind == FLAT_ASYNC) {
+    ScrDyn *r = flat_call(f->iter, "next", NULL, 0);
+    if (!r) {
+      flat_drop_delegate(f);
+      gen_close_source(&f->g, &f->values, scr_exc_take());
+      return;
+    }
+    op_await_value(r, &flat_iter_k, f);
+    scr_dyn_release(r);
+    return;
+  }
+  if (f->iter_kind == FLAT_STREAM) {
+    ScrPromise *p = scr_stream_next_result_dyn(f->stream);
+    op_await(p, &flat_iter_k, f);
+    scr_promise_release(p);
+    return;
+  }
+  bool failed = false;
+  ScrDyn *e = flat_take_element(f, &failed);
+  if (failed) {
+    flat_drop_delegate(f);
+    gen_close_source(&f->g, &f->values, scr_exc_take());
+    return;
+  }
   OpFlatWrap *w = op_alloc(sizeof *w);
   w->base.rc = 1;
   w->base.drop = &op_flat_wrap_drop;
@@ -1247,15 +1437,63 @@ static void flat_val_k(void *self, ScrDyn *v) {
     gen_complete(&f->g, NULL);
     return;
   }
-  if (v->kind != SCR_DYN_ARR && v->kind != SCR_DYN_STR) {
-    scr_dyn_release(v);
-    ScrCaught *c = op_take_error(
-        op_unsupported("flatMap callback results other than arrays or strings"));
-    gen_close_source(&f->g, &f->values, c);
+  if (v->kind == SCR_DYN_ARR || v->kind == SCR_DYN_STR) {
+    f->inner = v;
+    f->idx = 0;
+    flat_delegate_step(f);
     return;
   }
-  f->inner = v;
-  f->idx = 0;
+  ScrStream *stream = scr_stream_native_readable_of_dyn(v);
+  if (stream) {
+    scr_dyn_release(v);
+    f->stream = stream;
+    f->iter_kind = FLAT_STREAM;
+    flat_delegate_step(f);
+    return;
+  }
+  /* a compiled generator of the callback's declared type: stepped through
+   * the compiler's helpers */
+  if (f->gnext && v->kind == SCR_DYN_TYPED_REF && v->v.typed_ref.type_key &&
+      !strncmp(v->v.typed_ref.type_key, f->gen_async ? "async-generator<" : "generator<",
+               f->gen_async ? 16 : 10)) {
+    f->gen = scr_dyn_typed_ref_unbox(v);
+    scr_dyn_release(v);
+    f->iter_kind = f->gen_async ? FLAT_GEN_ASYNC : FLAT_GEN_SYNC;
+    flat_delegate_step(f);
+    return;
+  }
+  /* yield* val: GetIterator(val, async); a compiled generator is its own
+   * iterator */
+  int kind = 0;
+  ScrDyn *iter = NULL;
+  if (v->kind == SCR_DYN_TYPED_REF && v->v.typed_ref.type_key &&
+      (!strncmp(v->v.typed_ref.type_key, "async-generator<", 16) ||
+       !strncmp(v->v.typed_ref.type_key, "generator<", 10))) {
+    kind = v->v.typed_ref.type_key[0] == 'a' ? 2 : 1;
+    iter = scr_dyn_retain(v);
+  } else {
+    iter = scr_dyn_open_iterator(v, &kind, true);
+  }
+  if (!iter && kind == 0 && !scr_exc_pending()) {
+    /* V8's GetIterator over a value without either method */
+    if (v->kind == SCR_DYN_NULL || v->kind == SCR_DYN_UNDEF) {
+      char m[96];
+      int n = snprintf(m, sizeof m,
+                       "Cannot read properties of %s (reading 'Symbol(Symbol.asyncIterator)')",
+                       v->kind == SCR_DYN_NULL ? "null" : "undefined");
+      scr_throw_error_msg(SCR_ERR_TYPE, m, (size_t)n);
+    } else {
+      static const char m[] = "undefined is not a function";
+      scr_throw_error_msg(SCR_ERR_TYPE, m, sizeof m - 1);
+    }
+  }
+  scr_dyn_release(v);
+  if (!iter) {
+    gen_close_source(&f->g, &f->values, scr_exc_take());
+    return;
+  }
+  f->iter = iter;
+  f->iter_kind = kind == 2 ? FLAT_ASYNC : FLAT_SYNC;
   flat_delegate_step(f);
 }
 
@@ -1300,19 +1538,85 @@ static void op_flat_ret_k(void *self, ScrDyn *v) {
     op_await_value(scr_dyn_undefined(), &op_flat_ret_k, r);
     return;
   }
-  if (r->f->inner) {
-    scr_dyn_release(r->f->inner);
-    r->f->inner = NULL;
-  }
+  flat_drop_delegate(r->f);
   gen_close_source(&r->f->g, &r->f->values, NULL);
+}
+
+/* Whether the delegate's iterator has a callable `name` method. */
+static bool flat_iter_has(OpFlat *f, const char *name) {
+  if (!f->iter) return false;
+  ScrDyn *m = flat_get(f->iter, name);
+  if (!m) {
+    scr_exc_clear();
+    return false;
+  }
+  bool callable = scr_dyn_is_callable(m);
+  scr_dyn_release(m);
+  return callable;
 }
 
 static void flat_ret(OpGen *g, ScrDyn *v) {
   (void)v;
+  OpFlat *f = (OpFlat *)g;
   OpFlatRet *r = op_alloc(sizeof *r);
   r->base.rc = 1;
   r->base.drop = &op_flat_ret_drop;
-  r->f = op_ref((OpFlat *)g);
+  r->f = op_ref(f);
+  if (f->iter_kind == FLAT_GEN_ASYNC) {
+    /* the generator's return(): awaited, then the value */
+    ScrPromise *p = ((FromAsyncFn)f->gret->fn)(f->gret, scr_gen_retain(f->gen));
+    op_await_gen(p, f->gread, &op_flat_ret_k, r);
+    scr_promise_release(p);
+    op_unref(r);
+    return;
+  }
+  if (f->iter_kind == FLAT_GEN_SYNC) {
+    ScrDyn *res = ((FromSyncFn)f->gret->fn)(f->gret, scr_gen_retain(f->gen));
+    if (!res) {
+      flat_drop_delegate(f);
+      gen_close_source(g, &f->values, scr_exc_take());
+      op_unref(r);
+      return;
+    }
+    scr_dyn_release(res);
+    op_await_value(scr_dyn_undefined(), &op_flat_ret_k, r);
+    op_unref(r);
+    return;
+  }
+  if (f->iter_kind == FLAT_ASYNC) {
+    /* yield*'s return: Await(iterator.return(value)), then the value */
+    if (flat_iter_has(f, "return")) {
+      ScrDyn *arg = scr_dyn_undefined();
+      ScrDyn *res = flat_call(f->iter, "return", &arg, 1);
+      if (!res) {
+        flat_drop_delegate(f);
+        gen_close_source(g, &f->values, scr_exc_take());
+        op_unref(r);
+        return;
+      }
+      op_await_value(res, &op_flat_ret_k, r);
+      scr_dyn_release(res);
+    } else {
+      r->stage = 1;
+      op_await_value(scr_dyn_undefined(), &op_flat_ret_k, r);
+    }
+    op_unref(r);
+    return;
+  }
+  if (f->iter_kind == FLAT_SYNC && flat_iter_has(f, "return")) {
+    /* the async-from-sync iterator's return() calls the sync one */
+    ScrDyn *arg = scr_dyn_undefined();
+    ScrDyn *res = flat_call(f->iter, "return", &arg, 1);
+    if (!res) {
+      flat_drop_delegate(f);
+      gen_close_source(g, &f->values, scr_exc_take());
+      op_unref(r);
+      return;
+    }
+    scr_dyn_release(res);
+  } else if (f->iter_kind == FLAT_STREAM) {
+    scr_stream_release(scr_stream_iterator_close(f->stream));
+  }
   op_await_value(scr_dyn_undefined(), &op_flat_ret_k, r);
   op_unref(r);
 }
@@ -1321,12 +1625,72 @@ static void flat_ret(OpGen *g, ScrDyn *v) {
  * yield* rejects with Node's TypeError, which leaves the for await and
  * closes map's generator. */
 static void flat_thr(OpGen *g, ScrCaught *c) {
-  (void)c;
   OpFlat *f = (OpFlat *)g;
-  if (f->inner) {
-    scr_dyn_release(f->inner);
-    f->inner = NULL;
+  if (f->iter_kind == FLAT_GEN_ASYNC || f->iter_kind == FLAT_GEN_SYNC) {
+    /* the generator's throw(error) answers the next step */
+    ScrDyn *err = scr_caught_to_dyn(c);
+    if (f->iter_kind == FLAT_GEN_ASYNC) {
+      ScrPromise *p = ((FromAsyncThrowFn)f->gthr->fn)(f->gthr, scr_gen_retain(f->gen), err);
+      op_await_gen(p, f->gread, &flat_gen_k, f);
+      scr_promise_release(p);
+      return;
+    }
+    ScrDyn *v = ((FromSyncThrowFn)f->gthr->fn)(f->gthr, scr_gen_retain(f->gen), err);
+    if (!v) {
+      flat_drop_delegate(f);
+      gen_close_source(g, &f->values, scr_exc_take());
+      return;
+    }
+    if (v == op_k_done) {
+      scr_dyn_release(v);
+      flat_drop_delegate(f);
+      flat_next_value(f);
+      return;
+    }
+    op_await_value(v, &flat_step_k, f);
+    scr_dyn_release(v);
+    return;
   }
+  if ((f->iter_kind == FLAT_ASYNC || f->iter_kind == FLAT_SYNC) && flat_iter_has(f, "throw")) {
+    /* yield*'s throw: the delegate's throw(error) answers the next step */
+    ScrDyn *err = scr_caught_to_dyn(c);
+    ScrDyn *res = flat_call(f->iter, "throw", &err, 1);
+    scr_dyn_release(err);
+    if (!res) {
+      flat_drop_delegate(f);
+      gen_close_source(g, &f->values, scr_exc_take());
+      return;
+    }
+    if (f->iter_kind == FLAT_ASYNC) {
+      op_await_value(res, &flat_iter_k, f);
+      scr_dyn_release(res);
+      return;
+    }
+    ScrPromise *p = op_resolved(res);
+    scr_dyn_release(res);
+    op_await(p, &flat_iter_k, f);
+    scr_promise_release(p);
+    return;
+  }
+  if (f->iter_kind == FLAT_STREAM) {
+    /* the stream's iterator rethrows after destroying the stream */
+    ScrDyn *err = scr_caught_to_dyn(c);
+    ScrError *e = err ? scr_error_from_dyn(err) : NULL;
+    if (scr_exc_pending()) scr_exc_clear();
+    if (err) scr_dyn_release(err);
+    scr_stream_release(scr_stream_destroy(f->stream, e));
+    if (e) scr_error_release(e);
+    flat_drop_delegate(f);
+    gen_close_source(g, &f->values, scr_caught_retain(c));
+    return;
+  }
+  if (f->iter_kind != FLAT_NONE && flat_iter_has(f, "return")) {
+    /* no throw method: the iterator closes first */
+    ScrDyn *res = flat_call(f->iter, "return", NULL, 0);
+    if (res) scr_dyn_release(res);
+    else scr_exc_clear();
+  }
+  flat_drop_delegate(f);
   ScrError *e = op_coded_error(SCR_ERR_TYPE, NULL, "The iterator does not provide a 'throw' method.");
   gen_close_source(g, &f->values, op_take_error(e));
 }
@@ -1370,12 +1734,6 @@ static void op_from_drop(OpObj *o) {
 
 /* The helper ABIs: the closure first, then the declared parameters, which
  * the callee owns. */
-typedef ScrDyn *(*FromSyncFn)(ScrClosure *, ScrGen *);
-typedef ScrDyn *(*FromSyncThrowFn)(ScrClosure *, ScrGen *, ScrDyn *);
-typedef ScrPromise *(*FromAsyncFn)(ScrClosure *, ScrGen *);
-typedef ScrPromise *(*FromAsyncThrowFn)(ScrClosure *, ScrGen *, ScrDyn *);
-typedef ScrDyn *(*FromReadFn)(ScrClosure *, void *);
-
 /* `await p` over an async generator's resume promise: the IteratorResult
  * record goes through `read` (the value, or the done marker) before k.
  * Awaiting the typed promise itself keeps from.js's single await. */
@@ -1492,16 +1850,6 @@ static void op_from_step_k(void *self, ScrDyn *v) {
   }
   int pushed = scr_stream_push_object(out, v);
   scr_dyn_release(v);
-  if (pushed == -2) {
-    op_from_destroy_with(out, op_unsupported(
-        "a stream operator output that mixes strings and Buffers"));
-    return;
-  }
-  if (pushed < 0) {
-    op_from_destroy_with(out, op_unsupported(
-        "a stream operator value that is not a string or Buffer (object-mode streams of other values)"));
-    return;
-  }
   if (pushed) {
     from_next(f, out);
     return;
@@ -2039,6 +2387,466 @@ ScrStream *scr_stream_from_async_iter(ScrDyn *iter, double flags, double hwm) {
   return scr_stream_from_dyn_iter(scr_dyn_retain(iter), true, flags, hwm);
 }
 
+/* ── Duplex.from (duplexify.js) ─────────────────────────────────────
+ * Duplex.from(asyncGeneratorFunction): fromAsyncGen hands the function a
+ * source generator that the writes and the final feed through a deferred
+ * promise, and from(Duplexify, value, { objectMode: true, write, final,
+ * destroy }) reads what the function yields. The source generator is
+ * compiled (the frontend's Duplex.from source helper):
+ *
+ *   while (true) { const v = await next(); ack(); if (v is done) return; yield v; }
+ *
+ * next() answers the current deferred, a write or the final settles it
+ * (the chunk, or the done marker), and ack() is fromAsyncGen's
+ * `process.nextTick(cb)` followed by a fresh deferred. */
+
+enum { CHAN_NONE, CHAN_WRITE, CHAN_FINAL, CHAN_ABORT, CHAN_FINAL_ASYNC };
+
+typedef struct OpChan OpChan;
+struct OpChan {
+  OpObj base;
+  ScrStream *d;         /* +1, dropped at destroy (or exit) */
+  ScrPromise *promise;  /* +1: the deferred next() answers, NULL once taken */
+  ScrPromise *resolve;  /* +1: the deferred a write or the final settles, NULL once settled */
+  int settled;          /* CHAN_*: what settled the deferred, for ack() */
+  bool aborted;         /* destroy ran (fromAsyncGen's ac.abort()) */
+  ScrClosure *abort;    /* +1: the body's AbortController's abort(), or NULL */
+  /* An async function body: its promise's then() (duplexify.js) settles
+   * `promise` there; the final waits for it. */
+  bool finalized;       /* final() has started */
+  bool body_settled;    /* the then() callbacks ran */
+  bool final_waiting;   /* the final's callback awaits the settlement */
+  ScrError *body_err;   /* +1: what awaiting the then() result throws, or NULL */
+  OpChan *live_prev, *live_next;
+};
+
+static SCR_TL OpChan *op_chan_live = NULL;
+
+static void op_chan_drop(OpObj *o) {
+  OpChan *c = (OpChan *)o;
+  if (c->body_err) scr_error_release(c->body_err);
+  if (c->abort) scr_closure_release(c->abort);
+  if (c->d) scr_stream_release(c->d);
+  if (c->promise) scr_promise_release(c->promise);
+  if (c->resolve) scr_promise_release(c->resolve);
+  free(c);
+}
+
+/* createDeferredPromise() */
+static void op_chan_defer(OpChan *c) {
+  ScrPromise *p = scr_promise_new();
+  if (c->promise) scr_promise_release(c->promise);
+  if (c->resolve) scr_promise_release(c->resolve);
+  c->promise = p;
+  c->resolve = scr_promise_retain(p);
+}
+
+/* Unlinks the channel from the live list and drops its stream and its
+ * deferred (a source still awaiting it stays pending, as in Node). */
+static void op_chan_retire(OpChan *c) {
+  if (c->live_prev) c->live_prev->live_next = c->live_next;
+  else if (op_chan_live == c) op_chan_live = c->live_next;
+  else return; /* already retired */
+  if (c->live_next) c->live_next->live_prev = c->live_prev;
+  c->live_prev = c->live_next = NULL;
+  ScrStream *d = c->d;
+  c->d = NULL;
+  if (c->abort) scr_closure_release(c->abort);
+  c->abort = NULL;
+  if (c->promise) scr_promise_release(c->promise);
+  if (c->resolve) scr_promise_release(c->resolve);
+  c->promise = c->resolve = NULL;
+  if (d) scr_stream_release(d);
+  op_unref(c); /* the live list's reference */
+}
+
+static void op_chan_atexit(void) {
+  while (op_chan_live) op_chan_retire(op_chan_live);
+}
+
+static ScrClosure *op_chan_closure(void *fn, OpChan *c) {
+  ScrClosure *cl = scr_closure_new(fn, 1);
+  cl->caps[0] = scr_box_new_obj(&op_ref, &op_unref, NULL);
+  scr_box_set_ref(cl->caps[0], op_ref(c));
+  return cl;
+}
+
+static OpChan *op_chan_of(ScrClosure *cb) { return scr_box_get_ref(cb->caps[0]); /* +1 */ }
+
+/* process.nextTick(cb): the write's or the final's completion. */
+static void op_chan_done_tick(ScrClosure *job) {
+  ScrStream *d = scr_box_get_ref(job->caps[0]);
+  bool final = scr_box_get_bool(job->caps[1]);
+  if (final) scr_stream_final_done(d, NULL);
+  else scr_stream_write_done(d, NULL);
+  scr_stream_release(d);
+}
+
+/* The source's `await _promise`: the current deferred (+1). */
+static ScrPromise *op_chan_next_inv(ScrClosure *cb) {
+  OpChan *c = op_chan_of(cb);
+  ScrPromise *p = c->promise;
+  c->promise = NULL;
+  op_unref(c);
+  return p ? p : scr_promise_new();
+}
+
+static ScrError *op_chan_abort_error(void) {
+  ScrStr *message = scr_str_new("The operation was aborted", 25);
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, message);
+  scr_str_release(message);
+  scr_str_release(e->name);
+  e->name = scr_str_new("AbortError", 10);
+  scr_error_set_code(e, "ABORT_ERR");
+  e->name_present = true;
+  e->name_enumerable = true;
+  return e;
+}
+
+/* After the source's await: process.nextTick(cb), then (unless done) the
+ * aborted check and a fresh deferred. */
+static void op_chan_final_async_wait(OpChan *c);
+
+/* The final's completion after `await promise`: process.nextTick(cb, err) */
+static void op_chan_final_async_done(ScrClosure *job) {
+  OpChan *c = op_chan_of(job);
+  if (c->d) {
+    ScrError *err = c->body_err ? scr_error_retain(c->body_err) : NULL;
+    ScrStream *d = scr_stream_retain(c->d);
+    scr_stream_final_done(d, err);
+    scr_stream_release(d);
+  }
+  op_unref(c);
+}
+
+/* `await promise` resumed: the completion follows on the next tick */
+static void op_chan_final_async_resume(ScrClosure *job) {
+  OpChan *c = op_chan_of(job);
+  scr_next_tick(op_chan_closure((void *)&op_chan_final_async_done, c));
+  op_unref(c);
+}
+
+/* The final's async callback (run by the source's nextTick): it awaits
+ * the then() result, which may still be pending. */
+static void op_chan_final_async_tick(ScrClosure *job) {
+  OpChan *c = op_chan_of(job);
+  op_chan_final_async_wait(c);
+  op_unref(c);
+}
+
+static void op_chan_final_async_wait(OpChan *c) {
+  if (c->body_settled) scr_queue_microtask(op_chan_closure((void *)&op_chan_final_async_resume, c));
+  else c->final_waiting = true;
+}
+
+static void op_chan_ack_inv(ScrClosure *cb) {
+  OpChan *c = op_chan_of(cb);
+  int settled = c->settled;
+  c->settled = CHAN_NONE;
+  if (settled == CHAN_FINAL_ASYNC) {
+    scr_next_tick(op_chan_closure((void *)&op_chan_final_async_tick, c));
+    op_unref(c);
+    return;
+  }
+  if (c->d && (settled == CHAN_WRITE || settled == CHAN_FINAL)) {
+    ScrClosure *tick = scr_closure_new((void *)&op_chan_done_tick, 2);
+    tick->caps[0] = scr_box_new_obj(&scr_stream_retain_v, &scr_stream_release_v, &scr_stream_trace);
+    scr_box_set_ref(tick->caps[0], scr_stream_retain(c->d));
+    tick->caps[1] = scr_box_new(SCR_BOX_BOOL);
+    scr_box_set_bool(tick->caps[1], settled == CHAN_FINAL);
+    scr_next_tick(tick);
+  }
+  if (settled != CHAN_FINAL && settled != CHAN_ABORT) {
+    if (c->aborted) {
+      ScrError *e = op_chan_abort_error();
+      scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+    } else if (c->d) {
+      op_chan_defer(c);
+    }
+  }
+  op_unref(c);
+}
+
+/* `_resolve(value)`: the write's chunk or the final's done marker. */
+static void op_chan_settle(OpChan *c, ScrDyn *v /*moves*/, int kind) {
+  ScrPromise *p = c->resolve;
+  c->resolve = NULL;
+  if (!p) {
+    scr_dyn_release(v);
+    return;
+  }
+  c->settled = kind;
+  scr_promise_fulfill_ref(p, v, scr_dyn_retain_v, scr_dyn_release_v, NULL);
+  scr_promise_release(p);
+}
+
+/* Duplexify's write(chunk, encoding, cb) */
+static void op_chan_write_inv(ScrClosure *cb, ScrStream *s, ScrBytes *chunk) {
+  OpChan *c = op_chan_of(cb);
+  op_chan_settle(c, scr_stream_chunk_value(s, chunk), CHAN_WRITE);
+  op_unref(c);
+}
+
+/* Duplexify's final(cb) */
+static void op_chan_final_inv(ScrClosure *cb, ScrStream *s) {
+  (void)s;
+  OpChan *c = op_chan_of(cb);
+  op_chan_settle(c, scr_stream_from_done(), CHAN_FINAL);
+  op_unref(c);
+}
+
+/* fromAsyncGen's ac.abort(err): the body's signal fires its abort
+ * listeners once (a body that declares the options argument); without an
+ * error the reason is null (destroy passes `err || null`). */
+static void op_chan_abort(OpChan *c, ScrError *err) {
+  c->aborted = true;
+  ScrClosure *abort = c->abort;
+  if (!abort) return;
+  c->abort = NULL;
+  ScrDyn *reason = err ? scr_dyn_from_error(err) : NULL;
+  if (!reason) reason = scr_dyn_new_null();
+  ((void (*)(ScrClosure *, ScrDyn *))abort->fn)(abort, reason); /* reason moves in */
+  if (scr_exc_pending()) scr_exc_clear();
+  scr_closure_release(abort);
+}
+
+/* destroy: fromAsyncGen's (ac.abort(); a source waiting for a write or
+ * the final is unblocked with the done marker and a no-op callback;
+ * cb(err)), then from()'s close of the function's iterator. caps: the
+ * channel and the from() destroy closure. */
+static void op_dup_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
+  OpChan *c = scr_box_get_ref(cb->caps[0]);
+  ScrClosure *from = scr_box_get_ref(cb->caps[1]);
+  op_chan_abort(c, err);
+  if (c->resolve) op_chan_settle(c, scr_stream_from_done(), CHAN_ABORT);
+  op_chan_retire(c);
+  op_unref(c);
+  op_from_destroy_inv(from, s, err);
+  scr_closure_release(from);
+}
+
+typedef ScrGen *(*OpSourceFn)(ScrClosure *, ScrClosure *, ScrClosure *);
+typedef ScrGen *(*OpStageFn)(ScrClosure *, ScrGen *);
+typedef ScrGen *(*OpStageOptsFn)(ScrClosure *, ScrGen *, ScrDyn *);
+
+/* A new channel; with a signal (borrowed), the body's AbortController's
+ * abort() (borrowed) is kept for destroy and *opts is { signal } (+1). */
+static OpChan *op_chan_new(ScrClosure *abort, ScrDyn *signal, ScrDyn **opts) {
+  op_sentinels_init();
+  static SCR_TL bool registered = false;
+  if (!registered) {
+    registered = true;
+    scr_atexit(op_chan_atexit);
+  }
+  OpChan *c = op_alloc(sizeof *c);
+  c->base.rc = 1;
+  c->base.drop = &op_chan_drop;
+  *opts = NULL;
+  if (signal) {
+    c->abort = scr_closure_retain(abort);
+    *opts = scr_dyn_new_obj();
+    scr_dyn_obj_set(*opts, "signal", 6, scr_dyn_retain(signal));
+  }
+  op_chan_defer(c);
+  return c;
+}
+
+/* Duplex.from(fn) for an async generator function: the compiled stage
+ * (borrowed) takes the source generator and answers its own; source
+ * (borrowed) makes the source generator from next() and ack(); the
+ * compiler's helpers over the stage's generator are borrowed. With a
+ * signal, the stage also takes { signal }. +1, or NULL with the
+ * function's throw pending. */
+static ScrStream *op_duplex_from_gen(ScrClosure *stage, ScrClosure *source, ScrClosure *next,
+                                     ScrClosure *read, ScrClosure *ret, ScrClosure *thr,
+                                     ScrClosure *abort, ScrDyn *signal) {
+  ScrDyn *opts;
+  OpChan *c = op_chan_new(abort, signal, &opts);
+  ScrGen *src = ((OpSourceFn)source->fn)(source, op_chan_closure((void *)&op_chan_next_inv, c),
+                                         op_chan_closure((void *)&op_chan_ack_inv, c));
+  ScrGen *g = NULL; /* src and opts move in */
+  if (scr_exc_pending()) {
+    if (opts) scr_dyn_release(opts);
+  } else {
+    g = opts ? ((OpStageOptsFn)stage->fn)(stage, src, opts) : ((OpStageFn)stage->fn)(stage, src);
+  }
+  if (scr_exc_pending()) {
+    if (g) scr_gen_release(g);
+    op_unref(c);
+    return NULL;
+  }
+  OpFrom *f = op_alloc(sizeof *f);
+  f->base.rc = 1;
+  f->base.drop = &op_from_drop;
+  f->kind = FROM_ASYNC;
+  f->gen = g;
+  f->next = scr_closure_retain(next);
+  f->read = scr_closure_retain(read);
+  f->ret = scr_closure_retain(ret);
+  f->thr = scr_closure_retain(thr);
+  ScrClosure *destroy = scr_closure_new((void *)&op_dup_destroy_inv, 2);
+  destroy->caps[0] = scr_box_new_obj(&op_ref, &op_unref, NULL);
+  scr_box_set_ref(destroy->caps[0], op_ref(c));
+  destroy->caps[1] = scr_box_new_obj(&scr_closure_retain_v, &scr_closure_release_v, &scr_closure_trace_v);
+  scr_box_set_ref(destroy->caps[1], op_from_closure((void *)&op_from_destroy_inv, f));
+  /* Duplexify({ objectMode: true, highWaterMark: 1, write, final, destroy }) */
+  ScrStream *d = scr_stream_new_duplex(1, 1, true, true, true, true, true,
+                                       op_from_closure((void *)&op_from_read_inv, f), &op_from_read_inv,
+                                       op_chan_closure((void *)&op_chan_write_inv, c), &op_chan_write_inv,
+                                       op_chan_closure((void *)&op_chan_final_inv, c), &op_chan_final_inv,
+                                       destroy, &op_dup_destroy_inv);
+  scr_stream_set_object_mode(d, true, true);
+  d->cls = "Duplexify";
+  f->out = d;
+  op_unref(f);
+  c->d = scr_stream_retain(d);
+  c->live_next = op_chan_live;
+  if (op_chan_live) op_chan_live->live_prev = c;
+  op_chan_live = c; /* the reference c was created with */
+  return d;
+}
+
+ScrStream *scr_stream_duplex_from_gen(ScrClosure *stage, ScrClosure *source, ScrClosure *next,
+                                      ScrClosure *read, ScrClosure *ret, ScrClosure *thr) {
+  return op_duplex_from_gen(stage, source, next, read, ret, thr, NULL, NULL);
+}
+
+ScrStream *scr_stream_duplex_from_gen_signal(ScrClosure *stage, ScrClosure *source, ScrClosure *next,
+                                             ScrClosure *read, ScrClosure *ret, ScrClosure *thr,
+                                             ScrClosure *abort, ScrDyn *signal) {
+  return op_duplex_from_gen(stage, source, next, read, ret, thr, abort, signal);
+}
+
+/* ── Duplex.from(asyncFunction) ── duplexify.js: the function's promise
+ * must settle to a nullish value (else ERR_INVALID_RETURN_VALUE when the
+ * final awaits it), a return before the input was consumed destroys the
+ * Duplex, a rejection destroys it with the reason, and the Duplexify is
+ * writable only, its final waiting for the promise. */
+
+typedef ScrPromise *(*OpAsyncStageFn)(ScrClosure *, ScrGen *);
+typedef ScrPromise *(*OpAsyncStageOptsFn)(ScrClosure *, ScrGen *, ScrDyn *);
+typedef ScrDyn *(*OpBoxFn)(ScrClosure *, ScrPromise *);
+
+typedef struct {
+  OpChan *c;     /* +1 */
+  ScrDyn *boxed; /* +1, the function's promise boxed */
+} OpAsyncBody;
+
+static void op_async_body_entry(ScrFiber *fiber, void *arg) {
+  (void)fiber;
+  OpAsyncBody b = *(OpAsyncBody *)arg;
+  free(arg);
+  OpChan *c = b.c;
+  ScrDyn *v = scr_await_ref(b.boxed->v.promise); /* NULL: undefined */
+  ScrStream *d = c->d ? scr_stream_retain(c->d) : NULL;
+  if (!scr_exc_pending()) {
+    if (v && v->kind != SCR_DYN_NULL && v->kind != SCR_DYN_UNDEF) {
+      /* the then() callback throws: awaiting its result rejects */
+      char detail[160];
+      const char *got = scr_dyn_specific_type(v, detail, sizeof detail);
+      char msg[320];
+      int n = snprintf(msg, sizeof msg,
+                       "Expected nully to be returned from the \"body\" function but got %s.", got);
+      c->body_err = op_coded_error(SCR_ERR_TYPE, "ERR_INVALID_RETURN_VALUE", msg);
+      (void)n;
+    } else if (!c->finalized && d) {
+      /* returned without consuming the input: destroyer(d) */
+      ScrError *e = op_chan_abort_error();
+      scr_stream_release(scr_stream_destroy(d, e));
+      scr_error_release(e);
+    }
+    if (v) scr_dyn_release(v);
+  } else {
+    ScrCaught *caught = scr_exc_take();
+    ScrError *err = op_caught_error(caught);
+    scr_caught_release(caught);
+    if (d) scr_stream_release(scr_stream_destroy(d, err));
+    scr_error_release(err);
+  }
+  if (scr_exc_pending()) scr_exc_clear();
+  if (d) scr_stream_release(d);
+  c->body_settled = true;
+  if (c->final_waiting) {
+    c->final_waiting = false;
+    op_chan_final_async_wait(c);
+  }
+  op_unref(c);
+  scr_dyn_release(b.boxed);
+}
+
+/* Duplexify's final(cb) for an async function body: finalized, then
+ * fromAsyncGen's final with the awaiting callback */
+static void op_chan_final_async_inv(ScrClosure *cb, ScrStream *s) {
+  (void)s;
+  OpChan *c = op_chan_of(cb);
+  c->finalized = true;
+  op_chan_settle(c, scr_stream_from_done(), CHAN_FINAL_ASYNC);
+  op_unref(c);
+}
+
+/* fromAsyncGen's destroy alone (no from() iterator to close) */
+static void op_chan_destroy_inv(ScrClosure *cb, ScrStream *s, ScrError *err) {
+  OpChan *c = op_chan_of(cb);
+  op_chan_abort(c, err);
+  if (c->resolve) op_chan_settle(c, scr_stream_from_done(), CHAN_ABORT);
+  op_chan_retire(c);
+  op_unref(c);
+  scr_stream_destroy_done(s, err ? scr_error_retain(err) : NULL);
+}
+
+/* Duplex.from(fn) for an async function: the compiled stage (borrowed)
+ * takes the source generator (and, with a signal, { signal }) and answers
+ * its promise; source and box (promise → dyn promise) borrowed. +1, or
+ * NULL with the function's throw pending. */
+static ScrStream *op_duplex_from_async_fn(ScrClosure *stage, ScrClosure *source, ScrClosure *box,
+                                          ScrClosure *abort, ScrDyn *signal) {
+  ScrDyn *opts;
+  OpChan *c = op_chan_new(abort, signal, &opts);
+  ScrGen *src = ((OpSourceFn)source->fn)(source, op_chan_closure((void *)&op_chan_next_inv, c),
+                                         op_chan_closure((void *)&op_chan_ack_inv, c));
+  ScrPromise *p = NULL; /* src and opts move in */
+  if (scr_exc_pending()) {
+    if (opts) scr_dyn_release(opts);
+  } else {
+    p = opts ? ((OpAsyncStageOptsFn)stage->fn)(stage, src, opts)
+             : ((OpAsyncStageFn)stage->fn)(stage, src);
+  }
+  if (scr_exc_pending()) {
+    if (p) scr_promise_release(p);
+    op_unref(c);
+    return NULL;
+  }
+  /* Duplexify({ objectMode: true, readable: false, write, final, destroy }) */
+  ScrStream *d = scr_stream_new_duplex(16, 16, true, true, true, false, true, NULL, NULL,
+                                       op_chan_closure((void *)&op_chan_write_inv, c), &op_chan_write_inv,
+                                       op_chan_closure((void *)&op_chan_final_async_inv, c),
+                                       &op_chan_final_async_inv,
+                                       op_chan_closure((void *)&op_chan_destroy_inv, c), &op_chan_destroy_inv);
+  scr_stream_set_object_mode(d, true, true);
+  d->cls = "Duplexify";
+  c->d = scr_stream_retain(d);
+  c->live_next = op_chan_live;
+  if (op_chan_live) op_chan_live->live_prev = c;
+  op_chan_live = c; /* the reference c was created with */
+  /* value.then(onFulfilled, onRejected) */
+  OpAsyncBody *b = malloc(sizeof *b);
+  if (!b) op_oom();
+  b->c = op_ref(c);
+  b->boxed = ((OpBoxFn)box->fn)(box, p); /* p moves */
+  scr_promise_release(scr_async_spawn_after(b->boxed->v.promise, &op_async_body_entry, b));
+  return d;
+}
+
+ScrStream *scr_stream_duplex_from_async_fn(ScrClosure *stage, ScrClosure *source, ScrClosure *box) {
+  return op_duplex_from_async_fn(stage, source, box, NULL, NULL);
+}
+
+ScrStream *scr_stream_duplex_from_async_fn_signal(ScrClosure *stage, ScrClosure *source,
+                                                  ScrClosure *box, ScrClosure *abort,
+                                                  ScrDyn *signal) {
+  return op_duplex_from_async_fn(stage, source, box, abort, signal);
+}
+
 /* ── the promise operators ─────────────────────────────────────────── */
 
 enum { PK_DYN, PK_F64, PK_BOOL, PK_STR, PK_VOID };
@@ -2051,6 +2859,8 @@ typedef struct {
   ScrDyn *fn;     /* +1 or NULL */
   ScrDyn *signal; /* +1 or NULL */
   ScrDyn *acc;    /* toArray's array / reduce's accumulator (+1) */
+  ScrClosure *ctl; /* +1: reduce's ac.abort(), run when it ends, or NULL */
+  ScrDyn *cb_opts; /* +1: the { signal } the reducer takes as its third argument, or NULL */
   int op;
   int kind;       /* the promise payload (PK_*) */
   bool has_init, got_any, negate;
@@ -2065,7 +2875,19 @@ static void op_fn_drop(OpObj *o) {
   if (a->fn) scr_dyn_release(a->fn);
   if (a->signal) scr_dyn_release(a->signal);
   if (a->acc) scr_dyn_release(a->acc);
+  if (a->ctl) scr_closure_release(a->ctl);
+  if (a->cb_opts) scr_dyn_release(a->cb_opts);
   free(a);
+}
+
+/* reduce's `finally { ac.abort(); }`, before its promise settles. */
+static void op_fn_abort_ctl(OpFn *a) {
+  if (!a->ctl) return;
+  ScrClosure *ctl = a->ctl;
+  a->ctl = NULL;
+  ((void (*)(ScrClosure *))ctl->fn)(ctl);
+  if (scr_exc_pending()) scr_exc_clear();
+  scr_closure_release(ctl);
 }
 
 static OpFn *op_fn_new(int op, int kind) {
@@ -2081,6 +2903,7 @@ static OpFn *op_fn_new(int op, int kind) {
 /* Settles the operator's promise with v converted to its payload kind (a
  * value of the wrong kind rejects with the checked conversion's error). */
 static void op_fn_resolve(OpFn *a, ScrDyn *v /*borrowed*/) {
+  op_fn_abort_ctl(a);
   switch (a->kind) {
   case PK_VOID:
     scr_promise_fulfill_void(a->p);
@@ -2105,7 +2928,10 @@ static void op_fn_resolve(OpFn *a, ScrDyn *v /*borrowed*/) {
   scr_promise_reject_pending(a->p);
 }
 
-static void op_fn_reject(OpFn *a, const ScrCaught *c) { op_reject(a->p, c); }
+static void op_fn_reject(OpFn *a, const ScrCaught *c) {
+  op_fn_abort_ctl(a);
+  op_reject(a->p, c);
+}
 
 static void op_fn_next(OpFn *a);
 
@@ -2246,8 +3072,8 @@ static void op_fn_val_k(void *self, ScrDyn *v) {
       op_fn_next(a);
       return;
     }
-    ScrDyn *args[2] = {a->acc, v};
-    ScrDyn *r = scr_dyn_call(a->fn, args, 2, "reducer");
+    ScrDyn *args[3] = {a->acc, v, a->cb_opts};
+    ScrDyn *r = scr_dyn_call(a->fn, args, a->cb_opts ? 3 : 2, "reducer");
     scr_dyn_release(v);
     if (!r) {
       op_fn_close(a, scr_exc_take(), NULL);
@@ -2329,7 +3155,7 @@ static bool op_map_options(const ScrDyn *options, double *concurrency, double *h
 
 /* map(fn, options) with fn already checked: +1 generator, or NULL with
  * the error pending. */
-static OpMap *op_map_make(ScrStream *s, ScrDyn *fn, ScrDyn *options, int mode) {
+static OpMap *op_map_make(ScrStream *s, ScrDyn *fn, ScrDyn *options, int mode, ScrDyn *cb_opts) {
   op_sentinels_init();
   if (!op_check_options(options)) return NULL;
   bool ok;
@@ -2340,26 +3166,28 @@ static OpMap *op_map_make(ScrStream *s, ScrDyn *fn, ScrDyn *options, int mode) {
     if (signal) scr_dyn_release(signal);
     return NULL;
   }
-  OpMap *m = map_new(s, fn, mode, concurrency, hwm, signal);
+  OpMap *m = map_new(s, fn, mode, concurrency, hwm, signal, cb_opts);
   if (signal) scr_dyn_release(signal);
   return m;
 }
 
-ScrStream *scr_stream_op_map(ScrStream *s, ScrDyn *fn, ScrDyn *options) {
+ScrStream *scr_stream_op_map(ScrStream *s, ScrDyn *fn, ScrDyn *options, ScrDyn *cb_opts) {
   if (!op_check_fn(fn, "fn", 1)) return NULL;
-  OpMap *m = op_map_make(s, fn, options, MODE_MAP);
+  OpMap *m = op_map_make(s, fn, options, MODE_MAP, cb_opts);
   return m ? op_from_gen(&m->g) : NULL;
 }
 
-ScrStream *scr_stream_op_filter(ScrStream *s, ScrDyn *fn, ScrDyn *options) {
+ScrStream *scr_stream_op_filter(ScrStream *s, ScrDyn *fn, ScrDyn *options, ScrDyn *cb_opts) {
   if (!op_check_fn(fn, "fn", 1)) return NULL;
-  OpMap *m = op_map_make(s, fn, options, MODE_FILTER);
+  OpMap *m = op_map_make(s, fn, options, MODE_FILTER, cb_opts);
   return m ? op_from_gen(&m->g) : NULL;
 }
 
-ScrStream *scr_stream_op_flat_map(ScrStream *s, ScrDyn *fn, ScrDyn *options) {
+static ScrStream *op_flat_map(ScrStream *s, ScrDyn *fn, ScrDyn *options, ScrDyn *cb_opts,
+                              ScrClosure *next, ScrClosure *read, ScrClosure *ret,
+                              ScrClosure *thr, bool async_gen) {
   if (!op_check_fn(fn, "fn", 1)) return NULL;
-  OpMap *m = op_map_make(s, fn, options, MODE_MAP);
+  OpMap *m = op_map_make(s, fn, options, MODE_MAP, cb_opts);
   if (!m) return NULL;
   OpFlat *f = op_alloc(sizeof *f);
   gen_init(&f->g, &op_flat_body_drop);
@@ -2367,7 +3195,32 @@ ScrStream *scr_stream_op_flat_map(ScrStream *s, ScrDyn *fn, ScrDyn *options) {
   f->g.ret = &flat_ret;
   f->g.thr = &flat_thr;
   f->values.g = &m->g; /* moves */
+  if (next) {
+    f->gnext = scr_closure_retain(next);
+    f->gread = read ? scr_closure_retain(read) : NULL;
+    f->gret = scr_closure_retain(ret);
+    f->gthr = scr_closure_retain(thr);
+    f->gen_async = async_gen;
+  }
   return op_from_gen(&f->g);
+}
+
+ScrStream *scr_stream_op_flat_map(ScrStream *s, ScrDyn *fn, ScrDyn *options, ScrDyn *cb_opts) {
+  return op_flat_map(s, fn, options, cb_opts, NULL, NULL, NULL, NULL, false);
+}
+
+/* flatMap whose callback returns a compiled generator: the helpers over
+ * its type (borrowed) step the generators it yields from. */
+ScrStream *scr_stream_op_flat_map_async_gen(ScrStream *s, ScrDyn *fn, ScrDyn *options,
+                                            ScrDyn *cb_opts, ScrClosure *next, ScrClosure *read,
+                                            ScrClosure *ret, ScrClosure *thr) {
+  return op_flat_map(s, fn, options, cb_opts, next, read, ret, thr, true);
+}
+
+ScrStream *scr_stream_op_flat_map_sync_gen(ScrStream *s, ScrDyn *fn, ScrDyn *options,
+                                           ScrDyn *cb_opts, ScrClosure *next, ScrClosure *ret,
+                                           ScrClosure *thr) {
+  return op_flat_map(s, fn, options, cb_opts, next, NULL, ret, thr, false);
 }
 
 /* drop(number, options) / take(number, options) */
@@ -2454,8 +3307,8 @@ static void op_noop_listener(ScrClosure *cb, void *err) {
   (void)err;
 }
 
-ScrPromise *scr_stream_op_reduce(ScrStream *s, ScrDyn *fn, ScrDyn *init, bool has_init,
-                                 ScrDyn *options, double kind) {
+static ScrPromise *op_reduce(ScrStream *s, ScrDyn *fn, ScrDyn *init, bool has_init,
+                             ScrDyn *options, double kind, ScrClosure *ctl, ScrDyn *cb_opts) {
   op_sentinels_init();
   OpFn *a = op_fn_new(FN_REDUCE, (int)kind);
   if (!op_check_fn(fn, "reducer", 2)) return op_fn_reject_now(a);
@@ -2471,6 +3324,7 @@ ScrPromise *scr_stream_op_reduce(ScrStream *s, ScrDyn *fn, ScrDyn *init, bool ha
     ScrDyn *reason = op_get(a->signal, "reason");
     ScrError *e = op_abort_error(reason ? reason : scr_dyn_undefined());
     if (reason) scr_dyn_release(reason);
+    /* (thrown before the controller exists) */
     /* this.once('error', () => {}) */
     ScrStr *name = scr_str_new("error", 5);
     scr_emitter_release(scr_emitter_on((ScrEmitter *)s, name,
@@ -2486,40 +3340,97 @@ ScrPromise *scr_stream_op_reduce(ScrStream *s, ScrDyn *fn, ScrDyn *init, bool ha
     op_unref(a);
     return p;
   }
+  /* const ac = new AbortController() (options.signal's listener that
+   * aborts it too is registered by the caller) */
+  if (ctl) {
+    a->ctl = scr_closure_retain(ctl);
+    a->cb_opts = cb_opts && cb_opts->kind != SCR_DYN_UNDEF ? scr_dyn_retain(cb_opts) : NULL;
+  }
   return op_fn_start(a);
+}
+
+ScrPromise *scr_stream_op_reduce(ScrStream *s, ScrDyn *fn, ScrDyn *init, bool has_init,
+                                 ScrDyn *options, double kind) {
+  return op_reduce(s, fn, init, has_init, options, kind, NULL, NULL);
+}
+
+/* reduce with a reducer that reads its { signal }: abort is ac.abort()
+ * (borrowed), cb_opts `{ signal: ac.signal }`. */
+ScrPromise *scr_stream_op_reduce_signal(ScrStream *s, ScrDyn *fn, ScrDyn *init, bool has_init,
+                                        ScrDyn *options, double kind, ScrClosure *abort,
+                                        ScrDyn *cb_opts) {
+  return op_reduce(s, fn, init, has_init, options, kind, abort, cb_opts);
+}
+
+/* `options?.signal`: +1, undefined when absent. */
+ScrDyn *scr_stream_op_signal_of(ScrDyn *options) {
+  if (!options || options->kind == SCR_DYN_UNDEF || options->kind == SCR_DYN_NULL)
+    return scr_dyn_retain(scr_dyn_undefined());
+  ScrDyn *sig = op_get(options, "signal");
+  if (scr_exc_pending()) scr_exc_clear();
+  return sig ? sig : scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* `{ once: true }`: +1. */
+ScrDyn *scr_stream_op_once_options(void) {
+  ScrDyn *o = scr_dyn_new_obj();
+  scr_dyn_obj_set(o, "once", 4, scr_dyn_new_bool(true));
+  return o;
+}
+
+/* `[options?.signal].filter(Boolean)` for AbortSignal.any: +1 array. */
+ScrDyn *scr_stream_op_signal_list(ScrDyn *options) {
+  ScrDyn *list = scr_dyn_new_arr();
+  if (options && options->kind != SCR_DYN_UNDEF && options->kind != SCR_DYN_NULL) {
+    /* A signal that fails validateAbortSignal is left out: the operator
+     * itself throws Node's ERR_INVALID_ARG_TYPE for it. */
+    bool ok;
+    ScrDyn *sig = op_signal(options, &ok);
+    if (sig) scr_dyn_arr_push(list, sig); /* moves */
+    if (scr_exc_pending()) scr_exc_clear();
+  }
+  return list;
+}
+
+/* `{ signal }`, the callbacks' second argument: +1 object (borrows signal). */
+ScrDyn *scr_stream_op_signal_opts(ScrDyn *signal) {
+  ScrDyn *o = scr_dyn_new_obj();
+  scr_dyn_obj_set(o, "signal", 6, scr_dyn_retain(signal));
+  return o;
 }
 
 /* some/find/every/forEach: the loop over map's generator (filter's for
  * some, find and every). */
-static ScrPromise *op_gen_fn(ScrStream *s, ScrDyn *fn, ScrDyn *options, int op, int mode, int kind) {
+static ScrPromise *op_gen_fn(ScrStream *s, ScrDyn *fn, ScrDyn *options, int op, int mode, int kind,
+                             ScrDyn *cb_opts) {
   op_sentinels_init();
   OpFn *a = op_fn_new(op, kind);
   if (!op_check_fn(fn, "fn", 1)) return op_fn_reject_now(a);
-  OpMap *m = op_map_make(s, fn, options, mode);
+  OpMap *m = op_map_make(s, fn, options, mode, cb_opts);
   if (!m) return op_fn_reject_now(a);
   a->src.g = &m->g; /* moves */
   return op_fn_start(a);
 }
 
-ScrPromise *scr_stream_op_some(ScrStream *s, ScrDyn *fn, ScrDyn *options) {
-  return op_gen_fn(s, fn, options, FN_SOME, MODE_FILTER, PK_BOOL);
+ScrPromise *scr_stream_op_some(ScrStream *s, ScrDyn *fn, ScrDyn *options, ScrDyn *cb_opts) {
+  return op_gen_fn(s, fn, options, FN_SOME, MODE_FILTER, PK_BOOL, cb_opts);
 }
 
-ScrPromise *scr_stream_op_find(ScrStream *s, ScrDyn *fn, ScrDyn *options) {
-  return op_gen_fn(s, fn, options, FN_FIND, MODE_FILTER, PK_DYN);
+ScrPromise *scr_stream_op_find(ScrStream *s, ScrDyn *fn, ScrDyn *options, ScrDyn *cb_opts) {
+  return op_gen_fn(s, fn, options, FN_FIND, MODE_FILTER, PK_DYN, cb_opts);
 }
 
-ScrPromise *scr_stream_op_for_each(ScrStream *s, ScrDyn *fn, ScrDyn *options) {
-  return op_gen_fn(s, fn, options, FN_FOR_EACH, MODE_FOREACH, PK_VOID);
+ScrPromise *scr_stream_op_for_each(ScrStream *s, ScrDyn *fn, ScrDyn *options, ScrDyn *cb_opts) {
+  return op_gen_fn(s, fn, options, FN_FOR_EACH, MODE_FOREACH, PK_VOID, cb_opts);
 }
 
 /* every(fn, options) = !(await some.call(this, async (...args) =>
  * !(await fn(...args)), options)) */
-ScrPromise *scr_stream_op_every(ScrStream *s, ScrDyn *fn, ScrDyn *options) {
+ScrPromise *scr_stream_op_every(ScrStream *s, ScrDyn *fn, ScrDyn *options, ScrDyn *cb_opts) {
   op_sentinels_init();
   OpFn *outer = op_fn_new(FN_EVERY, PK_BOOL);
   if (!op_check_fn(fn, "fn", 1)) return op_fn_reject_now(outer);
-  ScrPromise *some = op_gen_fn(s, fn, options, FN_EVERY, MODE_EVERY, PK_DYN);
+  ScrPromise *some = op_gen_fn(s, fn, options, FN_EVERY, MODE_EVERY, PK_DYN, cb_opts);
   ScrPromise *p = scr_promise_retain(outer->p);
   op_await(some, &op_every_k, outer);
   scr_promise_release(some);

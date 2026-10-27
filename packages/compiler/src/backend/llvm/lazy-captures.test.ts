@@ -47,7 +47,7 @@ function lifted(name: string, body: IrStmt[], captured = "options"): IrFunction 
     loc,
   };
 }
-function lazy(...functions: IrFunction[]): Set<string> {
+function lazy(...functions: IrFunction[]): ReadonlySet<string> {
   const map = new Map(functions.map((fn) => [fn.name, fn]));
   return new LazyCaptures(map).parameters(functions[0]!);
 }

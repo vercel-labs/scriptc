@@ -2,8 +2,9 @@ scriptc coverage tests/coverage-fixtures/dynamic-mix.ts
 
   statements analyzed   8
   compile statically    7  (87%)
+    in dynamic tier     2  (operate on values typed only at runtime; --explain-dynamic lists them)
 
   blockers:
-      ×1  SC2012  '.toPrecision()' on numbers cannot compile statically
+      ×1  SC2020  'Number.prototype.toLocaleString without a locale' is part of the standard library types but has no scriptc lowering yet
           at tests/coverage-fixtures/dynamic-mix.ts:6:12
-          hint: use a supported API or rewrite this operation for native compilation
+          hint: the default locale is the host environment's, which a compiled binary cannot carry — pass it explicitly: x.toLocaleString("en-US")

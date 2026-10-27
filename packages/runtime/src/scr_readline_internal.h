@@ -56,11 +56,17 @@ typedef struct ScrRl {
   bool stdin_in; /* reads process.stdin through the shared consumer */
   bool dead;     /* stdin only: created after stdin ended */
   bool paused;
+  bool promises; /* created by node:readline/promises */
   const ScrRlIo *io; /* the stream side, for a stream input or output */
   void *in;  /* the input stream (+1), or NULL */
   void *out; /* the output stream (+1), or NULL */
   bool out_stdout;
   ScrStr *prompt, *old_prompt;
+  /* A prompt that is not a string (setPrompt or question with another
+   * value), +1, or NULL; prompt then holds String(value) for a terminal
+   * interface. Writing it the way Node's kWriteToOutput does throws
+   * ERR_INVALID_ARG_TYPE. old_prompt_value is old_prompt's. */
+  ScrDyn *prompt_value, *old_prompt_value;
   ScrClosure *q_cb; /* the pending question's callback (owned) */
   ScrRlLineFn q_fn;
   /* the last promise question (kQuestionReject), which the terminal's
@@ -114,6 +120,14 @@ ScrArr *scr_rl_history_of(ScrRl *rl); /* borrowed; created on first use */
 void scr_rl_emit(ScrRl *rl, int ev, ScrStr *line, ScrError *err);
 void scr_rl_emit_history(ScrRl *rl);
 void scr_rl_write_out(ScrRl *rl, ScrStr *text);
+/* kWriteToOutput(prompt)'s validateString: false with ERR_INVALID_ARG_TYPE
+ * pending when the prompt is not a string. */
+bool scr_rl_prompt_writable(ScrRl *rl);
+/* A prompt value whose String() the interface keeps in prompt. */
+static inline bool scr_rl_primitive_prompt(const ScrDyn *v) {
+  return v->kind == SCR_DYN_NULL || v->kind == SCR_DYN_UNDEF || v->kind == SCR_DYN_BOOL ||
+         v->kind == SCR_DYN_NUM || v->kind == SCR_DYN_BIGINT;
+}
 /* kOnLine: a pending question takes the line, else 'line'. Moves line. */
 void scr_rl_on_line(ScrRl *rl, ScrStr *line);
 void scr_rl_do_pause(ScrRl *rl);

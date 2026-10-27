@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/native-array-dynamic-reads/reads.js",
+  "<repo>/tests/corpus/native-array-dynamic-reads/main.ts"
+ ],
+ "diags": []
+}

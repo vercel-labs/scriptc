@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6465-optional-members-over-index-signature.ts"
+ ],
+ "diags": []
+}

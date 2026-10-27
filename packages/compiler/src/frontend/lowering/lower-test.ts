@@ -21,23 +21,27 @@ import {
   type IrStmt,
   type IrType,
   type SrcLoc,
+  BOOL,
+  DYN,
   F64,
   STRING,
+  TESTCTX_T,
   VOID,
   isUnitType,
 } from "../../ir/ir.js";
-import { numLit, strLit } from "../../ir/build.js";
+import { dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import {
   lowerMockContextCall,
   lowerMockContextProperty,
   lowerMockFn,
   lowerMockMethod,
+  lowerMockTimersCall,
   lowerMockTrackerCall,
   type MockTracker,
 } from "./lower-mock.js";
 
 const MOCK_HINT =
-  "mock.fn, mock.method, mock.restoreAll and mock.reset are the supported mock members";
+  "mock.fn, mock.method, mock.restoreAll, mock.reset and mock.timers are the supported mock members";
 
 /** The mock tracker members that lower, for the module's `mock` (tracker
  * null) and t.mock. Null for other members. */
@@ -63,7 +67,7 @@ function lowerMockTrackerMember(
 
 const TEST_FN_HINT = "test bodies take () or (t: TestContext) and return void or Promise<void>";
 const TESTCTX_SURFACE_HINT =
-  "t.test, t.skip, t.todo, t.diagnostic, t.plan, t.before, t.after, t.beforeEach, t.afterEach, t.name, t.fullName, and t.assert.* are the supported TestContext members";
+  "t.test, t.skip, t.todo, t.diagnostic, t.plan, t.before, t.after, t.beforeEach, t.afterEach, t.name, t.fullName, t.filePath, t.attempt, t.passed, t.workerId, t.tags, and t.assert.* are the supported TestContext members";
 
 /** Registration calls return Node's Promise<void>, but the promise only
  * resolves through the runner — consuming it outside `await t.test(...)`
@@ -82,17 +86,19 @@ function requireStatementPosition(lowerer: Lowerer, call: ts.CallExpression, wha
  * reports the `test` property's column), at the call for plain ones. */
 function atStringOf(expr: ts.CallExpression): string {
   const target = ts.isPropertyAccessExpression(expr.expression) ? expr.expression.name : expr;
-  const sf = expr.getSourceFile();
-  const pos = sf.getLineAndCharacterOfPosition(target.getStart());
+  const sf = ts.getSourceFileOfNode(expr);
+  const pos = sf.getLineAndCharacterOfPosition(ts.tokenStartOfNode(target));
   return `${sf.fileName}:${pos.line + 1}:${pos.character + 1}`;
 }
 
-/** One parsed { skip?, todo?, only? } options literal. `mode` is the
- * runtime literal (0 run / 1 skip / 2 todo), `msg` the directive message
- * expression ("" = none). */
+/** One parsed { skip?, todo?, only? } options literal. `skip` and `todo`
+ * are whether each is set (a string or true), and `skipMsg` and `todoMsg`
+ * the string messages (directiveOf settles them). */
 interface TestOptions {
-  mode: number;
-  msg: IrExpr | null;
+  skip: boolean;
+  skipMsg: IrExpr | null;
+  todo: boolean;
+  todoMsg: IrExpr | null;
   only: boolean;
   /** The { plan } count, -1 without one. */
   plan: number;
@@ -106,14 +112,33 @@ interface TestOptions {
 }
 
 const noOptions = (): TestOptions => ({
-  mode: 0,
-  msg: null,
+  skip: false,
+  skipMsg: null,
+  todo: false,
+  todoMsg: null,
   only: false,
   plan: -1,
   timeout: null,
   concurrency: null,
   pre: [],
 });
+
+/** The runtime mode (0 run / 1 skip / 2 todo) and directive message of a
+ * test or suite, as Node's Test constructor settles them: the skip and todo
+ * method twins override the options of the same name, skip wins over
+ * todo, and the message is the skip string, else the todo string. */
+function directiveOf(opts: TestOptions, methodMode: number, loc: SrcLoc): [IrExpr, IrExpr] {
+  if (methodMode === 1) {
+    opts.skip = true;
+    opts.skipMsg = null;
+  }
+  if (methodMode === 2) {
+    opts.todo = true;
+    opts.todoMsg = null;
+  }
+  const mode = opts.skip ? 1 : opts.todo ? 2 : 0;
+  return [numLit(mode, loc), opts.skipMsg ?? opts.todoMsg ?? strLit("", loc)];
+}
 
 /** Flags 8 and 16: a { timeout } and a { concurrency } are given. */
 const optionFlags = (opts: TestOptions): number =>
@@ -149,7 +174,7 @@ function lowerTestOptions(
     );
   }
   const out = noOptions();
-  for (const prop of node.properties) {
+  for (const prop of node.properties.nodes) {
     if (
       !(ts.isPropertyAssignment(prop) && ts.isIdentifier(prop.name)) &&
       !ts.isShorthandPropertyAssignment(prop)
@@ -165,15 +190,33 @@ function lowerTestOptions(
     // A shorthand entry's value is the binding of the same name.
     const init: ts.Expression = ts.isPropertyAssignment(prop) ? prop.initializer : key;
     if (name === "skip" || name === "todo") {
-      const mode = name === "skip" ? 1 : 2;
       const t = lowerer.typeOf(init);
       if (t.isStringLiteralType() || lowerer.mapTypeOf(t)?.kind === "string") {
-        out.mode = mode;
-        out.msg = optionValue(lowerer, out, lowerer.lowerExprExpecting(init, STRING), locOf(init));
-      } else if (init.kind === ts.SyntaxKind.TrueKeyword) {
-        out.mode = mode;
-      } else if (init.kind === ts.SyntaxKind.FalseKeyword) {
-        // explicit false: run normally
+        const msg = optionValue(
+          lowerer,
+          out,
+          lowerer.lowerExprExpecting(init, STRING),
+          locOf(init),
+        );
+        if (name === "skip") {
+          out.skip = true;
+          out.skipMsg = msg;
+        } else {
+          out.todo = true;
+          out.todoMsg = msg;
+        }
+      } else if (
+        init.kind === ts.SyntaxKind.TrueKeyword ||
+        init.kind === ts.SyntaxKind.FalseKeyword
+      ) {
+        const on = init.kind === ts.SyntaxKind.TrueKeyword;
+        if (name === "skip") {
+          out.skip = on;
+          out.skipMsg = null;
+        } else {
+          out.todo = on;
+          out.todoMsg = null;
+        }
       } else {
         lowerer.noLowering(
           `${what} with a non-literal ${name} value`,
@@ -281,6 +324,116 @@ function lowerBodyArg(
 /** The shared registration lowering behind test/it and their skip/todo/
  * only method twins — and, with `sub`, behind t.test. Argument shapes:
  * (name), (name, fn), (name, options, fn). */
+/** The `name` a function value has in JavaScript, when the compiler can
+ * tell: "" for an anonymous function expression, the declared or binding
+ * name otherwise; null for other expressions. */
+function staticFunctionName(lowerer: Lowerer, node: ts.Expression): string | null {
+  while (ts.isParenthesizedExpression(node)) node = node.expression;
+  if (ts.isArrowFunction(node)) return "";
+  if (ts.isFunctionExpression(node)) return node.name?.text ?? "";
+  if (!ts.isIdentifier(node)) return null;
+  const symbol = lowerer.resolveValueSymbol(node);
+  if (!symbol) return null;
+  for (const decl of symbol.declarations) {
+    if (ts.isFunctionDeclaration(decl)) return decl.name?.text ?? "default";
+    if (ts.isVariableDeclaration(decl) && ts.isIdentifier(decl.name) && decl.initializer) {
+      let init = decl.initializer;
+      while (ts.isParenthesizedExpression(init)) init = init.expression;
+      if (ts.isFunctionExpression(init) && init.name) return init.name.text;
+      if (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) return decl.name.text;
+    }
+  }
+  return null;
+}
+
+/** Node's (name?, options?, fn?) argument forms (`Test#createSubtest`): a
+ * leading function is the body, a leading object the options, otherwise
+ * the first argument is the name and a following object the options. */
+function splitTestArgs(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  what: string,
+): { nameNode?: ts.Expression; optionsNode?: ts.Expression; fnNode?: ts.Expression } {
+  const args = expr.arguments.nodes;
+  const isFn = (a: ts.Expression): boolean =>
+    lowerer.checker.getCallSignatures(lowerer.typeOf(a)).length > 0;
+  const isOptions = (a: ts.Expression): boolean => ts.isObjectLiteralExpression(a);
+  const unsupported = (): never =>
+    lowerer.noLowering(
+      `${what} with these arguments`,
+      expr,
+      "the supported forms are (name?, options?, fn?) with a string name, an options object literal, and a function",
+    );
+  if (args.length > 3 || args.some(ts.isSpreadElement)) unsupported();
+  const out: { nameNode?: ts.Expression; optionsNode?: ts.Expression; fnNode?: ts.Expression } = {};
+  let i = 0;
+  const next = args[i];
+  if (next !== undefined && !isFn(next) && !isOptions(next)) {
+    out.nameNode = next;
+    i++;
+  }
+  const options = args[i];
+  if (options !== undefined && isOptions(options)) {
+    out.optionsNode = options;
+    i++;
+  }
+  const fn = args[i];
+  if (fn !== undefined && isFn(fn)) {
+    out.fnNode = fn;
+    i++;
+  }
+  if (i < args.length) unsupported();
+  return out;
+}
+
+/** The test's name, as Node's Test constructor completes it: a missing or
+ * empty name takes the function's name, or "<anonymous>". */
+function lowerTestName(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  what: string,
+  nameNode: ts.Expression | undefined,
+  fnNode: ts.Expression | undefined,
+  loc: SrcLoc,
+): IrExpr {
+  const fallback = (): string => {
+    const fnName = fnNode ? staticFunctionName(lowerer, fnNode) : "";
+    if (fnName === null) {
+      lowerer.noLowering(
+        `${what} without a name, with a function whose name is not known at compile time`,
+        fnNode ?? expr,
+        "give the test a name, or pass a function expression or a declared function",
+      );
+    }
+    return fnName || "<anonymous>";
+  };
+  if (!nameNode) return strLit(fallback(), loc);
+  const name = lowerer.lowerExprExpecting(nameNode, STRING);
+  if (name.kind === "strLit") return name.value === "" ? strLit(fallback(), loc) : name;
+  // A name computed at run time: when the function's own name is not known
+  // at compile time (a function passed in as a parameter, say), the name
+  // is used as given, and an empty one stays empty (the limitations page
+  // notes it). Refusing here would refuse every helper that registers
+  // tests for its callers.
+  if (fnNode && staticFunctionName(lowerer, fnNode) === null) return name;
+  const slot = lowerer.declareHiddenLocal("%testName", STRING);
+  const value = varRef(slot.id, STRING, loc);
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: slot.id, init: name, loc }],
+    result: {
+      kind: "ternary",
+      cond: { kind: "strEq", negated: false, left: value, right: strLit("", loc), type: BOOL, loc },
+      then: strLit(fallback(), loc),
+      else_: value,
+      type: STRING,
+      loc,
+    },
+    type: STRING,
+    loc,
+  };
+}
+
 function lowerRegistration(
   lowerer: Lowerer,
   expr: ts.CallExpression,
@@ -290,21 +443,11 @@ function lowerRegistration(
   sub: IrExpr | null, // the lowered TestContext receiver (t.test)
 ): IrExpr {
   if (sub === null) requireStatementPosition(lowerer, expr, what);
-  const args = expr.arguments;
-  if (args.length < 1 || args.length > 3) {
-    lowerer.noLowering(
-      `${what} with ${args.length} arguments`,
-      expr,
-      "the supported forms are (name), (name, fn), and (name, options, fn)",
-    );
-  }
-  let name = lowerer.lowerExprExpecting(args[0]!, STRING);
+  const { nameNode, optionsNode, fnNode } = splitTestArgs(lowerer, expr, what);
+  let name = lowerTestName(lowerer, expr, what, nameNode, fnNode, loc);
   let opts = noOptions();
-  let fnNode: ts.Expression | undefined;
-  if (args.length === 2) fnNode = args[1];
-  if (args.length === 3) {
-    opts = lowerTestOptions(lowerer, args[1]!, what, false);
-    fnNode = args[2];
+  if (optionsNode) {
+    opts = lowerTestOptions(lowerer, optionsNode, what, false);
     // The name runs before the option values.
     if (opts.pre.length > 0 && name.kind !== "strLit") {
       const slot = lowerer.declareHiddenLocal("%testName", STRING);
@@ -312,11 +455,9 @@ function lowerRegistration(
       name = { kind: "varRef", localId: slot.id, type: STRING, loc };
     }
   }
-  if (methodMode === 1 || methodMode === 2) opts.mode = methodMode;
   if (methodMode === 3) opts.only = true;
   const at = strLit(atStringOf(expr), loc);
-  const mode = numLit(opts.mode, loc);
-  const msg = opts.msg ?? strLit("", loc);
+  const [mode, msg] = directiveOf(opts, methodMode, loc);
   const flagBits = optionFlags(opts);
   const planTimeout = [
     numLit(opts.plan, loc),
@@ -384,33 +525,32 @@ function lowerSuite(
   methodMode: number,
 ): IrExpr {
   requireStatementPosition(lowerer, expr, what);
-  const args = expr.arguments;
-  if (args.length < 2 || args.length > 3) {
-    lowerer.noLowering(
-      `${what} with ${args.length} arguments`,
-      expr,
-      "the supported forms are (name, fn) and (name, options, fn)",
-    );
-  }
-  let name = lowerer.lowerExprExpecting(args[0]!, STRING);
+  const split = splitTestArgs(lowerer, expr, what);
+  let name = lowerTestName(lowerer, expr, what, split.nameNode, split.fnNode, loc);
   let opts = noOptions();
-  let fnNode = args[1]!;
-  if (args.length === 3) {
-    opts = lowerTestOptions(lowerer, args[1]!, what, true);
-    fnNode = args[2]!;
+  if (split.optionsNode) {
+    opts = lowerTestOptions(lowerer, split.optionsNode, what, true);
     if (opts.pre.length > 0 && name.kind !== "strLit") {
       const slot = lowerer.declareHiddenLocal("%testName", STRING);
       opts.pre.unshift({ kind: "varDecl", localId: slot.id, init: name, loc });
       name = { kind: "varRef", localId: slot.id, type: STRING, loc };
     }
   }
-  if (methodMode === 1 || methodMode === 2) opts.mode = methodMode;
+  const fnNode = split.fnNode;
+  if (!fnNode) {
+    lowerer.noLowering(`${what} without a body`, expr, "give the suite a body function");
+  }
   const cb = lowerer.lowerExpr(fnNode);
-  if (cb.type.kind !== "func" || cb.type.params.length !== 0) {
+  // The body may take the SuiteContext (flag 2, as test bodies take theirs).
+  if (
+    cb.type.kind !== "func" ||
+    cb.type.params.length > 1 ||
+    (cb.type.params.length === 1 && cb.type.params[0]!.kind !== "testCtx")
+  ) {
     lowerer.noLowering(
-      `${what} whose body is not a zero-parameter function`,
+      `${what} whose body is not a function of the SuiteContext`,
       fnNode,
-      "suite bodies take no parameters (they run at registration)",
+      "suite bodies take no parameters or the SuiteContext (they run at registration)",
     );
   }
   if (cb.type.ret.kind !== "void" && !isUnitType(cb.type.ret)) {
@@ -421,10 +561,12 @@ function lowerSuite(
     );
   }
   const at = strLit(atStringOf(expr), loc);
-  const mode = numLit(opts.mode, loc);
-  const msg = opts.msg ?? strLit("", loc);
+  const [mode, msg] = directiveOf(opts, methodMode, loc);
   // describe.only and { only: true } mark the suite (flag 4, as for tests).
-  const flags = numLit(optionFlags(opts) | (methodMode === 3 ? 4 : 0), loc);
+  const flags = numLit(
+    optionFlags(opts) | (methodMode === 3 ? 4 : 0) | (cb.type.params.length === 1 ? 2 : 0),
+    loc,
+  );
   return withOptionValues(
     {
       kind: "libCall",
@@ -448,19 +590,21 @@ function lowerHook(
   loc: SrcLoc,
 ): IrExpr {
   requireStatementPosition(lowerer, expr, what);
-  const args = expr.arguments;
+  const args = expr.arguments.nodes;
   if (args.length !== 1) {
     lowerer.noLowering(
       `${what} with ${args.length} arguments`,
       expr,
-      "the supported form is one zero-parameter function (hook options have no lowering)",
+      "the supported form is one function (hook options have no lowering)",
     );
   }
-  const { cb, flags } = lowerBodyArg(lowerer, args[0]!, what, false);
+  // A hook may take its context: the suite's for before/after, the test's
+  // for beforeEach/afterEach.
+  const { cb, flags } = lowerBodyArg(lowerer, args[0]!, what, true);
   return {
     kind: "libCall",
     fn: "test.hook",
-    args: [numLit(which, loc), cb, numLit(flags, loc)],
+    args: [numLit(which, loc), cb, numLit(flags, loc), strLit(atStringOf(expr), loc)],
     type: VOID,
     loc,
   };
@@ -509,6 +653,8 @@ export function lowerNodeTestModuleCall(
     case "beforeEach":
     case "afterEach":
       return lowerHook(lowerer, expr, HOOK_WHICH[bi.member]!, `${bi.member}(...)`, loc);
+    case "getTestContext":
+      return lowerGetTestContext(lowerer, expr, loc);
     case "run":
       lowerer.noLowering(
         "test.run",
@@ -517,17 +663,55 @@ export function lowerNodeTestModuleCall(
       );
       break;
     case "snapshot":
-      lowerer.noLowering("test.snapshot", expr, "snapshot testing has no lowering");
+      lowerer.noLowering(
+        "test.snapshot",
+        expr,
+        "t.assert.snapshot and t.assert.fileSnapshot are the supported snapshot surface",
+      );
       break;
     default:
       lowerer.noLowering(
         `test.${bi.member}`,
         expr,
-        "test/it, describe/suite, before/after/beforeEach/afterEach, and the skip/todo/only twins are the lowered node:test members",
+        "test/it, describe/suite, before/after/beforeEach/afterEach, getTestContext, and the skip/todo/only twins are the lowered node:test members",
         ts.isIdentifier(expr.expression) ? lowerer.resolveValueSymbol(expr.expression) : undefined,
       );
   }
   return null; // unreachable — noLowering throws
+}
+
+/** getTestContext(): the context of the test, suite or hook running in
+ * the current async context, or undefined outside one (module top level,
+ * and code reached only through timer, immediate, nextTick and
+ * queueMicrotask callbacks). */
+function lowerGetTestContext(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+  if (expr.arguments.nodes.length > 0) {
+    lowerer.noLowering(
+      `getTestContext with ${expr.arguments.nodes.length} arguments`,
+      expr,
+      "the supported form is getTestContext()",
+    );
+  }
+  const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  const missing = declared ? lowerer.wrappedUndefined(declared, loc) : null;
+  if (!declared || !missing) {
+    lowerer.noLowering(
+      "getTestContext() of this type",
+      expr,
+      "getTestContext() lowers as TestContext | SuiteContext | undefined",
+    );
+  }
+  return {
+    kind: "ternary",
+    cond: { kind: "libCall", fn: "test.hasContext", args: [], type: BOOL, loc },
+    then: lowerer.coerceToExpected(
+      { kind: "libCall", fn: "test.context", args: [], type: TESTCTX_T, loc },
+      declared,
+    ),
+    else_: missing,
+    type: declared,
+    loc,
+  };
 }
 
 /** The callable-module form: `test(...)` where the callee identifier IS
@@ -544,7 +728,7 @@ export function lowerTestDirectCall(
   if (!ts.isIdentifier(callee)) return null;
   if (lowerer.builtinNamespaceModuleOf(callee) !== "test") return null;
   const calleeSym = lowerer.checker.getSymbolAtLocation(callee);
-  const decl = calleeSym ? lowerer.checker.declarationsOf(calleeSym)[0] : undefined;
+  const decl = calleeSym ? calleeSym.declarations[0] : undefined;
   if (decl && ts.isNamespaceImport(decl)) {
     lowerer.unsupported(
       "SC1013",
@@ -554,6 +738,195 @@ export function lowerTestDirectCall(
     );
   }
   return lowerRegistration(lowerer, expr, "test(...)", loc, 0, null);
+}
+
+/** t.assert.snapshot(value[, options]) and t.assert.fileSnapshot(value,
+ * path[, options]), Node's SnapshotManager assertions: the value runs
+ * through options.serializers, by default Node's JSON.stringify(value,
+ * null, 2), and String() of the result is compared with
+ * assert.strictEqual against the snapshot that scr_test.c reads from
+ * "<entry file>.snapshot" or `path`, or records in update mode. A throw
+ * while serializing becomes Node's ERR_INVALID_STATE. */
+function lowerSnapshotAssert(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  member: "snapshot" | "fileSnapshot",
+  testCtx: ts.Expression,
+): IrExpr {
+  const loc = locOf(call);
+  const what = `t.assert.${member}`;
+  const t = lowerer.lowerExpr(testCtx);
+  const stmts: IrStmt[] = [];
+  const slot = (name: string, type: IrType, init: IrExpr): IrExpr => {
+    const local = lowerer.declareHiddenLocal(name, type);
+    stmts.push({ kind: "varDecl", localId: local.id, init, loc });
+    return varRef(local.id, type, loc);
+  };
+  // Arguments evaluate in order before the assertion serializes, as in Node.
+  const valueNode = call.arguments.nodes[0];
+  const input = slot(
+    "%snapshotInput",
+    DYN,
+    valueNode ? lowerer.lowerExprExpecting(valueNode, DYN) : dynUndefinedExpr(loc),
+  );
+  let path: IrExpr | null = null;
+  if (member === "fileSnapshot") {
+    const pathNode = call.arguments.nodes[1];
+    path = slot(
+      "%snapshotPath",
+      STRING,
+      pathNode ? lowerer.lowerExprExpecting(pathNode, STRING) : strLit("", loc),
+    );
+  }
+  const serializers =
+    snapshotSerializers(lowerer, call.arguments.nodes[member === "snapshot" ? 1 : 2], what)?.map(
+      (fn) => slot("%snapshotSerializer", DYN, fn),
+    ) ?? null;
+  if (call.arguments.nodes.length > (member === "snapshot" ? 2 : 3)) {
+    lowerer.noLowering(`${what} with ${call.arguments.nodes.length} arguments`, call);
+  }
+  const text: IrExpr = {
+    kind: "toString",
+    operand: {
+      kind: "libCall",
+      fn: "test.snapshotSerialize",
+      args: [
+        input,
+        serializers === null
+          ? dynUndefinedExpr(loc)
+          : { kind: "dynArrLit", elems: serializers, type: DYN, loc },
+      ],
+      type: DYN,
+      loc,
+    },
+    type: STRING,
+    loc,
+  };
+  const actual = slot(
+    "%snapshotActual",
+    STRING,
+    member === "snapshot"
+      ? { kind: "libCall", fn: "test.snapshotValue", args: [text], type: STRING, loc }
+      : text,
+  );
+  const expected: IrExpr =
+    member === "snapshot"
+      ? {
+          kind: "libCall",
+          fn: "test.ctxSnapshot",
+          args: [t, actual, strLit(`${lowerer.entry.fileName}.snapshot`, loc)],
+          type: STRING,
+          loc,
+        }
+      : { kind: "libCall", fn: "test.fileSnapshot", args: [actual, path!], type: STRING, loc };
+  const no: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc };
+  return {
+    kind: "seqExpr",
+    stmts,
+    result: {
+      kind: "libCall",
+      fn: "assert.eqStr",
+      args: [actual, expected, no, no, strLit("", loc), no],
+      type: VOID,
+      loc,
+    },
+    type: VOID,
+    loc,
+  };
+}
+
+/** The serializer functions of a snapshot options object literal, as
+ * checked-dynamic values in order; null without a serializers option.
+ * Options that are not an object literal, a serializers list that is not
+ * an array literal, and other options fence. */
+function snapshotSerializers(
+  lowerer: Lowerer,
+  options: ts.Expression | undefined,
+  what: string,
+): IrExpr[] | null {
+  if (options === undefined) return null;
+  const hint = "pass the options as an object literal: { serializers: [(value) => ...] }";
+  if (!ts.isObjectLiteralExpression(options)) {
+    lowerer.noLowering(`${what} options that are not an object literal`, options, hint);
+  }
+  let fns: IrExpr[] | null = null;
+  for (const prop of options.properties.nodes) {
+    const name = prop.name && ts.isIdentifier(prop.name) ? prop.name.text : null;
+    if (
+      name !== "serializers" ||
+      !(ts.isPropertyAssignment(prop) || ts.isShorthandPropertyAssignment(prop))
+    ) {
+      lowerer.noLowering(`${what} options other than serializers`, prop, hint);
+    }
+    const list = ts.isPropertyAssignment(prop) ? prop.initializer : prop.name;
+    if (!ts.isArrayLiteralExpression(list)) {
+      lowerer.noLowering(`${what} with a non-literal serializers list`, list, hint);
+    }
+    fns = list.elements.nodes.map((el) => {
+      if (ts.isSpreadElement(el)) lowerer.noLowering(`${what} with a spread serializer`, el, hint);
+      return lowerer.lowerExprExpecting(el, DYN);
+    });
+  }
+  return fns;
+}
+
+/** `mock.timers` (tracker null) or `t.mock.timers` on a TestContext;
+ * null for other expressions. */
+function mockTimersReceiver(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+): { what: string; tracker: () => MockTracker } | null {
+  if (
+    !ts.isPropertyAccessExpression(expr) ||
+    expr.questionDotToken ||
+    expr.name.text !== "timers" ||
+    !lowerer.isStdlibMember(expr)
+  ) {
+    return null;
+  }
+  const owner = expr.expression;
+  if (ts.isIdentifier(owner)) {
+    const bi = lowerer.builtinImportOf(owner);
+    return bi && bi.module === "test" && bi.member === "mock"
+      ? { what: "mock.timers", tracker: () => null }
+      : null;
+  }
+  if (
+    ts.isPropertyAccessExpression(owner) &&
+    !owner.questionDotToken &&
+    owner.name.text === "mock" &&
+    lowerer.mapTypeOf(lowerer.typeOf(owner.expression))?.kind === "testCtx" &&
+    lowerer.isStdlibMember(owner)
+  ) {
+    const testCtx = owner.expression;
+    return { what: "t.mock.timers", tracker: () => lowerer.lowerExpr(testCtx) };
+  }
+  return null;
+}
+
+/** `mock.timers[Symbol.dispose]()` and its t.mock twin: an alias of
+ * reset(), as in Node. Null for other element-access calls. */
+export function lowerMockTimersElementCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.ElementAccessExpression,
+): IrExpr | null {
+  if (call.questionDotToken || access.questionDotToken) return null;
+  const timers = mockTimersReceiver(lowerer, access.expression);
+  if (!timers) return null;
+  const key = access.argumentExpression;
+  const isDispose =
+    ts.isPropertyAccessExpression(key) &&
+    key.name.text === "dispose" &&
+    lowerer.stdlibGlobalMember(key, "Symbol") === "dispose";
+  if (!isDispose) {
+    lowerer.noLowering(
+      `${timers.what} computed member calls`,
+      call,
+      "call timers[Symbol.dispose]()",
+    );
+  }
+  return lowerMockTimersCall(lowerer, call, "reset", timers.what, timers.tracker, null);
 }
 
 /** Method-position node:test calls — one entry in lower-calls.ts's
@@ -566,7 +939,8 @@ export function lowerTestMethodCall(
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
-  if (call.questionDotToken || access.questionDotToken) return null;
+  if (call.questionDotToken || (access.questionDotToken && !lowerer.chainHandled.has(access)))
+    return null;
   const loc = locOf(call);
   const member = access.name.text;
   // fn.mock.callCount() and the other mock context members.
@@ -634,6 +1008,13 @@ export function lowerTestMethodCall(
     );
     if (served) return served;
   }
+  // mock.timers.enable(...) and the other MockTimers members, on the
+  // module's `mock` and on t.mock.
+  const timers = mockTimersReceiver(lowerer, access.expression);
+  if (timers) {
+    const sym = lowerer.checker.getSymbolAtLocation(access.name) ?? null;
+    return lowerMockTimersCall(lowerer, call, member, timers.what, timers.tracker, sym);
+  }
   // t.assert.strictEqual(...) — the callee's receiver is `t.assert` on a
   // TestContext: Node's t.assert methods ARE the assert functions (bound
   // to the test for its counters — not modeled; the throw is identical),
@@ -645,7 +1026,10 @@ export function lowerTestMethodCall(
     lowerer.mapTypeOf(lowerer.typeOf(access.expression.expression))?.kind === "testCtx" &&
     lowerer.isStdlibMember(access.expression)
   ) {
-    const served = lowerer.lowerAssertModuleCall(call, { module: "assert", member }, loc);
+    const served =
+      member === "snapshot" || member === "fileSnapshot"
+        ? lowerSnapshotAssert(lowerer, call, member, access.expression.expression)
+        : lowerer.lowerAssertModuleCall(call, { module: "assert", member }, loc);
     // Each t.assert call counts against the test's plan (t.plan).
     if (served)
       return {
@@ -677,7 +1061,7 @@ export function lowerTestMethodCall(
   // The TestContext receiver surface.
   if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "testCtx") return null;
   if (!lowerer.isStdlibMember(access)) return null;
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   if (member === "test") {
     const receiver = lowerer.lowerExpr(access.expression);
     return lowerRegistration(lowerer, call, "t.test(...)", loc, 0, receiver);
@@ -713,7 +1097,8 @@ export function lowerTestMethodCall(
       );
     }
     const receiver = lowerer.lowerExpr(access.expression);
-    const { cb, flags } = lowerBodyArg(lowerer, args[0]!, what, false);
+    // The hook may take the test's context.
+    const { cb, flags } = lowerBodyArg(lowerer, args[0]!, what, true);
     return {
       kind: "libCall",
       fn: "test.ctxHook",
@@ -756,6 +1141,78 @@ export function lowerTestMethodCall(
   );
 }
 
+/** t.filePath (the entry file, as Node's entryFile), t.attempt (0: tests
+ * run once), t.passed, t.workerId (Number(NODE_TEST_WORKER_ID) ||
+ * undefined) and t.tags ([]: the tags option has no lowering), each
+ * coerced to the member's declared type. */
+function lowerTestCtxValue(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+  member: "filePath" | "attempt" | "passed" | "workerId" | "tags",
+): IrExpr {
+  const loc = locOf(expr);
+  const receiver = lowerer.lowerExpr(expr.expression);
+  const declared = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  if (!declared) {
+    lowerer.noLowering(`TestContext.${member} of this type`, expr, TESTCTX_SURFACE_HINT);
+  }
+  const after = (value: IrExpr): IrExpr => ({
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: receiver, loc }],
+    result: lowerer.coerceToExpected(value, declared),
+    type: declared,
+    loc,
+  });
+  switch (member) {
+    case "filePath":
+      return after(strLit(lowerer.entry.fileName, loc));
+    case "attempt":
+      return after(numLit(0, loc));
+    case "tags":
+      return after({ kind: "arrayLit", elems: [], type: declared, loc });
+    case "passed":
+      return lowerer.coerceToExpected(
+        { kind: "libCall", fn: "test.ctxPassed", args: [receiver], type: BOOL, loc },
+        declared,
+      );
+    case "workerId": {
+      const id = lowerer.declareHiddenLocal("%workerId", F64);
+      const missing = lowerer.wrappedUndefined(declared, loc);
+      if (!missing)
+        lowerer.noLowering("TestContext.workerId of this type", expr, TESTCTX_SURFACE_HINT);
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "exprStmt", expr: receiver, loc },
+          {
+            kind: "varDecl",
+            localId: id.id,
+            init: { kind: "libCall", fn: "test.workerId", args: [], type: F64, loc },
+            loc,
+          },
+        ],
+        result: {
+          kind: "ternary",
+          cond: {
+            kind: "bin",
+            op: "!==",
+            left: varRef(id.id, F64, loc),
+            right: numLit(0, loc),
+            type: BOOL,
+            loc,
+          },
+          then: lowerer.coerceToExpected(varRef(id.id, F64, loc), declared),
+          else_: missing,
+          type: declared,
+          loc,
+        },
+        type: declared,
+        loc,
+      };
+    }
+  }
+}
+
 /** `t.name` as a VALUE — one entry in lower-exprs' property chain. Null
  * for other receivers/members (the chain keeps trying); unlowered
  * TestContext members fence member-qualified. */
@@ -763,7 +1220,9 @@ export function lowerTestCtxProperty(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
 ): IrExpr | null {
-  if (expr.questionDotToken) return null;
+  // `getTestContext()?.name`: the optional-chain step re-enters here with
+  // the receiver narrowed.
+  if (expr.questionDotToken && !lowerer.chainHandled.has(expr)) return null;
   const mockCalls = lowerMockContextProperty(lowerer, expr);
   if (mockCalls) return mockCalls;
   if (lowerer.mapTypeOf(lowerer.typeOf(expr.expression))?.kind !== "testCtx") return null;
@@ -779,7 +1238,17 @@ export function lowerTestCtxProperty(
       loc,
     };
   }
-  if (expr.name.text === "assert") return null; // claimed by the call path
+  const member = expr.name.text;
+  if (
+    member === "filePath" ||
+    member === "attempt" ||
+    member === "passed" ||
+    member === "workerId" ||
+    member === "tags"
+  ) {
+    return lowerTestCtxValue(lowerer, expr, member);
+  }
+  if (member === "assert") return null; // claimed by the call path
   lowerer.noLowering(
     `TestContext.${expr.name.text}`,
     expr,

@@ -1,7 +1,7 @@
 {
   "name": "@scriptc/experimental",
-  "version": "0.3.6",
-  "description": "Experimental scriptc APIs, with Node.js implementations: lifetime regions for ProgramLifetime objects and intern tables shared between threads",
+  "version": "0.4.5",
+  "description": "Experimental scriptc APIs, with Node.js implementations: lifetime regions for ProgramLifetime objects, intern tables shared between threads, and per-thread slots on shared objects",
   "license": "Apache-2.0",
   "homepage": "https://scriptc.dev",
   "repository": {

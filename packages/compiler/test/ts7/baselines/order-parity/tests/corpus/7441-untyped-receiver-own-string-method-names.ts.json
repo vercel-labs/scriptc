@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7441-untyped-receiver-own-string-method-names.ts"
+ ],
+ "diags": []
+}

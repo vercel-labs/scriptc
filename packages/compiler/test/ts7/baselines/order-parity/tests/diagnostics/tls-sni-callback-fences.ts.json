@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/tls-sni-callback-fences.ts"
+ ],
+ "diags": []
+}

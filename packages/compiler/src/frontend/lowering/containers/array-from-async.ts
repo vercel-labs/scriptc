@@ -17,9 +17,10 @@ import { locOf } from "../../program.js";
 import { arrayValueRead, arrayValueStore, arrayValueType } from "../array-values.js";
 import { newFnCtx } from "../function-context.js";
 import { lowerArrayCallback } from "./callback-arguments.js";
+import { extractIteratorValue, resultRecordOf, type GenType } from "../lower-generators.js";
 
-/** `Array.fromAsync(source, mapFn?)` over an array, as an async helper
- * with the spec's loop:
+/** `Array.fromAsync(source, mapFn?)` over an array or an async generator,
+ * as an async helper with the spec's loop:
  *
  *   const out = []; let k = 0;
  *   for await (const v of source) out.push(mapFn ? await mapFn(v, k++) : v);
@@ -29,9 +30,10 @@ import { lowerArrayCallback } from "./callback-arguments.js";
  * awaited (a promise element through its promise, any other value as one
  * resolved promise), and the iterator result is awaited again, which the
  * helper spells as the same microtask hops the `for await` array loop
- * takes. A throwing or rejecting mapFn, and a rejected element, close the
- * iterator before the returned promise rejects. Null when this is not an
- * `Array.fromAsync` call. */
+ * takes. An async generator is driven directly: each next() result is
+ * awaited once and its value is used as is. A throwing or rejecting mapFn,
+ * and a rejected array element, close the iterator before the returned
+ * promise rejects. Null when this is not an `Array.fromAsync` call. */
 export function lowerArrayFromAsyncCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -41,7 +43,7 @@ export function lowerArrayFromAsyncCall(
   if (!lowerer.isStdlibGlobal(access.expression, "Array")) return null;
   if (access.name.text !== "fromAsync") return null;
   const loc = locOf(call);
-  const args = call.arguments;
+  const args = call.arguments.nodes;
   if (args.length < 1 || args.length > 2 || args.some(ts.isSpreadElement)) {
     lowerer.noLowering(
       `Array.fromAsync with ${args.length} arguments`,
@@ -54,23 +56,18 @@ export function lowerArrayFromAsyncCall(
     lowerer.badType(call, lowerer.typeOf(call));
   const outT = resultT.inner;
   const source = lowerer.lowerExpr(args[0]!);
-  if (source.type.kind !== "array") {
-    if (source.type.kind === "generator" && source.type.async) {
-      // An async generator's completion settles one microtask later here
-      // than in Node, which would reorder the returned promise.
-      lowerer.noLowering(
-        "Array.fromAsync over an async generator",
-        args[0]!,
-        "collect its values with for await",
-      );
-    }
+  let step: SourceStep;
+  if (source.type.kind === "array") {
+    step = arraySourceStep(lowerer, args[0]!, source.type.elem);
+  } else if (source.type.kind === "generator" && source.type.async) {
+    step = generatorSourceStep(lowerer, args[0]!, source.type);
+  } else {
     lowerer.noLowering(
       `Array.fromAsync over a value of type '${lowerer.checker.typeToString(lowerer.typeOf(args[0]!))}'`,
       args[0]!,
-      "an array is the supported source",
+      "an array or an async generator is the supported source",
     );
   }
-  const step = arraySourceStep(lowerer, args[0]!, source.type.elem);
   let mapper: (IrExpr & { type: IrType & { kind: "func" } }) | null = null;
   if (args[1]) {
     const callback = lowerArrayCallback(lowerer, args[1], [step.valueT], outT);
@@ -207,19 +204,173 @@ function nonThenable(lowerer: Lowerer, type: IrType): boolean {
   );
 }
 
+interface SourceStep {
+  /** The value each step hands to the mapping function. */
+  valueT: IrType;
+  loop(source: IrExpr, append: (value: IrExpr) => IrStmt[], loc: SrcLoc): IrStmt[];
+}
+
+/** The async generator loop: each next() result is awaited, `done` ends
+ * the loop, and the value goes to the mapping function as is (no further
+ * await, unlike the async-from-sync array form). A mapping function that
+ * throws or rejects closes the generator by awaiting return(); a failure
+ * of that close is dropped, so the mapping error rejects the result. A
+ * rejected next() does not close the generator and rejects the result on
+ * the turn Node rejects it. */
+function generatorSourceStep(lowerer: Lowerer, node: ts.Expression, genT: GenType): SourceStep {
+  if (genT.yieldT.kind === "void") {
+    lowerer.noLowering("Array.fromAsync over an async generator that never yields", node);
+  }
+  if (genT.nextT.kind !== "undefinedT" && genT.nextT.kind !== "dyn") {
+    lowerer.noLowering(
+      `Array.fromAsync over an async generator whose yields expect .next(value) ('${lowerer.fmt(genT.nextT)}')`,
+      node,
+    );
+  }
+  const recT = resultRecordOf(lowerer, genT);
+  const promiseT: IrType = { kind: "promise", inner: recT };
+  const fieldT = lowerer.shapes.get(recT.shapeId)!.fields.find((f) => f.name === "value")!.type;
+  return {
+    valueT: genT.yieldT,
+    loop(source, append, loc) {
+      const g = lowerer.declareHiddenLocal("%fromAsyncGenerator", genT);
+      const needsClose = lowerer.declareHiddenLocal("%fromAsyncNeedsClose", BOOL);
+      needsClose.mutable = true;
+      const p = lowerer.declareHiddenLocal("%fromAsyncNext", promiseT);
+      const r = lowerer.declareHiddenLocal("%fromAsyncResult", recT);
+      r.mutable = true;
+      const nextError = lowerer.declareHiddenLocal("%fromAsyncNextError", CAUGHT);
+      const closeError = lowerer.declareHiddenLocal("%fromAsyncCloseError", CAUGHT);
+      const gRef = varRef(g.id, genT, loc);
+      const rRef = varRef(r.id, recT, loc);
+      const read: IrExpr = {
+        kind: "recordGet",
+        obj: rRef,
+        shapeId: recT.shapeId,
+        field: "value",
+        type: fieldT,
+        loc,
+      };
+      const value = extractIteratorValue(lowerer, genT.yieldT, fieldT, read, loc);
+      if (!value) {
+        lowerer.noLowering(
+          `Array.fromAsync over an async generator yielding '${lowerer.fmt(genT.yieldT)}'`,
+          node,
+        );
+      }
+      const setClose = (on: boolean): IrStmt => ({
+        kind: "assign",
+        localId: needsClose.id,
+        value: boolLit(on, loc),
+        loc,
+      });
+      const loop: IrStmt = {
+        kind: "while",
+        cond: boolLit(true, loc),
+        body: [
+          {
+            kind: "varDecl",
+            localId: p.id,
+            init: { kind: "genResume", mode: "next", gen: gRef, arg: null, type: promiseT, loc },
+            loc,
+          },
+          { kind: "varDecl", localId: r.id, init: null, loc },
+          // A rejected next() rejects the result two reactions later, as
+          // the rejected array element does.
+          {
+            kind: "tryCatch",
+            tryBody: [
+              {
+                kind: "assign",
+                localId: r.id,
+                value: { kind: "awaitExpr", value: varRef(p.id, promiseT, loc), type: recT, loc },
+                loc,
+              },
+            ],
+            catchBody: [hop(loc), hop(loc), { kind: "rethrow", localId: nextError.id, loc }],
+            catchLocalId: nextError.id,
+            finallyBody: null,
+            loc,
+          },
+          {
+            kind: "if",
+            cond: {
+              kind: "recordGet",
+              obj: rRef,
+              shapeId: recT.shapeId,
+              field: "done",
+              type: BOOL,
+              loc,
+            },
+            then: [{ kind: "break", loc }],
+            else_: null,
+            loc,
+          },
+          setClose(true),
+          ...append(value!),
+          setClose(false),
+        ],
+        loc,
+      };
+      const stmts: IrStmt[] = [
+        { kind: "varDecl", localId: g.id, init: source, loc },
+        { kind: "varDecl", localId: needsClose.id, init: boolLit(false, loc), loc },
+        {
+          kind: "tryCatch",
+          tryBody: [loop],
+          catchBody: null,
+          catchLocalId: null,
+          finallyBody: [
+            {
+              kind: "if",
+              cond: varRef(needsClose.id, BOOL, loc),
+              then: [closeGenerator(gRef, promiseT, recT, closeError.id, loc)],
+              else_: null,
+              loc,
+            },
+          ],
+          loc,
+        },
+      ];
+      return stmts;
+    },
+  };
+}
+
+/** Await `gen.return()`, dropping a failure of the close. */
+function closeGenerator(
+  gen: IrExpr,
+  promiseT: IrType,
+  recT: IrType,
+  errorLocalId: string,
+  loc: SrcLoc,
+): IrStmt {
+  return {
+    kind: "tryCatch",
+    tryBody: [
+      {
+        kind: "exprStmt",
+        expr: {
+          kind: "awaitExpr",
+          value: { kind: "genResume", mode: "return", gen, arg: null, type: promiseT, loc },
+          type: recT,
+          loc,
+        },
+        loc,
+      },
+    ],
+    catchBody: [],
+    catchLocalId: errorLocalId,
+    finallyBody: null,
+    loc,
+  };
+}
+
 /** The `for await` array loop (lowerForOf's async-from-sync form): two
  * hops per element that is not a promise, the element's own await plus
  * one hop for a promise element, two hops before the final done result,
  * and one hop to close the iterator when the body completes abruptly. */
-function arraySourceStep(
-  lowerer: Lowerer,
-  node: ts.Expression,
-  elem: IrType,
-): {
-  /** The awaited value each element hands to the mapping function. */
-  valueT: IrType;
-  loop(source: IrExpr, append: (value: IrExpr) => IrStmt[], loc: SrcLoc): IrStmt[];
-} {
+function arraySourceStep(lowerer: Lowerer, node: ts.Expression, elem: IrType): SourceStep {
   const yieldedT = arrayValueType(lowerer, elem);
   let promiseTag: number | null = null;
   let valueT = yieldedT;

@@ -234,6 +234,8 @@ Without `@scriptc/threads`, a scriptc executable also shares a message of untype
 
 Starting a worker thread takes tens of microseconds plus the worker's own module initialization, since every worker initializes the program's modules again, as in Node.js. A worker that exits frees its heap first, which takes time proportional to what it still holds. `SCRIPTC_WORKER_STATS=1` prints, as each worker exits, how long it took to start, to run its script and to exit.
 
+On Linux, a worker that exits without having shared an object it allocated with another thread returns all of its memory, including objects it never freed, such as `ProgramLifetime` instances, once no other worker thread is running. A worker shares objects when, for example, it sends a published value or frozen plain data, which other threads read by reference, or stores a value in an `InternTable`. The memory of a worker that shared stays allocated, as on other platforms. Set `SCR_SA_DISCARD=0` in the environment to keep the memory of every worker.
+
 `publish` visits each object of the graph once and marks it immortal, so publication takes time proportional to the graph. Published objects then cost nothing on later sends, and reference counting and the cycle collector skip them. Stores into the types a program publishes carry one extra load and branch.
 
 Threads that add to one shared collection of published values while they run can use an [`InternTable`](/docs/experimental#interntable) from `@scriptc/experimental`.

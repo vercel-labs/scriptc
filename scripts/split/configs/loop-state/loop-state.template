@@ -1,0 +1,34 @@
+/* The loop optimizations' per-function state: counted loops, dense array
+ * loops, byte windows and typed-array loop versioning, and the unaliased
+ * local arrays they rely on. */
+import { findUnaliasedLocalArrays } from "../../ir/array-length-stability.js";
+import type { IrFunction, IrStmt } from "../../ir/ir.js";
+import { findInitializedByteLoopBindings } from "./byte-windows.js";
+import type { DenseArrayLoop } from "./dense-array-loops.js";
+import type { LlEmitter } from "./emitter.js";
+
+/** Sets the loop state for `fn` at the start of its emission; `numericFn`
+ * is `fn` with its initializer bindings (emitFunction). */
+export function beginFunctionLoops(
+  emitter: LlEmitter,
+  fn: IrFunction,
+  numericFn: IrFunction,
+): void {
+  const loops = LOOPS.of(emitter);
+  loops.unaliasedArrays = findUnaliasedLocalArrays(fn);
+  loops.countedLoopsEnabled = emitter.debug === null && !fn.async && !fn.generator;
+  loops.byteWindowsEnabled = loops.countedLoopsEnabled;
+  loops.bytesLoopVersionsEnabled = loops.countedLoopsEnabled;
+  loops.bytesLoopEntries = null;
+  loops.bytesLoopFunction = fn;
+  loops.denseLoopsEnabled = loops.countedLoopsEnabled;
+  loops.denseLoop = null;
+  loops.denseLoopEntries =
+    loops.denseLoopsEnabled && numericFn.locals.some((l) => l.type.kind === "array")
+      ? findInitializedByteLoopBindings(fn)
+      : new Map();
+  loops.byteWindowEntries =
+    loops.byteWindowsEnabled && numericFn.locals.some((l) => l.type.kind === "bytes")
+      ? findInitializedByteLoopBindings(fn)
+      : new Map();
+}

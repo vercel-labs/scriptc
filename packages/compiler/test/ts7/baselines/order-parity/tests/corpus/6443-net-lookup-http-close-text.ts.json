@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6443-net-lookup-http-close-text.ts"
+ ],
+ "diags": []
+}

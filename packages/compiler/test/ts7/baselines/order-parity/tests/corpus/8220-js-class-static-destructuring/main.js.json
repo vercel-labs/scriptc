@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8220-js-class-static-destructuring/classes/comparator.js",
+  "<repo>/tests/corpus/8220-js-class-static-destructuring/ranges/outside.js",
+  "<repo>/tests/corpus/8220-js-class-static-destructuring/formdata.js",
+  "<repo>/tests/corpus/8220-js-class-static-destructuring/main.js"
+ ],
+ "diags": []
+}

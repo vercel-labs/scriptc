@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7365-class-methods-untyped-computed-writes/untyped.js",
+  "<repo>/tests/corpus/7365-class-methods-untyped-computed-writes/main.ts"
+ ],
+ "diags": []
+}

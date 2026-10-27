@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5640-generic-structural-class-narrowing.ts"
+ ],
+ "diags": []
+}

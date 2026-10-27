@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/constructor-returns-object.ts"
+ ],
+ "diags": []
+}

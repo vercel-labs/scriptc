@@ -1,0 +1,36 @@
+regex-match-destructuring-fences.ts:6:16 - error SC1031: rest bindings over regex match results (the rest copies the positions and the index, input and groups properties — destructure them by name) are not supported yet
+
+  5 | const m = /(a)(b)?/.exec("ab")!;
+  6 | const { index, ...rest } = m;
+    |                ^~~~~~~
+  7 | const { input = "none" } = m;
+
+regex-match-destructuring-fences.ts:6:19 - error SC2001: values of type '{ [n: number]: string; input: string; 0: string; length: number; toString(): string; toLocaleString(): string; toLocaleString(locales: string | string[], options?: (NumberFormatOptions & DateTimeFormatOptions) | undefined): string; ... 39 more ...; with(index: number, value: string): string[]; }' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
+
+  5 | const m = /(a)(b)?/.exec("ab")!;
+  6 | const { index, ...rest } = m;
+    |                   ^~~~
+  7 | const { input = "none" } = m;
+
+regex-match-destructuring-fences.ts:7:9 - error SC1031: binding defaults on the 'input' of a regex match result is not supported yet
+
+  6 | const { index, ...rest } = m;
+  7 | const { input = "none" } = m;
+    |         ^~~~~~~~~~~~~~
+  8 | const { length } = m;
+
+regex-match-destructuring-fences.ts:8:9 - error SC1031: destructuring the property 'length' of a regex match result (numeric positions, index, input and groups compile) is not supported yet
+
+  7 | const { input = "none" } = m;
+  8 | const { length } = m;
+    |         ^~~~~~
+  9 | console.log(index, rest, input, length);
+
+regex-match-destructuring-fences.ts:9:20 - error SC2004: uses of 'rest' inherit the blocker on its declaration
+
+   8 | const { length } = m;
+   9 | console.log(index, rest, input, length);
+     |                    ^~~~
+  10 | 
+
+  hint: the declaration of 'rest' did not compile — fix the diagnostic reported there and these sites clear with it

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7324-loop-bound-parameter-window-sums.ts"
+ ],
+ "diags": []
+}

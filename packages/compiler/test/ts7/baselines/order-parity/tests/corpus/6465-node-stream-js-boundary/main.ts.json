@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6465-node-stream-js-boundary/consume.js",
+  "<repo>/tests/corpus/6465-node-stream-js-boundary/main.ts"
+ ],
+ "diags": []
+}

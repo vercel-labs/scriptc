@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7045-instanceof-constructor-values.mjs"
+ ],
+ "diags": []
+}

@@ -6,7 +6,7 @@
  * against Node by the differential corpus:
  *   - scheme lowercasing; "Invalid URL" TypeError on schemeless input
  *   - special schemes (http/https/ws/wss/ftp/file): authority parsing with
- *     host lowercasing, default-port removal (leading zeros stripped),
+ *     percent-decoded, lowercased hosts, default-port removal (leading zeros stripped),
  *     canonical bracketed IPv6 literals,
  *     backslash-as-slash, and any run of leading slashes tolerated
  *     (http:foo.com works); file: takes an authority only after exactly
@@ -17,13 +17,12 @@
  *     (space, quotes, angle brackets, braces, non-ASCII UTF-8 bytes, ...);
  *     existing %-sequences pass through verbatim (no decode, no case
  *     normalization — like Node)
- *   - non-special schemes: "//" parses an authority (host case preserved),
- *     a single "/" roots a normalized path, anything else is an OPAQUE
- *     path kept verbatim (data:text/plain,hi there)
- *
- * DOCUMENTED DIVERGENCES (SEMANTICS.md): non-ASCII and %-escaped hosts are
- * rejected with "Invalid URL" (no IDNA/punycode), and opaque paths skip
- * the spec's C0-encode pass (kept verbatim).
+ *   - non-special schemes: "//" parses an authority (an opaque host,
+ *     case preserved, C0-encoded), a single "/" roots a normalized path,
+ *     anything else is an OPAQUE path with the C0 control set encoded
+ *     (data:text/plain,hi there)
+ *   - UTS #46 processing of non-ASCII hosts through the IDNA unit
+ *     (scr_url_idna_install)
  *
  * Failures THROW catchable TypeErrors through the exception cell with
  * Node's messages; callers are compiler-emitted pending checks. */
@@ -176,7 +175,7 @@ static bool enc_query(unsigned char c, bool special) {
 }
 
 static bool enc_path(unsigned char c) {
-  return enc_query(c, false) || c == '?' || c == '`' || c == '{' || c == '}';
+  return enc_query(c, false) || c == '?' || c == '^' || c == '`' || c == '{' || c == '}';
 }
 
 static bool enc_userinfo(unsigned char c) {
@@ -392,17 +391,63 @@ static bool url_ipv4_parse(const char *s, size_t n, UrlBuf *out) {
   return true;
 }
 
-/* Shared constructor/setter host parsing keeps the existing ASCII-host
- * boundary and canonical IPv6 serialization in both execution tiers. A
- * special host that ends in a number is an IPv4 address: it serializes
- * as dotted decimal, or the URL is invalid. */
+/* Byte classes for the host parser: URL_FORBIDDEN_HOST marks the URL
+ * Standard's forbidden host code points (opaque hosts), URL_FORBIDDEN_DOMAIN
+ * its forbidden domain code points (those plus the C0 controls, '%' and
+ * U+007F) and every non-ASCII byte, which a special host cannot hold
+ * without UTS #46 processing. */
+enum { URL_FORBIDDEN_HOST = 1, URL_FORBIDDEN_DOMAIN = 2 };
+
+static const unsigned char url_host_byte_class[256] = {
+    3, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 2, 2, 3, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    3, 0, 0, 3, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 3, 0, 3, 3,
+    3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 3, 3, 3, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 0, 0, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+    2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
+};
+
+static bool enc_c0_control(unsigned char c) {
+  return c < 0x20 || c > 0x7E;
+}
+
+static int hex_val(char c) {
+  if (c >= '0' && c <= '9') return c - '0';
+  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+  return -1;
+}
+
+/* UTS #46 ToASCII (scr_idna.c), which programs that use URLs install at
+ * startup (scr_url_idna_install). NULL refuses hosts that hold non-ASCII
+ * text. */
+ScrStr *(*scr_url_host_to_ascii)(const char *p, size_t n) = NULL;
+
+/* The URL Standard's host parser for the constructor and the setters,
+ * with canonical IPv6 serialization:
+ * - a non-special (opaque) host refuses forbidden host code points and
+ *   percent-encodes the C0 control set;
+ * - a special host is percent-decoded and lowercased; when that leaves
+ *   non-ASCII text it goes through UTS #46 ToASCII (as Node's host parser
+ *   does, an ASCII host, "xn--" labels included, is only lowercased). The
+ *   result is refused when it holds a forbidden domain code point, and
+ *   serialized as dotted decimal when it ends in a number (or refused when
+ *   that number is invalid). */
 static bool parse_host(const char *hp, size_t host_len, bool special, bool is_file,
                        ScrStr **host) {
   bool ipv6 = host_len > 0 && hp[0] == '[';
   size_t ipv6_end = host_len ? host_len - 1 : 0;
   if (ipv6 && (host_len < 3 || hp[ipv6_end] != ']')) return false;
-  /* Validate + lowercase (special) the host. Divergence: non-ASCII and
-   * %-escapes (IDNA territory) are rejected outright. */
   UrlBuf hb;
   ub_init(&hb);
   if (ipv6) {
@@ -410,22 +455,53 @@ static bool parse_host(const char *hp, size_t host_len, bool special, bool is_fi
       free(hb.data);
       return false;
     }
-  } else {
+    *host = ub_take(&hb);
+    return true;
+  }
+  if (!special) {
     for (size_t i = 0; i < host_len; i++) {
       unsigned char c = (unsigned char)hp[i];
-      if (c >= 0x80 || c == '%' || c == ':' || c == '[' || c == ']' ||
-          c <= 0x20 || c == '#' || c == '/' || c == '<' || c == '>' ||
-          c == '?' || c == '@' || c == '\\' || c == '^' || c == '|') {
+      if (url_host_byte_class[c] & URL_FORBIDDEN_HOST) {
         free(hb.data);
         return false;
       }
-      if (special && c >= 'A' && c <= 'Z') {
-        c = (unsigned char)(c - 'A' + 'a');
-      }
-      ub_push(&hb, (char)c);
+      ub_push_encoded(&hb, c, enc_c0_control);
+    }
+    *host = ub_take(&hb);
+    return true;
+  }
+  bool non_ascii = false;
+  for (size_t i = 0; i < host_len; i++) {
+    unsigned char c = (unsigned char)hp[i];
+    int hi, lo;
+    if (c == '%' && i + 2 < host_len && (hi = hex_val(hp[i + 1])) >= 0 &&
+        (lo = hex_val(hp[i + 2])) >= 0) {
+      c = (unsigned char)(hi * 16 + lo);
+      i += 2;
+    }
+    if (c >= 0x80) non_ascii = true;
+    if (c >= 'A' && c <= 'Z') c = (unsigned char)(c - 'A' + 'a');
+    ub_push(&hb, (char)c);
+  }
+  if (non_ascii) {
+    /* UTS #46 ToASCII, or refused without the IDNA unit. */
+    ScrStr *ascii = scr_url_host_to_ascii ? scr_url_host_to_ascii(hb.data, hb.len) : NULL;
+    free(hb.data);
+    if (!ascii || ascii->len == 0) {
+      scr_str_release(ascii);
+      return false;
+    }
+    ub_init(&hb);
+    ub_append(&hb, ascii->data, ascii->len);
+    scr_str_release(ascii);
+  }
+  for (size_t i = 0; i < hb.len; i++) {
+    if (url_host_byte_class[(unsigned char)hb.data[i]] & URL_FORBIDDEN_DOMAIN) {
+      free(hb.data);
+      return false;
     }
   }
-  if (!ipv6 && special && url_ends_in_number(hb.data, hb.len)) {
+  if (url_ends_in_number(hb.data, hb.len)) {
     UrlBuf ip;
     ub_init(&ip);
     bool ok = url_ipv4_parse(hb.data, hb.len, &ip);
@@ -438,7 +514,7 @@ static bool parse_host(const char *hp, size_t host_len, bool special, bool is_fi
   }
   /* file: "localhost" normalizes to "" at parse time (Node). */
   if (is_file && hb.len == 9 && memcmp(hb.data, "localhost", 9) == 0) hb.len = 0;
-  if (hb.len == 0 && special && !is_file) {
+  if (hb.len == 0 && !is_file) {
     free(hb.data);
     return false; /* http:// — special non-file needs a host */
   }
@@ -481,6 +557,13 @@ static bool parse_authority(const char *raw, size_t len, bool special, bool is_f
   }
   const char *hp = at >= 0 ? raw + at + 1 : raw;
   size_t hp_len = at >= 0 ? len - (size_t)at - 1 : len;
+  /* Credentials need a host. A file: authority is a host alone, so its
+   * '@' and ':' reach the host parser, which refuses them. */
+  if (at >= 0 && hp_len == 0) return false;
+  if (is_file) {
+    *port = scr_str_new("", 0);
+    return at < 0 && parse_host(hp, hp_len, special, is_file, host);
+  }
   /* host[:port], with IPv6 literals bracketed per WHATWG. */
   long colon = -1;
   size_t host_len = hp_len;
@@ -500,6 +583,7 @@ static bool parse_authority(const char *raw, size_t len, bool special, bool is_f
     }
     host_len = colon >= 0 ? (size_t)colon : hp_len;
   }
+  if (colon >= 0 && host_len == 0) return false;
   if (!parse_host(hp, host_len, special, is_file, host)) return false;
   /* Port: digits only, leading zeros stripped, defaults dropped. */
   UrlBuf pb;
@@ -700,11 +784,18 @@ ScrUrl *scr_url_new(ScrStr *input) {
     port = scr_str_new("", 0);
     path = parse_rooted_path(body, body_len, false);
   } else {
-    /* Opaque path — kept verbatim (divergence: the spec C0-encodes). */
+    /* Opaque path: the C0 control set is percent-encoded, and a space
+     * right before a query or fragment becomes %20. */
     userinfo = scr_str_new("", 0);
     host = scr_str_new("", 0);
     port = scr_str_new("", 0);
-    path = scr_str_new(body, body_len);
+    UrlBuf ob;
+    ub_init(&ob);
+    bool trailing_space = qmark < rest_len && body_len > 0 && body[body_len - 1] == ' ';
+    size_t kept = trailing_space ? body_len - 1 : body_len;
+    for (size_t i = 0; i < kept; i++) ub_push_encoded(&ob, (unsigned char)body[i], enc_c0_control);
+    if (trailing_space) ub_append(&ob, "%20", 3);
+    path = ub_take(&ob);
   }
 
   /* Query and fragment, encoded and stored WITH their sigils. */
@@ -823,18 +914,22 @@ ScrUrl *scr_url_new_base(ScrStr *input, ScrStr *base_input) {
     bool drive = file && path_len >= 2 && url_drive_letter(raw, 2) &&
                  (path_len == 2 || raw[2] == '/' || raw[2] == '\\');
     if (base->has_authority) {
+      /* A drive letter relative to a file: base keeps the base's host. */
       ub_append(&absolute, "//", 2);
-      if (!drive) {
-        if (base->userinfo->len) {
-          ub_append(&absolute, base->userinfo->data, base->userinfo->len);
-          ub_push(&absolute, '@');
-        }
-        ub_append(&absolute, base->host->data, base->host->len);
-        if (base->port->len) {
-          ub_push(&absolute, ':');
-          ub_append(&absolute, base->port->data, base->port->len);
-        }
+      if (base->userinfo->len) {
+        ub_append(&absolute, base->userinfo->data, base->userinfo->len);
+        ub_push(&absolute, '@');
       }
+      ub_append(&absolute, base->host->data, base->host->len);
+      if (base->port->len) {
+        ub_push(&absolute, ':');
+        ub_append(&absolute, base->port->data, base->port->len);
+      }
+    } else if (!opaque) {
+      /* A host-less base path can start with "//"; the "/." prefix keeps
+       * the resolved path from reparsing as an authority (dot-segment
+       * removal drops it). */
+      ub_append(&absolute, "/.", 2);
     }
     if (!path_len) {
       ub_append(&absolute, base->path->data, base->path->len);
@@ -1279,13 +1374,6 @@ void scr_url_set_checked(ScrUrl *u, ScrStr *field, const ScrDyn *value) {
 
 /* ── the file-URL bridge ─────────────────────────────────────────────── */
 
-static int hex_val(char c) {
-  if (c >= '0' && c <= '9') return c - '0';
-  if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-  if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-  return -1;
-}
-
 static bool url_file_scheme(ScrUrl *u) {
   if (u->scheme->len == 4 && memcmp(u->scheme->data, "file", 4) == 0) return true;
   scr_throw_error_msg_code(SCR_ERR_TYPE, "The URL must be of scheme file", 30, "ERR_INVALID_URL_SCHEME");
@@ -1394,6 +1482,22 @@ ScrStr *scr_url_to_path(ScrUrl *u) {
 #endif
 }
 
+/* fs.existsSync and the fs.promises functions convert a URL path inside a
+ * try and turn its error into false or a rejection: the conversion's result
+ * as a value, the path string or the error. */
+ScrDyn *scr_url_to_path_value(ScrUrl *u) {
+  ScrStr *path = scr_url_to_path(u);
+  if (path) {
+    ScrDyn *value = scr_dyn_new_str(path);
+    scr_str_release(path);
+    return value;
+  }
+  ScrCaught *caught = scr_exc_take();
+  ScrDyn *error = scr_caught_to_dyn(caught);
+  scr_caught_release(caught);
+  return error;
+}
+
 /* The string-receiver form parses first (Node accepts URL strings). */
 ScrStr *scr_url_str_to_path(ScrStr *input) {
   ScrUrl *u = scr_url_new(input);
@@ -1451,7 +1555,7 @@ static void scr_url_throw_arg_value(const char *reason, ScrStr *value) {
  * bindingUrl.pathToFileURL does, reusing the parser's rooted-path
  * machinery (WHATWG dot-segment removal with empty segments preserved,
  * backslash-as-slash when `backslash_sep`, the enc_path set): the bytes
- * Node encodes BEYOND that set ('%', '[', ']', '^', '|' — and '\\' when
+ * Node encodes BEYOND that set ('%', '[', ']', '^', '|', '~' — and '\\' when
  * it is a path byte rather than a separator) pre-encode here so the
  * parser passes them through. */
 static ScrStr *scr_url_encode_file_path(const char *raw, size_t len, bool backslash_sep) {
@@ -1459,7 +1563,7 @@ static ScrStr *scr_url_encode_file_path(const char *raw, size_t len, bool backsl
   ub_init(&pre);
   for (size_t i = 0; i < len; i++) {
     unsigned char c = (unsigned char)raw[i];
-    if (c == '%' || c == '[' || c == ']' || c == '^' || c == '|' ||
+    if (c == '%' || c == '[' || c == ']' || c == '^' || c == '|' || c == '~' ||
         (c == '\\' && !backslash_sep)) {
       char hex[4];
       snprintf(hex, sizeof hex, "%%%02X", c);
@@ -1521,24 +1625,30 @@ static ScrUrl *scr_url_from_path_impl(ScrStr *path, bool win32) {
         scr_str_release(resolved);
         return NULL;
       }
-      /* The URL host parser lowercases ASCII and TERMINATES at the URL
-       * delimiters '/', '?', '#' (Node feeds the servername through
-       * set_hostname: "\\\\?\\C:\\x" gets an EMPTY host and stays a
-       * drive path). No IDNA (documented divergence — Node punycodes
-       * non-ASCII names), and names with ':' or '%' stay verbatim where
-       * Node aborts on a native set_hostname assertion. */
-      UrlBuf host;
-      ub_init(&host);
+      /* The servername goes through the host parser, as Node's hostname
+       * setter does: it drops tabs and newlines, stops at the URL
+       * delimiters '/', '?' and '#'
+       * ("\\\\?\\C:\\x" gets an empty host and stays a drive path),
+       * and a host it refuses throws ERR_INVALID_URL. */
+      UrlBuf name;
+      ub_init(&name);
       for (size_t i = prefix; i < (size_t)host_end; i++) {
         char c = resolved->data[i];
         if (c == '/' || c == '?' || c == '#') break;
-        if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
-        ub_push(&host, c);
+        if (c != '\t' && c != '\n' && c != '\r') ub_push(&name, c);
+      }
+      ScrStr *host = NULL;
+      bool valid = parse_host(name.data, name.len, true, true, &host);
+      free(name.data);
+      if (!valid) {
+        scr_str_release(resolved);
+        scr_url_throw_invalid();
+        return NULL;
       }
       ScrStr *encoded = scr_url_encode_file_path(resolved->data + host_end,
                                                  resolved->len - (size_t)host_end, true);
       scr_str_release(resolved);
-      return scr_url_new_file(ub_take(&host), encoded);
+      return scr_url_new_file(host, encoded);
     }
   } else {
     ScrArr *pack = scr_arr_new(SCR_ELEM_STR, 1);
@@ -1649,10 +1759,117 @@ static bool scr_native_url_set(void *ptr, const char *key, size_t len, const Scr
   return true;
 }
 
+/* util.inspect's view of a URL: the properties Node's URL inspector lists,
+ * in its order, with the live searchParams object. Past the depth limit
+ * the inspector returns the URL itself, which util.inspect prints as
+ * `URL {}` (it has no own properties). */
+static ScrDyn *scr_native_url_inspect_view(void *ptr) {
+  static const char *const keys[] = {"href", "origin", "protocol", "username", "password",
+                                     "host", "hostname", "port", "pathname", "search",
+                                     "searchParams", "hash"};
+  ScrDyn *view = scr_dyn_new_obj();
+  for (size_t i = 0; i < sizeof keys / sizeof keys[0]; i++) {
+    size_t len = strlen(keys[i]);
+    scr_dyn_obj_set(view, keys[i], len, scr_native_url_get(ptr, keys[i], len));
+  }
+  return view;
+}
+
+/* Node's urlToHttpOptions over a URL: protocol, hostname (an IPv6 literal
+ * without its brackets), hash, search, pathname, path (pathname and
+ * search), href, then port as a number when the URL has one and auth
+ * (the decoded username and password) when it has credentials. */
+ScrDyn *scr_url_to_http_options(ScrUrl *u) {
+  ScrDyn *options = scr_dyn_new_obj_null_proto();
+  ScrStr *pathname = scr_url_pathname(u);
+  ScrStr *search = scr_url_search(u);
+  ScrStr *hostname = scr_url_hostname(u);
+  ScrStr *port = scr_url_port(u);
+  ScrStr *username = scr_url_username(u);
+  ScrStr *password = scr_url_password(u);
+  ScrStr *auth = NULL;
+  if (username->len || password->len) {
+    ScrStr *user = scr_str_decode_uri_component(username);
+    ScrStr *pass = user ? scr_str_decode_uri_component(password) : NULL;
+    if (pass) {
+      UrlBuf b;
+      ub_init(&b);
+      ub_append(&b, user->data, user->len);
+      ub_push(&b, ':');
+      ub_append(&b, pass->data, pass->len);
+      auth = ub_take(&b);
+    }
+    scr_str_release(user);
+    scr_str_release(pass);
+    if (!auth) {
+      scr_str_release(pathname);
+      scr_str_release(search);
+      scr_str_release(hostname);
+      scr_str_release(port);
+      scr_str_release(username);
+      scr_str_release(password);
+      scr_dyn_release(options);
+      return NULL;
+    }
+  }
+#define PUT_STR(key, value)                                       \
+  do {                                                            \
+    ScrStr *text_ = (value);                                      \
+    scr_dyn_obj_set(options, key, sizeof key - 1, scr_dyn_new_str(text_)); \
+    scr_str_release(text_);                                       \
+  } while (0)
+  PUT_STR("protocol", scr_url_protocol(u));
+  if (hostname->len >= 2 && hostname->data[0] == '[')
+    PUT_STR("hostname", scr_str_new(hostname->data + 1, hostname->len - 2));
+  else
+    PUT_STR("hostname", scr_str_retain(hostname));
+  PUT_STR("hash", scr_url_hash(u));
+  PUT_STR("search", scr_str_retain(search));
+  PUT_STR("pathname", scr_str_retain(pathname));
+  UrlBuf path;
+  ub_init(&path);
+  ub_append(&path, pathname->data, pathname->len);
+  ub_append(&path, search->data, search->len);
+  PUT_STR("path", ub_take(&path));
+  PUT_STR("href", scr_url_href(u));
+  if (port->len) {
+    double number = 0;
+    for (size_t i = 0; i < port->len; i++) number = number * 10 + (port->data[i] - '0');
+    scr_dyn_obj_set(options, "port", 4, scr_dyn_new_num(number));
+  }
+  if (auth) PUT_STR("auth", auth);
+#undef PUT_STR
+  scr_str_release(pathname);
+  scr_str_release(search);
+  scr_str_release(hostname);
+  scr_str_release(port);
+  scr_str_release(username);
+  scr_str_release(password);
+  return options;
+}
+
+ScrDyn *scr_url_to_http_options_dyn(const ScrDyn *value) {
+  if (scr_dyn_native_url_is(value)) return scr_url_to_http_options(value->v.handle.ptr);
+  if (!value || value->kind <= SCR_DYN_STR || value->kind == SCR_DYN_UNDEF ||
+      value->kind == SCR_DYN_BIGINT || value->kind == SCR_DYN_SYMBOL) {
+    scr_dyn_arg_type_fail("url", "of type object", value);
+    return NULL;
+  }
+  static const char message[] = "url.urlToHttpOptions of an object that is not a URL is not supported yet";
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
+  return NULL;
+}
+
 ScrDyn *scr_dyn_native_url(ScrUrl *value) {
   static const ScrDynHandleOps ops = {
-    "URL", &scr_url_retain_v, &scr_url_release_v, &scr_native_url_invoke,
-    &scr_native_url_get, &scr_native_url_set, NULL, NULL,
+    .cls = "URL",
+    .retain = &scr_url_retain_v,
+    .release = &scr_url_release_v,
+    .invoke = &scr_native_url_invoke,
+    .get = &scr_native_url_get,
+    .set = &scr_native_url_set,
+    .inspect_view = &scr_native_url_inspect_view,
+    .inspect_view_nested = true,
   };
   scr_dyn_handle_install(SCR_DYNH_URL, &ops);
   return scr_dyn_new_handle(value, SCR_DYNH_URL);
@@ -1686,9 +1903,10 @@ static ScrDyn *scr_native_sp_step(void *ptr, double *index, unsigned selection) 
     } else value = scr_dyn_new_str(selection == 1 ? key : text);
     scr_str_release(key); scr_str_release(text);
   }
+  /* { value, done }, in the iterator result's own key order. */
   ScrDyn *result = scr_dyn_new_obj();
-  scr_dyn_obj_set(result, "done", 4, scr_dyn_new_bool(done));
   scr_dyn_obj_set(result, "value", 5, value);
+  scr_dyn_obj_set(result, "done", 4, scr_dyn_new_bool(done));
   return result;
 }
 
@@ -1988,3 +2206,342 @@ ScrBytes *scr_url_checked_to_path_buffer(const ScrDyn *value, const ScrDyn *opti
   scr_url_release(url);
   return result;
 }
+
+/* ── node:punycode (deprecated, DEP0040) ───────────────────────────────
+ * A port of the punycode.js 2.1.0 that Node 24 bundles as lib/punycode.js.
+ * It works on UTF-16 code units: ucs2.decode pairs surrogates and keeps
+ * lone ones, which is exactly a code-point walk over WTF-8 storage.
+ * Errors throw the module's RangeErrors ("Overflow: ...", "Illegal input
+ * >= 0x80 ...", "Invalid input"); decoded code points past U+10FFFF throw
+ * String.fromCodePoint's "Invalid code point N". All inputs are borrowed;
+ * results are +1, or NULL with the error pending. The DEP0040 report is
+ * scr_punycode_warn (scr_async_dyn.c). */
+
+enum {
+  PC_MAX_INT = 2147483647,
+  PC_BASE = 36,
+  PC_TMIN = 1,
+  PC_TMAX = 26,
+  PC_SKEW = 38,
+  PC_DAMP = 700,
+  PC_INITIAL_BIAS = 72,
+  PC_INITIAL_N = 128
+};
+
+static void pc_error(const char *message) {
+  scr_throw_error_msg(SCR_ERR_RANGE, message, strlen(message));
+}
+#define PC_OVERFLOW "Overflow: input needs wider integers to process"
+#define PC_NOT_BASIC "Illegal input >= 0x80 (not a basic code point)"
+#define PC_INVALID "Invalid input"
+
+typedef struct {
+  uint32_t *data;
+  size_t len, cap;
+} PcPoints;
+
+static void pc_push(PcPoints *p, uint32_t cp) {
+  if (p->len == p->cap) {
+    size_t cap = p->cap ? p->cap * 2 : 16;
+    uint32_t *grown = realloc(p->data, cap * sizeof *grown);
+    if (!grown) scr_trap("scriptc: out of memory\n");
+    p->data = grown;
+    p->cap = cap;
+  }
+  p->data[p->len++] = cp;
+}
+
+/* ucs2decode over WTF-8 storage: a pair is one 4-byte sequence, a lone
+ * surrogate one 3-byte sequence carrying its own value. */
+static void pc_code_points(const char *s, size_t n, PcPoints *out) {
+  const unsigned char *b = (const unsigned char *)s;
+  for (size_t i = 0; i < n;) {
+    uint32_t c = b[i];
+    if (c < 0x80) {
+      i += 1;
+    } else if (c < 0xE0 && i + 1 < n) {
+      c = ((c & 0x1F) << 6) | (b[i + 1] & 0x3F);
+      i += 2;
+    } else if (c < 0xF0 && i + 2 < n) {
+      c = ((c & 0x0F) << 12) | ((uint32_t)(b[i + 1] & 0x3F) << 6) | (b[i + 2] & 0x3F);
+      i += 3;
+    } else if (i + 3 < n) {
+      c = ((c & 0x07) << 18) | ((uint32_t)(b[i + 1] & 0x3F) << 12) |
+          ((uint32_t)(b[i + 2] & 0x3F) << 6) | (b[i + 3] & 0x3F);
+      i += 4;
+    } else {
+      i += 1;
+    }
+    pc_push(out, c);
+  }
+}
+
+static int64_t pc_adapt(int64_t delta, int64_t points, bool first) {
+  int64_t k = 0;
+  delta = first ? delta / PC_DAMP : delta >> 1;
+  delta += delta / points;
+  for (; delta > ((PC_BASE - PC_TMIN) * PC_TMAX) >> 1; k += PC_BASE) delta /= PC_BASE - PC_TMIN;
+  return k + (PC_BASE - PC_TMIN + 1) * delta / (delta + PC_SKEW);
+}
+
+static int64_t pc_basic_to_digit(unsigned char c) {
+  if (c >= 0x30 && c < 0x3A) return 26 + (c - 0x30);
+  if (c >= 0x41 && c < 0x5B) return c - 0x41;
+  if (c >= 0x61 && c < 0x7B) return c - 0x61;
+  return PC_BASE;
+}
+
+static char pc_digit_to_basic(int64_t digit) {
+  return (char)(digit + 22 + 75 * (digit < 26));
+}
+
+/* String.fromCodePoint(...points). */
+static ScrStr *pc_from_points(const PcPoints *p) {
+  for (size_t i = 0; i < p->len; i++) {
+    if (p->data[i] > 0x10FFFF) {
+      char message[48];
+      int size = snprintf(message, sizeof message, "Invalid code point %u", (unsigned)p->data[i]);
+      scr_throw_error_msg(SCR_ERR_RANGE, message, (size_t)size);
+      return NULL;
+    }
+  }
+  char *out = malloc(p->len * 4 + 1);
+  if (!out) scr_trap("scriptc: out of memory\n");
+  size_t offset = 0;
+  for (size_t i = 0; i < p->len; i++) {
+    uint32_t point = p->data[i];
+    if (point >= 0xD800 && point <= 0xDBFF && i + 1 < p->len && p->data[i + 1] >= 0xDC00 &&
+        p->data[i + 1] <= 0xDFFF) {
+      point = 0x10000 + ((point - 0xD800) << 10) + (p->data[i + 1] - 0xDC00);
+      i++;
+    }
+    offset += scr_wtf8_put(out + offset, point);
+  }
+  ScrStr *result = scr_str_new(out, offset);
+  free(out);
+  return result;
+}
+
+/* punycode.decode over the bytes of one label. Any non-ASCII byte fails
+ * where its first code unit would: before the last delimiter it is not
+ * basic, after it it is no digit — so byte positions stand in for code
+ * unit positions until the first error. */
+static ScrStr *pc_decode(const char *s, size_t n) {
+  PcPoints output = {0};
+  size_t basic = 0;
+  for (size_t k = n; k > 0; k--) {
+    if (s[k - 1] == '-') {
+      basic = k - 1;
+      break;
+    }
+  }
+  ScrStr *result = NULL;
+  for (size_t j = 0; j < basic; j++) {
+    if ((unsigned char)s[j] >= 0x80) {
+      pc_error(PC_NOT_BASIC);
+      goto done;
+    }
+    pc_push(&output, (unsigned char)s[j]);
+  }
+  int64_t i = 0, cp = PC_INITIAL_N, bias = PC_INITIAL_BIAS;
+  for (size_t index = basic > 0 ? basic + 1 : 0; index < n;) {
+    int64_t old = i;
+    for (int64_t w = 1, k = PC_BASE;; k += PC_BASE) {
+      if (index >= n) {
+        pc_error(PC_INVALID);
+        goto done;
+      }
+      int64_t digit = pc_basic_to_digit((unsigned char)s[index++]);
+      if (digit >= PC_BASE) {
+        pc_error(PC_INVALID);
+        goto done;
+      }
+      if (digit > (PC_MAX_INT - i) / w) {
+        pc_error(PC_OVERFLOW);
+        goto done;
+      }
+      i += digit * w;
+      int64_t t = k <= bias ? PC_TMIN : (k >= bias + PC_TMAX ? PC_TMAX : k - bias);
+      if (digit < t) break;
+      if (w > PC_MAX_INT / (PC_BASE - t)) {
+        pc_error(PC_OVERFLOW);
+        goto done;
+      }
+      w *= PC_BASE - t;
+    }
+    int64_t out = (int64_t)output.len + 1;
+    bias = pc_adapt(i - old, out, old == 0);
+    if (i / out > PC_MAX_INT - cp) {
+      pc_error(PC_OVERFLOW);
+      goto done;
+    }
+    cp += i / out;
+    i %= out;
+    pc_push(&output, 0);
+    memmove(output.data + i + 1, output.data + i, (output.len - 1 - (size_t)i) * sizeof *output.data);
+    output.data[i++] = (uint32_t)cp;
+  }
+  result = pc_from_points(&output);
+done:
+  free(output.data);
+  return result;
+}
+
+/* punycode.encode of one label's code points, appended to buf. */
+static bool pc_encode(const PcPoints *input, ScrJsonBuf *buf) {
+  int64_t cp = PC_INITIAL_N, delta = 0, bias = PC_INITIAL_BIAS;
+  size_t basic_length = 0;
+  for (size_t k = 0; k < input->len; k++) {
+    if (input->data[k] < 0x80) {
+      scr_jb_putc(buf, (char)input->data[k]);
+      basic_length++;
+    }
+  }
+  size_t handled = basic_length;
+  if (basic_length) scr_jb_putc(buf, '-');
+  while (handled < input->len) {
+    int64_t m = PC_MAX_INT;
+    for (size_t k = 0; k < input->len; k++)
+      if (input->data[k] >= cp && input->data[k] < m) m = input->data[k];
+    int64_t handled_plus_one = (int64_t)handled + 1;
+    if (m - cp > (PC_MAX_INT - delta) / handled_plus_one) {
+      pc_error(PC_OVERFLOW);
+      return false;
+    }
+    delta += (m - cp) * handled_plus_one;
+    cp = m;
+    for (size_t k = 0; k < input->len; k++) {
+      int64_t current = input->data[k];
+      if (current < cp && ++delta > PC_MAX_INT) {
+        pc_error(PC_OVERFLOW);
+        return false;
+      }
+      if (current == cp) {
+        int64_t q = delta;
+        for (int64_t j = PC_BASE;; j += PC_BASE) {
+          int64_t t = j <= bias ? PC_TMIN : (j >= bias + PC_TMAX ? PC_TMAX : j - bias);
+          if (q < t) break;
+          scr_jb_putc(buf, pc_digit_to_basic(t + (q - t) % (PC_BASE - t)));
+          q = (q - t) / (PC_BASE - t);
+        }
+        scr_jb_putc(buf, pc_digit_to_basic(q));
+        bias = pc_adapt(delta, handled_plus_one, handled == basic_length);
+        delta = 0;
+        handled++;
+      }
+    }
+    delta++;
+    cp++;
+  }
+  return true;
+}
+
+ScrStr *scr_punycode_decode(const ScrStr *input) { return pc_decode(input->data, input->len); }
+
+ScrStr *scr_punycode_encode(const ScrStr *input) {
+  PcPoints points = {0};
+  pc_code_points(input->data, input->len, &points);
+  ScrJsonBuf buf;
+  scr_jb_init(&buf);
+  bool ok = pc_encode(&points, &buf);
+  free(points.data);
+  ScrStr *result = scr_jb_finish(&buf);
+  if (ok) return result;
+  scr_str_release(result);
+  return NULL;
+}
+
+ScrArr *scr_punycode_ucs2_decode(const ScrStr *input) {
+  PcPoints points = {0};
+  pc_code_points(input->data, input->len, &points);
+  ScrArr *out = scr_arr_new(SCR_ELEM_F64, points.len);
+  for (size_t i = 0; i < points.len; i++) scr_arr_push_f64(out, (double)points.data[i]);
+  free(points.data);
+  return out;
+}
+
+/* mapDomain: only the part after the first '@' maps (and only up to a
+ * second one — punycode.js keeps parts[0] and parts[1]); the RFC 3490
+ * separators U+002E, U+3002, U+FF0E and U+FF61 all split labels, and the
+ * labels rejoin with '.'. */
+static ScrStr *pc_map_domain(const ScrStr *input, bool to_ascii) {
+  const char *s = input->data;
+  size_t n = input->len;
+  ScrJsonBuf buf;
+  scr_jb_init(&buf);
+  const char *at = memchr(s, '@', n);
+  if (at) {
+    scr_jb_write(&buf, s, (size_t)(at - s) + 1);
+    const char *rest = at + 1;
+    const char *second = memchr(rest, '@', n - (size_t)(rest - s));
+    n = (second ? (size_t)(second - rest) : n - (size_t)(rest - s));
+    s = rest;
+  }
+  size_t start = 0;
+  bool ok = true;
+  for (size_t i = 0; ok && i <= n;) {
+    size_t sep = 0;
+    if (i == n) sep = 1;
+    else if (s[i] == '.') sep = 1;
+    else if (i + 2 < n && (unsigned char)s[i] == 0xE3 && (unsigned char)s[i + 1] == 0x80 &&
+             (unsigned char)s[i + 2] == 0x82)
+      sep = 3;
+    else if (i + 2 < n && (unsigned char)s[i] == 0xEF &&
+             (((unsigned char)s[i + 1] == 0xBC && (unsigned char)s[i + 2] == 0x8E) ||
+              ((unsigned char)s[i + 1] == 0xBD && (unsigned char)s[i + 2] == 0xA1)))
+      sep = 3;
+    if (!sep) {
+      i++;
+      continue;
+    }
+    const char *label = s + start;
+    size_t len = i - start;
+    bool ascii = true;
+    for (size_t k = 0; k < len; k++) ascii = ascii && (unsigned char)label[k] < 0x80;
+    if (to_ascii && !ascii) {
+      PcPoints points = {0};
+      pc_code_points(label, len, &points);
+      scr_jb_puts(&buf, "xn--");
+      ok = pc_encode(&points, &buf);
+      free(points.data);
+    } else if (!to_ascii && len >= 4 && memcmp(label, "xn--", 4) == 0) {
+      /* string.slice(4).toLowerCase(): ASCII letters fold; the one other
+       * code point whose lowercase is ASCII is KELVIN SIGN (U+212A → k).
+       * Any other non-ASCII stays non-ASCII and fails in decode either
+       * way, at the same position. */
+      ScrJsonBuf lower;
+      scr_jb_init(&lower);
+      for (size_t k = 4; k < len; k++) {
+        unsigned char c = (unsigned char)label[k];
+        if (c == 0xE2 && k + 2 < len && (unsigned char)label[k + 1] == 0x84 &&
+            (unsigned char)label[k + 2] == 0xAA) {
+          scr_jb_putc(&lower, 'k');
+          k += 2;
+        } else {
+          scr_jb_putc(&lower, (char)(c >= 'A' && c <= 'Z' ? c + 32 : c));
+        }
+      }
+      ScrStr *folded = scr_jb_finish(&lower);
+      ScrStr *decoded = pc_decode(folded->data, folded->len);
+      scr_str_release(folded);
+      if (decoded) {
+        scr_jb_put_str(&buf, decoded);
+        scr_str_release(decoded);
+      } else {
+        ok = false;
+      }
+    } else {
+      scr_jb_write(&buf, label, len);
+    }
+    if (ok && i < n) scr_jb_putc(&buf, '.');
+    i += sep;
+    start = i;
+  }
+  ScrStr *result = scr_jb_finish(&buf);
+  if (ok) return result;
+  scr_str_release(result);
+  return NULL;
+}
+
+ScrStr *scr_punycode_to_ascii(const ScrStr *input) { return pc_map_domain(input, true); }
+ScrStr *scr_punycode_to_unicode(const ScrStr *input) { return pc_map_domain(input, false); }

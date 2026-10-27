@@ -1,1 +1,12 @@
-- **Object freezing:** `Object.freeze` and `Object.isFrozen` support plain checked dictionaries and primitives. Freezing is shallow and preserves accessors. Aliased typed records, arrays, proxies, and other native objects cannot be frozen.
+- **Object freezing:** `Object.freeze` and `Object.isFrozen` support plain checked dictionaries and primitives.
+  Freezing is shallow and preserves accessors.
+  Aliased typed records, arrays, proxies, and other native objects cannot be frozen.
+  Class instances support `Object.freeze`, `Object.seal`, `Object.preventExtensions`, `Object.isFrozen`, `Object.isSealed`, and `Object.isExtensible` when the static type of the argument names the class.
+  A write to a read-only field throws Node's `TypeError` in strict mode code and leaves the field unchanged in sloppy mode code.
+  `Object.defineProperty` with a string-literal key changes the value, `writable`, `enumerable`, and `configurable` attributes of a declared field; an object-literal accessor descriptor (`get` or `set`) for a declared field is refused at compile time with `SC2020`, and another accessor descriptor for a declared field throws `SC2020` when the call runs.
+  `Object.freeze`, `Object.seal`, and `Object.preventExtensions` of a class instance held in an untyped value change the instance itself, so writes through its typed references are checked the same way.
+  The `TypeError` for a write to a read-only property that was added to a class instance through an untyped value names `#<Object>` where Node names the class.
+  Functions support `Object.freeze`, `Object.seal`, `Object.preventExtensions`, `Object.isFrozen`, `Object.isSealed`, and `Object.isExtensible`; the operations apply to the function's own properties (`name`, `length`, `prototype`, and the ones a program assigns).
+  Class constructors are not supported.
+  A write to a read-only property of a checked dictionary or a function throws a `TypeError` whose message omits Node's `'x' of object '#<Object>'` (or `of function '…'`) suffix.
+  A JavaScript class field that is first created after its instance became non-extensible is added instead of throwing.

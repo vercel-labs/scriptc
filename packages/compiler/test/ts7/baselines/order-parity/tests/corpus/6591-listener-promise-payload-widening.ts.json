@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6591-listener-promise-payload-widening.ts"
+ ],
+ "diags": []
+}

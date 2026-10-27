@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6823-recursive-alias-generic-signature.ts"
+ ],
+ "diags": []
+}

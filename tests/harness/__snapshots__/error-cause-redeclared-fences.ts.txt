@@ -1,0 +1,41 @@
+error-cause-redeclared-fences.ts:6:12 - error SC1090: redeclaring Error.cause with a type other than 'unknown' or 'object' (declare it 'cause?: unknown' and narrow at the read) is not supported yet
+
+  5 | class Typed extends Error {
+  6 |   override cause?: Error;
+    |            ^~~~~
+  7 | }
+
+error-cause-redeclared-fences.ts:9:31 - error SC1090: redeclaring Error.cause as a parameter property (declare 'cause?: unknown' and assign it in the constructor) is not supported yet
+
+   8 | class FromParameter extends Error {
+   9 |   constructor(public override cause: unknown) {
+     |                               ^~~~~
+  10 |     super("parameter");
+
+error-cause-redeclared-fences.ts:14:16 - error SC1090: Error.cause accessors are not supported yet
+
+  13 | class Accessor extends Error {
+  14 |   override get cause(): unknown {
+     |                ^~~~~
+  15 |     return "accessor";
+
+error-cause-redeclared-fences.ts:18:13 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  17 | }
+  18 | console.log(new Typed("typed").cause);
+     |             ^~~~~~~~~~~~~~~~~~
+  19 | console.log(new FromParameter(1).cause);
+
+error-cause-redeclared-fences.ts:19:13 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  18 | console.log(new Typed("typed").cause);
+  19 | console.log(new FromParameter(1).cause);
+     |             ^~~~~~~~~~~~~~~~~~~~
+  20 | console.log(new Accessor("a").cause);
+
+error-cause-redeclared-fences.ts:20:13 - error SC1090: constructing through a class value whose class has no lowering (the class declaration itself was rejected — see its own diagnostic) is not supported yet
+
+  19 | console.log(new FromParameter(1).cause);
+  20 | console.log(new Accessor("a").cause);
+     |             ^~~~~~~~~~~~~~~~~
+  21 | 

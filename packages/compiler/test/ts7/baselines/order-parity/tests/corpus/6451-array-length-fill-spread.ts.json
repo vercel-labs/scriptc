@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6451-array-length-fill-spread.ts"
+ ],
+ "diags": []
+}

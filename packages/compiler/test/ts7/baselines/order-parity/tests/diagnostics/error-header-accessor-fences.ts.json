@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/error-header-accessor-fences.ts"
+ ],
+ "diags": []
+}

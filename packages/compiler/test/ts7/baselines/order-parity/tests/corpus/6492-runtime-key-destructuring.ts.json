@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6492-runtime-key-destructuring.ts"
+ ],
+ "diags": []
+}

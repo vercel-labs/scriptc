@@ -1,0 +1,4 @@
+- **Deprecated `punycode` and `constants` modules:** `punycode.encode()`, `decode()`, `toASCII()`, `toUnicode()`, `ucs2.decode()`, `ucs2.encode()`, and `version` compile, with the `DEP0040` warning Node.js reports when the module loads.
+  A `require("punycode")` made from inside `node_modules` doesn't warn; a `require()` used inside a larger expression, such as `require("punycode").toASCII(name)`, doesn't warn either.
+  The `punycode.ucs2` object itself is unsupported as a value.
+  The `constants` module is the frozen object Node.js builds from `os.constants` and `fs.constants`, plus the `crypto.constants` of Node.js 24.22.0.

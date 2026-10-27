@@ -18,6 +18,7 @@ export {
   moduleUsesAssert,
   moduleUsesDynInvoke,
   moduleUsesDynAsync,
+  moduleUsesDynTier,
   moduleUsesInspect,
   moduleUsesChildProcess,
   moduleUsesNet,

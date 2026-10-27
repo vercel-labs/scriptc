@@ -3,6 +3,7 @@ import type { IrExpr, IrFunction, IrLocal, IrModule, IrStmt, IrType } from "../.
 import { mangleFunction } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
 import { SCR_ARR_FIELD } from "./common.js";
+import { SCR_ELEM_F64, SCR_ELEM_I32 } from "./dense-array-access.js";
 
 /** Speculative integer clones of pure number-valued functions.
  *
@@ -191,6 +192,8 @@ function cloneShape(fn: IrFunction, borrowed?: BorrowedParameter): Set<string> |
       case "ternary":
         return expr(e.cond, "bool") && expr(e.then, want) && expr(e.else_, want);
       case "arrIntrinsic":
+        if (e.method === "getNumber")
+          return want === "num" && arrayRef(e.receiver) && expr(e.args[0]!, "num");
         return (
           want === "num" && e.method === "length" && e.args.length === 0 && arrayRef(e.receiver)
         );
@@ -267,6 +270,9 @@ function callsMatch(fn: IrFunction, byName: ReadonlyMap<string, IrFunction>): bo
         return;
       case "arrayGet":
         visit(e.index);
+        return;
+      case "arrIntrinsic":
+        if (e.method === "getNumber") visit(e.args[0]!);
         return;
       default:
         return;
@@ -432,6 +438,8 @@ function callsAnything(e: IrExpr): boolean {
       return callsAnything(e.cond) || callsAnything(e.then) || callsAnything(e.else_);
     case "arrayGet":
       return callsAnything(e.index);
+    case "arrIntrinsic":
+      return e.method === "getNumber" && callsAnything(e.args[0]!);
     default:
       return false;
   }
@@ -1009,10 +1017,10 @@ class CloneEmitter {
     B.line(
       `${field} = getelementptr inbounds %ScrArr, ptr ${array}, i32 0, i32 ${SCR_ARR_FIELD.len}`,
     );
-    B.line(`${len} = load i64, ptr ${field}`);
-    B.line(`${fits} = icmp ule i64 ${len}, 2147483647`);
+    B.line(`${len} = load i32, ptr ${field}`);
+    B.line(`${fits} = icmp ule i32 ${len}, 2147483647`);
     this.require(fits);
-    B.line(`${value} = trunc i64 ${len} to i32`);
+    B.line(`${value} = add i32 ${len}, 0`);
     return value;
   }
 
@@ -1020,10 +1028,10 @@ class CloneEmitter {
    * keeps every slot below `filled` a present value) whose element is
    * exactly an int32. Everything else (holes, indices outside the prefix,
    * other numbers) bails: the ordinary body reads it. */
-  private emitElement(e: Extract<IrExpr, { kind: "arrayGet" }>): string {
+  private emitElement(arr: IrExpr, indexExpr: IrExpr): string {
     const { B } = this;
-    const array = this.emitArray(e.arr);
-    const index = this.narrow(this.emitNum(e.index));
+    const array = this.emitArray(arr);
+    const index = this.narrow(this.emitNum(indexExpr));
     const filledField = B.tmp();
     const filled = B.tmp();
     const inside = B.tmp();
@@ -1044,9 +1052,39 @@ class CloneEmitter {
     );
     B.line(`${data} = load ptr, ptr ${dataField}`);
     B.line(`${offset} = zext i32 ${index} to i64`);
+    // A number array keeps 8-byte doubles, or 4-byte int32 slots when it is
+    // proven to hold only int32s (SCR_ELEM_I32); any other storage bails.
+    const kindField = B.tmp();
+    const kind = B.tmp();
+    const isInt32 = B.tmp();
+    B.line(
+      `${kindField} = getelementptr inbounds %ScrArr, ptr ${array}, i32 0, i32 ${SCR_ARR_FIELD.elem}`,
+    );
+    B.line(`${kind} = load i8, ptr ${kindField}`);
+    B.line(`${isInt32} = icmp eq i8 ${kind}, ${SCR_ELEM_I32}`);
+    const int32Slots = B.newLabel("elem.i32");
+    const doubleSlots = B.newLabel("elem.f64");
+    const join = B.newLabel("elem.join");
+    B.condBr(isInt32, int32Slots, doubleSlots);
+    B.startBlock(int32Slots);
+    const int32Slot = B.tmp();
+    const int32 = B.tmp();
+    B.line(`${int32Slot} = getelementptr inbounds i32, ptr ${data}, i64 ${offset}`);
+    B.line(`${int32} = load i32, ptr ${int32Slot}`);
+    B.br(join);
+    B.startBlock(doubleSlots);
+    const isDouble = B.tmp();
+    B.line(`${isDouble} = icmp eq i8 ${kind}, ${SCR_ELEM_F64}`);
+    this.require(isDouble);
     B.line(`${slot} = getelementptr inbounds double, ptr ${data}, i64 ${offset}`);
     B.line(`${number} = load double, ptr ${slot}`);
-    return this.exactInt32(number);
+    const exact = this.exactInt32(number);
+    const doubleEnd = B.currentLabel();
+    B.br(join);
+    B.startBlock(join);
+    const value = B.tmp();
+    B.line(`${value} = phi i32 [ ${int32}, %${int32Slots} ], [ ${exact}, %${doubleEnd} ]`);
+    return value;
   }
 
   /** The int32 the double `number` equals bit for bit (never -0, NaN, a
@@ -1157,9 +1195,13 @@ class CloneEmitter {
         if (this.inlines(e)) return { name: this.emitInlineCall(e), wide: false };
         return { name: this.emitCall(e), wide: true };
       case "arrIntrinsic":
+        // `getNumber` reads an element like `arrayGet`: a missing one bails,
+        // and the ordinary body reads it as NaN.
+        if (e.method === "getNumber")
+          return { name: this.emitElement(e.receiver, e.args[0]!), wide: false };
         return { name: this.emitLength(this.emitArray(e.receiver)), wide: false };
       case "arrayGet":
-        return { name: this.emitElement(e), wide: false };
+        return { name: this.emitElement(e.arr, e.index), wide: false };
       case "unary": {
         const operand = this.narrow(this.emitNum(e.operand));
         const value = B.tmp();

@@ -34,7 +34,7 @@ interface RuntimePackUnit {
 }
 
 interface RuntimePackArchive extends RuntimePackArtifact {
-  id: "quickjs" | "libregexp" | "zlib" | "mbedtls";
+  id: "quickjs" | "libregexp" | "zlib" | "brotli" | "mbedtls";
   predicate: RuntimePredicate;
 }
 
@@ -80,7 +80,26 @@ export interface RuntimePackManifest {
 
 export interface RuntimeFeatureSet extends NativeLinkFeatures {
   workers: boolean;
+  youngNursery: boolean;
   eventTarget: boolean;
+  wasm: boolean;
+  dynTier: boolean;
+  streamDyn: boolean;
+  handleProps: boolean;
+  declAdopt: boolean;
+  typeOrigins: boolean;
+  dynForAwait: boolean;
+  eventsOnceSignal: boolean;
+  mime: boolean;
+  largePages: boolean;
+  utilTiming: boolean;
+  dynBuffer: boolean;
+  builtinValues: boolean;
+  computedRequire: boolean;
+  warningReplace: boolean;
+  stdioExtended: boolean;
+  brotli: boolean;
+  moduleNamespace: boolean;
   nativeFetch: boolean;
   netEffective: boolean;
   httpEffective: boolean;
@@ -266,7 +285,26 @@ export function effectiveRuntimeFeatures(
   return {
     ...features,
     workers: features.workers === true,
+    youngNursery: features.youngNursery === true,
     eventTarget: features.eventTarget === true,
+    wasm: features.wasm === true,
+    dynTier: features.dynTier === true,
+    streamDyn: features.streamDyn === true,
+    handleProps: features.handleProps === true,
+    declAdopt: features.declAdopt === true,
+    typeOrigins: features.typeOrigins === true,
+    dynForAwait: features.dynForAwait === true,
+    eventsOnceSignal: features.eventsOnceSignal === true,
+    mime: features.mime === true,
+    largePages: features.largePages === true,
+    utilTiming: features.utilTiming === true,
+    dynBuffer: features.dynBuffer === true,
+    builtinValues: features.builtinValues === true,
+    computedRequire: features.computedRequire === true,
+    warningReplace: features.warningReplace === true,
+    stdioExtended: features.stdioExtended === true,
+    brotli: features.brotli === true,
+    moduleNamespace: features.moduleNamespace === true,
     nativeFetch,
     netEffective,
     httpEffective,
@@ -363,6 +401,19 @@ export function runtimePackFlavorKey(
   return optimized;
 }
 
+/** The units a flavor links for `features`, each with its selected
+ * variant. Variants of one unit can share an artifact file (the pack stores
+ * identical objects once), so a variant is identified by its unit and id,
+ * not by its path. */
+export function selectedRuntimeUnits(
+  flavor: RuntimePackFlavorManifest,
+  features: RuntimeFeatureSet,
+): { source: string; variant: RuntimePackVariant }[] {
+  return flavor.runtime_units
+    .filter((unit) => evaluateRuntimePredicate(unit.predicate, features))
+    .map((unit) => ({ source: unit.source, variant: selectVariant(unit, features) }));
+}
+
 /** Selection is deterministic and independent of installation paths. Both
  * hosts verify and privately stage exactly these artifacts before linking. */
 export function selectRuntimePackArtifacts(
@@ -384,9 +435,7 @@ export function selectRuntimePackArtifacts(
     );
   return {
     features,
-    runtime: selectedFlavor.runtime_units
-      .filter((unit) => evaluateRuntimePredicate(unit.predicate, features))
-      .map((unit) => selectVariant(unit, features)),
+    runtime: selectedRuntimeUnits(selectedFlavor, features).map(({ variant }) => variant),
     archives: manifest.archives.filter((archive) =>
       evaluateRuntimePredicate(archive.predicate, features),
     ),

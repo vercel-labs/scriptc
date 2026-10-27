@@ -1,5 +1,11 @@
-`process.argv[0]` is `"scriptc"`, `process.argv[1]` is the binary's path, and program arguments begin at index 2. `process.version` and `process.versions.node` report the Node.js release the runtime is verified against.
+`process.argv[0]` is `"scriptc"`, `process.argv[1]` is the binary's path, and program arguments begin at index 2.
+In programs that use `node:test`, a leading `--test-update-snapshots` argument is Node's snapshot update flag: it is kept out of `process.argv` and appears in `process.execArgv`, which is otherwise `[]`.
+`process.version` and `process.versions.node` report the Node.js release the runtime is verified against.
 
-Uncaught exceptions print `Uncaught <value>` to stderr instead of Node.js's source excerpt and stack-trace block; thrown strings and numbers print their value. Exit codes and output written before the exception are preserved. Runtime errors expose `message` and Node's `code`, but not `errno`, `syscall`, or `path`.
+Uncaught exceptions print `Uncaught <value>` to stderr instead of Node.js's source excerpt and stack-trace block; thrown strings and numbers print their value.
+Exit codes and output written before the exception are preserved.
+Runtime errors expose `message` and Node's `code` as typed members.
+The other own properties Node gives them, such as a system error's `errno`, `syscall`, and `path`, a child process error's `status`, `stdout`, and `stderr`, or an assertion error's `actual` and `expected`, are readable through an untyped view of the error (for example a cast of a caught value) and appear in `util.inspect` output.
 
-Errors carry no stack frames. `console.log` and `util.inspect` print an Error in Node's stackless form, `[TypeError: message]`, where Node prints `TypeError: message` followed by stack frames; the two agree when `Error.stackTraceLimit` is `0`.
+Errors carry no stack frames.
+`console.log` and `util.inspect` print an Error in Node's stackless form, `[TypeError: message]`, where Node prints `TypeError: message` followed by stack frames; the two agree when `Error.stackTraceLimit` is `0`.

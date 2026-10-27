@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/stream-completion-callback-error.ts"
+ ],
+ "diags": []
+}

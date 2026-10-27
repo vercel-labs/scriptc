@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/log-lines.ts",
+  "args": [
+    "4"
+  ]
+}

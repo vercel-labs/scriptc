@@ -41,7 +41,10 @@ test.runIf(process.arch === "x64" || process.arch === "arm64")(
   async () => {
     const llvm = await emit(source, "llvm");
     const body = /^define internal double @sc_bf_count\([^]*?^}/m.exec(llvm)?.[0] ?? "";
-    expect(body).toMatch(/= load i64, ptr %\S+(, !tbaa !\d+)?, !range !\{i64 0, i64 4294967296\}/);
+    // The length is an i32 field: its zero extension carries the range.
+    expect(body).toMatch(
+      /(%\S+) = load i32, ptr %\S+(, !tbaa !\d+)?\n\s*%\S+ = zext i32 \1 to i64/,
+    );
   },
 );
 
@@ -49,7 +52,9 @@ test.runIf(process.arch === "x64")(
   "a length used as an index is not converted to double and back",
   async () => {
     const asm = await emit(source, "asm");
-    const body = /^sc_bf_count:[^]*?\.cfi_endproc/m.exec(asm)?.[0] ?? "";
-    expect(body).not.toMatch(/cvtsi2sd|cvttsd2si/);
+    // `parameters[length - 1]` loads from data + length * 8 - 8: the index
+    // stays the integer length, folded into the address (whether or not
+    // `count` is inlined into its callers).
+    expect(asm).toMatch(/movq\t-8\(%r\w+,%r\w+,8\), %r\w+/);
   },
 );

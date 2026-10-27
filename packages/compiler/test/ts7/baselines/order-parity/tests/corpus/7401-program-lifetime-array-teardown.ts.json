@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7401-program-lifetime-array-teardown.ts"
+ ],
+ "diags": []
+}

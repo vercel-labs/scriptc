@@ -71,7 +71,7 @@ describe("interface method dispatch", () => {
   test("calls through an interface reach the implementing methods with typed values", async () => {
     const llvm = await emittedLlvm("direct", shapes(""));
     const run = bodies(llvm, "sc_bf_run");
-    expect(run).toMatch(/call double @sc_bf__x25_dyn_class_protocol_\d+/);
+    expect(run).toMatch(/(?:call|invoke) double @sc_bf__x25_dyn_class_protocol_\d+/);
     expect(run).not.toContain("@scr_dyn_call");
     expect(run).not.toContain("@sc_bf__x25_dyn_class_property_");
     const dispatch = llvm.slice(llvm.indexOf("; %dyn.class.protocol.0"));
@@ -90,7 +90,7 @@ describe("interface method dispatch", () => {
 console.log(sum([circle, new Rect(1)]));`),
     );
     const sum = bodies(llvm, "sc_bf_sum");
-    expect(sum).toMatch(/call double @sc_bf__x25_dyn_class_protocol_\d+/);
+    expect(sum).toMatch(/(?:call|invoke) double @sc_bf__x25_dyn_class_protocol_\d+/);
     expect(sum).not.toContain("@scr_dyn_iterator");
     expect(sum).not.toContain("@sc_bf__x25_dyn_class_computed_");
   });

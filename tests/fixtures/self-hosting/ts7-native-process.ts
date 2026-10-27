@@ -1,6 +1,9 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { NativeTs7Process } from "../../../packages/compiler/src/frontend/ts7/native-process.js";
+import {
+  attachNativeTs7Process,
+  NativeTs7Process,
+} from "../../../packages/compiler/src/frontend/ts7/native-process.js";
 import { createNativeTs7Api } from "../../../packages/compiler/src/frontend/ts7/native-api.js";
 import { Ts7RpcClient } from "../../../packages/compiler/src/frontend/ts7/rpc-client.js";
 import { Ts7Wire } from "../../../packages/compiler/src/frontend/ts7/rpc-wire.js";
@@ -95,12 +98,44 @@ function checkTransport(executable: string): void {
   console.log("native transport passed");
 }
 
+function readLine(connection: NativeTs7Process): string {
+  const byte = new Uint8Array(1);
+  let line = "";
+  for (;;) {
+    check(connection.read(byte, 0, 1) === 1, "shared server line");
+    if (byte[0] === 10) return line;
+    line += String.fromCharCode(byte[0]!);
+  }
+}
+
+// The stand-in server (ts7-process-child.test.c, mode "listen") answers each
+// client with its number, its socket and idle time, and its memory limit.
+function checkShared(executable: string): void {
+  const first = attachNativeTs7Process("server", executable, "listen");
+  check(first !== null, "shared server started");
+  check(readLine(first!) === "client 1", "first client");
+  check(readLine(first!).endsWith("/scriptc/server.sock 300"), "listen arguments");
+  check(readLine(first!) === "2048", "memory limit");
+  check(attachNativeTs7Process("server", executable, "listen") === null, "shared server in use");
+  first!.close();
+  first!.close();
+  const second = attachNativeTs7Process("server", executable, "listen");
+  check(second !== null && readLine(second) === "client 2", "shared server reused");
+  second!.close();
+  check(attachNativeTs7Process("old", executable, "listen-exit") === null, "server without --listen");
+  console.log("native shared server passed");
+}
+
 const executable = process.argv[2]!;
 const directory = process.argv[3]!;
 const report = process.argv[4]!;
 const mode = process.argv[5] ?? "client";
 if (mode === "transport") {
   checkTransport(executable);
+} else if (mode === "shared") {
+  checkShared(executable);
+} else if (mode === "api") {
+  checkApi(executable, directory);
 } else if (mode === "exit" || mode === "normal-exit") {
   const child = new NativeTs7Process(executable, "stall");
   const byte = new Uint8Array(1);

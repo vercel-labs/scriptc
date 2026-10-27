@@ -1,0 +1,163 @@
+/* The members Node 24 gives typed arrays and Buffers: every string-keyed
+ * property name on their prototype chains (Object.getOwnPropertyNames of
+ * each prototype), Object.prototype included. A typed array or Buffer in a
+ * compiled program is always one of these built-in kinds (programs cannot
+ * subclass them, add own properties to them or change their prototypes), so
+ * a name outside these lists reads as undefined there, as in Node. */
+
+/** %TypedArray%.prototype and Object.prototype. */
+const TYPED_ARRAY_CHAIN = new Set<string>([
+  "__defineGetter__",
+  "__defineSetter__",
+  "__lookupGetter__",
+  "__lookupSetter__",
+  "__proto__",
+  "at",
+  "buffer",
+  "byteLength",
+  "byteOffset",
+  "constructor",
+  "copyWithin",
+  "entries",
+  "every",
+  "fill",
+  "filter",
+  "find",
+  "findIndex",
+  "findLast",
+  "findLastIndex",
+  "forEach",
+  "hasOwnProperty",
+  "includes",
+  "indexOf",
+  "isPrototypeOf",
+  "join",
+  "keys",
+  "lastIndexOf",
+  "length",
+  "map",
+  "propertyIsEnumerable",
+  "reduce",
+  "reduceRight",
+  "reverse",
+  "set",
+  "slice",
+  "some",
+  "sort",
+  "subarray",
+  "toLocaleString",
+  "toReversed",
+  "toSorted",
+  "toString",
+  "valueOf",
+  "values",
+  "with",
+]);
+
+/** Each element kind's own prototype adds only BYTES_PER_ELEMENT. */
+const ELEMENT_KIND_MEMBER = "BYTES_PER_ELEMENT";
+
+/** Buffer.prototype, beyond Uint8Array.prototype's chain. */
+const BUFFER_PROTOTYPE = new Set<string>([
+  "asciiSlice",
+  "asciiWrite",
+  "base64Slice",
+  "base64Write",
+  "base64urlSlice",
+  "base64urlWrite",
+  "compare",
+  "copy",
+  "equals",
+  "hexSlice",
+  "hexWrite",
+  "inspect",
+  "latin1Slice",
+  "latin1Write",
+  "offset",
+  "parent",
+  "readBigInt64BE",
+  "readBigInt64LE",
+  "readBigUInt64BE",
+  "readBigUInt64LE",
+  "readBigUint64BE",
+  "readBigUint64LE",
+  "readDoubleBE",
+  "readDoubleLE",
+  "readFloatBE",
+  "readFloatLE",
+  "readInt16BE",
+  "readInt16LE",
+  "readInt32BE",
+  "readInt32LE",
+  "readInt8",
+  "readIntBE",
+  "readIntLE",
+  "readUInt16BE",
+  "readUInt16LE",
+  "readUInt32BE",
+  "readUInt32LE",
+  "readUInt8",
+  "readUIntBE",
+  "readUIntLE",
+  "readUint16BE",
+  "readUint16LE",
+  "readUint32BE",
+  "readUint32LE",
+  "readUint8",
+  "readUintBE",
+  "readUintLE",
+  "swap16",
+  "swap32",
+  "swap64",
+  "toJSON",
+  "ucs2Slice",
+  "ucs2Write",
+  "utf8Slice",
+  "utf8Write",
+  "write",
+  "writeBigInt64BE",
+  "writeBigInt64LE",
+  "writeBigUInt64BE",
+  "writeBigUInt64LE",
+  "writeBigUint64BE",
+  "writeBigUint64LE",
+  "writeDoubleBE",
+  "writeDoubleLE",
+  "writeFloatBE",
+  "writeFloatLE",
+  "writeInt16BE",
+  "writeInt16LE",
+  "writeInt32BE",
+  "writeInt32LE",
+  "writeInt8",
+  "writeIntBE",
+  "writeIntLE",
+  "writeUInt16BE",
+  "writeUInt16LE",
+  "writeUInt32BE",
+  "writeUInt32LE",
+  "writeUInt8",
+  "writeUIntBE",
+  "writeUIntLE",
+  "writeUint16BE",
+  "writeUint16LE",
+  "writeUint32BE",
+  "writeUint32LE",
+  "writeUint8",
+  "writeUintBE",
+  "writeUintLE",
+]);
+
+/** Whether every value a typed array of this element kind can hold has the
+ * member `name` (true), none has it (false), or it depends on the value
+ * (null): a Uint8Array may be a Buffer, whose prototype adds members. */
+export function typedArrayHasMember(name: string, mayBeBuffer: boolean): boolean | null {
+  if (name === ELEMENT_KIND_MEMBER || TYPED_ARRAY_CHAIN.has(name)) return true;
+  return mayBeBuffer && BUFFER_PROTOTYPE.has(name) ? null : false;
+}
+
+/** Whether `name` is absent from the prototype chain of every value a
+ * typed array of this element kind can hold. */
+export function typedArrayLacksMember(name: string, mayBeBuffer: boolean): boolean {
+  return typedArrayHasMember(name, mayBeBuffer) === false;
+}

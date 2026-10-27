@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8178-rsa-pss-auto-min-salt.cjs"
+ ],
+ "diags": []
+}

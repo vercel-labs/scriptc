@@ -1,8 +1,7 @@
-// The d/v flags are outside the native slice; .groups needs a
+// The d flag is outside the native slice; .groups needs a
 // statically-known regex. Named capture groups compile (corpus 2604).
 // Method values and regex union arms remain unsupported; arrays compile.
 const indices = /cat/d;
-const sets = /[\p{L}]/v;
 const asValue = /x/.test;
 const maybe: RegExp | undefined = /a/;
 function readGroups(re: RegExp): void {

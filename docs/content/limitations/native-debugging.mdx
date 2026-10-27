@@ -1,5 +1,11 @@
-Executable builds with `--optimization=dev` support source breakpoints and native stack frames for compiled TypeScript and JavaScript. LLVM builds include source names and lexical scopes for locals, parameters, captured bindings, and module globals. Release builds and builds with `--strip` omit these source mappings. On macOS, executable builds produce an adjacent `.dSYM` bundle using the Command Line Tools' `dsymutil`.
+Executable builds with `--optimization=dev` support source breakpoints and native stack frames for compiled TypeScript and JavaScript.
+LLVM builds include source names and lexical scopes for locals, parameters, captured bindings, and module globals.
+Release builds and builds with `--strip` omit these source mappings.
+On macOS, executable builds produce an adjacent `.dSYM` bundle using the Command Line Tools' `dsymutil`.
 
-Debugger values use native representations. Numbers and booleans display directly. Strings expose their `ScrStr` layout, including UTF-8 `data` and byte `len`; tagged unions expose their `tag` and `slot` fields. Other heap values and scalar bindings captured before initialization can appear as opaque pointers.
+Debugger values use native representations.
+Numbers and booleans display directly.
+Strings expose their `ScrStr` layout, including UTF-8 `data` and byte `len`; tagged unions expose their `tag` and `slot` fields.
+Other heap values and scalar bindings captured before initialization can appear as opaque pointers.
 
 Debuggers can't evaluate TypeScript expressions or format values as JavaScript objects.

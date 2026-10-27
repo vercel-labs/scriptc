@@ -1,3 +1,5 @@
+import { keyedHelperName } from "../stable-names.js";
+import { primitiveElement } from "../array-values.js";
 import { nodeThrowExpr, boolLit, countedFor, numLit, strLit, varRef } from "../../../ir/build.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
@@ -21,6 +23,7 @@ import {
   isPrimitiveCollectionKey,
   isUnitType,
   typeEquals,
+  UNDEFINED_T,
 } from "../../../ir/ir.js";
 import {
   COLLECTION_ITERATOR_METHODS,
@@ -41,6 +44,10 @@ import {
 } from "../collection-ingestion.js";
 import { strCharsCall } from "./array-construction.js";
 import { arrayElementRead } from "./array-iteration.js";
+import { isMimeParamsIterable } from "../builtins/mime.js";
+import { isSearchParamsIterable } from "../builtins/url.js";
+import { classGeneratorIterable } from "../class-iterables.js";
+import { generatorDrain, lowerCollectionIteratorValue } from "../iterator-adapters.js";
 
 /** Ambient Map method calls. `get`/`set`/`has`/`delete`/`clear` lower to
  * mapIntrinsic; `forEach` desugars to a direct call of a synthetic loop
@@ -57,7 +64,7 @@ export function lowerMapMethodCall(
   if (!MAP_METHODS.has(name)) return null;
   let receiverIr = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
   let probedUntyped = false;
-  if (receiverIr?.kind !== "map" && isJsSourceFile(access.getSourceFile())) {
+  if (receiverIr?.kind !== "map" && isJsSourceFile(ts.getSourceFileOfNode(access))) {
     const probed = tryLowerExpression(lowerer, access.expression);
     if (probed?.type.kind === "map") {
       receiverIr = probed.type;
@@ -79,16 +86,16 @@ export function lowerMapMethodCall(
     );
   }
   // The lib declares a thisArg parameter on forEach; unlowered — fenced.
-  if (name === "forEach" && call.arguments.length !== 1) {
+  if (name === "forEach" && call.arguments.nodes.length !== 1) {
     lowerer.noLowering(
-      `.forEach with ${call.arguments.length} arguments`,
+      `.forEach with ${call.arguments.nodes.length} arguments`,
       call,
       "the thisArg parameter has no lowering — use an arrow function",
     );
   }
 
   if (name === "get") {
-    const k = lowerer.lowerCollectionKey(call.arguments[0]!, receiverIr.key);
+    const k = lowerer.lowerCollectionKey(call.arguments.nodes[0]!, receiverIr.key);
     // The checker types the call `V | undefined`, which interns the
     // result union. `undefined` sorts LAST among all possible arm
     // typeKeys, so when V is itself a union its arms keep their tags in
@@ -108,11 +115,11 @@ export function lowerMapMethodCall(
     return { kind: "mapIntrinsic", method: "get", receiver, args: [k], type, loc };
   }
   if (name === "set") {
-    const k = lowerer.lowerCollectionKey(call.arguments[0]!, receiverIr.key);
+    const k = lowerer.lowerCollectionKey(call.arguments.nodes[0]!, receiverIr.key);
     const v =
       receiverIr.value.kind === "dyn"
-        ? lowerer.lowerCollectionKey(call.arguments[1]!, receiverIr.value)
-        : lowerer.lowerExprExpecting(call.arguments[1]!, receiverIr.value);
+        ? lowerer.lowerCollectionKey(call.arguments.nodes[1]!, receiverIr.value)
+        : lowerer.lowerExprExpecting(call.arguments.nodes[1]!, receiverIr.value);
     // A discarded set result needs no second receiver read or identity
     // owner. Keep the ordinary operand order: receiver, key, then value.
     let parent: ts.Node | undefined = call.parent;
@@ -145,7 +152,7 @@ export function lowerMapMethodCall(
     };
   }
   if (name === "has" || name === "delete") {
-    const k = lowerer.lowerCollectionKey(call.arguments[0]!, receiverIr.key);
+    const k = lowerer.lowerCollectionKey(call.arguments.nodes[0]!, receiverIr.key);
     return { kind: "mapIntrinsic", method: name, receiver, args: [k], type: BOOL, loc };
   }
   if (name === "clear") {
@@ -229,7 +236,7 @@ function lowerMapIterDrainCall(
   const key = `${method}:${typeKey(mapT.key)}:${typeKey(mapT.value)}`;
   let helper = lowerer.mapHofHelpers.get(key);
   if (!helper) {
-    helper = `%map.${method}.${lowerer.mapHofHelpers.size}`;
+    helper = keyedHelperName(lowerer, `%map.${method}`, key);
     lowerer.mapHofHelpers.set(key, helper);
     lowerer.liftedFns.push(buildMapIterDrainFn(helper, mapT, method, elemT, tupleT, loc));
   }
@@ -345,7 +352,7 @@ export function mapEntriesArray(lowerer: Lowerer, receiver: IrExpr): IrExpr {
   const key = `entries:${typeKey(mapT.key)}:${typeKey(mapT.value)}`;
   let helper = lowerer.mapHofHelpers.get(key);
   if (!helper) {
-    helper = `%map.entries.${lowerer.mapHofHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%map.entries", key);
     lowerer.mapHofHelpers.set(key, helper);
     lowerer.liftedFns.push(
       buildMapIterDrainFn(helper, mapT, "entries", tupleT, tupleT, receiver.loc),
@@ -424,7 +431,7 @@ export function lowerCollectionSpread(
         loc,
       },
       then: entries,
-      else_: nodeThrowExpr(1, "", `${node.getText()} is not iterable`, entries.type, loc),
+      else_: nodeThrowExpr(1, "", `${ts.getTextOfNode(node)} is not iterable`, entries.type, loc),
       type: entries.type,
       loc,
     },
@@ -451,14 +458,14 @@ export function lowerMapForEachCall(
   bindUntyped = false,
 ): IrExpr {
   const loc = locOf(call);
-  const argNode = call.arguments[0];
+  const argNode = call.arguments.nodes[0];
   if (!argNode) lowerer.unsupported("SC1090", call, "this call form"); // tsc-guarded
   const previousRuntime: { symbol: ts.Symbol; type: IrType | undefined }[] = [];
   const previousImplicit = lowerer.implicitParamTypes;
   let contextualTs: Map<ts.Symbol, ts.Type> | null = null;
   if (bindUntyped && (ts.isArrowFunction(argNode) || ts.isFunctionExpression(argNode))) {
     const expected = [mapT.value, mapT.key];
-    argNode.parameters.slice(0, 2).forEach((param, i) => {
+    argNode.parameters.nodes.slice(0, 2).forEach((param, i) => {
       const type = expected[i];
       if (
         type === undefined ||
@@ -516,11 +523,60 @@ export function lowerMapForEachCall(
   const key = `${typeKey(mapT.key)}:${typeKey(mapT.value)}:${arity}:${typeKey(fnRet)}`;
   let helper = lowerer.mapHofHelpers.get(key);
   if (!helper) {
-    helper = `%map.forEach.${lowerer.mapHofHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%map.forEach", key);
     lowerer.mapHofHelpers.set(key, helper);
     lowerer.liftedFns.push(buildCollectionForEachFn(helper, mapT, arity, fnRet, loc));
   }
   return { kind: "call", callee: helper, args: [receiver, fnArg], type: VOID, loc };
+}
+
+/** True when an arrow's expression body is lowered as a statement: the
+ * function being lowered returns void (`xs.forEach((x) => s.add(x))`) and
+ * the arrow's contextual signature returns void. An arrow that returns the
+ * Set (`(n) => s.add(n)`, a `map` callback) or a body inlined into a
+ * caller that reads its value is not. */
+function setAddArrowResultVoid(lowerer: Lowerer, arrow: ts.ArrowFunction): boolean {
+  if (lowerer.ctx.returnType.kind !== "void") return false;
+  const contextual = lowerer.checker.getContextualType(arrow);
+  if (contextual === undefined) return false;
+  const signatures = lowerer.checker.getCallSignatures(
+    lowerer.checker.getNonNullableType(contextual),
+  );
+  return (
+    signatures.length === 1 &&
+    (lowerer.checker.getReturnTypeOfSignature(signatures[0]!).flags & ts.TypeFlags.Void) !== 0
+  );
+}
+
+/** True when nothing reads an add() call's result: an expression
+ * statement, the expression body of an arrow whose result is void, a `void`
+ * operand, a for header's initializer or incrementor, a comma's left
+ * operand, or a conditional or comma result that is itself discarded. */
+function setAddResultDiscarded(lowerer: Lowerer, call: ts.CallExpression): boolean {
+  let node: ts.Node = call;
+  for (;;) {
+    let parent = node.parent;
+    while (parent !== undefined && ts.isParenthesizedExpression(parent)) {
+      node = parent;
+      parent = parent.parent;
+    }
+    if (parent === undefined) return false;
+    if (ts.isExpressionStatement(parent) || ts.isVoidExpression(parent)) return true;
+    if (ts.isArrowFunction(parent))
+      return parent.body === node && setAddArrowResultVoid(lowerer, parent);
+    if (ts.isForStatement(parent))
+      return parent.initializer === node || parent.incrementor === node;
+    if (ts.isBinaryExpression(parent) && parent.operatorToken.kind === ts.SyntaxKind.CommaToken) {
+      if (parent.left === node) return true;
+      node = parent;
+      continue;
+    }
+    if (ts.isConditionalExpression(parent) && parent.condition !== node) {
+      node = parent;
+      continue;
+    }
+    return false;
+  }
 }
 
 /** Ambient Set method calls — Map's lowering with the value slot gone.
@@ -541,7 +597,7 @@ export function lowerSetMethodCall(
   // Set<union-of-signatures>, but the VALUE lowered as a real Set of
   // identity tokens (the new-Set probe) — the lowered receiver's type
   // is the honest dispatch key.
-  if (receiverIr?.kind !== "set" && isJsSourceFile(access.getSourceFile())) {
+  if (receiverIr?.kind !== "set" && isJsSourceFile(ts.getSourceFileOfNode(access))) {
     const probed = tryLowerExpression(lowerer, access.expression);
     if (probed?.type.kind === "set") {
       receiverIr = probed.type;
@@ -557,8 +613,8 @@ export function lowerSetMethodCall(
   const value = lowerer.lowerExpr(access.expression);
   const receiver =
     lowerer.runtimeOptionalPropertyReceiver(access.expression, value, receiverIr, name) ?? value;
-  // The lib's `add` returns the Set (chaining typechecks); the lowered
-  // add is a void statement — fence chained receivers like Map's set.
+  // A used add() result lowers to its receiver (below), so a chained
+  // receiver is a Set; anything else lowering to a non-Set stays fenced.
   if (receiver.type.kind !== "set") {
     lowerer.noLowering(
       "chained Set method calls",
@@ -566,9 +622,9 @@ export function lowerSetMethodCall(
       "the lowered add() produces no value — call each add(v) as its own statement",
     );
   }
-  if (name === "forEach" && call.arguments.length !== 1) {
+  if (name === "forEach" && call.arguments.nodes.length !== 1) {
     lowerer.noLowering(
-      `.forEach with ${call.arguments.length} arguments`,
+      `.forEach with ${call.arguments.nodes.length} arguments`,
       call,
       "the thisArg parameter has no lowering — use an arrow function",
     );
@@ -580,11 +636,32 @@ export function lowerSetMethodCall(
     return lowerSetCombineCall(lowerer, call, name, receiver, receiverIr);
   }
   if (name === "add") {
-    const v = lowerer.lowerCollectionKey(call.arguments[0]!, receiverIr.elem);
-    return { kind: "setIntrinsic", method: "add", receiver, args: [v], type: VOID, loc };
+    const v = lowerer.lowerCollectionKey(call.arguments.nodes[0]!, receiverIr.elem);
+    if (setAddResultDiscarded(lowerer, call)) {
+      return { kind: "setIntrinsic", method: "add", receiver, args: [v], type: VOID, loc };
+    }
+    // add() returns its Set: a used result (`s.add(a).add(b)`,
+    // `s.add(x) === s`) reads the receiver once into a slot, adds, and
+    // answers the slot, as Map's set() does.
+    const slot = lowerer.declareHiddenLocal("%setAddReceiver", receiver.type);
+    const ref = varRef(slot.id, receiver.type, loc);
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: slot.id, init: receiver, loc },
+        {
+          kind: "exprStmt",
+          expr: { kind: "setIntrinsic", method: "add", receiver: ref, args: [v], type: VOID, loc },
+          loc,
+        },
+      ],
+      result: ref,
+      type: receiver.type,
+      loc,
+    };
   }
   if (name === "has" || name === "delete") {
-    const v = lowerer.lowerCollectionKey(call.arguments[0]!, receiverIr.elem);
+    const v = lowerer.lowerCollectionKey(call.arguments.nodes[0]!, receiverIr.elem);
     return { kind: "setIntrinsic", method: name, receiver, args: [v], type: BOOL, loc };
   }
   if (name === "clear") {
@@ -605,7 +682,7 @@ export function lowerSetForEachCall(
   setT: IrType & { kind: "set" },
 ): IrExpr {
   const loc = locOf(call);
-  const argNode = call.arguments[0];
+  const argNode = call.arguments.nodes[0];
   if (!argNode) lowerer.unsupported("SC1090", call, "this call form"); // tsc-guarded
   const fnArg = lowerer.lowerExpr(argNode);
   if (
@@ -620,7 +697,7 @@ export function lowerSetForEachCall(
   const key = `${typeKey(setT.elem)}:${arity}:${typeKey(fnRet)}`;
   let helper = lowerer.setHofHelpers.get(key);
   if (!helper) {
-    helper = `%set.forEach.${lowerer.setHofHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%set.forEach", key);
     lowerer.setHofHelpers.set(key, helper);
     lowerer.liftedFns.push(buildCollectionForEachFn(helper, setT, arity, fnRet, loc));
   }
@@ -643,10 +720,10 @@ function lowerSetCombineCall(
   setT: IrType & { kind: "set" },
 ): IrExpr {
   const loc = locOf(call);
-  const argNode = call.arguments[0];
-  if (call.arguments.length !== 1 || argNode === undefined || ts.isSpreadElement(argNode)) {
+  const argNode = call.arguments.nodes[0];
+  if (call.arguments.nodes.length !== 1 || argNode === undefined || ts.isSpreadElement(argNode)) {
     lowerer.noLowering(
-      `Set.prototype.${name} with ${call.arguments.length} arguments`,
+      `Set.prototype.${name} with ${call.arguments.nodes.length} arguments`,
       call,
       "exactly one Set argument is the supported form",
     );
@@ -672,7 +749,7 @@ function lowerSetCombineCall(
   const key = `${name}:${typeKey(setT.elem)}:${typeKey(otherT)}`;
   let helper = lowerer.setHofHelpers.get(key);
   if (!helper) {
-    helper = `%set.${name}.${lowerer.setHofHelpers.size}`;
+    helper = keyedHelperName(lowerer, `%set.${name}`, key);
     lowerer.setHofHelpers.set(key, helper);
     lowerer.liftedFns.push(buildSetCombineFn(helper, name, setT, otherT, loc));
   }
@@ -917,8 +994,10 @@ export function lowerSetSeedNew(
   }
   // Constructor contextual types include Iterable<T>, which has no value
   // representation. Build a literal at the actual Set element ABI instead.
-  if (ts.isArrayLiteralExpression(node) && !node.elements.some(ts.isSpreadElement)) {
-    const elems = node.elements.map((element) => lowerer.lowerCollectionKey(element, setT.elem));
+  if (ts.isArrayLiteralExpression(node) && !node.elements.nodes.some(ts.isSpreadElement)) {
+    const elems = node.elements.nodes.map((element) =>
+      lowerer.lowerCollectionKey(element, setT.elem),
+    );
     return {
       kind: "setNew",
       seed: { kind: "arrayLit", elems, type: arrayOf(setT.elem), loc },
@@ -968,7 +1047,7 @@ export function lowerSetSeedNew(
         {
           kind: "libCall",
           fn: "dyn.iterPack",
-          args: [source, strLit(node.getText(), loc)],
+          args: [source, strLit(ts.getTextOfNode(node), loc)],
           type: DYN,
           loc,
         },
@@ -1045,13 +1124,32 @@ function setFromSeedValue(
         }
       : null;
   }
+  // A generator, or a class whose [Symbol.iterator] is a generator method:
+  // the Set takes every value it yields, in order.
+  const generator =
+    classGeneratorIterable(lowerer, source) ?? (source.type.kind === "generator" ? source : null);
+  if (generator) {
+    const drained = generatorDrain(lowerer, generator, setT.elem, loc);
+    return drained ? { kind: "setNew", seed: drained, type: setT, loc } : null;
+  }
   let seed: IrExpr;
   if (source.type.kind === "set" && typeEquals(source.type, setT)) {
     return { kind: "setIntrinsic", method: "clone", receiver: source, args: [], type: setT, loc };
   } else if (source.type.kind === "string" && setT.elem.kind === "string") {
-    seed = strCharsCall(lowerer, source, loc);
+    seed = strCharsCall(source, loc);
   } else if (source.type.kind === "array" && typeEquals(source.type.elem, setT.elem)) {
     seed = source;
+  } else if (
+    source.type.kind === "array" &&
+    primitiveElement(source.type.elem) &&
+    setT.elem.kind === "union" &&
+    lowerer.armTag(setT.elem.unionId, UNDEFINED_T) >= 0 &&
+    typeEquals(lowerer.stripUndefinedArm(setT.elem), source.type.elem)
+  ) {
+    // A `(T | undefined)[]` stores T elements: its present undefined
+    // elements copy as the Set's undefined.
+    seed = lowerer.coerceToExpected(source, arrayOf(setT.elem));
+    if (!typeEquals(seed.type, arrayOf(setT.elem))) return null;
   } else if (source.type.kind === "record") {
     const shape = lowerer.shapes.get(source.type.shapeId);
     if (!shape?.tuple || !shape.fields.every((field) => typeEquals(field.type, setT.elem)))
@@ -1152,8 +1250,8 @@ export function lowerMapSeedNew(
   }
   if (ts.isArrayLiteralExpression(argNode)) {
     if (
-      isJsSourceFile(argNode.getSourceFile()) &&
-      argNode.elements.some((entry) => !ts.isArrayLiteralExpression(entry))
+      isJsSourceFile(ts.getSourceFileOfNode(argNode)) &&
+      argNode.elements.nodes.some((entry) => !ts.isArrayLiteralExpression(entry))
     ) {
       return mapFromSeedValue(lowerer, lowerer.lowerExprExpecting(argNode, DYN), mapT);
     }
@@ -1172,6 +1270,11 @@ export function lowerMapSeedNew(
       lowerer.lowerArrayLiteral(argNode, { kind: "array", elem: tuple }),
       mapT,
     );
+  }
+  // new Map(sp) / new Map(sp.entries()): the checked-dynamic view's live
+  // pairs seed the map in order, and so do a MIMEParams's entries.
+  if (isSearchParamsIterable(lowerer, argNode) || isMimeParamsIterable(lowerer, argNode)) {
+    return mapFromSeedValue(lowerer, lowerer.lowerExprExpecting(argNode, DYN), mapT);
   }
   const input = collectionInput(lowerer, argNode);
   if (input) {
@@ -1238,6 +1341,35 @@ export function mapFromSeedValue(
         }
       : null;
   }
+  // A generator of entries, or a class whose [Symbol.iterator] is one: the
+  // Map takes every [key, value] pair it yields, in order.
+  const generator =
+    classGeneratorIterable(lowerer, seed) ?? (seed.type.kind === "generator" ? seed : null);
+  if (generator) {
+    const entry: IrType = {
+      kind: "record",
+      shapeId: lowerer.shapes.intern(
+        [
+          { name: "0", type: mapT.key },
+          { name: "1", type: mapT.value },
+        ],
+        true,
+      ),
+    };
+    const drained = generatorDrain(lowerer, generator, entry, loc);
+    return drained ? mapFromSeedValue(lowerer, drained, mapT) : null;
+  }
+  // A Set of [key, value] pairs walks its values like a generator of them.
+  if (seed.type.kind === "set" && seed.type.elem.kind === "record") {
+    const walk = lowerCollectionIteratorValue(
+      lowerer,
+      seed,
+      "values",
+      { kind: "generator", yieldT: seed.type.elem, retT: VOID, nextT: UNDEFINED_T },
+      loc,
+    );
+    return walk ? mapFromSeedValue(lowerer, walk, mapT) : null;
+  }
   if (seed.type.kind === "map") {
     if (!typeEquals(seed.type, mapT)) return null;
     return { kind: "mapIntrinsic", method: "clone", receiver: seed, args: [], type: mapT, loc };
@@ -1251,7 +1383,7 @@ export function mapFromSeedValue(
     const key = `checked-seed:${typeKey(mapT)}`;
     let name = lowerer.mapHofHelpers.get(key);
     if (!name) {
-      name = `%map.checkedSeed.${lowerer.mapHofHelpers.size}`;
+      name = keyedHelperName(lowerer, "%map.checkedSeed", key);
       lowerer.mapHofHelpers.set(key, name);
       const source = varRef("source.0", DYN, loc);
       const entries = varRef("entries.0", DYN, loc);
@@ -1351,7 +1483,7 @@ export function mapFromSeedValue(
   const key = `seed:${typeKey(mapT.key)}:${typeKey(mapT.value)}:${elem.shapeId}`;
   let helper = lowerer.mapHofHelpers.get(key);
   if (!helper) {
-    helper = `%map.seed.${lowerer.mapHofHelpers.size}`;
+    helper = keyedHelperName(lowerer, "%map.seed", key);
     lowerer.mapHofHelpers.set(key, helper);
     lowerer.liftedFns.push(buildMapSeedFn(mapT, helper, seed.type, elem, kT, vT, loc));
   }

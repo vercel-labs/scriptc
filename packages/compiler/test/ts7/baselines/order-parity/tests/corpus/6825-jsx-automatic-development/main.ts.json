@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6825-jsx-automatic-development/runtime/jsx-dev-runtime.ts",
+  "<repo>/tests/corpus/6825-jsx-automatic-development/view.tsx",
+  "<repo>/tests/corpus/6825-jsx-automatic-development/main.ts"
+ ],
+ "diags": []
+}

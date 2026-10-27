@@ -10,7 +10,10 @@ import type {
 import type { LlvmEmitterContext } from "./expr-context.js";
 
 /** Field numbers of %ScrArr, which mirrors scr_runtime.h's ScrArr field for
- * field (its static assertions pin `cyc`, `filled` and `data`). */
+ * field (its static assertions pin `len`, `cap`, `cyc`, `spare`, `filled`
+ * and `data`). `len` and `cap` are i32 on every target; the dense states of
+ * an array with states (SCR_ARR_STATES in `spare`) end the allocation after
+ * the `cap` value slots at `data` (scrArrStates). */
 export const SCR_ARR_FIELD = {
   rc: 0,
   len: 1,
@@ -19,11 +22,108 @@ export const SCR_ARR_FIELD = {
   cyc: 4,
   spare: 5,
   filled: 6,
-  ops: 7,
-  data: 8,
-  present: 9,
-  ext: 10,
+  data: 7,
 } as const;
+
+/** The `spare` flag of a %ScrArr whose dense slots carry state bytes
+ * (SCR_ARR_STATES in scr_array.h). */
+export const SCR_ARR_STATES = 16;
+
+/** The `spare` flag of a frozen %ScrArr (SCR_ARR_FROZEN in scr_array.h). */
+export const SCR_ARR_FROZEN = 32;
+
+/** The bits of ScrClosure.function_kind (SCR_CLOSURE_KIND_* in
+ * scr_closure.h; runtime-registries.test.ts checks they agree). */
+export const CLOSURE_KIND = {
+  GENERATOR: 1,
+  ASYNC: 2,
+  OWN_PROTOTYPE: 4,
+  CHECKED_ADAPTER: 8,
+  RECEIVER_FREE: 16,
+} as const;
+
+/** Loads the i32 `len` or `cap` of a %ScrArr at `ptr` into `dest` as a
+ * size-type count. */
+export function loadArrCount(
+  host: Pick<LlvmEmitterContext, "B" | "sizeType">,
+  dest: string,
+  ptr: string,
+  attach = "",
+): void {
+  const B = host.B;
+  if (host.sizeType === "i32") {
+    B.line(`${dest} = load i32, ptr ${ptr}${attach}`);
+    return;
+  }
+  const raw = B.tmp();
+  B.line(`${raw} = load i32, ptr ${ptr}${attach}`);
+  B.line(`${dest} = zext i32 ${raw} to ${host.sizeType}`);
+}
+
+/** Stores the size-type count `value` (at most 2^32 - 1) into the i32 `len`
+ * or `cap` of a %ScrArr at `ptr`. */
+export function storeArrCount(
+  host: Pick<LlvmEmitterContext, "B" | "sizeType">,
+  value: string,
+  ptr: string,
+  attach = "",
+): void {
+  const B = host.B;
+  let narrow = value;
+  if (host.sizeType !== "i32") {
+    narrow = B.tmp();
+    B.line(`${narrow} = trunc ${host.sizeType} ${value} to i32`);
+  }
+  B.line(`store i32 ${narrow}, ptr ${ptr}${attach}`);
+}
+
+/** The end of the dense state bytes of a %ScrArr into `dest`
+ * (scr_arr_states_end): `cap` value slots of `width` bytes at `data`, then
+ * one state byte per slot in reverse slot order. `cap` is a size-type count. */
+export function scrArrStates(
+  host: Pick<LlvmEmitterContext, "B" | "sizeType">,
+  dest: string,
+  data: string,
+  cap: string,
+  width: number,
+): void {
+  host.B.line(
+    `${dest} = getelementptr inbounds [${width + 1} x i8], ptr ${data}, ${host.sizeType} ${cap}`,
+  );
+}
+
+/** The state byte of dense slot `offset` into `dest`, given the end of the
+ * states (scrArrStates): `end - 1 - offset`. */
+export function scrArrStatePtr(
+  host: Pick<LlvmEmitterContext, "B" | "sizeType">,
+  dest: string,
+  end: string,
+  offset: string,
+): void {
+  const B = host.B;
+  const back = B.tmp();
+  B.line(`${back} = xor ${host.sizeType} ${offset}, -1`);
+  B.line(`${dest} = getelementptr inbounds i8, ptr ${end}, ${host.sizeType} ${back}`);
+}
+
+/** The state byte of dense slot `offset` of a %ScrArr into `dest`, from its
+ * `data` and size-type `cap`: scrArrStates and scrArrStatePtr in one
+ * address computation, for paths that read a single state. */
+export function scrArrStateAt(
+  host: Pick<LlvmEmitterContext, "B" | "sizeType">,
+  dest: string,
+  data: string,
+  cap: string,
+  width: number,
+  offset: string,
+): void {
+  const B = host.B;
+  const back = B.tmp();
+  B.line(`${back} = xor ${host.sizeType} ${offset}, -1`);
+  B.line(
+    `${dest} = getelementptr inbounds [${width + 1} x i8], ptr ${data}, ${host.sizeType} ${cap}, ${host.sizeType} ${back}`,
+  );
+}
 
 /** Lines that decide whether the double `index` is an integer in
  * `[0, length)`, where `length` is an unsigned `sizeType` count, and give
@@ -62,6 +162,44 @@ export function exactIndexLines(
   }
   lines.push(`${below} = icmp ult i64 ${wide}, ${len64}`, `${ok} = and i1 ${integral}, ${below}`);
   return { lines, ok, wide };
+}
+
+/** exactIndexLines for the index `base + offset`, where `offset` is an
+ * integer of magnitude below 2^31: the round trip converts `base` instead of
+ * the sum, so accesses at several offsets from one base share the
+ * conversion. When `base` is an integer, the sum is in range exactly when
+ * the integer sum is (a length is at most 2^52, and a sum of 2^52 or more is
+ * out of range either way). A fractional `base` can still give an integer
+ * sum, as `1e-20 + 1` is 1, so `integral` false leaves the index to an
+ * exact check of the sum itself. */
+export function exactOffsetIndexLines(
+  base: string,
+  offset: number,
+  length: string,
+  sizeType: string,
+  tmp: () => string,
+): { lines: string[]; ok: string; wide: string; integral: string } {
+  const raw = tmp(),
+    integer = tmp(),
+    back = tmp(),
+    integral = tmp(),
+    wide = tmp(),
+    below = tmp(),
+    ok = tmp();
+  const lines = [
+    `${raw} = fptosi double ${base} to i64`,
+    `${integer} = freeze i64 ${raw}`,
+    `${back} = sitofp i64 ${integer} to double`,
+    `${integral} = fcmp oeq double ${back}, ${base}`,
+    `${wide} = add i64 ${integer}, ${offset}`,
+  ];
+  let len64 = length;
+  if (sizeType !== "i64") {
+    len64 = tmp();
+    lines.push(`${len64} = zext ${sizeType} ${length} to i64`);
+  }
+  lines.push(`${below} = icmp ult i64 ${wide}, ${len64}`, `${ok} = and i1 ${integral}, ${below}`);
+  return { lines, ok, wide, integral };
 }
 
 /** User-controlled text embedded after an LLVM `;` comment marker. Preserve
@@ -159,6 +297,7 @@ export const BYTES_ELEM_NUM: Record<IrBytesElem, number> = {
   u16: 6,
   i16: 7,
   u8c: 8,
+  f16: 9,
 };
 
 /** The payload marker of an ABSENT record field slot (IR fieldAbsent): the

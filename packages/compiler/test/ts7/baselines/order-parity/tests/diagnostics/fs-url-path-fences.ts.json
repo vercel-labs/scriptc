@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/fs-url-path-fences.ts"
+ ],
+ "diags": []
+}

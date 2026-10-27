@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7487-namespace-spread-untyped/shapes.js",
+  "<repo>/tests/corpus/7487-namespace-spread-untyped/extra.js",
+  "<repo>/tests/corpus/7487-namespace-spread-untyped/all.js",
+  "<repo>/tests/corpus/7487-namespace-spread-untyped/main.js"
+ ],
+ "diags": []
+}

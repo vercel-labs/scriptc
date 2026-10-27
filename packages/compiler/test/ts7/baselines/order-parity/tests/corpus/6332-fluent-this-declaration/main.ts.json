@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6332-fluent-this-declaration/main.ts"
+ ],
+ "diags": []
+}

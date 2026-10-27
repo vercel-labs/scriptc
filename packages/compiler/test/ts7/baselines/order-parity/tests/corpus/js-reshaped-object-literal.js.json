@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/js-reshaped-object-literal.js"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5945-local-class-observed-methods.ts"
+ ],
+ "diags": []
+}

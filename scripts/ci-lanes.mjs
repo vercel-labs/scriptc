@@ -7,18 +7,20 @@
 // own exemptions; a change to this script runs every lane until it is on the base branch. It uses only Node and git.
 //
 // Lanes (each an output, true or false):
-// - linux: the Linux build and test shards, the TypeScript 7 parity sweep and the smaller Linux, Windows and mobile
+// - linux: the Linux build and test shards, the TypeScript 7 parity sweep and the smaller Linux, Windows and Android
 //   jobs. Off only when every change is documentation.
-// - macos: the macOS native build, the darwin test shards and the macOS LLVM artifact jobs. On when the change touches
-//   a darwin package, a path naming darwin, macOS, iOS or Mach-O, the darwin test files of scripts/ci-test-plan.mjs,
-//   the LLVM helper (native/, packages/llvm-*) or the shared runtime pack code, or changed lines in packages/{runtime,compiler,cli} that mention darwin-specific APIs (__APPLE__, kqueue, Mach-O
-//   and similar).
+// - macos: the macOS native build, the darwin test shards, the macOS LLVM artifact jobs and the iOS runtime packs. On
+//   when the change touches a darwin package, a path naming darwin, macOS, iOS, Mach-O or kqueue, the runtime's
+//   platform header, the darwin suite's test files (scripts/ci-test-plan.mjs), the LLVM helper (native/,
+//   packages/llvm-*) or the shared runtime pack code, or changed lines in packages/{runtime,compiler,cli} that mention
+//   darwin-specific APIs (__APPLE__, kqueue, Mach-O and similar).
 // - effects: the Effect suites. On when the change touches their harness or fixtures.
 // - bootstrap: the native bootstrap seed and self-rebuild contracts. On when the change touches the bootstrap scripts,
 //   the native CLI build, the cli-* packages or the self-hosting tests.
 // Every lane is on when the change touches CI configuration, the workspace manifests or lockfile, vitest
-// configuration, the shared test harness modules or this script, or when the diff cannot be computed. Pushes to main
-// and the nightly sweep do not use this script: they run every lane.
+// configuration, the shared test harness modules or this script, or when the diff cannot be computed. Pushes to main,
+// the nightly sweep and manual runs do not use this script: pushes to main run every lane except macos, and the others
+// run every lane.
 import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
 
@@ -38,9 +40,11 @@ const everything = [
   /^packages\/[^/]+\/package\.json$/,
 ];
 const documentation = [/^docs\//, /\.mdx?$/, /^LICENSE$/, /^CHANGELOG\.md$/];
-const darwinPath = /darwin|macos|ios|apple|mach-?o/i;
+const darwinPath = /darwin|macos|ios|apple|mach-?o|kqueue/i;
 // Native code generation and runtime packs every platform shares.
 const sharedNative = /^native\/|^packages\/(llvm-[^/]+|runtime-pack-common)\//;
+// The darwin suite's files (darwinCorpusFiles and darwinFiles in scripts/ci-test-plan.mjs), the LLVM differential
+// the macOS artifact jobs run, and the runtime's platform header.
 const darwinFiles = [
   "packages/cli/test/bootstrap.test.ts",
   "packages/cli/test/native-link-info.test.ts",
@@ -49,7 +53,10 @@ const darwinFiles = [
   "packages/compiler/test/debug-variables.test.ts",
   "packages/compiler/test/native-codegen-integration.test.ts",
   "packages/compiler/test/source-debugging.test.ts",
+  "packages/runtime-darwin-arm64/test/archive.test.ts",
+  "packages/runtime/src/scr_platform.h",
   "packages/runtime/test/string.test.ts",
+  "tests/harness/differential.test.ts",
   "tests/harness/ffi-callback-pool.test.ts",
   "tests/harness/ffi-catalog.test.ts",
   "tests/harness/ffi-frameworks.test.ts",

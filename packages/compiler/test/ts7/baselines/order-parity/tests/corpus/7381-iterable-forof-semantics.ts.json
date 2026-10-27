@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7381-iterable-forof-semantics.ts"
+ ],
+ "diags": []
+}

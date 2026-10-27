@@ -9,7 +9,7 @@ function tail(path: string): string {
   while (i >= 0 && path.charAt(i) !== "/" && path.charAt(i) !== "\\") i = i - 1;
   return path.slice(i + 1);
 }
-const root = `/tmp/scr-cp-async-${tail(process.argv[1] === undefined ? "x" : process.argv[1])}`;
+const root = `/tmp/scr-cp-async-${tail(process.argv[1] === undefined ? "x" : process.argv[1])}-${process.pid}`;
 if (fs.existsSync(root)) fs.rmSync(root, { recursive: true, force: true });
 fs.mkdirSync(root);
 const home = process.cwd();
@@ -88,8 +88,13 @@ const stamp = new Date("2021-05-06T07:08:09.123Z");
 fs.utimesSync("file.txt", stamp, stamp);
 await fsp.cp("file.txt", "p-stamped.txt", { preserveTimestamps: true });
 console.log(new Date(fs.statSync("p-stamped.txt").mtimeMs).toISOString());
+// The source tree gets fixed times: its own times come from the clock, and
+// whether a copy equals them depends on their sub-millisecond digits.
+fs.utimesSync("src/a.txt", stamp, stamp);
+fs.utimesSync("src", stamp, stamp);
 await fsp.cp("src", "p-stamped-dir", { recursive: true, preserveTimestamps: true });
-console.log(fs.statSync("p-stamped-dir").mtimeMs === fs.statSync("src").mtimeMs);
+for (const path of ["p-stamped-dir", "p-stamped-dir/a.txt"])
+  console.log(path, new Date(fs.statSync(path).mtimeMs).toISOString());
 
 const rejected = await fsp.cp("missing", "x").then(
   () => "fulfilled",

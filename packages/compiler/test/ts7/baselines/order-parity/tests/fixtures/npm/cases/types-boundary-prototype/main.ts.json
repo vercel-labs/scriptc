@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/types-boundary-prototype/main.ts"
+ ],
+ "diags": []
+}

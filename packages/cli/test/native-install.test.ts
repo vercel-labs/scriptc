@@ -7,6 +7,7 @@ import {
   renameSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -53,6 +54,7 @@ function fixture() {
     dsymutil: "dsymutil",
     comptime: "../lib/comptime",
     wasi_node_runner: "../lib/wasi/cli/wasi-runner.js",
+    lib_diagnostics: "../lib/lib-diagnostics.json",
   };
   writeFileSync(binary + ".json", JSON.stringify(toolchain));
   const helpers = [
@@ -93,12 +95,80 @@ test("installs a direct executable and relocatable references to platform assets
   expect(resolve(dirname(installed), manifest.wasi_node_runner)).toBe(
     join(platform, "wasi/cli/wasi-runner.js"),
   );
+  expect(resolve(dirname(installed), manifest.lib_diagnostics)).toBe(
+    join(platform, "lib-diagnostics.json"),
+  );
   expect(resolve(dirname(installed), manifest.runtime_packs[0].path)).toBe(
     join(platform, "runtime"),
   );
   expect(manifest.linker).toBe("clang");
   expect(JSON.stringify(manifest)).not.toContain(f.directory);
 });
+
+test.each(["hoisted", "pnpm"])(
+  "resolves the LLVM helper and runtime pack a platform package depends on (%s)",
+  (layout) => {
+    const f = fixture();
+    const helper = "@scriptc/llvm-darwin-arm64";
+    const runtime = "@scriptc/runtime-darwin-arm64";
+    const toolchain: Record<string, unknown> = { ...f.toolchain };
+    delete toolchain.llvm_package;
+    delete toolchain.runtime_pack;
+    delete toolchain.runtime_packs;
+    writeFileSync(f.binary + ".json", JSON.stringify(toolchain));
+    // pnpm links a package's dependencies beside it in its virtual store,
+    // where the installation's node_modules does not see them.
+    const platform =
+      layout === "pnpm"
+        ? join(f.directory, "node_modules/.pnpm/cli@1.2.3/node_modules", f.packageName)
+        : f.platform;
+    if (layout === "pnpm") {
+      mkdirSync(dirname(platform), { recursive: true });
+      renameSync(f.platform, platform);
+      symlinkSync(platform, f.platform, "junction");
+    }
+    const modules =
+      layout === "pnpm" ? dirname(dirname(platform)) : join(f.directory, "node_modules");
+    writeFileSync(
+      join(platform, "package.json"),
+      JSON.stringify({
+        name: f.packageName,
+        version: "1.2.3",
+        dependencies: { [helper]: "1.2.3", [runtime]: "1.2.3" },
+      }),
+    );
+    for (const name of [helper, runtime]) {
+      mkdirSync(join(modules, name), { recursive: true });
+      writeFileSync(
+        join(modules, name, "package.json"),
+        JSON.stringify({ name, version: "1.2.3" }),
+      );
+    }
+    mkdirSync(join(modules, helper, "bin"));
+    writeFileSync(join(modules, helper, "bin/scriptc-llvm-codegen"), "helper", { mode: 0o644 });
+    const command = installNativeCli(f.directory, f.packageName);
+    const manifest = JSON.parse(readFileSync(command + ".json", "utf8"));
+    const bin = dirname(command);
+    expect(resolve(bin, manifest.llvm_package)).toBe(join(modules, helper));
+    expect(resolve(bin, manifest.runtime_pack)).toBe(join(modules, runtime));
+    expect(manifest.runtime_packs).toEqual([
+      { target: "macos-arm64", path: manifest.runtime_pack },
+    ]);
+    if (process.platform !== "win32")
+      expect(statSync(join(modules, helper, "bin/scriptc-llvm-codegen")).mode & 0o111).toBe(0o111);
+    writeFileSync(
+      join(modules, runtime, "package.json"),
+      JSON.stringify({ name: runtime, version: "1.2.4" }),
+    );
+    expect(() => installNativeCli(f.directory, f.packageName)).toThrow(
+      `scriptc requires ${runtime}@1.2.3, found 1.2.4`,
+    );
+    rmSync(join(modules, runtime), { recursive: true });
+    expect(() => installNativeCli(f.directory, f.packageName)).toThrow(
+      `scriptc requires ${runtime}@1.2.3; reinstall scriptc`,
+    );
+  },
+);
 
 test("missing and mismatched packages fail without replacing an installed command", () => {
   const f = fixture();

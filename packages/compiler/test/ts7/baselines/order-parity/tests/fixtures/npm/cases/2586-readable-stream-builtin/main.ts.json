@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/2586-readable-stream-builtin/main.ts"
+ ],
+ "diags": []
+}

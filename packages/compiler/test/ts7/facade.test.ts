@@ -381,15 +381,15 @@ void top;
   const { proxy, counts, calls } = countingChecker(w.p7.project.checker);
   const facade = new CheckerFacade(proxy);
   const sf = w.p7.getSourceFile(w.files[0]!)!;
-  const functions = sf.statements.filter(ad.isFunctionDeclaration);
-  const cls = sf.statements.find(ad.isClassDeclaration)!;
+  const functions = sf.statements.nodes.filter(ad.isFunctionDeclaration);
+  const cls = sf.statements.nodes.find(ad.isClassDeclaration)!;
   const withClass = functions[2]!;
-  const nested = withClass.body!.statements.find(ad.isClassDeclaration)!;
+  const nested = withClass.body!.statements.nodes.find(ad.isClassDeclaration)!;
   const reachedBody = functions[0]!.body!;
   const deadBody = functions[1]!.body!;
-  const nestedMethodBody = nested.members.find(ad.isMethodDeclaration)!.body!;
-  const defaultValue = functions[0]!.parameters[0]!.initializer!;
-  const fieldValue = cls.members.find(ad.isPropertyDeclaration)!.initializer!;
+  const nestedMethodBody = nested.members.nodes.find(ad.isMethodDeclaration)!.body!;
+  const defaultValue = functions[0]!.parameters.nodes[0]!.initializer!;
+  const fieldValue = cls.members.nodes.find(ad.isPropertyDeclaration)!.initializer!;
   const inside = (node: Node, root: Node): boolean =>
     node.getStart() >= root.getStart() && node.end <= root.end;
 
@@ -445,7 +445,7 @@ const item: Alias = identity({ value: 1 });
   const { proxy, counts, calls } = countingChecker(raw);
   const facade = new CheckerFacade(proxy);
   const sf = w.p7.getSourceFile(w.files[0]!)!;
-  const fn = sf.statements.find(ad.isFunctionDeclaration)!;
+  const fn = sf.statements.nodes.find(ad.isFunctionDeclaration)!;
   const references: Node[] = [];
   ad.walkPreorder(sf, (node) => {
     if (ad.isTypeReferenceNode(node)) references.push(node.typeName);
@@ -458,8 +458,8 @@ const item: Alias = identity({ value: 1 });
     calls[method]!.flatMap(([nodes]) => (Array.isArray(nodes) ? nodes : [nodes])) as Node[];
   expect(queried("getTypeAtLocation").some((node) => references.includes(node))).toBe(false);
   expect(queried("getSymbolAtLocation").some((node) => references.includes(node))).toBe(false);
-  const child = sf.statements.filter(ad.isClassDeclaration)[1]!;
-  const base = child.heritageClauses![0]!.types[0]!.expression;
+  const child = sf.statements.nodes.filter(ad.isClassDeclaration)[1]!;
+  const base = child.heritageClauses!.nodes[0]!.types.nodes[0]!.expression;
   expect(queried("getTypeAtLocation")).toContain(base);
 
   const reference = references[0]!;
@@ -485,8 +485,8 @@ test("declaration misses stay direct while explicit whole-file prefetch remains 
   const facade = new CheckerFacade(proxy);
   const sf = w.p7.getSourceFile(w.files[0]!)!;
   expect(sf.isDeclarationFile).toBe(true);
-  const declaration = sf.statements.find(ad.isInterfaceDeclaration)!;
-  const name = declaration.members.find(ad.isPropertySignature)!.name;
+  const declaration = sf.statements.nodes.find(ad.isInterfaceDeclaration)!;
+  const name = declaration.members.nodes.find(ad.isPropertySignature)!.name;
   expect(facade.getSymbolAtLocation(name)).toBe(raw.getSymbolAtLocation(name));
   expect(facade.getTypeAtLocation(name)).toBe(raw.getTypeAtLocation(name));
   expect(calls["getSymbolAtLocation"]).toEqual([[name]]);
@@ -517,7 +517,7 @@ export function dead(input: number): number {
   const { proxy, counts, calls } = countingChecker(w.p7.project.checker);
   const facade = new CheckerFacade(proxy);
   const sf = w.p7.getSourceFile(w.files[0]!)!;
-  const body = sf.statements.find(ad.isFunctionDeclaration)!.body!;
+  const body = sf.statements.nodes.find(ad.isFunctionDeclaration)!.body!;
   const identifiers: Node[] = [];
   ad.walkPreorder(body, (node) => {
     if (ad.isIdentifier(node)) identifiers.push(node);
@@ -551,7 +551,7 @@ ${locals}
   const { proxy, counts, calls } = countingChecker(w.p7.project.checker);
   const facade = new CheckerFacade(proxy);
   const sf = w.p7.getSourceFile(w.files[0]!)!;
-  const body = sf.statements.find(ad.isFunctionDeclaration)!.body!;
+  const body = sf.statements.nodes.find(ad.isFunctionDeclaration)!.body!;
   const identifiers: Node[] = [];
   ad.walkPreorder(body, (node) => {
     if (ad.isIdentifier(node)) identifiers.push(node);
@@ -600,8 +600,8 @@ console.log("ok");
   const facade = new CheckerFacade(proxy, { project: w.p7.project.checker.project });
   (w.p7 as unknown as { checkerFacade: CheckerFacade | null }).checkerFacade = facade;
   const sf = w.p7.getSourceFile(w.files[0]!)!;
-  const cls = sf.statements.find(ad.isClassDeclaration)!;
-  const ctor = cls.members.find(ad.isConstructorDeclaration)!;
+  const cls = sf.statements.nodes.find(ad.isClassDeclaration)!;
+  const ctor = cls.members.nodes.find(ad.isConstructorDeclaration)!;
   const insideCtor = (node: Node): boolean =>
     node.getStart() >= ctor.getStart() && node.end <= ctor.end;
 
@@ -630,9 +630,9 @@ test("signature collection batches exact types of deferred function defaults", (
   const facade = new CheckerFacade(proxy, { project: w.p7.project.checker.project });
   (w.p7 as unknown as { checkerFacade: CheckerFacade | null }).checkerFacade = facade;
   const sf = w.p7.getSourceFile(w.files[0]!)!;
-  const initializers = sf.statements
+  const initializers = sf.statements.nodes
     .filter(ad.isFunctionDeclaration)
-    .map((decl) => decl.parameters[0]!.initializer!);
+    .map((decl) => decl.parameters.nodes[0]!.initializer!);
 
   lowerToIr(w.p7, sf, [sf]);
 
@@ -665,10 +665,10 @@ test("class-shape collection batches deferred method default types", () => {
   const facade = new CheckerFacade(proxy, { project: w.p7.project.checker.project });
   (w.p7 as unknown as { checkerFacade: CheckerFacade | null }).checkerFacade = facade;
   const sf = w.p7.getSourceFile(w.files[0]!)!;
-  const cls = sf.statements.find(ad.isClassDeclaration)!;
-  const initializers = cls.members
+  const cls = sf.statements.nodes.find(ad.isClassDeclaration)!;
+  const initializers = cls.members.nodes
     .filter(ad.isMethodDeclaration)
-    .map((member) => member.parameters[0]!.initializer!);
+    .map((member) => member.parameters.nodes[0]!.initializer!);
 
   lowerToIr(w.p7, sf, [sf]);
 
@@ -703,7 +703,7 @@ console.log(pick(42));
   const facade = new CheckerFacade(proxy, { project: w.p7.project.checker.project });
   (w.p7 as unknown as { checkerFacade: CheckerFacade | null }).checkerFacade = facade;
   const sf = w.p7.getSourceFile(w.files[0]!)!;
-  const fn = sf.statements.find(ad.isFunctionDeclaration)!;
+  const fn = sf.statements.nodes.find(ad.isFunctionDeclaration)!;
   const insideBody = (node: Node): boolean =>
     node.getStart() >= fn.body!.getStart() && node.end <= fn.body!.end;
 
@@ -747,7 +747,7 @@ console.log(reached(1));
   // lowering and this assertion observe the same memo/batch traffic.
   (w.p7 as unknown as { checkerFacade: CheckerFacade | null }).checkerFacade = facade;
   const sf = w.p7.getSourceFile(w.files[0]!)!;
-  const deadBody = sf.statements
+  const deadBody = sf.statements.nodes
     .filter(ad.isFunctionDeclaration)
     .find((decl) => decl.name?.text === "dead")!.body!;
   const insideDeadBody = (node: Node): boolean =>
@@ -799,7 +799,7 @@ export function f(input: number): number {
   );
   worlds.push(w);
   const sf = w.p7.getSourceFile(w.files[0]!)!;
-  const body = sf.statements.find(ad.isFunctionDeclaration)!.body!;
+  const body = sf.statements.nodes.find(ad.isFunctionDeclaration)!.body!;
   const identifiers: Node[] = [];
   ad.walkPreorder(body, (node) => {
     if (ad.isIdentifier(node)) identifiers.push(node);
@@ -833,6 +833,37 @@ export function f(input: number): number {
   facade.prefetchRoots([body]);
   facade.getTypeAtLocation(poison);
   expect(panics).toBe(warmPanics);
+});
+
+test("a batch method the server answers as unknown is asked once, then node by node", () => {
+  const w = buildTwoWorlds(RICH_TS, host);
+  worlds.push(w);
+  const sf = w.p7.getSourceFile(w.files[0]!)!;
+  const raw = w.p7.project.checker;
+  const requests: Record<string, number> = {};
+  // A server without the batch methods, as tsgo is.
+  const older = new Proxy(raw, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (prop === "getContextualTypes" || prop === "getResolvedSignatures") {
+        return () => {
+          requests[prop] = (requests[prop] ?? 0) + 1;
+          throw new Error(`unknown API method "${prop}"`);
+        };
+      }
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  }) as Checker;
+  const facade = new CheckerFacade(older);
+
+  facade.prefetchRoots([sf]);
+  expect(requests).toEqual({ getContextualTypes: 1, getResolvedSignatures: 1 });
+  facade.prefetchRoots(sf.statements.nodes);
+  facade.prefetchContextualTypes(collectNodes(w));
+  expect(requests).toEqual({ getContextualTypes: 1, getResolvedSignatures: 1 });
+  // The node-by-node queries still answer.
+  const call = collectNodes(w).find(ad.isCallExpression)!;
+  expect(facade.getResolvedSignature(call)).toBe(raw.getResolvedSignature(call));
 });
 
 test("autoPrefetch: false degrades to per-call queries (the escape hatch works)", () => {

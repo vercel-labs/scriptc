@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6933-tls-sni-callback.ts"
+ ],
+ "diags": []
+}

@@ -12,6 +12,7 @@ extern double kr_bump(void);
 extern double kr_note(const uint8_t *p, size_t len);
 extern double kr_indexed_unicode(void);
 extern void kr_recall(const uint8_t **out, size_t *out_len);
+extern void kr_global_fences(const uint8_t **out, size_t *out_len);
 
 static void sink(void *ctx, const uint8_t *msg, size_t len, uint64_t addr) {
   (void)ctx; (void)addr;
@@ -30,6 +31,8 @@ static void session(void) {
   const uint8_t *s; size_t n;
   kr_recall(&s, &n);
   printf("recall: %.*s\n", (int)n, s);
+  kr_global_fences(&s, &n);
+  printf("globals: %.*s\n", (int)n, s);
 }
 
 int main(void) {

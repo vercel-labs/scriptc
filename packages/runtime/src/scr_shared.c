@@ -7,7 +7,9 @@
 #include "scr_numeric.h"
 #include <math.h>
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #if defined(SCR_WORKERS) || (defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES))
 #ifdef _WIN32
@@ -359,4 +361,70 @@ double scr_atomics_notify(ScrBytes *bytes, double index, double count) {
 #endif
   scr_wait_unlock(bucket);
   return notified;
+}
+
+/* V8's text for a value in the TypeErrors below: a typed array as
+ * [object Int8Array] and so on, an array as [object Array], an ArrayBuffer
+ * or other native object as #<Class>, an object as #<Constructor>, and
+ * other values as String() gives them (undefined and null by name). */
+static ScrStr *scr_atomics_value_text(const ScrDyn *value) {
+  char text[64];
+  int n;
+  if (value->kind == SCR_DYN_BYTES) {
+    if (value->v.bytes->is_data_view) n = snprintf(text, sizeof text, "#<DataView>");
+    else n = snprintf(text, sizeof text, "[object %s]", scr_bytes_elem_name(value->v.bytes->elem));
+  } else if (value->kind == SCR_DYN_ARR) {
+    n = snprintf(text, sizeof text, "[object Array]");
+  } else if (value->kind == SCR_DYN_HANDLE) {
+    n = snprintf(text, sizeof text, "#<%s>", scr_dyn_handle_ops_of(value)->cls);
+  } else if (value->kind == SCR_DYN_OBJ) {
+    const char *name = scr_dyn_class_name(value);
+    n = snprintf(text, sizeof text, "#<%s>", name ? name : "Object");
+  } else if (value->kind == SCR_DYN_TYPED_REF && scr_dyn_typed_ref_class_name(value)) {
+    const ScrStr *name = scr_dyn_typed_ref_class_name(value);
+    n = snprintf(text, sizeof text, "#<%.*s>", (int)name->len, (const char *)name->data);
+  } else if (value->kind == SCR_DYN_UNDEF) {
+    n = snprintf(text, sizeof text, "undefined");
+  } else if (value->kind == SCR_DYN_NULL) {
+    n = snprintf(text, sizeof text, "null");
+  } else {
+    return scr_dyn_to_string(value, NULL);
+  }
+  return scr_str_new(text, n < (int)sizeof text ? (size_t)n : sizeof text - 1);
+}
+
+/* The integer typed array an untyped Atomics argument holds, or NULL with
+ * Node's TypeError pending. `waitable` requires an Int32Array, as wait and
+ * notify do. */
+static ScrBytes *scr_atomics_dyn_array(const ScrDyn *value, bool waitable) {
+  if (value->kind == SCR_DYN_BYTES && !value->v.bytes->is_data_view) {
+    ScrBytesElem elem = value->v.bytes->elem;
+    bool integer = elem == SCR_BYTES_I8 || elem == SCR_BYTES_U8 || elem == SCR_BYTES_I16 ||
+      elem == SCR_BYTES_U16 || elem == SCR_BYTES_I32 || elem == SCR_BYTES_U32;
+    if (waitable ? elem == SCR_BYTES_I32 : integer) return value->v.bytes;
+  }
+  ScrStr *shown = scr_atomics_value_text(value);
+  if (!shown) return NULL;
+  const char *tail = waitable ? " is not an int32 or BigInt64 typed array." : " is not an integer typed array.";
+  ScrStr *parts[2] = {shown, scr_str_new(tail, strlen(tail))};
+  ScrStr *message = scr_str_concat_parts(parts, 2);
+  scr_str_release(parts[0]);
+  scr_str_release(parts[1]);
+  scr_throw_error(SCR_ERR_TYPE, message);
+  return NULL;
+}
+
+double scr_atomics_op_dyn(const ScrDyn *array, double index, double value, double replacement, double operation) {
+  ScrBytes *bytes = scr_atomics_dyn_array(array, false);
+  return bytes ? scr_atomics_op(bytes, index, value, replacement, operation) : 0;
+}
+
+ScrStr *scr_atomics_wait_dyn(const ScrDyn *array, double index, double expected, double timeout) {
+  ScrBytes *bytes = scr_atomics_dyn_array(array, true);
+  return bytes ? scr_atomics_wait(bytes, index, expected, timeout) : NULL;
+}
+
+double scr_atomics_notify_dyn(const ScrDyn *array, double index, double count) {
+  ScrBytes *bytes = scr_atomics_dyn_array(array, true);
+  return bytes ? scr_atomics_notify(bytes, index, count) : 0;
 }

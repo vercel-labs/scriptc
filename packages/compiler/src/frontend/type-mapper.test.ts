@@ -41,7 +41,7 @@ describe("union arm lookup", () => {
   test("sees finalized recursive arms after a missing lookup", () => {
     const unions = new UnionRegistry();
     const recursive = {} as Type;
-    const union = unions.recursiveRef(recursive);
+    const union = unions.recursiveRef(recursive, () => "Recursive");
     expect(unions.armTag(union, STRING)).toBe(-1);
     unions.finalizeRecursive(recursive, [
       F64,

@@ -1,0 +1,13 @@
+cjs-member-alias-writes/main.ts:5:13 - error SC1090: the reference to 'counter' (a binding form with no lowering) is not supported yet
+
+  4 | import { counter, version } from "metrics";
+  5 | console.log(counter);
+    |             ^~~~~~~
+  6 | console.log(version);
+
+cjs-member-alias-writes/main.ts:6:13 - error SC1090: the reference to 'version' (a binding form with no lowering) is not supported yet
+
+  5 | console.log(counter);
+  6 | console.log(version);
+    |             ^~~~~~~
+  7 | 

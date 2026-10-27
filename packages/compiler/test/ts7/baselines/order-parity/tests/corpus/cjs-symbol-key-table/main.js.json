@@ -1,0 +1,9 @@
+{
+ "order": [
+  "<repo>/tests/corpus/cjs-symbol-key-table/symbols.js",
+  "<repo>/tests/corpus/cjs-symbol-key-table/queue.js",
+  "<repo>/tests/corpus/cjs-symbol-key-table/upper-queue.js",
+  "<repo>/tests/corpus/cjs-symbol-key-table/main.js"
+ ],
+ "diags": []
+}

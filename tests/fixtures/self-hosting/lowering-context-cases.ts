@@ -35,7 +35,7 @@ function runContextCase(services: FrontendServices, entry: string): string[] {
     const shadowSymbol = symbols[1]!;
     const unusedSymbol = symbols[2]!;
     requireValue(outerSymbol !== shadowSymbol, "shadowed bindings share identity");
-    requireValue(outerSymbol.name === shadowSymbol.name, "fixture did not shadow a name");
+    requireValue(ts.symbolName(outerSymbol) === ts.symbolName(shadowSymbol), "fixture did not shadow a name");
     const source = bindingSource(declarations[0]!);
     const root = newFnCtx(false, null, null, VOID);
     const outer = declareContextLocal(root, "value", F64, true, outerSymbol, source);

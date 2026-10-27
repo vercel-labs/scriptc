@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5976-builtin-class-aliases.ts"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6475-js-promise-resolve-adoption/main.ts"
+ ],
+ "diags": []
+}

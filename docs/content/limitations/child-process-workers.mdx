@@ -1,5 +1,18 @@
-`child_process.fork()` requires a worker path resolved at build time from `new URL("./worker.ts", import.meta.url)` or `fileURLToPath(new URL("./worker.ts", import.meta.url))`. Never-reassigned `const` aliases and statically resolvable template parts are accepted. The worker and its imports are embedded in the executable, which re-executes itself to start that module. Worker arguments begin at `process.argv[2]`.
+`child_process.fork()` requires a worker path resolved at build time from `new URL("./worker.ts", import.meta.url)` or `fileURLToPath(new URL("./worker.ts", import.meta.url))`.
+Never-reassigned `const` aliases and statically resolvable template parts are accepted.
+The worker and its imports are embedded in the executable, which re-executes itself to start that module.
+Worker arguments begin at `process.argv[2]`.
 
-Supported options are default inherited stdio or an inline object with `cwd`, `env`, `silent`, `windowsHide`, or `[stdin, stdout, stderr, "ipc"]`. `execArgv` is accepted but has no native effect. Runtime worker paths, custom `execPath`, advanced serialization, transferred sockets or servers, uid/gid, timeout/signal options, and other stdio arrays are unsupported.
+Supported options are default inherited stdio or an inline object with `cwd`, `env`, `silent`, `windowsHide`, or `[stdin, stdout, stderr, "ipc"]`.
+`execArgv` is accepted but has no native effect.
+Runtime worker paths, custom `execPath`, advanced serialization, transferred sockets or servers, uid/gid, timeout/signal options, and other stdio arrays are unsupported.
 
-Parent and child channels support `send(message, callback?)`, `connected`, `disconnect()`, and `on`/`once` for `message` and `disconnect`. Message listeners may return `void` or `Promise<void>`. Messages use newline-delimited JSON, so their static types must be JSON-stringifiable or `unknown` backed by a checked JSON tree. `send()` returns the channel's backpressure state and invokes its callback later with `null` or an `Error`. `disconnect()` changes `connected` synchronously, before the later disconnect events.
+Parent and child channels support `send(message, callback?)`, `connected`, `disconnect()`, and `on`/`once` for `message` and `disconnect`.
+Message listeners may return `void` or `Promise<void>`.
+Messages use newline-delimited JSON, so their static types must be JSON-stringifiable or `unknown` backed by a checked JSON tree.
+`send()` returns the channel's backpressure state and invokes its callback later with `null` or an `Error`.
+`disconnect()` changes `connected` synchronously, before the later disconnect events.
+
+A `'data'` listener on a child's `stdout` or `stderr` whose chunk is `unknown` or `any` receives strings when a `setEncoding()` statement on the same stream precedes it in its block or an enclosing block, and Buffers when the function never calls `setEncoding()` on that stream.
+Any other placement of `setEncoding()` is refused at compile time, and a `setEncoding()` call that runs elsewhere afterwards makes the listener throw a TypeError instead of receiving strings.
+An inline `'exit'` or `'close'` listener may declare `(code: number, signal: string)`, which TypeScript accepts through the catch-all `on` overload; it receives the `null` values Node passes, and a typed use of a `null` value throws a TypeError.

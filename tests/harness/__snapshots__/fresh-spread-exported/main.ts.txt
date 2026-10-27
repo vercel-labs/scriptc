@@ -1,0 +1,13 @@
+fresh-spread-exported/items.ts:7:14 - error SC1090: pushing a spread of '{ file: null | undefined; message: string; noisy: boolean }[]' onto a '{ file: { path: string } | undefined; message: string; noisy: boolean }[]' array (only a same-element-type array spreads) is not supported yet
+
+  6 | export const shared = [{ message: "shared", file: undefined, noisy: false }];
+  7 | results.push(...shared);
+    |              ^~~~~~~~~
+  8 | const listed = [{ message: "listed", file: undefined, noisy: true }];
+
+fresh-spread-exported/items.ts:10:17 - error SC1090: unshifting a spread of '{ file: null | undefined; message: string; noisy: boolean }[]' onto a '{ file: { path: string } | undefined; message: string; noisy: boolean }[]' array (only a same-element-type array spreads) is not supported yet
+
+   9 | export { listed };
+  10 | results.unshift(...listed);
+     |                 ^~~~~~~~~
+  11 | 

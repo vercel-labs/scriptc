@@ -23,13 +23,13 @@ export function execResultCaptureMask(lowerer: Lowerer, call: ts.CallExpression)
   const statement = decl.parent.parent;
   if (
     ts.isVariableStatement(statement) &&
-    statement.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)
+    statement.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.ExportKeyword)
   )
     return null;
   const symbol = lowerer.resolveValueSymbol(decl.name);
   if (!symbol) return null;
   const read = new Set<number>();
-  for (const use of identifiersNamed(lowerer, decl.getSourceFile(), decl.name.text)) {
+  for (const use of identifiersNamed(lowerer, ts.getSourceFileOfNode(decl), decl.name.text)) {
     if (use === decl.name || lowerer.resolveValueSymbol(use) !== symbol) continue;
     const ref = outerValue(use);
     const parent = ref.parent;

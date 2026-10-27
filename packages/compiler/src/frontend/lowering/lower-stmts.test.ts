@@ -54,7 +54,7 @@ function mutate(value) { captured = value; compound += value; let shadow = 0; sh
   ctx.bind(shadow, []);
   ctx.bind(untouched, []);
   ctx.bind(innerShadow, [at(ctx.assignments, 2)]);
-  const walk = vi.spyOn(ctx.file, "appendChildIndices");
+  const walk = vi.spyOn(ctx.file.file.wire, "preorder");
   for (let i = 0; i < 20; i++) {
     expect(jsBindingHasOpenWrites(ctx.lowerer, captured)).toBe(true);
     expect(jsBindingHasOpenWrites(ctx.lowerer, compound)).toBe(true);

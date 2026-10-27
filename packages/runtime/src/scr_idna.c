@@ -1,8 +1,8 @@
 /* UTS #46 domain processing for node:url — the conversions Node applies to
- * url.parse() hostnames (ToASCII), url.domainToASCII()/domainToUnicode()
- * and url.format()'s unicode option: nontransitional mapping, NFC, label
- * validity (leading combining marks, ContextJ, and the RFC 5893 bidi rule),
- * and Punycode. It matches Node 24's implementation, including its
+ * WHATWG URL hosts and url.parse() hostnames (ToASCII),
+ * url.domainToASCII()/domainToUnicode() and url.format()'s unicode option:
+ * nontransitional mapping, NFC, label validity (leading combining marks,
+ * ContextJ, and the RFC 5893 bidi rule), and Punycode. It matches Node 24's implementation, including its
  * validity-data snapshot and the shortcuts its label checks take; the
  * differential corpus and test/url-legacy-cases.txt (generated from Node)
  * are the oracle.
@@ -511,3 +511,6 @@ ScrStr *scr_idna_to_unicode(const char *p, size_t n) {
   }
   return scr_jb_finish(&out);
 }
+
+/* The URL host parser's UTS #46 ToASCII (scr_url.c). */
+void scr_url_idna_install(void) { scr_url_host_to_ascii = &scr_idna_to_ascii; }

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6243-maybe-promise-narrowing.ts"
+ ],
+ "diags": []
+}

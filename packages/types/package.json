@@ -1,6 +1,6 @@
 {
   "name": "@scriptc/types",
-  "version": "0.3.6",
+  "version": "0.4.5",
   "description": "Contract types for scriptc: type-only annotations (Int32, NoThrow, Immutable) that scriptc checks and optimizes, with no runtime semantics",
   "license": "Apache-2.0",
   "homepage": "https://scriptc.dev",

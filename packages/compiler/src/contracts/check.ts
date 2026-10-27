@@ -26,6 +26,7 @@
  *   counts (classes.ts programLifetimeClass).
  *
  * Verified facts land on the IR as `contracts` (IrContracts). */
+import type { DiagnosticCode } from "../diagnostics/codes.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type {
   IrClassDef,
@@ -158,7 +159,7 @@ class ContractChecker {
     return raw.length > max ? `${raw.slice(0, max - 3)}...` : raw;
   }
 
-  report(code: `SC${number}`, loc: SrcLoc, message: string, hint: string): void {
+  report(code: DiagnosticCode, loc: SrcLoc, message: string, hint: string): void {
     const key = `${code}\0${contractLocKey(loc)}\0${message}`;
     if (this.reported.has(key)) return;
     this.reported.add(key);
@@ -174,7 +175,8 @@ class ContractChecker {
       return `${owner}.${method[2]}`;
     }
     if (fn?.sourceName !== undefined && fn.sourceName !== "<anonymous>") return fn.sourceName;
-    if (fn !== undefined && /^%fn\d+$/.test(fnName)) return `the function at ${this.where(fn.loc)}`;
+    if (fn !== undefined && /^%fn\.[0-9a-f]{12}$/.test(fnName))
+      return `the function at ${this.where(fn.loc)}`;
     return fnName.replace(/^%/, "");
   }
 
@@ -284,9 +286,10 @@ class ContractChecker {
    * the lifetimes of the objects they receive). Publication to other
    * threads needs no check: an instance carries a reference count of its
    * own until publication marks it like any other object it reaches
-   * (classes.ts programLifetimeRc). Static code has no WeakRef or
-   * FinalizationRegistry; weak collections stay correct because an entry
-   * keyed by an object that is never freed is never observable as removed. */
+   * (classes.ts programLifetimeRc). Static code has no WeakRef, and a
+   * FinalizationRegistry never runs its cleanup callbacks; weak collections
+   * stay correct because an entry keyed by an object that is never freed is
+   * never observable as removed. */
   private checkProgramLifetime(): void {
     if (this.notes.classes.size === 0) return;
     const roots: string[] = [];
@@ -516,8 +519,10 @@ class ContractChecker {
           for (const fn of this.fnByLoc.get(key) ?? []) targets.push({ fn, note });
     if (targets.length === 0) return;
     // Target-independent: the native stack guard (Linux, macOS) counts, so a
-    // contract holds on every platform.
-    const mt = computeMayThrow(this.mod, { stackChecks: true, explain: true });
+    // contract holds on every platform. Every function on a call cycle counts
+    // as checking it, a superset of the functions the backend picks, so the
+    // answer does not depend on that choice.
+    const mt = computeMayThrow(this.mod, { stackChecks: "everyCycleMember", explain: true });
     const proven: string[] = [];
     for (const { fn, note } of targets) {
       if (fn.async === true || fn.generator !== undefined) {
@@ -889,10 +894,7 @@ class Int32Contracts {
             const value = s.kind === "varDecl" ? s.init : s.value;
             if (note && value && !int32(value))
               fail(note, value, value.loc, "the value stored into");
-          } else if (
-            s.kind === "forOf" ||
-            (s.kind === "tryCatch" && s.catchLocalId !== undefined)
-          ) {
+          } else if (s.kind === "forOf" || (s.kind === "tryCatch" && s.catchLocalId !== null)) {
             const id = s.kind === "forOf" ? s.localId : s.catchLocalId!;
             const note = localNote(id);
             if (note)
@@ -1582,6 +1584,15 @@ class ImmutableContracts {
     for (let steps = 0; steps < 16; steps++) {
       if (root.kind === "fieldGet" || root.kind === "recordGet") root = root.obj;
       else if (root.kind === "arrayGet") root = root.arr;
+      else if (root.kind === "seqExpr") root = root.result;
+      // A receiver that is the element when it is present and otherwise
+      // throws (`xs[i]!.push(v)`) is that element read.
+      else if (
+        root.kind === "ternary" &&
+        root.else_.kind === "libCall" &&
+        root.else_.fn === "error.nodeThrow"
+      )
+        root = root.then;
       else if (
         root.kind === "upcast" ||
         root.kind === "downcast" ||

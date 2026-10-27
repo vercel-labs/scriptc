@@ -19,6 +19,7 @@ const runtimeSources = [
   "scr_hash.c",
   "scr_string.c",
   "scr_array.c",
+  "scr_arena.c",
   "scr_map.c",
   "scr_exception.c",
   "scr_error.c",
@@ -42,7 +43,7 @@ const runtimeSources = [
 ];
 
 // Compiled once with ASan, UBSan and the RC audit. The test runs the SHA-NI and portable
-// SHA-1/SHA-256 blocks over the same inputs and checks known vectors.
+// SHA-1/SHA-256 blocks and the SHA-512 kernels over the same inputs and checks known vectors.
 beforeAll(async () => {
   await mkdir(join(testDir, "build"), { recursive: true });
   await execFileAsync("clang", [
@@ -64,7 +65,7 @@ beforeAll(async () => {
   ]);
 }, 300_000);
 
-test("SHA-1 and SHA-256: the SHA-NI blocks match the portable blocks", async () => {
+test("SHA-1, SHA-256, SHA-384 and SHA-512: the CPU kernels match the portable blocks", async () => {
   const { stderr } = await execFileAsync(bin, [], {
     env: { ...process.env, UBSAN_OPTIONS: "halt_on_error=1" },
   });

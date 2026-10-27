@@ -202,7 +202,7 @@ export function storeLocalUnion(
       B.startBlock(label);
       host.frames.push([]);
       storeLocalUnion(host, storage, value);
-      host.releaseFrame(host.frames.pop()!);
+      host.releaseTemps(host.frames.pop()!);
       B.br(join);
     }
     B.startBlock(join);
@@ -241,7 +241,7 @@ export function storeLocalUnion(
     const copied = host.emitOwnedNullableStack(expr);
     source = copied.box;
     owner = copied.owner.name;
-    host.moveTemp(copied.owner);
+    host.toFrame(copied.owner);
   } else if (expr.kind === "varRef" && !canStackUnion(expr, host.boxedUnionsById)) {
     // A copy of another binding: snapshot the tag and bits, and retain the
     // reference payload (scalar and unit arms own nothing).
@@ -260,7 +260,7 @@ export function storeLocalUnion(
       B.line(`${isRef} = icmp eq i32 ${tag}, ${refTag}`);
       B.condBr(isRef, yes, join);
       B.startBlock(yes);
-      const retained = host.retainValue(host.unionPeek(source, unionId), storage.ownerType);
+      const retained = host.retainFrame(host.unionPeek(source, unionId), storage.ownerType);
       B.line(`store ptr ${retained}, ptr ${held}`);
       B.br(join);
       B.startBlock(join);
@@ -272,7 +272,7 @@ export function storeLocalUnion(
     source = wrapped.value.name;
     if (wrapped.payload) {
       owner = wrapped.payload.name;
-      host.moveTemp(wrapped.payload);
+      host.toFrame(wrapped.payload);
     }
   } else {
     const read = matchMapRead(expr, host.boxedUnionsById)!;
@@ -294,7 +294,7 @@ export function storeLocalUnion(
     const old = B.tmp();
     B.line(`${old} = load ptr, ptr ${storage.owner}`);
     B.line(`store ptr ${owner}, ptr ${storage.owner}`);
-    host.releaseValue(old, storage.ownerType);
+    host.releaseFrame(old, storage.ownerType);
   }
 }
 
@@ -326,7 +326,7 @@ export function emitScalarOptional(
     bindPresent();
     host.frames.push([]);
     storeLocalUnion(host, storage, expr.body);
-    host.releaseFrame(host.frames.pop()!);
+    host.releaseTemps(host.frames.pop()!);
     host.chainSlots.delete(expr.id);
     B.br(join);
   } else {
@@ -339,7 +339,7 @@ export function emitScalarOptional(
     B.startBlock(fallback);
     host.frames.push([]);
     storeLocalUnion(host, storage, expr.right);
-    host.releaseFrame(host.frames.pop()!);
+    host.releaseTemps(host.frames.pop()!);
     B.br(join);
   }
   B.startBlock(join);

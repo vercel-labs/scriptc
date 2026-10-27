@@ -54,6 +54,7 @@ interface EarlyLibraryCacheStamp {
     searchParams: boolean;
     emitter: boolean;
     zlib: boolean;
+    x509: boolean;
     copying: boolean;
     textDecoderLegacy: boolean;
   };
@@ -63,6 +64,9 @@ interface EarlyLibraryCacheStamp {
 export interface EarlyLibraryNativeFeatures {
   backend: "llvm";
   dynInvoke: boolean;
+  /** Buffer.prototype methods on checked-dynamic values (scr_bytes_dyn.c). */
+  dynBuffer?: boolean;
+  dynTier?: boolean;
   regex: boolean;
   assert: boolean;
   inspect: boolean;
@@ -71,6 +75,7 @@ export interface EarlyLibraryNativeFeatures {
   searchParams: boolean;
   emitter: boolean;
   zlib: boolean;
+  x509: boolean;
   copying: boolean;
   textDecoderLegacy: boolean;
   /** Volatile exact-source build identity emitted from the tiny identity TU. */
@@ -129,6 +134,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "searchParams",
   "emitter",
   "zlib",
+  "x509",
   "copying",
   "textDecoderLegacy",
 ] as const satisfies readonly (keyof EarlyLibraryNativeFeatures)[];

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8334-array-subclass-inspect-depth.ts"
+ ],
+ "diags": []
+}

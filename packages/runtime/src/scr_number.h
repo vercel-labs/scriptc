@@ -37,6 +37,12 @@ int scr_decimal_scan(const char *p, size_t n, double *out);
  * the length. */
 size_t scr_f64_to_fixed(double x, int f, char *buf);
 
+/* toPrecision / toExponential(fractionDigits) digits for POSITIVE finite
+ * a and 1 <= p <= 101: the spec's p-digit n (ties to the larger n on the
+ * exact binary value) into digits (NUL-terminated, >= p + 1 bytes) and its
+ * decimal exponent e (value ~ d.ddd x 10^e) into *e_out. Returns p. */
+int scr_f64_precision_digits(double a, int p, char *digits, int *e_out);
+
 /* ToString for template literals / string coercion. Returns +1. */
 ScrStr *scr_f64_to_scrstr(double x);
 ScrStr *scr_bool_to_scrstr(bool b); /* interned "true"/"false" */
@@ -46,6 +52,8 @@ ScrStr *scr_bool_to_scrstr(bool b); /* interned "true"/"false" */
  * adjacent surrogate pairs combine, other surrogates stay lone. Borrowed
  * args; the string result is +1; neither throws. */
 ScrStr *scr_str_from_char_code(ScrArr *codes);
+/* String.fromCharCode over n codes in a caller-owned array (no ScrArr). */
+ScrStr *scr_str_from_char_codes(const double *codes, size_t n);
 /* Single numeric argument; avoids argument packing. Defined in scr_string.c
  * to share its character cache. Same ToUint16 and lone-surrogate behavior. */
 ScrStr *scr_str_from_char_code_one(double code);
@@ -73,6 +81,12 @@ bool scr_num_is_safe_integer(double x);
 ScrStr *scr_num_to_exponential(double x);
 ScrStr *scr_num_to_fixed0(double x);
 ScrStr *scr_num_to_fixed(double x, double fraction_digits);
+/* Number.prototype.toPrecision(precision) and toExponential(fractionDigits)
+ * with the argument already coerced (has_precision false = undefined).
+ * Invalid digit counts throw V8's RangeError (NULL). Result +1. */
+ScrStr *scr_num_to_precision(double x, double precision, bool has_precision);
+ScrStr *scr_num_to_exponential_digits(double x, double fraction_digits);
+ScrStr *scr_num_to_string_radix_f64(double value, double radix);
 
 /* Object.is over two numbers — the spec's SameValue on doubles: NaN
  * equals NaN, +0 differs from -0, everything else is ==. Never throws. */
@@ -91,15 +105,60 @@ ScrStr *scr_intl_num_format_en_us(double x);
  * mutation are frontend-fenced; construction, storage, getters, and ISO
  * formatting are exact over this representation. */
 double scr_date_now(void); /* integer ms since epoch, like Node */
+/* The clock of the MockTimers that mocks Date (scr_test.c), NULL while
+ * Date is not mocked. Dynamic `new Date()` reads it; the runtime's own
+ * time stamps keep scr_date_now, as Node's internals keep the real Date. */
+extern SCR_TL const double *scr_date_mock_now;
 double scr_date_new_ms(double ms); /* TimeClip (NaN when invalid) */
 double scr_date_get_time(double ms);
+/* Date.prototype's setters (setMilliseconds ... setFullYear and their UTC
+ * forms) over a time value: the new time value for `argc` arguments
+ * `a`..`d` (scr_lib.c). `setter` is an SCR_DATE_SET_* code; it and `argc`
+ * are whole numbers passed as doubles, as the compiler's lib calls pass
+ * numbers. */
+enum {
+  SCR_DATE_SET_MILLISECONDS = 0,
+  SCR_DATE_SET_SECONDS = 1,
+  SCR_DATE_SET_MINUTES = 2,
+  SCR_DATE_SET_HOURS = 3,
+  SCR_DATE_SET_DATE = 4,
+  SCR_DATE_SET_MONTH = 5,
+  SCR_DATE_SET_FULL_YEAR = 6,
+  SCR_DATE_SET_UTC = 8,
+};
+double scr_date_set_fields(double t, double setter, double argc,
+                           double a, double b, double c, double d);
+/* A Date object: the TimeClip'd time value in milliseconds (NaN for an
+ * invalid date). Dates are immutable; their identity is the pointer.
+ * Retain/release follow the runtime's RC conventions (SIZE_MAX immortal). */
+typedef struct ScrDate {
+  size_t rc;
+  double ms;
+} ScrDate;
+ScrDate *scr_date_new(double ms); /* +1 */
+ScrDate *scr_date_retain(ScrDate *date);
+void scr_date_release(ScrDate *date);
+void *scr_date_retain_v(void *p);
+void scr_date_release_v(void *p);
 /* Node's exact ISO 8601 UTC format (expanded ±YYYYYY years outside
  * 0–9999). THROWS Node's "Invalid time value" RangeError on NaN or
  * |ms| > 8.64e15 and returns NULL; +1 otherwise. */
 ScrStr *scr_date_to_iso(double ms);
-/* new Date(dateString).getTime(): the BOUNDED parse (the X509 validity
- * shape + ECMA's format with an explicit offset); NaN elsewhere. */
+/* Node's Date.prototype.toUTCString ("Thu, 01 Jan 1970 00:00:00 GMT";
+ * "Invalid Date" for NaN). Never throws; +1. */
+ScrStr *scr_date_to_utc_string(double ms);
+/* The BOUNDED parse (the X509 validity shape + ECMA's format with an
+ * explicit offset); NaN elsewhere. */
 double scr_date_parse_get_time(ScrStr *s);
+/* Date.parse and new Date(dateString): V8's date parser (the ES5 format,
+ * then its legacy grammar: RFC 1123/2822, Date#toString, "Jan 2, 2024",
+ * ...). Zone-less dates are local time. Never throws. */
+double scr_date_parse(ScrStr *s);
+/* new Date(year, monthIndex, date, hours, minutes, seconds, ms) over
+ * already-number arguments: V8's MakeDay/MakeTime over LOCAL fields, then
+ * UTC(t) in the host zone and TimeClip. Never throws. */
+double scr_date_new_local(double y, double mo, double d,
+                          double h, double mi, double s, double ms);
 /* Date.UTC over already-number arguments (frontend completes the spec's
  * defaults): MakeDay/MakeTime/TimeClip exactly — 0–99 maps to 1900+year,
  * month/date rollover, NaN for non-finite parts, out-of-range results,
@@ -115,6 +174,20 @@ double scr_date_get_minutes(double ms, bool utc);
 double scr_date_get_seconds(double ms, bool utc);
 double scr_date_get_milliseconds(double ms);
 double scr_date_get_timezone_offset(double ms);
+/* Date.prototype.toString, toDateString and toTimeString with V8's
+ * formats; "Invalid Date" for NaN. +1. */
+ScrStr *scr_date_to_string(double ms);
+ScrStr *scr_date_to_date_string(double ms);
+ScrStr *scr_date_to_time_string(double ms);
+/* String() of a Date object (ScrDate *), and Array.prototype.join over an
+ * array of Date objects (holes empty). +1. */
+ScrStr *scr_date_object_to_string(void *date);
+struct ScrArr;
+ScrStr *scr_date_arr_join(struct ScrArr *dates, const ScrStr *sep);
+/* The long time zone name Node prints after the GMT offset for the host
+ * zone at time value `ms`; `isdst` is tm_isdst at `ms`, or -1 when not
+ * known. Borrowed; valid until the next call on the same thread. */
+const char *scr_date_zone_name(double ms, int isdst);
 /* One-argument ABI wrappers used by the LLVM lib-call table. */
 double scr_date_get_full_year_local(double ms);
 double scr_date_get_full_year_utc(double ms);

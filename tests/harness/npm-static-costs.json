@@ -84,6 +84,8 @@
     "the published Effect Function subpath initializes and runs statically": 9097,
     "the published Effect generator has deterministic native results": 105577,
     "the published Effect generator logs and completes statically": 112814,
+    "the published js-yaml loads, dumps and reports errors statically and matches Node": 12728,
+    "the published smol-toml parses and stringifies statically and matches Node": 11649,
     "untyped package methods preserve virtual overrides (llvm)": 3065
   },
   "san": {
@@ -171,6 +173,8 @@
     "the published Effect Function subpath initializes and runs statically": 8280,
     "the published Effect generator has deterministic native results": 136502,
     "the published Effect generator logs and completes statically": 181378,
+    "the published js-yaml loads, dumps and reports errors statically and matches Node": 35621,
+    "the published smol-toml parses and stringifies statically and matches Node": 25130,
     "untyped package methods preserve virtual overrides (llvm)": 2730
   }
 }

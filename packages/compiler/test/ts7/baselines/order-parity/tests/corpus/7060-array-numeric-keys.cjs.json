@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7060-array-numeric-keys.cjs"
+ ],
+ "diags": []
+}

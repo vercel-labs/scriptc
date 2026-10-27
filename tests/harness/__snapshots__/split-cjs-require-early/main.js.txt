@@ -1,0 +1,13 @@
+split-cjs-require-early/main.js:10:7 - error SC1013: require() binding 'lib' assigned below code that can reach it (Node reads undefined before the assignment runs, which is not modeled — move the assignment above the code that can run first) is not supported yet
+
+   9 | console.log('boot', helper());
+  10 | lib = require('./lib.js');
+     |       ^~~~~~~~~~~~~~~~~~~
+  11 | 
+
+split-cjs-require-early/main.js:15:12 - error SC1013: require() binding 'wrapped' assigned below code that can reach it (Node reads undefined before the assignment runs, which is not modeled — move the assignment above the code that can run first) is not supported yet
+
+  14 | console.log('peek', wrapped === undefined);
+  15 | wrapped = (require('./lib.js'));
+     |            ^~~~~~~~~~~~~~~~~~~
+  16 | 

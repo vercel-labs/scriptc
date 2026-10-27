@@ -38,6 +38,7 @@ extern SCR_TL ScrVt scr_emitter_vt; /* main() stamps pre/post */
 extern SCR_TL double scr_emitter_default_max;
 
 ScrEmitter *scr_emitter_new(void); /* +1, collector-headered */
+ScrStr *scr_emitter_class_name(const ScrEmitter *em); /* +1 */
 /* Internal owner hook; observes listener presence without running script. */
 void scr_emitter_observe(ScrEmitter *em,
                         void (*observe)(void *, const ScrStr *, bool), void *context);
@@ -63,6 +64,20 @@ ScrPromise *scr_events_once(ScrEmitter *em, ScrStr *name, ScrClosure *boxer, voi
                             ScrEeInvoke inv, ScrClosure *err_boxer, void *err_adapter,
                             ScrEeInvoke err_inv);
 void scr_events_once_fire(ScrClosure *cb, ScrArr *args);
+/* events.once(emitter, name, { signal }) (scr_events_once_signal.c): the
+ * scr_events_once arguments plus the checked-dynamic signal (borrowed;
+ * undefined for the plain form). Never throws: a non-AbortSignal value,
+ * an aborted signal or a throwing 'newListener' listener rejects the +1
+ * result. Its adapters end in scr_events_once_signal_fire. */
+typedef struct ScrDyn ScrDyn; /* full definition below (C11 repeat) */
+ScrPromise *scr_events_once_signal(ScrEmitter *em, ScrStr *name, ScrClosure *boxer, void *adapter,
+                                   ScrEeInvoke inv, ScrClosure *err_boxer, void *err_adapter,
+                                   ScrEeInvoke err_inv, ScrDyn *signal);
+void scr_events_once_signal_fire(ScrClosure *cb, ScrArr *args);
+/* Removes the listener entry whose closure is `cb` (borrowed) without a
+ * 'removeListener' event: the undo of an add whose 'newListener'
+ * announcement threw. */
+void scr_emitter_unadd_quiet(ScrEmitter *em, ScrStr *name, ScrClosure *cb);
 ScrEmitter *scr_emitter_on(ScrEmitter *em, ScrStr *name, ScrClosure *cb /*moves*/,
                             ScrEeInvoke inv, bool once, bool prepend);
 /* The dyn-adapted registration family (JS-lane checked-dynamic
@@ -80,12 +95,27 @@ void scr_emitter_check_listener(const ScrDyn *cb);
 ScrEmitter *scr_emitter_on_dyn(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
                                 ScrClosure *adapter /*moves*/,
                                 ScrEeInvoke inv, bool once, bool prepend);
-/* Computed-name listeners retain the original closure and its checked-
- * dynamic call thunk, preserving the number of arguments passed to emit.
- * The frontend keeps these names disjoint from fixed-tuple event names. */
+/* Listeners registered as checked-dynamic functions retain the original
+ * closure and its checked-dynamic call thunk, preserving the number of
+ * arguments passed to an untyped emit. on_dyn entries also carry the typed
+ * adapter for the event's fixed tuple; on_flex entries are for names the
+ * program emits only through untyped values or computed names. */
 ScrEmitter *scr_emitter_on_flex(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
                                 bool once, bool prepend);
+/* Registration and emit through an untyped value (the class dispatch of
+ * compiled emitters): on_any adds runtime typed adapters under 'error' and
+ * the meta events and installs the dynamic half; emit_any keeps Node's
+ * unhandled-'error' contract and gives typed meta listeners a string. */
+ScrEmitter *scr_emitter_on_any(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
+                               bool once, bool prepend);
+bool scr_emitter_emit_any(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, size_t argc);
 ScrEmitter *scr_emitter_off_dyn(ScrEmitter *em, ScrStr *name, const ScrDyn *cb);
+/* The registry's checked-dynamic half (meta-event argument vectors and
+ * rebuilt listener values), installed by the first on_any call; NULL in
+ * programs that never register a listener through an untyped value.
+ * Internal. */
+typedef struct ScrEeDynOps ScrEeDynOps;
+extern SCR_TL const ScrEeDynOps *scr_ee_dyn;
 /* The adapter-mediated registration (the LLVM backend's listeners): the
  * ADAPTER closure is what emit invokes, the ORIGINAL closure is the
  * entry's identity (the on_dyn split, with a plain-closure identity).
@@ -124,6 +154,20 @@ ScrEmitter *scr_emitter_remove_all(ScrEmitter *em, ScrStr *name, bool all);
  * emit('error', err): no listener ⇒ THROWS err (borrowed; +1 taken). */
 bool scr_emitter_emit(ScrEmitter *em, ScrStr *name, ...);
 bool scr_emitter_emit_flex(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, size_t argc);
+/* An untyped emit of one message: a listener registered from a function
+ * box with a typed message entry (scr_dyn_func_set_message) reads the
+ * message itself while no listener has needed the decoded value; from the
+ * first listener without an entry on, every listener gets decode(message),
+ * made once. */
+struct ScrMessage;
+bool scr_emitter_emit_message(ScrEmitter *em, ScrStr *name, const struct ScrMessage *message,
+                              ScrDyn *(*decode)(const struct ScrMessage *));
+/* An untyped emit of an event with a fixed tuple: the arguments as given
+ * for dynamic listeners, plus the tuple converted by the caller as
+ * scr_emitter_emit's variadics for typed listeners. has_typed answers
+ * whether any listener of the name needs the converted tuple. */
+bool scr_emitter_emit_mixed(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, size_t argc, ...);
+bool scr_emitter_has_typed(ScrEmitter *em, ScrStr *name);
 bool scr_emitter_emit_error_flex(ScrEmitter *em, ScrDyn *error);
 bool scr_emitter_emit_error(ScrEmitter *em, ScrStr *name, ScrError *err);
 double scr_emitter_listener_count(ScrEmitter *em, ScrStr *name);
@@ -139,10 +183,13 @@ ScrStr *scr_emitter_error_monitor(void);
  * other read). The stream constructors call this. */
 void scr_emitter_reserve(ScrEmitter *em, const char *name);
 ScrArr *scr_emitter_listeners(ScrEmitter *em, ScrStr *name); /* +1 closures */
+ScrDyn *scr_emitter_listeners_dyn(ScrEmitter *em, ScrStr *name); /* +1 dyn array */
 ScrEmitter *scr_emitter_set_max(ScrEmitter *em, double n);   /* returns em +1 */
 double scr_emitter_get_max(ScrEmitter *em);
 void scr_emitter_set_default_max(double n);
 double scr_emitter_get_default_max(void);
+double scr_emitter_esm_default_max_get(void);
+void scr_emitter_esm_sync(void);
 /* True when the emitter has at least one listener for `name` — the
  * stream unit's registration probe (and anyone else's). */
 bool scr_emitter_has(ScrEmitter *em, const char *name);

@@ -17,7 +17,7 @@ const concat = (left: IrExpr, right: IrExpr): IrExpr => ({
 
 function logBody(name: "console.log" | "console.error", args: IrExpr[]): string {
   const mod: IrModule = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     functions: [

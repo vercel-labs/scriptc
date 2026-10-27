@@ -25,15 +25,6 @@ options-record.ts:20:22 - error SC2020: 'get with agent: false and a non-literal
 
   hint: agent: false lowers by injecting Connection: close into a LITERAL headers object — add connection: "close" to the record instead, or write the headers inline
 
-options-record.ts:23:22 - error SC2020: 'get option 'socketPath'' is part of the standard library types but has no scriptc lowering yet
-
-  22 | // Documented client options with no lowering fence by name.
-  23 | http.get({ port: 80, socketPath: "/tmp/sock.s" }, () => {});
-     |                      ^~~~~~~~~~~~~~~~~~~~~~~~~
-  24 | http.get({ port: 80, localAddress: "127.0.0.1" }, () => {});
-
-  hint: hostname/host, port, path, method, timeout, headers, agent, signal, and maxHeaderSize are the supported options
-
 options-record.ts:24:22 - error SC2020: 'get option 'localAddress'' is part of the standard library types but has no scriptc lowering yet
 
   23 | http.get({ port: 80, socketPath: "/tmp/sock.s" }, () => {});

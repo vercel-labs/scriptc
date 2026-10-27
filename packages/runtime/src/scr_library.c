@@ -371,6 +371,30 @@ void scr_library_bytes_out(ScrBytes *b, const uint8_t **out, size_t *out_len) {
   *out_len = b->len;
 }
 
+ScrStr *scr_library_cstr_in(const char *p, const char *trap_msg) {
+  if (p == NULL) scr_trap(trap_msg);
+  return scr_str_from_utf8_lossy((const uint8_t *)p, strlen(p));
+}
+
+/* A C string ends at its first NUL: text holding U+0000 cannot cross. */
+static void scr_library_cstr_check(const ScrStr *s) {
+  if (memchr(s->data, 0, s->len) != NULL) {
+    scr_trap("scriptc: TypeError: a cstring value contains U+0000, which a C string cannot "
+             "hold\n");
+  }
+}
+
+const char *scr_library_cstr_out(ScrStr *s) {
+  scr_library_arena_keep(s, true);
+  scr_library_cstr_check(s);
+  return s->data; /* NUL-terminated after len (ScrStr layout) */
+}
+
+const char *scr_library_cstr_arg(const ScrStr *s) {
+  scr_library_cstr_check(s);
+  return s->data;
+}
+
 /* ── the reset registry + session reset ─────────────────────────────────
  * Where an executable's always-linked units atexit() their lazy teardowns,
  * library builds register here (scr_atexit in scr_runtime.h): registered

@@ -15,7 +15,7 @@ function tail(path: string): string {
 }
 
 async function main(): Promise<void> {
-  const scratch = "tmp-1357-" + tail(process.argv[1]);
+  const scratch = "tmp-1357-" + tail(process.argv[1]) + "-" + process.pid;
   if (existsSync(scratch)) {
     if (existsSync(scratch + "/a.txt")) {
       rmSync(scratch + "/a.txt");

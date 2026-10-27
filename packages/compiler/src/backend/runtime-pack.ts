@@ -46,8 +46,6 @@ export interface RuntimePackSelection {
   sourceDependencies: NativeArtifactDependency[];
   selectedRuntimeArtifacts: RuntimePackArtifact[];
   selectedArchiveArtifacts: RuntimePackArtifact[];
-  /** Bitcode of the selected runtime units that ship it, in unit order. */
-  selectedRuntimeBitcode: RuntimePackArtifact[];
 }
 
 async function verifyArtifact(root: string, artifact: RuntimePackArtifact): Promise<string> {
@@ -249,49 +247,5 @@ export async function loadRuntimePack(options: {
     sourceDependencies,
     selectedRuntimeArtifacts: selectedVariants,
     selectedArchiveArtifacts: selectedArchives,
-    selectedRuntimeBitcode: selectedVariants.flatMap((variant) =>
-      variant.bitcode === undefined ? [] : [variant.bitcode],
-    ),
-  };
-}
-
-export interface RuntimeBitcodeImport {
-  paths: string[];
-  /** Content digests, in path order, for cache keys. */
-  digests: string[];
-  dependencies: NativeArtifactDependency[];
-}
-
-/** Verified bitcode for the runtime units of the given flavor that a program
- * links, for the helper's available_externally import. Release units carry
- * their compiled bitcode reduced to the bodies that need no unit-local
- * state; speed units carry their promoted bitcode. Null when the selected
- * units ship no bitcode (a pack built without the helper, or no speed
- * flavor). */
-export async function loadRuntimeBitcode(options: {
-  target: NativeTargetSpec;
-  features: NativeLinkFeatures;
-  optimization: "release" | "speed";
-  env?: NodeJS.ProcessEnv;
-  resolver?: (specifier: string) => string;
-}): Promise<RuntimeBitcodeImport | null> {
-  const pack = await loadRuntimePack(options);
-  // Without a speed flavor, speed programs link release units; only the
-  // speed flavor's promoted objects match speed bitcode.
-  if (options.optimization === "speed" && pack.manifest.flavors.speed === undefined) return null;
-  if (pack.selectedRuntimeBitcode.length === 0) return null;
-  const paths = await Promise.all(
-    pack.selectedRuntimeBitcode.map((artifact) => verifyArtifact(pack.root, artifact)),
-  );
-  let dependencies: NativeArtifactDependency[];
-  try {
-    dependencies = await snapshotDependencies([pack.manifestPath, ...paths]);
-  } catch {
-    throw new RuntimePackError("runtime pack bitcode changed during selection", "invalid");
-  }
-  return {
-    paths,
-    digests: pack.selectedRuntimeBitcode.map((artifact) => artifact.sha256),
-    dependencies,
   };
 }

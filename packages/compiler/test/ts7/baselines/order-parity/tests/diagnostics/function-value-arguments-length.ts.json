@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/function-value-arguments-length.ts"
+ ],
+ "diags": []
+}

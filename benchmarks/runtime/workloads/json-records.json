@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/json-records.ts",
+  "args": [
+    "4"
+  ]
+}

@@ -1,3 +1,4 @@
+import { keyedHelperName } from "./stable-names.js";
 import {
   BOOL,
   STRING,
@@ -27,7 +28,7 @@ export function objectEnumerationReceiver(
   const key = `obj.receiver:${source.unionId}:${expected.shapeId}`;
   let name = lowerer.arrHofHelpers.get(key);
   if (name === undefined) {
-    name = `%obj.receiver.${lowerer.arrHofHelpers.size}`;
+    name = keyedHelperName(lowerer, "%obj.receiver", key);
     lowerer.arrHofHelpers.set(key, name);
     const value = varRef("value.0", source, loc);
     lowerer.liftedFns.push({

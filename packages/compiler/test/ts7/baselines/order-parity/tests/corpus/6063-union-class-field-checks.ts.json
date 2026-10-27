@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6063-union-class-field-checks.ts"
+ ],
+ "diags": []
+}

@@ -28,6 +28,7 @@ test.skipIf(process.platform === "win32")(
           "scr_worker.c",
           "scr_mailbox.c",
           "scr_message.c",
+          "scr_async_dyn.c",
           ...EXECUTABLE_RUNTIME_SOURCES,
         ].map((name) => join(import.meta.dirname, name)),
         ...(process.platform === "linux" ? ["-lm"] : []),

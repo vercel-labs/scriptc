@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/js-class-constructor-returns/factory.js",
+  "<repo>/tests/corpus/js-class-constructor-returns/main.ts"
+ ],
+ "diags": []
+}

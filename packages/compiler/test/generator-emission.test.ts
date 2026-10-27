@@ -9,13 +9,19 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
-async function emit(source: string): Promise<string> {
+async function emit(source: string, optimization?: "dev"): Promise<string> {
   const outDir = await mkdtemp(join(tmpdir(), "scriptc-generator-"));
   directories.push(outDir);
   const entry = join(outDir, "main.ts");
   await writeFile(entry, source);
   const outPath = join(outDir, "program.ll");
-  const result = await compile(entry, { entry, outDir, outPath, outputKind: "llvm" });
+  const result = await compile(entry, {
+    entry,
+    outDir,
+    outPath,
+    outputKind: "llvm",
+    ...(optimization !== undefined ? { optimization } : {}),
+  });
   expect(result.ok, JSON.stringify(result)).toBe(true);
   return readFile(outPath, "utf8");
 }
@@ -50,7 +56,7 @@ console.log(sum);
   expect(definition(llvm, "sc_f_range")).not.toContain("@scr_coro_yield_f64(");
   expect(llvm).not.toContain("@scr_gen_take_out_f64(");
   expect(llvm).toContain("%ScrGenHead = type { i64, ptr, ptr, i32, %ScrGenSlot }");
-  expect(llvm).toContain("attributes #1 = { sanitize_address presplitcoroutine }");
+  expect(llvm).toContain("attributes #1 = { uwtable presplitcoroutine }");
   expect(definition(llvm, "sc_gs_range")).toContain("call ptr @scr_gen_new_stackless(");
   expect(llvm).not.toContain("@scr_gen_yield_f64(");
 });
@@ -117,7 +123,7 @@ console.log(sum, r.value);
   expect(llvm).toMatch(/define internal ptr @sc_gres_\d+\(ptr %g\)[^\n]*\(dyn channel\)/);
 });
 
-test("async generators keep their fibers", async () => {
+test("async generators that suspend only at their own awaits and yields compile to stackless coroutines", async () => {
   const llvm = await emit(`
 async function* ticks(n: number): AsyncGenerator<number, void, undefined> {
   for (let i = 0; i < n; i++) {
@@ -130,6 +136,36 @@ async function main(): Promise<void> {
 }
 void main();
 `);
+  const body = definition(llvm, "sc_f_ticks");
+  expect(body).toMatch(/^define internal void @sc_f_ticks(?:\.i32)?\(double [^)]*\) #1 /);
+  // The await suspends the coroutine (one turn for a non-promise operand),
+  // and the yield stores OUT before its own suspension.
+  expect(body).toContain("call zeroext i1 @scr_coro_hop_prepare(ptr");
+  expect(body).toContain("call void @scr_coro_yield_f64(ptr");
+  expect(body).toContain("call void @scr_gen_coro_finish(ptr");
+  expect(body).not.toContain("@scr_await_hop(");
+  expect(body).not.toContain("@scr_gen_yield_f64(");
+  expect(definition(llvm, "sc_gs_ticks")).toContain("call ptr @scr_async_gen_new_stackless(");
+  // Consuming the generator does not park its consumer.
+  expect(definition(llvm, "sc_as_main")).toContain("@scr_async_spawn_stackless(");
+});
+
+test("debug builds keep async generators on their fibers", async () => {
+  const llvm = await emit(
+    `
+async function* ticks(n: number): AsyncGenerator<number, void, undefined> {
+  for (let i = 0; i < n; i++) {
+    await null;
+    yield i;
+  }
+}
+async function main(): Promise<void> {
+  for await (const t of ticks(3)) console.log(t);
+}
+void main();
+`,
+    "dev",
+  );
   expect(definition(llvm, "sc_gs_ticks")).toContain("call ptr @scr_async_gen_new(");
   expect(llvm).not.toContain("presplitcoroutine");
 });

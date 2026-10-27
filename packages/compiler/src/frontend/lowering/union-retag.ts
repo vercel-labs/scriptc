@@ -86,6 +86,36 @@ export function planRecordUnionWrap(
   return { field: discriminant.field, fieldType, routes };
 }
 
+/** A record whose layout converts into more than one arm of a
+ * discriminated union. The IR keeps the discriminant field as a plain
+ * string, so its layout alone cannot say which variant it is; the value of
+ * the discriminant does, as in JavaScript. Every record arm the record
+ * converts into (by copy or width) becomes a route selected by that arm's
+ * discriminant values. A value no route names throws the catchable
+ * TypeError. */
+export function planRecordUnionLift(
+  source: IrRecordShape,
+  to: IrUnionDef,
+  shapeOf: (id: string) => IrRecordShape | undefined,
+  widthLift: (src: IrType, dst: IrType) => WidthLift | null,
+): RecordUnionWrapPlan | null {
+  const discriminant = to.discriminant;
+  if (!discriminant || source.tuple || source.indexValue || shapeHasAccessorSlots(source))
+    return null;
+  const fieldType = discriminantField(source, discriminant.field);
+  if (!fieldType || discriminantOwners(to, shapeOf) === null) return null;
+  const sourceType: IrType = { kind: "record", shapeId: source.id };
+  const routes: UnionRetagRoute[] = [];
+  for (const entry of discriminant.cases) {
+    const arm = to.arms[entry.tag];
+    if (!arm || arm.kind !== "record") continue;
+    const lift = arm.shapeId === source.id ? { how: "copy" as const } : widthLift(sourceType, arm);
+    if (lift === null) continue;
+    routes.push({ tag: entry.tag, lift, values: entry.values });
+  }
+  return routes.length > 0 ? { field: discriminant.field, fieldType, routes } : null;
+}
+
 /** Pure conversion planning. A source storage tag need not denote just
  * one semantic variant: refinements can coalesce recursive record layouts.
  * When both unions name the same discriminant, its values select target

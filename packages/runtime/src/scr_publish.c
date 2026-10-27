@@ -37,8 +37,14 @@
 typedef struct {
   uintptr_t obj;
   uint32_t rc;
-  uint32_t buf; /* a candidate taken out of its buffer: its index + 1, else 0 */
+  uint32_t buf; /* a candidate taken out of its buffer: its index + 1, else 0;
+                 * SCR_PUB_LOG_COUNT: `rc` is the count of the low half */
 } ScrPubLog;
+
+/* In ScrPubLog.buf: the object keeps its class id in the high half of
+ * its rc word (SCR_PUB_CLASS_ID), and `rc` is the count of the low half,
+ * or it is compact (SCR_PUB_COMPACT), and `rc` is its header word. */
+#define SCR_PUB_LOG_COUNT UINT32_C(0x80000000)
 
 #define SCR_PUB_DYN ((uintptr_t)1)
 #define SCR_PUB_RC_LIFETIME UINT32_C(0xfffffffe)
@@ -103,7 +109,7 @@ static void *scr_pub_grow(void *p, size_t *cap, size_t size, void *inline_buf) {
 void scr_pub_str_fn(void *v, ScrPub *ctx);
 
 void scr_pub_push(ScrPub *ctx, void *v, ScrPubFn fn) {
-  if (!v || *(size_t *)v == SIZE_MAX || ctx->refusal) return;
+  if (!v || SCR_RC_PUBLISHED(v) || ctx->refusal) return;
   if (fn == scr_pub_str_fn) { /* a leaf: mark it now */
     scr_pub_str_fn(v, ctx);
     return;
@@ -120,7 +126,13 @@ void scr_pub_push(ScrPub *ctx, void *v, ScrPubFn fn) {
  * touch the objects again. */
 bool scr_pub_mark(ScrPub *ctx, void *obj, bool cyc, int kind) {
   size_t *rc = obj;
-  if (*rc == SIZE_MAX || ctx->refusal) return false;
+  if (SCR_RC_PUBLISHED(obj) || ctx->refusal) return false;
+  bool compact = (kind & SCR_PUB_COMPACT) != 0;
+  /* Both log the low 32 bits: a count, or a compact header word. An
+   * object with a layout id in its rc word (scr_rc_layout_id) keeps it, as
+   * a class instance keeps its class id. */
+  bool class_id = compact || (kind & SCR_PUB_CLASS_ID) != 0 || scr_rc_layout_id(obj) != 0;
+  kind &= ~(SCR_PUB_CLASS_ID | SCR_PUB_COMPACT);
   if (ctx->logged == ctx->log_cap)
     ctx->log = scr_pub_grow(ctx->log, &ctx->log_cap, sizeof *ctx->log, ctx->log_inline);
 #ifdef SCR_RC_AUDIT
@@ -135,10 +147,11 @@ bool scr_pub_mark(ScrPub *ctx, void *obj, bool cyc, int kind) {
     buf = scr_cyc_pub_take(obj) + 1;
     ctx->taken++;
   }
-  size_t count = *rc;
+  size_t count = class_id ? SCR_RC_COUNT(obj) : *rc;
   uint32_t logged = (uint32_t)count;
+  if (class_id) buf |= SCR_PUB_LOG_COUNT;
 #if SIZE_MAX > UINT32_MAX
-  if (count >= SCR_PUB_RC_LIFETIME) {
+  if (!class_id && count >= SCR_PUB_RC_LIFETIME) {
     if (count == (size_t)1 << 63) logged = SCR_PUB_RC_LIFETIME;
     else {
       if (ctx->nbig == ctx->big_cap) ctx->big = scr_pub_grow(ctx->big, &ctx->big_cap, sizeof *ctx->big, NULL);
@@ -148,7 +161,9 @@ bool scr_pub_mark(ScrPub *ctx, void *obj, bool cyc, int kind) {
   }
 #endif
   *e = (ScrPubLog){(uintptr_t)obj, logged, buf};
-  *rc = SIZE_MAX;
+  if (compact) SCR_RC_COUNT(obj) |= SCR_RC_COMPACT_PUBLISHED;
+  else if (class_id) SCR_RC_COUNT(obj) = SCR_RC_IMMORTAL;
+  else *rc = SIZE_MAX;
   return true;
 }
 
@@ -186,21 +201,40 @@ static void scr_pub_slot(ScrPub *ctx, uint64_t slot, ScrPubFn fn) {
   if (fn) scr_pub_push(ctx, p, fn);
 }
 
+/* The elements of a compact reference array (SCR_ELEM_CREF): 4-byte dense
+ * slots, 8-byte pointers in the sparse entries. */
+static __attribute__((noinline)) void scr_pub_cref_elems(ScrArr *a, ScrPub *ctx, ScrPubFn fn) {
+  size_t dense = a->len < a->cap ? a->len : a->cap;
+  const uint32_t *refs = (const uint32_t *)a->data;
+  const uint8_t *states = scr_arr_has_states(a) ? scr_arr_states_end_w(a, sizeof(uint32_t)) : NULL;
+  for (size_t i = 0; i < dense; i++)
+    if (!states || *scr_arr_state_in(states, i)) scr_pub_slot(ctx, scr_cref_decode(refs[i]), fn);
+  if (scr_arr_ext_of(a))
+    for (size_t i = 0; i < scr_arr_ext_of(a)->sparse_len; i++)
+      if (scr_arr_ext_of(a)->sparse[i].state) scr_pub_slot(ctx, scr_arr_ext_of(a)->sparse[i].slot, fn);
+}
+
 void scr_pub_arr(void *v, ScrPub *ctx, ScrPubFn elem) {
   ScrArr *a = v;
-  if (a->ext && (a->ext->props || a->ext->metadata)) {
+  if (scr_arr_ext_of(a) && (scr_arr_ext_of(a)->props || scr_arr_ext_of(a)->metadata)) {
     scr_pub_refuse(ctx, "Cannot publish an array with non-index properties");
     return;
   }
   if (!scr_pub_mark(ctx, a, a->cyc != 0, SCR_PUB_KIND_ARRAY)) return;
+  if (__builtin_expect(a->elem == SCR_ELEM_CREF, 0)) {
+    scr_pub_cref_elems(a, ctx, elem);
+    return;
+  }
   ScrPubFn fn = a->elem == SCR_ELEM_STR ? scr_pub_str_fn : a->elem == SCR_ELEM_REF ? elem : NULL;
   if (!fn) return;
+  /* String and reference elements have 8-byte slots. */
   size_t dense = a->len < a->cap ? a->len : a->cap;
+  const uint8_t *states = scr_arr_scan_states(a);
   for (size_t i = 0; i < dense; i++)
-    if (!a->present || a->present[i]) scr_pub_slot(ctx, a->data[i], fn);
-  if (a->ext)
-    for (size_t i = 0; i < a->ext->sparse_len; i++)
-      if (a->ext->sparse[i].state) scr_pub_slot(ctx, a->ext->sparse[i].slot, fn);
+    if (!states || *scr_arr_state_in(states, i)) scr_pub_slot(ctx, a->data[i], fn);
+  if (scr_arr_ext_of(a))
+    for (size_t i = 0; i < scr_arr_ext_of(a)->sparse_len; i++)
+      if (scr_arr_ext_of(a)->sparse[i].state) scr_pub_slot(ctx, scr_arr_ext_of(a)->sparse[i].slot, fn);
 }
 
 /* publish() of a scalar Node.js refuses (a Date): nothing to walk. */
@@ -217,12 +251,12 @@ void scr_pub_map(void *v, ScrPub *ctx, ScrPubFn key, ScrPubFn val) {
               m->key_kind == SCR_MAP_KEY_BIGINT || m->key_kind == SCR_MAP_KEY_UNION_VALUE
           ? key
           : NULL;
-  ScrPubFn vfn = m->val_kind == SCR_MAP_VAL_REF ? val : NULL;
+  ScrPubFn vfn = m->val_kind == SCR_MAP_VAL_REF || m->val_kind == SCR_MAP_VAL_CREF ? val : NULL;
   for (size_t i = 0; i < m->nentries; i++) {
-    const ScrMapEntry *e = &m->entries[i];
-    if (!e->hash) continue; /* tombstone */
+    if (!scr_map_entry_live(m, i)) continue; /* tombstone */
+    const ScrMapEntry *e = scr_map_entry_at(m, i);
     if (kfn) scr_pub_slot(ctx, e->key, kfn);
-    if (vfn) scr_pub_slot(ctx, e->val, vfn);
+    if (vfn) scr_pub_slot(ctx, scr_map_entry_val(m, e), vfn);
   }
 }
 
@@ -244,8 +278,8 @@ static bool scr_pub_dyn_ok(const ScrDyn *d, const char **why) {
     *why = "Cannot publish an Object object";
     return false;
   }
-  for (size_t i = 0; i < d->v.obj.len; i++)
-    if (d->v.obj.entries[i].accessor) {
+  for (size_t i = 0; i < scr_dyn_obj_count(d); i++)
+    if (scr_dyn_obj_prop_at(d, i).accessor) {
       *why = "Cannot publish an accessor property";
       return false;
     }
@@ -291,9 +325,9 @@ void scr_pub_dyn_fn(void *v, ScrPub *ctx) {
     case SCR_DYN_ARR:
     case SCR_DYN_OBJ: {
       if (!scr_pub_dyn_ok(d, &why)) break;
-      size_t n = d->kind == SCR_DYN_ARR ? d->v.arr.len : d->v.obj.len;
+      size_t n = d->kind == SCR_DYN_ARR ? d->v.arr.len : scr_dyn_obj_count(d);
       for (size_t i = 0; i < n; i++) {
-        ScrDyn *child = d->kind == SCR_DYN_ARR ? d->v.arr.items[i] : d->v.obj.entries[i].value;
+        ScrDyn *child = d->kind == SCR_DYN_ARR ? d->v.arr.items[i] : scr_dyn_obj_value_at(d, i);
         if (child && child->rc != SIZE_MAX) SCR_PUB_ADD((uintptr_t)child);
       }
       break;
@@ -372,7 +406,7 @@ static bool scr_pub_keep_ok(size_t bytes) {
 }
 
 void scr_publish(void *root, ScrPubFn fn) {
-  if (!root || *(size_t *)root == SIZE_MAX) return;
+  if (!root || SCR_RC_PUBLISHED(root)) return;
   ScrPub ctx;
   if (scr_pub_keep.stack) {
     ctx.stack = scr_pub_keep.stack;
@@ -417,13 +451,18 @@ void scr_publish(void *root, ScrPubFn fn) {
     for (size_t i = ctx.logged; i-- > 0;) {
       const ScrPubLog *e = &ctx.log[i];
       void *obj = scr_pub_log_obj(e);
-      size_t rc = e->rc;
+      uint32_t buf = e->buf & ~SCR_PUB_LOG_COUNT;
+      if (e->buf & SCR_PUB_LOG_COUNT) {
+        SCR_RC_COUNT(obj) = (ScrRcCount)e->rc;
+      } else {
+        size_t rc = e->rc;
 #if SIZE_MAX > UINT32_MAX
-      if (e->rc == SCR_PUB_RC_LIFETIME) rc = (size_t)1 << 63;
-      else if (e->rc == SCR_PUB_RC_BIG) rc = ctx.big[--ctx.nbig];
+        if (e->rc == SCR_PUB_RC_LIFETIME) rc = (size_t)1 << 63;
+        else if (e->rc == SCR_PUB_RC_BIG) rc = ctx.big[--ctx.nbig];
 #endif
-      *(size_t *)obj = rc;
-      if (e->buf) scr_cyc_pub_restore(obj, e->buf - 1);
+        *(size_t *)obj = rc;
+      }
+      if (buf) scr_cyc_pub_restore(obj, buf - 1);
     }
     if (ctx.taken) scr_cyc_pub_fill();
     scr_throw_error_msg(SCR_ERR_TYPE, ctx.refusal, strlen(ctx.refusal));
@@ -440,7 +479,13 @@ void scr_publish(void *root, ScrPubFn fn) {
 #endif
     for (size_t i = 0; i < each; i++) {
       void *obj = scr_pub_log_obj(&ctx.log[i]);
-      if (ctx.log[i].obj & SCR_PUB_DYN) scr_dyn_release(scr_dyn_freeze(obj));
+      if (ctx.log[i].obj & SCR_PUB_DYN) {
+        ScrDyn *d = obj;
+        /* Other threads share the object; layouts belong to this thread
+         * (scr_dyn.h), so it moves to dictionary mode. */
+        if (d->kind == SCR_DYN_OBJ) scr_dyn_to_dictionary(d);
+        scr_dyn_release(scr_dyn_freeze_data(d));
+      }
 #ifdef SCR_RC_AUDIT
       scr_pub_audit_forget(ctx.kinds[i]);
 #endif
@@ -484,62 +529,12 @@ void scr_throw_published_field(const char *prop, const char *owner) {
   scr_pub_throw("Cannot assign to read only property '%s' of object '#<%s>'", prop, owner);
 }
 
-static void scr_pub_index_text(double index, char *out, size_t size) {
-  char buf[64];
-  size_t n = scr_f64_to_str(index, buf);
-  if (n > size - 1) n = size - 1;
-  memcpy(out, buf, n);
-  out[n] = 0;
+bool scr_throw_published_array(int op, const ScrArr *a, double index, double n) {
+  return scr_array_frozen_error(op, a->len, index, n, 0);
 }
 
-/* op: 0 index write, 1 push (n = argument count), 2 pop, 3 length write,
- * 4 unshift (n = argument count), 5 delete, 6 shift, 7 other in-place
- * rewrites (splice, reverse, fill, copyWithin, sort). Returns false when
- * Node's operation would not write the frozen array at all (it then is not
- * an error: e.g. reversing an empty array). */
-bool scr_throw_published_array(int op, const ScrArr *a, double index, double n) {
-  static const char length[] = "Cannot assign to read only property 'length' of object '[object Array]'";
-  char text[64];
-  size_t len = a->len;
-  switch (op) {
-  case 0:
-    scr_pub_index_text(index, text, sizeof text);
-    if (index >= 0 && index < (double)len && index == (double)(size_t)index)
-      scr_pub_throw("Cannot assign to read only property '%s' of object '[object Array]'%s", text, "");
-    else scr_pub_throw("Cannot add property %s, object is not extensible%s", text, "");
-    return true;
-  case 1:
-    if (n == 0) break;
-    scr_pub_index_text((double)len, text, sizeof text);
-    scr_pub_throw("Cannot add property %s, object is not extensible%s", text, "");
-    return true;
-  case 2:
-  case 6:
-    if (len == 0) break;
-    if (op == 6 && len > 1) {
-      scr_pub_throw("Cannot assign to read only property '0' of object '[object Array]'%s%s", "", "");
-      return true;
-    }
-    scr_pub_index_text((double)(len - 1), text, sizeof text);
-    scr_pub_throw("Cannot delete property '%s' of [object Array]%s", text, "");
-    return true;
-  case 3: break;
-  case 4:
-    if (n == 0) break;
-    scr_pub_index_text(len ? (double)len + n - 1 : 0, text, sizeof text);
-    scr_pub_throw("Cannot add property %s, object is not extensible%s", text, "");
-    return true;
-  case 5:
-    scr_pub_index_text(index, text, sizeof text);
-    scr_pub_throw("Cannot delete property '%s' of [object Array]%s", text, "");
-    return true;
-  default:
-    if (len == 0) return false;
-    scr_pub_throw("Cannot assign to read only property '0' of object '[object Array]'%s%s", "", "");
-    return true;
-  }
-  scr_throw_error_msg(SCR_ERR_TYPE, length, sizeof length - 1);
-  return true;
+bool scr_throw_published_array_range(int op, const ScrArr *a, double x, double y, double z) {
+  return scr_array_frozen_error(op, a->len, x, y, z);
 }
 
 void scr_throw_published_collection(bool set) {

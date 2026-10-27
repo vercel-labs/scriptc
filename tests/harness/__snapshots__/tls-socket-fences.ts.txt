@@ -1,0 +1,26 @@
+tls-socket-fences.ts:15:29 - error SC2020: 'new tls.TLSSocket in client mode' is part of the standard library types but has no scriptc lowering yet
+
+  14 |   // The client mode: Node starts no handshake for it.
+  15 |   new tls.TLSSocket(socket, { cert, key });
+     |                             ^~~~~~~~~~~~~
+  16 |   // A member after secureContext with side effects.
+
+  hint: Node starts no handshake for a client-mode TLSSocket — pass isServer: true for the server side; tls.connect makes client sockets
+
+tls-socket-fences.ts:17:71 - error SC2020: 'a new tls.TLSSocket options literal with side effects after secureContext' is part of the standard library types but has no scriptc lowering yet
+
+  16 |   // A member after secureContext with side effects.
+  17 |   new tls.TLSSocket(socket, { isServer: true, secureContext: context, ALPNProtocols: alpn() });
+     |                                                                       ^~~~~~~~~~~~~~~~~~~~~
+  18 |   // A secureContext that is not a SecureContext.
+
+  hint: secureContext is read after the other members — move it to the end of the object
+
+tls-socket-fences.ts:19:62 - error SC2020: 'a '{ cert: Uint8Array; key: Uint8Array }' secureContext' is part of the standard library types but has no scriptc lowering yet
+
+  18 |   // A secureContext that is not a SecureContext.
+  19 |   new tls.TLSSocket(socket, { isServer: true, secureContext: { cert, key } });
+     |                                                              ^~~~~~~~~~~~~
+  20 | });
+
+  hint: pass a tls.createSecureContext({ cert, key }) result

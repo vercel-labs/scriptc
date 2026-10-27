@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7054-let-bindings-with-null-writes.mjs"
+ ],
+ "diags": []
+}

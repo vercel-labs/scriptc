@@ -63,7 +63,7 @@ type CensusTypes = [
   ts.SignatureDeclaration,
   ts.Signature,
   ts.RegularExpressionLiteral,
-  ts.NodeArray<ts.Node>,
+  readonly ts.Node[],
   ts.ForStatement,
   ts.ExportAssignment,
   ts.Declaration,

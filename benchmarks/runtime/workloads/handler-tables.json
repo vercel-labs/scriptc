@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/handler-tables.ts",
+  "args": [
+    "4"
+  ]
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7738-private-logical-assignment-untyped.js"
+ ],
+ "diags": []
+}

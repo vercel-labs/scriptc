@@ -20,7 +20,7 @@ function sharedGraph(roots: number): IrModule {
     unionId: `input${index}`,
   }));
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     records: [
@@ -141,7 +141,7 @@ test("live record capsules bind field hooks in snapshot order", () => {
   const llvm = emitLlvmModule(module, { pointerBits: 64 });
   const tables = [
     ...llvm.matchAll(
-      /^@(\S+)_rops = internal global \{ i64, ptr, ptr, ptr, i8, ptr \} \{ i64 (\d+), /gm,
+      /^@(\S+)_rops = internal global \{ i64, ptr, ptr, ptr, i8, ptr, ptr, ptr \} \{ i64 (\d+), /gm,
     ),
   ];
   // root and leaf get field hooks; the record with an index-like field name
@@ -161,7 +161,7 @@ test("class instance capsules bind prototype member names by exact class", () =>
   const loc = { file: "live-references.ts", start: 0, end: 0 };
   const base: IrType = { kind: "object", className: "Base" };
   const module: IrModule = {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     classes: [

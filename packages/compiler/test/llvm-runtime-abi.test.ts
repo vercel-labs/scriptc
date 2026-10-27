@@ -176,7 +176,10 @@ async function readRuntimeHeader(
  * no linkage symbol the emitter could declare, so a declare against one
  * must report as missing. */
 async function parseHeader(): Promise<{ protos: Map<string, CProto>; dataSyms: Set<string> }> {
-  const raw = await readRuntimeHeader();
+  // The dynamic tier's units declare their entry points in scr_js.h, which
+  // static runtime units never include (packages/runtime/test/headers).
+  const seen = new Set<string>();
+  const raw = `${await readRuntimeHeader("scr_runtime.h", seen)}\n${await readRuntimeHeader("scr_js.h", seen)}`;
   const src = raw
     .replace(/\\\r?\n/g, "")
     .replace(/\/\*[\s\S]*?\*\//g, " ")
@@ -190,6 +193,12 @@ async function parseHeader(): Promise<{ protos: Map<string, CProto>; dataSyms: S
   }
   const ptrTypedefs = new Set<string>();
   for (const m of src.matchAll(/typedef\s+[^;{()]*\(\s*\*\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)\s*\(/g)) {
+    ptrTypedefs.add(m[1]!);
+  }
+  // Object-pointer typedefs (ScrJsVal).
+  for (const m of src.matchAll(
+    /typedef\s+[A-Za-z_][A-Za-z0-9_ ]*\*\s*([A-Za-z_][A-Za-z0-9_]*)\s*;/g,
+  )) {
     ptrTypedefs.add(m[1]!);
   }
   const types: HeaderTypes = { enums, ptrTypedefs };
@@ -346,12 +355,13 @@ describe("LLVM backend declares match scr_runtime.h prototypes", () => {
 #include "scr_runtime.h"
 
 /* LLVM emits: %ScrBytes = type { i64, i64, i32, ptr, ptr, i8, i8, i8, i8, ptr }.
- * Keep every ABI fact used by its field-index GEPs explicit here. */
+ * Keep every ABI fact used by its field-index GEPs explicit here. The C
+ * struct continues with fields only the runtime reads. */
 _Static_assert(sizeof(size_t) == 8, "LLVM ScrBytes expects 64-bit size_t");
 _Static_assert(sizeof(void *) == 8, "LLVM ScrBytes expects 64-bit pointers");
 _Static_assert(sizeof(ScrBytesElem) == 4, "LLVM ScrBytes elem field is i32");
 _Static_assert(_Alignof(ScrBytes) == 8, "LLVM ScrBytes alignment changed");
-_Static_assert(sizeof(ScrBytes) == 56, "LLVM ScrBytes size changed");
+_Static_assert(sizeof(ScrBytes) == 64, "ScrBytes size changed");
 _Static_assert(offsetof(ScrBytes, rc) == 0, "LLVM ScrBytes.rc offset changed");
 _Static_assert(offsetof(ScrBytes, len) == 8, "LLVM ScrBytes.len offset changed");
 _Static_assert(offsetof(ScrBytes, elem) == 16, "LLVM ScrBytes.elem offset changed");
@@ -361,7 +371,9 @@ _Static_assert(offsetof(ScrBytes, is_buffer) == 40, "LLVM ScrBytes.is_buffer off
 _Static_assert(offsetof(ScrBytes, is_data_view) == 41, "LLVM ScrBytes.is_data_view offset changed");
 _Static_assert(offsetof(ScrBytes, external) == 42, "LLVM ScrBytes.external offset changed");
 _Static_assert(offsetof(ScrBytes, untransferable) == 43, "LLVM ScrBytes.untransferable offset changed");
+_Static_assert(offsetof(ScrBytes, properties_traced) == 44, "ScrBytes.properties_traced must stay in padding");
 _Static_assert(offsetof(ScrBytes, shared) == 48, "LLVM ScrBytes.shared offset changed");
+_Static_assert(offsetof(ScrBytes, properties) == 56, "ScrBytes.properties must follow the LLVM prefix");
 `,
     );
     const driver = resolveCc();

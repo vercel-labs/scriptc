@@ -1,3 +1,4 @@
+import { keyedHelperName } from "./stable-names.js";
 import * as ts from "../ts7/adapter.js";
 import { InternalCompilerError } from "../../errors.js";
 import { typeKey } from "../type-mapper.js";
@@ -53,7 +54,7 @@ export function collectionInput(
   if (
     ts.isCallExpression(expression) &&
     !expression.questionDotToken &&
-    expression.arguments.length === 0 &&
+    expression.arguments.nodes.length === 0 &&
     ts.isPropertyAccessExpression(expression.expression) &&
     !expression.expression.questionDotToken
   ) {
@@ -91,7 +92,7 @@ export function collectionInput(
   const symbol = type.getSymbol();
   if (
     !symbol ||
-    (symbol.name !== "MapIterator" && symbol.name !== "SetIterator") ||
+    (ts.symbolName(symbol) !== "MapIterator" && ts.symbolName(symbol) !== "SetIterator") ||
     !lowerer.isStdlibSymbol(symbol)
   )
     return null;
@@ -197,7 +198,7 @@ export function ingestCollection(
   const key = `ingest:${input.collection ? typeKey(input.collection) + ":" + input.selection : "cursor:" + typeKey(input.element)}:${typeKey(destination)}:${mapper ? typeKey(mapper.type) : "copy"}`;
   let name = lowerer.arrHofHelpers.get(key);
   if (!name) {
-    name = `%collection.ingest.${lowerer.arrHofHelpers.size}`;
+    name = keyedHelperName(lowerer, "%collection.ingest", key);
     lowerer.arrHofHelpers.set(key, name);
     const context = newFnCtx(false, null, null, destination);
     lowerer.fnStack.push(context);

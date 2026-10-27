@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -65,4 +65,15 @@ test("scr_runtime.h holds no declarations of its own", () => {
   expect(text.filter((line) => !/^#(include "scr_\w+\.h"|ifndef|define|endif)/.test(line))).toEqual(
     [],
   );
+});
+
+// Two-tier invariant I3: the dynamic tier's value representation stays in
+// the scr_js_* units. A static runtime unit or module header never includes
+// scr_js.h, so no static runtime function can take or return a jsval.
+test("only dynamic-tier units include scr_js.h", () => {
+  const includers = readdirSync(srcDir)
+    .filter((name) => /\.(c|h)$/.test(name))
+    .filter((name) => /^#include "scr_js\.h"/m.test(readFileSync(join(srcDir, name), "utf8")));
+  expect(includers.filter((name) => !/^scr_js_\w+(\.test)?\.c$/.test(name))).toEqual([]);
+  expect(includers).toContain("scr_js_value.c");
 });

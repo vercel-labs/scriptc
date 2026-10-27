@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7245-writable-callback-order.mjs"
+ ],
+ "diags": []
+}

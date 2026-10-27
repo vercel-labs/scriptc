@@ -1,9 +1,10 @@
+import type { DiagnosticCode } from "./codes.js";
 import { expect, test } from "vitest";
 import type { ScrDiagnostic } from "./diagnostic.js";
 import { SourceLocator, buildEnvelope, categoryOf, groupDiagnostics, hintOf } from "./envelope.js";
 
 const diag = (
-  code: `SC${number}`,
+  code: DiagnosticCode,
   message: string,
   start: number,
   extra: Partial<ScrDiagnostic> = {},

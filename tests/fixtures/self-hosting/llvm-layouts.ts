@@ -51,6 +51,7 @@ try {
     declare: (decl) => { declarations.add(decl); },
     needOom: () => { needsOom = true; },
     needBadTag: () => { needsBadTag = true; },
+    mayHoldForeign: () => false,
     internLiteral: (text) => {
       let index = literals.indexOf(text);
       if (index === -1) { index = literals.length; literals.push(text); }
@@ -119,7 +120,8 @@ try {
     },
   );
   virtualBorrows = new VirtualBorrows(mod, graph, functions, lifetimes.borrowed);
-  const classObjects = new Map(request.classObjects.map((name) => [name, { nameSym: `@name_${mangleClassObj(name)}` }]));
+  const classObjects: Map<string, { nameSym: string; baseNameSym: string | null }> = new Map();
+  for (const name of request.classObjects) classObjects.set(name, { nameSym: `@name_${mangleClassObj(name)}`, baseNameSym: null });
   const typeName = (type: IrType): string => type.kind === "void" ? "void" : type.kind === "f64" || type.kind === "date" ? "double" : type.kind === "bool" ? "i1" : "ptr";
   // Mirrors the emitter: whole-program int32 fields store the exact i32.
   const layouts = emitLlvmLayouts(host, mod, graph, classObjects, functions, typeName, undefined, analyzeInt32Slots(mod));

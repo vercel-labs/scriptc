@@ -23,7 +23,7 @@ const span: IrType = { kind: "record", shapeId: "span" };
  * class that cannot reach any (Label). */
 function module(body: IrExpr[] = [], lifetimeRegions = true): IrModule {
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     ...(lifetimeRegions ? { lifetimeRegions: true as const } : {}),
@@ -117,7 +117,13 @@ test("ProgramLifetime instances live in the current region and count in their ch
     );
     // The first reference is implied: allocation leaves the chunk count alone.
     expect(nw, cls).not.toContain("2097151");
-    expect(nw, cls).toContain("store i64 -9223372036854775808, ptr %o");
+    // The rc word: the class id in the high half (the hierarchy keeps it
+    // there instead of a vtable word) over the program-lifetime count, the
+    // midpoint of the 32-bit count in the low half.
+    const word = /store i64 (\d+), ptr %o\.vt/.exec(nw)?.[1];
+    expect(word, cls).toBeDefined();
+    expect(BigInt(word!) % 2n ** 32n, cls).toBe(2n ** 31n);
+    expect(BigInt(word!) / 2n ** 32n > 0n, cls).toBe(true);
     expect(nw, cls).not.toContain("scr_rt_calloc");
     // retain/release: the chunk count, NULL-tolerant, once a region
     // exists, and only in chunks that have an owner (freeable regions).

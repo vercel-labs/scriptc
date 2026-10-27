@@ -1,3 +1,5 @@
+import { appendElement, optionalElementValue, primitiveElement } from "./array-values.js";
+import { keyedHelperName } from "./stable-names.js";
 import { dynUndefinedExpr, varRef } from "../../ir/build.js";
 import {
   BOOL,
@@ -27,9 +29,204 @@ export function iteratorSlotAdapter(
   expr: IrExpr,
   expected: IrType & { kind: "generator" },
 ): IrExpr | null {
-  if (expr.type.kind === "dyn") return dynIteratorAdapter(lowerer, expr, expected);
+  if (expr.type.kind === "dyn")
+    return (
+      collectionIteratorSlotValue(lowerer, expr, expected) ??
+      dynIteratorAdapter(lowerer, expr, expected)
+    );
   if (expr.type.kind === "generator") return generatorRetypeAdapter(lowerer, expr, expected);
   return null;
+}
+
+/** `m.values()` (or keys/entries, or a Set's) on a typed Map or Set, which
+ * lowers to a dynamic invocation on the boxed collection, flowing into an
+ * iterator-typed slot (`values(): IterableIterator<T> { return
+ * this.rows.values(); }`): an interned generator over the collection that
+ * reads each entry typed, instead of the checked adapter over the boxed
+ * native iterator (dynIteratorAdapter), which boxes every value and checks
+ * it back. It keeps that adapter's protocol: the walk is lazy and live, and
+ * since the native iterator has no return(), an early exit from a
+ * consumer's loop parks it on the current entry instead of completing it,
+ * so a later loop continues with the next entry. Null for any other source
+ * or a slot whose yield type is not the collection's entry type. */
+function collectionIteratorSlotValue(
+  lowerer: Lowerer,
+  expr: IrExpr,
+  expected: IrType & { kind: "generator" },
+): IrExpr | null {
+  if (expr.kind !== "dynInvoke" || expr.args.length > 0 || expr.calleeNameValue) return null;
+  const method = expr.method;
+  if (method !== "values" && method !== "keys" && method !== "entries") return null;
+  if (expr.recv.kind !== "dynFrom") return null;
+  const receiver = expr.recv.value;
+  const collT = receiver.type;
+  if (collT.kind !== "map" && collT.kind !== "set") return null;
+  if (expected.async || expected.yieldT.kind === "void") return null;
+  if (expected.retT.kind !== "void" && expected.retT.kind !== "dyn") return null;
+  if (expected.nextT.kind !== "undefinedT" && expected.nextT.kind !== "dyn") return null;
+  const resultType = genResultRecord(
+    expected.yieldT,
+    expected.retT,
+    lowerer.shapes,
+    lowerer.unions,
+  );
+  if (!resultType) return null;
+  const loc = expr.loc;
+  const key = `collIterSlot:${method}:${typeKey(collT)}:${typeKey(expected)}`;
+  let name = lowerer.valueHelpers.get(key);
+  if (!name) {
+    const coll = varRef("coll.0", collT, loc);
+    const index = varRef("index.0", F64, loc);
+    const native = varRef("native.0", DYN, loc);
+    const resumedFlag = varRef("resumed.0", BOOL, loc);
+    const keyT = collT.kind === "map" ? collT.key : collT.elem;
+    const valueT = collT.kind === "map" ? collT.value : collT.elem;
+    const read = (m: "iterKey" | "iterValue", t: IrType): IrExpr =>
+      collT.kind === "map"
+        ? { kind: "mapIntrinsic", method: m, receiver: coll, args: [index], type: t, loc }
+        : { kind: "setIntrinsic", method: "iterKey", receiver: coll, args: [index], type: t, loc };
+    // entries() answers [key, value] pairs: only a slot whose yield type is
+    // that pair as a record of the two fields takes the typed walk; a tuple
+    // or other pair type keeps the checked adapter.
+    if (method === "entries") {
+      const pair =
+        expected.yieldT.kind === "record" ? lowerer.shapes.get(expected.yieldT.shapeId) : undefined;
+      const field = (name: string): IrType | undefined =>
+        pair?.fields.find((f) => f.name === name)?.type;
+      const first = field("0");
+      const second = field("1");
+      if (
+        pair === undefined ||
+        pair.fields.length !== 2 ||
+        first === undefined ||
+        second === undefined ||
+        !typeEquals(first, keyT) ||
+        !typeEquals(second, valueT)
+      )
+        return null;
+    }
+    const entry = (): IrExpr =>
+      method === "keys" || (collT.kind === "set" && method === "values")
+        ? read("iterKey", keyT)
+        : method === "values"
+          ? read("iterValue", valueT)
+          : {
+              kind: "recordLit",
+              fields: [
+                { name: "0", value: read("iterKey", keyT) },
+                { name: "1", value: read("iterValue", valueT) },
+              ],
+              type: expected.yieldT,
+              loc,
+            };
+    if (!typeEquals(entry().type, expected.yieldT)) return null;
+    // The entry is read once per step and kept: the parking yield of an
+    // early exit answers it again rather than rereading a slot the loop may
+    // have deleted.
+    const current = varRef("current.0", expected.yieldT, loc);
+    const suspend = (): IrStmt => ({
+      kind: "exprStmt",
+      expr: { kind: "yieldExpr", value: current, type: resumeType(expected.nextT), loc },
+      loc,
+    });
+    const finish: IrStmt = {
+      kind: "return",
+      value: expected.retT.kind === "dyn" ? dynUndefinedExpr(loc) : null,
+      loc,
+    };
+    name = keyedHelperName(lowerer, "%coll.iterSlot", key);
+    lowerer.valueHelpers.set(key, name);
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: "coll.0", name: "coll", type: collT }],
+      returnType: expected.retT,
+      locals: [
+        { id: "coll.0", name: "coll", type: collT, mutable: false },
+        { id: "native.0", name: "native", type: DYN, mutable: false },
+        { id: "index.0", name: "index", type: F64, mutable: true },
+        { id: "resumed.0", name: "resumed", type: BOOL, mutable: true },
+        { id: "current.0", name: "current", type: expected.yieldT, mutable: false },
+      ],
+      body: [
+        {
+          kind: "varDecl",
+          localId: "native.0",
+          init: {
+            kind: "dynInvoke",
+            recv: lowerer.coerceToExpected(coll, DYN),
+            method: "values",
+            calleeName: collT.kind === "map" ? "map.values" : "set.values",
+            args: [],
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+        {
+          kind: "varDecl",
+          localId: "resumed.0",
+          init: { kind: "boolLit", value: false, type: BOOL, loc },
+          loc,
+        },
+        {
+          kind: "while",
+          cond: { kind: "boolLit", value: true, type: BOOL, loc },
+          body: [
+            {
+              kind: "assign",
+              localId: "index.0",
+              value: {
+                kind: "libCall",
+                fn: "dyn.collectionIteratorIndex",
+                args: [native],
+                type: F64,
+                loc,
+              },
+              loc,
+            },
+            {
+              kind: "if",
+              cond: {
+                kind: "bin",
+                op: "<",
+                left: index,
+                right: { kind: "numLit", value: 0, type: F64, loc },
+                type: BOOL,
+                loc,
+              },
+              then: [finish],
+              else_: null,
+              loc,
+            },
+            setResumed(false, loc),
+            { kind: "varDecl", localId: "current.0", init: entry(), loc },
+            {
+              kind: "tryCatch",
+              tryBody: [suspend(), setResumed(true, loc)],
+              catchBody: null,
+              catchLocalId: null,
+              // An early exit parks on the current entry; the next step
+              // resumes the walk after it.
+              finallyBody: [
+                {
+                  kind: "if",
+                  cond: { kind: "unary", op: "!", operand: resumedFlag, type: BOOL, loc },
+                  then: [suspend(), { kind: "continue", loc }],
+                  else_: null,
+                  loc,
+                },
+              ],
+              loc,
+            },
+          ],
+          loc,
+        },
+      ],
+      generator: { yieldT: expected.yieldT, nextT: expected.nextT, resultType, tag: "!" },
+      loc,
+    });
+  }
+  return { kind: "call", callee: name, args: [receiver], type: expected, loc };
 }
 
 /** `resumed.0 = value` — the adapters' early-exit marker around a yield. */
@@ -86,7 +283,7 @@ function dynIteratorAdapter(
   const key = `iterAdapt:${typeKey(expected)}`;
   let name = lowerer.valueHelpers.get(key);
   if (!name) {
-    name = `%iter.adapt.${lowerer.valueHelpers.size}`;
+    name = keyedHelperName(lowerer, "%iter.adapt", key);
     lowerer.valueHelpers.set(key, name);
     const locals: IrLocal[] = [];
     const local = (id: string, type: IrType, mutable = false): IrExpr => {
@@ -258,11 +455,348 @@ function dynIteratorAdapter(
       returnType: expected.retT,
       locals,
       body,
-      generator: { yieldT: expected.yieldT, nextT: expected.nextT, resultType },
+      generator: { yieldT: expected.yieldT, nextT: expected.nextT, resultType, tag: "!" },
       loc,
     });
   }
   return { kind: "call", callee: name, args: [expr], type: expected, loc };
+}
+
+/** `m.keys()`, `m.values()` or `m.entries()` (or a Set's) as a source
+ * generator for an iterator helper object: an interned generator over the
+ * typed collection that steps the runtime's native iterator by entry
+ * index and reads each key or value with the typed intrinsics, so values
+ * keep their types without a checked conversion per step. The native
+ * iterator owns the live-walk bracket: it ends the iteration when the
+ * collection is exhausted or when the generator, done or abandoned,
+ * releases it. `type` yields the key, the value, or the interned [key,
+ * value] pair. Null when `type` does not match. */
+export function lowerCollectionIteratorValue(
+  lowerer: Lowerer,
+  receiver: IrExpr,
+  method: "keys" | "values" | "entries",
+  type: IrType,
+  loc: SrcLoc,
+): IrExpr | null {
+  const collT = receiver.type;
+  if ((collT.kind !== "map" && collT.kind !== "set") || type.kind !== "generator") return null;
+  if (type.retT.kind !== "void" || type.nextT.kind !== "undefinedT") return null;
+  const keyT = collT.kind === "map" ? collT.key : collT.elem;
+  const valueT = collT.kind === "map" ? collT.value : collT.elem;
+  const resultType = genResultRecord(type.yieldT, type.retT, lowerer.shapes, lowerer.unions);
+  if (!resultType) return null;
+  const key = `collIter:${method}:${typeKey(collT)}:${typeKey(type)}`;
+  let name = lowerer.valueHelpers.get(key);
+  if (!name) {
+    const coll = varRef("coll.0", collT, loc);
+    const index = varRef("index.0", F64, loc);
+    const native = varRef("native.0", DYN, loc);
+    const read = (m: "iterKey" | "iterValue", t: IrType): IrExpr =>
+      collT.kind === "map"
+        ? { kind: "mapIntrinsic", method: m, receiver: coll, args: [index], type: t, loc }
+        : { kind: "setIntrinsic", method: "iterKey", receiver: coll, args: [index], type: t, loc };
+    let yielded: IrExpr;
+    if (method === "keys" || (collT.kind === "set" && method === "values"))
+      yielded = read("iterKey", keyT);
+    else if (method === "values") yielded = read("iterValue", valueT);
+    else
+      yielded = {
+        kind: "recordLit",
+        fields: [
+          { name: "0", value: read("iterKey", keyT) },
+          { name: "1", value: read("iterValue", valueT) },
+        ],
+        type: type.yieldT,
+        loc,
+      };
+    if (!typeEquals(yielded.type, type.yieldT)) return null;
+    name = keyedHelperName(lowerer, "%coll.iter", key);
+    lowerer.valueHelpers.set(key, name);
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: "coll.0", name: "coll", type: collT }],
+      returnType: VOID,
+      locals: [
+        { id: "coll.0", name: "coll", type: collT, mutable: false },
+        { id: "native.0", name: "native", type: DYN, mutable: false },
+        { id: "index.0", name: "index", type: F64, mutable: true },
+      ],
+      body: [
+        {
+          kind: "varDecl",
+          localId: "native.0",
+          init: {
+            kind: "dynInvoke",
+            recv: lowerer.coerceToExpected(coll, DYN),
+            method: "values",
+            calleeName: collT.kind === "map" ? "map.values" : "set.values",
+            args: [],
+            type: DYN,
+            loc,
+          },
+          loc,
+        },
+        {
+          kind: "while",
+          cond: { kind: "boolLit", value: true, type: BOOL, loc },
+          body: [
+            {
+              kind: "varDecl",
+              localId: "index.0",
+              init: {
+                kind: "libCall",
+                fn: "dyn.collectionIteratorIndex",
+                args: [native],
+                type: F64,
+                loc,
+              },
+              loc,
+            },
+            {
+              kind: "if",
+              cond: {
+                kind: "bin",
+                op: "<",
+                left: index,
+                right: { kind: "numLit", value: 0, type: F64, loc },
+                type: BOOL,
+                loc,
+              },
+              then: [{ kind: "return", value: null, loc }],
+              else_: null,
+              loc,
+            },
+            { kind: "exprStmt", expr: { kind: "yieldExpr", value: yielded, type: VOID, loc }, loc },
+          ],
+          loc,
+        },
+      ],
+      generator: {
+        yieldT: type.yieldT,
+        nextT: UNDEFINED_T,
+        resultType,
+        tag: "!",
+      },
+      loc,
+    });
+  }
+  return { kind: "call", callee: name, args: [receiver], type, loc };
+}
+
+/** `ta.values()`, `ta.keys()` or `ta.entries()` on a typed array as a
+ * value: an interned generator over the indices, reading the length and
+ * the element at each step, as the typed array iterator does. Null when
+ * `type` is not the matching number (or [number, number]) generator. */
+export function lowerBytesIteratorValue(
+  lowerer: Lowerer,
+  receiver: IrExpr,
+  method: "values" | "keys" | "entries",
+  type: IrType,
+  loc: SrcLoc,
+): IrExpr | null {
+  const bytesT = receiver.type;
+  if (bytesT.kind !== "bytes" || type.kind !== "generator") return null;
+  if (type.retT.kind !== "void" || type.nextT.kind !== "undefinedT") return null;
+  const pair = type.yieldT.kind === "record" ? lowerer.shapes.get(type.yieldT.shapeId) : undefined;
+  const pairOk =
+    pair?.tuple === true &&
+    pair.fields.length === 2 &&
+    pair.fields.every((f) => (f.name === "0" || f.name === "1") && f.type.kind === "f64");
+  if (method === "entries" ? !pairOk : type.yieldT.kind !== "f64") return null;
+  const resultType = genResultRecord(type.yieldT, type.retT, lowerer.shapes, lowerer.unions);
+  if (!resultType) return null;
+  const key = `bytesIter:${method}:${typeKey(bytesT)}:${typeKey(type)}`;
+  let name = lowerer.valueHelpers.get(key);
+  if (!name) {
+    name = keyedHelperName(lowerer, "%bytes.iter", key);
+    lowerer.valueHelpers.set(key, name);
+    const list = varRef("list.0", bytesT, loc);
+    const index = varRef("index.0", F64, loc);
+    const element: IrExpr = {
+      kind: "bytesIntrinsic",
+      method: "get",
+      receiver: list,
+      args: [index],
+      type: F64,
+      loc,
+    };
+    const yielded: IrExpr =
+      method === "keys"
+        ? index
+        : method === "values"
+          ? element
+          : {
+              kind: "recordLit",
+              fields: [
+                { name: "0", value: index },
+                { name: "1", value: element },
+              ],
+              type: type.yieldT,
+              loc,
+            };
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: "list.0", name: "list", type: bytesT }],
+      returnType: VOID,
+      locals: [
+        { id: "list.0", name: "list", type: bytesT, mutable: false },
+        { id: "index.0", name: "index", type: F64, mutable: true },
+      ],
+      body: [
+        {
+          kind: "varDecl",
+          localId: "index.0",
+          init: { kind: "numLit", value: 0, type: F64, loc },
+          loc,
+        },
+        {
+          kind: "while",
+          cond: {
+            kind: "bin",
+            op: "<",
+            left: index,
+            right: {
+              kind: "bytesIntrinsic",
+              method: "length",
+              receiver: list,
+              args: [],
+              type: F64,
+              loc,
+            },
+            type: BOOL,
+            loc,
+          },
+          body: [
+            { kind: "exprStmt", expr: { kind: "yieldExpr", value: yielded, type: VOID, loc }, loc },
+            {
+              kind: "assign",
+              localId: "index.0",
+              value: {
+                kind: "bin",
+                op: "+",
+                left: index,
+                right: { kind: "numLit", value: 1, type: F64, loc },
+                type: F64,
+                loc,
+              },
+              loc,
+            },
+          ],
+          loc,
+        },
+        { kind: "return", value: null, loc },
+      ],
+      generator: { yieldT: type.yieldT, nextT: UNDEFINED_T, resultType, tag: "Array Iterator" },
+      loc,
+    });
+  }
+  return { kind: "call", callee: name, args: [receiver], type, loc };
+}
+
+/** `s[Symbol.iterator]()` on a string value: an interned generator over
+ * its code points, the string iterator's steps (a lone surrogate is one
+ * step). Null when `type` is not the plain string-yielding generator. */
+export function lowerStringIteratorValue(
+  lowerer: Lowerer,
+  receiver: IrExpr,
+  type: IrType,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (receiver.type.kind !== "string" || type.kind !== "generator") return null;
+  if (
+    type.yieldT.kind !== "string" ||
+    type.retT.kind !== "void" ||
+    type.nextT.kind !== "undefinedT"
+  )
+    return null;
+  const resultType = genResultRecord(type.yieldT, type.retT, lowerer.shapes, lowerer.unions);
+  if (!resultType) return null;
+  const key = `strIter:${typeKey(type)}`;
+  let name = lowerer.valueHelpers.get(key);
+  if (!name) {
+    name = keyedHelperName(lowerer, "%str.iter", key);
+    lowerer.valueHelpers.set(key, name);
+    const text = varRef("text.0", STRING, loc);
+    const index = varRef("index.0", F64, loc);
+    const point = varRef("point.0", STRING, loc);
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: "text.0", name: "text", type: STRING }],
+      returnType: VOID,
+      locals: [
+        { id: "text.0", name: "text", type: STRING, mutable: false },
+        { id: "index.0", name: "index", type: F64, mutable: true },
+        { id: "point.0", name: "point", type: STRING, mutable: false },
+      ],
+      body: [
+        {
+          kind: "varDecl",
+          localId: "index.0",
+          init: { kind: "numLit", value: 0, type: F64, loc },
+          loc,
+        },
+        {
+          kind: "while",
+          cond: {
+            kind: "bin",
+            op: "<",
+            left: index,
+            right: {
+              kind: "strIntrinsic",
+              method: "byteLength",
+              receiver: text,
+              args: [],
+              type: F64,
+              loc,
+            },
+            type: BOOL,
+            loc,
+          },
+          body: [
+            {
+              kind: "varDecl",
+              localId: "point.0",
+              init: {
+                kind: "strIntrinsic",
+                method: "cpAtByte",
+                receiver: text,
+                args: [index],
+                type: STRING,
+                loc,
+              },
+              loc,
+            },
+            {
+              kind: "assign",
+              localId: "index.0",
+              value: {
+                kind: "bin",
+                op: "+",
+                left: index,
+                right: {
+                  kind: "strIntrinsic",
+                  method: "byteLength",
+                  receiver: point,
+                  args: [],
+                  type: F64,
+                  loc,
+                },
+                type: F64,
+                loc,
+              },
+              loc,
+            },
+            { kind: "exprStmt", expr: { kind: "yieldExpr", value: point, type: VOID, loc }, loc },
+          ],
+          loc,
+        },
+        { kind: "return", value: null, loc },
+      ],
+      generator: { yieldT: type.yieldT, nextT: UNDEFINED_T, resultType, tag: "String Iterator" },
+      loc,
+    });
+  }
+  return { kind: "call", callee: name, args: [receiver], type, loc };
 }
 
 /** A generator flowing into a slot with other channel types (a
@@ -340,7 +874,7 @@ function generatorRetypeAdapter(
       type: resumeType(expected.nextT),
       loc,
     };
-    name = `%gen.retype.${lowerer.valueHelpers.size}`;
+    name = keyedHelperName(lowerer, "%gen.retype", key);
     lowerer.valueHelpers.set(key, name);
     lowerer.liftedFns.push({
       name,
@@ -419,23 +953,39 @@ function generatorRetypeAdapter(
           loc,
         },
       ],
-      generator: { yieldT: expected.yieldT, nextT: expected.nextT, resultType: toResult },
+      generator: {
+        yieldT: expected.yieldT,
+        nextT: expected.nextT,
+        resultType: toResult,
+        inheritsTag: true,
+      },
       loc,
     });
   }
   return { kind: "call", callee: name, args: [expr], type: expected, loc };
 }
 
+/** A checked-dynamic yielded value for a `(T | undefined)[]` of a
+ * number, string or boolean T: converted to `T | undefined`, which the
+ * drain stores as a T element or a present undefined. */
+function optionalYield(lowerer: Lowerer, value: IrExpr, elem: IrType, optional: boolean): IrExpr {
+  if (!optional || value.type.kind !== "dyn" || !primitiveElement(elem)) return value;
+  return lowerer.coerceToExpected(value, lowerer.withUndefinedArm(elem));
+}
+
 /** Drain a synchronous generator into a fresh `elem[]` — the eager
  * consumers of an iterator (`[...it]`, `Array.from(it)`). Each step resumes
  * the generator once and appends its value; completion stops the drain
  * without appending the return value, as in JS. Null when the yielded
- * values cannot be extracted into the element type. */
+ * values cannot be extracted into the element type. `optional`: the
+ * result is a `(T | undefined)[]`, which stores T elements, so a
+ * checked-dynamic value may also be undefined. */
 export function generatorDrain(
   lowerer: Lowerer,
   source: IrExpr,
   elem: IrType,
   loc: SrcLoc,
+  optional = false,
 ): IrExpr | null {
   const gen = source.type;
   if (gen.kind !== "generator" || gen.async || gen.yieldT.kind === "void") return null;
@@ -444,15 +994,17 @@ export function generatorDrain(
   const valueT = shape?.fields.find((field) => field.name === "value")?.type;
   if (!resultType || !valueT) return null;
   const arrT: IrType = { kind: "array", elem };
-  const key = `genDrain:${typeKey(gen)}:${typeKey(elem)}`;
+  const key = `genDrain:${typeKey(gen)}:${typeKey(elem)}${optional ? "?" : ""}`;
   let name = lowerer.valueHelpers.get(key);
   if (!name && stepDrivable(gen)) {
     // The record-free drive: test done, then take the yielded value.
     const genRef = varRef("gen.0", gen, loc) as IrExpr & { type: typeof gen };
     const outRef = varRef("out.0", arrT, loc);
-    const value = lowerer.coerceToExpected(genValue(genRef, loc), elem);
-    if (!typeEquals(value.type, elem)) return null;
-    name = `%gen.drain.${lowerer.valueHelpers.size}`;
+    const yielded = optionalYield(lowerer, genValue(genRef, loc), elem, optional);
+    const present = optionalElementValue(lowerer, yielded, elem);
+    const value = present ? yielded : lowerer.coerceToExpected(yielded, elem);
+    if (!present && !typeEquals(value.type, elem)) return null;
+    name = keyedHelperName(lowerer, "%gen.drain", key);
     lowerer.valueHelpers.set(key, name);
     lowerer.liftedFns.push({
       name,
@@ -461,6 +1013,7 @@ export function generatorDrain(
       locals: [
         { id: "gen.0", name: "gen", type: gen, mutable: false },
         { id: "out.0", name: "out", type: arrT, mutable: false },
+        ...(present ? [{ id: "v.0", name: "v", type: value.type, mutable: false }] : []),
       ],
       body: [
         {
@@ -472,20 +1025,7 @@ export function generatorDrain(
         {
           kind: "while",
           cond: { kind: "unary", op: "!", operand: genStep(genRef, loc), type: BOOL, loc },
-          body: [
-            {
-              kind: "exprStmt",
-              expr: {
-                kind: "arrIntrinsic",
-                method: "push",
-                receiver: outRef,
-                args: [value],
-                type: F64,
-                loc,
-              },
-              loc,
-            },
-          ],
+          body: appendElement(lowerer, outRef, value, elem, "v.0", loc),
           loc,
         },
         { kind: "return", value: outRef, loc },
@@ -512,9 +1052,11 @@ export function generatorDrain(
       loc,
     );
     if (!raw) return null;
-    const value = lowerer.coerceToExpected(raw, elem);
-    if (!typeEquals(value.type, elem)) return null;
-    name = `%gen.drain.${lowerer.valueHelpers.size}`;
+    const yielded = optionalYield(lowerer, raw, elem, optional);
+    const present = optionalElementValue(lowerer, yielded, elem);
+    const value = present ? yielded : lowerer.coerceToExpected(yielded, elem);
+    if (!present && !typeEquals(value.type, elem)) return null;
+    name = keyedHelperName(lowerer, "%gen.drain", key);
     lowerer.valueHelpers.set(key, name);
     lowerer.liftedFns.push({
       name,
@@ -524,6 +1066,7 @@ export function generatorDrain(
         { id: "gen.0", name: "gen", type: gen, mutable: false },
         { id: "out.0", name: "out", type: arrT, mutable: false },
         { id: "step.0", name: "step", type: resultType, mutable: false },
+        ...(present ? [{ id: "v.0", name: "v", type: value.type, mutable: false }] : []),
       ],
       body: [
         {
@@ -563,18 +1106,7 @@ export function generatorDrain(
               else_: null,
               loc,
             },
-            {
-              kind: "exprStmt",
-              expr: {
-                kind: "arrIntrinsic",
-                method: "push",
-                receiver: outRef,
-                args: [value],
-                type: F64,
-                loc,
-              },
-              loc,
-            },
+            ...appendElement(lowerer, outRef, value, elem, "v.0", loc),
           ],
           loc,
         },
@@ -636,7 +1168,7 @@ export function lowerArrayIteratorValue(
             };
     }
     if (!yielded || !typeEquals(yielded.type, type.yieldT)) return null;
-    name = `%arr.iter.${lowerer.valueHelpers.size}`;
+    name = keyedHelperName(lowerer, "%arr.iter", key);
     lowerer.valueHelpers.set(key, name);
     lowerer.liftedFns.push({
       name,
@@ -690,7 +1222,7 @@ export function lowerArrayIteratorValue(
         },
         { kind: "return", value: null, loc },
       ],
-      generator: { yieldT: type.yieldT, nextT: UNDEFINED_T, resultType },
+      generator: { yieldT: type.yieldT, nextT: UNDEFINED_T, resultType, tag: "Array Iterator" },
       loc,
     });
   }

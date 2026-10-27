@@ -699,45 +699,87 @@ function timSortBody(b: SortIr, src: SortLocal, n: IrExpr, less: Less): IrStmt[]
   ];
 }
 
-type SortKeyRead = IrExpr & { kind: "recordGet" | "fieldGet" };
+type SortKeyField = IrExpr & { kind: "recordGet" | "fieldGet" };
 
-/** A comparator that orders by one number: the elements themselves or one
- * field of each, ascending or descending. */
+/** A key read over the comparator's first parameter: one number field, or
+ * an optional number field with a number default (`x.k ?? 0`). */
+export interface SortKeyRead {
+  field: SortKeyField;
+  fallback: (IrExpr & { kind: "numLit" }) | null;
+}
+
+/** One key of a comparator: the elements themselves or one field of each,
+ * ascending or descending. */
 export interface SortKeyOrder {
   /** 1 for ascending, -1 for descending. */
   order: 1 | -1;
-  /** The field read over the comparator's first parameter, or null when
-   * the elements are the numbers. */
+  /** The key read, or null when the elements are the numbers. */
   read: SortKeyRead | null;
 }
+
+/** Most keys a comparator chain is recognized with (the runtime's
+ * SCR_SORT_KEYS_MAX). */
+const MAX_SORT_KEYS = 8;
 
 /** Recognizes the lifted body of a capture-free numeric comparator:
  * `(a, b) => a - b`, `b - a`, `a < b ? -1 : a > b ? 1 : 0` (either test
  * first, either sign), or any of them over one number field of both
- * parameters (`a.k - b.k`). Such a comparator runs no user code, cannot
- * throw, and is consistent over numbers other than NaN, so the runtime may
- * order the elements by their keys without calling it. */
-export function recognizeKeyComparator(fn: IrFunction): SortKeyOrder | null {
+ * parameters (`a.k - b.k`, or `(a.k ?? 0) - (b.k ?? 0)` over an optional
+ * field). Such a comparator runs no user code, cannot throw, and is
+ * consistent over numbers other than NaN, so the runtime may order the
+ * elements by their keys without calling it. A chain `t0 || t1 || ...` of
+ * such terms over fields orders by several keys, the first deciding: a term
+ * that is 0 or NaN falls through to the next. Returns the keys in order. */
+export function recognizeKeyComparator(fn: IrFunction): readonly SortKeyOrder[] | null {
   if (fn.params.length !== 2 || fn.async || fn.generator || (fn.captures?.length ?? 0) > 0)
     return null;
-  const [first, second] = fn.params;
   const ret = fn.body.length === 1 ? fn.body[0]! : null;
   if (ret?.kind !== "return" || !ret.value) return null;
+  const terms: IrExpr[] = [];
+  const flatten = (e: IrExpr): void => {
+    if (e.kind === "logical" && e.op === "||" && e.type.kind === "f64") {
+      flatten(e.left);
+      flatten(e.right);
+    } else terms.push(e);
+  };
+  flatten(ret.value);
+  if (terms.length > MAX_SORT_KEYS) return null;
+  const keys: SortKeyOrder[] = [];
+  for (const term of terms) {
+    const key = recognizeKeyTerm(fn, term);
+    if (!key) return null;
+    keys.push(key);
+  }
+  // Several keys order elements by their fields.
+  if (keys.length > 1 && keys.some((key) => key.read === null)) return null;
+  return keys;
+}
+
+/** One term of a key comparator over one key (recognizeKeyComparator). */
+function recognizeKeyTerm(fn: IrFunction, value: IrExpr): SortKeyOrder | null {
+  const [first, second] = fn.params;
   let read: SortKeyRead | null | undefined;
   // Which parameter an operand reads; every operand must read the same key.
   const operand = (e: IrExpr): 0 | 1 | null => {
     if (e.type.kind !== "f64") return null;
     let ref: IrExpr = e;
-    let field: SortKeyRead | null = null;
-    if (e.kind === "recordGet" || e.kind === "fieldGet") {
-      field = e;
+    let key: SortKeyRead | null = null;
+    if (
+      e.kind === "nullish" &&
+      (e.left.kind === "recordGet" || e.left.kind === "fieldGet") &&
+      e.right.kind === "numLit"
+    ) {
+      key = { field: e.left, fallback: e.right };
+      ref = e.left.obj;
+    } else if (e.kind === "recordGet" || e.kind === "fieldGet") {
+      key = { field: e, fallback: null };
       ref = e.obj;
     }
     if (ref.kind !== "varRef") return null;
     const param = ref.localId === first!.localId ? 0 : ref.localId === second!.localId ? 1 : null;
     if (param === null) return null;
-    if (read === undefined) read = field;
-    else if (!sameKeyRead(read, field)) return null;
+    if (read === undefined) read = key;
+    else if (!sameKeyRead(read, key)) return null;
     return param;
   };
   // `x < y` or `x > y` over both parameters, as the first one's relation.
@@ -750,7 +792,6 @@ export function recognizeKeyComparator(fn: IrFunction): SortKeyOrder | null {
   };
   const sign = (e: IrExpr): number | null =>
     e.kind === "numLit" && (e.value === 1 || e.value === -1 || e.value === 0) ? e.value : null;
-  const value = ret.value;
   if (value.kind === "bin" && value.op === "-") {
     const left = operand(value.left),
       right = operand(value.right);
@@ -778,12 +819,12 @@ export function recognizeKeyComparator(fn: IrFunction): SortKeyOrder | null {
   return null;
 }
 
-/** The key order of a comparator closure: a zero-capture closure (not a
+/** The keys of a comparator closure: a zero-capture closure (not a
  * signature adapter) over a lifted function recognizeKeyComparator accepts. */
 export function closureKeyOrder(
   liftedFns: readonly IrFunction[],
   closure: IrExpr,
-): SortKeyOrder | null {
+): readonly SortKeyOrder[] | null {
   if (closure.kind !== "closure" || closure.captures.length > 0 || closure.adapts) return null;
   const fn = liftedFns.find((lifted) => lifted.name === closure.fnName);
   return fn ? recognizeKeyComparator(fn) : null;
@@ -791,29 +832,87 @@ export function closureKeyOrder(
 
 function sameKeyRead(left: SortKeyRead | null, right: SortKeyRead | null): boolean {
   if (left === null || right === null) return left === right;
-  if (left.kind === "recordGet" && right.kind === "recordGet")
-    return left.shapeId === right.shapeId && left.field === right.field;
-  if (left.kind === "fieldGet" && right.kind === "fieldGet")
-    return left.className === right.className && left.field === right.field;
+  if (!Object.is(left.fallback?.value, right.fallback?.value)) return false;
+  const a = left.field,
+    b = right.field;
+  if (a.kind === "recordGet" && b.kind === "recordGet")
+    return a.shapeId === b.shapeId && a.field === b.field;
+  if (a.kind === "fieldGet" && b.kind === "fieldGet")
+    return a.className === b.className && a.field === b.field;
   return false;
 }
 
-/** The key reader of a recognized field comparator: `(x) => x.k`, the same
- * field read as the comparator's. */
+/** The order argument of a keyed sort: 1 or -1 for one key; for several,
+ * the key count in the low byte and, from bit 8, one bit per descending
+ * key (the runtime's SCR_SORT_KEYS encoding). */
+export function sortKeysOrder(keys: readonly SortKeyOrder[]): number {
+  if (keys.length === 1) return keys[0]!.order;
+  return keys.reduce((code, key, j) => (key.order < 0 ? code | (1 << (8 + j)) : code), keys.length);
+}
+
+/** A cache key that identifies a recognized comparator's key reads. */
+export function sortKeysId(keys: readonly SortKeyOrder[]): string {
+  return keys
+    .map((key) => {
+      if (!key.read) return "self";
+      const field = key.read.field;
+      const owner = field.kind === "recordGet" ? field.shapeId : field.className;
+      const fallback = key.read.fallback
+        ? `??${Object.is(key.read.fallback.value, -0) ? "-0" : key.read.fallback.value}`
+        : "";
+      return `${field.kind}:${owner}:${field.field}${fallback}`;
+    })
+    .join("|");
+}
+
+/** The key reader of a recognized field comparator: `(x) => x.k` (or
+ * `x.k ?? d`), the same read as the comparator's. For several keys it takes
+ * the key's index too: `(x, j) => j === 0 ? key0 : j === 1 ? key1 : ...`. */
 export function buildSortKeyFn(
   name: string,
   elem: IrType,
-  read: SortKeyRead,
+  reads: readonly SortKeyRead[],
   loc: SrcLoc,
 ): IrFunction {
   const b = new SortIr(loc);
   const x = b.local("x", elem);
+  const read = (key: SortKeyRead): IrExpr => {
+    const field: IrExpr = { ...key.field, obj: x, loc };
+    return key.fallback
+      ? { kind: "nullish", left: field, right: key.fallback, type: F64, loc }
+      : field;
+  };
+  if (reads.length === 1) {
+    return {
+      name,
+      params: [{ localId: x.localId, name: "x", type: elem }],
+      returnType: F64,
+      locals: b.locals,
+      body: distinctNodes([{ kind: "return", value: read(reads[0]!), loc }]),
+      loc,
+    };
+  }
+  const j = b.local("j");
+  let value = read(reads[reads.length - 1]!);
+  for (let index = reads.length - 2; index >= 0; index--) {
+    value = {
+      kind: "ternary",
+      cond: b.eq(j, b.num(index)),
+      then: read(reads[index]!),
+      else_: value,
+      type: F64,
+      loc,
+    };
+  }
   return {
     name,
-    params: [{ localId: x.localId, name: "x", type: elem }],
+    params: [
+      { localId: x.localId, name: "x", type: elem },
+      { localId: j.localId, name: "j", type: F64 },
+    ],
     returnType: F64,
     locals: b.locals,
-    body: [{ kind: "return", value: { ...read, obj: x, loc }, loc }],
+    body: distinctNodes([{ kind: "return", value, loc }]),
     loc,
   };
 }
@@ -826,14 +925,19 @@ export function buildArraySortFn(
   undefinedTag: number | null,
   loc: SrcLoc,
   native = false,
-  keyed: { order: 1 | -1; key: boolean } | null = null,
+  keyed: { order: number; key: boolean; keys: number } | null = null,
+  /** The throw for a foreign element (SCR_ARR_FOREIGN) at `index` of
+   * `arr`, which the comparator's element type cannot hold; for element
+   * types whose arrays can hold one. */
+  checkForeign: ((arr: IrExpr, index: IrExpr) => IrExpr) | null = null,
 ): IrFunction {
   const b = new SortIr(loc);
   const arrT = arrayOf(elem),
     fnT = funcOf([elem, elem].slice(0, arity), F64);
   const a = b.local("a", arrT),
     f = b.local("f", fnT);
-  const keyT = funcOf([elem], F64);
+  // A reader of several keys takes the key's index too (buildSortKeyFn).
+  const keyT = funcOf(keyed && keyed.keys > 1 ? [elem, F64] : [elem], F64);
   const key = keyed?.key ? b.local("key", keyT) : null;
   // A recognized comparator lets the runtime order by keys; it still
   // receives the comparator for inputs whose keys it does not order.
@@ -935,7 +1039,21 @@ export function buildArraySortFn(
       b.branch(
         b.eq(state, b.num(1)),
         [compactValue()],
-        [b.branch(b.eq(state, b.num(2)), [b.step(undefinedCount)])],
+        [
+          b.branch(
+            b.eq(state, b.num(2)),
+            [b.step(undefinedCount)],
+            checkForeign
+              ? [
+                  // A foreign element does not fit the comparator's element
+                  // type: the checked conversion's TypeError.
+                  b.branch(b.eq(state, b.num(3)), [
+                    { kind: "exprStmt", expr: checkForeign(src, index), loc },
+                  ]),
+                ]
+              : null,
+          ),
+        ],
       ),
     ]),
     // Sort only the compacted prefix. The tail is overwritten with undefined

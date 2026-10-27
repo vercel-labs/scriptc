@@ -1,0 +1,35 @@
+boot-path-node-surface-fences.ts:8:14 - error SC2020: 'process.send' is part of the standard library types but has no scriptc lowering yet
+
+  7 | 
+  8 | const send = process.send;
+    |              ^~~~~~~~~~~~
+  9 | console.log(typeof send);
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+boot-path-node-surface-fences.ts:11:1 - error SC2020: 'a '_write' method whose parameter 0 is 'number' where Node passes 'Uint8Array'' is part of the standard library types but has no scriptc lowering yet
+
+  10 | 
+  11 | class Counter extends Writable {
+     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  12 |   _write(chunk: number, _encoding: BufferEncoding, cb: (err?: Error | null) => void): void {
+
+  hint: annotate the parameter with the Node signature's type or a supertype of it (chunks are Buffers here)
+
+boot-path-node-surface-fences.ts:22:31 - error SC2020: 'util.promisify of this target' is part of the standard library types but has no scriptc lowering yet
+
+  21 | }
+  22 | const legacyAsync = promisify(legacy);
+     |                               ^~~~~~
+  23 | legacyAsync().then((v) => console.log(v));
+
+  hint: child_process.exec, child_process.execFile, setTimeout, setImmediate, stream.finished, stream.pipeline, the zlib callback one-shots, the crypto callback functions (randomBytes, pbkdf2, scrypt, hkdf, randomFill, randomInt, generateKey), dns.lookup, dns.lookupService, the fs callback functions with an fs/promises counterpart, and typed callback-last functions whose callback takes (error?: Error | null, value?) are the supported targets
+
+boot-path-node-surface-fences.ts:23:1 - error SC2004: uses of 'legacyAsync' inherit the blocker on its declaration
+
+  22 | const legacyAsync = promisify(legacy);
+  23 | legacyAsync().then((v) => console.log(v));
+     | ^~~~~~~~~~~
+  24 | 
+
+  hint: the declaration of 'legacyAsync' did not compile — fix the diagnostic reported there and these sites clear with it

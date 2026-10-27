@@ -1,4 +1,9 @@
 import { classMembershipIntervals } from "./classes.js";
+import {
+  emitCaughtInstanceof,
+  emitCaughtNarrowGuard,
+  emitUnionNarrowGuard,
+} from "./narrow-guards.js";
 import { borrowableInputs, emitBorrowedInput, emitBorrowedInputs } from "./borrowed-inputs.js";
 import { preservesDynTest } from "./checked-value-lifetimes.js";
 import { typedRefConstructor } from "./shapes.js";
@@ -6,16 +11,19 @@ import { bindLiveArrayOps } from "./expr-stream-bridges.js";
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { emitNullableIsTag, emitNullablePresent } from "./union-repr.js";
-import { isObjectArm } from "./nullable-unions.js";
+import { isPointerIdentityArm } from "./nullable-unions.js";
 import { streamTypedRefEligible } from "../../ir/analysis.js";
 import {
   DYN,
   type IrExpr,
+  type IrType,
   isDynTypedRefType,
+  textCodecRecordClass,
   isRefCounted,
   isUnitType,
   typeEquals,
   typeKey,
+  VOID,
 } from "../../ir/ir.js";
 import { BYTES_ELEM_NUM, closureIdentityEqual } from "./common.js";
 import { DYN_KIND } from "./dyn.js";
@@ -23,6 +31,9 @@ import { elemAccess, vAdapters } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 import { emitUnionWiden } from "./expr-records.js";
+import { emitJsIcLiteralMember, emitJsIcMethod, jsIcMethods } from "./js-ic.js";
+import { jsIcLiteralKey } from "../../ir/js-ic.js";
+import { DYN_BUFFER_METHODS } from "../../ir/runtime-features.js";
 
 export function emitDynamicExpr(
   host: LlvmEmitterContext,
@@ -48,6 +59,7 @@ export function emitDynamicExpr(
     | "caughtNarrow"
     | "caughtToDyn"
   >,
+  discarded = false,
 ): LlValue {
   const B = host.B;
   switch (e.kind) {
@@ -78,7 +90,10 @@ export function emitDynamicExpr(
       // Bytes already box their shared mutable storage directly. A second
       // capsule would split identity between checked and native views.
       const errorRef = v.type.kind === "object" && host.shapeHost.isErrorClass(v.type.className);
-      if (!errorRef && ((e.liveRef && v.type.kind !== "bytes") || identityRef)) {
+      // A TextEncoder, TextDecoder or StringDecoder record boxes as its own handle, which
+      // keeps the record's identity (toDynHelper).
+      const codecRef = textCodecRecordClass(v.type, (id) => host.recordsById.get(id)) !== null;
+      if (!errorRef && !codecRef && ((e.liveRef && v.type.kind !== "bytes") || identityRef)) {
         if (v.type.kind === "union") {
           const adapter = host.liveDynUnionRefAdapter(v.type);
           const boxed = B.tmp();
@@ -107,6 +122,10 @@ export function emitDynamicExpr(
         const box = host.dyn.dynFuncBoxHelper(v.type);
         const t = B.tmp();
         B.line(`${t} = call ptr @${box}(ptr ${v.name}, ptr ${name})`);
+        if (e.fnLength !== undefined) {
+          host.declare(`declare void @scr_dyn_function_set_length(ptr, i32)`);
+          B.line(`call void @scr_dyn_function_set_length(ptr ${t}, i32 ${e.fnLength})`);
+        }
         return host.own({ name: t, type: e.type });
       }
       const conv = host.dyn.toDynHelper(v.type);
@@ -156,7 +175,7 @@ export function emitDynamicExpr(
             );
             host.emitPendingCheck();
           } else {
-            host.moveTemp(v);
+            host.toHeap(v);
             B.line(`call void @scr_dyn_arr_push(ptr ${pack}, ptr ${v.name})`);
           }
         });
@@ -201,13 +220,32 @@ export function emitDynamicExpr(
       // pending exception.
       const recv = emitBorrowedInput(host, e.recv);
       host.declare(`declare ptr @scr_dyn_prepare_method(ptr, ptr)`);
-      const prepared = B.tmp();
-      B.line(
-        `${prepared} = call ptr @scr_dyn_prepare_method(ptr ${recv.name}, ptr ${host.cstr(e.method)})`,
-      );
+      let prepared: string;
+      if (jsIcMethods(host)) {
+        // Dynamic-tier code reads the method through the site's cache.
+        prepared = emitJsIcMethod(host, e, recv.name);
+      } else {
+        prepared = B.tmp();
+        B.line(
+          `${prepared} = call ptr @scr_dyn_prepare_method(ptr ${recv.name}, ptr ${host.cstr(e.method)})`,
+        );
+      }
       host.own({ name: prepared, type: { kind: "dyn" } });
       host.emitPendingCheck();
       const args = e.args.map((a) => emitBorrowedInput(host, a));
+      // A closure registered as a 'message' listener gets a typed message
+      // entry: ports deliver messages of its parameter's layout without
+      // decoding them to checked-dynamic values first.
+      const listener = messageListenerArg(e);
+      if (listener !== null) {
+        const entry = host.dyn.messageListenerHelper(listener);
+        if (entry !== null) {
+          host.declare(`declare void @scr_dyn_func_set_message(ptr, ptr, ptr)`);
+          B.line(
+            `call void @scr_dyn_func_set_message(ptr ${args[1]!.name}, ptr @${host.dyn.dynFuncThunkHelper(listener)}, ptr @${entry})`,
+          );
+        }
+      }
       let argsPtr = "null";
       if (args.length > 0) {
         const arr = B.slot();
@@ -221,9 +259,24 @@ export function emitDynamicExpr(
         });
         argsPtr = arr;
       }
-      host.declare(
-        `declare ptr @scr_dyn_invoke_prepared(ptr, ptr, ptr, ptr, ${host.sizeType}, ptr)`,
-      );
+      // Buffer.prototype method names take their scr_bytes_dyn.c entry, which
+      // runs them on Buffer receivers and dispatches any other receiver.
+      // Each call passes its method name's id slot, so only the first call
+      // looks the name up.
+      const invoke = DYN_BUFFER_METHODS.get(e.method) ?? "scr_dyn_invoke_prepared_id";
+      // A statement-position push drops the new length, so its entry
+      // need not box it.
+      if (discarded && e.method === "push" && invoke === "scr_dyn_invoke_prepared_id") {
+        host.declare(
+          `declare void @scr_dyn_invoke_discard_id(ptr, ptr, ptr, ptr, ptr, ${host.sizeType}, ptr)`,
+        );
+        B.line(
+          `call void @scr_dyn_invoke_discard_id(ptr ${recv.name}, ptr ${prepared}, ptr ${host.cstr(e.method)}, ptr ${host.methodIdSlot(e.method)}, ptr ${argsPtr}, ${host.sizeType} ${args.length}, ptr ${host.cstr(e.calleeName)})`,
+        );
+        host.emitPendingCheck();
+        return { name: "", type: VOID };
+      }
+      host.declare(`declare ptr @${invoke}(ptr, ptr, ptr, ptr, ptr, ${host.sizeType}, ptr)`);
       let name = host.cstr(e.calleeName);
       if (e.calleeNameValue !== undefined) {
         const value = emitBorrowedInput(host, e.calleeNameValue);
@@ -232,7 +285,7 @@ export function emitDynamicExpr(
       }
       const t = B.tmp();
       B.line(
-        `${t} = call ptr @scr_dyn_invoke_prepared(ptr ${recv.name}, ptr ${prepared}, ptr ${host.cstr(e.method)}, ptr ${argsPtr}, ${host.sizeType} ${args.length}, ptr ${name})`,
+        `${t} = call ptr @${invoke}(ptr ${recv.name}, ptr ${prepared}, ptr ${host.cstr(e.method)}, ptr ${host.methodIdSlot(e.method)}, ptr ${argsPtr}, ${host.sizeType} ${args.length}, ptr ${name})`,
       );
       const out = host.own({ name: t, type: e.type });
       host.emitPendingCheck();
@@ -248,7 +301,7 @@ export function emitDynamicExpr(
       const out = host.own({ name: arr, type: e.type });
       for (const el of e.elems) {
         const v = host.emitExpr(el);
-        host.moveTemp(v);
+        host.toHeap(v);
         B.line(`call void @scr_dyn_arr_push(ptr ${arr}, ptr ${v.name})`);
       }
       return out;
@@ -264,9 +317,14 @@ export function emitDynamicExpr(
       const obj = B.tmp();
       B.line(`${obj} = call ptr @scr_dyn_new_obj()`);
       const out = host.own({ name: obj, type: e.type });
+      const cached = jsIcMethods(host);
       for (const f of e.fields ?? []) {
         const k = emitBorrowedInput(host, f.key);
         const v = emitBorrowedInput(host, f.value);
+        if (cached && jsIcLiteralKey(f.key) !== null) {
+          emitJsIcLiteralMember(host, obj, k.name, v.name);
+          continue;
+        }
         B.line(
           `call void @${f.key.type.kind === "dyn" ? "scr_dyn_key_set_computed" : "scr_dyn_key_set"}(ptr ${obj}, ptr ${k.name}, ptr ${v.name})`,
         );
@@ -291,17 +349,18 @@ export function emitDynamicExpr(
         return host.own({ name: host.unitInstanceRef(e.unionId, e.tag), type: e.type });
       }
       const v = host.emitExpr(e.value);
-      if (isRefCounted(arm)) host.moveTemp(v);
+      if (isRefCounted(arm)) host.toHeap(v);
       return host.own({ name: host.unionNewOwned(e.unionId, e.tag, v), type: e.type });
     }
     case "unionNarrow": {
-      // Tag-UNCHECKED payload extraction: the frontend emits this only
-      // where tsc's control-flow narrowing proved the tag. Ref payloads
-      // come out +1. The receiver is consumed before any later expression.
+      // Payload extraction where tsc's control-flow narrowing proved the
+      // tag; the guard verifies it (narrow-guards.ts). Ref payloads come
+      // out +1. The receiver is consumed before any later expression.
       const u = host.emitUnionProjection(e.value);
       const arm = e.type;
       if (isUnitType(arm))
         throw new InternalCompilerError(`llvm emitter bug: unionNarrow to unit arm ${arm.kind}`);
+      emitUnionNarrowGuard(host, u.name, e.unionId, e.tag);
       const v = host.unionExtract(u.name, e.unionId, arm);
       return host.own({ name: v, type: arm });
     }
@@ -329,7 +388,7 @@ export function emitDynamicExpr(
           const payload = host.unionPeek(u.name, def.id);
           const { ptr, type, inline } =
             arm.kind === "object"
-              ? host.classFieldPtr(payload, arm.className, e.field)
+              ? host.classFieldPtr(payload, arm.className, e.field, "compressed")
               : host.recordFieldPtr(payload, arm.shapeId, e.field);
           const nullable =
             arm.kind === "object" ? host.nullableFields.get(arm.className, e.field) : null;
@@ -347,7 +406,7 @@ export function emitDynamicExpr(
           const value = nullable
             ? host.nullableToOwnedUnion(v, nullable)
             : isRefCounted(e.type)
-              ? host.retainValue(v, e.type)
+              ? host.retainFrame(v, e.type)
               : v;
           B.line(`store ${ty} ${value}, ptr ${slot}`);
           B.br(join);
@@ -459,7 +518,7 @@ export function emitDynamicExpr(
             const owned = inline
               ? host.inlineFieldUnion(ptr, ft)
               : isRefCounted(ft)
-                ? host.retainValue(v, ft)
+                ? host.retainFrame(v, ft)
                 : v;
             B.line(`store ${ty} ${owned}, ptr ${slot}`);
             B.br(join);
@@ -481,7 +540,7 @@ export function emitDynamicExpr(
             ft.kind === "f64" || ft.kind === "bool"
               ? host.unionNewOwned(e.type.unionId, tag, { name: v, type: ft })
               : host.unionNewOwned(e.type.unionId, tag, {
-                  name: host.retainValue(v, ft),
+                  name: host.retainHeap(v, ft),
                   type: ft,
                 });
           B.line(`store ptr ${wrapped}, ptr ${slot}`);
@@ -529,6 +588,27 @@ export function emitDynamicExpr(
         e.key.type.kind === "dyn" ? host.dyn.dynComputedKeyGetHelper() : host.dyn.dynKeyGetHelper();
       const t = B.tmp();
       const generic = `call ptr @${helper}(ptr ${d.name}, ptr ${k.name}, i1 ${e.optional ? "true" : "false"})`;
+      const inherited = e.key.kind === "strLit" && INHERITED_OBJECT_MEMBERS.has(e.key.value);
+      // Object.prototype itself answers its own members before the ordinary
+      // read (which fences reflection on the prototype).
+      let prototypeJoin: { member: string; from: string; join: string } | null = null;
+      if (inherited) {
+        host.declare(`declare ptr @scr_dyn_object_prototype_member(ptr, ptr)`);
+        const member = B.tmp();
+        B.line(
+          `${member} = call ptr @scr_dyn_object_prototype_member(ptr ${d.name}, ptr ${k.name})`,
+        );
+        const isMember = B.tmp();
+        B.line(`${isMember} = icmp ne ptr ${member}, null`);
+        const from = B.newLabel("dkg.op");
+        const read = B.newLabel("dkg.rd");
+        const join = B.newLabel("dkg.opj");
+        B.condBr(isMember, from, read);
+        B.startBlock(from);
+        B.br(join);
+        B.startBlock(read);
+        prototypeJoin = { member, from, join };
+      }
       if (e.key.kind === "strLit") {
         // A constant key on an ordinary object reads through the site's
         // cache; every other receiver keeps the shared helper.
@@ -554,7 +634,27 @@ export function emitDynamicExpr(
       } else {
         B.line(`${t} = ${generic}`);
       }
-      const out = host.own({ name: t, type: e.type });
+      let result = t;
+      if (prototypeJoin) {
+        // An undefined read of an Object.prototype member name answers the
+        // member the receiver inherits (scr_dyn_invoke.c; the frontend
+        // links that unit for these reads).
+        host.declare(`declare ptr @scr_dyn_inherited_read(ptr, ptr, ptr)`);
+        const read = B.tmp();
+        B.line(
+          `${read} = call ptr @scr_dyn_inherited_read(ptr ${d.name}, ptr ${k.name}, ptr ${t})`,
+        );
+        const readEnd = B.newLabel("dkg.rde");
+        B.br(readEnd);
+        B.startBlock(readEnd);
+        B.br(prototypeJoin.join);
+        B.startBlock(prototypeJoin.join);
+        result = B.tmp();
+        B.line(
+          `${result} = phi ptr [ ${prototypeJoin.member}, %${prototypeJoin.from} ], [ ${read}, %${readEnd} ]`,
+        );
+      }
+      const out = host.own({ name: result, type: e.type });
       host.emitPendingCheck();
       return out;
     }
@@ -647,6 +747,10 @@ export function emitDynamicExpr(
         B.line(
           `${test} = call zeroext i1 @scr_dyn_typed_array_is(ptr ${d.name}, i32 ${BYTES_ELEM_NUM[e.bytesElem ?? "u8"]})`,
         );
+      } else if (e.test === "classCapsule") {
+        host.declare(`declare zeroext i1 @scr_dyn_is_class_capsule(ptr)`);
+        test = B.tmp();
+        B.line(`${test} = call zeroext i1 @scr_dyn_is_class_capsule(ptr ${d.name})`);
       } else if (e.test === "truthy") {
         host.declare(`declare zeroext i1 @scr_dyn_truthy(ptr)`);
         test = B.tmp();
@@ -767,6 +871,7 @@ export function emitDynamicExpr(
             undefined: DYN_KIND.UNDEF,
             null: DYN_KIND.NULL,
             bytes: DYN_KIND.BYTES,
+            funcKind: DYN_KIND.FUNC,
           };
           test = oneOf([kindOf[e.test]!]);
         }
@@ -803,13 +908,13 @@ export function emitDynamicExpr(
       if (!def)
         throw new InternalCompilerError(`llvm emitter bug: equality of unknown union ${e.unionId}`);
       const nullable = host.nullableUnions.get(def.id);
-      if (nullable && isObjectArm(nullable)) {
+      if (nullable && isPointerIdentityArm(nullable)) {
         // Object identity, and NULL === NULL for the unit arm: one compare.
         const eq = B.tmp();
         B.line(`${eq} = icmp ${e.negated ? "ne" : "eq"} ptr ${l.name}, ${r.name}`);
         return { name: eq, type: e.type };
       }
-      if (nullable) {
+      if (nullable && nullable.repr === "single" && nullable.arm.kind === "string") {
         // String arm: identical pointers are equal (the same string or the
         // same unit encoding); otherwise equal only when both hold strings
         // with the same bytes.
@@ -974,56 +1079,30 @@ export function emitDynamicExpr(
       // borrowed. SCR_EXC_STR = 3, SCR_EXC_F64 = 1, SCR_EXC_BOOL = 2.
       const c = host.emitReadReceiver(e.value);
       if (e.test === "instanceof") {
-        const target = host.classMetaOf(e.className!);
-        if (!target.hierarchy) {
-          // Standalone class payloads have no vtable word. Their retain
-          // adapter identifies the exact native layout in the snapshot.
-          const adapterSlot = B.tmp();
-          const adapter = B.tmp();
-          B.line(`${adapterSlot} = getelementptr inbounds %ScrCaught, ptr ${c.name}, i64 0, i32 5`);
-          B.line(`${adapter} = load ptr, ptr ${adapterSlot}`);
-          let result: string | undefined;
-          const intervals = classMembershipIntervals(host.classMeta, target.def.name);
-          for (const candidate of host.classMeta.values()) {
-            if (
-              candidate.hierarchy ||
-              !intervals.some((range) => range.pre <= candidate.pre && candidate.pre <= range.post)
-            )
-              continue;
-            const rc = vAdapters(host.shapeHost, { kind: "object", className: candidate.def.name });
-            const matches = B.tmp();
-            B.line(`${matches} = icmp eq ptr ${adapter}, ${rc.retain}`);
-            if (result === undefined) result = matches;
-            else {
-              const joined = B.tmp();
-              B.line(`${joined} = or i1 ${result}, ${matches}`);
-              result = joined;
-            }
-          }
-          if (result === undefined)
-            throw new InternalCompilerError("empty standalone class membership");
-          if (e.negated !== true) return { name: result, type: e.type };
-          const negated = B.tmp();
-          B.line(`${negated} = xor i1 ${result}, true`);
-          return { name: negated, type: e.type };
-        }
-        host.declare(
-          `declare zeroext i1 @scr_caught_instanceof(ptr, ${host.sizeType}, ${host.sizeType})`,
-        );
-        let t: string | undefined;
-        for (const interval of classMembershipIntervals(host.classMeta, target.def.name)) {
-          const test = B.tmp();
-          B.line(
-            `${test} = call zeroext i1 @scr_caught_instanceof(ptr ${c.name}, ${host.sizeType} ${interval.pre}, ${host.sizeType} ${interval.post})`,
-          );
-          if (t === undefined) t = test;
-          else {
-            const combined = B.tmp();
-            B.line(`${combined} = or i1 ${t}, ${test}`);
-            t = combined;
-          }
-        }
-        if (t === undefined) throw new InternalCompilerError("empty class membership");
+        const t = emitCaughtInstanceof(host, c.name, e.className!);
+        if (e.negated !== true) return { name: t, type: e.type };
+        const n = B.tmp();
+        B.line(`${n} = xor i1 ${t}, true`);
+        return { name: n, type: e.type };
+      }
+      if (e.test === "dynamic") {
+        // A REF payload whose retain adapter is the dyn adapter (sc_cd's
+        // by-reference arm).
+        host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
+        const kp = B.tmp(),
+          k = B.tmp(),
+          isRef = B.tmp(),
+          rp = B.tmp(),
+          r = B.tmp(),
+          isDyn = B.tmp(),
+          t = B.tmp();
+        B.line(`${kp} = getelementptr inbounds %ScrCaught, ptr ${c.name}, i64 0, i32 1`);
+        B.line(`${k} = load i32, ptr ${kp}`);
+        B.line(`${isRef} = icmp eq i32 ${k}, 4`);
+        B.line(`${rp} = getelementptr inbounds %ScrCaught, ptr ${c.name}, i64 0, i32 5`);
+        B.line(`${r} = load ptr, ptr ${rp}`);
+        B.line(`${isDyn} = icmp eq ptr ${r}, @scr_dyn_retain_v`);
+        B.line(`${t} = and i1 ${isRef}, ${isDyn}`);
         if (e.negated !== true) return { name: t, type: e.type };
         const n = B.tmp();
         B.line(`${n} = xor i1 ${t}, true`);
@@ -1060,6 +1139,42 @@ export function emitDynamicExpr(
       host.declare(
         `declare ptr @scr_caught_check_obj(ptr, ${host.sizeType}, ${host.sizeType}, ptr)`,
       );
+      if (target.idInRc) {
+        // A REF payload (emitCaughtInstanceof): a match retains it through
+        // its adapter; anything else gets the runtime's TypeError from the
+        // check against an empty interval.
+        const ok = emitCaughtInstanceof(host, c.name, e.className);
+        const yes = B.newLabel("caught.cast"),
+          no = B.newLabel("caught.cast.fail"),
+          join = B.newLabel("caught.cast.done");
+        B.condBr(ok, yes, no);
+        B.startBlock(yes);
+        const payloadSlot = B.tmp(),
+          payload = B.tmp(),
+          retainSlot = B.tmp(),
+          retain = B.tmp(),
+          retained = B.tmp();
+        B.line(`${payloadSlot} = getelementptr inbounds %ScrCaught, ptr ${c.name}, i64 0, i32 4`);
+        B.line(`${payload} = load ptr, ptr ${payloadSlot}`);
+        B.line(`${retainSlot} = getelementptr inbounds %ScrCaught, ptr ${c.name}, i64 0, i32 5`);
+        B.line(`${retain} = load ptr, ptr ${retainSlot}`);
+        B.line(`${retained} = call ptr ${retain}(ptr ${payload})`);
+        const fromYes = B.currentLabel();
+        B.br(join);
+        B.startBlock(no);
+        const failed = B.tmp();
+        B.line(
+          `${failed} = call ptr @scr_caught_check_obj(ptr ${c.name}, ${host.sizeType} 1, ${host.sizeType} 0, ptr ${host.cstr(display)})`,
+        );
+        const fromNo = B.currentLabel();
+        B.br(join);
+        B.startBlock(join);
+        const t = B.tmp();
+        B.line(`${t} = phi ptr [ ${retained}, %${fromYes} ], [ ${failed}, %${fromNo} ]`);
+        const out = host.own({ name: t, type: e.type });
+        host.emitPendingCheck();
+        return out;
+      }
       let pre = String(target.pre);
       let post = String(target.post);
       const intervals = classMembershipIntervals(host.classMeta, target.def.name);
@@ -1097,10 +1212,18 @@ export function emitDynamicExpr(
       return out;
     }
     case "caughtNarrow": {
-      // Checker-trusted extraction (the matching caughtTest was proven
-      // by tsc's narrowing): scalars read the snapshot's slots,
-      // refcounted payloads come out retained (+1). Box borrowed.
+      // Extraction where tsc's narrowing proved the matching caughtTest;
+      // the guard verifies it (narrow-guards.ts). Scalars read the
+      // snapshot's slots, refcounted payloads come out retained (+1). Box
+      // borrowed.
       const c = host.emitReadReceiver(e.value);
+      if (
+        e.type.kind === "f64" ||
+        e.type.kind === "bool" ||
+        e.type.kind === "string" ||
+        e.type.kind === "object"
+      )
+        emitCaughtNarrowGuard(host, c.name, e.type);
       if (e.type.kind === "f64") {
         const p = B.tmp();
         const v = B.tmp();
@@ -1122,7 +1245,7 @@ export function emitDynamicExpr(
       B.line(`${pp} = getelementptr inbounds %ScrCaught, ptr ${c.name}, i64 0, i32 4`);
       B.line(`${payload} = load ptr, ptr ${pp}`);
       if (e.type.kind === "string") {
-        return host.own({ name: host.retainValue(payload, e.type), type: e.type });
+        return host.own({ name: host.retainFrame(payload, e.type), type: e.type });
       }
       if (e.type.kind === "object") {
         // Retain through the snapshot's own entry point (the payload's
@@ -1208,9 +1331,7 @@ function emitUnionEqWrappedScalar(
     B.startBlock(same);
     const eq = B.tmp();
     if (arm.kind === "f64") {
-      host.declare(`declare double @scr_union_get_f64(ptr)`);
-      const v = B.tmp();
-      B.line(`${v} = call double @scr_union_get_f64(ptr ${union.name})`);
+      const v = host.unionGetF64(union.name);
       if (e.sameValue) {
         host.declare(`declare zeroext i1 @scr_num_same_value(double, double)`);
         B.line(`${eq} = call zeroext i1 @scr_num_same_value(double ${v}, double ${plain.name})`);
@@ -1218,9 +1339,7 @@ function emitUnionEqWrappedScalar(
         B.line(`${eq} = fcmp oeq double ${v}, ${plain.name}`);
       }
     } else {
-      host.declare(`declare zeroext i1 @scr_union_get_bool(ptr)`);
-      const v = B.tmp();
-      B.line(`${v} = call zeroext i1 @scr_union_get_bool(ptr ${union.name})`);
+      const v = host.unionGetBool(union.name);
       B.line(`${eq} = icmp eq i1 ${v}, ${plain.name}`);
     }
     B.line(`store i1 ${eq}, ptr ${slot}`);
@@ -1238,4 +1357,35 @@ function emitUnionEqWrappedScalar(
 /** The text of a string literal wrapped into a union, or null. */
 function wrappedStringLiteral(e: IrExpr): string | null {
   return e.kind === "unionWrap" && e.value.kind === "strLit" ? e.value.value : null;
+}
+
+/** Object.prototype member names whose constant-key dynamic reads fall back
+ * to the inherited member (runtime-features.ts links the unit). */
+export const INHERITED_OBJECT_MEMBERS: ReadonlySet<string> = new Set([
+  "constructor",
+  "valueOf",
+  "toString",
+  "hasOwnProperty",
+  "propertyIsEnumerable",
+]);
+
+/** EventEmitter methods that register their second argument as a listener. */
+const LISTENER_METHODS: ReadonlySet<string> = new Set([
+  "on",
+  "once",
+  "addListener",
+  "prependListener",
+  "prependOnceListener",
+]);
+
+/** The closure type of `recv.on("message", listener)` and the other
+ * listener registrations with a typed closure for the 'message' event, or
+ * null. */
+function messageListenerArg(e: ExprOf<"dynInvoke">): (IrType & { kind: "func" }) | null {
+  if (!LISTENER_METHODS.has(e.method) || e.args.length !== 2) return null;
+  const [event, listener] = e.args;
+  if (event?.kind !== "dynFrom" || event.value.kind !== "strLit" || event.value.value !== "message")
+    return null;
+  if (listener?.kind !== "dynFrom" || listener.value.type.kind !== "func") return null;
+  return listener.value.type;
 }

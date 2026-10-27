@@ -1,0 +1,6 @@
+new-target-value-generic-subclass.ts:3:58 - error SC1090: 'new.target' as a value where 'B' is a generic subclass (its instantiations have no common class value; read 'new.target.name' or compare 'new.target' with a class instead) is not supported yet
+
+  2 | // instantiations have no common class value.
+  3 | class A { readonly t: typeof A; constructor() { this.t = new.target; } }
+    |                                                          ^~~~~~~~~~
+  4 | class B<T> extends A { readonly v: T | undefined = undefined; }

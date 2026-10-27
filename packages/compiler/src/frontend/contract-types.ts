@@ -7,10 +7,12 @@
  * variable and class field types, and the class markers (Acyclic,
  * ProgramLifetime) in heritage clauses. The IR-side checks live in
  * ir/contract-check.ts. */
+import type { DiagnosticCode } from "../diagnostics/codes.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import type { SrcLoc } from "../ir/ir.js";
 import { locOf } from "./program.js";
 import * as ts from "./ts7/adapter.js";
+import { type HeritageElement, isHeritageElement } from "./heritage-elements.js";
 
 export const CONTRACT_TYPES_MODULE = "@scriptc/types";
 
@@ -86,11 +88,11 @@ function markerOf(checker: ts.TypeChecker, ref: ts.TypeReferenceNode): ContractM
 }
 
 /** The marker a heritage clause names (`implements Acyclic`,
- * `implements sc.ProgramLifetime`). */
-function markerOfHeritage(
-  checker: ts.TypeChecker,
-  node: ts.ExpressionWithTypeArguments,
-): ContractMarker | null {
+ * `implements sc.ProgramLifetime`), as an ExpressionWithTypeArguments or,
+ * in TypeScript 7.1's interface `extends` and class `implements`, a
+ * TypeReference. */
+function markerOfHeritage(checker: ts.TypeChecker, node: HeritageElement): ContractMarker | null {
+  if (ts.isTypeReferenceNode(node)) return markerOf(checker, node);
   const e = node.expression;
   if (ts.isIdentifier(e)) return markerNamed(checker, e, e.text, false);
   if (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.expression) && ts.isIdentifier(e.name))
@@ -109,7 +111,7 @@ function markerNamed(
   if (!MARKERS.has(written)) return null;
   let member = written;
   const symbol = checker.getSymbolAtLocation(ident);
-  const decl = symbol ? checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (decl === undefined) return null;
   let importDecl: ts.Node | undefined;
   if (ts.isImportSpecifier(decl) && !qualified) {
@@ -130,11 +132,11 @@ function markerNamed(
 function nameText(node: ts.Node | undefined): string {
   if (node === undefined) return "<anonymous>";
   if (ts.isIdentifier(node) || ts.isPrivateIdentifier(node)) return node.text;
-  return node.getText();
+  return ts.getTextOfNode(node);
 }
 
 function contractDiag(
-  code: `SC${number}`,
+  code: DiagnosticCode,
   loc: SrcLoc,
   message: string,
   hint: string,
@@ -168,7 +170,7 @@ export function collectContractAnnotations(
     ts.walkPreorder(
       sf,
       (node) => {
-        if (ts.isExpressionWithTypeArguments(node)) {
+        if (isHeritageElement(node)) {
           const marker = markerOfHeritage(checker, node);
           if (marker === null) return;
           out.count++;
@@ -231,7 +233,7 @@ function unsupported(out: ContractAnnotations, node: ts.Node, marker: ContractMa
 function placeHeritage(
   out: ContractAnnotations,
   checker: ts.TypeChecker,
-  node: ts.ExpressionWithTypeArguments,
+  node: HeritageElement,
   marker: ContractMarker,
   resolveUnit: ContractUnitResolver,
 ): void {
@@ -262,7 +264,7 @@ function placeHeritage(
     return unsupported(out, node, marker);
   // `implements Acyclic<C>` would make the class implement C's own type,
   // which the lowering treats as a protocol of C.
-  if ((node.typeArguments?.length ?? 0) > 0) return unsupported(out, node, marker);
+  if ((node.typeArguments?.nodes.length ?? 0) > 0) return unsupported(out, node, marker);
   const note = (name: string): ContractNote => ({ marker, loc: locOf(node), name });
   if (
     (ts.isClassDeclaration(owner) || ts.isClassExpression(owner)) &&
@@ -324,8 +326,8 @@ function place(
       ts.isTypeReferenceNode(parent) &&
       ts.isIdentifier(parent.typeName) &&
       (parent.typeName.text === "Array" || parent.typeName.text === "ReadonlyArray") &&
-      parent.typeArguments?.length === 1 &&
-      parent.typeArguments[0] === ref
+      parent.typeArguments?.nodes.length === 1 &&
+      parent.typeArguments.nodes[0] === ref
     ) {
       node = parent;
       parent = parent.parent;
@@ -336,7 +338,7 @@ function place(
   // contract of the function the NoThrow annotates.
   if (marker !== "NoThrow" && parent !== undefined && ts.isTypeReferenceNode(parent)) {
     const wrapper = markerOf(checker, parent);
-    if (wrapper === "NoThrow" && parent.typeArguments?.[0] === node) {
+    if (wrapper === "NoThrow" && parent.typeArguments?.nodes[0] === node) {
       node = parent;
       parent = parent.parent;
     }

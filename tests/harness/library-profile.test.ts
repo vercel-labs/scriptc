@@ -8,7 +8,12 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
-import { loadLibraryProfile, profileRemediation, profileTeaching } from "@scriptc/compiler";
+import {
+  loadLibraryProfile,
+  profileRemediation,
+  profileTeaching,
+  resolveLibraryFences,
+} from "@scriptc/compiler";
 
 const dir = mkdtempSync(join(tmpdir(), "scriptc-lib-profile-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -160,7 +165,56 @@ describe("library profile validation", () => {
   });
 
   test("parse error", () => expectSc4001("{ not json", "not valid JSON"));
-  test("wrong format", () => expectSc4001({ ...good, profile_format: 2 }, "profile_format"));
+  test("wrong format", () => expectSc4001({ ...good, profile_format: 3 }, "profile_format"));
+  test("the cstring class requires profile_format 2", () => {
+    const cstringExport = {
+      export: "greet",
+      symbol: "kx_greet",
+      params: ["cstring"],
+      returns: "cstring",
+    };
+    const v2 = loadLibraryProfile(
+      writeProfile({ ...good, profile_format: 2, exports: [...good.exports, cstringExport] }),
+    );
+    expect(v2.ok).toBe(true);
+    if (v2.ok) {
+      expect(v2.profile.profileFormat).toBe(2);
+      expect(v2.profile.exports.at(-1)).toMatchObject({ params: ["cstring"], returns: "cstring" });
+    }
+    expectSc4001(
+      { ...good, exports: [...good.exports, cstringExport] },
+      "'exports[2].params[0]' class 'cstring' requires profile_format 2",
+    );
+    expectSc4001(
+      { ...good, exports: [...good.exports, { ...cstringExport, params: [] }] },
+      "'exports[2].returns' class 'cstring' requires profile_format 2",
+    );
+    const callbackAbi = { ...good.abi, callback_register_symbol: "kx_set_callback" };
+    const cstringCallback = { name: "log", params: ["cstring"], returns: "void" };
+    expect(
+      loadLibraryProfile(
+        writeProfile({
+          ...good,
+          profile_format: 2,
+          abi: callbackAbi,
+          callbacks: [cstringCallback],
+        }),
+      ).ok,
+    ).toBe(true);
+    expectSc4001(
+      { ...good, abi: callbackAbi, callbacks: [cstringCallback] },
+      "'callbacks[0].params[0]' class 'cstring' requires profile_format 2",
+    );
+    expectSc4001(
+      {
+        ...good,
+        profile_format: 2,
+        abi: callbackAbi,
+        callbacks: [{ name: "log", params: [], returns: "cstring" }],
+      },
+      "a callback return stays scalar",
+    );
+  });
   test("missing name", () => {
     const { name: _drop, ...rest } = good;
     expectSc4001(rest, "'name'");
@@ -426,14 +480,21 @@ describe("library profile fences", () => {
   });
 
   test("a fence remediation feeds the trap-remediation lookup through covered codes", () => {
+    // A crypto member that still refuses with SC2020, read from the
+    // manifest: members leave that set as they gain lowerings.
+    const builtins = resolveLibraryFences([{ path: "fences[0]", prefix: "node-builtin.crypto." }]);
+    expect(builtins.ok).toBe(true);
+    if (!builtins.ok) return;
+    const unlowered = builtins.fences[0]!.surfaces.find((s) => s.code === "SC2020");
+    expect(unlowered).toBeDefined();
     const r = loadLibraryProfile(
       writeProfile({
         ...good,
         determinism: {
           remediations: { SC2012: "the explicit map key wins" },
           fences: [
-            { id: "stdlib.number.toPrecision", remediation: "request it as an effect" },
-            { id: "node-builtin.crypto.createSign", remediation: "signatures come from the host" },
+            { id: "diagnostic.sc2012", remediation: "request it as an effect" },
+            { id: unlowered!.id, remediation: "the host provides it" },
           ],
         },
       }),
@@ -443,9 +504,9 @@ describe("library profile fences", () => {
     // Explicit remediations keys win over fence-supplied text.
     expect(profileRemediation(r.profile, "SC2012")).toBe("the explicit map key wins");
     // A fence's remediation answers for its covered entries' codes
-    // (crypto.createSign is SC2020) — spec §3's "in a fence entry or a
-    // remediations map", one lookup either way.
-    expect(profileRemediation(r.profile, "SC2020")).toBe("signatures come from the host");
+    // (SC2020 here) — spec §3's "in a fence entry or a remediations map",
+    // one lookup either way.
+    expect(profileRemediation(r.profile, "SC2020")).toBe("the host provides it");
     expect(profileRemediation(r.profile, "SC4014")).toBeUndefined();
   });
 
@@ -502,7 +563,12 @@ describe("library profile fences", () => {
       "stdlib.date.getUTCSeconds",
       "stdlib.date.now",
       "stdlib.date.parse",
+      "stdlib.date.setters",
+      "stdlib.date.toDateString",
       "stdlib.date.toISOString",
+      "stdlib.date.toString",
+      "stdlib.date.toTimeString",
+      "stdlib.date.toUTCString",
       "stdlib.date.valueOf",
     ]);
     expect(r.profile.fences[0]!.surfaces.every((s) => s.detector !== undefined)).toBe(true);
@@ -516,10 +582,13 @@ describe("library profile fences", () => {
     expect(processIds).toContain("node-builtin.process.isTTY");
     expect(r.profile.fences[1]!.surfaces.every((s) => s.detector !== undefined)).toBe(true);
     // The user-timing timeline reads the same clock (mark() and measure()
-    // default to performance.now()), so it joins the perf_hooks family.
+    // default to performance.now()), and so do the event-loop metrics, so
+    // they join the perf_hooks family.
     expect(r.profile.fences[2]!.surfaces.map((s) => s.id)).toEqual([
+      "node-builtin.perf_hooks.monitorEventLoopDelay",
       "node-builtin.perf_hooks.performance.clearMarks",
       "node-builtin.perf_hooks.performance.clearMeasures",
+      "node-builtin.perf_hooks.performance.eventLoopUtilization",
       "node-builtin.perf_hooks.performance.getEntries",
       "node-builtin.perf_hooks.performance.mark",
       "node-builtin.perf_hooks.performance.measure",

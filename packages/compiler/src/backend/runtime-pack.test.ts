@@ -9,7 +9,6 @@ import type { NativeLinkFeatures } from "./native-link-info.js";
 import {
   effectiveRuntimeFeatures,
   evaluateRuntimePredicate,
-  loadRuntimeBitcode,
   loadRuntimePack,
   parseRuntimePackManifest,
   RuntimePackError,
@@ -22,7 +21,12 @@ import {
   platformLinkerSupportsPersistentCache,
   resolvePlatformLinker,
 } from "./linker.js";
-import { MACOS_ARM64_TARGET, WINDOWS_X64_MSVC_TARGET, type NativeTargetSpec } from "./targets.js";
+import {
+  LINUX_X64_GNU_TARGET,
+  MACOS_ARM64_TARGET,
+  WINDOWS_X64_MSVC_TARGET,
+  type NativeTargetSpec,
+} from "./targets.js";
 
 const VERSION = compilerReleaseVersion();
 
@@ -44,18 +48,31 @@ const BASE: NativeLinkFeatures = {
   bigint: false,
   searchParams: false,
   qs: false,
+  utilPromisify: false,
+  dynBuiltinClass: false,
+  dynBuiltinStream: false,
   parseArgs: false,
   stream: false,
   net: false,
   http: false,
   http2: false,
   dgram: false,
+  dnsPromises: false,
+  dgramDyn: false,
+  textCodecDyn: false,
   watch: false,
   foreignFfi: false,
   nodeTest: false,
   tls: false,
   tlsCa: false,
   cipher: false,
+  ecdh: false,
+  dh: false,
+  pki: false,
+  ed25519: false,
+  x509: false,
+  webcrypto: false,
+  perfLoop: false,
 };
 
 async function fixture(target: NativeTargetSpec = MACOS_ARM64_TARGET) {
@@ -117,7 +134,7 @@ async function fixture(target: NativeTargetSpec = MACOS_ARM64_TARGET) {
       object_format: target.objectFormat,
       minimum_os: target.minimumOs,
     },
-    runtime_abi: { version: 22, marker: "scr_runtime_abi_v22" },
+    runtime_abi: { version: 47, marker: "scr_runtime_abi_v47" },
     compiler: {
       command: "clang",
       identity: "fixture clang",
@@ -230,6 +247,25 @@ describe("runtime pack manifests", () => {
     expect(guiPlan.driverFlags).toEqual([...defaultPlan.driverFlags, "-Wl,--subsystem,windows"]);
   });
 
+  test("Linux runtime-pack links are static PIE only when requested", async () => {
+    const { packagePath, root } = await fixture(LINUX_X64_GNU_TARGET);
+    const options = {
+      target: LINUX_X64_GNU_TARGET,
+      programObject: join(root, "program.o"),
+      outPath: join(root, "program"),
+      features: BASE,
+      ffi: null,
+      optimization: "release" as const,
+      resolver: () => packagePath,
+    };
+    const defaultPlan = await createNativeLinkPlan(options);
+    const staticPlan = await createNativeLinkPlan({ ...options, staticLink: true });
+    expect(defaultPlan.driverFlags).not.toContain("-static-pie");
+    expect(defaultPlan.staticLink).toBeUndefined();
+    expect(staticPlan.driverFlags).toEqual([...defaultPlan.driverFlags, "-static-pie"]);
+    expect(staticPlan.staticLink).toBe(true);
+  });
+
   test("selection chooses the most-specific variant and feature archive", async () => {
     const { packagePath } = await fixture();
     const resolver = () => packagePath;
@@ -254,80 +290,10 @@ describe("runtime pack manifests", () => {
     expect(fileHandle.archives.map((path) => path.split("/").at(-1))).toEqual(["zlib.a"]);
   });
 
-  test("runtime bitcode follows the selected flavor variant and is verified", async () => {
-    const { root, packagePath, manifest } = await fixture();
-    const bitcode = async (path: string, bytes: string) => {
-      await writeFile(join(root, path), bytes);
-      return {
-        path,
-        sha256: createHash("sha256").update(bytes).digest("hex"),
-        size: Buffer.byteLength(bytes),
-      };
-    };
-    const unit = manifest.flavors.release!.runtime_units[0]!;
-    const withBitcode: RuntimePackManifest = {
-      ...manifest,
-      flavors: {
-        ...manifest.flavors,
-        speed: {
-          optimization: "-O2",
-          runtime_units: [
-            {
-              ...unit,
-              variants: [
-                { ...unit.variants[0]!, bitcode: await bitcode("artifacts/base.bc", "base-bc") },
-                {
-                  ...unit.variants[1]!,
-                  bitcode: await bitcode("artifacts/legacy.bc", "legacy-bc"),
-                },
-                unit.variants[2]!,
-              ],
-            },
-          ],
-        },
-      },
-    };
-    const resolver = () => packagePath;
-    const speed = { target: MACOS_ARM64_TARGET, optimization: "speed" } as const;
-    // Release programs import their own units' bitcode. Speed programs
-    // never import release bitcode: without a speed flavor they import none.
-    await writeFile(
-      join(root, "runtime-pack.json"),
-      JSON.stringify({
-        ...withBitcode,
-        flavors: { ...withBitcode.flavors, release: withBitcode.flavors.speed, speed: undefined },
-      }),
-    );
-    expect(await loadRuntimeBitcode({ ...speed, features: BASE, resolver })).toBeNull();
-    const release = await loadRuntimeBitcode({
-      target: MACOS_ARM64_TARGET,
-      optimization: "release",
-      features: BASE,
-      resolver,
-    });
-    expect(release?.paths.map((path) => basename(path))).toEqual(["base.bc"]);
-    await writeFile(join(root, "runtime-pack.json"), JSON.stringify(withBitcode));
-    const legacy = await loadRuntimeBitcode({
-      ...speed,
-      features: { ...BASE, textDecoderLegacy: true },
-      resolver,
-    });
-    expect(legacy?.paths.map((path) => basename(path))).toEqual(["legacy.bc"]);
-    expect(legacy?.digests).toEqual([createHash("sha256").update("legacy-bc").digest("hex")]);
-    // A variant without bitcode imports nothing.
-    expect(
-      await loadRuntimeBitcode({
-        ...speed,
-        features: { ...BASE, fileHandle: true },
-        resolver,
-      }),
-    ).toBeNull();
-    await writeFile(join(root, "artifacts/base.bc"), "damaged");
-    await expect(loadRuntimeBitcode({ ...speed, features: BASE, resolver })).rejects.toThrow(
-      "hash mismatch",
-    );
-    const malformed = structuredClone(withBitcode);
-    malformed.flavors.speed!.runtime_units[0]!.variants[0]!.bitcode = {
+  test("runtime unit bitcode must stay inside the pack", async () => {
+    const { manifest } = await fixture();
+    const malformed = structuredClone(manifest);
+    malformed.flavors.release!.runtime_units[0]!.variants[0]!.bitcode = {
       path: "../escape.bc",
       sha256: "0".repeat(64),
       size: 1,

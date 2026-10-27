@@ -1,0 +1,35 @@
+inspect-custom-fences.ts:16:21 - error SC2020: 'util.inspect of 'Plain[]' values' is part of the standard library types but has no scriptc lowering yet
+
+  15 | const items: Plain[] = [new Fancy()];
+  16 | console.log(inspect(items));
+     |                     ^~~~~
+  17 | 
+
+  hint: classes whose subclasses declare [util.inspect.custom] have no inspect lowering yet (declare the method on the class itself)
+
+inspect-custom-fences.ts:23:21 - error SC2020: 'util.inspect of 'Wide' values' is part of the standard library types but has no scriptc lowering yet
+
+  22 | }
+  23 | console.log(inspect(new Wide()));
+     |                     ^~~~~~~~~~
+  24 | 
+
+  hint: [util.inspect.custom] methods with more than three parameters have no inspect lowering
+
+inspect-custom-fences.ts:30:21 - error SC2020: 'util.inspect of 'Echo' values' is part of the standard library types but has no scriptc lowering yet
+
+  29 | }
+  30 | console.log(inspect(new Echo()));
+     |                     ^~~~~~~~~~
+  31 | 
+
+  hint: [util.inspect.custom] methods that return a class instance have no inspect lowering
+
+inspect-custom-fences.ts:37:26 - error SC2020: 'util.format %o over values with [util.inspect.custom] methods' is part of the standard library types but has no scriptc lowering yet
+
+  36 | }
+  37 | console.log(format("%o", new Shown()));
+     |                          ^~~~~~~~~~~
+  38 | 
+
+  hint: %o passes showHidden to the methods — use %O

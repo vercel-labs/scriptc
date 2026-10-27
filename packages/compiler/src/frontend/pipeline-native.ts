@@ -1,4 +1,4 @@
-import { runFrontend, type Frontend } from "./pipeline.js";
+import { runFrontend, type Frontend, type FrontendOptions } from "./pipeline.js";
 import { loadProgram } from "./program.js";
 import { FrontendServices, type ComptimeEvaluator } from "./services.js";
 import { createNativeTs7Api } from "./ts7/native-api.js";
@@ -13,6 +13,7 @@ export function runNativeFrontend(
   externalTypes?: Readonly<Record<string, string>>,
   evaluateComptime?: ComptimeEvaluator,
   libraryNpmStatic: readonly string[] = [],
+  options: FrontendOptions = {},
 ): Frontend {
   const services = new FrontendServices(
     (options) => createNativeTs7Api({ ...options, executable }),
@@ -31,6 +32,7 @@ export function runNativeFrontend(
       npmStatic,
       externalTypes,
       libraryNpmStatic,
+      options,
     );
     return {
       ...frontend,

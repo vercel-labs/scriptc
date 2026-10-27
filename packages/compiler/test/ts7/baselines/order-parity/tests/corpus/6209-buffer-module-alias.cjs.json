@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6209-buffer-module-alias.cjs"
+ ],
+ "diags": []
+}

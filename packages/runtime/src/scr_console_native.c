@@ -507,8 +507,8 @@ static bool scr_console_holds_buffer(const ScrDyn *d) {
         if (scr_console_holds_buffer(d->v.arr.items[i])) return true;
       return false;
     case SCR_DYN_OBJ:
-      for (size_t i = 0; i < d->v.obj.len; i++) {
-        const ScrDyn *value = d->v.obj.entries[i].value;
+      for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
+        const ScrDyn *value = scr_dyn_obj_value_at(d, i);
         if (value && scr_console_holds_buffer(value)) return true;
       }
       return false;
@@ -523,7 +523,11 @@ ScrStr *scr_console_dir_dyn(ScrDyn *value, double depth) {
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
     return scr_str_new("", 0);
   }
-  return scr_insp_dyn(value, 0, depth);
+  /* console.dir is inspect with customInspect: false. */
+  bool custom = scr_insp_custom_inspect(false);
+  ScrStr *out = scr_insp_dyn(value, 0, depth);
+  scr_insp_custom_inspect(custom);
+  return out;
 }
 
 /* ── console.table ───────────────────────────────────────────────────
@@ -622,7 +626,7 @@ static ScrStr **scr_table_own_keys(const ScrDyn *item, size_t *count) {
     return keys;
   }
   if (item->kind != SCR_DYN_OBJ) return NULL;
-  size_t len = item->v.obj.len;
+  size_t len = scr_dyn_obj_count(item);
   const char **names = calloc(len ? len : 1, sizeof *names);
   size_t *lens = calloc(len ? len : 1, sizeof *lens);
   size_t *order = calloc(len ? len : 1, sizeof *order);
@@ -630,10 +634,10 @@ static ScrStr **scr_table_own_keys(const ScrDyn *item, size_t *count) {
   if (!names || !lens || !order || !keys) scr_trap("scriptc: out of memory\n");
   size_t n = 0;
   for (size_t i = 0; i < len; i++) {
-    const ScrDynEntry *ent = &item->v.obj.entries[i];
-    if (!ent->enumerable) continue;
-    names[n] = ent->key;
-    lens[n] = ent->key_len;
+    ScrDynProp prop = scr_dyn_obj_prop_at(item, i);
+    if (!prop.enumerable) continue;
+    names[n] = prop.key;
+    lens[n] = prop.key_len;
     n++;
   }
   scr_table_key_order(names, lens, n, order);
@@ -648,16 +652,14 @@ static ScrStr **scr_table_own_keys(const ScrDyn *item, size_t *count) {
 /* item[key] when it is an own property; NULL otherwise. +1. */
 static ScrDyn *scr_table_own_value(const ScrDyn *item, const ScrStr *key) {
   if (item->kind == SCR_DYN_OBJ) {
-    for (size_t i = 0; i < item->v.obj.len; i++) {
-      const ScrDynEntry *ent = &item->v.obj.entries[i];
-      if (ent->key_len != key->len || memcmp(ent->key, key->data, key->len) != 0) continue;
-      if (ent->accessor) {
-        scr_table_fence("console.table rows with accessor properties have no lowering");
-        return NULL;
-      }
-      return scr_dyn_retain(ent->value);
+    size_t i = scr_dyn_obj_index_of(item, key->data, key->len);
+    if (i == SIZE_MAX) return NULL;
+    ScrDynProp prop = scr_dyn_obj_prop_at(item, i);
+    if (prop.accessor) {
+      scr_table_fence("console.table rows with accessor properties have no lowering");
+      return NULL;
     }
-    return NULL;
+    return scr_dyn_retain(prop.value);
   }
   if (item->kind == SCR_DYN_ARR || item->kind == SCR_DYN_BYTES) {
     size_t len = item->kind == SCR_DYN_ARR ? item->v.arr.len : item->v.bytes->len;

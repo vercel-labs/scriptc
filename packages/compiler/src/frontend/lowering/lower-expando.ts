@@ -97,9 +97,9 @@ function expandoFnSymbolOf(lowerer: Lowerer, recv: ts.Expression): ts.Symbol | n
   // existing member paths stay put.
   const sym = lowerer.resolveValueSymbol(recv);
   if (!sym) return null;
-  const decl = lowerer.checker.valueDeclarationOf(sym);
-  if (!decl || decl.getSourceFile().isDeclarationFile) return null;
-  if (isJsSourceFile(decl.getSourceFile())) return null;
+  const decl = sym.valueDeclaration;
+  if (!decl || ts.getSourceFileOfNode(decl).isDeclarationFile) return null;
+  if (isJsSourceFile(ts.getSourceFileOfNode(decl))) return null;
   if (ts.isFunctionDeclaration(decl)) {
     return ts.isSourceFile(decl.parent) ? sym : null;
   }
@@ -177,7 +177,7 @@ export function collectExpandoMembers(lowerer: Lowerer, sf: ts.SourceFile): void
       }
       const existing = memberOf(members, w.key);
       if (existing) {
-        existing.firstWriteStart = Math.min(existing.firstWriteStart, node.getStart());
+        existing.firstWriteStart = Math.min(existing.firstWriteStart, ts.tokenStartOfNode(node));
       } else if (
         !(typeof w.key === "string" && READONLY_FN_MEMBERS.has(w.key)) &&
         !nsOwnedMember(lowerer, w.access)
@@ -198,18 +198,22 @@ export function collectExpandoMembers(lowerer: Lowerer, sf: ts.SourceFile): void
         }
         if (type?.kind === "void" && isUnitOnlyTsType(tsType)) type = unitOnlyUnion(lowerer.unions);
         if (type && type.kind !== "void") {
-          const fnName = w.fnSym.name;
+          const fnName = ts.symbolName(w.fnSym);
           const memberName =
             typeof w.key === "string"
               ? w.key
-              : `sym%${w.key.name}%${lowerer.checker.declarationsOf(w.key)[0]?.getStart() ?? 0}`;
+              : `sym%${ts.symbolName(w.key)}%${(w.key.declarations.length === 0 ? undefined : ts.tokenStartOfNode(w.key.declarations[0]!)) ?? 0}`;
           const g: IrGlobal = {
             id: `%g.${tag}${fnName}%.${memberName}`,
             name: `${fnName}.${memberName}`,
             type,
             mutable: true,
           };
-          const entry: ExpandoMember = { global: g, firstWriteStart: node.getStart(), file: sf };
+          const entry: ExpandoMember = {
+            global: g,
+            firstWriteStart: ts.tokenStartOfNode(node),
+            file: sf,
+          };
           if (typeof w.key === "string") members.names.set(w.key, entry);
           else members.symbols.set(w.key, entry);
           lowerer.globalsList.push(g);
@@ -239,7 +243,7 @@ function nsOwnedMember(
   const nameNode = ts.isPropertyAccessExpression(access) ? access.name : access.argumentExpression;
   const sym = lowerer.checker.getSymbolAtLocation(nameNode);
   if (!sym) return false;
-  for (const d of lowerer.checker.declarationsOf(sym)) {
+  for (const d of sym.declarations) {
     for (
       let p: ts.Node | undefined = d.parent;
       p !== undefined && !ts.isSourceFile(p);
@@ -247,8 +251,8 @@ function nsOwnedMember(
     ) {
       if (ts.isModuleDeclaration(p)) {
         return !(
-          p.modifiers?.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword) ||
-          p.getSourceFile().isDeclarationFile
+          p.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.DeclareKeyword) ||
+          ts.getSourceFileOfNode(p).isDeclarationFile
         );
       }
     }
@@ -308,11 +312,11 @@ export function expandoMemberRead(
   const member = memberOf(lowerer.expandoMembers.get(fnSym), key);
   if (!member) return null;
   if (
-    access.getSourceFile() === member.file &&
+    ts.getSourceFileOfNode(access) === member.file &&
     initExecutingPosition(access) &&
-    access.getStart() < member.firstWriteStart
+    ts.tokenStartOfNode(access) < member.firstWriteStart
   ) {
-    const name = typeof key === "string" ? key : key.name;
+    const name = typeof key === "string" ? key : ts.symbolName(key);
     lowerer.unsupported(
       "SC1090",
       access,

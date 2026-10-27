@@ -1,0 +1,22 @@
+// undici 5.x's `errors` export (lib/core/errors.js module.exports).
+export {
+  HTTPParserError,
+  UndiciError,
+  HeadersTimeoutError,
+  HeadersOverflowError,
+  BodyTimeoutError,
+  RequestContentLengthMismatchError,
+  ConnectTimeoutError,
+  ResponseStatusCodeError,
+  InvalidArgumentError,
+  InvalidReturnValueError,
+  RequestAbortedError,
+  ClientDestroyedError,
+  ClientClosedError,
+  InformationalError,
+  SocketError,
+  NotSupportedError,
+  ResponseContentLengthMismatchError,
+  BalancedPoolMissingUpstreamError,
+  ResponseExceededMaxSizeError,
+} from "./errors.ts";

@@ -34,11 +34,19 @@ void scr_dgram_send_str(ScrDgramSocket *s, ScrStr *data /*borrowed*/, double por
 void scr_dgram_send_bytes(ScrDgramSocket *s, ScrBytes *data /*borrowed*/, double port, ScrStr *host /*borrowed*/);
 /* The send argument-validation ladder over dyn arguments (Node's
  * signature shuffle, slice bounds, list/type contracts, port/address
- * validation, and the connected-state errors); a fully-validated
- * unconnected single-payload send RUNS, the rest meet the fence. */
+ * validation, and the connected-state errors), then the send: a list
+ * goes out as one datagram, a connected socket sends to its peer, and a
+ * completion callback receives (null, bytes) or the failure after this
+ * turn. */
 void scr_dgram_send_chk(ScrDgramSocket *s, const ScrDyn *buffer, const ScrDyn *a1,
                         const ScrDyn *a2, const ScrDyn *a3, const ScrDyn *a4,
-                        const ScrStr *fence);
+                        const ScrDyn *a5);
+/* The socket as an untyped value (SCR_DYNH_DGRAM_SOCKET): boxes of one
+ * socket share its untyped listeners; the first box installs the tag's
+ * ops. Borrows s; +1. The unbox checks the tag and answers the socket
+ * (+1), or NULL with the path-annotated TypeError pending. */
+ScrDyn *scr_dgram_to_dyn(ScrDgramSocket *s);
+ScrDgramSocket *scr_dgram_from_dyn(const ScrDyn *d, const ScrDynPath *path, const char *want);
 /* address() parts: ip THROWS "Not running" before bind/connect (+1
  * otherwise); family/port are only called after ip succeeded. */
 ScrStr *scr_dgram_addr_ip(ScrDgramSocket *s);     /* +1, may throw */
@@ -47,6 +55,13 @@ double scr_dgram_addr_port(ScrDgramSocket *s);
 void scr_dgram_close(ScrDgramSocket *s, ScrClosure *cb /*moves, nullable*/); /* throws on closed */
 void scr_dgram_unref(ScrDgramSocket *s);
 void scr_dgram_ref(ScrDgramSocket *s);
+/* Unix datagram sockets for the hot-shots package shim (the unix-dgram
+ * addon's surface): each answers its result (fd, 0) or a negative errno;
+ * send answers 1 when the socket would block. */
+double scr_dgram_unix_socket(void);
+double scr_dgram_unix_connect(double fd, ScrStr *path /*borrowed*/);
+double scr_dgram_unix_send(double fd, ScrBytes *data /*borrowed*/);
+double scr_dgram_unix_close(double fd);
 /* Socket options: Node's checks and errors (ErrnoException "<syscall>
  * <CODE>", ERR_SOCKET_BAD_BUFFER_SIZE, ERR_SOCKET_BUFFER_SIZE, the
  * TypeError after close()). The TTL setters and setMulticastLoopback
@@ -83,6 +98,17 @@ void scr_dns_lookup_dyn(const ScrDyn *hostname, const ScrDyn *options, const Scr
                         bool typed);
 void scr_dns_lookup_service(const ScrDyn *address, const ScrDyn *port, const ScrDyn *callback,
                             bool typed);
+/* util.promisify(dns.lookup) and util.promisify(dns.lookupService): a +1
+ * promise of the checked-dynamic result; never throws. */
+typedef struct ScrPromise ScrPromise;
+ScrPromise *scr_dns_lookup_promise(const ScrDyn *hostname, const ScrDyn *options);
+ScrPromise *scr_dns_lookup_service_promise(const ScrDyn *address, const ScrDyn *port);
+/* node:dns/promises (scr_dns_promises.c, linked only for the module's
+ * promise forms): lib/internal/dns/promises.js's stricter argument checks
+ * throw synchronously; the promise (+1), or NULL with the argument error
+ * pending. Arguments borrowed. */
+ScrPromise *scr_dns_promises_lookup(const ScrDyn *hostname, const ScrDyn *options);
+ScrPromise *scr_dns_promises_lookup_service(const ScrDyn *address, const ScrDyn *port);
 ScrDyn *scr_dns_get_servers(void);                  /* +1 */
 ScrStr *scr_dns_get_default_result_order(void);     /* +1 */
 void scr_dns_set_default_result_order(const ScrDyn *order);

@@ -1,17 +1,8 @@
-regex-constructor-flags.ts:3:39 - error SC1120: the regex 'v' flag (unicode sets) is not supported yet
+regex-constructor-flags.ts:3:35 - error SC1120: the regex 'd' flag (match indices) is not supported yet
 
-  2 | // forms; computed flags reach the runtime, which names the same gap.
-  3 | const sets = new RegExp("[\\w--\\d]", "v");
-    |                                       ^~~
-  4 | const indices = new RegExp("cat", "dg");
-
-  hint: supported: literal regexes with the g/i/m/s/u/y flags — .test(), .exec()/.match()/.matchAll(), named capture groups (.groups, $<name> templates, \k<name>), .source/.flags, and string replace/replaceAll/split with string replacement templates
-
-regex-constructor-flags.ts:4:35 - error SC1120: the regex 'd' flag (match indices) is not supported yet
-
-  3 | const sets = new RegExp("[\\w--\\d]", "v");
-  4 | const indices = new RegExp("cat", "dg");
+  2 | // computed flags reach the runtime, which names the same gap.
+  3 | const indices = new RegExp("cat", "dg");
     |                                   ^~~~
-  5 | 
+  4 | 
 
-  hint: supported: literal regexes with the g/i/m/s/u/y flags — .test(), .exec()/.match()/.matchAll(), named capture groups (.groups, $<name> templates, \k<name>), .source/.flags, and string replace/replaceAll/split with string replacement templates
+  hint: supported: literal regexes with the g/i/m/s/u/v/y flags — .test(), .exec()/.match()/.matchAll(), named capture groups (.groups, $<name> templates, \k<name>), .source/.flags, and string replace/replaceAll/split with string replacement templates

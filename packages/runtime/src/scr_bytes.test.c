@@ -37,6 +37,52 @@ static void external_set(void) {
   }
 }
 
+/* Same-kind sets into and out of shared storage copy raw bytes, NaN
+ * payloads included, also between overlapping views of one shared buffer. */
+static void shared_set(void) {
+  enum { COUNT = 37 };
+  for (ScrBytesElem elem = SCR_BYTES_U8; elem <= SCR_BYTES_F16; elem++) {
+    size_t width = scr_bytes_elem_size(elem), bytes = COUNT * width;
+    uint8_t pattern[COUNT * 8], expected[COUNT * 8];
+    for (size_t i = 0; i < bytes; i++) pattern[i] = (uint8_t)(i * 37 + 0x7f);
+    /* Signaling NaNs, which a conversion through double would quiet. */
+    const uint16_t nan16 = 0x7d01;
+    const uint32_t nan32 = 0x7fa00001;
+    const uint64_t nan64 = UINT64_C(0x7ff4000000000001);
+    for (size_t i = 1; i < COUNT; i += 6) {
+      if (elem == SCR_BYTES_F16) memcpy(pattern + i * width, &nan16, width);
+      if (elem == SCR_BYTES_F32) memcpy(pattern + i * width, &nan32, width);
+      if (elem == SCR_BYTES_F64) memcpy(pattern + i * width, &nan64, width);
+    }
+    for (int direction = 0; direction < 2; direction++) {
+      ScrBytes *shared = scr_bytes_new(elem, COUNT);
+      scr_bytes_make_shared(shared);
+      memcpy(shared->data, pattern, bytes);
+      ScrBytes *src = direction ? scr_bytes_subarray(shared, 3, COUNT) : scr_bytes_subarray(shared, 0, COUNT - 3);
+      double offset = direction ? 0 : 3;
+      memcpy(expected, pattern, bytes);
+      memmove(expected + (size_t)offset * width, pattern + (direction ? 3 : 0) * width, (COUNT - 3) * width);
+      scr_bytes_set_from(shared, src, offset);
+      assert(!scr_exc_pending());
+      assert(memcmp(shared->data, expected, bytes) == 0);
+      scr_bytes_release(src);
+
+      ScrBytes *local = scr_bytes_new(elem, COUNT);
+      memcpy(local->data, pattern, bytes);
+      ScrBytes *head = scr_bytes_subarray(local, 0, COUNT - 1);
+      scr_bytes_set_from(shared, head, 1);
+      memcpy(expected + width, pattern, bytes - width);
+      assert(memcmp(shared->data, expected, bytes) == 0);
+      memset(local->data, 0, bytes);
+      scr_bytes_set_from(local, shared, 0);
+      assert(memcmp(local->data, expected, bytes) == 0);
+      scr_bytes_release(head);
+      scr_bytes_release(local);
+      scr_bytes_release(shared);
+    }
+  }
+}
+
 static void copied_storage(void) {
   /* Same-kind copies preserve NaN payloads, signed zero and ownership. */
   const uint64_t bits[] = {UINT64_C(0x7ff8000000000042), UINT64_C(0x8000000000000000),
@@ -79,6 +125,7 @@ static void filled_storage(void) {
 void scr_bytes_test_bulk_storage(void) {
   long before = scr_bytes_live_count();
   external_set();
+  shared_set();
   copied_storage();
   filled_storage();
   assert(scr_bytes_live_count() == before);

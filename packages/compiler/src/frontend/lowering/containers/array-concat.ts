@@ -1,4 +1,6 @@
+import { keyedHelperName } from "../stable-names.js";
 import { identityPreservingWidening } from "../coercions/identity.js";
+import { elementMayBeForeign, foreignElementThrow } from "../array-values.js";
 import { countedFor, numLit, varRef } from "../../../ir/build.js";
 import {
   BOOL,
@@ -28,7 +30,7 @@ export function arrayConcatHelper(
   const key = `concat:${typeKey(elem)}:${shape.map((type) => (type ? `a:${typeKey(type)}` : "e")).join(";")}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
-  const name = `%arr.concat.${lowerer.arrHofHelpers.size}`;
+  const name = keyedHelperName(lowerer, "%arr.concat", key);
   const arrT = arrayOf(elem);
   const params = [
     { localId: "a.0", name: "a", type: arrT },
@@ -96,11 +98,15 @@ export function arrayConcatHelper(
     return [
       { kind: "varDecl", localId: "offset.0", init: length(out), loc },
       { kind: "varDecl", localId: "count.0", init: length(source), loc },
+      // Storage is reserved first and the length is set after the copy, so
+      // a source without holes is copied by appends and the result gets no
+      // state bytes.
       {
         kind: "arraySetLength",
         arr: out,
         length: { kind: "bin", op: "+", left: offset, right: count, type: F64, loc },
         loc,
+        reserve: true,
       },
       countedFor(loc, count, () => [
         {
@@ -126,13 +132,45 @@ export function arrayConcatHelper(
                 loc,
               },
               then: [{ kind: "arraySetUndefined", arr: out, index: destination, loc }],
-              else_: null,
+              else_: elementMayBeForeign(lowerer, sourceElem)
+                ? [
+                    {
+                      // A foreign element takes the checked conversion's TypeError.
+                      kind: "if",
+                      cond: {
+                        kind: "bin",
+                        op: "===",
+                        left: { kind: "arrayState", arr: source, index, type: F64, loc },
+                        right: numLit(3, loc),
+                        type: BOOL,
+                        loc,
+                      },
+                      then: [
+                        {
+                          kind: "arraySet",
+                          arr: out,
+                          index: destination,
+                          value: foreignElementThrow(lowerer, source, index, elem, loc),
+                          loc,
+                        },
+                      ],
+                      else_: null,
+                      loc,
+                    },
+                  ]
+                : null,
               loc,
             },
           ],
           loc,
         },
       ]),
+      {
+        kind: "arraySetLength",
+        arr: out,
+        length: { kind: "bin", op: "+", left: offset, right: count, type: F64, loc },
+        loc,
+      },
     ];
   };
   const body: IrStmt[] = [
@@ -144,7 +182,7 @@ export function arrayConcatHelper(
     },
     ...append(varRef("a.0", arrT, loc), elem, node.expression),
     ...shape.flatMap((type, i) =>
-      append(varRef(`x.${i}`, type ? arrayOf(type) : elem, loc), type, node.arguments[i]!),
+      append(varRef(`x.${i}`, type ? arrayOf(type) : elem, loc), type, node.arguments.nodes[i]!),
     ),
     { kind: "return", value: out, loc },
   ];

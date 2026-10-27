@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/class-symbol-field-constructor-assigned.ts"
+ ],
+ "diags": []
+}

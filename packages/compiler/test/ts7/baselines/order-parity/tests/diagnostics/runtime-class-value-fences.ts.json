@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/runtime-class-value-fences.ts"
+ ],
+ "diags": []
+}

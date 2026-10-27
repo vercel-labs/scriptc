@@ -1,0 +1,20 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6150-cjs-inline-require/lib.js",
+  "<repo>/tests/corpus/6150-cjs-inline-require/inner.js",
+  "<repo>/tests/corpus/6150-cjs-inline-require/reexport-inline.js",
+  "<repo>/tests/corpus/6150-cjs-inline-require/reexport-binding.js",
+  "<repo>/tests/corpus/6150-cjs-inline-require/type-error.js",
+  "<repo>/tests/corpus/6150-cjs-inline-require/pick.js",
+  "<repo>/tests/corpus/6150-cjs-inline-require/registry.js",
+  "<repo>/tests/corpus/6150-cjs-inline-require/make-logger.js",
+  "<repo>/tests/corpus/6150-cjs-inline-require/point.js",
+  "<repo>/tests/corpus/6150-cjs-inline-require/shapes.js",
+  "<repo>/tests/corpus/6150-cjs-inline-require/table.js",
+  "<repo>/tests/corpus/6150-cjs-inline-require/verify.js",
+  "<repo>/tests/corpus/6150-cjs-inline-require/fallback.js",
+  "<repo>/tests/corpus/6150-cjs-inline-require/main.js",
+  "<repo>/tests/corpus/6150-cjs-inline-require/late.js"
+ ],
+ "diags": []
+}

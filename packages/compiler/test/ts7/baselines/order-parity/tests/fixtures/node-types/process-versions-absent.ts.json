@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/node-types/process-versions-absent.ts"
+ ],
+ "diags": []
+}

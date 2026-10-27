@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/opentelemetry-api/main.ts"
+ ],
+ "diags": []
+}

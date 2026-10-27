@@ -1,1 +1,2 @@
-- **Process memory:** `process.memoryUsage()` reads `rss` from the operating system and `heapTotal` and `heapUsed` from the runtime's allocator, so the heap figures start near zero and grow as the program allocates. `external` and `arrayBuffers` are `0`, because Buffer and typed-array storage is part of the same heap.
+- **Process memory:** `process.memoryUsage()` reads `rss` from the operating system and `heapTotal` and `heapUsed` from the runtime's allocator, so the heap figures start near zero and grow as the program allocates.
+  `external` and `arrayBuffers` are `0`, because Buffer and typed-array storage is part of the same heap.

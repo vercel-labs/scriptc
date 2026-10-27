@@ -1315,3 +1315,25 @@ export enum LanguageVariant {
     Standard = 0,
     JSX = 1
 }
+
+export enum JsxEmit {
+    None = 0,
+    Preserve = 1,
+    ReactNative = 2,
+    React = 3,
+    ReactJSX = 4,
+    ReactJSXDev = 5
+}
+
+/** Numeric lookup with the SDK's aliases and undefined for unknown values. */
+export function jsxEmitName(value: number): string | undefined {
+  switch (value) {
+    case 0: return "None";
+    case 1: return "Preserve";
+    case 2: return "ReactNative";
+    case 3: return "React";
+    case 4: return "ReactJSX";
+    case 5: return "ReactJSXDev";
+    default: return undefined;
+  }
+}

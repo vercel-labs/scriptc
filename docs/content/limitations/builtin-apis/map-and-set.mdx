@@ -1,1 +1,12 @@
-- **Map and Set:** Keys and elements support numbers and strings by value, and records, classes, arrays, symbols, server handles, and unions of these reference types by identity. `unknown` slots use native checked values, comparing supported primitives by value and retaining supported object references. Typed nested collections other than `Map<unknown, unknown>` and `Set<unknown>`, and promises requiring payload adapters, cannot pass into these slots. `Promise<unknown>` retains its native representation. Stored `keys()`, `values()`, and `entries()` iterators compile, retain element identity, and observe live collection mutations until exhausted. They support `.next()`, `for...of`, array spreads, and mapper-less `Array.from`. Detached collection methods and iterator helper methods such as `.map()` and `.take()` are unsupported. The Set composition methods (`union`, `intersection`, `difference`, `symmetricDifference`, `isSubsetOf`, `isSupersetOf`, `isDisjointFrom`) accept a Set of the same element type or a Map keyed by it; other set-like arguments are unsupported.
+- **Map and Set:** Keys and elements support numbers and strings by value, and records, classes, arrays, functions, symbols, server handles, and unions of these reference types by identity.
+  Map values may also be functions.
+  `unknown` slots use native checked values, comparing supported primitives by value and retaining supported object references.
+  Typed nested collections other than `Map<unknown, unknown>` and `Set<unknown>`, and promises requiring payload adapters, cannot pass into these slots.
+  `Promise<unknown>` retains its native representation.
+  Stored `keys()`, `values()`, and `entries()` iterators compile, retain element identity, and observe live collection mutations until exhausted.
+  They support `.next()`, `for...of`, array spreads, and mapper-less `Array.from`.
+  They also support the iterator helper methods, such as `.map()` and `.take()`.
+  Detached collection methods are unsupported.
+  Constructing a Map, Set, WeakMap or WeakSet, or calling `Object.fromEntries`, with a checked-dynamic iterable (a native iterator, a generator, or an object with a `Symbol.iterator` method) takes all of its values before adding the first one.
+  When an entry of a Map seed is not an object, the TypeError comes after the iterable is exhausted; Node closes the iterator at that entry.
+  The Set composition methods (`union`, `intersection`, `difference`, `symmetricDifference`, `isSubsetOf`, `isSupersetOf`, `isDisjointFrom`) accept a Set of the same element type or a Map keyed by it; other set-like arguments are unsupported.

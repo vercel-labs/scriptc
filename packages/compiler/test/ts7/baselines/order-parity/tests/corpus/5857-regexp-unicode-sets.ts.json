@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5857-regexp-unicode-sets.ts"
+ ],
+ "diags": []
+}

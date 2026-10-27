@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/optional-fields.ts",
+  "args": [
+    "10"
+  ]
+}

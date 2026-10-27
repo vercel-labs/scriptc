@@ -1,6 +1,6 @@
 export class Shelf {
   readonly name: string;
-  private readonly notes = new WeakMap<object, string>();
+  private readonly cursor = new Map<string, number>().keys();
   constructor(name: string) {
     this.name = name;
   }

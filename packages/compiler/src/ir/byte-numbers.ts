@@ -25,6 +25,7 @@ const FORMATS: Readonly<Record<string, ByteNumberFormat | undefined>> = {
   i16: { width: 2, signed: true, floating: false },
   u32: { width: 4, signed: false, floating: false },
   i32: { width: 4, signed: true, floating: false },
+  f16: { width: 2, signed: false, floating: true },
   f32: { width: 4, signed: false, floating: true },
   f64: { width: 8, signed: false, floating: true },
   u64: { width: 8, signed: false, floating: false },
@@ -38,6 +39,7 @@ const VIEW_FORMATS: Readonly<Record<string, string | undefined>> = {
   dvGetInt16: "i16",
   dvGetUint32: "u32",
   dvGetInt32: "i32",
+  dvGetFloat16: "f16",
   dvGetFloat32: "f32",
   dvGetFloat64: "f64",
   dvGetBigUint64Number: "u64",
@@ -48,6 +50,7 @@ const VIEW_FORMATS: Readonly<Record<string, string | undefined>> = {
   dvSetInt16: "i16",
   dvSetUint32: "u32",
   dvSetInt32: "i32",
+  dvSetFloat16: "f16",
   dvSetFloat32: "f32",
   dvSetFloat64: "f64",
 };

@@ -1,0 +1,27 @@
+super-comma-nested.ts:9:3 - error SC1090: derived constructors without a lowered super() call is not supported yet
+
+   8 | class Selected extends Base {
+   9 |   constructor(left: boolean) {
+     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  10 |     left ? super("left") : super("right");
+
+super-comma-nested.ts:10:12 - error SC1090: super() in an expression position is not supported yet
+
+   9 |   constructor(left: boolean) {
+  10 |     left ? super("left") : super("right");
+     |            ^~~~~~~~~~~~~
+  11 |   }
+
+super-comma-nested.ts:19:3 - error SC1090: derived constructors without a lowered super() call is not supported yet
+
+  18 | class Argument extends Base {
+  19 |   constructor() {
+     |   ^~~~~~~~~~~~~~~
+  20 |     keep((super("argument"), 1));
+
+super-comma-nested.ts:20:11 - error SC1090: super() in an expression position is not supported yet
+
+  19 |   constructor() {
+  20 |     keep((super("argument"), 1));
+     |           ^~~~~~~~~~~~~~~~~
+  21 |   }

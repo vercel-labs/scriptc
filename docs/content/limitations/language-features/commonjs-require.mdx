@@ -1,0 +1,9 @@
+- **CommonJS `require`:** Literal `require()` calls of compiled modules, supported builtins, and JSON documents compile.
+  Reading a top-level `const` or `let` require binding before its `require` runs throws the same `ReferenceError` as Node.js.
+  A `var` binding that code above its `require` can reach is unsupported, and so is a read that compiles to no checkable expression, such as exporting the binding before the `require`.
+  JSON documents are parsed at build time, and every `require()` of a document returns the same object.
+  Destructuring the exports of a module supports plain and renamed properties, plus nested patterns for builtin sub-modules such as `util.types`.
+  Any pattern works on a JSON document.
+  Defaults, rest elements, and nested patterns over other modules are unsupported.
+  A require cycle compiles when each of its modules assigns all of its exports before its first `require` and uses the other modules of the cycle only inside functions that its top-level code can't call.
+  Other require cycles are rejected with `SC1016`.

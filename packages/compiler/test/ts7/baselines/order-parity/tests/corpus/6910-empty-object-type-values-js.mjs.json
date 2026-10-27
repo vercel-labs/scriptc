@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6910-empty-object-type-values-js.mjs"
+ ],
+ "diags": []
+}

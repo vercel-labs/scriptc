@@ -1,0 +1,27 @@
+any-destructure-unspelled-keys.ts:8:29 - error SC1031: destructuring declaration from an `any` source whose expression spelling is unsupported (use a variable, ordinary property chain, or ordinary call) is not supported yet
+
+  7 | const k = "a";
+  8 | const { value: computed } = events["a" + "b"];
+    |                             ^~~~~~~~~~~~~~~~~
+  9 | const { value: optional } = events?.["ab"];
+
+any-destructure-unspelled-keys.ts:9:29 - error SC1031: destructuring declaration from an `any` source whose expression spelling is unsupported (use a variable, ordinary property chain, or ordinary call) is not supported yet
+
+   8 | const { value: computed } = events["a" + "b"];
+   9 | const { value: optional } = events?.["ab"];
+     |                             ^~~~~~~~~~~~~~
+  10 | const { value: template } = events[`${k}b`];
+
+any-destructure-unspelled-keys.ts:10:29 - error SC1031: destructuring declaration from an `any` source whose expression spelling is unsupported (use a variable, ordinary property chain, or ordinary call) is not supported yet
+
+   9 | const { value: optional } = events?.["ab"];
+  10 | const { value: template } = events[`${k}b`];
+     |                             ^~~~~~~~~~~~~~~
+  11 | const { value: nul } = events["a\0b"];
+
+any-destructure-unspelled-keys.ts:11:24 - error SC1031: destructuring declaration from an `any` source whose expression spelling is unsupported (use a variable, ordinary property chain, or ordinary call) is not supported yet
+
+  10 | const { value: template } = events[`${k}b`];
+  11 | const { value: nul } = events["a\0b"];
+     |                        ^~~~~~~~~~~~~~
+  12 | console.log(computed, optional, template, nul);

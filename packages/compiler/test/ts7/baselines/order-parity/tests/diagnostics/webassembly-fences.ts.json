@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/webassembly-fences.ts"
+ ],
+ "diags": []
+}

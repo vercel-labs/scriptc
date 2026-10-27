@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/stream-byte-mode-chunk-fences.ts"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/2588-bundled-esm-classes/main.ts"
+ ],
+ "diags": []
+}

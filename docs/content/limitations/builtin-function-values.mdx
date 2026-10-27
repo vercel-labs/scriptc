@@ -5,14 +5,49 @@ Some builtins can be stored and passed as functions:
 - `util.isDeepStrictEqual`, `styleText`, `stripVTControlCharacters`, `toUSVString`, `inherits`, `deprecate`, `callbackify`, `debuglog`, and `debug`.
 - `fs.existsSync`, `unlinkSync`, `chmodSync`, `chownSync`, `renameSync`, and `closeSync`, and `fs/promises.unlink`, `chmod`, and `rename`.
 
-Other immutable aliases of table-backed Node builtins support direct calls, but cannot be passed elsewhere. `util.promisify` supports compile-time conversions of `child_process.execFile`, `child_process.exec`, `setTimeout` and `setImmediate` (to the `timers/promises` functions, as in Node), `stream.finished` and `stream.pipeline` (to the `stream/promises` functions, as in Node), the `zlib` callback one-shots `deflate`, `inflate`, `deflateRaw`, `inflateRaw`, `gzip`, `gunzip` and `unzip` (with or without options), and the `fs` callback functions that have an `fs/promises` counterpart (`access`, `appendFile`, `chmod`, `chown`, `copyFile`, `lchown`, `link`, `lstat`, `lutimes`, `mkdir`, `mkdtemp`, `readFile`, `readdir`, `readlink`, `realpath`, `rename`, `rm`, `rmdir`, `stat`, `statfs`, `symlink`, `truncate`, `unlink`, `utimes`, and `writeFile`); calls through the converted function lower as the `fs/promises` call.
+In JavaScript, `setTimeout`, `setInterval`, `setImmediate`, `clearTimeout`, `clearInterval`, `clearImmediate`, `queueMicrotask`, and `process.nextTick` are function values wherever they are stored, including conditional and logical expressions and assignments: `typeof` answers `"function"`, identity holds across spellings, and calls schedule as the direct calls do, returning the same numeric timer handles.
+Calls through these values bypass `node:test` mock timers.
+In JavaScript, `atob`, `btoa`, and `structuredClone` are function values the same way, and calls through them run what the direct calls run.
+Other builtin globals stored in JavaScript remain opaque identity values.
+In JavaScript, `require("events")` and the `EventEmitter` class assigned to an untyped binding or stored in an object (`ReleaseEmitter = EventEmitter`) are the untyped `EventEmitter` constructor that constructor functions inherit from (see below): `new` through it builds such an emitter object, and identity and `instanceof` agree with the class.
+A class can extend `require("events")` directly.
 
-`util.styleText` supports standard formats and aliases, `#RGB` and `#RRGGBB` hex colors, arrays of formats, nested ANSI resets, and explicit color enabling with `{ validateStream: false }`. Native calls accept standard process streams; custom native streams and mutations to `util.inspect.colors` remain unsupported.
+Other immutable aliases of table-backed Node builtins support direct calls, but cannot be passed elsewhere.
+`util.promisify` supports compile-time conversions of `child_process.execFile`, `child_process.exec`, `setTimeout` and `setImmediate` (to the `timers/promises` functions, as in Node), `stream.finished` and `stream.pipeline` (to the `stream/promises` functions, as in Node), the `zlib` callback one-shots `deflate`, `inflate`, `deflateRaw`, `inflateRaw`, `gzip`, `gunzip` and `unzip` (with or without options), the `crypto` callback functions `randomBytes`, `pbkdf2`, `scrypt`, `hkdf`, `randomFill`, `randomInt` and `generateKey`, `dns.lookup` (settling with `{ address, family }`, or the address array with `all: true`) and `dns.lookupService` (settling with `{ hostname, service }`), and the `fs` callback functions that have an `fs/promises` counterpart (`access`, `appendFile`, `chmod`, `chown`, `copyFile`, `lchown`, `link`, `lstat`, `lutimes`, `mkdir`, `mkdtemp`, `readFile`, `readdir`, `readlink`, `realpath`, `rename`, `rm`, `rmdir`, `stat`, `statfs`, `symlink`, `truncate`, `unlink`, `utimes`, and `writeFile`); calls through the converted function lower as the `fs/promises` call.
 
-`util.inherits` links the prototypes of constructor functions, and `util.deprecate`, `util.callbackify`, and `util.debuglog` return native function values that forward receivers and arguments. Class constructors passed to `util.inherits` or `util.deprecate` are refused. Deprecation warnings are emitted on the next tick and follow assignments to `process.noDeprecation` and `process.throwDeprecation`; compiled binaries take no Node command-line flags such as `--no-deprecation` or `--trace-deprecation`, and `process.traceDeprecation` is unsupported. A stored `util.deprecate` reports a `length` of 4, where Node reports 3. In TypeScript, a `util.callbackify` result must reach a callback whose error parameter accepts `null`; the @types/node overloads that type it as non-null are refused. `util.debuglog` reads `NODE_DEBUG` as the process started. Its `%s` refuses functions and objects with symbol-keyed members, `%o` refuses objects, and object arguments are refused on a color terminal.
+`util.promisify` over an untyped function (a value typed `any`, a function whose parameters are untyped, or any other target in JavaScript) returns a native wrapper that follows Node's callback rules and carries the original's `name` and `length`, and throws Node's `ERR_INVALID_ARG_TYPE` for values that are not functions.
+Such a function with other own properties, `util.promisify.custom` among them, throws `SC2020` where `util.promisify` runs, and the wrapper does not report Node's DEP0174 warning when the original returns a promise.
 
-`util.isDeepStrictEqual` supports primitives, ordinary records and arrays, cycles, enumerable string and symbol properties, and byte views. Its optional third argument skips prototype and constructor comparisons. Structural comparisons of native Maps, Sets, class instances, Errors, proxies, accessor properties, and function-valued own `constructor` properties remain refused.
+`util.styleText` supports standard formats and aliases, `#RGB` and `#RRGGBB` hex colors, arrays of formats, nested ANSI resets, and explicit color enabling with `{ validateStream: false }`.
+Native calls accept standard process streams; custom native streams and mutations to `util.inspect.colors` remain unsupported.
 
-Synchronous and promise filesystem APIs with trailing arguments that affect behavior remain call-only. This includes writers, open, directory creation/removal, metadata readers, and directory readers. Passing them as values could discard modes, flags, encodings, or options during function-signature adaptation.
+`util.inherits` links the prototypes of constructor functions, and `util.deprecate`, `util.callbackify`, and `util.debuglog` return native function values that forward receivers and arguments.
+In JavaScript, a constructor function can inherit from `EventEmitter`, the legacy `Stream` constructor, or a stream class through `util.inherits` or `Object.setPrototypeOf`.
+`EventEmitter.call(this)` and `Stream.call(this)` initialize the object as Node does, and its listener methods keep their state in the object's own `_events`, `_eventsCount`, and `_maxListeners` properties.
+The `captureRejections` option and `events.errorMonitor` listeners are not supported on such objects.
+`Readable.call(this, options)` and the same call on `Writable`, `Duplex`, `Transform`, or `PassThrough` give the object a native stream.
+The stream calls the object's `_read`, `_write`, `_final`, `_transform`, `_flush`, and `_destroy` with the object as `this`, and the stream prototypes' methods and accessors work on it.
+Its listeners live in the native stream rather than in `_events`, and `_readableState` and `_writableState` are read-only views that answer the commonly read fields.
+Typed code that receives such an object as a stream class uses its native stream, and piping a native stream into it works.
+The options the native streams refuse (`signal` and others) are refused here too, as are `_writev` on a Transform, `_final` on a Transform, symbol event names, `listeners()`, `rawListeners()`, `wrap()`, and pipes into a destination that overrides `write()` or `end()`.
+`_construct` and `_writev` are read when `Readable.call(this, options)` or `Writable.call(this, options)` runs, as Node's constructors read them.
+Other class constructors passed to `util.inherits` or `util.deprecate` are refused.
+Deprecation warnings are emitted on the next tick and follow assignments to `process.noDeprecation` and `process.throwDeprecation`; compiled binaries take no Node command-line flags such as `--no-deprecation` or `--trace-deprecation`, and `process.traceDeprecation` is unsupported.
+A stored `util.deprecate` reports a `length` of 4, where Node reports 3.
+In TypeScript, a `util.callbackify` result must reach a callback whose error parameter accepts `null`; the @types/node overloads that type it as non-null are refused.
+`util.debuglog` reads `NODE_DEBUG` as the process started.
+Its `%s` refuses functions and objects with symbol-keyed members, `%o` refuses objects, and object arguments are refused on a color terminal.
 
-Native error-first filesystem callbacks can be stored and passed to platform adapters. Reads support Buffer and UTF-8 results; writes preserve string flags and modes; copy follows `fs.cp`. Reads and writes reject already-aborted signals, but native file operations complete synchronously before the deferred callback, so cancellation cannot interrupt I/O in progress. Recursive directory reads and Dirent results report a native limitation. `fs.glob` compiles only as a direct call; a stored `fs.glob` value throws `SC2020`.
+`util.isDeepStrictEqual` supports primitives, ordinary records and arrays, cycles, enumerable string and symbol properties, and byte views.
+Its optional third argument skips prototype and constructor comparisons.
+Structural comparisons of native Maps, Sets, class instances, Errors, proxies, accessor properties, and function-valued own `constructor` properties remain refused.
+
+Synchronous and promise filesystem APIs with trailing arguments that affect behavior remain call-only.
+This includes writers, open, directory creation/removal, metadata readers, and directory readers.
+Passing them as values could discard modes, flags, encodings, or options during function-signature adaptation.
+
+Native error-first filesystem callbacks can be stored and passed to platform adapters.
+Reads support Buffer and UTF-8 results; writes preserve string flags and modes; copy follows `fs.cp`.
+Reads and writes reject already-aborted signals, but native file operations complete synchronously before the deferred callback, so cancellation cannot interrupt I/O in progress.
+Recursive directory reads and Dirent results report a native limitation.
+`fs.glob` compiles only as a direct call; a stored `fs.glob` value throws `SC2020`.

@@ -7,6 +7,7 @@ import {
   trackedReadFile,
   trackedRealpath,
 } from "./input-tracker.js";
+import { isUnloadedPackage } from "./package-shims.js";
 import { resolveExports, resolvePackageImports } from "./resolve.js";
 
 const NODE_IMPORT_CONDITIONS = new Set(["import", "node", "default"]);
@@ -66,6 +67,13 @@ export function probeNodeImportRefusal(
 ): NodeImportRefusal | null {
   if (specifier.startsWith("#") || specifier.startsWith("node:")) return null;
   const name = packageNameOf(specifier);
+  // A package the project marks never loaded resolves like a missing one.
+  if (isUnloadedPackage(specifier)) {
+    return {
+      code: "ERR_MODULE_NOT_FOUND",
+      message: `Cannot find package '${name}' imported from ${resolve(fromFile)}`,
+    };
+  }
   const parts = specifier.split("/");
   const subparts = specifier.startsWith("@") ? parts.slice(2) : parts.slice(1);
   const subpath = subparts.length > 0 ? `./${subparts.join("/")}` : ".";
@@ -152,6 +160,11 @@ export function probeNodeRequireRefusal(
   }
   const name = packageNameOf(specifier);
   const importer = resolve(fromFile);
+  // A package the project marks never loaded (package-shims.ts) throws
+  // exactly what Node throws when it is not installed.
+  if (isUnloadedPackage(specifier)) {
+    return { message: `Cannot find module '${specifier}'\nRequire stack:\n- ${importer}` };
+  }
   for (let dir = dirname(importer); ;) {
     // A self-scope whose "name" matches: Node's require honors package
     // self-reference — conservative null (resolvable or its own story).

@@ -11,13 +11,11 @@ export function concreteCollectionNarrow(
 ): ts.Type | null {
   if (!ts.isIdentifier(node) && !ts.isPropertyAccessExpression(node)) return null;
   const symbol = narrowed.getSymbol();
-  const name = symbol?.name;
+  const name = ts.symbolNameOf(symbol);
   if (name !== "Map" && name !== "Set") return null;
   if (
     !symbol ||
-    !lowerer.checker
-      .declarationsOf(symbol)
-      .some((decl) => lowerer.isStdlibFile(decl.getSourceFile()))
+    !symbol.declarations.some((decl) => lowerer.isStdlibFile(ts.getSourceFileOfNode(decl)))
   )
     return null;
   const args = lowerer.checker.getTypeArguments(narrowed as ts.TypeReference);

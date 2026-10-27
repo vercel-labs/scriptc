@@ -1,51 +1,8 @@
-utility-types.ts:15:7 - error SC2006: values of type '{ [s: symbol]: string; }' cannot be compiled: this index signature is outside the supported shape (string or number keys; values limited to numbers, strings, booleans, records, classes, arrays, unions, functions, Maps, Sets, RegExps, Promises, or 'unknown')
+utility-types.ts:13:7 - error SC2006: values of type '{ [s: symbol]: string; }' cannot be compiled: this index signature is outside the supported shape (string or number keys; values limited to numbers, strings, booleans, records, classes, arrays, unions, functions, Maps, Sets, RegExps, Dates, Promises, or 'unknown')
 
-  14 | // named recursive shapes; differential corpus covers both.)
-  15 | const bySymbol: { [s: symbol]: string } = {};
+  12 | // named recursive shapes; differential corpus covers both.)
+  13 | const bySymbol: { [s: symbol]: string } = {};
      |       ^~~~~~~~
-  16 | console.log(bySymbol);
+  14 | console.log(bySymbol);
 
   hint: string- and number-keyed index signatures over the supported value types compile directly; symbol keys and dual signatures with unequal value types have no lowering
-
-utility-types.ts:16:13 - error SC2004: uses of 'bySymbol' inherit the blocker on its declaration
-
-  15 | const bySymbol: { [s: symbol]: string } = {};
-  16 | console.log(bySymbol);
-     |             ^~~~~~~~
-  17 | 
-
-  hint: the declaration of 'bySymbol' did not compile — fix the diagnostic reported there and these sites clear with it
-
-utility-types.ts:18:7 - error SC2006: values of type '{ [k: string]: Date; }' cannot be compiled: this index signature is outside the supported shape (string or number keys; values limited to numbers, strings, booleans, records, classes, arrays, unions, functions, Maps, Sets, RegExps, Promises, or 'unknown')
-
-  17 | 
-  18 | const dateBag: { [k: string]: Date } = {};
-     |       ^~~~~~~
-  19 | const boot = dateBag["boot"];
-
-  hint: string- and number-keyed index signatures over the supported value types compile directly; symbol keys and dual signatures with unequal value types have no lowering
-
-utility-types.ts:19:14 - error SC2004: uses of 'dateBag' inherit the blocker on its declaration
-
-  18 | const dateBag: { [k: string]: Date } = {};
-  19 | const boot = dateBag["boot"];
-     |              ^~~~~~~
-  20 | console.log(boot);
-
-  hint: the declaration of 'dateBag' did not compile — fix the diagnostic reported there and these sites clear with it
-
-utility-types.ts:20:13 - error SC1090: console.log of 'Date' values ('Date' values have no inspect lowering) are not supported yet
-
-  19 | const boot = dateBag["boot"];
-  20 | console.log(boot);
-     |             ^~~~
-  21 | 
-
-utility-types.ts:22:33 - error SC1101: converting typed values to 'unknown' is not supported yet
-
-  21 | 
-  22 | const stamped: Readonly<Date> = new Date(0);
-     |                                 ^~~~~~~~~~~
-  23 | console.log(stamped.getTime());
-
-  hint: numbers, strings, booleans, JSON-safe records/arrays/unions (a deep copy), functions, program class instances, and supported native handles convert into 'unknown' slots; functions, exact-class round trips, and handles preserve identity, while this value's type has no dynamic representation yet

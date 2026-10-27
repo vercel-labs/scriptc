@@ -6,14 +6,14 @@ export function functionCanFallThrough(declaration: ts.Node): boolean {
   if (
     !ts.isFunctionLike(declaration) ||
     declaration.asteriskToken ||
-    declaration.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
+    declaration.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
   )
     return false;
   const body = declaration.body as ts.Block | ts.Expression | undefined;
   if (!body || !ts.isBlock(body)) return false;
   const completes = (statement: ts.Statement): boolean => {
     if (ts.isReturnStatement(statement) || ts.isThrowStatement(statement)) return false;
-    if (ts.isBlock(statement)) return sequence(statement.statements);
+    if (ts.isBlock(statement)) return sequence(statement.statements.nodes);
     if (ts.isIfStatement(statement))
       return (
         completes(statement.thenStatement) ||
@@ -29,13 +29,13 @@ export function functionCanFallThrough(declaration: ts.Node): boolean {
     }
     if (ts.isSwitchStatement(statement))
       return (
-        !statement.caseBlock.clauses.some(ts.isDefaultClause) ||
-        statement.caseBlock.clauses.some((clause) => sequence(clause.statements))
+        !statement.caseBlock.clauses.nodes.some(ts.isDefaultClause) ||
+        statement.caseBlock.clauses.nodes.some((clause) => sequence(clause.statements.nodes))
       );
     return true;
   };
   const sequence = (statements: readonly ts.Statement[]): boolean => statements.every(completes);
-  return sequence(body.statements);
+  return sequence(body.statements.nodes);
 }
 
 /** A documented JavaScript result must also represent explicit empty returns. */
@@ -44,7 +44,7 @@ export function functionCanReturnUndefined(declaration: ts.Node): boolean {
   if (
     !ts.isFunctionLike(declaration) ||
     declaration.asteriskToken ||
-    declaration.modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
+    declaration.modifiers?.nodes.some((modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword)
   )
     return false;
   const body = declaration.body;

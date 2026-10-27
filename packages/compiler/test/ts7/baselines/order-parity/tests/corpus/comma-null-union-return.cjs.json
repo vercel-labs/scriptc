@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/comma-null-union-return.cjs"
+ ],
+ "diags": []
+}

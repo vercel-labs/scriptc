@@ -20,6 +20,7 @@ import {
   type IrUnionDef,
 } from "./ir.js";
 import { deserializeModule, serializeModule } from "./serialize.js";
+import { assignLegacyTiers } from "./tiers.js";
 import { validateModule } from "./validate.js";
 
 const loc = { file: "numeric-read.ts", start: 0, end: 0 };
@@ -145,6 +146,7 @@ test("class prototype data helpers retain their ABI after serialization", () => 
     body: [{ kind: "return", value: { kind: "dynObjLit", fields: [], type: DYN, loc }, loc }],
     loc,
   });
+  assignLegacyTiers(mod.functions);
   expect(validateModule(deserializeModule(serializeModule(mod)))).toEqual([]);
   for (const variant of ["missing", "params", "return", "captures"]) {
     const bad = structuredClone(mod);
@@ -177,6 +179,7 @@ test("instance prototype helpers require the class receiver ABI", () => {
     body: [{ kind: "return", value: { kind: "dynObjLit", fields: [], type: DYN, loc }, loc }],
     loc,
   });
+  assignLegacyTiers(mod.functions);
   expect(validateModule(deserializeModule(serializeModule(mod)))).toEqual([]);
   for (const variant of ["missing", "params", "receiver", "return", "captures"]) {
     const bad = structuredClone(mod);
@@ -285,17 +288,25 @@ test.each([mapOf(STRING, F64), setOf(STRING), { kind: "promise", inner: F64 } as
   },
 );
 
-test.each([{ kind: "promise", inner: F64 } as IrType])(
-  "%j payloads still refuse unrelated data siblings",
-  (type) => {
-    const mod = expressionModule({ kind: "numLit", value: 0, type: F64, loc }, [
-      { id: "mixed", arms: [type, STRING, UNDEFINED_T] },
-    ]);
-    expect(validateModule(mod).map((error) => error.message)).toContain(
-      `union mixed: ${type.kind} arm 0 beside non-unit arms`,
-    );
-  },
-);
+test("a maybe-promise union holds one promise arm beside data arms", () => {
+  const mod = expressionModule({ kind: "numLit", value: 0, type: F64, loc }, [
+    { id: "maybe", arms: [{ kind: "promise", inner: F64 }, STRING, UNDEFINED_T] },
+  ]);
+  expect(validateModule(mod)).toEqual([]);
+  expect(deserializeModule(serializeModule(mod))).toEqual(mod);
+});
+
+test("a union refuses a second promise arm", () => {
+  const mod = expressionModule({ kind: "numLit", value: 0, type: F64, loc }, [
+    {
+      id: "mixed",
+      arms: [BOOL, { kind: "promise", inner: F64 }, { kind: "promise", inner: STRING }],
+    },
+  ]);
+  expect(validateModule(mod).map((error) => error.message)).toContain(
+    "union mixed: promise arm 1 beside another promise arm",
+  );
+});
 
 test("differently typed collection payloads preserve separate union tags", () => {
   const mod = expressionModule({ kind: "numLit", value: 0, type: F64, loc }, [
@@ -316,7 +327,7 @@ function numericReadModule(overrides: Partial<IrExpr & { kind: "arrIntrinsic" }>
     ...overrides,
   };
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     functions: [
@@ -399,8 +410,8 @@ test.each(["sortPrimitive", "toSortedPrimitive"] as const)(
 );
 
 function expressionModule(expr: IrExpr, unions: IrUnionDef[]): IrModule {
-  return {
-    irVersion: 16,
+  const mod: IrModule = {
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     unions,
@@ -415,6 +426,9 @@ function expressionModule(expr: IrExpr, unions: IrUnionDef[]): IrModule {
       },
     ],
   };
+  // Lowering assigns tiers from function bodies (ir/tiers.ts).
+  assignLegacyTiers(mod.functions);
+  return mod;
 }
 
 test("numeric byte tokens and DataView stores validate their storage before emission", () => {
@@ -951,6 +965,7 @@ test("library callbacks retain child, specialized, and generic result diagnostic
       { kind: "strLit", value: "tool", type: STRING, loc },
       { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc },
       { kind: "boolLit", value: true, type: F64, loc },
+      { kind: "boolLit", value: false, type: BOOL, loc },
     ],
   };
   expect(validateModule(expressionModule(expr, [])).map((error) => error.message)).toEqual([
@@ -1309,7 +1324,7 @@ test.each([
 function tdzModule(mutable = true): IrModule {
   const value: IrExpr = { kind: "numLit", value: 0, type: F64, loc };
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     functions: [
@@ -1602,7 +1617,7 @@ test("TDZ locals require a shared box", () => {
 
 function discriminatedModule(): IrModule {
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     functions: [{ name: "main", params: [], locals: [], returnType: VOID, body: [], loc }],
@@ -2091,6 +2106,7 @@ test("runtime comparator sort validates a recognized comparator's key order", ()
     mod.functions.push(
       fn("cmp", [elem, elem], F64),
       fn("key", [row], F64),
+      fn("keys", [row, F64], F64),
       fn("text", [row], STRING),
     );
     return mod;
@@ -2100,12 +2116,25 @@ test("runtime comparator sort validates a recognized comparator's key order", ()
     keyedModule(F64, [order(-1)], true),
     keyedModule(row, [order(1), closure("key", [row])]),
     keyedModule(row, [order(-1), closure("key", [row])], true),
+    // Two keys, the second descending.
+    keyedModule(row, [order(2 | (1 << 9)), closure("keys", [row, F64])]),
   ]) {
     expect(validateModule(mod)).toEqual([]);
     expect(deserializeModule(serializeModule(mod))).toEqual(mod);
   }
   for (const [mod, message] of [
-    [keyedModule(F64, [order(2)]), "key order must be the literal 1 or -1"],
+    [keyedModule(F64, [order(0.5)]), "key order must be 1, -1 or a key-chain order"],
+    [keyedModule(row, [order(9), closure("keys", [row, F64])]), "key-chain order"],
+    [keyedModule(row, [order(2 | (1 << 10)), closure("keys", [row, F64])]), "key-chain order"],
+    [keyedModule(F64, [order(2)]), "key order on f64"],
+    [
+      keyedModule(row, [order(2), closure("key", [row])]),
+      "key reader must be (elem, number) => number",
+    ],
+    [
+      keyedModule(row, [order(1), closure("keys", [row, F64])]),
+      "key reader must be (elem) => number",
+    ],
     [keyedModule(F64, [order(1), closure("key", [row])]), "key order on f64"],
     [keyedModule(STRING, [order(1)], true), "key order on string"],
     [keyedModule(row, [order(1)]), "key reader must be (elem) => number"],
@@ -2119,7 +2148,7 @@ test("a caught-typed global records a module error only from a catch binding", (
   const caught: IrType = { kind: "caught" };
   const errorId = "%g.e.%loaded%error";
   const module = (value: IrExpr): IrModule => ({
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     unions: [],

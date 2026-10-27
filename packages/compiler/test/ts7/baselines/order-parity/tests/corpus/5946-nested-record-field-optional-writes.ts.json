@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5946-nested-record-field-optional-writes.ts"
+ ],
+ "diags": []
+}

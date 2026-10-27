@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7427-duplex-from-async-function.mjs"
+ ],
+ "diags": []
+}

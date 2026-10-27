@@ -43,6 +43,7 @@ import {
   cacheTargetIdentity,
   isZigDriver,
   isMuslTarget,
+  type CcDriver,
 } from "./driver.js";
 import {
   resolveProgramShardMergeIdentity,
@@ -82,21 +83,319 @@ import {
   currentVendorCacheBuildIdentity,
   vendorBuildCacheRoot,
   tlsArchivePath,
+  brotliArchivePath,
   lreObjectPaths,
   zlibObjectPaths,
   stageVendorInputs,
   ensureTlsArchive,
+  ensureBrotliArchive,
   ensureLreObjects,
   ensureZlibObjects,
   vendorEngineDir,
   vendorZlibDir,
   vendorTlsDir,
+  vendorBrotliDir,
 } from "./vendor.js";
 import { execFileAsync, subprocessFailureDetail, CcCompileError } from "./process.js";
 import { implicitLinkerFingerprint } from "./linker-fingerprint.js";
 import { CacheInputsChangedError } from "./session.js";
 import { ensureRuntimeObjects, stageRuntimeObjects, clearCcCaches } from "./runtime-objects.js";
 import { localizeLibraryObjects } from "./object-merge.js";
+
+/** What the runtime-unit table reads: the build options, the target driver,
+ * the units other options imply, and the vendor inputs resolved for this
+ * build. */
+interface RuntimeUnitContext {
+  opts: CcOptions;
+  driver: ReturnType<typeof resolveCc>;
+  rt: (path: string) => string;
+  rtDir: string;
+  regex: boolean;
+  nativeFetch: boolean;
+  net: boolean;
+  http: boolean;
+  tls: boolean;
+  tlsCa: boolean;
+  cipher: boolean;
+  ecdh: boolean;
+  dh: boolean;
+  pki: boolean;
+  lreObjects: readonly string[];
+  zlibObjects: readonly string[];
+  tlsArchive: string | null;
+  brotliArchive: string | null;
+}
+
+/** An optional runtime input: runtime sources compiled when `when` holds,
+ * or command-line arguments computed from the build. */
+interface RuntimeUnit {
+  when: (u: RuntimeUnitContext) => boolean | undefined;
+  sources: readonly string[];
+  args?: (u: RuntimeUnitContext) => readonly string[];
+}
+
+const unit = (when: RuntimeUnit["when"], ...sources: string[]): RuntimeUnit => ({ when, sources });
+const unitArgs = (args: (u: RuntimeUnitContext) => readonly string[]): RuntimeUnit => ({
+  when: () => true,
+  sources: [],
+  args,
+});
+
+/** The optional runtime inputs, in link order. The order is part of the
+ * executable: a new unit goes next to the units it references. */
+const RUNTIME_UNITS: readonly RuntimeUnit[] = [
+  unit(
+    (u) => u.opts.workers,
+    "scr_worker.c",
+    "scr_worker_events.c",
+    "scr_mailbox.c",
+    "scr_message.c",
+  ),
+  unit((u) => u.opts.copying, "scr_copying.c"),
+  unit((u) => u.opts.fileHandle, "scr_file_handle.c"),
+  // win32 targets compile the libc-shim TU (stpcpy, arc4random_buf,
+  // gmtime_r, strcasestr — the _WIN32 block in scr_runtime.h declares
+  // them) and link advapi32 (the CSPRNG RtlGenRandom/SystemFunction036,
+  // GetUserNameA), iphlpapi (GetAdaptersAddresses behind
+  // os.networkInterfaces), and ws2_32 (inet_ntop there; the socket
+  // units ride the same import). Never present on the default path, so
+  // the historical line cannot change.
+  unitArgs((u) =>
+    targetPlatform(u.driver) === "win32"
+      ? [u.rt(join(u.rtDir, "scr_win.c")), "-ladvapi32", "-liphlpapi", "-lws2_32"]
+      : [],
+  ),
+  // musl deliberately has no libc-identification predefine; resolveCc's
+  // SCR_MUSL flag and this target-selected TU travel together.
+  unit((u) => isMuslTarget(u.driver), "scr_musl.c"),
+  // scr_glob.c (path.matchesGlob) compiles its segments through the
+  // regex unit and scr_idna.c (node:url's IDNA) normalizes through it,
+  // so both ride the same switch; section GC drops them from binaries
+  // that never use them.
+  unitArgs((u) =>
+    u.regex
+      ? [
+          "-I",
+          vendorEngineDir(),
+          u.rt(join(u.rtDir, "scr_regex.c")),
+          u.rt(join(u.rtDir, "scr_glob.c")),
+          u.rt(join(u.rtDir, "scr_idna.c")),
+          ...u.lreObjects,
+        ]
+      : [],
+  ),
+  unit((u) => u.opts.assert || u.regex || u.opts.symbol, "scr_assert.c"),
+  unit((u) => u.opts.inspect, "scr_inspect.c", "scr_console_native.c"),
+  unit((u) => u.opts.dynInvoke || u.opts.workers || u.nativeFetch, "scr_dyn_invoke.c"),
+  // Buffer.prototype methods called on checked-dynamic values.
+  unit((u) => u.opts.dynBuffer === true && u.opts.dynInvoke, "scr_bytes_dyn.c"),
+  // Builtin functions read as values in JavaScript dependencies.
+  unit((u) => u.opts.builtinValues === true, "scr_builtin_values.c"),
+  // createRequire's computed require and require.resolve.
+  unit((u) => u.opts.computedRequire === true, "scr_require.c"),
+  unit((u) => u.opts.dc, "scr_dc.c"),
+  unit((u) => u.opts.dynTier, "scr_js_value.c", "scr_js_object.c"),
+  unit((u) => u.opts.eventTarget || u.nativeFetch, "scr_event_target.c"),
+  unit((u) => u.opts.wasm, "scr_wasm.c"),
+  // Module namespace objects as checked-dynamic values.
+  unit((u) => u.opts.moduleNamespace === true, "scr_module_namespace.c"),
+  unit(
+    (u) =>
+      u.opts.dynAsync ||
+      u.opts.dynInvoke ||
+      u.opts.workers ||
+      u.opts.dc ||
+      u.opts.fileHandle ||
+      u.nativeFetch,
+    "scr_async_dyn.c",
+  ),
+  // The performance timeline (every perf_hooks user-timing call selects
+  // dynAsync, whose unit carries the timeline's buffer warning).
+  unit((u) => u.opts.dynAsync, "scr_perf.c"),
+  // perf_hooks event-loop metrics, only for programs that read them.
+  unit((u) => u.opts.perfLoop, "scr_perf_loop.c"),
+  // Blob and File (every blob.* call selects dynAsync, whose unit boxes
+  // their reads as dyn promises).
+  unit((u) => u.opts.dynAsync, "scr_blob.c"),
+  // The zlib UNIT (scr_zlib.c) gates on zlib.* IR use; the vendored zlib
+  // objects also serve the native fetch's gzip decoder — spread exactly once.
+  unitArgs((u) =>
+    u.opts.zlib
+      ? ["-I", vendorZlibDir(), u.rt(join(u.rtDir, "scr_zlib.c")), ...u.zlibObjects]
+      : u.nativeFetch
+        ? ["-I", vendorZlibDir(), ...u.zlibObjects]
+        : [],
+  ),
+  // Brotli (scr_brotli.c) plugs into the zlib engine and links the
+  // vendored brotli archive.
+  unitArgs((u) =>
+    u.brotliArchive
+      ? [
+          "-I",
+          join(vendorBrotliDir(), "include"),
+          u.rt(join(u.rtDir, "scr_brotli.c")),
+          u.brotliArchive,
+        ]
+      : [],
+  ),
+  unit((u) => u.opts.events, "scr_events.c", "scr_readline.c"),
+  // readline's terminal mode: rl.terminal sets the regex unit it
+  // measures with.
+  unit((u) => u.opts.events && u.regex, "scr_readline_tty.c"),
+  unit((u) => u.opts.emitter || u.opts.workers, "scr_events_emitter.c"),
+  // events.once with options registers through the emitter and
+  // event-target units.
+  unit((u) => u.opts.eventsOnceSignal === true, "scr_events_once_signal.c"),
+  unit((u) => u.opts.mime === true, "scr_mime.c"),
+  unit((u) => u.opts.largePages === true, "scr_text_pages.c"),
+  unit((u) => u.opts.utilTiming === true, "scr_util_timing.c"),
+  // The checked-dynamic HANDLE support unit (listener gate + runtime
+  // adapter closures): every referencing unit is one of the emitter or
+  // net families (http implies net), so handle-free binaries keep
+  // their exact size class.
+  unit((u) => u.opts.emitter || u.opts.workers || u.net, "scr_dyn_handle.c"),
+  unit((u) => u.opts.symbol, "scr_symbol.c"),
+  unit((u) => u.opts.assert && u.opts.bigint, "scr_bigint_assert.c"),
+  unit((u) => u.opts.qs, "scr_qs.c"),
+  // The legacy url unit references the regex, querystring and dyn-async
+  // units; the url.parse family's IR sets all three.
+  unit((u) => u.regex && u.opts.qs && u.opts.dynAsync, "scr_url_legacy.c"),
+  unit((u) => u.opts.parseArgs, "scr_util.c"),
+  unit((u) => u.opts.parseArgs && u.opts.symbol, "scr_util_compare.c"),
+  unit((u) => u.opts.parseArgs && u.opts.inspect && u.opts.dynAsync, "scr_util_style.c"),
+  unit(
+    (u) => u.opts.parseArgs && u.opts.inspect && u.opts.dynAsync && u.opts.dynInvoke && u.regex,
+    "scr_util_callable.c",
+  ),
+  // util.promisify over an untyped function: dyn promises and calls.
+  unit((u) => u.opts.utilPromisify && u.opts.dynAsync && u.opts.dynInvoke, "scr_util_promisify.c"),
+  unit(
+    (u) =>
+      u.opts.dynBuiltinClass &&
+      u.opts.inspect &&
+      u.opts.dynInvoke &&
+      u.opts.symbol &&
+      (u.opts.emitter || u.opts.workers),
+    "scr_dyn_builtin_class.c",
+  ),
+  unit(
+    (u) =>
+      u.opts.dynBuiltinStream &&
+      u.opts.dynBuiltinClass &&
+      u.opts.stream &&
+      u.opts.inspect &&
+      u.opts.dynInvoke &&
+      u.opts.symbol,
+    "scr_dyn_builtin_stream.c",
+  ),
+  unit((u) => u.opts.stream, "scr_stream.c", "scr_fs_stream.c"),
+  // The zlib stream classes reference both the zlib engine and the
+  // stream unit.
+  unit((u) => u.opts.zlib && u.opts.stream, "scr_zlib_stream.c"),
+  unit((u) => u.opts.stream && u.opts.dynAsync, "scr_stream_ops.c"),
+  // Checked-dynamic stream slots test values and call JavaScript stream
+  // members through the dyn-invoke unit.
+  unit((u) => u.opts.streamDyn === true, "scr_stream_dyn.c"),
+  // Own properties JavaScript adds to children.
+  unit((u) => u.opts.handleProps === true, "scr_dyn_handle_props.c"),
+  // The declaration-typed boundary's adoption.
+  unit((u) => u.opts.declAdopt === true, "scr_decl_adopt.c"),
+  unit((u) => u.opts.typeOrigins === true, "scr_type_origin.c"),
+  // for await over checked-dynamic values.
+  unit((u) => u.opts.dynForAwait === true, "scr_dyn_for_await.c"),
+  // for await over checked-dynamic values that may hold native streams.
+  unit(
+    (u) => u.opts.dynForAwait === true && u.opts.stream && u.opts.dynAsync,
+    "scr_dyn_for_await_stream.c",
+  ),
+  // FileHandle streams reference both the stream unit and FileHandle.
+  unit((u) => u.opts.stream && u.opts.fileHandle, "scr_fs_stream_fh.c"),
+  // The readiness-poller backends (scr_platform.h): kqueue on macOS/BSD,
+  // epoll on Linux, WSAPoll on Windows — each TU is empty off its
+  // platform, so all three link whenever a poller-using unit does and
+  // the others cost nothing (ws2_32 rides the unconditional win32 libs
+  // above).
+  unit((u) => u.net || u.opts.dgram, "scr_loop_kqueue.c", "scr_loop_epoll.c", "scr_loop_wsapoll.c"),
+  unit((u) => u.net, "scr_net.c"),
+  unit((u) => u.http, "scr_http.c"),
+  unit((u) => u.opts.http2, "scr_http2.c"),
+  unit((u) => u.opts.dgram, "scr_dgram.c"),
+  unit((u) => u.opts.dgram && u.opts.dnsPromises, "scr_dns_promises.c"),
+  unit((u) => u.opts.dgram && u.opts.dgramDyn, "scr_dgram_dyn.c"),
+  unit((u) => u.opts.textCodecDyn, "scr_text_codec_dyn.c"),
+  unit((u) => u.opts.watch, "scr_watch.c"),
+  unit((u) => u.opts.foreignFfi, "scr_ffi_queue.c"),
+  unit((u) => u.opts.nodeTest, "scr_test.c"),
+  unit((u) => u.opts.webcrypto, "scr_webcrypto.c"),
+  unit((u) => u.opts.webcrypto === true && u.opts.pki === true, "scr_webcrypto_pki.c"),
+  unit((u) => u.opts.pki === true && u.opts.ed25519 === true, "scr_ed25519.c"),
+  unit((u) => u.opts.x509 === true, "scr_x509.c"),
+  // The TLS socket certificate accessors read scr_tls.c and build with scr_x509.c.
+  unit((u) => u.tls && u.opts.x509 === true, "scr_tls_x509.c"),
+  // The crypto global's object extends scr_async_dyn.c's.
+  unit((u) => u.opts.webcrypto && u.opts.dynAsync, "scr_webcrypto_object.c"),
+  // The CA-store unit rides its own gate OR the tls one: scr_tls.c
+  // references its default-set override unconditionally.
+  unit((u) => u.tlsCa, "scr_tls_ca.c"),
+  unitArgs((u) =>
+    u.tlsArchive
+      ? [
+          "-I",
+          join(vendorTlsDir(), "include"),
+          ...(u.tls ? [u.rt(join(u.rtDir, "scr_tls.c"))] : []),
+          ...(u.cipher ? [u.rt(join(u.rtDir, "scr_cipher.c"))] : []),
+          ...(u.ecdh ? [u.rt(join(u.rtDir, "scr_ecdh.c"))] : []),
+          ...(u.dh ? [u.rt(join(u.rtDir, "scr_dh.c"))] : []),
+          ...(u.pki ? [u.rt(join(u.rtDir, "scr_pki.c"))] : []),
+          ...(u.cipher && u.opts.webcrypto ? [u.rt(join(u.rtDir, "scr_webcrypto_aes.c"))] : []),
+          u.tlsArchive,
+          // mbedTLS's win32 entropy poll is BCryptGenRandom (bcrypt.h).
+          // The unconditional win32 libs above do not carry it.
+          // Never present on the default path, so the historical TLS
+          // link line cannot change.
+          ...(targetPlatform(u.driver) === "win32" ? ["-lbcrypt"] : []),
+        ]
+      : [],
+  ),
+  // scr_tls_ca.c enumerates and PEM-encodes Windows system-store entries.
+  // This is independent of the mbedTLS archive: getCACertificates-only
+  // programs need crypt32 too, while TLS programs imply the CA unit.
+  unitArgs((u) => (u.tlsCa && targetPlatform(u.driver) === "win32" ? ["-lcrypt32"] : [])),
+  // Fetch uses the native network, TLS, and HTTP runtime.
+  unit((u) => u.nativeFetch, "scr_fetch.c"),
+  // Readable.fromWeb reads a web ReadableStream through its reader.
+  unit((u) => u.nativeFetch && u.opts.stream, "scr_stream_from_web.c"),
+];
+
+/** The arguments of the optional runtime inputs, in link order. */
+function runtimeUnitArgs(u: RuntimeUnitContext): string[] {
+  return RUNTIME_UNITS.flatMap((entry) =>
+    entry.args
+      ? [...entry.args(u)]
+      : entry.when(u)
+        ? entry.sources.map((source) => u.rt(join(u.rtDir, source)))
+        : [],
+  );
+}
+
+/** The runtime's optional compile-time definitions, in command-line order.
+ * Both the program build and the runtime-object flags use this list. */
+const RUNTIME_DEFINES: readonly {
+  define: string;
+  when: (opts: CcOptions) => boolean | undefined;
+}[] = [
+  { define: "SCR_TEXT_DECODER_LEGACY", when: (opts) => opts.textDecoderLegacy },
+  // scr_json.c's SCR_JS_TIER build exports the dynamic tier's cache primitives; only
+  // programs with dynamic-tier code select it.
+  { define: "SCR_JS_TIER", when: (opts) => opts.dynTier === true },
+  { define: "SCR_WARNING_REPLACE", when: (opts) => opts.warningReplace },
+  { define: "SCR_STDIO_EXTENDED", when: (opts) => opts.stdioExtended },
+  { define: "SCR_YIN", when: (opts) => opts.youngNursery },
+];
+
+function runtimeDefineArgs(opts: CcOptions): string[] {
+  return RUNTIME_DEFINES.filter((d) => d.when(opts)).map((d) => `-D${d.define}`);
+}
 
 export async function compileCInternal(
   opts: CcOptions,
@@ -115,9 +414,14 @@ export async function compileCInternal(
   const http = (opts.http ?? false) || nativeFetch;
   const tls = (opts.tls ?? false) || nativeFetch;
   const tlsCa = (opts.tlsCa ?? false) || tls;
-  // Symmetric ciphers link the same mbedTLS archive as TLS.
+  // Symmetric ciphers, ECDH and DiffieHellman link the same mbedTLS
+  // archive as TLS.
   const cipher = opts.cipher ?? false;
-  const mbedtls = tls || cipher;
+  const ecdh = opts.ecdh ?? false;
+  const dh = opts.dh ?? false;
+  const pki = opts.pki ?? false;
+  const mbedtls = tls || cipher || ecdh || dh || pki;
+  const brotli = (opts.zlib ?? false) && opts.brotli === true;
   const driver = resolveCc();
   const darwinDebugSymbols = needsDarwinDebugSymbols(
     targetPlatform(driver),
@@ -133,7 +437,7 @@ export async function compileCInternal(
       ? ["-gline-tables-only", ...(opts.cPath.endsWith(".ll") ? [] : ["-gno-column-info"])]
       : [];
   const { programShards, programPublicSymbols, programShardMergeIdentity } =
-    await selectProgramShards(driver, opts, optimization === "dev" && !sanitize);
+    await selectProgramShards(driver, opts, optimization === "dev");
   // Mobile triples produce library archives, never standalone executables:
   // the executable-lane runtime (event loop, sockets, child processes) is
   // not verified on those device classes. compile() reports the SC3002
@@ -223,7 +527,7 @@ export async function compileCInternal(
       const [compiler, runtimeHash, programBytes] = await Promise.all([
         resolvedTool(driver.argv[0] ?? "clang"),
         runtimeFingerprint(rtDir),
-        readFile(opts.cPath),
+        readFile(opts.cSourcePath ?? opts.cPath),
       ]);
       if (compiler !== null) {
         const effectiveCompiler =
@@ -357,17 +661,20 @@ export async function compileCInternal(
   let tlsArchive = mbedtls
     ? tlsArchivePath(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
     : null;
+  let brotliArchive = brotli
+    ? brotliArchivePath(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
+    : null;
 
   // ours would collide; see scr_regex.c) — the standalone objects are for
   // static builds only.
   let lreObjects = regex
     ? lreObjectPaths(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
     : [];
-  // Vendored zlib is the Zig story — default host-clang builds keep the exact
-  // historical `-lz` system link (see CcOptions.zlib). The native fetch's
-  // gzip decoder rides the same objects/link.
+  // Every driver links the vendored zlib (the copy Node bundles), so
+  // compressed bytes match Node's. The native fetch's gzip decoder rides the
+  // same objects.
   let zlibObjects =
-    ((opts.zlib ?? false) || nativeFetch) && isZigDriver(driver)
+    (opts.zlib ?? false) || nativeFetch
       ? zlibObjectPaths(sanitize, driver, vendorBuildIdentity, vendorCacheRoot)
       : [];
   const materializeVendorPrerequisites = async (
@@ -393,6 +700,23 @@ export async function compileCInternal(
           ? await materialize()
           : await stageVendorInputs(materialize, join(stageRoot, "tls"));
       tlsArchive = paths[0]!;
+    }
+    if (brotli) {
+      const cachedArchive = brotliArchivePath(
+        sanitize,
+        driver,
+        vendorBuildIdentity,
+        materializeCacheRoot,
+      );
+      protectCachedArtifact(cacheWarmPaths, cachedArchive);
+      const materialize = async (): Promise<string[]> => [
+        await ensureBrotliArchive(sanitize, driver, vendorBuildIdentity, materializeCacheRoot),
+      ];
+      const paths =
+        stageRoot === undefined
+          ? await materialize()
+          : await stageVendorInputs(materialize, join(stageRoot, "brotli"));
+      brotliArchive = paths[0]!;
     }
     if (regex) {
       for (const object of lreObjectPaths(
@@ -444,7 +768,7 @@ export async function compileCInternal(
       ? ["-O1", "-fsanitize=address", "-DSCR_RC_AUDIT"]
       : [optimization === "dev" ? "-O0" : "-O2"]),
     ...executableSectionFlags.compile,
-    ...(opts.textDecoderLegacy ? ["-DSCR_TEXT_DECODER_LEGACY"] : []),
+    ...runtimeDefineArgs(opts),
     "-fno-math-errno",
     // The runtime object model uses type-punned C: a hierarchy
     // upcast is a raw pointer cast, so one object's header (rc, vt) and
@@ -462,144 +786,26 @@ export async function compileCInternal(
     "-I",
     rtDir,
     ...runtimeSources.map((f) => rt(join(rtDir, f))),
-    ...(opts.workers
-      ? ["scr_worker.c", "scr_worker_events.c", "scr_mailbox.c", "scr_message.c"].map((f) =>
-          rt(join(rtDir, f)),
-        )
-      : []),
-    ...(opts.copying ? [rt(join(rtDir, "scr_copying.c"))] : []),
-    ...(opts.fileHandle ? [rt(join(rtDir, "scr_file_handle.c"))] : []),
-    // win32 targets compile the libc-shim TU (stpcpy, arc4random_buf,
-    // gmtime_r, strcasestr — the _WIN32 block in scr_runtime.h declares
-    // them) and link advapi32 (the CSPRNG RtlGenRandom/SystemFunction036,
-    // GetUserNameA), iphlpapi (GetAdaptersAddresses behind
-    // os.networkInterfaces), and ws2_32 (inet_ntop there; the socket
-    // units ride the same import). Never present on the default path, so
-    // the historical line cannot change.
-    ...(targetPlatform(driver) === "win32"
-      ? [rt(join(rtDir, "scr_win.c")), "-ladvapi32", "-liphlpapi", "-lws2_32"]
-      : []),
-    // musl deliberately has no libc-identification predefine; resolveCc's
-    // SCR_MUSL flag and this target-selected TU travel together.
-    ...(isMuslTarget(driver) ? [rt(join(rtDir, "scr_musl.c"))] : []),
-    // scr_glob.c (path.matchesGlob) compiles its segments through the
-    // regex unit and scr_idna.c (node:url's IDNA) normalizes through it,
-    // so both ride the same switch; section GC drops them from binaries
-    // that never use them.
-    ...(regex
-      ? [
-          "-I",
-          vendorEngineDir(),
-          rt(join(rtDir, "scr_regex.c")),
-          rt(join(rtDir, "scr_glob.c")),
-          rt(join(rtDir, "scr_idna.c")),
-          ...lreObjects,
-        ]
-      : []),
-    ...(opts.assert || regex || opts.symbol ? [rt(join(rtDir, "scr_assert.c"))] : []),
-    ...(opts.inspect
-      ? [rt(join(rtDir, "scr_inspect.c")), rt(join(rtDir, "scr_console_native.c"))]
-      : []),
-    ...(opts.dynInvoke || opts.workers || nativeFetch ? [rt(join(rtDir, "scr_dyn_invoke.c"))] : []),
-    ...(opts.dc ? [rt(join(rtDir, "scr_dc.c"))] : []),
-    ...(opts.eventTarget || nativeFetch ? [rt(join(rtDir, "scr_event_target.c"))] : []),
-    ...(opts.dynAsync || opts.dynInvoke || opts.workers || opts.dc || opts.fileHandle || nativeFetch
-      ? [rt(join(rtDir, "scr_async_dyn.c"))]
-      : []),
-    // The performance timeline (every perf_hooks user-timing call selects
-    // dynAsync, whose unit carries the timeline's buffer warning).
-    ...(opts.dynAsync ? [rt(join(rtDir, "scr_perf.c"))] : []),
-    // Blob and File (every blob.* call selects dynAsync, whose unit boxes
-    // their reads as dyn promises).
-    ...(opts.dynAsync ? [rt(join(rtDir, "scr_blob.c"))] : []),
-    // The zlib UNIT (scr_zlib.c) gates on zlib.* IR use; the LINK (system
-    // libz on the default host-clang build, vendored objects on Zig builds)
-    // also serves the native fetch's gzip decoder — spread exactly once.
-    ...(opts.zlib
-      ? isZigDriver(driver)
-        ? ["-I", vendorZlibDir(), rt(join(rtDir, "scr_zlib.c")), ...zlibObjects]
-        : [rt(join(rtDir, "scr_zlib.c"))]
-      : nativeFetch
-        ? isZigDriver(driver)
-          ? ["-I", vendorZlibDir(), ...zlibObjects]
-          : []
-        : []),
-
-    // through the native installation hooks — the emitted main calls its
-    // installer exactly then.
-    ...(opts.events ? [rt(join(rtDir, "scr_events.c")), rt(join(rtDir, "scr_readline.c"))] : []),
-    // readline's terminal mode: rl.terminal sets the regex unit it
-    // measures with.
-    ...(opts.events && regex ? [rt(join(rtDir, "scr_readline_tty.c"))] : []),
-    ...(opts.emitter || opts.workers ? [rt(join(rtDir, "scr_events_emitter.c"))] : []),
-    // The checked-dynamic HANDLE support unit (listener gate + runtime
-    // adapter closures): every referencing unit is one of the emitter or
-    // net families (http implies net), so handle-free binaries keep
-    // their exact size class.
-    ...(opts.emitter || opts.workers || net ? [rt(join(rtDir, "scr_dyn_handle.c"))] : []),
-    ...(opts.symbol ? [rt(join(rtDir, "scr_symbol.c"))] : []),
-    ...(opts.assert && opts.bigint ? [rt(join(rtDir, "scr_bigint_assert.c"))] : []),
-    ...(opts.qs ? [rt(join(rtDir, "scr_qs.c"))] : []),
-    // The legacy url unit references the regex, querystring and dyn-async
-    // units; the url.parse family's IR sets all three.
-    ...(regex && opts.qs && opts.dynAsync ? [rt(join(rtDir, "scr_url_legacy.c"))] : []),
-    ...(opts.parseArgs ? [rt(join(rtDir, "scr_util.c"))] : []),
-    ...(opts.parseArgs && opts.symbol ? [rt(join(rtDir, "scr_util_compare.c"))] : []),
-    ...(opts.parseArgs && opts.inspect && opts.dynAsync
-      ? [rt(join(rtDir, "scr_util_style.c"))]
-      : []),
-    ...(opts.parseArgs && opts.inspect && opts.dynAsync && opts.dynInvoke && regex
-      ? [rt(join(rtDir, "scr_util_callable.c"))]
-      : []),
-    ...(opts.stream ? [rt(join(rtDir, "scr_stream.c")), rt(join(rtDir, "scr_fs_stream.c"))] : []),
-    // The zlib stream classes reference both the zlib engine and the
-    // stream unit.
-    ...(opts.zlib && opts.stream ? [rt(join(rtDir, "scr_zlib_stream.c"))] : []),
-    ...(opts.stream && opts.dynAsync ? [rt(join(rtDir, "scr_stream_ops.c"))] : []),
-    // FileHandle streams reference both the stream unit and FileHandle.
-    ...(opts.stream && opts.fileHandle ? [rt(join(rtDir, "scr_fs_stream_fh.c"))] : []),
-    // The readiness-poller backends (scr_platform.h): kqueue on macOS/BSD,
-    // epoll on Linux, WSAPoll on Windows — each TU is empty off its
-    // platform, so all three link whenever a poller-using unit does and
-    // the others cost nothing (ws2_32 rides the unconditional win32 libs
-    // above).
-    ...(net || opts.dgram
-      ? [
-          rt(join(rtDir, "scr_loop_kqueue.c")),
-          rt(join(rtDir, "scr_loop_epoll.c")),
-          rt(join(rtDir, "scr_loop_wsapoll.c")),
-        ]
-      : []),
-    ...(net ? [rt(join(rtDir, "scr_net.c"))] : []),
-    ...(http ? [rt(join(rtDir, "scr_http.c"))] : []),
-    ...((opts.http2 ?? false) ? [rt(join(rtDir, "scr_http2.c"))] : []),
-    ...(opts.dgram ? [rt(join(rtDir, "scr_dgram.c"))] : []),
-    ...(opts.watch ? [rt(join(rtDir, "scr_watch.c"))] : []),
-    ...(opts.foreignFfi ? [rt(join(rtDir, "scr_ffi_queue.c"))] : []),
-    ...(opts.nodeTest ? [rt(join(rtDir, "scr_test.c"))] : []),
-    // The CA-store unit rides its own gate OR the tls one: scr_tls.c
-    // references its default-set override unconditionally.
-    ...(tlsCa ? [rt(join(rtDir, "scr_tls_ca.c"))] : []),
-    ...(tlsArchive
-      ? [
-          "-I",
-          join(vendorTlsDir(), "include"),
-          ...(tls ? [rt(join(rtDir, "scr_tls.c"))] : []),
-          ...(cipher ? [rt(join(rtDir, "scr_cipher.c"))] : []),
-          tlsArchive,
-          // mbedTLS's win32 entropy poll is BCryptGenRandom (bcrypt.h).
-          // The unconditional win32 libs above do not carry it.
-          // Never present on the default path, so the historical TLS
-          // link line cannot change.
-          ...(targetPlatform(driver) === "win32" ? ["-lbcrypt"] : []),
-        ]
-      : []),
-    // scr_tls_ca.c enumerates and PEM-encodes Windows system-store entries.
-    // This is independent of the mbedTLS archive: getCACertificates-only
-    // programs need crypt32 too, while TLS programs imply the CA unit.
-    ...(tlsCa && targetPlatform(driver) === "win32" ? ["-lcrypt32"] : []),
-    // Fetch uses the native network, TLS, and HTTP runtime.
-    ...(nativeFetch ? [rt(join(rtDir, "scr_fetch.c"))] : []),
+    ...runtimeUnitArgs({
+      opts,
+      driver,
+      rt,
+      rtDir,
+      regex,
+      nativeFetch,
+      net,
+      http,
+      tls,
+      tlsCa,
+      cipher,
+      ecdh,
+      dh,
+      pki,
+      lreObjects,
+      zlibObjects,
+      tlsArchive,
+      brotliArchive,
+    }),
     // A .ll program TU (the LLVM backend) deliberately carries no target
     // triple (byte-stable output; clang supplies the host/SCRIPTC_TARGET
     // triple exactly as it does for .c) — silence the -Woverride-module
@@ -617,11 +823,7 @@ export async function compileCInternal(
     ...(opts.linkInputs ?? []),
     ...(opts.systemLibraries ?? []).map((name) => `-l${name}`),
     ...(opts.frameworks ?? []).flatMap((name) => ["-framework", name]),
-    // GNU ld resolves libraries from left to right and commonly enables
-    // --as-needed: host-clang libz must follow scr_zlib.c/scr_fetch.c and every
-    // generated/native input that references inflate symbols. Cross
-    // and targetless Zig builds use vendored zlib objects in the input section above.
-    ...(((opts.zlib ?? false) || nativeFetch) && !isZigDriver(driver) ? ["-lz"] : []),
+    ...unwinderLinkArgs(driver),
     // glibc keeps libm separate from libc. This must trail the generated
     // program and every native FFI input because GNU ld resolves archives
     // from left to right.
@@ -642,7 +844,7 @@ export async function compileCInternal(
       ? ["-O1", "-fsanitize=address", "-DSCR_RC_AUDIT"]
       : [optimization === "dev" ? "-O0" : "-O2"]),
     ...executableSectionFlags.compile,
-    ...(opts.textDecoderLegacy ? ["-DSCR_TEXT_DECODER_LEGACY"] : []),
+    ...runtimeDefineArgs(opts),
     "-fno-math-errno",
     "-fno-strict-aliasing", // the emitted object model type-puns — see buildArgs
     "-Wno-deprecated-declarations",
@@ -684,9 +886,15 @@ export async function compileCInternal(
   };
   const buildExecutable = async (
     runtimeInput: (path: string) => string,
-    build: { programPath?: string; outPath?: string; compilerVisibleSource?: string } = {},
+    build: {
+      programPath?: string;
+      outPath?: string;
+      compilerVisibleSource?: string;
+      /** programPath is an object already (the merged program shards). */
+      programObject?: boolean;
+    } = {},
   ): Promise<void> => {
-    if (!separateSanitizedProgram) {
+    if (!separateSanitizedProgram || build.programObject === true) {
       await runClang(buildArgs(runtimeInput, build));
       return;
     }
@@ -724,7 +932,12 @@ export async function compileCInternal(
       );
     try {
       await materializeVendorPrerequisites(undefined, privateVendorRoot);
-      await buildExecutable((p) => p);
+      await buildExecutable(
+        (p) => p,
+        opts.cSourcePath === undefined
+          ? {}
+          : { programPath: opts.cSourcePath, compilerVisibleSource: opts.cPath },
+      );
     } finally {
       await rm(privateVendorRoot, { recursive: true, force: true }).catch(() => undefined);
     }
@@ -759,7 +972,9 @@ export async function compileCInternal(
         localArtifact === null
           ? runtimeFingerprint(rtDir)
           : Promise.resolve(localArtifact.runtimeHash),
-        localArtifact === null ? readFile(opts.cPath) : Promise.resolve(localArtifact.programBytes),
+        localArtifact === null
+          ? readFile(opts.cSourcePath ?? opts.cPath)
+          : Promise.resolve(localArtifact.programBytes),
       ]);
       compileMetadataStamp =
         compileMetadataKey === null
@@ -828,7 +1043,7 @@ export async function compileCInternal(
       Promise.all([
         ccVersion(driver.argv, toolchainEnv, true),
         runtimeFingerprint(rtDir),
-        readFile(opts.cPath),
+        readFile(opts.cSourcePath ?? opts.cPath),
       ]));
   } catch (error) {
     // A version/fingerprint probe is an optimization boundary. If the compiler
@@ -861,7 +1076,7 @@ export async function compileCInternal(
     ...(targetPlatform(driver) === "win32" ? ["-ladvapi32", "-liphlpapi", "-lws2_32"] : []),
     ...(mbedtls && targetPlatform(driver) === "win32" ? ["-lbcrypt"] : []),
     ...(tlsCa && targetPlatform(driver) === "win32" ? ["-lcrypt32"] : []),
-    ...(((opts.zlib ?? false) || nativeFetch) && !isZigDriver(driver) ? ["-lz"] : []),
+    ...unwinderLinkArgs(driver),
     ...driver.linkArgs,
     ...executableLinkFlags,
   ];
@@ -873,7 +1088,7 @@ export async function compileCInternal(
     ...(targetPlatform(driver) === "win32" ? ["-ladvapi32", "-liphlpapi", "-lws2_32"] : []),
     ...(mbedtls && targetPlatform(driver) === "win32" ? ["-lbcrypt"] : []),
     ...(tlsCa && targetPlatform(driver) === "win32" ? ["-lcrypt32"] : []),
-    ...(((opts.zlib ?? false) || nativeFetch) && !isZigDriver(driver) ? ["-lz"] : []),
+    ...unwinderLinkArgs(driver),
     ...driver.linkArgs,
     ...executableLinkFlags,
   ];
@@ -1256,7 +1471,7 @@ export async function compileCInternal(
             .update("\0")
             .update(shard.name)
             .update("\0")
-            .update(shard.source)
+            .update(shard.source())
             .digest("hex");
           return {
             ...shard,
@@ -1270,7 +1485,7 @@ export async function compileCInternal(
         for (let i = 0; i < entries.length; i += shardWidth) {
           await Promise.all(
             entries.slice(i, i + shardWidth).map(async (entry) => {
-              await writeFile(entry.sourcePath, entry.source);
+              await writeFile(entry.sourcePath, entry.source());
               if (await copyValidCachedFile(entry.cachePath, entry.staged)) return;
               entry.missed = true;
               await runClang([
@@ -1293,6 +1508,8 @@ export async function compileCInternal(
           [],
           programPublicSymbols,
           `${stem}.program`,
+          undefined,
+          { inProcessElf: true },
         );
         const publishable = entries.filter((entry) => entry.missed);
         if (publishable.length > 0) {
@@ -1357,7 +1574,7 @@ export async function compileCInternal(
       (p) => objects?.get(p) ?? p,
       shardedProgramObject === null
         ? { programPath, outPath: privateOut, compilerVisibleSource: opts.cPath }
-        : { programPath: shardedProgramObject, outPath: privateOut },
+        : { programPath: shardedProgramObject, outPath: privateOut, programObject: true },
     );
     if (darwinDebugSymbols) {
       // clang invokes dsymutil when compiling a source TU while linking.
@@ -1482,4 +1699,12 @@ export async function compileC(opts: CcOptions): Promise<void> {
   ) {
     await rm(`${opts.outPath}.dSYM`, { recursive: true, force: true });
   }
+}
+
+/** Linux runtimes raise through the native unwinder (scr_unwind_raise):
+ * Zig's libunwind, or the toolchain's libgcc_eh. Both are static archives,
+ * so programs load no shared library for them. */
+function unwinderLinkArgs(driver: CcDriver): string[] {
+  if (targetPlatform(driver) !== "linux") return [];
+  return isZigDriver(driver) ? ["-lunwind"] : ["-lgcc_eh"];
 }

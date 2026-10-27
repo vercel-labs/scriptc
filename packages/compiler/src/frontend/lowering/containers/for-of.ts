@@ -77,7 +77,7 @@ export function lowerForOfSearchParams(
   }
   const isVar = (list.flags & ts.NodeFlags.BlockScoped) === 0;
   const isLet = (list.flags & ts.NodeFlags.Let) !== 0 || isVar;
-  const decl = list.declarations[0]!; // the grammar allows exactly one
+  const decl = list.declarations.nodes[0]!; // the grammar allows exactly one
   lowerer.scopes.push(new Map());
   try {
     const sp = lowerer.declareHiddenLocal("%spof", SP);
@@ -108,13 +108,15 @@ export function lowerForOfSearchParams(
       yieldsPair &&
       !isVar && // var pattern names assign hoisted slots — the generic desugar below owns them
       ts.isArrayBindingPattern(decl.name) &&
-      decl.name.elements.length >= 1 &&
-      decl.name.elements.length <= 2 &&
-      decl.name.elements.every(isPlainIdent)
+      decl.name.elements.nodes.length >= 1 &&
+      decl.name.elements.nodes.length <= 2 &&
+      decl.name.elements.nodes.every(isPlainIdent)
     ) {
       // `for (const [k, v] of sp)` — bind straight from the reads; the
       // tuple never exists. `[k]` alone reads only the key.
-      const els = decl.name.elements as readonly (ts.BindingElement & { name: ts.Identifier })[];
+      const els = decl.name.elements.nodes as readonly (ts.BindingElement & {
+        name: ts.Identifier;
+      })[];
       const kLocal = lowerer.declareLocal(els[0]!.name, els[0]!.name.text, STRING, isLet);
       binds.push({ kind: "varDecl", localId: kLocal.id, init: keyRead(), loc });
       if (els[1]) {
@@ -151,7 +153,7 @@ export function lowerForOfSearchParams(
           }
         : singleRead();
       if (ts.isIdentifier(decl.name)) {
-        const varTarget = forOfVarTarget(lowerer, decl);
+        const varTarget = forOfVarTarget(lowerer, decl, elemT!);
         if (varTarget) {
           // `for (var x of ...)`: one function-scoped binding, assigned
           // per pass — closures made in the loop share it, and the value
@@ -260,7 +262,7 @@ export function lowerForOfArrayIter(
   }
   const isVar = (list.flags & ts.NodeFlags.BlockScoped) === 0;
   const isLet = (list.flags & ts.NodeFlags.Let) !== 0 || isVar;
-  const decl = list.declarations[0]!; // the grammar allows exactly one
+  const decl = list.declarations.nodes[0]!; // the grammar allows exactly one
   lowerer.scopes.push(new Map());
   try {
     const arr = lowerer.declareHiddenLocal("%arof", arrT);
@@ -293,13 +295,15 @@ export function lowerForOfArrayIter(
       yieldsPair &&
       !isVar && // var pattern names assign hoisted slots — the generic desugar below owns them
       ts.isArrayBindingPattern(decl.name) &&
-      decl.name.elements.length >= 1 &&
-      decl.name.elements.length <= 2 &&
-      decl.name.elements.every(isPlainIdent)
+      decl.name.elements.nodes.length >= 1 &&
+      decl.name.elements.nodes.length <= 2 &&
+      decl.name.elements.nodes.every(isPlainIdent)
     ) {
       // `for (const [i, v] of xs.entries())` — bind straight from the
       // reads; the tuple never exists. `[i]` alone reads only the index.
-      const els = decl.name.elements as readonly (ts.BindingElement & { name: ts.Identifier })[];
+      const els = decl.name.elements.nodes as readonly (ts.BindingElement & {
+        name: ts.Identifier;
+      })[];
       const kLocal = lowerer.declareLocal(els[0]!.name, els[0]!.name.text, F64, isLet);
       binds.push({ kind: "varDecl", localId: kLocal.id, init: keyRead(), loc });
       if (els[1]) {
@@ -353,7 +357,7 @@ export function lowerForOfArrayIter(
           }
         : keyRead();
       if (ts.isIdentifier(decl.name)) {
-        const varTarget = forOfVarTarget(lowerer, decl);
+        const varTarget = forOfVarTarget(lowerer, decl, declT!);
         if (varTarget) {
           // `for (var x of ...)`: one function-scoped binding, assigned
           // per pass — closures made in the loop share it, and the value
@@ -493,7 +497,7 @@ function lowerForOfMapOrSet(
     }
     isVar = (list.flags & ts.NodeFlags.BlockScoped) === 0;
     isLet = (list.flags & ts.NodeFlags.Let) !== 0 || isVar;
-    decl = list.declarations[0]!; // the grammar allows exactly one
+    decl = list.declarations.nodes[0]!; // the grammar allows exactly one
   }
   lowerer.scopes.push(new Map());
   try {
@@ -603,13 +607,15 @@ function lowerForOfMapOrSet(
         yieldsPair &&
         !isVar && // var pattern names assign hoisted slots — the generic desugar below owns them
         ts.isArrayBindingPattern(decl!.name) &&
-        decl!.name.elements.length >= 1 &&
-        decl!.name.elements.length <= 2 &&
-        decl!.name.elements.every(isPlainIdent)
+        decl!.name.elements.nodes.length >= 1 &&
+        decl!.name.elements.nodes.length <= 2 &&
+        decl!.name.elements.nodes.every(isPlainIdent)
       ) {
         // `for (const [k, v] of m)` — bind straight from the primitives;
         // the tuple never exists. `[k]` alone reads only the key.
-        const els = decl!.name.elements as readonly (ts.BindingElement & { name: ts.Identifier })[];
+        const els = decl!.name.elements.nodes as readonly (ts.BindingElement & {
+          name: ts.Identifier;
+        })[];
         const kLocal = lowerer.declareLocal(els[0]!.name, els[0]!.name.text, keyT, isLet);
         binds.push({ kind: "varDecl", localId: kLocal.id, init: keyRead(), loc });
         if (els[1]) {
@@ -644,7 +650,7 @@ function lowerForOfMapOrSet(
             }
           : singleRead();
         if (ts.isIdentifier(decl!.name)) {
-          const varTarget = forOfVarTarget(lowerer, decl!);
+          const varTarget = forOfVarTarget(lowerer, decl!, elemT!);
           if (varTarget) {
             // `for (var x of ...)`: one function-scoped binding, assigned
             // per pass — closures made in the loop share it, and the value
@@ -747,7 +753,7 @@ function lowerForOfMapOrSet(
  * Recurses through every nested statement list; nested functions are
  * lifted elsewhere and never appear here, so every return found exits
  * THIS function through the active iteration. */
-function exitBeforeReturns(stmts: IrStmt[], make: () => IrStmt): IrStmt[] {
+export function exitBeforeReturns(stmts: IrStmt[], make: () => IrStmt): IrStmt[] {
   const walk = (list: IrStmt[]): IrStmt[] =>
     list.flatMap((s): IrStmt[] => {
       switch (s.kind) {

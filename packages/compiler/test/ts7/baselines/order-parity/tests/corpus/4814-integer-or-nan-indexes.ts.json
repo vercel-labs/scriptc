@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/4814-integer-or-nan-indexes.ts"
+ ],
+ "diags": []
+}

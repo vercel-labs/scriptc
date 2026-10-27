@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6564-constructor-function-stream-late-hooks.cjs"
+ ],
+ "diags": []
+}

@@ -97,9 +97,9 @@ const probeErrors = ts
   .filter((d) => d.fileName === sf.fileName && d.category === ts.DiagnosticCategory.Error);
 
 const decls = new Map<string, ts.VariableDeclaration>();
-for (const stmt of sf.statements) {
+for (const stmt of sf.statements.nodes) {
   if (!ts.isVariableStatement(stmt)) continue;
-  const decl = stmt.declarationList.declarations[0]!;
+  const decl = stmt.declarationList.declarations.nodes[0]!;
   if (ts.isIdentifier(decl.name)) decls.set(decl.name.text, decl);
 }
 
@@ -119,7 +119,7 @@ function calleeSymbol(decl: ts.VariableDeclaration): ts.Symbol | undefined {
 
 function isStdlibDeclared(symbol: ts.Symbol | undefined): boolean {
   if (!symbol) return false;
-  return checker.declarationsOf(symbol).some((d) => {
+  return symbol.declarations.some((d) => {
     const file = d.getSourceFile();
     return (
       file.fileName === ambient ||

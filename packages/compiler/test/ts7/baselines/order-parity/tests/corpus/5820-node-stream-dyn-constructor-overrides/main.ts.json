@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5820-node-stream-dyn-constructor-overrides/sources.js",
+  "<repo>/tests/corpus/5820-node-stream-dyn-constructor-overrides/main.ts"
+ ],
+ "diags": []
+}

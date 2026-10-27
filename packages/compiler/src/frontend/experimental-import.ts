@@ -1,14 +1,15 @@
 /* Provenance of the @scriptc/experimental exports. The package is scriptc's
  * own (packages/experimental): Node.js runs its JavaScript implementation,
  * scriptc builds lower its exports (lowering/lifetime-regions.ts,
- * lowering/intern-tables.ts) and never compile its body. */
+ * lowering/intern-tables.ts, lowering/thread-slots.ts) and never compile
+ * its body. */
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import * as ts from "./ts7/adapter.js";
 
 export const EXPERIMENTAL_MODULE = "@scriptc/experimental";
 
-export type ExperimentalMember = "LifetimeRegion" | "InternTable";
+export type ExperimentalMember = "LifetimeRegion" | "InternTable" | "ThreadSlots";
 
 /** The @scriptc/experimental export an identifier is a named-import binding of. */
 export function experimentalImportOf(
@@ -17,7 +18,7 @@ export function experimentalImportOf(
 ): ExperimentalMember | null {
   const checker = program.getTypeChecker();
   const symbol = checker.getSymbolAtLocation(ident);
-  const decl = symbol ? checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (decl === undefined || !ts.isImportSpecifier(decl)) return null;
   const importDecl = decl.parent?.parent?.parent;
   if (
@@ -27,7 +28,9 @@ export function experimentalImportOf(
   )
     return null;
   const member = decl.propertyName?.text ?? decl.name.text;
-  return member === "LifetimeRegion" || member === "InternTable" ? member : null;
+  return member === "LifetimeRegion" || member === "InternTable" || member === "ThreadSlots"
+    ? member
+    : null;
 }
 
 /** Whether `sf` is the package's own declaration file: its directory's
@@ -64,13 +67,13 @@ export function lifetimeRegionMemberOf(
 ): "run" | "release" | null {
   const checker = program.getTypeChecker();
   const symbol = checker.getSymbolAtLocation(access.name);
-  const decl = symbol ? checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (decl === undefined || !ts.isMethodDeclaration(decl)) return null;
   const owner = decl.parent;
   if (
     !ts.isClassDeclaration(owner) ||
     owner.name?.text !== "LifetimeRegion" ||
-    !isExperimentalDeclarationFile(owner.getSourceFile(), known)
+    !isExperimentalDeclarationFile(ts.getSourceFileOfNode(owner), known)
   )
     return null;
   const name = access.name.text;
@@ -88,7 +91,7 @@ export function internTableMemberOf(
 ): InternTableMember | null {
   const checker = program.getTypeChecker();
   const symbol = checker.getSymbolAtLocation(access.name);
-  const decl = symbol ? checker.declarationsOf(symbol)[0] : undefined;
+  const decl = symbol ? symbol.declarations[0] : undefined;
   if (
     decl === undefined ||
     !(
@@ -102,7 +105,7 @@ export function internTableMemberOf(
   if (
     !ts.isClassDeclaration(owner) ||
     owner.name?.text !== "InternTable" ||
-    !isExperimentalDeclarationFile(owner.getSourceFile(), known)
+    !isExperimentalDeclarationFile(ts.getSourceFileOfNode(owner), known)
   )
     return null;
   const name = access.name.text;
@@ -113,4 +116,28 @@ export function internTableMemberOf(
     name === "size"
     ? name
     : null;
+}
+
+export type ThreadSlotsMember = "get" | "has" | "set" | "delete";
+
+/** The ThreadSlots member a property access names (`slots.get`), by the
+ * declaration it resolves to. */
+export function threadSlotsMemberOf(
+  program: ts.Program,
+  access: ts.PropertyAccessExpression,
+  known: Map<string, boolean>,
+): ThreadSlotsMember | null {
+  const checker = program.getTypeChecker();
+  const symbol = checker.getSymbolAtLocation(access.name);
+  const decl = symbol ? symbol.declarations[0] : undefined;
+  if (decl === undefined || !ts.isMethodDeclaration(decl)) return null;
+  const owner = decl.parent;
+  if (
+    !ts.isClassDeclaration(owner) ||
+    owner.name?.text !== "ThreadSlots" ||
+    !isExperimentalDeclarationFile(ts.getSourceFileOfNode(owner), known)
+  )
+    return null;
+  const name = access.name.text;
+  return name === "get" || name === "has" || name === "set" || name === "delete" ? name : null;
 }

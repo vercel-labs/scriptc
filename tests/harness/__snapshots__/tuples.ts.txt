@@ -12,14 +12,14 @@ tuples.ts:12:6 - error SC1090: tuple indexing with a non-literal index (tuples a
      |      ^
   13 | 
 
-tuples.ts:15:7 - error SC2001: values of type '[string, (number | undefined)?]' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, read-only Date values, functions, classes, records, unions of those, and 'unknown')
+tuples.ts:15:7 - error SC2001: values of type '[string, (number | undefined)?]' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
 
   14 | // Optional and rest elements have no fixed arity/shape.
   15 | const opt: [string, number?] = ["x"];
      |       ^~~
   16 | const rest: [string, ...number[]] = ["y", 1, 2];
 
-tuples.ts:16:7 - error SC2001: values of type '[string, ...number[]]' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, read-only Date values, functions, classes, records, unions of those, and 'unknown')
+tuples.ts:16:7 - error SC2001: values of type '[string, ...number[]]' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
 
   15 | const opt: [string, number?] = ["x"];
   16 | const rest: [string, ...number[]] = ["y", 1, 2];
@@ -40,14 +40,14 @@ tuples.ts:31:13 - error SC1090: '.length' of a computed tuple expression (the ar
      |             ^~~~~~~~~~~
   32 | 
 
-tuples.ts:35:13 - error SC1090: '.join()' on arrays of this element type (number, string, and boolean arrays join — unions of those with undefined/null arms too, the units printing empty like JS) is not supported yet
+tuples.ts:35:13 - error SC1090: '.join()' on arrays of this element type (number, string, boolean and Date arrays join — unions of those with undefined/null arms too, the units printing empty like JS) is not supported yet
 
   34 | const recs: { id: number }[] = [{ id: 1 }];
   35 | console.log(recs.join(","));
      |             ^~~~~~~~~~~~~~
   36 | const tuples: [string, string][] = [["k", "v"]];
 
-tuples.ts:37:13 - error SC1090: '.join()' on arrays of this element type (number, string, and boolean arrays join — unions of those with undefined/null arms too, the units printing empty like JS) is not supported yet
+tuples.ts:37:13 - error SC1090: '.join()' on arrays of this element type (number, string, boolean and Date arrays join — unions of those with undefined/null arms too, the units printing empty like JS) is not supported yet
 
   36 | const tuples: [string, string][] = [["k", "v"]];
   37 | console.log(tuples.join(";"));

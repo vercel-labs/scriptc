@@ -1,1 +1,5 @@
-- **Copy:** `fs.cpSync`, `fs.cp`, and `fs/promises` `cp` support every option and follow Node's two implementations: `cpSync` reports the native binding's errors, and the callback and promise forms report `SystemError`s. Files, directories, and symbolic links are copied in directory order, as in Node. The callback and promise forms complete the copy before the callback runs or the promise settles. An async `filter` must return a promise that is already settled; a pending one throws `SC2020`. On Windows, the three functions throw `SC2020`.
+- **Copy:** `fs.cpSync`, `fs.cp`, and `fs/promises` `cp` support every option and follow Node's two implementations: `cpSync` reports the native binding's errors, and the callback and promise forms report `SystemError`s.
+  Files, directories, and symbolic links are copied in directory order, as in Node.
+  The callback and promise forms complete the copy before the callback runs or the promise settles.
+  An async `filter` must return a promise that is already settled; a pending one throws `SC2020`.
+  On Windows, the three functions throw `SC2020`.

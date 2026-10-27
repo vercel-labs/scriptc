@@ -1,0 +1,63 @@
+runtime-class-value-fences.ts:8:20 - error SC1090: EventEmitter and stream class values constructed with options (construct with 'new Readable({ ... })' directly) are not supported yet
+
+  7 | const R: typeof Readable = Readable;
+  8 | const configured = new R({ read() {} });
+    |                    ^~~~~~~~~~~~~~~~~~~~
+  9 | console.log(configured.readable);
+
+runtime-class-value-fences.ts:12:13 - error SC1090: console.log of 'typeof EventEmitter' values ('typeof EventEmitter' values have no inspect lowering) are not supported yet
+
+  11 | const C: typeof EventEmitter = EventEmitter;
+  12 | console.log(C);
+     |             ^
+  13 | const boxed: unknown = Readable;
+
+runtime-class-value-fences.ts:13:24 - error SC1090: a runtime-provided class value ('Readable') as an untyped value is not supported yet
+
+  12 | console.log(C);
+  13 | const boxed: unknown = Readable;
+     |                        ^~~~~~~~
+  14 | console.log(boxed !== undefined, C.defaultMaxListeners);
+
+runtime-class-value-fences.ts:14:34 - error SC2020: 'typeof EventEmitter.defaultMaxListeners' is part of the standard library types but has no scriptc lowering yet
+
+  13 | const boxed: unknown = Readable;
+  14 | console.log(boxed !== undefined, C.defaultMaxListeners);
+     |                                  ^~~~~~~~~~~~~~~~~~~~~
+  15 | 
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+runtime-class-value-fences.ts:19:19 - error SC1090: structurally-typed class-value flows ('typeof TypeError' into a 'typeof RangeError' slot: only a class and its subclasses share a slot — extend the base class) are not supported yet
+
+  18 | // ErrorConstructor[].
+  19 | const errorMix = [TypeError, RangeError];
+     |                   ^~~~~~~~~
+  20 | console.log(errorMix.length);
+
+runtime-class-value-fences.ts:22:7 - error SC2009: values of type 'AggregateErrorConstructor[]' cannot be compiled: the array shape is supported, but its element type 'AggregateErrorConstructor' does not compile
+
+  21 | 
+  22 | const aggregates = [AggregateError];
+     |       ^~~~~~~~~~
+  23 | console.log(aggregates.length);
+
+  hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
+
+runtime-class-value-fences.ts:22:20 - error SC2009: values of type 'AggregateErrorConstructor[]' cannot be compiled: the array shape is supported, but its element type 'AggregateErrorConstructor' does not compile
+
+  21 | 
+  22 | const aggregates = [AggregateError];
+     |                    ^~~~~~~~~~~~~~~~
+  23 | console.log(aggregates.length);
+
+  hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
+
+runtime-class-value-fences.ts:23:13 - error SC2020: 'AggregateErrorConstructor[].length' is part of the standard library types but has no scriptc lowering yet
+
+  22 | const aggregates = [AggregateError];
+  23 | console.log(aggregates.length);
+     |             ^~~~~~~~~~~~~~~~~
+  24 | 
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)

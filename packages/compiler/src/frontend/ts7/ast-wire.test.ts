@@ -101,6 +101,30 @@ test("node words respect a byte view's offset, signed spans and unsigned flags",
   expect(() => file.kind(5)).toThrow(AstDecodeError);
 });
 
+test("strings, string offsets and node words read alike at every byte alignment", () => {
+  const original = response();
+  for (let shift = 0; shift < 4; shift++) {
+    const padded = new Uint8Array(original.length + 8).fill(0xff);
+    padded.set(original, shift);
+    const bytes = padded.subarray(shift, shift + original.length);
+    const file = new AstWireFile(bytes);
+    expect([file.string(0), file.string(2), file.text(1), file.text(3)]).toEqual([
+      "abcfile!",
+      "file",
+      "abcfile!",
+      "file",
+    ]);
+    expect([file.kind(3), file.next(3), file.parent(4), file.data(4)]).toEqual([
+      AstKind.Identifier,
+      4,
+      2,
+      0x40000002,
+    ]);
+    word(bytes, 56, 9);
+    expect(() => new AstWireFile(bytes)).toThrow("invalid string table offset");
+  }
+});
+
 test("truncated headers, sections and node tables are rejected", () => {
   for (let size = 0; size < HEADER_SIZE; size++)
     expect(() => new AstWireFile(new Uint8Array(size))).toThrow(AstDecodeError);

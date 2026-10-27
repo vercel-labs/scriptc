@@ -73,14 +73,13 @@ import { CacheInputsChangedError } from "./session.js";
  * async_free refusal already guarantees nothing references them — and
  * scr_library.c (sink, arena, reset registry, library funnel) joins. The gated
  * units a library may reach are the pure-data ones (regex + the vendored matcher, assert,
- * inspect, symbol, searchParams, emitter+dyn_handle, zlib); every
+ * inspect, symbol, searchParams, emitter+dyn_handle, zlib, x509); every
  * loop-hooked or ambient unit was refused at SC4005 before emission.
  * External-symbol contract: undefined references only to the target's C/math
  * runtime and system APIs. Windows embedders additionally link advapi32,
  * iphlpapi, and ws2_32; the platform driver supplies its ordinary CRT and
- * kernel imports. Zlib rides the VENDORED per-flavor objects here even on
- * hosts because the executable lane's system `-lz` cannot ride inside an
- * archive. */
+ * kernel imports. Zlib rides the vendored per-flavor objects, as in the
+ * executable lane. */
 
 export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> {
   clearCcCaches();
@@ -112,7 +111,10 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     ...(opts.assert && opts.bigint ? ["scr_bigint_assert.c"] : []),
     ...(opts.emitter ? ["scr_events_emitter.c", "scr_dyn_handle.c"] : []),
     ...(opts.dynInvoke ? ["scr_dyn_invoke.c"] : []),
+    ...(opts.dynInvoke && opts.dynBuffer ? ["scr_bytes_dyn.c"] : []),
+    ...(opts.dynTier === true ? ["scr_js_value.c", "scr_js_object.c"] : []),
     ...(opts.zlib ? ["scr_zlib.c"] : []),
+    ...(opts.x509 ? ["scr_x509.c"] : []),
     ...(opts.copying ? ["scr_copying.c"] : []),
   ];
   const cflags = [
@@ -128,6 +130,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
     "-DSCR_LIB",
     ...(opts.threadInstances ? ["-DSCR_THREAD_INSTANCES"] : []),
     ...(opts.textDecoderLegacy ? ["-DSCR_TEXT_DECODER_LEGACY"] : []),
+    ...(opts.dynTier === true ? ["-DSCR_JS_TIER"] : []),
     "-I",
     rtDir,
     ...(regex ? ["-I", vendorEngineDir()] : []),
@@ -481,7 +484,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
                 .update("\0")
                 .update(shard.name)
                 .update("\0")
-                .update(shard.source)
+                .update(shard.source())
                 .digest("hex");
               cachePath = join(persistentCache.root, "program-shard", key);
             }
@@ -491,7 +494,7 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
           for (let i = 0; i < shardEntries.length; i += shardWidth) {
             await Promise.all(
               shardEntries.slice(i, i + shardWidth).map(async (entry) => {
-                await writeFile(entry.sourcePath, entry.source);
+                await writeFile(entry.sourcePath, entry.source());
                 if (
                   entry.cachePath !== null &&
                   (await copyValidCachedFile(entry.cachePath, entry.staged))
@@ -513,6 +516,8 @@ export async function compileLibArchive(opts: LibArchiveOptions): Promise<void> 
             [],
             programPublicSymbols!,
             `${stem}.program`,
+            undefined,
+            { inProcessElf: true },
           );
           // Keep the canonical archive member spelling. The fact that native
           // compilation used shards is an implementation detail; consumers and

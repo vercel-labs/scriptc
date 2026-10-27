@@ -166,6 +166,13 @@ static SCR_TL char **scr_lib_argv_owned = NULL;
 static SCR_TL char *scr_lib_argv_utf8 = NULL;
 #endif
 static SCR_TL bool scr_lib_has_fork = false;
+/* A leading Node runtime flag taken out of process.argv (scr_lib_take_flag),
+ * which process.execArgv reports; NULL without one. */
+static SCR_TL const char *scr_lib_exec_flag = NULL;
+#if defined(_WIN32) && !defined(SCR_LIB)
+/* The flag's index in the original Windows command line, -1 without one. */
+static SCR_TL int scr_lib_exec_flag_index = -1;
+#endif
 #if !defined(_WIN32) && !defined(__wasi__) && !defined(SCR_LIB)
 static void scr_title_init(int argc, char **argv);
 #endif
@@ -218,7 +225,18 @@ static void scr_module_registry_cleanup(void) {
  * own cleanup only when the value is first materialized.  That is equivalent
  * at process exit and retains the RC-audit cleanup guarantee for the values a
  * program actually observes. */
+#if defined(__linux__) && !defined(SCR_LIB)
+/* The heap census of a program built with SCRIPTC_HEAP_CENSUS
+ * (heap-census.ts) writes its counters at exit, from here and from
+ * scr_process_exit; every other program leaves the weak reference null.
+ * Libraries have no census, and their archives declare no such symbol. */
+extern void scr_census_write(void) __attribute__((weak));
+#endif
+
 static void scr_lib_cleanup(void) {
+#if defined(__linux__) && !defined(SCR_LIB)
+  if (scr_census_write != NULL) scr_census_write();
+#endif
   scr_module_registry_cleanup();
   scr_arr_release(scr_argv_arr);
   scr_argv_arr = NULL;
@@ -321,6 +339,7 @@ static void scr_lib_prepare_utf8_argv(void) {
     // scr_lib_init already consumed this private ASCII fork marker. Do not
     // reintroduce it when replacing the narrow argument storage.
     if (i == 1 && scr_lib_has_fork) continue;
+    if (i == scr_lib_exec_flag_index) continue;
     int size = WideCharToMultiByte(CP_UTF8, 0, wide[i], -1, NULL, 0, NULL, NULL);
     if (size == 0 || WideCharToMultiByte(CP_UTF8, 0, wide[i], -1, next, size, NULL, NULL) != size) {
       free(text); free(args); LocalFree(wide);
@@ -565,6 +584,31 @@ const char *scr_lib_arg(int i) {
   return scr_lib_argv[i];
 }
 
+bool scr_lib_take_flag(const char *flag) {
+  if (scr_lib_argc < 2 || strcmp(scr_lib_argv[1], flag) != 0) return false;
+  char **args = malloc((size_t)scr_lib_argc * sizeof(char *));
+  if (!args) scr_trap("out of memory");
+  args[0] = scr_lib_argv[0];
+  for (int i = 2; i < scr_lib_argc; i++) args[i - 1] = scr_lib_argv[i];
+  args[scr_lib_argc - 1] = NULL;
+  free(scr_lib_argv_owned);
+  scr_lib_argv_owned = args;
+  scr_lib_argv = args;
+  scr_lib_argc--;
+#if defined(_WIN32) && !defined(SCR_LIB)
+  scr_lib_exec_flag_index = scr_lib_has_fork ? 2 : 1;
+#endif
+  scr_lib_exec_flag = flag;
+  return true;
+}
+
+ScrArr *scr_process_exec_argv(void) {
+  ScrArr *arr = scr_arr_new(SCR_ELEM_STR, 1);
+  if (scr_lib_exec_flag)
+    scr_arr_push_ref(arr, scr_str_new(scr_lib_exec_flag, strlen(scr_lib_exec_flag)));
+  return arr;
+}
+
 bool scr_lib_fork_info(double *target, uintptr_t *read_handle,
                        uintptr_t *write_handle) {
   if (!scr_lib_has_fork) return false;
@@ -683,8 +727,9 @@ ScrDyn *scr_process_versions(void) {
     scr_dyn_obj_set(scr_versions_object, "openssl", 7, scr_dyn_new_str(openssl));
     scr_str_release(node);
     scr_str_release(openssl);
-    for (size_t i = 0; i < scr_versions_object->v.obj.len; i++) {
-      scr_versions_object->v.obj.entries[i].writable = false;
+    for (size_t i = 0; i < scr_dyn_obj_count(scr_versions_object); i++) {
+      ScrDynProp prop = scr_dyn_obj_prop_at(scr_versions_object, i);
+      scr_dyn_obj_set_attrs_at(scr_versions_object, i, false, prop.enumerable, prop.configurable);
     }
     scr_atexit(&scr_versions_object_cleanup);
   }
@@ -791,6 +836,26 @@ static void scr_node_debug_capture(const ScrStr *name) {
   if (name->len == 10 && memcmp(name->data, "NODE_DEBUG", 10) == 0) (void)scr_node_debug_initial();
 }
 
+/* Counts writes and deletes of process.env.TZ. The local-time getters keep
+ * their last conversion for the generation it was made in. */
+#ifdef SCR_WORKERS
+static atomic_uint scr_date_tz_generation;
+#else
+static unsigned scr_date_tz_generation;
+#endif
+
+/* After a write or delete of the process's TZ, local time follows the new
+ * value, as in Node: tzset(3) rereads it for later localtime calls. */
+static void scr_env_tz_changed(const ScrStr *name) {
+  /* Compared by character: a string literal would join the merged
+   * read-only strings of every program that links this file. */
+  if (name->len != 2 || name->data[0] != 'T' || name->data[1] != 'Z') return;
+#if !defined(_WIN32) && !defined(__wasi__)
+  tzset();
+#endif
+  scr_date_tz_generation++;
+}
+
 /* process.env.NAME = v — setenv(3): later scr_env_get reads and spawned
  * children (posix_spawn inherits environ) observe the write, like Node.
  * Both args borrowed (NUL-terminated ScrStr data); setenv copies. */
@@ -809,6 +874,7 @@ void scr_env_set(const ScrStr *name, const ScrStr *value) {
 #else
   setenv(k, v, 1);
 #endif
+  scr_env_tz_changed(name);
 #ifdef SCR_WORKERS
 done:
 #endif
@@ -828,6 +894,7 @@ void scr_env_unset(const ScrStr *name) {
 #else
   unsetenv(name->data);
 #endif
+  scr_env_tz_changed(name);
 }
 
 static ScrStr *scr_fs_read_file_core(ScrStr *path, bool env_file, size_t *ascii);
@@ -859,8 +926,8 @@ static void scr_env_store(ScrDyn *out, const char *text, size_t ks, size_t ke,
 }
 
 static int scr_env_entry_order(const void *left, const void *right) {
-  const ScrDynEntry *a = *(const ScrDynEntry *const *)left;
-  const ScrDynEntry *b = *(const ScrDynEntry *const *)right;
+  const ScrDynProp *a = left;
+  const ScrDynProp *b = right;
   size_t n = a->key_len < b->key_len ? a->key_len : b->key_len;
   int cmp = memcmp(a->key, b->key, n);
   return cmp ? cmp : (a->key_len > b->key_len) - (a->key_len < b->key_len);
@@ -936,14 +1003,14 @@ static ScrDyn *scr_env_parse_content(const ScrStr *input, bool ordinary) {
   /* Node's std::map orders UTF-8 keys before installing object properties.
    * Ordinary objects ignore string-valued __proto__ assignments; loading
    * the native environment retains that name as an ordinary variable. */
-  size_t count = entries->v.obj.len;
-  const ScrDynEntry **sorted = count ? malloc(count * sizeof(*sorted)) : NULL;
+  size_t count = scr_dyn_obj_count(entries);
+  ScrDynProp *sorted = count ? malloc(count * sizeof(*sorted)) : NULL;
   if (count && !sorted) scr_trap("scriptc: out of memory\n");
-  for (size_t i = 0; i < count; i++) sorted[i] = &entries->v.obj.entries[i];
+  for (size_t i = 0; i < count; i++) sorted[i] = scr_dyn_obj_prop_at(entries, i);
   if (count > 1) qsort(sorted, count, sizeof(*sorted), scr_env_entry_order);
   ScrDyn *result = ordinary ? scr_dyn_new_obj() : scr_dyn_new_obj_null_proto();
   for (size_t i = 0; i < count; i++) {
-    const ScrDynEntry *entry = sorted[i];
+    const ScrDynProp *entry = &sorted[i];
     if (ordinary && entry->key_len == 9 && memcmp(entry->key, "__proto__", 9) == 0) continue;
     if (!ordinary) {
       scr_dyn_obj_set(result, entry->key, entry->key_len, scr_dyn_retain(entry->value));
@@ -1023,6 +1090,10 @@ bool scr_fs_path_ok(const ScrStr *path, const char *name) {
   return false;
 }
 
+void scr_fs_check_path(ScrStr *path, ScrStr *name) {
+  (void)scr_fs_path_ok(path, name->data);
+}
+
 void scr_process_load_env_file(const ScrDyn *value) {
   ScrStr *path;
   if (value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL) path = scr_str_new("./.env", 6);
@@ -1044,15 +1115,15 @@ void scr_process_load_env_file(const ScrDyn *value) {
   if (!content) return;
   ScrDyn *entries = scr_env_parse_content(content, false);
   scr_str_release(content);
-  for (size_t i = 0; i < entries->v.obj.len; i++) {
-    const ScrDynEntry *entry = &entries->v.obj.entries[i];
+  for (size_t i = 0; i < scr_dyn_obj_count(entries); i++) {
+    ScrDynProp entry = scr_dyn_obj_prop_at(entries, i);
     /* Node normalizes each raw sorted entry immediately before checking
      * the environment. Distinct invalid byte keys can normalize alike;
      * the first absent name wins, rather than the last parsed entry. */
-    ScrStr *key = scr_str_from_utf8_lossy((const uint8_t *)entry->key, entry->key_len);
+    ScrStr *key = scr_str_from_utf8_lossy((const uint8_t *)entry.key, entry.key_len);
     ScrStr *existing = scr_env_get(key);
     if (!existing) {
-      const ScrStr *raw = entry->value->v.str;
+      const ScrStr *raw = entry.value->v.str;
       ScrStr *value = scr_str_from_utf8_lossy((const uint8_t *)raw->data, raw->len);
       scr_env_set(key, value);
       scr_str_release(value);
@@ -1945,14 +2016,17 @@ SCR_TL void (*scr_warning_emit_hook)(const char *name, const char *code, ScrStr 
 SCR_TL bool scr_warning_trace_hint_shown = false;
 SCR_TL void (*scr_stdin_destroy_hook)(void) = NULL;
 
-void scr_process_set_exit_code(double code) {
+/* process.exitCode's validation: a safe integer, or a RangeError
+ * (ERR_OUT_OF_RANGE). Node converts valid codes to signed int32 for
+ * exitCode and exit listeners; the OS observes the low eight bits. */
+static bool scr_process_exit_code_of(double code, int *out) {
   if (!isfinite(code) || trunc(code) != code) {
     char recv[48], msg[160];
     scr_num_received(code, recv);
     int len = snprintf(msg, sizeof msg,
                        "The value of \"code\" is out of range. It must be an integer. Received %s", recv);
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
-    return;
+    return false;
   }
   if (fabs(code) > 9007199254740991.0) {
     char recv[48], msg[192];
@@ -1960,19 +2034,36 @@ void scr_process_set_exit_code(double code) {
     int len = snprintf(msg, sizeof msg,
                        "The value of \"code\" is out of range. It must be >= -9007199254740991 && <= 9007199254740991. Received %s", recv);
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
-    return;
+    return false;
   }
-  /* Node converts valid safe integers to signed int32 for exitCode and
-   * exit listeners. The OS subsequently observes the low eight bits. */
   double low = fmod(code, 4294967296.0);
   if (low < 0) low += 4294967296.0;
   int64_t signed_code = (int64_t)low;
   if (signed_code > INT_MAX) signed_code -= 4294967296LL;
-  scr_exit_code_note((int)signed_code);
+  *out = (int)signed_code;
+  return true;
+}
+
+void scr_process_set_exit_code(double code) {
+  int converted;
+  if (scr_process_exit_code_of(code, &converted)) scr_exit_code_note(converted);
 }
 
 double scr_process_exit_code_or_zero(void) {
   return (double)scr_exit_code_hint_get();
+}
+
+static SCR_TL bool scr_exit_code_assigned = false;
+
+void scr_process_set_exit_code_tracked(double code) {
+  int converted;
+  if (!scr_process_exit_code_of(code, &converted)) return;
+  scr_exit_code_note(converted);
+  scr_exit_code_assigned = true;
+}
+
+bool scr_process_has_exit_code(void) {
+  return scr_exit_code_assigned || scr_exit_code_hint_get() != 0;
 }
 
 #if defined(__linux__)
@@ -2025,7 +2116,20 @@ static void scr_detach_teardown(void) {
 }
 #endif
 
+#if defined(__linux__)
+/* LLVM's profile writer. Instrumented builds (--profile-generate) link the
+ * profile runtime, which writes the profile from an atexit handler that the
+ * _Exit below skips, so the exit writes it first. Every other build leaves the
+ * weak reference null. */
+extern int __llvm_profile_write_file(void) __attribute__((weak));
+#endif
+
 void scr_process_exit(double code) {
+  /* process.exit(code) assigns process.exitCode first, so a code that is
+   * not a safe integer throws its RangeError and the program continues. */
+  int converted;
+  if (!scr_process_exit_code_of(code, &converted)) return;
+  code = converted;
   /* Node runs 'exit' listeners on explicit process.exit() too — they run
    * HERE, synchronously, before the teardown-free exit below. The hook is
    * non-NULL only when the events unit is linked (scr_events.c). */
@@ -2043,6 +2147,10 @@ void scr_process_exit(double code) {
    * expected). scr_init's flush-at-exit is also skipped — flush here. */
   fflush(stdout);
 #if defined(__linux__)
+  if (__llvm_profile_write_file != NULL) (void)__llvm_profile_write_file();
+#ifndef SCR_LIB
+  if (scr_census_write != NULL) scr_census_write();
+#endif
   scr_detach_teardown();
 #endif
   _Exit((int)code);
@@ -2717,10 +2825,9 @@ ScrDyn *scr_process_release(void) {
 #endif
 #undef SCR_RELEASE_FILE
 #undef SCR_RELEASE_PREFIX
-    for (size_t i = 0; i < scr_release_object->v.obj.len; i++) {
-      scr_release_object->v.obj.entries[i].writable = false;
-      scr_release_object->v.obj.entries[i].configurable = false;
-    }
+    for (size_t i = 0; i < scr_dyn_obj_count(scr_release_object); i++)
+      scr_dyn_obj_set_attrs_at(scr_release_object, i, false,
+                               scr_dyn_obj_prop_at(scr_release_object, i).enumerable, false);
     scr_atexit(&scr_release_object_cleanup);
   }
   return scr_dyn_retain(scr_release_object);
@@ -4143,27 +4250,35 @@ double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length,
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
     return 0;
   }
-  /* Node returns after the offset and position validation when the
-   * requested length normalizes to zero: buffer-window bounds and fd are
-   * not consulted. Preserve the existing size_t coercion's [0, 1) case. */
-  if (length >= 0 && length < 1) return 0;
-  if (offset > (double)bytelen) {
-    numbuf[scr_f64_to_str(offset, numbuf)] = 0;
+  /* `length |= 0`, then Node's order: a zero length reads nothing after
+   * the offset and position checks; otherwise the buffer must not be
+   * empty and the window must fit it (validateOffsetLengthRead). */
+  if (!isfinite(length)) {
+    length = 0;
+  } else {
+    double wrapped = fmod(trunc(length), 4294967296.0);
+    if (wrapped < 0) wrapped += 4294967296.0;
+    length = wrapped >= 2147483648.0 ? wrapped - 4294967296.0 : wrapped;
+  }
+  if (length == 0) return 0;
+  if (bytelen == 0) {
+    static const char empty[] =
+        "The argument 'buffer' is empty and cannot be written. Received <Buffer >";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, empty, sizeof empty - 1, "ERR_INVALID_ARG_VALUE");
+    return 0;
+  }
+  if (length < 0 || offset + length > (double)bytelen) {
+    char recv[48], range[48];
+    scr_num_received(length, recv);
+    if (length < 0) snprintf(range, sizeof range, ">= 0");
+    else snprintf(range, sizeof range, "<= %.0f", (double)bytelen - offset);
     mlen = snprintf(msg, sizeof msg,
-                    "The value of \"offset\" is out of range. It must be >= 0 && <= 9007199254740991. Received %s",
-                    numbuf);
+                    "The value of \"length\" is out of range. It must be %s. Received %s", range,
+                    recv);
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
     return 0;
   }
   size_t off = (size_t)offset;
-  if (length < 0 || (double)length > (double)(bytelen - off)) {
-    numbuf[scr_f64_to_str(length, numbuf)] = 0;
-    mlen = snprintf(msg, sizeof msg,
-                    "The value of \"length\" is out of range. It must be <= %zu. Received %s",
-                    bytelen - off, numbuf);
-    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
-    return 0;
-  }
   size_t want = (size_t)length;
   uint8_t *bounce = buf->shared ? malloc(want ? want : 1) : NULL;
   if (buf->shared && !bounce) scr_trap("scriptc: out of memory\n");
@@ -4507,6 +4622,13 @@ void scr_fs_rename(ScrStr *oldpath, ScrStr *newpath) {
 
 static int scr_rm_unlink(const char *path, size_t len);
 
+/* Node's ERR_FS_EISDIR for rm on a directory without `recursive`. */
+static void scr_fs_rm_throw_eisdir(const ScrStr *path) {
+  ScrStr *message = scr_str_new("is a directory", 14);
+  scr_fs_throw_system_error("ERR_FS_EISDIR", "Path is a directory", EISDIR, "rm", message, path);
+  scr_str_release(message);
+}
+
 void scr_fs_rm(ScrStr *path) {
   if (!scr_fs_path_ok(path, "path")) return;
 #ifdef _WIN32
@@ -4514,16 +4636,15 @@ void scr_fs_rm(ScrStr *path) {
   if (link != 0) { if (link < 0) scr_fs_throw(errno, "unlink", path); return; }
 #endif
   /* Node's rmSync: lstat first (a missing path reports the lstat syscall),
-   * refuse directories (Node requires `recursive`, which the scriptc
-   * surface doesn't declare — the message wording diverges from Node's
-   * ERR_FS_EISDIR, see SEMANTICS.md), then unlink. */
+   * refuse directories (ERR_FS_EISDIR: removing one requires `recursive`),
+   * then unlink. */
   struct stat st;
   if (lstat(path->data, &st) != 0) {
     scr_fs_throw(errno, "lstat", path);
     return;
   }
   if (S_ISDIR(st.st_mode)) {
-    scr_fs_throw(EISDIR, "rm", path);
+    scr_fs_rm_throw_eisdir(path);
     return;
   }
   if (scr_rm_unlink(path->data, path->len) != 0) scr_fs_throw(errno, "unlink", path);
@@ -4677,6 +4798,13 @@ typedef struct {
   ScrStr *path;
 } ScrRmFail;
 
+/* Throws the recorded failure and releases its path. */
+static void scr_rm_fail_throw(ScrRmFail *f) {
+  if (f->err == EISDIR && strcmp(f->op, "rm") == 0) scr_fs_rm_throw_eisdir(f->path);
+  else scr_fs_throw(f->err, f->op, f->path);
+  scr_str_release(f->path);
+}
+
 static void scr_rm_fail_set(ScrRmFail *f, int err, const char *op, const char *path, size_t len) {
   if (f->err != 0) return; /* first failure wins, exactly like the old unwind */
   f->err = err;
@@ -4772,8 +4900,6 @@ static void scr_fs_rm_attempt(ScrStr *path, bool recursive, bool force, ScrRmFai
   }
   if (S_ISDIR(st.st_mode)) {
     if (!recursive) {
-      /* Node throws ERR_FS_EISDIR here; the EISDIR-prefixed wording is
-       * divergence 13's documented difference. */
       scr_rm_fail_set(f, EISDIR, "rm", path->data, path->len);
       return;
     }
@@ -4787,18 +4913,24 @@ void scr_fs_rm_opts(ScrStr *path, bool recursive, bool force) {
   if (!scr_fs_path_ok(path, "path")) return;
   ScrRmFail f = {0, NULL, NULL};
   scr_fs_rm_attempt(path, recursive, force, &f);
-  if (f.err != 0) {
-    scr_fs_throw(f.err, f.op, f.path);
-    scr_str_release(f.path);
-  }
+  if (f.err != 0) scr_rm_fail_throw(&f);
+}
+
+/* Node's validateRmdirOptions range checks: retryDelay is an int32 >= 0,
+ * then maxRetries is a uint32 (ERR_OUT_OF_RANGE). */
+bool scr_fs_rm_retry_options_ok(double max_retries, double retry_delay) {
+  return scr_bytes_validate_off("options.retryDelay", retry_delay, 2147483647.0) &&
+         scr_bytes_validate_off("options.maxRetries", max_retries, 4294967295.0);
 }
 
 /* rmSync(p, { recursive, force, maxRetries, retryDelay }): Node retries
  * the operation on EBUSY/EMFILE/ENFILE/ENOTEMPTY/EPERM up to maxRetries
  * times, waiting retryDelay ms LONGER on each try (linear backoff — the
  * fs.rmSync documented semantics). Everything else throws immediately
- * with the failing path, exactly like the plain options form. */
+ * with the failing path, exactly like the plain options form. rmSync
+ * validates the options before the path. */
 void scr_fs_rm_opts_retry(ScrStr *path, bool recursive, bool force, double max_retries, double retry_delay) {
+  if (!scr_fs_rm_retry_options_ok(max_retries, retry_delay)) return;
   if (!scr_fs_path_ok(path, "path")) return;
   long tries = max_retries > 0 ? (long)max_retries : 0;
   double delay_ms = retry_delay > 0 ? retry_delay : 0;
@@ -4823,8 +4955,7 @@ void scr_fs_rm_opts_retry(ScrStr *path, bool recursive, bool force, double max_r
       nanosleep(&ts, NULL);
     }
   }
-  scr_fs_throw(f.err, f.op, f.path);
-  scr_str_release(f.path);
+  scr_rm_fail_throw(&f);
 }
 
 #if defined(_WIN32) || defined(__wasi__)
@@ -5683,7 +5814,7 @@ void scr_fs_symlink(ScrStr *target, ScrStr *destination, int kind) {
   if (!scr_fs_path_ok(target, "target")) return;
   if (!scr_fs_path_ok(destination, "path")) return;
 #ifdef _WIN32
-  static const ScrArrOps str_ops = { scr_str_retain_v, scr_str_release_v, NULL };
+  static ScrArrOps str_ops = { scr_str_retain_v, scr_str_release_v, NULL };
   ScrArr *parts = scr_arr_new_ops(&str_ops, 3);
   scr_arr_push_ref(parts, scr_str_retain(destination));
   scr_arr_push_ref(parts, scr_str_new("..", 2));
@@ -6227,6 +6358,56 @@ ScrArr *scr_fs_readdir(ScrStr *path) {
   return arr;
 }
 
+/* fs.readdirSync(path, { recursive: true }): Node's readdirSyncRecursive.
+ * Directories are listed in queue order: the base, then each directory in
+ * the order its entry was listed. Each entry's path is path.join of its
+ * directory and name; the result holds it relative to the base
+ * (path.relative). An entry stat(2) reports as a directory, a symlink to
+ * one included, joins the queue. */
+ScrArr *scr_fs_readdir_recursive(ScrStr *base) {
+  if (!scr_fs_path_ok(base, "path")) return NULL;
+  ScrArr *out = scr_arr_new(SCR_ELEM_STR, 0);
+  size_t len = 1, cap = 8;
+  ScrStr **queue = malloc(cap * sizeof *queue);
+  if (!queue) scr_trap("scriptc: out of memory\n");
+  queue[0] = scr_str_retain(base);
+  bool failed = false;
+  for (size_t at = 0; at < len && !failed; at++) {
+    ScrScandir *scan = scr_fs_scandir(queue[at]);
+    if (!scan) {
+      failed = true;
+      break;
+    }
+    for (size_t i = 0; i < scr_fs_scandir_count(scan); i++) {
+      ScrArr *parts = scr_arr_new(SCR_ELEM_STR, 2);
+      scr_arr_push_ref(parts, scr_str_retain(queue[at]));
+      scr_arr_push_ref(parts, scr_fs_scandir_name(scan, i));
+      ScrStr *full = scr_path_join(parts);
+      scr_arr_release(parts);
+      scr_arr_push_ref(out, scr_path_relative(base, full));
+      struct stat st;
+      if (stat(full->data, &st) == 0 && S_ISDIR(st.st_mode)) {
+        if (len == cap) {
+          cap *= 2;
+          queue = realloc(queue, cap * sizeof *queue);
+          if (!queue) scr_trap("scriptc: out of memory\n");
+        }
+        queue[len++] = full;
+      } else {
+        scr_str_release(full);
+      }
+    }
+    scr_fs_scandir_free(scan);
+  }
+  for (size_t i = 0; i < len; i++) scr_str_release(queue[i]);
+  free(queue);
+  if (failed) {
+    scr_arr_release(out);
+    return NULL;
+  }
+  return out;
+}
+
 /* ── the withFileTypes scandir snapshot ──────────────────────────────
  * One readdir pass capturing name + entry kind for the emitter's Dirent
  * assembly (scr_runtime.h has the contract). Kinds are libuv's UV_DIRENT
@@ -6711,11 +6892,28 @@ double scr_math_round(double x) {
   return (r == 0.0 && x < 0.0) ? -0.0 : r;
 }
 
-/* IEEE pow(±1, ±Infinity) and pow(1, NaN) return 1; ECMAScript requires
- * NaN. The other special cases, including signed zero and odd integer
- * powers, follow libm. */
+/* V8's math::pow: the platform pow, as Node's Math.pow and ** call it,
+ * after the cases V8 answers itself. IEEE pow(±1, ±Infinity) and
+ * pow(1, NaN) return 1; ECMAScript requires NaN. A NaN base becomes the
+ * quiet NaN, and the exponents 2 and 0.5 answer base * base and
+ * sqrt(base + 0) (+Infinity for an infinite base), as V8's optimizing
+ * compilers do; pow can differ from those in the last bit. */
 double scr_math_pow(double base, double exponent) {
   if (isnan(exponent) || (isinf(exponent) && fabs(base) == 1.0)) return NAN;
+  if (isnan(base)) base = NAN;
+  if (exponent == 2.0) return base * base;
+  if (exponent == 0.5) return isinf(base) ? INFINITY : sqrt(base + 0.0);
+  /* 2 ** n for an integer n in the double range is an exact power of two,
+   * the value pow returns; its bits are the exponent alone. */
+  if (base == 2.0 && exponent >= -1074.0 && exponent <= 1023.0) {
+    int32_t n = (int32_t)exponent;
+    if ((double)n == exponent) {
+      uint64_t bits = n >= -1022 ? (uint64_t)(n + 1023) << 52 : UINT64_C(1) << (n + 1074);
+      double result;
+      memcpy(&result, &bits, sizeof result);
+      return result;
+    }
+  }
   return pow(base, exponent);
 }
 
@@ -7196,45 +7394,112 @@ static ScrStr *scr_digest_encode(const unsigned char *d, size_t n, int enc) {
 
 /* ── MD5 (RFC 1321) ───────────────────────────────────────────────── */
 
-static const uint32_t scr_md5_k[64] = {
-    0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a,
-    0xa8304613, 0xfd469501, 0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be,
-    0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821, 0xf61e2562, 0xc040b340,
-    0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
-    0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8,
-    0x676f02d9, 0x8d2a4c8a, 0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c,
-    0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70, 0x289b7ec6, 0xeaa127fa,
-    0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
-    0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92,
-    0xffeff47d, 0x85845dd1, 0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1,
-    0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391};
-static const unsigned char scr_md5_r[64] = {
-    7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
-    5, 9,  14, 20, 5, 9,  14, 20, 5, 9,  14, 20, 5, 9,  14, 20,
-    4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
-    6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21};
+/* The 64 steps are unrolled with their message word, constant and
+ * rotation inlined. a + m + K does not depend on the previous step, so
+ * each step's critical path is the round function of b, an add, the
+ * rotate and the add of b. G is written as (b & d) + (c & ~d) (the two
+ * terms share no bits) so that its c & ~d half joins that early sum. The
+ * empty asm statement keeps the compiler from moving the constant's add
+ * after the round function, which puts it back on the critical path. */
+#if (defined(__GNUC__) || defined(__clang__)) && !defined(__wasm__)
+#define SCR_MD5_PIN(v) __asm__("" : "+r"(v))
+#else
+#define SCR_MD5_PIN(v) ((void)0)
+#endif
+#define SCR_MD5_F(b, c, d) ((d) ^ ((b) & ((c) ^ (d))))
+#define SCR_MD5_H(b, c, d) ((b) ^ (c) ^ (d))
+#define SCR_MD5_I(b, c, d) ((c) ^ ((b) | ~(d)))
+#define SCR_MD5_STEP(f, a, b, c, d, xk, s)        \
+  do {                                            \
+    (a) += (xk);                                  \
+    SCR_MD5_PIN(a);                               \
+    (a) += f((b), (c), (d));                      \
+    (a) = ((a) << (s) | (a) >> (32 - (s))) + (b); \
+  } while (0)
+#define SCR_MD5_GSTEP(a, b, c, d, xk, s)          \
+  do {                                            \
+    (a) += ((c) & ~(d)) + (xk);                   \
+    SCR_MD5_PIN(a);                               \
+    (a) += (b) & (d);                             \
+    (a) = ((a) << (s) | (a) >> (32 - (s))) + (b); \
+  } while (0)
 
-SCR_DIGEST_ALIGNED static void scr_md5_block(uint32_t h[4], const unsigned char *p) {
-  uint32_t m[16];
-  for (int i = 0; i < 16; i++) {
-    m[i] = (uint32_t)p[i * 4] | ((uint32_t)p[i * 4 + 1] << 8) |
-           ((uint32_t)p[i * 4 + 2] << 16) | ((uint32_t)p[i * 4 + 3] << 24);
-  }
+SCR_DIGEST_ALIGNED static void scr_md5_blocks(uint32_t h[4], const unsigned char *p, size_t blocks) {
   uint32_t a = h[0], b = h[1], c = h[2], d = h[3];
-  for (int i = 0; i < 64; i++) {
-    uint32_t f, g;
-    if (i < 16) { f = (b & c) | (~b & d); g = (uint32_t)i; }
-    else if (i < 32) { f = (d & b) | (~d & c); g = (5u * i + 1) & 15; }
-    else if (i < 48) { f = b ^ c ^ d; g = (3u * i + 5) & 15; }
-    else { f = c ^ (b | ~d); g = (7u * i) & 15; }
-    uint32_t t = d;
-    d = c;
-    c = b;
-    uint32_t x = a + f + scr_md5_k[i] + m[g];
-    b = b + ((x << scr_md5_r[i]) | (x >> (32 - scr_md5_r[i])));
-    a = t;
+  for (; blocks != 0; blocks--, p += 64) {
+    uint32_t m[16];
+    for (int i = 0; i < 16; i++) {
+      m[i] = (uint32_t)p[i * 4] | ((uint32_t)p[i * 4 + 1] << 8) |
+             ((uint32_t)p[i * 4 + 2] << 16) | ((uint32_t)p[i * 4 + 3] << 24);
+    }
+    uint32_t a0 = a, b0 = b, c0 = c, d0 = d;
+    SCR_MD5_STEP(SCR_MD5_F, a, b, c, d, m[0] + 0xd76aa478u, 7);
+    SCR_MD5_STEP(SCR_MD5_F, d, a, b, c, m[1] + 0xe8c7b756u, 12);
+    SCR_MD5_STEP(SCR_MD5_F, c, d, a, b, m[2] + 0x242070dbu, 17);
+    SCR_MD5_STEP(SCR_MD5_F, b, c, d, a, m[3] + 0xc1bdceeeu, 22);
+    SCR_MD5_STEP(SCR_MD5_F, a, b, c, d, m[4] + 0xf57c0fafu, 7);
+    SCR_MD5_STEP(SCR_MD5_F, d, a, b, c, m[5] + 0x4787c62au, 12);
+    SCR_MD5_STEP(SCR_MD5_F, c, d, a, b, m[6] + 0xa8304613u, 17);
+    SCR_MD5_STEP(SCR_MD5_F, b, c, d, a, m[7] + 0xfd469501u, 22);
+    SCR_MD5_STEP(SCR_MD5_F, a, b, c, d, m[8] + 0x698098d8u, 7);
+    SCR_MD5_STEP(SCR_MD5_F, d, a, b, c, m[9] + 0x8b44f7afu, 12);
+    SCR_MD5_STEP(SCR_MD5_F, c, d, a, b, m[10] + 0xffff5bb1u, 17);
+    SCR_MD5_STEP(SCR_MD5_F, b, c, d, a, m[11] + 0x895cd7beu, 22);
+    SCR_MD5_STEP(SCR_MD5_F, a, b, c, d, m[12] + 0x6b901122u, 7);
+    SCR_MD5_STEP(SCR_MD5_F, d, a, b, c, m[13] + 0xfd987193u, 12);
+    SCR_MD5_STEP(SCR_MD5_F, c, d, a, b, m[14] + 0xa679438eu, 17);
+    SCR_MD5_STEP(SCR_MD5_F, b, c, d, a, m[15] + 0x49b40821u, 22);
+    SCR_MD5_GSTEP(a, b, c, d, m[1] + 0xf61e2562u, 5);
+    SCR_MD5_GSTEP(d, a, b, c, m[6] + 0xc040b340u, 9);
+    SCR_MD5_GSTEP(c, d, a, b, m[11] + 0x265e5a51u, 14);
+    SCR_MD5_GSTEP(b, c, d, a, m[0] + 0xe9b6c7aau, 20);
+    SCR_MD5_GSTEP(a, b, c, d, m[5] + 0xd62f105du, 5);
+    SCR_MD5_GSTEP(d, a, b, c, m[10] + 0x02441453u, 9);
+    SCR_MD5_GSTEP(c, d, a, b, m[15] + 0xd8a1e681u, 14);
+    SCR_MD5_GSTEP(b, c, d, a, m[4] + 0xe7d3fbc8u, 20);
+    SCR_MD5_GSTEP(a, b, c, d, m[9] + 0x21e1cde6u, 5);
+    SCR_MD5_GSTEP(d, a, b, c, m[14] + 0xc33707d6u, 9);
+    SCR_MD5_GSTEP(c, d, a, b, m[3] + 0xf4d50d87u, 14);
+    SCR_MD5_GSTEP(b, c, d, a, m[8] + 0x455a14edu, 20);
+    SCR_MD5_GSTEP(a, b, c, d, m[13] + 0xa9e3e905u, 5);
+    SCR_MD5_GSTEP(d, a, b, c, m[2] + 0xfcefa3f8u, 9);
+    SCR_MD5_GSTEP(c, d, a, b, m[7] + 0x676f02d9u, 14);
+    SCR_MD5_GSTEP(b, c, d, a, m[12] + 0x8d2a4c8au, 20);
+    SCR_MD5_STEP(SCR_MD5_H, a, b, c, d, m[5] + 0xfffa3942u, 4);
+    SCR_MD5_STEP(SCR_MD5_H, d, a, b, c, m[8] + 0x8771f681u, 11);
+    SCR_MD5_STEP(SCR_MD5_H, c, d, a, b, m[11] + 0x6d9d6122u, 16);
+    SCR_MD5_STEP(SCR_MD5_H, b, c, d, a, m[14] + 0xfde5380cu, 23);
+    SCR_MD5_STEP(SCR_MD5_H, a, b, c, d, m[1] + 0xa4beea44u, 4);
+    SCR_MD5_STEP(SCR_MD5_H, d, a, b, c, m[4] + 0x4bdecfa9u, 11);
+    SCR_MD5_STEP(SCR_MD5_H, c, d, a, b, m[7] + 0xf6bb4b60u, 16);
+    SCR_MD5_STEP(SCR_MD5_H, b, c, d, a, m[10] + 0xbebfbc70u, 23);
+    SCR_MD5_STEP(SCR_MD5_H, a, b, c, d, m[13] + 0x289b7ec6u, 4);
+    SCR_MD5_STEP(SCR_MD5_H, d, a, b, c, m[0] + 0xeaa127fau, 11);
+    SCR_MD5_STEP(SCR_MD5_H, c, d, a, b, m[3] + 0xd4ef3085u, 16);
+    SCR_MD5_STEP(SCR_MD5_H, b, c, d, a, m[6] + 0x04881d05u, 23);
+    SCR_MD5_STEP(SCR_MD5_H, a, b, c, d, m[9] + 0xd9d4d039u, 4);
+    SCR_MD5_STEP(SCR_MD5_H, d, a, b, c, m[12] + 0xe6db99e5u, 11);
+    SCR_MD5_STEP(SCR_MD5_H, c, d, a, b, m[15] + 0x1fa27cf8u, 16);
+    SCR_MD5_STEP(SCR_MD5_H, b, c, d, a, m[2] + 0xc4ac5665u, 23);
+    SCR_MD5_STEP(SCR_MD5_I, a, b, c, d, m[0] + 0xf4292244u, 6);
+    SCR_MD5_STEP(SCR_MD5_I, d, a, b, c, m[7] + 0x432aff97u, 10);
+    SCR_MD5_STEP(SCR_MD5_I, c, d, a, b, m[14] + 0xab9423a7u, 15);
+    SCR_MD5_STEP(SCR_MD5_I, b, c, d, a, m[5] + 0xfc93a039u, 21);
+    SCR_MD5_STEP(SCR_MD5_I, a, b, c, d, m[12] + 0x655b59c3u, 6);
+    SCR_MD5_STEP(SCR_MD5_I, d, a, b, c, m[3] + 0x8f0ccc92u, 10);
+    SCR_MD5_STEP(SCR_MD5_I, c, d, a, b, m[10] + 0xffeff47du, 15);
+    SCR_MD5_STEP(SCR_MD5_I, b, c, d, a, m[1] + 0x85845dd1u, 21);
+    SCR_MD5_STEP(SCR_MD5_I, a, b, c, d, m[8] + 0x6fa87e4fu, 6);
+    SCR_MD5_STEP(SCR_MD5_I, d, a, b, c, m[15] + 0xfe2ce6e0u, 10);
+    SCR_MD5_STEP(SCR_MD5_I, c, d, a, b, m[6] + 0xa3014314u, 15);
+    SCR_MD5_STEP(SCR_MD5_I, b, c, d, a, m[13] + 0x4e0811a1u, 21);
+    SCR_MD5_STEP(SCR_MD5_I, a, b, c, d, m[4] + 0xf7537e82u, 6);
+    SCR_MD5_STEP(SCR_MD5_I, d, a, b, c, m[11] + 0xbd3af235u, 10);
+    SCR_MD5_STEP(SCR_MD5_I, c, d, a, b, m[2] + 0x2ad7d2bbu, 15);
+    SCR_MD5_STEP(SCR_MD5_I, b, c, d, a, m[9] + 0xeb86d391u, 21);
+    a += a0; b += b0; c += c0; d += d0;
   }
-  h[0] += a; h[1] += b; h[2] += c; h[3] += d;
+  h[0] = a; h[1] = b; h[2] = c; h[3] = d;
 }
 
 typedef struct ScrMd5Ctx {
@@ -7262,14 +7527,15 @@ static void scr_md5_update(ScrMd5Ctx *ctx, const unsigned char *data, size_t len
     data += take;
     len -= take;
     if (ctx->tail_len == 64) {
-      scr_md5_block(ctx->h, ctx->tail);
+      scr_md5_blocks(ctx->h, ctx->tail, 1);
       ctx->tail_len = 0;
     }
   }
-  while (len >= 64) {
-    scr_md5_block(ctx->h, data);
-    data += 64;
-    len -= 64;
+  if (len >= 64) {
+    size_t blocks = len / 64;
+    scr_md5_blocks(ctx->h, data, blocks);
+    data += blocks * 64;
+    len -= blocks * 64;
   }
   if (len != 0) {
     memcpy(ctx->tail, data, len);
@@ -7287,8 +7553,7 @@ static size_t scr_md5_final(const ScrMd5Ctx *source, unsigned char out[32]) {
   memset(tail + rem + 1, 0, pad - rem - 1 - 8);
   uint64_t bits = ctx.bytes * 8;
   for (int b = 0; b < 8; b++) tail[pad - 8 + b] = (unsigned char)(bits >> (8 * b));
-  scr_md5_block(ctx.h, tail);
-  if (pad == 128) scr_md5_block(ctx.h, tail + 64);
+  scr_md5_blocks(ctx.h, tail, pad / 64);
   for (int j = 0; j < 4; j++) {
     for (int b = 0; b < 4; b++) out[j * 4 + b] = (unsigned char)(ctx.h[j] >> (8 * b));
   }
@@ -7338,29 +7603,319 @@ static uint64_t scr_sha512_rotr(uint64_t x, unsigned n) {
   return (x >> n) | (x << (64 - n));
 }
 
-SCR_DIGEST_ALIGNED static void scr_sha512_block(uint64_t h[8], const unsigned char *data) {
-  uint64_t w[80];
-  for (size_t i = 0; i < 16; i++) {
-    w[i] = 0;
-    for (size_t b = 0; b < 8; b++) w[i] = (w[i] << 8) | data[i * 8 + b];
+#define SCR_SHA512_BSIG0(x) \
+  (scr_sha512_rotr(x, 28) ^ scr_sha512_rotr(x, 34) ^ scr_sha512_rotr(x, 39))
+#define SCR_SHA512_BSIG1(x) \
+  (scr_sha512_rotr(x, 14) ^ scr_sha512_rotr(x, 18) ^ scr_sha512_rotr(x, 41))
+#define SCR_SHA512_SSIG0(x) (scr_sha512_rotr(x, 1) ^ scr_sha512_rotr(x, 8) ^ ((x) >> 7))
+#define SCR_SHA512_SSIG1(x) (scr_sha512_rotr(x, 19) ^ scr_sha512_rotr(x, 61) ^ ((x) >> 6))
+
+/* One round with the eight working variables passed in rotated order, so
+ * an unrolled sequence of rounds needs no register moves. */
+#define SCR_SHA512_ROUND(a, b, c, d, e, f, g, h, k, w)                                  \
+  do {                                                                                  \
+    uint64_t t1 = (h) + SCR_SHA512_BSIG1(e) + ((g) ^ ((e) & ((f) ^ (g)))) + (k) + (w); \
+    (d) += t1;                                                                          \
+    (h) = t1 + SCR_SHA512_BSIG0(a) + (((a) & (b)) | ((c) & ((a) | (b))));               \
+  } while (0)
+
+static uint64_t scr_sha512_load(const unsigned char *p) {
+  uint64_t v = 0;
+  for (size_t b = 0; b < 8; b++) v = (v << 8) | p[b];
+  return v;
+}
+
+/* The message schedule is kept as a 16-word ring and extended 16 words
+ * at a time between groups of 16 rounds. */
+SCR_DIGEST_ALIGNED static void scr_sha512_blocks_portable(uint64_t state[8], const unsigned char *p,
+                                                          size_t blocks) {
+  uint64_t a = state[0], b = state[1], c = state[2], d = state[3];
+  uint64_t e = state[4], f = state[5], g = state[6], h = state[7];
+  for (; blocks != 0; blocks--, p += 128) {
+    uint64_t w[16];
+    for (size_t i = 0; i < 16; i++) w[i] = scr_sha512_load(p + i * 8);
+    for (size_t i = 0; i < 80; i += 16) {
+      if (i != 0) {
+        for (size_t j = 0; j < 16; j++) {
+          w[j] += SCR_SHA512_SSIG1(w[(j + 14) & 15]) + w[(j + 9) & 15] +
+                  SCR_SHA512_SSIG0(w[(j + 1) & 15]);
+        }
+      }
+      const uint64_t *k = scr_sha512_k + i;
+      SCR_SHA512_ROUND(a, b, c, d, e, f, g, h, k[0], w[0]);
+      SCR_SHA512_ROUND(h, a, b, c, d, e, f, g, k[1], w[1]);
+      SCR_SHA512_ROUND(g, h, a, b, c, d, e, f, k[2], w[2]);
+      SCR_SHA512_ROUND(f, g, h, a, b, c, d, e, k[3], w[3]);
+      SCR_SHA512_ROUND(e, f, g, h, a, b, c, d, k[4], w[4]);
+      SCR_SHA512_ROUND(d, e, f, g, h, a, b, c, k[5], w[5]);
+      SCR_SHA512_ROUND(c, d, e, f, g, h, a, b, k[6], w[6]);
+      SCR_SHA512_ROUND(b, c, d, e, f, g, h, a, k[7], w[7]);
+      SCR_SHA512_ROUND(a, b, c, d, e, f, g, h, k[8], w[8]);
+      SCR_SHA512_ROUND(h, a, b, c, d, e, f, g, k[9], w[9]);
+      SCR_SHA512_ROUND(g, h, a, b, c, d, e, f, k[10], w[10]);
+      SCR_SHA512_ROUND(f, g, h, a, b, c, d, e, k[11], w[11]);
+      SCR_SHA512_ROUND(e, f, g, h, a, b, c, d, k[12], w[12]);
+      SCR_SHA512_ROUND(d, e, f, g, h, a, b, c, k[13], w[13]);
+      SCR_SHA512_ROUND(c, d, e, f, g, h, a, b, k[14], w[14]);
+      SCR_SHA512_ROUND(b, c, d, e, f, g, h, a, k[15], w[15]);
+    }
+    a = state[0] += a; b = state[1] += b; c = state[2] += c; d = state[3] += d;
+    e = state[4] += e; f = state[5] += f; g = state[6] += g; h = state[7] += h;
   }
-  for (size_t i = 16; i < 80; i++) {
-    uint64_t s0 = scr_sha512_rotr(w[i - 15], 1) ^ scr_sha512_rotr(w[i - 15], 8) ^ (w[i - 15] >> 7);
-    uint64_t s1 = scr_sha512_rotr(w[i - 2], 19) ^ scr_sha512_rotr(w[i - 2], 61) ^ (w[i - 2] >> 6);
-    w[i] = w[i - 16] + s0 + w[i - 7] + s1;
+}
+
+#ifdef SCR_SHA_NI
+/* ── SHA-512 kernels (x86-64) ─────────────────────────────────────────
+ * With AVX2 and BMI2, the message schedule is computed two words at a
+ * time in vector registers, interleaved with the scalar rounds, and the
+ * rounds rotate with RORX. With AVX-512VL the schedule uses vector
+ * rotates and three-input XOR. The CPU and OS state checks run once and
+ * are cached. */
+static int scr_sha512_x86_state; /* 0 unknown, 1 portable, 2 AVX2, 3 AVX-512VL */
+
+static int scr_sha512_x86(void) {
+  if (scr_sha512_x86_state == 0) {
+    unsigned a, b, c, d;
+    int kind = 1;
+    if (__get_cpuid(1, &a, &b, &c, &d) && (c & bit_OSXSAVE) && (c & bit_AVX)) {
+      unsigned lo, hi;
+      __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+      (void)hi;
+      /* XMM and YMM state enabled. */
+      if ((lo & 6) == 6 && __get_cpuid_count(7, 0, &a, &b, &c, &d) && (b & bit_AVX2) &&
+          (b & bit_BMI2)) {
+        kind = 2;
+        /* Opmask, ZMM0-15 upper halves and ZMM16-31 state enabled. */
+        if ((b & bit_AVX512F) && (b & bit_AVX512VL) && (lo & 0xe0) == 0xe0) kind = 3;
+      }
+    }
+    scr_sha512_x86_state = kind;
   }
-  uint64_t a = h[0], b = h[1], c = h[2], d = h[3];
-  uint64_t e = h[4], f = h[5], g = h[6], v = h[7];
-  for (size_t i = 0; i < 80; i++) {
-    uint64_t s1 = scr_sha512_rotr(e, 14) ^ scr_sha512_rotr(e, 18) ^ scr_sha512_rotr(e, 41);
-    uint64_t t1 = v + s1 + ((e & f) ^ (~e & g)) + scr_sha512_k[i] + w[i];
-    uint64_t s0 = scr_sha512_rotr(a, 28) ^ scr_sha512_rotr(a, 34) ^ scr_sha512_rotr(a, 39);
-    uint64_t t2 = s0 + ((a & b) ^ (a & c) ^ (b & c));
-    v = g; g = f; f = e; e = d + t1;
-    d = c; c = b; b = a; a = t1 + t2;
+  return scr_sha512_x86_state;
+}
+
+__attribute__((target("avx2,bmi2"))) static inline __m128i scr_sha512_ssig0_avx2(__m128i x) {
+  return _mm_xor_si128(_mm_xor_si128(_mm_or_si128(_mm_srli_epi64(x, 1), _mm_slli_epi64(x, 63)),
+                                     _mm_or_si128(_mm_srli_epi64(x, 8), _mm_slli_epi64(x, 56))),
+                       _mm_srli_epi64(x, 7));
+}
+
+__attribute__((target("avx2,bmi2"))) static inline __m128i scr_sha512_ssig1_avx2(__m128i x) {
+  return _mm_xor_si128(_mm_xor_si128(_mm_or_si128(_mm_srli_epi64(x, 19), _mm_slli_epi64(x, 45)),
+                                     _mm_or_si128(_mm_srli_epi64(x, 61), _mm_slli_epi64(x, 3))),
+                       _mm_srli_epi64(x, 6));
+}
+
+__attribute__((target("avx512f,avx512vl,bmi2"))) static inline __m128i
+scr_sha512_ssig0_avx512(__m128i x) {
+  return _mm_ternarylogic_epi64(_mm_ror_epi64(x, 1), _mm_ror_epi64(x, 8), _mm_srli_epi64(x, 7),
+                                0x96);
+}
+
+__attribute__((target("avx512f,avx512vl,bmi2"))) static inline __m128i
+scr_sha512_ssig1_avx512(__m128i x) {
+  return _mm_ternarylogic_epi64(_mm_ror_epi64(x, 19), _mm_ror_epi64(x, 61), _mm_srli_epi64(x, 6),
+                                0x96);
+}
+
+/* A round for the vector kernels. wk is the schedule word plus its
+ * constant. Maj(a, b, c) is ((a ^ b) & (b ^ c)) ^ b, where b ^ c is the
+ * previous round's a ^ b. The empty asm statements keep the compiler from
+ * reassociating the additions: adding Sigma1(e) last keeps the sum of h,
+ * wk and Ch off the dependency chain through e. */
+#define SCR_SHA512_PIN(v) __asm__("" : "+r"(v))
+#define SCR_SHA512_ROUND_WK(a, b, c, d, e, f, g, h, wk, ab, bc) \
+  do {                                                          \
+    uint64_t t1 = (h) + (wk);                                   \
+    SCR_SHA512_PIN(t1);                                         \
+    t1 += (g) ^ ((e) & ((f) ^ (g)));                            \
+    SCR_SHA512_PIN(t1);                                         \
+    t1 += SCR_SHA512_BSIG1(e);                                  \
+    SCR_SHA512_PIN(t1);                                         \
+    (d) += t1;                                                  \
+    (ab) = (a) ^ (b);                                           \
+    uint64_t m = t1 + (((ab) & (bc)) ^ (b));                    \
+    SCR_SHA512_PIN(m);                                          \
+    (h) = m + SCR_SHA512_BSIG0(a);                              \
+  } while (0)
+
+/* Words 2j and 2j+1 of the schedule, in the ring slot of words 2j-16 and
+ * 2j-15, and their sum with the round constants into wk. */
+#define SCR_SHA512_SCHEDULE(j, ssig0, ssig1)                                                     \
+  do {                                                                                           \
+    if ((j) < 40) {                                                                              \
+      __m128i s15 = _mm_alignr_epi8(w[((j) + 1) & 7], w[(j) & 7], 8);                           \
+      __m128i s7 = _mm_alignr_epi8(w[((j) + 5) & 7], w[((j) + 4) & 7], 8);                      \
+      __m128i next = _mm_add_epi64(_mm_add_epi64(w[(j) & 7], ssig0(s15)),                       \
+                                   _mm_add_epi64(s7, ssig1(w[((j) + 7) & 7])));                 \
+      w[(j) & 7] = next;                                                                         \
+      _mm_store_si128((__m128i *)&wk[(j) * 2],                                                   \
+                      _mm_add_epi64(next, _mm_loadu_si128((const __m128i *)&scr_sha512_k[(j) * 2]))); \
+    }                                                                                            \
+  } while (0)
+
+/* Rounds 2i to 2i+7 compute the schedule words 2i+16 to 2i+23. */
+#define SCR_SHA512_VECTOR_BODY(ssig0, ssig1)                                                   \
+  const __m128i bswap = _mm_set_epi64x(0x08090a0b0c0d0e0fULL, 0x0001020304050607ULL);         \
+  uint64_t a = state[0], b = state[1], c = state[2], d = state[3];                             \
+  uint64_t e = state[4], f = state[5], g = state[6], h = state[7];                             \
+  for (; blocks != 0; blocks--, p += 128) {                                                    \
+    __m128i w[8];                                                                              \
+    uint64_t wk[80] __attribute__((aligned(16)));                                              \
+    _Pragma("GCC unroll 8") for (int i = 0; i < 8; i++) {                                      \
+      w[i] = _mm_shuffle_epi8(_mm_loadu_si128((const __m128i *)(p + i * 16)), bswap);          \
+      _mm_store_si128((__m128i *)&wk[i * 2],                                                   \
+                      _mm_add_epi64(w[i], _mm_loadu_si128((const __m128i *)&scr_sha512_k[i * 2]))); \
+    }                                                                                          \
+    uint64_t x = b ^ c, y;                                                                     \
+    _Pragma("GCC unroll 10") for (int i = 0; i < 40; i += 4) {                                 \
+      SCR_SHA512_SCHEDULE(i + 8, ssig0, ssig1);                                                \
+      SCR_SHA512_ROUND_WK(a, b, c, d, e, f, g, h, wk[2 * i + 0], y, x);                        \
+      SCR_SHA512_ROUND_WK(h, a, b, c, d, e, f, g, wk[2 * i + 1], x, y);                        \
+      SCR_SHA512_SCHEDULE(i + 9, ssig0, ssig1);                                                \
+      SCR_SHA512_ROUND_WK(g, h, a, b, c, d, e, f, wk[2 * i + 2], y, x);                        \
+      SCR_SHA512_ROUND_WK(f, g, h, a, b, c, d, e, wk[2 * i + 3], x, y);                        \
+      SCR_SHA512_SCHEDULE(i + 10, ssig0, ssig1);                                               \
+      SCR_SHA512_ROUND_WK(e, f, g, h, a, b, c, d, wk[2 * i + 4], y, x);                        \
+      SCR_SHA512_ROUND_WK(d, e, f, g, h, a, b, c, wk[2 * i + 5], x, y);                        \
+      SCR_SHA512_SCHEDULE(i + 11, ssig0, ssig1);                                               \
+      SCR_SHA512_ROUND_WK(c, d, e, f, g, h, a, b, wk[2 * i + 6], y, x);                        \
+      SCR_SHA512_ROUND_WK(b, c, d, e, f, g, h, a, wk[2 * i + 7], x, y);                        \
+    }                                                                                          \
+    a = state[0] += a; b = state[1] += b; c = state[2] += c; d = state[3] += d;                \
+    e = state[4] += e; f = state[5] += f; g = state[6] += g; h = state[7] += h;                \
   }
-  h[0] += a; h[1] += b; h[2] += c; h[3] += d;
-  h[4] += e; h[5] += f; h[6] += g; h[7] += v;
+
+__attribute__((target("avx2,bmi2"), aligned(64))) static void
+scr_sha512_blocks_avx2(uint64_t state[8], const unsigned char *p, size_t blocks) {
+  SCR_SHA512_VECTOR_BODY(scr_sha512_ssig0_avx2, scr_sha512_ssig1_avx2)
+}
+
+__attribute__((target("avx512f,avx512vl,bmi2"), aligned(64))) static void
+scr_sha512_blocks_avx512(uint64_t state[8], const unsigned char *p, size_t blocks) {
+  SCR_SHA512_VECTOR_BODY(scr_sha512_ssig0_avx512, scr_sha512_ssig1_avx512)
+}
+#endif
+
+
+#if defined(__aarch64__) && (defined(__clang__) || defined(__GNUC__)) && !defined(_WIN32)
+/* ── SHA-512 kernel (arm64) ───────────────────────────────────────────
+ * On CPUs with the SHA-512 extension (FEAT_SHA512), the blocks run with
+ * SHA512H, SHA512H2, SHA512SU0 and SHA512SU1; other CPUs use the portable
+ * blocks. The CPU check runs once and is cached. */
+#include <arm_neon.h>
+#if defined(__APPLE__)
+#include <sys/sysctl.h>
+#else
+#include <sys/auxv.h>
+#endif
+#define SCR_SHA512_ARM 1
+#if defined(__clang__)
+#define SCR_SHA512_ARM_TARGET __attribute__((target("sha3")))
+#else
+#define SCR_SHA512_ARM_TARGET __attribute__((target("+sha3")))
+#endif
+
+static int scr_sha512_arm_state; /* 0 unknown, 1 available, 2 absent */
+
+static bool scr_sha512_arm(void) {
+  if (scr_sha512_arm_state == 0) {
+    bool ok;
+#if defined(__APPLE__)
+    int value = 0;
+    size_t size = sizeof value;
+    ok = sysctlbyname("hw.optional.armv8_2_sha512", &value, &size, NULL, 0) == 0 && value != 0;
+#else
+    ok = (getauxval(AT_HWCAP) & (1ul << 21)) != 0; /* HWCAP_SHA512 */
+#endif
+    scr_sha512_arm_state = ok ? 1 : 2;
+  }
+  return scr_sha512_arm_state == 1;
+}
+
+/* Two rounds per step. With the state pairs in the roles (A, B, C, D) =
+ * (ab, cd, ef, gh), a step computes I = SHA512H(swap(K + W) + D, ext(C, D),
+ * ext(B, C)), D = SHA512H2(I, B, A) and B += I; the roles then rotate to
+ * (D, A, B, C). */
+#define SCR_SHA512_ARM_STEP(A, B, C, D, msg, k)                                                \
+  do {                                                                                         \
+    uint64x2_t kw = vaddq_u64((msg), vld1q_u64(k));                                            \
+    uint64x2_t sum = vaddq_u64(vextq_u64(kw, kw, 1), (D));                                     \
+    uint64x2_t i = vsha512hq_u64(sum, vextq_u64((C), (D), 1), vextq_u64((B), (C), 1));         \
+    (D) = vsha512h2q_u64(i, (B), (A));                                                         \
+    (B) = vaddq_u64((B), i);                                                                   \
+  } while (0)
+
+/* Message words 2j and 2j+1 from the eight pairs before them. */
+#define SCR_SHA512_ARM_SCHEDULE(m0, m1, m4, m5, m7) \
+  (m0) = vsha512su1q_u64(vsha512su0q_u64((m0), (m1)), (m7), vextq_u64((m4), (m5), 1))
+
+SCR_SHA512_ARM_TARGET static void scr_sha512_blocks_arm(uint64_t state[8], const unsigned char *p,
+                                                         size_t blocks) {
+  uint64x2_t ab = vld1q_u64(&state[0]), cd = vld1q_u64(&state[2]);
+  uint64x2_t ef = vld1q_u64(&state[4]), gh = vld1q_u64(&state[6]);
+  for (; blocks != 0; blocks--, p += 128) {
+    uint64x2_t ab0 = ab, cd0 = cd, ef0 = ef, gh0 = gh;
+    uint64x2_t m0 = vreinterpretq_u64_u8(vrev64q_u8(vld1q_u8(p + 0)));
+    uint64x2_t m1 = vreinterpretq_u64_u8(vrev64q_u8(vld1q_u8(p + 16)));
+    uint64x2_t m2 = vreinterpretq_u64_u8(vrev64q_u8(vld1q_u8(p + 32)));
+    uint64x2_t m3 = vreinterpretq_u64_u8(vrev64q_u8(vld1q_u8(p + 48)));
+    uint64x2_t m4 = vreinterpretq_u64_u8(vrev64q_u8(vld1q_u8(p + 64)));
+    uint64x2_t m5 = vreinterpretq_u64_u8(vrev64q_u8(vld1q_u8(p + 80)));
+    uint64x2_t m6 = vreinterpretq_u64_u8(vrev64q_u8(vld1q_u8(p + 96)));
+    uint64x2_t m7 = vreinterpretq_u64_u8(vrev64q_u8(vld1q_u8(p + 112)));
+    const uint64_t *k = scr_sha512_k;
+    for (int i = 0; i < 5; i++, k += 16) {
+      SCR_SHA512_ARM_STEP(ab, cd, ef, gh, m0, k + 0);
+      SCR_SHA512_ARM_STEP(gh, ab, cd, ef, m1, k + 2);
+      SCR_SHA512_ARM_STEP(ef, gh, ab, cd, m2, k + 4);
+      SCR_SHA512_ARM_STEP(cd, ef, gh, ab, m3, k + 6);
+      SCR_SHA512_ARM_STEP(ab, cd, ef, gh, m4, k + 8);
+      SCR_SHA512_ARM_STEP(gh, ab, cd, ef, m5, k + 10);
+      SCR_SHA512_ARM_STEP(ef, gh, ab, cd, m6, k + 12);
+      SCR_SHA512_ARM_STEP(cd, ef, gh, ab, m7, k + 14);
+      if (i == 4) break;
+      SCR_SHA512_ARM_SCHEDULE(m0, m1, m4, m5, m7);
+      SCR_SHA512_ARM_SCHEDULE(m1, m2, m5, m6, m0);
+      SCR_SHA512_ARM_SCHEDULE(m2, m3, m6, m7, m1);
+      SCR_SHA512_ARM_SCHEDULE(m3, m4, m7, m0, m2);
+      SCR_SHA512_ARM_SCHEDULE(m4, m5, m0, m1, m3);
+      SCR_SHA512_ARM_SCHEDULE(m5, m6, m1, m2, m4);
+      SCR_SHA512_ARM_SCHEDULE(m6, m7, m2, m3, m5);
+      SCR_SHA512_ARM_SCHEDULE(m7, m0, m3, m4, m6);
+    }
+    ab = vaddq_u64(ab, ab0);
+    cd = vaddq_u64(cd, cd0);
+    ef = vaddq_u64(ef, ef0);
+    gh = vaddq_u64(gh, gh0);
+  }
+  vst1q_u64(&state[0], ab);
+  vst1q_u64(&state[2], cd);
+  vst1q_u64(&state[4], ef);
+  vst1q_u64(&state[6], gh);
+}
+#endif
+
+static void scr_sha512_blocks(uint64_t h[8], const unsigned char *p, size_t blocks) {
+#ifdef SCR_SHA_NI
+  switch (scr_sha512_x86()) {
+  case 3:
+    scr_sha512_blocks_avx512(h, p, blocks);
+    return;
+  case 2:
+    scr_sha512_blocks_avx2(h, p, blocks);
+    return;
+  default:
+    break;
+  }
+#endif
+#ifdef SCR_SHA512_ARM
+  if (scr_sha512_arm()) {
+    scr_sha512_blocks_arm(h, p, blocks);
+    return;
+  }
+#endif
+  scr_sha512_blocks_portable(h, p, blocks);
 }
 
 static void scr_sha512_init(ScrSha512Ctx *ctx, bool sha384) {
@@ -7389,14 +7944,15 @@ static void scr_sha512_update(ScrSha512Ctx *ctx, const unsigned char *data, size
     data += take;
     len -= take;
     if (ctx->tail_len == 128) {
-      scr_sha512_block(ctx->h, ctx->tail);
+      scr_sha512_blocks(ctx->h, ctx->tail, 1);
       ctx->tail_len = 0;
     }
   }
-  while (len >= 128) {
-    scr_sha512_block(ctx->h, data);
-    data += 128;
-    len -= 128;
+  if (len >= 128) {
+    size_t blocks = len / 128;
+    scr_sha512_blocks(ctx->h, data, blocks);
+    data += blocks * 128;
+    len -= blocks * 128;
   }
   if (len != 0) {
     memcpy(ctx->tail, data, len);
@@ -7415,8 +7971,7 @@ static size_t scr_sha512_final(const ScrSha512Ctx *source, unsigned char out[64]
     tail[pad - 1 - b] = (unsigned char)(low >> (8 * b));
     tail[pad - 9 - b] = (unsigned char)(high >> (8 * b));
   }
-  scr_sha512_block(ctx.h, tail);
-  if (pad == 256) scr_sha512_block(ctx.h, tail + 128);
+  scr_sha512_blocks(ctx.h, tail, pad / 128);
   size_t len = sha384 ? 48 : 64;
   for (size_t i = 0; i < len; i++) out[i] = (unsigned char)(ctx.h[i / 8] >> (56 - 8 * (i % 8)));
   return len;
@@ -7658,6 +8213,11 @@ static bool scr_digest_alg(const char *name, size_t len, ScrDigestAlg *out) {
     }
   }
   return false;
+}
+
+bool scr_digest_known(const char *name, size_t len) {
+  ScrDigestAlg alg;
+  return scr_digest_alg(name, len, &alg);
 }
 
 /* createHash() and crypto.hash() also accept "dss1" in any case. */
@@ -8031,6 +8591,201 @@ void scr_crypto_hash_release(ScrCryptoHash *hash) {
 void *scr_crypto_hash_retain_v(void *p) { return scr_crypto_hash_retain(p); }
 void scr_crypto_hash_release_v(void *p) { scr_crypto_hash_release(p); }
 
+/* Node's TypeError for calling a missing member: "<what> is not a
+ * function", where `what` is the callee's source text, of any length. */
+static void scr_lib_throw_not_a_function(const char *what) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  scr_jb_puts(&b, what);
+  scr_jb_puts(&b, " is not a function");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&b));
+}
+
+/* Hash and Hmac values seen as 'unknown' are native handles. update(),
+ * digest() and Hash's copy() dispatch through the handle, called or read
+ * as values; the other members Node defines on a Hash or Hmac (the
+ * Transform and emitter surface) throw a coded SC2020 error, and other
+ * names read as undefined, as they do in Node. The member names are one
+ * NUL-separated char array, which the linker drops from programs that
+ * never box a Hash (an array of string pointers keeps the strings in the
+ * unit's shared string section). */
+static const char scr_crypto_hash_dyn_members[] =
+    "_destroy\0_events\0_eventsCount\0_final\0_flush\0_maxListeners\0_options\0_read\0"
+    "_readableState\0_transform\0_undestroy\0_writableState\0_write\0_writev\0addListener\0"
+    "allowHalfOpen\0closed\0compose\0constructor\0cork\0destroy\0destroyed\0digest\0drop\0"
+    "emit\0end\0errored\0eventNames\0every\0filter\0find\0flatMap\0forEach\0getMaxListeners\0"
+    "isPaused\0iterator\0listenerCount\0listeners\0map\0off\0on\0once\0pause\0pipe\0"
+    "prependListener\0prependOnceListener\0push\0rawListeners\0read\0readable\0"
+    "readableAborted\0readableBuffer\0readableDidRead\0readableEncoding\0readableEnded\0"
+    "readableFlowing\0readableHighWaterMark\0readableLength\0readableObjectMode\0reduce\0"
+    "removeAllListeners\0removeListener\0resume\0setDefaultEncoding\0setEncoding\0"
+    "setMaxListeners\0some\0take\0toArray\0uncork\0unpipe\0unshift\0update\0wrap\0writable\0"
+    "writableBuffer\0writableCorked\0writableEnded\0writableFinished\0writableHighWaterMark\0"
+    "writableLength\0writableNeedDrain\0writableObjectMode\0write\0";
+
+static bool scr_crypto_hash_dyn_member(const ScrCryptoHash *hash, const char *key, size_t len) {
+  if (len == 4 && memcmp(key, "copy", 4) == 0) return !hash->hmac;
+  for (const char *name = scr_crypto_hash_dyn_members; *name; name += strlen(name) + 1)
+    if (strlen(name) == len && memcmp(name, key, len) == 0) return true;
+  return false;
+}
+
+static void scr_crypto_hash_dyn_unsupported(const ScrCryptoHash *hash) {
+  static const char hash_msg[] =
+      "Hash members other than update(), digest() and copy() have no lowering on an 'unknown' "
+      "value; cast the value to Hash first";
+  static const char hmac_msg[] =
+      "Hmac members other than update() and digest() have no lowering on an 'unknown' value; "
+      "cast the value to Hmac first";
+  if (hash->hmac) scr_throw_error_msg_code(SCR_ERR_ERROR, hmac_msg, sizeof hmac_msg - 1, "SC2020");
+  else scr_throw_error_msg_code(SCR_ERR_ERROR, hash_msg, sizeof hash_msg - 1, "SC2020");
+}
+
+/* The method values: update() is one function for Hash and Hmac, as in
+ * Node; digest() is one per class, and copy() is Hash's. */
+enum { SCR_HASH_DYN_UPDATE, SCR_HASH_DYN_HASH_DIGEST, SCR_HASH_DYN_HMAC_DIGEST, SCR_HASH_DYN_COPY };
+static const char *const scr_crypto_hash_dyn_method_names[] = {"update", "digest", "digest", "copy"};
+static SCR_TL ScrDyn *scr_crypto_hash_dyn_methods[4];
+static SCR_TL bool scr_crypto_hash_dyn_methods_registered;
+
+static void scr_crypto_hash_dyn_methods_cleanup(void) {
+  for (size_t i = 0; i < 4; i++) {
+    ScrDyn *method = scr_crypto_hash_dyn_methods[i];
+    scr_crypto_hash_dyn_methods[i] = NULL;
+    scr_dyn_release(method);
+  }
+}
+
+static int scr_crypto_hash_dyn_method_index(const ScrCryptoHash *hash, const char *key, size_t len) {
+  if (len == 6 && memcmp(key, "update", 6) == 0) return SCR_HASH_DYN_UPDATE;
+  if (len == 6 && memcmp(key, "digest", 6) == 0)
+    return hash->hmac ? SCR_HASH_DYN_HMAC_DIGEST : SCR_HASH_DYN_HASH_DIGEST;
+  if (len == 4 && memcmp(key, "copy", 4) == 0 && !hash->hmac) return SCR_HASH_DYN_COPY;
+  return -1;
+}
+
+/* Runs method `index` on `hash`; `self` is the receiving box, which
+ * update() answers. */
+static ScrDyn *scr_crypto_hash_dyn_run(ScrCryptoHash *hash, ScrDyn *self, int index,
+                                       ScrDyn *const *args, size_t argc) {
+  ScrDyn *undefined = scr_dyn_undefined();
+  ScrDyn *first = argc > 0 ? args[0] : undefined;
+  ScrDyn *second = argc > 1 ? args[1] : undefined;
+  ScrDyn *result = NULL;
+  if (index == SCR_HASH_DYN_UPDATE) {
+    ScrCryptoHash *updated = scr_crypto_hash_update_dyn(hash, first, second);
+    if (updated) {
+      scr_crypto_hash_release(updated);
+      result = scr_dyn_retain(self);
+    }
+  } else if (index == SCR_HASH_DYN_COPY) {
+    ScrCryptoHash *copy = scr_crypto_hash_copy_opts(hash, first);
+    if (copy) {
+      result = scr_dyn_new_handle(copy, SCR_DYNH_HASH);
+      scr_crypto_hash_release(copy);
+    }
+  } else {
+    result = scr_crypto_hash_digest_dyn(hash, first);
+  }
+  scr_dyn_release(undefined);
+  return result;
+}
+
+static ScrDyn *scr_crypto_hash_dyn_method_call(ScrClosure *clo, ScrDyn *const *args, size_t argc) {
+  int index = (int)scr_box_get_f64(clo->caps[0]);
+  ScrDyn *self = scr_dyn_this_get();
+  bool hash_this = self->kind == SCR_DYN_HANDLE && self->v.handle.tag == SCR_DYNH_HASH;
+  bool hmac_this = self->kind == SCR_DYN_HANDLE && self->v.handle.tag == SCR_DYNH_HMAC;
+  bool valid = index == SCR_HASH_DYN_UPDATE ? hash_this || hmac_this
+               : index == SCR_HASH_DYN_HMAC_DIGEST ? hmac_this
+                                                   : hash_this;
+  ScrDyn *result = NULL;
+  if (valid) {
+    result = scr_crypto_hash_dyn_run(self->v.handle.ptr, self, index, args, argc);
+  } else {
+    static const char msg[] =
+        "Hash and Hmac methods called with a receiver other than their own Hash or Hmac have no "
+        "lowering";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, sizeof msg - 1, "SC2020");
+  }
+  scr_dyn_release(self);
+  return result;
+}
+
+static ScrDyn *scr_crypto_hash_dyn_method_value(int index) {
+  if (!scr_crypto_hash_dyn_methods_registered) {
+    scr_crypto_hash_dyn_methods_registered = true;
+    scr_atexit(scr_crypto_hash_dyn_methods_cleanup);
+  }
+  if (!scr_crypto_hash_dyn_methods[index]) {
+    ScrClosure *clo = scr_closure_new(NULL, 1);
+    clo->caps[0] = scr_box_new(SCR_BOX_F64);
+    scr_box_set_f64(clo->caps[0], (double)index);
+    uint32_t arity = index == SCR_HASH_DYN_UPDATE ? 2 : 1;
+    scr_crypto_hash_dyn_methods[index] = scr_dyn_new_func(
+        clo, scr_crypto_hash_dyn_method_call, arity, "", scr_crypto_hash_dyn_method_names[index]);
+  }
+  return scr_dyn_retain(scr_crypto_hash_dyn_methods[index]);
+}
+
+static ScrDyn *scr_crypto_hash_dyn_invoke(void *h, ScrDyn *self, const char *method,
+                                          ScrDyn *const *args, size_t argc, const char *what) {
+  ScrCryptoHash *hash = h;
+  size_t len = strlen(method);
+  int index = scr_crypto_hash_dyn_method_index(hash, method, len);
+  if (index >= 0) return scr_crypto_hash_dyn_run(hash, self, index, args, argc);
+  if (scr_crypto_hash_dyn_member(hash, method, len)) {
+    scr_crypto_hash_dyn_unsupported(hash);
+    return NULL;
+  }
+  scr_lib_throw_not_a_function(what);
+  return NULL;
+}
+
+static ScrDyn *scr_crypto_hash_dyn_get(void *h, const char *key, size_t len) {
+  int index = scr_crypto_hash_dyn_method_index(h, key, len);
+  if (index >= 0) return scr_crypto_hash_dyn_method_value(index);
+  if (scr_crypto_hash_dyn_member(h, key, len)) scr_crypto_hash_dyn_unsupported(h);
+  return NULL;
+}
+
+static bool scr_crypto_hash_dyn_set(void *h, const char *key, size_t len, const ScrDyn *value) {
+  (void)h;
+  (void)key;
+  (void)len;
+  (void)value;
+  return false;
+}
+
+static void scr_crypto_hash_dyn_install(void) {
+  static SCR_TL bool installed;
+  if (installed) return;
+  installed = true;
+  static const ScrDynHandleOps hash_ops = {
+      .cls = "Hash",
+      .retain = scr_crypto_hash_retain_v,
+      .release = scr_crypto_hash_release_v,
+      .invoke = scr_crypto_hash_dyn_invoke,
+      .get = scr_crypto_hash_dyn_get,
+      .set = scr_crypto_hash_dyn_set,
+  };
+  static const ScrDynHandleOps hmac_ops = {
+      .cls = "Hmac",
+      .retain = scr_crypto_hash_retain_v,
+      .release = scr_crypto_hash_release_v,
+      .invoke = scr_crypto_hash_dyn_invoke,
+      .get = scr_crypto_hash_dyn_get,
+      .set = scr_crypto_hash_dyn_set,
+  };
+  scr_dyn_handle_install(SCR_DYNH_HASH, &hash_ops);
+  scr_dyn_handle_install(SCR_DYNH_HMAC, &hmac_ops);
+}
+
+ScrDyn *scr_crypto_hash_to_dyn(ScrCryptoHash *hash) {
+  scr_crypto_hash_dyn_install();
+  return scr_dyn_new_handle(hash, hash->hmac ? SCR_DYNH_HMAC : SCR_DYNH_HASH);
+}
+
 static ScrCryptoHash *scr_crypto_hash_update_raw(ScrCryptoHash *hash,
                                                  const unsigned char *data, size_t len) {
   if (!scr_crypto_hash_updatable(hash)) return NULL;
@@ -8210,6 +8965,8 @@ void scr_crypto_hash_stream_close(ScrCryptoHash *hash) {
   hash->stream_closed = true;
   if (stream) stream_release(stream);
 }
+
+bool scr_crypto_hash_is_hmac(const ScrCryptoHash *hash) { return hash->hmac; }
 
 bool scr_crypto_hash_stream_usable(const ScrCryptoHash *hash) {
   if (!hash->stream_closed) return true;
@@ -8476,12 +9233,10 @@ static void scr_crypto_not_xof(void) {
   ScrStr *text = scr_str_new(message, sizeof message - 1);
   ScrError *e = scr_error_new(SCR_ERR_ERROR, text);
   scr_str_release(text);
-  ScrDyn *view = scr_dyn_from_error(e);
-  scr_dyn_obj_set(view, "library", 7, scr_crypto_dyn_str(scr_str_new("digital envelope routines", 25)));
-  scr_dyn_obj_set(view, "reason", 6, scr_crypto_dyn_str(scr_str_new("not XOF or invalid length", 25)));
+  scr_error_set_prop(e, "library", 7, scr_crypto_dyn_str(scr_str_new("digital envelope routines", 25)));
+  scr_error_set_prop(e, "reason", 6, scr_crypto_dyn_str(scr_str_new("not XOF or invalid length", 25)));
   scr_error_set_code(e, code);
-  scr_dyn_obj_set(view, "code", 4, scr_crypto_dyn_str(scr_str_new(code, sizeof code - 1)));
-  scr_dyn_release(view);
+  scr_error_set_prop(e, "code", 4, scr_crypto_dyn_str(scr_str_new(code, sizeof code - 1)));
   scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
 }
 
@@ -8557,6 +9312,10 @@ ScrCryptoHash *scr_crypto_hmac_new_dyn(ScrStr *alg, ScrDyn *key, ScrDyn *options
   if (key_object) {
     bytes = scr_bytes_new(SCR_BYTES_U8, (double)key_object_len);
     if (key_object_len) memcpy(bytes->data, key_object, key_object_len);
+  } else if (scr_crypto_is_key_object(key)) {
+    /* A private or public KeyObject: scr_pki.c reports Node's error. */
+    scr_crypto_reject_asymmetric_secret(key);
+    return NULL;
   } else if (key->kind == SCR_DYN_STR) {
     ScrStr *utf8 = encoding ? NULL : scr_str_new("utf8", 4);
     bytes = scr_bytes_from_str_checked(key->v.str, encoding ? encoding : utf8);
@@ -9188,9 +9947,15 @@ const unsigned char *scr_key_object_bytes(const ScrDyn *value, size_t *len) {
   return key->data;
 }
 
-/* `value instanceof KeyObject`. */
+void (*scr_crypto_reject_asymmetric_secret)(const ScrDyn *key) = NULL;
+
+/* `value instanceof KeyObject`: a secret key, or a private or public key
+ * (scr_pki.c, matched by its handle tags so this unit does not link it). */
 bool scr_crypto_is_key_object(const ScrDyn *value) {
   size_t len;
+  if (value->kind == SCR_DYN_HANDLE &&
+      (value->v.handle.tag == SCR_DYNH_PRIVATE_KEY || value->v.handle.tag == SCR_DYNH_PUBLIC_KEY))
+    return true;
   return scr_key_object_bytes(value, &len) != NULL;
 }
 
@@ -9269,9 +10034,7 @@ static ScrDyn *scr_key_object_invoke(void *h, ScrDyn *self, const char *method, 
     scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
     return NULL;
   }
-  char message[160];
-  int n = snprintf(message, sizeof message, "%s is not a function", what);
-  scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)n);
+  scr_lib_throw_not_a_function(what);
   return NULL;
 }
 
@@ -9846,10 +10609,29 @@ static bool scr_x509_der(const uint8_t *in, size_t n, const uint8_t **der, size_
   *der = NULL;
   *der_len = 0;
   *decoded = NULL;
+  /* One whole DER SEQUENCE is the certificate itself: these members read
+   * the DER the constructor already decoded, whose extensions can carry
+   * PEM armor as text. */
+  if (n >= 2 && in[0] == 0x30) {
+    size_t len = in[1], head = 2;
+    if (len & 0x80) {
+      size_t k = len & 0x7f;
+      len = 0;
+      head = 2 + k;
+      for (size_t i = 0; i < k && k <= 4 && head <= n; i++) len = (len << 8) | in[2 + i];
+      if (k == 0 || k > 4) head = n + 1;
+    }
+    if (head <= n && len == n - head) {
+      *der = in;
+      *der_len = n;
+      return true;
+    }
+  }
   /* PEM: base64-decode the armor's body. */
   const uint8_t *b = NULL;
+  /* OpenSSL's PEM reader looks for the armor at the start of a line. */
   for (size_t i = 0; i + sizeof begin - 1 <= n; i++) {
-    if (memcmp(in + i, begin, sizeof begin - 1) == 0) {
+    if ((i == 0 || in[i - 1] == '\n') && memcmp(in + i, begin, sizeof begin - 1) == 0) {
       b = in + i + sizeof begin - 1;
       break;
     }
@@ -10075,7 +10857,9 @@ ScrStr *scr_crypto_x509_valid_to_str(ScrStr *pem) {
  * keep other surrogates lone, WTF-8 encode. */
 static ScrStr *scr_str_from_units(size_t n, uint32_t (*unit)(void *, size_t), void *src) {
   if (n == 1) return scr_str_from_char_code_one((double)unit(src, 0));
-  char *out = malloc(n * 3 + 1); /* worst case: 3 bytes per UTF-16 unit */
+  /* Up to 64 units encode on the stack (3 bytes per UTF-16 unit at most). */
+  char small[64 * 3 + 1];
+  char *out = n <= 64 ? small : malloc(n * 3 + 1);
   if (!out) {
     scr_trap("scriptc: out of memory\n");
   }
@@ -10092,8 +10876,17 @@ static ScrStr *scr_str_from_units(size_t n, uint32_t (*unit)(void *, size_t), vo
     o += scr_wtf8_put(out + o, cp);
   }
   ScrStr *s = scr_str_new(out, o);
-  free(out);
+  if (out != small) free(out);
   return s;
+}
+
+static uint32_t scr_fcc_units_unit(void *src, size_t i) {
+  return scr_to_uint32(((const double *)src)[i]) & 0xFFFFu;
+}
+
+/* String.fromCharCode(c0, ..., cn-1) with the codes in a caller's array. */
+ScrStr *scr_str_from_char_codes(const double *codes, size_t n) {
+  return scr_str_from_units(n, scr_fcc_units_unit, (void *)codes);
 }
 
 static uint32_t scr_fcc_arr_unit(void *src, size_t i) {
@@ -10171,6 +10964,8 @@ ScrStr *scr_str_from_code_point_bytes(ScrBytes *codes) {
  * frontend-fenced; construction, storage, getters, and ISO formatting
  * observe exactly this payload. */
 
+SCR_TL const double *scr_date_mock_now = NULL;
+
 double scr_date_now(void) {
   struct timespec ts;
   clock_gettime(CLOCK_REALTIME, &ts);
@@ -10227,11 +11022,78 @@ ScrStr *scr_date_to_iso(double ms) {
   return scr_str_new(buf, (size_t)len);
 }
 
+/* Node's Date.prototype.toUTCString over a stored (TimeClip'd) time
+ * value: "Www, DD Mmm YYYY HH:mm:ss GMT", a "-" and at least four digits
+ * for negative years, and "Invalid Date" for NaN. Never throws. +1.
+ * The text is assembled from function-local arrays rather than string
+ * literals: literals would land in this unit's shared mergeable string
+ * section and grow every executable, while these arrays are removed with
+ * the function by --gc-sections when a program never calls it. */
+ScrStr *scr_date_to_utc_string(double ms) {
+  /* Sized without the terminating NUL, so none is a C string the
+   * compiler could move into a mergeable string section. */
+  static const char invalid[12] = "Invalid Date";
+  static const char weekdays[21] = "SunMonTueWedThuFriSat";
+  static const char months[36] = "JanFebMarAprMayJunJulAugSepOctNovDec";
+  if (!(fabs(ms) <= 8640000000000000.0)) return scr_str_new(invalid, sizeof invalid);
+  double t = trunc(ms);
+  double dayd = floor(t / 86400000.0);
+  long long msday = (long long)(t - dayd * 86400000.0);
+  long long days = (long long)dayd;
+  int weekday = (int)(((days + 4) % 7 + 7) % 7);
+  long long z = days + 719468;
+  long long era = (z >= 0 ? z : z - 146096) / 146097;
+  unsigned long long doe = (unsigned long long)(z - era * 146097);
+  unsigned long long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+  long long y = (long long)yoe + era * 400;
+  unsigned long long doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+  unsigned long long mp = (5 * doy + 2) / 153;
+  unsigned long long d = doy - (153 * mp + 2) / 5 + 1;
+  unsigned long long m = mp < 10 ? mp + 3 : mp - 9;
+  if (m <= 2) y += 1;
+  int hh = (int)(msday / 3600000), mi = (int)(msday / 60000 % 60),
+      ss = (int)(msday / 1000 % 60);
+  char buf[40];
+  size_t n = 0;
+  memcpy(buf, weekdays + 3 * weekday, 3);
+  n = 3;
+  buf[n++] = ',';
+  buf[n++] = ' ';
+  buf[n++] = (char)('0' + d / 10);
+  buf[n++] = (char)('0' + d % 10);
+  buf[n++] = ' ';
+  memcpy(buf + n, months + 3 * (m - 1), 3);
+  n += 3;
+  buf[n++] = ' ';
+  if (y < 0) buf[n++] = '-';
+  unsigned long long year = (unsigned long long)(y < 0 ? -y : y);
+  char digits[20];
+  size_t count = 0;
+  do {
+    digits[count++] = (char)('0' + year % 10);
+    year /= 10;
+  } while (year > 0);
+  while (count < 4) digits[count++] = '0';
+  while (count > 0) buf[n++] = digits[--count];
+  int parts[3] = {hh, mi, ss};
+  for (int i = 0; i < 3; i++) {
+    buf[n++] = i == 0 ? ' ' : ':';
+    buf[n++] = (char)('0' + parts[i] / 10);
+    buf[n++] = (char)('0' + parts[i] % 10);
+  }
+  buf[n++] = ' ';
+  buf[n++] = 'G';
+  buf[n++] = 'M';
+  buf[n++] = 'T';
+  return scr_str_new(buf, n);
+}
+
 /* ── new Date(dateString).getTime() ──────────────────────────────────────
  *
- * The BOUNDED date-string parse (documented divergence — V8's parser
- * accepts far more): two grammars answer a time value, everything else is
- * NaN (Node's invalid-date getTime).
+ * The BOUNDED date-string parse, the fast path: two grammars answer a time
+ * value directly; scr_date_parse falls back to V8's full parser
+ * (scr_date_parse_v8 below), which also answers everything they accept,
+ * for the strings they reject.
  *
  *   1. The ASN1_TIME_print shape X509Certificate.validFrom/validTo answer
  *      ("Jul  1 00:00:00 2026 GMT", "Jul 17 17:52:11 2026 GMT") — the
@@ -10240,8 +11102,8 @@ ScrStr *scr_date_to_iso(double ms) {
  *   2. ECMA's own date-time string format with an EXPLICIT offset:
  *      YYYY[-MM[-DD]] date-only forms (UTC, per the spec) and full
  *      date-times YYYY-MM-DDTHH:mm[:ss[.sss]] ending in Z or ±HH:MM.
- *      Offset-less date-times are LOCAL time in JS; that arm answers NaN
- *      here rather than guessing a zone (the divergence note).
+ *      Offset-less date-times are LOCAL time in JS; they take the
+ *      fallback, which converts them in the host zone.
  */
 
 /* Howard Hinnant's days_from_civil (the to_iso walk inverted). */
@@ -10375,6 +11237,16 @@ double scr_date_parse_get_time(ScrStr *s) {
   }
 }
 
+static double scr_date_parse_v8(ScrStr *s);
+
+/* Date.parse and new Date(string): the bounded grammars answer first; only
+ * a string they reject reaches V8's full parser, so the timestamps they
+ * accept cost nothing more. */
+double scr_date_parse(ScrStr *s) {
+  double t = scr_date_parse_get_time(s);
+  return isnan(t) ? scr_date_parse_v8(s) : t;
+}
+
 /* Date.UTC(year, month, date, hours, minutes, seconds, ms) — the spec's
  * MakeDay/MakeTime/TimeClip pipeline over ALREADY-NUMBER arguments (tsc
  * pins them; the frontend completes omitted trailing arguments with the
@@ -10428,9 +11300,14 @@ typedef struct ScrDateParts {
  * endpoint. The checked wrapper is the public UTC-getter gate; the inner
  * walk accepts those bounded local-time values too. */
 static void scr_date_utc_parts_unchecked(double t, ScrDateParts *out) {
-  double dayd = floor(t / 86400000.0);
-  long long msday = (long long)(t - dayd * 86400000.0);
-  long long z = (long long)dayd + 719468;
+  /* t is an integral number of milliseconds within about 2^53. */
+  long long tms = (long long)t;
+  long long day = tms / 86400000, msday = tms % 86400000;
+  if (msday < 0) {
+    msday += 86400000;
+    day--;
+  }
+  long long z = day + 719468;
   long long era = (z >= 0 ? z : z - 146096) / 146097;
   unsigned long long doe = (unsigned long long)(z - era * 146097);
   unsigned long long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
@@ -10440,7 +11317,7 @@ static void scr_date_utc_parts_unchecked(double t, ScrDateParts *out) {
   unsigned long long d = doy - (153 * mp + 2) / 5 + 1;
   unsigned long long m = mp < 10 ? mp + 3 : mp - 9;
   if (m <= 2) y++;
-  long long wday = ((long long)dayd + 4) % 7;
+  long long wday = (day + 4) % 7;
   if (wday < 0) wday += 7;
   out->year = y;
   out->month = (int)m - 1;
@@ -10453,9 +11330,27 @@ static void scr_date_utc_parts_unchecked(double t, ScrDateParts *out) {
   out->timezone_offset = 0;
 }
 
+/* The thread's last UTC decomposition: reading several UTC fields of one
+ * Date (getUTCFullYear, getUTCMonth, ...) decomposes it once. */
+typedef struct {
+  bool valid;
+  double ms;
+  ScrDateParts parts;
+} ScrDateUtcCache;
+static SCR_TL ScrDateUtcCache scr_date_utc_cache;
+
 static bool scr_date_utc_parts(double ms, ScrDateParts *out) {
   if (!isfinite(ms) || fabs(ms) > 8640000000000000.0) return false;
-  scr_date_utc_parts_unchecked(trunc(ms), out);
+  double clipped = trunc(ms);
+  ScrDateUtcCache *c = &scr_date_utc_cache;
+  if (c->valid && c->ms == clipped) {
+    *out = c->parts;
+    return true;
+  }
+  scr_date_utc_parts_unchecked(clipped, out);
+  c->valid = true;
+  c->ms = clipped;
+  c->parts = *out;
   return true;
 }
 
@@ -10469,10 +11364,220 @@ static bool scr_date_localtime(double secd, struct tm *out) {
 #endif
 }
 
+/* The thread's last local conversion: reading several local fields of one
+ * Date (getFullYear, getMonth, getDate, getHours, ...) converts it once.
+ * A change of process.env.TZ starts a new generation. */
+typedef struct {
+  bool valid;
+  unsigned generation;
+  double ms;
+  ScrDateParts parts;
+} ScrDateLocalCache;
+static SCR_TL ScrDateLocalCache scr_date_local_cache;
+
+static bool scr_date_local_parts_uncached(double clipped, ScrDateParts *out);
+
+/* The local zone's offset at an instant, cached the way Node's V8 date cache
+ * (src/date/date.cc, DateCache::LocalOffsetInMs) caches it, so the answers
+ * match Node's in every order of reads. V8 keeps 32 segments of instants with
+ * one offset each and takes an offset that matches 19 days apart as constant
+ * in between (kDefaultTimeZoneOffsetDeltaInMs). A zone that changed its offset
+ * twice within 19 days (America/Argentina/Tucuman in June 2004) breaks that
+ * assumption, and Node's answers between the two changes then depend on the
+ * order of the reads; this cache gives the same answers for the same order
+ * (corpus date-zone-intervals.ts). Segments hold offsets only, as V8's do;
+ * zone names decide daylight time at the instant (scr_date_zone_name). */
+#define SCR_DATE_ZONE_DELTA_MS (19LL * 86400000LL)
+#define SCR_DATE_ZONE_SEGMENTS 32
+typedef struct {
+  long long start_ms, end_ms; /* empty when start_ms > end_ms */
+  double offset;              /* local minus UTC, seconds */
+  int last_used;
+} ScrDateZoneSegment;
+typedef struct {
+  bool valid;
+  unsigned generation;
+  int usage;
+  ScrDateZoneSegment segments[SCR_DATE_ZONE_SEGMENTS];
+  ScrDateZoneSegment *before, *after;
+} ScrDateZoneCache;
+static SCR_TL ScrDateZoneCache scr_date_zone_cache;
+
+static bool scr_date_zone_offset(double clipped, double *offset, bool *isdst);
+
+static void scr_date_zone_clear(ScrDateZoneSegment *segment) {
+  segment->start_ms = 0;
+  segment->end_ms = -1;
+  segment->offset = 0;
+  segment->last_used = 0;
+}
+
+static bool scr_date_zone_empty(const ScrDateZoneSegment *segment) {
+  return segment->start_ms > segment->end_ms;
+}
+
+static void scr_date_zone_reset(ScrDateZoneCache *z, unsigned generation) {
+  for (int i = 0; i < SCR_DATE_ZONE_SEGMENTS; i++) scr_date_zone_clear(&z->segments[i]);
+  z->usage = 0;
+  z->before = &z->segments[0];
+  z->after = &z->segments[1];
+  z->valid = true;
+  z->generation = generation;
+}
+
+/* V8's LeastRecentlyUsedCacheItem: the least recently used segment other
+ * than `skip`, cleared. */
+static ScrDateZoneSegment *scr_date_zone_lru(ScrDateZoneCache *z, ScrDateZoneSegment *skip) {
+  ScrDateZoneSegment *result = NULL;
+  for (int i = 0; i < SCR_DATE_ZONE_SEGMENTS; i++) {
+    ScrDateZoneSegment *s = &z->segments[i];
+    if (s == skip) continue;
+    if (!result || result->last_used > s->last_used) result = s;
+  }
+  scr_date_zone_clear(result);
+  return result;
+}
+
+/* V8's ProbeCache: the segment starting at or before `t` and the one after. */
+static void scr_date_zone_probe(ScrDateZoneCache *z, long long t) {
+  ScrDateZoneSegment *before = NULL, *after = NULL;
+  for (int i = 0; i < SCR_DATE_ZONE_SEGMENTS; i++) {
+    ScrDateZoneSegment *s = &z->segments[i];
+    if (scr_date_zone_empty(s)) continue;
+    if (s->start_ms <= t) {
+      if (!before || before->start_ms < s->start_ms) before = s;
+    } else if (t < s->end_ms) {
+      if (!after || after->end_ms > s->end_ms) after = s;
+    }
+  }
+  if (!before) before = scr_date_zone_empty(z->before) ? z->before : scr_date_zone_lru(z, after);
+  if (!after)
+    after = scr_date_zone_empty(z->after) && before != z->after ? z->after : scr_date_zone_lru(z, before);
+  z->before = before;
+  z->after = after;
+}
+
+/* V8's ExtendTheAfterSegment. */
+static void scr_date_zone_extend_after(ScrDateZoneCache *z, long long t, double offset) {
+  ScrDateZoneSegment *after = z->after;
+  if (!scr_date_zone_empty(after) && after->offset == offset &&
+      after->start_ms - SCR_DATE_ZONE_DELTA_MS <= t && t <= after->end_ms) {
+    after->start_ms = t;
+    return;
+  }
+  if (!scr_date_zone_empty(after)) after = z->after = scr_date_zone_lru(z, z->before);
+  after->start_ms = after->end_ms = t;
+  after->offset = offset;
+  after->last_used = ++z->usage;
+}
+
+static bool scr_date_zone_lookup(double clipped, double *offset) {
+  bool isdst; /* scr_date_zone_offset's flag, unused here */
+  ScrDateZoneCache *z = &scr_date_zone_cache;
+  unsigned generation = scr_date_tz_generation;
+  if (!z->valid || z->generation != generation) scr_date_zone_reset(z, generation);
+  long long t = (long long)clipped;
+  if (z->usage >= INT_MAX - 10) {
+    z->usage = 0;
+    for (int i = 0; i < SCR_DATE_ZONE_SEGMENTS; i++) scr_date_zone_clear(&z->segments[i]);
+  }
+  ScrDateZoneSegment *before = z->before;
+  if (before->start_ms <= t && t <= before->end_ms) {
+    before->last_used = ++z->usage;
+    *offset = before->offset;
+    return true;
+  }
+  scr_date_zone_probe(z, t);
+  before = z->before;
+  if (scr_date_zone_empty(before)) {
+    if (!scr_date_zone_offset(clipped, offset, &isdst)) return false;
+    before->start_ms = before->end_ms = t;
+    before->offset = *offset;
+    before->last_used = ++z->usage;
+    return true;
+  }
+  if (t <= before->end_ms) {
+    before->last_used = ++z->usage;
+    *offset = before->offset;
+    return true;
+  }
+  if (t - SCR_DATE_ZONE_DELTA_MS > before->end_ms) {
+    if (!scr_date_zone_offset(clipped, offset, &isdst)) return false;
+    scr_date_zone_extend_after(z, t, *offset);
+    ScrDateZoneSegment *swap = z->before;
+    z->before = z->after;
+    z->after = swap;
+    return true;
+  }
+  before->last_used = ++z->usage;
+  long long ahead = before->end_ms + SCR_DATE_ZONE_DELTA_MS;
+  if (scr_date_zone_empty(z->after) || ahead <= z->after->start_ms) {
+    double ahead_offset;
+    if (!scr_date_zone_offset((double)ahead, &ahead_offset, &isdst)) return false;
+    scr_date_zone_extend_after(z, ahead, ahead_offset);
+  } else {
+    z->after->last_used = ++z->usage;
+  }
+  ScrDateZoneSegment *after = z->after;
+  if (before->offset == after->offset) {
+    before->end_ms = after->end_ms;
+    scr_date_zone_clear(after);
+    *offset = before->offset;
+    return true;
+  }
+  /* Binary search for the change point, giving up after five probes (the
+   * last one reads `t` itself). */
+  for (int i = 4; i >= 0; i--) {
+    long long delta = after->start_ms - before->end_ms;
+    long long middle = i == 0 ? t : before->end_ms + delta / 2;
+    if (!scr_date_zone_offset((double)middle, offset, &isdst)) return false;
+    if (before->offset == *offset) {
+      before->end_ms = middle;
+      if (t <= before->end_ms) return true;
+    } else {
+      after->start_ms = middle;
+      if (t >= after->start_ms) {
+        ScrDateZoneSegment *swap = z->before;
+        z->before = z->after;
+        z->after = swap;
+        return true;
+      }
+    }
+  }
+  return true;
+}
+
 static bool scr_date_local_parts(double ms, ScrDateParts *out) {
   if (!isfinite(ms) || fabs(ms) > 8640000000000000.0) return false;
   double clipped = trunc(ms);
-  double secd = floor(clipped / 1000.0);
+  ScrDateLocalCache *c = &scr_date_local_cache;
+  unsigned generation = scr_date_tz_generation;
+  if (c->valid && c->ms == clipped && c->generation == generation) {
+    *out = c->parts;
+    return true;
+  }
+  if (!scr_date_local_parts_uncached(clipped, out)) return false;
+  c->valid = true;
+  c->generation = generation;
+  c->ms = clipped;
+  c->parts = *out;
+  return true;
+}
+
+static bool scr_date_local_parts_uncached(double clipped, ScrDateParts *out) {
+  double local_offset;
+  if (!scr_date_zone_lookup(clipped, &local_offset)) return false;
+  scr_date_utc_parts_unchecked(clipped + local_offset * 1000.0, out);
+  double timezone_offset = trunc(-local_offset / 60.0);
+  out->timezone_offset = timezone_offset == 0 ? 0 : timezone_offset;
+  return true;
+}
+
+/* The local zone's offset (local minus UTC, in seconds) and DST flag at a
+ * clipped instant, from the host's localtime. */
+static bool scr_date_zone_offset(double clipped, double *offset, bool *isdst) {
+  long long cms = (long long)clipped;
+  double secd = (double)(cms / 1000 - (cms % 1000 < 0));
   struct tm tmv;
   double basis_secd = secd;
   if (!scr_date_localtime(basis_secd, &tmv)) {
@@ -10501,10 +11606,8 @@ static bool scr_date_local_parts(double ms, ScrDateParts *out) {
   double local_as_utc =
     scr_days_from_civil((long long)tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday) * 86400.0 +
     tmv.tm_hour * 3600.0 + tmv.tm_min * 60.0 + tmv.tm_sec;
-  double local_offset = local_as_utc - basis_secd;
-  scr_date_utc_parts_unchecked(clipped + local_offset * 1000.0, out);
-  double timezone_offset = trunc(-local_offset / 60.0);
-  out->timezone_offset = timezone_offset == 0 ? 0 : timezone_offset;
+  *offset = local_as_utc - basis_secd;
+  *isdst = tmv.tm_isdst > 0;
   return true;
 }
 
@@ -10543,6 +11646,1154 @@ double scr_date_get_timezone_offset(double ms) {
   ScrDateParts p;
   return scr_date_local_parts(ms, &p) ? p.timezone_offset : NAN;
 }
+
+/* ── Local time to UTC, and the year/month field constructor ───────────
+ * The spec's UTC(t) over the host zone: t is a local wall-clock time
+ * value. The offset in effect a day before and a day after t brackets any
+ * transition (none come closer together than that in tzdata). A time in
+ * a DST overlap has two instants and answers the earlier; a time in a gap
+ * has none and is read with the offset BEFORE the transition, exactly
+ * V8's ICU getOffsetFromLocal(FORMER, FORMER). Offsets come from the same
+ * localtime/surrogate-year walk as the local getters, so a Date built
+ * from local fields reads those fields back. */
+
+/* The host zone's offset (local - UTC) in ms at UTC instant `ms` (an
+ * integral time value within about ±8.65e15), from the host's localtime. */
+static bool scr_date_offset_at_uncached(double ms, double *out) {
+  long long cms = (long long)ms;
+  double secd = (double)(cms / 1000 - (cms % 1000 < 0));
+  struct tm tmv;
+  double basis_secd = secd;
+  if (!scr_date_localtime(basis_secd, &tmv)) {
+    ScrDateParts utc;
+    scr_date_utc_parts_unchecked(ms, &utc);
+    long long cycle_year = (utc.year - 2000) % 400;
+    if (cycle_year < 0) cycle_year += 400;
+    basis_secd =
+      scr_days_from_civil(2000 + cycle_year, utc.month + 1, utc.date) * 86400.0 +
+      utc.hours * 3600.0 + utc.minutes * 60.0 + utc.seconds;
+    if (!scr_date_localtime(basis_secd, &tmv)) return false;
+  }
+  double local_as_utc =
+    scr_days_from_civil((long long)tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday) * 86400.0 +
+    tmv.tm_hour * 3600.0 + tmv.tm_min * 60.0 + tmv.tm_sec;
+  *out = (local_as_utc - basis_secd) * 1000.0;
+  return true;
+}
+
+/* Offsets at UTC midnights, for scr_date_offset_at. A day whose two
+ * midnights have the same offset has that offset throughout, given at most
+ * one transition per day (scr_date_local_to_utc already takes transitions
+ * to be at least a day apart). Each local setter asks for three to five
+ * offsets around one time value, and consecutive ones land on the same or
+ * neighbouring days, so most answers come from here instead of a
+ * localtime(3) call: glibc takes its zone lock in each and, for dates past
+ * the zone file's last transition, parses the zone's rule string again. A
+ * change of process.env.TZ starts a new generation. */
+#define SCR_DATE_MIDNIGHTS 64
+typedef struct {
+  long long day;
+  double offset;
+  bool valid;
+} ScrDateMidnight;
+typedef struct {
+  bool valid;
+  unsigned generation;
+  ScrDateMidnight entries[SCR_DATE_MIDNIGHTS];
+} ScrDateMidnightCache;
+static SCR_TL ScrDateMidnightCache scr_date_midnight_cache;
+
+static bool scr_date_midnight_offset(ScrDateMidnightCache *c, long long day, double *out) {
+  ScrDateMidnight *e = &c->entries[(unsigned long long)day % SCR_DATE_MIDNIGHTS];
+  if (e->valid && e->day == day) {
+    *out = e->offset;
+    return true;
+  }
+  if (!scr_date_offset_at_uncached((double)day * 86400000.0, out)) return false;
+  e->valid = true;
+  e->day = day;
+  e->offset = *out;
+  return true;
+}
+
+static bool scr_date_offset_at(double ms, double *out) {
+  ScrDateMidnightCache *c = &scr_date_midnight_cache;
+  unsigned generation = scr_date_tz_generation;
+  if (!c->valid || c->generation != generation) {
+    memset(c, 0, sizeof *c);
+    c->valid = true;
+    c->generation = generation;
+  }
+  long long cms = (long long)ms;
+  long long day = cms / 86400000 - (cms % 86400000 < 0);
+  double start, end;
+  if (scr_date_midnight_offset(c, day, &start) && scr_date_midnight_offset(c, day + 1, &end) &&
+      start == end) {
+    *out = start;
+    return true;
+  }
+  return scr_date_offset_at_uncached(ms, out);
+}
+
+static volatile const double scr_date_day_ms = 86400000.0;
+
+static double scr_date_local_to_utc(double t) {
+  double before, after, at_first, at_second, day = scr_date_day_ms;
+  if (!scr_date_offset_at(t - day, &before) || !scr_date_offset_at(t + day, &after)) {
+    return NAN;
+  }
+  double first = t - before;
+  if (!scr_date_offset_at(first, &at_first)) return NAN;
+  if (before == after) {
+    if (at_first == before) return first;
+    /* Two transitions inside the window: settle on the instant's own offset. */
+    double again = t - at_first, at_again;
+    if (scr_date_offset_at(again, &at_again) && at_again == at_first) return again;
+    return first;
+  }
+  double second = t - after;
+  if (!scr_date_offset_at(second, &at_second)) return NAN;
+  bool first_ok = at_first == before, second_ok = at_second == after;
+  if (first_ok && second_ok) return first < second ? first : second; /* overlap */
+  if (second_ok && !first_ok) return second;
+  return first; /* the earlier offset's instant, or a gap */
+}
+
+/* V8's MakeDay (date.cc): bounds the UNtruncated year and month, then
+ * truncates (FastD2I) and normalizes the month into the year. */
+static double scr_date_v8_make_day(double year, double month, double date) {
+  if (!(fabs(year) <= 1000000.0 && fabs(month) <= 10000000.0 && isfinite(date))) return NAN;
+  int y = (int)year, m = (int)month;
+  y += m / 12;
+  m %= 12;
+  if (m < 0) {
+    m += 12;
+    y -= 1;
+  }
+  static const int year_delta = 399999;
+  static const int base_day = 365 * (1970 + year_delta) + (1970 + year_delta) / 4 -
+                              (1970 + year_delta) / 100 + (1970 + year_delta) / 400;
+  int day_from_year = 365 * (y + year_delta) + (y + year_delta) / 4 -
+                      (y + year_delta) / 100 + (y + year_delta) / 400 - base_day;
+  static const int common[12] = {0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334};
+  static const int leap[12] = {0, 31, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335};
+  bool is_leap = !((y % 4 != 0) || (y % 100 == 0 && y % 400 != 0));
+  day_from_year += is_leap ? leap[m] : common[m];
+  return (double)(day_from_year - 1) + trunc(date);
+}
+
+static double scr_date_v8_make_time(double h, double m, double s, double ms) {
+  if (!isfinite(h) || !isfinite(m) || !isfinite(s) || !isfinite(ms)) return NAN;
+  return trunc(h) * 3600000.0 + trunc(m) * 60000.0 + trunc(s) * 1000.0 + trunc(ms);
+}
+
+/* V8's bound on a local time value before UTC(t): TimeClip's range plus
+ * ten days. Read from memory so the value stays in its own section instead
+ * of this unit's shared constant pool, which every program linking the
+ * unit carries. */
+static volatile const double scr_date_local_limit = 8640000864000000.0;
+
+/* MakeDate over local fields, then UTC(t) and TimeClip. V8 refuses a local
+ * time value more than ten days past TimeClip's range before converting. */
+static double scr_date_from_local(double day, double time) {
+  if (!isfinite(day) || !isfinite(time)) return NAN;
+  double t = time + day * 86400000.0;
+  if (!(fabs(t) <= scr_date_local_limit)) return NAN;
+  return scr_date_new_ms(scr_date_local_to_utc(trunc(t)));
+}
+
+/* new Date(year, monthIndex[, date[, hours[, minutes[, seconds[, ms]]]]])
+ * over already-number arguments (the frontend completes omitted trailing
+ * arguments with date 1 and time parts 0): years 0–99 map to 1900+year,
+ * fields roll over through MakeDay/MakeTime, and the local time converts
+ * to UTC in the host zone. Never throws. */
+double scr_date_new_local(double y, double mo, double d,
+                          double h, double mi, double s, double ms) {
+  if (!isnan(y)) {
+    double yi = trunc(y);
+    if (yi >= 0 && yi <= 99) y = 1900 + yi;
+  }
+  return scr_date_from_local(scr_date_v8_make_day(y, mo, d), scr_date_v8_make_time(h, mi, s, ms));
+}
+
+/* Date.prototype's setters over a time value, as V8's builtins-date.cc
+ * computes them: the fields of `t` (local fields for the local setters)
+ * with the first `argc` of them replaced, in the order the setter names
+ * them, by `a`..`d`, through MakeDay/MakeTime/MakeDate, then UTC(t) for
+ * the local setters and TimeClip. An invalid `t` stays invalid, except
+ * that setFullYear and setUTCFullYear start from +0: January 1 of the
+ * epoch year at midnight (local midnight for setFullYear). Returns the new
+ * time value; the caller stores it into the Date. Never throws. */
+double scr_date_set_fields(double t, double setter_code, double argc_count,
+                           double a, double b, double c, double d) {
+  int32_t setter = (int32_t)setter_code, argc = (int32_t)argc_count;
+  bool utc = (setter & SCR_DATE_SET_UTC) != 0;
+  int32_t field = setter & ~SCR_DATE_SET_UTC;
+  ScrDateParts p;
+  if (isnan(t)) {
+    if (field != SCR_DATE_SET_FULL_YEAR) return NAN;
+    p = (ScrDateParts){1970, 0, 1, 4, 0, 0, 0, 0, 0};
+  } else if (utc) {
+    if (!scr_date_utc_parts(t, &p)) return NAN;
+  } else if (!scr_date_local_parts(t, &p)) {
+    return NAN;
+  }
+  double y = (double)p.year, mo = p.month, dt = p.date;
+  double h = p.hours, mi = p.minutes, s = p.seconds, ms = p.milliseconds;
+  double args[4] = {a, b, c, d};
+  double *slots[7] = {&y, &mo, &dt, &h, &mi, &s, &ms};
+  /* The first field each setter names, in slots' order. */
+  int first;
+  switch (field) {
+  case SCR_DATE_SET_MILLISECONDS: first = 6; break;
+  case SCR_DATE_SET_SECONDS: first = 5; break;
+  case SCR_DATE_SET_MINUTES: first = 4; break;
+  case SCR_DATE_SET_HOURS: first = 3; break;
+  case SCR_DATE_SET_DATE: first = 2; break;
+  case SCR_DATE_SET_MONTH: first = 1; break;
+  case SCR_DATE_SET_FULL_YEAR: first = 0; break;
+  default: return NAN;
+  }
+  /* Each setter takes at most the fields from its own down to the next
+   * larger unit's end: setHours up to milliseconds, setMonth up to the
+   * date, setFullYear up to the date. */
+  int last = first <= 2 ? 2 : 6;
+  for (int i = 0; i < argc && first + i <= last && i < 4; i++) *slots[first + i] = args[i];
+  double day = scr_date_v8_make_day(y, mo, dt);
+  double time = scr_date_v8_make_time(h, mi, s, ms);
+  if (!utc) return scr_date_from_local(day, time);
+  if (!isfinite(day) || !isfinite(time)) return NAN;
+  return scr_date_new_ms(day * 86400000.0 + time);
+}
+
+/* ── V8's date-string parser, the fallback ─────────────────────────────
+ * scr_date_parse answers the bounded grammars directly and asks
+ * this parser only when they produce NaN. It follows V8's DateParser
+ * (dateparser.cc, dateparser-inl.h) step for step: the ES5 date-time
+ * format first, then the Safari-compatible legacy grammar for whatever
+ * is left (RFC 1123/2822 HTTP dates, Date#toString output, "Jan 2, 2024",
+ * "2024/01/02 10:00", ...). Strings are read as UTF-16 code units, and a
+ * NUL unit ends the input, as in V8. A date without a zone is local time. */
+
+enum {
+  SCR_DT_INVALID = -6, SCR_DT_UNKNOWN = -5, SCR_DT_SPACE = -4,
+  SCR_DT_NUMBER = -3, SCR_DT_SYMBOL = -2, SCR_DT_END = -1,
+  /* keyword tags are their keyword type (>= 0) */
+  SCR_DK_WORD = 0, SCR_DK_MONTH = 1, SCR_DK_ZONE = 2, SCR_DK_T = 3, SCR_DK_AMPM = 4,
+};
+#define SCR_DT_NONE INT_MAX
+
+typedef struct {
+  int tag, length, value;
+} ScrDateTok;
+
+typedef struct {
+  const unsigned char *p, *end;
+  uint32_t ch, low;
+  ScrDateTok next;
+} ScrDateScan;
+
+static void scr_date_scan_advance(ScrDateScan *in) {
+  if (in->low) {
+    in->ch = in->low;
+    in->low = 0;
+    return;
+  }
+  if (in->p >= in->end) {
+    in->ch = 0;
+    return;
+  }
+  const unsigned char *p = in->p;
+  size_t left = (size_t)(in->end - p);
+  uint32_t cp = p[0];
+  size_t n = 1;
+  if (cp >= 0xF0 && left >= 4) {
+    cp = ((cp & 0x07u) << 18) | ((p[1] & 0x3Fu) << 12) | ((p[2] & 0x3Fu) << 6) | (p[3] & 0x3Fu);
+    n = 4;
+  } else if (cp >= 0xE0 && left >= 3) {
+    cp = ((cp & 0x0Fu) << 12) | ((p[1] & 0x3Fu) << 6) | (p[2] & 0x3Fu);
+    n = 3;
+  } else if (cp >= 0xC0 && left >= 2) {
+    cp = ((cp & 0x1Fu) << 6) | (p[1] & 0x3Fu);
+    n = 2;
+  } else if (cp >= 0x80) {
+    cp = 0xFFFD;
+  }
+  in->p += n;
+  if (cp > 0xFFFF) {
+    cp -= 0x10000;
+    in->ch = 0xD800 + (cp >> 10);
+    in->low = 0xDC00 + (cp & 0x3FF);
+  } else {
+    in->ch = cp;
+  }
+}
+
+/* ECMAScript WhiteSpace, and WhiteSpace or LineTerminator. */
+static bool scr_date_is_space(uint32_t c) {
+  return c == 0x09 || c == 0x0B || c == 0x0C || c == 0x20 || c == 0xA0 || c == 0xFEFF ||
+         c == 0x1680 || (c >= 0x2000 && c <= 0x200A) || c == 0x202F || c == 0x205F ||
+         c == 0x3000;
+}
+
+static bool scr_date_is_space_or_newline(uint32_t c) {
+  return scr_date_is_space(c) || c == 0x0A || c == 0x0D || c == 0x2028 || c == 0x2029;
+}
+
+static const struct {
+  char prefix[3];
+  signed char type, value;
+} scr_date_keywords[] = {
+  {{'j', 'a', 'n'}, SCR_DK_MONTH, 1}, {{'f', 'e', 'b'}, SCR_DK_MONTH, 2},
+  {{'m', 'a', 'r'}, SCR_DK_MONTH, 3}, {{'a', 'p', 'r'}, SCR_DK_MONTH, 4},
+  {{'m', 'a', 'y'}, SCR_DK_MONTH, 5}, {{'j', 'u', 'n'}, SCR_DK_MONTH, 6},
+  {{'j', 'u', 'l'}, SCR_DK_MONTH, 7}, {{'a', 'u', 'g'}, SCR_DK_MONTH, 8},
+  {{'s', 'e', 'p'}, SCR_DK_MONTH, 9}, {{'o', 'c', 't'}, SCR_DK_MONTH, 10},
+  {{'n', 'o', 'v'}, SCR_DK_MONTH, 11}, {{'d', 'e', 'c'}, SCR_DK_MONTH, 12},
+  {{'a', 'm', 0}, SCR_DK_AMPM, 0}, {{'p', 'm', 0}, SCR_DK_AMPM, 12},
+  {{'u', 't', 0}, SCR_DK_ZONE, 0}, {{'u', 't', 'c'}, SCR_DK_ZONE, 0},
+  {{'z', 0, 0}, SCR_DK_ZONE, 0}, {{'g', 'm', 't'}, SCR_DK_ZONE, 0},
+  {{'c', 'd', 't'}, SCR_DK_ZONE, -5}, {{'c', 's', 't'}, SCR_DK_ZONE, -6},
+  {{'e', 'd', 't'}, SCR_DK_ZONE, -4}, {{'e', 's', 't'}, SCR_DK_ZONE, -5},
+  {{'m', 'd', 't'}, SCR_DK_ZONE, -6}, {{'m', 's', 't'}, SCR_DK_ZONE, -7},
+  {{'p', 'd', 't'}, SCR_DK_ZONE, -7}, {{'p', 's', 't'}, SCR_DK_ZONE, -8},
+  {{'t', 0, 0}, SCR_DK_T, 0},
+};
+
+static ScrDateTok scr_date_scan_token(ScrDateScan *in) {
+  ScrDateTok t;
+  t.tag = SCR_DT_UNKNOWN;
+  t.length = 1;
+  t.value = -1;
+  uint32_t c = in->ch;
+  if (c == 0) {
+    t.tag = SCR_DT_END;
+    return t;
+  }
+  if (c >= '0' && c <= '9') {
+    /* Leading zeros count toward the length; past nine significant
+     * digits the value stops growing but the digits are consumed. */
+    int n = 0, digits = 0, length = 0;
+    while (in->ch == '0') {
+      scr_date_scan_advance(in);
+      length++;
+    }
+    while (in->ch >= '0' && in->ch <= '9') {
+      if (digits < 9) n = n * 10 + (int)(in->ch - '0');
+      digits++;
+      length++;
+      scr_date_scan_advance(in);
+    }
+    t.tag = SCR_DT_NUMBER;
+    t.value = n;
+    t.length = length;
+    return t;
+  }
+  if (c == ':' || c == '-' || c == '+' || c == '.' || c == ')') {
+    scr_date_scan_advance(in);
+    t.tag = SCR_DT_SYMBOL;
+    t.value = (int)c;
+    return t;
+  }
+  if (c >= 'A' && !scr_date_is_space(c)) {
+    uint32_t prefix[3];
+    prefix[0] = prefix[1] = prefix[2] = 0;
+    int length = 0;
+    while (in->ch >= 'A' && !scr_date_is_space(in->ch)) {
+      if (length < 3) prefix[length] = in->ch | 0x20;
+      length++;
+      scr_date_scan_advance(in);
+    }
+    t.tag = SCR_DK_WORD;
+    t.value = 0;
+    t.length = length;
+    for (size_t i = 0; i < sizeof scr_date_keywords / sizeof scr_date_keywords[0]; i++) {
+      const char *k = scr_date_keywords[i].prefix;
+      if (prefix[0] == (uint32_t)(unsigned char)k[0] && prefix[1] == (uint32_t)(unsigned char)k[1] &&
+          prefix[2] == (uint32_t)(unsigned char)k[2] &&
+          (length <= 3 || scr_date_keywords[i].type == SCR_DK_MONTH)) {
+        t.tag = scr_date_keywords[i].type;
+        t.value = scr_date_keywords[i].value;
+        break;
+      }
+    }
+    return t;
+  }
+  if (scr_date_is_space_or_newline(c)) {
+    scr_date_scan_advance(in);
+    t.tag = SCR_DT_SPACE;
+    return t;
+  }
+  if (c == '(') {
+    int balance = 0;
+    do {
+      if (in->ch == ')') balance--;
+      else if (in->ch == '(') balance++;
+      scr_date_scan_advance(in);
+    } while (balance > 0 && in->ch);
+    return t;
+  }
+  scr_date_scan_advance(in);
+  return t;
+}
+
+static ScrDateTok scr_date_next(ScrDateScan *in) {
+  ScrDateTok t = in->next;
+  in->next = scr_date_scan_token(in);
+  return t;
+}
+
+static bool scr_date_tok_symbol(ScrDateTok t, int c) {
+  return t.tag == SCR_DT_SYMBOL && t.value == c;
+}
+
+static bool scr_date_skip(ScrDateScan *in, int c) {
+  if (!scr_date_tok_symbol(in->next, c)) return false;
+  in->next = scr_date_scan_token(in);
+  return true;
+}
+
+static bool scr_date_tok_sign(ScrDateTok t) {
+  return t.tag == SCR_DT_SYMBOL && (t.value == '-' || t.value == '+');
+}
+
+static bool scr_date_tok_fixed(ScrDateTok t, int length) {
+  return t.tag == SCR_DT_NUMBER && t.length == length;
+}
+
+static bool scr_date_tok_z(ScrDateTok t) {
+  return t.tag == SCR_DK_ZONE && t.length == 1 && t.value == 0;
+}
+
+static bool scr_date_between(int x, int lo, int hi) { return x >= lo && x <= hi; }
+
+typedef struct {
+  int comp[3], index, named_month;
+  bool iso;
+} ScrDateDay;
+
+typedef struct {
+  int comp[4], index, hour_offset;
+} ScrDateTime;
+
+typedef struct {
+  int sign, hour, minute;
+} ScrDateZone;
+
+static bool scr_date_day_add(ScrDateDay *d, int n) {
+  if (d->index >= 3) return false;
+  d->comp[d->index++] = n;
+  return true;
+}
+
+static bool scr_date_time_add(ScrDateTime *t, int n) {
+  if (t->index >= 4) return false;
+  t->comp[t->index++] = n;
+  return true;
+}
+
+static bool scr_date_time_add_final(ScrDateTime *t, int n) {
+  if (!scr_date_time_add(t, n)) return false;
+  while (t->index < 4) t->comp[t->index++] = 0;
+  return true;
+}
+
+static bool scr_date_time_expecting(const ScrDateTime *t, int n) {
+  return (t->index == 1 && scr_date_between(n, 0, 59)) ||
+         (t->index == 2 && scr_date_between(n, 0, 59)) ||
+         (t->index == 3 && scr_date_between(n, 0, 999));
+}
+
+static void scr_date_zone_set(ScrDateZone *z, int hours) {
+  z->sign = hours < 0 ? -1 : 1;
+  z->hour = hours * z->sign;
+  z->minute = 0;
+}
+
+static bool scr_date_zone_expecting(const ScrDateZone *z, int n) {
+  return z->hour != SCR_DT_NONE && z->minute == SCR_DT_NONE && scr_date_between(n, 0, 59);
+}
+
+/* ReadMilliseconds: the first three significant digits of the numeral. */
+static int scr_date_millis(ScrDateTok t) {
+  int number = t.value, length = t.length;
+  if (length == 1) number *= 100;
+  else if (length == 2) number *= 10;
+  else if (length > 3) {
+    static const int factors[] = {10, 100, 1000, 10000, 100000, 1000000};
+    if (length > 9) length = 9;
+    number /= factors[length - 4];
+  }
+  return number;
+}
+
+/* ParseES5DateTime: answers the first token it could not place (the
+ * legacy grammar resumes there), END after a complete ES5 string, or
+ * INVALID for a malformed ES5 time part. */
+static ScrDateTok scr_date_parse_es5(ScrDateScan *in, ScrDateDay *day, ScrDateTime *time,
+                                     ScrDateZone *tz) {
+  ScrDateTok invalid;
+  invalid.tag = SCR_DT_INVALID;
+  invalid.length = 0;
+  invalid.value = -1;
+  if (scr_date_tok_sign(in->next)) {
+    ScrDateTok sign = scr_date_next(in);
+    if (!scr_date_tok_fixed(in->next, 6)) return sign;
+    int s = 44 - sign.value;
+    int year = scr_date_next(in).value;
+    if (s < 0 && year == 0) return sign;
+    scr_date_day_add(day, s * year);
+  } else if (scr_date_tok_fixed(in->next, 4)) {
+    scr_date_day_add(day, scr_date_next(in).value);
+  } else {
+    return scr_date_next(in);
+  }
+  if (scr_date_skip(in, '-')) {
+    if (!scr_date_tok_fixed(in->next, 2) || !scr_date_between(in->next.value, 1, 12)) {
+      return scr_date_next(in);
+    }
+    scr_date_day_add(day, scr_date_next(in).value);
+    if (scr_date_skip(in, '-')) {
+      if (!scr_date_tok_fixed(in->next, 2) || !scr_date_between(in->next.value, 1, 31)) {
+        return scr_date_next(in);
+      }
+      scr_date_day_add(day, scr_date_next(in).value);
+    }
+  }
+  if (in->next.tag != SCR_DK_T) {
+    if (in->next.tag != SCR_DT_END) return scr_date_next(in);
+  } else {
+    scr_date_next(in);
+    if (!scr_date_tok_fixed(in->next, 2) || !scr_date_between(in->next.value, 0, 24)) return invalid;
+    bool hour_is_24 = in->next.value == 24;
+    scr_date_time_add(time, scr_date_next(in).value);
+    if (!scr_date_skip(in, ':')) return invalid;
+    if (!scr_date_tok_fixed(in->next, 2) || !scr_date_between(in->next.value, 0, 59) ||
+        (hour_is_24 && in->next.value > 0)) {
+      return invalid;
+    }
+    scr_date_time_add(time, scr_date_next(in).value);
+    if (scr_date_skip(in, ':')) {
+      if (!scr_date_tok_fixed(in->next, 2) || !scr_date_between(in->next.value, 0, 59) ||
+          (hour_is_24 && in->next.value > 0)) {
+        return invalid;
+      }
+      scr_date_time_add(time, scr_date_next(in).value);
+      if (scr_date_skip(in, '.')) {
+        if (in->next.tag != SCR_DT_NUMBER || (hour_is_24 && in->next.value > 0)) return invalid;
+        scr_date_time_add(time, scr_date_millis(scr_date_next(in)));
+      }
+    }
+    if (scr_date_tok_z(in->next)) {
+      scr_date_next(in);
+      scr_date_zone_set(tz, 0);
+    } else if (scr_date_tok_sign(in->next)) {
+      tz->sign = scr_date_next(in).value == '+' ? 1 : -1;
+      if (scr_date_tok_fixed(in->next, 4)) {
+        int hourmin = scr_date_next(in).value;
+        int hour = hourmin / 100, minute = hourmin % 100;
+        if (!scr_date_between(hour, 0, 23) || !scr_date_between(minute, 0, 59)) return invalid;
+        tz->hour = hour;
+        tz->minute = minute;
+      } else {
+        if (!scr_date_tok_fixed(in->next, 2) || !scr_date_between(in->next.value, 0, 23)) {
+          return invalid;
+        }
+        tz->hour = scr_date_next(in).value;
+        if (!scr_date_skip(in, ':')) return invalid;
+        if (!scr_date_tok_fixed(in->next, 2) || !scr_date_between(in->next.value, 0, 59)) {
+          return invalid;
+        }
+        tz->minute = scr_date_next(in).value;
+      }
+    }
+    if (in->next.tag != SCR_DT_END) return invalid;
+  }
+  /* Date-only forms without a zone are UTC; date-times are local. */
+  if (tz->hour == SCR_DT_NONE && time->index == 0) scr_date_zone_set(tz, 0);
+  day->iso = true;
+  ScrDateTok end;
+  end.tag = SCR_DT_END;
+  end.length = 0;
+  end.value = -1;
+  return end;
+}
+
+static bool scr_date_day_write(ScrDateDay *d, double *year_out, double *month_out, double *day_out) {
+  if (d->index < 1) return false;
+  while (d->index < 3) d->comp[d->index++] = 1;
+  int year = 0, month, day;
+  if (d->named_month == SCR_DT_NONE) {
+    if (d->iso || !scr_date_between(d->comp[0], 1, 31)) {
+      year = d->comp[0];
+      month = d->comp[1];
+      day = d->comp[2];
+    } else {
+      month = d->comp[0];
+      day = d->comp[1];
+      year = d->comp[2];
+    }
+  } else {
+    month = d->named_month;
+    /* V8 pads to three components before choosing an order, so a lone
+     * day after a month name reads the padding 1 as the year (2001). */
+    if (!scr_date_between(d->comp[0], 1, 31)) {
+      year = d->comp[0];
+      day = d->comp[1];
+    } else {
+      day = d->comp[0];
+      year = d->comp[1];
+    }
+  }
+  if (!d->iso) {
+    if (scr_date_between(year, 0, 49)) year += 2000;
+    else if (scr_date_between(year, 50, 99)) year += 1900;
+  }
+  if (!scr_date_between(month, 1, 12) || !scr_date_between(day, 1, 31)) return false;
+  *year_out = year;
+  *month_out = month - 1;
+  *day_out = day;
+  return true;
+}
+
+static bool scr_date_time_write(ScrDateTime *t, double out[4]) {
+  while (t->index < 4) t->comp[t->index++] = 0;
+  int hour = t->comp[0], minute = t->comp[1], second = t->comp[2], millisecond = t->comp[3];
+  if (t->hour_offset != SCR_DT_NONE) {
+    if (!scr_date_between(hour, 0, 12)) return false;
+    hour %= 12;
+    hour += t->hour_offset;
+  }
+  if (!scr_date_between(hour, 0, 23) || !scr_date_between(minute, 0, 59) ||
+      !scr_date_between(second, 0, 59) || !scr_date_between(millisecond, 0, 999)) {
+    if (hour != 24 || minute != 0 || second != 0 || millisecond != 0) return false;
+  }
+  out[0] = hour;
+  out[1] = minute;
+  out[2] = second;
+  out[3] = millisecond;
+  return true;
+}
+
+static bool scr_date_zone_write(ScrDateZone *z, double *offset_ms) {
+  if (z->sign == SCR_DT_NONE) {
+    *offset_ms = NAN;
+    return true;
+  }
+  if (z->hour == SCR_DT_NONE) z->hour = 0;
+  if (z->minute == SCR_DT_NONE) z->minute = 0;
+  unsigned total = (unsigned)z->hour * 3600u + (unsigned)z->minute * 60u;
+  if (total > (unsigned)INT_MAX) return false;
+  long long ms = (long long)total * 1000;
+  *offset_ms = (double)(z->sign < 0 ? -ms : ms);
+  return true;
+}
+
+static double scr_date_parse_v8(ScrStr *s) {
+  /* Field-by-field initialization keeps vector constants out of the
+   * unit's shared constant pool (see scr_date_local_limit). */
+  ScrDateScan in;
+  in.p = (const unsigned char *)s->data;
+  in.end = in.p + s->len;
+  in.ch = 0;
+  in.low = 0;
+  scr_date_scan_advance(&in);
+  in.next = scr_date_scan_token(&in);
+  ScrDateDay day;
+  day.index = 0;
+  day.named_month = SCR_DT_NONE;
+  day.iso = false;
+  ScrDateTime time;
+  time.index = 0;
+  time.hour_offset = SCR_DT_NONE;
+  ScrDateZone tz;
+  tz.sign = SCR_DT_NONE;
+  tz.hour = SCR_DT_NONE;
+  tz.minute = SCR_DT_NONE;
+  ScrDateTok token = scr_date_parse_es5(&in, &day, &time, &tz);
+  if (token.tag == SCR_DT_INVALID) return NAN;
+  bool has_read_number = day.index != 0;
+  for (; token.tag != SCR_DT_END; token = scr_date_next(&in)) {
+    if (token.tag == SCR_DT_NUMBER) {
+      has_read_number = true;
+      int n = token.value;
+      if (scr_date_skip(&in, ':')) {
+        if (scr_date_skip(&in, ':')) {
+          /* n:: */
+          if (time.index != 0) return NAN;
+          scr_date_time_add(&time, n);
+          scr_date_time_add(&time, 0);
+        } else {
+          if (!scr_date_time_add(&time, n)) return NAN;
+          if (scr_date_tok_symbol(in.next, '.')) scr_date_next(&in);
+        }
+      } else if (scr_date_skip(&in, '.') && scr_date_time_expecting(&time, n)) {
+        scr_date_time_add(&time, n);
+        if (in.next.tag != SCR_DT_NUMBER) return NAN;
+        int ms = scr_date_millis(scr_date_next(&in));
+        if (ms < 0) return NAN;
+        scr_date_time_add_final(&time, ms);
+      } else if (scr_date_zone_expecting(&tz, n)) {
+        tz.minute = n;
+      } else if (scr_date_time_expecting(&time, n)) {
+        scr_date_time_add_final(&time, n);
+        ScrDateTok peek = in.next;
+        if (peek.tag != SCR_DT_END && peek.tag != SCR_DT_SPACE && !scr_date_tok_z(peek) &&
+            !scr_date_tok_sign(peek)) {
+          return NAN;
+        }
+      } else {
+        if (!scr_date_day_add(&day, n)) return NAN;
+        scr_date_skip(&in, '-');
+      }
+    } else if (token.tag >= 0) {
+      if (token.tag == SCR_DK_AMPM && time.index != 0) {
+        time.hour_offset = token.value;
+      } else if (token.tag == SCR_DK_MONTH) {
+        day.named_month = token.value;
+        scr_date_skip(&in, '-');
+      } else if (token.tag == SCR_DK_ZONE && has_read_number) {
+        scr_date_zone_set(&tz, token.value);
+      } else {
+        /* Garbage words are illegal once a number has been read, and the
+         * first number must be separated from them. */
+        if (has_read_number) return NAN;
+        if (in.next.tag == SCR_DT_NUMBER) return NAN;
+      }
+    } else if (scr_date_tok_sign(token) &&
+               ((tz.hour == 0 && tz.minute == 0) || time.index != 0)) {
+      /* A UTC offset, only after UTC or a time. */
+      tz.sign = token.value == '-' ? -1 : 1;
+      int n = 0, length = 0;
+      if (in.next.tag == SCR_DT_NUMBER) {
+        ScrDateTok number = scr_date_next(&in);
+        length = number.length;
+        n = number.value;
+      }
+      has_read_number = true;
+      if (scr_date_tok_symbol(in.next, ':')) {
+        tz.hour = n;
+        tz.minute = SCR_DT_NONE;
+      } else if (length == 2 || length == 1) {
+        tz.hour = n;
+        tz.minute = 0;
+      } else if (length == 4 || length == 3) {
+        tz.hour = n / 100;
+        tz.minute = n % 100;
+      } else {
+        return NAN;
+      }
+    } else if ((scr_date_tok_sign(token) || scr_date_tok_symbol(token, ')')) && has_read_number) {
+      return NAN;
+    }
+    /* Anything else (whitespace, unknown characters) is ignored. */
+  }
+  double year, month, date, hms[4], offset;
+  if (!scr_date_day_write(&day, &year, &month, &date) || !scr_date_time_write(&time, hms) ||
+      !scr_date_zone_write(&tz, &offset)) {
+    return NAN;
+  }
+  double dayv = scr_date_v8_make_day(year, month, date);
+  double timev = scr_date_v8_make_time(hms[0], hms[1], hms[2], hms[3]);
+  if (isnan(offset)) return scr_date_from_local(dayv, timev);
+  if (!isfinite(dayv) || !isfinite(timev)) return NAN;
+  double t = timev + dayv * 86400000.0 - offset;
+  if (!(fabs(t) <= 8640000000000000.0)) return NAN;
+  return scr_date_new_ms(t);
+}
+
+/* ── Date time zone names ───────────────────────────────────────────────
+ * Long time zone names for Date.prototype.toString and toTimeString.
+ *
+ * Node prints "GMT-0500 (Central Daylight Time)": the name comes from ICU
+ * for the host zone, in standard or daylight form. ICU identifies the host
+ * zone from TZ when it looks like a zone ID, else from /etc/localtime (the
+ * symlink's target, or the zoneinfo file with the same contents), else
+ * from the libc zone abbreviation. The runtime follows the same steps and
+ * looks the ID up in the names Node prints for each tzdata zone
+ * (scr_timezone_data.h, generated). An ID without a row prints Node's
+ * fallback for a zone without a name, "GMT+hh:mm" with the zone's standard
+ * offset.
+ *
+ * Whether an instant is in daylight time follows V8: instants before 1970
+ * or after 2038-01-19 use the instant with the same month, day and time in
+ * an equivalent year between 2008 and 2037 (same leap-year status and
+ * weekday of January 1), and tm_isdst decides. A few zones carry Node's
+ * own daylight-time changes instead: those whose tzdata rules use a
+ * negative daylight saving (Europe/Dublin's winter time, Morocco's Ramadan
+ * time), where ICU's data calls the larger offset daylight time, and those
+ * Node shows in daylight time through 2038 (British Columbia's permanent
+ * UTC-7, which tzdata names standard time). */
+#include "scr_timezone_data.h"
+
+#define SCR_TZ_ROWS (sizeof scr_tz_names / sizeof scr_tz_names[0])
+
+/* Text that no other code in this file uses lives in named arrays: string
+ * literals would join the merged read-only strings of every program that
+ * links this file. */
+static const char scr_tz_posix_ids[4][8] = { "PST8PDT", "MST7MDT", "CST6CDT", "EST5EDT" };
+static const char scr_tz_prefixes[2][7] = { "posix/", "right/" };
+static const char scr_tz_env_name[] = "TZ";
+static const char scr_tz_utc[] = "UTC";
+static const char scr_tz_localtime_path[] = "/etc/localtime";
+static const char scr_tz_zoneinfo_tail[] = "/zoneinfo/";
+static const char scr_tz_zoneinfo_dir[] = "/usr/share/zoneinfo/";
+static const char scr_tz_skipped[4][11] = { ".", "..", "posixrules", "localtime" };
+static const char scr_tz_fallback_format[] = "GMT%c%02lld:%02lld";
+static const char scr_date_invalid_text[] = "Invalid Date";
+
+/* The thread's host zone, detected again after a write to process.env.TZ
+ * (scr_date_tz_generation). */
+typedef struct {
+  unsigned generation;
+  const ScrTzNames *row; /* NULL: no row, use the fallback */
+  bool resolved;
+  bool fallback_ready;
+  char fallback[16]; /* "GMT+hh:mm" */
+} ScrTzState;
+
+static SCR_TL ScrTzState scr_tz_state;
+
+/* The local UTC offset (seconds) and tm_isdst at an epoch second. */
+static bool scr_tz_offset_at(double sec, double *offset, bool *isdst) {
+  struct tm tmv;
+  if (!scr_date_localtime(sec, &tmv)) return false;
+  double local =
+    scr_days_from_civil((long long)tmv.tm_year + 1900, tmv.tm_mon + 1, tmv.tm_mday) * 86400.0 +
+    tmv.tm_hour * 3600.0 + tmv.tm_min * 60.0 + tmv.tm_sec;
+  *offset = local - sec;
+  *isdst = tmv.tm_isdst > 0;
+  return true;
+}
+
+/* ICU's isValidOlsonID: letters and punctuation up to an optional run of at
+ * most two digits ending the string ("GMT+11"), or one of the four POSIX
+ * zone IDs tzdata also names. */
+static bool scr_tz_valid_id(const char *id) {
+  size_t i = 0;
+  while (id[i] && !(id[i] >= '0' && id[i] <= '9') && id[i] != ',') i++;
+  size_t max = i + 2;
+  while (id[i] && id[i] >= '0' && id[i] <= '9' && i < max) i++;
+  if (id[i] == 0) return true;
+  for (size_t k = 0; k < 4; k++) {
+    if (!strcmp(id, scr_tz_posix_ids[k])) return true;
+  }
+  return false;
+}
+
+static const char *scr_tz_skip_prefix(const char *id) {
+  return !strncmp(id, scr_tz_prefixes[0], 6) || !strncmp(id, scr_tz_prefixes[1], 6) ? id + 6 : id;
+}
+
+static const ScrTzNames *scr_tz_find(const char *id) {
+  size_t lo = 0, hi = SCR_TZ_ROWS;
+  while (lo < hi) {
+    size_t mid = lo + (hi - lo) / 2;
+    int c = strcmp(id, scr_tz_ids + scr_tz_names[mid].id);
+    if (c == 0) return &scr_tz_names[mid];
+    if (c < 0) hi = mid;
+    else lo = mid + 1;
+  }
+  return NULL;
+}
+
+#if !defined(_WIN32) && !defined(__wasi__)
+
+/* The bytes of a file, or NULL. */
+static char *scr_tz_read_file(const char *path, size_t *len) {
+  FILE *f = fopen(path, "rb");
+  if (!f) return NULL;
+  size_t cap = 4096, n = 0;
+  char *data = malloc(cap);
+  while (data) {
+    n += fread(data + n, 1, cap - n, f);
+    if (n < cap) break;
+    char *grown = realloc(data, cap * 2);
+    if (!grown) {
+      free(data);
+      data = NULL;
+      break;
+    }
+    data = grown;
+    cap *= 2;
+  }
+  fclose(f);
+  *len = n;
+  return data;
+}
+
+static bool scr_tz_same_file(const char *path, const char *data, size_t len) {
+  struct stat st;
+  if (stat(path, &st) != 0 || !S_ISREG(st.st_mode) || (size_t)st.st_size != len) return false;
+  size_t other_len;
+  char *other = scr_tz_read_file(path, &other_len);
+  bool same = other && other_len == len && memcmp(other, data, len) == 0;
+  free(other);
+  return same;
+}
+
+/* ICU's search for a zoneinfo file with /etc/localtime's contents, in
+ * directory order, skipping "posixrules" and "localtime". Writes the
+ * path below the zoneinfo directory into `out`. */
+static bool scr_tz_search(char *dir, size_t dir_len, const char *data, size_t len, char *out, size_t cap) {
+  DIR *d = opendir(dir);
+  if (!d) return false;
+  bool found = false;
+  struct dirent *entry;
+  while (!found && (entry = readdir(d)) != NULL) {
+    const char *name = entry->d_name;
+    bool skipped = false;
+    for (size_t k = 0; k < 4; k++) skipped = skipped || !strcmp(name, scr_tz_skipped[k]);
+    if (skipped) continue;
+    size_t name_len = strlen(name);
+    if (dir_len + name_len + 2 > PATH_MAX) continue;
+    memcpy(dir + dir_len, name, name_len + 1);
+    DIR *sub = opendir(dir);
+    if (sub) {
+      closedir(sub);
+      dir[dir_len + name_len] = '/';
+      dir[dir_len + name_len + 1] = 0;
+      found = scr_tz_search(dir, dir_len + name_len + 1, data, len, out, cap);
+    } else if (scr_tz_same_file(dir, data, len)) {
+      const char *id = scr_tz_skip_prefix(dir + strlen(scr_tz_zoneinfo_dir));
+      size_t id_len = strlen(id);
+      if (id_len < cap) {
+        memcpy(out, id, id_len + 1);
+        found = true;
+      }
+    }
+    dir[dir_len] = 0;
+  }
+  closedir(d);
+  return found;
+}
+#endif
+
+/* The host zone's row, or NULL when ICU would not find a zone name. */
+static const ScrTzNames *scr_tz_detect(void) {
+#if defined(__wasi__)
+  /* WASI's libc keeps every local time in UTC. */
+  return scr_tz_find(scr_tz_utc);
+#else
+  const char *tz = getenv(scr_tz_env_name);
+  if (tz && scr_tz_valid_id(tz)) {
+    if (tz[0] == ':') tz++;
+    return scr_tz_find(scr_tz_skip_prefix(tz));
+  }
+#ifdef _WIN32
+  return NULL;
+#else
+  /* The zone ID is the path below a zoneinfo directory of the
+   * /etc/localtime symlink's target, or of a zoneinfo file with the same
+   * contents when /etc/localtime is a regular file. */
+  char path[PATH_MAX];
+  if (realpath(scr_tz_localtime_path, path) && strcmp(path, scr_tz_localtime_path) != 0) {
+    const char *tail = strstr(path, scr_tz_zoneinfo_tail);
+    if (tail) {
+      tail = scr_tz_skip_prefix(tail + strlen(scr_tz_zoneinfo_tail));
+      if (scr_tz_valid_id(tail)) return scr_tz_find(tail);
+    }
+  } else {
+    size_t len;
+    DIR *zoneinfo = opendir(scr_tz_zoneinfo_dir);
+    char *data = zoneinfo ? scr_tz_read_file(scr_tz_localtime_path, &len) : NULL;
+    if (zoneinfo) closedir(zoneinfo);
+    if (data) {
+      char dir[PATH_MAX];
+      memcpy(dir, scr_tz_zoneinfo_dir, sizeof scr_tz_zoneinfo_dir);
+      char id[PATH_MAX];
+      bool found = scr_tz_search(dir, strlen(dir), data, len, id, sizeof id);
+      free(data);
+      if (found && scr_tz_valid_id(id)) return scr_tz_find(id);
+    }
+  }
+  /* Otherwise the standard-time abbreviation names the zone ("UTC" when
+   * there is no /etc/localtime). */
+  tzset();
+  return scr_tz_find(tzname[0]);
+#endif
+#endif
+}
+
+static ScrTzState *scr_tz_current(void) {
+  ScrTzState *s = &scr_tz_state;
+  unsigned generation = scr_date_tz_generation;
+  if (s->generation != generation || !s->resolved) {
+    s->generation = generation;
+    s->row = scr_tz_detect();
+    s->resolved = true;
+    s->fallback_ready = false;
+  }
+  return s;
+}
+
+/* "GMT+hh:mm" for the zone's current standard offset: the name Node prints
+ * for a zone ID it does not know. */
+static const char *scr_tz_fallback(ScrTzState *s) {
+  if (!s->fallback_ready) {
+    double offset = 0;
+    bool isdst = false;
+    long long seconds = 0;
+    if (scr_tz_offset_at((double)time(NULL), &offset, &isdst)) seconds = (long long)offset - (isdst ? 3600 : 0);
+    long long minutes = (seconds < 0 ? -seconds : seconds) / 60;
+    snprintf(s->fallback, sizeof s->fallback, scr_tz_fallback_format, seconds < 0 ? '-' : '+',
+             minutes / 60, minutes % 60);
+    s->fallback_ready = true;
+  }
+  return s->fallback;
+}
+
+/* V8's EquivalentTime: the same month, day and time of day in a year
+ * between 2008 and 2037 with the same leap-year status and weekday of
+ * January 1. */
+static double scr_tz_equivalent_time(double ms) {
+  ScrDateParts p;
+  scr_date_utc_parts_unchecked(ms, &p);
+  double within = ms - floor(ms / 86400000.0) * 86400000.0;
+  long long year = p.year;
+  bool leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+  long long week_day = ((long long)scr_days_from_civil(year, 1, 1) + 4) % 7;
+  if (week_day < 0) week_day += 7;
+  long long recent = (leap ? 1956 : 1967) + (week_day * 12) % 28;
+  long long equivalent = 2008 + (recent + 3 * 28 - 2008) % 28;
+  return (scr_days_from_civil(equivalent, p.month + 1, 1) + p.date - 1) * 86400000.0 + within;
+}
+
+static bool scr_tz_is_daylight(double ms, int isdst_hint, const ScrTzNames *row) {
+  /* V8 names instants in [0, 2^31 - 1] seconds directly. */
+  if (ms < 0 || (long long)ms > 2147483647000LL) {
+    ms = scr_tz_equivalent_time(ms);
+    isdst_hint = -1;
+  }
+  double sec = floor(ms / 1000.0);
+  if (row->change_count > 0) {
+    /* Daylight time after an odd number of changes. */
+    const int32_t *changes = scr_tz_daylight_changes + row->first_change;
+    size_t lo = 0, hi = row->change_count;
+    while (lo < hi) {
+      size_t mid = lo + (hi - lo) / 2;
+      if (changes[mid] <= sec) lo = mid + 1;
+      else hi = mid;
+    }
+    return (lo & 1) != 0;
+  }
+  if (isdst_hint >= 0) return isdst_hint != 0;
+  double offset;
+  bool isdst;
+  return scr_tz_offset_at(sec, &offset, &isdst) && isdst;
+}
+
+const char *scr_date_zone_name(double ms, int isdst) {
+  ScrTzState *s = scr_tz_current();
+  if (!s->row) return scr_tz_fallback(s);
+  bool daylight = scr_tz_is_daylight(ms, isdst, s->row);
+  return scr_tz_name_text + (daylight ? s->row->daylight : s->row->standard);
+}
+
+/* Date.prototype.toString, toDateString and toTimeString: V8's formats over
+ * the local calendar fields ("Sat Oct 18 2026 09:12:00 GMT-0500 (Central
+ * Daylight Time)"), with years before 1 as "-0001", and "Invalid Date" for
+ * an invalid date. */
+enum { SCR_DATE_TEXT_FULL, SCR_DATE_TEXT_DATE, SCR_DATE_TEXT_TIME };
+
+/* `value` (>= 0) in decimal, zero-padded to `width` digits. */
+static char *scr_date_put_digits(char *p, long long value, int width) {
+  char digits[24];
+  int n = 0;
+  do {
+    digits[n++] = (char)('0' + value % 10);
+    value /= 10;
+  } while (value > 0);
+  while (n < width) digits[n++] = '0';
+  while (n > 0) *p++ = digits[--n];
+  return p;
+}
+
+static ScrStr *scr_date_text(double ms, int mode) {
+  static const char week_days[7][3] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+  static const char months[12][3] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+  ScrDateParts p;
+  if (!scr_date_local_parts(ms, &p)) return scr_str_new(scr_date_invalid_text, sizeof scr_date_invalid_text - 1);
+  char buf[160];
+  char *o = buf;
+  if (mode != SCR_DATE_TEXT_TIME) {
+    memcpy(o, week_days[p.day], 3);
+    o[3] = ' ';
+    memcpy(o + 4, months[p.month], 3);
+    o[7] = ' ';
+    o = scr_date_put_digits(o + 8, p.date, 2);
+    *o++ = ' ';
+    /* "%04d", or "%05d" (a sign and four digits) before year 0. */
+    if (p.year < 0) *o++ = '-';
+    o = scr_date_put_digits(o, p.year < 0 ? -p.year : p.year, 4);
+  }
+  if (mode == SCR_DATE_TEXT_FULL) *o++ = ' ';
+  if (mode != SCR_DATE_TEXT_DATE) {
+    int offset = -(int)p.timezone_offset;
+    int magnitude = offset < 0 ? -offset : offset;
+    o = scr_date_put_digits(o, p.hours, 2);
+    *o++ = ':';
+    o = scr_date_put_digits(o, p.minutes, 2);
+    *o++ = ':';
+    o = scr_date_put_digits(o, p.seconds, 2);
+    *o++ = ' ';
+    *o++ = 'G';
+    *o++ = 'M';
+    *o++ = 'T';
+    *o++ = offset < 0 ? '-' : '+';
+    o = scr_date_put_digits(o, magnitude / 60, 2);
+    o = scr_date_put_digits(o, magnitude % 60, 2);
+    *o++ = ' ';
+    *o++ = '(';
+    /* Zone names are at most 64 bytes (scr_timezone_data.h). */
+    /* The name's daylight flag is decided at the instant itself, as V8's
+     * LocalTimezone does, not from the offset cache. */
+    const char *zone = scr_date_zone_name(ms, -1);
+    size_t zone_len = strlen(zone);
+    memcpy(o, zone, zone_len);
+    o += zone_len;
+    *o++ = ')';
+  }
+  return scr_str_new(buf, (size_t)(o - buf));
+}
+
+ScrStr *scr_date_to_string(double ms) { return scr_date_text(ms, SCR_DATE_TEXT_FULL); }
+
+/* JSON.stringify of a Date object: its toJSON(), the quoted
+ * toISOString() text, or null for an invalid date. */
+void scr_jb_put_date(ScrJsonBuf *b, const ScrDate *date) {
+  if (isnan(date->ms)) {
+    scr_jb_puts(b, "null");
+    return;
+  }
+  ScrStr *iso = scr_date_to_iso(date->ms);
+  scr_jb_put_json_str(b, iso);
+  scr_str_release(iso);
+}
+
+/* String(date) of a Date object: Date arrays' default ordering key. +1. */
+ScrStr *scr_date_object_to_string(void *date) {
+  return scr_date_text(((ScrDate *)date)->ms, SCR_DATE_TEXT_FULL);
+}
+
+/* Array.prototype.join over Date objects: each element's String() text,
+ * holes empty. Both borrowed; +1. */
+ScrStr *scr_date_arr_join(ScrArr *dates, const ScrStr *sep) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  double len = scr_arr_len(dates);
+  for (double i = 0; i < len; i++) {
+    if (i > 0) scr_jb_put_str(&b, sep);
+    if (scr_arr_state(dates, i) != 1) continue;
+    ScrStr *text = scr_date_object_to_string(scr_arr_peek_ref(dates, i));
+    scr_jb_put_str(&b, text);
+    scr_str_release(text);
+  }
+  return scr_jb_finish(&b);
+}
+ScrStr *scr_date_to_date_string(double ms) { return scr_date_text(ms, SCR_DATE_TEXT_DATE); }
+ScrStr *scr_date_to_time_string(double ms) { return scr_date_text(ms, SCR_DATE_TEXT_TIME); }
 
 /* ── Number statics ────────────────────────────────────────────────────
  * JS-exact: the ES2015 Number statics never coerce (unlike the global
@@ -10613,6 +12864,71 @@ ScrStr *scr_num_to_fixed0(double x) {
  * the receiver's non-finite arm, as ECMA-262 requires. Invalid precision
  * raises V8's catchable RangeError text; otherwise the result is +1. The
  * exact-binary-value digits come from scr_f64_to_fixed (scr_number.c). */
+/* Number.prototype.toString(radix) with a number radix, which
+ * ToIntegerOrInfinity truncates (NaN to 0). Radix digit generation follows
+ * V8's DoubleToRadixStringView algorithm. Copyright 2012 the V8 project
+ * authors. BSD license in ../vendor/v8-number-radix/LICENSE. The decimal
+ * path retains Ryū. */
+ScrStr *scr_num_to_string_radix_f64(double value, double requested) {
+  requested = isnan(requested) ? 0 : trunc(requested);
+  if (requested < 2 || requested > 36 || !isfinite(requested)) {
+    static const char message[] = "toString() radix argument must be between 2 and 36";
+    scr_throw_error_msg(SCR_ERR_RANGE, message, sizeof message - 1);
+    return NULL;
+  }
+  int radix = (int)requested;
+  if (radix == 10 || !isfinite(value) || value == 0) return scr_f64_to_scrstr(value);
+  static const char digits[] = "0123456789abcdefghijklmnopqrstuvwxyz";
+  char buffer[2200];
+  const size_t middle = sizeof buffer / 2;
+  size_t begin = middle, end = middle;
+  bool negative = value < 0;
+  value = fabs(value);
+  double integer = floor(value), fraction = value - integer;
+  /* The next double above the positive finite value: its bits plus one
+   * (Infinity above the largest double). */
+  uint64_t value_bits;
+  memcpy(&value_bits, &value, sizeof value_bits);
+  value_bits += 1;
+  double next;
+  memcpy(&next, &value_bits, sizeof next);
+  double tolerance = 0.5 * (next - value);
+  if (tolerance <= 0) tolerance = 0x1p-1074;
+  if (fraction >= tolerance) {
+    buffer[end++] = '.';
+    do {
+      fraction *= radix;
+      tolerance *= radix;
+      int digit = (int)fraction;
+      buffer[end++] = digits[digit];
+      fraction -= digit;
+      if ((fraction > 0.5 || (fraction == 0.5 && (digit & 1))) && fraction + tolerance > 1) {
+        for (;;) {
+          end--;
+          if (end == middle) { integer += 1; break; }
+          char last = buffer[end];
+          digit = last > '9' ? last - 'a' + 10 : last - '0';
+          if (digit + 1 < radix) { buffer[end++] = digits[digit + 1]; break; }
+        }
+        break;
+      }
+    } while (fraction >= tolerance);
+  }
+  /* V8's Double::Exponent is the unbiased exponent minus 52. Beyond
+   * that precision boundary, trailing digits are unrepresented zeros. */
+  while (integer / radix >= 0x1p53) {
+    integer /= radix;
+    buffer[--begin] = '0';
+  }
+  do {
+    double remainder = fmod(integer, radix);
+    buffer[--begin] = digits[(int)remainder];
+    integer = (integer - remainder) / radix;
+  } while (integer > 0);
+  if (negative) buffer[--begin] = '-';
+  return scr_str_new(buffer + begin, end - begin);
+}
+
 ScrStr *scr_num_to_fixed(double x, double fraction_digits) {
   double fd = isnan(fraction_digits) ? 0 : trunc(fraction_digits);
   if (!(fd >= 0 && fd <= 100)) {
@@ -10625,6 +12941,137 @@ ScrStr *scr_num_to_fixed(double x, double fraction_digits) {
   char out[128];
   size_t len = scr_f64_to_fixed(x, (int)fd, out);
   return scr_str_new(out, len);
+}
+
+/* String.prototype.substr (Annex B.2.2.1) over substring's UTF-16
+ * clamp: -Infinity and other starts below -size clamp to 0, an Infinity
+ * length to the end. Comparisons only (no floating-point literal other
+ * than zero, which would join the constant pool every binary links).
+ * Nothing on an existing path calls this. */
+ScrStr *scr_str_substr(ScrStr *s, double start, double length, bool has_length) {
+  double size = scr_str_utf16_len(s);
+  double first = isnan(start) ? 0 : trunc(start);
+  if (first < 0) {
+    first = size + first;
+    if (first < 0) first = 0;
+  } else if (first > size) {
+    first = size;
+  }
+  double count = has_length ? (isnan(length) ? 0 : trunc(length)) : size;
+  if (count < 0) count = 0;
+  double end = first + count;
+  if (end > size) end = size;
+  return scr_str_substring(s, first, end);
+}
+
+/* The exponent suffix of toPrecision/toExponential: "e+5", "e-7". */
+static size_t scr_num_exp_suffix(char *o, int e) {
+  size_t n = 0;
+  o[n++] = 'e';
+  o[n++] = e < 0 ? '-' : '+';
+  int a = e < 0 ? -e : e;
+  char rev[8];
+  int k = 0;
+  do {
+    rev[k++] = (char)('0' + a % 10);
+    a /= 10;
+  } while (a != 0);
+  while (k > 0) o[n++] = rev[--k];
+  return n;
+}
+
+/* Number.prototype.toPrecision(precision) (ECMA-262 §21.1.3.5): undefined
+ * precision is ToString(x); ToIntegerOrInfinity runs (in the caller's
+ * coercion) before the non-finite arm, which precedes the 1..100 range
+ * check. Digits are the exact-value, ties-up n of
+ * scr_f64_precision_digits; exponential form when e < -6 or e >= p.
+ * Nothing on an existing path calls this. */
+ScrStr *scr_num_to_precision(double x, double precision, bool has_precision) {
+  if (!has_precision || !isfinite(x)) return scr_f64_to_scrstr(x);
+  double p = isnan(precision) ? 0 : trunc(precision);
+  if (!(p >= 1 && p <= 100)) {
+    static const char msg[] = "toPrecision() argument must be between 1 and 100";
+    scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
+    return NULL;
+  }
+  int digits_count = (int)p;
+  char out[160];
+  size_t o = 0;
+  double a = x;
+  if (x < 0) {
+    out[o++] = '-';
+    a = -x;
+  }
+  char d[104];
+  int e = 0;
+  if (a == 0) {
+    memset(d, '0', (size_t)digits_count);
+    d[digits_count] = '\0';
+  } else {
+    scr_f64_precision_digits(a, digits_count, d, &e);
+  }
+  if (e < -6 || e >= digits_count) {
+    out[o++] = d[0];
+    if (digits_count != 1) {
+      out[o++] = '.';
+      memcpy(out + o, d + 1, (size_t)(digits_count - 1));
+      o += (size_t)(digits_count - 1);
+    }
+    o += scr_num_exp_suffix(out + o, e);
+  } else if (e >= 0) {
+    memcpy(out + o, d, (size_t)(e + 1));
+    o += (size_t)(e + 1);
+    if (e + 1 < digits_count) {
+      out[o++] = '.';
+      memcpy(out + o, d + e + 1, (size_t)(digits_count - e - 1));
+      o += (size_t)(digits_count - e - 1);
+    }
+  } else {
+    out[o++] = '0';
+    out[o++] = '.';
+    for (int i = 0; i < -(e + 1); i++) out[o++] = '0';
+    memcpy(out + o, d, (size_t)digits_count);
+    o += (size_t)digits_count;
+  }
+  return scr_str_new(out, o);
+}
+
+/* Number.prototype.toExponential(fractionDigits) with a DEFINED argument
+ * (the undefined form is scr_num_to_exponential's shortest mantissa):
+ * f + 1 exact-value, ties-up digits, "d.ddde±X". Nothing on an existing
+ * path calls this. */
+ScrStr *scr_num_to_exponential_digits(double x, double fraction_digits) {
+  if (!isfinite(x)) return scr_f64_to_scrstr(x);
+  double f = isnan(fraction_digits) ? 0 : trunc(fraction_digits);
+  if (!(f >= 0 && f <= 100)) {
+    static const char msg[] = "toExponential() argument must be between 0 and 100";
+    scr_throw_error_msg(SCR_ERR_RANGE, msg, sizeof msg - 1);
+    return NULL;
+  }
+  int count = (int)f + 1;
+  char out[160];
+  size_t o = 0;
+  double a = x;
+  if (x < 0) {
+    out[o++] = '-';
+    a = -x;
+  }
+  char d[104];
+  int e = 0;
+  if (a == 0) {
+    memset(d, '0', (size_t)count);
+    d[count] = '\0';
+  } else {
+    scr_f64_precision_digits(a, count, d, &e);
+  }
+  out[o++] = d[0];
+  if (count != 1) {
+    out[o++] = '.';
+    memcpy(out + o, d + 1, (size_t)(count - 1));
+    o += (size_t)(count - 1);
+  }
+  o += scr_num_exp_suffix(out + o, e);
+  return scr_str_new(out, o);
 }
 
 /* Increment a decimal digit string in place. Returns true on overflow —
@@ -10752,7 +13199,7 @@ static bool scr_set_to_arr_sparse(const ScrMap *s, ScrArr *out) {
   /* scr_arr_new reserves dense storage for the live count; keep the
    * ordinary append path in case an allocation ever declines it. */
   for (size_t i = 0; i < s->nentries; i++) {
-    if (!s->entries[i].hash) continue;
+    if (!scr_map_entry_live(s, i)) continue;
     if (out->elem == SCR_ELEM_F64) scr_arr_push_f64(out, scr_map_iter_key_f64(s, (double)i));
     else if (out->elem == SCR_ELEM_BOOL) scr_arr_push_bool(out, scr_map_iter_key_bool(s, (double)i));
     else if (out->elem == SCR_ELEM_STR) scr_arr_push_ref(out, scr_map_iter_key_str(s, (double)i));
@@ -10764,69 +13211,247 @@ static bool scr_set_to_arr_sparse(const ScrMap *s, ScrArr *out) {
 ScrArr *scr_set_to_arr_f64(const ScrMap *s) {
   ScrArr *out = scr_arr_new(SCR_ELEM_F64, s->nlive);
   if (scr_set_to_arr_sparse(s, out)) return out;
+  /* A fresh array without states: the values in order. */
   for (size_t i = 0; i < s->nentries; i++) {
-    if (!s->entries[i].hash) continue;
-    out->data[out->len] = s->entries[i].key;
-    out->present[out->len++] = SCR_ARR_VALUE;
+    if (!scr_map_entry_live(s, i)) continue;
+    out->data[out->len++] = scr_map_entry_at(s, i)->key;
   }
+  scr_arr_refill(out);
   return out;
 }
 
 ScrArr *scr_set_to_arr_bool(const ScrMap *s) {
   ScrArr *out = scr_arr_new(SCR_ELEM_BOOL, s->nlive);
   if (scr_set_to_arr_sparse(s, out)) return out;
+  /* A fresh array without states: the values in order. */
   for (size_t i = 0; i < s->nentries; i++) {
-    if (!s->entries[i].hash) continue;
-    scr_arr_dense_put(out, out->len, s->entries[i].key != 0);
-    out->present[out->len++] = SCR_ARR_VALUE;
+    if (!scr_map_entry_live(s, i)) continue;
+    scr_arr_dense_put(out, out->len++, scr_map_entry_at(s, i)->key != 0);
   }
+  scr_arr_refill(out);
   return out;
 }
 
 ScrArr *scr_set_to_arr_str(const ScrMap *s) {
   ScrArr *out = scr_arr_new(SCR_ELEM_STR, s->nlive);
   if (scr_set_to_arr_sparse(s, out)) return out;
+  /* A fresh array without states: the values in order. */
   for (size_t i = 0; i < s->nentries; i++) {
-    if (!s->entries[i].hash) continue;
-    scr_str_retain((ScrStr *)(uintptr_t)s->entries[i].key);
-    out->data[out->len] = s->entries[i].key;
-    out->present[out->len++] = SCR_ARR_VALUE;
+    if (!scr_map_entry_live(s, i)) continue;
+    scr_str_retain((ScrStr *)(uintptr_t)scr_map_entry_at(s, i)->key);
+    out->data[out->len++] = scr_map_entry_at(s, i)->key;
   }
+  scr_arr_refill(out);
   return out;
 }
 
 ScrArr *scr_set_to_arr_ref(const ScrMap *s, const ScrArrOps *ops) {
   ScrArr *out = scr_arr_new_ops(ops, s->nlive);
   if (scr_set_to_arr_sparse(s, out)) return out;
+  /* A fresh array without states: the values in order. */
   for (size_t i = 0; i < s->nentries; i++) {
-    if (!s->entries[i].hash) continue;
-    ops->retain((void *)(uintptr_t)s->entries[i].key);
-    out->data[out->len] = s->entries[i].key;
-    out->present[out->len++] = SCR_ARR_VALUE;
+    if (!scr_map_entry_live(s, i)) continue;
+    ops->retain((void *)(uintptr_t)scr_map_entry_at(s, i)->key);
+    scr_arr_dense_put(out, out->len, scr_map_entry_at(s, i)->key);
+    out->len++;
   }
+  scr_arr_refill(out);
   return out;
 }
 
-/* JS Date storage owns an identity; the typed read-only Date ABI continues
- * to use milliseconds and explicitly extracts them for native getters. */
-typedef struct { size_t rc; double milliseconds; } ScrNativeDate;
-static void *scr_native_date_retain(void *ptr) { ((ScrNativeDate *)ptr)->rc++; return ptr; }
-static void scr_native_date_release(void *ptr) { if (--((ScrNativeDate *)ptr)->rc == 0) free(ptr); }
+/* A Date object: one time value, and its identity. Compiled code and
+ * checked-dynamic Date handles share these objects, so a Date keeps its
+ * identity across `unknown` conversions. */
+ScrDate *scr_date_new(double ms) {
+  ScrDate *date = malloc(sizeof *date);
+  if (!date) scr_trap("scriptc: out of memory\n");
+  date->rc = 1;
+  date->ms = ms;
+  return date;
+}
+
+ScrDate *scr_date_retain(ScrDate *date) {
+  if (date->rc != SIZE_MAX) date->rc++;
+  return date;
+}
+
+void scr_date_release(ScrDate *date) {
+  if (!date || date->rc == SIZE_MAX) return;
+  if (--date->rc == 0) free(date);
+}
+
+void *scr_date_retain_v(void *p) { return scr_date_retain(p); }
+void scr_date_release_v(void *p) { scr_date_release(p); }
 
 bool scr_dyn_native_date_is(const ScrDyn *value) {
   return value && value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_DATE;
 }
 
-double scr_dyn_native_date_value(const ScrDyn *value) {
-  if (!scr_dyn_native_date_is(value)) { scr_dyn_check_fail(NULL, "Date", value); return NAN; }
-  return ((ScrNativeDate *)value->v.handle.ptr)->milliseconds;
+/* Instances of program classes declared `extends Date` keep their time
+ * value in a compiled field. In checked-dynamic code such an instance is a
+ * typed reference, and the runtime reaches its time value and methods
+ * through the functions %main installs (builtins/date-classes.ts), called
+ * as (op, value, argument): for op 0 the time function answers the time
+ * value, or undefined for any other value, and for op 1 sets it; for ops 2
+ * to 5 the method function calls the instance's toISOString,
+ * toJSON(argument), toString and valueOf. */
+enum {
+  SCR_DATE_CLASS_TIME,
+  SCR_DATE_CLASS_SET_TIME,
+  SCR_DATE_CLASS_TO_ISO_STRING,
+  SCR_DATE_CLASS_TO_JSON,
+  SCR_DATE_CLASS_TO_STRING,
+  SCR_DATE_CLASS_VALUE_OF,
+  SCR_DATE_CLASS_NAME,
+};
+static SCR_TL ScrDyn *scr_date_class_operation;
+static SCR_TL ScrDyn *scr_date_class_methods;
+
+static void scr_date_class_operation_cleanup(void) {
+  ScrDyn *operation = scr_date_class_operation;
+  ScrDyn *methods = scr_date_class_methods;
+  scr_date_class_operation = scr_date_class_methods = NULL;
+  scr_dyn_release(operation);
+  scr_dyn_release(methods);
 }
+
+static bool scr_date_class_time_of(const ScrDyn *value, double *time);
+static ScrDyn *scr_date_class_to_json(const ScrDyn *value, const ScrDyn *key);
+static ScrDyn *scr_date_class_to_string(const ScrDyn *value);
+static ScrDyn *scr_date_class_value_of(const ScrDyn *value);
+static ScrStr *scr_date_class_name(const ScrDyn *value);
+static ScrDyn *scr_date_class_method(const ScrDyn *value, const char *key, size_t key_len);
+
+/* The installation also publishes these functions to the rest of the
+ * runtime (scr_date_class_hooks), so only a program that declares a class
+ * extending Date links them. */
+static const ScrDateClassHooks scr_date_class_hook_table = {
+  scr_date_class_time_of, scr_date_class_to_json, scr_date_class_to_string,
+  scr_date_class_value_of, scr_date_class_name, scr_date_class_method,
+};
+
+void scr_date_class_operation_install(ScrDyn *time, ScrDyn *methods) {
+  scr_date_class_hooks = &scr_date_class_hook_table;
+  if (!scr_date_class_operation) scr_atexit(scr_date_class_operation_cleanup);
+  scr_dyn_release(scr_date_class_operation);
+  scr_dyn_release(scr_date_class_methods);
+  scr_date_class_operation = scr_dyn_retain(time);
+  scr_date_class_methods = scr_dyn_retain(methods);
+}
+
+/* The installed operation `op` on `value`: +1, or NULL with an exception
+ * pending. */
+static ScrDyn *scr_date_class_call(int op, const ScrDyn *value, const ScrDyn *argument) {
+  ScrDyn *code = scr_dyn_new_num(op);
+  ScrDyn *args[] = { code, (ScrDyn *)value, (ScrDyn *)(argument ? argument : scr_dyn_undefined()) };
+  bool time = op < SCR_DATE_CLASS_TO_ISO_STRING || op == SCR_DATE_CLASS_NAME;
+  ScrDyn *result = scr_dyn_call(time ? scr_date_class_operation : scr_date_class_methods, args, 3, "Date");
+  scr_dyn_release(code);
+  return result;
+}
+
+/* True, with the time value in *time, when `value` holds an instance of a
+ * class declared `extends Date`. */
+static bool scr_date_class_time_of(const ScrDyn *value, double *time) {
+  if (!scr_date_class_operation || !value || value->kind != SCR_DYN_TYPED_REF) return false;
+  ScrDyn *result = scr_date_class_call(SCR_DATE_CLASS_TIME, value, NULL);
+  bool found = result && result->kind == SCR_DYN_NUM;
+  if (found) *time = result->v.num;
+  scr_dyn_release(result);
+  return found;
+}
+
+/* `value instanceof Date`: a Date, or an instance of a class declared
+ * `extends Date`. */
+bool scr_dyn_date_instance_is(const ScrDyn *value) {
+  double time;
+  return scr_dyn_native_date_is(value) || scr_dyn_date_class_time(value, &time);
+}
+
+/* toJSON(key), toString() or valueOf() of an instance of a class declared
+ * `extends Date` (scr_dyn_date_class_time answered true): the class's
+ * declaration or the Date method. +1, or NULL with an exception pending. */
+static ScrDyn *scr_date_class_to_json(const ScrDyn *value, const ScrDyn *key) {
+  return scr_date_class_call(SCR_DATE_CLASS_TO_JSON, value, key);
+}
+static ScrDyn *scr_date_class_to_string(const ScrDyn *value) {
+  return scr_date_class_call(SCR_DATE_CLASS_TO_STRING, value, NULL);
+}
+static ScrDyn *scr_date_class_value_of(const ScrDyn *value) {
+  return scr_date_class_call(SCR_DATE_CLASS_VALUE_OF, value, NULL);
+}
+
+/* The name of the class of an instance of a class declared `extends
+ * Date`: +1, or NULL for any other value. */
+static ScrStr *scr_date_class_name(const ScrDyn *value) {
+  if (!scr_date_class_operation || !value || value->kind != SCR_DYN_TYPED_REF) return NULL;
+  ScrDyn *result = scr_date_class_call(SCR_DATE_CLASS_NAME, value, NULL);
+  ScrStr *name = result && result->kind == SCR_DYN_STR ? scr_str_retain(result->v.str) : NULL;
+  scr_dyn_release(result);
+  return name;
+}
+
+double scr_dyn_native_date_value(const ScrDyn *value) {
+  if (scr_dyn_native_date_is(value)) return ((ScrDate *)value->v.handle.ptr)->ms;
+  double time;
+  if (scr_dyn_date_class_time(value, &time)) return time;
+  scr_dyn_check_fail(NULL, "Date", value);
+  return NAN;
+}
+
+/* The Date object a checked-dynamic Date value holds, +1: the Date itself,
+ * or a new Date with the time value of an instance of a class declared
+ * `extends Date`. NULL with the check failure pending for any other
+ * value. */
+ScrDate *scr_dyn_native_date_check(const ScrDyn *value, const ScrDynPath *path) {
+  if (scr_dyn_native_date_is(value)) return scr_date_retain(value->v.handle.ptr);
+  double time;
+  if (scr_dyn_date_class_time(value, &time)) return scr_date_new(time);
+  scr_dyn_check_fail(path, "Date", value);
+  return NULL;
+}
+
+/* Method names without another use in this file, in named arrays (see
+ * scr_tz_posix_ids). */
+static const char scr_date_to_date_string_name[] = "toDateString";
+static const char scr_date_to_time_string_name[] = "toTimeString";
+
+/* The field setters a checked-dynamic Date answers (scr_date_set_fields). */
+static const struct {
+  const char *name;
+  int code, max;
+} scr_native_date_setters[] = {
+  {"setMilliseconds", SCR_DATE_SET_MILLISECONDS, 1},
+  {"setSeconds", SCR_DATE_SET_SECONDS, 2},
+  {"setMinutes", SCR_DATE_SET_MINUTES, 3},
+  {"setHours", SCR_DATE_SET_HOURS, 4},
+  {"setDate", SCR_DATE_SET_DATE, 1},
+  {"setMonth", SCR_DATE_SET_MONTH, 2},
+  {"setFullYear", SCR_DATE_SET_FULL_YEAR, 3},
+  {"setUTCMilliseconds", SCR_DATE_SET_UTC | SCR_DATE_SET_MILLISECONDS, 1},
+  {"setUTCSeconds", SCR_DATE_SET_UTC | SCR_DATE_SET_SECONDS, 2},
+  {"setUTCMinutes", SCR_DATE_SET_UTC | SCR_DATE_SET_MINUTES, 3},
+  {"setUTCHours", SCR_DATE_SET_UTC | SCR_DATE_SET_HOURS, 4},
+  {"setUTCDate", SCR_DATE_SET_UTC | SCR_DATE_SET_DATE, 1},
+  {"setUTCMonth", SCR_DATE_SET_UTC | SCR_DATE_SET_MONTH, 2},
+  {"setUTCFullYear", SCR_DATE_SET_UTC | SCR_DATE_SET_FULL_YEAR, 3},
+};
 
 static ScrDyn *scr_native_date_invoke(void *ptr, ScrDyn *self, const char *method,
     ScrDyn *const *args, size_t argc, const char *what) {
-  (void)self; (void)args; (void)argc; (void)what;
-  double ms = ((ScrNativeDate *)ptr)->milliseconds;
+  (void)self; (void)what;
+  double ms = ((ScrDate *)ptr)->ms;
   if (!strcmp(method, "getTime") || !strcmp(method, "valueOf")) return scr_dyn_new_num(ms);
+  if (!strcmp(method, "toString") || !strcmp(method, scr_date_to_date_string_name) ||
+      !strcmp(method, scr_date_to_time_string_name) || !strcmp(method, "toUTCString")) {
+    ScrStr *text = !strcmp(method, "toString")                     ? scr_date_to_string(ms)
+                   : !strcmp(method, scr_date_to_date_string_name) ? scr_date_to_date_string(ms)
+                   : !strcmp(method, "toUTCString")                ? scr_date_to_utc_string(ms)
+                                                                   : scr_date_to_time_string(ms);
+    ScrDyn *result = scr_dyn_new_str(text);
+    scr_str_release(text);
+    return result;
+  }
   if (!strcmp(method, "toISOString") || !strcmp(method, "toJSON")) {
     if (!strcmp(method, "toJSON") && !isfinite(ms)) return scr_dyn_new_null();
     ScrStr *text = scr_date_to_iso(ms);
@@ -10834,6 +13459,31 @@ static ScrDyn *scr_native_date_invoke(void *ptr, ScrDyn *self, const char *metho
     ScrDyn *result = scr_dyn_new_str(text);
     scr_str_release(text);
     return result;
+  }
+  if (!strcmp(method, "setTime")) {
+    double time = NAN;
+    if (argc > 0 && !scr_dyn_number_coerce_js(args[0], &time)) return NULL;
+    ((ScrDate *)ptr)->ms = scr_date_new_ms(time);
+    return scr_dyn_new_num(((ScrDate *)ptr)->ms);
+  }
+  for (size_t i = 0; i < sizeof scr_native_date_setters / sizeof *scr_native_date_setters; i++) {
+    if (strcmp(method, scr_native_date_setters[i].name)) continue;
+    /* V8's order: ToNumber of the first argument, then the time value,
+     * then (unless the date is invalid) ToNumber of the optional ones the
+     * setter takes. */
+    int code = scr_native_date_setters[i].code, max = scr_native_date_setters[i].max;
+    double values[4] = {NAN, 0, 0, 0};
+    if (argc > 0 && !scr_dyn_number_coerce_js(args[0], &values[0])) return NULL;
+    double t = ((ScrDate *)ptr)->ms;
+    int used = argc < (size_t)max ? (int)argc : max;
+    if (used < 1) used = 1;
+    if (!isnan(t) || (code & ~SCR_DATE_SET_UTC) == SCR_DATE_SET_FULL_YEAR) {
+      for (int k = 1; k < used; k++)
+        if (!scr_dyn_number_coerce_js(args[k], &values[k])) return NULL;
+    }
+    double next = scr_date_set_fields(t, code, used, values[0], values[1], values[2], values[3]);
+    ((ScrDate *)ptr)->ms = next;
+    return scr_dyn_new_num(next);
   }
 #define DATE_GET(name, fn) if (!strcmp(method, name)) return scr_dyn_new_num(fn(ms))
   DATE_GET("getFullYear", scr_date_get_full_year_local);
@@ -10861,24 +13511,239 @@ static ScrDyn *scr_native_date_invoke(void *ptr, ScrDyn *self, const char *metho
 
 ScrDyn *scr_dyn_native_date_new(const ScrDyn *arguments) {
   double ms;
-  if (arguments->v.arr.len == 0) ms = scr_date_now();
+  if (arguments->v.arr.len == 0) ms = scr_date_mock_now ? *scr_date_mock_now : scr_date_now();
   else {
     ScrDyn *value = arguments->v.arr.items[0];
     if (scr_dyn_native_date_is(value)) ms = scr_dyn_native_date_value(value);
-    else if (value->kind == SCR_DYN_STR) ms = scr_date_parse_get_time(value->v.str);
+    else if (scr_dyn_date_class_time(value, &ms)) {
+    } else if (value->kind == SCR_DYN_STR) ms = scr_date_parse_get_time(value->v.str);
     else if (!scr_dyn_number_coerce_js(value, &ms)) return NULL;
     ms = scr_date_new_ms(ms);
   }
+  return scr_dyn_native_date_from_ms(ms);
+}
+
+/* The time value `new Date(...arguments)` constructs (super(...) in a
+ * class declared `extends Date`), or NaN with an exception pending. */
+double scr_dyn_date_arguments_time(const ScrDyn *arguments) {
+  ScrDyn *date = arguments->v.arr.len > 1 ? scr_dyn_native_date_new_fields(arguments)
+                                          : scr_dyn_native_date_new_value(arguments);
+  if (!date) return NAN;
+  double time = ((ScrDate *)date->v.handle.ptr)->ms;
+  scr_dyn_release(date);
+  return time;
+}
+
+/* new Date(value) in JavaScript: a string parses with the full parser;
+ * every other value takes scr_dyn_native_date_new. */
+ScrDyn *scr_dyn_native_date_new_value(const ScrDyn *arguments) {
+  if (arguments->v.arr.len == 1 && arguments->v.arr.items[0]->kind == SCR_DYN_STR)
+    return scr_dyn_native_date_from_ms(scr_date_new_ms(scr_date_parse(arguments->v.arr.items[0]->v.str)));
+  return scr_dyn_native_date_new(arguments);
+}
+
+/* new Date(year, monthIndex, ...) in JavaScript: ToNumber over the first
+ * seven arguments in order (a throwing conversion stops there), the
+ * spec's defaults for the rest, then the local-time field constructor. */
+ScrDyn *scr_dyn_native_date_new_fields(const ScrDyn *arguments) {
+  double fields[7];
+  fields[0] = fields[1] = fields[3] = fields[4] = fields[5] = fields[6] = 0;
+  fields[2] = 1;
+  size_t n = arguments->v.arr.len < 7 ? arguments->v.arr.len : 7;
+  for (size_t i = 0; i < n; i++) {
+    if (!scr_dyn_number_coerce_js(arguments->v.arr.items[i], &fields[i])) return NULL;
+  }
+  return scr_dyn_native_date_from_ms(
+    scr_date_new_local(fields[0], fields[1], fields[2], fields[3], fields[4], fields[5], fields[6]));
+}
+
+/* The Date.prototype methods scr_native_date_invoke answers. */
+static const char *const scr_native_date_methods[] = {
+  "getTime", "valueOf", "toISOString", "toJSON", "toString", scr_date_to_date_string_name,
+  scr_date_to_time_string_name, "toUTCString",
+  "getFullYear", "getUTCFullYear", "getMonth",
+  "getUTCMonth", "getDate", "getUTCDate", "getDay", "getUTCDay", "getHours", "getUTCHours",
+  "getMinutes", "getUTCMinutes", "getSeconds", "getUTCSeconds", "getMilliseconds",
+  "getUTCMilliseconds", "getTimezoneOffset", "setTime", "setMilliseconds", "setSeconds",
+  "setMinutes", "setHours", "setDate", "setMonth", "setFullYear", "setUTCMilliseconds",
+  "setUTCSeconds", "setUTCMinutes", "setUTCHours", "setUTCDate", "setUTCMonth", "setUTCFullYear",
+};
+#define SCR_NATIVE_DATE_METHODS (sizeof scr_native_date_methods / sizeof scr_native_date_methods[0])
+static SCR_TL ScrDyn *scr_native_date_method_values[SCR_NATIVE_DATE_METHODS];
+static SCR_TL bool scr_native_date_methods_registered;
+
+static void scr_native_date_methods_cleanup(void) {
+  for (size_t i = 0; i < SCR_NATIVE_DATE_METHODS; i++) {
+    ScrDyn *function = scr_native_date_method_values[i];
+    scr_native_date_method_values[i] = NULL;
+    scr_dyn_release(function);
+  }
+}
+
+/* A Date method read as a value and called later: the closure's function
+ * slot holds the method's name, and the receiver must be a Date. On an
+ * instance of a class declared `extends Date` the method runs over its
+ * time value; toJSON calls the instance's toISOString. */
+static ScrDyn *scr_native_date_method_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  const char *method = closure->fn;
+  ScrDyn *self = scr_dyn_this_get();
+  ScrDyn *result = NULL;
+  double time;
+  if (scr_dyn_native_date_is(self)) {
+    result = scr_native_date_invoke(self->v.handle.ptr, self, method, args, argc, method);
+  } else if (scr_dyn_date_class_time(self, &time)) {
+    if (!strcmp(method, "toJSON")) {
+      result = isfinite(time) ? scr_date_class_call(SCR_DATE_CLASS_TO_ISO_STRING, self, NULL)
+                              : scr_dyn_new_null();
+    } else {
+      ScrDate date = { 1, time };
+      result = scr_native_date_invoke(&date, self, method, args, argc, method);
+      if (result && date.ms != time && !(isnan(date.ms) && isnan(time))) {
+        ScrDyn *stored = scr_dyn_new_num(date.ms);
+        ScrDyn *set = scr_date_class_call(SCR_DATE_CLASS_SET_TIME, self, stored);
+        scr_dyn_release(stored);
+        if (!set) {
+          scr_dyn_release(result);
+          result = NULL;
+        }
+        scr_dyn_release(set);
+      }
+    }
+  } else {
+    static const char message[] = "this is not a Date object.";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+  }
+  scr_dyn_release(self);
+  return result;
+}
+
+static ScrDyn *scr_native_date_get(void *ptr, const char *key, size_t key_len);
+
+/* The Date method `key` as a function value when `value` holds an instance
+ * of a class declared `extends Date`, or NULL. The class's own members are
+ * read first, by the caller. */
+static ScrDyn *scr_date_class_method(const ScrDyn *value, const char *key, size_t key_len) {
+  if (!scr_date_class_operation) return NULL;
+  bool named = false;
+  for (size_t i = 0; i < SCR_NATIVE_DATE_METHODS && !named; i++)
+    named = strlen(scr_native_date_methods[i]) == key_len && !memcmp(scr_native_date_methods[i], key, key_len);
+  double time;
+  if (!named || !scr_dyn_date_class_time(value, &time)) return NULL;
+  return scr_native_date_get(NULL, key, key_len);
+}
+
+/* Property reads of a Date: its methods as function values, one per name
+ * and thread, and NULL (undefined) for other names. */
+static ScrDyn *scr_native_date_get(void *ptr, const char *key, size_t key_len) {
+  (void)ptr;
+  for (size_t i = 0; i < SCR_NATIVE_DATE_METHODS; i++) {
+    const char *name = scr_native_date_methods[i];
+    if (strlen(name) != key_len || memcmp(name, key, key_len) != 0) continue;
+    if (!scr_native_date_methods_registered) {
+      scr_native_date_methods_registered = true;
+      scr_atexit(scr_native_date_methods_cleanup);
+    }
+    if (!scr_native_date_method_values[i]) {
+      scr_native_date_method_values[i] = scr_dyn_new_func(
+          scr_closure_new((void *)name, 0), scr_native_date_method_call, 0, "native:Date", name);
+    }
+    return scr_dyn_retain(scr_native_date_method_values[i]);
+  }
+  return NULL;
+}
+
+/* structuredClone of a Date: a new Date with the same time value. */
+static ScrDyn *scr_native_date_clone(void *h) {
+  return scr_dyn_native_date_from_ms(((ScrDate *)h)->ms);
+}
+
+/* A Date crossing threads (postMessage, workerData) carries its time value
+ * in a plain allocation any thread may read and free. */
+static void *scr_native_date_share(void *h) {
+  double *ms = malloc(sizeof *ms);
+  if (!ms) scr_trap("scriptc: out of memory\n");
+  *ms = ((ScrDate *)h)->ms;
+  return ms;
+}
+
+static ScrDyn *scr_native_date_adopt(void *payload) {
+  return scr_dyn_native_date_from_ms(*(double *)payload);
+}
+
+static void scr_native_date_drop(void *payload) { free(payload); }
+
+static const ScrDynHandleTransfer scr_native_date_transfer = {
+  .share = scr_native_date_share, .adopt = scr_native_date_adopt, .drop = scr_native_date_drop};
+
+/* A checked-dynamic handle for the Date object `date` (borrowed; the
+ * handle retains it), so the value stays the same object. */
+ScrDyn *scr_dyn_native_date(ScrDate *date) {
   static const ScrDynHandleOps ops = {
-    "Date", &scr_native_date_retain, &scr_native_date_release, &scr_native_date_invoke,
-    NULL, NULL, NULL, NULL,
+    .cls = "Date",
+    .retain = &scr_date_retain_v,
+    .release = &scr_date_release_v,
+    .invoke = &scr_native_date_invoke,
+    .get = &scr_native_date_get,
+    .clone = &scr_native_date_clone,
+    .transfer = &scr_native_date_transfer,
   };
   scr_dyn_handle_install(SCR_DYNH_DATE, &ops);
-  ScrNativeDate *date = malloc(sizeof *date);
-  if (!date) scr_trap("scriptc: out of memory\n");
-  date->rc = 1;
-  date->milliseconds = ms;
-  ScrDyn *result = scr_dyn_new_handle(date, SCR_DYNH_DATE);
-  scr_native_date_release(date);
+  return scr_dyn_new_handle(date, SCR_DYNH_DATE);
+}
+
+/* A Date handle holding the time value `ms` (already TimeClip'd). */
+ScrDyn *scr_dyn_native_date_from_ms(double ms) {
+  ScrDate *date = scr_date_new(ms);
+  ScrDyn *result = scr_dyn_native_date(date);
+  scr_date_release(date);
   return result;
+}
+
+/* crypto.getRandomValues(typedArray) (WebCrypto, also node:crypto's
+ * export): integer typed arrays only (Node's TypeMismatchError DOMException
+ * for float arrays, DataViews and every other value), at most 65536 bytes
+ * (QuotaExceededError), filled in place and returned. Nothing on an
+ * existing path calls these. They stay at the end of the unit: clang emits
+ * a static helper (scr_random_write) where its first emitted caller
+ * appears, and an earlier caller would move it in every binary that links
+ * the random fills. */
+ScrBytes *scr_crypto_get_random_values(ScrBytes *view) {
+  static const char mismatch[] = "TypeMismatchError";
+  static const char mismatch_msg[] = "The data argument must be an integer-type TypedArray";
+  static const char quota[] = "QuotaExceededError";
+  static const char quota_msg[] = "The requested length exceeds 65,536 bytes";
+  if (view->is_data_view || view->elem == SCR_BYTES_F32 || view->elem == SCR_BYTES_F64 ||
+      view->elem == SCR_BYTES_F16) {
+    scr_throw_domex(mismatch, mismatch_msg);
+    return NULL;
+  }
+  /* Integer arithmetic: a new floating-point literal would land in the
+   * merged constant pool every binary links. */
+  size_t length = view->len * (size_t)scr_bytes_elem_size(view->elem);
+  if (length > 65536u) {
+    scr_throw_domex(quota, quota_msg);
+    return NULL;
+  }
+  scr_random_write(view, 0, length);
+  return scr_bytes_retain(view);
+}
+
+ScrDyn *scr_crypto_get_random_values_dyn(ScrDyn *value) {
+  if (value->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *materialized = scr_dyn_typed_ref_materialize(value);
+    if (!materialized) return NULL;
+    ScrDyn *result = scr_crypto_get_random_values_dyn(materialized);
+    scr_dyn_release(materialized);
+    return result ? scr_dyn_retain(value) : NULL;
+  }
+  if (value->kind != SCR_DYN_BYTES) {
+    static const char mismatch[] = "TypeMismatchError";
+    static const char mismatch_msg[] = "The data argument must be an integer-type TypedArray";
+    scr_throw_domex(mismatch, mismatch_msg);
+    return NULL;
+  }
+  ScrBytes *filled = scr_crypto_get_random_values(value->v.bytes);
+  if (!filled) return NULL;
+  scr_bytes_release(filled);
+  return scr_dyn_retain(value);
 }

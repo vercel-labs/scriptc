@@ -7,6 +7,9 @@ import { rebaseSourceLocations, semanticallyEqualSource } from "../library/seman
 import type { SemanticReplay } from "./verdict-cache.js";
 
 export const commentOnlyReplay: SemanticReplay = (probes, sources, coverage) => {
+  // The performance warning's text names file:line positions, which moving
+  // its locations would not update: such a verdict is analyzed again.
+  if (coverage.performance !== undefined) return null;
   const previous = new Map<string, string>();
   for (const source of sources) previous.set(source.path, source.text);
   const match = frontendInputsSemanticallyMatch(probes, previous, semanticallyEqualSource);

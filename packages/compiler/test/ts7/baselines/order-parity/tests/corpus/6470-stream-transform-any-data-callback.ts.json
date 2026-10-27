@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6470-stream-transform-any-data-callback.ts"
+ ],
+ "diags": []
+}

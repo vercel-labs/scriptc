@@ -1,1 +1,4 @@
-- **Filesystem flags:** `fs.openSync` supports inline bitwise OR expressions of `O_RDONLY`, `O_WRONLY`, `O_RDWR`, `O_CREAT`, `O_EXCL`, `O_NOFOLLOW`, `O_NONBLOCK`, `O_TRUNC`, and `O_APPEND`, with an optional creation mode. Computed numeric flags are unsupported because bit values vary by target. `fstatSync`, `fchmodSync`, `fsyncSync`, and `linkSync` support direct calls. On Windows, numeric opens with `O_NOFOLLOW` and calls to `fchmodSync` throw `ENOSYS`; use a POSIX target if you require these operations.
+- **Filesystem flags:** `fs.openSync` supports inline bitwise OR expressions of `O_RDONLY`, `O_WRONLY`, `O_RDWR`, `O_CREAT`, `O_EXCL`, `O_NOFOLLOW`, `O_NONBLOCK`, `O_TRUNC`, and `O_APPEND`, with an optional creation mode.
+  Computed numeric flags are unsupported because bit values vary by target.
+  `fstatSync`, `fchmodSync`, `fsyncSync`, and `linkSync` support direct calls.
+  On Windows, numeric opens with `O_NOFOLLOW` and calls to `fchmodSync` throw `ENOSYS`; use a POSIX target if you require these operations.

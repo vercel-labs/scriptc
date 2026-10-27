@@ -73,9 +73,9 @@ scriptc region heap passes: 0
   <dt><code>new LifetimeRegion()</code></dt>
   <dd>Creates a region. Creating a region also retries the released regions that could not be freed yet.</dd>
   <dt><code>region.run(fn)</code></dt>
-  <dd>Calls <code>fn</code> with the region as the current region and returns its result. <code>ProgramLifetime</code> instances created during the call belong to the region. Calls nest: a <code>run</code> inside the callback makes another region current until it returns, and the previous region is current again however the callback finishes, including when it throws.</dd>
+  <dd>Calls <code>fn</code> with the region as the current region and returns its result. <code>ProgramLifetime</code> instances created during the call belong to the region, and so do those that async functions called during it create after an <code>await</code> (see <a href="#async-work">Async work</a>). Calls nest: a <code>run</code> inside the callback makes another region current until it returns, and the previous region is current again however the callback finishes, including when it throws.</dd>
   <dt><code>region.release()</code></dt>
-  <dd>Requests that the region be freed. scriptc frees it as soon as nothing outside the region refers to any of its instances, which may be at once, at a later release or region creation, or never. A region is never freed while a <code>run</code> call on it is active. After <code>release()</code>, <code>run</code> still calls its callback, and the instances it creates belong to the default region.</dd>
+  <dd>Requests that the region be freed. scriptc frees it as soon as nothing outside the region refers to any of its instances, which may be at once, at a later release or region creation, or never. A region is never freed while a <code>run</code> call on it is active, or while async work started inside it has not finished. After <code>release()</code>, <code>run</code> still calls its callback, and the instances it creates belong to the default region.</dd>
 </dl>
 
 `ProgramLifetime` instances created outside every `run` call belong to the default region, which is never freed. Ordinary objects (instances of classes without the contract, arrays, maps, closures) are reference counted as always; a region frees the ones that only its instances refer to.
@@ -92,7 +92,62 @@ A released region stays allocated, and its instances stay usable, while anything
 - an instance of the default region, which is never freed;
 - a promise, generator or `Error` that holds an instance, until it is no longer referenced.
 
-Work that resumes after an `await` inside the callback runs outside the region, so the instances it creates belong to the default region and keep the instances they refer to allocated.
+### Async work
+
+An async function called inside `run` keeps the region for its whole run: the instances it creates after each `await` belong to the region too, as do those of the async functions it calls. A server can give every request its own region, even while requests interleave at their awaits:
+
+```ts:requests.ts
+import type { ProgramLifetime } from "@scriptc/types";
+import { LifetimeRegion } from "@scriptc/experimental";
+
+class Part implements ProgramLifetime {
+  readonly text: string;
+  previous: Part | undefined = undefined;
+  constructor(text: string) {
+    this.text = text;
+  }
+}
+
+const read = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+async function handle(id: number): Promise<string> {
+  let last: Part | undefined;
+  for (let i = 0; i < 1000; i++) {
+    if (i % 100 === 0) await read(); // the next chunk of the request body
+    const part = new Part(`${id}.${i}`);
+    part.previous = last;
+    last = part;
+  }
+  return `request ${id}: last part ${last!.text}`;
+}
+
+async function serve(id: number): Promise<string> {
+  const region = new LifetimeRegion();
+  try {
+    return await region.run(() => handle(id));
+  } finally {
+    region.release();
+  }
+}
+
+Promise.all([1, 2, 3].map(serve)).then((responses) => {
+  for (const response of responses) console.log(response);
+});
+```
+
+Each request's 1000 parts are freed when the request releases its region:
+
+```console
+$ scriptc build requests.ts -o requests >/dev/null
+$ SCRIPTC_REGION_STATS=1 ./requests >/dev/null
+scriptc region 1: freed 1000 objects, 0 owned objects, 1 chunks (2.0 MiB); cycles 0.0 ms, walk 0.0 ms, free 0.0 ms
+scriptc region 2: freed 1000 objects, 0 owned objects, 1 chunks (2.0 MiB); cycles 0.0 ms, walk 0.0 ms, free 0.0 ms
+scriptc region 3: freed 1000 objects, 0 owned objects, 1 chunks (2.0 MiB); cycles 0.0 ms, walk 0.0 ms, free 0.0 ms
+scriptc regions: 3 created, 3 released, 3 freed, 0 pinned, 0 kept
+scriptc region heap passes: 0
+```
+
+A region released while async work started inside it is still pending stays allocated until that work has finished, and the work keeps creating its instances in the region. Callbacks that the event loop calls (timers, `queueMicrotask`, event listeners) and the bodies of async generators run outside the region; synchronous generators run in the region of the code that resumes them.
 
 ### Threads
 
@@ -102,7 +157,7 @@ Each thread has its own regions and its own default region. A region belongs to 
 
 Programs that never construct a `LifetimeRegion` compile exactly as they would without the package. In programs that do, every retain and release of a `ProgramLifetime` instance that belongs to a region updates a count of the region chunk that holds it. Instances of the default region are not counted, and until the program creates its first region, a retain or release only tests whether counting has started.
 
-Freeing a region visits each of its instances and the ordinary objects they own. A region that the check would keep may be kept only by unreachable cycles of ordinary objects that refer into it, so before keeping it scriptc runs the cycle collector over the thread's heap and checks again.
+Freeing a region visits each of its instances and the ordinary objects they own. Each thread keeps up to 8 MiB of the memory of freed regions for its next regions, so a program that frees a region per request or per batch does not map and fault in new pages every time. A region that the check would keep may be kept only by unreachable cycles of ordinary objects that refer into it, so before keeping it scriptc runs the cycle collector over the thread's heap and checks again.
 
 `SCRIPTC_REGION_STATS=1` prints one line per release attempt, freed, `kept` (with the number of references the check could not explain) or `pinned` (published), and at exit a summary per thread and the number of those cycle-collector passes over the thread's heap.
 
@@ -183,8 +238,99 @@ No lock is held while a callback runs. Two threads that miss the same key at the
 2. It does not compare identities or ids across threads.
 3. A thread does not depend on another thread's inserts: `size` and `has` reflect every thread's inserts in scriptc and the calling thread's under Node.js.
 
-State that a thread computes about a shared value later (lazily resolved members, caches) belongs in thread-local state, such as a module-level `Map` keyed by the value or an array indexed by an id the value carries: module state is per thread in both runtimes. In scriptc an array indexed by a dense id is the fastest of these.
+State that a thread computes about a shared value later (lazily resolved members, caches) belongs in thread-local state, such as a [`ThreadSlots`](#threadslots) family, a module-level `Map` keyed by the value or an array indexed by an id the value carries: module state is per thread in both runtimes. In scriptc an array indexed by a dense id is the fastest of these.
 
 ### Memory
 
 Lookups take no lock and write nothing. Inserts lock one of 64 segments of the table for a probe and a few stores. Stored values are immortal in scriptc builds: they stay allocated until the process exits, including a value a callback computed for a key that another thread stored first. Programs that never construct an `InternTable` do not run any of its code.
+
+## ThreadSlots
+
+Threads that share values through an `InternTable` often compute more about each shared value later: resolved members, cached results, flags. That state differs per thread, so it cannot live in the shared value, which is immutable. A `ThreadSlots` family holds one value per key and thread, like a `WeakMap` that each thread has its own copy of. A thread sees only the values it set, including for keys that every thread shares.
+
+```ts:slots.ts
+import { Worker, isMainThread, parentPort, threadId } from "node:worker_threads";
+import { InternTable, ThreadSlots } from "@scriptc/experimental";
+
+class Shape {
+  readonly name: string;
+  constructor(name: string) {
+    this.name = name;
+  }
+}
+
+class ShapeState {
+  uses = 0;
+  readonly thread: number;
+  constructor(thread: number) {
+    this.thread = thread;
+  }
+}
+
+const shapes = new InternTable<string, Shape>("example.slot-shapes");
+// Module scope: every thread that evaluates this line opens the same family.
+const states = new ThreadSlots<Shape, ShapeState>("example.shape-states");
+
+function use(name: string): ShapeState {
+  const shape = shapes.getOrInsertComputed(name, () => new Shape(name));
+  let state = states.get(shape);
+  if (state === undefined) {
+    state = new ShapeState(threadId);
+    states.set(shape, state);
+  }
+  state.uses++;
+  return state;
+}
+
+if (isMainThread) {
+  for (let i = 0; i < 2; i++) {
+    new Worker(new URL(import.meta.url)).on("message", (text: string) => console.log(text));
+  }
+} else {
+  use("square");
+  const state = use("square");
+  parentPort!.postMessage(`worker: ${state.uses} uses, own state ${state.thread === threadId}`);
+}
+```
+
+In the scriptc executable both workers read the same `Shape` object from the table, and each keeps its own `ShapeState` for it. Both runtimes print the same:
+
+```console
+$ node slots.ts
+worker: 2 uses, own state true
+worker: 2 uses, own state true
+$ scriptc build slots.ts -o slots >/dev/null
+$ ./slots
+worker: 2 uses, own state true
+worker: 2 uses, own state true
+```
+
+### Slot methods
+
+<dl>
+  <dt><code>new ThreadSlots&lt;K, V&gt;(name)</code></dt>
+  <dd>Opens the family called <code>name</code>. Within one thread every construction with the same name refers to the same family.</dd>
+  <dt><code>slots.get(key)</code>, <code>slots.has(key)</code></dt>
+  <dd>Read the calling thread's value for <code>key</code>.</dd>
+  <dt><code>slots.set(key, value)</code></dt>
+  <dd>Sets the calling thread's value for <code>key</code> and returns the slots. It never writes the key, so it works on published keys.</dd>
+  <dt><code>slots.delete(key)</code></dt>
+  <dd>Removes the calling thread's value for <code>key</code> and returns whether there was one.</dd>
+</dl>
+
+Under Node.js each family is a `WeakMap` per thread.
+
+### Keys and values
+
+scriptc requires:
+
+- the name to be a string literal, and every construction of one name to use the same type arguments;
+- the key type to be a class declared in the program; keys may be instances of its subclasses;
+- the value type to be a class, an object type, an array, a `Map` or a `Set`;
+- the methods to be called through a module-level `const` initialized with `new ThreadSlots<K, V>("name")`, as in the example. A family's storage is found by its name when the program is compiled.
+
+### Slot cost
+
+Each instance of a key class, and of every class in its hierarchy, carries a 4-byte slot index, 0 until a value is set for it. The first `set` for a key assigns the index; indices are never reused. `get` and `has` read the index, a page of the thread's family and the entry, with no lock, hash or atomic update. A family stores values in pages of 1024 entries, allocated as the thread sets values in them.
+
+A family holds a reference to each of the thread's values. A value is released when it is replaced or deleted, when its key is freed, and when the thread exits. Keys that are freed with a [`LifetimeRegion`](#lifetimeregion) keep their values until the thread exits, a value that belongs to a region keeps the region allocated while the family holds it, and a value that refers to its own key keeps the key alive. Programs that never construct a `ThreadSlots` do not run any of its code, and their classes have no slot index.

@@ -1,1 +1,7 @@
-- **FileHandle and descriptor I/O:** Static reads and writes accept Buffer and Uint8Array windows, numeric positions, and UTF-8 strings. FileHandle reads also accept options records and allocate a buffer when omitted. Vector I/O, truncation, syncing, and permission changes compile. Ownership changes, timestamps, and bigint Stats remain unsupported; FileHandle streams and `readLines` are covered under File streams. Dynamic descriptor I/O accepts other ArrayBuffer views and Buffer encodings; read positions outside the safe integer range are refused. File operations complete synchronously before their callbacks or promise continuations. Descriptor permission changes on Windows throw `ENOSYS`.
+- **FileHandle and descriptor I/O:** Static reads and writes accept Buffer and Uint8Array windows, numeric positions, and UTF-8 strings.
+  FileHandle reads also accept options records and allocate a buffer when omitted.
+  Vector I/O, truncation, syncing, and permission changes compile.
+  Ownership changes, timestamps, and bigint Stats remain unsupported; FileHandle streams and `readLines` are covered under File streams.
+  Dynamic descriptor I/O accepts other ArrayBuffer views and Buffer encodings; read positions outside the safe integer range are refused.
+  File operations complete synchronously before their callbacks or promise continuations.
+  Descriptor permission changes on Windows throw `ENOSYS`.

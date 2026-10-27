@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/builtin-function-values.mjs"
+ ],
+ "diags": []
+}

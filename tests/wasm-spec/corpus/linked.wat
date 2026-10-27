@@ -1,0 +1,12 @@
+(module
+  (import "api" "memory" (memory 1))
+  (import "api" "table" (table 2 funcref))
+  (import "api" "counter" (global $c (mut i32)))
+  (import "api" "add" (func $add (param i32 i32) (result i32)))
+  (func (export "read") (param i32) (result i32) (i32.load8_u (local.get 0)))
+  (func (export "useTable") (param i32 i32) (result i32)
+    (call_indirect (param i32) (result i32) (local.get 1) (local.get 0)))
+  (func (export "setCounter") (param i32) (global.set $c (local.get 0)))
+  (func (export "add3") (param i32 i32 i32) (result i32)
+    (call $add (call $add (local.get 0) (local.get 1)) (local.get 2)))
+)

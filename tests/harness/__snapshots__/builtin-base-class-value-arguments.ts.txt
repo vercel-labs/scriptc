@@ -1,0 +1,17 @@
+builtin-base-class-value-arguments.ts:9:34 - error SC2020: 'new Upper with arguments through an inherited stream constructor' is part of the standard library types but has no scriptc lowering yet
+
+   8 | const registry = { upper: Upper };
+   9 | const upper = new registry.upper({ objectMode: true });
+     |                                  ^~~~~~~~~~~~~~~~~~~~
+  10 | upper.destroy();
+
+  hint: declare a constructor that passes an inline options object to super(...)
+
+builtin-base-class-value-arguments.ts:13:24 - error SC2020: 'new Upper with arguments through an inherited stream constructor' is part of the standard library types but has no scriptc lowering yet
+
+  12 | const Kind = Upper;
+  13 | const other = new Kind({ highWaterMark: 4 });
+     |                        ^~~~~~~~~~~~~~~~~~~~
+  14 | other.destroy();
+
+  hint: declare a constructor that passes an inline options object to super(...)

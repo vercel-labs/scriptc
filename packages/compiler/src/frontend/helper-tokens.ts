@@ -1,8 +1,8 @@
 /** Token fingerprints for the fixed bundler helpers we recognize. This is
  * deliberately not a JavaScript parser: regexes, templates, escaped names,
- * numbers, and unknown punctuation refuse the helper. None occur in the
- * canonical helpers. Every accepted token is represented in the result;
- * comments and whitespace alone may disappear. */
+ * numbers other than plain decimal integers, and unknown punctuation refuse
+ * the helper. None occur in the canonical helpers. Every accepted token is
+ * represented in the result; comments and whitespace alone may disappear. */
 const operators = [
   ">>>=",
   "===",
@@ -157,6 +157,15 @@ export function helperTokens(text: string): string | null {
       result += fingerprint("s", token.value);
       i = token.end;
       previous = "string";
+    } else if (/[0-9]/.test(ch)) {
+      // Plain decimal integers only (esbuild's `cb[keys(cb)[0]]`): a
+      // legacy octal, fraction, exponent, radix prefix, BigInt suffix or
+      // numeric separator refuses rather than aliasing another value.
+      const start = i++;
+      while (i < text.length && /[0-9]/.test(text.charAt(i))) i++;
+      if (/[A-Za-z0-9_$.\\]/.test(text.charAt(i)) || (ch === "0" && i - start > 1)) return null;
+      previous = text.slice(start, i);
+      result += fingerprint("n", previous);
     } else if (/[A-Za-z_$]/.test(ch)) {
       const start = i++;
       while (i < text.length && /[A-Za-z0-9_$]/.test(text.charAt(i))) i++;

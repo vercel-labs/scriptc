@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6041-error-cause-redeclared.ts"
+ ],
+ "diags": []
+}

@@ -14,6 +14,7 @@ test("native toolchain installation paths relocate with the manifest", () => {
     compiler_version: "1.2.3",
     target: "macos-arm64",
     ts7: "typescript/tsc",
+    tsc_ts: "tsc-ts/lib/tsc-ts",
     llvm_package: "llvm",
     runtime_pack: "runtime",
     linker: "tools/linker",
@@ -23,7 +24,10 @@ test("native toolchain installation paths relocate with the manifest", () => {
   try {
     writeFileSync(path, JSON.stringify(manifest));
     const toolchain = loadNativeToolchain(path);
-    expect(toolchain.ts7Executable).toBe(join(root, "typescript/tsc"));
+    expect(toolchain.ts7Executable).toBe(join(root, "tsc-ts/lib/tsc-ts"));
+    expect(loadNativeToolchain(path, { SCRIPTC_CHECKER: "tsgo" }).ts7Executable).toBe(
+      join(root, "typescript/tsc"),
+    );
     expect(toolchain.helperExecutable).toBe(join(root, "llvm/bin/scriptc-llvm-codegen"));
     expect(toolchain.runtimePackRoot).toBe(join(root, "runtime"));
     expect(toolchain.linker).toBe(join(root, "tools/linker"));
@@ -39,11 +43,46 @@ test("native toolchain installation paths relocate with the manifest", () => {
       { ...manifest, schema: "other" },
       { ...manifest, target: "other" },
       { ...manifest, ts7: "" },
+      { ...manifest, tsc_ts: "" },
       { ...manifest, linker_args: [1] },
     ]) {
       writeFileSync(path, JSON.stringify(invalid));
       expect(() => loadNativeToolchain(path)).toThrow();
     }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("prebuilt lib diagnostics apply while the checker is the distribution's tsc-ts", () => {
+  const root = realpathSync(
+    mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-native-tools-")),
+  );
+  const path = join(root, "toolchain.json");
+  const manifest: NativeToolchainManifest = {
+    schema: "scriptc.native-toolchain.v1",
+    compiler_version: "1.2.3",
+    target: "macos-arm64",
+    ts7: "typescript/tsc",
+    tsc_ts: "tsc-ts/lib/tsc-ts",
+    llvm_package: "llvm",
+    runtime_pack: "runtime",
+    linker: "tools/linker",
+    linker_args: [],
+    dsymutil: "dsymutil",
+    lib_diagnostics: "declarations/lib-diagnostics.json",
+  };
+  try {
+    writeFileSync(path, JSON.stringify(manifest));
+    expect(loadNativeToolchain(path).prebuiltLibDiagnostics).toBe(
+      join(root, "declarations/lib-diagnostics.json"),
+    );
+    // tsgo checks without them.
+    expect(
+      loadNativeToolchain(path, { SCRIPTC_CHECKER: "tsgo" }).prebuiltLibDiagnostics,
+    ).toBeUndefined();
+    writeFileSync(path, JSON.stringify({ ...manifest, lib_diagnostics: "" }));
+    expect(() => loadNativeToolchain(path)).toThrow();
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -71,6 +110,7 @@ test("native toolchain assets resolve from the physical manifest through package
     compiler_version: "1.2.3",
     target: "windows-x64-msvc",
     ts7: asset("typescript/lib/tsc.exe"),
+    tsc_ts: asset("tsc-ts/lib/tsc-ts.exe"),
     llvm_package: asset("llvm"),
     runtime_pack: asset("runtime"),
     runtime_packs: [{ target: "windows-x64-msvc", path: asset("runtime") }],
@@ -93,7 +133,11 @@ test("native toolchain assets resolve from the physical manifest through package
     const direct = loadNativeToolchain(path);
     const viaLink = loadNativeToolchain(join(linked, "bin", "scriptc.exe.json"));
     expect(viaLink).toEqual(direct);
-    expect(viaLink.ts7Executable).toBe(join(assets, "typescript/lib/tsc.exe"));
+    expect(viaLink.ts7Executable).toBe(join(assets, "tsc-ts/lib/tsc-ts.exe"));
+    expect(
+      loadNativeToolchain(join(linked, "bin", "scriptc.exe.json"), { SCRIPTC_CHECKER: "tsgo" })
+        .ts7Executable,
+    ).toBe(join(assets, "typescript/lib/tsc.exe"));
     expect(viaLink.helperExecutable).toBe(join(assets, "llvm/bin/scriptc-llvm-codegen.exe"));
     expect(
       loadNativeToolchain(join(linked, "bin", "scriptc.exe.json"), {
@@ -126,6 +170,7 @@ test("cross-target packs can be added to a project after the compiler is install
     compiler_version: "1.2.3",
     target: "macos-arm64",
     ts7: "../lib/typescript/tsc",
+    tsc_ts: "../lib/tsc-ts/lib/tsc-ts",
     llvm_package: "../lib/llvm",
     runtime_pack: "../lib/runtime-darwin-arm64",
     linker: "clang",
@@ -174,6 +219,7 @@ test("versioned GNU targets select Zig while ordinary host builds keep the insta
       compiler_version: "1.2.3",
       target: "linux-x64-gnu",
       ts7: "tsc",
+      tsc_ts: "tsc-ts",
       llvm_package: "llvm",
       runtime_pack: "runtime",
       linker: "clang",
@@ -192,3 +238,104 @@ test("versioned GNU targets select Zig while ordinary host builds keep the insta
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("a manifest without tsc_ts takes the host's tsc-ts executable from the installed package", () => {
+  const root = realpathSync(
+    mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-checker-tools-")),
+  );
+  const path = join(root, "toolchain.json");
+  const manifest: NativeToolchainManifest = {
+    schema: "scriptc.native-toolchain.v1",
+    compiler_version: "1.2.3",
+    target: "linux-x64-musl",
+    ts7: "typescript/tsc",
+    llvm_package: "llvm",
+    runtime_pack: "runtime",
+    linker: "tools/linker",
+    linker_args: ["cc"],
+    dsymutil: "dsymutil",
+  };
+  try {
+    writeFileSync(path, JSON.stringify(manifest));
+    const project = join(root, "project");
+    const platformPackage = join(project, "node_modules/@tsc-ts/linux-x64-musl");
+    mkdirSync(join(project, "node_modules/tsc-ts"), { recursive: true });
+    writeFileSync(join(project, "node_modules/tsc-ts/package.json"), '{"name":"tsc-ts"}');
+    mkdirSync(join(platformPackage, "lib"), { recursive: true });
+    writeFileSync(join(platformPackage, "lib/tsc-ts"), "");
+    expect(loadNativeToolchain(path, {}, project).ts7Executable).toBe(
+      join(platformPackage, "lib/tsc-ts"),
+    );
+    expect(loadNativeToolchain(path, { SCRIPTC_CHECKER: "tsgo" }, project).ts7Executable).toBe(
+      join(root, "typescript/tsc"),
+    );
+    expect(() => loadNativeToolchain(path, {}, root)).toThrow(
+      "the tsc-ts package is not installed",
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test.each(["nested", "hoisted", "pnpm"])(
+  "an npm platform package resolves its LLVM helper and runtime pack dependencies (%s)",
+  (layout) => {
+    const root = realpathSync(
+      mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-dependencies-")),
+    );
+    const modules =
+      layout === "pnpm"
+        ? join(root, "node_modules/.pnpm/@scriptc+cli-linux-x64-gnu@1.2.3/node_modules")
+        : join(root, "node_modules");
+    const platform = join(modules, "@scriptc/cli-linux-x64-gnu");
+    const dependencies = layout === "nested" ? join(platform, "node_modules") : modules;
+    const bin = join(platform, "dist/bin");
+    const path = join(bin, "scriptc.json");
+    const manifest: NativeToolchainManifest = {
+      schema: "scriptc.native-toolchain.v1",
+      compiler_version: "1.2.3",
+      target: "linux-x64-gnu",
+      ts7: "../lib/typescript/tsc",
+      tsc_ts: "../lib/tsc-ts/lib/tsc-ts",
+      linker: "clang",
+      linker_args: [],
+      dsymutil: "dsymutil",
+    };
+    const install = (name: string, version = "1.2.3") => {
+      mkdirSync(join(dependencies, name), { recursive: true });
+      writeFileSync(join(dependencies, name, "package.json"), JSON.stringify({ name, version }));
+    };
+    try {
+      mkdirSync(bin, { recursive: true });
+      writeFileSync(path, JSON.stringify(manifest));
+      expect(() => loadNativeToolchain(path)).toThrow(
+        "scriptc requires @scriptc/llvm-linux-x64-gnu@1.2.3, which is not installed beside the native compiler",
+      );
+      install("@scriptc/llvm-linux-x64-gnu");
+      install("@scriptc/runtime-linux-x64-gnu", "1.2.2");
+      expect(() => loadNativeToolchain(path)).toThrow(
+        "scriptc requires @scriptc/runtime-linux-x64-gnu@1.2.3, found 1.2.2",
+      );
+      install("@scriptc/runtime-linux-x64-gnu");
+      const toolchain = loadNativeToolchain(path);
+      expect(toolchain.helperPackageRoot).toBe(join(dependencies, "@scriptc/llvm-linux-x64-gnu"));
+      expect(toolchain.helperExecutable).toBe(
+        join(dependencies, "@scriptc/llvm-linux-x64-gnu/bin/scriptc-llvm-codegen"),
+      );
+      expect(toolchain.runtimePackRoot).toBe(join(dependencies, "@scriptc/runtime-linux-x64-gnu"));
+      // Other targets' packs still come from the project.
+      const project = join(root, "project");
+      const wasi = join(project, "node_modules/@scriptc/runtime-wasm32-wasi");
+      mkdirSync(wasi, { recursive: true });
+      writeFileSync(join(wasi, "package.json"), "{}");
+      expect(
+        loadNativeToolchain(path, { SCRIPTC_TARGET: "wasm32-wasi" }, project).runtimePackRoot,
+      ).toBe(wasi);
+      expect(
+        loadNativeToolchain(path, { SCRIPTC_RUNTIME_PACK: "../explicit" }).runtimePackRoot,
+      ).toBe(join(platform, "dist/explicit"));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);

@@ -5,11 +5,11 @@
  "diags": [
   {
    "code": "SC0001",
-   "message": "Cannot find name 'node:v8'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.",
+   "message": "Cannot find name 'node:vm'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.",
    "loc": {
     "file": "<repo>/tests/diagnostics/module-out-of-scope.ts",
-    "start": 381,
-    "end": 390
+    "start": 384,
+    "end": 393
    }
   },
   {
@@ -17,8 +17,8 @@
    "message": "Cannot find name 'domain'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.",
    "loc": {
     "file": "<repo>/tests/diagnostics/module-out-of-scope.ts",
-    "start": 415,
-    "end": 423
+    "start": 418,
+    "end": 426
    }
   },
   {
@@ -26,8 +26,8 @@
    "message": "Cannot find name 'node:sqlite'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.",
    "loc": {
     "file": "<repo>/tests/diagnostics/module-out-of-scope.ts",
-    "start": 454,
-    "end": 467
+    "start": 457,
+    "end": 470
    }
   },
   {
@@ -35,8 +35,8 @@
    "message": "Cannot find module '_http_common' or its corresponding type declarations.",
    "loc": {
     "file": "<repo>/tests/diagnostics/module-out-of-scope.ts",
-    "start": 496,
-    "end": 510
+    "start": 499,
+    "end": 513
    }
   },
   {
@@ -44,84 +44,84 @@
    "message": "Cannot find name 'node:inspector'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.",
    "loc": {
     "file": "<repo>/tests/diagnostics/module-out-of-scope.ts",
-    "start": 533,
-    "end": 549
+    "start": 536,
+    "end": 552
    }
   },
   {
    "code": "SC0001",
-   "message": "Cannot find name 'node:stream/web'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.",
+   "message": "Cannot find name 'node:repl'. Do you need to install type definitions for node? Try `npm i --save-dev @types/node` and then add 'node' to the types field in your tsconfig.",
    "loc": {
     "file": "<repo>/tests/diagnostics/module-out-of-scope.ts",
-    "start": 582,
-    "end": 599
+    "start": 576,
+    "end": 587
    }
   },
   {
    "code": "SC1010",
-   "message": "the 'node:v8' module (it observes V8 engine internals — heap statistics and snapshots, GC and CPU profiles, serialize/deserialize — and a compiled binary embeds no V8 engine to observe) is not supported yet",
+   "message": "the 'node:vm' module (it compiles and runs JavaScript source at runtime, and a compiled binary embeds no JavaScript engine to run it) is not supported yet",
    "loc": {
     "file": "<repo>/tests/diagnostics/module-out-of-scope.ts",
-    "start": 347,
-    "end": 391
+    "start": 352,
+    "end": 394
    },
    "milestone": "M4",
-   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
+   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
   },
   {
    "code": "SC1010",
    "message": "the 'domain' module (deprecated in Node and slated for removal; its implicit error interception hooks every async callback at engine level, which is not modeled) is not supported yet",
    "loc": {
     "file": "<repo>/tests/diagnostics/module-out-of-scope.ts",
-    "start": 392,
-    "end": 424
+    "start": 395,
+    "end": 427
    },
    "milestone": "M4",
-   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
+   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
   },
   {
    "code": "SC1010",
    "message": "the 'node:sqlite' module (it wraps the SQLite library bundled into the node executable, and scriptc binaries bundle no SQLite engine) is not supported yet",
    "loc": {
     "file": "<repo>/tests/diagnostics/module-out-of-scope.ts",
-    "start": 425,
-    "end": 468
+    "start": 428,
+    "end": 471
    },
    "milestone": "M4",
-   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
+   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
   },
   {
    "code": "SC1010",
    "message": "the '_http_common' module (a Node-internal module: it exposes Node's own implementation objects, which the scriptc runtime does not replicate) is not supported yet",
    "loc": {
     "file": "<repo>/tests/diagnostics/module-out-of-scope.ts",
-    "start": 469,
-    "end": 511
+    "start": 472,
+    "end": 514
    },
    "milestone": "M4",
-   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
+   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
   },
   {
    "code": "SC1010",
    "message": "the 'node:inspector' module (it drives the V8 inspector protocol — debugger, profiler, heap access — and a compiled binary embeds no V8 engine to inspect) is not supported yet",
    "loc": {
     "file": "<repo>/tests/diagnostics/module-out-of-scope.ts",
-    "start": 512,
-    "end": 550
+    "start": 515,
+    "end": 553
    },
    "milestone": "M4",
-   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
+   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
   },
   {
    "code": "SC1010",
-   "message": "the 'node:stream/web' module is not supported yet",
+   "message": "the 'node:repl' module is not supported yet",
    "loc": {
     "file": "<repo>/tests/diagnostics/module-out-of-scope.ts",
-    "start": 551,
-    "end": 600
+    "start": 554,
+    "end": 588
    },
    "milestone": "M4",
-   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
+   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
   }
  ]
 }

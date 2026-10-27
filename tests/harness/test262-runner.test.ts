@@ -101,6 +101,26 @@ test("the property helper only admits direct inline descriptor checks", () => {
   }
 });
 
+test("the typed array helper is admitted without the %TypedArray% intrinsic", () => {
+  const text = source(
+    "includes: [testTypedArray.js]",
+    "testWithTypedArrayConstructors(function(TA) { assert.sameValue(new TA(1).length, 1); });",
+  );
+  expect(exclusion(text, metadata(text), "strict")).toBeUndefined();
+  const prepared = prepare(text, false, undefined, "strict", ["testTypedArray.js"]);
+  expect(prepared).toContain("function testWithTypedArrayConstructors(");
+  expect(prepared).not.toContain("Object.getPrototypeOf(Int8Array)");
+  for (const body of [
+    "assert.sameValue(typeof TypedArray, 'function');",
+    "testWithTypedArrayConstructors(function(TA) { assert.sameValue(Object.getPrototypeOf(TA), TypedArray); });",
+  ]) {
+    const named = source("includes: [testTypedArray.js]", body);
+    expect(exclusion(named, metadata(named), "strict")).toBe("harness:TypedArray-intrinsic");
+  }
+  const other = source("includes: [testTypedArray.js, detachArrayBuffer.js]");
+  expect(exclusion(other, metadata(other), "strict")).toBe("harness-includes:detachArrayBuffer.js");
+});
+
 test("receiver-bound this is admitted without adapting script-level this", () => {
   for (const [body, expected] of [
     ["class C { read() { return this.value; } }", undefined],

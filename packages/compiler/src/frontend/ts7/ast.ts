@@ -47,12 +47,16 @@ import {
 } from "./ast-guards.generated.js";
 import type { Ts7DiagnosticData as Diagnostic } from "./session-schema.generated.js";
 import { ModifierFlags, SyntaxKind } from "./enums.js";
+import { AstKind, KIND_NODE_LIST } from "./ast-schema.generated.js";
+import { PREORDER_LIST } from "./ast-wire.js";
+import { tokenStartOfNode } from "./node-functions.js";
 
 /* ---- everything 7 kept under the same name ---- */
 
 // The frontend's node types, guards and token spellings share the concrete
 // AstNode layout. Parser and transform factories remain outside this client.
 export * from "./ast-types.js";
+export * from "./node-functions.js";
 export * from "./ast-guards.generated.js";
 export { tokenToString } from "./ast-tokens.generated.js";
 
@@ -100,7 +104,7 @@ export function forEachChild<T>(
   return node.forEachChild(cbNode, cbNodes);
 }
 
-/** Preorder walk over a whole subtree with an EXPLICIT stack. The idiomatic
+/** Preorder walk over a whole subtree without recursion. The idiomatic
  * recursive forEachChild visit costs two JS frames per AST level, so a
  * pathologically deep tree — the ~6500-term left-nested binary chain of the
  * binderBinaryExpressionStress corpus pair — overflows the stack as an ICE
@@ -109,8 +113,61 @@ export function forEachChild<T>(
  * detection) walk this way instead, so absurd nesting always reaches the
  * named fence. The callback may answer "skip" to leave a node's children
  * unvisited (scope and depth cut-offs — `depth` counts levels below the
- * root) or "stop" to end the walk early. */
+ * root) or "stop" to end the walk early.
+ *
+ * The wire stores nodes in preorder, so the walk visits the subtree's index
+ * range in order: it enters lists without a level of their own, and passes
+ * over attached JSDoc trees and skipped subtrees by their end index. A table
+ * that is not a checked preorder tree (AstWireFile.preorder) is walked
+ * through its links instead. */
 export function walkPreorder(
+  root: Node,
+  cb: (node: Node, depth: number) => void | "skip" | "stop",
+  kinds?: ReadonlySet<SyntaxKind>,
+): void {
+  const file = root.file;
+  const tree = file.wire.preorder();
+  if (tree === null) {
+    walkLinkedPreorder(root, cb, kinds);
+    return;
+  }
+  const nodeKinds = tree.kinds;
+  const ends = tree.ends;
+  const start = root.index;
+  const stop = ends[start]!;
+  // The subtree ends of the visited nodes that contain the current index.
+  const open: number[] = [];
+  let index = start;
+  while (index < stop) {
+    const kind = nodeKinds[index]!;
+    if (kind === PREORDER_LIST) {
+      index++;
+      continue;
+    }
+    if (
+      kind === AstKind.JSDoc &&
+      index !== start &&
+      nodeKinds[file.wire.parent(index)] !== PREORDER_LIST
+    ) {
+      index = ends[index]!;
+      continue;
+    }
+    while (open.length > 0 && open[open.length - 1]! <= index) open.pop();
+    const node = kinds === undefined || kinds.has(kind) ? file.node(index) : undefined;
+    const verdict = node === undefined ? undefined : cb(node, open.length);
+    if (verdict === "stop") return;
+    if (verdict === "skip") {
+      index = ends[index]!;
+      continue;
+    }
+    open.push(ends[index]!);
+    index++;
+  }
+}
+
+/** walkPreorder through the sibling and parent links, with an explicit
+ * stack. */
+function walkLinkedPreorder(
   root: Node,
   cb: (node: Node, depth: number) => void | "skip" | "stop",
   kinds?: ReadonlySet<SyntaxKind>,
@@ -138,6 +195,93 @@ export function walkPreorder(
     }
     for (let i = first; i < stack.length; i++) depths.push(depth + 1);
   }
+}
+
+/** The semantic children of a wire node: list items stand in for their
+ * list, and attached JSDoc trees are left out (the walkPreorder view). */
+function semanticChildIndices(root: Node, index: number, out: number[]): void {
+  const wire = root.file.wire;
+  for (let child = wire.firstChild(index); child !== 0; child = wire.next(child)) {
+    const kind = wire.kind(child);
+    if (kind === KIND_NODE_LIST) {
+      for (let item = wire.firstChild(child); item !== 0; item = wire.next(item)) out.push(item);
+    } else if (kind !== AstKind.JSDoc) out.push(child);
+  }
+}
+
+/** The outermost node of `sourceFile` whose token span is exactly
+ * [start, end), or undefined. Only nodes ending at `end` are
+ * materialized. */
+export function nodeAtSpan(sourceFile: SourceFile, start: number, end: number): Node | undefined {
+  const wire = sourceFile.file.wire;
+  const children: number[] = [];
+  let index = sourceFile.index;
+  for (;;) {
+    children.length = 0;
+    semanticChildIndices(sourceFile, index, children);
+    let next = 0;
+    for (const child of children) {
+      if (wire.pos(child) > start || wire.end(child) < end) continue;
+      if (wire.end(child) === end) {
+        const node = sourceFile.file.node(child);
+        if (tokenStartOfNode(node) === start) return node;
+      }
+      next = child;
+      break;
+    }
+    if (next === 0) return undefined;
+    index = next;
+  }
+}
+
+/** The name of the declaration at wire `index` in `root`'s file when its
+ * kind is in `kinds`: its identifier, private identifier or string literal
+ * name, "constructor" for a constructor, or null. Reads the wire without
+ * materializing nodes. */
+export function declarationNameAt(
+  root: Node,
+  index: number,
+  kinds: ReadonlySet<number>,
+): string | null {
+  const wire = root.file.wire;
+  const kind = wire.kind(index);
+  if (!kinds.has(kind)) return null;
+  if (kind === SyntaxKind.Constructor) return "constructor";
+  const name = wire.namedChild(index, "name");
+  if (name === 0) return null;
+  const nameKind = wire.kind(name);
+  if (
+    nameKind !== SyntaxKind.Identifier &&
+    nameKind !== SyntaxKind.PrivateIdentifier &&
+    nameKind !== SyntaxKind.StringLiteral
+  )
+    return null;
+  return wire.text(name) ?? null;
+}
+
+/** The indices, in preorder, of the nodes below `root` that have `key` and
+ * are not inside a nested named declaration (declarationNameAt with
+ * `kinds`). A named declaration is keyed `<kind>:<name>` and its subtree is
+ * not visited; other nodes are keyed by their kind. No node is
+ * materialized. */
+export function anchoredNodes(root: Node, key: string, kinds: ReadonlySet<number>): number[] {
+  const wire = root.file.wire;
+  const out: number[] = [];
+  const children: number[] = [];
+  const stack: number[] = [];
+  semanticChildIndices(root, root.index, children);
+  for (let i = children.length - 1; i >= 0; i--) stack.push(children[i]!);
+  while (stack.length > 0) {
+    const index = stack.pop()!;
+    const kind = wire.kind(index);
+    const name = declarationNameAt(root, index, kinds);
+    if ((name === null ? String(kind) : `${kind}:${name}`) === key) out.push(index);
+    if (name !== null) continue;
+    children.length = 0;
+    semanticChildIndices(root, index, children);
+    for (let i = children.length - 1; i >= 0; i--) stack.push(children[i]!);
+  }
+  return out;
 }
 
 export function getLineAndCharacterOfPosition(
@@ -186,7 +330,7 @@ export function canHaveModifiers(node: Node): boolean {
 
 /** The node's modifier tokens, decorators excluded (5.9.3's getModifiers). */
 export function getModifiers(node: Node): readonly Modifier[] | undefined {
-  const modifiers = node.modifiers;
+  const modifiers = node.modifiers?.nodes;
   if (modifiers === undefined) return undefined;
   return modifiers.filter((m): m is Modifier => m.kind !== SyntaxKind.Decorator);
 }
@@ -232,7 +376,7 @@ function modifierToFlag(kind: number): number {
 }
 
 function modifierFlagsOfNode(node: Node): number {
-  const modifiers = node.modifiers;
+  const modifiers = node.modifiers?.nodes;
   let flags = ModifierFlags.None as number;
   if (modifiers !== undefined) {
     for (const m of modifiers) flags |= modifierToFlag(m.kind);

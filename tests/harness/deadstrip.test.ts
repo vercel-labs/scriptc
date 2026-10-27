@@ -1,5 +1,6 @@
 /* Reachability's build contract — scriptc-only, deliberately NOT
- * differential:
+ * differential (tests/corpus/6170-flight-dev-stacks-dead pins statement-level
+ * reachability differentially; here its emitted LLVM is grepped):
  *
  * - The dead-strip side (a program importing a module whose UNUSED exports
  *   hold rejected constructs must build and run) is covered differentially
@@ -47,6 +48,36 @@ test("unreached bodies leave no trace in the emitted LLVM", async () => {
   ]) {
     expect(c, `unreached '${gone}' must leave no trace in the emitted LLVM`).not.toContain(gone);
   }
+});
+
+test("statements after an abrupt statement leave no trace and no stack frames", async () => {
+  const outDir = join(cacheDir, `deadstrip-abrupt${sanitize ? "-san" : ""}`);
+  const result = await compile(join(repoRoot, "tests/corpus/6170-flight-dev-stacks-dead.ts"), {
+    outPath: join(outDir, "program"),
+    outDir,
+    sanitize,
+    backend: "llvm",
+  });
+  if (!result.ok) {
+    throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+  }
+  const c = readFileSync(result.llvmPath, "utf8");
+  for (const reached of ["outlineComponentInfo", "emitOutlinedDebugModelChunk", "renderModel"]) {
+    expect(c, `expected reached '${reached}' in the emitted LLVM`).toContain(reached);
+  }
+  // The development-only stack parser is referenced only after the
+  // production stubs' throw: none of it is emitted, and the program keeps
+  // no source frames (its only stack read never runs).
+  for (const gone of [
+    "parseStackTrace",
+    "collectStackTrace",
+    "getMethodCallName",
+    "renderDebugModel",
+  ]) {
+    expect(c, `unreached '${gone}' must leave no trace in the emitted LLVM`).not.toContain(gone);
+  }
+  expect(c).not.toContain("source_frame");
+  expect(c).not.toContain("scr_stack_enter");
 });
 
 /** Compiles an in-repo fixture and returns its diagnostics codes+messages.

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7553-var-for-in-of-zero-iterations.js"
+ ],
+ "diags": []
+}

@@ -1,1 +1,5 @@
-- **Method values:** Borrowing a class method onto an unrelated object is unsupported. Detached methods that use `this`, builtin method values, abstract declarations, unspecialized generic methods, and incompatible override signatures produce runtime errors or compilation diagnostics. Supported class methods can be stored and passed as unbound functions. A field call supplies its containing instance as `this`; `call`, `apply`, and `bind` work when the signature supports runtime-checked conversion. Extracted overrides retain the selected method, and receiver validation accepts the declaring class and its subclasses.
+- **Method values:** Borrowing a class method onto an unrelated object is unsupported.
+  Detached methods that use `this`, builtin method values, abstract declarations, unspecialized generic methods, and incompatible override signatures produce runtime errors or compilation diagnostics.
+  Supported class methods can be stored and passed as unbound functions.
+  A field call supplies its containing instance as `this`; `call`, `apply`, and `bind` work when the signature supports runtime-checked conversion.
+  Extracted overrides retain the selected method, and receiver validation accepts the declaring class and its subclasses.

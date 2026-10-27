@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7243-for-await-close-order.mjs"
+ ],
+ "diags": []
+}

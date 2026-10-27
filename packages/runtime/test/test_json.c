@@ -551,6 +551,91 @@ static void test_class_values(void) {
   scr_str_release(name);
 }
 
+/* The class-view copy (scr_dyn_copy_property_descriptors) gives each
+ * property of the bag the attributes, value or accessors, and own-key
+ * position that defining it from its own descriptor would. */
+static ScrDyn *define_from(ScrDyn *target, const char *key, ScrDyn *value, bool writable,
+                           bool enumerable, bool configurable) {
+  ScrDyn *descriptor = scr_dyn_new_obj();
+  scr_dyn_obj_set(descriptor, "value", 5, value);
+  scr_dyn_obj_set(descriptor, "writable", 8, scr_dyn_new_bool(writable));
+  scr_dyn_obj_set(descriptor, "enumerable", 10, scr_dyn_new_bool(enumerable));
+  scr_dyn_obj_set(descriptor, "configurable", 12, scr_dyn_new_bool(configurable));
+  ScrStr *name = S(key);
+  ScrDyn *k = scr_dyn_new_str(name);
+  ScrDyn *result = scr_dyn_define_property(target, k, descriptor);
+  scr_dyn_release(k);
+  scr_str_release(name);
+  scr_dyn_release(descriptor);
+  return result;
+}
+
+static const ScrDynEntry *entry_of(const ScrDyn *obj, const char *key) {
+  const ScrDynEntry *entries = scr_dyn_obj_dict_entries(obj);
+  for (size_t i = 0; i < obj->v.obj.len; i++)
+    if (entries[i].key_len == strlen(key) && memcmp(entries[i].key, key, strlen(key)) == 0)
+      return &entries[i];
+  return NULL;
+}
+
+static void test_copy_property_descriptors(void) {
+  ScrDyn *bag = scr_dyn_new_obj();
+  ScrDyn *getter = scr_dyn_new_obj();
+  scr_dyn_release(define_from(bag, "label", scr_dyn_new_num(1), true, true, true));
+  scr_dyn_release(define_from(bag, "hidden", scr_dyn_new_num(2), false, false, true));
+  scr_dyn_obj_set(bag, "7", 1, scr_dyn_new_num(7));
+  scr_dyn_obj_set(bag, "3", 1, scr_dyn_new_num(3));
+  /* An accessor entry (the getter object stands in for its function). */
+  scr_dyn_obj_set(bag, "computed", 8, scr_dyn_retain(scr_dyn_undefined()));
+  ScrDynEntry *accessor = (ScrDynEntry *)entry_of(bag, "computed");
+  accessor->accessor = true;
+  accessor->getter = scr_dyn_retain(getter);
+  accessor->writable = false;
+  accessor->enumerable = false;
+  accessor->configurable = false;
+
+  ScrDyn *view = scr_dyn_new_obj();
+  scr_dyn_release(scr_dyn_copy_property_descriptors(view, bag));
+  check(!scr_exc_pending() && view->v.obj.len == 5, "copy keeps every bag property");
+  ScrDyn *keys = scr_dyn_obj_own_keys(view);
+  const char *order[] = {"3", "7", "label", "hidden", "computed"};
+  bool ordered = keys->v.arr.len == 5;
+  for (size_t i = 0; ordered && i < 5; i++) ordered = str_is(keys->v.arr.items[i]->v.str, order[i]);
+  check(ordered, "copy keeps the bag's own-key order");
+  scr_dyn_release(keys);
+  const ScrDynEntry *hidden = entry_of(view, "hidden");
+  check(hidden && !hidden->accessor && hidden->value->v.num == 2 && !hidden->writable &&
+            !hidden->enumerable && hidden->configurable,
+        "copy keeps data attributes");
+  const ScrDynEntry *copied = entry_of(view, "computed");
+  check(copied && copied->accessor && copied->getter == getter && !copied->setter &&
+            !copied->writable && !copied->enumerable && !copied->configurable &&
+            copied->value->kind == SCR_DYN_UNDEF,
+        "copy keeps an accessor without calling it");
+
+  /* A property the target already has is redefined like defineProperty. */
+  ScrDyn *existing = scr_dyn_new_obj();
+  scr_dyn_obj_set(existing, "label", 5, scr_dyn_new_num(9));
+  scr_dyn_release(scr_dyn_copy_property_descriptors(existing, bag));
+  const ScrDynEntry *label = entry_of(existing, "label");
+  check(!scr_exc_pending() && existing->v.obj.len == 5 && scr_dyn_obj_dict_entries(existing)[0].key_len == 5 &&
+            label->value->v.num == 1,
+        "copy redefines an existing property in place");
+
+  /* A target that takes no new properties throws as defineProperty does. */
+  ScrDyn *closed = scr_dyn_new_obj();
+  scr_dyn_release(scr_dyn_prevent_extensions(closed));
+  ScrDyn *refused = scr_dyn_copy_property_descriptors(closed, bag);
+  check(!refused && scr_exc_pending() && closed->v.obj.len == 0, "copy onto a non-extensible object throws");
+  scr_exc_clear();
+
+  scr_dyn_release(closed);
+  scr_dyn_release(existing);
+  scr_dyn_release(view);
+  scr_dyn_release(bag);
+  scr_dyn_release(getter);
+}
+
 static void test_primitive_owners(void) {
   ScrDyn *values[] = {scr_dyn_new_null(), scr_dyn_new_bool(false), scr_dyn_new_bool(true)};
   const char *texts[] = {"null", "false", "true"};
@@ -579,6 +664,7 @@ int main(void) {
   test_class_values();
   scr_init();
   test_primitive_owners();
+  test_copy_property_descriptors();
 
   /* ── primitives ─────────────────────────────────────────────────── */
   ScrDyn *d = parse_ok("null", "parse null");

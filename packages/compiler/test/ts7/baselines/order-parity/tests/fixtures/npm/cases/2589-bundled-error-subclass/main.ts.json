@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/2589-bundled-error-subclass/main.ts"
+ ],
+ "diags": []
+}

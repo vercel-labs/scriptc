@@ -5,14 +5,14 @@ generics.ts:23:3 - error SC1090: generic nested functions (only top-level generi
      |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   24 |     return x;
 
-generics.ts:30:10 - error SC1090: '.join()' on arrays of this element type (number, string, and boolean arrays join — unions of those with undefined/null arms too, the units printing empty like JS) is not supported yet (instantiating 'joinAll' with <number[]>)
+generics.ts:30:10 - error SC1090: '.join()' on arrays of this element type (number, string, boolean and Date arrays join — unions of those with undefined/null arms too, the units printing empty like JS) is not supported yet (instantiating 'joinAll' with <number[]>)
 
   29 | function joinAll<T>(a: T[]): string {
   30 |   return a.join(",");
      |          ^~~~~~~~~~~
   31 | }
 
-generics.ts:44:7 - error SC2001: values of type 'typeof Box' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, read-only Date values, functions, classes, records, unions of those, and 'unknown')
+generics.ts:44:7 - error SC2001: values of type 'typeof Box' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
 
   43 | // The uninstantiated family as a value: no thunk, no single ctor ABI.
   44 | const BoxAlias = Box;

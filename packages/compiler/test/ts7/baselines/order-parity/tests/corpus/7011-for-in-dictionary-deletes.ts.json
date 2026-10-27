@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7011-for-in-dictionary-deletes.ts"
+ ],
+ "diags": []
+}

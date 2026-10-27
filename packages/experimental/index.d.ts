@@ -7,13 +7,14 @@ export declare class LifetimeRegion {
   constructor();
   /** Calls `fn` with this region as the current region and returns its
    * result. ProgramLifetime instances created during the call, outside
-   * nested `run` calls of other regions, belong to this region. Work that
-   * resumes after an `await` inside `fn` runs outside the region. */
+   * nested `run` calls of other regions, belong to this region, and so do
+   * those that async functions called during it create after an `await`. */
   run<T>(fn: () => T): T;
   /** Requests that the region be freed. Its instances are freed once
-   * nothing outside the region refers to any of them; until then the
-   * region stays allocated. Later `run` calls allocate outside the region.
-   * Never observable except through memory use. */
+   * nothing outside the region refers to any of them and the async work
+   * started inside it has finished; until then the region stays allocated.
+   * Later `run` calls allocate outside the region. Never observable except
+   * through memory use. */
   release(): void;
 }
 
@@ -51,4 +52,25 @@ export declare class InternTable<
    * callback runs: threads that miss one key at the same time may each
    * call it. */
   getOrInsertComputed(key: K, callback: (key: K) => V): V;
+}
+
+/** A named family of per-thread values keyed by objects, like a WeakMap
+ * that each thread has its own copy of. Every construction with one name
+ * opens the same family. A value set on one thread is visible only to that
+ * thread, including for keys that every thread shares (published objects,
+ * @scriptc/threads), and setting one never writes the key. scriptc requires
+ * the name to be a string literal, every construction of one name to use
+ * the same type arguments, the key type to be a class, and the slots to be
+ * called through a module-level const initialized with `new ThreadSlots`. */
+export declare class ThreadSlots<K extends object, V extends object> {
+  /** Opens the family called `name`. */
+  constructor(name: string);
+  /** This thread's value for `key`, or undefined. */
+  get(key: K): V | undefined;
+  /** Whether this thread has a value for `key`. */
+  has(key: K): boolean;
+  /** Sets this thread's value for `key`. Returns the slots. */
+  set(key: K, value: V): this;
+  /** Removes this thread's value for `key`. Returns whether there was one. */
+  delete(key: K): boolean;
 }

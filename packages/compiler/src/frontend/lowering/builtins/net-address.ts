@@ -31,8 +31,10 @@ export function netAddressClassOf(lowerer: Lowerer, node: ts.Expression): NetAdd
 function netAddressValueClass(lowerer: Lowerer, node: ts.Expression): NetAddressClass | null {
   const type = lowerer.typeOf(node);
   const sym = type.getAliasSymbol() ?? type.getSymbol();
-  if (!sym || (sym.name !== "SocketAddress" && sym.name !== "BlockList")) return null;
-  return lowerer.isStdlibSymbol(sym) ? sym.name : null;
+  if (!sym) return null;
+  const name = ts.symbolName(sym);
+  if (name !== "SocketAddress" && name !== "BlockList") return null;
+  return lowerer.isStdlibSymbol(sym) ? name : null;
 }
 
 /** `new SocketAddress(options?)` and `new BlockList()`: the argument
@@ -40,7 +42,7 @@ function netAddressValueClass(lowerer: Lowerer, node: ts.Expression): NetAddress
 export function lowerNetAddressNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
   const cls = netAddressClassOf(lowerer, expr.expression);
   if (cls === null) return null;
-  const args = expr.arguments ?? [];
+  const args = expr.arguments?.nodes ?? [];
   if (args.some(ts.isSpreadElement)) return null;
   const loc = locOf(expr);
   const values = args.map((arg) =>
@@ -93,13 +95,13 @@ const INSTANCE_METHODS: Record<NetAddressClass, ReadonlySet<string>> = {
 export function lowerNetAddressCall(lowerer: Lowerer, call: ts.CallExpression): IrExpr | null {
   if (call.questionDotToken || !ts.isPropertyAccessExpression(call.expression)) return null;
   const access = call.expression;
-  if (access.questionDotToken || call.arguments.some(ts.isSpreadElement)) return null;
+  if (access.questionDotToken || call.arguments.nodes.some(ts.isSpreadElement)) return null;
   const name = access.name.text;
   const loc = locOf(call);
   const statics = Object.hasOwn(STATIC_CALLS, name) ? STATIC_CALLS[name]! : null;
   if (statics !== null && netAddressClassOf(lowerer, access.expression) === statics.cls) {
     // The member takes one value; any others still evaluate, in order.
-    const args = call.arguments.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
+    const args = call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
     const first: IrExpr = args[0] ?? dynUndefinedExpr(loc);
     const result: IrExpr = {
       kind: "libCall",
@@ -127,8 +129,8 @@ export function lowerNetAddressCall(lowerer: Lowerer, call: ts.CallExpression): 
     kind: "dynInvoke",
     recv: lowerer.lowerExprExpecting(access.expression, DYN),
     method: name,
-    calleeName: access.getText(),
-    args: call.arguments.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+    calleeName: ts.getTextOfNode(access),
+    args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
     type: DYN,
     loc,
   };

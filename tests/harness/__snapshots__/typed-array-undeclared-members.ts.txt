@@ -1,0 +1,13 @@
+typed-array-undeclared-members.ts:7:20 - error SC1090: reading 'asciiSlice' from a value of type 'Uint8Array<ArrayBufferLike>' is not supported yet
+
+  6 | // @ts-ignore
+  7 | console.log(typeof bytes.asciiSlice);
+    |                    ^~~~~~~~~~~~~~~~
+  8 | console.log("latin1Write" in bytes);
+
+typed-array-undeclared-members.ts:8:13 - error SC1090: 'in' on 'Uint8Array' receivers (only process.env, Error instances, record-typed values, and unions of fixed record shapes answer; narrow first: check a discriminant field, or compare with '!== undefined'/'!== null' for unit arms) are not supported yet
+
+  7 | console.log(typeof bytes.asciiSlice);
+  8 | console.log("latin1Write" in bytes);
+    |             ^~~~~~~~~~~~~~~~~~~~~~
+  9 | 

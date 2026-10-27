@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6409-catch-binding-shapes.ts"
+ ],
+ "diags": []
+}

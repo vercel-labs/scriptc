@@ -1,0 +1,20 @@
+json-class-fields.ts:20:28 - error SC1090: JSON.stringify of 'Pattern' values (field 'source' of class 'Pattern' has type 'RegExp', which the runtime JSON traversal cannot write) are not supported yet
+
+  19 | 
+  20 | console.log(JSON.stringify(new Pattern()));
+     |                            ^~~~~~~~~~~~~
+  21 | console.log(JSON.stringify(new Job()));
+
+json-class-fields.ts:21:28 - error SC1090: JSON.stringify of 'Job' values (field 'pending' of class 'Job' has type 'Promise<number>', which the runtime JSON traversal cannot write) are not supported yet
+
+  20 | console.log(JSON.stringify(new Pattern()));
+  21 | console.log(JSON.stringify(new Job()));
+     |                            ^~~~~~~~~
+  22 | console.log(JSON.stringify({ catalog: new Catalog() }));
+
+json-class-fields.ts:22:28 - error SC1090: JSON.stringify of '{ catalog: Catalog }' values (field 'source' of class 'Pattern' has type 'RegExp', which the runtime JSON traversal cannot write) are not supported yet
+
+  21 | console.log(JSON.stringify(new Job()));
+  22 | console.log(JSON.stringify({ catalog: new Catalog() }));
+     |                            ^~~~~~~~~~~~~~~~~~~~~~~~~~
+  23 | 

@@ -14,7 +14,7 @@ import {
 } from "@scriptc/compiler";
 import { emitLlvmModule } from "../../packages/compiler/src/backend/llvm/emitter.js";
 import { type IrModule } from "../../packages/compiler/src/ir/ir.js";
-import { executableLinkFeatures } from "../../packages/compiler/src/backend/executable-features.js";
+import { moduleLinkFeatures } from "./link-features.js";
 import {
   llvmEmitterCases,
   llvmEmitterOptions,
@@ -92,6 +92,7 @@ const programs = [
   "local-union-storage.ts",
   "class-callback-storage.ts",
   "byte-record-windows.ts",
+  "typed-array-masked-index-stores.ts",
   "constant-callback-dispatch.ts",
   "constant-number-remainders.ts",
   "numeric-call-specialization.ts",
@@ -99,6 +100,10 @@ const programs = [
   "native-worker-roots/main.ts",
   "native-worker-shared-views.ts",
 ];
+// Debug info turns the emitter's loop optimizations off. These programs are
+// emitted without it, so the compiled emitter runs its loop analyses on them
+// (typed-array loop versioning, which caches null index shapes).
+const withoutDebugInfo = new Set(["typed-array-masked-index-stores.ts"]);
 
 for (const backend of ["llvm"] as const) {
   test(
@@ -161,7 +166,7 @@ for (const backend of ["llvm"] as const) {
           name: string,
           request = llvmEmitterRequest(),
         ): Promise<string> => {
-          writeFileSync(input, serializeModule(mod));
+          writeFileSync(input, serializeModule(mod, true));
           writeFileSync(config, JSON.stringify(request));
           const result = await execFileAsync(stage, [input, output, config], {
             ...runOptions,
@@ -195,7 +200,7 @@ for (const backend of ["llvm"] as const) {
             loc: { file: rejected.sourceFile, start: 0, end: 0 },
           },
         ];
-        writeFileSync(input, serializeModule(rejected));
+        writeFileSync(input, serializeModule(rejected, true));
         writeFileSync(config, JSON.stringify(llvmEmitterRequest()));
         writeFileSync(output, "untouched");
         const args = [input, output, config];
@@ -227,10 +232,12 @@ for (const backend of ["llvm"] as const) {
           if (!lowered.ok)
             throw new Error(`${source}: ${lowered.diagnostics.map((d) => d.message).join("\n")}`);
           const mod = deserializeModule(readFileSync(irPath, "utf8"));
-          const request: LlvmEmitterRequest = llvmEmitterRequest({
-            debug: true,
-            sources: [{ file: sourcePath, text: readFileSync(sourcePath, "utf8") }],
-          });
+          const request: LlvmEmitterRequest = withoutDebugInfo.has(source)
+            ? llvmEmitterRequest()
+            : llvmEmitterRequest({
+                debug: true,
+                sources: [{ file: sourcePath, text: readFileSync(sourcePath, "utf8") }],
+              });
           const text = await emit(mod, source, request);
           const llvmPath = join(dir, "program.ll");
           const outPath = executable("program");
@@ -244,7 +251,7 @@ for (const backend of ["llvm"] as const) {
             cacheIdentity: generatedProgram,
             sanitize,
             optimization: "dev",
-            ...executableLinkFeatures(mod),
+            ...moduleLinkFeatures(mod),
           });
           const node = spawnSync(process.execPath, [sourcePath], runOptions);
           const native = spawnSync(outPath, [], runOptions);
@@ -272,7 +279,7 @@ for (const backend of ["llvm"] as const) {
           cacheIdentity: generatedProgram,
           sanitize,
           optimization: "dev",
-          ...executableLinkFeatures(ownIr),
+          ...moduleLinkFeatures(ownIr),
         });
         const again = join(dir, "again.ll");
         progress("second generation emits own IR");

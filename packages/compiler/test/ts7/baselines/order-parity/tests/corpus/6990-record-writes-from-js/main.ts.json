@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6990-record-writes-from-js/helpers.js",
+  "<repo>/tests/corpus/6990-record-writes-from-js/main.ts"
+ ],
+ "diags": []
+}

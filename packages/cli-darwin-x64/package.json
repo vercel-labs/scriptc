@@ -1,6 +1,6 @@
 {
   "name": "@scriptc/cli-darwin-x64",
-  "version": "0.3.6",
+  "version": "0.4.5",
   "description": "Native scriptc compiler for darwin-x64",
   "license": "Apache-2.0",
   "homepage": "https://scriptc.dev",
@@ -18,9 +18,13 @@
   "files": [
     "dist"
   ],
+  "dependencies": {
+    "@scriptc/llvm-darwin-x64": "workspace:*",
+    "@scriptc/runtime-darwin-x64": "workspace:*"
+  },
   "scripts": {
     "build": "node -e \"\"",
-    "build:native": "node --max-old-space-size=8192 --import tsx ../../scripts/build-native-cli.mts dist",
+    "build:native": "node --max-old-space-size=8192 --import tsx ../../scripts/build-native-cli.mts dist --platform-packages",
     "prepack": "node ../../scripts/verify-native-cli.mjs ."
   },
   "publishConfig": {

@@ -272,6 +272,85 @@ describe.skipIf(!hasZig).each(["node", "native"] as const)(
       },
     );
 
+    test("cstring parameters, results, and callback arguments use NUL-terminated pointers", async () => {
+      const entry = join(directory, "cstring-lib.ts");
+      await writeFile(
+        entry,
+        [
+          "declare function log(text: string): void;",
+          "export function greet(name: string): string {",
+          "  log(name.toUpperCase());",
+          "  return `hello, ${name}!`;",
+          "}",
+          "export function withNul(): string {",
+          '  return "a\\u0000b";',
+          "}",
+          "",
+        ].join("\n"),
+      );
+      const profilePath = join(directory, "cstring.json");
+      await writeFile(
+        profilePath,
+        JSON.stringify({
+          profile_format: 2,
+          name: "wasm-cstring",
+          entry,
+          emission: "llvm",
+          abi: {
+            prefix: "cs_",
+            init_symbol: "cs_init",
+            sink_register_symbol: "cs_sink",
+            callback_register_symbol: "cs_callback",
+            collect_symbol: null,
+            result_reset_symbol: null,
+          },
+          callbacks: [{ name: "log", params: ["cstring"], returns: "void" }],
+          exports: [
+            { export: "greet", symbol: "cs_greet", params: ["cstring"], returns: "cstring" },
+            { export: "withNul", symbol: "cs_with_nul", params: [], returns: "cstring" },
+          ],
+        }),
+      );
+      const result = await compileLibrary({ profilePath, outDir: directory });
+      if (!result.ok) throw new Error(JSON.stringify(result.diagnostics));
+      const wasi = new WASI({ version: "preview1" });
+      let api: Api;
+      const logs: string[] = [];
+      const panics: string[] = [];
+      const cString = (ptr: number): string => {
+        const memory = new Uint8Array(api.memory.buffer);
+        let end = ptr;
+        while (memory[end] !== 0) end++;
+        return new TextDecoder().decode(memory.subarray(ptr, end));
+      };
+      const instance = new WebAssembly.Instance(
+        new WebAssembly.Module(await readFile(result.archivePath)),
+        {
+          ...wasi.getImportObject(),
+          scriptc: {
+            log: (ptr: number) => logs.push(cString(ptr)),
+            panic: (ptr: number, len: number) => {
+              const message = new TextDecoder().decode(new Uint8Array(api.memory.buffer, ptr, len));
+              panics.push(message);
+              throw new Error(message);
+            },
+          },
+        },
+      );
+      api = instance.exports as Api;
+      wasi.initialize(instance);
+      api.cs_init();
+      const input = new TextEncoder().encode("w\u00f6rld\0");
+      const ptr = api.scriptc_alloc(input.length);
+      new Uint8Array(api.memory.buffer, ptr, input.length).set(input);
+      expect(cString(api.cs_greet(ptr))).toBe("hello, w\u00f6rld!");
+      expect(logs).toEqual(["W\u00d6RLD"]);
+      api.scriptc_free(ptr);
+      expect(() => api.cs_with_nul()).toThrow();
+      expect(panics).toHaveLength(1);
+      expect(panics[0]).toContain("a cstring value contains U+0000");
+    });
+
     test("refuses collisions with built-in Wasm exports and imports", async () => {
       for (const change of [
         {

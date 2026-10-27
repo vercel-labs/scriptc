@@ -1,6 +1,0 @@
-retired-engine-761-any-objects.ts:13:38 - error SC1090: reading 'length' from a value of type 'any' is not supported yet
-
-  12 | const s: any = "hello world";
-  13 | console.log(`${s.toUpperCase()}`, `${s.split(" ").length}`, `${s.charAt(4)}`);
-     |                                      ^~~~~~~~~~~~~~~~~~~
-  14 | const num: any = 3.14159;

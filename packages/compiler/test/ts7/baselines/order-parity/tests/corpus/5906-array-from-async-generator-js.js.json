@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5906-array-from-async-generator-js.js"
+ ],
+ "diags": []
+}

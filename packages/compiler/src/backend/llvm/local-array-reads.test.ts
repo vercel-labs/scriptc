@@ -129,7 +129,7 @@ function fixture(): IrModule {
     ],
   };
   return {
-    irVersion: 16,
+    irVersion: 17,
     sourceFile: loc.file,
     entry: "main",
     records: [{ id: "cell", fields: [{ name: "x", type: F64 }] }],
@@ -924,4 +924,33 @@ test.each([
     );
     if (consumer !== "local") expect(ir).toContain("local.array.dense");
   }
+});
+
+test("a dense read tests the hole-free prefix before the capacity", () => {
+  const module = immediateFixture();
+  for (const bits of [32, 64] as const) {
+    const ir = workBody(module, bits);
+    // Field 6 is `filled` and field 2 `cap`: the first branch takes the value
+    // path below the prefix, and only the range block reads the capacity.
+    const firstFilled = ir.search(/getelementptr inbounds %ScrArr, ptr %[^,]+, i32 0, i32 6\b/);
+    const firstCap = ir.search(/getelementptr inbounds %ScrArr, ptr %[^,]+, i32 0, i32 2\b/);
+    expect(firstFilled).toBeGreaterThan(0);
+    expect(firstCap).toBeGreaterThan(firstFilled);
+    expect(ir.slice(firstFilled, firstCap)).toMatch(/br i1 [^,]+, label %local\.array\.value/);
+    expect(ir.lastIndexOf("local.array.range", firstCap)).toBeGreaterThan(firstFilled);
+  }
+});
+
+test("an optional read at a proven integer index skips the double round trip", () => {
+  const module = fixture();
+  const call = module.functions[2]!.body[0]!;
+  if (call.kind !== "varDecl" || call.init?.kind !== "call") throw new Error("missing call");
+  call.init.args[1] = { kind: "bin", op: "|", left: ref("i", F64), right: num(0), type: F64, loc };
+  expect(candidates(module).get("value")?.borrow).toBe(true);
+  expect(validateModule(module)).toEqual([]);
+  // The int32 index is the dense offset on 64-bit targets; a 32-bit target
+  // converts the double, as a borrowed read does.
+  expect(workBody(module, 64)).not.toContain("local.array.exact");
+  expect(workBody(module, 64)).toContain("local.array.value");
+  expect(workBody(module, 32)).toContain("local.array.exact");
 });

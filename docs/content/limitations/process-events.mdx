@@ -1,3 +1,9 @@
-Static signal listeners resolve names on the target platform, including `SIGWINCH` on POSIX. `on`, `once`, `off`, and `removeListener` accept computed signal names and deliver the signal name and number. Computed names for other event families and chained registrations are unsupported. Windows registration is limited to CRT signals; WASI has no OS signals.
+Static signal listeners resolve names on the target platform, including `SIGWINCH` on POSIX.
+`on`, `once`, `off`, and `removeListener` accept computed signal names and deliver the signal name and number.
+Computed names for other event families and chained registrations are unsupported.
+Windows registration is limited to CRT signals; WASI has no OS signals.
 
-Literal `uncaughtException` and `uncaughtExceptionMonitor` registrations compile. Handled exceptions resume queued native work; monitors alone do not suppress failure. Error objects and primitive exceptions can reach listeners, while arbitrary native objects remain subject to exception-value restrictions. Exception capture callbacks are unsupported.
+Literal `uncaughtException` and `uncaughtExceptionMonitor` registrations compile.
+Handled exceptions resume queued native work; monitors alone do not suppress failure.
+Error objects and primitive exceptions can reach listeners, while arbitrary native objects remain subject to exception-value restrictions.
+Exception capture callbacks are unsupported.

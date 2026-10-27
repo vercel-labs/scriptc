@@ -1,48 +1,3 @@
-retired-engine-2104-computed-key-destructuring.ts:12:9 - error SC2011: destructuring on 'any'-typed values cannot compile statically
-
-  11 | function pick(key: string) {
-  12 |   const { [key]: got } = src;
-     |         ^~~~~~~~~~~~~~~~~~~~
-  13 |   return got;
-
-  hint: use a supported typed operation, or 'unknown' with a checked cast ('x as T')
-
-retired-engine-2104-computed-key-destructuring.ts:13:10 - error SC2004: uses of 'got' inherit the blocker on its declaration
-
-  12 |   const { [key]: got } = src;
-  13 |   return got;
-     |          ^~~
-  14 | }
-
-  hint: the declaration of 'got' did not compile — fix the diagnostic reported there and these sites clear with it
-
-retired-engine-2104-computed-key-destructuring.ts:17:9 - error SC2011: destructuring on 'any'-typed values cannot compile statically
-
-  16 | function pick2(key: string) {
-  17 |   const { [key]: got = "dflt" } = src;
-     |         ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  18 |   return got;
-
-  hint: use a supported typed operation, or 'unknown' with a checked cast ('x as T')
-
-retired-engine-2104-computed-key-destructuring.ts:18:10 - error SC2004: uses of 'got' inherit the blocker on its declaration
-
-  17 |   const { [key]: got = "dflt" } = src;
-  18 |   return got;
-     |          ^~~
-  19 | }
-
-  hint: the declaration of 'got' did not compile — fix the diagnostic reported there and these sites clear with it
-
-retired-engine-2104-computed-key-destructuring.ts:23:7 - error SC2011: destructuring on 'any'-typed values cannot compile statically
-
-  22 | const key2 = "y";
-  23 | const { x: sx, [key2]: sy } = src;
-     |       ^~~~~~~~~~~~~~~~~~~~~~~~~~~
-  24 | console.log(`${sx} ${sy}`);
-
-  hint: use a supported typed operation, or 'unknown' with a checked cast ('x as T')
-
 retired-engine-2104-computed-key-destructuring.ts:30:38 - error SC2009: values of type '[any?]' cannot be compiled: the tuple shape is supported, but its element type 'any' does not compile
 
   29 | let order = (n: any): any => { traceS += `${n},`; return n; };
@@ -52,18 +7,11 @@ retired-engine-2104-computed-key-destructuring.ts:30:38 - error SC2009: values o
 
   hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
 
-retired-engine-2104-computed-key-destructuring.ts:33:8 - error SC1031: destructuring with computed keys that do not fold to one property name is not supported yet
-
-  32 | traceS = "";
-  33 | let [{ [order(1)]: y } = order(0)] = [{}];
-     |        ^~~~~~~~~~~~~
-  34 | console.log(traceS);
-
-retired-engine-2104-computed-key-destructuring.ts:36:7 - error SC1031: destructuring with computed keys that do not fold to one property name is not supported yet
+retired-engine-2104-computed-key-destructuring.ts:36:58 - error SC1031: destructuring declaration from an `any` source whose expression spelling is unsupported (use a variable, ordinary property chain, or ordinary call) is not supported yet
 
   35 | traceS = "";
   36 | let { [order(0)]: { [order(2)]: z } = order(1), ...w } = {} as any;
-     |       ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+     |                                                          ^~~~~~~~~
   37 | console.log(traceS);
 
 retired-engine-2104-computed-key-destructuring.ts:39:8 - error SC1031: rest bindings whose packed type has no static mapping (only plain record types pack) is not supported yet

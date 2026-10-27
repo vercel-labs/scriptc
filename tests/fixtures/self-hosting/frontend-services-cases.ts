@@ -41,10 +41,10 @@ export function runFrontendServices(services: FrontendServices, input: string, o
     const before = host.createProgram([sourcePath], { noLib: true, types: [] });
     try {
       const source = before.getSourceFile(sourcePath)!;
-      const statement = source.statements[0]!;
+      const statement = source.statements.nodes[0]!;
       check(isVariableStatement(statement), "native statement view");
       if (isVariableStatement(statement)) {
-        const declaration = statement.declarationList.declarations[0]!;
+        const declaration = statement.declarationList.declarations.nodes[0]!;
         const name = declaration.name;
         check(isIdentifier(name), "native binding view");
         if (isIdentifier(name)) {

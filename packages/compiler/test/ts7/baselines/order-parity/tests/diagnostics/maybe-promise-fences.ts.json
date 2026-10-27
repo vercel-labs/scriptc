@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/maybe-promise-fences.ts"
+ ],
+ "diags": []
+}

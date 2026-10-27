@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/alloc-trees.ts",
+  "args": [
+    "1"
+  ]
+}

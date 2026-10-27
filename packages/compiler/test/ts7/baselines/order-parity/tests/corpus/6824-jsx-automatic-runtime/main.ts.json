@@ -1,0 +1,12 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6824-jsx-automatic-runtime/runtime/jsx-runtime.ts",
+  "<repo>/tests/corpus/6824-jsx-automatic-runtime/alt/jsx-runtime.ts",
+  "<repo>/tests/corpus/6824-jsx-automatic-runtime/alt.tsx",
+  "<repo>/tests/corpus/6824-jsx-automatic-runtime/runtime/index.ts",
+  "<repo>/tests/corpus/6824-jsx-automatic-runtime/page.tsx",
+  "<repo>/tests/corpus/6824-jsx-automatic-runtime/render.ts",
+  "<repo>/tests/corpus/6824-jsx-automatic-runtime/main.ts"
+ ],
+ "diags": []
+}

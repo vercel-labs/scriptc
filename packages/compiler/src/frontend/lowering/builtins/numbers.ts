@@ -1,8 +1,8 @@
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, own } from "../lowerer.js";
 import { lowerCheckedPredicateValue } from "../lower-builtin-values.js";
-import { locOf } from "../../program.js";
-import { BOOL, F64, type IrExpr, type IrLibFn } from "../../../ir/ir.js";
+import { isJsSourceFile, locOf } from "../../program.js";
+import { BOOL, F64, STRING, type IrExpr, type IrLibFn } from "../../../ir/ir.js";
 import { lowerBuiltinValuePreservingUndefined, lowerOptionalNumberPredicate } from "./arguments.js";
 import { tryLowerExpression } from "../expressions/try-lower-expression.js";
 import { lowerStaticNumberGlobal } from "../lower-calls.js";
@@ -54,10 +54,10 @@ export function lowerNumberStaticCall(
   const loc = locOf(call);
   const fn = own(NUMBER_STATIC_PREDICATES, member);
   if (fn !== undefined) {
-    if (call.arguments.length !== 1) {
-      lowerer.noLowering(`Number.${member} with ${call.arguments.length} arguments`, call);
+    if (call.arguments.nodes.length !== 1) {
+      lowerer.noLowering(`Number.${member} with ${call.arguments.nodes.length} arguments`, call);
     }
-    const argNode = call.arguments[0]!;
+    const argNode = call.arguments.nodes[0]!;
     const arg = lowerBuiltinValuePreservingUndefined(lowerer, argNode);
 
     const optional = lowerOptionalNumberPredicate(lowerer, arg, fn, loc);
@@ -72,26 +72,49 @@ export function lowerNumberStaticCall(
     return { kind: "libCall", fn, args: [arg], type: BOOL, loc };
   }
   if (member === "parseFloat" || member === "parseInt") {
-    const want = member === "parseFloat" ? 1 : 2;
-    if (call.arguments.length !== want) {
-      lowerer.noLowering(
-        `Number.${member} with ${call.arguments.length} argument${call.arguments.length === 1 ? "" : "s"}`,
-        call,
-        member === "parseInt" ? "pass an explicit radix: Number.parseInt(s, 10)" : undefined,
-      );
+    const count = call.arguments.nodes.length;
+    if (count < 1 || count > (member === "parseFloat" ? 1 : 2)) {
+      lowerer.noLowering(`Number.${member} with ${count} argument${count === 1 ? "" : "s"}`, call);
     }
     // Number.parseFloat/Number.parseInt ARE the global parsers: over a
     // string argument they lower to the same static parse (parseInt with
-    // its explicit radix); only the coercing argument shapes are refused.
-    const probed = tryLowerExpression(lowerer, call.arguments[0]!);
+    // its radix, or radix 0 when it is missing); only the coercing argument
+    // shapes are refused.
+    const probed = tryLowerExpression(lowerer, call.arguments.nodes[0]!);
     if (probed !== null && isStringLike(lowerer, probed.type)) {
-      const parsed = lowerStaticNumberGlobal(lowerer, member, call, call.arguments, loc);
+      const parsed = lowerStaticNumberGlobal(lowerer, member, call, call.arguments.nodes, loc);
+      if (parsed !== null) return parsed;
+    }
+    // A checked-dynamic argument (`Number.parseInt(env.FORCE_COLOR, 10)`
+    // over a JavaScript dictionary read): the parsers' own ToString,
+    // exactly the global parseFloat's dyn form.
+    if (probed?.type.kind === "dyn") {
+      const text: IrExpr = {
+        kind: "libCall",
+        fn: "dyn.toStringCoerce",
+        args: [probed],
+        type: STRING,
+        loc,
+      };
+      if (member === "parseFloat")
+        return { kind: "libCall", fn: "num.parseFloat", args: [text], type: F64, loc };
+      const radixNode = call.arguments.nodes[1];
+      const radix: IrExpr = radixNode
+        ? lowerer.lowerExprExpecting(radixNode, F64)
+        : { kind: "numLit", value: 0, type: F64, loc };
+      return { kind: "libCall", fn: "num.parseInt", args: [text, radix], type: F64, loc };
+    }
+    // JavaScript whose argument does not lower on its own (zod's
+    // `Number.parseInt(val.toFixed(n).replace(".", ""))` over an untyped
+    // parameter): the global parser's own JavaScript forms.
+    if (probed === null && member === "parseInt" && isJsSourceFile(ts.getSourceFileOfNode(call))) {
+      const parsed = lowerStaticNumberGlobal(lowerer, member, call, call.arguments.nodes, loc);
       if (parsed !== null) return parsed;
     }
     const argText =
       probed !== null
         ? lowerer.fmt(probed.type)
-        : lowerer.checker.typeToString(lowerer.checker.getTypeAtLocation(call.arguments[0]!));
+        : lowerer.checker.typeToString(lowerer.checker.getTypeAtLocation(call.arguments.nodes[0]!));
     lowerer.refuseUnsupportedApi(
       `'Number.${member}' with a '${argText}' argument`,
       call,

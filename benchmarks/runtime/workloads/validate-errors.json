@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/validate-errors.ts",
+  "args": [
+    "1"
+  ]
+}

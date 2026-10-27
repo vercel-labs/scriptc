@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6120-type-only-import-graph/mixed.ts",
+  "<repo>/tests/corpus/6120-type-only-import-graph/flags.ts",
+  "<repo>/tests/corpus/6120-type-only-import-graph/main.ts"
+ ],
+ "diags": []
+}

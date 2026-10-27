@@ -1,1 +1,4 @@
-After a failed `dns.lookup` or `dns.lookupService`, Node calls the callback with the error alone, so the address and family parameters are `undefined`. A callback whose address parameter is typed `string` (as Node's own type declarations type it) receives `""` and `NaN` there, or an empty array for `all: true`, because a typed string or number cannot hold `undefined`. An untyped callback receives the error alone, as in Node.
+After a failed `dns.lookup` or `dns.lookupService`, Node calls the callback with the error alone, so the address and family parameters are `undefined`.
+A callback whose address parameter is typed `string` (as Node's own type declarations type it) receives `""` and `NaN` there, or an empty array for `all: true`, because a typed string or number cannot hold `undefined`.
+An untyped callback receives the error alone, as in Node.
+The promise forms in `node:dns/promises` (also reached as `dns.promises`) reject with the error and are unaffected.

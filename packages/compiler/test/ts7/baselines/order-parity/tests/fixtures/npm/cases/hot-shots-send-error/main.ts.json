@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/packages/compiler/shims/hot-shots/client.ts",
+  "<repo>/packages/compiler/shims/hot-shots/v8.ts",
+  "<repo>/tests/fixtures/npm/cases/hot-shots-send-error/main.ts"
+ ],
+ "diags": []
+}

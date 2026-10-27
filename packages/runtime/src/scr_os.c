@@ -27,6 +27,8 @@
 #include <sys/utsname.h>
 #include <unistd.h>
 #endif
+#include <fcntl.h>
+#include <sys/stat.h>
 #ifdef __linux__
 #include <sys/sysinfo.h>
 #endif
@@ -296,21 +298,25 @@ static void scr_os_system_error(const char *syscall, int uv_code) {
   if (cell->kind == SCR_EXC_OBJ) scr_error_set_code((ScrError *)cell->payload, "ERR_SYSTEM_ERROR");
 }
 
-static bool scr_os_validate_int32(const char *name, double value) {
+static bool scr_os_validate_int32_in(const char *name, double value, int min, int max) {
   if (isfinite(value) && trunc(value) == value) {
-    if (value >= -2147483648.0 && value <= 2147483647.0) return true;
+    if (value >= (double)min && value <= (double)max) return true;
   }
   char received[48];
   scr_num_received(value, received);
   char text[192];
   int n = isfinite(value) && trunc(value) == value
     ? snprintf(text, sizeof text,
-               "The value of \"%s\" is out of range. It must be >= -2147483648 && <= 2147483647. Received %s",
-               name, received)
+               "The value of \"%s\" is out of range. It must be >= %d && <= %d. Received %s",
+               name, min, max, received)
     : snprintf(text, sizeof text, "The value of \"%s\" is out of range. It must be an integer. Received %s",
                name, received);
   scr_throw_error_msg_code(SCR_ERR_RANGE, text, n < 0 ? 0 : (size_t)n, "ERR_OUT_OF_RANGE");
   return false;
+}
+
+static bool scr_os_validate_int32(const char *name, double value) {
+  return scr_os_validate_int32_in(name, value, INT32_MIN, INT32_MAX);
 }
 
 double scr_os_get_priority(double pid) {
@@ -348,6 +354,48 @@ double scr_os_get_priority(double pid) {
     return 0;
   }
   return r;
+#endif
+}
+
+/* ── setPriority ──────────────────────────────────────────────────────
+ * validateInt32(pid, 'pid') and validateInt32(priority, 'priority', -20,
+ * 19) (a one-argument call passes pid 0), then uv_os_setpriority; a
+ * failure is Node's ERR_SYSTEM_ERROR. */
+
+void scr_os_set_priority(double pid, double priority) {
+  if (!scr_os_validate_int32("pid", pid)) return;
+  if (!scr_os_validate_int32_in("priority", priority, SCR_OS_PRIORITY_HIGHEST, SCR_OS_PRIORITY_LOW)) return;
+  int value = (int)priority;
+#ifdef _WIN32
+  /* libuv's mapping of nice values to Windows priority classes. */
+  DWORD klass = value < SCR_OS_PRIORITY_HIGH           ? REALTIME_PRIORITY_CLASS
+                : value < SCR_OS_PRIORITY_ABOVE_NORMAL ? HIGH_PRIORITY_CLASS
+                : value < SCR_OS_PRIORITY_NORMAL       ? ABOVE_NORMAL_PRIORITY_CLASS
+                : value < SCR_OS_PRIORITY_BELOW_NORMAL ? NORMAL_PRIORITY_CLASS
+                : value < SCR_OS_PRIORITY_LOW          ? BELOW_NORMAL_PRIORITY_CLASS
+                                                       : IDLE_PRIORITY_CLASS;
+  HANDLE handle = pid == 0 ? GetCurrentProcess()
+                           : OpenProcess(PROCESS_SET_INFORMATION, FALSE, (DWORD)(int)pid);
+  if (handle == NULL) {
+    DWORD err = GetLastError();
+    scr_os_system_error("uv_os_setpriority", err == ERROR_ACCESS_DENIED ? SCR_NODE_UV__EPERM
+                                             : err == ERROR_INVALID_PARAMETER ? SCR_NODE_UV__EINVAL
+                                                                              : SCR_NODE_UV__UNKNOWN);
+    return;
+  }
+  BOOL ok = SetPriorityClass(handle, klass);
+  DWORD err = ok ? 0 : GetLastError();
+  if (pid != 0) CloseHandle(handle);
+  if (!ok) {
+    scr_os_system_error("uv_os_setpriority", err == ERROR_ACCESS_DENIED ? SCR_NODE_UV__EPERM
+                                                                        : SCR_NODE_UV__UNKNOWN);
+  }
+#elif defined(__wasi__)
+  (void)value;
+  scr_os_system_error("uv_os_setpriority", SCR_NODE_UV__ENOSYS);
+#else
+  if (setpriority(PRIO_PROCESS, (id_t)(int)pid, value) != 0)
+    scr_os_system_error("uv_os_setpriority", SCR_NODE_UV__ERR(errno));
 #endif
 }
 
@@ -697,9 +745,8 @@ double scr_os_cpus_field(double i, double field) {
 
 static void scr_os_constant(ScrDyn *o, const char *name, double value) {
   scr_dyn_obj_set(o, name, strlen(name), scr_dyn_new_num(value));
-  ScrDynEntry *entry = &o->v.obj.entries[o->v.obj.len - 1];
-  entry->writable = false;
-  entry->configurable = false;
+  size_t last = scr_dyn_obj_count(o) - 1;
+  scr_dyn_obj_set_attrs_at(o, last, false, scr_dyn_obj_prop_at(o, last).enumerable, false);
 }
 #define SCR_OS_CONSTANT(o, name) scr_os_constant((o), #name, (double)(name))
 
@@ -1279,10 +1326,409 @@ ScrDyn *scr_os_constants(void) {
   scr_os_constant(os, "UV_UDP_REUSEADDR", 4);
   scr_dyn_obj_set(os, "dlopen", 6, dlopen);
   scr_dyn_obj_set(os, "errno", 5, errnos);
-  scr_dyn_release(scr_dyn_freeze(signals));
+  scr_dyn_release(scr_dyn_freeze_data(signals));
   scr_dyn_obj_set(os, "signals", 7, signals);
   scr_dyn_obj_set(os, "priority", 8, priority);
   scr_os_constants_value = os;
   scr_atexit(scr_os_constants_clear);
   return scr_dyn_retain(os);
+}
+
+/* ── node:constants (deprecated, DEP0008) ──────────────────────────────
+ * Node's lib/constants.js: Object.assign({}, os.constants.dlopen, errno,
+ * priority, signals, fs.constants, crypto.constants), frozen, with an
+ * ordinary prototype. The fs group follows node_constants.cc's
+ * DefineFsConstants order and guards (libuv's UV_* values are fixed on
+ * POSIX); crypto_table (borrowed) is a compiler-emitted function that
+ * answers the baked crypto.constants table, called only on first use. One
+ * object per thread. */
+#define SCR_FS_CONSTANT(o, name) scr_os_constant((o), #name, (double)(name))
+
+static void scr_fs_constants(ScrDyn *o) {
+  scr_os_constant(o, "UV_FS_SYMLINK_DIR", 1);
+  scr_os_constant(o, "UV_FS_SYMLINK_JUNCTION", 2);
+#ifdef O_RDONLY
+  SCR_FS_CONSTANT(o, O_RDONLY);
+#endif
+#ifdef O_WRONLY
+  SCR_FS_CONSTANT(o, O_WRONLY);
+#endif
+#ifdef O_RDWR
+  SCR_FS_CONSTANT(o, O_RDWR);
+#endif
+  scr_os_constant(o, "UV_DIRENT_UNKNOWN", 0);
+  scr_os_constant(o, "UV_DIRENT_FILE", 1);
+  scr_os_constant(o, "UV_DIRENT_DIR", 2);
+  scr_os_constant(o, "UV_DIRENT_LINK", 3);
+  scr_os_constant(o, "UV_DIRENT_FIFO", 4);
+  scr_os_constant(o, "UV_DIRENT_SOCKET", 5);
+  scr_os_constant(o, "UV_DIRENT_CHAR", 6);
+  scr_os_constant(o, "UV_DIRENT_BLOCK", 7);
+#ifdef S_IFMT
+  SCR_FS_CONSTANT(o, S_IFMT);
+#endif
+#ifdef S_IFREG
+  SCR_FS_CONSTANT(o, S_IFREG);
+#endif
+#ifdef S_IFDIR
+  SCR_FS_CONSTANT(o, S_IFDIR);
+#endif
+#ifdef S_IFCHR
+  SCR_FS_CONSTANT(o, S_IFCHR);
+#endif
+#ifdef S_IFBLK
+  SCR_FS_CONSTANT(o, S_IFBLK);
+#endif
+#ifdef S_IFIFO
+  SCR_FS_CONSTANT(o, S_IFIFO);
+#endif
+#ifdef S_IFLNK
+  SCR_FS_CONSTANT(o, S_IFLNK);
+#endif
+#ifdef S_IFSOCK
+  SCR_FS_CONSTANT(o, S_IFSOCK);
+#endif
+#ifdef O_CREAT
+  SCR_FS_CONSTANT(o, O_CREAT);
+#endif
+#ifdef O_EXCL
+  SCR_FS_CONSTANT(o, O_EXCL);
+#endif
+  /* libuv's Windows-only open flags are 0 everywhere else. */
+  scr_os_constant(o, "UV_FS_O_FILEMAP", 0);
+  scr_os_constant(o, "UV_FS_O_TEMPORARY", 0);
+  scr_os_constant(o, "UV_FS_O_SHORT_LIVED", 0);
+  scr_os_constant(o, "UV_FS_O_SEQUENTIAL", 0);
+  scr_os_constant(o, "UV_FS_O_RANDOM", 0);
+#ifdef O_NOCTTY
+  SCR_FS_CONSTANT(o, O_NOCTTY);
+#endif
+#ifdef O_TRUNC
+  SCR_FS_CONSTANT(o, O_TRUNC);
+#endif
+#ifdef O_APPEND
+  SCR_FS_CONSTANT(o, O_APPEND);
+#endif
+#ifdef O_DIRECTORY
+  SCR_FS_CONSTANT(o, O_DIRECTORY);
+#endif
+#ifdef O_NOATIME
+  SCR_FS_CONSTANT(o, O_NOATIME);
+#endif
+#ifdef O_NOFOLLOW
+  SCR_FS_CONSTANT(o, O_NOFOLLOW);
+#endif
+#ifdef O_SYNC
+  SCR_FS_CONSTANT(o, O_SYNC);
+#endif
+#ifdef O_DSYNC
+  SCR_FS_CONSTANT(o, O_DSYNC);
+#endif
+#ifdef O_SYMLINK
+  SCR_FS_CONSTANT(o, O_SYMLINK);
+#endif
+#ifdef O_DIRECT
+  SCR_FS_CONSTANT(o, O_DIRECT);
+#endif
+#ifdef O_NONBLOCK
+  SCR_FS_CONSTANT(o, O_NONBLOCK);
+#endif
+#ifdef S_IRWXU
+  SCR_FS_CONSTANT(o, S_IRWXU);
+#endif
+#ifdef S_IRUSR
+  SCR_FS_CONSTANT(o, S_IRUSR);
+#endif
+#ifdef S_IWUSR
+  SCR_FS_CONSTANT(o, S_IWUSR);
+#endif
+#ifdef S_IXUSR
+  SCR_FS_CONSTANT(o, S_IXUSR);
+#endif
+#ifdef S_IRWXG
+  SCR_FS_CONSTANT(o, S_IRWXG);
+#endif
+#ifdef S_IRGRP
+  SCR_FS_CONSTANT(o, S_IRGRP);
+#endif
+#ifdef S_IWGRP
+  SCR_FS_CONSTANT(o, S_IWGRP);
+#endif
+#ifdef S_IXGRP
+  SCR_FS_CONSTANT(o, S_IXGRP);
+#endif
+#ifdef S_IRWXO
+  SCR_FS_CONSTANT(o, S_IRWXO);
+#endif
+#ifdef S_IROTH
+  SCR_FS_CONSTANT(o, S_IROTH);
+#endif
+#ifdef S_IWOTH
+  SCR_FS_CONSTANT(o, S_IWOTH);
+#endif
+#ifdef S_IXOTH
+  SCR_FS_CONSTANT(o, S_IXOTH);
+#endif
+#ifdef F_OK
+  SCR_FS_CONSTANT(o, F_OK);
+#endif
+#ifdef R_OK
+  SCR_FS_CONSTANT(o, R_OK);
+#endif
+#ifdef W_OK
+  SCR_FS_CONSTANT(o, W_OK);
+#endif
+#ifdef X_OK
+  SCR_FS_CONSTANT(o, X_OK);
+#endif
+  scr_os_constant(o, "UV_FS_COPYFILE_EXCL", 1);
+  scr_os_constant(o, "COPYFILE_EXCL", 1);
+  scr_os_constant(o, "UV_FS_COPYFILE_FICLONE", 2);
+  scr_os_constant(o, "COPYFILE_FICLONE", 2);
+  scr_os_constant(o, "UV_FS_COPYFILE_FICLONE_FORCE", 4);
+  scr_os_constant(o, "COPYFILE_FICLONE_FORCE", 4);
+}
+#undef SCR_FS_CONSTANT
+
+static SCR_TL ScrDyn *scr_node_constants_value;
+static void scr_node_constants_clear(void) {
+  ScrDyn *value = scr_node_constants_value;
+  scr_node_constants_value = NULL;
+  scr_dyn_release(value);
+}
+
+ScrDyn *scr_node_constants(const ScrDyn *crypto_table) {
+  if (scr_node_constants_value) return scr_dyn_retain(scr_node_constants_value);
+  ScrDyn *crypto = scr_dyn_call(crypto_table, NULL, 0, "constants");
+  if (!crypto) return NULL;
+  ScrDyn *o = scr_dyn_new_obj();
+  scr_os_dlopen_constants(o);
+  scr_os_errno_constants(o);
+  scr_os_constant(o, "PRIORITY_LOW", SCR_OS_PRIORITY_LOW);
+  scr_os_constant(o, "PRIORITY_BELOW_NORMAL", SCR_OS_PRIORITY_BELOW_NORMAL);
+  scr_os_constant(o, "PRIORITY_NORMAL", SCR_OS_PRIORITY_NORMAL);
+  scr_os_constant(o, "PRIORITY_ABOVE_NORMAL", SCR_OS_PRIORITY_ABOVE_NORMAL);
+  scr_os_constant(o, "PRIORITY_HIGH", SCR_OS_PRIORITY_HIGH);
+  scr_os_constant(o, "PRIORITY_HIGHEST", SCR_OS_PRIORITY_HIGHEST);
+  scr_os_signal_constants(o);
+  scr_fs_constants(o);
+  if (crypto && crypto->kind == SCR_DYN_OBJ) {
+    for (size_t i = 0; i < scr_dyn_obj_count(crypto); i++) {
+      ScrDynProp entry = scr_dyn_obj_prop_at(crypto, i);
+      if (entry.accessor || !entry.value) continue;
+      scr_dyn_obj_set(o, entry.key, entry.key_len, scr_dyn_retain(entry.value));
+    }
+  }
+  scr_dyn_release(crypto);
+  scr_dyn_release(scr_dyn_freeze_data(o));
+  scr_node_constants_value = o;
+  scr_atexit(scr_node_constants_clear);
+  return scr_dyn_retain(o);
+}
+
+/* fs.constants as a value: node_constants.cc's fs group (the set
+ * node:constants merges above), in its order and under its #ifdef guards,
+ * on its own cached null-prototype object with read-only members. It keeps
+ * its own table instead of calling the scr_fs_constants fill: a second
+ * caller would stop that static from inlining into scr_node_constants and
+ * change every binary that links node:constants. The names live inside
+ * the table entries, so the table is one data object section GC drops.
+ * Nothing on an existing path calls this. */
+typedef struct {
+  char name[32];
+  double value;
+} ScrFsConstant;
+#define SCR_FS_C(n) {#n, (double)(n)}
+static const ScrFsConstant scr_fs_constant_table[] = {
+    {"UV_FS_SYMLINK_DIR", 1},
+    {"UV_FS_SYMLINK_JUNCTION", 2},
+#ifdef O_RDONLY
+    SCR_FS_C(O_RDONLY),
+#endif
+#ifdef O_WRONLY
+    SCR_FS_C(O_WRONLY),
+#endif
+#ifdef O_RDWR
+    SCR_FS_C(O_RDWR),
+#endif
+    {"UV_DIRENT_UNKNOWN", 0},
+    {"UV_DIRENT_FILE", 1},
+    {"UV_DIRENT_DIR", 2},
+    {"UV_DIRENT_LINK", 3},
+    {"UV_DIRENT_FIFO", 4},
+    {"UV_DIRENT_SOCKET", 5},
+    {"UV_DIRENT_CHAR", 6},
+    {"UV_DIRENT_BLOCK", 7},
+#ifdef S_IFMT
+    SCR_FS_C(S_IFMT),
+#endif
+#ifdef S_IFREG
+    SCR_FS_C(S_IFREG),
+#endif
+#ifdef S_IFDIR
+    SCR_FS_C(S_IFDIR),
+#endif
+#ifdef S_IFCHR
+    SCR_FS_C(S_IFCHR),
+#endif
+#ifdef S_IFBLK
+    SCR_FS_C(S_IFBLK),
+#endif
+#ifdef S_IFIFO
+    SCR_FS_C(S_IFIFO),
+#endif
+#ifdef S_IFLNK
+    SCR_FS_C(S_IFLNK),
+#endif
+#ifdef S_IFSOCK
+    SCR_FS_C(S_IFSOCK),
+#endif
+#ifdef O_CREAT
+    SCR_FS_C(O_CREAT),
+#endif
+#ifdef O_EXCL
+    SCR_FS_C(O_EXCL),
+#endif
+    {"UV_FS_O_FILEMAP", 0},
+    {"UV_FS_O_TEMPORARY", 0},
+    {"UV_FS_O_SHORT_LIVED", 0},
+    {"UV_FS_O_SEQUENTIAL", 0},
+    {"UV_FS_O_RANDOM", 0},
+#ifdef O_NOCTTY
+    SCR_FS_C(O_NOCTTY),
+#endif
+#ifdef O_TRUNC
+    SCR_FS_C(O_TRUNC),
+#endif
+#ifdef O_APPEND
+    SCR_FS_C(O_APPEND),
+#endif
+#ifdef O_DIRECTORY
+    SCR_FS_C(O_DIRECTORY),
+#endif
+#ifdef O_NOATIME
+    SCR_FS_C(O_NOATIME),
+#endif
+#ifdef O_NOFOLLOW
+    SCR_FS_C(O_NOFOLLOW),
+#endif
+#ifdef O_SYNC
+    SCR_FS_C(O_SYNC),
+#endif
+#ifdef O_DSYNC
+    SCR_FS_C(O_DSYNC),
+#endif
+#ifdef O_SYMLINK
+    SCR_FS_C(O_SYMLINK),
+#endif
+#ifdef O_DIRECT
+    SCR_FS_C(O_DIRECT),
+#endif
+#ifdef O_NONBLOCK
+    SCR_FS_C(O_NONBLOCK),
+#endif
+#ifdef S_IRWXU
+    SCR_FS_C(S_IRWXU),
+#endif
+#ifdef S_IRUSR
+    SCR_FS_C(S_IRUSR),
+#endif
+#ifdef S_IWUSR
+    SCR_FS_C(S_IWUSR),
+#endif
+#ifdef S_IXUSR
+    SCR_FS_C(S_IXUSR),
+#endif
+#ifdef S_IRWXG
+    SCR_FS_C(S_IRWXG),
+#endif
+#ifdef S_IRGRP
+    SCR_FS_C(S_IRGRP),
+#endif
+#ifdef S_IWGRP
+    SCR_FS_C(S_IWGRP),
+#endif
+#ifdef S_IXGRP
+    SCR_FS_C(S_IXGRP),
+#endif
+#ifdef S_IRWXO
+    SCR_FS_C(S_IRWXO),
+#endif
+#ifdef S_IROTH
+    SCR_FS_C(S_IROTH),
+#endif
+#ifdef S_IWOTH
+    SCR_FS_C(S_IWOTH),
+#endif
+#ifdef S_IXOTH
+    SCR_FS_C(S_IXOTH),
+#endif
+#ifdef F_OK
+    SCR_FS_C(F_OK),
+#endif
+#ifdef R_OK
+    SCR_FS_C(R_OK),
+#endif
+#ifdef W_OK
+    SCR_FS_C(W_OK),
+#endif
+#ifdef X_OK
+    SCR_FS_C(X_OK),
+#endif
+    {"UV_FS_COPYFILE_EXCL", 1},
+    {"COPYFILE_EXCL", 1},
+    {"UV_FS_COPYFILE_FICLONE", 2},
+    {"COPYFILE_FICLONE", 2},
+    {"UV_FS_COPYFILE_FICLONE_FORCE", 4},
+    {"COPYFILE_FICLONE_FORCE", 4},
+};
+#undef SCR_FS_C
+
+static SCR_TL ScrDyn *scr_fs_constants_value;
+static void scr_fs_constants_clear(void) {
+  ScrDyn *value = scr_fs_constants_value;
+  scr_fs_constants_value = NULL;
+  scr_dyn_release(value);
+}
+
+ScrDyn *scr_fs_constants_object(void) {
+  if (scr_fs_constants_value) return scr_dyn_retain(scr_fs_constants_value);
+  ScrDyn *o = scr_dyn_new_obj_null_proto();
+  for (size_t i = 0; i < sizeof scr_fs_constant_table / sizeof scr_fs_constant_table[0]; i++)
+    scr_os_constant(o, scr_fs_constant_table[i].name, scr_fs_constant_table[i].value);
+  scr_fs_constants_value = o;
+  scr_atexit(scr_fs_constants_clear);
+  return scr_dyn_retain(o);
+}
+
+/* util.convertProcessSignalToExitCode(signalCode): 128 plus the number of
+ * the os.constants.signals entry, and validateOneOf's
+ * ERR_INVALID_ARG_VALUE, listing every name, for anything else. NaN with
+ * the exception pending. */
+double scr_util_signal_exit_code(const ScrDyn *code) {
+  ScrDyn *signals = scr_dyn_new_obj();
+  scr_os_signal_constants(signals);
+  const ScrDyn *number =
+      code->kind == SCR_DYN_STR ? scr_dyn_obj_get(signals, code->v.str->data, code->v.str->len) : NULL;
+  double result = NAN;
+  if (number && number->kind == SCR_DYN_NUM) {
+    result = 128 + number->v.num;
+  } else {
+    ScrJsonBuf reason;
+    scr_jb_init(&reason);
+    scr_jb_puts(&reason, "must be one of: ");
+    for (size_t i = 0; i < scr_dyn_obj_count(signals); i++) {
+      if (i > 0) scr_jb_puts(&reason, ", ");
+      scr_jb_putc(&reason, '\'');
+      size_t key_len;
+      const char *key = scr_dyn_obj_key_at(signals, i, &key_len);
+      scr_jb_write(&reason, key, key_len);
+      scr_jb_putc(&reason, '\'');
+    }
+    ScrStr *text = scr_jb_finish(&reason);
+    scr_dyn_arg_value_fail("signalCode", text->data, code);
+    scr_str_release(text);
+  }
+  scr_dyn_release(signals);
+  return result;
 }

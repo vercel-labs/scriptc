@@ -19,18 +19,18 @@ destructuring-fences.ts:31:9 - error SC1090: reading a property that has only a 
      |         ^~~~~~
   32 | console.log(onlyIn);
 
-destructuring-fences.ts:45:9 - error SC1031: object destructuring of non-record values (the source is union-typed) are not supported yet
+destructuring-fences.ts:45:11 - error SC1031: destructuring 'b' from a union whose arms type it differently (every arm must be a record or class with a same-typed field 'b' — narrow first: check a discriminant field, or compare with '!== undefined'/'!== null' for unit arms) is not supported yet
 
   44 | function fromUnion(u: E1 | E2): string {
-  45 |   const { b } = u; // union source: narrow first
-     |         ^~~~~
-  46 |   return b;
+  45 |   const { b } = u; // union source whose arms type the field differently: narrow first
+     |           ^
+  46 |   return String(b);
 
-destructuring-fences.ts:46:10 - error SC2004: uses of 'b' inherit the blocker on its declaration
+destructuring-fences.ts:46:17 - error SC2004: uses of 'b' inherit the blocker on its declaration
 
-  45 |   const { b } = u; // union source: narrow first
-  46 |   return b;
-     |          ^
+  45 |   const { b } = u; // union source whose arms type the field differently: narrow first
+  46 |   return String(b);
+     |                 ^
   47 | }
 
   hint: the declaration of 'b' did not compile — fix the diagnostic reported there and these sites clear with it
@@ -38,9 +38,9 @@ destructuring-fences.ts:46:10 - error SC2004: uses of 'b' inherit the blocker on
 destructuring-fences.ts:51:7 - error SC1031: object destructuring of non-record values (the source is array-typed) are not supported yet
 
   50 | const xs = [1, 2, 3];
-  51 | const { length: len } = xs; // object patterns over arrays keep the fence
-     |       ^~~~~~~~~~~~~~~
-  52 | console.log(len);
+  51 | const { push: append } = xs; // object patterns over arrays read positions and length only
+     |       ^~~~~~~~~~~~~~~~
+  52 | console.log(typeof append);
 
 destructuring-fences.ts:55:9 - error SC1031: rest bindings over index-signature shapes (the undeclared entries would need overflow packing) are not supported yet
 

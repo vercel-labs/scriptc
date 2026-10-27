@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6401-dyn-error-own-property-names.ts"
+ ],
+ "diags": []
+}

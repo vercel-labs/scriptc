@@ -23,7 +23,7 @@ export function mentionsReceiver(node: ts.Node): boolean {
       found = true;
       return;
     }
-    child.forEachChild(visit);
+    ts.forEachChild(child, visit);
   };
   visit(node);
   return found;
@@ -68,9 +68,9 @@ function containsReturn(node: ts.Node): boolean {
       found = true;
       return;
     }
-    child.forEachChild(visit);
+    ts.forEachChild(child, visit);
   };
-  node.forEachChild(visit);
+  ts.forEachChild(node, visit);
   return found;
 }
 
@@ -89,17 +89,18 @@ export function constructionEscape(inputs: ConstructionInputs): ConstructionEsca
     if (node.kind === ts.SyntaxKind.ThisKeyword || node.kind === ts.SyntaxKind.SuperKeyword)
       return true;
     if (ts.isCallExpression(node) && thisMember(node.expression)) {
-      if (node.arguments.some((arg) => mentionsReceiver(arg) && exposes(arg, depth))) return true;
+      if (node.arguments.nodes.some((arg) => mentionsReceiver(arg) && exposes(arg, depth)))
+        return true;
       const body = depth < HELPER_DEPTH ? inputs.privateMethodBody(node) : null;
       if (!body) return true;
-      return !followStatements(body.statements, depth + 1);
+      return !followStatements(body.statements.nodes, depth + 1);
     }
     if (thisMember(node)) {
       const name = node.name.text;
       return !(ts.isIdentifier(node.name) && assigned.has(name) && inputs.isField(name));
     }
     let found = false;
-    node.forEachChild((child) => {
+    ts.forEachChild(node, (child) => {
       if (!found && mentionsReceiver(child)) found = exposes(child, depth);
     });
     return found;
@@ -137,7 +138,7 @@ export function constructionEscape(inputs: ConstructionInputs): ConstructionEsca
     }
     return true;
   };
-  const statements = inputs.ctor?.body?.statements ?? [];
+  const statements = inputs.ctor?.body?.statements?.nodes ?? [];
   let index = 0;
   if (inputs.derived) {
     // Own initializers run when super() returns. A base construction that
@@ -149,7 +150,7 @@ export function constructionEscape(inputs: ConstructionInputs): ConstructionEsca
         ts.isCallExpression(stmt.expression) &&
         stmt.expression.expression.kind === ts.SyntaxKind.SuperKeyword;
       if (isSuper) {
-        if (stmt.expression.arguments.some((arg) => mentionsReceiver(arg))) return stop();
+        if (stmt.expression.arguments.nodes.some((arg) => mentionsReceiver(arg))) return stop();
         break;
       }
       // super() nested inside other statements: keep the analysis simple.

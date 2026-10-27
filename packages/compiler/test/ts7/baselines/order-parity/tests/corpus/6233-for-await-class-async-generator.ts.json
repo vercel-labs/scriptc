@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6233-for-await-class-async-generator.ts"
+ ],
+ "diags": []
+}

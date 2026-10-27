@@ -2,6 +2,7 @@ import { nodeThrowExpr, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import type { Lowerer } from "../lowerer.js";
 import { narrowStoredClassValue } from "../class-unions.js";
+import { markSloppyRecordWrites } from "../frozen-records.js";
 import {
   BOOL,
   type IrExpr,
@@ -117,7 +118,7 @@ export function lowerUnionFieldRead(
   access: ts.PropertyAccessExpression,
   receiver: IrExpr,
 ): IrExpr | null {
-  if (receiver.type.kind !== "union" || isJsSourceFile(access.getSourceFile())) return null;
+  if (receiver.type.kind !== "union" || isJsSourceFile(ts.getSourceFileOfNode(access))) return null;
   const unionId = receiver.type.unionId;
   const arms = lowerer.unions.get(unionId)?.arms;
   if (!arms || arms.length < 2) return null;
@@ -246,6 +247,8 @@ export function lowerUnionFieldWrite(
               value: slotValue,
               loc,
             };
+      // A sloppy-mode write to a frozen record leaves it unchanged.
+      if (write.kind === "recordSet") markSloppyRecordWrites(lowerer, write, access);
       branch = { kind: "seqExpr", stmts: [write], result, type: result.type, loc };
     } else {
       branch = nodeThrowExpr(
@@ -277,4 +280,59 @@ export function lowerUnionFieldWrite(
           };
   }
   return { kind: "seqExpr", stmts: body, result: dispatch, type: result.type, loc };
+}
+
+/** Read the element at a literal index from a union of tuples whose element
+ * types differ (`readonly [true, number] | readonly [false, string]`, index
+ * 1): each tag reads its own tuple's slot and widens it into the union of
+ * the arms' element types; the caller narrows the result to the checker's
+ * flow type. Null when an arm is not a tuple with that position. */
+export function lowerUnionTupleRead(
+  lowerer: Lowerer,
+  receiver: IrExpr,
+  index: number,
+  loc: IrExpr["loc"],
+): IrExpr | null {
+  if (receiver.type.kind !== "union" || !Number.isInteger(index) || index < 0) return null;
+  const unionId = receiver.type.unionId;
+  const arms = lowerer.unions.get(unionId)?.arms;
+  if (!arms || arms.length < 2) return null;
+  const name = String(index);
+  const fields: UnionFieldArm[] = [];
+  const parts: IrType[] = [];
+  for (const arm of arms) {
+    if (arm.kind !== "record" || lowerer.shapes.get(arm.shapeId)?.tuple !== true) return null;
+    const field = unionFieldArm(lowerer, arm, name);
+    if (!field || field.type.kind === "void") return null;
+    fields.push(field);
+    const own =
+      field.type.kind === "union" ? lowerer.unions.get(field.type.unionId)?.arms : [field.type];
+    if (!own) return null;
+    for (const part of own) if (!parts.some((p) => typeEquals(p, part))) parts.push(part);
+  }
+  const type: IrType =
+    parts.length === 1 ? parts[0]! : { kind: "union", unionId: lowerer.unions.intern(parts) };
+  const object = lowerer.declareHiddenLocal("%unionReadObject", receiver.type);
+  const objectRef = varRef(object.id, object.type, loc);
+  const read = (tag: number): IrExpr | null => {
+    const probe = unionFieldRead(unionId, tag, objectRef, fields[tag]!, name, loc);
+    const converted = lowerer.coerceToExpected(probe, type);
+    return typeEquals(converted.type, type) && isWidening(converted, probe) ? converted : null;
+  };
+  let dispatch = read(fields.length - 1);
+  if (!dispatch) return null;
+  for (let tag = fields.length - 2; tag >= 0; tag--) {
+    const then = read(tag);
+    if (!then) return null;
+    dispatch = {
+      kind: "ternary",
+      cond: { kind: "unionIsTag", unionId, tag, value: objectRef, negated: false, type: BOOL, loc },
+      then,
+      else_: dispatch,
+      type,
+      loc,
+    };
+  }
+  const init: IrStmt = { kind: "varDecl", localId: object.id, init: receiver, loc };
+  return { kind: "seqExpr", stmts: [init], result: dispatch, type, loc };
 }

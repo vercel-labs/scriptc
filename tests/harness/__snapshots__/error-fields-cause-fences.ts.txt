@@ -1,0 +1,8 @@
+error-fields-cause-fences.ts:11:26 - error SC2020: 'util.inspect of 'Retried' values' is part of the standard library types but has no scriptc lowering yet
+
+  10 | 
+  11 | console.log(util.inspect(new Retried("failed")));
+     |                          ^~~~~~~~~~~~~~~~~~~~~
+  12 | 
+
+  hint: 'Retried' error values (its field 'cause' is one Node's error inspector treats specially)

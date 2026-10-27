@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/2565-chunk-shared-function/main.ts"
+ ],
+ "diags": []
+}

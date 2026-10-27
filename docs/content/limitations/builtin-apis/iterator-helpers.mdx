@@ -1,0 +1,9 @@
+- **Iterator helpers:** `map`, `filter`, `take`, `drop`, `flatMap`, `toArray`, `forEach`, `reduce`, `some`, `every` and `find` compile on generators, on array, typed array, string, Map and Set iterators, and on the objects the helpers return.
+  Helper objects support `.next()`, `.return()`, `for...of`, spreads, `Array.from` and `yield*`, pull their source lazily, and close it (run its `return()`) at the same points as Node: when `take` reaches its count, when a short-circuiting method finds its answer, when a callback throws, and when the loop consuming the helper exits early.
+  In TypeScript, `h.return!()` and `h.return?.()` compile when `h` is a helper call or a `const` initialized with one.
+  `flatMap` callbacks return arrays, generators, Sets or Maps; a string result throws Node's TypeError.
+  `Iterator.from` accepts arrays, strings, typed arrays, Sets, Maps and iterator objects such as generators.
+  In JavaScript, untyped generators and array, string, Map and Set iterators answer the same methods, and array destructuring of untyped values steps generators, iterators, Maps and Sets the way Node does.
+  Helper methods on untyped async generators are unsupported.
+  `console.log`, `util.inspect` and `Object.prototype.toString` print iterator objects as Node does: `Object [Iterator Helper] {}`, `Object [Generator] {}`, `Object [Array Iterator] {}`, and Map and Set iterators with the entries they have left.
+  `Iterator.from` over an object with its own `next` method or over an untyped value, the `Iterator` global as a value, and `String()` and template literals of typed iterator objects are unsupported.

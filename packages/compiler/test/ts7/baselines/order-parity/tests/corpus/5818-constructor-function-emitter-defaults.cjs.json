@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5818-constructor-function-emitter-defaults.cjs"
+ ],
+ "diags": []
+}

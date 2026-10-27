@@ -1,0 +1,6 @@
+new-target-value-signatures.ts:3:58 - error SC1090: 'new.target' as a value where 'B' constructs with a different signature than 'A' (read 'new.target.name' or compare 'new.target' with a class instead) is not supported yet
+
+  2 | // base's signature; B's constructor takes a parameter A's does not.
+  3 | class A { readonly t: typeof A; constructor() { this.t = new.target; } }
+    |                                                          ^~~~~~~~~~
+  4 | class B extends A { constructor(readonly n: number) { super(); } }

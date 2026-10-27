@@ -27,6 +27,7 @@ import { funcTypeFromParamShapes, type ParamShape } from "./call-signatures.js";
 import { erasedGenericInstance, implicitDefaultInstance } from "./generic-functions.js";
 import { errorToStringMethod } from "./error-methods.js";
 import { classCallbackValue, isClassCallback } from "./class-callbacks.js";
+import { perEvaluationPrivateNames } from "./private-brands.js";
 
 export interface ClassMethodValueSelection {
   expression: ts.PropertyAccessExpression;
@@ -51,18 +52,20 @@ export function lowerClassMethodValue(
   }
   const loc = locOf(expr);
   const receiver = lowerer.lowerExpr(expr.expression);
+  const declared = findMethodOn(lowerer, info, method);
   // A JS checker may name a class while the value is held in checked
   // storage. Read its actual property so own replacements and getters
-  // participate, and never pass a dynamic value to a native selector.
-  if (receiver.type.kind === "dyn")
+  // participate, and never pass a dynamic value to a native selector. A
+  // method whose private names belong to one evaluation is that
+  // evaluation's prototype method as well.
+  if (receiver.type.kind === "dyn" || (!!declared && perEvaluationPrivateNames(declared.declarer)))
     return {
       kind: "dynKeyGet",
-      value: receiver,
+      value: lowerer.coerceToExpected(receiver, DYN),
       key: { kind: "strLit", value: method, type: STRING, loc },
       type: DYN,
       loc,
     };
-  const declared = findMethodOn(lowerer, info, method);
   // Abstract declarations have no prototype function. Concrete descendants
   // provide the extracted value through the same reachability-driven selector.
   let value = declared?.sig.abstract
@@ -89,7 +92,8 @@ export function lowerClassMethodValue(
       loc,
     };
   };
-  const checked = isJsSourceFile(expr.getSourceFile()) && lowerer.dynConvertible(value.type);
+  const checked =
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) && lowerer.dynConvertible(value.type);
   if (checked) value = lowerer.coerceToExpected(value, DYN);
   // Select the declaration when extracting the value. Calling the value
   // later must not redispatch the method name on a different receiver.
@@ -348,7 +352,7 @@ function reflectedMethodValue(
   if (existing) return existing;
   const declaration = info.decl;
   if (!declaration) return null;
-  const member = declaration.members.find((member) => {
+  const member = declaration.members.nodes.find((member) => {
     if (
       (!ts.isMethodDeclaration(member) && !ts.isAccessor(member)) ||
       !member.name ||
@@ -371,22 +375,87 @@ function reflectedMethodValue(
   if (!member || (!ts.isMethodDeclaration(member) && !ts.isAccessor(member)) || !member.body)
     return null;
   let needsNativeReceiver =
-    !isJsSourceFile(declaration.getSourceFile()) ||
+    !isJsSourceFile(ts.getSourceFileOfNode(declaration)) ||
     info.localClass !== undefined ||
     lowerer.errorHierarchyClassOf(info.def.name);
+  // `super.m(...)` in a prototype method reads the base class's prototype,
+  // which lowerSuperMethodCall answers over the call-site receiver when the
+  // base has a prototype object. Other uses of `super` keep the native
+  // receiver.
+  const superCalls = !staticMethod && info.base !== null && prototypeChainViewable(info.base);
+  // Over a dynamic receiver, private fields are brand-checked and read, and private methods
+  // brand-checked and called; a private accessor, or a private method read as a value, would become a
+  // lookup of its name.
+  const privateAccessors = new Set<string>();
+  const privateMethods = new Set<string>();
+  for (const other of declaration.members.nodes)
+    if (other.name !== undefined && ts.isPrivateIdentifier(other.name)) {
+      if (ts.isAccessor(other)) privateAccessors.add(other.name.text);
+      else if (ts.isMethodDeclaration(other)) privateMethods.add(other.name.text);
+    }
   ts.walkPreorder(member, (node) => {
-    if (ts.isPrivateIdentifier(node) || node.kind === ts.SyntaxKind.SuperKeyword)
+    if (node.kind === ts.SyntaxKind.SuperKeyword && !(superCalls && isSuperMethodCallee(node)))
+      needsNativeReceiver = true;
+    if (!ts.isPrivateIdentifier(node)) return;
+    // Private members on a static method's receiver (the class value) keep
+    // the native receiver; prototype methods brand-check theirs, except
+    // private accessors and private methods used other than by a call.
+    if (
+      staticMethod ||
+      privateAccessors.has(node.text) ||
+      (privateMethods.has(node.text) && !isPrivateMethodCallee(node))
+    )
       needsNativeReceiver = true;
   });
   if (needsNativeReceiver) return null;
+  // The method reads itself as a value inside its own body: it is the
+  // closure its lowering in progress produces.
+  if (lowerer.methodLambdasInProgress.has(member)) {
+    const pending = lowerer.methodLambdasInProgress.get(member);
+    if (!pending) {
+      lowerer.unsupported(
+        "SC1090",
+        member,
+        "class methods that read their own value while their signature is computed",
+      );
+    }
+    pending.selfReads++;
+    return {
+      kind: "closure",
+      fnName: pending.fnName,
+      captures: [],
+      type: pending.type,
+      loc: locOf(member),
+    };
+  }
+  // The method may be lowered on top of an unrelated caller's frames (a
+  // `super` call in another class's method reflects this class): its `this`
+  // is its own receiver, never an enclosing function's.
   const context = newFnCtx(false, null, null, DYN);
+  context.thisBoundary = true;
   const previousClass = lowerer.currentClass;
   lowerer.currentClass = info;
   lowerer.fnStack.push(context);
+  lowerer.methodLambdasInProgress.set(member, null);
   try {
     const value = lowerer.lowerLambda(member);
+    const pending = lowerer.methodLambdasInProgress.get(member);
+    if (
+      pending &&
+      pending.selfReads > 0 &&
+      (value.kind !== "closure" ||
+        value.fnName !== pending.fnName ||
+        value.captures.length > 0 ||
+        !typeEquals(value.type, pending.type))
+    ) {
+      lowerer.unsupported(
+        "SC1090",
+        member,
+        "class methods that read their own value inside their body when the method's value type is only settled by its body",
+      );
+    }
     if (value.kind === "closure" && value.captures.length === 0) {
-      const body = lowerer.liftedFns.find((fn) => fn.name === value.fnName);
+      const body = lowerer.liftedFnNamed(value.fnName);
       if (body?.captures?.length === 0) delete body.captures;
     }
     const cache = staticMethod
@@ -395,9 +464,59 @@ function reflectedMethodValue(
     cache.set(method, value);
     return value;
   } finally {
+    lowerer.methodLambdasInProgress.delete(member);
     lowerer.fnStack.pop();
     lowerer.currentClass = previousClass;
   }
+}
+
+/** Whether `base` and every class above it have a complete prototype object
+ * (reflectClassPrototype): module-level program classes that neither extend
+ * Date nor a runtime-provided class. */
+function prototypeChainViewable(base: ClassInfo): boolean {
+  for (let c: ClassInfo | null = base; c; c = c.base)
+    if (
+      c.decl === null ||
+      c.localClass !== undefined ||
+      c.generic !== undefined ||
+      c.genericInstance !== undefined ||
+      c.mixinInstance !== undefined ||
+      c.callableBase !== undefined ||
+      c.extendsDate !== undefined ||
+      c.def.runtime ||
+      c.builtinEmitter ||
+      c.builtinStream ||
+      c.builtinError ||
+      c.builtinEventTarget
+    )
+      return false;
+  return true;
+}
+
+/** `super` as the receiver of a called member: `super.m(...)`. */
+/** Whether `node`, a private name, is the method a call calls (`x.#m(...)`). */
+function isPrivateMethodCallee(node: ts.Node): boolean {
+  const access = node.parent;
+  return (
+    access !== undefined &&
+    ts.isPropertyAccessExpression(access) &&
+    access.name === node &&
+    access.parent !== undefined &&
+    ts.isCallExpression(access.parent) &&
+    access.parent.expression === access
+  );
+}
+
+function isSuperMethodCallee(node: ts.Node): boolean {
+  const access = node.parent;
+  return (
+    access !== undefined &&
+    ts.isPropertyAccessExpression(access) &&
+    access.expression === node &&
+    access.parent !== undefined &&
+    ts.isCallExpression(access.parent) &&
+    access.parent.expression === access
+  );
 }
 
 /** Complete adapters after all native class bodies and instantiations exist. */
@@ -500,10 +619,13 @@ export function finalizeClassMethodValues(lowerer: Lowerer, functions: IrFunctio
           !(expr.kind === "closure" && expr.captures.includes(thisParam.localId)),
       });
     if (usesThis) continue;
-    // A method that never uses this remains callable when detached.
+    // A method that never uses this remains callable when detached. Without
+    // class captures it needs no class environment, so the detached copy
+    // drops the (empty) capture list, which requires a receiver.
     const name = `%method.receiverless:${target.name}`;
+    const { classCaptures: _classCaptures, ...detached } = target;
     functions.push({
-      ...target,
+      ...detached,
       name,
       params: target.params.slice(1),
       locals: target.locals.filter((local) => local.id !== thisParam.localId),

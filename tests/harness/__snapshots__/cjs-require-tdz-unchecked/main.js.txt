@@ -1,0 +1,6 @@
+cjs-require-tdz-unchecked/main.js:7:20 - error SC1013: reading require() binding 'greet' where it can run before the require (this use has no checked form for Node's ReferenceError — move the require above the code that can run first) is not supported yet
+
+  6 | 
+  7 | module.exports = { greet };
+    |                    ^~~~~
+  8 | const { greet } = require('./lib.js');

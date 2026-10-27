@@ -1,5 +1,11 @@
 The `wasm32-wasi` executable target supports async/await, promises, generators, timers, portable event-loop work, stdin/readline, filesystem callbacks and promises.
 
-WASI Preview 1 does not provide sockets, process spawning, OS signals, network interfaces, or filesystem notifications. Networking/fetch, child processes, signal APIs, `os.networkInterfaces()`, the `os` host facts without a WASI equivalent (`cpus()`, `hostname()`, `freemem()`, `loadavg()`, `uptime()`, `getPriority()`), and `fs.watch` are rejected before linking with `SC3002`. `--sanitize` and native FFI are unavailable.
+WASI Preview 1 does not provide sockets, process spawning, OS signals, network interfaces, or filesystem notifications.
+Networking/fetch, child processes, signal APIs, `os.networkInterfaces()`, the `os` host facts without a WASI equivalent (`cpus()`, `hostname()`, `freemem()`, `loadavg()`, `uptime()`, `getPriority()`), and `fs.watch` are rejected before linking with `SC3002`.
+`--sanitize` and native FFI are unavailable.
 
-Library mode emits an async-free Wasm reactor with named host imports. Native runtime localization and thread instances are unsupported. Each Wasm instance owns independent state. Filesystem access is limited to directories opened by the host; `scriptc run` exposes the current working directory and `/tmp`. See [Platform Support](/docs/platforms) for build and run details.
+Library mode emits an async-free Wasm reactor with named host imports.
+Native runtime localization and thread instances are unsupported.
+Each Wasm instance owns independent state.
+Filesystem access is limited to directories opened by the host; `scriptc run` exposes the current working directory and `/tmp`.
+See [Platform Support](/docs/platforms) for build and run details.

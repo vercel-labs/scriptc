@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7282-http2-once-add-listener.ts"
+ ],
+ "diags": []
+}

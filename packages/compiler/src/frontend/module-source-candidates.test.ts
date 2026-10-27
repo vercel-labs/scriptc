@@ -6,6 +6,7 @@ import * as ast from "./ts7/ast.js";
 import { Ts7Api } from "./ts7/rpc-api.js";
 import { Ts7Host } from "./ts7/program-host.js";
 import { moduleSourceCandidates } from "./module-source-candidates.js";
+import { getTextOfNode } from "./ts7/node-functions.js";
 
 test("module candidates preserve nested call order and belong to one program snapshot", () => {
   const directory = mkdtempSync(join(tmpdir(), "scriptc-module-candidates-"));
@@ -24,7 +25,7 @@ test("module candidates preserve nested call order and belong to one program sna
     const source = first.getSourceFile(entry)!;
     const candidates = moduleSourceCandidates(first, source);
     expect(candidates.specifiers).toEqual(["first", "second", "third", "fourth"]);
-    expect(candidates.calls.map((call) => call.expression.getText())).toEqual([
+    expect(candidates.calls.map((call) => getTextOfNode(call.expression))).toEqual([
       "outer",
       "require",
       "import",

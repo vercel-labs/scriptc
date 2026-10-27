@@ -126,10 +126,12 @@ test.for([
   ["replacement export property", "module.exports = read; module.exports.name = read;"],
   ["non-export assignment chain", "const box = {}; exports.alias = box.read = read;"],
 ])("require still refuses an early read through %s", ([, early]) => {
+  // A var binding keeps the fence (Node reads undefined there); a const
+  // compiles with initialization checks instead, from the same analysis.
   const diagnostics = requireOrderDiagnostics(`
 exports.read = read;
 ${early}
-const dep = require('./dep.cjs');
+var dep = require('./dep.cjs');
 function read() { return dep.value; }
 `);
   expect(
@@ -140,11 +142,41 @@ function read() { return dep.value; }
 test("publishing a require binding itself still reads it before initialization", () => {
   const diagnostics = requireOrderDiagnostics(`
 exports.read = read;
-const { read } = require('./dep.cjs');
+var { read } = require('./dep.cjs');
 `);
   expect(
     diagnostics.some((diag) => diag.code === "SC1013" && diag.message.includes("binding 'read'")),
   ).toBe(true);
+});
+
+test("an early-reachable const require binding compiles with initialization checks", () => {
+  // Preflight admits it; the lowering checks every reference that can run
+  // before the require (require-initialization.ts).
+  expect(
+    requireOrderDiagnostics(`
+exports.read = read;
+read();
+const dep = require('./dep.cjs');
+function read() { return dep.value; }
+`),
+  ).toEqual([]);
+});
+
+test.for([
+  ["a class whose methods read it", "class Reader { read() { return dep.value; } }"],
+  ["a stored class expression", "var Reader = class { read() { return dep.value; } };"],
+  ["a later-job callback", "setTimeout(() => dep.value, 0);"],
+  ["a published getter", "Object.defineProperty(exports, 'value', { get: () => dep.value });"],
+  ["a property stored on a published function", "module.exports = read; read.again = again;"],
+])("code that cannot run before the require does not reach it: %s", ([, early]) => {
+  expect(
+    requireOrderDiagnostics(`
+${early}
+var dep = require('./dep.cjs');
+function read() { return dep.value; }
+function again() { return dep.value; }
+`),
+  ).toEqual([]);
 });
 
 test.for([
@@ -154,7 +186,7 @@ test.for([
 ])("source bindings cannot masquerade as a CommonJS prologue: %s", (prefix) => {
   const diagnostics = requireOrderDiagnostics(`
 ${prefix}
-const dep = require('./dep.cjs');
+var dep = require('./dep.cjs');
 function read() { return dep.value; }
 `);
   expect(
@@ -165,7 +197,7 @@ function read() { return dep.value; }
 test("an earlier declarator can call an export before the require initializes", () => {
   const diagnostics = requireOrderDiagnostics(`
 exports.read = read;
-const before = read(), dep = require('./dep.cjs');
+var before = read(), dep = require('./dep.cjs');
 function read() { return dep.value; }
 `);
   expect(
@@ -181,6 +213,63 @@ const dep = require('./dep.cjs'), after = read();
 function read() { return dep.value; }
 `),
   ).toEqual([]);
+});
+
+test("a member added to a replaced export does not run the replacement (on-finished)", () => {
+  expect(
+    requireOrderDiagnostics(`
+module.exports = read;
+module.exports.check = check;
+var hooks = probe();
+var dep = require('./dep.cjs');
+function read() { return dep.value; }
+function check() { return 1; }
+function probe() { return check(); }
+`),
+  ).toEqual([]);
+});
+
+test("a require cycle whose modules export first and use each other only later is admitted", () => {
+  expect(
+    requireOrderDiagnostics(
+      `
+const ANY = Symbol('ANY');
+class Main { dep() { return new Dep(); } }
+module.exports = Main;
+const Dep = require('./dep.cjs');
+`,
+      "class Dep { main() { return new Main(); } }\nmodule.exports = Dep;\nconst Main = require('./main.cjs');\n",
+    ),
+  ).toEqual([]);
+});
+
+test.for([
+  [
+    "an export after the require",
+    "const Main = require('./main.cjs');\nmodule.exports = { Dep: 1 };\n",
+  ],
+  [
+    "a top-level use of the cycle binding",
+    "module.exports = 1;\nconst Main = require('./main.cjs');\nnew Main();\n",
+  ],
+  [
+    "an escaping export object",
+    "module.exports = 1;\nconst Main = require('./main.cjs');\nObject.assign(exports, {});\n",
+  ],
+  [
+    "a call before the export",
+    "setup();\nmodule.exports = 1;\nconst Main = require('./main.cjs');\nfunction setup() {}\n",
+  ],
+])("a require cycle keeps SC1016 for %s", ([, dependency]) => {
+  const diagnostics = requireOrderDiagnostics(
+    `
+class Main {}
+module.exports = Main;
+const dep = require('./dep.cjs');
+`,
+    dependency,
+  );
+  expect(diagnostics.some((diag) => diag.code === "SC1016")).toBe(true);
 });
 
 test("function publication does not admit CommonJS cycles", () => {
@@ -255,14 +344,14 @@ test("repeated cycle edges reuse a file's binding index", () => {
   try {
     const main = load.entry;
     const peer = load.program.getSourceFile(join(directory, "peer.ts"))!;
-    const mainImports = main.statements.filter(ts.isImportDeclaration);
-    const peerImports = peer.statements.filter(ts.isImportDeclaration);
+    const mainImports = main.statements.nodes.filter(ts.isImportDeclaration);
+    const peerImports = peer.statements.nodes.filter(ts.isImportDeclaration);
     const edges = new Map<ts.SourceFile, CycleEdge[]>([
       [main, mainImports.map((stmt) => ({ dep: peer, stmt }))],
       [peer, peerImports.map((stmt) => ({ dep: main, stmt }))],
     ]);
     const admit = makeCycleAdmission(load.program, (file) => edges.get(file) ?? []);
-    const walk = vi.spyOn(peer, "appendChildIndices");
+    const walk = vi.spyOn(peer.file.wire, "preorder");
     try {
       expect(admit(peer, edges.get(peer)![0]!)).toBeNull();
       expect(walk).toHaveBeenCalled();
@@ -282,15 +371,60 @@ test("repeated cycle edges reuse a file's binding index", () => {
 
 test.for([
   [
-    // A shared instance built by a user constructor: the reads of it in
-    // the partner's function can run early; the class cannot.
+    // A shared instance built by a user constructor that calls the
+    // partner's function: its read of the instance can run early.
+    {
+      "main.ts": 'import { shared } from "./a.ts"; console.log(shared.n);',
+      "a.ts":
+        'import { f } from "./b.ts"; export class C { n = 1; constructor() { console.log(f()); } } export const shared = new C();',
+      "b.ts": 'import { shared } from "./a.ts"; export function f(): number { return shared.n; }',
+    },
+    ["shared"],
+  ],
+  [
+    // User code runs while the instance is built, but nothing it reaches
+    // calls the partner's function before the declaration completed.
     {
       "main.ts": 'import { shared } from "./a.ts"; console.log(shared.n);',
       "a.ts":
         'import { f } from "./b.ts"; export class C { n = 1; } export const shared = new C(); console.log(f());',
       "b.ts": 'import { shared } from "./a.ts"; export function f(): number { return shared.n; }',
     },
-    ["shared"],
+    [],
+  ],
+  [
+    // The partner's top level runs first and calls a hoisted function of
+    // the importer that reads a const declared later; a second function
+    // reads another const but nothing calls it early.
+    {
+      "main.ts": 'import { late } from "./a.ts"; console.log(late());',
+      "a.ts":
+        'import { probe } from "./b.ts"; export function read(): string { return name; } export function late(): string { return other + probe; } export const name = "n"; export const other = "o";',
+      "b.ts":
+        'import { read } from "./a.ts"; function attempt(): string { try { return read(); } catch { return "tdz"; } } export const probe = attempt();',
+    },
+    ["name"],
+  ],
+  [
+    // The partner's class calls a method through `this` in a static
+    // initializer; the method reads a const of the importer declared later.
+    {
+      "main.ts": 'import { name } from "./a.ts"; console.log(name);',
+      "a.ts": 'import { Probe } from "./b.ts"; export const name = "n"; console.log(Probe.value);',
+      "b.ts":
+        'import { name } from "./a.ts"; export class Probe { static read(): string { return name; } static value = this.read(); }',
+    },
+    ["name"],
+  ],
+  [
+    // The same through a static block of a class stored by a const.
+    {
+      "main.ts": 'import { name } from "./a.ts"; console.log(name);',
+      "a.ts": 'import { Box } from "./b.ts"; export const name = "n"; console.log(Box.value);',
+      "b.ts":
+        'import { name } from "./a.ts"; export const Box = class { static value = ""; static read(): string { return name; } static { this.value = this.read(); } };',
+    },
+    ["name"],
   ],
   [
     // The partner's top level reads the importer's const before it ran.

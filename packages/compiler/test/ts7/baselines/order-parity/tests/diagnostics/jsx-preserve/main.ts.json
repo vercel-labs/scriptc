@@ -1,0 +1,18 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/jsx-preserve/view.tsx",
+  "<repo>/tests/diagnostics/jsx-preserve/main.ts"
+ ],
+ "diags": [
+  {
+   "code": "SC1090",
+   "message": "JSX with \"jsx\": \"preserve\" is not supported: that setting keeps JSX in the output instead of lowering it to calls",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/jsx-preserve/view.tsx",
+    "start": 158,
+    "end": 176
+   },
+   "hint": "set \"jsx\" to \"react\", \"react-jsx\" or \"react-jsxdev\" in the project tsconfig"
+  }
+ ]
+}

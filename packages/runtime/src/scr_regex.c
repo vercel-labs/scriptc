@@ -85,6 +85,7 @@ static int scr_lre_flags(const ScrStr *flags) {
       case 's': mask |= LRE_FLAG_DOTALL; break;
       case 'u': mask |= LRE_FLAG_UNICODE; break;
       case 'y': mask |= LRE_FLAG_STICKY; break;
+      case 'v': mask |= LRE_FLAG_UNICODE_SETS; break;
       default:
         scr_trap_fmt("scriptc: internal error: unexpected regex flag '%c'\n",
                      flags->data[i]);
@@ -201,7 +202,7 @@ static uint8_t *scr_regex_bc(ScrRegex *re) {
   const char *pat = re->source->data;
   size_t pat_len = re->source->len;
   char *cesu = NULL;
-  if (!(flags & LRE_FLAG_UNICODE)) {
+  if (!(flags & (LRE_FLAG_UNICODE | LRE_FLAG_UNICODE_SETS))) {
     cesu = scr_pattern_cesu8(re->source, &pat_len);
     if (cesu) pat = cesu;
   }
@@ -609,6 +610,139 @@ static ScrStr *scr_regex_span(const ScrRegexInput *input, int start, int end) {
   return scr_str_new((const char *)input->data + start, (size_t)(end - start));
 }
 
+/* ── match metadata ───────────────────────────────────────────────────── */
+
+/* Results of one exec or matchAll call share their subject and regex
+ * through one match source handle, which each result's metadata slot
+ * holds with its start index until the metadata object (index, input,
+ * groups) is first needed: when the result is converted to a dynamic
+ * value or its groups are read. Results read only through their elements
+ * never allocate it, and releasing a result releases the handle with the
+ * rest of its metadata. */
+typedef struct ScrRegexMatchSource {
+  size_t rc;
+  ScrStr *input;
+  ScrRegex *re;
+  ScrDyn *input_value; /* `input` as a dynamic value, built on first use */
+} ScrRegexMatchSource;
+
+static bool scr_regex_copy_pending_metadata(ScrArr *a, ScrDyn *target);
+
+static void *scr_regex_source_retain_v(void *p) {
+  ((ScrRegexMatchSource *)p)->rc++;
+  return p;
+}
+
+static void scr_regex_source_release_v(void *p) {
+  ScrRegexMatchSource *src = p;
+  if (--src->rc != 0) return;
+  scr_str_release(src->input);
+  scr_regex_release(src->re);
+  scr_dyn_release(src->input_value);
+  free(src);
+}
+
+/* The +1 match source handle of one exec or matchAll call. */
+static ScrDyn *scr_regex_source_new(ScrStr *s, ScrRegex *re) {
+  static const ScrDynHandleOps ops = {
+    "MatchSource", &scr_regex_source_retain_v, &scr_regex_source_release_v, NULL, NULL, NULL, NULL,
+  };
+  scr_dyn_handle_install(SCR_DYNH_MATCH_SOURCE, &ops);
+  scr_arr_match_copy = &scr_regex_copy_pending_metadata;
+  ScrRegexMatchSource *src = malloc(sizeof *src);
+  if (!src) scr_regex_oom();
+  src->rc = 0;
+  src->input = scr_str_retain(s);
+  src->re = scr_regex_retain(re);
+  src->input_value = NULL;
+  return scr_dyn_new_handle(src, SCR_DYNH_MATCH_SOURCE);
+}
+
+/* Records the match at UTF-16 `index` as the row's pending metadata. */
+static void scr_regex_defer_metadata(ScrArr *row, ScrDyn *source, int index) {
+  ScrArrExt *x = scr_arr_ext(row);
+  x->metadata = scr_dyn_retain(source);
+  x->match_index = (double)index;
+}
+
+/* The pending match source of a result, or NULL once its metadata exists. */
+static ScrRegexMatchSource *scr_regex_pending(const ScrArr *a) {
+  const ScrDyn *metadata = scr_arr_ext_of(a) ? scr_arr_ext_of(a)->metadata : NULL;
+  if (!metadata || metadata->kind != SCR_DYN_HANDLE || metadata->v.handle.tag != SCR_DYNH_MATCH_SOURCE)
+    return NULL;
+  return metadata->v.handle.ptr;
+}
+
+/* The subject as a dynamic value, shared by the source's results. +1. */
+static ScrDyn *scr_regex_source_input(ScrRegexMatchSource *src) {
+  if (!src->input_value) src->input_value = scr_dyn_new_str(src->input);
+  return scr_dyn_retain(src->input_value);
+}
+
+/* groups is a null-prototype object mapping each group name to its first
+ * participating capture (the row's own string, shared) or undefined, and
+ * undefined itself for a pattern without named groups. The row holds each
+ * capture as a string or a present undefined. +1. */
+static ScrDyn *scr_regex_groups_of(const ScrArr *a, uint8_t *bc) {
+  const char *groupnames = lre_get_groupnames(bc);
+  if (!groupnames) return scr_dyn_retain(scr_dyn_undefined());
+  int capture_count = lre_get_capture_count(bc);
+  ScrDyn *groups = scr_dyn_new_obj_null_proto();
+  const char *name = groupnames;
+  for (int k = 1; k < capture_count; k++) {
+    size_t length = strlen(name);
+    bool matched = (size_t)k < a->len && (size_t)k < a->cap &&
+                   scr_arr_dense_state(a, (size_t)k) == SCR_ARR_VALUE;
+    /* ES2025 duplicates sit in distinct alternatives: at most one
+     * participates, and it wins over an earlier undefined. */
+    if (length && (matched || !scr_dyn_obj_get(groups, name, length)))
+      scr_dyn_obj_set(groups, name, length,
+                      matched ? scr_dyn_new_str((ScrStr *)(uintptr_t)a->data[k])
+                              : scr_dyn_retain(scr_dyn_undefined()));
+    name += length + LRE_GROUP_NAME_TRAILER_LEN;
+  }
+  return groups;
+}
+
+static void scr_regex_materialize_metadata(ScrArr *a) {
+  ScrRegexMatchSource *src = scr_regex_pending(a);
+  if (!src) return;
+  ScrArrExt *x = scr_arr_ext_of(a);
+  ScrDyn *source = x->metadata;
+  ScrDyn *props = scr_dyn_new_obj();
+  scr_dyn_obj_set(props, "index", 5, scr_dyn_new_num(x->match_index));
+  scr_dyn_obj_set(props, "input", 5, scr_regex_source_input(src));
+  scr_dyn_obj_set(props, "groups", 6, scr_regex_groups_of(a, scr_regex_bc(src->re)));
+  x->metadata = props;
+  scr_dyn_release(source);
+}
+
+static bool scr_regex_copy_pending_metadata(ScrArr *a, ScrDyn *target) {
+  ScrRegexMatchSource *src = scr_regex_pending(a);
+  if (target->kind != SCR_DYN_ARR || target->v.arr.properties || target->non_extensible ||
+      target->v.arr.frozen) {
+    scr_regex_materialize_metadata(a);
+    return false;
+  }
+  scr_dyn_arr_named_put(target, "index", 5, scr_dyn_new_num(scr_arr_ext_of(a)->match_index));
+  scr_dyn_arr_named_put(target, "input", 5, scr_regex_source_input(src));
+  scr_dyn_arr_named_put(target, "groups", 6, scr_regex_groups_of(a, scr_regex_bc(src->re)));
+  return true;
+}
+
+ScrDyn *scr_regex_result_prop(ScrArr *a, ScrStr *key) {
+  ScrRegexMatchSource *src = scr_regex_pending(a);
+  if (src) {
+    if (key->len == 5 && memcmp(key->data, "index", 5) == 0)
+      return scr_dyn_new_num(scr_arr_ext_of(a)->match_index);
+    if (key->len == 5 && memcmp(key->data, "input", 5) == 0) return scr_regex_source_input(src);
+    scr_regex_materialize_metadata(a);
+  }
+  ScrDyn *metadata = scr_arr_ext_of(a) ? scr_arr_ext_of(a)->metadata : NULL;
+  ScrDyn *value = metadata ? scr_dyn_obj_get(metadata, key->data, key->len) : NULL;
+  return scr_dyn_retain(value ? value : scr_dyn_undefined());
+}
+
 /* ECMA-262 AdvanceStringIndex: past a whole surrogate pair under /u, one
  * code unit otherwise. ASCII cannot contain a surrogate pair. */
 static int scr_advance(const ScrRegexInput *input, int i, bool unicode) {
@@ -670,7 +804,7 @@ static uint64_t scr_regex_mask_bits(double mask) {
  * present undefined (SCR_RE_NO_SPAN when lazy), a lazy capture of an ASCII
  * subject is a span word, and every other capture a fresh string. */
 static inline void scr_regex_fill_slot(const ScrRegexInput *input, uint64_t *data,
-                                       uint8_t *present, int k, uint64_t mask, uint64_t lazy,
+                                       uint8_t *states, int k, uint64_t mask, uint64_t lazy,
                                        bool spans) {
   const uint8_t *cs = input->capture[2 * k], *ce = input->capture[2 * k + 1];
   bool deferred = k < 64 && (lazy >> k & 1);
@@ -687,7 +821,7 @@ static inline void scr_regex_fill_slot(const ScrRegexInput *input, uint64_t *dat
     state = SCR_ARR_VALUE;
   }
   data[k] = word;
-  present[k] = state;
+  *scr_arr_state_in(states, (size_t)k) = state;
 }
 
 /* re.exec(s): a fresh string[] of [whole match, ...captures], or NULL
@@ -711,44 +845,43 @@ static ScrArr *scr_regex_exec_core(ScrStr *s, ScrRegex *re, uint64_t mask, bool 
   if (rc == 1) {
     int count = lre_get_capture_count(bc);
     bool spans = lazy != 0 && !input.wide && (count >= 64 || ((mask | lazy) >> count) == 0);
-    out = scr_arr_new_inline(SCR_ELEM_STR, (size_t)count + spans);
-    if (metadata) {
-      ScrDyn *props = scr_dyn_new_obj();
-      scr_arr_ext(out)->metadata = props;
-      scr_dyn_obj_set(props, "index", 5, scr_dyn_new_num((double)scr_capture_index(&input, capture[0])));
-      scr_dyn_obj_set(props, "input", 5, scr_dyn_new_str(s));
-    }
+    out = scr_arr_new_inline(SCR_ELEM_STR, (size_t)count + spans, true);
     /* A fresh dense array: every slot is written directly, then the
      * hole-free prefix is the run of materialized captures from 0. Its
      * storage pointers are fixed (the inline block never moves here), so
      * they stay in registers across the slot stores. */
     size_t n = (size_t)count + spans;
     uint64_t *data = out->data;
-    uint8_t *present = out->present;
+    uint8_t *states = scr_arr_states_end(out);
     if (count <= 64) {
       /* Captures neither selected nor lazy are present undefined with a
        * zero payload; only the selected and lazy ones need a decision. */
       memset(data, 0, (size_t)count * sizeof *data);
-      memset(present, SCR_ARR_UNDEFINED, (size_t)count);
+      memset(states - count, SCR_ARR_UNDEFINED, (size_t)count);
       uint64_t visit = mask | lazy;
       if (count < 64) visit &= (UINT64_C(1) << count) - 1;
       while (visit) {
         int k = __builtin_ctzll(visit);
         visit &= visit - 1;
-        scr_regex_fill_slot(&input, data, present, k, mask, lazy, spans);
+        scr_regex_fill_slot(&input, data, states, k, mask, lazy, spans);
       }
     } else {
       for (int k = 0; k < count; k++)
-        scr_regex_fill_slot(&input, data, present, k, mask, lazy, spans);
+        scr_regex_fill_slot(&input, data, states, k, mask, lazy, spans);
     }
     if (spans) {
       data[count] = (uint64_t)(uintptr_t)scr_str_retain(s);
-      present[count] = SCR_ARR_VALUE;
+      *scr_arr_state_in(states, count) = SCR_ARR_VALUE;
     }
     size_t filled = 0;
-    while (filled < n && present[filled] == SCR_ARR_VALUE) filled++;
+    while (filled < n && *scr_arr_state_in(states, filled) == SCR_ARR_VALUE) filled++;
     out->filled = (uint32_t)filled;
     out->len = n;
+    if (metadata) {
+      ScrDyn *source = scr_regex_source_new(s, re);
+      scr_regex_defer_metadata(out, source, scr_capture_index(&input, capture[0]));
+      scr_dyn_release(source);
+    }
   }
   scr_regex_input_dispose(&input);
   return out; /* +1, or NULL (no match) */
@@ -772,14 +905,15 @@ static bool scr_regex_group_bytes(const ScrArr *m, double k, const char **p, siz
   /* Array lengths stay below 2^53, so signed conversions are exact. */
   if (!(k >= 0 && k < (double)(int64_t)m->len)) return false;
   size_t i = (size_t)(int64_t)k;
-  if (m->present[i] == SCR_ARR_VALUE) {
+  uint8_t state = scr_arr_dense_state(m, i);
+  if (state == SCR_ARR_VALUE) {
     const ScrStr *str = (const ScrStr *)(uintptr_t)m->data[i];
     *p = str->data;
     *n = str->len;
     return true;
   }
   uint64_t span = m->data[i];
-  if (m->present[i] != SCR_ARR_UNDEFINED || span == SCR_RE_NO_SPAN) return false;
+  if (state != SCR_ARR_UNDEFINED || span == SCR_RE_NO_SPAN) return false;
   const ScrStr *subject = (const ScrStr *)(uintptr_t)m->data[m->len - 1];
   *p = subject->data + (span >> 32);
   *n = (size_t)((span & UINT32_MAX) - (span >> 32));
@@ -882,8 +1016,11 @@ double scr_regex_search(ScrStr *s, ScrRegex *re) {
  * Node's exact TypeError (catchable — replaceAll's stance). Empty matches
  * advance one unit, unicode-aware (AdvanceStringIndex). `indices`, when
  * non-NULL, receives each match's UTF-16 start index (the row's .index —
- * the companion array the for-of-over-matchAll desugar reads). */
-static ScrArr *scr_regex_match_all_core(ScrStr *s, ScrRegex *re, ScrArr *indices) {
+ * the companion array the for-of-over-matchAll desugar reads). With
+ * `metadata`, each row records the match source for its index, input and
+ * groups properties. */
+static ScrArr *scr_regex_match_all_core(ScrStr *s, ScrRegex *re, ScrArr *indices,
+                                        bool metadata) {
   uint8_t *bc = scr_regex_bc(re);
   int re_flags = lre_get_flags(bc);
   if (!(re_flags & LRE_FLAG_GLOBAL)) {
@@ -894,6 +1031,7 @@ static ScrArr *scr_regex_match_all_core(ScrStr *s, ScrRegex *re, ScrArr *indices
   }
   bool unicode = (re_flags & (LRE_FLAG_UNICODE | LRE_FLAG_UNICODE_SETS)) != 0;
   int capture_count = lre_get_capture_count(bc);
+  ScrDyn *source = metadata ? scr_regex_source_new(s, re) : NULL;
   ScrRegexInput input;
   scr_regex_input_init(&input, re, bc, s);
   int len = input.len;
@@ -905,30 +1043,55 @@ static ScrArr *scr_regex_match_all_core(ScrStr *s, ScrRegex *re, ScrArr *indices
     if (scr_exec(&input, bc, pos) != 1) break;
     int start = scr_capture_index(&input, capture[0]);
     int end = scr_capture_index(&input, capture[1]);
-    ScrArr *row = scr_arr_new(SCR_ELEM_STR, (size_t)capture_count);
+    /* One allocation per row, like an exec result: every slot is written
+     * directly, then the hole-free prefix is the run of captures from 0.
+     * A row needs states only for a capture that did not participate. */
+    bool all = true;
+    for (int k = 0; k < capture_count; k++) all &= capture[2 * k] != NULL && capture[2 * k + 1] != NULL;
+    ScrArr *row = scr_arr_new_inline(SCR_ELEM_STR, (size_t)capture_count, !all);
+    uint64_t *data = row->data;
+    uint8_t *states = all ? NULL : scr_arr_states_end_w(row, 8);
     for (int k = 0; k < capture_count; k++) {
       const uint8_t *cs = capture[2 * k], *ce = capture[2 * k + 1];
       if (cs == NULL || ce == NULL) {
-        scr_arr_set_undefined(row, (double)row->len);
+        data[k] = 0;
+        *scr_arr_state_in(states, (size_t)k) = SCR_ARR_UNDEFINED;
       } else {
-        scr_arr_push_ref(
-            row, scr_regex_span(&input, scr_capture_index(&input, cs), scr_capture_index(&input, ce)));
+        ScrStr *text =
+            scr_regex_span(&input, scr_capture_index(&input, cs), scr_capture_index(&input, ce));
+        data[k] = (uint64_t)(uintptr_t)text;
+        if (states) *scr_arr_state_in(states, (size_t)k) = SCR_ARR_VALUE;
       }
     }
+    size_t filled = 0;
+    while (filled < (size_t)capture_count && (!states || *scr_arr_state_in(states, filled) == SCR_ARR_VALUE))
+      filled++;
+    row->filled = (uint32_t)filled;
+    row->len = (size_t)capture_count;
+    if (source) scr_regex_defer_metadata(row, source, start);
     scr_arr_push_ref(out, row);
     if (indices != NULL) scr_arr_push_f64(indices, (double)start);
     pos = end == start ? scr_advance(&input, end, unicode) : end;
   }
+  scr_dyn_release(source);
   scr_regex_input_dispose(&input);
   return out; /* +1 (possibly empty — Node's no-match drain is []) */
 }
 
 ScrArr *scr_regex_match_all(ScrStr *s, ScrRegex *re) {
-  return scr_regex_match_all_core(s, re, NULL);
+  return scr_regex_match_all_core(s, re, NULL, true);
+}
+
+ScrArr *scr_regex_match_all_captures(ScrStr *s, ScrRegex *re) {
+  return scr_regex_match_all_core(s, re, NULL, false);
 }
 
 ScrArr *scr_regex_match_all_into(ScrStr *s, ScrRegex *re, ScrArr *indices) {
-  return scr_regex_match_all_core(s, re, indices);
+  return scr_regex_match_all_core(s, re, indices, true);
+}
+
+ScrArr *scr_regex_match_all_captures_into(ScrStr *s, ScrRegex *re, ScrArr *indices) {
+  return scr_regex_match_all_core(s, re, indices, false);
 }
 
 /* ── replace / replaceAll ─────────────────────────────────────────────── */
@@ -1253,6 +1416,51 @@ ScrStr *scr_regex_replace(ScrStr *s, ScrRegex *re, ScrStr *rep) {
   return scr_replace_impl(s, re, rep);
 }
 
+void scr_re_replace_out_reserve(ScrReReplaceOut *o, int64_t need) {
+  if (need < 0 || (uint64_t)need > SCR_STR_MAX_CAP - (uint64_t)o->len) scr_regex_oom();
+  size_t cap = (size_t)o->cap * 2;
+  if (cap < (size_t)(o->len + need)) cap = (size_t)(o->len + need);
+  if (cap > SCR_STR_MAX_CAP) cap = SCR_STR_MAX_CAP;
+  o->str->len = (size_t)o->len;
+  o->str = scr_str_regrow(o->str, cap);
+  o->data = o->str->data;
+  o->cap = (int64_t)o->str->cap;
+}
+
+/* A global substitution with a literal ASCII replacement through the
+ * build-time replacer of its (pattern, replacement) pair: on an ASCII
+ * subject the replacer writes each gap and the replacement into the output
+ * and continues the search after every match without returning. Every
+ * other subject, and a plain-text pattern (string search), takes
+ * scr_replace_impl. */
+ScrStr *scr_regex_replace_with(ScrStr *s, ScrRegex *re, ScrStr *rep,
+                               ScrRegexMatcherFn replacer) {
+  (void)scr_regex_bc(re);
+  if (scr_regex_lit(re) || !scr_text_ascii(s)) return scr_replace_impl(s, re, rep);
+  if (s->len > (size_t)INT32_MAX - 1) scr_regex_oom();
+  re->last_index = 0;
+  ScrReReplaceOut o;
+  o.str = scr_str_alloc_raw(0, s->len + 64);
+  o.data = o.str->data;
+  o.len = 0;
+  o.cap = (int64_t)o.str->cap;
+  o.next = 0;
+  int32_t n = replacer((const uint8_t *)s->data, (int32_t)s->len, 0, (uint8_t **)(void *)&o);
+  if (n == 0) {
+    o.str->len = 0;
+    scr_str_release(o.str);
+    return scr_str_retain(s);
+  }
+  size_t tail = s->len - (size_t)o.next;
+  if ((int64_t)(tail + 1) > o.cap - o.len) scr_re_replace_out_reserve(&o, (int64_t)tail + 1);
+  scr_copy_bytes(o.data + o.len, s->data + o.next, tail);
+  o.len += (int64_t)tail;
+  o.str->len = (size_t)o.len;
+  o.data[o.len] = '\0';
+  scr_str_note_ascii(o.str);
+  return o.str;
+}
+
 typedef struct {
   ScrDyn *arguments;
   int start, end;
@@ -1357,13 +1565,260 @@ ScrStr *scr_regex_replace_callback(ScrStr *s, ScrRegex *re, ScrDyn *callback, bo
   for (size_t i = 0; i < count; i++) scr_dyn_release(matches[i].arguments);
   free(matches);
   if (scr_exc_pending()) {
-    free(output.data);
+    scr_jb_abandon(&output);
     scr_regex_input_dispose(&input);
     return NULL;
   }
   scr_regex_put_span(&output, &input, next, len);
   scr_regex_input_dispose(&input);
   return scr_jb_finish(&output);
+}
+
+/* The closure signature scr_regex_replace_fn calls: `arity` pointer
+ * parameters, except a number at `number_at` (-1 when there is none). A
+ * string and a checked-dynamic value are both pointers, and so are both
+ * results. */
+#define SCR_REPLACER_CALL(...) return ((void *(*)(ScrClosure *, __VA_ARGS__))fn)
+static inline __attribute__((always_inline)) void *scr_regex_call_replacer(
+    ScrClosure *f, uint32_t arity, int number_at, void *const *p, double offset) {
+  void *fn = f->fn;
+  typedef void *P;
+  typedef double D;
+  switch (arity * 8 + (uint32_t)(number_at < 0 ? 7 : number_at)) {
+  case 0 * 8 + 7: return ((void *(*)(ScrClosure *))fn)(f);
+  case 1 * 8 + 7: SCR_REPLACER_CALL(P)(f, p[0]);
+  case 2 * 8 + 7: SCR_REPLACER_CALL(P, P)(f, p[0], p[1]);
+  case 2 * 8 + 1: SCR_REPLACER_CALL(P, D)(f, p[0], offset);
+  case 3 * 8 + 7: SCR_REPLACER_CALL(P, P, P)(f, p[0], p[1], p[2]);
+  case 3 * 8 + 1: SCR_REPLACER_CALL(P, D, P)(f, p[0], offset, p[2]);
+  case 3 * 8 + 2: SCR_REPLACER_CALL(P, P, D)(f, p[0], p[1], offset);
+  case 4 * 8 + 7: SCR_REPLACER_CALL(P, P, P, P)(f, p[0], p[1], p[2], p[3]);
+  case 4 * 8 + 1: SCR_REPLACER_CALL(P, D, P, P)(f, p[0], offset, p[2], p[3]);
+  case 4 * 8 + 2: SCR_REPLACER_CALL(P, P, D, P)(f, p[0], p[1], offset, p[3]);
+  case 4 * 8 + 3: SCR_REPLACER_CALL(P, P, P, D)(f, p[0], p[1], p[2], offset);
+  case 5 * 8 + 7: SCR_REPLACER_CALL(P, P, P, P, P)(f, p[0], p[1], p[2], p[3], p[4]);
+  case 5 * 8 + 1: SCR_REPLACER_CALL(P, D, P, P, P)(f, p[0], offset, p[2], p[3], p[4]);
+  case 5 * 8 + 2: SCR_REPLACER_CALL(P, P, D, P, P)(f, p[0], p[1], offset, p[3], p[4]);
+  case 5 * 8 + 3: SCR_REPLACER_CALL(P, P, P, D, P)(f, p[0], p[1], p[2], offset, p[4]);
+  case 5 * 8 + 4: SCR_REPLACER_CALL(P, P, P, P, D)(f, p[0], p[1], p[2], p[3], offset);
+  case 6 * 8 + 7: SCR_REPLACER_CALL(P, P, P, P, P, P)(f, p[0], p[1], p[2], p[3], p[4], p[5]);
+  case 6 * 8 + 1: SCR_REPLACER_CALL(P, D, P, P, P, P)(f, p[0], offset, p[2], p[3], p[4], p[5]);
+  case 6 * 8 + 2: SCR_REPLACER_CALL(P, P, D, P, P, P)(f, p[0], p[1], offset, p[3], p[4], p[5]);
+  case 6 * 8 + 3: SCR_REPLACER_CALL(P, P, P, D, P, P)(f, p[0], p[1], p[2], offset, p[4], p[5]);
+  case 6 * 8 + 4: SCR_REPLACER_CALL(P, P, P, P, D, P)(f, p[0], p[1], p[2], p[3], offset, p[5]);
+  case 6 * 8 + 5: SCR_REPLACER_CALL(P, P, P, P, P, D)(f, p[0], p[1], p[2], p[3], p[4], offset);
+  default: break;
+  }
+  scr_trap("scriptc: internal error: typed replacer signature\n");
+}
+#undef SCR_REPLACER_CALL
+
+/* Typed replacer argument k: a capture (NULL for an unset optional one)
+ * or the subject; the offset is passed separately. The compiler admits a
+ * typed parameter only at those positions. Inlined with each constant k. */
+static inline __attribute__((always_inline)) void scr_regex_typed_arg(
+    void **p, uint32_t k, uint32_t kinds, int capture_count, ScrStr *const *caps, ScrStr *subject) {
+  if ((int)k < capture_count) {
+    if (!caps[k] && !(kinds & (SCR_REPLACER_OPTIONAL << k)))
+      scr_trap("scriptc: internal error: typed replacer capture is unset\n");
+    p[k] = caps[k] ? scr_str_retain(caps[k]) : NULL;
+  } else if ((int)k == capture_count + 1) {
+    p[k] = scr_str_retain(subject);
+  }
+}
+
+/* One match's replacer arguments when some parameter is checked-dynamic
+ * (scr_regex_replace_fn's `kinds`): typed ones +1, the rest new boxes.
+ * `boxed_subject` is the subject's box; `groups` the match's groups
+ * object, or NULL when no parameter reads it. */
+__attribute__((noinline)) static void scr_regex_replacer_args(
+    void **p, uint32_t arity, uint32_t kinds, int capture_count, ScrStr *const *caps, double offset,
+    ScrStr *subject, ScrDyn *boxed_subject, ScrDyn *groups) {
+  for (uint32_t k = 0; k < arity; k++) {
+    int at = (int)k;
+    if (kinds & (1u << k)) {
+      if (at < capture_count)
+        p[k] = caps[k] ? scr_dyn_new_str(caps[k]) : scr_dyn_retain(scr_dyn_undefined());
+      else if (at == capture_count)
+        p[k] = scr_dyn_new_num(offset);
+      else if (at == capture_count + 1)
+        p[k] = scr_dyn_retain(boxed_subject);
+      else if (at == capture_count + 2 && groups)
+        p[k] = scr_dyn_retain(groups);
+      else
+        p[k] = scr_dyn_retain(scr_dyn_undefined());
+    } else if (at < capture_count) {
+      if (!caps[k] && !(kinds & (SCR_REPLACER_OPTIONAL << k)))
+        scr_trap("scriptc: internal error: typed replacer capture is unset\n");
+      p[k] = caps[k] ? scr_str_retain(caps[k]) : NULL;
+    } else if (at == capture_count + 1) {
+      p[k] = scr_str_retain(subject);
+    } else if (at != capture_count) {
+      scr_trap("scriptc: internal error: typed replacer signature\n");
+    }
+  }
+}
+
+/* scr_regex_replace_callback's algorithm for a typed replacer: the matches
+ * are collected first, keeping only the captures and groups objects the
+ * replacer reads, then the replacer runs once per match in order. Typed
+ * parameters receive their values +1 (the closure ABI's owned
+ * parameters) and an unset optional capture NULL; checked-dynamic ones
+ * receive new boxes. Inlined into one copy for kinds 0, where the boxed
+ * handling folds away, and one for the other kinds. */
+static inline __attribute__((always_inline)) ScrStr *
+scr_regex_replace_fn_impl(ScrStr *s, ScrRegex *re, ScrClosure *f, uint32_t arity, uint32_t kinds,
+                          bool all) {
+  uint8_t *bc = scr_regex_bc(re);
+  int flags = lre_get_flags(bc);
+  bool global = (flags & LRE_FLAG_GLOBAL) != 0;
+  if (all && !global) {
+    static const char message[] = "String.prototype.replaceAll called with a non-global RegExp argument";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  if (arity > SCR_REPLACER_MAX_ARITY) scr_trap("scriptc: internal error: typed replacer arity\n");
+  bool sticky = (flags & LRE_FLAG_STICKY) != 0;
+  bool unicode = (flags & (LRE_FLAG_UNICODE | LRE_FLAG_UNICODE_SETS)) != 0;
+  int capture_count = lre_get_capture_count(bc);
+  size_t keep = arity < (uint32_t)capture_count ? arity : (size_t)capture_count;
+  /* Node passes the groups object after the subject when the pattern has
+   * named groups; only a checked-dynamic parameter can read it, and no
+   * typed parameter follows the subject. */
+  bool past_subject = (uint32_t)capture_count + 2 < arity;
+  if (past_subject && !(kinds & SCR_REPLACER_BOXED_PARAMS))
+    scr_trap("scriptc: internal error: typed replacer signature\n");
+  const char *groupnames = past_subject ? lre_get_groupnames(bc) : NULL;
+  bool groups_read = groupnames != NULL;
+  if (groups_read && !(kinds & (1u << (capture_count + 2))))
+    scr_trap("scriptc: internal error: typed replacer groups parameter\n");
+  int number_at = capture_count < (int)arity && !(kinds & (1u << capture_count)) ? capture_count : -1;
+  ScrRegexInput input;
+  scr_regex_input_init(&input, re, bc, s);
+  int len = input.len;
+  struct { int start, end; } *matches = NULL;
+  ScrStr **caps = NULL;
+  ScrDyn **groups = NULL;
+  size_t count = 0, capacity = 0;
+  if (global) re->last_index = 0;
+  int position = sticky ? scr_regex_start(re, len) : 0;
+  if (position < 0) position = len + 1;
+  if (sticky && !global) re->last_index = 0;
+  while (position <= len && scr_exec(&input, bc, position) == 1) {
+    uint8_t **capture = input.capture;
+    int start = scr_capture_index(&input, capture[0]);
+    int end = scr_capture_index(&input, capture[1]);
+    if (sticky && !global) re->last_index = end;
+    if (count == capacity) {
+      size_t next = capacity ? capacity * 2 : 8;
+      if (next < capacity || next > SIZE_MAX / sizeof(*matches) / (keep + 1)) scr_regex_oom();
+      void *grown = realloc(matches, next * sizeof(*matches));
+      if (!grown) scr_regex_oom();
+      matches = grown;
+      if (keep) {
+        grown = realloc(caps, next * keep * sizeof(*caps));
+        if (!grown) scr_regex_oom();
+        caps = grown;
+      }
+      if (groups_read) {
+        grown = realloc(groups, next * sizeof(*groups));
+        if (!grown) scr_regex_oom();
+        groups = grown;
+      }
+      capacity = next;
+    }
+    for (size_t group = 0; group < keep; group++) {
+      const uint8_t *cs = capture[group * 2], *ce = capture[group * 2 + 1];
+      caps[count * keep + group] =
+          cs && ce ? scr_regex_span(&input, scr_capture_index(&input, cs), scr_capture_index(&input, ce))
+                   : NULL;
+    }
+    if (groups_read) {
+      ScrDyn *object = scr_dyn_new_obj_null_proto();
+      const char *name = groupnames;
+      for (int group = 1; group < capture_count; group++) {
+        size_t length = strlen(name);
+        if (length && (capture[group * 2] || !scr_dyn_obj_get(object, name, length)))
+          scr_dyn_obj_set(object, name, length,
+            scr_regex_capture_value(&input, capture[group * 2], capture[group * 2 + 1]));
+        name += length + LRE_GROUP_NAME_TRAILER_LEN;
+      }
+      groups[count] = object;
+    }
+    matches[count].start = start;
+    matches[count].end = end;
+    count++;
+    if (!global) break;
+    position = start == end ? scr_advance(&input, end, unicode) : end;
+  }
+  ScrJsonBuf output;
+  scr_jb_init(&output);
+  int next = 0;
+  /* One box of the subject serves every match. */
+  ScrDyn *subject = NULL;
+  if (kinds & SCR_REPLACER_BOXED_PARAMS) subject = scr_dyn_new_str(s);
+  scr_dyn_this_push_dyn(NULL);
+  for (size_t i = 0; i < count; i++) {
+    void *p[SCR_REPLACER_MAX_ARITY] = { NULL };
+    double offset = (double)matches[i].start;
+    ScrStr *const *match_caps = caps + i * keep;
+    if (kinds & SCR_REPLACER_BOXED_PARAMS) {
+      scr_regex_replacer_args(p, arity, kinds, capture_count, match_caps, offset, s, subject,
+                              groups_read ? groups[i] : NULL);
+    } else {
+      for (uint32_t k = 0; k < SCR_REPLACER_MAX_ARITY; k++)
+        if (k < arity) scr_regex_typed_arg(p, k, kinds, capture_count, match_caps, s);
+    }
+    void *result = scr_regex_call_replacer(f, arity, number_at, p, offset);
+    ScrStr *replacement = (ScrStr *)result;
+    if (kinds & SCR_REPLACER_BOXED_RESULT) {
+      replacement = scr_exc_pending() ? NULL : scr_dyn_string_coerce_js((ScrDyn *)result);
+      scr_dyn_release((ScrDyn *)result);
+    }
+    if (scr_exc_pending()) {
+      scr_str_release(replacement);
+      break;
+    }
+    scr_regex_put_span(&output, &input, next, matches[i].start);
+    scr_jb_put_str(&output, replacement);
+    scr_str_release(replacement);
+    next = matches[i].end;
+  }
+  scr_dyn_this_pop();
+  if (subject) scr_dyn_release(subject);
+  for (size_t i = 0; i < count * keep; i++) scr_str_release(caps[i]);
+  if (groups_read) {
+    for (size_t i = 0; i < count; i++) scr_dyn_release(groups[i]);
+    free(groups);
+  }
+  free(caps);
+  free(matches);
+  if (scr_exc_pending()) {
+    scr_jb_abandon(&output);
+    scr_regex_input_dispose(&input);
+    return NULL;
+  }
+  scr_regex_put_span(&output, &input, next, len);
+  scr_regex_input_dispose(&input);
+  return scr_jb_finish(&output);
+}
+
+__attribute__((noinline)) static ScrStr *scr_regex_replace_typed(ScrStr *s, ScrRegex *re,
+                                                                ScrClosure *f, uint32_t arity,
+                                                                bool all) {
+  return scr_regex_replace_fn_impl(s, re, f, arity, 0, all);
+}
+
+__attribute__((noinline)) static ScrStr *scr_regex_replace_kinds(ScrStr *s, ScrRegex *re,
+                                                                ScrClosure *f, uint32_t arity,
+                                                                uint32_t kinds, bool all) {
+  return scr_regex_replace_fn_impl(s, re, f, arity, kinds, all);
+}
+
+ScrStr *scr_regex_replace_fn(ScrStr *s, ScrRegex *re, ScrClosure *f, uint32_t arity,
+                             uint32_t kinds, bool all) {
+  if (kinds == 0) return scr_regex_replace_typed(s, re, f, arity, all);
+  return scr_regex_replace_kinds(s, re, f, arity, kinds, all);
 }
 
 /* The pinned Node ANSI matcher derives from ansi-regex, copyright (c)
@@ -1741,10 +2196,417 @@ static ScrStr *scr_str_case_conv(const ScrStr *s, int to_lower) {
 ScrStr *scr_str_to_lower(const ScrStr *s) { return scr_str_case_conv(s, 1); }
 ScrStr *scr_str_to_upper(const ScrStr *s) { return scr_str_case_conv(s, 0); }
 
+/* ── String.prototype.toLocaleLowerCase / toLocaleUpperCase ────────────
+ * V8 decides the case mapping from the FIRST requested locale only
+ * (probed: ["en", 5] maps like "en", [5] throws, a non-object primitive
+ * requests nothing). ICU tailors case mapping for Turkic (tr, az: dotted
+ * and dotless I), Lithuanian (dot above retention) and Greek uppercasing
+ * (accent removal); every other language uses the default conversion.
+ * The Turkic rules are SpecialCasing's: lowercase I → ı unless a
+ * U+0307 follows (then I + U+0307 → i), İ → i; uppercase i → İ. Tags are
+ * checked against the unicode_locale_id structure; anything this unit
+ * cannot decide exactly (malformed tags, whose V8 RangeError texts vary,
+ * objects, lt, el uppercasing, I before other combining marks) throws a
+ * 'not supported yet' Error rather than guess. Nothing on an existing
+ * path calls this. */
+
+static bool scr_tag_alpha(const char *p, size_t n) {
+  for (size_t i = 0; i < n; i++)
+    if (!((p[i] >= 'a' && p[i] <= 'z') || (p[i] >= 'A' && p[i] <= 'Z'))) return false;
+  return true;
+}
+
+static bool scr_tag_digit(const char *p, size_t n) {
+  for (size_t i = 0; i < n; i++)
+    if (!(p[i] >= '0' && p[i] <= '9')) return false;
+  return true;
+}
+
+static bool scr_tag_alnum(const char *p, size_t n) {
+  for (size_t i = 0; i < n; i++)
+    if (!scr_tag_alpha(p + i, 1) && !scr_tag_digit(p + i, 1)) return false;
+  return true;
+}
+
+static bool scr_tag_same(const char *a, size_t an, const char *b, size_t bn) {
+  if (an != bn) return false;
+  for (size_t i = 0; i < an; i++) {
+    char x = a[i] >= 'A' && a[i] <= 'Z' ? (char)(a[i] + 32) : a[i];
+    char y = b[i] >= 'A' && b[i] <= 'Z' ? (char)(b[i] + 32) : b[i];
+    if (x != y) return false;
+  }
+  return true;
+}
+
+/* 0 default, 1 Turkic, 2 Lithuanian, 3 Greek; -1 when the tag is outside
+ * the structural grammar handled here. */
+static int scr_locale_case_rules(const char *tag, size_t len) {
+  const char *subtags[64];
+  size_t lens[64];
+  size_t count = 0;
+  size_t start = 0;
+  for (size_t i = 0; i <= len; i++) {
+    if (i < len && tag[i] != '-') continue;
+    if (i == start || count == 64) return -1;
+    subtags[count] = tag + start;
+    lens[count++] = i - start;
+    start = i + 1;
+  }
+  size_t k = 0;
+  size_t lang = lens[0];
+  if (!scr_tag_alpha(subtags[0], lang) || !((lang >= 2 && lang <= 3) || (lang >= 5 && lang <= 8)))
+    return -1;
+  k = 1;
+  if (k < count && lens[k] == 4 && scr_tag_alpha(subtags[k], 4)) k++;
+  if (k < count && ((lens[k] == 2 && scr_tag_alpha(subtags[k], 2)) ||
+                    (lens[k] == 3 && scr_tag_digit(subtags[k], 3))))
+    k++;
+  size_t variants = k;
+  while (k < count && scr_tag_alnum(subtags[k], lens[k]) &&
+         ((lens[k] >= 5 && lens[k] <= 8) || (lens[k] == 4 && scr_tag_digit(subtags[k], 1)))) {
+    for (size_t j = variants; j < k; j++)
+      if (scr_tag_same(subtags[j], lens[j], subtags[k], lens[k])) return -1;
+    k++;
+  }
+  size_t singletons = k;
+  while (k < count) {
+    if (lens[k] != 1 || !scr_tag_alnum(subtags[k], 1)) return -1;
+    for (size_t j = singletons; j < k; j++)
+      if (lens[j] == 1 && scr_tag_same(subtags[j], 1, subtags[k], 1)) return -1;
+    bool private_use = subtags[k][0] == 'x' || subtags[k][0] == 'X';
+    size_t min = private_use ? 1 : 2;
+    size_t first = ++k;
+    while (k < count && lens[k] >= min && lens[k] <= 8 && scr_tag_alnum(subtags[k], lens[k]) &&
+           (private_use || lens[k] > 1))
+      k++;
+    if (k == first) return -1;
+    if (private_use && k != count) return -1;
+  }
+  if (lang > 3) return 0;
+  char l[3] = {0, 0, 0};
+  for (size_t i = 0; i < lang; i++)
+    l[i] = subtags[0][i] >= 'A' && subtags[0][i] <= 'Z' ? (char)(subtags[0][i] + 32) : subtags[0][i];
+  bool two = lang == 2;
+  if ((two && l[0] == 't' && l[1] == 'r') || (two && l[0] == 'a' && l[1] == 'z') ||
+      (!two && l[0] == 't' && l[1] == 'u' && l[2] == 'r') ||
+      (!two && l[0] == 'a' && l[1] == 'z' && l[2] == 'e'))
+    return 1;
+  if ((two && l[0] == 'l' && l[1] == 't') || (!two && l[0] == 'l' && l[1] == 'i' && l[2] == 't'))
+    return 2;
+  if ((two && l[0] == 'e' && l[1] == 'l') || (!two && l[0] == 'e' && l[1] == 'l' && l[2] == 'l') ||
+      (!two && l[0] == 'g' && l[1] == 'r' && l[2] == 'e'))
+    return 3;
+  return 0;
+}
+
+static ScrStr *scr_locale_case_unsupported(bool upper) {
+  static const char lower_msg[] =
+      "String.prototype.toLocaleLowerCase with this locale argument is not supported yet";
+  static const char upper_msg[] =
+      "String.prototype.toLocaleUpperCase with this locale argument is not supported yet";
+  /* The unit's existing "SC2020" literal: a separate constant array would
+   * absorb it (LLVM merges identical constants) and move it out of the
+   * string section every regex-linking binary keeps. */
+  if (upper) scr_throw_error_msg_code(SCR_ERR_ERROR, upper_msg, sizeof upper_msg - 1, "SC2020");
+  else scr_throw_error_msg_code(SCR_ERR_ERROR, lower_msg, sizeof lower_msg - 1, "SC2020");
+  return NULL;
+}
+
+static ScrStr *scr_turkic_case(const ScrStr *s, bool upper) {
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  for (size_t i = 0; i < s->len; i++) {
+    unsigned char c = (unsigned char)s->data[i];
+    if (upper && c == 'i') {
+      scr_jb_putc(&b, (char)0xC4); /* İ */
+      scr_jb_putc(&b, (char)0xB0);
+      continue;
+    }
+    if (!upper && c == 'I') {
+      unsigned char n0 = i + 1 < s->len ? (unsigned char)s->data[i + 1] : 0;
+      unsigned char n1 = i + 2 < s->len ? (unsigned char)s->data[i + 2] : 0;
+      if (n0 == 0xCC && n1 == 0x87) { /* I + U+0307 → i */
+        scr_jb_putc(&b, 'i');
+        i += 2;
+        continue;
+      }
+      /* Another combining mark (U+0300..U+036F) may precede a U+0307. */
+      if ((n0 == 0xCC && n1 >= 0x80) || (n0 == 0xCD && n1 >= 0x80 && n1 <= 0xAF)) {
+        scr_str_release(scr_jb_finish(&b));
+        return scr_locale_case_unsupported(upper);
+      }
+      scr_jb_putc(&b, (char)0xC4); /* ı */
+      scr_jb_putc(&b, (char)0xB1);
+      continue;
+    }
+    if (!upper && c == 0xC4 && i + 1 < s->len && (unsigned char)s->data[i + 1] == 0xB0) {
+      scr_jb_putc(&b, 'i'); /* İ → i */
+      i++;
+      continue;
+    }
+    scr_jb_putc(&b, (char)c);
+  }
+  ScrStr *mapped = scr_jb_finish(&b);
+  ScrStr *result = scr_str_case_conv(mapped, upper ? 0 : 1);
+  scr_str_release(mapped);
+  return result;
+}
+
+ScrStr *scr_str_locale_case(const ScrStr *s, ScrDyn *locales, bool upper) {
+  ScrDyn *owned = NULL;
+  if (locales->kind == SCR_DYN_TYPED_REF) {
+    owned = scr_dyn_typed_ref_materialize(locales);
+    if (!owned) return NULL;
+    locales = owned;
+  }
+  const ScrDyn *tag = NULL;
+  int rules = 0;
+  switch (locales->kind) {
+  case SCR_DYN_NULL: {
+    static const char msg[] = "Cannot convert undefined or null to object";
+    scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+    return NULL;
+  }
+  case SCR_DYN_UNDEF:
+  case SCR_DYN_NUM:
+  case SCR_DYN_BOOL:
+  case SCR_DYN_SYMBOL:
+  case SCR_DYN_BIGINT:
+    break;
+  case SCR_DYN_STR:
+    tag = locales;
+    break;
+  case SCR_DYN_ARR:
+    if (locales->v.arr.len == 0) break;
+    if (locales->v.arr.presence && !locales->v.arr.presence[0]) {
+      static const char msg[] = "Language ID should be string or object.";
+      scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+      scr_dyn_release(owned);
+      return NULL;
+    }
+    tag = locales->v.arr.items[0];
+    if (tag->kind != SCR_DYN_STR) {
+      bool primitive = tag->kind == SCR_DYN_UNDEF || tag->kind == SCR_DYN_NULL ||
+                       tag->kind == SCR_DYN_NUM || tag->kind == SCR_DYN_BOOL ||
+                       tag->kind == SCR_DYN_BIGINT || tag->kind == SCR_DYN_SYMBOL;
+      scr_dyn_release(owned);
+      if (!primitive) return scr_locale_case_unsupported(upper);
+      static const char msg[] = "Language ID should be string or object.";
+      scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+      return NULL;
+    }
+    break;
+  default:
+    scr_dyn_release(owned);
+    return scr_locale_case_unsupported(upper);
+  }
+  if (tag) {
+    rules = scr_locale_case_rules(tag->v.str->data, tag->v.str->len);
+    if (rules < 0 || rules == 2 || (rules == 3 && upper)) {
+      scr_dyn_release(owned);
+      return scr_locale_case_unsupported(upper);
+    }
+  }
+  scr_dyn_release(owned);
+  if (rules == 1) return scr_turkic_case(s, upper);
+  return scr_str_case_conv(s, upper ? 0 : 1);
+}
+
 static void *scr_normalize_realloc(void *opaque, void *ptr, size_t size) {
   (void)opaque;
   if (!size) { free(ptr); return NULL; }
   return realloc(ptr, size);
+}
+
+/* unicode_normalize, except that U+11A7 never composes. libunicode composes
+ * an LV syllable with U+11A7 as a trailing consonant (those are U+11A8 to
+ * U+11C2), which drops it: "\uAC00\u11A7" became "\uAC00". U+11A7 is a
+ * class-0 vowel that composes with nothing, so for the composing forms the
+ * code points between occurrences of it normalize on their own and it is
+ * kept as it is, as in Node. */
+static int scr_unicode_normalize(uint32_t **pdst, const uint32_t *src, int len,
+                                 UnicodeNormalizationEnum mode) {
+  int at = 0;
+  if (mode == UNICODE_NFC || mode == UNICODE_NFKC)
+    while (at < len && src[at] != 0x11A7) at++;
+  else
+    at = len;
+  if (at == len) return unicode_normalize(pdst, src, len, mode, NULL, scr_normalize_realloc);
+  uint32_t *out = NULL;
+  size_t count = 0, cap = 0;
+  int start = 0;
+  for (int i = 0; i <= len; i++) {
+    if (i < len && src[i] != 0x11A7) continue;
+    uint32_t *part = NULL;
+    int n = 0;
+    if (i > start) {
+      n = unicode_normalize(&part, src + start, i - start, mode, NULL, scr_normalize_realloc);
+      if (n < 0) {
+        free(out);
+        return -1;
+      }
+    }
+    size_t need = count + (size_t)n + 1;
+    if (need > cap) {
+      size_t grown = cap ? cap * 2 : 16;
+      if (grown < need) grown = need;
+      uint32_t *bigger = realloc(out, grown * sizeof *out);
+      if (!bigger) {
+        free(part);
+        free(out);
+        return -1;
+      }
+      out = bigger;
+      cap = grown;
+    }
+    if (n > 0) memcpy(out + count, part, (size_t)n * sizeof *out);
+    count += (size_t)n;
+    free(part);
+    if (i < len) out[count++] = 0x11A7;
+    start = i + 1;
+  }
+  *pdst = out;
+  return (int)count;
+}
+
+/* Normalization quick check (UAX #15): a string whose every code point is
+ * inert for the form is already in that form. A code point is inert when
+ * normalizing it alone leaves it unchanged, its canonical combining class
+ * is 0, and (for the composing forms) no composition can take it as its
+ * second element. The last condition holds in the ranges below: none holds
+ * a code point with combining class 0 that composes with a preceding one
+ * (those are Hangul jamo vowels and trailing consonants, U+3099/U+309A,
+ * and vowel signs of Indic and Southeast Asian scripts above U+0900), so a
+ * code point outside them takes the full algorithm. Inert flags are
+ * computed through unicode_normalize, 256 code points at a time, when a
+ * block is first seen. */
+#define SCR_NQC_BLOCKS 0x200
+typedef struct {
+  uint8_t known[4][SCR_NQC_BLOCKS];
+  uint8_t inert[4][SCR_NQC_BLOCKS][32];
+  uint8_t starter[4][SCR_NQC_BLOCKS][32]; /* class 0, never a second element */
+  struct {
+    uint32_t cp;
+    uint8_t len;
+    char bytes[15];
+  } single[4][256]; /* a lone code point's normalized UTF-8 */
+} ScrNormalizeQuick;
+static SCR_TL ScrNormalizeQuick *scr_nqc;
+
+static void scr_nqc_free(void) {
+  free(scr_nqc);
+  scr_nqc = NULL;
+}
+
+static bool scr_nqc_in_ranges(uint32_t c) {
+  return c < 0x900 || (c >= 0x2000 && c < 0x3099) || (c >= 0x309B && c < 0xA000) ||
+         (c >= 0xAC00 && c < 0xD7A4) || (c >= 0xF900 && c < 0x10000) ||
+         (c >= 0x1F000 && c < 0x1FB00);
+}
+
+/* Bit 0: inert. Bit 1: a starter, with class 0 and never the second element
+ * of a composition, so nothing before it reorders or composes with it. */
+/* Whether c has class 0 and lies in the ranges above. U+0345 is the one
+ * code point of class 240, which the reordering test cannot tell from
+ * class 0; a mark of class 1..239 after U+0345 moves before it. */
+static bool scr_nqc_class0(uint32_t c) {
+  if (c == 0x345 || !scr_nqc_in_ranges(c)) return false;
+  uint32_t pair[2] = {0x345, c};
+  uint32_t *out = NULL;
+  int n = unicode_normalize(&out, pair, 2, UNICODE_NFD, NULL, scr_normalize_realloc);
+  bool starter = n >= 2 && out[0] == 0x345;
+  free(out);
+  return starter;
+}
+
+static unsigned scr_nqc_compute(uint32_t c, UnicodeNormalizationEnum mode) {
+  if (!scr_nqc_class0(c)) return 0;
+  uint32_t *out = NULL;
+  int n = unicode_normalize(&out, &c, 1, mode, NULL, scr_normalize_realloc);
+  bool same = n == 1 && out[0] == c;
+  free(out);
+  if (same) return 3u;
+  /* A starter's decomposition must begin with one too (U+FF9E's
+   * compatibility decomposition is U+3099, which composes with the code
+   * point before it). */
+  UnicodeNormalizationEnum decompose =
+      mode == UNICODE_NFKC || mode == UNICODE_NFKD ? UNICODE_NFKD : UNICODE_NFD;
+  out = NULL;
+  n = unicode_normalize(&out, &c, 1, decompose, NULL, scr_normalize_realloc);
+  bool leads = n >= 1 && scr_nqc_class0(out[0]);
+  free(out);
+  return leads ? 2u : 0u;
+}
+
+/* scr_nqc_compute's bits for c, from its block's flags. */
+static unsigned scr_nqc_class(uint32_t c, UnicodeNormalizationEnum mode) {
+  if (c >= (uint32_t)SCR_NQC_BLOCKS << 8) return 0;
+  if (!scr_nqc) {
+    scr_nqc = calloc(1, sizeof *scr_nqc);
+    if (!scr_nqc) return 0;
+    scr_atexit(scr_nqc_free);
+  }
+  uint32_t block = c >> 8;
+  uint8_t *inert = scr_nqc->inert[mode][block];
+  uint8_t *starter = scr_nqc->starter[mode][block];
+  if (!scr_nqc->known[mode][block]) {
+    for (uint32_t i = 0; i < 256; i++) {
+      unsigned bits = scr_nqc_compute((block << 8) | i, mode);
+      if (bits & 1) inert[i >> 3] |= (uint8_t)(1u << (i & 7));
+      if (bits & 2) starter[i >> 3] |= (uint8_t)(1u << (i & 7));
+    }
+    scr_nqc->known[mode][block] = 1;
+  }
+  unsigned bit = c & 0xff;
+  return ((inert[bit >> 3] >> (bit & 7)) & 1) | (((starter[bit >> 3] >> (bit & 7)) & 1) << 1);
+}
+
+/* Normalize the code points of data[from, to) and append them. */
+static void scr_nqc_segment(ScrJsonBuf *b, const char *data, size_t from, size_t to,
+                            UnicodeNormalizationEnum mode) {
+  size_t first_step;
+  uint32_t first = scr_case_decode(data + from, &first_step);
+  if (first_step == to - from && scr_nqc) {
+    /* One code point (a precomposed letter between inert ones): its
+     * normalized bytes repeat, so they are kept per form. */
+    __typeof__(scr_nqc->single[0][0]) *slot = &scr_nqc->single[mode][first & 0xff];
+    if (slot->cp != first || slot->len == 0) {
+      uint32_t *output = NULL;
+      int count = unicode_normalize(&output, &first, 1, mode, NULL, scr_normalize_realloc);
+      if (count < 0) scr_regex_oom();
+      ScrJsonBuf one;
+      scr_jb_init(&one);
+      for (int i = 0; i < count; i++) scr_case_put_cp(&one, output[i]);
+      free(output);
+      ScrStr *bytes = scr_jb_finish(&one);
+      if (bytes->len == 0 || bytes->len > sizeof slot->bytes) {
+        scr_jb_write(b, bytes->data, bytes->len);
+        scr_str_release(bytes);
+        return;
+      }
+      slot->cp = first;
+      slot->len = (uint8_t)bytes->len;
+      memcpy(slot->bytes, bytes->data, bytes->len);
+      scr_str_release(bytes);
+    }
+    scr_jb_write(b, slot->bytes, slot->len);
+    return;
+  }
+  uint32_t local[32];
+  uint32_t *input = to - from <= 32 ? local : malloc((to - from) * sizeof *input);
+  if (!input) scr_regex_oom();
+  int length = 0;
+  for (size_t offset = from; offset < to;) {
+    size_t step;
+    input[length++] = scr_case_decode(data + offset, &step);
+    offset += step;
+  }
+  uint32_t *output = NULL;
+  int count = scr_unicode_normalize(&output, input, length, mode);
+  if (input != local) free(input);
+  if (count < 0) scr_regex_oom();
+  for (int i = 0; i < count; i++) scr_case_put_cp(b, output[i]);
+  free(output);
 }
 
 ScrStr *scr_str_normalize(const ScrStr *s, const ScrStr *form) {
@@ -1761,30 +2623,65 @@ ScrStr *scr_str_normalize(const ScrStr *s, const ScrStr *form) {
   /* Every ASCII string is already normalized in all four forms. Validate
    * the form first: even an empty subject must reject an invalid form. */
   if (scr_text_ascii(s)) return scr_str_retain((ScrStr *)s);
-  if (s->len > INT32_MAX / sizeof(uint32_t)) scr_regex_oom();
-  uint32_t *input = malloc((s->len + 1) * sizeof(uint32_t));
-  if (!input) scr_regex_oom();
-  int length = 0;
+  bool inert = true;
   for (size_t offset = 0; offset < s->len;) {
+    if ((unsigned char)s->data[offset] < 0x80) {
+      offset++;
+      continue;
+    }
     size_t step;
-    input[length++] = scr_case_decode(s->data + offset, &step);
+    uint32_t c = scr_case_decode(s->data + offset, &step);
     offset += step;
+    if (!(scr_nqc_class(c, mode) & 1)) {
+      inert = false;
+      break;
+    }
   }
-  uint32_t *output = NULL;
-  int count = unicode_normalize(&output, input, length, mode, NULL, scr_normalize_realloc);
-  free(input);
-  if (count < 0) scr_regex_oom();
+  if (inert) return scr_str_retain((ScrStr *)s);
+  if (s->len > INT32_MAX / sizeof(uint32_t)) scr_regex_oom();
+  /* An inert code point bounds reordering and composition, and so does any
+   * other starter (class 0, never a composition's second element), so the
+   * text normalizes segment by segment. A segment starts at a starter: runs
+   * of inert code points copy as they are, and a segment with any other
+   * code point goes through scr_unicode_normalize. */
   ScrJsonBuf buffer;
   scr_jb_init(&buffer);
-  for (int i = 0; i < count; i++) scr_case_put_cp(&buffer, output[i]);
-  free(output);
+  size_t seg = 0, last_inert = 0;
+  bool plain = true;
+  for (size_t offset = 0; offset < s->len;) {
+    unsigned char lead = (unsigned char)s->data[offset];
+    size_t step = 1;
+    unsigned kind = 3;
+    if (lead >= 0x80) kind = scr_nqc_class(scr_case_decode(s->data + offset, &step), mode);
+    if (kind & 1) {
+      if (!plain) {
+        scr_nqc_segment(&buffer, s->data, seg, offset, mode);
+        seg = offset;
+        plain = true;
+      }
+      last_inert = offset;
+    } else if (kind & 2) {
+      if (plain) scr_jb_write(&buffer, s->data + seg, offset - seg);
+      else scr_nqc_segment(&buffer, s->data, seg, offset, mode);
+      seg = offset;
+      plain = false;
+    } else if (plain) {
+      size_t start = last_inert > seg ? last_inert : seg;
+      scr_jb_write(&buffer, s->data + seg, start - seg);
+      seg = start;
+      plain = false;
+    }
+    offset += step;
+  }
+  if (plain) scr_jb_write(&buffer, s->data + seg, s->len - seg);
+  else scr_nqc_segment(&buffer, s->data, seg, s->len, mode);
   return scr_jb_finish(&buffer);
 }
 
 uint32_t *scr_nfc_code_points(const uint32_t *input, size_t length, size_t *out_len) {
   if (length > INT32_MAX) scr_regex_oom();
   uint32_t *output = NULL;
-  int count = unicode_normalize(&output, input, (int)length, UNICODE_NFC, NULL, scr_normalize_realloc);
+  int count = scr_unicode_normalize(&output, input, (int)length, UNICODE_NFC);
   if (count < 0) scr_regex_oom();
   *out_len = (size_t)count;
   return output;
@@ -2042,11 +2939,9 @@ ScrRegex *scr_regex_new(ScrStr *pattern, ScrStr *flags) {
   }
   /* Valid in Node, absent from the engine: name the gap rather than
    * report a flag Node accepts as invalid. */
-  if (seen_flags & ((1u << 6) | (1u << 7))) {
+  if (seen_flags & (1u << 6)) {
     static const char d_msg[] = "the regex 'd' flag (match indices) is not supported yet [SC1120]";
-    static const char v_msg[] = "the regex 'v' flag (unicode sets) is not supported yet [SC1120]";
-    if (seen_flags & (1u << 6)) scr_throw_error_msg(SCR_ERR_ERROR, d_msg, sizeof d_msg - 1);
-    else scr_throw_error_msg(SCR_ERR_ERROR, v_msg, sizeof v_msg - 1);
+    scr_throw_error_msg(SCR_ERR_ERROR, d_msg, sizeof d_msg - 1);
     return NULL;
   }
   ScrRegex *re = calloc(1, sizeof *re);
@@ -2057,11 +2952,11 @@ ScrRegex *scr_regex_new(ScrStr *pattern, ScrStr *flags) {
   re->source = pattern->len > 0 ? scr_str_retain(pattern) : scr_str_new("(?:)", 4);
   /* Public flags use getter order, independently of constructor spelling.
    * Validate first so duplicates and invalid flags retain their errors. */
-  char canonical[6];
+  char canonical[8];
   size_t flag_count = 0;
-  const char *order = "gimsuy";
-  for (unsigned i = 0; i < 6; i++) {
-    if (seen_flags & (1u << i)) canonical[flag_count++] = order[i];
+  static const unsigned order_bits[] = {0, 1, 2, 3, 4, 7, 5};
+  for (unsigned i = 0; i < sizeof order_bits / sizeof order_bits[0]; i++) {
+    if (seen_flags & (1u << order_bits[i])) canonical[flag_count++] = "gimsuvy"[i];
   }
   re->flags = flag_count == flags->len && memcmp(canonical, flags->data, flag_count) == 0
     ? scr_str_retain(flags) : scr_str_new(canonical, flag_count);
@@ -2078,7 +2973,7 @@ ScrRegex *scr_regex_new(ScrStr *pattern, ScrStr *flags) {
   const char *pat = re->source->data;
   size_t pat_len = re->source->len;
   char *cesu = NULL;
-  if (!(lre_flags & LRE_FLAG_UNICODE)) {
+  if (!(lre_flags & (LRE_FLAG_UNICODE | LRE_FLAG_UNICODE_SETS))) {
     cesu = scr_pattern_cesu8(re->source, &pat_len);
     if (cesu) pat = cesu;
   }
@@ -2288,6 +3183,24 @@ static ScrDyn *scr_native_regex_invoke(void *ptr, ScrDyn *self, const char *meth
     bool matches = scr_regex_test(re, subject);
     scr_str_release(subject);
     return scr_exc_pending() ? NULL : scr_dyn_new_bool(matches);
+  }
+  if (strcmp(method, "exec") == 0) {
+    /* The match array: each capture (undefined when it did not
+     * participate), then index, input and groups; null without a match.
+     * The exec itself reads and advances lastIndex. */
+    ScrStr *subject = scr_dyn_string_coerce_js(argc ? args[0] : scr_dyn_undefined());
+    if (!subject) return NULL;
+    ScrArr *row = scr_regex_exec(subject, re);
+    scr_str_release(subject);
+    if (!row) return scr_exc_pending() ? NULL : scr_dyn_new_null();
+    ScrDyn *match = scr_dyn_new_arr();
+    for (size_t k = 0; k < row->len; k++)
+      scr_dyn_arr_push(match, scr_arr_dense_state(row, k) == SCR_ARR_VALUE
+                                  ? scr_dyn_new_str((ScrStr *)(uintptr_t)row->data[k])
+                                  : scr_dyn_retain(scr_dyn_undefined()));
+    scr_arr_copy_metadata(row, match);
+    scr_arr_release(row);
+    return match;
   }
   static const char message[] = "Native RegExp method has no lowering";
   scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");

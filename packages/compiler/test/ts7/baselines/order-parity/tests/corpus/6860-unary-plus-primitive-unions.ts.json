@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6860-unary-plus-primitive-unions.ts"
+ ],
+ "diags": []
+}

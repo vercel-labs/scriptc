@@ -58,13 +58,13 @@ console.log(orders.length, typed.sku, loose.name, mixed.length, pair[0], either.
     // record pointer (0), the inline scalar pair (1), and a tagged box built
     // through the schema's box function (2), with arm tags by JSON kind.
     expect(llvm).toMatch(
-      /@sc_jsch_\d+_union = internal constant \{ i64, \[7 x i64\], \[7 x ptr\], ptr, ptr, ptr \} \{ i64 0, /,
+      /@sc_jsch_\d+_union = internal constant \{ i64, \[7 x i64\], \[7 x ptr\], ptr, ptr, ptr, ptr \} \{ i64 0, /,
     );
     expect(llvm).toMatch(
-      /@sc_jsch_\d+_union = internal constant \{ i64, \[7 x i64\], \[7 x ptr\], ptr, ptr, ptr \} \{ i64 1, /,
+      /@sc_jsch_\d+_union = internal constant \{ i64, \[7 x i64\], \[7 x ptr\], ptr, ptr, ptr, ptr \} \{ i64 1, /,
     );
     expect(llvm).toMatch(
-      /@sc_jsch_\d+_union = internal constant \{ i64, \[7 x i64\], \[7 x ptr\], ptr, ptr, ptr \} \{ i64 2, .*ptr @sc_jsch_\d+_box \}/,
+      /@sc_jsch_\d+_union = internal constant \{ i64, \[7 x i64\], \[7 x ptr\], ptr, ptr, ptr, ptr \} \{ i64 2, .*ptr @sc_jsch_\d+_box, ptr null \}/,
     );
     expect(llvm).toMatch(/^define internal ptr @sc_jsch_\d+_box\(i32 %tag, i64 %bits\)/m);
     // A pure dictionary has no declared fields: its index value schema and
@@ -78,8 +78,58 @@ console.log(orders.length, typed.sku, loose.name, mixed.length, pair[0], either.
 
     const wasm = emitLlvmModule(mod, { pointerBits: 32, wasi: true });
     expect(wasm).toContain("= internal constant { i32, i32, ptr, ptr, ptr, ptr, ptr, ptr, i32 }");
-    expect(wasm).toContain("= internal constant { i32, [7 x i32], [7 x ptr], ptr, ptr, ptr }");
+    expect(wasm).toContain("= internal constant { i32, [7 x i32], [7 x ptr], ptr, ptr, ptr, ptr }");
     expect(wasm).toMatch(/\{ ptr, i32, i32, ptr \} \{ ptr @sc_cs_\d+, i32 3, i32 ptrtoint/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("JSON.parse casts to discriminated unions fuse into the schema parser", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-json-schema-union-"));
+  try {
+    const entry = join(dir, "main.ts");
+    const outPath = join(dir, "main.ir.json");
+    await writeFile(
+      entry,
+      `
+type Event =
+  | { kind: "click"; x: number; y: number }
+  | { kind: "focus" | "blur"; target: string }
+  | { kind: "load"; ms: number; next: Event | null };
+type Expr = { kind: "num"; value: number } | { kind: "add"; items: Expr[] };
+type Loose = { kind: string; a: number } | { kind: string; b: string };
+const text = process.argv[2] ?? "[]";
+const events = JSON.parse(text) as Event[];
+const tree = JSON.parse(text) as Expr;
+const loose = JSON.parse(text) as Loose[];
+console.log(events.length, tree.kind, loose.length);
+`,
+    );
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "ir" });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const llvm = emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")));
+    // Event[] and the whole-document Expr take the fused path; a union
+    // without literal discriminants keeps the checked-dynamic route alone.
+    expect(llvm.match(/^define internal ptr @sc_jp_\d+(?:\.i32)?\(ptr %text\)/gm)).toHaveLength(2);
+    expect(llvm.match(/call ptr @scr_json_parse\(ptr /g)).toHaveLength(3);
+    // Each literal names its arm's tag and record schema; an arm with two
+    // literals is listed under both. Event, `Event | null` and Expr each
+    // have a table.
+    const cases = [...llvm.matchAll(/^@sc_jsch_\d+_case_table = internal constant \[(\d+) x /gm)];
+    expect(cases.map((m) => Number(m[1])).sort()).toEqual([2, 4, 4]);
+    expect(llvm).toMatch(
+      /^@sc_jsch_\d+_cases = internal constant \{ ptr, i64, i64, ptr \} \{ ptr @sc_cs_\d+, i64 4, i64 4, ptr @sc_jsch_\d+_case_table \}/m,
+    );
+    // The union descriptors point at their cases, and a union schema that
+    // can be a whole document carries its release.
+    expect(llvm).toMatch(
+      /@sc_jsch_\d+_union = internal constant \{ i64, \[7 x i64\], \[7 x ptr\], ptr, ptr, ptr, ptr \} \{ .*, ptr @sc_jsch_\d+_cases \}/,
+    );
+    expect(llvm).toMatch(
+      /= internal constant \{ i64, i64, ptr, ptr, ptr, ptr, ptr, ptr, i64 \} \{ i64 5, i64 0, ptr null, ptr null, ptr null, ptr null, ptr @\S+, ptr @sc_jsch_\d+_union, i64 0 \}/,
+    );
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

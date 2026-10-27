@@ -30,7 +30,7 @@ function freshDir(dir: string): void {
   }
   mkdirSync(dir);
 }
-const scratch = "tmp-994-" + tail(process.argv[1]);
+const scratch = "tmp-994-" + tail(process.argv[1]) + "-" + process.pid;
 freshDir(scratch);
 
 let caught = 0;

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6991-inspect-class-name-instanceof.ts"
+ ],
+ "diags": []
+}

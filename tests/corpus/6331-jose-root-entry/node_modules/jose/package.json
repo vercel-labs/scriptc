@@ -1,0 +1,134 @@
+{
+  "name": "jose",
+  "version": "6.2.12",
+  "description": "JWA, JWS, JWE, JWT, JWK, JWKS for Node.js, Browser, Cloudflare Workers, Deno, Bun, and other Web-interoperable runtimes",
+  "keywords": [
+    "akp",
+    "browser",
+    "bun",
+    "cloudflare",
+    "compact",
+    "decode",
+    "decrypt",
+    "deno",
+    "detached",
+    "ec",
+    "ecdsa",
+    "ed25519",
+    "eddsa",
+    "edge",
+    "electron",
+    "embedded",
+    "encrypt",
+    "flattened",
+    "general",
+    "jose",
+    "json web token",
+    "jsonwebtoken",
+    "jwa",
+    "jwe",
+    "jwk",
+    "jwks",
+    "jws",
+    "jwt-decode",
+    "jwt",
+    "ml-dsa",
+    "netlify",
+    "next",
+    "nextjs",
+    "oct",
+    "okp",
+    "payload",
+    "pem",
+    "pkcs8",
+    "rsa",
+    "sign",
+    "signature",
+    "spki",
+    "validate",
+    "vercel",
+    "verify",
+    "webcrypto",
+    "workerd",
+    "workers",
+    "x509"
+  ],
+  "homepage": "https://github.com/panva/jose",
+  "repository": "panva/jose",
+  "funding": {
+    "url": "https://github.com/sponsors/panva"
+  },
+  "license": "MIT",
+  "author": "Filip Skokan <panva.ip@gmail.com>",
+  "sideEffects": false,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/webapi/index.js"
+    },
+    "./jwk/*": {
+      "types": "./dist/types/jwk/*.d.ts",
+      "default": "./dist/webapi/jwk/*.js"
+    },
+    "./key/import": {
+      "types": "./dist/types/key/import.d.ts",
+      "default": "./dist/webapi/key/import.js"
+    },
+    "./key/export": {
+      "types": "./dist/types/key/export.d.ts",
+      "default": "./dist/webapi/key/export.js"
+    },
+    "./key/generate/keypair": {
+      "types": "./dist/types/key/generate_key_pair.d.ts",
+      "default": "./dist/webapi/key/generate_key_pair.js"
+    },
+    "./key/generate/secret": {
+      "types": "./dist/types/key/generate_secret.d.ts",
+      "default": "./dist/webapi/key/generate_secret.js"
+    },
+    "./jwks/*": {
+      "types": "./dist/types/jwks/*.d.ts",
+      "default": "./dist/webapi/jwks/*.js"
+    },
+    "./jwt/decode": {
+      "types": "./dist/types/util/decode_jwt.d.ts",
+      "default": "./dist/webapi/util/decode_jwt.js"
+    },
+    "./jwt/*": {
+      "types": "./dist/types/jwt/*.d.ts",
+      "default": "./dist/webapi/jwt/*.js"
+    },
+    "./decode/protected_header": {
+      "types": "./dist/types/util/decode_protected_header.d.ts",
+      "default": "./dist/webapi/util/decode_protected_header.js"
+    },
+    "./jws/*": {
+      "types": "./dist/types/jws/*.d.ts",
+      "default": "./dist/webapi/jws/*.js"
+    },
+    "./jwe/*": {
+      "types": "./dist/types/jwe/*.d.ts",
+      "default": "./dist/webapi/jwe/*.js"
+    },
+    "./errors": {
+      "types": "./dist/types/util/errors.d.ts",
+      "default": "./dist/webapi/util/errors.js"
+    },
+    "./base64url": {
+      "types": "./dist/types/util/base64url.d.ts",
+      "default": "./dist/webapi/util/base64url.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/webapi/index.js",
+  "types": "./dist/types/index.d.ts",
+  "files": [
+    "dist/webapi/**/*.js",
+    "dist/types/**/*.d.ts",
+    "!dist/**/*.bundle.js",
+    "!dist/**/*.umd.js",
+    "!dist/**/*.min.js",
+    "!dist/types/lib/**"
+  ]
+}

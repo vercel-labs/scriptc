@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6262-js-file-scope-var-identity.js"
+ ],
+ "diags": []
+}

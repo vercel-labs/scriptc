@@ -2,8 +2,9 @@ scriptc coverage tests/coverage-fixtures/mixed.ts
 
   statements analyzed   13
   compile statically    12  (92%)
+    in dynamic tier     1  (operate on values typed only at runtime; --explain-dynamic lists them)
 
   blockers:
-      ×1  SC1031  object destructuring of non-record values (the source is array-typed)
+      ×1  SC1031  object destructuring of non-record values (the source is union-typed)
           at tests/coverage-fixtures/mixed.ts:13:7
           hint: this construct is valid TypeScript outside the compiled subset — rewrite it with a supported equivalent (https://scriptc.dev/limitations)

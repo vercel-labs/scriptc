@@ -28,40 +28,42 @@ const program = createProgram([path], { noLib: true, noResolve: true, types: [] 
 const source = program.getSourceFile(path)!;
 afterAll(() => program.dispose());
 function childType(type: ts.TypeNode): boolean {
-  if (ts.isTypeReferenceNode(type)) return ["IrExpr", "IrStmt"].includes(type.typeName.getText());
+  if (ts.isTypeReferenceNode(type))
+    return ["IrExpr", "IrStmt"].includes(ts.getTextOfNode(type.typeName));
   if (ts.isArrayTypeNode(type)) return childType(type.elementType);
-  if (ts.isUnionTypeNode(type)) return type.types.some(childType);
+  if (ts.isUnionTypeNode(type)) return type.types.nodes.some(childType);
   if (ts.isTypeLiteralNode(type))
-    return type.members.some(
+    return type.members.nodes.some(
       (member) => ts.isPropertySignature(member) && member.type && childType(member.type),
     );
   return false;
 }
 
 for (const name of ["IrExpr", "IrStmt"]) {
-  const alias = source.statements.find(
+  const alias = source.statements.nodes.find(
     (node): node is ts.TypeAliasDeclaration =>
       ts.isTypeAliasDeclaration(node) && node.name.text === name,
   )!;
   if (!ts.isUnionTypeNode(alias.type)) throw new Error("IR must be a discriminated union");
-  for (const variant of alias.type.types) {
+  for (const variant of alias.type.types.nodes) {
     if (!ts.isTypeLiteralNode(variant)) throw new Error("IR variants must be records");
-    const members = variant.members.filter(ts.isPropertySignature);
-    const tag = members.find((member) => member.name.getText() === "kind")!.type!;
-    const kind = JSON.parse(tag.getText()) as string;
+    const members = variant.members.nodes.filter(ts.isPropertySignature);
+    const tag = members.find((member) => ts.getTextOfNode(member.name) === "kind")!.type!;
+    const kind = JSON.parse(ts.getTextOfNode(tag)) as string;
     test(`${name}.${kind}: every declared child is visited and rewritten, metadata is preserved`, () => {
       for (const presence of [true, false]) {
         const expected: (IrExpr | IrStmt)[] = [];
         function value(type: ts.TypeNode): unknown {
           if (ts.isTypeReferenceNode(type)) {
             const node =
-              type.typeName.getText() === "IrExpr"
+              ts.getTextOfNode(type.typeName) === "IrExpr"
                 ? num(expected.length)
                 : statement(expected.length);
             expected.push(node);
             return node;
           }
-          if (ts.isUnionTypeNode(type)) return presence ? value(type.types.find(childType)!) : null;
+          if (ts.isUnionTypeNode(type))
+            return presence ? value(type.types.nodes.find(childType)!) : null;
           if (ts.isArrayTypeNode(type)) return [value(type.elementType), value(type.elementType)];
           if (ts.isTypeLiteralNode(type)) {
             const result: Record<string, unknown> = {
@@ -69,9 +71,9 @@ for (const name of ["IrExpr", "IrStmt"]) {
               drop: true,
               overflow: true,
             };
-            for (const member of type.members) {
+            for (const member of type.members.nodes) {
               if (ts.isPropertySignature(member) && member.type && childType(member.type))
-                result[member.name.getText()] = value(member.type);
+                result[ts.getTextOfNode(member.name)] = value(member.type);
             }
             return result;
           }
@@ -85,7 +87,7 @@ for (const name of ["IrExpr", "IrStmt"]) {
         };
         for (const member of members) {
           if (member.type && childType(member.type) && (presence || !member.postfixToken))
-            input[member.name.getText()] = value(member.type);
+            input[ts.getTextOfNode(member.name)] = value(member.type);
         }
         const before = structuredClone(input);
         const seen: (IrExpr | IrStmt)[] = [];
@@ -134,7 +136,7 @@ for (const name of ["IrExpr", "IrStmt"]) {
         expect(output.loc).toBe(loc);
         expect((output as unknown as Record<string, unknown>)["metadata"]).toBe(input["metadata"]);
         for (const member of members) {
-          const key = member.name.getText();
+          const key = ts.getTextOfNode(member.name);
           if (member.postfixToken && !presence) expect(Object.hasOwn(output, key)).toBe(false);
         }
       }
@@ -216,7 +218,7 @@ test("module traversal covers every declared type slot", () => {
   const active = new Set<string>();
   function slots(node: ts.TypeNode): unknown {
     if (ts.isTypeReferenceNode(node)) {
-      const name = node.typeName.getText();
+      const name = ts.getTextOfNode(node.typeName);
       if (name === "IrType") {
         const value: IrType = { kind: "regex" };
         expected.push(value);
@@ -231,7 +233,7 @@ test("module traversal covers every declared type slot", () => {
         };
       if (name === "SrcLoc") return loc;
       if (active.has(name)) throw new Error(`unexpected recursive schema reference: ${name}`);
-      const declaration = source.statements.find(
+      const declaration = source.statements.nodes.find(
         (item) =>
           (ts.isInterfaceDeclaration(item) || ts.isTypeAliasDeclaration(item)) &&
           item.name.text === name,
@@ -239,21 +241,21 @@ test("module traversal covers every declared type slot", () => {
       if (!declaration) return undefined;
       active.add(name);
       const result = ts.isInterfaceDeclaration(declaration)
-        ? fields(declaration.members)
+        ? fields(declaration.members.nodes)
         : ts.isTypeAliasDeclaration(declaration)
           ? slots(declaration.type)
           : undefined;
       active.delete(name);
       return result;
     }
-    if (ts.isTypeLiteralNode(node)) return fields(node.members);
+    if (ts.isTypeLiteralNode(node)) return fields(node.members.nodes);
     if (ts.isArrayTypeNode(node)) return [slots(node.elementType)];
     if (ts.isParenthesizedTypeNode(node)) return slots(node.type);
-    if (ts.isIntersectionTypeNode(node)) return slots(node.types[0]!);
+    if (ts.isIntersectionTypeNode(node)) return slots(node.types.nodes[0]!);
     if (ts.isUnionTypeNode(node)) {
       // Metadata unions can choose any arm: the schema puts executable and
       // typed alternatives first, followed by null/unit alternatives.
-      return slots(node.types[0]!);
+      return slots(node.types.nodes[0]!);
     }
     return undefined;
   }
@@ -267,15 +269,18 @@ test("module traversal covers every declared type slot", () => {
     for (const member of members) {
       if (!ts.isPropertySignature(member) || !member.type) continue;
       const value = slots(member.type);
-      if (value !== undefined) result[member.name.getText()] = value;
+      if (value !== undefined) result[ts.getTextOfNode(member.name)] = value;
     }
     return result;
   }
-  const declaration = source.statements.find(
+  const declaration = source.statements.nodes.find(
     (item): item is ts.InterfaceDeclaration =>
       ts.isInterfaceDeclaration(item) && item.name.text === "IrModule",
   )!;
-  const module = { ...fields(declaration.members), sourceFile: loc.file } as unknown as IrModule;
+  const module = {
+    ...fields(declaration.members.nodes),
+    sourceFile: loc.file,
+  } as unknown as IrModule;
   const seen: IrType[] = [];
   expect(
     everyModuleNode(module, {
@@ -303,29 +308,29 @@ test("module traversal covers every declared type slot", () => {
 });
 
 test("type traversal visits all structural children and leaves named shapes as references", () => {
-  const alias = source.statements.find(
+  const alias = source.statements.nodes.find(
     (node): node is ts.TypeAliasDeclaration =>
       ts.isTypeAliasDeclaration(node) && node.name.text === "IrType",
   )!;
   if (!ts.isUnionTypeNode(alias.type)) throw new Error("IrType must be a union");
-  for (const variant of alias.type.types) {
+  for (const variant of alias.type.types.nodes) {
     if (!ts.isTypeLiteralNode(variant)) throw new Error("IrType variants must be records");
-    const members = variant.members.filter(ts.isPropertySignature);
+    const members = variant.members.nodes.filter(ts.isPropertySignature);
     const kind = JSON.parse(
-      members.find((member) => member.name.getText() === "kind")!.type!.getText(),
+      ts.getTextOfNode(members.find((member) => ts.getTextOfNode(member.name) === "kind")!.type!),
     ) as string;
     const node: Record<string, unknown> = { kind };
     const expected: IrType[] = [];
     for (const member of members) {
       if (!member.type) continue;
       const child =
-        ts.isTypeReferenceNode(member.type) && member.type.typeName.getText() === "IrType";
+        ts.isTypeReferenceNode(member.type) && ts.getTextOfNode(member.type.typeName) === "IrType";
       const array =
-        ts.isArrayTypeNode(member.type) && member.type.elementType.getText() === "IrType";
+        ts.isArrayTypeNode(member.type) && ts.getTextOfNode(member.type.elementType) === "IrType";
       if (!child && !array) continue;
       const value: IrType = { kind: "fileHandle" };
       expected.push(value);
-      node[member.name.getText()] = array ? [value] : value;
+      node[ts.getTextOfNode(member.name)] = array ? [value] : value;
     }
     const seen: IrType[] = [];
     expect(

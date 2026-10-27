@@ -9,7 +9,7 @@ function tail(path) {
   while (i >= 0 && path.charAt(i) !== "/" && path.charAt(i) !== "\\") i = i - 1;
   return path.slice(i + 1);
 }
-const dir = `/tmp/scr-dirent-untyped-${tail(process.argv[1] === undefined ? "x" : process.argv[1])}`;
+const dir = `/tmp/scr-dirent-untyped-${tail(process.argv[1] === undefined ? "x" : process.argv[1])}-${process.pid}`;
 if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
 fs.mkdirSync(`${dir}/sub`, { recursive: true });
 fs.writeFileSync(`${dir}/a.txt`, "x");

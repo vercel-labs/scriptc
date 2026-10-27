@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/numeric-kernels.ts",
+  "args": [
+    "0.5"
+  ]
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/object-literal-accessors-dyn.ts"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/records-sort.ts",
+  "args": [
+    "1"
+  ]
+}

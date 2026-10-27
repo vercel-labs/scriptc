@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/builtin-function-record-values/native.js",
+  "<repo>/tests/corpus/builtin-function-record-values/main.ts"
+ ],
+ "diags": []
+}

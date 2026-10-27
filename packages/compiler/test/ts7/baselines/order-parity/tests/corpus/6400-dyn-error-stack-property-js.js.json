@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6400-dyn-error-stack-property-js.js"
+ ],
+ "diags": []
+}

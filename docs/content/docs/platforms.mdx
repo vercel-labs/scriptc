@@ -49,7 +49,7 @@ $ file fib-linux
 fib-linux: ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), dynamically linked, interpreter /lib/ld-linux-aarch64.so.1, for GNU/Linux 2.0.0, with debug_info, not stripped
 ```
 
-`x86_64-linux-gnu.2.36` works the same way. For Alpine and other musl-based systems, use `aarch64-linux-musl` or `x86_64-linux-musl`; these produce statically linked executables.
+`x86_64-linux-gnu.2.36` works the same way. For Alpine and other musl-based systems, use `aarch64-linux-musl` or `x86_64-linux-musl`; these produce statically linked executables. On a glibc-based Linux machine, [`--static`](/docs/cli#options) links a static executable for the machine's own target.
 
 Linux executables use the native Linux implementations of the event loop (epoll), servers, TLS (with the system's CA bundle), and `fs.watch`, and they are tested against Node.js on Linux, including Alpine.
 

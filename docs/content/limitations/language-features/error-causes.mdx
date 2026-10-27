@@ -1,1 +1,6 @@
-- **Error causes:** Accessor constructor options and explicit subclass redeclarations of `cause` are unsupported. `Error`, `TypeError`, `RangeError`, and `SyntaxError` otherwise accept `{ cause }`, including through inherited constructors. Reads, writes, deletion, and `"cause" in error` distinguish an absent cause from an explicitly undefined cause. Constructor causes are non-enumerable; assignment to an absent cause creates an enumerable property. Property descriptors and checked-value aliases share the cause, including getters and setters installed after construction.
+- **Error causes:** Accessor constructor options are unsupported.
+  Subclasses may redeclare `cause` as `unknown` or `object` (for example `cause?: unknown`), which defines the own property after `super()` returns as Node does; redeclarations with other types, parameter properties, and accessors named `cause` are unsupported.
+  `Error`, `TypeError`, `RangeError`, and `SyntaxError` otherwise accept `{ cause }`, including through inherited constructors.
+  Reads, writes, deletion, and `"cause" in error` distinguish an absent cause from an explicitly undefined cause.
+  Constructor causes are non-enumerable; assignment to an absent cause creates an enumerable property.
+  Property descriptors and checked-value aliases share the cause, including getters and setters installed after construction.

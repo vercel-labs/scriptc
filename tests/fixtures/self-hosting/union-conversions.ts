@@ -2,6 +2,7 @@ import { writeFileSync } from "node:fs";
 import { BOOL, F64, STRING, UNDEFINED_T, VOID, typeEquals } from "../../../packages/compiler/src/ir/ir.js";
 import type { IrClassDef, IrExpr, IrFunction, IrModule, IrRecordShape, IrStmt, IrType, IrUnionDef, SrcLoc } from "../../../packages/compiler/src/ir/ir.js";
 import { IR_VERSION, serializeModule } from "../../../packages/compiler/src/ir/serialize.js";
+import { assignLegacyTiers } from "../../../packages/compiler/src/ir/tiers.js";
 import { buildUnionNarrow } from "../../../packages/compiler/src/frontend/lowering/union-narrow.js";
 import { buildUnionRetag, planUnionRetag } from "../../../packages/compiler/src/frontend/lowering/union-retag.js";
 import type { WidthLift } from "../../../packages/compiler/src/frontend/lowering/width-lift.js";
@@ -227,4 +228,6 @@ const classes: IrClassDef[] = [
   { name: "%TypeError", runtime: true, base: "%Error", fields: errorFields, loc },
 ];
 const module: IrModule = { classes, irVersion: IR_VERSION, sourceFile: loc.file, entry: "main", records, unions, functions };
+// Serialized IR carries each function's tier, as lowering assigns it.
+assignLegacyTiers(module.functions);
 writeFileSync(process.argv[2]!, serializeModule(module));

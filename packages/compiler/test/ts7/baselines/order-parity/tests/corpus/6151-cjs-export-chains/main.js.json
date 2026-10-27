@@ -1,0 +1,10 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6151-cjs-export-chains/chain.js",
+  "<repo>/tests/corpus/6151-cjs-export-chains/constants.js",
+  "<repo>/tests/corpus/6151-cjs-export-chains/re.js",
+  "<repo>/tests/corpus/6151-cjs-export-chains/sem.js",
+  "<repo>/tests/corpus/6151-cjs-export-chains/main.js"
+ ],
+ "diags": []
+}

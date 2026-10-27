@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7422-for-await-untyped-streams.mjs"
+ ],
+ "diags": []
+}

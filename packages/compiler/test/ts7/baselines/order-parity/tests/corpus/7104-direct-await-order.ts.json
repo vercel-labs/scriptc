@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7104-direct-await-order.ts"
+ ],
+ "diags": []
+}

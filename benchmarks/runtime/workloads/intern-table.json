@@ -1,0 +1,8 @@
+{
+  "entry": "workloads/intern-table.ts",
+  "args": [
+    "table",
+    "8",
+    "100000"
+  ]
+}

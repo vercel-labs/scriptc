@@ -1,0 +1,62 @@
+builtin-constructor-members.ts:5:22 - error SC2020: 'Map.prototype' is part of the standard library types but has no scriptc lowering yet
+
+  4 | // through globalThis or through an alias; it never reads undefined.
+  5 | const mapPrototype = Map.prototype;
+    |                      ^~~~~~~~~~~~~
+  6 | const datePrototype = Date.prototype;
+
+  hint: prototype objects are not values here (method lookup is static) — call the method on an instance instead
+
+builtin-constructor-members.ts:6:23 - error SC2020: 'Date.prototype' is part of the standard library types but has no scriptc lowering yet
+
+  5 | const mapPrototype = Map.prototype;
+  6 | const datePrototype = Date.prototype;
+    |                       ^~~~~~~~~~~~~~
+  7 | const regExpPrototype = RegExp.prototype;
+
+  hint: prototype objects are not values here (method lookup is static) — call the method on an instance instead
+
+builtin-constructor-members.ts:7:25 - error SC2020: 'RegExp.prototype' is part of the standard library types but has no scriptc lowering yet
+
+  6 | const datePrototype = Date.prototype;
+  7 | const regExpPrototype = RegExp.prototype;
+    |                         ^~~~~~~~~~~~~~~~
+  8 | const promisePrototype = Promise.prototype;
+
+  hint: prototype objects are not values here (method lookup is static) — call the method on an instance instead
+
+builtin-constructor-members.ts:9:26 - error SC2020: 'WeakSet.prototype' is part of the standard library types but has no scriptc lowering yet
+
+   8 | const promisePrototype = Promise.prototype;
+   9 | const weakSetPrototype = WeakSet.prototype;
+     |                          ^~~~~~~~~~~~~~~~~
+  10 | const frozen = Object.isFrozen;
+
+  hint: prototype objects are not values here (method lookup is static) — call the method on an instance instead
+
+builtin-constructor-members.ts:10:16 - error SC2020: 'Object.isFrozen' is part of the standard library types but has no scriptc lowering yet
+
+   9 | const weakSetPrototype = WeakSet.prototype;
+  10 | const frozen = Object.isFrozen;
+     |                ^~~~~~~~~~~~~~~
+  11 | const setPrototype = globalThis.Set.prototype;
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+builtin-constructor-members.ts:11:22 - error SC2020: 'SetConstructor.prototype' is part of the standard library types but has no scriptc lowering yet
+
+  10 | const frozen = Object.isFrozen;
+  11 | const setPrototype = globalThis.Set.prototype;
+     |                      ^~~~~~~~~~~~~~~~~~~~~~~~
+  12 | const D = Date;
+
+  hint: prototype objects are not values here (method lookup is static) — call the method on an instance instead
+
+builtin-constructor-members.ts:13:24 - error SC2020: 'DateConstructor.prototype' is part of the standard library types but has no scriptc lowering yet
+
+  12 | const D = Date;
+  13 | const aliasPrototype = D.prototype;
+     |                        ^~~~~~~~~~~
+  14 | // End with a nonblank context line so diagnostic snapshots carry no trailing whitespace.
+
+  hint: prototype objects are not values here (method lookup is static) — call the method on an instance instead

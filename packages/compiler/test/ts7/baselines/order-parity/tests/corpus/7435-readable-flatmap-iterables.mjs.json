@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7435-readable-flatmap-iterables.mjs"
+ ],
+ "diags": []
+}

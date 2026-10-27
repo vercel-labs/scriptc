@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/node-types/event-loop-metrics.ts"
+ ],
+ "diags": []
+}

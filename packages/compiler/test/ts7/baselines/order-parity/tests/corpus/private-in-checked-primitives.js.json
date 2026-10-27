@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/private-in-checked-primitives.js"
+ ],
+ "diags": []
+}

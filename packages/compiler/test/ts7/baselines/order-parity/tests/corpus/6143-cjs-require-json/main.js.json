@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6143-cjs-require-json/counter.js",
+  "<repo>/tests/corpus/6143-cjs-require-json/main.js"
+ ],
+ "diags": []
+}

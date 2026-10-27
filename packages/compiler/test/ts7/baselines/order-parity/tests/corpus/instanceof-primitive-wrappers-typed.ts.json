@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/instanceof-primitive-wrappers-typed.ts"
+ ],
+ "diags": []
+}

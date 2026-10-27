@@ -19,10 +19,15 @@
  * canonical TU normally — cache optimization must never become correctness.
  */
 
+import { closeSync, openSync, readSync, statSync } from "node:fs";
+
 export interface LlvmProgramShard {
   /** Stable source identity used in object cache keys and diagnostics. */
   name: string;
-  source: string;
+  /** Assembles the shard's LLVM text. A module split from a file reads its
+   * function bodies back from there on each call, so only the shards being
+   * written are in memory. */
+  source: () => string;
 }
 
 export interface LlvmProgramSplit {
@@ -54,11 +59,19 @@ const LIBRARY_TARGET_BYTES = 768 * 1024;
 const LIBRARY_MINIMUM_BYTES = 2 * 1024 * 1024;
 
 interface FunctionDef {
-  source: string;
+  /** UTF-8 length of the definition's text. */
+  bytes: number;
+  /** The definition's text: its header (promoted to hidden linkage when
+   * internal), body and closing brace. A definition left in a file reads
+   * its body through `read`. */
+  text: (read: RangeReader) => string;
   declaration: string;
   symbol: string;
   promoted: boolean;
 }
+
+/** Reads the text between two byte offsets of the module file. */
+type RangeReader = (start: number, end: number) => string;
 
 interface GlobalDef {
   line: string;
@@ -72,50 +85,68 @@ function symbolOf(spelling: string): string | null {
   return match?.[1] ?? null;
 }
 
-function functionDefAt(
-  lines: readonly string[],
-  start: number,
-): { def: FunctionDef; end: number } | null {
-  const header = lines[start]!;
+/** A definition's header line: the line its shard compiles, the
+ * declaration every other shard carries, and its linkage. */
+function functionHeader(
+  header: string,
+): { line: string; declaration: string; symbol: string; promoted: boolean } | null {
   const match =
     /^define\s+(internal\s+)?(.+?)\s+(@[-$._A-Za-z][-$.\w]*)\((.*)\)(.*)\{(?:\s*;.*)?$/.exec(
       header,
     );
   if (!match) return null;
-  let end = start + 1;
-  while (end < lines.length && lines[end] !== "}") end++;
-  if (end >= lines.length) return null;
   const symbol = symbolOf(match[3]!);
   if (symbol === null) return null;
   const promoted = match[1] !== undefined;
   const linkage = promoted ? "hidden " : "";
-  const definitionHeader = promoted
-    ? header.replace(/^define internal /, "define hidden ")
-    : header;
-  const source = [definitionHeader, ...lines.slice(start + 1, end + 1)].join("\n");
+  const line = promoted ? header.replace(/^define internal /, "define hidden ") : header;
   // Parameter names are legal on declarations. Preserve the emitted text so
   // attributes, zeroext, and varargs stay byte-exact.
   // A definition's DISubprogram cannot be attached to a declaration in a
   // different shard. Its owning definition retains the original metadata.
   const attrs = match[5]!.replace(/\s+!dbg !\d+/g, "");
   const declaration = `declare ${linkage}${match[2]} ${match[3]}(${match[4]})${attrs}`.trimEnd();
-  return { def: { source, declaration, symbol, promoted }, end };
+  return { line, declaration, symbol, promoted };
+}
+
+function functionDefAt(
+  lines: readonly string[],
+  start: number,
+): { def: FunctionDef; end: number } | null {
+  const header = functionHeader(lines[start]!);
+  if (header === null) return null;
+  let end = start + 1;
+  while (end < lines.length && lines[end] !== "}") end++;
+  if (end >= lines.length) return null;
+  const source = [header.line, ...lines.slice(start + 1, end + 1)].join("\n");
+  return {
+    def: {
+      bytes: Buffer.byteLength(source),
+      text: () => source,
+      declaration: header.declaration,
+      symbol: header.symbol,
+      promoted: header.promoted,
+    },
+    end,
+  };
 }
 
 function globalDef(line: string): GlobalDef | null {
   const match =
-    /^(@[-$._A-Za-z][-$.\w]*)\s+=\s+(internal\s+)?(thread_local(?:\([^)]*\))?\s+)?(global|constant)\s+(.+)$/.exec(
+    /^(@[-$._A-Za-z][-$.\w]*)\s+=\s+((?:internal|private)\s+)?(thread_local(?:\([^)]*\))?\s+)?((?:local_)?unnamed_addr\s+)?(global|constant)\s+([\s\S]+)$/.exec(
       line,
     );
   if (!match) return null;
   const symbol = symbolOf(match[1]!);
   if (symbol === null) return null;
+  // Internal and private definitions (such as private unnamed_addr lookup
+  // tables) are local to their module: shards reach them as hidden ones.
   const promoted = match[2] !== undefined;
   const threadLocal = match[3] === undefined ? "" : `${match[3].trim()} `;
   // The declaration needs only the complete type. Emitted initializers begin
   // after it; the generated LLVM subset uses first-class scalars/pointers or
   // balanced aggregate types, so one small scanner is sufficient.
-  const rest = match[5]!;
+  const rest = match[6]!;
   let depth = 0;
   let quote = false;
   let typeEnd = -1;
@@ -133,11 +164,28 @@ function globalDef(line: string): GlobalDef | null {
   if (typeEnd < 0) return null;
   const type = rest.slice(0, typeEnd);
   return {
-    line: promoted ? line.replace(`${match[1]} = internal `, `${match[1]} = hidden `) : line,
-    declaration: `${match[1]} = external ${promoted ? "hidden " : ""}${threadLocal}${match[4]} ${type}`,
+    line: promoted ? line.replace(`${match[1]} = ${match[2]}`, `${match[1]} = hidden `) : line,
+    declaration: `${match[1]} = external ${promoted ? "hidden " : ""}${threadLocal}${match[5]} ${type}`,
     symbol,
     promoted,
   };
+}
+
+/** The change in aggregate nesting depth over one line of LLVM text,
+ * outside string constants and comments (a regex global's comment spells
+ * its source). */
+function bracketDepth(line: string): number {
+  let depth = 0;
+  let quote = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i]!;
+    if (ch === '"') quote = !quote;
+    if (quote) continue;
+    if (ch === ";") break;
+    if (ch === "{" || ch === "[" || ch === "<" || ch === "(") depth++;
+    else if (ch === "}" || ch === "]" || ch === ">" || ch === ")") depth--;
+  }
+  return depth;
 }
 
 function stableBucket(symbol: string, count: number): number {
@@ -154,7 +202,7 @@ function chunksOf(
   targetBytes: number,
   maximumBuckets: number,
 ): { bucket: number; functions: FunctionDef[] }[] {
-  const totalBytes = functions.reduce((sum, fn) => sum + Buffer.byteLength(fn.source) + 2, 0);
+  const totalBytes = functions.reduce((sum, fn) => sum + fn.bytes + 2, 0);
   // A power-of-two bucket count changes only when the program crosses a wide
   // size band. Ordinary edits therefore keep every function in the same
   // symbol-hash bucket; ceil(total/target) would reshuffle the whole program
@@ -168,6 +216,74 @@ function chunksOf(
   );
 }
 
+/** A module's top-level forms, as the splitter classifies them. */
+interface ModuleParts {
+  preamble: string[];
+  globals: GlobalDef[];
+  functions: FunctionDef[];
+  trailer: string[];
+}
+
+/** Classifies a module one line at a time. `define` lines go to
+ * `onFunction`, which takes the following lines through the definition's
+ * closing brace; every other line is offered to `line`. */
+class ModuleReader {
+  readonly parts: ModuleParts = { preamble: [], globals: [], functions: [], trailer: [] };
+  private sawDefinition = false;
+  private inTrailer = false;
+  /** A global definition whose aggregate initializer continues over the
+   * following lines (vtable arrays list one element per line). */
+  private pendingGlobal: { text: string; depth: number } | null = null;
+  failed = false;
+
+  /** Whether a definition may start here (none may follow the trailer). */
+  startFunction(): boolean {
+    if (this.inTrailer || this.pendingGlobal !== null) this.failed = true;
+    this.sawDefinition = true;
+    return !this.failed;
+  }
+
+  line(line: string): void {
+    if (this.pendingGlobal !== null) {
+      this.pendingGlobal.text += "\n" + line;
+      this.pendingGlobal.depth += bracketDepth(line);
+      if (this.pendingGlobal.depth <= 0) {
+        const { text } = this.pendingGlobal;
+        this.pendingGlobal = null;
+        this.global(text);
+      }
+      return;
+    }
+    if (line.startsWith("@") && line.includes(" = ")) {
+      const depth = bracketDepth(line);
+      if (depth > 0) this.pendingGlobal = { text: line, depth };
+      else this.global(line);
+      return;
+    }
+    if (line.startsWith("attributes ") || line.startsWith("!")) this.inTrailer = true;
+    if (this.inTrailer) this.parts.trailer.push(line);
+    else if (!this.sawDefinition || line.trim() !== "") this.parts.preamble.push(line);
+  }
+
+  /** Globals may follow the attributes and metadata (the feature flags the
+   * link-features step appends); they are module storage like any other. */
+  private global(definition: string): void {
+    const parsed = globalDef(definition);
+    if (parsed === null) {
+      // External declarations are already valid in every shard.
+      if (/^@.+\s+=\s+external\s+/.test(definition)) this.parts.preamble.push(definition);
+      else this.failed = true;
+    } else {
+      this.parts.globals.push(parsed);
+      this.sawDefinition = true;
+    }
+  }
+
+  finish(): ModuleParts | null {
+    return this.failed || this.pendingGlobal !== null ? null : this.parts;
+  }
+}
+
 export function splitLlvmProgram(
   source: string,
   options: LlvmProgramSplitOptions = {},
@@ -175,42 +291,129 @@ export function splitLlvmProgram(
   const minimumBytes = options.minimumBytes ?? DEFAULT_MINIMUM_BYTES;
   const sourceBytes = Buffer.byteLength(source);
   if (sourceBytes < minimumBytes) return null;
-  const targetBytes = Math.max(64 * 1024, options.targetBytes ?? DEFAULT_TARGET_BYTES);
   const lines = source.split("\n");
-  const preamble: string[] = [];
-  const globals: GlobalDef[] = [];
-  const functions: FunctionDef[] = [];
-  const trailer: string[] = [];
-  let sawDefinition = false;
-  let inTrailer = false;
-  for (let i = 0; i < lines.length; i++) {
+  const reader = new ModuleReader();
+  for (let i = 0; i < lines.length && !reader.failed; i++) {
     const line = lines[i]!;
     if (line.startsWith("define ")) {
-      if (inTrailer) return null;
+      if (!reader.startFunction()) break;
       const parsed = functionDefAt(lines, i);
       if (parsed === null) return null;
-      functions.push(parsed.def);
-      sawDefinition = true;
+      reader.parts.functions.push(parsed.def);
       i = parsed.end;
-      continue;
-    }
-    if (line.startsWith("@") && line.includes(" = ")) {
-      if (inTrailer) return null;
-      const parsed = globalDef(line);
-      if (parsed === null) {
-        // External declarations are already valid in every shard.
-        if (/^@.+\s+=\s+external\s+/.test(line)) preamble.push(line);
-        else return null;
-      } else {
-        globals.push(parsed);
-        sawDefinition = true;
-      }
-      continue;
-    }
-    if (line.startsWith("attributes ") || line.startsWith("!")) inTrailer = true;
-    if (inTrailer) trailer.push(line);
-    else if (!sawDefinition || line.trim() !== "") preamble.push(line);
+    } else reader.line(line);
   }
+  const parts = reader.finish();
+  return parts === null ? null : shardModule(parts, sourceBytes, options, null);
+}
+
+/** The read size of splitLlvmProgramFile's scan. */
+const FILE_CHUNK_BYTES = 16 * 1024 * 1024;
+
+/** splitLlvmProgram over LLVM text already written to `path`, for modules
+ * too large to hold in memory more than once (or past the longest string the
+ * engine allows). Function bodies stay in the file: each shard's source
+ * reads its bodies when it is read, so only the shards being written at a
+ * time are in memory. */
+export function splitLlvmProgramFile(
+  path: string,
+  options: LlvmProgramSplitOptions = {},
+): LlvmProgramSplit | null {
+  const minimumBytes = options.minimumBytes ?? DEFAULT_MINIMUM_BYTES;
+  const sourceBytes = statSync(path).size;
+  if (sourceBytes < minimumBytes) return null;
+  const reader = new ModuleReader();
+  // The definition being read: its header and where its body starts.
+  let current: { header: NonNullable<ReturnType<typeof functionHeader>>; body: number } | null =
+    null;
+  const onLine = (bytes: Buffer, start: number, end: number, offset: number): void => {
+    if (current !== null) {
+      // Only the closing brace ends a definition; its body is not decoded.
+      if (end - start === 1 && bytes[start] === 0x7d) {
+        const { header, body } = current;
+        const bodyEnd = offset + 1;
+        reader.parts.functions.push({
+          bytes: Buffer.byteLength(header.line) + 1 + (bodyEnd - body),
+          text: (read) => `${header.line}\n${read(body, bodyEnd)}`,
+          declaration: header.declaration,
+          symbol: header.symbol,
+          promoted: header.promoted,
+        });
+        current = null;
+      }
+      return;
+    }
+    const line = bytes.toString("utf8", start, end);
+    if (line.startsWith("define ")) {
+      const header = functionHeader(line);
+      if (header === null || !reader.startFunction()) reader.failed = true;
+      else current = { header, body: offset + (end - start) + 1 };
+    } else reader.line(line);
+  };
+  const fd = openSync(path, "r");
+  try {
+    let carry: Buffer = Buffer.alloc(0);
+    let carryOffset = 0;
+    for (let position = 0; position < sourceBytes && !reader.failed;) {
+      const chunk = Buffer.allocUnsafe(Math.min(FILE_CHUNK_BYTES, sourceBytes - position));
+      const read = readSync(fd, chunk, 0, chunk.length, position);
+      if (read === 0) break;
+      const data =
+        carry.length === 0
+          ? chunk.subarray(0, read)
+          : Buffer.concat([carry, chunk.subarray(0, read)]);
+      const dataOffset = carry.length === 0 ? position : carryOffset;
+      position += read;
+      let lineStart = 0;
+      for (let newline = data.indexOf(10); newline >= 0; newline = data.indexOf(10, lineStart)) {
+        onLine(data, lineStart, newline, dataOffset + lineStart);
+        lineStart = newline + 1;
+      }
+      carry = Buffer.from(data.subarray(lineStart));
+      carryOffset = dataOffset + lineStart;
+    }
+    // The text after the last newline is a line too (empty when the file
+    // ends with one), as String.prototype.split answers it.
+    if (!reader.failed) onLine(carry, 0, carry.length, carryOffset);
+  } finally {
+    closeSync(fd);
+  }
+  if (current !== null) return null;
+  const parts = reader.finish();
+  return parts === null ? null : shardModule(parts, sourceBytes, options, path);
+}
+
+/** Runs `use` with a reader of `path`'s byte ranges (or of nothing, for a
+ * module held in memory). */
+function withRangeReader<T>(path: string | null, use: (read: RangeReader) => T): T {
+  if (path === null)
+    return use(() => {
+      throw new Error("an in-memory LLVM module has no file to read");
+    });
+  const fd = openSync(path, "r");
+  try {
+    return use((start, end) => {
+      const bytes = Buffer.allocUnsafe(end - start);
+      for (let done = 0; done < bytes.length;) {
+        const read = readSync(fd, bytes, done, bytes.length - done, start + done);
+        if (read === 0) throw new Error(`${path} ended before byte ${end}`);
+        done += read;
+      }
+      return bytes.toString("utf8");
+    });
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function shardModule(
+  parts: ModuleParts,
+  sourceBytes: number,
+  options: LlvmProgramSplitOptions,
+  path: string | null,
+): LlvmProgramSplit | null {
+  const { preamble, globals, functions, trailer } = parts;
+  const targetBytes = Math.max(64 * 1024, options.targetBytes ?? DEFAULT_TARGET_BYTES);
   if (functions.length < 2) return null;
   const globalDecls = globals.flatMap((global) =>
     global.declaration === null ? [] : [global.declaration],
@@ -230,16 +433,22 @@ export function splitLlvmProgram(
   const chunks = chunksOf(functions, targetBytes, 2 ** Math.floor(Math.log2(bucketLimit)));
   if (chunks.length < 2) return null;
   const tail = trailer.length === 0 ? "" : `\n${trailer.join("\n")}`;
-  const functionShards = chunks.map(({ bucket, functions: chunk }) => {
+  // A shard's source is assembled when it is read; a module split from a
+  // file reads its function bodies from there each time.
+  const functionShards = chunks.map(({ bucket, functions: chunk }): LlvmProgramShard => {
     const owned = new Set(chunk);
-    const declarations = functions.filter((fn) => !owned.has(fn)).map((fn) => fn.declaration);
     return {
       name: `program-f${bucket.toString().padStart(3, "0")}.ll`,
-      source: [
-        [...preamble, ...globalDecls, ...declarations, ""].join("\n"),
-        ...chunk.map((fn) => fn.source),
-        tail,
-      ].join("\n"),
+      source: () => {
+        const declarations = functions.filter((fn) => !owned.has(fn)).map((fn) => fn.declaration);
+        return withRangeReader(path, (read) =>
+          [
+            [...preamble, ...globalDecls, ...declarations, ""].join("\n"),
+            ...chunk.map((fn) => fn.text(read)),
+            tail,
+          ].join("\n"),
+        );
+      },
     };
   });
   // Global initializer changes are common (literal text, generated tables)
@@ -247,15 +456,15 @@ export function splitLlvmProgram(
   // all module storage in one dedicated shard that declares every function.
   const globalShard: LlvmProgramShard = {
     name: "program-globals.ll",
-    source: [
-      [...preamble, ...functions.map((fn) => fn.declaration), ""].join("\n"),
-      ...globals.map((global) => global.line),
-      tail,
-    ].join("\n"),
+    source: () =>
+      [
+        [...preamble, ...functions.map((fn) => fn.declaration), ""].join("\n"),
+        ...globals.map((global) => global.line),
+        tail,
+      ].join("\n"),
   };
-  const shards = [globalShard, ...functionShards];
   return {
-    shards,
+    shards: [globalShard, ...functionShards],
     promotedSymbols: [
       ...globals.filter((global) => global.promoted).map((global) => global.symbol),
       ...functions.filter((fn) => fn.promoted).map((fn) => fn.symbol),

@@ -8,7 +8,7 @@ import { isNpmStaticPackage, npmStaticActive, npmStaticOffenders, npmStaticPacka
 for (const specifier of SUPPORTED_NODE_MODULES) {
   console.log(specifier, canonicalBuiltinModule(specifier), builtinDefaultImportModule(specifier));
 }
-for (const specifier of ["test", "node:test", "node:missing", "missing", "v8", "node:inspector"]) {
+for (const specifier of ["test", "node:test", "node:missing", "missing", "vm", "node:inspector", "graceful-fs", "node:graceful-fs"]) {
   console.log(canonicalBuiltinModule(specifier), unsupportedModuleFeatureOf(specifier));
 }
 clearWorkspacePackages();

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/2560-cjs-cycle-partner-first/main.ts"
+ ],
+ "diags": []
+}

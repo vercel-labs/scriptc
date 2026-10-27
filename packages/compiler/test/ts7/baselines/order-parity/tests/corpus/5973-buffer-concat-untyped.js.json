@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5973-buffer-concat-untyped.js"
+ ],
+ "diags": []
+}

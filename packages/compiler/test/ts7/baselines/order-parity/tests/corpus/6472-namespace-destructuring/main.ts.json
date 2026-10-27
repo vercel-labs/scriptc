@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6472-namespace-destructuring/lib.ts",
+  "<repo>/tests/corpus/6472-namespace-destructuring/main.ts"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7794-untyped-array-iteration.js"
+ ],
+ "diags": []
+}

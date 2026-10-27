@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6941-emitter-untyped-zero-arg-listener.ts"
+ ],
+ "diags": []
+}

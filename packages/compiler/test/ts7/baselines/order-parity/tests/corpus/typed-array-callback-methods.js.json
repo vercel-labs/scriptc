@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/typed-array-callback-methods.js"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/optional-chain-any-tail.ts"
+ ],
+ "diags": []
+}

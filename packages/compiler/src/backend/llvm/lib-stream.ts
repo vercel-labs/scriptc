@@ -2,6 +2,7 @@
 import { InternalCompilerError } from "../../errors.js";
 import type { LlvmEmitterContext, LibCallExpr, LlValue } from "./expr-context.js";
 import { f64Lit } from "./common.js";
+import { pipelinePumpedRuns } from "../../ir/builtin-signatures.js";
 
 const STREAM_CANONICAL_CBS: Record<string, ("r" | "w" | "f" | "d" | "t" | "l")[]> = {
   readable: ["r", "d"],
@@ -36,6 +37,29 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     host.emitPendingCheck();
     return out;
   }
+  if (e.fn === "stream.dynNative" || e.fn === "stream.dynNativePipe") {
+    // Checked-dynamic stream slots: the boxed native stream (+1) or NULL.
+    if (e.type.kind !== "union")
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
+    const def = host.unionsById.get(e.type.unionId);
+    const streamTag = def ? def.arms.findIndex((a) => a.kind === "object") : -1;
+    const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
+    if (streamTag < 0 || nullTag < 0)
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
+    const value = host.emitExpr(e.args[0]!);
+    const side = host.emitExpr(e.args[1]!);
+    // A pipe or unpipe destination in programs with constructor-function
+    // streams can be one of those streams too (scr_dyn_builtin_stream.c),
+    // as stream.unboxDyn does there.
+    const fn =
+      e.fn === "stream.dynNativePipe" && host.usesDynBuiltinStream
+        ? "scr_dyn_builtin_stream_dyn_native"
+        : "scr_stream_dyn_native";
+    host.declare(`declare ptr @${fn}(ptr, double)`);
+    const raw = B.tmp();
+    B.line(`${raw} = call ptr @${fn}(ptr ${value.name}, double ${side.name}) ; +1 or NULL`);
+    return host.wrapNullable(raw, raw, def!.arms[streamTag]!, streamTag, e.type, nullTag);
+  }
   if (e.fn === "stream.onData") {
     // The callback MOVES into the stream's listener registry; the
     // adapter is per callback shape — runtime-provided for the
@@ -48,7 +72,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     const s0 = host.emitExpr(e.args[0]!);
     const cb = host.emitExpr(e.args[1]!);
     const once = host.emitExpr(e.args[2]!);
-    host.moveTemp(cb);
+    host.toHeap(cb);
     const param = cbT.params[0];
     let adapter: string;
     if (param === undefined) {
@@ -56,6 +80,8 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
       host.declare(`declare void @scr_child_stream_thunk0(ptr, ptr)`);
     } else if (param.kind === "union") {
       adapter = host.childDataThunkFor(param);
+    } else if (param.kind === "dyn") {
+      adapter = host.childDataDynThunkFor("bytes");
     } else {
       adapter = "scr_child_stream_thunk_bytes";
       host.declare(`declare void @scr_child_stream_thunk_bytes(ptr, ptr)`);
@@ -70,7 +96,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     const s0 = host.emitExpr(e.args[0]!);
     const cb = host.emitExpr(e.args[1]!);
     const once = host.emitExpr(e.args[2]!);
-    host.moveTemp(cb);
+    host.toHeap(cb);
     host.declare(`declare void @scr_child_stream_on_end(ptr, ptr, i1 zeroext)`);
     B.line(`call void @scr_child_stream_on_end(ptr ${s0.name}, ptr ${cb.name}, i1 ${once.name})`);
     return { name: "", type: e.type };
@@ -78,7 +104,8 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
   if (e.fn === "stream.onDataStr") {
     host.usesTimers = true;
     const cbT = e.args[1]!.type;
-    if (cbT.kind !== "func" || cbT.params[0]?.kind !== "string") {
+    const strParam = cbT.kind === "func" ? cbT.params[0]?.kind : undefined;
+    if (strParam !== "string" && strParam !== "dyn") {
       throw new InternalCompilerError(
         "llvm emitter bug: stream.onDataStr callback not a string func",
       );
@@ -86,11 +113,13 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     const s0 = host.emitExpr(e.args[0]!);
     const cb = host.emitExpr(e.args[1]!);
     const once = host.emitExpr(e.args[2]!);
-    host.moveTemp(cb);
-    host.declare(`declare void @scr_child_stream_thunk_str(ptr, ptr)`);
+    host.toHeap(cb);
+    let adapter = "scr_child_stream_thunk_str";
+    if (strParam === "dyn") adapter = host.childDataDynThunkFor("str");
+    else host.declare(`declare void @scr_child_stream_thunk_str(ptr, ptr)`);
     host.declare(`declare void @scr_child_stream_on_data_str(ptr, ptr, ptr, i1 zeroext)`);
     B.line(
-      `call void @scr_child_stream_on_data_str(ptr ${s0.name}, ptr ${cb.name}, ptr @scr_child_stream_thunk_str, i1 ${once.name})`,
+      `call void @scr_child_stream_on_data_str(ptr ${s0.name}, ptr ${cb.name}, ptr @${adapter}, i1 ${once.name})`,
     );
     return { name: "", type: e.type };
   }
@@ -127,7 +156,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
       }
       const cb = args[at]!;
       const cbT = e.args[at]!.type;
-      host.moveTemp(cb); // the callback closure MOVES into the stream
+      host.toHeap(cb); // the callback closure MOVES into the stream
       cbArgs.push(`ptr ${cb.name}`, `ptr @${host.streamCbThunkFor(canonical[i]!, cbT)}`);
       at++;
     }
@@ -158,18 +187,26 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     e.fn === "stream.setFinal" ||
     e.fn === "stream.setDestroy" ||
     e.fn === "stream.setTransform" ||
-    e.fn === "stream.setFlush"
+    e.fn === "stream.setFlush" ||
+    e.fn === "stream.setConstruct" ||
+    e.fn === "stream.replaceConstruct" ||
+    e.fn === "stream.setWritev" ||
+    e.fn === "stream.setWritevDefault"
   ) {
     // The underscore-method assignment surface: the runtime slot swaps
     // its closure (+1 moves in) and invoke thunk — the next
     // _read/_write/... dispatch uses it, Node's timing.
-    const kindOf: Record<string, "r" | "w" | "f" | "d" | "t" | "l"> = {
+    const kindOf: Record<string, "r" | "w" | "f" | "d" | "t" | "l" | "c" | "v"> = {
       "stream.setRead": "r",
       "stream.setWrite": "w",
       "stream.setFinal": "f",
       "stream.setDestroy": "d",
       "stream.setTransform": "t",
       "stream.setFlush": "l",
+      "stream.setConstruct": "c",
+      "stream.replaceConstruct": "c",
+      "stream.setWritev": "v",
+      "stream.setWritevDefault": "v",
     };
     const symOf: Record<string, string> = {
       "stream.setRead": "scr_stream_set_read",
@@ -178,11 +215,15 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
       "stream.setDestroy": "scr_stream_set_destroy",
       "stream.setTransform": "scr_stream_set_transform",
       "stream.setFlush": "scr_stream_set_flush",
+      "stream.setConstruct": "scr_stream_set_construct",
+      "stream.replaceConstruct": "scr_stream_replace_construct",
+      "stream.setWritev": "scr_stream_set_writev",
+      "stream.setWritevDefault": "scr_stream_set_writev_default",
     };
     const recv = host.emitExpr(e.args[0]!);
     const cb = host.emitExpr(e.args[1]!);
     const cbT = e.args[1]!.type;
-    host.moveTemp(cb); // the callback closure MOVES into the stream
+    host.toHeap(cb); // the callback closure MOVES into the stream
     const sym = symOf[e.fn]!;
     host.declare(`declare void @${sym}(ptr, ptr, ptr)`);
     B.line(
@@ -210,7 +251,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
       }
       const cb = args[at]!;
       const cbT = e.args[at]!.type;
-      host.moveTemp(cb);
+      host.toHeap(cb);
       cbArgs.push(`ptr ${cb.name}`, `ptr @${host.streamCbThunkFor(canonical[i]!, cbT)}`);
       at++;
     }
@@ -246,10 +287,9 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
       .filter((a) => a.tag >= 0);
     if (present.length === 0)
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
-    const tagP = B.tmp();
-    const tag = B.tmp();
-    B.line(`${tagP} = getelementptr inbounds %ScrUnion, ptr ${args[1]!.name}, i64 0, i32 1`);
-    B.line(`${tag} = load i32, ptr ${tagP}`);
+    // A tagged box, or the arm pointer itself for a nullable union
+    // (`string | null`, `Buffer | null`).
+    const tag = host.unionTag(args[1]!.name, t.unionId);
     const slot = B.slot();
     B.entryAllocas.push(`${slot} = alloca i1`);
     const lj = B.newLabel("scu.j");
@@ -262,10 +302,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
         B.line(`store i1 ${r}, ptr ${slot}`);
         return;
       }
-      const pk = B.tmp();
-      const pv = B.tmp();
-      B.line(`${pk} = getelementptr inbounds %ScrUnion, ptr ${args[1]!.name}, i64 0, i32 5`);
-      B.line(`${pv} = load ptr, ptr ${pk} ; borrowed payload`);
+      const pv = host.unionPeek(args[1]!.name, t.unionId); // borrowed payload
       const r = B.tmp();
       if (pushing) {
         host.declare(`declare zeroext i1 @${entry}(ptr, ptr)`);
@@ -321,7 +358,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     B.line(`${raw} = call ptr @scr_stream_read(ptr ${args[0]!.name}, double ${args[1]!.name})`);
     const b = host.own({ name: raw, type: def!.arms[bytesTag]! });
     host.emitPendingCheck();
-    host.moveTemp(b); // moves into the union arm when present
+    host.toHeap(b); // moves into the union arm when present
     return host.wrapNullable(raw, raw, def!.arms[bytesTag]!, bytesTag, e.type, nullTag);
   }
   if (e.fn === "readable.flowing") {
@@ -383,7 +420,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     const args = e.args.map((a) => host.emitExpr(a));
     let cb = "null";
     if (e.fn !== "writable.writeDyn" && e.args.length > 2) {
-      host.moveTemp(args[2]!);
+      host.toHeap(args[2]!);
       cb = args[2]!.name;
     }
     host.declare(`declare zeroext i1 @${entry}(ptr, ptr, ptr)`);
@@ -394,10 +431,34 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     host.emitPendingCheck();
     return e.type.kind === "void" ? { name: "", type: e.type } : { name: t, type: e.type };
   }
+  if (e.fn === "writable.writeEnc") {
+    // (recv, flags, chunk[, encoding][, cb]) — flags: 1 encoding, 2
+    // callback (MOVES). Without an encoding the argument is undefined, or
+    // null when the callback took its place.
+    const flagsArg = e.args[1]!;
+    if (flagsArg.kind !== "numLit")
+      throw new InternalCompilerError("llvm emitter bug: writable.writeEnc flags not a literal");
+    const flags = flagsArg.value;
+    const args = e.args.map((a) => host.emitExpr(a));
+    let at = 3;
+    const enc = flags & 1 ? args[at++]!.name : writeEncNull(host, flags & 2 ? "null" : "undef");
+    let cb = "null";
+    if (flags & 2) {
+      host.toHeap(args[at]!);
+      cb = args[at]!.name;
+    }
+    host.declare(`declare zeroext i1 @scr_stream_write_enc(ptr, ptr, ptr, ptr)`);
+    const t = B.tmp();
+    B.line(
+      `${t} = call zeroext i1 @scr_stream_write_enc(ptr ${args[0]!.name}, ptr ${args[2]!.name}, ptr ${enc}, ptr ${cb})`,
+    );
+    host.emitPendingCheck();
+    return e.type.kind === "void" ? { name: "", type: e.type } : { name: t, type: e.type };
+  }
   if (e.fn === "writable.end") {
-    // (recv, flags[, chunk][, cb]) — flags: 1 bytes chunk, 2 string
-    // chunk, 8 dyn chunk (write first, Node's end(chunk) decomposition),
-    // 4 callback.
+    // (recv, flags[, chunk][, encoding][, cb]) — flags: 1 bytes chunk, 2
+    // string chunk, 8 dyn chunk (write first, Node's end(chunk)
+    // decomposition), 16 an encoding after the dyn chunk, 4 callback.
     const flagsArg = e.args[1]!;
     if (flagsArg.kind !== "numLit")
       throw new InternalCompilerError("llvm emitter bug: writable.end flags not a literal");
@@ -407,19 +468,27 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     let chunkB = "null";
     let chunkS = "null";
     let chunkD: string | null = null;
+    let encD = "null";
     if (flags & 1) chunkB = args[at++]!.name;
     else if (flags & 2) chunkS = args[at++]!.name;
     else if (flags & 8) chunkD = args[at++]!.name;
+    if (flags & 16) encD = args[at++]!.name;
+    else if (chunkD !== null && flags & 4) encD = writeEncNull(host, "null");
     let cbName = "null";
     if (flags & 4) {
-      host.moveTemp(args[at]!);
+      host.toHeap(args[at]!);
       cbName = args[at]!.name;
     }
     if (chunkD !== null) {
-      host.declare(`declare zeroext i1 @scr_stream_write_dyn(ptr, ptr, ptr)`);
+      // end(chunk, cb) writes with a null encoding argument (Node's end
+      // shifts the callback out of it)
+      host.declare(`declare zeroext i1 @scr_stream_write_enc(ptr, ptr, ptr, ptr)`);
       B.line(
-        `${B.tmp()} = call zeroext i1 @scr_stream_write_dyn(ptr ${args[0]!.name}, ptr ${chunkD}, ptr null)`,
+        `${B.tmp()} = call zeroext i1 @scr_stream_write_enc(ptr ${args[0]!.name}, ptr ${chunkD}, ptr ${encD}, ptr null)`,
       );
+      // a write that throws (an unknown encoding) leaves the stream as it
+      // was: Node's end() throws before it ends the stream
+      host.emitPendingCheck();
     }
     host.declare(`declare ptr @scr_stream_end(ptr, ptr, ptr, ptr)`);
     const t = B.tmp();
@@ -490,7 +559,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
       const cbT = e.args[1]!.type;
       if (cbT.kind !== "func")
         throw new InternalCompilerError("llvm emitter bug: stream.finished callback not a func");
-      host.moveTemp(args[1]!); // the watcher closure MOVES into the stream
+      host.toHeap(args[1]!); // the watcher closure MOVES into the stream
       const thunk = host.streamCbThunkFor("e", cbT);
       host.declare(`declare ptr @scr_stream_finished(ptr, ptr, ptr)`);
       B.line(
@@ -599,7 +668,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
         throw new InternalCompilerError(
           "llvm emitter bug: stream.finishedOpts callback not a func",
         );
-      host.moveTemp(args[cbIdx]!);
+      host.toHeap(args[cbIdx]!);
       const thunk = host.streamCbThunkFor("e", cbT);
       host.declare(
         `declare ptr @scr_stream_finished_opts(ptr, ptr, ptr, double, double, i1, ptr, ptr)`,
@@ -635,17 +704,20 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
   }
   if (
     e.fn === "sp.pipelineStages" ||
+    e.fn === "sp.pipelineStagesOpts" ||
     e.fn === "stream.pipelineStages" ||
-    e.fn === "stream.pipelineStagesDyn"
+    e.fn === "stream.pipelineStagesDyn" ||
+    e.fn === "stream.composeStages"
   ) {
-    // (n, at, k, flags, mask, s1..sn, stage1..stagek, (next, read,
-    // return)?, box?, (signal, abort)?[, cb]): the streams and the stage
-    // closures ride stack arrays; absent groups pass null.
-    const [nArg, atArg, kArg, flagsArg, maskArg] = e.args;
+    // (n, k, positions, flags, mask, s1..sn, stage1..stagek, helpers...,
+    // box?, (signal, abort)?[, cb | end, signal?]): the streams, the
+    // stage closures and the helpers ride stack arrays; absent groups
+    // pass null.
+    const [nArg, kArg, positionsArg, flagsArg, maskArg] = e.args;
     if (
       nArg?.kind !== "numLit" ||
-      atArg?.kind !== "numLit" ||
       kArg?.kind !== "numLit" ||
+      positionsArg?.kind !== "numLit" ||
       flagsArg?.kind !== "numLit" ||
       maskArg?.kind !== "numLit"
     )
@@ -653,6 +725,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     const n = nArg.value;
     const k = kArg.value;
     const flags = flagsArg.value;
+    const helperCount = 3 * pipelinePumpedRuns(n + k, positionsArg.value, flags);
     const args = e.args.map((a) => host.emitExpr(a));
     const packed = (from: number, count: number): string => {
       if (count === 0) return "null";
@@ -667,24 +740,36 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     };
     const streams = packed(5, n);
     const stages = packed(5 + n, k);
-    let at = 5 + n + k;
+    const helpers = packed(5 + n + k, helperCount);
+    let at = 5 + n + k + helperCount;
     const take = (present: boolean): string => (present ? args[at++]!.name : "null");
-    const hasHelpers = (flags & 8) !== 0;
-    const next = take(hasHelpers);
-    const read = take(hasHelpers);
-    const ret = take(hasHelpers);
-    const box = take((flags & 16) !== 0);
+    const box = take(((flags >> 1) & 3) >= 2);
     const signal = take((flags & 32) !== 0);
     const abort = take((flags & 32) !== 0);
     const head =
-      `double ${f64Lit(n)}, ptr ${streams}, double ${f64Lit(atArg.value)}, double ${f64Lit(k)}, ` +
-      `ptr ${stages}, double ${f64Lit(flags)}, double ${f64Lit(maskArg.value)}, ` +
-      `ptr ${next}, ptr ${read}, ptr ${ret}, ptr ${box}, ptr ${signal}, ptr ${abort}`;
-    const params = "double, ptr, double, double, ptr, double, double, ptr, ptr, ptr, ptr, ptr, ptr";
+      `double ${f64Lit(n)}, ptr ${streams}, double ${f64Lit(k)}, ptr ${stages}, ` +
+      `double ${f64Lit(positionsArg.value)}, double ${f64Lit(flags)}, double ${f64Lit(maskArg.value)}, ` +
+      `ptr ${helpers}, ptr ${box}, ptr ${signal}, ptr ${abort}`;
+    const params = "double, ptr, double, ptr, double, double, double, ptr, ptr, ptr, ptr";
     const t = B.tmp();
     if (e.fn === "sp.pipelineStages") {
       host.declare(`declare ptr @scr_sp_pipeline_stages(${params})`);
       B.line(`${t} = call ptr @scr_sp_pipeline_stages(${head})`);
+    } else if (e.fn === "sp.pipelineStagesOpts") {
+      const end = args[at++]!.name;
+      const outer = take((flags & 64) !== 0);
+      let add = "null";
+      if (outer !== "null") {
+        host.declare(`declare ptr @scr_events_add_abort_listener(ptr, ptr)`);
+        add = "@scr_events_add_abort_listener";
+      }
+      host.declare(`declare ptr @scr_sp_pipeline_stages_opts(${params}, i1, ptr, ptr)`);
+      B.line(
+        `${t} = call ptr @scr_sp_pipeline_stages_opts(${head}, i1 ${end}, ptr ${outer}, ptr ${add})`,
+      );
+    } else if (e.fn === "stream.composeStages") {
+      host.declare(`declare ptr @scr_stream_compose_stages(${params})`);
+      B.line(`${t} = call ptr @scr_stream_compose_stages(${head})`);
     } else if (e.fn === "stream.pipelineStagesDyn") {
       host.declare(`declare ptr @scr_stream_pipeline_stages_dyn(${params}, ptr)`);
       B.line(
@@ -696,7 +781,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
         throw new InternalCompilerError(
           "llvm emitter bug: stream.pipelineStages callback not a func",
         );
-      host.moveTemp(args[args.length - 1]!);
+      host.toHeap(args[args.length - 1]!);
       const thunk = host.streamCbThunkFor("e", cbT);
       host.declare(`declare ptr @scr_stream_pipeline_stages(${params}, ptr, ptr)`);
       B.line(
@@ -732,7 +817,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
       const cbT = e.args[1 + n]!.type;
       if (cbT.kind !== "func")
         throw new InternalCompilerError("llvm emitter bug: stream.pipeline callback not a func");
-      host.moveTemp(args[1 + n]!);
+      host.toHeap(args[1 + n]!);
       const thunk = host.streamCbThunkFor("e", cbT);
       host.declare(`declare ptr @scr_stream_pipeline(double, ptr, ptr, ptr)`);
       B.line(
@@ -747,4 +832,14 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
   // their callbacks into the handle's registry with runtime-provided
   // adapters; the handful of union-wrapped reads use the envGet shapes.
   return host.emitGenericLibCall(e);
+}
+
+/** The encoding argument a write passes when the call has none: undefined
+ * (a null pointer), or the null value when a callback took its place. */
+function writeEncNull(host: LlvmEmitterContext, which: "null" | "undef"): string {
+  if (which === "undef") return "null";
+  host.declare(`declare ptr @scr_dyn_new_null()`);
+  const t = host.B.tmp();
+  host.B.line(`${t} = call ptr @scr_dyn_new_null()`);
+  return t;
 }

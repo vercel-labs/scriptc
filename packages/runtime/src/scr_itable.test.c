@@ -8,12 +8,17 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* The table unit needs only scr_trap and scr_throw_error_msg from the
- * rest of the runtime; refusals are recorded here. */
+/* The table unit needs only scr_trap, scr_throw_error_msg and
+ * scr_sa_thread_shares from the rest of the runtime; refusals and the
+ * inserting threads' shares are recorded here. */
 _Noreturn void scr_trap(const char *msg) {
   fputs(msg, stderr);
   abort();
 }
+
+/* Inserts share the stored values with every thread. */
+static atomic_int shares;
+void scr_sa_thread_shares(void) { atomic_fetch_add(&shares, 1); }
 
 static char refused[128];
 void scr_throw_error_msg(int kind, const char *msg, size_t len) {
@@ -49,8 +54,11 @@ static ScrArr *make_f64s(const double *values, size_t n) {
   a->len = a->cap = n;
   a->filled = (uint32_t)n;
   a->elem = SCR_ELEM_F64;
-  a->data = calloc(n ? n : 1, sizeof(uint64_t));
+  /* Values, then one state byte per slot (scr_arr_states_end). */
+  a->spare = SCR_ARR_STATES;
+  a->data = calloc(n ? n : 1, sizeof(uint64_t) + 1);
   for (size_t i = 0; i < n; i++) memcpy(&a->data[i], &values[i], sizeof(double));
+  memset(scr_arr_state_run(a, 0, n), SCR_ARR_VALUE, n);
   return a;
 }
 
@@ -60,8 +68,9 @@ static ScrArr *make_strs(ScrStr *const *values, size_t n) {
   a->filled = (uint32_t)n;
   a->elem = SCR_ELEM_STR;
   free(a->data);
-  a->data = calloc(n, sizeof(uint64_t));
+  a->data = calloc(n ? n : 1, sizeof(uint64_t) + 1);
   for (size_t i = 0; i < n; i++) a->data[i] = (uint64_t)(uintptr_t)values[i];
+  memset(scr_arr_state_run(a, 0, n), SCR_ARR_VALUE, n);
   return a;
 }
 
@@ -152,10 +161,7 @@ int main(void) {
   ScrArr *shorter = make_f64s((double[]){1, 0.0}, 2);
   ScrArr *holed = make_f64s((double[]){1, 0.0, 0.0}, 3);
   holed->filled = 1;
-  holed->present = calloc(3, 1);
-  holed->present[0] = SCR_ARR_VALUE;
-  holed->present[1] = SCR_ARR_VALUE;
-  holed->present[2] = SCR_ARR_HOLE;
+  *scr_arr_state_ptr(holed, 2) = SCR_ARR_HOLE;
   ScrArr *empty_list = make_f64s(NULL, 0);
   const ScrITableEntry *l1 = scr_itable_insert_arr(lists, one, 1);
   assert(scr_itable_find_arr(lists, same) == l1 && scr_itable_insert_arr(lists, same, 2) == l1);
@@ -165,6 +171,7 @@ int main(void) {
   assert(scr_itable_size(lists) == 4);
   ScrArr *big = make_f64s(NULL, 0);
   big->len = big->cap = big->filled = 100;
+  big->spare = 0; /* values without states */
   free(big->data);
   big->data = calloc(100, sizeof(uint64_t));
   for (unsigned i = 0; i < 100; i++) memcpy(&big->data[i], &(double){i}, sizeof(double));
@@ -202,7 +209,6 @@ int main(void) {
   ScrArr *arrays[] = {one, same, shorter, holed, empty_list, big, longest, huge, p1, p2, p3, heavy};
   for (unsigned i = 0; i < sizeof arrays / sizeof *arrays; i++) {
     free(arrays[i]->data);
-    free(arrays[i]->present);
     free(arrays[i]);
   }
   free(ab);
@@ -222,6 +228,7 @@ int main(void) {
     for (unsigned i = 1; i < THREADS; i++) assert(seen_str[i][k] == seen_str[0][k]);
   assert(scr_itable_size(strings) == KEYS);
   assert(scr_itable_size(numbers) == KEYS);
+  assert(atomic_load(&shares) >= 2 * KEYS);
   printf("intern tables share one entry per key across racing inserts and lookups\n");
   return 0;
 }

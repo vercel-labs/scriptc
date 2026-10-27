@@ -7,7 +7,7 @@ const node = { kind: "object" as const, className: "Node" };
 const kids = { kind: "array" as const, elem: node };
 
 const mod: IrModule = {
-  irVersion: 16,
+  irVersion: 17,
   sourceFile: loc.file,
   entry: "main",
   functions: [
@@ -60,6 +60,9 @@ test("publication walkers mark and push inline, with the runtime for the rest", 
   expect(fn).toContain("icmp ult i64 %mrc, 4294967294");
   expect(fn).toContain("getelementptr inbounds { ptr, i32, i32 }, ptr %mlog, i64 %mlogged");
   expect(fn).toContain("store i64 -1, ptr %o");
+  // A headered object leaves its candidate buffer only when `buf` is below
+  // -1: SCR_CYC_ACYCLIC (-1) marks an object that is never in one.
+  expect(fn).toContain("icmp sge i32 %mbufw, -1");
   // Anything else goes through scr_pub_mark.
   expect(fn).toMatch(/call zeroext i1 @scr_pub_mark\(ptr %ctx, ptr %o, i1 (true|false), i32 4\)/);
   // A string is a leaf, marked at once; other references go on the stack,

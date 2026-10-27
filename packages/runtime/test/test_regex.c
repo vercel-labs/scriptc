@@ -331,9 +331,9 @@ static void test_exec_groups(void) {
   ScrArr *full = scr_regex_exec(s, &re_opt_group);
   ScrArr *lean = scr_regex_exec_groups(s, &re_opt_group, 2.0);
   check(full && lean && full->len == lean->len && lean->len == 2, "exec_groups keeps the capture count");
-  check(lean->present[0] == SCR_ARR_UNDEFINED && lean->present[1] == SCR_ARR_UNDEFINED,
+  check(*scr_arr_state_ptr(lean, 0) == SCR_ARR_UNDEFINED && *scr_arr_state_ptr(lean, 1) == SCR_ARR_UNDEFINED,
         "exec_groups: unselected and nonparticipating captures are undefined");
-  check(lean->ext == NULL || lean->ext->metadata == NULL, "exec_groups: no index/input properties");
+  check(scr_arr_ext_of(lean) == NULL || scr_arr_ext_of(lean)->metadata == NULL, "exec_groups: no index/input properties");
   scr_arr_release(full);
   scr_arr_release(lean);
   ScrStr *ab = S("ab");
@@ -430,7 +430,7 @@ static void test_exec_spans(void) {
    * subjects, materialized on wide ones. */
   ScrStr *ascii = S("xa12");
   ScrArr *m = scr_regex_exec_spans(ascii, &re_pair, 6.0, 6.0);
-  check(m && m->len == 4 && m->present[1] == SCR_ARR_UNDEFINED,
+  check(m && m->len == 4 && *scr_arr_state_ptr(m, 1) == SCR_ARR_UNDEFINED,
         "exec_spans: ASCII subjects keep lazy captures as spans");
   ScrStr *a = S("a");
   ScrStr *twelve = S("12");
@@ -448,7 +448,7 @@ static void test_exec_spans(void) {
   scr_arr_release(m);
   ScrStr *wide = S("\xC3\xA9" "a7");
   m = scr_regex_exec_spans(wide, &re_pair, 6.0, 6.0);
-  check(m && m->len == 3 && m->present[2] == SCR_ARR_VALUE && scr_regex_group_number(m, 2) == 7,
+  check(m && m->len == 3 && *scr_arr_state_ptr(m, 2) == SCR_ARR_VALUE && scr_regex_group_number(m, 2) == 7,
         "exec_spans: wide subjects materialize lazy captures");
   scr_arr_release(m);
   m = scr_regex_exec_spans(ascii, &re_pair, 38.0, 2.0);

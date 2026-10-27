@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6715-dyn-for-await-protocol.ts"
+ ],
+ "diags": []
+}

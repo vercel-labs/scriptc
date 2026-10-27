@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6180-cjs-let-early-reachable/lib.js",
+  "<repo>/tests/corpus/6180-cjs-let-early-reachable/main.js"
+ ],
+ "diags": []
+}

@@ -1,4 +1,3 @@
-// @no-deprecation
 // Buffer's invalid-argument ladders, Node-exact: Buffer.compare /
 // buf.compare / buf.equals over non-buffer values and bad offsets throw
 // ERR_INVALID_ARG_TYPE / ERR_OUT_OF_RANGE with Node's argument names and
@@ -7,6 +6,8 @@
 // real answers. Plus the deprecated `new Buffer(number, enc)` string-arm
 // rejection and the ERR_* codes on the write/swap/fill range ladders.
 'use strict';
+// The deprecated constructor's DEP0005 report carries a process id.
+process.noDeprecation = true;
 const show = (fn) => {
   try {
     console.log('ret', fn());

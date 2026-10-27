@@ -47,13 +47,22 @@ void scr_rl_input_error(double id, ScrError *err);
 void scr_rl_question(double id, ScrStr *query, ScrClosure *cb /*moves*/,
                       void (*fn)(ScrClosure *, ScrStr *));
 ScrPromise *scr_rl_question_promise(double id, ScrStr *query, ScrDyn *signal, ScrAbortAddFn add);
+/* The same with a checked-dynamic query (borrowed). A query that is not a
+ * string makes the prompt write throw ERR_INVALID_ARG_TYPE (the promise
+ * form rejects with it) unless the interface is a terminal; the question
+ * stays pending, as in Node. */
+void scr_rl_question_dyn(double id, ScrDyn *query, ScrClosure *cb /*moves*/,
+                         void (*fn)(ScrClosure *, ScrStr *));
+ScrPromise *scr_rl_question_promise_dyn(double id, ScrDyn *query, ScrDyn *signal,
+                                        ScrAbortAddFn add);
 void scr_rl_close(double id);
 void scr_rl_pause(double id);  /* may throw ERR_USE_AFTER_CLOSE */
 void scr_rl_resume(double id); /* may throw ERR_USE_AFTER_CLOSE */
 void scr_rl_prompt(double id); /* may throw ERR_USE_AFTER_CLOSE */
 void scr_rl_prompt_with(double id, bool preserve); /* prompt(preserveCursor); may throw */
 void scr_rl_set_prompt(double id, ScrStr *prompt);
-ScrStr *scr_rl_get_prompt(double id); /* +1 */
+void scr_rl_set_prompt_dyn(double id, ScrDyn *prompt); /* borrows; may throw */
+ScrStr *scr_rl_get_prompt(double id); /* +1; may throw (a prompt that is not a string) */
 void scr_rl_write(double id, ScrStr *data); /* may throw ERR_USE_AFTER_CLOSE */
 void scr_rl_on(double id, double ev, ScrClosure *cb /*moves*/, void *fn, bool once);
 /* createInterface's history and editing options, in Node's order: the
@@ -83,6 +92,8 @@ double scr_rl_num_prop(double id, double which);
  * when there is a completer (the inspect unit links only then). */
 void scr_rl_terminal(double id, double mode, bool on, ScrDyn *completer, bool promises,
                      ScrStr *(*inspect)(ScrDyn *, double, double));
+void scr_rl_mark_promises(double id);
+bool scr_rl_is_promises(double id);
 bool scr_rl_is_terminal(double id);
 /* readline.cursorTo / moveCursor / clearLine / clearScreenDown: the data
  * written (+1; kind 0-3), after the argument checks (may throw), and
@@ -135,6 +146,9 @@ void scr_rl_error_thunk_dyn(ScrClosure *cb, ScrError *err);
  * the input stream or NULL for process.stdin; out the output stream or
  * NULL (out_stdout picks process.stdout). Both borrowed, like prompt
  * (NULL: the default "> "). */
+/* A checked-dynamic input or output as its stream (+1; NULL for an output
+ * of null or undefined); refuses other values (may throw). */
+ScrStream *scr_stream_rl_from_dyn(const ScrDyn *value, bool output);
 double scr_stream_rl_open(ScrStream *in, ScrStream *out, bool out_stdout, double crlf_delay,
                           ScrStr *prompt, ScrDyn *signal, ScrAbortAddFn add);
 void scr_stdin_data_thunk0(ScrClosure *cb, ScrBytes *chunk);

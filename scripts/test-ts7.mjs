@@ -25,6 +25,7 @@ if (process.argv.includes("--baselines-only")) {
 
 const ALLOWED_TYPESCRIPT5_IMPORTS = new Set([
   "packages/compiler/src/frontend/comptime-node.ts",
+  "packages/compiler/src/frontend/jsx-source.test.ts",
   "packages/compiler/src/frontend/ts7/world-check.ts",
   "packages/compiler/src/frontend/ts7/source-parser.test.ts",
   "packages/compiler/src/library/semantic-source.ts",

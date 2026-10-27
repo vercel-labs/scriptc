@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6453-dns-lookup-runtime-callbacks.ts"
+ ],
+ "diags": []
+}

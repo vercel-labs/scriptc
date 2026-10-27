@@ -14,7 +14,7 @@ async function main(): Promise<void> {
     console.log(timeout.hasRef(), immediate.hasRef());
   }
 
-  const path = "/tmp/scriptc-disposable-file.txt";
+  const path = `/tmp/scriptc-disposable-file-${process.pid}.txt`;
   await writeFile(path, "resource");
   {
     await using handle = await open(path, "r");

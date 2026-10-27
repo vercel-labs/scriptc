@@ -10,8 +10,8 @@ const ZERO_INIT = ["-ftrivial-auto-var-init=zero", "-ftrivial-auto-var-init-max-
 
 /**
  * Hardening flags for the precompiled C runtime units and for the vendored
- * zlib and mbedtls archives, which parse untrusted compressed and network
- * input.
+ * zlib, brotli and mbedtls archives, which parse untrusted compressed and
+ * network input.
  *
  * Generated code is checked by the compiler; the C runtime is trusted. These
  * flags turn some classes of runtime memory bugs into deterministic traps or

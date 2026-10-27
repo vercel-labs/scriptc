@@ -22,6 +22,9 @@ const fixturesRoot = join(repoRoot, "tests/fixtures");
 const pilotRoot = join(fixturesRoot, "npm-static");
 const cacheDir = join(repoRoot, "node_modules/.cache/scriptc-tests");
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
+/* Sanitized builds of the published Effect pilots alone take 290 to 330 s on a 16-vCPU host, most of it in
+ * the sanitized native link: near or past the suite's 300 s default. */
+const effectBuildTimeout = sanitize ? 900_000 : undefined;
 // Measured milliseconds per test on a CI runner (scripts/ci-test-costs.mjs).
 const testCosts = (
   JSON.parse(readFileSync(new URL("./npm-static-costs.json", import.meta.url), "utf8")) as {
@@ -69,15 +72,16 @@ async function buildStatic(entry: string, npmStatic: string[] | "auto"): Promise
   const hash = createHash("sha256");
   const inputs = [
     entry,
-    ...globSync(join(pilotRoot, "**/node_modules/**/*.{js,mjs,cjs,json,d.ts}")).sort(),
+    ...globSync(join(pilotRoot, "**/node_modules/**/*.{js,mjs,cjs,json,ts}")).sort(),
     ...globSync(
       join(fixturesRoot, "commander-calc/node_modules/**/*.{js,mjs,cjs,json,d.ts}"),
     ).sort(),
     ...globSync(
       join(fixturesRoot, "npm/node_modules/cryptozoo/**/*.{js,mjs,cjs,json,d.ts}"),
     ).sort(),
-    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2557)
-    ...globSync(join(fixturesRoot, "npm/node_modules/gt*/**/*.{js,json}")).sort(),
+    // the bundler-emitted-CJS mini packages (cases 2465-2469, 2556-2567, 2571, 2580-2590, 2595)
+    ...globSync(join(fixturesRoot, "npm/node_modules/gt*/**/*.{js,cjs,json}")).sort(),
+    ...globSync(join(fixturesRoot, "npm/store/gt*/**/*.{js,cjs,json}")).sort(),
   ];
   for (const f of inputs) hash.update(f).update(readFileSync(f));
   const key = hash
@@ -419,13 +423,122 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     },
   );
 
+  test.each(["llvm"] as const)(
+    "a package probing for optional addons through createRequire resolves at run time (%s)",
+    async (backend) => {
+      const entry = join(pilotRoot, "addon-probe-cli.ts");
+      const { coverage } = analyze(entry, { npmStatic: "auto" });
+      expect(coverage.npmStatic).toEqual([{ package: "addon-probe", status: "static" }]);
+      expect(coverage.diagnostics).toHaveLength(0);
+      expect(
+        (coverage.runtimeFences ?? []).filter((f) => f.code === "SC2020").map((f) => f.message),
+      ).toEqual([
+        expect.stringContaining(
+          "createRequire's require with a computed specifier resolves at run time",
+        ),
+        expect.stringContaining(
+          "createRequire's require.resolve with a computed specifier resolves at run time",
+        ),
+        expect.stringContaining(
+          "createRequire's require.resolve with a computed specifier resolves at run time",
+        ),
+        expect.stringContaining(
+          "createRequire's require.resolve with a computed specifier resolves at run time",
+        ),
+      ]);
+      const outDir = join(cacheDir, "addon-probe", sanitize ? "san" : "plain", backend);
+      const result = await compile(entry, {
+        backend,
+        npmStatic: "auto",
+        sanitize,
+        outDir,
+        outPath: join(outDir, "program"),
+      });
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      const [nodeRes, nativeRes] = await Promise.all([
+        runBinary(process.execPath, [entry]),
+        runBinary(result.binaryPath, []),
+      ]);
+      expect(nativeRes.stdout.toString()).toBe(
+        "a/b absent,absent,unresolved\ncustom:other\nmissing after 1,missing after 2\n",
+      );
+      expect(nativeRes.stdout).toEqual(nodeRes.stdout);
+      expect(comparableStderr(nativeRes.stderr)).toEqual(nodeRes.stderr);
+      expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+    },
+  );
+
+  // Node would load the installed file, which the compiled program cannot:
+  // the require ends the program with the refusal instead of throwing, so
+  // the package's catch clause does not take its fallback.
   test.each([
     [
-      "computed specifier",
-      'const spec = "node:path"; const path = load(spec);',
-      "computed specifier",
+      "addon",
+      /^scriptc: native addon '.*[\\/]native[\\/]installed\.node' requires Node's addon runtime, which is unavailable in scriptc \[SC2020 at .*index\.js:\d+\]\n$/,
     ],
+    [
+      "module",
+      /^scriptc: createRequire's require of '.*[\\/]installed\.js' resolves to '.*[\\/]installed\.js', which is not part of the compiled program: the module graph is fixed at build time \[SC2020 at .*index\.js:\d+\]\n$/,
+    ],
+  ] as const)(
+    "a computed require of an installed %s ends the program with a refusal",
+    async (kind, stderr) => {
+      const entry = join(pilotRoot, "addon-probe-installed-cli.ts");
+      const outDir = join(cacheDir, "addon-probe-installed", sanitize ? "san" : "plain");
+      const result = await compile(entry, {
+        backend: "llvm",
+        npmStatic: "auto",
+        sanitize,
+        outDir,
+        outPath: join(outDir, "program"),
+      });
+      if (!result.ok)
+        throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+      const nativeRes = await runBinary(result.binaryPath, [kind]);
+      expect(nativeRes.stdout.toString()).toBe("before\n");
+      expect(comparableStderr(nativeRes.stderr).toString()).toMatch(stderr);
+      expect(nativeRes.exitCode).toBe(1);
+    },
+  );
+
+  test.each([
     ["escaped require", 'const alias = load; const path = alias("node:path");', "escapes"],
+    [
+      "computed resolve.paths request in a catch clause",
+      'try { load("node:path"); } catch { load.resolve.paths(String(1)); } const path = load("node:path");',
+      "outside a try block",
+    ],
+    [
+      "computed resolve.paths request in a function inside a try block",
+      'try { [1].map((n) => load.resolve.paths(String(n))); } catch {} const path = load("node:path");',
+      "outside a try block",
+    ],
+    [
+      "spread require arguments in a class field inside a try block",
+      'try { new (class { addon = load(...[String(1)]); })(); } catch {} const path = load("node:path");',
+      "outside a try block",
+    ],
+    [
+      "resolve.paths value outside a try block",
+      'const find = load.resolve.paths; const path = load("node:path");',
+      "outside a try block",
+    ],
+    [
+      "escaped require in a try block",
+      'try { const alias = load; alias("node:path"); } catch {} const path = load("node:path");',
+      "escapes",
+    ],
+    [
+      "computed resolve.paths request",
+      'const spec = "node:path"; load.resolve.paths(spec); const path = load("node:path");',
+      "outside a try block",
+    ],
+    [
+      "spread require arguments",
+      'const specs = ["node:path"]; load(...specs); const path = load("node:path");',
+      "outside a try block",
+    ],
     [
       "reassigned require",
       'let load = createLoader(import.meta.url); load = () => ({}); const path = load("node:path");',
@@ -517,6 +630,28 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test("a word segmenter in a package constructs, and its segment() throws SC2020", async () => {
+    const entry = join(pilotRoot, "word-segments-cli.ts");
+    const { coverage } = analyze(entry, { npmStatic: "auto" });
+    expect(coverage.npmStatic).toEqual([{ package: "word-segments", status: "static" }]);
+    expect(coverage.diagnostics).toHaveLength(0);
+    const outDir = join(cacheDir, "word-segments", sanitize ? "san" : "plain");
+    const result = await compile(entry, {
+      backend: "llvm",
+      npmStatic: "auto",
+      sanitize,
+      outDir,
+      outPath: join(outDir, "program"),
+    });
+    if (!result.ok)
+      throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+    const nativeRes = await runBinary(result.binaryPath, []);
+    expect(nativeRes.stdout.toString()).toMatch(
+      /^SC2020: Intl\.Segmenter segmentation with granularity 'word' is not supported yet \[SC2020 at .*index\.js:1\]\n$/,
+    );
+    expect(nativeRes.exitCode).toBe(0);
   });
 
   test.each([
@@ -821,9 +956,81 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
         package: "ms",
         status: "refused",
         detail: "it ships no own .d.ts declaration surface",
+        hint: "to compile it anyway, name it with --npm-static=ms (or --npm-static=ms... to include its dependencies)",
       },
     ]);
   }, 120_000);
+
+  // Types-first resolution answers @types/twinned, but the refusal names the
+  // package that has the code and the flag that compiles it.
+  // The default selection compiles a package typed by a DefinitelyTyped
+  // twin that describes its installed release, and the untyped
+  // dependencies of compiled packages.
+  test("an @types-typed package and its untyped dependency compile by default", async () => {
+    const entry = join(pilotRoot, "twinned-cli.ts");
+    const { coverage } = analyze(entry);
+    expect(coverage.npmStatic).toEqual([
+      { package: "twinned", status: "static" },
+      { package: "ms", status: "static" },
+    ]);
+    expect(coverage.preflightFailed).toBe(false);
+    const binary = await buildStatic(entry, "auto");
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry]),
+      runBinary(binary, []),
+    ]);
+    expect(nativeRes.stdout.toString("utf8")).toBe(nodeRes.stdout.toString("utf8"));
+    expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+  }, 180_000);
+
+  // The twin only checks the program; the JavaScript compiles with its
+  // inferred surface, so a twin naming an export the JavaScript lacks
+  // (Node's link error) fails the build at the import's use instead of
+  // compiling against the declaration.
+  test("an @types twin that disagrees with the shipped JavaScript does not build", () => {
+    const { coverage } = analyze(join(pilotRoot, "twinstale-cli.ts"));
+    expect(coverage.npmStatic).toEqual([{ package: "twinstale", status: "static" }]);
+    expect(coverage.diagnostics).toContainEqual(
+      expect.objectContaining({ message: expect.stringContaining("'stale'") as string }),
+    );
+  }, 120_000);
+
+  test("a named package's untyped dependency compiles with it", () => {
+    const { coverage } = analyze(join(pilotRoot, "twinned-cli.ts"), { npmStatic: ["twinned"] });
+    expect(coverage.npmStatic).toContainEqual({ package: "ms", status: "static" });
+  }, 120_000);
+
+  test("--npm-static=pkg... compiles the package's dependency closure", async () => {
+    const entry = join(pilotRoot, "twinned-cli.ts");
+    const { coverage } = analyze(entry, { npmStatic: ["twinned..."] });
+    expect(coverage.npmStatic).toEqual([
+      { package: "twinned", status: "static" },
+      { package: "ms", status: "static" },
+    ]);
+    expect(coverage.preflightFailed).toBe(false);
+    const binary = await buildStatic(entry, ["twinned..."]);
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry]),
+      runBinary(binary, []),
+    ]);
+    expect(nativeRes.stdout.toString("utf8")).toBe(nodeRes.stdout.toString("utf8"));
+    expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+  }, 180_000);
+
+  test("type-only imports select no package", async () => {
+    const entry = join(pilotRoot, "type-only-cli.ts");
+    const { coverage } = analyze(entry);
+    expect(coverage.npmStatic ?? []).toEqual([]);
+    expect(coverage.preflightFailed).toBe(false);
+    expect(coverage.diagnostics).toEqual([]);
+    const binary = await buildStatic(entry, []);
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry]),
+      runBinary(binary, []),
+    ]);
+    expect(nativeRes.stdout.toString("utf8")).toBe(nodeRes.stdout.toString("utf8"));
+    expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+  }, 180_000);
 
   test("ms supports invalid duration strings without runtime fences", () => {
     const { coverage } = analyze(join(pilotRoot, "ms-invalid-cli.ts"), { npmStatic: ["ms"] });
@@ -912,6 +1119,24 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
   }, 180_000);
 
+  // Real CommonJS packages whose require() placement (a binding required
+  // below code that only reaches it after the require ran) or JSON
+  // require preflight refused before.
+  test("export-first CommonJS packages and JSON requires compile statically", () => {
+    const { coverage } = analyze(join(pilotRoot, "cjs-interop-cli.ts"), {
+      npmStatic: ["fs.realpath", "on-finished", "ee-first", "statuses"],
+    });
+    expect(coverage.preflightFailed).toBe(false);
+    expect(
+      [...(coverage.npmStatic ?? [])].sort((a, b) => a.package.localeCompare(b.package)),
+    ).toEqual([
+      { package: "ee-first", status: "static" },
+      { package: "fs.realpath", status: "static" },
+      { package: "on-finished", status: "static" },
+      { package: "statuses", status: "static" },
+    ]);
+  }, 120_000);
+
   // A package preflight failure stays visible as a package-specific refusal.
   test("a preflight-refused package reports its native refusal", () => {
     const { coverage } = analyze(join(fixturesRoot, "npm/divergent/lazybuiltin.ts"), {
@@ -956,6 +1181,7 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
         package: "typegapped",
         status: "refused",
         detail: "it ships no own .d.ts declaration surface",
+        hint: "to compile it anyway, name it with --npm-static=typegapped (or --npm-static=typegapped... to include its dependencies)",
       },
       { package: "escape-string-regexp", status: "static" },
     ]);
@@ -981,9 +1207,55 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
   }, 180_000);
 
+  // The two resolvers must answer one file for every opted-in edge. Each
+  // shape below once left the runtime file outside tsgo's program (SC2013
+  // "did not join the type-checked program"): uuid's node condition with
+  // declarations in another tree, tldts's package-root TypeScript source
+  // beside `main`, express's same-version copies of one package (tsgo's
+  // package-id redirect), and get-intrinsic's dependency chain deeper than
+  // maxNodeModuleJsDepth.
+  test.each([
+    ["split-node-types-cli.ts", ["split-node-types"]],
+    ["ts-root-source-cli.ts", ["ts-root-source"]],
+    ["dup-install-cli.ts", ["dup-left", "dup-right", "dup-leaf"]],
+    ["deep-packages-cli.ts", Array.from({ length: 11 }, (_, i) => `hop-${i + 1}`)],
+  ])(
+    "%s joins the type-checked program and matches Node",
+    async (name, pkgs) => {
+      const entry = join(pilotRoot, name);
+      const { coverage } = analyze(entry, { npmStatic: pkgs });
+      expect(coverage.npmStatic.map((p) => [p.package, p.status]).sort()).toEqual(
+        pkgs.map((p) => [p, "static"]).sort(),
+      );
+      expect(coverage.preflightFailed).toBe(false);
+      expect(coverage.diagnostics).toHaveLength(0);
+      const binary = await buildStatic(entry, pkgs);
+      const [nodeRes, nativeRes] = await Promise.all([
+        runBinary("node", [entry]),
+        runBinary(binary, []),
+      ]);
+      expect(nativeRes.stdout).toEqual(nodeRes.stdout);
+      expect(comparableStderr(nativeRes.stderr)).toEqual(nodeRes.stderr);
+      expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+    },
+    180_000,
+  );
+
   test("recursive inferred JavaScript results retain their promised ABI", async () => {
     const entry = join(pilotRoot, "recursive-result-cli.ts");
     const binary = await buildStatic(entry, ["recursive-result"]);
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry]),
+      runBinary(binary, []),
+    ]);
+    expect(nativeRes.stdout).toEqual(nodeRes.stdout);
+    expect(comparableStderr(nativeRes.stderr)).toEqual(nodeRes.stderr);
+    expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+  }, 180_000);
+
+  test("package values cross at the members their declarations promise", async () => {
+    const entry = join(pilotRoot, "declared-members-cli.ts");
+    const binary = await buildStatic(entry, ["declared-members"]);
     const [nodeRes, nativeRes] = await Promise.all([
       runBinary("node", [entry]),
       runBinary(binary, []),
@@ -1009,34 +1281,74 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
   }, 180_000);
 
-  test("the published Effect generator logs and completes statically", async () => {
-    const entry = join(pilotRoot, "effect-gen-cli.ts");
-    const binary = await buildStatic(entry, ["effect"]);
+  test(
+    "the published Effect generator logs and completes statically",
+    async () => {
+      const entry = join(pilotRoot, "effect-gen-cli.ts");
+      const binary = await buildStatic(entry, ["effect"]);
+      const [reference, native] = await Promise.all([
+        runBinary(process.execPath, [entry]),
+        runBinary(binary, []),
+      ]);
+      const log =
+        /^timestamp=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z level=INFO fiber=#0 message="Hello, world!"\n$/;
+      expect(reference.stdout.toString()).toMatch(log);
+      expect(native.stdout.toString()).toMatch(log);
+      expect(comparableStderr(native.stderr)).toEqual(reference.stderr);
+      expect(native.exitCode).toBe(reference.exitCode);
+      expect(native.exitCode).toBe(0);
+    },
+    effectBuildTimeout,
+  );
+
+  test(
+    "the published Effect generator has deterministic native results",
+    async () => {
+      const entry = join(pilotRoot, "effect-gen-result-cli.ts");
+      const binary = await buildStatic(entry, ["effect"]);
+      const [reference, native] = await Promise.all([
+        runBinary(process.execPath, [entry]),
+        runBinary(binary, []),
+      ]);
+      expect(reference.stdout.toString()).toBe("Hello, world!\n42\n");
+      expect(native.stdout).toEqual(reference.stdout);
+      expect(comparableStderr(native.stderr)).toEqual(reference.stderr);
+      expect(native.exitCode).toBe(reference.exitCode);
+    },
+    effectBuildTimeout,
+  );
+
+  test("the published js-yaml loads, dumps and reports errors statically and matches Node", async () => {
+    const entry = join(pilotRoot, "js-yaml-cli.mjs");
+    const { coverage } = analyze(entry, { npmStatic: ["js-yaml"] });
+    expect(coverage.npmStatic).toEqual([{ package: "js-yaml", status: "static" }]);
+    expect(coverage.diagnostics).toHaveLength(0);
+    const binary = await buildStatic(entry, ["js-yaml"]);
     const [reference, native] = await Promise.all([
       runBinary(process.execPath, [entry]),
       runBinary(binary, []),
     ]);
-    const log =
-      /^timestamp=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z level=INFO fiber=#0 message="Hello, world!"\n$/;
-    expect(reference.stdout.toString()).toMatch(log);
-    expect(native.stdout.toString()).toMatch(log);
+    expect(native.stdout.toString()).toBe(reference.stdout.toString());
     expect(comparableStderr(native.stderr)).toEqual(reference.stderr);
     expect(native.exitCode).toBe(reference.exitCode);
     expect(native.exitCode).toBe(0);
-  });
+  }, 300_000);
 
-  test("the published Effect generator has deterministic native results", async () => {
-    const entry = join(pilotRoot, "effect-gen-result-cli.ts");
-    const binary = await buildStatic(entry, ["effect"]);
+  test("the published smol-toml parses and stringifies statically and matches Node", async () => {
+    const entry = join(pilotRoot, "smol-toml-cli.mjs");
+    const { coverage } = analyze(entry, { npmStatic: ["smol-toml"] });
+    expect(coverage.npmStatic).toEqual([{ package: "smol-toml", status: "static" }]);
+    expect(coverage.diagnostics).toHaveLength(0);
+    const binary = await buildStatic(entry, ["smol-toml"]);
     const [reference, native] = await Promise.all([
       runBinary(process.execPath, [entry]),
       runBinary(binary, []),
     ]);
-    expect(reference.stdout.toString()).toBe("Hello, world!\n42\n");
-    expect(native.stdout).toEqual(reference.stdout);
+    expect(native.stdout.toString()).toBe(reference.stdout.toString());
     expect(comparableStderr(native.stderr)).toEqual(reference.stderr);
     expect(native.exitCode).toBe(reference.exitCode);
-  });
+    expect(native.exitCode).toBe(0);
+  }, 300_000);
 
   test("inferred variadic factories preserve checked callable results", async () => {
     const entry = join(pilotRoot, "variadic-factory-cli.ts");
@@ -1271,6 +1583,323 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
         package: "gtdrift",
         status: "refused",
         detail: expect.stringContaining("__toESM") as string,
+      },
+    ]);
+  }, 120_000);
+
+  /* ── 2558-2561: esbuild's bundled CommonJS chunks and per-file CommonJS
+   * cycles ─ every __commonJS chunk compiles as its own CommonJS module
+   * (evaluated once, at its first require); a require cycle between
+   * esbuild outputs whose live getter tables install before their first
+   * require initializes exactly like Node, and a cycle that reads a
+   * binding in its temporal dead zone stays refused. */
+  async function expectNodeParity(entry: string, packages: string[]): Promise<void> {
+    const { coverage } = analyze(entry, { npmStatic: packages });
+    expect(coverage.npmStatic).toEqual(packages.map((pkg) => ({ package: pkg, status: "static" })));
+    expect(coverage.preflightFailed).toBe(false);
+    expect(coverage.diagnostics).toHaveLength(0);
+    const binary = await buildStatic(entry, packages);
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry]),
+      runBinary(binary, []),
+    ]);
+    // Node's stderr carries its type-stripping warning; the programs write
+    // only to stdout.
+    expect(nativeRes.stdout.toString("utf8")).toBe(nodeRes.stdout.toString("utf8"));
+    expect(comparableStderr(nativeRes.stderr).toString("utf8")).toBe("");
+    expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+    expect(nativeRes.exitCode).toBe(0);
+  }
+
+  // 2558: esbuild 0.25 (plain and whitespace/syntax minified) and 0.17
+  // CommonJS bundles of one source, plus a .cjs bundle in a type-module
+  // package with the node-mode interop.
+  test("bundled CommonJS chunks 2558-bundled-chunks compile statically and byte-match Node", async () => {
+    await expectNodeParity(join(fixturesRoot, "npm/cases/2558-bundled-chunks/main.ts"), [
+      "gtchunk",
+      "gtchunkws",
+      "gtchunk17",
+      "gtcjsdist",
+      "gtcore",
+    ]);
+  }, 180_000);
+
+  // 2595: a minified chunk whose top-level var statement mixes require
+  // bindings with a class extending the events binding; the bindings own no
+  // storage, so the constructor reaches the modules through them.
+  test("bundled chunk 2595-bundled-chunk-emitter builds its emitters through require bindings", async () => {
+    await expectNodeParity(join(fixturesRoot, "npm/cases/2595-bundled-chunk-emitter/main.ts"), [
+      "gtchunkee",
+    ]);
+  }, 180_000);
+
+  // 7546: a one-line minified ES module: a var statement whose later
+  // declarators spread earlier ones, regexes read through an untyped rules
+  // table, and a function instantiated with typed and untyped arguments.
+  test("the minified module 7546-minified-esm-rules compiles statically and matches Node", async () => {
+    await expectNodeParity(join(fixturesRoot, "npm/cases/7546-minified-esm-rules/main.ts"), [
+      "gtminimark",
+    ]);
+  }, 180_000);
+
+  // 7547: an identifier-minified esbuild CommonJS bundle: the __commonJS
+  // helper and chunk parameters renamed, { value: !0 } stamps, and
+  // (0, ns.member)(...) calls of builtin module functions.
+  test("the identifier-minified bundle 7547-minified-cjs-chunks compiles statically and matches Node", async () => {
+    await expectNodeParity(join(fixturesRoot, "npm/cases/7547-minified-cjs-chunks/main.ts"), [
+      "gtminicache",
+    ]);
+  }, 180_000);
+
+  // A whitespace/syntax-minified bundle whose helpers keep their names is
+  // judged by the recognizers, not refused up front as minified.
+  test("--npm-static=auto opts a minified bundle with named helpers in", () => {
+    const entry = join(fixturesRoot, "npm/cases/2558-bundled-chunks/main.ts");
+    const { coverage } = analyze(entry, { npmStatic: "auto" });
+    expect(coverage.npmStatic).toContainEqual({ package: "gtchunkws", status: "static" });
+  }, 120_000);
+
+  test.each(["2559-cjs-cycle", "2560-cjs-cycle-partner-first"])(
+    "the esbuild CommonJS cycle %s compiles statically and byte-matches Node",
+    async (name) => {
+      await expectNodeParity(join(fixturesRoot, `npm/cases/${name}/main.ts`), ["gtcycle"]);
+    },
+    180_000,
+  );
+
+  // 2561: Node throws a ReferenceError there; the cycle keeps SC1016.
+  test("a CommonJS cycle that reads a binding before its declaration stays refused", () => {
+    const entry = join(fixturesRoot, "npm/cases/2561-cjs-cycle-early-read/main.ts");
+    const { coverage } = analyze(entry, { npmStatic: ["gtcyclebad"] });
+    expect(coverage.npmStatic).toEqual([
+      {
+        package: "gtcyclebad",
+        status: "refused",
+        detail: expect.stringMatching(
+          /circular imports .*can use its binding 'import_index' of a module of the cycle/,
+        ) as string,
+      },
+    ]);
+  }, 120_000);
+
+  // 2563: lazily initialized ES modules (__esm) in esbuild 0.25 plain and
+  // whitespace/syntax-minified bundles.
+  test("bundled ES module initializers 2563-bundled-esm-inits compile statically and byte-match Node", async () => {
+    await expectNodeParity(join(fixturesRoot, "npm/cases/2563-bundled-esm-inits/main.ts"), [
+      "gtesm",
+      "gtesmws",
+      "gtcore",
+    ]);
+  }, 180_000);
+
+  // 2580-2581: a barrel whose re-exports are memoized lazy loaders of
+  // lazily initialized ES modules (a bundle plugin's shape): ES-module
+  // importers copy every export when they link (Node's CommonJS import),
+  // require() reads each export's getter at the read.
+  test.each([
+    ["2580-lazy-barrel", ["gtlazy", "gtlazyws"]],
+    ["2581-lazy-barrel-require", ["gtlazyuser", "gtlazy"]],
+  ])(
+    "the lazy barrel %s compiles statically and byte-matches Node",
+    async (name, packages) => {
+      await expectNodeParity(join(fixturesRoot, `npm/cases/${name}/main.ts`), packages);
+    },
+    180_000,
+  );
+
+  // 2582: two releases of one package in a pnpm store, the newer through
+  // an npm alias directory; the default selection compiles both copies.
+  test("an npm alias of a selected package compiles from its JavaScript", async () => {
+    const entry = join(fixturesRoot, "npm/cases/2582-npm-alias-two-releases/main.ts");
+    const { coverage } = analyze(entry);
+    expect(coverage.npmStatic).toEqual(
+      expect.arrayContaining([
+        { package: "gtroute", status: "static" },
+        { package: "gtpattern", status: "static" },
+      ]),
+    );
+    const binary = await buildStatic(entry, "auto");
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry]),
+      runBinary(binary, []),
+    ]);
+    expect(nativeRes.stdout.toString("utf8")).toBe(nodeRes.stdout.toString("utf8"));
+    expect(nativeRes.exitCode).toBe(nodeRes.exitCode);
+  }, 180_000);
+
+  // 2583: a module whose export object is one of its functions (semver
+  // 5/6's `exports = module.exports = Version`), under both values of the
+  // environment variable the module reads.
+  test("function export objects 2583-cjs-function-exports compile statically and byte-match Node", async () => {
+    const entry = join(fixturesRoot, "npm/cases/2583-cjs-function-exports/main.ts");
+    await expectNodeParity(entry, ["gtfnexports", "gtfnmembers"]);
+    const binary = await buildStatic(entry, ["gtfnexports", "gtfnmembers"]);
+    const env = { ...process.env, GT_LABEL: "x" };
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry], env),
+      runBinary(binary, [], env),
+    ]);
+    expect(nativeRes.stdout.toString("utf8")).toBe(nodeRes.stdout.toString("utf8"));
+    expect(nativeRes.stdout.toString("utf8")).toContain("[x]");
+  }, 180_000);
+
+  // 2584: an export object replaced inside an environment-dependent branch
+  // (readable-stream 2.x) is named precisely.
+  test("an environment-dependent export object is refused by name", () => {
+    const entry = join(fixturesRoot, "npm/cases/2584-cjs-conditional-exports/main.ts");
+    const { coverage } = analyze(entry, { npmStatic: ["gtcondexports"] });
+    expect(JSON.stringify(coverage)).toContain(
+      "replacing module.exports outside a top-level statement (a conditional or environment-dependent export object)",
+    );
+  }, 120_000);
+
+  // 2567: an export that reads `this`, called through its namespace, sees
+  // Node's module object; the lowered namespace would differ, so the
+  // package stays refused.
+  test("a namespace call to an export that reads `this` stays refused", () => {
+    const entry = join(fixturesRoot, "npm/cases/2567-esm-namespace-this/main.ts");
+    const { coverage } = analyze(entry, { npmStatic: ["gtesmthis", "gtcore"] });
+    expect(coverage.npmStatic).toContainEqual({
+      package: "gtesmthis",
+      status: "refused",
+      detail: expect.stringMatching(
+        /calls only of exported functions that do not read 'this'/,
+      ) as string,
+    });
+  }, 120_000);
+
+  /* 2585-2587: polyfill packages whose module IS a Node builtin on Node 24
+   * compile as the builtins (builtin-package-aliases.ts), installed
+   * (2585, 2586) and bundled as versioned __commonJS chunks (2587).
+   * readable-stream compiles as its own READABLE_STREAM=disable behavior,
+   * so the Node side runs with that variable; util-deprecate's warning
+   * reaches stderr on both sides (Node's carries its pid). */
+  async function expectAliasParity(
+    entry: string,
+    packages: string[],
+    env: NodeJS.ProcessEnv,
+  ): Promise<void> {
+    const { coverage } = analyze(entry, { npmStatic: packages });
+    expect(coverage.npmStatic).toEqual(packages.map((pkg) => ({ package: pkg, status: "static" })));
+    expect(coverage.diagnostics).toHaveLength(0);
+    const binary = await buildStatic(entry, packages);
+    const [nodeRes, nativeRes] = await Promise.all([
+      runBinary("node", [entry], env),
+      runBinary(binary, [], env),
+    ]);
+    expect(nativeRes.stdout.toString("utf8")).toBe(nodeRes.stdout.toString("utf8"));
+    const warnings = (stderr: Buffer) =>
+      comparableStderr(stderr)
+        .toString("utf8")
+        .split("\n")
+        .filter((line) => line.includes("DeprecationWarning"))
+        .map((line) => line.replace(/^\(node:\d+\) /, ""));
+    expect(warnings(nativeRes.stderr)).toEqual(warnings(nodeRes.stderr));
+    expect(nativeRes.exitCode).toBe(0);
+    expect(nodeRes.exitCode).toBe(0);
+  }
+  const disabled = { ...process.env, READABLE_STREAM: "disable" };
+
+  test("installed polyfill packages 2585-builtin-polyfill-aliases compile as the Node builtins", async () => {
+    const entry = join(fixturesRoot, "npm/cases/2585-builtin-polyfill-aliases/main.ts");
+    await expectAliasParity(entry, ["gtpolyfills"], process.env);
+  }, 180_000);
+
+  test("readable-stream 2.x and 4.x 2586-readable-stream-builtin compile as node:stream", async () => {
+    const entry = join(fixturesRoot, "npm/cases/2586-readable-stream-builtin/main.ts");
+    await expectAliasParity(entry, ["gtrs2", "gtrs4"], disabled);
+  }, 180_000);
+
+  test("bundled polyfill chunks 2587-bundled-polyfill-aliases compile as the Node builtins", async () => {
+    const entry = join(fixturesRoot, "npm/cases/2587-bundled-polyfill-aliases/main.ts");
+    await expectAliasParity(entry, ["gtpolybundle"], disabled);
+  }, 180_000);
+
+  // 2588: classes a bundled ES module defines inside its lazy initializer,
+  // over stream.Readable and over each other, compile as declarations.
+  test("bundled ES module classes 2588-bundled-esm-classes compile statically and byte-match Node", async () => {
+    await expectNodeParity(join(fixturesRoot, "npm/cases/2588-bundled-esm-classes/main.ts"), [
+      "gtesmclass",
+    ]);
+  }, 180_000);
+
+  // 2589: a program class over an error class a bundled package defines
+  // inside a lazy initializer (build-utils' NowBuildError shape), with new
+  // and instanceof against both.
+  test("a program subclass 2589-bundled-error-subclass of a bundled error class byte-matches Node", async () => {
+    await expectNodeParity(join(fixturesRoot, "npm/cases/2589-bundled-error-subclass/main.ts"), [
+      "gtesmerror",
+    ]);
+  }, 180_000);
+
+  // 2590: a bundle that embeds fs-extra 9 (build-utils' shape): its
+  // fs-extra chunk compiles as the built-in package.
+  test("a bundled fs-extra copy 2590-bundled-fs-extra compiles as the built-in package", async () => {
+    await expectNodeParity(join(fixturesRoot, "npm/cases/2590-bundled-fs-extra/main.ts"), [
+      "gtfsxbundle",
+    ]);
+  }, 180_000);
+
+  // 2562: a file with unverifiable interop that no compiled code can load
+  // (the program imports a leaf data module and only a type from the
+  // main entry) leaves its package static.
+  test("a package is judged by the files its imported subpaths can load", async () => {
+    await expectNodeParity(join(fixturesRoot, "npm/cases/2562-subpath-leaf/main.ts"), [
+      "gtsubpath",
+    ]);
+  }, 180_000);
+
+  // 2566: the same early read through esbuild's `(0, binding.fn)()` call
+  // spelling also keeps SC1016.
+  test("a CommonJS cycle that calls an export during initialization stays refused", () => {
+    const entry = join(fixturesRoot, "npm/cases/2566-cjs-cycle-indirect-call/main.ts");
+    const { coverage } = analyze(entry, { npmStatic: ["gtcyclecall"] });
+    expect(coverage.npmStatic).toEqual([
+      {
+        package: "gtcyclecall",
+        status: "refused",
+        detail: expect.stringMatching(
+          /circular imports .*can use its binding 'import_index' of a module of the cycle/,
+        ) as string,
+      },
+    ]);
+  }, 120_000);
+
+  // 2571: the partner stores the export (in a const, or in an object
+  // literal) and calls it while the cycle initializes; both keep SC1016.
+  test("a CommonJS cycle that stores an export and calls it stays refused", () => {
+    const entry = join(fixturesRoot, "npm/cases/2571-cjs-cycle-stored-function/main.ts");
+    const { coverage } = analyze(entry, { npmStatic: ["gtcyclealias", "gtcyclebox"] });
+    for (const pkg of ["gtcyclealias", "gtcyclebox"])
+      expect(coverage.npmStatic).toContainEqual({
+        package: pkg,
+        status: "refused",
+        detail: expect.stringMatching(
+          /circular imports .*can use its binding 'import_index' of a module of the cycle/,
+        ) as string,
+      });
+  }, 120_000);
+
+  // 2564: a chunk reads a top-level function whose name a nested scope of
+  // the chunk also declares; the function still travels with the chunk.
+  test("a chunk carries a top-level function its nested scopes shadow", async () => {
+    await expectNodeParity(join(fixturesRoot, "npm/cases/2564-chunk-helper-shadowing/main.ts"), [
+      "gtchunkshadow",
+    ]);
+  }, 180_000);
+
+  // 2565: Node shares one function between the chunks that export it; a
+  // per-chunk copy would not, so the package stays refused.
+  test("chunks that export a shared top-level function stay refused", () => {
+    const entry = join(fixturesRoot, "npm/cases/2565-chunk-shared-function/main.ts");
+    const { coverage } = analyze(entry, { npmStatic: ["gtchunkshared"] });
+    expect(coverage.npmStatic).toEqual([
+      {
+        package: "gtchunkshared",
+        status: "refused",
+        detail: expect.stringMatching(
+          /uses the bundle's top-level function 'tally' as a value, which its chunks cannot share/,
+        ) as string,
       },
     ]);
   }, 120_000);

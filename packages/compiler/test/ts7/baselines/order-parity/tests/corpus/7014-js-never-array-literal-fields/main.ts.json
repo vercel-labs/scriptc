@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7014-js-never-array-literal-fields/main.ts"
+ ],
+ "diags": []
+}

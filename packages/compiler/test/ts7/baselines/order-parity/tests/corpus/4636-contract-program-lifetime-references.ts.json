@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/4636-contract-program-lifetime-references.ts"
+ ],
+ "diags": []
+}

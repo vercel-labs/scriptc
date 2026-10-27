@@ -22,7 +22,10 @@ import { builtinImportOf } from "./module-bindings.js";
  * lib/internal/fs/glob.js). The pattern and options cross as dyn values so
  * the runtime validates them in Node's order. The result form (strings or
  * Dirent rows) comes from the call's mapped result type, so withFileTypes
- * must be statically known; the runtime checks that the option agrees. */
+ * must be statically known; the runtime checks that the option agrees.
+ * Because of that check, the form follows the checker's resolved overload
+ * even where an untyped options argument leaves the overload undecided
+ * (dynamicOverloadChoice). */
 
 /** The interned Dirent record array (type-mapper.ts), or null. */
 function direntArray(lowerer: Lowerer, type: IrType | null | undefined): boolean {
@@ -40,7 +43,7 @@ function direntArray(lowerer: Lowerer, type: IrType | null | undefined): boolean
 /** An exclude function receives Node's Dirent objects when withFileTypes is
  * set, which have no native representation here. */
 function fenceDirentExclude(lowerer: Lowerer, call: ts.CallExpression, what: string): void {
-  const options = call.arguments[1];
+  const options = call.arguments.nodes[1];
   if (!options) return;
   const exclude = lowerer.checker.getPropertyOfType(lowerer.typeOf(options), "exclude");
   if (!exclude) return;
@@ -54,10 +57,10 @@ function fenceDirentExclude(lowerer: Lowerer, call: ts.CallExpression, what: str
 }
 
 function globArgs(lowerer: Lowerer, call: ts.CallExpression, what: string): IrExpr[] {
-  if (call.arguments.some(ts.isSpreadElement)) {
+  if (call.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering(`${what} with spread arguments`, call, "write the arguments positionally");
   }
-  return call.arguments.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
+  return call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN));
 }
 
 /** `globSync(pattern, options?)`: string[] or Dirent[]. */
@@ -67,7 +70,7 @@ export function lowerFsGlobSyncCall(
   loc: SrcLoc,
 ): IrExpr {
   const args = globArgs(lowerer, call, "fs.globSync");
-  const callType = lowerer.mapTypeOf(lowerer.typeOf(call));
+  const callType = lowerer.mapTypeOf(lowerer.checker.getTypeAtLocation(call));
   const types = direntArray(lowerer, callType);
   if (types) fenceDirentExclude(lowerer, call, "fs.globSync");
   if (!types && !(callType?.kind === "array" && callType.elem.kind === "string")) {
@@ -132,7 +135,9 @@ export function lowerFspGlobCall(lowerer: Lowerer, call: ts.CallExpression, loc:
   }
   const args = globArgs(lowerer, call, "fs/promises glob");
   // The async iterator's yielded type (its first type argument).
-  const yielded = lowerer.checker.getTypeArguments(lowerer.typeOf(call) as ts.TypeReference)[0];
+  const yielded = lowerer.checker.getTypeArguments(
+    lowerer.checker.getTypeAtLocation(call) as ts.TypeReference,
+  )[0];
   const element = yielded ? lowerer.mapTypeOf(yielded) : null;
   const rows: IrType | null = element ? { kind: "array", elem: element } : null;
   const types = direntArray(lowerer, rows);

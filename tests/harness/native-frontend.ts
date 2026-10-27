@@ -15,16 +15,7 @@ import type { compile } from "@scriptc/compiler";
 import type { IrModule } from "../../packages/compiler/src/ir/ir.js";
 import { ts7Executable } from "../../packages/compiler/src/frontend/ts7/rpc-api.js";
 
-import {
-  moduleUsesAssert,
-  moduleUsesBigInt,
-  moduleUsesCopying,
-  moduleUsesDynInvoke,
-  moduleUsesInspect,
-  moduleUsesRegex,
-  moduleUsesSymbol,
-  moduleUsesZlib,
-} from "../../packages/compiler/src/ir/runtime-features.js";
+import { moduleLinkFeatures } from "./link-features.js";
 
 const root = join(import.meta.dirname, "../..");
 const entry = join(root, "tests/fixtures/self-hosting/frontend-pipeline.ts");
@@ -65,6 +56,16 @@ export const programs = [
   "nullish-long-chain.ts",
   "class-array-optional-return.ts",
   "contextual-array-union-write.ts",
+  "2391-default-builtin-imports/main.ts",
+  "3055-default-builtin-nodenext/main.ts",
+  "5854-array-from-async.ts",
+  "6020-class-extends-function-constructor.js",
+  "5585-record-results-inlined.ts",
+  "2631-create-require/main.ts",
+  "4970-int32-call-abi.ts",
+  // Re-chosen key orders rebuild the inspect helpers after lowering.
+  "key-order-late-optional.ts",
+  "5888-inspect-sorted.ts",
 ];
 
 interface LowerRequest {
@@ -219,14 +220,7 @@ export async function checkProgram(frontend: NativeFrontend, file: string): Prom
     cPath,
     outPath: frontend.executable("program"),
     sanitize,
-    regex: moduleUsesRegex(module),
-    copying: moduleUsesCopying(module),
-    inspect: moduleUsesInspect(module),
-    dynInvoke: moduleUsesDynInvoke(module),
-    symbol: moduleUsesSymbol(module),
-    bigint: moduleUsesBigInt(module),
-    zlib: moduleUsesZlib(module),
-    assert: moduleUsesAssert(module),
+    ...moduleLinkFeatures(module),
   });
   const node = spawnSync(process.execPath, [source], runOptions);
   const native = spawnSync(frontend.executable("program"), [], runOptions);
@@ -389,6 +383,7 @@ export async function checkNativeBindings(frontend: NativeFrontend): Promise<voi
     cPath: ffiC,
     outPath: frontend.executable("ffi"),
     sanitize,
+    ...moduleLinkFeatures(ffiResult.module),
     inspect: true,
     linkInputs: [helperObject],
   });

@@ -51,8 +51,8 @@ export function lowerQuerystringParseCall(
   call: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
-  if (call.arguments.length > 4 || call.arguments.some(ts.isSpreadElement)) {
-    lowerer.noLowering(`querystring.parse with ${call.arguments.length} arguments`, call);
+  if (call.arguments.nodes.length > 4 || call.arguments.nodes.some(ts.isSpreadElement)) {
+    lowerer.noLowering(`querystring.parse with ${call.arguments.nodes.length} arguments`, call);
   }
   const fence: () => never = () =>
     lowerer.noLowering(
@@ -82,17 +82,17 @@ export function lowerQuerystringParseCall(
     else if (arm.kind !== "undefinedT" && arm.kind !== "f64") fence();
   }
   if (!sawStr || !sawArr) fence();
-  const argument = call.arguments[0];
+  const argument = call.arguments.nodes[0];
   if (!argument) lowerer.noLowering("querystring.parse without a query string", call);
   const str = lowerer.lowerExprExpecting(argument, STRING);
-  const sep = qsSepEqArg(lowerer, call.arguments[1], "&", "querystring.parse", loc);
-  const eq = qsSepEqArg(lowerer, call.arguments[2], "=", "querystring.parse", loc);
+  const sep = qsSepEqArg(lowerer, call.arguments.nodes[1], "&", "querystring.parse", loc);
+  const eq = qsSepEqArg(lowerer, call.arguments.nodes[2], "=", "querystring.parse", loc);
   // The options walk: maxKeys lowers (Node's rule — > 0 caps the pair
   // count, 0 and negatives mean unlimited — lives in the runtime, so
   // any number expression works); a custom decodeURIComponent changes
   // every decoded byte and fences by name.
   let maxKeys: IrExpr = { kind: "numLit", value: 1000, type: F64, loc };
-  const optsNode = call.arguments[3];
+  const optsNode = call.arguments.nodes[3];
   if (optsNode) {
     if (!ts.isObjectLiteralExpression(optsNode)) {
       lowerer.noLowering(
@@ -101,7 +101,7 @@ export function lowerQuerystringParseCall(
         "the supported form spells the options inline: parse(s, sep, eq, { maxKeys: n })",
       );
     }
-    for (const p of optsNode.properties) {
+    for (const p of optsNode.properties.nodes) {
       const m = optionMember(p);
       if (!m) {
         lowerer.noLowering(
@@ -144,10 +144,10 @@ export function lowerQuerystringStringifyCall(
   call: ts.CallExpression,
   loc: SrcLoc,
 ): IrExpr {
-  if (call.arguments.length > 4 || call.arguments.some(ts.isSpreadElement)) {
-    lowerer.noLowering(`querystring.stringify with ${call.arguments.length} arguments`, call);
+  if (call.arguments.nodes.length > 4 || call.arguments.nodes.some(ts.isSpreadElement)) {
+    lowerer.noLowering(`querystring.stringify with ${call.arguments.nodes.length} arguments`, call);
   }
-  const objNode = call.arguments[0];
+  const objNode = call.arguments.nodes[0];
   // stringify() / stringify(undefined) / stringify(null): Node answers
   // '' for every non-object — the constant folds.
   if (
@@ -170,9 +170,9 @@ export function lowerQuerystringStringifyCall(
       "pass a record of string/number/boolean values (arrays of those expand to repeated keys; null/undefined values serialize empty)",
     );
   }
-  const sep = qsSepEqArg(lowerer, call.arguments[1], "&", "querystring.stringify", loc);
-  const eq = qsSepEqArg(lowerer, call.arguments[2], "=", "querystring.stringify", loc);
-  const optsNode = call.arguments[3];
+  const sep = qsSepEqArg(lowerer, call.arguments.nodes[1], "&", "querystring.stringify", loc);
+  const eq = qsSepEqArg(lowerer, call.arguments.nodes[2], "=", "querystring.stringify", loc);
+  const optsNode = call.arguments.nodes[3];
   if (optsNode) {
     if (!ts.isObjectLiteralExpression(optsNode)) {
       lowerer.noLowering(
@@ -181,7 +181,7 @@ export function lowerQuerystringStringifyCall(
         "the supported form spells the options inline (and the only documented option, encodeURIComponent, has no lowering)",
       );
     }
-    for (const p of optsNode.properties) {
+    for (const p of optsNode.properties.nodes) {
       const m = optionMember(p);
       if (!m) {
         lowerer.noLowering(

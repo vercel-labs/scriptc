@@ -1,7 +1,22 @@
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { load } from "js-yaml";
 import { expect, test } from "vitest";
 import { select } from "../../scripts/ci-lanes.mjs";
+import { darwinCorpusFiles, darwinFiles } from "../../scripts/ci-test-plan.mjs";
+
+type Job = {
+  if?: string;
+  "runs-on"?: string;
+  strategy?: { matrix?: { include?: { runner?: string }[] } };
+  steps: { id?: string; run?: string }[];
+};
+const workflow = load(
+  readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"),
+) as { on: { workflow_dispatch: { inputs: Record<string, unknown> } }; jobs: Record<string, Job> };
+const lanesScript = workflow.jobs["lanes"]!.steps.find((step) => step.id === "lanes")!.run!;
 
 type Selection = { on: Record<string, boolean>; reasons: string[] };
 const lanesOf = (files: string[], lines: { file: string; text: string }[] = []) =>
@@ -41,6 +56,16 @@ test.each([
   [
     "a darwin test file",
     ["tests/harness/ffi-frameworks.test.ts"],
+    { linux: true, macos: true, effects: false, bootstrap: false },
+  ],
+  [
+    "the kqueue event loop",
+    ["packages/runtime/src/scr_loop_kqueue.c"],
+    { linux: true, macos: true, effects: false, bootstrap: false },
+  ],
+  [
+    "the runtime's platform header",
+    ["packages/runtime/src/scr_platform.h"],
     { linux: true, macos: true, effects: false, bootstrap: false },
   ],
   [
@@ -91,15 +116,62 @@ test("a changed line that mentions a darwin-specific API runs the macOS lane", (
   expect(lanesOf([file], [{ file, text: "  struct kevent change;" }]).macos).toBe(true);
 });
 
+test("every file of the darwin suite runs the macOS lane", () => {
+  for (const file of [...darwinCorpusFiles, ...darwinFiles])
+    expect(lanesOf([file]).macos, file).toBe(true);
+});
+
 test("CI runs the base commit's lane selection against the pull request's diff", () => {
-  const workflow = load(
-    readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"),
-  ) as { jobs: Record<string, { steps: { id?: string; run?: string }[] }> };
-  const script = workflow.jobs["lanes"]!.steps.find((step) => step.id === "lanes")!.run!;
-  expect(script).toContain('git show "$BASE:scripts/ci-lanes.mjs"');
-  expect(script).toContain(
+  expect(lanesScript).toContain('git show "$BASE:scripts/ci-lanes.mjs"');
+  expect(lanesScript).toContain(
     'node "$RUNNER_TEMP/ci-lanes.mjs" --base "$BASE" --head "$HEAD" --github-output',
   );
-  // Pushes and the nightly sweep, and a base without the script, run every lane.
-  expect(script.match(/every$/gm)).toHaveLength(2);
+  // The nightly sweep and manual runs, and a base without the script, run every lane.
+  expect(lanesScript.match(/every$/gm)).toHaveLength(2);
+});
+
+function runLanes(event: string) {
+  const directory = mkdtempSync(join(tmpdir(), "ci-lanes-"));
+  try {
+    const output = join(directory, "output");
+    writeFileSync(output, "");
+    const result = spawnSync("bash", ["-e", "-o", "pipefail", "-c", lanesScript], {
+      encoding: "utf8",
+      env: { ...process.env, EVENT: event, GITHUB_OUTPUT: output },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    return readFileSync(output, "utf8");
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+test("pushes to main run every lane except macos; the nightly sweep and manual runs run every lane", () => {
+  expect(runLanes("push")).toBe("linux=true\nmacos=false\neffects=true\nbootstrap=true\n");
+  for (const event of ["schedule", "workflow_dispatch"])
+    expect(runLanes(event), event).toBe("linux=true\nmacos=true\neffects=true\nbootstrap=true\n");
+  expect(workflow.on.workflow_dispatch.inputs["macos_suite"]).toEqual({
+    description: "The test suite to run on macOS",
+    type: "choice",
+    options: ["full", "darwin"],
+    default: "full",
+  });
+});
+
+test("every job on a macOS runner is in the macos lane", () => {
+  const macosJobs = Object.entries(workflow.jobs).filter(([, job]) =>
+    [job["runs-on"], ...(job.strategy?.matrix?.include ?? []).map((entry) => entry.runner)].some(
+      (runner) => runner?.startsWith("macos"),
+    ),
+  );
+  expect(macosJobs.map(([name]) => name).sort()).toEqual([
+    "llvm_artifacts_macos_arm64",
+    "llvm_artifacts_macos_arm64_contracts",
+    "llvm_artifacts_macos_x64",
+    "mobile_runtime_packs_ios",
+    "native_macos",
+    "tests_macos",
+  ]);
+  for (const [name, job] of macosJobs)
+    expect(job.if, name).toContain("needs.lanes.outputs.macos == 'true'");
 });

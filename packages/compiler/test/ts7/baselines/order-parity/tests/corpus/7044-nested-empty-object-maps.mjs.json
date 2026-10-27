@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7044-nested-empty-object-maps.mjs"
+ ],
+ "diags": []
+}

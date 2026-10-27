@@ -1,14 +1,9 @@
 /* Stream chunk kinds Node cannot oracle — scriptc-only.
  *
- * A typed read() answers `Buffer | null`. When the read itself makes the
- * stream hold strings (the first string a lazy Readable.from pull over a
- * dynamic array produces, or setEncoding() inside _read), Node returns
- * the string, which the typed result cannot hold, so the read throws the
- * encoding fence instead (caught here, so the program exits normally).
- * These pins keep that refusal exact and, under
- * SCRIPTC_SAN=1 (ASan and the RC audit, like every harness lane), prove
- * no string reaches Buffer code. The Node-observable cases are corpus
- * programs (stream-dynamic-entry-kinds.*).
+ * Under SCRIPTC_SAN=1 (ASan and the RC audit, like every harness lane)
+ * these pins prove no string reaches Buffer code. The Node-observable
+ * cases are corpus programs (stream-dynamic-entry-kinds.*, and
+ * 7439-readable-read-string-chunks for read() of strings).
  */
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -73,72 +68,8 @@ function stripAsanFiberWarning(s: string): string {
   );
 }
 
-const READ_FENCE_MESSAGE =
-  "read() on a stream with an encoding set is not supported yet (consume 'data' events, which deliver strings)";
-
 describe(`typed stream reads of string chunks (scriptc-only${sanitize ? ", sanitized" : ""})`, () => {
-  test("a typed read() whose lazy pull yields the first string throws the encoding fence", async () => {
-    const r = await compileAndRun(
-      "typed-read-json-string",
-      `import { Readable } from "node:stream";
-const r = Readable.from(JSON.parse('["j1", "j2"]'));
-try {
-  const chunk = r.read();
-  console.log("hex", chunk === null ? "null" : chunk.toString("hex"));
-} catch (err) {
-  console.log("caught", (err as Error).message);
-}
-`,
-    );
-    expect(r.exitCode).toBe(0);
-    expect(r.stdout).toBe(`caught ${READ_FENCE_MESSAGE}\n`);
-  });
-
-  test("a typed read() whose _read calls setEncoding() throws the encoding fence", async () => {
-    const r = await compileAndRun(
-      "typed-read-encoding-in-read",
-      `import { Readable } from "node:stream";
-const r = new Readable({
-  read() {
-    this.setEncoding("utf8");
-    this.push(Buffer.from("ab"));
-    this.push(null);
-  },
-});
-try {
-  const chunk = r.read();
-  console.log("hex", chunk === null ? "null" : chunk.toString("hex"));
-} catch (err) {
-  console.log("caught", (err as Error).message);
-}
-`,
-    );
-    expect(r.exitCode).toBe(0);
-    expect(r.stdout).toBe(`caught ${READ_FENCE_MESSAGE}\n`);
-  });
-
-  test("the JavaScript lane's read() on a JSON source throws the same fence", async () => {
-    const r = await compileAndRun(
-      "js-read-json-string",
-      `'use strict';
-const { Readable } = require('node:stream');
-const r = Readable.from(JSON.parse('["j1"]'));
-r.once('readable', () => {
-  try {
-    const chunk = r.read();
-    console.log('got', chunk === null ? 'null' : chunk.length);
-  } catch (err) {
-    console.log('caught', err.message);
-  }
-});
-`,
-      "cjs",
-    );
-    expect(r.exitCode).toBe(0);
-    expect(r.stdout).toBe(`caught ${READ_FENCE_MESSAGE}\n`);
-  });
-
-  test("a dynamic source that mixes Buffers and strings without a decoder is destroyed", async () => {
+  test("a dynamic source that mixes Buffers and strings yields each as it is, as Node does", async () => {
     const r = await compileAndRun(
       "mixed-dynamic-source",
       `import { Readable } from "node:stream";
@@ -151,8 +82,6 @@ r.on("close", () => console.log("close"));
 `,
     );
     expect(r.exitCode).toBe(0);
-    expect(r.stdout).toBe(
-      "data true b1\nerror a Readable.from source that mixes strings and Buffers is not supported yet\nclose\n",
-    );
+    expect(r.stdout).toBe("data true b1\ndata false s1\nclose\n");
   });
 });

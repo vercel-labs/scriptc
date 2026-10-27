@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/array-length-limits.ts"
+ ],
+ "diags": []
+}

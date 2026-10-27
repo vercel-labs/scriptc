@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7046-parse-float-extra-arguments.mjs"
+ ],
+ "diags": []
+}

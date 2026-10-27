@@ -1,0 +1,13 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6142-cjs-require-published-early/parse-options.js",
+  "<repo>/tests/corpus/6142-cjs-require-published-early/debug.js",
+  "<repo>/tests/corpus/6142-cjs-require-published-early/comparator.js",
+  "<repo>/tests/corpus/6142-cjs-require-published-early/helpers.js",
+  "<repo>/tests/corpus/6142-cjs-require-published-early/glob.js",
+  "<repo>/tests/corpus/6142-cjs-require-published-early/core.js",
+  "<repo>/tests/corpus/6142-cjs-require-published-early/bundle.js",
+  "<repo>/tests/corpus/6142-cjs-require-published-early/main.js"
+ ],
+ "diags": []
+}

@@ -163,6 +163,7 @@ describe(`static fetch differential${sanitize ? " (sanitized)" : ""}`, () => {
     "static-listener-noncallable",
     "static-abort-throw",
     "static-dispatch-throw",
+    "static-response-json",
   ] as const;
   test.for(
     staticCases.flatMap((name) => (["llvm"] as const).map((backend) => [name, backend] as const)),

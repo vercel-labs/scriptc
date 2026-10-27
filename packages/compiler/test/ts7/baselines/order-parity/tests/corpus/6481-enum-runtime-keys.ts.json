@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6481-enum-runtime-keys.ts"
+ ],
+ "diags": []
+}

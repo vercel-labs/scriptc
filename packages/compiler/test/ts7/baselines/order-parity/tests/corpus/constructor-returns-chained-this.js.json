@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/constructor-returns-chained-this.js"
+ ],
+ "diags": []
+}

@@ -6,9 +6,10 @@ import type { IrExpr } from "../../../ir/ir.js";
 export function isSafeToRepeat(expr: IrExpr): boolean {
   if (expr.kind === "varRef") return true;
   if (expr.kind === "recordGet" || expr.kind === "fieldGet") return isSafeToRepeat(expr.obj);
-  // The trust-the-checker narrowing bridges over a pure read: extraction
-  // and downcast are reads too (the +1 on ref payloads is RC bookkeeping,
-  // not an observable effect — each emission owns its own copy).
+  // The narrowing bridges over a pure read: extraction and downcast are
+  // reads too (their guards only compare, and the +1 on ref payloads is RC
+  // bookkeeping, not an observable effect — each emission owns its own
+  // copy).
   if (expr.kind === "unionNarrow" || expr.kind === "downcast") return isSafeToRepeat(expr.value);
   return false;
 }

@@ -23,6 +23,7 @@
  * The entry handles that itable.find and itable.insert answer stay inside
  * these lowerings: f64 locals that only reach toBool and itable.value.
  * Any other use of the class or its members as values is refused. */
+import { keyedHelperName } from "./stable-names.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
 import { BOOL, F64, STRING, funcOf, typeKey } from "../../ir/ir.js";
 import type { IrExpr, IrFunction, IrStmt, IrType, SrcLoc } from "../../ir/ir.js";
@@ -142,7 +143,7 @@ interface TableTypes {
 /** The key and value types of an InternTable<K, V> checker type. */
 function tableTypes(lowerer: Lowerer, type: ts.Type, blame: ts.Node): TableTypes {
   const parts = type.isUnionType() ? ts.constituentTypes(type) : [type];
-  const table = parts.find((p) => p.getSymbol()?.name === "InternTable");
+  const table = parts.find((p) => ts.symbolNameOf(p.getSymbol()) === "InternTable");
   const args = table ? lowerer.checker.getTypeArguments(table as ts.TypeReference) : [];
   if (args.length !== 2) lowerer.noLowering("InternTable without type arguments", blame);
   const key = lowerer.mapTypeOf(args[0]!);
@@ -168,7 +169,7 @@ function tableTypes(lowerer: Lowerer, type: ts.Type, blame: ts.Node): TableTypes
 export function lowerInternTableNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
   if (!ts.isIdentifier(expr.expression)) return null;
   if (experimentalImportOf(lowerer.program, expr.expression) !== "InternTable") return null;
-  const args = expr.arguments ?? [];
+  const args = expr.arguments?.nodes ?? [];
   const arg = args[0];
   if (args.length !== 1 || arg === undefined || ts.isSpreadElement(arg))
     lowerer.noLowering(`new InternTable with ${args.length} arguments`, expr);
@@ -265,11 +266,14 @@ export function lowerInternTableCall(lowerer: Lowerer, expr: ts.CallExpression):
   if (expr.questionDotToken !== undefined)
     lowerer.noLowering(`InternTable.${member}?.() calls`, expr, `call table.${member}() directly`);
   const arity = member === "get" || member === "has" ? 1 : 2;
-  if (expr.arguments.length !== arity || expr.arguments.some((a) => ts.isSpreadElement(a)))
-    lowerer.noLowering(`InternTable.${member} with ${expr.arguments.length} arguments`, expr);
+  if (
+    expr.arguments.nodes.length !== arity ||
+    expr.arguments.nodes.some((a) => ts.isSpreadElement(a))
+  )
+    lowerer.noLowering(`InternTable.${member} with ${expr.arguments.nodes.length} arguments`, expr);
   const types = tableTypes(lowerer, lowerer.typeOf(callee.expression), expr);
   const table = receiverOf(lowerer, callee);
-  const keyNode = expr.arguments[0]!;
+  const keyNode = expr.arguments.nodes[0]!;
   const key = lowerer.coerceInto(keyNode, lowerer.lowerExpr(keyNode), types.key);
   if (member === "has")
     return { kind: "toBool", operand: find(handleOf(table, loc), key, loc), type: BOOL, loc };
@@ -285,7 +289,7 @@ export function lowerInternTableCall(lowerer: Lowerer, expr: ts.CallExpression):
       loc,
     };
   }
-  const valueNode = expr.arguments[1]!;
+  const valueNode = expr.arguments.nodes[1]!;
   const expected = member === "getOrInsert" ? types.value : funcOf([types.key], types.value);
   if (
     member === "getOrInsertComputed" &&
@@ -399,10 +403,10 @@ function inlineArrowBody(
   value: IrType,
 ): IrExpr | null {
   if (!ts.isArrowFunction(node) || ts.isBlock(node.body)) return null;
-  if (node.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) return null;
-  const param = node.parameters[0];
+  if (node.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) return null;
+  const param = node.parameters.nodes[0];
   if (
-    node.parameters.length > 1 ||
+    node.parameters.nodes.length > 1 ||
     (param !== undefined &&
       (!ts.isIdentifier(param.name) ||
         param.initializer !== undefined ||
@@ -444,7 +448,11 @@ function helperName(lowerer: Lowerer, member: InternTableMember, signature: stri
 }
 
 function registerHelper(lowerer: Lowerer, member: InternTableMember, signature: string): string {
-  const name = `%${INTERN_TABLE_CLASS}.${member}.${lowerer.internTableHelpers.size}`;
+  const name = keyedHelperName(
+    lowerer,
+    `%${INTERN_TABLE_CLASS}.${member}`,
+    `${member}|${signature}`,
+  );
   lowerer.internTableHelpers.set(`${member}|${signature}`, name);
   return name;
 }

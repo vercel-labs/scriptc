@@ -1,3 +1,8 @@
-scriptc supports a subset of JavaScript, TypeScript, and the Node.js APIs. This page is a reference for the remaining restrictions and for runtime behavior that differs from Node.js. You don't need to read it front to back: run [`scriptc coverage`](/docs/coverage) on your program, and come here when a diagnostic or a behavior difference needs more context. The [Node.js compatibility reference](/compatibility) lists support API by API.
+scriptc supports a subset of JavaScript, TypeScript, and the Node.js APIs.
+This page is a reference for the remaining restrictions and for runtime behavior that differs from Node.js.
+You don't need to read it front to back: run [`scriptc coverage`](/docs/coverage) on your program, and come here when a diagnostic or a behavior difference needs more context.
+The [Node.js compatibility reference](/compatibility) lists support API by API.
 
-Some entries mention **checked values**. When the type of a value is only known at runtime, such as `unknown`, `any`, the result of `JSON.parse`, or a value passed through untyped JavaScript, scriptc stores it together with its runtime type and checks it when the program converts it back to a specific type. Entries that say a value "retains identity through checked storage" mean the same object comes back out, rather than a copy.
+Some entries mention **checked values**.
+When the type of a value is only known at runtime, such as `unknown`, `any`, the result of `JSON.parse`, or a value passed through untyped JavaScript, scriptc stores it together with its runtime type and checks it when the program converts it back to a specific type.
+Entries that say a value "retains identity through checked storage" mean the same object comes back out, rather than a copy.

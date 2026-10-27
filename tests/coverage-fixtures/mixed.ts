@@ -10,7 +10,7 @@ const handler = (x: number) => x * 2;
 
 const anyone: unknown = score(1);
 const flags = anyone == score(2); // unknown/object coercion keeps the fence; static primitive pairs lower
-const { length: firstItem } = items; // object patterns over arrays keep the fence (patterns and defaults compile)
+const { length: firstItem } = score(3) > 99 ? items : "abc"; // a union source keeps the object-pattern fence (narrow first)
 let label = "score: ";
 label += score(10);
 console.log(label);

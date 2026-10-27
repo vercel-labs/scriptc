@@ -31,8 +31,8 @@ export function lowerChildArgsArg(
   loc: SrcLoc,
 ): IrExpr {
   if (!node) return { kind: "arrayLit", elems: [], type: arrayOf(STRING), loc };
-  if (ts.isArrayLiteralExpression(node) && !node.elements.some(ts.isSpreadElement)) {
-    const elems = node.elements.map((el) => lowerer.lowerExprExpecting(el, STRING));
+  if (ts.isArrayLiteralExpression(node) && !node.elements.nodes.some(ts.isSpreadElement)) {
+    const elems = node.elements.nodes.map((el) => lowerer.lowerExprExpecting(el, STRING));
     return { kind: "arrayLit", elems, type: arrayOf(STRING), loc: locOf(node) };
   }
   return lowerer.lowerExprExpecting(node, arrayOf(STRING));
@@ -92,16 +92,16 @@ const NODE_SIGNAL_NAMES = new Set([
  * fences by name. The bare `{ encoding: "utf8" }` shape keeps its
  * historical cp.spawnSync lowering. */
 export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
-  if (expr.arguments.length > 3 || expr.arguments.some(ts.isSpreadElement)) {
+  if (expr.arguments.nodes.length > 3 || expr.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering(
       "spawnSync with this argument shape",
       expr,
       "the supported form is spawnSync(command, args?, options?)",
     );
   }
-  const cmd = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
-  const argv = lowerChildArgsArg(lowerer, expr.arguments[1], loc);
-  const optsNode = expr.arguments[2];
+  const cmd = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, STRING);
+  const argv = lowerChildArgsArg(lowerer, expr.arguments.nodes[1], loc);
+  const optsNode = expr.arguments.nodes[2];
 
   let timeout: IrExpr = numLit(0, loc);
   let killSignal: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
@@ -115,6 +115,8 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
   // "pipe"`) — accepted when its TYPE proves every arm is a supported
   // literal; the runtime maps the value to the modes at the call.
   let stdioStr: IrExpr | null = null;
+  // The `env` option's [k,v,...] pairs, which replace the child's environment.
+  let envPairs: IrExpr | null = null;
   let plain = true; // no behavior-changing option: the historical libCall
 
   if (optsNode) {
@@ -152,8 +154,8 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         modeOf(t.value, 2);
         return;
       }
-      if (ts.isArrayLiteralExpression(node) && node.elements.length === 3) {
-        node.elements.forEach((el, i) => {
+      if (ts.isArrayLiteralExpression(node) && node.elements.nodes.length === 3) {
+        node.elements.nodes.forEach((el, i) => {
           const et = lowerer.typeOf(el);
           if (!et.isStringLiteralType()) {
             lowerer.noLowering("spawnSync stdio tuple entries beyond string literals", el);
@@ -182,7 +184,7 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         'stdio takes a "pipe"/"ignore"/"inherit" literal (or a value typed as a union of those), or a 3-tuple of literals',
       );
     };
-    for (const p of optsNode.properties) {
+    for (const p of optsNode.properties.nodes) {
       const m = optionMember(p);
       if (!m) {
         lowerer.noLowering(
@@ -227,17 +229,29 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
         case "windowsHide":
           lowerer.lowerExpr(m.value); // Node no-op on POSIX
           break;
+        case "env":
+          // A REPLACEMENT environment, as for spawn and execFileSync.
+          envPairs = recordToEnvPairs(lowerer, m.value);
+          plain = false;
+          break;
         default:
           lowerer.noLowering(
             `spawnSync option '${m.name}'`,
             p,
-            "encoding, timeout, killSignal, stdio, and windowsHide are the supported options",
+            "encoding, timeout, killSignal, stdio, env, and windowsHide are the supported options",
           );
       }
     }
   }
   if (plain) {
     return { kind: "libCall", fn: "cp.spawnSync", args: [cmd, argv], type: SPAWNRES_T, loc };
+  }
+  if (stdioStr !== null && envPairs !== null) {
+    lowerer.noLowering(
+      "spawnSync with a runtime stdio value and env",
+      optsNode!,
+      'pass stdio as a "pipe"/"ignore"/"inherit" literal when env is set',
+    );
   }
   if (stdioStr !== null) {
     return {
@@ -250,7 +264,7 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
   }
   return {
     kind: "libCall",
-    fn: "cp.spawnSyncOpts",
+    fn: envPairs !== null ? "cp.spawnSyncEnv" : "cp.spawnSyncOpts",
     args: [
       cmd,
       argv,
@@ -259,6 +273,7 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
       numLit(inMode, loc),
       numLit(outMode, loc),
       numLit(errMode, loc),
+      ...(envPairs !== null ? [envPairs] : []),
     ],
     type: SPAWNRES_T,
     loc,
@@ -280,21 +295,21 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
  * `windowsHide` (a POSIX no-op). The bare `{ stdio: "ignore" }` shape
  * keeps its historical cp.spawn lowering. */
 export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
-  if (expr.arguments.length > 3 || expr.arguments.some(ts.isSpreadElement)) {
+  if (expr.arguments.nodes.length > 3 || expr.arguments.nodes.some(ts.isSpreadElement)) {
     lowerer.noLowering(
       "spawn with this argument shape",
       expr,
       'the supported form is spawn(command, args?, { stdio: "pipe" | "ignore" | "inherit", detached?, env?, cwd? })',
     );
   }
-  const cmd = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
+  const cmd = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, STRING);
   let argsNode: ts.Expression | undefined;
   let optsNode: ts.Expression | undefined;
-  if (expr.arguments.length === 3) {
-    argsNode = expr.arguments[1];
-    optsNode = expr.arguments[2];
-  } else if (expr.arguments.length === 2) {
-    const second = expr.arguments[1]!;
+  if (expr.arguments.nodes.length === 3) {
+    argsNode = expr.arguments.nodes[1];
+    optsNode = expr.arguments.nodes[2];
+  } else if (expr.arguments.nodes.length === 2) {
+    const second = expr.arguments.nodes[1]!;
     const secondType = lowerer.typeOf(second);
     const mapped = lowerer.mapTypeOf(secondType);
     if (
@@ -338,7 +353,7 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   let plain = true; // exactly { stdio: "ignore" }: the historical libCall
 
   if (optsNode && ts.isObjectLiteralExpression(optsNode)) {
-    for (const p of optsNode.properties) {
+    for (const p of optsNode.properties.nodes) {
       // The conditional-spread idiom `...(isWindows ? {} : { detached:
       // true })` (either orientation): the one carried member supported
       // is `detached` with a boolean literal — the platform-conditional
@@ -393,7 +408,7 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
           // The 3-tuple form: every slot accepts a literal, including
           // "pipe" (child.stdin/stdout/stderr); stdout/stderr also accept
           // a number-typed fd (an openSync result — dup2'd into the child).
-          if (ts.isArrayLiteralExpression(m.value) && m.value.elements.length === 3) {
+          if (ts.isArrayLiteralExpression(m.value) && m.value.elements.nodes.length === 3) {
             const slot = (el: ts.Expression, which: 0 | 1 | 2): void => {
               const t = lowerer.typeOf(el);
               if (t.isStringLiteralType()) {
@@ -434,7 +449,7 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
                 errFd = fd;
               }
             };
-            m.value.elements.forEach((el, i) => slot(el, i as 0 | 1 | 2));
+            m.value.elements.nodes.forEach((el, i) => slot(el, i as 0 | 1 | 2));
             sawStdio = true;
             plain = false;
             break;
@@ -512,7 +527,7 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
   }
   if (shellEnabled && argsNode !== undefined) {
     const shellArgs = stripTypeCasts(argsNode);
-    if (!ts.isArrayLiteralExpression(shellArgs) || shellArgs.elements.length !== 0) {
+    if (!ts.isArrayLiteralExpression(shellArgs) || shellArgs.elements.nodes.length !== 0) {
       lowerer.noLowering(
         "spawn with shell enabled and separate arguments",
         argsNode,
@@ -551,9 +566,9 @@ export function lowerSpawnCall(lowerer: Lowerer, expr: ts.CallExpression, loc: S
  * Node's default JSON IPC channel is always present. */
 export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
   if (
-    expr.arguments.length < 1 ||
-    expr.arguments.length > 3 ||
-    expr.arguments.some(ts.isSpreadElement)
+    expr.arguments.nodes.length < 1 ||
+    expr.arguments.nodes.length > 3 ||
+    expr.arguments.nodes.some(ts.isSpreadElement)
   ) {
     lowerer.noLowering(
       "fork with this argument shape",
@@ -561,24 +576,24 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
       "use fork(staticModulePath[, stringArgs][, inlineOptions])",
     );
   }
-  const targetPath = staticForkModulePath(lowerer.program, expr.arguments[0]!);
+  const targetPath = staticForkModulePath(lowerer.program, expr.arguments.nodes[0]!);
   const targetId =
     targetPath === null ? undefined : lowerer.forkTargetIdByPath.get(tsgoPath(resolve(targetPath)));
   if (targetId === undefined) {
     lowerer.noLowering(
       "fork with a runtime-valued module path",
-      expr.arguments[0]!,
+      expr.arguments.nodes[0]!,
       'resolve a relative worker with new URL("./worker.ts", import.meta.url) or fileURLToPath(...) and bind it to a const if needed',
     );
   }
 
   let argsNode: ts.Expression | undefined;
   let optsNode: ts.Expression | undefined;
-  if (expr.arguments.length === 3) {
-    argsNode = expr.arguments[1];
-    optsNode = expr.arguments[2];
-  } else if (expr.arguments.length === 2) {
-    const second = expr.arguments[1]!;
+  if (expr.arguments.nodes.length === 3) {
+    argsNode = expr.arguments.nodes[1];
+    optsNode = expr.arguments.nodes[2];
+  } else if (expr.arguments.nodes.length === 2) {
+    const second = expr.arguments.nodes[1]!;
     const secondType = lowerer.typeOf(second);
     const mapped = lowerer.mapTypeOf(secondType);
     if (
@@ -622,7 +637,7 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
   };
 
   if (optsNode && ts.isObjectLiteralExpression(optsNode)) {
-    for (const property of optsNode.properties) {
+    for (const property of optsNode.properties.nodes) {
       const member = optionMember(property);
       if (!member) {
         lowerer.noLowering(
@@ -651,14 +666,14 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
           break;
         case "stdio": {
           if (ts.isArrayLiteralExpression(member.value)) {
-            if (member.value.elements.length !== 4) {
+            if (member.value.elements.nodes.length !== 4) {
               lowerer.noLowering(
                 "fork with this stdio tuple",
                 member.value,
                 'use [stdin, stdout, stderr, "ipc"] with exactly four literal entries',
               );
             }
-            const ipc = member.value.elements[3]!;
+            const ipc = member.value.elements.nodes[3]!;
             const ipcType = lowerer.typeOf(ipc);
             if (!ipcType.isStringLiteralType() || ipcType.value !== "ipc") {
               lowerer.noLowering(
@@ -667,9 +682,9 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
                 'the fourth stdio entry must be "ipc"',
               );
             }
-            inMode = stdioMode(member.value.elements[0]!, "stdin");
-            outMode = stdioMode(member.value.elements[1]!, "stdout");
-            errMode = stdioMode(member.value.elements[2]!, "stderr");
+            inMode = stdioMode(member.value.elements.nodes[0]!, "stdin");
+            outMode = stdioMode(member.value.elements.nodes[1]!, "stdout");
+            errMode = stdioMode(member.value.elements.nodes[2]!, "stderr");
           } else {
             const mode = stdioMode(member.value, "scalar");
             inMode = outMode = errMode = mode;
@@ -725,35 +740,63 @@ export function lowerForkCall(lowerer: Lowerer, expr: ts.CallExpression, loc: Sr
 }
 
 /** `execFile(file[, args][, options], callback)` — the asynchronous callback
- * slice. The child starts immediately with stdin/stdout/stderr piped; the
- * runtime captures both outputs and invokes the error-first callback after
- * settlement. The callback may ignore a suffix of `(error, stdout,
+ * slice. With `shell`, `exec(command[, options], callback)`: the command
+ * line runs with /bin/sh -c, as execSync runs it, and failure messages show
+ * the command line as Node's do. The child starts immediately with
+ * stdin/stdout/stderr piped; the runtime captures both outputs and invokes
+ * the error-first callback after settlement. The callback may ignore a suffix of `(error, stdout,
  * stderr)`, but every declared parameter must have the Node shape. Inline
  * `encoding: "utf8"` and a pure numeric `maxBuffer` are accepted; the latter
  * is not enforced by the growing native capture, as
  * with the synchronous and promisified capture forms. Other options remain
  * fenced until their lifecycle can share this asynchronous core. */
-export function lowerExecFileCall(lowerer: Lowerer, expr: ts.CallExpression, loc: SrcLoc): IrExpr {
+export function lowerExecFileCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  loc: SrcLoc,
+  shell = false,
+): IrExpr {
+  const what = shell ? "exec" : "execFile";
   if (
-    expr.arguments.some(ts.isSpreadElement) ||
-    expr.arguments.length < 2 ||
-    expr.arguments.length > 4
+    expr.arguments.nodes.some(ts.isSpreadElement) ||
+    expr.arguments.nodes.length < 2 ||
+    expr.arguments.nodes.length > (shell ? 3 : 4)
   ) {
     lowerer.noLowering(
-      `execFile with ${expr.arguments.length} arguments`,
+      `${what} with ${expr.arguments.nodes.length} arguments`,
       expr,
-      "the supported callback forms are execFile(file, callback), execFile(file, args, callback), and execFile(file, args, { encoding: 'utf8', maxBuffer: N }, callback)",
+      shell
+        ? "the supported callback forms are exec(command, callback) and exec(command, { encoding: 'utf8', maxBuffer: N }, callback)"
+        : "the supported callback forms are execFile(file, callback), execFile(file, args, callback), and execFile(file, args, { encoding: 'utf8', maxBuffer: N }, callback)",
     );
   }
-  const cmd = lowerer.lowerExprExpecting(expr.arguments[0]!, STRING);
-  const argsNode = expr.arguments.length >= 3 ? expr.arguments[1] : undefined;
-  const callbackNode = expr.arguments[expr.arguments.length - 1]!;
-  const argv = lowerChildArgsArg(lowerer, argsNode, loc);
-  if (expr.arguments.length === 4) {
-    const options = expr.arguments[2]!;
+  const first = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, STRING);
+  const callbackNode = expr.arguments.nodes[expr.arguments.nodes.length - 1]!;
+  // exec: /bin/sh -c <command>, execSync's lowering (the runtime reads the
+  // command line back from argv[1] for failure messages); execFile: the
+  // file and its args list.
+  const cmd: IrExpr = shell ? { kind: "strLit", value: "/bin/sh", type: STRING, loc } : first;
+  const argv: IrExpr = shell
+    ? {
+        kind: "arrayLit",
+        elems: [{ kind: "strLit", value: "-c", type: STRING, loc }, first],
+        type: arrayOf(STRING),
+        loc,
+      }
+    : lowerChildArgsArg(
+        lowerer,
+        expr.arguments.nodes.length >= 3 ? expr.arguments.nodes[1] : undefined,
+        loc,
+      );
+  const optionsNode =
+    expr.arguments.nodes.length === (shell ? 3 : 4)
+      ? expr.arguments.nodes[shell ? 1 : 2]
+      : undefined;
+  if (optionsNode) {
+    const options = optionsNode;
     if (!ts.isObjectLiteralExpression(options)) {
       lowerer.noLowering(
-        "execFile with a non-literal options argument",
+        `${what} with a non-literal options argument`,
         options,
         "pass encoding and maxBuffer in an inline object literal",
       );
@@ -770,11 +813,11 @@ export function lowerExecFileCall(lowerer: Lowerer, expr: ts.CallExpression, loc
         ].includes(node.operatorToken.kind) &&
         pureNumber(node.left) &&
         pureNumber(node.right));
-    for (const property of options.properties) {
+    for (const property of options.properties.nodes) {
       const member = optionMember(property);
       if (!member)
         lowerer.noLowering(
-          "execFile with this options shape",
+          `${what} with this options shape`,
           property,
           "use plain encoding and maxBuffer properties without spreads or computed keys",
         );
@@ -784,7 +827,7 @@ export function lowerExecFileCall(lowerer: Lowerer, expr: ts.CallExpression, loc
           (member.value.text !== "utf8" && member.value.text !== "utf-8")
         ) {
           lowerer.noLowering(
-            "execFile with a non-literal utf8 encoding",
+            `${what} with a non-literal utf8 encoding`,
             member.value,
             "pass the literal 'utf8' or 'utf-8' (other expressions might have side effects)",
           );
@@ -792,14 +835,14 @@ export function lowerExecFileCall(lowerer: Lowerer, expr: ts.CallExpression, loc
       } else if (member.name === "maxBuffer") {
         if (!pureNumber(member.value)) {
           lowerer.noLowering(
-            "execFile with a non-literal maxBuffer",
+            `${what} with a non-literal maxBuffer`,
             member.value,
             "pass a numeric literal or literal arithmetic (the native capture grows without enforcing this limit)",
           );
         }
       } else {
         lowerer.noLowering(
-          `execFile option '${member.name}'`,
+          `${what} option '${member.name}'`,
           property,
           "only encoding: 'utf8' and a pure numeric maxBuffer are supported in the callback form",
         );
@@ -815,14 +858,14 @@ export function lowerExecFileCall(lowerer: Lowerer, expr: ts.CallExpression, loc
     lowerer.unsupported(
       "SC1090",
       callbackNode,
-      "execFile callbacks take (error), (error, stdout), (error, stdout, stderr), or no parameters",
+      `${what} callbacks take (error), (error, stdout), (error, stdout, stderr), or no parameters`,
     );
   }
   if (callback.type.ret.kind !== "void") {
     lowerer.unsupported(
       "SC1090",
       callbackNode,
-      "execFile callbacks returning a value (make the callback body a block, or return nothing)",
+      `${what} callbacks returning a value (make the callback body a block, or return nothing)`,
     );
   }
   const errorParam = callback.type.params[0];
@@ -837,7 +880,7 @@ export function lowerExecFileCall(lowerer: Lowerer, expr: ts.CallExpression, loc
       lowerer.unsupported(
         "SC1090",
         callbackNode,
-        `execFile callbacks whose first parameter is not 'Error | null' (got '${lowerer.fmt(errorParam)}')`,
+        `${what} callbacks whose first parameter is not 'Error | null' (got '${lowerer.fmt(errorParam)}')`,
       );
     }
   }
@@ -846,9 +889,15 @@ export function lowerExecFileCall(lowerer: Lowerer, expr: ts.CallExpression, loc
       lowerer.unsupported(
         "SC1090",
         callbackNode,
-        `execFile callbacks whose ${i === 1 ? "stdout" : "stderr"} parameter is not 'string'`,
+        `${what} callbacks whose ${i === 1 ? "stdout" : "stderr"} parameter is not 'string'`,
       );
     }
   }
-  return { kind: "libCall", fn: "cp.execFile", args: [cmd, argv, callback], type: CHILD_T, loc };
+  return {
+    kind: "libCall",
+    fn: "cp.execFile",
+    args: [cmd, argv, callback, boolLit(shell, loc)],
+    type: CHILD_T,
+    loc,
+  };
 }

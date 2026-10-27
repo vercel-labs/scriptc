@@ -60,14 +60,6 @@ const bareN = null;
 // honest text (JS prints "[object Object]") and stays fenced.
 const templated = `${mkAB()}`;
 
-// `x == null` lowers as the null-or-undefined tag test — but a union with
-// BOTH unit arms needs the operand twice, so an effectful operand (a call)
-// gets its own fence pointing at a const binding.
-function mkNullish(): string | null | undefined {
-  return null;
-}
-const looseCall = mkNullish() == null;
-
 // A DECLARED `T | string` param infers nothing for T (no union
 // unification); the body's use of T then fails with the instantiation.
 function tagOr<T>(x: T | string): T {

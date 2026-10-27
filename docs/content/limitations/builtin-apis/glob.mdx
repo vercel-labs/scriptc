@@ -1,1 +1,4 @@
-- **Glob:** `fs.globSync`, `fs.glob` and `fs/promises` `glob` support every option. `withFileTypes` must be a literal `true` or `false`, and `exclude` functions cannot be combined with `withFileTypes`. The `fs/promises` iterator is supported only as the source of a `for await` loop, and its walk completes when the loop starts. `fs.glob` callbacks receive file names, not Dirents.
+- **Glob:** `fs.globSync`, `fs.glob` and `fs/promises` `glob` support every option.
+  `withFileTypes` must be a literal `true` or `false`, and `exclude` functions cannot be combined with `withFileTypes`.
+  The `fs/promises` iterator is supported only as the source of a `for await` loop, and its walk completes when the loop starts.
+  `fs.glob` callbacks receive file names, not Dirents.

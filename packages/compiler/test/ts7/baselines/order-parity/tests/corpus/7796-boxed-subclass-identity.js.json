@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7796-boxed-subclass-identity.js"
+ ],
+ "diags": []
+}

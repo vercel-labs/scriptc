@@ -38,15 +38,15 @@ import { InternalCompilerError } from "../errors.js";
  * harness asserts refusals match entry codes. renderSurfaceManifest is
  * byte-deterministic: entries sort by id, keys are emitted in one fixed
  * order, and the output carries no timestamps or absolute paths. */
-import { FENCE_CODES, UNSUPPORTED } from "../diagnostics/diagnostic.js";
-import { NODE24_FETCH_COMPAT_PROFILE } from "../compat/fetch-profile.js";
+import { FENCE_CODES, UNSUPPORTED, webAssemblyDiag } from "../diagnostics/diagnostic.js";
+import { node24FetchCompatProfile } from "../compat/fetch-profile.js";
 import { SUPPORTED_BUILTIN_MODULES, SUPPORTED_NODE_MODULES } from "../frontend/builtin-modules.js";
 import {
-  AMBIENT_SURFACE_FNS,
+  ambientSurfaceFns,
   ARRAY_METHODS,
   BUILTIN_MODULE_CONSTS,
   BUILTIN_MODULE_FENCE_HINTS,
-  BUILTIN_MODULE_FNS,
+  builtinModuleFns,
   COLLECTION_ITERATOR_METHODS,
   COMPOUND_ASSIGN_OPS,
   STDLIB_SURFACE,
@@ -88,18 +88,21 @@ export const MANIFEST_SCHEMA_VERSION = 2;
 /** The manifest's own scope statement: what the projection covers and —
  * just as load-bearing — what it deliberately leaves out, so absence is
  * never read as a support claim in either direction. */
-const COVERAGE_NOTES: string[] = [
-  "Entries are projected mechanically from the compiler's own decision tables: the diagnostics registry, the unsupported-syntax dispatch tables, the stdlib and node-builtin lowering tables, and the supported-builtin-module list. Nothing is hand-maintained; the manifest regenerates byte-identically from the source tree at this version.",
-  "Absence from this manifest means 'not projected', never 'unsupported'. Surfaces lowered through dedicated code paths rather than tables are not yet projected: console, JSON, Promise/async and the timer surface, the net/http/tls/https/dgram/dns/assert/test/stream/readline module member surfaces, template literals, the regex slice, global functions (parseInt, parseFloat, isNaN, isFinite), and the process surface outside its ambient slice.",
-  "The ambient-nondeterminism and ambient-authority surfaces the library sidecar's determinism attestation scans ARE projected even where they lower through dedicated code paths — the Date compositions (stdlib.date.*), perf_hooks' performance.now, and the process global's ambient reads and authority calls (node-builtin.process.*) — so a determinism fence can name every surface the attestation demotes on.",
-  "stdlib and node-builtin member entries name surface whose LOWERED call forms are constrained (arity, argument shapes); declared call forms outside the lowered set are refused per site, with code SC2020 for standard-library and node-builtin surface.",
-  "Entries with status 'unsupported' describe where the named code is raised: forms of the construct outside the supported subset are refused with that code — not that every form of the named feature is refused. Supported forms appear as their own static entries where a table projects them.",
-  `The engine-free fetch projection targets Node ${NODE24_FETCH_COMPAT_PROFILE.target.node} with bundled Undici ${NODE24_FETCH_COMPAT_PROFILE.target.undici}. Each projected row names the differential evidence that guards it; changing the pinned Node or Undici version is an explicit profile update.`,
-  "The fetch profile also contains a runtime-reflected census of the selected fetch, abort, Headers, and readable-stream interfaces plus RequestInit/ResponseInit dictionary reads. Static and unsupported census rows are projected here; its explicitly out-of-scope metadata rows and adjacent-interface exclusions remain in the profile so absence is deliberate rather than ambiguous.",
-  "Process-level diagnostic codes are not surface entries: SC0001-SC0004 are preflight gates, SC1110 is a comptime evaluation failure, SC3001/SC3002 are backend/target tier refusals, SC9001/SC9002 are internal errors.",
-  "Entry statuses are projected for the desktop targets. The mobile targets (aarch64-apple-ios, aarch64-apple-ios-simulator, aarch64-linux-android) compile library-mode archives only: the library-admissible surface (what SC4005's async_free requirement and the library link set admit) is supported there, the executable lane refuses those triples with SC3002, and no entry outside the library-admissible surface carries a mobile support claim. iOS archives build for iOS 15.0 on darwin hosts; Android archives build against NDK API level 26.",
-  "No scheduling metadata is published; entry ids are the stable diff keys across releases.",
-];
+function coverageNotes(): string[] {
+  const fetchTarget = node24FetchCompatProfile().target;
+  return [
+    "Entries are projected mechanically from the compiler's own decision tables: the diagnostics registry, the unsupported-syntax dispatch tables, the stdlib and node-builtin lowering tables, and the supported-builtin-module list. Nothing is hand-maintained; the manifest regenerates byte-identically from the source tree at this version.",
+    "Absence from this manifest means 'not projected', never 'unsupported'. Surfaces lowered through dedicated code paths rather than tables are not yet projected: console, JSON, Promise/async and the timer surface, the net/http/tls/https/dgram/dns/assert/test/stream/readline module member surfaces, template literals, the regex slice, global functions (parseInt, parseFloat, isNaN, isFinite), and the process surface outside its ambient slice.",
+    "The ambient-nondeterminism and ambient-authority surfaces the library sidecar's determinism attestation scans ARE projected even where they lower through dedicated code paths — the Date compositions (stdlib.date.*), perf_hooks' performance.now, and the process global's ambient reads and authority calls (node-builtin.process.*) — so a determinism fence can name every surface the attestation demotes on.",
+    "stdlib and node-builtin member entries name surface whose LOWERED call forms are constrained (arity, argument shapes); declared call forms outside the lowered set are refused per site, with code SC2020 for standard-library and node-builtin surface.",
+    "Entries with status 'unsupported' describe where the named code is raised: forms of the construct outside the supported subset are refused with that code — not that every form of the named feature is refused. Supported forms appear as their own static entries where a table projects them.",
+    `The engine-free fetch projection targets Node ${fetchTarget.node} with bundled Undici ${fetchTarget.undici}. Each projected row names the differential evidence that guards it; changing the pinned Node or Undici version is an explicit profile update.`,
+    "The fetch profile also contains a runtime-reflected census of the selected fetch, abort, Headers, and readable-stream interfaces plus RequestInit/ResponseInit dictionary reads. Static and unsupported census rows are projected here; its explicitly out-of-scope metadata rows and adjacent-interface exclusions remain in the profile so absence is deliberate rather than ambiguous.",
+    "Process-level diagnostic codes are not surface entries: SC0001-SC0004 are preflight gates, SC1110 is a comptime evaluation failure, SC3001/SC3002 are backend/target tier refusals, SC9001/SC9002 are internal errors.",
+    "Entry statuses are projected for the desktop targets. The mobile targets (aarch64-apple-ios, aarch64-apple-ios-simulator, aarch64-linux-android) compile library-mode archives only: the library-admissible surface (what SC4005's async_free requirement and the library link set admit) is supported there, the executable lane refuses those triples with SC3002, and no entry outside the library-admissible surface carries a mobile support claim. iOS archives build for iOS 15.0 on darwin hosts; Android archives build against NDK API level 26.",
+    "No scheduling metadata is published; entry ids are the stable diff keys across releases.",
+  ];
+}
 
 /** Stable kebab id segment from prose: quotes dropped, the parenthetical
  * tail dropped, non-alphanumeric runs collapsed to one dash. */
@@ -275,7 +278,7 @@ export function generateSurfaceManifest(compilerVersion: string): SurfaceManifes
       status: "static",
       ...(COLLECTION_ITERATOR_METHODS.has(name)
         ? {
-            note: "live native iterators support next(), for...of, and drains; iterator helper methods are refused",
+            note: "live native iterators support next(), for...of, drains, and the iterator helper methods",
           }
         : {}),
     });
@@ -288,7 +291,7 @@ export function generateSurfaceManifest(compilerVersion: string): SurfaceManifes
       status: "static",
       ...(COLLECTION_ITERATOR_METHODS.has(name)
         ? {
-            note: "live native iterators support next(), for...of, and drains; iterator helper methods are refused",
+            note: "live native iterators support next(), for...of, drains, and the iterator helper methods",
           }
         : {}),
     });
@@ -410,7 +413,7 @@ export function generateSurfaceManifest(compilerVersion: string): SurfaceManifes
         : "recognized module (bare and node:-prefixed specifiers)",
     });
   }
-  for (const [mod, members] of Object.entries(BUILTIN_MODULE_FNS)) {
+  for (const [mod, members] of Object.entries(builtinModuleFns())) {
     for (const member of Object.keys(members!)) {
       add({
         id: `${moduleId(mod)}.${member}`,
@@ -444,11 +447,24 @@ export function generateSurfaceManifest(compilerVersion: string): SurfaceManifes
     }
   }
 
+  // ── the WebAssembly global (builtins/webassembly.ts, wasm/translate.ts):
+  // the core API lowers over modules translated at build time; the rest
+  // refuses at each use (webAssemblyDiag) ─
+  {
+    const refusal = webAssemblyDiag("WebAssembly", { file: "", start: 0, end: 0 });
+    add({
+      id: "stdlib.webassembly",
+      kind: "stdlib",
+      name: "globalThis.WebAssembly",
+      status: "static",
+      note: `compile, instantiate, validate, the Module, Instance, Memory, Table and Global constructors, Module.imports, exports and customSections, instanceof, the error classes, exports, imports and Module transfer to workers, over the modules translated at build time; the rest refuses with ${refusal.code} (${refusal.hint ?? ""})`,
+    });
+  }
+
   // ── fetch/Web platform: one explicit, versioned compatibility profile ─
-  const fetchTarget =
-    `Node ${NODE24_FETCH_COMPAT_PROFILE.target.node} / ` +
-    `Undici ${NODE24_FETCH_COMPAT_PROFILE.target.undici}`;
-  for (const operation of NODE24_FETCH_COMPAT_PROFILE.operations) {
+  const fetchProfile = node24FetchCompatProfile();
+  const fetchTarget = `Node ${fetchProfile.target.node} / Undici ${fetchProfile.target.undici}`;
+  for (const operation of fetchProfile.operations) {
     const evidence = operation.evidence.map((item) =>
       item.generated !== undefined ? `generated:${item.generated}` : `fixture:${item.fixture!}`,
     );
@@ -464,10 +480,7 @@ export function generateSurfaceManifest(compilerVersion: string): SurfaceManifes
         `differential evidence: ${evidence.join(", ")}`,
     });
   }
-  for (const options of [
-    NODE24_FETCH_COMPAT_PROFILE.requestInit,
-    NODE24_FETCH_COMPAT_PROFILE.responseInit,
-  ]) {
+  for (const options of [fetchProfile.requestInit, fetchProfile.responseInit]) {
     for (const option of options) {
       const evidence = option.evidence.map((item) =>
         item.generated !== undefined ? `generated:${item.generated}` : `fixture:${item.fixture!}`,
@@ -483,7 +496,7 @@ export function generateSurfaceManifest(compilerVersion: string): SurfaceManifes
       });
     }
   }
-  for (const row of NODE24_FETCH_COMPAT_PROFILE.inventory.entries) {
+  for (const row of fetchProfile.inventory.entries) {
     if (row.status !== "unsupported") continue;
     if (row.code === undefined || row.reason === undefined) {
       throw new InternalCompilerError(`non-static fetch inventory row '${row.id}' is incomplete`);
@@ -510,7 +523,7 @@ export function generateSurfaceManifest(compilerVersion: string): SurfaceManifes
   // Date/perf_hooks/process rows from the one ambient table — each entry
   // is fenceable by construction (its row carries the reach-witnessing
   // libCall spellings the fence detector uses).
-  for (const row of AMBIENT_SURFACE_FNS) {
+  for (const row of ambientSurfaceFns()) {
     add({
       id: row.id,
       kind: row.kind,
@@ -564,7 +577,7 @@ export function generateSurfaceManifest(compilerVersion: string): SurfaceManifes
   return {
     schemaVersion: MANIFEST_SCHEMA_VERSION,
     compilerVersion,
-    coverage: COVERAGE_NOTES,
+    coverage: coverageNotes(),
     entries,
   };
 }

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/code-generation-disallowed.cjs"
+ ],
+ "diags": []
+}

@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/js-builder-string-method-names/builder.js",
+  "<repo>/tests/corpus/js-builder-string-method-names/main.ts"
+ ],
+ "diags": []
+}

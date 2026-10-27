@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7793-untyped-key-writes.js"
+ ],
+ "diags": []
+}

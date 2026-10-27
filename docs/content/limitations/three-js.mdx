@@ -1,7 +1,13 @@
-With `--npm-static=three`, native and WASI builds support published package imports and tested CPU workflows for math, bounds, procedural geometry, curves, shapes, extrusion, text geometry, scene graphs, cameras, lights, materials, textures, and render-target data. Mesh workflows include instancing, batching, morph targets, skeletal deformation, LOD, and sprites. Raycasting includes mesh intersections, sorted results, recursive traversal, layers, distance limits, camera rays, lines, and points.
+With `--npm-static=three`, native and WASI builds support published package imports and tested CPU workflows for math, bounds, procedural geometry, curves, shapes, extrusion, text geometry, scene graphs, cameras, lights, materials, textures, and render-target data.
+Mesh workflows include instancing, batching, morph targets, skeletal deformation, LOD, and sprites.
+Raycasting includes mesh intersections, sorted results, recursive traversal, layers, distance limits, camera rays, lines, and points.
 
-Animation coverage includes tracks, clips, property binding, mixer playback, blending, and fading. In-memory loading covers scene, material, geometry, and animation JSON, OBJ, STL, PLY, and self-contained glTF/GLB scenes with buffers, PBR material data, and animation. This establishes the exercised workflows, not every loader extension or overload.
+Animation coverage includes tracks, clips, property binding, mixer playback, blending, and fading.
+In-memory loading covers scene, material, geometry, and animation JSON, OBJ, STL, PLY, and self-contained glTF/GLB scenes with buffers, PBR material data, and animation.
+This establishes the exercised workflows, not every loader extension or overload.
 
 Tested CPU graph construction from `three/webgpu` and `three/tsl` includes scalar/vector nodes, mutable uniforms, `Fn` layouts and calls, and `MeshBasicNodeMaterial` data.
 
-WebGL/WebGPU rendering, DOM controls, image and video resources, audio, and worker-based decoders require external host bindings. A browser or native application can render geometry and material state produced by a compiled library and receive its resource lifecycle notifications. Compressed model and texture decoding belongs to that host; shader execution and rendered output are outside the CPU coverage described here.
+WebGL/WebGPU rendering, DOM controls, image and video resources, audio, and worker-based decoders require external host bindings.
+A browser or native application can render geometry and material state produced by a compiled library and receive its resource lifecycle notifications.
+Compressed model and texture decoding belongs to that host; shader execution and rendered output are outside the CPU coverage described here.

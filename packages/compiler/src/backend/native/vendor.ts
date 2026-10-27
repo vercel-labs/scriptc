@@ -6,6 +6,9 @@ import { resolvedToolIdentity } from "./tool-identity.js";
 export const {
   vendorEngineDir,
   vendorTlsDir,
+  vendorBrotliDir,
+  brotliArchivePath,
+  ensureBrotliArchive,
   vendorBuildCacheRoot,
   vendorCacheTargetFlavor,
   vendorCacheBuildIdentity,

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8291-frozen-record-union-keys.ts"
+ ],
+ "diags": []
+}

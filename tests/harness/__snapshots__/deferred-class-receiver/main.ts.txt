@@ -5,9 +5,9 @@ deferred-class-receiver/main.ts:4:10 - error SC1090: constructing through a clas
     |          ^~~~~~~~~~~~~~~
   5 | }
 
-deferred-class-receiver/shelf.ts:3:20 - error SC1090: 'unknown'-typed class fields are not supported yet
+deferred-class-receiver/shelf.ts:3:20 - error SC1090: 'MapIterator<string>'-typed class fields are not supported yet
 
   2 |   readonly name: string;
-  3 |   private readonly notes = new WeakMap<object, string>();
-    |                    ^~~~~
+  3 |   private readonly cursor = new Map<string, number>().keys();
+    |                    ^~~~~~
   4 |   constructor(name: string) {

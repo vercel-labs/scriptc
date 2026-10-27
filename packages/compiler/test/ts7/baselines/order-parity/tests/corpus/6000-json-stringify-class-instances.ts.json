@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6000-json-stringify-class-instances.ts"
+ ],
+ "diags": []
+}

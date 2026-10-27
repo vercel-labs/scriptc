@@ -1,5 +1,9 @@
-Graphs published with [`@scriptc/threads`](/docs/threads) are immortal: scriptc never frees them, even after every thread has stopped using them. Publish long-lived data, not per-request messages.
+Graphs published with [`@scriptc/threads`](/docs/threads) are immortal: scriptc never frees them, even after every thread has stopped using them.
+Publish long-lived data, not per-request messages.
 
-A receiving thread reads the sender's objects, so they keep their classes, methods, and identity across threads and across messages. Node.js delivers clones without prototypes, a new clone for every message.
+A receiving thread reads the sender's objects, so they keep their classes, methods, and identity across threads and across messages.
+Node.js delivers clones without prototypes, a new clone for every message.
 
-Writes into published objects throw Node's frozen-object `TypeError`s. In Node.js, `o.x = f()` evaluates `f()` before the write fails, and scriptc does the same, except for writes to union-typed class fields and for `Map`, `Set`, and array mutator methods, where the write check runs before the arguments are evaluated. Private fields (`#x`) of published objects cannot be written either, although Node.js allows writing private fields of frozen objects.
+Writes into published objects throw Node's frozen-object `TypeError`s.
+In Node.js, `o.x = f()` evaluates `f()` before the write fails, and scriptc does the same, except for writes to union-typed class fields and for `Map`, `Set`, and array mutator methods, where the write check runs before the arguments are evaluated.
+Private fields (`#x`) of published objects cannot be written either, although Node.js allows writing private fields of frozen objects.

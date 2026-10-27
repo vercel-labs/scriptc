@@ -83,6 +83,7 @@ jobs:
                 spawnSync('git', ['diff', '--quiet', run.head_sha, 'HEAD', '--', '.',
                   ':(exclude).github/workflows/release.yml', ':(exclude)scripts/verify-native-cli.mjs',
                   ':(exclude)scripts/package-native-cli.mjs', ':(exclude)tests/harness/native-cli-packaging.test.ts',
+                  ':(exclude)scripts/wait-npm-available.mjs', ':(exclude)tests/harness/npm-available.test.ts',
                 ]).status !== 0) continue;
             const artifacts = api(`repos/${repo}/actions/runs/${run.id}/artifacts?per_page=100`).artifacts
               .filter((artifact) => !artifact.expired && artifact.size_in_bytes > 0);
@@ -100,10 +101,71 @@ jobs:
           if (receiptRun) appendFileSync(process.env.GITHUB_OUTPUT, `receipt_run=${receiptRun}\n`);
           NODE
 
-  build-native-packages:
-    name: Build native package (${{ matrix.platform }})
+  # Collects the native compiler's function layout and profile on this commit
+  # (scripts/refresh-cli-layout.mjs, scripts/refresh-cli-profile.mjs), so every
+  # platform's CLI build optimizes and lays out the code it compiles. The
+  # committed ones fall behind main within a day or two. If this job fails,
+  # the CLI builds use the committed profile and layout.
+  cli-profile:
+    name: Collect the native compiler profile
     needs: check-release
     if: needs.check-release.outputs.should_release == 'true' && needs.check-release.outputs.reuse_artifacts != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+      - uses: ./.github/actions/llvm-linux
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/zig
+      - uses: ./.github/actions/native-packages
+        with:
+          target: linux-x64-gnu
+      - run: pnpm --filter @scriptc/compiler --filter scriptc build
+      - name: Check out tsc-ts
+        run: |
+          git clone --quiet --depth 1 https://github.com/vercel-labs/tsc-ts "$RUNNER_TEMP/tsc-ts"
+          echo "tsc-ts $(git -C "$RUNNER_TEMP/tsc-ts" rev-parse HEAD)"
+          npm ci --prefix "$RUNNER_TEMP/tsc-ts"
+      # The layout comes first: the profile matches the functions of builds
+      # with the layout its instrumented compiler was built with, so the
+      # profile is collected with a second instrumented compiler built with
+      # this layout.
+      - name: Collect the function layout
+        run: >-
+          node scripts/refresh-cli-layout.mjs --jobs 4
+          --output "$RUNNER_TEMP/cli-profile/cli.layout.gz" --work "$RUNNER_TEMP/cli-layout-work"
+      - name: Collect the profile
+        env:
+          SCRIPTC_NATIVE_LAYOUT: ${{ runner.temp }}/cli-profile/cli.layout.gz
+        run: >-
+          node scripts/refresh-cli-profile.mjs --tsc-ts "$RUNNER_TEMP/tsc-ts" --jobs 4
+          --output "$RUNNER_TEMP/cli-profile/cli.profdata.gz" --work "$RUNNER_TEMP/cli-profile-work"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-profile
+          path: |
+            ${{ runner.temp }}/cli-profile/cli.profdata.gz
+            ${{ runner.temp }}/cli-profile/cli.layout.gz
+          retention-days: 7
+          if-no-files-found: error
+
+  build-native-packages:
+    name: Build native package (${{ matrix.platform }})
+    needs: [check-release, cli-profile]
+    # Runs when the profile job fails; the CLI builds then use the committed profile.
+    if: >-
+      !cancelled() && needs.check-release.outputs.should_release == 'true' &&
+      needs.check-release.outputs.reuse_artifacts != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -124,6 +186,7 @@ jobs:
             runtime: runtime-linux-x64-gnu
             cli: cli-linux-x64-gnu
             llvm_asset: LLVM-22.1.8-Linux-X64
+            llvm_dist: x64
             use_zig: true
           - platform: linux-arm64
             runner: ubuntu-24.04-arm
@@ -131,6 +194,7 @@ jobs:
             runtime: runtime-linux-arm64-gnu
             cli: cli-linux-arm64-gnu
             llvm_asset: LLVM-22.1.8-Linux-ARM64
+            llvm_dist: arm64
             use_zig: true
           - platform: windows-x64
             runner: windows-2022
@@ -146,6 +210,7 @@ jobs:
             seed_helper: llvm-linux-x64-gnu
             cli_target: x86_64-linux-musl
             llvm_asset: LLVM-22.1.8-Linux-X64
+            llvm_dist: x64
             use_zig: true
           - platform: linux-arm64-musl
             runner: ubuntu-24.04-arm
@@ -155,12 +220,14 @@ jobs:
             seed_helper: llvm-linux-arm64-gnu
             cli_target: aarch64-linux-musl
             llvm_asset: LLVM-22.1.8-Linux-ARM64
+            llvm_dist: arm64
             use_zig: true
           - platform: wasm32-wasi
             runner: ubuntu-24.04
             helper: llvm-linux-x64-gnu
             runtime: runtime-wasm32-wasi
             llvm_asset: LLVM-22.1.8-Linux-X64
+            llvm_dist: x64
             use_zig: true
     runs-on: ${{ matrix.runner }}
     # The Intel macOS build took 24 minutes for 0.3.2 and passed 30 for 0.3.3.
@@ -191,6 +258,28 @@ jobs:
           mv "$RUNNER_TEMP/${{ matrix.llvm_asset }}" "$RUNNER_TEMP/llvm-22.1.8"
           echo "LLVM_DIR=$RUNNER_TEMP/llvm-22.1.8/lib/cmake/llvm" >> "$GITHUB_ENV"
           echo "$RUNNER_TEMP/llvm-22.1.8/bin" >> "$GITHUB_PATH"
+      # The Linux helpers link LLVM built with ThinLTO and a profile of the
+      # helper's code generation (native/llvm-codegen/llvm-dist.mjs), from a
+      # release of this repository. Without that archive they link LLVM's
+      # release archive, which gives the same objects more slowly. The
+      # wasm32-wasi job also uploads the x64 GNU helper, so it selects the same.
+      - name: Select the profiled LLVM distribution (Linux)
+        if: matrix.llvm_dist != ''
+        env:
+          ARCH: ${{ matrix.llvm_dist }}
+        run: |
+          tag=$(node --input-type=module -e "import { LLVM_DIST_TAG } from './native/llvm-codegen/llvm-dist.mjs'; console.log(LLVM_DIST_TAG)")
+          asset=$(node --input-type=module -e "import { llvmDistAsset } from './native/llvm-codegen/llvm-dist.mjs'; console.log(llvmDistAsset(process.env.ARCH))")
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$tag"
+          if curl -fsSL --retry 3 -o "$RUNNER_TEMP/$asset" "$base/$asset" &&
+            curl -fsSL --retry 3 -o "$RUNNER_TEMP/$asset.sha256" "$base/$asset.sha256" &&
+            (cd "$RUNNER_TEMP" && sha256sum --check "$asset.sha256"); then
+            tar -xJf "$RUNNER_TEMP/$asset" -C "$RUNNER_TEMP"
+            echo "SCRIPTC_HELPER_LLVM_DIR=$RUNNER_TEMP/${asset%.tar.xz}/lib/cmake/llvm" >> "$GITHUB_ENV"
+            echo "The helper links $asset from release $tag"
+          else
+            echo "::warning::$asset is not available from release $tag; the helper links LLVM's release archive"
+          fi
       - uses: vercel-labs/setup-zig@v1
         if: matrix.use_zig == true
         with:
@@ -219,11 +308,25 @@ jobs:
           Move-Item "$expanded\clang+llvm-22.1.8-x86_64-pc-windows-msvc" $llvm
           echo "LLVM_DIR=$llvm\lib\cmake\llvm" >> $env:GITHUB_ENV
           echo "$llvm\bin" >> $env:GITHUB_PATH
+      # A musl CLI ships tsc-ts's musl executable, and these jobs run on glibc
+      # runners, where pnpm installs only the glibc platform packages.
+      - name: Let pnpm install musl platform packages
+        if: endsWith(matrix.cli_target, '-musl')
+        run: |
+          printf 'supportedArchitectures:\n  libc: [current, musl]\n' >> pnpm-workspace.yaml
       - run: pnpm install --frozen-lockfile
       - name: Build native packages (POSIX)
         if: matrix.platform != 'windows-x64'
         run: |
-          pnpm --filter @scriptc/${{ matrix.helper }} build:native
+          if [ -n "${SCRIPTC_HELPER_LLVM_DIR:-}" ]; then
+            LLVM_DIR="$SCRIPTC_HELPER_LLVM_DIR" SCRIPTC_LLVM_THINLTO=1 pnpm --filter @scriptc/${{ matrix.helper }} build:native || {
+              echo "::warning::the helper did not build against the profiled LLVM; it links LLVM's release archive"
+              rm -rf node_modules/.cache/scriptc-${{ matrix.helper }}
+              pnpm --filter @scriptc/${{ matrix.helper }} build:native
+            }
+          else
+            pnpm --filter @scriptc/${{ matrix.helper }} build:native
+          fi
           if [ "${{ matrix.use_zig }}" = true ]; then
             CC=zig AR=zig pnpm --filter @scriptc/${{ matrix.runtime }} build:native
           else
@@ -237,6 +340,33 @@ jobs:
       - name: Build host helper for cross-libc bootstrap
         if: matrix.seed_helper != ''
         run: pnpm --filter @scriptc/${{ matrix.seed_helper }} build:native
+      - name: Download the profile collected on this commit
+        id: cli-profile
+        if: matrix.cli != ''
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: cli-profile
+          path: ${{ runner.temp }}/cli-profile
+      # Without the artifact, SCRIPTC_NATIVE_PROFILE_USE and SCRIPTC_NATIVE_LAYOUT
+      # stay unset and build-native-cli.mts uses the committed profile and layout.
+      - name: Select the native compiler profile
+        if: matrix.cli != ''
+        shell: bash
+        env:
+          COLLECTED: ${{ steps.cli-profile.outcome == 'success' && format('{0}/cli-profile/cli.profdata.gz', runner.temp) || '' }}
+        run: |
+          if [ -n "$COLLECTED" ]; then
+            echo "SCRIPTC_NATIVE_PROFILE_USE=$COLLECTED" >> "$GITHUB_ENV"
+            echo "The native CLI builds with the profile collected on $GITHUB_SHA"
+            layout="$(dirname "$COLLECTED")/cli.layout.gz"
+            if [ -f "$layout" ]; then
+              echo "SCRIPTC_NATIVE_LAYOUT=$layout" >> "$GITHUB_ENV"
+              echo "The native CLI builds with the function layout collected on $GITHUB_SHA"
+            fi
+          else
+            echo "::warning::No profile was collected on this commit; the native CLI builds with the committed profile"
+          fi
       - name: Build native CLI distribution
         if: matrix.cli != ''
         env:
@@ -311,12 +441,15 @@ jobs:
       (needs.check-release.outputs.reuse_artifacts == 'true' ||
       (needs.build-native-packages.result == 'success' && needs.build-mobile-runtime-packs.result == 'success'))
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Two waits for npm availability of at most 25 minutes each.
+    timeout-minutes: 70
     environment: Release
     permissions:
       contents: read
       actions: read
       id-token: write
+    outputs:
+      uploads: ${{ steps.publish.outputs.uploads }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -336,7 +469,7 @@ jobs:
           VERSION: ${{ needs.check-release.outputs.version }}
           RECEIPT_RUN: ${{ needs.check-release.outputs.receipt_run }}
         run: |
-          touch "$RUNNER_TEMP/npm-accepted.txt"
+          touch "$RUNNER_TEMP/npm-accepted.txt" "$RUNNER_TEMP/npm-accepted-times.txt"
           # Include this run so re-running only failed jobs restores its receipts.
           for run in "$GITHUB_RUN_ID" "$RECEIPT_RUN"; do
             if [ -z "$run" ]; then continue; fi
@@ -345,6 +478,7 @@ jobs:
             if [ "$count" -eq 0 ]; then continue; fi
             gh run download "$run" --repo "$GITHUB_REPOSITORY" --pattern "npm-accepted-$VERSION-*" --dir "$RUNNER_TEMP/npm-receipts/$run"
             find "$RUNNER_TEMP/npm-receipts/$run" -name npm-accepted.txt -exec cat {} + >> "$RUNNER_TEMP/npm-accepted.txt"
+            find "$RUNNER_TEMP/npm-receipts/$run" -name npm-accepted-times.txt -exec cat {} + >> "$RUNNER_TEMP/npm-accepted-times.txt"
           done
 
       - name: Setup pnpm
@@ -394,6 +528,7 @@ jobs:
           done
 
       - name: Publish to npm
+        id: publish
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -413,10 +548,14 @@ jobs:
 
           # Upload acceptance and public availability are separate states.
           # Save acceptance immediately so retries never depend on registry lag.
+          # npm-release.txt lists every package of the release, and
+          # npm-accepted-times.txt the time npm accepted each upload, for the
+          # npm-available job.
           publish_dir() {
             dir="$1"
             packed="${2:-}"
             name=$(node -p "require('./$dir/package.json').name")
+            echo "$name@$VERSION" >> "$RUNNER_TEMP/npm-release.txt"
             if grep -Fxq "$name@$VERSION" "$RUNNER_TEMP/npm-accepted.txt"; then
               echo "$name@$VERSION upload already accepted, skipping"
               return 0
@@ -433,6 +572,7 @@ jobs:
             publish_log="$RUNNER_TEMP/npm-publish.log"
             if npm publish "$packed" $PROVENANCE --access public 2>&1 | tee "$publish_log"; then
               echo "$name@$VERSION" >> "$RUNNER_TEMP/npm-accepted.txt"
+              echo "$name@$VERSION $(date +%s)" >> "$RUNNER_TEMP/npm-accepted-times.txt"
               return 0
             else
               publish_status=${PIPESTATUS[0]}
@@ -455,8 +595,8 @@ jobs:
           }
 
           # pnpm pack resolves workspace dependencies; npm handles OIDC.
-          # Publish dependencies first. Registry propagation after an accepted
-          # upload must not block the remaining packages or the GitHub release.
+          # Publish dependencies first. The npm-available job waits for the
+          # packages that nothing in this release depends on.
           publish_dir packages/runtime
           publish_dir packages/runtime-darwin-arm64
           publish_dir packages/llvm-darwin-arm64
@@ -476,30 +616,86 @@ jobs:
           publish_dir packages/runtime-wasm32-wasi
           publish_dir packages/runtime-win32-x64-msvc
           publish_dir packages/llvm-win32-x64-msvc
+          # A native CLI package depends on its platform's LLVM helper and
+          # runtime pack packages, and scriptc on the native CLI packages.
+          # Each group publishes only once the packages it depends on
+          # resolve, so an install never finds a package whose dependencies
+          # npm is still processing. A rerun skips accepted uploads and waits
+          # again.
+          wait_available() {
+            awk 'FILENAME == ARGV[1] { accepted[$1] = $2; next } { print $1, accepted[$1] }' \
+              "$RUNNER_TEMP/npm-accepted-times.txt" "$RUNNER_TEMP/npm-release.txt" > "$RUNNER_TEMP/npm-wait.txt"
+            node scripts/wait-npm-available.mjs "$RUNNER_TEMP/npm-wait.txt" --interval 30 --timeout 1500
+          }
+          wait_available
           for pkg in packages/cli-*; do publish_dir "$pkg"; done
           publish_dir packages/compiler
           publish_dir packages/experimental
           publish_dir packages/threads
           publish_dir packages/types
+          wait_available
           publish_dir packages/cli
           echo "All package uploads accepted; npm registry propagation may continue after this job." >> "$GITHUB_STEP_SUMMARY"
+
+          # Each package of the release with the time its upload was accepted,
+          # when a run recorded it.
+          {
+            echo "uploads<<NPM_UPLOADS"
+            awk 'FILENAME == ARGV[1] { accepted[$1] = $2; next } { print $1, accepted[$1] }' \
+              "$RUNNER_TEMP/npm-accepted-times.txt" "$RUNNER_TEMP/npm-release.txt"
+            echo "NPM_UPLOADS"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Save accepted upload receipts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: npm-accepted-${{ needs.check-release.outputs.version }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/npm-accepted.txt
+          path: |
+            ${{ runner.temp }}/npm-accepted.txt
+            ${{ runner.temp }}/npm-accepted-times.txt
           if-no-files-found: ignore
           retention-days: 90
 
-  # Publish standalone native distributions and the surface manifest after
-  # npm publishing succeeds. The release body comes from the marked changelog.
-  github-release:
-    name: Create GitHub Release
+  # Waits until every package of the release resolves on the npm registry,
+  # and reports each package's time from upload to available. Fails with the
+  # packages that are still missing after 2 hours. It only reads from the
+  # registry; the next release run retries it, and publishing skips uploads
+  # npm already accepted.
+  npm-available:
+    name: Wait for npm availability
     needs: [check-release, publish]
     if: >-
       !cancelled() && needs.check-release.outputs.should_release == 'true' && needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 135
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Wait for every package to resolve
+        env:
+          UPLOADS: ${{ needs.publish.outputs.uploads }}
+        run: |
+          printf '%s\n' "$UPLOADS" > "$RUNNER_TEMP/npm-uploads.txt"
+          node scripts/wait-npm-available.mjs "$RUNNER_TEMP/npm-uploads.txt"
+
+  # Publish standalone native distributions and the surface manifest after
+  # every npm package resolves. The release body comes from the marked
+  # changelog.
+  github-release:
+    name: Create GitHub Release
+    needs: [check-release, publish, npm-available]
+    if: >-
+      !cancelled() && needs.check-release.outputs.should_release == 'true' && needs.npm-available.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -551,6 +747,21 @@ jobs:
 
       - name: Package standalone compilers
         run: node scripts/package-native-cli.mjs packages /tmp/scriptc-release-assets
+
+      # The profile the native CLIs were built with. Runs that reuse native
+      # builds from before the cli-profile job, or whose profile job failed,
+      # have none; their CLIs used the committed profile.
+      - name: Download the native compiler profile
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN: ${{ needs.check-release.outputs.artifact_run }}
+          VERSION: ${{ needs.check-release.outputs.version }}
+        run: |
+          if gh run download "$RUN" --repo "$GITHUB_REPOSITORY" --name cli-profile --dir "$RUNNER_TEMP/cli-profile"; then
+            mv "$RUNNER_TEMP/cli-profile/cli.profdata.gz" "/tmp/scriptc-release-assets/scriptc-$VERSION-cli.profdata.gz"
+          else
+            echo "Run $RUN has no cli-profile artifact"
+          fi
 
       - name: Create GitHub Release
         run: |

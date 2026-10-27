@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6311-typed-array-integer-products.ts"
+ ],
+ "diags": []
+}

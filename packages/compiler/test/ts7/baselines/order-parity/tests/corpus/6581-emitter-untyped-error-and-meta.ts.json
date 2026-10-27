@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6581-emitter-untyped-error-and-meta.ts"
+ ],
+ "diags": []
+}

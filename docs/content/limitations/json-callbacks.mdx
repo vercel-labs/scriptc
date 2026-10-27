@@ -1,5 +1,12 @@
-Function replacers and two-argument revivers support nested replacements, object-property deletion, and thrown exceptions. Omitting the root through a replacer returns `undefined`. Array replacers list the object keys to serialize, as in Node.js. Stored `JSON.stringify` functions accept numeric and string indentation; direct calls require literal indentation.
+Function replacers and two-argument revivers support nested replacements, object-property deletion, and thrown exceptions.
+Omitting the root through a replacer returns `undefined`.
+Array replacers list the object keys to serialize, as in Node.js.
+Stored `JSON.stringify` functions accept numeric and string indentation; direct calls require literal indentation.
 
-Reviver source contexts are unsupported. A reviver that deletes an array element throws, because checked arrays cannot represent holes.
+Reviver source contexts are unsupported.
+A reviver that deletes an array element throws, because checked arrays cannot represent holes.
 
-Callback values use checked storage. Typed records and arrays retain identity and mutations; record fields use declaration order; typed-array views retain backing storage and brands. `Buffer.isBuffer` preserves the Buffer brand through `unknown`. JavaScript callbacks receive the holder as `this`; TypeScript callbacks that access dynamic `this` are unsupported.
+Callback values use checked storage.
+Typed records and arrays retain identity and mutations; record fields use declaration order; typed-array views retain backing storage and brands.
+`Buffer.isBuffer` preserves the Buffer brand through `unknown`.
+JavaScript callbacks receive the holder as `this`; TypeScript callbacks that access dynamic `this` are unsupported.

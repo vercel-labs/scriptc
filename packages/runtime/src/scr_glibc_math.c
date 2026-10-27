@@ -113,15 +113,21 @@ __attribute__((target("sse4.1"))) static double sgm_trunc_sse41(double x) {
   return _mm_cvtsd_f64(_mm_round_sd(_mm_set_sd(x), _mm_set_sd(x), _MM_FROUND_TO_ZERO | _MM_FROUND_NO_EXC));
 }
 
-static int sgm_has_sse41(void) {
+/* IFUNC resolvers run while a static PIE relocates itself, before libc sets
+ * up thread-local storage. The stack protector reads its canary from TLS
+ * (%fs:0x28), so neither the resolvers nor the CPU probe they call may carry
+ * one. */
+#define SGM_RESOLVER __attribute__((no_stack_protector))
+
+SGM_RESOLVER static int sgm_has_sse41(void) {
   unsigned eax, ebx, ecx, edx;
   return __get_cpuid(1, &eax, &ebx, &ecx, &edx) && (ecx & bit_SSE4_1) != 0;
 }
 
 typedef double (*SgmUnary)(double);
-static SgmUnary sgm_resolve_floor(void) { return sgm_has_sse41() ? sgm_floor_sse41 : sgm_floor; }
-static SgmUnary sgm_resolve_ceil(void) { return sgm_has_sse41() ? sgm_ceil_sse41 : sgm_ceil; }
-static SgmUnary sgm_resolve_trunc(void) { return sgm_has_sse41() ? sgm_trunc_sse41 : sgm_trunc; }
+SGM_RESOLVER static SgmUnary sgm_resolve_floor(void) { return sgm_has_sse41() ? sgm_floor_sse41 : sgm_floor; }
+SGM_RESOLVER static SgmUnary sgm_resolve_ceil(void) { return sgm_has_sse41() ? sgm_ceil_sse41 : sgm_ceil; }
+SGM_RESOLVER static SgmUnary sgm_resolve_trunc(void) { return sgm_has_sse41() ? sgm_trunc_sse41 : sgm_trunc; }
 SGM_DEFINE double floor(double x) __attribute__((ifunc("sgm_resolve_floor")));
 SGM_DEFINE double ceil(double x) __attribute__((ifunc("sgm_resolve_ceil")));
 SGM_DEFINE double trunc(double x) __attribute__((ifunc("sgm_resolve_trunc")));

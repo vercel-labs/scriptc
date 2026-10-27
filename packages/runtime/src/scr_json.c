@@ -1245,7 +1245,15 @@ static inline void scr_dyn_weak_dispose(ScrDyn *d) {
 /* A disposed node's child: most getters, setters, prototypes and symbol
  * tables are NULL, and the test costs less than the call. */
 static inline void scr_dyn_release_child(ScrDyn *child) {
-  if (child) scr_dyn_release(child);
+  if (!child) return;
+  size_t rc = child->rc;
+  if (rc == SIZE_MAX) return;
+  /* A shared leaf (no edges, never a cycle candidate) only loses one. */
+  if (rc > 1 && child->kind <= SCR_DYN_STR) {
+    child->rc = rc - 1;
+    return;
+  }
+  scr_dyn_release(child);
 }
 
 static void scr_dyn_dispose(ScrDyn *d, bool collected) {
@@ -1378,7 +1386,6 @@ static void scr_dyn_dispose(ScrDyn *d, bool collected) {
 
 static void scr_dyn_gcfree(void *ptr) { scr_dyn_dispose(ptr, true); }
 
-static void scr_dyn_destroy(void *ptr) { scr_dyn_dispose(ptr, false); }
 
 /* The cycle bookkeeping of a value that survives a release. Compiled
  * release fast paths decrement first and call this for every kind that can
@@ -1401,6 +1408,10 @@ void scr_dyn_release_survivor(ScrDyn *d) {
       (d->kind == SCR_DYN_HANDLE && d->v.handle.traced))
     scr_cyc_released(d);
 }
+
+static SCR_TL bool scr_dyn_draining;
+static SCR_TL ScrDyn **scr_dyn_dead;
+static SCR_TL size_t scr_dyn_dead_count, scr_dyn_dead_capacity;
 
 void scr_dyn_release(ScrDyn *d) {
   if (!d || d->rc == SIZE_MAX) return;
@@ -1448,7 +1459,24 @@ void scr_dyn_release(ScrDyn *d) {
     return;
   }
 #endif
-  scr_rc_destroy(d, scr_dyn_destroy);
+  /* Disposal releases children; a checked value that dies meanwhile waits
+   * in the list the outermost disposal drains, so a tree of checked values
+   * is torn down in a loop, without recursion or the generic depth guard. */
+  if (scr_dyn_draining) {
+    if (scr_dyn_dead_count == scr_dyn_dead_capacity) {
+      size_t capacity = scr_dyn_dead_capacity ? scr_dyn_dead_capacity * 2 : 256;
+      ScrDyn **grown = realloc(scr_dyn_dead, capacity * sizeof *grown);
+      if (!grown) scr_json_oom();
+      scr_dyn_dead = grown;
+      scr_dyn_dead_capacity = capacity;
+    }
+    scr_dyn_dead[scr_dyn_dead_count++] = d;
+    return;
+  }
+  scr_dyn_draining = true;
+  scr_dyn_dispose(d, false);
+  while (scr_dyn_dead_count) scr_dyn_dispose(scr_dyn_dead[--scr_dyn_dead_count], false);
+  scr_dyn_draining = false;
 }
 
 /* Small objects retain their compact linear representation. A wide object

@@ -5696,6 +5696,13 @@ bool scr_arr_numeric_key(const char *key, size_t len, double *out) {
    * other names answer without parsing. */
   char first = key[0];
   if (!(first >= '0' && first <= '9') && first != '-' && first != 'N' && first != 'I') return false;
+  /* A canonical array index (digits, no leading zero, below 2^32 - 1) is
+   * no numeric property: the common index read answers without parsing. */
+  if (len <= 9 && (first != '0' || len == 1)) {
+    size_t digits = 0;
+    while (digits < len && key[digits] >= '0' && key[digits] <= '9') digits++;
+    if (digits == len) return false;
+  }
   memcpy(text, key, len);
   text[len] = '\0';
   char *end;

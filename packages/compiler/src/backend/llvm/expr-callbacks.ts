@@ -18,7 +18,7 @@ import { registerReplay } from "./emit-journal.js";
 
 /** Text-template union construction around an owned (+1) reference payload:
  * a fresh box, or the payload itself for a nullable union. */
-function unionWrapRefLines(
+export function unionWrapRefLines(
   host: LlvmEmitterContext,
   unionId: string,
   tag: number,
@@ -26,8 +26,12 @@ function unionWrapRefLines(
   payload: string,
   out: string,
 ): string[] {
-  if (host.nullableUnions.has(unionId))
-    return [`  ${out} = getelementptr i8, ptr ${payload}, i64 0`];
+  const nullable = host.nullableUnions.get(unionId);
+  if (nullable?.repr === "tagged") {
+    const bits = nullable.refs.find((r) => r.tag === tag)?.bits ?? 0;
+    return [`  ${out} = getelementptr i8, ptr ${payload}, i64 ${bits}`];
+  }
+  if (nullable) return [`  ${out} = getelementptr i8, ptr ${payload}, i64 0`];
   const av = vAdapters(host.shapeHost, arm);
   host.declare(`declare ptr @scr_union_new_ref(i32, ptr, ptr, ptr, ptr)`);
   return [
@@ -128,9 +132,13 @@ export function raceAdapterFor(host: LlvmEmitterContext, from: IrType, to: IrTyp
         ...unionWrapRefLines(host, to.unionId, tag, from, "%x", "%u"),
       );
     } else if (host.nullableUnions.has(to.unionId)) {
-      // The nullable result union is the (+1) reference payload itself.
+      // The nullable result union is the (+1) reference payload itself
+      // (with its tag bits for a tagged union).
       host.declare(`declare ptr @scr_promise_payload_ref(ptr)`);
-      d.push(`  %u = call ptr @scr_promise_payload_ref(ptr %src)`);
+      d.push(
+        `  %x = call ptr @scr_promise_payload_ref(ptr %src)`,
+        ...unionWrapRefLines(host, to.unionId, tag, from, "%x", "%u"),
+      );
     } else {
       const fv = vAdapters(host.shapeHost, from);
       host.declare(`declare ptr @scr_promise_payload_ref(ptr)`);
@@ -780,7 +788,7 @@ export function childDataThunkFor(host: LlvmEmitterContext, param: IrType): stri
     `define internal void @${sym}(ptr %cb, ptr %chunk) ${FN_ATTRS} { ; child 'data' → ${param.unionId}`,
     `entry:`,
     `  %r = call ptr @scr_bytes_retain_v(ptr %chunk)`,
-    `  %u = call ptr @scr_union_new_ref(i32 ${bytesTag}, ptr %r, ptr @scr_bytes_retain_v, ptr @scr_bytes_release_v, ptr null)`,
+    ...unionWrapRefLines(host, param.unionId, bytesTag, def!.arms[bytesTag]!, "%r", "%u"),
     `  %fnp = getelementptr inbounds %ScrClosure, ptr %cb, i64 0, i32 1`,
     `  %fn = load ptr, ptr %fnp`,
     `  call void %fn(ptr %cb, ptr %u)`,

@@ -54,8 +54,34 @@ export interface ShapeUnion {
   arms: readonly { tag: number; shapeId: string }[];
 }
 
+/** A union of two to four reference arms of leaf kinds (string, bytes,
+ * stats: no collector header, so no trace ever visits one) and at most two
+ * unit arms (`string | Uint8Array`, `string | Buffer | null`) whose VALUES are the arm
+ * pointer with the arm's index among the reference arms in its low two
+ * bits: every reference arm's instances are at least 8-byte aligned, so
+ * those bits are otherwise zero. NULL is the unit arm (`undefined` when
+ * both exist, NULLABLE_NULL is then `null`), as for the other pointer
+ * unions. Peeking masks the bits off; retain and release dispatch on them
+ * through per-union helpers. */
+export interface TaggedUnion {
+  repr: "tagged";
+  unionId: string;
+  unitTag: number;
+  nullTag: number;
+  /** The reference arms in tag order; `bits` is the pointer tag. */
+  refs: readonly { tag: number; bits: number; arm: IrType }[];
+}
+
 /** A union whose values are plain pointers (no `%ScrUnion` box). */
-export type PointerUnion = NullableUnion | ShapeUnion;
+export type PointerUnion = NullableUnion | ShapeUnion | TaggedUnion;
+
+/** The pointer-tag mask of a tagged union value. */
+export const TAG_BITS_MASK = 3;
+
+/** The per-union helpers of a tagged union: tag, retain, release, trace. */
+export function taggedFn(kind: "tag" | "retain" | "release" | "trace", unionId: string): string {
+  return `@sc_t${kind}.${unionId.replace(/[^A-Za-z0-9_.]/g, "_")}`;
+}
 
 /** The struct index of a tagged record shape's hidden shape-number word. */
 export const SHAPE_WORD_INDEX = 1;
@@ -90,7 +116,7 @@ export const NULLABLE_ABSENT = "@sc_nullable_absent";
 /** The reference arms whose instances are never NULL. Class and record
  * entry points all tolerate NULL; strings, Stats snapshots, arrays, maps and
  * sets retain through a NULL-skipping wrapper (shapes.ts), as do closures
- * (function arms). Object arms are always truthy and compare by identity
+ * (function arms) and typed arrays (bytes arms). Object arms are always truthy and compare by identity
  * (function arms by identity root); string arms are truthy when non-empty
  * and compare bytes. */
 export type NullableRefArm =
@@ -98,16 +124,18 @@ export type NullableRefArm =
   | { kind: "record"; shapeId: string }
   | { kind: "string" }
   | { kind: "stats" }
-  | (IrType & { kind: "array" | "map" | "set" | "func" });
+  | (IrType & { kind: "array" | "map" | "set" | "func" | "bytes" });
 
 /** The arm is a JS object: always truthy. */
 export function isObjectArm(nullable: PointerUnion): boolean {
+  if (nullable.repr === "tagged") return nullable.refs.every((r) => r.arm.kind !== "string");
   return nullable.repr === "shapes" || nullable.arm.kind !== "string";
 }
 
 /** The arm compares by pointer identity. Function arms compare identity
  * roots instead: a signature adapter is the function it adapts. */
 export function isPointerIdentityArm(nullable: PointerUnion): boolean {
+  if (nullable.repr === "tagged") return nullable.refs.every((r) => r.arm.kind !== "string");
   return (
     nullable.repr === "shapes" || (nullable.arm.kind !== "string" && nullable.arm.kind !== "func")
   );
@@ -154,7 +182,8 @@ export class NullableUnions {
       if (boxed.has(def.id)) continue;
       const nullable =
         nullableShape(def, emitted, records) ??
-        (allowShapes ? shapeUnion(def, records, boxedRecords) : null);
+        (allowShapes ? shapeUnion(def, records, boxedRecords) : null) ??
+        (allowShapes ? taggedUnion(def) : null);
       if (!nullable) continue;
       this.byId.set(def.id, nullable);
       if (nullable.nullTag >= 0) this.usesNullSentinel = true;
@@ -201,6 +230,13 @@ export class NullableUnions {
   shapes(unionId: string): ShapeUnion | null {
     const nullable = this.byId.get(unionId);
     return nullable?.repr === "shapes" ? nullable : null;
+  }
+
+  /** Every tagged union, in module order. */
+  allTaggedUnions(): TaggedUnion[] {
+    const out: TaggedUnion[] = [];
+    for (const nullable of this.byId.values()) if (nullable.repr === "tagged") out.push(nullable);
+    return out;
   }
 
   /** Every shape union, in module order. */
@@ -273,9 +309,43 @@ function nullableShape(
     return { ...base, arm: { kind: "record", shapeId: arm.shapeId } };
   if (arm.kind === "string") return { ...base, arm: { kind: "string" } };
   if (arm.kind === "stats") return { ...base, arm: { kind: "stats" } };
-  if (arm.kind === "array" || arm.kind === "map" || arm.kind === "set" || arm.kind === "func")
+  if (
+    arm.kind === "array" ||
+    arm.kind === "map" ||
+    arm.kind === "set" ||
+    arm.kind === "func" ||
+    arm.kind === "bytes"
+  )
     return { ...base, arm };
   return null;
+}
+
+/** Two to four reference arms (not all records) and at most two unit
+ * arms (both: undefined and null). */
+function taggedUnion(def: IrUnionDef): TaggedUnion | null {
+  if (process.env.SCRIPTC_TAGGED_UNIONS === "0") return null;
+  const units = def.arms.filter(isUnitType).length;
+  const refCount = def.arms.length - units;
+  if (units > 2 || refCount < 2 || refCount > 4) return null;
+  const refs: { tag: number; bits: number; arm: IrType }[] = [];
+  for (let tag = 0; tag < def.arms.length; tag++) {
+    const arm = def.arms[tag]!;
+    if (isUnitType(arm)) continue;
+    // Leaf arms only for now: no collector header, never on a cycle, so
+    // no trace ever visits a tagged value.
+    const ok = arm.kind === "string" || arm.kind === "bytes" || arm.kind === "stats";
+    if (!ok) return null;
+    refs.push({ tag, bits: refs.length, arm });
+  }
+  let unitTag = -1,
+    nullTag = -1;
+  if (units === 1) unitTag = def.arms.findIndex(isUnitType);
+  else if (units === 2) {
+    unitTag = def.arms.findIndex((arm) => arm.kind === "undefinedT");
+    nullTag = def.arms.findIndex((arm) => arm.kind === "nullT");
+    if (unitTag < 0 || nullTag < 0) return null;
+  }
+  return { repr: "tagged", unionId: def.id, unitTag, nullTag, refs };
 }
 
 /** Two or more emitted record arms and at most two unit arms (both:

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/dyn-integer-values.cjs"
+ ],
+ "diags": []
+}

@@ -18,7 +18,7 @@ import {
   isUnitType,
   typeEquals,
 } from "../../ir/ir.js";
-import { isJsSourceFile, isNodeEsmFile } from "../program.js";
+import { isJsLikeSourceFile, isJsSourceFile, isNodeEsmFile } from "../program.js";
 import {
   genResultRecord,
   restTupleParamTypes,
@@ -67,6 +67,11 @@ export interface ParamShape {
    * (restTupleShapes): the declaration's last parameter owns every shape
    * from its index on, and the body binds the tuple (declareParams). */
   restTuple?: true;
+  /** An `arguments` slot that a call passing no surplus argument fills
+   * with its argument count (a number) instead of the array: the callee
+   * builds the array from its parameters when it reads more than the
+   * length (argumentsCountTokens). */
+  countToken?: true;
 }
 
 export interface FnSig {
@@ -221,7 +226,7 @@ export function paramShape(lowerer: Lowerer, param: ts.ParameterDeclaration): Pa
       : { type: DYN, mode: param.questionToken ? "omittable" : "required" };
   }
   if (
-    isJsSourceFile(ts.getSourceFileOfNode(param)) &&
+    isJsLikeSourceFile(ts.getSourceFileOfNode(param)) &&
     !param.dotDotDotToken &&
     prototypeAssignedFunction(param.parent) &&
     !checkedJsDocumentedParameter(lowerer, param)
@@ -928,7 +933,7 @@ function appendArgumentsParameter(
       ts.isFunctionDeclaration(node) ||
       ts.isMethodDeclaration(node)
     ) ||
-    !isJsSourceFile(ts.getSourceFileOfNode(node)) ||
+    !isJsLikeSourceFile(ts.getSourceFileOfNode(node)) ||
     !bodyReadsArguments(node)
   )
     return;
@@ -951,7 +956,63 @@ function appendArgumentsParameter(
       );
     }
   }
-  shapes.push({ type: DYN, mode });
+  shapes.push({
+    type: DYN,
+    mode,
+    ...(argumentsCountTokens(lowerer, node) ? { countToken: true as const } : {}),
+  });
+}
+
+/** Whether a function's parameters still hold their arguments whenever it
+ * reads `arguments`: plain identifier parameters it never assigns, and
+ * every `arguments` read in its own body (not a nested function's). The
+ * array is then the parameters' values (strict functions do not alias). */
+export function argumentsCountTokens(lowerer: Lowerer, node: ts.SignatureDeclaration): boolean {
+  // Declarations and function expressions declare their slot through
+  // declareFunctionArguments, which reads the count (lower-functions.ts).
+  if (!(ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node))) return false;
+  if (!node.body || node.parameters.nodes.length === 0) return false;
+  if (
+    !node.parameters.nodes.every(
+      (p) => ts.isIdentifier(p.name) && !p.dotDotDotToken && !p.initializer,
+    )
+  )
+    return false;
+  const symbols = new Set(
+    node.parameters.nodes.map((p) => lowerer.checker.getSymbolAtLocation(p.name)),
+  );
+  const isParam = (e: ts.Expression): boolean => {
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    return ts.isIdentifier(e) && symbols.has(lowerer.checker.getSymbolAtLocation(e));
+  };
+  let ok = true;
+  const visit = (n: ts.Node, nested: boolean): void => {
+    if (!ok) return;
+    if (ts.isIdentifier(n) && n.text === "arguments" && nested) ok = false;
+    else if (
+      ts.isBinaryExpression(n) &&
+      n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      n.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
+      isParam(n.left)
+    )
+      ok = false;
+    else if (
+      (ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n)) &&
+      isParam(n.operand)
+    )
+      ok = false;
+    else if (
+      (ts.isForInStatement(n) || ts.isForOfStatement(n)) &&
+      ts.isExpression(n.initializer) &&
+      isParam(n.initializer)
+    )
+      ok = false;
+    ts.forEachChild(n, (c) =>
+      visit(c, nested || (ts.isFunctionLike(c) && !ts.isArrowFunction(c)) || ts.isArrowFunction(c)),
+    );
+  };
+  ts.forEachChild(node.body, (c) => visit(c, ts.isFunctionLike(c)));
+  return ok;
 }
 
 /** Whether `arguments` inside `node` is Node's unmapped object: strict code

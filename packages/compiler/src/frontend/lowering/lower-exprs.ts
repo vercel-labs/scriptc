@@ -2041,10 +2041,27 @@ export function lowerDynMemberAssignment(
   const loc = locOf(expr);
   const target = expr.left as ts.ElementAccessExpression | ts.PropertyAccessExpression;
   const receiver = lowerer.declareHiddenLocal("%setReceiver", DYN);
-  const keyValue = ts.isElementAccessExpression(target)
-    ? lowerer.lowerExprExpecting(target.argumentExpression, DYN)
-    : lowerer.coerceToExpected({ kind: "strLit", value: target.name.text, type: STRING, loc }, DYN);
-  const key = lowerer.declareHiddenLocal("%setKey", DYN);
+  // A key whose value is a string needs no coercion at PutValue: the store
+  // takes it as is. (The checker's `string` is not enough: an unchecked
+  // index read can hold undefined.)
+  const rawKey =
+    ts.isElementAccessExpression(target) &&
+    lowerer.mapTypeOf(lowerer.typeOf(target.argumentExpression))?.kind === "string"
+      ? lowerer.lowerExpr(target.argumentExpression)
+      : null;
+  const stringKey = rawKey?.type.kind === "string";
+  const keyValue = stringKey
+    ? rawKey!
+    : rawKey
+      ? lowerer.coerceToExpected(rawKey, DYN)
+      : ts.isElementAccessExpression(target)
+        ? lowerer.lowerExprExpecting(target.argumentExpression, DYN)
+        : lowerer.coerceToExpected(
+            { kind: "strLit", value: target.name.text, type: STRING, loc },
+            DYN,
+          );
+  const keyType = stringKey ? STRING : DYN;
+  const key = lowerer.declareHiddenLocal("%setKey", keyType);
   const raw = lowerer.lowerExpr(expr.right);
   const value: IrExpr =
     raw.type.kind === "void"
@@ -2073,8 +2090,8 @@ export function lowerDynMemberAssignment(
         kind: "exprStmt",
         expr: {
           kind: "libCall",
-          fn: "dyn.keySetComputed",
-          args: [varRef(receiver.id, DYN, loc), varRef(key.id, DYN, loc), stored],
+          fn: stringKey ? "dyn.keySet" : "dyn.keySetComputed",
+          args: [varRef(receiver.id, DYN, loc), varRef(key.id, keyType, loc), stored],
           type: VOID,
           loc,
         },

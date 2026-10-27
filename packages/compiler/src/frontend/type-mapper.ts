@@ -3293,7 +3293,11 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const key = (args[0]!.flags & ts.TypeFlags.Any) !== 0 ? DYN : mapType(args[0]!, ctx);
     if (
       !key ||
-      !isSupportedMapKey(key, key.kind === "union" ? ctx.unions.get(key.unionId)?.arms : undefined)
+      (!(key.kind === "union" && ctx.unions.isPendingPlaceholder(key.unionId)) &&
+        !isSupportedMapKey(
+          key,
+          key.kind === "union" ? ctx.unions.get(key.unionId)?.arms : undefined,
+        ))
     )
       return null;
     const value = (args[1]!.flags & ts.TypeFlags.Any) !== 0 ? DYN : mapType(args[1]!, ctx);
@@ -3314,10 +3318,13 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     const elem = (args[0]!.flags & ts.TypeFlags.Any) !== 0 ? DYN : mapType(args[0]!, ctx);
     if (
       !elem ||
-      !isSupportedSetElem(
-        elem,
-        elem.kind === "union" ? ctx.unions.get(elem.unionId)?.arms : undefined,
-      )
+      // A recursive union still being mapped (`Set<Task>` inside a Task
+      // arm) has no arms yet; the validator checks the completed module.
+      (!(elem.kind === "union" && ctx.unions.isPendingPlaceholder(elem.unionId)) &&
+        !isSupportedSetElem(
+          elem,
+          elem.kind === "union" ? ctx.unions.get(elem.unionId)?.arms : undefined,
+        ))
     )
       return null;
     return setOf(elem);
@@ -8674,7 +8681,9 @@ export function describeComponentBlocker(widened: ts.Type, ctx: TypeMapperCtx): 
     }
     for (const { p: part, mapped } of mappedArms) {
       if (!mapped) {
-        return `the union shape is supported, but its arm '${text(part)}' does not compile`;
+        // The arm's own blocker, so the story reaches the member at fault.
+        const inner = describeComponentBlocker(part, ctx);
+        return `the union shape is supported, but its arm '${text(part)}' does not compile${inner ? ` (${inner})` : ""}`;
       }
       if (!armHasUnionHome(mapped)) {
         return `the union shape is supported, but '${text(part)}' arms have no home in a compiled union yet (no runtime narrowing test exists against sibling arms)`;

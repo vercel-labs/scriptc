@@ -1253,6 +1253,11 @@ export function wrapNullable(
   const B = host.B;
   if (host.nullableUnions.has(resultType.unionId)) {
     // A nullable union is its present payload, or the absent arm's encoding.
+    if (host.nullableUnions.get(resultType.unionId)?.repr === "tagged")
+      present = host.unionNewOwned(resultType.unionId, valueTag, {
+        name: present,
+        type: valueType,
+      });
     const absent = host.unitInstanceRef(resultType.unionId, absentTag);
     if (raw === present && absent === "null") return host.own({ name: present, type: resultType });
     const isnull = B.tmp(),

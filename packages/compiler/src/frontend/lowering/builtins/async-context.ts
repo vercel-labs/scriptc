@@ -13,7 +13,11 @@ import {
   VOID,
   canBoxFuncIntoDyn,
   canConvertToDyn,
+  type IrParam,
+  typeKey,
 } from "../../../ir/ir.js";
+import { keyedHelperName } from "../stable-names.js";
+import { tryLowerExpression } from "../expressions/try-lower-expression.js";
 
 /** The channel-name argument of the diagnostics_channel surface: a
  * string (dyn names ride the validated extraction — Node's non-string
@@ -85,6 +89,10 @@ function lowerDiagnosticsMessage(lowerer: Lowerer, node: ts.Expression): IrExpr 
   ) {
     return { kind: "dynFrom", value: msg, type: DYN, loc: locOf(node) };
   }
+  // A static-only record or array crosses by reference (an opaque live
+  // capsule): a store or message keeps its identity, as in Node.
+  if (msg.type.kind === "record" || msg.type.kind === "array")
+    return { kind: "dynFrom", value: msg, type: DYN, liveRef: true, loc: locOf(node) };
   lowerer.unsupported(
     "SC1090",
     node,
@@ -283,6 +291,8 @@ export function lowerAsyncLocalStorageMethodCall(
   }
   if (name === "run" && call.arguments.nodes.length >= 2) {
     const receiver = lowerer.lowerExprExpecting(access.expression, F64);
+    const typed = lowerTypedAlsRun(lowerer, call, receiver);
+    if (typed) return typed;
     const value = lowerDiagnosticsMessage(lowerer, call.arguments.nodes[0]!);
     const fn = lowerDiagnosticsSubscriber(lowerer, call.arguments.nodes[1]!);
     const rest = lowerTracingArguments(lowerer, call.arguments.nodes.slice(2), loc);
@@ -605,4 +615,102 @@ export function lowerDiagnosticsChannelCall(
   }
 
   return null;
+}
+
+/** `store.run(value, fn, ...args)` with a compiled callback that cannot
+ * cross as a checked-dynamic function (a parameter of a static-only type):
+ * a helper enters the store, calls fn with its typed arguments, and
+ * restores the previous context in a finally, as scr_als_run does. */
+function lowerTypedAlsRun(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  receiver: IrExpr,
+): IrExpr | null {
+  const [valueNode, fnNode, ...argNodes] = call.arguments.nodes;
+  if (!valueNode || !fnNode || call.arguments.nodes.some(ts.isSpreadElement)) return null;
+  const fn = tryLowerExpression(lowerer, fnNode);
+  if (!fn || fn.type.kind !== "func" || fn.type.rest || fn.type.params.length !== argNodes.length)
+    return null;
+  if (
+    canBoxFuncIntoDyn(
+      fn.type,
+      (id) => lowerer.shapes.get(id),
+      (id) => lowerer.unions.get(id),
+    )
+  )
+    return null;
+  const type = fn.type;
+  const loc = locOf(call);
+  const key = `als.run:${typeKey(type)}`;
+  let name: string | undefined = lowerer.arrHofHelpers.get(key);
+  if (name === undefined) {
+    name = keyedHelperName(lowerer, "%als.runTyped", key) as string;
+    lowerer.arrHofHelpers.set(key, name);
+    const params: IrParam[] = [
+      { localId: "id.0", name: "id", type: F64 },
+      { localId: "store.0", name: "store", type: DYN },
+      { localId: "fn.0", name: "fn", type },
+      ...type.params.map((t, i) => ({ localId: `a.${i}`, name: `a${i}`, type: t })),
+    ];
+    const invoked: IrExpr = {
+      kind: "callValue",
+      callee: { kind: "varRef", localId: "fn.0", type, loc },
+      args: type.params.map((t, i) => ({ kind: "varRef", localId: `a.${i}`, type: t, loc })),
+      type: type.ret,
+      loc,
+    };
+    lowerer.liftedFns.push({
+      name,
+      params,
+      returnType: type.ret,
+      locals: params.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: false })),
+      body: [
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "als.push",
+            args: [
+              { kind: "varRef", localId: "id.0", type: F64, loc },
+              { kind: "varRef", localId: "store.0", type: DYN, loc },
+            ],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+        {
+          kind: "tryCatch",
+          tryBody: [
+            type.ret.kind === "void"
+              ? { kind: "exprStmt", expr: invoked, loc }
+              : { kind: "return", value: invoked, loc },
+          ],
+          catchBody: null,
+          catchLocalId: null,
+          finallyBody: [
+            {
+              kind: "exprStmt",
+              expr: { kind: "libCall", fn: "als.pop", args: [], type: VOID, loc },
+              loc,
+            },
+          ],
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  return {
+    kind: "call",
+    callee: name,
+    args: [
+      receiver,
+      lowerDiagnosticsMessage(lowerer, valueNode),
+      fn,
+      ...argNodes.map((a, i) => lowerer.lowerExprExpecting(a, type.params[i]!)),
+    ],
+    type: type.ret,
+    loc,
+  };
 }

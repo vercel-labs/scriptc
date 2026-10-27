@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/discarded-logical-void-conditional.cjs"
+ ],
+ "diags": []
+}

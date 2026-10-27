@@ -2403,7 +2403,8 @@ export function lowerObjectLiteral(
           init.properties.nodes.length > 0
             ? (() => {
                 const nested = lowerer.lowerObjectLiteral(init, fieldType);
-                return lowerer.isRuntimeOptionalRecordVariant(nested.type, fieldType)
+                return lowerer.isRuntimeOptionalRecordVariant(nested.type, fieldType) ||
+                  anyInstantiation(lowerer, lowerer.typeOf(init))
                   ? nested
                   : lowerer.coerceInto(init, nested, fieldType);
               })()
@@ -2448,7 +2449,7 @@ export function lowerObjectLiteral(
       ) {
         throw err;
       }
-      lowerer.runtimeFences.push(...lowerer.diags.splice(propDiagsBefore));
+      lowerer.deferRefusals(lowerer.diags.splice(propDiagsBefore));
       droppedNames.add(name);
       continue;
     }
@@ -2473,6 +2474,24 @@ export function lowerObjectLiteral(
       if (type.kind === "record") shape = lowerer.shapes.get(type.shapeId)!;
       fieldTypes.set(name, promotedField);
       fieldType = promotedField;
+    }
+    // A field the checker typed by an all-`any` instantiation (a `new
+    // Map()` it typed without the context) holds the typed container the
+    // value lowered to.
+    if (
+      value.type.kind === fieldType.kind &&
+      (value.type.kind === "map" ||
+        value.type.kind === "set" ||
+        value.type.kind === "array" ||
+        (value.type.kind === "record" &&
+          ts.isObjectLiteralExpression(ts.skipOuterExpressions(valueNode)))) &&
+      !typeEquals(value.type, fieldType) &&
+      anyInstantiation(lowerer, lowerer.typeOf(valueNode))
+    ) {
+      type = lowerer.runtimeOptionalRecordField(type, name, value.type);
+      if (type.kind === "record") shape = lowerer.shapes.get(type.shapeId)!;
+      fieldTypes.set(name, value.type);
+      fieldType = value.type;
     }
     value = lowerer.coerceInto(valueNode, value, fieldType); // union-typed fields wrap arm values
     if (!typeEquals(value.type, fieldType)) lowerer.badType(valueNode, lowerer.typeOf(valueNode));
@@ -3375,14 +3394,7 @@ export function lowerShorthandValue(
       return { kind: "closure", fnName: sig.name, captures: [], type: funcType, loc };
     }
     const generic = lowerer.genericFnsBySymbol.get(resolved);
-    if (generic?.implicitParams) return lowerer.lowerGenericFnValue(propName, generic);
-    if (generic) {
-      lowerer.unsupported(
-        "SC1090",
-        prop,
-        `generic functions as values (call '${propName.text}' directly)`,
-      );
-    }
+    if (generic) return lowerer.lowerGenericFnValue(propName, generic);
     // A program class name (`{ parse, TomlError }`, an imported class
     // included): the class object, exactly the long form `{ C: C }`.
     // Generic classes keep the identifier path's contextual pinning.
@@ -3446,4 +3458,16 @@ function rejectThisInObjectAccessor(lowerer: Lowerer, node: ts.Node): void {
     );
   }
   ts.forEachChild(node, (child) => rejectThisInObjectAccessor(lowerer, child));
+}
+
+/** Whether `t` instantiates a generic type with only `any` arguments, or
+ * is an object literal's type with such a property. */
+function anyInstantiation(lowerer: Lowerer, t: ts.Type, depth = 0): boolean {
+  if ((t.flags & ts.TypeFlags.Object) === 0 || depth > 4) return false;
+  const args = lowerer.checker.getTypeArguments(t as ts.TypeReference);
+  if (args.length > 0) return args.every((a) => (a.flags & ts.TypeFlags.Any) !== 0);
+  if (((t as ts.ObjectType).objectFlags & ts.ObjectFlags.ObjectLiteral) === 0) return false;
+  return lowerer.checker
+    .getPropertiesOfType(t)
+    .some((p) => anyInstantiation(lowerer, lowerer.checker.getTypeOfSymbol(p), depth + 1));
 }

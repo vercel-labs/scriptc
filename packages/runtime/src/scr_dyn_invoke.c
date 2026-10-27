@@ -744,10 +744,18 @@ static ScrDyn *dyn_live_array_method(ScrDyn *recv, int mid, ScrDyn *const *args,
   size_t len = arr->len;
   /* A frozen array's view refuses the write. */
   if (scr_arr_frozen(arr) && ((mid == DYN_M_push) || (mid == DYN_M_pop))) return NULL;
-  if ((mid == DYN_M_push) && argc == 1 && ops->set) {
-    if (!ops->set(arr, (double)len, args[0])) return NULL;
+  if ((mid == DYN_M_push) && argc >= 1 && ops->set) {
+    /* Each value appends through the native array; one that does not fit
+     * its element type undoes the appends, and the snapshot path below
+     * answers the whole call. */
+    for (size_t i = 0; i < argc; i++) {
+      if (ops->set(arr, (double)(len + i), args[i]) && !scr_exc_pending()) continue;
+      if (scr_exc_pending()) return NULL;
+      scr_arr_set_len(arr, (double)len);
+      return NULL;
+    }
     *handled = true;
-    return scr_exc_pending() ? NULL : scr_dyn_new_num((double)arr->len);
+    return scr_dyn_new_num((double)arr->len);
   }
   if ((mid == DYN_M_pop)) {
     if (len == 0) {
@@ -996,6 +1004,20 @@ static ScrDyn *scr_dyn_invoke_impl(
       return result;
     }
     scr_dyn_release(inherited);
+    ScrDyn *builtin = scr_dyn_typed_ref_view_builtin_method(recv, method, method_len);
+    if (builtin) {
+      ScrDyn *view = recv->v.typed_ref.materialized;
+      scr_dyn_retain(builtin);
+      scr_dyn_this_push_dyn(recv);
+      ScrDyn *result = scr_dyn_call(builtin, args, argc, what);
+      scr_dyn_this_pop();
+      scr_dyn_release(builtin);
+      if (result == view) {
+        scr_dyn_release(result);
+        result = scr_dyn_retain(recv);
+      }
+      return result;
+    }
     ScrDyn *materialized = scr_dyn_typed_ref_materialize(recv);
     if (scr_exc_pending()) {
       scr_dyn_release(materialized);
@@ -2271,6 +2293,16 @@ static ScrDyn *dyn_builtin_fn_call(ScrClosure *clo, ScrDyn *const *args, size_t 
       scr_queue_microtask_dyn(args[0]);
       result = scr_dyn_retain(scr_dyn_undefined());
     }
+  } else if (strcmp(name->data, "Function.prototype.bind") == 0) {
+    /* Throwing leaves the exception pending: the call returns NULL. */
+    ScrDyn *target = scr_dyn_this_get();
+    if (target && target->kind == SCR_DYN_FUNC) {
+      result = scr_dyn_bind(target, args, argc);
+    } else {
+      static const char msg[] = "Bind must be called on a function";
+      scr_throw_error_msg(SCR_ERR_TYPE, msg, sizeof msg - 1);
+    }
+    if (target) scr_dyn_release(target);
   } else if (strncmp(name->data, dyn_s28, 5) == 0) {
     /* Node ignores anything that is not a live handle. */
     if (argc > 0 && args[0]->kind == SCR_DYN_NUM) {
@@ -2298,7 +2330,7 @@ ScrDyn *scr_dyn_builtin_function(const ScrStr *name) {
     ScrClosure *closure = scr_closure_new(NULL, 1);
     closure->caps[0] = scr_box_new(SCR_BOX_STR);
     scr_box_set_ref(closure->caps[0], scr_str_retain((ScrStr *)name));
-    const char *dot = memchr(name->data, '.', name->len);
+    const char *dot = strrchr(name->data, '.');
     bool two = strcmp(name->data, dyn_s16) == 0 || strcmp(name->data, dyn_s15) == 0;
     value = scr_dyn_new_func(closure, dyn_builtin_fn_call, two ? 2 : 1, dyn_s10, dot ? dot + 1 : name->data);
     scr_dyn_obj_set(dyn_builtin_fns, name->data, name->len, value); /* the table owns it */

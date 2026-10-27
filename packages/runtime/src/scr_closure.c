@@ -140,6 +140,8 @@ double scr_box_get_f64(ScrBox *b) {
 
 bool scr_box_get_bool(ScrBox *b) { return b->slot != 0; }
 
+void *scr_box_peek_ref(const ScrBox *b) { return scr_box_ptr(b); }
+
 void *scr_box_get_ref(ScrBox *b) {
   void *p = scr_box_ptr(b);
   switch (b->kind) {

@@ -678,12 +678,26 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
       const recv = lowerer.lowerExpr(expr.expression);
       const rawIndex = lowerer.lowerExpr(expr.argumentExpression);
       // A checked-dynamic index (an untyped JavaScript parameter, a parsed
-      // value) reads the property its key names, as JavaScript does: a code
-      // unit for an integer index, the length for "length", else undefined.
-      // The checker's string type does not describe those results, so the
-      // value stays checked-dynamic and consumers convert it.
-      if (rawIndex.type.kind === "dyn" && lowerer.dynConvertible(recv.type)) {
-        const key = lowerRecordPropertyKey(lowerer, rawIndex, expr.argumentExpression);
+      // value), or a union index holding more than a number (a JavaScript
+      // binding written a string), reads the property its key names, as
+      // JavaScript does: a code unit for an integer index, the length for
+      // "length", else undefined. The checker's string type does not
+      // describe those results, so the value stays checked-dynamic and
+      // consumers convert it.
+      const keyedIndex =
+        rawIndex.type.kind === "dyn" ||
+        (rawIndex.type.kind === "union" &&
+          isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+          lowerer.unions
+            .get(rawIndex.type.unionId)
+            ?.arms.some((arm) => arm.kind !== "f64" && arm.kind !== "undefinedT") === true &&
+          lowerer.dynConvertible(rawIndex.type));
+      if (keyedIndex && lowerer.dynConvertible(recv.type)) {
+        const key = lowerRecordPropertyKey(
+          lowerer,
+          lowerer.coerceToExpected(rawIndex, DYN),
+          expr.argumentExpression,
+        );
         return {
           kind: "dynKeyGet",
           value: lowerer.coerceInto(expr.expression, recv, DYN),

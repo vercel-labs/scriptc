@@ -2412,6 +2412,17 @@ static void scr_http_proto_sweep(void) {
     }
     }
     scr_als_dispatch_leave(prev);
+    /* A closed response fires no more of the events that ran in its end()
+     * context, so the context goes now: it can hold the response itself (a
+     * store whose request object keeps a callback that captured the
+     * response, as React's render requests do), and the collector cannot
+     * see through an AsyncLocalStorage context to break that cycle. */
+    if (e.kind == SCR_HTTP_EMIT_RES_CLOSE && ((ScrHttpRes *)e.h)->close_emitted) {
+      ScrHttpRes *res = (ScrHttpRes *)e.h;
+      scr_als_ctx_release(res->end_als);
+      res->end_als = NULL;
+      res->end_ctx_set = false;
+    }
     scr_http_emit_release(&e);
     if (scr_exc_pending()) return;
   }

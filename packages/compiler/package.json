@@ -40,6 +40,7 @@
   },
   "dependencies": {
     "@scriptc/runtime": "workspace:*",
+    "hermes-parser": "^0.37.0",
     "tsc-ts": "0.0.9",
     "typescript": "7.0.2",
     "typescript5": "npm:typescript@5.9.3"
@@ -47,21 +48,21 @@
   "optionalDependencies": {
     "@scriptc/llvm-darwin-arm64": "workspace:*",
     "@scriptc/llvm-darwin-x64": "workspace:*",
-    "@scriptc/llvm-linux-x64-gnu": "workspace:*",
     "@scriptc/llvm-linux-arm64-gnu": "workspace:*",
-    "@scriptc/llvm-linux-x64-musl": "workspace:*",
     "@scriptc/llvm-linux-arm64-musl": "workspace:*",
+    "@scriptc/llvm-linux-x64-gnu": "workspace:*",
+    "@scriptc/llvm-linux-x64-musl": "workspace:*",
     "@scriptc/llvm-win32-x64-msvc": "workspace:*",
+    "@scriptc/runtime-android-arm64": "workspace:*",
     "@scriptc/runtime-darwin-arm64": "workspace:*",
     "@scriptc/runtime-darwin-x64": "workspace:*",
-    "@scriptc/runtime-linux-x64-gnu": "workspace:*",
-    "@scriptc/runtime-linux-arm64-gnu": "workspace:*",
-    "@scriptc/runtime-linux-x64-musl": "workspace:*",
-    "@scriptc/runtime-linux-arm64-musl": "workspace:*",
-    "@scriptc/runtime-win32-x64-msvc": "workspace:*",
-    "@scriptc/runtime-wasm32-wasi": "workspace:*",
     "@scriptc/runtime-ios-arm64": "workspace:*",
     "@scriptc/runtime-ios-simulator-arm64": "workspace:*",
-    "@scriptc/runtime-android-arm64": "workspace:*"
+    "@scriptc/runtime-linux-arm64-gnu": "workspace:*",
+    "@scriptc/runtime-linux-arm64-musl": "workspace:*",
+    "@scriptc/runtime-linux-x64-gnu": "workspace:*",
+    "@scriptc/runtime-linux-x64-musl": "workspace:*",
+    "@scriptc/runtime-wasm32-wasi": "workspace:*",
+    "@scriptc/runtime-win32-x64-msvc": "workspace:*"
   }
 }

@@ -1,11 +1,11 @@
 import { isNavigatorGlobal } from "../builtins/navigator.js";
 import { isSafeToDiscard } from "./evaluation-safety.js";
 import { completeFuncValueArgs } from "../call-arguments.js";
-import { dynUndefinedExpr } from "../../../ir/build.js";
+import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { DYN, STRING, UNDEFINED_T, VOID, isUnitType, typeEquals } from "../../../ir/ir.js";
 import type { IrExpr, IrStmt, SrcLoc } from "../../../ir/ir.js";
-import { isNodeEsmFile, locOf } from "../../program.js";
+import { isJsSourceFile, isNodeEsmFile, locOf } from "../../program.js";
 import type { Lowerer } from "../lowerer.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
 import { constituentTypes } from "../../ts7/checker.js";
@@ -563,4 +563,60 @@ export function finishOptionalChain(
   const wrapped = lowerer.coerceToExpected(body, type);
   if (!typeEquals(wrapped.type, type)) lowerer.badType(expr, lowerer.typeOf(expr));
   return { kind: "optChain", id, receiver, body: wrapped, type, loc };
+}
+
+/** A JavaScript member read or call whose receiver holds one present arm
+ * beside null/undefined (`var view = null` later holding a Uint8Array):
+ * the receiver evaluates once, a unit arm throws Node's member-read
+ * TypeError, and the member lowers against the present arm, typed as the
+ * receiver's non-nullish type. `value` is the receiver already lowered,
+ * when the caller has it. Null when the receiver is not such a union or
+ * the member has no lowering on the present arm. */
+export function lowerPresentArmMember(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+  recvNode: ts.Expression,
+  member: string,
+  value: IrExpr | null = null,
+): IrExpr | null {
+  if (!isJsSourceFile(ts.getSourceFileOfNode(expr)) || lowerer.chainRecvByNode.has(recvNode))
+    return null;
+  const source = value ?? tryLowerExpression(lowerer, recvNode);
+  if (source?.type.kind !== "union") return null;
+  const present = (lowerer.unions.get(source.type.unionId)?.arms ?? []).filter(
+    (arm) => !isUnitType(arm),
+  );
+  if (present.length !== 1 || present[0]!.kind === "dyn") return null;
+  const presentIr = present[0]!;
+  // At a use the checker narrowed to the unit (`view = null; view.m()`),
+  // the declared type still names the present arm.
+  const symbol = ts.isIdentifier(recvNode) ? lowerer.resolveValueSymbol(recvNode) : null;
+  const presentTs = lowerer.checker.getNonNullableType(
+    symbol ? lowerer.checker.getTypeOfSymbol(symbol) : lowerer.typeOf(recvNode),
+  );
+  const mapped = lowerer.mapTypeOf(presentTs);
+  if (!mapped || !typeEquals(mapped, presentIr)) return null;
+  const receiver = lowerer.nullableArmReceiver(recvNode, source, presentIr, member);
+  if (!receiver) return null;
+  const loc = locOf(expr);
+  const stable = lowerer.declareHiddenLocal("%presentRecv", presentIr);
+  const previous = lowerer.chainNarrowedType.get(recvNode);
+  lowerer.chainNarrowedType.set(recvNode, presentTs);
+  let body: IrExpr | null;
+  try {
+    body = lowerer.withExpressionOverride(recvNode, varRef(stable.id, presentIr, loc), () =>
+      tryLowerExpression(lowerer, expr),
+    );
+  } finally {
+    if (previous) lowerer.chainNarrowedType.set(recvNode, previous);
+    else lowerer.chainNarrowedType.delete(recvNode);
+  }
+  if (!body || body.type.kind === "dyn") return null;
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: stable.id, init: receiver, loc }],
+    result: body,
+    type: body.type,
+    loc,
+  };
 }

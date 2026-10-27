@@ -10,7 +10,11 @@ import {
   type IrStmt,
   type IrType,
 } from "./ir.js";
-import { scalarizeLiteralResults, scalarizeNumericRecords } from "./scalar-records.js";
+import {
+  scalarizeLiteralResults,
+  scalarizeNumericRecords,
+  scalarizeRecordLiterals,
+} from "./scalar-records.js";
 import { validateModule } from "./validate.js";
 
 const loc = { file: "scalar-records.ts", start: 0, end: 0 };
@@ -469,4 +473,89 @@ test("renames a producer's parameter where its literal writes it", () => {
   // Only the written parameter's binding is mutable.
   expect(caller.locals.find((l) => l.id === at)?.mutable).toBe(true);
   expect(caller.locals.find((l) => l.id === text)?.mutable).toBe(false);
+});
+
+test("a record literal read only through its fields is never built", () => {
+  const literal = (a: IrExpr, b: IrExpr): IrExpr => ({
+    kind: "recordLit",
+    fields: [
+      { name: "a", value: a },
+      { name: "b", value: b },
+    ],
+    type: record,
+    loc,
+  });
+  const mod: IrModule = {
+    irVersion: 17,
+    sourceFile: loc.file,
+    entry: "main",
+    records: [
+      {
+        id: "r0",
+        fields: [
+          { name: "a", type: F64 },
+          { name: "b", type: F64 },
+        ],
+      },
+    ],
+    functions: [
+      {
+        name: "main",
+        params: [{ localId: "x", name: "x", type: F64 }],
+        returnType: F64,
+        locals: [
+          { id: "x", name: "x", type: F64, mutable: false },
+          { id: "pair", name: "pair", type: record, mutable: false },
+        ],
+        body: [
+          { kind: "varDecl", localId: "pair", init: literal(ref("x"), num(2)), loc },
+          {
+            kind: "return",
+            value: {
+              kind: "bin",
+              op: "+",
+              left: {
+                kind: "bin",
+                op: "+",
+                left: read("pair", "a"),
+                right: read("pair", "b"),
+                type: F64,
+                loc,
+              },
+              right: {
+                kind: "recordGet",
+                obj: literal(num(3), num(4)),
+                shapeId: "r0",
+                field: "b",
+                type: F64,
+                loc,
+              },
+              type: F64,
+              loc,
+            },
+            loc,
+          },
+        ],
+        loc,
+      },
+    ],
+  };
+  const out = scalarizeRecordLiterals(mod);
+  validateModule(out);
+  const text = JSON.stringify(out.functions[0]!.body);
+  expect(text).not.toContain("recordLit");
+  expect(text).not.toContain("recordGet");
+  expect(out.functions[0]!.locals.some((l) => l.id === "pair")).toBe(false);
+  // Any other use keeps the record.
+  const kept = scalarizeRecordLiterals({
+    ...mod,
+    functions: [
+      {
+        ...mod.functions[0]!,
+        returnType: record,
+        body: [mod.functions[0]!.body[0]!, { kind: "return", value: ref("pair", record), loc }],
+      },
+    ],
+  });
+  expect(JSON.stringify(kept.functions[0]!.body)).toContain("recordLit");
 });

@@ -155,6 +155,7 @@ export function analyzeWalks(fn: IrFunction, host: WalkBorrowHost): WalkFacts {
       case "unionNarrow":
       case "downcast":
       case "upcast":
+      case "unionRetype":
         return host.borrowsWithoutOwning(e) && walk(e.value);
       case "unionWrap":
         if (!host.borrowsWithoutOwning(e)) return false;

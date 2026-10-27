@@ -833,6 +833,14 @@ static ScrArr *scr_regex_exec_core(ScrStr *s, ScrRegex *re, uint64_t mask, bool 
                                    uint64_t lazy) {
   uint8_t *bc = scr_regex_bc(re);
   bool stateful = (lre_get_flags(bc) & (LRE_FLAG_GLOBAL | LRE_FLAG_STICKY)) != 0;
+  /* A short ASCII subject of a build-time matcher that finds no match
+   * answers null before any engine input is set up. */
+  ScrRegexMatcherFn matcher = scr_regex_matcher(re);
+  if (!stateful && matcher && s->len < SCR_REGEX_SUBJECT_CACHE_MIN && lre_get_alloc_count(bc) <= 32 &&
+      scr_text_ascii(s)) {
+    uint8_t *registers[32];
+    if (matcher((const uint8_t *)s->data, (int32_t)s->len, 0, registers) == 0) return NULL;
+  }
   ScrRegexInput input;
   scr_regex_input_init_cached(&input, re, bc, s);
   int len = input.len;

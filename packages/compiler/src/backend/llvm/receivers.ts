@@ -27,6 +27,7 @@ import {
   emitBorrowedRecordKeyGet,
   emitStackRecordKeyGet,
   pointerRecordKeyGet,
+  retypeIsIdentity,
   scalarRecordKeyGet,
 } from "./expr-records.js";
 import { type WalkBorrowHost, analyzeWalks } from "./walk-borrows.js";
@@ -112,6 +113,8 @@ export function emitReadReceiver(emitter: LlEmitter, e: IrExpr): LlValue {
   if (canStackUnion(e, emitter.boxedUnionsById)) return emitStackUnion(emitter, e).value;
   if (e.kind === "recordKeyGet" && scalarRecordKeyGet(emitter, e))
     return { name: emitStackRecordKeyGet(emitter, e), type: e.type };
+  if (e.kind === "unionRetype" && retypeIsIdentity(emitter.nullableUnions, e))
+    return { name: emitter.emitReadReceiver(e.value).name, type: e.type };
   if (e.kind === "unionNarrow") {
     const union = emitter.emitUnionProjection(e.value);
     emitUnionNarrowGuard(emitter, union.name, e.unionId, e.tag);
@@ -284,6 +287,8 @@ export function canBorrowReceiver(emitter: LlEmitter, e: IrExpr): boolean {
     case "downcast":
     case "upcast":
       return emitter.canBorrowReceiver(e.value);
+    case "unionRetype":
+      return retypeIsIdentity(emitter.nullableUnions, e) && emitter.canBorrowReceiver(e.value);
     // An inline union field has no box to lend: projections read it
     // through emitReadReceiver's private stack box.
     case "fieldGet":

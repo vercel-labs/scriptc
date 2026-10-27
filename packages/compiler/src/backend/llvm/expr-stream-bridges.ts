@@ -1,3 +1,4 @@
+import { canConvertToDyn } from "../../ir/ir.js";
 import { typedRefConstructor } from "./shapes.js";
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
@@ -811,6 +812,22 @@ export function streamTypedRefMaterializeAdapter(
     "streamTypedRefMaterializeAdapter",
     [t],
   );
+  // A record or array whose fields have no checked-dynamic form (a live
+  // reference to a static-only structure) crosses as an opaque capsule:
+  // identity round-trips; viewing it from dynamic code throws.
+  if (
+    (t.kind === "record" || t.kind === "array") &&
+    !canConvertToDyn(
+      t,
+      (id) => host.recordsById.get(id),
+      (id) => host.unionsById.get(id),
+    )
+  ) {
+    host.declare(`declare ptr @scr_dyn_view_unavailable(ptr)`);
+    adapter.snapshot = "scr_dyn_view_unavailable";
+    host.journal?.built();
+    return adapter;
+  }
   if (isDynTypedRefType(t)) {
     const fields = host.classMeta.get(t.className)?.def.fields;
     if (
@@ -1406,6 +1423,53 @@ function liveRecordOpsEligible(fields: readonly { name: string }[]): boolean {
   );
 }
 
+/** Field types a keyed write through a live record capsule converts with
+ * the ordinary checked conversion; other fields leave the write to the
+ * checked view. */
+function liveStorable(
+  t: IrType,
+  unions: ReadonlyMap<string, { arms: readonly IrType[] }>,
+  records: ReadonlyMap<string, IrRecordShape>,
+  seen = new Set<string>(),
+): boolean {
+  const nested = (u: IrType): boolean => liveStorable(u, unions, records, seen);
+  switch (t.kind) {
+    case "record": {
+      if (seen.has(t.shapeId)) return true;
+      seen.add(t.shapeId);
+      const shape = records.get(t.shapeId);
+      return (
+        shape !== undefined &&
+        shape.fields.every((f) => nested(f.type)) &&
+        (!shape.indexValue || nested(shape.indexValue))
+      );
+    }
+    case "array":
+      return nested(t.elem);
+    case "f64":
+    case "bool":
+    case "string":
+    case "bigint":
+    case "symbol":
+    case "dyn":
+    case "jsval":
+    case "nullT":
+    case "undefinedT":
+    case "bytes":
+    case "func":
+    case "object":
+      return true;
+    case "map":
+      return nested(t.key) && nested(t.value);
+    case "set":
+      return nested(t.elem);
+    case "union":
+      return unions.get(t.unionId)?.arms.every(nested) ?? false;
+    default:
+      return false;
+  }
+}
+
 /** Per-field hooks for a live record capsule (ScrDynTypedRecordOps). The
  * runtime answers keyed reads, presence and key walks of a capsule whose
  * checked view was never created from the native record: `has` applies the
@@ -1484,7 +1548,86 @@ function liveRecordOps(
   G.startBlock(bad);
   G.terminate(`unreachable`);
 
+  // A keyed write through the capsule (`task.node = x` in untyped code)
+  // stores one field: the value converts as the view's commit would convert
+  // it (the same checker and `$.field` path), and the old value is released
+  // after the store. Only shapes whose fields are all required store here,
+  // and not into inline union fields; the hook answers false for those,
+  // and the write takes the checked view.
+  const set = `${snapshot}_set`;
+  const S = new BlockBuilder();
+  const setFields = fields
+    .map((field, position) => ({ field, position }))
+    .filter(
+      ({ field }) =>
+        optional.length === 0 &&
+        !host.inlineUnions.record(field.type) &&
+        liveStorable(field.type, host.unionsById, host.recordsById),
+    );
+  const setLabels = setFields.map(() => S.newLabel("live.record.set"));
+  const declined = S.newLabel("live.record.decline");
+  S.terminate(
+    `switch ${host.sizeType} %i, label %${declined} [ ${setFields
+      .map(({ position }, k) => `${host.sizeType} ${position}, label %${setLabels[k]}`)
+      .join(" ")} ]`,
+  );
+  if (setFields.length > 0) {
+    host.declare(`declare zeroext i1 @scr_exc_pending()`);
+    S.entryAllocas.push(`%path = alloca %ScrDynPath`);
+  }
+  setFields.forEach(({ field }, k) => {
+    S.startBlock(setLabels[k]!);
+    const pp = S.tmp();
+    const kp = S.tmp();
+    const ip = S.tmp();
+    S.line(`${pp} = getelementptr inbounds %ScrDynPath, ptr %path, i64 0, i32 0`);
+    S.line(`store ptr null, ptr ${pp}`);
+    S.line(`${kp} = getelementptr inbounds %ScrDynPath, ptr %path, i64 0, i32 1`);
+    S.line(`store ptr ${host.cstr(field.name)}, ptr ${kp}`);
+    S.line(`${ip} = getelementptr inbounds %ScrDynPath, ptr %path, i64 0, i32 2`);
+    S.line(`store ${host.sizeType} 0, ptr ${ip}`);
+    const fieldTy = llFieldType(field.type, false);
+    const checked = S.tmp();
+    S.line(
+      `${checked} = call ${fieldTy === "i8" ? "i1" : fieldTy} @${host.dyn.dynCheckHelper(field.type)}(ptr %v, ptr %path)`,
+    );
+    const failed = S.tmp();
+    S.line(`${failed} = call zeroext i1 @scr_exc_pending()`);
+    const store = S.newLabel("live.record.store");
+    const thrown = S.newLabel("live.record.thrown");
+    S.condBr(failed, thrown, store);
+    S.startBlock(thrown);
+    S.terminate(`ret i1 true`);
+    S.startBlock(store);
+    const index = shape.fields.indexOf(field) + host.nullableUnions.fieldBase(t.shapeId);
+    const fieldPtr = S.tmp();
+    S.line(`${fieldPtr} = getelementptr inbounds %${struct}, ptr %p, i64 0, i32 ${index}`);
+    if (fieldTy === "i8") {
+      const byte = S.tmp();
+      S.line(`${byte} = zext i1 ${checked} to i8`);
+      S.line(`store i8 ${byte}, ptr ${fieldPtr}`);
+    } else if (fieldTy === "ptr" && isRefCounted(field.type)) {
+      const previous = S.tmp();
+      S.line(`${previous} = load ptr, ptr ${fieldPtr}`);
+      S.line(`store ptr ${checked}, ptr ${fieldPtr}`);
+      S.line(`call void ${releaseSym(host.shapeHost, field.type)}(ptr ${previous})`);
+    } else {
+      S.line(`store ${fieldTy} ${checked}, ptr ${fieldPtr}`);
+    }
+    S.terminate(`ret i1 true`);
+  });
+  S.startBlock(declined);
+  S.terminate(`ret i1 false`);
+
   const literals = fields.map((field) => `ptr ${host.internLiteral(field.name)}`);
+  // The byte offset of each field the record stores as a checked value
+  // (compiled get sites read it in place), -1 for the others.
+  const offsets = fields.map((field) => {
+    if (field.type.kind !== "dyn" || host.inlineUnions.record(field.type)) return "i32 -1";
+    const index = shape.fields.indexOf(field) + host.nullableUnions.fieldBase(t.shapeId);
+    return `i32 ptrtoint (ptr getelementptr (%${struct}, ptr null, i64 0, i32 ${index}) to i32)`;
+  });
+  const offsetTable = `${snapshot}_offsets`;
   host.resolveThunkDefs.push(
     `define internal zeroext i1 @${has}(ptr %p, ${host.sizeType} %i) ${FN_ATTRS} { ; live field presence of ${typeKey(t)}`,
     H.render(),
@@ -1494,9 +1637,14 @@ function liveRecordOps(
     G.render(),
     `}`,
     ``,
+    `define internal zeroext i1 @${set}(ptr %p, ${host.sizeType} %i, ptr %v) ${FN_ATTRS} { ; live field store into ${typeKey(t)}`,
+    S.render(),
+    `}`,
+    ``,
     `@${names} = internal constant [${fields.length} x ptr] [${literals.join(", ")}]`,
-    // Mutable: the runtime fills the trailing key-array slot on first use.
-    `@${ops} = internal global { ${host.sizeType}, ptr, ptr, ptr, i8, ptr, ptr } { ${host.sizeType} ${fields.length}, ptr @${names}, ptr @${has}, ptr @${get}, i8 ${optional.length === 0 ? 1 : 0}, ptr null, ptr null }`,
+    `@${offsetTable} = internal constant [${fields.length} x i32] [${offsets.join(", ")}]`,
+    // Mutable: the runtime fills the key-array slot on first use.
+    `@${ops} = internal global { ${host.sizeType}, ptr, ptr, ptr, i8, ptr, ptr, ptr, ptr } { ${host.sizeType} ${fields.length}, ptr @${names}, ptr @${has}, ptr @${get}, i8 ${optional.length === 0 ? 1 : 0}, ptr null, ptr null, ptr @${set}, ptr @${offsetTable} }`,
     ``,
   );
 }
@@ -1524,7 +1672,7 @@ function liveRecordOrderSelect(
     B.render(),
     `}`,
     ``,
-    `@${snapshot}_rops = internal global { ${host.sizeType}, ptr, ptr, ptr, i8, ptr, ptr } { ${host.sizeType} 0, ptr null, ptr null, ptr null, i8 0, ptr null, ptr @${snapshot}_select }`,
+    `@${snapshot}_rops = internal global { ${host.sizeType}, ptr, ptr, ptr, i8, ptr, ptr, ptr, ptr } { ${host.sizeType} 0, ptr null, ptr null, ptr null, i8 0, ptr null, ptr @${snapshot}_select, ptr null, ptr null }`,
     ``,
   );
 }

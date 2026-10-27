@@ -292,6 +292,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.currentBorrowedReturn = emitter.borrowedReturns.has(fn.name);
   emitter.lastUseMoves.clear();
   emitter.varRefCounts = null;
+  emitter.localMentionCounts = null;
   emitter.currentFunctionBody = fn.body;
   emitter.inConstructor = emitter.constructorFunctions.has(fn.name);
   emitter.currentCoro = null;

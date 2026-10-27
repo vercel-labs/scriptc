@@ -1,8 +1,8 @@
 // The import/export forms that stay OUTSIDE the lowered set now that
 // local-module namespace imports, namespace re-exports of user modules,
 // and default exports/imports compile: default imports of builtin
-// modules, package/builtin re-exports, namespace imports of JSON and
-// CommonJS modules, and the module namespace OBJECT as a first-class
+// modules, package/builtin re-exports, namespace imports of JSON
+// modules, and the module namespace OBJECT as a first-class
 // value (member accesses resolve statically; the frozen, alphabetically-
 // keyed object itself is not materialized).
 import * as helpers from "./helpers.ts";

@@ -698,3 +698,122 @@ export function scalarizeLiteralResults(mod: IrModule): IrModule {
   });
   return changed ? { ...mod, functions } : mod;
 }
+
+/** A local declared with a fresh numeric record literal (`const { read,
+ * written } = encoder.encodeInto(s, view)`, whose lowering builds the
+ * record from two reads) and only read through its fields: the fields
+ * become locals, evaluated in the literal's order, and the record is never
+ * built. */
+export function scalarizeRecordLiterals(mod: IrModule): IrModule {
+  const shapes = new Map((mod.records ?? []).map((s) => [s.id, s]));
+  let changed = false;
+  const functions = mod.functions.map((fn): IrFunction => {
+    if (fn.async || fn.generator) return fn;
+    const locals = new Map(fn.locals.map((l) => [l.id, l]));
+    const used = new Set([...locals.keys(), ...(mod.globals ?? []).map((g) => g.id)]);
+    collectLabels(fn.body, used);
+    let next = 0;
+    const fresh = (): string => {
+      let id: string;
+      do id = `%field.${next++}`;
+      while (used.has(id));
+      used.add(id);
+      return id;
+    };
+    const replacements = new Map<string, Replacement>();
+    const added: IrLocal[] = [];
+    everyStmtList(fn.body, {
+      expr: () => true,
+      stmt: (decl) => {
+        if (decl.kind !== "varDecl" || decl.init === null) return true;
+        const local = locals.get(decl.localId);
+        if (!local || local.mutable || local.boxed || local.tdz || local.type.kind !== "record")
+          return true;
+        const init = decl.init;
+        const literal = init.kind === "seqExpr" ? init.result : init;
+        const shape = shapes.get(local.type.shapeId);
+        if (
+          literal.kind !== "recordLit" ||
+          !shape ||
+          shape.tuple ||
+          shape.indexValue ||
+          shape.fields.length === 0 ||
+          shape.fields.length > MAX_FIELDS ||
+          literal.fields.length !== shape.fields.length ||
+          !literal.fields.every(
+            (f) => !f.overflow && f.value.type.kind === "f64" && viewsOnly(f.value),
+          ) ||
+          !fieldOnlyUses(fn, local.id, shape)
+        )
+          return true;
+        const fields = new Map<string, string>();
+        const body: IrStmt[] = init.kind === "seqExpr" ? [...init.stmts] : [];
+        for (const f of literal.fields) {
+          const id = fresh();
+          fields.set(f.name, id);
+          added.push({ id, name: `${local.name}.${f.name}`, type: F64, mutable: false });
+          body.push({ kind: "varDecl", localId: id, init: f.value, loc: decl.loc });
+        }
+        replacements.set(local.id, { fields, body });
+        return true;
+      },
+    });
+    // A field read straight off a literal (`encoder.encodeInto(s, v).written`).
+    const direct = (expr: IrExpr): IrExpr | null => {
+      if (expr.kind !== "recordGet" || expr.type.kind !== "f64") return null;
+      const init = expr.obj;
+      const literal = init.kind === "seqExpr" ? init.result : init;
+      const shape = shapes.get(expr.shapeId);
+      if (
+        literal.kind !== "recordLit" ||
+        !shape ||
+        shape.tuple ||
+        shape.indexValue ||
+        literal.fields.length !== shape.fields.length ||
+        !literal.fields.every(
+          (f) => !f.overflow && f.value.type.kind === "f64" && viewsOnly(f.value),
+        )
+      )
+        return null;
+      const stmts: IrStmt[] = init.kind === "seqExpr" ? [...init.stmts] : [];
+      let read: string | null = null;
+      for (const f of literal.fields) {
+        const id = fresh();
+        added.push({ id, name: `%literal.${f.name}`, type: F64, mutable: false });
+        stmts.push({ kind: "varDecl", localId: id, init: f.value, loc: expr.loc });
+        if (f.name === expr.field) read = id;
+      }
+      if (read === null) return null;
+      return {
+        kind: "seqExpr",
+        stmts,
+        result: { kind: "varRef", localId: read, type: F64, loc: expr.loc },
+        type: F64,
+        loc: expr.loc,
+      };
+    };
+    let directs = 0;
+    const body = transformStmtList(fn.body, {
+      stmt: (stmt) => {
+        const replacement = stmt.kind === "varDecl" ? replacements.get(stmt.localId) : undefined;
+        return replacement ? { kind: "block", body: replacement.body, loc: stmt.loc } : stmt;
+      },
+      expr: (expr) => {
+        if (expr.kind === "recordGet" && expr.obj.kind === "varRef") {
+          const id = replacements.get(expr.obj.localId)?.fields.get(expr.field);
+          if (id) return { kind: "varRef", localId: id, type: F64, loc: expr.loc };
+        }
+        const scalar = direct(expr);
+        if (scalar) {
+          directs++;
+          return scalar;
+        }
+        return expr;
+      },
+    });
+    if (replacements.size === 0 && directs === 0) return fn;
+    changed = true;
+    return { ...fn, locals: [...fn.locals.filter((l) => !replacements.has(l.id)), ...added], body };
+  });
+  return changed ? { ...mod, functions } : mod;
+}

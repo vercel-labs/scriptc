@@ -129,6 +129,8 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "als.disable",
   "als.enterWith",
   "als.exitRun",
+  "als.push",
+  "als.pop",
   "als.get",
   "als.name",
   "als.new",
@@ -162,6 +164,8 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 const ASYNC_CONTEXT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "als.enterWith",
   "als.exitRun",
+  "als.push",
+  "als.pop",
   "als.run",
   "dc.chanBindStore",
   "dc.chanRunStores",

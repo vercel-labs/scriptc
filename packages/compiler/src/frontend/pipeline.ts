@@ -25,7 +25,12 @@ import {
   npmStaticOffenders,
   npmStaticPackageOfPath,
 } from "./npm-static.js";
-import { clearResolveCaches, resolveBareModule, resolveWorkspaceSourceModule } from "./resolve.js";
+import {
+  clearResolveCaches,
+  resolveBareModule,
+  resolveProjectModule,
+  resolveWorkspaceSourceModule,
+} from "./resolve.js";
 import { isShimmedImport } from "./package-shims.js";
 import { provenanceEntryFor } from "./provenance-registry.js";
 import { isJsSourceFileName } from "./tsc-codes.js";
@@ -292,6 +297,10 @@ function detectAutoPackages(
       if (isShimmedImport(sf.fileName, spec)) continue;
       if (resolveWorkspaceSourceModule(sf.fileName, spec) !== null) continue;
       if (isRelativeSpecifier(spec) || spec.startsWith("node:") || spec.startsWith("#")) continue;
+      // A bare specifier the project resolves to its own sources (tsconfig
+      // paths onto a package's source tree) is program code, not npm.
+      const own = resolveProjectModule(sf.fileName, spec);
+      if (own !== null && !own.includes("/node_modules/") && !/\.d\.[cm]?ts$/.test(own)) continue;
       // Bare builtin names ("fs", "path") are the builtin machinery's
       // business (and the SC4005 async_free gate's, in library mode) —
       // never npm candidates. Auto keeps its original path (the

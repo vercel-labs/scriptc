@@ -33,7 +33,7 @@
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { type IrExpr, type IrGlobal, type IrStmt, type IrType } from "../../ir/ir.js";
-import { isJsSourceFile, locOf } from "../program.js";
+import { isJsLikeSourceFile, locOf } from "../program.js";
 import { isUnitOnlyTsType, unitOnlyUnion } from "../type-mapper.js";
 
 /** The registry entry for one expando member slot. */
@@ -99,7 +99,7 @@ function expandoFnSymbolOf(lowerer: Lowerer, recv: ts.Expression): ts.Symbol | n
   if (!sym) return null;
   const decl = sym.valueDeclaration;
   if (!decl || ts.getSourceFileOfNode(decl).isDeclarationFile) return null;
-  if (isJsSourceFile(ts.getSourceFileOfNode(decl))) return null;
+  if (isJsLikeSourceFile(ts.getSourceFileOfNode(decl))) return null;
   if (ts.isFunctionDeclaration(decl)) {
     return ts.isSourceFile(decl.parent) ? sym : null;
   }

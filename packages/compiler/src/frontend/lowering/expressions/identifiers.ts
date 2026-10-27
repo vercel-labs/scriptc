@@ -1,4 +1,5 @@
 /* Identifier references in expression position: lowerExprInner's identifier branch and its helpers. */
+import { typedReceiverFunction } from "../receiver-binding.js";
 import { predeclareForwardClass } from "../lower-stmts.js";
 import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
 import { builtinClassValue, builtinMemberClassKind } from "../builtins/builtin-class-dyn.js";
@@ -17,6 +18,8 @@ import {
   type IrType,
   STRING,
   type SrcLoc,
+  type IrParam,
+  VOID,
   UNDEFINED_T,
   arrayOf,
   funcOf,
@@ -114,6 +117,8 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     if (binding && lowerer.ctx.pureTuples.has(binding.id)) {
       throw new InternalCompilerError("lowerer bug: forwarded-only 'arguments' read as a value");
     }
+    if (binding && binding === lowerer.ctx.argumentsLocal && lowerer.ctx.argumentsParams)
+      return argumentsArray(lowerer, binding.id, lowerer.ctx.argumentsParams, loc);
     if (binding) return { kind: "varRef", localId: binding.id, type: binding.type, loc };
     const owner = argumentsOwner(expr);
     if (owner && typedArgumentsCandidate(owner)) {
@@ -445,6 +450,14 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     // backend interns one per function so `f === f` holds (JS identity).
     // The value's type is the completed ABI signature; optional/default
     // slots and typed rest arrays pass the value fence first.
+    // A typed `this` is its first parameter: only callers that supply
+    // the receiver reach it (receiver-binding.ts).
+    if (typedReceiverFunction(lowerer, expr) !== null)
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        "functions with a typed 'this' parameter as values (call them with .call(receiver, ...), or pass them with a thisArg to forEach)",
+      );
     lowerer.noteEdge(sig.name);
     // dynRest slots stay out of the VALUE type's param list (fn.length
     // semantics); the rest marker carries the trailing dyn-array ABI.
@@ -824,6 +837,10 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         isJsSourceFile(ts.getSourceFileOfNode(expr)),
       );
       if (builtinValue !== null) return builtinValue;
+      if (canonical === "queueMicrotask") {
+        const typed = queueMicrotaskValue(lowerer, expr, loc);
+        if (typed !== null) return typed;
+      }
       if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
         return { kind: "strLit", value: `[builtin ${canonical}]`, type: STRING, loc };
       }
@@ -1160,4 +1177,88 @@ function cjsExportAccessorRead(lowerer: Lowerer, ident: ts.Identifier): IrExpr |
       return { kind: "varRef", localId: snapshot.id, type: snapshot.type, loc: locOf(ident) };
   }
   return cjsAccessorCall(lowerer, getter, locOf(ident));
+}
+
+/** `queueMicrotask` as a typed function value (`const schedule =
+ * queueMicrotask`): a helper that queues its zero-parameter callback the
+ * way a direct call does. */
+function queueMicrotaskValue(lowerer: Lowerer, expr: ts.Identifier, loc: SrcLoc): IrExpr | null {
+  const type = lowerer.mapTypeOf(lowerer.typeOf(expr));
+  const cb =
+    type?.kind === "func" && !type.rest && type.params.length === 1 ? type.params[0]! : null;
+  if (
+    type?.kind !== "func" ||
+    type.ret.kind !== "void" ||
+    cb?.kind !== "func" ||
+    cb.params.length !== 0 ||
+    cb.rest
+  )
+    return null;
+  const name = "%queueMicrotask.value";
+  if (!lowerer.liftedFns.some((f) => f.name === name)) {
+    lowerer.liftedFns.push({
+      name,
+      params: [{ localId: "cb.0", name: "callback", type: cb }],
+      returnType: VOID,
+      locals: [{ id: "cb.0", name: "callback", type: cb, mutable: false }],
+      body: [
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "libCall",
+            fn: "timers.queueMicrotask",
+            args: [{ kind: "varRef", localId: "cb.0", type: cb, loc }],
+            type: VOID,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    });
+  }
+  return { kind: "closure", fnName: name, captures: [], type, loc };
+}
+
+/** `arguments` read as the array in a function whose slot may hold a call's
+ * argument count (ParamShape.countToken): the first such read replaces the
+ * count with the array of the parameters' values, cut to the count, so
+ * every later read sees the same array. */
+function argumentsArray(
+  lowerer: Lowerer,
+  slot: string,
+  params: readonly IrParam[],
+  loc: SrcLoc,
+): IrExpr {
+  const current = varRef(slot, DYN, loc);
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "assign",
+        localId: slot,
+        value: {
+          kind: "libCall",
+          fn: "dyn.argumentsFrom",
+          args: [
+            current,
+            {
+              kind: "dynArrLit",
+              elems: params.map((p) =>
+                lowerer.coerceToExpected(varRef(p.localId, p.type, loc), DYN),
+              ),
+              type: DYN,
+              loc,
+            },
+          ],
+          type: DYN,
+          loc,
+        },
+        loc,
+      },
+    ],
+    result: current,
+    type: DYN,
+    loc,
+  };
 }

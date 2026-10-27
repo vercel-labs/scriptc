@@ -361,7 +361,39 @@ export function emitJsIcCall(
       return emitSet(host, e, callee, site.key);
     case "keyed":
       return emitKeyed(host, e, callee);
+    case "keyedSet":
+      return emitKeyedSet(host, e, callee, site.stringKey);
   }
+}
+
+/** A computed store `o[k] = v`: an ordinary object and a string key that
+ * names no array index take the shape transition (shared key bytes, the
+ * shape the next object of the same build reuses); anything else calls the
+ * helper. The key varies per call, so the site keeps no cache entry. */
+function emitKeyedSet(
+  host: Host,
+  e: ExprOf<"call">,
+  callee: IrFunction,
+  stringKey: boolean,
+): LlValue {
+  const B = host.B;
+  const receiver = emitBorrowedInput(host, e.args[0]!);
+  const key = emitBorrowedInput(host, e.args[1]!);
+  const value = emitBorrowedInput(host, e.args[2]!);
+  const probe = stringKey ? "scr_js_keyed_store_probe_str" : "scr_js_keyed_store_probe";
+  host.declare(`declare zeroext i1 @${probe}(ptr, ptr, ptr)`);
+  const done = B.tmp();
+  B.line(
+    `${done} = call zeroext i1 @${probe}(ptr ${receiver.name}, ptr ${key.name}, ptr ${value.name})`,
+  );
+  const slow = B.newLabel("icks.slow");
+  const join = B.newLabel("icks.j");
+  B.condBr(done, join, slow);
+  B.startBlock(slow);
+  helperCall(host, e, callee, [receiver, key, value]);
+  B.br(join);
+  B.startBlock(join);
+  return { name: "", type: e.type };
 }
 
 function emitGet(host: Host, e: ExprOf<"call">, callee: IrFunction, key: string): LlValue {
@@ -397,13 +429,36 @@ function emitGet(host: Host, e: ExprOf<"call">, callee: IrFunction, key: string)
     B.br(join);
     B.startBlock(rest);
   }
+  if (key === "length" || key === "byteLength") {
+    // A typed array's sizes, unless an own property shadows them.
+    const bytes = B.newLabel("icg.bytes");
+    const sized = B.newLabel("icg.sized");
+    const rest = B.newLabel("icg.nbytes");
+    kindIs(host, receiver.name, DYN_KIND.BYTES, bytes, rest);
+    B.startBlock(bytes);
+    host.declare(`declare double @scr_dyn_bytes_size(ptr, i1 zeroext)`);
+    const size = B.tmp();
+    const known = B.tmp();
+    B.line(
+      `${size} = call double @scr_dyn_bytes_size(ptr ${receiver.name}, i1 zeroext ${key === "byteLength"})`,
+    );
+    B.line(`${known} = fcmp oge double ${size}, 0.0`);
+    B.condBr(known, sized, rest);
+    B.startBlock(sized);
+    incoming.push(`[ ${numberResult(host, size, e)}, %${B.currentLabel()} ]`);
+    B.br(join);
+    B.startBlock(rest);
+  }
   // Inline hits (borrowed values) and probe hits (owned ones) share one
   // conversion to the result type.
   const hit = B.newLabel("icg.hit");
   const hits: string[] = [];
-  kindIs(host, receiver.name, DYN_KIND.OBJ, object, probe);
+  const capsule = B.newLabel("icg.rec");
+  kindIs(host, receiver.name, DYN_KIND.OBJ, object, capsule);
   B.startBlock(object);
   inlineLoad(host, receiver.name, ic, INLINE_WAYS, INLINE_PROTO, (cell) => cell, hits, hit, probe);
+  B.startBlock(capsule);
+  inlineRecordField(host, receiver.name, ic, hits, hit, probe);
   B.startBlock(probe);
   // The read's probe also answers keys the receiver's plain chain lacks.
   // Only `length` and `next` reads can be answered for a native array or
@@ -643,6 +698,85 @@ function numberKey(host: Host, key: IrExpr): NumberKey | null {
 /** Branches to `yes` when `d` is a capsule of a native array passed in
  * from typed code (a TYPED_REF bound to live array ops, not a record or
  * class instance), with the ScrArr in `yes`; else to `no`. */
+/** A record capsule answering from its native record (no view yet) whose
+ * layout a cache way names (the probe's record entries: the ops table as
+ * the shape, the field index as the slot): a field the record stores as a
+ * checked value is read in place (ScrDynTypedRecordOps.dyn_offsets). Its
+ * borrowed cell joins `incoming` at `join`; everything else goes to `miss`. */
+function inlineRecordField(
+  host: Host,
+  d: string,
+  ic: string,
+  incoming: string[],
+  join: string,
+  miss: string,
+): void {
+  const B = host.B;
+  const flagged = B.newLabel("icr.flags");
+  const live = B.newLabel("icr.live");
+  kindIs(host, d, DYN_KIND.TYPED_REF, flagged, miss);
+  B.startBlock(flagged);
+  // `record` alone among the flag word's top three bits.
+  const flags = load(host, "i32", d, 88);
+  const kinds = B.tmp();
+  const record = B.tmp();
+  B.line(`${kinds} = lshr i32 ${flags}, 29`);
+  B.line(`${record} = icmp eq i32 ${kinds}, 1`);
+  const unviewed = B.newLabel("icr.native");
+  B.condBr(record, unviewed, miss);
+  B.startBlock(unviewed);
+  const view = load(host, "ptr", d, 72);
+  const none = B.tmp();
+  B.line(`${none} = icmp eq ptr ${view}, null`);
+  B.condBr(none, live, miss);
+  B.startBlock(live);
+  const ops = load(host, "ptr", d, 64);
+  let next = B.newLabel("icr.w");
+  B.br(next);
+  for (let way = 0; way < INLINE_WAYS; way++) {
+    const base = way * 40;
+    B.startBlock(next);
+    next = way + 1 < INLINE_WAYS ? B.newLabel("icr.w") : miss;
+    const cached = load(host, "ptr", ic, base);
+    const same = B.tmp();
+    B.line(`${same} = icmp eq ptr ${ops}, ${cached}`);
+    const matched = B.newLabel("icr.m");
+    B.condBr(same, matched, next);
+    B.startBlock(matched);
+    const slot = load(host, "i64", ic, base + 32);
+    const count = load(host, "i64", ops, 0);
+    const inRange = B.tmp();
+    B.line(`${inRange} = icmp ult i64 ${slot}, ${count}`);
+    const ranged = B.newLabel("icr.slot");
+    B.condBr(inRange, ranged, miss);
+    B.startBlock(ranged);
+    const offsets = load(host, "ptr", ops, 64);
+    const table = B.tmp();
+    B.line(`${table} = icmp ne ptr ${offsets}, null`);
+    const tabled = B.newLabel("icr.off");
+    B.condBr(table, tabled, miss);
+    B.startBlock(tabled);
+    const offsetPtr = B.tmp();
+    B.line(`${offsetPtr} = getelementptr inbounds i32, ptr ${offsets}, i64 ${slot}`);
+    const offset = B.tmp();
+    B.line(`${offset} = load i32, ptr ${offsetPtr}`);
+    const stored = B.tmp();
+    B.line(`${stored} = icmp sge i32 ${offset}, 0`);
+    const read = B.newLabel("icr.read");
+    B.condBr(stored, read, miss);
+    B.startBlock(read);
+    const native = load(host, "ptr", d, 16);
+    const wide = B.tmp();
+    B.line(`${wide} = sext i32 ${offset} to i64`);
+    const fieldPtr = B.tmp();
+    B.line(`${fieldPtr} = getelementptr inbounds i8, ptr ${native}, i64 ${wide}`);
+    const cell = B.tmp();
+    B.line(`${cell} = load ptr, ptr ${fieldPtr}`);
+    incoming.push(`[ ${cell}, %${B.currentLabel()} ]`);
+    B.br(join);
+  }
+}
+
 function nativeArray(host: Host, d: string, no: string): string {
   const B = host.B;
   const capsule = B.newLabel("ica.cap");

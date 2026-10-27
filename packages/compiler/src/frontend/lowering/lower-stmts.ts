@@ -1,3 +1,4 @@
+import { isFlowModule } from "../flow/index.js";
 import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
 import {
   allBytesArms,
@@ -114,6 +115,7 @@ import {
   cjsExportTargetLiteral,
   isCjsJsFile,
   isEsModuleStamp,
+  isJsLikeSourceFile,
   isJsSourceFile,
   locOf,
   requireEarlyReference,
@@ -725,9 +727,10 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
   // statement whose construct has no static lowering compiles to a
   // runtimeFence — a catchable, SC-coded throw at the statement's
   // position — instead of failing the whole build). TypeScript keeps
-  // compile fences. ICEs (SC9001) always stay compile errors.
+  // compile fences, except Flow modules, which Flow checked instead
+  // (flow/index.ts). ICEs (SC9001) always stay compile errors.
   const sf = stmts.length === 0 ? undefined : ts.getSourceFileOfNode(stmts[0]!);
-  const deferFences = sf !== undefined && isJsSourceFile(sf);
+  const deferFences = sf !== undefined && (isJsSourceFile(sf) || isFlowModule(sf.fileName));
   // Register this list as open for the forward-capture machinery: a
   // nested function lowering mid-list may pre-declare a LATER const of
   // this list as a TDZ box (predeclareForwardCapture), pushing the
@@ -800,7 +803,7 @@ export function lowerStmts(lowerer: Lowerer, stmts: readonly ts.Statement[]): Ir
           const flushed = lowerer.diags.splice(diagsBefore);
           const ice = flushed.filter((d) => d.code === "SC9001");
           lowerer.diags.push(...ice);
-          lowerer.runtimeFences.push(...flushed.filter((d) => d.code !== "SC9001"));
+          lowerer.deferRefusals(flushed.filter((d) => d.code !== "SC9001"));
         }
       } catch (e) {
         // A Go panic inside tsgo, surfaced by the sync channel as a
@@ -965,15 +968,20 @@ const TDZ_KINDS = new Set<IrType["kind"]>([
  * is empty. Mutable bindings also guard writes; only the declaration's
  * initializing assignment may leave the temporal dead zone. */
 export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): boolean {
-  const decl = symbol.valueDeclaration;
+  const binding = symbol.valueDeclaration;
   if (
-    !decl ||
-    !ts.isVariableDeclaration(decl) ||
-    decl.name === undefined ||
-    !ts.isIdentifier(decl.name)
+    !binding ||
+    !(ts.isVariableDeclaration(binding) || ts.isBindingElement(binding)) ||
+    binding.name === undefined ||
+    !ts.isIdentifier(binding.name)
   )
     return false;
-  if (!decl.initializer) return false;
+  // A name a destructuring declaration binds (`const { pipe } =
+  // render({ onReady() { pipe(out); } })`) takes the box of its host
+  // declaration's statement; bindPatternTarget initializes it.
+  const nameNode = binding.name;
+  const decl = ts.isVariableDeclaration(binding) ? binding : hostVariableDeclarationOf(nameNode);
+  if (!decl || !decl.initializer) return false;
   const flags = ts.getCombinedNodeFlags(decl);
   if ((flags & ts.NodeFlags.BlockScoped) === 0 || (flags & ts.NodeFlags.Using) !== 0) return false;
   // `const E = EventEmitter` has no storage to box: uses resolve at
@@ -1000,8 +1008,9 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
     // TDZ read until the initializing assign completes — JS exactly.
     if (idx < entry.index || entry.ctx === lowerer.ctx || entry.ctx.tdzPredeclared.has(symbol))
       return false;
-    let type = lowerer.irTypeOf(decl.name);
+    let type = lowerer.irTypeOf(nameNode);
     if (
+      decl === binding &&
       isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
       !decl.type &&
       !hasJsTypeAnnotation(decl) &&
@@ -1014,7 +1023,7 @@ export function predeclareForwardCapture(lowerer: Lowerer, symbol: ts.Symbol): b
     )
       type = DYN;
     if (!TDZ_KINDS.has(type.kind) || isUnitType(type)) return false;
-    const name = decl.name.text;
+    const name = nameNode.text;
     const count = entry.ctx.localCounters.get(name) ?? 0;
     entry.ctx.localCounters.set(name, count + 1);
     const local: IrLocal = {
@@ -1282,11 +1291,51 @@ function lowerJsVarFromExisting(
   };
 }
 
+/** A JavaScript `var` the checker types `any` that holds its initializer's
+ * value at every read (jsBindingKeepsInitializer) takes the initializer's
+ * static type, as an `any` const does: React's `var request =
+ * request$jscomp$1` keeps the class instance a specialized caller passed.
+ * Null when the declaration does not qualify. */
+function lowerJsVarKeepingInitializer(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+  symbol: ts.Symbol,
+): IrStmt | null {
+  const initializer = decl.initializer;
+  if (
+    !ts.isIdentifier(decl.name) ||
+    !initializer ||
+    !isJsSourceFile(ts.getSourceFileOfNode(decl)) ||
+    lowerer.ctx.hoistedVars.has(symbol) ||
+    lowerer.bindingIn(lowerer.ctx, symbol) ||
+    hasJsTypeAnnotation(decl) ||
+    (lowerer.typeOf(decl.name).flags & ts.TypeFlags.Any) === 0 ||
+    mentionsSymbol(lowerer, initializer, symbol) ||
+    !jsBindingKeepsInitializer(lowerer, decl)
+  )
+    return null;
+  const value = lowerer.lowerExpr(initializer);
+  const adopted =
+    value.type.kind !== "dyn" &&
+    value.type.kind !== "void" &&
+    value.type.kind !== "caught" &&
+    !isUnitType(value.type)
+      ? value.type
+      : undefined;
+  const local = hoistVarBinding(lowerer, symbol, decl.name, undefined, adopted);
+  return {
+    kind: "assign",
+    localId: local.id,
+    value: lowerer.coerceExistingInto(initializer, value, local.type),
+    loc: locOf(decl),
+  };
+}
+
 /** Whether a JavaScript declaration's object value changes shape after its
  * initializer (jsOpenObjectType, jsObjectBindingExpands) or carries
  * methods, so only the checked-dynamic representation holds it.
  * `inferred` is the declaration's mapped checker type. */
-function jsDeclarationExpandsObject(
+export function jsDeclarationExpandsObject(
   lowerer: Lowerer,
   decl: ts.VariableDeclaration,
   inferred: IrType | null,
@@ -1396,6 +1445,7 @@ function hoistVarBinding(
   symbol: ts.Symbol,
   nameNode: ts.Identifier,
   valueType?: IrType,
+  adopted?: IrType,
 ): IrLocal {
   const existing = lowerer.ctx.hoistedVars.get(symbol);
   if (existing) return existing;
@@ -1405,7 +1455,7 @@ function hoistVarBinding(
     lowerer.ctx.hoistedVars.set(symbol, bound);
     return bound;
   }
-  let type = varBindingType(lowerer, nameNode);
+  let type = adopted ?? varBindingType(lowerer, nameNode);
   // The first value stored is an existing checked-dynamic object: keep it
   // (jsBindingKeepsCheckedObject). A checked-dynamic slot holds undefined
   // natively, so no runtime-optional widening applies.
@@ -1973,11 +2023,32 @@ export function lowerVarStatement(lowerer: Lowerer, stmt: ts.VariableStatement):
     (list.flags & ts.NodeFlags.Let) !== 0 || (list.flags & ts.NodeFlags.BlockScoped) === 0;
   return list.declarations.nodes.flatMap((decl) => {
     const lowered = lowerVarDeclarator(lowerer, stmt, decl, isConst, isLet);
+    if (!ts.isIdentifier(decl.name)) refuseUninitializedPatternBoxes(lowerer, decl.name);
     // A require binding earlier code can read is initialized from here on
     // (require-initialization.ts).
     const initialized = requireInitFlagStmt(lowerer, decl);
     return initialized ? [...lowered, initialized] : lowered;
   });
+}
+
+/** A pattern name a closure in the declaration's own initializer captured
+ * was pre-declared as a TDZ box (predeclareForwardCapture); a declaration
+ * form that binds it without bindPatternTarget would leave the box empty,
+ * so every later read would throw. */
+function refuseUninitializedPatternBoxes(lowerer: Lowerer, pattern: ts.BindingName): void {
+  if (ts.isIdentifier(pattern)) {
+    const symbol = lowerer.checker.getSymbolAtLocation(pattern);
+    if (symbol && lowerer.ctx.tdzPredeclared.has(symbol))
+      lowerer.unsupported(
+        "SC1090",
+        pattern,
+        `a closure in this destructuring's initializer reading '${pattern.text}' (this destructuring form does not initialize the binding it reads)`,
+      );
+    return;
+  }
+  for (const element of pattern.elements.nodes)
+    if (!ts.isOmittedExpression(element) && element.name)
+      refuseUninitializedPatternBoxes(lowerer, element.name);
 }
 
 function lowerVarDeclarator(
@@ -5075,6 +5146,20 @@ export function bindPatternTarget(
   const loc = value.loc;
   if (ts.isIdentifier(name)) {
     const symbol = lowerer.checker.getSymbolAtLocation(name);
+    // A closure in the declaration's own initializer captured the name: its
+    // TDZ box exists (predeclareForwardCapture), and this initializes it.
+    const pre = symbol ? lowerer.ctx.tdzPredeclared.get(symbol) : undefined;
+    if (pre) {
+      lowerer.ctx.tdzPredeclared.delete(symbol!);
+      out.push({
+        kind: "assign",
+        localId: pre.id,
+        value: lowerer.coerceInto(name, value, pre.type),
+        initializes: true,
+        loc,
+      });
+      return;
+    }
     const g = symbol ? lowerer.globalsBySymbol.get(symbol) : undefined;
     if (g) {
       if (value.type.kind === "dyn" && jsBindingKeepsCheckedObject(lowerer, name, g.type))
@@ -5461,7 +5546,11 @@ function inferredEvolvingLetType(lowerer: Lowerer, decl: ts.VariableDeclaration)
       if (captures(node)) invalid = true;
       return "skip";
     }
-    if (ts.isBinaryExpression(node)) {
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+    ) {
       let left = node.left;
       while (ts.isParenthesizedExpression(left)) left = left.expression;
       if (ts.isIdentifier(left) && lowerer.checker.getSymbolAtLocation(left) === symbol) {
@@ -5493,9 +5582,18 @@ function inferredEvolvingLetType(lowerer: Lowerer, decl: ts.VariableDeclaration)
       invalid = true;
       return "stop";
     }
+    // `for (x in o)` writes each key: a string.
+    const forInHead =
+      ts.isIdentifier(node) &&
+      node.parent !== undefined &&
+      ts.isForInStatement(node.parent) &&
+      node.parent.initializer === node &&
+      refersToBinding(node);
+    if (forInHead) writes.push(STRING);
     if (
       ts.isIdentifier(node) &&
       node !== decl.name &&
+      !forInHead &&
       refersToBinding(node) &&
       !isPlainAssignmentTarget(node)
     ) {
@@ -5883,6 +5981,8 @@ export function lowerVarDecl(
   if (isVarDeclared(decl) && declSymbol) {
     const fromExisting = lowerJsVarFromExisting(lowerer, decl, declSymbol);
     if (fromExisting) return fromExisting;
+    const keeping = lowerJsVarKeepingInitializer(lowerer, decl, declSymbol);
+    if (keeping) return keeping;
     const local = hoistVarBinding(lowerer, declSymbol, decl.name);
     if (!decl.initializer) return null;
     const init = lowerer.lowerExprExpecting(decl.initializer, local.type);
@@ -5898,7 +5998,7 @@ export function lowerVarDecl(
     // immediately (the type covers the unassigned state), so they
     // initialize to the interned undefined arm like an omitted optional.
     let type = lowerer.irTypeOf(decl.name);
-    if (type.kind === "dyn" && isLet && isJsSourceFile(ts.getSourceFileOfNode(decl))) {
+    if (type.kind === "dyn" && isLet && isJsLikeSourceFile(ts.getSourceFileOfNode(decl))) {
       type = inferredEvolvingLetType(lowerer, decl) ?? type;
     }
     // `var v: void;` / `let x: undefined;` — a unit-only binding rides
@@ -6074,8 +6174,15 @@ export function lowerVarDecl(
     const shape = lowerer.shapes.get(type.shapeId);
     if (shape && shape.fields.length === 0 && !shape.indexValue && !shape.tuple) type = DYN;
   }
+  // A JavaScript let or var nothing writes again holds its initializer's
+  // value at every read, as a const does.
+  const keepsInitializer =
+    isLet &&
+    isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+    jsBindingKeepsInitializer(lowerer, decl);
   if (
     isLet &&
+    !keepsInitializer &&
     type !== null &&
     isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
     !decl.type &&
@@ -6228,7 +6335,7 @@ export function lowerVarDecl(
   if (
     !emptyAnyDictionary &&
     (type === null || (type.kind === "dyn" && checkerAny)) &&
-    !isLet &&
+    (!isLet || keepsInitializer) &&
     (checkerAny ||
       (lowerer.checkerAnyArray(decl.name) && lowerer.isArrayValueType(init.type)) ||
       // JS declarations carry no annotations: an unmappable inferred
@@ -6618,10 +6725,15 @@ function jsObjectBindingExpands(
         expands = true;
     }
     if (ts.isDeleteExpression(node) && property(node.expression) !== undefined) expands = true;
+    // Object.defineProperty and defineProperties can add accessors or add a
+    // property on some paths only, which the checker still declares as a
+    // required field.
     if (
       ts.isCallExpression(node) &&
       ts.isPropertyAccessExpression(node.expression) &&
-      node.expression.name.text === "setPrototypeOf" &&
+      (node.expression.name.text === "setPrototypeOf" ||
+        node.expression.name.text === "defineProperty" ||
+        node.expression.name.text === "defineProperties") &&
       lowerer.isStdlibGlobal(node.expression.expression, "Object")
     ) {
       const target = node.arguments.nodes[0];
@@ -6636,13 +6748,14 @@ function jsObjectBindingExpands(
 }
 
 export function hasJsTypeAnnotation(decl: ts.VariableDeclaration): boolean {
-  const statement = decl.parent?.parent;
-  return (
-    !!statement &&
-    /@type\b/.test(
-      ts.getSourceFileOfNode(decl).text.slice(statement.pos, ts.tokenStartOfNode(decl)),
-    )
-  );
+  const list = decl.parent;
+  const statement = list?.parent;
+  if (!statement || !ts.isVariableDeclarationList(list)) return false;
+  // The declaration's own span: a sibling's annotation in the same list
+  // (`var /** @type {T} */ a = null, b = 0`) does not type it.
+  const index = list.declarations.nodes.indexOf(decl);
+  const start = index > 0 ? list.declarations.nodes[index - 1]!.end : statement.pos;
+  return /@type\b/.test(ts.getSourceFileOfNode(decl).text.slice(start, ts.tokenStartOfNode(decl)));
 }
 
 /** The assignments to a declaration's binding in its function (or file),
@@ -6677,6 +6790,72 @@ function jsBindingWrites(
   return (writes.get(name.text) ?? []).filter(
     (node) => lowerer.resolveValueSymbol(node.left as ts.Identifier) === symbol,
   );
+}
+
+/** Whether a JavaScript `let` or `var` holds its initializer's value at
+ * every read, as a const would: it has one declaration, nothing writes it
+ * again (assignments, increments, destructuring and loop heads), and a
+ * hoisted `var` is only read after its declaration statement inside that
+ * statement's own block, outside function declarations there (which can
+ * run before it). A read anywhere else could see `undefined` or an earlier
+ * iteration's value. */
+function jsBindingKeepsInitializer(lowerer: Lowerer, decl: ts.VariableDeclaration): boolean {
+  const name = decl.name;
+  const statement = decl.parent?.parent;
+  if (
+    !ts.isIdentifier(name) ||
+    !decl.initializer ||
+    !statement ||
+    !ts.isVariableStatement(statement)
+  )
+    return false;
+  const symbol = lowerer.resolveValueSymbol(name);
+  if (!symbol || symbol.declarations.length !== 1) return false;
+  if ((jsBindingWrites(lowerer, decl, name) ?? [null]).length > 0) return false;
+  const hoisted = (statement.declarationList.flags & ts.NodeFlags.BlockScoped) === 0;
+  const block = statement.parent;
+  let owner: ts.Node = decl;
+  while (owner.parent && !ts.isFunctionLike(owner) && !ts.isSourceFile(owner)) owner = owner.parent;
+  let keeps = true;
+  ts.walkPreorder(owner, (node) => {
+    if (!keeps || node === name || !ts.isIdentifier(node) || node.text !== name.text) return;
+    if (lowerer.resolveValueSymbol(node) !== symbol) return;
+    let target: ts.Node = node;
+    for (;;) {
+      const parent = target.parent;
+      if (!parent) break;
+      if (
+        (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) &&
+        (parent.operator === ts.SyntaxKind.PlusPlusToken ||
+          parent.operator === ts.SyntaxKind.MinusMinusToken)
+      )
+        keeps = false;
+      else if (
+        ts.isParenthesizedExpression(parent) ||
+        ts.isArrayLiteralExpression(parent) ||
+        ts.isObjectLiteralExpression(parent) ||
+        ts.isSpreadElement(parent) ||
+        ts.isSpreadAssignment(parent) ||
+        ts.isShorthandPropertyAssignment(parent) ||
+        (ts.isPropertyAssignment(parent) && parent.initializer === target)
+      ) {
+        target = parent;
+        continue;
+      } else if (
+        (ts.isBinaryExpression(parent) && parent.left === target && target !== node) ||
+        ((ts.isForInStatement(parent) || ts.isForOfStatement(parent)) &&
+          parent.initializer === target)
+      )
+        keeps = false;
+      break;
+    }
+    if (!keeps || !hoisted) return;
+    if (ts.tokenStartOfNode(node) < statement.end) keeps = false;
+    for (let up: ts.Node | undefined = node.parent; keeps && up !== block; up = up?.parent) {
+      if (!up || ts.isFunctionDeclaration(up)) keeps = false;
+    }
+  });
+  return keeps;
 }
 
 /** Whether a JavaScript binding always holds a string: the checker types it
@@ -6743,6 +6922,8 @@ export function jsBindingHasOpenWrites(lowerer: Lowerer, decl: ts.VariableDeclar
   // writes that coerce into the declared type keep it.
   // A write whose checker type is the declaration's own maps to the same
   // representation; the declared type is mapped only for the others.
+  // A union declaration (`var match = re.exec(text)`, later `match =
+  // "&lt;"`) counts a write that fits none of its arms.
   const declaredType = lowerer.typeOf(decl.name);
   const differing = candidates.filter(
     (node) =>
@@ -6751,7 +6932,9 @@ export function jsBindingHasOpenWrites(lowerer: Lowerer, decl: ts.VariableDeclar
   );
   if (differing.length === 0) return false;
   const declared = lowerer.mapTypeOf(declaredType);
-  if (declared === null || declared.kind === "dyn" || declared.kind === "union") return false;
+  if (declared === null || declared.kind === "dyn" || !lowerer.dynConvertible(declared))
+    return false;
+  const arms = declared.kind === "union" ? lowerer.unions.get(declared.unionId)!.arms : [declared];
   return differing.some((node) => {
     const written = lowerer.mapTypeOf(lowerer.typeOf(node.right));
     return (
@@ -6760,9 +6943,10 @@ export function jsBindingHasOpenWrites(lowerer: Lowerer, decl: ts.VariableDeclar
       written.kind !== "union" &&
       !isUnitType(written) &&
       lowerer.dynConvertible(written) &&
-      lowerer.dynConvertible(declared) &&
-      !typeEquals(written, declared) &&
-      (written.kind !== declared.kind || written.kind === "bytes")
+      arms.every(
+        (arm) =>
+          !typeEquals(written, arm) && (written.kind !== arm.kind || written.kind === "bytes"),
+      )
     );
   });
 }
@@ -8808,8 +8992,22 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
  * and undefined into the checker's `string`) — does the statement lower
  * as the control flow it is: `if (a) b;` / `if (!a) b;`, a condition test
  * that needs no result value. Diagnostics outside the statement, and
- * internal errors, keep the original failure. */
+ * internal errors, keep the original failure. A right operand ending in a
+ * void conditional (`d && (w(a), c ? f() : g())`) has no value form at
+ * all, so it takes the control flow directly. */
 function lowerDiscardedLogical(lowerer: Lowerer, expr: ts.BinaryExpression): IrStmt {
+  let tail: ts.Expression = expr.right;
+  for (;;) {
+    while (ts.isParenthesizedExpression(tail)) tail = tail.expression;
+    if (!ts.isBinaryExpression(tail) || tail.operatorToken.kind !== ts.SyntaxKind.CommaToken) break;
+    tail = tail.right;
+  }
+  if (
+    ts.isConditionalExpression(tail) &&
+    lowerer.mapTypeOf(lowerer.typeOf(tail))?.kind === "void"
+  ) {
+    return lowerLogicalAsIf(lowerer, expr);
+  }
   const diagsBefore = lowerer.diags.length;
   try {
     const value = lowerer.lowerExpr(expr);
@@ -8834,6 +9032,10 @@ function lowerDiscardedLogical(lowerer: Lowerer, expr: ts.BinaryExpression): IrS
     if (!local) throw e;
     lowerer.diags.length = diagsBefore;
   }
+  return lowerLogicalAsIf(lowerer, expr);
+}
+
+function lowerLogicalAsIf(lowerer: Lowerer, expr: ts.BinaryExpression): IrStmt {
   const and = expr.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken;
   const cond = lowerer.lowerCondition(expr.left);
   if (cond.kind === "boolLit") {

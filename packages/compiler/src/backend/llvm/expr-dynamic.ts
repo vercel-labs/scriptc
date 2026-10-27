@@ -82,6 +82,41 @@ export function emitDynamicExpr(
         }
         return host.own({ name: t, type: e.type });
       }
+      // A string or number literal converts to its site's immortal box,
+      // made once.
+      if (
+        (e.value.kind === "strLit" || e.value.kind === "numLit") &&
+        host.shapeHost.rcMode !== undefined
+      ) {
+        const literal = host.emitExpr(e.value);
+        const ctor =
+          e.value.kind === "strLit"
+            ? "scr_dyn_new_str_immortal(ptr"
+            : "scr_dyn_new_num_immortal(double";
+        host.declare(
+          e.value.kind === "strLit"
+            ? `declare ptr @scr_dyn_new_str_immortal(ptr)`
+            : `declare ptr @scr_dyn_new_num_immortal(double)`,
+        );
+        const site = host.dynLiteralSite();
+        const entry = B.currentLabel();
+        const cached = B.tmp(),
+          missing = B.tmp(),
+          made = B.tmp(),
+          boxed = B.tmp();
+        B.line(`${cached} = load ptr, ptr ${site}`);
+        B.line(`${missing} = icmp eq ptr ${cached}, null`);
+        const make = B.newLabel("dlit.make");
+        const done = B.newLabel("dlit.done");
+        B.condBr(missing, make, done);
+        B.startBlock(make);
+        B.line(`${made} = call ptr @${ctor} ${literal.name})`);
+        B.line(`store ptr ${made}, ptr ${site}`);
+        B.br(done);
+        B.startBlock(done);
+        B.line(`${boxed} = phi ptr [ ${cached}, %${entry} ], [ ${made}, %${make} ]`);
+        return host.own({ name: boxed, type: e.type });
+      }
       const v = emitBorrowedInput(host, e.value);
       const identityRef =
         isDynTypedRefType(v.type) ||
@@ -314,6 +349,40 @@ export function emitDynamicExpr(
       host.declare(`declare ptr @scr_dyn_new_obj()`);
       host.declare(`declare void @scr_dyn_key_set(ptr, ptr, ptr)`);
       host.declare(`declare void @scr_dyn_key_set_computed(ptr, ptr, ptr)`);
+      const fields = e.fields ?? [];
+      const names = fields.map((f) => jsIcLiteralKey(f.key));
+      if (
+        jsIcMethods(host) &&
+        fields.length > 0 &&
+        fields.length <= 16 &&
+        names.every((n) => n !== null && !/^(0|[1-9][0-9]*)$/.test(n)) &&
+        new Set(names).size === names.length
+      ) {
+        // Every member a distinct constant key: the values in order, then
+        // one call that fills the object through the site's shape (no
+        // member can observe the object before it exists).
+        const n = fields.length;
+        const keys = B.slot(),
+          values = B.slot();
+        B.entryAllocas.push(`${keys} = alloca [${n} x ptr]`);
+        B.entryAllocas.push(`${values} = alloca [${n} x ptr]`);
+        fields.forEach((f, i) => {
+          const k = emitBorrowedInput(host, f.key);
+          const v = emitBorrowedInput(host, f.value);
+          const kAt = B.tmp(),
+            vAt = B.tmp();
+          B.line(`${kAt} = getelementptr inbounds [${n} x ptr], ptr ${keys}, i64 0, i64 ${i}`);
+          B.line(`store ptr ${k.name}, ptr ${kAt}`);
+          B.line(`${vAt} = getelementptr inbounds [${n} x ptr], ptr ${values}, i64 0, i64 ${i}`);
+          B.line(`store ptr ${v.name}, ptr ${vAt}`);
+        });
+        host.declare(`declare ptr @scr_js_new_literal(ptr, ${host.sizeType}, ptr, ptr)`);
+        const built = B.tmp();
+        B.line(
+          `${built} = call ptr @scr_js_new_literal(ptr ${host.jsIcSite()}, ${host.sizeType} ${n}, ptr ${keys}, ptr ${values})`,
+        );
+        return host.own({ name: built, type: e.type });
+      }
       const obj = B.tmp();
       B.line(`${obj} = call ptr @scr_dyn_new_obj()`);
       const out = host.own({ name: obj, type: e.type });
@@ -621,16 +690,36 @@ export function emitDynamicExpr(
         B.condBr(isObject, cached, shared);
         B.startBlock(cached);
         const fast = B.tmp();
+        const site = host.dynReadIcSite();
         B.line(
-          `${fast} = call ptr @scr_dyn_obj_read_ic(ptr ${d.name}, ptr ${k.name}, ptr ${host.dynReadIcSite()})`,
+          `${fast} = call ptr @scr_dyn_obj_read_ic(ptr ${d.name}, ptr ${k.name}, ptr ${site})`,
         );
         B.br(join);
+        // A record capsule reads the field the site last found in its
+        // layout; anything the cache does not answer takes the helper.
         B.startBlock(shared);
+        host.declare(`declare ptr @scr_dyn_record_read_ic(ptr, ptr, ptr)`);
+        const isRecord = B.tmp();
+        B.line(`${isRecord} = icmp eq i32 ${host.dynKind(d.name)}, ${DYN_KIND.TYPED_REF}`);
+        const record = B.newLabel("dkg.rec");
+        const generalRead = B.newLabel("dkg.gen");
+        B.condBr(isRecord, record, generalRead);
+        B.startBlock(record);
+        const field = B.tmp();
+        B.line(
+          `${field} = call ptr @scr_dyn_record_read_ic(ptr ${d.name}, ptr ${k.name}, ptr ${site})`,
+        );
+        const hit = B.tmp();
+        B.line(`${hit} = icmp ne ptr ${field}, null`);
+        B.condBr(hit, join, generalRead);
+        B.startBlock(generalRead);
         const slow = B.tmp();
         B.line(`${slow} = ${generic}`);
         B.br(join);
         B.startBlock(join);
-        B.line(`${t} = phi ptr [ ${fast}, %${cached} ], [ ${slow}, %${shared} ]`);
+        B.line(
+          `${t} = phi ptr [ ${fast}, %${cached} ], [ ${field}, %${record} ], [ ${slow}, %${generalRead} ]`,
+        );
       } else {
         B.line(`${t} = ${generic}`);
       }
@@ -679,21 +768,92 @@ export function emitDynamicExpr(
       // dyn vs scalar strict equality: kind test + payload compare.
       // Operands emit in SOURCE order; the dyn side is found by type.
       // Both borrowed, no allocation.
+      // A boxed primitive literal (a switch case over a dyn value) compares
+      // as the literal itself.
+      // So does a boxed symbol (`$$typeof === REACT_ELEMENT_TYPE`): its
+      // identity is the symbol pointer.
+      const literal = (x: IrExpr): IrExpr | null =>
+        x.kind === "dynFrom" &&
+        (x.value.kind === "strLit" ||
+          x.value.kind === "numLit" ||
+          x.value.kind === "boolLit" ||
+          x.value.type.kind === "symbol")
+          ? x.value
+          : null;
+      const leftLiteral = literal(e.left),
+        rightLiteral = literal(e.right);
+      if (rightLiteral && e.left.type.kind === "dyn" && !leftLiteral)
+        return host.emitExpr({ ...e, right: rightLiteral });
+      if (leftLiteral && e.right.type.kind === "dyn" && !rightLiteral)
+        return host.emitExpr({ ...e, left: leftLiteral });
       const inputs = emitBorrowedInputs(host, [e.left, e.right]);
       const l = inputs[0]!,
         r = inputs[1]!;
       const [d, s, st] = e.left.type.kind === "dyn" ? [l, r, e.right.type] : [r, l, e.left.type];
       let test: string;
       if (st.kind === "dyn") {
-        // dyn vs dyn: whole-dyn strict equality.
+        // dyn vs dyn: whole-dyn strict equality. Inline answers: the same
+        // node is equal unless it is a number (NaN), and different kinds
+        // differ unless they are a record capsule and an object that may
+        // share a source record. The runtime answers the rest.
         host.declare(`declare zeroext i1 @scr_dyn_strict_eq(ptr, ptr)`);
+        const entry = B.currentLabel();
+        const ka = host.dynKind(l.name);
+        const same = B.tmp(),
+          num = B.tmp(),
+          sameEqual = B.tmp();
+        B.line(`${same} = icmp eq ptr ${l.name}, ${r.name}`);
+        B.line(`${num} = icmp eq i32 ${ka}, ${DYN_KIND.NUM}`);
+        B.line(`${sameEqual} = select i1 ${same}, i1 true, i1 false`);
+        const kinds = B.newLabel("dse.k");
+        const call = B.newLabel("dse.rt");
+        const done = B.newLabel("dse.d");
+        const notNum = B.tmp();
+        B.line(`${notNum} = xor i1 ${num}, true`);
+        const fastTrue = B.tmp();
+        B.line(`${fastTrue} = and i1 ${sameEqual}, ${notNum}`);
+        B.condBr(fastTrue, done, kinds);
+        B.startBlock(kinds);
+        const kb = host.dynKind(r.name);
+        const differ = B.tmp();
+        B.line(`${differ} = icmp ne i32 ${ka}, ${kb}`);
+        const refA = B.tmp(),
+          objA = B.tmp(),
+          capA = B.tmp(),
+          refB = B.tmp(),
+          objB = B.tmp(),
+          capB = B.tmp(),
+          pair = B.tmp(),
+          notPair = B.tmp(),
+          fastFalse = B.tmp();
+        B.line(`${refA} = icmp eq i32 ${ka}, ${DYN_KIND.TYPED_REF}`);
+        B.line(`${objA} = icmp eq i32 ${ka}, ${DYN_KIND.OBJ}`);
+        B.line(`${capA} = or i1 ${refA}, ${objA}`);
+        B.line(`${refB} = icmp eq i32 ${kb}, ${DYN_KIND.TYPED_REF}`);
+        B.line(`${objB} = icmp eq i32 ${kb}, ${DYN_KIND.OBJ}`);
+        B.line(`${capB} = or i1 ${refB}, ${objB}`);
+        B.line(`${pair} = and i1 ${capA}, ${capB}`);
+        B.line(`${notPair} = xor i1 ${pair}, true`);
+        B.line(`${fastFalse} = and i1 ${differ}, ${notPair}`);
+        B.condBr(fastFalse, done, call);
+        B.startBlock(call);
+        const slow = B.tmp();
+        B.line(`${slow} = call zeroext i1 @scr_dyn_strict_eq(ptr ${l.name}, ptr ${r.name})`);
+        B.br(done);
+        B.startBlock(done);
         test = B.tmp();
-        B.line(`${test} = call zeroext i1 @scr_dyn_strict_eq(ptr ${l.name}, ptr ${r.name})`);
+        B.line(`${test} = phi i1 [ true, %${entry} ], [ false, %${kinds} ], [ ${slow}, %${call} ]`);
       } else {
         const kd = host.dynKind(d.name);
         const kindOk = B.tmp();
         const wantKind =
-          st.kind === "string" ? DYN_KIND.STR : st.kind === "f64" ? DYN_KIND.NUM : DYN_KIND.BOOL;
+          st.kind === "string"
+            ? DYN_KIND.STR
+            : st.kind === "f64"
+              ? DYN_KIND.NUM
+              : st.kind === "symbol"
+                ? DYN_KIND.SYMBOL
+                : DYN_KIND.BOOL;
         B.line(`${kindOk} = icmp eq i32 ${kd}, ${wantKind}`);
         const slot = B.slot();
         B.entryAllocas.push(`${slot} = alloca i1`);
@@ -709,7 +869,17 @@ export function emitDynamicExpr(
           B.line(`${pv} = getelementptr inbounds i8, ptr ${d.name}, i64 16 ; ->v.str`);
           const sv = B.tmp();
           B.line(`${sv} = load ptr, ptr ${pv}`);
-          B.line(`${eq} = call zeroext i1 @sc_str_eq(ptr ${sv}, ptr ${s.name})`);
+          // A literal side compares through its own inline test (length and
+          // bytes known at compile time).
+          const literal = e.left.type.kind === "dyn" ? e.right : e.left;
+          if (literal.kind === "strLit")
+            B.line(`${eq} = call zeroext i1 ${host.literalEquals(literal.value)}(ptr ${sv})`);
+          else B.line(`${eq} = call zeroext i1 @sc_str_eq(ptr ${sv}, ptr ${s.name})`);
+        } else if (st.kind === "symbol") {
+          B.line(`${pv} = getelementptr inbounds i8, ptr ${d.name}, i64 16 ; ->v.symbol.value`);
+          const sv = B.tmp();
+          B.line(`${sv} = load ptr, ptr ${pv}`);
+          B.line(`${eq} = icmp eq ptr ${sv}, ${s.name}`);
         } else if (st.kind === "f64") {
           B.line(`${pv} = getelementptr inbounds i8, ptr ${d.name}, i64 16 ; ->v.num`);
           const nv = B.tmp();
@@ -748,13 +918,58 @@ export function emitDynamicExpr(
           `${test} = call zeroext i1 @scr_dyn_typed_array_is(ptr ${d.name}, i32 ${BYTES_ELEM_NUM[e.bytesElem ?? "u8"]})`,
         );
       } else if (e.test === "classCapsule") {
+        // Only a typed reference (ScrDyn.kind 12 at offset 8) can be a class
+        // capsule: test the kind inline and ask the runtime for those alone.
         host.declare(`declare zeroext i1 @scr_dyn_is_class_capsule(ptr)`);
+        const kindPtr = B.tmp();
+        const kind = B.tmp();
+        const isRef = B.tmp();
+        const entry = B.currentLabel();
+        const lRef = B.newLabel("cap.ref");
+        const lDone = B.newLabel("cap.done");
+        B.line(`${kindPtr} = getelementptr i8, ptr ${d.name}, i64 8`);
+        B.line(`${kind} = load i32, ptr ${kindPtr}`);
+        B.line(`${isRef} = icmp eq i32 ${kind}, 12`);
+        B.condBr(isRef, lRef, lDone);
+        B.startBlock(lRef);
+        const capsule = B.tmp();
+        B.line(`${capsule} = call zeroext i1 @scr_dyn_is_class_capsule(ptr ${d.name})`);
+        B.br(lDone);
+        B.startBlock(lDone);
         test = B.tmp();
-        B.line(`${test} = call zeroext i1 @scr_dyn_is_class_capsule(ptr ${d.name})`);
+        B.line(`${test} = phi i1 [ false, %${entry} ], [ ${capsule}, %${lRef} ]`);
       } else if (e.test === "truthy") {
+        // Objects of every kind are truthy and null/undefined falsy, by kind;
+        // booleans, numbers, strings and bigints ask the runtime.
         host.declare(`declare zeroext i1 @scr_dyn_truthy(ptr)`);
+        const kind = host.dynKind(d.name);
+        const scalar = B.tmp();
+        const low = B.tmp();
+        const big = B.tmp();
+        B.line(`${low} = icmp ule i32 ${kind}, ${DYN_KIND.STR}`);
+        B.line(`${big} = icmp eq i32 ${kind}, ${DYN_KIND.BIGINT}`);
+        B.line(`${scalar} = or i1 ${low}, ${big}`);
+        const nullish = B.tmp();
+        const isUndef = B.tmp();
+        const isNull = B.tmp();
+        B.line(`${isUndef} = icmp eq i32 ${kind}, ${DYN_KIND.UNDEF}`);
+        B.line(`${isNull} = icmp eq i32 ${kind}, ${DYN_KIND.NULL}`);
+        B.line(`${nullish} = or i1 ${isUndef}, ${isNull}`);
+        const byKind = B.tmp();
+        B.line(`${byKind} = xor i1 ${nullish}, true`);
+        const entry = B.currentLabel();
+        const lCall = B.newLabel("tru.call");
+        const lDone = B.newLabel("tru.done");
+        const ask = B.tmp();
+        B.line(`${ask} = and i1 ${scalar}, ${byKind}`);
+        B.condBr(ask, lCall, lDone);
+        B.startBlock(lCall);
+        const answer = B.tmp();
+        B.line(`${answer} = call zeroext i1 @scr_dyn_truthy(ptr ${d.name})`);
+        B.br(lDone);
+        B.startBlock(lDone);
         test = B.tmp();
-        B.line(`${test} = call zeroext i1 @scr_dyn_truthy(ptr ${d.name})`);
+        B.line(`${test} = phi i1 [ ${byKind}, %${entry} ], [ ${answer}, %${lCall} ]`);
       } else if (e.test === "error") {
         // `u instanceof Error`: the checked-dynamic tree's error encoding — an object
         // carrying the reserved "%error" marker key, a registered native
@@ -833,27 +1048,62 @@ export function emitDynamicExpr(
           B.line(`${test} = and i1 ${bytes}, ${buffer}`);
         } else if (e.test === "object") {
           // `typeof v === "object"`: objects, arrays, bytes, native
-          // handles, promises, null, and native reference capsules.
-          const object = orNativeRef(
-            oneOf([
-              DYN_KIND.OBJ,
-              DYN_KIND.ARR,
-              DYN_KIND.BYTES,
-              DYN_KIND.HANDLE,
-              DYN_KIND.PROMISE,
-              DYN_KIND.PROXY,
-              DYN_KIND.NULL,
-            ]),
-            "scr_dyn_ref_typeof_is",
-            host.cstr("object"),
-          );
-          host.declare("declare zeroext i1 @scr_dyn_is_callable(ptr)");
-          const callable = B.tmp();
-          const nonCallable = B.tmp();
+          // handles, promises and null, none of them callable, answer by
+          // kind; native reference capsules and proxies ask the runtime.
+          const direct = oneOf([
+            DYN_KIND.OBJ,
+            DYN_KIND.ARR,
+            DYN_KIND.BYTES,
+            DYN_KIND.HANDLE,
+            DYN_KIND.PROMISE,
+            DYN_KIND.NULL,
+          ]);
+          const slow = oneOf([DYN_KIND.TYPED_REF, DYN_KIND.PROXY]);
+          host.declare("declare zeroext i1 @scr_dyn_typeof_object_ref(ptr)");
+          const entry = B.currentLabel();
+          const lSlow = B.newLabel("tyo.ref");
+          const lDone = B.newLabel("tyo.done");
+          B.condBr(slow, lSlow, lDone);
+          B.startBlock(lSlow);
+          let viewTest: { label: string } | null = null;
+          if (host.sizeType === "i64") {
+            // A record capsule with no view yet (React's elements) is an
+            // ordinary object: its flag word's top three bits say record
+            // alone and its view slot is empty (scr_dyn_typeof_object_ref).
+            const flagsAt = B.tmp(),
+              flags = B.tmp(),
+              kinds = B.tmp(),
+              record = B.tmp(),
+              viewAt = B.tmp(),
+              view = B.tmp(),
+              unviewed = B.tmp(),
+              plain = B.tmp();
+            B.line(`${flagsAt} = getelementptr inbounds i8, ptr ${d.name}, i64 88`);
+            B.line(`${flags} = load i32, ptr ${flagsAt}`);
+            B.line(`${kinds} = lshr i32 ${flags}, 29`);
+            B.line(`${record} = icmp eq i32 ${kinds}, 1`);
+            B.line(`${viewAt} = getelementptr inbounds i8, ptr ${d.name}, i64 72`);
+            B.line(`${view} = load ptr, ptr ${viewAt}`);
+            B.line(`${unviewed} = icmp eq ptr ${view}, null`);
+            B.line(`${plain} = and i1 ${record}, ${unviewed}`);
+            const typed = B.tmp();
+            B.line(`${typed} = icmp eq i32 ${host.dynKind(d.name)}, ${DYN_KIND.TYPED_REF}`);
+            const fast = B.tmp();
+            B.line(`${fast} = and i1 ${typed}, ${plain}`);
+            const lCall = B.newLabel("tyo.call");
+            viewTest = { label: B.currentLabel() };
+            B.condBr(fast, lDone, lCall);
+            B.startBlock(lCall);
+          }
+          const answer = B.tmp();
+          B.line(`${answer} = call zeroext i1 @scr_dyn_typeof_object_ref(ptr ${d.name})`);
+          const callLabel = B.currentLabel();
+          B.br(lDone);
+          B.startBlock(lDone);
           test = B.tmp();
-          B.line(`${callable} = call zeroext i1 @scr_dyn_is_callable(ptr ${d.name})`);
-          B.line(`${nonCallable} = xor i1 ${callable}, true`);
-          B.line(`${test} = and i1 ${object}, ${nonCallable}`);
+          B.line(
+            `${test} = phi i1 [ ${direct}, %${entry} ], [ ${answer}, %${callLabel} ]${viewTest ? `, [ true, %${viewTest.label} ]` : ""}`,
+          );
         } else if (e.test === "array") {
           // Array.isArray accepts native arrays and typed array capsules.
           test = orNativeRef(oneOf([DYN_KIND.ARR]), "scr_dyn_ref_is_array");

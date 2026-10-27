@@ -5,6 +5,7 @@ import { staticTextDecoderEncoding } from "../text-decoder-encoding.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { locOf } from "../../program.js";
+import { tryLowerExpression } from "../expressions/try-lower-expression.js";
 import { defaultAfterUndefined, lowerStaticallyUndefinedArgument } from "../optional-arguments.js";
 import {
   BOOL,
@@ -14,6 +15,7 @@ import {
   type IrExpr,
   type IrStmt,
   type IrType,
+  isUnitType,
   STRING,
   type SrcLoc,
 } from "../../../ir/ir.js";
@@ -578,6 +580,108 @@ export function lowerTextCodecCall(
       lowerer.noLowering("TextEncoder.encodeInto with this argument shape", call);
     const loc = locOf(call);
     const receiver = lowerer.lowerExpr(access.expression);
+    const type = lowerer.mapTypeOf(lowerer.typeOf(call));
+    if (!type) lowerer.badType(call, lowerer.typeOf(call));
+    // A typed string into a typed Uint8Array: the result record is built
+    // from the two counts, without a checked-dynamic object between.
+    const [source, destination] = call.arguments.nodes.map((arg) =>
+      tryLowerExpression(lowerer, stripTypeCasts(arg)),
+    );
+    const typedResult = (text: IrExpr, view: IrExpr): IrExpr => ({
+      kind: "recordLit",
+      fields: [
+        {
+          name: "read",
+          value: { kind: "libCall", fn: "text.encodeIntoRead", args: [text, view], type: F64, loc },
+        },
+        {
+          name: "written",
+          value: { kind: "libCall", fn: "text.encodeIntoWritten", args: [], type: F64, loc },
+        },
+      ],
+      type,
+      loc,
+    });
+    const isU8 = (t: IrType): boolean => t.kind === "bytes" && t.elem === "u8";
+    const viewArms =
+      destination?.type.kind === "union"
+        ? (lowerer.unions.get(destination.type.unionId)?.arms ?? [])
+        : [];
+    const viewTag = viewArms.findIndex(isU8);
+    if (
+      type.kind === "record" &&
+      lowerer.shapes
+        .get(type.shapeId)
+        ?.fields.map((f) => f.name)
+        .join(",") === "read,written" &&
+      source?.type.kind === "string" &&
+      destination &&
+      (isU8(destination.type) ||
+        (viewTag >= 0 && viewArms.every((arm, i) => i === viewTag || isUnitType(arm))))
+    ) {
+      let result: IrExpr;
+      if (isU8(destination.type)) result = typedResult(source, destination);
+      else {
+        // `Uint8Array | null`: the typed call for the view, the checked call
+        // (and its TypeError) otherwise. Both operands evaluate once.
+        const text = lowerer.declareHiddenLocal("%encodeText", STRING);
+        const view = lowerer.declareHiddenLocal("%encodeView", destination.type);
+        const viewRef = varRef(view.id, destination.type, loc);
+        const unionId = (destination.type as IrType & { kind: "union" }).unionId;
+        result = {
+          kind: "seqExpr",
+          stmts: [
+            { kind: "varDecl", localId: text.id, init: source, loc },
+            { kind: "varDecl", localId: view.id, init: destination, loc },
+          ],
+          result: {
+            kind: "ternary",
+            cond: {
+              kind: "unionIsTag",
+              unionId,
+              tag: viewTag,
+              negated: false,
+              value: viewRef,
+              type: BOOL,
+              loc,
+            },
+            then: typedResult(varRef(text.id, STRING, loc), {
+              kind: "unionNarrow",
+              unionId,
+              tag: viewTag,
+              value: viewRef,
+              type: viewArms[viewTag]!,
+              loc,
+            }),
+            else_: lowerer.coerceInto(
+              call,
+              {
+                kind: "libCall",
+                fn: "text.encodeInto",
+                args: [
+                  lowerer.coerceToExpected(varRef(text.id, STRING, loc), DYN),
+                  lowerer.coerceToExpected(viewRef, DYN),
+                ],
+                type: DYN,
+                loc,
+              },
+              type,
+            ),
+            type,
+            loc,
+          },
+          type,
+          loc,
+        };
+      }
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: receiver, loc }],
+        result,
+        type,
+        loc,
+      };
+    }
     const result: IrExpr = {
       kind: "libCall",
       fn: "text.encodeInto",
@@ -585,8 +689,6 @@ export function lowerTextCodecCall(
       type: DYN,
       loc,
     };
-    const type = lowerer.mapTypeOf(lowerer.typeOf(call));
-    if (!type) lowerer.badType(call, lowerer.typeOf(call));
     const checked = lowerer.coerceInto(call, result, type);
     return {
       kind: "seqExpr",

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/dyn-strict-equality-kinds.cjs"
+ ],
+ "diags": []
+}

@@ -49,7 +49,7 @@ import {
 import { COMPOUND_ASSIGN_OPS, type CompoundOp, NARROW_FIRST } from "../surfaces.js";
 import { lowerElementCompoundParts } from "./element-access.js";
 import { InternalCompilerError } from "../../../errors.js";
-import { isJsSourceFile, locOf } from "../../program.js";
+import { isJsLikeSourceFile, isJsSourceFile, locOf } from "../../program.js";
 import { storedClassValueType } from "../lower-classes.js";
 import { builtinClassKind } from "../builtins/builtin-class-dyn.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
@@ -540,7 +540,7 @@ export function lowerNativeFunctionAssignment(
 ): IrExpr | null {
   const target = expr.left;
   if (
-    !isJsSourceFile(ts.getSourceFileOfNode(expr)) ||
+    !isJsLikeSourceFile(ts.getSourceFileOfNode(expr)) ||
     (!ts.isPropertyAccessExpression(target) && !ts.isElementAccessExpression(target)) ||
     target.questionDotToken
   )
@@ -1333,7 +1333,7 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
     // must be a variable or `this`.
     if (
       op === ts.SyntaxKind.EqualsToken &&
-      isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+      isJsLikeSourceFile(ts.getSourceFileOfNode(expr)) &&
       (ts.isPropertyAccessExpression(expr.left) || ts.isElementAccessExpression(expr.left)) &&
       !expr.left.questionDotToken
     ) {

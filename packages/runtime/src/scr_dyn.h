@@ -383,10 +383,23 @@ typedef struct ScrDynTypedRecordOps {
    * optional key can change after the record is boxed. NULL in every other
    * table. */
   const struct ScrDynTypedRecordOps *(*select)(void *rec);
+  /* Stores `value` into field `index` as the checked view's commit would
+   * (an exception is pending when it does not convert), true when it did;
+   * false leaves the write to the view. NULL in a `select` table. */
+  bool (*set)(void *rec, size_t index, const ScrDyn *value);
+  /* Per field: the byte offset of a field the record stores as a checked
+   * value, which compiled get sites read in place, else -1. NULL in a
+   * `select` table. */
+  const int32_t *dyn_offsets;
 } ScrDynTypedRecordOps;
 /* A record capsule's ops while it answers from the native record (no view
  * created yet), or NULL. */
 const ScrDynTypedRecordOps *scr_dyn_typed_ref_live_record(const ScrDyn *d);
+/* The index of the field `key` names in a record layout; false when it
+ * names none. */
+bool scr_dyn_record_field_index(const ScrDynTypedRecordOps *ops, const ScrStr *key, size_t *out);
+/* A record or array capsule that Object.freeze reached. */
+bool scr_dyn_typed_ref_is_frozen(const ScrDyn *d);
 /* The declaration-typed boundary's adoption (scr_decl_adopt.c, linked by
  * programs with boundary casts): the nodes of `source` that something else
  * still references become live capsules of the native value `capsule`
@@ -500,6 +513,13 @@ struct ScrDyn {
        * every change to the key set resets it. Other programs never look
        * at it, so it may hold anything there. */
       struct ScrJsShape *shape;
+      /* Every entry slot from here up holds no key bytes, across the
+       * node's pooled lives: disposal scans only the slots below it. */
+      uint32_t key_slots;
+      /* The key bytes the node kept when it left the pool, while no slot's
+       * key has changed since (SCR_DYN_KEYS_TOUCHED once one has): its
+       * disposal returns them to the pool's budget without a scan. */
+      uint32_t untouched_key_bytes;
     } obj; /* owned */
     /* SCR_DYN_FUNC: the boxed closure (owned) + its call descriptor. `sig`
      * and `name` are static compiler-emitted literals (never freed); name
@@ -691,6 +711,12 @@ static inline const ScrDynTypedArrayOps *scr_dyn_typed_ref_array_ops(const ScrDy
 
 /* BORROWED member lookup on a SCR_DYN_OBJ; NULL when the key is absent. */
 ScrDyn *scr_dyn_obj_get(const ScrDyn *d, const char *key, size_t key_len);
+/* A builtin stream method a capsule's cached view would answer again
+ * (scr_json.c): borrowed, or NULL. */
+ScrDyn *scr_dyn_typed_ref_view_builtin_method(const ScrDyn *capsule, const char *method, size_t len);
+/* An empty array that answers a capsule's name read as its view would
+ * (scr_json.c): borrowed, or NULL. */
+ScrDyn *scr_dyn_typed_ref_name_stand_in(const ScrDyn *d, const ScrStr *key);
 /* Own-enumerable check on a SCR_DYN_OBJ. */
 bool scr_dyn_obj_enumerable(const ScrDyn *d, const char *key, size_t key_len);
 /* Stores own property `entry` of `source` on `target` with its attributes:
@@ -790,6 +816,9 @@ ScrDyn *scr_dyn_obj_entries(const ScrDyn *v);
  * like JS). scr_dyn_undefined returns THE immortal undefined value
  * (rc == SIZE_MAX — retains/releases are no-ops). */
 ScrDyn *scr_dyn_undefined(void);
+/* The immortal undefined and null nodes the two constructors return. */
+extern ScrDyn scr_dyn_undefined_value;
+extern ScrDyn scr_dyn_null_value;
 ScrDyn *scr_dyn_new_null(void);
 ScrDyn *scr_dyn_new_bool(bool b);
 ScrDyn *scr_dyn_new_num(double n);
@@ -907,6 +936,8 @@ ScrDyn *scr_dyn_increment(const ScrDyn *value, bool increment);
 /* Internal constructor consumes a retained symbol with its native operations. */
 ScrDyn *scr_dyn_symbol_ref(ScrSym *value, void (*release)(ScrSym *), ScrStr *(*render)(ScrSym *), ScrStr *(*description)(ScrSym *));
 ScrDyn *scr_dyn_new_str(ScrStr *s);
+ScrDyn *scr_dyn_new_str_immortal(ScrStr *s); /* a literal's site box */
+ScrDyn *scr_dyn_new_num_immortal(double value);
 ScrDyn *scr_dyn_new_arr(void);
 ScrDyn *scr_dyn_array_constructor(void);
 /* Gives a builtin constructor value (Object, Array, Error) its builtin
@@ -1043,6 +1074,10 @@ ScrDyn *scr_dyn_seal(ScrDyn *object);
 bool scr_dyn_is_sealed(const ScrDyn *object);
 ScrDyn *scr_dyn_proxy_new(const ScrDyn *target, const ScrDyn *handler);
 bool scr_dyn_is_callable(const ScrDyn *value);
+bool scr_dyn_typeof_object_ref(const ScrDyn *value);
+ScrDyn *scr_dyn_fn_plain_table(const ScrDyn *d, bool *plain);
+double scr_dyn_arguments_length(const ScrDyn *slot);
+ScrDyn *scr_dyn_arguments_from(const ScrDyn *slot, ScrDyn *params);
 ScrDyn *scr_dyn_proxy_get(const ScrDyn *proxy, const ScrStr *key);
 bool scr_dyn_proxy_has(const ScrDyn *proxy, const ScrStr *key);
 ScrDyn *scr_dyn_own_descriptor(const ScrDyn *value, const ScrStr *key);
@@ -1065,6 +1100,9 @@ ScrDyn *scr_bytes_construct(const ScrDyn *callee, const ScrDyn *args, const ScrS
 extern SCR_TL bool (*scr_dyn_global_construct_fn)(const ScrDyn *callee, const ScrDyn *args,
                                                   ScrDyn **result);
 ScrDyn *scr_dyn_bytes_key_get(const ScrDyn *value, const ScrStr *key);
+/* A typed array's or DataView's `byteLength`, or a typed array's `length`,
+ * for a view without own named properties; -1 otherwise. */
+double scr_dyn_bytes_size(const ScrDyn *value, bool byte_length);
 /* A typed array's, Buffer's or DataView's own named property (+1), or NULL
  * without an exception when it has none. */
 ScrDyn *scr_bytes_named_get(const ScrDyn *view, const char *key, size_t key_len);
@@ -1096,6 +1134,7 @@ bool scr_dyn_typed_ref_is(
 bool scr_dyn_typed_ref_is_key(const ScrDyn *d, const ScrStr *type_key);
 void *scr_dyn_typed_ref_unbox(const ScrDyn *d); /* +1 */
 ScrDyn *scr_dyn_class_view_unavailable(void *ptr);
+ScrDyn *scr_dyn_view_unavailable(void *ptr);
 ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d); /* +1 */
 /* What string conversion renders for a capsule (+1): its materialized
  * view, or, for an EventTarget or Event subclass without its own
@@ -1377,10 +1416,18 @@ typedef struct ScrDynReadIc {
   size_t key_len;
   size_t index;
   struct ScrDynReadIc *next; /* this thread's filled sites, for cleanup */
+  /* The record layout a typed-reference receiver last had at this site,
+   * and the field the key names in it (SIZE_MAX: none). */
+  const void *record_ops;
+  size_t record_index;
 } ScrDynReadIc;
 /* scr_dyn_obj_read for a SCR_DYN_OBJ receiver `d` (callers check the kind)
  * and the site's constant key; same result and ownership. */
 ScrDyn *scr_dyn_obj_read_ic(const ScrDyn *d, const ScrStr *key, ScrDynReadIc *ic);
+/* The site's constant key on a live record capsule `d` (callers check the
+ * kind): the +1 field value, or NULL when the generic read must answer (a
+ * materialized or absent field, or another receiver). */
+ScrDyn *scr_dyn_record_read_ic(const ScrDyn *d, const ScrStr *key, ScrDynReadIc *ic);
 /* JS typeof comparison, including null's "object" result. */
 bool scr_dyn_is_object(const ScrDyn *d);
 void scr_dyn_throw(ScrDyn *d); /* moves; preserves boxed native Error classification */
@@ -1823,6 +1870,10 @@ ScrPromise *scr_dyn_promise_of(const ScrDyn *d);
  * a promise. */
 ScrDyn *scr_dyn_promise_key_get(const ScrDyn *d, const ScrStr *k);
 extern SCR_TL ScrDyn *(*scr_dyn_promise_member_fn)(const char *key, size_t len);
+/* The slot of the own-property table a promise box shares with every box
+ * and adapted twin of its promise (NULL when it has none and `create` is
+ * false). Installed by the gated async unit with the boxes. */
+extern SCR_TL ScrDyn **(*scr_dyn_promise_properties_fn)(const ScrDyn *d, bool create);
 /* Promise.all / allSettled / any over a spread dyn array (borrowed);
  * `reader` (borrowed) reads a program class instance's `then`. +1. */
 ScrPromise *scr_dyn_promise_all(const ScrDyn *entries, const ScrDyn *reader);
@@ -1976,9 +2027,16 @@ ScrDyn *scr_dyn_tier_unshaped_get(const ScrDyn *receiver, const ScrStr *key);
 /* Shared key bytes for `key` (+1, NUL-terminated), and their release. */
 char *scr_dyn_tier_key_copy(const char *key, size_t key_len);
 void scr_dyn_tier_key_release(char *key, size_t key_len);
+/* Records that a slot's key of `obj` changed (v.obj.untouched_key_bytes). */
+void scr_dyn_tier_keys_touched(ScrDyn *obj);
 /* Appends an own data property (writable, enumerable, configurable) that
  * `obj` does not have, sharing `key`'s bytes and taking ownership of
  * `value`, exactly as an ordinary insertion would; leaves the shape reset. */
 void scr_dyn_tier_append(ScrDyn *obj, char *key, size_t key_len, ScrDyn *value);
+bool scr_dyn_tier_clone_entries(ScrDyn *dst, ScrDyn *src);
+/* Swaps the entries of an empty ordinary object `dst` and an ordinary
+ * object `src` nothing else references or watches weakly; false, both
+ * untouched, otherwise. */
+bool scr_dyn_tier_adopt_entries(ScrDyn *dst, ScrDyn *src);
 
 #endif /* SCR_DYN_H */

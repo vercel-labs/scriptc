@@ -16,7 +16,11 @@ import {
 import { isJsSourceFile } from "../program.js";
 import { PoisonError, dynFallbackType } from "./lowerer.js";
 import { functionCanReturnUndefined } from "../function-completion.js";
-import { jsBindingAppendsOnly, jsBindingHasOpenWrites } from "./lower-stmts.js";
+import {
+  jsBindingAppendsOnly,
+  jsBindingHasOpenWrites,
+  jsDeclarationExpandsObject,
+} from "./lower-stmts.js";
 import type { FnCtx } from "./function-context.js";
 import { constituentTypes } from "../ts7/checker.js";
 import { returnsGuessedOverloadValue } from "./overload-choice.js";
@@ -130,7 +134,10 @@ export function producesConstructor(lowerer: Lowerer, type: ts.Type): boolean {
 
 /** Whether a return of `decl` itself (not of a nested function) is a bare
  * read of a JavaScript variable whose writes the checker does not
- * constrain. A string that is only appended to stays a string. */
+ * constrain, or whose object changes shape after its initializer (a
+ * property `Object.defineProperty` adds only on some paths is still
+ * required in the checker's type). A string that is only appended to
+ * stays a string. */
 function returnsOpenJsBinding(lowerer: Lowerer, decl: ts.SignatureDeclaration): boolean {
   let open = false;
   const opens = (value: ts.Expression | undefined): boolean => {
@@ -140,8 +147,12 @@ function returnsOpenJsBinding(lowerer: Lowerer, decl: ts.SignatureDeclaration): 
     return (
       binding !== undefined &&
       ts.isVariableDeclaration(binding) &&
-      jsBindingHasOpenWrites(lowerer, binding) &&
-      !jsBindingAppendsOnly(lowerer, binding)
+      ((jsBindingHasOpenWrites(lowerer, binding) && !jsBindingAppendsOnly(lowerer, binding)) ||
+        jsDeclarationExpandsObject(
+          lowerer,
+          binding,
+          lowerer.mapTypeOf(lowerer.typeOf(binding.name)),
+        ))
     );
   };
   const scan = (node: ts.Node): void => {
@@ -531,7 +542,7 @@ export function resolveInferredReturn(
       const captured = lowerer.diags.splice(diagsBefore);
       const ice = captured.filter((d) => d.code === "SC9001");
       if (ice.length > 0) lowerer.diags.push(...ice);
-      lowerer.runtimeFences.push(...captured.filter((d) => d.code !== "SC9001"));
+      lowerer.deferRefusals(captured.filter((d) => d.code !== "SC9001"));
       const first = captured.find((d) => d.code !== "SC9001");
       // Property writes, not literal element writes: the class method
       // census reads `x["kind"] = …` as a possible write to every method

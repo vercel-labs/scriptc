@@ -18,6 +18,14 @@
  *       "commander@^15.0.0": {
  *         "declarations": { "HelpContext.helpWidth": "| undefined" }
  *       }
+ *     },
+ *     "flow": {                           // frontend/flow/index.ts
+ *       "dynamicTypes": ["Node"],         // compile as unknown
+ *       "types": { "Key": "symbol" }      // what a Flow type really is
+ *     },
+ *     "constants": { "__DEV__": false },     // build-time constants
+ *     "moduleSubstitutions": {               // a module answered by another
+ *       "src/Config.js": "src/forks/Config.node.js"
  *     }
  *   }
  *
@@ -101,6 +109,14 @@ export interface ProjectConfig {
   wasm: string[];
   /** `scriptc.typePatches`, in manifest order. */
   typePatches: TypePatchEntry[];
+  /** `scriptc.flow`: compile `@flow` modules as TypeScript; null when off. */
+  flow: { dynamicTypes: string[]; types: Record<string, string>; all: boolean } | null;
+  /** `scriptc.moduleSubstitutions`: absolute module path → the absolute path
+   * of the module that answers for it. */
+  moduleSubstitutions: Map<string, string>;
+  /** `scriptc.constants`: compile-time constants (a build's `__DEV__`),
+   * applied to the Flow modules the program translates. */
+  constants: Map<string, boolean | number | string | null>;
   /** The local files the configuration checked for existence, with the
    * answer. A configuration read again from an unchanged package.json is
    * reused only while every answer still holds. */
@@ -157,6 +173,9 @@ export function emptyProjectConfig(): ProjectConfig {
     nodeIslands: defaultNodeIslands(),
     wasm: [],
     typePatches: [],
+    flow: null,
+    moduleSubstitutions: new Map<string, string>(),
+    constants: new Map<string, boolean | number | string | null>(),
     localFiles: [],
     diagnostics: [],
   };
@@ -342,6 +361,85 @@ export function parseProjectConfig(manifest: string, text: string): ProjectConfi
 
   const patches = root["typePatches"];
   if (patches !== undefined) readTypePatches(patches, config, problem, locate);
+
+  const flow = root["flow"];
+  if (flow === true) config.flow = { dynamicTypes: [], types: {}, all: false };
+  else if (isRecord(flow)) {
+    config.flow = { dynamicTypes: [], types: {}, all: false };
+    for (const key of Object.keys(flow)) {
+      const v = flow[key];
+      if (key === "all") {
+        if (typeof v === "boolean") config.flow.all = v;
+        else problem(["flow", key], `must be true or false, not ${shown(v)}`, "use a boolean");
+      } else if (key === "types") {
+        if (isRecord(v) && Object.values(v).every((t) => typeof t === "string"))
+          config.flow.types = v as Record<string, string>;
+        else
+          problem(
+            ["flow", key],
+            `must map type names to TypeScript types, not ${shown(v)}`,
+            `write "types": { "OptimisticKey": "symbol" }`,
+          );
+      } else if (key !== "dynamicTypes") {
+        problem(
+          ["flow", key],
+          "is not a known Flow setting",
+          "the settings are all, dynamicTypes, types",
+        );
+      } else if (!Array.isArray(v) || !v.every((name) => typeof name === "string")) {
+        problem(
+          ["flow", key],
+          `must be an array of type names, not ${shown(v)}`,
+          `write "dynamicTypes": ["ReactNodeList"]`,
+        );
+      } else config.flow.dynamicTypes = v as string[];
+    }
+  } else if (flow !== undefined && flow !== false) {
+    problem(["flow"], `must be true, false or an object, not ${shown(flow)}`, `write "flow": true`);
+  }
+
+  const constants = root["constants"];
+  if (isRecord(constants)) {
+    for (const [name, value] of Object.entries(constants)) {
+      if (!/^[A-Za-z_$][\w$]*$/.test(name)) {
+        problem(["constants", name], "is not an identifier", "name a global such as __DEV__");
+      } else if (value === null || ["boolean", "number", "string"].includes(typeof value)) {
+        config.constants.set(name, value as boolean | number | string | null);
+      } else {
+        problem(
+          ["constants", name],
+          `must be a boolean, number, string or null, not ${shown(value)}`,
+          `write "${name}": false`,
+        );
+      }
+    }
+  } else if (constants !== undefined) {
+    problem(
+      ["constants"],
+      `must be an object of constant values, not ${shown(constants)}`,
+      `write "constants": { "__DEV__": false }`,
+    );
+  }
+
+  const substitutions = root["moduleSubstitutions"];
+  if (isRecord(substitutions)) {
+    const base = dirname(manifest);
+    for (const [from, to] of Object.entries(substitutions)) {
+      if (typeof to !== "string" || to === "") {
+        problem(
+          ["moduleSubstitutions", from],
+          `must be a module path, not ${shown(to)}`,
+          `write "${from}": "src/forks/module.js"`,
+        );
+      } else config.moduleSubstitutions.set(resolve(base, from), resolve(base, to));
+    }
+  } else if (substitutions !== undefined) {
+    problem(
+      ["moduleSubstitutions"],
+      `must be an object mapping module paths to module paths, not ${shown(substitutions)}`,
+      `write "moduleSubstitutions": { "src/Config.js": "src/forks/Config.node.js" }`,
+    );
+  }
 
   // `scriptc.wasm` keeps its lenient reading: string entries of an array.
   const wasm = root["wasm"];

@@ -136,6 +136,19 @@ export function nullableReference(
     throw new InternalCompilerError("nullable runtime result lacks its union arms");
   // A nullable union is the reference itself, or the absent arm's encoding.
   if (host.nullableUnions.has(type.unionId)) {
+    if (host.nullableUnions.get(type.unionId)?.repr === "tagged") {
+      const isNull = host.B.tmp(),
+        wrapped = host.unionNewOwned(type.unionId, presentTag, {
+          name: value,
+          type: arms[presentTag]!,
+        }),
+        chosen = host.B.tmp();
+      host.B.line(`${isNull} = icmp eq ptr ${value}, null`);
+      host.B.line(
+        `${chosen} = select i1 ${isNull}, ptr ${host.unitInstanceRef(type.unionId, absentTag)}, ptr ${wrapped}`,
+      );
+      return host.own({ name: chosen, type });
+    }
     const absent = host.unitInstanceRef(type.unionId, absentTag);
     if (absent === "null") return host.own({ name: value, type });
     const isNull = host.B.tmp(),

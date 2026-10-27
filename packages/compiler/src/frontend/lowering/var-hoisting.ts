@@ -78,12 +78,37 @@ export function earlyReadVarSymbols(
         (ref) =>
           !binding.names.includes(ref) &&
           !isPlainWriteTarget(ref) &&
-          !analysis.settles(binding.scope, settle, ref),
+          !analysis.settles(binding.scope, settle, ref) &&
+          !followsInitializingDeclaration(binding.names, ref),
       );
       if (early) out.add(symbol);
     }
   }
   return out;
+}
+
+/** Whether a reference runs only after one of the binding's declarations
+ * stored its initializer: it follows that declaration statement inside the
+ * statement's own block, outside function declarations there (which are
+ * hoisted and can run first). */
+function followsInitializingDeclaration(names: readonly ts.Identifier[], ref: ts.Node): boolean {
+  return names.some((name) => {
+    const declaration = name.parent;
+    if (
+      !ts.isVariableDeclaration(declaration) ||
+      declaration.name !== name ||
+      !declaration.initializer
+    )
+      return false;
+    const statement = declaration.parent?.parent;
+    if (!statement || !ts.isVariableStatement(statement) || ref.pos < statement.end) return false;
+    const block = statement.parent;
+    for (let up: ts.Node | undefined = ref.parent; up; up = up.parent) {
+      if (up === block) return true;
+      if (ts.isFunctionDeclaration(up)) return false;
+    }
+    return false;
+  });
 }
 
 /** The function body or source file a `var` hoists to. */

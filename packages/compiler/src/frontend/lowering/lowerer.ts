@@ -1,3 +1,6 @@
+import { presentIndexRead } from "./array-values.js";
+import { lowerConstructorFunctionNew } from "./constructor-functions.js";
+import { isFlowModule } from "../flow/index.js";
 import {
   compactDeclOrigins,
   inPackageFile,
@@ -289,6 +292,7 @@ import {
   isCheckedJsSourceFile,
   isCjsExportTableLiteral,
   isCjsJsFile,
+  isJsLikeSourceFile,
   isJsSourceFile,
   isNodeEsmFile,
   isNodeTypesPath,
@@ -1526,7 +1530,10 @@ export function ladderFenceExpr(
 
 export function dynFallbackType(lowerer: Lowerer, node: ts.Node, t: ts.Type): IrType | null {
   if (t.flags & ts.TypeFlags.Void) return null;
-  if (!isJsSourceFile(ts.getSourceFileOfNode(node))) {
+  // Flow modules fall back like JavaScript: a type with no static
+  // representation is checked-dynamic (flow/index.ts).
+  const sf = ts.getSourceFileOfNode(node);
+  if (!isJsSourceFile(sf) && !isFlowModule(sf.fileName)) {
     if (t.flags & ts.TypeFlags.Any) return DYN;
     const symbol = t.getSymbol();
     const args =
@@ -2707,7 +2714,20 @@ export class Lowerer {
     action: "read" | "set" = "read",
   ): IrExpr | null {
     const source = this.runtimeOptionalSourceValue(node, value);
-    if (source?.type.kind !== "union") return null;
+    return source ? this.nullableArmReceiver(node, source, expected, member, action) : null;
+  }
+
+  /** A member receiver whose union holds `expected` beside null/undefined:
+   * evaluates it once, throws Node's member-read TypeError for a unit arm,
+   * and extracts `expected` otherwise. */
+  nullableArmReceiver(
+    node: ts.Expression,
+    source: IrExpr,
+    expected: IrType,
+    member: string,
+    action: "read" | "set" = "read",
+  ): IrExpr | null {
+    if (source.type.kind !== "union") return null;
     const def = this.unions.get(source.type.unionId);
     const valueTag = this.armTag(source.type.unionId, expected);
     if (
@@ -3732,6 +3752,13 @@ export class Lowerer {
    * see lowerStmts): off the build, preserved here so coverage reporting
    * can still name every deferred fence. */
   readonly runtimeFences: ScrDiagnostic[] = [];
+  /** The runtime fences that are deferred refusals: forms this lowering
+   * could not compile, as opposed to fences a construct always carries. */
+  readonly deferredRefusals = new WeakSet<ScrDiagnostic>();
+  deferRefusals(diags: readonly ScrDiagnostic[]): void {
+    for (const d of diags) this.deferredRefusals.add(d);
+    this.runtimeFences.push(...diags);
+  }
   /** --provenance-sources: diagnostics of ELIDED pure-annotated dead
    * consts in fetched source modules (lowerStmts's elision rule) — off
    * the build entirely (the statement lowers to its poisoned bindings and
@@ -5634,7 +5661,11 @@ export class Lowerer {
       if (kind === "bytes") return !nanCoded.isNumericRead(e);
       if (kind === "record")
         return this.optionalIndexSignatureRead(e) !== null && !nanCoded.isNumericRead(e);
-      return kind === "array";
+      // A read below the length of an array without holes or undefined
+      // elements is always present.
+      if (kind === "array")
+        return !(indexReadInBounds(e) && elementStates.elementsPresent(e.expression, "find"));
+      return false;
     };
     /** `r.name` where the name resolves to the receiver's index signature. */
     const isRecordIndexPropertyRead = (e: ts.PropertyAccessExpression): boolean => {
@@ -9200,7 +9231,7 @@ export class Lowerer {
       this.diags.push(...captured);
       return null;
     }
-    this.runtimeFences.push(...captured);
+    this.deferRefusals(captured);
 
     const fence = this.runtimeFenceStmt(captured[0], node, target.fallback, target.bareMessage);
     const loc = locOf(node);
@@ -9694,7 +9725,7 @@ export class Lowerer {
     // into native field loads when the method is borrowed by another object.
     if (
       node.kind === ts.SyntaxKind.ThisKeyword &&
-      isJsSourceFile(ts.getSourceFileOfNode(node)) &&
+      isJsLikeSourceFile(ts.getSourceFileOfNode(node)) &&
       this.fnStack.length > 0 &&
       this.resolveThis()?.type.kind === "dyn"
     )
@@ -10240,6 +10271,8 @@ export class Lowerer {
    * else (including a DIFFERENT union) is left for requireExactShape, which
    * rejects union mismatches with SC2003. */
   coerceToExpected(expr: IrExpr, expected: IrType): IrExpr {
+    const present = presentIndexRead(this, expr, expected);
+    if (present !== null) return present;
     // A comma expression ending in a unit literal (`return log(), null`):
     // its effects run first, unchanged, and the unit value takes the
     // destination's representation (a bare unit literal has none).
@@ -11500,6 +11533,10 @@ export class Lowerer {
     if (staged) return expected ? this.coerceInto(node, staged, expected) : staged;
     if (expected) {
       if (ts.isConditionalExpression(node)) return lowerTernary(this, node, expected);
+      if (ts.isNewExpression(node)) {
+        const factory = lowerConstructorFunctionNew(this, node, expected);
+        if (factory) return factory;
+      }
       const escaped = this.neverAssertionInto(node, expected);
       if (escaped) return escaped;
       const fresh = this.emptyCollectionFor(node, expected);
@@ -12674,6 +12711,10 @@ export class Lowerer {
 
   /** Declares the this parameter in the function's dedicated binding slot.
    * Arrow captures use the same boxing and threading as named bindings. */
+  /** Functions whose first IR parameter is their declared `this`
+   * (lower-functions.ts typedThisParameter), by IR name. */
+  readonly receiverFunctions = new Map<string, IrType>();
+
   declareThis(type: IrType): IrLocal {
     return declareContextThis(this.ctx, type);
   }

@@ -25,7 +25,7 @@ import {
   canBoxFuncIntoDyn,
   typeEquals,
 } from "../../ir/ir.js";
-import { isJsSourceFile, locOf } from "../program.js";
+import { isJsLikeSourceFile, isJsSourceFile, locOf } from "../program.js";
 import { PoisonError, jsFuncNameOf, newFnCtx } from "./lowerer.js";
 import { enforceLibBoundary, lowerSurplusCalls } from "./lib-boundary.js";
 import { returnsOnlyThis } from "./lower-classes.js";
@@ -60,6 +60,80 @@ function declareCallReceiver(
     },
     loc,
   };
+}
+
+/** The static type of a TypeScript (or Flow) function's declared `this`
+ * parameter, or null (none, a JavaScript function, or a type with no
+ * static representation). */
+export function typedThisParameter(lowerer: Lowerer, decl: ts.FunctionDeclaration): IrType | null {
+  if (isJsSourceFile(ts.getSourceFileOfNode(decl))) return null;
+  const param = decl.parameters.nodes.find(isThisParameter);
+  if (param === undefined || param.type === undefined) return null;
+  const type = lowerer.mapTypeOf(lowerer.checker.getTypeFromTypeNode(param.type));
+  if (type === null || type.kind === "dyn" || type.kind === "void" || type.kind === "undefinedT")
+    return null;
+  return receiverBindingUsesOnly(lowerer, decl) ? type : null;
+}
+
+const receiverBindingUses = new WeakMap<ts.FunctionDeclaration, boolean>();
+
+/** Whether every reference to the function binds its receiver explicitly
+ * (`f.call(receiver, ...)`, or `forEach(f, thisArg)`): the uses a typed
+ * first parameter serves. Any other use (a value, a constructor, a
+ * listener) keeps the checked-dynamic receiver. */
+function receiverBindingUsesOnly(lowerer: Lowerer, decl: ts.FunctionDeclaration): boolean {
+  const cached = receiverBindingUses.get(decl);
+  if (cached !== undefined) return cached;
+  const name = decl.name;
+  const symbol = name ? lowerer.resolveValueSymbol(name) : null;
+  let only = symbol !== null && symbol !== undefined;
+  for (const sf of only ? lowerer.program.getImplementationSourceFiles() : []) {
+    ts.walkPreorder(sf, (n) => {
+      if (!only) return "stop";
+      if (ts.isTypeNode(n)) return "skip";
+      if (n === name || !ts.isIdentifier(n) || n.text !== name!.text || !n.parent) return undefined;
+      if (lowerer.resolveValueSymbol(n) !== symbol) return undefined;
+      const parent = n.parent;
+      if (ts.isExportSpecifier(parent) || ts.isImportSpecifier(parent) || ts.isImportClause(parent))
+        return undefined;
+      const call =
+        ts.isPropertyAccessExpression(parent) &&
+        parent.expression === n &&
+        parent.name.text === "call" &&
+        parent.parent !== undefined &&
+        ts.isCallExpression(parent.parent) &&
+        parent.parent.expression === parent;
+      const forEach =
+        ts.isCallExpression(parent) &&
+        parent.arguments.nodes.length === 2 &&
+        parent.arguments.nodes[0] === n &&
+        ts.isPropertyAccessExpression(parent.expression) &&
+        parent.expression.name.text === "forEach";
+      if (!call && !forEach) only = false;
+      return undefined;
+    });
+  }
+  receiverBindingUses.set(decl, only);
+  return only;
+}
+
+/** Whether `this` or `super` occurs in the function, its parameters, or an
+ * arrow (or class member) that inherits its receiver. A JavaScript function
+ * that never reads it needs no receiver binding: the caller's pushed
+ * receiver is only read lazily (dyn.this). */
+function readsReceiver(node: ts.FunctionLikeDeclaration): boolean {
+  let found = false;
+  const visit = (child: ts.Node): void => {
+    if (found) return;
+    if (child.kind === ts.SyntaxKind.ThisKeyword || child.kind === ts.SyntaxKind.SuperKeyword) {
+      found = true;
+      return;
+    }
+    if (child !== node && ts.isFunctionLike(child) && !ts.isArrowFunction(child)) return;
+    ts.forEachChild(child, visit);
+  };
+  visit(node);
+  return found;
 }
 
 /** True when the identifier resolves (through import aliases) to a
@@ -138,8 +212,18 @@ function declareFunctionArguments(
 ): void {
   if (receivesArgumentsSlot) {
     const local = lowerer.declareHiddenLocal("%arguments", DYN);
+    const declared = [...params];
     params.push({ localId: local.id, name: "%arguments", type: DYN });
     lowerer.ctx.argumentsLocal = local;
+    if (shapes[shapes.length - 1]?.countToken) {
+      // The slot may hold the call's count: an owned copy is replaced by
+      // the array the first time it is read as one.
+      const own = lowerer.declareHiddenLocal("%argumentsArray", DYN);
+      own.mutable = true;
+      prologue.push({ kind: "varDecl", localId: own.id, init: varRef(local.id, DYN, loc), loc });
+      lowerer.ctx.argumentsLocal = own;
+      lowerer.ctx.argumentsParams = declared;
+    }
   }
   if (
     isJsSourceFile(ts.getSourceFileOfNode(node)) &&
@@ -378,7 +462,7 @@ export function lowerLambda(
   try {
     const receiver =
       (checkedReceiver ||
-        isJsSourceFile(ts.getSourceFileOfNode(node)) ||
+        (isJsLikeSourceFile(ts.getSourceFileOfNode(node)) && readsReceiver(node)) ||
         node.parameters.nodes.some(isThisParameter)) &&
       !ts.isArrowFunction(node)
         ? declareCallReceiver(lowerer, node, isGenerator)
@@ -582,11 +666,23 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
     // throws must not leave the slot set for the next direct call.
     const argumentCount: IrStmt[] = [];
     declareArgumentCount(lowerer, decl, argumentCount);
+    // A declared `this` of a static type (TypeScript and Flow) is the
+    // function's first parameter: callers that supply the receiver
+    // (`f.call(t, ...)`, `forEach(f, t)`) pass it typed. Any other
+    // declared `this` reads the call-time receiver.
+    const typedThis = typedThisParameter(lowerer, decl);
     const receiver =
-      decl.parameters.nodes.some(isThisParameter) || isJsSourceFile(ts.getSourceFileOfNode(decl))
+      typedThis === null &&
+      (decl.parameters.nodes.some(isThisParameter) ||
+        (isJsLikeSourceFile(ts.getSourceFileOfNode(decl)) && readsReceiver(decl)))
         ? declareCallReceiver(lowerer, decl, sig.generator !== undefined)
         : null;
+    const thisLocal = typedThis === null ? null : lowerer.declareThis(typedThis);
     const { params, prologue } = lowerer.declareParams(decl.parameters.nodes, sig.params);
+    if (thisLocal !== null) {
+      params.unshift({ localId: thisLocal.id, name: "this", type: typedThis! });
+      lowerer.receiverFunctions.set(sig.name, typedThis!);
+    }
     if (receiver) prologue.unshift(receiver);
     prologue.unshift(...argumentCount);
     declareFunctionArguments(

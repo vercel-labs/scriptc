@@ -62,6 +62,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "worker.broadcastChannel",
   "process.exit",
   "text.encodeInto",
+  "text.encodeIntoRead",
+  "text.encodeIntoWritten",
   "buffer.isAscii",
   "buffer.isUtf8",
   "buffer.transcode",

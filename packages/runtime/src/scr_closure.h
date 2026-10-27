@@ -78,6 +78,7 @@ void scr_box_release(ScrBox *b); /* releases ref contents by kind; NULL-tolerant
 double scr_box_get_f64(ScrBox *b);
 bool scr_box_get_bool(ScrBox *b);
 void *scr_box_get_ref(ScrBox *b); /* returns +1 */
+void *scr_box_peek_ref(const ScrBox *b); /* borrowed: the box keeps it */
 void scr_box_set_f64(ScrBox *b, double v);
 void scr_box_set_bool(ScrBox *b, bool v);
 void scr_box_set_ref(ScrBox *b, void *v); /* releases old, owns new */

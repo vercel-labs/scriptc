@@ -4,6 +4,7 @@
   The typed-array callback methods (`forEach`, `map`, `filter`, `some`, `every`, `find`, `findIndex`, `findLast`, `findLastIndex`, `reduce`, `reduceRight`) compile; `map` and `filter` return the receiver's kind, a Buffer for a Buffer, and a `thisArg` argument is unsupported.
   Numeric typed arrays and Buffers preserve their kind and shared storage through `unknown`, including when nested in records and arrays.
   Numeric typed-array constructors can be stored and used with `new`, including constructors read from an array's `constructor` property.
+  `ArrayBuffer.prototype` and the typed-array prototypes do not read as values; an own-property check of a literal key against one (`Object.prototype.hasOwnProperty.call(ArrayBuffer.prototype, "detached")`, also through a variable holding `hasOwnProperty`, or `Object.hasOwn`) answers as in Node 24.
   JavaScript numeric-array parameters and returns preserve typed-array storage.
   `Buffer.from`, `Buffer.allocUnsafe`, and `Buffer.concat` return views into a per-thread pool of `Buffer.poolSize` bytes (64 KiB by default) when the size is below `Buffer.poolSize >>> 1`, as in Node; a pool slab stays in memory while any of its Buffers does.
   Node's own startup code allocates from the first slab, so the `byteOffset` of Buffers in that slab differs from Node's.

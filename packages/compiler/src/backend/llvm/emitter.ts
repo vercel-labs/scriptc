@@ -70,7 +70,13 @@ import {
   type StoredSplitSnapshot,
   type StringSplit,
 } from "./split-loops.js";
-import { scalarizeLiteralResults, scalarizeNumericRecords } from "../../ir/scalar-records.js";
+import { copyOwnPropertyLoops } from "../../ir/for-in-copies.js";
+import { hoistCallArgumentSequences } from "../../ir/call-sequences.js";
+import {
+  scalarizeLiteralResults,
+  scalarizeNumericRecords,
+  scalarizeRecordLiterals,
+} from "../../ir/scalar-records.js";
 import { addRecordResultEntries, resultEntryName } from "./record-results.js";
 import { specializeCallbackCalls } from "../../ir/callback-specialization.js";
 import {
@@ -297,6 +303,7 @@ import {
   emitRegexIntrinsic,
   keyedRecordReadInto,
   pointerRecordKeyGet,
+  retypeIsIdentity,
 } from "./expr-records.js";
 import {
   dynPromiseAdapter,
@@ -346,7 +353,7 @@ import { VirtualBorrows } from "./virtual-borrows.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { LlWalkers } from "./walkers.js";
 import { isObjectArm, NULLABLE_ABSENT, NULLABLE_NULL, NullableUnions } from "./nullable-unions.js";
-import { emitNullablePresent, emitUnionPeek, emitUnionTag } from "./union-repr.js";
+import { emitNullablePresent, emitTaggedWrap, emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import {
   emitConcatInputs,
   emitMixedConcat,
@@ -363,6 +370,7 @@ import {
   emitInlineRcHelpers,
   emitNullableRetainWrappers,
   emitShapeUnionHelpers,
+  emitTaggedUnionHelpers,
   FN_ATTRS,
   inlineRcDecls,
   type InlineRcMode,
@@ -682,19 +690,23 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
   if (options.debugSources !== undefined) return new LlEmitter(mod, options, null, null);
   const passed = versionParameters(
     addRecordResultEntries(
-      scalarizeLiteralResults(
-        scalarizeNumericRecords(
-          specializeCallbackCalls(
-            specializeNumericCalls(
-              pairRowSums(
-                inlineExpressionFunctions(
-                  foldConstantGlobals(
-                    copyStableCaptures(
-                      resolveSelfCaptures(
-                        hoistFinalFieldReads(
-                          freezeInitOnlyGlobals(
-                            holdCharLocalsAsUnits(
-                              dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
+      scalarizeRecordLiterals(
+        copyOwnPropertyLoops(
+        hoistCallArgumentSequences(
+        scalarizeLiteralResults(
+          scalarizeNumericRecords(
+            specializeCallbackCalls(
+              specializeNumericCalls(
+                pairRowSums(
+                  inlineExpressionFunctions(
+                    foldConstantGlobals(
+                      copyStableCaptures(
+                        resolveSelfCaptures(
+                          hoistFinalFieldReads(
+                            freezeInitOnlyGlobals(
+                              holdCharLocalsAsUnits(
+                                dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
+                              ),
                             ),
                           ),
                         ),
@@ -702,12 +714,13 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
                     ),
                   ),
                 ),
+                mangleFunction,
               ),
               mangleFunction,
             ),
-            mangleFunction,
           ),
-        ),
+        )),
+      ),
       ),
     ),
   );
@@ -1464,6 +1477,7 @@ export class LlEmitter {
   /** Constant-key reads on checked-dynamic objects, each with its own
    * zero-initialized ScrDynReadIc (scr_runtime.h). */
   dynReadIcSites = 0;
+  dynLiteralSites = 0;
   /** ThreadSlots blocks by family name (thread-slots.ts). */
   readonly threadSlotsBlocks = new Map<string, string>();
   /** May-throw analysis (computeMayThrow): pending
@@ -2549,7 +2563,15 @@ export class LlEmitter {
    * declarations a late request added after the extern block flushed land
    * here too. */
   inlineRcTail(flushedDecls: ReadonlySet<string>): string[] {
+    const tagged = emitTaggedUnionHelpers(this.shapeHost);
     const late = inlineRcDecls(this.shapeHost).filter((d) => !flushedDecls.has(d));
+    // The runtime entry points the tagged union helpers call.
+    for (const line of tagged) {
+      const m = /call (ptr|void) (@scr_[A-Za-z0-9_]+)\(/.exec(line);
+      if (!m) continue;
+      const decl = `declare ${m[1]} ${m[2]}(ptr)`;
+      if (!flushedDecls.has(decl) && !late.includes(decl)) late.push(decl);
+    }
     // NULL-skipping retain wrappers of nullable unions; a runtime inner
     // retain requested after the extern block flushed is declared here.
     for (const inner of this.nullableUnions.retainWrappers.values()) {
@@ -2561,6 +2583,7 @@ export class LlEmitter {
       ...late,
       ...emitNullableRetainWrappers(this.shapeHost),
       ...emitShapeUnionHelpers(this.shapeHost),
+      ...tagged,
       ...emitInlineRcHelpers(this.shapeHost),
     ];
   }
@@ -4441,6 +4464,14 @@ export class LlEmitter {
   unionNewOwned(unionId: string, tag: number, v: LlValue): string {
     const B = this.B;
     const nullable = this.nullableUnions.get(unionId);
+    if (nullable?.repr === "tagged") {
+      const ref = nullable.refs.find((r) => r.tag === tag);
+      if (!ref)
+        throw new InternalCompilerError(
+          `llvm emitter bug: payload wrap into unit arm ${tag} of ${unionId}`,
+        );
+      return emitTaggedWrap(B, v.name, ref.bits);
+    }
     if (nullable) {
       // The owned payload IS the nullable union's value.
       if (
@@ -5907,6 +5938,54 @@ export class LlEmitter {
   varRefCounts: Map<IrExpr, number> | null = null;
   currentFunctionBody: IrStmt[] = [];
 
+  /** How often each local is mentioned (read, written, declared or
+   * captured) in the current function. */
+  localMentionCounts: Map<string, number> | null = null;
+
+  private localMentions(node: IrExpr | IrStmt[]): Map<string, number> {
+    const counts = new Map<string, number>();
+    const add = (id: string): void => void counts.set(id, (counts.get(id) ?? 0) + 1);
+    const visitor = {
+      stmt: (s: IrStmt) => {
+        if (s.kind === "varDecl" || s.kind === "assign" || s.kind === "forOf") add(s.localId);
+        return true;
+      },
+      expr: (e: IrExpr) => {
+        if (e.kind === "varRef" || e.kind === "assignExpr" || e.kind === "incDec") add(e.localId);
+        if ((e.kind === "closure" || e.kind === "classRef") && e.captures) for (const id of e.captures) add(id);
+        return true;
+      },
+    };
+    if (Array.isArray(node)) everyStmtList(node, visitor);
+    else everyStmtList([{ kind: "exprStmt", expr: node, loc: node.loc }], visitor);
+    return counts;
+  }
+
+  /** A sequence's statements, each at a cursor over the sequence (its
+   * statements, then its result) when it declares a local nothing outside
+   * the sequence mentions: the rest of the sequence is then the local's
+   * whole lifetime, so its last read can take over its reference. */
+  emitSequenceStmts(e: IrExpr & { kind: "seqExpr" }): void {
+    this.localMentionCounts ??= this.localMentions(this.currentFunctionBody);
+    const inside = e.stmts.some((s) => s.kind === "varDecl") ? this.localMentions(e) : null;
+    const stmts: IrStmt[] = [...e.stmts, { kind: "exprStmt", expr: e.result, loc: e.loc }];
+    const saved = this.stmtCursor;
+    try {
+      for (let i = 0; i < e.stmts.length; i++) {
+        if (this.B.isTerminated()) this.B.startBlock(this.B.newLabel("seq.dead"));
+        const s = e.stmts[i]!;
+        const contained =
+          s.kind === "varDecl" &&
+          inside !== null &&
+          inside.get(s.localId) === this.localMentionCounts.get(s.localId);
+        this.stmtCursor = contained ? { stmts, index: i } : null;
+        this.emitStmt(s);
+      }
+    } finally {
+      this.stmtCursor = saved;
+    }
+  }
+
   private varRefCount(e: IrExpr): number {
     if (this.varRefCounts === null) {
       const counts = new Map<IrExpr, number>();
@@ -6075,6 +6154,7 @@ export class LlEmitter {
       case "unionNarrow":
       case "downcast":
       case "upcast":
+      case "unionRetype":
         return this.borrowsWithoutOwning(e) && this.unownedWalk(e.value);
       case "unionWrap":
         if (!this.borrowsWithoutOwning(e)) return false;
@@ -7344,6 +7424,9 @@ export class LlEmitter {
         );
       case "unionNarrow":
         return this.nullableUnions.has(e.unionId);
+      // A retype between equal encodings is the operand's own pointer.
+      case "unionRetype":
+        return retypeIsIdentity(this.nullableUnions, e);
       case "downcast":
       case "upcast":
         return e.value.type.kind === "object";
@@ -7373,6 +7456,8 @@ export class LlEmitter {
     const nullable = this.nullableUnions.get(e.unionId);
     if (!nullable) return null;
     if (isUnitType(e.value.type)) return e.value.kind === "unitLit" ? "unit" : null;
+    // A tagged wrap's value is not its payload pointer.
+    if (nullable.repr === "tagged") return null;
     const refArm =
       nullable.repr === "single"
         ? e.tag === nullable.refTag
@@ -7401,6 +7486,14 @@ export class LlEmitter {
   }
 
   /** A fresh read-site cache for one constant-key dyn read. */
+  /** A site's immortal box of a string literal (scr_dyn_new_str_immortal),
+   * created on first use. */
+  dynLiteralSite(): string {
+    const name = `@sc_dyn_lit_${this.dynLiteralSites++}`;
+    this.journal?.site(name, "dynLiteralSite");
+    return name;
+  }
+
   dynReadIcSite(): string {
     const name = `@sc_dyn_read_ic_${this.dynReadIcSites++}`;
     this.journal?.site(name, "dynReadIcSite");
@@ -7890,6 +7983,7 @@ function addNumberedSymbol<V extends { sym: string }>(
 
 registerReplay("jsIcSite", (emitter) => emitter.jsIcSite());
 registerReplay("dynReadIcSite", (emitter) => emitter.dynReadIcSite());
+registerReplay("dynLiteralSite", (emitter) => emitter.dynLiteralSite());
 registerReplay("speculativeLoopSite", (emitter) => emitter.speculativeLoopSite());
 for (const op of [
   "dyn.collectionDynOps",

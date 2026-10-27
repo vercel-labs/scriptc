@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/nullable-uint8array-values.mjs"
+ ],
+ "diags": []
+}

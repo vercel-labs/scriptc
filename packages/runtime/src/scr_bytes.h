@@ -365,6 +365,9 @@ ScrStr *scr_text_decode(const ScrBytes *b);
 double scr_text_decoder_encoding(const ScrDyn *label);
 ScrStr *scr_text_decoder_name(double encoding);
 ScrDyn *scr_text_encode_into(const ScrDyn *source, const ScrDyn *destination);
+double scr_text_encode_into_native(const ScrStr *text, ScrBytes *dest, size_t *written_out);
+double scr_text_encode_into_typed(const ScrStr *text, ScrBytes *dest);
+double scr_text_encode_into_last_written(void);
 /* TextEncoder and TextDecoder records as checked-dynamic handles
  * (scr_text_codec_dyn.c, linked by the textCodecDyn runtime feature). The
  * boxes borrow the record and retain it through `retain`; a decoder also

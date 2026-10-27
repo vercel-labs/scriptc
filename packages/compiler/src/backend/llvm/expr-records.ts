@@ -3,6 +3,7 @@ import { InternalCompilerError } from "../../errors.js";
 import { undefinedArmTag, unionWideningTags } from "../../ir/analysis.js";
 import { type IrExpr, type IrType, isRefCounted, type SrcLoc, typeEquals } from "../../ir/ir.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
+import type { PointerUnion } from "./nullable-unions.js";
 import type { LlvmEmitterContext, LlValue } from "./expr-context.js";
 import { f64Lit, llvmCommentText } from "./common.js";
 import { borrowableInputs, emitBorrowedInputs, emitBorrowedInput } from "./borrowed-inputs.js";
@@ -56,6 +57,35 @@ export function emitUnionWiden(
  * lifetime analysis, so it is never a stack box. A nullable-pointer union
  * on either side, or a source union whose boxes a checked-dynamic cast has
  * cached (and refreshes in place), rebuilds each listed arm instead. */
+/** Whether a retype is its operand's own pointer: both unions are pointer
+ * unions with equal encodings of every listed arm. A shape union derives
+ * its record arms from the record, so only the unit encodings must agree. */
+export function retypeIsIdentity(
+  unions: { get(id: string): PointerUnion | null | undefined },
+  e: IrExpr & { kind: "unionRetype" },
+): boolean {
+  const from = unions.get(e.fromId);
+  const to = unions.get(e.unionId);
+  if (!from || !to) return false;
+  if (from.repr === "single" && to.repr === "single")
+    return from.refTag === to.refTag && from.unitTag === to.unitTag && from.nullTag === to.nullTag;
+  if (from.repr === "tagged" && to.repr === "tagged")
+    // Each listed arm keeps its pointer bits (or its unit encoding).
+    return e.tags.every((tag) => {
+      const ref = from.refs.find((r) => r.tag === tag);
+      if (ref) return to.refs.some((r) => r.tag === tag && r.bits === ref.bits);
+      return (
+        (from.unitTag === tag && to.unitTag === tag) || (from.nullTag === tag && to.nullTag === tag)
+      );
+    });
+  return (
+    from.repr === "shapes" &&
+    to.repr === "shapes" &&
+    from.unitTag === to.unitTag &&
+    from.nullTag === to.nullTag
+  );
+}
+
 export function emitUnionRetype(
   host: LlvmEmitterContext,
   e: IrExpr & { kind: "unionRetype" },
@@ -65,17 +95,7 @@ export function emitUnionRetype(
   const from = host.nullableUnions.get(e.fromId);
   const to = host.nullableUnions.get(e.unionId);
   if (from && to) {
-    // Equal encodings make the pointer itself the target value. A shape
-    // union derives its record arms from the record, so only the unit
-    // encodings must agree.
-    const same =
-      from.repr === "single" && to.repr === "single"
-        ? from.refTag === to.refTag && from.unitTag === to.unitTag && from.nullTag === to.nullTag
-        : from.repr === "shapes" &&
-          to.repr === "shapes" &&
-          from.unitTag === to.unitTag &&
-          from.nullTag === to.nullTag;
-    if (same) return host.own({ name: value.name, type: e.type });
+    if (retypeIsIdentity(host.nullableUnions, e)) return host.own({ name: value.name, type: e.type });
     return host.own({ name: rebuildRetype(host, value.name, e), type: e.type });
   }
   if (from || to) return host.own({ name: rebuildRetype(host, value.name, e), type: e.type });

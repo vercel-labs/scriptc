@@ -173,11 +173,45 @@ double scr_bytes_to_u8_clamp(double value) {
 
 /* ── lifecycle ─────────────────────────────────────────────────────────── */
 
+/* Byte array and view headers recycle through a per-thread free list:
+ * views such as `buffer.subarray(offset)` are made and dropped per call.
+ * The list only keeps headers the thread already allocated, like the
+ * checked-dynamic node pools. Audited builds allocate each one fresh. */
+#ifndef SCR_RC_AUDIT
+static SCR_TL ScrBytes *scr_bytes_free_list;
+static SCR_TL size_t scr_bytes_free_count;
+#define SCR_BYTES_FREE_MAX 4096
+#endif
+
+static inline ScrBytes *scr_bytes_struct_alloc(void) {
+#ifndef SCR_RC_AUDIT
+  ScrBytes *pooled = scr_bytes_free_list;
+  if (pooled) {
+    scr_bytes_free_list = (ScrBytes *)(void *)pooled->data; /* free-list link */
+    scr_bytes_free_count--;
+    return pooled;
+  }
+#endif
+  return malloc(sizeof(ScrBytes));
+}
+
+static inline void scr_bytes_struct_free(ScrBytes *b) {
+#ifndef SCR_RC_AUDIT
+  if (scr_bytes_free_count < SCR_BYTES_FREE_MAX) {
+    b->data = (uint8_t *)(void *)scr_bytes_free_list;
+    scr_bytes_free_list = b;
+    scr_bytes_free_count++;
+    return;
+  }
+#endif
+  free(b);
+}
+
 /* Adopt private malloc storage without clearing or copying its contents. The
  * caller transfers ownership; views keep it alive through the usual owner. */
 ScrBytes *scr_bytes_take_data(uint8_t *data, size_t len) {
   if (!data && len) scr_trap("scriptc: NULL owned byte storage\n");
-  ScrBytes *b = malloc(sizeof(ScrBytes));
+  ScrBytes *b = scr_bytes_struct_alloc();
   if (!b) scr_bytes_oom();
   b->rc = 1;
   b->len = len;
@@ -317,7 +351,7 @@ void scr_bytes_release(ScrBytes *b) {
 #ifdef SCR_RC_AUDIT
     scr_live_bytes--;
 #endif
-    free(b);
+    scr_bytes_struct_free(b);
   }
 }
 
@@ -731,7 +765,7 @@ ScrBytes *scr_bytes_subarray(ScrBytes *b, double start, double end) {
   size_t e = scr_bytes_rel_index(end, b->len);
   size_t count = e > s ? e - s : 0;
   ScrBytes *owner = b->backing ? b->backing : b;
-  ScrBytes *v = malloc(sizeof(ScrBytes));
+  ScrBytes *v = scr_bytes_struct_alloc();
   if (!v) scr_bytes_oom();
   v->rc = 1;
   v->len = count;
@@ -788,7 +822,14 @@ void scr_bytes_set_from(ScrBytes *dst, const ScrBytes *src, double offset) {
   }
   uint8_t *target = dst->data + (size_t)t * width;
   if (dst->elem == src->elem) {
-    memmove(target, src->data, src->len * width);
+    size_t bytes = src->len * width;
+    /* Short copies (a server renderer's markup chunks) skip the call; a
+     * forward copy is exact unless the target starts inside the source. */
+    if (bytes <= 16 && !(target > src->data && target < src->data + bytes)) {
+      for (size_t i = 0; i < bytes; i++) target[i] = src->data[i];
+      return;
+    }
+    memmove(target, src->data, bytes);
     return;
   }
   size_t source_bytes = src->len * scr_bytes_elem_size(src->elem);
@@ -1004,7 +1045,7 @@ ScrBytes *scr_dataview_new(ScrBytes *src, double byte_off, bool has_len, double 
   } else {
     len = buf_bytes - off;
   }
-  ScrBytes *v = malloc(sizeof(ScrBytes));
+  ScrBytes *v = scr_bytes_struct_alloc();
   if (!v) scr_bytes_oom();
   v->rc = 1;
   v->len = (size_t)len; /* elem u8 — len IS the byte length */
@@ -2275,8 +2316,40 @@ ScrDyn *scr_text_encode_into(const ScrDyn *source, const ScrDyn *destination) {
     scr_dyn_arg_type_fail("dest", "an instance of Uint8Array", destination);
     return NULL;
   }
-  const ScrStr *text = source->v.str;
-  ScrBytes *dest = destination->v.bytes;
+  size_t written;
+  double read = scr_text_encode_into_native(source->v.str, destination->v.bytes, &written);
+  ScrDyn *result = scr_dyn_new_obj();
+  scr_dyn_obj_set(result, "read", 4, scr_dyn_new_num(read));
+  scr_dyn_obj_set(result, "written", 7, scr_dyn_new_num((double)written));
+  return result;
+}
+
+static SCR_TL double scr_text_encode_into_written;
+
+/* encodeInto over a typed string and Uint8Array: the UTF-16 units read,
+ * with the bytes written in scr_text_encode_into_written (compiled code
+ * builds the result record from the two). */
+double scr_text_encode_into_typed(const ScrStr *text, ScrBytes *dest) {
+  size_t written;
+  double read = scr_text_encode_into_native(text, dest, &written);
+  scr_text_encode_into_written = (double)written;
+  return read;
+}
+
+double scr_text_encode_into_last_written(void) { return scr_text_encode_into_written; }
+
+double scr_text_encode_into_native(const ScrStr *text, ScrBytes *dest, size_t *written_out) {
+  /* An ASCII string is its own UTF-8, one unit per byte. */
+  if (text->ascii && !dest->shared) {
+    size_t n = text->len < dest->len ? text->len : dest->len;
+    if (n <= 16) {
+      for (size_t i = 0; i < n; i++) dest->data[i] = (uint8_t)text->data[i];
+    } else {
+      memcpy(dest->data, text->data, n);
+    }
+    *written_out = n;
+    return (double)n;
+  }
   size_t read = 0, written = 0;
   size_t limit = text->len < dest->len ? text->len : dest->len;
   while (written < limit) {
@@ -2299,10 +2372,8 @@ ScrDyn *scr_text_encode_into(const ScrDyn *source, const ScrDyn *destination) {
       free(out);
     }
   }
-  ScrDyn *result = scr_dyn_new_obj();
-  scr_dyn_obj_set(result, "read", 4, scr_dyn_new_num((double)read));
-  scr_dyn_obj_set(result, "written", 7, scr_dyn_new_num((double)written));
-  return result;
+  *written_out = written;
+  return (double)read;
 }
 
 static ScrBytes *scr_buffer_validation_input(const ScrDyn *input) {
@@ -3155,7 +3226,7 @@ static bool scr_pool_reserve(size_t reserve) {
 /* A +1 Buffer view of `len` bytes at the pool offset, which then advances
  * past it to the next 8-byte boundary (Node's alignPool). */
 static ScrBytes *scr_pool_take(size_t len) {
-  ScrBytes *v = malloc(sizeof(ScrBytes));
+  ScrBytes *v = scr_bytes_struct_alloc();
   if (!v) scr_bytes_oom();
   v->rc = 1;
   v->len = len;
@@ -4004,6 +4075,8 @@ ScrBytes *scr_bytes_concat_len(const ScrArr *list, double total) {
  * (len * 3) >>> 2. The enc arrives NORMALIZED (the compiler folds
  * aliases). */
 double scr_bytes_byte_length_str(ScrStr *s, const ScrStr *enc) {
+  /* The stored bytes are the UTF-8 encoding. */
+  if (enc->len == 4 && memcmp(enc->data, "utf8", 4) == 0) return (double)s->len;
   if (scr_enc_is(enc, "latin1") || scr_enc_is(enc, "ascii")) {
     return scr_str_utf16_len(s);
   }

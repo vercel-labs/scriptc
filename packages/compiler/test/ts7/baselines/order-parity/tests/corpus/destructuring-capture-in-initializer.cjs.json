@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/destructuring-capture-in-initializer.cjs"
+ ],
+ "diags": []
+}

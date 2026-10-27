@@ -106,6 +106,10 @@ export const MODELED_GLOBALS: ReadonlySet<string> = new Set([
   "decodeURI",
   "BigInt",
   "Proxy",
+  "queueMicrotask",
+  "setImmediate",
+  "setTimeout",
+  "setInterval",
 ]);
 
 /** Results of string (and number) methods, by name. Anything else is ⊤. */

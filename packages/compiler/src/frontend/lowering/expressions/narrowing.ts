@@ -23,7 +23,7 @@ import {
   shapeHasAccessorSlots,
   typeEquals,
 } from "../../../ir/ir.js";
-import { isJsSourceFile, locOf } from "../../program.js";
+import { isJsLikeSourceFile, isJsSourceFile, locOf } from "../../program.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { jsBindingHasOpenWrites } from "../lower-stmts.js";
 import { documentedParameter, prototypeAssignedFunction } from "../call-signatures.js";
@@ -558,10 +558,11 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     )
       return expr;
     // A null-initialized JS field can later receive an object even when
-    // checker flow calls its non-null branch never. The live checked
-    // value remains authoritative; never is not a numeric guard.
+    // checker flow calls its non-null branch never (as can a Flow value
+    // the checker narrows through unchecked declarations). The live
+    // checked value remains authoritative; never is not a numeric guard.
     if (
-      isJsSourceFile(ts.getSourceFileOfNode(node)) &&
+      isJsLikeSourceFile(ts.getSourceFileOfNode(node)) &&
       (lowerer.typeOf(node).flags & ts.TypeFlags.Never) !== 0
     )
       return expr;

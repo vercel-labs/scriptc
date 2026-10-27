@@ -1,3 +1,4 @@
+import { captureContextArguments } from "../function-context.js";
 import { widensReducedRecords } from "../function-returns.js";
 import { widthNarrowHelper } from "../coercions/unions.js";
 /* Property reads (`a.b`): lowerExprInner's property-access branch, intrinsic and union properties, field reads and targets, and match-group reads. */
@@ -109,6 +110,7 @@ import {
   hasOptionalChainGuard,
   isOptionalChainTail,
   isRequireMainFilename,
+  lowerPresentArmMember,
 } from "./optional-chains.js";
 import {
   isCjsModuleGlobal,
@@ -127,6 +129,7 @@ import {
   cjsExportDiscardReason,
   isCjsExportTableLiteral,
   isCjsJsFile,
+  isJsLikeSourceFile,
   isJsSourceFile,
   isModuleExportsAccess,
   isNodeEsmFile,
@@ -322,6 +325,19 @@ export function lowerPropertyAccessExpr(
   expr: ts.PropertyAccessExpression,
   loc: SrcLoc,
 ): IrExpr {
+  // `Function.prototype.bind` as a value in a JavaScript-like source: the
+  // interned builtin, which binds the receiver it is called on
+  // (`bind.apply(fn, [thisArg, ...args])`).
+  if (
+    expr.name.text === "bind" &&
+    ts.isPropertyAccessExpression(expr.expression) &&
+    expr.expression.name.text === "prototype" &&
+    ts.isIdentifier(expr.expression.expression) &&
+    expr.expression.expression.text === "Function" &&
+    lowerer.isStdlibSymbol(lowerer.resolveValueSymbol(expr.expression.expression) ?? undefined) &&
+    isJsLikeSourceFile(ts.getSourceFileOfNode(expr))
+  )
+    return builtinFunctionValue("Function.prototype.bind", loc);
   // `value.#x` on a checked-dynamic value, or on a checked extraction of
   // one: the field of the brand-checked receiver (checkedPrivateValue).
   if (ts.isPrivateIdentifier(expr.name)) {
@@ -704,6 +720,23 @@ export function lowerPropertyAccessExpr(
   // exactly JS's scoping); variable-arity signatures keep the fence
   // (the count would need a hidden argc). The JS-source variadic
   // `arguments` object (dynRest) was claimed at identifier lowering.
+  // A slot that may hold the call's argument count answers it directly.
+  if (
+    expr.name.text === "length" &&
+    !expr.questionDotToken &&
+    ts.isIdentifier(expr.expression) &&
+    expr.expression.text === "arguments" &&
+    lowerer.ctx.argumentsLocal &&
+    lowerer.ctx.argumentsParams &&
+    captureContextArguments(lowerer.fnStack) === lowerer.ctx.argumentsLocal
+  )
+    return {
+      kind: "libCall",
+      fn: "dyn.argumentsLength",
+      args: [varRef(lowerer.ctx.argumentsLocal.id, DYN, loc)],
+      type: F64,
+      loc,
+    };
   if (
     expr.name.text === "length" &&
     !expr.questionDotToken &&
@@ -1141,7 +1174,7 @@ export function lowerPropertyAccessExpr(
   // storage can expose its own name and length in both source languages.
   if (
     !["apply", "bind", "call", "toString", "caller", "arguments"].includes(expr.name.text) &&
-    (isJsSourceFile(ts.getSourceFileOfNode(expr)) ||
+    (isJsLikeSourceFile(ts.getSourceFileOfNode(expr)) ||
       expr.name.text === "name" ||
       expr.name.text === "length" ||
       expr.name.text === "constructor")
@@ -1178,7 +1211,7 @@ export function lowerPropertyAccessExpr(
       );
     }
     if (
-      (isJsSourceFile(ts.getSourceFileOfNode(expr)) || expr.name.text === "constructor") &&
+      (isJsLikeSourceFile(ts.getSourceFileOfNode(expr)) || expr.name.text === "constructor") &&
       probed?.type.kind === "func" &&
       canBoxFuncIntoDyn(
         probed.type,
@@ -1416,6 +1449,14 @@ export function lowerPropertyAccessExpr(
       (["f64", "bool", "bigint", "string", "symbol"].includes(recvLowered.type.kind) ||
         (recvLowered.type.kind === "union" && lowerer.dynConvertible(recvLowered.type))))
   ) {
+    const present = lowerPresentArmMember(
+      lowerer,
+      expr,
+      expr.expression,
+      expr.name.text,
+      recvLowered,
+    );
+    if (present) return present;
     const key: IrExpr = {
       kind: "strLit",
       value: expr.name.text,
@@ -3488,6 +3529,8 @@ export function lowerUnionProperty(
   // missing-property semantics and dispatch class data through its native
   // capsule instead of demanding a field shared by every union arm.
   if (isJsSourceFile(ts.getSourceFileOfNode(expr)) && lowerer.dynConvertible(value.type)) {
+    const present = lowerPresentArmMember(lowerer, expr, expr.expression, field, value);
+    if (present) return present;
     return {
       kind: "dynKeyGet",
       value: lowerer.coerceToExpected(value, DYN),
@@ -4444,9 +4487,10 @@ function readsBuiltinGlobalMembers(expr: ts.Expression): boolean {
 }
 
 /** Reports SC2020 when `access` reads a stdlib static member or the
- * prototype of a builtin constructor with an interned function value through
- * a receiver the checker types as the constructor's static side
- * (`MapConstructor`); null otherwise. Calls that lower statically never
+ * prototype of a builtin constructor with an interned function value
+ * (ArrayBuffer and the typed arrays have their own, which model the same
+ * members) through a receiver the checker types as the constructor's static
+ * side (`MapConstructor`); null otherwise. Calls that lower statically never
  * reach the member read. */
 function fenceBuiltinConstructorStaticRead(
   lowerer: Lowerer,
@@ -4454,11 +4498,16 @@ function fenceBuiltinConstructorStaticRead(
 ): null {
   if (BUILTIN_VALUE_MEMBERS.has(access.name.text)) return null;
   const symbol = lowerer.typeOf(access.expression).getSymbol();
+  const symbolName = symbol === undefined ? "" : ts.symbolName(symbol);
+  const name = symbolName.endsWith("Constructor")
+    ? symbolName.slice(0, -"Constructor".length)
+    : null;
   if (
-    symbol !== undefined &&
-    ts.symbolName(symbol).endsWith("Constructor") &&
-    GLOBAL_CONSTRUCTOR_VALUES.has(ts.symbolName(symbol).slice(0, -"Constructor".length)) &&
-    !ERROR_CONSTRUCTOR_VALUES.has(ts.symbolName(symbol).slice(0, -"Constructor".length)) &&
+    name !== null &&
+    (GLOBAL_CONSTRUCTOR_VALUES.has(name) ||
+      name === "ArrayBuffer" ||
+      Object.values(BYTES_ELEMENT_NAME).includes(name)) &&
+    !ERROR_CONSTRUCTOR_VALUES.has(name) &&
     lowerer.isStdlibSymbol(symbol)
   )
     lowerer.stdlibMemberFence(access);

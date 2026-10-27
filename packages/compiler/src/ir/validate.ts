@@ -3477,7 +3477,10 @@ function validateFunction(
         // function type (the checked-dynamic tree's function kind — canConvertToDyn folds
         // all four in).
         const vt = e.value.type;
+        // A live reference needs no conversion: values with no checked-
+        // dynamic view cross as opaque capsules (identity only).
         if (
+          !(e.liveRef && liveDynRefEligible(vt)) &&
           !canConvertToDyn(
             vt,
             (id) => records.get(id),

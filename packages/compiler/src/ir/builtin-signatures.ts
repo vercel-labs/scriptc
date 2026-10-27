@@ -5009,6 +5009,12 @@ function buildLibFnSignatures() {
     "als.get": { argTypes: [F64], result: DYN },
     "als.run": { argTypes: [F64, DYN, DYN, DYN], result: DYN },
     "als.exitRun": { argTypes: [F64, DYN, DYN], result: DYN },
+    "als.push": { argTypes: [F64, DYN], result: VOID },
+    "dyn.argumentsLength": { argTypes: [DYN], result: F64 },
+    "dyn.copyOwnExcept": { argTypes: [DYN, DYN, STRING], result: BOOL },
+    "dyn.adoptOwnExcept": { argTypes: [DYN, DYN, STRING], result: BOOL },
+    "dyn.argumentsFrom": { argTypes: [DYN, DYN], result: DYN },
+    "als.pop": { argTypes: [], result: VOID },
     "als.enterWith": { argTypes: [F64, DYN], result: VOID },
     "als.disable": { argTypes: [F64], result: VOID },
     /** new AsyncLocalStorage(options) (Node's object check throws; MAY
@@ -5169,6 +5175,10 @@ function buildLibFnSignatures() {
     "text.decoderEncoding": { argTypes: [DYN], result: F64 },
     "text.decoderName": { argTypes: [F64], result: STRING },
     "text.encodeInto": { argTypes: [DYN, DYN], result: DYN },
+    /** encodeInto over a typed string and Uint8Array: the UTF-16 units read;
+     * text.encodeIntoWritten then answers the bytes that call wrote. */
+    "text.encodeIntoRead": { argTypes: [STRING, BYTES_U8], result: F64 },
+    "text.encodeIntoWritten": { argTypes: [], result: F64 },
     /** `value instanceof TextDecoder` (true) or `TextEncoder` (false) on a
      * checked-dynamic value: a codec record's handle box (scr_text_codec_dyn.c).
      * Borrowed; never throws. */

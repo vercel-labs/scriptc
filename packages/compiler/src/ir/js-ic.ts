@@ -29,7 +29,8 @@ import { everyStmtList } from "./traverse.js";
 export type JsIcSite =
   | { kind: "get"; key: string }
   | { kind: "set"; key: string }
-  | { kind: "keyed" };
+  | { kind: "keyed" }
+  | { kind: "keyedSet"; stringKey: boolean };
 
 const CAPSULE_TESTS = new Set(["dyn.typedRefIs", "dyn.typedRefKeyIs", "dyn.classIs"]);
 
@@ -58,7 +59,10 @@ export class JsIcSites {
     if (!fn.name.startsWith("%dyn.class.")) return null;
     if (fn.async !== undefined || fn.generator !== undefined || fn.captures !== undefined)
       return null;
-    if (fn.params.some((p) => p.type.kind !== "dyn")) return null;
+    // A computed store's helper may take its key as a string.
+    const stringKeyStore = fn.params.length === 3 && fn.params[1]!.type.kind === "string";
+    if (fn.params.some((p, i) => p.type.kind !== "dyn" && !(stringKeyStore && i === 1)))
+      return null;
     const receiver = fn.params[0]?.localId;
     if (receiver === undefined) return null;
     const second = fn.params[1]?.localId;
@@ -73,10 +77,14 @@ export class JsIcSites {
     }
     const tail = fn.body.slice(i);
     let site: JsIcSite | null;
+    const third = fn.params[2]?.localId;
     if (fn.params.length === 1) site = this.getTail(tail, receiver);
+    else if (fn.params.length === 3 && second !== undefined && third !== undefined)
+      site = this.keyedSetTail(tail, receiver, second, third);
     else if (fn.params.length !== 2 || second === undefined) return null;
     else site = this.setTail(tail, receiver, second) ?? this.keyedTail(tail, receiver, second);
-    if (site === null || site.kind === "keyed") return exits.length === 0 ? site : null;
+    if (site === null || site.kind === "keyed" || site.kind === "keyedSet")
+      return exits.length === 0 ? site : null;
     // An exit answers plain values with the operation the site caches.
     return exits.every((exit) => exit.kind === site.kind && exit.key === site.key) ? site : null;
   }
@@ -182,6 +190,82 @@ export class JsIcSites {
     if (read?.kind !== "dynKeyGet" || !isVar(read.key, decl.localId)) return null;
     if (!this.bagOf(read.value, receiver)) return null;
     return { kind: "keyed" };
+  }
+
+  /** The store form of keyedTail: `if (typeof key === "symbol") {
+   * dyn.keySetComputed(BAG(receiver), key, value); return } if (receiver ==
+   * null) { dyn.keySetComputed(receiver, key, value); return } const s =
+   * String(key); <capsule branches> dyn.keySet(BAG(receiver), s, value);
+   * return`. */
+  private keyedSetTail(
+    tail: IrStmt[],
+    receiver: string,
+    key: string,
+    value: string,
+  ): JsIcSite | null {
+    // A string key: `<capsule branches> dyn.keySet(BAG(receiver), key, value); return`.
+    const last = tail[tail.length - 2];
+    if (
+      tail.length >= 2 &&
+      tail.slice(0, -2).every((s) => this.capsuleBranch(s, receiver)) &&
+      last?.kind === "exprStmt" &&
+      last.expr.kind === "libCall" &&
+      last.expr.fn === "dyn.keySet" &&
+      last.expr.args.length === 3 &&
+      this.bagOf(last.expr.args[0]!, receiver) &&
+      isVar(last.expr.args[1], key) &&
+      isVar(last.expr.args[2], value) &&
+      tail[tail.length - 1]?.kind === "return" &&
+      (tail[tail.length - 1] as IrStmt & { kind: "return" }).value === null
+    )
+      return { kind: "keyedSet", stringKey: true };
+    if (tail.length < 5) return null;
+    const [symbol, nullish, decl] = tail;
+    const store = tail[tail.length - 2];
+    const ret = tail[tail.length - 1];
+    if (!tail.slice(3, -2).every((s) => this.capsuleBranch(s, receiver))) return null;
+    const guarded = (
+      s: IrStmt | undefined,
+      test: "symbol" | "nullish",
+      tested: string,
+      object: (e: IrExpr) => boolean,
+    ): boolean => {
+      if (s?.kind !== "if" || s.else_ !== null || s.then.length !== 2) return false;
+      const { cond } = s;
+      if (
+        cond.kind !== "dynTest" ||
+        cond.test !== test ||
+        cond.negated === true ||
+        !isVar(cond.value, tested)
+      )
+        return false;
+      const [write, done] = s.then;
+      if (write?.kind !== "exprStmt" || done?.kind !== "return" || done.value !== null)
+        return false;
+      const call = write.expr;
+      return (
+        call.kind === "libCall" &&
+        call.fn === "dyn.keySetComputed" &&
+        call.args.length === 3 &&
+        object(call.args[0]!) &&
+        isVar(call.args[1], key) &&
+        isVar(call.args[2], value)
+      );
+    };
+    if (!guarded(symbol, "symbol", key, (e) => this.bagOf(e, receiver))) return null;
+    if (!guarded(nullish, "nullish", receiver, (e) => isVar(e, receiver))) return null;
+    if (decl?.kind !== "varDecl" || decl.init?.kind !== "libCall") return null;
+    if (decl.init.fn !== "dyn.toStringCoerce" || !isVar(decl.init.args[0], key)) return null;
+    if (store?.kind !== "exprStmt" || ret?.kind !== "return" || ret.value !== null) return null;
+    const call = store.expr;
+    if (call.kind !== "libCall" || call.fn !== "dyn.keySet" || call.args.length !== 3) return null;
+    if (
+      !this.bagOf(call.args[0]!, receiver) ||
+      !isVar(call.args[1], decl.localId) ||
+      !isVar(call.args[2], value)
+    )
+      return null;
+    return { kind: "keyedSet", stringKey: false };
   }
 
   private guard(

@@ -6,7 +6,13 @@
  * record pointer; its tag comes from the record's shape word. Every structural read of a union value
  * goes through here. */
 import type { BlockBuilder } from "./blocks.js";
-import { NULLABLE_NULL, shapeTagFn, type PointerUnion } from "./nullable-unions.js";
+import {
+  NULLABLE_NULL,
+  TAG_BITS_MASK,
+  shapeTagFn,
+  taggedFn,
+  type PointerUnion,
+} from "./nullable-unions.js";
 
 /** The i32 tag of a union value. `alias` is the tag word's alias
  * attachment (", !tbaa !N"), when the caller has one. */
@@ -19,6 +25,10 @@ export function emitUnionTag(
   const t = B.tmp();
   if (nullable?.repr === "shapes") {
     B.line(`${t} = call i32 ${shapeTagFn(nullable.unionId)}(ptr ${u})`);
+    return t;
+  }
+  if (nullable?.repr === "tagged") {
+    B.line(`${t} = call i32 ${taggedFn("tag", nullable.unionId)}(ptr ${u})`);
     return t;
   }
   if (nullable) {
@@ -67,7 +77,7 @@ export function emitNullableIsTag(
   tag: number,
   negated: boolean,
 ): string {
-  if (nullable.repr === "shapes" && tag !== nullable.unitTag && tag !== nullable.nullTag) {
+  if (nullable.repr !== "single" && tag !== nullable.unitTag && tag !== nullable.nullTag) {
     const actual = emitUnionTag(B, nullable, u),
       t = B.tmp();
     B.line(`${t} = icmp ${negated ? "ne" : "eq"} i32 ${actual}, ${tag}`);
@@ -93,6 +103,7 @@ export function emitUnionPeek(
   u: string,
   alias = "",
 ): string {
+  if (nullable?.repr === "tagged") return emitTaggedPayload(B, u);
   if (nullable) return u;
   const p = B.tmp();
   const t = B.tmp();
@@ -106,6 +117,8 @@ export function emitUnionPeek(
 export function unionTagLines(nullable: PointerUnion | null, u: string, out: string): string[] {
   if (nullable?.repr === "shapes")
     return [`  ${out} = call i32 ${shapeTagFn(nullable.unionId)}(ptr ${u})`];
+  if (nullable?.repr === "tagged")
+    return [`  ${out} = call i32 ${taggedFn("tag", nullable.unionId)}(ptr ${u})`];
   if (nullable && nullable.nullTag < 0)
     return [
       `  ${out}.isnull = icmp eq ptr ${u}, null`,
@@ -126,9 +139,39 @@ export function unionTagLines(nullable: PointerUnion | null, u: string, out: str
 
 export function unionPeekLines(nullable: PointerUnion | null, u: string, out: string): string[] {
   // A plain copy of the pointer (NULL included) under the template's name.
+  if (nullable?.repr === "tagged")
+    return [
+      `  ${out}.bits = ptrtoint ptr ${u} to i64`,
+      `  ${out}.low = and i64 ${out}.bits, ${TAG_BITS_MASK}`,
+      `  ${out}.neg = sub i64 0, ${out}.low`,
+      `  ${out} = getelementptr i8, ptr ${u}, i64 ${out}.neg`,
+    ];
   if (nullable) return [`  ${out} = getelementptr i8, ptr ${u}, i64 0`];
   return [
     `  ${out}.p = getelementptr inbounds %ScrUnion, ptr ${u}, i64 0, i32 5`,
     `  ${out} = load ptr, ptr ${out}.p`,
   ];
+}
+
+/** The payload pointer of a tagged union value: the value minus its tag
+ * bits (a getelementptr, which keeps the pointer's provenance). */
+export function emitTaggedPayload(B: BlockBuilder, u: string): string {
+  const bits = B.tmp(),
+    low = B.tmp(),
+    neg = B.tmp(),
+    p = B.tmp();
+  B.line(`${bits} = ptrtoint ptr ${u} to i64`);
+  B.line(`${low} = and i64 ${bits}, ${TAG_BITS_MASK}`);
+  B.line(`${neg} = sub i64 0, ${low}`);
+  B.line(`${p} = getelementptr i8, ptr ${u}, i64 ${neg}`);
+  return p;
+}
+
+/** A tagged union value from its arm's payload: the payload plus the arm's
+ * tag bits. */
+export function emitTaggedWrap(B: BlockBuilder, payload: string, bits: number): string {
+  if (bits === 0) return payload;
+  const t = B.tmp();
+  B.line(`${t} = getelementptr i8, ptr ${payload}, i64 ${bits}`);
+  return t;
 }

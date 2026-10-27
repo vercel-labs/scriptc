@@ -333,7 +333,16 @@ export function completeArgs(
       lowerer.unsupported("SC1090", blame, "this call form");
     });
     const elems = passed.map((value) => lowerer.coerceInto(blame, value, DYN));
-    const full: IrExpr = { kind: "dynArrLit", elems, type: DYN, loc };
+    // No surplus argument: the count stands for the array (countToken).
+    const full: IrExpr =
+      shapes[restAt]!.countToken && passed.length <= positional.length
+        ? {
+            kind: "dynFrom",
+            value: { kind: "numLit", value: passed.length, type: F64, loc },
+            type: DYN,
+            loc,
+          }
+        : { kind: "dynArrLit", elems, type: DYN, loc };
     const out = [...fixed, full];
     if (stmts.length > 0) {
       out[0] = { kind: "seqExpr", stmts, result: out[0]!, type: out[0]!.type, loc };

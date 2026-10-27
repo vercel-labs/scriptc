@@ -141,6 +141,8 @@ export type Ts7HostOptions = {
   fsShadow?: {
     readFile: (path: string) => string | undefined;
     hideFile: (path: string) => boolean;
+    /** Paths that exist only as the shadow's replacement text. */
+    fileExists?: (path: string) => boolean;
   } | null;
 };
 
@@ -190,11 +192,14 @@ export class Ts7Host {
         fileExists: (fileName) => {
           if (virtualFiles.has(tsgoPath(fileName))) return true;
           if (shadow !== null && shadow.hideFile(fileName)) return false;
+          if (shadow?.fileExists?.(fileName) === true) return true;
           return trackedFileExists(fileName) || typePatchFileExists(fileName);
         },
         directoryExists: (path) => trackedDirectoryExists(path),
         realpath: (path) =>
-          virtualFiles.has(tsgoPath(path)) ? path : (trackedRealpath(path) ?? path),
+          virtualFiles.has(tsgoPath(path)) || shadow?.fileExists?.(path) === true
+            ? path
+            : (trackedRealpath(path) ?? path),
         getAccessibleEntries: (path) =>
           trackedAccessibleEntries(path) ?? { files: [], directories: [] },
       },

@@ -1,11 +1,12 @@
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { FrontendServices } from "./services.js";
+import type { FlowNode } from "./flow/index.js";
 import { Ts7Api } from "./ts7/rpc-api.js";
 import { evaluateNodeComptime } from "./comptime-node.js";
 
 export function createNodeFrontendServices(): FrontendServices {
-  return new FrontendServices(
+  const services = new FrontendServices(
     (options) => new Ts7Api(options),
     process.cwd(),
     evaluateNodeComptime,
@@ -20,6 +21,13 @@ export function createNodeFrontendServices(): FrontendServices {
         createRequire(pathToFileURL(fromFile)).resolve.paths(specifier),
     },
   );
+  // hermes-parser loads on the first Flow module.
+  let hermes: { parse: (text: string, options: object) => unknown } | undefined;
+  services.parseFlow = (text) => {
+    hermes ??= createRequire(import.meta.url)("hermes-parser") as typeof hermes;
+    return hermes!.parse(text, { flow: "all", sourceType: "module", tokens: false }) as FlowNode;
+  };
+  return services;
 }
 
 let shared: FrontendServices | undefined;

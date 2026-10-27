@@ -52,6 +52,13 @@ struct ScrJsShape {
   uint64_t hash;
   uint32_t count; /* entries: the depth in the tree */
   ScrJsShape *all_next;
+  /* for-in's keys of objects of this shape (scr_js_for_in_keys), built on
+   * first use: a string[] that reads as immortal and owns its strings. */
+  ScrArr *key_strs;
+  bool index_keys; /* some key is integer-like (for-in orders those first) */
+  /* One bit per key on the path (scr_js_key_bit): a key whose bit is clear
+   * is not an own property of objects of this shape. */
+  uint64_t bloom;
 };
 
 /* The root is the empty key sequence. Transitions live in one open
@@ -86,7 +93,30 @@ typedef struct ScrJsSharedLoad {
 } ScrJsSharedLoad;
 static SCR_TL ScrJsSharedLoad *scr_js_shared_loads;
 
+/* The key checks of an adopting copy, per (source shape, excluded names):
+ * whether the keys copy as they are, which entry positions the copy drops,
+ * and the shape of the kept keys (NULL past the budgets). Shapes die with
+ * the shape reset, which clears these too. */
+typedef struct {
+  const ScrJsShape *shape;
+  const ScrStr *excluded;
+  const ScrJsShape *kept;
+  uint64_t drop;
+  bool ok;
+} ScrJsAdoptMemo;
+#define SCR_JS_ADOPT_MEMOS 64
+static SCR_TL ScrJsAdoptMemo scr_js_adopt_memos[SCR_JS_ADOPT_MEMOS];
+
+static void scr_js_key_strs_free(ScrJsShape *shape) {
+  if (!shape->key_strs) return;
+  shape->key_strs->rc = 1;
+  scr_arr_release(shape->key_strs);
+  shape->key_strs = NULL;
+}
+
 static void scr_js_shapes_reset(void) {
+  scr_js_key_strs_free(&scr_js_root);
+  memset(scr_js_adopt_memos, 0, sizeof scr_js_adopt_memos);
   for (size_t i = 0; i < scr_js_filled_count; i++)
     memset(scr_js_filled_ics[i], 0, sizeof *scr_js_filled_ics[i]);
   free(scr_js_shared_loads);
@@ -99,6 +129,7 @@ static void scr_js_shapes_reset(void) {
     ScrJsShape *shape = scr_js_all_shapes;
     scr_js_all_shapes = shape->all_next;
     scr_dyn_tier_key_release(shape->key, shape->key_len);
+    scr_js_key_strs_free(shape);
     free(shape);
   }
   free(scr_js_transitions);
@@ -152,6 +183,7 @@ static const ScrJsShape *scr_js_transition(const ScrJsShape *parent, const char 
   if (!child) scr_trap("scriptc: out of memory\n");
   *child = (ScrJsShape){parent, scr_dyn_tier_key_copy(key, key_len), key_len, hash, parent->count + 1,
                         scr_js_all_shapes};
+  child->bloom = parent->bloom | (UINT64_C(1) << (hash & 63));
   scr_js_all_shapes = child;
   if (!scr_js_shapes_registered) {
     scr_js_shapes_registered = true;
@@ -206,6 +238,48 @@ static const ScrJsShape *scr_js_shape_of(ScrDyn *object) {
   }
   object->v.obj.shape = (ScrJsShape *)shape;
   return shape;
+}
+
+/* for-in's key snapshot of a plain object whose prototype contributes no
+ * keys, shared by every object of its shape: the keys in entry order, or
+ * NULL when the object has no shape, some key is integer-like (for-in
+ * lists those first, ascending) or some entry is not enumerable. The
+ * array reads as immortal (callers only read it) and lives until the
+ * thread's shapes are reset. */
+ScrArr *scr_js_for_in_keys(ScrDyn *object) {
+  ScrJsShape *shape = (ScrJsShape *)scr_js_shape_of(object);
+  if (!shape) return NULL;
+  if (!shape->key_strs) {
+    const ScrJsShape *path[SCR_JS_SHAPE_MAX];
+    for (const ScrJsShape *s = shape; s->parent; s = s->parent) path[s->count - 1] = s;
+    ScrArr *keys = scr_arr_new(SCR_ELEM_STR, shape->count);
+    bool index_keys = false;
+    for (uint32_t i = 0; i < shape->count; i++) {
+      uint32_t index;
+      index_keys = index_keys || scr_key_array_index(path[i]->key, path[i]->key_len, &index);
+      scr_arr_push_ref(keys, scr_str_new(path[i]->key, path[i]->key_len));
+    }
+    if (!shape->parent && !scr_js_shapes_registered) {
+      scr_js_shapes_registered = true;
+      scr_atexit(scr_js_shapes_reset);
+    }
+    keys->rc = SIZE_MAX;
+    shape->key_strs = keys;
+    shape->index_keys = index_keys;
+  }
+  if (shape->index_keys) return NULL;
+  for (size_t i = 0; i < object->v.obj.len; i++)
+    if (!object->v.obj.entries[i].enumerable) return NULL;
+  return shape->key_strs;
+}
+
+/* The entry index of `key` in `object` (of its shape): its entries are
+ * contiguous, so this scan touches no shape chain. */
+static inline size_t scr_js_entry_find(const ScrDyn *object, const char *key, size_t key_len) {
+  const ScrDynEntry *entries = object->v.obj.entries;
+  for (size_t i = 0, n = object->v.obj.len; i < n; i++)
+    if (entries[i].key_len == key_len && scr_key_equal(entries[i].key, key, key_len)) return i;
+  return SIZE_MAX;
 }
 
 /* The entry index of `key` in an object of shape `shape`, or SIZE_MAX. */
@@ -338,6 +412,27 @@ static void scr_js_load_fill(ScrJsIc *ic, uint32_t stale, ScrJsSharedLoad *share
   scr_js_ic_add(ic, stale, entry);
 }
 
+/* What a site's key means to an absent read: its shape-filter bit and
+ * whether an absent own property answers undefined on a receiver with the
+ * default prototype. Site keys are immortal strings, remembered by their
+ * bytes' address. */
+typedef struct {
+  const char *data;
+  uint64_t bit;
+  bool cacheable;
+} ScrJsKeyFacts;
+
+static const ScrJsKeyFacts *scr_js_key_facts(const ScrStr *key) {
+  static SCR_TL ScrJsKeyFacts memo[64];
+  ScrJsKeyFacts *facts = &memo[((uintptr_t)key->data >> 4) & 63];
+  if (facts->data != key->data) {
+    facts->data = key->data;
+    facts->bit = UINT64_C(1) << (scr_key_hash(key->data, key->len) & 63);
+    facts->cacheable = key->rc == SIZE_MAX && scr_js_absent_cacheable(key);
+  }
+  return facts;
+}
+
 /* A load site's probe. With `absent`, a read of a key that the receiver and
  * its chain of plain shaped objects (ending in the default prototype) lack
  * answers undefined and caches that answer. Method reads leave absent
@@ -353,6 +448,12 @@ static __attribute__((noinline)) ScrDyn *scr_js_probe_load(ScrDyn *receiver, con
     if (value) return value;
     if (stale == UINT32_MAX) stale = i;
   }
+  /* A megamorphic site's absent key: the shape filter answers without the
+   * shared cache. */
+  if (absent && ic->count == SCR_JS_IC_WAYS && !receiver->prototype) {
+    const ScrJsKeyFacts *facts = scr_js_key_facts(key);
+    if (facts->cacheable && !(shape->bloom & facts->bit)) return scr_dyn_retain(scr_dyn_undefined());
+  }
   ScrJsSharedLoad *shared = NULL;
   if (ic->count == SCR_JS_IC_WAYS) {
     shared = scr_js_shared_load(shape, key);
@@ -362,7 +463,7 @@ static __attribute__((noinline)) ScrDyn *scr_js_probe_load(ScrDyn *receiver, con
       if (value) return value;
     }
   }
-  size_t slot = scr_js_shape_find(shape, key->data, key->len);
+  size_t slot = scr_js_entry_find(receiver, key->data, key->len);
   if (slot != SIZE_MAX) {
     const ScrDynEntry *found = &receiver->v.obj.entries[slot];
     if (found->accessor) return NULL;
@@ -395,6 +496,147 @@ static __attribute__((noinline)) ScrDyn *scr_js_probe_load(ScrDyn *receiver, con
   return scr_dyn_retain(found->value);
 }
 
+/* ── object literals ───────────────────────────────────────────────────── */
+
+/* An object literal whose members all have distinct constant keys (a
+ * compiled literal site): a fresh ordinary object with `values` (borrowed)
+ * under `keys`, in order. The site remembers the literal's shape, so a
+ * repeat appends each value under the key bytes the shape holds and sets
+ * the shape, with no transition lookup. +1. */
+ScrDyn *scr_js_new_literal(ScrJsIc *ic, size_t n, ScrStr *const *keys, ScrDyn *const *values) {
+  ScrDyn *obj = scr_dyn_new_obj();
+  const ScrJsShape *shape = ic->count ? ic->entry[0].target : NULL;
+  const ScrJsShape *path[SCR_JS_SHAPE_MAX];
+  if (shape && shape->count == n) {
+    const ScrJsShape *s = shape;
+    for (size_t i = n; i-- > 0; s = s->parent) path[i] = s;
+    for (size_t i = 0; i < n; i++)
+      scr_dyn_tier_append(obj, path[i]->key, path[i]->key_len, scr_dyn_retain(values[i]));
+    obj->v.obj.shape = (ScrJsShape *)shape;
+    return obj;
+  }
+  const ScrJsShape *s = &scr_js_root;
+  for (size_t i = 0; i < n; i++) {
+    if (s) s = scr_js_transition(s, keys[i]->data, keys[i]->len);
+    if (s) scr_dyn_tier_append(obj, s->key, s->key_len, scr_dyn_retain(values[i]));
+    else scr_dyn_key_set(obj, keys[i], values[i]);
+  }
+  if (s) {
+    obj->v.obj.shape = (ScrJsShape *)s;
+    scr_js_ic_add(ic, 0, (ScrJsIcEntry){NULL, s, NULL, NULL, 0});
+  }
+  return obj;
+}
+
+/* ── live record capsules ─────────────────────────────────────────────── */
+
+/* A record compiled by static code reaches dynamic code as a capsule that
+ * answers its declared fields from the native record (record ops). Such a
+ * receiver has no shape; its site remembers the field a key names per
+ * record layout in an entry keyed by the layout's ops table, which no
+ * shape pointer can equal. */
+static inline size_t scr_js_record_slot(const ScrDynTypedRecordOps *ops, const ScrStr *key,
+                                        ScrJsIc *ic) {
+  const ScrJsShape *tag = (const ScrJsShape *)(const void *)ops;
+  for (uint32_t i = 0; i < ic->count; i++)
+    if (ic->entry[i].shape == tag && !ic->entry[i].target) return ic->entry[i].slot;
+  size_t index;
+  if (!scr_dyn_record_field_index(ops, key, &index)) index = SIZE_MAX;
+  scr_js_ic_add(ic, UINT32_MAX, (ScrJsIcEntry){tag, NULL, NULL, NULL, index});
+  return index;
+}
+
+/* The ops of a record capsule that answers from its native record (no
+ * view yet): scr_dyn_typed_ref_live_record, inline. */
+static inline const ScrDynTypedRecordOps *scr_js_live_record(const ScrDyn *d) {
+  if (!d->v.typed_ref.record || d->v.typed_ref.materialized) return NULL;
+  const ScrDynTypedRecordOps *ops = (const ScrDynTypedRecordOps *)(const void *)d->v.typed_ref.array;
+  return ops && ops->select ? ops->select(d->v.typed_ref.ptr) : ops;
+}
+
+/* +1 value of a present declared field, or NULL. */
+static inline ScrDyn *scr_js_record_load(ScrDyn *receiver, const ScrStr *key, ScrJsIc *ic) {
+  const ScrDynTypedRecordOps *ops = scr_js_live_record(receiver);
+  if (!ops) return NULL;
+  size_t index = scr_js_record_slot(ops, key, ic);
+  if (index == SIZE_MAX || (!ops->fixed && !ops->has(receiver->v.typed_ref.ptr, index))) return NULL;
+  return ops->get(receiver->v.typed_ref.ptr, index);
+}
+
+/* A declared field's store into the native record, as the generic [[Set]]
+ * of a capsule makes it; false leaves the store to the helper. */
+static inline bool scr_js_record_store(ScrDyn *receiver, const ScrStr *key, ScrDyn *value,
+                                       ScrJsIc *ic) {
+  const ScrDynTypedRecordOps *ops = scr_js_live_record(receiver);
+  if (!ops || !ops->set || scr_dyn_typed_ref_is_frozen(receiver)) return false;
+  size_t index = scr_js_record_slot(ops, key, ic);
+  if (index == SIZE_MAX) return false;
+  return ops->set(receiver->v.typed_ref.ptr, index, value) || scr_exc_pending();
+}
+
+/* Names an ordinary function answers other than from its own table: its
+ * builtin members and Object.prototype's. A site's key is one constant
+ * string, so the answer is remembered by the key's bytes. */
+static bool scr_js_fn_builtin(const ScrStr *key) {
+  static SCR_TL struct {
+    const char *data;
+    size_t len;
+    bool builtin;
+  } memo[64];
+  size_t slot = ((uintptr_t)key->data >> 4) & 63;
+  if (memo[slot].data == key->data && memo[slot].len == key->len) return memo[slot].builtin;
+  static const struct {
+    const char *name;
+    size_t len;
+  } names[] = {{"name", 4},      {"length", 6}, {"prototype", 9}, {"apply", 5},
+               {"call", 4},      {"bind", 4},   {"caller", 6},    {"arguments", 9},
+               {"toString", 8},  {"stackTraceLimit", 15}};
+  bool builtin = !scr_js_absent_cacheable(key);
+  for (size_t i = 0; !builtin && i < sizeof names / sizeof names[0]; i++)
+    builtin = key->len == names[i].len && memcmp(key->data, names[i].name, key->len) == 0;
+  memo[slot].data = key->data;
+  memo[slot].len = key->len;
+  memo[slot].builtin = builtin;
+  return builtin;
+}
+
+/* A read on an ordinary function: an own data property through the site's
+ * cache (its table is an ordinary object without a prototype, so the cache
+ * also keeps absent answers), else undefined for a name that is no builtin
+ * member. NULL leaves the read to the generic path. */
+static ScrDyn *scr_js_fn_load(ScrDyn *receiver, const ScrStr *key, ScrJsIc *ic) {
+  bool plain;
+  ScrDyn *table = scr_dyn_fn_plain_table(receiver, &plain);
+  if (!plain) return NULL;
+  bool builtin = scr_js_fn_builtin(key);
+  if (table) return scr_js_probe_load(table, key, ic, !builtin);
+  if (key->len == 4 && memcmp(key->data, "name", 4) == 0) {
+    /* The name strings recently read, by the name's address and checked
+     * against its text (React reads a component's name for every element
+     * it renders). */
+    static SCR_TL struct {
+      const char *name;
+      ScrDyn *value;
+    } names[64];
+    const char *name = receiver->v.fn.name ? receiver->v.fn.name : "";
+    size_t slot = ((uintptr_t)name >> 3) & 63, length = strlen(name);
+    const ScrStr *cached = names[slot].name == name ? names[slot].value->v.str : NULL;
+    if (!cached || cached->len != length || memcmp(cached->data, name, length) != 0) {
+      ScrStr *text = scr_str_new(name, length);
+      ScrDyn *value = scr_dyn_new_str(text);
+      scr_str_release(text);
+      scr_dyn_release(names[slot].value);
+      names[slot].name = name;
+      names[slot].value = value;
+    }
+    return scr_dyn_retain(names[slot].value);
+  }
+  if (key->len == 6 && memcmp(key->data, "length", 6) == 0)
+    return scr_dyn_new_num((double)receiver->v.fn.arity);
+  if (builtin) return NULL;
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
 /* Receivers other than ordinary objects have no shape: they miss before
  * the probe sets up its frame. */
 ScrDyn *scr_js_load_probe(ScrDyn *receiver, const ScrStr *key, ScrJsIc *ic) {
@@ -403,11 +645,17 @@ ScrDyn *scr_js_load_probe(ScrDyn *receiver, const ScrStr *key, ScrJsIc *ic) {
 }
 
 ScrDyn *scr_js_get_probe(ScrDyn *receiver, const ScrStr *key, ScrJsIc *ic) {
+  if (receiver->kind == SCR_DYN_TYPED_REF) return scr_js_record_load(receiver, key, ic);
+  if (receiver->kind == SCR_DYN_FUNC) return scr_js_fn_load(receiver, key, ic);
   if (receiver->kind != SCR_DYN_OBJ) return NULL;
   return scr_js_probe_load(receiver, key, ic, true);
 }
 
 ScrDyn *scr_js_get_probe_native(ScrDyn *receiver, const ScrStr *key, ScrJsIc *ic) {
+  if (receiver->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *field = scr_js_record_load(receiver, key, ic);
+    if (field || scr_exc_pending()) return field;
+  }
   if (receiver->kind != SCR_DYN_OBJ) return scr_dyn_tier_unshaped_get(receiver, key);
   return scr_js_probe_load(receiver, key, ic, true);
 }
@@ -452,11 +700,13 @@ static bool scr_js_append_shaped(ScrDyn *receiver, const ScrJsShape *target, Scr
   return true;
 }
 
-bool scr_js_store_probe(ScrDyn *receiver, const ScrStr *key, ScrDyn *value, ScrJsIc *ic) {
+/* A store's add or replace on an ordinary shaped object; `ic` (the site's
+ * cache) may be NULL for a store whose key varies per call. */
+static bool scr_js_store_shaped(ScrDyn *receiver, const ScrStr *key, ScrDyn *value, ScrJsIc *ic) {
   const ScrJsShape *shape = scr_js_shape_of(receiver);
   if (!shape || scr_js_error_synced_key(key)) return false;
   uint32_t stale = UINT32_MAX;
-  for (uint32_t i = 0; i < ic->count; i++) {
+  for (uint32_t i = 0; ic && i < ic->count; i++) {
     const ScrJsIcEntry *entry = &ic->entry[i];
     if (entry->shape != shape) continue;
     if (entry->target == shape) {
@@ -474,7 +724,7 @@ bool scr_js_store_probe(ScrDyn *receiver, const ScrStr *key, ScrDyn *value, ScrJ
   if (slot != SIZE_MAX) {
     const ScrDynEntry *found = &receiver->v.obj.entries[slot];
     if (found->accessor || !found->writable || found->fenced) return false;
-    scr_js_ic_add(ic, stale, (ScrJsIcEntry){shape, shape, NULL, NULL, slot});
+    if (ic) scr_js_ic_add(ic, stale, (ScrJsIcEntry){shape, shape, NULL, NULL, slot});
     return scr_js_replace(receiver, slot, value);
   }
   ScrDyn *prototype = receiver->prototype;
@@ -484,8 +734,182 @@ bool scr_js_store_probe(ScrDyn *receiver, const ScrStr *key, ScrDyn *value, ScrJ
     return false;
   const ScrJsShape *target = scr_js_transition(shape, key->data, key->len);
   if (!target) return false;
-  scr_js_ic_add(ic, stale, (ScrJsIcEntry){shape, target, prototype, prototype_shape, target->count - 1});
+  if (ic)
+    scr_js_ic_add(ic, stale, (ScrJsIcEntry){shape, target, prototype, prototype_shape, target->count - 1});
   return scr_js_append_shaped(receiver, target, value);
+}
+
+bool scr_js_store_probe(ScrDyn *receiver, const ScrStr *key, ScrDyn *value, ScrJsIc *ic) {
+  if (receiver->kind == SCR_DYN_TYPED_REF) return scr_js_record_store(receiver, key, value, ic);
+  return scr_js_store_shaped(receiver, key, value, ic);
+}
+
+bool scr_js_keyed_store_probe_str(ScrDyn *receiver, const ScrStr *name, ScrDyn *value);
+
+/* `for (k in src) if (hasOwn(src, k) && k !== e1 && ...) dst[k] = src[k]`
+ * into a fresh empty `dst`, in one pass: an ordinary shaped `src` whose
+ * entries are all enumerable data properties under ordinary names, copied
+ * into an ordinary empty `dst` through shape transitions. False, with `dst`
+ * untouched, leaves the loop to run as written. */
+/* Whether the copy loop over `src` reads each own property once, in entry
+ * order, as a plain value that the target can take as an ordinary data
+ * property. */
+static bool scr_js_copyable_source(ScrDyn *src, ScrDyn *dst) {
+  if (src->kind != SCR_DYN_OBJ || dst->kind != SCR_DYN_OBJ || dst->v.obj.len != 0 ||
+      dst->prototype || dst->null_proto || dst->non_extensible || src->v.obj.source_identity)
+    return false;
+  ScrArr *keys = scr_js_for_in_keys(src);
+  if (!keys || !scr_js_shape_of(dst)) return false;
+  size_t count = src->v.obj.len;
+  if (count >= SCR_JS_SHAPE_MAX) return false;
+  for (size_t i = 0; i < count; i++) {
+    const ScrDynEntry *entry = &src->v.obj.entries[i];
+    if (entry->accessor || entry->fenced) return false;
+    if (entry->key_len == 9 && memcmp(entry->key, "__proto__", 9) == 0) return false;
+    /* The keys an error's native fields mirror (scr_js_error_synced_key). */
+    if (entry->key_len >= 4 && entry->key_len <= 7) {
+      static const char *const synced[] = {"name", "code", "cause", "stack", "message"};
+      for (size_t k = 0; k < 5; k++)
+        if (strlen(synced[k]) == entry->key_len && memcmp(synced[k], entry->key, entry->key_len) == 0)
+          return false;
+    }
+  }
+  return true;
+}
+
+/* `excluded` holds at most a few names, NUL-separated; false past eight. */
+static bool scr_js_excluded_names(const ScrStr *excluded, const char **names, size_t *lens, size_t *count) {
+  size_t skip = 0;
+  for (size_t at = 0; at <= excluded->len;) {
+    if (skip == 8) return false;
+    const char *end = memchr(excluded->data + at, 0, excluded->len - at);
+    size_t len = end ? (size_t)(end - (excluded->data + at)) : excluded->len - at;
+    names[skip] = excluded->data + at;
+    lens[skip++] = len;
+    at += len + 1;
+  }
+  *count = skip;
+  return true;
+}
+
+
+static void scr_js_adopt_memo_fill(ScrJsAdoptMemo *memo, ScrDyn *src, const ScrJsShape *shape,
+                                   const ScrStr *excluded) {
+  *memo = (ScrJsAdoptMemo){shape, excluded, NULL, 0, false};
+  const char *names[8];
+  size_t lens[8], skip;
+  size_t count = src->v.obj.len;
+  if (count >= 64 || !scr_js_excluded_names(excluded, names, lens, &skip)) return;
+  if (!scr_js_for_in_keys(src)) return;
+  const ScrJsShape *kept = &scr_js_root;
+  for (size_t i = 0; i < count; i++) {
+    const ScrDynEntry *entry = &src->v.obj.entries[i];
+    if (entry->key_len == 9 && memcmp(entry->key, "__proto__", 9) == 0) return;
+    if (entry->key_len >= 4 && entry->key_len <= 7) {
+      static const char *const synced[] = {"name", "code", "cause", "stack", "message"};
+      for (size_t k = 0; k < 5; k++)
+        if (strlen(synced[k]) == entry->key_len && memcmp(synced[k], entry->key, entry->key_len) == 0)
+          return;
+    }
+    bool drop = false;
+    for (size_t j = 0; !drop && j < skip; j++)
+      drop = lens[j] == entry->key_len && memcmp(names[j], entry->key, lens[j]) == 0;
+    if (drop) memo->drop |= UINT64_C(1) << i;
+    else if (kept) kept = scr_js_transition(kept, entry->key, entry->key_len);
+  }
+  memo->kept = kept;
+  memo->ok = true;
+}
+
+/* The copy from an owned source the function never reads again: when
+ * nothing else references it, `dst` takes its entries, all of them plain
+ * writable data, and drops the excluded ones, which is the copy's result. */
+bool scr_js_adopt_own_except(ScrDyn *dst, ScrDyn *src, const ScrStr *excluded) {
+  const ScrJsShape *shape = src->rc == 1 && dst->kind == SCR_DYN_OBJ && dst->v.obj.len == 0 &&
+                                    excluded->rc == SIZE_MAX
+                                ? scr_js_shape_of(src)
+                                : NULL;
+  if (!shape) return scr_js_copy_own_except(dst, src, excluded);
+  ScrJsAdoptMemo *memo = &scr_js_adopt_memos[(((uintptr_t)shape >> 4) ^ ((uintptr_t)excluded >> 3)) &
+                                              (SCR_JS_ADOPT_MEMOS - 1)];
+  if (memo->shape != shape || memo->excluded != excluded) scr_js_adopt_memo_fill(memo, src, shape, excluded);
+  if (!memo->ok) return scr_js_copy_own_except(dst, src, excluded);
+  size_t count = src->v.obj.len;
+  for (size_t i = 0; i < count; i++) {
+    const ScrDynEntry *entry = &src->v.obj.entries[i];
+    if (entry->accessor || entry->fenced || !entry->writable || !entry->configurable || !entry->enumerable)
+      return scr_js_copy_own_except(dst, src, excluded);
+  }
+  if (!scr_dyn_tier_adopt_entries(dst, src)) return scr_js_copy_own_except(dst, src, excluded);
+  uint64_t drop = memo->drop;
+  if (drop) {
+    scr_dyn_tier_keys_touched(dst);
+    ScrDynEntry *entries = dst->v.obj.entries;
+    size_t kept = 0;
+    for (size_t i = 0; i < count; i++) {
+      ScrDynEntry entry = entries[i];
+      if (!(drop >> i & 1)) {
+        entries[kept++] = entry;
+        continue;
+      }
+      scr_dyn_tier_key_release(entry.key, entry.key_len);
+      scr_dyn_release(entry.value);
+    }
+    memset(&entries[kept], 0, (count - kept) * sizeof *entries);
+    dst->v.obj.len = kept;
+    dst->v.obj.shape = (ScrJsShape *)memo->kept;
+  }
+  return true;
+}
+
+bool scr_js_copy_own_except(ScrDyn *dst, ScrDyn *src, const ScrStr *excluded) {
+  if (!scr_js_copyable_source(src, dst)) return false;
+  size_t count = src->v.obj.len;
+  const char *names[8];
+  size_t lens[8], skip;
+  if (!scr_js_excluded_names(excluded, names, lens, &skip)) return false;
+  /* No key excluded: the target takes the source's shape and a copy of its
+   * entries (each value and shared key held once more). */
+  bool clean = !src->null_proto && !src->v.obj.index;
+  for (size_t i = 0; clean && i < count; i++) {
+    const ScrDynEntry *entry = &src->v.obj.entries[i];
+    clean = entry->writable && entry->configurable && entry->enumerable;
+    for (size_t j = 0; clean && j < skip; j++)
+      clean = !(lens[j] == entry->key_len && memcmp(names[j], entry->key, lens[j]) == 0);
+  }
+  if (clean && count > 0 && scr_js_shape_of(src) && scr_dyn_tier_clone_entries(dst, src)) return true;
+  /* Source keys are distinct, so each kept key appends to the target's
+   * shape. */
+  const ScrJsShape *shape = scr_js_shape_of(dst);
+  bool done = true;
+  for (size_t i = 0; done && i < count; i++) {
+    const ScrDynEntry *entry = &src->v.obj.entries[i];
+    bool kept = true;
+    for (size_t j = 0; kept && j < skip; j++)
+      kept = !(lens[j] == entry->key_len && memcmp(names[j], entry->key, lens[j]) == 0);
+    if (!kept) continue;
+    const ScrJsShape *target = scr_js_transition(shape, entry->key, entry->key_len);
+    done = target && scr_js_append_shaped(dst, target, entry->value);
+    shape = target;
+  }
+  if (!done) scr_trap("scriptc: internal error: a fresh object refused a shaped copy\n");
+  return true;
+}
+
+/* A computed store's add or replace on an ordinary object, without a
+ * cache: the key varies per call. Array-index names keep the generic path
+ * (they order before other keys). */
+bool scr_js_keyed_store_probe(ScrDyn *receiver, const ScrDyn *key, ScrDyn *value) {
+  if (key->kind != SCR_DYN_STR) return false;
+  return scr_js_keyed_store_probe_str(receiver, key->v.str, value);
+}
+
+bool scr_js_keyed_store_probe_str(ScrDyn *receiver, const ScrStr *name, ScrDyn *value) {
+  if (receiver->kind != SCR_DYN_OBJ) return false;
+  uint32_t index;
+  if (scr_key_array_index(name->data, name->len, &index)) return false;
+  if (name->len == 9 && memcmp(name->data, "__proto__", 9) == 0) return false;
+  return scr_js_store_shaped(receiver, name, value, NULL);
 }
 
 /* ── keyed loads ──────────────────────────────────────────────────────── */
@@ -513,9 +937,8 @@ ScrDyn *scr_js_keyed_probe(ScrDyn *receiver, const ScrDyn *key, ScrJsIc *ic) {
     if (found->key_len == name->len && scr_key_equal(found->key, name->data, name->len))
       return found->accessor ? NULL : scr_dyn_retain(found->value);
   }
-  const ScrJsShape *shape = scr_js_shape_of(receiver);
-  if (!shape) return NULL;
-  size_t slot = scr_js_shape_find(shape, name->data, name->len);
+  if (!scr_js_shape_of(receiver)) return NULL;
+  size_t slot = scr_js_entry_find(receiver, name->data, name->len);
   if (slot == SIZE_MAX) return NULL;
   const ScrDynEntry *found = &receiver->v.obj.entries[slot];
   if (found->accessor) return NULL;

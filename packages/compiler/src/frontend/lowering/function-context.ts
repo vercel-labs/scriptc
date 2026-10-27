@@ -46,6 +46,9 @@ export interface FnCtx {
    * rest param): the synthetic trailing dyn-array param `arguments`
    * reads resolve to. */
   argumentsLocal?: IrLocal | null;
+  /** The function's parameters, when its `arguments` slot may hold a count
+   * instead of the array (ParamShape.countToken). */
+  argumentsParams?: readonly IrParam[];
   /** The count `arguments.length` reads in a top-level function declaration
    * that is also used as a value (argument-counts.ts). */
   argumentCount?: IrLocal;

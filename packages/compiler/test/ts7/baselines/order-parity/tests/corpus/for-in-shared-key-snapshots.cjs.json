@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/for-in-shared-key-snapshots.cjs"
+ ],
+ "diags": []
+}

@@ -5,6 +5,7 @@ import { FN_ATTRS, releaseSym, retainSym, traceArg } from "./shapes.js";
 import type { LlvmEmitterContext } from "./expr-context.js";
 import { unionPeekLines, unionTagLines } from "./union-repr.js";
 import { registerReplay } from "./emit-journal.js";
+import { unionWrapRefLines } from "./expr-callbacks.js";
 
 export function streamDataAdapter(
   host: LlvmEmitterContext,
@@ -30,7 +31,8 @@ export function streamDataAdapter(
       const def = host.unionsById.get(p.unionId);
       return (
         def !== undefined &&
-        !host.nullableUnions.has(p.unionId) &&
+        (!host.nullableUnions.has(p.unionId) ||
+          host.nullableUnions.get(p.unionId)?.repr === "tagged") &&
         def.arms.length === 2 &&
         def.arms.some((a) => a.kind === "bytes" && a.elem === "u8") &&
         def.arms.some((a) => a.kind === "string")
@@ -113,9 +115,10 @@ export function streamDataAdapter(
     const def = host.unionsById.get(p.unionId);
     const bytesTag = def ? def.arms.findIndex((a) => a.kind === "bytes" && a.elem === "u8") : -1;
     const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
+    const tagged = host.nullableUnions.get(p.unionId);
     if (
       !def ||
-      host.nullableUnions.has(p.unionId) ||
+      (host.nullableUnions.has(p.unionId) && tagged?.repr !== "tagged") ||
       bytesTag < 0 ||
       strTag < 0 ||
       def.arms.length !== 2
@@ -137,7 +140,7 @@ export function streamDataAdapter(
       `  br i1 %isb, label %buf, label %str`,
       `buf:`,
       `  %rb = call ptr @scr_bytes_retain_v(ptr %a0)`,
-      `  %ub = call ptr @scr_union_new_ref(i32 ${bytesTag}, ptr %rb, ptr @scr_bytes_retain_v, ptr @scr_bytes_release_v, ptr null)`,
+      ...unionWrapRefLines(host, p.unionId, bytesTag, def.arms[bytesTag]!, "%rb", "%ub"),
       `  store ptr %ub, ptr %uslot`,
       `  br label %go`,
       `str:`,
@@ -151,7 +154,7 @@ export function streamDataAdapter(
       `  ret void`,
       `strok:`,
       `  %rs = call ptr @scr_str_retain_v(ptr %a1)`,
-      `  %us = call ptr @scr_union_new_ref(i32 ${strTag}, ptr %rs, ptr @scr_str_retain_v, ptr @scr_str_release_v, ptr null)`,
+      ...unionWrapRefLines(host, p.unionId, strTag, def.arms[strTag]!, "%rs", "%us"),
       `  store ptr %us, ptr %uslot`,
       `  br label %go`,
       `go:`,

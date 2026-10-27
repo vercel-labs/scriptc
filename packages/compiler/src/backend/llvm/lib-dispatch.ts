@@ -243,6 +243,18 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     return output;
   }
   if (e.fn === "promise.allTuple") return emitPromiseAllTuple(host, e);
+  if (e.fn === "dyn.copyOwnExcept" || e.fn === "dyn.adoptOwnExcept") {
+    // Both objects are stable locals: lend them, so an adopting copy sees
+    // exactly the references the program holds.
+    const dst = host.emitReadReceiver(e.args[0]!);
+    const src = host.emitReadReceiver(e.args[1]!);
+    const names = host.emitExpr(e.args[2]!);
+    const fn = e.fn === "dyn.copyOwnExcept" ? "scr_js_copy_own_except" : "scr_js_adopt_own_except";
+    host.declare(`declare zeroext i1 @${fn}(ptr, ptr, ptr)`);
+    const out = B.tmp();
+    B.line(`${out} = call zeroext i1 @${fn}(ptr ${dst.name}, ptr ${src.name}, ptr ${names.name})`);
+    return { name: out, type: e.type };
+  }
   if (e.fn === "promise.fulfilledValue") {
     // The payload of a fulfilled promise (borrowed operand): the scalar
     // kinds that lower to a double (numbers, Dates, process streams) and
@@ -845,7 +857,12 @@ function emitAssertFailing(
 /** Runtime string functions that only read their string arguments and keep
  * no reference to them: their operands are lent (a comparator's
  * `a.name.localeCompare(b.name)` reads both fields without retaining). */
-const READ_ONLY_STRING_LIB_FNS: ReadonlySet<string> = new Set(["str.localeCompare"]);
+const READ_ONLY_STRING_LIB_FNS: ReadonlySet<string> = new Set([
+  "str.localeCompare",
+  // Pure reads of their operands (encodeInto writes only the view's bytes).
+  "buffer.byteLenStr",
+  "text.encodeIntoRead",
+]);
 
 /** The most parameters scr_regex_replace_fn calls a replacer with
  * (SCR_REPLACER_MAX_ARITY), the first bit of its string-or-undefined

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/record-capsule-dynamic-field-access.cjs"
+ ],
+ "diags": []
+}

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/dyn-string-literal-comparisons.cjs"
+ ],
+ "diags": []
+}

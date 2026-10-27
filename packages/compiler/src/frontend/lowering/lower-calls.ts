@@ -1,3 +1,5 @@
+import { typedReceiverFunction } from "./receiver-binding.js";
+import { lowerPresentArmMember } from "./expressions/optional-chains.js";
 import { checkedPrivateMethodReceiver, privateNameClass } from "./private-brands.js";
 import { assertFunctionAliasOf } from "./lower-assert.js";
 import { keyedHelperName } from "./stable-names.js";
@@ -209,6 +211,7 @@ import {
   exactInstanceClassOf,
   findGenericMethodOn,
   lowerClassGenericMethodCall,
+  lowerRegExpConstruct,
   lowerStaticMethodCall,
   lowerStaticFieldRead,
   returnsOnlyThis,
@@ -260,7 +263,7 @@ import { lowerClassFieldDefine, lowerClassIntegrity } from "./class-attributes.j
 import { freezableRecordType, lowerNativeFreeze, noteUntypedIntegrity } from "./frozen-records.js";
 import { classStaticDataFor } from "./class-static-data.js";
 import { lowerUrlFactory } from "./lower-url.js";
-import { nullishValueUnitOf } from "./binding-analysis.js";
+import { bindingNeverReassigned, nullishValueUnitOf } from "./binding-analysis.js";
 import {
   spreadNeedsRuntimeArity,
   completeFuncValueArgs,
@@ -362,6 +365,8 @@ function receiverlessCalleeOf(callee: ts.Expression): ts.Expression | null {
 export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   const loc = locOf(expr);
   if (lowerer.errorAccessorReflection === null) noteErrorAccessorReflection(lowerer, expr);
+  const ownCheck = builtinPrototypeOwnCheck(lowerer, expr);
+  if (ownCheck !== null) return { kind: "boolLit", value: ownCheck, type: BOOL, loc };
   // Object's checker return type is `any`. Claim known object inputs
   // before generic checked-dynamic dispatch tries to load the constructor.
   if (
@@ -917,6 +922,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   // Provenance-checked like setTimeout; zero-arg forms are the JS
   // constants ("", false, 0). Wrapper objects stay fenced except where
   // the receiver is immediately converted by a direct String method call.
+  if (lowerer.isStdlibGlobal(expr.expression, "RegExp")) return lowerRegExpConstruct(lowerer, expr);
+
   if (lowerer.isStdlibGlobal(expr.expression, "BigInt")) {
     if (expr.arguments.nodes.length !== 1) {
       lowerer.noLowering(`BigInt with ${expr.arguments.nodes.length} arguments`, expr);
@@ -1826,6 +1833,15 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     // (m.keys(), p.then(f), Object.keys(o)) or an unlowered call FORM of
     // a lowered one (Math.min with three arguments, s.padStart(8),
     // x.toFixed()).
+    if (ts.isPropertyAccessExpression(expr.expression) && !expr.questionDotToken) {
+      const present = lowerPresentArmMember(
+        lowerer,
+        expr,
+        expr.expression.expression,
+        expr.expression.name.text,
+      );
+      if (present) return present;
+    }
     lowerer.stdlibMemberFence(expr.expression);
     // The npm METHOD-CALL chokepoint: a call on a package-typed receiver
     // in a static build — attributed to the package.
@@ -2879,7 +2895,23 @@ function lowerObjectOwnPrototypeCall(
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
-  if (access.name.text !== "call" || !ts.isPropertyAccessExpression(access.expression)) return null;
+  if (access.name.text !== "call") return null;
+  // `hasOwnProperty.call(o, k)` through a binding of
+  // Object.prototype.hasOwnProperty never reassigned.
+  if (
+    ts.isIdentifier(access.expression) &&
+    !call.arguments.nodes.some(ts.isSpreadElement) &&
+    isObjectHasOwnProperty(lowerer, access.expression)
+  )
+    return lowerObjectOwnCall(
+      lowerer,
+      call,
+      call.arguments.nodes[0],
+      call.arguments.nodes[1],
+      call.arguments.nodes.slice(2),
+      "hasOwnProperty",
+    );
+  if (!ts.isPropertyAccessExpression(access.expression)) return null;
   const method = access.expression;
   const enumerable = method.name.text === "propertyIsEnumerable";
   if (method.name.text !== "hasOwnProperty" && !enumerable) return null;
@@ -10026,6 +10058,25 @@ function lowerObjLitGenericMethodCall(
   }
   const found = objLitGenericFnNodeOf(lowerer, propSym);
   if (!found) {
+    // `f.call(receiver, ...args)` on a function with a typed `this`: the
+    // receiver is its first parameter (receiver-binding.ts).
+    if (name === "call" && !call.arguments.nodes.some(ts.isSpreadElement)) {
+      const typed = typedReceiverFunction(lowerer, access.expression);
+      if (typed !== null && call.arguments.nodes.length === typed.params.length + 1) {
+        lowerer.noteEdge(typed.name);
+        const [receiverNode, ...argNodes] = call.arguments.nodes;
+        return {
+          kind: "call",
+          callee: typed.name,
+          args: [
+            lowerer.lowerExprExpecting(receiverNode!, typed.thisType),
+            ...argNodes.map((arg, i) => lowerer.lowerExprExpecting(arg, typed.params[i]!)),
+          ],
+          type: typed.ret,
+          loc: locOf(call),
+        };
+      }
+    }
     const arrowBind = lowerInlineArrowBind(lowerer, call, access);
     if (arrowBind !== null) return arrowBind;
     const arrowApply = lowerArrowFunctionApply(lowerer, call, access);
@@ -11530,4 +11581,85 @@ function lowerCheckedPrivateMethodCall(
 function checkedDynamicOperand(expr: IrExpr): IrExpr | null {
   if (expr.type.kind === "dyn") return expr;
   return expr.kind === "dynCheck" && expr.value.type.kind === "dyn" ? expr.value : null;
+}
+
+/** Node 24's own property keys of the builtin prototypes that have no value
+ * here: no write, delete or redefinition through them succeeds, so a
+ * program cannot change them. */
+const TYPED_ARRAY_PROTOTYPE_KEYS = ["constructor", "BYTES_PER_ELEMENT"];
+const UNMODELED_PROTOTYPE_KEYS: ReadonlyMap<string, readonly string[]> = new Map([
+  [
+    "ArrayBuffer",
+    [
+      "constructor",
+      "byteLength",
+      "slice",
+      "maxByteLength",
+      "resizable",
+      "resize",
+      "transfer",
+      "transferToFixedLength",
+      "detached",
+    ],
+  ],
+  ...Object.values(BYTES_ELEMENT_NAME).map((name) => [name, TYPED_ARRAY_PROTOTYPE_KEYS] as const),
+]);
+
+/** The answer of a feature check of a literal key against one of those
+ * prototypes (`hasOwnProperty.call(ArrayBuffer.prototype, "detached")`,
+ * also through `Object.prototype.hasOwnProperty` held in a binding that is
+ * never reassigned, and `Object.hasOwn`), or null for any other call. */
+function builtinPrototypeOwnCheck(lowerer: Lowerer, call: ts.CallExpression): boolean | null {
+  const args = call.arguments.nodes;
+  const callee = call.expression;
+  if (
+    args.length !== 2 ||
+    !ts.isPropertyAccessExpression(callee) ||
+    callee.questionDotToken ||
+    !(
+      lowerer.stdlibGlobalMember(callee, "Object") === "hasOwn" ||
+      (callee.name.text === "call" && isObjectHasOwnProperty(lowerer, callee.expression))
+    )
+  )
+    return null;
+  let target = args[0]!;
+  while (ts.isParenthesizedExpression(target)) target = target.expression;
+  const key = args[1]!;
+  if (
+    !ts.isPropertyAccessExpression(target) ||
+    target.questionDotToken ||
+    target.name.text !== "prototype" ||
+    !ts.isStringLiteralLike(key)
+  )
+    return null;
+  const owner = stdlibGlobalNameOf(lowerer, target.expression);
+  const keys = owner === null ? undefined : UNMODELED_PROTOTYPE_KEYS.get(owner);
+  return keys === undefined ? null : keys.includes(key.text);
+}
+
+/** Whether `expr` is `Object.prototype.hasOwnProperty`, directly or through
+ * a variable initialized with it and never reassigned. */
+function isObjectHasOwnProperty(lowerer: Lowerer, expr: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (ts.isIdentifier(expr)) {
+    const symbol = lowerer.resolveValueSymbol(expr);
+    const decl = symbol?.valueDeclaration;
+    return (
+      decl !== undefined &&
+      ts.isVariableDeclaration(decl) &&
+      decl.initializer !== undefined &&
+      !ts.isIdentifier(decl.initializer) &&
+      isObjectHasOwnProperty(lowerer, decl.initializer) &&
+      bindingNeverReassigned(lowerer, symbol!, decl)
+    );
+  }
+  return (
+    ts.isPropertyAccessExpression(expr) &&
+    !expr.questionDotToken &&
+    expr.name.text === "hasOwnProperty" &&
+    ts.isPropertyAccessExpression(expr.expression) &&
+    !expr.expression.questionDotToken &&
+    lowerer.stdlibGlobalMember(expr.expression, "Object") === "prototype" &&
+    lowerer.isStdlibMember(expr)
+  );
 }

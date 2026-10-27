@@ -212,6 +212,24 @@ ScrDyn *scr_als_run(double id, ScrDyn *value, ScrDyn *fn, ScrDyn *args) {
   return scr_als_call_in(scr_als_enter(id, value), fn, args);
 }
 
+static SCR_TL ScrAlsCtx **scr_als_saved;
+static SCR_TL size_t scr_als_saved_len, scr_als_saved_cap;
+
+void scr_als_push(double id, ScrDyn *value) {
+  if (scr_als_saved_len == scr_als_saved_cap) {
+    size_t cap = scr_als_saved_cap ? scr_als_saved_cap * 2 : 16;
+    ScrAlsCtx **grown = realloc(scr_als_saved, cap * sizeof *grown);
+    if (!grown) scr_trap("scriptc: out of memory\n");
+    scr_als_saved = grown;
+    scr_als_saved_cap = cap;
+  }
+  scr_als_saved[scr_als_saved_len++] = scr_als_enter(id, value);
+}
+
+void scr_als_pop(void) {
+  if (scr_als_saved_len > 0) scr_als_restore(scr_als_saved[--scr_als_saved_len]);
+}
+
 /* exit() runs fn with the store undefined: a store with a default value
  * holds an undefined entry for the call (getStore() answers undefined,
  * not the default, as in Node); other stores drop their entry. */
@@ -1432,9 +1450,16 @@ static ScrDyn *scr_dyn_promise_member(const char *key, size_t len) {
   return NULL;
 }
 
+static void scr_dyn_release_properties(void *table) { scr_dyn_release((ScrDyn *)table); }
+
+static ScrDyn **scr_dyn_promise_properties(const ScrDyn *d, bool create) {
+  return (ScrDyn **)scr_promise_properties_slot(d->v.promise, create, scr_dyn_release_properties);
+}
+
 ScrDyn *scr_dyn_new_promise(ScrPromise *p) {
   scr_dyn_promise_identity_fn = scr_promise_identity_equal;
   scr_dyn_promise_member_fn = scr_dyn_promise_member;
+  scr_dyn_promise_properties_fn = scr_dyn_promise_properties;
   ScrDyn *d = scr_dyn_alloc_promise(scr_promise_release);
   d->v.promise = scr_promise_retain(p);
   return d;
@@ -1452,6 +1477,7 @@ ScrDyn *scr_dyn_new_promise_adapting(ScrPromise *src,
   scr_promise_share_identity(dst, src);
   scr_dyn_promise_identity_fn = scr_promise_identity_equal;
   scr_dyn_promise_member_fn = scr_dyn_promise_member;
+  scr_dyn_promise_properties_fn = scr_dyn_promise_properties;
   scr_promise_race_add(dst, src, adapt);
   ScrDyn *d = scr_dyn_alloc_promise(scr_promise_release);
   d->v.promise = dst; /* the constructor's +1 moves in */

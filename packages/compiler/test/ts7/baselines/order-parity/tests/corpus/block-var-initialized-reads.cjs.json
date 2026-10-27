@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/block-var-initialized-reads.cjs"
+ ],
+ "diags": []
+}

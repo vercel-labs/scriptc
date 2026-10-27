@@ -23,6 +23,10 @@ ScrPromise *scr_tp_set_immediate(void);
 ScrPromise *scr_promise_new(void);
 void scr_promise_share_identity(ScrPromise *dst, ScrPromise *src);
 bool scr_promise_identity_equal(ScrPromise *a, ScrPromise *b);
+/* The slot of the own-property table the promise's identity shares (NULL
+ * when the promise has no identity and `create` is false). The table is
+ * released through `release` with the identity's last promise. */
+void **scr_promise_properties_slot(ScrPromise *p, bool create, void (*release)(void *));
 ScrPromise *scr_promise_retain(ScrPromise *p);
 void scr_promise_release(ScrPromise *p);
 void *scr_promise_retain_v(void *p);
@@ -206,6 +210,11 @@ void scr_als_disable(double id);
 /* run/exit: enter (or clear), call the dyn function with the forwarded
  * argument vector, restore (the finally). Result +1 or NULL pending. */
 ScrDyn *scr_als_run(double id, ScrDyn *value, ScrDyn *fn, ScrDyn *args);
+/* run(store, fn) for a compiled callback: push enters `value` (borrowed)
+ * and remembers the previous context; pop restores the most recent one
+ * (the compiled call pops in a finally). */
+void scr_als_push(double id, ScrDyn *value);
+void scr_als_pop(void);
 ScrDyn *scr_als_exit_run(double id, ScrDyn *fn, ScrDyn *args);
 /* new AsyncLocalStorage(options) (options borrowed; NaN with the exception
  * pending for a non-object) and the name it carries (+1). */

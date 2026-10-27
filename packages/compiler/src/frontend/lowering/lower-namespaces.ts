@@ -42,7 +42,7 @@ import { isPackageShimFile, isShimIntrinsicName, packageShimFor } from "../packa
 import type { Lowerer } from "./lowerer.js";
 import { boundIdentifiersOf } from "./lowerer.js";
 import type { FileParts } from "./lower-modules.js";
-import { isCjsJsFile, isJsSourceFile, locOf, resolveImport } from "../program.js";
+import { isCjsJsFile, locOf, resolveImport } from "../program.js";
 import { F64, type IrExpr, type IrStmt, type IrType, STRING } from "../../ir/ir.js";
 import { TEMPORAL_GLOBAL } from "../builtin-modules.js";
 
@@ -325,7 +325,6 @@ export function cjsNamespaceImportDep(lowerer: Lowerer, e: ts.Expression): ts.So
   )
     return null;
   const from = ts.getSourceFileOfNode(decl);
-  if (!isJsSourceFile(from)) return null;
   const dep = resolveImport(lowerer.program, from, stmt.moduleSpecifier.text);
   return dep !== null &&
     !dep.isDeclarationFile &&

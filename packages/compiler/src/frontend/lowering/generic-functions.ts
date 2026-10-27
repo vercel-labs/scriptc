@@ -18,8 +18,8 @@ import {
   isUnitType,
   typeEquals,
 } from "../../ir/ir.js";
-import { helperLoc, nodeThrowExpr } from "../../ir/build.js";
-import { isJsSourceFile, locOf } from "../program.js";
+import { helperLoc, nodeThrowExpr, varRef } from "../../ir/build.js";
+import { isJsLikeSourceFile, isJsSourceFile, locOf } from "../program.js";
 import { typeKey } from "../type-mapper.js";
 import { functionCanReturnUndefined } from "../function-completion.js";
 import { PoisonError, dynFallbackType, neverTaintedJsType, newFnCtx } from "./lowerer.js";
@@ -1394,6 +1394,31 @@ export function lowerGenericFnValue(
       if (callable.length === 1) target = callable[0]![0]!;
     }
   }
+  // A slot with no signature to pin (an `unknown`/`any` destination; in a
+  // JavaScript-like source also none at all, or a slot whose signature is
+  // itself generic) stores the function as JavaScript does: the erased
+  // instance, every type parameter unknown.
+  const jsLike = isJsLikeSourceFile(ts.getSourceFileOfNode(ref));
+  const targetDecl = target?.declaration;
+  const genericTarget =
+    targetDecl !== undefined &&
+    ts.isFunctionLike(targetDecl) &&
+    (targetDecl.typeParameters?.nodes.length ?? 0) > 0;
+  if (
+    (!target && (pinT ? (pinT.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 : jsLike)) ||
+    (jsLike && genericTarget)
+  ) {
+    const inst = erasedGenericInstance(lowerer, ref, info);
+    lowerer.noteEdge(inst.name);
+    const type: IrType = funcTypeFromParamShapes(inst.params, inst.returnType);
+    return guardEarlyBindingValue(lowerer, info, ref, {
+      kind: "closure",
+      fnName: inst.name,
+      captures: [],
+      type,
+      loc,
+    });
+  }
   if (!target) fenceUnpinned();
   return guardEarlyBindingValue(
     lowerer,
@@ -2234,6 +2259,20 @@ export function implicitCallInstance(
           return;
         }
       }
+      // A JavaScript binding holding a class instance the checker types
+      // `any` (a variable that kept its initializer, a minified binding
+      // split from its reuse): bind the instance type it holds.
+      if (stored?.kind === "object" && (lowerer.typeOf(arg).flags & ts.TypeFlags.Any) !== 0) {
+        const classDecl = lowerer.classes.get(stored.className)?.decl;
+        const classSym = classDecl?.name
+          ? lowerer.checker.getSymbolAtLocation(classDecl.name)
+          : undefined;
+        if (classSym) {
+          argTypes.set(sym, lowerer.checker.getDeclaredTypeOfSymbol(classSym));
+          shapes.push({ type: stored, mode: "required" });
+          return;
+        }
+      }
       // A represented native array must keep its storage when a direct
       // inferred helper receives it. Re-boxing a checker-any array would
       // copy it, losing writes (and attempting to read unfilled slots).
@@ -2444,8 +2483,9 @@ function internImplicitInstance(
       ),
       ...(info.decl.body ? [info.decl.body] : []),
     ]);
+    const fencesBefore = lowerer.runtimeFences.length;
     const fn = lowerer.lowerGenericInstance(info, inst);
-    lowerer.implicitFns.push(fn);
+    lowerer.implicitFns.push(specializationFallback(lowerer, info, inst, fn, fencesBefore) ?? fn);
   } catch (e) {
     if (!(e instanceof PoisonError)) throw e;
     inst.implicitState = "failed";
@@ -2465,6 +2505,70 @@ function internImplicitInstance(
   }
   inst.implicitState = "done";
   return inst;
+}
+
+/** A specialization is an optimization: when typing a plain function's
+ * parameters reaches a form only the checked-dynamic body lowers (its body
+ * deferred a refusal to a runtime fence), the instance
+ * forwards to the all-dyn default instance instead, converting its typed
+ * arguments, and the fences go with the discarded body. An inferred return
+ * type, settled by that partly fenced body, becomes the default instance's.
+ * Null when the specialization stands. */
+function specializationFallback(
+  lowerer: Lowerer,
+  info: GenericFnInfo,
+  inst: GenericInstance,
+  fn: IrFunction,
+  fencesBefore: number,
+): IrFunction | null {
+  if (info.member || !info.implicitParams) return null;
+  const typed = inst.params.some(
+    (param, index) => info.implicitParams![index] && param.type.kind !== "dyn",
+  );
+  if (!typed) return null;
+  const sf = ts.getSourceFileOfNode(info.decl);
+  const start = info.decl.pos;
+  const end = info.decl.end;
+  const own = (d: (typeof lowerer.runtimeFences)[number]): boolean =>
+    d.loc !== undefined && d.loc.file === sf.fileName && d.loc.start >= start && d.loc.end <= end;
+  const added = lowerer.runtimeFences.slice(fencesBefore);
+  if (!added.some((d) => own(d) && lowerer.deferredRefusals.has(d))) return null;
+  const fallback = implicitDefaultInstance(lowerer, info.decl, info);
+  if (fallback === inst) return null;
+  lowerer.runtimeFences.splice(fencesBefore, added.length, ...added.filter((d) => !own(d)));
+  if (inst.implicitInferReturn) inst.returnType = fallback.returnType;
+  const loc = locOf(info.decl);
+  const args: IrExpr[] = fn.params.map((param, index) => {
+    const value = varRef(param.localId, param.type, loc);
+    const target = fallback.params[index]?.type ?? param.type;
+    return lowerer.coerceToExpected(value, target);
+  });
+  const call: IrExpr = {
+    kind: "call",
+    callee: fallback.name,
+    args,
+    type: fallback.returnType,
+    loc,
+  };
+  const value =
+    inst.returnType.kind === "void" ? null : lowerer.coerceToExpected(call, inst.returnType);
+  return {
+    ...fn,
+    returnType: inst.returnType,
+    locals: fn.params.map((param) => ({
+      id: param.localId,
+      name: param.name,
+      type: param.type,
+      mutable: false,
+    })),
+    body:
+      value === null
+        ? [
+            { kind: "exprStmt", expr: call, loc },
+            { kind: "return", value: null, loc },
+          ]
+        : [{ kind: "return", value, loc }],
+  };
 }
 
 /** The implicit-any twin of bindingGenericFnNodeOf, for LOCAL and module

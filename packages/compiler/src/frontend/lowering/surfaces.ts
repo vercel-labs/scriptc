@@ -3279,6 +3279,14 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
   // below this fence answers, member-or-refusal ladder, so no compile
   // fence belongs here.
   if (lowerer.mapTypeOf(lowerer.typeOf(recv))?.kind === "dyn") return;
+  // `arguments` bound to JavaScript's hidden arguments slot (a checked-
+  // dynamic array), whatever the checker calls it.
+  if (
+    ts.isIdentifier(recv) &&
+    recv.text === "arguments" &&
+    lowerer.fnStack.some((ctx) => ctx.argumentsLocal)
+  )
+    return;
   // Name the container the way the source reads: the global's name when
   // the receiver IS a stdlib global (Math, process), the dotted path for
   // a member of one (process.stdout — its TYPE text would be the useless
@@ -3439,7 +3447,11 @@ export function isStdlibMember(lowerer: Lowerer, access: ts.PropertyAccessExpres
   // the member from it, the same provenance answer the checker would
   // give on a typed receiver (`path.startsWith` with path bound string
   // IS String.prototype.startsWith).
-  if (lowerer.implicitParamTypes !== null || lowerer.aliasNarrowTypes.size > 0) {
+  if (
+    lowerer.implicitParamTypes !== null ||
+    lowerer.aliasNarrowTypes.size > 0 ||
+    lowerer.chainNarrowedType.has(access.expression)
+  ) {
     const viaType = lowerer.checker.getPropertyOfType(
       lowerer.typeOf(access.expression),
       access.name.text,

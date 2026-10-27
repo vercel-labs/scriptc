@@ -844,3 +844,107 @@ export function tryFuseIndexRead(
     loc,
   };
 }
+
+/** Operands a read may evaluate twice: locals, literals, and record or
+ * class field reads of them. */
+function pureOperand(e: IrExpr): boolean {
+  switch (e.kind) {
+    case "varRef":
+    case "numLit":
+      return true;
+    case "recordGet":
+    case "fieldGet":
+      return pureOperand(e.obj);
+    default:
+      return false;
+  }
+}
+
+/** The safe reads a fused read falls back to, which keep their narrowing. */
+const fallbackReads = new WeakSet<IrExpr>();
+
+/** `a[i]` (the safe read, `elem | undefined`) where the consumer takes the
+ * element type itself: a present element is read directly, and any other
+ * position takes the safe read and its narrowing, as before. Null for
+ * other expressions. */
+export function presentIndexRead(lowerer: Lowerer, expr: IrExpr, expected: IrType): IrExpr | null {
+  if (
+    fallbackReads.has(expr) ||
+    expr.kind !== "call" ||
+    !expr.callee.startsWith("%arr.idxOr") ||
+    expr.args.length !== 2 ||
+    expr.args[0]!.type.kind !== "array" ||
+    typeEquals(expr.type, expected)
+  )
+    return null;
+  const arrT = expr.args[0]!.type;
+  const elem = arrT.elem;
+  if (!typeEquals(elem, expected)) return null;
+  // Simple operands read inline, where the element can stay borrowed.
+  const [arr, index] = expr.args as [IrExpr, IrExpr];
+  if (pureOperand(arr) && pureOperand(index)) {
+    const fallback: IrExpr = { ...expr };
+    fallbackReads.add(fallback);
+    return {
+      kind: "ternary",
+      cond: {
+        kind: "bin",
+        op: "===",
+        left: { kind: "arrayState", arr, index, type: F64, loc: expr.loc },
+        right: { kind: "numLit", value: 1, type: F64, loc: expr.loc },
+        type: BOOL,
+        loc: expr.loc,
+      },
+      then: { kind: "arrayGet", arr, index, type: elem, loc: expr.loc },
+      else_: lowerer.coerceToExpected(fallback, elem),
+      type: elem,
+      loc: expr.loc,
+    };
+  }
+  const key = `idxIn:${typeKey(elem)}`;
+  let name = lowerer.arrHofHelpers.get(key);
+  if (!name) {
+    const at = helperLoc(expr.loc);
+    name = keyedHelperName(lowerer, "%arr.idxIn", key);
+    lowerer.arrHofHelpers.set(key, name);
+    const a = varRef("a.0", arrT, at);
+    const i = varRef("i.0", F64, at);
+    const fallback: IrExpr = { ...expr, args: [a, i] };
+    fallbackReads.add(fallback);
+    lowerer.liftedFns.push({
+      name,
+      params: [
+        { localId: "a.0", name: "a", type: arrT },
+        { localId: "i.0", name: "i", type: F64 },
+      ],
+      returnType: elem,
+      locals: [
+        { id: "a.0", name: "a", type: arrT, mutable: false },
+        { id: "i.0", name: "i", type: F64, mutable: false },
+      ],
+      body: [
+        {
+          kind: "return",
+          value: {
+            kind: "ternary",
+            cond: {
+              kind: "bin",
+              op: "===",
+              left: { kind: "arrayState", arr: a, index: i, type: F64, loc: at },
+              right: { kind: "numLit", value: 1, type: F64, loc: at },
+              type: BOOL,
+              loc: at,
+            },
+            then: { kind: "arrayGet", arr: a, index: i, type: elem, loc: at },
+            else_: lowerer.coerceToExpected(fallback, elem),
+            type: elem,
+            loc: at,
+          },
+          loc: at,
+        },
+      ],
+      loc: at,
+    });
+  }
+  return { kind: "call", callee: name, args: expr.args, type: elem, loc: expr.loc };
+}

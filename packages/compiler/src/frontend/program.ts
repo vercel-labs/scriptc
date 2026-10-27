@@ -39,6 +39,15 @@
  *    JSON.parse's wording rather than tsc's, the one message-text delta on
  *    that path (no snapshot pins it). */
 
+import {
+  flowHidesFile,
+  flowPresentedSource,
+  flowPresentsFile,
+  isFlowModule,
+  setFlowSources,
+} from "./flow/index.js";
+import { setModuleSubstitutions, substitutedSource } from "./module-substitutions.js";
+import { readProjectConfig } from "../project-config.js";
 import { builtinModules } from "node:module";
 import { dirname, isAbsolute, resolve } from "node:path";
 import * as ts from "./ts7/adapter.js";
@@ -82,6 +91,8 @@ import {
 } from "./npm-static.js";
 import type { Defines } from "./defines.js";
 import { isPrunedNpmReexport, planNpmStaticReexports } from "./npm-static-prune.js";
+import { npmStaticBindingSplits } from "./npm-static-binding-splits.js";
+import { npmStaticBindingTypes } from "./npm-static-binding-types.js";
 import { npmStaticTypeExportPlan } from "./npm-static-type-exports-host.js";
 import { isNpmStaticSubclassArgument } from "./npm-static-subtyping.js";
 import {
@@ -939,6 +950,27 @@ function loadProgram7(
       };
       program = host.createProgram([...programRoots, overridesDtsPath()], options);
     }
+    // --npm-static JavaScript: bindings the checker leaves `any` take the
+    // type of the values written to them (npm-static-binding-types.ts). A
+    // round's types can type the next round's writes. The analysis queries
+    // the checker in its own order, and the checker's answers for
+    // JavaScript can depend on that order, so the lowering always gets a
+    // program the analysis has not queried.
+    if (npmStaticActive()) {
+      // Split the bindings minified code reuses for values of different
+      // types (npm-static-binding-splits.ts).
+      const split = npmStaticBindingSplits(program);
+      for (const [file, text] of split) host.addVirtualFile(file, text);
+      program.dispose();
+      program = host.createProgram([...programRoots, overridesDtsPath()], options);
+      for (let round = 0; round < 3; round++) {
+        const typed = npmStaticBindingTypes(program);
+        for (const [file, text] of typed) host.addVirtualFile(file, text);
+        program.dispose();
+        program = host.createProgram([...programRoots, overridesDtsPath()], options);
+        if (typed.size === 0) break;
+      }
+    }
     // JSX: the program above checks the files as written; the program the
     // lowering compiles holds them with their JSX lowered.
     const jsx = lowerProgramJsx7(program, options);
@@ -1223,14 +1255,29 @@ export function loadProgram(
   const npmShadow = npmStaticFsShadow(services);
   clearProgramBuiltinAliasCache();
   setProgramDefines(opts?.define);
+  // The project's module substitutions and Flow sources (flow/index.ts);
+  // both answer nothing for a project without the settings.
+  const project = readProjectConfig(entryPath);
+  setModuleSubstitutions(project.moduleSubstitutions);
+  setFlowSources(
+    project.flow === null ? null : { ...project.flow, constants: project.constants },
+    services.parseFlow,
+    trackedReadFile,
+    trackedFileExists,
+  );
   const fsShadow = {
     readFile: (path: string) =>
+      substitutedSource(path) ??
+      flowPresentedSource(path) ??
       npmShadow?.readFile(path) ??
       programBuiltinAliasSource(services, path) ??
       definedSource(services, path) ??
       undefined,
     hideFile: (path: string) =>
-      (npmShadow?.hideFile(path) ?? false) || projectDtsRuntimeSibling(path) !== null,
+      (npmShadow?.hideFile(path) ?? false) ||
+      projectDtsRuntimeSibling(path) !== null ||
+      flowHidesFile(path),
+    fileExists: (path: string) => flowPresentsFile(path),
   };
   const host = services.createProgramHost({ cwd: dirname(entryPath), fsShadow });
   let authoredHost: ts.Ts7Host | null = null;
@@ -6058,10 +6105,13 @@ function preflight7(load: LoadResult): {
             // partially-built exports are never observed). In JavaScript
             // sources every use passes here: member reads lower through the
             // names Node's lexer detects, and the other reads refuse at
-            // their site (lower-namespaces.ts, cjsNamespaceImportDep). Any
-            // OTHER use in TypeScript keeps the fence.
+            // their site (lower-namespaces.ts, cjsNamespaceImportDep), and
+            // TypeScript importers read them the same way: the namespace
+            // is the module's exports whatever language imports it. Only
+            // a CommonJS module that is not program code keeps the fence.
             if (
               !isJsSourceFileName(sf.fileName) &&
+              !isJsSourceFileName(dep.fileName) &&
               !nsBindingUsesAreBareStatements7(program, sf, clause.namedBindings.name)
             ) {
               diags.push(
@@ -7180,6 +7230,13 @@ export {
  * declare fields by constructor assignment. */
 export function isJsSourceFile(sf: ts.SourceFile): boolean {
   return isJsSourceFileName(sf.fileName);
+}
+
+/** JavaScript, or a Flow module: sources whose values follow JavaScript's
+ * dynamic model where their annotations stop (ES5 constructor functions,
+ * expando members, dynamic receivers). */
+export function isJsLikeSourceFile(sf: ts.SourceFile): boolean {
+  return isJsSourceFileName(sf.fileName) || isFlowModule(sf.fileName);
 }
 
 /** True for a JavaScript file of the program that TypeScript type-checks:

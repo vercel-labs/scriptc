@@ -21,6 +21,7 @@
  * - Census: writes and reflection whose receiver may be ⊤ apply to every
  *   escaped atom (§5.4); the report uses them to decide which allocation
  *   sites could become native records (§5.5). */
+import { dirname, resolve as resolvePath } from "node:path";
 import * as ts from "../ts7/adapter.js";
 import { isJsSourceFile } from "../program.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
@@ -237,6 +238,14 @@ function isLoop(node: Node): boolean {
     ts.isDoStatement(node)
   );
 }
+
+const ALS_METHODS: ReadonlySet<string> = new Set([
+  "run",
+  "exit",
+  "getStore",
+  "enterWith",
+  "disable",
+]);
 
 const LOOP_CALLBACK_METHODS: ReadonlySet<string> = new Set([
   "map",
@@ -1138,6 +1147,16 @@ class Analyzer {
   }
 
   stmt(s: Node): void {
+    // A condition the source fixes (`"production" === "production"` after
+    // --define): only the branch that runs.
+    if (ts.isIfStatement(s)) {
+      const known = constantCondition(s.expression);
+      if (known !== null) {
+        const taken = known ? s.thenStatement : s.elseStatement;
+        if (taken !== undefined) this.stmt(taken);
+        return;
+      }
+    }
     if (ts.isVariableStatement(s)) {
       for (const d of list(s.declarationList.declarations)) this.varDecl(d);
       return;
@@ -1455,6 +1474,14 @@ class Analyzer {
     }
     const decl = this.resolve(id);
     if (decl === undefined) return this.globalNode(id.text);
+    // node:async_hooks (its ambient module declaration, through a require
+    // binding the checker resolves there): AsyncLocalStorage is modeled.
+    if (
+      ts.isModuleDeclaration(decl) &&
+      ts.isStringLiteral(decl.name) &&
+      (decl.name.text === "async_hooks" || decl.name.text === "node:async_hooks")
+    )
+      return this.constNode(this.builtin("async_hooks"));
     if (decl.getSourceFile().isDeclarationFile) return this.globalNode(id.text);
     if (!this.files.includes(decl.getSourceFile())) return this.constNode(this.top);
     if (ts.isFunctionDeclaration(decl)) {
@@ -1477,7 +1504,7 @@ class Analyzer {
       ts.isNamespaceImport(decl) ||
       ts.isImportEqualsDeclaration(decl)
     )
-      return this.constNode(this.top);
+      return this.constNode(this.asyncHooksImport(decl) ?? this.top);
     if (ts.isSourceFile(decl) || ts.isModuleDeclaration(decl)) return this.namespaceNode(decl);
     // A CommonJS export the checker resolved an import or require binding
     // to (`module.exports = { name }`, `exports.name = v`): the member of the
@@ -1489,6 +1516,26 @@ class Analyzer {
       return dst;
     }
     return this.narrowed(id, decl, this.binding(decl));
+  }
+
+  /** An import of node:async_hooks, whose AsyncLocalStorage is modeled
+   * (loadBuiltin, callBuiltin); null for any other import. */
+  asyncHooksImport(decl: Node): Atom | null {
+    let declaration: Node | undefined = decl;
+    while (declaration && !ts.isImportDeclaration(declaration)) declaration = declaration.parent;
+    if (!declaration || !ts.isImportDeclaration(declaration)) return null;
+    const spec = declaration.moduleSpecifier;
+    if (
+      !ts.isStringLiteral(spec) ||
+      (spec.text !== "async_hooks" && spec.text !== "node:async_hooks")
+    )
+      return null;
+    if (ts.isNamespaceImport(decl) || ts.isImportClause(decl)) return this.builtin("async_hooks");
+    if (ts.isImportSpecifier(decl))
+      return (decl.propertyName ?? decl.name).text === "AsyncLocalStorage"
+        ? this.builtin("AsyncLocalStorage")
+        : null;
+    return null;
   }
 
   /** Flow narrowing at guarded references (S1 handles the guards hot code
@@ -2228,6 +2275,14 @@ class Analyzer {
 
   loadBuiltin(a: Atom, name: string, dst: number): void {
     const path = a.path ?? "";
+    if (path === "async_hooks") {
+      this.add(dst, name === "AsyncLocalStorage" ? this.builtin("AsyncLocalStorage") : this.top);
+      return;
+    }
+    if (path === "AsyncLocalStorage.instance") {
+      this.add(dst, ALS_METHODS.has(name) ? this.builtin(`als.${name}`, a) : this.top);
+      return;
+    }
     if (
       path === "Number" &&
       (name === "MAX_SAFE_INTEGER" ||
@@ -2439,6 +2494,14 @@ class Analyzer {
     // field and the checker's view of its exports).
     if (ts.isIdentifier(callee) && callee.text === "require" && e.arguments.nodes.length === 1) {
       const spec = e.arguments.nodes[0]!;
+      // node:async_hooks: AsyncLocalStorage keeps its stores to itself.
+      if (
+        ts.isStringLiteral(spec) &&
+        (spec.text === "async_hooks" || spec.text === "node:async_hooks")
+      ) {
+        this.add(dst, this.builtin("async_hooks"));
+        return dst;
+      }
       if (ts.isStringLiteral(spec)) {
         let target: Node | undefined;
         try {
@@ -2446,6 +2509,17 @@ class Analyzer {
           target = sym?.valueDeclaration ?? sym?.declarations[0];
         } catch {
           target = undefined;
+        }
+        // A relative specifier the checker does not resolve (a shadowed
+        // package entry): the analyzed file at that path.
+        if (target === undefined && spec.text.startsWith(".")) {
+          const path = resolvePath(dirname(e.getSourceFile().fileName), spec.text);
+          target = this.files.find(
+            (f) =>
+              f.fileName === path ||
+              f.fileName === `${path}.js` ||
+              f.fileName === `${path}/index.js`,
+          );
         }
         if (target !== undefined && ts.isSourceFile(target) && this.files.includes(target)) {
           const ns = this.namespaceNode(target);
@@ -2618,6 +2692,16 @@ class Analyzer {
       case "Date":
         this.add(dst, this.builtin("Date.instance"));
         return;
+      case "AsyncLocalStorage": {
+        // One instance per construction site; its stores live in a holder.
+        const holder = this.atoms.intern(`als:${this.nodeKey(site)}`, () => ({
+          kind: "object",
+          label: `AsyncLocalStorage@${locLabel(site)}`,
+          node: site,
+        }));
+        this.add(dst, this.builtin("AsyncLocalStorage.instance", holder));
+        return;
+      }
       case "RegExp":
         this.add(dst, this.builtin("RegExp.instance"));
         return;
@@ -2651,13 +2735,23 @@ class Analyzer {
     const recv = a.receiver;
     const arg = (i: number): number => args[i] ?? this.constNode(this.prim("undefined"));
     const prim = (p: string): void => this.add(dst, this.prim(p));
-    const callback = (i: number, cbArgs: number[], ret: number | null): void => {
+    /** Calls the function argument `i` with `cbArgs`; `thisArg` is the
+     * index of the argument its receiver comes from (forEach's second). */
+    const callback = (i: number, cbArgs: number[], ret: number | null, thisArg?: number): void => {
       if (args[i] === undefined) return;
+      const receiver = thisArg !== undefined && args[thisArg] !== undefined ? args[thisArg]! : null;
       this.on(args[i]!, (f) => {
         if (f.kind === "function") {
           const saved = this.forceLoop;
           this.forceLoop = LOOP_CALLBACK_METHODS.has(path.slice(path.indexOf(".") + 1));
-          this.callFunction(this.infoOfAtom(f)!, null, cbArgs, false, ret ?? this.newNode(), site);
+          this.callFunction(
+            this.infoOfAtom(f)!,
+            receiver,
+            cbArgs,
+            false,
+            ret ?? this.newNode(),
+            site,
+          );
           this.forceLoop = saved;
         } else if (f.kind === "top" || f.kind === "builtin") {
           for (const x of cbArgs) this.sink(x, `argument of ⊤ callback at ${locLabel(site)}`);
@@ -2669,6 +2763,33 @@ class Analyzer {
       for (const x of args) this.sink(x, `argument of ${path} at ${locLabel(site)}`);
       this.add(dst, this.top);
     };
+    // AsyncLocalStorage: run(store, fn, ...args) and exit(fn, ...args) call
+    // fn with the arguments at once; getStore() answers a store or undefined.
+    if (path.startsWith("als.") && recv?.receiver !== undefined) {
+      const store = this.field(recv.receiver, "store");
+      switch (path) {
+        case "als.run":
+          if (spread) break;
+          this.edge(arg(0), store);
+          callback(1, args.slice(2), dst);
+          return;
+        case "als.exit":
+          if (spread) break;
+          callback(0, args.slice(1), dst);
+          return;
+        case "als.getStore":
+          this.edge(store, dst);
+          prim("undefined");
+          return;
+        case "als.enterWith":
+          this.edge(arg(0), store);
+          prim("undefined");
+          return;
+        case "als.disable":
+          prim("undefined");
+          return;
+      }
+    }
     // Methods of builtin receivers.
     if (recv !== undefined) {
       const method = path.slice(path.indexOf(".") + 1);
@@ -2698,7 +2819,7 @@ class Analyzer {
             this.add(dst, this.prim("undefined"));
             return;
           case "forEach":
-            callback(0, [el, num, recvN], null);
+            callback(0, [el, num, recvN], null, 1);
             prim("undefined");
             return;
           case "some":
@@ -2850,7 +2971,7 @@ class Analyzer {
             prim("undefined");
             return;
           case "forEach":
-            callback(0, [el, el], null);
+            callback(0, [el, el, this.constNode(recv)], null, 1);
             prim("undefined");
             return;
           case "keys":
@@ -2930,6 +3051,24 @@ class Analyzer {
       return;
     }
     switch (path) {
+      // Timers call their callback later with the given arguments; nothing
+      // else reaches it. Their handles are opaque.
+      case "queueMicrotask":
+        if (spread) break;
+        callback(0, [], null);
+        prim("undefined");
+        return;
+      case "setImmediate":
+        if (spread) break;
+        callback(0, args.slice(1), null);
+        this.add(dst, this.top);
+        return;
+      case "setTimeout":
+      case "setInterval":
+        if (spread) break;
+        callback(0, args.slice(2), null);
+        this.add(dst, this.top);
+        return;
       case "Object.keys":
       case "Object.getOwnPropertyNames": {
         const out = this.syntheticArray(site, "keys");
@@ -3226,4 +3365,37 @@ function cjsExportName(decl: Node): string | null {
   )
     return decl.left.name.text;
   return null;
+}
+
+/** The value of a condition built from literals: string or number
+ * comparisons, `true`/`false` and `!`. Null when it depends on anything
+ * else. */
+function constantCondition(e: ts.Expression): boolean | null {
+  e = unparen(e);
+  if (e.kind === ts.SyntaxKind.TrueKeyword) return true;
+  if (e.kind === ts.SyntaxKind.FalseKeyword) return false;
+  if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken) {
+    const inner = constantCondition(e.operand);
+    return inner === null ? null : !inner;
+  }
+  if (!ts.isBinaryExpression(e)) return null;
+  const literal = (x: ts.Expression): string | number | null => {
+    x = unparen(x);
+    if (ts.isStringLiteral(x) || ts.isNoSubstitutionTemplateLiteral(x)) return x.text;
+    if (ts.isNumericLiteral(x)) return Number(x.text);
+    return null;
+  };
+  const left = literal(e.left);
+  const right = literal(e.right);
+  if (left === null || right === null) return null;
+  switch (e.operatorToken.kind) {
+    case ts.SyntaxKind.EqualsEqualsEqualsToken:
+    case ts.SyntaxKind.EqualsEqualsToken:
+      return left === right;
+    case ts.SyntaxKind.ExclamationEqualsEqualsToken:
+    case ts.SyntaxKind.ExclamationEqualsToken:
+      return left !== right;
+    default:
+      return null;
+  }
 }

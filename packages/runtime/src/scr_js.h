@@ -229,6 +229,11 @@ typedef struct ScrJsIc {
   uint32_t next;  /* the entry a full cache replaces next */
 } ScrJsIc;
 
+/* for-in's shared key snapshot of a shaped plain object whose keys are all
+ * enumerable and none integer-like (immortal; callers only read it), or
+ * NULL. */
+ScrArr *scr_js_for_in_keys(ScrDyn *object);
+
 /* `receiver.key` for a plain data property: +1 value, or NULL. */
 ScrDyn *scr_js_load_probe(ScrDyn *receiver, const ScrStr *key, ScrJsIc *ic);
 /* The same for a property read site, which also answers (+1) undefined for
@@ -242,6 +247,16 @@ ScrDyn *scr_js_get_probe_native(ScrDyn *receiver, const ScrStr *key, ScrJsIc *ic
 /* `receiver.key = value` (value borrowed) when it replaces a writable own
  * data property or adds one the prototype chain lacks: true when done. */
 bool scr_js_store_probe(ScrDyn *receiver, const ScrStr *key, ScrDyn *value, ScrJsIc *ic);
+bool scr_js_keyed_store_probe(ScrDyn *receiver, const ScrDyn *key, ScrDyn *value);
+bool scr_js_keyed_store_probe_str(ScrDyn *receiver, const ScrStr *name, ScrDyn *value);
+bool scr_js_copy_own_except(ScrDyn *dst, ScrDyn *src, const ScrStr *excluded);
+/* An object literal of distinct constant keys at a cached site
+ * (scr_js_object.c): +1. */
+ScrDyn *scr_js_new_literal(ScrJsIc *ic, size_t n, ScrStr *const *keys, ScrDyn *const *values);
+/* The same copy from an owned parameter the function never reads again
+ * (ir/for-in-copies.ts): it may move the source's entries instead. True
+ * when the copy is done; false as scr_js_copy_own_except. */
+bool scr_js_adopt_own_except(ScrDyn *dst, ScrDyn *src, const ScrStr *excluded);
 /* `receiver[key]` for an array element or an own data property named by a
  * string key: +1 value, or NULL. */
 ScrDyn *scr_js_keyed_probe(ScrDyn *receiver, const ScrDyn *key, ScrJsIc *ic);

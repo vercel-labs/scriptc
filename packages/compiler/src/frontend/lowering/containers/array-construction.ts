@@ -37,7 +37,7 @@ import {
   isSupportedArrayElem,
   typeEquals,
 } from "../../../ir/ir.js";
-import { isJsSourceFile, locOf } from "../../program.js";
+import { isJsLikeSourceFile, isJsSourceFile, locOf } from "../../program.js";
 import {
   arrayValueRead,
   arrayValueStore,
@@ -423,7 +423,10 @@ export function lowerArrayConstructor(
       : null;
     if (elem !== null && isSupportedArrayElem(elem)) result = arrayOf(elem);
   }
-  if (isJsSourceFile(ts.getSourceFileOfNode(expr)) && (result === null || result.kind === "dyn"))
+  if (
+    isJsLikeSourceFile(ts.getSourceFileOfNode(expr)) &&
+    (result === null || result.kind === "dyn")
+  )
     result = arrayOf(DYN);
   if (result?.kind !== "array" || !isSupportedArrayElem(result.elem)) {
     lowerer.badType(expr, lowerer.typeOf(expr));

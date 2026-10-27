@@ -7,6 +7,7 @@ import {
   isDynTypedRefType,
   isRefCounted,
   isUnitType,
+  STRING,
   typeEquals,
   typeKey,
 } from "../../ir/ir.js";
@@ -410,6 +411,8 @@ export function emitSerializationExpr(
       const dynV = emitBorrowedInput(host, e.value);
       const helper = host.dyn.dynCheckHelper(e.type, e.preserveRefs);
       if (isDynTypedRefType(e.type)) return emitClassCheck(host, e.type, dynV.name, helper, note);
+      if (e.type.kind === "string" && !e.preserveRefs)
+        return emitStringCheck(host, dynV.name, helper, note);
       const ty = host.llType(e.type);
       const t = B.tmp();
       B.line(
@@ -425,6 +428,47 @@ export function emitSerializationExpr(
       throw new InternalCompilerError("unreachable");
     }
   }
+}
+
+/** A checked string: a string node yields its payload (+1) inline; any
+ * other value takes the checking helper, which may throw. */
+function emitStringCheck(
+  host: LlvmEmitterContext,
+  value: string,
+  helper: string,
+  note?: () => void,
+): LlValue {
+  const B = host.B;
+  const kindPtr = B.tmp(),
+    kind = B.tmp(),
+    isString = B.tmp();
+  B.line(`${kindPtr} = getelementptr inbounds i8, ptr ${value}, i64 8`);
+  B.line(`${kind} = load i32, ptr ${kindPtr}`);
+  B.line(`${isString} = icmp eq i32 ${kind}, ${DYN_KIND.STR}`);
+  const fast = B.newLabel("dcs.str"),
+    slow = B.newLabel("dcs.chk"),
+    join = B.newLabel("dcs.join");
+  B.condBr(isString, fast, slow);
+  B.startBlock(fast);
+  host.declare("declare ptr @scr_str_retain_v(ptr)");
+  const payloadPtr = B.tmp(),
+    payload = B.tmp(),
+    retained = B.tmp();
+  B.line(`${payloadPtr} = getelementptr inbounds i8, ptr ${value}, i64 16`);
+  B.line(`${payload} = load ptr, ptr ${payloadPtr}`);
+  B.line(`${retained} = call ptr @scr_str_retain_v(ptr ${payload})`);
+  B.br(join);
+  B.startBlock(slow);
+  const checked = B.tmp();
+  B.line(`${checked} = call ptr @${helper}(ptr ${value}, ptr null)`);
+  const slowEnd = B.currentLabel();
+  B.br(join);
+  B.startBlock(join);
+  const t = B.tmp();
+  B.line(`${t} = phi ptr [ ${retained}, %${fast} ], [ ${checked}, %${slowEnd} ]`);
+  const out = host.own({ name: t, type: STRING });
+  host.emitPendingCheck(undefined, false, undefined, note);
+  return out;
 }
 
 /** A checked class value: a capsule this program boxed from exactly the

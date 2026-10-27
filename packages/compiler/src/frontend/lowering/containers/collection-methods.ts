@@ -1,3 +1,4 @@
+import { bindCallReceiver } from "../receiver-binding.js";
 import { keyedHelperName } from "../stable-names.js";
 import { primitiveElement } from "../array-values.js";
 import { nodeThrowExpr, boolLit, countedFor, numLit, strLit, varRef } from "../../../ir/build.js";
@@ -86,12 +87,12 @@ export function lowerMapMethodCall(
     );
   }
   // The lib declares a thisArg parameter on forEach; unlowered — fenced.
-  if (name === "forEach" && call.arguments.nodes.length !== 1) {
-    lowerer.noLowering(
-      `.forEach with ${call.arguments.nodes.length} arguments`,
-      call,
-      "the thisArg parameter has no lowering — use an arrow function",
-    );
+  // forEach(fn, thisArg): fn runs with thisArg as its receiver.
+  if (
+    name === "forEach" &&
+    (call.arguments.nodes.length === 0 || call.arguments.nodes.length > 2)
+  ) {
+    lowerer.noLowering(`.forEach with ${call.arguments.nodes.length} arguments`, call);
   }
 
   if (name === "get") {
@@ -498,7 +499,8 @@ export function lowerMapForEachCall(
   if (contextualTs !== null) lowerer.implicitParamTypes = contextualTs;
   let fnArg: IrExpr;
   try {
-    fnArg = lowerer.lowerExpr(argNode);
+    const thisArg = call.arguments.nodes[1];
+    fnArg = thisArg ? bindCallReceiver(lowerer, argNode, thisArg) : lowerer.lowerExpr(argNode);
   } finally {
     lowerer.implicitParamTypes = previousImplicit;
     for (const { symbol, type } of previousRuntime) {
@@ -622,12 +624,12 @@ export function lowerSetMethodCall(
       "the lowered add() produces no value — call each add(v) as its own statement",
     );
   }
-  if (name === "forEach" && call.arguments.nodes.length !== 1) {
-    lowerer.noLowering(
-      `.forEach with ${call.arguments.nodes.length} arguments`,
-      call,
-      "the thisArg parameter has no lowering — use an arrow function",
-    );
+  // forEach(fn, thisArg): fn runs with thisArg as its receiver.
+  if (
+    name === "forEach" &&
+    (call.arguments.nodes.length === 0 || call.arguments.nodes.length > 2)
+  ) {
+    lowerer.noLowering(`.forEach with ${call.arguments.nodes.length} arguments`, call);
   }
   if (COLLECTION_ITERATOR_METHODS.has(name)) {
     return lowerCollectionIteratorCall(lowerer, call, receiver, name);
@@ -684,7 +686,8 @@ export function lowerSetForEachCall(
   const loc = locOf(call);
   const argNode = call.arguments.nodes[0];
   if (!argNode) lowerer.unsupported("SC1090", call, "this call form"); // tsc-guarded
-  const fnArg = lowerer.lowerExpr(argNode);
+  const thisArg = call.arguments.nodes[1];
+  const fnArg = thisArg ? bindCallReceiver(lowerer, argNode, thisArg) : lowerer.lowerExpr(argNode);
   if (
     fnArg.type.kind !== "func" ||
     fnArg.type.params.length > 2 ||

@@ -776,8 +776,10 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     out.push(...threadSlotsBlockDefinitions(emitter.threadSlotsBlocks, tl !== ""));
     for (let site = 0; site < emitter.dynReadIcSites; site++)
       out.push(
-        `@sc_dyn_read_ic_${site} = internal ${tl}global { ptr, ${emitter.sizeType}, ${emitter.sizeType}, ptr } zeroinitializer`,
+        `@sc_dyn_read_ic_${site} = internal ${tl}global { ptr, ${emitter.sizeType}, ${emitter.sizeType}, ptr, ptr, ${emitter.sizeType} } zeroinitializer`,
       );
+    for (let site = 0; site < emitter.dynLiteralSites; site++)
+      out.push(`@sc_dyn_lit_${site} = internal ${tl}global ptr null`);
     for (let site = 0; site < emitter.jsIcSiteCount; site++)
       out.push(`@sc_js_ic_${site} = internal ${tl}global [${JS_IC_WORDS} x i64] zeroinitializer`);
   }
@@ -2606,11 +2608,111 @@ export function emitFfiCallbackDefs(emitter: LlEmitter): { globals: string[]; de
   return { globals, defs };
 }
 
+/** The runtime's immortal undefined and null nodes, by the constructor
+ * that returns them. */
+const IMMORTAL_VALUES = [
+  ["scr_dyn_undefined", "scr_dyn_undefined_value"],
+  ["scr_dyn_new_null", "scr_dyn_null_value"],
+] as const;
+
+/** Compiled code reads the immortal undefined and null nodes as the
+ * runtime globals they are: the precompiled runtime cannot inline its
+ * constructors, so each would otherwise cost a call. The parts are pieces
+ * of one module; a declaration is always a top-level line. */
+function immortalValueAddresses(parts: string[]): string[] {
+  for (const [fn, value] of IMMORTAL_VALUES) {
+    const call = `call ptr @${fn}()`;
+    if (!parts.some((part) => part.includes(call))) continue;
+    let declared = false;
+    parts = parts.map((part) => {
+      if (!part.includes(fn)) return part;
+      const declaration = `declare ptr @${fn}()`;
+      if (part.includes(declaration)) declared = true;
+      return part
+        .replaceAll(call, `getelementptr inbounds i8, ptr @${value}, i64 0`)
+        .replaceAll(declaration, `@${value} = external global i8`);
+    });
+    if (!declared) parts.push(`@${value} = external global i8`);
+  }
+  return parts;
+}
+
+/** Direct calls of the runtime's reference-count entry points the
+ * precompiled runtime cannot inline, rewritten to inline fast paths with
+ * the same semantics: a retain increments unless the value is immortal; a
+ * string release skips NULL and immortal strings and decrements in place,
+ * calling the runtime only for the last reference. */
+function inlineRcCalls(parts: string[]): string[] {
+  for (const [call, helper, body] of INLINE_RC_CALLS) {
+    if (!parts.some((part) => part.includes(call))) continue;
+    parts = parts.map((part) => part.replaceAll(call, `call ${helper}(`));
+    parts.push(body);
+  }
+  return parts;
+}
+
+/** Immortal values can live in read-only memory (string literals): the
+ * increment must not store to them. */
+const RETAIN_BODY = (
+  name: string,
+): string => `define internal ptr @${name}(ptr %o) alwaysinline nounwind {
+entry:
+  %rc = load i64, ptr %o
+  %imm = icmp eq i64 %rc, -1
+  br i1 %imm, label %done, label %inc
+inc:
+  %next = add i64 %rc, 1
+  store i64 %next, ptr %o
+  br label %done
+done:
+  ret ptr %o
+}`;
+
+const INLINE_RC_CALLS: readonly (readonly [string, string, string])[] = [
+  [
+    "call ptr @scr_dyn_retain_v(",
+    "ptr @sc_rc_retain_dyn_direct",
+    RETAIN_BODY("sc_rc_retain_dyn_direct"),
+  ],
+  [
+    "call ptr @scr_str_retain_v(",
+    "ptr @sc_rc_retain_str_direct",
+    RETAIN_BODY("sc_rc_retain_str_direct"),
+  ],
+  [
+    "call void @scr_str_release(",
+    "void @sc_rc_release_str_direct",
+    `define internal void @sc_rc_release_str_direct(ptr %o) alwaysinline nounwind {
+entry:
+  %isnull = icmp eq ptr %o, null
+  br i1 %isnull, label %done, label %check
+check:
+  %rc = load i64, ptr %o
+  %imm = icmp eq i64 %rc, -1
+  br i1 %imm, label %done, label %owned
+owned:
+  %last = icmp eq i64 %rc, 1
+  br i1 %last, label %free, label %dec
+dec:
+  %n = sub i64 %rc, 1
+  store i64 %n, ptr %o
+  br label %done
+free:
+  call void @scr_str_release(ptr %o)
+  br label %done
+done:
+  ret void
+}`,
+  ],
+];
+
 export function emitParts(emitter: LlEmitter): string[] {
-  const parts = [
+  let parts = [
     ...limitInlineReleases(emitter.emitModuleParts(), emitter.shapeHost.rcMode),
     ...emitter.disposeObserverGates(),
   ];
+  parts = immortalValueAddresses(parts);
+  if (emitter.shapeHost.rcMode !== undefined) parts = inlineRcCalls(parts);
   if (!emitter.executableTls) return parts;
   // A worker executable's thread-locals all live in the executable's own
   // TLS block: the program's internal ones, and the runtime's external

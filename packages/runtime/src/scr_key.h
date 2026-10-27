@@ -32,11 +32,20 @@ static inline uint64_t scr_key_short_word(const char *bytes, size_t length) {
          (unsigned char)bytes[length - 1];
 }
 
-/* Callers check equal lengths first. Short keys need no out-of-line memcmp;
- * longer keys keep the platform's bulk comparison. */
+/* Callers check equal lengths first. Keys up to sixteen bytes need no
+ * out-of-line memcmp; longer keys keep the platform's bulk comparison. */
 static inline bool scr_key_equal(const char *a, const char *b, size_t length) {
   if (a == b) return true;
   if (length <= 8) return scr_key_short_word(a, length) == scr_key_short_word(b, length);
+  if (length <= 16) {
+    /* Two overlapping eight-byte words cover lengths nine through sixteen. */
+    uint64_t a0, a1, b0, b1;
+    memcpy(&a0, a, 8);
+    memcpy(&b0, b, 8);
+    memcpy(&a1, a + length - 8, 8);
+    memcpy(&b1, b + length - 8, 8);
+    return ((a0 ^ b0) | (a1 ^ b1)) == 0;
+  }
   return memcmp(a, b, length) == 0;
 }
 

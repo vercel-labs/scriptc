@@ -38,10 +38,12 @@ import {
 } from "./input-tracker.js";
 import { isRelativeSpecifier, packageNameOfSpecifier } from "./workspace-registry.js";
 import { typePatchFileExists } from "./type-patches/layer.js";
+import { flowPresentedPath, flowPresentsFile } from "./flow/index.js";
 
 function isFile(path: string): boolean {
-  // A declaration entry a project type patch supplies (type-patches/layer.ts).
-  return trackedFileExists(path) || typePatchFileExists(path);
+  // A declaration entry a project type patch supplies (type-patches/layer.ts),
+  // or a Flow module's presented TypeScript path (flow/index.ts).
+  return trackedFileExists(path) || typePatchFileExists(path) || flowPresentsFile(path);
 }
 
 function isDirectory(path: string): boolean {
@@ -57,7 +59,9 @@ function realpathOr(path: string): string {
  * Keep native paths while probing, then normalize every resolver answer at
  * the boundary so TS5 and TS7 callers observe the same contract. */
 function normalizeResolvedPath(path: string): string {
-  return path.replaceAll("\\", "/");
+  const normalized = path.replaceAll("\\", "/");
+  // A Flow source resolves to the TypeScript module it is presented as.
+  return flowPresentedPath(normalized) ?? normalized;
 }
 
 function normalizeResolvedAnswer(path: string | null): string | null {

@@ -2,7 +2,7 @@ import { emitPerKeyOrder } from "./key-orders.js";
 import { typedRefConstructor } from "./shapes.js";
 import { bindLiveArrayOps } from "./expr-stream-bridges.js";
 import { BYTES_ELEM_NUM, SCR_ARR_FIELD, SCR_ARR_STATES, f64Lit, sizeToDouble } from "./common.js";
-import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
+import { emitTaggedWrap, emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import {
   INLINE_UNION_FIELD,
   loadInlineUnion,
@@ -36,6 +36,7 @@ import { InternalCompilerError } from "../../errors.js";
 import type { IrRecordShape, IrType, IrUnionDef } from "../../ir/ir.js";
 import {
   accessorSlotProp,
+  DYN,
   DYN_HANDLE_KINDS,
   isDirentShape,
   KEY_ORDER_FIELD,
@@ -57,6 +58,7 @@ import {
   llFieldType,
   mapFlagsOffset,
   releaseSym,
+  retainSym,
   traceAdapter,
   traceArg,
   vAdapters,
@@ -878,11 +880,11 @@ export class LlDyn {
     return { len, data };
   }
 
-  /** `call ptr @scr_dyn_retain_v(x)` (+1; immortals skip). */
+  /** +1 on a dyn value (immortals skip), through the inline fast path
+   * when the build inlines RC. */
   private retainDyn(B: BlockBuilder, x: string): string {
-    this.host.declare(`declare ptr @scr_dyn_retain_v(ptr)`);
     const t = B.tmp();
-    B.line(`${t} = call ptr @scr_dyn_retain_v(ptr ${x})`);
+    B.line(`${t} = call ptr ${retainSym(this.host, DYN)}(ptr ${x})`);
     return t;
   }
 
@@ -1152,6 +1154,15 @@ export class LlDyn {
     const types: IrType[] = isDynTypedRefType(t)
       ? this.host.classSubtypes(t.className).map((className) => ({ kind: "object", className }))
       : [t];
+    // Only a typed reference can match: test its kind inline and probe the
+    // runtime for those alone (most checked values are plain).
+    const isRef = B.tmp();
+    B.line(`${isRef} = icmp eq i32 ${this.kindOf(B, "%d")}, ${DYN_KIND.TYPED_REF}`);
+    const entry = B.currentLabel();
+    const probe = B.newLabel("tr.probe");
+    const joined = B.newLabel("tr.join");
+    B.condBr(isRef, probe, joined);
+    B.startBlock(probe);
     let matched = "false";
     for (const type of types) {
       const key = typeKey(type);
@@ -1166,7 +1177,12 @@ export class LlDyn {
         matched = either;
       }
     }
-    return matched;
+    const probed = B.currentLabel();
+    B.br(joined);
+    B.startBlock(joined);
+    const result = B.tmp();
+    B.line(`${result} = phi i1 [ false, %${entry} ], [ ${matched}, %${probed} ]`);
+    return result;
   }
 
   /** `sc_dm_<n>(ptr d) -> i1` — does this dyn fit T? Never throws. */
@@ -1631,6 +1647,8 @@ export class LlDyn {
         );
       }
       case "union": {
+        // The parser builds plain payload pointers, not tagged values.
+        if (this.host.nullableUnions.get(t.unionId)?.repr === "tagged") return false;
         const def = this.host.unionsById.get(t.unionId);
         if (def?.discriminant) return this.jsonDiscriminatedSupported(def, visiting);
         return member && this.jsonUnionSupported(t, visiting);
@@ -2948,14 +2966,17 @@ export class LlDyn {
             B.line(`${u} = call ptr @scr_union_new_bool(i32 ${i}, i1 ${x})`);
             B.terminate(`ret ptr ${u}`);
           } else if (host.nullableUnions.has(t.unionId)) {
-            // A nullable union is its (+1) reference payload.
+            // A nullable union is its (+1) reference payload; a tagged one
+            // adds the arm's tag bits.
             const x = B.tmp();
             trustedCall(() =>
               B.line(
                 `${x} = call ptr @${this.dynCheckHelper(arm, preserveRefs)}(ptr %d, ptr %path)`,
               ),
             );
-            B.terminate(`ret ptr ${x}`);
+            const tagged = host.nullableUnions.get(t.unionId);
+            const bits = tagged?.repr === "tagged" ? tagged.refs.find((r) => r.tag === i)!.bits : 0;
+            B.terminate(`ret ptr ${emitTaggedWrap(B, x, bits)}`);
           } else {
             const rc = vAdapters(host, arm);
             host.declare(`declare ptr @scr_union_new_ref(i32, ptr, ptr, ptr, ptr)`);
@@ -3143,12 +3164,32 @@ export class LlDyn {
           `${sigp} = getelementptr inbounds i8, ptr %d, i64 ${this.abiOffset(32, 24)} ; ->v.fn.sig`,
         );
         B.line(`${sig} = load ptr, ptr ${sigp}`);
+        // Signatures are literals, one copy per program partition: the
+        // helper remembers the last copy that matched, so a repeated
+        // signature answers without comparing bytes.
+        const seen = `${sigLit}.seen`;
+        host.declare(`${seen} = internal global ptr null`);
         const cmp = B.tmp();
         const same = B.tmp();
+        const identical = B.tmp();
+        const remembered = B.tmp();
+        const known = B.tmp();
+        const recognized = B.tmp();
+        const lSame = B.newLabel("dcf.s");
+        const lCompare = B.newLabel("dcf.cmp");
+        const lRemember = B.newLabel("dcf.remember");
+        B.line(`${identical} = icmp eq ptr ${sig}, ${sigLit}`);
+        B.line(`${remembered} = load ptr, ptr ${seen}`);
+        B.line(`${known} = icmp eq ptr ${sig}, ${remembered}`);
+        B.line(`${recognized} = or i1 ${identical}, ${known}`);
+        B.condBr(recognized, lSame, lCompare);
+        B.startBlock(lCompare);
         B.line(`${cmp} = call i32 @strcmp(ptr ${sig}, ptr ${sigLit})`);
         B.line(`${same} = icmp eq i32 ${cmp}, 0`);
-        const lSame = B.newLabel("dcf.s");
-        B.condBr(same, lSame, lWrap);
+        B.condBr(same, lRemember, lWrap);
+        B.startBlock(lRemember);
+        B.line(`store ptr ${sig}, ptr ${seen}`);
+        B.br(lSame);
         B.startBlock(lSame);
         host.declare(`declare ptr @scr_closure_retain_v(ptr)`);
         const clop = B.tmp();
@@ -4633,6 +4674,21 @@ export class LlDyn {
       B.startBlock(lFast);
       B.terminate(`ret ptr ${fast}`);
       B.startBlock(lView);
+      // A name on a native array that any empty array answers the same
+      // way needs no snapshot.
+      host.declare(`declare ptr @scr_dyn_typed_ref_name_stand_in(ptr, ptr)`);
+      const standIn = B.tmp();
+      const stands = B.tmp();
+      B.line(`${standIn} = call ptr @scr_dyn_typed_ref_name_stand_in(ptr %d, ptr %k)`);
+      B.line(`${stands} = icmp ne ptr ${standIn}, null`);
+      const lStand = B.newLabel("kg.tr.stand");
+      const lSnapshot = B.newLabel("kg.tr.snapshot");
+      B.condBr(stands, lStand, lSnapshot);
+      B.startBlock(lStand);
+      const standing = B.tmp();
+      B.line(`${standing} = call ptr @${name}(ptr ${standIn}, ptr %k, i1 %opt)`);
+      B.terminate(`ret ptr ${standing}`);
+      B.startBlock(lSnapshot);
       host.declare(`declare ptr @scr_dyn_typed_ref_materialize(ptr)`);
       host.declare(`declare void @scr_dyn_release_v(ptr)`);
       const materialized = B.tmp();

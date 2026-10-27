@@ -130,6 +130,27 @@ describe(`npm-static pilots${sanitize ? " (sanitized)" : ""}`, () => {
     expect(actual.exitCode).toBe(0);
   });
 
+  test("module bindings take the types of the values written to them", async () => {
+    // module-binding-types-cli.mjs: chunk-writer's null-initialized
+    // bindings, typed (`encoded`) or kept checked-dynamic (`currentView`,
+    // indexed), match Node before, between, and after their writes.
+    const entry = join(pilotRoot, "module-binding-types-cli.mjs");
+    const reference = await runBinary(process.execPath, [entry]);
+    const actual = await runBinary(await buildStatic(entry, ["chunk-writer"]), []);
+    actual.stderr = comparableStderr(actual.stderr);
+    expect(actual).toEqual(reference);
+    const ir = analyze(entry, { npmStatic: ["chunk-writer"] });
+    expect(ir.coverage.npmStatic).toEqual([{ package: "chunk-writer", status: "static" }]);
+  });
+
+  test("a specialization that reaches a checked-dynamic form forwards to the default instance", async () => {
+    const entry = join(pilotRoot, "specialization-fallback-cli.mjs");
+    const reference = await runBinary(process.execPath, [entry]);
+    const actual = await runBinary(await buildStatic(entry, ["specialized-fallback"]), []);
+    actual.stderr = comparableStderr(actual.stderr);
+    expect(actual).toEqual(reference);
+  });
+
   test("conditional exports keep distinct import and require behavior", async () => {
     const dir = mkdtempSync("/tmp/scriptc-conditional-exports-");
     try {

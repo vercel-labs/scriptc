@@ -51,6 +51,7 @@ import {
   shapeWordHeader,
   type NullableUnions,
   type ShapeUnion,
+  taggedFn,
 } from "./nullable-unions.js";
 import {
   INLINE_UNION_FIELD,
@@ -235,6 +236,11 @@ export { computeTraced } from "../cycle-analysis.js";
 export function vAdapters(host: ShapeHost, t: IrType): { retain: string; release: string } {
   const nullable = host.nullableUnions.of(t);
   if (nullable?.repr === "shapes") return shapeUnionRc(host, nullable);
+  if (nullable?.repr === "tagged")
+    return {
+      retain: taggedFn("retain", nullable.unionId),
+      release: taggedFn("release", nullable.unionId),
+    };
   if (nullable) {
     const arm = vAdapters(host, nullable.arm);
     return { retain: nullableRetainSym(host, nullable.arm), release: arm.release };
@@ -292,6 +298,7 @@ export function retainSym(host: ShapeHost, t: IrType): string {
   if (t.kind === "jsval") return jsvalRcSym(host, "retain");
   const nullable = host.nullableUnions.of(t);
   if (nullable?.repr === "shapes") return shapeUnionRc(host, nullable).retain;
+  if (nullable?.repr === "tagged") return taggedFn("retain", nullable.unionId);
   if (nullable) return nullableRetainSym(host, nullable.arm);
   const stem = runtimeRcStem(t);
   if (host.rcHelpers !== null && stem !== null && inlineRcFamily(host, stem, "retain") !== null) {
@@ -479,6 +486,83 @@ export function emitShapeUnionHelpers(host: ShapeHost): string[] {
   return out;
 }
 
+/** The tag, retain and release helpers of every tagged union
+ * (nullable-unions.ts): NULL and the null sentinel are the unit arms, any
+ * other value an arm payload with the arm's index in its low two bits. */
+export function emitTaggedUnionHelpers(host: ShapeHost): string[] {
+  const out: string[] = [];
+  for (const union of host.nullableUnions.allTaggedUnions()) {
+    const sentinel = union.nullTag >= 0;
+    const units = (done: string): string[] => [
+      `  %isnull = icmp eq ptr %u, null`,
+      `  br i1 %isnull, label %${done}, label %notnull`,
+      `notnull:`,
+      ...(sentinel
+        ? [
+            `  %isnullarm = icmp eq ptr %u, ${NULLABLE_NULL}`,
+            `  br i1 %isnullarm, label %${done}, label %ref`,
+          ]
+        : [`  br label %ref`]),
+      `ref:`,
+      `  %bits = ptrtoint ptr %u to i64`,
+      `  %low = and i64 %bits, 3`,
+      `  %neg = sub i64 0, %low`,
+      `  %p = getelementptr i8, ptr %u, i64 %neg`,
+    ];
+    const arms = (call: (arm: IrType) => string, done: string): string[] => [
+      `  switch i64 %low, label %${done} [ ${union.refs.map((r) => `i64 ${r.bits}, label %a${r.bits}`).join(" ")} ]`,
+      ...union.refs.flatMap((r) => [`a${r.bits}:`, call(r.arm), `  br label %${done}`]),
+    ];
+    out.push(
+      `define internal i32 ${taggedFn("tag", union.unionId)}(ptr %u) alwaysinline ${FN_ATTRS} { ; tagged union tag`,
+      `entry:`,
+      `  %isnull = icmp eq ptr %u, null`,
+      `  br i1 %isnull, label %unit, label %notnull`,
+      `unit:`,
+      `  ret i32 ${union.unitTag}`,
+      `notnull:`,
+      ...(sentinel
+        ? [
+            `  %isnullarm = icmp eq ptr %u, ${NULLABLE_NULL}`,
+            `  br i1 %isnullarm, label %nullarm, label %ref`,
+            `nullarm:`,
+            `  ret i32 ${union.nullTag}`,
+          ]
+        : [`  br label %ref`]),
+      `ref:`,
+      `  %bits = ptrtoint ptr %u to i64`,
+      `  %low = and i64 %bits, 3`,
+      `  switch i64 %low, label %bad [ ${union.refs.map((r) => `i64 ${r.bits}, label %t${r.bits}`).join(" ")} ]`,
+      ...union.refs.flatMap((r) => [`t${r.bits}:`, `  ret i32 ${r.tag}`]),
+      `bad:`,
+      `  ret i32 -1`,
+      `}`,
+      ``,
+      `define internal ptr ${taggedFn("retain", union.unionId)}(ptr %u) ${FN_ATTRS} { ; tagged union retain`,
+      `entry:`,
+      ...units("done"),
+      ...arms(
+        (arm) =>
+          `  %r${union.refs.find((r) => r.arm === arm)!.bits} = call ptr ${retainSym(host, arm)}(ptr %p)`,
+        "done",
+      ),
+      `done:`,
+      `  ret ptr %u`,
+      `}`,
+      ``,
+      `define internal void ${taggedFn("release", union.unionId)}(ptr %u) ${FN_ATTRS} { ; tagged union release`,
+      `entry:`,
+      ...units("done"),
+      ...arms((arm) => `  call void ${releaseSym(host, arm)}(ptr %p)`, "done"),
+      `done:`,
+      `  ret void`,
+      `}`,
+      ``,
+    );
+  }
+  return out;
+}
+
 /** A shape union's arms carry collector headers (all or none: the emitter
  * traces every arm of a union with one traced arm). */
 function shapeUnionTraced(host: ShapeHost, union: ShapeUnion): boolean {
@@ -526,6 +610,7 @@ export function releaseSym(host: ShapeHost, t: IrType): string {
   if (t.kind === "jsval") return jsvalRcSym(host, "release");
   const nullable = host.nullableUnions.of(t);
   if (nullable?.repr === "shapes") return shapeUnionRc(host, nullable).release;
+  if (nullable?.repr === "tagged") return taggedFn("release", nullable.unionId);
   if (nullable) return releaseSym(host, nullable.arm);
   const stem = runtimeRcStem(t);
   if (host.rcHelpers !== null && stem !== null && inlineRcFamily(host, stem, "release") !== null) {
@@ -684,6 +769,12 @@ export type InlineRcMode = "release" | "speed";
 const RELEASE_RC_OPS = new Set([
   "str:retain",
   "str:release",
+  "bytes:retain",
+  "bytes:release",
+  "union:retain",
+  "union:release",
+  "arr:retain",
+  "arr:release",
   "map:retain",
   "dyn:retain",
   "dyn:release",
@@ -788,7 +879,14 @@ export function limitInlineReleases(
     family === "dyn" ? INLINE_DYN_RELEASES_PER_FUNCTION : INLINE_STR_RELEASES_PER_FUNCTION,
   );
   const calls = families.map((family) => `${inlineRcName(family, "release")}(`);
-  const runtimes = families.map((family) => `call void @${INLINE_RC_FAMILIES[family]!.release}(`);
+  // A dyn release past the limit keeps the guard for null and immortal
+  // values inline (most releases there are of undefined, null and
+  // booleans) and calls the runtime for the rest.
+  const runtimes = families.map((family) =>
+    family === "dyn"
+      ? `call void @${GUARDED_DYN_RELEASE}(`
+      : `call void @${INLINE_RC_FAMILIES[family]!.release}(`,
+  );
   const head = "call void @";
   const prefix = `${head}${inlineRcName("", "release")}`;
   // The function each release site belongs to: the last `define` line
@@ -838,7 +936,7 @@ export function limitInlineReleases(
     for (let f = from; f <= to; f++) if (anyOver.has(f)) return true;
     return false;
   };
-  return parts.map((part, index) => {
+  const limited = parts.map((part, index) => {
     const from = spans[2 * index]!;
     if (!touches(from, spans[2 * index + 1]!)) return part;
     const cuts: { at: number; family: number }[] = [];
@@ -858,7 +956,26 @@ export function limitInlineReleases(
     }
     return out + part.slice(next);
   });
+  if (over[0]!.size > 0) limited.push(GUARDED_DYN_RELEASE_DEF);
+  return limited;
 }
+
+const GUARDED_DYN_RELEASE = "sc_rc_release_dyn_guarded";
+
+const GUARDED_DYN_RELEASE_DEF = `define internal void @${GUARDED_DYN_RELEASE}(ptr %o) alwaysinline nounwind {
+entry:
+  %isnull = icmp eq ptr %o, null
+  br i1 %isnull, label %done, label %check
+check:
+  %rc = load i64, ptr %o
+  %imm = icmp eq i64 %rc, -1
+  br i1 %imm, label %done, label %release
+release:
+  call void @scr_dyn_release(ptr %o)
+  br label %done
+done:
+  ret void
+}`;
 
 function rcHelperDecls(family: string, op: RcOp): string[] {
   if (family === "js")
@@ -1085,6 +1202,8 @@ export function traceAdapter(host: ShapeHost, t: IrType): string | null {
         return shapeUnionTraced(host, nullable)
           ? shapeTraceFn(host.nullableUnions.helperOwner(nullable.unionId))
           : null;
+      // Tagged unions have leaf arms only.
+      if (nullable?.repr === "tagged") return null;
       if (nullable) return traceAdapter(host, nullable.arm);
       if (!host.tracedUnions.has(t.unionId)) return null;
       host.declare(`declare void @scr_union_trace_v(ptr, ptr, ptr)`);
@@ -1712,7 +1831,7 @@ function directDestroyKey(host: ShapeHost, type: IrType): string | null {
   const nullable = host.nullableUnions.of(type);
   let t = type;
   if (nullable !== null) {
-    if (nullable.repr === "shapes") return null;
+    if (nullable.repr !== "single") return null;
     t = nullable.arm;
   }
   if (t.kind === "record") return `record:${t.shapeId}`;

@@ -2,7 +2,7 @@
 
 Eleven PRs, one per theme, each with its tests, corpus programs, cost files, order baselines and docs, plus the already-open `--define` PR. They're listed in priority order. Details and measurements for every item are in `REACT-REPORT.md`; the "Part" numbers below point there, and the full per-part history is in commit `7f0f6c502` (Parts 1–36) and `/tmp/REACT-REPORT-full-2026-10-28.md` (Parts 1–44).
 
-**Where the code is:** branch `lfades/react-node-ssr` in this worktree. Most of the earlier work is in one large commit, `4d60d90ea` ("Compile React's server renderer from its Flow sources and speed up its checked-dynamic paths", 217 files), and has to be split by file and hunk. Later work is in focused commits, plus unstaged changes from the latest sessions. Each item names its source.
+**Where the code is:** branch `lfades/react-node-ssr` in this worktree. Most of the earlier work is in one large commit, `4d60d90ea` ("Compile React's server renderer from its Flow sources and speed up its checked-dynamic paths", 217 files), and has to be split by file and hunk. Later work is in focused commits, and the latest sessions' work is in the snapshot commit `0ef856f5f`. Each item names its source. The commits only carry the raw changes: each PR gets its own, new commits.
 
 **Size:** about 9,800 lines of source added (122 files) and 38 corpus programs, plus tests, baselines and cost files.
 
@@ -40,7 +40,7 @@ Statuses: not started → in progress → ready for review → approved → comm
 
 ## How we ship
 
-**Save the unstaged work first.** About 1,800 lines exist only as unstaged changes in this worktree. They're saved as a patch at `/Users/lfades/all/vercel/scriptc-react-unstaged-2026-10-28.patch` (38 files, including the two new `rc-pairs` files and the report; it was checked to match the working tree with `git apply --check -R`). Committing them on `lfades/react-node-ssr` before carving makes every carve a plain git operation; the patch is the fallback. Restore it on a clean checkout of `lfades/react-node-ssr` with `git apply`.
+**All work is committed** on `lfades/react-node-ssr`: the latest sessions' changes are in `0ef856f5f`. A patch of that work also exists at `/Users/lfades/all/vercel/scriptc-react-unstaged-2026-10-28.patch`.
 
 **One worktree per PR.** Each PR has its own agent and its own working folder, backed by the same `.git` (no copies), so agents work in parallel without touching each other's files. This folder (`scriptc-react`) stays the source: `lfades/react-node-ssr` with all the work, left unchanged while shipping.
 
@@ -58,8 +58,7 @@ Each worktree needs its own `pnpm install` (fast: pnpm hard-links from a shared 
 **Bringing changes in, unstaged.** The agent brings every change relevant to its PR into its worktree and leaves it unstaged. No commits until you've reviewed.
 - whole files that belong to the PR: `git restore --source=lfades/react-node-ssr --worktree -- <path>` (`git checkout <branch> -- <path>` would also stage them);
 - pieces of `4d60d90ea`, or files shared by several PRs: `git restore -p --source=lfades/react-node-ssr --worktree -- <file>`, choosing this PR's hunks;
-- focused commits: `git cherry-pick -n <hash>`, then `git reset` to unstage;
-- unstaged work in the source (until it's committed there): apply the relevant hunks from the patch, for example `git apply --include='<path>' <patch>`.
+- focused commits: `git cherry-pick -n <hash>`, then `git reset` to unstage.
 
 **Chains** (2 → 3 → 4, 5 → 6 → 9, 7 → 10, 8 → 11): stack them. Cut the later PR's branch from the earlier one and open it with that branch as its base (`gh pr create --base pr/02-react-compat`). When the earlier PR merges, retarget the later one to `main` and rebase:
 
@@ -282,9 +281,9 @@ Before PR 11.
   - call-argument moves (`ir/call-sequences.ts`, `emitSequenceStmts`; `4d60d90ea`);
   - parameters moved into record literals and unwritten parameters lent to reads (`3b1d2d4cc`);
   - borrowed reads through retypes (`4d60d90ea`);
-  - union field writes move their value (unstaged: `lowerUnionFieldWriteStmt` in `union-fields.ts` and `lower-stmts.ts`; the move through a final `if`, `lastUseReads` in `local-extents.ts` and `emitter.ts`).
-- [ ] **Proof-based retain/release pair removal** (Part 37; unstaged; `native/llvm-codegen/src/rc-pairs.cpp`/`.h`, `emit.cpp`, `CMakeLists.txt`). Decide which debug switches to keep: `SCRIPTC_NO_RC_PAIRS`, `SCRIPTC_RC_PAIRS_STATS`, `SCRIPTC_RC_SITES`, `SCRIPTC_RC_DEBUG`.
-- [ ] **Two crossings no longer make types mutable for the cycle collector** (Part 44; unstaged; `cycle-mutability.ts`): opaque live references of records with no checked-dynamic form, and `JSON.stringify` of JSON-inert data.
+  - union field writes move their value (`0ef856f5f`: `lowerUnionFieldWriteStmt` in `union-fields.ts` and `lower-stmts.ts`; the move through a final `if`, `lastUseReads` in `local-extents.ts` and `emitter.ts`).
+- [ ] **Proof-based retain/release pair removal** (Part 37; `0ef856f5f`; `native/llvm-codegen/src/rc-pairs.cpp`/`.h`, `emit.cpp`, `CMakeLists.txt`). Decide which debug switches to keep: `SCRIPTC_NO_RC_PAIRS`, `SCRIPTC_RC_PAIRS_STATS`, `SCRIPTC_RC_SITES`, `SCRIPTC_RC_DEBUG`.
+- [ ] **Two crossings no longer make types mutable for the cycle collector** (Part 44; `0ef856f5f`; `cycle-mutability.ts`): opaque live references of records with no checked-dynamic form, and `JSON.stringify` of JSON-inert data.
 
 **Tests:**
 - existing: `cycle-analysis.test.ts` (add cases);
@@ -301,13 +300,13 @@ After PR 6. The typed bench app went from 19% slower than the untyped one to wit
 - [ ] **Element capsules: moves and reuse** (Parts 29, 43, 45):
   - fresh records boxed without an identity entry (`654c7488a`, its `scr_json.c` and `expr-dynamic.ts` parts);
   - the typed-ref identity table keeps the referent (`4d60d90ea`);
-  - moved constructors take over the record's reference (unstaged);
-  - the capsule pool, with the fix that every unregistered construction reuses its head (unstaged).
+  - moved constructors take over the record's reference (`0ef856f5f`);
+  - the capsule pool, with the fix that every unregistered construction reuses its head (`0ef856f5f`).
 - [ ] **`for…in` copy loops, including typed records** (Parts 19, 24–25, 45):
   - copy loops become one runtime call (`ir/for-in-copies.ts`); owned sources are adopted (`scr_js_adopt_own_except`), with key checks memoized (`4d60d90ea`);
   - shared key snapshots (`scr_js_for_in_keys`; `4d60d90ea`);
-  - record capsule sources copied straight into a shaped object (unstaged; `scr_js_copy_record_except`, `scr_js_fill_shape`).
-- [ ] **Record-source decisions remembered per (shape, layout)** (Part 45; unstaged; `scr_record_source_note`, `scr_js_shape_identity`).
+  - record capsule sources copied straight into a shaped object (`0ef856f5f`; `scr_js_copy_record_except`, `scr_js_fill_shape`).
+- [ ] **Record-source decisions remembered per (shape, layout)** (Part 45; `0ef856f5f`; `scr_record_source_note`, `scr_js_shape_identity`).
 
 **Tests:**
 - existing: `for-in-shared-key-snapshots.cjs`;
@@ -326,7 +325,7 @@ After PR 7.
   - `Uint8Array | null | undefined` as a nullable pointer;
   - retypes between equal tag layouts are free;
   - safe array reads fused with their narrowing (`%arr.idxIn`).
-- [ ] **Numbers in tagged unions** (Part 46; unstaged):
+- [ ] **Numbers in tagged unions** (Part 46; `0ef856f5f`):
   - `string | number`-style unions without heap boxes: doubles offset by 2^49, pointers below;
   - boxed relatives stay boxed;
   - representation-aware helpers in `dyn.ts`, `expr-callbacks.ts`, `expr-dynamic.ts`, `expr-primitives.ts`, `expr-records.ts`, `expr-stream-bridges.ts`, `walkers.ts`;
@@ -339,7 +338,7 @@ After PR 7.
 
 ## 11. Profile-guided optimization
 
-After PR 8. All unstaged.
+After PR 8. All in `0ef856f5f`.
 
 - [ ] **macOS** (Part 47): `native-profile.ts` allows it; `process.exit` writes the profile there (a weak `__llvm_profile_write_file` on Mach-O, `scr_lib.c`).
 - [ ] **The profile covers the runtime** (Part 48):

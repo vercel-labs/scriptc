@@ -13,7 +13,8 @@ function markers(source: string, ext = "cjs"): string[] {
 
 describe("R1 runtime markers", () => {
   test("R1.1 code from strings", () => {
-    expect(markers("eval(code);")).toEqual(["R1.1 code-from-string"]);
+    // A bare eval() is also a sloppy-mode construct (R2.4 direct-eval).
+    expect(markers("eval(code);")).toEqual(["R1.1 code-from-string", "R2.4 direct-eval"]);
     expect(markers("(0, eval)(code);")).toEqual(["R1.1 code-from-string"]);
     expect(markers("const f = new Function('a', 'return a');")).toEqual(["R1.1 code-from-string"]);
     expect(markers("const f = Function('a', body);")).toEqual(["R1.1 code-from-string"]);
@@ -80,13 +81,16 @@ describe("R2 object-model markers", () => {
     expect(markers("const util = require('util'); util.inherits(A, B);")).toEqual([
       "R2.1 constructor-function",
     ]);
+    // `this` in a plain function is also the conservative sloppy-this marker
+    // (decision S2): the file cannot see a call site in another module.
     expect(markers("function Child() { Parent.call(this, 1); }")).toEqual([
       "R2.1 constructor-function",
+      "R2.4 sloppy-this",
     ]);
     expect(markers("class C {} const c = new C();")).toEqual([]);
     expect(
       markers("function wrap(fn) { return function () { return fn.apply(this, arguments); }; }"),
-    ).toEqual([]);
+    ).toEqual(["R2.4 sloppy-this"]);
   });
 
   test("R2.2 prototype mutation", () => {
@@ -133,6 +137,77 @@ describe("R2 object-model markers", () => {
     expect(markers("class C { m(a) { a = 2; return arguments[0]; } }")).toEqual([]);
   });
 
+  test("R2.4 direct eval in sloppy mode", () => {
+    expect(markers("eval(code);")).toEqual(["R1.1 code-from-string", "R2.4 direct-eval"]);
+    expect(markers("function f() { return eval('x'); }")).toEqual([
+      "R1.1 code-from-string",
+      "R2.4 direct-eval",
+    ]);
+    // Indirect, aliased and builtin-object calls read no local scope.
+    expect(markers("(0, eval)(code);")).toEqual(["R1.1 code-from-string"]);
+    // An aliased eval is not a call the scan recognizes as code-from-string.
+    expect(markers("const e = eval; e(code);")).toEqual([]);
+    expect(markers("globalThis.eval(code);")).toEqual(["R1.1 code-from-string"]);
+    expect(markers("function eval(code) { return code; } eval('x');")).toEqual([]);
+    // Strict code's direct eval cannot see the caller's scope: no marker.
+    expect(markers("'use strict'; eval(code);")).toEqual(["R1.1 code-from-string"]);
+    expect(markers("export function f() { return eval('x'); }", "mjs")).toEqual([
+      "R1.1 code-from-string",
+    ]);
+  });
+
+  test("R2.4 Annex B block functions in sloppy mode", () => {
+    // A block-level function declaration also creates a var-like binding in
+    // the enclosing function (Annex B.3.2).
+    expect(markers("if (x) { function f() {} f(); }")).toEqual(["R2.4 annexb-block-function"]);
+    expect(markers("{ function f() {} }")).toEqual(["R2.4 annexb-block-function"]);
+    expect(markers("function g() { { function f() {} } }")).toEqual(["R2.4 annexb-block-function"]);
+    // A declaration in a function body or at the top level is ordinary, and
+    // a strict block declaration is block-scoped.
+    expect(markers("function f() {}")).toEqual([]);
+    expect(markers("function g() { function f() {} }")).toEqual([]);
+    expect(markers("'use strict'; if (x) { function f() {} }")).toEqual([]);
+    expect(markers("export function g() { if (x) { function f() {} } }", "mjs")).toEqual([]);
+  });
+
+  test("R2.4 'this' in a plain sloppy call (decision S2)", () => {
+    // A plain call's `this` is the global object in sloppy mode and
+    // undefined in strict mode: the file cannot see its call sites, so any
+    // plain function's `this` marks the module.
+    expect(markers("function f() { return this; }")).toEqual(["R2.4 sloppy-this"]);
+    expect(markers("const f = function () { return this; };")).toEqual(["R2.4 sloppy-this"]);
+    expect(markers("function f() { const g = () => this; return g(); }")).toEqual([
+      "R2.4 sloppy-this",
+    ]);
+    expect(markers("function f() { return { m() { return this; } }; }")).toEqual([]);
+    // A receiver-carrying call, a class body, a class member initializer,
+    // top-level `this` (the exports object) and strict code carry no marker.
+    expect(markers("const o = { m() { return this; } }; o.m();")).toEqual([]);
+    // A property-assigned function expression is indistinguishable from a
+    // bare-call site in another module: conservative marking (S2).
+    expect(markers("const o = { m: function () { return this; } };")).toEqual(["R2.4 sloppy-this"]);
+    expect(markers("class C { m() { return this; } static s = this; }")).toEqual([]);
+    expect(markers("this.x = 1;")).toEqual([]);
+    expect(markers("'use strict'; function f() { return this; }")).toEqual([]);
+    expect(markers("export function f() { return this; }", "mjs")).toEqual([]);
+  });
+
+  test("R2.4 receiver-proven functions stay native (decision S5)", () => {
+    const sloppy = (source: string) => markers(source).filter((m) => m.startsWith("R2.4"));
+    // Native passes the receiver for both shapes: `new X()` and a
+    // `X.prototype.name` method. Marking them would move native passes.
+    expect(sloppy("function Ctor() { this.x = 1; } new Ctor();")).toEqual([]);
+    expect(sloppy("const Ctor = function () { this.x = 1; }; new Ctor();")).toEqual([]);
+    expect(sloppy("function M() {} M.prototype.m = function () { return this; };")).toEqual([]);
+    // The name is also called plainly, so the receiver is not proven.
+    expect(sloppy("function Ctor() { return this; } new Ctor(); Ctor();")).toEqual([
+      "R2.4 sloppy-this",
+    ]);
+    // A callback's receiver belongs to its callee, which the file cannot
+    // see: conservative marking (S2).
+    expect(sloppy("function f() { return this; } [1].map(f);")).toEqual(["R2.4 sloppy-this"]);
+  });
+
   test("R2.5 builtin and global patching", () => {
     expect(markers("Array.prototype.last = function () {};")).toEqual(["R2.5 builtin-write"]);
     expect(markers("Promise = Bluebird;")).toEqual(["R2.5 builtin-write"]);
@@ -156,6 +231,7 @@ test("markers come back in source order with their locations", () => {
   expect(found.map((m) => [m.rule, source.slice(m.loc.start, m.loc.end)])).toEqual([
     ["R2.2", "Object.setPrototypeOf(a, b)"],
     ["R1.1", "eval(x)"],
+    ["R2.4", "eval(x)"],
   ]);
 });
 

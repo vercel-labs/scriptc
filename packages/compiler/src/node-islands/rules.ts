@@ -69,6 +69,9 @@ const REASON_RULES: Record<string, NodeIslandRule> = {
   with: "R2.4",
   "sloppy-arguments": "R2.4",
   "sloppy-mode": "R2.4",
+  "direct-eval": "R2.4",
+  "annexb-block-function": "R2.4",
+  "sloppy-this": "R2.4",
   "builtin-write": "R2.5",
   proxy: "R2.5",
 };

@@ -9,8 +9,10 @@
  * declare it at all, and a builtin module object when the file binds it to
  * require("<builtin>") or imports it from one. Checker-dependent parts of
  * R2.3 (writes the declared type does not cover, freeze followed by writes)
- * and R2.4 (assignments to undeclared identifiers, `this` as the global
- * object) are left to the lowering. */
+ * and R2.4 (assignments to undeclared identifiers) are left to the lowering;
+ * `this` in a plain call is marked conservatively (decision S2): a file
+ * cannot see its call sites, so every `this` in a sloppy plain function
+ * marks the module. */
 import type { SrcLoc } from "../ir/ir.js";
 import * as ts from "../frontend/ts7/adapter.js";
 import { SUPPORTED_BUILTIN_MODULES } from "../frontend/builtin-modules.js";
@@ -236,6 +238,29 @@ function isFunctionBoundary(node: ts.Node): boolean {
   );
 }
 
+/** The name a plain function value is bound to in the same file
+ * (`function f`, `var f = function`), for the constructor refinement. */
+function boundFunctionName(fn: ts.FunctionDeclaration | ts.FunctionExpression): string | null {
+  if (ts.isFunctionDeclaration(fn)) return fn.name?.text ?? null;
+  const parent = fn.parent;
+  if (parent === undefined) return null;
+  if (ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) return parent.name.text;
+  if (ts.isPropertyAssignment(parent)) return propertyName(parent.name);
+  return null;
+}
+
+/** `X.prototype.name = function () {}`: a method assignment, whose every
+ * call through the same spelling has a receiver. */
+function isPrototypeFunctionAssignment(left: ts.PropertyAccessExpression, right: ts.Node): boolean {
+  let value = right;
+  while (ts.isParenthesizedExpression(value)) value = value.expression;
+  return (
+    ts.isFunctionExpression(value) &&
+    ts.isPropertyAccessExpression(left.expression) &&
+    propertyName(left.expression) === "prototype"
+  );
+}
+
 /** One module's pre-scan. */
 class ModuleScanner {
   readonly markers: NodeIslandMarker[] = [];
@@ -250,6 +275,15 @@ class ModuleScanner {
   private readonly builtinBindings = new Map<string, string>();
   /** Local names bound to a createRequire(...) result. */
   private readonly createdRequires = new Set<string>();
+  /** Names the file constructs with `new`: a constructor's `this` is never
+   * the global object, so its `this` uses need no island (decision S5). */
+  private readonly constructed = new Set<string>();
+  /** Names the file calls as a bare identifier, `f(...)`: a name used both
+   * ways is a constructor and a plain function, so it still marks. */
+  private readonly bareCalled = new Set<string>();
+  /** Function expressions the file assigns to `X.prototype.name`: every
+   * same-file call of them is a receiver call (decision S5). */
+  private readonly prototypeFunctions = new Set<ts.Node>();
   private readonly strictness = new Map<ts.Node, boolean>();
   private readonly moduleStrict: boolean;
 
@@ -362,6 +396,17 @@ class ModuleScanner {
         this.bindName(node.name, node.initializer);
       } else if (ts.isParameter(node)) {
         this.bindName(node.name, undefined);
+      } else if (ts.isNewExpression(node) && ts.isIdentifier(node.expression)) {
+        this.constructed.add(node.expression.text);
+      } else if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+        this.bareCalled.add(node.expression.text);
+      } else if (
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        ts.isPropertyAccessExpression(node.left) &&
+        isPrototypeFunctionAssignment(node.left, node.right)
+      ) {
+        this.prototypeFunctions.add(node.right);
       } else if (ts.isImportDeclaration(node)) {
         const spec = literalText(node.moduleSpecifier);
         const module = spec === null ? null : builtinModuleName(spec);
@@ -427,6 +472,67 @@ class ModuleScanner {
     return BUILTIN_GLOBALS.has(name) && !this.declared.has(name);
   }
 
+  /** A function declaration whose parent is a block that is not a function
+   * body: Annex B.3.2's block-level declaration, which in sloppy code also
+   * creates a `var`-like binding in the enclosing function (DESIGN.md note 1
+   * §3.1, construct 5). A declaration directly in a function body or at the
+   * top level of a script is ordinary. */
+  private isAnnexBBlockFunction(fn: ts.FunctionDeclaration): boolean {
+    const parent = fn.parent;
+    if (parent === undefined || !ts.isBlock(parent)) return false;
+    const owner = parent.parent;
+    if (owner === undefined) return false;
+    // A function-like body, a class static block or a class member
+    // initializer block is not a bare block statement.
+    return (owner as ts.FunctionLikeDeclaration).body !== parent;
+  }
+
+  /** Whether the file shows the function is only ever called with a
+   * receiver, so native's missing sloppy `this` cannot be observed: it is
+   * constructed with `new`, or it is a `X.prototype.name` method (decision
+   * S5 — the marker islands what native gets wrong, and native passes the
+   * receiver for both shapes). */
+  private receiverSafe(fn: ts.FunctionDeclaration | ts.FunctionExpression): boolean {
+    if (this.prototypeFunctions.has(fn)) return true;
+    const name = boundFunctionName(fn);
+    return name !== null && this.constructed.has(name) && !this.bareCalled.has(name);
+  }
+
+  /** `this` in a plain function call: a sloppy function that is not a
+   * method, constructor, accessor or class member, and is not an arrow
+   * function (whose `this` is its enclosing function's). Conservative
+   * (decision S2): a file-level scan cannot see cross-file call sites, so
+   * any `this` in such a function marks the module, except the shapes the
+   * file itself proves are receiver calls (decision S5). Top-level `this`
+   * is not this marker: it is the module's exports object, and the test262
+   * profile's script-environment exclusion covers the script form. */
+  private visitThis(node: ts.Node): void {
+    if (this.isStrict(node)) return;
+    for (let cur: ts.Node | undefined = node.parent; cur !== undefined; cur = cur.parent) {
+      // An arrow function has no `this` of its own: keep looking outward.
+      if (ts.isArrowFunction(cur)) continue;
+      if (ts.isFunctionDeclaration(cur) || ts.isFunctionExpression(cur)) {
+        if (this.receiverSafe(cur)) return;
+        this.add("R2.4", "sloppy-this", "'this' in a plain call in sloppy mode", node);
+        return;
+      }
+      // A method, constructor or accessor has a receiver; a class member
+      // initializer and a class static block have their own `this`; a
+      // property assignment's function is commonly a method too.
+      if (
+        isFunctionBoundary(cur) ||
+        ts.isClassDeclaration(cur) ||
+        ts.isClassExpression(cur) ||
+        ts.isClassStaticBlockDeclaration(cur) ||
+        ts.isPropertyDeclaration(cur) ||
+        ts.isPropertyAssignment(cur)
+      )
+        return;
+      // Top-level `this` is the module's exports object, not a call site.
+      if (ts.isSourceFile(cur)) return;
+    }
+  }
+
   private visit(node: ts.Node): void {
     if (ts.isCallExpression(node)) this.visitCall(node);
     else if (ts.isNewExpression(node)) this.visitNew(node);
@@ -440,7 +546,9 @@ class ModuleScanner {
       )
         this.visitWrite(node.operand, node, "write");
     } else if (ts.isWithStatement(node)) {
-      this.add("R2.4", "with", "a 'with' statement", node);
+      // A `with` in strict code is an early error (Node refuses the file
+      // too), so only sloppy code carries the sloppy-semantics marker.
+      if (!this.isStrict(node)) this.add("R2.4", "with", "a 'with' statement", node);
     } else if (ts.isImportDeclaration(node)) {
       const spec = literalText(node.moduleSpecifier);
       if (spec !== null) this.visitSpecifier(spec, node);
@@ -454,6 +562,8 @@ class ModuleScanner {
       const text = chainText(node);
       if ((text === "arguments.callee" || text === "arguments.caller") && !this.isStrict(node))
         this.add("R2.4", "sloppy-arguments", `'${text}'`, node);
+    } else if (node.kind === ts.SyntaxKind.ThisKeyword) {
+      this.visitThis(node);
     } else if (ts.isObjectLiteralExpression(node)) {
       for (const prop of node.properties.nodes) {
         if (!ts.isPropertyAssignment(prop)) continue;
@@ -506,16 +616,23 @@ class ModuleScanner {
     // eval, Function
     let target = callee;
     while (ts.isParenthesizedExpression(target)) target = target.expression;
+    // A bare `eval(...)` is the intrinsic's DIRECT call: it reads and
+    // creates bindings in the caller's scope, and in sloppy mode creates
+    // globals (DESIGN.md note 1 §3.1). `globalThis.eval(...)`, the
+    // comma-operator idiom `(0, eval)(...)` and the other spellings are
+    // indirect: they observe no caller scope, so only R1.1.
+    const direct = ts.isIdentifier(target) && target.text === "eval" && !this.declared.has("eval");
     if (ts.isBinaryExpression(target) && target.operatorToken.kind === ts.SyntaxKind.CommaToken)
       target = target.right;
     const text = chainText(target);
     if (text === null) return;
-    if (
-      (text === "eval" && !this.declared.has("eval")) ||
-      text === "globalThis.eval" ||
-      text === "global.eval" ||
-      text === "window.eval"
-    ) {
+    if (text === "eval" && !this.declared.has("eval")) {
+      this.add("R1.1", "code-from-string", "eval()", call);
+      if (direct && !this.isStrict(call))
+        this.add("R2.4", "direct-eval", "a direct call of eval() in sloppy mode", call);
+      return;
+    }
+    if (text === "globalThis.eval" || text === "global.eval" || text === "window.eval") {
       this.add("R1.1", "code-from-string", "eval()", call);
       return;
     }
@@ -789,6 +906,13 @@ class ModuleScanner {
   /** Observable `arguments` aliasing in a sloppy function: writes to
    * arguments[i], or to a parameter while `arguments` is read. */
   private visitFunction(fn: ts.FunctionLikeDeclaration): void {
+    if (ts.isFunctionDeclaration(fn) && this.isAnnexBBlockFunction(fn) && !this.isStrict(fn))
+      this.add(
+        "R2.4",
+        "annexb-block-function",
+        "a function declaration in a block in sloppy mode",
+        fn,
+      );
     const body = fn.body;
     if (body === undefined || !ts.isBlock(body)) return;
     if (this.isStrict(body.statements.nodes[0] ?? body)) return;

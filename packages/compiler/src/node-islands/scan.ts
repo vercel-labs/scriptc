@@ -94,6 +94,44 @@ function specifiersOf(program: ts.Program, sf: ts.SourceFile): { spec: string; n
   return out;
 }
 
+/** The diagnostics of a construct that sloppy-mode Node accepts: the
+ * frontend compiles every file under the project's `strict` options (with
+ * `alwaysStrict`), so a `with`, an octal literal, or a strict-only reserved
+ * word reports here even though the file itself is a CommonJS script that
+ * Node runs sloppy. JavaScript grammar errors arrive in the bind pass
+ * (TS1101 among them), so both passes filter by this set. They cannot hide
+ * a real syntax error: they exist only for code the engine parses in sloppy
+ * mode. */
+const SLOPPY_LEGAL_CODES: ReadonlySet<number> = new Set([
+  1100, // invalid use of a strict-mode reserved word
+  1101, // 'with' statements are not allowed in strict mode
+  1102, // 'delete' of an identifier in strict mode
+  1121, // an octal literal
+  1487, // an octal escape sequence
+  1210, // a class body's strict-mode restriction
+  1212, // a strict-mode reserved word
+  1213, // a strict-mode reserved word in a class
+  1214, // a strict-mode reserved word in a module
+  1215, // invalid use of a strict-mode-only construct in a module
+]);
+
+/** Whether the file parses as the sloppy JavaScript the island would run:
+ * a file with a genuine syntax or early error cannot run in an island as
+ * written (Node refuses it too, at load), so its pre-scan markers must not
+ * put it there — a parse-negative test stays the compile refusal it is
+ * (decision S5: the markers narrow, never move, the native passes). */
+function sloppyParsable(program: ts.Program, sf: ts.SourceFile): boolean {
+  try {
+    const sloppyLegal = (d: ts.Diagnostic): boolean => SLOPPY_LEGAL_CODES.has(d.code);
+    return (
+      program.getSyntacticDiagnostics(sf).every(sloppyLegal) &&
+      program.getBindDiagnostics(sf).every(sloppyLegal)
+    );
+  } catch {
+    return true;
+  }
+}
+
 /** Scans `files`: markers for npm JavaScript (and for user JavaScript when
  * `userJs`), and package edges for every file when `edges` (a program with
  * no npm package has none to find). */
@@ -112,7 +150,8 @@ export function scanFiles(
     if (origin === "builtin" || origin === "shim") continue;
     const at = origin === "npm" ? packageDirOf(sf.fileName) : null;
     const js = isJsSourceFileName(sf.fileName);
-    const markers = js && (origin === "npm" || opts.userJs) ? scanModule(sf) : [];
+    let markers = js && (origin === "npm" || opts.userJs) ? scanModule(sf) : [];
+    if (markers.length > 0 && !sloppyParsable(program, sf)) markers = [];
     modules.push({
       file: sf.fileName,
       origin,

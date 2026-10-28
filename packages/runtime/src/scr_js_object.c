@@ -937,6 +937,19 @@ ScrDyn *scr_js_keyed_probe(ScrDyn *receiver, const ScrDyn *key, ScrJsIc *ic) {
   if (key->kind != SCR_DYN_STR || receiver->kind != SCR_DYN_OBJ) return NULL;
   const ScrStr *name = key->v.str;
   size_t len = receiver->v.obj.len;
+  /* A site past its ways (many keys, as in `row[column]`) asks the shared
+   * table by (shape, key bytes): one entry, checked against the slot's key. */
+  ScrJsSharedLoad *shared = NULL;
+  const ScrJsShape *shape = NULL;
+  if (ic->count == SCR_JS_IC_WAYS && (shape = scr_js_shape_of(receiver))) {
+    shared = scr_js_shared_load(shape, name);
+    if (shared->key == name->data && shared->entry.shape == shape && !shared->entry.target) {
+      size_t slot = shared->entry.slot;
+      const ScrDynEntry *found = &receiver->v.obj.entries[slot];
+      if (slot < len && found->key_len == name->len && scr_key_equal(found->key, name->data, name->len))
+        return found->accessor ? NULL : scr_dyn_retain(found->value);
+    }
+  }
   for (uint32_t i = 0; i < ic->count; i++) {
     size_t slot = ic->entry[i].slot;
     if (slot >= len) continue;
@@ -944,11 +957,12 @@ ScrDyn *scr_js_keyed_probe(ScrDyn *receiver, const ScrDyn *key, ScrJsIc *ic) {
     if (found->key_len == name->len && scr_key_equal(found->key, name->data, name->len))
       return found->accessor ? NULL : scr_dyn_retain(found->value);
   }
-  if (!scr_js_shape_of(receiver)) return NULL;
+  if (!shape && !(shape = scr_js_shape_of(receiver))) return NULL;
   size_t slot = scr_js_entry_find(receiver, name->data, name->len);
   if (slot == SIZE_MAX) return NULL;
   const ScrDynEntry *found = &receiver->v.obj.entries[slot];
   if (found->accessor) return NULL;
+  if (shared) *shared = (ScrJsSharedLoad){name->data, (ScrJsIcEntry){shape, NULL, NULL, NULL, slot}};
   scr_js_ic_add(ic, UINT32_MAX, (ScrJsIcEntry){NULL, NULL, NULL, NULL, slot});
   return scr_dyn_retain(found->value);
 }

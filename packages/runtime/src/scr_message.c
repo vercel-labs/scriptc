@@ -376,6 +376,7 @@ static size_t scr_message_value(ScrMessageEncoder *encoder, const ScrDyn *input)
     }
     node->kind = SCR_MESSAGE_TYPED_REF;
     node->v.typed_index = encoder->typed_count;
+    scr_dyn_typed_ref_register_if_needed((ScrDyn *)input);
     encoder->typed[encoder->typed_count++] = (ScrMessageTyped){
       input->v.typed_ref.ptr, input->v.typed_ref.retain, input->v.typed_ref.release,
       input->v.typed_ref.type_key, input->v.typed_ref.type_key_len, input->v.typed_ref.materialize,

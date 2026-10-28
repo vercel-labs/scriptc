@@ -1068,7 +1068,7 @@ static void scr_typed_ref_reserve(void) {
   free(old);
 }
 static void scr_typed_ref_forget(ScrDyn *value) {
-  if (!scr_typed_ref_capacity) return;
+  if (!scr_typed_ref_capacity || value->v.typed_ref.unregistered) return;
   size_t mask = scr_typed_ref_capacity - 1;
   size_t hole = scr_typed_ref_bucket(value->v.typed_ref.ptr);
   while (scr_typed_ref_slots[hole].capsule != value) {
@@ -4053,10 +4053,14 @@ static ScrDyn *scr_dyn_typed_ref_new(
     void *ptr, void *(*retain)(void *), void (*release)(void *),
     const char *type_key, size_t type_key_len,
     ScrDyn *(*materialize)(void *),
-    void (*commit)(void *, const ScrDyn *), bool traced, bool observed) {
+    void (*commit)(void *, const ScrDyn *), bool traced, bool observed, bool moved) {
+  /* A record whose one reference the caller hands over (a fresh result)
+   * has no capsule yet and gets none elsewhere while this one holds it. */
+  bool unregistered = moved && type_key_len >= 7 && memcmp(type_key, "record:", 7) == 0 &&
+                      (*(const uint64_t *)ptr & UINT32_MAX) == 1;
   scr_typed_ref_reserve();
   size_t slot = scr_typed_ref_bucket(ptr);
-  for (ScrDyn *value; (value = scr_typed_ref_slots[slot].capsule); slot = (slot + 1) & (scr_typed_ref_capacity - 1)) {
+  for (ScrDyn *value; !unregistered && (value = scr_typed_ref_slots[slot].capsule); slot = (slot + 1) & (scr_typed_ref_capacity - 1)) {
     if (scr_typed_ref_slots[slot].ptr == ptr && value->v.typed_ref.retain == retain &&
         value->v.typed_ref.materialize == materialize && value->v.typed_ref.commit == commit &&
         value->v.typed_ref.type_key_len == type_key_len && !memcmp(value->v.typed_ref.type_key, type_key, type_key_len)) {
@@ -4065,7 +4069,7 @@ static ScrDyn *scr_dyn_typed_ref_new(
       return scr_dyn_retain(value);
     }
   }
-  if (type_key_len >= (size_t)1 << 27) scr_trap("scriptc: typed reference key too long\n");
+  if (type_key_len >= (size_t)1 << 26) scr_trap("scriptc: typed reference key too long\n");
   ScrDyn *d = scr_dyn_alloc(SCR_DYN_TYPED_REF);
   d->v.typed_ref.ptr = retain(ptr);
   d->v.typed_ref.retain = retain;
@@ -4089,9 +4093,26 @@ static ScrDyn *scr_dyn_typed_ref_new(
   d->v.typed_ref.record = false;
   d->v.typed_ref.klass = false;
   d->v.typed_ref.bag_class = false;
+  d->v.typed_ref.unregistered = unregistered;
+  if (unregistered) return d;
   scr_typed_ref_slots[slot] = (ScrTypedRefSlot){d->v.typed_ref.ptr, d}; /* the empty slot that ended the probe */
   scr_typed_ref_count++;
   return d;
+}
+
+/* Enters a capsule boxed unregistered into the identity table, before a
+ * static reference to its record leaves it. */
+static void scr_typed_ref_register(ScrDyn *d) {
+  d->v.typed_ref.unregistered = false;
+  scr_typed_ref_reserve();
+  size_t slot = scr_typed_ref_bucket(d->v.typed_ref.ptr);
+  while (scr_typed_ref_slots[slot].capsule) slot = (slot + 1) & (scr_typed_ref_capacity - 1);
+  scr_typed_ref_slots[slot] = (ScrTypedRefSlot){d->v.typed_ref.ptr, d};
+  scr_typed_ref_count++;
+}
+
+void scr_dyn_typed_ref_register_if_needed(ScrDyn *d) {
+  if (d->kind == SCR_DYN_TYPED_REF && d->v.typed_ref.unregistered) scr_typed_ref_register(d);
 }
 
 ScrDyn *scr_dyn_new_typed_ref(
@@ -4100,7 +4121,7 @@ ScrDyn *scr_dyn_new_typed_ref(
     ScrDyn *(*materialize)(void *),
     void (*commit)(void *, const ScrDyn *)) {
   return scr_dyn_typed_ref_new(ptr, retain, release, type_key, type_key_len, materialize, commit,
-                               false, false);
+                               false, false, false);
 }
 
 ScrDyn *scr_dyn_new_typed_ref_traced(
@@ -4109,7 +4130,16 @@ ScrDyn *scr_dyn_new_typed_ref_traced(
     ScrDyn *(*materialize)(void *),
     void (*commit)(void *, const ScrDyn *)) {
   return scr_dyn_typed_ref_new(ptr, retain, release, type_key, type_key_len, materialize, commit,
-                               true, true);
+                               true, true, false);
+}
+
+ScrDyn *scr_dyn_new_typed_ref_traced_moved(
+    void *ptr, void *(*retain)(void *), void (*release)(void *),
+    const char *type_key, size_t type_key_len,
+    ScrDyn *(*materialize)(void *),
+    void (*commit)(void *, const ScrDyn *)) {
+  return scr_dyn_typed_ref_new(ptr, retain, release, type_key, type_key_len, materialize, commit,
+                               true, true, true);
 }
 
 ScrDyn *scr_dyn_new_typed_ref_observed(
@@ -4117,7 +4147,15 @@ ScrDyn *scr_dyn_new_typed_ref_observed(
     const char *type_key, size_t type_key_len,
     ScrDyn *(*materialize)(void *), void (*commit)(void *, const ScrDyn *)) {
   return scr_dyn_typed_ref_new(ptr, retain, release, type_key, type_key_len, materialize, commit,
-                               false, true);
+                               false, true, false);
+}
+
+ScrDyn *scr_dyn_new_typed_ref_observed_moved(
+    void *ptr, void *(*retain)(void *), void (*release)(void *),
+    const char *type_key, size_t type_key_len,
+    ScrDyn *(*materialize)(void *), void (*commit)(void *, const ScrDyn *)) {
+  return scr_dyn_typed_ref_new(ptr, retain, release, type_key, type_key_len, materialize, commit,
+                               false, true, true);
 }
 
 bool scr_dyn_typed_ref_is(
@@ -4132,6 +4170,7 @@ bool scr_dyn_typed_ref_is_key(const ScrDyn *d, const ScrStr *type_key) {
 }
 
 void *scr_dyn_typed_ref_unbox(const ScrDyn *d) {
+  if (d->v.typed_ref.unregistered) scr_typed_ref_register((ScrDyn *)d);
   return d->v.typed_ref.retain(d->v.typed_ref.ptr);
 }
 
@@ -19489,6 +19528,7 @@ void scr_dyn_decl_become(ScrDyn *n, const ScrDyn *capsule) {
   n->symbol_properties = NULL;
   n->symbol_keys = NULL;
   memset(&n->v, 0, sizeof n->v);
+  if (capsule->v.typed_ref.unregistered) scr_typed_ref_register(capsule);
   n->v.typed_ref = capsule->v.typed_ref;
   n->v.typed_ref.ptr = capsule->v.typed_ref.retain(capsule->v.typed_ref.ptr);
   n->v.typed_ref.materialized = NULL;

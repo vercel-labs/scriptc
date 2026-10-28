@@ -1258,7 +1258,7 @@ export function traceArg(host: ShapeHost, t: IrType): string {
 }
 
 /** Keep native capsule edges visible when the referent is cycle-capable. */
-export function typedRefConstructor(host: ShapeHost, t: IrType): string {
+export function typedRefConstructor(host: ShapeHost, t: IrType, moved = false): string {
   const observed =
     t.kind === "record" ||
     t.kind === "array" ||
@@ -1268,12 +1268,14 @@ export function typedRefConstructor(host: ShapeHost, t: IrType): string {
       !RUNTIME_ERROR_CLASSES.has(t.className) &&
       t.className !== RUNTIME_EMITTER_CLASS &&
       !RUNTIME_STREAM_CLASSES.has(t.className));
-  const name =
+  const base =
     traceAdapter(host, t) !== null
       ? "scr_dyn_new_typed_ref_traced"
       : observed
         ? "scr_dyn_new_typed_ref_observed"
         : "scr_dyn_new_typed_ref";
+  // A fresh record handed over whole needs no identity entry yet.
+  const name = moved && t.kind === "record" && base !== "scr_dyn_new_typed_ref" ? `${base}_moved` : base;
   host.declare(`declare ptr @${name}(ptr, ptr, ptr, ptr, ${host.sizeType}, ptr, ptr)`);
   return `@${name}`;
 }

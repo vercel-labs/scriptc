@@ -510,6 +510,10 @@ function emitClassCheck(
   const objectSlot = B.tmp(),
     object = B.tmp(),
     retained = B.tmp();
+  // The record leaves the capsule by reference: a capsule boxed without an
+  // identity entry takes one now.
+  host.declare(`declare void @scr_dyn_typed_ref_register_if_needed(ptr)`);
+  B.line(`call void @scr_dyn_typed_ref_register_if_needed(ptr ${value})`);
   B.line(`${objectSlot} = getelementptr inbounds i8, ptr ${value}, i64 16 ; ->v.typed_ref.ptr`);
   B.line(`${object} = load ptr, ptr ${objectSlot}`);
   B.line(`${retained} = call ptr ${vAdapters(host.shapeHost, type).retain}(ptr ${object})`);

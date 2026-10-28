@@ -142,9 +142,16 @@ export function emitDynamicExpr(
         const adapter = host.liveDynRefAdapter(v.type);
         const rc = vAdapters(host.shapeHost, v.type);
 
+        // A call's result or a literal is a temporary the box is about to
+        // take over (the frame releases it right after).
+        let produced: IrExpr = e.value;
+        while (produced.kind === "seqExpr") produced = produced.result;
+        const fresh =
+          (produced.kind === "call" && !host.borrowedReturns.has(produced.callee)) ||
+          produced.kind === "recordLit";
         const boxed = B.tmp();
         B.line(
-          `${boxed} = call ptr ${typedRefConstructor(host.shapeHost, v.type)}(ptr ${v.name}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${host.cstr(key)}, ${host.sizeType} ${Buffer.byteLength(key, "utf8")}, ptr @${adapter.snapshot}, ptr ${adapter.commit})`,
+          `${boxed} = call ptr ${typedRefConstructor(host.shapeHost, v.type, fresh)}(ptr ${v.name}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${host.cstr(key)}, ${host.sizeType} ${Buffer.byteLength(key, "utf8")}, ptr @${adapter.snapshot}, ptr ${adapter.commit})`,
         );
         for (const line of bindLiveArrayOps(host.shapeHost, adapter, boxed)) B.line(line);
         return host.own({ name: boxed, type: e.type });

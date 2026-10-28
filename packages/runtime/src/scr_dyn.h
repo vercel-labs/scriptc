@@ -582,7 +582,12 @@ struct ScrDyn {
       /* One word keeps this, the largest payload, at its previous size.
        * Dynamic-tier inline caches read record, klass and bag_class as
        * the word's top three bits (backend/llvm/js-ic.ts nativeArray). */
-      uint32_t type_key_len : 27;
+      uint32_t type_key_len : 26;
+      /* Not in the identity table: a fresh record boxed with its only
+       * reference, which nothing can box again until a static reference
+       * comes back out of this capsule (scr_dyn_typed_ref_unbox registers
+       * it then). */
+      uint32_t unregistered : 1;
       uint32_t traced : 1; /* native referent has a cycle header */
       uint32_t observed : 1; /* native release reports this identity's disposal */
       uint32_t record : 1; /* `array` holds ScrDynTypedRecordOps */
@@ -735,6 +740,9 @@ static inline const ScrDynTypedArrayOps *scr_dyn_typed_ref_array_ops(const ScrDy
 
 /* BORROWED member lookup on a SCR_DYN_OBJ; NULL when the key is absent. */
 ScrDyn *scr_dyn_obj_get(const ScrDyn *d, const char *key, size_t key_len);
+/* Enters a capsule boxed without an identity entry (a fresh record handed
+ * over whole) into the table, before its record leaves it by reference. */
+void scr_dyn_typed_ref_register_if_needed(ScrDyn *d);
 /* A builtin stream method a capsule's cached view would answer again
  * (scr_json.c): borrowed, or NULL. */
 ScrDyn *scr_dyn_typed_ref_view_builtin_method(const ScrDyn *capsule, const char *method, size_t len);

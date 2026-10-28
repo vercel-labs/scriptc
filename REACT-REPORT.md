@@ -1162,6 +1162,32 @@ Profile-guided specialization of compiled code, the plan of Part 34, therefore a
 - `shapes.test.ts` has two failing tests from this branch's inline-release changes: "release builds inline only string and dyn retains and releases and Map retains" and "a function over the budget calls the runtime release at every site". Fix before shipping.
 - Six corpus programs from this branch lack TypeScript order baselines (`pnpm test:ts7 --baselines-only`).
 
+## Part 36: the object redesign, stage by stage (Oct 27)
+
+Measured by instructions retired per `/large` render (`/usr/bin/time -l`, the difference between 250 and 50 renders, `/tmp/ipr.sh`), which machine load does not move, and checked by wall time.
+
+### What the measurements ruled out
+
+- **Node size:** a C model of reference-counted 64-, 128- and 192-byte nodes, building and dropping 20,000-node lists (React's build-then-tear-down pattern), took 7.3, 6.3 and 6.8 ns per pair. Halving `ScrDyn` would not speed up React, so the layout rewrite was dropped.
+- **What is left:** the floor model is faster because it executes fewer instructions per object's life. Stepping one iteration in `lldb` put an empty object at about 91 instructions (dispose 32, release 21, allocation 15, `scr_dyn_obj_drop_keys` 15). The redesign is therefore cutting instructions on the hot runtime paths.
+- **Tooling:** an in-process sampler thread (Mach `thread_suspend` plus `thread_get_state` on the main thread; `/tmp/pcsampler.c`, added and removed with `/tmp/addsampler.py`) gives unbiased per-instruction samples. `SIGPROF` on macOS records page-fault sites instead.
+
+### Stages landed
+
+| commit | change | instructions per render |
+|---|---|---|
+| baseline | (S81) | 136.7M |
+| `84bc5f66f` | plain objects die through a short path into a clean pool, reused with five stores; shapes cache their key arrays and an entry's flags are one store; one immortal box per literal and function (a growable table, ordinary boxes past 64K); the dispose hook is installed only while a weak collection holds a key or a record keeps its source (React creates development-only `WeakMap`s it never fills) | 130.5M |
+| `896c1c378` | record symbol fields read in place by compiled get sites (`element.$$typeof`: 24K probes per render gone; offsets carry `RECORD_SYMBOL_FIELD`, read through `ScrSym.box`) | 128.8M |
+| `896c1c378`, `28cf5c66b` | function property reads remembered per (function, key) with the table's identity and shape (33K per render: `prototype`, `name`, `displayName`, `$$typeof`, `defaultProps`); a 512-slot recent cache in front of the literal box table | 126.3M |
+
+**Wall time:** `/large` 5.79 → 5.48 ms, `/medium` 313 → 304 µs. The HTML is identical on all routes, and RSS stays bounded.
+
+### Remaining probe misses per render
+
+- `type.defaultProps` on string types (`"td"`): 6K;
+- `config.key` in `createElement` and `hasValidKey`: 5.5K each.
+
 ## Known scriptc gaps found along the way (not fixed)
 
 - A top-level function's property table (built by a dynamic `.name` or `.length` read) lives as long as the program; the sanitized audit reports it at exit.

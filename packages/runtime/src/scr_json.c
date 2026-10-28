@@ -1130,82 +1130,7 @@ static void scr_dyn_region_leave(ScrDyn *d) {
   *slot = NULL;
 }
 
-/* ── young checked values (REACT-REPORT.md Part 32) ─────────────────────
- * With SCR_YOUNG=1, every checked value is born young: generation
- * SCR_CYC_YOUNG, `buf` SCR_CYC_ACYCLIC (never a cycle candidate, so no
- * release buffers it), listed in scr_young. Every reference to a young
- * value is counted except those in a young container's slots (object entry
- * values, array items: SCR_YOUNG_SLOTS_OBJ/ARR once their store sites keep
- * the rule), so a young value with a nonzero count is referenced from
- * outside the young set. A young value's count reaching zero frees nothing;
- * the collection marks from counted values through young slots, promotes
- * what it reached (counting the slots of each promoted container) and
- * returns the rest to the pool, releasing only their counted references.
- * An old value whose count reaches zero while young values exist may sit
- * in a young slot uncounted: its teardown waits in scr_young_deferred until
- * the next collection. */
-#define SCR_YOUNG_LIMIT 16384
-#define SCR_CYC_DEFERRED 4 /* generation of an old value waiting in scr_young_deferred */
-#define SCR_YOUNG_MARKED 0x80 /* color bits of a young value */
-#define SCR_YOUNG_IN_SLOT 0x40 /* stored in a young slot: its count may undercount holders */
-static SCR_TL ScrDyn **scr_young, **scr_young_stack, **scr_young_deferred;
-static SCR_TL size_t scr_young_n, scr_young_cap, scr_young_stack_n, scr_young_stack_cap,
-    scr_young_deferred_n, scr_young_deferred_cap;
-static SCR_TL int scr_young_on = -1;
-static SCR_TL bool scr_young_collecting;
-
-static inline bool scr_dyn_young(const ScrDyn *d) {
-  return scr_cyc_gen(scr_cyc_hdr((ScrDyn *)d)) == SCR_CYC_YOUNG;
-}
-
-/* Slots of young containers hold uncounted references. Each container
- * family switches once every one of its store and removal sites keeps the
- * rule. */
-#define SCR_YOUNG_SLOTS_OBJ 0
-#define SCR_YOUNG_SLOTS_ARR 0
-static inline bool scr_dyn_uncounted_slots(const ScrDyn *container) {
-  if (!scr_dyn_young(container)) return false;
-  return container->kind == SCR_DYN_OBJ ? SCR_YOUNG_SLOTS_OBJ : container->kind == SCR_DYN_ARR && SCR_YOUNG_SLOTS_ARR;
-}
-
-static void scr_young_push(ScrDyn ***vec, size_t *n, size_t *cap, ScrDyn *d) {
-  if (*n == *cap) {
-    size_t grown = *cap ? *cap * 2 : 1024;
-    ScrDyn **next = realloc(*vec, grown * sizeof *next);
-    if (!next) scr_json_oom();
-    *vec = next;
-    *cap = grown;
-  }
-  (*vec)[(*n)++] = d;
-}
-
-static void scr_young_collect(void);
-
-static inline void scr_dyn_young_enter(ScrDyn *d) {
-  ScrCycHdr *h = scr_cyc_hdr(d);
-#ifndef SCR_RC_AUDIT
-  if (scr_young_on < 0) scr_young_on = getenv("SCR_YOUNG") != NULL;
-  if (scr_young_on && !scr_young_collecting) {
-    scr_cyc_young_hook = scr_young_collect;
-    if (scr_young_n >= SCR_YOUNG_LIMIT) scr_young_collect();
-    scr_cyc_set_gen(h, SCR_CYC_YOUNG);
-    scr_cyc_set_color(h, SCR_CYC_BLACK);
-    h->buf = SCR_CYC_ACYCLIC;
-    scr_young_push(&scr_young, &scr_young_n, &scr_young_cap, d);
-    return;
-  }
-#endif
-  h->buf = 0;
-}
-
-static ScrDyn *scr_dyn_alloc_node(ScrDynKind kind);
 static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
-  ScrDyn *d = scr_dyn_alloc_node(kind);
-  scr_dyn_young_enter(d);
-  return d;
-}
-
-static ScrDyn *scr_dyn_alloc_node(ScrDynKind kind) {
 #ifndef SCR_RC_AUDIT
   ScrDyn **list = kind == SCR_DYN_ARR   ? &scr_dyn_free_arr
                   : kind == SCR_DYN_OBJ ? &scr_dyn_free_obj
@@ -1288,7 +1213,6 @@ static inline ScrDyn *scr_dyn_leaf_alloc(ScrDynKind kind) {
     d->null_proto = false;
     d->copied_from_native = false;
     d->non_extensible = false;
-    scr_dyn_young_enter(d);
     return d;
   }
 #endif
@@ -1381,16 +1305,13 @@ static void scr_dyn_dispose(ScrDyn *d, bool collected) {
       d->v.arr.presence = NULL;
     }
     if (!collected) {
-      /* A dead young container's items were never counted. */
-      if (!scr_dyn_uncounted_slots(d))
-        for (size_t i = 0; i < d->v.arr.len; i++) scr_dyn_release_child(d->v.arr.items[i]);
+      for (size_t i = 0; i < d->v.arr.len; i++) scr_dyn_release_child(d->v.arr.items[i]);
       scr_dyn_release_child(d->v.arr.properties);
     }
     break;
   case SCR_DYN_OBJ:
     for (size_t i = 0; i < d->v.obj.len; i++) {
       ScrDyn *value = d->v.obj.entries[i].value;
-      if (scr_dyn_uncounted_slots(d)) value = NULL; /* never counted */
       if (!collected || !d->v.obj.entries[i].value_traced) scr_dyn_release_child(value);
       if (!collected) {
         scr_dyn_release_child(SCR_DYN_ENTRY_GETTER(&d->v.obj.entries[i]));
@@ -1492,19 +1413,9 @@ static SCR_TL bool scr_dyn_draining;
 static SCR_TL ScrDyn **scr_dyn_dead;
 static SCR_TL size_t scr_dyn_dead_count, scr_dyn_dead_capacity;
 
-static void scr_dyn_die(ScrDyn *d);
-
 void scr_dyn_release(ScrDyn *d) {
   if (!d || d->rc == SIZE_MAX) return;
-  ScrCycHdr *header = scr_cyc_hdr(d);
-  unsigned gen = scr_cyc_gen(header);
-  /* A young value's liveness is the collection's to decide. */
-  if (gen == SCR_CYC_YOUNG) {
-    if (d->rc) d->rc--;
-    return;
-  }
   if (--d->rc != 0) {
-    if (gen == SCR_CYC_DEFERRED) return; /* scr_young_collect restores it */
     /* A container of an intact parse region cannot lie on a cycle
      * (ScrDynRegion). */
     if (d->kind == SCR_DYN_ARR || d->kind == SCR_DYN_OBJ) {
@@ -1522,20 +1433,6 @@ void scr_dyn_release(ScrDyn *d) {
       scr_cyc_released(d);
     return;
   }
-  if (gen == SCR_CYC_DEFERRED) return; /* already waiting */
-  /* A young slot may hold this value uncounted until the next collection. */
-  if (scr_young_n) {
-    scr_cyc_dead(d);
-    scr_cyc_set_gen(header, SCR_CYC_DEFERRED);
-    header->buf = SCR_CYC_ACYCLIC; /* inline releases make no survivor call */
-    scr_young_push(&scr_young_deferred, &scr_young_deferred_n, &scr_young_deferred_cap, d);
-    return;
-  }
-  scr_dyn_die(d);
-}
-
-/* The teardown of an old value whose count reached zero. */
-static void scr_dyn_die(ScrDyn *d) {
 #ifndef SCR_RC_AUDIT
   /* Number and string boxes own at most one string and cannot be weak
    * keys: return them to the free list. Their releases never buffer them,
@@ -1581,118 +1478,6 @@ static void scr_dyn_die(ScrDyn *d) {
   while (scr_dyn_dead_count) scr_dyn_dispose(scr_dyn_dead[--scr_dyn_dead_count], false);
   scr_dyn_draining = false;
 }
-
-/* The checked children of `d` with whether each reference is counted
- * (a young container's slots are not). */
-#define SCR_YOUNG_EDGE(child, counted) \
-  do { \
-    ScrDyn *edge_ = (child); \
-    if (edge_ && edge_->rc != SIZE_MAX && scr_dyn_young(edge_)) visit(edge_, (counted), ctx); \
-  } while (0)
-static void scr_young_edges(ScrDyn *d, void (*visit)(ScrDyn *, bool, void *), void *ctx) {
-  SCR_YOUNG_EDGE(d->prototype, true);
-  SCR_YOUNG_EDGE(d->symbol_properties, true);
-  SCR_YOUNG_EDGE(d->symbol_keys, true);
-  bool slots_counted = !scr_dyn_uncounted_slots(d);
-  switch (d->kind) {
-  case SCR_DYN_ARR:
-    for (size_t i = 0; i < d->v.arr.len; i++) SCR_YOUNG_EDGE(d->v.arr.items[i], slots_counted);
-    SCR_YOUNG_EDGE(d->v.arr.properties, true);
-    break;
-  case SCR_DYN_OBJ:
-    for (size_t i = 0; i < d->v.obj.len; i++) {
-      const ScrDynEntry *e = &d->v.obj.entries[i];
-      SCR_YOUNG_EDGE(e->value, slots_counted);
-      if (e->pair) {
-        SCR_YOUNG_EDGE(e->pair->getter, true);
-        SCR_YOUNG_EDGE(e->pair->setter, true);
-      }
-    }
-    break;
-  case SCR_DYN_TYPED_REF:
-    SCR_YOUNG_EDGE(d->v.typed_ref.materialized, true);
-    break;
-  case SCR_DYN_PROXY:
-    SCR_YOUNG_EDGE(d->v.proxy.target, true);
-    SCR_YOUNG_EDGE(d->v.proxy.handler, true);
-    break;
-  default:
-    break;
-  }
-}
-
-/* During a collection a young value's `buf` counts the counted references
- * other young values hold to it. */
-static void scr_young_count_edge(ScrDyn *child, bool counted, void *ctx) {
-  (void)ctx;
-  if (counted) scr_cyc_hdr(child)->buf++;
-}
-
-static void scr_young_mark_edge(ScrDyn *child, bool counted, void *ctx) {
-  (void)counted;
-  (void)ctx;
-  ScrCycHdr *h = scr_cyc_hdr(child);
-  if (h->color & SCR_YOUNG_MARKED) return;
-  h->color |= SCR_YOUNG_MARKED;
-  scr_young_push(&scr_young_stack, &scr_young_stack_n, &scr_young_stack_cap, child);
-}
-
-static void scr_young_collect(void) {
-  if (scr_young_collecting || !scr_young_n) return;
-  scr_young_collecting = true;
-  size_t n = scr_young_n;
-  /* Count the references young values hold to each other, counted ones. */
-  for (size_t i = 0; i < n; i++) scr_cyc_hdr(scr_young[i])->buf = 0;
-  for (size_t i = 0; i < n; i++) scr_young_edges(scr_young[i], scr_young_count_edge, NULL);
-  /* Roots: more counted references than the young set holds. Mark from
-   * them through every edge into the young set. */
-  for (size_t i = 0; i < n; i++) {
-    ScrDyn *d = scr_young[i];
-    ScrCycHdr *h = scr_cyc_hdr(d);
-    if (d->rc > h->buf && !(h->color & SCR_YOUNG_MARKED)) {
-      h->color |= SCR_YOUNG_MARKED;
-      scr_young_push(&scr_young_stack, &scr_young_stack_n, &scr_young_stack_cap, d);
-    }
-  }
-  while (scr_young_stack_n) scr_young_edges(scr_young_stack[--scr_young_stack_n], scr_young_mark_edge, NULL);
-  /* Sweep: the dead give up their counted references (deaths of old
-   * values they release wait, as young slots may still hold them); the
-   * marked are promoted, their uncounted slots counted. */
-  for (size_t i = 0; i < n; i++) {
-    ScrDyn *d = scr_young[i];
-    ScrCycHdr *h = scr_cyc_hdr(d);
-    if (h->color & SCR_YOUNG_MARKED) continue;
-    h->buf = SCR_CYC_ACYCLIC;
-    scr_dyn_dispose(d, false);
-  }
-  for (size_t i = 0; i < n; i++) {
-    ScrDyn *d = scr_young[i];
-    ScrCycHdr *h = scr_cyc_hdr(d);
-    if (!(h->color & SCR_YOUNG_MARKED)) continue;
-    bool uncounted = scr_dyn_uncounted_slots(d);
-    scr_cyc_set_color(h, SCR_CYC_BLACK);
-    scr_cyc_set_gen(h, SCR_CYC_NURSERY);
-    h->buf = 0;
-    if (!uncounted) continue;
-    if (d->kind == SCR_DYN_OBJ) {
-      for (size_t k = 0; k < d->v.obj.len; k++) scr_dyn_retain(d->v.obj.entries[k].value);
-    } else {
-      for (size_t k = 0; k < d->v.arr.len; k++) scr_dyn_retain(d->v.arr.items[k]);
-    }
-  }
-  scr_young_n = 0;
-  /* Deaths that waited: those still unreferenced die now. */
-  while (scr_young_deferred_n) {
-    ScrDyn *d = scr_young_deferred[--scr_young_deferred_n];
-    ScrCycHdr *h = scr_cyc_hdr(d);
-    scr_cyc_set_gen(h, SCR_CYC_NURSERY);
-    h->buf = 0;
-    if (d->rc == 0) scr_dyn_die(d);
-  }
-  scr_young_collecting = false;
-}
-
-void scr_dyn_young_collect(void) { scr_young_collect(); }
 
 /* Small objects retain their compact linear representation. A wide object
  * owns a bucket index of entry positions; entries remain insertion ordered.

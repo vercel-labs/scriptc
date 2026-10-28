@@ -306,9 +306,6 @@ static inline void scr_cyc_clear_buffered(ScrCycHdr *h) { h->buf = 0; }
  * pointer (header at scr_cyc_hdr). `type` must outlive the object (a
  * static descriptor). Aborts on OOM. */
 void *scr_cyc_alloc(size_t size, ScrCycType *type);
-/* Runs before every cycle-collection pass when checked values have a young
- * generation (scr_json.c). */
-extern SCR_TL void (*scr_cyc_young_hook)(void);
 void scr_cyc_free(void *obj); /* frees the block, header included */
 
 /* ── small-object allocator (scr_alloc.c) ───────────────────────────────

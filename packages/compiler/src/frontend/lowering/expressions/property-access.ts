@@ -25,6 +25,7 @@ import {
   privateNameClass,
 } from "../private-brands.js";
 import { type Lowerer, PoisonError, jsFuncNameOf, neverTaintedJsType, own } from "../lowerer.js";
+import { keepsLivePropertyTable } from "../live-property-table.js";
 import {
   ARRAY_METHODS,
   MAP_METHODS,
@@ -1654,6 +1655,29 @@ export function lowerPropertyAccessExpr(
   if (
     recvLowered.type.kind === "bytes" &&
     (lowerer.typeOf(expr.expression).flags & ts.TypeFlags.Any) !== 0
+  ) {
+    return lowerer.maybeNarrow(
+      {
+        kind: "dynKeyGet",
+        value: lowerer.coerceToExpected(recvLowered, DYN),
+        key: { kind: "strLit", value: expr.name.text, type: STRING, loc },
+        type: DYN,
+        loc,
+      },
+      expr,
+    );
+  }
+  // An own property the static shape does not carry — the read side of an
+  // expando write (`__expected.index = 0` then `__expected.index`), or a
+  // member the representation has no slot for while Node's object does
+  // (`RegExpMatchArray.index` once the checker's type lowers to the array).
+  // Node answers the value's own property, else its prototype chain's, else
+  // undefined; the live checked-dynamic capsule is where the object model
+  // keeps exactly those properties. A declared field and every represented
+  // member answer above, so this arm only replaces the fence.
+  if (
+    lowerer.dynConvertible(recvLowered.type) &&
+    keepsLivePropertyTable(lowerer, recvLowered.type)
   ) {
     return lowerer.maybeNarrow(
       {

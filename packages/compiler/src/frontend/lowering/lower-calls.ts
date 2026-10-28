@@ -11946,11 +11946,18 @@ export function lowerObjectMethodCall(
     } else {
       const loc = locOf(call);
       const stmts: IrStmt[] = [{ kind: "exprStmt", expr: lowerReceiver(), loc }];
-      for (const arg of call.arguments.nodes) stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(arg), loc: locOf(arg) });
+      for (const arg of call.arguments.nodes)
+        stmts.push({ kind: "exprStmt", expr: lowerer.lowerExpr(arg), loc: locOf(arg) });
       return {
         kind: "seqExpr",
         stmts,
-        result: nodeThrowExpr(1, "", `${ts.getTextOfNode(access)} is not a function`, found.sig.ret, loc),
+        result: nodeThrowExpr(
+          1,
+          "",
+          `${ts.getTextOfNode(access)} is not a function`,
+          found.sig.ret,
+          loc,
+        ),
         type: found.sig.ret,
         loc,
       };

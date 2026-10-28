@@ -1542,8 +1542,18 @@ static __attribute__((noinline)) ScrDynEntry *scr_dyn_find_indexed_entry(
   return NULL;
 }
 
+#ifdef SCR_JS_TIER
+size_t scr_js_shape_key_slot(const ScrDyn *object, const char *key);
+#endif
+
 static ScrDynEntry *scr_dyn_find_entry(const ScrDyn *object, const char *key, size_t length) {
   if (object->kind != SCR_DYN_OBJ) return NULL;
+#ifdef SCR_JS_TIER
+  /* A for-in key read back on its object (the loop's presence test, its
+   * hasOwnProperty, its read) names its slot by address. */
+  size_t known = scr_js_shape_key_slot(object, key);
+  if (known != SIZE_MAX) return &object->v.obj.entries[known];
+#endif
   if (object->v.obj.index) return scr_dyn_find_indexed_entry(object, key, length);
   size_t slot = (length + (length ? (unsigned char)key[0] * 7u : 0)) % SCR_DYN_PROPERTY_HINTS;
   size_t hint = scr_dyn_property_hints[slot];

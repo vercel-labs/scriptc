@@ -59,6 +59,9 @@ struct ScrJsShape {
   /* One bit per key on the path (scr_js_key_bit): a key whose bit is clear
    * is not an own property of objects of this shape. */
   uint64_t bloom;
+  /* The bytes of each key_strs string, in order: a for-in key read back
+   * on an object of this shape finds its entry by address. */
+  const char **key_data;
 };
 
 /* Compiled get sites test a key's filter bit inline (js-ic.ts emitGet). */
@@ -112,6 +115,8 @@ typedef struct {
 static SCR_TL ScrJsAdoptMemo scr_js_adopt_memos[SCR_JS_ADOPT_MEMOS];
 
 static void scr_js_key_strs_free(ScrJsShape *shape) {
+  free(shape->key_data);
+  shape->key_data = NULL;
   if (!shape->key_strs) return;
   shape->key_strs->rc = 1;
   scr_arr_release(shape->key_strs);
@@ -257,12 +262,17 @@ ScrArr *scr_js_for_in_keys(ScrDyn *object) {
     const ScrJsShape *path[SCR_JS_SHAPE_MAX];
     for (const ScrJsShape *s = shape; s->parent; s = s->parent) path[s->count - 1] = s;
     ScrArr *keys = scr_arr_new(SCR_ELEM_STR, shape->count);
+    const char **data = shape->count ? malloc(shape->count * sizeof *data) : NULL;
+    if (shape->count && !data) scr_trap("scriptc: out of memory\n");
     bool index_keys = false;
     for (uint32_t i = 0; i < shape->count; i++) {
       uint32_t index;
       index_keys = index_keys || scr_key_array_index(path[i]->key, path[i]->key_len, &index);
-      scr_arr_push_ref(keys, scr_str_new(path[i]->key, path[i]->key_len));
+      ScrStr *key = scr_str_new(path[i]->key, path[i]->key_len);
+      data[i] = key->data;
+      scr_arr_push_ref(keys, key);
     }
+    shape->key_data = data;
     if (!shape->parent && !scr_js_shapes_registered) {
       scr_js_shapes_registered = true;
       scr_atexit(scr_js_shapes_reset);
@@ -275,6 +285,17 @@ ScrArr *scr_js_for_in_keys(ScrDyn *object) {
   for (size_t i = 0; i < object->v.obj.len; i++)
     if (!object->v.obj.entries[i].enumerable) return NULL;
   return shape->key_strs;
+}
+
+/* The entry of a key whose bytes are one of the for-in key strings of
+ * `object`'s shape, by address; SIZE_MAX otherwise. The object holds
+ * exactly its shape's keys, in order. */
+size_t scr_js_shape_key_slot(const ScrDyn *object, const char *key) {
+  const ScrJsShape *shape = object->v.obj.shape;
+  if (!shape || !shape->key_data || shape->count != object->v.obj.len) return SIZE_MAX;
+  for (uint32_t i = 0; i < shape->count; i++)
+    if (shape->key_data[i] == key) return i;
+  return SIZE_MAX;
 }
 
 /* The entry index of `key` in `object` (of its shape): its entries are

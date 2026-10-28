@@ -88,17 +88,17 @@ export const NULLABLE_NULL = "@sc_nullable_null";
 export const NULLABLE_ABSENT = "@sc_nullable_absent";
 
 /** The reference arms whose instances are never NULL. Class and record
- * entry points all tolerate NULL; strings, Stats snapshots, arrays, maps and
- * sets retain through a NULL-skipping wrapper (shapes.ts), as do closures
- * (function arms). Object arms are always truthy and compare by identity
- * (function arms by identity root); string arms are truthy when non-empty
- * and compare bytes. */
+ * entry points all tolerate NULL; strings, Stats snapshots, arrays, typed
+ * arrays, maps and sets retain through a NULL-skipping wrapper (shapes.ts),
+ * as do closures (function arms). Object arms are always truthy and compare
+ * by identity (function arms by identity root); string arms are truthy when
+ * non-empty and compare bytes. */
 export type NullableRefArm =
   | { kind: "object"; className: string }
   | { kind: "record"; shapeId: string }
   | { kind: "string" }
   | { kind: "stats" }
-  | (IrType & { kind: "array" | "map" | "set" | "func" });
+  | (IrType & { kind: "array" | "bytes" | "map" | "set" | "func" });
 
 /** The arm is a JS object: always truthy. */
 export function isObjectArm(nullable: PointerUnion): boolean {
@@ -273,7 +273,13 @@ function nullableShape(
     return { ...base, arm: { kind: "record", shapeId: arm.shapeId } };
   if (arm.kind === "string") return { ...base, arm: { kind: "string" } };
   if (arm.kind === "stats") return { ...base, arm: { kind: "stats" } };
-  if (arm.kind === "array" || arm.kind === "map" || arm.kind === "set" || arm.kind === "func")
+  if (
+    arm.kind === "array" ||
+    arm.kind === "bytes" ||
+    arm.kind === "map" ||
+    arm.kind === "set" ||
+    arm.kind === "func"
+  )
     return { ...base, arm };
   return null;
 }

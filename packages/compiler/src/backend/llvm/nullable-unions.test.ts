@@ -130,3 +130,19 @@ test("function arms are nullable pointers compared by identity root", () => {
   expect(isPointerIdentityArm(single)).toBe(false);
   expect(unions.armTypes().get("fu")).toEqual(fn);
 });
+
+test("typed array arms are nullable pointers compared by identity", () => {
+  const i32: IrType = { kind: "bytes", elem: "i32" };
+  const unions = new NullableUnions(
+    module([
+      { id: "iu", arms: [i32, UNDEFINED_T] },
+      { id: "nin", arms: [NULL_T, i32, UNDEFINED_T] },
+      { id: "if", arms: [i32, F64] },
+    ]),
+  );
+  expect(unions.single("iu")).toMatchObject({ refTag: 0, unitTag: 1, nullTag: -1, arm: i32 });
+  expect(unions.single("nin")).toMatchObject({ refTag: 1, unitTag: 2, nullTag: 0, arm: i32 });
+  expect(unions.get("if")).toBeNull();
+  expect(isObjectArm(unions.single("iu")!)).toBe(true);
+  expect(isPointerIdentityArm(unions.single("iu")!)).toBe(true);
+});

@@ -164,10 +164,11 @@ export class LinkerJobs {
    * Runs the link that the driver arguments `args` describe as its recorded
    * job. `paths` are the link's own inputs and output among `args`, which may
    * differ from build to build; `stage` is the directory they are in. Without
-   * an entry, `list` records the job first with the driver's `-v -###`;
+   * an entry, or with one whose job names a path that changed since it was
+   * recorded, `list` records the job first with the driver's `-v -###`;
    * otherwise the caller links through the driver and passes its `-v` output
-   * to record(). Null when the link has to run through the driver: no job is
-   * recorded, a recorded path changed, or the job failed.
+   * to record(), which records it again. Null when the link has to run
+   * through the driver: no job is recorded, or the job failed.
    */
   run(
     args: readonly string[],
@@ -180,7 +181,7 @@ export class LinkerJobs {
       const roots = [resolve(stage), realpathSync(stage)];
       const key = this.key(args, paths, roots);
       if (key === null) return null;
-      let entry = this.read(key, paths.length);
+      let entry = this.fresh(this.read(key, paths.length));
       if (entry === null && list) {
         const result = spawnSync(this.driver, [...args, "-v", "-###"], {
           encoding: "utf8",
@@ -190,7 +191,7 @@ export class LinkerJobs {
           return null;
         entry = this.store(key, result.stdout + "\n" + result.stderr, paths, roots);
       }
-      if (entry === null || entry.job === null || !stillMatches(entry.inputs)) return null;
+      if (entry === null || entry.job === null) return null;
       const job = entry.job.map((token) => (typeof token === "number" ? paths[token]! : token));
       const result = spawnSync(job[0]!, job.slice(1), {
         encoding: "utf8",
@@ -204,6 +205,14 @@ export class LinkerJobs {
     } catch {
       return null;
     }
+  }
+
+  /** `entry`, or null when a path its job names changed since it was
+   * recorded: the next link through the driver records the job again. An
+   * entry without a job, a link the driver cannot hand to one ld.lld job,
+   * stays. */
+  private fresh(entry: LinkerJobEntry | null): LinkerJobEntry | null {
+    return entry !== null && entry.job !== null && !stillMatches(entry.inputs) ? null : entry;
   }
 
   private read(key: string, paths: number): LinkerJobEntry | null {
@@ -231,7 +240,7 @@ export class LinkerJobs {
     try {
       const roots = [resolve(stage), realpathSync(stage)];
       const key = this.key(args, paths, roots);
-      if (key !== null && this.read(key, paths.length) === null)
+      if (key !== null && this.fresh(this.read(key, paths.length)) === null)
         this.store(key, output, paths, roots, driverInputs);
     } catch {
       /* The next link records it. */

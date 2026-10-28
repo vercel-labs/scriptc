@@ -191,8 +191,10 @@ test("a loop over a counter array tests its kind once on entry", async () => {
     /icmp eq i8 %\w+, 7\n\s+br i1 %\w+, label %kind\.fast\d+, label %kind\.wide/,
   );
   const rest = counter.slice(counter.search(/^kind\.fast\d+:/m));
-  // The fast copy is the last one, before the loop's exit.
-  const fast = rest.slice(0, rest.search(/^loop\.e\d+:/m));
+  // The fast copy is the last one, before the loop's exit or, when the
+  // loop is also versioned on `n`'s entry range, before the copy for other
+  // entry values.
+  const fast = rest.slice(0, rest.search(/^(loop\.e|entry\.slow)\d+:/m));
   expect(fast).not.toBe("");
   expect(fast).not.toMatch(/icmp eq i8 %\w+, 7/);
   expect(fast).toMatch(/add nsw i64 %\w+, 1/);

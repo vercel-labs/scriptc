@@ -18,6 +18,7 @@ import {
 } from "../mangle.js";
 import {
   type IrGlobal,
+  type IrNodeIslandModules,
   type IrType,
   RUNTIME_ERROR_CLASSES,
   RUNTIME_EVENT_CLASS,
@@ -58,7 +59,8 @@ import {
   ffiNativeTypeLl,
 } from "./common.js";
 import { literalCapWord, literalCapWord32 } from "./string-key-hash.js";
-import { hasLoneSurrogate, wtf8Bytes } from "../literals.js";
+import { hasLoneSurrogate, llvmBytes, wtf8Bytes } from "../literals.js";
+import { nodeIslandManifest } from "../../node-islands/modules.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
 import { NULLABLE_ABSENT, NULLABLE_NULL } from "./nullable-unions.js";
 import { literalEqualityDefinition } from "./string-literal-equality.js";
@@ -411,6 +413,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   const usesEvents = runtimeFeatures.processEvents;
   const usesChildProcess = runtimeFeatures.childProcess;
   const usesFsWatch = runtimeFeatures.fsWatch;
+  // Programs that call into Node record the libnode pack and its Node
+  // version before %main (scr_node_island.c).
+  const usesNodeIsland = runtimeFeatures.nodeIsland;
   // Stream-surface programs fill the loop's stream hook (the deferred
   // next-tick emissions) and the emitter's post-registration flow kick
   // before %main — scr_stream.c links only when the line is emitted
@@ -471,6 +476,19 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (workerStdioBox || workerStdinBox)
     emitter.declare(`declare void @scr_worker_stdio_install(ptr, ptr, ptr)`);
   if (usesFsWatch) emitter.declare(`declare void @scr_watch_install()`);
+  if (usesNodeIsland) emitter.declare(`declare void @scr_node_island_install(ptr, ptr)`);
+  // Interned now: the C-string constants flush before main assembles.
+  const nodeIslandConfig = usesNodeIsland
+    ? [
+        emitter.cstr(emitter.mod.nodeIsland?.libnode ?? ""),
+        emitter.cstr(emitter.mod.nodeIsland?.nodeVersion ?? ""),
+      ]
+    : null;
+  // The island module tree: its manifest, and its files unless they ship
+  // beside the executable (node-islands/modules.ts).
+  const nodeIslandModules = usesNodeIsland ? emitter.mod.nodeIsland?.modules : undefined;
+  const nodeIslandModulesCall =
+    nodeIslandModules === undefined ? null : nodeIslandModulesInstall(emitter, nodeIslandModules);
   if (emitter.ffiHasForeignCallback) emitter.declare(`declare void @scr_ffi_install()`);
   if (usesStream) emitter.declare(`declare void @scr_stream_install()`);
   if (usesNetLookup) emitter.declare(`declare void @scr_net_lookup_install()`);
@@ -841,6 +859,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     for (let site = 0; site < emitter.jsIcSiteCount; site++)
       out.push(`@sc_js_ic_${site} = internal ${tl}global [${JS_IC_WORDS} x i64] zeroinitializer`);
   }
+  if (nodeIslandModulesCall !== null) out.push(...nodeIslandModulesCall.globals);
   for (const table of emitter.constantNumericTables.values()) {
     const n = table.values.length;
     let tableTmp = 0;
@@ -1139,6 +1158,12 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // fs.watch programs fill the loop's watch hooks the same way —
     // scr_watch.c links only when this line is emitted.
     ...(usesFsWatch ? [`  call void @scr_watch_install()`] : []),
+    ...(nodeIslandConfig
+      ? [
+          `  call void @scr_node_island_install(ptr ${nodeIslandConfig[0]}, ptr ${nodeIslandConfig[1]})`,
+        ]
+      : []),
+    ...(nodeIslandModulesCall === null ? [] : [nodeIslandModulesCall.call]),
     ...(emitter.ffiHasForeignCallback ? [`  call void @scr_ffi_install()`] : []),
     ...(snapshotsTlsCa ? [`  call void @scr_tls_ca_install()`] : []),
     ...(usesFetch ? [`  call void @scr_fetch_install()`] : []),
@@ -1407,6 +1432,33 @@ function hashedNumberProbe(
 /** The shared abort helpers (emitted only when referenced): the OOM
  * abort of untraced shape allocation and the invalid-union-tag abort —
  * both print the runtime ABI’s exact message on fd 2 and abort. */
+/** The island module tree's install call before %main, and the constant
+ * that carries its files when the executable ships them itself
+ * (scr_node_island.c: scr_node_island_install_modules). */
+function nodeIslandModulesInstall(
+  emitter: LlEmitter,
+  modules: IrNodeIslandModules,
+): { call: string; globals: string[] } {
+  emitter.declare(
+    `declare void @scr_node_island_install_modules(ptr, ${emitter.sizeType}, ptr, ${emitter.sizeType}, ptr)`,
+  );
+  const manifest = nodeIslandManifest(modules);
+  const manifestPtr = emitter.cstr(manifest);
+  const location = emitter.cstr(modules.location ?? "");
+  const data = modules.location === undefined ? emitter.nodeIslandModuleData : null;
+  const globals =
+    data === null || data.length === 0
+      ? []
+      : [
+          `@sc_node_island_modules = private unnamed_addr constant [${data.length} x i8] c"${llvmBytes(data, false)}", align 16`,
+        ];
+  const st = emitter.sizeType;
+  return {
+    call: `  call void @scr_node_island_install_modules(ptr ${manifestPtr}, ${st} ${Buffer.byteLength(manifest, "utf8")}, ptr ${globals.length > 0 ? "@sc_node_island_modules" : "null"}, ${st} ${globals.length > 0 ? data!.length : 0}, ptr ${location})`,
+    globals,
+  };
+}
+
 export function helperDefs(emitter: LlEmitter): string[] {
   const defs: string[] = [];
   const msgHelper = (fnName: string, msgSym: string, msg: string): void => {

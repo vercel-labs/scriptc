@@ -1,3 +1,4 @@
+import { constructorEscapePoint } from "../cycle-mutability.js";
 import {
   VOID,
   isRefCounted,
@@ -15,8 +16,8 @@ import {
 } from "./record-results.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import { mangleClassStruct, mangleRecordStruct } from "../mangle.js";
-import { undefinedArmTag } from "../../ir/analysis.js";
-import { classFieldIndex } from "./classes.js";
+import { classFieldIndex, classUndefinedFieldInits } from "./classes.js";
+import { CYC_BUF, CYC_HDR } from "./alloc.js";
 import type { CallLifetimes } from "./call-lifetimes.js";
 import { emitCallExpr, emitConstruction } from "./expr-calls.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
@@ -83,14 +84,69 @@ export function canStackObject(host: LlvmEmitterContext, e: IrExpr): e is StackO
   );
 }
 
+/** A standalone class whose instance can live in the frame of a binding
+ * that frame-escapes.ts proves stays in the frame. Unlike
+ * scalarStandaloneClass, its fields may own references: the frame owns
+ * them and releases them when the binding's scope exits. Classes in a
+ * hierarchy keep heap storage, as do the kinds canStackObject refuses. */
+export function frameClass(host: LlvmEmitterContext, className: string): boolean {
+  const meta = host.classMeta.get(className);
+  const ctor = host.fnByName.get(`%${className}.constructor`);
+  if (meta === undefined || ctor === undefined) return false;
+  const cls = meta.def;
+  if (
+    meta.hierarchy ||
+    meta.compact ||
+    meta.threadSlot === true ||
+    host.programLifetime.has(className) ||
+    host.publishedTypes?.classGuarded(className) === true ||
+    cls.runtime ||
+    cls.base !== undefined ||
+    cls.arrayElem !== undefined ||
+    cls.localCaptures !== undefined ||
+    cls.tracksOwnFields ||
+    (cls.symbolFields?.length ?? 0) > 0 ||
+    ctor.async ||
+    ctor.generator
+  )
+    return false;
+  const self = ctor.params[0]?.localId;
+  return self !== undefined && constructorEscapePoint(ctor, self, null) === ctor.body.length;
+}
+
 /** Whether a frame object of this type has fields that own references. */
 function ownsReferences(host: LlvmEmitterContext, type: IrType): boolean {
+  if (type.kind === "object") return classReferenceFields(host, type.className).length > 0;
   return (
     type.kind === "record" &&
     host
       .recordShape(type.shapeId)
       .fields.some((field) => isRefCounted(field.type) && !host.inlineUnions.record(field.type))
   );
+}
+
+/** The fields of a frame class that own references: refcounted, not inline
+ * unions, and not compressed references to program-lifetime instances.
+ * Each has its storage type: a nullable class field holds the class pointer
+ * itself, whatever form its union takes elsewhere (nullable-fields.ts). */
+function classReferenceFields(
+  host: LlvmEmitterContext,
+  className: string,
+): { name: string; index: number; type: IrType }[] {
+  const meta = host.classMeta.get(className);
+  if (meta === undefined) return [];
+  const out: { name: string; index: number; type: IrType }[] = [];
+  for (const field of meta.def.fields) {
+    if (!isRefCounted(field.type) || host.inlineUnions.classField(className, field.name)) continue;
+    const { index, compressed } = classFieldIndex(meta, field.name, "compressed");
+    if (compressed) continue;
+    out.push({
+      name: field.name,
+      index,
+      type: host.nullableFields.storageType(className, field.name, field.type),
+    });
+  }
+  return out;
 }
 
 /** Locals declared directly in a switch case. The cases share one scope
@@ -112,7 +168,10 @@ function caseScopedLocals(fn: IrFunction): Set<string> {
 
 /** Locals initialized once by a stack-eligible object and only projected
  * afterwards (CallLifetimes.locals): field reads, and arguments to
- * parameters that are themselves only projected. */
+ * parameters that are themselves only projected. Also locals initialized
+ * once by a `new` of a frame class (frameClass) whose value stays in the
+ * frame (frame-escapes.ts): their methods and callees may store into the
+ * instance. */
 export function findLocalStackObjects(
   host: LlvmEmitterContext,
   fn: IrFunction,
@@ -120,19 +179,28 @@ export function findLocalStackObjects(
 ): Map<string, StackObjectSource> {
   const result = new Map<string, StackObjectSource>();
   const safe = lifetimes.locals.get(fn.name);
-  if (!safe?.size || fn.async || fn.generator) return result;
+  if (fn.async || fn.generator) return result;
+  // Frame facts are computed only for functions that construct a frame class.
+  let frame: ReadonlySet<string> | undefined;
+  const frameLocal = (localId: string): boolean => {
+    if (host.frameEscapes === null) return false;
+    frame ??= host.frameEscapes.locals(fn);
+    return frame.has(localId);
+  };
   const caseScoped = caseScopedLocals(fn);
   everyStmtList(fn.body, {
     expr: () => true,
     stmt: (stmt) => {
       if (
         stmt.kind === "varDecl" &&
-        safe.has(stmt.localId) &&
         stmt.init &&
-        canStackObject(host, stmt.init) &&
+        ((safe?.has(stmt.localId) === true && canStackObject(host, stmt.init)) ||
+          (stmt.init.kind === "new" &&
+            frameClass(host, stmt.init.className) &&
+            frameLocal(stmt.localId))) &&
         !(caseScoped.has(stmt.localId) && ownsReferences(host, stmt.init.type))
       )
-        result.set(stmt.localId, stmt.init);
+        result.set(stmt.localId, stmt.init as StackObjectSource);
       return true;
     },
   });
@@ -194,17 +262,29 @@ export function stackObjectStruct(type: IrType): string {
 
 /** The reference fields of the frame object in `slot`, addressed from the
  * entry block so that every cleanup path can reach them. Inline union
- * fields copy bits and own nothing; class objects in frame storage are
- * scalar. */
+ * fields copy bits and own nothing, and so do a class's compressed
+ * references to program-lifetime instances. */
 export function stackObjectFields(
   host: LlvmEmitterContext,
   type: IrType,
   slot: string,
 ): readonly StackObjectField[] {
-  if (type.kind !== "record") return [];
+  if (type.kind !== "record" && type.kind !== "object") return [];
   const cached = host.stackObjectFieldPtrs.get(slot);
   if (cached) return cached;
   const struct = stackObjectStruct(type);
+  if (type.kind === "object") {
+    const fields: StackObjectField[] = [];
+    for (const field of classReferenceFields(host, type.className)) {
+      const ptr = host.B.slot();
+      host.B.entryAllocas.push(
+        `${ptr} = getelementptr inbounds ${struct}, ptr ${slot}, i64 0, i32 ${field.index}`,
+      );
+      fields.push({ name: field.name, ptr, type: field.type });
+    }
+    host.stackObjectFieldPtrs.set(slot, fields);
+    return fields;
+  }
   const base = host.nullableUnions.fieldBase(type.shapeId);
   const fields: StackObjectField[] = [];
   host.recordShape(type.shapeId).fields.forEach((field, index) => {
@@ -272,7 +352,19 @@ export function emitStackObject(
   let slot = into;
   if (slot === undefined) {
     slot = B.slot();
-    B.entryAllocas.push(`${slot} = alloca ${struct}, align 8`);
+    if (type.kind === "object" && host.shapeHost.tracedShapes.has(`object:${type.className}`)) {
+      // A cycle-capable class keeps its collector header in front of the
+      // object, never a candidate (SCR_CYC_ACYCLIC), as arena objects do.
+      const frame = B.slot();
+      B.entryAllocas.push(
+        `${frame} = alloca { [${CYC_HDR} x i8], ${struct} }, align 8`,
+        `${slot} = getelementptr inbounds { [${CYC_HDR} x i8], ${struct} }, ptr ${frame}, i64 0, i32 1`,
+      );
+      const buf = B.tmp();
+      B.line(`store i16 0, ptr ${frame} ; ScrCycHdr.id`);
+      B.line(`${buf} = getelementptr inbounds i8, ptr ${frame}, i64 ${CYC_BUF}`);
+      B.line(`store i32 -1, ptr ${buf} ; ScrCycHdr.buf = SCR_CYC_ACYCLIC`);
+    } else B.entryAllocas.push(`${slot} = alloca ${struct}, align 8`);
   }
   // A literal's interned string fields are immortal and need no owner. A
   // binding's own slot (`into`) keeps an owner for every field: later
@@ -293,16 +385,15 @@ export function emitStackObject(
     const ctor = host.fnByName.get(`%${type.className}.constructor`)!;
     if (!constructorInitializesFields(meta.def, ctor)) {
       B.line(`store ${struct} zeroinitializer, ptr ${slot}`);
-      // Inline union fields start undefined, as the class's `new` sets them.
-      for (const field of meta.def.fields) {
-        const tag = undefinedArmTag(field.type, host.unionsById);
-        if (tag < 0 || !host.inlineUnions.classField(type.className, field.name)) continue;
-        const p = B.tmp();
-        B.line(
-          `${p} = getelementptr inbounds ${struct}, ptr ${slot}, i64 0, i32 ${classFieldIndex(meta, field.name).index}, i32 0`,
-        );
-        B.line(`store i32 ${tag}, ptr ${p}`);
-      }
+      // Union and dyn fields start undefined, as the class's `new` sets them.
+      for (const line of classUndefinedFieldInits(
+        host.shapeHost,
+        meta,
+        host.nullableFields,
+        slot,
+        `${B.tmp()}.uf`,
+      ))
+        B.line(line.trim());
     }
   }
   B.line(`store ${host.sizeType} -1, ptr ${slot}`);

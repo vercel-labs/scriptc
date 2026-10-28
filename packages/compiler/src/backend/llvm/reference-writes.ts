@@ -930,6 +930,10 @@ export class ReferenceWrites {
           out.push(ANY_RECORD_KEY);
           for (const f of this.records.get(node.shapeId)?.fields ?? []) out.push(`r:${f.name}`);
           return this.expr(node.key) === null && walk(node.obj);
+        case "nullish":
+          // `r[k] ?? d`: a hit is the read's own value; the default runs only
+          // on a miss and is owned apart from any location.
+          return walk(node.left);
         case "mapIntrinsic":
           // A typed Map.get: any entry of any map.
           if (node.method !== "get" || node.args.length !== 1 || !borrowsMapReadInputs(node))

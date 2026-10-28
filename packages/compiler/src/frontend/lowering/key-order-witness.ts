@@ -140,6 +140,17 @@ export class KeyOrderNotes {
   /** Shapes whose table this pass replaced. */
   readonly changed = new Set<string>();
 
+  /** The sizes of the notes' tables (unit-journal.ts). */
+  journalSizes(): number[] {
+    return [
+      this.literals.size,
+      this.copies.size,
+      this.methodResults.size,
+      this.observed.size,
+      this.changed.size,
+    ];
+  }
+
   literal(node: IrExpr, segments: KeyOrderSegment[]): IrExpr {
     this.literals.set(node, segments);
     return node;

@@ -8,7 +8,7 @@ import {
   type NativeTargetSpec,
   type WindowsSubsystem,
 } from "./targets.js";
-import { profileGenerateLinkerArgs } from "./native-profile.js";
+import { profileGenerateLinkerArgs, profileLayoutLinkerArgs } from "./native-profile.js";
 
 export interface ExecutableLinkInputs {
   inputs: string[];
@@ -34,6 +34,8 @@ export function executableLinkInputs(options: {
   windowsSubsystem?: WindowsSubsystem;
   /** Instrumented for profile-guided optimization. */
   profileGenerate?: boolean;
+  /** Laid out by a profile's context-sensitive counts (nativeProfileLayout). */
+  profileLayout?: boolean;
 }): ExecutableLinkInputs {
   if (options.ffiFrameworks.length !== 0 && options.target.platform !== "darwin")
     throw new Error("FFI frameworks require a Darwin target");
@@ -71,6 +73,7 @@ export function executableLinkInputs(options: {
       ...executableStaticLinkerArgs(options.target, options.staticLink ?? false),
       ...windowsSubsystemLinkerArgs(options.target.platform, options.windowsSubsystem),
       ...profileGenerateLinkerArgs(options.profileGenerate ?? false),
+      ...profileLayoutLinkerArgs(options.target, options.profileLayout ?? false),
     ],
   };
 }

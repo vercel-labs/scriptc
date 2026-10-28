@@ -11,6 +11,7 @@ import { indexedUnionArms, lowerIndexedUnionMember } from "../indexed-unions.js"
 import { keyedHelperName } from "../stable-names.js";
 import { builtinNamespaceValue } from "../builtin-namespaces.js";
 import { staticallySelected } from "../static-typeof.js";
+import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
 import * as ts from "../../ts7/adapter.js";
 import { lowerHistogramProperty } from "../builtins/performance.js";
 import { staticFunctionNameRead } from "../static-function-names.js";
@@ -594,6 +595,11 @@ export function lowerPropertyAccessExpr(
   }
   if (lowerer.stdlibGlobalMember(expr, "globalThis") === "console") {
     return { kind: "libCall", fn: "console.native", args: [], type: DYN, loc };
+  }
+  {
+    // `globalThis.ReadableStream` in JavaScript: the class value.
+    const webStream = lowerWebStreamClassRead(lowerer, expr);
+    if (webStream) return webStream;
   }
   if (lowerer.stdlibGlobalMember(expr, "console") !== null) {
     return {

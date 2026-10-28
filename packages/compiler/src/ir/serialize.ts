@@ -42,7 +42,8 @@ function encodeNumber(_key: string, value: unknown): unknown {
   return value;
 }
 
-function encodeFunction(fn: IrFunction): string | undefined {
+/** One function in the compact encoding (deserializeFunction reads it). */
+export function encodeFunction(fn: IrFunction): string | undefined {
   return ordinaryNumbers(fn) ? JSON.stringify(fn) : JSON.stringify(fn, encodeNumber);
 }
 
@@ -125,6 +126,14 @@ function checkedVersion(mod: IrModule): IrModule {
     );
   }
   return mod;
+}
+
+/** A function from its compact encoding (encodeFunction). */
+export function deserializeFunction(json: string): IrFunction {
+  // Only an encoding that holds a number sentinel needs the reviver.
+  return (
+    json.includes('"$nonfinite"') ? JSON.parse(json, decodeNumber) : JSON.parse(json)
+  ) as IrFunction;
 }
 
 export function deserializeModule(json: string): IrModule {

@@ -871,7 +871,7 @@ static void scr_rgn_walk_dyn(ScrRgnWalk *w, ScrDyn *d) {
     scr_region_slot(w, d->v.typed_ref.ptr, d->v.typed_ref.release);
     scr_rgn_enter(w, d->v.typed_ref.materialized, SCR_RGN_W_DYN, NULL);
     for (ScrDynTypedCast *cast = d->v.typed_ref.casts; cast; cast = cast->next)
-      scr_region_slot(w, cast->ptr, cast->release);
+      if (!cast->borrowed) scr_region_slot(w, cast->ptr, cast->release);
     break;
   case SCR_DYN_PROXY:
     scr_rgn_enter(w, d->v.proxy.target, SCR_RGN_W_DYN, NULL);

@@ -1,4 +1,4 @@
-/* Loop-entry range versions (ir/loop-entry-ranges.ts): a while loop whose
+/* Loop-entry range versions (ir/loop-entry-ranges.ts): a while or for loop whose
  * integer work depends on locals entering it without range facts runs as
  * two copies. A test on entry checks that each such local holds an integer
  * in its assumed range; the fast copy is emitted under the facts that hold
@@ -16,7 +16,7 @@ interface LoopEntryState {
   fn: IrFunction | null;
   facts: IntegerRangeFacts | null;
   slots: IntegerSlotFacts;
-  /** Found on the first while loop the function emits. */
+  /** Found on the first while or for loop the function emits. */
   versions: Map<IrStmt, LoopEntryVersion> | null;
   /** Loops whose copies are being emitted: a loop is versioned once. */
   readonly versioning: Set<IrStmt>;
@@ -61,7 +61,7 @@ export function beginLoopEntryVersions(
  * its locals: plain double slots of the current function, outside a
  * speculative copy and a coroutine. */
 export function loopEntryVersion(emitter: LlEmitter, loop: IrStmt): LoopEntryVersion | null {
-  if (loop.kind !== "while") return null;
+  if (loop.kind !== "while" && loop.kind !== "for") return null;
   const state = ENTRY_VERSIONS.of(emitter);
   if (state.fn === null || state.facts === null || state.versioning.has(loop)) return null;
   if (

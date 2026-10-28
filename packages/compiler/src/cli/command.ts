@@ -645,6 +645,14 @@ async function main(args: string[], host: CliHost): Promise<number> {
       ...(values.static ? { staticLink: true } : {}),
       ...(windowsSubsystem !== undefined ? { windowsSubsystem } : {}),
       ...(values["detached-exit"] ? { detachedExit: true } : {}),
+      ...(values.libnode !== undefined
+        ? {
+            libnode:
+              values.libnode === "beside" || values.libnode.startsWith("$ORIGIN/")
+                ? values.libnode
+                : resolve(values.libnode),
+          }
+        : {}),
       ...(values["large-pages"] ? { largePages: true } : {}),
       ...targetCpuField(targetCpu),
       ...(values["cpu-dispatch"] === undefined ? {} : { cpuDispatch: values["cpu-dispatch"] }),

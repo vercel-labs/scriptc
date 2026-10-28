@@ -172,6 +172,8 @@ async function tryFastPath(): Promise<number | null> {
           )
         : startup.executableNativeEnvironmentFingerprint(),
     nodeVersion: process.version,
+    // An entry of a program that calls into Node.js serves only the same pack.
+    libnodeIdentity: () => startup.libnodeCacheKey(values.libnode),
   });
   if (hit === null) return null;
   if (!values["keep-llvm"]) await rm(hit.llvmPath, { force: true });

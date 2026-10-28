@@ -773,6 +773,9 @@ export interface ProvenLoopPlan {
   locals: Map<string, IntegerRange>;
   /** Statement-level writes computed as integers. */
   writes: Set<IrStmt>;
+  /** Expression-position `++`/`--` of shadowed bindings (`out[o++] = v`),
+   * computed on the shadows. */
+  increments: Set<IrExpr>;
 }
 
 /** Plan a proven integer loop. `cursors` are the loop's bounded bindings,
@@ -791,10 +794,17 @@ export function planProvenIntegerLoop(
 ): ProvenLoopPlan | null {
   if (cursors.size === 0) return null;
   const writes = new Map<string, IrStmt[]>();
+  const increments = new Map<string, IrExpr[]>();
   const refused = new Set<string>();
   let rejected = false;
   const expr = (e: IrExpr): boolean => {
-    if (e.kind === "assignExpr" || e.kind === "incDec") refused.add(e.localId);
+    // Every value a cursor holds in the loop lies in its loop range, so an
+    // increment of one writes an integer of that range.
+    if (e.kind === "incDec" && cursors.has(e.localId)) {
+      const list = increments.get(e.localId) ?? [];
+      list.push(e);
+      increments.set(e.localId, list);
+    } else if (e.kind === "assignExpr" || e.kind === "incDec") refused.add(e.localId);
     return everyExprChild(e, expr, nested);
   };
   const nested = (s: IrStmt): boolean => {
@@ -827,12 +837,13 @@ export function planProvenIntegerLoop(
   for (const s of loop.body) stmt(s);
   if (rejected) return null;
   const locals = new Map<string, IntegerRange>();
-  for (const [id, list] of writes) {
+  for (const id of new Set([...writes.keys(), ...increments.keys()])) {
     if (refused.has(id) || !eligible(id)) continue;
-    const exact = list.every((s) => {
-      const value = speculativeWriteTarget(s)!.value!;
-      return isSpeculableValue(value, false) && proven(value);
-    });
+    const exact =
+      (writes.get(id) ?? []).every((s) => {
+        const value = speculativeWriteTarget(s)!.value!;
+        return isSpeculableValue(value, false) && proven(value);
+      }) && (increments.get(id) ?? []).every(proven);
     if (exact) locals.set(id, cursors.get(id)!);
   }
   // Every binding a shadowed write reads is shadowed, already an integer,
@@ -844,15 +855,19 @@ export function planProvenIntegerLoop(
   for (let changed = true; changed;) {
     changed = false;
     for (const id of [...locals.keys()])
-      if (!writes.get(id)!.every((s) => grounded(speculativeWriteTarget(s)!.value!))) {
+      if (!(writes.get(id) ?? []).every((s) => grounded(speculativeWriteTarget(s)!.value!))) {
         locals.delete(id);
         changed = true;
       }
   }
   if (locals.size === 0) return null;
   const planned = new Set<IrStmt>();
-  for (const id of locals.keys()) for (const s of writes.get(id)!) planned.add(s);
-  return { locals, writes: planned };
+  const plannedIncrements = new Set<IrExpr>();
+  for (const id of locals.keys()) {
+    for (const s of writes.get(id) ?? []) planned.add(s);
+    for (const e of increments.get(id) ?? []) plannedIncrements.add(e);
+  }
+  return { locals, writes: planned, increments: plannedIncrements };
 }
 
 const SAFE = Number.MAX_SAFE_INTEGER;

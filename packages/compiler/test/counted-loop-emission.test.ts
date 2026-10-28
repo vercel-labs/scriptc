@@ -438,3 +438,36 @@ test("a loop that starts from a typed-array read guards the read's integer and o
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("an exact integer loop limit becomes the endpoint without rounding", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-counted-limit-"));
+  try {
+    const entry = join(import.meta.dirname, "../../../tests/corpus/counted-loop-integer-limits.ts");
+    const outPath = join(dir, "limits.ir.json");
+    const result = await compile(entry, { outPath, outDir: dir, outputKind: "ir" });
+    if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+    const ll = emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")), {});
+    const bodies = (method: string): string[] =>
+      [
+        ...ll.matchAll(
+          new RegExp(
+            `define internal [^\\n]+ @\\w*Page_${method}(?:\\.i32)?\\([^\\n]*\\) #0 \\{ ; [^\\n]*([\\s\\S]*?)\\n\\}`,
+            "g",
+          ),
+        ),
+      ].map((m) => m[1]!);
+    // The int32 rank is the endpoint of the loops in both directions, with
+    // exclusive and inclusive bounds: no floor, ceil or 2^53 clamp.
+    for (const method of ["set", "suffix"]) {
+      const found = bodies(method);
+      expect(found.length).toBeGreaterThan(0);
+      for (const body of found) {
+        expect(body).toContain("integer induction i");
+        expect(body).not.toMatch(/@llvm\.(floor|ceil)\.f64/);
+        expect(body).not.toContain("0x4340000000000000");
+      }
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

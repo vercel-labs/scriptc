@@ -21,6 +21,8 @@ export interface CanonProp {
   name: string;
   optional: boolean;
   readonly: boolean;
+  /** A get or set accessor, not a data property. */
+  accessor: boolean;
   type: () => Canon;
 }
 
@@ -131,7 +133,10 @@ function canonKeyInner(c: Canon, depth: number, budget: { left: number }): strin
       }
       const props = c
         .props()
-        .map((p) => `${p.name}${p.optional ? "?" : ""}: ${canonKey(p.type(), depth + 1)}`);
+        .map(
+          (p) =>
+            `${p.accessor ? "get " : ""}${p.name}${p.optional ? "?" : ""}: ${canonKey(p.type(), depth + 1)}`,
+        );
       const sig = (s: CanonSig): string =>
         `(${s.params
           .map(
@@ -251,7 +256,13 @@ function sameCanon(a: Canon, b: Canon, assumed: Assumptions): boolean {
       if (ap.length !== op.length) return false;
       for (const p of ap) {
         const q = op.find((x) => x.name === p.name);
-        if (q === undefined || q.optional !== p.optional || !eq(p.type(), q.type())) return false;
+        if (
+          q === undefined ||
+          q.optional !== p.optional ||
+          q.accessor !== p.accessor ||
+          !eq(p.type(), q.type())
+        )
+          return false;
       }
       const ai = a.index();
       const oi = o.index();
@@ -514,6 +525,7 @@ export class Normalizer {
           name: ts.symbolName(p),
           optional: (p.flags & ts.SymbolFlags.Optional) !== 0,
           readonly: false,
+          accessor: (p.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)) !== 0,
           type: () => this.canon(checker.getTypeOfSymbol(p), env),
         }))),
       index: () =>

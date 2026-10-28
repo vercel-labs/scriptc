@@ -13,6 +13,7 @@ import type { NativeArtifactDependency } from "./native/contracts.js";
 import { needsDarwinDebugSymbols } from "./debug-symbols.js";
 import { loadRuntimePack, type RuntimePackSelection } from "./runtime-pack.js";
 import { executableLinkInputs } from "./link-plan-core.js";
+import { hugeTextProgram } from "./huge-text.js";
 import type { NativeTargetSpec, WindowsSubsystem } from "./targets.js";
 
 export interface NativeLinkPlan {
@@ -30,6 +31,8 @@ export interface NativeLinkPlan {
   darwinDebugSymbols?: boolean;
   /** Linked with `--static`: the linked executable is checked before use. */
   staticLink?: boolean;
+  /** Program code large enough for text on huge pages (huge-text.ts). */
+  hugeText?: boolean;
 }
 
 export async function createNativeLinkPlan(options: {
@@ -44,6 +47,7 @@ export async function createNativeLinkPlan(options: {
   staticLink?: boolean;
   windowsSubsystem?: WindowsSubsystem;
   profileGenerate?: boolean;
+  profileLayout?: boolean;
   programObjectDependencies?: readonly NativeArtifactDependency[];
   env?: NodeJS.ProcessEnv;
   resolver?: (specifier: string) => string;
@@ -78,10 +82,17 @@ export async function createNativeLinkPlan(options: {
         ? {}
         : { windowsSubsystem: options.windowsSubsystem }),
       ...(options.profileGenerate === true ? { profileGenerate: true } : {}),
+      ...(options.profileLayout === true ? { profileLayout: true } : {}),
     }),
     dependencyPaths: [...runtimePack.dependencyPaths, ...(options.ffi?.libraries ?? [])],
     programObjectDependencies: [...(options.programObjectDependencies ?? [])],
     runtimePack,
     ...(options.staticLink === true ? { staticLink: true } : {}),
+    ...(hugeTextProgram(options.target, [
+      options.programObject,
+      ...(options.programPartitions ?? []),
+    ])
+      ? { hugeText: true }
+      : {}),
   };
 }

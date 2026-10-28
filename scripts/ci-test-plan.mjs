@@ -18,14 +18,17 @@ const cacheFile = "packages/compiler/src/backend/native-toolchain.test.ts";
 export const isolatedFiles = [
   ["self-hosting serialization", "tests/harness/self-hosting-serialization.test.ts"],
   ["self-hosting", "tests/harness/self-hosting.test.ts"],
-  ["self-hosting LLVM emitter", "tests/harness/self-hosting-llvm-emitter.test.ts"],
   ["fetch", "tests/harness/fetch.test.ts"],
   ["surface manifest", "tests/harness/surface-manifest.test.ts"],
 ];
 // Suites that split their own tests across the shards (SCRIPTC_TEST_SHARD,
 // skipUnownedTest in tests/harness/shard.ts): every shard runs its share in
 // its own vitest process.
-export const caseShardedSideFiles = [["npm static", "tests/harness/npm-static.test.ts"]];
+export const caseShardedSideFiles = [
+  ["npm static", "tests/harness/npm-static.test.ts"],
+  ["self-hosting LLVM emitter", "tests/harness/self-hosting-llvm-emitter.test.ts"],
+  ["three.js library", "tests/harness/three-library.test.ts"],
+];
 export const fileExclusions = [
   ...corpusFiles,
   ...effectFiles,

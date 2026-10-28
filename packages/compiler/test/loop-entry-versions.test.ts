@@ -43,3 +43,33 @@ test("while loops test their entry values and run integer remainders in the fast
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("for loops test the positions they advance and step them as integers in the fast copy", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-entry-cursors-"));
+  try {
+    const entry = join(import.meta.dirname, "../../../tests/corpus/for-entry-range-cursors.ts");
+    const outPath = join(dir, "cursors.ir.json");
+    const result = await compile(entry, { outPath, outDir: dir, outputKind: "ir" });
+    if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
+    const mod = deserializeModule(await readFile(outPath, "utf8"));
+    const ll = emitLlvmModule(mod, { pointerBits: 64 });
+    const body = (name: string): string =>
+      ll.match(
+        new RegExp(`define internal [^\\n]+ @sc_bf_${name}\\([^\\n]*\\{([\\s\\S]*?)\\n\\}`),
+      )![1]!;
+    for (const name of ["lines", "reverse", "find"]) {
+      const fn = body(name);
+      const fast = fn.slice(fn.indexOf("\nentry.fast"), fn.indexOf("\nentry.slow"));
+      const slow = fn.slice(fn.indexOf("\nentry.slow"));
+      // The fast copy steps i64 shadows of the positions; the ordinary copy
+      // steps their doubles.
+      expect(fast, name).toMatch(/= (add|sub) nsw i64 %t\d+, 1\n/);
+      expect(fn, name).toMatch(/alloca i64 ; integer [io]\n/);
+      expect(slow, name).toMatch(/= f(add|sub) double %t\d+, 0x3FF0000000000000\n/);
+    }
+    // The initializer writes a position, so the loop has one copy.
+    expect(body("restart")).not.toContain("entry.fast");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

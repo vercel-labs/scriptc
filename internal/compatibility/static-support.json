@@ -433,8 +433,9 @@
     { "chapter": "zlib", "signatures": ["`zlib.constants`"], "status": "partial", "evidence": ["tests/corpus/5376-zlib-constants.cjs", "tests/corpus/5374-zlib-stream-flush-params.ts"] },
     { "chapter": "dns", "symbols": ["dns.lookup", "dns.lookupService", "dns.getServers", "dns.getDefaultResultOrder", "dns.setDefaultResultOrder"], "status": "partial", "evidence": ["tests/corpus/5648-dns-lookup-forms.ts", "tests/corpus/5649-dns-service-servers.ts", "tests/corpus/5650-dns-lookup-errors-untyped.cjs"] },
     { "chapter": "dns", "symbols": ["dnsPromises.lookup", "dnsPromises.lookupService", "dnsPromises.getDefaultResultOrder"], "status": "partial", "evidence": ["tests/corpus/dns-promises-lookup.ts", "tests/corpus/dns-promises-untyped.cjs"] },
-    { "chapter": "webstreams", "symbols": ["ReadableStream"], "status": "partial", "evidence": ["tests/corpus/stream-web-readable.ts", "tests/corpus/stream-web-require.cjs", "tests/corpus/2862-web-readable-async-iteration.ts"] },
-    { "chapter": "webstreams", "symbols": ["TransformStream"], "status": "partial", "evidence": ["tests/corpus/7743-transform-stream-identity.ts"] },
+    { "chapter": "webstreams", "symbols": ["ReadableStream"], "status": "partial", "evidence": ["tests/corpus/stream-web-readable.ts", "tests/corpus/web-stream-readable-untyped.mjs", "tests/corpus/stream-web-require.cjs", "tests/corpus/2862-web-readable-async-iteration.ts"] },
+    { "chapter": "webstreams", "symbols": ["TransformStream"], "status": "partial", "evidence": ["tests/corpus/7743-transform-stream-identity.ts", "tests/corpus/web-stream-transform-pipes-untyped.mjs"] },
+    { "chapter": "webstreams", "symbols": ["WritableStream"], "status": "partial", "evidence": ["tests/corpus/web-stream-writable-untyped.mjs"] },
     { "chapter": "globals", "signatures": ["Class: `TransformStream`"], "status": "partial", "evidence": ["tests/corpus/7743-transform-stream-identity.ts"] }
   ],
   "dedicated": [

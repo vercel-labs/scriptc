@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { canonEqual, canonKey, Normalizer, type Canon } from "../src/frontend/canon.js";
-import { mapCanonical } from "../src/frontend/canon-map.js";
+import { mapCanonical, type CanonMapNotes } from "../src/frontend/canon-map.js";
 import {
   mapType,
   ShapeRegistry,
@@ -73,6 +73,12 @@ beforeAll(() => {
     export type Loose = [string, number?, ...boolean[]];
     // Arrays of two instantiations of one generic class.
     export type Maps = Map<string, number>[] | Map<number, string>[];
+    // Accessor members: one type, and a getter and setter of different types.
+    export interface Gauge { get level(): number; set level(next: number) }
+    export interface Cell { get value(): string; set value(next: string | number) }
+    // A union with an arm that maps to the checked dynamic, inside a record.
+    export type Collapsing = { tag: string | {}; name: string };
+    export type Tight = { tag: string; name: string };
     // The same instantiations, each refined by an object type.
     export type RefinedMaps =
       | (Map<string, number> & { tag: number })[]
@@ -301,11 +307,36 @@ describe("mapCanonical", () => {
     isExternalTypeFile: () => false,
     isProgramFile: (sf) => load.moduleOrder.includes(sf),
   });
-  test.for(["Normalized", "Same", "Flat", "Id", "Pair"])("%s maps like mapType", (name) => {
-    const strict = mapType(aliases.get(name)!, ctx());
-    const canonical = mapCanonical(new Normalizer(checker).canon(aliases.get(name)!), ctx());
-    expect(strict).not.toBeNull();
-    expect(canonical && typeKey(canonical)).toBe(typeKey(strict!));
+  test.for(["Normalized", "Same", "Flat", "Id", "Pair", "Gauge"])(
+    "%s maps like mapType",
+    (name) => {
+      const strict = mapType(aliases.get(name)!, ctx());
+      const canonical = mapCanonical(new Normalizer(checker).canon(aliases.get(name)!), ctx());
+      expect(strict).not.toBeNull();
+      expect(canonical && typeKey(canonical)).toBe(typeKey(strict!));
+    },
+  );
+  test("accessors are not data fields: a getter and setter of different types do not map", () => {
+    const cell = aliases.get("Cell")!;
+    expect(mapType(cell, ctx())).toBeNull();
+    expect(mapCanonical(new Normalizer(checker).canon(cell), ctx())).toBeNull();
+    expect(key(new Normalizer(checker).canon(cell))).toContain("get value");
+  });
+  test("a union that maps to the checked dynamic inside a record is noted", () => {
+    const loose: CanonMapNotes = { collapsedToDynamic: false };
+    const mapped = mapCanonical(
+      new Normalizer(checker).canon(aliases.get("Collapsing")!),
+      ctx(),
+      0,
+      loose,
+    );
+    expect(mapped?.kind).toBe("record");
+    expect(loose.collapsedToDynamic).toBe(true);
+    const tight: CanonMapNotes = { collapsedToDynamic: false };
+    expect(
+      mapCanonical(new Normalizer(checker).canon(aliases.get("Tight")!), ctx(), 0, tight)?.kind,
+    ).toBe("record");
+    expect(tight.collapsedToDynamic).toBe(false);
   });
   test("shadow mode observes every successful top-level mapping", () => {
     const seen: string[] = [];

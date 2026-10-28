@@ -389,6 +389,17 @@ export function dynamicTierSymbols(names) {
     .sort();
 }
 
+/** The Node island runtime (scr_node_island*.c, scope-B design §2.15): no
+ * program without a call into Node.js may define any of these. */
+export const NODE_ISLAND_PREFIXES = ["scr_node_island", "scr_loop_set_node_island"];
+
+/** The Node island symbols among `names`, sorted. */
+export function nodeIslandSymbols(names) {
+  return [...new Set(names)]
+    .filter((name) => NODE_ISLAND_PREFIXES.some((prefix) => name.startsWith(prefix)))
+    .sort();
+}
+
 /* Bench workloads whose release binaries link dynamic-tier symbols on
  * b14377864: JSON.parse trees, worker messages, regex exec metadata
  * (two-tier §3.3 L5), and a shared scr_dyn_call/scr_dyn_define_property core
@@ -491,6 +502,86 @@ export function compareCounts(baseline, candidate) {
   };
 }
 
+/* ── runtime packs ─────────────────────────────────────────────────────── */
+
+/** Every file a runtime-pack.json lists (each flavor's runtime unit
+ * variants, their bitcode, and the vendor archives), as path → sha256. */
+export function runtimePackFiles(manifest) {
+  const files = new Map();
+  const visit = (value) => {
+    if (Array.isArray(value)) value.forEach(visit);
+    else if (value !== null && typeof value === "object") {
+      if (typeof value.path === "string" && typeof value.sha256 === "string")
+        files.set(value.path, value.sha256);
+      Object.values(value).forEach(visit);
+    }
+  };
+  visit(manifest.flavors ?? {});
+  visit(manifest.archives ?? {});
+  return files;
+}
+
+/** The runtime pack files that differ between two runtime-pack.json
+ * manifests: changed, added and removed paths, each sorted. */
+export function runtimePackDiff(baseline, candidate) {
+  const before = runtimePackFiles(baseline);
+  const after = runtimePackFiles(candidate);
+  const changed = [...before].filter(([path, sha]) => after.has(path) && after.get(path) !== sha);
+  return {
+    changed: changed.map(([path]) => path).sort(),
+    added: [...after.keys()].filter((path) => !before.has(path)).sort(),
+    removed: [...before.keys()].filter((path) => !after.has(path)).sort(),
+  };
+}
+
+/** The changed runtime pack files whose symbols executables link: runtime
+ * objects and vendor archives. */
+export function linkedRuntimeFiles(diff) {
+  return [...diff.changed, ...diff.added, ...diff.removed].filter(
+    (path) => path.endsWith(".o") || path.endsWith(".a"),
+  );
+}
+
+/** Defined functions of textual LLVM IR (llvm-dis output) as name → hash of
+ * the body. Attribute group and metadata numbers are dropped first, since
+ * an unrelated change elsewhere in the unit renumbers them. */
+export function llvmFunctionHashes(text) {
+  const functions = new Map();
+  const lines = text.split("\n");
+  for (let index = 0; index < lines.length; index++) {
+    const head = /^define\b[^@]*@("(?:[^"\\]|\\.)*"|[\w.$-]+)\(/.exec(lines[index]);
+    if (head === null) continue;
+    const body = [];
+    for (; index < lines.length && lines[index] !== "}"; index++) body.push(lines[index]);
+    const normalized = body.join("\n").replace(/ #\d+/g, "").replace(/!\d+/g, "!");
+    functions.set(head[1].replace(/^"|"$/g, ""), hash(normalized));
+  }
+  return functions;
+}
+
+/** Names whose hashes differ between two function maps, and the names only
+ * one side defines. */
+export function changedFunctions(before, after) {
+  return {
+    changed: [...before]
+      .filter(([name, h]) => after.has(name) && after.get(name) !== h)
+      .map(([name]) => name)
+      .sort(),
+    added: [...after.keys()].filter((name) => !before.has(name)).sort(),
+    removed: [...before.keys()].filter((name) => !after.has(name)).sort(),
+  };
+}
+
+/** Whether every symbol an executable comparison added, removed or resized
+ * is one of `runtimeSymbols`, the symbols the changed runtime objects
+ * define. Mach-O nm prints no sizes, so there only additions and removals
+ * are checked. */
+export function confinedToRuntime(exe, runtimeSymbols) {
+  return [...exe.added, ...exe.removed, ...exe.resized.map((s) => s.name)].every((name) =>
+    runtimeSymbols.has(name),
+  );
+}
+
 /** The report lines the gate prints for one program. */
 export function programLines(entry) {
   const lines = [];
@@ -499,6 +590,8 @@ export function programLines(entry) {
     identical: "identical",
     allowed: "allowed  ",
     differs: "DIFFERS  ",
+    "runtime-only": "runtime  ",
+    nondeterministic: "nondet   ",
     "build-error": "ERROR    ",
     "both-fail": "both-fail",
   }[entry.verdict];
@@ -525,6 +618,17 @@ export function programLines(entry) {
     );
   } else if (entry.cachegrind?.skipped)
     notes.push(`cachegrind skipped: ${entry.cachegrind.skipped}`);
+  if (entry.runtime) {
+    const linked = [...entry.runtime.changed, ...entry.runtime.added];
+    notes.push(
+      `runtime-only: links ${linked.length} changed runtime function${linked.length === 1 ? "" : "s"}` +
+        (linked.length
+          ? ` (${linked.slice(0, 8).join(", ")}${linked.length > 8 ? ", ..." : ""})`
+          : ""),
+    );
+  }
+  if (entry.nondeterministic)
+    notes.push(`the baseline's own rebuild differs in ${entry.nondeterministic.join(", ")}`);
   for (const failure of entry.dynamicTier?.failures ?? []) notes.push(`SYMBOLS: ${failure}`);
   lines.push(`${label}  ${entry.id}${notes.length ? `  ${notes.join("; ")}` : ""}`);
   // A build error's first line is often a warning; print all of it.
@@ -549,7 +653,23 @@ export function programLines(entry) {
 /** `required` programs must build with both checkouts: a failure both share
  * means the gate compared nothing for them. Other programs may fail the same
  * way on both sides, as a corpus program the compiler refuses does. */
-export function programVerdict({ baseline, candidate, artifacts, allowed, required = false }) {
+/** A difference in the release executable alone, with identical IR and
+ * LLVM, is "runtime-only" when `runtimeOnly` says the changed runtime
+ * objects explain it (the gate checks the runtime packs and the symbols).
+ * A difference the baseline also shows when it builds the program again is
+ * "nondeterministic": `nondeterministic` lists the artifact kinds whose
+ * baseline rebuild differs, and every differing artifact must be among
+ * them. Neither fails the gate unless `strict` is set. */
+export function programVerdict({
+  baseline,
+  candidate,
+  artifacts,
+  allowed,
+  required = false,
+  runtimeOnly = false,
+  nondeterministic = [],
+  strict = false,
+}) {
   if (!baseline.ok || !candidate.ok) {
     if (!baseline.ok && !candidate.ok && baseline.error === candidate.error)
       return { verdict: "both-fail", fails: required };
@@ -557,7 +677,12 @@ export function programVerdict({ baseline, candidate, artifacts, allowed, requir
   }
   const differing = Object.entries(artifacts).filter(([, r]) => !r.identical);
   if (differing.length === 0) return { verdict: "identical", fails: false };
-  return allowed ? { verdict: "allowed", fails: false } : { verdict: "differs", fails: true };
+  if (allowed) return { verdict: "allowed", fails: false };
+  if (runtimeOnly && differing.every(([kind]) => kind === "exe"))
+    return { verdict: "runtime-only", fails: strict };
+  if (differing.every(([kind]) => nondeterministic.includes(kind)))
+    return { verdict: "nondeterministic", fails: strict };
+  return { verdict: "differs", fails: true };
 }
 
 export function median(values) {
@@ -726,7 +851,8 @@ export function mergeReports(reports) {
   }
   const counts = {};
   for (const p of merged.programs) counts[p.verdict] = (counts[p.verdict] ?? 0) + 1;
-  if (!merged.programs.some((p) => ["identical", "allowed", "differs"].includes(p.verdict)))
+  const compared = ["identical", "allowed", "runtime-only", "nondeterministic", "differs"];
+  if (!merged.programs.some((p) => compared.includes(p.verdict)))
     merged.globalFailures.push("no program built with both checkouts, so nothing was compared");
   merged.failures.push(...merged.globalFailures);
   merged.counts = counts;

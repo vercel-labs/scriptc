@@ -239,7 +239,19 @@ typedef enum {
   X(WORKER, 35)
 
 /* Tags added since the last pin, by name only (see above). */
-#define SCR_DYNH_NEW_TAGS(Y)
+#define SCR_DYNH_NEW_TAGS(Y) \
+  Y(WS_BYTE_STRATEGY) /* ByteLengthQueuingStrategy (scr_webstreams.c) */ \
+  Y(WS_COUNT_STRATEGY) /* CountQueuingStrategy (scr_webstreams.c) */ \
+  Y(WS_RCONTROLLER) /* ReadableStreamDefaultController (scr_webstreams.c) */ \
+  Y(WS_READABLE) /* ReadableStream for checked-dynamic code (scr_webstreams.c) */ \
+  Y(WS_READER) /* ReadableStreamDefaultReader (scr_webstreams.c) */ \
+  Y(WS_TCONTROLLER) /* TransformStreamDefaultController (scr_webstreams.c) */ \
+  Y(WS_TEXT_DECODER) /* TextDecoderStream (scr_webstreams.c) */ \
+  Y(WS_TEXT_ENCODER) /* TextEncoderStream (scr_webstreams.c) */ \
+  Y(WS_TRANSFORM) /* TransformStream for checked-dynamic code (scr_webstreams.c) */ \
+  Y(WS_WCONTROLLER) /* WritableStreamDefaultController (scr_webstreams.c) */ \
+  Y(WS_WRITABLE) /* WritableStream for checked-dynamic code (scr_webstreams.c) */ \
+  Y(WS_WRITER) /* WritableStreamDefaultWriter (scr_webstreams.c) */
 
 /* Values below the largest pinned one that no tag holds, each with the
  * reason. Never reuse one without removing it here. */
@@ -301,6 +313,9 @@ typedef struct ScrDynTypedCast {
   void *(*retain)(void *);
   void (*release)(void *);
   bool traced;
+  /* A record view (scr_dyn_record_view): the view's own record-source
+   * entry owns the capsule, so the list neither owns nor releases it. */
+  bool borrowed;
   struct ScrDynTypedCast *next;
 } ScrDynTypedCast;
 
@@ -1199,6 +1214,10 @@ void scr_dyn_install_species_symbol(ScrDyn *key);
 /* Records each well-known symbol the symbol unit creates. */
 void scr_dyn_install_well_known_symbol(ScrDyn *key);
 void scr_dyn_install_to_string_tag_symbol(ScrDyn *key);
+/* Whether key is Symbol.asyncIterator. */
+bool scr_dyn_is_async_iterator_symbol(const ScrDyn *key);
+/* Symbol.asyncIterator (+1), or NULL before the symbol unit installed it. */
+ScrDyn *scr_dyn_async_iterator_symbol_value(void);
 /* True when key is Symbol.asyncDispose (registered by the symbol unit when
  * the program names it); handle symbol_get ops outside that unit use it. */
 bool scr_dyn_is_async_dispose_symbol(const ScrDyn *key);
@@ -1315,7 +1334,17 @@ bool scr_dyn_typed_ref_is(
     const ScrDyn *d, const char *type_key, size_t type_key_len);
 bool scr_dyn_typed_ref_is_key(const ScrDyn *d, const ScrStr *type_key);
 void *scr_dyn_typed_ref_unbox(const ScrDyn *d); /* +1 */
-void *scr_dyn_typed_ref_prefix_view(const ScrDyn *d); /* +1 or NULL */
+/* Record views (scr_json.c): a checked conversion's view of the record a
+ * capsule holds, or NULL. */
+typedef struct {
+  const char *key;
+  size_t key_len;
+  const size_t *offsets;
+} ScrRecordViewSource;
+void *scr_record_view_slot(void *view, size_t position);
+void *scr_record_view_field(void *value, size_t offset, size_t position);
+void *scr_dyn_record_view(ScrDyn *d, const ScrRecordViewSource *sources, size_t count,
+                          const char *key, size_t key_len, void *(*alloc)(void));
 ScrDyn *scr_dyn_class_view_unavailable(void *ptr);
 ScrDyn *scr_dyn_typed_ref_materialize(const ScrDyn *d); /* +1 */
 ScrDyn *scr_dyn_typed_ref_peek(const ScrDyn *d); /* +1 */
@@ -1563,7 +1592,6 @@ ScrStr *scr_dyn_to_string_method(const ScrDyn *d, const ScrStr *enc, const ScrSt
 ScrDyn *scr_dyn_object_prototype(void);
 ScrDyn *scr_dyn_error_prototype(void);
 bool scr_dyn_inherits_error_prototype(const ScrDyn *value);
-ScrDyn *scr_dyn_error_capture_stack_trace(ScrDyn *target);
 ScrDyn *scr_dyn_error_capture_stack_trace_function(void);
 ScrDyn *scr_dyn_function_apply(void);
 ScrDyn *scr_dyn_reflect_apply(ScrDyn *target, ScrDyn *receiver, ScrDyn *arguments_list);
@@ -1671,6 +1699,7 @@ ScrError *scr_error_from_dyn(const ScrDyn *d); /* scr_async_dyn.c (gated) */
 /* The cache's runtime-internal access pair (scr_json.c owns the storage;
  * the gated extraction reads/writes through these). */
 ScrError *scr_errdyn_err_of(const ScrDyn *d); /* +1 or NULL */
+void scr_error_capture_stack_trace(ScrDyn *target, const char *through, bool skip);
 void scr_errdyn_put(ScrError *e, ScrDyn *d);  /* retains both sides */
 /* Sets an own property on an error: its checked-dynamic node, which casts
  * and util.inspect read. Moves value. */
@@ -1999,6 +2028,77 @@ typedef struct ScrDynHandleOps {
   ScrDyn *(*rejected)(void);
 } ScrDynHandleOps;
 
+/* A WebIDL interface over a handle tag: its constructor value, whose
+ * prototype holds the tag's methods (ScrDynHandleOps.methods, the same
+ * function values a member read answers) and the getters below, each
+ * enumerable and configurable and brand-checked against the tag. Handles of
+ * the tag answer the prototype from Object.getPrototypeOf, find its other
+ * members through it, and pass `instanceof` against the constructor. */
+typedef struct ScrDynHandleAccessor {
+  const char *name;
+  /* The getter on another receiver answers a rejected promise instead of
+   * throwing (a promise-valued attribute such as a reader's `closed`). */
+  bool rejects;
+} ScrDynHandleAccessor;
+
+typedef struct ScrDynHandleStatic {
+  const char *name;
+  uint32_t length;
+  ScrDynThunk thunk;
+} ScrDynHandleStatic;
+
+typedef struct ScrDynHandleClass {
+  const char *name;
+  uint32_t length;
+  /* `new X(...args)`: the new handle (+1), or NULL with the exception
+   * pending. NULL = the interface has no constructor ("Illegal
+   * constructor"). Arguments are borrowed. */
+  ScrDyn *(*construct)(ScrDyn *const *args, size_t argc);
+  /* Getters, read through ScrDynHandleOps.get; NULL name terminates. */
+  const ScrDynHandleAccessor *accessors;
+  /* Static methods of the constructor; NULL name terminates. */
+  const ScrDynHandleStatic *statics;
+  /* The prototype's methods and getters in definition order (the order
+   * Object.keys reports); NULL = the methods, then the getters. */
+  const char *const *order;
+  /* A call of one of the class's method values
+   * (`WritableStream.prototype.close.call(stream)`): the class's method,
+   * which an own property of the same name on the handle does not
+   * replace. NULL = ScrDynHandleOps.invoke. */
+  ScrDyn *(*method_invoke)(void *h, ScrDyn *self, const char *method, ScrDyn *const *args, size_t argc,
+                           const char *what);
+} ScrDynHandleClass;
+
+/* Installs a tag's ops with the class its handles belong to; both outlive
+ * the program. */
+void scr_dyn_handle_class_install(ScrDynHandleTag tag, const ScrDynHandleOps *ops, const ScrDynHandleClass *klass);
+/* The tag's constructor value (+1), created on first use; the tag must be
+ * installed with a class. */
+ScrDyn *scr_dyn_handle_class_value(ScrDynHandleTag tag);
+/* The method `name` of the tag's class as the function value a member
+ * read answers (+1), or NULL when the class has no such method. */
+ScrDyn *scr_dyn_handle_class_method(ScrDynHandleTag tag, const char *name);
+/* The tag's prototype (+1), created on first use. */
+ScrDyn *scr_dyn_handle_class_prototype(ScrDynHandleTag tag);
+/* Handles of `tag` (another unit's native representation of the same
+ * interface) are instances of the class of `klass_tag`. */
+void scr_dyn_handle_class_alias(ScrDynHandleTag tag, ScrDynHandleTag klass_tag);
+/* The class tag a handle is an instance of, or SCR_DYNH_CAPACITY for a
+ * handle of no class. */
+ScrDynHandleTag scr_dyn_handle_class_tag_of(const ScrDyn *handle);
+/* The prototype of the class a handle is an instance of (+1), or NULL. */
+ScrDyn *scr_dyn_handle_class_prototype_of(const ScrDyn *handle);
+/* For a class's ScrDynHandleOps.get: a member that is not one of the
+ * class's methods, from the prototype chain with a handle over `h` as the
+ * receiver (+1); NULL when the chain has none or with the exception
+ * pending. */
+ScrDyn *scr_dyn_handle_class_member(ScrDynHandleTag tag, void *h, const char *key, size_t len);
+/* A method value's call on a handle of its tag (`self`, borrowed): the
+ * class's method_invoke, or the ops' invoke for a tag without one. +1, or
+ * NULL with the exception pending. */
+ScrDyn *scr_dyn_handle_class_method_call(const ScrDynHandleOps *ops, ScrDyn *self, const char *method,
+                                         ScrDyn *const *args, size_t argc);
+
 /* The operations a Transform handle gives the stream unit (scr_stream.c):
  * the slot where the handle keeps its stream (+1) with the stream's
  * release, update() and final() over bytes (+1 Buffer, or NULL with the
@@ -2074,6 +2174,11 @@ ScrPromise *scr_dyn_promise_any(const ScrDyn *entries, const ScrDyn *reader);
  * itself, a thenable adopts through its resolve job, a throwing `then`
  * read rejects, and any other value fulfills. +1. */
 ScrPromise *scr_dyn_promise_resolve(const ScrDyn *value, const ScrDyn *reader);
+/* Resolves `target` with a dyn value (borrowed), as a promise's resolve
+ * function does: a native promise adopts, a thenable adopts through its
+ * resolve job, a throwing `then` read rejects, and any other value
+ * fulfills. */
+void scr_dyn_promise_resolve_with(ScrPromise *target, ScrDyn *value);
 
 /* Native predicates for typed reference capsules and boxed errors. */
 bool scr_dyn_ref_typeof_is(const ScrDyn *d, const char *name);

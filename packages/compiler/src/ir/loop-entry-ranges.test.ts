@@ -1,7 +1,7 @@
 import { expect, test } from "vitest";
 import { analyzeIntegerRangeFacts } from "./integer-ranges.js";
 import { findLoopEntryVersions, LOOP_ENTRY_RANGE } from "./loop-entry-ranges.js";
-import { BOOL, F64, type IrExpr, type IrFunction, type IrStmt } from "./ir.js";
+import { BOOL, BYTES_U8, F64, type IrExpr, type IrFunction, type IrStmt } from "./ir.js";
 
 const loc = { file: "test.ts", start: 0, end: 0 };
 const num = (value: number): IrExpr => ({ loc, kind: "numLit", value, type: F64 });
@@ -140,4 +140,78 @@ test("loops without a remainder the assumption proves keep one copy", () => {
   };
   const known = fn([set("acc", ref("unknown")), set("i", num(0)), proven], ["acc", "i"]);
   expect(findLoopEntryVersions(known, analyzeIntegerRangeFacts(known)).size).toBe(0);
+});
+
+const step = (localId: string): IrExpr => ({
+  loc,
+  kind: "incDec",
+  op: "+",
+  prefix: false,
+  localId,
+  type: F64,
+});
+const bytes = (localId: string): IrExpr => ({ loc, kind: "varRef", localId, type: BYTES_U8 });
+
+/** i = unknown; o = unknown; line = unknown;
+ * for (let j = 0; j < line; j = j + 1) out[o++] = src[i++];
+ * observe(o) */
+function cursors(init?: IrStmt) {
+  const read: IrExpr = {
+    loc,
+    kind: "bytesIntrinsic",
+    method: "get",
+    receiver: bytes("src"),
+    args: [step("i")],
+    type: F64,
+  };
+  const store: IrStmt = { loc, kind: "bytesSet", arr: bytes("out"), index: step("o"), value: read };
+  const loop: IrStmt = {
+    loc,
+    kind: "for",
+    init: init ?? { loc, kind: "varDecl", localId: "j", init: num(0) },
+    cond: condition("<", ref("j"), ref("line")),
+    update: set("j", bin("+", ref("j"), num(1))),
+    body: [store],
+  };
+  const after = ref("o");
+  const f = fn(
+    [
+      set("i", ref("unknown")),
+      set("o", ref("unknown")),
+      set("line", ref("unknown")),
+      loop,
+      observe(after),
+    ],
+    ["i", "o", "line", "j", "unknown"],
+  );
+  f.locals.push(
+    { id: "src", name: "src", type: BYTES_U8, mutable: false },
+    { id: "out", name: "out", type: BYTES_U8, mutable: false },
+  );
+  return { f, loop, store, read, after };
+}
+
+test("versions a for loop on the positions it advances and the passes it runs", () => {
+  const { f, loop, store, read, after } = cursors();
+  const facts = analyzeIntegerRangeFacts(f);
+  expect(facts.ranges.get((store as Extract<IrStmt, { kind: "bytesSet" }>).index)).toBeNull();
+  const version = findLoopEntryVersions(f, facts).get(loop)!;
+  expect([...version.entry.keys()].sort()).toEqual(["i", "line", "o"]);
+  // Every pass advances each position once, and the passes stay below `line`.
+  expect(version.loopRanges?.get("o")).toEqual({
+    min: LOOP_ENTRY_RANGE.min,
+    max: 2 * LOOP_ENTRY_RANGE.max,
+  });
+  expect(version.ranges.get((store as Extract<IrStmt, { kind: "bytesSet" }>).index)).toBeDefined();
+  expect(
+    version.ranges.get((read as Extract<IrExpr, { kind: "bytesIntrinsic" }>).args[0]!),
+  ).toBeDefined();
+  // No fact leaves the loop.
+  expect(version.ranges.has(after)).toBe(false);
+});
+
+test("leaves a for loop whose initializer writes an advanced position as it is", () => {
+  const init: IrStmt = { loc, kind: "assign", localId: "o", value: num(0) };
+  const { f, loop } = cursors(init);
+  expect(findLoopEntryVersions(f, analyzeIntegerRangeFacts(f)).has(loop)).toBe(false);
 });

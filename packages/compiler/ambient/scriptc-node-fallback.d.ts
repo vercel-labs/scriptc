@@ -1084,6 +1084,12 @@ interface ReadableStreamDefaultController<T = unknown> {
   close(): void;
   error(reason?: unknown): void;
 }
+interface StreamPipeOptions {
+  preventAbort?: boolean;
+  preventCancel?: boolean;
+  preventClose?: boolean;
+  signal?: AbortSignal;
+}
 interface UnderlyingSource<T = unknown> {
   start?(controller: ReadableStreamDefaultController<T>): unknown;
   pull?(controller: ReadableStreamDefaultController<T>): unknown;
@@ -1093,6 +1099,12 @@ interface ReadableStream<T = unknown> {
   readonly locked: boolean;
   cancel(reason?: unknown): Promise<void>;
   getReader(): ReadableStreamDefaultReader<T>;
+  tee(): [ReadableStream<T>, ReadableStream<T>];
+  pipeTo(destination: WritableStream<T>, options?: StreamPipeOptions): Promise<void>;
+  pipeThrough<O>(
+    transform: { readable: ReadableStream<O>; writable: WritableStream<T> },
+    options?: StreamPipeOptions,
+  ): ReadableStream<O>;
   [Symbol.asyncIterator](options?: { preventCancel?: boolean }): AsyncIterableIterator<T>;
   values(options?: { preventCancel?: boolean }): AsyncIterableIterator<T>;
 }
@@ -1130,6 +1142,79 @@ interface TransformStream<I = unknown, O = unknown> {
 declare var TransformStream: {
   new <I = unknown, O = I>(): TransformStream<I, O>;
   readonly prototype: TransformStream<unknown, unknown>;
+};
+/* The other web stream interfaces. JavaScript sources construct and read
+ * them as checked-dynamic values (scr_webstreams.c); TypeScript sources
+ * have no static lowering for them. */
+declare var ReadableStreamDefaultReader: {
+  new <T = unknown>(stream: ReadableStream<T>): ReadableStreamDefaultReader<T>;
+  readonly prototype: ReadableStreamDefaultReader<unknown>;
+};
+declare var ReadableStreamDefaultController: {
+  new (): ReadableStreamDefaultController<unknown>;
+  readonly prototype: ReadableStreamDefaultController<unknown>;
+};
+interface WritableStreamDefaultController {
+  readonly signal: AbortSignal;
+  error(reason?: unknown): void;
+}
+declare var WritableStream: {
+  new <W = unknown>(sink?: object, strategy?: QueuingStrategy<W>): WritableStream<W>;
+  readonly prototype: WritableStream<unknown>;
+};
+declare var WritableStreamDefaultWriter: {
+  new <W = unknown>(stream: WritableStream<W>): WritableStreamDefaultWriter<W>;
+  readonly prototype: WritableStreamDefaultWriter<unknown>;
+};
+declare var WritableStreamDefaultController: {
+  new (): WritableStreamDefaultController;
+  readonly prototype: WritableStreamDefaultController;
+};
+interface TransformStreamDefaultController<O = unknown> {
+  readonly desiredSize: number | null;
+  enqueue(chunk?: O): void;
+  error(reason?: unknown): void;
+  terminate(): void;
+}
+declare var TransformStreamDefaultController: {
+  new (): TransformStreamDefaultController<unknown>;
+  readonly prototype: TransformStreamDefaultController<unknown>;
+};
+interface CountQueuingStrategy extends QueuingStrategy<unknown> {
+  readonly highWaterMark: number;
+  readonly size: QueuingStrategySize<unknown>;
+}
+declare var CountQueuingStrategy: {
+  new (init: { highWaterMark: number }): CountQueuingStrategy;
+  readonly prototype: CountQueuingStrategy;
+};
+interface ByteLengthQueuingStrategy extends QueuingStrategy<ArrayBufferView> {
+  readonly highWaterMark: number;
+  readonly size: QueuingStrategySize<ArrayBufferView>;
+}
+declare var ByteLengthQueuingStrategy: {
+  new (init: { highWaterMark: number }): ByteLengthQueuingStrategy;
+  readonly prototype: ByteLengthQueuingStrategy;
+};
+interface TextEncoderStream {
+  readonly encoding: "utf-8";
+  readonly readable: ReadableStream<Uint8Array>;
+  readonly writable: WritableStream<string>;
+}
+declare var TextEncoderStream: {
+  new (): TextEncoderStream;
+  readonly prototype: TextEncoderStream;
+};
+interface TextDecoderStream {
+  readonly encoding: string;
+  readonly fatal: boolean;
+  readonly ignoreBOM: boolean;
+  readonly readable: ReadableStream<string>;
+  readonly writable: WritableStream<Uint8Array>;
+}
+declare var TextDecoderStream: {
+  new (label?: string, options?: { fatal?: boolean; ignoreBOM?: boolean }): TextDecoderStream;
+  readonly prototype: TextDecoderStream;
 };
 
 /* fetch, typed as the native JSON + readable-stream slice: one URL, an
@@ -1665,4 +1750,5 @@ declare module "node:tty" {
 
 interface ErrorConstructor {
   stackTraceLimit: number;
+  captureStackTrace(targetObject: object, constructorOpt?: Function): void;
 }

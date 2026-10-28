@@ -55,7 +55,6 @@ describe("output option compatibility", () => {
     [{ emit: "asm", cpuDispatch: true }, /cpu-dispatch/],
     [{ emit: "obj", profileGenerate: "/tmp/%p.profraw" }, /profile-generate/],
     [{ emit: "llvm", profileUse: "/tmp/a.profdata" }, /profile-use/],
-    [{ profileGenerate: "/tmp/%p.profraw", profileUse: "/tmp/a.profdata" }, /cannot be combined/],
   ] as const)("rejects %j", (override, message) => {
     const result = resolveOutputOptions("build", { ...BASE, ...override });
     expect(result).toEqual({ ok: false, message: expect.stringMatching(message) });
@@ -119,5 +118,15 @@ describe("output option compatibility", () => {
       ok: true,
       outputKind: "exe",
     });
+  });
+
+  test("a second profile phase combines --profile-use and --profile-generate", () => {
+    expect(
+      resolveOutputOptions("build", {
+        ...BASE,
+        profileGenerate: "/tmp/%p.profraw",
+        profileUse: "/tmp/a.profdata",
+      }),
+    ).toMatchObject({ ok: true, outputKind: "exe" });
   });
 });

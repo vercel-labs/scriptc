@@ -173,10 +173,10 @@ With `--sparse`, the profile leaves out the functions the runs never reached. Th
   <dd>On x86-64 targets, compile the program's code twice, for the baseline and for <code>x86-64-v3</code>, and choose the copy when the program starts. The executable runs on any x86-64 CPU and uses the <code>x86-64-v3</code> code on CPUs that support it. Not used with a <code>--target-cpu</code> level above <code>baseline</code>. Valid only for executable builds. See <a href="#runtime-cpu-dispatch">Runtime CPU dispatch</a>.</dd>
 
   <dt><code>--profile-generate &lt;pattern&gt;</code></dt>
-  <dd>On Linux, build an instrumented executable for profile-guided optimization. Each run writes a raw profile to the path pattern, where <code>%p</code> expands to the process ID; the <code>LLVM_PROFILE_FILE</code> environment variable overrides the pattern at run time. A relative pattern resolves from the current working directory. Instrumented programs run slower. Valid only for executable builds with <code>--optimization=release</code> or <code>speed</code>.</dd>
+  <dd>On Linux, build an instrumented executable for profile-guided optimization. Each run writes a raw profile to the path pattern, where <code>%p</code> expands to the process ID; the <code>LLVM_PROFILE_FILE</code> environment variable overrides the pattern at run time. A relative pattern resolves from the current working directory. Instrumented programs run slower. With <code>--profile-use</code>, the build is optimized by that profile and instrumented after inlining, the second phase of a <a href="#context-sensitive-profiles">context-sensitive profile</a>. Valid only for executable builds with <code>--optimization=release</code> or <code>speed</code>.</dd>
 
   <dt><code>--profile-use &lt;file.profdata&gt;</code></dt>
-  <dd>Optimize the executable with a profile from <code>scriptc merge-profiles</code>: code is laid out, inlined, and split by how the profiled runs used it. Code the profile does not describe, or describes from an older version of the program, is optimized as without a profile, so a stale profile only loses part of its gain. A new or changed profile compiles every partition of the program again. <code>scriptc build</code> prints how the profile matched the program's functions on stderr; see <a href="#profile-guided-optimization">Profile-guided optimization</a>. Valid only for executable builds with <code>--optimization=release</code> or <code>speed</code>.</dd>
+  <dd>Optimize the executable with a profile from <code>scriptc merge-profiles</code>: code is laid out, inlined, and split by how the profiled runs used it. Code the profile does not describe, or describes from an older version of the program, is optimized as without a profile, so a stale profile only loses part of its gain. A new or changed profile compiles every partition of the program again. <code>scriptc build</code> prints how the profile matched the program's functions on stderr; see <a href="#profile-guided-optimization">Profile-guided optimization</a>. A profile with <a href="#context-sensitive-profiles">context-sensitive counts</a> also orders each function's blocks by them on Linux. Valid only for executable builds with <code>--optimization=release</code> or <code>speed</code>.</dd>
 
   <dt><code>--npm-static &lt;pkg[,pkg…]|auto&gt;</code></dt>
   <dd>Name npm packages to compile even if they don't ship their own type declarations (repeatable). A trailing <code>...</code>, as in <code>fs-extra...</code>, also names every package that package depends on. <code>auto</code> uses the default automatic selection. Packages that can't compile produce diagnostics. See <a href="/docs/dependencies#explicit-package-selection">npm Dependencies</a>.</dd>
@@ -246,7 +246,7 @@ With `--sparse`, the profile leaves out the functions the runs never reached. Th
   <dd>The TypeScript 7 API server that checks the program: <code>tsc-ts</code> (the default), which scriptc includes, or <code>tsgo</code>, from the <code>typescript</code> package scriptc also includes. Both give the same diagnostics and generated code.</dd>
 
   <dt><code>SCRIPTC_CHECKER_SERVER</code></dt>
-  <dd>Set to <code>1</code> on Linux and macOS to check with a tsc-ts server that later builds share. It takes effect with a tsc-ts release that serves <code>tsc-ts --api --listen</code>. The tsc-ts 0.0.9 that this version of scriptc includes does not, so each build checks with its own tsc-ts process, as without the variable. A build connects to the server for its working directory, starting it when none answers, and the server keeps the files it parsed, so the next build of the same program loads it faster. A build that finds the server in use by another build, or cannot start or reach it, checks with its own tsc-ts process. The server exits after 5 minutes without a build, or after a build when its resident memory is above 2048 MB (<code>TSC_TS_LISTEN_MEMORY</code> sets another limit in megabytes). Diagnostics and generated code are the same with and without it. It applies to the default checker, tsc-ts.</dd>
+  <dd>On Linux and macOS, builds check with a tsc-ts server that later builds share. The first build in a working directory starts it: a <code>tsc-ts</code> process, started with <code>--api</code> and <code>--listen</code>, that keeps running in the background with no terminal and keeps the files it parsed, so the next build in that directory loads its program faster. Each user, working directory and scriptc installation gets its own server, and a build connects only to the server of its own scriptc and tsc-ts. The socket is in <code>$XDG_RUNTIME_DIR/scriptc</code>, or <code>/tmp/scriptc-&lt;uid&gt;</code>, a directory only that user can access. A build that finds the server in use by another build, cannot start or reach it, or loses its connection to it, checks with its own tsc-ts process. The server exits after 10 minutes without a build, or after a build when its resident memory is above 2048 MB (<code>TSC_TS_LISTEN_MEMORY</code> sets another limit in megabytes). To stop it sooner, end that process, for example with <code>pkill -f 'tsc-ts --api .*--listen'</code>. Set to <code>0</code> to check with a tsc-ts process of each build's own. When <code>CI</code> is set to a value other than <code>0</code> or <code>false</code>, builds use their own process unless this variable is <code>1</code>. Diagnostics and generated code are the same with and without the server. It applies to the default checker, tsc-ts.</dd>
 </dl>
 
 ```console
@@ -286,6 +286,23 @@ scriptc: warning: 3739 of the 8947 functions app.profdata describes (41.8%) chan
 ```
 
 The build still succeeds. Collecting the profile again with the current program and scriptc version restores the counts.
+
+### Context-sensitive profiles
+
+A profile from the steps above counts each function's branches before the optimizer inlines calls. A second phase counts them again after inlining, separately for every place a function was inlined into:
+
+```console
+$ scriptc build app.ts --optimization=speed --profile-use app.profdata --profile-generate profiles-cs/%p.profraw -o app-instrumented-cs
+$ ./app-instrumented-cs typical-input.json
+$ scriptc merge-profiles -o app-cs.profdata app.profdata profiles-cs/*.profraw
+$ scriptc build app.ts --optimization=speed --profile-use app-cs.profdata
+```
+
+- **First phase:** `--profile-generate` alone. It instruments the program before inlining and gives the profile of the steps above.
+- **Second phase:** `--profile-use` with the first profile and `--profile-generate` together. The build is optimized by the first profile and instrumented after inlining, and `scriptc merge-profiles` adds its counts to the first profile.
+- **Optimized build:** `--profile-use` with the merged profile. On Linux, it also orders each function's blocks by the counts and moves blocks the runs never reached into separate sections, so the code that runs sits together.
+
+A profile that already holds context-sensitive counts cannot start a second phase. Merge the second phase's raw profiles into the first-phase profile instead. Both phases run the same workloads.
 
 ## Target CPU
 

@@ -25,8 +25,21 @@ import {
 
 const MAX_DEPTH = 24;
 
+/** What a mapping did besides its result. */
+export interface CanonMapNotes {
+  /** A union in the form mapped to the checked dynamic because an arm
+   * did (`string | {}`): the result holds a dynamic part the form did not
+   * spell as `unknown`. */
+  collapsedToDynamic: boolean;
+}
+
 /** The IR type of a canonical node, or null when no rule applies. */
-export function mapCanonical(c: Canon, ctx: TypeMapperCtx, depth = 0): IrType | null {
+export function mapCanonical(
+  c: Canon,
+  ctx: TypeMapperCtx,
+  depth = 0,
+  notes?: CanonMapNotes,
+): IrType | null {
   if (depth > MAX_DEPTH) return null;
   const viaChecker = (): IrType | null => (c.src === undefined ? null : mapType(c.src, ctx));
   switch (c.k) {
@@ -55,13 +68,13 @@ export function mapCanonical(c: Canon, ctx: TypeMapperCtx, depth = 0): IrType | 
     case "tuple":
       return viaChecker();
     case "array": {
-      const elem = mapCanonical(c.elem, ctx, depth + 1);
+      const elem = mapCanonical(c.elem, ctx, depth + 1, notes);
       return elem === null ? null : { kind: "array", elem };
     }
     case "union": {
       const byKey = new Map<string, IrType>();
       for (const arm of c.arms) {
-        const mapped = mapCanonical(arm, ctx, depth + 1);
+        const mapped = mapCanonical(arm, ctx, depth + 1, notes);
         if (mapped === null || mapped.kind === "void") return null;
         if (mapped.kind === "union") {
           const def = ctx.unions.get(mapped.unionId);
@@ -71,7 +84,10 @@ export function mapCanonical(c: Canon, ctx: TypeMapperCtx, depth = 0): IrType | 
       }
       const arms = [...byKey.values()];
       if (arms.length === 1) return arms[0]!;
-      if (arms.some((a) => a.kind === "dyn")) return DYN;
+      if (arms.some((a) => a.kind === "dyn")) {
+        if (notes !== undefined) notes.collapsedToDynamic = true;
+        return DYN;
+      }
       arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
       return { kind: "union", unionId: ctx.unions.intern(arms) };
     }
@@ -80,9 +96,13 @@ export function mapCanonical(c: Canon, ctx: TypeMapperCtx, depth = 0): IrType | 
         return viaChecker();
       if (c.index().length > 0) return viaChecker();
       const props = c.props();
+      // Accessor members are closure slots (`%get:x`, `%set:x`), and a
+      // getter and setter of different types have no single slot type:
+      // mapType's rules decide them, not a data field of the read type.
+      if (props.some((p) => p.accessor)) return viaChecker();
       // `{}` holds any non-nullish value: the checked dynamic, as mapType.
       if (props.length === 0) return DYN;
-      const structural = mapCanonicalRecord(props, ctx, depth);
+      const structural = mapCanonicalRecord(props, ctx, depth, notes);
       // An object whose members do not map structurally (an interface over
       // Map or Set, methods) keeps its per-type recognition.
       return structural ?? viaChecker();
@@ -96,10 +116,11 @@ function mapCanonicalRecord(
   props: readonly CanonProp[],
   ctx: TypeMapperCtx,
   depth: number,
+  notes: CanonMapNotes | undefined,
 ): IrType | null {
   const fields: { name: string; type: IrType }[] = [];
   for (const p of props) {
-    let t = mapCanonical(p.type(), ctx, depth + 1);
+    let t = mapCanonical(p.type(), ctx, depth + 1, notes);
     if (t === null) return null;
     if (p.optional && t.kind !== "dyn") {
       const armed = withUndefinedArm(t, ctx.unions);

@@ -8,6 +8,7 @@ process.env.SCRIPTC_RUNTIME_PACK_CONFIG = JSON.stringify({
   runtimeDefines: ["_GNU_SOURCE", "_WASI_EMULATED_SIGNAL", "_WASI_EMULATED_PROCESS_CLOCKS"],
   omitRuntimeSources: ["scr_child.c"],
   omitOptionalSources: [
+    "scr_abort.c",
     "scr_event_target.c",
     "scr_loop_kqueue.c",
     "scr_loop_epoll.c",

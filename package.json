@@ -22,6 +22,7 @@
     "test:test262:fetch": "node tests/test262/fetch.mjs",
     "test:cache-identity": "node tests/harness/cache-identity.mjs",
     "test:lowering-order": "node scripts/lowering-order.mjs --fail-on names",
+    "test:recorded-lowering": "node scripts/recorded-lowering.mjs",
     "test:sandbox": "node scripts/sandbox-test.mjs",
     "test:sandbox:image": "node scripts/sandbox-image.mjs",
     "test:watch": "vitest",
@@ -37,6 +38,7 @@
   },
   "devDependencies": {
     "@scriptc/experimental": "workspace:*",
+    "@scriptc/node": "workspace:*",
     "@scriptc/threads": "workspace:*",
     "@scriptc/types": "workspace:*",
     "@types/node": "^24.0.0",

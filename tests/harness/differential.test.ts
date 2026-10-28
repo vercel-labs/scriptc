@@ -23,6 +23,7 @@ import ts5 from "typescript";
 import { compile } from "@scriptc/compiler";
 import { corpusSelect, shardSuffix } from "./shard.js";
 import { oracleEnvKey } from "./oracle-env.js";
+import { libnodePack, requiresLibnode } from "./libnode.js";
 import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
 
 const execFileAsync = promisify(execFile);
@@ -407,7 +408,10 @@ describe(`differential corpus (${files.length} programs${sanitize ? ", sanitized
   test.for(files.map((f) => [f.slice(corpusDir.length + 1), f] as const))(
     "%s",
     { retry: 1 },
-    async ([, file]) => {
+    async ([, file], { skip }) => {
+      // `// @requires-libnode`: the binary loads Node from a libnode pack,
+      // required in the Linux CI lanes (libnode.ts), else skipped without one.
+      if (requiresLibnode(file) && libnodePack() === null) skip();
       const [nodeRes, nativeRes] = await Promise.all([runNode(file), compileAndRun(file)]);
       // Compare as bytes; decode only for the failure diff.
       if (!nodeRes.stdout.equals(nativeRes.stdout)) {

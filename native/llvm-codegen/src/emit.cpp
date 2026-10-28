@@ -111,9 +111,6 @@ std::optional<EmitOptions> parseEmitOptions(int Argc, char **Argv) {
   }
   if (Options.Input.empty() || Options.Outputs.empty())
     return std::nullopt;
-  // A build either collects a profile or uses one.
-  if (!Options.ProfileGenerate.empty() && !Options.ProfileUse.empty())
-    return std::nullopt;
   return Options;
 }
 
@@ -150,18 +147,46 @@ PipelineTuningOptions tuningFor(OptimizationLevel Level) {
   return Tuning;
 }
 
-// The profile-guided optimization a build asks for: IR instrumentation that
-// writes raw profiles to the ProfileGenerate pattern, or annotation from the
-// indexed ProfileUse profile. Functions the profile does not describe, or
-// whose control flow changed since it was collected, are optimized as without
-// one, so a stale profile loses only its gain.
+// Whether the ProfileUse profile also holds context-sensitive counts, which
+// a second instrumentation after inlining recorded (inspectProfile).
+bool ContextProfile = false;
+
+// The profile-guided optimization a build asks for:
+// - IR instrumentation that writes raw profiles to the ProfileGenerate
+//   pattern;
+// - annotation from the indexed ProfileUse profile, and from its
+//   context-sensitive counts after inlining when it has them;
+// - with both, annotation from ProfileUse and a second instrumentation after
+//   inlining that writes context-sensitive counts to the ProfileGenerate
+//   pattern. `scriptc merge-profiles` adds them to the first profile.
+// Functions the profile does not describe, or whose control flow changed
+// since it was collected, are optimized as without one, so a stale profile
+// loses only its gain.
 std::optional<PGOOptions> profileOptions(const EmitOptions &Options) {
+  if (!Options.ProfileGenerate.empty() && !Options.ProfileUse.empty())
+    return PGOOptions(Options.ProfileUse, Options.ProfileGenerate, "", "",
+                      PGOOptions::IRUse, PGOOptions::CSIRInstr);
   if (!Options.ProfileGenerate.empty())
     return PGOOptions(Options.ProfileGenerate, "", "", "",
                       PGOOptions::IRInstr);
   if (!Options.ProfileUse.empty())
-    return PGOOptions(Options.ProfileUse, "", "", "", PGOOptions::IRUse);
+    return PGOOptions(Options.ProfileUse, "", "", "", PGOOptions::IRUse,
+                      ContextProfile ? PGOOptions::CSIRUse
+                                     : PGOOptions::NoCSAction);
   return std::nullopt;
+}
+
+// Block placement by the extended TSP model, which needs the exact block
+// counts a context-sensitive profile gives. The option is process-wide; the
+// helper sets it once.
+void enableExtTspPlacement() {
+  static const bool Enabled = [] {
+    if (cl::Option *Option = cl::getRegisteredOptions().lookup(
+            "enable-ext-tsp-block-placement"))
+      Option->addOccurrence(0, "enable-ext-tsp-block-placement", "true");
+    return true;
+  }();
+  (void)Enabled;
 }
 
 // With a profile, the thin link imports the callees of hot call edges up to
@@ -318,7 +343,8 @@ void reportProfileMatch(const ProfileMatch &Match) {
 }
 
 // Reads the profile's header once, before any partition needs it: it must
-// hold IR-level counts.
+// hold IR-level counts. Context-sensitive counts lay out the code by them;
+// a profile that has them cannot take a second set.
 std::optional<EmitFailure> inspectProfile(const EmitOptions &Options) {
   if (Options.ProfileUse.empty())
     return std::nullopt;
@@ -333,6 +359,16 @@ std::optional<EmitFailure> inspectProfile(const EmitOptions &Options) {
     return EmitFailure{"profile_read_failed",
                        Options.ProfileUse +
                            ": not an IR-level instrumentation profile"};
+  ContextProfile = (*Reader)->hasCSIRLevelProfile();
+  if (ContextProfile && !Options.ProfileGenerate.empty())
+    return EmitFailure{"profile_read_failed",
+                       Options.ProfileUse +
+                           ": already holds context-sensitive counts; "
+                           "collect them on top of the IR-level profile"};
+  if (ContextProfile && Triple(Options.Target).isOSBinFormatELF()) {
+    enableProfileLayout();
+    enableExtTspPlacement();
+  }
   return std::nullopt;
 }
 
@@ -804,6 +840,14 @@ compileOptimizedPartitions(const EmitOptions &Options,
                     : Level == OptimizationLevel::O3 ? 3
                                                      : 2;
   Config.PTO = tuningFor(Level);
+  // The thin backend instruments or annotates context-sensitive counts after
+  // its inlining (see profileOptions).
+  if (!Options.ProfileGenerate.empty() && !Options.ProfileUse.empty()) {
+    Config.RunCSIRInstr = true;
+    Config.CSIRProfile = Options.ProfileGenerate;
+  } else if (ContextProfile) {
+    Config.CSIRProfile = Options.ProfileUse;
+  }
   Config.CGFileType = CodeGenFileType::ObjectFile;
   Config.DefaultTriple = Options.Target;
   Config.DiagHandler = [&](const DiagnosticInfo &Info) {

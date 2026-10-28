@@ -414,8 +414,10 @@ static int connect_server(const char *path) {
 /* Starts the server in its own process group, so that a terminal's signals
  * to the build do not reach it, with its standard streams on /dev/null and
  * no other descriptor of this process, so that it holds no pipe a caller of
- * the build waits on. `limit` (TSC_TS_LISTEN_MEMORY=...) is added to the
- * environment unless it sets TSC_TS_LISTEN_MEMORY. */
+ * the build waits on. It runs in the root directory, so that it does not
+ * keep the build's directory in use; its working directory for the build's
+ * files is the --cwd argument. `limit` (TSC_TS_LISTEN_MEMORY=...) is added
+ * to the environment unless it sets TSC_TS_LISTEN_MEMORY. */
 static pid_t start_server(char **args, char *limit) {
 #ifdef __APPLE__
   char **inherited = *_NSGetEnviron();
@@ -440,7 +442,7 @@ static pid_t start_server(char **args, char *limit) {
     // Only async-signal-safe calls until exec.
     int null = open("/dev/null", O_RDWR);
     if (setpgid(0, 0) != 0 || null < 0 || dup2(null, STDIN_FILENO) < 0 || dup2(null, STDOUT_FILENO) < 0 ||
-        dup2(null, STDERR_FILENO) < 0)
+        dup2(null, STDERR_FILENO) < 0 || chdir("/") != 0)
       _exit(127);
 #if defined(__linux__) && defined(SYS_close_range)
     if (syscall(SYS_close_range, 3U, ~0U, 0U) != 0)

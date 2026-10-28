@@ -157,6 +157,20 @@ ScrDyn *scr_await_dyn_value(ScrDyn *v);
  * settles a fresh result promise, answered BOXED (+1). Microtask-exact
  * ordering rides the fiber machinery. */
 ScrDyn *scr_dyn_promise_then(ScrPromise *src, ScrDyn *onf, ScrDyn *onr, ScrDyn *onfin);
+/* A native reaction to a promise's settlement, as PerformPromiseThen with
+ * native steps: react(ctx, settled) runs as a reaction job once the promise
+ * settles (from the next microtask checkpoint when it already has), in
+ * subscription order among the promise's other reactions, and borrows the
+ * settled promise. drop(ctx), when non-NULL, runs after react, or when the
+ * promise goes away unsettled. The collector does not trace the context:
+ * the reaction's references count as outside references while it waits. */
+typedef struct ScrPromiseReaction {
+  void (*react)(void *ctx, ScrPromise *settled);
+  void (*drop)(void *ctx);
+} ScrPromiseReaction;
+/* Subscribes a native reaction to `p` (the descriptor outlives it) and
+ * marks `p` handled, as a `then` does. */
+void scr_promise_react(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx);
 /* ── AsyncLocalStorage (node:async_hooks — scr_async.c) ───────────────
  * Stores are process-lived f64 handles; the CONTEXT is an immutable
  * refcounted snapshot of (store → dyn value) entries riding the fiber

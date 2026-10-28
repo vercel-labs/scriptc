@@ -1,7 +1,14 @@
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { undefinedArmTag, unionWideningTags } from "../../ir/analysis.js";
-import { type IrExpr, type IrType, isRefCounted, type SrcLoc, typeEquals } from "../../ir/ir.js";
+import {
+  type IrExpr,
+  type IrType,
+  isRefCounted,
+  isUnitType,
+  type SrcLoc,
+  typeEquals,
+} from "../../ir/ir.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext, LlValue } from "./expr-context.js";
 import { f64Lit, llvmCommentText } from "./common.js";
@@ -11,6 +18,7 @@ import { canReplaceWith, regexLiteralCompiles } from "./regex-matchers.js";
 import { isScalarUnionDef, loadInlineUnion, presentBits } from "./inline-unions.js";
 import { preservesRegexInputs } from "./reference-effects.js";
 import { emitNumberMapSlot, emitStringMapEntry } from "./map-number-lookup.js";
+import { everyStmtList } from "../../ir/traverse.js";
 
 /** Widen one tagged read. The source is borrowed unless the overflow map
  * supplied an owned value. Each selected reference payload is retained
@@ -490,6 +498,7 @@ export function pointerRecordKeyGet(host: LlvmEmitterContext, e: IrExpr): boolea
 export function emitBorrowedRecordKeyGet(
   host: LlvmEmitterContext,
   e: IrExpr & { kind: "recordKeyGet" },
+  fallback: IrExpr | null = null,
 ): LlValue {
   const B = host.B;
   if (e.type.kind !== "union")
@@ -499,6 +508,15 @@ export function emitBorrowedRecordKeyGet(
   const key = host.canBorrowReceiver(e.key) ? host.emitReadReceiver(e.key) : host.emitExpr(e.key);
   const slot = B.slot();
   B.entryAllocas.push(`${slot} = alloca ptr`);
+  // A default that needs an owner gets a frame slot, empty on every path
+  // until a miss fills it.
+  let owner: string | null = null;
+  if (fallback !== null && !immortalDefault(host, fallback)) {
+    owner = B.slot();
+    B.entryAllocas.push(`${owner} = alloca ptr`);
+    B.line(`store ptr null, ptr ${owner}`);
+    host.ownSlot(owner, resultType, true);
+  }
   const join = B.newLabel("rkb.j");
   const shape = host.recordShape(e.shapeId);
   for (const f of e.overflowOnly === true ? [] : shape.fields) {
@@ -528,13 +546,76 @@ export function emitBorrowedRecordKeyGet(
     B.br(join);
     B.startBlock(ln);
   }
-  const undefTag = undefinedArmTag(resultType, host.unionsById);
-  B.line(`store ptr ${host.unitInstanceRef(resultType.unionId, undefTag)}, ptr ${slot}`);
+  if (fallback !== null && immortalDefault(host, fallback)) {
+    // An immortal default (an interned function value or undefined) needs
+    // no owner at all.
+    const value = host.emitExpr(fallback);
+    host.toHeap(value);
+    B.line(`store ptr ${value.name}, ptr ${slot}`);
+  } else if (fallback !== null && owner !== null) {
+    // `r[k] ?? d` (borrowedRecordKeyGetOr): the default is owned by a
+    // statement-frame slot, which the consumer may borrow like a hit.
+    const value = host.emitExpr(fallback);
+    host.toHeap(value);
+    B.line(`store ptr ${value.name}, ptr ${owner}`);
+    B.line(`store ptr ${value.name}, ptr ${slot}`);
+  } else {
+    const undefTag = undefinedArmTag(resultType, host.unionsById);
+    B.line(`store ptr ${host.unitInstanceRef(resultType.unionId, undefTag)}, ptr ${slot}`);
+  }
   B.br(join);
   B.startBlock(join);
   const t = B.tmp();
   B.line(`${t} = load ptr, ptr ${slot}`);
   return { name: t, type: e.type };
+}
+
+/** `r[k] ?? d` in its pass-through shape over a pointerRecordKeyGet whose
+ * stored values are never unit (so only a miss evaluates `d`): the hit
+ * lends the stored pointer and the default is frame-owned, so the result
+ * borrows for the rest of the statement. */
+export function borrowedRecordKeyGetOr(
+  host: LlvmEmitterContext,
+  e: IrExpr,
+): (IrExpr & { kind: "recordKeyGet" }) | null {
+  if (e.kind !== "nullish" || e.left.kind !== "recordKeyGet") return null;
+  if (!typeEquals(e.type, e.left.type) || !pointerRecordKeyGet(host, e.left)) return null;
+  const shape = host.recordShape(e.left.shapeId);
+  const holdsUnit = (t: IrType): boolean =>
+    isUnitType(t) ||
+    t.kind === "dyn" ||
+    (t.kind === "union" && (host.unionsById.get(t.unionId)?.arms ?? []).some(isUnitType));
+  if (shape.indexValue !== undefined && holdsUnit(shape.indexValue)) return null;
+  if (e.left.overflowOnly !== true && shape.fields.some((f) => holdsUnit(f.type))) return null;
+  return e.left;
+}
+
+/** The default is a call to a helper whose every result is immortal: the
+ * unit arm or a closure over no captures (an interned function value), as
+ * the unbound inherited-method reads return. */
+export function immortalDefault(host: LlvmEmitterContext, fallback: IrExpr): boolean {
+  if (fallback.kind !== "call") return false;
+  const fn = host.fnByName.get(fallback.callee);
+  if (!fn || fn.async || fn.generator) return false;
+  const immortal = (v: IrExpr | null): boolean => {
+    if (v === null) return false;
+    if (v.kind === "unitLit") return true;
+    if (v.kind === "unionWrap") return immortal(v.value);
+    if (v.kind === "closure") {
+      const target = host.fnByName.get(v.fnName);
+      return v.captures.length === 0 && target !== undefined && target.captures === undefined;
+    }
+    return false;
+  };
+  let ok = true;
+  everyStmtList(fn.body, {
+    stmt: (st) => {
+      if (st.kind === "return" && !immortal(st.value)) ok = false;
+      return ok;
+    },
+    expr: () => ok,
+  });
+  return ok;
 }
 
 /** A keyed read whose result is a scalar union (`r[k]` on a

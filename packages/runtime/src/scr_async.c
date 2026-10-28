@@ -211,12 +211,20 @@ struct ScrPromise {
    * Combinator entries (Promise.all / Promise.race) are reaction jobs:
    * `job_at` is the number of waiters parked before the entry subscribed,
    * so settlement queues the job in subscription order among the waking
-   * fibers. Conversions (SCR_CB_SYNC) run inside the settle itself. */
+   * fibers. Conversions (SCR_CB_SYNC) run inside the settle itself.
+   * Native reactions (scr_promise_react) are reaction jobs with no dst:
+   * `reaction` and `ctx` take the places of adapt and all_idx. */
   struct ScrPromiseCbWaiter {
-    void (*adapt)(ScrPromise *dst, ScrPromise *src);
+    union {
+      void (*adapt)(ScrPromise *dst, ScrPromise *src);
+      const ScrPromiseReaction *reaction;
+    };
     ScrPromise *dst;
     struct ScrAllState *all;
-    size_t all_idx;
+    union {
+      size_t all_idx;
+      void *ctx;
+    };
     size_t job_at;
   } *cbs;
   size_t ncbs, cbs_cap;
@@ -288,6 +296,24 @@ static void scr_promise_add_waiter(ScrPromise *p, ScrFiber *f) {
   p->waiters[p->nwaiters++] = f;
 }
 
+#ifdef SCR_NATIVE_REACTIONS
+/* A native reaction's steps (scr_promise_react). Only the build for
+ * programs with web streams has them (runtime-pack-matrix.mjs). */
+static void scr_promise_reaction_drop(struct ScrPromiseCbWaiter *cb) {
+  if (cb->reaction->drop) cb->reaction->drop(cb->ctx);
+}
+
+static void scr_promise_reaction_run(struct ScrPromiseCbWaiter *cb, ScrPromise *src) {
+  cb->reaction->react(cb->ctx, src);
+  scr_promise_reaction_drop(cb);
+}
+#define SCR_PROMISE_IS_REACTION(cb) ((cb)->dst == NULL)
+#else
+#define SCR_PROMISE_IS_REACTION(cb) false
+#define scr_promise_reaction_drop(cb) ((void)0)
+#define scr_promise_reaction_run(cb, src) ((void)0)
+#endif
+
 static bool scr_promise_has_traced_children(const ScrPromise *p) {
   return p->ncbs != 0 ||
          ((p->payload_kind == SCR_EXC_REF || p->payload_kind == SCR_EXC_OBJ ||
@@ -324,7 +350,8 @@ static void scr_promise_gcfree(void *o) {
    * is reachable only through them) — release like the untraced payload
    * above; the cb destinations stay untouched (trace visits them). */
   for (size_t i = 0; i < p->ncbs; i++) {
-    if (p->cbs[i].all) scr_promise_all_state_release(p->cbs[i].all);
+    if (SCR_PROMISE_IS_REACTION(&p->cbs[i])) scr_promise_reaction_drop(&p->cbs[i]);
+    else if (p->cbs[i].all) scr_promise_all_state_release(p->cbs[i].all);
   }
   scr_promise_free_side(p);
   if (p->cbs) free(p->cbs);
@@ -416,6 +443,10 @@ void scr_promise_release(ScrPromise *p) {
     scr_promise_release_payload(p);
     scr_promise_free_side(p);
     for (size_t i = 0; i < p->ncbs; i++) {
+      if (SCR_PROMISE_IS_REACTION(&p->cbs[i])) {
+        scr_promise_reaction_drop(&p->cbs[i]);
+        continue;
+      }
       scr_promise_release(p->cbs[i].dst);
       if (p->cbs[i].all) scr_promise_all_state_release(p->cbs[i].all);
     }
@@ -1635,6 +1666,10 @@ static inline void scr_promise_wake_one(ScrFiber *f) {
 /* Runs one callback waiter against its settled source and drops the
  * waiter's references (its destination and countdown state). */
 static void scr_promise_cb_run(struct ScrPromiseCbWaiter *cb, ScrPromise *src) {
+  if (SCR_PROMISE_IS_REACTION(cb)) {
+    scr_promise_reaction_run(cb, src);
+    return;
+  }
   if (cb->all) {
     scr_promise_all_settle(cb->all, cb->dst, cb->all_idx, src);
     scr_promise_all_state_release(cb->all);
@@ -1695,6 +1730,15 @@ static void scr_promise_cb_subscribe(ScrPromise *in, struct ScrPromiseCbWaiter c
   }
 }
 
+#ifdef SCR_NATIVE_REACTIONS
+void scr_promise_react(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx) {
+  struct ScrPromiseCbWaiter cb = {0};
+  cb.reaction = reaction;
+  cb.ctx = ctx;
+  scr_promise_cb_subscribe(p, cb);
+}
+#endif
+
 /* Settlement with callback waiters: combinator jobs enter the microtask
  * queue interleaved with the waking fibers in subscription order, then
  * the conversions run in place (they settle their destinations now, so
@@ -1741,7 +1785,7 @@ static void scr_promise_settle_wake(ScrPromise *p) {
 void scr_promise_race_join(ScrPromise *race, ScrPromise *in,
                             void (*adapt)(ScrPromise *dst, ScrPromise *src)) {
   scr_promise_cb_subscribe(
-      in, (struct ScrPromiseCbWaiter){ adapt, scr_promise_retain(race), NULL, 0, 0 });
+      in, (struct ScrPromiseCbWaiter){ .adapt = adapt, .dst = scr_promise_retain(race) });
 }
 
 void scr_promise_race_add(ScrPromise *race, ScrPromise *in,
@@ -1752,7 +1796,7 @@ void scr_promise_race_add(ScrPromise *race, ScrPromise *in,
     return;
   }
   *scr_promise_cb_push(in) =
-      (struct ScrPromiseCbWaiter){ adapt, scr_promise_retain(race), NULL, 0, SCR_CB_SYNC };
+      (struct ScrPromiseCbWaiter){ .adapt = adapt, .dst = scr_promise_retain(race), .job_at = SCR_CB_SYNC };
 }
 
 /* ── Promise.all / allSettled / any ───────────────────────────────────
@@ -1805,7 +1849,7 @@ __attribute__((always_inline)) static inline void scr_combine_add(ScrCombine *c,
   if (in->state == SCR_PROM_PENDING) {
     st->rc++;
     scr_promise_cb_subscribe(
-        in, (struct ScrPromiseCbWaiter){ NULL, scr_promise_retain(c->result), st, i, 0 });
+        in, (struct ScrPromiseCbWaiter){ .dst = scr_promise_retain(c->result), .all = st, .all_idx = i });
     return;
   }
   scr_prom_observe(in);
@@ -1825,8 +1869,8 @@ __attribute__((always_inline)) static inline void scr_combine_flush(ScrCombine *
   c->st->rc++;
   job->cb_job = true;
   job->cb_src = c->decided; /* the reference moves in */
-  job->cb = (struct ScrPromiseCbWaiter){ NULL, scr_promise_retain(c->result), c->st, c->batched,
-                                         SCR_CB_BATCH };
+  job->cb = (struct ScrPromiseCbWaiter){
+      .dst = scr_promise_retain(c->result), .all = c->st, .all_idx = c->batched, .job_at = SCR_CB_BATCH};
   scr_ready_push(job);
   c->decided = NULL;
   c->batched = 0;
@@ -4330,6 +4374,29 @@ void scr_loop_set_watch(bool (*pending)(void), void (*dispatch)(void), int (*pol
   scr_watch_pollfd_fn = pollfd;
 }
 
+#ifdef SCR_NODE_ISLANDS
+/* The Node island hook (scr_node_island.c): the watch hook's shape plus a
+ * sleep bound, in the SCR_NODE_ISLANDS build of this unit only, so
+ * programs without Node islands link the plain object byte for byte. Once
+ * Node is loaded, `pending` keeps the loop alive while Node's own loop has
+ * ref'd work, `dispatch` runs one non-blocking turn of it at every turn
+ * top, `pollfd` is its backend fd for the idle poll(2) sleep and `timeout`
+ * the milliseconds to its next timer (-1: none). NI-3 replaces this with
+ * the runtime's queues hosted on Node's loop. */
+static SCR_TL bool (*scr_node_island_pending_fn)(void) = NULL;
+static SCR_TL void (*scr_node_island_dispatch_fn)(void) = NULL;
+static SCR_TL int (*scr_node_island_pollfd_fn)(void) = NULL;
+static SCR_TL int (*scr_node_island_timeout_fn)(void) = NULL;
+
+void scr_loop_set_node_island(bool (*pending)(void), void (*dispatch)(void), int (*pollfd)(void),
+                              int (*timeout)(void)) {
+  scr_node_island_pending_fn = pending;
+  scr_node_island_dispatch_fn = dispatch;
+  scr_node_island_pollfd_fn = pollfd;
+  scr_node_island_timeout_fn = timeout;
+}
+#endif
+
 /* The child-process hook (scr_child.c, installed with the first spawned
  * child or IPC channel). Programs that never create one keep it NULL and
  * do not link the child unit; WASI never links it. */
@@ -4599,6 +4666,16 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       if (scr_exc_pending()) return false; /* uncaught throw in a listener */
       if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
     }
+#ifdef SCR_NODE_ISLANDS
+    /* Node island dispatch (scr_node_island.c): one non-blocking turn of
+     * Node's loop, whose callbacks may settle calls into Node — the watch
+     * hook's station. */
+    if (scr_node_island_dispatch_fn != NULL) {
+      scr_node_island_dispatch_fn();
+      if (scr_exc_pending()) return false;
+      if (scr_ready_len > 0 || scr_nt_head != NULL) continue;
+    }
+#endif
     /* Reap spawned children and fire their listeners (before timers,
      * like Node's nextTick-ish spawn-failure "error"). A callback may
      * enqueue microtasks or spawn again — restart the turn if so.
@@ -4623,7 +4700,11 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
           (scr_watch_pending_fn != NULL && scr_watch_pending_fn()) ||
           (scr_ffi_pending_fn != NULL && scr_ffi_pending_fn()) ||
           scr_fs_renames_pending() || scr_crypto_bytes_pending() || scr_loop_deferred_pending() ||
-          scr_workers_pending();
+          scr_workers_pending()
+#ifdef SCR_NODE_ISLANDS
+          || (scr_node_island_pending_fn != NULL && scr_node_island_pending_fn())
+#endif
+          ;
       if (held) {
         scr_loop_children->poll();
         if (scr_exc_pending()) return false; /* uncaught throw in a listener */
@@ -4649,13 +4730,20 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     bool renames = scr_fs_renames_pending();
     bool crypto = scr_crypto_bytes_pending() || scr_loop_deferred_pending();
     bool workers = scr_workers_pending();
+#ifdef SCR_NODE_ISLANDS
+    bool node_island = scr_node_island_pending_fn != NULL && scr_node_island_pending_fn();
+#endif
     /* Timer liveness counts only REF'd timers: an unref'd timer stays in
      * the heap (and fires if the loop runs on for other reasons) but does
      * not by itself keep the process alive — Node's unref semantics.
      * Children follow the same rule: an unref'd child is still REAPED
      * while the loop runs (kids drives the sweeps and sleeps above) but
      * only reffed ones keep the process alive. */
-    if (scr_reffed_timers == 0 && scr_reffed_immediates == 0 && !kids_reffed && !events && !net && !dgram && !watch && !ffi && !renames && !crypto && !workers) break;
+    if (scr_reffed_timers == 0 && scr_reffed_immediates == 0 && !kids_reffed && !events && !net && !dgram && !watch && !ffi && !renames && !crypto && !workers
+#ifdef SCR_NODE_ISLANDS
+        && !node_island
+#endif
+        ) break;
     /* Sleep to the earliest deadline, then run every due timer (each may
      * enqueue microtasks, which the next iteration drains first). Who
      * sleeps depends on what is pending:
@@ -4713,12 +4801,20 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
 #endif
     bool evw = scr_events_watching_fn != NULL && scr_events_watching_fn();
 #ifdef SCR_WORKERS
-    if (workers && scr_workers_wait_fn && !kids && !evw && !net_io && !dgram && !watch && !ffi && !renames && !crypto) {
+    if (workers && scr_workers_wait_fn && !kids && !evw && !net_io && !dgram && !watch && !ffi && !renames && !crypto
+#ifdef SCR_NODE_ISLANDS
+        && !node_island
+#endif
+        ) {
       scr_workers_wait_fn(due > now ? due - now : 0);
       now = scr_now_ms();
     } else
 #endif
-    if (evw || net_io || dgram || watch || ffi || workers || renames_fd >= 0) {
+    if (evw || net_io || dgram || watch || ffi || workers || renames_fd >= 0
+#ifdef SCR_NODE_ISLANDS
+        || node_island
+#endif
+        ) {
 #if defined(_WIN32) || defined(__wasi__)
       /* The win32 arm, and WASI hosts whose poll_oneoff adapters do not
        * reliably wake for a closed inherited stdin pipe: the sleep is a capped nanosleep and
@@ -4734,6 +4830,9 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       if (evw && due > now + SCR_SIGNAL_POLL_MS) due = now + SCR_SIGNAL_POLL_MS;
       if ((net_io || dgram || watch) && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
       if ((ffi || workers) && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
+#ifdef SCR_NODE_ISLANDS
+      if (node_island && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
+#endif
       if (kids && due > now + SCR_CHILD_POLL_MS) due = now + SCR_CHILD_POLL_MS;
       if (due > now) {
         double wait = due - now;
@@ -4827,6 +4926,22 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
         fds[nfds].events = POLLIN;
         fds[nfds++].revents = 0;
       }
+#ifdef SCR_NODE_ISLANDS
+      if (node_island) {
+        /* Node's backend fd ends the sleep on its I/O; its next timer
+         * bounds the sleep. */
+        int left = scr_node_island_timeout_fn != NULL ? scr_node_island_timeout_fn() : -1;
+        if (left >= 0 && due > now + left) due = now + left;
+        int ifd = scr_node_island_pollfd_fn != NULL ? scr_node_island_pollfd_fn() : -1;
+        if (ifd >= 0) {
+          fds[nfds].fd = ifd;
+          fds[nfds].events = POLLIN;
+          fds[nfds++].revents = 0;
+        } else if (due > now + SCR_CHILD_POLL_MS) {
+          due = now + SCR_CHILD_POLL_MS;
+        }
+      }
+#endif
       if (workers) {
         int worker_fd = scr_workers_pollfd();
         if (worker_fd >= 0) {
@@ -6386,6 +6501,7 @@ static void scr_context_ready_discard(void) {
       scr_gen_release(generator);
       scr_mem_free(fiber);
     } else if (fiber->cb_job) {
+      if (SCR_PROMISE_IS_REACTION(&fiber->cb)) scr_promise_reaction_drop(&fiber->cb);
       scr_promise_release(fiber->cb.dst);
       if (fiber->cb.all) scr_promise_all_state_release(fiber->cb.all);
       scr_promise_release(fiber->cb_src);

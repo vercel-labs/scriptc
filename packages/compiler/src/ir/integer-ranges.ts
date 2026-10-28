@@ -23,7 +23,8 @@ export interface IntegerRangeFacts {
   ranges: IntegerRanges;
   loopRanges: ReadonlyMap<IrStmt, ReadonlyMap<string, IntegerRange>>;
 }
-/** Ranges assumed for locals on entry to while loops (loop-entry-ranges.ts):
+/** Ranges assumed for locals on entry to while and for loops
+ * (loop-entry-ranges.ts), after a for loop's initializer:
  * the facts inside such a loop hold in a copy of it that runs only after a
  * test proves every assumed local is an integer in its range. After the
  * loop, its assumed locals and its writes carry no facts. */
@@ -744,8 +745,11 @@ export function analyzeIntegerRangeFacts(
         set(facts, e.localId, range);
         break;
       case "incDec": {
-        const before = facts.get(e.localId) ?? null;
+        // A binding a for loop bounds holds a value in its loop range at
+        // every point of the loop, also where a statement around this
+        // increment has discarded its fact.
         const bound = counterRanges.get(e.localId);
+        const before = facts.get(e.localId) ?? bound ?? null;
         const sum = before ? integerArithmeticRange(e.op, before, { min: 1, max: 1 }) : null;
         const after =
           bound && sum
@@ -1005,6 +1009,9 @@ export function analyzeIntegerRangeFacts(
         }
         case "for": {
           if (s.init) body([s.init], facts);
+          // The initializer writes none of the assumed locals.
+          const assumed = entries?.get(s);
+          if (assumed) for (const [id, range] of assumed) if (!facts.has(id)) set(facts, id, range);
           const counter = induction(s, facts);
           const bounded = boundedIntegerLoopFacts(s, loopLocals, facts);
           const loop = new Map(facts);
@@ -1076,6 +1083,10 @@ export function analyzeIntegerRangeFacts(
             body([s.update], entry);
           }
           havoc(facts, [s], facts);
+          if (assumed) {
+            invalidate(facts, [s]);
+            for (const id of assumed.keys()) facts.delete(id);
+          }
           break;
         }
         case "while":

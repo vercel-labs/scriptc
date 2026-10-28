@@ -864,6 +864,20 @@ function undefFieldInits(
   meta: LlClassMeta,
   nullable: NullableRefFields | undefined,
 ): string[] {
+  return classUndefinedFieldInits(host, meta, nullable, "%o", "%uf");
+}
+
+/** The stores that start an instance's union and dyn fields at undefined,
+ * for the instance at `object`, with temporaries named `<prefix><index>`
+ * and `<prefix>v<index>`. A nullable-pointer field's zeroed slot already is
+ * its unit arm. */
+export function classUndefinedFieldInits(
+  host: ClassHost,
+  meta: LlClassMeta,
+  nullable: NullableRefFields | undefined,
+  object: string,
+  prefix: string,
+): string[] {
   const out: string[] = [];
   meta.def.fields.forEach((f, i) => {
     // Error.cause uses NULL for absence; an options constructor installs
@@ -880,17 +894,17 @@ function undefFieldInits(
       const tag = undefinedArmTag(f.type, host.unionsById);
       if (tag < 0) return;
       out.push(
-        `  %uf${i} = getelementptr inbounds %${mangleClassStruct(meta.def.name)}, ptr %o, i64 0, i32 ${index}, i32 0`,
-        `  store i32 ${tag}, ptr %uf${i} ; ${llvmCommentText(f.name)} starts undefined`,
+        `  ${prefix}${i} = getelementptr inbounds %${mangleClassStruct(meta.def.name)}, ptr ${object}, i64 0, i32 ${index}, i32 0`,
+        `  store i32 ${tag}, ptr ${prefix}${i} ; ${llvmCommentText(f.name)} starts undefined`,
       );
       return;
     }
     if (f.type.kind === "dyn") {
       host.declare("declare ptr @scr_dyn_undefined()");
       out.push(
-        `  %ufv${i} = call ptr @scr_dyn_undefined()`,
-        `  %uf${i} = getelementptr inbounds %${mangleClassStruct(meta.def.name)}, ptr %o, i64 0, i32 ${index}`,
-        `  store ptr %ufv${i}, ptr %uf${i} ; ${llvmCommentText(f.name)} starts undefined`,
+        `  ${prefix}v${i} = call ptr @scr_dyn_undefined()`,
+        `  ${prefix}${i} = getelementptr inbounds %${mangleClassStruct(meta.def.name)}, ptr ${object}, i64 0, i32 ${index}`,
+        `  store ptr ${prefix}v${i}, ptr ${prefix}${i} ; ${llvmCommentText(f.name)} starts undefined`,
       );
       return;
     }
@@ -898,8 +912,8 @@ function undefFieldInits(
     const tag = undefinedArmTag(f.type, host.unionsById);
     if (tag < 0) return;
     out.push(
-      `  %uf${i} = getelementptr inbounds %${mangleClassStruct(meta.def.name)}, ptr %o, i64 0, i32 ${index}`,
-      `  store ptr ${host.unitInstanceRef(f.type.unionId, tag)}, ptr %uf${i} ; ${llvmCommentText(f.name)} starts undefined`,
+      `  ${prefix}${i} = getelementptr inbounds %${mangleClassStruct(meta.def.name)}, ptr ${object}, i64 0, i32 ${index}`,
+      `  store ptr ${host.unitInstanceRef(f.type.unionId, tag)}, ptr ${prefix}${i} ; ${llvmCommentText(f.name)} starts undefined`,
     );
   });
   return out;

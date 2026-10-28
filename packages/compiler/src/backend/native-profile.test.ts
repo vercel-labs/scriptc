@@ -5,8 +5,11 @@ import {
   nativeProfileHelperArgs,
   renderNativeProfileMatch,
   nativeProfileKey,
+  nativeProfileLayout,
   nativeProfileRefusal,
   profileGenerateLinkerArgs,
+  profileHasContextCounts,
+  profileLayoutLinkerArgs,
 } from "./native-profile.js";
 import { NATIVE_TARGETS } from "./targets.js";
 
@@ -27,10 +30,21 @@ test("profiles are accepted for optimized executables", () => {
   expect(
     nativeProfileRefusal({ ...BASE, platform: "darwin", profileUse: "/p/a.profdata" }),
   ).toBeNull();
+  // The second phase of a context-sensitive profile.
+  expect(
+    nativeProfileRefusal({
+      ...BASE,
+      profileGenerate: "/p/%p.profraw",
+      profileUse: "/p/a.profdata",
+    }),
+  ).toBeNull();
 });
 
 test.each([
-  [{ profileGenerate: "/p/%p.profraw", profileUse: "/p/a.profdata" }, /cannot be combined/],
+  [
+    { profileGenerate: "/p/%p.profraw", profileUse: "/p/a.profdata", platform: "darwin" },
+    /Linux executables/,
+  ],
   [{ profileUse: "/p/a.profdata", outputKind: "obj" }, /--profile-use is only supported/],
   [{ profileGenerate: "/p/%p.profraw", sanitize: true }, /--sanitize/],
   [{ profileUse: "/p/a.profdata", optimization: "dev" }, /optimized build/],
@@ -48,9 +62,47 @@ test("helper arguments and cache keys name the profile", () => {
     "/p/%p.profraw",
   ]);
   expect(nativeProfileKey({ generate: "/p/%p.profraw" })).toBe("profile-generate:/p/%p.profraw");
-  const use = { use: { path: "/p/a.profdata", digest: "d".repeat(64) } };
+  const use = { use: { path: "/p/a.profdata", digest: "d".repeat(64), contextSensitive: false } };
   expect(nativeProfileHelperArgs(use)).toEqual(["--profile-use", "/p/a.profdata"]);
   expect(nativeProfileKey(use)).toBe(`profile-use:${"d".repeat(64)}`);
+  const both = { generate: "/p/%p.profraw", ...use };
+  expect(nativeProfileHelperArgs(both)).toEqual([
+    "--profile-generate",
+    "/p/%p.profraw",
+    "--profile-use",
+    "/p/a.profdata",
+  ]);
+  expect(nativeProfileKey(both)).toBe(
+    `profile-generate:/p/%p.profraw\0profile-use:${"d".repeat(64)}`,
+  );
+});
+
+test("a profile's context-sensitive flag is read from its header", () => {
+  const header = (last: number) =>
+    Uint8Array.from([0xff, 0x6c, 0x70, 0x72, 0x6f, 0x66, 0x69, 0x81, 12, 0, 0, 0, 0, 0, 0, last]);
+  // VARIANT_MASK_IR_PROF (bit 56) alone, then with VARIANT_MASK_CSIR_PROF (bit 57).
+  expect(profileHasContextCounts(header(0x01))).toBe(false);
+  expect(profileHasContextCounts(header(0x03))).toBe(true);
+  expect(profileHasContextCounts(header(0x03).slice(0, 15))).toBe(false);
+  const raw = header(0x03);
+  raw[0] = 0x00;
+  expect(profileHasContextCounts(raw)).toBe(false);
+});
+
+test("only a context-sensitive profile lays out code and keeps its section kinds apart", () => {
+  const use = (contextSensitive: boolean) => ({
+    use: { path: "/p/a.profdata", digest: "d".repeat(64), contextSensitive },
+  });
+  expect(nativeProfileLayout(undefined)).toBe(false);
+  expect(nativeProfileLayout(use(false))).toBe(false);
+  expect(nativeProfileLayout(use(true))).toBe(true);
+  expect(nativeProfileLayout({ generate: "/p/%p.profraw", ...use(true) })).toBe(false);
+  const linux = { platform: "linux", defaultLinker: "clang" };
+  expect(profileLayoutLinkerArgs(linux, true)).toEqual(["-Wl,-z,keep-text-section-prefix"]);
+  expect(profileLayoutLinkerArgs(linux, false)).toEqual([]);
+  expect(profileLayoutLinkerArgs({ platform: "darwin", defaultLinker: "clang" }, true)).toEqual([]);
+  // Zig links cross-compiled and glibc-versioned Linux targets and rejects the flag.
+  expect(profileLayoutLinkerArgs({ platform: "linux", defaultLinker: "zig" }, true)).toEqual([]);
 });
 
 test("only the instrumented link adds the profile runtime", () => {

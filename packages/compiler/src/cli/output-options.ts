@@ -87,9 +87,6 @@ export function resolveOutputOptions(
   if (values.cpuDispatch && emit !== "exe") {
     return { ok: false, message: `--cpu-dispatch is only supported with --emit=exe` };
   }
-  if (values.profileGenerate !== undefined && values.profileUse !== undefined) {
-    return { ok: false, message: `--profile-generate and --profile-use cannot be combined` };
-  }
   if (values.profileGenerate !== undefined && emit !== "exe") {
     return { ok: false, message: `--profile-generate is only supported with --emit=exe` };
   }

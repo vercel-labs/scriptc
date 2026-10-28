@@ -17,6 +17,9 @@ importers:
       '@scriptc/experimental':
         specifier: workspace:*
         version: link:packages/experimental
+      '@scriptc/node':
+        specifier: workspace:*
+        version: link:packages/node
       '@scriptc/threads':
         specifier: workspace:*
         version: link:packages/threads
@@ -246,6 +249,8 @@ importers:
   packages/llvm-linux-x64-musl: {}
 
   packages/llvm-win32-x64-msvc: {}
+
+  packages/node: {}
 
   packages/runtime: {}
 

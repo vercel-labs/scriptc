@@ -42,7 +42,7 @@ Parsing, type checking, lowering, and LLVM IR generation run one after another o
 
 ### Partitions
 
-The LLVM helper divides an executable's LLVM IR into partitions by its size. Up to 1 MiB of LLVM text is one partition, and up to 2 MiB is four. Larger programs get one partition per 4 MiB of LLVM text, rounded up to a power of two, and at least 8 and at most 64. `--emit=llvm` writes this text, so its file size shows how many partitions a program gets.
+The LLVM helper divides an executable's LLVM IR into partitions by its size. Up to 1 MiB of LLVM text is one partition, and up to 2 MiB is four. Larger programs get one partition per 4 MiB of LLVM text, rounded up to a power of two, and at least 8 and at most 64. `--emit=llvm` writes this text, so its file size shows how many partitions a program gets. `dev` executables, whose partitions are compiled on their own with nothing imported, are divided from 64 KiB: up to 128 KiB is four partitions, and larger `dev` programs get at least 8.
 
 <table>
   <thead>

@@ -73,6 +73,11 @@ export class PublishedTypes {
     return this.containers.has(key) || this.frozenArrays.has(key);
   }
 
+  /** Whether an array, Map or Set of type `t` may be published. */
+  containerPublished(t: IrType): boolean {
+    return this.containers.has(typeKey(t));
+  }
+
   /** Whether an array of type `t` may be published, and whether it may be
    * frozen: the two states its write guard tests. */
   arrayGuards(t: IrType): { published: boolean; frozen: boolean } {

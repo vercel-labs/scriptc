@@ -1,5 +1,5 @@
 import { emitPerKeyOrder } from "./key-orders.js";
-import { rcMembers, typedRefConstructor } from "./shapes.js";
+import { typedRefConstructor } from "./shapes.js";
 import { bindLiveArrayOps } from "./expr-stream-bridges.js";
 import {
   BYTES_ELEM_NUM,
@@ -45,7 +45,6 @@ import {
   DYN_HANDLE_KINDS,
   isDirentShape,
   KEY_ORDER_FIELD,
-  shapeHasAccessorSlots,
   shapeKeyOrders,
   isDynTypedRefType,
   isRefCounted,
@@ -261,7 +260,7 @@ export class LlDyn {
   /** Emitted function definitions, in interning order. */
   readonly defs: string[] = [];
 
-  private readonly prefixSources = new Map<string, string[]>();
+  private readonly recordViewTables = new Map<string, string>();
 
   constructor(private readonly host: DynHost) {}
 
@@ -1161,51 +1160,47 @@ export class LlDyn {
     );
   }
 
-  /** The record shapes whose values a pointer of shape `targetId` may
-   * reference unchanged: their struct begins with exactly the target's
-   * fields (same names, types and representations, so the same offsets),
-   * and everything the target's release, teardown and collector support
-   * would get wrong on them is absent. The extra fields hold no
-   * references (the target's release frees the block without visiting
-   * them; frees are size-class agnostic), neither shape carries a shape
-   * word, a cycle header, an overflow map, key order variants or accessor
-   * slots, and both freeze alike. A record that keeps undeclared source
-   * properties is refused at run time (scr_dyn_typed_ref_prefix_view). */
-  private prefixViewSources(targetId: string): string[] {
-    const memo = this.prefixSources.get(targetId);
-    if (memo) return memo;
+  /** `scr_dyn_record_view(d, sources, n, key, key_len, new)` for
+   * view target `targetId`: the view (+1) of the record a capsule `%d`
+   * holds when its type is one of the target's sources, else NULL. The
+   * sources table lists each source's type key and the byte offsets of
+   * the target's fields in it. */
+  private recordViewCall(B: BlockBuilder, targetId: string): string {
     const host = this.host;
-    const plain = (shape: IrRecordShape): boolean =>
-      !shape.tuple &&
-      !shape.indexValue &&
-      !isDirentShape(shape) &&
-      !shapeHasAccessorSlots(shape) &&
-      shapeKeyOrders(shape).length === 1 &&
-      !shape.fields.some((field) => field.name === KEY_ORDER_FIELD) &&
-      host.nullableUnions.shapeNumber(shape.id) === 0 &&
-      !host.tracedShapes.has(`record:${shape.id}`);
-    const target = host.recordsById.get(targetId);
-    const out: string[] = [];
-    if (target && plain(target) && target.fields.length > 0) {
-      const base = host.nullableUnions.fieldBase(targetId);
-      for (const shape of host.recordsById.values()) {
-        if (shape.id === targetId || shape.fields.length <= target.fields.length) continue;
-        if (!plain(shape) || shape.freezable !== target.freezable) continue;
-        if (host.nullableUnions.fieldBase(shape.id) !== base) continue;
-        const prefix = target.fields.every(
-          (field, i) =>
-            shape.fields[i]!.name === field.name &&
-            typeKey(shape.fields[i]!.type) === typeKey(field.type),
+    let table = this.recordViewTables.get(targetId);
+    const sources = host.recordViews!.sources(targetId);
+    const target = host.recordsById.get(targetId)!;
+    if (table === undefined) {
+      table = `@sc_rv_${this.recordViewTables.size}`;
+      this.recordViewTables.set(targetId, table);
+      const S = this.S;
+      const entries = sources.map((sourceId, k) => {
+        const source = host.recordsById.get(sourceId)!;
+        const struct = mangleRecordStruct(sourceId);
+        const base = host.nullableUnions.fieldBase(sourceId);
+        const offsets = target.fields.map((field) => {
+          const index = source.fields.findIndex((f) => f.name === field.name) + base;
+          return `${S} ptrtoint (ptr getelementptr (%${struct}, ptr null, i32 0, i32 ${index}) to ${S})`;
+        });
+        const offsetTable = `${table}_${k}`;
+        this.defs.push(
+          `${offsetTable} = internal constant [${offsets.length} x ${S}] [${offsets.join(", ")}]`,
         );
-        if (!prefix) continue;
-        const extra = rcMembers(shape, host.inlineUnions, base).some(
-          (member) => member.index >= target.fields.length + base && isRefCounted(member.type),
-        );
-        if (!extra) out.push(shape.id);
-      }
+        const key = typeKey({ kind: "record", shapeId: sourceId });
+        return `{ ptr, ${S}, ptr } { ptr ${host.cstr(key)}, ${S} ${Buffer.byteLength(key, "utf8")}, ptr ${offsetTable} }`;
+      });
+      this.defs.push(
+        `${table} = internal constant [${entries.length} x { ptr, ${S}, ptr }] [${entries.join(", ")}]`,
+        ``,
+      );
     }
-    this.prefixSources.set(targetId, out);
-    return out;
+    const key = typeKey({ kind: "record", shapeId: targetId });
+    host.declare(`declare ptr @scr_dyn_record_view(ptr, ptr, ${this.S}, ptr, ${this.S}, ptr)`);
+    const view = B.tmp();
+    B.line(
+      `${view} = call ptr @scr_dyn_record_view(ptr %d, ptr ${table}, ${this.S} ${sources.length}, ptr ${host.cstr(key)}, ${this.S} ${Buffer.byteLength(key, "utf8")}, ptr @${mangleRecordNew(targetId)})`,
+    );
+    return view;
   }
 
   private typedRefMatchesAny(B: BlockBuilder, types: readonly IrType[]): string {
@@ -2222,31 +2217,19 @@ export class LlDyn {
       B.line(`${ref} = call ptr @scr_dyn_typed_ref_unbox(ptr %d)`);
       B.terminate(`ret ptr ${ref}`);
       B.startBlock(lNext);
-      if (t.kind === "record") {
-        // A record whose storage begins with exactly this type's storage
-        // is this type's value too: the conversion passes the pointer, so
-        // both names keep one object (decision D3).
-        const sources = this.prefixViewSources(t.shapeId);
-        if (sources.length > 0) {
-          const viewed = this.typedRefMatchesAny(
-            B,
-            sources.map((shapeId) => ({ kind: "record", shapeId })),
-          );
-          const lView = B.newLabel("dc.prefix");
-          const lOther = B.newLabel("dc.noprefix");
-          B.condBr(viewed, lView, lOther);
-          B.startBlock(lView);
-          host.declare(`declare ptr @scr_dyn_typed_ref_prefix_view(ptr)`);
-          const view = B.tmp();
-          B.line(`${view} = call ptr @scr_dyn_typed_ref_prefix_view(ptr %d)`);
-          const passed = B.tmp();
-          B.line(`${passed} = icmp ne ptr ${view}, null`);
-          const lPass = B.newLabel("dc.prefix.pass");
-          B.condBr(passed, lPass, lOther);
-          B.startBlock(lPass);
-          B.terminate(`ret ptr ${view}`);
-          B.startBlock(lOther);
-        }
+      if (t.kind === "record" && host.recordViews?.targets.has(t.shapeId) === true) {
+        // A capsule of a record with all of this type's fields converts
+        // to a view of that record: both names keep one object
+        // (record-views.ts, decision D3).
+        const view = this.recordViewCall(B, t.shapeId);
+        const viewed = B.tmp();
+        B.line(`${viewed} = icmp ne ptr ${view}, null`);
+        const lView = B.newLabel("dc.view");
+        const lOther = B.newLabel("dc.noview");
+        B.condBr(viewed, lView, lOther);
+        B.startBlock(lView);
+        B.terminate(`ret ptr ${view}`);
+        B.startBlock(lOther);
       }
       // A constructor-function stream (scr_dyn_builtin_stream.c) carries
       // its runtime stream.

@@ -186,13 +186,17 @@ test("profiles reach the helper and key the native cache by their bytes", async 
   const used = {
     ...base,
     outputPath: join(pkg.root, "used.o"),
-    profile: { use: { path: "/profiles/a.profdata", digest: "a".repeat(64) } },
+    profile: {
+      use: { path: "/profiles/a.profdata", digest: "a".repeat(64), contextSensitive: false },
+    },
   };
   await emitNativeArtifact(used);
   await emitNativeArtifact({
     ...used,
     outputPath: join(pkg.root, "changed.o"),
-    profile: { use: { path: "/profiles/a.profdata", digest: "b".repeat(64) } },
+    profile: {
+      use: { path: "/profiles/a.profdata", digest: "b".repeat(64), contextSensitive: false },
+    },
   });
   await emitNativeArtifact({ ...used, outputPath: join(pkg.root, "again.o") });
   const calls = (await readFile(pkg.log, "utf8")).trim().split("\n");
@@ -209,7 +213,9 @@ test("a cached artifact keeps the profile match of the build that produced it", 
   });
   const used = {
     ...request(pkg.root, pkg.packageJson, join(pkg.root, "used.o")),
-    profile: { use: { path: "/profiles/a.profdata", digest: "a".repeat(64) } },
+    profile: {
+      use: { path: "/profiles/a.profdata", digest: "a".repeat(64), contextSensitive: false },
+    },
   };
   const match = { annotated: 120, mismatched: 7, missing: 40, unknownPartitions: 0 };
   expect((await emitNativeArtifact(used)).profileMatch).toEqual(match);
@@ -402,6 +408,14 @@ test("program partitions depend only on module size", () => {
   expect(nativeProgramPartitions(32 * megabyte + 1)).toBe(16);
   expect(nativeProgramPartitions(100 * megabyte)).toBe(32);
   expect(nativeProgramPartitions(1024 * megabyte)).toBe(64);
+  // Unoptimized (dev) programs are divided from 64 KiB.
+  const kilobyte = 1024;
+  expect(nativeProgramPartitions(64 * kilobyte, true)).toBe(1);
+  expect(nativeProgramPartitions(64 * kilobyte + 1, true)).toBe(4);
+  expect(nativeProgramPartitions(128 * kilobyte, true)).toBe(4);
+  expect(nativeProgramPartitions(128 * kilobyte + 1, true)).toBe(8);
+  expect(nativeProgramPartitions(megabyte, true)).toBe(8);
+  expect(nativeProgramPartitions(32 * megabyte + 1, true)).toBe(16);
   expect(nativePartitionPaths("/build.d/program.o", 3)).toEqual([
     "/build.d/program.o",
     "/build.d/program.part1.o",

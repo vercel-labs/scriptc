@@ -69,6 +69,11 @@ Options:
                      a helper process so the parent sees the exit sooner. The
                      helper keeps the executable mapped and its memory charged
                      for up to ~100 ms after exit (opt in; --emit=exe only)
+      --libnode <dir|beside>
+                     the libnode pack that calls into Node.js (@scriptc/node)
+                     load at run time, or beside to copy it next to the
+                     executable (default: SCRIPTC_LIBNODE at build time;
+                     SCRIPTC_LIBNODE overrides it at run time)
       --large-pages  Linux: at startup, move the executable's code onto 2 MiB
                      transparent huge pages when the system allows them, for
                      large programs. Takes about 3 ms per 10 MiB of code, and
@@ -184,6 +189,7 @@ export const CLI_OPTIONS = {
   static: { type: "boolean", default: false },
   "windows-subsystem": { type: "string" },
   "detached-exit": { type: "boolean", default: false },
+  libnode: { type: "string" },
   "large-pages": { type: "boolean", default: false },
   "target-cpu": { type: "string" },
   "cpu-dispatch": { type: "boolean" },

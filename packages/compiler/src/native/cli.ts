@@ -13,7 +13,7 @@ import { setDeclarationRoot } from "../frontend/dts-paths.js";
 import { setFrontendDisposedHook } from "../frontend/dispose-hook.js";
 import { FrontendServices } from "../frontend/services.js";
 import { runTypePatchCommand } from "../frontend/type-patches/command.js";
-import { createNativeTs7Api } from "../frontend/ts7/native-api.js";
+import { checkerServerLost, createNativeTs7Api } from "../frontend/ts7/native-api.js";
 import { resolveProvenanceSourcesWithParser } from "../frontend/provenance-core.js";
 import { setCompilerReleaseVersion } from "../library/sidecar.js";
 import { NativeCompiler } from "./compiler.js";
@@ -40,6 +40,30 @@ declare function compilerNativeLockOpen(path: string): boolean;
 declare function compilerNativeLock(): void;
 declare function compilerNativeUnlock(): void;
 declare function compilerNativeBoundCycleGrowth(): void;
+
+/** Runs a build. When this process's connection to the shared checker server
+ * failed during it, the command runs again in a new process that checks with
+ * its own tsc-ts process (SCRIPTC_CHECKER_SERVER=0), and this process exits
+ * with that one's status: the new process prints the build's output. */
+async function withCheckerFallback<T>(work: () => Promise<T>): Promise<T> {
+  let result: T;
+  try {
+    result = await work();
+  } catch (error) {
+    if (!checkerServerLost()) throw error;
+    return runWithOwnChecker();
+  }
+  return checkerServerLost() ? runWithOwnChecker() : result;
+}
+
+function runWithOwnChecker(): never {
+  const run = spawnSync(process.execPath, process.argv.slice(2), {
+    stdio: "inherit",
+    env: { ...process.env, SCRIPTC_CHECKER_SERVER: "0" },
+  });
+  if (run.error) throw new Error(run.error.message);
+  process.exit(run.status ?? 1);
+}
 
 async function main(): Promise<number> {
   compilerNativeBoundCycleGrowth();
@@ -100,9 +124,12 @@ async function main(): Promise<number> {
   return runCli(process.argv.slice(2), {
     version: () => loadNativeToolchain(manifestPath).compilerVersion,
     sourceTargetPlatform: () => getCompiler().toolchain.target.platform,
-    analyze: (entry, options) => runCompilerTask(() => getCompiler().analyzeCached(entry, options)),
-    compile: (entry, options) => runCompilerTask(() => getCompiler().compile(entry, options)),
-    compileLibrary: (options) => runCompilerTask(() => getCompiler().compileLibrary(options)),
+    analyze: (entry, options) =>
+      withCheckerFallback(() => runCompilerTask(() => getCompiler().analyzeCached(entry, options))),
+    compile: (entry, options) =>
+      withCheckerFallback(() => runCompilerTask(() => getCompiler().compile(entry, options))),
+    compileLibrary: (options) =>
+      withCheckerFallback(() => runCompilerTask(() => getCompiler().compileLibrary(options))),
     resolveProvenanceSources: async (entry) => {
       const toolchain = getCompiler().toolchain;
       const services = new FrontendServices((options) =>

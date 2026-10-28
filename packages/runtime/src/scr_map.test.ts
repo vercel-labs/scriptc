@@ -14,7 +14,14 @@ test("number-key maps keep Map semantics across linear, direct and hashed indexe
   try {
     await exec("clang", [
       "-std=c11",
-      "-O1",
+      // The runtime link set includes scr_json.c, scr_lib.c and scr_hash.c.
+      // With ASan/UBSan their optimized builds dominate the test's cost: -O1
+      // takes about 90s (scr_hash.c alone 29s, its unrolled digest rounds
+      // instrumented) and regularly starved past this test's timeout when the
+      // lane shared the box. The test checks Map semantics under sanitizers,
+      // not codegen, so -O0 keeps every assertion and sanitizer check and
+      // builds in about 15s.
+      "-O0",
       "-Wall",
       "-Wextra",
       "-fsanitize=address,undefined",

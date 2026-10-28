@@ -670,6 +670,9 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   // checked dynamic call. Keeping that fallback out of line leaves the
   // tests small enough to inline at each call site.
   if (fn.name.startsWith("%dyn.class.protocol.fallback.")) attrs = `noinline ${attrs}`;
+  // A keyed record read's inherited-method miss path (record-inherited.ts)
+  // stays out of line, so the hit path keeps its own small frame.
+  else if (fn.name.startsWith("%rec.inherited.")) attrs = `noinline cold ${attrs}`;
   else if (fn.name.startsWith("%dyn.class.protocol.")) attrs = `inlinehint ${attrs}`;
   if (fn.name.startsWith(RESULT_ENTRY_PREFIX)) attrs = `inlinehint ${attrs}`;
   if (unoptimized && attrs === FN_ATTRS) attrs = `noinline optnone ${attrs}`;

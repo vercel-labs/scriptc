@@ -47,8 +47,18 @@ import {
 } from "../input-tracker.js";
 import { packageShimDeclarationText } from "../package-shims.js";
 import { typePatchedText, typePatchFileExists } from "../type-patches/layer.js";
-import { ambientDtsPath, isFallbackDtsPath, overridesDtsPath } from "../dts-paths.js";
-import { inFileOrder, reusedKeptLibDiagnostics, reusedLibDiagnostics } from "./lib-diagnostics.js";
+import {
+  ambientDtsPath,
+  isFallbackDtsPath,
+  isFallbackModuleDtsPath,
+  overridesDtsPath,
+} from "../dts-paths.js";
+import {
+  inFileOrder,
+  reusedKeptLibDiagnostics,
+  reusedLibDiagnostics,
+  type SuppliedKind,
+} from "./lib-diagnostics.js";
 import { ts7Diagnostic } from "./diagnostic.js";
 import type { Ts7DiagnosticData } from "./session-schema.generated.js";
 
@@ -446,8 +456,15 @@ export class Ts7Program {
       isFallbackDtsPath(name) ||
       program.getSourceFileMetadataByPath(name)?.isDefaultLibrary === true;
     const sourceFile = (name: string): SourceFile | undefined => this.getSourceFile(name);
+    // By path: a supplied file that is not one of scriptc's is a default library.
+    const kind = (name: string): SuppliedKind =>
+      isFallbackModuleDtsPath(name)
+        ? "module"
+        : declarations.has(tsgoPath(name)) || isFallbackDtsPath(name)
+          ? "declarations"
+          : "library";
     return kept === null
-      ? reusedLibDiagnostics(program, names, supplied, sourceFile)
+      ? reusedLibDiagnostics(program, names, supplied, sourceFile, kind)
       : reusedKeptLibDiagnostics(program, names, supplied, sourceFile, kept);
   }
 

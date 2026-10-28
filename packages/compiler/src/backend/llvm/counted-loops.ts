@@ -13,7 +13,10 @@ import { integerOrNaNRange } from "./wrapping-sums.js";
 
 /** The caller has proved or guarded the direction's finite endpoint. Clamp
  * the opposite infinity before integer conversion. Fractional limits become
- * exclusive integer endpoints for signed comparisons in either direction. */
+ * exclusive integer endpoints for signed comparisons in either direction. A
+ * limit that is an exact integer (an int32 local, an integer view, or a
+ * proven range) is its own floor and ceiling and within ±2^53, so it is the
+ * endpoint without the double conversion and rounding. */
 export function emitCountedLoopLimit(
   host: LlvmEmitterContext,
   loop: IntegerCountedForLoop,
@@ -35,6 +38,24 @@ export function emitCountedLoopLimit(
   }
   const B = host.B;
   const value = host.emitExpr(loop.limit);
+  const exact = exactInteger(host, value, loop.limit);
+  if (exact) {
+    // An i32 literal may be the unsigned bit pattern of a negative int32
+    // (a ToUint32 view): read it back with the integer's signedness.
+    const integer = /^-?\d+$/.test(exact.name)
+      ? String(
+          exact.type === "i64"
+            ? Number(exact.name)
+            : exact.signed
+              ? Number(exact.name) | 0
+              : Number(exact.name) >>> 0,
+        )
+      : widenInteger(host, exact);
+    if (!loop.inclusive) return integer;
+    const limit = B.tmp();
+    B.line(`${limit} = add nsw i64 ${integer}, ${ascending ? 1 : -1}`);
+    return limit;
+  }
   const within = B.tmp(),
     bounded = B.tmp(),
     rounded = B.tmp(),

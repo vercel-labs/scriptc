@@ -741,6 +741,32 @@ export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
 
 export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
+  if (e.fn === "error.captureStackTrace") {
+    // The second argument names the function constructorOpt skips through;
+    // its frame text is the constant its own frame pushes (emit-function.ts),
+    // or null when it has no frame, which leaves no frames.
+    const target = host.emitExpr(e.args[0]!);
+    const named = e.args[1]!;
+    const skip = e.args[2]!.kind === "boolLit" && e.args[2]!.value;
+    let through = "null";
+    if (named.kind === "strLit" && named.value !== "") {
+      const fn = host.mod.functions.find((f) => f.name === named.value);
+      if (
+        fn !== undefined &&
+        host.stackTraces &&
+        !host.wasi &&
+        fn.sourceName !== undefined &&
+        !host.unframedFunctions.has(fn.name)
+      )
+        through = host.cstr(`    at ${fn.sourceName} (${fn.loc.file})`);
+    }
+    host.declare(`declare void @scr_error_capture_stack_trace(ptr, ptr, i1)`);
+    B.line(
+      `call void @scr_error_capture_stack_trace(ptr ${target.name}, ptr ${through}, i1 ${skip ? "true" : "false"})`,
+    );
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
   if (e.fn === "error.argTypeThrow") {
     // Always throws with the runtime-rendered Received tail (the
     // error.nodeThrow dummy pattern). Borrows all three.

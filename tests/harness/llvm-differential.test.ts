@@ -13,6 +13,7 @@ import { describe, expect, test } from "vitest";
 import ts5 from "typescript";
 import { compile } from "@scriptc/compiler";
 import { corpusSelect, shardSuffix } from "./shard.js";
+import { libnodePack, requiresLibnode } from "./libnode.js";
 import { tscJsxOracleEntry, wantsTscJsx } from "./jsx-oracle.js";
 
 const execFileAsync = promisify(execFile);
@@ -203,7 +204,9 @@ async function build(file: string, optimization: "release" | "dev") {
 describe(`llvm differential corpus (${files.length} programs, ${optimizationModes.join("+")}${sanitize ? ", sanitized" : ""}${cpuDispatch ? ", CPU dispatch" : ""}${shardSuffix()})`, () => {
   test.for(files.map((f) => [f.slice(corpusDir.length + 1), f] as const))(
     "%s",
-    async ([rel, file]) => {
+    async ([rel, file], { skip }) => {
+      // Programs that call into Node need a libnode pack (libnode.ts).
+      if (requiresLibnode(file) && libnodePack() === null) skip();
       const oracle = await runBinary(process.execPath, nodeOracleArgs(file));
       const expectedExit = expectedExitCode(file);
       expect(oracle.exitCode).toBe(expectedExit);

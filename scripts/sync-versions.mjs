@@ -31,6 +31,7 @@ for (const pkg of [
   "runtime-android-arm64",
   "compiler",
   "experimental",
+  "node",
   "threads",
   "types",
   "cli-darwin-arm64",

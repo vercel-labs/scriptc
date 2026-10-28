@@ -35,6 +35,8 @@ export interface LlValue {
    * convert it instead of the sum (expr-bytes.ts). */
   offsetIndex?: OffsetIndex;
   slot?: boolean;
+  /** A frame slot that usually stays NULL: its release tests it first. */
+  rarelyFilled?: boolean;
   /** A sequence local held in a capture box; release the box itself. */
   boxed?: boolean;
   /** A group arena list slot (arenas.ts): the frame closes the newest

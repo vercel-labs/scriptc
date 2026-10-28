@@ -5,14 +5,32 @@
  * merge-profiles` turns those raw profiles into one indexed profile, and an
  * optimized build (`--profile-use`) lays out, inlines, and splits code by it.
  * The helper applies both in the pre-link pipeline of every partition.
+ *
+ * A second phase records context-sensitive counts: a build with both flags
+ * is optimized by the first profile and instrumented again after inlining,
+ * and merging its raw profiles into the first profile adds the counts of the
+ * inlined code. A profile with those counts also orders each function's
+ * blocks by them and moves cold blocks to separate sections.
  */
 import type { NativeOptimization } from "./optimization.js";
 
 export interface NativeProfileOptions {
-  /** Raw profile path pattern written by the instrumented executable. */
+  /** Raw profile path pattern written by the instrumented executable. With
+   * `use`, the instrumentation runs after inlining and records
+   * context-sensitive counts. */
   generate?: string;
-  /** Indexed profile and the digest of its bytes, which key every cache. */
-  use?: { path: string; digest: string };
+  /** Indexed profile, the digest of its bytes (which key every cache), and
+   * whether it holds context-sensitive counts. */
+  use?: { path: string; digest: string; contextSensitive: boolean };
+}
+
+/** Whether an indexed profile holds context-sensitive counts: the header's
+ * version word carries LLVM's VARIANT_MASK_CSIR_PROF flag, bit 57, which is
+ * bit 1 of its last byte. */
+export function profileHasContextCounts(bytes: Uint8Array): boolean {
+  const magic = [0xff, 0x6c, 0x70, 0x72, 0x6f, 0x66, 0x69, 0x81];
+  if (bytes.length < 16 || magic.some((byte, index) => bytes[index] !== byte)) return false;
+  return (bytes[15]! & 0x02) !== 0;
 }
 
 /** Why a request cannot use profiles, or null when it can. */
@@ -28,7 +46,6 @@ export function nativeProfileRefusal(options: {
   const use = options.profileUse !== undefined;
   if (!generate && !use) return null;
   const flag = generate ? "--profile-generate" : "--profile-use";
-  if (generate && use) return "--profile-generate and --profile-use cannot be combined";
   if (options.outputKind !== "exe") return `${flag} is only supported for executable output`;
   if (options.sanitize) return `${flag} cannot be combined with --sanitize`;
   if (options.optimization === "dev")
@@ -39,9 +56,10 @@ export function nativeProfileRefusal(options: {
 }
 
 export function nativeProfileHelperArgs(profile: NativeProfileOptions | undefined): string[] {
-  if (profile?.generate !== undefined) return ["--profile-generate", profile.generate];
-  if (profile?.use !== undefined) return ["--profile-use", profile.use.path];
-  return [];
+  return [
+    ...(profile?.generate === undefined ? [] : ["--profile-generate", profile.generate]),
+    ...(profile?.use === undefined ? [] : ["--profile-use", profile.use.path]),
+  ];
 }
 
 /** How an optimized build's profile matched the program's functions, as the
@@ -111,12 +129,32 @@ export function renderNativeProfileMatch(profile: string, match: NativeProfileMa
 
 /** Cache-key part; empty without a profile so other keys are unchanged. */
 export function nativeProfileKey(profile: NativeProfileOptions | undefined): string {
-  if (profile?.generate !== undefined) return `profile-generate:${profile.generate}`;
-  if (profile?.use !== undefined) return `profile-use:${profile.use.digest}`;
-  return "";
+  return [
+    ...(profile?.generate === undefined ? [] : [`profile-generate:${profile.generate}`]),
+    ...(profile?.use === undefined ? [] : [`profile-use:${profile.use.digest}`]),
+  ].join("\0");
+}
+
+/** Whether a build lays out its code by context-sensitive counts: it uses a
+ * profile that has them, and records none. */
+export function nativeProfileLayout(profile: NativeProfileOptions | undefined): boolean {
+  return profile?.use?.contextSensitive === true && profile.generate === undefined;
 }
 
 /** The instrumented link adds the compiler driver's profile runtime. */
 export function profileGenerateLinkerArgs(generate: boolean): string[] {
   return generate ? ["-fprofile-generate"] : [];
+}
+
+/** A link that lays out code by a profile keeps the hot, unlikely and split
+ * sections the helper writes apart, so each kind of code sits together. Zig,
+ * which links cross-compiled and glibc-versioned Linux targets, rejects the
+ * flag, so those links leave it out. */
+export function profileLayoutLinkerArgs(
+  target: { platform: string; defaultLinker: string },
+  layout: boolean,
+): string[] {
+  return layout && target.platform === "linux" && target.defaultLinker !== "zig"
+    ? ["-Wl,-z,keep-text-section-prefix"]
+    : [];
 }

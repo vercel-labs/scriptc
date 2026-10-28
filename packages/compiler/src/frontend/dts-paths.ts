@@ -220,6 +220,11 @@ export function fallbackModulesNamedIn(text: string): string[] {
   return [...files];
 }
 
+/** True for the fallback declarations of a Node module (node-fallback/). */
+export function isFallbackModuleDtsPath(file: string): boolean {
+  return tsgoPath(file).startsWith(fallbackModuleRoot() + "/");
+}
+
 /** True for the fallback declarations: the core file and the module files. */
 export function isFallbackDtsPath(file: string): boolean {
   const path = tsgoPath(file);

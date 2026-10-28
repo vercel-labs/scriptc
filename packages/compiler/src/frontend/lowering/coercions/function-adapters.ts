@@ -16,6 +16,7 @@ import {
 import { typeKey } from "../../type-mapper.js";
 import { newFnCtx } from "../function-context.js";
 import type { Lowerer } from "../lowerer.js";
+import { omittedArgFor } from "../call-arguments.js";
 import { maybePromiseUnionOf } from "../maybe-promise.js";
 
 /** Wrap a zero-argument function whose array result needs an element
@@ -273,7 +274,22 @@ export function funcCoerceAdapter(
   if (toT.rest === true && toT.restAbi === undefined && toT.params.length === 0)
     return funcIntoDynRestAdapter(lowerer, fromT, toT, loc);
   if (fromT.rest === true || toT.rest === true) return null;
-  if (fromT.params.length > toT.params.length) return null;
+  // A source with MORE parameters than the slot: the checker admits it only
+  // when every extra trailing parameter is optional, so a call through the
+  // slot hands them undefined (JavaScript ignores surplus arguments). Pass
+  // that absent value explicitly. A pair whose extra parameter cannot hold
+  // undefined stays refused.
+  const omittedParams = new Map<number, IrExpr>();
+  for (let i = toT.params.length; i < fromT.params.length; i++) {
+    const param = fromT.params[i]!;
+    const absent =
+      omittedArgFor(lowerer, param, loc) ??
+      (typeEquals(param, UNDEFINED_T)
+        ? ({ kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc } as IrExpr)
+        : null);
+    if (!absent) return null;
+    omittedParams.set(i, absent);
+  }
   // Piece dispositions beyond coercibleValue, all CHECKER-APPROVED
   // function compatibilities (bivariant method params under the suite's
   // non-strict settings, `() => never` throwers displayed as void by
@@ -290,7 +306,7 @@ export function funcCoerceAdapter(
   let strandParams = false;
   const narrowedParams = new Map<number, ReadonlySet<number>>();
   const partialDynParams = new Map<number, IrType>();
-  for (let i = 0; i < fromT.params.length; i++) {
+  for (let i = 0; i < toT.params.length && i < fromT.params.length; i++) {
     const actual = toT.params[i]!;
     const expected = fromT.params[i]!;
     if (lowerer.coercibleValue(actual, expected)) continue;
@@ -412,6 +428,8 @@ export function funcCoerceAdapter(
       ];
     } else {
       const args = fromT.params.map((pt, i) => {
+        const omitted = omittedParams.get(i);
+        if (omitted) return omitted;
         const aRef: IrExpr = { kind: "varRef", localId: `a.${i}`, type: toT.params[i]!, loc };
         const partial = partialDynParams.get(i);
         if (partial && aRef.type.kind === "union") {

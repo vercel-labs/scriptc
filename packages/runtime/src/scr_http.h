@@ -365,6 +365,14 @@ ScrHttpClientReq *scr_http_request_agent_ex(ScrStr *host /*borrowed*/, double po
                                              ScrStr *pool_key /*borrowed, nullable: https TLS options*/); /* +1 */
 /* http.globalAgent / https.globalAgent: borrowed, and as a +1 value. */
 const ScrDyn *scr_http_global_agent(bool secure);
+/* fetch()'s client request for a direct connection: through fetch's own
+ * keep-alive agent, which reuses an idle connection with the same host,
+ * port and pool_key (+1). */
+ScrHttpClientReq *scr_http_fetch_request(bool secure, ScrStr *host /*borrowed*/, double port,
+                                          ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,
+                                          ScrArr *header_pairs /*borrowed*/, int default_port,
+                                          void (*wrap)(ScrNetSocket *, void *), void *wrap_ctx,
+                                          ScrStr *pool_key /*borrowed*/);
 ScrDyn *scr_http_global_agent_value(bool secure);
 ScrHttpClientReq *scr_http_request_agent(ScrStr *host /*borrowed*/, double port,
                                           ScrStr *path /*borrowed*/, ScrStr *method /*borrowed*/,

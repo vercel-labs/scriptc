@@ -272,18 +272,54 @@ async function cacheEntries(cache: string): Promise<Set<string>> {
 }
 
 describe.runIf(helper !== null)("LLVM profile-guided optimization", () => {
-  test("a profile and instrumentation together are a usage error", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-usage-"));
-    dirs.push(dir);
-    await expect(
-      emit(dir, program(), {
-        outputs: 1,
-        name: "both",
-        generate: join(dir, "%p.profraw"),
-        use: join(dir, "missing.profdata"),
-      }),
-    ).rejects.toMatchObject({ stderr: expect.stringContaining('"code":"usage"') });
-  });
+  test.runIf(profileLinker !== null)(
+    "a second phase records context-sensitive counts that lay out the code",
+    async () => {
+      const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-context-"));
+      dirs.push(dir);
+      const first = await collect(dir, inlinedProgram(), 2, "first", inlinedExit);
+      // The second phase: optimized by the first profile, instrumented after inlining.
+      const raw = join(dir, "context-raw");
+      const instrumented = await emit(dir, inlinedProgram(), {
+        outputs: 2,
+        name: "context",
+        generate: join(raw, "%p.profraw"),
+        use: first.profile,
+      });
+      const executable = await link(dir, instrumented, "context", true);
+      expect(await run(executable, 1)).toBe(inlinedExit(1));
+      expect(await run(executable, 3)).toBe(inlinedExit(3));
+      const raws = (await readdir(raw)).map((file) => join(raw, file));
+      expect(raws).toHaveLength(2);
+      const merged = join(dir, "context.profdata");
+      await merge(merged, [first.profile, ...raws]);
+      // VARIANT_MASK_CSIR_PROF, bit 57 of the header's version word.
+      expect((await readFile(merged))[15]! & 0x02).toBe(0x02);
+      expect((await readFile(first.profile))[15]! & 0x02).toBe(0);
+      // A build with the merged profile gives every function its own section.
+      const objects = await emit(dir, inlinedProgram(), {
+        outputs: 2,
+        name: "laidout",
+        use: merged,
+      });
+      const bytes = Buffer.concat(await Promise.all(objects.map((object) => readFile(object))));
+      expect(bytes.includes(".text.hot.main")).toBe(true);
+      const optimized = await link(dir, objects, "laidout");
+      expect(await run(optimized, 1)).toBe(inlinedExit(1));
+      expect(await run(optimized, 3)).toBe(inlinedExit(3));
+      // A profile that has context-sensitive counts cannot start another second phase.
+      await expect(
+        emit(dir, inlinedProgram(), {
+          outputs: 1,
+          name: "again",
+          generate: join(dir, "again-raw", "%p.profraw"),
+          use: merged,
+        }),
+      ).rejects.toMatchObject({
+        stderr: expect.stringContaining("already holds context-sensitive counts"),
+      });
+    },
+  );
 
   test("merge-profiles reports an input that is not a profile", async () => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-merge-error-"));

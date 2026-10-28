@@ -24,10 +24,12 @@ const platformPackages = process.argv.includes("--platform-packages");
 const optimization = process.env["SCRIPTC_NATIVE_OPTIMIZATION"] === "dev" ? "dev" : "release";
 const sanitize = process.env["SCRIPTC_SAN"] === "1";
 // SCRIPTC_NATIVE_PROFILE_GENERATE=<pattern> builds a compiler that writes a
-// raw profile per run (scripts/refresh-cli-profile.mjs). Optimized builds
-// otherwise use the committed profile, or the indexed profile that
-// SCRIPTC_NATIVE_PROFILE_USE names (gzip-compressed when the name ends in
-// .gz, as refresh-cli-profile.mjs writes it); an empty
+// raw profile per run (scripts/refresh-cli-profile.mjs). With it, a
+// SCRIPTC_NATIVE_PROFILE_USE profile optimizes the build too and the
+// instrumentation runs after inlining: the second, context-sensitive phase
+// of the profile. Optimized builds otherwise use the committed profile, or
+// the indexed profile that SCRIPTC_NATIVE_PROFILE_USE names (gzip-compressed
+// when the name ends in .gz, as refresh-cli-profile.mjs writes it); an empty
 // SCRIPTC_NATIVE_PROFILE_USE builds without one.
 const profileGenerate = process.env["SCRIPTC_NATIVE_PROFILE_GENERATE"] || undefined;
 // Below this share of matching functions, the build warns that the profile
@@ -39,7 +41,7 @@ const PROFILE_MATCH_WARNING = 0.9;
 const committedProfile = join(root, "packages/compiler/native/cli.profdata.gz");
 const requestedProfile = process.env["SCRIPTC_NATIVE_PROFILE_USE"];
 const useProfile =
-  profileGenerate === undefined &&
+  (profileGenerate === undefined || (requestedProfile !== undefined && requestedProfile !== "")) &&
   optimization !== "dev" &&
   !sanitize &&
   requestedProfile !== "" &&

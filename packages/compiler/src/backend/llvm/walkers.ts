@@ -1,4 +1,5 @@
 import { emitPerKeyOrder } from "./key-orders.js";
+import { recordViewFieldPtr } from "./record-views.js";
 import { f64Lit } from "./common.js";
 import { InternalCompilerError } from "../../errors.js";
 /* Structure-walking helper EMITTERS for the LLVM backend — the .ll mirror
@@ -280,10 +281,25 @@ export class LlWalkers {
     index: number,
     t: IrType,
   ): string {
-    const p = B.tmp();
-    B.line(
-      `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${recName}, i64 0, i32 ${index}`,
-    );
+    const base = this.host.nullableUnions.fieldBase(shapeId);
+    let p: string;
+    if (this.host.recordViews?.targets.has(shapeId) === true) {
+      p = recordViewFieldPtr(
+        B,
+        this.S,
+        mangleRecordStruct(shapeId),
+        recName,
+        index,
+        index - base,
+        (decl) => this.host.declare(decl),
+        this.host.rcMode === undefined,
+      );
+    } else {
+      p = B.tmp();
+      B.line(
+        `${p} = getelementptr inbounds %${mangleRecordStruct(shapeId)}, ptr ${recName}, i64 0, i32 ${index}`,
+      );
+    }
     // An inline union field lends a private stack box (ABSENT kept).
     if (this.host.inlineUnions.record(t)) return loadStructField(B, this.S, p, t, true);
     const fieldTy = llFieldType(t, false);

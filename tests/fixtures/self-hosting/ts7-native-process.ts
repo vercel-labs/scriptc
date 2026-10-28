@@ -109,13 +109,15 @@ function readLine(connection: NativeTs7Process): string {
 }
 
 // The stand-in server (ts7-process-child.test.c, mode "listen") answers each
-// client with its number, its socket and idle time, and its memory limit.
+// client with its number, its socket and idle time, its memory limit and its
+// working directory.
 function checkShared(executable: string): void {
   const first = attachNativeTs7Process("server", executable, "listen");
   check(first !== null, "shared server started");
   check(readLine(first!) === "client 1", "first client");
-  check(readLine(first!).endsWith("/scriptc/server.sock 300"), "listen arguments");
+  check(readLine(first!).endsWith("/scriptc/server.sock 600"), "listen arguments");
   check(readLine(first!) === "2048", "memory limit");
+  check(readLine(first!) === "/", "server in the root directory");
   check(attachNativeTs7Process("server", executable, "listen") === null, "shared server in use");
   first!.close();
   first!.close();

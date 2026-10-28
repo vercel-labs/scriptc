@@ -10,7 +10,8 @@ import {
   arrayRootOf,
   lowerWithArraySpecies,
 } from "./builtins/array-classes.js";
-import { canonShadowHook } from "../canon-map.js";
+import { canonShadowHook, mapCanonical, type CanonMapNotes } from "../canon-map.js";
+import { Normalizer } from "../canon.js";
 import {
   compactDeclOrigins,
   inPackageFile,
@@ -20,6 +21,26 @@ import {
 } from "./decl-origin.js";
 import { isDeclBoundaryFile } from "../decl-projection.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
+import {
+  checkedTable,
+  countTable,
+  fixedScalar,
+  flagScalar,
+  functionTable,
+  irDataTable,
+  journalDump,
+  journalMode,
+  lowerWaveRecorded,
+  mapTable,
+  setTable,
+  waveStats,
+  writeRecords,
+  type JournalEvent,
+  type JournalScalar,
+  type JournalTable,
+  type UnitEvents,
+  type WaveHost,
+} from "./unit-journal.js";
 import { moduleNamespaceObject, moduleNamespaceValue } from "./module-namespace-elements.js";
 import { keyedHelperName, moduleTagNumber, portableRelativePath } from "./stable-names.js";
 import { positionTag, StructuralPositions } from "./structural-positions.js";
@@ -90,6 +111,7 @@ import { fenceWebCryptoMember, lowerWebCryptoCall } from "./builtins/webcrypto.j
 import { valueStreamOf } from "./builtins/hash-stream.js";
 import { lowerNetAddressCall, lowerNetAddressNew } from "./builtins/net-address.js";
 import { lowerMimeCall, lowerMimeNew } from "./builtins/mime.js";
+import { lowerWebStreamNew, lowerWebStreamStaticCall } from "./builtins/web-streams-dyn.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
 import { iteratorSlotAdapter } from "./iterator-adapters.js";
 import { iterableSlotValue } from "./iterable-values.js";
@@ -732,6 +754,7 @@ import {
   maybePromiseUnionOf,
   promiseArmedUnionOf,
 } from "./maybe-promise.js";
+import { NodeIslandModuleCollector } from "../../node-islands/modules.js";
 
 /** Entry function name. '%' cannot appear in a TS identifier, so a user
  * function can never collide with it (mangling is injective per prefix). */
@@ -754,6 +777,9 @@ export interface DynamicSlot {
   /** The slot keeps its type's compilable shape; only the failing
    * components are checked-dynamic (push-down, stage L3). */
   partial?: true;
+  /** The type mapped exactly from its canonical form (stage N2): a static
+   * slot, never reported as dynamic. */
+  canonical?: true;
 }
 
 /** Localized failure: rounds of the declaration flush retry. */
@@ -1011,6 +1037,9 @@ export interface DegradedType {
   lenient: IrType | null;
   code: string;
   reason: string;
+  /** The type maps exactly from its canonical form (stage N2): its slots
+   * are static. */
+  canonical?: true;
 }
 
 /** The Lowerer's pass configuration (see lowerToIr). */
@@ -2213,6 +2242,7 @@ export class Lowerer {
   }
 
   noteGenericInstanceDemand(inst: GenericInstance): void {
+    this.unitEvents?.record("functionDemand", inst.name);
     const owner = this.genericDemandOwner;
     owner?.functionDemands.push(inst);
     const ref = this.genericDemandPriority.get(inst) ?? { rank: [4, Number.MAX_SAFE_INTEGER] };
@@ -2228,6 +2258,7 @@ export class Lowerer {
   }
 
   noteGenericClassInstanceDemand(info: ClassInfo): void {
+    this.unitEvents?.record("classDemand", info.def.name);
     const owner = this.genericDemandOwner;
     owner?.classDemands.push(info);
     const ref = this.genericClassDemandPriority.get(info) ?? { rank: [4, Number.MAX_SAFE_INTEGER] };
@@ -3494,6 +3525,19 @@ export class Lowerer {
   usesWasmCustomSections = false;
   /** The program constructs a LifetimeRegion (lifetime-regions.ts). */
   usesLifetimeRegions = false;
+  /** The program calls into Node.js (@scriptc/node): the module carries
+   * the nodeIsland record, which the executable build fills in. */
+  usesNodeIsland = false;
+  /** The modules Node island calls load (lower-node-island.ts). */
+  readonly nodeIslandModules = new NodeIslandModuleCollector();
+  /** Each call's caller literal, set to its tree path when lowering ends. */
+  readonly nodeIslandCallers: { literal: IrExpr & { kind: "strLit" }; caller: string }[] = [];
+  /** Absolute specifiers, rewritten to the shipped file relative to their caller. */
+  readonly nodeIslandSpecifiers: {
+    literal: IrExpr & { kind: "strLit" };
+    caller: string;
+    target: string;
+  }[] = [];
   /** Per-directory answers of experimental-import.ts's declaration-file test. */
   readonly experimentalFiles = new Map<string, boolean>();
   /** Interned LifetimeRegion.run helpers, by callback type key. */
@@ -3615,6 +3659,9 @@ export class Lowerer {
   /** global-values.ts's answer per JavaScript source: the receiver of its
    * first read of the global object by a computed name, or null. */
   readonly computedGlobalReads = new Map<ts.SourceFile, ts.Expression | null>();
+  /** web-streams-dyn.ts's answer: whether a JavaScript source names a web
+   * stream class; undefined until asked. */
+  namesWebStreamClass: boolean | undefined = undefined;
   /** The first lifted function of each name (liftedFnNamed), for the
    * liftedFns indexed so far. liftedFns only grows. */
   private readonly liftedFnsByName = new Map<string, IrFunction>();
@@ -3766,6 +3813,14 @@ export class Lowerer {
    * promise operand (returnedPromiseAwait). */
   private returnAwaitedPromise = false;
   private readonly virtualEdges = new Map<ClassInfo, Set<string>>();
+  /** The events of the unit being recorded (unit-journal.ts); null
+   * otherwise. */
+  unitEvents: UnitEvents | null = null;
+  /** Fields added to collected classes (class-attributes.ts) and reachable
+   * units registered while units lower: a unit that changes either has no
+   * record (journalScalars). */
+  classLayoutChanges = 0;
+  unitRegistrations = 0;
 
   classCanBeConstructed(info: ClassInfo): boolean {
     return (
@@ -3903,6 +3958,531 @@ export class Lowerer {
     }
     return name === undefined ? undefined : this.liftedFnsByName.get(name);
   }
+
+  /** The tables lowering a unit can grow (unit-journal.ts): the
+   * appendable tables whose entries a unit's record carries, then the
+   * tables whose growth leaves the unit without a record.
+   * Lowerer.unjournaled lists the collections that are in neither. */
+  journalTables(): JournalTable[] {
+    const sizes = (name: string, of: () => readonly number[]): JournalTable =>
+      checkedTable(name, () => {
+        let hash = 0;
+        for (const size of of()) hash = (Math.imul(hash, 31) + size) | 0;
+        return hash;
+      });
+    return [
+      functionTable("implicitFns", this.implicitFns, (fn) =>
+        this.implicitFns.some((other) => other.name === fn),
+      ),
+      mapTable("equalityHelpers", this.equalityHelpers),
+      mapTable("arrHofHelpers", this.arrHofHelpers),
+      irDataTable("arrHofInfo", this.arrHofInfo),
+      mapTable("unionCallHelpers", this.unionCallHelpers),
+      mapTable("indexedUnionNumericTwins", this.indexedUnionNumericTwins),
+      setTable("coercions.checkedNarrows", this.coercions.checkedNarrows),
+      irDataTable("coercions.checkedNarrowArms", this.coercions.checkedNarrowArms),
+      mapTable("coercions.retags", this.coercions.retags),
+      mapTable("coercions.narrows", this.coercions.narrows),
+      mapTable("coercions.widthNarrows", this.coercions.widthNarrows),
+      setTable("coercions.widenedReturns", this.coercions.widenedReturns),
+      mapTable("valueHelpers", this.valueHelpers),
+      countTable("keyedNameKeys", this.keyedNameKeys),
+      mapTable("assertHelpers", this.assertHelpers),
+      mapTable("inspectHelpers", this.inspectHelpers),
+      setTable("classMethodValueHelpers", this.classMethodValueHelpers),
+      setTable("freshClosureAdapters", this.freshClosureAdapters),
+      mapTable("iterDrainHelpers", this.iterDrainHelpers),
+      mapTable("mapHofHelpers", this.mapHofHelpers),
+      mapTable("setHofHelpers", this.setHofHelpers),
+      mapTable("spHofHelpers", this.spHofHelpers),
+      mapTable("primitiveCtorFns", this.primitiveCtorFns),
+      mapTable("builtinCallableValueFns", this.builtinCallableValueFns),
+      mapTable("builtinCallableValueNames", this.builtinCallableValueNames),
+      countTable("builtinCallableValueLengths", this.builtinCallableValueLengths),
+      mapTable("regionRunHelpers", this.regionRunHelpers),
+      mapTable("internTableHelpers", this.internTableHelpers),
+      functionTable(
+        "liftedFns",
+        this.liftedFns,
+        (fn) => this.liftedFnNamed(fn) !== undefined,
+        () => {
+          this.liftedFnsByName.clear();
+          this.liftedFnsIndexed = 0;
+        },
+      ),
+      countTable("closureNameCounts", this.closureNameCounts),
+      setTable("sharedHelperNames", this.sharedHelperNames),
+      setTable("sloppyRecordWrites", this.sloppyRecordWrites),
+      setTable("recordFieldDeletes", this.recordFieldDeletes),
+      setTable("freezableArrays", this.freezableArrays),
+      checkedTable("moduleOrder", () => this.moduleOrder.length),
+      checkedTable("diags", () => this.diags.length),
+      // Node island call sites hold literals of the unit's IR that lowering's
+      // end rewrites to module tree paths (nodeIslandRecord): a unit that adds
+      // one lowers again rather than replaying a record.
+      checkedTable("nodeIslandCallers", () => this.nodeIslandCallers.length),
+      checkedTable("nodeIslandSpecifiers", () => this.nodeIslandSpecifiers.length),
+      checkedTable("fnSigsBySymbol", () => this.fnSigsBySymbol.size),
+      checkedTable("cjsExportsAssignments", () => this.cjsExportsAssignments.size),
+      checkedTable("inlineRequireCycleCalls", () => this.inlineRequireCycleCalls.size),
+      checkedTable("staticCallables", () => this.staticCallables.size),
+      checkedTable("genericFnsBySymbol", () => this.genericFnsBySymbol.size),
+      checkedTable("objLitGenericFns", () => this.objLitGenericFns.size),
+      checkedTable("bindingGenericFns", () => this.bindingGenericFns.size),
+      checkedTable("bindingIdentifiers", () => this.bindingIdentifiers.size),
+      checkedTable("ownToStringTargets", () => this.ownToStringTargets.size),
+      checkedTable("neverReassignedCache", () => this.neverReassignedCache.size),
+      checkedTable("jsBindingWritesByOwner", () => this.jsBindingWritesByOwner.size),
+      checkedTable("rebindableFunctions", () => this.rebindableFunctions.size),
+      checkedTable("trapBindings", () => this.trapBindings.size),
+      checkedTable("deadBindings", () => this.deadBindings.size),
+      checkedTable("instantiationQueue", () => this.instantiationQueue.length),
+      checkedTable("genericFunctionDemandOwner", () => this.genericFunctionDemandOwner.size),
+      checkedTable("genericClassDemandOwner", () => this.genericClassDemandOwner.size),
+      checkedTable("erasingLambdas", () => this.erasingLambdas.size),
+      checkedTable("typedArgumentsLambdas", () => this.typedArgumentsLambdas.size),
+      checkedTable("tupleAliasSymbols", () => this.tupleAliasSymbols.size),
+      checkedTable("nullishFuncResults", () => this.nullishFuncResults.size),
+      checkedTable("localClassInstantiations", () => this.localClassInstantiations.length),
+      checkedTable("localClassInstanceTypes", () => this.localClassInstanceTypes.size),
+      checkedTable("localClassValueTypes", () => this.localClassValueTypes.size),
+      checkedTable("dynParamLambdas", () => this.dynParamLambdas.size),
+      checkedTable("aliasNarrowTypes", () => this.aliasNarrowTypes.size),
+      checkedTable("classSymbolKeys", () => this.classSymbolKeys.size),
+      checkedTable("registeredClassSymbols", () => this.registeredClassSymbols.size),
+      checkedTable("symbolFieldIdentities", () => this.symbolFieldIdentities.size),
+      checkedTable("httpClientFnBindings", () => this.httpClientFnBindings.size),
+      checkedTable("emitterComputedPatterns", () => this.emitterComputedPatterns.length),
+      checkedTable("unstableSwitchBindings", () => this.unstableSwitchBindings.size),
+      checkedTable("earlyReadVars", () => this.earlyReadVars.size),
+      checkedTable("runtimeOptionalGlobals", () => this.runtimeOptionalGlobals.size),
+      checkedTable("cjsExportsThis", () => this.cjsExportsThis.size),
+      checkedTable("inlineRequireInitDone", () => this.inlineRequireInitDone.size),
+      checkedTable(
+        "runtimeOptionalArithmeticGlobals",
+        () => this.runtimeOptionalArithmeticGlobals.size,
+      ),
+      checkedTable("runtimeOptionalBindingTypes", () => this.runtimeOptionalBindingTypes.size),
+      checkedTable("stageSourceTypes", () => this.stageSourceTypes.size),
+      checkedTable(
+        "runtimeOptionalAssignedSymbols",
+        () => this.runtimeOptionalAssignedSymbols.size,
+      ),
+      checkedTable("runtimeOptionalGenericReturns", () => this.runtimeOptionalGenericReturns.size),
+      checkedTable(
+        "runtimeOptionalFunctionReturns",
+        () => this.runtimeOptionalFunctionReturns.size,
+      ),
+      checkedTable("contextualFunctionReturns", () => this.contextualFunctionReturns.size),
+      checkedTable(
+        "runtimeOptionalArithmeticTypes",
+        () => this.runtimeOptionalArithmeticTypes.size,
+      ),
+      checkedTable("runtimeOptionalFields", () => this.runtimeOptionalFields.size),
+      checkedTable("dateJsonBindings", () => this.dateJsonBindings.size),
+      checkedTable(
+        "runtimeOptionalRecordsKeptDeclared",
+        () => this.runtimeOptionalRecordsKeptDeclared.size,
+      ),
+      checkedTable("runtimeOptionalPatternTypes", () => this.runtimeOptionalPatternTypes.size),
+      checkedTable("runtimeOptionalReduceTypes", () => this.runtimeOptionalReduceTypes.size),
+      checkedTable("runtimeOptionalAssertions", () => this.runtimeOptionalAssertions.size),
+      checkedTable("presentElementCalls", () => this.presentElementCalls.size),
+      checkedTable("presentElementLoops", () => this.presentElementLoops.size),
+      checkedTable("errorFirstLiterals", () => this.errorFirstLiterals.size),
+      checkedTable("anySymbols", () => this.anySymbols.size),
+      checkedTable("knownErrors", () => this.knownErrors.size),
+      checkedTable("shapeOrderMetadataFinalizers", () => this.shapeOrderMetadataFinalizers.length),
+      checkedTable("receiverTypeOverrides", () => this.receiverTypeOverrides.size),
+      checkedTable("shapeOrderHelperFinalizers", () => this.shapeOrderHelperFinalizers.length),
+      checkedTable("emitSpecDone", () => this.emitSpecDone.size),
+      checkedTable("emitSpecQueue", () => this.emitSpecQueue.length),
+      checkedTable("structuralClassPeers", () => this.structuralClassPeers.size),
+      checkedTable("methodLambdasInProgress", () => this.methodLambdasInProgress.size),
+      checkedTable("classMethodValueSelections", () => this.classMethodValueSelections.size),
+      checkedTable("stdlibGlobalAliases", () => this.stdlibGlobalAliases.size),
+      checkedTable("cjsAccessorFns", () => this.cjsAccessorFns.size),
+      checkedTable("cjsAccessorSnapshots", () => this.cjsAccessorSnapshots.size),
+      checkedTable("cjsSnapshotReady", () => this.cjsSnapshotReady.size),
+      checkedTable("matchAllIndexBindings", () => this.matchAllIndexBindings.size),
+      checkedTable("matchAllDrainIndexes", () => this.matchAllDrainIndexes.size),
+      checkedTable("numericIterators", () => this.numericIterators.size),
+      checkedTable("classes", () => this.classes.size),
+      checkedTable("classBySymbol", () => this.classBySymbol.size),
+      checkedTable("prototypeMethodAccesses", () => this.prototypeMethodAccesses.size),
+      checkedTable("replacedSymbolMethods", () => this.replacedSymbolMethods.size),
+      checkedTable("protocolDispatches", () => this.protocolDispatches.size),
+      checkedTable("protocolOwnedBindings", () => this.protocolOwnedBindings.size),
+      checkedTable("receiverFreeCallbackFields", () => this.receiverFreeCallbackFields.size),
+      checkedTable("virtualJsMethods", () => this.virtualJsMethods.size),
+      checkedTable("inheritedJsFieldWrites", () => this.inheritedJsFieldWrites.size),
+      checkedTable("virtualJsMethodArity", () => this.virtualJsMethodArity.size),
+      checkedTable("checkedVirtualJsMethods", () => this.checkedVirtualJsMethods.size),
+      checkedTable("unionReturnOverrides", () => this.unionReturnOverrides.size),
+      checkedTable("checkedVirtualJsAccessors", () => this.checkedVirtualJsAccessors.size),
+      checkedTable("checkedVirtualJsValueReturns", () => this.checkedVirtualJsValueReturns.size),
+      checkedTable("globalsBySymbol", () => this.globalsBySymbol.size),
+      checkedTable("expandoMembers", () => this.expandoMembers.size),
+      checkedTable("globalsByDeclNode", () => this.globalsByDeclNode.size),
+      checkedTable("globalsList", () => this.globalsList.length),
+      checkedTable("npmInitActions", () => this.npmInitActions.size),
+      checkedTable("jsonInitActions", () => this.jsonInitActions.size),
+      checkedTable("jsonRequireModules", () => this.jsonRequireModules.size),
+      checkedTable("jsonRequireCalls", () => this.jsonRequireCalls.size),
+      checkedTable("dynImports", () => this.dynImports.size),
+      checkedTable("createRequireImports", () => this.createRequireImports.size),
+      checkedTable("dynNsBuilders", () => this.dynNsBuilders.size),
+      checkedTable("checkedCallbackParams", () => this.checkedCallbackParams.size),
+      checkedTable("valueStreamReceivers", () => this.valueStreamReceivers.size),
+      checkedTable("stagedArguments", () => this.stagedArguments.size),
+      checkedTable("moduleNsParamOverrides", () => this.moduleNsParamOverrides.size),
+      checkedTable("fileTag", () => this.fileTag.size),
+      checkedTable("forkTargets", () => this.forkTargets.length),
+      checkedTable("workerTargets", () => this.workerTargets.length),
+      checkedTable("workerTargetIdByPath", () => this.workerTargetIdByPath.size),
+      checkedTable("experimentalFiles", () => this.experimentalFiles.size),
+      checkedTable("internTableNames", () => this.internTableNames.size),
+      checkedTable("threadSlotNames", () => this.threadSlotNames.size),
+      checkedTable("threadSlotFamilies", () => this.threadSlotFamilies.size),
+      checkedTable("threadSlotKeys", () => this.threadSlotKeys.size),
+      checkedTable("forkTargetIdByPath", () => this.forkTargetIdByPath.size),
+      checkedTable("nsBlocks", () => this.nsBlocks.size),
+      checkedTable("initNameOf", () => this.initNameOf.size),
+      checkedTable("cjsModuleIdOf", () => this.cjsModuleIdOf.size),
+      checkedTable("cjsModuleFiles", () => this.cjsModuleFiles.length),
+      checkedTable("moduleGuardOf", () => this.moduleGuardOf.size),
+      checkedTable("asyncInitFiles", () => this.asyncInitFiles.size),
+      checkedTable("modulePromiseOf", () => this.modulePromiseOf.size),
+      checkedTable("asyncCycleRepresentativeOf", () => this.asyncCycleRepresentativeOf.size),
+      checkedTable("asyncCyclePromiseOf", () => this.asyncCyclePromiseOf.size),
+      checkedTable("runtimeClassValues", () => this.runtimeClassValues.size),
+      checkedTable("preparedClassFactories", () => this.preparedClassFactories.size),
+      checkedTable("preparingClassFactories", () => this.preparingClassFactories.size),
+      checkedTable("varGlobalEntryInits", () => this.varGlobalEntryInits.size),
+      checkedTable("cycleInitFlags", () => this.cycleInitFlags.size),
+      checkedTable("classInitFlags", () => this.classInitFlags.size),
+      checkedTable("cycleInitDeclarations", () => this.cycleInitDeclarations.size),
+      checkedTable("uninitializedLexicalGlobals", () => this.uninitializedLexicalGlobals.size),
+      checkedTable("requireInitFlags", () => this.requireInitFlags.size),
+      checkedTable("requireEarlyReferences", () => this.requireEarlyReferences.length),
+      checkedTable("sharedHelpers", () => this.sharedHelpers.size),
+      checkedTable("dynamicFunctions", () => this.dynamicFunctions.length),
+      checkedTable("dynamicBodies", () => this.dynamicBodies.length),
+      checkedTable("deferredDiags", () => this.deferredDiags.size),
+      checkedTable("deferredClassByName", () => this.deferredClassByName.size),
+      checkedTable("flushedSymbols", () => this.flushedSymbols.size),
+      checkedTable("alreadyFlushed", () => this.alreadyFlushed.size),
+      checkedTable("pendingFlushes", () => this.pendingFlushes.size),
+      checkedTable("checkedJsFiles", () => this.checkedJsFiles.size),
+      checkedTable("ffiImports", () => this.ffiImports.length),
+      checkedTable("ffiImportsByName", () => this.ffiImportsByName.size),
+      checkedTable("externalTypes", () => this.externalTypes.size),
+      checkedTable("externalTypeSpecifiersByFile", () => this.externalTypeSpecifiersByFile.size),
+      checkedTable("blockedBindings", () => this.blockedBindings.size),
+      checkedTable("runtimeFences", () => this.runtimeFences.length),
+      checkedTable("provenanceElided", () => this.provenanceElided.length),
+      checkedTable("statsByFile", () => this.statsByFile.size),
+      checkedTable(
+        "reachedBlockedBodyDiagnostics",
+        () => this.reachedBlockedBodyDiagnostics.length,
+      ),
+      checkedTable("exprClasses", () => this.exprClasses.length),
+      checkedTable("exprClassInfoByName", () => this.exprClassInfoByName.size),
+      checkedTable("collectingExprClasses", () => this.collectingExprClasses.size),
+      checkedTable("pendingClassExprInits", () => this.pendingClassExprInits.length),
+      checkedTable("computedClassBases", () => this.computedClassBases.size),
+      checkedTable("computedCallableBases", () => this.computedCallableBases.size),
+      checkedTable("mixinInstanceByCall", () => this.mixinInstanceByCall.size),
+      checkedTable("mixinCollectingCalls", () => this.mixinCollectingCalls.size),
+      checkedTable("mixinOrdinals", () => this.mixinOrdinals.size),
+      checkedTable("mixinInstancesByClassNode", () => this.mixinInstancesByClassNode.size),
+      checkedTable("genericClassByDecl", () => this.genericClassByDecl.size),
+      checkedTable("collectingClassDeclarations", () => this.collectingClassDeclarations.size),
+      checkedTable("genericClassInstances", () => this.genericClassInstances.length),
+      checkedTable("mainPrelude", () => this.mainPrelude.length),
+      checkedTable("structuralFnInfos", () => this.structuralFnInfos.size),
+      checkedTable("preservedLayoutTypes", () => this.preservedLayoutTypes.size),
+      checkedTable("layoutKeptNodes", () => this.layoutKeptNodes.size),
+      checkedTable("boundAliasInstances", () => this.boundAliasInstances.size),
+      checkedTable("castGlobalAliases", () => this.castGlobalAliases.size),
+      checkedTable("methodAccessSites", () => this.methodAccessSites.size),
+      checkedTable("checkedJsOverrideMethods", () => this.checkedJsOverrideMethods.size),
+      checkedTable("untypedLoops", () => this.untypedLoops.size),
+      checkedTable("classBagInitializers", () => this.classBagInitializers.size),
+      checkedTable("degradedTypes", () => this.degradedTypes.size),
+      checkedTable("rejectedGroups", () => this.rejectedGroups.size),
+      checkedTable("lenientPieces", () => this.lenientPieces.size),
+      checkedTable("dynamicSlots", () => this.dynamicSlots.length),
+      checkedTable("retriedSymbols", () => this.retriedSymbols.size),
+      checkedTable("skippedBodies", () => this.skippedBodies.size),
+      checkedTable("retriedDeclarations", () => this.retriedDeclarations.length),
+      checkedTable("loweredOnceDiags", () => this.loweredOnceDiags.size),
+      checkedTable("staticInitsPassed", () => this.staticInitsPassed.size),
+      checkedTable("deferredCollectors", () => this.deferredCollectors.size),
+      checkedTable("retriableDiags", () => this.retriableDiags.size),
+      checkedTable("failedTypes", () => this.failedTypes.size),
+      checkedTable("retryDegraded", () => this.retryDegraded.length),
+      checkedTable("declOrigins", () => this.declOrigins.length),
+      checkedTable("declOriginIds", () => this.declOriginIds.size),
+      sizes("shapes", () => this.shapes.journalSizes()),
+      this.unions.journalTable(),
+      sizes("unions.recIds", () => this.unions.journalSizes()),
+      sizes("keyOrder", () => this.keyOrder.journalSizes()),
+      sizes("deferredModuleInitializers", () =>
+        this.deferredModuleInitializers === null
+          ? []
+          : this.deferredModuleInitializers.journalSizes(),
+      ),
+    ];
+  }
+
+  /** The fields a unit's record need not carry: settings, caches of
+   * program facts that are computed again when needed, state of the unit
+   * being lowered (keyed by its own IR, nodes or frames), scratch that
+   * unwinds before the unit ends, and state that applying the unit's events
+   * rebuilds. */
+  static readonly unjournaled: readonly string[] = [
+    // settings
+    "frontendServices",
+    "ambient",
+    "overridesAmbient",
+    "remainder",
+    "tierMode",
+    "generalNodeStreams",
+    "dynNodeStreams",
+    "targetPlatform",
+    "startupCrash",
+    "projectCheckJs",
+    "libraryCallbacks",
+    "ffiBindingSymbols",
+    "priorRetriedSymbols",
+    "wholeSlotDegradation",
+    "inferredCollectionTypes",
+    "foreignElementKeys",
+    // caches made when first needed
+    "nanCodedReads",
+    "mentionsProcessVersions",
+    "stringIndexBoundsCache",
+    "functionLocalSubclasses",
+    "socketEncodingReachable",
+    "thenablesMayBeDefined",
+    "unixListenReachable",
+    "streamPropMutatedSyms",
+    "readsExitCode",
+    "requestInitPropMutatedSyms",
+    "classProtocols",
+    "cjsSplitRequireBindings",
+    "cjsWholeExportSymbols",
+    "cjsLiveMemberExports",
+    "cjsNamespaces",
+    "createRequireBindingTargets",
+    "createRequireElementTargets",
+    "computedGlobalReads",
+    "namesWebStreamClass",
+    "timeValueDateDecisions",
+    "timeValueDateWrites",
+    "dynamicOverloadAnswers",
+    "argumentCountSlots",
+    "coercions.widenedReturnTypes",
+    "packageFileMemo",
+    "slotOriginMemo",
+    "recordOriginMemo",
+    "boundaryCastOrder",
+    "declBoundaryMemo",
+    "structuredCloneReadCounts",
+    // state of the unit being lowered
+    "assertedValues",
+    "timeValueDateLocals",
+    "speculatedClosures",
+    "fsPathPlans",
+    "fallibleFsCalls",
+    "failureTouches",
+    "partialHits",
+    // sized by journalTables, indexes over journaled tables, and state that
+    // applying a unit's events rebuilds
+    "deferredModuleInitializers",
+    "liftedFnsIndexed",
+    "liftedFnsByName",
+    "reachable",
+    "reachableForArtifacts",
+    "constructedClasses",
+    "virtualEdges",
+    "countedStatements",
+    "failedStatements",
+    "genericDemandRoots",
+    "genericDemandPriority",
+    "genericClassDemandPriority",
+    "unitEvents",
+    // scratch of the lowering in progress, and memos keyed by nodes
+    "nullishBindings",
+    "implicitLocalFns",
+    "builtinClassAliases",
+    "runtimeOptionalLocals.active",
+    "runtimeOptionalLocals.scopes",
+    "narrowing.facts",
+    "narrowing.verdicts",
+    "narrowing.effects",
+    "narrowing.capturedMutable",
+    "narrowing.staleBindings",
+    "narrowing.identifierWrites",
+    "narrowing.widened",
+    "narrowing.plainContainers",
+    "runtimeOptionalStorageLocals",
+    "runtimeOptionalArithmeticLocals",
+    "runtimeOptionalRoots",
+    "coercions.planning",
+    "coercions.copyRetags",
+    "assertInstances",
+    "unionLiteralOwners",
+    "strippedUndefinedArms",
+    "addedUndefinedArms",
+    "stdlibSymbols",
+    "chainRecvByNode",
+    "neverValued",
+    "chainNarrowedType",
+    "chainHandled",
+    "splitIdentifierUses",
+    "typeMemo",
+    "fnStack",
+    "positions.nodesByKey",
+    "positions.paths",
+    "activeStmtLists",
+    "constructorReturnPlans",
+    "mixinFnShapes",
+  ];
+
+  /** The fields a unit must leave as they were, and the flags it may set
+   * (unit-journal.ts). */
+  journalScalars(): JournalScalar[] {
+    const flag = flagScalar;
+    const fixed = fixedScalar;
+    return [
+      flag(
+        "handleEventReader",
+        () => this.handleEventReader,
+        () => (this.handleEventReader = true),
+      ),
+      flag(
+        "writesOntoChildren",
+        () => this.writesOntoChildren,
+        () => (this.writesOntoChildren = true),
+      ),
+      flag(
+        "regexGroupResults",
+        () => this.regexGroupResults,
+        () => (this.regexGroupResults = true),
+      ),
+      flag(
+        "requiresHistoricalOrderRelower",
+        () => this.requiresHistoricalOrderRelower,
+        () => (this.requiresHistoricalOrderRelower = true),
+      ),
+      flag(
+        "requiresGeneralNodeStreams",
+        () => this.requiresGeneralNodeStreams,
+        () => (this.requiresGeneralNodeStreams = true),
+      ),
+      flag(
+        "requiresDynNodeStreams",
+        () => this.requiresDynNodeStreams,
+        () => (this.requiresDynNodeStreams = true),
+      ),
+      flag(
+        "errorPrototypeValues",
+        () => this.errorPrototypeValues,
+        () => (this.errorPrototypeValues = true),
+      ),
+      flag(
+        "usesWorkers",
+        () => this.usesWorkers,
+        () => (this.usesWorkers = true),
+      ),
+      flag(
+        "usesWebAssembly",
+        () => this.usesWebAssembly,
+        () => (this.usesWebAssembly = true),
+      ),
+      flag(
+        "usesWasmCustomSections",
+        () => this.usesWasmCustomSections,
+        () => (this.usesWasmCustomSections = true),
+      ),
+      flag(
+        "usesLifetimeRegions",
+        () => this.usesLifetimeRegions,
+        () => (this.usesLifetimeRegions = true),
+      ),
+      flag(
+        "usesNodeIsland",
+        () => this.usesNodeIsland,
+        () => (this.usesNodeIsland = true),
+      ),
+      flag(
+        "cjsModuleGraphEnabled",
+        () => this.cjsModuleGraphEnabled,
+        () => (this.cjsModuleGraphEnabled = true),
+      ),
+      flag(
+        "globalThisComputedWrite",
+        () => this.globalThisComputedWrite,
+        () => (this.globalThisComputedWrite = true),
+      ),
+      flag(
+        "untypedIntegrity",
+        () => this.untypedIntegrity,
+        () => (this.untypedIntegrity = true),
+      ),
+      flag(
+        "partialDegradedTypesMapped",
+        () => this.partialDegradedTypesMapped,
+        () => (this.partialDegradedTypesMapped = true),
+      ),
+      fixed("errorAccessorReflection", () => this.errorAccessorReflection),
+      fixed("subclassLinks", () => this.subclassLinks),
+      fixed("errorPathCopies", () => this.errorPathCopies),
+      fixed("errorMethodDispatchRevision", () => this.errorMethodDispatchRevision),
+      fixed("errorPropertyDispatchRevision", () => this.errorPropertyDispatchRevision),
+      fixed("childAdditions", () => this.childAdditions),
+      fixed("emitterEventTable", () => this.emitterEventTable),
+      fixed("globalThisWrittenNames", () => this.globalThisWrittenNames),
+      fixed("importRetryModules", () => this.importRetryModules),
+      fixed("localSubclassIndex", () => this.localSubclassIndex),
+      // State of the lowering in progress, which a unit restores.
+      fixed("genericInstantiationPath", () => this.genericInstantiationPath),
+      fixed("genericDemandOwner", () => this.genericDemandOwner),
+      fixed("typeParamBindings", () => this.typeParamBindings),
+      fixed("staticFnNames", () => this.staticFnNames),
+      fixed("erasingDepth", () => this.erasingDepth),
+      fixed("instanceResultClass", () => this.instanceResultClass),
+      fixed("typeParamTsBindings", () => this.typeParamTsBindings),
+      fixed("implicitParamTypes", () => this.implicitParamTypes),
+      fixed("fspGlobHead", () => this.fspGlobHead),
+      fixed("instantiationContext", () => this.instantiationContext),
+      fixed("suppressStats", () => this.suppressStats),
+      fixed("emitSpecCtx", () => this.emitSpecCtx),
+      fixed("assertCallOptions", () => this.assertCallOptions),
+      fixed("currentClass", () => this.currentClass),
+      fixed("closureRoot", () => this.closureRoot),
+      fixed("superConstructorEdge", () => this.superConstructorEdge),
+      fixed("returnAwaitedPromise", () => this.returnAwaitedPromise),
+      fixed("collecting", () => this.collecting),
+      fixed("diagSink", () => this.diagSink),
+      fixed("speculativeTypeQueryDepth", () => this.speculativeTypeQueryDepth),
+      fixed("mixinTypeContext", () => this.mixinTypeContext),
+      fixed("pendingLabels", () => this.pendingLabels),
+      fixed("onEdge", () => this.onEdge),
+      fixed("onExprClassCollected", () => this.onExprClassCollected),
+      fixed("onLateClassCollected", () => this.onLateClassCollected),
+      fixed("onDeclarationRegistered", () => this.onDeclarationRegistered),
+      fixed("classLayoutChanges", () => this.classLayoutChanges),
+      fixed("unitRegistrations", () => this.unitRegistrations),
+      fixed("liftDynFieldPolicy", () => this.liftDynFieldPolicy),
+      fixed("coercionOriginNode", () => this.coercionOriginNode),
+      fixed("coercionOriginUnion", () => this.coercionOriginUnion),
+      fixed("coercionFieldOrigin", () => this.coercionFieldOrigin),
+    ];
+  }
+
   /** Coverage remainder mode: the reachability gate inverts (see wantBody)
    * and no module is built. */
   readonly remainder: boolean;
@@ -4053,6 +4633,12 @@ export class Lowerer {
   countStatement(node: ts.Node, file: string | undefined): void {
     if (this.countedStatements.has(node)) return;
     this.countedStatements.add(node);
+    this.unitEvents?.record(
+      "statement",
+      ts.getSourceFileOfNode(node).fileName,
+      file ?? null,
+      node.index,
+    );
     this.stats.statementsTotal++;
     if (file !== undefined) this.bumpFileStat(file, "total");
   }
@@ -4062,6 +4648,12 @@ export class Lowerer {
   countStatementFailed(node: ts.Node, file: string | undefined): void {
     if (this.failedStatements.has(node)) return;
     this.failedStatements.add(node);
+    this.unitEvents?.record(
+      "failedStatement",
+      ts.getSourceFileOfNode(node).fileName,
+      file ?? null,
+      node.index,
+    );
     this.stats.statementsFailed++;
     if (file !== undefined) this.bumpFileStat(file, "failed");
   }
@@ -4224,9 +4816,11 @@ export class Lowerer {
         // checked dynamic cuts the knot while it does.
         if (degraded.lenient === null) {
           degraded.lenient = DYN;
-          degraded.lenient = this.lenientType(type);
+          degraded.lenient =
+            (degraded.canonical === true ? this.canonicalType(type) : null) ??
+            this.lenientType(type);
         }
-        if (degraded.lenient.kind !== "dyn") {
+        if (degraded.lenient.kind !== "dyn" && degraded.canonical !== true) {
           this.partialHits[this.partialHits.length - 1]?.add(id);
           this.partialDegradedTypesMapped = true;
         }
@@ -8864,6 +9458,7 @@ export class Lowerer {
             entry: ENTRY_NAME,
             ...(this.usesWorkers ? { workers: true } : {}),
             ...(this.usesLifetimeRegions ? { lifetimeRegions: true as const } : {}),
+            ...(this.usesNodeIsland ? { nodeIsland: this.nodeIslandRecord() } : {}),
             ...(this.declBoundary ? { declBoundary: true as const } : {}),
             ...(shapeOverlayFileNames().length > 0
               ? {
@@ -9297,6 +9892,7 @@ export class Lowerer {
         lower: () => IrFunction | null,
       ): void => {
         units.set(name, { order: unitOrder++, roots, lower });
+        this.unitRegistrations++;
         if (reachable.has(name)) queue.push(name);
         metadataPriority.set(name, [3, expressionMetadataOrder++]);
       };
@@ -9337,6 +9933,7 @@ export class Lowerer {
           roots: functionRoots(decl),
           lower: () => this.lowerFunction(decl),
         });
+        this.unitRegistrations++;
         if (reachable.has(sig.name)) queue.push(sig.name);
         metadataPriority.set(sig.name, [3, expressionMetadataOrder++]);
       } else if (ts.isClassDeclaration(decl)) {
@@ -9357,6 +9954,7 @@ export class Lowerer {
             roots: functionRoots(entry.member),
             lower: () => lowerStaticMethod(this, info, name),
           });
+          this.unitRegistrations++;
           if (reachable.has(unit)) queue.push(unit);
           metadataPriority.set(unit, [3, expressionMetadataOrder++]);
         }
@@ -9500,25 +10098,36 @@ export class Lowerer {
     const rootEdge = this.onEdge;
     for (const root of extraRoots ?? []) rootEdge?.(root);
     const shuffle = lowerShuffle();
+    const lowerUnitBody = (name: string): IrFunction | null => {
+      const unit = units.get(name)!;
+      const priority = metadataPriority.get(name) ?? [3, expressionMetadataOrder++];
+      const owner = demandOwner(priority);
+      return this.withGenericDemandOwner(owner, () =>
+        this.shapes.withDeclaredOrderPriority(priority, () =>
+          this.withClosureRoot(name, unit.lower),
+        ),
+      );
+    };
+    const recorded = journalMode() === "serial" ? waveStats() : null;
+    const host = recorded === null ? null : this.waveHost(loweredUnits, lowerUnitBody);
+    const dump = recorded === null ? null : journalDump();
+    const recordLines: string[] = [];
     const drainUnits = (): void => {
       while (queue.length > 0) {
         const wave = queue.splice(0);
         shuffle?.(wave);
         this.checker.prefetchRoots(wave.flatMap((name) => units.get(name)!.roots));
+        if (host !== null && recorded !== null) {
+          lowerWaveRecorded(host, wave, recorded, dump === null ? null : recordLines);
+          continue;
+        }
         for (const name of wave) {
           // A body-level poison outside the per-statement catches (a fenced
           // constructor/method parameter default lowered by declareParams):
           // every edge fired before poisoning remains retained; the diagnostic
           // stays recorded and the member stays omitted.
           try {
-            const unit = units.get(name)!;
-            const priority = metadataPriority.get(name) ?? [3, expressionMetadataOrder++];
-            const owner = demandOwner(priority);
-            const fn = this.withGenericDemandOwner(owner, () =>
-              this.shapes.withDeclaredOrderPriority(priority, () =>
-                this.withClosureRoot(name, unit.lower),
-              ),
-            );
+            const fn = lowerUnitBody(name);
             if (fn) loweredUnits.set(name, fn);
             relieveHeapPressure();
           } catch (e) {
@@ -9569,6 +10178,11 @@ export class Lowerer {
       this.restoreGenericClassInstanceOrder(clsInstLowered);
     }
     classDispatch.finalize(this);
+    if (dump !== null) writeRecords(dump, recordLines);
+    if (recorded !== null && process.env["SCRIPTC_TIMING"] === "1")
+      process.stderr.write(
+        `scriptc lowering ${JSON.stringify({ phase: "unit-records", ...recorded })}\n`,
+      );
     const orderedUnits = unitsInOrder();
     this.settleGenericDemandPriorities();
     this.shapes.settleDeclaredOrderPriorities();
@@ -9613,12 +10227,101 @@ export class Lowerer {
     return { reachable, result: this.finishModule(functions) };
   }
 
+  /** The lowerer's side of a recorded wave (unit-journal.ts).
+   * `lowerUnitBody` lowers a unit as reachable emit does. */
+  private waveHost(
+    loweredUnits: Map<string, IrFunction>,
+    lowerUnitBody: (name: string) => IrFunction | null,
+  ): WaveHost {
+    const scalars = this.journalScalars();
+    const flags = new Map(scalars.map((scalar) => [scalar.name, scalar]));
+    let instances = new Map<string, GenericInstance>();
+    let indexed = -1;
+    const instanceNamed = (name: string): GenericInstance | undefined => {
+      if (indexed !== this.instantiationQueue.length) {
+        instances = new Map(this.instantiationQueue.map(({ inst }) => [inst.name, inst]));
+        indexed = this.instantiationQueue.length;
+      }
+      return instances.get(name);
+    };
+    const classNamed = (name: string): ClassInfo | undefined => {
+      const info = this.classes.get(name);
+      return info !== undefined && info.def.name === name ? info : undefined;
+    };
+    const files = new Map<string, ts.SourceFile | undefined>();
+    const statementNode = (event: JournalEvent): ts.Node | undefined => {
+      let sf = files.get(event.name);
+      if (sf === undefined && !files.has(event.name)) {
+        sf = this.program.getSourceFile(event.name);
+        files.set(event.name, sf);
+      }
+      if (sf === undefined) return undefined;
+      try {
+        return sf.file.node(event.index);
+      } catch {
+        return undefined;
+      }
+    };
+    return {
+      tables: this.journalTables(),
+      scalars,
+      lowerRecorded: (name, events) => {
+        this.unitEvents = events;
+        try {
+          const fn = lowerUnitBody(name);
+          relieveHeapPressure();
+          return { fn, poisoned: false };
+        } catch (e) {
+          if (!(e instanceof PoisonError)) throw e;
+          return { fn: null, poisoned: true };
+        } finally {
+          this.unitEvents = null;
+        }
+      },
+      store: (name, fn) => {
+        if (fn) loweredUnits.set(name, fn);
+      },
+      statementCounts: () => ({
+        total: this.stats.statementsTotal,
+        failed: this.stats.statementsFailed,
+        other: this.stats.functionsSkipped + this.diags.length,
+      }),
+      resolves: (event) => {
+        switch (event.kind) {
+          case "virtualEdge":
+          case "classDemand":
+            return classNamed(event.name) !== undefined;
+          case "functionDemand":
+            return instanceNamed(event.name) !== undefined;
+          case "statement":
+          case "failedStatement":
+            return statementNode(event) !== undefined;
+          case "flag":
+            return flags.get(event.name)?.set !== undefined;
+          default:
+            return true;
+        }
+      },
+    };
+  }
+
   /** Reachability hook (see emitReachable): fires when lowering resolves a
    * reference to a lowerable body. */
   noteEdge(name: string): void {
     // Called as a plain function: the instance is not its receiver.
     const onEdge = this.onEdge;
-    if (onEdge) onEdge(name);
+    const events = this.unitEvents;
+    if (events === null) {
+      if (onEdge) onEdge(name);
+      return;
+    }
+    events.record(this.superConstructorEdge ? "superConstructorEdge" : "edge", name);
+    events.depth++;
+    try {
+      if (onEdge) onEdge(name);
+    } finally {
+      events.depth--;
+    }
   }
 
   /** A subclass constructor's super() edge: the base constructor runs, but
@@ -9639,6 +10342,21 @@ export class Lowerer {
    * them). */
   noteVirtualEdge(info: ClassInfo, method: string): void {
     if (!this.onEdge) return;
+    const events = this.unitEvents;
+    if (events === null) {
+      this.virtualEdgeOf(info, method);
+      return;
+    }
+    events.record("virtualEdge", info.def.name, method);
+    events.depth++;
+    try {
+      this.virtualEdgeOf(info, method);
+    } finally {
+      events.depth--;
+    }
+  }
+
+  private virtualEdgeOf(info: ClassInfo, method: string): void {
     if (this.constructedClasses) {
       const methods = this.virtualEdges.get(info) ?? new Set<string>();
       methods.add(method);
@@ -9824,6 +10542,18 @@ export class Lowerer {
     this.diags.push(d);
   }
 
+  /** The module's Node island record: the collected module tree, with each
+   * call's caller literal set to its path in that tree. The executable
+   * build fills in the libnode pack (index.ts). */
+  private nodeIslandRecord(): NonNullable<IrModule["nodeIsland"]> {
+    const modules = this.nodeIslandModules.tree();
+    for (const { literal, caller } of this.nodeIslandCallers)
+      literal.value = NodeIslandModuleCollector.callerPath(modules, caller);
+    for (const { literal, caller, target } of this.nodeIslandSpecifiers)
+      literal.value = NodeIslandModuleCollector.relativeSpecifier(caller, target);
+    return { libnode: "", nodeVersion: "", ...(modules === null ? {} : { modules }) };
+  }
+
   unsupported(
     code: keyof typeof UNSUPPORTED & DiagnosticCode,
     node: ts.Node,
@@ -9903,8 +10633,10 @@ export class Lowerer {
     }
     if (committed === undefined) return null;
     this.degradeType(type, committed.code, committed.message);
+    const canonical = this.isCanonicalDegraded(id);
     const partial = this.degradedTypes.get(id)?.lenient?.kind !== "dyn";
     return {
+      ...(canonical ? { canonical: true as const } : {}),
       ...(partial ? { partial: true as const } : {}),
       loc: committed.loc,
       failure,
@@ -10049,6 +10781,14 @@ export class Lowerer {
       this.degradedTypes.set(id, { lenient: DYN, code, reason });
       return true;
     }
+    // Canonical normalization (stage N2): a type the per-form rules miss
+    // maps exactly from its canonical form when that form maps; no dynamic
+    // slot then. Otherwise the lenient (pushed-down) form.
+    const canonical = this.canonicalType(type);
+    if (canonical !== null) {
+      this.degradedTypes.set(id, { lenient: canonical, code, reason, canonical: true });
+      return true;
+    }
     this.degradedTypes.set(id, {
       lenient: this.wholeSlotDegradation ? DYN : this.lenientType(type),
       code,
@@ -10057,13 +10797,44 @@ export class Lowerer {
     return true;
   }
 
+  /** The IR type of a type's canonical form (canon-map.ts), or null when
+   * the form is irreducible, unbound, only the checked dynamic, or holds a
+   * union that mapped to the checked dynamic (such a slot is dynamic in
+   * part, so it degrades like any other). Runs only at localized failure's
+   * commit points, so a program that compiles today never consults it. */
+  canonicalType(type: ts.Type): IrType | null {
+    try {
+      const resolve = this.typeCtx.resolveTypeParamTs;
+      const c = new Normalizer(this.checker).canon(type, resolve ? (t) => resolve(t) : new Map());
+      if (c.k === "opaque" || c.k === "param") return null;
+      const { typeMemo: _strictMemo, ...strict } = this.typeCtx;
+      const notes: CanonMapNotes = { collapsedToDynamic: false };
+      const mapped = mapCanonical(c, { ...strict, canMemoizeType: () => false }, 0, notes);
+      if (notes.collapsedToDynamic) return null;
+      return mapped === null || mapped.kind === "void" || mapped.kind === "dyn" ? null : mapped;
+    } catch {
+      return null;
+    }
+  }
+
+  /** The degraded type of `id` maps exactly (canonical form): its slots
+   * are static, not dynamic. */
+  isCanonicalDegraded(id: number): boolean {
+    return this.degradedTypes.get(id)?.canonical === true;
+  }
+
   /** Some degraded type kept a pushed-down (partial) shape, or one was
    * mapped before a retry widened it: the IR lowered before the retry keeps
    * that shape. */
   hasPartialDegradedTypes(): boolean {
     if (this.partialDegradedTypesMapped) return true;
     for (const degraded of this.degradedTypes.values())
-      if (degraded.lenient !== null && degraded.lenient.kind !== "dyn") return true;
+      if (
+        degraded.canonical !== true &&
+        degraded.lenient !== null &&
+        degraded.lenient.kind !== "dyn"
+      )
+        return true;
     return false;
   }
 
@@ -10097,6 +10868,7 @@ export class Lowerer {
 
   /** Records a dynamic slot whose unit lowered with it (one per site). */
   noteDynamicSlot(slot: DynamicSlot): void {
+    if (slot.canonical === true) return;
     const seen = this.dynamicSlots.some(
       (s) =>
         s.loc.file === slot.loc.file &&
@@ -13255,15 +14027,22 @@ export class Lowerer {
           prior:
             prior === undefined
               ? undefined
-              : { lenient: prior.lenient, code: prior.code, reason: prior.reason },
+              : {
+                  lenient: prior.lenient,
+                  code: prior.code,
+                  reason: prior.reason,
+                  ...(prior.canonical === true ? { canonical: true as const } : {}),
+                },
         });
         this.degradeType(type, diag.code, diag.message);
+        const canonical = this.isCanonicalDegraded(id);
         const partial = this.degradedTypes.get(id)?.lenient?.kind !== "dyn";
         slots.push({
           loc: diag.loc,
           failure,
           code: diag.code,
           reason: diag.message,
+          ...(canonical ? { canonical: true as const } : {}),
           ...(partial ? { partial: true as const } : {}),
         });
       }
@@ -15082,6 +15861,7 @@ export class Lowerer {
       lowerStaticFetchCompanionCall(this, expr) ??
       lowerStaticAbortControllerCall(this, expr) ??
       lowerStaticAbortSignalListenerCall(this, expr) ??
+      lowerWebStreamStaticCall(this, expr) ??
       lowerStaticReadableStreamCancelCall(this, expr) ??
       lowerStaticReadableStreamControllerCall(this, expr) ??
       lowerStaticReadableStreamReaderCall(this, expr) ??
@@ -15334,6 +16114,7 @@ export class Lowerer {
       lowerBlobNew(this, expr) ??
       lowerNetAddressNew(this, expr) ??
       lowerMimeNew(this, expr) ??
+      lowerWebStreamNew(this, expr) ??
       lowerStaticReadableStreamNew(this, expr) ??
       lowerStaticTransformStreamNew(this, expr) ??
       lowerConsoleNew(this, expr);

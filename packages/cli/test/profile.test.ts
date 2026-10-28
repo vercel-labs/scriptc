@@ -109,10 +109,6 @@ test("profile options are refused where they cannot apply", async () => {
     await writeFile(entry, PROGRAM);
     for (const [args, message] of [
       [["build", entry, "--emit=llvm", "--profile-use", "a.profdata"], "--emit=exe"],
-      [
-        ["build", entry, "--profile-generate", "%p.profraw", "--profile-use", "a.profdata"],
-        "cannot be combined",
-      ],
       [["coverage", entry, "--profile-use", "a.profdata"], "build/run option"],
       [["merge-profiles", "a.profraw"], "merge-profiles takes -o"],
       [["merge-profiles", "-o", "out.profdata"], "merge-profiles takes -o"],

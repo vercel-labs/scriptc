@@ -79,6 +79,10 @@ void scr_arena_drop(void **list);
 void *scr_arena_obj(void *arena, size_t size, void *cyc);
 /* Appends `obj` to `arena`'s dispose list, which the drop runs. */
 void scr_arena_disposal(void *arena, void *obj, ScrArenaDispose dispose);
+/* Frees the arenas and chunks the calling thread keeps for reuse. A worker
+ * thread calls it when its script has finished, after every arena it
+ * opened has been dropped. */
+void scr_arena_thread_exit(void);
 
 /* The leading fields of an arena (scr_arena.c's ScrArena), for the
  * runtime's own inline allocation. */

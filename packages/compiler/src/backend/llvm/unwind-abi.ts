@@ -1,8 +1,14 @@
 /* The functions that propagate exceptions by unwinding instead of the
  * pending flag (see unwindAbiFunctions). */
-import type { IrExpr, IrModule } from "../../ir/ir.js";
-import { everyStmtList } from "../../ir/traverse.js";
+import type { IrExpr, IrModule, IrStmt } from "../../ir/ir.js";
 import { eachStringField } from "../../ir/fields.generated.js";
+import { eachNodeOfKinds, type IrNodeIndex } from "../../ir/node-index.js";
+import { InternalCompilerError } from "../../errors.js";
+
+/** The kinds of every recorded node, for eachNodeOfKinds over whole bodies. */
+const EVERY_KIND: ReadonlySet<string> = new Set();
+/** Virtual calls, which name the methods a vtable must reach. */
+const VIRTUAL_CALL_KINDS = ["virtualCall"] as const;
 
 /** How many calls above a `throw` functions keep the pending flag. */
 const THROW_LEVELS = 3;
@@ -80,6 +86,8 @@ export function unwindAbiFunctions(
   mod: IrModule,
   mayThrow: ReadonlySet<string>,
   excluded: ReadonlySet<string> = new Set(),
+  /** The module's node index: the bodies' nodes are read from it, in walk order, without walking. */
+  nodes?: IrNodeIndex,
 ): Set<string> {
   const names = new Set(mod.functions.map((fn) => fn.name));
   const blocked = new Set<string>(excluded);
@@ -97,16 +105,16 @@ export function unwindAbiFunctions(
   // class's method of that name.
   const classes = new Map((mod.classes ?? []).map((cls) => [cls.name, cls]));
   const anyClass = new Set<string>();
+  const virtualCalls = nodes?.scan(VIRTUAL_CALL_KINDS);
   for (const fn of mod.functions)
-    everyStmtList(fn.body, {
-      expr: (e: IrExpr) => {
-        if (e.kind !== "virtualCall") return true;
-        if (e.targets !== undefined) for (const target of e.targets) blocked.add(target);
-        else if (classes.has(e.className)) blocked.add(`%${e.className}.${e.method}`);
-        else anyClass.add(e.method);
-        return true;
-      },
-      stmt: () => true,
+    // Without the index (or for a function it didn't record) every node
+    // arrives, statements included: the kind test narrows, not a cast.
+    eachNodeOfKinds(fn, virtualCalls, (node) => {
+      if (node.kind !== "virtualCall") return true;
+      if (node.targets !== undefined) for (const target of node.targets) blocked.add(target);
+      else if (classes.has(node.className)) blocked.add(`%${node.className}.${node.method}`);
+      else anyClass.add(node.method);
+      return true;
     });
   // A hierarchy's vtables hold the methods declared by more than one of its
   // classes (an override and what it overrides).
@@ -161,9 +169,10 @@ export function unwindAbiFunctions(
       if (list === undefined) methodsNamed.set(m, (list = []));
       list.push(`%${cls.name}.${m}`);
     }
+  const everyNode = nodes?.scanExcept(EVERY_KIND);
   for (const fn of mod.functions) {
     const coroutine = fn.async === true || fn.generator !== undefined;
-    everyStmtList(fn.body, {
+    const visit = {
       expr: (e: IrExpr) => {
         const kind = e.kind as string;
         if (kind === "throw" || kind === "rethrow") throws.add(fn.name);
@@ -192,13 +201,16 @@ export function unwindAbiFunctions(
         }
         return true;
       },
-      stmt: (s) => {
+      stmt: (s: IrStmt) => {
         const kind = s.kind as string;
         if (kind === "throw" || kind === "rethrow") throws.add(fn.name);
         eachStringField(s, noteName);
         return true;
       },
-    });
+    };
+    eachNodeOfKinds(fn, everyNode, (node, statement) =>
+      statement ? visit.stmt(node as IrStmt) : visit.expr(node as IrExpr),
+    );
   }
   for (const name of referenced) {
     blocked.add(name);
@@ -227,6 +239,13 @@ export function unwindAbiFunctions(
     if (!mayThrow.has(fn.name) || blocked.has(fn.name)) continue;
     if (fn.async === true || fn.generator !== undefined) continue;
     result.add(fn.name);
+  }
+  if (nodes !== undefined && process.env["SCRIPTC_EMIT_FACTS_VERIFY"] === "1") {
+    const walked = unwindAbiFunctions(mod, mayThrow, excluded);
+    if (walked.size !== result.size || [...walked].some((name) => !result.has(name)))
+      throw new InternalCompilerError(
+        "unwind ABI: the functions read from the node index differ from a walk's",
+      );
   }
   return result;
 }

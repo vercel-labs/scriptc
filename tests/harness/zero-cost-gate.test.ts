@@ -3,17 +3,22 @@ import { expect, test } from "vitest";
 import {
   cachedComparison,
   cachegrindCounts,
+  changedFunctions,
   compareArtifact,
   compareCounts,
   compareExecutables,
+  confinedToRuntime,
   definedFunctionNames,
   dynamicTierSymbols,
+  linkedRuntimeFiles,
+  llvmFunctionHashes,
   mergeReports,
   nmOutput,
   programInputsHash,
   programLines,
   programVerdict,
   recordedBaseline,
+  runtimePackDiff,
   timingVerdict,
 } from "../../scripts/zero-cost-compare.mjs";
 
@@ -198,6 +203,116 @@ test("the zero-cost gate fails differing programs unless they match the signatur
   expect(verdict({}, true, ok, failed)).toEqual({ verdict: "build-error", fails: true });
 });
 
+test("the zero-cost gate classifies runtime-only and nondeterministic differences", () => {
+  const ok = { ok: true };
+  const exeOnly = { ir: { identical: true }, llvm: { identical: true }, exe: { identical: false } };
+  const llvmToo = {
+    ir: { identical: true },
+    llvm: { identical: false },
+    exe: { identical: false },
+  };
+  const verdict = (artifacts: object, flags: object) =>
+    programVerdict({ baseline: ok, candidate: ok, artifacts, allowed: false, ...flags });
+  expect(verdict(exeOnly, { runtimeOnly: true })).toEqual({
+    verdict: "runtime-only",
+    fails: false,
+  });
+  expect(verdict(exeOnly, { runtimeOnly: true, strict: true })).toEqual({
+    verdict: "runtime-only",
+    fails: true,
+  });
+  // A changed runtime cannot explain different LLVM.
+  expect(verdict(llvmToo, { runtimeOnly: true })).toEqual({ verdict: "differs", fails: true });
+  expect(verdict(llvmToo, { nondeterministic: ["llvm", "exe"] })).toEqual({
+    verdict: "nondeterministic",
+    fails: false,
+  });
+  expect(verdict(llvmToo, { nondeterministic: ["llvm", "exe"], strict: true })).toEqual({
+    verdict: "nondeterministic",
+    fails: true,
+  });
+  // A nondeterministic executable does not excuse a deterministic LLVM difference.
+  expect(verdict(llvmToo, { nondeterministic: ["exe"] })).toEqual({
+    verdict: "differs",
+    fails: true,
+  });
+});
+
+test("the zero-cost gate reads the symbols of changed runtime objects and vendor archives", () => {
+  expect(
+    linkedRuntimeFiles({
+      changed: [
+        "artifacts/release/runtime/default/scr_a.o",
+        "artifacts/release/runtime/default/scr_a.bc",
+      ],
+      added: ["artifacts/vendor/libz/libscriptc-zlib.a"],
+      removed: [],
+    }),
+  ).toEqual([
+    "artifacts/release/runtime/default/scr_a.o",
+    "artifacts/vendor/libz/libscriptc-zlib.a",
+  ]);
+});
+
+test("the zero-cost gate names the runtime pack files and functions that changed", () => {
+  const unit = (sha: string, bc: string) => ({
+    path: "artifacts/release/runtime/default/scr_a.o",
+    sha256: sha,
+    bitcode: { path: "artifacts/release/runtime/default/scr_a.bc", sha256: bc },
+  });
+  const pack = (a: object, extra: object[] = []) => ({
+    flavors: { release: { runtime_units: [{ source: "scr_a.c", variants: [a, ...extra] }] } },
+    archives: [{ path: "artifacts/vendor/libz.a", sha256: "z" }],
+  });
+  const other = { path: "artifacts/release/runtime/default/scr_b.o", sha256: "b" };
+  expect(runtimePackDiff(pack(unit("1", "2")), pack(unit("1", "2")))).toEqual({
+    changed: [],
+    added: [],
+    removed: [],
+  });
+  expect(runtimePackDiff(pack(unit("1", "2")), pack(unit("3", "4"), [other]))).toEqual({
+    changed: [
+      "artifacts/release/runtime/default/scr_a.bc",
+      "artifacts/release/runtime/default/scr_a.o",
+    ],
+    added: ["artifacts/release/runtime/default/scr_b.o"],
+    removed: [],
+  });
+
+  const ll = (body: string, attrs: number) =>
+    [
+      `define i32 @scr_same(i32 %x) #${attrs} {`,
+      "  ret i32 %x, !dbg !" + attrs,
+      "}",
+      "define internal void @scr_changed() {",
+      `  ${body}`,
+      "}",
+      "",
+    ].join("\n");
+  const before = llvmFunctionHashes(ll("ret void", 0));
+  const after = llvmFunctionHashes(
+    ll("call void @f()\n  ret void", 7) + 'define void @"scr new"() {\n}\n',
+  );
+  // Renumbered attribute groups and metadata are not changes.
+  expect(changedFunctions(before, after)).toEqual({
+    changed: ["scr_changed"],
+    added: ["scr new"],
+    removed: [],
+  });
+});
+
+test("the zero-cost gate confines runtime-only differences to runtime symbols", () => {
+  const exe = (added: string[], removed: string[], resized: string[]) => ({
+    added,
+    removed,
+    resized: resized.map((name) => ({ name, baseline: 1, candidate: 2 })),
+  });
+  const runtime = new Set(["scr_a", "scr_b"]);
+  expect(confinedToRuntime(exe([], [], ["scr_a"]), runtime)).toBe(true);
+  expect(confinedToRuntime(exe(["scr_b"], ["scr_a"], []), runtime)).toBe(true);
+  expect(confinedToRuntime(exe([], [], ["main.$1"]), runtime)).toBe(false);
+});
+
 test("a recorded baseline settles identical programs and shared build errors", () => {
   const hashes = { ir: "a", llvm: "b", exe: "c" };
   const entry = { ok: true, ms: 12, hashes, exeBytes: 100 };
@@ -298,4 +413,15 @@ test("merged gate shards judge compile time and comparisons over every shard", (
     "no program built with both checkouts, so nothing was compared",
   ]);
   expect(() => mergeReports([fast, fast])).toThrow(/more than one gate report/);
+  // A runtime-only program was compared, and its line names the runtime change.
+  const runtimeOnly = {
+    id: "bench/r",
+    verdict: "runtime-only",
+    artifacts: { exe: { identical: false, first: "resized scr_a" } },
+    runtime: { changed: ["scr_a"], added: [] },
+  };
+  expect(mergeReports([shard([runtimeOnly], [])]).report.verdict).toBe("pass");
+  expect(programLines(runtimeOnly)).toEqual([
+    "runtime    bench/r  exe: resized scr_a; runtime-only: links 1 changed runtime function (scr_a)",
+  ]);
 });

@@ -212,7 +212,7 @@ test.skipIf(process.platform === "win32")(
 );
 
 test.skipIf(process.platform === "win32")(
-  "a changed startup object, library directory or linker sends the link to the driver",
+  "a changed startup object, library directory or linker records the job again",
   () => {
     for (const change of ["crt", "lib", "ld"] as const) {
       const f = fixture();
@@ -230,9 +230,41 @@ test.skipIf(process.platform === "win32")(
       }
       const second = f.stage();
       const count = f.calls().length;
-      expect(open().run(second.args, second.paths, second.directory, true)).toBeNull();
-      expect(f.calls().length).toBe(count);
+      expect(open().run(second.args, second.paths, second.directory, true)).not.toBeNull();
+      expect(f.calls().slice(count)).toEqual([
+        `driver ${second.args.join(" ")} -v -###`,
+        `ld.lld -pie ${f.crt} -L${f.lib} -pthread ${second.paths[0]} -lm -o ${second.output}`,
+      ]);
     }
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "a traced link whose recorded job names a changed path records it again",
+  () => {
+    const f = fixture();
+    const open = () => LinkerJobs.open(f.cache, f.toolchain(), ["-fuse-ld=lld"], false)!;
+    const traced = (s: ReturnType<typeof f.stage>) => [...s.args, "-v", "-Wl,-t"];
+    const linkThroughDriver = (s: ReturnType<typeof f.stage>) => {
+      const link = open().link(s.paths, s.directory);
+      expect(link.run(traced(s), false)).toBeNull();
+      const linked = spawnSync(f.driver, traced(s), { encoding: "utf8" });
+      expect(linked.status).toBe(0);
+      link.record(traced(s), linked.stdout + "\n" + linked.stderr);
+    };
+    linkThroughDriver(f.stage());
+    const before = statSync(f.crt);
+    writeFileSync(f.crt, "new startup object");
+    utimesSync(f.crt, before.atime, new Date(before.mtimeMs + 1000));
+    // The recorded job names the old startup object: the link runs through the driver once,
+    // and its job is recorded again.
+    linkThroughDriver(f.stage());
+    const third = f.stage();
+    const count = f.calls().length;
+    expect(open().link(third.paths, third.directory).run(traced(third), false)).not.toBeNull();
+    expect(f.calls().slice(count)).toEqual([
+      `ld.lld -pie ${f.crt} -L${f.lib} -pthread ${third.paths[0]} -lm -o ${third.output} -t`,
+    ]);
   },
 );
 

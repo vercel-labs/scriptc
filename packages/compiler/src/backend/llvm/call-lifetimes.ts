@@ -9,7 +9,8 @@ import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
 import { borrowsStringInputs } from "./string-lifetimes.js";
 import { borrowsMapReadInputs } from "./map-read-lifetimes.js";
 import { LazyCaptures } from "./lazy-captures.js";
-import { storedLastUseRead } from "./local-extents.js";
+import { BodyLastUses, storedLastUseRead } from "./local-extents.js";
+import { InternalCompilerError } from "../../errors.js";
 
 interface ForwardedUse {
   callee: string;
@@ -497,6 +498,9 @@ export function analyzeCallLifetimes(
     // environment box takes a reference of its own when it is created.
     const unchangedCaptures = lazyCaptures.parameters(fn);
     const walks = walkParameters.get(fn.name);
+    // One walk of the body answers every parameter's last use (consumedParameter).
+    let lastUses: BodyLastUses | undefined;
+    const bodyLastUses = (): BodyLastUses => (lastUses ??= new BodyLastUses(fn.body));
     fn.params.forEach((param, index) => {
       const local = locals.get(param.localId);
       if (
@@ -511,7 +515,7 @@ export function analyzeCallLifetimes(
           !walks?.has(index) &&
           !unchangedCaptures.has(local.id) &&
           param.name !== "this" &&
-          consumedParameter(fn, param.localId)
+          consumedParameter(fn, param.localId, bodyLastUses)
         )
           consumed.push({ fn: fn.name, index });
       }
@@ -626,6 +630,9 @@ export function analyzeCallLifetimes(
   return result;
 }
 
+/** SCRIPTC_EMIT_FACTS_VERIFY=1: every BodyLastUses answer is checked against storedLastUseRead. */
+const verifiesLastUses = process.env["SCRIPTC_EMIT_FACTS_VERIFY"] === "1";
+
 /** A parameter whose last use in the body stores it (a field, record or
  * element store, a record literal field, a push) and moves its reference
  * there (lastUseRead). Its owned convention lets a caller hand over a
@@ -633,8 +640,12 @@ export function analyzeCallLifetimes(
  * copy while the caller releases its temporary right after the call. The
  * read must be the only node of its kind in the function, like every
  * moved read. */
-function consumedParameter(fn: IrFunction, localId: string): boolean {
-  const read = storedLastUseRead(fn.body, -1, localId, true);
+function consumedParameter(fn: IrFunction, localId: string, lastUses: () => BodyLastUses): boolean {
+  const read = lastUses().storedRead(localId);
+  if (verifiesLastUses && read !== storedLastUseRead(fn.body, -1, localId, true))
+    throw new InternalCompilerError(
+      `call lifetimes: the body's last use of ${localId} in ${fn.name} differs`,
+    );
   if (read === null) return false;
   let count = 0;
   const expr = (e: IrExpr): boolean => {

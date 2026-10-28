@@ -22,7 +22,9 @@ struct EmitOptions {
   std::string CacheDirectory;
   // Instruments the program for IR profiling. The instrumented executable
   // writes raw profiles to this path pattern (LLVM_PROFILE_FILE overrides it
-  // at run time). Empty: no instrumentation.
+  // at run time). Empty: no instrumentation. With ProfileUse, the program is
+  // optimized by that profile and instrumented again after inlining, which
+  // records context-sensitive counts.
   std::string ProfileGenerate;
   // Indexed profile (.profdata) that guides optimization. Empty: none.
   std::string ProfileUse;

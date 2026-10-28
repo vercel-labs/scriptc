@@ -1551,8 +1551,11 @@ static ScrDyn *scr_dyn_then_of(const ScrDyn *value, const ScrDyn *reader) {
   return NULL;
 }
 
-/* Resolves `target` with `value` (borrowed). */
-static void scr_dyn_resolve_value(ScrPromise *target, ScrDyn *value, const ScrDyn *reader) {
+/* Resolves `target` with `value` (borrowed). Inlined into both callers, so
+ * the code of scr_dyn_then_resolve_call does not depend on whether a
+ * program links scr_dyn_promise_resolve_with. */
+__attribute__((always_inline)) static inline void scr_dyn_resolve_value(ScrPromise *target, ScrDyn *value,
+                                                                const ScrDyn *reader) {
   if (value->kind == SCR_DYN_PROMISE) {
     scr_promise_resolve_dyn(target, scr_dyn_retain(value));
     return;
@@ -1667,6 +1670,10 @@ static ScrPromise *scr_dyn_promise_entry(ScrCombine *c, const ScrDyn *value, con
 
 ScrPromise *scr_dyn_promise_resolve(const ScrDyn *value, const ScrDyn *reader) {
   return scr_dyn_promise_entry(NULL, value, reader);
+}
+
+void scr_dyn_promise_resolve_with(ScrPromise *target, ScrDyn *value) {
+  scr_dyn_resolve_value(target, value, NULL);
 }
 
 static void scr_dyn_settled_store(ScrArr *a, double i, ScrPromise *src) {

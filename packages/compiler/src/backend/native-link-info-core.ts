@@ -34,6 +34,9 @@ export interface NativeLinkFeatures {
   /** The program uses process.stdin.setEncoding, string 'data' listeners
    * or stdio 'resize' events: links the SCR_STDIO_EXTENDED events unit. */
   stdioExtended?: boolean;
+  /** Calls into Node.js (@scriptc/node): scr_node_island.c and the
+   * SCR_NODE_ISLANDS variant of the event loop unit. */
+  nodeIsland?: boolean;
   /** Module namespace objects as checked-dynamic values link
    * scr_module_namespace.c; absent (false) otherwise. */
   moduleNamespace?: boolean;
@@ -67,6 +70,12 @@ export interface NativeLinkFeatures {
   /** `--large-pages`: scr_text_pages.c, which moves the executable's code
    * onto transparent huge pages at startup. Absent (false) without it. */
   largePages?: boolean;
+  /** Web streams in checked-dynamic code: scr_webstreams.c and
+   * scr_dyn_handle_class.c. */
+  webStreams?: boolean;
+  /** AbortController and AbortSignal: scr_abort.c, unless the program
+   * links the fetch unit, which has them. */
+  abortSignal?: boolean;
   /** util.debounce and util.throttle: scr_util_timing.c. */
   utilTiming?: boolean;
   /** Buffer.prototype methods called on checked-dynamic values link

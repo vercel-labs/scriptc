@@ -251,6 +251,24 @@ static void scr_arena_free(ScrArena *a) {
   free(a);
 }
 
+void scr_arena_thread_exit(void) {
+  while (scr_arena_pool) {
+    ScrArena *a = scr_arena_pool;
+    scr_arena_pool = a->next;
+    free(a->disposal_base);
+    free(a);
+  }
+  scr_arena_pooled = 0;
+#if SCR_SMALL_ALLOC
+  for (ScrArenaChunk *c = scr_arena_chunk_pool, *next; c; c = next) {
+    next = c->next;
+    free(c);
+  }
+  scr_arena_chunk_pool = NULL;
+  scr_arena_chunk_bytes = 0;
+#endif
+}
+
 void scr_arena_drop(void **list) {
   ScrArena *a = (ScrArena *)*list;
   *list = NULL;

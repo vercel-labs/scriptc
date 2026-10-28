@@ -1,6 +1,7 @@
 // A dynamic slot read in a loop: SC6101 names the slot, and coverage
-// counts the dynamic operations on it.
-type Hook = (() => number) | AbortSignal | Map<string, (x: number) => string>;
+// counts the dynamic operations on it. The intersection arm has no
+// canonical form, so `Hook` stays a dynamic piece of `Plugin[]`.
+type Hook = (() => number) | (AbortSignal & { tag?: string }) | Map<string, (x: number) => string>;
 
 interface Plugin {
   name: string;

@@ -797,10 +797,12 @@ static void scr_sa_large_note(void *p, size_t n) {
  * once; arena i spans [region + i * arena_span, + arena_span) and is split
  * into class slices exactly like the single-threaded reservation. */
 #define SCR_SA_ARENAS 32u
+#define SCR_SA_MIN_ARENAS 4u /* the fewest arenas a limited host gets before smaller slices */
 static pthread_mutex_t scr_sa_region_lock = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic(uintptr_t) scr_sa_region; /* 0 until reserved */
 static uintptr_t scr_sa_arena_span;
 static unsigned scr_sa_region_shift;
+static unsigned scr_sa_region_arenas; /* arenas the region holds, a power of two */
 static bool scr_sa_region_refused;
 static _Atomic(uint32_t) scr_sa_claimed;              /* one bit per arena */
 static ScrSaState scr_sa_parked[SCR_SA_ARENAS];         /* unowned arenas */
@@ -813,17 +815,34 @@ static bool scr_sa_reserve_region(void) {
   pthread_mutex_lock(&scr_sa_region_lock);
   if (!atomic_load_explicit(&scr_sa_region, memory_order_acquire) && !scr_sa_region_refused) {
     /* Same per-class slice ladder as the single-threaded reservation, for
-     * every arena at once; hosts that limit address space get smaller
-     * slices (each slice that fills falls back to the system). */
-    for (unsigned shift = 30; shift >= 22; shift -= 2) {
-      size_t arena = (size_t)SCR_SA_NCLASS << shift;
-      size_t span = arena * SCR_SA_ARENAS;
-      void *p = scr_sa_map(span);
-      if (!p) continue;
-      scr_sa_arena_span = arena;
-      scr_sa_region_shift = shift;
-      atomic_store_explicit(&scr_sa_region, (uintptr_t)p, memory_order_release);
-      break;
+     * every arena at once. A host that limits address space (valgrind maps
+     * at most 56 GiB) gets fewer arenas before smaller slices, down to
+     * SCR_SA_MIN_ARENAS, and fewer still only when no slice size fits that
+     * many. A slice that fills falls back to the system, so with smaller
+     * slices a program that keeps many objects of one class makes system
+     * allocations that a run with full slices does not, and a profile taken
+     * under the limit counts them. At least SCR_SA_MIN_ARENAS arenas are
+     * kept because threads claim them in the order they first allocate:
+     * the main thread keeps its arena, and a thread that starts later reuses
+     * one that another thread parked. Threads beyond the arenas reserved use
+     * the system allocator. */
+    for (unsigned least = SCR_SA_MIN_ARENAS; least >= 1 && !scr_sa_region_arenas; least /= 2) {
+      for (unsigned shift = 30; shift >= 22 && !scr_sa_region_arenas; shift -= 2) {
+        for (unsigned arenas = least == SCR_SA_MIN_ARENAS ? SCR_SA_ARENAS : least; arenas >= least;
+             arenas /= 2) {
+          size_t arena = (size_t)SCR_SA_NCLASS << shift;
+          void *p = scr_sa_map(arena * arenas);
+          if (!p) continue;
+          scr_sa_arena_span = arena;
+          scr_sa_region_shift = shift;
+          scr_sa_region_arenas = arenas;
+          /* The arenas that were not reserved stay claimed. */
+          if (arenas < SCR_SA_ARENAS)
+            atomic_fetch_or_explicit(&scr_sa_claimed, ~((1u << arenas) - 1u), memory_order_relaxed);
+          atomic_store_explicit(&scr_sa_region, (uintptr_t)p, memory_order_release);
+          break;
+        }
+      }
     }
     if (!atomic_load_explicit(&scr_sa_region, memory_order_relaxed)) scr_sa_region_refused = true;
   }
@@ -1743,7 +1762,7 @@ static void scr_sa_park_arena(void) {
 static size_t scr_sa_foreign_size(const void *p) {
   uintptr_t region = atomic_load_explicit(&scr_sa_region, memory_order_acquire);
   uintptr_t off = (uintptr_t)p - region;
-  if (!region || off >= scr_sa_arena_span * SCR_SA_ARENAS) return 0;
+  if (!region || off >= scr_sa_arena_span * scr_sa_region_arenas) return 0;
   return scr_sa_class_size((unsigned)((off % scr_sa_arena_span) >> scr_sa_region_shift));
 }
 
@@ -1753,7 +1772,7 @@ void scr_sa_free_foreign(void *p) {
 #endif
   uintptr_t region = atomic_load_explicit(&scr_sa_region, memory_order_acquire);
   uintptr_t off = (uintptr_t)p - region;
-  if (region && off < scr_sa_arena_span * SCR_SA_ARENAS) {
+  if (region && off < scr_sa_arena_span * scr_sa_region_arenas) {
     unsigned i = (unsigned)(off / scr_sa_arena_span);
     ScrSaBlock *b = p;
     ScrSaBlock *head = atomic_load_explicit(&scr_sa_remote[i], memory_order_relaxed);

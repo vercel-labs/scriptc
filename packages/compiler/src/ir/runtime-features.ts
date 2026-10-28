@@ -80,6 +80,9 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.native",
   // The crypto global's object extends crypto.native's.
   "webcrypto.object",
+  // Web streams settle their promises with dyn values.
+  "webstream.class",
+  "webstream.instanceOf",
   "dyn.promiseAll",
   "dyn.promiseAllSettled",
   "dyn.promiseAny",
@@ -384,6 +387,9 @@ const BUILTIN_CLASS_LIB_FNS: readonly IrLibFn[] = [
 
 /** Entry points that link the symbol unit, besides the sym. and disposable. families. */
 const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  // Web streams answer async iteration through Symbol.asyncIterator.
+  "webstream.class",
+  "webstream.instanceOf",
   // EventEmitter's kShapeMode and kCapture properties
   ...BUILTIN_CLASS_LIB_FNS,
   "dyn.usingDispose",
@@ -945,6 +951,9 @@ const RUNTIME_FEATURE_RULES = {
       ...BUILTIN_CLASS_LIB_FNS,
       "util.promisifyDyn",
       "buffer.prototypeMember",
+      // scr_webstreams.c calls the iterators ReadableStream.from reads.
+      "webstream.class",
+      "webstream.instanceOf",
     ],
     // Constant-key reads of Object.prototype member names answer the
     // inherited member through scr_dyn_invoke.c.
@@ -1033,6 +1042,11 @@ const RUNTIME_FEATURE_RULES = {
   }),
   /** util.MIMEType and util.MIMEParams (scr_mime.c). */
   mime: rule({ prefixes: ["mime."] }),
+  /** Web streams in checked-dynamic code (scr_webstreams.c). */
+  webStreams: rule({ prefixes: ["webstream."] }),
+  /** AbortController and AbortSignal (scr_abort.c, or the fetch unit).
+   * A WritableStream controller's signal is one (scr_webstreams.c). */
+  abortSignal: rule({ prefixes: ["abort.", "webstream."] }),
   /** util.debounce and util.throttle (scr_util_timing.c). */
   utilTiming: rule({ fns: ["util.debounce", "util.throttle"] }),
   /** events.once(emitter, name, { signal }) (scr_events_once_signal.c). */
@@ -1060,6 +1074,8 @@ const RUNTIME_FEATURE_RULES = {
   inspect: rule({
     fns: [
       "global.native",
+      // ERR_ARG_NOT_ITERABLE renders the value as util.format's %s does.
+      "webstream.class",
       "util.styleText",
       "crypto.cipherNew",
       "webcrypto.encrypt",
@@ -1097,6 +1113,9 @@ const RUNTIME_FEATURE_RULES = {
       "secureCtx",
     ],
   }),
+  /** Calls into Node.js (@scriptc/node): scr_node_island.c and the
+   * SCR_NODE_ISLANDS build of the event loop unit. */
+  nodeIsland: rule({ prefixes: ["nodeIsland."] }),
   nodeTest: rule({ prefixes: ["test."], types: ["testCtx"] }),
   /** scr_util_callable.c reads options through the parseArgs unit's
    * descriptors. */
@@ -1254,10 +1273,13 @@ function noRuntimeFeatures(): RuntimeFeatures {
     inspect: false,
     legacyTextDecoder: false,
     mime: false,
+    webStreams: false,
+    abortSignal: false,
     utilTiming: false,
     mockTimers: false,
     net: false,
     netLookup: false,
+    nodeIsland: false,
     nodeTest: false,
     parseArgs: false,
     perfLoop: false,

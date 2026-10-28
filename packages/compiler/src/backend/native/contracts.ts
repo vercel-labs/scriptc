@@ -131,6 +131,12 @@ export interface CcOptions {
   mime?: boolean;
   /** `--large-pages`: compiles scr_text_pages.c. */
   largePages?: boolean;
+  /** Web streams in checked-dynamic code: compiles scr_webstreams.c and
+   * scr_dyn_handle_class.c. */
+  webStreams?: boolean;
+  /** AbortController and AbortSignal: compiles scr_abort.c, unless the
+   * program compiles the fetch unit, which has them. */
+  abortSignal?: boolean;
   /** util.debounce and util.throttle: compiles scr_util_timing.c. */
   utilTiming?: boolean;
   /** Buffer.prototype methods called on checked-dynamic values:
@@ -152,6 +158,9 @@ export interface CcOptions {
   warningReplace?: boolean;
   /** SCR_STDIO_EXTENDED: stdin encoding, string data listeners, resize. */
   stdioExtended?: boolean;
+  /** Calls into Node.js (@scriptc/node): compiles scr_node_island.c and
+   * the event loop with SCR_NODE_ISLANDS (its helper slot). */
+  nodeIsland?: boolean;
   /** Module namespace objects as checked-dynamic values: compiles
    * scr_module_namespace.c. */
   moduleNamespace?: boolean;

@@ -2066,6 +2066,48 @@ bool scr_process_has_exit_code(void) {
   return scr_exit_code_assigned || scr_exit_code_hint_get() != 0;
 }
 
+#if defined(__linux__) && !defined(SCR_LIB)
+#include <link.h>
+#include <sys/mman.h>
+/* Text on huge pages (huge-text.ts). An executable with enough program code
+ * is linked with 2 MiB segment alignment, so each 2 MiB window inside its
+ * text segment starts at a 2 MiB file offset, and the kernel maps a window
+ * with one huge page when the page cache holds it as one 2 MiB folio.
+ * MADV_HUGEPAGE on those windows makes the kernel read a window that is not
+ * cached as a 2 MiB folio. glibc runs it from .preinit_array, before _init
+ * and the constructors fault in any of the text; musl, which has no
+ * .preinit_array, runs it as a constructor. Executables with 4 KiB alignment
+ * make no call. */
+#define SCR_TEXT_HUGE_PAGE ((uintptr_t)2 << 20)
+
+static int scr_text_segment(struct dl_phdr_info *info, size_t size, void *data) {
+  (void)size;
+  uintptr_t *range = data;
+  for (size_t i = 0; i < info->dlpi_phnum; i++) {
+    const ElfW(Phdr) *ph = &info->dlpi_phdr[i];
+    if (ph->p_type != PT_LOAD || !(ph->p_flags & PF_X) || ph->p_align < SCR_TEXT_HUGE_PAGE) continue;
+    range[0] = (uintptr_t)info->dlpi_addr + (uintptr_t)ph->p_vaddr;
+    range[1] = range[0] + (uintptr_t)ph->p_memsz;
+    break;
+  }
+  return 1; /* the first object is the executable */
+}
+
+static bool scr_text_huge_pages_done;
+
+__attribute__((constructor)) static void scr_text_huge_pages(void) {
+  if (scr_text_huge_pages_done) return;
+  scr_text_huge_pages_done = true;
+  uintptr_t range[2] = {0, 0};
+  (void)dl_iterate_phdr(scr_text_segment, range);
+  uintptr_t lo = (range[0] + SCR_TEXT_HUGE_PAGE - 1) & ~(SCR_TEXT_HUGE_PAGE - 1);
+  uintptr_t hi = range[1] & ~(SCR_TEXT_HUGE_PAGE - 1);
+  if (hi > lo) (void)madvise((void *)lo, hi - lo, MADV_HUGEPAGE);
+}
+__attribute__((section(".preinit_array"), used)) static void (*const scr_text_huge_pages_entry)(void) =
+    scr_text_huge_pages;
+#endif
+
 #if defined(__linux__)
 #include <sched.h>
 #include <signal.h>

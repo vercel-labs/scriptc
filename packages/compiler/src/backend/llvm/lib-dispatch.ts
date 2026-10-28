@@ -24,7 +24,7 @@ import {
 } from "./lib-shared.js";
 import { isDynUndefined } from "../../ir/runtime-features.js";
 import { DYN_KIND } from "./dyn.js";
-import { caBytes } from "./lib-abi.js";
+import { caBytes, callRuntime, ptr } from "./lib-abi.js";
 import { emitInlineAtomicsOp } from "./expr-bytes.js";
 import { regexLiteralCaptures } from "./regex-matchers.js";
 import { registerReplay } from "./emit-journal.js";
@@ -1110,14 +1110,44 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   if (e.fn === "record.isFrozen") {
     // The frozen bit of the record's rc word (scr_rc.h SCR_RC_FROZEN) is
     // its second-highest bit; an immortal word sets the highest one too.
-    const value = host.emitReadReceiver(e.args[0]!);
+    // Where the record's shape may be published, an immortal word reads as
+    // frozen: publish() freezes what it reaches, as Node's deep freeze does.
+    const receiver = e.args[0]!;
+    const value = host.emitReadReceiver(receiver);
     const S = host.sizeType;
     const rc = host.B.tmp(),
-      top = host.B.tmp(),
-      t = host.B.tmp();
+      top = host.B.tmp();
+    let t = host.B.tmp();
     host.B.line(`${rc} = load ${S}, ptr ${value.name}`);
     host.B.line(`${top} = lshr ${S} ${rc}, ${S === "i64" ? 62 : 30}`);
     host.B.line(`${t} = icmp eq ${S} ${top}, 1`);
+    if (
+      receiver.type.kind === "record" &&
+      host.publishedTypes?.recordGuarded(receiver.type.shapeId) === true
+    )
+      t = orPublished(host, t, rc);
+    return { name: t, type: e.type };
+  }
+  if (
+    (e.fn === "array.isFrozen" || e.fn === "collection.isExtensible") &&
+    host.publishedTypes?.containerPublished(e.args[0]!.type) === true
+  ) {
+    // publish() freezes what it reaches, as Node's deep freeze does: a
+    // published array is frozen, and a published Map or Set is not extensible.
+    const value = host.emitReadReceiver(e.args[0]!);
+    const answer = callRuntime(
+      host,
+      e.fn === "array.isFrozen" ? "scr_arr_is_frozen" : "scr_map_is_extensible",
+      "i1",
+      [ptr(value.name)],
+    );
+    const rc = host.B.tmp();
+    host.B.line(`${rc} = load ${host.sizeType}, ptr ${value.name}`);
+    if (e.fn === "array.isFrozen") return { name: orPublished(host, answer, rc), type: e.type };
+    const mortal = host.B.tmp(),
+      t = host.B.tmp();
+    host.B.line(`${mortal} = icmp ne ${host.sizeType} ${rc}, -1`);
+    host.B.line(`${t} = and i1 ${answer}, ${mortal}`);
     return { name: t, type: e.type };
   }
   const prefix = e.fn.slice(0, e.fn.indexOf(".")) as LibCallPrefix;
@@ -1239,6 +1269,13 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "navigator":
     case "mime":
       return host.emitGenericLibCall(e);
+    case "nodeIsland":
+      return host.emitGenericLibCall(e);
+    case "webstream":
+      // A stream's start, pull and cancel steps run as promise jobs, so
+      // a program with the classes runs its event loop.
+      if (e.fn === "webstream.class") host.usesTimers = true;
+      return host.emitGenericLibCall(e);
     case "test":
       return emitTestLibCall(host, e);
     case "tls":
@@ -1345,4 +1382,15 @@ function emitPromiseAllTuple(host: LlvmEmitterContext, e: LibCallExpr): LlValue 
   B.line(`call void @scr_promise_race_add(ptr ${result}, ptr ${all}, ptr @${adapter})`);
   B.line(`call void @scr_promise_release(ptr ${all})`);
   return host.own({ name: result, type: e.type });
+}
+
+/** `frozen` or'ed with "the object whose rc word is `rc` is published": an
+ * immortal word (all ones), the test of the published write guards
+ * (emitter.ts emitPublishedTest). */
+function orPublished(host: LlvmEmitterContext, frozen: string, rc: string): string {
+  const immortal = host.B.tmp(),
+    t = host.B.tmp();
+  host.B.line(`${immortal} = icmp eq ${host.sizeType} ${rc}, -1`);
+  host.B.line(`${t} = or i1 ${frozen}, ${immortal}`);
+  return t;
 }

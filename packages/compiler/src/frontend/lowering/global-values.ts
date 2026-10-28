@@ -32,6 +32,11 @@ import { builtinNamespaceValue } from "./builtin-namespaces.js";
 import { uriFunctionValue } from "./expressions/identifiers.js";
 import { navigatorValue } from "./builtins/navigator.js";
 import { primitiveCtorClosure } from "./lower-exprs.js";
+import {
+  WEB_STREAM_CLASSES,
+  programNamesWebStreamClass,
+  webStreamClassValue,
+} from "./builtins/web-streams-dyn.js";
 
 const LOOKUP_FN = "%global.builtinValue";
 
@@ -177,9 +182,14 @@ export function globalValuesInstall(
     const name: IrExpr = { kind: "varRef", localId: "name.0", type: STRING, loc };
     const body: IrStmt[] = [];
     for (const global of [...new Set(names)].sort()) {
+      const webStream = (WEB_STREAM_CLASSES as readonly string[]).indexOf(global);
       const value: IrExpr | null = REFUSED.has(global)
         ? { kind: "unitLit", unit: "null", type: { kind: "nullT" }, loc }
-        : jsGlobalValueByName(lowerer, global, loc);
+        : webStream >= 0
+          ? programNamesWebStreamClass(lowerer)
+            ? webStreamClassValue(webStream, loc)
+            : null
+          : jsGlobalValueByName(lowerer, global, loc);
       if (value === null) continue;
       body.push({
         kind: "if",

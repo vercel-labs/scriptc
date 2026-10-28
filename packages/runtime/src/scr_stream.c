@@ -4379,7 +4379,8 @@ static int scr_pipe_dest_dyn_kind(const ScrPipeStages *fs, ScrDyn *r, void **out
   int kind = scr_dyn_iterable_kind(r);
   if (kind < 0) return -1;
   if (r->kind == SCR_DYN_HANDLE &&
-      (r->v.handle.tag == SCR_DYNH_WEB_STREAM || r->v.handle.tag == SCR_DYNH_WEB_TRANSFORM)) {
+      (r->v.handle.tag == SCR_DYNH_WEB_STREAM || r->v.handle.tag == SCR_DYNH_WEB_TRANSFORM ||
+       r->v.handle.tag == SCR_DYNH_WS_READABLE)) {
     scr_stream_throw_web_stage();
     return -1;
   }
@@ -8840,7 +8841,8 @@ static bool scr_stream_dyn_has_method(const ScrDyn *value, const char *key) {
 static bool scr_stream_dyn_stream_like(const ScrDyn *value) {
   if (value->kind == SCR_DYN_HANDLE) {
     int tag = value->v.handle.tag;
-    return tag == SCR_DYNH_WEB_STREAM || tag == SCR_DYNH_WEB_TRANSFORM || tag == SCR_DYNH_WEB_WRITABLE;
+    return tag == SCR_DYNH_WEB_STREAM || tag == SCR_DYNH_WEB_TRANSFORM || tag == SCR_DYNH_WEB_WRITABLE ||
+           tag == SCR_DYNH_WS_READABLE;
   }
   if (value->kind != SCR_DYN_OBJ) return false;
   static const char *const state_keys[] = {"_readableState", "_writableState"};

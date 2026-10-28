@@ -15,6 +15,7 @@ import {
   typeKey,
 } from "../../ir/ir.js";
 import { buildFunctionAdapter } from "./coercions/builders.js";
+import { lowerOptionalNumber } from "./lower-exprs.js";
 import type { Lowerer } from "./lowerer.js";
 
 /** setTimeout invokes its callback with NO arguments, but @types/node's
@@ -409,6 +410,13 @@ function lowerTimerCall(
         type: F64,
         loc,
       };
+    } else if (ms.type.kind === "union") {
+      // A delay that may be undefined: an optional `ms?: number` passed on,
+      // or an element read (`delays[0]`) whose storage keeps the
+      // out-of-range undefined. Node converts the delay with ToNumber
+      // (`after *= 1`), so undefined is NaN, the omitted delay. Other
+      // unions stay as they are, and the lib boundary refuses them.
+      ms = lowerOptionalNumber(lowerer, ms, loc, expr.arguments.nodes[1]);
     }
     if (member === "setInterval") {
       return { kind: "libCall", fn: "timers.setInterval", args: [cb, ms], type: F64, loc };

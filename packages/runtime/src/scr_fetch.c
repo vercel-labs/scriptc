@@ -157,6 +157,14 @@ struct SfStream {
   ScrDyn *cancel_cb;
   ScrDyn *source_this;
   ScrDyn *from_dyn;
+#ifdef SCR_HANDLE_CLASSES
+  /* A body made from a checked-dynamic web ReadableStream: that stream's
+   * reader (+1), read one chunk per pull through scr_web_stream_bridge. */
+  ScrDyn *web_reader;
+  /* Consuming the body takes Uint8Array chunks only: set on a body from a
+   * web ReadableStream and on the tee branches of such a body. */
+  bool u8_chunks;
+#endif
   ScrArr *from_array;
   ScrBytes *from_bytes;
   ScrStr *from_string;
@@ -923,6 +931,9 @@ static void sf_stream_release(SfStream *s) {
   scr_dyn_release(s->error);
   sf_stream_drop_source_callbacks(s, true);
   scr_dyn_release(s->from_dyn);
+#ifdef SCR_HANDLE_CLASSES
+  scr_dyn_release(s->web_reader);
+#endif
   scr_arr_release(s->from_array);
   scr_bytes_release(s->from_bytes);
   scr_str_release(s->from_string);
@@ -1129,15 +1140,19 @@ static void sf_response_pause_if_full(SfStream *s) {
 
 static void sf_response_resume_if_ready(SfStream *s) {
   SfTransfer *t = s->response_owner;
-  if (!t || t->done || !t->response_paused || !t->response_socket ||
-      s->queued >= 1 || s->close_requested || s->closed || s->error) {
+  if (!t || t->done || s->queued >= 1 || s->close_requested || s->closed ||
+      s->error || t->inflate_draining) {
     return;
   }
-  if (t->inflate_draining) return;
-  if (t->inflating && (t->inflate_pending || t->inflate_needs_drain)) {
+  /* Compressed input or decoder output still buffered drains on demand:
+   * while the socket is paused, and after 'end', when the transfer no
+   * longer holds the socket and no more data arrives. */
+  if (t->inflating && (t->inflate_pending || t->inflate_needs_drain) &&
+      (t->response_paused || t->response_ended)) {
     sf_inflate_resume(t);
     return;
   }
+  if (!t->response_paused || !t->response_socket) return;
   t->response_paused = false;
   scr_net_sock_release(scr_net_sock_resume(t->response_socket));
 }
@@ -1168,7 +1183,20 @@ static void sf_stream_drain(SfStream *s) {
       s->head = c->next;
       if (!s->head) s->tail = NULL;
       s->queued--;
+#ifdef SCR_HANDLE_CLASSES
+      ScrBytes *bytes;
+      /* A body read from a JavaScript ReadableStream, or from a clone or
+       * tee branch of one, takes Uint8Array chunks only, as Node's body
+       * mixin does. */
+      if (s->u8_chunks && !scr_dyn_bytes_is(c->value, SCR_BYTES_U8)) {
+        sf_type_error("Received non-Uint8Array chunk");
+        bytes = NULL;
+      } else {
+        bytes = sf_chunk_bytes(c->value);
+      }
+#else
       ScrBytes *bytes = sf_chunk_bytes(c->value);
+#endif
       if (!bytes) {
         sf_chunk_release(c);
         scr_promise_reject_pending(s->collector->promise);
@@ -1520,8 +1548,88 @@ static ScrDyn *sf_controller_box(SfStream *s) {
 }
 
 static bool sf_stream_has_from_source(const SfStream *s) {
+#ifdef SCR_HANDLE_CLASSES
+  if (s->web_reader) return true;
+#endif
   return s->from_dyn || s->from_array || s->from_bytes || s->from_string;
 }
+
+/* A Response, Request or fetch body of a ReadableStream: the fetch unit's
+ * own streams, and in the build that programs with JavaScript web streams
+ * link (SCR_HANDLE_CLASSES), theirs. */
+static bool sf_is_stream_body(const ScrDyn *body) {
+  if (body->kind != SCR_DYN_HANDLE) return false;
+#ifdef SCR_HANDLE_CLASSES
+  if (body->v.handle.tag == SCR_DYNH_WS_READABLE) return true;
+#endif
+  return body->v.handle.tag == SCR_DYNH_WEB_STREAM;
+}
+
+#ifdef SCR_HANDLE_CLASSES
+static void sf_stream_schedule_pull_complete(SfStream *s);
+
+/* The web stream reader's answer to one pull. */
+static void sf_web_chunk(void *ctx, ScrDyn *chunk) {
+  SfStream *s = ctx;
+  if (!s->close_requested && !s->closed && !s->error) {
+    sf_stream_enqueue_value(s, chunk);
+    sf_stream_drain(s);
+  }
+  sf_stream_schedule_pull_complete(s);
+  sf_stream_release(s);
+}
+
+static void sf_web_close(void *ctx) {
+  SfStream *s = ctx;
+  s->pulling = false;
+  sf_stream_close(s);
+  sf_stream_release(s);
+}
+
+static void sf_web_error(void *ctx, ScrDyn *reason) {
+  SfStream *s = ctx;
+  s->pulling = false;
+  sf_stream_error(s, reason ? reason : scr_dyn_undefined());
+  sf_stream_release(s);
+}
+
+static const ScrFetchReadSink sf_web_sink = {sf_web_chunk, sf_web_close, sf_web_error};
+
+static void sf_stream_pull_from_web(SfStream *s) {
+  s->pulling = true;
+  sf_stream_retain(s);
+  if (!scr_web_stream_bridge->reader_read_into(s->web_reader, &sf_web_sink, s)) {
+    ScrCaught *caught = scr_exc_take();
+    ScrDyn *reason = scr_caught_to_dyn(caught);
+    scr_caught_release(caught);
+    sf_web_error(s, reason);
+    scr_dyn_release(reason);
+  }
+}
+
+/* A body from a checked-dynamic web ReadableStream (borrowed): a native
+ * stream that reads it (+1 handle), or NULL with the TypeError pending
+ * for one that is locked or disturbed. */
+static ScrDyn *sf_web_body(const ScrDyn *body) {
+  if (!scr_web_stream_bridge || scr_web_stream_bridge->unusable(body)) {
+    sf_type_error("Response body object should not be disturbed or locked");
+    return NULL;
+  }
+  ScrDyn *reader = scr_dyn_invoke((ScrDyn *)body, "getReader", NULL, 0, "ReadableStream.getReader");
+  if (!reader) return NULL;
+  SfStream *s = sf_stream_new_native();
+  s->web_reader = reader;
+  s->u8_chunks = true;
+  sf_stream_schedule_initial_pull(s);
+  ScrDyn *out = scr_dyn_new_handle(s, SCR_DYNH_WEB_STREAM);
+  sf_stream_release(s);
+  return out;
+}
+
+static bool sf_is_web_body(const ScrDyn *body) {
+  return body && body->kind == SCR_DYN_HANDLE && body->v.handle.tag == SCR_DYNH_WS_READABLE;
+}
+#endif
 
 static void sf_stream_pull_from_source(SfStream *s) {
   ScrDyn *value = NULL;
@@ -1657,6 +1765,12 @@ static void sf_stream_pull(SfStream *s) {
     s->pull_again = true;
     return;
   }
+#ifdef SCR_HANDLE_CLASSES
+  if (s->web_reader) {
+    sf_stream_pull_from_web(s);
+    return;
+  }
+#endif
   if (sf_stream_has_from_source(s)) {
     s->pulling = true;
     sf_stream_pull_from_source(s);
@@ -1823,6 +1937,9 @@ static ScrPromise *sf_stream_cancel(SfStream *s, ScrDyn *reason,
       s->cancel_cb ? scr_dyn_retain(s->cancel_cb) : NULL;
   ScrDyn *cancel_this =
       cancel_cb ? scr_dyn_retain(s->source_this) : NULL;
+#ifdef SCR_HANDLE_CLASSES
+  ScrDyn *web_reader = s->web_reader ? scr_dyn_retain(s->web_reader) : NULL;
+#endif
   sf_stream_drop_chunks(s);
   SfTransfer *response_owner = s->response_owner;
   if (response_owner && response_owner->client) {
@@ -1832,6 +1949,22 @@ static ScrPromise *sf_stream_cancel(SfStream *s, ScrDyn *reason,
   else sf_stream_close(s);
   if (response_owner && !response_owner->done) sf_settle(response_owner);
 
+#ifdef SCR_HANDLE_CLASSES
+  if (cancel_cb || web_reader) {
+    ScrDyn *args[1] = {reason ? reason : scr_dyn_undefined()};
+    ScrDyn *r;
+    if (web_reader) {
+      /* The web stream's cancel through its reader. */
+      r = scr_dyn_invoke(web_reader, "cancel", args, 1, "ReadableStreamDefaultReader.cancel");
+      scr_dyn_release(web_reader);
+    } else {
+      scr_dyn_this_push_dyn(cancel_this);
+      r = scr_dyn_call(cancel_cb, args, 1, "underlyingSource.cancel");
+      scr_dyn_this_pop();
+      scr_dyn_release(cancel_cb);
+      scr_dyn_release(cancel_this);
+    }
+#else
   if (cancel_cb) {
     ScrDyn *args[1] = {reason ? reason : scr_dyn_undefined()};
     scr_dyn_this_push_dyn(cancel_this);
@@ -1840,6 +1973,7 @@ static ScrPromise *sf_stream_cancel(SfStream *s, ScrDyn *reason,
     scr_dyn_this_pop();
     scr_dyn_release(cancel_cb);
     scr_dyn_release(cancel_this);
+#endif
     if (!r) {
       scr_promise_reject_pending(p);
       return p;
@@ -2103,6 +2237,9 @@ static void sf_stream_tee(SfStream *s, SfStream *out[2]) {
     b->cancel_cb = sf_tee_func(
         t, i == 0 ? &sf_tee_cancel_thunk_0 : &sf_tee_cancel_thunk_1, "cancel");
     b->source_this = scr_dyn_retain(scr_dyn_undefined());
+#ifdef SCR_HANDLE_CLASSES
+    b->u8_chunks = s->u8_chunks;
+#endif
     sf_stream_track_callbacks(b);
     t->branch[i] = sf_stream_retain(b);
     out[i] = b;
@@ -2266,6 +2403,11 @@ ScrDyn *scr_fetch_stream_from_string(ScrStr *iterable) {
 }
 
 bool scr_fetch_reader_read_into(ScrDyn *reader, const ScrFetchReadSink *sink, void *ctx) {
+#ifdef SCR_HANDLE_CLASSES
+  if (scr_web_stream_bridge && reader && reader->kind == SCR_DYN_HANDLE &&
+      reader->v.handle.tag == SCR_DYNH_WS_READER)
+    return scr_web_stream_bridge->reader_read_into(reader, sink, ctx);
+#endif
   if (!reader || reader->kind != SCR_DYN_HANDLE ||
       reader->v.handle.tag != SCR_DYNH_WEB_READER) {
     sf_type_error("Expected a ReadableStreamDefaultReader");
@@ -2275,6 +2417,20 @@ bool scr_fetch_reader_read_into(ScrDyn *reader, const ScrFetchReadSink *sink, vo
 }
 
 ScrPromise *scr_fetch_reader_read(ScrDyn *reader) {
+#ifdef SCR_HANDLE_CLASSES
+  /* A checked-dynamic web stream's reader answers its own read(). */
+  if (reader && reader->kind == SCR_DYN_HANDLE && reader->v.handle.tag == SCR_DYNH_WS_READER) {
+    ScrDyn *result = scr_dyn_invoke(reader, "read", NULL, 0, "reader.read");
+    if (!result) {
+      ScrPromise *p = scr_promise_new();
+      scr_promise_reject_pending(p);
+      return p;
+    }
+    ScrPromise *p = scr_promise_retain(result->v.promise);
+    scr_dyn_release(result);
+    return p;
+  }
+#endif
   if (!reader || reader->kind != SCR_DYN_HANDLE ||
       reader->v.handle.tag != SCR_DYNH_WEB_READER) {
     sf_type_error("Expected a ReadableStreamDefaultReader");
@@ -5386,9 +5542,21 @@ static void sf_on_data(ScrClosure *cb, ScrBytes *chunk) {
   sf_release(t);
 }
 
+/* After 'end' the keep-alive agent can hand the socket to the next request
+ * on the connection, so the transfer leaves it reading and stops pausing
+ * and resuming it. */
+static void sf_drop_response_socket(SfTransfer *t) {
+  if (!t->response_socket) return;
+  if (t->response_paused) scr_net_sock_release(scr_net_sock_resume(t->response_socket));
+  t->response_paused = false;
+  scr_net_sock_release(t->response_socket);
+  t->response_socket = NULL;
+}
+
 static void sf_on_end(ScrClosure *cb) {
   SfTransfer *t = sf_from(cb);
   if (!t) return;
+  sf_drop_response_socket(t);
   if (!t->done) {
     if (t->inflating && t->response_stream &&
         !t->response_stream->discarded) {
@@ -5929,9 +6097,16 @@ static bool sf_start_hop(SfTransfer *t) {
     wrap_ctx = scr_tls_fetch_client_ctx(sni, true);
     wrap = &scr_tls_fetch_client_wrap;
   }
-  ScrHttpClientReq *client = scr_http_request_ex(
-      dial, dial_port, path, t->method, 0, headers, false, NULL, NULL,
-      default_port, wrap, wrap_ctx);
+  /* A direct connection goes through fetch's keep-alive agent, which hands
+   * an idle connection to the next request for the same origin, as
+   * undici's dispatcher does; the bare host keys the pool, so origins that
+   * share an address keep their own connections. A proxied request dials
+   * its own connection. */
+  ScrHttpClientReq *client =
+      proxy ? scr_http_request_ex(dial, dial_port, path, t->method, 0, headers, false, NULL,
+                                  NULL, default_port, wrap, wrap_ctx)
+            : scr_http_fetch_request(https, dial, dial_port, path, t->method, headers,
+                                     default_port, wrap, wrap_ctx, bare);
   scr_arr_release(headers);
   scr_str_release(path);
   scr_str_release(dial);
@@ -6154,9 +6329,7 @@ static ScrDyn *sf_response_construct(ScrDyn *body, ScrDyn *init,
    * string arm therefore runs before ResponseInit's dictionary conversion,
    * while a ReadableStream is only brand-converted here — its locked/
    * disturbed state belongs to the later body-extraction phase. */
-  if (!null_body && !json_body &&
-      !(body->kind == SCR_DYN_HANDLE &&
-        body->v.handle.tag == SCR_DYNH_WEB_STREAM)) {
+  if (!null_body && !json_body && !sf_is_stream_body(body)) {
     if (body->kind == SCR_DYN_BYTES) {
       ScrBytes *raw = scr_bytes_raw_view(body->v.bytes);
       body_bytes = scr_bytes_copy(raw);
@@ -6260,6 +6433,13 @@ static ScrDyn *sf_response_construct(ScrDyn *body, ScrDyn *init,
       goto fail;
     }
     sf_stream_retain(stream);
+#ifdef SCR_HANDLE_CLASSES
+  } else if (sf_is_web_body(body)) {
+    ScrDyn *web = sf_web_body(body);
+    if (!web) goto fail;
+    stream = sf_stream_retain((SfStream *)web->v.handle.ptr);
+    scr_dyn_release(web);
+#endif
   } else {
     stream = sf_stream_new_native();
     light_length_bytes = body_bytes->len;
@@ -6504,7 +6684,7 @@ ScrDyn *scr_fetch_request_new(ScrDyn *input, ScrDyn *init) {
   if (has_body && (sf_name(method_text->data, method_text->len, "GET") || sf_name(method_text->data, method_text->len, "HEAD"))) {
     scr_dyn_release(body); scr_str_release(method_text); scr_url_release(url); sf_type_error("Request with GET/HEAD method cannot have body."); return NULL;
   }
-  if (supplied && body->kind == SCR_DYN_HANDLE && body->v.handle.tag == SCR_DYNH_WEB_STREAM) {
+  if (supplied && sf_is_stream_body(body)) {
     ScrDyn *duplex = sf_response_init_get(init, "duplex", 6);
     ScrStr *text = duplex && duplex->kind != SCR_DYN_UNDEF ? scr_dyn_string_coerce_js(duplex) : NULL;
     scr_dyn_release(duplex);
@@ -6710,6 +6890,17 @@ ScrPromise *scr_fetch_static(ScrStr *url, ScrDyn *init) {
    * arrays, and plain objects (with the ordinary JS object coercion
    * protocol), while null and undefined continue to mean no body. */
   ScrDyn *coerced_body = NULL;
+#ifdef SCR_HANDLE_CLASSES
+  if (body_present && sf_is_web_body(body)) {
+    coerced_body = sf_web_body(body);
+    if (!coerced_body) {
+      scr_promise_reject_pending(promise);
+      return promise;
+    }
+    body = coerced_body;
+    body_stream = true;
+  }
+#endif
   /* A URLSearchParams body is its serialization, sent as
    * application/x-www-form-urlencoded;charset=UTF-8 (extract a body). */
   bool form_body = false;

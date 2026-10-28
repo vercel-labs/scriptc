@@ -24,6 +24,7 @@ import { type NativeArtifactDependency } from "./native/contracts.js";
 import { RuntimePackError, stageRuntimePackArtifacts } from "./runtime-pack.js";
 import type { NativeLinkPlan } from "./link-plan.js";
 import { inputsWithoutLld, lldLinkerArgs } from "./lld.js";
+import { hugeTextLinkerArgs, rewriteHugeTextExecutable } from "./huge-text.js";
 import { systemLibraryLinkerArgs } from "./link-plan-core.js";
 import {
   createDarwinDebugSymbols,
@@ -248,11 +249,13 @@ export async function linkNativeExecutable(
     stagedRoot = staged.root;
     // Linux links with lld when the default driver finds it.
     const lld = explicitLinker === undefined ? lldLinkerArgs(plan.target.platform, linker) : [];
+    const zig = explicitLinker === undefined && plan.target.defaultLinker === "zig";
     const linkArgs = (withLld: boolean): string[] => {
       const inputs = plan.inputs.map((input) => staged.replacements.get(input) ?? input);
       return [
         ...(explicitLinker === undefined ? plan.target.defaultLinkerArgs : []),
         ...(withLld ? lld : []),
+        ...hugeTextLinkerArgs(plan.hugeText === true, (withLld && lld.length !== 0) || zig),
         ...plan.driverFlags,
         ...mapArgs,
         ...(withLld ? inputs : inputsWithoutLld(plan.target.platform, inputs)),
@@ -298,6 +301,7 @@ export async function linkNativeExecutable(
     });
     const output = await stat(privateOut);
     if (!output.isFile() || output.size === 0) throw new Error("linker produced no executable");
+    if (plan.hugeText === true) rewriteHugeTextExecutable(privateOut);
     if (mapArgs.length !== 0) {
       const refusal = staticExecutableRefusal(plan.target, true, await readFile(linkMap, "utf8"));
       if (refusal !== null) throw new NativeCodegenError("SC3002", refusal);

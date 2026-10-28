@@ -72,15 +72,17 @@
  *   SC7xxx  contract types (@scriptc/types): a NoThrow, Int32, Immutable,
  *            Acyclic or ProgramLifetime contract that does not hold or
  *            cannot be checked (SC7001–SC7008, contracts/check.ts)
- *   SC8xxx  Node island policy: packages and modules outside the native
- *            subset that run (or, in report-only mode, would run) in a
- *            Node island — unknown project configuration (SC8004), a
- *            package required to be native (SC8003) or every island
- *            refused (SC8002) while outside the native subset, and the
- *            R2 object-model constructs in user JavaScript (SC8101–SC8105,
- *            behind --strict-user-js); type patches from
- *            `scriptc.typePatches` that did not apply as written
- *            (SC8030–SC8033, warnings)
+ *   SC8xxx  Node islands: packages and modules outside the native subset
+ *            that run (or, in report-only mode, would run) in a Node
+ *            island — unknown project configuration (SC8004), a package
+ *            required to be native (SC8003) or every island refused
+ *            (SC8002) while outside the native subset, and the R2
+ *            object-model constructs in user JavaScript (SC8101–SC8105,
+ *            behind --strict-user-js); programs that call into Node.js
+ *            where the build finds no usable libnode pack (SC8005), or
+ *            cannot collect the modules a call loads (SC8006); and type
+ *            patches from `scriptc.typePatches` that did not apply as
+ *            written (SC8030–SC8033, warnings)
  *   SC9xxx  internal compiler errors (still source-anchored)
  */
 import type { SrcLoc } from "../ir/ir.js";
@@ -197,6 +199,29 @@ export function nativeCodegenDiag(
     message,
     loc: { file, start: 0, end: 0 },
     ...(shown !== undefined ? { hint: shown } : {}),
+  };
+}
+
+/** SC8005 — the program calls into Node.js (@scriptc/node), and the build
+ * found no usable libnode pack to record into the binary. */
+export function nodeIslandNodeDiag(message: string, file: string): ScrDiagnostic {
+  return {
+    code: "SC8005",
+    message,
+    loc: { file, start: 0, end: 0 },
+    hint: "point SCRIPTC_LIBNODE or --libnode at a libnode pack (packages/libnode-common/build-pack.mjs assembles one) for Node.js >=24.13.1",
+  };
+}
+
+/** SC8006 — a Node island call whose modules the build cannot collect into
+ * the executable: a computed specifier, or a module of the program that
+ * loads others through computed specifiers. */
+export function nodeIslandModuleDiag(message: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC8006",
+    message,
+    loc,
+    hint: "name the module with a string literal (a relative path or a package name); the build ships the modules it can see with the executable",
   };
 }
 

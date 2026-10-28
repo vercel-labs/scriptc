@@ -24,6 +24,7 @@ import { emitDowncastGuard, emitUnionNarrowGuard } from "./narrow-guards.js";
 import { emitScalarOptional, isScalarOptionalSource } from "./local-union-storage.js";
 import { borrowableInputs } from "./borrowed-inputs.js";
 import {
+  borrowedRecordKeyGetOr,
   emitBorrowedRecordKeyGet,
   emitStackRecordKeyGet,
   pointerRecordKeyGet,
@@ -104,6 +105,10 @@ export function emitReadReceiver(emitter: LlEmitter, e: IrExpr): LlValue {
   if (arrayRead) return emitProjectedArrayRead(emitter, arrayRead);
   if (e.kind === "recordKeyGet" && emitter.canBorrowReceiver(e))
     return emitBorrowedRecordKeyGet(emitter, e);
+  if (e.kind === "nullish" && emitter.canBorrowReceiver(e)) {
+    const read = borrowedRecordKeyGetOr(emitter, e);
+    if (read) return emitBorrowedRecordKeyGet(emitter, read, e.right);
+  }
   if (e.kind === "mapIntrinsic" && emitter.canBorrowReceiver(e))
     return emitBorrowedMapGet(emitter, e);
   const narrow = emitter.checkedNarrows.get(e);
@@ -160,6 +165,12 @@ export function emitReadReceiver(emitter: LlEmitter, e: IrExpr): LlValue {
       no = B.newLabel("read.else"),
       join = B.newLabel("read.join");
     B.condBr(cond.name, yes, no);
+    // Slots an arm's borrowed read fills (the owner of a `r[k] ?? d`
+    // default) may hold what the result points to: the enclosing frame
+    // releases them after the use, and the other arm's path leaves them
+    // empty so that release skips them.
+    const armSlots: LlValue[][] = [];
+    const ends: string[] = [];
     for (const [label, value] of [
       [yes, e.then],
       [no, e.else_],
@@ -168,9 +179,21 @@ export function emitReadReceiver(emitter: LlEmitter, e: IrExpr): LlValue {
       emitter.frames.push([]);
       const result = emitter.emitReadReceiver(value);
       B.line(`store ptr ${result.name}, ptr ${slot}`);
-      emitter.releaseTemps(emitter.frames.pop()!);
+      const frame = emitter.frames.pop()!;
+      armSlots.push(frame.filter((entry) => entry.slot === true && entry.boxed !== true));
+      emitter.releaseTemps(frame.filter((entry) => entry.slot !== true || entry.boxed === true));
+      const end = B.newLabel("read.end");
+      ends.push(end);
+      B.br(end);
+    }
+    for (const [i, end] of ends.entries()) {
+      B.startBlock(end);
+      for (const entry of armSlots[1 - i]!) B.line(`store ptr null, ptr ${entry.name}`);
       B.br(join);
     }
+    for (const entries of armSlots)
+      for (const entry of entries)
+        emitter.ownSlot(entry.name, entry.type, entry.rarelyFilled === true);
     B.startBlock(join);
     const value = B.tmp();
     B.line(`${value} = load ptr, ptr ${slot}`);
@@ -315,6 +338,12 @@ export function canBorrowReceiver(emitter: LlEmitter, e: IrExpr): boolean {
         emitter.canBorrowReceiver(e.obj) &&
         emitter.referenceEffects.preserves(e.key)
       );
+    // `r[k] ?? inherited(r, k)` lends a hit the same way; its default is
+    // owned by the statement frame (so never by a longer-lived alias).
+    case "nullish": {
+      const read = borrowedRecordKeyGetOr(emitter, e);
+      return read !== null && emitter.canBorrowReceiver(read);
+    }
     // So does a Map.get while the map keeps it.
     case "mapIntrinsic":
       return (

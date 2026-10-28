@@ -1,5 +1,9 @@
 /* Type narrowing of lowered values, conditional and as-expressions, and runtime-optional receiver reads. */
 import { declBoundaryOrigin } from "../../decl-projection.js";
+import {
+  isWebStreamMemberInJavaScript,
+  typeInvolvesWebStream,
+} from "../builtins/web-streams-dyn.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, dynFallbackType } from "../lowerer.js";
 import {
@@ -427,6 +431,15 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     // A process.versions entry declared as a string can be absent here.
     if (isOptionalProcessVersionsRead(lowerer, node))
       return lowerer.coerceToExpected(expr, lowerer.withUndefinedArm(STRING));
+    // A web stream member in JavaScript (a reader's closed promise, a read
+    // result's value) keeps the checked-dynamic value its handle answered.
+    if (ts.isPropertyAccessExpression(node) && isWebStreamMemberInJavaScript(lowerer, node))
+      return expr;
+    if (
+      isJsSourceFile(ts.getSourceFileOfNode(node)) &&
+      typeInvolvesWebStream(lowerer, lowerer.typeOf(node))
+    )
+      return expr;
     // An inferred JS member's storage may be deliberately wider than its
     // declaration (prototype-selected buffers, null-initialized scratch
     // objects). Extract at the consuming operation, not at the read.

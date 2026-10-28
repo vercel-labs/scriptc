@@ -188,9 +188,10 @@ test("a speculative loop reads its views' header fields once, before its copies"
   // A view held by a const local or by a parameter is the same view in
   // every iteration. Its data pointer is read before the branch to the fast
   // copy, and no copy (ordinary, fast, or the one a failed check resumes
-  // in) reads it again.
+  // in) reads it again. `last` starts from a value no analysis bounds,
+  // so the loops speculate on `l`.
   const llvm = await emitLlvm(`
-let last = 42;
+let last = Number(process.argv[2] ?? "42");
 function fill(array: ArrayBuffer, count: number): void {
   const buf = new Float64Array(array);
   let l = last;

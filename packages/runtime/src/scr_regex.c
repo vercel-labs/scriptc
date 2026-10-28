@@ -2161,6 +2161,7 @@ static ScrStr *scr_str_case_conv(const ScrStr *s, int to_lower) {
       out->data[i] = (char)(c >= first && c <= last ? c ^ 0x20 : c);
     }
     out->data[s->len] = '\0';
+    scr_str_note_ascii(out);
     return out;
   }
   ScrJsonBuf b;

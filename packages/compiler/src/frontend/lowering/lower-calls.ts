@@ -25,6 +25,8 @@ import { lowerArrayCallbackCall } from "./containers/array-callback-call.js";
 import { dynUndefinedExpr, nodeThrowExpr, countedFor, numLit, varRef } from "../../ir/build.js";
 import { lowerBuiltinCall } from "./builtin-calls.js";
 import { threadsImportOf } from "../threads-import.js";
+import { nodeApiCalleeOf } from "../node-api-import.js";
+import { lowerNodeApiCall } from "./lower-node-island.js";
 import {
   adaptZeroArgTimerCallback,
   lowerTimersMemberCall,
@@ -405,6 +407,12 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const codeGeneration = codeGenerationCalleeOf(lowerer, expr.expression);
     if (codeGeneration !== null) return lowerCodeGenerationCall(lowerer, expr, codeGeneration);
   }
+  // @scriptc/node call/callSync: a call into the Node island helper
+  // (lower-node-island.ts).
+  {
+    const nodeApi = nodeApiCalleeOf(lowerer.program, expr.expression);
+    if (nodeApi !== null) return lowerNodeApiCall(lowerer, expr, nodeApi);
+  }
   // `(0, util_1.inspect)(value)`: TypeScript's CommonJS output calls a
   // named import through a comma expression, which leaves the call's
   // receiver undefined. node:util's functions do not read their receiver,
@@ -555,6 +563,14 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
   if (expr.questionDotToken && ts.isPropertyAccessExpression(expr.expression)) {
     const timeoutOptional = lowerer.lowerTimeoutMethodCall(expr, expr.expression);
     if (timeoutOptional) return timeoutOptional;
+  }
+  // `Error.captureStackTrace?.(this, this.constructor)`: Node always has it.
+  if (
+    ts.isPropertyAccessExpression(expr.expression) &&
+    (expr.questionDotToken || expr.expression.questionDotToken)
+  ) {
+    const captured = lowerErrorCaptureStackTraceCall(lowerer, expr, expr.expression);
+    if (captured) return captured;
   }
   // `req.session?.m(...)` remains absent on compatibility requests. Live
   // `req.stream` calls now pass through the normal optional-chain and h2
@@ -6102,6 +6118,24 @@ export function lowerPromiseMethodCall(
       const fulfilledAbsent = isAbsentHandler(fulfilledNode);
       const rejectedAbsent = isAbsentHandler(rejectedNode);
       const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
+      // An untyped call in JavaScript whose receiver arrived as a typed
+      // promise (a function instantiated with one): Promise.prototype.then
+      // over the promise as a checked-dynamic value, which shares its
+      // identity.
+      if (resultT?.kind !== "promise" && isJsSourceFile(ts.getSourceFileOfNode(call))) {
+        return {
+          kind: "dynInvoke",
+          recv: lowerer.coerceToExpected(receiver, DYN),
+          method: "then",
+          calleeName: ts.getTextOfNode(access),
+          args: [
+            lowerer.lowerExprExpecting(fulfilledNode, DYN),
+            lowerer.lowerExprExpecting(rejectedNode, DYN),
+          ],
+          type: DYN,
+          loc,
+        };
+      }
       if (resultT?.kind !== "promise") {
         lowerer.noLowering(
           "then with these handlers",

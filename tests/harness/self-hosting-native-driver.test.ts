@@ -177,7 +177,18 @@ test(
         expectedStderr = "",
         env: Record<string, string> = {},
       ) => {
-        const result = await exec(compiler, args, {
+        // An ASan-instrumented compiler's frames are several times larger, and
+        // its recursion over the compiler's own deep ASTs overflows the
+        // default 8 MiB stack (SC3004). Raise the soft limit to the hard limit
+        // for each sanitized compiler process, as a shell's ulimit would.
+        const [file, argv] =
+          sanitize && process.platform !== "win32"
+            ? [
+                "/bin/sh",
+                ["-c", 'ulimit -s "$(ulimit -H -s)" && exec "$0" "$@"', compiler, ...args],
+              ]
+            : [compiler, args];
+        const result = await exec(file, argv, {
           ...nativeOptions,
           env: { ...nativeOptions.env, ...env },
         }).catch((error: unknown) => {

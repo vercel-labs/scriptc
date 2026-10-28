@@ -1,3 +1,4 @@
+import { isWebStreamMemberInJavaScript } from "./builtins/web-streams-dyn.js";
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
 import { staticCondition, staticallySelected } from "./static-typeof.js";
@@ -3279,6 +3280,9 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
   // below this fence answers, member-or-refusal ladder, so no compile
   // fence belongs here.
   if (lowerer.mapTypeOf(lowerer.typeOf(recv))?.kind === "dyn") return;
+  // JavaScript reads web stream values (read results, sources, strategies)
+  // as checked-dynamic objects (web-streams-dyn.ts).
+  if (isWebStreamMemberInJavaScript(lowerer, access)) return;
   // Name the container the way the source reads: the global's name when
   // the receiver IS a stdlib global (Math, process), the dotted path for
   // a member of one (process.stdout — its TYPE text would be the useless

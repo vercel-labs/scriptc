@@ -337,3 +337,159 @@ test("spread updates copy into the binding's slot and release the replaced field
     /(%t\d+) = load ptr, ptr %s\d+\n\s+(%t\d+) = load %sc_rs_\w+, ptr %s\d+\n\s+store %sc_rs_\w+ \2, ptr %s\d+\n(?:.*\n)*?\s+call void @\w+\(ptr \1\)/,
   );
 });
+
+const COLLECTORS = `
+class Tag { readonly name: string; constructor(name: string) { this.name = name; } }
+class Collector {
+  readonly items: string[] = [];
+  last: string | undefined = undefined;
+  tag: Tag | null = null;
+  count = 0;
+  add(item: string): void { this.items.push(item); this.last = item; this.count++; }
+  label(name: string): void { this.tag = new Tag(name); }
+}
+function fill(c: Collector, n: number): void { for (let i = 0; i < n; i++) c.add("w" + i); }
+const kept: Collector[] = [];
+let outer: Collector | null = null;
+export function local(n: number): number {
+  const c = new Collector();
+  fill(c, n);
+  c.label("x");
+  return c.count + c.items.length + (c.tag?.name.length ?? 0);
+}
+export function stored(n: number): number {
+  const c = new Collector();
+  fill(c, n);
+  kept.push(c);
+  return c.count;
+}
+export function assigned(n: number): number {
+  const c = new Collector();
+  outer = c;
+  fill(c, n);
+  return c.count;
+}
+export function returned(n: number): Collector {
+  const c = new Collector();
+  fill(c, n);
+  return c;
+}
+export function inCase(n: number): number {
+  switch (n) {
+    case 1:
+      const c = new Collector();
+      fill(c, n);
+      return c.count;
+    default:
+      return 0;
+  }
+}
+class Link { next: Link | null = null; readonly id: number; constructor(id: number) { this.id = id; } }
+export function chain(n: number): number {
+  const head = new Link(0);
+  let tail = new Link(1);
+  head.next = tail;
+  for (let i = 2; i < n; i++) { const l = new Link(i); tail.next = l; tail = l; }
+  tail.next = head.next;
+  return head.next.id + (head.next.next?.id ?? 0);
+}
+console.log(local(2), stored(1), assigned(1), returned(1).count, inCase(1), chain(4), kept.length, outer !== null);
+`;
+
+test("class instances that own references live in frame storage while they stay in the frame", async () => {
+  const ir = emitLlvmModule(await moduleFor(COLLECTORS));
+  const local = body(ir, "local");
+  expect(local).toMatch(/alloca %sc_o_Collector, align 8/);
+  expect(local).not.toContain("@sc_new_Collector()");
+  expect(local).toContain("store i64 -1, ptr");
+  // The frame releases the reference fields when the binding's scope exits.
+  expect(local).toMatch(/call void @scr_arr_release\(/);
+  // A cycle-capable class keeps its collector header in front of the object.
+  const chain = body(ir, "chain");
+  expect(chain).toMatch(/alloca \{ \[8 x i8\], %sc_o_Link \}, align 8/);
+  expect(chain).toContain("store i32 -1, ptr");
+  // Stored, assigned to another binding, returned, or declared in a switch
+  // case: the instance stays on the heap.
+  for (const name of ["stored", "assigned", "returned", "inCase"]) {
+    const fn = body(ir, name);
+    expect(fn, name).not.toMatch(/alloca %sc_o_Collector/);
+    expect(fn, name).toContain("@sc_new_Collector()");
+  }
+});
+
+test("fresh instances passed in place and instances captured by invoked closures live in frame storage", async () => {
+  const ir = emitLlvmModule(
+    await moduleFor(`
+class Checker {
+  readonly names: string[];
+  readonly seen = new Set<string>();
+  constructor(names: string[]) { this.names = names; }
+  check(): number { let d = 0; for (const n of this.names) { if (this.seen.has(n)) d++; this.seen.add(n); } return d; }
+}
+function each(xs: number[], f: (x: number) => void): void { for (const x of xs) f(x); }
+class Totals {
+  readonly seen: number[] = [];
+  total = 0;
+  add(x: number): void { this.total += x; this.seen.push(x); }
+  addAll(xs: number[]): void { each(xs, (x) => this.add(x)); }
+}
+const handlers: ((x: number) => void)[] = [];
+export function inPlace(names: string[]): number { return new Checker(names).check(); }
+export function captured(xs: number[]): number {
+  const t = new Totals();
+  t.addAll(xs);
+  each(xs, (x) => t.add(x * 2));
+  return t.total;
+}
+export function kept(xs: number[]): number {
+  const t = new Totals();
+  handlers.push((x) => t.add(x));
+  return t.total;
+}
+console.log(inPlace(["a", "a"]), captured([1, 2]), kept([3]), handlers.length);
+`),
+  );
+  const inPlace = body(ir, "inPlace");
+  expect(inPlace).toMatch(/alloca %sc_o_Checker, align 8/);
+  expect(inPlace).not.toContain("@sc_new_Checker()");
+  const captured = body(ir, "captured");
+  expect(captured).toMatch(/alloca %sc_o_Totals, align 8/);
+  expect(captured).not.toContain("@sc_new_Totals()");
+  // A closure that outlives the call keeps its captured instance on the heap.
+  const kept = body(ir, "kept");
+  expect(kept).not.toMatch(/alloca %sc_o_Totals/);
+  expect(kept).toContain("@sc_new_Totals()");
+});
+
+test("a nullable class field in frame storage is released as the class pointer it holds", async () => {
+  const ir = emitLlvmModule(
+    await moduleFor(`
+class Tag { readonly name: string; constructor(name: string) { this.name = name; } }
+const seen = new Set<Tag | null>();
+const counts = new Map<Tag | null, number>();
+class Holder {
+  tag: Tag | null = null;
+  set(name: string): void { this.tag = new Tag(name); }
+}
+export function label(names: string[]): string {
+  const h = new Holder();
+  for (const n of names) h.set(n);
+  seen.add(h.tag);
+  counts.set(h.tag, 1);
+  return h.tag?.name ?? "-";
+}
+console.log(label(["a"]), seen.size, counts.size);
+`),
+  );
+  const label = body(ir, "label");
+  expect(label).toMatch(/alloca %sc_o_Holder, align 8/);
+  // The union is boxed where it is a Set element or Map key, but the field
+  // keeps the raw pointer: its release at scope exit is the class release.
+  const field = /(%s\d+) = getelementptr inbounds %sc_o_Holder, ptr %s\d+, i64 0, i32 1/.exec(
+    label,
+  )![1]!;
+  const release = new RegExp(
+    `(%t\\d+) = load ptr, ptr ${field}\\n\\s+call void (@\\w+)\\(ptr \\1\\)`,
+  ).exec(label);
+  expect(release?.[2]).toBe("@sc_release_Tag");
+});

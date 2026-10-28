@@ -34,6 +34,7 @@ import { InternalCompilerError } from "../../errors.js";
  * declarations including destructuring patterns, scoped blocks, control
  * flow (if/while/for/for-of/do, switch, try/catch, abrupt completions),
  * explicit resource management, and blocked-binding poisoning. */
+import { isWebStreamValueInJavaScript, typeInvolvesWebStream } from "./builtins/web-streams-dyn.js";
 import * as ts from "../ts7/adapter.js";
 import { lowerOptionalIndex } from "./undefined-index.js";
 import { processDataMemberValue, programReadsExitCode } from "./builtins/process.js";
@@ -6109,6 +6110,17 @@ export function lowerVarDecl(
     type = init.type;
   // Promise.prototype is an ordinary object the checker types Promise<any>.
   if (!decl.type && !hasJsTypeAnnotation(decl) && isPromisePrototypeRead(lowerer, decl.initializer))
+    type = DYN;
+  // A web stream value in JavaScript keeps its checked-dynamic identity.
+  if (
+    init.type.kind === "dyn" &&
+    !decl.type &&
+    !hasJsTypeAnnotation(decl) &&
+    decl.initializer !== undefined &&
+    (isWebStreamValueInJavaScript(lowerer, decl.initializer) ||
+      (isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+        typeInvolvesWebStream(lowerer, lowerer.typeOf(decl.name))))
+  )
     type = DYN;
   // A const whose initializer has another record or array layout than the
   // binding's type keeps the initializer's layout: converting would copy the

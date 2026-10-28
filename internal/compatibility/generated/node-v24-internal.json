@@ -111928,6 +111928,9 @@
           "tests/corpus/7743-transform-stream-identity.ts",
           "tests/corpus/stream-web-readable.ts",
           "tests/corpus/stream-web-require.cjs",
+          "tests/corpus/web-stream-readable-untyped.mjs",
+          "tests/corpus/web-stream-transform-pipes-untyped.mjs",
+          "tests/corpus/web-stream-writable-untyped.mjs",
           "tests/harness/fetch-conformance.test.ts"
         ]
       },
@@ -112200,6 +112203,7 @@
         "evidence": "compiler-feature:webstreams.ReadableStream",
         "tests": [
           "tests/corpus/stream-web-readable.ts",
+          "tests/corpus/web-stream-readable-untyped.mjs",
           "tests/corpus/stream-web-require.cjs",
           "tests/corpus/2862-web-readable-async-iteration.ts"
         ]
@@ -113009,8 +113013,11 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:webstreams"
+        "status": "partial",
+        "evidence": "compiler-feature:webstreams.WritableStream",
+        "tests": [
+          "tests/corpus/web-stream-writable-untyped.mjs"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -113403,7 +113410,8 @@
         "status": "partial",
         "evidence": "compiler-feature:webstreams.TransformStream",
         "tests": [
-          "tests/corpus/7743-transform-stream-identity.ts"
+          "tests/corpus/7743-transform-stream-identity.ts",
+          "tests/corpus/web-stream-transform-pipes-untyped.mjs"
         ]
       },
       "anchorSource": "exact"

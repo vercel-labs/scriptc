@@ -2118,6 +2118,14 @@ double scr_str_utf16_len(ScrStr *s) {
   return (double)(int64_t)units;
 }
 
+/* scr_str_utf16_len as a size: proven-ASCII and short strings are counted
+ * here, without the call. */
+static inline size_t scr_str_len16(ScrStr *s) {
+  if (s->ascii) return s->len;
+  if (s->len <= 64) return scr_utf16_units_short(s->data, s->len);
+  return (size_t)scr_str_utf16_len(s);
+}
+
 /* Records the UTF-16 length of a string whose producer counted it (latin1
  * text has one unit per byte), so scr_str_utf16_len does not walk it. Only
  * strings that scr_str_utf16_len would otherwise record are kept. */
@@ -3137,15 +3145,17 @@ ScrStr *scr_str_replace_literal(ScrStr *s, ScrStr *search, ScrStr *rep, bool all
 static ScrStr *scr_pad_impl(ScrStr *s, double maxLength, ScrStr *fill,
                              bool at_start) {
   double target = scr_to_integer_or_infinity(maxLength);
-  size_t len16 = scr_sidx_len(s, scr_sidx_for(s));
+  size_t len16 = scr_str_len16(s);
   if (!(target > (double)len16) || fill->len == 0) return scr_str_retain(s);
   /* Reject pad sizes malloc could not satisfy before the double→size_t
    * conversion can overflow (each unit is at most 3 bytes here: BMP chars
    * and lone surrogates; astral chars are 4 bytes for 2 units). */
   if (target > (double)((SIZE_MAX - sizeof(ScrStr) - 1) / 4)) scr_oom();
   size_t pad16 = (size_t)target - len16;
-  size_t fill16 = scr_sidx_len(fill, scr_sidx_for(fill));
-  size_t reps = pad16 / fill16, rem16 = pad16 % fill16;
+  size_t fill16 = scr_str_len16(fill);
+  /* A one-unit fill, the common case, needs no division. */
+  size_t reps = fill16 == 1 ? pad16 : pad16 / fill16;
+  size_t rem16 = fill16 == 1 ? 0 : pad16 % fill16;
   /* The truncated prefix of fill: whole chars while they fit in rem16
    * units; a final astral char that doesn't fit contributes its high
    * surrogate. */
@@ -3167,9 +3177,14 @@ static ScrStr *scr_pad_impl(ScrStr *s, double maxLength, ScrStr *fill,
   size_t total = s->len + pad_b;
   ScrStr *r = scr_str_alloc(total, total);
   char *w = r->data + (at_start ? 0 : s->len);
-  for (size_t i = 0; i < reps; i++) {
-    memcpy(w, fill->data, fill->len);
-    w += fill->len;
+  if (fill->len == 1) {
+    memset(w, fill->data[0], reps);
+    w += reps;
+  } else {
+    for (size_t i = 0; i < reps; i++) {
+      memcpy(w, fill->data, fill->len);
+      w += fill->len;
+    }
   }
   memcpy(w, fill->data, prefix_b);
   w += prefix_b;
@@ -3179,6 +3194,7 @@ static ScrStr *scr_pad_impl(ScrStr *s, double maxLength, ScrStr *fill,
   }
   memcpy(at_start ? w : r->data, s->data, s->len);
   r->data[total] = '\0';
+  if (s->ascii && fill->ascii) scr_str_note_ascii(r);
   /* Only a piece that starts with a lone low surrogate can complete a
    * pair across a seam: the fill (after a fill or the receiver) or the
    * receiver (after a fill ending in a high surrogate). */

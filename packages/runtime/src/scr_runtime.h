@@ -79,5 +79,6 @@
 #include "scr_fs_cp.h"
 #include "scr_wasm_abi.h"
 #include "scr_wasm.h"
+#include "scr_node_island.h"
 
 #endif /* SCR_RUNTIME_H */

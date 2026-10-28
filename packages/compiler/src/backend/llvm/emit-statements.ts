@@ -153,7 +153,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         break;
       }
       const stackObject = emitter.localStackObjects.get(s.localId);
-      if (stackObject) {
+      if (stackObject && b.kind !== "boxed") {
         const value = emitStackObject(emitter, stackObject, (fields) =>
           emitter.ownScopeFields(fields),
         );
@@ -222,7 +222,11 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           B.line(`store ptr ${stack.box}, ptr ${b.slot}`);
           if (stack.owner) emitter.scopes[emitter.scopes.length - 1]!.push(stack.owner);
           if (s.init) {
-            const value = emitter.emitExpr(s.init);
+            const value = stackObject
+              ? emitter.markImmortal(
+                  emitStackObject(emitter, stackObject, (fields) => emitter.ownScopeFields(fields)),
+                )
+              : emitter.emitExpr(s.init);
             if (isRefCounted(value.type)) emitter.toFrame(value);
             emitter.boxSet(stack.box, b.type, value.name);
           }
@@ -253,7 +257,13 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
           if (sentinel !== null) B.line(`store ptr ${sentinel}, ptr ${emitter.boxSlot(box)}`);
           break;
         }
-        const v = emitter.emitExpr(s.init);
+        // A frame object's binding box holds its frame storage, which the
+        // closures that capture the box never keep (frame-escapes.ts).
+        const v = stackObject
+          ? emitter.markImmortal(
+              emitStackObject(emitter, stackObject, (fields) => emitter.ownScopeFields(fields)),
+            )
+          : emitter.emitExpr(s.init);
         if (isRefCounted(v.type)) emitter.toHeap(v); // the box takes ownership
         if (b.local!.tdz === true && boxAccess(b.type) !== "ref") {
           emitter.tdzScalarInit(box, b.type, v.name);
@@ -2992,7 +3002,12 @@ function emitProvenLoop(
   }
   const deferred = new Set<string>();
   for (const id of plan.locals.keys()) deferred.add(id);
-  emitter.speculation = { writes: plan.writes, resume: new Map(), deferred };
+  emitter.speculation = {
+    writes: plan.writes,
+    resume: new Map(),
+    deferred,
+    increments: plan.increments,
+  };
   try {
     const leave = B.newLabel("integer.leave");
     emitCopy(leave);

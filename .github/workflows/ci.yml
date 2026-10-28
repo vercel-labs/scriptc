@@ -52,9 +52,13 @@ jobs:
           const stackBase = pr?.stack?.base?.ref;
           const prBase = pr?.base?.ref;
           // Position 1 can already be merged; compare the current base branches.
+          // A PR into the default branch is the lowest unmerged layer of any
+          // stack, whatever the stack metadata names as its base.
+          const defaultBranch = event.repository?.default_branch;
           const upperLayer = process.env.GITHUB_EVENT_NAME === 'pull_request' &&
             sameRepository && trustedAuthor && typeof stackBase === 'string' && stackBase.length > 0 &&
-            typeof prBase === 'string' && prBase.length > 0 && stackBase !== prBase;
+            typeof prBase === 'string' && prBase.length > 0 && stackBase !== prBase &&
+            prBase !== defaultBranch;
           const full = !upperLayer;
           appendFileSync(process.env.GITHUB_OUTPUT, `full=${full}\n`);
           console.log(full ? 'Run full CI' : 'Defer full CI until this PR becomes the lowest unmerged layer');
@@ -208,6 +212,10 @@ jobs:
           path: ${{ runner.temp }}
       - run: tar -xzf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
       - run: pnpm build
+      # Node island tests (`// @requires-libnode` corpus programs and
+      # node-island.test.ts) load Node from a libnode pack, and fail rather
+      # than skip in this lane when none is configured.
+      - uses: ./.github/actions/libnode-dev-pack
       # Ubuntu pipes core dumps to apport, and RLIMIT_CORE does not limit a
       # piped dump. The kernel then streams every page of the runtime's
       # reserved allocator address space through the pipe, so each expected
@@ -276,6 +284,9 @@ jobs:
           path: ${{ runner.temp }}
       - run: tar -xzf "$RUNNER_TEMP/native-darwin-arm64.tar.gz"
       - run: pnpm build
+      # Node island tests load Node from a libnode pack, and fail rather
+      # than skip on macOS CI when none is configured.
+      - uses: ./.github/actions/libnode-dev-pack
       - name: Tests (${{ (github.event_name != 'schedule' && inputs.macos_suite != 'full') && 'darwin suite' || 'corpus and integration suites' }})
         run: node scripts/ci-test.mjs
 
@@ -694,6 +705,12 @@ jobs:
           path: ${{ runner.temp }}
       - run: tar -xzf "$RUNNER_TEMP/native-darwin-arm64.tar.gz"
       - run: pnpm build
+      # Node island tests load Node from a libnode pack, and fail rather
+      # than skip on macOS CI when none is configured.
+      - uses: ./.github/actions/libnode-dev-pack
+      - name: Node island harness
+        if: matrix.shard == 1
+        run: pnpm test tests/harness/node-island packages/libnode-common
       - name: LLVM release/dev differential (${{ matrix.shard }}/5)
         env:
           SCRIPTC_TEST_WORKERS: "4"
@@ -773,7 +790,8 @@ jobs:
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.macos == 'true' }}
     name: test (macOS x64 LLVM artifacts, no clang)
     runs-on: macos-15-intel
-    timeout-minutes: 20
+    # The Node island tests take most of it.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -788,6 +806,15 @@ jobs:
         with:
           target: darwin-x64
       - run: pnpm build
+      # Node island tests load Node from a libnode pack, and fail rather
+      # than skip on macOS CI when none is configured.
+      - uses: ./.github/actions/libnode-dev-pack
+      - name: Node islands (Intel)
+        run: >-
+          pnpm test tests/harness/node-island packages/libnode-common
+          && pnpm test tests/harness/differential.test.ts -t ' (68[0-9][0-9]|7661|7662)-'
+        env:
+          SCRIPTC_TEST_WORKERS: "3"
       - name: Intel Mach-O no-clang object contract
         run: |
           mkdir -p "$RUNNER_TEMP/traps"

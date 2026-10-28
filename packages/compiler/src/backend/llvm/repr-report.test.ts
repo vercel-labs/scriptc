@@ -50,11 +50,11 @@ console.log(scale(boxes[1]!.id), scale(3, 4), half(boxes.length), boxes[2]!.item
     expect(row("field", "Box", "hits")?.[4]).toBe("double");
     expect(row("field", "Box", "hits")?.[5]).not.toBe("");
     expect(row("field", "Box", "items")?.slice(3, 5)).toEqual(["array<f64>", "ptr"]);
-    expect(row("param", "scale", "value")?.[4]).toBe("i32");
-    // A defaulted parameter is a `number | undefined` box; the variant for
-    // calls that pass a number takes an i32.
-    expect(row("param", "scale", "by")?.slice(3, 5)).toEqual(["f64 | undefined", "box"]);
-    expect(row("param", "scale.nativeNumber", "by")?.[4]).toBe("i32");
+    // Both calls of `scale` take its variant, whose defaulted parameter is
+    // a number: the one that omits it passes the default.
+    expect(row("param", "scale", "by")).toBeUndefined();
+    expect(row("param", "scale.nativeNumber", "value")?.[4]).toBe("i32");
+    expect(row("param", "scale.nativeNumber", "by")?.slice(3, 5)).toEqual(["f64", "i32"]);
     // An array length may exceed the int32 range.
     expect(row("param", "half", "value")?.[4]).toBe("double");
     expect(row("param", "half", "value")?.[5]).toMatch(/^argument in .* is not int32$/);

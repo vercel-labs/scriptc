@@ -110,6 +110,8 @@ export const DIAGNOSTIC_CODES = {
   SC8002: "Node islands off for a package or module outside the native subset",
   SC8003: "package marked native is outside the native subset",
   SC8004: "unknown scriptc.packages or scriptc.nodeIslands configuration",
+  SC8005: "no usable libnode pack for a program that calls into Node.js",
+  SC8006: "Node island modules the build cannot collect",
   SC8030: "type patch: no range covers the installed copy",
   SC8031: "type patch: selector matches nothing",
   SC8032: "type patch: declaration already has the type",
@@ -148,8 +150,6 @@ export const RETIRED_DIAGNOSTIC_CODES = {
  * abandoned, delete them here. */
 export const RESERVED_DIAGNOSTIC_CODES = {
   SC8001: "Node islands (ni/* branches)",
-  SC8005: "Node islands (ni/* branches)",
-  SC8006: "Node islands (ni/* branches)",
   SC8010: "Node islands (ni/* branches)",
   SC8011: "Node islands (ni/* branches)",
   SC8012: "Node islands (ni/* branches)",

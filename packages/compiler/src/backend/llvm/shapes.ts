@@ -69,6 +69,7 @@ import {
   disposeFieldLines,
   plainRefType,
 } from "./arenas.js";
+import { recordViewTestLines, type RecordViews } from "./record-views.js";
 import { recordMayKeepSource } from "./record-sources.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 
@@ -151,6 +152,8 @@ export interface ShapeHost {
   /** Record shapes and classes with an arena-aware constructor
    * (arenas.ts). */
   arenaShapes?: ReadonlySet<string>;
+  /** Record view targets and their sources (record-views.ts). */
+  recordViews?: RecordViews;
   arenaClasses?: ReadonlySet<string>;
   /** Every arena the program opens is closed (ArenaPlan.allClosed): the
    * arena-aware constructors take no dispose list. */
@@ -451,7 +454,11 @@ export function emitShapeUnionHelpers(host: ShapeHost): string[] {
     const traced = union.arms.map((arm) => host.tracedShapes.has(`record:${arm.shapeId}`));
     // A freezable arm's count is the word without its frozen bit, as in
     // releaseFastPath: a frozen record's last reference takes the slow path.
-    const frozen = union.arms.some((arm) => host.recordsById.get(arm.shapeId)?.freezable === true);
+    const frozen = union.arms.some(
+      (arm) =>
+        host.recordsById.get(arm.shapeId)?.freezable === true ||
+        host.recordViews?.targets.has(arm.shapeId) === true,
+    );
     const notFrozen = ~recordFrozenBit(S);
     const release = shapeReleaseFn(union.unionId);
     if (traced.every((t) => t === traced[0]))
@@ -2291,7 +2298,9 @@ export function emitRecordShapes(
         false,
         chained,
         segmented,
-        shape.freezable === true,
+        // A record view's word carries the frozen bit as its view mark
+        // (record-views.ts), so view targets release like freezable shapes.
+        shape.freezable === true || host.recordViews?.targets.has(shape.id) === true,
         iterative
           ? iterativeTeardownDefinitions(
               host,
@@ -2390,10 +2399,25 @@ export function emitRecordShapes(
         const index = i + base;
         const inline = host.inlineUnions.record(field.type);
         const fieldTy = llFieldType(field.type, inline);
-        clone.push(
-          `  %sp${i} = getelementptr inbounds %${struct}, ptr %src, i64 0, i32 ${index}`,
-          `  %sv${i} = load ${fieldTy}, ptr %sp${i}`,
-        );
+        if (host.recordViews?.targets.has(shape.id) === true) {
+          // A view's fields live in the viewed record (record-views.ts).
+          host.declare(`declare ptr @scr_record_view_slot(ptr, ${host.sizeType})`);
+          clone.push(
+            `  %so${i} = getelementptr inbounds %${struct}, ptr %src, i64 0, i32 ${index}`,
+            ...recordViewTestLines(host.sizeType, "%src", `%sr${i}v`),
+            `  br i1 %sr${i}v, label %sv${i}.view, label %sv${i}.join`,
+            `sv${i}.view:`,
+            `  %sw${i} = call ptr @scr_record_view_slot(ptr %src, ${host.sizeType} ${i})`,
+            `  br label %sv${i}.join`,
+            `sv${i}.join:`,
+            `  %sp${i} = phi ptr [ %so${i}, %${i === 0 ? "entry" : `sv${i - 1}.join`} ], [ %sw${i}, %sv${i}.view ]`,
+            `  %sv${i} = load ${fieldTy}, ptr %sp${i}`,
+          );
+        } else
+          clone.push(
+            `  %sp${i} = getelementptr inbounds %${struct}, ptr %src, i64 0, i32 ${index}`,
+            `  %sv${i} = load ${fieldTy}, ptr %sp${i}`,
+          );
         const owned = isRefCounted(field.type) && !inline;
         const stored = owned ? `%sr${i}` : `%sv${i}`;
         if (owned) {

@@ -45,6 +45,7 @@ import {
 import { moduleSourceCandidates } from "./module-source-candidates.js";
 import { CONTRACT_TYPES_MODULE } from "./contract-types.js";
 import { THREADS_MODULE } from "./threads-import.js";
+import { NODE_API_MODULE } from "./node-api-import.js";
 import { erasedTypeOnlyImport } from "./type-only-imports.js";
 import { EXPERIMENTAL_MODULE } from "./experimental-import.js";
 import { readProjectConfig } from "../project-config.js";
@@ -278,7 +279,12 @@ function detectAutoPackages(
       // declarations only, and @scriptc/threads and @scriptc/experimental
       // exports lower at their use sites (threads-import.ts,
       // experimental-import.ts), typed by their declarations.
-      if (spec === CONTRACT_TYPES_MODULE || spec === THREADS_MODULE || spec === EXPERIMENTAL_MODULE)
+      if (
+        spec === CONTRACT_TYPES_MODULE ||
+        spec === THREADS_MODULE ||
+        spec === EXPERIMENTAL_MODULE ||
+        spec === NODE_API_MODULE
+      )
         continue;
       // Attested entries already resolve to program sources, so the
       // published package's declaration eligibility does not apply.

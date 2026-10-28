@@ -20,8 +20,9 @@
 /* `--listen PATH --idle-exit SECONDS`: a stand-in for a shared server. In
  * mode "listen-exit" it exits as an executable without --listen does. In
  * mode "listen" it answers each client, in order, with its client number,
- * its listen arguments and TSC_TS_LISTEN_MEMORY, then echoes until the
- * client closes, and exits after SECONDS (at most 5) without a client. */
+ * its listen arguments, TSC_TS_LISTEN_MEMORY and its working directory, then
+ * echoes until the client closes, and exits after SECONDS (at most 5) without
+ * a client. */
 static int listen_main(const char *mode, char **argv) {
   if (strcmp(mode, "listen-exit") == 0) return 2;
   if (strcmp(mode, "listen") != 0) return 73;
@@ -42,9 +43,10 @@ static int listen_main(const char *mode, char **argv) {
     if (poll(&entry, 1, idle * 1000) <= 0) break;
     int fd = accept(listener, NULL, NULL);
     if (fd < 0) return 79;
-    char line[512];
-    int size = snprintf(line, sizeof(line), "client %d\n%s %s\n%s\n", client, argv[0], argv[2],
-                        memory == NULL ? "unset" : memory);
+    char line[1024], cwd[256];
+    if (getcwd(cwd, sizeof(cwd)) == NULL) return 81;
+    int size = snprintf(line, sizeof(line), "client %d\n%s %s\n%s\n%s\n", client, argv[0], argv[2],
+                        memory == NULL ? "unset" : memory, cwd);
     if (size <= 0 || write(fd, line, (size_t)size) != size) return 80;
     uint8_t bytes[17];
     ssize_t count;

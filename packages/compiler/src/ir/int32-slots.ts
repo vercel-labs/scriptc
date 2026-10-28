@@ -118,6 +118,9 @@ export class Int32Slots {
   private readonly pinned = new Set<string>();
   /** Int32 contract locals (`function\0localId`) and globals (`\0id`). */
   private readonly int32Locals = new Set<string>();
+  /** Module globals of type number whose every write the fixpoint proved
+   * an int32 (`global:` keys). */
+  private readonly globals = new Set<string>();
   /** Number-array slots whose arrays hold only int32 elements (Int32[]
    * contracts, IrContracts.int32Elements keys). */
   private readonly int32Elements = new Set<string>();
@@ -167,6 +170,7 @@ export class Int32Slots {
       this.paramFacts.size === 0 &&
       this.boxes.size === 0 &&
       this.int32Locals.size === 0 &&
+      this.globals.size === 0 &&
       this.int32Elements.size === 0
     )
       return {};
@@ -181,11 +185,13 @@ export class Int32Slots {
         return group !== null && this.boxes.has(group) ? level(`box:${group}`) : null;
       },
     };
-    if (this.int32Locals.size > 0)
+    if (this.int32Locals.size > 0 || this.globals.size > 0)
       result.locals = (localId) =>
         this.int32Locals.has(`${fnName}\0${localId}`) || this.int32Locals.has(`\0${localId}`)
           ? INT32_RANGE
-          : null;
+          : this.globals.has(localId)
+            ? level(`global:${localId}`)
+            : null;
     if (this.int32Elements.size > 0) {
       result.elements = (arr) => this.hasInt32Elements(fnName, arr);
       if (this.narrowedReads) result.narrowedReads = true;
@@ -250,6 +256,16 @@ export class Int32Slots {
   }
   addInt32Local(key: string): void {
     this.int32Locals.add(key);
+  }
+  addGlobal(id: string): void {
+    this.globals.add(id);
+  }
+  hasGlobal(id: string): boolean {
+    return this.globals.has(id);
+  }
+  dropGlobal(id: string): boolean {
+    this.nonNegative.delete(`global:${id}`);
+    return this.globals.delete(id);
   }
   addInt32Elements(key: string): void {
     this.int32Elements.add(key);
@@ -372,6 +388,7 @@ export class Int32Slots {
       reasons: [...this.reasons],
       pinned: [...this.pinned],
       int32Locals: [...this.int32Locals],
+      globals: [...this.globals],
       int32Elements: [...this.int32Elements],
       pinViolations: this.pinViolations,
       nonNegative: [...this.nonNegative],
@@ -398,6 +415,7 @@ export class Int32Slots {
     for (const [key, why] of data.reasons) slots.reasons.set(key, why);
     for (const key of data.pinned) slots.pinned.add(key);
     for (const key of data.int32Locals) slots.int32Locals.add(key);
+    for (const id of data.globals) slots.globals.add(id);
     for (const key of data.int32Elements) slots.int32Elements.add(key);
     slots.pinViolations.push(...data.pinViolations);
     for (const key of data.nonNegative) slots.nonNegative.add(key);
@@ -422,6 +440,7 @@ export class Int32Slots {
       `called ${sorted(this.called)}`,
       `pinned ${sorted(this.pinned)}`,
       `int32Locals ${sorted(this.int32Locals)}`,
+      `globals ${sorted(this.globals)}`,
       `int32Elements ${sorted(this.int32Elements)}`,
       `nonNegative ${sorted(this.nonNegative)}`,
       `pinViolations ${sorted(this.pinViolations)}`,
@@ -463,6 +482,7 @@ interface Int32SlotsData {
   reasons: [string, string][];
   pinned: string[];
   int32Locals: string[];
+  globals: string[];
   int32Elements: string[];
   pinViolations: string[];
   nonNegative: string[];
@@ -1208,6 +1228,9 @@ export function analyzeInt32Slots(mod: IrModule, inputs: Int32SlotInputs = {}): 
   };
   const boxedReads: [IrFunction, Set<string>][] = [];
   const incrementedFamilies: string[] = [];
+  // Bindings written by `++`/`--` or bound by for-of and catch: a module
+  // global among them is no candidate.
+  const unstableGlobals = new Set<string>();
   for (const fn of mod.functions) {
     for (const local of fn.locals)
       if (local.boxed) {
@@ -1251,12 +1274,20 @@ export function analyzeInt32Slots(mod: IrModule, inputs: Int32SlotInputs = {}): 
           });
         } else if (e.kind === "classRef")
           for (const id of e.captures ?? []) unstableBoxes.add(boxKey(fn.name, id));
-        else if (e.kind === "incDec") unstableBoxes.add(boxKey(fn.name, e.localId));
+        else if (e.kind === "incDec") {
+          unstableBoxes.add(boxKey(fn.name, e.localId));
+          unstableGlobals.add(e.localId);
+        }
       },
       stmt: (s) => {
-        if (s.kind === "forOf") unstableBoxes.add(boxKey(fn.name, s.localId));
-        if (s.kind === "tryCatch" && s.catchLocalId)
+        if (s.kind === "forOf") {
+          unstableBoxes.add(boxKey(fn.name, s.localId));
+          unstableGlobals.add(s.localId);
+        }
+        if (s.kind === "tryCatch" && s.catchLocalId) {
           unstableBoxes.add(boxKey(fn.name, s.catchLocalId));
+          unstableGlobals.add(s.catchLocalId);
+        }
       },
     });
     if (read.size > 0) boxedReads.push([fn, read]);
@@ -1361,6 +1392,41 @@ export function analyzeInt32Slots(mod: IrModule, inputs: Int32SlotInputs = {}): 
       const group = slots.boxGroup(fn.name, localId);
       if (group !== null) reads(`box:${group}`, fn.name);
     }
+
+  /* ── module globals ── */
+  // A module global of type number is a candidate when its module's
+  // initializer assigns it at its top level or in an unlabeled block there
+  // (the declaration's initializer, which runs before any read that does
+  // not throw) and no other write is outside the assignments the fixpoint
+  // checks. Globals with a TDZ sentinel or a cycle's initialization flag,
+  // and globals an Int32 contract already covers, keep their ordinary facts.
+  const initialized = new Set<string>();
+  const initializers = (body: readonly IrStmt[]): void => {
+    for (const s of body) {
+      if (s.kind === "assign") initialized.add(s.localId);
+      else if (s.kind === "block" && !s.labels?.length) initializers(s.body);
+    }
+  };
+  for (const fn of mod.functions) if (fn.name.startsWith("%init")) initializers(fn.body);
+  for (const global of mod.globals ?? []) {
+    if (
+      global.type.kind !== "f64" ||
+      global.tdz ||
+      global.initFlag !== undefined ||
+      !initialized.has(global.id) ||
+      unstableGlobals.has(global.id) ||
+      contracts?.int32Locals?.includes(`\0${global.id}`)
+    )
+      continue;
+    slots.addGlobal(global.id);
+    slots.assumeNonNegative(`global:${global.id}`);
+  }
+  const dropGlobal = (id: string, why: string): boolean => {
+    reason(`global:${id}`, why);
+    return slots.dropGlobal(id);
+  };
+  for (const [fn, read] of boxedReads)
+    for (const localId of read) if (slots.hasGlobal(localId)) reads(`global:${localId}`, fn.name);
   for (const family of incrementedFamilies) dropFamily(family, "++/-- on the field");
 
   /* ── the optimistic fixpoint ── */
@@ -1396,7 +1462,7 @@ export function analyzeInt32Slots(mod: IrModule, inputs: Int32SlotInputs = {}): 
     eachNodeOfKinds(fn, candidateWrites, (node) => {
       switch (node.kind) {
         case "assign":
-          found = box(node.localId);
+          found = box(node.localId) || slots.hasGlobal(node.localId);
           break;
         case "varDecl":
           found = node.init !== null && box(node.localId);
@@ -1420,7 +1486,7 @@ export function analyzeInt32Slots(mod: IrModule, inputs: Int32SlotInputs = {}): 
           );
           break;
         case "assignExpr":
-          found = box(node.localId);
+          found = box(node.localId) || slots.hasGlobal(node.localId);
           break;
       }
       return !found;
@@ -1637,10 +1703,26 @@ export function analyzeInt32Slots(mod: IrModule, inputs: Int32SlotInputs = {}): 
       if (int32(value)) settle(`box:${group}`, value);
       else if (dropBox(group, `write in ${fn.name} is not int32`)) invalidate(`box:${group}`);
     };
+    // An integer literal is its own range, also where the analysis proves
+    // nothing (an async module initializer).
+    const globalWrite = (localId: string, value: IrExpr): void => {
+      if (!slots.hasGlobal(localId)) return;
+      const key = `global:${localId}`;
+      const range =
+        ranges.get(value) ??
+        (value.kind === "numLit" && Number.isSafeInteger(value.value) && !Object.is(value.value, -0)
+          ? { min: value.value, max: value.value }
+          : null);
+      if (!withinInt32(range)) {
+        if (dropGlobal(localId, `write in ${fn.name} is not int32`)) invalidate(key);
+      } else if (range!.min < 0 && slots.demote(key)) invalidate(key);
+    };
     walkFunction(fn, nodes?.scan(CANDIDATE_WRITE_KINDS), {
       stmt: (s) => {
-        if (s.kind === "assign") boxWrite(s.localId, s.value);
-        else if (s.kind === "varDecl" && s.init) boxWrite(s.localId, s.init);
+        if (s.kind === "assign") {
+          boxWrite(s.localId, s.value);
+          globalWrite(s.localId, s.value);
+        } else if (s.kind === "varDecl" && s.init) boxWrite(s.localId, s.init);
         if (s.kind === "fieldSet") {
           const family = slots.family(s.className, s.field);
           if (!family || !slots.hasFamily(family)) return;
@@ -1662,7 +1744,10 @@ export function analyzeInt32Slots(mod: IrModule, inputs: Int32SlotInputs = {}): 
       expr: (e) => {
         if (e.kind === "call") args(functions.get(e.callee), e.args, 0);
         else if (e.kind === "new") args(functions.get(`%${e.className}.constructor`), e.args, 1);
-        else if (e.kind === "assignExpr") boxWrite(e.localId, e.value);
+        else if (e.kind === "assignExpr") {
+          boxWrite(e.localId, e.value);
+          globalWrite(e.localId, e.value);
+        }
       },
     });
     provenByFunction.set(fn.name, proven);

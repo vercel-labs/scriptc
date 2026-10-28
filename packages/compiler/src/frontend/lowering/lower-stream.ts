@@ -5176,7 +5176,7 @@ function lowerPipelineStages(
           {
             kind: "varDecl",
             localId: ac.id,
-            init: { kind: "libCall", fn: "fetch.abortControllerNew", args: [], type: DYN, loc },
+            init: { kind: "libCall", fn: "abort.controllerNew", args: [], type: DYN, loc },
             loc,
           },
         ],
@@ -5502,7 +5502,7 @@ function duplexFromBody(lowerer: Lowerer, node: ts.Expression, loc: SrcLoc): IrE
         {
           kind: "varDecl",
           localId: acLocal.id,
-          init: { kind: "libCall", fn: "fetch.abortControllerNew", args: [], type: DYN, loc },
+          init: { kind: "libCall", fn: "abort.controllerNew", args: [], type: DYN, loc },
           loc,
         },
       ];
@@ -5954,7 +5954,7 @@ export function operatorSignalOptions(lowerer: Lowerer, options: IrExpr, loc: Sr
     type: DYN,
     loc,
   };
-  const signal: IrExpr = { kind: "libCall", fn: "fetch.abortAny", args: [list], type: DYN, loc };
+  const signal: IrExpr = { kind: "libCall", fn: "abort.any", args: [list], type: DYN, loc };
   return { kind: "libCall", fn: "readable.opSignalOpts", args: [signal], type: DYN, loc };
 }
 
@@ -5978,7 +5978,7 @@ export function reduceSignalSetup(
     {
       kind: "varDecl",
       localId: acLocal.id,
-      init: { kind: "libCall", fn: "fetch.abortControllerNew", args: [], type: DYN, loc },
+      init: { kind: "libCall", fn: "abort.controllerNew", args: [], type: DYN, loc },
       loc,
     },
     {

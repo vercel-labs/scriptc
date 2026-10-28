@@ -208,9 +208,9 @@ static void attach_cases(void) {
   uint8_t bytes[4];
   snprintf(directory, sizeof(directory), "%s/scriptc", runtime);
   snprintf(socket_path, sizeof(socket_path), "%s/server.sock", directory);
-  // The first build starts the server with its idle time and memory limit.
-  // The server holds none of the build's descriptors, such as an output
-  // pipe its caller reads to the end.
+  // The first build starts the server with its idle time and memory limit,
+  // in the root directory. The server holds none of the build's descriptors,
+  // such as an output pipe its caller reads to the end.
   int output[2];
   assert(pipe(output) == 0);
   uint32_t first = attach("server", "listen", 123);
@@ -224,6 +224,7 @@ static void attach_cases(void) {
   snprintf(expected, sizeof(expected), "%s 1\n", socket_path);
   expect_line(first, expected);
   expect_line(first, "123\n");
+  expect_line(first, "/\n");
   write_exact(first, (const uint8_t *)"ping", 4, 0, 4);
   read_exact(first, bytes, 4);
   assert(memcmp(bytes, "ping", 4) == 0);

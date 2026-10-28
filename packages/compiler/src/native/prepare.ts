@@ -217,6 +217,8 @@ function implementationIdentity(toolchain: NativeToolchain): string {
 const FRONTEND_INDEPENDENT_VARIABLES = new Set([
   "SCRIPTC_CACHE_DIR",
   "SCRIPTC_CACHE_MAX_MB",
+  // The shared checker server answers as the build's own checker does.
+  "SCRIPTC_CHECKER_SERVER",
   "SCRIPTC_EMIT_WORKERS",
   "SCRIPTC_EMIT_WORKER_FUNCTIONS",
   "SCRIPTC_TIMING",
@@ -438,6 +440,7 @@ export function prepareNativeExecutable(
           lowRegion: lowRegionTarget(toolchain.target.platform, options.sanitize === true),
           functionWorkers: emitWorkers(),
           forkPrimitives: emitForkPrimitives(),
+          timing,
           ...inlineRcOption(options.optimization, options.sanitize === true),
           ...(options.detachedExit === true && outputKind === "exe" ? { detachedExit: true } : {}),
           ...targetCpuField(options.targetCpu),
@@ -554,6 +557,7 @@ export function prepareNativeLibrary(
     wasi: toolchain.target.platform === "wasi",
     objectAudit: options.sanitize === true,
     sanitizeAttributes: options.sanitize === true,
+    timing,
     ...inlineRcOption(profile.optimization, options.sanitize === true),
   });
   timing("llvm-emit");

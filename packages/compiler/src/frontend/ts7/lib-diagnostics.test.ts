@@ -1,6 +1,6 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterAll, afterEach, expect, test } from "vitest";
 import type { SourceFile } from "./ast-types.js";
 import {
@@ -12,7 +12,9 @@ import {
   setLibDiagnosticsStore,
   type LibDiagnosticsStore,
   type PrebuiltLibDiagnostics,
+  type SuppliedKind,
 } from "./lib-diagnostics.js";
+import { hostTscTsExecutable } from "./checker-backend.js";
 import type { Ts7DiagnosticData } from "./session-schema.generated.js";
 import type { Ts7CheckedFileDiagnosticData, Ts7SessionProgram } from "./session.js";
 import { closeSourceParser, parseSourceFile } from "./source-parser-node.js";
@@ -381,4 +383,175 @@ test("prebuilt answer files round-trip, and a malformed one is no answer", () =>
   writeFileSync(path, '{ "schema": "other", "checker": "1.0.0", "keys": [] }');
   expect(readPrebuiltLibDiagnostics(path)).toBeNull();
   expect(readPrebuiltLibDiagnostics(join(dir, "missing.json"))).toBeNull();
+});
+
+// Node module fallback files: ambient modules only, or one that also declares a global.
+const moduleA = join(dir, "node-fallback-a.d.ts");
+const moduleB = join(dir, "node-fallback-b.d.ts");
+const moduleGlobal = join(dir, "node-fallback-global.d.ts");
+const moduleTexts: Record<string, string> = {
+  [moduleA]: 'declare module "node:a" {\n  export const a: number;\n}\n',
+  [moduleB]: 'declare module "node:b" {\n  export const b: string;\n}\n',
+  [moduleGlobal]:
+    'declare module "node:g" {\n  global {\n    var g: number;\n  }\n  export {};\n}\n',
+};
+for (const [name, text] of Object.entries(moduleTexts)) writeFileSync(name, text);
+const kind = (name: string): SuppliedKind =>
+  name === lib ? "library" : name.includes("node-fallback-") ? "module" : "declarations";
+const withModules = (...modules: string[]): string[] => [lib, fallback, ...modules, main];
+const suppliedWithModules = (name: string): boolean => name !== main;
+const moduleSources = files({ ...moduleTexts, [main]: "export const n: number = 'x';\n" });
+
+test("a set with module files reuses the libs' answers of the set without them", () => {
+  const store = memoryStore();
+  setLibDiagnosticsStore(store, "checker");
+  const semantic = new Map([
+    [lib, [diagnostic(lib, 1)]],
+    [main, [diagnostic(main, 5)]],
+  ]);
+  // Without an answer for the set without module files, a set with them checks in full.
+  const first = sessionProgram({ semantic });
+  reusedLibDiagnostics(first, withModules(moduleA), suppliedWithModules, moduleSources, kind);
+  expect(first.asked[0]).toBe("getGlobalDiagnostics");
+  const base = sessionProgram({ semantic });
+  reusedLibDiagnostics(base, withModules(), suppliedWithModules, moduleSources, kind);
+  expect(base.asked[0]).toBe("getGlobalDiagnostics");
+  // That answer reports a diagnostic in a lib, so a set with another module file reuses the
+  // libs' answers and checks the program, scriptc's declarations and that file.
+  const second = sessionProgram({ semantic });
+  const composed = reusedLibDiagnostics(
+    second,
+    withModules(moduleB),
+    suppliedWithModules,
+    moduleSources,
+    kind,
+  );
+  expect(second.asked).toEqual([`checked ${main},${fallback},${moduleB}`]);
+  expect(composed).toEqual({ semantic: [diagnostic(lib, 1), diagnostic(main, 5)], global: [] });
+  // Its own answer is stored, so the same set then checks only the program.
+  const third = sessionProgram({ semantic });
+  reusedLibDiagnostics(third, withModules(moduleB), suppliedWithModules, moduleSources, kind);
+  expect(third.asked).toEqual([`checked ${main}`]);
+});
+
+test("a clean answer of the set without module files stands in for all of its files", () => {
+  const semantic = new Map([[main, []]]);
+  const store = memoryStore();
+  setLibDiagnosticsStore(store, "checker");
+  reusedLibDiagnostics(
+    sessionProgram({ semantic }),
+    withModules(),
+    suppliedWithModules,
+    moduleSources,
+    kind,
+  );
+  const fromBase = sessionProgram({ semantic });
+  reusedLibDiagnostics(fromBase, withModules(moduleA), suppliedWithModules, moduleSources, kind);
+  expect(fromBase.asked).toEqual([`checked ${main},${moduleA}`]);
+  // So does a prebuilt answer for it.
+  const keys = new Set<string>();
+  recordPrebuiltLibDiagnostics({ checker: "1.0.0", record: (key) => keys.add(key) });
+  setLibDiagnosticsStore(memoryStore(), "build-time checker");
+  reusedLibDiagnostics(
+    sessionProgram({ semantic }),
+    withModules(),
+    suppliedWithModules,
+    moduleSources,
+    kind,
+  );
+  recordPrebuiltLibDiagnostics(null);
+  expect(keys.size).toBe(1);
+  setLibDiagnosticsStore(memoryStore(), "installed checker", () => ({ checker: "1.0.0", keys }));
+  const prebuilt = sessionProgram({ semantic });
+  reusedLibDiagnostics(
+    prebuilt,
+    withModules(moduleA, moduleB),
+    suppliedWithModules,
+    moduleSources,
+    kind,
+  );
+  expect(prebuilt.asked).toEqual([`checked ${main},${moduleA},${moduleB}`]);
+});
+
+test("scriptc's declarations are checked again when they report something or declare a module file's module", () => {
+  const declared = join(dir, "scriptc-declared.d.ts");
+  const moduleX = join(dir, "node-fallback-x.d.ts");
+  const texts = {
+    [declared]: 'declare module "node:x" {\n  export const x: number;\n}\n',
+    [moduleX]: 'declare module "node:x" {\n  export const y: number;\n}\n',
+  };
+  for (const [name, text] of Object.entries(texts)) writeFileSync(name, text);
+  const sources = files({ ...moduleTexts, ...texts, [main]: "export const n: number = 'x';\n" });
+  const semantic = new Map([[main, []]]);
+  setLibDiagnosticsStore(memoryStore(), "checker");
+  const base = [lib, fallback, declared, main];
+  const set = [lib, fallback, declared, moduleX, main];
+  reusedLibDiagnostics(sessionProgram({ semantic }), base, suppliedWithModules, sources, kind);
+  const merged = sessionProgram({ semantic });
+  reusedLibDiagnostics(merged, set, suppliedWithModules, sources, kind);
+  expect(merged.asked).toEqual([`checked ${main},${fallback},${declared},${moduleX}`]);
+  // With a diagnostic in scriptc's declarations, only the libs' answers are reused.
+  const reporting = new Map([
+    [main, []],
+    [fallback, [diagnostic(fallback, 3)]],
+  ]);
+  setLibDiagnosticsStore(memoryStore(), "checker");
+  reusedLibDiagnostics(
+    sessionProgram({ semantic: reporting }),
+    withModules(),
+    suppliedWithModules,
+    moduleSources,
+    kind,
+  );
+  const again = sessionProgram({ semantic: reporting });
+  const answer = reusedLibDiagnostics(
+    again,
+    withModules(moduleA),
+    suppliedWithModules,
+    moduleSources,
+    kind,
+  );
+  expect(again.asked).toEqual([`checked ${main},${fallback},${moduleA}`]);
+  expect(answer?.semantic).toEqual([diagnostic(fallback, 3)]);
+});
+
+test("module files that declare something global, and programs with scripts, check in full", () => {
+  const semantic = new Map([[main, []]]);
+  const store = memoryStore();
+  setLibDiagnosticsStore(store, "checker");
+  reusedLibDiagnostics(
+    sessionProgram({ semantic }),
+    withModules(),
+    suppliedWithModules,
+    moduleSources,
+    kind,
+  );
+  const global = sessionProgram({ semantic });
+  reusedLibDiagnostics(global, withModules(moduleGlobal), suppliedWithModules, moduleSources, kind);
+  expect(global.asked[0]).toBe("getGlobalDiagnostics");
+  const other = sessionProgram({ semantic });
+  reusedLibDiagnostics(
+    other,
+    withModules(moduleGlobal, moduleA),
+    suppliedWithModules,
+    moduleSources,
+    kind,
+  );
+  expect(other.asked[0]).toBe("getGlobalDiagnostics");
+  const script = sessionProgram({ semantic });
+  const scriptSources = files({ ...moduleTexts, [main]: "const total = 1;\n" });
+  reusedLibDiagnostics(script, withModules(moduleA), suppliedWithModules, scriptSources, kind);
+  expect(script.asked[0]).toBe("getGlobalDiagnostics");
+});
+
+test("the TypeScript libs declare no ambient module and import none, so module files cannot reach them", () => {
+  const libDir = dirname(hostTscTsExecutable());
+  const libFiles = readdirSync(libDir).filter((name) => /^lib\..*\.d\.ts$/.test(name));
+  expect(libFiles.length).toBeGreaterThan(50);
+  for (const name of libFiles) {
+    const text = readFileSync(join(libDir, name), "utf8");
+    expect(text, name).not.toMatch(
+      /\bmodule\s+["']|\bimport\s*\(\s*["']|\bfrom\s+["']|\brequire\s*\(/,
+    );
+  }
 });

@@ -8575,6 +8575,7 @@ function lowerObjectStaticCall(
     // already answers for those kinds. Reads of a declared field keep their
     // own lowerings above; this arm only replaces the SC2020 fence.
     if (
+      member === "getOwnPropertyDescriptor" &&
       target &&
       target.type.kind !== "dyn" &&
       target.type.kind !== "func" &&

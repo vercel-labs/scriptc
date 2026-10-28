@@ -62,6 +62,10 @@ struct ScrJsShape {
   /* The bytes of each key_strs string, in order: a for-in key read back
    * on an object of this shape finds its entry by address. */
   const char **key_data;
+  /* The key bytes and lengths of the path, in entry order, built on the
+   * first literal of this shape (scr_js_new_literal). */
+  char **fill_keys;
+  size_t *fill_lens;
 };
 
 /* Compiled get sites test a key's filter bit inline (js-ic.ts emitGet). */
@@ -117,6 +121,9 @@ static SCR_TL ScrJsAdoptMemo scr_js_adopt_memos[SCR_JS_ADOPT_MEMOS];
 static void scr_js_key_strs_free(ScrJsShape *shape) {
   free(shape->key_data);
   shape->key_data = NULL;
+  free(shape->fill_keys);
+  shape->fill_keys = NULL;
+  shape->fill_lens = NULL;
   if (!shape->key_strs) return;
   shape->key_strs->rc = 1;
   scr_arr_release(shape->key_strs);
@@ -532,15 +539,22 @@ ScrDyn *scr_js_new_literal(ScrJsIc *ic, size_t n, ScrStr *const *keys, ScrDyn *c
   ScrDyn *obj = scr_dyn_new_obj();
   const ScrJsShape *shape = ic->count ? ic->entry[0].target : NULL;
   if (shape && shape->count == n) {
-    char *names[16];
-    size_t lens[16];
-    const ScrJsShape *s = shape;
-    for (size_t i = n; i-- > 0; s = s->parent) {
-      names[i] = s->key;
-      lens[i] = s->key_len;
+    ScrJsShape *owner = (ScrJsShape *)shape;
+    if (!owner->fill_keys && n) {
+      /* One block: the key pointers, then the lengths. */
+      char **keys = malloc(n * (sizeof *keys + sizeof(size_t)));
+      if (!keys) scr_trap("scriptc: out of memory\n");
+      size_t *lens = (size_t *)(keys + n);
+      const ScrJsShape *s = shape;
+      for (size_t i = n; i-- > 0; s = s->parent) {
+        keys[i] = s->key;
+        lens[i] = s->key_len;
+      }
+      owner->fill_lens = lens;
+      owner->fill_keys = keys;
     }
-    scr_dyn_tier_fill(obj, n, names, lens, values);
-    obj->v.obj.shape = (ScrJsShape *)shape;
+    scr_dyn_tier_fill(obj, n, owner->fill_keys, owner->fill_lens, values);
+    obj->v.obj.shape = owner;
     return obj;
   }
   const ScrJsShape *s = &scr_js_root;

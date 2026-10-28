@@ -879,6 +879,10 @@ static void scr_dyn_key_release(char *key, size_t length) {
 
 #ifndef SCR_RC_AUDIT
 static SCR_TL ScrDyn *scr_dyn_free_arr, *scr_dyn_free_obj, *scr_dyn_free_misc;
+/* Ordinary objects whose disposal left every optional field clear (no
+ * prototype, symbol tables, index, region, source, class name or flags):
+ * their reuse sets only the count, header, length and shape. */
+static SCR_TL ScrDyn *scr_dyn_free_plain;
 static SCR_TL size_t scr_dyn_free_count;
 /* Sized for whole documents: a parse/serialize loop over a 100k-record
  * document frees ~400k nodes per round, and a pool capped below that sent
@@ -1132,6 +1136,20 @@ static void scr_dyn_region_leave(ScrDyn *d) {
 
 static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
 #ifndef SCR_RC_AUDIT
+  if (kind == SCR_DYN_OBJ && scr_dyn_free_plain) {
+    ScrDyn *d = scr_dyn_free_plain;
+    scr_dyn_free_plain = (ScrDyn *)d->v.str; /* freelist link */
+    scr_dyn_free_count--;
+    ScrCycHdr *header = scr_cyc_hdr(d);
+    scr_cyc_set_color(header, SCR_CYC_BLACK);
+    scr_cyc_set_gen(header, SCR_CYC_NURSERY);
+    d->rc = 1;
+    d->v.obj.len = 0; /* cap/entries/keys preserved */
+    scr_dyn_cached_key_bytes -= d->v.obj.cached_key_bytes;
+    d->v.obj.region = NULL;
+    SCR_JS_SHAPE_RESET(d);
+    return d;
+  }
   ScrDyn **list = kind == SCR_DYN_ARR   ? &scr_dyn_free_arr
                   : kind == SCR_DYN_OBJ ? &scr_dyn_free_obj
                                         : &scr_dyn_free_misc;
@@ -1256,8 +1274,13 @@ static inline void scr_dyn_release_child(ScrDyn *child) {
   scr_dyn_release(child);
 }
 
+static inline bool scr_dyn_obj_plain(const ScrDyn *d);
+static bool scr_dyn_obj_die_plain(ScrDyn *d);
+
 static void scr_dyn_dispose(ScrDyn *d, bool collected) {
 #ifndef SCR_RC_AUDIT
+  if (d->kind == SCR_DYN_OBJ && !collected && scr_dyn_obj_plain(d) && scr_dyn_obj_die_plain(d)) return;
+
   /* A capsule with nothing but its referent and adapters: the common end
    * of a value that crossed into a dyn slot for one call. */
   if (d->kind == SCR_DYN_TYPED_REF && !collected && !d->prototype && !d->symbol_properties &&
@@ -1326,9 +1349,6 @@ static void scr_dyn_dispose(ScrDyn *d, bool collected) {
     break;
   case SCR_DYN_FUNC:
     if (!collected) scr_closure_release(d->v.fn.clo); /* sig/name are static literals */
-    /* A cached box's mark (scr_dyn_new_func_box) must not outlive it in
-     * the pool. */
-    if (scr_cyc_hdr(d)->buf == SCR_CYC_ACYCLIC) scr_cyc_hdr(d)->buf = 0;
     break;
   case SCR_DYN_HANDLE:
     if (!collected || !d->v.handle.traced)
@@ -1412,12 +1432,72 @@ void scr_dyn_release_survivor(ScrDyn *d) {
     scr_cyc_released(d);
 }
 
+/* Whether a dead ordinary object has nothing but data entries in its
+ * node: no prototype, symbol tables, index, region, source or class name,
+ * and none of the four flags (buffer, null_proto, copied_from_native,
+ * non_extensible: the word after the kind). */
+static inline bool scr_dyn_obj_plain(const ScrDyn *d) {
+  uint32_t flags;
+  memcpy(&flags, &d->buffer, sizeof flags);
+  return !flags && !((uintptr_t)d->prototype | (uintptr_t)d->symbol_properties | (uintptr_t)d->symbol_keys |
+                     (uintptr_t)d->v.obj.index | (uintptr_t)d->v.obj.region | (uintptr_t)d->v.obj.source_identity |
+                     (uintptr_t)d->v.obj.class_name);
+}
+_Static_assert(offsetof(ScrDyn, null_proto) == offsetof(ScrDyn, buffer) + 1 &&
+               offsetof(ScrDyn, copied_from_native) == offsetof(ScrDyn, buffer) + 2 &&
+               offsetof(ScrDyn, non_extensible) == offsetof(ScrDyn, buffer) + 3, "flag word");
+
 static SCR_TL bool scr_dyn_draining;
 static SCR_TL ScrDyn **scr_dyn_dead;
 static SCR_TL size_t scr_dyn_dead_count, scr_dyn_dead_capacity;
 
+#ifndef SCR_RC_AUDIT
+/* The death of a plain object (scr_dyn_obj_plain): its values are
+ * released and the node, with its entries and their keys, goes to the
+ * plain pool. False, untouched, for one with an accessor entry, a weak
+ * observer or no pool room. */
+static bool scr_dyn_obj_die_plain(ScrDyn *d) {
+  ScrDynEntry *entries = d->v.obj.entries;
+  size_t n = d->v.obj.len;
+  for (size_t i = 0; i < n; i++)
+    if (entries[i].pair) return false;
+  if (scr_dyn_free_count >= SCR_DYN_FREE_MAX || scr_weak_maybe_key(d)) return false;
+  scr_cyc_dead(d);
+  if (n) {
+    bool outer = !scr_dyn_draining;
+    scr_dyn_draining = true;
+    for (size_t i = 0; i < n; i++) {
+      ScrDyn *value = entries[i].value;
+      entries[i].value = NULL;
+      scr_dyn_release_child(value);
+    }
+    if (outer) {
+      while (scr_dyn_dead_count) scr_dyn_dispose(scr_dyn_dead[--scr_dyn_dead_count], false);
+      scr_dyn_draining = false;
+    }
+  }
+  size_t held = d->v.obj.slot_key_bytes;
+  if (d->v.obj.key_slots <= SCR_DYN_KEY_CACHE_SLOTS && held <= SCR_DYN_KEY_CACHE_MAX - scr_dyn_cached_key_bytes)
+    scr_dyn_cached_key_bytes += held;
+  else
+    held = scr_dyn_obj_drop_keys(d, true);
+  d->v.obj.cached_key_bytes = held;
+  d->v.str = (ScrStr *)scr_dyn_free_plain;
+  scr_dyn_free_plain = d;
+  scr_dyn_free_count++;
+  return true;
+}
+#endif
+
 void scr_dyn_release(ScrDyn *d) {
   if (!d || d->rc == SIZE_MAX) return;
+#ifndef SCR_RC_AUDIT
+  if (d->rc == 1 && d->kind == SCR_DYN_OBJ && scr_dyn_obj_plain(d)) {
+    d->rc = 0;
+    if (scr_dyn_obj_die_plain(d)) return;
+    d->rc = 1;
+  }
+#endif
   if (--d->rc != 0) {
     /* A container of an intact parse region cannot lie on a cycle
      * (ScrDynRegion). */
@@ -2118,56 +2198,70 @@ ScrDyn *scr_dyn_new_num(double n) {
 
 static ScrDyn *scr_dyn_make_immortal(ScrDyn *d);
 
-/* The recent boxes of immortal strings and of immortal closures. A slot
- * holds one reference to its box, and a box another string or closure
- * takes the slot from is released, not abandoned: the slots are few and
- * the program's literals many. */
-static SCR_TL struct {
-  const ScrStr *str;
-  ScrDyn *box;
-} scr_dyn_str_boxes[256];
-static SCR_TL struct {
-  ScrClosure *clo;
-  ScrDynThunk thunk;
+/* The one immortal box of each immortal string and each immortal closure
+ * (per signature and name): boxes have no identity of their own (strings
+ * have none, functions compare by closure), and literals and top-level
+ * functions are as many as the program has. The table keeps every box
+ * reachable; past its cap, values get ordinary boxes. */
+typedef struct {
+  const void *key;
+  const void *thunk;
   const char *sig, *name;
   ScrDyn *box;
-} scr_dyn_func_boxes[128];
-static SCR_TL bool scr_dyn_box_caches_registered;
+} ScrDynBoxSlot;
+static SCR_TL ScrDynBoxSlot *scr_dyn_box_slots;
+static SCR_TL size_t scr_dyn_box_capacity, scr_dyn_box_count;
+#define SCR_DYN_BOX_MAX ((size_t)1 << 16)
 
-static void scr_dyn_box_caches_reset(void) {
-  for (size_t i = 0; i < 256; i++) {
-    scr_dyn_release(scr_dyn_str_boxes[i].box);
-    scr_dyn_str_boxes[i].str = NULL;
-    scr_dyn_str_boxes[i].box = NULL;
+/* The slot of (key, thunk, sig, name): its box, or an empty slot to fill;
+ * NULL when the table is full. */
+static ScrDynBoxSlot *scr_dyn_box_slot(const void *key, const void *thunk, const char *sig, const char *name) {
+  if (scr_dyn_box_count * 2 >= scr_dyn_box_capacity) {
+    if (scr_dyn_box_count >= SCR_DYN_BOX_MAX) {
+      size_t i = (((uintptr_t)key >> 4) * 0x9E3779B97F4A7C15ull >> 20) & (scr_dyn_box_capacity - 1);
+      for (ScrDynBoxSlot *e; (e = &scr_dyn_box_slots[i])->box; i = (i + 1) & (scr_dyn_box_capacity - 1))
+        if (e->key == key && e->thunk == thunk && e->sig == sig && e->name == name) return e;
+      return NULL;
+    }
+    size_t capacity = scr_dyn_box_capacity ? scr_dyn_box_capacity * 2 : 1024;
+    ScrDynBoxSlot *grown = calloc(capacity, sizeof *grown);
+    if (!grown) scr_json_oom();
+    for (size_t j = 0; j < scr_dyn_box_capacity; j++) {
+      ScrDynBoxSlot *old = &scr_dyn_box_slots[j];
+      if (!old->box) continue;
+      size_t i = (((uintptr_t)old->key >> 4) * 0x9E3779B97F4A7C15ull >> 20) & (capacity - 1);
+      while (grown[i].box) i = (i + 1) & (capacity - 1);
+      grown[i] = *old;
+    }
+    free(scr_dyn_box_slots);
+    scr_dyn_box_slots = grown;
+    scr_dyn_box_capacity = capacity;
   }
-  for (size_t i = 0; i < 128; i++) {
-    scr_dyn_release(scr_dyn_func_boxes[i].box);
-    memset(&scr_dyn_func_boxes[i], 0, sizeof scr_dyn_func_boxes[i]);
-  }
-  scr_dyn_box_caches_registered = false;
+  size_t i = (((uintptr_t)key >> 4) * 0x9E3779B97F4A7C15ull >> 20) & (scr_dyn_box_capacity - 1);
+  for (ScrDynBoxSlot *e; (e = &scr_dyn_box_slots[i])->box; i = (i + 1) & (scr_dyn_box_capacity - 1))
+    if (e->key == key && e->thunk == thunk && e->sig == sig && e->name == name) return e;
+  return &scr_dyn_box_slots[i];
 }
 
-static void scr_dyn_box_caches_register(void) {
-  if (scr_dyn_box_caches_registered) return;
-  scr_dyn_box_caches_registered = true;
-  scr_atexit(scr_dyn_box_caches_reset);
-}
+/* The last string looked up, for runs of the same literal. */
+static SCR_TL const ScrStr *scr_dyn_box_last_str;
+static SCR_TL ScrDyn *scr_dyn_box_last_box;
 
 ScrDyn *scr_dyn_new_str(ScrStr *s) {
-  /* An immortal string (a literal, or interned) reuses its recent box:
-   * strings have no identity. */
   if (s->rc == SIZE_MAX) {
-    size_t slot = ((uintptr_t)s >> 4) & 255;
-    if (scr_dyn_str_boxes[slot].str != s) {
-      scr_dyn_box_caches_register();
-      ScrDyn *box = scr_dyn_leaf_alloc(SCR_DYN_STR);
-      box->v.str = s;
-      ScrDyn *old = scr_dyn_str_boxes[slot].box;
-      scr_dyn_str_boxes[slot].str = s;
-      scr_dyn_str_boxes[slot].box = box;
-      scr_dyn_release(old);
+    if (s == scr_dyn_box_last_str) return scr_dyn_box_last_box;
+    ScrDynBoxSlot *slot = scr_dyn_box_slot(s, NULL, NULL, NULL);
+    if (slot) {
+      if (!slot->box) {
+        ScrDyn *box = scr_dyn_leaf_alloc(SCR_DYN_STR);
+        box->v.str = s;
+        *slot = (ScrDynBoxSlot){s, NULL, NULL, NULL, scr_dyn_make_immortal(box)};
+        scr_dyn_box_count++;
+      }
+      scr_dyn_box_last_str = s;
+      scr_dyn_box_last_box = slot->box;
+      return slot->box;
     }
-    return scr_dyn_retain(scr_dyn_str_boxes[slot].box);
   }
   ScrDyn *d = scr_dyn_leaf_alloc(SCR_DYN_STR);
   d->v.str = scr_str_retain(s);
@@ -3642,6 +3736,11 @@ typedef struct {
 } ScrRecordSource;
 static SCR_TL ScrRecordSource *scr_record_sources;
 static SCR_TL size_t scr_record_source_capacity, scr_record_source_count;
+/* Installs the dispose hook while some weak collection holds a key or
+ * some record keeps its source, and removes it otherwise: a program that
+ * creates weak collections it never fills (React's development-only
+ * tables) frees without the call. */
+static void scr_dispose_hook_refresh(void);
 /* Deleted slots keep this marker so probe runs stay intact without moving
  * entries (records free in conversion order, so a backward shift would
  * rescan the same run on every deletion); insertion reuses them and the
@@ -3698,6 +3797,7 @@ static void scr_record_source_drop(ScrRecordSource *found) {
   *found = (ScrRecordSource){ .rec = SCR_RECORD_SOURCE_DELETED };
   scr_record_source_count--;
   scr_record_source_deleted++;
+  scr_dispose_hook_refresh();
   scr_dyn_release(view);
 }
 
@@ -3804,7 +3904,7 @@ static void scr_record_source_put(const ScrRecordSource *entry) {
   if (scr_record_sources[slot].rec == SCR_RECORD_SOURCE_DELETED) scr_record_source_deleted--;
   scr_record_sources[slot] = *entry;
   scr_record_source_count++;
-  scr_weak_dispose_hook = &scr_dispose_observers;
+  scr_dispose_hook_refresh();
 }
 
 /* Called by the checked record builder after it filled `rec` from `src`;
@@ -6240,17 +6340,14 @@ void scr_dyn_fence_member(ScrDyn *object, const ScrStr *key) {
  * never on a cycle. */
 ScrDyn *scr_dyn_new_func_box(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, const char *sig, const char *name) {
   if (clo->rc != SIZE_MAX || (clo->function_kind & 8)) return scr_dyn_new_func(clo, thunk, arity, sig, name);
-  size_t slot = (((uintptr_t)clo >> 4) ^ ((uintptr_t)thunk >> 2)) & 127;
-  __typeof__(scr_dyn_func_boxes[0]) *cached = &scr_dyn_func_boxes[slot];
-  if (cached->clo != clo || cached->thunk != thunk || cached->sig != sig || cached->name != name) {
-    scr_dyn_box_caches_register();
-    ScrDyn *box = scr_dyn_new_func(clo, thunk, arity, sig, name);
-    scr_cyc_hdr(box)->buf = SCR_CYC_ACYCLIC;
-    ScrDyn *old = cached->box;
-    *cached = (__typeof__(*cached)){clo, thunk, sig, name, box};
-    scr_dyn_release(old);
+  ScrDynBoxSlot *slot = scr_dyn_box_slot(clo, (const void *)thunk, sig, name);
+  if (!slot) return scr_dyn_new_func(clo, thunk, arity, sig, name);
+  if (!slot->box) {
+    *slot = (ScrDynBoxSlot){clo, (const void *)thunk, sig, name,
+                            scr_dyn_make_immortal(scr_dyn_new_func(clo, thunk, arity, sig, name))};
+    scr_dyn_box_count++;
   }
-  return scr_dyn_retain(cached->box);
+  return slot->box;
 }
 
 ScrDyn *scr_dyn_new_func(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, const char *sig, const char *name) {
@@ -18070,8 +18167,13 @@ static ScrWeakKeySlot *scr_weak_key_slot_put(void *key) {
     scr_weak_keys_used++;
     size_t bit = scr_weak_key_filter_bit(key);
     scr_weak_key_filter[bit >> 6] |= UINT64_C(1) << (bit & 63);
+    scr_dispose_hook_refresh();
   }
   return &scr_weak_keys[j];
+}
+
+static void scr_dispose_hook_refresh(void) {
+  scr_weak_dispose_hook = scr_weak_keys_used || scr_record_source_count ? &scr_dispose_observers : NULL;
 }
 static void scr_weak_key_slot_delete(ScrWeakKeySlot *slot) {
   size_t mask = scr_weak_keys_mask;
@@ -18080,6 +18182,7 @@ static void scr_weak_key_slot_delete(ScrWeakKeySlot *slot) {
     free(scr_weak_keys);
     scr_weak_keys = NULL;
     memset(scr_weak_key_filter, 0, sizeof scr_weak_key_filter);
+    scr_dispose_hook_refresh();
     return;
   }
   for (size_t k = i;;) {
@@ -18328,7 +18431,6 @@ static ScrDyn *scr_weak_collection_new(ScrDyn *seed, bool is_set) {
   };
   ScrDynHandleTag tag = is_set ? SCR_DYNH_WEAK_SET : SCR_DYNH_WEAK_MAP;
   scr_weak_observing = true;
-  scr_weak_dispose_hook = &scr_dispose_observers;
   scr_dyn_handle_install(tag, is_set ? &set_ops : &map_ops);
   static ScrCycType cyc_type = { &scr_weak_map_trace, &scr_weak_map_gcfree, SCR_CYC_KIND_WEAK_MAP };
   ScrWeakMap *map = scr_cyc_alloc(sizeof *map, &cyc_type);
@@ -19370,11 +19472,9 @@ void scr_dyn_tier_fill(ScrDyn *obj, size_t n, char *const *keys, const size_t *l
     }
     e->key_len = (uint32_t)lens[i];
     e->value = values[i];
-    e->accessor = false;
-    e->fenced = false;
-    e->writable = true;
-    e->enumerable = true;
-    e->configurable = true;
+    /* accessor, value_traced and fenced clear; writable, enumerable and
+     * configurable set. */
+    memcpy((char *)e + offsetof(ScrDynEntry, key_len) + sizeof e->key_len, &(uint32_t){SCR_DYN_ENTRY_DATA_FLAGS}, 4);
   }
   obj->v.obj.len = n;
   SCR_JS_SHAPE_RESET(obj);

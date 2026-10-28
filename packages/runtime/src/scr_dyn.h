@@ -347,6 +347,10 @@ typedef struct {
   ScrDynAccessorPair *pair;
 } ScrDynEntry;
 
+/* The four flag bytes after key_len of an ordinary data property: no
+ * accessor, trace snapshot or fence bits, and writable, enumerable and
+ * configurable (little-endian: bytes 1, 2, 3 of the word are true). */
+#define SCR_DYN_ENTRY_DATA_FLAGS 0x01010100u
 _Static_assert(sizeof(ScrDynEntry) == (sizeof(void *) == 8 ? 32 : 20),
                "LLVM checked-object readers use the target entry stride");
 _Static_assert(offsetof(ScrDynEntry, value) == (sizeof(void *) == 8 ? 16 : 12),

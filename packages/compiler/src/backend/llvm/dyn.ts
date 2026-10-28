@@ -2,7 +2,13 @@ import { emitPerKeyOrder } from "./key-orders.js";
 import { typedRefConstructor } from "./shapes.js";
 import { bindLiveArrayOps } from "./expr-stream-bridges.js";
 import { BYTES_ELEM_NUM, SCR_ARR_FIELD, SCR_ARR_STATES, f64Lit, sizeToDouble } from "./common.js";
-import { emitTaggedWrap, emitUnionPeek, emitUnionTag } from "./union-repr.js";
+import {
+  emitTaggedNumber,
+  emitTaggedNumberWrap,
+  emitTaggedWrap,
+  emitUnionPeek,
+  emitUnionTag,
+} from "./union-repr.js";
 import {
   INLINE_UNION_FIELD,
   loadInlineUnion,
@@ -2956,14 +2962,18 @@ export class LlDyn {
             // instance (rc == SIZE_MAX — no retain owed).
             B.terminate(`ret ptr ${host.unitInstanceRef(t.unionId, i)}`);
           } else if (arm.kind === "f64" || arm.kind === "procStream") {
-            host.declare(`declare ptr @scr_union_new_f64(i32, double)`);
             const x = B.tmp();
-            const u = B.tmp();
             B.line(
               `${x} = call double @${this.dynCheckHelper(arm, preserveRefs)}(ptr %d, ptr %path)`,
             );
-            B.line(`${u} = call ptr @scr_union_new_f64(i32 ${i}, double ${x})`);
-            B.terminate(`ret ptr ${u}`);
+            if (host.nullableUnions.get(t.unionId)?.repr === "tagged") {
+              B.terminate(`ret ptr ${emitTaggedNumberWrap(B, x)}`);
+            } else {
+              host.declare(`declare ptr @scr_union_new_f64(i32, double)`);
+              const u = B.tmp();
+              B.line(`${u} = call ptr @scr_union_new_f64(i32 ${i}, double ${x})`);
+              B.terminate(`ret ptr ${u}`);
+            }
           } else if (arm.kind === "bool") {
             host.declare(`declare ptr @scr_union_new_bool(i32, i1 zeroext)`);
             const x = B.tmp();
@@ -3900,10 +3910,14 @@ export class LlDyn {
             B.line(`${r} = call ptr @scr_dyn_new_null()`);
             B.terminate(`ret ptr ${r}`);
           } else if (arm.kind === "f64" || arm.kind === "procStream") {
-            host.declare(`declare double @scr_union_get_f64(ptr)`);
-            const x = B.tmp();
             const r = B.tmp();
-            B.line(`${x} = call double @scr_union_get_f64(ptr %v)`);
+            let x: string;
+            if (nullable?.repr === "tagged") x = emitTaggedNumber(B, "%v");
+            else {
+              host.declare(`declare double @scr_union_get_f64(ptr)`);
+              x = B.tmp();
+              B.line(`${x} = call double @scr_union_get_f64(ptr %v)`);
+            }
             B.line(`${r} = call ptr @${this.toDynHelper(arm)}(double ${x})`);
             B.terminate(`ret ptr ${r}`);
           } else if (arm.kind === "bool") {
@@ -5806,6 +5820,19 @@ export class LlDyn {
             B.line(`store i1 false, ptr %fail`);
             B.br(lNext);
             B.startBlock(lHit);
+          }
+          const pointer = host.nullableUnions.get(t.unionId);
+          if (pointer) {
+            // A pointer union is its payload (tagged: plus the arm's bits, or
+            // a number's encoding).
+            const ref = pointer.repr === "tagged" ? pointer.refs.find((r) => r.tag === i) : undefined;
+            const value =
+              pointer.repr === "tagged" && i === pointer.num
+                ? emitTaggedNumberWrap(B, v)
+                : emitTaggedWrap(B, v, ref?.bits ?? 0);
+            B.terminate(`ret ptr ${value}`);
+            B.startBlock(lNext);
+            return;
           }
           const u = B.tmp();
           if (arm.kind === "f64") {

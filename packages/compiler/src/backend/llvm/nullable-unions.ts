@@ -1,5 +1,6 @@
 import {
   isUnitType,
+  typeKey,
   type IrClassDef,
   type IrModule,
   type IrType,
@@ -70,7 +71,17 @@ export interface TaggedUnion {
   nullTag: number;
   /** The reference arms in tag order; `bits` is the pointer tag. */
   refs: readonly { tag: number; bits: number; arm: IrType }[];
+  /** The `number` arm's tag, or -1. A number is its double's bits plus
+   * TAGGED_NUMBER_OFFSET (NaN canonical first), which puts every number at
+   * or above the offset and leaves every pointer, NULL and the `null`
+   * sentinel below it. */
+  num: number;
 }
+
+/** Added to a tagged union's number bits: user-space pointers stay below
+ * 2^47, and the largest non-NaN bit pattern (-Infinity) plus 2^49 does not
+ * wrap. */
+export const TAGGED_NUMBER_OFFSET = "562949953421312";
 
 /** A union whose values are plain pointers (no `%ScrUnion` box). */
 export type PointerUnion = NullableUnion | ShapeUnion | TaggedUnion;
@@ -128,14 +139,16 @@ export type NullableRefArm =
 
 /** The arm is a JS object: always truthy. */
 export function isObjectArm(nullable: PointerUnion): boolean {
-  if (nullable.repr === "tagged") return nullable.refs.every((r) => r.arm.kind !== "string");
+  if (nullable.repr === "tagged")
+    return nullable.num < 0 && nullable.refs.every((r) => r.arm.kind !== "string");
   return nullable.repr === "shapes" || nullable.arm.kind !== "string";
 }
 
 /** The arm compares by pointer identity. Function arms compare identity
  * roots instead: a signature adapter is the function it adapts. */
 export function isPointerIdentityArm(nullable: PointerUnion): boolean {
-  if (nullable.repr === "tagged") return nullable.refs.every((r) => r.arm.kind !== "string");
+  if (nullable.repr === "tagged")
+    return nullable.num < 0 && nullable.refs.every((r) => r.arm.kind !== "string");
   return (
     nullable.repr === "shapes" || (nullable.arm.kind !== "string" && nullable.arm.kind !== "func")
   );
@@ -325,12 +338,21 @@ function nullableShape(
 function taggedUnion(def: IrUnionDef): TaggedUnion | null {
   if (process.env.SCRIPTC_TAGGED_UNIONS === "0") return null;
   const units = def.arms.filter(isUnitType).length;
-  const refCount = def.arms.length - units;
-  if (units > 2 || refCount < 2 || refCount > 4) return null;
+  const nums = process.env.SCRIPTC_TAGGED_NUMBERS === "0" ? [] : def.arms.filter((arm) => arm.kind === "f64");
+  const refCount = def.arms.length - units - nums.length;
+  // A number arm joins one to three reference arms: unions of a number and
+  // unit arms alone keep their scalar paths (register results).
+  if (units > 2 || nums.length > 1 || refCount < 2 - nums.length || refCount < 1 || refCount > 4 - nums.length)
+    return null;
   const refs: { tag: number; bits: number; arm: IrType }[] = [];
+  let num = -1;
   for (let tag = 0; tag < def.arms.length; tag++) {
     const arm = def.arms[tag]!;
     if (isUnitType(arm)) continue;
+    if (arm.kind === "f64" && nums.length === 1) {
+      num = tag;
+      continue;
+    }
     // Leaf arms only for now: no collector header, never on a cycle, so
     // no trace ever visits a tagged value.
     const ok = arm.kind === "string" || arm.kind === "bytes" || arm.kind === "stats";
@@ -345,7 +367,7 @@ function taggedUnion(def: IrUnionDef): TaggedUnion | null {
     nullTag = def.arms.findIndex((arm) => arm.kind === "nullT");
     if (unitTag < 0 || nullTag < 0) return null;
   }
-  return { repr: "tagged", unionId: def.id, unitTag, nullTag, refs };
+  return { repr: "tagged", unionId: def.id, unitTag, nullTag, refs, num };
 }
 
 /** Two or more emitted record arms and at most two unit arms (both:
@@ -382,6 +404,35 @@ function shapeUnion(
  * exception: its keys compare by record identity, which a shape union's
  * record pointer carries as well (the map keys it by reference). */
 function boxedUnionIds(mod: IrModule, nodes?: IrNodeIndex): Set<string> {
+  const boxed = directlyBoxedUnionIds(mod, nodes);
+  // Conversions between a union with a number arm and a narrower or wider
+  // one may reuse the value as it is (`T` into `T | undefined`), so a
+  // boxed one boxes every such relative.
+  const defs = (mod.unions ?? []).filter((def) => def.arms.some((arm) => arm.kind === "f64"));
+  const arms = new Map(
+    defs.map((def) => [def.id, new Set(def.arms.filter((arm) => !isUnitType(arm)).map(typeKey))]),
+  );
+  const within = (a: Set<string>, b: Set<string>): boolean => [...a].every((k) => b.has(k));
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const def of defs) {
+      if (boxed.has(def.id)) continue;
+      const mine = arms.get(def.id)!;
+      for (const other of defs) {
+        if (!boxed.has(other.id)) continue;
+        const theirs = arms.get(other.id)!;
+        if (within(mine, theirs) || within(theirs, mine)) {
+          boxed.add(def.id);
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+  return boxed;
+}
+
+function directlyBoxedUnionIds(mod: IrModule, nodes?: IrNodeIndex): Set<string> {
   const boxed = new Set<string>();
   // Only the module's union definitions consult the result.
   if (!mod.unions?.length) return boxed;

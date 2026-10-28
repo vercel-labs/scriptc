@@ -71,6 +71,8 @@ export interface NativeCodegenArtifact {
   dependencies: NativeArtifactDependency[];
   /** Every emitted file, starting with the requested output path. */
   outputPaths: string[];
+  /** The objects of NativeCodegenOptions.runtimeModules, in their order. */
+  runtimeOutputPaths?: string[];
   /** How the build's profile matched, when it used one and the helper ran. */
   profileMatch?: NativeProfileMatch;
 }
@@ -117,6 +119,9 @@ export interface NativeCodegenOptions {
   partitions?: number;
   /** Profile-guided optimization: instrumentation or an indexed profile. */
   profile?: NativeProfileOptions;
+  /** Complete runtime unit bitcode compiled with the program, each to an
+   * object of its own (runtimeOutputPaths), so the profile covers it. */
+  runtimeModules?: readonly string[];
 }
 
 /** Writes LLVM text in large batches; see `writeTextParts`. */
@@ -327,7 +332,7 @@ function cacheKey(
   else
     for (const part of typeof options.llvm === "string" ? [options.llvm] : options.llvm)
       hash.update(part);
-  return hash
+  hash
     .update("\0")
     .update(JSON.stringify(target))
     .update("\0")
@@ -341,8 +346,12 @@ function cacheKey(
     .update("\0")
     .update(options.sourcePath)
     .update((options.partitions ?? 1) > 1 ? `\0partitions:${options.partitions}` : "")
-    .update(options.profile === undefined ? "" : `\0${nativeProfileKey(options.profile)}`)
-    .digest("hex");
+    .update(options.profile === undefined ? "" : `\0${nativeProfileKey(options.profile)}`);
+  for (const module of options.runtimeModules ?? []) {
+    hash.update("\0runtime\0");
+    updateHashFromFile(hash, module);
+  }
+  return hash.digest("hex");
 }
 
 function artifactMode(): number {
@@ -419,7 +428,11 @@ export async function emitNativeArtifact(
     options.cacheRoot === undefined ? buildCacheRoot() : options.cacheRoot,
   );
   const key = cacheKey(options, target, helper.identity);
-  const outputs = nativePartitionPaths(options.outputPath, options.partitions ?? 1);
+  const programOutputs = nativePartitionPaths(options.outputPath, options.partitions ?? 1);
+  const runtimeOutputs = (options.runtimeModules ?? []).map(
+    (_, index) => `${options.outputPath}.rt${index}.o`,
+  );
+  const outputs = [...programOutputs, ...runtimeOutputs];
   const suffix = options.outputKind === "obj" ? "o" : "s";
   const cached = outputs.map((_, index) =>
     root === null
@@ -434,14 +447,15 @@ export async function emitNativeArtifact(
   await mkdir(dirname(options.outputPath), { recursive: true });
   const artifact = {
     dependencies: helper.dependencies,
-    outputPaths: outputs,
+    outputPaths: programOutputs,
+    ...(runtimeOutputs.length === 0 ? {} : { runtimeOutputPaths: runtimeOutputs }),
   } satisfies NativeCodegenArtifact;
   if (await installCachedPartitions(cached, outputs)) return artifact;
   // Partitioned programs also reuse individual partition artifacts, so an
   // edit recompiles only the partitions it affects. The directory names the
   // exact helper build and target; the helper keys entries by content.
   const partitionCache =
-    root === null || outputs.length < 2
+    root === null || programOutputs.length < 2
       ? null
       : join(
           root,
@@ -466,7 +480,7 @@ export async function emitNativeArtifact(
       "emit",
       "--input",
       input,
-      ...stages.flatMap((stage) => ["--output", stage]),
+      ...stages.slice(0, programOutputs.length).flatMap((stage) => ["--output", stage]),
       "--filetype",
       options.outputKind,
       "--target",
@@ -481,6 +495,12 @@ export async function emitNativeArtifact(
       options.sourcePath,
       ...(partitionCache === null ? [] : ["--cache-dir", partitionCache]),
       ...nativeProfileHelperArgs(options.profile),
+      ...(options.runtimeModules ?? []).flatMap((module, index) => [
+        "--runtime-module",
+        module,
+        "--runtime-output",
+        stages[programOutputs.length + index]!,
+      ]),
     ]);
     for (const stage of stages) {
       const emitted = await stat(stage).catch(() => null);

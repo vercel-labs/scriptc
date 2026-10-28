@@ -203,7 +203,7 @@ import { emitBorrowedFieldSequence, guardedValue } from "./borrowed-receivers.js
 import { emitBorrowedInputs } from "./borrowed-inputs.js";
 import { findWalkBorrows, type WalkBorrowHost } from "./walk-borrows.js";
 import { eachNodeOfKinds, IrNodeIndex, type IrNodeKind } from "../../ir/node-index.js";
-import { lastUseRead } from "./local-extents.js";
+import { lastUseRead, lastUseReads } from "./local-extents.js";
 import { findReboundParameters } from "./rebound-parameters.js";
 import { ReferenceEffects } from "./reference-effects.js";
 import { ReferenceWrites, type Writes } from "./reference-writes.js";
@@ -353,7 +353,14 @@ import { VirtualBorrows } from "./virtual-borrows.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { LlWalkers } from "./walkers.js";
 import { isObjectArm, NULLABLE_ABSENT, NULLABLE_NULL, NullableUnions } from "./nullable-unions.js";
-import { emitNullablePresent, emitTaggedWrap, emitUnionPeek, emitUnionTag } from "./union-repr.js";
+import {
+  emitNullablePresent,
+  emitTaggedNumber,
+  emitTaggedNumberWrap,
+  emitTaggedWrap,
+  emitUnionPeek,
+  emitUnionTag,
+} from "./union-repr.js";
 import {
   emitConcatInputs,
   emitMixedConcat,
@@ -4228,7 +4235,7 @@ export class LlEmitter {
       this.unionTagSwitch(v.name, def, (arm) => {
         let valueName = "false";
         if (arm.kind === "f64" || arm.kind === "procStream") {
-          valueName = this.unionGetF64(v.name);
+          valueName = this.unionGetF64(v.name, unionId);
         } else if (arm.kind === "bool") {
           valueName = this.unionGetBool(v.name);
         } else if (arm.kind === "string") {
@@ -4432,14 +4439,15 @@ export class LlEmitter {
    * the nullish-family reads): scalars via inline payload loads, ref arms
    * a retained peek. */
   unionExtract(uName: string, unionId: string, arm: IrType): string {
-    if (arm.kind === "f64" || arm.kind === "procStream") return this.unionGetF64(uName);
+    if (arm.kind === "f64" || arm.kind === "procStream") return this.unionGetF64(uName, unionId);
     if (arm.kind === "bool") return this.unionGetBool(uName);
     return this.retainFrame(this.unionPeek(uName, unionId), arm);
   }
 
   /** A scalar f64 arm's payload (scr_union_get_f64 inlined). Inline loads
    * keep stack boxes free of escaping calls, so LLVM can scalarize them. */
-  unionGetF64(uName: string): string {
+  unionGetF64(uName: string, unionId: string): string {
+    if (this.nullableUnions.get(unionId)?.repr === "tagged") return emitTaggedNumber(this.B, uName);
     const p = this.B.tmp();
     const t = this.B.tmp();
     this.B.line(`${p} = getelementptr inbounds %ScrUnion, ptr ${uName}, i64 0, i32 5`);
@@ -4465,6 +4473,7 @@ export class LlEmitter {
     const B = this.B;
     const nullable = this.nullableUnions.get(unionId);
     if (nullable?.repr === "tagged") {
+      if (tag === nullable.num) return emitTaggedNumberWrap(B, v.name);
       const ref = nullable.refs.find((r) => r.tag === tag);
       if (!ref)
         throw new InternalCompilerError(
@@ -6049,8 +6058,8 @@ export class LlEmitter {
       this.integerViews.has(s.localId)
     )
       return;
-    const read = lastUseRead(cursor.stmts, cursor.index, s.localId);
-    if (read !== null && this.varRefCount(read) === 1) this.lastUseMoves.set(read, b.slot);
+    for (const read of lastUseReads(cursor.stmts, cursor.index, s.localId))
+      if (this.varRefCount(read) === 1) this.lastUseMoves.set(read, b.slot);
   }
 
   /** An owned parameter whose last statement in the body reads it once:

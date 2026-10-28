@@ -44,6 +44,7 @@ import type { BlockBuilder } from "./blocks.js";
 import { SCR_ARR_FIELD, llvmCommentText } from "./common.js";
 import {
   NULLABLE_NULL,
+  TAGGED_NUMBER_OFFSET,
   SHAPE_WORD_INDEX,
   shapeReleaseFn,
   shapeTagFn,
@@ -505,6 +506,14 @@ export function emitTaggedUnionHelpers(host: ShapeHost): string[] {
         : [`  br label %ref`]),
       `ref:`,
       `  %bits = ptrtoint ptr %u to i64`,
+      // A number holds no reference.
+      ...(union.num >= 0
+        ? [
+            `  %isnum = icmp uge i64 %bits, ${TAGGED_NUMBER_OFFSET}`,
+            `  br i1 %isnum, label %${done}, label %ptr`,
+            `ptr:`,
+          ]
+        : []),
       `  %low = and i64 %bits, 3`,
       `  %neg = sub i64 0, %low`,
       `  %p = getelementptr i8, ptr %u, i64 %neg`,
@@ -531,6 +540,15 @@ export function emitTaggedUnionHelpers(host: ShapeHost): string[] {
         : [`  br label %ref`]),
       `ref:`,
       `  %bits = ptrtoint ptr %u to i64`,
+      ...(union.num >= 0
+        ? [
+            `  %isnum = icmp uge i64 %bits, ${TAGGED_NUMBER_OFFSET}`,
+            `  br i1 %isnum, label %num, label %ptr`,
+            `num:`,
+            `  ret i32 ${union.num}`,
+            `ptr:`,
+          ]
+        : []),
       `  %low = and i64 %bits, 3`,
       `  switch i64 %low, label %bad [ ${union.refs.map((r) => `i64 ${r.bits}, label %t${r.bits}`).join(" ")} ]`,
       ...union.refs.flatMap((r) => [`t${r.bits}:`, `  ret i32 ${r.tag}`]),

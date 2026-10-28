@@ -33,8 +33,7 @@ test.each([
   [{ profileUse: "/p/a.profdata", outputKind: "obj" }, /--profile-use is only supported/],
   [{ profileGenerate: "/p/%p.profraw", sanitize: true }, /--sanitize/],
   [{ profileUse: "/p/a.profdata", optimization: "dev" }, /optimized build/],
-  [{ profileGenerate: "/p/%p.profraw", platform: "darwin" }, /Linux executables/],
-  [{ profileGenerate: "/p/%p.profraw", platform: "wasi" }, /Linux executables/],
+  [{ profileGenerate: "/p/%p.profraw", platform: "wasi" }, /Linux and macOS executables/],
 ] as const)("refuses %j", (override, message) => {
   expect(nativeProfileRefusal({ ...BASE, ...override })).toMatch(message);
 });

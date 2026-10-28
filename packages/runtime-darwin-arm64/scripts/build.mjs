@@ -253,6 +253,28 @@ async function build() {
                 };
               }
             }
+            // The complete unit before LLVM's optimizations, which a profiled
+            // build compiles with the program (instrumented or annotated).
+            let fullBitcode;
+            if (flavor === "release") {
+              const fullOutput = output.replace(/\.o$/, ".full.bc");
+              await run(compiler, [
+                ...sourcePathFlags,
+                ...unitFlags,
+                "-emit-llvm",
+                "-Xclang",
+                "-disable-llvm-passes",
+                "-c",
+                join(runtimeSrc, unit.source),
+                "-o",
+                fullOutput,
+              ]);
+              fullBitcode = {
+                path: artifactPath(fullOutput),
+                sha256: await sha256(fullOutput),
+                size: (await stat(fullOutput)).size,
+              };
+            }
             const built = {
               id: variant.id,
               when: variant.when,
@@ -261,6 +283,7 @@ async function build() {
               sha256: await sha256(output),
               size: (await stat(output)).size,
               ...(bitcode === undefined ? {} : { bitcode }),
+              ...(fullBitcode === undefined ? {} : { full_bitcode: fullBitcode }),
             };
             variants.push(built);
           }

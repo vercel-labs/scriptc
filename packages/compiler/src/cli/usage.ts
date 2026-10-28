@@ -76,7 +76,7 @@ Options:
                      environment variable (0 to 4, or a level name) caps the
                      level at run time (opt in; --emit=exe only)
       --profile-generate <pattern>
-                     Linux: instrument the executable for profile-guided
+                     Linux, macOS: instrument the executable for profile-guided
                      optimization. Each run writes a raw profile to the
                      pattern (%p expands to the process id; the
                      LLVM_PROFILE_FILE environment variable overrides it).

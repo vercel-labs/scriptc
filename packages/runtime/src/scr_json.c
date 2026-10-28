@@ -883,6 +883,10 @@ static SCR_TL ScrDyn *scr_dyn_free_arr, *scr_dyn_free_obj, *scr_dyn_free_misc;
  * prototype, symbol tables, index, region, source, class name or flags):
  * their reuse sets only the count, header, length and shape. */
 static SCR_TL ScrDyn *scr_dyn_free_plain;
+/* Dead capsules of moved records that held nothing but their referent:
+ * they keep their type's adapters, so boxing another record of the same
+ * type sets only the referent (scr_dyn_typed_ref_new). */
+static SCR_TL ScrDyn *scr_dyn_free_capsule;
 static SCR_TL size_t scr_dyn_free_count;
 /* Sized for whole documents: a parse/serialize loop over a 100k-record
  * document frees ~400k nodes per round, and a pool capped below that sent
@@ -1289,8 +1293,13 @@ static void scr_dyn_dispose(ScrDyn *d, bool collected) {
     scr_typed_ref_forget(d);
     d->v.typed_ref.release(d->v.typed_ref.ptr);
     scr_dyn_weak_dispose(d);
-    d->v.str = (ScrStr *)scr_dyn_free_misc;
-    scr_dyn_free_misc = d;
+    if (d->v.typed_ref.unregistered) {
+      d->v.typed_ref.ptr = scr_dyn_free_capsule; /* freelist link; the adapters stay */
+      scr_dyn_free_capsule = d;
+    } else {
+      d->v.str = (ScrStr *)scr_dyn_free_misc;
+      scr_dyn_free_misc = d;
+    }
     scr_dyn_free_count++;
     return;
   }
@@ -3921,13 +3930,39 @@ void scr_record_source_note(void *rec, const ScrDyn *src, const char *const *nam
   if (!rec || !src || src->kind != SCR_DYN_OBJ || src->v.obj.source_identity) return;
   ScrRecordSource probe = { rec, NULL, (const char *)names, (const char *)lens,
                             sizeof *names, sizeof *lens, count };
+  /* Whether the source's keys leave the layout (an undeclared key, or the
+   * declared ones in another order) depends only on its key sequence, so
+   * a shaped source's answer is remembered per (shape, layout). */
+#ifdef SCR_JS_TIER
+  const void *scr_js_shape_identity(ScrDyn *object);
+  static SCR_TL struct {
+    const void *shape;
+    const char *const *names;
+    bool keep;
+  } memo[64];
+  const void *shape = scr_js_shape_identity((ScrDyn *)src);
+  size_t slot = (((uintptr_t)shape >> 4) ^ ((uintptr_t)names >> 3)) & 63;
+  bool known = shape && memo[slot].shape == shape && memo[slot].names == names;
+  bool keep = known && memo[slot].keep;
+  if (!known) {
+#else
   bool keep = false;
-  size_t next = 0;
-  for (size_t i = 0; i < src->v.obj.len && !keep; i++) {
-    const ScrDynEntry *entry = &src->v.obj.entries[i];
-    size_t index = scr_record_source_index(&probe, entry->key, entry->key_len);
-    keep = index == count || index < next;
-    next = index + 1;
+  {
+#endif
+    size_t next = 0;
+    for (size_t i = 0; i < src->v.obj.len && !keep; i++) {
+      const ScrDynEntry *entry = &src->v.obj.entries[i];
+      size_t index = scr_record_source_index(&probe, entry->key, entry->key_len);
+      keep = index == count || index < next;
+      next = index + 1;
+    }
+#ifdef SCR_JS_TIER
+    if (shape) {
+      memo[slot].shape = shape;
+      memo[slot].names = names;
+      memo[slot].keep = keep;
+    }
+#endif
   }
   if (!keep) return;
   ScrDyn *view = scr_dyn_new_obj();
@@ -4223,24 +4258,53 @@ static ScrDyn *scr_dyn_typed_ref_new(
     const char *type_key, size_t type_key_len,
     ScrDyn *(*materialize)(void *),
     void (*commit)(void *, const ScrDyn *), bool traced, bool observed, bool moved) {
-  /* A record whose one reference the caller hands over (a fresh result)
-   * has no capsule yet and gets none elsewhere while this one holds it. */
-  bool unregistered = moved && type_key_len >= 7 && memcmp(type_key, "record:", 7) == 0 &&
-                      (*(const uint64_t *)ptr & UINT32_MAX) == 1;
-  scr_typed_ref_reserve();
-  size_t slot = scr_typed_ref_bucket(ptr);
-  for (ScrDyn *value; !unregistered && (value = scr_typed_ref_slots[slot].capsule); slot = (slot + 1) & (scr_typed_ref_capacity - 1)) {
-    if (scr_typed_ref_slots[slot].ptr == ptr && value->v.typed_ref.retain == retain &&
-        value->v.typed_ref.materialize == materialize && value->v.typed_ref.commit == commit &&
-        value->v.typed_ref.type_key_len == type_key_len && !memcmp(value->v.typed_ref.type_key, type_key, type_key_len)) {
-      if (traced) value->v.typed_ref.traced = true;
-      if (observed) value->v.typed_ref.observed = true;
-      return scr_dyn_retain(value);
+  /* `moved` (only records): the caller hands over its reference. A record
+   * whose one reference that is (a fresh result) has no capsule yet and
+   * gets none elsewhere while this one holds it. */
+  bool unregistered = moved && (*(const uint64_t *)ptr & UINT32_MAX) == 1;
+  ScrDyn *d = NULL;
+#ifndef SCR_RC_AUDIT
+  /* Every unregistered construction takes the pooled capsule at the head,
+   * so the pool never outgrows its use; one that already holds this
+   * type's adapters only needs its referent. */
+  ScrDyn *pooled = scr_dyn_free_capsule;
+  if (unregistered && pooled) {
+    scr_dyn_free_capsule = pooled->v.typed_ref.ptr;
+    scr_dyn_free_count--;
+    ScrCycHdr *header = scr_cyc_hdr(pooled);
+    scr_cyc_set_color(header, SCR_CYC_BLACK);
+    scr_cyc_set_gen(header, SCR_CYC_NURSERY);
+    pooled->rc = 1;
+    pooled->buffer = pooled->null_proto = pooled->copied_from_native = pooled->non_extensible = false;
+    if (pooled->v.typed_ref.type_key == type_key && pooled->v.typed_ref.retain == retain &&
+        pooled->v.typed_ref.materialize == materialize && pooled->v.typed_ref.commit == commit &&
+        !scr_record_source_count) {
+      pooled->v.typed_ref.ptr = ptr;
+      pooled->v.typed_ref.traced = traced;
+      pooled->v.typed_ref.observed = observed;
+      return pooled;
+    }
+    d = pooled;
+  }
+#endif
+  size_t slot = 0;
+  if (!unregistered) {
+    scr_typed_ref_reserve();
+    slot = scr_typed_ref_bucket(ptr);
+    for (ScrDyn *value; (value = scr_typed_ref_slots[slot].capsule); slot = (slot + 1) & (scr_typed_ref_capacity - 1)) {
+      if (scr_typed_ref_slots[slot].ptr == ptr && value->v.typed_ref.retain == retain &&
+          value->v.typed_ref.materialize == materialize && value->v.typed_ref.commit == commit &&
+          value->v.typed_ref.type_key_len == type_key_len && !memcmp(value->v.typed_ref.type_key, type_key, type_key_len)) {
+        if (traced) value->v.typed_ref.traced = true;
+        if (observed) value->v.typed_ref.observed = true;
+        if (moved) release(ptr);
+        return scr_dyn_retain(value);
+      }
     }
   }
   if (type_key_len >= (size_t)1 << 26) scr_trap("scriptc: typed reference key too long\n");
-  ScrDyn *d = scr_dyn_alloc(SCR_DYN_TYPED_REF);
-  d->v.typed_ref.ptr = retain(ptr);
+  if (!d) d = scr_dyn_alloc(SCR_DYN_TYPED_REF);
+  d->v.typed_ref.ptr = moved ? ptr : retain(ptr);
   d->v.typed_ref.retain = retain;
   d->v.typed_ref.release = release;
   d->v.typed_ref.type_key = type_key;

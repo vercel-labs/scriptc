@@ -88,6 +88,7 @@ add_executable(scriptc-llvm-codegen
   src/emit.cpp
   src/main.cpp
   src/partition.cpp
+  src/rc-pairs.cpp
   src/profile.cpp
   src/runtime-import.cpp
   src/runtime-unit.cpp

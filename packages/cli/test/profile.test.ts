@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -31,7 +31,7 @@ async function scriptc(args: string[], env: NodeJS.ProcessEnv) {
   });
 }
 
-test.skipIf(process.platform !== "linux")(
+test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
   "instrumented runs write profiles that merge and optimize the program, stale or not",
   async () => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-"));
@@ -81,6 +81,54 @@ test.skipIf(process.platform !== "linux")(
       await writeFile(entry, PROGRAM + 'console.log("edited");\n');
       await scriptc(["build", entry, "--profile-use", merged, "-o", optimized], env);
       expect((await execFileAsync(optimized, ["1000"])).stdout).toBe("total 167499\nedited\n");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+  300_000,
+);
+
+const SERVER = `let ticks = 0;
+setInterval(() => {
+  ticks += JSON.stringify({ ticks }).length;
+}, 5);
+console.log("ready");
+`;
+
+test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
+  "an instrumented program stopped by a termination signal still writes its profile",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-profile-signal-"));
+    const env = { ...process.env, SCRIPTC_CACHE_DIR: join(dir, "cache") };
+    const entry = join(dir, "server.ts");
+    const raw = join(dir, "raw");
+    try {
+      await writeFile(entry, SERVER);
+      const instrumented = join(dir, "instrumented");
+      await scriptc(
+        ["build", entry, "--profile-generate", join(raw, "%p.profraw"), "-o", instrumented],
+        env,
+      );
+      const child = spawn(instrumented, [], { stdio: ["ignore", "pipe", "inherit"] });
+      await new Promise<void>((resolve) =>
+        child.stdout.on("data", (chunk: Buffer) => {
+          if (chunk.toString().includes("ready")) resolve();
+        }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const exited = new Promise<NodeJS.Signals | null>((resolve) =>
+        child.on("exit", (_code, signal) => resolve(signal)),
+      );
+      child.kill("SIGTERM");
+      // The signal still ends the process, after the profile is written.
+      expect(await exited).toBe("SIGTERM");
+      const profiles = (await readdir(raw)).filter((name) => name.endsWith(".profraw"));
+      expect(profiles).toHaveLength(1);
+      expect((await stat(join(raw, profiles[0]!))).size).toBeGreaterThan(0);
+      const merged = join(dir, "server.profdata");
+      await scriptc(["merge-profiles", "-o", merged, join(raw, profiles[0]!)], env);
+      const optimized = join(dir, "optimized");
+      await scriptc(["build", entry, "--profile-use", merged, "-o", optimized], env);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

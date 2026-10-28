@@ -8,6 +8,7 @@ import {
   type IrExpr,
   type IrStmt,
   type IrType,
+  type SrcLoc,
   isUnitType,
   typeEquals,
 } from "../../../ir/ir.js";
@@ -168,6 +169,29 @@ export function lowerUnionFieldWrite(
   access: ts.PropertyAccessExpression,
   rhs: ts.Expression,
 ): IrExpr | null {
+  const lowered = lowerUnionFieldWriteParts(lowerer, access, rhs, false);
+  return lowered?.kind === "seqExpr" ? lowered : null;
+}
+
+/** The write as a statement whose value nobody reads: each arm stores its
+ * own read of the value, the binding's last use, so the store takes over
+ * the value's reference instead of retaining a copy the binding then
+ * releases (lastUseRead). */
+export function lowerUnionFieldWriteStmt(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+  rhs: ts.Expression,
+): IrStmt | null {
+  const lowered = lowerUnionFieldWriteParts(lowerer, access, rhs, true);
+  return lowered?.kind === "block" ? lowered : null;
+}
+
+function lowerUnionFieldWriteParts(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+  rhs: ts.Expression,
+  discarded: boolean,
+): (IrExpr & { kind: "seqExpr" }) | (IrStmt & { kind: "block" }) | null {
   const mapped = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
   if (access.questionDotToken || mapped?.kind !== "union") return null;
   let receiver = lowerer.maybeNarrow(lowerer.lowerExpr(access.expression), access.expression);
@@ -216,6 +240,7 @@ export function lowerUnionFieldWrite(
   ];
   const result = varRef(stored.id, stored.type, loc);
   let dispatch: IrExpr = result;
+  let chain: IrStmt[] | null = null;
   for (let tag = fields.length - 1; tag >= 0; tag--) {
     const field = fields[tag];
     let branch: IrExpr;
@@ -228,7 +253,10 @@ export function lowerUnionFieldWrite(
         type: field.receiver,
         loc,
       };
-      const slotValue = lowerer.coerceToExpected(result, field.type);
+      const slotValue = lowerer.coerceToExpected(
+        discarded ? varRef(stored.id, stored.type, loc) : result,
+        field.type,
+      );
       const write: IrStmt =
         field.receiver.kind === "record"
           ? {
@@ -249,6 +277,10 @@ export function lowerUnionFieldWrite(
             };
       // A sloppy-mode write to a frozen record leaves it unchanged.
       if (write.kind === "recordSet") markSloppyRecordWrites(lowerer, write, access);
+      if (discarded) {
+        chain = armChain(unionId, tag, objectRef, fields.length, [write], chain, loc);
+        continue;
+      }
       branch = { kind: "seqExpr", stmts: [write], result, type: result.type, loc };
     } else {
       branch = nodeThrowExpr(
@@ -258,6 +290,11 @@ export function lowerUnionFieldWrite(
         result.type,
         loc,
       );
+      if (discarded) {
+        const thrown: IrStmt = { kind: "exprStmt", expr: branch, loc };
+        chain = armChain(unionId, tag, objectRef, fields.length, [thrown], chain, loc);
+        continue;
+      }
     }
     dispatch =
       tag === fields.length - 1
@@ -279,5 +316,30 @@ export function lowerUnionFieldWrite(
             loc,
           };
   }
+  if (discarded) return { kind: "block", body: [...body, ...(chain ?? [])], loc };
   return { kind: "seqExpr", stmts: body, result: dispatch, type: result.type, loc };
+}
+
+/** One arm of a statement dispatch built from the last tag down: the last
+ * tag needs no test, every other tests its tag and falls to the rest. */
+function armChain(
+  unionId: string,
+  tag: number,
+  objectRef: IrExpr,
+  tags: number,
+  arm: IrStmt[],
+  rest: IrStmt[] | null,
+  loc: SrcLoc,
+): IrStmt[] {
+  if (tag === tags - 1) return arm;
+  const cond: IrExpr = {
+    kind: "unionIsTag",
+    unionId,
+    tag,
+    value: objectRef,
+    negated: false,
+    type: BOOL,
+    loc,
+  };
+  return [{ kind: "if", cond, then: arm, else_: rest, loc }];
 }

@@ -99,6 +99,7 @@ import { windowsSubsystemLinkerArgs, type WindowsSubsystem } from "./backend/tar
 import { createNativeLinkInfo } from "./backend/native-link-info.js";
 import { RuntimePackError } from "./backend/runtime-pack.js";
 import { createNativeLinkPlan } from "./backend/link-plan.js";
+import { loadRuntimePack } from "./backend/runtime-pack.js";
 import {
   nativeProfileKey,
   nativeProfileRefusal,
@@ -588,6 +589,8 @@ async function compileExecutableNative(
   /** The kept LLVM text's shared name, when `llvmPath` is the build's private copy of it
    * (BuildSources): the spelling clang sees and native cache keys name. */
   llvmVisiblePath?: string,
+  /** Runtime objects compiled with the program, replacing the pack's. */
+  runtimeObjects?: readonly string[],
 ): Promise<void> {
   const programIsObject = /\.(?:o|obj)$/.test(llvmPath);
   const runtimePackTarget = programIsObject && !sanitize ? nativeCodegenTarget() : null;
@@ -603,6 +606,7 @@ async function compileExecutableNative(
       ...(strip ? { strip: true } : {}),
       ...(windowsSubsystem === undefined ? {} : { windowsSubsystem }),
       ...(profileGenerate ? { profileGenerate: true } : {}),
+      ...(runtimeObjects === undefined ? {} : { runtimeObjects }),
       programObjectDependencies,
     });
     const cacheableLinker =
@@ -719,6 +723,9 @@ interface NativeProgramObject {
   linkPath: string;
   /** Further partition objects linked after linkPath. */
   partitionPaths: string[];
+  /** Runtime units compiled with the program (profiled builds), linked in
+   * place of the runtime pack's objects. */
+  runtimeObjectPaths?: string[];
   artifactPath: string;
   dependencies: NativeArtifactDependency[];
   profileMatch?: NativeProfileMatch;
@@ -729,6 +736,7 @@ async function emitNativeProgramObject(
   opts: CompileRequestOptions,
   llvm: LlvmInput,
   profile: NativeProfileOptions | undefined,
+  features?: EarlyExecutableNativeFeatures,
 ): Promise<NativeProgramObject> {
   const stem = basename(entryPath).replace(/\.(ts|mts|cts|js|mjs|cjs)$/, "");
   const artifactPath = join(opts.outDir, `${stem}.helper.o`);
@@ -741,6 +749,20 @@ async function emitNativeProgramObject(
   const llvmBytes = llvmInputBytes(llvm);
   const partitions =
     opts.nativeProgramObject === true || target === null ? 1 : nativeProgramPartitions(llvmBytes);
+  // A profile instruments and annotates the runtime too: its units compile
+  // with the program from the pack's complete bitcode, which the release
+  // flavor carries for every optimized posture.
+  const runtimeModules =
+    profile !== undefined && features !== undefined && target !== null
+      ? (
+          await loadRuntimePack({
+            target,
+            features,
+            optimization: "release",
+            withRuntimeModules: true,
+          })
+        ).runtimeModules
+      : undefined;
   try {
     const artifact = await emitNativeArtifact({
       outputPath: linkPath,
@@ -751,16 +773,23 @@ async function emitNativeProgramObject(
       ...(opts.sanitize === undefined ? {} : { sanitize: opts.sanitize }),
       partitions,
       ...(profile === undefined ? {} : { profile }),
+      ...(runtimeModules === undefined ? {} : { runtimeModules }),
     });
     return {
       linkPath,
       partitionPaths: artifact.outputPaths.slice(1),
+      ...(artifact.runtimeOutputPaths === undefined
+        ? {}
+        : { runtimeObjectPaths: artifact.runtimeOutputPaths }),
       artifactPath,
       dependencies: artifact.dependencies,
       ...(artifact.profileMatch === undefined ? {} : { profileMatch: artifact.profileMatch }),
     };
   } catch (error) {
-    await removeNativeProgramObject(linkPath, nativePartitionPaths(linkPath, partitions));
+    await removeNativeProgramObject(linkPath, [
+      ...nativePartitionPaths(linkPath, partitions),
+      ...(runtimeModules ?? []).map((_, index) => `${linkPath}.rt${index}.o`),
+    ]);
     throw error;
   }
 }
@@ -1715,6 +1744,7 @@ async function compileTracked(
             // string; the emitter takes it in parts, as on a cold build.
             await readTextParts(hitSources.llvmSourcePath),
             profile,
+            earlyHit.native,
           );
           nativeInputPath = nativeProgramObject.linkPath;
         } catch (err) {
@@ -1758,6 +1788,7 @@ async function compileTracked(
         nativeProgramObject?.partitionPaths,
         profile?.generate !== undefined,
         hitSources.llvmPath,
+        nativeProgramObject?.runtimeObjectPaths,
       );
       if (nativeProgramObject !== null && opts.nativeProgramObject === true) {
         await rename(nativeProgramObject.linkPath, nativeProgramObject.artifactPath);
@@ -1850,7 +1881,13 @@ async function compileTracked(
         );
       }
       try {
-        nativeProgramObject = await emitNativeProgramObject(entryPath, opts, llvmSource, profile);
+        nativeProgramObject = await emitNativeProgramObject(
+          entryPath,
+          opts,
+          llvmSource,
+          profile,
+          nativeFeatures,
+        );
         timing("native-object");
         await recordEarlyExecutableNativeBuild(cacheRoot, executableCacheOptions).catch(
           () => undefined,
@@ -1895,6 +1932,7 @@ async function compileTracked(
       nativeProgramObject?.partitionPaths,
       profile?.generate !== undefined,
       llvmPath,
+      nativeProgramObject?.runtimeObjectPaths,
     );
     timing("native-link");
     if (nativeProgramObject !== null && opts.nativeProgramObject === true) {

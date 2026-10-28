@@ -167,7 +167,7 @@ With `--sparse`, the profile leaves out the functions the runs never reached. Th
   <dd>On x86-64 targets, compile the program's code twice, for the baseline and for <code>x86-64-v3</code>, and choose the copy when the program starts. The executable runs on any x86-64 CPU and uses the <code>x86-64-v3</code> code on CPUs that support it. Not used with a <code>--target-cpu</code> level above <code>baseline</code>. Valid only for executable builds. See <a href="#runtime-cpu-dispatch">Runtime CPU dispatch</a>.</dd>
 
   <dt><code>--profile-generate &lt;pattern&gt;</code></dt>
-  <dd>On Linux, build an instrumented executable for profile-guided optimization. Each run writes a raw profile to the path pattern, where <code>%p</code> expands to the process ID; the <code>LLVM_PROFILE_FILE</code> environment variable overrides the pattern at run time. A relative pattern resolves from the current working directory. Instrumented programs run slower. Valid only for executable builds with <code>--optimization=release</code> or <code>speed</code>.</dd>
+  <dd>On Linux and macOS, build an instrumented executable for profile-guided optimization. Each run writes a raw profile to the path pattern, where <code>%p</code> expands to the process ID; the <code>LLVM_PROFILE_FILE</code> environment variable overrides the pattern at run time. A relative pattern resolves from the current working directory. Instrumented programs run slower. Valid only for executable builds with <code>--optimization=release</code> or <code>speed</code>.</dd>
 
   <dt><code>--profile-use &lt;file.profdata&gt;</code></dt>
   <dd>Optimize the executable with a profile from <code>scriptc merge-profiles</code>: code is laid out, inlined, and split by how the profiled runs used it. Code the profile does not describe, or describes from an older version of the program, is optimized as without a profile, so a stale profile only loses part of its gain. A new or changed profile compiles every partition of the program again. Valid only for executable builds with <code>--optimization=release</code> or <code>speed</code>.</dd>
@@ -254,16 +254,16 @@ fib-linux: ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), dynamically
 
 ## Profile-guided optimization
 
-A profile records how often each branch and call ran in representative runs of the program. With it, the optimizer inlines the hot calls, keeps hot paths together, and moves cold code out of the way. Profiling takes three steps:
+A profile records how often each branch and call ran in representative runs of the program. With it, the optimizer inlines the hot calls, keeps hot paths together, and moves cold code out of the way. The profile covers the scriptc runtime as well as the program: a profiled build compiles the runtime with the program, so the runtime's object allocation, reference counting, and property access are optimized for how the program uses them. Profiling takes three steps:
 
 ```console
-$ scriptc build app.ts --optimization=speed --profile-generate profiles/%p.profraw -o app-instrumented
+$ scriptc build app.ts --profile-generate profiles/%p.profraw -o app-instrumented
 $ ./app-instrumented typical-input.json
 $ scriptc merge-profiles -o app.profdata profiles/*.profraw
-$ scriptc build app.ts --optimization=speed --profile-use app.profdata
+$ scriptc build app.ts --profile-use app.profdata
 ```
 
-Train on workloads like the ones the program will run: code the training never reached is optimized as without a profile. The profile can be committed and reused as the program changes. Functions whose control flow changed since the profile was collected lose their profile, and the rest keep theirs, so regenerate it when much of the program has changed. [Build parallelism](/docs/how-it-works#build-parallelism) describes what a profile adds to build time.
+Train on workloads like the ones the program will run: code the training never reached is optimized as without a profile. A server can be trained under representative traffic and then stopped: an instrumented executable writes its profile when it exits, and also when `SIGINT`, `SIGTERM`, or `SIGHUP` ends it without a listener for that signal. Profiles of several runs, such as different routes or inputs, merge into one. The profile can be committed and reused as the program changes. Functions whose control flow changed since the profile was collected lose their profile, and the rest keep theirs, so regenerate it when much of the program has changed. [Build parallelism](/docs/how-it-works#build-parallelism) describes what a profile adds to build time.
 
 ## Target CPU
 

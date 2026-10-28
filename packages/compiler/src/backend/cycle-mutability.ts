@@ -1,5 +1,10 @@
 import type { IrExpr, IrFunction, IrModule, IrStmt, IrType } from "../ir/ir.js";
-import { RUNTIME_EMITTER_CLASS, RUNTIME_STREAM_CLASSES, typeKey } from "../ir/ir.js";
+import {
+  RUNTIME_EMITTER_CLASS,
+  RUNTIME_STREAM_CLASSES,
+  canConvertToDyn,
+  typeKey,
+} from "../ir/ir.js";
 import { dynamicFieldStores, type DynamicFieldStores } from "../ir/int32-slots.js";
 import { everyExprChild, everyStmtChild, everyTypeChild } from "../ir/traverse.js";
 import { resultSlotStore } from "./result-slots.js";
@@ -32,7 +37,11 @@ import { resultSlotStore } from "./result-slots.js";
  * - every type that can cross into the checked-dynamic world (operands of
  *   `dynFrom`, including boxed closure signatures, thrown values, and
  *   arguments of library/intrinsic/JSON/FFI calls) makes its entire type
- *   closure mutable, because typed-ref capsules commit dynamic mutations
+ *   closure mutable — except an opaque live reference (a `liveRef`
+ *   crossing of a record with no checked-dynamic form, whose
+ *   capsule has no view to write through) and a serialization of data made
+ *   only of primitives, arrays, records and unions (its emitted writer
+ *   reads the fields and builds no capsule) — because typed-ref capsules commit dynamic mutations
  *   straight into native fields — unless the program contains no runtime
  *   store into a dynamic value at all (int32-slots' dynamicFieldStores),
  *   in which case no commit can happen; FFI operands and intrinsics other
@@ -133,6 +142,44 @@ export function computeCycleMutability(
       !e.name.startsWith("itable.") &&
       e.name !== "slots.get" &&
       e.name !== "slots.has");
+
+  // Crossings that hand dynamic code nothing it can write through.
+  const inertJson = new Map<string, boolean>();
+  const jsonInert = (t: IrType): boolean => {
+    switch (t.kind) {
+      case "f64":
+      case "bool":
+      case "string":
+      case "undefinedT":
+      case "nullT":
+        return true;
+    }
+    const key = typeKey(t);
+    const known = inertJson.get(key);
+    if (known !== undefined) return known;
+    inertJson.set(key, true); // recursive shapes: assume, then confirm
+    let inert = false;
+    if (t.kind === "array") inert = jsonInert(t.elem);
+    else if (t.kind === "record")
+      inert = recordsById.get(t.shapeId)?.fields.every((f) => jsonInert(f.type)) ?? false;
+    else if (t.kind === "union")
+      inert = unionsById.get(t.unionId)?.arms.every(jsonInert) ?? false;
+    inertJson.set(key, inert);
+    return inert;
+  };
+  const writesNothing = (e: IrExpr): boolean => {
+    if (e.kind === "jsonStringify") return e.value.type.kind !== "dyn" && jsonInert(e.value.type);
+    if (e.kind !== "dynFrom" || e.liveRef !== true) return false;
+    const t = e.value.type;
+    return (
+      t.kind === "record" &&
+      !canConvertToDyn(
+        t,
+        (id) => recordsById.get(id),
+        (id) => unionsById.get(id),
+      )
+    );
+  };
 
   // Types that can become checked-dynamic values: mark their whole closure.
   const exposedTypes = new Set<string>();
@@ -276,7 +323,7 @@ export function computeCycleMutability(
         : 0;
     const baseCtor = ctorClass?.base !== undefined ? `%${ctorClass.base}.constructor` : null;
     const expr = (e: IrExpr): boolean => {
-      if (DYNAMIC_BOUNDARY_EXPRS.has(e.kind) && boundaryWrites(e)) {
+      if (DYNAMIC_BOUNDARY_EXPRS.has(e.kind) && boundaryWrites(e) && !writesNothing(e)) {
         everyExprChild(
           e,
           (child) => {

@@ -26,6 +26,11 @@ struct EmitOptions {
   std::string ProfileGenerate;
   // Indexed profile (.profdata) that guides optimization. Empty: none.
   std::string ProfileUse;
+  // Runtime units (complete bitcode) compiled with the program's partitions,
+  // so profiles instrument and annotate the runtime too; each writes the
+  // object at the same index of RuntimeOutputs.
+  std::vector<std::string> RuntimeModules;
+  std::vector<std::string> RuntimeOutputs;
 };
 
 std::optional<EmitOptions> parseEmitOptions(int Argc, char **Argv);

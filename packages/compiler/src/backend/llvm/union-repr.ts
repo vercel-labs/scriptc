@@ -9,6 +9,7 @@ import type { BlockBuilder } from "./blocks.js";
 import {
   NULLABLE_NULL,
   TAG_BITS_MASK,
+  TAGGED_NUMBER_OFFSET,
   shapeTagFn,
   taggedFn,
   type PointerUnion,
@@ -174,4 +175,58 @@ export function emitTaggedWrap(B: BlockBuilder, payload: string, bits: number): 
   const t = B.tmp();
   B.line(`${t} = getelementptr i8, ptr ${payload}, i64 ${bits}`);
   return t;
+}
+
+/** The number of a tagged union value holding its number arm: the word
+ * minus the offset, as a double. */
+export function emitTaggedNumber(B: BlockBuilder, u: string): string {
+  const out = B.tmp();
+  for (const line of taggedNumberLines(u, out)) B.line(line.trim());
+  return out;
+}
+
+/** A tagged union value holding the number `x`: NaN canonical, then the
+ * bits plus the offset. */
+export function emitTaggedNumberWrap(B: BlockBuilder, x: string): string {
+  const out = B.tmp();
+  for (const line of taggedNumberWrapLines(x, out)) B.line(line.trim());
+  return out;
+}
+
+export function taggedNumberLines(u: string, out: string): string[] {
+  return [
+    `  ${out}.w = ptrtoint ptr ${u} to i64`,
+    `  ${out}.b = sub i64 ${out}.w, ${TAGGED_NUMBER_OFFSET}`,
+    `  ${out} = bitcast i64 ${out}.b to double`,
+  ];
+}
+
+export function taggedNumberWrapLines(x: string, out: string): string[] {
+  return [
+    `  ${out}.nan = fcmp uno double ${x}, ${x}`,
+    `  ${out}.c = select i1 ${out}.nan, double 0x7FF8000000000000, double ${x}`,
+    `  ${out}.b = bitcast double ${out}.c to i64`,
+    `  ${out}.w = add i64 ${out}.b, ${TAGGED_NUMBER_OFFSET}`,
+    `  ${out} = inttoptr i64 ${out}.w to ptr`,
+  ];
+}
+
+/** Template forms of a union's f64 payload and of a box or tagged value
+ * holding a number (`+1`), for helpers written as raw lines. */
+export function unionNumberLines(nullable: PointerUnion | null, u: string, out: string): string[] {
+  if (nullable?.repr === "tagged") return taggedNumberLines(u, out);
+  return [
+    `  ${out}.p = getelementptr inbounds %ScrUnion, ptr ${u}, i64 0, i32 5`,
+    `  ${out} = load double, ptr ${out}.p`,
+  ];
+}
+
+export function unionNewNumberLines(
+  nullable: PointerUnion | null,
+  tag: number,
+  x: string,
+  out: string,
+): string[] {
+  if (nullable?.repr === "tagged") return taggedNumberWrapLines(x, out);
+  return [`  ${out} = call ptr @scr_union_new_f64(i32 ${tag}, double ${x})`];
 }

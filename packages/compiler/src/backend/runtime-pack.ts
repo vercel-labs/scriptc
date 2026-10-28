@@ -39,6 +39,9 @@ export interface RuntimePackSelection {
   flavor: NativeOptimization;
   features: RuntimeFeatureSet;
   runtimeObjects: string[];
+  /** Each selected unit's complete bitcode, in runtimeObjects' order, when
+   * requested and the pack ships it for all of them. */
+  runtimeModules?: string[];
   archives: string[];
   systemLibraries: string[];
   dependencyPaths: string[];
@@ -159,6 +162,8 @@ export async function loadRuntimePack(options: {
   mode?: RuntimePackMode;
   env?: NodeJS.ProcessEnv;
   resolver?: (specifier: string) => string;
+  /** Also verify each selected unit's complete bitcode (profiled builds). */
+  withRuntimeModules?: boolean;
 }): Promise<RuntimePackSelection> {
   const packageName = options.target.runtimePackPackage;
   const resolvePackageJson =
@@ -222,6 +227,15 @@ export async function loadRuntimePack(options: {
     Promise.all(selectedVariants.map((artifact) => verifyArtifact(root, artifact))),
     Promise.all(selectedArchives.map((artifact) => verifyArtifact(root, artifact))),
   ]);
+  // Profiled builds compile every selected unit from its complete bitcode,
+  // or none of them.
+  const runtimeModules =
+    options.withRuntimeModules === true &&
+    selectedVariants.every((artifact) => artifact.full_bitcode !== undefined)
+      ? await Promise.all(
+          selectedVariants.map((artifact) => verifyArtifact(root, artifact.full_bitcode!)),
+        )
+      : null;
   await Promise.all(manifest.licenses.map((license) => readFile(join(root, license.path)))).catch(
     () => {
       throw new RuntimePackError("runtime pack license payload is incomplete", "invalid");
@@ -241,6 +255,7 @@ export async function loadRuntimePack(options: {
     flavor,
     features,
     runtimeObjects,
+    ...(runtimeModules === null ? {} : { runtimeModules }),
     archives,
     systemLibraries: selected.systemLibraries,
     dependencyPaths: [packagePath, manifestPath, ...runtimeObjects, ...archives],

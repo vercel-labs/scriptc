@@ -249,7 +249,7 @@ import {
 import { keptIdentityAssertion } from "./assertion-identity.js";
 import { isNativeProxyInitializer } from "./expressions/native-proxy.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
-import { lowerUnionFieldWrite } from "./expressions/union-fields.js";
+import { lowerUnionFieldWriteStmt } from "./expressions/union-fields.js";
 import {
   UNSUPPORTED,
   checkerPanicDiag,
@@ -8665,8 +8665,8 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
             loc,
           };
         }
-        const unionWrite = lowerUnionFieldWrite(lowerer, expr.left, expr.right);
-        if (unionWrite) return { kind: "exprStmt", expr: unionWrite, loc: locOf(expr) };
+        const unionWrite = lowerUnionFieldWriteStmt(lowerer, expr.left, expr.right);
+        if (unionWrite) return unionWrite;
         const target = lowerer.fieldTarget(expr.left);
         if (target) {
           const value = lowerer.lowerExprExpecting(expr.right, target.fieldType);

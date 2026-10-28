@@ -2110,6 +2110,42 @@ static void scr_detach_teardown(void) {
  * _Exit below skips, so the exit writes it first. Every other build leaves the
  * weak reference null. */
 extern int __llvm_profile_write_file(void) __attribute__((weak));
+#elif defined(__APPLE__)
+/* Mach-O cannot leave a static weak reference unresolved: the runtime
+ * defines the writer weakly as a no-op, and an instrumented build's profile
+ * runtime replaces it with the real one at link time. */
+__attribute__((weak)) int __llvm_profile_write_file(void) { return 0; }
+#endif
+
+#if defined(__linux__) || defined(__APPLE__)
+/* An instrumented build's program defines this as 1 (the native helper adds
+ * the definition): a termination signal no listener handles then writes the
+ * profile before the process dies of it, so a server stopped with SIGINT or
+ * SIGTERM still records its run. */
+__attribute__((weak)) int scr_profile_generate = 0;
+
+static void scr_profile_signal(int sig) {
+#if defined(__linux__)
+  if (__llvm_profile_write_file != NULL)
+#endif
+    (void)__llvm_profile_write_file();
+  signal(sig, SIG_DFL);
+  raise(sig);
+}
+
+void scr_profile_signals(void) {
+  if (!scr_profile_generate) return;
+  static const int signals[] = {SIGINT, SIGTERM, SIGHUP};
+  for (size_t i = 0; i < sizeof signals / sizeof signals[0]; i++) {
+    struct sigaction current;
+    if (sigaction(signals[i], NULL, &current) != 0 || current.sa_handler != SIG_DFL) continue;
+    struct sigaction handler;
+    memset(&handler, 0, sizeof handler);
+    handler.sa_handler = scr_profile_signal;
+    sigemptyset(&handler.sa_mask);
+    (void)sigaction(signals[i], &handler, NULL);
+  }
+}
 #endif
 
 void scr_process_exit(double code) {
@@ -2137,6 +2173,8 @@ void scr_process_exit(double code) {
 #if defined(__linux__)
   if (__llvm_profile_write_file != NULL) (void)__llvm_profile_write_file();
   scr_detach_teardown();
+#elif defined(__APPLE__)
+  (void)__llvm_profile_write_file();
 #endif
   _Exit((int)code);
 }

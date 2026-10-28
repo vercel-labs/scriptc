@@ -3,6 +3,7 @@
 #include "cache.h"
 #include "diagnostics.h"
 #include "partition.h"
+#include "rc-pairs.h"
 #include "runtime-import.h"
 #include "target.h"
 
@@ -97,6 +98,10 @@ std::optional<EmitOptions> parseEmitOptions(int Argc, char **Argv) {
       Options.ProfileGenerate = Value.str();
     else if (Arg == "--profile-use")
       Options.ProfileUse = Value.str();
+    else if (Arg == "--runtime-module")
+      Options.RuntimeModules.push_back(Value.str());
+    else if (Arg == "--runtime-output")
+      Options.RuntimeOutputs.push_back(Value.str());
     else
       return std::nullopt;
   }
@@ -104,6 +109,8 @@ std::optional<EmitOptions> parseEmitOptions(int Argc, char **Argv) {
     return std::nullopt;
   // A build either collects a profile or uses one.
   if (!Options.ProfileGenerate.empty() && !Options.ProfileUse.empty())
+    return std::nullopt;
+  if (Options.RuntimeModules.size() != Options.RuntimeOutputs.size())
     return std::nullopt;
   return Options;
 }
@@ -544,6 +551,8 @@ emitModule(Module &M, TargetMachine &Machine, OptimizationLevel Level,
 struct PartitionPlan {
   std::vector<std::string> Modules;
   StringSet<> PublicSymbols;
+  // Complete runtime unit bitcode, compiled after the program's partitions.
+  std::vector<std::string> RuntimeModules;
 };
 
 // Fallback when the input is outside the text partitioner's grammar: parse
@@ -563,6 +572,14 @@ std::optional<EmitFailure> splitParsedModule(const EmitOptions &Options,
   }
   if (std::optional<EmitFailure> Failure = verify(*Mod, "verification_failed"))
     return Failure;
+  if (!getenv("SCRIPTC_NO_RC_PAIRS")) {
+    unsigned Removed = removeRcPairs(*Mod);
+    if (const char *Stats = getenv("SCRIPTC_RC_PAIRS_STATS"))
+      if (FILE *Out = fopen(Stats, "a")) {
+        fprintf(Out, "rc pairs removed: %u\n", Removed);
+        fclose(Out);
+      }
+  }
   for (const GlobalValue &GV : Mod->global_values())
     if (!GV.isDeclaration() && !GV.hasLocalLinkage())
       Plan.PublicSymbols.insert(GV.getName());
@@ -601,23 +618,57 @@ private:
   std::optional<EmitFailure> First;
 };
 
+// Marks an instrumented program for the runtime (scr_profile_generate,
+// weakly 0 there): termination signals then write the profile.
+void addProfileMarker(Module &Mod) {
+  if (Mod.getNamedGlobal("scr_profile_generate"))
+    return;
+  Type *Int32 = Type::getInt32Ty(Mod.getContext());
+  new GlobalVariable(Mod, Int32, /*isConstant=*/false,
+                     GlobalValue::ExternalLinkage, ConstantInt::get(Int32, 1),
+                     "scr_profile_generate");
+}
+
 // Parses one partition into its own context with the requested target.
 Expected<std::unique_ptr<Module>> loadPartition(const EmitOptions &Options,
                                                 StringRef Bytes, size_t Index,
                                                 LLVMContext &Context,
-                                                TargetMachine &Machine) {
+                                                TargetMachine &Machine,
+                                                bool Runtime = false) {
   SMDiagnostic Diagnostic;
   std::string Name = "partition-" + std::to_string(Index);
   std::unique_ptr<Module> Mod =
       parseIR(MemoryBufferRef(Bytes, Name), Diagnostic, Context);
+  if (Mod && !Runtime && !getenv("SCRIPTC_NO_RC_PAIRS")) {
+    unsigned Removed = removeRcPairs(*Mod);
+    if (const char *Stats = getenv("SCRIPTC_RC_PAIRS_STATS"))
+      if (FILE *Out = fopen(Stats, "a")) {
+        fprintf(Out, "rc pairs removed: %u\n", Removed);
+        fclose(Out);
+      }
+  }
   if (!Mod) {
     std::string Detail;
     raw_string_ostream Stream(Detail);
     Diagnostic.print("scriptc-llvm-codegen", Stream);
     return createStringError(inconvertibleErrorCode(), Stream.str());
   }
-  if (!Options.SourcePath.empty())
+  // A runtime unit keeps its own source name: profiles key its local
+  // functions by it.
+  if (!Runtime && !Options.SourcePath.empty())
     Mod->setSourceFileName(Options.SourcePath);
+  if (!Runtime && Index == 0 && !Options.ProfileGenerate.empty())
+    addProfileMarker(*Mod);
+  // A runtime unit compiled by a vendor clang can name a stack probe this
+  // LLVM cannot emit; it keeps only the inline form LLVM supports.
+  if (Runtime)
+    for (Function &F : *Mod) {
+      Attribute Probe = F.getFnAttribute("probe-stack");
+      if (Probe.isValid() && Probe.getValueAsString() != "inline-asm") {
+        F.removeFnAttr("probe-stack");
+        F.removeFnAttr("stack-probe-size");
+      }
+    }
   Mod->setTargetTriple(Triple(Options.Target));
   Mod->setDataLayout(Machine.createDataLayout());
   if (std::optional<EmitFailure> Failure = verify(*Mod, "verification_failed"))
@@ -700,12 +751,17 @@ compileOptimizedPartitions(const EmitOptions &Options,
                            StringRef Salt, const ArtifactCache &Cache,
                            std::vector<SmallVector<char, 0>> &Objects,
                            ProfileMatch &Match) {
-  size_t Count = Plan.Modules.size();
+  size_t ProgramCount = Plan.Modules.size();
+  size_t Count = ProgramCount + Plan.RuntimeModules.size();
+  auto SourceOf = [&](size_t I) -> StringRef {
+    return I < ProgramCount ? StringRef(Plan.Modules[I])
+                            : StringRef(Plan.RuntimeModules[I - ProgramCount]);
+  };
   bool Annotating = !Options.ProfileUse.empty();
   std::vector<std::unique_ptr<MemoryBuffer>> Summaries(Count);
   SharedFailure Failures;
   forEachPartition(Count, [&](size_t I) {
-    std::string Key = hashParts({Salt, "summary", Plan.Modules[I]});
+    std::string Key = hashParts({Salt, "summary", SourceOf(I)});
     if ((Summaries[I] = Cache.lookup(Key, "bc"))) {
       if (Annotating) {
         std::unique_ptr<MemoryBuffer> Counts = Cache.lookup(Key, "match");
@@ -724,12 +780,12 @@ compileOptimizedPartitions(const EmitOptions &Options,
     if (Annotating)
       Context.setDiagnosticHandler(
           std::make_unique<ProfileMatchHandler>(PartitionMatch));
-    Expected<std::unique_ptr<Module>> Loaded =
-        loadPartition(Options, Plan.Modules[I], I, Context, *Machine);
+    Expected<std::unique_ptr<Module>> Loaded = loadPartition(
+        Options, SourceOf(I), I, Context, *Machine, I >= ProgramCount);
     if (!Loaded)
       return Failures.set({"partition_failed", toString(Loaded.takeError())});
     Module &Mod = **Loaded;
-    if (!Options.ImportBitcode.empty()) {
+    if (I < ProgramCount && !Options.ImportBitcode.empty()) {
       // See emit(): the attribute is inert without a sanitizer pass and
       // would block inlining of the imported runtime bodies.
       for (Function &F : Mod)
@@ -851,7 +907,8 @@ compileOptimizedPartitions(const EmitOptions &Options,
   // The link refers to module identifiers for its whole lifetime.
   std::vector<std::string> Names(Count);
   for (size_t I = 0; I < Count; ++I)
-    Names[I] = "partition-" + std::to_string(I);
+    Names[I] = I < ProgramCount ? "partition-" + std::to_string(I)
+                                : "runtime-" + std::to_string(I - ProgramCount);
   if (!Options.ProfileUse.empty())
     limitProfileImports();
   lto::LTO Link(std::move(Config),
@@ -860,29 +917,62 @@ compileOptimizedPartitions(const EmitOptions &Options,
   // variables the profile runtime reads (the profile format and file name).
   // One copy prevails and stays visible so the runtime's defaults do not.
   StringSet<> ProfileSymbols;
+  std::vector<std::unique_ptr<lto::InputFile>> Inputs(Count);
   for (size_t I = 0; I < Count; ++I) {
     Expected<std::unique_ptr<lto::InputFile>> Input = lto::InputFile::create(
         MemoryBufferRef(Summaries[I]->getBuffer(), Names[I]));
     if (!Input)
       return EmitFailure{"partition_failed", toString(Input.takeError())};
+    Inputs[I] = std::move(*Input);
+  }
+  // Runtime units can define a name another input also defines (a weak
+  // default that the program or another unit overrides): a strong
+  // definition prevails, else the first weak one.
+  StringMap<std::pair<size_t, bool>> Prevailing;
+  for (size_t I = ProgramCount; I < Count; ++I)
+    for (const lto::InputFile::Symbol &Symbol : Inputs[I]->symbols()) {
+      if (Symbol.isUndefined())
+        continue;
+      bool Strong = !Symbol.isWeak();
+      auto [Entry, Fresh] = Prevailing.try_emplace(Symbol.getIRName(), I, Strong);
+      if (!Fresh && Strong && !Entry->second.second)
+        Entry->second = {I, true};
+    }
+  for (size_t I = 0; I < ProgramCount && !Prevailing.empty(); ++I)
+    for (const lto::InputFile::Symbol &Symbol : Inputs[I]->symbols()) {
+      if (Symbol.isUndefined())
+        continue;
+      auto Entry = Prevailing.find(Symbol.getIRName());
+      if (Entry != Prevailing.end() && !Symbol.isWeak() && !Entry->second.second)
+        Entry->second = {I, true};
+    }
+  for (size_t I = 0; I < Count; ++I) {
+    bool Runtime = I >= ProgramCount;
     std::vector<lto::SymbolResolution> Resolutions;
-    for (const lto::InputFile::Symbol &Symbol : (*Input)->symbols()) {
+    for (const lto::InputFile::Symbol &Symbol : Inputs[I]->symbols()) {
       lto::SymbolResolution Resolution;
       if (!Symbol.isUndefined()) {
         // Partitions define disjoint symbols. Only definitions that were
-        // external before partitioning are visible to the runtime objects
-        // linked beside them; the rest may become internal again.
-        bool Public = Plan.PublicSymbols.contains(Symbol.getIRName());
+        // external before partitioning are visible to the native objects
+        // linked beside them; the rest may become internal again. Runtime
+        // units stay visible: the vendor archives and the program object
+        // reference them.
+        bool Public = Runtime || Plan.PublicSymbols.contains(Symbol.getIRName()) ||
+                      Symbol.getIRName() == "scr_profile_generate";
         bool Profile = Symbol.getIRName().starts_with("__llvm_profile_");
+        bool Wins = true;
         if (Profile)
-          Public = ProfileSymbols.insert(Symbol.getIRName()).second;
-        Resolution.Prevailing = !Profile || Public;
+          Public = Wins = ProfileSymbols.insert(Symbol.getIRName()).second;
+        else if (auto Entry = Prevailing.find(Symbol.getIRName());
+                 Entry != Prevailing.end())
+          Wins = Entry->second.first == I;
+        Resolution.Prevailing = Wins;
         Resolution.VisibleToRegularObj = Public;
         Resolution.FinalDefinitionInLinkageUnit = !Public;
       }
       Resolutions.push_back(Resolution);
     }
-    if (Error Err = Link.add(std::move(*Input), Resolutions))
+    if (Error Err = Link.add(std::move(Inputs[I]), Resolutions))
       return EmitFailure{"partition_failed", toString(std::move(Err))};
   }
   Error Err = Link.run([&](unsigned Task, const Twine &)
@@ -912,7 +1002,8 @@ compilePartitions(const EmitOptions &Options, const PartitionPlan &Plan,
   // Everything besides a partition's own bytes that determines its
   // artifacts. The caller's cache directory already identifies the exact
   // helper build; source content and partition count arrive per module.
-  std::string Salt = hashParts({"scriptc-partition-v1", LLVM_VERSION_STRING,
+  std::string Salt = hashParts({getenv("SCRIPTC_NO_RC_PAIRS") ? "scriptc-partition-v1" : "scriptc-partition-v1-rc-pairs-3",
+                                LLVM_VERSION_STRING,
                                 Options.Target, Options.OptLevel,
                                 Options.RelocationModel, Options.SourcePath,
                                 "profile-generate", Options.ProfileGenerate});
@@ -937,12 +1028,20 @@ compilePartitions(const EmitOptions &Options, const PartitionPlan &Plan,
     Salt = hashParts({Salt, (*Bitcode)->getBuffer()});
   }
   ArtifactCache Cache(Options.CacheDirectory);
-  Objects.assign(Plan.Modules.size(), {});
+  Objects.assign(Plan.Modules.size() + Plan.RuntimeModules.size(), {});
   if (Options.OptLevel == "0")
     return compileUnoptimizedPartitions(Options, Plan, Salt, Cache, Objects);
   return compileOptimizedPartitions(Options, Plan,
                                     optimizationLevel(Options.OptLevel), Salt,
                                     Cache, Objects, Match);
+}
+
+// Program partitions write Outputs; the runtime units after them write
+// RuntimeOutputs.
+const std::string &outputPath(const EmitOptions &Options, size_t I) {
+  return I < Options.Outputs.size()
+             ? Options.Outputs[I]
+             : Options.RuntimeOutputs[I - Options.Outputs.size()];
 }
 
 // Publishes in-memory partition objects through private sibling files.
@@ -951,7 +1050,7 @@ writePartitionObjects(const EmitOptions &Options,
                       const std::vector<SmallVector<char, 0>> &Objects,
                       std::vector<SmallString<256>> &Temporaries) {
   for (size_t I = 0; I < Objects.size(); ++I) {
-    SmallString<256> TemporaryPath(Options.Outputs[I]);
+    SmallString<256> TemporaryPath(outputPath(Options, I));
     TemporaryPath.append(".tmp-%%%%%%");
     int TemporaryFd = -1;
     if (std::error_code EC = sys::fs::createUniqueFile(
@@ -985,6 +1084,17 @@ int emitPartitions(const EmitOptions &Options) {
   bool Compiled = false;
   // A failed attempt's counts are discarded with its objects.
   auto Match = std::make_unique<ProfileMatch>();
+  std::vector<std::string> Runtime;
+  for (const std::string &Path : Options.RuntimeModules) {
+    ErrorOr<std::unique_ptr<MemoryBuffer>> Bitcode =
+        MemoryBuffer::getFile(Path, /*IsText=*/false,
+                              /*RequiresNullTerminator=*/false);
+    if (!Bitcode)
+      return reportError("runtime_module_failed",
+                         Path + ": " + Bitcode.getError().message(),
+                         Options.DiagnosticFormat);
+    Runtime.push_back((*Bitcode)->getBuffer().str());
+  }
   {
     ErrorOr<std::unique_ptr<MemoryBuffer>> Input =
         MemoryBuffer::getFile(Options.Input, /*IsText=*/false,
@@ -995,7 +1105,7 @@ int emitPartitions(const EmitOptions &Options) {
       if (Text) {
         Input->reset();
         PartitionPlan Plan{std::move(Text->Sources),
-                           std::move(Text->PublicSymbols)};
+                           std::move(Text->PublicSymbols), Runtime};
         Compiled = !compilePartitions(Options, Plan, Objects, *Match);
       }
     }
@@ -1004,6 +1114,7 @@ int emitPartitions(const EmitOptions &Options) {
     Match = std::make_unique<ProfileMatch>();
     PartitionPlan Plan;
     Failure = splitParsedModule(Options, Plan);
+    Plan.RuntimeModules = std::move(Runtime);
     if (!Failure)
       Failure = compilePartitions(Options, Plan, Objects, *Match);
   }
@@ -1011,7 +1122,7 @@ int emitPartitions(const EmitOptions &Options) {
   if (!Failure)
     Failure = writePartitionObjects(Options, Objects, Temporaries);
   for (size_t I = 0; !Failure && I < Temporaries.size(); ++I)
-    Failure = publish(Temporaries[I], Options.Outputs[I]);
+    Failure = publish(Temporaries[I], outputPath(Options, I));
   if (Failure) {
     for (const SmallString<256> &Temporary : Temporaries)
       sys::fs::remove(Temporary);
@@ -1064,12 +1175,18 @@ int emit(const EmitOptions &Options) {
     return reportError("invalid_import",
                        "runtime bitcode import requires an optimized build",
                        Options.DiagnosticFormat);
+  if (!Options.RuntimeModules.empty() &&
+      (Options.FileType != "obj" || Options.OptLevel == "0" ||
+       Options.OptLevel == "s" || Options.OptLevel == "z"))
+    return reportError("invalid_runtime_modules",
+                       "runtime modules require optimized object emission",
+                       Options.DiagnosticFormat);
   if (!Options.ProfileUse.empty())
     reportMissingProfiles();
   if (std::optional<EmitFailure> Failure = inspectProfile(Options))
     return reportError(Failure->Code, Failure->Message,
                        Options.DiagnosticFormat);
-  if (Options.Outputs.size() > 1)
+  if (Options.Outputs.size() > 1 || !Options.RuntimeModules.empty())
     return emitPartitions(Options);
 
   SMDiagnostic ParseDiagnostic;
@@ -1084,6 +1201,8 @@ int emit(const EmitOptions &Options) {
   }
   if (!Options.SourcePath.empty())
     Mod->setSourceFileName(Options.SourcePath);
+  if (!Options.ProfileGenerate.empty())
+    addProfileMarker(*Mod);
 
   std::string LookupError;
   std::unique_ptr<TargetMachine> Machine =
@@ -1100,6 +1219,14 @@ int emit(const EmitOptions &Options) {
   if (verifyModule(*Mod, &VerificationStream))
     return reportError("verification_failed", VerificationStream.str(),
                        Options.DiagnosticFormat);
+  if (!getenv("SCRIPTC_NO_RC_PAIRS")) {
+    unsigned Removed = removeRcPairs(*Mod);
+    if (const char *Stats = getenv("SCRIPTC_RC_PAIRS_STATS"))
+      if (FILE *Out = fopen(Stats, "a")) {
+        fprintf(Out, "rc pairs removed: %u\n", Removed);
+        fclose(Out);
+      }
+  }
 
   // Runtime bitcode import is the `speed` posture's opt-in; without it the
   // module reaches the pipeline exactly as emitted.

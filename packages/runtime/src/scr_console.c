@@ -150,7 +150,14 @@ static void scr_enable_utf8_console_output(void) {
 
 void scr_runtime_abi_v46(void) {}
 
+#if defined(__linux__) || defined(__APPLE__)
+void scr_profile_signals(void);
+#endif
+
 void scr_init(void) {
+#if defined(__linux__) || defined(__APPLE__)
+  scr_profile_signals();
+#endif
 #ifdef SCR_WORKERS
   /* Generated inline exception polls read the active cell directly. */
   scr_exc_swap_cell(NULL);

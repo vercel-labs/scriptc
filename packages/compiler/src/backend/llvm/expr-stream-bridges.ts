@@ -47,7 +47,7 @@ import {
 } from "./shapes.js";
 import type { LlvmEmitterContext, LlStreamTypedRefAdapter } from "./expr-context.js";
 import type { NullableRefField } from "./nullable-fields.js";
-import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
+import { emitTaggedNumber, emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import { inlineUnionCopyLines } from "./inline-unions.js";
 import { recordMayKeepSource } from "./record-sources.js";
 import { emitPerKeyOrder } from "./key-orders.js";
@@ -698,10 +698,14 @@ export function liveDynUnionRefAdapter(
       B.line(`${boxed} = call ptr @scr_dyn_new_null()`);
       B.terminate(`ret ptr ${boxed}`);
     } else if (arm.kind === "f64" || arm.kind === "procStream") {
-      host.declare(`declare double @scr_union_get_f64(ptr)`);
-      const value = B.tmp();
       const boxed = B.tmp();
-      B.line(`${value} = call double @scr_union_get_f64(ptr %u)`);
+      let value: string;
+      if (nullable?.repr === "tagged") value = emitTaggedNumber(B, "%u");
+      else {
+        host.declare(`declare double @scr_union_get_f64(ptr)`);
+        value = B.tmp();
+        B.line(`${value} = call double @scr_union_get_f64(ptr %u)`);
+      }
       B.line(`${boxed} = call ptr @${host.dyn.toDynHelper(arm)}(double ${value})`);
       B.terminate(`ret ptr ${boxed}`);
     } else if (arm.kind === "bool") {

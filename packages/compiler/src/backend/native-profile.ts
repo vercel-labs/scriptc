@@ -33,8 +33,8 @@ export function nativeProfileRefusal(options: {
   if (options.sanitize) return `${flag} cannot be combined with --sanitize`;
   if (options.optimization === "dev")
     return `${flag} needs an optimized build (--optimization=release or speed)`;
-  if (generate && options.platform !== "linux")
-    return "--profile-generate is only supported for Linux executables";
+  if (generate && options.platform !== "linux" && options.platform !== "darwin")
+    return "--profile-generate is only supported for Linux and macOS executables";
   return null;
 }
 

@@ -150,10 +150,13 @@ export function emitDynamicExpr(
           (produced.kind === "call" && !host.borrowedReturns.has(produced.callee)) ||
           produced.kind === "recordLit";
         const boxed = B.tmp();
+        const ctor = typedRefConstructor(host.shapeHost, v.type, fresh);
         B.line(
-          `${boxed} = call ptr ${typedRefConstructor(host.shapeHost, v.type, fresh)}(ptr ${v.name}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${host.cstr(key)}, ${host.sizeType} ${Buffer.byteLength(key, "utf8")}, ptr @${adapter.snapshot}, ptr ${adapter.commit})`,
+          `${boxed} = call ptr ${ctor}(ptr ${v.name}, ptr ${rc.retain}, ptr ${rc.release}, ptr ${host.cstr(key)}, ${host.sizeType} ${Buffer.byteLength(key, "utf8")}, ptr @${adapter.snapshot}, ptr ${adapter.commit})`,
         );
         for (const line of bindLiveArrayOps(host.shapeHost, adapter, boxed)) B.line(line);
+        // A moved record's reference now belongs to the capsule.
+        if (ctor.endsWith("_moved")) host.toHeap(v);
         return host.own({ name: boxed, type: e.type });
       }
       if (v.type.kind === "func") {
@@ -1237,8 +1240,8 @@ export function emitDynamicExpr(
             B.line(`store i1 true, ptr ${slot}`);
             break;
           case "f64": {
-            const a = host.unionGetF64(l.name);
-            const b = host.unionGetF64(r.name);
+            const a = host.unionGetF64(l.name, def.id);
+            const b = host.unionGetF64(r.name, def.id);
             const t = B.tmp();
             if (e.sameValue) {
               // Object.is's f64 compare: NaN equals NaN, +0 differs
@@ -1595,7 +1598,7 @@ function emitUnionEqWrappedScalar(
     B.startBlock(same);
     const eq = B.tmp();
     if (arm.kind === "f64") {
-      const v = host.unionGetF64(union.name);
+      const v = host.unionGetF64(union.name, def.id);
       if (e.sameValue) {
         host.declare(`declare zeroext i1 @scr_num_same_value(double, double)`);
         B.line(`${eq} = call zeroext i1 @scr_num_same_value(double ${v}, double ${plain.name})`);

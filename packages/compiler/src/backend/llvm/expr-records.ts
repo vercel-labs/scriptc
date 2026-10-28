@@ -72,6 +72,8 @@ export function retypeIsIdentity(
   if (from.repr === "tagged" && to.repr === "tagged")
     // Each listed arm keeps its pointer bits (or its unit encoding).
     return e.tags.every((tag) => {
+      // A number's encoding carries no tag.
+      if (tag === from.num) return tag === to.num;
       const ref = from.refs.find((r) => r.tag === tag);
       if (ref) return to.refs.some((r) => r.tag === tag && r.bits === ref.bits);
       return (

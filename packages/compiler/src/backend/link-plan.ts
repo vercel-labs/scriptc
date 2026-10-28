@@ -41,6 +41,8 @@ export async function createNativeLinkPlan(options: {
   strip?: boolean;
   windowsSubsystem?: WindowsSubsystem;
   profileGenerate?: boolean;
+  /** Runtime objects compiled with the program, replacing the pack's. */
+  runtimeObjects?: readonly string[];
   programObjectDependencies?: readonly NativeArtifactDependency[];
   env?: NodeJS.ProcessEnv;
   resolver?: (specifier: string) => string;
@@ -65,7 +67,7 @@ export async function createNativeLinkPlan(options: {
       ffiLibraries: options.ffi?.libraries ?? [],
       ffiSystemLibraries: options.ffi?.systemLibraries ?? [],
       ffiFrameworks: options.ffi?.frameworks ?? [],
-      runtimeObjects: runtimePack.runtimeObjects,
+      runtimeObjects: [...(options.runtimeObjects ?? runtimePack.runtimeObjects)],
       runtimeArchives: runtimePack.archives,
       runtimeSystemLibraries: runtimePack.systemLibraries,
       optimization: options.optimization,

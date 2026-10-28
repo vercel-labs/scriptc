@@ -21,7 +21,19 @@ export function lastUseRead(
   localId: string,
   rebound = false,
 ): IrExpr | null {
-  return lastUse(stmts, index, localId, rebound)?.read ?? null;
+  const use = lastUse(stmts, index, localId, rebound);
+  return use !== null && use.reads.length === 1 ? use.reads[0]! : null;
+}
+
+/** lastUseRead, where the last statement may also be an `if` whose arms
+ * each read the binding once: each read moves the reference on its own
+ * path, and a path that reads nothing keeps it for the scope release. */
+export function lastUseReads(
+  stmts: readonly IrStmt[],
+  index: number,
+  localId: string,
+): readonly IrExpr[] {
+  return lastUse(stmts, index, localId, false)?.reads ?? [];
 }
 
 /** Stores that keep a moved value: the read is the stored value of a field,
@@ -33,7 +45,7 @@ export function storedLastUseRead(
   rebound = false,
 ): IrExpr | null {
   const use = lastUse(stmts, index, localId, rebound);
-  return use !== null && use.stored ? use.read : null;
+  return use !== null && use.stored && use.reads.length === 1 ? use.reads[0]! : null;
 }
 
 function lastUse(
@@ -41,7 +53,7 @@ function lastUse(
   index: number,
   localId: string,
   rebound: boolean,
-): { read: IrExpr; stored: boolean } | null {
+): { reads: IrExpr[]; stored: boolean } | null {
   const { extent, derived } = extentOf(stmts, index, localId, rebound);
   const last = extent[extent.length - 1];
   if (last === undefined) return null;
@@ -50,6 +62,8 @@ function lastUse(
     stored: false,
     ok: true,
   };
+  // Reads in exclusive arms of the last statement when it is an `if`.
+  const armReads: IrExpr[] = [];
   const isRead = (e: IrExpr): boolean => e.kind === "varRef" && e.localId === localId;
   const stmt = (s: IrStmt): boolean => {
     if (!state.ok) return false;
@@ -105,8 +119,29 @@ function lastUse(
     if (!state.ok) return false;
     return everyExprChild(e, expr, stmt);
   };
+  // The condition reads nothing; each arm is then walked as a last
+  // statement of its own path (an arm that is one `if` splits again).
+  const arms = (s: IrStmt & { kind: "if" }): boolean => {
+    if (!expr(s.cond) || state.read !== null) return false;
+    for (const arm of [s.then, s.else_ ?? []]) {
+      if (arm.length === 1 && arm[0]!.kind === "if") {
+        if (!arms(arm[0]!)) return false;
+        continue;
+      }
+      for (const t of arm) if (!stmt(t)) return false;
+      if (state.read !== null) armReads.push(state.read);
+      state.read = null;
+    }
+    return state.ok;
+  };
   stmt(last);
-  return state.ok && state.read !== null ? { read: state.read, stored: state.stored } : null;
+  if (state.ok && state.read !== null) return { reads: [state.read], stored: state.stored };
+  if (last.kind !== "if") return null;
+  state.read = null;
+  state.stored = false;
+  state.ok = true;
+  if (!arms(last)) return null;
+  return armReads.length > 0 ? { reads: armReads, stored: state.stored } : null;
 }
 
 /** The statements of a block during which a binding declared at

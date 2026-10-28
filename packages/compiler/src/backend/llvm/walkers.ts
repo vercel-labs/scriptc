@@ -33,7 +33,7 @@ import {
 import { disposeHookLoadLines, RECORD_SOURCES_GATE } from "./alloc.js";
 import { recordMayKeepSource, recordSourceFieldOrder } from "./record-sources.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
-import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
+import { emitUnionPeek, emitUnionTag, unionNumberLines } from "./union-repr.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
 
 /** What the walkers need from the emitter beyond the shape tables: union
@@ -163,6 +163,14 @@ export class LlWalkers {
 
   private unionPeek(B: BlockBuilder, uName: string, unionId: string): string {
     return emitUnionPeek(B, this.host.nullableUnions.get(unionId), uName);
+  }
+
+  /** A union's number payload, by its representation. */
+  private unionNumber(B: BlockBuilder, uName: string, unionId: string): string {
+    const out = B.tmp();
+    for (const line of unionNumberLines(this.host.nullableUnions.get(unionId), uName, out))
+      B.line(line.trim());
+    return out;
   }
 
   /* ── circular-structure detection (the C walkers' scr_jb_enter bracket,
@@ -899,9 +907,7 @@ export class LlWalkers {
       }
       const w = this.jsonWriteHelper(arm);
       if (arm.kind === "f64") {
-        this.host.declare(`declare double @scr_union_get_f64(ptr)`);
-        const x = B.tmp();
-        B.line(`${x} = call double @scr_union_get_f64(ptr %v)`);
+        const x = this.unionNumber(B, "%v", unionId);
         B.line(`call void @${w}(ptr %b, double ${x})`);
       } else if (arm.kind === "bool") {
         this.host.declare(`declare zeroext i1 @scr_union_get_bool(ptr)`);
@@ -1025,10 +1031,8 @@ export class LlWalkers {
             break;
           }
           case "f64": {
-            host.declare(`declare double @scr_union_get_f64(ptr)`);
             host.declare(`declare void @scr_jb_put_number(ptr, double)`);
-            const value = B.tmp();
-            B.line(`${value} = call double @scr_union_get_f64(ptr ${u})`);
+            const value = this.unionNumber(B, u, unionId);
             B.line(`call void @scr_jb_put_number(ptr ${buf}, double ${value})`);
             break;
           }

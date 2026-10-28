@@ -821,7 +821,7 @@ export function emitStringExpr(
               );
               break;
             case "f64": {
-              const x = host.unionGetF64(v.name);
+              const x = host.unionGetF64(v.name, def.id);
               const r = B.tmp();
               host.declare(`declare ptr @scr_f64_to_scrstr(double)`);
               B.line(`${r} = call ptr @scr_f64_to_scrstr(double ${x})`);

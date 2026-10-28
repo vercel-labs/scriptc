@@ -25,6 +25,9 @@ export interface RuntimePackVariant extends RuntimePackArtifact {
   defines: string[];
   /** LLVM bitcode of the same unit, imported by the helper for inlining. */
   bitcode?: RuntimePackArtifact;
+  /** The complete unit as LLVM bitcode before optimization, which a profiled
+   * build compiles with the program in place of the object. */
+  full_bitcode?: RuntimePackArtifact;
 }
 
 interface RuntimePackUnit {
@@ -183,6 +186,7 @@ export function parseRuntimePackManifest(value: unknown): RuntimePackManifest {
             return (
               validArtifact(variantRaw) &&
               (variant?.bitcode === undefined || validArtifact(variant.bitcode)) &&
+              (variant?.full_bitcode === undefined || validArtifact(variant.full_bitcode)) &&
               typeof variant?.id === "string" &&
               when !== null &&
               Object.values(when).every((entry) => typeof entry === "boolean") &&
@@ -377,7 +381,10 @@ export function validateRuntimePackIdentity(
 export interface RuntimePackArtifacts {
   features: RuntimeFeatureSet;
   /** Selected unit variants; each may carry its bitcode artifact. */
-  runtime: (RuntimePackArtifact & { bitcode?: RuntimePackArtifact })[];
+  runtime: (RuntimePackArtifact & {
+    bitcode?: RuntimePackArtifact;
+    full_bitcode?: RuntimePackArtifact;
+  })[];
   archives: RuntimePackArtifact[];
   systemLibraries: string[];
 }

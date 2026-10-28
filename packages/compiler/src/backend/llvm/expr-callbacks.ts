@@ -12,7 +12,12 @@ import { mangleRecordNew, mangleRecordStruct } from "../mangle.js";
 import { FN_ATTRS, llFieldType, releaseSym, retainSym, traceArg, vAdapters } from "./shapes.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import type { LlvmEmitterContext } from "./expr-context.js";
-import { unionPeekLines, unionTagLines } from "./union-repr.js";
+import {
+  unionNewNumberLines,
+  unionNumberLines,
+  unionPeekLines,
+  unionTagLines,
+} from "./union-repr.js";
 import { inlineUnionCopyLines } from "./inline-unions.js";
 import { registerReplay } from "./emit-journal.js";
 
@@ -116,7 +121,7 @@ export function raceAdapterFor(host: LlvmEmitterContext, from: IrType, to: IrTyp
       host.declare(`declare ptr @scr_union_new_f64(i32, double)`);
       d.push(
         `  %x = call double @scr_promise_payload_f64(ptr %src)`,
-        `  %u = call ptr @scr_union_new_f64(i32 ${tag}, double %x)`,
+        ...unionNewNumberLines(host.nullableUnions.get(to.unionId), tag, "%x", "%u"),
       );
     } else if (from.kind === "bool") {
       host.declare(`declare zeroext i1 @scr_promise_payload_bool(ptr)`);
@@ -175,8 +180,8 @@ export function raceAdapterFor(host: LlvmEmitterContext, from: IrType, to: IrTyp
       host.declare(`declare double @scr_union_get_f64(ptr)`);
       host.declare(`declare ptr @scr_union_new_f64(i32, double)`);
       d.push(
-        `  %x${i} = call double @scr_union_get_f64(ptr %u0)`,
-        `  %v${i} = call ptr @scr_union_new_f64(i32 ${tag}, double %x${i})`,
+        ...unionNumberLines(fromNullable, "%u0", `%x${i}`),
+        ...unionNewNumberLines(host.nullableUnions.get(to.unionId), tag, `%x${i}`, `%v${i}`),
         `  store ptr %v${i}, ptr %slot`,
         `  br label %join`,
       );
@@ -360,7 +365,7 @@ export function genResultThunkFor(
       host.declare(`declare ptr @scr_union_new_f64(i32, double)`);
       return [
         `  %${px}x = call double @scr_gen_take_out_f64(ptr %g)`,
-        `  %${px}u = call ptr @scr_union_new_f64(i32 ${tagOf(srcT)}, double %${px}x)`,
+        ...unionNewNumberLines(host.nullableUnions.get(valueT.unionId), tagOf(srcT), `%${px}x`, `%${px}u`),
         `  store ptr %${px}u, ptr %vslot`,
         `  br label %join`,
       ];
@@ -411,8 +416,8 @@ export function genResultThunkFor(
         host.declare(`declare double @scr_union_get_f64(ptr)`);
         host.declare(`declare ptr @scr_union_new_f64(i32, double)`);
         lines.push(
-          `  %${px}x${i} = call double @scr_union_get_f64(ptr %${px}u0)`,
-          `  %${px}v${i} = call ptr @scr_union_new_f64(i32 ${tag}, double %${px}x${i})`,
+          ...unionNumberLines(srcNullable, `%${px}u0`, `%${px}x${i}`),
+          ...unionNewNumberLines(host.nullableUnions.get(valueT.unionId), tag, `%${px}x${i}`, `%${px}v${i}`),
           `  store ptr %${px}v${i}, ptr %vslot`,
         );
       } else if (arm.kind === "bool") {

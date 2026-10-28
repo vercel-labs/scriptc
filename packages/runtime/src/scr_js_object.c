@@ -256,6 +256,8 @@ static const ScrJsShape *scr_js_shape_of(ScrDyn *object) {
   return shape;
 }
 
+const void *scr_js_shape_identity(ScrDyn *object) { return scr_js_shape_of(object); }
+
 /* for-in's key snapshot of a plain object whose prototype contributes no
  * keys, shared by every object of its shape: the keys in entry order, or
  * NULL when the object has no shape, some key is integer-like (for-in
@@ -535,24 +537,32 @@ static __attribute__((noinline)) ScrDyn *scr_js_probe_load(ScrDyn *receiver, con
  * taken over) under `keys`, in order. The site remembers the literal's shape, so a
  * repeat appends each value under the key bytes the shape holds and sets
  * the shape, with no transition lookup. +1. */
+/* A shape's key pointers and lengths in entry order, built once: what a
+ * one-pass fill of an object of that shape needs. */
+static ScrJsShape *scr_js_fill_shape(const ScrJsShape *shape) {
+  ScrJsShape *owner = (ScrJsShape *)shape;
+  size_t n = shape->count;
+  if (!owner->fill_keys && n) {
+    /* One block: the key pointers, then the lengths. */
+    char **keys = malloc(n * (sizeof *keys + sizeof(size_t)));
+    if (!keys) scr_trap("scriptc: out of memory\n");
+    size_t *lens = (size_t *)(keys + n);
+    const ScrJsShape *s = shape;
+    for (size_t i = n; i-- > 0; s = s->parent) {
+      keys[i] = s->key;
+      lens[i] = s->key_len;
+    }
+    owner->fill_lens = lens;
+    owner->fill_keys = keys;
+  }
+  return owner;
+}
+
 ScrDyn *scr_js_new_literal(ScrJsIc *ic, size_t n, ScrStr *const *keys, ScrDyn *const *values) {
   ScrDyn *obj = scr_dyn_new_obj();
   const ScrJsShape *shape = ic->count ? ic->entry[0].target : NULL;
   if (shape && shape->count == n) {
-    ScrJsShape *owner = (ScrJsShape *)shape;
-    if (!owner->fill_keys && n) {
-      /* One block: the key pointers, then the lengths. */
-      char **keys = malloc(n * (sizeof *keys + sizeof(size_t)));
-      if (!keys) scr_trap("scriptc: out of memory\n");
-      size_t *lens = (size_t *)(keys + n);
-      const ScrJsShape *s = shape;
-      for (size_t i = n; i-- > 0; s = s->parent) {
-        keys[i] = s->key;
-        lens[i] = s->key_len;
-      }
-      owner->fill_lens = lens;
-      owner->fill_keys = keys;
-    }
+    ScrJsShape *owner = scr_js_fill_shape(shape);
     scr_dyn_tier_fill(obj, n, owner->fill_keys, owner->fill_lens, values);
     obj->v.obj.shape = owner;
     return obj;
@@ -1004,7 +1014,84 @@ bool scr_js_adopt_own_except(ScrDyn *dst, ScrDyn *src, const ScrStr *excluded) {
   return true;
 }
 
+/* The copy loop over a record capsule answering from its native record:
+ * its own keys are the present declared fields in layout order, each a
+ * plain enumerable value. Per (layout, excluded names): the fields kept,
+ * and for a layout whose fields are all required, the copy's final shape. */
+typedef struct {
+  const ScrDynTypedRecordOps *ops;
+  const ScrStr *excluded;
+  uint64_t keep;
+  ScrJsShape *shape;
+  bool ok;
+} ScrJsRecordCopyMemo;
+static SCR_TL ScrJsRecordCopyMemo scr_js_record_copy_memos[64];
+
+static void scr_js_record_copy_memo_fill(ScrJsRecordCopyMemo *memo, const ScrDynTypedRecordOps *ops,
+                                         const ScrStr *excluded) {
+  *memo = (ScrJsRecordCopyMemo){ops, excluded, 0, NULL, false};
+  const char *names[8];
+  size_t lens[8], skip;
+  if (ops->count > 64 || !scr_js_excluded_names(excluded, names, lens, &skip)) return;
+  const ScrJsShape *shape = &scr_js_root;
+  for (size_t i = 0; i < ops->count; i++) {
+    const ScrStr *name = ops->names[i];
+    uint32_t index;
+    /* Index-like names enumerate first; `__proto__` and an error's mirrored
+     * keys take the generic store. */
+    if (scr_key_array_index(name->data, name->len, &index)) return;
+    if (name->len == 9 && memcmp(name->data, "__proto__", 9) == 0) return;
+    if (name->len >= 4 && name->len <= 7) {
+      static const char *const synced[] = {"name", "code", "cause", "stack", "message"};
+      for (size_t k = 0; k < 5; k++)
+        if (strlen(synced[k]) == name->len && memcmp(synced[k], name->data, name->len) == 0) return;
+    }
+    bool drop = false;
+    for (size_t j = 0; !drop && j < skip; j++)
+      drop = lens[j] == name->len && memcmp(names[j], name->data, lens[j]) == 0;
+    if (drop) continue;
+    memo->keep |= UINT64_C(1) << i;
+    if (shape) shape = scr_js_transition(shape, name->data, name->len);
+  }
+  if (ops->fixed && shape) memo->shape = scr_js_fill_shape(shape);
+  memo->ok = true;
+}
+
+static bool scr_js_copy_record_except(ScrDyn *dst, ScrDyn *src, const ScrStr *excluded) {
+  const ScrDynTypedRecordOps *ops = scr_js_live_record(src);
+  if (!ops || excluded->rc != SIZE_MAX || dst->kind != SCR_DYN_OBJ || dst->v.obj.len != 0 ||
+      dst->prototype || dst->null_proto || dst->non_extensible || scr_js_shape_of(dst) != &scr_js_root)
+    return false;
+  ScrJsRecordCopyMemo *memo = &scr_js_record_copy_memos[(((uintptr_t)ops >> 4) ^ ((uintptr_t)excluded >> 3)) & 63];
+  if (memo->ops != ops || memo->excluded != excluded) scr_js_record_copy_memo_fill(memo, ops, excluded);
+  if (!memo->ok) return false;
+  void *rec = src->v.typed_ref.ptr;
+  uint64_t keep = memo->keep;
+  if (memo->shape) {
+    ScrDyn *values[64];
+    size_t n = 0;
+    for (size_t i = 0; keep >> i; i++)
+      if (keep >> i & 1) values[n++] = ops->get(rec, i);
+    if (n) scr_dyn_tier_fill(dst, n, memo->shape->fill_keys, memo->shape->fill_lens, values);
+    dst->v.obj.shape = memo->shape;
+    return true;
+  }
+  const ScrJsShape *shape = &scr_js_root;
+  for (size_t i = 0; keep >> i; i++) {
+    if (!(keep >> i & 1) || (!ops->fixed && !ops->has(rec, i))) continue;
+    const ScrStr *name = ops->names[i];
+    ScrDyn *value = ops->get(rec, i);
+    const ScrJsShape *target = shape ? scr_js_transition(shape, name->data, name->len) : NULL;
+    if (target) scr_js_append_shaped(dst, target, value);
+    else scr_dyn_key_set(dst, name, value);
+    scr_dyn_release(value);
+    shape = target;
+  }
+  return true;
+}
+
 bool scr_js_copy_own_except(ScrDyn *dst, ScrDyn *src, const ScrStr *excluded) {
+  if (src->kind == SCR_DYN_TYPED_REF) return scr_js_copy_record_except(dst, src, excluded);
   if (!scr_js_copyable_source(src, dst)) return false;
   size_t count = src->v.obj.len;
   const char *names[8];

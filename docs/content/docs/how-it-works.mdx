@@ -87,6 +87,7 @@ Building with a profile adds these costs (see [Profile-guided optimization](/doc
 - The profile's contents are part of every partition's cache key. A new or changed profile compiles every partition again; builds without a profile keep their own cache entries.
 - With a profile, the import step lets a hot call import a function of up to twice the usual size limit. LLVM's default limits for profiled calls are 10 and 100 times as large, and on large programs they tripled the build's time and memory without making the program measurably faster.
 - The profile does not change which partition a function is in.
+- The runtime units the program links compile with its partitions, from the complete LLVM bitcode the runtime package ships, instead of linking their precompiled objects. A profiled build therefore also compiles the runtime, once per profile; its objects are cached like the partitions'.
 
 Collecting a profile takes an instrumented build, the training runs, and the merge. With a committed profile, later builds skip those steps and are one optimized build each.
 

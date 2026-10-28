@@ -1111,7 +1111,61 @@ Node was profiled on the same `/large` loop (`node --cpu-prof`, 100 µs interval
 - **A typed app is slower:** `workloads.mjs` was retyped as TypeScript (row and props types, `Column = keyof RowData`), and `/large` took 6.72 ms against 5.70 ms untyped (+18%). Typed props objects reach React's untyped `createElement` as typed records, and its `for…in` copy over them takes the slow path: key lists (`scr_dyn_own_key_strs`, `scr_dyn_for_in_key_strs`), per-field reads (`scr_typed_ref_key_get`, `scr_typed_ref_record_field`), shape transitions, and destroying `string | number` unions. The boundary from typed code into untyped libraries needs to be cheap before typing helps.
 - **Gaps found while typing:** React's exports are `unknown` from TypeScript (`Theme.Provider` needs `any`), and converting a typed `Promise<T>` to `unknown` is refused (SC1101).
 
+## Part 35: where the runtime time goes, and two leaks (Oct 27)
+
+### The gap is in the runtime, not the compiled code
+
+Splitting scriptc's `/large` self time by owner, compiled JavaScript functions take 2.35 ms. Without the output writers, that is about 2.05 ms against roughly 1.9 ms of JavaScript in Node's profile, so the compiled code itself is close to V8. Almost the whole gap is runtime calls out of compiled code:
+- `scr_dyn_*`: 1.27 ms;
+- `scr_js_*`: 0.49 ms;
+- strings, refcounts, arrays, cycle collection, unions, boxes, closures and release helpers: about 1.2 ms more.
+
+Profile-guided specialization of compiled code, the plan of Part 34, therefore aims at the wrong thing. The inline caches already exist, and the cost is what happens inside the runtime per value.
+
+### Per-node cost
+
+- **What a render allocates:** about 57,000 dynamic nodes per `/large` render:
+  - 28,566 objects;
+  - 14,589 string boxes;
+  - 12,040 typed references, all capsules of the React element record `{ $$typeof, key, props, ref, type }`;
+  - 1,033 arrays, 961 number boxes, 609 function boxes.
+
+  At 1.32 ms of memory work, that is about 23 ns per node.
+- **The microbenchmark:** creating a props object and an element object per iteration and dropping them (`/tmp/mb2/life3.mjs`):
+  - Node: 1.3 ns, because escape analysis removes the allocations; 6.4 ns when the objects stay alive through a ring;
+  - scriptc: 62 ns;
+  - a minimal C model of pooled, reference-counted objects with shape-held keys and inline slots (`/tmp/mb2/floor.c`): 10.5 ns.
+
+  So the current object path is about 6× its reference-counting floor. Reference counting itself stays above V8's allocation cost.
+- **Where the microbenchmark's time goes:** `scr_dyn_dispose` 26%, `scr_dyn_release` 13%, `scr_dyn_tier_fill` 12%, `scr_js_new_literal` 8%, `scr_dyn_alloc` 6%, cycle hooks (`scr_cyc_on_release`, `scr_cyc_on_dead`, `scr_dyn_release_survivor`) 11%.
+
+  Its second number box is the constant `1` in `$$typeof: 1`: constant numbers are boxed at every evaluation.
+- **Shape pools, tried and reverted:** a dead plain shaped object kept its entries and keys on its shape's free list, so a literal site of that shape refilled only the values. The microbenchmark went from 62 to 52 ns; React was neutral, because its props objects come from `createElement`'s copy, not from literal sites.
+- **A profiling trap:** a `SIGPROF` sampler records page-fault sites on macOS, not time, so it can't attribute time; `sample` stays the tool.
+
+### Two leaks: RSS grew 160 KB per render
+
+`/large` grew from 45 MB after 100 renders to 482 MB after 3,000. A full cycle collection did not free the extra objects, but teardown at exit did, so the audit at exit stayed clean. Node's heap stayed at 6 MB.
+
+1. **Recent-box caches abandoned boxes.** The immortal-string box cache (256 slots, `9299930a0`) and the function-box cache (128 slots, `eb3918bf4`) made a new immortal box on every slot collision and abandoned the previous one. React cycles through more literals and components than there are slots, so every miss leaked a box, about 22 per render.
+
+   **Fix** (`cbf3e4f82`): a slot holds a counted reference and releases its box on eviction. Function boxes are marked acyclic, and the mark is cleared when they die. Corpus program `dyn-recent-box-eviction.cjs` covers eviction.
+2. **Slots of emitter subclasses were untraced.** The cycle analysis gave the synthetic `<listeners>` field to `%EventEmitter` itself only. It decides tracing per hierarchy, but reachability per class, so a record holding a `Writable` looked acyclic and its capsule was created untraced. A cycle such as stream → listener → closure → request → capsule → stream was then invisible to the collector: one stream graph leaked per render.
+
+   **Fix** (`9bb4e29f0`): every class that inherits from the emitter or the event target gets the synthetic field, with a unit test in `cycle-analysis.test.ts`.
+
+**After both fixes:** `/large` RSS is 46 MB after 300 renders and 59 MB after 3,000; speed is unchanged (5.85 → 5.80 ms, in noise).
+
+### Found along the way
+
+- Reading `.name` on a dynamic function value builds a property table on the closure. A top-level closure is immortal, so the table lives as long as the program, and the sanitized lane's audit reports its name string and box at exit.
+- `shapes.test.ts` has two failing tests from this branch's inline-release changes: "release builds inline only string and dyn retains and releases and Map retains" and "a function over the budget calls the runtime release at every site". Fix before shipping.
+- Six corpus programs from this branch lack TypeScript order baselines (`pnpm test:ts7 --baselines-only`).
+
 ## Known scriptc gaps found along the way (not fixed)
+
+- A top-level function's property table (built by a dynamic `.name` or `.length` read) lives as long as the program; the sanitized audit reports it at exit.
+- Constant numbers in dynamic code (`$$typeof: 1`) are boxed at every evaluation.
 
 - Converting a typed `Promise<T>` to `unknown` is refused (SC1101); React exports are `unknown` from TypeScript.
 - Typed records passed into untyped code take slow for-in/key paths (Part 34).

@@ -1044,6 +1044,42 @@ Both are neutral within noise: a pooled box costs a free-list pop and push, so t
 - **Specializing the render path** cannot be done soundly as a compile-time transform here. The app's components build the element tree, and React consumes it later through its task queue and segments (with Suspense retries holding nodes), so no call chain exists for the compiler to fuse.
 - **A generational collector for checked values** is the remaining structural lever. Freeing (`scr_rc_destroy` inclusive) is about 17% and cycle bookkeeping about 3.5%. It needs write barriers across the runtime's stores of checked values (1,327 retain sites, about 1,000 global slots, 280 struct fields) and stack maps from the compiler.
 
+## Part 32: design, a young generation for checked values (Oct 27)
+
+**Goal:** dead short-lived checked values (props, children arrays, element capsules, boxes) cost no teardown walk, and stores into fresh containers cost no reference counting. Freeing is about 17% of `/large` and cycle bookkeeping about 3.5%.
+
+**What exists:** `SCRIPTC_YOUNG_NURSERY=1` (`SCR_YIN` in `scr_cycle.c`) nurses compiled records and classes with exact counts. Each collection recounts young-to-young edges, marks from objects referenced from outside the nursery, and tears the dead down giving up only edges that leave the dead set. On React it is neutral (5.84 against 5.85 ms): dead objects are still visited edge by edge.
+
+**The design: uncounted young slots.**
+- **Young values:** every checked value (`ScrDyn`: objects, arrays, capsules, function boxes, string and number boxes) is born young. Its header has generation `SCR_CYC_YOUNG` with the buffered bit set, so releases never make it a cycle candidate, and it is listed in the young list in allocation order.
+- **Invariant 1, counted references:** every reference to a young value is counted (stack, locals, globals, records and classes, closures, runtime structures, old checked containers) *except* a reference held in a young container's value slot (object entry values, array items). Because every root is counted, a young value with a nonzero count is referenced from outside the young set: **no stack maps, no conservative scan**.
+- **Invariant 2, uncounted slots:** a young container's value slots hold uncounted references, whether the value is young or old.
+  - Storing into a young container does not retain, and a store that takes over a reference releases it.
+  - Overwriting or removing a value does not release it, and taking a value out with ownership (`pop`, `shift`, `splice` results) retains it.
+  - Moving entries between containers of different generations converts the counts, or takes the copying path (adopting copies require both young).
+- **Invariant 3, deferred deaths:** an old checked value whose count reaches zero while the young list is not empty may still sit in an uncounted young slot, so its teardown waits in a deferred list.
+- **Death of a young value:** when its count reaches zero, nothing happens. Liveness is decided at collection.
+
+**Collection** (when the young list reaches its limit, and before every cycle-collection pass, so trial deletion never meets young values):
+1. **Mark:** every young value with a nonzero count is a root (counted references are exact). From the roots, follow the uncounted slots (entry values, array items) to young values.
+2. **Sweep** the young list in order:
+   - **An unmarked (dead) value** releases only the counted references it holds: a string box's string, a capsule's referent (plus identity-table forget), a function box's closure, a prototype, symbol tables, accessor pairs, a materialized view. It returns to the pool with its entry buffer and cached keys, with no recursion into slot values.
+   - **A marked value is promoted:** generation old, unbuffered, and each slot value it holds gains its count (+1 per edge).
+3. **Deferred old deaths:** each value whose count is still zero is torn down as today.
+
+**Why no runtime-wide audit:** the runtime's own references (streams, timers, caches, 1,327 retain sites) are counted references and stay exactly as they are. Only code that writes or removes slot values of checked objects and arrays changes:
+- **Entry values:** `scr_json.c` `scr_dyn_obj_put`, `append_shared`, `tier_fill`, `tier_append`, `clone_entries`, define-property and accessor paths, delete, `fit_object`, the view refresh; `scr_js_object.c` `scr_js_store_shaped`, adopt (both young), literal fill.
+- **Array items:** `scr_dyn_arr_push`, index set, length truncation; `scr_dyn_invoke.c` `push`, `pop`, `shift`, `unshift`, `splice`, `reverse`, `fill`, `copyWithin`, `sort`.
+- **Compiled code:** the inline store path of `js-ic.ts` `emitSet` (retain new, release old at entry +16).
+- **Elsewhere:** `scr_message.c` decode writes into fresh arrays.
+
+A missed store site retains into an uncounted slot (a leak); a missed removal site releases an uncounted reference (an early free). Removal sites need the most care.
+
+**Phases:**
+1. Young allocation, list and header state; `scr_dyn_release` does nothing at zero for young values; collection (mark, sweep, promote, deferred deaths); the collection before cycle passes. Slot sites still count, so the first build changes nothing observable.
+2. Convert the slot sites to the uncounted rule, one family at a time (object stores, array stores, removals), measuring after each.
+3. Leaf boxes and capsules through the sweep; weak tables (`scr_dyn_weak_dispose`, typed-ref identity) at sweep.
+
 ## Known scriptc gaps found along the way (not fixed)
 
 - A named function expression assigned to a variable (`const Other = function Named() {}`) reports the variable's name from `.name` (`Other`; Node prints `Named`).

@@ -1005,6 +1005,16 @@ Objects that die at once cost about the same in both. Objects that are kept and 
 - **Escape analysis (plan step 2):** React's dynamic objects nearly all escape (config into props, props into elements, children into props, elements returned, key paths into tasks). Not applicable to this render.
 - **Shape inference (plan step 3):** props reach the app through React's generic `Component(props)` calls, and React's Flow types declare them `any`, so no single site proves a layout. Typing them needs per-layout specialization of React's render path.
 
+## Part 29: property paths, round 3 (Oct 27)
+
+`/large` went from about 6.3 to 5.98 ms (best same-run measurement; the machine was noisy) and `/medium` to about 322 µs. HTML is identical on every route.
+
+**Changes** (general):
+- **Absent keys at compiled get sites:** a get site's key filter bit is computed at compile time (the compiler's `scrKeyHash` mirrors the runtime's). An object whose shape filter lacks the bit and whose prototype is the default reads `undefined` inline, with no probe call. The unshaped marker sets every bit, and keys of `Object.prototype` members and `length`/`next` keep the probe. `props.ref` and `config.key` no longer call into the runtime: `scr_js_probe_load` went from 5% to 2.2%, and `/large` gained 3%.
+- **Fresh records boxed without an identity entry:** `dynFrom` of a call's result (not a borrowed return) or of a record literal uses `scr_dyn_new_typed_ref_*_moved`. A record with that one reference gets a capsule marked `unregistered`, not entered into the identity table. Nothing can box it again until a static reference leaves the capsule; `scr_dyn_typed_ref_unbox`, the await exact path, in-place capsules and message encoding register it first. Element identity holds through arrays, `Map`, `WeakMap`, `Set`, props and `Children.toArray`. `scr_typed_ref_forget` dropped out of the profile (−1%).
+- **Megamorphic keyed reads share the load table:** a keyed site past its four ways (`row[column]`) asks the shared (shape, key bytes) table and checks the slot's key bytes.
+- **for-in keys read back by address:** a shape keeps the byte pointers of its for-in key strings, so the loop's presence test, its `hasOwnProperty` and its `props[key]` read find the slot by address (`scr_dyn_find_entry` went from 1.6% to 0.6%).
+
 ## Known scriptc gaps found along the way (not fixed)
 
 - **Dynamic stores and reads on functions:**

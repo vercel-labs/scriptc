@@ -1326,6 +1326,9 @@ static void scr_dyn_dispose(ScrDyn *d, bool collected) {
     break;
   case SCR_DYN_FUNC:
     if (!collected) scr_closure_release(d->v.fn.clo); /* sig/name are static literals */
+    /* A cached box's mark (scr_dyn_new_func_box) must not outlive it in
+     * the pool. */
+    if (scr_cyc_hdr(d)->buf == SCR_CYC_ACYCLIC) scr_cyc_hdr(d)->buf = 0;
     break;
   case SCR_DYN_HANDLE:
     if (!collected || !d->v.handle.traced)
@@ -2115,22 +2118,56 @@ ScrDyn *scr_dyn_new_num(double n) {
 
 static ScrDyn *scr_dyn_make_immortal(ScrDyn *d);
 
+/* The recent boxes of immortal strings and of immortal closures. A slot
+ * holds one reference to its box, and a box another string or closure
+ * takes the slot from is released, not abandoned: the slots are few and
+ * the program's literals many. */
+static SCR_TL struct {
+  const ScrStr *str;
+  ScrDyn *box;
+} scr_dyn_str_boxes[256];
+static SCR_TL struct {
+  ScrClosure *clo;
+  ScrDynThunk thunk;
+  const char *sig, *name;
+  ScrDyn *box;
+} scr_dyn_func_boxes[128];
+static SCR_TL bool scr_dyn_box_caches_registered;
+
+static void scr_dyn_box_caches_reset(void) {
+  for (size_t i = 0; i < 256; i++) {
+    scr_dyn_release(scr_dyn_str_boxes[i].box);
+    scr_dyn_str_boxes[i].str = NULL;
+    scr_dyn_str_boxes[i].box = NULL;
+  }
+  for (size_t i = 0; i < 128; i++) {
+    scr_dyn_release(scr_dyn_func_boxes[i].box);
+    memset(&scr_dyn_func_boxes[i], 0, sizeof scr_dyn_func_boxes[i]);
+  }
+  scr_dyn_box_caches_registered = false;
+}
+
+static void scr_dyn_box_caches_register(void) {
+  if (scr_dyn_box_caches_registered) return;
+  scr_dyn_box_caches_registered = true;
+  scr_atexit(scr_dyn_box_caches_reset);
+}
+
 ScrDyn *scr_dyn_new_str(ScrStr *s) {
-  /* An immortal string (a literal, or interned) keeps one immortal box:
-   * strings have no identity, and their number is bounded by the program. */
+  /* An immortal string (a literal, or interned) reuses its recent box:
+   * strings have no identity. */
   if (s->rc == SIZE_MAX) {
-    static SCR_TL struct {
-      const ScrStr *str;
-      ScrDyn *box;
-    } boxes[256];
     size_t slot = ((uintptr_t)s >> 4) & 255;
-    if (boxes[slot].str != s) {
+    if (scr_dyn_str_boxes[slot].str != s) {
+      scr_dyn_box_caches_register();
       ScrDyn *box = scr_dyn_leaf_alloc(SCR_DYN_STR);
       box->v.str = s;
-      boxes[slot].str = s;
-      boxes[slot].box = scr_dyn_make_immortal(box);
+      ScrDyn *old = scr_dyn_str_boxes[slot].box;
+      scr_dyn_str_boxes[slot].str = s;
+      scr_dyn_str_boxes[slot].box = box;
+      scr_dyn_release(old);
     }
-    return boxes[slot].box;
+    return scr_dyn_retain(scr_dyn_str_boxes[slot].box);
   }
   ScrDyn *d = scr_dyn_leaf_alloc(SCR_DYN_STR);
   d->v.str = scr_str_retain(s);
@@ -6196,26 +6233,24 @@ void scr_dyn_fence_member(ScrDyn *object, const ScrStr *key) {
 }
 
 /* A compiled function value boxed for checked-dynamic code. An immortal
- * closure (a top-level function) keeps one immortal box per signature and
- * name: functions compare by closure identity, so a box per crossing (React
- * passes each component through its renderer) is pure overhead. */
+ * closure (a top-level function) reuses its recent box per signature and
+ * name (scr_dyn_func_boxes): functions compare by closure identity, so a
+ * box per crossing (React passes each component through its renderer) is
+ * pure overhead. Such a box only reaches an immortal closure, so it is
+ * never on a cycle. */
 ScrDyn *scr_dyn_new_func_box(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, const char *sig, const char *name) {
   if (clo->rc != SIZE_MAX || (clo->function_kind & 8)) return scr_dyn_new_func(clo, thunk, arity, sig, name);
-  static SCR_TL struct {
-    ScrClosure *clo;
-    ScrDynThunk thunk;
-    const char *sig, *name;
-    ScrDyn *box;
-  } boxes[128];
   size_t slot = (((uintptr_t)clo >> 4) ^ ((uintptr_t)thunk >> 2)) & 127;
-  if (boxes[slot].clo != clo || boxes[slot].thunk != thunk || boxes[slot].sig != sig || boxes[slot].name != name) {
-    boxes[slot].clo = clo;
-    boxes[slot].thunk = thunk;
-    boxes[slot].sig = sig;
-    boxes[slot].name = name;
-    boxes[slot].box = scr_dyn_make_immortal(scr_dyn_new_func(clo, thunk, arity, sig, name));
+  __typeof__(scr_dyn_func_boxes[0]) *cached = &scr_dyn_func_boxes[slot];
+  if (cached->clo != clo || cached->thunk != thunk || cached->sig != sig || cached->name != name) {
+    scr_dyn_box_caches_register();
+    ScrDyn *box = scr_dyn_new_func(clo, thunk, arity, sig, name);
+    scr_cyc_hdr(box)->buf = SCR_CYC_ACYCLIC;
+    ScrDyn *old = cached->box;
+    *cached = (__typeof__(*cached)){clo, thunk, sig, name, box};
+    scr_dyn_release(old);
   }
-  return boxes[slot].box;
+  return scr_dyn_retain(cached->box);
 }
 
 ScrDyn *scr_dyn_new_func(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, const char *sig, const char *name) {

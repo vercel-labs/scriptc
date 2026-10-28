@@ -762,6 +762,12 @@ function numberKey(host: Host, key: IrExpr): NumberKey | null {
  * the shape, the field index as the slot): a field the record stores as a
  * checked value is read in place (ScrDynTypedRecordOps.dyn_offsets). Its
  * borrowed cell joins `incoming` at `join`; everything else goes to `miss`. */
+/** The bit a record layout's dyn_offsets entry carries for a symbol field:
+ * the rest is the field's offset, and the read answers the symbol's live
+ * checked box (ScrSym.box, at SYMBOL_BOX_OFFSET), missing when it has none. */
+export const RECORD_SYMBOL_FIELD = 1 << 30;
+const SYMBOL_BOX_OFFSET = 32;
+
 function inlineRecordField(
   host: Host,
   d: string,
@@ -825,6 +831,14 @@ function inlineRecordField(
     B.condBr(stored, read, miss);
     B.startBlock(read);
     const native = load(host, "ptr", d, 16);
+    const flagged = B.tmp();
+    B.line(`${flagged} = and i32 ${offset}, ${RECORD_SYMBOL_FIELD}`);
+    const symbolic = B.tmp();
+    B.line(`${symbolic} = icmp ne i32 ${flagged}, 0`);
+    const symbolRead = B.newLabel("icr.sym");
+    const cellRead = B.newLabel("icr.cell");
+    B.condBr(symbolic, symbolRead, cellRead);
+    B.startBlock(cellRead);
     const wide = B.tmp();
     B.line(`${wide} = sext i32 ${offset} to i64`);
     const fieldPtr = B.tmp();
@@ -832,6 +846,23 @@ function inlineRecordField(
     const cell = B.tmp();
     B.line(`${cell} = load ptr, ptr ${fieldPtr}`);
     incoming.push(`[ ${cell}, %${B.currentLabel()} ]`);
+    B.br(join);
+    B.startBlock(symbolRead);
+    const bare = B.tmp();
+    B.line(`${bare} = xor i32 ${offset}, ${RECORD_SYMBOL_FIELD}`);
+    const symWide = B.tmp();
+    B.line(`${symWide} = zext i32 ${bare} to i64`);
+    const symPtr = B.tmp();
+    B.line(`${symPtr} = getelementptr inbounds i8, ptr ${native}, i64 ${symWide}`);
+    const symbol = B.tmp();
+    B.line(`${symbol} = load ptr, ptr ${symPtr}`);
+    const box = load(host, "ptr", symbol, SYMBOL_BOX_OFFSET);
+    const boxed = B.tmp();
+    B.line(`${boxed} = icmp ne ptr ${box}, null`);
+    const boxRead = B.newLabel("icr.box");
+    B.condBr(boxed, boxRead, miss);
+    B.startBlock(boxRead);
+    incoming.push(`[ ${box}, %${B.currentLabel()} ]`);
     B.br(join);
   }
 }

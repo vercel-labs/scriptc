@@ -650,12 +650,74 @@ static bool scr_js_fn_builtin(const ScrStr *key) {
  * cache (its table is an ordinary object without a prototype, so the cache
  * also keeps absent answers), else undefined for a name that is no builtin
  * member. NULL leaves the read to the generic path. */
+/* A function read's recent answers, by (function, key): `table` and its
+ * shape when the answer was read, and either a fixed answer (`value`, held:
+ * an absent property, or a builtin name or length of a function without
+ * a table) or the table entry `slot` holding it. */
+typedef struct {
+  const ScrClosure *owner;
+  const char *key;
+  ScrDynThunk thunk;
+  const char *name;
+  const ScrDyn *table;
+  const ScrJsShape *shape;
+  ScrDyn *value;
+  size_t slot;
+} ScrJsFnMemo;
+static SCR_TL ScrJsFnMemo scr_js_fn_memo[256];
+
+static ScrJsFnMemo *scr_js_fn_memo_of(const ScrClosure *owner, const ScrStr *key) {
+  return &scr_js_fn_memo[(((uintptr_t)owner >> 4) ^ ((uintptr_t)key->data >> 3)) & 255];
+}
+
+/* The memo's answer for a plain function whose table (or its absence) is
+ * as recorded, +1; NULL otherwise. */
+static ScrDyn *scr_js_fn_memo_answer(const ScrDyn *receiver, const ScrClosure *owner, const ScrStr *key) {
+  const ScrJsFnMemo *memo = scr_js_fn_memo_of(owner, key);
+  if (memo->owner != owner || memo->key != key->data || memo->thunk != receiver->v.fn.thunk ||
+      memo->name != receiver->v.fn.name || receiver->v.fn.class_obj)
+    return NULL;
+  const ScrDyn *table = owner->props ? scr_box_peek_ref(owner->props) : NULL;
+  if (table != memo->table) return NULL;
+  if (!table) return scr_dyn_retain(memo->value);
+  if (table->kind != SCR_DYN_OBJ || table->v.obj.shape != memo->shape || table->prototype || table->null_proto)
+    return NULL;
+  if (memo->value) return scr_dyn_retain(memo->value);
+  const ScrDynEntry *entry = &table->v.obj.entries[memo->slot];
+  return entry->accessor ? NULL : scr_dyn_retain(entry->value);
+}
+
+static void scr_js_fn_memo_fill(const ScrDyn *receiver, const ScrClosure *owner, const ScrStr *key,
+                                const ScrDyn *table, ScrDyn *answer) {
+  if (key->rc != SIZE_MAX || receiver->v.fn.class_obj) return;
+  ScrJsFnMemo *memo = scr_js_fn_memo_of(owner, key);
+  size_t slot = SIZE_MAX;
+  const ScrJsShape *shape = NULL;
+  if (table) {
+    shape = table->v.obj.shape;
+    if (!shape || shape == &scr_js_unshaped) return;
+    slot = scr_js_shape_find(shape, key->data, key->len);
+    /* A present key answers from its entry; an absent one is undefined. */
+    if (slot != SIZE_MAX && table->v.obj.entries[slot].value != answer) return;
+  }
+  ScrDyn *held = slot == SIZE_MAX ? scr_dyn_retain(answer) : NULL;
+  scr_dyn_release(memo->value);
+  *memo = (ScrJsFnMemo){owner, key->data, receiver->v.fn.thunk, receiver->v.fn.name, table, shape, held, slot};
+}
+
 static ScrDyn *scr_js_fn_load(ScrDyn *receiver, const ScrStr *key, ScrJsIc *ic) {
+  ScrClosure *owner = scr_closure_identity(receiver->v.fn.clo);
+  ScrDyn *remembered = scr_js_fn_memo_answer(receiver, owner, key);
+  if (remembered) return remembered;
   bool plain;
   ScrDyn *table = scr_dyn_fn_plain_table(receiver, &plain);
   if (!plain) return NULL;
   bool builtin = scr_js_fn_builtin(key);
-  if (table) return scr_js_probe_load(table, key, ic, !builtin);
+  if (table) {
+    ScrDyn *answer = scr_js_probe_load(table, key, ic, !builtin);
+    if (answer) scr_js_fn_memo_fill(receiver, owner, key, table, answer);
+    return answer;
+  }
   if (key->len == 4 && memcmp(key->data, "name", 4) == 0) {
     /* The name strings recently read, by the name's address and checked
      * against its text (React reads a component's name for every element
@@ -675,11 +737,13 @@ static ScrDyn *scr_js_fn_load(ScrDyn *receiver, const ScrStr *key, ScrJsIc *ic) 
       names[slot].name = name;
       names[slot].value = value;
     }
+    scr_js_fn_memo_fill(receiver, owner, key, NULL, names[slot].value);
     return scr_dyn_retain(names[slot].value);
   }
   if (key->len == 6 && memcmp(key->data, "length", 6) == 0)
     return scr_dyn_new_num((double)receiver->v.fn.arity);
   if (builtin) return NULL;
+  scr_js_fn_memo_fill(receiver, owner, key, NULL, scr_dyn_undefined());
   return scr_dyn_retain(scr_dyn_undefined());
 }
 

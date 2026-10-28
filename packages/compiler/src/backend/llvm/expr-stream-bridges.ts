@@ -1,4 +1,5 @@
 import { canConvertToDyn } from "../../ir/ir.js";
+import { RECORD_SYMBOL_FIELD } from "./js-ic.js";
 import { typedRefConstructor } from "./shapes.js";
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
@@ -1621,11 +1622,15 @@ function liveRecordOps(
 
   const literals = fields.map((field) => `ptr ${host.internLiteral(field.name)}`);
   // The byte offset of each field the record stores as a checked value
-  // (compiled get sites read it in place), -1 for the others.
+  // (compiled get sites read it in place), -1 for the others. A symbol
+  // field's offset carries RECORD_SYMBOL_FIELD: sites read the symbol's
+  // live box (React's `element.$$typeof`).
   const offsets = fields.map((field) => {
-    if (field.type.kind !== "dyn" || host.inlineUnions.record(field.type)) return "i32 -1";
+    const symbol = field.type.kind === "symbol";
+    if ((field.type.kind !== "dyn" && !symbol) || host.inlineUnions.record(field.type)) return "i32 -1";
     const index = shape.fields.indexOf(field) + host.nullableUnions.fieldBase(t.shapeId);
-    return `i32 ptrtoint (ptr getelementptr (%${struct}, ptr null, i64 0, i32 ${index}) to i32)`;
+    const offset = `ptrtoint (ptr getelementptr (%${struct}, ptr null, i64 0, i32 ${index}) to i32)`;
+    return symbol ? `i32 add (i32 ${offset}, i32 ${RECORD_SYMBOL_FIELD})` : `i32 ${offset}`;
   });
   const offsetTable = `${snapshot}_offsets`;
   host.resolveThunkDefs.push(

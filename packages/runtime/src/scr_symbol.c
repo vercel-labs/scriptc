@@ -27,6 +27,9 @@ struct ScrSym {
    * every conversion of the symbol to a checked value. */
   ScrDyn *box;
 };
+/* Compiled record field reads load the box in place (js-ic.ts
+ * SYMBOL_BOX_OFFSET). */
+_Static_assert(offsetof(struct ScrSym, box) == 32, "symbol box offset");
 
 ScrSym *scr_sym_retain(ScrSym *s) {
   if (s->rc != SIZE_MAX) s->rc++;

@@ -1080,6 +1080,17 @@ A missed store site retains into an uncounted slot (a leak); a missed removal si
 2. Convert the slot sites to the uncounted rule, one family at a time (object stores, array stores, removals), measuring after each.
 3. Leaf boxes and capsules through the sweep; weak tables (`scr_dyn_weak_dispose`, typed-ref identity) at sweep.
 
+## Part 33: the young generation, built and measured (Oct 27)
+
+Part 32's design was implemented behind `SCR_YOUNG=1`.
+- **Phase 1** (young values, count/mark/sweep, deferred old deaths, the collection before cycle passes) and **phase 2 for objects** (`SCR_YOUNG_SLOTS_OBJ` 1, every entry store and removal site through `scr_slot_take`/`scr_slot_retain`/`scr_slot_out`, adopt limited to one generation, compiled inline stores sent to the probe for young receivers) were both correct: every repro and every React route was identical, with the switch on and off.
+- **They were slower:** `/large` took 7.7–7.9 ms with young values against 5.8–6.1 ms without, in the same runs.
+  - **First cause, premature promotion:** collecting every 16K allocations promoted the render's live tree mid-render, and its later releases made it cycle candidates (cycle passes went to 21%). Aging (two collections) and a 64K nursery removed that.
+  - **What remained:** the young collection itself was 15% inclusive.
+- **Why the design cannot win here:** a dead young value is still visited. Nearly every checked value holds a counted reference to a reference-counted object outside the checked world (a string box its string, a capsule its record, a function box its closure, objects their keys and accessor pairs), so the sweep must visit each dead value to release them. It must also return each node to the pool. A collection therefore does at least the work reference counting already did, plus counting and marking.
+- **What a nursery would need to win:** V8 wins because a dead young object costs nothing, and the whole nursery is reset at once. That requires every kind the young values point to (strings, records, closures, keys) to live in the collected world too, and survivors to be moved out of a bump region. That is a rewrite of the whole memory model, with moving collection, precise roots from compiled code, and barriers.
+- **Reverted** (commit "Revert …phase 1"); the design and this measurement stay here for reference.
+
 ## Known scriptc gaps found along the way (not fixed)
 
 - A named function expression assigned to a variable (`const Other = function Named() {}`) reports the variable's name from `.name` (`Other`; Node prints `Named`).

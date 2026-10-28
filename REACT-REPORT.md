@@ -1183,12 +1183,25 @@ Measured by instructions retired per `/large` render (`/usr/bin/time -l`, the di
 
 **Wall time:** `/large` 5.79 → 5.48 ms, `/medium` 313 → 304 µs. The HTML is identical on all routes, and RSS stays bounded.
 
+| `20f61a5e5` | get sites answer absent properties of string primitives (`type.defaultProps` on `"td"`); `String.prototype` assignments are refused, so the member set is fixed | 125.8M |
+
+**At this point:** `/large` 5.90 → 5.54 ms and `/medium` 315 → 303 µs in the same run, 8% fewer instructions, and 56 MB RSS after 3,000 renders. The profile is flat: the largest runtime function is `scr_dyn_release` at 3.8%, and the next ten are 1–2.6% each. Further gains are many medium-sized items, listed next.
+
+### Next candidates (measured shares)
+
+- **Candidate-buffer removal:** `scr_cyc_on_dead` (1.6%) swaps the buffer's last candidate into the hole, which touches that object's header, usually a cache miss. Holes, compacted in passes, would avoid it.
+- **`config.key` misses:** 5.5K each in `createElement` and `hasValidKey`. The site sees many config shapes and the inline path checks entry 0 only.
+- **Function reads still call the probe:** the memo answers them, but the call and the receiver's first miss remain (33K per render). An inline function-receiver path in compiled code would remove the call.
+- **Retain/release churn in compiled code:** for example `renderNodeDestructive`, where `task.node = node` retains, stores, releases the old value, and retains the stored value again.
+
 ### Remaining probe misses per render
 
 - `type.defaultProps` on string types (`"td"`): 6K;
 - `config.key` in `createElement` and `hasValidKey`: 5.5K each.
 
 ## Known scriptc gaps found along the way (not fixed)
+
+- Keyed reads of inherited members on string primitives (`s[k]` with `k` = `"padStart"`, `"toString"`, `"constructor"`, `"__proto__"`, …) answer `undefined`; constant-key reads are right.
 
 - A top-level function's property table (built by a dynamic `.name` or `.length` read) lives as long as the program; the sanitized audit reports it at exit.
 - Constant numbers in dynamic code (`$$typeof: 1`) are boxed at every evaluation.

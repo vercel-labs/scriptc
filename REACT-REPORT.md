@@ -1091,7 +1091,30 @@ Part 32's design was implemented behind `SCR_YOUNG=1`.
 - **What a nursery would need to win:** V8 wins because a dead young object costs nothing, and the whole nursery is reset at once. That requires every kind the young values point to (strings, records, closures, keys) to live in the collected world too, and survivors to be moved out of a bump region. That is a rewrite of the whole memory model, with moving collection, precise roots from compiled code, and barriers.
 - **Reverted** (commit "Revert …phase 1"); the design and this measurement stay here for reference.
 
+## Part 34: where the gap to Node actually is (Oct 27)
+
+Node was profiled on the same `/large` loop (`node --cpu-prof`, 100 µs interval) and both profiles were split into the same categories by self time. V8 inlines property access into its callers, so its logic row includes what scriptc reports as property access. Times are per render: Node 3.6 ms, scriptc 5.93 ms.
+
+| category | Node | scriptc | gap |
+|---|---|---|---|
+| output (chunk writing, encoding) | 1598 µs | 740 µs | −858 |
+| memory (alloc, free, refcount, cycles) | 126 µs | 1321 µs | +1195 |
+| React and app logic | 1542 µs | 2679 µs | +1137 |
+| property access | (inlined) | 555 µs | +555 |
+| element creation | 182 µs | 470 µs | +288 |
+| escaping | 150 µs | 127 µs | −23 |
+
+- **Output:** scriptc already wins it by 2.2×. Node spends 44% of its render in `writeChunk` and the native `encodeInto`.
+- **Memory:** 10× Node's; V8's garbage collector is only 3.4% of its time.
+- **Logic, property access and elements together:** 1.72 ms against 3.70 ms, 2.1× slower. This is the cost of generic dynamic operations without type feedback.
+- **The arithmetic:** fixing memory alone gives about 4.7 ms; fixing the dynamic logic alone about 3.95 ms; both about 2.75 ms, faster than Node.
+- **A typed app is slower:** `workloads.mjs` was retyped as TypeScript (row and props types, `Column = keyof RowData`), and `/large` took 6.72 ms against 5.70 ms untyped (+18%). Typed props objects reach React's untyped `createElement` as typed records, and its `for…in` copy over them takes the slow path: key lists (`scr_dyn_own_key_strs`, `scr_dyn_for_in_key_strs`), per-field reads (`scr_typed_ref_key_get`, `scr_typed_ref_record_field`), shape transitions, and destroying `string | number` unions. The boundary from typed code into untyped libraries needs to be cheap before typing helps.
+- **Gaps found while typing:** React's exports are `unknown` from TypeScript (`Theme.Provider` needs `any`), and converting a typed `Promise<T>` to `unknown` is refused (SC1101).
+
 ## Known scriptc gaps found along the way (not fixed)
+
+- Converting a typed `Promise<T>` to `unknown` is refused (SC1101); React exports are `unknown` from TypeScript.
+- Typed records passed into untyped code take slow for-in/key paths (Part 34).
 
 - A named function expression assigned to a variable (`const Other = function Named() {}`) reports the variable's name from `.name` (`Other`; Node prints `Named`).
 

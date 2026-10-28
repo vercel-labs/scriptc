@@ -2243,13 +2243,17 @@ static ScrDynBoxSlot *scr_dyn_box_slot(const void *key, const void *thunk, const
   return &scr_dyn_box_slots[i];
 }
 
-/* The last string looked up, for runs of the same literal. */
-static SCR_TL const ScrStr *scr_dyn_box_last_str;
-static SCR_TL ScrDyn *scr_dyn_box_last_box;
+/* The boxes of recently boxed immortal strings, by address: the table's
+ * answers, so a stale entry is only ever overwritten. */
+static SCR_TL struct {
+  const ScrStr *str;
+  ScrDyn *box;
+} scr_dyn_box_recent[512];
 
 ScrDyn *scr_dyn_new_str(ScrStr *s) {
   if (s->rc == SIZE_MAX) {
-    if (s == scr_dyn_box_last_str) return scr_dyn_box_last_box;
+    __typeof__(scr_dyn_box_recent[0]) *recent = &scr_dyn_box_recent[((uintptr_t)s >> 4) & 511];
+    if (recent->str == s) return recent->box;
     ScrDynBoxSlot *slot = scr_dyn_box_slot(s, NULL, NULL, NULL);
     if (slot) {
       if (!slot->box) {
@@ -2258,8 +2262,8 @@ ScrDyn *scr_dyn_new_str(ScrStr *s) {
         *slot = (ScrDynBoxSlot){s, NULL, NULL, NULL, scr_dyn_make_immortal(box)};
         scr_dyn_box_count++;
       }
-      scr_dyn_box_last_str = s;
-      scr_dyn_box_last_box = slot->box;
+      recent->str = s;
+      recent->box = slot->box;
       return slot->box;
     }
   }

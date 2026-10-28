@@ -989,6 +989,22 @@ Objects that die at once cost about the same in both. Objects that are kept and 
 
 **What the microbenchmark says next:** at 54 against 7.7 ns, the remaining cost is generic per-object work spread over allocation, the fill, releases, the destroy guard and disposal. That is what steps 2 and 3 remove: objects that are never heap-allocated (escape analysis) or that are records instead of checked objects (shape inference).
 
+## Part 28: object life cycle, round 2 (Oct 27)
+
+`/large` stays at about 6.3 ms; the tree microbenchmark went from 54 to about 49 ns (Node: 7.7 ns).
+
+**Changes** (general):
+- **Teardown in a loop:** a checked value that dies while another is being disposed waits in a list the outermost disposal drains, instead of recursing through the generic depth guard. A shared leaf child (null, boolean, number or string box with other owners) is released inline.
+- **Moves into record literals:** a parameter whose last use is a record literal field is consumed even when sibling fields read bindings derived from it (the literal keeps the moved value alive), and a binding assigned a fresh literal is no alias of what the literal holds. React's `ReactElement` now takes `props` over from `createElement`.
+- **Unwritten parameters are stable bindings:** reads of a parameter nothing declares or writes lend it instead of retaining it. `config.key` reads no longer bump `config`'s count.
+
+**What a counter showed:** per `/large` render, about 21,000 checked objects, 11,000 element capsules, 5,700 closures and 500 arrays died while buffered as cycle candidates. Each had been retained by a container and released by its creator, leaving a count of 1. The changes above cut checked objects by a quarter with no measurable time change: what remains is spread over React's dynamic calls of components and its element plumbing.
+
+**Measured scope of the remaining ideas:**
+- **Strings without a box:** about 700 `v.str` uses and 640 string-kind checks in the runtime, for at most 1–2% of React. Not pursued.
+- **Escape analysis (plan step 2):** React's dynamic objects nearly all escape (config into props, props into elements, children into props, elements returned, key paths into tasks). Not applicable to this render.
+- **Shape inference (plan step 3):** props reach the app through React's generic `Component(props)` calls, and React's Flow types declare them `any`, so no single site proves a layout. Typing them needs per-layout specialization of React's render path.
+
 ## Known scriptc gaps found along the way (not fixed)
 
 - **Dynamic stores and reads on functions:**

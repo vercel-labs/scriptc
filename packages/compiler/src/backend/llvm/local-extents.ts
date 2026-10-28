@@ -85,8 +85,20 @@ function lastUse(
       if (derived.has(e.localId)) state.ok = false;
     } else if (e.kind === "closure" || e.kind === "classRef") {
       for (const id of e.captures ?? []) if (derived.has(id)) state.ok = false;
-    } else if (e.kind === "recordLit") {
-      if (e.fields.some((f) => isRead(f.value))) state.stored = true;
+    } else if (e.kind === "recordLit" && e.fields.some((f) => isRead(f.value))) {
+      // The literal takes the binding's reference, and the record keeps it
+      // alive while the other fields build and after: they may read
+      // bindings derived from it, but not the binding again.
+      state.stored = true;
+      for (const f of e.fields) {
+        if (isRead(f.value)) {
+          if (state.read !== null) state.ok = false;
+          else state.read = f.value;
+        } else if (!absentExpr(f.value, new Set([localId]))) {
+          state.ok = false;
+        }
+      }
+      return state.ok;
     } else if (e.kind === "arrIntrinsic" && e.method === "push") {
       if (e.args.some(isRead)) state.stored = true;
     }
@@ -141,7 +153,8 @@ function collectDerivedStmt(
     !assigned.has(s.localId)
   ) {
     const value = s.kind === "varDecl" ? s.init : s.kind === "assign" ? s.value : s.iterable;
-    if (value !== null && !absentExpr(value, derived)) derived.add(s.localId);
+    // A fresh literal holds references of its own, never an alias.
+    if (value !== null && !freshLiteral(value) && !absentExpr(value, derived)) derived.add(s.localId);
   }
   return everyStmtChild(
     s,
@@ -181,6 +194,10 @@ function collectAssignedExpr(e: IrExpr, assigned: Set<string>): boolean {
     (c) => collectAssignedExpr(c, assigned),
     (s) => collectAssignedStmt(s, assigned),
   );
+}
+
+function freshLiteral(e: IrExpr): boolean {
+  return e.kind === "recordLit" || e.kind === "dynObjLit" || e.kind === "dynArrLit" || e.kind === "arrayLit";
 }
 
 /** True while no node of the tree mentions a derived binding. */

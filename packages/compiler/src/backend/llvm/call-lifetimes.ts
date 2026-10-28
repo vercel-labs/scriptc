@@ -467,11 +467,19 @@ export function analyzeCallLifetimes(
     const locals = new Map(fn.locals.map((local) => [local.id, local]));
     const stable = (local: IrLocal): boolean =>
       !local.boxed && !local.tdz && !uses.written.has(local.id);
+    // Parameters never declared again or written hold their entry value
+    // for the whole body, as a once-initialized local does.
+    const parameterIds = new Set(fn.params.map((p) => p.localId));
     result.bindings.set(
       fn.name,
       new Set(
         fn.locals
-          .filter((local) => stable(local) && uses.declarations.get(local.id) === 1)
+          .filter(
+            (local) =>
+              stable(local) &&
+              (uses.declarations.get(local.id) === 1 ||
+                (parameterIds.has(local.id) && !uses.declarations.has(local.id))),
+          )
           .map((local) => local.id),
       ),
     );

@@ -32,6 +32,7 @@ import { BOOL, DYN, F64, STRING, type IrExpr, type IrFunction } from "../../ir/i
 import { jsIcMethodSites, type JsIcSite } from "../../ir/js-ic.js";
 import { mangleBorrowedFunction } from "../mangle.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
+import { scrKeyHash } from "./string-key-hash.js";
 import { DYN_KIND } from "./dyn.js";
 import type { ExprOf, LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { JS_BITS } from "./jsval-encoding.js";
@@ -456,7 +457,39 @@ function emitGet(host: Host, e: ExprOf<"call">, callee: IrFunction, key: string)
   const capsule = B.newLabel("icg.rec");
   kindIs(host, receiver.name, DYN_KIND.OBJ, object, capsule);
   B.startBlock(object);
-  inlineLoad(host, receiver.name, ic, INLINE_WAYS, INLINE_PROTO, (cell) => cell, hits, hit, probe);
+  const bit = absentKeyBit(key);
+  const absent = bit !== null ? B.newLabel("icg.absent") : probe;
+  inlineLoad(host, receiver.name, ic, INLINE_WAYS, INLINE_PROTO, (cell) => cell, hits, hit, absent);
+  if (bit !== null) {
+    // An own key the receiver's shape lacks, on an object with the default
+    // prototype, reads undefined: the shape's key filter answers inline
+    // (scr_js_object.c ScrJsShape.bloom; the unshaped marker sets every bit).
+    B.startBlock(absent);
+    const shape = load(host, "ptr", receiver.name, 80);
+    const shaped = B.tmp();
+    B.line(`${shaped} = icmp ne ptr ${shape}, null`);
+    const filter = B.newLabel("icg.filter");
+    B.condBr(shaped, filter, probe);
+    B.startBlock(filter);
+    const prototype = load(host, "ptr", receiver.name, 96);
+    const bloom = load(host, "i64", shape, 64);
+    const masked = B.tmp(),
+      lacks = B.tmp(),
+      plain = B.tmp(),
+      answer = B.tmp();
+    B.line(`${masked} = and i64 ${bloom}, ${bit}`);
+    B.line(`${lacks} = icmp eq i64 ${masked}, 0`);
+    B.line(`${plain} = icmp eq ptr ${prototype}, null`);
+    B.line(`${answer} = and i1 ${lacks}, ${plain}`);
+    const yes = B.newLabel("icg.undef");
+    B.condBr(answer, yes, probe);
+    B.startBlock(yes);
+    host.declare(`declare ptr @scr_dyn_undefined()`);
+    const undef = B.tmp();
+    B.line(`${undef} = call ptr @scr_dyn_undefined()`);
+    hits.push(`[ ${undef}, %${B.currentLabel()} ]`);
+    B.br(hit);
+  }
   B.startBlock(capsule);
   inlineRecordField(host, receiver.name, ic, hits, hit, probe);
   B.startBlock(probe);
@@ -491,6 +524,32 @@ function emitGet(host: Host, e: ExprOf<"call">, callee: IrFunction, key: string)
   const out = B.tmp();
   B.line(`${out} = phi ptr ${incoming.join(", ")}`);
   return host.own({ name: out, type: e.type });
+}
+
+/** Object.prototype's members: an absent own key with one of these names
+ * reads the inherited member (scr_js_object.c scr_js_absent_cacheable). */
+const INHERITED_NAMES = new Set([
+  "constructor",
+  "__proto__",
+  "toString",
+  "toLocaleString",
+  "valueOf",
+  "hasOwnProperty",
+  "isPrototypeOf",
+  "propertyIsEnumerable",
+  "__defineGetter__",
+  "__defineSetter__",
+  "__lookupGetter__",
+  "__lookupSetter__",
+]);
+
+/** The shape-filter bit of a get site's key (scr_js_key_facts), or null
+ * when an absent own key does not read undefined. */
+function absentKeyBit(key: string): string | null {
+  if (INHERITED_NAMES.has(key) || key === "length" || key === "next") return null;
+  const hash = scrKeyHash(new TextEncoder().encode(key));
+  const bit = 1n << (hash & 63n);
+  return (bit >= 1n << 63n ? bit - (1n << 64n) : bit).toString(); // as a signed i64 constant
 }
 
 /** A number as the site's result type: an immediate for a jsval result,

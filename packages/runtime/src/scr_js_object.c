@@ -61,6 +61,10 @@ struct ScrJsShape {
   uint64_t bloom;
 };
 
+/* Compiled get sites test a key's filter bit inline (js-ic.ts emitGet). */
+_Static_assert(offsetof(ScrJsShape, bloom) == 64, "shape filter offset");
+_Static_assert(offsetof(ScrDyn, v.obj.shape) == 80, "object shape offset");
+
 /* The root is the empty key sequence. Transitions live in one open
  * addressing table per thread keyed by (parent, key). */
 static SCR_TL ScrJsShape scr_js_root;
@@ -81,7 +85,7 @@ static SCR_TL size_t scr_js_filled_capacity;
 /* The shape word of an object whose key sequence has no shape within the
  * budgets. No cache entry names it, so its accesses take the probes,
  * which answer with a miss until the key set changes. */
-static ScrJsShape scr_js_unshaped;
+static ScrJsShape scr_js_unshaped = {.bloom = UINT64_MAX}; /* never answers absent */
 
 /* The second-level cache of load sites whose own record is full: one entry
  * per (receiver shape, key bytes) slot, filled by the probe and checked like

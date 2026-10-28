@@ -2110,8 +2110,13 @@ static size_t scr_cyc_pass_done(size_t freed) {
   return freed;
 }
 
+/* Set by the young generation of checked values (scr_json.c): trial
+ * deletion never meets young values, whose slots hold uncounted edges. */
+SCR_TL void (*scr_cyc_young_hook)(void);
+
 static size_t scr_cyc_pass(unsigned gen_limit) {
   if (scr_collecting) return 0;
+  if (scr_cyc_young_hook) scr_cyc_young_hook();
   scr_cyc_route_bypassed();
   scr_collecting = true;
   scr_cyc_window_update();

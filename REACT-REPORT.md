@@ -1080,6 +1080,16 @@ A missed store site retains into an uncounted slot (a leak); a missed removal si
 2. Convert the slot sites to the uncounted rule, one family at a time (object stores, array stores, removals), measuring after each.
 3. Leaf boxes and capsules through the sweep; weak tables (`scr_dyn_weak_dispose`, typed-ref identity) at sweep.
 
+**Progress:**
+- **Phase 1 done** (commit "Young generation of checked values, phase 1"), behind the runtime switch `SCR_YOUNG=1` (off by default).
+  - **Code:** in `scr_json.c`, `scr_dyn_young_enter` at allocation; young values never die by count; old deaths defer to `scr_young_deferred` while young values exist (generation `SCR_CYC_DEFERRED`, buf `SCR_CYC_ACYCLIC`).
+  - **Collection:** `scr_young_collect` counts counted young-to-young edges in `buf`, marks from values with more counted references than that, disposes the unmarked (dispose skips uncounted slots), promotes the marked (counting the slots of uncounted-slot containers), then runs the deferred deaths. `scr_cyc_young_hook` runs it before every cycle-collection pass.
+  - **Result:** with slots still counted (`SCR_YOUNG_SLOTS_OBJ/ARR` 0), all repros and React's HTML are identical, and `/large` is slower (7.2 against 6.2 ms), as expected for an exact batched collector.
+- **Next, phase 2:** convert the object entry sites (`SCR_YOUNG_SLOTS_OBJ` 1), then array items.
+  - **Stores:** a store taking over a reference releases it; a retaining store doesn't retain; an overwrite or removal doesn't release; young values stored get `SCR_YOUNG_IN_SLOT`.
+  - **Adopt** requires both objects in the same generation, and a young source that isn't `IN_SLOT`.
+  - **Compiled inline stores** (`js-ic.ts` `emitSet`, including the in-place number update) take the runtime path for young containers.
+
 ## Known scriptc gaps found along the way (not fixed)
 
 - A named function expression assigned to a variable (`const Other = function Named() {}`) reports the variable's name from `.name` (`Other`; Node prints `Named`).

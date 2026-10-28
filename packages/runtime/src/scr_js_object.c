@@ -754,7 +754,39 @@ ScrDyn *scr_js_load_probe(ScrDyn *receiver, const ScrStr *key, ScrJsIc *ic) {
   return scr_js_probe_load(receiver, key, ic, false);
 }
 
+/* Whether a string primitive lacks the property `key`: no index, `length`,
+ * String.prototype or Object.prototype member has the name. Programs cannot
+ * add members to String.prototype (assignments to it are refused), so the
+ * answer is fixed; it is remembered per key. React reads `type.defaultProps`
+ * for every host element, whose type is a string. */
+static bool scr_js_str_lacks(const ScrStr *key) {
+  static SCR_TL struct {
+    const char *data;
+    size_t len;
+    bool lacks;
+  } memo[64];
+  size_t slot = ((uintptr_t)key->data >> 4) & 63;
+  if (memo[slot].data == key->data && memo[slot].len == key->len) return memo[slot].lacks;
+  static const char *const members[] = {
+      "length", "at", "charAt", "charCodeAt", "codePointAt", "concat", "endsWith", "includes",
+      "indexOf", "isWellFormed", "lastIndexOf", "localeCompare", "match", "matchAll", "normalize",
+      "padEnd", "padStart", "repeat", "replace", "replaceAll", "search", "slice", "split",
+      "startsWith", "substring", "substr", "toLocaleLowerCase", "toLocaleUpperCase", "toLowerCase",
+      "toUpperCase", "toWellFormed", "trim", "trimEnd", "trimStart", "trimLeft", "trimRight",
+      "anchor", "big", "blink", "bold", "fixed", "fontcolor", "fontsize", "italics", "link",
+      "small", "strike", "sub", "sup"};
+  bool lacks = key->rc == SIZE_MAX && key->len > 0 && !(key->data[0] >= '0' && key->data[0] <= '9') &&
+               scr_js_absent_cacheable(key);
+  for (size_t i = 0; lacks && i < sizeof members / sizeof members[0]; i++)
+    lacks = !(strlen(members[i]) == key->len && memcmp(members[i], key->data, key->len) == 0);
+  memo[slot].data = key->data;
+  memo[slot].len = key->len;
+  memo[slot].lacks = lacks;
+  return lacks;
+}
+
 ScrDyn *scr_js_get_probe(ScrDyn *receiver, const ScrStr *key, ScrJsIc *ic) {
+  if (receiver->kind == SCR_DYN_STR) return scr_js_str_lacks(key) ? scr_dyn_retain(scr_dyn_undefined()) : NULL;
   if (receiver->kind == SCR_DYN_TYPED_REF) return scr_js_record_load(receiver, key, ic);
   if (receiver->kind == SCR_DYN_FUNC) return scr_js_fn_load(receiver, key, ic);
   if (receiver->kind != SCR_DYN_OBJ) return NULL;

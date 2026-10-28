@@ -1036,6 +1036,14 @@ Objects that die at once cost about the same in both. Objects that are kept and 
 
 Both are neutral within noise: a pooled box costs a free-list pop and push, so the gain is the allocation count, not time.
 
+## Part 31: elements as plain checked objects, measured (Oct 27)
+
+**Experiment:** `ReactElement`'s `let element` was typed `any` through a temporary translator switch, and an IR pass built `dynFrom(liveRef, recordLit)` as a checked object literal. That is equivalent for a fresh literal nothing static can reach. Each element was then one checked object instead of a record plus its capsule. HTML was identical; `/large` took 5.89 against 5.86 ms, no gain (an earlier attempt found the same). With capsule field reads inline, absent keys answered from the shape filter and fresh records boxed without an identity entry, a record plus capsule costs what one checked object does. Reverted.
+
+**What this says about the remaining options:**
+- **Specializing the render path** cannot be done soundly as a compile-time transform here. The app's components build the element tree, and React consumes it later through its task queue and segments (with Suspense retries holding nodes), so no call chain exists for the compiler to fuse.
+- **A generational collector for checked values** is the remaining structural lever. Freeing (`scr_rc_destroy` inclusive) is about 17% and cycle bookkeeping about 3.5%. It needs write barriers across the runtime's stores of checked values (1,327 retain sites, about 1,000 global slots, 280 struct fields) and stack maps from the compiler.
+
 ## Known scriptc gaps found along the way (not fixed)
 
 - A named function expression assigned to a variable (`const Other = function Named() {}`) reports the variable's name from `.name` (`Other`; Node prints `Named`).

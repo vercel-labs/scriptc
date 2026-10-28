@@ -8,6 +8,7 @@ import { checkedPrivateMethodReceiver, privateNameClass } from "./private-brands
 import { assertFunctionAliasOf } from "./lower-assert.js";
 import { keyedHelperName } from "./stable-names.js";
 import { perKeyOrder } from "./key-order-witness.js";
+import { keepsLivePropertyTable } from "./live-property-table.js";
 import { lowerDateToPrimitiveCall } from "./builtins/dates.js";
 import { isForwardedTupleSpread, lowerForwardingApply } from "./typed-arguments.js";
 import { guardNullProto, nullProtoRecordShape } from "./null-prototype.js";
@@ -7870,6 +7871,20 @@ function lowerObjectStaticCall(
       isUnitType(object.type)
     )
       object = { kind: "dynFrom", value: object, type: DYN, loc: locOf(call) };
+    // An array, instance or function answers through the same live property
+    // table its expando writes use, so the keys it reports are the keys
+    // Node's object has; a byte view reports its named properties the same
+    // way. A record's own-property names keep the typed walk below, which
+    // answers a string array instead of a dynamic one, and a kind without a
+    // table (a Date, Map, Set or RegExp handle) keeps whatever it answered
+    // before.
+    else if (
+      object.type.kind !== "dyn" &&
+      !(member === "getOwnPropertyNames" && object.type.kind === "record") &&
+      lowerer.dynConvertible(object.type) &&
+      (keepsLivePropertyTable(lowerer, object.type) || object.type.kind === "bytes")
+    )
+      object = lowerer.coerceToExpected(object, DYN);
     if (object.type.kind === "dyn")
       return {
         kind: "libCall",
@@ -8554,6 +8569,22 @@ function lowerObjectStaticCall(
       member === "getOwnPropertyDescriptor" &&
       target &&
       (target.type.kind === "bool" || target.type.kind === "f64" || target.type.kind === "string");
+    // A typed receiver of a representation that keeps its own-property
+    // table live (a record, an array, an instance): the descriptor comes
+    // from the value's checked-dynamic view, which the descriptor builder
+    // already answers for those kinds. Reads of a declared field keep their
+    // own lowerings above; this arm only replaces the SC2020 fence.
+    if (
+      target &&
+      target.type.kind !== "dyn" &&
+      target.type.kind !== "func" &&
+      target.type.kind !== "classval" &&
+      !isUnitType(target.type) &&
+      !descriptorPrimitive &&
+      lowerer.dynConvertible(target.type) &&
+      keepsLivePropertyTable(lowerer, target.type)
+    )
+      target = lowerer.coerceToExpected(target, DYN);
     if (!target || (target.type.kind !== "dyn" && !isUnitType(target.type) && !descriptorPrimitive))
       return null;
     if (target.type.kind !== "dyn")
@@ -8700,8 +8731,14 @@ function lowerObjectStaticCall(
     if (member === "preventExtensions" || member === "seal") {
       const integrity = lowerClassIntegrity(lowerer, call, member, value);
       if (integrity) return integrity;
-    } else if (isDynTypedRefType(value.type)) {
-      // The instance's checked view carries its integrity state.
+    } else if (
+      isDynTypedRefType(value.type) ||
+      (lowerer.dynConvertible(value.type) && keepsLivePropertyTable(lowerer, value.type))
+    ) {
+      // The instance's checked view carries its integrity state. A record,
+      // array or function reaches the same state through its live property
+      // table, which is what an untyped caller's preventExtensions/seal
+      // flag lives on.
       return {
         kind: "libCall",
         fn: member === "isSealed" ? "dyn.isSealed" : "dyn.isExtensible",

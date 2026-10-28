@@ -6195,6 +6195,29 @@ void scr_dyn_fence_member(ScrDyn *object, const ScrStr *key) {
   if (entry) entry->fenced = true;
 }
 
+/* A compiled function value boxed for checked-dynamic code. An immortal
+ * closure (a top-level function) keeps one immortal box per signature and
+ * name: functions compare by closure identity, so a box per crossing (React
+ * passes each component through its renderer) is pure overhead. */
+ScrDyn *scr_dyn_new_func_box(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, const char *sig, const char *name) {
+  if (clo->rc != SIZE_MAX || (clo->function_kind & 8)) return scr_dyn_new_func(clo, thunk, arity, sig, name);
+  static SCR_TL struct {
+    ScrClosure *clo;
+    ScrDynThunk thunk;
+    const char *sig, *name;
+    ScrDyn *box;
+  } boxes[128];
+  size_t slot = (((uintptr_t)clo >> 4) ^ ((uintptr_t)thunk >> 2)) & 127;
+  if (boxes[slot].clo != clo || boxes[slot].thunk != thunk || boxes[slot].sig != sig || boxes[slot].name != name) {
+    boxes[slot].clo = clo;
+    boxes[slot].thunk = thunk;
+    boxes[slot].sig = sig;
+    boxes[slot].name = name;
+    boxes[slot].box = scr_dyn_make_immortal(scr_dyn_new_func(clo, thunk, arity, sig, name));
+  }
+  return boxes[slot].box;
+}
+
 ScrDyn *scr_dyn_new_func(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, const char *sig, const char *name) {
   if (clo->function_kind & 8) {
     ScrDyn *original = scr_box_get_ref(clo->caps[0]);

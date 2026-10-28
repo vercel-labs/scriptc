@@ -5530,12 +5530,13 @@ export class LlDyn {
     const thunk = this.dynFuncThunkHelper(t);
     host.declare(`declare ptr @scr_closure_retain_v(ptr)`);
     host.declare(`declare ptr @scr_dyn_new_func(ptr, ptr, i32, ptr, ptr)`);
+    host.declare(`declare ptr @scr_dyn_new_func_box(ptr, ptr, i32, ptr, ptr)`);
     const sigLit = host.cstr(key);
     this.defs.push(
       `define internal ptr @${name}(ptr %v, ptr %fname) ${FN_ATTRS} { ; box ${key} into dyn`,
       `entry:`,
       `  %c = call ptr @scr_closure_retain_v(ptr %v)`,
-      `  %r = call ptr @scr_dyn_new_func(ptr %c, ptr @${thunk}, i32 ${t.params.length - (t.restAbi === "typed" ? 1 : 0)}, ptr ${sigLit}, ptr %fname)`,
+      `  %r = call ptr @scr_dyn_new_func_box(ptr %c, ptr @${thunk}, i32 ${t.params.length - (t.restAbi === "typed" ? 1 : 0)}, ptr ${sigLit}, ptr %fname)`,
       `  ret ptr %r`,
       `}`,
       ``,

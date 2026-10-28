@@ -1015,7 +1015,30 @@ Objects that die at once cost about the same in both. Objects that are kept and 
 - **Megamorphic keyed reads share the load table:** a keyed site past its four ways (`row[column]`) asks the shared (shape, key bytes) table and checks the slot's key bytes.
 - **for-in keys read back by address:** a shape keeps the byte pointers of its for-in key strings, so the loop's presence test, its `hasOwnProperty` and its `props[key]` read find the slot by address (`scr_dyn_find_entry` went from 1.6% to 0.6%).
 
+## Part 30: allocation counts (Oct 27)
+
+`/large` is at about 5.9–6.2 ms depending on machine load; HTML is identical on every route.
+
+**Checked-dynamic allocations per `/large` render:**
+
+| Kind | Per render |
+|---|---|
+| String boxes | 41,500 |
+| Checked objects | 25,700 |
+| Typed-ref capsules (element wrappers) | 10,800 |
+| Functions | 5,500 |
+| Number boxes | 900 |
+| Arrays | 900 |
+
+**Changes:**
+- **String boxes:** the Row arrow boxed each `column` string three times per cell (`key: column`, `column`, and `row[column]`). An immortal string (a literal or interned) now keeps one immortal box (`scr_dyn_new_str`); strings have no identity.
+- **Function boxes:** `renderWithHooks` boxed each component's closure per render, and the Row arrow boxed `Cell` per cell. The compiler's function box helpers now use `scr_dyn_new_func_box`: an immortal closure (a top-level function) keeps one immortal box per thunk, signature and name. Functions compare by closure identity, and class boxes and adapters keep their own path.
+
+Both are neutral within noise: a pooled box costs a free-list pop and push, so the gain is the allocation count, not time.
+
 ## Known scriptc gaps found along the way (not fixed)
+
+- A named function expression assigned to a variable (`const Other = function Named() {}`) reports the variable's name from `.name` (`Other`; Node prints `Named`).
 
 - **Dynamic stores and reads on functions:**
   - A computed store `o["__proto__"] = p` defines an own property instead of setting the prototype.

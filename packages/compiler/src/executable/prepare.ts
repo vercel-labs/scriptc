@@ -33,7 +33,11 @@ import {
 } from "../node-islands/policy.js";
 import { buildNodeIslandReport } from "../node-islands/report.js";
 import type { IslandModule, IslandPackage, NodeIslandSet } from "../node-islands/boundary.js";
-import { classifyDiagnostic, isIslandReasonCode } from "../node-islands/classify.js";
+import {
+  classifyDiagnostic,
+  classifyMarker,
+  isIslandReasonCode,
+} from "../node-islands/classify.js";
 import { packageDirOf, packageVersionOf } from "../node-islands/origin.js";
 import { describe } from "../node-islands/summary.js";
 import { resolveBareModule } from "../frontend/resolve.js";
@@ -347,10 +351,22 @@ function samePath(a: string, b: string): boolean {
   return a.replaceAll("\\", "/") === b.replaceAll("\\", "/");
 }
 
+/** The pre-scan reasons that make a user module a sloppy-semantics island
+ * by themselves (DESIGN.md note 1 §3.1): the constructs whose behavior
+ * needs the JavaScript engine and that a syntax scan decides exactly, plus
+ * the conservative `this` marker (decision S2). */
+const SLOPPY_REASONS: ReadonlySet<string> = new Set([
+  "with",
+  "direct-eval",
+  "annexb-block-function",
+  "sloppy-this",
+]);
+
 /** The program modules that run in Node islands, by file: modules marked
- * with `--node-island=<path>` or `scriptc.nodeIslands.modules`. The entry
- * stays native: a program whose entry is an island runs the whole file in
- * Node, which is a different feature. */
+ * with `--node-island=<path>` or `scriptc.nodeIslands.modules`, and (under
+ * `--node-islands=auto`) user JavaScript the pre-scan found a sloppy-only
+ * construct in (decision S3). The entry stays native: a program whose entry
+ * is an island runs the whole file in Node, which is a different feature. */
 function moduleIslands(
   entryPath: string,
   policy: NodeIslandPolicy,
@@ -362,15 +378,20 @@ function moduleIslands(
     if (!isJsSourceFileName(m.file)) continue;
     if (sameFile(m.file, entryPath)) continue;
     const marked = isMarkedUserModule(policy, m.file);
-    if (marked === null) continue;
+    const sloppy = m.markers.filter((marker) => SLOPPY_REASONS.has(marker.reason));
+    if (marked === null && (policy.mode !== "auto" || sloppy.length === 0)) continue;
+    const first = sloppy[0];
+    const reason = first === undefined ? null : classifyMarker(first);
     modules.set(m.file, {
       file: m.file,
-      class: "marked",
+      class: reason === null ? "marked" : reason.class,
       reason:
-        marked === "cli"
-          ? "marked with --node-island"
-          : 'marked "node" in scriptc.nodeIslands.modules',
-      decision: "marked",
+        reason === null
+          ? marked === "cli"
+            ? "marked with --node-island"
+            : 'marked "node" in scriptc.nodeIslands.modules'
+          : describe(reason),
+      decision: marked === null ? "auto" : "marked",
     });
   }
   return modules;
@@ -378,9 +399,10 @@ function moduleIslands(
 
 /** The packages and modules a build runs in Node islands, or null for none:
  * under `--node-islands=auto` (the default) every npm package the native
- * pipeline refused, plus the packages and modules marked `node`; under
- * `explicit` only the marked ones; under `off`, none (refusals stay
- * SC2013). Each island is reported once as an SC8001 note. */
+ * pipeline refused plus the user modules the pre-scan found a sloppy
+ * construct in, and packages marked `node`; under `explicit` only the
+ * marked ones; under `off`, none (refusals stay SC2013). Each island is
+ * reported once as an SC8001 note. */
 function decideNodeIslands(
   entryPath: string,
   opts: CompileRequestOptions,
@@ -400,7 +422,9 @@ function decideNodeIslands(
       : [],
   );
   for (const name of lowerIslands.keys()) refused.add(name);
-  const scan = fe.nodeIslandScan({ userJs: false });
+  // The pre-scan's user-JavaScript markers exist only where a build may act
+  // on them.
+  const scan = fe.nodeIslandScan({ userJs: policy.mode === "auto" });
   const modules = moduleIslands(entryPath, policy, scan);
   // Modules the lowering refused keep their first reason (the reload no
   // longer compiles them).

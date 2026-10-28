@@ -193,7 +193,7 @@ const UTIL_CALLABLE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.isArrayDeprecated",
 ]);
 
-/** Entry points that link the regex unit: the regex and glob matchers (fs.glob's walk compiles its patterns with the glob matcher), and readline's terminal unit (scr_readline_tty.c), which measures with the regex unit's stripVTControlCharacters. */
+/** Entry points that link the regex unit: the regex and glob matchers (fs.glob's walk compiles its patterns with the glob matcher), readline's terminal unit (scr_readline_tty.c), which measures with the regex unit's stripVTControlCharacters, and the match-slice `.index`/`.input` read, which any `string[]` value reaches without naming a regex type or literal. */
 const REGEX_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.nativeRegexIs",
   "fs.callbackGlob",
@@ -204,6 +204,7 @@ const REGEX_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fsp.globTypes",
   "path.matchesGlob",
   "path.win32MatchesGlob",
+  "regex.resultProp",
   "regexp.escape",
   "rl.cursorPos",
   "rl.keypressStdin",

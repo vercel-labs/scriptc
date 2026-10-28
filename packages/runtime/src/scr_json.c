@@ -2113,7 +2113,25 @@ ScrDyn *scr_dyn_new_num(double n) {
   return d;
 }
 
+static ScrDyn *scr_dyn_make_immortal(ScrDyn *d);
+
 ScrDyn *scr_dyn_new_str(ScrStr *s) {
+  /* An immortal string (a literal, or interned) keeps one immortal box:
+   * strings have no identity, and their number is bounded by the program. */
+  if (s->rc == SIZE_MAX) {
+    static SCR_TL struct {
+      const ScrStr *str;
+      ScrDyn *box;
+    } boxes[256];
+    size_t slot = ((uintptr_t)s >> 4) & 255;
+    if (boxes[slot].str != s) {
+      ScrDyn *box = scr_dyn_leaf_alloc(SCR_DYN_STR);
+      box->v.str = s;
+      boxes[slot].str = s;
+      boxes[slot].box = scr_dyn_make_immortal(box);
+    }
+    return boxes[slot].box;
+  }
   ScrDyn *d = scr_dyn_leaf_alloc(SCR_DYN_STR);
   d->v.str = scr_str_retain(s);
   return d;

@@ -15,6 +15,12 @@ export type FieldLift =
  * and conversions that can only throw are not structural conversions. */
 export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): WidthLift | null {
   if (typeEquals(src, dst)) return { how: "copy" };
+  // A promise whose payload widens (`Promise<void>` into `Promise<unknown>`,
+  // a settlement type gaining optional members): the checked payload
+  // widening coerceToExpected applies at a promise slot. The promise keeps
+  // its identity and settlement turn; the payload converts when it settles.
+  if (dst.kind === "promise" && src.kind === "promise" && lowerer.promisePayloadWidens(src, dst))
+    return { how: "promiseWiden" };
   // An 'unknown' (dyn) DESTINATION slot: the static→dyn conversion —
   // dynFrom, a DEEP COPY (`{ v: 5 }` into `{ v: unknown }`, `number[]`
   // into `unknown[]` — tsc's top type over the width family's copies).
@@ -72,6 +78,7 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
         (src.kind === "record" && arm.kind === "record") ||
         (src.kind === "array" && arm.kind === "array") ||
         (src.kind === "func" && arm.kind === "func") ||
+        (src.kind === "promise" && arm.kind === "promise") ||
         (src.kind === "object" && arm.kind === "object") ||
         // Tuples already lift into ordinary array slots. Consider that
         // same conversion when the array is an arm of a union too.
@@ -170,6 +177,25 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
   ) {
     return { how: "narrow" };
   }
+  // A UNION of tuples/arrays into ONE array slot that is not already one of
+  // its arms: each arm converts on its own tag (a tuple rebuilds through
+  // tupleArr, an array copies or lifts through arr), and a unit arm takes
+  // the stranded TypeError — the slot holds no unit. This sits AFTER the
+  // checked-extraction rule above, so a union that already contains the
+  // destination array arm keeps compiling to the same narrow it always did;
+  // only sources with no conversion at all (the `as const` key-table read)
+  // gain one.
+  if (dst.kind === "array" && src.kind === "union") {
+    const from = lowerer.unions.get(src.unionId);
+    if (
+      from &&
+      !from.arms.some((arm) => typeEquals(arm, dst)) &&
+      from.arms.some((arm) => !isUnitType(arm))
+    ) {
+      if (from.arms.every((arm) => isUnitType(arm) || lowerer.widthLiftPlan(arm, dst) !== null))
+        return { how: "unionArr" };
+    }
+  }
   // A DERIVED instance into a BASE-typed slot (`{ p: Q }` copying into
   // `{ p: P }`): the same implicit upcast coerceToExpected performs at
   // top level — prefix layout, a pointer reinterpret, no copy.
@@ -190,6 +216,16 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
     return { how: "funcAdapt" };
   }
   if (dst.kind === "record" && src.kind === "record") {
+    // An INDEX-SIGNATURE destination takes the overflow CAPTURE reshape:
+    // declared fields copy off the source, every other source field keys
+    // into the destination's overflow (the same helper widthCoerce uses
+    // at top level). Without this the pair had no width plan at all, so a
+    // union arm, field or element of this shape refused.
+    if (lowerer.shapes.get(dst.shapeId)?.indexValue !== undefined) {
+      return lowerer.recordOvfCapturePlan(src.shapeId, dst.shapeId) !== null
+        ? { how: "ovf" }
+        : null;
+    }
     return lowerer.recordWidthPlan(src.shapeId, dst.shapeId) !== null ? { how: "width" } : null;
   }
   if (dst.kind === "record" && src.kind === "union") {

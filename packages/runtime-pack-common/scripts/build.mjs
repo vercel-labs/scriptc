@@ -2,10 +2,12 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { availableParallelism, tmpdir } from "node:os";
+import { existsSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { gunzipSync } from "node:zlib";
 import { createRuntimePackMatrix } from "../runtime-pack-matrix.mjs";
 import {
   RUNTIME_COMPILE_FLAGS,
@@ -124,6 +126,44 @@ async function build() {
     config.bitcode === false
       ? null
       : await resolveRuntimeUnitHelper(repoRoot, matrix.target.llvm_triple);
+  // Speed units that the LLVM helper optimizes with the target's committed
+  // runtime profile (profiles/<target>.profdata.gz), or instruments for
+  // scripts/refresh-runtime-profile.mjs (SCRIPTC_RUNTIME_PROFILE_GENERATE=1).
+  // The runtime compiler then emits their bitcode unoptimized, and one LLVM,
+  // the helper's, instruments, annotates and optimizes every profiled unit.
+  // Release and library flavors keep the runtime compiler's optimization.
+  const committedProfile = join(
+    repoRoot,
+    "packages",
+    "runtime-pack-common",
+    "profiles",
+    `${config.target.name}.profdata.gz`,
+  );
+  // The committed profile is unpacked into the build directory once it exists.
+  const unpackedProfile = join(buildRoot, "runtime.profdata");
+  // Without a helper that optimizes units itself, speed units are built as
+  // before, without the profile.
+  const unitProfiles = unitHelper?.features.includes("runtime-unit-profile") === true;
+  if (process.env.SCRIPTC_RUNTIME_PROFILE_GENERATE === "1" && !unitProfiles)
+    throw new Error(
+      "SCRIPTC_RUNTIME_PROFILE_GENERATE=1 needs an LLVM helper with runtime-unit profiles",
+    );
+  const speedProfile = !unitProfiles
+    ? null
+    : process.env.SCRIPTC_RUNTIME_PROFILE_GENERATE === "1"
+      ? { args: ["--opt-level", "2", "--profile-generate", ""] }
+      : existsSync(committedProfile)
+        ? { args: ["--opt-level", "2", "--profile-use", unpackedProfile], unpack: true }
+        : null;
+  // Speed units the helper optimizes without the profile (at the same level).
+  // scr_message.c: with the profile on its decoding, a program whose workers
+  // each receive many small messages ran 5% slower in its workers' own code,
+  // although that code and its data were unchanged; without it, the program
+  // runs as fast as with an unprofiled runtime.
+  const unprofiledUnits = new Set(["scr_message.c"]);
+  // The instrumented units' functions, which SCRIPTC_RUNTIME_PROFILE_FUNCTIONS
+  // names a file for; the refresh script keeps only their records.
+  const profiledFunctions = new Set();
   const parallel = async (items, task) => {
     const width = Math.max(1, Math.min(8, availableParallelism()));
     return parallelMap(items, width, task);
@@ -162,6 +202,8 @@ async function build() {
   await rm(buildRoot, { recursive: true, force: true });
   try {
     await mkdir(stagedOutputRoot, { recursive: true });
+    if (speedProfile?.unpack)
+      await writeFile(unpackedProfile, gunzipSync(await readFile(committedProfile)));
     // Zig 0.16 creates a zero-byte `a.o` in its working directory for
     // `zig cc --version`. Probe from a private temporary directory so a
     // runtime-pack build never leaves that compiler byproduct in the package.
@@ -203,6 +245,7 @@ async function build() {
               ...(config.platform === "linux" ? ["-fomit-frame-pointer"] : []),
             ]
           : [];
+      const profileMatches = [];
       const units = await parallel(
         flavorSpec.runtime_units ?? matrix.runtime_units,
         async (unit) => {
@@ -260,9 +303,10 @@ async function build() {
             let bitcode;
             const bitcodeOutput = output.replace(/\.o$/, ".bc");
             if (flavor === "speed") await mkdir(dirname(output), { recursive: true });
+            let unitBuild = false;
             if (
               flavor === "speed" &&
-              (await buildRuntimeUnit({
+              (unitBuild = await buildRuntimeUnit({
                 helper: unitHelper,
                 compileBitcode: (optimized) =>
                   run(compiler, [
@@ -270,12 +314,17 @@ async function build() {
                     ...sourcePathFlags,
                     ...unitFlags,
                     "-g0",
+                    ...(speedProfile === null ? [] : ["-Xclang", "-disable-llvm-passes"]),
                     "-emit-llvm",
                     "-c",
                     join(runtimeSrc, unit.source),
                     "-o",
                     optimized,
                   ]),
+                helperArgs:
+                  speedProfile?.unpack && unprofiledUnits.has(unit.source)
+                    ? ["--opt-level", "2"]
+                    : (speedProfile?.args ?? []),
                 object: output,
                 bitcode: bitcodeOutput,
                 triple: matrix.target.llvm_triple,
@@ -286,6 +335,8 @@ async function build() {
                   ),
               }))
             ) {
+              if (unitBuild.profile !== undefined) profileMatches.push(unitBuild.profile);
+              for (const name of unitBuild.functions ?? []) profiledFunctions.add(name);
               bitcode = {
                 path: artifactPath(bitcodeOutput),
                 sha256: await sha256(bitcodeOutput),
@@ -335,7 +386,21 @@ async function build() {
           return { source: unit.source, predicate: unit.predicate, variants };
         },
       );
-      flavors[flavor] = { optimization: flavorSpec.optimization, runtime_units: units };
+      flavors[flavor] = {
+        optimization: flavorSpec.optimization,
+        runtime_units: units,
+        // How the committed runtime profile matched the units it guided
+        // (scripts/refresh-runtime-profile.mjs refreshes it).
+        ...(profileMatches.length === 0
+          ? {}
+          : {
+              runtime_profile: {
+                annotated: profileMatches.reduce((sum, match) => sum + match.annotated, 0),
+                mismatched: profileMatches.reduce((sum, match) => sum + match.mismatched, 0),
+                missing: profileMatches.reduce((sum, match) => sum + match.missing, 0),
+              },
+            }),
+      };
     }
     const mbedtlsSources = (await readdir(join(mbedtls, "library")))
       .filter((name) => !name.startsWith(".") && name.endsWith(".c"))
@@ -522,6 +587,14 @@ async function build() {
       backupRoot: join(packageRoot, `.runtime-pack-artifacts-backup-${suffix}`),
       backupManifestPath: join(packageRoot, `.runtime-pack-manifest-backup-${suffix}`),
     });
+    if (process.env.SCRIPTC_RUNTIME_PROFILE_FUNCTIONS !== undefined)
+      await writeFile(
+        process.env.SCRIPTC_RUNTIME_PROFILE_FUNCTIONS,
+        [...profiledFunctions]
+          .sort()
+          .map((name) => `${name}\n`)
+          .join(""),
+      );
     process.stdout.write(
       `built ${packageManifest.name}@${packageManifest.version}: ${Object.keys(flavors).length} flavors, ${archives.length} vendor archives\n`,
     );

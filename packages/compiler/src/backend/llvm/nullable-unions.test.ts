@@ -3,6 +3,7 @@ import {
   F64,
   NULL_T,
   UNDEFINED_T,
+  type IrClassDef,
   type IrModule,
   type IrType,
   type IrUnionDef,
@@ -145,4 +146,74 @@ test("typed array arms are nullable pointers compared by identity", () => {
   expect(unions.get("if")).toBeNull();
   expect(isObjectArm(unions.single("iu")!)).toBe(true);
   expect(isPointerIdentityArm(unions.single("iu")!)).toBe(true);
+});
+
+test("unions of two or more classes become class unions", () => {
+  const cls = (className: string): IrType => ({ kind: "object", className });
+  const def = (name: string, base?: string, runtime?: true): IrClassDef => ({
+    name,
+    fields: [],
+    loc,
+    ...(base === undefined ? {} : { base }),
+    ...(runtime === undefined ? {} : { runtime }),
+  });
+  const classes = [
+    def("%Error", undefined, true),
+    def("%TypeError", "%Error", true),
+    def("Leaf"),
+    def("Pair"),
+    def("Node"),
+    def("Name", "Node"),
+    def("Call", "Node"),
+    def("Sym"),
+    def("Type"),
+  ];
+  const unions = [
+    { id: "lp", arms: [cls("Leaf"), cls("Pair")] },
+    { id: "lpu", arms: [cls("Leaf"), UNDEFINED_T, cls("Pair")] },
+    { id: "lpnu", arms: [NULL_T, cls("Leaf"), cls("Pair"), UNDEFINED_T] },
+    { id: "siblings", arms: [cls("Name"), cls("Call")] },
+    { id: "target", arms: [cls("Sym"), cls("Node"), cls("Type")] },
+    { id: "ancestor", arms: [cls("Node"), cls("Name")] },
+    { id: "number", arms: [cls("Leaf"), F64] },
+    { id: "error", arms: [cls("Leaf"), cls("%TypeError")] },
+    { id: "mixed", arms: [cls("Leaf"), cls("Sym")] },
+    { id: "rp", arms: [cls("Pair"), cls("Leaf")] },
+  ];
+  const lifetime = { contracts: { programLifetime: ["Sym", "Type", "Node"] } };
+  const nullable = new NullableUnions(module(unions, { classes, ...lifetime }));
+  expect(nullable.classes("lp")).toMatchObject({ unitTag: -1, nullTag: -1 });
+  expect(nullable.classes("lpu")).toMatchObject({ unitTag: 1, nullTag: -1 });
+  expect(nullable.classes("lpnu")).toMatchObject({ unitTag: 3, nullTag: 0 });
+  expect(nullable.classes("lpnu")?.arms).toEqual([
+    { tag: 1, className: "Leaf" },
+    { tag: 2, className: "Pair" },
+  ]);
+  expect(nullable.classes("siblings")).not.toBeNull();
+  expect(nullable.classes("target")).not.toBeNull();
+  // An arm that extends another, a scalar arm, a runtime-rooted arm, and
+  // arms of which only some are ProgramLifetime keep the box.
+  expect(nullable.get("ancestor")).toBeNull();
+  expect(nullable.get("number")).toBeNull();
+  expect(nullable.get("error")).toBeNull();
+  expect(nullable.get("mixed")).toBeNull();
+  // Standalone arms keep their class id only because they are arms.
+  expect([...nullable.taggedClasses()].sort()).toEqual(["Leaf", "Pair", "Sym", "Type"]);
+  expect(nullable.helperOwner("rp")).toBe("lp");
+  expect(nullable.helperOwner("lpu")).toBe("lp");
+  expect(nullable.allClassUnions().map((u) => u.unionId)).toEqual([
+    "lp",
+    "lpu",
+    "lpnu",
+    "siblings",
+    "target",
+    "rp",
+  ]);
+  const plain = { classes, ...lifetime };
+  // 32-bit targets, debug builds and library builds keep boxes.
+  expect(new NullableUnions(module(unions, plain), true, undefined, false).get("lp")).toBeNull();
+  expect(new NullableUnions(module(unions, plain), false).get("lp")).toBeNull();
+  expect(
+    new NullableUnions(module(unions, plain), true, undefined, false).taggedClasses().size,
+  ).toBe(0);
 });

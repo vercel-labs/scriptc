@@ -130,6 +130,7 @@ import {
   widthCoerce,
   applyWidthLift,
   unionRecordWidthHelper,
+  unionArrayWidthHelper,
   recordWidthHelper,
   tupleArrayWidthHelper,
   emptyArrayLiftHelper,
@@ -533,7 +534,11 @@ import {
   lowerSetMethodCall,
   lowerSetForEachCall,
 } from "./containers/collection-methods.js";
-import { lowerEnvToPairsHelper } from "./containers/indexed-objects.js";
+import {
+  lowerEnvToPairsHelper,
+  recordOvfCapturePlan,
+  type RecordOvfCapturePlan,
+} from "./containers/indexed-objects.js";
 import { lowerBufferStaticCall, lowerBytesMethodCall, lowerBytesNew } from "./containers/bytes.js";
 import { lowerRegexMethodCall, lowerStringMethodCall } from "./containers/string-and-regexp.js";
 import {
@@ -6748,6 +6753,7 @@ export class Lowerer {
         isUndefined: (node) =>
           node.text === "undefined" &&
           ((typeOrNull(node)?.flags ?? 0) & ts.TypeFlags.Undefined) !== 0,
+        neverReturns: (call) => ((typeOrNull(call)?.flags ?? 0) & ts.TypeFlags.Never) !== 0,
       });
       presenceProofs.set(use, proven);
       return proven;
@@ -12358,6 +12364,20 @@ export class Lowerer {
         const lifted = unionArmsWidthLift(this, expr, expected);
         if (lifted) return lifted;
       }
+      // A UNION of tuples/arrays flowing into an array slot that is not one
+      // of its arms (an `as const` key table's index read into
+      // `readonly string[]`): a width plan converts every arm on its own
+      // tag, a tuple rebuilding through tupleArr. Planned after the
+      // checked extraction above, and skipped when an arm already IS the
+      // slot, so every union that converted before keeps the same IR.
+      if (
+        expr.type.kind === "union" &&
+        expected.kind === "array" &&
+        !(this.unions.get(expr.type.unionId)?.arms ?? []).some((arm) => typeEquals(arm, expected))
+      ) {
+        const lift = this.widthLiftPlan(expr.type, expected);
+        if (lift) return this.applyWidthLift(lift, expr, expected, expr.loc);
+      }
       if (!typeEquals(expr.type, expected)) {
         const w = this.widthCoerce(expr, expected);
         if (w) return w;
@@ -12561,8 +12581,16 @@ export class Lowerer {
     return unionRecordWidthHelper(this, fromId, target, loc);
   }
 
+  unionArrayWidthHelper(fromId: string, target: IrType & { kind: "array" }, loc: SrcLoc): string {
+    return unionArrayWidthHelper(this, fromId, target, loc);
+  }
+
   recordWidthPlan(fromId: string, toId: string): Map<string, FieldLift> | null {
     return recordWidthPlan(this, fromId, toId);
+  }
+
+  recordOvfCapturePlan(fromId: string, toId: string): RecordOvfCapturePlan | null {
+    return recordOvfCapturePlan(this, fromId, toId);
   }
 
   describeRecordWidthBlocker(fromId: string, toId: string): string | null {

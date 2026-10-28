@@ -1,8 +1,14 @@
 #pragma once
 
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
+
+namespace llvm {
+class Module;
+class TargetMachine;
+} // namespace llvm
 
 namespace scriptc {
 
@@ -35,5 +41,28 @@ struct EmitOptions {
 
 std::optional<EmitOptions> parseEmitOptions(int Argc, char **Argv);
 int emit(const EmitOptions &Options);
+
+// How a profile matched the functions of one optimized module: functions
+// that received its counts, functions whose control flow changed since it
+// was collected, and functions it has no record of.
+struct ModuleProfileMatch {
+  uint64_t Annotated = 0;
+  uint64_t Mismatched = 0;
+  uint64_t Missing = 0;
+};
+
+// Optimizes `M` with the per-module default pipeline at `OptLevel`, as `emit`
+// does for a whole program, with IR instrumentation when `Instrument` is set
+// or annotation from the indexed `ProfileUse` profile. Instrumentation writes
+// raw profiles to the `ProfileGenerate` pattern; an empty pattern names no
+// file, so the program that links the module names it. Returns an error
+// message, or nothing on success.
+std::optional<std::string> optimizeModule(llvm::Module &M,
+                                          llvm::TargetMachine &Machine,
+                                          const std::string &OptLevel,
+                                          bool Instrument,
+                                          const std::string &ProfileGenerate,
+                                          const std::string &ProfileUse,
+                                          ModuleProfileMatch &Match);
 
 } // namespace scriptc

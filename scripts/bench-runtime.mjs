@@ -44,6 +44,7 @@ const { values } = parseArgs({
     "candidate-target-cpu": { type: "string" },
     "baseline-cpu-dispatch": { type: "boolean", default: false },
     "candidate-cpu-dispatch": { type: "boolean", default: false },
+    "candidate-profile-generate": { type: "string" },
     json: { type: "string" },
     "no-lock": { type: "boolean", default: false },
     node: { type: "boolean", default: true },
@@ -57,6 +58,7 @@ if (values.help) {
        [--baseline-optimization=release] [--candidate-optimization=release]
        [--baseline-target-cpu=<level>] [--candidate-target-cpu=<level>]
        [--baseline-cpu-dispatch] [--candidate-cpu-dispatch]
+       [--candidate-profile-generate=<raw profile pattern>]
        [--no-lock] [--no-node] [--keep]
 
 Each checkout must have a built CLI (packages/cli/dist/bootstrap.js) and native
@@ -79,7 +81,10 @@ release. --baseline-target-cpu/--candidate-target-cpu pass --target-cpu to each
 contender's builds, e.g. --baseline=. --candidate-target-cpu=x86-64-v3 compares
 x86-64-v3 code with the baseline. --baseline-cpu-dispatch/--candidate-cpu-dispatch
 pass --cpu-dispatch, and SCRIPTC_CPU_LEVEL in the environment reaches every timed
-run. cold_build_ms records each contender's first, uncached build.`);
+run. cold_build_ms records each contender's first, uncached build.
+--candidate-profile-generate builds the candidate's workloads with
+--profile-generate=<pattern>, so its runs write raw profiles there
+(scripts/refresh-runtime-profile.mjs trains the runtime profile this way).`);
   process.exit(0);
 }
 const runs = Number(values.runs);
@@ -448,7 +453,16 @@ function revision(root) {
   });
   return r.stdout.trim() + (dirty.stdout.trim() ? "+dirty" : "");
 }
-function build(label, root, workload, layout, optimization, targetCpu, cpuDispatch) {
+function build(
+  label,
+  root,
+  workload,
+  layout,
+  optimization,
+  targetCpu,
+  cpuDispatch,
+  profileGenerate,
+) {
   const cli = cliFor(root);
   const out = join(work, label, layout === 0 ? workload.name : `${workload.name}.layout${layout}`);
   mkdirSync(dirname(out), { recursive: true });
@@ -471,6 +485,7 @@ function build(label, root, workload, layout, optimization, targetCpu, cpuDispat
       `--optimization=${optimization}`,
       ...(targetCpu === undefined ? [] : [`--target-cpu=${targetCpu}`]),
       ...(cpuDispatch ? ["--cpu-dispatch"] : []),
+      ...(profileGenerate === undefined ? [] : [`--profile-generate=${profileGenerate}`]),
       "-o",
       out,
     ],
@@ -507,6 +522,7 @@ const contenders = [
     optimization: values["candidate-optimization"],
     targetCpu: values["candidate-target-cpu"],
     cpuDispatch: values["candidate-cpu-dispatch"],
+    profileGenerate: values["candidate-profile-generate"],
   },
 ];
 const report = {
@@ -613,7 +629,16 @@ try {
       entry.results[c.label] = result;
       result.binaries = [];
       for (let layout = 0; layout < layouts && result.status === undefined; layout++) {
-        const built = build(c.label, c.root, w, layout, c.optimization, c.targetCpu, c.cpuDispatch);
+        const built = build(
+          c.label,
+          c.root,
+          w,
+          layout,
+          c.optimization,
+          c.targetCpu,
+          c.cpuDispatch,
+          c.profileGenerate,
+        );
         result.build_ms += Math.round(built.buildMs);
         if (layout === 0) result.cold_build_ms = Math.round(built.buildMs);
         if (!built.ok) {

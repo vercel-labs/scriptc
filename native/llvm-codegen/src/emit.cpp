@@ -1340,6 +1340,44 @@ emitSplitCodegen(const EmitOptions &Options, Module &M, TargetMachine &Machine,
 
 } // namespace
 
+std::optional<std::string> optimizeModule(Module &M, TargetMachine &Machine,
+                                          const std::string &OptLevel,
+                                          bool Instrument,
+                                          const std::string &ProfileGenerate,
+                                          const std::string &ProfileUse,
+                                          ModuleProfileMatch &Result) {
+  OptimizationLevel Level = optimizationLevel(OptLevel);
+  std::optional<PGOOptions> Profile;
+  if (Instrument) {
+    Profile = PGOOptions(ProfileGenerate, "", "", "", PGOOptions::IRInstr);
+  } else if (!ProfileUse.empty()) {
+    EmitOptions Inspected;
+    Inspected.ProfileUse = ProfileUse;
+    if (std::optional<EmitFailure> Failure = inspectProfile(Inspected))
+      return Failure->Message;
+    reportMissingProfiles();
+    Profile = PGOOptions(ProfileUse, "", "", "", PGOOptions::IRUse);
+  }
+  bool Annotating = Profile && Profile->Action == PGOOptions::IRUse;
+  ProfileMatch Match;
+  if (Annotating)
+    M.getContext().setDiagnosticHandler(
+        std::make_unique<ProfileMatchHandler>(Match));
+  {
+    Pipeline P(Machine, Level, std::move(Profile));
+    if (Annotating)
+      P.countAnnotated(Match.Annotated);
+    P.PB.buildPerModuleDefaultPipeline(Level).run(M, P.MAM);
+  }
+  Result.Annotated = Match.Annotated.load();
+  Result.Mismatched = Match.Mismatched.load();
+  Result.Missing = Match.Missing.load();
+  if (std::optional<EmitFailure> Failure =
+          verify(M, "post_optimization_verification_failed"))
+    return Failure->Message;
+  return std::nullopt;
+}
+
 int emit(const EmitOptions &Options) {
   if (!supportsTarget(Options.Target))
     return reportError("unsupported_target",

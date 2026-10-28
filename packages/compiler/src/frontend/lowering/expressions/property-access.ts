@@ -125,6 +125,12 @@ import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../.
 import { typedArrayLacksMember } from "../builtins/typed-array-members.js";
 import { TEMPORAL_GLOBAL } from "../../builtin-modules.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
+import {
+  applyDeferredAssertion,
+  assertedReceiverNode,
+  deferredMemberReadTarget,
+  deferredProbeReadAccess,
+} from "./asserted-receiver.js";
 import { lowerRecordInheritedMember } from "../record-inherited.js";
 import { DATE_METHOD_HINT } from "../builtins/dates.js";
 import {
@@ -1398,6 +1404,25 @@ export function lowerPropertyAccessExpr(
   // receiver that lowers cleanly means the MEMBER is the gap — name
   // the property and the receiver's type instead of "property access".
   let recvLowered = lowerer.lowerExpr(expr.expression);
+  // A PRESENCE PROBE of a member read through an erased assertion
+  // (`typeof (u as R).member`, `(u as R).member !== undefined`): Node
+  // reads the property off the value actually stored, so an arm that does
+  // not declare it answers undefined. lowerAsExpression deferred the
+  // assertion's checked extraction for this read; answer it per arm
+  // (assertedMemberRead), and only a member with no per-arm answer applies
+  // the extraction the assertion would otherwise have taken (a lying
+  // assertion still throws on a real use, never on the probe).
+  {
+    const assertion = assertedReceiverNode(expr.expression);
+    const target = assertion
+      ? deferredMemberReadTarget(lowerer, assertion, expr, recvLowered)
+      : null;
+    if (target !== null) {
+      const read = assertedMemberRead(lowerer, expr, recvLowered, loc);
+      if (read) return read;
+      recvLowered = applyDeferredAssertion(lowerer, recvLowered, target, loc);
+    }
+  }
   // A receiver whose value union holds record types the checker's subtype
   // reduction folded into its type (`{ status } | { status, value }` typed
   // `{ status }`, a call of a function with an inferred return type): read
@@ -1692,7 +1717,9 @@ function assertedMemberRead(
   const name = expr.name.text;
   let resultType: IrType | null = null;
   let records = 0;
-  const declaring: { tag: number; shapeId: string; type: IrType }[] = [];
+  // A getter arm answers by calling its getter, once per read, as Node's
+  // read does; a data arm reads its slot.
+  const declaring: { tag: number; shapeId: string; type: IrType; getter: boolean }[] = [];
   const units: number[] = [];
   for (let tag = 0; tag < arms.length; tag++) {
     const arm = arms[tag]!;
@@ -1704,16 +1731,21 @@ function assertedMemberRead(
     records++;
     const shape = lowerer.shapes.get(arm.shapeId);
     if (!shape || shape.tuple || shape.indexValue) return null;
-    const field = shape.fields.find((f) => f.name === name);
+    const getter = shape.fields.find((f) => f.name === `%get:${name}`);
+    if (!getter && shape.fields.some((f) => f.name === `%set:${name}`)) return null;
+    if (getter && getter.type.kind !== "func") return null;
+    const field = getter ?? shape.fields.find((f) => f.name === name);
     if (!field) continue;
+    const fieldType = field.type.kind === "func" && getter ? field.type.ret : field.type;
     // The declaring arms agree up to an undefined arm (`string` beside
     // `string | undefined`).
-    const armResult = lowerer.withUndefinedArmOf(field.type);
+    const armResult = lowerer.withUndefinedArmOf(fieldType);
     if (!armResult || (resultType && !typeEquals(resultType, armResult))) return null;
     resultType = armResult;
-    declaring.push({ tag, shapeId: arm.shapeId, type: field.type });
+    declaring.push({ tag, shapeId: arm.shapeId, type: field.type, getter: getter !== undefined });
   }
-  if (!resultType || declaring.length === records) return null;
+  if (!resultType || (declaring.length === records && declaring.every((d) => !d.getter)))
+    return null;
   const stable = lowerer.declareHiddenLocal("%assertedRecv", recv.type);
   const ref = (): IrExpr => ({ kind: "varRef", localId: stable.id, type: recv.type, loc });
   let result: IrExpr | null = lowerer.wrappedUndefined(resultType, loc);
@@ -1736,15 +1768,19 @@ function assertedMemberRead(
       loc,
     };
   }
-  for (const { tag, shapeId, type: fieldType } of declaring) {
-    const read: IrExpr = {
+  for (const { tag, shapeId, type: fieldType, getter } of declaring) {
+    const slot: IrExpr = {
       kind: "recordGet",
       obj: { kind: "unionNarrow", unionId, tag, value: ref(), type: arms[tag]!, loc },
       shapeId,
-      field: name,
+      field: getter ? `%get:${name}` : name,
       type: fieldType,
       loc,
     };
+    const read: IrExpr =
+      getter && fieldType.kind === "func"
+        ? { kind: "callValue", callee: slot, args: [], type: fieldType.ret, loc }
+        : slot;
     result = {
       kind: "ternary",
       cond: { kind: "unionIsTag", unionId, tag, negated: false, value: ref(), type: BOOL, loc },
@@ -3145,6 +3181,12 @@ export function lowerFieldRead(lowerer: Lowerer, expr: ts.PropertyAccessExpressi
         };
     }
   }
+  // A presence probe of a member read through a record assertion
+  // (`typeof (u as R).member`): the field target comes from the ASSERTED
+  // checker type and would apply the checked extraction, trapping on the
+  // very arm the probe exists to detect. Leave the read to the per-arm
+  // answer in lowerPropertyAccessExpr (asserted-receiver.ts).
+  if (deferredProbeReadAccess(lowerer, expr)) return null;
   const target = lowerer.fieldTarget(expr);
   if (target) return lowerer.fieldGetExpr(target, locOf(expr), expr);
   if (expr.questionDotToken) return null;

@@ -47,10 +47,14 @@ import { SCR_ARR_FIELD, llvmCommentText } from "./common.js";
 import {
   NULLABLE_NULL,
   SHAPE_WORD_INDEX,
+  classReleaseFn,
+  classRetainFn,
+  classTraceFn,
   shapeReleaseFn,
   shapeTagFn,
   shapeTraceFn,
   shapeWordHeader,
+  type ClassUnion,
   type NullableUnions,
   type ShapeUnion,
 } from "./nullable-unions.js";
@@ -257,6 +261,7 @@ export { computeTraced } from "../cycle-analysis.js";
 export function vAdapters(host: ShapeHost, t: IrType): { retain: string; release: string } {
   const nullable = host.nullableUnions.of(t);
   if (nullable?.repr === "shapes") return shapeUnionRc(host, nullable);
+  if (nullable?.repr === "classes") return classUnionRc(host, nullable);
   if (nullable) {
     const arm = vAdapters(host, nullable.arm);
     return { retain: nullableRetainSym(host, nullable.arm), release: arm.release };
@@ -314,6 +319,7 @@ export function retainSym(host: ShapeHost, t: IrType): string {
   if (t.kind === "jsval") return jsvalRcSym(host, "retain");
   const nullable = host.nullableUnions.of(t);
   if (nullable?.repr === "shapes") return shapeUnionRc(host, nullable).retain;
+  if (nullable?.repr === "classes") return classUnionRc(host, nullable).retain;
   if (nullable) return nullableRetainSym(host, nullable.arm);
   const stem = runtimeRcStem(t);
   if (host.rcHelpers !== null && stem !== null && inlineRcFamily(host, stem, "retain") !== null) {
@@ -333,6 +339,13 @@ function shapeUnionRc(host: ShapeHost, union: ShapeUnion): { retain: string; rel
     retain: `@${mangleRecordRetain(union.arms[0]!.shapeId)}`,
     release: shapeReleaseFn(host.nullableUnions.helperOwner(union.unionId)),
   };
+}
+
+/** A class union's RC entry points (class-unions.ts), shared by the unions
+ * over the same classes. */
+function classUnionRc(host: ShapeHost, union: ClassUnion): { retain: string; release: string } {
+  const owner = host.nullableUnions.helperOwner(union.unionId);
+  return { retain: classRetainFn(owner), release: classReleaseFn(owner) };
 }
 
 /** The widest span of shape numbers a union's arms may cover for its tag
@@ -552,6 +565,7 @@ export function releaseSym(host: ShapeHost, t: IrType): string {
   if (t.kind === "jsval") return jsvalRcSym(host, "release");
   const nullable = host.nullableUnions.of(t);
   if (nullable?.repr === "shapes") return shapeUnionRc(host, nullable).release;
+  if (nullable?.repr === "classes") return classUnionRc(host, nullable).release;
   if (nullable) return releaseSym(host, nullable.arm);
   const stem = runtimeRcStem(t);
   if (host.rcHelpers !== null && stem !== null && inlineRcFamily(host, stem, "release") !== null) {
@@ -1110,6 +1124,11 @@ export function traceAdapter(host: ShapeHost, t: IrType): string | null {
       if (nullable?.repr === "shapes")
         return shapeUnionTraced(host, nullable)
           ? shapeTraceFn(host.nullableUnions.helperOwner(nullable.unionId))
+          : null;
+      // Every arm of a class union carries a collector header when one does.
+      if (nullable?.repr === "classes")
+        return host.tracedShapes.has(`object:${nullable.arms[0]!.className}`)
+          ? classTraceFn(host.nullableUnions.helperOwner(nullable.unionId))
           : null;
       if (nullable) return traceAdapter(host, nullable.arm);
       if (!host.tracedUnions.has(t.unionId)) return null;
@@ -1754,7 +1773,7 @@ function directDestroyKey(host: ShapeHost, type: IrType): string | null {
   const nullable = host.nullableUnions.of(type);
   let t = type;
   if (nullable !== null) {
-    if (nullable.repr === "shapes") return null;
+    if (nullable.repr !== "single") return null;
     t = nullable.arm;
   }
   if (t.kind === "record") return `record:${t.shapeId}`;
@@ -1977,8 +1996,9 @@ export function releaseBody(
   segmented = false,
   frozen = false,
   destroyDefs: readonly string[] | null = null,
+  count: RcCount = host.sizeType,
 ): string[] {
-  const S = host.sizeType;
+  const S = count;
   if (bounded) host.declare(`declare void @scr_rc_destroy(ptr, ptr)`);
   const destroy = `${fnName}_destroy`;
   // A freezable record's count is the word without its frozen bit.

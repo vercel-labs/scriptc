@@ -16,7 +16,7 @@ import {
 } from "./record-results.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import { mangleClassStruct, mangleRecordStruct } from "../mangle.js";
-import { classFieldIndex, classUndefinedFieldInits } from "./classes.js";
+import { classFieldIndex, classIdImmortalRcWord, classUndefinedFieldInits } from "./classes.js";
 import { CYC_BUF, CYC_HDR } from "./alloc.js";
 import type { CallLifetimes } from "./call-lifetimes.js";
 import { emitCallExpr, emitConstruction } from "./expr-calls.js";
@@ -396,7 +396,10 @@ export function emitStackObject(
         B.line(line.trim());
     }
   }
-  B.line(`store ${host.sizeType} -1, ptr ${slot}`);
+  const tagged = type.kind === "object" ? host.classMeta.get(type.className) : undefined;
+  // A class-union arm keeps its class id beside the immortal count.
+  if (tagged?.idInRc === true) B.line(`store i64 ${classIdImmortalRcWord(tagged)}, ptr ${slot}`);
+  else B.line(`store ${host.sizeType} -1, ptr ${slot}`);
   if (type.kind === "record") {
     // A tagged shape's word names it to every shape union's tag read.
     const shapeNumber = host.nullableUnions.shapeNumber(type.shapeId);

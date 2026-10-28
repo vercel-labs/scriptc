@@ -869,6 +869,143 @@ function lowerFromEntriesStringRows(
   return { kind: "call", callee: helper, args: [receiver], type: resultT, loc };
 }
 
+/** One destination-field initializer of the overflow capture reshape: a
+ * directly-lifted source field, or the target field's undefined arm (left
+ * absent for a runtime keyed write). */
+export type RecordOvfFieldInit =
+  | { name: string; kind: "undef"; unionId: string; utag: number }
+  | { name: string; kind: "direct"; src: IrType; lift: WidthLift };
+
+/** The planning half of lowerRecordOvfCaptureHelper (its doc is the
+ * contract): the same gates, with no interning and no observable state (a
+ * speculative widthLiftPlan call must not mark the source's key order
+ * observed — the builder does that), so the width relation can promise
+ * the reshape before any helper exists. */
+export interface RecordOvfCapturePlan {
+  inits: RecordOvfFieldInit[];
+  fieldLifts: Map<string, WidthLift | "dyn">;
+  orderedFields: IrRecordShape["fields"];
+  consumed: Set<string>;
+  /** How the source's own overflow slot enters the target's value slot. */
+  ovfLift: WidthLift | "dyn" | null;
+}
+
+export function recordOvfCapturePlan(
+  lowerer: Lowerer,
+  fromId: string,
+  toId: string,
+): RecordOvfCapturePlan | null {
+  const from = lowerer.shapes.get(fromId);
+  const to = lowerer.shapes.get(toId);
+  if (!from || !to?.indexValue || from.tuple || to.tuple) return null;
+  const planningKey = `ovfp:${fromId}:${toId}`;
+  // Recursive shapes re-enter their own pair through a field: assume the
+  // pair is coercible while the outer plan checks its other fields (the
+  // same rule recordWidthPlan applies).
+  if (lowerer.coercions.planning.has(planningKey))
+    return {
+      inits: [],
+      fieldLifts: new Map(),
+      orderedFields: [],
+      consumed: new Set(),
+      ovfLift: null,
+    };
+  lowerer.coercions.planning.add(planningKey);
+  try {
+    const fIv = from.indexValue ?? null;
+    const tIv = to.indexValue;
+    // How a source value enters the target's value slot: identity, the
+    // dyn conversion, or a width lift (wrap/retag/nested reshape).
+    const slotLift = (t: IrType): WidthLift | "dyn" | null => {
+      if (typeEquals(t, tIv)) return { how: "copy" };
+      if (tIv.kind === "dyn" && (t.kind === "dyn" || lowerer.dynConvertible(t))) return "dyn";
+      return lowerer.widthLiftPlan(t, tIv);
+    };
+    // The overflow value slot must line up (sources without an index
+    // signature have no overflow to carry over).
+    if (fIv && slotLift(fIv) === null) return null;
+    // Target declared fields initialize one of two ways. A same-named
+    // SOURCE declared field whose type lifts initializes the slot DIRECTLY
+    // (consumed — no keyed write below): the declared half of a width flow
+    // into a hybrid target (`{ a: 1, b: 2 }` into `{ a: number;
+    // [k: string]: number }`), which is also what admits REQUIRED declared
+    // target fields — tsc guarantees the source declares them (an index
+    // signature alone never satisfies a required member), and an
+    // index-signature source's OVERFLOW can never collide with them (its
+    // own declared name owns the key). Every other target field defaults
+    // to its undefined arm (fresh record), so it must be optional-flavored
+    // and must accept a runtime collision (dyn slots validate via dynCheck
+    // — fields must be dyn-convertible; typed slots write through
+    // directly).
+    const inits: RecordOvfFieldInit[] = [];
+    const consumed = new Set<string>();
+    for (const tf of to.fields) {
+      const sf = from.fields.find((f) => f.name === tf.name);
+      const directLift = sf ? lowerer.widthLiftPlan(sf.type, tf.type) : null;
+      if (sf && directLift) {
+        inits.push({ name: tf.name, kind: "direct", src: sf.type, lift: directLift });
+        consumed.add(tf.name);
+        continue;
+      }
+      if (tf.type.kind !== "union") return null;
+      const utag = lowerer.armTag(tf.type.unionId, UNDEFINED_T);
+      if (utag < 0) return null;
+      if (tIv.kind === "dyn" ? !lowerer.dynConvertible(tf.type) : !typeEquals(tf.type, tIv))
+        return null;
+      inits.push({ name: tf.name, kind: "undef", unionId: tf.type.unionId, utag });
+    }
+    // Every source declared field must flow into the keyed-write slot —
+    // in DECLARATION order (insertion order below; declaredOrder omits
+    // internal '%'-fields, which never enter the copy).
+    const orderedFields = from.declaredOrder
+      ? from.declaredOrder.flatMap((n) => {
+          const f = from.fields.find((x) => x.name === n);
+          return f ? [f] : [];
+        })
+      : from.fields;
+    const fieldLifts = new Map<string, WidthLift | "dyn">();
+    for (const ff of orderedFields) {
+      if (consumed.has(ff.name)) continue; // direct-initialized above
+      const lift = slotLift(ff.type);
+      if (lift === null) return null;
+      fieldLifts.set(ff.name, lift);
+    }
+    // DISPATCH writes — keys that can hit a declared target slot: the
+    // overflow loop's runtime keys, and a literal source-field name the
+    // target also declares. Non-dyn slots store THROUGH on a collision, so
+    // such writes need every declared field to BE the slot type (the
+    // validator's recordKeySet rule); dyn slots validate per field
+    // (dynCheck), so each field must be dyn-convertible. Writes to
+    // literal names the target does NOT declare are overflowOnly and
+    // exempt — which is what lets a direct-initialized required field
+    // (`id: number` beside a `number | undefined` slot) coexist with a
+    // declared-only source, while an index-signature source declines.
+    const dispatchWrites =
+      fIv !== undefined ||
+      orderedFields.some(
+        (ff) => !consumed.has(ff.name) && to.fields.some((f) => f.name === ff.name),
+      );
+    if (dispatchWrites) {
+      if (
+        tIv.kind === "dyn"
+          ? !to.fields.every((f) => lowerer.dynConvertible(f.type))
+          : !to.fields.every((f) => typeEquals(f.type, tIv))
+      ) {
+        return null;
+      }
+    }
+    return {
+      inits,
+      fieldLifts,
+      orderedFields,
+      consumed,
+      ovfLift: fIv ? slotLift(fIv) : null,
+    };
+  } finally {
+    lowerer.coercions.planning.delete(planningKey);
+  }
+}
+
 /** Interned `%rec.capture.<n>(s)` — the INDEX-SIGNATURE reshape behind
  * `Object.fromEntries(entries) as ModelPricing` (hybrid→hybrid width
  * coercion) and `const r: Record<string, number> = { a: 1, b: 2 }`
@@ -891,100 +1028,30 @@ function lowerFromEntriesStringRows(
  * slot), and every target field must either be initialized directly by
  * a same-named source declared field (the rule that admits REQUIRED
  * declared members) or be optional-flavored (the fresh record's
- * default) and writable at runtime. */
+ * default) and writable at runtime.
+ *
+ * The width relation's `{ how: "ovf" }` lift (a record into an
+ * index-signature record arm) builds this same helper through
+ * recordOvfCapturePlan. */
 export function lowerRecordOvfCaptureHelper(
   lowerer: Lowerer,
   fromId: string,
   toId: string,
   loc: SrcLoc,
 ): string | null {
-  const from = lowerer.shapes.get(fromId);
+  const plan = recordOvfCapturePlan(lowerer, fromId, toId);
+  if (!plan) return null;
   const to = lowerer.shapes.get(toId);
-  if (!from || !to?.indexValue || from.tuple || to.tuple) return null;
+  const from = lowerer.shapes.get(fromId);
+  if (!to || !from) return null;
   const fIv = from.indexValue ?? null;
   const tIv = to.indexValue;
-  // How a source value enters the target's value slot: identity, the
-  // dyn conversion, or a width lift (wrap/retag/nested reshape).
-  const slotLift = (t: IrType): WidthLift | "dyn" | null => {
-    if (typeEquals(t, tIv)) return { how: "copy" };
-    if (tIv.kind === "dyn" && (t.kind === "dyn" || lowerer.dynConvertible(t))) return "dyn";
-    return lowerer.widthLiftPlan(t, tIv);
-  };
-  // The overflow value slot must line up (sources without an index
-  // signature have no overflow to carry over).
-  if (fIv && slotLift(fIv) === null) return null;
-  // Target declared fields initialize one of two ways. A same-named
-  // SOURCE declared field whose type lifts initializes the slot DIRECTLY
-  // (consumed — no keyed write below): the declared half of a width flow
-  // into a hybrid target (`{ a: 1, b: 2 }` into `{ a: number;
-  // [k: string]: number }`), which is also what admits REQUIRED declared
-  // target fields — tsc guarantees the source declares them (an index
-  // signature alone never satisfies a required member), and an
-  // index-signature source's OVERFLOW can never collide with them (its
-  // own declared name owns the key). Every other target field defaults
-  // to its undefined arm (fresh record), so it must be optional-flavored
-  // and must accept a runtime collision (dyn slots validate via dynCheck
-  // — fields must be dyn-convertible; typed slots write through
-  // directly).
-  type FieldInit =
-    | { name: string; kind: "undef"; unionId: string; utag: number }
-    | { name: string; kind: "direct"; src: IrType; lift: WidthLift };
-  const inits: FieldInit[] = [];
-  const consumed = new Set<string>();
-  for (const tf of to.fields) {
-    const sf = from.fields.find((f) => f.name === tf.name);
-    const directLift = sf ? lowerer.widthLiftPlan(sf.type, tf.type) : null;
-    if (sf && directLift) {
-      inits.push({ name: tf.name, kind: "direct", src: sf.type, lift: directLift });
-      consumed.add(tf.name);
-      continue;
-    }
-    if (tf.type.kind !== "union") return null;
-    const utag = lowerer.armTag(tf.type.unionId, UNDEFINED_T);
-    if (utag < 0) return null;
-    if (tIv.kind === "dyn" ? !lowerer.dynConvertible(tf.type) : !typeEquals(tf.type, tIv))
-      return null;
-    inits.push({ name: tf.name, kind: "undef", unionId: tf.type.unionId, utag });
-  }
-  // Every source declared field must flow into the keyed-write slot —
-  // in DECLARATION order (insertion order below; declaredOrder omits
-  // internal '%'-fields, which never enter the copy).
+  if (tIv === undefined) return null;
+  // The copy below writes the source's declared fields in order, so a
+  // program that reaches it observes that order (the plan itself is pure:
+  // a speculative widthLiftPlan call must not mark a shape observed).
   lowerer.keyOrder.observed.add(from.id);
-  const orderedFields = from.declaredOrder
-    ? from.declaredOrder.flatMap((n) => {
-        const f = from.fields.find((x) => x.name === n);
-        return f ? [f] : [];
-      })
-    : from.fields;
-  const fieldLifts = new Map<string, WidthLift | "dyn">();
-  for (const ff of orderedFields) {
-    if (consumed.has(ff.name)) continue; // direct-initialized above
-    const lift = slotLift(ff.type);
-    if (lift === null) return null;
-    fieldLifts.set(ff.name, lift);
-  }
-  // DISPATCH writes — keys that can hit a declared target slot: the
-  // overflow loop's runtime keys, and a literal source-field name the
-  // target also declares. Non-dyn slots store THROUGH on a collision, so
-  // such writes need every declared field to BE the slot type (the
-  // validator's recordKeySet rule); dyn slots validate per field
-  // (dynCheck), so each field must be dyn-convertible. Writes to
-  // literal names the target does NOT declare are overflowOnly and
-  // exempt — which is what lets a direct-initialized required field
-  // (`id: number` beside a `number | undefined` slot) coexist with a
-  // declared-only source, while an index-signature source declines.
-  const dispatchWrites =
-    fIv !== undefined ||
-    orderedFields.some((ff) => !consumed.has(ff.name) && to.fields.some((f) => f.name === ff.name));
-  if (dispatchWrites) {
-    if (
-      tIv.kind === "dyn"
-        ? !to.fields.every((f) => lowerer.dynConvertible(f.type))
-        : !to.fields.every((f) => typeEquals(f.type, tIv))
-    ) {
-      return null;
-    }
-  }
+  const { inits, fieldLifts, orderedFields, consumed } = plan;
   const key = `ovf:${fromId}:${toId}`;
   const existing = lowerer.valueHelpers.get(key);
   if (existing) return existing;
@@ -1092,7 +1159,7 @@ export function lowerRecordOvfCaptureHelper(
   // sources carry one).
   const ksT = arrayOf(STRING);
   if (fIv) {
-    const ovfLift = slotLift(fIv)!;
+    const ovfLift = plan.ovfLift!;
     body.push(
       {
         kind: "varDecl",

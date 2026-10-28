@@ -56,6 +56,7 @@ import { assertsGlobalObject, extractionCopiesReference } from "../assertion-ide
 import { iterableSlotValue, iterableUnionOf } from "../iterable-values.js";
 import { isDeclBoundaryTypeNode } from "../../decl-projection.js";
 import { isMessageListenerCall } from "./message-listeners.js";
+import { assertedProbeAccessOf, deferredMemberReadTarget } from "./asserted-receiver.js";
 
 /** `c ? a : b`. An explicit destination constructs each branch at that
  * layout before joining it. Without one, retain the expression's inferred
@@ -1407,6 +1408,17 @@ export function lowerAsExpression(
   if (inner.type.kind !== "dyn") {
     const targetTs0 = lowerer.checker.getTypeFromTypeNode(expr.type);
     const target = lowerer.mapTypeOf(targetTs0);
+    // A PRESENCE PROBE of a member read through the assertion (`typeof
+    // (u as R).member`, `(u as R).member !== undefined`): the read answers
+    // off the value actually stored, since Node erases the assertion and an
+    // arm that does not declare the member answers undefined. The read
+    // answers that per arm (assertedMemberRead); an eager extraction of R
+    // here would trap first and turn the probe into a TypeError. Defer to
+    // the read (asserted-receiver.ts); every real use keeps the extraction.
+    {
+      const access = assertedProbeAccessOf(expr);
+      if (access && deferredMemberReadTarget(lowerer, expr, access, inner) !== null) return inner;
+    }
     if (target?.kind === "object") {
       const asserted = checkedClassAssertion(lowerer, inner, target, locOf(expr));
       if (asserted) return asserted;

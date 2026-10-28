@@ -74,13 +74,13 @@ export function emitUnionRetype(
   const to = host.nullableUnions.get(e.unionId);
   if (from && to) {
     // Equal encodings make the pointer itself the target value. A shape
-    // union derives its record arms from the record, so only the unit
-    // encodings must agree.
+    // union derives its record arms from the record and a class union its
+    // class arms from the class id, so only the unit encodings must agree.
     const same =
       from.repr === "single" && to.repr === "single"
         ? from.refTag === to.refTag && from.unitTag === to.unitTag && from.nullTag === to.nullTag
-        : from.repr === "shapes" &&
-          to.repr === "shapes" &&
+        : from.repr !== "single" &&
+          from.repr === to.repr &&
           from.unitTag === to.unitTag &&
           from.nullTag === to.nullTag;
     if (same) return host.own({ name: value.name, type: e.type });

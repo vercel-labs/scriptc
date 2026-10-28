@@ -100,7 +100,9 @@ export class LlClassMeta {
    * a vtable word, the rc word holds the class id (classIdRcWord) in its
    * high 32 bits (CLASS_ID_OFFSET) and the reference count in its low 32
    * bits, and the hierarchy's vtables are one array indexed by the id
-   * (mangleVtArray). */
+   * (mangleVtArray). A standalone class that is an arm of a class union
+   * (nullable-unions.ts taggedClasses) keeps its id the same way, without
+   * vtables. */
   idInRc = false;
   /** A ProgramLifetime class with the 32-bit header (assignCompactLayouts):
    * the i32 at offset 0 is compactHeaderWord, with the class id in place of
@@ -131,6 +133,7 @@ export function buildClassGraph(
   mod: IrModule,
   fnByName: Map<string, IrFunction>,
   sizeType: "i32" | "i64" = "i64",
+  tagged: ReadonlySet<string> = new Set(),
 ): Map<string, LlClassMeta> {
   const metaMap = new Map<string, LlClassMeta>();
   for (const cls of mod.classes ?? []) {
@@ -161,7 +164,10 @@ export function buildClassGraph(
   // EventEmitter, EventTarget, Event and the streams) and 32-bit targets
   // have no spare half in the rc word: those keep the vtable word.
   for (const meta of metaMap.values())
-    meta.idInRc = sizeType === "i64" && meta.hierarchy && meta.root.def.runtime !== true;
+    meta.idInRc =
+      sizeType === "i64" &&
+      (meta.hierarchy || tagged.has(meta.def.name)) &&
+      meta.root.def.runtime !== true;
   const slotRoots = new Set<LlClassMeta>();
   for (const key of mod.threadSlotKeys ?? []) {
     const meta = metaMap.get(key);
@@ -628,10 +634,20 @@ export function classIdRcWord(meta: LlClassMeta, lifetime: boolean): string {
   return (BigInt(meta.pre + 1) * 2n ** 32n + (lifetime ? 2n ** 31n : 1n)).toString();
 }
 
+/** The rc word of an immortal LlClassMeta.idInRc instance (a frame
+ * object): the class id in the high half and the immortal count, all ones,
+ * in the low half, which scr_rc_immortal reads as immortal. */
+export function classIdImmortalRcWord(meta: LlClassMeta): string {
+  if (meta.pre + 1 >= LAYOUT_ID_LIMIT)
+    throw new InternalCompilerError(`class id ${meta.pre + 1} is not a layout id`);
+  return (BigInt(meta.pre + 1) * 2n ** 32n + 0xffffffffn).toString();
+}
+
 /** The 32-bit header of a compact class instance (LlClassMeta.compact):
  * COMPACT_HEADER_TAG, the class id (classIdRcWord's preorder number + 1, 0
- * outside a hierarchy) in the low 28 bits, and COMPACT_PUBLISHED once
- * publication marks the object. No other object's count reaches
+ * for a class without LlClassMeta.idInRc) in the low 28 bits, and
+ * COMPACT_PUBLISHED once publication marks the object. No other object's
+ * count reaches
  * 0x70000000, so the runtime reads a word of 0xf0000000 and up as published
  * for every object (scr_rc.h SCR_RC_PUBLISHED). */
 export const COMPACT_HEADER_TAG = 0x70000000;
@@ -650,7 +666,7 @@ export function storedHeaderBytes(meta: LlClassMeta): number {
 
 /** The header word a compact instance is created with. */
 export function compactHeaderWord(meta: LlClassMeta): number {
-  return COMPACT_HEADER_TAG | (meta.hierarchy ? meta.pre + 1 : 0);
+  return COMPACT_HEADER_TAG | (meta.idInRc ? meta.pre + 1 : 0);
 }
 
 /** Lines that decode the 32-bit reference `idx` (an i32) of a compressed
@@ -1024,7 +1040,7 @@ export function emitClassShapes(
   // instance is the element at its number minus the root's.
   for (const name of roots) {
     const root = metaMap.get(name)!;
-    if (!root.idInRc) continue;
+    if (!root.hierarchy || !root.idInRc) continue;
     const members = [...metaMap.values()]
       .filter((m) => m.root === root)
       .sort((a, b) => a.pre - b.pre);
@@ -1395,6 +1411,7 @@ export function emitClassShapes(
                 count,
               )
             : null,
+          count,
         ),
         ``,
       );

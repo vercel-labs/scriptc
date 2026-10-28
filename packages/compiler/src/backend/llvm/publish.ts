@@ -26,7 +26,6 @@ import { mapOf, STRING, typeKey } from "../../ir/ir.js";
 import { mangleClassStruct, mangleRecordStruct } from "../mangle.js";
 import { FN_ATTRS } from "./shapes.js";
 import { COMPACT_ID_MASK, compactRefLoadLines } from "./classes.js";
-import { shapeTagFn } from "./nullable-unions.js";
 import type { InlineUnionFields } from "./inline-unions.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 
@@ -53,8 +52,9 @@ export interface PublishHost {
   readonly inlineUnions: InlineUnionFields;
   /** The nullable-pointer representation of a union, when it has one. */
   nullableArm(t: IrType): IrType | null;
-  /** The union's values are tagged record pointers (nullable-unions.ts). */
-  shapeUnion(t: IrType): boolean;
+  /** The tag helper of a union whose values are tagged record pointers or
+   * class instance pointers (nullable-unions.ts), or null. */
+  pointerTagFn(t: IrType): string | null;
   /** The struct index of a record shape's first field. */
   fieldBase(shapeId: string): number;
   /** Class layout: hierarchy membership, preorder interval, field slots
@@ -258,12 +258,13 @@ export class PublishWalkers {
             ? []
             : [{ tag: a.tag, fn: a.fn, compact: this.compactRef(def.arms[a.tag]!) }],
         );
-        if (this.host.shapeUnion(t)) {
-          // The value is the record itself (or a unit encoding): no box to
-          // mark; the arm's walker marks and walks the record.
+        const tagFn = this.host.pointerTagFn(t);
+        if (tagFn !== null) {
+          // The value is the record or instance itself (or a unit
+          // encoding): no box to mark; the arm's walker marks and walks it.
           const lines = [head, `entry:`];
           lines.push(
-            `  %tag = call i32 ${shapeTagFn(t.unionId)}(ptr %o)`,
+            `  %tag = call i32 ${tagFn}(ptr %o)`,
             `  switch i32 %tag, label %done [ ${live.map((a) => `i32 ${a.tag}, label %arm${a.tag}`).join(" ")} ]`,
           );
           for (const a of live)

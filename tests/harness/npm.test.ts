@@ -34,7 +34,6 @@ const sanitize = process.env["SCRIPTC_SAN"] === "1";
 type Known = { build: string } | { run: string; argvs?: string[][] } | { divergence: string };
 
 const KNOWN: Record<string, Known> = {
-  "any-chaining": { build: "SC2003" },
   "assert-shims": { run: "SC1043" },
   "buffer-shims": { run: "SC2020" },
   "bytes-exit": { build: "SC2004" },

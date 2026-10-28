@@ -589,6 +589,14 @@ export class ClassProtocols {
     if (facts.observed.has(symbol) || facts.written.has(symbol)) return true;
     const target = facts.targets.get(symbol);
     if (target === undefined) return true;
+    // A type that exposes a program class's method can never be a record
+    // copy: the copy would drop the method, which Node reads from the
+    // instance's prototype, and a copied receiver would lose overrides.
+    // The mark exists because an identity-carrying value flows into the
+    // type, so keep the view even when nothing compares the value (pi's
+    // `{ handleInput?(data: string): void } | undefined` field receives
+    // component instances directly and is only ever called through).
+    if (this.methodViewSources(target).length > 0) return true;
     const names = new Set(this.checker.getPropertiesOfType(target).map((p) => ts.symbolName(p)));
     const origins = facts.origins.get(symbol) ?? new Set<ts.Symbol>();
     const writesNames = (written: Set<string> | "all"): boolean =>

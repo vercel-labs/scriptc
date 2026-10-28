@@ -8,7 +8,7 @@ import { arrayValueRead, arrayValueStore, primitiveElement } from "../array-valu
 import type { WidthLift } from "../width-lift.js";
 import { InternalCompilerError } from "../../../errors.js";
 import type { IrExpr, IrFunction, IrRecordShape, IrStmt, IrType, SrcLoc } from "../../../ir/ir.js";
-import { BOOL, DYN, F64, STRING, UNDEFINED_T, typeEquals } from "../../../ir/ir.js";
+import { BOOL, DYN, F64, STRING, UNDEFINED_T, isUnitType, typeEquals } from "../../../ir/ir.js";
 import { typeKey } from "../../type-mapper.js";
 import { findStaticOn, findGenericStaticOn } from "../lower-classes.js";
 import { lowerRecordOvfCaptureHelper } from "../containers/indexed-objects.js";
@@ -238,10 +238,24 @@ export function applyWidthLift(
         throw new InternalCompilerError("lowerer bug: planned width lift failed to intern");
       return { kind: "call", callee: helper, args: [value], type: dst, loc };
     }
+    case "ovf": {
+      if (dst.kind !== "record" || value.type.kind !== "record")
+        throw new InternalCompilerError("lowerer bug: ovf lift shape");
+      const helper = lowerRecordOvfCaptureHelper(lowerer, value.type.shapeId, dst.shapeId, loc);
+      if (!helper)
+        throw new InternalCompilerError("lowerer bug: planned ovf lift failed to intern");
+      return { kind: "call", callee: helper, args: [value], type: dst, loc };
+    }
     case "unionWidth": {
       if (dst.kind !== "record" || value.type.kind !== "union")
         throw new InternalCompilerError("lowerer bug: union width lift shape");
       const helper = lowerer.unionRecordWidthHelper(value.type.unionId, dst, loc);
+      return { kind: "call", callee: helper, args: [value], type: dst, loc };
+    }
+    case "unionArr": {
+      if (dst.kind !== "array" || value.type.kind !== "union")
+        throw new InternalCompilerError("lowerer bug: union array lift shape");
+      const helper = lowerer.unionArrayWidthHelper(value.type.unionId, dst, loc);
       return { kind: "call", callee: helper, args: [value], type: dst, loc };
     }
     case "arr": {
@@ -318,6 +332,16 @@ export function applyWidthLift(
         throw new InternalCompilerError("lowerer bug: planned funcAdapt lift failed to intern");
       return { kind: "call", callee: adapter, args: [value], type: dst, loc };
     }
+    case "promiseWiden": {
+      if (dst.kind !== "promise" || value.type.kind !== "promise")
+        throw new InternalCompilerError("lowerer bug: promiseWiden lift shape");
+      const converted = lowerer.coerceToExpected(value, dst);
+      if (!typeEquals(converted.type, dst))
+        throw new InternalCompilerError(
+          "lowerer bug: planned promise payload widening stopped converting",
+        );
+      return converted;
+    }
     default: {
       const _exhaustive: never = lift;
       void _exhaustive;
@@ -365,6 +389,92 @@ export function unionRecordWidthHelper(
       kind: "libCall",
       fn: "error.new",
       args: [{ kind: "strLit", value: "invalid record union tag", type: STRING, loc }],
+      type: { kind: "object", className: "%TypeError" },
+      loc,
+    },
+    loc,
+  });
+  lowerer.liftedFns.push({
+    name,
+    params: [{ localId: "value.0", name: "value", type }],
+    returnType: target,
+    locals: [{ id: "value.0", name: "value", type, mutable: false }],
+    body,
+    loc,
+  });
+  return name;
+}
+
+/** Dispatch a union of tuples/arrays into one array slot from its runtime
+ * tag (widthLiftPlan's unionArr): each arm rebuilds or copies on its own
+ * tag through the ordinary width lifts, the same copy stance
+ * tupleArrayWidthHelper takes for one tuple. A unit arm takes the stranded
+ * TypeError: the slot holds no unit, the checker excluded that arm, and
+ * only a lying `!`/assertion still carries it. Intern before descending so
+ * a recursive arm lift can reuse it. */
+export function unionArrayWidthHelper(
+  lowerer: Lowerer,
+  fromId: string,
+  target: IrType & { kind: "array" },
+  loc: SrcLoc,
+): string {
+  const key = `unionArr:${fromId}:${typeKey(target)}`;
+  const existing = lowerer.valueHelpers.get(key);
+  if (existing) return existing;
+  const name = keyedHelperName(lowerer, "%union.arr", key);
+  lowerer.valueHelpers.set(key, name);
+  const type: IrType = { kind: "union", unionId: fromId };
+  const value = varRef("value.0", type, loc);
+  const from = lowerer.unions.get(fromId);
+  if (!from) throw new InternalCompilerError("lowerer bug: missing array union");
+  const body: IrStmt[] = [];
+  for (let tag = 0; tag < from.arms.length; tag++) {
+    const arm = from.arms[tag]!;
+    const then: IrStmt[] = [];
+    if (isUnitType(arm)) {
+      const what = arm.kind === "nullT" ? "null" : "undefined";
+      then.push({
+        kind: "throw",
+        value: {
+          kind: "libCall",
+          fn: "error.new",
+          args: [
+            {
+              kind: "strLit",
+              value: `${what} is not representable in a '${lowerer.fmt(target)}' slot (a value narrowed or asserted past the type still held it)`,
+              type: STRING,
+              loc,
+            },
+          ],
+          type: { kind: "object", className: "%TypeError" },
+          loc,
+        },
+        loc,
+      });
+    } else {
+      const lift = lowerer.widthLiftPlan(arm, target);
+      if (!lift) throw new InternalCompilerError("lowerer bug: invalid union array plan");
+      const narrowed: IrExpr = { kind: "unionNarrow", unionId: fromId, tag, value, type: arm, loc };
+      then.push({
+        kind: "return",
+        value: lowerer.applyWidthLift(lift, narrowed, target, loc),
+        loc,
+      });
+    }
+    body.push({
+      kind: "if",
+      cond: { kind: "unionIsTag", unionId: fromId, tag, negated: false, value, type: BOOL, loc },
+      then,
+      else_: null,
+      loc,
+    });
+  }
+  body.push({
+    kind: "throw",
+    value: {
+      kind: "libCall",
+      fn: "error.new",
+      args: [{ kind: "strLit", value: "invalid array union tag", type: STRING, loc }],
       type: { kind: "object", className: "%TypeError" },
       loc,
     },

@@ -16,11 +16,12 @@
  * checked against the declared result type, like `JSON.parse(s) as T`; a
  * thrown Error crosses as its nearest intrinsic class with its message and
  * string `code`. */
-import { readFileSync, realpathSync } from "node:fs";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { resolveFrom } from "../../node-islands/resolve.js";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import * as ts from "../ts7/adapter.js";
 import { isJsSourceFile, locOf } from "../program.js";
+import { isRelativeSpecifier } from "../workspace-registry.js";
 import type { NodeApiMember } from "../node-api-import.js";
 import { PoisonError, newFnCtx, type Lowerer } from "./lowerer.js";
 import {
@@ -49,7 +50,7 @@ import {
   isForeignType,
   isIslandSubclassDecl,
   markIslandSubclass,
-  islandPackageOfFile,
+  islandOwnerOfFile,
   type NodeIslandSet,
 } from "../../node-islands/boundary.js";
 import { stripTypeWrappers } from "./typed-arguments.js";
@@ -288,21 +289,54 @@ export function isEsmFile(file: string): boolean {
   }
 }
 
+/** The file a relative (or absolute) specifier names from `fromFile`, as
+ * Node's CommonJS/ESM resolution would find it, or null. Extension fallback
+ * and directory indexes only: an island module is a file the program
+ * already loaded, and `exports` maps stay Node's job. */
+function relativeIslandFile(fromFile: string, spec: string): string | null {
+  const base = isAbsolute(spec) ? spec : resolve(dirname(fromFile), spec);
+  const candidates = [base];
+  if (!/\.[cm]?js$/.test(base)) {
+    for (const ext of [".js", ".cjs", ".mjs"]) candidates.push(base + ext);
+  }
+  for (const ext of [".js", ".cjs", ".mjs"]) candidates.push(join(base, `index${ext}`));
+  for (const candidate of candidates) {
+    try {
+      if (statSync(candidate).isFile()) return candidate;
+    } catch {
+      /* the next candidate */
+    }
+  }
+  return null;
+}
+
 /** The island module file `spec` names from `fromFile`, or null when the
- * specifier does not resolve into an island package. */
+ * specifier does not resolve into an island package or module. */
 export function islandModuleFile(
   islands: NodeIslandSet,
   fromFile: string,
   spec: string,
   kind: "import" | "require",
 ): string | null {
-  const js = resolveBareModule(fromFile, spec, "js-only", kind);
-  if (js === null) return null;
-  if (islandPackageOfFile(islands, js.typesFile) === null) return null;
+  let file: string;
+  if (isRelativeSpecifier(spec) || isAbsolute(spec)) {
+    // A program module the pre-scan put in a Node island (DESIGN.md note 1
+    // §3.2): the file itself is the island, resolved as Node would.
+    if (islands.modules.size === 0) return null;
+    const resolved = relativeIslandFile(fromFile, spec);
+    if (resolved === null) return null;
+    if (islandOwnerOfFile(islands, resolved) === null) return null;
+    file = resolved;
+  } else {
+    const js = resolveBareModule(fromFile, spec, "js-only", kind);
+    if (js === null) return null;
+    if (islandOwnerOfFile(islands, js.typesFile) === null) return null;
+    file = js.typesFile;
+  }
   try {
-    return realpathSync(js.typesFile);
+    return realpathSync(file);
   } catch {
-    return js.typesFile;
+    return file;
   }
 }
 

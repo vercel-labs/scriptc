@@ -415,6 +415,10 @@ export function sharedModulePlans(lowerer: Lowerer): SharedModulePlan[] {
   }
   for (const island of lowerer.nodeIslands?.packages.values() ?? [])
     packageJsFiles(island.dir, queue);
+  // A program module the build runs in a Node island is loaded by Node, so
+  // the program modules IT imports are shared with it like an island
+  // package's (DESIGN.md note 1 §3.2).
+  for (const module of lowerer.nodeIslands?.modules.values() ?? []) queue.push(real(module.file));
   if (queue.length === 0 && candidates.size === 0) return plans;
   const seen = new Set<string>();
   // Classes island code extends, by the compiled module that exports them.

@@ -28,9 +28,45 @@ export interface IslandPackage {
   reason: string;
 }
 
-/** The program's island packages, by package name. */
+/** One program module the build runs in a Node island (DESIGN.md
+ * note 1 §3.2): a user JavaScript file whose semantics need the JavaScript
+ * engine, keyed by its absolute path. */
+export interface IslandModule {
+  /** The module file (absolute, as the checker spells it). */
+  file: string;
+  /** The island class (runtime, object-model, gap, packaging) and the first
+   * reason, for the SC8001 note. */
+  class: string;
+  reason: string;
+  /** Marked by the user (`--node-island`, `nodeIslands.modules`) or
+   * detected by the pre-scan under `--node-islands=auto`. */
+  decision: "marked" | "auto";
+}
+
+/** The program's island packages, by package name, and island modules, by
+ * absolute file path. */
 export interface NodeIslandSet {
   packages: ReadonlyMap<string, IslandPackage>;
+  modules: ReadonlyMap<string, IslandModule>;
+}
+
+function normalizePath(file: string): string {
+  return file.replaceAll("\\", "/");
+}
+
+/** The island module at `file`, or null. */
+export function islandModuleOfFile(islands: NodeIslandSet, file: string): IslandModule | null {
+  if (islands.modules.size === 0) return null;
+  return islands.modules.get(file) ?? islands.modules.get(normalizePath(file)) ?? null;
+}
+
+/** The island (package or module) that owns a declaration or JavaScript
+ * file, or null. Modules first: a user module is never inside a package. */
+export function islandOwnerOfFile(
+  islands: NodeIslandSet,
+  file: string,
+): IslandPackage | IslandModule | null {
+  return islandModuleOfFile(islands, file) ?? islandPackageOfFile(islands, file);
 }
 
 /** The island package that owns a declaration or JavaScript file, or null.
@@ -65,7 +101,7 @@ function declaredInIsland(islands: NodeIslandSet, symbol: ts.Symbol | null | und
   if (decls.length === 0) return false;
   if (islandSubclassDecls.size > 0 && decls.some((d) => islandSubclassDecls.has(d))) return true;
   return decls.every(
-    (d) => islandPackageOfFile(islands, ts.getSourceFileOfNode(d).fileName) !== null,
+    (d) => islandOwnerOfFile(islands, ts.getSourceFileOfNode(d).fileName) !== null,
   );
 }
 
@@ -150,7 +186,8 @@ export function crossingOf(
 let active: NodeIslandSet | null = null;
 
 export function setActiveNodeIslands(islands: NodeIslandSet | null): void {
-  active = islands !== null && islands.packages.size > 0 ? islands : null;
+  active =
+    islands !== null && (islands.packages.size > 0 || islands.modules.size > 0) ? islands : null;
 }
 
 export function activeNodeIslands(): NodeIslandSet | null {

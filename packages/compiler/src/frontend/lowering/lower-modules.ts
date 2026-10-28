@@ -665,6 +665,10 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
       // graph: resolveImport follows its node_modules link to the loaded
       // TypeScript entry. Its internal `.js` spellings have already been
       // resolved to `.ts` by that graph.
+      // A relative import of a program module the pre-scan put in a Node
+      // island (DESIGN.md note 1 §3.2): the island loads at this module's
+      // position and its bindings are island values.
+      if (lowerer.nodeIslands !== null && collectIslandImport(lowerer, fp.sf, stmt, spec)) continue;
       const projectDep = isRelativeSpecifier(spec)
         ? null
         : resolveImport(lowerer.program, fp.sf, spec);

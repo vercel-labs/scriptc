@@ -453,6 +453,22 @@ export function nodeIslandNoteDiag(
   };
 }
 
+/** SC8001 — a program module runs in a Node island (a note, once per island
+ * module in the build output; DESIGN.md note 1 §3.2). */
+export function nodeIslandModuleNoteDiag(
+  file: string,
+  klass: string,
+  reason: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8001",
+    message: `module '${file}' runs in a Node island: ${klass}: ${reason}`,
+    loc,
+    hint: "sloppy-mode code Node runs; --node-islands=off compiles this module natively instead",
+  };
+}
+
 /** SC8010 — a value crosses an island boundary in a way NI-4 cannot keep
  * exact yet (callbacks, native objects, remote promises). */
 export function nodeIslandBoundaryDiag(what: string, loc: SrcLoc): ScrDiagnostic {

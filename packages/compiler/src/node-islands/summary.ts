@@ -82,6 +82,8 @@ export interface NodeIslandReport {
  * addition to the pre-scan construct. */
 const REASON_SENTENCES: Readonly<Record<string, string>> = {
   "builtin-patch": "it patches a builtin module's CommonJS export, which only code in Node can see",
+  "host-class-base":
+    "it extends a class only the JavaScript runtime has, and native code cannot inherit it",
 };
 
 /** "R2.1 constructor functions: 'new Foo()' of a function" or

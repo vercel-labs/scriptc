@@ -42,7 +42,7 @@ import {
   isIslandReasonCode,
 } from "../node-islands/classify.js";
 import { packageDirOf, packageVersionOf } from "../node-islands/origin.js";
-import { describe } from "../node-islands/summary.js";
+import { describe, type NodeIslandReason } from "../node-islands/summary.js";
 import { resolveBareModule } from "../frontend/resolve.js";
 import { isEsmFile } from "../frontend/lowering/lower-node-island.js";
 import type { NodeIslandScan, PackageEdge } from "../node-islands/scan.js";
@@ -194,7 +194,13 @@ export function prepareExecutableModule(
       // Sloppy user modules the lowering refused join the same retry
       // (DESIGN.md note 1 §3.2): one reload with every island at once,
       // never one round per module.
-      const grownModules = loweringModules(entryPath, opts, lowered.diagnostics, lowerModules);
+      const grownModules = loweringModules(
+        entryPath,
+        opts,
+        lowered.diagnostics,
+        lowerModules,
+        (files) => fe.nodeIslandScan?.({ userJs: false, stripFor: files }) ?? null,
+      );
       if (grown !== null || grownModules !== null) {
         fe.dispose();
         frontendDisposed();
@@ -378,6 +384,14 @@ const SLOPPY_REASONS: ReadonlySet<string> = new Set([
  * decision, 2026-10-29): its patch is meant for code that shares Node's
  * builtin, so it runs in Node, where an island consumer sees it. */
 const PATCH_REASONS: ReadonlySet<string> = new Set(["builtin-patch"]);
+
+/** The runtime reasons a TypeScript module turns into an island module for:
+ * the JavaScript runtime owns the construct's base class, so the module
+ * needs nothing shipped beside it. A load only the runtime can resolve (a
+ * computed specifier, a worker entry path) stays refused — the shipped tree
+ * cannot carry what the module loads, and an island would fail where the
+ * native build ran. */
+const ISLAND_RUN_REASONS: ReadonlySet<string> = new Set(["host-class-base"]);
 
 /** The program modules that run in Node islands, by file: modules marked
  * with `--node-island=<path>` or `scriptc.nodeIslands.modules`, and (under
@@ -744,27 +758,58 @@ function loweringModules(
   opts: CompileRequestOptions,
   diagnostics: readonly ScrDiagnostic[],
   known: ReadonlyMap<string, IslandModule>,
+  scanForRun: (files: readonly string[]) => NodeIslandScan | null,
 ): Map<string, IslandModule> | null {
   const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
   if (policy.mode !== "auto" || known.size > 16) return null;
   const grown = new Map(known);
+  // TypeScript modules the refusals name, with the reason that names them
+  // (a module joins once, with its first reason).
+  const runtimeReasons = new Map<string, NodeIslandReason>();
   for (const d of diagnostics) {
     if (!isIslandReasonCode(d.code)) continue;
     const file = d.loc.file;
     // Packages run in Node through their own decision (loweringIslands).
     if (file.includes("/node_modules/") || packageDirOf(file) !== null) continue;
-    if (!isJsSourceFileName(file) || sameFile(file, entryPath)) continue;
-    if (grown.has(file)) continue;
+    if (sameFile(file, entryPath) || grown.has(file) || runtimeReasons.has(file)) continue;
     const reason = classifyDiagnostic(d, "refusal");
     // A gap is a construct scriptc does not implement, not a sloppy
     // semantic: running it in Node would hide a compiler limitation.
     if (reason.class === "gap") continue;
-    grown.set(file, {
-      file,
-      class: reason.class,
-      reason: describe(reason),
-      decision: "auto",
-    });
+    if (isJsSourceFileName(file)) {
+      grown.set(file, {
+        file,
+        class: reason.class,
+        reason: describe(reason),
+        decision: "auto",
+      });
+      continue;
+    }
+    // A TypeScript module runs in Node only for a need of the JavaScript
+    // runtime itself that the shipped tree satisfies (ISLAND_RUN_REASONS):
+    // Node then does what the native pipeline could not. An object-model
+    // need is a JavaScript module's sloppy semantics, and a refusal caused
+    // by another declaration is that declaration's cascade.
+    if (!ISLAND_RUN_REASONS.has(reason.reason) || d.cause !== undefined) continue;
+    if (!/\.(?:ts|mts|cts)$/.test(file) || /\.d\.[cm]?ts$/.test(file)) continue;
+    runtimeReasons.set(file, reason);
+  }
+  if (runtimeReasons.size > 0) {
+    const scan = scanForRun([...runtimeReasons.keys()]);
+    for (const [file, reason] of runtimeReasons) {
+      const module = scan?.modules.find((m) => m.file === file);
+      // Node runs TypeScript by erasing types in place: a module that needs
+      // a transform, or resolves a relative import only without its
+      // extension, cannot run in an island as written, and its refusal
+      // stays the build's answer.
+      if (module === undefined || module.stripProblem !== null) continue;
+      grown.set(file, {
+        file,
+        class: reason.class,
+        reason: describe(reason),
+        decision: "auto",
+      });
+    }
   }
   return grown.size === known.size ? null : grown;
 }

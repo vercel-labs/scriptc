@@ -92,6 +92,26 @@ async function build(name: string, libnode?: string, entry = fixture): Promise<s
   return result.binaryPath;
 }
 
+/** A build with a cache of its own: a hit reports the islands but not the
+ * SC8001 notes, and these tests read the notes. */
+async function withFreshBuildCache<T>(build: () => Promise<T>): Promise<T> {
+  const cache = mkdtempSync(join(tmpdir(), "scriptc-builtin-patch-cache-"));
+  const previous = process.env["SCRIPTC_CACHE_DIR"];
+  process.env["SCRIPTC_CACHE_DIR"] = cache;
+  try {
+    return await build();
+  } finally {
+    if (previous === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+    else process.env["SCRIPTC_CACHE_DIR"] = previous;
+    rmSync(cache, { recursive: true, force: true });
+  }
+}
+
+/** A build's diagnostics as "SC0000: message" lines. */
+function messages(result: { diagnostics?: { code: string; message: string }[] }): string[] {
+  return (result.diagnostics ?? []).map((d) => `${d.code}: ${d.message}`);
+}
+
 /** A bridge library that answers the ABI handshake and nothing else. */
 async function fakePack(name: string, abi: string, version: string): Promise<string> {
   const dir = join(outDir, name);
@@ -369,23 +389,6 @@ describe.skipIf(skip)("Node islands in-process", () => {
       );
     }
 
-    async function withFreshBuildCache<T>(build: () => Promise<T>): Promise<T> {
-      const cache = mkdtempSync(join(tmpdir(), "scriptc-builtin-patch-cache-"));
-      const previous = process.env["SCRIPTC_CACHE_DIR"];
-      process.env["SCRIPTC_CACHE_DIR"] = cache;
-      try {
-        return await build();
-      } finally {
-        if (previous === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
-        else process.env["SCRIPTC_CACHE_DIR"] = previous;
-        rmSync(cache, { recursive: true, force: true });
-      }
-    }
-
-    function messages(result: { diagnostics?: { code: string; message: string }[] }): string[] {
-      return (result.diagnostics ?? []).map((d) => `${d.code}: ${d.message}`);
-    }
-
     test("islands only the patching module, with the builtin-patch reason", async () => {
       const dir = copyCorpus("auto");
       const result = await buildDir(dir, "main");
@@ -533,6 +536,101 @@ export async function loadPayload(name: string): Promise<unknown> {
       expect(untraced).toContain("import() with a computed specifier");
     });
   });
+
+  // A module that needs the JavaScript runtime itself — it extends a host
+  // class the program only declares — runs in a Node island automatically
+  // (R1.6). The entry stays native.
+  describe("a module that needs a host class", () => {
+    const globals = `interface HostSocket {
+  readonly readyState: number;
+  close(code?: number, reason?: string): void;
+}
+
+declare var WebSocket: {
+  new (url: string): HostSocket;
+  readonly prototype: HostSocket;
+};
+`;
+    const socket = `/// <reference path="./globals.d.ts" />
+export class Socket extends WebSocket {
+  static tag = "socket";
+}
+
+export function describeSocket(): string {
+  return \`\${Socket.tag}:\${Object.getPrototypeOf(Socket) === WebSocket}\`;
+}
+`;
+    const main = `import { describeSocket } from "./socket.ts";
+
+console.log("socket:", describeSocket());
+`;
+
+    async function buildProgram(): Promise<string> {
+      const dir = mkdtempSync(join(tmpdir(), "scriptc-host-class-"));
+      writeFileSync(
+        join(dir, "package.json"),
+        '{ "name": "host-class", "private": true, "type": "module" }\n',
+      );
+      writeFileSync(join(dir, "globals.d.ts"), globals);
+      writeFileSync(join(dir, "socket.ts"), socket);
+      writeFileSync(join(dir, "main.ts"), main);
+      return dir;
+    }
+
+    test("islands the module and runs it in Node", async () => {
+      const dir = await buildProgram();
+      const result = await withFreshBuildCache(() =>
+        compile(join(dir, "main.ts"), {
+          outPath: join(dir, "main"),
+          outDir: dir,
+          sanitize,
+          libnode: pack!,
+        }),
+      );
+      expect(messages(result)).toEqual([]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.islands?.modules.map((file) => basename(file))).toEqual(["socket.ts"]);
+      const note = (result.warnings ?? []).find(
+        (d) => d.code === "SC8001" && d.message.includes("socket.ts"),
+      );
+      expect(note?.message).toContain("Node island");
+      // The island's module cache holds the TypeScript module, and Node
+      // refuses to strip types under node_modules, where this suite keeps
+      // its shared cache: this run gets a cache of its own.
+      const executed = await run(join(dir, "main"), [], {
+        ...process.env,
+        XDG_CACHE_HOME: join(dir, "cache"),
+      });
+      expect(executed).toEqual({ stdout: "socket: socket:true\n", stderr: "", code: 0 });
+    }, 600_000);
+
+    // Node runs TypeScript by erasing types in place: a module that needs a
+    // transform cannot run in an island, so its refusal stays the build's
+    // answer.
+    test("a host class in a file Node cannot strip stays refused", async () => {
+      const dir = await buildProgram();
+      writeFileSync(
+        join(dir, "socket.ts"),
+        `/// <reference path="./globals.d.ts" />
+enum Mode {
+  Socket,
+}
+export class Socket extends WebSocket {
+  static tag = Mode.Socket === 0 ? "socket" : "other";
+}
+
+export function describeSocket(): string {
+  return \`\${Socket.tag}:\${Object.getPrototypeOf(Socket) === WebSocket}\`;
+}
+`,
+      );
+      const result = await withFreshBuildCache(() =>
+        compile(join(dir, "main.ts"), { outPath: join(dir, "main"), outDir: dir, sanitize }),
+      );
+      expect(result.ok).toBe(false);
+      expect(messages(result).some((m) => m.startsWith("SC1090: extending classes"))).toBe(true);
+    }, 600_000);
   });
 });
 

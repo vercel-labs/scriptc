@@ -7050,18 +7050,6 @@ export function lowerPromiseMethodCall(
   if (param && (!ts.isIdentifier(param.name) || param.dotDotDotToken || param.initializer)) {
     lowerer.unsupported("SC1062", param);
   }
-  if (
-    param?.type &&
-    param.type.kind !== ts.SyntaxKind.AnyKeyword &&
-    param.type.kind !== ts.SyntaxKind.UnknownKeyword
-  ) {
-    lowerer.unsupported(
-      "SC1090",
-      param,
-      "catch handlers with a typed parameter (the reject payload can be any thrown " +
-        "value — take `(e)` or `(e: unknown)` and narrow with instanceof)",
-    );
-  }
   const resultT = callResultType();
   if (resultT?.kind !== "promise") {
     lowerer.noLowering(
@@ -7094,13 +7082,58 @@ export function lowerPromiseMethodCall(
           ]
         : [{ kind: "return", value: lowerer.coerceInto(call, awaitE, R), loc }];
     // The handler body lowers as the catch clause, its parameter bound
-    // as the CAUGHT local — exactly `catch (e) { ... }`.
+    // as the CAUGHT local — exactly `catch (e) { ... }`. An ANNOTATED
+    // parameter (`.catch((error: Error) => ...)`) is a claim the checker
+    // cannot verify — the reject payload is whatever was thrown — so it
+    // is never trusted: the snapshot binds as a hidden CAUGHT local and
+    // the parameter as an ordinary local of the claimed class, converted
+    // by the checked extraction (`caughtCheck`: an instanceof match
+    // extracts the payload, anything else raises the catchable TypeError
+    // at handler entry). Reads inside the handler are then plain typed
+    // reads of a verified value.
     let catchLocalId: string | null = null;
+    let claimInit: IrStmt | null = null;
     let catchBody: IrStmt[];
     lowerer.scopes.push(new Map());
     try {
       if (param && ts.isIdentifier(param.name)) {
-        catchLocalId = lowerer.declareLocal(param.name, param.name.text, CAUGHT, false).id;
+        const claim = param.type;
+        const annotated =
+          claim !== undefined &&
+          claim.kind !== ts.SyntaxKind.AnyKeyword &&
+          claim.kind !== ts.SyntaxKind.UnknownKeyword;
+        if (annotated) {
+          const target = lowerer.mapTypeOf(lowerer.checker.getTypeFromTypeNode(claim));
+          const info =
+            target?.kind === "object" ? lowerer.classes.get(target.className) : undefined;
+          if (target === null || target.kind !== "object" || info === undefined) {
+            lowerer.unsupported(
+              "SC1090",
+              claim,
+              "catch parameters annotated with a type other than a class (the reject payload " +
+                "is whatever was thrown, so an annotation is a claim the checker cannot " +
+                "verify — it is accepted only as a checked conversion against a class) — take " +
+                "`(e)` and narrow with instanceof, or assert `e as C` inside the handler",
+            );
+          }
+          const snapshot = lowerer.declareHiddenLocal("%catch", CAUGHT);
+          catchLocalId = snapshot.id;
+          const local = lowerer.declareLocal(param.name, param.name.text, target, false);
+          claimInit = {
+            kind: "varDecl",
+            localId: local.id,
+            init: {
+              kind: "caughtCheck",
+              value: { kind: "varRef", localId: snapshot.id, type: CAUGHT, loc },
+              className: target.className,
+              type: target,
+              loc,
+            },
+            loc,
+          };
+        } else {
+          catchLocalId = lowerer.declareLocal(param.name, param.name.text, CAUGHT, false).id;
+        }
       }
       const hb = handlerNode.body;
       if (ts.isBlock(hb)) {
@@ -7118,6 +7151,7 @@ export function lowerPromiseMethodCall(
     } finally {
       lowerer.scopes.pop();
     }
+    if (claimInit !== null) catchBody.unshift(claimInit);
     // A handler falling off its end resolves with undefined — the
     // checker already typed R with the undefined arm; the appended wrap
     // also satisfies the validator's always-returns analysis.

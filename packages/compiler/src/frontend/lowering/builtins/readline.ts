@@ -111,6 +111,11 @@ function questionSignal(lowerer: Lowerer, node: ts.Expression | undefined): ts.E
       signal = p.initializer;
       continue;
     }
+    // `{ signal }` — the shorthand names the local whose value is the signal.
+    if (ts.isShorthandPropertyAssignment(p) && p.name.text === "signal") {
+      signal = p.name as ts.Identifier;
+      continue;
+    }
     lowerer.noLowering(
       "readline/promises question with this option",
       p,

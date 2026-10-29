@@ -1,6 +1,8 @@
-dynamic-import/main.ts:13:9 - error SC1090: dynamic import() of computed specifiers (the module graph resolves at build time — the specifier must be a string literal) are not supported yet
+dynamic-import/main.ts:13:9 - error SC1090: dynamic import() with a specifier that cannot be bounded at build time (at dynamic-import/main.ts:12: the result of `tag(...)`) is not supported yet
 
   12 |   const name = "greeter" + tag();
   13 |   await import(name);
      |         ^~~~~~~~~~~~
   14 |   await import("./helper.js");
+
+  hint: pass a string literal, a const, or a parameter of a module-local function every call of which passes one

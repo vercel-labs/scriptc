@@ -2483,6 +2483,20 @@ function appendStaticModuleInit(
   });
 }
 
+/** The positional field names of a fixed-length numeric tuple — a record
+ * shape flagged `tuple` whose fields are "0".."n-1", all numbers — or null.
+ * These are the values a spread of the tuple passes, in order. */
+function numericTupleFields(lowerer: Lowerer, t: IrType): string[] | null {
+  if (t.kind !== "record") return null;
+  const shape = lowerer.shapes.get(t.shapeId);
+  if (!shape?.tuple || shape.indexValue !== undefined || shape.fields.length === 0) return null;
+  for (let i = 0; i < shape.fields.length; i++) {
+    const field = shape.fields[i]!;
+    if (field.name !== String(i) || field.type.kind !== "f64") return null;
+  }
+  return shape.fields.map((field) => field.name);
+}
+
 export function lowerStdlibMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -2614,11 +2628,39 @@ export function lowerStdlibMethodCall(
         loc,
       };
     }
+    // A fixed-length numeric tuple (`Math.max(...oklabToLinearSrgb(c))`): a
+    // tuple is a record whose positional fields "0".."n-1" hold the values,
+    // so fold them in order with the same scalar compare the positional
+    // form uses. The source evaluates ONCE into a hidden local (a call's
+    // side effects run once) and no array is built.
+    const tuple = numericTupleFields(lowerer, src.type);
+    if (tuple !== null) {
+      // STATIC_MATH_FNS holds every Math.max/min, the enclosing branch's
+      // `isMath` precondition.
+      const fold = staticMath!.fn;
+      const rec = src.type as IrType & { kind: "record" };
+      const holder = lowerer.declareHiddenLocal("%tupleSpread", rec);
+      const at = src.loc;
+      const elem = (field: string): IrExpr => ({
+        kind: "recordGet",
+        obj: { kind: "varRef", localId: holder.id, type: rec, loc: at },
+        shapeId: rec.shapeId,
+        field,
+        type: F64,
+        loc: at,
+      });
+      let acc = elem(tuple[0]!);
+      for (let i = 1; i < tuple.length; i++) {
+        acc = { kind: "libCall", fn: fold, args: [acc, elem(tuple[i]!)], type: F64, loc };
+      }
+      return afterArguments([{ kind: "varDecl", localId: holder.id, init: src, loc: at }], acc);
+    }
     if (src.type.kind !== "array" || src.type.elem.kind !== "f64") {
       lowerer.unsupported(
         "SC1090",
         spread,
-        `spreading '${lowerer.fmt(src.type)}' into Math.${name} (only a number[] spreads)`,
+        `spreading '${lowerer.fmt(src.type)}' into Math.${name} ` +
+          "(only a number[] or a fixed-length numeric tuple spreads)",
       );
     }
     return {

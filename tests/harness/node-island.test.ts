@@ -501,6 +501,38 @@ export const patched = Kind.A;
       expect(stripped).toBeDefined();
       expect(stripped).toContain("enum");
     });
+
+    // The module tree refuses a program module whose loads it cannot trace
+    // (they run in Node from the shipped tree, where nothing else provides
+    // them). Collection runs before any statement fence, so the refusal has
+    // to be a diagnostic — never a thrown PoisonError reaching the CLI.
+    test("a load the island tree cannot trace is SC8006", async () => {
+      const dir = copyCorpus(
+        "computed",
+        `import { loadPayload } from "./loader.ts";
+console.log(await loadPayload("payload-reader"));
+`,
+        {
+          "loader.ts": `import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const fs = require("fs") as typeof import("fs");
+fs.readFileSync = (() => "") as typeof fs.readFileSync;
+export async function loadPayload(name: string): Promise<unknown> {
+  return import(name);
+}
+`,
+        },
+      );
+      const result = await buildDir(dir, "main");
+      expect(result.ok).toBe(false);
+      const untraced = messages(result).find(
+        (m) => m.startsWith("SC8006:") && m.includes("string-literal specifiers only"),
+      );
+      expect(untraced).toBeDefined();
+      expect(untraced).toContain("loader.ts");
+      expect(untraced).toContain("import() with a computed specifier");
+    });
+  });
   });
 });
 

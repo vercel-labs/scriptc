@@ -195,6 +195,7 @@ async function main(): Promise<number> {
               textCodecDyn: false,
               watch: false,
               watchFile: false,
+              readlineStderr: false,
               foreignFfi: false,
               nodeTest: false,
               tls: false,

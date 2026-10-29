@@ -167,8 +167,21 @@ void scr_rl_emit_history(ScrRl *rl) { scr_rl_emit(rl, RL_EV_HISTORY, NULL, NULL)
 
 void scr_rl_write_out(ScrRl *rl, ScrStr *text) {
   if (rl->out) rl->io->write(rl->out, text);
-  else if (rl->out_stdout) scr_stdio_write_str(1, text);
+  else if (rl->out_stdout) scr_stdio_write_str(SCR_RL_OUT_FD(rl), text);
 }
+
+#ifdef SCR_READLINE_STDERR
+/* output: process.stderr on createInterface. The interface opens as one
+ * with no output (scr_rl_open / scr_stream_rl_open, out_stdout false) and
+ * this marks its std output as fd 2. Only programs that pass
+ * process.stderr link the build of this unit that defines it. */
+void scr_rl_use_stderr(double id) {
+  ScrRl *rl = scr_rl_find(id);
+  if (!rl) return;
+  rl->out_stdout = true;
+  rl->out_fd = 2;
+}
+#endif /* SCR_READLINE_STDERR */
 
 static void scr_rl_feed_bytes(ScrRl *rl, const char *p, size_t n);
 

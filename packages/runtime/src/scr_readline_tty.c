@@ -312,7 +312,7 @@ static void tty_clear_screen_down(ScrRl *rl) { tty_write_cstr(rl, "\x1b[0J", 4);
 /* this.columns: the output's columns, or Infinity */
 static double tty_columns(ScrRl *rl) {
   if (rl->out_stdout && !rl->out) {
-    double cols = scr_process_columns(1);
+    double cols = scr_process_columns(SCR_RL_OUT_FD(rl));
     if (cols > 0) return cols;
   }
   return INFINITY;
@@ -2360,16 +2360,21 @@ static const ScrRlTtyOps TTY_OPS = {
 /* ── entry points ──────────────────────────────────────────────────── */
 
 /* The terminal half of createInterface: mode 0 takes `on` (the terminal
- * option), 2 is an absent option with process.stdout as the output
- * (output.isTTY). completer is borrowed (the undefined dyn when absent);
- * promises selects readline/promises, whose completer is awaited; inspect
- * is scr_insp_dyn when there is a completer. */
+ * option), 2 is an absent option with process.stdout as the output,
+ * 3 the same with process.stderr (output.isTTY of that fd). completer is
+ * borrowed (the undefined dyn when absent); promises selects
+ * readline/promises, whose completer is awaited; inspect is scr_insp_dyn
+ * when there is a completer. */
 void scr_rl_terminal(double id, double mode, bool on, ScrDyn *completer, bool promises,
                      ScrRlInspectFn inspect) {
   ScrRl *rl = scr_rl_find(id);
   if (!rl || rl->tty) return;
   if (mode == 2) {
     if (!scr_process_is_tty(1)) return;
+#ifdef SCR_READLINE_STDERR
+  } else if (mode == 3) {
+    if (!scr_process_is_tty(2)) return;
+#endif
   } else if (!on) {
     return;
   }

@@ -422,6 +422,17 @@ export function variantsFor(source) {
       defines: ["SCR_STREAM_WRITE_ERRORS"],
     });
   }
+  // createInterface with output: process.stderr writes to fd 2. The unit's
+  // std output fd and the terminal mode's isTTY check live in these two
+  // files, so programs that pass process.stderr link this build of them and
+  // every other program keeps the default objects, byte for byte.
+  if (source === "scr_readline.c" || source === "scr_readline_tty.c") {
+    variants.push({
+      id: "readline-stderr",
+      when: { readlineStderr: true },
+      defines: ["SCR_READLINE_STDERR"],
+    });
+  }
   if (source === "scr_cycle.c") {
     // The young-in nursery (SCRIPTC_YOUNG_NURSERY=1): the collector with
     // nursery collections; programs built without it link the default.

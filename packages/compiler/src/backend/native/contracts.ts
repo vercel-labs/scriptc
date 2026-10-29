@@ -291,6 +291,11 @@ export interface CcOptions {
    * unit under the same precedent, so polling-free binaries keep their
    * exact link line. */
   watchFile?: boolean;
+  /** The program creates a readline interface with output: process.stderr:
+   * links the SCR_READLINE_STDERR build of scr_readline.c and
+   * scr_readline_tty.c, whose interfaces write to fd 2. Every other program
+   * links the default objects, byte for byte. */
+  readlineStderr?: boolean;
   /** The executable manifest has a format-5 foreign callback descriptor:
    * compiles the MPSC queue/self-pipe unit. Other FFI and non-FFI binaries
    * keep their existing runtime size class. */

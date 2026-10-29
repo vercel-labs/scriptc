@@ -88,6 +88,14 @@ export function emitIoLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue
         `${t} = call double @scr_rl_open(ptr null, ptr null, ptr null, i1 ${stdout}, double ${crlf}, ptr ${prompt}, ptr ${signal}, ptr ${add})`,
       );
     }
+    if (mode & 64) {
+      // output: process.stderr: the interface writes to fd 2 instead of fd 1.
+      // The program links the SCR_READLINE_STDERR build of scr_readline.c,
+      // whose entry point marks the open interface (the readlineStderr
+      // runtime feature, which the mode literal alone selects).
+      host.declare(`declare void @scr_rl_use_stderr(double)`);
+      B.line(`call void @scr_rl_use_stderr(double ${t})`);
+    }
     // A signal that is not an AbortSignal throws ERR_INVALID_ARG_TYPE.
     if (mode & 8) host.emitPendingCheck();
     // readline/promises interfaces are instances of that module's class.

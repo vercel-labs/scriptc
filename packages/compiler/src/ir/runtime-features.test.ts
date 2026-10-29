@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { IR_VERSION } from "./serialize.js";
-import { DYN, STRING, VOID, arrayOf, type IrModule, type IrLibFn } from "./ir.js";
+import { DYN, F64, STRING, VOID, arrayOf, type IrModule, type IrLibFn } from "./ir.js";
 import { moduleRuntimeFeatures, moduleUsesHttp2, moduleUsesTlsCa } from "./runtime-features.js";
 
 describe("runtime feature snapshots", () => {
@@ -152,6 +152,30 @@ describe("runtime feature snapshots", () => {
     expect(moduleRuntimeFeatures(mod).dynAsync).toBe(true);
     mod.records[1]!.fields[0]!.type = { kind: "func", params: [], ret: STRING };
     expect(moduleRuntimeFeatures(mod).dynAsync).toBe(false);
+  });
+
+  test("selects the stderr readline build only from the output mode bit", () => {
+    const mod = module();
+    const create = (mode: number, fn: IrLibFn = "rl.create") =>
+      ({
+        kind: "exprStmt" as const,
+        loc,
+        expr: {
+          kind: "libCall" as const,
+          fn,
+          args: [{ kind: "numLit" as const, value: mode, type: F64, loc }],
+          type: F64,
+          loc,
+        },
+      }) as const;
+    mod.functions[0]!.body.push(create(4 | 64));
+    expect(moduleRuntimeFeatures(mod).readlineStderr).toBe(true);
+    mod.functions[0]!.body = [create(4 | 64, "rl.createSignal")];
+    expect(moduleRuntimeFeatures(mod).readlineStderr).toBe(true);
+    mod.functions[0]!.body = [create(4), create(36)];
+    expect(moduleRuntimeFeatures(mod).readlineStderr).toBe(false);
+    mod.functions[0]!.body = [];
+    expect(moduleRuntimeFeatures(mod).readlineStderr).toBe(false);
   });
 
   test("detects promise boxing through a function's result type", () => {

@@ -141,6 +141,10 @@ export interface NativeLinkFeatures {
   watch: boolean;
   /** fs.watchFile/fs.unwatchFile: scr_watch_file.c. */
   watchFile: boolean;
+  /** createInterface with output: process.stderr: the SCR_READLINE_STDERR
+   * build of scr_readline.c and scr_readline_tty.c. False keeps the default
+   * objects, byte for byte. */
+  readlineStderr: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;

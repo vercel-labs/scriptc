@@ -4,8 +4,11 @@ import type { FfiProfile } from "../ffi/ffi-manifest.js";
 import { frontendDisposed } from "../frontend/dispose-hook.js";
 import {
   checkerPanicDiag,
+  nodeIslandEntryPatchDiag,
   nodeIslandModuleNoteDiag,
   nodeIslandNoteDiag,
+  nodeIslandPatchedReadDiag,
+  nodeIslandStripDiag,
   nodeIslandRetryFailedDiag,
   npmStaticRefusalDiag,
   iceDiag,
@@ -43,6 +46,7 @@ import { describe } from "../node-islands/summary.js";
 import { resolveBareModule } from "../frontend/resolve.js";
 import { isEsmFile } from "../frontend/lowering/lower-node-island.js";
 import type { NodeIslandScan, PackageEdge } from "../node-islands/scan.js";
+import type { NodeIslandMarker } from "../node-islands/detect.js";
 import { isJsSourceFileName } from "../frontend/tsc-codes.js";
 
 export interface PreparedExecutableModule {
@@ -83,6 +87,14 @@ export function prepareExecutableModule(
   // unless the policy says otherwise. The frontend reloads without them,
   // so their declarations type the program.
   const islandDecision = decideNodeIslands(entryPath, opts, fe, lowerIslands, lowerModules);
+  // A patched builtin the native build cannot represent (an entry module
+  // patch, or a native read of a patched member) fails here.
+  if (islandDecision !== null && islandDecision.errors.length > 0) {
+    const diagnostics = islandDecision.errors;
+    const sourceTexts = fe.sourceTexts();
+    fe.dispose();
+    return { ok: false, diagnostics, sourceTexts };
+  }
   if (islandDecision !== null) {
     fe.dispose();
     fe = createFrontend(entryPath, opts.npmStatic, undefined, undefined, {
@@ -362,25 +374,57 @@ const SLOPPY_REASONS: ReadonlySet<string> = new Set([
   "sloppy-this",
 ]);
 
+/** A module that patches a builtin module's CommonJS object (the user's
+ * decision, 2026-10-29): its patch is meant for code that shares Node's
+ * builtin, so it runs in Node, where an island consumer sees it. */
+const PATCH_REASONS: ReadonlySet<string> = new Set(["builtin-patch"]);
+
 /** The program modules that run in Node islands, by file: modules marked
  * with `--node-island=<path>` or `scriptc.nodeIslands.modules`, and (under
  * `--node-islands=auto`) user JavaScript the pre-scan found a sloppy-only
  * construct in (decision S3). The entry stays native: a program whose entry
  * is an island runs the whole file in Node, which is a different feature. */
+interface ModuleIslandDecision {
+  modules: Map<string, IslandModule>;
+  /** The entry module's own `builtin-patch` marker: the entry stays native
+   * (a whole-file island is a different feature), so the build refuses it
+   * with SC8006. */
+  entryPatch: { file: string; marker: NodeIslandMarker } | null;
+  /** User TypeScript modules with a `builtin-patch` marker that Node
+   * cannot run with type stripping only (H3.5): SC8006, kept native. */
+  stripProblems: { file: string; construct: string; loc: SrcLoc }[];
+}
+
 function moduleIslands(
   entryPath: string,
   policy: NodeIslandPolicy,
   scan: NodeIslandScan,
-): Map<string, IslandModule> {
+): ModuleIslandDecision {
   const modules = new Map<string, IslandModule>();
+  let entryPatch: ModuleIslandDecision["entryPatch"] = null;
+  const stripProblems: ModuleIslandDecision["stripProblems"] = [];
   for (const m of scan.modules) {
     if (m.origin !== "user") continue;
-    if (!isJsSourceFileName(m.file)) continue;
-    if (sameFile(m.file, entryPath)) continue;
+    const patches = m.markers.filter((marker) => PATCH_REASONS.has(marker.reason));
+    // A TypeScript module islands only for a builtin patch (H3.2).
+    if (!isJsSourceFileName(m.file) && patches.length === 0) continue;
+    if (sameFile(m.file, entryPath)) {
+      if (patches.length > 0 && entryPatch === null)
+        entryPatch = { file: m.file, marker: patches[0]! };
+      continue;
+    }
+    if (m.stripProblem !== null) {
+      stripProblems.push({ file: m.file, ...m.stripProblem });
+      continue;
+    }
     const marked = isMarkedUserModule(policy, m.file);
     const sloppy = m.markers.filter((marker) => SLOPPY_REASONS.has(marker.reason));
-    if (marked === null && (policy.mode !== "auto" || sloppy.length === 0)) continue;
-    const first = sloppy[0];
+    if (
+      marked === null &&
+      (policy.mode !== "auto" || (sloppy.length === 0 && patches.length === 0))
+    )
+      continue;
+    const first = sloppy[0] ?? patches[0];
     const reason = first === undefined ? null : classifyMarker(first);
     modules.set(m.file, {
       file: m.file,
@@ -394,7 +438,7 @@ function moduleIslands(
       decision: marked === null ? "auto" : "marked",
     });
   }
-  return modules;
+  return { modules, entryPatch, stripProblems };
 }
 
 /** The packages and modules a build runs in Node islands, or null for none:
@@ -409,7 +453,7 @@ function decideNodeIslands(
   fe: ReturnType<FrontendFactory>,
   lowerIslands: ReadonlyMap<string, IslandPackage>,
   lowerModules: ReadonlyMap<string, IslandModule>,
-): (NodeIslandSet & { notes: ScrDiagnostic[] }) | null {
+): (NodeIslandSet & { notes: ScrDiagnostic[]; errors: ScrDiagnostic[] }) | null {
   const policy = nodeIslandPolicy(readProjectConfig(entryPath), opts.nodeIslands);
   if (policy.mode === "off" || fe.nodeIslandScan === undefined) return null;
   // A package marked native stays refused: the build reports it rather
@@ -425,11 +469,68 @@ function decideNodeIslands(
   // The pre-scan's user-JavaScript markers exist only where a build may act
   // on them.
   const scan = fe.nodeIslandScan({ userJs: policy.mode === "auto" });
-  const modules = moduleIslands(entryPath, policy, scan);
+  const moduleDecision = moduleIslands(entryPath, policy, scan);
+  const modules = moduleDecision.modules;
   // Modules the lowering refused keep their first reason (the reload no
   // longer compiles them).
   for (const [file, island] of lowerModules) if (!modules.has(file)) modules.set(file, island);
-  if (refused.size === 0 && policy.forcedNode.size === 0 && modules.size === 0) return null;
+  const errors: ScrDiagnostic[] = [];
+  if (moduleDecision.entryPatch !== null) {
+    const { file, marker } = moduleDecision.entryPatch;
+    errors.push(
+      nodeIslandEntryPatchDiag(
+        file,
+        marker.member ?? marker.construct,
+        builtinModuleOf(marker.member),
+        marker.loc,
+      ),
+    );
+  }
+  for (const problem of moduleDecision.stripProblems)
+    errors.push(nodeIslandStripDiag(problem.file, problem.construct, problem.loc));
+  // Who else must see the patch (H3.4): every non-islanded module that
+  // reads a patched member through the builtin's CommonJS object. An npm
+  // package joins the island set (a patch meant for it must reach it); a
+  // user module is SC8020, because native code cannot see the patch.
+  const patchedMembers = new Map<string, string>();
+  for (const m of scan.modules) {
+    if (!modules.has(m.file)) continue;
+    for (const marker of m.markers) {
+      if (!PATCH_REASONS.has(marker.reason) || marker.member === undefined) continue;
+      if (!patchedMembers.has(marker.member)) patchedMembers.set(marker.member, m.file);
+    }
+  }
+  const readerPackages = new Map<
+    string,
+    { packageDir: string; member: string; patchFile: string }
+  >();
+  if (policy.mode === "auto" && patchedMembers.size > 0) {
+    for (const m of scan.modules) {
+      if (modules.has(m.file)) continue;
+      for (const read of m.cjsReads) {
+        const patchFile = patchFileOf(patchedMembers, read.member);
+        if (patchFile === undefined) continue;
+        if (m.origin === "npm" && m.packageName !== null && m.packageDir !== null) {
+          if (!readerPackages.has(m.packageName) && !refused.has(m.packageName))
+            readerPackages.set(m.packageName, {
+              packageDir: m.packageDir,
+              member: read.member,
+              patchFile,
+            });
+        } else if (m.origin === "user") {
+          errors.push(nodeIslandPatchedReadDiag(read.member, patchFile, read.loc));
+        }
+      }
+    }
+  }
+  if (errors.length > 0) return { packages: new Map(), modules: new Map(), notes: [], errors };
+  if (
+    refused.size === 0 &&
+    policy.forcedNode.size === 0 &&
+    modules.size === 0 &&
+    readerPackages.size === 0
+  )
+    return null;
   const report = buildNodeIslandReport({
     entry: entryPath,
     scan,
@@ -505,6 +606,29 @@ function decideNodeIslands(
       ),
     );
   }
+  // npm packages that read a patched member join the island set: their
+  // patch lives in the island's Node, and only a shared builtin shows it.
+  for (const [name, reader] of readerPackages) {
+    if (packages.has(name)) continue;
+    const version = packageVersionOf(reader.packageDir);
+    const reason = `it reads '${reader.member}' through the CommonJS ${builtinModuleOf(reader.member)} object, which island module ${reader.patchFile} patches`;
+    packages.set(name, {
+      name,
+      version,
+      dir: reader.packageDir,
+      class: "object-model",
+      reason,
+    });
+    notes.push(
+      nodeIslandNoteDiag(
+        name,
+        version,
+        "object-model",
+        reason,
+        fe.npmImportSites.get(name) ?? { file: entryPath, start: 0, end: 0 },
+      ),
+    );
+  }
   for (const island of [...modules.values()].sort((a, b) =>
     a.file < b.file ? -1 : a.file > b.file ? 1 : 0,
   ))
@@ -515,7 +639,21 @@ function decideNodeIslands(
         end: 0,
       }),
     );
-  return packages.size === 0 && modules.size === 0 ? null : { packages, modules, notes };
+  return packages.size === 0 && modules.size === 0 ? null : { packages, modules, notes, errors };
+}
+
+/** The builtin module a patched member belongs to ("fs" of
+ * "fs.readFileSync"). */
+function builtinModuleOf(member: string | undefined): string {
+  if (member === undefined) return "";
+  const dot = member.indexOf(".");
+  return dot < 0 ? member : member.slice(0, dot);
+}
+
+/** The island module that patches `member`, matching an exact member or a
+ * whole-module patch ("fs.*"). */
+function patchFileOf(patched: ReadonlyMap<string, string>, member: string): string | undefined {
+  return patched.get(member) ?? patched.get(`${builtinModuleOf(member)}.*`);
 }
 
 /** The island set grown by the npm packages whose own modules refused to

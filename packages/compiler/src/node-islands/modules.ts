@@ -324,6 +324,7 @@ export class NodeIslandModuleCollector {
     if (!TRACED.test(file)) return null;
     const text = trackedReadFile(file);
     if (text === null) return `cannot read ${file}`;
+    this.addNamedData(file, text);
     const scan = scanModuleSpecifiers(text);
     if (scan.computed.length > 0) {
       const first = scan.computed[0]!;
@@ -335,6 +336,33 @@ export class NodeIslandModuleCollector {
       if (problem !== null) return problem;
     }
     return null;
+  }
+
+  /** Data files beside a program module that runs in an island: the module
+   * resolves them from its own directory (photon redirects a package's
+   * read to the wasm next to the patching module), and the island runs from
+   * the shipped tree, so a file the module names by a string literal ships
+   * with it. Files the source does not name stay out, and module sources
+   * ship through the traced walk, never as data. */
+  private addNamedData(moduleFile: string, text: string): void {
+    const names = new Set<string>();
+    for (const token of moduleTokens(text))
+      if (token.kind === "string" && !token.value.includes("${")) names.add(basename(token.value));
+    if (names.size === 0) return;
+    const walk = (dir: string): void => {
+      const entries = trackedAccessibleEntries(dir);
+      if (entries === null) return;
+      for (const file of entries.files) {
+        const path = join(dir, file);
+        if (!names.has(file) || TRACED.test(file) || path === moduleFile) continue;
+        this.files.add(path);
+      }
+      for (const sub of entries.directories) {
+        if (sub === "node_modules" || sub === ".git") continue;
+        walk(join(dir, sub));
+      }
+    };
+    walk(dirname(moduleFile));
   }
 
   /** A package: its whole directory, then its dependencies. */

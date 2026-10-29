@@ -73,6 +73,7 @@ const REASON_RULES: Record<string, NodeIslandRule> = {
   "annexb-block-function": "R2.4",
   "sloppy-this": "R2.4",
   "builtin-write": "R2.5",
+  "builtin-patch": "R2.5",
   proxy: "R2.5",
 };
 

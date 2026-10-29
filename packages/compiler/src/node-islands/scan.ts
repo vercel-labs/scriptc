@@ -12,7 +12,8 @@ import { resolveBareModule } from "../frontend/resolve.js";
 import { isJsSourceFileName } from "../frontend/tsc-codes.js";
 import { isRelativeSpecifier, packageNameOfSpecifier } from "../frontend/workspace-registry.js";
 import { moduleSourceCandidates } from "../frontend/module-source-candidates.js";
-import { scanModule, type NodeIslandMarker } from "./detect.js";
+import { scanModuleFacts, type CjsRead, type NodeIslandMarker } from "./detect.js";
+import { stripProblem, type StripProblem } from "./type-strip.js";
 import { originOf, packageDirOf, type Origin } from "./origin.js";
 
 export interface ScannedModule {
@@ -22,6 +23,11 @@ export interface ScannedModule {
   packageDir: string | null;
   packageName: string | null;
   markers: NodeIslandMarker[];
+  /** Members the module reads through a builtin's CommonJS object (H3.4). */
+  cjsReads: CjsRead[];
+  /** A user TypeScript module with a `builtin-patch` marker that Node
+   * cannot run with type stripping only (H3.5): it stays native. */
+  stripProblem: StripProblem | null;
   /** True for a module of a package the drop-and-reload loop removed. */
   dropped: boolean;
 }
@@ -150,14 +156,24 @@ export function scanFiles(
     if (origin === "builtin" || origin === "shim") continue;
     const at = origin === "npm" ? packageDirOf(sf.fileName) : null;
     const js = isJsSourceFileName(sf.fileName);
-    let markers = js && (origin === "npm" || opts.userJs) ? scanModule(sf) : [];
-    if (markers.length > 0 && !sloppyParsable(program, sf)) markers = [];
+    // A user TypeScript module is scanned only for the builtin-patch marker
+    // (H3.2): its other markers are JavaScript semantics, and sloppy
+    // parsing is never required of TypeScript.
+    const userTs = !js && origin === "user" && !sf.isDeclarationFile && opts.userJs;
+    let facts: ReturnType<typeof scanModuleFacts> = { markers: [], cjsReads: [] };
+    if ((js && (origin === "npm" || opts.userJs)) || userTs) facts = scanModuleFacts(sf);
+    let markers = userTs
+      ? facts.markers.filter((marker) => marker.reason === "builtin-patch")
+      : facts.markers;
+    if (js && markers.length > 0 && !sloppyParsable(program, sf)) markers = [];
     modules.push({
       file: sf.fileName,
       origin,
       packageDir: at === null ? null : at.dir,
       packageName: at === null ? null : at.name,
       markers,
+      cjsReads: facts.cjsReads,
+      stripProblem: userTs && markers.length > 0 ? stripProblem(program, sf) : null,
       dropped: opts.dropped,
     });
     if (!opts.edges) continue;

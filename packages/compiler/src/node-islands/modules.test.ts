@@ -249,6 +249,26 @@ describe("the collected module tree", () => {
     expect(NodeIslandModuleCollector.callerPath(null, join(root, "main.ts"))).toBe("main.ts");
   });
 
+  test("a data file the module names beside itself ships with it", () => {
+    const root = project({
+      "src/main.ts": "",
+      "src/loader.ts": [
+        'import { join } from "node:path";',
+        'const here = "/x";',
+        'const fallback = join(here, "fallback", "payload.txt");',
+      ].join("\n"),
+      "src/fallback/payload.txt": "from the fallback path\n",
+      "src/unrelated.txt": "not named by the module\n",
+      "src/helper.ts": "export const h = 1;",
+    });
+    const collector = new NodeIslandModuleCollector();
+    expect(collector.add(join(root, "src/main.ts"), "./loader.ts")).toBeNull();
+    const paths = collector.tree()!.files.map((file) => file.path);
+    expect(paths).toContain("fallback/payload.txt");
+    expect(paths).not.toContain("unrelated.txt");
+    expect(paths).not.toContain("helper.ts");
+  });
+
   test("the manifest names relative paths only, and the data is checked against it", () => {
     const root = project({ "main.ts": "", "m.cjs": "exports.f = () => 1;" });
     const collector = new NodeIslandModuleCollector();

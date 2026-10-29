@@ -25,6 +25,18 @@ export interface NodeIslandMarker {
   /** The construct, as a short phrase for messages. */
   construct: string;
   loc: SrcLoc;
+  /** For `builtin-patch`: the builtin module member the module patches
+   * ("fs.readFileSync"; "fs.*" when the source is not an object literal). */
+  member?: string;
+}
+
+/** A member read through a builtin module's CommonJS object (H3.4): the
+ * patch a Node island module installs is visible to such a read, which a
+ * native build cannot reproduce. */
+export interface CjsRead {
+  /** The member read ("fs.readFileSync"). */
+  member: string;
+  loc: SrcLoc;
 }
 
 /** Markers past this count in one module add nothing to a report. */
@@ -127,6 +139,23 @@ function builtinModuleName(spec: string): string | null {
   return null;
 }
 
+/** Parentheses and the TypeScript wrappers Node erases (`as`,
+ * `satisfies`, `!` and the angle-bracket assertion). */
+function stripWrappers(node: ts.Node): ts.Node {
+  let value = node;
+  for (;;) {
+    if (
+      ts.isParenthesizedExpression(value) ||
+      ts.isAsExpression(value) ||
+      ts.isTypeAssertion(value) ||
+      ts.isNonNullExpression(value) ||
+      ts.isSatisfiesExpression(value)
+    )
+      value = value.expression;
+    else return value;
+  }
+}
+
 function literalText(node: ts.Node | undefined): string | null {
   if (node === undefined) return null;
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return node.text;
@@ -147,6 +176,15 @@ function isAssignmentOperator(kind: ts.SyntaxKind): boolean {
   return kind >= ts.SyntaxKind.FirstAssignment && kind <= ts.SyntaxKind.LastAssignment;
 }
 
+/** The key of an object-literal property (`name`, `"name"` or a
+ * template without substitutions). */
+function literalKeyName(name: ts.Node | undefined): string | null {
+  if (name === undefined) return null;
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNoSubstitutionTemplateLiteral(name))
+    return name.text;
+  return null;
+}
+
 function propertyName(node: ts.Node): string | null {
   if (ts.isPropertyAccessExpression(node)) {
     const name = node.name;
@@ -159,12 +197,12 @@ function propertyName(node: ts.Node): string | null {
 /** `a.b.c` as "a.b.c" (element accesses with literal keys included), or
  * null when the chain has a computed key or does not start at a name. */
 function chainText(node: ts.Node): string | null {
-  if (ts.isIdentifier(node)) return node.text;
-  if (node.kind === ts.SyntaxKind.ThisKeyword) return "this";
-  if (ts.isParenthesizedExpression(node)) return chainText(node.expression);
-  if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
-    const base = chainText(node.expression);
-    const name = propertyName(node);
+  const value = stripWrappers(node);
+  if (ts.isIdentifier(value)) return value.text;
+  if (value.kind === ts.SyntaxKind.ThisKeyword) return "this";
+  if (ts.isPropertyAccessExpression(value) || ts.isElementAccessExpression(value)) {
+    const base = chainText(value.expression);
+    const name = propertyName(value);
     if (base === null || name === null) return null;
     return `${base}.${name}`;
   }
@@ -173,15 +211,16 @@ function chainText(node: ts.Node): string | null {
 
 /** Like chainText, with computed keys spelled `[…]`: `process.env[…]`. */
 function memberText(node: ts.Node): string | null {
-  const text = chainText(node);
+  const value = stripWrappers(node);
+  const text = chainText(value);
   if (text !== null) return text;
-  if (ts.isElementAccessExpression(node)) {
-    const base = memberText(node.expression);
+  if (ts.isElementAccessExpression(value)) {
+    const base = memberText(value.expression);
     return base === null ? null : `${base}[…]`;
   }
-  if (ts.isPropertyAccessExpression(node)) {
-    const base = memberText(node.expression);
-    const name = propertyName(node);
+  if (ts.isPropertyAccessExpression(value)) {
+    const base = memberText(value.expression);
+    const name = propertyName(value);
     return base === null || name === null ? null : `${base}.${name}`;
   }
   return null;
@@ -189,15 +228,11 @@ function memberText(node: ts.Node): string | null {
 
 /** The identifier a member chain starts at (`a` of `a.b[c].d`). */
 function chainRoot(node: ts.Node): ts.Identifier | null {
-  let cur = node;
+  let cur = stripWrappers(node);
   for (;;) {
     if (ts.isIdentifier(cur)) return cur;
     if (ts.isPropertyAccessExpression(cur) || ts.isElementAccessExpression(cur)) {
-      cur = cur.expression;
-      continue;
-    }
-    if (ts.isParenthesizedExpression(cur)) {
-      cur = cur.expression;
+      cur = stripWrappers(cur.expression);
       continue;
     }
     return null;
@@ -275,6 +310,12 @@ class ModuleScanner {
   private readonly builtinBindings = new Map<string, string>();
   /** Local names bound to a createRequire(...) result. */
   private readonly createdRequires = new Set<string>();
+  /** Local names bound to a builtin module's CommonJS object: require(),
+   * a createRequire'd require's result, a default import, or an alias of
+   * one. Writes through these names are patches of the module object. */
+  private readonly cjsBuiltinObjects = new Set<string>();
+  /** Members read through a CommonJS builtin object (H3.4). */
+  readonly cjsReads: CjsRead[] = [];
   /** Names the file constructs with `new`: a constructor's `this` is never
    * the global object, so its `this` uses need no island (decision S5). */
   private readonly constructed = new Set<string>();
@@ -306,13 +347,20 @@ class ModuleScanner {
     return this.markers;
   }
 
-  private add(rule: NodeIslandRule, reason: string, construct: string, node: ts.Node): void {
+  private add(
+    rule: NodeIslandRule,
+    reason: string,
+    construct: string,
+    node: ts.Node,
+    member?: string,
+  ): void {
     if (this.markers.length >= MARKER_CAP) return;
     this.markers.push({
       rule,
       reason,
       construct,
       loc: { file: this.sf.fileName, start: ts.tokenStartOfNode(node), end: node.end },
+      ...(member === undefined ? {} : { member }),
     });
   }
 
@@ -321,13 +369,16 @@ class ModuleScanner {
     if (ts.isIdentifier(name)) {
       this.declared.add(name.text);
       if (init === undefined) return;
-      let value = init;
-      while (ts.isParenthesizedExpression(value)) value = value.expression;
+      const value = stripWrappers(init);
       if (ts.isFunctionExpression(value) || ts.isArrowFunction(value))
         this.functions.add(name.text);
       else if (ts.isClassExpression(value)) this.classes.add(name.text);
       const bound = this.builtinOf(value);
-      if (bound !== null) this.builtinBindings.set(name.text, bound);
+      if (bound !== null) {
+        this.builtinBindings.set(name.text, bound);
+        if (!bound.includes(".") && this.isCjsObjectValue(value))
+          this.cjsBuiltinObjects.add(name.text);
+      }
       if (ts.isCallExpression(value) && this.isCreateRequireCallee(value.expression))
         this.createdRequires.add(name.text);
       return;
@@ -353,11 +404,25 @@ class ModuleScanner {
     }
   }
 
+  /** A value that is a builtin module's CommonJS object: a require() or a
+   * createRequire'd require's result of a builtin, or an alias of one. */
+  private isCjsObjectValue(value: ts.Node): boolean {
+    if (ts.isIdentifier(value)) return this.cjsBuiltinObjects.has(value.text);
+    if (!ts.isCallExpression(value)) return false;
+    return (
+      this.isRequireCallee(value.expression) ||
+      (ts.isIdentifier(value.expression) && this.createdRequires.has(value.expression.text))
+    );
+  }
+
   /** `require("fs")`, `require("node:util").inherits` → "fs", "util.inherits". */
   private builtinOf(node: ts.Node): string | null {
-    let value = node;
-    while (ts.isParenthesizedExpression(value)) value = value.expression;
-    if (ts.isCallExpression(value) && this.isRequireCallee(value.expression)) {
+    const value = stripWrappers(node);
+    if (
+      ts.isCallExpression(value) &&
+      (this.isRequireCallee(value.expression) ||
+        (ts.isIdentifier(value.expression) && this.createdRequires.has(value.expression.text)))
+    ) {
       const spec = literalText(value.arguments.nodes[0]);
       return spec === null ? null : builtinModuleName(spec);
     }
@@ -414,7 +479,12 @@ class ModuleScanner {
         if (clause !== undefined) {
           if (clause.name !== undefined) {
             this.declared.add(clause.name.text);
-            if (module !== null) this.builtinBindings.set(clause.name.text, module);
+            if (module !== null) {
+              this.builtinBindings.set(clause.name.text, module);
+              // A default import is the CommonJS object (unlike a namespace
+              // or named import, through which Node refuses writes).
+              this.cjsBuiltinObjects.add(clause.name.text);
+            }
           }
           const bindings = clause.namedBindings;
           if (bindings !== undefined && ts.isNamespaceImport(bindings)) {
@@ -562,6 +632,7 @@ class ModuleScanner {
       const text = chainText(node);
       if ((text === "arguments.callee" || text === "arguments.caller") && !this.isStrict(node))
         this.add("R2.4", "sloppy-arguments", `'${text}'`, node);
+      this.recordCjsRead(node);
     } else if (node.kind === ts.SyntaxKind.ThisKeyword) {
       this.visitThis(node);
     } else if (ts.isObjectLiteralExpression(node)) {
@@ -575,6 +646,37 @@ class ModuleScanner {
     } else if (isFunctionBoundary(node)) {
       this.visitFunction(node as ts.FunctionLikeDeclaration);
     }
+  }
+
+  /** Records a read of a member of a builtin module's CommonJS object, so
+   * a patch installed by an island module can be checked against it
+   * (H3.4). The left of an assignment (and a delete or ++/-- target) is a
+   * write, not a read. */
+  private recordCjsRead(node: ts.PropertyAccessExpression): void {
+    const root = chainRoot(node);
+    if (root === null || !this.cjsBuiltinObjects.has(root.text)) return;
+    const module = this.builtinBindings.get(root.text);
+    const text = chainText(node);
+    if (module === undefined || text === null) return;
+    const parent = node.parent;
+    if (parent !== undefined) {
+      if (
+        ts.isBinaryExpression(parent) &&
+        isAssignmentOperator(parent.operatorToken.kind) &&
+        parent.left === node
+      )
+        return;
+      if (
+        ts.isDeleteExpression(parent) ||
+        ts.isPrefixUnaryExpression(parent) ||
+        ts.isPostfixUnaryExpression(parent)
+      )
+        return;
+    }
+    this.cjsReads.push({
+      member: module + text.slice(root.text.length),
+      loc: { file: this.sf.fileName, start: ts.tokenStartOfNode(node), end: node.end },
+    });
   }
 
   private visitSpecifier(spec: string, node: ts.Node): void {
@@ -691,9 +793,66 @@ class ModuleScanner {
         this.isGlobal("Object")) ||
       (text === "Reflect.defineProperty" && this.isGlobal("Reflect"))
     ) {
+      // A definition on a builtin module's CommonJS object is a patch the
+      // code loading that object must see (R2.5, H3.1.4).
+      const target = first === undefined ? undefined : stripWrappers(first);
+      const builtin =
+        target !== undefined && ts.isIdentifier(target) && this.cjsBuiltinObjects.has(target.text)
+          ? (this.builtinBindings.get(target.text) ?? null)
+          : null;
+      if (builtin !== null) {
+        const key = literalText(args[1] === undefined ? undefined : stripWrappers(args[1]));
+        this.add(
+          "R2.5",
+          "builtin-patch",
+          `'${text}()' on the builtin module '${builtin}'`,
+          call,
+          key === null ? `${builtin}.*` : `${builtin}.${key}`,
+        );
+        return;
+      }
       if (first !== undefined && !this.isModuleObject(first) && !this.inInteropHelper(call))
         this.add("R2.3", "define-property", `'${text}()'`, call);
       return;
+    }
+    // Object.assign(fs, …) on a builtin module's CommonJS object: every
+    // literal key is a patch (R2.5, H3.1.4).
+    if (text === "Object.assign" && this.isGlobal("Object") && first !== undefined) {
+      const target = stripWrappers(first);
+      if (ts.isIdentifier(target) && this.cjsBuiltinObjects.has(target.text)) {
+        const builtin = this.builtinBindings.get(target.text) ?? null;
+        if (builtin !== null) {
+          const source = args.length === 2 ? stripWrappers(args[1]!) : undefined;
+          const keys =
+            source !== undefined && ts.isObjectLiteralExpression(source)
+              ? source.properties.nodes
+                  .map((property) =>
+                    ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property)
+                      ? literalKeyName(property.name)
+                      : null,
+                  )
+                  .filter((key): key is string => key !== null)
+              : [];
+          if (keys.length === 0)
+            this.add(
+              "R2.5",
+              "builtin-patch",
+              `'Object.assign()' on the builtin module '${builtin}'`,
+              call,
+              `${builtin}.*`,
+            );
+          else
+            for (const key of keys)
+              this.add(
+                "R2.5",
+                "builtin-patch",
+                `'Object.assign()' on the builtin module '${builtin}'`,
+                call,
+                `${builtin}.${key}`,
+              );
+          return;
+        }
+      }
     }
     if (text.endsWith(".__defineGetter__") || text.endsWith(".__defineSetter__")) {
       this.add("R2.3", "define-property", `'${text.slice(text.lastIndexOf(".") + 1)}()'`, call);
@@ -850,11 +1009,15 @@ class ModuleScanner {
     if (binding !== undefined) {
       const member = binding + spelled.slice(root.text.length);
       if (!this.allowedWrite(member)) {
+        // A write through a builtin module's CommonJS object patches that
+        // object; only code sharing Node's builtin can see it (H3.1).
+        const patch = this.cjsBuiltinObjects.has(root.text);
         this.add(
           "R2.5",
-          "builtin-write",
+          patch ? "builtin-patch" : "builtin-write",
           `a ${what} of the builtin module member '${member}'`,
           node,
+          patch ? member : undefined,
         );
       }
       return;
@@ -966,8 +1129,21 @@ interface ArgumentsUse {
   paramWrite: ts.Node | null;
 }
 
-/** The R1/R2 markers of one JavaScript module, in source order. */
+/** The R1/R2 markers and CommonJS-object reads of one module, in source
+ * order. */
+export function scanModuleFacts(sf: ts.SourceFile): {
+  markers: NodeIslandMarker[];
+  cjsReads: CjsRead[];
+} {
+  const scanner = new ModuleScanner(sf);
+  const markers = scanner.scan();
+  return {
+    markers: markers.sort((a, b) => a.loc.start - b.loc.start),
+    cjsReads: scanner.cjsReads.sort((a, b) => a.loc.start - b.loc.start),
+  };
+}
+
+/** The R1/R2 markers of one module, in source order. */
 export function scanModule(sf: ts.SourceFile): NodeIslandMarker[] {
-  const markers = new ModuleScanner(sf).scan();
-  return markers.sort((a, b) => a.loc.start - b.loc.start);
+  return scanModuleFacts(sf).markers;
 }

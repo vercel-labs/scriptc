@@ -354,6 +354,55 @@ export function nativeSubclassOfIslandDiag(loc: SrcLoc, detail?: string): ScrDia
   };
 }
 
+/** SC8006 — the entry module patches a builtin module's CommonJS object.
+ * The entry always stays native (a whole-file island is a different
+ * feature), so the patch cannot run: it belongs in a module of its own,
+ * which then runs in a Node island. */
+export function nodeIslandEntryPatchDiag(
+  file: string,
+  member: string,
+  module: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  return {
+    code: "SC8006",
+    message: `the entry module patches '${member}' on the CommonJS ${module} object; move the patch into a module of its own, which then runs in a Node island`,
+    loc,
+    hint: `the entry module ${file} stays native; only a separate module runs in Node`,
+  };
+}
+
+/** SC8006 — a user TypeScript module patches a builtin module's CommonJS
+ * object but uses syntax Node cannot run with type stripping only. */
+export function nodeIslandStripDiag(file: string, construct: string, loc: SrcLoc): ScrDiagnostic {
+  return {
+    code: "SC8006",
+    message: `'${file}' patches a builtin module's CommonJS object, but Node cannot strip its types: ${construct}`,
+    loc,
+    hint: "Node runs TypeScript by erasing types: avoid enums, namespaces, constructor parameter properties, decorators, JSX, import =/export =, extensionless relative imports and value imports of types; a separate .js module can hold this patch",
+  };
+}
+
+/** SC8020 — native code reads a builtin module member that an island
+ * module patches: Node would show the read the patch, the native build
+ * cannot. ES module bindings of builtins never see the patch (in Node
+ * either), so the named import is the exact spelling. */
+export function nodeIslandPatchedReadDiag(
+  member: string,
+  patchFile: string,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const dot = member.indexOf(".");
+  const module = dot < 0 ? member : member.slice(0, dot);
+  const property = dot < 0 ? member : member.slice(dot + 1);
+  return {
+    code: "SC8020",
+    message: `'${member}' is patched by ${patchFile}, which runs in a Node island; Node would show this read through the CommonJS ${module} object the patch, the native build cannot. Use \`import { ${property} } from "node:${module}"\` (ES module bindings never see the patch, in Node either), or move this code into ${patchFile}.`,
+    loc,
+    hint: `node:${module} ES module bindings keep the original function, in Node too`,
+  };
+}
+
 /** SC8020 — a stateful module the program compiles is duplicated across
  * the Node island boundary (an explicit "duplicate", or a form NI-6 cannot
  * share yet): each side has its own state. */

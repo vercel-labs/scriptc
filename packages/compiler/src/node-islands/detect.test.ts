@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "vitest";
 import { closeSourceParser, parseSourceFile } from "../frontend/ts7/source-parser-node.js";
-import { scanModule } from "./detect.js";
+import { scanModule, scanModuleFacts } from "./detect.js";
 
 afterAll(() => closeSourceParser());
 
@@ -213,7 +213,7 @@ describe("R2 object-model markers", () => {
     expect(markers("Promise = Bluebird;")).toEqual(["R2.5 builtin-write"]);
     expect(markers("globalThis.fetch = f;")).toEqual(["R2.5 builtin-write"]);
     expect(markers("const fs = require('fs'); fs.close = patched;")).toEqual([
-      "R2.5 builtin-write",
+      "R2.5 builtin-patch",
     ]);
     expect(markers("const p = new Proxy(t, h);")).toEqual(["R2.5 proxy"]);
     // Modeled process state and tuning knobs stay; so do redeclared names.
@@ -222,6 +222,86 @@ describe("R2 object-model markers", () => {
     ).toEqual([]);
     expect(markers("var Promise = require('bluebird'); Promise.config = {};")).toEqual([]);
   });
+});
+
+describe("R2.5 builtin patches (H3.1)", () => {
+  /** The markers and the member each builtin patch names. */
+  function patches(source: string, ext = "cjs"): string[] {
+    const sf = parseSourceFile(`/virtual/p${serial++}.${ext}`, source, "js");
+    return scanModuleFacts(sf).markers.map(
+      (m) => `${m.reason} ${m.member === undefined ? "-" : m.member}`,
+    );
+  }
+
+  test("a write through the CommonJS object is a builtin patch", () => {
+    expect(patches("const fs = require('fs'); fs.readFileSync = f;")).toEqual([
+      "builtin-patch fs.readFileSync",
+    ]);
+  });
+
+  test("createRequire(), casts and aliases resolve to the same object", () => {
+    expect(
+      patches(
+        "const r = createRequire(import.meta.url); const fs = r('node:fs') as typeof import('fs'); (fs as { readFileSync: unknown }).readFileSync = f;",
+        "mjs",
+      ),
+    ).toEqual(["builtin-patch fs.readFileSync"]);
+    expect(
+      patches(
+        "const r = createRequire(import.meta.url); const fs = r('node:fs') as typeof import('fs'); const m = fs as { readFileSync: unknown }; m.readFileSync = f;",
+        "mjs",
+      ),
+    ).toEqual(["builtin-patch fs.readFileSync"]);
+  });
+
+  test("a default import is the CommonJS object", () => {
+    expect(patches("import fs from 'node:fs'; fs.writeFileSync = f;", "mjs")).toEqual([
+      "builtin-patch fs.writeFileSync",
+    ]);
+  });
+
+  test("defineProperty, Object.assign, delete and bind are patches too", () => {
+    expect(
+      patches("const fs = require('fs'); Object.defineProperty(fs, 'readFileSync', { value: f });"),
+    ).toEqual(["builtin-patch fs.readFileSync"]);
+    expect(patches("const fs = require('fs'); Object.assign(fs, { readFileSync: f });")).toEqual([
+      "builtin-patch fs.readFileSync",
+    ]);
+    expect(patches("const fs = require('fs'); Object.assign(fs, source);")).toEqual([
+      "builtin-patch fs.*",
+    ]);
+    expect(patches("const fs = require('fs'); delete fs.readFileSync;")).toEqual([
+      "builtin-patch fs.readFileSync",
+    ]);
+    expect(
+      patches("const fs = require('fs'); fs.readFileSync = fs.readFileSync.bind(fs);"),
+    ).toEqual(["builtin-patch fs.readFileSync"]);
+  });
+
+  test("writes Node itself refuses are not patches", () => {
+    // A namespace import is not the CommonJS object: Node throws on the
+    // write, and the module stays as it is today.
+    expect(patches("import * as fs from 'node:fs'; fs.x = 1;", "mjs")).toEqual(["builtin-write -"]);
+    expect(patches("import { readFileSync } from 'node:fs'; readFileSync(p);", "mjs")).toEqual([]);
+    expect(patches("const fs = { readFileSync: 1 }; fs.readFileSync = 2;")).toEqual([]);
+    expect(patches("process.exitCode = 1;")).toEqual([]);
+  });
+});
+
+test("CommonJS object reads are recorded for the patch check (H3.4)", () => {
+  const reads = (source: string, ext = "cjs"): string[] => {
+    const sf = parseSourceFile(`/virtual/r${serial++}.${ext}`, source, "js");
+    return scanModuleFacts(sf).cjsReads.map((read) => read.member);
+  };
+  expect(reads("const fs = require('fs'); fs.readFileSync(p);")).toEqual(["fs.readFileSync"]);
+  expect(reads("import { readFileSync } from 'node:fs'; readFileSync(p);", "mjs")).toEqual([]);
+  // A write is not a read; an ES module read through the namespace import
+  // is not the CommonJS object either.
+  expect(reads("const fs = require('fs'); fs.readFileSync = f;")).toEqual([]);
+  expect(reads("import fs from 'node:fs'; fs.readFileSync(p);", "mjs")).toEqual([
+    "fs.readFileSync",
+  ]);
+  expect(reads("import * as fs from 'node:fs'; fs.readFileSync(p);", "mjs")).toEqual([]);
 });
 
 test("markers come back in source order with their locations", () => {

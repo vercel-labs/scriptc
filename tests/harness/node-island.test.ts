@@ -12,6 +12,7 @@ import {
   cpSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -19,6 +20,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { beforeAll, describe, expect, test } from "vitest";
@@ -335,6 +337,170 @@ describe.skipIf(skip)("Node islands in-process", () => {
         ),
       );
     expect(conflicting).toEqual([]);
+  });
+
+  // A module that patches a builtin module's CommonJS object runs in a Node
+  // island automatically (H3): the patch is meant for code that shares
+  // Node's builtin, and only Node has that object.
+  describe("a module that patches a builtin module", () => {
+    const corpus = join(repoRoot, "tests/corpus/6897-node-island-builtin-patch");
+
+    /** A scratch copy of the corpus, with main.ts optionally replaced. It
+     * lives outside node_modules: a package copied below one is a library
+     * with no declaration file, and its implicit `any` fails the build. */
+    function copyCorpus(name: string, main?: string, extra: Record<string, string> = {}): string {
+      const dir = mkdtempSync(join(tmpdir(), `scriptc-builtin-patch-${name}-`));
+      cpSync(corpus, dir, { recursive: true });
+      if (main !== undefined) writeFileSync(join(dir, "main.ts"), main);
+      for (const [file, text] of Object.entries(extra)) writeFileSync(join(dir, file), text);
+      return dir;
+    }
+
+    /** A build with a cache of its own: a hit reports the islands but not
+     * the SC8001 notes, and these tests read the notes. */
+    async function buildDir(dir: string, name: string) {
+      return withFreshBuildCache(() =>
+        compile(join(dir, "main.ts"), {
+          outPath: join(dir, name),
+          outDir: dir,
+          sanitize,
+          libnode: pack!,
+        }),
+      );
+    }
+
+    async function withFreshBuildCache<T>(build: () => Promise<T>): Promise<T> {
+      const cache = mkdtempSync(join(tmpdir(), "scriptc-builtin-patch-cache-"));
+      const previous = process.env["SCRIPTC_CACHE_DIR"];
+      process.env["SCRIPTC_CACHE_DIR"] = cache;
+      try {
+        return await build();
+      } finally {
+        if (previous === undefined) delete process.env["SCRIPTC_CACHE_DIR"];
+        else process.env["SCRIPTC_CACHE_DIR"] = previous;
+        rmSync(cache, { recursive: true, force: true });
+      }
+    }
+
+    function messages(result: { diagnostics?: { code: string; message: string }[] }): string[] {
+      return (result.diagnostics ?? []).map((d) => `${d.code}: ${d.message}`);
+    }
+
+    test("islands only the patching module, with the builtin-patch reason", async () => {
+      const dir = copyCorpus("auto");
+      const result = await buildDir(dir, "main");
+      expect(messages(result)).toEqual([]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.islands?.modules.map((file) => basename(file))).toEqual(["loader.ts"]);
+      const notes = (result.warnings ?? []).filter(
+        (d) => d.code === "SC8001" && d.message.includes("loader.ts"),
+      );
+      expect(notes).toHaveLength(1);
+      expect(notes[0]!.message).toContain("builtin-patch");
+      expect(notes[0]!.message).toContain("fs.readFileSync");
+      expect(notes[0]!.message).toContain("Node island");
+    }, 300_000);
+
+    test("a native read of the patched member is SC8020", async () => {
+      const dir = copyCorpus(
+        "read",
+        `import fs from "node:fs";
+import { loadPayload } from "./loader.ts";
+const result = await loadPayload();
+console.log(result.text, fs.readFileSync("payload.txt", "utf8"));
+`,
+      );
+      const result = await buildDir(dir, "main");
+      expect(result.ok).toBe(false);
+      const list = messages(result);
+      const read = list.find((m) => m.startsWith("SC8020:"));
+      expect(read).toBeDefined();
+      expect(read).toContain("fs.readFileSync");
+      expect(read).toContain("loader.ts");
+    }, 300_000);
+
+    test("--node-islands=off makes the patch a native refusal again", async () => {
+      const dir = copyCorpus(
+        "off",
+        'import { patch } from "./loader.ts";\npatch();\nconsole.log("ok");\n',
+      );
+      // The package the corpus loads has no declaration file, and without
+      // an island its implicit `any` would fail before the patch refusal.
+      writeFileSync(
+        join(dir, "loader.ts"),
+        `import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const fs = require("fs") as typeof import("fs");
+const original = fs.readFileSync.bind(fs);
+export function patch(): void {
+  fs.readFileSync = original as typeof fs.readFileSync;
+}
+`,
+      );
+      const result = await withFreshBuildCache(() =>
+        compile(join(dir, "main.ts"), {
+          outPath: join(dir, "main"),
+          outDir: dir,
+          sanitize,
+          libnode: pack!,
+          nodeIslands: { mode: "off" },
+        }),
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(
+        result.diagnostics.some(
+          (d) => /^SC(1090|2020)$/.test(d.code) && d.loc.file.endsWith("loader.ts"),
+        ),
+      ).toBe(true);
+    }, 300_000);
+
+    test("an entry module that patches is SC8006", async () => {
+      const dir = copyCorpus(
+        "entry",
+        `import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const fs = require("fs") as typeof import("fs");
+fs.readFileSync = (() => "") as typeof fs.readFileSync;
+console.log(fs.existsSync("x"));
+`,
+      );
+      const result = await buildDir(dir, "main");
+      expect(result.ok).toBe(false);
+      const entry = messages(result).find(
+        (m) => m.startsWith("SC8006:") && m.includes("move the patch into a module of its own"),
+      );
+      expect(entry).toBeDefined();
+      expect(entry).toContain("fs.readFileSync");
+    });
+
+    test("a TypeScript patcher Node cannot strip is SC8006", async () => {
+      const dir = copyCorpus(
+        "enum",
+        `import { patched } from "./enumpatch.ts";
+console.log(patched);
+`,
+        {
+          "enumpatch.ts": `import { createRequire } from "node:module";
+enum Kind {
+  A,
+}
+const require = createRequire(import.meta.url);
+const fs = require("fs") as typeof import("fs");
+fs.readFileSync = (() => "") as typeof fs.readFileSync;
+export const patched = Kind.A;
+`,
+        },
+      );
+      const result = await buildDir(dir, "main");
+      expect(result.ok).toBe(false);
+      const stripped = messages(result).find(
+        (m) => m.startsWith("SC8006:") && m.includes("Node cannot strip its types"),
+      );
+      expect(stripped).toBeDefined();
+      expect(stripped).toContain("enum");
+    });
   });
 });
 

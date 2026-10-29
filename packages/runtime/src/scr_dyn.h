@@ -888,6 +888,11 @@ static inline ScrDyn *scr_dyn_retain(ScrDyn *d) {
 
 void scr_dyn_release(ScrDyn *d); /* releases the tree recursively; NULL-tolerant */
 
+/* A plain object's entry positions in JS own-key order: integer-like keys
+ * ascending, then the rest in insertion order. NULL when that order is
+ * insertion order; the caller frees the array. */
+size_t *scr_dyn_obj_key_order(const ScrDyn *v);
+
 /* The runtime class an object inherits from (util.inspect's constructor
  * name, found on its prototype chain), or NULL. */
 static inline const char *scr_dyn_class_name(const ScrDyn *d) {

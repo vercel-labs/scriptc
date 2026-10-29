@@ -1226,16 +1226,37 @@ ScrBytes *scr_crypto_random_bytes(double n) {
 
 /* ── process.stdout/stderr.write(buf) ──────────────────────────────────── */
 
+/* Where another thread can write shared bytes (where SCR_BYTES_SNAPSHOT
+ * copies them), they are written through a bounded local buffer, read with
+ * scr_shared_load, so no shared raw memory reaches the system call and a
+ * large shared view is not copied whole first. */
+static bool scr_stdio_write_bytes(int fd, const ScrBytes *b) {
+  size_t n = b->len * scr_bytes_elem_size(b->elem);
+#if defined(SCR_WORKERS) || (defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES))
+  if (!b->shared) return scr_stdio_write(fd, b->data, n);
+  enum { CHUNK = 64 * 1024 };
+  unsigned char *chunk = scr_mem_alloc(n < CHUNK ? (n ? n : 1) : CHUNK);
+  bool ok = true;
+  for (size_t off = 0; ok && off < n; off += CHUNK) {
+    size_t k = n - off < CHUNK ? n - off : CHUNK;
+    scr_shared_load(chunk, b->data + off, k);
+    ok = scr_stdio_write(fd, chunk, k);
+  }
+  scr_mem_free(chunk);
+  return ok;
+#else
+  return scr_stdio_write(fd, b->data, n);
+#endif
+}
+
 bool scr_process_stdout_write_bytes(const ScrBytes *b, const ScrStr *encoding) {
-  SCR_BYTES_SNAPSHOT(b);
   (void)encoding;
-  return scr_stdio_write(1, b->data, b->len * scr_bytes_elem_size(b->elem));
+  return scr_stdio_write_bytes(1, b);
 }
 
 bool scr_process_stderr_write_bytes(const ScrBytes *b, const ScrStr *encoding) {
-  SCR_BYTES_SNAPSHOT(b);
   (void)encoding;
-  return scr_stdio_write(2, b->data, b->len * scr_bytes_elem_size(b->elem));
+  return scr_stdio_write_bytes(2, b);
 }
 
 /* Buffer.from over checked-native input. Strings use the existing codec;

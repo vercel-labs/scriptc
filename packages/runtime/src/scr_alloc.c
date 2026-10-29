@@ -1599,10 +1599,30 @@ static void scr_sa_group_starting(void) {
  * waits. Only that thread writes it. */
 static _Atomic(unsigned long) scr_sa_loop_turns;
 
+/* The carved bytes of the main thread's arena at its last idle trim. */
+static size_t scr_sa_idle_carved;
+
+/* The main thread returns its free pages when its loop waits with nothing
+ * ready, as a parking thread does (scr_sa_trim), once it has carved at least
+ * SCR_SA_TRIM_MIN more since its last trim: memory it freed (a large teardown
+ * before it starts workers, say) then stops counting while the workers
+ * allocate their own. Measuring the carved bytes costs one pass over the
+ * classes; the trim itself only runs when the frontier has grown. */
+static void scr_sa_idle_trim(void) {
+  if (scr_sa_arena < 0) return;
+  size_t carved = scr_sa_carved();
+  if (carved - scr_sa_idle_carved < SCR_SA_TRIM_MIN) return;
+  scr_sa_trim();
+  scr_sa_idle_carved = scr_sa_carved();
+}
+
 void scr_sa_loop_waiting(bool waiting) {
   if (scr_sa_worker) return;
   unsigned long turns = atomic_load_explicit(&scr_sa_loop_turns, memory_order_relaxed);
-  if ((bool)(turns & 1) != waiting) atomic_store_explicit(&scr_sa_loop_turns, turns + 1, memory_order_relaxed);
+  if ((bool)(turns & 1) != waiting) {
+    atomic_store_explicit(&scr_sa_loop_turns, turns + 1, memory_order_relaxed);
+    if (waiting) scr_sa_idle_trim();
+  }
 }
 
 /* Waits out the delay first, and stops if a worker starts meanwhile: the

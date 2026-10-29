@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { IR_VERSION } from "./serialize.js";
-import { DYN, F64, STRING, VOID, arrayOf, type IrModule, type IrLibFn } from "./ir.js";
+import { DYN, F64, STRING, VOID, arrayOf, type IrLibFn, type IrModule, type IrStmt } from "./ir.js";
 import { moduleRuntimeFeatures, moduleUsesHttp2, moduleUsesTlsCa } from "./runtime-features.js";
 
 describe("runtime feature snapshots", () => {
@@ -156,18 +156,17 @@ describe("runtime feature snapshots", () => {
 
   test("selects the stderr readline build only from the output mode bit", () => {
     const mod = module();
-    const create = (mode: number, fn: IrLibFn = "rl.create") =>
-      ({
-        kind: "exprStmt" as const,
+    const create = (mode: number, fn: IrLibFn = "rl.create"): IrStmt => ({
+      kind: "exprStmt",
+      loc,
+      expr: {
+        kind: "libCall",
+        fn,
+        args: [{ kind: "numLit", value: mode, type: F64, loc }],
+        type: F64,
         loc,
-        expr: {
-          kind: "libCall" as const,
-          fn,
-          args: [{ kind: "numLit" as const, value: mode, type: F64, loc }],
-          type: F64,
-          loc,
-        },
-      }) as const;
+      },
+    });
     mod.functions[0]!.body.push(create(4 | 64));
     expect(moduleRuntimeFeatures(mod).readlineStderr).toBe(true);
     mod.functions[0]!.body = [create(4 | 64, "rl.createSignal")];

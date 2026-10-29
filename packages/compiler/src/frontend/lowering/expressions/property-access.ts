@@ -18,7 +18,12 @@ import { staticFunctionNameRead } from "../static-function-names.js";
 import { typedArgumentsArity } from "../typed-arguments.js";
 import { INSPECT_CUSTOM_DESCRIPTION, isInspectCustomAccess } from "../symbol-fields.js";
 import { isThisParameter } from "../call-signatures.js";
-import { argumentCountSlot, contextualCallCount, usedAsValue } from "../argument-counts.js";
+import {
+  argumentCountSlot,
+  boundExpressionCountEscape,
+  contextualCallCount,
+  usedAsValue,
+} from "../argument-counts.js";
 import {
   checkedPrivateValue,
   localPrivateBrandClass,
@@ -796,6 +801,26 @@ export function lowerPropertyAccessExpr(
             expr,
             "'arguments.length' in a function expression that is called both through its own name and through a function type with more parameters (the count varies per call)",
           );
+        }
+        // A function expression bound to a variable (`const f = function
+        // (…) {…arguments…}`) folds here like any fixed-arity expression;
+        // a reference whose expected function type passes a different count
+        // (or no function type at all, e.g. `const x: any = f`) makes that
+        // constant wrong, so the read fences instead of silently answering
+        // the declared arity.
+        if (ts.isFunctionExpression(fn)) {
+          const escape = boundExpressionCountEscape(lowerer, fn, count);
+          if (escape !== null) {
+            lowerer.unsupported(
+              "SC1090",
+              expr,
+              escape === "no-type"
+                ? "'arguments.length' in a function expression bound to a variable and used as a value where no function type is expected (the count each call passes is not known)"
+                : escape === "varies"
+                  ? "'arguments.length' in a function expression bound to a variable and used as a value where the expected function type has optional or rest parameters (the count varies per call)"
+                  : "'arguments.length' in a function expression bound to a variable and used as a value through a function type with a different parameter count (the count varies per call)",
+            );
+          }
         }
         return { kind: "numLit", value: count, type: F64, loc };
       }

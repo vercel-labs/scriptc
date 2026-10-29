@@ -1086,6 +1086,10 @@ const RUNTIME_FEATURE_RULES = {
   /** events.once(emitter, name, { signal }) (scr_events_once_signal.c). */
   eventsOnceSignal: rule({ fns: ["events.onceSignal"] }),
   fetch: rule({ prefixes: ["fetch."] }),
+  /** A typed `for..of` walks a static Headers' entries/keys/values:
+   * scr_fetch_headers_walk.c, a unit of its own so a program that never
+   * iterates a Headers keeps scr_fetch.c's layout. */
+  headersWalk: rule({ fns: ["fetch.headersCount", "fetch.headersEntry"] }),
   fileHandle: rule({ types: ["fileHandle"] }),
   fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),
   /** fs.watchFile / fs.unwatchFile (scr_watch_file.c): the stat-polling
@@ -1345,6 +1349,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     eventTarget: false,
     eventsOnceSignal: false,
     fetch: false,
+    headersWalk: false,
     fileHandle: false,
     fsWatch: false,
     fsWatchFile: false,

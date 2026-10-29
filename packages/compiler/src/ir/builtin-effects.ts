@@ -177,6 +177,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "bigint.dataViewSet",
   "fetch.requestNew",
   "fetch.headersNew",
+  "fetch.headersCount",
+  "fetch.headersEntry",
   "fetch.responseNew",
   "fetch.responseJsonStatic",
   "abort.timeout",

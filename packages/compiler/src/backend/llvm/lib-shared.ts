@@ -1096,6 +1096,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fetch.function": "scr_fetch_function",
   "fetch.requestNew": "scr_fetch_request_new",
   "fetch.headersNew": "scr_fetch_headers_new",
+  "fetch.headersCount": "scr_fetch_headers_count",
+  "fetch.headersEntry": "scr_fetch_headers_entry",
   "fetch.responseArrayBuffer": "scr_fetch_response_array_buffer",
   "fetch.responseJson": "scr_fetch_response_json",
   "fetch.responseText": "scr_fetch_response_text",

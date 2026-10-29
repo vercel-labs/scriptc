@@ -215,6 +215,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_webcrypto_aes.c", all("cipher", "webcrypto")],
   ["scr_abort.c", "abortSignalOnly"],
   ["scr_fetch.c", "nativeFetch"],
+  // A typed `for..of` over a static Headers walks the fetch unit's own
+  // iterator; a unit of its own so scr_fetch.c's layout stays put for every
+  // program that never iterates a Headers.
+  ["scr_fetch_headers_walk.c", all("headersWalk", "nativeFetch")],
   // Node islands: libnode loaded on first use (explicit @scriptc/node calls),
   // over the SCR_NODE_ISLANDS build of scr_async.c.
   ["scr_node_island.c", "nodeIsland"],

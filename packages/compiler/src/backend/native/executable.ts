@@ -413,6 +413,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unitArgs((u) => (u.tlsCa && targetPlatform(u.driver) === "win32" ? ["-lcrypt32"] : [])),
   // Fetch uses the native network, TLS, and HTTP runtime.
   unit((u) => u.nativeFetch, "scr_fetch.c"),
+  // A typed `for..of` over a static Headers walks the fetch unit's iterator.
+  unit((u) => u.opts.headersWalk === true && u.nativeFetch, "scr_fetch_headers_walk.c"),
   unit(
     (u) => u.opts.nodeIsland === true,
     "scr_node_island.c",

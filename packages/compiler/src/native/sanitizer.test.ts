@@ -19,6 +19,7 @@ const features = {
   handleProps: false,
   childLifecycle: false,
   fsWriteForms: false,
+  headersWalk: false,
   declAdopt: false,
   typeOrigins: false,
   dynForAwait: false,

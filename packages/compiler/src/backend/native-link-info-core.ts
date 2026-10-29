@@ -79,6 +79,9 @@ export interface NativeLinkFeatures {
   /** An fs write passes an options record or Uint8Array data: links
    * scr_fs_write_forms.c. Absent (false) otherwise. */
   fsWriteForms?: boolean;
+  /** A typed `for..of` walks a static Headers: links
+   * scr_fetch_headers_walk.c. Absent (false) otherwise. */
+  headersWalk?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   /** for await over checked-dynamic values: scr_dyn_for_await.c. Absent

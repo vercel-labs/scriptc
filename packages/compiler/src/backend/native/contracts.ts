@@ -137,6 +137,9 @@ export interface CcOptions {
   /** An fs write passes an options record (`mode`, `flag: "wx"`) or
    * Uint8Array data to writeFile: compiles scr_fs_write_forms.c. */
   fsWriteForms?: boolean;
+  /** A typed `for..of` walks a static Headers: compiles
+   * scr_fetch_headers_walk.c. */
+  headersWalk?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   /** for await over checked-dynamic values: compiles scr_dyn_for_await.c. */

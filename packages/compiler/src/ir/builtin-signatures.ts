@@ -156,6 +156,11 @@ function buildLibFnSignatures() {
     "fetch.function": { argTypes: [], result: DYN },
     "fetch.requestNew": { argTypes: [DYN, DYN], result: DYN },
     "fetch.headersNew": { argTypes: [DYN], result: DYN },
+    /** The head-consumed `for..of` walk over headers.entries()/keys()/
+     * values(): the current entry count, and the index-th entry's name
+     * (part 0) or value (part 1) — both re-read the live sorted list. */
+    "fetch.headersCount": { argTypes: [DYN], result: F64 },
+    "fetch.headersEntry": { argTypes: [DYN, F64, F64], result: STRING },
     "fetch.responseArrayBuffer": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
     "fetch.responseJson": { argTypes: [DYN], result: { kind: "promise", inner: DYN } },
     "fetch.responseText": { argTypes: [DYN], result: { kind: "promise", inner: STRING } },

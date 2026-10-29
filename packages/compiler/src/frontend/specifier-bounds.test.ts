@@ -14,20 +14,26 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 let seq = 0;
 
-/** The specifier-bounding refusals a build of `source` reports: each
- * SC1090's "<why>" with the "at <file>:<line>: " prefix removed, sorted so
- * the assertion does not pin lowering order. */
-function refusals(source: string): string[] {
+/** Every SC1090 a build of `source` reports, minus the " is not supported
+ * yet" suffix the message renderer appends. A bound form must report NONE of
+ * them: a refusal for a different reason (a bounded value whose target does
+ * not resolve) has to fail the test, not slip through a filter. */
+function features(source: string): string[] {
   const entry = join(dir, `program${seq++}.ts`);
   writeFileSync(entry, source);
   return analyze(entry, { tier: "static-only" })
-    .coverage.diagnostics.filter(
-      (d) => d.code === "SC1090" && d.message.startsWith("dynamic import()"),
-    )
-    .map((d) => {
-      const feature = d.message.replace(/ (?:is|are) not supported yet$/, "");
+    .coverage.diagnostics.filter((d) => d.code === "SC1090")
+    .map((d) => d.message.replace(/ (?:is|are) not supported yet$/, ""));
+}
+
+/** The "<why>" of each specifier-bounding refusal, with the "at <file>:<line>:
+ * " prefix removed, sorted so the assertion does not pin lowering order. */
+function unboundedWhys(source: string): string[] {
+  return features(source)
+    .filter((feature) => feature.startsWith("dynamic import()"))
+    .map((feature) => {
       const why = /\(at .*?:\d+: ([\s\S]*)\)$/.exec(feature);
-      expect(why, d.message).not.toBeNull();
+      expect(why, feature).not.toBeNull();
       return `(${why![1]})`;
     })
     .sort();
@@ -35,7 +41,7 @@ function refusals(source: string): string[] {
 
 test("every §3.2 form B1 implements bounds to a finite set", () => {
   expect(
-    refusals(`
+    features(`
 const literal = "node:path";
 const template = \`node:path\`;
 let neverReassigned = "node:path";
@@ -43,7 +49,7 @@ const LEFT = "node:";
 const RIGHT = "path";
 const name = "path";
 const flag = process.argv.length > 2;
-const maybe: string | undefined = undefined;
+const maybe = "node:path" as string | undefined;
 function local(specifier: string): Promise<unknown> {
   return import(specifier);
 }
@@ -58,8 +64,8 @@ async function main(): Promise<void> {
   await import(LEFT + RIGHT);
   await import(\`node:\${name}\`);
   await import(flag ? "node:path" : "node:os");
-  await import(maybe ?? "node:path");
-  await import("" || "node:path");
+  await import(maybe ?? "node:os");
+  await import(maybe || "node:path");
   await local("node:path");
   await local(flag ? "node:os" : "node:path");
   await withDefault();
@@ -72,7 +78,7 @@ export {};
 
 test("every unbounded form names the first source that stops it", () => {
   expect(
-    refusals(`
+    unboundedWhys(`
 const fromArgv = process.argv[2] ?? "node:path";
 let reassigned = "node:path";
 reassigned = "node:os";
@@ -88,6 +94,8 @@ async function main(specifier: string): Promise<void> {
   await import(reassigned);
   await import(computed());
   await import(\`node:\${process.argv[2]}\`);
+  await import(process.env.SCRIPTC_SPEC ?? "node:path");
+  await import(process.env.SCRIPTC_SPEC || "node:path");
 }
 void load("node:path");
 void run("node:path");
@@ -100,6 +108,8 @@ export {};
     "(a parameter of the exported function 'run')",
     "(a value read from `process.argv`)",
     "(a value read from `process.argv`)",
+    "(a value read from `process.env`)",
+    "(a value read from `process.env`)",
     "(the result of `computed(...)`)",
   ]);
 });

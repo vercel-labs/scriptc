@@ -30,3 +30,11 @@ console.log("varies", varies(1), varies(1, 2));
 // count later, so the constant is no longer the whole story.
 const copied = boxed;
 console.log("copied", copied("a", "b", "c"));
+
+// Read through `.call`: the value escapes, since `.call` and `.apply` pass any
+// count. Reading `.name` or `.length` alone is no escape (corpus
+// typed-arguments-length-calls).
+const viaCall = function (a: number): number {
+  return arguments.length;
+};
+console.log("call", viaCall.call(undefined, 1), viaCall.name);

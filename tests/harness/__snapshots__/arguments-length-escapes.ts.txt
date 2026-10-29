@@ -108,3 +108,26 @@ arguments-length-escapes.ts:32:23 - error SC2004: uses of 'copied' inherit the b
   33 | 
 
   hint: the declaration of 'copied' did not compile — fix the diagnostic reported there and these sites clear with it
+
+arguments-length-escapes.ts:37:7 - error SC2009: values of type '(a: number) => number' cannot be compiled: the function shape is supported, but its signature is variadic ('arguments'-reading), and a compiled signature is fixed-arity
+
+  36 | // typed-arguments-length-calls).
+  37 | const viaCall = function (a: number): number {
+     |       ^~~~~~~
+  38 |   return arguments.length;
+
+  hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
+
+arguments-length-escapes.ts:38:10 - error SC1090: 'arguments.length' in a function expression bound to a variable and used as a value where no function type is expected (the count each call passes is not known) is not supported yet
+
+  37 | const viaCall = function (a: number): number {
+  38 |   return arguments.length;
+     |          ^~~~~~~~~~~~~~~~
+  39 | };
+
+arguments-length-escapes.ts:40:21 - error SC1090: Function.prototype.call on a function whose signature cannot cross the checked-value boundary (call 'viaCall(...)' directly) is not supported yet
+
+  39 | };
+  40 | console.log("call", viaCall.call(undefined, 1), viaCall.name);
+     |                     ^~~~~~~~~~~~~~~~~~~~~~~~~~
+  41 | 

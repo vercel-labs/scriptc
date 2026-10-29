@@ -235,7 +235,8 @@ function declaredCount(fn: ts.FunctionLikeDeclaration): number {
  * (`const x: any = f`, an `any` record field) or with a different parameter
  * count passes a count no constant answers, and the value can be called
  * later with anything — the read fences instead of silently reporting the
- * declared arity. */
+ * declared arity. Reading the value's `name` or `length` (or `typeof`) does
+ * not call it, so it is no escape. */
 export function boundExpressionCountEscape(
   lowerer: Lowerer,
   fn: ts.FunctionExpression,
@@ -257,6 +258,15 @@ export function boundExpressionCountEscape(
       if (ts.isCallExpression(parent) && parent.expression === n) return undefined;
       if (ts.isExportSpecifier(parent) || ts.isExportAssignment(parent)) return undefined;
       if (ts.isImportSpecifier(parent) || ts.isImportClause(parent)) return undefined;
+      // Reading the value's `name` or `length`, or its `typeof`, does not
+      // call it.
+      if (
+        ts.isPropertyAccessExpression(parent) &&
+        parent.expression === n &&
+        (parent.name.text === "name" || parent.name.text === "length")
+      )
+        return undefined;
+      if (ts.isTypeOfExpression(parent)) return undefined;
       if (lowerer.resolveValueSymbol(n) !== symbol) return undefined;
       const contextual = contextualCallCount(lowerer, n);
       if (contextual === null) escape = "no-type";

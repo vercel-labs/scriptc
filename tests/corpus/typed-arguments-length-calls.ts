@@ -11,6 +11,8 @@ const scaled = function (value: number, factor: number): number {
 console.log(scaled(2, 3));
 const same: (value: number, factor: number) => number = scaled;
 console.log(same(4, 5));
+// Reading the function's name, length or typeof does not call it.
+console.log(scaled.name, scaled.length, typeof scaled);
 console.log(
   [1, 2]
     .map(function (value) {

@@ -318,6 +318,76 @@ describe("modules the program provides", () => {
     expect(files.some((f) => f.path.endsWith("internal.mjs"))).toBe(false);
   });
 
+  test("a worker entry a module starts ships as source, and so does what it imports", () => {
+    const root = project({
+      "src/main.ts": "",
+      "src/launcher.mjs": [
+        'import { Worker } from "node:worker_threads";',
+        'export const start = () => new Worker(new URL("./worker.mjs", import.meta.url));',
+      ].join("\n"),
+      "src/worker.mjs": 'import { count } from "./state.mjs";\ncount();',
+      "src/state.mjs": "export let count = 0;\nexport const internal = 7;\n",
+    });
+    const collector = new NodeIslandModuleCollector({
+      workers: (file) =>
+        file.endsWith("launcher.mjs")
+          ? { kind: "entries", files: [join(root, "src/worker.mjs")] }
+          : { kind: "entries", files: [] },
+    });
+    // A worker thread has its own module instances, so the program module
+    // the entry imports ships as source there even though the island thread
+    // reads a placeholder for it.
+    collector.addProvided(join(root, "src/state.mjs"));
+    expect(collector.add(join(root, "src/main.ts"), "./launcher.mjs")).toBeNull();
+    const tree = collector.tree()!;
+    expect(tree.root).toBe(join(root, "src"));
+    expect(tree.files.map((f) => f.path)).toEqual(["launcher.mjs", "state.mjs", "worker.mjs"]);
+    expect(tree.files.every((f) => f.placeholder !== true)).toBe(true);
+    const data = readNodeIslandModules(tree);
+    if (typeof data === "string") throw new Error(data);
+    expect(new TextDecoder().decode(data)).toContain("export const internal = 7;");
+  });
+
+  test("a worker entry traced after the placeholder ships the real source instead", () => {
+    const root = project({
+      "src/main.ts": "",
+      "src/plugin.mjs": [
+        'import { s } from "./shared.mjs";',
+        'new Worker(new URL("./worker.mjs", import.meta.url));',
+      ].join("\n"),
+      "src/worker.mjs": 'import { s } from "./shared.mjs";',
+      "src/shared.mjs": "export const s = 42;\n",
+    });
+    const collector = new NodeIslandModuleCollector({
+      workers: (file) =>
+        file.endsWith("plugin.mjs")
+          ? { kind: "entries", files: [join(root, "src/worker.mjs")] }
+          : { kind: "entries", files: [] },
+    });
+    collector.addProvided(join(root, "src/shared.mjs"));
+    expect(collector.add(join(root, "src/main.ts"), "./plugin.mjs")).toBeNull();
+    const shared = collector.tree()!.files.find((f) => f.path === "shared.mjs")!;
+    expect(shared.placeholder).toBeUndefined();
+  });
+
+  test("a worker entry the build refuses stops the collection", () => {
+    const root = project({
+      "src/main.ts": "",
+      "src/plugin.mjs": 'new Worker(new URL("./worker.ts", import.meta.url));',
+      "src/worker.ts": "enum E {}\n",
+    });
+    const collector = new NodeIslandModuleCollector({
+      workers: (file) =>
+        file.endsWith("plugin.mjs")
+          ? { kind: "entries", files: [join(root, "src/worker.ts")] }
+          : { kind: "entries", files: [] },
+      sourceProblem: (file) => `${file}: Node cannot strip its types: an enum`,
+    });
+    expect(collector.add(join(root, "src/main.ts"), "./plugin.mjs")).toBe(
+      `${join(root, "src/worker.ts")}: Node cannot strip its types: an enum`,
+    );
+  });
+
   test("requireModule specifiers come from code, not comments or strings", () => {
     expect(
       requireModuleSpecifiers(`

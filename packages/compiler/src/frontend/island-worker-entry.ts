@@ -1,0 +1,151 @@
+/* Worker entries of a module whose shipped copy Node runs (scope-B: an
+ * island module, or a module such an island loads). Node starts a worker
+ * thread with its own module instances: the thread re-evaluates the entry
+ * and everything the entry imports. So the module tree ships the entry and
+ * its static import subtree as real sources (node-islands/modules.ts), and
+ * the Worker keeps its path: the URL the module builds from its own URL at
+ * build time names the same file in the tree.
+ *
+ * Only a form the tree can keep is accepted: an entry relative to the
+ * module's own URL (`new URL("./entry.ts", import.meta.url)`, through
+ * consts, templates and fileURLToPath; `import.meta.url` itself;
+ * `__filename`). Every other form a build can see is refused, because the
+ * tree keeps relative layout and nothing else:
+ *  - a computed or unbounded entry: the build cannot know what to ship;
+ *  - an absolute path or a `file:` URL that is not built from the module's
+ *    own URL: the tree never holds a build-machine path;
+ *  - a path relative to the process's working directory (Node resolves a
+ *    plain relative filename against `cwd`): the tree is not the cwd.
+ * A static entry that names no file at all (a data: URL, a package
+ * specifier, a missing path) is Node's own business and stays as it is.
+ *
+ * A TypeScript file that ships this way must pass stripProblem: Node
+ * erases types in place in a worker thread too, and it refuses to do so
+ * inside node_modules. */
+import { resolve } from "node:path";
+import { trackedFileExists, trackedReadFile } from "./input-tracker.js";
+import * as ts from "./ts7/adapter.js";
+import { parseSourceFile } from "./ts7/source-parser-node.js";
+import { tsgoPath } from "./dts-paths.js";
+import { fromModuleUrl, staticForkString } from "./fork-target.js";
+import { moduleSourceCandidates } from "./module-source-candidates.js";
+import { isWorkerConstructor, workerModulePath } from "./worker-target.js";
+import type { NodeIslandWorkerScan } from "../node-islands/modules.js";
+import { stripProblem } from "../node-islands/type-strip.js";
+
+export interface IslandWorkerScan {
+  /** The worker entries `file`'s shipped copy starts, or the reason one
+   * cannot ship (node-islands/modules.ts asks for each traced module). */
+  workers(file: string): NodeIslandWorkerScan;
+  /** Why Node cannot run `file`'s source as shipped, or null. */
+  sourceProblem(file: string): string | null;
+}
+
+const TYPESCRIPT = /\.[mc]?ts$/;
+
+const NONE: NodeIslandWorkerScan = { kind: "entries", files: [] };
+
+interface IslandWorkerSource {
+  sf: ts.SourceFile;
+  /** False for a file the program never parsed: a worker entry's subtree is
+   * shipped, not compiled, so it need not be a file of the program. */
+  inProgram: boolean;
+}
+
+/** The scan over one program: `compiled` answers whether the program lowers
+ * a file natively, whose Worker constructions the native lowering answers
+ * (lowerWorkerNew) and which therefore never run from the shipped tree. It
+ * is asked on every call, not read once: the module order grows while
+ * lowering (worker targets join it) and the tree is collected after. */
+export function createIslandWorkerScan(
+  program: ts.Program,
+  compiled: (file: string) => boolean,
+): IslandWorkerScan {
+  let programSources: Map<string, ts.SourceFile> | null = null;
+  const parsed = new Map<string, IslandWorkerSource | null>();
+  const key = (file: string): string => tsgoPath(resolve(file));
+  const sourceOf = (file: string): IslandWorkerSource | null => {
+    const id = key(file);
+    const cached = parsed.get(id);
+    if (cached !== undefined) return cached;
+    programSources ??= new Map();
+    if (programSources.size === 0)
+      for (const sf of program.getImplementationSourceFiles())
+        programSources.set(key(sf.fileName), sf);
+    const inProgram = programSources.get(id);
+    let source: IslandWorkerSource | null = null;
+    if (inProgram !== undefined) source = { sf: inProgram, inProgram: true };
+    else {
+      // Only the files a worker entry's subtree ships reach this: parse the
+      // text the tree carries, because the program never did.
+      const text = trackedReadFile(file);
+      if (text !== null)
+        source = { sf: parseSourceFile(file, text, kindOf(file)), inProgram: false };
+    }
+    parsed.set(id, source);
+    return source;
+  };
+
+  const workers = (file: string): NodeIslandWorkerScan => {
+    if (compiled(key(file))) return NONE;
+    const source = sourceOf(file);
+    // A file a worker entry's subtree ships was never checked, so the
+    // checker cannot bind its names and a Worker it starts is not
+    // recognised; Node then reports that entry as a missing module in the
+    // worker thread. A file of the program is the case this serves.
+    if (source === null || !source.inProgram) return NONE;
+    const sf = source.sf;
+    const entries = new Set<string>();
+    for (const construction of moduleSourceCandidates(program, sf).constructions) {
+      const args = construction.arguments?.nodes ?? [];
+      // An arity the constructor rejects is the runtime's error, in the
+      // island exactly as under Node.
+      if (args.length === 0 || args.length > 2 || args.some(ts.isSpreadElement)) continue;
+      if (!isWorkerConstructor(program, construction.expression)) continue;
+      const entry = args[0]!;
+      const path = workerModulePath(program, entry);
+      if (path === null) {
+        // A static entry that names no file of the build (a data: URL a
+        // package specifier, a filename relative to the working directory)
+        // is Node's to resolve; only an entry the build cannot even see is
+        // refused.
+        if (staticForkString(program, entry) !== null) continue;
+        return { kind: "refused", reason: refusal(sf, construction, "cannot resolve") };
+      }
+      if (!fromModuleUrl(program, entry))
+        return {
+          kind: "refused",
+          reason: refusal(sf, construction, `names the build-machine path '${path}'`),
+        };
+      // A file that does not exist is loaded (and fails) exactly as under
+      // Node: there is nothing for the tree to carry.
+      if (trackedFileExists(path)) entries.add(path);
+    }
+    return entries.size === 0 ? NONE : { kind: "entries", files: [...entries].sort() };
+  };
+
+  const sourceProblem = (file: string): string | null => {
+    if (!TYPESCRIPT.test(file)) return null;
+    if (/[\\/]node_modules[\\/]/.test(file))
+      return `'${file}' runs in a worker thread of a Node island, but Node refuses to strip types inside node_modules`;
+    const source = sourceOf(file);
+    if (source === null) return null;
+    const problem = stripProblem(program, source.sf, source.inProgram);
+    if (problem === null) return null;
+    return `'${file}' runs in a worker thread of a Node island, but Node cannot strip its types: ${problem.construct}`;
+  };
+
+  return { workers, sourceProblem };
+}
+
+/** The syntax a parse of `file` needs, from its extension. */
+function kindOf(file: string): "ts" | "tsx" {
+  return /\.[mc]?tsx$/.test(file) ? "tsx" : "ts";
+}
+
+/** A one-line description of the construction, anchored at its source: the
+ * collector's diagnostics carry the reason as a message. */
+function refusal(sf: ts.SourceFile, node: ts.Node, what: string): string {
+  const line = sf.text.slice(0, ts.tokenStartOfNode(node)).split("\n").length;
+  return `${sf.fileName}:${line} starts a Worker whose entry the build ${what}; a worker entry that runs in a Node island is new URL("./entry.ts", import.meta.url), so the build ships the entry and the modules it imports beside the module`;
+}

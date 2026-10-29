@@ -786,7 +786,11 @@ import {
   maybePromiseUnionOf,
   promiseArmedUnionOf,
 } from "./maybe-promise.js";
-import { NodeIslandModuleCollector } from "../../node-islands/modules.js";
+import {
+  NodeIslandModuleCollector,
+  type NodeIslandWorkerScan,
+} from "../../node-islands/modules.js";
+import { createIslandWorkerScan, type IslandWorkerScan } from "../island-worker-entry.js";
 
 /** Entry function name. '%' cannot appear in a TS identifier, so a user
  * function can never collide with it (mangling is injective per prefix). */
@@ -3744,8 +3748,13 @@ export class Lowerer {
   /** Island module loads, by the importing file and specifier: the module
    * global holding what the import form sees (lower-node-island.ts). */
   readonly islandModules = new Map<string, IslandModuleBinding>();
-  /** The modules Node island calls load (lower-node-island.ts). */
-  readonly nodeIslandModules = new NodeIslandModuleCollector();
+  /** The modules Node island calls load (lower-node-island.ts). The hooks
+   * answer what a module's shipped copy runs that is not an import: the
+   * worker entries it starts (frontend/island-worker-entry.ts) and whether
+   * Node can run its source (type stripping). */
+  readonly nodeIslandModules: NodeIslandModuleCollector;
+  private islandWorkerScans: IslandWorkerScan | null = null;
+  private islandWorkerCompiled: { size: number; set: ReadonlySet<string> } | null = null;
   /** Each call's caller literal, set to its tree path when lowering ends. */
   readonly nodeIslandCallers: { literal: IrExpr & { kind: "strLit" }; caller: string }[] = [];
   /** Absolute specifiers, rewritten to the shipped file relative to their caller. */
@@ -3756,6 +3765,32 @@ export class Lowerer {
   }[] = [];
   /** Each island module load's path literal, set to its tree path when lowering ends. */
   readonly nodeIslandLoads: { literal: IrExpr & { kind: "strLit" }; path: string }[] = [];
+  /** The worker entries a module its shipped copy runs starts, or why one
+   * cannot ship; null when the program has no Node islands. */
+  private islandWorkerEntries(file: string): NodeIslandWorkerScan {
+    return this.islandWorkerScan().workers(file);
+  }
+  /** Why Node cannot run a module's source as shipped (type stripping). */
+  private islandWorkerSourceProblem(file: string): string | null {
+    return this.islandWorkerScan().sourceProblem(file);
+  }
+  private islandWorkerScan(): IslandWorkerScan {
+    this.islandWorkerScans ??= createIslandWorkerScan(this.program, (file) =>
+      this.compiledModulePaths().has(file),
+    );
+    return this.islandWorkerScans;
+  }
+  /** The modules the program lowers natively, by tsgo path: rebuilt when
+   * the order grows (worker targets join it while lowering). */
+  private compiledModulePaths(): ReadonlySet<string> {
+    if (this.islandWorkerCompiled?.size !== this.moduleOrder.length) {
+      this.islandWorkerCompiled = {
+        size: this.moduleOrder.length,
+        set: new Set(this.moduleOrder.map((sf) => tsgoPath(resolve(sf.fileName)))),
+      };
+    }
+    return this.islandWorkerCompiled.set;
+  }
   /** Island handle bindings by symbol (lower-node-island.ts). */
   readonly islandHandleBindings = new Map<ts.Symbol, boolean>();
   /** `instanceof` expressions the island lowering already handles. */
@@ -5057,6 +5092,10 @@ export class Lowerer {
     this.generalNodeStreams = mode.generalNodeStreams ?? false;
     this.dynNodeStreams = this.generalNodeStreams && (mode.dynNodeStreams ?? false);
     this.workerTargets = mode.workerTargets ?? [];
+    this.nodeIslandModules = new NodeIslandModuleCollector({
+      workers: (file) => this.islandWorkerEntries(file),
+      sourceProblem: (file) => this.islandWorkerSourceProblem(file),
+    });
     this.workerTargets.forEach((sf, id) => {
       this.workerTargetIdByPath.set(tsgoPath(resolve(sf.fileName)), id);
     });

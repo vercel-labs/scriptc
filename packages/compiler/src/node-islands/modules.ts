@@ -163,6 +163,24 @@ function portable(path: string): string {
   return sep === "/" ? path : path.split(sep).join("/");
 }
 
+/** What a module whose shipped copy Node runs starts, or why it cannot
+ * ship: the worker entries it resolves to a file (worker threads, Node's
+ * own: the worker re-evaluates its entry in its own thread, so the tree
+ * ships the entry and its static import subtree as real sources). */
+export type NodeIslandWorkerScan =
+  | { kind: "entries"; files: readonly string[] }
+  | { kind: "refused"; reason: string };
+
+export interface NodeIslandModuleHooks {
+  /** The worker entries `file`'s source starts, or the reason one cannot
+   * ship. Only asked for modules whose shipped copy is the only copy: a
+   * module the program compiles lowers its Worker constructions natively. */
+  workers?: ((file: string) => NodeIslandWorkerScan) | undefined;
+  /** Why Node cannot run `file`'s source as shipped (type stripping), or
+   * null. Asked for every file a worker entry's subtree ships. */
+  sourceProblem?: ((file: string) => string | null) | undefined;
+}
+
 export class NodeIslandModuleCollector {
   /** Real paths of collected files. */
   private readonly files = new Set<string>();
@@ -176,6 +194,14 @@ export class NodeIslandModuleCollector {
   private readonly loaded = new Set<string>();
   /** Program modules whose source the program provides (addProvided). */
   private readonly provided = new Set<string>();
+  /** Files a worker entry's static import subtree runs: shipped as their
+   * real sources, even where the program provides a placeholder. */
+  private readonly fresh = new Set<string>();
+  /** Fresh files whose subtree is already traced (fresh reaches further
+   * than the island-side trace: it also runs through placeholders). */
+  private readonly freshTraced = new Set<string>();
+
+  constructor(private readonly hooks: NodeIslandModuleHooks = {}) {}
 
   /** Collects the module `specifier` names from `caller` (a real path).
    * Returns null, or the reason the build cannot ship it. */
@@ -233,7 +259,11 @@ export class NodeIslandModuleCollector {
     const files: NodeIslandModuleFile[] = [];
     for (const file of [...this.files].sort()) {
       const path = portable(relative(root, file));
-      if (this.provided.has(file)) {
+      // A worker entry's subtree runs in the worker's own thread, with its
+      // own instances: its real source ships even where the program's copy
+      // is a placeholder (the island thread never reads the placeholder
+      // anyway; the loader hooks answer it).
+      if (this.provided.has(file) && !this.fresh.has(file)) {
         const bytes = providedModulePlaceholder(path);
         files.push({ path, size: bytes.length, sha256: sha256(bytes), placeholder: true });
         continue;
@@ -262,7 +292,7 @@ export class NodeIslandModuleCollector {
     return tree === null ? file : `./${portable(relative(tree.root, file))}`;
   }
 
-  private resolveFrom(fromFile: string, specifier: string): string | null {
+  private resolveFrom(fromFile: string, specifier: string, fresh = false): string | null {
     if (isBuiltin(specifier)) return null;
     if (specifier.startsWith("#"))
       return `'${specifier}' is a package import ("imports" in package.json), which Node island modules of the program cannot use`;
@@ -273,7 +303,8 @@ export class NodeIslandModuleCollector {
     // optional require in a try block keeps working).
     if (isPathSpecifier(specifier)) {
       const target = resolveFile(resolve(dirname(fromFile), specifier));
-      return target === null ? null : this.addModule(this.placed(target));
+      if (target === null) return null;
+      return fresh ? this.addFresh(this.placed(target)) : this.addModule(this.placed(target));
     }
     const dir = packageDirectory(dirname(fromFile), packageName(specifier));
     if (dir !== null) this.addPackage(dir);
@@ -319,6 +350,29 @@ export class NodeIslandModuleCollector {
     // The program provides its source: island code never runs this file,
     // so what it imports is not shipped for it.
     if (this.provided.has(file)) return null;
+    return this.traceSource(file, false);
+  }
+
+  /** A worker entry and, through its imports, the subtree the worker's own
+   * thread evaluates: shipped as its real sources, placeholders or not,
+   * because the worker has its own module instances (Node starts a
+   * worker's module graph afresh, in a thread whose loader hooks are its
+   * own). */
+  private addFresh(file: string): string | null {
+    this.files.add(file);
+    this.fresh.add(file);
+    if (this.freshTraced.has(file)) return null;
+    this.freshTraced.add(file);
+    this.traced.add(file);
+    const problem = this.hooks.sourceProblem?.(file) ?? null;
+    if (problem !== null) return problem;
+    return this.traceSource(file, true);
+  }
+
+  /** The source of a collected program module: its package scope, the data
+   * files it names, its module specifiers (`fresh` on a worker entry's
+   * subtree) and the worker entries it starts. */
+  private traceSource(file: string, fresh: boolean): string | null {
     const scope = packageScope(dirname(file));
     if (scope !== null) this.files.add(scope);
     if (!TRACED.test(file)) return null;
@@ -332,7 +386,14 @@ export class NodeIslandModuleCollector {
       return `${file}:${line} loads a module through ${first.form}; a module that runs in a Node island loads modules by string-literal specifiers only`;
     }
     for (const specifier of scan.specifiers) {
-      const problem = this.resolveFrom(file, specifier);
+      const problem = this.resolveFrom(file, specifier, fresh);
+      if (problem !== null) return problem;
+    }
+    const workers = this.hooks.workers?.(file);
+    if (workers === undefined) return null;
+    if (workers.kind === "refused") return workers.reason;
+    for (const entry of workers.files) {
+      const problem = this.addFresh(this.placed(entry));
       if (problem !== null) return problem;
     }
     return null;

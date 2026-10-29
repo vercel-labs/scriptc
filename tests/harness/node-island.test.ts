@@ -632,6 +632,128 @@ export function describeSocket(): string {
       expect(messages(result).some((m) => m.startsWith("SC1090: extending classes"))).toBe(true);
     }, 600_000);
   });
+
+  // A Worker a module of the program starts from inside a Node island: its
+  // entry is a module of the program too, so the module tree ships the entry
+  // and what it imports as real sources, and the worker thread evaluates its
+  // own copies (Node gives every thread its own module instances). The corpus
+  // program 6901 pins the behavior against Node; these cases read what the
+  // build ships and what the island refuses.
+  describe("a worker entry a Node island starts", () => {
+    const corpus = join(repoRoot, "tests/corpus/6901-island-worker-entry");
+
+    /** A scratch copy of the corpus outside node_modules: the worker entry
+     * ships as TypeScript and Node refuses to strip types below one. */
+    function copyCorpus(name: string, extra: Record<string, string> = {}): string {
+      const dir = mkdtempSync(join(tmpdir(), `scriptc-island-worker-${name}-`));
+      cpSync(corpus, dir, { recursive: true });
+      for (const [file, text] of Object.entries(extra)) writeFileSync(join(dir, file), text);
+      return dir;
+    }
+
+    async function buildDir(dir: string, libnode: string = pack!) {
+      return withFreshBuildCache(() =>
+        compile(join(dir, "main.ts"), {
+          outPath: join(dir, "main"),
+          outDir: dir,
+          sanitize,
+          libnode,
+        }),
+      );
+    }
+
+    test("ships the entry and what it imports as real sources", async () => {
+      const dir = copyCorpus("tree");
+      const result = await buildDir(dir, "beside");
+      expect(messages(result)).toEqual([]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const modules = join(dir, "main.libnode/modules");
+      const shipped = (file: string) => readFileSync(join(modules, file), "utf8");
+      expect(shipped("worker.ts")).toContain("parentPort?.postMessage");
+      // state.ts is the program's own module: the program compiles its copy
+      // for its own thread, and the worker thread reads this source.
+      expect(shipped("state.ts")).toContain("export let count = 0;");
+      expect(shipped("launcher.ts")).toContain("new Worker(new URL");
+    }, 600_000);
+
+    test("runs the worker on its own module instances", async () => {
+      const dir = copyCorpus("run");
+      const result = await buildDir(dir);
+      expect(messages(result)).toEqual([]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      // The island's module cache cannot live under node_modules, where this
+      // suite keeps its shared one.
+      const executed = await run(join(dir, "main"), [], {
+        ...process.env,
+        XDG_CACHE_HOME: join(dir, "cache"),
+      });
+      expect(executed).toEqual({
+        stdout:
+          "socket: socket:true\nmain: 1 2 2\nworker: echo=21 worker=1,2,3 count=3 echo=22 worker=4,5,6 count=6\nmain after: 2\n",
+        stderr: "",
+        code: 0,
+      });
+    }, 600_000);
+
+    // The tree keeps the program's relative layout and no other: an entry the
+    // build cannot name is refused instead of shipped.
+    test("a computed entry is SC8006", async () => {
+      const dir = copyCorpus("computed", {
+        "launcher.ts": `/// <reference path="./globals.d.ts" />
+import { Worker } from "node:worker_threads";
+
+export class Socket extends WebSocket {
+  static tag = "socket";
+}
+
+export function socketTag(): string {
+  return \`\${Socket.tag}:\${Object.getPrototypeOf(Socket) === WebSocket}\`;
+}
+
+export function start(name: string): number {
+  return new Worker(new URL(name, import.meta.url)).threadId;
+}
+`,
+        "main.ts": `import { socketTag, start } from "./launcher.ts";
+
+console.log(socketTag(), "started", start("worker.ts"));
+`,
+      });
+      const result = await buildDir(dir);
+      expect(result.ok).toBe(false);
+      const refused = messages(result).find(
+        (m) =>
+          m.startsWith("SC8006:") &&
+          m.includes("starts a Worker whose entry the build cannot resolve"),
+      );
+      expect(refused).toBeDefined();
+      expect(refused).toContain("launcher.ts");
+      expect(refused).toContain('new URL("./entry.ts", import.meta.url)');
+    }, 600_000);
+
+    test("a worker entry Node cannot strip stays refused", async () => {
+      const dir = copyCorpus("enum", {
+        "worker.ts": `import { parentPort } from "node:worker_threads";
+
+enum Kind {
+  A,
+}
+
+parentPort?.postMessage(Kind.A);
+`,
+      });
+      const result = await buildDir(dir);
+      expect(result.ok).toBe(false);
+      const stripped = messages(result).find(
+        (m) => m.startsWith("SC8006:") && m.includes("Node cannot strip its types"),
+      );
+      expect(stripped).toBeDefined();
+      expect(stripped).toContain("worker.ts");
+      expect(stripped).toContain("enum");
+    }, 600_000);
+  });
 });
 
 // Lowering checks every argument and result type for JSON data; IR output

@@ -1,7 +1,8 @@
 `node:worker_threads` runs workers as native threads.
 Worker entry points must resolve at build time: use a source-relative `new URL("./worker.ts", import.meta.url)`, the current module URL, an absolute path, or CommonJS `__filename`.
 A module that runs in a Node island starts Node's own Worker instead: its entry must be a source-relative `new URL("./worker.ts", import.meta.url)` built from that module's URL, the build ships the entry and the modules it imports beside the island's modules, and the worker thread evaluates its own copies of them.
-The build refuses a Worker whose entry it cannot resolve to such a path, and a TypeScript entry, or a TypeScript module its imports reach, whose types Node cannot strip in a worker thread.
+The build refuses a Worker whose entry it cannot resolve to such a path, and a TypeScript module of the program that ships this way whose types Node cannot strip in a worker thread.
+A TypeScript module the worker's entry imports from outside the program ships unchecked, and Node reports its own error there if it cannot strip it.
 Each worker initializes its own module state, event loop, environment snapshot, and reference-counted heap.
 Nested workers inherit their parent's environment snapshot.
 Supported constructor options are `workerData`, `argv`, a `transferList` of MessagePorts, `name` (reported by `threadName` and `worker.threadName`), `stdout`, `stderr` and `stdin`, and `resourceLimits.stackSizeMb`, which sets the worker thread's stack size (at least 192 KiB; without it a worker's stack is 8 MiB, where Node's is 4 MiB).

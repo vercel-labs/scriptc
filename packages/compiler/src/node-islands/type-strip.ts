@@ -70,15 +70,8 @@ function importedValue(checker: ts.TypeChecker, element: ts.ImportSpecifier): bo
 
 /** The first construct in `sf` that Node cannot run with type stripping
  * only, or null. Only called for a user TypeScript module the pre-scan
- * marked as patching a builtin, so the walk costs nothing elsewhere.
- * `checkImports` is false for a file the build never put in the program
- * (a shipped worker entry's subtree): every other check is syntactic, and
- * the one that is not needs the checker. */
-export function stripProblem(
-  program: ts.Program,
-  sf: ts.SourceFile,
-  checkImports = true,
-): StripProblem | null {
+ * marked as patching a builtin, so the walk costs nothing elsewhere. */
+export function stripProblem(program: ts.Program, sf: ts.SourceFile): StripProblem | null {
   let checker: ts.TypeChecker | null = null;
   let found: StripProblem | null = null;
   ts.walkPreorder(sf, (node) => {
@@ -138,7 +131,6 @@ export function stripProblem(
       }
       const clause = node.importClause;
       if (
-        !checkImports ||
         clause === undefined ||
         clause.phaseModifier === ts.SyntaxKind.TypeKeyword ||
         clause.namedBindings === undefined ||

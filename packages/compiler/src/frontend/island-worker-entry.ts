@@ -21,11 +21,19 @@
  *
  * A TypeScript file that ships this way must pass stripProblem: Node
  * erases types in place in a worker thread too, and it refuses to do so
- * inside node_modules. */
+ * inside node_modules.
+ *
+ * The scan reads only the program's own sources, and never the TypeScript
+ * parser: a worker entry is a program root and its import graph is in the
+ * program (worker-target.ts), so the files this ships are exactly the ones
+ * the checker bound. A module of the tree the program does not hold has no
+ * checked source, and its Worker stays Node's own business, as it was before
+ * the tree carried it. The compiler itself is compiled natively, where the
+ * parser island's rpc-api/rpc-process modules cannot lower — importing them
+ * from a lowering-side module breaks the self-hosted build. */
 import { resolve } from "node:path";
-import { trackedFileExists, trackedReadFile } from "./input-tracker.js";
+import { trackedFileExists } from "./input-tracker.js";
 import * as ts from "./ts7/adapter.js";
-import { parseSourceFile } from "./ts7/source-parser-node.js";
 import { tsgoPath } from "./dts-paths.js";
 import { fromModuleUrl, staticForkString } from "./fork-target.js";
 import { moduleSourceCandidates } from "./module-source-candidates.js";
@@ -45,13 +53,6 @@ const TYPESCRIPT = /\.[mc]?ts$/;
 
 const NONE: NodeIslandWorkerScan = { kind: "entries", files: [] };
 
-interface IslandWorkerSource {
-  sf: ts.SourceFile;
-  /** False for a file the program never parsed: a worker entry's subtree is
-   * shipped, not compiled, so it need not be a file of the program. */
-  inProgram: boolean;
-}
-
 /** The scan over one program: `compiled` answers whether the program lowers
  * a file natively, whose Worker constructions the native lowering answers
  * (lowerWorkerNew) and which therefore never run from the shipped tree. It
@@ -62,39 +63,22 @@ export function createIslandWorkerScan(
   compiled: (file: string) => boolean,
 ): IslandWorkerScan {
   let programSources: Map<string, ts.SourceFile> | null = null;
-  const parsed = new Map<string, IslandWorkerSource | null>();
   const key = (file: string): string => tsgoPath(resolve(file));
-  const sourceOf = (file: string): IslandWorkerSource | null => {
-    const id = key(file);
-    const cached = parsed.get(id);
-    if (cached !== undefined) return cached;
+  const sourceOf = (file: string): ts.SourceFile | null => {
     programSources ??= new Map();
     if (programSources.size === 0)
       for (const sf of program.getImplementationSourceFiles())
         programSources.set(key(sf.fileName), sf);
-    const inProgram = programSources.get(id);
-    let source: IslandWorkerSource | null = null;
-    if (inProgram !== undefined) source = { sf: inProgram, inProgram: true };
-    else {
-      // Only the files a worker entry's subtree ships reach this: parse the
-      // text the tree carries, because the program never did.
-      const text = trackedReadFile(file);
-      if (text !== null)
-        source = { sf: parseSourceFile(file, text, kindOf(file)), inProgram: false };
-    }
-    parsed.set(id, source);
-    return source;
+    return programSources.get(key(file)) ?? null;
   };
 
   const workers = (file: string): NodeIslandWorkerScan => {
     if (compiled(key(file))) return NONE;
-    const source = sourceOf(file);
-    // A file a worker entry's subtree ships was never checked, so the
-    // checker cannot bind its names and a Worker it starts is not
-    // recognised; Node then reports that entry as a missing module in the
-    // worker thread. A file of the program is the case this serves.
-    if (source === null || !source.inProgram) return NONE;
-    const sf = source.sf;
+    // A file outside the program has no checked source: its Worker cannot be
+    // recognised, and Node reports its entry as a missing module in the
+    // worker thread exactly as it did before the tree carried the file.
+    const sf = sourceOf(file);
+    if (sf === null) return NONE;
     const entries = new Set<string>();
     for (const construction of moduleSourceCandidates(program, sf).constructions) {
       const args = construction.arguments?.nodes ?? [];
@@ -128,19 +112,14 @@ export function createIslandWorkerScan(
     if (!TYPESCRIPT.test(file)) return null;
     if (/[\\/]node_modules[\\/]/.test(file))
       return `'${file}' runs in a worker thread of a Node island, but Node refuses to strip types inside node_modules`;
-    const source = sourceOf(file);
-    if (source === null) return null;
-    const problem = stripProblem(program, source.sf, source.inProgram);
+    const sf = sourceOf(file);
+    if (sf === null) return null;
+    const problem = stripProblem(program, sf);
     if (problem === null) return null;
     return `'${file}' runs in a worker thread of a Node island, but Node cannot strip its types: ${problem.construct}`;
   };
 
   return { workers, sourceProblem };
-}
-
-/** The syntax a parse of `file` needs, from its extension. */
-function kindOf(file: string): "ts" | "tsx" {
-  return /\.[mc]?tsx$/.test(file) ? "tsx" : "ts";
 }
 
 /** A one-line description of the construction, anchored at its source: the

@@ -21,16 +21,19 @@ async function compileSource(source: string) {
 
 // A statement that lowers again after a later declarator degrades a type
 // reuses the member bodies of a function-local class it lowered the first
-// time, so the diagnostics of those bodies still report.
+// time, so the diagnostics of those bodies still report. An expando write on
+// a builtin handle (`new Date()`) reports, because a handle has no own-
+// property table to hold the write; the same write on an array or a record
+// lowers to `dyn.keySet` and compiles.
 test("a degrading retry keeps the diagnostics of a local class lowered before it", async () => {
   const result = await compileSource(`type Progress = (done: number, total: number) => void;
 type Callbacks = Progress | AbortSignal | Map<string, (x: number) => string> | Set<number>;
 function make(): number {
   const K = class {
       m(): number {
-        const a = [1, 2];
-        (a as any).foo = 1;
-        return a.length;
+        const d = new Date(0);
+        (d as any).foo = 1;
+        return 1;
       }
     },
     size = (cb: Callbacks): number => (cb instanceof Set ? cb.size : 0);

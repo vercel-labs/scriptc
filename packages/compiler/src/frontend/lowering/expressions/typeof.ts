@@ -81,6 +81,20 @@ export function lowerTypeofExpr(lowerer: Lowerer, expr: ts.TypeOfExpression, loc
         return { kind: "strLit", value: "undefined", type: STRING, loc };
     }
   }
+  // `require` in an ES module: Node defines no `require` binding there, so
+  // typeof answers "undefined" instead of throwing (the __dirname stance
+  // above, for the binding Node never creates in ANY ES module file kind).
+  {
+    let operand = expr.expression;
+    while (ts.isParenthesizedExpression(operand)) operand = operand.expression;
+    if (
+      ts.isIdentifier(operand) &&
+      operand.text === "require" &&
+      lowerer.isStdlibGlobal(operand, "require") &&
+      isNodeEsmFile(ts.getSourceFileOfNode(operand), lowerer.program)
+    )
+      return { kind: "strLit", value: "undefined", type: STRING, loc };
+  }
   if (isNavigatorGlobal(lowerer, expr.expression))
     return { kind: "strLit", value: "object", type: STRING, loc };
   const performance = lowerPerfHooksTypeof(lowerer, expr.expression);

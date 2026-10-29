@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/bounded-builtin-import.ts"
+ ],
+ "diags": []
+}

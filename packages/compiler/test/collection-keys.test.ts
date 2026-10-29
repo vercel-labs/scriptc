@@ -75,6 +75,42 @@ test.each(references)("identity key %j uses the reference ABI in LLVM", (type) =
   expect(mapKeyKindNum(type)).toBe(2);
 });
 
+test("a promise is a reference key: Set<Promise<T>> compares by identity", () => {
+  // A promise is one object for its whole life and the runtime's
+  // scr_promise_{retain,release,trace}_v adapters serve it as a Map value
+  // already, so it joins the identity-key ABI.
+  const promise: IrType = { kind: "promise", inner: VOID };
+  expect(isIdentityCollectionKey(promise)).toBe(true);
+  expect(isSupportedMapKey(promise)).toBe(true);
+  expect(isSupportedSetElem(promise)).toBe(true);
+  expect(mapKeyAccess(promise)).toBe("ref");
+  expect(mapKeyKindNum(promise)).toBe(2);
+
+  const dir = mkdtempSync(join(tmpdir(), "scriptc-promise-set-"));
+  try {
+    const entry = join(dir, "main.ts");
+    writeFileSync(
+      entry,
+      `
+      async function main(): Promise<void> {
+        const pending = new Set<Promise<void>>();
+        const work = Promise.resolve();
+        pending.add(work);
+        pending.add(work);
+        if (pending.has(work)) pending.delete(work);
+        await Promise.all([...pending]);
+        for (const member of pending) await member;
+      }
+      main();
+    `,
+    );
+    const { coverage } = analyze(entry, {});
+    expect(coverage.diagnostics).toEqual([]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("boxed reference keys select payload identity, not wrapper identity", () => {
   expect(isSupportedMapKey(union, references)).toBe(true);
   expect(isSupportedSetElem(union, references)).toBe(true);

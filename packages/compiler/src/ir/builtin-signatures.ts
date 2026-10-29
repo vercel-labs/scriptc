@@ -4878,6 +4878,11 @@ function buildLibFnSignatures() {
      * (key-order-witness.ts ordered spreads). Both are record types. Never
      * throws. */
     "record.sourceSpread": { argTypes: [null, null], result: VOID },
+    /** `record.sourceNote(built, mirror)`: the record `built` keeps the own
+     * properties of the ordinary dyn object `mirror` as its checked source
+     * (scr_record_source_note), so reflective surfaces observe the keys it
+     * has no slot for, in the mirror's order (record-sources.ts). */
+    "record.sourceNote": { argTypes: [null, null], result: VOID },
     "insp.key": { argTypes: [STRING], result: STRING },
     "insp.moreItems": { argTypes: [F64], result: STRING },
     "insp.end": { argTypes: [STRING, STRING, STRING, F64, BOOL, BOOL], result: STRING },

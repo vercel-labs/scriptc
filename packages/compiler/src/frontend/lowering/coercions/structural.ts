@@ -178,12 +178,14 @@ export function applyWidthLift(
       const inner = lowerer.widthLiftPlan(value.type, lift.arm);
       if (!inner)
         throw new InternalCompilerError("lowerer bug: planned liftWrap arm stopped lifting");
-      const lifted = lowerer.applyWidthLift(inner, value, lift.arm, loc);
+      // A width narrowing keeps the copy stance (SEMANTICS.md 36): the arm's
+      // conversion drops the fields the arm does not declare, exactly like a
+      // record-to-record width. Only a field spread in the source keeps them.
       return {
         kind: "unionWrap",
         unionId: dst.unionId,
         tag: lift.tag,
-        value: lifted,
+        value: lowerer.applyWidthLift(inner, value, lift.arm, loc),
         type: dst,
         loc,
       };

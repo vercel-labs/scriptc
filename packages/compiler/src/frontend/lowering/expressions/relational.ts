@@ -60,6 +60,12 @@ import { foldedStringKeyOf } from "./object-literals.js";
 import { NARROW_FIRST, sideEffectFreeOptionValue } from "../surfaces.js";
 import { isExecExceptionType, refuseExecExceptionCode } from "../builtins/errors.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
+import {
+  deferSourceAnswer,
+  type DeclareLocal,
+  recordMayKeepSource,
+  recordSourceAnswer,
+} from "../record-sources.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js";
 
 /** The class value an `instanceof` right-hand side holds. A JavaScript
@@ -1852,8 +1858,16 @@ export function lowerInExpression(
   if (recv.type.kind === "union") {
     const unionId = recv.type.unionId;
     const arms = lowerer.unions.get(unionId)?.arms ?? [];
-    const answers: { tag: number; has: boolean | "slot" | "unit" | "keyed"; arm: IrType }[] = [];
+    const answers: {
+      tag: number;
+      has: boolean | "slot" | "unit" | "keyed" | "source";
+      arm: IrType;
+    }[] = [];
     let staticAnswers = arms.length > 0;
+    // Arms that do not declare the name but can keep a source: they answer
+    // the static false that forces the per-value chain below, and the
+    // source-aware answer for them is settled after the pass (deferred).
+    const pendingTags = new Set<number>();
     for (const arm of arms) {
       const tag = lowerer.armTag(unionId, arm);
       if (tag < 0) {
@@ -1887,18 +1901,53 @@ export function lowerInExpression(
       // the name a member.
       const acc = shape.fields.some((x) => x.name === `%get:${key}` || x.name === `%set:${key}`);
       if (f !== undefined || acc || !shape.indexValue) {
-        answers.push({ tag, has: f !== undefined || acc || inherited, arm });
+        const answer = f !== undefined || acc || inherited;
+        // An arm that does not declare the name still answers a record
+        // that kept its checked source's undeclared properties: presence is
+        // asked of the value (perValueUnionIn). Whether the program can keep
+        // such a source anywhere settles only after the pass, so the arm
+        // answers the shape's static false now and the source-aware chain is
+        // built at the end if the fact holds (deferSourceAnswer).
+        if (!answer && arm.kind === "record" && recordMayKeepSource(lowerer, arm))
+          pendingTags.add(tag);
+        answers.push({ tag, has: answer, arm });
         continue;
       }
       // An index-signature arm answers the overflow map's own key (a
       // stored undefined is present), or the prototype's name.
       answers.push({ tag, has: "keyed", arm });
     }
+    // The source-aware answer, planned only when the program turns out to
+    // keep a source (record-sources.ts): the same chain with those arms
+    // asked of the value. Until then the site keeps the static answer.
+    const settled = (node: IrExpr): IrExpr =>
+      pendingTags.size === 0
+        ? node
+        : deferSourceAnswer(
+            lowerer,
+            node,
+            recv,
+            `union:${unionId}:${typeKey(recv.type)}:${key}`,
+            (value, declare) =>
+              perValueUnionIn(
+                lowerer,
+                value,
+                unionId,
+                key,
+                answers.map((a): { tag: number; has: boolean | "slot" | "unit" | "keyed" | "source"; arm: IrType } =>
+                  pendingTags.has(a.tag) ? { ...a, has: "source" } : a,
+                ),
+                loc,
+                declare,
+              ),
+          );
     if (
       staticAnswers &&
-      answers.some((a) => a.has === "slot" || a.has === "unit" || a.has === "keyed")
+      answers.some(
+        (a) => a.has === "slot" || a.has === "unit" || a.has === "keyed" || a.has === "source",
+      )
     ) {
-      return perValueUnionIn(lowerer, recv, unionId, key, answers, loc);
+      return settled(perValueUnionIn(lowerer, () => recv, unionId, key, answers, loc));
     }
     if (staticAnswers) {
       // A field read is pure only over a pure object: the stored value of
@@ -1922,21 +1971,21 @@ export function lowerInExpression(
         // reads fold; anything else rides one tag test whose branches
         // agree, evaluating the receiver exactly once.
         const ans = trues.length !== 0;
-        if (pureRecv) return { kind: "boolLit", value: ans, type: BOOL, loc };
-        return {
+        if (pureRecv) return settled({ kind: "boolLit", value: ans, type: BOOL, loc });
+        return settled({
           kind: "ternary",
           cond: isTag(answers[0]!.tag, false),
           then: { kind: "boolLit", value: ans, type: BOOL, loc },
           else_: { kind: "boolLit", value: ans, type: BOOL, loc },
           type: BOOL,
           loc,
-        };
+        });
       }
       // One deciding arm (either polarity): a single tag test, receiver
       // evaluated once — no purity requirement.
-      if (trues.length === 1) return isTag(trues[0]!.tag, false);
+      if (trues.length === 1) return settled(isTag(trues[0]!.tag, false));
       const falses = answers.filter((a) => !a.has);
-      if (falses.length === 1) return isTag(falses[0]!.tag, true);
+      if (falses.length === 1) return settled(isTag(falses[0]!.tag, true));
       // Several arms on each side: the OR chain re-reads the receiver, so
       // anything but a pure read is evaluated once into a hidden local.
       const stable = pureRecv ? null : lowerer.declareHiddenLocal("%inRecv", recv.type);
@@ -1952,14 +2001,14 @@ export function lowerInExpression(
           loc,
         };
       }
-      if (!stable) return out;
-      return {
+      if (!stable) return settled(out);
+      return settled({
         kind: "seqExpr",
         stmts: [{ kind: "varDecl", localId: stable.id, init: recv, loc }],
         result: out,
         type: BOOL,
         loc,
-      };
+      });
     }
   }
   // A literal member name over a typed array (`"BYTES_PER_ELEMENT" in a`):
@@ -2058,6 +2107,34 @@ export function lowerInExpression(
       loc,
     };
   }
+  // A closed record built by a checked conversion keeps the own properties
+  // of its source that the shape does not declare beside it
+  // (record-sources.ts). `in` asks the VALUE for an own property, so an
+  // undeclared name answers from the live checked view when the record kept
+  // a source; a record that kept none answers the shape's (false) as before.
+  // Whether the program can keep one anywhere settles only after the pass,
+  // so the site keeps the static answer and the view is built at the end
+  // when the fact holds (deferSourceAnswer).
+  if (!inherited && recordMayKeepSource(lowerer, recv.type)) {
+    // Answered after the pass settles the fact: a program that keeps no
+    // source anywhere keeps this static answer, byte for byte
+    // (deferSourceAnswer).
+    return deferSourceAnswer(
+      lowerer,
+      staticAnswerAfter(recv, inherited, loc),
+      recv,
+      `record:${typeKey(recv.type)}:${key}`,
+      (view, declare) =>
+        recordSourceAnswer(
+          lowerer,
+          view(),
+          loc,
+          () => ({ kind: "boolLit", value: false, type: BOOL, loc }),
+          (live) => ({ kind: "dynHasKey", key, value: live, type: BOOL, loc }),
+          declare,
+        ),
+    );
+  }
   return staticAnswerAfter(recv, inherited, loc);
 }
 
@@ -2089,18 +2166,20 @@ function staticAnswerAfterWith(recv: IrExpr, result: IrExpr, loc: SrcLoc): IrExp
  * hidden local first. */
 function perValueUnionIn(
   lowerer: Lowerer,
-  recv: IrExpr,
+  recvAt: () => IrExpr,
   unionId: string,
   key: string,
   answers: readonly {
     tag: number;
-    has: boolean | "slot" | "unit" | "keyed";
+    has: boolean | "slot" | "unit" | "keyed" | "source";
     arm: IrType;
   }[],
   loc: SrcLoc,
+  declare: DeclareLocal = (name, type) => lowerer.declareHiddenLocal(name, type),
 ): IrExpr {
+  const recv = recvAt();
   const recvType = recv.type;
-  const stable = isSafeToRepeat(recv) ? null : lowerer.declareHiddenLocal("%inRecv", recvType);
+  const stable = isSafeToRepeat(recv) ? null : declare("%inRecv", recvType);
   const ref = (): IrExpr => (stable ? varRef(stable.id, recvType, loc) : recv);
   const isTag = (tag: number): IrExpr => ({
     kind: "unionIsTag",
@@ -2175,6 +2254,34 @@ function perValueUnionIn(
         op: "&&",
         left: test,
         right: presence,
+        type: BOOL,
+        loc,
+      };
+    }
+    if (a.has === "source" && a.arm.kind === "record") {
+      // The arm does not declare the name; a value of it built by a checked
+      // conversion still owns the source's undeclared properties, kept
+      // beside the record (record-sources.ts) — ask the value.
+      const narrowed: IrExpr = {
+        kind: "unionNarrow",
+        unionId,
+        tag: a.tag,
+        value: ref(),
+        type: a.arm,
+        loc,
+      };
+      test = {
+        kind: "logical",
+        op: "&&",
+        left: test,
+        right: recordSourceAnswer(
+          lowerer,
+          narrowed,
+          loc,
+          () => ({ kind: "boolLit", value: false, type: BOOL, loc }),
+          (view) => ({ kind: "dynHasKey", key, value: view, type: BOOL, loc }),
+          declare,
+        ),
         type: BOOL,
         loc,
       };

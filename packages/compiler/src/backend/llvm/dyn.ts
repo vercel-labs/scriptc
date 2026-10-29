@@ -1939,6 +1939,21 @@ export class LlDyn {
     return descriptor;
   }
 
+  /** `record.sourceNote(built, mirror)`: the built record keeps the own
+   * properties of an ordinary dyn mirror as its checked source, so the keys
+   * it has no slot for stay observable (scr_record_source_note, walked by
+   * the serializers and the reflective surfaces in the mirror's order). */
+  emitRecordSourceNote(B: BlockBuilder, built: string, mirror: string, shapeId: string): void {
+    const host = this.host;
+    const shape = host.recordsById.get(shapeId)!;
+    this.keepsRecordSources = true;
+    const names = this.recordNameTable(shapeId, shape);
+    host.declare(`declare void @scr_record_source_note(ptr, ptr, ptr, ptr, ${host.sizeType})`);
+    B.line(
+      `call void @scr_record_source_note(ptr ${built}, ptr ${mirror}, ptr ${names.names}, ptr ${names.lens}, ${host.sizeType} ${shape.fields.length})`,
+    );
+  }
+
   /** `record.sourceSpread(built, value)`: the built record keeps value's
    * kept-source order over its own declared names. */
   emitRecordSourceSpread(B: BlockBuilder, built: string, value: string, shapeId: string): void {

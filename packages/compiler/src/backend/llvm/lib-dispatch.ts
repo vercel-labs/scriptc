@@ -271,6 +271,15 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(`${out} = call ptr @scr_promise_payload_ref(ptr ${promise.name}) ; +1`);
     return host.own({ name: out, type: e.type });
   }
+  if (e.fn === "record.sourceNote") {
+    const built = host.emitReadReceiver(e.args[0]!);
+    const mirror = host.emitReadReceiver(e.args[1]!);
+    const type = e.args[0]!.type;
+    if (type.kind !== "record")
+      throw new InternalCompilerError("llvm emitter bug: record.sourceNote of a non-record");
+    host.dyn.emitRecordSourceNote(B, built.name, mirror.name, type.shapeId);
+    return { name: "", type: e.type };
+  }
   if (e.fn === "record.sourceSpread") {
     const built = host.emitReadReceiver(e.args[0]!);
     const value = host.emitReadReceiver(e.args[1]!);

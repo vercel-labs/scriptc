@@ -312,9 +312,15 @@ export function lowerLambda(
   // A lambda IS a value: the completed-ABI rule applies at birth. The
   // contextual (target) type decides — `(x?: number) => void` may flow
   // into a slot annotated `(x: number | undefined) => void` (same ABI
-  // signature), anything else is fenced. Nested function declarations and
-  // object-literal shorthand methods aren't expressions — always fenced.
+  // signature), anything else is fenced. Object-literal shorthand methods
+  // aren't expressions: their slot is the literal's, judged inside.
+  // A nested function DECLARATION is not an expression either: lowering it
+  // builds the body, not a value, and every value use re-runs the same
+  // fence at the reference (identifiers.ts) with that use's own target
+  // (a call, or `const g = f` under an annotated slot). Fencing it here
+  // refused declarations that are only ever CALLED.
   if (
+    !ts.isFunctionDeclaration(node) &&
     !(
       ts.isMethodDeclaration(node) &&
       isJsSourceFile(ts.getSourceFileOfNode(node)) &&

@@ -94,3 +94,23 @@ test.for([
     invalid,
   );
 });
+
+test("JavaScript async generators may delegate over a runtime async-iterator shape", () => {
+  expect(
+    diagnostics(
+      `export async function* delegated() { yield* { [Symbol.asyncIterator]: 42 }; }
+export async function* looped() { for await (const value of { [Symbol.asyncIterator]() { return "text"; } }) console.dir(value); }`,
+      'import { delegated, looped } from "./library.js"; delegated(); looped();',
+    ),
+  ).toEqual([]);
+});
+
+test("TypeScript keeps the async-iterator demand", () => {
+  expect(
+    diagnostics(
+      "export async function* delegated() { yield* { [Symbol.asyncIterator]: 42 }; }",
+      'import { delegated } from "./library.js"; delegated();',
+      "ts",
+    ).some((diagnostic) => diagnostic.message.includes("Symbol.asyncIterator")),
+  ).toBe(true);
+});

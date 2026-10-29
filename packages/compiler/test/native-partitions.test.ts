@@ -8,6 +8,9 @@ import { afterEach, describe, expect, test } from "vitest";
 import { nativeCodegenTarget, nativeHelperForTarget } from "../src/backend/targets.js";
 
 const execFileAsync = promisify(execFile);
+// Mach-O objects define a local label (ltmp0, ltmp1, ...) at the start of
+// each section; it names no function.
+const machoSectionLabel = /^ltmp\d+$/;
 const target = nativeCodegenTarget();
 const helperSpec = target === null ? null : nativeHelperForTarget(target);
 const helper = (() => {
@@ -264,7 +267,7 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
       return stdout
         .split("\n")
         .map((line) => /^[0-9a-fA-F]+ [Tt] _?(\w+)$/.exec(line.trim())?.[1])
-        .filter((name): name is string => name !== undefined);
+        .filter((name): name is string => name !== undefined && !machoSectionLabel.test(name));
     };
     const whole = await defined(
       (await emit(dir, program(), { outputs: 1, optLevel: "2", name: "whole" }))[0]!,
@@ -390,7 +393,12 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
     expect(stdout).toMatch(/ t _?heavy$/m);
     for (const part of parts.slice(1)) {
       const listed = await execFileAsync("nm", ["--defined-only", part]);
-      expect(listed.stdout.trim()).toBe("");
+      const symbols = listed.stdout
+        .split("\n")
+        .filter(
+          (line) => line.trim() !== "" && !machoSectionLabel.test(line.trim().split(" ").at(-1)!),
+        );
+      expect(symbols).toEqual([]);
     }
     // The first output is the object that a single output produces.
     const first = await readFile(parts[0]!);

@@ -1,7 +1,7 @@
 import { keyedHelperName } from "../stable-names.js";
 import { dateJsonType, isDateJsonSource } from "../builtins/dates.js";
 import { dynUndefinedExpr, numLit, strLit, varRef } from "../../../ir/build.js";
-import { pathModuleValue } from "../lower-builtin-values.js";
+import { pathModuleSpreadSource } from "../lower-builtin-values.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
 import {
@@ -20,7 +20,10 @@ import {
 import type { IrExpr, IrLocal, IrRecordShape, IrStmt, IrType, SrcLoc } from "../../../ir/ir.js";
 import { isCjsExportTableLiteral, isJsSourceFile, locOf } from "../../program.js";
 import { NARROW_FIRST } from "../surfaces.js";
-import { recordShapeMismatchDiag } from "../../../diagnostics/diagnostic.js";
+import {
+  recordShapeMismatchDiag,
+  unionLiteralMismatchDiag,
+} from "../../../diagnostics/diagnostic.js";
 import { PoisonError, jsFuncNameOf, neverTaintedJsType } from "../lowerer.js";
 import type { Lowerer } from "../lowerer.js";
 import { lowerIndexMergeHelper } from "../containers/indexed-objects.js";
@@ -44,6 +47,7 @@ import { jsHoldsDynObject, runtimeOptionalStorageOperand } from "../lower-exprs.
 import { builtinGlobalValue } from "./property-access.js";
 import { holdsEvolvingArray } from "../lower-stmts.js";
 import { builtinNamespaceValue } from "../builtin-namespaces.js";
+import { tsUntypedGlobalValue } from "../global-values.js";
 
 /** `{ a: 1, b: "x" }` → recordLit. The record type comes from the
  * contextual type when tsc has one (annotated declarations, arguments,
@@ -307,7 +311,12 @@ export function lowerDynObjectLiteral(
       const builtin = lowerer.builtinNamespaceModuleOf(prop.expression);
       const raw =
         builtin === "path" || builtin === "path/posix" || builtin === "path/win32"
-          ? pathModuleValue(lowerer, builtin === "path" ? "path/posix" : builtin, locOf(prop))
+          ? pathModuleSpreadSource(
+              lowerer,
+              builtin === "path" ? "path/posix" : builtin,
+              isNamespaceImport(lowerer, prop.expression),
+              locOf(prop),
+            )
           : !boxValue &&
               conditionalArms &&
               (conditionalSpreadOf(prop.expression) !== null ||
@@ -438,8 +447,11 @@ export function lowerDynObjectLiteral(
       // A PURE member read a JS file cannot lower (a namespace object
       // in an export aggregate): the slot takes a boxed fence closure —
       // the diagnostics defer to the runtime-fence ledger, the object
-      // builds, and only USING the member stops the run.
-      const pureMember = ts.isIdentifier(valueExpr);
+      // builds, and only USING the member stops the run. A TypeScript
+      // source keeps the compile-time refusal: the closure would answer
+      // typeof "function" and undefined members where Node reads the
+      // value.
+      const pureMember = ts.isIdentifier(valueExpr) && isJsSourceFile(ts.getSourceFileOfNode(prop));
       if (!(err instanceof PoisonError) || !pureMember) throw err;
       const fence = lowerer.deferToRuntimeFence(propDiagsBefore, prop, {
         kind: "closure",
@@ -1301,7 +1313,24 @@ export function lowerObjectLiteral(
     if (fallback) return fallback;
     lowerer.unsupported("SC1090", deferredConditionalSpread, CONDITIONAL_SPREAD_FENCE);
   }
-  if (!mapped || mapped.kind !== "record") lowerer.badType(expr, tsType);
+  if (!mapped || mapped.kind !== "record") {
+    // A spread merge over UNION-typed sources (`{ ...base, ...override }`
+    // with `base`, `override` of arm-union types) has one field set per
+    // combination of source arms, so its own type is a union of records.
+    // No single arm of the contextual union can hold that value without
+    // dropping the fields the other arms contributed (Node keeps them
+    // all), and a runtime tag would be a guess about which arm the value
+    // "is". Refuse, naming the candidate arms.
+    if (mapped?.kind === "union") {
+      const members = tsType.isUnionType() ? ts.constituentTypes(tsType) : [tsType];
+      const arms = [...new Set(members.map((m) => lowerer.checker.typeToString(m)))];
+      lowerer.pushDiag(
+        unionLiteralMismatchDiag(lowerer.checker.typeToString(tsType), arms, locOf(expr)),
+      );
+      throw new PoisonError();
+    }
+    lowerer.badType(expr, tsType);
+  }
   let type: IrType = mapped;
   // A fresh, plain literal can construct its fields directly for a known
   // destination with the same field set. This matters for inferred
@@ -2537,7 +2566,7 @@ export function lowerObjectLiteral(
       ) {
         throw err;
       }
-      lowerer.runtimeFences.push(...lowerer.diags.splice(propDiagsBefore));
+      for (const d of lowerer.diags.splice(propDiagsBefore)) lowerer.runtimeFences.push(d);
       droppedNames.add(name);
       continue;
     }
@@ -3515,7 +3544,8 @@ function shorthandBuiltinValue(
   const name = ts.symbolName(symbol);
   return (
     (js ? builtinNamespaceValue(lowerer, name, locOf(prop.name)) : null) ??
-    builtinGlobalValue(name, locOf(prop.name), js)
+    builtinGlobalValue(name, locOf(prop.name), js) ??
+    tsUntypedGlobalValue(lowerer, prop.name as ts.Identifier, name, locOf(prop.name))
   );
 }
 
@@ -3654,4 +3684,13 @@ function rejectThisInObjectAccessor(lowerer: Lowerer, node: ts.Node): void {
     );
   }
   ts.forEachChild(node, (child) => rejectThisInObjectAccessor(lowerer, child));
+}
+
+/** Whether a spread source is an ES module namespace binding
+ * (`import * as path`); a default import, a require and a named
+ * sub-namespace are module objects. */
+function isNamespaceImport(lowerer: Lowerer, expr: ts.Expression): boolean {
+  if (!ts.isIdentifier(expr)) return false;
+  const decl = lowerer.checker.getSymbolAtLocation(expr)?.declarations[0];
+  return decl !== undefined && ts.isNamespaceImport(decl);
 }

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/stdio-write-replacement-arguments.cjs"
+ ],
+ "diags": []
+}

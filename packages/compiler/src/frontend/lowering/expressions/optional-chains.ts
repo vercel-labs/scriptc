@@ -1,5 +1,4 @@
 import { isNavigatorGlobal } from "../builtins/navigator.js";
-import { isSafeToDiscard } from "./evaluation-safety.js";
 import { completeFuncValueArgs } from "../call-arguments.js";
 import { dynUndefinedExpr } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
@@ -449,24 +448,20 @@ export function lowerOptionalChain(
   // directly (no member dispatch exists to re-enter).
   if (dotNode === expr && ts.isCallExpression(expr)) {
     if (narrowed.kind !== "func") lowerer.badType(recvNode, lowerer.typeOf(recvNode));
-    const params = narrowed.params;
-    // Forwarded fixed tuples (`f?.(...args)`) complete into the slots.
-    if (expr.arguments.nodes.some(ts.isSpreadElement)) {
-      const completed = completeFuncValueArgs(lowerer, expr, narrowed, loc);
-      const call: IrExpr = {
-        kind: "callValue",
-        callee: recvRef,
-        args: completed,
-        type: narrowed.ret,
-        loc,
-      };
-      return lowerer.finishOptionalChain(expr, id, receiver, call, loc);
-    }
-    const args = expr.arguments.nodes.map((a, i) => lowerer.lowerExprExpecting(a, params[i]));
-    // Effect-free surplus arguments (a dropped `void` slot) are ignored.
-    while (narrowed.rest !== true && args.length > params.length && isSafeToDiscard(args.at(-1)!))
-      args.pop();
-    const body: IrExpr = { kind: "callValue", callee: recvRef, args, type: narrowed.ret, loc };
+    // The same completed function-value ABI an unguarded call uses: an
+    // omitted optional argument still reaches the callee as undefined
+    // (`cb?.onRetryFinished?.(false, attempt)` must see its third
+    // parameter), a forwarded tuple completes into the slots, and an
+    // effect-free surplus argument is ignored. The completion runs INSIDE
+    // the guard, so a nullish callee still evaluates no argument.
+    const completed = completeFuncValueArgs(lowerer, expr, narrowed, loc);
+    const body: IrExpr = {
+      kind: "callValue",
+      callee: recvRef,
+      args: completed,
+      type: narrowed.ret,
+      loc,
+    };
     return lowerer.finishOptionalChain(expr, id, receiver, body, loc);
   }
 

@@ -1,5 +1,5 @@
 /* Identifier references in expression position: lowerExprInner's identifier branch and its helpers. */
-import { globalMemberValue } from "../global-values.js";
+import { globalMemberValue, tsUntypedGlobalValue } from "../global-values.js";
 import { predeclareForwardClass } from "../lower-stmts.js";
 import { cjsMemberAliasValueOf } from "../cjs-exports-object.js";
 import { builtinClassValue, builtinMemberClassKind } from "../builtins/builtin-class-dyn.js";
@@ -86,7 +86,7 @@ import {
   identifierReadSymbol,
   stdlibGlobalNameOf,
 } from "../surfaces.js";
-import { builtinConstantsObject } from "../lower-builtin-values.js";
+import { builtinConstantsObject, pathModuleValue } from "../lower-builtin-values.js";
 import { lowerTlsRootCertificates } from "../lower-server.js";
 import { builtinFunctionFenceValue } from "../builtin-function-fences.js";
 import { unsupportedModuleFeatureOf } from "../../builtin-modules.js";
@@ -95,6 +95,15 @@ import { fenceEnumObjectValue } from "../lower-enums.js";
 import { mixinFnOfCallee } from "../lower-mixins.js";
 import { isNavigatorGlobal, navigatorValue } from "../builtins/navigator.js";
 import { moduleFileName } from "../import-meta.js";
+
+/** A JavaScript binding with checked-dynamic storage because the program
+ * stores values outside its declared type (analyzeJsWidenedBindings): the
+ * checker's narrowing at a read does not describe the stored value. */
+function isJsWidenedBinding(lowerer: Lowerer, expr: ts.Identifier): boolean {
+  if (lowerer.jsWidenedBindings.size === 0) return false;
+  const symbol = lowerer.resolveValueSymbol(expr);
+  return symbol !== null && symbol !== undefined && lowerer.jsWidenedBindings.has(symbol);
+}
 
 export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: SrcLoc): IrExpr {
   if (lowerer.isStdlibGlobal(expr, "console")) {
@@ -286,6 +295,8 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       }
       return { kind: "varRef", localId: local.id, type: local.type, loc };
     }
+    if (local.type.kind === "dyn" && isJsWidenedBinding(lowerer, expr))
+      return { kind: "varRef", localId: local.id, type: local.type, loc };
     const narrowed = lowerer.maybeNarrow(
       { kind: "varRef", localId: local.id, type: local.type, loc },
       expr,
@@ -401,6 +412,7 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       if (use?.kind === "call") return runtimeOptionalReceiverRead(lowerer, expr, g, null, loc);
       return ref;
     }
+    if (g.type.kind === "dyn" && isJsWidenedBinding(lowerer, expr)) return ref;
     return lowerer.maybeNarrow(ref, expr);
   }
   // `undefined` — tsc's intrinsic global (a local shadowing the name
@@ -562,6 +574,16 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       }
       const c = builtinModuleConstOf(lowerer, bi.module, bi.member);
       if (c !== undefined) return builtinConstLit(c, loc);
+      // `import { posix, win32 } from "node:path"` as VALUES: the platform
+      // namespaces are members of the path module object, so the named
+      // import reads the same checked-dynamic module value the property
+      // form (path.posix) lowers to.
+      if (
+        (bi.module === "path" || bi.module === "path/posix" || bi.module === "path/win32") &&
+        (bi.member === "posix" || bi.member === "win32")
+      ) {
+        return pathModuleValue(lowerer, `path/${bi.member}`, loc);
+      }
       // module.builtinModules — the baked Node v24 list, a fresh
       // string[] per read.
       if (bi.module === "module" && bi.member === "builtinModules") {
@@ -815,6 +837,8 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
         return { kind: "strLit", value: `[builtin ${canonical}]`, type: STRING, loc };
       }
+      const untyped = tsUntypedGlobalValue(lowerer, expr, canonical, loc);
+      if (untyped !== null) return untyped;
       // The families with a WHY: each hint states what makes the
       // surface genuinely non-static (or what to use instead).
       const globalHints: Record<string, string | undefined> = {
@@ -1030,6 +1054,27 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
         `the exports object of '${split.spec}' as a value (its exports compile to a static table: read require(${JSON.stringify(split.spec)}).member directly)`,
       );
     }
+  }
+  // A `.js` READ of a name NOTHING declares. Node resolves such a name at
+  // run time: the access throws the catchable `ReferenceError: <name> is not
+  // defined` (a `typeof` test lowers earlier, in expressions/typeof.ts, and
+  // answers "undefined" — exactly Node's rule), so the read compiles to that
+  // throw and never yields a value. The value is checked-dynamic (the
+  // checker's error-any), which every use site carries or fences — and the
+  // read always unwinds before any of them observes it. A WRITE to the same
+  // name is not a read: it reaches rejectUnresolved and its SC1091 story.
+  // Typed sources keep the compile error (preflight's JS relaxation is
+  // `isJsSourceFileName`-gated, so no TS file reaches this branch).
+  // In shorthand position (`{ x }`) `resolveValueSymbol` answers the
+  // PROPERTY symbol, so the declaration test there is the checker's
+  // shorthand-VALUE symbol.
+  const parent = expr.parent;
+  const undeclared =
+    parent !== undefined && ts.isShorthandPropertyAssignment(parent) && parent.name === expr
+      ? lowerer.checker.getShorthandAssignmentValueSymbol(parent) === undefined
+      : lowerer.resolveValueSymbol(expr) === null;
+  if (undeclared && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    return nsUndefRead(lowerer, expr.text, expr, contextualUndefReadType(lowerer, expr) ?? DYN);
   }
   // Preflight guarantees no unresolved identifiers; anything else here
   // is a blocked declaration's binding (the SC2004 cascade) or a

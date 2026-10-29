@@ -1,6 +1,6 @@
 {
   "name": "@scriptc/libnode-linux-arm64-gnu",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "private": true,
   "description": "Prebuilt Node.js shared library and scriptc bridge for Node islands on Linux arm64 glibc",
   "license": "SEE LICENSE IN LICENSE",

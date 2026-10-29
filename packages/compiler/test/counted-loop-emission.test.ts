@@ -85,7 +85,11 @@ test("worker programs poll counted loops over typed arrays between blocks of ite
       const outPath = join(dir, `${workers ? "worker" : "plain"}.ir.json`);
       const result = await compile(entry, { outPath, outDir: dir, outputKind: "ir" });
       if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
-      return emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")));
+      // ELF executables poll the thread's pending word (@scr_exc_flag);
+      // other targets read the process-wide alert word.
+      return emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")), {
+        targetTriple: "x86_64-unknown-linux-gnu",
+      });
     };
     // Every emitted version of a function (the number and int32 entries).
     const bodies = (ll: string, name: string): string =>
@@ -254,7 +258,10 @@ test("worker programs poll no loop whose proven ranges bound its runs inside ano
     const outPath = join(dir, "bounded.ir.json");
     const result = await compile(entry, { outPath, outDir: dir, outputKind: "ir" });
     if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
-    const ll = emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")));
+    // The polls counted below read the thread's pending word of ELF executables.
+    const ll = emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")), {
+      targetTriple: "x86_64-unknown-linux-gnu",
+    });
     const body = (name: string): string =>
       [
         ...ll.matchAll(

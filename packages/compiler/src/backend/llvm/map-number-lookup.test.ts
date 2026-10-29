@@ -117,8 +117,9 @@ test("string keys and reference values are retained inline, boolean slots compar
   expect(text).toContain("call ptr @scr_map_iter_val_ref(");
 });
 
-/** work(map, k): map.has(k) on a number-keyed map. */
-function lookupFixture(key: IrExpr = ref("k", F64)): IrModule {
+/** work(map, k): map.has(k) on a number-keyed map, or with `loop`, the
+ * condition of `while (map.has(k)) {}`, after `filler` statements `k;`. */
+function lookupFixture(key: IrExpr = ref("k", F64), loop = false, filler = 0): IrModule {
   const map: IrType = { kind: "map", key: F64, value: F64 };
   const params = [
     { localId: "map", name: "map", type: map },
@@ -138,7 +139,17 @@ function lookupFixture(key: IrExpr = ref("k", F64)): IrModule {
     returnType: BOOL,
     loc,
     locals: params.map((p) => ({ id: p.localId, name: p.name, type: p.type, mutable: true })),
-    body: [{ kind: "return", value: has, loc }],
+    body: loop
+      ? [
+          ...Array.from({ length: filler }, (): IrStmt => ({
+            kind: "exprStmt",
+            expr: ref("k", F64),
+            loc,
+          })),
+          { kind: "while", cond: has, body: [], loc },
+          { kind: "return", value: { kind: "boolLit", value: false, type: BOOL, loc }, loc },
+        ]
+      : [{ kind: "return", value: has, loc }],
   };
   return {
     irVersion: 17,
@@ -159,6 +170,10 @@ test("hashed number-key lookups probe inline and call the runtime only for wide 
       module,
     )![0];
     expect(helper).toContain("call ptr @sc_map_entry_f64_hashed(ptr %m, double %k)");
+    // A key outside the direct index goes to the probe, whose small-map
+    // branch tells a map with the index (field 16) from one without it.
+    expect(helper).toMatch(/br i1 %ix\d+, label %slot, label %slow\n/);
+    expect(helper).not.toContain("dense.any");
     const hashed =
       /^define internal ptr @sc_map_entry_f64_hashed\(ptr %m, double %k\) noinline [^]*?^}/m.exec(
         module,
@@ -171,7 +186,10 @@ test("hashed number-key lookups probe inline and call the runtime only for wide 
     // Filter (field 10) before the small-map scan of the entry count (field
     // 8) only, and compact buckets (fields 13 and 14) tagged with the hash's
     // top byte.
-    expect(hashed).toContain("br i1 %linear, label %filter, label %buckets");
+    expect(hashed).toContain("br i1 %linear, label %unbucketed, label %buckets");
+    expect(hashed).toMatch(
+      /^unbucketed:\n[^]*i32 0, i32 16\n[^]*br i1 %indexed, label %miss, label %filter\n/m,
+    );
     expect(hashed).toContain("getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 10");
     expect(hashed).toContain(`load i32, ptr %nep`);
     expect(hashed).toContain(`load i32, ptr %nbp`);
@@ -198,6 +216,7 @@ test("a key with an integer view tests the direct index on the integer", () => {
     expect(helper).toContain("icmp ult i64 %ki, %nd");
     expect(helper).toContain(`getelementptr inbounds i32, ptr %dense, ${sz} %i`);
     expect(helper).toContain("call ptr @sc_map_entry_f64_hashed_int(ptr %m, i64 %ki)");
+    expect(helper).toContain("br i1 %inside, label %slot, label %slow");
     expect(helper).not.toContain("fptosi");
     // Its key word is the integer's double, which needs no NaN or -0
     // normalization; the runtime lookup gets that double.
@@ -217,6 +236,36 @@ test("a key with an integer view tests the direct index on the integer", () => {
       expect(work).toContain("call ptr @sc_map_entry_f64(");
       expect(work).not.toContain("@sc_map_entry_f64_int(");
     }
+  }
+});
+
+test("a lookup inside a loop calls the flavor that inlines the hashed probe", () => {
+  for (const key of [ref("k", F64), { kind: "numLit", value: 12, type: F64, loc } as IrExpr]) {
+    const { work, module } = emitted(lookupFixture(key, true), 64);
+    const name = key.kind === "numLit" ? "sc_map_entry_f64_int" : "sc_map_entry_f64";
+    expect(work).toContain(`call ptr @${name}.loop(`);
+    expect(work).not.toContain(`call ptr @${name}(`);
+    // They only read memory and always return, so a has() and get() of one
+    // key merge before they are inlined.
+    const helper = new RegExp(
+      `^define internal ptr @${name}\\.loop\\([^)]*\\) alwaysinline memory\\(read\\) nounwind willreturn [^]*?^}`,
+      "m",
+    ).exec(module)![0];
+    const hashed =
+      key.kind === "numLit" ? "sc_map_entry_f64_hashed_int" : "sc_map_entry_f64_hashed";
+    expect(helper).toContain(`call ptr @${hashed}.loop(`);
+    expect(module).toMatch(
+      new RegExp(
+        `^define internal ptr @${hashed}\\.loop\\([^)]*\\) alwaysinline memory\\(read\\) nounwind willreturn `,
+        "m",
+      ),
+    );
+    // A lookup outside a loop keeps the out-of-line probe, and so does a
+    // lookup in a loop of a function of more than 200 nodes.
+    expect(emitted(lookupFixture(key), 64).work).toContain(`call ptr @${name}(`);
+    const large = emitted(lookupFixture(key, true, 100), 64).work;
+    expect(large).toContain(`call ptr @${name}(`);
+    expect(large).not.toContain(".loop(");
   }
 });
 

@@ -424,6 +424,16 @@ void annotateFromBlocks(Function &F, const FunctionBlocks &Record,
   markFrequency(F, EntryCount, MaxCount, Summary);
 }
 
+void BlockRecorder::addNeverRan(const Function &F) {
+  std::string Text;
+  raw_string_ostream OS(Text);
+  OS << "f ";
+  writeEscaped(OS, F.getName());
+  OS << " 0 0\n";
+  std::lock_guard<std::mutex> Guard(Lock);
+  Records.emplace(F.getName().str(), std::move(Text));
+}
+
 void BlockRecorder::add(const Function &F) {
   std::optional<Function::ProfileCount> Entry = F.getEntryCount();
   if (!Entry || Entry->isSynthetic())

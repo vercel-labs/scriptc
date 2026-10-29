@@ -309,14 +309,14 @@ A profile that already holds context-sensitive counts cannot start a second phas
 
 ### Block counts
 
-A profile matches a function only while the function's control flow hashes as it did when the profile was collected, so a change to the program or to scriptc leaves the changed functions without counts. A block-count file beside the profile, with its name and a `.blocks` extension in place of `.profdata` (`app.blocks` beside `app.profdata`), describes each function by the labels of its blocks instead. `--profile-use` reads it when it exists and annotates the functions whose control flow changed (the mismatched ones; a function the profile has no record of keeps no counts): blocks that keep their place in the function take their recorded counts, and the counts of the other blocks follow from the counts of the blocks and edges around them. The report then adds a line, and the warning counts only the functions that remain without counts:
+A profile matches a function only while the function's control flow hashes as it did when the profile was collected, so a change to the program or to scriptc leaves the changed functions without counts. A block-count file beside the profile, with its name and a `.blocks` extension in place of `.profdata` (`app.blocks` beside `app.profdata`), describes each function by the labels of its blocks instead. `--profile-use` reads it when it exists and annotates the functions whose control flow changed (the mismatched ones): blocks that keep their place in the function take their recorded counts, and the counts of the other blocks follow from the counts of the blocks and edges around them. The file also names the functions that never ran while the profile was collected, which a profile merged with `--sparse` has no record of. Those functions are compiled as cold code (an entry count of 0, optimized for size and placed with the other unlikely code), which shortens the build. A function the file does not name, for example one added since the profile was collected, keeps no counts and is optimized as without a profile. The report then adds a line, and the warning counts only the functions that remain without counts:
 
 ```
 scriptc: profile app-cs.profdata: 0 functions annotated, 1 mismatched, 0 without a record
 scriptc: profile app-cs.profdata: 1 function without profile counts annotated from app-cs.blocks
 ```
 
-A `--profile-use` build writes the block counts of the functions its profile annotates when the `SCRIPTC_RECORD_PROFILE_BLOCKS` environment variable names a path; such a build reuses no cached artifacts. For a context-sensitive profile, record them in the second phase, which the first-phase profile annotates:
+A `--profile-use` build writes the block counts of the functions its profile annotates, and the names of the functions it has no record of, when the `SCRIPTC_RECORD_PROFILE_BLOCKS` environment variable names a path; such a build reuses no cached artifacts. For a context-sensitive profile, record them in the second phase, which the first-phase profile annotates:
 
 ```console
 $ SCRIPTC_RECORD_PROFILE_BLOCKS=app-cs.blocks scriptc build app.ts --optimization=speed --profile-use app.profdata --profile-generate profiles-cs/%p.profraw -o app-instrumented-cs

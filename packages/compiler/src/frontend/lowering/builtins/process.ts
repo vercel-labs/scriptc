@@ -740,6 +740,11 @@ export function lowerProcessProperty(
       "process.env as a value of this type (read one variable: process.env.NAME or process.env[name])",
     );
   }
+  // process.cwd as a value: the process module's member (surfaces.ts).
+  if (member === "cwd") {
+    const value = lowerer.lowerBuiltinCallableValue({ module: "process", member }, loc);
+    if (value) return value;
+  }
   if (member === "exit" || member === "cwd" || member === "getuid" || member === "kill") {
     lowerer.unsupported("SC1090", expr, `process methods as values (call '${member}' directly)`);
   }

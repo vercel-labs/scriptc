@@ -1425,7 +1425,7 @@ export function fenceStaticReadableStreamMember(
   lowerer.noLowering(
     `ReadableStream.${member} in a static build`,
     access,
-    "the native static ReadableStream surface is locked plus cancel() and getReader(); values()/[Symbol.asyncIterator]() compile when consumed directly by for await, while stored iterator handles remain unsupported",
+    "ReadableStream's locked compiles as a read, and getReader(), cancel(), tee(), pipeTo() and pipeThrough() as direct calls; values()/[Symbol.asyncIterator]() compile when consumed directly by for await, while method values and stored iterator handles remain unsupported",
     sym,
   );
 }
@@ -1965,8 +1965,9 @@ export function lowerStaticReadableStreamNew(
 
 /** `new TransformStream()`: the identity transform, a native handle whose
  * readable side is a native ReadableStream and whose writable side is the
- * runtime's WritableStream. A transformer or queuing strategies have no
- * native lowering yet and keep the SC2020 refusal. */
+ * runtime's WritableStream. A TransformStream with a transformer or
+ * queuing strategies is built with the web stream classes instead
+ * (web-streams-dyn.ts, lowerWebStreamNew). */
 export function lowerStaticTransformStreamNew(
   lowerer: Lowerer,
   expr: ts.NewExpression,

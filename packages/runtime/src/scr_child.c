@@ -2593,7 +2593,7 @@ bool scr_child_kill(ScrChild *c, const ScrStr *signal) {
     char *msg = malloc(cap);
     if (!msg) scr_child_oom();
     int len = snprintf(msg, cap, "Unknown signal: %s", signal->data);
-    scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)len);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_UNKNOWN_SIGNAL");
     free(msg);
     return false;
   }
@@ -5462,7 +5462,7 @@ bool scr_child_kill(ScrChild *c, const ScrStr *signal) {
     char *msg = malloc(cap);
     if (!msg) scr_child_oom();
     int len = snprintf(msg, cap, "Unknown signal: %s", signal->data);
-    scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)len);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_UNKNOWN_SIGNAL");
     free(msg);
     return false;
   }

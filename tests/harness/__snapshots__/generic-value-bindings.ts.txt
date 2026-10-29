@@ -57,46 +57,62 @@ generic-value-bindings.ts:20:13 - error SC2004: uses of 'flipAlias' inherit the 
 
   hint: the declaration of 'flipAlias' did not compile — fix the diagnostic reported there and these sites clear with it
 
-generic-value-bindings.ts:25:17 - error SC1090: generic arrow/function-expression bindings that use the frames of their enclosing functions (the compiled instantiations of 'inner' are module functions and cannot capture its locals, parameters, type parameters or 'this' — pass them as arguments, or declare the binding at module scope) are not supported yet
+generic-value-bindings.ts:27:17 - error SC1090: generic arrow/function-expression bindings that use the frames of their enclosing functions (the compiled instantiations of 'inner' are module functions and cannot capture its locals, parameters, type parameters or 'this' — pass them as arguments, or declare the binding at module scope) are not supported yet
 
-  24 | function outer(base: number): number {
-  25 |   const inner = <T>(x: T): [T, number] => [x, base];
-     |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  26 |   return inner(3)[1];
+  26 | function outer(base: number): number {
+  27 |   const inner = <T>(x: T): [T, number] => [x, scale];
+     |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  28 |   const scale = base + 1;
 
-generic-value-bindings.ts:26:10 - error SC2004: uses of 'inner' inherit the blocker on its declaration
+generic-value-bindings.ts:29:10 - error SC2004: uses of 'inner' inherit the blocker on its declaration
 
-  25 |   const inner = <T>(x: T): [T, number] => [x, base];
-  26 |   return inner(3)[1];
+  28 |   const scale = base + 1;
+  29 |   return inner(3)[1];
      |          ^~~~~
-  27 | }
+  30 | }
 
   hint: the declaration of 'inner' did not compile — fix the diagnostic reported there and these sites clear with it
 
-generic-value-bindings.ts:35:10 - error SC1090: generic arrow/function-expression bindings declared inside functions as values (each call of the enclosing function makes a new 'same' function object, while its compiled instances are shared module functions — call 'same' directly, or declare it at module scope) are not supported yet
+generic-value-bindings.ts:36:17 - error SC1090: generic arrow/function-expression bindings that use the frames of their enclosing functions (the compiled instantiations of 'inner' are module functions and cannot capture its locals, parameters, type parameters or 'this' — pass them as arguments, or declare the binding at module scope) are not supported yet (instantiating 'outerGeneric' with <number>)
 
-  34 |   const same = <T>(x: T): T => x;
-  35 |   return same<number>;
+  35 | function outerGeneric<U>(seed: U): string {
+  36 |   const inner = <T>(x: T): string => `${String(x)}${String(seed)}`;
+     |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  37 |   return inner(3);
+
+generic-value-bindings.ts:37:10 - error SC2004: uses of 'inner' inherit the blocker on its declaration (instantiating 'outerGeneric' with <number>)
+
+  36 |   const inner = <T>(x: T): string => `${String(x)}${String(seed)}`;
+  37 |   return inner(3);
+     |          ^~~~~
+  38 | }
+
+  hint: the declaration of 'inner' did not compile — fix the diagnostic reported there and these sites clear with it
+
+generic-value-bindings.ts:46:10 - error SC1090: generic arrow/function-expression bindings declared inside functions as values (each call of the enclosing function makes a new 'same' function object, while its compiled instances are shared module functions — call 'same' directly, or declare it at module scope) are not supported yet
+
+  45 |   const same = <T>(x: T): T => x;
+  46 |   return same<number>;
      |          ^~~~~~~~~~~~
-  36 | }
+  47 | }
 
-generic-value-bindings.ts:48:13 - error SC1090: results that are themselves generic functions ('<U>(y: U) => string' keeps its type parameters — no call-site instantiation pins them, and the returned value would need the producing call's frame; restructure to one generic function taking all arguments) are not supported yet
+generic-value-bindings.ts:59:13 - error SC1090: results that are themselves generic functions ('<U>(y: U) => string' keeps its type parameters — no call-site instantiation pins them, and the returned value would need the producing call's frame; restructure to one generic function taking all arguments) are not supported yet
 
-  47 | const curried = <T>(x: T) => <U>(y: U): string => `${x}|${y}`;
-  48 | console.log(curried(1)("a"));
+  58 | const curried = <T>(x: T) => <U>(y: U): string => `${x}|${y}`;
+  59 | console.log(curried(1)("a"));
      |             ^~~~~~~~~~
-  49 | 
+  60 | 
 
-generic-value-bindings.ts:60:15 - error SC1090: calls of the generic method 'm' through this receiver (no compiled declaration with a body resolves statically here — ambient 'declare class' and interface-only methods are signature-only, and only class, static, and object-literal generic methods with bodies monomorphize) is not supported yet
+generic-value-bindings.ts:71:15 - error SC1090: calls of the generic method 'm' through this receiver (no compiled declaration with a body resolves statically here — ambient 'declare class' and interface-only methods are signature-only, and only class, static, and object-literal generic methods with bodies monomorphize) is not supported yet
 
-  59 | function throughParam(a: Amb): void {
-  60 |   console.log(a.m(4));
+  70 | function throughParam(a: Amb): void {
+  71 |   console.log(a.m(4));
      |               ^~~~~~
-  61 | }
+  72 | }
 
-generic-value-bindings.ts:71:32 - error SC1090: generic arrow/function-expression bindings declared inside functions that code can call before their declaration runs (the binding 'picked' is a 'var' in a branch or block, or is called from a place that can run first — declare it with const before its uses) are not supported yet
+generic-value-bindings.ts:82:32 - error SC1090: generic arrow/function-expression bindings declared inside functions that code can call before their declaration runs (the binding 'picked' is a 'var' in a branch or block, or is called from a place that can run first — declare it with const before its uses) are not supported yet
 
-  70 |   }
-  71 |   const invoke = (): number => picked(1);
+  81 |   }
+  82 |   const invoke = (): number => picked(1);
      |                                ^~~~~~
-  72 |   return invoke();
+  83 |   return invoke();

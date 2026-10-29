@@ -173,15 +173,37 @@ double scr_bytes_to_u8_clamp(double value) {
 
 /* ── lifecycle ─────────────────────────────────────────────────────────── */
 
-/* Adopt private malloc storage without clearing or copying its contents. The
- * caller transfers ownership; views keep it alive through the usual owner. */
-ScrBytes *scr_bytes_take_data(uint8_t *data, size_t len) {
+/* The storage of this instance's owners, which are created and released on
+ * its thread (their reference counts are not atomic), and of the
+ * SharedArrayBuffer storage of the process, which any thread may release. */
+static SCR_TL size_t scr_array_buffers_local;
+static size_t scr_array_buffers_shared;
+
+double scr_array_buffers_held(bool shared) {
+  return shared ? (double)__atomic_load_n(&scr_array_buffers_shared, __ATOMIC_RELAXED)
+                : (double)scr_array_buffers_local;
+}
+
+void scr_array_buffers_sub(bool shared, size_t n) {
+  if (shared) __atomic_fetch_sub(&scr_array_buffers_shared, n, __ATOMIC_RELAXED);
+  else scr_array_buffers_local -= n;
+}
+
+void scr_array_buffers_share(size_t n) {
+  scr_array_buffers_local -= n;
+  __atomic_fetch_add(&scr_array_buffers_shared, n, __ATOMIC_RELAXED);
+}
+
+/* An owner of `len` elements of `elem` over malloc storage `data`, counting
+ * `held` bytes of it in scr_array_buffers_held. */
+__attribute__((always_inline)) static inline ScrBytes *
+scr_bytes_own(uint8_t *data, size_t len, ScrBytesElem elem, size_t held) {
   if (!data && len) scr_trap("scriptc: NULL owned byte storage\n");
   ScrBytes *b = malloc(sizeof(ScrBytes));
   if (!b) scr_bytes_oom();
   b->rc = 1;
   b->len = len;
-  b->elem = SCR_BYTES_U8;
+  b->elem = elem;
   b->data = data ? data : malloc(1);
   if (!b->data) scr_bytes_oom();
   b->backing = NULL;
@@ -192,10 +214,18 @@ ScrBytes *scr_bytes_take_data(uint8_t *data, size_t len) {
   b->shared = NULL;
   b->properties = NULL;
   b->properties_traced = false;
+  scr_bytes_set_held(b, held);
+  scr_array_buffers_local += held;
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif
   return b;
+}
+
+/* Adopt private malloc storage without clearing or copying its contents. The
+ * caller transfers ownership; views keep it alive through the usual owner. */
+ScrBytes *scr_bytes_take_data(uint8_t *data, size_t len) {
+  return scr_bytes_own(data, len, SCR_BYTES_U8, len);
 }
 
 /* Only complete, non-observable initialization may use private storage. */
@@ -204,9 +234,7 @@ static ScrBytes *scr_bytes_alloc_private(ScrBytesElem elem, size_t len) {
   if (len > SIZE_MAX / width) scr_bytes_oom();
   uint8_t *data = malloc(len ? len * width : 1);
   if (!data) scr_bytes_oom();
-  ScrBytes *b = scr_bytes_take_data(data, len);
-  b->elem = elem;
-  return b;
+  return scr_bytes_own(data, len, elem, len * width);
 }
 
 static ScrBytes *scr_bytes_alloc(ScrBytesElem elem, size_t len) {
@@ -214,9 +242,7 @@ static ScrBytes *scr_bytes_alloc(ScrBytesElem elem, size_t len) {
   if (len > SIZE_MAX / width) scr_bytes_oom();
   uint8_t *data = calloc(len ? len : 1, width);
   if (!data) scr_bytes_oom();
-  ScrBytes *b = scr_bytes_take_data(data, len);
-  b->elem = elem;
-  return b;
+  return scr_bytes_own(data, len, elem, len * width);
 }
 
 ScrBytes *scr_bytes_from_external(void *data, size_t length) {
@@ -229,6 +255,7 @@ ScrBytes *scr_bytes_from_external(void *data, size_t length) {
     b->external = true;
   }
   b->len = length;
+  scr_bytes_set_held(b, 0);
   return b;
 }
 
@@ -312,6 +339,7 @@ void scr_bytes_release(ScrBytes *b) {
     } else if (b->shared) {
       scr_shared_release(b->shared);
     } else if (!b->external) {
+      scr_array_buffers_local -= scr_bytes_held(b);
       free(b->data);
     }
 #ifdef SCR_RC_AUDIT
@@ -745,6 +773,7 @@ ScrBytes *scr_bytes_subarray(ScrBytes *b, double start, double end) {
   v->shared = owner->shared;
   v->properties = NULL;
   v->properties_traced = false;
+  scr_bytes_set_held(v, 0);
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif
@@ -1018,6 +1047,7 @@ ScrBytes *scr_dataview_new(ScrBytes *src, double byte_off, bool has_len, double 
   v->shared = owner->shared;
   v->properties = NULL;
   v->properties_traced = false;
+  scr_bytes_set_held(v, 0);
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif
@@ -2819,7 +2849,7 @@ static ScrBytes *scr_bytes_conversion_storage_in(ScrBytesSink *sink, size_t capa
   }
   uint8_t *data = malloc(capacity ? capacity : 1);
   if (!data) scr_bytes_oom();
-  return scr_bytes_take_data(data, 0);
+  return scr_bytes_own(data, 0, SCR_BYTES_U8, capacity);
 }
 
 static ScrBytes *scr_bytes_conversion_storage(size_t capacity) {
@@ -3169,6 +3199,7 @@ static ScrBytes *scr_pool_take(size_t len) {
   v->shared = NULL;
   v->properties = NULL;
   v->properties_traced = false;
+  scr_bytes_set_held(v, 0);
 #ifdef SCR_RC_AUDIT
   scr_live_bytes++;
 #endif

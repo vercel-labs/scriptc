@@ -1,7 +1,7 @@
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
-import { type IrType, isRefCounted, typeKey } from "../../ir/ir.js";
-import { FN_ATTRS, releaseSym, retainSym, traceArg } from "./shapes.js";
+import { type IrType, isRefCounted, STRING, typeKey } from "../../ir/ir.js";
+import { FN_ATTRS, releaseSym, retainSym, traceArg, vAdapters } from "./shapes.js";
 import type { LlvmEmitterContext } from "./expr-context.js";
 import { unionPeekLines, unionTagLines } from "./union-repr.js";
 import { registerReplay } from "./emit-journal.js";
@@ -279,8 +279,6 @@ export function streamDoneFnFor(
   host.declare(
     `declare void @${entry}(ptr, ptr${twoSlot ? ", ptr, ptr" : valueData ? ", ptr" : ""})`,
   );
-  host.declare(`declare ptr @scr_box_get_ref(ptr)`);
-  host.declare(`declare void @scr_stream_release_v(ptr)`);
   host.declare(`declare ptr @scr_error_retain_v(ptr)`);
   host.declare(`declare void @scr_union_release(ptr)`);
   const params = [
@@ -295,7 +293,10 @@ export function streamDoneFnFor(
     ...(twoSlot ? [`  %bslot = alloca ptr`, `  %sslot = alloca ptr`] : []),
     `  %capsp = getelementptr inbounds %ScrClosure, ptr %self, i64 1`,
     `  %bx = load ptr, ptr %capsp`,
-    `  %s = call ptr @scr_box_get_ref(ptr %bx) ; the stream, +1`,
+    // the stream, borrowed: the box holds it, and the closure (alive for
+    // the call) holds the box
+    `  %sp = getelementptr inbounds %ScrBox, ptr %bx, i64 0, i32 5`,
+    `  %s = load ptr, ptr %sp`,
     `  store ptr null, ptr %eslot`,
     ...(twoSlot ? [`  store ptr null, ptr %bslot`, `  store ptr null, ptr %sslot`] : []),
   ];
@@ -347,7 +348,6 @@ export function streamDoneFnFor(
   } else {
     d.push(`  call void @${entry}(ptr %s, ptr %ev) ; moves err; borrows s`);
   }
-  d.push(`  call void @scr_stream_release_v(ptr %s)`);
   if (errT !== undefined) d.push(`  call void ${releaseSym(host.shapeHost, errT)}(ptr %e)`);
   if (dataT !== undefined && isRefCounted(dataT))
     d.push(`  call void ${releaseSym(host.shapeHost, dataT)}(ptr %d)`);
@@ -868,18 +868,46 @@ export function streamCbThunkFor(
       host.declare(`declare void @scr_dyn_release(ptr)`);
       host.declare(`declare zeroext i1 @scr_exc_pending()`);
       if (hasThis) host.declare(`declare void @scr_stream_release_v(ptr)`);
+      // An object-mode write without an encoding argument passes
+      // undefined: a pointer union whose unit arm is undefined holds it as
+      // the null pointer, so that case skips the conversion.
+      const pointer = p.kind === "union" ? host.nullableUnions.get(p.unionId) : null;
+      const undefinedIsNull =
+        pointer !== null &&
+        p.kind === "union" &&
+        host.unionsById.get(p.unionId)?.arms[pointer.unitTag]?.kind === "undefinedT";
+      if (undefinedIsNull) {
+        host.declare(`declare zeroext i1 @scr_stream_chunk_encoding_undefined(ptr)`);
+        d.push(
+          `  br label %etchk${i}`,
+          `etchk${i}:`,
+          `  %eu${i} = call zeroext i1 @scr_stream_chunk_encoding_undefined(ptr %s)`,
+          `  br i1 %eu${i}, label %etok${i}, label %etconv${i}`,
+          `etconv${i}:`,
+        );
+      }
       d.push(
         `  %ev${i} = call ptr @scr_stream_chunk_encoding_value(ptr %s)`,
         `  %et${i} = call ${ty === "i1" ? "zeroext i1" : ty} @${helper}(ptr %ev${i}, ptr null)`,
         `  call void @scr_dyn_release(ptr %ev${i})`,
         `  %etbad${i} = call zeroext i1 @scr_exc_pending()`,
-        `  br i1 %etbad${i}, label %etfail${i}, label %etok${i}`,
+        `  br i1 %etbad${i}, label %etfail${i}, label %${undefinedIsNull ? "etconvok" : "etok"}${i}`,
         `etfail${i}:`,
         ...(hasThis ? [`  call void @scr_stream_release_v(ptr %sr)`] : []),
         `  ret void`,
-        `etok${i}:`,
       );
-      passed.push(`${ty} %et${i}`);
+      if (undefinedIsNull) {
+        d.push(
+          `etconvok${i}:`,
+          `  br label %etok${i}`,
+          `etok${i}:`,
+          `  %etv${i} = phi ptr [ null, %etchk${i} ], [ %et${i}, %etconvok${i} ]`,
+        );
+        passed.push(`${ty} %etv${i}`);
+      } else {
+        d.push(`etok${i}:`);
+        passed.push(`${ty} %et${i}`);
+      }
     } else if (isErrPos) {
       // destroy's error argument: `Error | null` — wrap type-directedly.
       // The finished/pipeline callback ("e") may declare `Error | null |
@@ -965,6 +993,161 @@ registerReplay("streamDoneFnFor", (host, args) =>
 );
 registerReplay("fsRenameThunkFor", (host, args) =>
   fsRenameThunkFor(host, args[0] as IrType & { kind: "func" }),
+);
+/** The fs.watch listener adapter for an (eventType, filename) listener, or
+ * for an (eventType) listener whose parameter is dynamic: the runtime hands
+ * the borrowed C strings, the thunk builds what the listener declared. The
+ * listener owns its +1 arguments (the universal convention
+ * scr_watch_thunk_event follows), so a string the thunk boxes into a dynamic
+ * value is released once the box holds it. */
+export function watchNameThunkFor(
+  host: LlvmEmitterContext,
+  cbT: IrType & { kind: "func" },
+): string {
+  const key = `watchname:${typeKey(cbT)}`;
+  let sym = host.resolveThunks.get(key);
+  if (sym) return sym;
+  sym = host.contentSymbol("sc_watchname_", key);
+  host.resolveThunks.set(key, sym);
+  host.journal?.allocated(sym, "watchNameThunkFor", [cbT]);
+  const S = host.sizeType;
+  host.declare(`declare ${S} @strlen(ptr)`);
+  host.declare(`declare ptr @scr_str_new(ptr, ${S})`);
+  host.declare(`declare void @scr_str_release(ptr)`);
+  const d: string[] = [
+    `define internal void @${sym}(ptr %cb, ptr %event, ptr %name) ${FN_ATTRS} { ; fs.watch listener ${typeKey(cbT)}`,
+    `entry:`,
+    `  %evlen = call ${S} @strlen(ptr %event)`,
+    `  %evstr = call ptr @scr_str_new(ptr %event, ${S} %evlen)`,
+  ];
+  const named = cbT.params.length === 2;
+  if (named) {
+    d.push(
+      `  %slot = alloca ptr`,
+      `  %has = icmp ne ptr %name, null`,
+      `  br i1 %has, label %yes, label %no`,
+      `yes:`,
+    );
+    const nameParam = cbT.params[1]!;
+    if (nameParam.kind === "dyn") {
+      host.declare(`declare ptr @scr_dyn_new_null()`);
+      host.declare(`declare ptr @scr_dyn_new_str(ptr)`);
+      d.push(
+        `  %nlen = call ${S} @strlen(ptr %name)`,
+        `  %nstr = call ptr @scr_str_new(ptr %name, ${S} %nlen)`,
+        `  %ndyn = call ptr @scr_dyn_new_str(ptr %nstr)`,
+        `  call void @scr_str_release(ptr %nstr)`,
+        `  store ptr %ndyn, ptr %slot`,
+        `  br label %go`,
+        `no:`,
+        `  %dn = call ptr @scr_dyn_new_null()`,
+        `  store ptr %dn, ptr %slot`,
+      );
+    } else {
+      if (nameParam.kind !== "union")
+        throw new InternalCompilerError("llvm emitter bug: fs.watch filename param is not a union");
+      const def = host.unionsById.get(nameParam.unionId);
+      const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
+      const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
+      if (strTag < 0 || nullTag < 0)
+        throw new InternalCompilerError("llvm emitter bug: fs.watch filename union lacks its arms");
+      if (host.nullableUnions.has(nameParam.unionId)) {
+        // `string | null` erases: the owned payload IS the union's value.
+        d.push(
+          `  %nlen = call ${S} @strlen(ptr %name)`,
+          `  %nstr = call ptr @scr_str_new(ptr %name, ${S} %nlen)`,
+          `  store ptr %nstr, ptr %slot`,
+          `  br label %go`,
+          `no:`,
+          `  store ptr null, ptr %slot`,
+        );
+      } else {
+        const rc = vAdapters(host.shapeHost, STRING);
+        host.declare(`declare ptr @scr_union_new_ref(i32, ptr, ptr, ptr, ptr)`);
+        d.push(
+          `  %nlen = call ${S} @strlen(ptr %name)`,
+          `  %nstr = call ptr @scr_str_new(ptr %name, ${S} %nlen)`,
+          `  %nu = call ptr @scr_union_new_ref(i32 ${strTag}, ptr %nstr, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, STRING)})`,
+          `  store ptr %nu, ptr %slot`,
+          `  br label %go`,
+          `no:`,
+          `  store ptr ${host.unitInstanceRef(nameParam.unionId, nullTag)}, ptr %slot`,
+        );
+      }
+    }
+    d.push(`  br label %go`, `go:`);
+  }
+  let ev: string;
+  if (cbT.params[0]?.kind === "dyn") {
+    // The box retains the string; the thunk's own reference goes.
+    host.declare(`declare ptr @scr_dyn_new_str(ptr)`);
+    d.push(
+      `  %evd = call ptr @scr_dyn_new_str(ptr %evstr)`,
+      `  call void @scr_str_release(ptr %evstr)`,
+    );
+    ev = "%evd";
+  } else {
+    ev = "%evstr";
+  }
+  d.push(
+    `  %fnp = getelementptr inbounds %ScrClosure, ptr %cb, i64 0, i32 1`,
+    `  %fn = load ptr, ptr %fnp`,
+  );
+  if (named)
+    d.push(`  %arg = load ptr, ptr %slot`, `  call void %fn(ptr %cb, ptr ${ev}, ptr %arg)`);
+  else d.push(`  call void %fn(ptr %cb, ptr ${ev})`);
+  d.push(`  ret void`, `}`, ``);
+  host.resolveThunkDefs.push(...d);
+  host.journal?.built();
+  return sym;
+}
+
+/** The FSWatcher 'error' listener adapter: the runtime hands a borrowed
+ * ScrError, the listener receives the declared dyn value or an Error
+ * object it owns. A zero-parameter listener uses the runtime's
+ * scr_watch_err_thunk0 and never reaches here. */
+export function watchErrorThunkFor(
+  host: LlvmEmitterContext,
+  cbT: IrType & { kind: "func" },
+): string {
+  const key = `watcherr:${typeKey(cbT)}`;
+  let sym = host.resolveThunks.get(key);
+  if (sym) return sym;
+  sym = host.contentSymbol("sc_watcherr_", key);
+  host.resolveThunks.set(key, sym);
+  host.journal?.allocated(sym, "watchErrorThunkFor", [cbT]);
+  const param = cbT.params[0]!;
+  const d: string[] = [
+    `define internal void @${sym}(ptr %cb, ptr %err) ${FN_ATTRS} { ; FSWatcher error listener ${typeKey(cbT)}`,
+    `entry:`,
+  ];
+  if (param.kind === "dyn") {
+    host.declare(`declare ptr @scr_dyn_from_error(ptr)`);
+    d.push(`  %de = call ptr @scr_dyn_from_error(ptr %err)`);
+  } else if (param.kind === "object" && param.className === "%Error") {
+    host.declare(`declare ptr @scr_error_retain(ptr)`);
+    d.push(`  %de = call ptr @scr_error_retain(ptr %err)`);
+  } else {
+    throw new InternalCompilerError("llvm emitter bug: FSWatcher error param is not an Error");
+  }
+  d.push(
+    `  %fnp = getelementptr inbounds %ScrClosure, ptr %cb, i64 0, i32 1`,
+    `  %fn = load ptr, ptr %fnp`,
+    `  call void %fn(ptr %cb, ptr %de)`,
+    `  ret void`,
+    `}`,
+    ``,
+  );
+  host.resolveThunkDefs.push(...d);
+  host.journal?.built();
+  return sym;
+}
+
+registerReplay("watchNameThunkFor", (host, args) =>
+  watchNameThunkFor(host, args[0] as IrType & { kind: "func" }),
+);
+registerReplay("watchErrorThunkFor", (host, args) =>
+  watchErrorThunkFor(host, args[0] as IrType & { kind: "func" }),
 );
 registerReplay("cryptoIntThunkFor", (host, args) =>
   cryptoIntThunkFor(host, args[0] as IrType & { kind: "func" }),

@@ -156,6 +156,18 @@ function wantsNoDeprecation(file: string): boolean {
   return directiveHead(file).some((l) => /^\/\/ @no-deprecation\s*$/.test(l));
 }
 
+/** `// @normalize-pid` in the directive head: Node's process warnings
+ * ("(node:<pid>) [DEP0040] ...") are compared with the pid replaced on both
+ * sides — for island programs, where Node itself prints the warning in the
+ * compiled program's process. */
+function wantsPidNormalized(file: string): boolean {
+  return directiveHead(file).some((l) => /^\/\/ @normalize-pid\s*$/.test(l));
+}
+
+function withoutWarningPid(stderr: Buffer): Buffer {
+  return Buffer.from(stderr.toString("utf8").replace(/^\(node:\d+\) /gm, "(node:PID) "), "utf8");
+}
+
 /** The Node oracle's argv for a corpus entry (shims + the per-program
  * transform flag). */
 /** `// @disallow-code-generation` in the directive head: the Node oracle
@@ -426,9 +438,13 @@ describe(`differential corpus (${files.length} programs${sanitize ? ", sanitized
       // — their stderr carries the uncaught report, whose format is a
       // documented divergence.
       if (expectedExit === 0) {
-        const nativeErr = comparableStderr(nativeRes.stderr);
-        if (!nodeRes.stderr.equals(nativeErr)) {
-          expect(nativeErr.toString("utf8")).toBe(nodeRes.stderr.toString("utf8"));
+        const pidFree = wantsPidNormalized(file);
+        const nativeErr = pidFree
+          ? withoutWarningPid(comparableStderr(nativeRes.stderr))
+          : comparableStderr(nativeRes.stderr);
+        const nodeErr = pidFree ? withoutWarningPid(nodeRes.stderr) : nodeRes.stderr;
+        if (!nodeErr.equals(nativeErr)) {
+          expect(nativeErr.toString("utf8")).toBe(nodeErr.toString("utf8"));
           expect.unreachable("stderr differed at byte level but not after utf8 decode");
         }
       }

@@ -93,6 +93,25 @@ void __sanitizer_finish_switch_fiber(void *fake_stack_save, const void **bottom_
                                      size_t *size_old);
 void __lsan_register_root_region(const void *p, size_t size) __attribute__((weak));
 void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
+
+/* LeakSanitizer's report at exit, with Node loaded: Node keeps its root
+ * certificate stores (the bundled roots, the system's with
+ * NODE_USE_SYSTEM_CA, the extra ones of NODE_EXTRA_CA_CERTS) for the
+ * process's life and never frees them, and OpenSSL keeps the compression
+ * methods it loads with its default library context. Only those loaders
+ * are suppressed; a leak anywhere else, in libnode or in the program,
+ * still reports. */
+__attribute__((used)) const char *__lsan_default_suppressions(void) {
+  return "leak:node::crypto::LoadCACertificates\n"
+         "leak:node::crypto::GetBundledRootCertificates\n"
+         "leak:node::crypto::LoadSystemCACertificates\n"
+         "leak:node::crypto::GetExtraCACertificates\n"
+         "leak:ossl_load_builtin_compressions\n";
+}
+
+/* Without the table of suppressions used, which LeakSanitizer otherwise
+ * prints to stderr at every exit (LSAN_OPTIONS still overrides it). */
+__attribute__((used)) const char *__lsan_default_options(void) { return "print_suppressions=0"; }
 #endif
 #endif
 
@@ -954,8 +973,15 @@ static void ni_nested_trampoline(void) {
 static void ni_on_node_stack_below_mark(void (*job)(void *), void *arg) {
   ucontext_t nested, caller;
   char *lo = ni_stack + NI_GUARD;
-  /* Below the red zone and 16-byte aligned, as makecontext expects. */
-  uintptr_t hi = (ni_mark - 512) & ~(uintptr_t)15;
+  /* Below every live frame of Node's stack: the mark the host callback
+   * recorded, or lower where runtime code it ran went deeper before it
+   * switched to this fiber (an async call's eager start, a job: the
+   * spawner's frame and its saved context are still in use there). Below
+   * the red zone and the swap's own frame, 16-byte aligned, as makecontext
+   * expects. */
+  uintptr_t top = ni_mark;
+  if (scr_node_stack_low != 0 && scr_node_stack_low < top) top = scr_node_stack_low;
+  uintptr_t hi = (top - 1024) & ~(uintptr_t)15;
   ni_make_context(&nested, lo, hi - (uintptr_t)lo, ni_nested_trampoline);
 #ifdef NI_ASAN
   ni_nested_top = hi;
@@ -965,6 +991,7 @@ static void ni_on_node_stack_below_mark(void (*job)(void *), void *arg) {
   ni_nested_return = &caller;
   uintptr_t guard = scr_stack_guard;
   SCR_STACK_GUARD_SET(scr_stack_guard_for((uintptr_t)lo, hi - (uintptr_t)lo));
+  void *loop_save = scr_loop_nested_enter();
 #ifdef NI_ASAN
   void *caller_fake = NULL;
   __sanitizer_start_switch_fiber(&caller_fake, lo, hi - (uintptr_t)lo);
@@ -975,6 +1002,7 @@ static void ni_on_node_stack_below_mark(void (*job)(void *), void *arg) {
   size_t size;
   __sanitizer_finish_switch_fiber(caller_fake, &bottom, &size);
 #endif
+  scr_loop_nested_leave(loop_save);
   SCR_STACK_GUARD_SET(guard);
 }
 
@@ -994,6 +1022,7 @@ static void ni_on_node_stack(void (*job)(void *), void *arg) {
     ni_stack = mmap(NULL, NI_STACK, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (ni_stack == MAP_FAILED) ni_oom();
     (void)mprotect(ni_stack, NI_GUARD, PROT_NONE);
+    scr_node_stack_has = &ni_stack_has;
 #ifdef NI_ASAN
     if (__lsan_register_root_region) __lsan_register_root_region(ni_stack, NI_STACK);
 #endif
@@ -1183,6 +1212,7 @@ static const ScrNodeBridgeHost ni_host = {
     &scr_ni_host_shared_get,
     &scr_ni_host_shared_tdz,
     &scr_ni_host_export_op,
+    &scr_ni_host_gc_analyze,
 };
 
 typedef struct {
@@ -1227,9 +1257,29 @@ static void ni_stop_atexit(void) {
     fflush(stdout);
     fprintf(stderr, "[node-islands] live handles %u\n", scr_ni_live_handles());
   }
+  /* SCRIPTC_NODE_ISLANDS_TRACE=gc: the cross-heap collector's counters at
+   * exit (NI-8; each major GC is traced by the bridge as it ends). */
+  if (trace != NULL && strstr(trace, "gc") != NULL) {
+    /* The native halves of cycles V8 already freed are cyclic garbage the
+     * exit sweep would free anyway: count what is left after it. */
+    scr_collect_cycles();
+    ScrNodeGcStats stats;
+    memset(&stats, 0, sizeof stats);
+    ni_bridge->gc_stats(&stats);
+    fflush(stdout);
+    fprintf(stderr,
+            "[node-islands] gc totals: major %llu, analyzed %llu, freed exports %llu, freed "
+            "imports %llu, representatives %u, import entries %u, held exports %u, held handles "
+            "%u, analysis max %.3f ms total %.3f ms\n",
+            (unsigned long long)stats.major_gcs, (unsigned long long)stats.analyses,
+            (unsigned long long)stats.freed_exports, (unsigned long long)stats.freed_imports,
+            stats.live_exports, stats.live_imports, scr_ni_live_exports(), scr_ni_live_handles(),
+            (double)stats.max_analysis_ns / 1e6, (double)stats.analysis_ns / 1e6);
+  }
   ni_on_node_stack(ni_stop_job, NULL);
   /* Node is gone: no representative can call in again. */
   scr_ni_exports_release_all();
+  scr_ni_gc_cleanup();
 }
 
 /* The hosted loop's run_loop on Node's stack. */
@@ -1368,10 +1418,11 @@ static void ni_start(void) {
              ni_node_version, bridge->node_version, bridge->module_version, dir);
     ni_fatal(message);
   }
-  ScrStr *self = scr_process_exec_path();
-  char argv0[4096];
-  snprintf(argv0, sizeof argv0, "%.*s", (int)self->len, self->data);
-  scr_str_release(self);
+  /* Node's argv[0] is "node": island process.argv0 reads it, and Node's
+   * warning hint is built from it ("(Use `node --trace-deprecation ...`"),
+   * which the runtime's own warnings print too. process.execPath stays the
+   * executable (libuv's exepath). */
+  char argv0[] = "node";
   /* Flush first: Node writes to the same stdout. */
   fflush(stdout);
   ni_bridge = bridge;

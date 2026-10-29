@@ -13,6 +13,7 @@
 #include <windows.h>
 #else
 #include <poll.h>
+#include <time.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -102,7 +103,9 @@ static int child_main(int argc, char **argv) {
 #endif
     }
   }
-  if (strcmp(mode, "echo") != 0) return 73;
+  // "slow-echo" answers each read 20 ms later: after the client's poll.
+  int slow = strcmp(mode, "slow-echo") == 0;
+  if (!slow && strcmp(mode, "echo") != 0) return 73;
   // Unbuffered reads let short writes make progress without waiting for a
   // complete stdio buffer. Fragment each echoed reply independently.
   uint8_t bytes[17];
@@ -113,6 +116,14 @@ static int child_main(int argc, char **argv) {
     ssize_t count = read(STDIN_FILENO, bytes, sizeof(bytes));
 #endif
     if (count <= 0) return count < 0 ? 74 : 0;
+    if (slow) {
+#ifdef _WIN32
+      Sleep(20);
+#else
+      struct timespec delay = {0, 20000000L};
+      nanosleep(&delay, NULL);
+#endif
+    }
     if (fwrite(bytes, 1, (size_t)count, stdout) != (size_t)count || fflush(stdout) != 0) return 75;
   }
 }

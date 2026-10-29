@@ -752,7 +752,12 @@ static void scr_stream_do_destroy(ScrStream *s, ScrError *err /*borrowed*/);
 static void scr_stream_notify_finished(ScrStream *s);
 static void *scr_stream_read_n(ScrStream *s, double size);
 static void *scr_stream_read_n_kind(ScrStream *s, double size, ScrEntryKind *kind);
-static void scr_stream_settle_next(ScrStream *s);
+static void scr_stream_settle_next_waiter(ScrStream *s);
+/* A for-await iterator's parked next(): only a stream with a waiter that
+ * is not mid-read has anything to settle. */
+static inline void scr_stream_settle_next(ScrStream *s) {
+  if (s->st->r.next_waiter && !s->st->r.next_reading) scr_stream_settle_next_waiter(s);
+}
 static ScrStream *scr_stream_alloc(const ScrVt *vt, const char *cls, bool has_r, bool has_w,
                                     double rhwm, double whwm, bool auto_destroy,
                                     bool emit_close, bool allow_half_open);
@@ -989,7 +994,12 @@ static void scr_stream_call_read(ScrStream *s) {
  * multi-byte tail held pending) adds nothing but still clears the
  * reading flag. */
 static int scr_stream_add_entry(ScrStream *s, void *entry /*moves*/, ScrEntryKind kind);
-static void *scr_stream_entry_convert(ScrStreamState *st, void *entry, ScrEntryKind *kind);
+static void *scr_stream_entry_convert_kind(ScrStreamState *st, void *entry, ScrEntryKind *kind);
+/* An entry already of the buffer's kind is kept as-is. */
+static inline void *scr_stream_entry_convert(ScrStreamState *st, void *entry, ScrEntryKind *kind) {
+  if (*kind == scr_stream_rkind(st)) return entry;
+  return scr_stream_entry_convert_kind(st, entry, kind);
+}
 
 static bool scr_stream_add_chunk(ScrStream *s, ScrBytes *chunk, bool front) {
   ScrStreamState *st = s->st;
@@ -1395,8 +1405,6 @@ static void scr_stream_next_fulfill(ScrStreamState *st, ScrPromise *w /*moves*/,
   scr_queue_microtask(job);
 }
 
-static void scr_stream_settle_next(ScrStream *s);
-
 /* One pass of createAsyncIterator's loop for the parked waiter:
  * `stream.read()` (a _read below the hwm, then the buffered chunk; pushes
  * the _read makes join it), else the settled states (error, EOF), else
@@ -1442,7 +1450,7 @@ static void scr_stream_next_wake_job(ScrClosure *job) {
  * error rejects, buffered content fulfills (one whole entry in from
  * mode, the whole buffer otherwise — Node's iterator read()), EOF
  * fulfills the sentinel. Called from push/eof/destroy transitions. */
-static void scr_stream_settle_next(ScrStream *s) {
+static void scr_stream_settle_next_waiter(ScrStream *s) {
   ScrStreamState *st = s->st;
   if (!st->r.next_waiter || st->r.next_reading) return;
   if (st->errored && !st->error_emitted) {
@@ -1964,7 +1972,7 @@ static void scr_stream_rbuf_to_dyn(ScrStreamState *st) {
  * A Buffer on a stream with a decoder decodes through it (Node's
  * decoder.write in readableAddChunkPushObjectMode); an entry of another
  * kind turns the buffer into dyn entries. */
-static void *scr_stream_entry_convert(ScrStreamState *st, void *entry, ScrEntryKind *kind) {
+static void *scr_stream_entry_convert_kind(ScrStreamState *st, void *entry, ScrEntryKind *kind) {
   ScrEntryKind want = scr_stream_rkind(st);
   if (*kind == want) return entry;
   if (*kind == SCR_ENTRY_BYTES && want == SCR_ENTRY_STR && st->r.decoding) {
@@ -2390,7 +2398,7 @@ static void scr_stream_writev_batch(ScrStream *s) {
 }
 
 /* The buffered writes, one at a time (Node's clearBuffer without _writev). */
-static void scr_stream_clear_buffer_each(ScrStream *s) {
+static void scr_stream_clear_buffer_entries(ScrStream *s) {
   ScrStreamState *st = s->st;
   if (st->w.buffer_processing) return;
   st->w.buffer_processing = true;
@@ -2410,6 +2418,12 @@ static void scr_stream_clear_buffer_each(ScrStream *s) {
     scr_stream_do_write(s, e.chunk, e.cb, e.enc);
   }
   st->w.buffer_processing = false;
+}
+
+/* An empty write queue has nothing to clear. */
+static inline void scr_stream_clear_buffer_each(ScrStream *s) {
+  ScrStreamState *st = s->st;
+  if (st->w.head < st->w.n) scr_stream_clear_buffer_entries(s);
 }
 
 /* The fs streams' clearBuffer: nothing while constructing, and _writev
@@ -6696,6 +6710,10 @@ ScrDyn *scr_stream_chunk_encoding_value(ScrStream *s) {
   }
   ScrDyn *enc = s->st->w.cur_enc;
   return enc ? scr_dyn_retain(enc) : scr_dyn_undefined();
+}
+
+bool scr_stream_chunk_encoding_undefined(ScrStream *s) {
+  return scr_stream_writes_values(s) && s->st->w.cur_enc == NULL;
 }
 
 /* ── the readable surface ─────────────────────────────────────────────── */

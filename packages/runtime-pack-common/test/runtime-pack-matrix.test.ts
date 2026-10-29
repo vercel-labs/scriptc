@@ -40,3 +40,12 @@ test("web streams and Node islands select an async build that defines both", () 
     selected("scr_async.c", { webStreams: false, nodeIsland: false, workers: false }).defines,
   ).toEqual([]);
 });
+
+test("the BigIntStats unit follows its own member-read gate, not bigint", () => {
+  const unit = matrix.runtime_units.find(
+    (u: { source: string }) => u.source === "scr_stats_bigint.c",
+  );
+  // Every bigint value turns the bigint feature on; only the member reads
+  // name bigstats, so a bigint program keeps this unit out of its binary.
+  expect(unit.predicate).toBe("bigstats");
+});

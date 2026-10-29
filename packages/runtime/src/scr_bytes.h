@@ -55,6 +55,11 @@ typedef struct ScrBytes {
   size_t rc;
   size_t len; /* ELEMENT count, fixed at construction */
   ScrBytesElem elem;
+#if SIZE_MAX > UINT32_MAX
+  /* Bits 0-31 of the storage an owner counts (scr_bytes_held), in the
+   * padding after elem, so the offsets compiled code uses hold. */
+  uint32_t held_lo;
+#endif
   uint8_t *data; /* len * elem_size bytes; owned unless backing is set */
   /* NULL for owners. A view (DataView, subarray, Buffer-slice) sets this
    * to the retained OWNER it aliases (chain depth is always exactly 1:
@@ -69,12 +74,41 @@ typedef struct ScrBytes {
    * value that held this view (see scr_dyn_trace_v). In padding, so the
    * offsets compiled code uses hold. */
   bool properties_traced;
+#if SIZE_MAX > UINT32_MAX
+  uint16_t held_hi; /* bits 32-47 of the counted storage, in padding */
+#endif
   ScrSharedBytes *shared; /* Neutral backing, borrowed by views from their local owner. */
   /* Named properties a program adds to the view (`ta.foo = 1`,
    * Object.defineProperty): a checked object, NULL until the first one.
    * Runtime-only and last, so compiled code's field indices hold. */
   struct ScrDyn *properties;
+#if SIZE_MAX <= UINT32_MAX
+  uint32_t held_lo; /* the counted storage, runtime-only */
+#endif
 } ScrBytes;
+#if SIZE_MAX > UINT32_MAX
+_Static_assert(offsetof(ScrBytes, data) == 24 && offsetof(ScrBytes, shared) == 48 && sizeof(ScrBytes) == 64,
+               "the counted storage sits in padding: compiled code reads data at 24 and shared at 48");
+#endif
+
+/* The bytes of storage an owner counts in process.memoryUsage()'s
+ * arrayBuffers and external (scr_array_buffers_held): 0 for views, foreign
+ * memory and owners whose storage became shared. On 64-bit targets its 48
+ * bits hold any size the address space can allocate. */
+static inline size_t scr_bytes_held(const ScrBytes *b) {
+#if SIZE_MAX > UINT32_MAX
+  return (size_t)b->held_lo | (size_t)b->held_hi << 32;
+#else
+  return b->held_lo;
+#endif
+}
+
+static inline void scr_bytes_set_held(ScrBytes *b, size_t n) {
+  b->held_lo = (uint32_t)n;
+#if SIZE_MAX > UINT32_MAX
+  b->held_hi = (uint16_t)(n >> 32);
+#endif
+}
 
 /* Copies out of and into shared storage, made of relaxed atomic accesses
  * (aligned 8-byte words, single bytes at unaligned edges). Lock-free
@@ -204,6 +238,15 @@ ScrBytes *scr_array_buffer_view_dv(ScrDyn *, ScrDyn *, ScrDyn *);
  * empty span. */
 ScrBytes *scr_bytes_from_data(const uint8_t *data, size_t len); /* +1 */
 ScrBytes *scr_bytes_take_data(uint8_t *data, size_t len); /* +1, consumes malloc storage */
+/* Bytes of storage the runtime holds: the typed array, Buffer and DataView
+ * owners of the calling instance (shared false), and the SharedArrayBuffer
+ * storage of the process (shared true). process.memoryUsage()'s
+ * arrayBuffers is their sum and external counts the first, as Node's do.
+ * scr_array_buffers_sub uncounts released storage; scr_array_buffers_share
+ * moves an owner's bytes to shared storage. */
+double scr_array_buffers_held(bool shared);
+void scr_array_buffers_sub(bool shared, size_t n);
+void scr_array_buffers_share(size_t n);
 
 /* Same-element-kind copy, preserving the raw representation. Cross-kind
  * construction uses scr_bytes_convert. Borrows src. Never throws. */

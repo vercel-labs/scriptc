@@ -12,6 +12,7 @@ import {
   nativeCodegenTarget,
 } from "../packages/compiler/src/backend/targets.js";
 import { tsgoExecutable } from "../packages/compiler/src/frontend/ts7/rpc-api.js";
+import { PACK_VERIFIED_FILE } from "../packages/compiler/src/backend/runtime-pack-native.js";
 import { prebuiltLibDiagnosticsText } from "../packages/compiler/src/frontend/ts7/lib-diagnostics.js";
 import { stageNativeCliAssets } from "./native-cli-assets.mjs";
 import type { NativeToolchainManifest } from "../packages/compiler/src/native/toolchain.js";
@@ -164,6 +165,12 @@ const result = await compile(join(root, "packages/compiler/src/native/cli.ts"), 
   ...(profileGenerate === undefined ? {} : { profileGenerate }),
   ...(profileUse === undefined ? {} : { profileUse }),
   ...(functionLayout === undefined ? {} : { functionLayout }),
+  // Most of the compiler's runs are short (an unchanged rebuild takes tens of
+  // milliseconds), and a run maps every 2 MiB text window it touches whole. Text
+  // on 4 KiB pages keeps an unchanged rebuild at about a third of the peak RSS,
+  // and builds of tsc-ts take the same time. Executables the compiler builds
+  // keep huge text.
+  hugeText: false,
   emitIr: process.env["SCRIPTC_NATIVE_EMIT_IR"] === "1",
 });
 if (!result.ok)
@@ -183,8 +190,17 @@ const match = useProfile && "artifact" in result ? result.artifact.profileMatch 
 if (match !== undefined) {
   const profiled = match.annotated + match.mismatched;
   const share = profiled === 0 ? 0 : match.annotated / profiled;
+  // The same by the profile's counters: a changed hot function loses more
+  // of the profile's gain than a changed cold one.
+  const counts =
+    match.annotatedCounts === undefined || match.mismatchedCounts === undefined
+      ? 0
+      : match.annotatedCounts + match.mismatchedCounts;
   console.log(
     `native compiler profile: ${match.annotated} of ${profiled} profiled functions match (${(100 * share).toFixed(1)}%); ${match.missing} functions have no profile` +
+      (counts > 0
+        ? `; changed functions hold ${((100 * match.mismatchedCounts!) / counts).toFixed(1)}% of its counts`
+        : "") +
       (match.recovered > 0
         ? `; ${match.recovered} functions annotated from the profile's block counts`
         : "") +
@@ -231,6 +247,12 @@ writeFileSync(executable + ".json", JSON.stringify(manifest, null, 2) + "\n");
 // for programs without a tsconfig, recorded by the built compiler itself. A
 // compiler this host cannot run ships without them.
 const prebuiltKeys = recordPrebuiltLibDiagnostics(executable);
+// The probes' builds record the bundled runtime pack's verified artifacts
+// beside it, by this host's file identities; the distribution ships without
+// that record.
+rmSync(join(lib, target.runtimePackPackage.replace("@scriptc/", ""), PACK_VERIFIED_FILE), {
+  force: true,
+});
 if (prebuiltKeys === null) {
   console.warn(
     "warning: the built compiler did not run here; it ships without prebuilt lib diagnostics",

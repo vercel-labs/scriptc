@@ -48,6 +48,7 @@ import {
   promiseCarriesDyn,
 } from "./function-returns.js";
 import { bindingNeverReassigned, stripValueWrappers } from "./binding-analysis.js";
+import { declareContextLocal } from "./function-context.js";
 import {
   extendInstantiationPath,
   MAX_INSTANTIATION_RECURSION,
@@ -101,6 +102,21 @@ export interface GenericFnInfo {
    * declaration makes a new function object in JavaScript, while the
    * compiled instances are shared module functions, so only calls lower. */
   functionScoped?: true;
+  /** The enclosing-frame values a function-scoped generic arrow reads.
+   * The instances are module functions, so each captured binding travels
+   * as a TRAILING parameter: the call sites (which sit in the declaring
+   * frame or in a closure over it) pass the value, in this order, and the
+   * instance body reads it through the same symbol. Only never-reassigned
+   * bindings qualify — a shared copy is exact exactly as long as nothing
+   * writes the original. */
+  captures?: FrameCapture[];
+  /** "env": some capture is reassigned, so a copy cannot stand in for it.
+   * The instances are then LIFTED functions that receive every capture
+   * through a closure environment (boxed, shared with the declaring frame
+   * and every ordinary closure over it), and each call site calls a fresh
+   * closure over its own boxes. Absent: captures travel as trailing
+   * parameters. */
+  captureMode?: "env";
   /** The declaration of a generic arrow/function-expression binding. */
   bindingDecl?: ts.VariableDeclaration;
   /** A module-scope binding that code can use before its declaration
@@ -129,6 +145,19 @@ export interface GenericFnInfo {
   /** Parameter index → symbol for the function parameters whose `.name`
    * the body reads (static-function-names.ts); computed on first use. */
   nameReadParams?: Map<number, ts.Symbol>;
+}
+
+/** One enclosing-frame value a generic arrow/function-expression binding
+ * reads (GenericFnInfo.captures). `nameNode` is the binding's own
+ * declaration identifier: declaring a local for it binds the SYMBOL, so
+ * the instance body resolves the reference like any parameter. */
+export interface FrameCapture {
+  symbol: ts.Symbol;
+  nameNode: ts.Node;
+  name: string;
+  type: IrType;
+  /** Something in the file writes the binding (bindingNeverReassigned). */
+  reassigned: boolean;
 }
 
 export interface GenericInstance {
@@ -285,6 +314,57 @@ export function lowerGenericCall(
     ? implicitCallInstance(lowerer, expr, info)
     : genericCallInstance(lowerer, expr, info);
   const args = lowerer.completeArgs(expr.arguments.nodes, instance.params, loc, expr);
+  if (info.captureMode === "env") {
+    // The environment form: a closure over this call site's boxes of the
+    // captured bindings (resolveKey threads them through any closures in
+    // between and boxes the origin), called at once. Arguments evaluate
+    // after the callee, as in JavaScript; building the closure only reads
+    // the boxes.
+    if (
+      instance.params.some(
+        (p) => p.mode === "rest" || p.mode === "dynRest" || p.mode === "arguments",
+      )
+    ) {
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `generic arrow/function-expression bindings with rest parameters that write the frames of their enclosing functions ('${info.baseName}')`,
+      );
+    }
+    const sources = info.captures!.map((capture) => {
+      const local = lowerer.resolveKey(capture.symbol, expr);
+      if (local === null || !typeEquals(local.type, capture.type)) {
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          `generic arrow/function-expression bindings sharing '${capture.name}' with their enclosing function when its storage differs from its declared type ('${info.baseName}')`,
+        );
+      }
+      // An origin read from its own frame is not boxed by resolveKey; the
+      // closure needs the box (captureContextBinding's origin rule).
+      local.boxed = true;
+      return local.id;
+    });
+    const call: IrExpr & { kind: "callValue" } = {
+      kind: "callValue",
+      callee: {
+        kind: "closure",
+        fnName: instance.name,
+        captures: sources,
+        type: funcTypeFromParamShapes(instance.params, instance.returnType),
+        loc,
+      },
+      args,
+      type: instance.returnType,
+      loc,
+    };
+    return guardEarlyBindingCall(lowerer, info, expr, call);
+  }
+  // The enclosing-frame values follow the declared arguments, the order
+  // the instance takes them in (lowerGenericInstance).
+  for (const capture of info.captures ?? []) {
+    args.push(lowerer.lowerExprExpecting(capture.nameNode as ts.Expression, capture.type));
+  }
   const call: IrExpr & { kind: "call" } = {
     kind: "call",
     callee: instance.name,
@@ -1202,7 +1282,10 @@ export function lowerGenericInstance(
   let bodyReturn = isGenerator
     ? lowerer.genBodyReturnType(inst.returnType)
     : lowerer.bodyReturnType(isAsync, inst.returnType);
-  const fnCtx = newFnCtx(false, null, null, bodyReturn);
+  // The environment form lowers as a LIFTED function: its captures arrive
+  // in the closure environment, never as parameters.
+  const envForm = info.captureMode === "env";
+  const fnCtx = newFnCtx(envForm, null, null, bodyReturn);
   fnCtx.isAsync = isAsync;
   // Instances lower on demand, on top of whichever caller reached them.
   fnCtx.thisBoundary = true;
@@ -1246,10 +1329,41 @@ export function lowerGenericInstance(
       const thisLocal = lowerer.declareThis(thisType);
       params.push({ localId: thisLocal.id, name: "this", type: thisType });
     }
+    // Environment form: one boxed capture entry per captured binding, in
+    // FrameCapture order (the call sites' closure caps[] order), keyed by
+    // the binding's symbol so the body (parameter defaults included)
+    // reads and writes the shared box. Pre-registering them also keeps
+    // resolution from walking past this instance's frame.
+    if (envForm) {
+      for (const capture of info.captures!) {
+        const entry = declareContextLocal(
+          fnCtx,
+          capture.name,
+          capture.type,
+          capture.reassigned,
+          undefined,
+          undefined,
+        );
+        entry.boxed = true;
+        fnCtx.captureBySymbol.set(capture.symbol, entry);
+        fnCtx.captures!.push({ localId: entry.id, name: entry.name, type: entry.type });
+      }
+    }
+    // The enclosing-frame values travel as TRAILING parameters, after the
+    // declared ones: a call lowers its arguments first (JavaScript's
+    // order), then reads the captures. Binding each local to the captured
+    // symbol is what lets the body resolve the reference; the locals are
+    // bound before the declared parameters so that a default initializer
+    // reading a capture resolves it too.
+    const captureParams: IrParam[] = [];
+    for (const capture of envForm ? [] : (info.captures ?? [])) {
+      const local = lowerer.declareLocal(capture.nameNode, capture.name, capture.type, false);
+      captureParams.push({ localId: local.id, name: capture.name, type: capture.type });
+    }
     // Default-param initializers lower per instance, with the bindings
     // threaded — a default mentioning T resolves like any body expression.
     const declared = lowerer.declareParams(decl.parameters.nodes, inst.params);
-    params.push(...declared.params);
+    params.push(...declared.params, ...captureParams);
     const body = [...receiverInit, ...declared.prologue];
     const bodyBlock = blockBodyOf(decl);
     if (bodyBlock) {
@@ -1304,6 +1418,7 @@ export function lowerGenericInstance(
       params,
       returnType: bodyReturn,
       locals: lowerer.ctx.locals,
+      ...(envForm ? { captures: fnCtx.captures! } : {}),
       body,
       loc: locOf(decl),
     };
@@ -2638,6 +2753,120 @@ function capturesEnclosingFrame(
   return captures;
 }
 
+/** The enclosing-frame VALUES `fn`, bound by `decl`, reads — in first-use
+ * order, the order the instances take them as trailing parameters. The
+ * shape is the one the instance body resolves: a binding declared by an
+ * enclosing function (a local, a parameter, a local function or class).
+ *
+ * Module-scope declarations and the binding itself are reachable from the
+ * module functions the instances compile to, so they are not captures; nor
+ * are type-only declarations, whose mapping is static. `this`, `super`,
+ * `arguments`, `new.target`, and an enclosing generic's type parameter
+ * have no value a parameter can stand in for and stay fenced. A
+ * reassigned binding is shared through the environment form instead of
+ * copied. */
+function enclosingFrameCaptures(
+  lowerer: Lowerer,
+  fn: ts.FunctionExpression | ts.ArrowFunction,
+  decl: ts.VariableDeclaration,
+  scope: ts.Node,
+  name: string,
+): FrameCapture[] {
+  const file = ts.getSourceFileOfNode(decl);
+  const self = lowerer.checker.getSymbolAtLocation(decl.name);
+  const frameFence = (): never =>
+    lowerer.unsupported(
+      "SC1090",
+      fn,
+      `generic arrow/function-expression bindings that use the frames of their enclosing functions (the compiled instantiations of '${name}' are module functions and cannot capture its locals, parameters, type parameters or 'this' — pass them as arguments, or declare the binding at module scope)`,
+    );
+  const captures: FrameCapture[] = [];
+  const seen = new Set<ts.Symbol>();
+  const scan = (n: ts.Node): void => {
+    if (
+      n.kind === ts.SyntaxKind.ThisKeyword ||
+      n.kind === ts.SyntaxKind.SuperKeyword ||
+      ts.isMetaProperty(n)
+    ) {
+      // Arrow bodies see the ENCLOSING this; function expressions
+      // rebind their own — but a bare `this` there is untyped JS
+      // dynamism either way. Reject both, cheaply and soundly.
+      frameFence();
+    }
+    if (ts.isIdentifier(n)) {
+      const s = lowerer.checker.getSymbolAtLocation(n);
+      if (s === undefined) {
+        if (n.text === "arguments") frameFence();
+      } else if (s !== self && !seen.has(s)) {
+        for (const d of s.declarations) {
+          if (ts.getSourceFileOfNode(d) !== file || (d.pos >= fn.pos && d.end <= fn.end)) continue;
+          let enclosing = false;
+          for (
+            let p: ts.Node | undefined = d.parent;
+            p !== undefined && !ts.isSourceFile(p);
+            p = p.parent
+          ) {
+            if (ts.isFunctionLike(p)) {
+              enclosing = true;
+              break;
+            }
+          }
+          if (!enclosing) continue;
+          // A type parameter (of the enclosing function or class) keys
+          // the enclosing instantiation; the instance would need that
+          // frame's type arguments, which this binding cannot carry.
+          if ((s.flags & ts.SymbolFlags.TypeParameter) !== 0) frameFence();
+          // Type-only declarations cost no runtime slot.
+          if ((s.flags & ts.SymbolFlags.Value) === 0) break;
+          // A trailing-parameter COPY is exact only while the original
+          // never changes; a binding written anywhere in the file puts the
+          // whole binding in the environment form (GenericFnInfo.captureMode).
+          const reassigned = !bindingNeverReassigned(lowerer, s, d);
+          // ...and exact only once the original is INITIALIZED. A capture
+          // declared after the binding could be read from a call that runs
+          // before its initializer — a temporal dead zone JavaScript would
+          // throw on. Declared before, the copy is always the initialized
+          // value: reaching the binding's own declaration ran it.
+          if (d.pos > decl.pos) frameFence();
+          // The declaration's own identifier (a binding element's for a
+          // destructured name): lowering it resolves the SYMBOL, so the
+          // instance body reads the parameter we declare for it.
+          const declaredName = (d as { name?: ts.Node }).name;
+          const nameNode =
+            declaredName !== undefined && ts.isIdentifier(declaredName) ? declaredName : d;
+          const type = lowerer.irTypeOf(nameNode);
+          captures.push({
+            symbol: s,
+            nameNode,
+            name: ts.isIdentifier(nameNode) ? nameNode.text : ts.symbolName(s),
+            type,
+            reassigned,
+          });
+          seen.add(s);
+          break;
+        }
+      }
+    }
+    ts.forEachChild(n, scan);
+  };
+  scan(scope);
+  // A capture's type is fixed when the info is registered, once per
+  // binding, while an enclosing generic function or class re-lowers its
+  // frame per instantiation: the second instantiation's value would have a
+  // different type than the parameter the shared instance declares.
+  // Generic enclosing scopes keep the fence; non-generic ones carry no
+  // type argument for the instance to miss.
+  if (captures.length > 0) {
+    for (let p: ts.Node | undefined = fn.parent; p && !ts.isSourceFile(p); p = p.parent) {
+      if (!ts.isFunctionLike(p) && !ts.isClassLikeDeclaration(p)) continue;
+      const typeParameters = (p as { typeParameters?: ts.NodeArray<ts.TypeParameterDeclaration> })
+        .typeParameters;
+      if (typeParameters !== undefined && typeParameters.nodes.length > 0) frameFence();
+    }
+  }
+  return captures;
+}
+
 /** Registers (or returns) the GenericFnInfo of a qualifying implicit-any
  * function-value binding — implicitLocalFnNodeOf's companion, the
  * bindingGenericFnInfoOf shape: the info enters genericFnsBySymbol under
@@ -2848,22 +3077,22 @@ export function bindingGenericFnInfoOf(
   if (existing) return existing;
   const name = (decl.name as ts.Identifier).text;
   if (fnNode.asteriskToken) lowerer.unsupported("SC1071", fnNode);
-  // Inside a function, the compiled instances are module functions, so
-  // the initializer may not use the enclosing frame.
+  // Inside a function, the compiled instances are module functions: the
+  // values the initializer reads from the enclosing frame travel as
+  // trailing parameters (FrameCapture), or through a closure environment
+  // when one of them is reassigned (captureMode). `this`, `arguments` and
+  // an enclosing generic's type parameters have no value to pass and stay
+  // fenced.
   let functionScoped = false;
+  let captures: FrameCapture[] | undefined;
   for (
     let n: ts.Node | undefined = decl.parent;
     n !== undefined && !ts.isSourceFile(n);
     n = n.parent
   ) {
     if (ts.isFunctionLike(n)) {
-      if (capturesEnclosingFrame(lowerer, fnNode, decl, fnNode)) {
-        lowerer.unsupported(
-          "SC1090",
-          fnNode,
-          `generic arrow/function-expression bindings that use the frames of their enclosing functions (the compiled instantiations of '${name}' are module functions and cannot capture its locals, parameters, type parameters or 'this' — pass them as arguments, or declare the binding at module scope)`,
-        );
-      }
+      const found = enclosingFrameCaptures(lowerer, fnNode, decl, fnNode, name);
+      if (found.length > 0) captures = found;
       functionScoped = true;
       break;
     }
@@ -2912,6 +3141,8 @@ export function bindingGenericFnInfoOf(
     typeParams,
     instances: new Map(),
     ...(functionScoped ? { functionScoped: true as const } : {}),
+    ...(captures ? { captures } : {}),
+    ...(captures?.some((capture) => capture.reassigned) ? { captureMode: "env" as const } : {}),
     bindingDecl: decl,
   };
   lowerer.bindingGenericFns.set(fnNode, info);
@@ -3095,7 +3326,7 @@ function guardEarlyBindingCall(
   lowerer: Lowerer,
   info: GenericFnInfo,
   expr: ts.CallExpression,
-  call: IrExpr & { kind: "call" },
+  call: IrExpr & { kind: "call" | "callValue" },
 ): IrExpr {
   if (info.bindingDecl === undefined || runsAfterDeclaration(lowerer, info, expr)) return call;
   const loc = call.loc;

@@ -1,3 +1,4 @@
+import { lowerWrapperNew } from "./primitive-wrappers.js";
 import { lowerAsyncLocalStorageOptions } from "./builtins/async-context.js";
 import { shapeOverlayAnnotated } from "../shape-inference/index.js";
 import {
@@ -133,7 +134,11 @@ import { isAssertClassNew } from "./assert-instances.js";
 import { isCjsRequireGlobal } from "./lower-node-module.js";
 import { lowerArrayConstructor } from "./containers/array-construction.js";
 import { initializedCollectionType } from "./js-collection-types.js";
-import { lowerMapSeedNew, lowerSetSeedNew } from "./containers/collection-methods.js";
+import {
+  lowerMapSeedNew,
+  lowerSetSeedNew,
+  mapFromSeedValue,
+} from "./containers/collection-methods.js";
 import { lowerObjectConstructor } from "./containers/indexed-objects.js";
 import { knownBufEncoding, lowerBufferConstruct } from "./containers/bytes.js";
 import { lowerSearchParamsNew } from "./builtins/url.js";
@@ -2448,9 +2453,15 @@ export function collectClassShapeInner(
               (modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword,
             ),
         )) &&
+      // A private static ACCESSOR has no native storage yet, and a private
+      // static method that reads `arguments` would lose the arguments past
+      // its parameters when called through its value (`this.#m` returned by
+      // a getter): keep such a class on the static path, whose public
+      // static accessors refuse.
       !decl.members.nodes.some(
         (member) =>
-          member.name &&
+          (ts.isAccessor(member) ||
+            (ts.isMethodDeclaration(member) && bodyReadsArguments(member))) &&
           ts.isPrivateIdentifier(member.name) &&
           ts
             .getModifiers(member)
@@ -2519,8 +2530,22 @@ export function collectClassShapeInner(
             .getModifiers(member)
             ?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword))
       ) {
-        runtimeStatics.push(member);
-        continue;
+        // A private static of a declaration-level class keeps its native
+        // storage (the %C.static:#m function, the %g.s.C.#x global): the
+        // constructor object never carries a property for it, and every
+        // access brand-checks its receiver (private-statics.ts). A field
+        // also stays in runtimeStatics, so its initializer runs in source
+        // order with the constructor's other initializers.
+        const privateStatic =
+          checkedStatics &&
+          !functionLocalClass(decl) &&
+          (member as { name?: ts.PropertyName }).name !== undefined &&
+          ts.isPrivateIdentifier((member as { name: ts.PropertyName }).name);
+        if (!privateStatic) {
+          runtimeStatics.push(member);
+          continue;
+        }
+        if (ts.isPropertyDeclaration(member)) runtimeStatics.push(member);
       }
       if (
         functionLocalClass(decl) &&
@@ -3451,7 +3476,15 @@ export function collectClassShapeInner(
             if (shape.bodyType) shape.bodyType = DYN;
           }
           ft.params = shapes.map((shape) => shape.type);
-          if (ft.ret.kind !== "void") ft.ret = DYN;
+          // A GENERATOR method's result is the suspended generator its spawn
+          // wrapper answers, so the generator kind IS the checked-crossable
+          // ABI: dynFrom boxes a generator by reference and dyn calls resume
+          // it through the dyn generator ops. Replacing it with plain DYN
+          // would leave the method no representation at all (the generator
+          // branch below needs the channels to build its metadata), which
+          // fenced every `c.m` read on a prototype-accessed class. Only the
+          // ARGUMENTS cross as checked values here.
+          if (ft.ret.kind !== "void" && member.asteriskToken === undefined) ft.ret = DYN;
         }
         // JS subclasses can add parameters to a method. Reserve checked
         // argument slots in the base before constructing its vtable; shorter
@@ -5127,11 +5160,15 @@ function lowerStaticFieldInitsInner(lowerer: Lowerer, info: ClassInfo): IrStmt[]
     | { pos: number; kind: "field"; f: ClassInfo["staticFields"][number] }
     | { pos: number; kind: "block"; b: ts.ClassStaticBlockDeclaration };
   const items: Item[] = [
-    ...info.staticFields.map((f): Item => ({
-      pos: ts.tokenStartOfNode(f.initializer),
-      kind: "field",
-      f,
-    })),
+    // A runtime-statics class initializes its private static fields with
+    // its other initializers (initializeRuntimeStatics).
+    ...info.staticFields
+      .filter((f) => !(info.runtimeStatics && f.name.startsWith("#")))
+      .map((f): Item => ({
+        pos: ts.tokenStartOfNode(f.initializer),
+        kind: "field",
+        f,
+      })),
     ...(info.staticBlocks ?? []).map((b): Item => ({
       pos: ts.tokenStartOfNode(b),
       kind: "block",
@@ -5836,7 +5873,7 @@ export function lowerClassStaticRead(
     !(ts.isCallExpression(site.parent) && site.parent.expression === site)
   )
     lowerer.noLowering(`Date.${name} read through a class that extends Date`, site);
-  if (hasRuntimeStatics(info) && !found?.field)
+  if (hasRuntimeStatics(info) && !found?.field && !name.startsWith("#"))
     return {
       kind: "dynKeyGet",
       value: lowerer.coerceToExpected(classValueRef(lowerer, info, receiver), DYN),
@@ -6734,7 +6771,9 @@ function staticCallOn(
     if (date) return date;
   }
   if (
-    (hasRuntimeStatics(info) && !findStaticOn(lowerer, info, access.name.text)?.field) ||
+    (hasRuntimeStatics(info) &&
+      !access.name.text.startsWith("#") &&
+      !findStaticOn(lowerer, info, access.name.text)?.field) ||
     (info.callableBase &&
       !findStaticOn(lowerer, info, access.name.text) &&
       !findGenericStaticOn(lowerer, info, access.name.text))
@@ -7189,7 +7228,9 @@ export function lowerClassValueProperty(
   if (info?.def.runtime && member !== "name") return null;
   if (
     info &&
-    ((hasRuntimeStatics(info) && !findStaticOn(lowerer, info, member)?.field) ||
+    ((hasRuntimeStatics(info) &&
+      !member.startsWith("#") &&
+      !findStaticOn(lowerer, info, member)?.field) ||
       (info.callableBase && !findStaticOn(lowerer, info, member)))
   )
     return {
@@ -10063,6 +10104,21 @@ function lowerProgramClassNew(
   });
 }
 
+/** The supported map layout a contextual type pins for `new Map()`: the type
+ * itself, or the single map arm of a union — a nullable annotation such as
+ * `Map<K, V> | undefined`, or `ReadonlyMap<K, V> | undefined`, where a Map
+ * value can only inhabit the map arm and the no-argument constructor gives
+ * the checker nothing to infer the type arguments from. */
+function contextualMapLayout(lowerer: Lowerer, ctx: ts.Type): IrType | null {
+  const mapped = lowerer.mapTypeOf(ctx);
+  if (mapped?.kind === "map") return mapped;
+  if (mapped?.kind !== "union") return null;
+  const arms = (lowerer.unions.get(mapped.unionId)?.arms ?? []).filter(
+    (arm): arm is IrType & { kind: "map" } => arm.kind === "map",
+  );
+  return arms.length === 1 ? arms[0]! : null;
+}
+
 function assignedThisFieldType(lowerer: Lowerer, expr: ts.NewExpression): IrType | null {
   const parent = expr.parent;
   if (
@@ -10181,6 +10237,8 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       return lowerWithInlineRequireInit(lowerer, req, () => lowerNew(lowerer, expr));
     }
   }
+  const wrapper = lowerWrapperNew(lowerer, expr);
+  if (wrapper) return wrapper;
   const worker = lowerWorkerNew(lowerer, expr);
   if (worker) return worker;
   const readlineUi = lowerReadlineUiNew(lowerer, expr) ?? lowerReadlineInterfaceNew(lowerer, expr);
@@ -11056,11 +11114,40 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         mapped = lowerer.mapTypeOf(inferred);
       } else if (mapped?.kind !== "map" || contextualSeed) {
         const ctx = lowerer.checker.getContextualType(expr);
-        const ctxMapped = ctx ? lowerer.mapTypeOf(ctx) : null;
-        if (ctx && ctxMapped?.kind === "map") {
+        const ctxMap = ctx ? contextualMapLayout(lowerer, ctx) : null;
+        if (ctx && ctxMap !== null) {
           tsType = ctx;
-          mapped = ctxMapped;
+          mapped = ctxMap;
         }
+      }
+      // `new Map(source)` the checker types `Map<any, any>` because the
+      // source's checker type joins an untyped `new Map()` with a typed map
+      // (a union of map types): the copy takes the layout the source value
+      // actually has.
+      if (
+        seedArg &&
+        !entriesLit &&
+        mapped?.kind === "map" &&
+        mapped.key.kind === "dyn" &&
+        mapped.value.kind === "dyn" &&
+        (expr.typeArguments?.nodes.length ?? 0) === 0 &&
+        !isJsSourceFile(ts.getSourceFileOfNode(expr)) &&
+        lowerer.mapTypeOf(lowerer.typeOf(seedArg))?.kind === "union"
+      ) {
+        const source = lowerer.lowerExpr(seedArg);
+        if (
+          source.type.kind === "map" &&
+          source.type.key.kind !== "dyn" &&
+          source.type.value.kind !== "dyn"
+        ) {
+          const copied = mapFromSeedValue(lowerer, source, source.type);
+          if (copied) return copied;
+        }
+        lowerer.noLowering(
+          "new Map(entries)",
+          expr,
+          "a source whose map layouts differ (give the empty `new Map()` its type arguments)",
+        );
       }
       if (seedArg && !entriesLit && mapped?.kind === "map") {
         const seeded = lowerMapSeedNew(lowerer, seedArg, mapped);

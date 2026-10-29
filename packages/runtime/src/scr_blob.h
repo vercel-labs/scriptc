@@ -29,6 +29,7 @@ ScrDyn *scr_intl_segmenter_new(void);
 ScrDyn *scr_intl_segmenter_refusing(ScrStr *refusal);
 ScrStr *scr_process_builtin_id(ScrDyn *id, ScrArr *known);
 ScrDyn *scr_process_builtin_module(ScrStr *id, ScrDyn *getter);
+ScrDyn *scr_process_builtin_object(ScrStr *id, ScrDyn *getter, ScrArr *keys);
 ScrDyn *scr_process_builtin_unsupported(ScrStr *id, ScrStr *member);
 /* A module namespace object as a checked-dynamic value (scr_module_namespace.c):
  * one handle per module `id`, whose reads call `getter` with the export

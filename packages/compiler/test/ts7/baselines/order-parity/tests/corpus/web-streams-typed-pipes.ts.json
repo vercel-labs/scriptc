@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/web-streams-typed-pipes.ts"
+ ],
+ "diags": []
+}

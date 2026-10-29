@@ -932,7 +932,32 @@ bool scr_process_deprecation_flag_on(int which) {
 
 /* The warning's name as warning.toString() reads it: the own property, or
  * the Error class name an emitted Error instance inherits. +1 or NULL. */
+/* A warning's `key` as a property read sees it, including the fields of an
+ * Error subclass instance: +1, or NULL when there is none or the read threw
+ * (the exception is pending). */
+static ScrDyn *scr_warning_field(const ScrDyn *w, const char *key, size_t key_len) {
+  if (w->kind == SCR_DYN_TYPED_REF) {
+    /* The reference's own answer, else its materialized view's. */
+    ScrStr *name = scr_str_new(key, key_len);
+    ScrDyn *value = scr_dyn_typed_ref_key_get(w, name);
+    scr_str_release(name);
+    if (value || scr_exc_pending()) return value;
+    ScrDyn *view = scr_dyn_typed_ref_materialize(w);
+    if (view && !scr_exc_pending()) value = scr_warning_field(view, key, key_len);
+    scr_dyn_release(view);
+    return value;
+  }
+  if (w->kind != SCR_DYN_OBJ) return NULL;
+  return scr_dyn_obj_read(w, key, key_len);
+}
+
 static ScrStr *scr_warning_name(const ScrDyn *w) {
+  if (w->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *en = scr_warning_field(w, "name", 4);
+    ScrStr *name = en && en->kind == SCR_DYN_STR ? scr_str_retain(en->v.str) : NULL;
+    scr_dyn_release(en);
+    if (name) return name;
+  }
   const ScrDyn *en = scr_dyn_obj_get(w, "name", 4);
   if (en) return en->kind == SCR_DYN_STR ? scr_str_retain(en->v.str) : NULL;
   ScrError *e = scr_errdyn_err_of(w);
@@ -960,9 +985,17 @@ static void scr_warning_dispatch(ScrDyn *w) {
   bool deprecation = scr_warning_is_deprecation(w);
   if (deprecation && scr_process_deprecation_flag_on(0)) goto listeners;
   ScrStr *name = scr_warning_name(w);
-  const ScrDyn *em = scr_dyn_obj_get(w, "message", 7);
-  const ScrDyn *ec = scr_dyn_obj_get(w, "code", 4);
-  const ScrDyn *ed = scr_dyn_obj_get(w, "detail", 6);
+  ScrDyn *em = scr_warning_field(w, "message", 7);
+  ScrDyn *ec = scr_exc_pending() ? NULL : scr_warning_field(w, "code", 4);
+  ScrDyn *ed = scr_exc_pending() ? NULL : scr_warning_field(w, "detail", 6);
+  if (scr_exc_pending()) {
+    /* A read that threw reports nothing; the exception propagates. */
+    scr_str_release(name);
+    scr_dyn_release(em);
+    scr_dyn_release(ec);
+    scr_dyn_release(ed);
+    return;
+  }
   ScrJsonBuf report;
   scr_jb_init(&report);
   char pid[32];
@@ -982,6 +1015,9 @@ static void scr_warning_dispatch(ScrDyn *w) {
     scr_jb_puts(&report, "\n");
     scr_jb_put_str(&report, ed->v.str);
   }
+  scr_dyn_release(em);
+  scr_dyn_release(ec);
+  scr_dyn_release(ed);
   /* Node's one-time trace hint, after the first report; deprecations
    * name their own trace flag. */
   if (!scr_warning_trace_hint_shown) {
@@ -1086,8 +1122,9 @@ static void scr_warning_tick(ScrClosure *c) {
 }
 
 static void scr_warning_throw_tick(ScrClosure *c) {
-  ScrDyn *w = scr_box_get_ref(c->caps[0]);
-  scr_throw_ref(w, scr_dyn_retain_v, scr_dyn_release_v, scr_dyn_trace_v);
+  /* Thrown as the Error it encodes, so the uncaught report and catch
+   * bindings see an Error. */
+  scr_dyn_throw(scr_box_get_ref(c->caps[0]));
 }
 
 static void scr_warning_defer(ScrDyn *w, void (*fire)(ScrClosure *)) {
@@ -1199,18 +1236,76 @@ void scr_process_emit_warning_text(ScrStr *message) {
   scr_next_tick_raw(scr_warn_text_tick);
 }
 
-static void scr_warn_bad_arg(const char *arg, const char *want) {
-  char buf[160];
-  int n = snprintf(buf, sizeof buf, "The \"%s\" argument must be of type %s", arg, want);
-  scr_throw_error_msg_code(SCR_ERR_TYPE, buf, (size_t)n, "ERR_INVALID_ARG_TYPE");
+/* A dyn value of kind STR equal to `text`. */
+static bool scr_warn_str_is(const ScrDyn *value, const char *text) {
+  size_t n = strlen(text);
+  return value != NULL && value->kind == SCR_DYN_STR && value->v.str->len == n &&
+         memcmp(value->v.str->data, text, n) == 0;
 }
 
-/* process.emitWarning(...) — Node's full argument grammar over dyn
- * values: (warning: string | Error), then for string warnings a type
- * string / ctor function / options object ({type, code, detail}) second
- * and a code string / ctor function third. Wrong kinds throw Node's
- * ERR_INVALID_ARG_TYPE TypeErrors at the call; non-string details are
- * ignored. The warning itself is emitted on the next tick. */
+/* process.emitWarning(warning, type, code, ctor) in the order Node's
+ * lib/internal/process/warning.js runs it:
+ *   - a "DeprecationWarning" type string returns at once while
+ *     process.noDeprecation is set;
+ *   - an options object (any non-array object) replaces type with
+ *     `options.type || "Warning"` and code with `options.code`, and keeps
+ *     a string `options.detail`; a function in the type position is the
+ *     ctor and clears code;
+ *   - type, when not undefined, and code, when neither undefined nor a
+ *     function, must be strings, for Error warnings too;
+ *   - the warning must be a string or an Error.
+ * Wrong kinds throw ERR_INVALID_ARG_TYPE TypeErrors with Node's message.
+ * A string warning becomes an Error named `type || "Warning"`. The warning
+ * is emitted on the next tick. Borrows its arguments; NULL is an omitted
+ * argument. */
+static void scr_emit_warning_args(const ScrDyn *warning, const ScrDyn *type, const ScrDyn *code) {
+  const ScrDyn *detail = NULL;
+  if (scr_warn_str_is(type, "DeprecationWarning") && scr_process_deprecation_flag_on(0)) return;
+  if (type != NULL && type->kind == SCR_DYN_OBJ) {
+    const ScrDyn *t = scr_dyn_obj_get(type, "type", 4);
+    const ScrDyn *d = scr_dyn_obj_get(type, "detail", 6);
+    code = scr_dyn_obj_get(type, "code", 4);
+    if (d != NULL && d->kind == SCR_DYN_STR) detail = d;
+    type = t != NULL && scr_dyn_truthy(t) ? t : NULL;
+  } else if (type != NULL && type->kind == SCR_DYN_FUNC) {
+    type = NULL;
+    code = NULL;
+  }
+  if (type != NULL && type->kind == SCR_DYN_UNDEF) type = NULL;
+  if (type != NULL && type->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail("type", "of type string", type);
+    return;
+  }
+  if (code != NULL && (code->kind == SCR_DYN_FUNC || code->kind == SCR_DYN_UNDEF)) code = NULL;
+  if (code != NULL && code->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail("code", "of type string", code);
+    return;
+  }
+  /* An Error warning, an instance of an Error subclass included, keeps
+   * its own name and code (Node). */
+  ScrError *error = scr_errdyn_err_of(warning);
+  if (error != NULL || (warning->kind == SCR_DYN_OBJ && scr_dyn_obj_get(warning, "%error", 6) != NULL) ||
+      scr_dyn_ref_is_error(warning)) {
+    scr_error_release(error);
+    scr_warning_emit_deferred((ScrDyn *)warning);
+    return;
+  }
+  if (warning->kind != SCR_DYN_STR) {
+    scr_dyn_arg_type_fail("warning", "of type string or an instance of Error", warning);
+    return;
+  }
+  ScrError *e = scr_error_new(SCR_ERR_ERROR, warning->v.str);
+  scr_str_release(e->name);
+  e->name = type != NULL && type->v.str->len > 0 ? scr_str_retain(type->v.str) : scr_str_new("Warning", 7);
+  e->name_present = true;
+  if (code != NULL) e->code = scr_str_retain(code->v.str);
+  if (detail != NULL) scr_error_set_prop(e, "detail", 6, scr_dyn_new_str(detail->v.str)); /* retains */
+  ScrDyn *w = scr_dyn_from_error(e);
+  scr_error_release(e);
+  scr_warning_emit_deferred(w);
+  scr_dyn_release(w);
+}
+
 void scr_process_emit_warning(ScrDyn *args) {
 #ifdef SCR_WARNING_REPLACE
   if (scr_emit_warning_override != NULL) {
@@ -1221,65 +1316,19 @@ void scr_process_emit_warning(ScrDyn *args) {
 #endif
   size_t argc = args->kind == SCR_DYN_ARR ? args->v.arr.len : 0;
   ScrDyn *const *items = args->kind == SCR_DYN_ARR ? args->v.arr.items : NULL;
-  ScrDyn *warning = argc >= 1 ? items[0] : NULL;
-  /* An Error-encoded warning: type/code arguments are ignored (Node). */
-  if (warning != NULL && warning->kind == SCR_DYN_OBJ &&
-      scr_dyn_obj_get(warning, "%error", 6) != NULL) {
-    scr_warning_emit_deferred(warning);
-    return;
-  }
-  if (warning == NULL || warning->kind != SCR_DYN_STR) {
-    scr_warn_bad_arg("warning", "string or an instance of Error");
-    return;
-  }
-  const ScrStr *type = NULL;
-  const ScrStr *code = NULL;
-  const ScrStr *detail = NULL;
-  size_t i = 1;
-  if (i < argc && items[i]->kind != SCR_DYN_UNDEF) {
-    ScrDyn *a = items[i];
-    if (a->kind == SCR_DYN_STR) {
-      type = a->v.str;
-      i++;
-    } else if (a->kind == SCR_DYN_FUNC) {
-      i = argc; /* ctor: consumed, stack-trace trimming only — ignored */
-    } else if (a->kind == SCR_DYN_OBJ && scr_dyn_obj_get(a, "%error", 6) == NULL) {
-      const ScrDyn *t = scr_dyn_obj_get(a, "type", 4);
-      const ScrDyn *c = scr_dyn_obj_get(a, "code", 4);
-      const ScrDyn *d = scr_dyn_obj_get(a, "detail", 6);
-      if (t && t->kind == SCR_DYN_STR) type = t->v.str;
-      else if (t && t->kind != SCR_DYN_UNDEF) {
-        scr_warn_bad_arg("options.type", "string");
-        return;
-      }
-      if (c && c->kind == SCR_DYN_STR) code = c->v.str;
-      if (d && d->kind == SCR_DYN_STR) detail = d->v.str;
-      i = argc; /* options form: no third argument (Node ignores it) */
-    } else {
-      scr_warn_bad_arg("type", "string");
+  const ScrDyn *type = argc >= 2 ? items[1] : NULL;
+  /* A typed record in the options position reads as the object it is. */
+  ScrDyn *options = NULL;
+  if (type != NULL && type->kind == SCR_DYN_TYPED_REF && !scr_dyn_ref_is_array(type)) {
+    options = scr_dyn_typed_ref_materialize(type);
+    if (options == NULL || scr_exc_pending()) {
+      scr_dyn_release(options);
       return;
     }
-  } else if (i < argc) {
-    i++; /* explicit undefined type: default */
+    type = options;
   }
-  if (i < argc && items[i]->kind != SCR_DYN_UNDEF) {
-    ScrDyn *a = items[i];
-    if (a->kind == SCR_DYN_STR) code = a->v.str;
-    else if (a->kind != SCR_DYN_FUNC) {
-      scr_warn_bad_arg("code", "string");
-      return;
-    }
-  }
-  ScrError *e = scr_error_new(SCR_ERR_ERROR, (ScrStr *)warning->v.str);
-  scr_str_release(e->name);
-  e->name = type ? scr_str_retain((ScrStr *)type) : scr_str_new("Warning", 7);
-  e->name_present = true;
-  if (code) e->code = scr_str_retain((ScrStr *)code);
-  if (detail) scr_error_set_prop(e, "detail", 6, scr_dyn_new_str((ScrStr *)detail)); /* retains */
-  ScrDyn *w = scr_dyn_from_error(e);
-  scr_error_release(e);
-  scr_warning_emit_deferred(w);
-  scr_dyn_release(w);
+  scr_emit_warning_args(argc >= 1 ? items[0] : scr_dyn_undefined(), type, argc >= 3 ? items[2] : NULL);
+  scr_dyn_release(options);
 }
 
 

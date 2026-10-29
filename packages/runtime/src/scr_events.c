@@ -1507,9 +1507,19 @@ static ScrDyn *scr_stdio_invoke(void *ptr, ScrDyn *self, const char *name,
   return result;
 }
 
-static bool scr_stdio_intercept(int fd, const void *data, size_t length, bool wide) {
+/* Node's console error handler for a stream write (createWriteErrorHandler):
+ * console swallows write errors, so it ignores its argument. */
+static ScrDyn *scr_stdio_console_error_handler(ScrClosure *cb, ScrDyn *const *args, size_t argc) {
+  (void)cb; (void)args; (void)argc;
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+static SCR_TL ScrDyn *scr_stdio_console_handler = NULL;
+
+static bool scr_stdio_intercept(int fd, const void *data, size_t length, int flags) {
   ScrStdio *stream = &scr_stdio_streams[fd == 2 ? 2 : 1];
   if (!stream->write || scr_dyn_strict_eq(stream->write, scr_stdio_methods[STDIO_WRITE])) {
+    bool wide = (flags & SCR_STDIO_HOOK_WIDE) != 0;
     char *owned = NULL;
     if (wide && scr_wtf8_find_surrogate(data, length)) {
       owned = malloc(length ? length : 1);
@@ -1522,12 +1532,25 @@ static bool scr_stdio_intercept(int fd, const void *data, size_t length, bool wi
     free(owned);
     return true;
   }
-  ScrStr *text = scr_str_new(data, length);
-  ScrDyn *chunk = scr_dyn_new_str(text);
-  scr_str_release(text);
+  ScrDyn *chunk;
+  if (flags & SCR_STDIO_HOOK_BYTES) {
+    /* Always a Buffer: a write from a 'data' listener of a stream with an
+     * encoding set is still the bytes it was given. */
+    ScrBytes *b = scr_bytes_new(SCR_BYTES_U8, (double)length);
+    memcpy(b->data, data, length);
+    b->is_buffer = true;
+    chunk = scr_dyn_new_bytes(b);
+    scr_bytes_release(b);
+  } else {
+    ScrStr *text = scr_str_new(data, length);
+    chunk = scr_dyn_new_str(text);
+    scr_str_release(text);
+  }
+  ScrDyn *argv[2] = {chunk, scr_stdio_console_handler};
+  size_t argc = (flags & SCR_STDIO_HOOK_CONSOLE) ? 2 : 1;
   scr_dyn_this_push(stream, SCR_DYNH_STDIO);
   ScrDyn *fn = scr_dyn_retain(stream->write);
-  ScrDyn *result = scr_dyn_call(fn, &chunk, 1, "write");
+  ScrDyn *result = scr_dyn_call(fn, argv, argc, "write");
   scr_dyn_release(fn);
   scr_dyn_this_pop();
   bool accepted = result && scr_dyn_truthy(result);
@@ -1562,6 +1585,8 @@ static void scr_stdio_cleanup(void) {
     scr_dyn_release(scr_stdio_methods[i]);
     scr_stdio_methods[i] = NULL;
   }
+  scr_dyn_release(scr_stdio_console_handler);
+  scr_stdio_console_handler = NULL;
   scr_stdio_initialized = false;
 }
 
@@ -1582,6 +1607,7 @@ ScrDyn *scr_process_stdio(double fd) {
       scr_box_set_f64(cb->caps[0], i);
       scr_stdio_methods[i] = scr_dyn_new_func(cb, scr_stdio_method, i == STDIO_WRITE ? 3 : 1, "", scr_stdio_names[i]);
     }
+    scr_stdio_console_handler = scr_dyn_new_func(scr_closure_new(NULL, 0), scr_stdio_console_error_handler, 1, "", "");
     scr_stdio_write_hook = scr_stdio_intercept;
   }
   return scr_dyn_new_handle(&scr_stdio_streams[fd == 0 ? 0 : fd == 2 ? 2 : 1], SCR_DYNH_STDIO);

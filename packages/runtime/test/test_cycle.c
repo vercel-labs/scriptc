@@ -1039,6 +1039,75 @@ static void check_nursery_bypass(void) {
   scr_collect_cycles();
 }
 
+/* A nursery probe window that opens makes the next release-triggered pass
+ * that would run at the nursery run at the mature level, which reclaims
+ * dead promoted rings a nursery pass stops at. */
+static size_t window_kind_freed, window_ring_freed;
+static void window_kind_free(void *obj) {
+  window_kind_freed++;
+  node_free(obj);
+}
+static void window_ring_free(void *obj) {
+  window_ring_freed++;
+  node_free(obj);
+}
+static ScrCycType window_kind_type = { &node_trace, &window_kind_free, 9 };
+static ScrCycType window_ring_type = { &node_trace, &window_ring_free, 0 };
+
+/* A candidate of the window kind that dies once it has been routed, as the
+ * next pass would route it: it counts down a bypass without growing the
+ * heap. */
+static void release_window_candidate(void) {
+  Node *node = scr_cyc_alloc(sizeof(*node), &window_kind_type);
+  node->rc = 2;
+  release_live(node);
+  scr_cyc_route_bypassed_at();
+  node->rc = 0;
+  scr_cyc_on_dead(node);
+  window_kind_free(node);
+}
+
+static void check_probe_window_runs_mature_pass(void) {
+  /* Every release collects at a threshold of 1, and passes with only a few
+   * candidates walk too few of them to decide a window. */
+  if (configured_nursery_threshold() < 8) return;
+  enum { WINDOW = 8192, INTERVAL = 16, LIVE = WINDOW, RING = 4 };
+  Node **live = calloc(LIVE, sizeof(*live));
+  if (!live) scr_trap("cycle test: out of memory\n");
+  for (size_t i = 0; i < LIVE; i++) {
+    live[i] = scr_cyc_alloc(sizeof(*live[i]), &window_kind_type);
+    live[i]->rc = 1;
+    read_live(live[i]);
+    scr_cyc_pass_at(SCR_CYC_NURSERY);
+  }
+  scr_collect_cycles();
+  /* A pass that an earlier window asked for runs now. */
+  run_release_passes();
+
+  /* A dead ring promoted to the mature level: nursery passes stop at it. */
+  Node *ring = make_ring_of(RING, &window_ring_type);
+  ring->rc++;
+  release_live(ring);
+  scr_cyc_pass_at(SCR_CYC_NURSERY);
+  release_live(ring);
+  run_release_passes();
+  check(window_ring_freed == 0, "a nursery pass freed a dead mature ring");
+
+  /* The window kind's candidates go past the nursery until a probe window
+   * opens; the next release-triggered pass runs at the mature level. */
+  for (size_t i = 0; i < (size_t)WINDOW * INTERVAL; i++) release_window_candidate();
+  run_release_passes();
+  check(window_ring_freed == RING, "the pass after a probe window opened missed a dead mature ring");
+
+  for (size_t i = 0; i < LIVE; i++) {
+    live[i]->rc = 0;
+    scr_cyc_on_dead(live[i]);
+    window_kind_free(live[i]);
+  }
+  free(live);
+  scr_collect_cycles();
+}
+
 /* The mature level's bypass: a type whose mature candidates keep surviving
  * goes straight to the old generation, its dead cycles are found by full
  * passes, and once its objects die at the mature level again it is judged
@@ -1719,6 +1788,7 @@ int main(void) {
   check_death_brings_full_pass();
   check_nursery_bypass();
   check_mature_bypass();
+  check_probe_window_runs_mature_pass();
   check_probe_sees_candidate_rings();
   check_rebuffer_past_mature();
   check_allocation_growth_runs_passes();

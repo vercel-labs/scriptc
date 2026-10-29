@@ -1,0 +1,40 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6880-node-island-cjs-entry/main.js"
+ ],
+ "diags": [
+  {
+   "code": "SC1010",
+   "message": "the 'envkit' module is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/corpus/6880-node-island-cjs-entry/main.js",
+    "start": 628,
+    "end": 645
+   },
+   "milestone": "M4",
+   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
+  },
+  {
+   "code": "SC1010",
+   "message": "the 'envkit' module is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/corpus/6880-node-island-cjs-entry/main.js",
+    "start": 652,
+    "end": 678
+   },
+   "milestone": "M4",
+   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
+  },
+  {
+   "code": "SC1010",
+   "message": "the 'startkit' module is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/corpus/6880-node-island-cjs-entry/main.js",
+    "start": 685,
+    "end": 745
+   },
+   "milestone": "M4",
+   "hint": "relative imports (./file, ../dir/file), package.json-mediated project imports (#alias via the imports field, self-name references via exports), statically compiled npm packages, and the built-in fs, fs/promises, path, os, url, crypto, zlib, child_process, net, http, tls, https, http2, dgram, dns, dns/promises, util, util/types, string_decoder, querystring, readline, events, stream, stream/promises, stream/consumers, stream/web, buffer, assert, assert/strict, worker_threads, cluster, tty, async_hooks, timers, timers/promises, diagnostics_channel, perf_hooks, module, v8, and console modules (bare or node:-prefixed) and node:test (node:-prefixed only, like in Node) are supported"
+  }
+ ]
+}

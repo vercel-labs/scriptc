@@ -19,6 +19,7 @@ import type {
 import {
   arrayOf,
   iterableArmsElem,
+  BIGINT_STATS_T,
   BYTES_ELEMENT_NAME,
   BOOL,
   BYTES_U8,
@@ -51,6 +52,7 @@ import {
   RUNTIME_ERROR_CLASSES,
   RUNTIME_STREAM_CLASSES,
   shapeHasAccessorSlots,
+  STATS_T,
   STRING,
   typeEquals,
   typeKey,
@@ -4187,7 +4189,14 @@ function validateFunction(
       e.fn === "readable.unpipe" ||
       e.fn === "rl.create" ||
       e.fn === "rl.createSignal";
-    if (variadic ? e.args.length < sig.argTypes.length : e.args.length !== sig.argTypes.length) {
+    // fs.unwatchFile's listener is optional, so its last slot may be
+    // omitted (1 or 2 args) rather than extended.
+    const optionalTail = e.fn === "fs.unwatchFile" ? 1 : 0;
+    const arityOk = variadic
+      ? e.args.length >= sig.argTypes.length
+      : e.args.length === sig.argTypes.length ||
+        (optionalTail > 0 && e.args.length === sig.argTypes.length - optionalTail);
+    if (!arityOk) {
       err(`libCall ${e.fn}: ${e.args.length} args, expected ${sig.argTypes.length}`, e.loc);
     }
     e.args.forEach((a, i) => {
@@ -4239,7 +4248,14 @@ function validateFunction(
       }
     }
     if (!typeEquals(e.type, sig.result)) {
-      err(`libCall ${e.fn} must be ${sig.result.kind}, got ${e.type.kind}`, e.loc);
+      // The stat calls answer the SAME snapshot under either member table:
+      // their `bigint` option picks BigIntStats' reads over Stats'.
+      const statsVariant =
+        (e.fn === "fs.statSync" || e.fn === "fs.lstatSync" || e.fn === "fs.fstatSync") &&
+        typeEquals(sig.result, STATS_T) &&
+        typeEquals(e.type, BIGINT_STATS_T);
+      if (!statsVariant)
+        err(`libCall ${e.fn} must be ${sig.result.kind}, got ${e.type.kind}`, e.loc);
     }
   }
 
@@ -4922,7 +4938,7 @@ function validateFunction(
       const ok =
         def &&
         def.arms.length === 2 &&
-        def.arms.some((a) => a.kind === "stats") &&
+        def.arms.some((a) => a.kind === "stats" || a.kind === "bigintStats") &&
         def.arms.some((a) => a.kind === "undefinedT");
       if (!ok) {
         err(`libCall ${e.fn} must return the 'Stats | undefined' union`, e.loc);

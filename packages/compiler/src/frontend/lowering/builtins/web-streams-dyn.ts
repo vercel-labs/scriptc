@@ -1,4 +1,7 @@
-import { staticFetchMembers } from "../../../compat/fetch-profile.js";
+import {
+  READABLE_STREAM_WEB_VIEW_CALLS,
+  staticFetchMembers,
+} from "../../../compat/fetch-profile.js";
 import { numLit } from "../../../ir/build.js";
 import { everyStmt } from "../../../ir/traverse.js";
 import {
@@ -16,6 +19,7 @@ import { constituentTypes } from "../../ts7/checker.js";
 import { ENTRY_NAME, type Lowerer } from "../lowerer.js";
 import { stdlibGlobalNameOf } from "../surfaces.js";
 import { streamWebImportOf } from "./module-bindings.js";
+import { lowerDynObjectLiteral } from "../expressions/object-literals.js";
 
 /* The web stream classes in JavaScript sources: the globals and the
  * node:stream/web exports, which are the same constructors. Each reference
@@ -92,6 +96,60 @@ export function programNamesWebStreamClass(lowerer: Lowerer): boolean {
   return found;
 }
 
+/** The classes a TypeScript source constructs through the web stream
+ * classes once it uses an operation the native streams lack. */
+const TYPED_CLASSES: ReadonlySet<string> = new Set([
+  "ReadableStream",
+  "WritableStream",
+  "TransformStream",
+]);
+const WEB_VIEW_CALLS: ReadonlySet<string> = new Set(READABLE_STREAM_WEB_VIEW_CALLS);
+
+/** Whether a TypeScript source of the program uses a web stream operation
+ * the native streams lack: a ReadableStream tee(), pipeTo() or
+ * pipeThrough() call, a WritableStream constructor, or a TransformStream
+ * constructor with arguments (a transformer or queuing strategies). Such a
+ * program builds its ReadableStream, WritableStream and TransformStream
+ * values with the web stream classes, as JavaScript does; a program that
+ * uses only getReader(), cancel() and the identity transform keeps the
+ * native streams. */
+export function programUsesTypedWebStreams(lowerer: Lowerer): boolean {
+  if (lowerer.typedWebStreams !== undefined) return lowerer.typedWebStreams;
+  let found = false;
+  for (const file of lowerer.program.getSourceFiles()) {
+    if (file.isDeclarationFile || isJsSourceFile(file)) continue;
+    ts.walkPreorder(file, (node) => {
+      const member = staticMemberName(node);
+      if (member !== null && WEB_VIEW_CALLS.has(member) && isReadableStreamMember(lowerer, node))
+        found = true;
+      else if (ts.isNewExpression(node)) {
+        const name = stdlibGlobalNameOf(lowerer, unparenthesized(node.expression));
+        if (
+          name === "WritableStream" ||
+          (name === "TransformStream" && (node.arguments?.nodes.length ?? 0) > 0)
+        )
+          found = true;
+      }
+      return found ? "stop" : undefined;
+    });
+    if (found) break;
+  }
+  lowerer.typedWebStreams = found;
+  return found;
+}
+
+/** The class a TypeScript `new` expression constructs through the web
+ * stream classes (programUsesTypedWebStreams), as its index in
+ * WEB_STREAM_CLASSES; null otherwise. */
+function typedWebStreamClassKindOf(lowerer: Lowerer, node: ts.Expression): number | null {
+  const expr = unparenthesized(node);
+  if (!ts.isIdentifier(expr) || isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
+  const name = streamWebImportOf(lowerer, expr) ?? stdlibGlobalNameOf(lowerer, expr);
+  if (name === null || !TYPED_CLASSES.has(name) || !programUsesTypedWebStreams(lowerer))
+    return null;
+  return CLASS_NAMES.indexOf(name);
+}
+
 export function webStreamClassValue(kind: number, loc: SrcLoc): IrExpr {
   return { kind: "libCall", fn: "webstream.class", args: [numLit(kind, loc)], type: DYN, loc };
 }
@@ -102,13 +160,24 @@ export function lowerWebStreamClassRead(lowerer: Lowerer, node: ts.Expression): 
   return kind === null ? null : webStreamClassValue(kind, locOf(node));
 }
 
-/** `new X(...args)` on one of the classes in JavaScript. */
+/** `new X(...args)` on one of the classes in JavaScript, and on
+ * ReadableStream, WritableStream and TransformStream in a TypeScript
+ * program that uses the web stream classes (programUsesTypedWebStreams).
+ * A TypeScript source's object literal argument (a source, sink,
+ * transformer or strategy) becomes a plain object with its methods. */
 export function lowerWebStreamNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
-  const kind = webStreamClassKindOf(lowerer, expr.expression);
+  const typed = webStreamClassKindOf(lowerer, expr.expression) === null;
+  const kind = typed
+    ? typedWebStreamClassKindOf(lowerer, expr.expression)
+    : webStreamClassKindOf(lowerer, expr.expression);
   if (kind === null) return null;
   const nodes = expr.arguments?.nodes ?? [];
   if (nodes.some(ts.isSpreadElement)) return null;
   const loc = locOf(expr);
+  const argument = (arg: ts.Expression): IrExpr =>
+    typed && ts.isObjectLiteralExpression(arg)
+      ? lowerDynObjectLiteral(lowerer, arg)
+      : lowerer.lowerExprExpecting(arg, DYN);
   return {
     kind: "libCall",
     fn: "dyn.construct",
@@ -116,7 +185,7 @@ export function lowerWebStreamNew(lowerer: Lowerer, expr: ts.NewExpression): IrE
       webStreamClassValue(kind, loc),
       {
         kind: "dynArrLit",
-        elems: nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+        elems: nodes.map(argument),
         type: DYN,
         loc,
       },
@@ -244,10 +313,29 @@ function isReadableStreamType(lowerer: Lowerer, type: ts.Type): boolean {
   );
 }
 
-/** Whether a member access resolves to a member of the stdlib
- * ReadableStream interface. */
-function isReadableStreamMember(lowerer: Lowerer, access: ts.PropertyAccessExpression): boolean {
-  const member = lowerer.checker.getSymbolAtLocation(access.name);
+type MemberAccess = ts.PropertyAccessExpression | ts.ElementAccessExpression;
+
+/** The member a property access names, or an element access with a string
+ * literal key (`body.tee` and `body["tee"]`); null for any other node. */
+function staticMemberName(node: ts.Node): string | null {
+  if (ts.isPropertyAccessExpression(node)) return node.name.text;
+  if (ts.isElementAccessExpression(node)) {
+    const key = node.argumentExpression;
+    if (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) return key.text;
+  }
+  return null;
+}
+
+/** Whether a member access (staticMemberName) resolves to a member of the
+ * stdlib ReadableStream interface. */
+function isReadableStreamMember(lowerer: Lowerer, access: ts.Node): boolean {
+  const key = ts.isPropertyAccessExpression(access)
+    ? access.name
+    : ts.isElementAccessExpression(access)
+      ? access.argumentExpression
+      : null;
+  if (key === null) return false;
+  const member = lowerer.checker.getSymbolAtLocation(key);
   if (member === undefined || !lowerer.isStdlibSymbol(member)) return false;
   let owner: ts.Node | undefined = member.declarations[0]?.parent;
   while (owner !== undefined && !ts.isInterfaceDeclaration(owner)) owner = owner.parent;
@@ -285,6 +373,7 @@ function programLinksFetch(functions: IrFunction[]): boolean {
  * count in a program that links the fetch unit, since the value can be a
  * fetch body. */
 function programUsesWebStreamOnlyMembers(lowerer: Lowerer, functions: IrFunction[]): boolean {
+  if (programUsesTypedWebStreams(lowerer)) return true;
   const members = staticFetchMembers().readableStreamUnsupported;
   const iterates = members.has("[Symbol.asyncIterator]");
   let untyped = false;
@@ -293,9 +382,10 @@ function programUsesWebStreamOnlyMembers(lowerer: Lowerer, functions: IrFunction
     let found = false;
     ts.walkPreorder(file, (node) => {
       let receiver: ts.Type | null = null;
-      if (ts.isPropertyAccessExpression(node) && members.has(node.name.text)) {
+      const member = staticMemberName(node);
+      if (member !== null && members.has(member)) {
         if (isReadableStreamMember(lowerer, node)) found = true;
-        else receiver = lowerer.typeOf(node.expression);
+        else receiver = lowerer.typeOf((node as MemberAccess).expression);
       } else if (iterates && ts.isForOfStatement(node) && node.awaitModifier !== undefined) {
         receiver = lowerer.typeOf(node.expression);
         if (isReadableStreamType(lowerer, receiver)) found = true;
@@ -310,7 +400,9 @@ function programUsesWebStreamOnlyMembers(lowerer: Lowerer, functions: IrFunction
 }
 
 /** Links the web stream classes into a program whose JavaScript uses a
- * ReadableStream member the fetch unit's own stream lacks: a fetch body's
+ * ReadableStream member the fetch unit's own stream lacks, or whose
+ * TypeScript uses the web stream classes (programUsesTypedWebStreams): a
+ * fetch body's or a native stream's
  * handle stands for a web ReadableStream once such a member is used
  * (scr_fetch.c, sf_stream_web_view). %main installs the classes first. A
  * program that names one of the classes links them already. */

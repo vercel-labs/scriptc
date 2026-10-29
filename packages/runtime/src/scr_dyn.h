@@ -770,6 +770,17 @@ static inline __attribute__((always_inline)) ScrDynProp scr_dyn_obj_prop_at(cons
                       e->accessor, e->writable, e->enumerable, e->configurable};
 }
 
+/* Stores `value` (moved) as the value of data property i and returns the
+ * previous value (owned by the caller). Reads no keys and does not follow
+ * the layout pointer, so exit-time teardown can use it after the layouts
+ * are freed. */
+static inline ScrDyn *scr_dyn_obj_exchange_value_at(ScrDyn *o, size_t i, ScrDyn *value) {
+  ScrDyn **slot = o->v.obj.layout ? &o->v.obj.slots[i] : &o->v.obj.entries[i].value;
+  ScrDyn *previous = *slot;
+  *slot = value;
+  return previous;
+}
+
 /* The index of own property `key`, or SIZE_MAX. A linear scan in
  * dictionary mode: for code that looks up options and headers, not for hot
  * property reads. */
@@ -1220,6 +1231,9 @@ void scr_dyn_install_species_symbol(ScrDyn *key);
 /* Records each well-known symbol the symbol unit creates. */
 void scr_dyn_install_well_known_symbol(ScrDyn *key);
 void scr_dyn_install_to_string_tag_symbol(ScrDyn *key);
+/* Symbol.toStringTag (borrowed), or NULL before the program first
+ * evaluates it. */
+const ScrDyn *scr_dyn_to_string_tag_symbol(void);
 /* Whether key is Symbol.asyncIterator. */
 bool scr_dyn_is_async_iterator_symbol(const ScrDyn *key);
 /* Symbol.asyncIterator (+1), or NULL before the symbol unit installed it. */
@@ -1447,6 +1461,24 @@ ScrBytes *scr_dyn_bytes_unbox(const ScrDyn *d);
 bool scr_dyn_bytes_is(const ScrDyn *d, int elem);
 bool scr_dyn_typed_array_is(const ScrDyn *d, int elem);
 bool scr_dyn_util_type_is(const ScrDyn *value, const ScrStr *probe);
+
+/* Primitive wrapper objects (scr_js_wrapper.c, linked only into programs
+ * that create one): `new String/Number/Boolean` (kind 0/1/2) and ToObject,
+ * with the compiled String, Number and Boolean constructor values; the
+ * instanceof, Object.prototype.toString and util.types answers that read
+ * the [[PrimitiveValue]] slot; and the guard of the consumers that cannot
+ * read it yet. */
+ScrDyn *scr_js_wrapper_new(double kind, ScrDyn *value, ScrDyn *string_ctor, ScrDyn *number_ctor,
+                           ScrDyn *boolean_ctor);
+ScrDyn *scr_js_wrapper_to_object(ScrDyn *value, ScrDyn *string_ctor, ScrDyn *number_ctor,
+                                 ScrDyn *boolean_ctor);
+bool scr_js_wrapper_instance_of(ScrDyn *value, double kind);
+ScrStr *scr_js_wrapper_object_tag(ScrDyn *value);
+bool scr_js_wrapper_type_is(ScrDyn *value, ScrStr *probe);
+ScrDyn *scr_js_wrapper_guard(ScrDyn *value, ScrStr *consumer);
+ScrArr *scr_js_wrapper_guard_list(ScrArr *values, ScrStr *consumer);
+bool scr_js_wrapper_is_string_method(ScrDyn *member, ScrStr *name);
+ScrDyn *scr_js_wrapper_this_string(ScrDyn *value, ScrStr *name);
 ScrDyn *scr_dyn_util_type_value(const ScrDyn *value, const ScrStr *probe);
 void scr_dyn_arr_push(ScrDyn *arr, ScrDyn *item);
 /* Spread completion for a runtime-arity argument list (`f(...xs)` in the
@@ -2280,6 +2312,12 @@ const char *scr_dyn_specific_type(const ScrDyn *v, char *buf, size_t cap);
  * error.argTypeThrow libCall). Borrows all three; always throws. */
 SCR_COLD void scr_throw_arg_type(const ScrStr *argname, const ScrStr *expected, const ScrDyn *got);
 SCR_COLD void scr_dyn_arg_type_fail(const char *argname, const char *expected, const ScrDyn *got);
+/* validateString(value, name) for a builtin function read as a value
+ * (scr_builtin_values.c): the string (+1), or NULL with Node's
+ * ERR_INVALID_ARG_TYPE pending; strings checks each element of a rest list
+ * in order and answers them as a string[]. Borrows both. */
+ScrStr *scr_value_string(const ScrDyn *value, ScrStr *name);
+ScrArr *scr_value_strings(const ScrDyn *args, ScrStr *name);
 /* The property flavor ("The \"options.x\" property must be ...") — the
  * option-bag validators' gate (error.propTypeThrow). Always throws. */
 SCR_COLD void scr_throw_prop_type(const ScrStr *name, const ScrStr *expected, const ScrDyn *got);

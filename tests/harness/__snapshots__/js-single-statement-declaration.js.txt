@@ -1,0 +1,48 @@
+js-single-statement-declaration.js:6:15 - error SC0007: a function declaration can only appear at the top level, inside a block, or as the body of an if statement
+
+  5 | // preflight — the shapes come from Test262's negative-parse suites.
+  6 | while (false) function inLoop() {}
+    |               ^~~~~~~~~~~~~~~~~~~~
+  7 | l: class inLabel {}
+
+js-single-statement-declaration.js:7:1 - error SC0001: A label is not allowed here.
+
+  6 | while (false) function inLoop() {}
+  7 | l: class inLabel {}
+    | ^
+  8 | if (true) async function inIf() {}
+
+js-single-statement-declaration.js:7:4 - error SC0007: a class declaration cannot appear in a single-statement position
+
+  6 | while (false) function inLoop() {}
+  7 | l: class inLabel {}
+    |    ^~~~~~~~~~~~~~~~
+  8 | if (true) async function inIf() {}
+
+js-single-statement-declaration.js:8:11 - error SC0007: an async function or generator declaration can only appear at the top level or inside a block
+
+  7 | l: class inLabel {}
+  8 | if (true) async function inIf() {}
+    |           ^~~~~~~~~~~~~~~~~~~~~~~~
+  9 | if (false) il: function labelledInIf() {}
+
+js-single-statement-declaration.js:9:12 - error SC0001: A label is not allowed here.
+
+   8 | if (true) async function inIf() {}
+   9 | if (false) il: function labelledInIf() {}
+     |            ^~
+  10 | do function* inDoWhile() {} while (false);
+
+js-single-statement-declaration.js:9:16 - error SC0007: a labelled function declaration cannot be the body of a loop, a 'with' statement, or an 'if' clause
+
+   8 | if (true) async function inIf() {}
+   9 | if (false) il: function labelledInIf() {}
+     |                ^~~~~~~~~~~~~~~~~~~~~~~~~~
+  10 | do function* inDoWhile() {} while (false);
+
+js-single-statement-declaration.js:10:4 - error SC0007: an async function or generator declaration can only appear at the top level or inside a block
+
+   9 | if (false) il: function labelledInIf() {}
+  10 | do function* inDoWhile() {} while (false);
+     |    ^~~~~~~~~~~~~~~~~~~~~~~~
+  11 | 

@@ -1115,9 +1115,9 @@ declare var ReadableStream: {
   from(iterable: string): ReadableStream<string>;
   readonly prototype: ReadableStream<unknown>;
 };
-/* The writable side of a TransformStream and its writer. The
- * WritableStream constructor has no native lowering; writable streams come
- * from `new TransformStream()`. */
+/* The writable side of a TransformStream and its writer. A program that
+ * constructs a WritableStream, or a TransformStream with a transformer,
+ * builds its streams with the web stream classes (scr_webstreams.c). */
 interface WritableStreamDefaultWriter<W = unknown> {
   readonly closed: Promise<void>;
   readonly desiredSize: number | null;
@@ -1133,14 +1133,25 @@ interface WritableStream<W = unknown> {
   close(): Promise<void>;
   getWriter(): WritableStreamDefaultWriter<W>;
 }
-/* The identity transform: chunks written to `writable` are read from
- * `readable`, and a write completes when its chunk is read. */
+/* Without a transformer, the identity transform: chunks written to
+ * `writable` are read from `readable`, and a write completes when its chunk
+ * is read. */
 interface TransformStream<I = unknown, O = unknown> {
   readonly readable: ReadableStream<O>;
   readonly writable: WritableStream<I>;
 }
+interface Transformer<I = unknown, O = unknown> {
+  start?(controller: TransformStreamDefaultController<O>): unknown;
+  transform?(chunk: I, controller: TransformStreamDefaultController<O>): unknown;
+  flush?(controller: TransformStreamDefaultController<O>): unknown;
+  cancel?(reason?: unknown): unknown;
+}
 declare var TransformStream: {
-  new <I = unknown, O = I>(): TransformStream<I, O>;
+  new <I = unknown, O = I>(
+    transformer?: Transformer<I, O>,
+    writableStrategy?: QueuingStrategy<I>,
+    readableStrategy?: QueuingStrategy<O>,
+  ): TransformStream<I, O>;
   readonly prototype: TransformStream<unknown, unknown>;
 };
 /* The other web stream interfaces. JavaScript sources construct and read
@@ -1158,8 +1169,14 @@ interface WritableStreamDefaultController {
   readonly signal: AbortSignal;
   error(reason?: unknown): void;
 }
+interface UnderlyingSink<W = unknown> {
+  start?(controller: WritableStreamDefaultController): unknown;
+  write?(chunk: W, controller: WritableStreamDefaultController): unknown;
+  close?(): unknown;
+  abort?(reason?: unknown): unknown;
+}
 declare var WritableStream: {
-  new <W = unknown>(sink?: object, strategy?: QueuingStrategy<W>): WritableStream<W>;
+  new <W = unknown>(sink?: UnderlyingSink<W>, strategy?: QueuingStrategy<W>): WritableStream<W>;
   readonly prototype: WritableStream<unknown>;
 };
 declare var WritableStreamDefaultWriter: {

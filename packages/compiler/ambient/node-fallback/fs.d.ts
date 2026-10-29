@@ -387,9 +387,43 @@ declare module "node:fs" {
     readonly ctime: Date;
     readonly birthtime: Date;
   }
+  /* Node's BigIntStats: the same snapshot under the bigint member table.
+   * Every number member of Stats — including the *Ms millisecond members —
+   * answers a bigint, and the *Ns nanosecond members sit beside them; the
+   * four time members stay Dates. */
+  export interface BigIntStats {
+    isFile(): boolean;
+    isDirectory(): boolean;
+    isSymbolicLink(): boolean;
+    isBlockDevice(): boolean;
+    isCharacterDevice(): boolean;
+    isFIFO(): boolean;
+    isSocket(): boolean;
+    readonly dev: bigint;
+    readonly mode: bigint;
+    readonly nlink: bigint;
+    readonly uid: bigint;
+    readonly gid: bigint;
+    readonly rdev: bigint;
+    readonly blksize: bigint;
+    readonly ino: bigint;
+    readonly size: bigint;
+    readonly blocks: bigint;
+    readonly atimeMs: bigint;
+    readonly mtimeMs: bigint;
+    readonly ctimeMs: bigint;
+    readonly birthtimeMs: bigint;
+    readonly atimeNs: bigint;
+    readonly mtimeNs: bigint;
+    readonly ctimeNs: bigint;
+    readonly birthtimeNs: bigint;
+    readonly atime: Date;
+    readonly mtime: Date;
+    readonly ctime: Date;
+    readonly birthtime: Date;
+  }
   /* throwIfNoEntry: false answers undefined for a missing entry (ENOENT or
-   * ENOTDIR) instead of throwing. BigIntStats (bigint: true) has no
-   * lowering. */
+   * ENOTDIR) instead of throwing. bigint: true answers BigIntStats. */
   export interface StatSyncOptions {
     bigint?: boolean;
     throwIfNoEntry?: boolean;
@@ -401,10 +435,18 @@ declare module "node:fs" {
   ): Stats | undefined;
   export function statSync(
     path: string | URL,
+    options: StatSyncOptions & { bigint: true; throwIfNoEntry: false },
+  ): BigIntStats | undefined;
+  export function statSync(
+    path: string | URL,
     options: StatSyncOptions & { bigint?: false; throwIfNoEntry?: true },
   ): Stats;
-  /* bigint: true type-checks so the lowering can name it as unsupported. */
-  export function statSync(path: string | URL, options: StatSyncOptions & { bigint: true }): Stats;
+  export function statSync(
+    path: string | URL,
+    options: StatSyncOptions & { bigint: true; throwIfNoEntry?: true },
+  ): BigIntStats;
+  /* A runtime-valued `bigint` is refused at lowering, so the catch-all keeps
+   * the Stats answer the other reachable forms give. */
   export function statSync(path: string | URL, options: StatSyncOptions): Stats | undefined;
   export function lstatSync(path: string | URL, options?: undefined): Stats;
   export function lstatSync(
@@ -413,10 +455,16 @@ declare module "node:fs" {
   ): Stats | undefined;
   export function lstatSync(
     path: string | URL,
+    options: StatSyncOptions & { bigint: true; throwIfNoEntry: false },
+  ): BigIntStats | undefined;
+  export function lstatSync(
+    path: string | URL,
     options: StatSyncOptions & { bigint?: false; throwIfNoEntry?: true },
   ): Stats;
-  /* bigint: true type-checks so the lowering can name it as unsupported. */
-  export function lstatSync(path: string | URL, options: StatSyncOptions & { bigint: true }): Stats;
+  export function lstatSync(
+    path: string | URL,
+    options: StatSyncOptions & { bigint: true; throwIfNoEntry?: true },
+  ): BigIntStats;
   export function lstatSync(path: string | URL, options: StatSyncOptions): Stats | undefined;
   /* The fd pair behind spawn's fd-stdio form: openSync(path, flags) →
    * the raw fd. Numeric flags use an inline OR of the O_* constants. */
@@ -498,8 +546,9 @@ declare module "node:fs" {
     position?: number | null,
     encoding?: "utf8" | "utf-8",
   ): number;
-  /* statSync over an open fd — the same Stats snapshot. */
-  export function fstatSync(fd: number): Stats;
+  /* statSync over an open fd — the same snapshot. */
+  export function fstatSync(fd: number, options?: StatSyncOptions & { bigint?: false }): Stats;
+  export function fstatSync(fd: number, options: StatSyncOptions & { bigint: true }): BigIntStats;
   /* realpath(3) — resolves symlinks, `.`/`..`, throwing Node's fs error
    * shapes for missing paths. */
   export function realpathSync(path: string | URL): string;
@@ -555,11 +604,29 @@ declare module "node:fs" {
   ): void;
   /* fs.watch — the file-watching slice (scr_watch.c, kqueue EVFILT_VNODE):
    * "rename"/"change" events on ONE path, watcher.close() to stop. The
-   * listener takes zero parameters or the eventType string (the filename
-   * parameter has no lowering); an open watcher keeps the loop alive. A
-   * path that cannot be opened THROWS Node's fs error synchronously. */
+   * listener takes (), (eventType) or (eventType, filename); an open
+   * watcher keeps the loop alive. A path that cannot be opened THROWS
+   * Node's fs error synchronously. */
+  export type WatchEventType = "rename" | "change";
+  /* (eventType, filename): filename is the changed entry's name (null when
+   * the platform does not provide one). */
+  export type WatchListener<T> = (event: WatchEventType, filename: T | null) => void;
   export interface FSWatcher {
     close(): void;
+    on(event: "change", listener: (eventType: string, filename: string | Buffer) => void): this;
+    on(event: "error", listener: (error: Error) => void): this;
+    on(event: "close", listener: () => void): this;
+    once(event: "change", listener: (eventType: string, filename: string | Buffer) => void): this;
+    once(event: "error", listener: (error: Error) => void): this;
+    once(event: "close", listener: () => void): this;
+    addListener(
+      event: "change",
+      listener: (eventType: string, filename: string | Buffer) => void,
+    ): this;
+    addListener(event: "error", listener: (error: Error) => void): this;
+    addListener(event: "close", listener: () => void): this;
+    off(event: "change" | "error" | "close", listener: (...args: any[]) => void): this;
+    removeListener(event: "change" | "error" | "close", listener: (...args: any[]) => void): this;
   }
   /* The options-record stance (see http.RequestOptions): persistent: true,
    * recursive: false, and encoding: "utf8" state the lowered behavior and
@@ -571,12 +638,34 @@ declare module "node:fs" {
     encoding?: string;
     [option: string]: unknown;
   }
-  export function watch(path: string, listener?: (eventType: string) => void): FSWatcher;
+  export function watch(path: string, listener?: WatchListener<string>): FSWatcher;
   export function watch(
     path: string,
     options: WatchOptions,
-    listener?: (eventType: string) => void,
+    listener?: WatchListener<string>,
   ): FSWatcher;
+  /* fs.watchFile — stat polling (scr_watch_file.c, libuv's uv_fs_poll
+   * shape): the listener runs with (current, previous) Stats when a poll
+   * sees a difference, the first poll only records the baseline, and a
+   * path that cannot be stat'd polls as all-zero Stats. One poller per
+   * resolved path is shared by every listener on it. interval defaults to
+   * 5007 ms, persistent defaults to true; bigint: true (BigIntStats) has
+   * no lowering. The call is a statement: Node's StatWatcher has no
+   * lowering. */
+  export interface StatWatcher {}
+  export function watchFile(
+    filename: string,
+    options: { interval?: number; persistent?: boolean; bigint?: false },
+    listener: (current: Stats, previous: Stats) => void,
+  ): StatWatcher;
+  export function watchFile(
+    filename: string,
+    listener: (current: Stats, previous: Stats) => void,
+  ): StatWatcher;
+  export function unwatchFile(
+    filename: string,
+    listener?: (current: Stats, previous: Stats) => void,
+  ): void;
   /* fs.promises IS the fs/promises module (Node's rule) — the namespace-
    * import form `fs.promises.readFile(...)` lowers through the same
    * fs/promises table as `import { readFile } from "node:fs/promises"`. */

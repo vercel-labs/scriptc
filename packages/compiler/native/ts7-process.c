@@ -552,6 +552,41 @@ static int valid_range(const uint8_t *bytes, size_t size, uint32_t offset, uint3
   return 1;
 }
 
+#ifndef _WIN32
+/* How long a read polls the socket before it blocks. The server answers
+ * most requests within a few microseconds; a blocked reader that the reply
+ * wakes takes tens of microseconds more per round trip. */
+#define TS7_REPLY_POLL_NS 200000L
+
+static long monotonic_ns(void) {
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+  return now.tv_sec * 1000000000L + now.tv_nsec;
+}
+
+/* recv on the server's socket: polls it for TS7_REPLY_POLL_NS, then waits. */
+static ssize_t ts7_recv(int socket, uint8_t *bytes, size_t length) {
+  long started = -1;
+  for (;;) {
+    ssize_t count = recv(socket, bytes, length, MSG_DONTWAIT);
+    if (count >= 0) return count;
+    if (errno == EINTR) continue;
+    if (errno != EAGAIN && errno != EWOULDBLOCK) return -1;
+    long now = monotonic_ns();
+    if (started < 0) started = now;
+    else if (now - started >= TS7_REPLY_POLL_NS) break;
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__)
+    __asm__ volatile("yield");
+#endif
+  }
+  ssize_t count;
+  do { count = recv(socket, bytes, length, 0); } while (count < 0 && errno == EINTR);
+  return count;
+}
+#endif
+
 int32_t scriptc_ts7_read(uint32_t handle, uint8_t *bytes, size_t size,
                         uint32_t offset, uint32_t length) {
   Ts7Process *p = find_process(handle);
@@ -565,8 +600,7 @@ int32_t scriptc_ts7_read(uint32_t handle, uint8_t *bytes, size_t size,
   if (code == ERROR_BROKEN_PIPE) return 0;
   system_error(code); return -1;
 #else
-  ssize_t count;
-  do { count = recv(p->socket, bytes + offset, length, 0); } while (count < 0 && errno == EINTR);
+  ssize_t count = ts7_recv(p->socket, bytes + offset, length);
   if (count < 0) { system_error(errno); return -1; }
   return (int32_t)count;
 #endif

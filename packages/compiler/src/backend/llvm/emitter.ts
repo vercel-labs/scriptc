@@ -96,6 +96,7 @@ import {
 } from "../../ir/inline-arrays.js";
 import { inlineArraysApply, programLifetimeClassOf } from "./inline-arrays.js";
 import { pairRowSums } from "../../ir/row-pairs.js";
+import { jamSaturatingLoops } from "../../ir/saturating-loop-jams.js";
 import {
   allocatedLiteral,
   fillAllocationLength,
@@ -285,6 +286,8 @@ import {
   cryptoIntThunkFor,
   type BytesThunkValue,
   fsRenameThunkFor,
+  watchNameThunkFor,
+  watchErrorThunkFor,
   streamCbThunkFor,
   zlibBytesThunkFor,
 } from "./expr-stream-callbacks.js";
@@ -763,16 +766,18 @@ function moduleEmitter(input: IrModule, options: LlvmTargetOptions): LlEmitter {
           specializeCallbackCalls(
             specializeNumericCalls(
               pairRowSums(
-                inlineArraysPass(
-                  options,
-                  inlineExpressionFunctions(
-                    foldConstantGlobals(
-                      copyStableCaptures(
-                        resolveSelfCaptures(
-                          hoistFinalFieldReads(
-                            freezeInitOnlyGlobals(
-                              holdCharLocalsAsUnits(
-                                dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
+                jamSaturatingLoops(
+                  inlineArraysPass(
+                    options,
+                    inlineExpressionFunctions(
+                      foldConstantGlobals(
+                        copyStableCaptures(
+                          resolveSelfCaptures(
+                            hoistFinalFieldReads(
+                              freezeInitOnlyGlobals(
+                                holdCharLocalsAsUnits(
+                                  dropUnwrittenPropertyBags(runPairedWhileLoopsAsFor(mod)),
+                                ),
                               ),
                             ),
                           ),
@@ -4620,6 +4625,7 @@ export class LlEmitter {
       case "url":
       case "searchParams":
       case "stats":
+      case "bigintStats":
       case "fileHandle":
       case "dir":
       case "spawnRes":
@@ -8155,6 +8161,14 @@ export class LlEmitter {
 
   fsRenameThunkFor(cbT: IrType & { kind: "func" }): string {
     return fsRenameThunkFor(this, cbT);
+  }
+
+  watchNameThunkFor(cbT: IrType & { kind: "func" }): string {
+    return watchNameThunkFor(this, cbT);
+  }
+
+  watchErrorThunkFor(cbT: IrType & { kind: "func" }): string {
+    return watchErrorThunkFor(this, cbT);
   }
 
   cryptoBytesThunkFor(

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8523-settings-keyof-dynamic-read.ts"
+ ],
+ "diags": []
+}

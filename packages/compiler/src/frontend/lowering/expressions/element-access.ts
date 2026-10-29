@@ -1534,6 +1534,20 @@ export function lowerRecordKeyRead(
     recordKeyResultOk(lowerer, shape, DYN)
   )
     declared = DYN;
+  // A `keyof` read over a record that holds an 'unknown' member: the
+  // checker's answer collapses to 'unknown' (the union of every field
+  // type absorbs into it), so there is no typed join to dispatch into.
+  // Each declared field still reads through its checked-dynamic slot —
+  // the very value the checker's 'unknown' can hold — so dispatch per
+  // declared key and answer a checked-dynamic read. The key type is the
+  // record's own `keyof`, so the answer is present whenever the read is.
+  if (
+    !declared &&
+    (lowerer.typeOf(expr).flags & ts.TypeFlags.Unknown) !== 0 &&
+    !shape.indexValue &&
+    recordKeyResultOk(lowerer, shape, DYN)
+  )
+    declared = DYN;
   if (!declared) {
     lowerer.unsupported(
       "SC1090",

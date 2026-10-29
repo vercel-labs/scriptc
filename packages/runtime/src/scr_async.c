@@ -1701,9 +1701,26 @@ static void *scr_win_self(void) {
 }
 #endif
 
+#ifdef SCR_NODE_ISLANDS
+/* The lowest frame of Node's stack that is still live while a fiber runs:
+ * where runtime code on Node's stack (a job or host callback, however deep
+ * it went) last switched to a fiber. A call into Node from that fiber runs
+ * on Node's stack below it (scr_node_island.c), never over those frames.
+ * 0: none. scr_node_stack_has (set when Node starts) tells Node's stack. */
+uintptr_t scr_node_stack_low = 0;
+bool (*scr_node_stack_has)(uintptr_t sp) = NULL;
+#endif
+
 static void scr_switch(ScrCtx *from, ScrCtx *to, ScrFiber *to_fiber) {
 #ifdef SCR_ASAN_FIBERS
   ScrFiber *from_fiber = scr_current;
+#endif
+#ifdef SCR_NODE_ISLANDS
+  uintptr_t node_low = scr_node_stack_low;
+  if (to_fiber != NULL && scr_node_stack_has != NULL) {
+    uintptr_t here = (uintptr_t)__builtin_frame_address(0);
+    if (scr_node_stack_has(here)) scr_node_stack_low = here;
+  }
 #endif
   scr_current = to_fiber;
   scr_exc_swap_cell(to_fiber ? &to_fiber->exc : NULL);
@@ -1756,7 +1773,58 @@ static void scr_switch(ScrCtx *from, ScrCtx *to, ScrFiber *to_fiber) {
 #if !defined(_WIN32) && !defined(__wasi__)
   SCR_STACK_GUARD_SET(guard);
 #endif
+#ifdef SCR_NODE_ISLANDS
+  scr_node_stack_low = node_low; /* back on the stack that switched away */
+#endif
 }
+
+#ifdef SCR_NODE_ISLANDS
+/* A nested entry into Node (scr_node_island.c) runs on Node's stack in a
+ * context of its own while the fiber that made the call stays suspended in
+ * it. Runtime code that Node calls back there runs as the loop's code does:
+ * no current fiber, the main exception cell and ALS slot. It may resume
+ * other fibers, which saves the resumer's context in scr_loop_ctx (and,
+ * under ASan, its fake stack in the main slot); those belong to whoever
+ * resumed the calling fiber, so they are saved here and put back when the
+ * nested entry returns, or the calling fiber's next park would return to a
+ * context that no longer exists. */
+typedef struct {
+  ScrFiber *current;
+  ScrAlsCtx **als;
+  ScrCtx loop_ctx;
+#ifdef SCR_ASAN_FIBERS
+  void *main_fake;
+#endif
+} ScrNestedSave;
+
+void *scr_loop_nested_enter(void) {
+  ScrNestedSave *s = malloc(sizeof *s);
+  if (s == NULL) scr_oom();
+  s->current = scr_current;
+  s->als = scr_als_active;
+  s->loop_ctx = scr_loop_ctx;
+#ifdef SCR_ASAN_FIBERS
+  s->main_fake = scr_main_fake_stack;
+  scr_main_fake_stack = NULL;
+#endif
+  scr_current = NULL;
+  scr_exc_swap_cell(NULL);
+  scr_als_active = &scr_als_main_slot;
+  return s;
+}
+
+void scr_loop_nested_leave(void *save) {
+  ScrNestedSave *s = save;
+  scr_loop_ctx = s->loop_ctx;
+#ifdef SCR_ASAN_FIBERS
+  scr_main_fake_stack = s->main_fake;
+#endif
+  scr_current = s->current;
+  scr_exc_swap_cell(s->current ? &s->current->exc : NULL);
+  scr_als_active = s->als;
+  free(s);
+}
+#endif
 
 static void scr_promise_settle_wake(ScrPromise *p);
 
@@ -1979,6 +2047,17 @@ void scr_promise_race_join(ScrPromise *race, ScrPromise *in,
 void scr_promise_on_settle_sync(ScrPromise *in, void (*cb)(ScrPromise *dst, ScrPromise *src)) {
   *scr_promise_cb_push(in) =
       (struct ScrPromiseCbWaiter){ cb, scr_promise_retain(in), NULL, SCR_CB_ANY, SCR_CB_SYNC };
+}
+
+/* Node islands (NI-8): a settled promise's dyn payload when the promise
+ * owns a reference to it that its trace does not visit (settled without a
+ * trace function), else NULL. The cross-heap analysis counts that edge. */
+void *scr_promise_untraced_dyn_payload(const ScrPromise *p) {
+  if ((p->payload_kind == SCR_EXC_REF || p->payload_kind == SCR_EXC_OBJ ||
+       p->payload_kind == SCR_EXC_PRIMITIVE_REF) &&
+      p->payload != NULL && p->trace_fn == NULL && p->release_fn == scr_dyn_release_v)
+    return p->payload;
+  return NULL;
 }
 #endif
 
@@ -3423,20 +3502,25 @@ ScrPromise *scr_fsp_rename(ScrStr *oldpath, ScrStr *newpath) {
  * platform mutex publishes each result before the loop removes it from the
  * completion queue. */
 #if !defined(SCR_LIB) && !defined(__wasi__)
-/* The completion wake: a worker signals it once per published completion,
+/* The completion wake: a worker signals it when it publishes a completion,
  * so the loop's sleep ends for the completion — a pipe the poll(2) sleep
- * watches on POSIX, an auto-reset event the Windows sleep waits on. */
+ * watches on POSIX, an auto-reset event the Windows sleep waits on. On
+ * POSIX, `posted` (guarded by the queue lock) records that the pipe holds
+ * a byte: a worker writes one only when none is there, and the loop reads
+ * it when it takes the last completion, so the pipe holds a byte exactly
+ * while completions wait. */
 typedef struct ScrFsRenameWake {
 #ifdef _WIN32
   HANDLE event; /* NULL until created */
 #else
   int fds[2]; /* -1 until created */
+  bool posted;
 #endif
 } ScrFsRenameWake;
 #ifdef _WIN32
 #define SCR_FS_RENAME_WAKE_NONE {NULL}
 #else
-#define SCR_FS_RENAME_WAKE_NONE {{-1, -1}}
+#define SCR_FS_RENAME_WAKE_NONE {{-1, -1}, false}
 #endif
 #ifdef SCR_WORKERS
 typedef struct ScrFsRenameOwner ScrFsRenameOwner;
@@ -3467,15 +3551,25 @@ struct ScrFsRenameOwner {
   ScrFsRenameOp **tail;
   size_t pending;
   ScrFsRenameWake wake;
+  ScrFsRenameOp *next_turn;
+  ScrFsRenameOp **next_turn_tail;
 };
 static SCR_TL ScrFsRenameOwner *scr_fs_rename_owner;
 #define scr_fs_rename_done (scr_fs_rename_owner->done)
 #define scr_fs_rename_done_tail (scr_fs_rename_owner->tail)
 #define scr_fs_rename_pending_count (scr_fs_rename_owner->pending)
+#define scr_fs_rename_next_turn (scr_fs_rename_owner->next_turn)
+#define scr_fs_rename_next_turn_tail (scr_fs_rename_owner->next_turn_tail)
 #else
 static ScrFsRenameOp *scr_fs_rename_done = NULL;
 static ScrFsRenameOp **scr_fs_rename_done_tail = &scr_fs_rename_done;
 static size_t scr_fs_rename_pending_count = 0;
+/* Jobs the main thread completed itself (scr_work_submit_done): they join
+ * the done queue at the loop's next sleep step (scr_fs_renames_promote), so
+ * their completions wait one loop turn as a pool job's do. Main thread
+ * only, so no lock. */
+static ScrFsRenameOp *scr_fs_rename_next_turn = NULL;
+static ScrFsRenameOp **scr_fs_rename_next_turn_tail = &scr_fs_rename_next_turn;
 static ScrFsRenameWake scr_fs_rename_wake_global = SCR_FS_RENAME_WAKE_NONE;
 #endif
 static size_t scr_fs_rename_worker_count = 0;
@@ -3530,28 +3624,29 @@ static void scr_fs_rename_wake_open(ScrFsRenameWake *wake) {
 #endif
 }
 
+/* Called with the queue lock held. */
 static void scr_fs_rename_wake_post(ScrFsRenameWake *wake) {
 #ifdef _WIN32
   if (wake->event != NULL) (void)SetEvent(wake->event);
 #else
-  if (wake->fds[1] >= 0) {
+  if (wake->fds[1] >= 0 && !wake->posted) {
     char byte = 1;
-    ssize_t n = write(wake->fds[1], &byte, 1); /* a full pipe already wakes the loop */
-    (void)n;
+    wake->posted = write(wake->fds[1], &byte, 1) == 1;
   }
 #endif
 }
 
-/* POSIX: empty the pipe before taking the queue, so a completion published
- * afterwards leaves its byte for the next poll. The Windows event resets
- * when a wait consumes it. */
+/* POSIX, with the queue lock held: the loop took the last completion, so
+ * the pipe's byte is read and the next completion writes a new one. The
+ * Windows event resets when a wait consumes it. */
 static void scr_fs_rename_wake_drain(ScrFsRenameWake *wake) {
 #ifdef _WIN32
   (void)wake;
 #else
-  if (wake->fds[0] < 0) return;
+  if (wake->fds[0] < 0 || !wake->posted) return;
+  wake->posted = false;
   char buf[64];
-  while (read(wake->fds[0], buf, sizeof buf) > 0) {
+  while (read(wake->fds[0], buf, sizeof buf) == (ssize_t)sizeof buf) {
   }
 #endif
 }
@@ -3585,6 +3680,13 @@ static void scr_fs_rename_op_release(ScrFsRenameOp *op) {
 #ifdef SCR_WORKERS
 static void scr_fs_rename_context_cleanup(void) {
   ScrFsRenameOwner *owner = scr_fs_rename_owner;
+  /* Jobs completed on this thread need no wait. */
+  while (owner->next_turn) {
+    ScrFsRenameOp *op = owner->next_turn;
+    owner->next_turn = op->next;
+    owner->pending--;
+    scr_fs_rename_op_release(op);
+  }
   /* Outstanding native work may still borrow payload storage. Wait for its
    * publication before reclaiming it, without invoking script callbacks
    * during context teardown. Other script contexts keep using the pool. */
@@ -3608,6 +3710,7 @@ static ScrFsRenameOwner *scr_fs_rename_context(void) {
     ScrFsRenameOwner *owner = calloc(1, sizeof(*owner));
     if (!owner) scr_oom();
     owner->tail = &owner->done;
+    owner->next_turn_tail = &owner->next_turn;
     owner->wake = (ScrFsRenameWake)SCR_FS_RENAME_WAKE_NONE;
     if (scr_atexit(scr_fs_rename_context_cleanup) != 0) {
       free(owner);
@@ -3661,6 +3764,18 @@ static DWORD WINAPI scr_fs_rename_worker(LPVOID payload) {
 #else
 static void *scr_fs_rename_worker(void *payload) {
   (void)payload;
+  /* A pool thread keeps SIGPIPE and SIGXFSZ blocked: its file writes then
+   * report EPIPE and EFBIG without changing the signal mask per write
+   * (scr_fs_write_once). */
+  sigset_t write_set;
+  sigemptyset(&write_set);
+#ifdef SIGPIPE
+  sigaddset(&write_set, SIGPIPE);
+#endif
+#ifdef SIGXFSZ
+  sigaddset(&write_set, SIGXFSZ);
+#endif
+  (void)pthread_sigmask(SIG_BLOCK, &write_set, NULL);
   scr_fs_rename_worker_loop();
   return NULL;
 }
@@ -3714,7 +3829,31 @@ static void scr_fs_renames_shutdown(void) {
     scr_fs_rename_op_release(done);
     done = next;
   }
+  while (scr_fs_rename_next_turn != NULL) {
+    ScrFsRenameOp *next = scr_fs_rename_next_turn->next;
+    scr_fs_rename_op_release(scr_fs_rename_next_turn);
+    scr_fs_rename_next_turn = next;
+  }
+  scr_fs_rename_next_turn_tail = &scr_fs_rename_next_turn;
 #endif
+}
+
+/* At the loop's sleep step: the jobs this thread completed during the turn
+ * join the done queue, so the next turn delivers them, one per checkpoint
+ * as pool completions are. Answers whether any joined (the sleep is then
+ * skipped). */
+static bool scr_fs_renames_promote(void) {
+#ifdef SCR_WORKERS
+  if (!scr_fs_rename_owner) return false;
+#endif
+  if (scr_fs_rename_next_turn == NULL) return false;
+  scr_fs_rename_lock_enter();
+  *scr_fs_rename_done_tail = scr_fs_rename_next_turn;
+  scr_fs_rename_done_tail = scr_fs_rename_next_turn_tail;
+  scr_fs_rename_lock_leave();
+  scr_fs_rename_next_turn = NULL;
+  scr_fs_rename_next_turn_tail = &scr_fs_rename_next_turn;
+  return true;
 }
 
 static bool scr_fs_renames_pending(void) {
@@ -3759,13 +3898,13 @@ static bool scr_fs_renames_dispatch(void) {
 #ifdef SCR_WORKERS
   if (!scr_fs_rename_owner) return false;
 #endif
-  scr_fs_rename_wake_drain(SCR_FS_RENAME_WAKE(scr_fs_rename_owner));
   scr_fs_rename_lock_enter();
   ScrFsRenameOp *op = scr_fs_rename_done;
   if (op != NULL) {
     scr_fs_rename_done = op->next;
     if (scr_fs_rename_done == NULL) scr_fs_rename_done_tail = &scr_fs_rename_done;
   }
+  if (scr_fs_rename_done == NULL) scr_fs_rename_wake_drain(SCR_FS_RENAME_WAKE(scr_fs_rename_owner));
   scr_fs_rename_lock_leave();
   if (op == NULL) return false;
   scr_fs_rename_pending_count--;
@@ -3880,6 +4019,7 @@ static size_t scr_fs_rename_pending_count = 0;
 static bool scr_fs_renames_pending(void) { return scr_fs_rename_pending_count != 0; }
 static int scr_fs_renames_pollfd(void) { return -1; }
 static bool scr_fs_renames_can_wait(void) { return false; }
+static bool scr_fs_renames_promote(void) { return false; }
 
 static bool scr_fs_renames_dispatch(void) {
   ScrFsRenameOp *op = scr_fs_rename_done;
@@ -3919,6 +4059,7 @@ static bool scr_fs_renames_pending(void) { return false; }
 static bool scr_fs_renames_dispatch(void) { return false; }
 static int scr_fs_renames_pollfd(void) { return -1; }
 static bool scr_fs_renames_can_wait(void) { return false; }
+static bool scr_fs_renames_promote(void) { return false; }
 #endif
 
 void scr_fs_rename_async(ScrStr *oldpath, ScrStr *newpath,
@@ -3980,6 +4121,44 @@ void scr_work_submit(void *payload, ScrWorkFn work, ScrWorkFn after,
   op->after = after;
   op->destroy = destroy;
   scr_work_submit_op(op);
+#endif
+}
+
+#if defined(__wasi__)
+static void scr_work_already_done(void *payload) { (void)payload; }
+#endif
+
+void scr_work_submit_done(void *payload, ScrWorkFn after, ScrWorkFn destroy) {
+#if defined(SCR_LIB)
+  (void)after;
+  destroy(payload);
+  scr_trap("scriptc: native worker jobs are not supported by this target\n");
+#else
+  ScrFsRenameOp *op = calloc(1, sizeof *op);
+  if (!op) scr_trap("scriptc: out of memory\n");
+  op->generic = true;
+  op->payload = payload;
+  op->after = after;
+  op->destroy = destroy;
+#if defined(__wasi__)
+  op->work = &scr_work_already_done; /* the dispatch runs work, then after */
+  *scr_fs_rename_done_tail = op;
+  scr_fs_rename_done_tail = &op->next;
+#else
+  op->ran = true;
+#ifdef SCR_WORKERS
+  op->owner = scr_fs_rename_context();
+#endif
+  if (!scr_fs_rename_shutdown_registered) {
+    if (atexit(scr_fs_renames_shutdown) != 0) {
+      scr_trap("scriptc: could not register worker cleanup\n");
+    }
+    scr_fs_rename_shutdown_registered = true;
+  }
+  *scr_fs_rename_next_turn_tail = op;
+  scr_fs_rename_next_turn_tail = &op->next;
+#endif
+  scr_fs_rename_pending_count++;
 #endif
 }
 
@@ -5152,11 +5331,13 @@ void scr_loop_hosted_io_state(ScrNodeIoState *st) {
    * end of the turn that queued them and run in the next one, as the loop
    * pass delivers them; Node's own fs requests take a turn or more too. */
   if (st->phase == SCR_NODE_IO_CHECK) scr_loop_deferred_ready = scr_loop_deferred_count;
+  /* jobs this thread completed during the turn: delivered next turn */
+  bool promoted = st->phase == SCR_NODE_IO_CHECK && scr_fs_renames_promote();
   st->alive = kids_reffed || kids_failed || events || net || dgram || watch || ffi || stream ||
               renames || crypto || deferred || workers;
   /* Queued deferred callbacks keep the poll from sleeping (their work is
    * done; only the delivery waits for the next turn). */
-  st->ready = stream || crypto || deferred || kids_failed ||
+  st->ready = stream || crypto || deferred || promoted || kids_failed ||
               (scr_loop_children != NULL && scr_loop_children->ready());
 #ifdef SCR_WORKERS
   if (scr_workers_ready_fn && scr_workers_ready_fn()) st->ready = 1;
@@ -5613,6 +5794,9 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       due = now;
       scr_loop_deferred_ready = scr_loop_deferred_count;
     }
+    /* Jobs this thread completed during the turn (scr_work_submit_done)
+     * join the done queue: the next turn delivers them, no sleep. */
+    if (scr_fs_renames_promote()) due = now;
     /* Child polling can drain a pipe into the IPC queue after its dispatch
      * station has run. Completed sends and disconnects can also become ready
      * during that turn. No fd will wake us for this userspace work: return to

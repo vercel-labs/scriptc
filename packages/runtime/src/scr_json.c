@@ -261,6 +261,7 @@ void scr_dyn_install_to_string_tag_symbol(ScrDyn *key) {
   scr_to_string_tag_symbol = scr_dyn_retain(key);
   scr_atexit(scr_to_string_tag_symbol_cleanup);
 }
+const ScrDyn *scr_dyn_to_string_tag_symbol(void) { return scr_to_string_tag_symbol; }
 
 void scr_dyn_install_iterator_symbol(ScrDyn *key) {
   if (scr_iterator_symbol) return;

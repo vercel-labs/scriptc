@@ -153,6 +153,11 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   ),
   unit((u) => u.opts.copying, "scr_copying.c"),
   unit((u) => u.opts.fileHandle, "scr_file_handle.c"),
+  // BigIntStats member reads (`statSync(p, { bigint: true })` integers and
+  // `*Ns`/`*Ms` members). Gated on the reads themselves (the bigstats
+  // feature), not on bigint: every bigint value or wasm conversion turns
+  // bigint on, and the linked getters would move their executable.
+  unit((u) => u.opts.bigstats === true, "scr_stats_bigint.c"),
   // win32 targets compile the libc-shim TU (stpcpy, arc4random_buf,
   // gmtime_r, strcasestr — the _WIN32 block in scr_runtime.h declares
   // them) and link advapi32 (the CSPRNG RtlGenRandom/SystemFunction036,
@@ -169,9 +174,10 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   // SCR_MUSL flag and this target-selected TU travel together.
   unit((u) => isMuslTarget(u.driver), "scr_musl.c"),
   // scr_glob.c (path.matchesGlob) compiles its segments through the
-  // regex unit and scr_idna.c (node:url's IDNA) normalizes through it,
-  // so both ride the same switch; section GC drops them from binaries
-  // that never use them.
+  // regex unit, scr_idna.c (node:url's IDNA) normalizes through it and
+  // scr_path_win32_relative.c lowercases through its case mapping, so all
+  // three ride the same switch; section GC drops them from binaries that
+  // never use them.
   unitArgs((u) =>
     u.regex
       ? [
@@ -180,6 +186,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
           u.rt(join(u.rtDir, "scr_regex.c")),
           u.rt(join(u.rtDir, "scr_glob.c")),
           u.rt(join(u.rtDir, "scr_idna.c")),
+          u.rt(join(u.rtDir, "scr_path_win32_relative.c")),
           ...u.lreObjects,
         ]
       : [],
@@ -207,6 +214,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.moduleNamespace === true, "scr_module_namespace.c"),
   // A module namespace as the frozen null-prototype object typed code sees.
   unit((u) => u.opts.moduleNamespaceDyn === true, "scr_module_namespace_dyn.c"),
+  // Primitive wrapper objects (new String/Number/Boolean, Object(primitive)).
+  unit((u) => u.opts.primitiveWrapper === true, "scr_js_wrapper.c"),
   unit(
     (u) =>
       u.opts.dynAsync ||
@@ -339,6 +348,9 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   unit((u) => u.opts.dgram && u.opts.dgramDyn, "scr_dgram_dyn.c"),
   unit((u) => u.opts.textCodecDyn, "scr_text_codec_dyn.c"),
   unit((u) => u.opts.watch, "scr_watch.c"),
+  // fs.watchFile's stat poller: its own gated unit (no loop hook — the
+  // re-armed timers are the liveness), linked only by programs that poll.
+  unit((u) => u.opts.watchFile, "scr_watch_file.c"),
   unit((u) => u.opts.foreignFfi, "scr_ffi_queue.c"),
   unit((u) => u.opts.nodeTest, "scr_test.c"),
   unit((u) => u.opts.webcrypto, "scr_webcrypto.c"),
@@ -384,6 +396,7 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
     "scr_node_island_handle.c",
     "scr_node_island_export.c",
     "scr_node_island_boot.c",
+    "scr_node_island_gc.c",
   ),
   // Readable.fromWeb reads a web ReadableStream through its reader.
   unit((u) => u.nativeFetch && u.opts.stream, "scr_stream_from_web.c"),
@@ -418,6 +431,8 @@ const RUNTIME_DEFINES: readonly {
   { define: "SCR_NATIVE_REACTIONS", when: (opts) => opts.webStreams },
   { define: "SCR_HANDLE_CLASSES", when: (opts) => opts.webStreams },
   { define: "SCR_YIN", when: (opts) => opts.youngNursery },
+  // scr_lib.c's path stat and zero Stats for the fs.watchFile poll.
+  { define: "SCR_FS_WATCH_FILE", when: (opts) => opts.watchFile },
   { define: "SCR_NODE_ISLANDS", when: (opts) => opts.nodeIsland },
 ];
 

@@ -306,6 +306,83 @@ export function lowerUnionFieldWrite(
   return { kind: "seqExpr", stmts: body, result: dispatch, type: result.type, loc };
 }
 
+/** `delete u.f` on a union receiver: each record arm declares `f` as an
+ * OPTIONAL field (an undefined-armed slot), so each tag writes its own
+ * slot's ABSENT state — the monomorphic optional-field delete, dispatched
+ * over the arms the way union field writes are. The union value is
+ * retained once, so every arm deletes the object the program passed, not a
+ * projection. Null when an arm is not a record that declares `f` optional
+ * (unit arms, class arms, required fields, accessors and index signatures
+ * keep their own fences): a required slot has no absence to represent. */
+export function lowerUnionFieldDelete(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): IrStmt | null {
+  const mapped = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+  if (access.questionDotToken || mapped?.kind !== "union") return null;
+  let receiver = lowerer.maybeNarrow(lowerer.lowerExpr(access.expression), access.expression);
+  if (receiver.type.kind === "union" && !typeEquals(receiver.type, mapped))
+    receiver = narrowStoredClassValue(lowerer, receiver, mapped) ?? receiver;
+  if (receiver.type.kind !== "union") return null;
+  const unionId = receiver.type.unionId;
+  const arms = lowerer.unions.get(unionId)?.arms;
+  if (!arms || arms.length < 2) return null;
+  const name = access.name.text;
+  const loc = locOf(access);
+  const fields: { arm: IrType & { kind: "record" }; type: IrType }[] = [];
+  for (const arm of arms) {
+    if (arm.kind !== "record" || lowerer.shapes.get(arm.shapeId)?.tuple) return null;
+    const field = unionFieldArm(lowerer, arm, name);
+    if (!field || lowerer.absentFieldValue(field.type, loc) === null) return null;
+    fields.push({ arm, type: field.type });
+  }
+  const object = lowerer.declareHiddenLocal("%unionDeleteObject", receiver.type);
+  const objectRef = varRef(object.id, object.type, loc);
+  const branch = (tag: number): IrStmt[] => {
+    const field = fields[tag]!;
+    const absent = lowerer.absentFieldValue(field.type, loc);
+    if (absent === null) return [];
+    const write: IrStmt = {
+      kind: "recordSet",
+      obj: { kind: "unionNarrow", unionId, tag, value: objectRef, type: field.arm, loc },
+      shapeId: field.arm.shapeId,
+      field: name,
+      value: absent,
+      loc,
+    };
+    // A sloppy-mode delete on a frozen record leaves it unchanged.
+    markSloppyRecordWrites(lowerer, write, access);
+    return [write];
+  };
+  // One tag test per arm, the last arm as the fall-through else: a delete
+  // runs at most one arm's write.
+  const dispatch = (tag: number): IrStmt[] =>
+    tag === fields.length - 1
+      ? branch(tag)
+      : [
+          {
+            kind: "if",
+            cond: {
+              kind: "unionIsTag",
+              unionId,
+              tag,
+              value: objectRef,
+              negated: false,
+              type: BOOL,
+              loc,
+            },
+            then: branch(tag),
+            else_: dispatch(tag + 1),
+            loc,
+          },
+        ];
+  return {
+    kind: "block",
+    body: [{ kind: "varDecl", localId: object.id, init: receiver, loc }, ...dispatch(0)],
+    loc,
+  };
+}
+
 /** Read the element at a literal index from a union of tuples whose element
  * types differ (`readonly [true, number] | readonly [false, string]`, index
  * 1): each tag reads its own tuple's slot and widens it into the union of

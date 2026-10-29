@@ -56,6 +56,7 @@ const LEAF_KINDS: ReadonlySet<IrType["kind"]> = new Set([
   "url",
   "searchParams",
   "stats",
+  "bigintStats",
   "undefinedT",
   "nullT",
   "void",

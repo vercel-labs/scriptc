@@ -14,6 +14,7 @@ import {
   RuntimePackError,
   type RuntimePackManifest,
 } from "./runtime-pack.js";
+import { HUGE_TEXT_MIN_CODE_BYTES } from "./huge-text.js";
 import { createNativeLinkPlan } from "./link-plan.js";
 import {
   executableLinkerEnvironmentFingerprint,
@@ -61,6 +62,7 @@ const BASE: NativeLinkFeatures = {
   dgramDyn: false,
   textCodecDyn: false,
   watch: false,
+  watchFile: false,
   foreignFfi: false,
   nodeTest: false,
   tls: false,
@@ -264,6 +266,34 @@ describe("runtime pack manifests", () => {
     expect(defaultPlan.staticLink).toBeUndefined();
     expect(staticPlan.driverFlags).toEqual([...defaultPlan.driverFlags, "-static-pie"]);
     expect(staticPlan.staticLink).toBe(true);
+  });
+
+  test("Linux links of large program code use huge text unless it is turned off", async () => {
+    const { packagePath, root } = await fixture(LINUX_X64_GNU_TARGET);
+    // An ELF64 relocatable object's headers with one executable section of
+    // HUGE_TEXT_MIN_CODE_BYTES; only the headers are read.
+    const object = Buffer.alloc(64 + 2 * 64);
+    object.writeUInt32BE(0x7f454c46, 0);
+    object[4] = 2;
+    object[5] = 1;
+    object.writeBigUInt64LE(64n, 40);
+    object.writeUInt16LE(64, 58);
+    object.writeUInt16LE(2, 60);
+    object.writeUInt32LE(1, 128 + 4); // SHT_PROGBITS
+    object.writeBigUInt64LE(0x6n, 128 + 8); // SHF_ALLOC | SHF_EXECINSTR
+    object.writeBigUInt64LE(BigInt(HUGE_TEXT_MIN_CODE_BYTES), 128 + 32);
+    await writeFile(join(root, "program.o"), object);
+    const options = {
+      target: LINUX_X64_GNU_TARGET,
+      programObject: join(root, "program.o"),
+      outPath: join(root, "program"),
+      features: BASE,
+      ffi: null,
+      optimization: "release" as const,
+      resolver: () => packagePath,
+    };
+    expect((await createNativeLinkPlan(options)).hugeText).toBe(true);
+    expect((await createNativeLinkPlan({ ...options, hugeText: false })).hugeText).toBeUndefined();
   });
 
   test("selection chooses the most-specific variant and feature archive", async () => {

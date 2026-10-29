@@ -2,9 +2,11 @@
  * selected artifact is verified and copied from the same read into private
  * storage. With a store, a pack's selections and the identities of the
  * artifacts it verified are kept between builds: an artifact whose file
- * identity is unchanged since it was hashed is not hashed again. */
+ * identity is unchanged since it was hashed is not hashed again. The
+ * identities are also kept in a record beside the pack when its directory
+ * can be written, which builds with an empty store read too. */
 import type { NativeOptimization } from "./optimization.js";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync,
   constants,
@@ -13,6 +15,8 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  renameSync,
+  rmSync,
   statSync,
   writeSync,
   type Stats,
@@ -239,21 +243,53 @@ function readVerified(
   try {
     const text = store?.read(key) ?? null;
     if (text === null) return verified;
-    const stored = JSON.parse(text) as StoredVerification;
-    if (stored.schema === 1)
-      for (const artifact of stored.artifacts) verified.set(artifact.path, artifact);
+    for (const artifact of storedArtifacts(text)) verified.set(artifact.path, artifact);
   } catch {
     /* A malformed entry verifies everything again. */
   }
   return verified;
 }
 
+/** The well-formed entries of a stored verification; none when the text is
+ * not a stored verification. */
+function storedArtifacts(text: string): VerifiedArtifact[] {
+  const stored = JSON.parse(text) as Partial<StoredVerification> | null;
+  if (stored === null || stored.schema !== 1 || !Array.isArray(stored.artifacts)) return [];
+  const number = (value: unknown): boolean => typeof value === "number" && Number.isFinite(value);
+  return stored.artifacts.filter(
+    (artifact): artifact is VerifiedArtifact =>
+      artifact !== null &&
+      typeof artifact === "object" &&
+      typeof artifact.path === "string" &&
+      typeof artifact.sha256 === "string" &&
+      number(artifact.dev) &&
+      number(artifact.ino) &&
+      number(artifact.size) &&
+      number(artifact.mtime) &&
+      number(artifact.ctime),
+  );
+}
+
+/** `known` records `artifact`'s digest and size for a file with `identity`. */
+function verifiedAs(
+  known: VerifiedArtifact | undefined,
+  artifact: { sha256: string; size: number },
+  identity: FileIdentity,
+): boolean {
+  return (
+    known !== undefined &&
+    known.sha256 === artifact.sha256 &&
+    known.size === artifact.size &&
+    sameIdentity(known, identity)
+  );
+}
+
 function stageArtifact(
   root: string,
   stage: string,
   artifact: RuntimePackArtifact,
-  verified: Map<string, VerifiedArtifact>,
-  newlyVerified: VerifiedArtifact[],
+  records: readonly Map<string, VerifiedArtifact>[],
+  verified: VerifiedArtifact[],
 ): string {
   const source = join(root, artifact.path);
   const destination = join(stage, artifact.path);
@@ -276,26 +312,17 @@ function stageArtifact(
   }
   // The bytes are those last hashed when the file kept the identity it had
   // then for the whole read.
-  const known = verified.get(artifact.path);
   const unchanged = sameIdentity(before, after);
   const trusted =
-    known !== undefined &&
-    known.sha256 === artifact.sha256 &&
-    known.size === artifact.size &&
-    unchanged &&
-    known.dev === before.dev &&
-    known.ino === before.ino &&
-    known.size === before.size &&
-    known.mtime === before.mtime &&
-    known.ctime === before.ctime;
+    unchanged && records.some((record) => verifiedAs(record.get(artifact.path), artifact, before));
   if (
     bytes.length !== artifact.size ||
     (!trusted && createHash("sha256").update(bytes).digest("hex") !== artifact.sha256)
   ) {
     throw new RuntimePackError(`runtime pack artifact hash mismatch: ${artifact.path}`, "invalid");
   }
-  if (!trusted && unchanged)
-    newlyVerified.push({
+  if (unchanged)
+    verified.push({
       path: artifact.path,
       sha256: artifact.sha256,
       dev: before.dev,
@@ -353,10 +380,12 @@ export function stageNativeRuntimeSelection(
   const packagePath = join(root, "package.json");
   const manifestPath = join(root, "runtime-pack.json");
   const key = storeKey(JSON.stringify({ schema: 1, verified: root }));
-  const verified = readVerified(store, key);
-  const newlyVerified: VerifiedArtifact[] = [];
+  const cacheRecord = readVerified(store, key);
+  const packRecordPath = join(root, PACK_VERIFIED_FILE);
+  const packRecord = readPackVerified(packRecordPath);
+  const verified: VerifiedArtifact[] = [];
   const stage = (artifact: RuntimePackArtifact): string =>
-    stageArtifact(root, stageRoot, artifact, verified, newlyVerified);
+    stageArtifact(root, stageRoot, artifact, [cacheRecord, packRecord], verified);
   const runtimeObjects = selected.runtime.map(stage);
   const archives = selected.archives.map(stage);
   for (const license of licenses) {
@@ -372,14 +401,78 @@ export function stageNativeRuntimeSelection(
   ) {
     throw new RuntimePackError("runtime pack changed while staging verified artifacts", "invalid");
   }
-  if (store !== undefined && newlyVerified.length > 0) {
-    for (const artifact of newlyVerified) verified.set(artifact.path, artifact);
-    const entry: StoredVerification = { schema: 1, artifacts: [...verified.values()] };
+  // Each record learns the artifacts verified here that it does not list
+  // with their current identity.
+  const missing = (record: Map<string, VerifiedArtifact>): VerifiedArtifact[] =>
+    verified.filter((artifact) => !verifiedAs(record.get(artifact.path), artifact, artifact));
+  const cacheMissing = missing(cacheRecord);
+  if (store !== undefined && cacheMissing.length > 0) {
+    for (const artifact of cacheMissing) cacheRecord.set(artifact.path, artifact);
+    const entry: StoredVerification = { schema: 1, artifacts: [...cacheRecord.values()] };
     try {
       store.write(key, JSON.stringify(entry));
     } catch {
       /* A failed write only means hashing again next time. */
     }
   }
+  const packMissing = missing(packRecord);
+  if (packMissing.length > 0) writePackVerified(packRecordPath, packMissing);
   return { runtimeObjects, archives, systemLibraries: selected.systemLibraries };
+}
+
+/** The verification record kept beside the runtime pack, so a build with an
+ * empty cache does not hash the pack's artifacts again. Like the cache's
+ * record, it trusts an artifact only while its file keeps the identity
+ * (device, inode, size, mtime, ctime) the record lists. */
+export const PACK_VERIFIED_FILE = "runtime-pack.verified.json";
+
+/** The pack record's well-formed entries; none when it is missing,
+ * unreadable or malformed. */
+function readPackVerified(path: string): Map<string, VerifiedArtifact> {
+  const verified = new Map<string, VerifiedArtifact>();
+  try {
+    for (const artifact of storedArtifacts(readFileSync(path, "utf8")))
+      verified.set(artifact.path, artifact);
+  } catch {
+    /* The artifacts are hashed again. */
+  }
+  return verified;
+}
+
+/** Adds `artifacts` to the pack record: the record as it is now, with these
+ * entries replacing the ones for the same paths, written to a new file and
+ * renamed over the record, so a reader sees a whole record. Of two builds
+ * writing at once, the last rename wins; the entries the other added are
+ * hashed again by a later build. When the pack directory cannot be written,
+ * the cache's record is the only one. */
+function writePackVerified(path: string, artifacts: readonly VerifiedArtifact[]): void {
+  const temporary = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+  try {
+    const record = readPackVerified(path);
+    for (const artifact of artifacts) record.set(artifact.path, artifact);
+    const entry: StoredVerification = { schema: 1, artifacts: [...record.values()] };
+    const bytes = Buffer.from(JSON.stringify(entry));
+    const fd = openSync(
+      temporary,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+      0o644,
+    );
+    try {
+      let offset = 0;
+      while (offset < bytes.length) {
+        const written = writeSync(fd, bytes, offset, bytes.length - offset);
+        if (written === 0) throw new Error("the pack record was not written");
+        offset += written;
+      }
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(temporary, path);
+  } catch {
+    try {
+      rmSync(temporary, { force: true });
+    } catch {
+      /* Cleanup is best effort. */
+    }
+  }
 }

@@ -1,6 +1,6 @@
 {
   "name": "@scriptc/libnode-darwin-x64",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "private": true,
   "description": "Prebuilt Node.js shared library and scriptc bridge for Node islands on macOS x64",
   "license": "SEE LICENSE IN LICENSE",

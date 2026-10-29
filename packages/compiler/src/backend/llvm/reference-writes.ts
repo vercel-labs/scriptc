@@ -119,6 +119,7 @@ const INERT_LIB_CALLS = new Set([
   "process.platform",
   "process.execPath",
   "process.isTTY",
+  "process.isTTYValue",
   "worker.data",
   "worker.isMainThread",
   "worker.parentPort",

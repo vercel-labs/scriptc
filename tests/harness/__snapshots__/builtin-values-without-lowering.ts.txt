@@ -1,0 +1,53 @@
+builtin-values-without-lowering.ts:7:7 - error SC2009: values of type '{ json: JSON; }' cannot be compiled: the record shape is supported, but its member 'json.parse' has type '{ (text: string, reviver?: ((this: any, key: string, value: any) => any) | undefined): any; (text: string): unknown; (text: string, reviver: (this: unknown, key: string, value: unknown) => unknown): unknown; }', which does not compile
+
+  6 | 
+  7 | const inferred = { json: JSON };
+    |       ^~~~~~~~
+  8 | const loose: any = { intl: Intl, proxy: Proxy };
+
+  hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
+
+builtin-values-without-lowering.ts:7:18 - error SC2009: values of type '{ json: JSON; }' cannot be compiled: the record shape is supported, but its member 'json.parse' has type '{ (text: string, reviver?: ((this: any, key: string, value: any) => any) | undefined): any; (text: string): unknown; (text: string, reviver: (this: unknown, key: string, value: unknown) => unknown): unknown; }', which does not compile
+
+  6 | 
+  7 | const inferred = { json: JSON };
+    |                  ^~~~~~~~~~~~~~
+  8 | const loose: any = { intl: Intl, proxy: Proxy };
+
+  hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
+
+builtin-values-without-lowering.ts:8:28 - error SC2020: 'Intl' is part of the standard library types but has no scriptc lowering yet
+
+  7 | const inferred = { json: JSON };
+  8 | const loose: any = { intl: Intl, proxy: Proxy };
+    |                            ^~~~
+  9 | const timers: Record<string, unknown> = { setTimeout };
+
+  hint: native Intl supports default Unicode grapheme segmentation and the composed new Intl.NumberFormat("en-US").format(x); locale negotiation and other ICU-backed operations remain unsupported
+
+builtin-values-without-lowering.ts:9:43 - error SC2020: 'setTimeout' is part of the standard library types but has no scriptc lowering yet
+
+   8 | const loose: any = { intl: Intl, proxy: Proxy };
+   9 | const timers: Record<string, unknown> = { setTimeout };
+     |                                           ^~~~~~~~~~
+  10 | const list: any[] = [Array, parseInt];
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+builtin-values-without-lowering.ts:10:22 - error SC2020: 'Array' is part of the standard library types but has no scriptc lowering yet
+
+   9 | const timers: Record<string, unknown> = { setTimeout };
+  10 | const list: any[] = [Array, parseInt];
+     |                      ^~~~~
+  11 | console.log(inferred, loose, timers, list, take(process));
+
+  hint: the type checker sees the full standard library, but only the supported surface compiles (https://scriptc.dev/limitations)
+
+builtin-values-without-lowering.ts:11:13 - error SC2004: uses of 'inferred' inherit the blocker on its declaration
+
+  10 | const list: any[] = [Array, parseInt];
+  11 | console.log(inferred, loose, timers, list, take(process));
+     |             ^~~~~~~~
+  12 | 
+
+  hint: the declaration of 'inferred' did not compile — fix the diagnostic reported there and these sites clear with it

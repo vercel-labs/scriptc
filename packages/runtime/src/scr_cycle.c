@@ -235,6 +235,7 @@ typedef struct {
   bool falling;
   bool idle_points;
   size_t death_due_live;
+  bool probe_due;
   bool keep_base;
   size_t trigger;
   size_t alloc_trigger;
@@ -286,6 +287,7 @@ static _Thread_local ScrCycThread scr_cyc_thread = {.gen_limit = SCR_CYC_OLD};
 #define scr_cyc_falling (scr_cyc_thread.falling)
 #define scr_cyc_idle_points (scr_cyc_thread.idle_points)
 #define scr_cyc_death_due_live (scr_cyc_thread.death_due_live)
+#define scr_cyc_probe_due (scr_cyc_thread.probe_due)
 #define scr_cyc_keep_base (scr_cyc_thread.keep_base)
 #define scr_cyc_kinds (scr_cyc_thread.kinds)
 #define scr_cyc_kinds_cap (scr_cyc_thread.kinds_cap)
@@ -640,6 +642,10 @@ static SCR_TL bool scr_cyc_falling = false, scr_cyc_keep_base = false;
 #ifndef SCR_WORKERS
 static SCR_TL bool scr_cyc_idle_points = false;
 static SCR_TL size_t scr_cyc_death_due_live = 0;
+/* A nursery probe window opened since the last scheduled pass (see "level
+ * bypass"): the next pass the release path would run at the nursery runs at
+ * the mature level instead. */
+static SCR_TL bool scr_cyc_probe_due = false;
 #endif
 
 /* The nursery trigger a program sets for itself
@@ -976,9 +982,11 @@ static SCR_CYC_SCHEDULING void scr_cyc_collect_due(void) {
   if (!by_growth && !by_death && scr_roots[SCR_CYC_OLD].n < scr_cyc_backlog_threshold(SCR_CYC_OLD)) {
     gen = SCR_CYC_MATURE;
     by_growth = scr_cyc_grown(SCR_CYC_MATURE);
-    if (!by_growth && scr_roots[SCR_CYC_MATURE].n < scr_cyc_backlog_threshold(SCR_CYC_MATURE))
+    if (!by_growth && scr_roots[SCR_CYC_MATURE].n < scr_cyc_backlog_threshold(SCR_CYC_MATURE) &&
+        !scr_cyc_probe_due)
       gen = SCR_CYC_NURSERY;
   }
+  scr_cyc_probe_due = false;
   scr_cyc_scheduled_pass(gen, by_growth, by_death);
 }
 
@@ -1059,6 +1067,16 @@ bool scr_cyc_collect_idle(void) {
  * a probe window every candidate of the type stays at the level, so the
  * cycles it builds during the window die there.
  *
+ * Those young cycles can still be held by older garbage: a dead structure
+ * the bypass promoted before the window that points at objects built in it.
+ * A restricted pass reads that edge as external, so the window frees none
+ * of them, judges the type long-lived again, and the garbage on both sides
+ * waits for a mature pass, which the growth schedule may not run until the
+ * heap has grown a multiple of its size. So a nursery window that opens
+ * makes the next release-triggered pass that would run at the nursery run
+ * at the mature level: it reclaims the promoted garbage once, and the window
+ * judges the young cycles on their own.
+ *
  * This changes only which generation an object is judged in. Any
  * generation assignment is sound (a restricted pass treats edges from older
  * objects as external), and a bypassing candidate is buffered like any
@@ -1110,7 +1128,8 @@ static inline ScrCycKind *scr_cyc_kind(uint32_t kind) {
 
 /* Whether a candidate of this type at level `gen` (nursery or mature)
  * skips that level's passes (see above). The last candidate a bypass sends
- * past the level opens a probe window, with fresh counts. */
+ * past the level opens a probe window, with fresh counts, and a nursery
+ * window asks for a mature pass first. */
 static inline __attribute__((always_inline)) bool scr_cyc_bypassed(const ScrCycType *type,
                                                                   unsigned gen) {
   uint32_t kind = type->kind;
@@ -1119,9 +1138,12 @@ static inline __attribute__((always_inline)) bool scr_cyc_bypassed(const ScrCycT
   if (k->bypass == 0) return false;
   if (--k->bypass == 0) {
     k->walked = k->freed = 0;
+    if (gen == SCR_CYC_NURSERY) {
+      scr_cyc_probe_due = true;
 #if SCR_CYC_INLINE_BUFFERING
-    if (gen == SCR_CYC_NURSERY) scr_cyc_nursery_bypassing--;
+      scr_cyc_nursery_bypassing--;
 #endif
+    }
   }
   return true;
 }

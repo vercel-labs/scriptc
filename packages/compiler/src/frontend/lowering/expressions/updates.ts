@@ -1,4 +1,6 @@
 /* Increment, decrement and prefix unary operators, and compound field updates. */
+import { staticPrivateUpdateTarget } from "../private-statics.js";
+import { lowerCompoundValueToTarget } from "./binary.js";
 import {
   indexedUnionArms,
   lowerIndexedUnionNumberRead,
@@ -269,6 +271,19 @@ export function lowerIncDec(
     }
     fenceNodeModuleMutation(lowerer, access, "assignment");
     if (ts.isPropertyAccessExpression(access)) {
+      // `this.#x++` on a static private field (private-statics.ts): the
+      // brand check, then the field's native global.
+      const staticPrivate = staticPrivateUpdateTarget(lowerer, access);
+      if (staticPrivate) {
+        const update = lowerIncDecTarget(lowerer, expr, staticPrivate.target, prefix);
+        return {
+          kind: "seqExpr",
+          stmts: [staticPrivate.brand],
+          result: update,
+          type: update.type,
+          loc,
+        };
+      }
       const target =
         staticFieldWriteTarget(lowerer, access) ??
         expandoWritableTarget(lowerer, access) ??
@@ -921,6 +936,27 @@ export function lowerFieldCompoundValue(
       access,
       "compound assignment through 'super' (read and write separately)",
     );
+  }
+  // `this.#x op= v` on a static private field (private-statics.ts): the
+  // brand check, then the field's native global read before the right side.
+  if (
+    ts.isPropertyAccessExpression(access) &&
+    rhsNode !== null &&
+    ts.isBinaryExpression(access.parent) &&
+    access.parent.left === access
+  ) {
+    const staticPrivate = staticPrivateUpdateTarget(lowerer, access);
+    if (staticPrivate) {
+      const { target } = staticPrivate;
+      const value = lowerCompoundValueToTarget(lowerer, access.parent, op, target);
+      return {
+        kind: "seqExpr",
+        stmts: [staticPrivate.brand],
+        result: { kind: "assignExpr", localId: target.id, value, type: target.type, loc },
+        type: target.type,
+        loc,
+      };
+    }
   }
   const body: IrStmt[] = [];
   const save = (value: IrExpr, name: string): IrExpr => {

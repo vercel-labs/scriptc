@@ -37,7 +37,19 @@ export class ClassProtocols {
     };
     const usesReceiver = (node: ts.Node): boolean =>
       node.kind === ts.SyntaxKind.ThisKeyword || ts.forEachChild(node, usesReceiver) === true;
+    // The names any type in the program declares as a get/set accessor, and
+    // every object literal in it. A data member of a literal can only
+    // disagree with a target at a name in this set, and marking waits until
+    // the walk ends, so the checker round trip stays off every literal whose
+    // names are not accessors somewhere (this analysis runs on every
+    // program, so it must stay syntax-cheap).
+    const accessorNames = new Set<string>();
+    const literals: ts.ObjectLiteralExpression[] = [];
     const visit = (node: ts.Node): void => {
+      if (ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)) {
+        const name = propertyNameText(node.name);
+        if (name !== null) accessorNames.add(name);
+      }
       if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
         for (const clause of node.heritageClauses?.nodes ?? [])
           if (clause.token === ts.SyntaxKind.ImplementsKeyword)
@@ -61,29 +73,105 @@ export class ClassProtocols {
           this.methods.set(ts.symbolName(property), entries);
         }
       }
-      if (
-        ts.isObjectLiteralExpression(node) &&
-        node.properties.nodes.some(
-          (property) =>
-            (ts.isMethodDeclaration(property) ||
-              ts.isGetAccessorDeclaration(property) ||
-              ts.isSetAccessorDeclaration(property)) &&
-            property.body !== undefined &&
-            usesReceiver(property.body),
-        )
-      ) {
-        // Receiver-dependent methods and accessors need a live object even
-        // without a class implementation. Receiver-free methods keep their
-        // native callable fields, including async callbacks.
-        add(this.checker.getTypeAtLocation(node));
-        const contextual = this.checker.getContextualType(node);
-        if (contextual) add(contextual);
+      if (ts.isObjectLiteralExpression(node)) {
+        if (
+          node.properties.nodes.some(
+            (property) =>
+              (ts.isMethodDeclaration(property) ||
+                ts.isGetAccessorDeclaration(property) ||
+                ts.isSetAccessorDeclaration(property)) &&
+              property.body !== undefined &&
+              usesReceiver(property.body),
+          )
+        ) {
+          // Receiver-dependent methods and accessors need a live object even
+          // without a class implementation. Receiver-free methods keep their
+          // native callable fields, including async callbacks.
+          add(this.checker.getTypeAtLocation(node));
+          const contextual = this.checker.getContextualType(node);
+          if (contextual) add(contextual);
+        }
+        // Member-kind disagreements with the literal's target type are
+        // checked once the walk ends, when the accessor-name index above is
+        // complete (see markMemberKindViews).
+        literals.push(node);
       }
       ts.forEachChild(node, visit);
     };
     for (const source of this.sources) if (!source.isDeclarationFile) visit(source);
+    for (const literal of literals) this.markMemberKindViews(literal, accessorNames, add);
     this.markIdentityFlows(protocols);
     return protocols;
+  }
+
+  /** Marks the structural types a literal's member kinds disagree with: a
+   * get/set accessor satisfying a declared DATA member, or a data property
+   * satisfying a declared accessor member. One static record layout cannot
+   * hold both member kinds at one name (a data member is a storage slot, an
+   * accessor member a `%get:`/`%set:` closure pair), so the target type
+   * keeps checked identity instead: every value of it is a live
+   * checked-dynamic view, where the accessor stays live, `Object.keys`
+   * lists it, and `JSON.stringify` calls it — Node's own model.
+   *
+   * Only the TARGET is marked: the literal then takes the checked-dynamic
+   * literal path (`lowerDynObjectLiteral`), which defines an accessor member
+   * as a live get/set property and a data member as a plain property, so
+   * both directions construct live objects. */
+  private markMemberKindViews(
+    literal: ts.ObjectLiteralExpression,
+    accessorNames: ReadonlySet<string>,
+    add: (type: ts.Type) => void,
+  ): void {
+    const members: { name: string; accessor: boolean }[] = [];
+    for (const property of literal.properties.nodes) {
+      if (ts.isSpreadAssignment(property) || property.name === undefined) continue;
+      const name = propertyNameText(property.name);
+      if (name === null) continue;
+      if (ts.isGetAccessorDeclaration(property) || ts.isSetAccessorDeclaration(property)) {
+        members.push({ name, accessor: true });
+        continue;
+      }
+      if (
+        (ts.isPropertyAssignment(property) || ts.isShorthandPropertyAssignment(property)) &&
+        // A data member only disagrees with an accessor-declared target, and
+        // only a type that declares an accessor somewhere can be one: the
+        // name index keeps the checker round trip off the common literal.
+        accessorNames.has(name)
+      )
+        members.push({ name, accessor: false });
+    }
+    if (members.length === 0) return;
+    const contextual = attempt(() => this.checker.getContextualType(literal));
+    if (contextual === undefined) return;
+    // Only one object type can be the one the literal converts into: a union
+    // with several arms picks its arm from the value itself, and an
+    // intersection merges members, so neither has the single layout the
+    // literal would have to disagree with. Nullish arms are ignored, so
+    // `Counter | undefined` still names Counter.
+    const present = contextual.isUnionType()
+      ? ts
+          .constituentTypes(contextual)
+          .filter((part) => (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Null)) === 0)
+      : [contextual];
+    const target = present.length === 1 ? present[0]! : undefined;
+    if (target === undefined || target.isIntersectionType()) return;
+    if ((target.flags & ts.TypeFlags.TypeParameter) !== 0) return;
+    if (!this.isStructuralTarget(target)) return;
+    const disagrees = members.some((member) => {
+      const kind = attempt(() => this.memberKind(target, member.name));
+      return kind == null ? false : (kind === "accessor") !== member.accessor;
+    });
+    if (disagrees) add(target);
+  }
+
+  /** The member kind `type` declares at `name` — an accessor (get/set pair)
+   * or a data property — or null when it declares no member by that name. */
+  private memberKind(type: ts.Type, name: string): "accessor" | "data" | null {
+    const property = this.checker.getPropertyOfType(type, name);
+    if (property === undefined) return null;
+    return property.flags & (ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor)
+      ? "accessor"
+      : "data";
   }
 
   /** Structural types that receive a value with identity: a program class
@@ -1373,6 +1461,14 @@ function attempt<T>(query: () => T): T | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** The static property name a member declares, or null for a computed key
+ * (its name is not a compile-time fact). */
+function propertyNameText(name: ts.PropertyName): string | null {
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name)) return name.text;
+  if (ts.isNumericLiteral(name)) return String(Number(name.text));
+  return null;
 }
 
 /** `(value as T).member` and `(value as T)[key]`: the assertion is read or

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "compilerVersion": "0.4.5",
+  "compilerVersion": "0.4.6",
   "coverage": [
     "Entries are projected mechanically from the compiler's own decision tables: the diagnostics registry, the unsupported-syntax dispatch tables, the stdlib and node-builtin lowering tables, and the supported-builtin-module list. Nothing is hand-maintained; the manifest regenerates byte-identically from the source tree at this version.",
     "Absence from this manifest means 'not projected', never 'unsupported'. Surfaces lowered through dedicated code paths rather than tables are not yet projected: console, JSON, Promise/async and the timer surface, the net/http/tls/https/dgram/dns/assert/test/stream/readline module member surfaces, template literals, the regex slice, global functions (parseInt, parseFloat, isNaN, isFinite), and the process surface outside its ambient slice.",
@@ -9,7 +9,7 @@
     "Entries with status 'unsupported' describe where the named code is raised: forms of the construct outside the supported subset are refused with that code — not that every form of the named feature is refused. Supported forms appear as their own static entries where a table projects them.",
     "The engine-free fetch projection targets Node 24.22.0 with bundled Undici 7.29.1. Each projected row names the differential evidence that guards it; changing the pinned Node or Undici version is an explicit profile update.",
     "The fetch profile also contains a runtime-reflected census of the selected fetch, abort, Headers, and readable-stream interfaces plus RequestInit/ResponseInit dictionary reads. Static and unsupported census rows are projected here; its explicitly out-of-scope metadata rows and adjacent-interface exclusions remain in the profile so absence is deliberate rather than ambiguous.",
-    "Process-level diagnostic codes are not surface entries: SC0001-SC0004 are preflight gates, SC1110 is a comptime evaluation failure, SC3001/SC3002 are backend/target tier refusals, SC9001/SC9002 are internal errors.",
+    "Process-level diagnostic codes are not surface entries: SC0001-SC0007 are preflight gates (SC0005-SC0007 are the ECMAScript early errors), SC1110 is a comptime evaluation failure, SC3001/SC3002 are backend/target tier refusals, SC9001/SC9002 are internal errors.",
     "Entry statuses are projected for the desktop targets. The mobile targets (aarch64-apple-ios, aarch64-apple-ios-simulator, aarch64-linux-android) compile library-mode archives only: the library-admissible surface (what SC4005's async_free requirement and the library link set admit) is supported there, the executable lane refuses those triples with SC3002, and no entry outside the library-admissible surface carries a mobile support claim. iOS archives build for iOS 15.0 on darwin hosts; Android archives build against NDK API level 26.",
     "No scheduling metadata is published; entry ids are the stable diff keys across releases."
   ],
@@ -169,6 +169,14 @@
       "name": "this syntax",
       "status": "unsupported",
       "code": "SC1090"
+    },
+    {
+      "id": "diagnostic.sc1091",
+      "kind": "diagnostic-fence",
+      "name": "writing an undeclared name in a JavaScript source",
+      "status": "unsupported",
+      "code": "SC1091",
+      "note": "a write to an undeclared name has no native lowering: sloppy mode makes it a property on Node's global object, which a native binary has none of, and strict mode makes it throw; declare the name, or keep the module in a Node island (sloppy-mode programs route there)"
     },
     {
       "id": "diagnostic.sc1100",
@@ -1280,6 +1288,13 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.fs.unwatchFile",
+      "kind": "node-builtin",
+      "name": "fs.unwatchFile",
+      "status": "static",
+      "note": "removes one listener, or every listener, from a resolved path's poller"
+    },
+    {
       "id": "node-builtin.fs.utimesSync",
       "kind": "node-builtin",
       "name": "fs.utimesSync",
@@ -1290,6 +1305,13 @@
       "kind": "node-builtin",
       "name": "fs.watch",
       "status": "static"
+    },
+    {
+      "id": "node-builtin.fs.watchFile",
+      "kind": "node-builtin",
+      "name": "fs.watchFile",
+      "status": "static",
+      "note": "stat polling of a resolved path with Stats listeners, in statement position; bigint: true is refused"
     },
     {
       "id": "node-builtin.fs.writeFileSync",
@@ -5039,17 +5061,15 @@
       "id": "stdlib.readable-stream.pipeThrough",
       "kind": "stdlib",
       "name": "ReadableStream.pipeThrough",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.0 / Undici 7.29.1; the wider Web Streams graph is outside the native readable-stream slice"
+      "status": "static",
+      "note": "Node 24.22.0 / Undici 7.29.1; facets: identity, promise-settlement, state-machine, error-shape; differential evidence: fixture:static-web-streams"
     },
     {
       "id": "stdlib.readable-stream.pipeTo",
       "kind": "stdlib",
       "name": "ReadableStream.pipeTo",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.0 / Undici 7.29.1; this operation is outside the native readable-stream implementation"
+      "status": "static",
+      "note": "Node 24.22.0 / Undici 7.29.1; facets: identity, promise-settlement, state-machine, error-shape; differential evidence: fixture:static-web-streams"
     },
     {
       "id": "stdlib.readable-stream.symbol.asyncIterator",
@@ -5063,9 +5083,8 @@
       "id": "stdlib.readable-stream.tee",
       "kind": "stdlib",
       "name": "ReadableStream.tee",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.0 / Undici 7.29.1; this operation is outside the native readable-stream implementation"
+      "status": "static",
+      "note": "Node 24.22.0 / Undici 7.29.1; facets: identity, promise-settlement, state-machine, error-shape; differential evidence: fixture:static-web-streams"
     },
     {
       "id": "stdlib.readable-stream.values",

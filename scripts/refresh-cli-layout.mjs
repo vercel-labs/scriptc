@@ -92,9 +92,11 @@ const scriptc = join(cli, "bin/scriptc");
 const baseEnv = { ...process.env, SCRIPTC_TIMING: "1" };
 delete baseEnv["SCRIPTC_LLVM_HELPER"];
 
-/** Runs the instrumented compiler, writing its profile to `options.profile`. */
+/** Runs the instrumented compiler, writing its profile to `options.profile`.
+ * Throws when the profile runtime reports that it could not write the
+ * profile (a full disk, for example): the compiler still exits with 0. */
 function run(args, options) {
-  return new Promise((done) => {
+  return new Promise((done, fail) => {
     const child = spawn(scriptc, args, {
       cwd: options.cwd,
       stdio: ["ignore", "pipe", "pipe"],
@@ -109,7 +111,9 @@ function run(args, options) {
     child.stderr.on("data", (chunk) => (text += chunk));
     child.on("close", (code) => {
       appendFileSync(log, `$ scriptc ${args.join(" ")}\n${text}exit ${code}\n`);
-      done({ ok: code === 0, text });
+      const profileError = /^LLVM Profile Error: .*$/m.exec(text)?.[0];
+      if (profileError !== undefined) fail(new Error(`scriptc ${args.join(" ")}: ${profileError}`));
+      else done({ ok: code === 0, text });
     });
   });
 }
@@ -142,8 +146,24 @@ const training = [
 // rebuild that missed a cache (it shows no `frontend-cache-hit` or
 // `executable-cache-hit` phase) is left out. The first builds each write
 // their own profile (cold-<program>-*), merged across the build's processes.
+// Each profile is read and deleted when its build finishes: a profile is
+// about 23 MB, and keeping every build's until the end takes about 9 GB.
 const warm = new Set();
 let skipped = 0;
+// For each function, how many of the first builds ran it.
+const runs = new Map();
+let coldBuilds = 0;
+function countColdRun(index) {
+  const profiles = readdirSync(raw).filter((name) => name.startsWith(`cold-${index}-`));
+  if (profiles.length === 0) return;
+  const ran = new Set();
+  for (const name of profiles) {
+    for (const fn of executedFunctions(join(raw, name))) ran.add(fn);
+    rmSync(join(raw, name));
+  }
+  for (const fn of ran) runs.set(fn, (runs.get(fn) ?? 0) + 1);
+  coldBuilds++;
+}
 async function warmRun(args, cache, name, cacheHits) {
   const profile = join(raw, `warm-${name}.profraw`);
   const { ok, text } = await run(args, { cwd: root, cache, profile });
@@ -166,6 +186,7 @@ const passed = await pool(
       cache,
       profile: join(raw, `cold-${index}-%1m.profraw`),
     });
+    countColdRun(index);
     if (ok)
       await warmRun(args, cache, String(index), ["frontend-cache-hit", "executable-cache-hit"]);
     rmSync(cache, { recursive: true, force: true });
@@ -196,6 +217,12 @@ function executedFunctions(path) {
   const dataStart = 16 * 8 + binaryIdsBytes;
   const countersStart = dataStart + records * recordBytes + beforeCounters;
   const namesStart = countersStart + counters * 8 + afterCounters + bitmapBytes + afterBitmap;
+  // The profile runtime reports a failed write (a full disk, for example) on
+  // stderr, and the compiler still exits with 0, leaving a partial file.
+  if (buf.length < namesStart + namesBytes)
+    throw new Error(
+      `${path} is ${buf.length} bytes, shorter than the ${namesStart + namesBytes} bytes its header describes`,
+    );
   const countersDelta = buf.readBigInt64LE(10 * 8);
   const names = new Map();
   let at = namesStart;
@@ -241,18 +268,8 @@ function executedFunctions(path) {
 // tier 2 for functions at least 90% of the builds run, tier 3 for 60%, and so
 // on; tier 7 holds the functions fewer than 3% of the builds run.
 const COLD_TIERS = [0.9, 0.6, 0.3, 0.1, 0.03];
-const coldRuns = new Map();
-for (const name of readdirSync(raw)) {
-  const program = /^cold-(\d+)-/.exec(name)?.[1];
-  if (program === undefined) continue;
-  const ran = coldRuns.get(program) ?? new Set();
-  for (const fn of executedFunctions(join(raw, name))) ran.add(fn);
-  coldRuns.set(program, ran);
-}
-const runs = new Map();
-for (const ran of coldRuns.values()) for (const fn of ran) runs.set(fn, (runs.get(fn) ?? 0) + 1);
 const coldTier = (count) => {
-  const share = count / coldRuns.size;
+  const share = count / coldBuilds;
   const index = COLD_TIERS.findIndex((least) => share >= least);
   return 2 + (index < 0 ? COLD_TIERS.length : index);
 };
@@ -269,7 +286,7 @@ const perTier = new Map();
 for (const line of lines)
   perTier.set(line.split(" ")[0], (perTier.get(line.split(" ")[0]) ?? 0) + 1);
 console.log(
-  `wrote ${output}: ${[...perTier].map(([tier, count]) => `tier ${tier}: ${count}`).join(", ")} functions, from ${coldRuns.size} builds (${statSync(output).size} bytes)`,
+  `wrote ${output}: ${[...perTier].map(([tier, count]) => `tier ${tier}: ${count}`).join(", ")} functions, from ${coldBuilds} builds (${statSync(output).size} bytes)`,
 );
 rmSync(builds, { recursive: true, force: true });
 if (values.work === undefined) rmSync(work, { recursive: true, force: true });

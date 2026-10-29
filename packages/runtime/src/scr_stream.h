@@ -556,6 +556,9 @@ ScrBytes *scr_stream_chunk_bytes(ScrStream *s, ScrBytes *chunk);
 struct ScrDyn *scr_stream_chunk_value(ScrStream *s, ScrBytes *chunk);
 ScrStr *scr_stream_chunk_encoding(ScrStream *s);
 ScrDyn *scr_stream_chunk_encoding_value(ScrStream *s);
+/* True when the write in progress is an object-mode write that passed no
+ * encoding argument (its encoding value is undefined). */
+bool scr_stream_chunk_encoding_undefined(ScrStream *s);
 /* emit('data', value) with a checked-dynamic chunk (borrowed). */
 bool scr_stream_emit_value(ScrStream *s, ScrStr *name, struct ScrDyn *v);
 /* Whether a dyn for-await step (readable.nextChunkDyn) answered the end. */

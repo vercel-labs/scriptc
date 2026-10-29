@@ -11,13 +11,22 @@
  * so writes to those values stay fenced. A byte view is excluded for the
  * read side: an undeclared member name on one answers undefined from a
  * static decision that Node's typed-array prototypes lack it, so a write
- * this path allowed could not be read back the same way. */
+ * this path allowed could not be read back the same way. A record with a
+ * hidden `%`-prefixed field is the same kind of handle (a builtin object
+ * the compiler boxes, `new TextEncoder()` becomes `{ "%TextEncoder": n }`),
+ * not a JavaScript object with properties, so it stays fenced too. */
 import type { Lowerer } from "./lowerer.js";
 import type { IrType } from "../../ir/ir.js";
+
+function isBuiltinHandleRecord(lowerer: Lowerer, shapeId: string): boolean {
+  const shape = lowerer.shapes.get(shapeId);
+  return !!shape && shape.fields.some((field) => field.name.startsWith("%"));
+}
 
 export function keepsLivePropertyTable(lowerer: Lowerer, type: IrType): boolean {
   switch (type.kind) {
     case "record":
+      return !isBuiltinHandleRecord(lowerer, type.shapeId);
     case "array":
     case "func":
       return true;

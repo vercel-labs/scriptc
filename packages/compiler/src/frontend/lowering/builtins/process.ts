@@ -34,6 +34,7 @@ import { builtinFunctionValue } from "../lower-exprs.js";
 import { canonicalBuiltinModule } from "../../builtin-modules.js";
 import { lowerProcessIpcSend, ipcMessageListener, ipcDisconnectListener } from "./ipc.js";
 import { lowerDiagnosticsSubscriber, lowerTracingArguments } from "./async-context.js";
+import { isCheckerPanic } from "../../../diagnostics/diagnostic.js";
 
 /** Whether the process has an IPC channel, Node's test for defining
  * process.send and process.disconnect: a channel this fork child opened
@@ -170,6 +171,70 @@ export function programReadsExitCode(lowerer: Lowerer): boolean {
     if (found) break;
   }
   lowerer.readsExitCode = found;
+  return found;
+}
+
+/** A write-method replacement on a process output stream, its source site.
+ * `stream` is null when the receiver is a first-class alias, whose type does
+ * not say which of the two output streams it holds. */
+export interface StdioPatchSite {
+  stream: "stdout" | "stderr" | null;
+  loc: SrcLoc;
+}
+
+/** Whether any program file replaces a process output stream's write
+ * method: `process.stdout.write = …` / `process.stderr.write = …`, or the
+ * same assignment through a first-class alias of the stream (a value whose
+ * type maps to the process stream). Such a program routes its typed
+ * stdout/stderr writes through the stream object, so the replacement sees
+ * them with their arguments, as in Node. Cached per program; the first
+ * site found is recorded for the executable planner's SC8020 check. */
+export function programPatchesStdio(lowerer: Lowerer): boolean {
+  if (lowerer.patchesStdio !== null) return lowerer.patchesStdio;
+  let found = false;
+  // undefined: not an output stream; null: a first-class alias of one.
+  const streamOf = (recv: ts.Expression): "stdout" | "stderr" | null | undefined => {
+    if (ts.isPropertyAccessExpression(recv)) {
+      const direct = lowerer.stdlibGlobalMember(recv, "process");
+      if (direct === "stdout" || direct === "stderr") return direct;
+    }
+    // An arbitrary receiver's mapping is a query, never a commit: a checker
+    // panic (the type has no readable form) is not a patch site. The type
+    // cannot say WHICH output stream an alias holds.
+    try {
+      return lowerer.mapTypeOf(lowerer.typeOf(recv))?.kind === "procStream" ? null : undefined;
+    } catch (e) {
+      if (!isCheckerPanic(e)) throw e;
+      return undefined;
+    }
+  };
+  const walk = (node: ts.Node): void => {
+    if (found) return;
+    if (
+      ts.isBinaryExpression(node) &&
+      node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isPropertyAccessExpression(node.left) &&
+      node.left.name.text === "write"
+    ) {
+      const recv = node.left.expression;
+      const direct = ts.isPropertyAccessExpression(recv)
+        ? lowerer.stdlibGlobalMember(recv, "process")
+        : null;
+      const stream = direct === "stdout" || direct === "stderr" ? direct : streamOf(recv);
+      if (stream !== undefined) {
+        found = true;
+        lowerer.stdioPatchSites.push({ stream, loc: locOf(node) });
+        return;
+      }
+    }
+    ts.forEachChild(node, walk);
+  };
+  for (const sf of lowerer.program.getImplementationSourceFiles()) {
+    if (sf.isDeclarationFile) continue;
+    walk(sf);
+    if (found) break;
+  }
+  lowerer.patchesStdio = found;
   return found;
 }
 
@@ -340,6 +405,26 @@ export function lowerProcessStreamProperty(
         type: DYN,
         loc: locOf(expr),
       };
+  }
+  // The write method as a VALUE in TypeScript (`const original =
+  // process.stdout.write`, `process.stdout.write.bind(process.stdout)`):
+  // the stream object's current write slot, a checked-dynamic function
+  // (the native method until a program replaces it).
+  if (member === "write" && (direct === "stdout" || direct === "stderr")) {
+    const loc = locOf(expr);
+    return {
+      kind: "dynKeyGet",
+      value: {
+        kind: "libCall",
+        fn: "process.stdio",
+        args: [numLit(direct === "stdout" ? 1 : 2, loc)],
+        type: DYN,
+        loc,
+      },
+      key: strLit("write", locOf(expr.name)),
+      type: DYN,
+      loc,
+    };
   }
   // `if (process.stdin.setRawMode)`: Node's stdin has the method only
   // when it is a TTY. The runtime's stream object answers the same
@@ -1073,6 +1158,33 @@ export function lowerProcessMethodCall(
     if (stream === "stdout" || stream === "stderr") {
       const loc = locOf(call);
       const args = call.arguments.nodes;
+      // In a program that replaces a process stream's write, a write call is
+      // what Node makes it: a call of the stream's CURRENT write property,
+      // with the arguments as passed (the replacement sees byte chunks,
+      // encodings and callbacks). The native method behind the slot is the
+      // same synchronous write, so an unpatched stream behaves as before.
+      if (programPatchesStdio(lowerer) && !args.some(ts.isSpreadElement)) {
+        const handle: IrExpr = {
+          kind: "libCall",
+          fn: "process.stdio",
+          args: [numLit(stream === "stdout" ? 1 : 2, loc)],
+          type: DYN,
+          loc,
+        };
+        const invoke: IrExpr = {
+          kind: "dynInvoke",
+          recv: handle,
+          method: "write",
+          calleeName: ts.getTextOfNode(access),
+          args: args.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+          type: DYN,
+          loc,
+        };
+        // The declared boolean: a replacement returning something else
+        // throws at a use that needs the boolean (types do not lie); a
+        // discarded result is not converted.
+        return resultIsDiscarded(call) ? invoke : lowerer.coerceToExpected(invoke, BOOL);
+      }
       if (args.length < 1 || args.length > 3 || args.some(ts.isSpreadElement)) {
         lowerer.noLowering(
           `process.${stream}.write with ${args.length} arguments`,

@@ -366,6 +366,24 @@ export function sharedModuleDuplicatedDiag(
   };
 }
 
+/** SC8020 — the program replaces a process output stream's write method
+ * while a Node island exists: the island's `process.stdout` is its own
+ * object, so the replacement and the island's writes cannot see each other.
+ * H2 shares the native stream object with the islands and removes this. */
+export function stdioPatchAcrossIslandsDiag(
+  stream: "stdout" | "stderr" | null,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const what =
+    stream === null ? "process.stdout.write or process.stderr.write" : `process.${stream}.write`;
+  return {
+    code: "SC8020",
+    message: `${what} is replaced while a Node island exists: the island's process output stream would not see this patch, and island writes would bypass it`,
+    loc,
+    hint: "the island's process.stdout would not see this patch",
+  };
+}
+
 /** SC8022 — island code extends a class of a module the program compiles.
  * A native instance cannot take an island subclass's overrides, so the
  * module is not owned by the program: a package runs in Node for both

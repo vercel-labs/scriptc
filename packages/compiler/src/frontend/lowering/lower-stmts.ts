@@ -25,7 +25,7 @@ import {
   matchAllRowsReadByElements,
   storedMatchAllRowsReadByElements,
 } from "./containers/match-row-uses.js";
-import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
+import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { runtimeKeyPatternRead } from "./expressions/keyed-field-targets.js";
 import { declaresHoistedBinding, staticCondition } from "./static-typeof.js";
 import { lowerCollectionSpread } from "./containers/collection-methods.js";
@@ -9193,6 +9193,39 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
             localId: g.id,
             value: lowerer.lowerExprExpecting(expr.right, g.type),
             loc: locOf(expr),
+          };
+        }
+      }
+      // process.stdout.write = fn (and stderr): replace the stream object's
+      // write slot. Every later write to the stream — console output, typed
+      // write calls (programPatchesStdio), runtime writers — goes through it.
+      if (ts.isPropertyAccessExpression(expr.left) && expr.left.name.text === "write") {
+        const recv = expr.left.expression;
+        const stream = ts.isPropertyAccessExpression(recv)
+          ? lowerer.stdlibGlobalMember(recv, "process")
+          : null;
+        if (stream === "stdout" || stream === "stderr") {
+          const loc = locOf(expr);
+          return {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "dyn.keySet",
+              args: [
+                {
+                  kind: "libCall",
+                  fn: "process.stdio",
+                  args: [numLit(stream === "stdout" ? 1 : 2, loc)],
+                  type: DYN,
+                  loc,
+                },
+                strLit("write", locOf(expr.left.name)),
+                lowerer.lowerExprExpecting(expr.right, DYN),
+              ],
+              type: VOID,
+              loc,
+            },
+            loc,
           };
         }
       }

@@ -12,7 +12,8 @@ Stored global console values and detached output methods retain identity and acc
 Stored methods do not support format specifiers with substitution arguments.
 Other stored console APIs, custom `Console` instances, and console mutation are unsupported.
 
-JavaScript can store `process.stdin`, `stdout`, and `stderr`, replace output `write` methods, and call saved methods with their stream receiver.
+JavaScript and TypeScript can store `process.stdin`, `stdout`, and `stderr`, replace output `write` methods, and call saved methods with their stream receiver.
+A replaced `write` method does not receive console's error-callback argument.
 Input supports data/end/error listeners, pause/resume, buffered reads, and TTY raw mode.
 Output writes are synchronous, with successful callbacks on the next-tick queue; queued backpressure is not modeled.
 Stored streams do not support piping, encoding changes, arbitrary properties, or other events.

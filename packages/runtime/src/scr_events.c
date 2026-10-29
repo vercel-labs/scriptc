@@ -1580,7 +1580,8 @@ ScrDyn *scr_process_stdio(double fd) {
       ScrClosure *cb = scr_closure_new(NULL, 1);
       cb->caps[0] = scr_box_new(SCR_BOX_F64);
       scr_box_set_f64(cb->caps[0], i);
-      scr_stdio_methods[i] = scr_dyn_new_func(cb, scr_stdio_method, i == STDIO_WRITE ? 3 : 1, "", scr_stdio_names[i]);
+      scr_stdio_methods[i] = scr_dyn_new_func(
+          cb, scr_stdio_method, i == STDIO_WRITE ? 3 : 1, "", i == STDIO_WRITE ? "" : scr_stdio_names[i]);
     }
     scr_stdio_write_hook = scr_stdio_intercept;
   }

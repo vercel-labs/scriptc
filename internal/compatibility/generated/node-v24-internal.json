@@ -79689,6 +79689,7 @@
           "tests/corpus/stdio-values.mjs",
           "tests/corpus/stdio-write-errors.mjs",
           "tests/corpus/stdio-write-overrides.mjs",
+          "tests/corpus/stdout-write-patch.ts",
           "tests/fixtures/node-types/env-files.ts",
           "tests/fixtures/node-types/util-callables.ts",
           "tests/harness/event-loop.test.ts",
@@ -82047,6 +82048,7 @@
           "tests/corpus/stdio-values.mjs",
           "tests/corpus/stdio-write-overrides.mjs",
           "tests/corpus/stdio-write-errors.mjs",
+          "tests/corpus/stdout-write-patch.ts",
           "tests/harness/event-loop.test.ts"
         ]
       },
@@ -82089,6 +82091,7 @@
           "tests/corpus/stdio-values.mjs",
           "tests/corpus/stdio-write-overrides.mjs",
           "tests/corpus/stdio-write-errors.mjs",
+          "tests/corpus/stdout-write-patch.ts",
           "tests/harness/event-loop.test.ts"
         ]
       },
@@ -82131,6 +82134,7 @@
           "tests/corpus/stdio-values.mjs",
           "tests/corpus/stdio-write-overrides.mjs",
           "tests/corpus/stdio-write-errors.mjs",
+          "tests/corpus/stdout-write-patch.ts",
           "tests/harness/event-loop.test.ts"
         ]
       },

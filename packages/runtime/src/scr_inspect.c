@@ -611,8 +611,11 @@ static void insp_budget_add(size_t indent, size_t len) {
 
 /* Whether a composite at `recurse` renders: 0 renders it, 1 answers its
  * past-depth placeholder (beyond `depth`, or after the budget is spent),
- * 2 answers the interrupted-inspection marker (scr_insp_interrupted). */
+ * 2 answers the interrupted-inspection marker (scr_insp_interrupted). A
+ * gate with no frame open starts a top-level value, which gets a fresh
+ * budget (Node's per-inspect ctx). */
 double scr_insp_gate(double recurse, double depth) {
+  if (g_nframes == 0) insp_budget_reset();
   if (recurse > depth || g_budget_spent) return 1;
   if (recurse >= INSP_MAX_NESTING) return 2;
   return 0;
@@ -1852,10 +1855,16 @@ static ScrStr *scr_insp_obj(ScrDyn *d, double recurse, double depth, const char 
   }
   scr_insp_begin(recurse + 1);
   /* Own string keys in [[OwnPropertyKeys]] order: integer-like keys
-   * ascending, then the rest in insertion order. */
+   * ascending, then the rest in insertion order. Like Node's getKeys, the
+   * keys are the ones the object has when its rendering starts: a property
+   * a custom inspect function adds meanwhile does not print, and one it
+   * deletes is skipped. */
   size_t *order = scr_dyn_obj_key_order(d);
-  for (size_t k = 0; k < scr_dyn_obj_count(d); k++) {
-    ScrDynProp ent = scr_dyn_obj_prop_at(d, order ? order[k] : k);
+  size_t nkeys = scr_dyn_obj_count(d);
+  for (size_t k = 0; k < nkeys; k++) {
+    size_t at = order ? order[k] : k;
+    if (at >= scr_dyn_obj_count(d)) continue;
+    ScrDynProp ent = scr_dyn_obj_prop_at(d, at);
     if (!insp_obj_shows(&ent)) continue;
     ScrStr *val = ent.accessor ? insp_accessor_tag(&ent) : scr_insp_dyn(ent.value, recurse + 1, depth);
     InspBuf eb = {0};

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8517-override-trailing-optional-params.ts"
+ ],
+ "diags": []
+}

@@ -9986,8 +9986,10 @@ export function lowerRecordFieldCall(
       );
     }
   }
-  const args = completeFuncValueArgs(lowerer, call, callee.type, locOf(call));
-  let result: IrExpr = {
+  const dynamic = dynRestValueCall(lowerer, call, callee, receiver, loc);
+  const args =
+    dynamic === null ? completeFuncValueArgs(lowerer, call, callee.type, locOf(call)) : [];
+  let result: IrExpr = dynamic ?? {
     kind: "callValue",
     callee,
     ...(receiver ? { receiver } : {}),
@@ -9999,11 +10001,49 @@ export function lowerRecordFieldCall(
   // member's field its erased function (the overloads joined): the result
   // converts to this call's instantiated or resolved return type.
   const memberType = lowerer.typeOf(access);
-  if (isGenericCallableMemberType(memberType, lowerer.checker))
-    result = lowerer.coerceInto(call, result, lowerer.irTypeOf(call));
-  else if (isOverloadedMemberAccess(lowerer, access))
-    result = lowerer.coerceInto(call, result, resolvedOverloadResultType(lowerer, call));
+  const declared = lowerer.irTypeOf(call);
+  // A call that rode the checked-dynamic boundary already produced a dyn
+  // value; a `void` member's result is discarded as it stands (and needs no
+  // conversion).
+  if (dynamic === null || declared.kind !== "void") {
+    if (isGenericCallableMemberType(memberType, lowerer.checker))
+      result = lowerer.coerceInto(call, result, declared);
+    else if (isOverloadedMemberAccess(lowerer, access))
+      result = lowerer.coerceInto(call, result, resolvedOverloadResultType(lowerer, call));
+  }
   return init ? { kind: "seqExpr", stmts: [init], result, type: result.type, loc } : result;
+}
+
+/** A call through a checked-dynamic VARIADIC function value — the erased
+ * instance of a generic member, or a JS `(...args: unknown[])` rest: its
+ * native ABI carries one hidden trailing dyn array that only the boxed
+ * call thunk fills, so the fixed `callValue` form cannot carry it at any
+ * arity (the closure receives the array as its last argument). Ride the
+ * checked-dynamic boundary instead — box the callee and `dynCall` with the
+ * source arity, exactly as a call through an `unknown`-typed value does —
+ * and let the caller convert the dyn result to the call's own type. Null
+ * when the call fits the fixed form (a typed rest, which spells its array
+ * as a real parameter) or carries spread arguments (the runtime-arity lane
+ * serves those). */
+function dynRestValueCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  callee: IrExpr,
+  receiver: IrExpr | undefined,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (callee.type.kind !== "func" || callee.type.rest !== true) return null;
+  if (callee.type.restAbi !== undefined) return null;
+  if (call.arguments.nodes.some((a) => ts.isSpreadElement(a))) return null;
+  return {
+    kind: "dynCall",
+    callee: { kind: "dynFrom", value: callee, type: DYN, loc },
+    ...(receiver ? { receiver } : {}),
+    calleeName: ts.getTextOfNode(call.expression),
+    args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+    type: DYN,
+    loc,
+  };
 }
 
 /** `o.m(args)` where `m` is an object-literal GENERIC method (own type

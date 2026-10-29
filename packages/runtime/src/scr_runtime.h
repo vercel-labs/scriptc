@@ -77,6 +77,7 @@
 #include "scr_assert.h"
 #include "scr_console.h"
 #include "scr_fs_cp.h"
+#include "scr_fs_write_forms.h"
 #include "scr_wasm_abi.h"
 #include "scr_wasm.h"
 #include "scr_node_island.h"

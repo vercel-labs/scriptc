@@ -950,6 +950,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.writeFileSyncBytes",
   "fs.writeFileSyncFd",
   "fs.appendFileSyncBytes",
+  "fs.appendFileModeSync",
   "zlib.inflateSync",
   "zlib.inflateRawSync",
   "zlib.gunzipSync",

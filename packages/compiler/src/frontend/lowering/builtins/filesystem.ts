@@ -434,30 +434,98 @@ export function lowerFsLadderCall(
 
 /** A valid string/byte overload must select its runtime entry from the live
  * union tag. Coercing the whole argument to the string overload loses bytes. */
-export function lowerStringOrBytesWrite(
+export type StringOrBytesWriteForm = "write" | "append";
+
+/** fs.promises.writeFile over `string | Uint8Array` data: the live tag
+ * selects the string or the bytes runtime entry, both answering a promise.
+ * The tag test reads the staged data value, so neither branch runs before
+ * the data's own expression has. */
+export function promiseStringOrBytesWrite(
+  lowerer: Lowerer,
+  dataType: Extract<IrType, { kind: "union" }>,
+  arms: readonly IrType[],
+  pathArg: IrExpr,
+  dataArg: IrExpr,
+  modeArg: IrExpr | null,
+  exclusive: boolean,
+  loc: SrcLoc,
+): IrExpr {
+  const unionId = dataType.unionId;
+  const mode = modeArg ?? numLit(0o666, loc);
+  const entry = (arm: IrType): IrExpr => ({
+    kind: "libCall",
+    fn: arm.kind === "bytes" ? "fsp.writeFileBytesFlags" : "fsp.writeFileTextFlags",
+    args: [
+      pathArg,
+      {
+        kind: "unionNarrow",
+        unionId,
+        tag: lowerer.armTag(unionId, arm),
+        value: dataArg,
+        type: arm,
+        loc,
+      },
+      mode,
+      numLit(exclusive ? 1 : 0, loc),
+    ],
+    type: { kind: "promise", inner: VOID },
+    loc,
+  });
+  // The last arm is the fallback; earlier arms test their own tag, so the
+  // dispatch never writes through a tag it did not read.
+  let value = entry(arms[arms.length - 1]!);
+  for (let tag = arms.length - 2; tag >= 0; tag--) {
+    value = {
+      kind: "ternary",
+      cond: {
+        kind: "unionIsTag",
+        unionId,
+        tag: lowerer.armTag(unionId, arms[tag]!),
+        negated: false,
+        value: dataArg,
+        type: BOOL,
+        loc,
+      },
+      then: entry(arms[tag]!),
+      else_: value,
+      type: { kind: "promise", inner: VOID },
+      loc,
+    };
+  }
+  return value;
+}
+
+/** The tag dispatch behind a string|bytes write: the lifted helper takes
+ * (path, data) and writes through the arm the live tag names. */
+export function stringOrBytesWriteCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   dataType: Extract<IrType, { kind: "union" }>,
   arms: readonly IrType[],
-  append: boolean,
+  form: StringOrBytesWriteForm,
+  pathArg: IrExpr,
+  dataArg: IrExpr,
 ): IrExpr {
   const loc = locOf(call);
-  const key = `fs.${append ? "append" : "write"}:${dataType.unionId}`;
+  const append = form === "append";
+  const key = `fs.${form}:${dataType.unionId}`;
+  const resultType: IrType = VOID;
   let helper = lowerer.valueHelpers.get(key);
   if (!helper) {
     helper = keyedHelperName(lowerer, "%fs.writeData", key);
     lowerer.valueHelpers.set(key, helper);
+    // The arm's runtime entry: the string or the bytes one.
+    const writeFn = (arm: IrType): IrLibFn =>
+      arm.kind === "bytes"
+        ? append
+          ? "fs.appendFileSyncBytes"
+          : "fs.writeFileSyncBytes"
+        : append
+          ? "fs.appendFileSync"
+          : "fs.writeFileSync";
     const body: IrStmt[] = [];
     for (let tag = 0; tag < arms.length; tag++) {
       const arm = arms[tag]!;
-      const fn: IrLibFn =
-        arm.kind === "bytes"
-          ? append
-            ? "fs.appendFileSyncBytes"
-            : "fs.writeFileSyncBytes"
-          : append
-            ? "fs.appendFileSync"
-            : "fs.writeFileSync";
       body.push({
         kind: "if",
         loc,
@@ -475,7 +543,7 @@ export function lowerStringOrBytesWrite(
             kind: "exprStmt",
             expr: {
               kind: "libCall",
-              fn,
+              fn: writeFn(arm),
               args: [
                 varRef("path.0", STRING, loc),
                 {
@@ -487,7 +555,7 @@ export function lowerStringOrBytesWrite(
                   loc,
                 },
               ],
-              type: VOID,
+              type: resultType,
               loc,
             },
             loc,
@@ -500,7 +568,7 @@ export function lowerStringOrBytesWrite(
     body.push({ kind: "return", value: null, loc });
     lowerer.liftedFns.push({
       name: helper,
-      returnType: VOID,
+      returnType: resultType,
       loc,
       params: [
         { localId: "path.0", name: "path", type: STRING },
@@ -516,13 +584,30 @@ export function lowerStringOrBytesWrite(
   return {
     kind: "call",
     callee: helper,
-    args: [
-      lowerFsPath(lowerer, call.arguments.nodes[0]!),
-      lowerer.lowerExprExpecting(call.arguments.nodes[1]!, dataType),
-    ],
-    type: VOID,
+    args: [pathArg, dataArg],
+    type: resultType,
     loc,
   };
+}
+
+/** The direct-call form: the call's own path and data arguments, with the
+ * default creation mode (the 2-argument sync and promise writes). */
+export function lowerStringOrBytesWrite(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  dataType: Extract<IrType, { kind: "union" }>,
+  arms: readonly IrType[],
+  form: StringOrBytesWriteForm,
+): IrExpr {
+  return stringOrBytesWriteCall(
+    lowerer,
+    call,
+    dataType,
+    arms,
+    form,
+    lowerFsPath(lowerer, call.arguments.nodes[0]!),
+    lowerer.lowerExprExpecting(call.arguments.nodes[1]!, dataType),
+  );
 }
 
 /** Calls on an fs/promises FileHandle. The promise-returning methods run

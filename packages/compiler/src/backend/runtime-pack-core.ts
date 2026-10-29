@@ -96,6 +96,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   streamDyn: boolean;
   handleProps: boolean;
   childLifecycle: boolean;
+  fsWriteForms: boolean;
   declAdopt: boolean;
   typeOrigins: boolean;
   dynForAwait: boolean;
@@ -319,6 +320,7 @@ export function effectiveRuntimeFeatures(
     streamDyn: features.streamDyn === true,
     handleProps: features.handleProps === true,
     childLifecycle: features.childLifecycle === true,
+    fsWriteForms: features.fsWriteForms === true,
     declAdopt: features.declAdopt === true,
     typeOrigins: features.typeOrigins === true,
     dynForAwait: features.dynForAwait === true,

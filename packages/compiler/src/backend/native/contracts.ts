@@ -134,6 +134,9 @@ export interface CcOptions {
   /** ChildProcess listener removal and signalCode: compiles
    * scr_child_lifecycle.c. */
   childLifecycle?: boolean;
+  /** An fs write passes an options record (`mode`, `flag: "wx"`) or
+   * Uint8Array data to writeFile: compiles scr_fs_write_forms.c. */
+  fsWriteForms?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   /** for await over checked-dynamic values: compiles scr_dyn_for_await.c. */

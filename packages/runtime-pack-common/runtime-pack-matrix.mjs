@@ -177,6 +177,10 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_fs_stream.c", "stream"],
   // FileHandle streams reference both the stream unit and FileHandle.
   ["scr_fs_stream_fh.c", all("stream", "fileHandle")],
+  // fs writes that pass an options record or Uint8Array data; a unit of its
+  // own so scr_lib.c's, scr_bytes_io.c's and scr_async.c's layout stays put
+  // for every other program.
+  ["scr_fs_write_forms.c", "fsWriteForms"],
   ["scr_loop_kqueue.c", any("netEffective", "dgram")],
   ["scr_loop_epoll.c", any("netEffective", "dgram")],
   ["scr_loop_wsapoll.c", any("netEffective", "dgram")],

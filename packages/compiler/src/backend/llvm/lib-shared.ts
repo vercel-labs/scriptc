@@ -589,6 +589,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fs.writeFileSyncBytes": "scr_fs_write_file_bytes",
   "fs.writeFileSyncFd": "scr_fs_write_file_fd",
   "fs.appendFileSyncBytes": "scr_fs_append_file_bytes",
+  "fs.appendFileModeSync": "scr_fs_append_file_mode",
   "fs.readFdSyncBytes": "scr_fs_read_fd_bytes",
   // Stats snapshots (scr_lib.c): statSync/lstatSync throw like the other
   // sync fs calls; the getters are pure reads.
@@ -936,6 +937,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "fsp.readFileBytes": "scr_fsp_read_file_bytes",
   "fsp.writeFile": "scr_fsp_write_file",
   "fsp.writeFileMode": "scr_fsp_write_file_mode",
+  "fsp.writeFileTextFlags": "scr_fsp_write_file_text_flags",
+  "fsp.writeFileBytesFlags": "scr_fsp_write_file_bytes_flags",
   "fsp.mkdir": "scr_fsp_mkdir",
   "fsp.mkdirMode": "scr_fsp_mkdir_mode",
   "fsp.mkdirRecursive": "scr_fsp_mkdir_recursive",

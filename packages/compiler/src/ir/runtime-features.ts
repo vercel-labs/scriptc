@@ -1091,6 +1091,13 @@ const RUNTIME_FEATURE_RULES = {
   /** fs.watchFile / fs.unwatchFile (scr_watch_file.c): the stat-polling
    * half of the watching surface, gated on its own unit. */
   fsWatchFile: rule({ fns: ["fs.watchFile", "fs.unwatchFile"] }),
+  /** An fs write passes an options record (`mode`, `flag: "wx"`) or
+   * Uint8Array data: scr_fs_write_forms.c, a unit of its own so a program
+   * that never passes one keeps scr_lib.c's, scr_bytes_io.c's and
+   * scr_async.c's layout. */
+  fsWriteForms: rule({
+    fns: ["fs.appendFileModeSync", "fsp.writeFileTextFlags", "fsp.writeFileBytesFlags"],
+  }),
   /** A socket 'lookup' listener: the C main installs the net unit's
    * lookup records (scr_net_lookup_install). */
   netLookup: rule({ fns: ["net.sockOnLookup"] }),
@@ -1341,6 +1348,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     fileHandle: false,
     fsWatch: false,
     fsWatchFile: false,
+    fsWriteForms: false,
     http2: false,
     http: false,
     icu: false,

@@ -145,9 +145,12 @@ declare module "fs/promises" {
     options: BufferEncoding | { encoding: BufferEncoding },
   ): Promise<string>;
   export function readFile(path: string | URL): Promise<Buffer>;
+  /* Byte data writes the same bytes the string form does; the data kind
+   * only selects the runtime entry. */
+  export function writeFile(path: string | URL, data: string | Uint8Array): Promise<void>;
   export function writeFile(
     path: string | URL,
-    data: string,
+    data: string | Uint8Array,
     options?: {
       mode?: number;
       encoding?: "utf8" | "utf-8";

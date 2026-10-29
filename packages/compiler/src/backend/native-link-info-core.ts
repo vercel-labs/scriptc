@@ -76,6 +76,9 @@ export interface NativeLinkFeatures {
   /** ChildProcess listener removal and signalCode link scr_child_lifecycle.c;
    * absent (false) otherwise. */
   childLifecycle?: boolean;
+  /** An fs write passes an options record or Uint8Array data: links
+   * scr_fs_write_forms.c. Absent (false) otherwise. */
+  fsWriteForms?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   /** for await over checked-dynamic values: scr_dyn_for_await.c. Absent

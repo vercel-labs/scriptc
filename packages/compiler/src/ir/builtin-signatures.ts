@@ -3422,6 +3422,9 @@ function buildLibFnSignatures() {
     "fs.readFileSyncBytes": { argTypes: [STRING], result: BYTES_U8 },
     "fs.writeFileSyncBytes": { argTypes: [STRING, BYTES_U8], result: VOID },
     "fs.appendFileSyncBytes": { argTypes: [STRING, BYTES_U8], result: VOID },
+    /** appendFileSync(path, string, { encoding?, mode? }): "a" opened with
+     * the mode as O_CREAT's argument. */
+    "fs.appendFileModeSync": { argTypes: [STRING, STRING, F64], result: VOID },
     "fsp.readFileBytes": { argTypes: [STRING], result: { kind: "promise", inner: BYTES_U8 } },
     /** node:zlib (scr_zlib.c — native-toolchain.ts compiles/links it ONLY when these
      * appear on the IR, the regex/libcurl gating precedent): one-shot zlib,
@@ -3514,6 +3517,16 @@ function buildLibFnSignatures() {
      * twin of fs.writeFileModeSync. */
     "fsp.writeFileMode": {
       argTypes: [STRING, STRING, F64],
+      result: { kind: "promise", inner: VOID },
+    },
+    /** fs.promises.writeFile over string|bytes data: the runtime entry per
+     * data kind, opened with the option's mode and `flag: "w" | "wx"`. */
+    "fsp.writeFileTextFlags": {
+      argTypes: [STRING, STRING, F64, F64],
+      result: { kind: "promise", inner: VOID },
+    },
+    "fsp.writeFileBytesFlags": {
+      argTypes: [STRING, BYTES_U8, F64, F64],
       result: { kind: "promise", inner: VOID },
     },
     "fsp.mkdir": { argTypes: [STRING], result: { kind: "promise", inner: VOID } },

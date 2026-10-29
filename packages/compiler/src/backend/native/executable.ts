@@ -355,6 +355,8 @@ const RUNTIME_UNITS: readonly RuntimeUnit[] = [
   ),
   // FileHandle streams reference both the stream unit and FileHandle.
   unit((u) => u.opts.stream && u.opts.fileHandle, "scr_fs_stream_fh.c"),
+  // fs writes that pass an options record or Uint8Array data.
+  unit((u) => u.opts.fsWriteForms === true, "scr_fs_write_forms.c"),
   // The readiness-poller backends (scr_platform.h): kqueue on macOS/BSD,
   // epoll on Linux, WSAPoll on Windows — each TU is empty off its
   // platform, so all three link whenever a poller-using unit does and

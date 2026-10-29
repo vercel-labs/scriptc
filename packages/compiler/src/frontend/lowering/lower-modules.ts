@@ -57,6 +57,7 @@ import {
 import { markRequireEarlyBindings } from "./require-initialization.js";
 import {
   cjsHasLiveMemberExports,
+  cjsRequireSnapshotBindingsOf,
   cjsTableMethodEntry,
   inlineProgramRequireOf,
   nestedCjsExportAssignmentsOf,
@@ -2895,8 +2896,8 @@ function requireAliasDecl(lowerer: Lowerer, decl: ts.VariableDeclaration): boole
  * lower via the process surface. In `const { codes: { ERR_X } } =
  * require("./errors")` the outer keys stay alias plumbing, but a nested
  * pattern destructures the export's value at the require, so its bindings
- * own storage like any destructured declaration (lowerVarDeclarator
- * assigns them). */
+ * own storage like any destructured declaration. Getters and mutable
+ * exports also need storage for their declaration-time snapshots. */
 function registerRequireDeclBindings(
   lowerer: Lowerer,
   sf: ts.SourceFile,
@@ -2908,26 +2909,31 @@ function registerRequireDeclBindings(
     stdlibGlobalAliasDecl(lowerer, decl.name, decl.initializer);
   const isLetList =
     (list.flags & ts.NodeFlags.Let) !== 0 || (list.flags & ts.NodeFlags.BlockScoped) === 0;
-  for (const element of requireNestedPatternsOf(decl)) {
-    for (const nameNode of boundIdentifiersOf(element.name!)) {
-      const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
-      if (!symbol || lowerer.globalsBySymbol.has(symbol)) continue;
-      const mapped = lowerer.mapTypeOf(lowerer.typeOf(nameNode));
-      const type = mapped && mapped.kind !== "void" ? mapped : DYN;
-      const g: IrGlobal = {
-        id: `%g.${tag}${nameNode.text}`,
-        name: nameNode.text,
-        type,
-        mutable: isLetList,
-        source: bindingSource(nameNode),
-        ...((type.kind === "func" || type.kind === "dyn") && !isVarDeclared(decl)
-          ? { tdz: true as const }
-          : {}),
-      };
-      lowerer.globalsBySymbol.set(symbol, g);
-      lowerer.globalsList.push(g);
-      if (isVarDeclared(decl)) noteVarGlobalEntryInit(lowerer, sf, g);
-    }
+  const names = requireNestedPatternsOf(decl).flatMap((element) =>
+    boundIdentifiersOf(element.name!),
+  );
+  const snapshots = cjsRequireSnapshotBindingsOf(lowerer, decl);
+  if (snapshots !== null) {
+    for (const binding of snapshots.bindings.values()) names.push(binding.name);
+  }
+  for (const nameNode of names) {
+    const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
+    if (!symbol || lowerer.globalsBySymbol.has(symbol)) continue;
+    const mapped = lowerer.mapTypeOf(lowerer.typeOf(nameNode));
+    const type = mapped && mapped.kind !== "void" ? mapped : DYN;
+    const g: IrGlobal = {
+      id: `%g.${tag}${nameNode.text}`,
+      name: nameNode.text,
+      type,
+      mutable: isLetList,
+      source: bindingSource(nameNode),
+      ...((type.kind === "func" || type.kind === "dyn") && !isVarDeclared(decl)
+        ? { tdz: true as const }
+        : {}),
+    };
+    lowerer.globalsBySymbol.set(symbol, g);
+    lowerer.globalsList.push(g);
+    if (isVarDeclared(decl)) noteVarGlobalEntryInit(lowerer, sf, g);
   }
 }
 
@@ -3268,7 +3274,7 @@ export function lowerFileInit(
               !isCjsJsFile(sf, lowerer.program) &&
               isCjsJsFile(dep, lowerer.program)
             )
-              header.push(...cjsAccessorSnapshotStores(lowerer, dep, loc));
+              header.push(...cjsAccessorSnapshotStores(lowerer, dep, stmt));
           }
         }
       }

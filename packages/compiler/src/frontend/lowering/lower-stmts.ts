@@ -26,6 +26,7 @@ import {
   storedMatchAllRowsReadByElements,
 } from "./containers/match-row-uses.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
+import { isSafeToRepeat } from "./expressions/evaluation-safety.js";
 import { runtimeKeyPatternRead } from "./expressions/keyed-field-targets.js";
 import { declaresHoistedBinding, staticCondition } from "./static-typeof.js";
 import { lowerCollectionSpread } from "./containers/collection-methods.js";
@@ -56,6 +57,8 @@ import { statementGroupKey } from "./type-failure.js";
 import {
   cjsExportValueByName,
   cjsNamespaceDestructureOf,
+  cjsNamespaceTargetOf,
+  cjsRequireSnapshotBindingsOf,
   cjsTableMethodEntry,
   inlineProgramRequireOf,
   requireNestedPatternsOf,
@@ -2179,18 +2182,46 @@ function lowerVarDeclarator(
     if (ts.isSourceFile(stmt.parent)) {
       const init = lowerer.requireInitStmt(spec, decl);
       const out: IrStmt[] = init ? [init] : [];
-      // Nested patterns destructure the named export's value right after
-      // the module evaluated (`const { codes: { ERR_X } } = require(...)`).
-      for (const element of requireNestedPatternsOf(decl)) {
-        const key = element.propertyName as ts.Identifier;
-        const value = lowerer.lowerExpr(key);
-        lowerer.lowerBindingPattern(
-          element.name as ts.ObjectBindingPattern,
-          () => lowerer.lowerExpr(key),
-          value.type,
-          isLet,
-          out,
-        );
+      // Snapshot bindings and nested patterns evaluate in pattern order,
+      // immediately after the required module has initialized.
+      const snapshots = cjsRequireSnapshotBindingsOf(lowerer, decl);
+      const nested = new Set(requireNestedPatternsOf(decl));
+      if (ts.isObjectBindingPattern(decl.name)) {
+        for (const element of decl.name.elements.nodes) {
+          const binding = snapshots?.bindings.get(element);
+          if (binding !== undefined) {
+            out.push(lowerCjsBindingSnapshot(lowerer, snapshots!.dep, binding.name, binding.key));
+          } else if (nested.has(element)) {
+            // The export is read once: a getter export runs once, however
+            // many names the nested pattern binds.
+            const key = element.propertyName as ts.Identifier;
+            const value = lowerer.lowerExpr(key);
+            let source = (): IrExpr => lowerer.lowerExpr(key);
+            if (!isSafeToRepeat(value)) {
+              const loc = locOf(element);
+              const saved = lowerer.declareHiddenLocal("%requireNested", value.type);
+              out.push({ kind: "varDecl", localId: saved.id, init: value, loc });
+              source = () => varRef(saved.id, value.type, loc);
+            }
+            lowerer.lowerBindingPattern(
+              element.name as ts.ObjectBindingPattern,
+              source,
+              value.type,
+              isLet,
+              out,
+            );
+          } else if (
+            ts.isComputedPropertyName(element.propertyName) &&
+            lowerer.foldedStringKeyOf(element.propertyName.expression) === null &&
+            lowerer.cjsModuleRefDepOf(decl.initializer) !== null
+          ) {
+            lowerer.unsupported(
+              "SC1090",
+              element.propertyName,
+              "require() destructuring with a runtime or effectful computed key",
+            );
+          }
+        }
       }
       return out;
     }
@@ -2226,28 +2257,9 @@ function lowerVarDeclarator(
     {
       const nsDestructure = cjsNamespaceDestructureOf(lowerer, decl);
       if (nsDestructure !== null) {
-        const out: IrStmt[] = [];
-        for (const element of nsDestructure.elements) {
-          const target = lowerer.globalOf(element.name);
-          const value = cjsExportValueByName(lowerer, nsDestructure.dep, element.key, element.name);
-          if (target === null || value === null) {
-            lowerer.unsupported(
-              "SC1090",
-              element.name,
-              `destructuring the export '${element.key}' of a CommonJS module binding (it has no static value)`,
-            );
-          }
-          out.push({
-            kind: "assign",
-            localId: target.id,
-            value: typeEquals(value.type, target.type)
-              ? value
-              : lowerer.coerceInto(element.name, value, target.type),
-            loc: locOf(element.name),
-            ...("tdz" in target && target.tdz ? { initializes: true as const } : {}),
-          });
-        }
-        return out;
+        return nsDestructure.elements.map((element) =>
+          lowerCjsBindingSnapshot(lowerer, nsDestructure.dep, element.name, element.key),
+        );
       }
     }
     return lowerer.lowerDestructuringDecl(decl, isLet);
@@ -2262,6 +2274,32 @@ function lowerVarDeclarator(
   if (drained) return drained;
   const lowered = lowerer.lowerVarDecl(decl, isLet);
   return lowered ? [lowered] : [];
+}
+
+function lowerCjsBindingSnapshot(
+  lowerer: Lowerer,
+  dep: ts.SourceFile,
+  name: ts.Identifier,
+  key: string,
+): IrStmt {
+  const target = lowerer.globalOf(name);
+  const value = cjsExportValueByName(lowerer, dep, key, name);
+  if (target === null || value === null) {
+    lowerer.unsupported(
+      "SC1090",
+      name,
+      `destructuring the export '${key}' of a CommonJS module binding (it has no static value)`,
+    );
+  }
+  return {
+    kind: "assign",
+    localId: target.id,
+    value: typeEquals(value.type, target.type)
+      ? value
+      : lowerer.coerceInto(name, value, target.type),
+    loc: locOf(name),
+    ...("tdz" in target && target.tdz ? { initializes: true as const } : {}),
+  };
 }
 
 /** The numeric indexed source of a built-in value-iterator expression:
@@ -8302,6 +8340,11 @@ function lowerCjsSingleValueExport(
       return lowerer.requireInitStmt(req.spec, req.call) ?? { kind: "block", body: [], loc };
   }
   if (ts.isIdentifier(rhs)) {
+    // A table re-export forwards its members without materializing the
+    // namespace object. The binding's require already initialized it.
+    if (cjsNamespaceTargetOf(lowerer, ts.getSourceFileOfNode(expr)) !== null) {
+      return { kind: "block", body: [], loc };
+    }
     const split = splitRequireBindingOfIdent(lowerer, rhs);
     if (split !== null) {
       if (wholeExportSymbolOfModule(lowerer, split.dep) === null) {

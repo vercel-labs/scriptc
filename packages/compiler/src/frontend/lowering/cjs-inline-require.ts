@@ -38,6 +38,9 @@ import { isCjsRequireGlobal } from "./lower-node-module.js";
 import { DYN, type IrExpr } from "../../ir/ir.js";
 import { nodeThrowExpr } from "../../ir/build.js";
 import { probeNodeRequireRefusal } from "../npm.js";
+import { cjsAccessorCall } from "./lower-exprs.js";
+import { isWriteTarget } from "./binding-analysis.js";
+import { isCjsExportsIdentifier, isCjsModuleExports } from "./cjs-exports-object.js";
 
 export interface InlineRequire {
   call: ts.CallExpression;
@@ -414,13 +417,42 @@ export function cjsWholeExportValueOf(
   return { assign: kept, rhs };
 }
 
-/** True when `dep`'s exports, through `module.exports = require("./y")`
- * re-export chains, are a table that member reads resolve against. */
-export function cjsNamespaceModule(lowerer: Lowerer, dep: ts.SourceFile, depth = 0): boolean {
+/** The table behind pure CommonJS re-exports (inline, initialized, or split
+ * require bindings). Member reads use the original table's symbols, while
+ * each require still initializes its own wrapper at its source position. */
+export function cjsNamespaceTargetOf(lowerer: Lowerer, dep: ts.SourceFile): ts.SourceFile | null {
+  const cached = lowerer.cjsNamespaceTargets.get(dep);
+  if (cached !== undefined) return cached;
+  // A pure forwarding cycle has no terminal table. Mark this module before
+  // following its edge so revisiting it terminates the search.
+  lowerer.cjsNamespaceTargets.set(dep, null);
   const whole = cjsWholeExportValueOf(dep);
-  if (whole === null) return true;
-  const inner = inlineProgramRequireOf(lowerer, whole.rhs);
-  return inner !== null && depth < 32 && cjsNamespaceModule(lowerer, inner.dep, depth + 1);
+  if (whole === null) {
+    lowerer.cjsNamespaceTargets.set(dep, dep);
+    return dep;
+  }
+  if (cjsHasLiveMemberExports(lowerer, dep)) return null;
+  let inner: InlineRequire | null = inlineProgramRequireOf(lowerer, whole.rhs);
+  if (inner === null && ts.isIdentifier(whole.rhs)) {
+    const symbol = lowerer.checker.getSymbolAtLocation(whole.rhs);
+    const decl = symbol?.declarations.find(ts.isVariableDeclaration);
+    if (decl !== undefined) {
+      inner =
+        splitRequireBindingOf(lowerer, decl) ??
+        (decl.initializer !== undefined &&
+        (ts.getCombinedNodeFlags(decl) & ts.NodeFlags.Const) !== 0
+          ? inlineProgramRequireOf(lowerer, decl.initializer)
+          : null);
+    }
+  }
+  const target = inner === null ? null : cjsNamespaceTargetOf(lowerer, inner.dep);
+  lowerer.cjsNamespaceTargets.set(dep, target);
+  return target;
+}
+
+/** True when `dep`'s exports resolve to a static table. */
+export function cjsNamespaceModule(lowerer: Lowerer, dep: ts.SourceFile): boolean {
+  return cjsNamespaceTargetOf(lowerer, dep) !== null;
 }
 
 /** An inline program-module require over a table module (member reads and
@@ -626,6 +658,28 @@ export function nestedCjsExportAssignmentsOf(
   return out;
 }
 
+function cjsNamedBindingOf(
+  lowerer: Lowerer,
+  element: ts.BindingElement,
+): { name: ts.Identifier; key: string } | null {
+  if (
+    element.initializer !== undefined ||
+    element.dotDotDotToken !== undefined ||
+    element.name === undefined ||
+    !ts.isIdentifier(element.name)
+  )
+    return null;
+  const property = element.propertyName ?? element.name;
+  const key = ts.isComputedPropertyName(property)
+    ? lowerer.foldedStringKeyOf(property.expression)
+    : ts.isIdentifier(property) || ts.isStringLiteral(property)
+      ? property.text
+      : ts.isNumericLiteral(property)
+        ? String(Number(property.text))
+        : null;
+  return key === null ? null : { name: element.name, key };
+}
+
 /** `const { A, B: b } = ns` at a module's top level, where `ns` is a
  * CommonJS module binding over a table module (picomatch's `const {
  * MAX_LENGTH, ... } = constants`): each name takes a snapshot of the named
@@ -648,18 +702,108 @@ export function cjsNamespaceDestructureOf(
   if (dep === null) return null;
   const elements: { name: ts.Identifier; key: string }[] = [];
   for (const e of decl.name.elements.nodes) {
-    if (e.initializer !== undefined || e.dotDotDotToken !== undefined) return null;
-    if (e.name === undefined || !ts.isIdentifier(e.name)) return null;
-    const key =
-      e.propertyName === undefined
-        ? e.name.text
-        : ts.isIdentifier(e.propertyName) || ts.isStringLiteral(e.propertyName)
-          ? e.propertyName.text
-          : null;
-    if (key === null) return null;
-    elements.push({ name: e.name, key });
+    const binding = cjsNamedBindingOf(lowerer, e);
+    if (binding === null) return null;
+    elements.push(binding);
   }
   return { dep, elements };
+}
+
+type MemberWrite = ts.PropertyAccessExpression | ts.ElementAccessExpression;
+
+function memberWritesByName(lowerer: Lowerer): Map<string, MemberWrite[]> {
+  if (lowerer.cjsMemberWritesByName !== null) return lowerer.cjsMemberWritesByName;
+  const writes = new Map<string, MemberWrite[]>();
+  const visit = (node: ts.Node): void => {
+    const key = ts.isPropertyAccessExpression(node)
+      ? node.name.text
+      : ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)
+        ? node.argumentExpression.text
+        : null;
+    if (key !== null && isWriteTarget(node as MemberWrite)) {
+      const sites = writes.get(key);
+      if (sites === undefined) writes.set(key, [node as MemberWrite]);
+      else sites.push(node as MemberWrite);
+    }
+    ts.forEachChild(node, visit);
+  };
+  for (const sf of lowerer.fileTag.keys()) if (!sf.isDeclarationFile) visit(sf);
+  lowerer.cjsMemberWritesByName = writes;
+  return writes;
+}
+
+/** Whether a write can run after its module's initialization returned:
+ * from another module, a callable body, or an instance field initializer. */
+function writeRunsAfterInit(write: ts.Node, exporter: ts.SourceFile): boolean {
+  if (ts.getSourceFileOfNode(write) !== exporter) return true;
+  for (let parent = write.parent; parent && !ts.isSourceFile(parent); parent = parent.parent) {
+    if (ts.isFunctionLike(parent)) return true;
+    if (
+      ts.isPropertyDeclaration(parent) &&
+      !ts.getModifiers(parent)?.some((m) => m.kind === ts.SyntaxKind.StaticKeyword)
+    )
+      return true;
+  }
+  return false;
+}
+
+/** Whether a CommonJS data export can change after its module initialized,
+ * so bindings that copy it must not alias its storage. */
+export function cjsExportChangesAfterInit(lowerer: Lowerer, symbol: ts.Symbol): boolean {
+  const cached = lowerer.cjsLateWrittenExports.get(symbol);
+  if (cached !== undefined) return cached;
+  const exporter = symbol.declarations[0] && ts.getSourceFileOfNode(symbol.declarations[0]);
+  const changes =
+    exporter !== undefined &&
+    (memberWritesByName(lowerer).get(ts.symbolName(symbol)) ?? []).some(
+      (write) => writeRunsAfterInit(write, exporter) && writesExport(lowerer, write, symbol),
+    );
+  lowerer.cjsLateWrittenExports.set(symbol, changes);
+  return changes;
+}
+
+function writesExport(lowerer: Lowerer, write: MemberWrite, symbol: ts.Symbol): boolean {
+  let target = lowerer.checker.getSymbolAtLocation(
+    ts.isPropertyAccessExpression(write) ? write.name : write.argumentExpression,
+  );
+  if (
+    target === undefined &&
+    (isCjsModuleExports(lowerer, write.expression) ||
+      isCjsExportsIdentifier(lowerer, write.expression))
+  )
+    target = lowerer.cjsModuleExportSymbol(ts.getSourceFileOfNode(write), ts.symbolName(symbol));
+  if (target !== undefined && target.flags & ts.SymbolFlags.Alias)
+    target = lowerer.checker.getAliasedSymbol(target);
+  return target === symbol;
+}
+
+/** Require destructuring needs storage for getters and data exports that
+ * may change after the module initializes. Stable exports remain aliases. */
+export function cjsRequireSnapshotBindingsOf(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+): {
+  dep: ts.SourceFile;
+  bindings: Map<ts.BindingElement, { name: ts.Identifier; key: string }>;
+} | null {
+  if (!ts.isObjectBindingPattern(decl.name) || decl.initializer === undefined) return null;
+  const dep = lowerer.cjsModuleRefDepOf(decl.initializer);
+  if (dep === null) return null;
+  const bindings = new Map<ts.BindingElement, { name: ts.Identifier; key: string }>();
+  for (const element of decl.name.elements.nodes) {
+    const binding = cjsNamedBindingOf(lowerer, element);
+    if (binding === null) continue;
+    let symbol = lowerer.cjsModuleExportSymbol(dep, binding.key);
+    if (symbol !== undefined && symbol.flags & ts.SymbolFlags.Alias)
+      symbol = lowerer.checker.getAliasedSymbol(symbol);
+    if (
+      symbol !== undefined &&
+      (symbol.declarations.some(ts.isGetAccessorDeclaration) ||
+        cjsExportChangesAfterInit(lowerer, symbol))
+    )
+      bindings.set(element, binding);
+  }
+  return bindings.size === 0 ? null : { dep, bindings };
 }
 
 /** The value of `dep`'s export `key` read from another module: its export
@@ -679,6 +823,7 @@ export function cjsExportValueByName(
   for (const d of sym.declarations) {
     const byDecl = lowerer.globalsByDeclNode.get(d);
     if (byDecl) return { kind: "varRef", localId: byDecl.id, type: byDecl.type, loc: locOf(blame) };
+    if (ts.isGetAccessorDeclaration(d)) return cjsAccessorCall(lowerer, d, locOf(blame));
     // Alias plumbing: a shorthand/identifier table entry or a member
     // export naming a declaration. Reading that identifier IS the value.
     if (ts.isShorthandPropertyAssignment(d)) return lowerer.lowerShorthandValue(d);

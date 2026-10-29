@@ -32,9 +32,14 @@ import {
   npmStaticDepSf7,
   resolveImport,
 } from "../program.js";
-import { cjsWholeExportValueOf, inlineProgramRequireOf } from "./cjs-inline-require.js";
+import {
+  cjsNamespaceTargetOf,
+  cjsWholeExportValueOf,
+  inlineProgramRequireOf,
+} from "./cjs-inline-require.js";
 import { isCjsModuleGlobal } from "./lower-node-module.js";
 import { bindingNeverReassigned } from "./binding-analysis.js";
+import { moduleExportIgnoresThis } from "./module-member-this.js";
 import { DYN, type IrExpr, type IrGlobal } from "../../ir/ir.js";
 
 /** True for the CommonJS wrapper's `exports` binding (not shadowed by any
@@ -91,11 +96,35 @@ export function cjsInFileExportGlobalOf(
     sym !== undefined && sym.flags & ts.SymbolFlags.Alias
       ? lowerer.checker.getAliasedSymbol(sym)
       : sym;
-  return (
+  const g =
     (sym ? lowerer.globalsBySymbol.get(sym) : undefined) ??
     (resolved ? lowerer.globalsBySymbol.get(resolved) : undefined) ??
-    null
+    null;
+  if (g === null || sym === undefined || !declaredOnlyOutside(sym, sf)) return g;
+  return replacementExportsAccess(access, sf) ? g : null;
+}
+
+/** True when every declaration of `sym` is in a file other than `sf`. */
+function declaredOnlyOutside(sym: ts.Symbol, sf: ts.SourceFile): boolean {
+  return (
+    sym.declarations.length > 0 && sym.declarations.every((d) => ts.getSourceFileOfNode(d) !== sf)
   );
+}
+
+/** Whether `access` reads `module.exports` after the module replaced it with
+ * another module's exports. The checker gives members of `module.exports` and
+ * `exports` the replacement's symbols everywhere in the file, but `exports`
+ * keeps the original object, and so does `module.exports` before the
+ * replacement runs. Only top-level code after the `module.exports = ...`
+ * statement is known to run after it. */
+function replacementExportsAccess(access: ts.PropertyAccessExpression, sf: ts.SourceFile): boolean {
+  if (!isModuleExportsAccess(access.expression)) return false;
+  const whole = cjsWholeExportValueOf(sf);
+  if (whole === null || ts.tokenStartOfNode(access) < whole.assign.end) return false;
+  for (let p: ts.Node | undefined = access.parent; p !== undefined && p !== sf; p = p.parent) {
+    if (ts.isFunctionLike(p) || ts.isClassDeclaration(p) || ts.isClassExpression(p)) return false;
+  }
+  return true;
 }
 
 /** Whether `node` is an operand of an equality operator: only its identity
@@ -336,38 +365,6 @@ export function cjsExportMemberWriteGlobalOf(
   return cjsInFileExportGlobalOf(lowerer, target);
 }
 
-/** Whether a function body reads `this` (arrow functions inherit it; other
- * nested functions bind their own). */
-function functionUsesThis(fn: ts.FunctionLikeDeclaration): boolean {
-  if (fn.body === undefined) return false;
-  let found = false;
-  ts.walkPreorder(fn.body, (node) => {
-    if (node !== fn.body && ts.isFunctionLike(node) && !ts.isArrowFunction(node)) return "skip";
-    if (node.kind === ts.SyntaxKind.ThisKeyword) {
-      found = true;
-      return "stop";
-    }
-    return undefined;
-  });
-  return found;
-}
-
-/** A function declaration, or a variable initialized with a function or
- * arrow expression, that never reads `this`. */
-function symbolIsThisFreeFunction(lowerer: Lowerer, sym: ts.Symbol | undefined): boolean {
-  const decls = sym ? sym.declarations : [];
-  const fn = decls.find(ts.isFunctionDeclaration);
-  if (fn !== undefined) return !functionUsesThis(fn);
-  const v = decls.find(ts.isVariableDeclaration);
-  let init = v?.initializer;
-  while (init !== undefined && ts.isParenthesizedExpression(init)) init = init.expression;
-  return (
-    init !== undefined &&
-    (ts.isFunctionExpression(init) || ts.isArrowFunction(init)) &&
-    !functionUsesThis(init)
-  );
-}
-
 /** The ES-module half (a TypeScript module required from JavaScript, such
  * as a package shim): require() answers its namespace, so a call through
  * it binds `this` to the namespace. True when the export is a function
@@ -389,7 +386,7 @@ function esModuleExportIgnoresThis(
     if (decls.length === 0) return false;
     return decls.every(
       (d) =>
-        (ts.isFunctionDeclaration(d) && !functionUsesThis(d)) ||
+        (ts.isFunctionDeclaration(d) && moduleExportIgnoresThis(lowerer, d)) ||
         (ts.getSourceFileOfNode(d).isDeclarationFile && ts.isFunctionDeclaration(d)),
     );
   }
@@ -420,7 +417,26 @@ export function cjsExportCallIgnoresThis(
   lowerer: Lowerer,
   sf: ts.SourceFile,
   name: string,
-  depth = 0,
+): boolean {
+  sf = cjsNamespaceTargetOf(lowerer, sf) ?? sf;
+  let proofs = lowerer.cjsReceiverProofs.get(sf);
+  const cached = proofs?.get(name);
+  if (cached !== undefined) return cached;
+  // Recursive searches are depth-bounded; cache only complete root queries.
+  const result = computeExportCallIgnoresThis(lowerer, sf, name, 0);
+  if (proofs === undefined) {
+    proofs = new Map();
+    lowerer.cjsReceiverProofs.set(sf, proofs);
+  }
+  proofs.set(name, result);
+  return result;
+}
+
+function computeExportCallIgnoresThis(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  name: string,
+  depth: number,
 ): boolean {
   if (depth > 16) return false;
   if (!isJsSourceFile(sf)) return esModuleExportIgnoresThis(lowerer, sf, name, depth);
@@ -451,21 +467,24 @@ export function cjsExportCallIgnoresThis(
         continue;
       if (ts.isPropertyAssignment(prop)) values.push(prop.initializer);
       else if (ts.isShorthandPropertyAssignment(prop)) {
-        const value = lowerer.checker.getShorthandAssignmentValueSymbol(prop);
-        if (!symbolIsThisFreeFunction(lowerer, value)) return false;
+        if (!moduleExportIgnoresThis(lowerer, prop.name)) return false;
         shorthandOnly = true;
       } else if (ts.isMethodDeclaration(prop)) methodEntry = prop;
     }
   }
-  if (methodEntry !== null) return values.length === 0 && !functionUsesThis(methodEntry);
+  if (methodEntry !== null)
+    return values.length === 0 && moduleExportIgnoresThis(lowerer, methodEntry);
   if (values.length === 0) return shorthandOnly;
   return values.every((v) => {
     let e = v;
     while (ts.isParenthesizedExpression(e)) e = e.expression;
-    if (ts.isFunctionExpression(e) || ts.isArrowFunction(e)) return !functionUsesThis(e);
-    if (ts.isIdentifier(e)) {
-      return symbolIsThisFreeFunction(lowerer, lowerer.checker.getSymbolAtLocation(e));
-    }
+    if (
+      ts.isFunctionExpression(e) ||
+      ts.isArrowFunction(e) ||
+      ts.isIdentifier(e) ||
+      ts.isCallExpression(e)
+    )
+      return moduleExportIgnoresThis(lowerer, e);
     // Another module's member (`exports.f = require("./lib").f`, or through
     // a module binding): that module's own export values decide.
     if (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.name)) {
@@ -474,7 +493,7 @@ export function cjsExportCallIgnoresThis(
           ? lowerer.cjsModuleBindingDepOf(e.expression)
           : null
         : lowerer.cjsModuleRefDepOf(e.expression);
-      return dep !== null && cjsExportCallIgnoresThis(lowerer, dep, e.name.text, depth + 1);
+      return dep !== null && computeExportCallIgnoresThis(lowerer, dep, e.name.text, depth + 1);
     }
     return false;
   });

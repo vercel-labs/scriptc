@@ -82,13 +82,13 @@ import { lowerX509PublicKey } from "../builtins/x509.js";
 import { fenceMimeStaticRead } from "../builtins/mime.js";
 import { NODE_COMPAT_VERSION } from "../builtins/process.js";
 import {
+  cjsExportValueByName,
   inlineNamespaceRequireOf,
   lowerWithInlineRequireInit,
   wholeExportValue,
 } from "../cjs-inline-require.js";
 import {
   type FieldTarget,
-  cjsAccessorCall,
   constInitializerOf,
   exactUnionWidening,
   hasClassPayload,
@@ -865,6 +865,13 @@ export function lowerPropertyAccessExpr(
       }
     }
   }
+  // Replacing `module.exports` leaves `exports` on its original object.
+  // Check before export-global lookup: the checker may give this read the
+  // replacement's member symbol, despite the objects being different.
+  {
+    const ex = lowerReplacedExportsRead(lowerer, expr);
+    if (ex) return ex;
+  }
   // `module.exports.Sub` / `exports.Sub` READ in the same module: an
   // EXPRESSION-valued member rides its pre-registered export global —
   // exactly what requirers see through `require('./x').Sub`, and the
@@ -910,18 +917,6 @@ export function lowerPropertyAccessExpr(
       const t = ambientUndefReadType(lowerer, expr);
       if (t) return nsUndefRead(lowerer, ambientRoot.text, expr, t);
     }
-  }
-  // `exports.<name>` READS in a module whose export object was
-  // REPLACED (`module.exports = ...`): `exports` still references the
-  // ORIGINAL object — Node's aliasing rule — so when nothing ever
-  // attached this name to it (`exports.<name> =` nowhere in the
-  // file), the honest answer is undefined. tsc types the read off the
-  // REPLACEMENT (its CJS model is identity-blind), which is exactly
-  // the undiagnosed divergence this lowering closes. Reads in modules with
-  // real `exports.<name> =` attachments keep their fences.
-  {
-    const ex = lowerReplacedExportsRead(lowerer, expr);
-    if (ex) return ex;
   }
   // `this.<name>` inside a CJS export-table getter: Node binds the
   // receiver to module.exports — the read is the sibling getter's
@@ -2781,8 +2776,8 @@ function runtimeOptionalClassField(
  * file: the read observes the ORIGINAL (empty-here) exports object, so
  * the honest value is undefined (Node's object identity exactly; tsc's
  * CJS model types the read off the replacement — identity-blind). Null
- * everywhere else: no replacement, a real attachment of this name, a
- * shadowing binding named `exports`, or write position. */
+ * everywhere else: no replacement, a rebinding of `exports`, a real
+ * attachment of this name, a shadowing binding, or write position. */
 function lowerReplacedExportsRead(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
@@ -2805,7 +2800,11 @@ function lowerReplacedExportsRead(
   for (const stmt of sf.statements.nodes) {
     const cjs = cjsExportAssignmentOf(stmt);
     if (!cjs) continue;
-    if (cjs.kind === "table" && cjsExportDiscardReason(stmt) === null) replaced = true;
+    if (cjs.kind === "table" && cjsExportDiscardReason(stmt) === null) {
+      // `exports = module.exports = value` updates both bindings.
+      if (cjs.rebindsExports) return null;
+      replaced = true;
+    }
     if (cjs.kind === "member" && ts.isIdentifier(cjs.name) && cjs.name.text === expr.name.text) {
       return null; // a real attachment of this name exists somewhere
     }
@@ -2817,38 +2816,45 @@ function lowerReplacedExportsRead(
 /** `this.<name>` INSIDE a CJS export-table accessor (test/common's
  * `get localhostIPv4() { if (this.inFreeBSDJail) ... }`): Node binds the
  * getter's receiver to module.exports, so the read is the SIBLING table
- * property — a sibling GETTER's lifted call (per-read evaluation, like
- * any accessor read). Only arrows inherit the binding (a nested function
- * expression's `this` is its own). Null everywhere else — non-getter
- * siblings and absent names keep their per-site fences (none of the
- * probed suite shapes read them). */
+ * member — a sibling getter's lifted call (per-read evaluation, like any
+ * accessor read) or a data member's export value. Only arrows inherit the
+ * binding (a nested function expression's `this` is its own). Members
+ * without a static value are refused. */
 function lowerCjsExportTableThisMember(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (expr.expression.kind !== ts.SyntaxKind.ThisKeyword || expr.questionDotToken) return null;
-  if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
-  // The enclosing accessor, crossing only arrow boundaries (arrows
-  // inherit `this`; any other function form rebinds it).
-  let n: ts.Node | undefined = expr.parent;
+  const n = cjsExportTableAccessorOf(expr.expression);
+  if (n === null) return null;
+  const value = cjsExportValueByName(lowerer, ts.getSourceFileOfNode(n), expr.name.text, expr);
+  if (value === null) {
+    lowerer.unsupported(
+      "SC1090",
+      expr,
+      `reading 'this.${expr.name.text}' in a CommonJS export-table accessor (the member has no static value)`,
+    );
+  }
+  return value;
+}
+
+/** The CommonJS export-table accessor whose `this` a `this` expression
+ * reads, crossing only arrow boundaries (arrows inherit `this`; any other
+ * function form rebinds it). */
+export function cjsExportTableAccessorOf(
+  thisExpr: ts.Node,
+): ts.GetAccessorDeclaration | ts.SetAccessorDeclaration | null {
+  if (!isJsSourceFile(ts.getSourceFileOfNode(thisExpr))) return null;
+  let n: ts.Node | undefined = thisExpr.parent;
   while (n !== undefined && !ts.isGetAccessorDeclaration(n) && !ts.isSetAccessorDeclaration(n)) {
-    if (ts.isFunctionLike(n) && !ts.isArrowFunction(n)) return null;
-    if (ts.isSourceFile(n)) return null;
+    if ((ts.isFunctionLike(n) && !ts.isArrowFunction(n)) || ts.isSourceFile(n)) return null;
     n = n.parent;
   }
-  if (
-    n === undefined ||
-    !ts.isObjectLiteralExpression(n.parent) ||
-    !isCjsExportTableLiteral(n.parent)
-  ) {
-    return null;
-  }
-  const sibling = n.parent.properties.nodes.find(
-    (p): p is ts.GetAccessorDeclaration =>
-      ts.isGetAccessorDeclaration(p) && ts.isIdentifier(p.name) && p.name.text === expr.name.text,
-  );
-  if (!sibling) return null;
-  return cjsAccessorCall(lowerer, sibling, locOf(expr));
+  return n !== undefined &&
+    ts.isObjectLiteralExpression(n.parent) &&
+    isCjsExportTableLiteral(n.parent)
+    ? n
+    : null;
 }
 
 /** RegExp.prototype's flag getters and the flag each one reads. */

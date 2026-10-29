@@ -6,23 +6,45 @@
  * of seeing another receiver. */
 import * as ts from "../ts7/adapter.js";
 import type { Lowerer } from "./lowerer.js";
+import { bindingNeverReassigned } from "./binding-analysis.js";
+import { isRebindableFunction } from "./rebindable-functions.js";
 
-/** The function an export binding holds, when its declaration shows it. */
-function exportedFunction(decl: ts.Node): ts.Node | null {
+/** The value an export declaration or write assigns. */
+function exportedValue(decl: ts.Node): ts.Node | undefined {
   let node: ts.Node | undefined = decl;
   if (ts.isPropertyAccessExpression(node) && node.parent && ts.isBinaryExpression(node.parent))
     node = node.parent;
   if (ts.isBinaryExpression(node)) node = node.right;
   else if (ts.isVariableDeclaration(node) || ts.isPropertyAssignment(node)) node = node.initializer;
   while (node !== undefined && ts.isParenthesizedExpression(node)) node = node.expression;
-  if (node === undefined) return null;
+  return node;
+}
+
+/** The function an export binding holds, when its declaration shows it. */
+function exportedFunction(lowerer: Lowerer, value: ts.Node): ts.Node | null {
+  if (ts.isIdentifier(value)) return functionOfName(lowerer, value, noBindings).fn;
   if (
-    ts.isFunctionDeclaration(node) ||
-    ts.isFunctionExpression(node) ||
-    ts.isMethodDeclaration(node)
+    ts.isFunctionDeclaration(value) ||
+    ts.isFunctionExpression(value) ||
+    ts.isMethodDeclaration(value)
   )
-    return node;
+    return value;
   return null;
+}
+
+/** The call of a program function an export binding holds (`makeRead()`,
+ * directly or through an immutable alias), whose result the call's
+ * arguments decide. */
+function exportedFactoryCall(lowerer: Lowerer, value: ts.Node): ts.CallExpression | null {
+  const call = ts.isIdentifier(value)
+    ? functionOfName(lowerer, value, noBindings).bound?.expr
+    : value;
+  return call !== undefined &&
+    ts.isCallExpression(call) &&
+    ts.isIdentifier(call.expression) &&
+    functionOfName(lowerer, call.expression, noBindings).fn !== null
+    ? call
+    : null;
 }
 
 /** Whether `node` is `f.apply(this, ...)` or `f.call(this, ...)`, which
@@ -76,32 +98,55 @@ function ignoresOwnThis(lowerer: Lowerer, fn: ts.Node, bindings: Bindings, depth
   return ignores;
 }
 
-/** The function `name` provably holds: a function declaration, a const
- * initialized with a function, or an import of one. */
+/** The function `name` provably holds, following imports and immutable
+ * identifier aliases as well as direct function initializers. */
 function functionOfName(
   lowerer: Lowerer,
   name: ts.Identifier,
   bindings: Bindings,
 ): { fn: ts.Node | null; bound?: { expr: ts.Expression; bindings: Bindings } } {
-  let symbol = lowerer.checker.getSymbolAtLocation(name);
-  if (symbol === undefined) return { fn: null };
-  const bound = bindings.get(symbol);
-  if (bound) return { fn: null, bound };
-  if ((symbol.flags & ts.SymbolFlags.Alias) !== 0)
-    symbol = lowerer.checker.getAliasedSymbol(symbol);
-  const decls = symbol.declarations;
-  if (decls.length !== 1) return { fn: null };
-  const decl = decls[0]!;
-  if (ts.isFunctionDeclaration(decl)) return { fn: decl };
-  if (
-    ts.isVariableDeclaration(decl) &&
-    decl.initializer &&
-    ts.isVariableDeclarationList(decl.parent) &&
-    (decl.parent.flags & ts.NodeFlags.Const) !== 0
-  ) {
-    let init: ts.Expression = decl.initializer;
-    while (ts.isParenthesizedExpression(init)) init = init.expression;
-    if (ts.isFunctionExpression(init) || ts.isArrowFunction(init)) return { fn: init };
+  const parent = name.parent;
+  let symbol =
+    ts.isShorthandPropertyAssignment(parent) && parent.name === name
+      ? lowerer.checker.getShorthandAssignmentValueSymbol(parent)
+      : lowerer.checker.getSymbolAtLocation(name);
+  const seen = new Set<ts.Symbol>();
+  while (symbol !== undefined && !seen.has(symbol)) {
+    seen.add(symbol);
+    const bound = bindings.get(symbol);
+    if (bound) return { fn: null, bound };
+    if ((symbol.flags & ts.SymbolFlags.Alias) !== 0)
+      symbol = lowerer.checker.getAliasedSymbol(symbol);
+    const decls = symbol.declarations;
+    if (decls.length !== 1) return { fn: null };
+    const decl = decls[0]!;
+    if (ts.isFunctionDeclaration(decl)) {
+      const stable = ts.isSourceFile(decl.parent)
+        ? !isRebindableFunction(lowerer, decl)
+        : bindingNeverReassigned(lowerer, symbol, decl, (ident) =>
+            lowerer.checker.getSymbolAtLocation(ident),
+          );
+      return { fn: stable ? decl : null };
+    }
+    if (
+      ts.isVariableDeclaration(decl) &&
+      decl.initializer &&
+      ts.isVariableDeclarationList(decl.parent) &&
+      ((decl.parent.flags & ts.NodeFlags.Const) !== 0 ||
+        bindingNeverReassigned(lowerer, symbol, decl, (ident) =>
+          lowerer.checker.getSymbolAtLocation(ident),
+        ))
+    ) {
+      let init: ts.Expression = decl.initializer;
+      while (ts.isParenthesizedExpression(init)) init = init.expression;
+      if (ts.isFunctionExpression(init) || ts.isArrowFunction(init)) return { fn: init };
+      if (ts.isCallExpression(init)) return { fn: null, bound: { expr: init, bindings } };
+      if (ts.isIdentifier(init)) {
+        symbol = lowerer.checker.getSymbolAtLocation(init);
+        continue;
+      }
+    }
+    break;
   }
   return { fn: null };
 }
@@ -217,7 +262,16 @@ function ignoresThis(
     const { fn, bound } = functionOfName(lowerer, expr, bindings);
     if (bound) return ignoresThis(lowerer, bound.expr, bound.bindings, depth + 1);
     if (fn === null) return false;
-    return ts.isArrowFunction(fn) || ignoresOwnThis(lowerer, fn, noBindings, depth + 1);
+    if (ts.isArrowFunction(fn)) return true;
+    // Preserve outer captures, but the returned function's own arguments
+    // come from its eventual caller, not the factory invocation.
+    const captured =
+      bindings.size === 0
+        ? bindings
+        : new Map(
+            [...bindings].filter(([symbol]) => !symbol.declarations.some((d) => d.parent === fn)),
+          );
+    return ignoresOwnThis(lowerer, fn, captured, depth + 1);
   }
   // A call of a known function: what it returns, with its parameters bound
   // to this call's arguments.
@@ -244,7 +298,19 @@ function ignoresThis(
 /** Whether calling `fn` with another `this` than Node's can change what it
  * does: it reads `this`, or passes it on to a function that may. */
 function readsOwnThis(lowerer: Lowerer, fn: ts.Node): boolean {
-  return !ignoresOwnThis(lowerer, fn, noBindings, 0);
+  return !ts.isArrowFunction(fn) && !ignoresOwnThis(lowerer, fn, noBindings, 0);
+}
+
+/** Whether an exported callable provably ignores the receiver supplied by
+ * a member call: the proof behind inline `require(...).f()` and
+ * `exports.f()` calls (cjsExportCallIgnoresThis). */
+export function moduleExportIgnoresThis(
+  lowerer: Lowerer,
+  value: ts.Expression | ts.FunctionDeclaration | ts.MethodDeclaration,
+): boolean {
+  if (ts.isFunctionDeclaration(value) || ts.isMethodDeclaration(value))
+    return !isRebindableFunction(lowerer, value) && !readsOwnThis(lowerer, value);
+  return ignoresThis(lowerer, value, noBindings, 0);
 }
 
 export function refuseModuleMemberThis(
@@ -252,17 +318,21 @@ export function refuseModuleMemberThis(
   call: ts.CallExpression,
   member: ts.Identifier,
 ): void {
-  let symbol = lowerer.checker.getSymbolAtLocation(member);
-  if (symbol !== undefined && (symbol.flags & ts.SymbolFlags.Alias) !== 0)
-    symbol = lowerer.checker.getAliasedSymbol(symbol);
-  if (symbol === undefined) return;
+  const symbol = lowerer.resolveValueSymbol(member);
+  if (symbol === null) return;
   for (const decl of symbol.declarations) {
-    const fn = exportedFunction(decl);
-    if (fn === null || !readsOwnThis(lowerer, fn)) continue;
+    const value = exportedValue(decl);
+    if (value === undefined) continue;
+    // A factory's result reads `this` through the function it returns.
+    const factory = exportedFactoryCall(lowerer, value);
+    if (factory === null) {
+      const fn = exportedFunction(lowerer, value);
+      if (fn === null || !readsOwnThis(lowerer, fn)) continue;
+    } else if (ignoresThis(lowerer, factory, noBindings, 0)) continue;
     lowerer.unsupported(
       "SC1090",
       call,
-      `calling a module export that reads 'this' through its module binding ('${member.text}': Node passes the module object as 'this', which this call has no value for)`,
+      `calling a module export that ${factory !== null ? "may read" : "reads"} 'this' through its module binding ('${member.text}': Node passes the module object as 'this', which this call has no value for)`,
     );
   }
 }

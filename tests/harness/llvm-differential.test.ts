@@ -182,7 +182,8 @@ function programInputs(file: string): string[] {
 }
 
 async function build(file: string, optimization: "release" | "dev") {
-  const hash = createHash("sha256");
+  // The entry joins the key: a directory can hold several entries.
+  const hash = createHash("sha256").update(file).update("\0");
   for (const f of programInputs(file)) hash.update(f).update(readFileSync(f));
   const key = hash
     .update(sanitize ? "san" : "plain")

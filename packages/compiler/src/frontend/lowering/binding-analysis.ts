@@ -402,3 +402,22 @@ export function deadUnmappableBinding(
   if (dead) lowerer.deadBindings.add(sym);
   return dead;
 }
+
+/** Whether an access is assigned, updated or deleted. */
+export function isWriteTarget(access: ts.Expression): boolean {
+  let node: ts.Node = access;
+  while (ts.isParenthesizedExpression(node.parent)) node = node.parent;
+  const parent = node.parent;
+  if (ts.isBinaryExpression(parent))
+    return (
+      parent.left === node &&
+      parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+      parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+    );
+  if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent))
+    return (
+      parent.operator === ts.SyntaxKind.PlusPlusToken ||
+      parent.operator === ts.SyntaxKind.MinusMinusToken
+    );
+  return ts.isDeleteExpression(parent);
+}

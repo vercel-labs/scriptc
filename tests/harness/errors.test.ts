@@ -354,6 +354,230 @@ console.log(a.fromA, a.fromB);
     );
   });
 
+  test("split table re-exports keep the exports-object value fence at the consumer", async () => {
+    const r = await compileAndRun(
+      "split-table-reexport-as-value",
+      `const lib = require("./wrap.cjs");
+console.log("before");
+console.log(lib);
+`,
+      "cjs",
+      {
+        "lib.cjs": "exports.n = 7;\n",
+        "wrap.cjs": `var lib;
+lib = require("./lib.cjs");
+module.exports = lib;
+console.log("wrap: done");
+`,
+      },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("wrap: done\nbefore\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: module namespace objects as values.*\[SC1090 at .*split-table-reexport-as-value\.cjs:3\]\n$/,
+    );
+  });
+
+  test("split table re-exports with later live member writes keep the value fence", async () => {
+    const r = await compileAndRun(
+      "split-table-reexport-live-members",
+      `var lib;
+lib = require("./lib.cjs");
+console.log("before");
+module.exports = lib;
+module.exports.extra = 2;
+`,
+      "cjs",
+      { "lib.cjs": "exports.n = 7;\n" },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("before\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: the exports object of '\.\/lib\.cjs' as a value.*\[SC1090 at .*split-table-reexport-live-members\.cjs:4\]\n$/,
+    );
+  });
+
+  const wrapper = `var lib;
+lib = require("./lib.cjs");
+module.exports = lib;
+`;
+  test.for([
+    ["function declaration", "function read() { return this.n; } exports.read = read;"],
+    ["const function", "const read = function () { return this.n; }; exports.read = read;"],
+  ])("split table re-exports keep the module-binding receiver fence: %s", async ([, publish]) => {
+    const r = await compileAndRun(
+      "split-table-reexport-this",
+      `const lib = require("./wrap.cjs");
+console.log("before");
+console.log(lib.read());
+`,
+      "cjs",
+      { "lib.cjs": `${publish}\nexports.n = 7;\n`, "wrap.cjs": wrapper },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("before\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: calling a module export that reads 'this' through its module binding.*\[SC1090 at .*split-table-reexport-this\.cjs:3\]\n$/,
+    );
+  });
+
+  test.for([
+    [
+      "factory result",
+      "function makeRead() { return function () { return this.n; }; } exports.read = makeRead();",
+    ],
+    [
+      "factory result alias",
+      "function makeRead() { return function () { return this.n; }; } const read = makeRead(); exports.read = read;",
+    ],
+  ])(
+    "split table re-exports prove factory-made exports ignore the module-binding receiver: %s",
+    async ([, publish]) => {
+      const r = await compileAndRun(
+        "split-table-reexport-factory-this",
+        `const lib = require("./wrap.cjs");
+console.log("before");
+console.log(lib.read());
+`,
+        "cjs",
+        { "lib.cjs": `${publish}\nexports.n = 7;\n`, "wrap.cjs": wrapper },
+      );
+      expect(r.exitCode).toBe(1);
+      expect(r.stdout).toBe("before\n");
+      expect(r.stderr).toMatch(
+        /^Uncaught Error: calling a module export that may read 'this' through its module binding.*\[SC1090 at .*split-table-reexport-factory-this\.cjs:3\]\n$/,
+      );
+    },
+  );
+
+  test.for(
+    Object.entries({
+      "function expression": "exports.read = function () { return this.n; };",
+      "const alias chain":
+        "function read() { return this.n; } const first = read; const second = (first); exports.read = second;",
+      // Reassignment is legal in JS; unchecked dependencies reach its lowering.
+      "reassigned declaration":
+        "// @ts-nocheck\nfunction read() { return 1; } read = function () { return this.n; }; const alias = read; exports.read = alias;",
+      "factory result":
+        "function makeRead() { return function () { return this.n; }; } exports.read = makeRead();",
+      "reassigned factory-local declaration":
+        "// @ts-nocheck\nfunction makeRead() { function read() { return 1; } read = function () { return this.n; }; return read; } exports.read = makeRead();",
+      "named forwarding factory":
+        "function forward(body) { function wrapper() { return body.call(this); } return wrapper; } exports.read = forward(function () { return this.n; });",
+      // The returned function's own arguments come from its caller, not the
+      // factory invocation.
+      "factory returning itself":
+        "function forward(body) { body.call(this); return forward; } exports.read = forward(function () {});",
+    }),
+  )(
+    "inline requires through split table re-exports prove the receiver: %s",
+    async ([, publish]) => {
+      const r = await compileAndRun(
+        "split-table-reexport-inline-this",
+        `console.log("before");
+console.log(require("./wrap.cjs").read(function () { return this.n; }));
+`,
+        "cjs",
+        { "lib.cjs": `${publish}\nexports.n = 7;\n`, "wrap.cjs": wrapper },
+      );
+      expect(r.exitCode).toBe(1);
+      expect(r.stdout).toBe("before\n");
+      expect(r.stderr).toMatch(
+        /^Uncaught Error: calling 'read' through require\("\.\/wrap\.cjs"\) when the function may read 'this'.*\[SC1090 at .*split-table-reexport-inline-this\.cjs:2\]\n$/,
+      );
+    },
+  );
+
+  test("computed require destructuring keys with effects keep a named refusal", async () => {
+    const r = await compileAndRun(
+      "computed-require-binding-key",
+      `function key() { console.log("key"); return "value"; }
+console.log("before");
+const { [key()]: unused } = require("./wrap.cjs");
+console.log("after");
+`,
+      "cjs",
+      {
+        "lib.cjs": "module.exports = { get value() { return 7; } };\n",
+        "wrap.cjs": 'var lib; lib = require("./lib.cjs"); module.exports = lib;\n',
+      },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("before\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: require\(\) destructuring with a runtime or effectful computed key.*\[SC1090 at .*computed-require-binding-key\.cjs:3\]\n$/,
+    );
+  });
+
+  test("an export-table getter's own 'this' keeps a named refusal", async () => {
+    const r = await compileAndRun(
+      "export-table-getter-this",
+      `console.log("before");
+console.log(require("./lib.cjs").kind);
+`,
+      "cjs",
+      { "lib.cjs": "module.exports = { get kind() { return typeof this; } };\n" },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("before\n");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: uses of 'this' in a CommonJS export-table accessor other than reading one of its members.*\[SC1090 at .*lib\.cjs:1\]\n$/,
+    );
+  });
+
+  test("a changing CommonJS export ESM-imported through two modules keeps a named refusal", async () => {
+    // Node copies the export separately when each module links; scriptc
+    // keeps one copy per export.
+    const r = await compileAndRun(
+      "esm-import-through-two-modules",
+      `import { n as direct } from "./lib.cjs";
+import "./bumper.cjs";
+import { n as wrapped } from "./wrap.cjs";
+console.log(direct, wrapped);
+`,
+      "mjs",
+      {
+        "lib.cjs": "exports.n = 7;\nexports.bump = function () { exports.n = exports.n + 1; };\n",
+        "bumper.cjs": 'require("./lib.cjs").bump();\n',
+        "wrap.cjs": 'module.exports = require("./lib.cjs");\n',
+      },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: importing 'n', a CommonJS export that changes after it loads, through two different modules.*\[SC1090 at .*esm-import-through-two-modules\.mjs:3\]\n$/,
+    );
+  });
+
+  test.for([
+    [
+      "exports call after the replacement",
+      'module.exports = require("./lib.cjs");\nconsole.log("before");\nconsole.log(exports.hello());\n',
+      "method calls like 'exports.hello'",
+    ],
+    [
+      "exports call before the replacement",
+      'const lib = require("./lib.cjs");\nconsole.log("before");\nconsole.log(exports.hello());\nmodule.exports = lib;\n',
+      "method calls like 'exports.hello'",
+    ],
+    [
+      "module.exports read before the replacement",
+      'const lib = require("./lib.cjs");\nconsole.log("before");\nconsole.log(module.exports.n);\nmodule.exports = lib;\n',
+      "the CommonJS 'module' object in this position",
+    ],
+  ])(
+    "members of a replaced exports object keep a named refusal: %s",
+    async ([, source, message]) => {
+      const r = await compileAndRun("replaced-exports-members", source!, "cjs", {
+        "lib.cjs": 'exports.hello = function () { return "hi"; };\nexports.n = 7;\n',
+      });
+      expect(r.exitCode).toBe(1);
+      expect(r.stdout).toBe("before\n");
+      expect(r.stderr).toContain(`Uncaught Error: ${message}`);
+      expect(r.stderr).toMatch(/\[SC1090 at .*replaced-exports-members\.cjs:3\]\n$/);
+    },
+  );
+
   test("an EFFECTFUL surplus argument is a named deferred fence (JS lane)", async () => {
     // Effect-free surplus args drop at compile time, JS-exact (corpus
     // 1760 — the test-string-decoder writeSequences shape). An effectful

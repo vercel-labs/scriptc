@@ -46,6 +46,7 @@ import { builtinClassAliasOwnsNoSlot, runtimeClassValueOf } from "../builtins/cl
 import {
   cjsAccessorCall,
   cjsAccessorSnapshotOf,
+  cjsImportedDataSnapshotOf,
   primitiveCtorClosure,
   runtimeOptionalElementKey,
   runtimeOptionalUseOf,
@@ -314,6 +315,10 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
   // fnSigOf below; their source-order guards live here (a no-op for
   // every non-import= binding — see lower-namespaces.ts).
   fenceEarlyAliasUse(lowerer, expr, expr);
+  {
+    const snapshot = cjsImportedDataSnapshotOf(lowerer, expr);
+    if (snapshot !== null) return varRef(snapshot.id, snapshot.type, loc);
+  }
   const g = lowerer.globalOf(expr);
   if (g) {
     // A global typed by a class that never REGISTERED (its collection

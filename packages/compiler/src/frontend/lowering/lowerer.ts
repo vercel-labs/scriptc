@@ -5428,8 +5428,8 @@ export class Lowerer {
    * = ns`, `take(ns)`): the runtime's namespace object — one per module,
    * Node's sorted export keys, live reads through a compiled getter, and
    * Node's read-only write errors — built by `moduleNamespaceDynValue`.
-   * `node:` builtins have no compiled source and no complete export table,
-   * so they keep their fence. */
+   * `node:` builtins have no compiled source, so their box comes from the
+   * lowering tables instead (moduleNamespaceBuiltinDynValue). */
   moduleNamespaceDyn(ns: IrExpr & { type: IrType & { kind: "moduleNs" } }): IrExpr | null {
     if (ns.type.moduleId.startsWith("builtin:"))
       return moduleNamespaceBuiltinDynValue(this, ns.type.moduleId, ns.loc);

@@ -1,4 +1,11 @@
-import { dynUndefinedExpr, nodeThrowExpr, boolLit, strLit, varRef } from "../../../ir/build.js";
+import {
+  dynUndefinedExpr,
+  nodeThrowExpr,
+  boolLit,
+  numLit,
+  strLit,
+  varRef,
+} from "../../../ir/build.js";
 import { dirname, isAbsolute, resolve } from "node:path";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer, PoisonError } from "../lowerer.js";
@@ -43,6 +50,7 @@ import {
   createRequireCalleeFileOf,
 } from "./module-bindings.js";
 import { stripTypeCasts } from "./arguments.js";
+import { boundSpecifier } from "../../specifier-bounds.js";
 import { keyedHelperName } from "../stable-names.js";
 
 /** node:module's two compiler-only calls. isBuiltin compares one evaluated
@@ -504,13 +512,7 @@ export function lowerImportMetaResolveCall(
     );
   }
   const specifier = staticString(call.arguments.nodes[0]);
-  if (specifier === null) {
-    lowerer.noLowering(
-      "import.meta.resolve with a runtime-computed specifier",
-      call.arguments.nodes[0]!,
-      "a compiled binary has a fixed module graph — pass a string literal",
-    );
-  }
+  if (specifier === null) return lowerBoundedImportMetaResolve(lowerer, call, call.arguments.nodes[0]!);
   const result = resolveImportMetaRuntime(
     ts.getSourceFileOfNode(call).fileName,
     specifier,
@@ -528,6 +530,110 @@ export function lowerImportMetaResolveCall(
   return result.ok
     ? { kind: "strLit", value: result.value, type: STRING, loc }
     : runtimeResolveThrow(result.error, STRING, loc);
+}
+
+/** A computed import.meta.resolve whose specifier the build can bound
+ * (SPEC §5.5): a selector over the bounded values, each arm the literal
+ * site's own runtime fold. Nothing loads, so no placement question arises;
+ * the default arm is unreachable while the bound is sound and throws
+ * ERR_MODULE_NOT_FOUND rather than falling through. */
+function lowerBoundedImportMetaResolve(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  arg: ts.Expression,
+): IrExpr | null {
+  const bound = boundSpecifier(lowerer, arg);
+  if (bound.kind !== "set") {
+    const at = ts.getSourceFileOfNode(bound.at);
+    const line = ts.getLineAndCharacterOfPosition(at, ts.tokenStartOfNode(bound.at)).line + 1;
+    lowerer.noLowering(
+      "import.meta.resolve with a runtime-computed specifier",
+      arg,
+      `the specifier cannot be bounded at build time (at ${at.fileName}:${line}: ${bound.why}); ` +
+        "pass a string literal, a const, or a parameter of a module-local function every call of which passes one",
+    );
+  }
+  const loc = locOf(call);
+  const file = ts.getSourceFileOfNode(call);
+  const arms: { value: string; expr: IrExpr }[] = [];
+  for (const value of bound.values) {
+    const result = resolveImportMetaRuntime(
+      file.fileName,
+      value,
+      lowerer.targetPlatform,
+      lowerer.frontendServices,
+    );
+    if (result === null) {
+      lowerer.noLowering(
+        `import.meta.resolve of '${value}'`,
+        call,
+        "relative paths, URL-like names, builtins, and installed package names are supported; package-import aliases remain unsupported",
+      );
+    }
+    arms.push({
+      value,
+      expr: result.ok
+        ? { kind: "strLit", value: result.value, type: STRING, loc }
+        : runtimeResolveThrow(result.error, STRING, loc),
+    });
+  }
+  const specifier = lowerer.declareHiddenLocal("%specifier", STRING);
+  const specifierRef = (): IrExpr => varRef(specifier.id, STRING, loc);
+  let result: IrExpr = {
+    kind: "libCall",
+    fn: "error.nodeThrow",
+    args: [
+      numLit(0, loc),
+      strLit("ERR_MODULE_NOT_FOUND", loc),
+      {
+        kind: "strConcat",
+        left: strLit("Cannot find module '", loc),
+        right: {
+          kind: "strConcat",
+          left: specifierRef(),
+          right: strLit("'", loc),
+          type: STRING,
+          loc,
+        },
+        type: STRING,
+        loc,
+      },
+    ],
+    type: STRING,
+    loc,
+  };
+  for (let i = arms.length - 1; i >= 0; i--) {
+    const arm = arms[i]!;
+    result = {
+      kind: "ternary",
+      cond: {
+        kind: "strEq",
+        negated: false,
+        left: specifierRef(),
+        right: strLit(arm.value, loc),
+        type: { kind: "bool" },
+        loc,
+      },
+      then: arm.expr,
+      else_: result,
+      type: STRING,
+      loc,
+    };
+  }
+  return {
+    kind: "seqExpr",
+    stmts: [
+      {
+        kind: "varDecl",
+        localId: specifier.id,
+        init: lowerer.lowerExprExpecting(arg, STRING),
+        loc,
+      },
+    ],
+    result,
+    type: STRING,
+    loc,
+  };
 }
 
 function requireResolverBaseFile(lowerer: Lowerer, receiver: ts.Expression): ts.SourceFile | null {

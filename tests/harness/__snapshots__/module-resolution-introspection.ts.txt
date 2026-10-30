@@ -5,7 +5,7 @@ module-resolution-introspection.ts:4:33 - error SC2020: 'import.meta.resolve wit
     |                                 ^~~~~~~~~
   5 | // createRequire uses the same static-literal boundary.
 
-  hint: a compiled binary has a fixed module graph — pass a string literal
+  hint: the specifier cannot be bounded at build time (at module-resolution-introspection.ts:3: a value read from `process.env`); pass a string literal, a const, or a parameter of a module-local function every call of which passes one
 
 module-resolution-introspection.ts:7:29 - error SC2020: 'require.resolve with a runtime-computed request' is part of the standard library types but has no scriptc lowering yet
 

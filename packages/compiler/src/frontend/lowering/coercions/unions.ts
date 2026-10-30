@@ -12,10 +12,88 @@ import {
 } from "../union-retag.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as ts from "../../ts7/adapter.js";
-import type { IrExpr, IrType, SrcLoc } from "../../../ir/ir.js";
+import type { IrExpr, IrLocal, IrType, SrcLoc } from "../../../ir/ir.js";
 import { BOOL, F64, isUnitType, STRING, typeEquals } from "../../../ir/ir.js";
 import { typeKey } from "../../type-mapper.js";
 import type { Lowerer } from "../lowerer.js";
+import { dynMirrorOf, noteRecordSource, recordMayKeepSource } from "../record-sources.js";
+
+/** Whether converting `source` into `target` drops fields of the source
+ * that the target has no slot for: both are plain declared-field records
+ * inside the kept-source contract, and the source declares a user field the
+ * target does not. */
+export function recordLosesSourceKeys(lowerer: Lowerer, source: IrType, target: IrType): boolean {
+  if (source.kind !== "record" || target.kind !== "record") return false;
+  const from = lowerer.shapes.get(source.shapeId);
+  const to = lowerer.shapes.get(target.shapeId);
+  if (!from || !to || from.tuple || to.tuple || to.indexValue !== undefined) return false;
+  if (!recordMayKeepSource(lowerer, source) || !recordMayKeepSource(lowerer, target)) return false;
+  const declared = new Set(to.fields.map((f) => f.name));
+  return from.fields.some((f) => !f.name.startsWith("%") && !declared.has(f.name));
+}
+
+/** A record conversion into a narrower record kills the source's other own
+ * keys; Node's conversion keeps them. When such a conversion drops one, the
+ * destination keeps them as its checked source (dynMirrorOf +
+ * record.sourceNote), so JSON serialization, inspect, Object.keys and `in`
+ * still observe them, in the source's key order. Conversions that drop
+ * nothing (and shapes outside the kept-source contract: index-signature
+ * targets, tuples, accessors) build exactly `convert(source)`.
+ *
+ * The conversion runs in its own lifted helper (%record.keep.<n>): the call
+ * sites are themselves inside hand-built lifted helpers (%record.wrap,
+ * %record.route, %rec.width, …) that assemble a fixed `locals` list, and a
+ * hidden local declared while their body lowers would be emitted into the
+ * *requesting* function's context. A helper per conversion keeps every local
+ * it needs in its own `locals`. Each conversion gets its own helper: the
+ * site's `convert` may depend on the checker type at that site. */
+export function keepDroppedSourceKeys(
+  lowerer: Lowerer,
+  source: IrExpr,
+  target: IrType,
+  loc: SrcLoc,
+  convert: (source: IrExpr) => IrExpr,
+): IrExpr {
+  if (!recordLosesSourceKeys(lowerer, source.type, target)) return convert(source);
+  // The conversion itself is what keeps the dropped keys: the helper below
+  // notes the source's own properties beside the narrower record, so the
+  // program keeps a record source from here on even when nothing converts a
+  // checked-dynamic value into a record (record-sources.ts). The reflective
+  // answers gated on that fact read this one.
+  lowerer.recordSourcesPossible = true;
+  const name = keyedHelperName(
+    lowerer,
+    "%record.keep",
+    `keep:${typeKey(source.type)}:${typeKey(target)}:${lowerer.keyedNameKeys.size}`,
+  );
+  const param: IrLocal = { id: "v.0", name: "value", type: source.type, mutable: false };
+  const kept: IrLocal = { id: "arm.0", name: "arm", type: target, mutable: false };
+  const input = (): IrExpr => ({ kind: "varRef", localId: param.id, type: source.type, loc });
+  const keptRef = (): IrExpr => ({ kind: "varRef", localId: kept.id, type: target, loc });
+  // Hidden locals the conversion's own builders declare belong to it.
+  const helperLocals: IrLocal[] = [];
+  const outerSink = lowerer.localSink;
+  lowerer.localSink = helperLocals;
+  let converted: IrExpr;
+  try {
+    converted = convert(input());
+  } finally {
+    lowerer.localSink = outerSink;
+  }
+  lowerer.liftedFns.push({
+    name,
+    params: [{ localId: param.id, name: param.name, type: param.type }],
+    returnType: target,
+    locals: [param, kept, ...helperLocals],
+    body: [
+      { kind: "varDecl", localId: kept.id, init: converted, loc },
+      { kind: "exprStmt", expr: noteRecordSource(keptRef(), dynMirrorOf(input(), loc), loc), loc },
+      { kind: "return", value: keptRef(), loc },
+    ],
+    loc,
+  });
+  return { kind: "call", callee: name, args: [source], type: target, loc };
+}
 
 /** Validate the complete union conversion before interning helpers.
  * Recursive width plans close through the same in-progress pair guard;
@@ -281,7 +359,9 @@ export function recordUnionWrapHelper(
   lowerer.coercions.retags.set(key, name);
   lowerer.liftedFns.push(
     buildRecordUnionWrap(name, source, to, plan, loc, (lift, value, dst) =>
-      lowerer.applyWidthLift(lift, value, dst, loc),
+      keepDroppedSourceKeys(lowerer, value, dst, loc, (v) =>
+        lowerer.applyWidthLift(lift, v, dst, loc),
+      ),
     ),
   );
   return name;
@@ -313,7 +393,9 @@ export function recordUnionRouteHelper(
   lowerer.coercions.retags.set(key, name);
   lowerer.liftedFns.push(
     buildRecordUnionWrap(name, source, to, plan, loc, (lift, value, dst) =>
-      lowerer.applyWidthLift(lift, value, dst, loc),
+      keepDroppedSourceKeys(lowerer, value, dst, loc, (v) =>
+        lowerer.applyWidthLift(lift, v, dst, loc),
+      ),
     ),
   );
   return name;

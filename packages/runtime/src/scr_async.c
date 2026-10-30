@@ -3105,8 +3105,28 @@ static void scr_promise_rethrow(ScrPromise *p) {
   case SCR_EXC_F64: scr_throw_f64(p->f64); break;
   case SCR_EXC_BOOL: scr_throw_bool(p->b); break;
   case SCR_EXC_STR: scr_throw_str(scr_str_retain((ScrStr *)p->payload)); break;
+#ifdef SCR_PROMISE_REJECT_DYN
+  /* A checked-dynamic reason re-throws like `throw reason` does: a boxed
+   * native Error arrives as that %Error instance (the dyn cache keeps it
+   * reference-equal both ways), a primitive as the primitive, anything
+   * else as the REF payload its typeof deserves. Re-throwing the raw dyn
+   * payload instead left an `await`ed Error reason opaque to a caught
+   * `(e as Error)` cast, which failed its instance check. */
+  case SCR_EXC_REF:
+  case SCR_EXC_PRIMITIVE_REF:
+    if (p->retain_fn == scr_dyn_retain_v) {
+      scr_dyn_throw(scr_dyn_retain((ScrDyn *)p->payload));
+      break;
+    }
+    if (p->payload_kind == SCR_EXC_REF)
+      scr_throw_ref(p->retain_fn(p->payload), p->retain_fn, p->release_fn, p->trace_fn);
+    else
+      scr_throw_primitive_ref(p->retain_fn(p->payload), p->retain_fn, p->release_fn, p->trace_fn);
+    break;
+#else
   case SCR_EXC_REF: scr_throw_ref(p->retain_fn(p->payload), p->retain_fn, p->release_fn, p->trace_fn); break;
   case SCR_EXC_PRIMITIVE_REF: scr_throw_primitive_ref(p->retain_fn(p->payload), p->retain_fn, p->release_fn, p->trace_fn); break;
+#endif
   case SCR_EXC_OBJ: scr_throw_obj(p->retain_fn(p->payload), p->retain_fn, p->release_fn, p->trace_fn); break;
   case SCR_EXC_NONE:
   case SCR_EXC_TERMINATE:

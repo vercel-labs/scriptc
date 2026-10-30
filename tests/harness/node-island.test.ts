@@ -308,7 +308,7 @@ describe.skipIf(skip)("Node islands in-process", () => {
     });
     expect(result.code).toBe(1);
     expect(result.stderr).toBe(
-      `scriptc: the libnode pack at ${dir} has an incompatible bridge (ABI 999; this program needs 9)\n`,
+      `scriptc: the libnode pack at ${dir} has an incompatible bridge (ABI 999; this program needs 10)\n`,
     );
   });
 

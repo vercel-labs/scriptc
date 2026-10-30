@@ -626,9 +626,11 @@ ScrArr *scr_process_argv(void) {
     int argc = scr_lib_arg_count();
     scr_argv_arr = scr_arr_new(SCR_ELEM_STR, (size_t)argc + 1);
     scr_arr_push_ref(scr_argv_arr, scr_str_new("scriptc", 7));
+    /* Node decodes each argument as UTF-8, replacing malformed bytes with
+     * U+FFFD. */
     for (int i = 0; i < argc; i++) {
       const char *a = scr_lib_arg(i);
-      scr_arr_push_ref(scr_argv_arr, scr_str_new(a, strlen(a)));
+      scr_arr_push_ref(scr_argv_arr, scr_str_from_utf8_lossy((const uint8_t *)a, strlen(a)));
     }
   }
   return scr_arr_retain(scr_argv_arr);
@@ -1370,22 +1372,23 @@ static int scr_wasi_kill(int pid, int sig) {
 #define scr_sys_kill(pid, sig) kill((pid_t)(pid), (sig))
 #endif
 
+static const char *scr_errno_name(int e, char *fallback, size_t cap);
+static const char *scr_errno_text(int e);
+static ScrError *scr_fs_error_details(int e, const char *name, const char *message, size_t length,
+                                      const char *op, const ScrStr *path, const ScrStr *dest);
+
+/* Node's errnoException(err, "kill"): message "kill <code>", with own
+ * errno (the negative uv code), code and syscall properties. */
 static bool scr_kill_send(int pid, int sig) {
   if (scr_sys_kill(pid, sig) == 0) return true;
-  const char *name = errno == ESRCH   ? "ESRCH"
-                     : errno == EPERM ? "EPERM"
-                     : errno == EINVAL ? "EINVAL"
-                                       : NULL;
+  int e = errno;
+  char namebuf[16];
+  const char *name = scr_errno_name(e, namebuf, sizeof namebuf);
   char msg[32];
-  int len;
-  if (name) {
-    len = snprintf(msg, sizeof msg, "kill %s", name);
-    /* Node's errnoException carries code = the errno name. */
-    scr_throw_error_msg_code(SCR_ERR_ERROR, msg, (size_t)len, name);
-  } else {
-    len = snprintf(msg, sizeof msg, "kill E%d", errno);
-    scr_throw_error_msg(SCR_ERR_ERROR, msg, (size_t)len);
-  }
+  int len = snprintf(msg, sizeof msg, "kill %s", name);
+  ScrError *error = scr_fs_error_details(e, name, msg, (size_t)len, "kill", NULL, NULL);
+  error->errno_order = true;
+  scr_throw_obj(error, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
   return false;
 }
 
@@ -1405,7 +1408,7 @@ bool scr_process_kill_named(double pid, const ScrStr *signal) {
       scr_trap("scriptc: out of memory\n");
     }
     int len = snprintf(msg, cap, "Unknown signal: %s", signal->data);
-    scr_throw_error_msg(SCR_ERR_TYPE, msg, (size_t)len);
+    scr_throw_error_msg_code(SCR_ERR_TYPE, msg, (size_t)len, "ERR_UNKNOWN_SIGNAL");
     free(msg);
     return false;
   }
@@ -1489,6 +1492,10 @@ ScrStr *scr_os_user_homedir(void) {
   return scr_os_homedir(); /* uv_os_get_passwd reuses uv_os_homedir on win */
 }
 
+/* uv_os_get_passwd on Windows has no uid or gid: both are -1. */
+double scr_os_user_uid(void) { return -1; }
+double scr_os_user_gid(void) { return -1; }
+
 ScrStr *scr_os_release(void) {
   /* uv_os_uname on Windows: RtlGetVersion (the un-lied-to GetVersionEx),
    * rendered "major.minor.build" — Node answers e.g. "10.0.26100". */
@@ -1554,6 +1561,8 @@ ScrStr *scr_os_user_name(void) {
 }
 ScrStr *scr_os_user_shell(void) { return scr_str_new("", 0); }
 ScrStr *scr_os_user_homedir(void) { return scr_os_homedir(); }
+double scr_os_user_uid(void) { return -1; }
+double scr_os_user_gid(void) { return -1; }
 ScrStr *scr_os_release(void) { return scr_str_new("", 0); }
 ScrStr *scr_os_type(void) { return scr_str_new("WASI", 4); }
 double scr_os_totalmem(void) { return 0; }
@@ -1565,26 +1574,27 @@ double scr_os_available_parallelism(void) { return 1; }
 ScrStr *scr_os_tmpdir(void) { return scr_str_new("/tmp", 4); }
 #else
 ScrStr *scr_os_homedir(void) {
-  /* uv_os_homedir: $HOME when set (even empty is "set" only if non-NULL;
-   * libuv requires non-empty), else the passwd entry. */
+  /* uv_os_homedir: $HOME whenever it is set, an empty value included,
+   * else the passwd entry of the effective uid. */
   const char *home = scr_getenv("HOME");
-  if (home && home[0] != '\0') return scr_str_new(home, strlen(home));
+  if (home) return scr_str_new(home, strlen(home));
   struct passwd pw;
   struct passwd *result = NULL;
   char buf[8192];
-  if (getpwuid_r(getuid(), &pw, buf, sizeof buf, &result) != 0 || !result || !result->pw_dir) {
+  if (getpwuid_r(geteuid(), &pw, buf, sizeof buf, &result) != 0 || !result || !result->pw_dir) {
     scr_trap("scriptc: os.homedir() failed\n");
   }
   return scr_str_new(result->pw_dir, strlen(result->pw_dir));
 }
 
-/* The os.userInfo() field trio — uv_os_get_passwd's slices. One passwd
- * lookup per call (three calls per userInfo record — cheap, no caching
- * to invalidate). Failure aborts: Node throws a system error there, but
- * no compiled program path reaches it for the running uid. */
+/* The os.userInfo() fields — uv_os_get_passwd's slices of the passwd
+ * entry for the effective uid. One passwd lookup per call (one call per
+ * userInfo field — cheap, no caching to invalidate). Failure aborts: Node
+ * throws a system error there, but no compiled program path reaches it
+ * for the running uid. */
 static const struct passwd *scr_os_passwd(char *buf, size_t cap, struct passwd *pw) {
   struct passwd *result = NULL;
-  if (getpwuid_r(getuid(), pw, buf, cap, &result) != 0 || !result) {
+  if (getpwuid_r(geteuid(), pw, buf, cap, &result) != 0 || !result) {
     scr_trap("scriptc: os.userInfo() failed\n");
   }
   return result;
@@ -1612,6 +1622,20 @@ ScrStr *scr_os_user_homedir(void) {
   char buf[8192];
   const struct passwd *r = scr_os_passwd(buf, sizeof buf, &pw);
   return scr_str_new(r->pw_dir, strlen(r->pw_dir));
+}
+
+/* The entry's pw_uid and pw_gid: the user's primary group, which can
+ * differ from the process gid. */
+double scr_os_user_uid(void) {
+  struct passwd pw;
+  char buf[8192];
+  return (double)scr_os_passwd(buf, sizeof buf, &pw)->pw_uid;
+}
+
+double scr_os_user_gid(void) {
+  struct passwd pw;
+  char buf[8192];
+  return (double)scr_os_passwd(buf, sizeof buf, &pw)->pw_gid;
 }
 
 ScrStr *scr_os_release(void) {
@@ -2659,8 +2683,12 @@ void scr_process_memory_usage_take(void) {
   scr_memory_usage_sample[0] = rss;
   scr_memory_usage_sample[1] = total;
   scr_memory_usage_sample[2] = used;
-  scr_memory_usage_sample[3] = 0;
-  scr_memory_usage_sample[4] = 0;
+  /* external is the storage of the ArrayBuffers and typed arrays this
+   * instance holds, and arrayBuffers adds the SharedArrayBuffer storage of
+   * the process, as Node counts them. */
+  double local = scr_array_buffers_held(false);
+  scr_memory_usage_sample[3] = local;
+  scr_memory_usage_sample[4] = local + scr_array_buffers_held(true);
 }
 
 double scr_process_memory_usage_field(double k) {
@@ -2828,7 +2856,7 @@ void scr_process_set_title(const ScrStr *title) {
 ScrStr *scr_process_argv0(void) {
   if (scr_lib_arg_count() < 1) return scr_str_new("", 0);
   const char *a = scr_lib_arg(0);
-  return scr_str_new(a, strlen(a));
+  return scr_str_from_utf8_lossy((const uint8_t *)a, strlen(a));
 }
 
 static SCR_TL ScrDyn *scr_release_object;
@@ -2983,6 +3011,33 @@ double scr_process_umask(double mask) {
 #endif
 }
 
+/* Node's chdir failure: the uv exception carries the working directory
+ * as path and the target, as given, as dest ("ENOENT: no such file or
+ * directory, chdir '<cwd>' -> '<target>'"). */
+static void scr_process_chdir_throw(int e, const ScrStr *dir) {
+#ifdef _WIN32
+  ScrStr *cwd = scr_process_cwd();
+#else
+  char buf[4096];
+  ScrStr *cwd = getcwd(buf, sizeof buf) ? scr_str_new(buf, strlen(buf)) : NULL;
+#endif
+  if (cwd == NULL) {
+    scr_fs_throw(e, "chdir", dir);
+    return;
+  }
+  char namebuf[16];
+  const char *name = scr_errno_name(e, namebuf, sizeof namebuf);
+  const char *text = scr_errno_text(e);
+  size_t cap = strlen(name) + strlen(text) + cwd->len + dir->len + 24;
+  char *msg = malloc(cap);
+  if (!msg) scr_trap("scriptc: out of memory\n");
+  int len = snprintf(msg, cap, "%s: %s, chdir '%s' -> '%s'", name, text, cwd->data, dir->data);
+  ScrError *error = scr_fs_error_details(e, name, msg, (size_t)len, "chdir", cwd, dir);
+  free(msg);
+  scr_str_release(cwd);
+  scr_throw_obj(error, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
+}
+
 void scr_process_chdir(ScrStr *dir) {
 #ifdef SCR_WORKERS
   if (!scr_context_is_main()) {
@@ -2996,9 +3051,9 @@ void scr_process_chdir(ScrStr *dir) {
   BOOL changed = wide && SetCurrentDirectoryW(wide);
   DWORD error = changed ? ERROR_SUCCESS : GetLastError();
   free(wide);
-  if (!changed) scr_fs_throw(scr_fs_win_errno(error), "chdir", dir);
+  if (!changed) scr_process_chdir_throw(scr_fs_win_errno(error), dir);
 #else
-  if (chdir(dir->data) != 0) scr_fs_throw(errno, "chdir", dir);
+  if (chdir(dir->data) != 0) scr_process_chdir_throw(errno, dir);
 #endif
 }
 
@@ -3065,6 +3120,7 @@ static const char *scr_errno_name(int e, char *fallback, size_t cap) {
   case ELOOP: return "ELOOP";
   case ENOSYS: return "ENOSYS";
   case ENOTSUP: return "ENOTSUP";
+  case ESRCH: return "ESRCH";
   default:
     snprintf(fallback, cap, "E%d", e);
     return fallback;
@@ -3935,7 +3991,7 @@ void scr_fs_futimes(double fd, double atime, double mtime) {
  * supplies pread(2). Windows follows libuv's synchronous-handle recipe:
  * ReadFile with an OVERLAPPED byte offset, then restore the handle position
  * because synchronous ReadFile updates it even when OVERLAPPED is present. */
-static ssize_t scr_fs_pread(int fd, void *data, size_t length, double position) {
+static ssize_t scr_fs_pread(int fd, void *data, size_t length, int64_t position) {
 #ifdef _WIN32
   HANDLE handle = (HANDLE)_get_osfhandle(fd);
   if (handle == INVALID_HANDLE_VALUE) {
@@ -4082,13 +4138,14 @@ static bool scr_fs_write_fd_valid(double fd) {
 
 /* write(2) raises SIGPIPE before returning EPIPE when a pipe/socket peer has
  * closed; write(2)/pwrite(2) likewise raise SIGXFSZ before returning EFBIG at
- * RLIMIT_FSIZE. Node turns both into catchable fs errors. Do the same per
- * calling thread rather than changing process dispositions (which spawned
- * children would inherit). Consume only a signal freshly generated by this
- * call, preserving any signal that was already pending. */
+ * RLIMIT_FSIZE. Node ignores both signals, so they arrive as catchable fs
+ * errors. Executables ignore them too (scr_init) and write directly. A
+ * library does not own its host's dispositions: it blocks the signals in
+ * the calling thread instead, and consumes only a signal freshly generated
+ * by this call, preserving any signal that was already pending. */
 static ssize_t scr_fs_write_once(int fd, const void *data, size_t length,
                                  bool positioned, double position) {
-#if defined(_WIN32) || defined(__wasi__)
+#if defined(_WIN32) || defined(__wasi__) || !defined(SCR_LIB)
   return positioned
     ? scr_fs_pwrite(fd, data, length, position)
     : write(fd, data, length);
@@ -4311,14 +4368,11 @@ void scr_fs_write_file_fd(double fd, ScrStr *data) {
  * throw the RangeError shape. Position -1 means the fd's current offset;
  * nonnegative positions do not advance it. Returns the byte count the OS
  * reports; errors carry the errno name like the other fd operations. */
-double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length,
-                        double position) {
-  size_t bytelen = buf->len; /* u8 buffers: elem count == byte count */
+/* fs.readSync's offset check: an integer in [0, 2^53 - 1], Node's exact
+ * texts (validateOffset); false with ERR_OUT_OF_RANGE pending otherwise. */
+bool scr_fs_read_offset_chk(double offset) {
   char msg[160];
   int mlen;
-  /* Node's exact texts: offset validates against MAX_SAFE_INTEGER's range
-   * form, length against the remaining window (validateOffset vs the
-   * buffer-bounds check in fs.readSync). */
   char numbuf[40];
   if (!(isfinite(offset) && trunc(offset) == offset)) {
     char recv[48];
@@ -4327,7 +4381,7 @@ double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length,
                     "The value of \"offset\" is out of range. It must be an integer. Received %s",
                     recv);
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
-    return 0;
+    return false;
   }
   if (offset < 0 || offset > 9007199254740991.0) {
     numbuf[scr_f64_to_str(offset, numbuf)] = 0;
@@ -4335,8 +4389,19 @@ double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length,
                     "The value of \"offset\" is out of range. It must be >= 0 && <= 9007199254740991. Received %s",
                     numbuf);
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
-    return 0;
+    return false;
   }
+  return true;
+}
+
+double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length,
+                        double position) {
+  char msg[160];
+  int mlen;
+  /* Node's exact texts: offset validates against MAX_SAFE_INTEGER's range
+   * form, length against the remaining window (validateOffset vs the
+   * buffer-bounds check in fs.readSync). */
+  if (!scr_fs_read_offset_chk(offset)) return 0;
   if (!(isfinite(position) && trunc(position) == position)) {
     char recv[48];
     scr_num_received(position, recv);
@@ -4355,6 +4420,16 @@ double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length,
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)mlen, "ERR_OUT_OF_RANGE");
     return 0;
   }
+  return scr_fs_read_sync_at(fd, buf, offset, length, (int64_t)position);
+}
+
+/* fs.readSync after its offset and position checks: `position` is exact,
+ * so a bigint position past 2^53 reads where it says. */
+double scr_fs_read_sync_at(double fd, ScrBytes *buf, double offset, double length,
+                           int64_t position) {
+  size_t bytelen = buf->len; /* u8 buffers: elem count == byte count */
+  char msg[160];
+  int mlen;
   /* `length |= 0`, then Node's order: a zero length reads nothing after
    * the offset and position checks; otherwise the buffer must not be
    * empty and the window must fit it (validateOffsetLengthRead). */
@@ -4417,7 +4492,7 @@ double scr_fs_read_zero(double fd, double position) {
   if (!scr_fs_write_fd_valid(fd)) return 0;
   uint8_t dummy;
   ssize_t n = position < 0 ? read((int)fd, &dummy, 0)
-    : scr_fs_pread((int)fd, &dummy, 0, position);
+    : scr_fs_pread((int)fd, &dummy, 0, (int64_t)position);
   if (n < 0) scr_fs_throw_nopath(errno, "read");
   return 0;
 }
@@ -4447,7 +4522,7 @@ static double scr_fs_vector_sync(double fd, ScrArr *buffers, double position,
       scr_bytes_release(buf);
     }
   }
-  ScrBytes window = {SIZE_MAX, length, SCR_BYTES_U8, data, NULL};
+  ScrBytes window = {.rc = SIZE_MAX, .len = length, .elem = SCR_BYTES_U8, .data = data};
   position = isfinite(position) && position >= 0 && position <= 9007199254740991.0
     ? trunc(position) : -1;
   double transferred = writing
@@ -4498,7 +4573,8 @@ int scr_fs_raw_open(const char *path, int flags, int mode) {
 }
 
 int64_t scr_fs_raw_read(int fd, void *data, size_t length, double position) {
-  ssize_t n = position >= 0 ? scr_fs_pread(fd, data, length, position) : read(fd, data, length);
+  ssize_t n = position >= 0 ? scr_fs_pread(fd, data, length, (int64_t)position)
+                            : read(fd, data, length);
   return n < 0 ? -errno : n;
 }
 
@@ -6135,6 +6211,35 @@ ScrStats *scr_fs_fstat(double fd) {
   return s;
 }
 
+#ifdef SCR_FS_WATCH_FILE
+/* fs.watchFile's poll (scr_watch_file.c calls this): stat(2) following
+ * symlinks, libuv's uv_fs_stat — NULL with *error = errno on failure,
+ * never throwing, because a failed poll IS a reportable event. +1. */
+ScrStats *scr_stats_poll_path(ScrStr *path, int *error) {
+  if (!scr_fs_path_ok(path, "path")) {
+    *error = EINVAL;
+    return NULL;
+  }
+#ifdef _WIN32
+  /* The CRT snapshot states what the probe can see without opening a
+   * handle: the poll needs the errno, not Win32's extended attributes. */
+  struct stat st;
+  if (stat(path->data, &st) != 0) {
+    *error = errno;
+    return NULL;
+  }
+  return scr_stats_of_crt(&st);
+#else
+  return scr_stats_posix(path->data, -1, false, error);
+#endif
+}
+
+/* The all-zero Stats a failed poll reports (Node's kZeroStats): every
+ * field 0, so isFile()/isDirectory() and the size/date reads all answer
+ * zero/false. +1. */
+ScrStats *scr_stats_zero(void) { return scr_stats_new(); }
+#endif /* SCR_FS_WATCH_FILE */
+
 /* ── Stats objects ───────────────────────────────────────────────────
  * Node's Stats and BigIntStats over a snapshot. The integers and the *Ms
  * fields (and BigIntStats' *Ns fields) are own properties in the binding's
@@ -6512,30 +6617,39 @@ struct ScrScandir {
 
 #ifndef _WIN32
 /* libuv's uv_fs_scandir sorts entries with strcmp on POSIX hosts, so
- * readdir, readdirSync and fs/promises readdir list names in byte order. */
+ * readdir, readdirSync and fs/promises readdir list names in byte order.
+ * The sort runs on the raw entry bytes before decoding: a name that is not
+ * valid UTF-8 decodes to U+FFFD text that no longer orders like its bytes,
+ * and two malformed names can decode to the same text, so decoding first
+ * would list them in an order Node never produces. */
 typedef struct {
-  ScrStr *name;
+  char *raw;
   unsigned char kind;
 } ScrScandirEntry;
 
 static int scr_fs_scandir_cmp(const void *a, const void *b) {
-  const ScrStr *x = ((const ScrScandirEntry *)a)->name, *y = ((const ScrScandirEntry *)b)->name;
-  size_t n = x->len < y->len ? x->len : y->len;
-  int c = memcmp(x->data, y->data, n);
-  return c ? c : (x->len > y->len) - (x->len < y->len);
+  return strcmp(((const ScrScandirEntry *)a)->raw, ((const ScrScandirEntry *)b)->raw);
 }
 
-static void scr_fs_scandir_sort(ScrScandir *s) {
-  if (s->len < 2) return;
-  ScrScandirEntry *rows = malloc(s->len * sizeof *rows);
-  if (!rows) scr_trap("scriptc: out of memory\n");
-  for (size_t i = 0; i < s->len; i++) rows[i] = (ScrScandirEntry){s->names[i], s->kinds[i]};
-  qsort(rows, s->len, sizeof *rows, scr_fs_scandir_cmp);
-  for (size_t i = 0; i < s->len; i++) {
-    s->names[i] = rows[i].name;
+/* Sorts the collected rows by their raw bytes, then decodes each name into a
+ * fresh ScrScandir and frees the rows. */
+static ScrScandir *scr_fs_scandir_from_rows(ScrScandirEntry *rows, size_t len) {
+  ScrScandir *s = malloc(sizeof *s);
+  if (!s) scr_trap("scriptc: out of memory\n");
+  s->len = len;
+  s->cap = len;
+  s->names = len ? malloc(len * sizeof *s->names) : NULL;
+  s->kinds = len ? malloc(len) : NULL;
+  if (len && (!s->names || !s->kinds)) scr_trap("scriptc: out of memory\n");
+  qsort(rows, len, sizeof *rows, scr_fs_scandir_cmp);
+  for (size_t i = 0; i < len; i++) {
+    /* Decoded as UTF-8 with U+FFFD for malformed bytes, as Node does. */
+    s->names[i] = scr_str_from_utf8_lossy((const uint8_t *)rows[i].raw, strlen(rows[i].raw));
     s->kinds[i] = rows[i].kind;
+    free(rows[i].raw);
   }
   free(rows);
+  return s;
 }
 
 static unsigned char scr_dirent_kind_of_mode(mode_t m) {
@@ -6624,15 +6738,9 @@ ScrScandir *scr_fs_scandir(ScrStr *path) {
     scr_fs_throw(errno, "scandir", path); /* Node reports scandir */
     return NULL;
   }
-  ScrScandir *s = malloc(sizeof *s);
-  if (!s) {
-    scr_trap("scriptc: out of memory\n");
-  }
-  s->len = 0;
-  s->cap = 8;
-  s->names = malloc(s->cap * sizeof *s->names);
-  s->kinds = malloc(s->cap);
-  if (!s->names || !s->kinds) {
+  size_t len = 0, cap = 8;
+  ScrScandirEntry *rows = malloc(cap * sizeof *rows);
+  if (!rows) {
     scr_trap("scriptc: out of memory\n");
   }
   const struct dirent *ent;
@@ -6669,21 +6777,24 @@ ScrScandir *scr_fs_scandir(ScrStr *path) {
                  : 0;
     }
 #endif
-    if (s->len == s->cap) {
-      s->cap *= 2;
-      s->names = realloc(s->names, s->cap * sizeof *s->names);
-      s->kinds = realloc(s->kinds, s->cap);
-      if (!s->names || !s->kinds) {
+    if (len == cap) {
+      cap *= 2;
+      rows = realloc(rows, cap * sizeof *rows);
+      if (!rows) {
         scr_trap("scriptc: out of memory\n");
       }
     }
-    s->names[s->len] = scr_str_new(ent->d_name, strlen(ent->d_name));
-    s->kinds[s->len] = kind;
-    s->len++;
+    size_t raw_len = strlen(ent->d_name);
+    rows[len].raw = malloc(raw_len + 1);
+    if (!rows[len].raw) {
+      scr_trap("scriptc: out of memory\n");
+    }
+    memcpy(rows[len].raw, ent->d_name, raw_len + 1);
+    rows[len].kind = kind;
+    len++;
   }
   closedir(d);
-  scr_fs_scandir_sort(s);
-  return s;
+  return scr_fs_scandir_from_rows(rows, len);
 #endif
 }
 
@@ -6923,7 +7034,9 @@ bool scr_dir_read(ScrDir *d, ScrStr **name, double *kind) {
       return false;
     }
     if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
-    *name = scr_str_new(ent->d_name, strlen(ent->d_name));
+    /* Node decodes an entry name as UTF-8, replacing malformed bytes with
+     * U+FFFD. */
+    *name = scr_str_from_utf8_lossy((const uint8_t *)ent->d_name, strlen(ent->d_name));
     *kind = scr_dir_entry_kind(d, ent);
     return true;
   }

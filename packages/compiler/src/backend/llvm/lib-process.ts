@@ -811,10 +811,19 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
     const kind = host.emitExpr(e.args[0]!);
     const code = host.emitExpr(e.args[1]!);
     const msg = host.emitExpr(e.args[2]!);
-    host.declare(`declare void @scr_throw_node_coded(double, ptr, ptr)`);
-    B.line(
-      `call void @scr_throw_node_coded(double ${kind.name}, ptr ${code.name}, ptr ${msg.name})`,
-    );
+    if (e.args.length > 3) {
+      // The fourth argument: the error's own `url` property.
+      const url = host.emitExpr(e.args[3]!);
+      host.declare(`declare void @scr_throw_node_coded_url(double, ptr, ptr, ptr)`);
+      B.line(
+        `call void @scr_throw_node_coded_url(double ${kind.name}, ptr ${code.name}, ptr ${msg.name}, ptr ${url.name})`,
+      );
+    } else {
+      host.declare(`declare void @scr_throw_node_coded(double, ptr, ptr)`);
+      B.line(
+        `call void @scr_throw_node_coded(double ${kind.name}, ptr ${code.name}, ptr ${msg.name})`,
+      );
+    }
     const ty = host.llType(e.type);
     if (ty === "void") {
       host.emitAlwaysPendingUnwind();
@@ -867,6 +876,10 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
     const cbT = e.args[2]!.type;
     if (cbT.kind !== "func")
       throw new InternalCompilerError("llvm emitter bug: emitter.on listener not a func");
+    // A registration past the emitter's maxListeners queues the leak
+    // warning for the next tick (scr_events_emitter.c), which the loop
+    // delivers before the process exits.
+    host.usesTimers = true;
     const args = e.args.map((a) => host.emitExpr(a));
     const { fn: adapterFn, shim } = host.emitterFixedAdapter(cbT);
     // The wrapper's capture box owns its OWN +1 of the listener; the
@@ -897,6 +910,7 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
     const adT = e.args[3]!.type;
     if (adT.kind !== "func")
       throw new InternalCompilerError("llvm emitter bug: emitter.onDyn adapter not a func");
+    host.usesTimers = true; // the leak warning's tick (emitter.on)
     const args = e.args.map((a) => host.emitExpr(a));
     const { fn: adapterFn, shim } = host.emitterFixedAdapter(adT);
     host.toHeap(args[3]!); // the frame's +1 moves into the wrapper's box
@@ -1046,6 +1060,7 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
     // emitter.on/onDyn, but the DATA adapter (the three-slot payload ABI
     // — scr_stream_emit_data) behind the arity-3 fixed shim.
     const isDyn = e.fn === "emitter.onDataDyn";
+    host.usesTimers = true; // the leak warning's tick (emitter.on)
     const cbT = e.args[isDyn ? 3 : 2]!.type;
     if (cbT.kind !== "func")
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} listener not a func`);

@@ -24,7 +24,12 @@ import {
   sharedModuleRegistrations,
 } from "./lower-shared-modules.js";
 import { dirname as dirnamePath, resolve as resolvePath } from "node:path";
-import { packageNameOfPath, probeNodeImportRefusal } from "../npm.js";
+import {
+  packageNameOfPath,
+  probeNodeFileImportRefusal,
+  probeNodeImportRefusal,
+  type NodeImportRefusal,
+} from "../npm.js";
 import { isNpmStaticPackage } from "../npm-static.js";
 import { isJsSourceFileName } from "../tsc-codes.js";
 import { isRelativeSpecifier } from "../workspace-registry.js";
@@ -754,23 +759,38 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
  * runtime-computed name). */
 /** The refusal a literal import() rejects with, or null when it loads:
  * Node's ERR_MODULE_NOT_FOUND for a package the project marks never loaded
- * (package-shims.ts), or the first refusal in the static graph of a module
- * only import() loads (LoadResult.dynamicImportRejections). */
+ * (package-shims.ts), the first refusal in the static graph of a module
+ * only import() loads (LoadResult.dynamicImportRejections), or Node's
+ * resolution refusal for a specifier nothing resolves (a package nothing
+ * installed provides, a relative path to a file that does not exist). */
 function dynamicImportRejectionOf(
   lowerer: Lowerer,
   sf: ts.SourceFile,
   spec: string,
   call: ts.CallExpression,
 ): StartupCrash | null {
-  if (isUnloadedPackage(spec)) {
-    const refusal = probeNodeImportRefusal(sf.fileName, spec);
-    if (refusal === null) return null;
-    return { message: refusal.message, className: "%Error", code: refusal.code, loc: locOf(call) };
-  }
-  if (lowerer.dynamicImportRejections.size === 0) return null;
+  const rejection = (refusal: NodeImportRefusal | null): StartupCrash | null =>
+    refusal === null
+      ? null
+      : {
+          message: refusal.message,
+          className: "%Error",
+          code: refusal.code,
+          ...(refusal.url === undefined ? {} : { url: refusal.url }),
+          loc: locOf(call),
+        };
+  if (isUnloadedPackage(spec)) return rejection(probeNodeImportRefusal(sf.fileName, spec));
   const root =
     resolveImport(lowerer.program, sf, spec) ?? npmStaticDepSf7(lowerer.program, sf, spec);
-  return root === null ? null : (lowerer.dynamicImportRejections.get(root) ?? null);
+  if (root !== null) return lowerer.dynamicImportRejections.get(root) ?? null;
+  // Builtins, and URL specifiers (file:, data:), are not package names.
+  if (canonicalBuiltinModule(spec) !== null || /^[a-z][a-z0-9+.-]*:/i.test(spec)) return null;
+  return rejection(
+    probeNodeFileImportRefusal(sf.fileName, spec) ??
+      (spec.startsWith(".") || spec.startsWith("/")
+        ? null
+        : probeNodeImportRefusal(sf.fileName, spec)),
+  );
 }
 
 function collectDynamicImports(lowerer: Lowerer, sf: ts.SourceFile): void {
@@ -1219,8 +1239,8 @@ function deferJsCollectionDiags(lowerer: Lowerer, sf: ts.SourceFile, diagsBefore
   if (!isJsSourceFile(sf)) return;
   const captured = lowerer.diags.splice(diagsBefore);
   const ice = captured.filter((d) => d.code === "SC9001");
-  if (ice.length > 0) lowerer.diags.push(...ice);
-  lowerer.runtimeFences.push(...captured.filter((d) => d.code !== "SC9001"));
+  for (const d of ice) lowerer.diags.push(d);
+  for (const d of captured) if (d.code !== "SC9001") lowerer.runtimeFences.push(d);
 }
 
 /** A scalar-literal expression a single-value `module.exports =` can carry

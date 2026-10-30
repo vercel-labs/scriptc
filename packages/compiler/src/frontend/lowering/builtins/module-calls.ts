@@ -32,6 +32,7 @@ import { lowerUtilTypeCall } from "./util-types.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
+import { jsCheckedBuiltinCall } from "../lower-builtin-values.js";
 import { type Lowerer } from "../lowerer.js";
 import { type BuiltinModuleFn } from "../surfaces.js";
 import { type ParamShape } from "../call-signatures.js";
@@ -72,6 +73,10 @@ export function lowerBuiltinModuleCall(
   );
   if (fallible) return fallible;
   checkFsUrlPaths(lowerer, expr, bi);
+  {
+    const checked = jsCheckedBuiltinCall(lowerer, expr, fn, `${bi.module}.${bi.member}`, loc);
+    if (checked) return checked;
+  }
   if (bi.module === "util/types") {
     return lowerUtilTypeCall(lowerer, expr, bi, loc, name);
   }

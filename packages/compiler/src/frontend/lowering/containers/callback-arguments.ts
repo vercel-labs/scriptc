@@ -306,6 +306,42 @@ function readsParameter(argNode: ts.Expression, index: number): boolean {
   );
 }
 
+/** The result array's element when it is the unit-only union (`undefined[]`,
+ * the sparse-literal/`Array.from(..., () => undefined)` shape): a callback
+ * that answers `undefined` stores a PRESENT unit element, so the producer
+ * gives the callback that union as its contextual return. The standalone
+ * `undefined` in return position otherwise maps to the void convention,
+ * whose answer is erased before it could be stored. Null for other elements. */
+export function unitOnlyArrayElement(lowerer: Lowerer, call: ts.CallExpression): IrType | null {
+  const result = lowerer.mapTypeOf(lowerer.typeOf(call));
+  if (result?.kind !== "array") return null;
+  const elem = result.elem;
+  if (isUnitType(elem)) return elem;
+  return elem.kind === "union" &&
+    lowerer.unions.get(elem.unionId)?.arms.every((arm) => isUnitType(arm)) === true
+    ? elem
+    : null;
+}
+
+/** Lower a callback whose answer becomes an array element, with the result
+ * element as its contextual return when that element is the unit-only union
+ * (see unitOnlyArrayElement). Other producers lower the callback directly. */
+export function lowerArrayCallbackAnswering(
+  lowerer: Lowerer,
+  fnNode: ts.Expression,
+  expected: IrType | null,
+): IrExpr {
+  if (expected === null) return lowerer.lowerExpr(fnNode);
+  const previous = lowerer.contextualFunctionReturns.get(fnNode);
+  lowerer.contextualFunctionReturns.set(fnNode, expected);
+  try {
+    return lowerer.lowerExpr(fnNode);
+  } finally {
+    if (previous === undefined) lowerer.contextualFunctionReturns.delete(fnNode);
+    else lowerer.contextualFunctionReturns.set(fnNode, previous);
+  }
+}
+
 /** Preserve the checker-selected payload ABI when a callback's runtime
  * return gained only undefined. The array state byte carries that value. */
 export function callbackArrayElement(

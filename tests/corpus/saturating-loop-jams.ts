@@ -142,6 +142,31 @@ function shifted(initial: Float64Array): number {
   return res;
 }
 
+// The inner counter starts where `j++` leaves it unchanged or where its
+// low bits never reach 3: the loop ends once both pixels escape.
+function stuck(initial: Float64Array, start: number): number {
+  let res = 0;
+  for (let i = 0; i < 4; i += 2) {
+    let zr1 = initial[i]!;
+    let zr2 = initial[i + 1]!;
+    let b = 0;
+    for (let j = start; j < 40; j++) {
+      zr1 = zr1 * zr1 + 0.2;
+      if (zr1 > 2) {
+        b |= 2;
+        if (b === 3) break;
+      }
+      zr2 = zr2 * zr2 + 0.2;
+      if (zr2 > 2) {
+        b |= 1;
+        if (b === 3) break;
+      }
+    }
+    res = res * 4 + b;
+  }
+  return res;
+}
+
 const size = 64;
 const initial = new Float64Array(size);
 for (let x = 0; x < size; x++) initial[x] = (2 * x) / size - 1.5;
@@ -162,3 +187,5 @@ console.log(row(initial, 0.5, (size >> 3) + 1, 50).slice(-2));
 const r = new Float64Array([1.2, 0.5, 1.3, 0.9]);
 const s = new Float64Array([0.1, 0.1, 0.73, 0.74]);
 console.log(resets(q), resets(r), skips(q), skips(s), shifted(q), shifted(r));
+const e = new Float64Array([1.2, 1.5, 3, 0.9]);
+console.log(stuck(e, -Infinity), stuck(e, -(2 ** 54)), stuck(e, 0.5), stuck(e, -7));

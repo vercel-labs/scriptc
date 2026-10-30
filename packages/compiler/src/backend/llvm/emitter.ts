@@ -5,7 +5,7 @@ import type { CompilationTiming } from "../../timing.js";
 import { relieveHeapPressure } from "../../heap-pressure.js";
 import { analyzeFrameEscapes, type FrameEscapes } from "./frame-escapes.js";
 import { wasmBoundsChecks } from "./wasm-modules.js";
-import { jsTruthy } from "./jsval.js";
+import { jsImmediates, jsTruthy } from "./jsval.js";
 import { JsIcSites } from "../../ir/js-ic.js";
 import { type ArraySearchKind } from "./array-search.js";
 import { emitStringInputs } from "./string-lifetimes.js";
@@ -286,6 +286,8 @@ import {
   cryptoIntThunkFor,
   type BytesThunkValue,
   fsRenameThunkFor,
+  watchNameThunkFor,
+  watchErrorThunkFor,
   streamCbThunkFor,
   zlibBytesThunkFor,
 } from "./expr-stream-callbacks.js";
@@ -374,7 +376,7 @@ import {
   type ArenaPlan,
 } from "./arenas.js";
 import { children, type Node } from "./region-ir.js";
-import { LlDyn, recordDynKeepsIdentity, type DynHost } from "./dyn.js";
+import { LlDyn, recordDynKeepsIdentity, type DynHost, type JsEntryClosure } from "./dyn.js";
 import { VirtualBorrows } from "./virtual-borrows.js";
 import { planRecordViews, recordViewFieldPtr } from "./record-views.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
@@ -1485,6 +1487,10 @@ export class LlEmitter {
   private readonly rcHelpersNoinline: boolean;
 
   readonly fnByName = new Map<string, IrFunction>();
+  /** Whether some closure has a jsval body (IrFunction.jsEntry): the
+   * dynamic tier's dynCall and dynInvoke sites then call a function value's
+   * jsval entry when it has one. */
+  jsEntries = false;
   /** Empty literals that construct with inline slots (appended-array-literals.ts). */
   appendedArrayLiterals: ReadonlySet<IrExpr> = new Set();
   /** Emitted LLVM text of every IR function body, by function name: the
@@ -2180,7 +2186,10 @@ export class LlEmitter {
     this.ffiCallbackAdapters = allocateFfiCallbackAdapters(mod.ffiImports ?? []);
     this.ffiHasRetainedCallback = hasRetainedFfiCallback(mod.ffiImports ?? []);
     this.ffiHasForeignCallback = hasForeignFfiCallback(mod.ffiImports ?? []);
-    for (const fn of mod.functions) this.fnByName.set(fn.name, fn);
+    for (const fn of mod.functions) {
+      this.fnByName.set(fn.name, fn);
+      if (fn.jsEntry !== undefined) this.jsEntries = true;
+    }
     this.appendedArrayLiterals = findAppendedArrayLiterals(mod, this.nodeIndex);
     for (const entry of mod.ffiImports ?? []) {
       this.ffiByName.set(entry.name, entry);
@@ -2396,6 +2405,7 @@ export class LlEmitter {
         ? undefined
         : (table, key, value) => this.journal?.entry(table, key, value),
       compactArrayElem: (elem) => this.compactArrayElem(elem),
+      jsEntryClosures: () => this.jsEntryClosures(),
       compactRegion: () => this.compactRegion,
       sizeType: this.sizeType,
       cycleBufOffset: this.cycleBufOffset,
@@ -5064,6 +5074,8 @@ export class LlEmitter {
         idx,
         (decl) => this.declare(decl),
         this.rcMode === undefined,
+        (text) => this.cstr(text),
+        this.shapeHost.recordViews?.partialTargets.has(shapeId) === true,
       );
     } else {
       p = this.B.tmp();
@@ -5568,6 +5580,30 @@ export class LlEmitter {
    * the fiber eagerly to its first suspension and returns the promise);
    * generator bodies via theirs (which only ALLOCATES the suspended
    * fiber and returns the generator object). */
+  private jsEntryClosureList: readonly JsEntryClosure[] | null = null;
+
+  /** The closures with a jsval body (IrFunction.jsEntry), on targets with
+   * jsval words. */
+  jsEntryClosures(): readonly JsEntryClosure[] {
+    if (this.jsEntryClosureList !== null) return this.jsEntryClosureList;
+    const list: JsEntryClosure[] = [];
+    if (this.jsEntries && jsImmediates(this))
+      for (const fn of this.fnByName.values()) {
+        const body = fn.jsEntry === undefined ? undefined : this.fnByName.get(fn.jsEntry);
+        if (body === undefined) continue;
+        list.push({
+          closure: this.callTarget(fn.name),
+          params: fn.params.map((p) => p.type),
+          ret: fn.returnType,
+          body: this.callTarget(body.name),
+          bodyParams: body.params.map((p) => p.type),
+          bodyRet: body.returnType,
+        });
+      }
+    this.jsEntryClosureList = list;
+    return list;
+  }
+
   callTarget(fnName: string): string {
     const fn = this.fnByName.get(fnName);
     if (fn?.generator !== undefined) return mangleGenSpawn(fnName);
@@ -8161,6 +8197,14 @@ export class LlEmitter {
     return fsRenameThunkFor(this, cbT);
   }
 
+  watchNameThunkFor(cbT: IrType & { kind: "func" }): string {
+    return watchNameThunkFor(this, cbT);
+  }
+
+  watchErrorThunkFor(cbT: IrType & { kind: "func" }): string {
+    return watchErrorThunkFor(this, cbT);
+  }
+
   cryptoBytesThunkFor(
     cbT: IrType & { kind: "func" },
     arrayBuffer = false,
@@ -8553,6 +8597,7 @@ for (const op of [
   "dyn.promiseDynAdapterHelper",
   "dyn.dynFuncThunkHelper",
   "dyn.dynFuncBoxHelper",
+  "dyn.jsEntryThunk",
   "dyn.dynFuncAdapterHelper",
   "dyn.dynToStrHelper",
   "dyn.dynIterNHelper",

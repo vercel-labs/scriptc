@@ -169,7 +169,11 @@ export function exclusion(source, meta, variant) {
         // Supported assertion calls; aliases, mutations, and reflection stay out.
       } else reason = "harness:assert-surface";
     } else if (meta.includes.includes("compareArray.js") && ts.isIdentifier(node) && node.text === "compareArray" &&
+      !(ts.isCallExpression(node.parent) && node.parent.expression === node) &&
       !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node && ts.isIdentifier(node.parent.expression) && node.parent.expression.text === "assert")) {
+      // assert.js defines the bare compareArray; only its direct call form is
+      // hosted (a value reference or property read would need the upstream
+      // function object and its format expando).
       reason = "harness:compareArray-surface";
     } else if (ts.isIdentifier(node) && node.text === "Test262Error") {
       if (!ts.isNewExpression(node.parent) || node.parent.expression !== node) reason = "harness:Test262Error-surface";
@@ -192,7 +196,9 @@ export function exclusion(source, meta, variant) {
 }
 
 export function prepare(source, asyncTest = false, marker = completion, variant = "strict", includes = []) {
-  const names = asyncTest ? "assert, Test262Error, $DONE" : "assert, Test262Error";
+  const names = asyncTest
+    ? "assert, compareArray, Test262Error, $DONE"
+    : "assert, compareArray, Test262Error";
   const end = asyncTest ? "" : `;console.log(${JSON.stringify(marker)});\n`;
   const helpers =
     (includes.includes("propertyHelper.js") ? `${propertyHelperSource}\n` : "") +
@@ -255,8 +261,29 @@ function earlyErrorDiagnostics(source, variant) {
     !(variant === "sloppy" && (diagnostic.code === 1214 || diagnostic.code === 1215)));
 }
 
+// The compiler's OWN early errors (frontend/early-errors.ts): static
+// semantics tsc does not model, reported at preflight under their own codes.
+// A negative-parse test only asks for SOME SyntaxError, so one of these
+// inside the test's source is a match — the same standard as the tsc
+// diagnostics above, minus tsc's ability to tell us where it points.
+const ownEarlyErrorCodes = new Set(["SC0005", "SC0006", "SC0007"]);
+
 export function matchesParseNegative(outcome, source, variant = "strict") {
   if (outcome.status !== "compile-refusal") return false;
+  {
+    const prepared = prepare(source, false, completion, variant);
+    const start = prepared.indexOf(source);
+    const end = start + source.length;
+    const suffix = variant === "sloppy" ? "/main.cjs" : "/main.js";
+    const own = outcome.diagnostics?.some(
+      (reported) =>
+        ownEarlyErrorCodes.has(reported.code) &&
+        reported.loc?.file?.endsWith(suffix) &&
+        reported.loc.start >= start &&
+        reported.loc.start < end,
+    );
+    if (own) return true;
+  }
   const matches = (parsed) => outcome.diagnostics?.some((reported) =>
     reported.code === "SC0001" &&
     reported.loc?.file?.endsWith(variant === "sloppy" ? "/main.cjs" : "/main.js") &&

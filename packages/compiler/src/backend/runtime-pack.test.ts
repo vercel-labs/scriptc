@@ -62,6 +62,7 @@ const BASE: NativeLinkFeatures = {
   dgramDyn: false,
   textCodecDyn: false,
   watch: false,
+  watchFile: false,
   foreignFfi: false,
   nodeTest: false,
   tls: false,
@@ -135,7 +136,7 @@ async function fixture(target: NativeTargetSpec = MACOS_ARM64_TARGET) {
       object_format: target.objectFormat,
       minimum_os: target.minimumOs,
     },
-    runtime_abi: { version: 47, marker: "scr_runtime_abi_v47" },
+    runtime_abi: { version: 48, marker: "scr_runtime_abi_v48" },
     compiler: {
       command: "clang",
       identity: "fixture clang",

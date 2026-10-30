@@ -7,6 +7,7 @@
  * text parts and decoded from bytes one function at a time; neither direction
  * materializes the complete document as a single string. */
 import type { IrExpr, IrFunction, IrModule, IrStmt } from "./ir.js";
+import { decodeModuleBinary, isIrEncoding } from "./codec.js";
 
 // Version 17 adds the dynamic tier's jsval type and js.* builtins (two-tier
 // design stage S3) and serializes each function's execution tier.
@@ -268,10 +269,12 @@ function functionSpans(bytes: Buffer): FunctionSpans | null {
   return null;
 }
 
-/** Decode a UTF-8 IR artifact (compact or readable) without materializing
- * it as one string: the header and each function are parsed separately.
+/** Decode an IR artifact: the binary encoding (codec.ts), or UTF-8 JSON
+ * (compact or readable) without materializing it as one string: the header
+ * and each function are parsed separately.
  * Split points are ASCII structural bytes, so every range is valid UTF-8. */
 export function deserializeModuleBytes(bytes: Buffer): IrModule {
+  if (isIrEncoding(bytes)) return decodeModuleBinary(bytes);
   const spans = functionSpans(bytes);
   if (spans === null) return deserializeModule(bytes.toString("utf8"));
   const mod = checkedVersion(

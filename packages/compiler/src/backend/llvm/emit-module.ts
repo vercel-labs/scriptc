@@ -478,6 +478,10 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   const usesEvents = runtimeFeatures.processEvents;
   const usesChildProcess = runtimeFeatures.childProcess;
   const usesFsWatch = runtimeFeatures.fsWatch;
+  // fs.watchFile programs register the poller unit's exit cleanup — the
+  // same one-line gating (native/executable.ts links scr_watch_file.c on
+  // the same predicate).
+  const usesFsWatchFile = runtimeFeatures.fsWatchFile;
   // Programs that call into Node record the libnode pack and its Node
   // version before %main (scr_node_island.c).
   const usesNodeIsland = runtimeFeatures.nodeIsland;
@@ -541,6 +545,7 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   if (workerStdioBox || workerStdinBox)
     emitter.declare(`declare void @scr_worker_stdio_install(ptr, ptr, ptr)`);
   if (usesFsWatch) emitter.declare(`declare void @scr_watch_install()`);
+  if (usesFsWatchFile) emitter.declare(`declare void @scr_watch_file_install()`);
   if (usesNodeIsland) emitter.declare(`declare void @scr_node_island_install(ptr, ptr)`);
   // Interned now: the C-string constants flush before main assembles.
   const nodeIslandConfig = usesNodeIsland
@@ -1226,6 +1231,9 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
     // fs.watch programs fill the loop's watch hooks the same way —
     // scr_watch.c links only when this line is emitted.
     ...(usesFsWatch ? [`  call void @scr_watch_install()`] : []),
+    // fs.watchFile programs register the poller unit's atexit cleanup the
+    // same way — scr_watch_file.c links only when this line is emitted.
+    ...(usesFsWatchFile ? [`  call void @scr_watch_file_install()`] : []),
     ...(nodeIslandConfig
       ? [
           `  call void @scr_node_island_install(ptr ${nodeIslandConfig[0]}, ptr ${nodeIslandConfig[1]})`,
@@ -1377,25 +1385,147 @@ export function emitModuleParts(emitter: LlEmitter): string[] {
   return out;
 }
 
-/** The out-of-line hashed probe of a number-key map (scr_map_find_f64):
- * `keyLines` define the normalized key word %kb from the parameter, and
- * `runtimeKey` is the double passed to the runtime lookup. A map with at
- * most SCR_MAP_LINEAR_LIMIT entries keeps no bucket table: the absent-key
- * filter is tested before its entries are scanned. A bucket table is
- * probed without the filter: the filter keeps two of its 64 bits per key,
- * so past a few dozen keys it rejects few absent keys, and the probe's
- * first bucket read answers those. Compact tables tag each 24-bit entry
- * index (+1) with the hash's top byte; wider tables take the runtime
- * lookup. */
+/** The `.loop` lookup helpers only read memory and always return, as
+ * declared: LLVM then merges two lookups of one key (a has() followed by
+ * get()) before it inlines them. */
+const INLINED_LOOKUP_ATTRS = "alwaysinline memory(read) nounwind willreturn";
+
+/** The number-key entry lookups (sc_map_entry_f64 and sc_map_entry_f64_int)
+ * and their hashed probes. With `loop` they are the `.loop` flavor, which
+ * lookups inside a loop call (emitNumberMapEntry): each of its functions is
+ * inlined, so a lookup that finds its key in a bucket table makes no call,
+ * and the loop keeps no argument moves or spills around one. */
+function numberMapEntryHelpers(sz: string, loop: boolean): string[] {
+  const flavor = loop ? ".loop" : "";
+  const attrs = loop ? `${INLINED_LOOKUP_ATTRS} ${FN_ATTRS}` : FN_ATTRS;
+  let mapTmp = 0;
+  const mapIndex = exactIndexLines("%k", "%nd", sz, () => `%ix${mapTmp++}`);
+  return [
+    `define internal ptr @sc_map_entry_f64${flavor}(ptr %m, double %k) ${attrs} {`,
+    `entry:`,
+    `  %ndp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 16`,
+    ...(sz === "i64"
+      ? [`  %nd32 = load i32, ptr %ndp`, `  %nd = zext i32 %nd32 to i64`]
+      : [`  %nd = load i32, ptr %ndp`]),
+    // A non-integral key inside the table is as absent as one outside it.
+    ...mapIndex.lines.map((line) => `  ${line}`),
+    `  br i1 ${mapIndex.ok}, label %slot, label %slow`,
+    `slot:`,
+    sz === "i64"
+      ? `  %i = add i64 ${mapIndex.wide}, 0`
+      : `  %i = trunc i64 ${mapIndex.wide} to ${sz}`,
+    `  %dp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 15`,
+    `  %dense = load ptr, ptr %dp`,
+    `  %sp = getelementptr inbounds i32, ptr %dense, ${sz} %i`,
+    `  %s = load i32, ptr %sp`,
+    `  %empty = icmp eq i32 %s, 0`,
+    `  br i1 %empty, label %miss, label %hit`,
+    `hit:`,
+    `  %e32 = sub i32 %s, 1`,
+    sz === "i32" ? `  %e = add i32 %e32, 0` : `  %e = zext i32 %e32 to ${sz}`,
+    `  %ep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11`,
+    `  %entries = load ptr, ptr %ep`,
+    `  %found = getelementptr inbounds %ScrMapNumEntry, ptr %entries, ${sz} %e`,
+    `  ret ptr %found`,
+    `miss:`,
+    `  ret ptr null`,
+    `slow:`,
+    `  %hashed = call ptr @sc_map_entry_f64_hashed${flavor}(ptr %m, double %k)`,
+    `  ret ptr %hashed`,
+    `}`,
+    ``,
+    // The same lookup for a key the emitter knows is an integer (`%ki`,
+    // the double `%k`'s exact value): the direct index tests the integer
+    // itself, so the double is converted only by the hashed probe. A
+    // negative key is not below the index's size as an unsigned value.
+    `define internal ptr @sc_map_entry_f64_int${flavor}(ptr %m, i64 %ki, double %k) ${attrs} {`,
+    `entry:`,
+    `  %ndp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 16`,
+    `  %nd32 = load i32, ptr %ndp`,
+    `  %nd = zext i32 %nd32 to i64`,
+    `  %inside = icmp ult i64 %ki, %nd`,
+    `  br i1 %inside, label %slot, label %slow`,
+    `slot:`,
+    sz === "i64" ? `  %i = add i64 %ki, 0` : `  %i = trunc i64 %ki to ${sz}`,
+    `  %dp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 15`,
+    `  %dense = load ptr, ptr %dp`,
+    `  %sp = getelementptr inbounds i32, ptr %dense, ${sz} %i`,
+    `  %s = load i32, ptr %sp`,
+    `  %empty = icmp eq i32 %s, 0`,
+    `  br i1 %empty, label %miss, label %hit`,
+    `hit:`,
+    `  %e32 = sub i32 %s, 1`,
+    sz === "i32" ? `  %e = add i32 %e32, 0` : `  %e = zext i32 %e32 to ${sz}`,
+    `  %ep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11`,
+    `  %entries = load ptr, ptr %ep`,
+    `  %found = getelementptr inbounds %ScrMapNumEntry, ptr %entries, ${sz} %e`,
+    `  ret ptr %found`,
+    `miss:`,
+    `  ret ptr null`,
+    `slow:`,
+    `  %hashed = call ptr @sc_map_entry_f64_hashed_int${flavor}(ptr %m, i64 %ki, double %k)`,
+    `  ret ptr %hashed`,
+    `}`,
+    ``,
+    // Hashing (scr_map_find_f64): the SameValueZero key word and its
+    // scr_key_mix hash. sc_map_entry_f64_int's probe takes the key's double
+    // with its integer view: its bits are the key word, never NaN, and +0
+    // for the integer 0. The caller converts the integer: cvtsi2sd writes
+    // only the low half of its register, so in a function entry, where
+    // LLVM cannot clear the register first, it waits for the register's
+    // last value, in a loop of lookups often a value the previous
+    // iteration loaded.
+    ...hashedNumberProbe(
+      `sc_map_entry_f64_hashed${flavor}`,
+      loop,
+      "double %k",
+      sz,
+      [
+        `  %nan = fcmp uno double %k, %k`,
+        `  %zero = fcmp oeq double %k, 0.0`,
+        `  %kz = select i1 %zero, double 0.0, double %k`,
+        `  %kzb = bitcast double %kz to i64`,
+        `  %kb = select i1 %nan, i64 9221120237041090560, i64 %kzb`,
+      ],
+      "%k",
+    ),
+    ...hashedNumberProbe(
+      `sc_map_entry_f64_hashed_int${flavor}`,
+      loop,
+      "i64 %ki, double %k",
+      sz,
+      [
+        `  %kzero = icmp eq i64 %ki, 0`,
+        `  %kbits = bitcast double %k to i64`,
+        `  %kb = select i1 %kzero, i64 0, i64 %kbits`,
+      ],
+      "%k",
+    ),
+  ];
+}
+
+/** The hashed probe of a number-key map (scr_map_find_f64), out of line,
+ * or inlined with `loop`: `keyLines` define the normalized key word %kb
+ * from the parameter, and `runtimeKey` is the double passed to the runtime
+ * lookup. A map with at most SCR_MAP_LINEAR_LIMIT entries keeps no bucket
+ * table, and neither does a map with the direct index, whose lookups reach
+ * the probe only for a key outside the index, which is absent. In a small
+ * map the absent-key filter is tested before its entries are scanned.
+ * A bucket table is probed without the filter: the filter keeps two of its
+ * 64 bits per key, so past a few dozen keys it rejects few absent keys, and
+ * the probe's first bucket read answers those. Compact tables tag each
+ * 24-bit entry index (+1) with the hash's top byte; wider tables take the
+ * runtime lookup. */
 function hashedNumberProbe(
   name: string,
+  loop: boolean,
   param: string,
   sz: string,
   keyLines: string[],
   runtimeKey: string,
 ): string[] {
   return [
-    `define internal ptr @${name}(ptr %m, ${param}) noinline ${FN_ATTRS} {`,
+    `define internal ptr @${name}(ptr %m, ${param}) ${loop ? INLINED_LOOKUP_ATTRS : "noinline"} ${FN_ATTRS} {`,
     `entry:`,
     ...keyLines,
     `  %x1s = lshr i64 %kb, 30`,
@@ -1415,7 +1545,14 @@ function hashedNumberProbe(
     `  %eps = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11`,
     `  %ents = load ptr, ptr %eps`,
     `  %linear = icmp eq ${sz} %nb, 0`,
-    `  br i1 %linear, label %filter, label %buckets`,
+    `  br i1 %linear, label %unbucketed, label %buckets`,
+    // A map without a bucket table either indexes its keys directly, and
+    // then holds none outside the index, or scans its entries.
+    `unbucketed:`,
+    `  %ndp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 16`,
+    `  %nd = load i32, ptr %ndp`,
+    `  %indexed = icmp ne i32 %nd, 0`,
+    `  br i1 %indexed, label %miss, label %filter`,
     `filter:`,
     `  %f1s = lshr i64 %h, 44`,
     `  %f1a = and i64 %f1s, 63`,
@@ -1582,117 +1719,22 @@ export function helperDefs(emitter: LlEmitter): string[] {
   }
   // Number-key Map/Set lookups probe the runtime's direct index inline:
   // while ndense is nonzero every live key is an integer below it, so an
-  // in-range integral key reads its slot (entry index + 1, 0 = absent) and
-  // any other key is absent. Maps without the index (ndense 0) hash the
-  // key in sc_map_entry_f64_hashed, which scans the entries of a small map
-  // or probes a compact bucket table as scr_map_find_f64 does, and calls
-  // the runtime lookup for a wide table. It stays out of line so that the
-  // direct-index path stays small at every call site. Both only read
-  // memory, so LLVM merges lookups of one key when nothing is stored in
-  // between (a has() followed by get(), for example).
-  if (emitter.decls.has(NUMBER_MAP_ENTRY_DECL)) {
-    const sz = emitter.sizeType;
-    let mapTmp = 0;
-    const mapIndex = exactIndexLines("%k", "%nd", sz, () => `%ix${mapTmp++}`);
+  // in-range integral key reads its slot (entry index + 1, 0 = absent).
+  // Any other key goes to sc_map_entry_f64_hashed, which probes a compact
+  // bucket table as scr_map_find_f64 does, calls the runtime lookup for a
+  // wide table, and in a map without a bucket table answers absent when the
+  // map has the index (a map with buckets keeps no index, scr_map.h) and
+  // scans the entries otherwise. A lookup in a hashed map so tests the
+  // index once. The probe stays out of line so that the direct-index path
+  // stays small at every call site, except in the `.loop` flavor
+  // (numberMapEntryHelpers). Both only read memory, so LLVM merges lookups
+  // of one key when nothing is stored in between (a has() followed by
+  // get(), for example).
+  if (emitter.decls.has(NUMBER_MAP_ENTRY_DECL))
     defs.push(
-      `define internal ptr @sc_map_entry_f64(ptr %m, double %k) ${FN_ATTRS} {`,
-      `entry:`,
-      `  %ndp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 16`,
-      ...(sz === "i64"
-        ? [`  %nd32 = load i32, ptr %ndp`, `  %nd = zext i32 %nd32 to i64`]
-        : [`  %nd = load i32, ptr %ndp`]),
-      // A non-integral key inside the table is as absent as one outside it.
-      ...mapIndex.lines.map((line) => `  ${line}`),
-      `  br i1 ${mapIndex.ok}, label %slot, label %outside`,
-      `slot:`,
-      sz === "i64"
-        ? `  %i = add i64 ${mapIndex.wide}, 0`
-        : `  %i = trunc i64 ${mapIndex.wide} to ${sz}`,
-      `  %dp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 15`,
-      `  %dense = load ptr, ptr %dp`,
-      `  %sp = getelementptr inbounds i32, ptr %dense, ${sz} %i`,
-      `  %s = load i32, ptr %sp`,
-      `  %empty = icmp eq i32 %s, 0`,
-      `  br i1 %empty, label %miss, label %hit`,
-      `hit:`,
-      `  %e32 = sub i32 %s, 1`,
-      sz === "i32" ? `  %e = add i32 %e32, 0` : `  %e = zext i32 %e32 to ${sz}`,
-      `  %ep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11`,
-      `  %entries = load ptr, ptr %ep`,
-      `  %found = getelementptr inbounds %ScrMapNumEntry, ptr %entries, ${sz} %e`,
-      `  ret ptr %found`,
-      `miss:`,
-      `  ret ptr null`,
-      `outside:`,
-      `  %dense.any = icmp ne ${sz} %nd, 0`,
-      `  br i1 %dense.any, label %miss, label %slow`,
-      `slow:`,
-      `  %hashed = call ptr @sc_map_entry_f64_hashed(ptr %m, double %k)`,
-      `  ret ptr %hashed`,
-      `}`,
-      ``,
-      // The same lookup for a key the emitter knows is an integer (`%ki`,
-      // the double `%k`'s exact value): the direct index tests the integer
-      // itself, so the double is converted only by the hashed probe. A
-      // negative key is not below the index's size as an unsigned value.
-      `define internal ptr @sc_map_entry_f64_int(ptr %m, i64 %ki, double %k) ${FN_ATTRS} {`,
-      `entry:`,
-      `  %ndp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 16`,
-      `  %nd32 = load i32, ptr %ndp`,
-      `  %nd = zext i32 %nd32 to i64`,
-      `  %inside = icmp ult i64 %ki, %nd`,
-      `  br i1 %inside, label %slot, label %outside`,
-      `slot:`,
-      sz === "i64" ? `  %i = add i64 %ki, 0` : `  %i = trunc i64 %ki to ${sz}`,
-      `  %dp = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 15`,
-      `  %dense = load ptr, ptr %dp`,
-      `  %sp = getelementptr inbounds i32, ptr %dense, ${sz} %i`,
-      `  %s = load i32, ptr %sp`,
-      `  %empty = icmp eq i32 %s, 0`,
-      `  br i1 %empty, label %miss, label %hit`,
-      `hit:`,
-      `  %e32 = sub i32 %s, 1`,
-      sz === "i32" ? `  %e = add i32 %e32, 0` : `  %e = zext i32 %e32 to ${sz}`,
-      `  %ep = getelementptr inbounds %ScrMapIx, ptr %m, i32 0, i32 11`,
-      `  %entries = load ptr, ptr %ep`,
-      `  %found = getelementptr inbounds %ScrMapNumEntry, ptr %entries, ${sz} %e`,
-      `  ret ptr %found`,
-      `miss:`,
-      `  ret ptr null`,
-      `outside:`,
-      `  %dense.any = icmp ne i64 %nd, 0`,
-      `  br i1 %dense.any, label %miss, label %slow`,
-      `slow:`,
-      `  %hashed = call ptr @sc_map_entry_f64_hashed_int(ptr %m, i64 %ki)`,
-      `  ret ptr %hashed`,
-      `}`,
-      ``,
-      // Hashing (scr_map_find_f64): the SameValueZero key word and its
-      // scr_key_mix hash. sc_map_entry_f64_int's probe converts the integer
-      // view to the key word, which is never NaN or -0, and so skips the
-      // normalization.
-      ...hashedNumberProbe(
-        "sc_map_entry_f64_hashed",
-        "double %k",
-        sz,
-        [
-          `  %nan = fcmp uno double %k, %k`,
-          `  %zero = fcmp oeq double %k, 0.0`,
-          `  %kz = select i1 %zero, double 0.0, double %k`,
-          `  %kzb = bitcast double %kz to i64`,
-          `  %kb = select i1 %nan, i64 9221120237041090560, i64 %kzb`,
-        ],
-        "%k",
-      ),
-      ...hashedNumberProbe(
-        "sc_map_entry_f64_hashed_int",
-        "i64 %ki",
-        sz,
-        [`  %kf = sitofp i64 %ki to double`, `  %kb = bitcast double %kf to i64`],
-        "%kf",
-      ),
+      ...numberMapEntryHelpers(emitter.sizeType, false),
+      ...numberMapEntryHelpers(emitter.sizeType, true),
     );
-  }
   // Map/Set iteration steps read the entries array inline: an index is
   // live when it is below the entry count and its entry's cached hash is
   // nonzero (a tombstone's is zero), as scr_map_iter_live decides, or for

@@ -1,4 +1,4 @@
-import { planRecordUnionLift, planRecordUnionWrap } from "../union-retag.js";
+import { planRecordUnionLift, planRecordUnionWrap, planUnionRetag } from "../union-retag.js";
 import type { WidthLift } from "../width-lift.js";
 import type { IrRecordShape, IrType } from "../../../ir/ir.js";
 import { canDynCheckTo, isUnitType, typeEquals, UNDEFINED_T } from "../../../ir/ir.js";
@@ -57,6 +57,33 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
         lowerer.armTag(dst.unionId, UNDEFINED_T) >= 0
       )
         return { how: "unitRetag" };
+      // Inside a checked method adapter (contravariant positions): source
+      // arms with no destination home trap instead of refusing the pair.
+      if (lowerer.coercions.checkedRetags > 0) {
+        const from = lowerer.unions.get(src.unionId);
+        const to = lowerer.unions.get(dst.unionId);
+        if (from && to) {
+          const trappable: number[] = [];
+          from.arms.forEach((arm, tag) => {
+            if (isUnitType(arm) || lowerer.armTag(dst.unionId, arm) >= 0) return;
+            if (to.arms.some((d) => !isUnitType(d) && lowerer.widthLiftPlan(arm, d) !== null))
+              return;
+            trappable.push(tag);
+          });
+          if (
+            trappable.length > 0 &&
+            trappable.length < from.arms.length &&
+            planUnionRetag(
+              from,
+              to,
+              (id) => lowerer.shapes.get(id),
+              (s, d) => lowerer.widthLiftPlan(s, d),
+              new Set(trappable),
+            ) !== null
+          )
+            return { how: "checkedRetag", trappable };
+        }
+      }
       return null;
     }
     // A unit-typed source can't wrap here (unionWrap requires the
@@ -71,7 +98,7 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
         return { how: "discriminantWrap" };
       return { how: "wrap", tag };
     }
-    const candidates: { tag: number; arm: IrType }[] = [];
+    const candidates: { tag: number; arm: IrType; checked: boolean }[] = [];
     def.arms.forEach((arm, i) => {
       if (isUnitType(arm)) return;
       const sameFamily =
@@ -87,9 +114,15 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
           arm.kind === "array") ||
         (src.kind === "object" && arm.kind === "record") ||
         (src.kind === "record" && arm.kind === "object");
-      if (sameFamily && lowerer.widthLiftPlan(src, arm) !== null) candidates.push({ tag: i, arm });
+      const armLift = sameFamily ? lowerer.widthLiftPlan(src, arm) : null;
+      if (armLift !== null)
+        candidates.push({ tag: i, arm, checked: armLift.how === "funcAdaptChecked" });
     });
     let selected = candidates;
+    // A clean function candidate always wins over a checked one, so every
+    // selection that resolves today resolves the same way.
+    if (selected.some((c) => c.checked) && selected.some((c) => !c.checked))
+      selected = selected.filter((c) => !c.checked);
     if (selected.length > 1 && src.kind === "record") {
       const source = lowerer.shapes.get(src.shapeId);
       // An inferred JS union may widen its tag while retaining variants
@@ -215,6 +248,22 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
   // never promises a bridge that can only throw.
   if (dst.kind === "func" && src.kind === "func" && lowerer.cleanFuncAdaptable(src, dst)) {
     return { how: "funcAdapt" };
+  }
+  // A method FIELD of a record width copy whose parameters convert only
+  // through a checked narrowing (method bivariance across instantiations):
+  // a checked adapter. Top-level function conversions never see it.
+  if (
+    dst.kind === "func" &&
+    src.kind === "func" &&
+    lowerer.coercions.methodFieldDepth > 0 &&
+    lowerer.coercions.checkedRetags === 0
+  ) {
+    lowerer.coercions.checkedRetags++;
+    try {
+      if (lowerer.cleanFuncAdaptable(src, dst)) return { how: "funcAdaptChecked" };
+    } finally {
+      lowerer.coercions.checkedRetags--;
+    }
   }
   if (dst.kind === "record" && src.kind === "record") {
     // An INDEX-SIGNATURE destination takes the overflow CAPTURE reshape:
@@ -370,6 +419,7 @@ export function recordWidthPlan(
   // fields answers "assume coercible" — see CoercionState.planning.
   if (lowerer.coercions.planning.has(key)) return new Map();
   lowerer.coercions.planning.add(key);
+  lowerer.coercions.methodFieldDepth++;
   try {
     const plan = new Map<string, FieldLift>();
     for (const tf of to.fields) {
@@ -405,6 +455,7 @@ export function recordWidthPlan(
     }
     return plan;
   } finally {
+    lowerer.coercions.methodFieldDepth--;
     lowerer.coercions.planning.delete(key);
   }
 }

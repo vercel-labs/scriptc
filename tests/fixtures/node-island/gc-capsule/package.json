@@ -1,0 +1,1 @@
+{ "name": "gc-capsule", "private": true, "type": "module", "scriptc": { "packages": { "weakkit": "node" } } }

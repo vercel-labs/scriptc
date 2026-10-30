@@ -420,6 +420,14 @@ ScrStream *scr_stream_end(ScrStream *s, ScrBytes *chunk_b, ScrStr *chunk_s,
 void scr_stream_cork(ScrStream *s);
 void scr_stream_uncork(ScrStream *s);
 
+#ifdef SCR_STREAM_WRITE_ERRORS
+/* An error-first write callback: wraps the user's zero-argument closure
+ * (which MOVES) so the compiler-built adapter (an ScrFsRenameFn,
+ * fn(cb, err-or-NULL)) receives the error this write completion carries
+ * (NULL is Node's null). */
+ScrClosure *scr_stream_ecb_wrap(ScrClosure *cb /*moves*/, void (*fn)(ScrClosure *, ScrError *));
+#endif
+
 /* Shared lifecycle. destroy's err is BORROWED (may be NULL). */
 ScrStream *scr_stream_destroy(ScrStream *s, ScrError *err); /* recv +1 */
 /* Readable async-iterator return(): destroy with Node's AbortError payload;
@@ -556,6 +564,9 @@ ScrBytes *scr_stream_chunk_bytes(ScrStream *s, ScrBytes *chunk);
 struct ScrDyn *scr_stream_chunk_value(ScrStream *s, ScrBytes *chunk);
 ScrStr *scr_stream_chunk_encoding(ScrStream *s);
 ScrDyn *scr_stream_chunk_encoding_value(ScrStream *s);
+/* True when the write in progress is an object-mode write that passed no
+ * encoding argument (its encoding value is undefined). */
+bool scr_stream_chunk_encoding_undefined(ScrStream *s);
 /* emit('data', value) with a checked-dynamic chunk (borrowed). */
 bool scr_stream_emit_value(ScrStream *s, ScrStr *name, struct ScrDyn *v);
 /* Whether a dyn for-await step (readable.nextChunkDyn) answered the end. */

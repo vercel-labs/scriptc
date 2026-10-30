@@ -472,3 +472,286 @@ ScrDyn *scr_buffer_static_value(const ScrStr *name) {
   scr_dyn_release(buffer);
   return member;
 }
+
+/* ── node:path functions read as values ──────────────────────────────
+ * A stored `path.posix.join` or a `path.win32` namespace passed around
+ * receives unchecked arguments, so these entries apply lib/path.js's
+ * validators (validateString, validateObject) under Node's argument names
+ * before the string algorithms in scr_path.c run. All borrow; results are
+ * +1, or NULL with Node's ERR_INVALID_ARG_TYPE pending. */
+
+/* validateString(value, name) */
+static bool scr_bv_path_string(const ScrDyn *value, const char *name, size_t name_len) {
+  if (value->kind == SCR_DYN_STR) return true;
+  char text[64];
+  int n = snprintf(text, sizeof text, "%.*s", (int)name_len, name);
+  if (n < 0) text[0] = 0;
+  scr_dyn_arg_type_fail(text, "of type string", value);
+  return false;
+}
+
+ScrStr *scr_value_string(const ScrDyn *value, ScrStr *name) {
+  if (!scr_bv_path_string(value, name->data, name->len)) return NULL;
+  return scr_str_retain(value->v.str);
+}
+
+/* validateString over every argument of a rest list, in order (join's). */
+ScrArr *scr_value_strings(const ScrDyn *args, ScrStr *name) {
+  size_t n = (size_t)scr_dyn_arr_len(args);
+  ScrArr *out = scr_arr_new(SCR_ELEM_STR, n);
+  for (size_t i = 0; i < n; i++) {
+    ScrDyn *arg = scr_dyn_arr_at(args, (double)i);
+    bool ok = scr_bv_path_string(arg, name->data, name->len);
+    if (ok) scr_arr_push_ref(out, scr_str_retain(arg->v.str));
+    scr_dyn_release(arg);
+    if (!ok) {
+      scr_arr_release(out);
+      return NULL;
+    }
+  }
+  return out;
+}
+
+static bool scr_bv_w32_sep(char c) { return c == '/' || c == '\\'; }
+
+static bool scr_bv_w32_ieq(const char *a, const char *b, size_t n) {
+  for (size_t i = 0; i < n; i++) {
+    char x = a[i] >= 'A' && a[i] <= 'Z' ? (char)(a[i] + 32) : a[i];
+    char y = b[i] >= 'A' && b[i] <= 'Z' ? (char)(b[i] + 32) : b[i];
+    if (x != y) return false;
+  }
+  return true;
+}
+
+/* win32.resolve's root match for one argument: the device it names (a UNC
+ * share, a device namespace or a drive letter) written into `device`
+ * (capacity len + 4), its length returned, and whether it is absolute. */
+static size_t scr_bv_w32_device(const char *path, size_t len, char *device, bool *absolute) {
+  *absolute = false;
+  char code = path[0];
+  if (len == 1) {
+    *absolute = scr_bv_w32_sep(code);
+    return 0;
+  }
+  if (scr_bv_w32_sep(code)) {
+    *absolute = true;
+    if (!scr_bv_w32_sep(path[1])) return 0;
+    size_t j = 2, last = 2;
+    while (j < len && !scr_bv_w32_sep(path[j])) j++;
+    if (!(j < len && j != last)) return 0;
+    size_t first = last, first_len = j - last;
+    last = j;
+    while (j < len && scr_bv_w32_sep(path[j])) j++;
+    if (!(j < len && j != last)) return 0;
+    last = j;
+    while (j < len && !scr_bv_w32_sep(path[j])) j++;
+    if (!(j == len || j != last)) return 0;
+    size_t n = 0;
+    device[n++] = '\\';
+    device[n++] = '\\';
+    memcpy(device + n, path + first, first_len);
+    n += first_len;
+    if (!(first_len == 1 && (path[first] == '.' || path[first] == '?'))) {
+      device[n++] = '\\';
+      memcpy(device + n, path + last, j - last);
+      n += j - last;
+    }
+    return n;
+  }
+  if (((code >= 'A' && code <= 'Z') || (code >= 'a' && code <= 'z')) && path[1] == ':') {
+    device[0] = path[0];
+    device[1] = ':';
+    *absolute = len > 2 && scr_bv_w32_sep(path[2]);
+    return 2;
+  }
+  return 0;
+}
+
+/* Whether resolve's last-first walk over args[from, n) — all strings —
+ * stops before it reaches args[from - 1]: posix stops at the first absolute
+ * argument, win32 once it has an absolute path on a resolved device. */
+static bool scr_bv_resolve_stops(const ScrDyn *args, long from, long n, bool win32) {
+  bool stops = false, absolute = false;
+  char *dev = NULL;
+  size_t dev_len = 0;
+  for (long i = n - 1; i >= from && !stops; i--) {
+    ScrDyn *arg = scr_dyn_arr_at(args, (double)i);
+    const ScrStr *s = arg->v.str;
+    if (s->len > 0 && !win32) {
+      stops = s->data[0] == '/';
+    } else if (s->len > 0) {
+      char *device = malloc(s->len + 4);
+      if (!device) scr_trap("scriptc: out of memory\n");
+      bool is_absolute;
+      size_t len = scr_bv_w32_device(s->data, s->len, device, &is_absolute);
+      bool other = false;
+      if (len > 0 && dev_len > 0) {
+        other = !(len == dev_len && scr_bv_w32_ieq(device, dev, len));
+      } else if (len > 0) {
+        free(dev);
+        dev = device;
+        dev_len = len;
+        device = NULL;
+      }
+      free(device);
+      if (!other && absolute) {
+        stops = dev_len > 0;
+      } else if (!other) {
+        absolute = is_absolute;
+        stops = is_absolute && dev_len > 0;
+      }
+    }
+    scr_dyn_release(arg);
+  }
+  free(dev);
+  return stops;
+}
+
+/* resolve(...args): Node validates `paths[i]` as its walk reaches each
+ * argument, last first, and the walk ends at an absolute path, so a
+ * non-string before that point is never read. */
+ScrStr *scr_path_resolve_value(const ScrDyn *args, bool win32) {
+  long n = (long)scr_dyn_arr_len(args);
+  long last_bad = n - 1;
+  for (; last_bad >= 0; last_bad--) {
+    ScrDyn *arg = scr_dyn_arr_at(args, (double)last_bad);
+    bool string = arg->kind == SCR_DYN_STR;
+    scr_dyn_release(arg);
+    if (!string) break;
+  }
+  if (last_bad >= 0 && !scr_bv_resolve_stops(args, last_bad + 1, n, win32)) {
+    char name[32];
+    int len = snprintf(name, sizeof name, "paths[%ld]", last_bad);
+    ScrDyn *arg = scr_dyn_arr_at(args, (double)last_bad);
+    scr_bv_path_string(arg, name, len < 0 ? 0 : (size_t)len);
+    scr_dyn_release(arg);
+    return NULL;
+  }
+  ScrArr *parts = scr_arr_new(SCR_ELEM_STR, (size_t)(n - last_bad - 1));
+  for (long i = last_bad + 1; i < n; i++) {
+    ScrDyn *arg = scr_dyn_arr_at(args, (double)i);
+    scr_arr_push_ref(parts, scr_str_retain(arg->v.str));
+    scr_dyn_release(arg);
+  }
+  ScrStr *out = win32 ? scr_path_win32_resolve(parts) : scr_path_resolve(parts);
+  scr_arr_release(parts);
+  return out;
+}
+
+/* parse(path): validateString, then a fresh { root, dir, base, ext, name }. */
+ScrDyn *scr_path_parse_value(const ScrDyn *path, bool win32) {
+  if (!scr_bv_path_string(path, "path", 4)) return NULL;
+  ScrArr *parts = win32 ? scr_path_win32_parse(path->v.str) : scr_path_parse(path->v.str);
+  static const char *const keys[] = {"root", "dir", "base", "ext", "name"};
+  ScrDyn *out = scr_dyn_new_obj();
+  for (size_t i = 0; i < 5; i++) {
+    ScrStr *part = scr_arr_get_ref(parts, (double)i);
+    scr_dyn_obj_set(out, keys[i], strlen(keys[i]), scr_dyn_new_str(part));
+    scr_str_release(part);
+  }
+  scr_arr_release(parts);
+  return out;
+}
+
+/* ToString for a template position (`${value}`); NULL with the error
+ * pending (a Symbol). */
+static bool scr_bv_append(ScrJsonBuf *b, const ScrDyn *value) {
+  ScrStr *text = scr_dyn_string_coerce_js(value);
+  if (!text) return false;
+  scr_jb_write(b, text->data, text->len);
+  scr_str_release(text);
+  return true;
+}
+
+/* format(pathObject): lib/path.js's _format and formatExt over any object,
+ * reading each property as Node does. The result is `base` itself when
+ * there is no dir, so it need not be a string. */
+ScrDyn *scr_path_format_value(const ScrDyn *object, bool win32) {
+  ScrStr *type = scr_dyn_typeof(object);
+  bool is_object = type->len == 6 && memcmp(type->data, "object", 6) == 0;
+  scr_str_release(type);
+  if (!is_object || object->kind == SCR_DYN_NULL || object->kind == SCR_DYN_ARR) {
+    scr_dyn_arg_type_fail("pathObject", "of type object", object);
+    return NULL;
+  }
+  ScrDyn *dir = scr_dyn_obj_read(object, "dir", 3);
+  if (!dir) return NULL;
+  if (!scr_dyn_truthy(dir)) {
+    scr_dyn_release(dir);
+    dir = scr_dyn_obj_read(object, "root", 4);
+    if (!dir) return NULL;
+  }
+  ScrDyn *base = scr_dyn_obj_read(object, "base", 4);
+  if (!base) goto fail_dir;
+  if (!scr_dyn_truthy(base)) {
+    scr_dyn_release(base);
+    base = NULL;
+    ScrJsonBuf b;
+    scr_jb_init(&b);
+    ScrDyn *name = scr_dyn_obj_read(object, "name", 4);
+    bool ok = name != NULL && (!scr_dyn_truthy(name) || scr_bv_append(&b, name));
+    if (name) scr_dyn_release(name);
+    ScrDyn *ext = ok ? scr_dyn_obj_read(object, "ext", 3) : NULL;
+    ok = ext != NULL;
+    if (ok && scr_dyn_truthy(ext)) {
+      /* `${ext[0] === '.' ? '' : '.'}${ext}` */
+      bool dot = false;
+      if (ext->kind == SCR_DYN_STR) {
+        dot = ext->v.str->len > 0 && ext->v.str->data[0] == '.';
+      } else if (ext->kind == SCR_DYN_OBJ || ext->kind == SCR_DYN_ARR || ext->kind == SCR_DYN_FUNC) {
+        ScrDyn *first = ext->kind == SCR_DYN_ARR ? scr_dyn_arr_at(ext, 0) : scr_dyn_obj_read(ext, "0", 1);
+        ok = first != NULL;
+        dot = ok && first->kind == SCR_DYN_STR && first->v.str->len == 1 && first->v.str->data[0] == '.';
+        if (first) scr_dyn_release(first);
+      }
+      if (ok && !dot) scr_jb_putc(&b, '.');
+      ok = ok && scr_bv_append(&b, ext);
+    }
+    if (ext) scr_dyn_release(ext);
+    ScrStr *text = scr_jb_finish(&b);
+    if (!ok) {
+      scr_str_release(text);
+      goto fail_dir;
+    }
+    base = scr_dyn_new_str(text);
+    scr_str_release(text);
+  }
+  if (!scr_dyn_truthy(dir)) {
+    scr_dyn_release(dir);
+    return base;
+  }
+  ScrDyn *root = scr_dyn_obj_read(object, "root", 4);
+  if (!root) goto fail_base;
+  bool same = scr_dyn_strict_eq(dir, root);
+  scr_dyn_release(root);
+  ScrJsonBuf b;
+  scr_jb_init(&b);
+  bool ok = scr_bv_append(&b, dir);
+  if (ok && !same) scr_jb_putc(&b, win32 ? '\\' : '/');
+  ok = ok && scr_bv_append(&b, base);
+  ScrStr *text = scr_jb_finish(&b);
+  scr_dyn_release(dir);
+  scr_dyn_release(base);
+  if (!ok) {
+    scr_str_release(text);
+    return NULL;
+  }
+  ScrDyn *out = scr_dyn_new_str(text);
+  scr_str_release(text);
+  return out;
+fail_base:
+  scr_dyn_release(base);
+fail_dir:
+  scr_dyn_release(dir);
+  return NULL;
+}
+
+/* toNamespacedPath(path): posix answers its argument; win32 answers a
+ * non-string or empty argument as it is and namespaces a string. */
+ScrDyn *scr_path_to_namespaced_value(ScrDyn *path, bool win32) {
+  if (!win32 || path->kind != SCR_DYN_STR || path->v.str->len == 0) return scr_dyn_retain(path);
+  ScrStr *text = scr_path_win32_to_namespaced_path(path->v.str);
+  ScrDyn *out = scr_dyn_new_str(text);
+  scr_str_release(text);
+  return out;
+}

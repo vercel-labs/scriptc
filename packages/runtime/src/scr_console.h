@@ -41,8 +41,8 @@ void scr_console_error(size_t n, const ScrLogArg *args);
 void scr_console_log_parts(size_t n, const ScrLogArg *args);
 void scr_console_error_parts(size_t n, const ScrLogArg *args);
 /* A Console instance's line on fd 1 or 2, without the global console's
- * group indentation. */
-void scr_console_write_fd(int fd, size_t n, const ScrLogArg *args);
+ * group indentation, under the instance's ignoreErrors. */
+void scr_console_write_fd(int fd, size_t n, const ScrLogArg *args, bool ignore_errors);
 /* The global console's line rewrite while a group is open (scr_console.c;
  * installed by scr_console_group): the indented heap copy of a rendered
  * line, its length in *used. */

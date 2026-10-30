@@ -647,6 +647,8 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.onExit",
   "process.onSignal",
   "process.stdio",
+  "process.stdioSlot",
+  "process.stdioWriteDyn",
   "stdin.nextChunk",
   "stdin.onData",
   "stdin.onEnd",
@@ -975,6 +977,11 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.class",
       "webstream.instanceOf",
       "webstream.install",
+      // scr_js_wrapper.c answers other values' tags through
+      // scr_dyn_object_tag_of, and its prototype methods call scr_dyn_invoke.
+      "wrapper.objectTag",
+      "wrapper.new",
+      "wrapper.toObject",
     ],
     // Constant-key reads of Object.prototype member names answer the
     // inherited member through scr_dyn_invoke.c.
@@ -1026,6 +1033,12 @@ const RUNTIME_FEATURE_RULES = {
       "buffer.installValue",
       "buffer.staticValue",
       "buffer.prototypeMember",
+      "dyn.validateString",
+      "dyn.validateStrings",
+      "path.resolveValue",
+      "path.parseValue",
+      "path.formatValue",
+      "path.toNamespacedValue",
     ],
   }),
   /** The stream unit emits through the emitter unit, also when the
@@ -1075,6 +1088,9 @@ const RUNTIME_FEATURE_RULES = {
   fetch: rule({ prefixes: ["fetch."] }),
   fileHandle: rule({ types: ["fileHandle"] }),
   fsWatch: rule({ prefixes: ["fs.watch", "watcher."], types: ["fsWatcher"] }),
+  /** fs.watchFile / fs.unwatchFile (scr_watch_file.c): the stat-polling
+   * half of the watching surface, gated on its own unit. */
+  fsWatchFile: rule({ fns: ["fs.watchFile", "fs.unwatchFile"] }),
   /** A socket 'lookup' listener: the C main installs the net unit's
    * lookup records (scr_net_lookup_install). */
   netLookup: rule({ fns: ["net.sockOnLookup"] }),
@@ -1088,6 +1104,12 @@ const RUNTIME_FEATURE_RULES = {
     libCall: (node) => node.fn.startsWith("http2.") && !HTTP2_LEGACY_FNS.has(node.fn),
     types: ["http2Session", "http2Stream"],
   }),
+  /** Intl over ICU: scr_intl.c plus the ICU archive and the data
+   * file that ships beside the executable. The prefix is `icu.` because the
+   * `intl.` libCalls are the engine-free fast paths — the embedded en-US
+   * number format and the table-driven grapheme segmenter — which must keep
+   * linking no ICU code. */
+  icu: rule({ prefixes: ["icu."] }),
   /** scr_test.c renders thrown strings with the inspect unit's string
    * formatting; scr_util_callable.c wraps the inspect unit; readline's
    * terminal unit prints completion errors through it when there is a
@@ -1166,6 +1188,9 @@ const RUNTIME_FEATURE_RULES = {
       ...UTIL_CALLABLE_LIB_FNS,
       "rl.terminal",
       "str.localeCase",
+      // win32.relative compares with String.prototype.toLowerCase's
+      // Unicode case mapping.
+      "path.win32Relative",
     ],
     prefixes: URL_PREFIXES,
     expr: (node, _tables) =>
@@ -1191,6 +1216,18 @@ const RUNTIME_FEATURE_RULES = {
       (node.kind === "dynInvoke" && STDIO_EXTENDED_NAMES.has(node.method)) ||
       (node.kind === "strLit" && STDIO_EXTENDED_NAMES.has(node.value)),
   }),
+  /** A write completion callback that takes the error argument lowers
+   * through writable.writeEcb: the SCR_STREAM_WRITE_ERRORS stream unit
+   * publishes the error the adapter delivers. */
+  streamWriteErrors: rule({ fns: ["writable.writeEcb"] }),
+  /** The program reaches the process output streams' write slot — the
+   * write method as a value (process.stdioSlot), its replacement, a patched
+   * program's typed writes, or a run-time-typed chunk
+   * (process.stdioWriteDyn): the SCR_STDIO_WRITE_SLOT build of the events
+   * unit carries the shared write body, the dynamic-chunk entry point and
+   * Node's anonymous write function. Every other program links the default
+   * object, byte for byte. */
+  stdioWriteSlot: rule({ fns: ["process.stdioSlot", "process.stdioWriteDyn"] }),
   stream: rule({
     initial: (mod) => (mod.classes ?? []).some((c) => RUNTIME_STREAM_CLASSES.has(c.name)),
     fns: [...STREAM_LIB_FNS, "dyn.builtinStreamClass"],
@@ -1212,11 +1249,19 @@ const RUNTIME_FEATURE_RULES = {
   utilPromisify: rule({ fns: ["util.promisifyDyn"] }),
   /** process.emitWarning is assigned (process.setEmitWarning). */
   warningReplace: rule({ fns: ["process.setEmitWarning"] }),
+  /** A record literal asserted to a wider record type answers a partial
+   * record view (record-views.ts): the SIZE_MAX sentinel and its trap live in
+   * the SCR_RECORD_VIEW_PARTIAL build of scr_json.c. */
+  recordViewPartial: rule({
+    expr: (node) => node.kind === "dynCheck" && node.partialView === true,
+  }),
   /** Module namespace objects as checked-dynamic values
    * (scr_module_namespace.c). */
   moduleNamespace: rule({ fns: ["module.namespaceValue"] }),
   /** A module namespace boxed for typed code (scr_module_namespace_dyn.c). */
   moduleNamespaceDyn: rule({ fns: ["module.namespaceDyn"] }),
+  /** Primitive wrapper objects (scr_js_wrapper.c). */
+  primitiveWrapper: rule({ prefixes: ["wrapper."] }),
   /** The WebAssembly API (scr_wasm.c). */
   wasm: rule({ prefixes: ["wasm."] }),
   /** crypto.subtle importKey/sign/verify/digest and CryptoKey:
@@ -1293,8 +1338,10 @@ function noRuntimeFeatures(): RuntimeFeatures {
     fetch: false,
     fileHandle: false,
     fsWatch: false,
+    fsWatchFile: false,
     http2: false,
     http: false,
+    icu: false,
     inspect: false,
     legacyTextDecoder: false,
     mime: false,
@@ -1316,8 +1363,11 @@ function noRuntimeFeatures(): RuntimeFeatures {
     searchParams: false,
     urlIdna: false,
     stdioExtended: false,
+    stdioWriteSlot: false,
+    streamWriteErrors: false,
     moduleNamespace: false,
     moduleNamespaceDyn: false,
+    primitiveWrapper: false,
     stream: false,
     streamDyn: false,
     handleProps: false,
@@ -1333,6 +1383,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     tlsCa: false,
     utilPromisify: false,
     warningReplace: false,
+    recordViewPartial: false,
     wasm: false,
     webcrypto: false,
     zlib: false,
@@ -1424,6 +1475,13 @@ function scanRuntimeFeatures(
     const sites = new JsIcSites(mod);
     features.dynTier = mod.functions.some((fn) => fn.tier === "dynamic" && hasJsIcSite(fn, sites));
   }
+  // A jsval parameter or result (ir/jsval.ts) is retained and released
+  // through the tier's word reference counting, with or without a js.*
+  // operation in the body.
+  if (!features.dynTier)
+    features.dynTier = mod.functions.some(
+      (fn) => fn.returnType.kind === "jsval" || fn.params.some((p) => p.type.kind === "jsval"),
+    );
   return features;
 }
 
@@ -1636,6 +1694,15 @@ export function moduleUsesParseArgs(mod: IrModule): boolean {
  * link line. Same generic-walk shape as moduleUsesZlib. */
 export function moduleUsesFsWatch(mod: IrModule): boolean {
   return scanRuntimeFeatures(mod, "fsWatch").fsWatch;
+}
+
+/** True when the module contains an fs.watchFile/fs.unwatchFile libCall —
+ * the link switch that pulls scr_watch_file.c into the binary and has the
+ * emitted main call scr_watch_file_install (the moduleUsesFsWatch
+ * precedent, one unit of its own). Programs that never poll pay zero bytes
+ * and keep their exact link line. */
+export function moduleUsesFsWatchFile(mod: IrModule): boolean {
+  return scanRuntimeFeatures(mod, "fsWatchFile").fsWatchFile;
 }
 
 /** True when the module contains any test.* libCall or a testCtx handle

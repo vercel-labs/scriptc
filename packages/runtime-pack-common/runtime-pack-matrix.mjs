@@ -66,6 +66,8 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // bigstats gate is narrower than bigint, which every bigint value turns on.
   ["scr_stats_bigint.c", "bigstats"],
   ["scr_regex.c", "regex"],
+  // path.win32.relative uses the regex unit's Unicode case mapping.
+  ["scr_path_win32_relative.c", "regex"],
   ["scr_glob.c", "regex"],
   ["scr_idna.c", "regex"],
   ["scr_assert.c", any("assert", "regex", "symbol")],
@@ -100,10 +102,17 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_module_namespace.c", "moduleNamespace"],
   // The same namespace as the frozen null-prototype object typed code sees.
   ["scr_module_namespace_dyn.c", "moduleNamespaceDyn"],
+  // Primitive wrapper objects.
+  ["scr_js_wrapper.c", "primitiveWrapper"],
   // Blob and File box their reads as dyn promises through scr_async_dyn.c.
   ["scr_blob.c", "dynAsync"],
   ["scr_zlib.c", "zlib"],
   ["scr_brotli.c", all("zlib", "brotli")],
+  // Intl over ICU (scr_intl.c): the default-locale number/date formats and
+  // word segmentation, over the packed ICU archive and its data file.
+  // Every engine-free Intl form (the en-US fast paths, default grapheme
+  // clusters) keeps its own unit and links none of this.
+  ["scr_intl.c", "intl"],
   ["scr_events.c", "events"],
   ["scr_readline.c", "events"],
   ["scr_readline_tty.c", all("events", "regex")],
@@ -182,6 +191,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   // TextEncoder and TextDecoder records boxed as untyped values.
   ["scr_text_codec_dyn.c", "textCodecDyn"],
   ["scr_watch.c", "watch"],
+  ["scr_watch_file.c", "watchFile"],
   ["scr_ffi_queue.c", "foreignFfi"],
   ["scr_test.c", "nodeTest"],
   ["scr_tls_ca.c", "tlsCaEffective"],
@@ -207,6 +217,7 @@ export const OPTIONAL_RUNTIME_SOURCES = [
   ["scr_node_island_handle.c", "nodeIsland"],
   ["scr_node_island_export.c", "nodeIsland"],
   ["scr_node_island_boot.c", "nodeIsland"],
+  ["scr_node_island_gc.c", "nodeIsland"],
   ["scr_stream_from_web.c", all("stream", "nativeFetch")],
 ];
 
@@ -252,6 +263,21 @@ export function variantsFor(source) {
       when: { dynTier: true, webStreams: true, nodeIsland: true },
       defines: ["SCR_JS_TIER", "SCR_HANDLE_CLASSES", "SCR_NODE_ISLANDS"],
     });
+    // A program with a partial record assertion (record-views.ts) links the
+    // build whose view slot answers NULL for a field the viewed record does
+    // not declare, so the emitted guard, clone helper and presence test can
+    // stop with the program's message instead of reading a bogus slot. The
+    // selector takes the variant with the most conditions, so each of the
+    // builds above needs its counterpart; every other program keeps the
+    // default object, byte for byte.
+    for (const { id, when, defines } of variants.slice()) {
+      const suffix = id === "default" ? "" : `-${id}`;
+      variants.push({
+        id: `record-view-partial${suffix}`,
+        when: { ...when, recordViewPartial: true },
+        defines: [...defines, "SCR_RECORD_VIEW_PARTIAL"],
+      });
+    }
   }
   // util.inspect and instanceof of Node island handles; Node's report for
   // an uncaught island error.
@@ -271,6 +297,17 @@ export function variantsFor(source) {
       id: "text-decoder-legacy",
       when: { textDecoderLegacy: true },
       defines: ["SCR_TEXT_DECODER_LEGACY"],
+    });
+  }
+  // fs.watchFile's poll needs a path stat that reports the errno (its failed
+  // poll IS a reportable event). The Stats snapshot is private to scr_lib.c,
+  // so the two entry points live in a build of that unit only programs that
+  // poll link; every other program keeps the default object, byte for byte.
+  if (source === "scr_lib.c") {
+    variants.push({
+      id: "fs-watch-file",
+      when: { watchFile: true },
+      defines: ["SCR_FS_WATCH_FILE"],
     });
   }
   // Programs that assign process.emitWarning link the replacement-aware
@@ -334,6 +371,29 @@ export function variantsFor(source) {
       when: { stdioExtended: true, nodeIsland: true },
       defines: ["SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS"],
     });
+    // The typed process output write slot (the write method as a value, its
+    // replacement, run-time-typed chunks): the shared write body, the
+    // dynamic-chunk entry point and Node's anonymous write function. Every
+    // other program keeps the default object, byte for byte.
+    for (const [id, when, defines] of [
+      ["stdio-write-slot", { stdioWriteSlot: true }, ["SCR_STDIO_WRITE_SLOT"]],
+      [
+        "stdio-extended-write-slot",
+        { stdioExtended: true, stdioWriteSlot: true },
+        ["SCR_STDIO_EXTENDED", "SCR_STDIO_WRITE_SLOT"],
+      ],
+      [
+        "node-island-write-slot",
+        { nodeIsland: true, stdioWriteSlot: true },
+        ["SCR_NODE_ISLANDS", "SCR_STDIO_WRITE_SLOT"],
+      ],
+      [
+        "stdio-extended-node-island-write-slot",
+        { stdioExtended: true, nodeIsland: true, stdioWriteSlot: true },
+        ["SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS", "SCR_STDIO_WRITE_SLOT"],
+      ],
+    ])
+      variants.push({ id, when, defines });
   }
   // Programs with Node islands link the event loop with the Node island slot;
   // every other program keeps the default object, byte for byte.
@@ -342,6 +402,16 @@ export function variantsFor(source) {
       id: "node-island",
       when: { nodeIsland: true },
       defines: ["SCR_NODE_ISLANDS"],
+    });
+  }
+  // Error-taking write completion callbacks: the stream unit publishes the
+  // error each callback receives; every other program keeps the default
+  // object, byte for byte.
+  if (source === "scr_stream.c") {
+    variants.push({
+      id: "write-errors",
+      when: { streamWriteErrors: true },
+      defines: ["SCR_STREAM_WRITE_ERRORS"],
     });
   }
   if (source === "scr_cycle.c") {
@@ -371,6 +441,7 @@ export function createRuntimePackMatrix({
     { id: "libregexp", predicate: "regex" },
     { id: "zlib", predicate: "zlibEffective" },
     { id: "brotli", predicate: all("zlib", "brotli") },
+    { id: "icu", predicate: "intl" },
     { id: "mbedtls", predicate: any("tlsEffective", "cipher", "ecdh", "dh", "pki") },
   ];
   const matrix = withLibraryRuntimeFlavors(

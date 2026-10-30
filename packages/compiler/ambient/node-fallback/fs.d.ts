@@ -604,11 +604,29 @@ declare module "node:fs" {
   ): void;
   /* fs.watch — the file-watching slice (scr_watch.c, kqueue EVFILT_VNODE):
    * "rename"/"change" events on ONE path, watcher.close() to stop. The
-   * listener takes zero parameters or the eventType string (the filename
-   * parameter has no lowering); an open watcher keeps the loop alive. A
-   * path that cannot be opened THROWS Node's fs error synchronously. */
+   * listener takes (), (eventType) or (eventType, filename); an open
+   * watcher keeps the loop alive. A path that cannot be opened THROWS
+   * Node's fs error synchronously. */
+  export type WatchEventType = "rename" | "change";
+  /* (eventType, filename): filename is the changed entry's name (null when
+   * the platform does not provide one). */
+  export type WatchListener<T> = (event: WatchEventType, filename: T | null) => void;
   export interface FSWatcher {
     close(): void;
+    on(event: "change", listener: (eventType: string, filename: string | Buffer) => void): this;
+    on(event: "error", listener: (error: Error) => void): this;
+    on(event: "close", listener: () => void): this;
+    once(event: "change", listener: (eventType: string, filename: string | Buffer) => void): this;
+    once(event: "error", listener: (error: Error) => void): this;
+    once(event: "close", listener: () => void): this;
+    addListener(
+      event: "change",
+      listener: (eventType: string, filename: string | Buffer) => void,
+    ): this;
+    addListener(event: "error", listener: (error: Error) => void): this;
+    addListener(event: "close", listener: () => void): this;
+    off(event: "change" | "error" | "close", listener: (...args: any[]) => void): this;
+    removeListener(event: "change" | "error" | "close", listener: (...args: any[]) => void): this;
   }
   /* The options-record stance (see http.RequestOptions): persistent: true,
    * recursive: false, and encoding: "utf8" state the lowered behavior and
@@ -620,12 +638,34 @@ declare module "node:fs" {
     encoding?: string;
     [option: string]: unknown;
   }
-  export function watch(path: string, listener?: (eventType: string) => void): FSWatcher;
+  export function watch(path: string, listener?: WatchListener<string>): FSWatcher;
   export function watch(
     path: string,
     options: WatchOptions,
-    listener?: (eventType: string) => void,
+    listener?: WatchListener<string>,
   ): FSWatcher;
+  /* fs.watchFile — stat polling (scr_watch_file.c, libuv's uv_fs_poll
+   * shape): the listener runs with (current, previous) Stats when a poll
+   * sees a difference, the first poll only records the baseline, and a
+   * path that cannot be stat'd polls as all-zero Stats. One poller per
+   * resolved path is shared by every listener on it. interval defaults to
+   * 5007 ms, persistent defaults to true; bigint: true (BigIntStats) has
+   * no lowering. The call is a statement: Node's StatWatcher has no
+   * lowering. */
+  export interface StatWatcher {}
+  export function watchFile(
+    filename: string,
+    options: { interval?: number; persistent?: boolean; bigint?: false },
+    listener: (current: Stats, previous: Stats) => void,
+  ): StatWatcher;
+  export function watchFile(
+    filename: string,
+    listener: (current: Stats, previous: Stats) => void,
+  ): StatWatcher;
+  export function unwatchFile(
+    filename: string,
+    listener?: (current: Stats, previous: Stats) => void,
+  ): void;
   /* fs.promises IS the fs/promises module (Node's rule) — the namespace-
    * import form `fs.promises.readFile(...)` lowers through the same
    * fs/promises table as `import { readFile } from "node:fs/promises"`. */

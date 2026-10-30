@@ -3,10 +3,18 @@
  * local arrays they rely on. */
 import { findUnaliasedLocalArrays } from "../../ir/array-length-stability.js";
 import type { IrFunction, IrStmt } from "../../ir/ir.js";
+import { everyStmtList } from "../../ir/traverse.js";
 import { findInitializedByteLoopBindings } from "./byte-windows.js";
 import type { DenseArrayLoop } from "./dense-array-loops.js";
 import type { LlEmitter } from "./emitter.js";
 import { defineModuleState } from "./emitter-state.js";
+
+/** The most IR nodes a function may have for its in-loop number-key
+ * lookups to inline the hashed probe (emitNumberMapEntry). Each inlined
+ * probe adds code to its function, and LLVM's passes over a large function
+ * take longer for it; a small function's loop of lookups, such as a k-mer
+ * count, gains the most from it. */
+const MAX_INLINED_LOOKUP_NODES = 200;
 
 /** Sets the loop state for `fn` at the start of its emission; `numericFn`
  * is `fn` with its initializer bindings (emitFunction). */
@@ -32,6 +40,15 @@ export function beginFunctionLoops(
     loops.byteWindowsEnabled && numericFn.locals.some((l) => l.type.kind === "bytes")
       ? findInitializedByteLoopBindings(fn)
       : new Map();
+  loops.inlinedLookups = fewNodes(fn.body, MAX_INLINED_LOOKUP_NODES);
+}
+
+/** Whether `body` has at most `max` statements and expressions. */
+function fewNodes(body: IrStmt[], max: number): boolean {
+  let count = 0;
+  const visit = (): boolean => ++count <= max;
+  everyStmtList(body, { expr: visit, stmt: visit });
+  return count <= max;
 }
 
 /** The state LOOPS holds on each emitter. */
@@ -58,6 +75,9 @@ export interface LoopState {
   /** Counted loops whose integer-form safety test an enclosing version
    * guard already passed. */
   readonly provenCountedGuards: Set<IrStmt>;
+  /** Number-key lookups in this function's loops inline the hashed probe:
+   * the function has at most MAX_INLINED_LOOKUP_NODES nodes. */
+  inlinedLookups: boolean;
 }
 
 export const LOOPS = defineModuleState<LoopState>(() => ({
@@ -73,4 +93,5 @@ export const LOOPS = defineModuleState<LoopState>(() => ({
   bytesLoopEntries: null,
   bytesLoopFunction: null,
   provenCountedGuards: new Set<IrStmt>(),
+  inlinedLookups: false,
 }));

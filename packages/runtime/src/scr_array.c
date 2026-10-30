@@ -55,9 +55,12 @@ static size_t scr_arr_prefix(const ScrArr *a) {
   return (a->spare & SCR_ARR_HAS_EXT) ? SCR_ARR_EXT_PREFIX : 0;
 }
 
-/* The start of the block the dense storage was allocated as. */
+/* The start of the block the dense storage was allocated as. The block is
+ * NULL while the array has no storage, and offsetting a null pointer, even
+ * by 0, is undefined: the address is computed as an integer, which keeps the
+ * callers' control flow (and the runtime profile's view of it) as it was. */
 static void *scr_arr_alloc_start(const ScrArr *a) {
-  return (char *)scr_arr_block(a) - scr_arr_prefix(a);
+  return (void *)((uintptr_t)scr_arr_block(a) - scr_arr_prefix(a));
 }
 
 /* Bytes per dense slot: an 8-byte value or a boolean byte, and its state

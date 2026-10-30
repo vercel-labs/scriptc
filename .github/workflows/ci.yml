@@ -136,6 +136,8 @@ jobs:
         run: pnpm generate:ts7-ast --check
       - name: Verify the generated IR field readers
         run: pnpm generate:ir-fields --check
+      - name: Verify the generated IR codec
+        run: pnpm generate:ir-codec --check
 
   native_macos:
     needs: [validation_scope, lanes]
@@ -464,6 +466,10 @@ jobs:
           name: native-linux-x64-gnu-shape-overlay
           path: ${{ runner.temp }}
       - run: tar -xzf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
+      # The npm suites' Node island cases load Node from a libnode pack, and
+      # fail rather than skip in this lane when none is configured.
+      - uses: ./.github/actions/libnode
+        if: matrix.suite == 'npm' || matrix.suite == 'npm-static'
       - name: Run the suite with the overlay on
         run: |
           case "${{ matrix.suite }}" in
@@ -686,11 +692,17 @@ jobs:
         run: pnpm test:checker-identity --optimization dev
 
   llvm_artifacts_linux_x64:
-    needs: [validation_scope, lanes]
+    needs: [validation_scope, lanes, native_linux]
     if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
     name: test (Linux x64 LLVM artifacts, no clang)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    # The glibc helper and runtime pack come from native_linux, as the macOS
+    # artifact jobs take theirs from native_macos. The musl packages and the
+    # WASI smoke run in llvm_artifacts_linux_x64_musl and
+    # llvm_artifacts_linux_x64_wasi: together with a rebuild of the glibc
+    # packages, which a runtime change forces, the one job took 25 to 32
+    # minutes.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -700,32 +712,13 @@ jobs:
         with:
           node-version-file: .node-version
           cache: pnpm
-      - uses: ./.github/actions/llvm-linux
       - run: pnpm install --frozen-lockfile
       - uses: ./.github/actions/zig
-      - uses: ./.github/actions/native-packages
+      - uses: actions/download-artifact@v4
         with:
-          target: linux-x64-gnu
-      - name: Build and verify Linux x64 musl release packages
-        run: |
-          pnpm --filter @scriptc/llvm-linux-x64-musl build:native
-          CC=zig AR=zig pnpm --filter @scriptc/runtime-linux-x64-musl build:native
-          helper=packages/llvm-linux-x64-musl/bin/scriptc-llvm-codegen
-          readelf -l "$helper" > "$RUNNER_TEMP/musl-helper-program-headers"
-          if grep -q INTERP "$RUNNER_TEMP/musl-helper-program-headers"; then
-            echo "musl helper must be a static executable" >&2
-            exit 1
-          fi
-          docker run --rm --volume "$GITHUB_WORKSPACE:/work:ro" alpine:3.22 \
-            /work/$helper version --format=json | node -e '
-              const value = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
-              if (value.default_target !== "x86_64-unknown-linux-musl" || !value.supported_targets?.includes("wasm32-unknown-wasi")) process.exit(1);
-            '
-          node packages/runtime-linux-x64-musl/scripts/verify.mjs
-      - uses: ./.github/actions/native-packages
-        with:
-          target: wasm32-wasi
-          helper: "false"
+          name: native-linux-x64-gnu
+          path: ${{ runner.temp }}
+      - run: tar -xzf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
       - run: pnpm build
       - name: Linux helper object format and no-clang output contract
         run: |
@@ -751,6 +744,82 @@ jobs:
             SCRIPTC_NO_CACHE=1 SCRIPTC_LEGACY_C_PIPELINE=0 node packages/cli/dist/main.js build tests/corpus/001-hello.ts -o /tmp/hello
             test "$(/tmp/hello)" = "hello world"
           '
+
+  llvm_artifacts_linux_x64_musl:
+    needs: [validation_scope, lanes, native_linux]
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
+    name: test (Linux x64 LLVM artifacts, no clang, musl)
+    runs-on: ubuntu-24.04
+    # The static musl helper and runtime pack, restored from the
+    # native-packages cache when their inputs are unchanged: about 9 minutes
+    # when both are built. The runtime build emits its units through the
+    # host's glibc helper (runtime-unit.mjs), which comes from native_linux.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - uses: ./.github/actions/llvm-linux
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/zig
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-linux-x64-gnu
+          path: ${{ runner.temp }}
+      - run: tar -xzf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
+      - uses: ./.github/actions/native-packages
+        with:
+          target: linux-x64-musl
+      - name: Verify the Linux x64 musl release helper
+        run: |
+          helper=packages/llvm-linux-x64-musl/bin/scriptc-llvm-codegen
+          readelf -l "$helper" > "$RUNNER_TEMP/musl-helper-program-headers"
+          if grep -q INTERP "$RUNNER_TEMP/musl-helper-program-headers"; then
+            echo "musl helper must be a static executable" >&2
+            exit 1
+          fi
+          docker run --rm --volume "$GITHUB_WORKSPACE:/work:ro" alpine:3.22 \
+            /work/$helper version --format=json | node -e '
+              const value = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+              if (value.default_target !== "x86_64-unknown-linux-musl" || !value.supported_targets?.includes("wasm32-unknown-wasi")) process.exit(1);
+            '
+
+  llvm_artifacts_linux_x64_wasi:
+    needs: [validation_scope, lanes, native_linux]
+    if: ${{ needs.validation_scope.outputs.full == 'true' && needs.lanes.outputs.linux == 'true' }}
+    name: test (Linux x64 LLVM artifacts, no clang, wasm32)
+    runs-on: ubuntu-24.04
+    # The wasm32-wasi runtime pack (restored from the native-packages cache
+    # when unchanged; its units go through native_linux's glibc helper) and
+    # the WASI smoke tests, which take 6 to 9 minutes.
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - uses: ./.github/actions/llvm-linux
+      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/zig
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-linux-x64-gnu
+          path: ${{ runner.temp }}
+      - run: tar -xzf "$RUNNER_TEMP/native-linux-x64-gnu.tar.gz"
+      - uses: ./.github/actions/native-packages
+        with:
+          target: wasm32-wasi
+          helper: "false"
+      - run: pnpm build
       - name: WASI helper object/runtime-pack smoke
         run: pnpm test packages/cli/test/wasi-runtime-pack.test.ts tests/harness/wasm-library.test.ts
 
@@ -1120,6 +1189,8 @@ jobs:
         ts7_parity,
         checker_identity,
         llvm_artifacts_linux_x64,
+        llvm_artifacts_linux_x64_musl,
+        llvm_artifacts_linux_x64_wasi,
         llvm_artifacts_macos_arm64,
         llvm_artifacts_macos_arm64_contracts,
         llvm_artifacts_macos_x64,
@@ -1154,6 +1225,8 @@ jobs:
               lane ts7_parity "${{ needs.ts7_parity.result }}" "${{ needs.lanes.outputs.linux }}"
               lane checker_identity "${{ needs.checker_identity.result }}" "${{ needs.lanes.outputs.linux }}"
               lane llvm_artifacts_linux_x64 "${{ needs.llvm_artifacts_linux_x64.result }}" "${{ needs.lanes.outputs.linux }}"
+              lane llvm_artifacts_linux_x64_musl "${{ needs.llvm_artifacts_linux_x64_musl.result }}" "${{ needs.lanes.outputs.linux }}"
+              lane llvm_artifacts_linux_x64_wasi "${{ needs.llvm_artifacts_linux_x64_wasi.result }}" "${{ needs.lanes.outputs.linux }}"
               lane llvm_artifacts_macos_arm64 "${{ needs.llvm_artifacts_macos_arm64.result }}" "${{ needs.lanes.outputs.macos }}"
               lane llvm_artifacts_macos_arm64_contracts "${{ needs.llvm_artifacts_macos_arm64_contracts.result }}" "${{ needs.lanes.outputs.macos }}"
               lane llvm_artifacts_macos_x64 "${{ needs.llvm_artifacts_macos_x64.result }}" "${{ needs.lanes.outputs.macos }}"

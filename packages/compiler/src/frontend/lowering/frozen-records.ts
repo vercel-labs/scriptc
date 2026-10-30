@@ -114,7 +114,7 @@ function holdsAbsentState(e: IrExpr): boolean {
 
 /** The record shapes and array types (typeKeys) whose values the program
  * may freeze. */
-function freezableTypes(
+export function freezableTypes(
   lowerer: Lowerer,
   functions: IrFunction[],
 ): { shapes: Set<string>; arrays: Set<string> } {
@@ -141,16 +141,21 @@ function freezableTypes(
     });
   if (!lowerer.untypedIntegrity && !freezesUntyped) return { shapes, arrays };
   const stack: IrType[] = [];
+  // Both seeds are program-sized (one entry per untyped conversion or check in
+  // every function), so they are pushed with loops: a spread argument list
+  // exceeds the engine's limit and throws RangeError on a large program.
   // A record checked from an untyped value copies it, frozen when the value
   // is (a fresh literal frozen in a JavaScript file included), so the shapes
   // a check builds are freezable in a program that freezes untyped values.
-  if (freezesUntyped) stack.push(...checked);
+  if (freezesUntyped) {
+    for (const type of checked) stack.push(type);
+  }
   if (lowerer.untypedIntegrity) {
     // An untyped reference to a class instance, or to a record or array
     // boxed live, reaches the values its fields and elements hold as further
     // live references. Class instances also cross into untyped code through
     // compiled callbacks, so every class is a root.
-    stack.push(...live);
+    for (const type of live) stack.push(type);
     for (const info of lowerer.classes.values())
       for (const field of info.def.fields) stack.push(field.type);
   }

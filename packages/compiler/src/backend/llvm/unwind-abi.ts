@@ -72,9 +72,9 @@ function recursiveFunctions(edges: ReadonlyMap<string, readonly string[]>): Set<
  * `call` from emitted code that can lower it as an `invoke`: it is not
  * async or a generator, not a constructor, not a method a virtual call can
  * reach or one a vtable holds (an overridden method), not a closure
- * target, not the entry or a library export, not named by any node other
- * than a `call`'s callee, and not called from an async or generator body
- * (coroutine bodies keep plain calls).
+ * target or a closure's jsval body, not the entry or a library export,
+ * not named by any node other than a `call`'s callee, and not called from
+ * an async or generator body (coroutine bodies keep plain calls).
  *
  * A native unwind costs about 0.05 µs a raise and 10 to 25 ns a frame on
  * x86-64 (scr_unwind.c's cached plans) and about 2 µs a raise and 0.1 µs a
@@ -103,6 +103,9 @@ export function unwindAbiFunctions(
   blocked.add("%error.name.read");
   blocked.add("%error.message.read");
   for (const entry of mod.lib?.exports ?? []) blocked.add(entry.fnName);
+  // A closure's jsval body is called through the function value's jsval
+  // entry (IrFunction.jsEntry), which runtime calls reach.
+  for (const fn of mod.functions) if (fn.jsEntry !== undefined) blocked.add(fn.jsEntry);
   // Methods a virtual call can reach, and the overridden methods of class
   // hierarchies (whose vtables list them), are called through pointers; the
   // others are called directly, like functions. A virtual call reaches its listed

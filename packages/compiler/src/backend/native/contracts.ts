@@ -83,6 +83,17 @@ export interface CcOptions {
   /** The program uses node:zlib's Brotli forms (with zlib): compiles
    * scr_brotli.c and links the vendored brotli archive. */
   brotli?: boolean;
+  /** The program uses an Intl form that only ICU can answer (the `icu.*`
+   * libCalls: default-locale number/date formats, word segmentation):
+   * compiles scr_intl.c and links the ICU archive, and the
+   * executable gets icudt78l.dat next to it. Every engine-free form keeps
+   * linking none of it. */
+  intl?: boolean;
+  /** With `intl`: the installed runtime pack's ICU archive and the include
+   * root of the ICU headers it ships. The C-source path then links that
+   * archive and compiles scr_intl.c against those headers, instead of
+   * building ICU from its fetched release with Zig's C++ driver. */
+  icuPack?: { archive: string; include: string };
   /** The program uses node:assert (index.ts detects assert.* libCalls on
    * the IR): compiles scr_assert.c — the zlib gating precedent, so
    * assert-free binaries keep their exact size class. scr_regex.c calls
@@ -159,8 +170,17 @@ export interface CcOptions {
   wasm?: boolean;
   /** SCR_WARNING_REPLACE: process.emitWarning replacement support. */
   warningReplace?: boolean;
+  /** SCR_RECORD_VIEW_PARTIAL: the scr_json.c build whose view slot answers
+   * NULL for a field a partial record view does not have. */
+  recordViewPartial?: boolean;
   /** SCR_STDIO_EXTENDED: stdin encoding, string data listeners, resize. */
   stdioExtended?: boolean;
+  /** SCR_STREAM_WRITE_ERRORS: the stream unit publishes the error each
+   * write completion callback receives (error-taking write callbacks). */
+  streamWriteErrors?: boolean;
+  /** SCR_STDIO_WRITE_SLOT: the events unit carries the typed write slot
+   * (the write method as a value, its replacement, run-time-typed chunks). */
+  stdioWriteSlot?: boolean;
   /** Calls into Node.js (@scriptc/node): compiles scr_node_island.c and
    * the event loop with SCR_NODE_ISLANDS (its helper slot). */
   nodeIsland?: boolean;
@@ -170,6 +190,8 @@ export interface CcOptions {
   /** A module namespace boxed for typed code: compiles
    * scr_module_namespace_dyn.c. */
   moduleNamespaceDyn?: boolean;
+  /** Primitive wrapper objects: compiles scr_js_wrapper.c. */
+  primitiveWrapper?: boolean;
   /** The program uses the process-events surface (signal/exit listeners,
    * stdin events, for-await over stdin — moduleUsesProcessEvents on the
    * IR): compiles scr_events.c into the binary. Event-free binaries keep
@@ -258,6 +280,11 @@ export interface CcOptions {
    * scr_watch.c into the binary — the net gating precedent, so watch-free
    * binaries keep their exact link line. */
   watch?: boolean;
+  /** The program uses fs.watchFile or fs.unwatchFile (moduleUsesFsWatchFile
+   * on the IR): compiles scr_watch_file.c into the binary — its own gated
+   * unit under the same precedent, so polling-free binaries keep their
+   * exact link line. */
+  watchFile?: boolean;
   /** The executable manifest has a format-5 foreign callback descriptor:
    * compiles the MPSC queue/self-pipe unit. Other FFI and non-FFI binaries
    * keep their existing runtime size class. */

@@ -33,6 +33,7 @@ import {
 } from "../backend/native-tools.js";
 import {
   type NativeRuntimeSelection,
+  installNativeRuntimeData,
   selectNativeRuntimePack,
   runtimePackManifest,
   stageNativeRuntimeSelection,
@@ -727,6 +728,11 @@ export class NativeCompiler {
         renameSync(stagedOutput, output);
         executableCache?.recordOutput(output);
       }
+      // The ICU data file is a RUN-time input: it goes beside the executable,
+      // on the cache-hit path too (the restored binary loads it all the
+      // same). Nothing else selects a data artifact, so the pack is asked
+      // only for Intl programs.
+      if (features.intl === true) installNativeRuntimeData(selectPack(), output);
       if (target.platform === "darwin" && (optimization !== "dev" || options.strip))
         rmSync(output + ".dSYM", { recursive: true, force: true });
       return {

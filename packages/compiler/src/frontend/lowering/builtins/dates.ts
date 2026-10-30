@@ -72,7 +72,7 @@ const DATE_TEXT_FNS: ReadonlyMap<string, IrLibFn> = new Map([
 ]);
 
 export const DATE_METHOD_HINT =
-  "getTime(), valueOf(), toISOString(), toUTCString(), toJSON(), toString(), toDateString(), toTimeString(), the local/UTC calendar getters and setters, setTime(), and getTimezoneOffset() are supported; locale formatters have no lowering";
+  "getTime(), valueOf(), toISOString(), toUTCString(), toJSON(), toString(), toDateString(), toTimeString(), toLocaleString(), toLocaleTimeString(), the local/UTC calendar getters and setters, setTime(), and getTimezoneOffset() are supported; locale and options arguments, toLocaleDateString() and the Intl.DateTimeFormat surface have no lowering";
 
 /** Date statics and methods on Date objects (a TimeClip'd millisecond
  * time value with identity): getters, text forms and setters.
@@ -207,6 +207,19 @@ export function dateValueMethod(name: string, value: IrExpr, loc: SrcLoc): IrExp
   const textFn = DATE_TEXT_FNS.get(name);
   if (textFn !== undefined) {
     return { kind: "libCall", fn: textFn, args: [value], type: STRING, loc };
+  }
+  // The default locale's forms. The spec makes them DateTimeFormat(locale,
+  // options).format(this); with neither argument that is ICU's default
+  // locale over the host time zone, which scr_intl.c formats over the
+  // ICU release exactly as V8 does.
+  if (name === "toLocaleString" || name === "toLocaleTimeString") {
+    return {
+      kind: "libCall",
+      fn: name === "toLocaleString" ? "icu.dateLocaleString" : "icu.dateLocaleTimeString",
+      args: [value],
+      type: STRING,
+      loc,
+    };
   }
   return null;
 }

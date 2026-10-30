@@ -57,7 +57,7 @@ export function jsIcMethods(host: Host): boolean {
   return (
     jsImmediates(host) &&
     host.currentTier === "dynamic" &&
-    jsIcMethodSites(host.currentFunctionName)
+    jsIcMethodSites(host.currentFunctionName, host.loopDepth > 0)
   );
 }
 

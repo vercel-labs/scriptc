@@ -7,8 +7,12 @@
  * Code bands:
  *   SC0xxx  preflight gates: TypeScript errors passed through (SC0001),
  *            project-config incompatibilities (SC0002), malformed imported
- *            JSON modules (SC0003), and upstream tsgo checker panics
- *            surfaced as source-anchored diagnostics (SC0004)
+ *            JSON modules (SC0003), upstream tsgo checker panics surfaced
+ *            as source-anchored diagnostics (SC0004), and the ECMAScript
+ *            early errors the checker does not model: a duplicated or
+ *            `var`-colliding lexical declaration in a block or switch
+ *            statement list (SC0005/SC0006) and a declaration where the
+ *            grammar admits only a Statement (SC0007)
  *   SC1xxx  supported-TypeScript-not-yet: valid TS outside the current subset
  *   SC2xxx  scriptc type rules (types we cannot compile yet)
  *   SC3xxx  backend/target coverage: the program is valid, but the selected
@@ -366,6 +370,24 @@ export function sharedModuleDuplicatedDiag(
   };
 }
 
+/** SC8020 — the program replaces a process output stream's write method
+ * while a Node island exists: the island's `process.stdout` is its own
+ * object, so the replacement and the island's writes cannot see each other.
+ * H2 shares the native stream object with the islands and removes this. */
+export function stdioPatchAcrossIslandsDiag(
+  stream: "stdout" | "stderr" | null,
+  loc: SrcLoc,
+): ScrDiagnostic {
+  const what =
+    stream === null ? "process.stdout.write or process.stderr.write" : `process.${stream}.write`;
+  return {
+    code: "SC8020",
+    message: `${what} is replaced while a Node island exists: the island's process output stream would not see this patch, and island writes would bypass it`,
+    loc,
+    hint: "the island's process.stdout would not see this patch",
+  };
+}
+
 /** SC8022 — island code extends a class of a module the program compiles.
  * A native instance cannot take an island subclass's overrides, so the
  * module is not owned by the program: a package runs in Node for both
@@ -687,6 +709,11 @@ export const UNSUPPORTED: Record<string, UnsupportedEntry> = {
   // remains is `this` outside any method (top level, plain functions).
   SC1080: { feature: "'this' outside a class method", milestone: "later" },
   SC1090: { feature: "this syntax", milestone: "later" }, // generic fallback; message names the construct
+  SC1091: {
+    feature: "writing an undeclared name in a JavaScript source",
+    milestone: "later",
+    hint: "a write to an undeclared name has no native lowering: sloppy mode makes it a property on Node's global object, which a native binary has none of, and strict mode makes it throw; declare the name, or keep the module in a Node island (sloppy-mode programs route there)",
+  },
   SC1100: {
     feature: "operations on 'unknown' values",
     milestone: "later",

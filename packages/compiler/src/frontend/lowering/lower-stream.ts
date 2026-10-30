@@ -6964,18 +6964,49 @@ export function lowerStreamMethodCall(
     const kind = chunkKind(args[0]!);
     if (kind === "null") lowerer.noLowering("write(null)", call, "end() finishes a writable");
     const lowerWriteCb = (cbArg: ts.Expression): IrExpr => {
-      const cb = callbackDeclaresParameters(cbArg)
-        ? null
-        : lowerer.lowerExprExpecting(cbArg, funcOf([], VOID));
-      if (cb === null || cb.type.kind !== "func" || cb.type.params.length > 0) {
+      // The stream ignores what the callback returns (`() => count++`, a
+      // stored function returning a value): the value is discarded.
+      // An untyped callback (a function a JavaScript module returned) is
+      // called unbound with the error argument, as Node calls it.
+      const raw = lowerer.lowerExpr(cbArg);
+      const cb =
+        raw.type.kind === "dyn"
+          ? lowerer.coerceToExpected(raw, funcOf([DYN], VOID))
+          : raw.type.kind === "func" && raw.type.ret.kind !== "void" && raw.type.params.length <= 1
+            ? lowerer.coerceToExpected(raw, funcOf(raw.type.params, VOID))
+            : raw;
+      if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > 1) {
         lowerer.noLowering(
-          "write completion callbacks taking the error argument",
+          "write completion callbacks of this shape",
           cbArg,
-          "() => void callbacks are supported (listen for 'error' to observe failures)",
+          "callbacks take () or (error?: Error | null) and return nothing",
         );
       }
-      return cb!;
+      if (cb.type.params.length === 0) return cb;
+      const param = cb.type.params[0]!;
+      const def = param.kind === "union" ? lowerer.unions.get(param.unionId) : undefined;
+      const ok =
+        param.kind === "dyn" ||
+        (!!def &&
+          def.arms.some((a) => a.kind === "nullT") &&
+          def.arms.some((a) => a.kind === "object" && a.className === "%Error") &&
+          def.arms.every(
+            (a) =>
+              a.kind === "nullT" ||
+              a.kind === "undefinedT" ||
+              (a.kind === "object" && a.className === "%Error"),
+          ));
+      if (!ok) {
+        lowerer.unsupported(
+          "SC1090",
+          cbArg,
+          `write completion callbacks whose parameter is not 'Error | null' (got '${lowerer.fmt(param)}')`,
+        );
+      }
+      return cb;
     };
+    const takesError = (cb: IrExpr): boolean =>
+      cb.type.kind === "func" && cb.type.params.length === 1;
     // write(chunk, encoding[, cb]), and write(value, cb): the encoding
     // argument reaches an object-mode side's _write as passed, null when
     // the callback took its place (a byte-mode side encodes a string
@@ -6988,7 +7019,19 @@ export function lowerStreamMethodCall(
       const chunk = lowerer.lowerExprExpecting(args[0]!, DYN);
       const tail: IrExpr[] = [];
       if (encArg !== undefined) tail.push(lowerer.lowerExprExpecting(encArg, DYN));
-      if (cbArg !== undefined) tail.push(lowerWriteCb(cbArg));
+      if (cbArg !== undefined) {
+        const cb = lowerWriteCb(cbArg);
+        if (takesError(cb)) {
+          return {
+            kind: "libCall",
+            fn: "writable.writeEcb",
+            args: [receiver, numLit(2, loc), chunk, tail[0] ?? dynUndefinedExpr(loc), cb],
+            type: BOOL,
+            loc,
+          };
+        }
+        tail.push(cb);
+      }
       const flags = (encArg !== undefined ? 1 : 0) | (cbArg !== undefined ? 2 : 0);
       return {
         kind: "libCall",
@@ -7055,6 +7098,15 @@ export function lowerStreamMethodCall(
     const fn = kind === "bytes" ? "writable.write" : "writable.writeStr";
     if (cbArg !== undefined) {
       const cb = lowerWriteCb(cbArg);
+      if (takesError(cb)) {
+        return {
+          kind: "libCall",
+          fn: "writable.writeEcb",
+          args: [receiver, numLit(kind === "bytes" ? 0 : 1, loc), chunk, dynUndefinedExpr(loc), cb],
+          type: BOOL,
+          loc,
+        };
+      }
       return { kind: "libCall", fn, args: [receiver, chunk, cb], type: BOOL, loc };
     }
     return { kind: "libCall", fn, args: [receiver, chunk], type: BOOL, loc };

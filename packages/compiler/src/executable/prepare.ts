@@ -8,6 +8,7 @@ import {
   npmStaticRefusalDiag,
   iceDiag,
   isCheckerPanic,
+  stdioPatchAcrossIslandsDiag,
   type ScrDiagnostic,
 } from "../diagnostics/diagnostic.js";
 import type { IrModule, SrcLoc } from "../ir/ir.js";
@@ -20,6 +21,7 @@ import {
 } from "../backend/target-diagnostics.js";
 import type { LowerResult, LowerStats } from "../frontend/lowering/lowerer.js";
 import type { FrontendFactory } from "../frontend/pipeline.js";
+import type { UnitStore } from "../frontend/lowering/unit-reuse.js";
 import type { CompilationTiming } from "../timing.js";
 import { readProjectConfig } from "../project-config.js";
 import { nodeIslandPolicy } from "../node-islands/policy.js";
@@ -42,7 +44,9 @@ export interface PreparedExecutableModule {
   warnings: ScrDiagnostic[];
 }
 
-/** Release the parser/checker before native object generation begins. */
+/** Release the parser/checker before native object generation begins.
+ * `unitStore` keeps the lowered units of this build for the next one
+ * (unit-reuse.ts). */
 export function prepareExecutableModule(
   entryPath: string,
   opts: CompileRequestOptions,
@@ -52,6 +56,7 @@ export function prepareExecutableModule(
   timing: CompilationTiming = () => {},
   lowerIslands: ReadonlyMap<string, IslandPackage> = new Map(),
   retryFences = true,
+  unitStore: UnitStore | null = null,
 ): PreparedExecutableModule | CompileFailure {
   // The island decision reads the detector's scan unless islands are off.
   const islandScan =
@@ -115,6 +120,7 @@ export function prepareExecutableModule(
           timing,
           grown,
           retryFences,
+          unitStore,
         );
       }
       return fail(fe.preflight);
@@ -127,6 +133,7 @@ export function prepareExecutableModule(
           targetPlatform: buildPlatform,
           ...(ffi !== null ? { ffiImports: ffi.functions } : {}),
           ...(opts.tier !== undefined ? { tierMode: opts.tier } : {}),
+          ...(unitStore !== null ? { unitStore } : {}),
         },
         (module) => validateModule(module).length === 0,
       );
@@ -165,6 +172,7 @@ export function prepareExecutableModule(
           timing,
           grown,
           retryFences,
+          unitStore,
         );
       }
       // A failed program whose compiled packages need the runtime or a
@@ -193,6 +201,14 @@ export function prepareExecutableModule(
         );
       }
       return fail(lowered.diagnostics);
+    }
+
+    // A program that replaces a process output stream's write method has
+    // nowhere to route an island's writes: the island's process.stdout is
+    // its own object. Until islands share the native stream object (H2),
+    // refuse the combination instead of silently missing the patch.
+    if (islandDecision !== null && lowered.stdioPatches !== undefined) {
+      return fail(lowered.stdioPatches.map((p) => stdioPatchAcrossIslandsDiag(p.stream, p.loc)));
     }
 
     const validation = validateModule(lowered.module);
@@ -267,6 +283,7 @@ export function prepareExecutableModule(
         timing,
         islands,
         false,
+        unitStore,
       );
       if (islanded.ok) return islanded;
       firstError ??= islanded.diagnostics[0] ?? null;

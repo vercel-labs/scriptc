@@ -57,6 +57,7 @@ import { dynDesc, streamTypedRefEligible } from "../../ir/analysis.js";
 import { mangleRecordNew, mangleRecordStruct } from "../mangle.js";
 import { BlockBuilder } from "./blocks.js";
 import { llvmCommentText } from "./common.js";
+import { JS_BITS } from "./jsval-encoding.js";
 import {
   arrNewCall,
   elemAccess,
@@ -219,6 +220,21 @@ export interface DynHost extends WalkerHost {
   classValueSubtypes(className: string): readonly string[];
   /** emitter.ts's pendingTestLines: the inline pending-exception test. */
   pendingTestLines(dest: string): string[];
+  /** The closures with a jsval body (IrFunction.jsEntry) on targets with
+   * jsval words, which the box builders give a jsval entry. */
+  jsEntryClosures?(): readonly JsEntryClosure[];
+}
+
+/** A closure with a jsval body (IrFunction.jsEntry), for the box builders. */
+export interface JsEntryClosure {
+  /** The closure's entry symbol (ScrClosure.fn) and signature. */
+  closure: string;
+  params: readonly IrType[];
+  ret: IrType;
+  /** The jsval body's entry symbol and signature. */
+  body: string;
+  bodyParams: readonly IrType[];
+  bodyRet: IrType;
 }
 
 const FN_ATTRS = "#0";
@@ -247,6 +263,7 @@ export class LlDyn {
   private readonly toDynFns = new Map<string, string>();
   private readonly dynFuncThunks = new Map<string, string>();
   private readonly dynFuncBoxes = new Map<string, string>();
+  private readonly jsEntryThunks = new Map<string, string>();
   private readonly dynFuncAdapters = new Map<string, string>();
   private readonly messageListeners = new Map<string, string | null>();
   private readonly messageReaders = new Map<string, string>();
@@ -290,6 +307,8 @@ export class LlDyn {
         return this.dynFuncThunkHelper(args[0] as IrType & { kind: "func" });
       case "dyn.dynFuncBoxHelper":
         return this.dynFuncBoxHelper(args[0] as IrType & { kind: "func" });
+      case "dyn.jsEntryThunk":
+        return this.jsEntryThunk(args[0] as string, args[1] as IrType[], args[2] as IrType);
       case "dyn.dynFuncAdapterHelper":
         return this.dynFuncAdapterHelper(args[0] as IrType & { kind: "func" });
       case "dyn.dynToStrHelper":
@@ -1179,8 +1198,11 @@ export class LlDyn {
         const struct = mangleRecordStruct(sourceId);
         const base = host.nullableUnions.fieldBase(sourceId);
         const offsets = target.fields.map((field) => {
-          const index = source.fields.findIndex((f) => f.name === field.name) + base;
-          return `${S} ptrtoint (ptr getelementptr (%${struct}, ptr null, i32 0, i32 ${index}) to ${S})`;
+          const index = source.fields.findIndex((f) => f.name === field.name);
+          // A partial view's target field the source does not declare has
+          // no slot: all ones (SIZE_MAX) marks it absent (record-views.ts).
+          if (index < 0) return `${S} -1`;
+          return `${S} ptrtoint (ptr getelementptr (%${struct}, ptr null, i32 0, i32 ${index + base}) to ${S})`;
         });
         const offsetTable = `${table}_${k}`;
         this.defs.push(
@@ -5534,6 +5556,101 @@ export class LlDyn {
     return name;
   }
 
+  /** `sc_jt_<n>(ptr c, ptr args, size argc) -> ptr`, a function value's
+   * jsval entry (ScrDynJsEntry) into a closure's jsval body `target`
+   * (IrFunction.jsEntry, 64-bit targets): passes each argument word to the
+   * body, a missing one as undefined and a dyn parameter's boxed, and
+   * returns the body's result as an owned word. Like the closure's own
+   * entry, the body consumes its arguments. With an exception pending the
+   * result is undefined. */
+  jsEntryThunk(target: string, params: readonly IrType[], ret: IrType): string {
+    const existing = this.jsEntryThunks.get(target);
+    if (existing) return existing;
+    const name = `sc_jt_${this.jsEntryThunks.size}`;
+    this.jsEntryThunks.set(target, name);
+    this.host.journalAllocated?.(name, "dyn.jsEntryThunk", [target, params, ret]);
+    const host = this.host;
+    const B = new BlockBuilder();
+    const undefinedWord = `inttoptr (i64 ${JS_BITS.undefined} to ptr)`;
+    const args = params.map((p, i) => {
+      const slot = B.slot();
+      B.entryAllocas.push(`${slot} = alloca ptr`);
+      B.line(`store ptr ${undefinedWord}, ptr ${slot}`);
+      const has = B.tmp();
+      B.line(`${has} = icmp ult ${host.sizeType} ${i}, %argc`);
+      const lHas = B.newLabel("jt.h");
+      const lj = B.newLabel("jt.j");
+      B.condBr(has, lHas, lj);
+      B.startBlock(lHas);
+      const ap = B.tmp();
+      const av = B.tmp();
+      B.line(`${ap} = getelementptr inbounds ptr, ptr %args, ${host.sizeType} ${i}`);
+      B.line(`${av} = load ptr, ptr ${ap}`);
+      B.line(`store ptr ${av}, ptr ${slot}`);
+      B.br(lj);
+      B.startBlock(lj);
+      const word = B.tmp();
+      B.line(`${word} = load ptr, ptr ${slot}`);
+      const owned = B.tmp();
+      if (p.kind === "jsval") {
+        host.declare(`declare ptr @scr_js_retain(ptr)`);
+        B.line(`${owned} = call ptr @scr_js_retain(ptr ${word})`);
+      } else if (p.kind === "dyn") {
+        host.declare(`declare ptr @scr_js_to_dyn_borrow(ptr)`);
+        B.line(`${owned} = call ptr @scr_js_to_dyn_borrow(ptr ${word})`);
+      } else {
+        throw new InternalCompilerError(`llvm emitter bug: jsval entry parameter ${p.kind}`);
+      }
+      return `ptr ${owned}`;
+    });
+    const callArgs = [`ptr %c`, ...args].join(", ");
+    if (ret.kind === "void") {
+      B.line(`call void @${target}(${callArgs})`);
+      this.pendingBail(B, "jtr", () => {}, `ptr ${undefinedWord}`);
+      B.terminate(`ret ptr ${undefinedWord}`);
+    } else {
+      const r = B.tmp();
+      B.line(`${r} = call ${this.valTy(ret)} @${target}(${callArgs})`);
+      this.pendingBail(B, "jtr", () => {}, `ptr ${undefinedWord}`);
+      if (ret.kind === "jsval") {
+        B.terminate(`ret ptr ${r}`);
+      } else if (ret.kind === "f64") {
+        const raw = B.tmp();
+        const nan = B.tmp();
+        const bits = B.tmp();
+        const word = B.tmp();
+        B.line(`${raw} = bitcast double ${r} to i64`);
+        B.line(`${nan} = fcmp uno double ${r}, ${r}`);
+        B.line(`${bits} = select i1 ${nan}, i64 ${JS_BITS.canonicalNan}, i64 ${raw}`);
+        B.line(`${word} = inttoptr i64 ${bits} to ptr`);
+        B.terminate(`ret ptr ${word}`);
+      } else if (ret.kind === "bool") {
+        const bits = B.tmp();
+        const word = B.tmp();
+        B.line(`${bits} = select i1 ${r}, i64 ${JS_BITS.true}, i64 ${JS_BITS.false}`);
+        B.line(`${word} = inttoptr i64 ${bits} to ptr`);
+        B.terminate(`ret ptr ${word}`);
+      } else {
+        // dyn, or a typed result boxed as the closure's own entry would.
+        const d = ret.kind === "dyn" ? r : this.toDynExpr(B, ret, r);
+        if (ret.kind !== "dyn" && isRefCounted(ret))
+          B.line(`call void ${releaseSym(host, ret)}(ptr ${r})`);
+        host.declare(`declare ptr @scr_js_from_dyn(ptr)`);
+        const word = B.tmp();
+        B.line(`${word} = call ptr @scr_js_from_dyn(ptr ${d})`);
+        B.terminate(`ret ptr ${word}`);
+      }
+    }
+    this.defs.push(
+      `define internal ptr @${name}(ptr %c, ptr %args, ${host.sizeType} %argc) ${FN_ATTRS} { ; jsval entry into ${llvmCommentText(target)}`,
+      B.render(),
+      `}`,
+      ``,
+    );
+    this.host.journalBuilt?.();
+    return name;
+  }
+
   /** The box builder dynFrom emits for one closure signature. */
   dynFuncBoxHelper(t: IrType & { kind: "func" }): string {
     const key = typeKey(t);
@@ -5547,11 +5664,43 @@ export class LlDyn {
     host.declare(`declare ptr @scr_closure_retain_v(ptr)`);
     host.declare(`declare ptr @scr_dyn_new_func(ptr, ptr, i32, ptr, ptr)`);
     const sigLit = host.cstr(key);
+    // A closure of this signature with a jsval body gets the function
+    // value's jsval entry, however the value is boxed: the closure's
+    // entry pointer names it.
+    const entries =
+      t.rest === true
+        ? []
+        : (host.jsEntryClosures?.() ?? []).filter(
+            (c) =>
+              c.params.length === t.params.length &&
+              c.params.every((p, i) => typeKey(p) === typeKey(t.params[i]!)) &&
+              typeKey(c.ret) === typeKey(t.ret),
+          );
+    const register: string[] = [];
+    if (entries.length > 0) {
+      host.declare(`declare void @scr_dyn_func_set_js(ptr, ptr, ptr)`);
+      register.push(
+        `  %fnp = getelementptr inbounds %ScrClosure, ptr %c, i64 0, i32 1`,
+        `  %fn = load ptr, ptr %fnp`,
+      );
+      entries.forEach((c, i) => {
+        const jsEntry = this.jsEntryThunk(c.body, c.bodyParams, c.bodyRet);
+        register.push(
+          `  %is${i} = icmp eq ptr %fn, @${c.closure}`,
+          `  br i1 %is${i}, label %set${i}, label %next${i}`,
+          `set${i}:`,
+          `  call void @scr_dyn_func_set_js(ptr %r, ptr @${thunk}, ptr @${jsEntry})`,
+          `  ret ptr %r`,
+          `next${i}:`,
+        );
+      });
+    }
     this.defs.push(
       `define internal ptr @${name}(ptr %v, ptr %fname) ${FN_ATTRS} { ; box ${key} into dyn`,
       `entry:`,
       `  %c = call ptr @scr_closure_retain_v(ptr %v)`,
       `  %r = call ptr @scr_dyn_new_func(ptr %c, ptr @${thunk}, i32 ${t.params.length - (t.restAbi === "typed" ? 1 : 0)}, ptr ${sigLit}, ptr %fname)`,
+      ...register,
       `  ret ptr %r`,
       `}`,
       ``,

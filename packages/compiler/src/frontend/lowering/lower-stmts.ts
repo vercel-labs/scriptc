@@ -1,8 +1,16 @@
+import { lowerStaticPrivateAssignment } from "./private-statics.js";
 import type { DiagnosticCode } from "../../diagnostics/codes.js";
 import { keepsInitializerLayout, notePreservedLayout } from "./structural-instances.js";
+import { partialFieldRead } from "./partial-assertions.js";
 import { jsGlobalValueByName } from "./global-values.js";
 import { lowerTupleAliasDecl, stripTypeWrappers } from "./typed-arguments.js";
-import { islandHandleBinding, lowerIslandExpr, lowerIslandSubclass } from "./lower-node-island.js";
+import {
+  islandHandleBinding,
+  lowerIslandExpr,
+  isIslandRequireSpec,
+  lowerIslandRequireAtStatement,
+  lowerIslandSubclass,
+} from "./lower-node-island.js";
 import { isIslandSubclassDecl } from "../../node-islands/boundary.js";
 import {
   allBytesArms,
@@ -25,13 +33,14 @@ import {
   matchAllRowsReadByElements,
   storedMatchAllRowsReadByElements,
 } from "./containers/match-row-uses.js";
-import { dynUndefinedExpr, nodeThrowExpr, numLit, varRef } from "../../ir/build.js";
+import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { runtimeKeyPatternRead } from "./expressions/keyed-field-targets.js";
 import { declaresHoistedBinding, staticCondition } from "./static-typeof.js";
 import { lowerCollectionSpread } from "./containers/collection-methods.js";
 import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
 import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
 import { importMetaBindingSource } from "./import-meta.js";
+import { nullishEmptyPatternSource } from "./nullish-empty-pattern.js";
 import { anyResidueReplacedBy } from "./any-collection-residue.js";
 import { iteratorCanStep, iteratorValue } from "./iterator-consumption.js";
 import { notIterableSpelling } from "./iterable-spelling.js";
@@ -961,8 +970,8 @@ function lowerOneStatement(
   if (deferFences && lowerer.diagSink === null && lowerer.diags.length > diagsBefore) {
     const flushed = lowerer.diags.splice(diagsBefore);
     const ice = flushed.filter((d) => d.code === "SC9001");
-    lowerer.diags.push(...ice);
-    lowerer.runtimeFences.push(...flushed.filter((d) => d.code !== "SC9001"));
+    for (const d of ice) lowerer.diags.push(d);
+    for (const d of flushed) if (d.code !== "SC9001") lowerer.runtimeFences.push(d);
   }
 }
 
@@ -1222,7 +1231,10 @@ export function predeclareForwardFnDecl(lowerer: Lowerer, symbol: ts.Symbol): bo
       entry.out.push(lowerer.lowerNestedFunctionDecl(decl));
     } catch (e) {
       entry.ctx.hoistedFnDecls.delete(decl);
-      if (previousSink !== null) previousSink.push(...lowerer.diags.splice(diagsBefore));
+      if (previousSink !== null) {
+        const flushed = lowerer.diags.splice(diagsBefore);
+        for (const d of flushed) previousSink.push(d);
+      }
       throw e;
     } finally {
       lowerer.diagSink = previousSink;
@@ -2177,6 +2189,10 @@ function lowerVarDeclarator(
     const spec = requireSpecOf(decl.initializer)!;
     if (lowerer.externalTypes.has(spec)) lowerer.externalHostFence(spec, decl, false);
     if (ts.isSourceFile(stmt.parent)) {
+      // `const x = require("<island>")` and `const { name } = …`: the
+      // island module loads here, at the statement (lower-node-island.ts).
+      const island = lowerIslandRequireAtStatement(lowerer, decl);
+      if (island !== null) return [island];
       const init = lowerer.requireInitStmt(spec, decl);
       const out: IrStmt[] = init ? [init] : [];
       // Nested patterns destructure the named export's value right after
@@ -2201,6 +2217,12 @@ function lowerVarDeclarator(
     // same routing top-level requires use, and no statement remains.
     // Relative requires keep the fence: their module-init-at-position
     // semantics needs storage this model doesn't represent.
+    // A nested require of an island package is an ordinary binding of the
+    // island module, loaded at the statement (lower-node-island.ts).
+    if (isIslandRequireSpec(lowerer, ts.getSourceFileOfNode(decl).fileName, spec)) {
+      const lowered = lowerer.lowerVarDecl(decl, isLet);
+      return lowered ? [lowered] : [];
+    }
     if (canonicalBuiltinModule(spec) !== null) {
       return canonicalBuiltinModule(spec) === "punycode"
         ? [lowerer.punycodeRequireWarning(decl)]
@@ -2486,6 +2508,7 @@ export function lowerDestructuringDecl(
   }
   let init =
     importMetaBindingSource(lowerer, decl.name, decl.initializer) ??
+    nullishEmptyPatternSource(lowerer, decl.name, decl.initializer) ??
     lowerer.lowerExpr(decl.initializer);
   const parseArgsDynObject =
     init.type.kind === "dyn" &&
@@ -2549,13 +2572,26 @@ export function lowerDestructuringDecl(
     }
   }
   const out: IrStmt[] = [];
+  // V8's destructuring TypeError spells STATIC sources: an identifier
+  // source reads "<name> is not iterable", an identifier-callee call
+  // "<name> is not a function or its return value is not iterable";
+  // everything else (property reads, method calls, parameters) gets the
+  // runtime kind wording — exactly V8's CallPrinter behavior. The DYN
+  // pattern arm and the unit arms of a narrowed union consume this.
+  const src = decl.initializer!;
+  const dynSpell = ts.isIdentifier(src)
+    ? `${src.text} is not iterable`
+    : ts.isCallExpression(src) && ts.isIdentifier(src.expression)
+      ? `${src.expression.text} is not a function or its return value is not iterable`
+      : undefined;
   // JS: a union source with exactly ONE destructurable arm beside unit
   // arms (`nameAndArgs.match(re)` — `RegExpMatchArray | null`, the
   // always-matches idiom) destructures through a VALIDATED narrow: the
-  // unit arms throw at runtime exactly where Node's TypeError would
-  // (the message is the fence's — a unit value here is the failure
-  // path either way). TypeScript keeps the fence: narrowing first is
-  // the annotated fix.
+  // unit arms throw Node's TypeError, through the checks a dyn source
+  // takes (RequireObjectCoercible for an object pattern, GetIterator for
+  // an array pattern). An object pattern whose source has no V8
+  // spelling keeps the fence. TypeScript keeps the fence: narrowing
+  // first is the annotated fix.
   if (isJsSourceFile(ts.getSourceFileOfNode(decl)) && init.type.kind === "union") {
     const def = lowerer.unions.get(init.type.unionId);
     const dataArms = (def?.arms ?? []).filter((a) => !isUnitType(a));
@@ -2568,9 +2604,63 @@ export function lowerDestructuringDecl(
       (arm.kind === "array" || arm.kind === "record")
     ) {
       const tag = def.arms.indexOf(arm);
+      const unionId = init.type.unionId;
       const utmp = lowerer.declareHiddenLocal("%destrU", init.type);
       out.push({ kind: "varDecl", localId: utmp.id, init, loc });
       const uref: IrExpr = { kind: "varRef", localId: utmp.id, type: init.type, loc };
+      // The failure branch holds one of the unit arms: the check reads it
+      // as the dyn null or undefined it is, so the data arm needs no dyn
+      // form (a record holding a generator has none).
+      const unitValue = (): IrExpr => {
+        const unitOf = (t: IrType): IrExpr =>
+          lowerer.coerceToExpected(
+            { kind: "unitLit", unit: t.kind === "nullT" ? "null" : "undefined", type: t, loc },
+            DYN,
+          );
+        const units = def.arms.filter(isUnitType);
+        const last = units[units.length - 1]!;
+        return units.slice(0, -1).reduceRight<IrExpr>(
+          (rest, t) => ({
+            kind: "ternary",
+            cond: {
+              kind: "unionIsTag",
+              unionId,
+              tag: def.arms.indexOf(t),
+              negated: false,
+              value: uref,
+              type: BOOL,
+              loc,
+            },
+            then: unitOf(t),
+            else_: rest,
+            type: DYN,
+            loc,
+          }),
+          unitOf(last),
+        );
+      };
+      const spelling = destrSpellingOf(src);
+      const check: IrExpr | null = ts.isArrayBindingPattern(decl.name)
+        ? {
+            kind: "dynIterN",
+            value: unitValue(),
+            count: decl.name.elements.nodes.length,
+            ...(dynSpell ? { notIterableMessage: dynSpell } : {}),
+            type: DYN,
+            loc,
+          }
+        : firstReadsWithDefault(decl.name as ts.ObjectBindingPattern)
+          ? firstKeyRead(lowerer, decl.name as ts.ObjectBindingPattern, unitValue, loc)
+          : spelling !== null
+            ? {
+                kind: "dynDestrCheck",
+                value: unitValue(),
+                spelling,
+                ...firstPatternProp(lowerer, decl.name as ts.ObjectBindingPattern),
+                type: DYN,
+                loc,
+              }
+            : null;
       out.push({
         kind: "if",
         cond: {
@@ -2583,6 +2673,7 @@ export function lowerDestructuringDecl(
           loc,
         },
         then: [
+          ...(check !== null ? [{ kind: "exprStmt" as const, expr: check, loc }] : []),
           {
             kind: "runtimeFence",
             code: "SC1031",
@@ -2610,22 +2701,25 @@ export function lowerDestructuringDecl(
   // value: RequireObjectCoercible with V8's own TypeError ("Cannot
   // destructure property 'a' of 'f(...)' as it is null.") for the source
   // spellings the assignment form reproduces; other sources are refused,
-  // as in the assignment form. JavaScript files keep their existing
-  // per-read errors, except that a runtime computed first key checks the
-  // source first: Node throws before it evaluates any key, and V8's bare
-  // message names the source.
-  const jsRuntimeKeyCheck =
+  // as in the assignment form. A JavaScript object pattern over a dyn
+  // source checks the source first in the same way when V8 can spell it,
+  // so a null or undefined source throws Node's message before any key
+  // is read or evaluated; other sources keep their per-read errors. V8
+  // skips the check when the first element has a default and a static
+  // key: the read of that key throws ("Cannot read properties of null
+  // (reading 'a')"), and so does the lowering's.
+  const jsSourceCheck =
     init.type.kind === "dyn" &&
     ts.isObjectBindingPattern(decl.name) &&
     isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
-    (decl.name.elements.nodes.length === 0 || startsWithRuntimeKey(lowerer, decl.name)) &&
     destrSpellingOf(decl.initializer) !== null;
   if (
-    jsRuntimeKeyCheck ||
-    (init.type.kind === "dyn" &&
-      ts.isObjectBindingPattern(decl.name) &&
-      !isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
-      lowerer.anyOrigin(decl.initializer))
+    (jsSourceCheck ||
+      (init.type.kind === "dyn" &&
+        ts.isObjectBindingPattern(decl.name) &&
+        !isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+        lowerer.anyOrigin(decl.initializer))) &&
+    !firstReadsWithDefault(decl.name as ts.ObjectBindingPattern)
   ) {
     const spelling = destrSpellingOf(decl.initializer);
     if (spelling === null) {
@@ -2635,42 +2729,19 @@ export function lowerDestructuringDecl(
         "destructuring declaration from an `any` source whose expression spelling is unsupported (use a variable, ordinary property chain, or ordinary call)",
       );
     }
-    const first = (decl.name as ts.ObjectBindingPattern).elements.nodes[0];
-    const firstKey =
-      first === undefined || first.dotDotDotToken !== undefined
-        ? undefined
-        : (first.propertyName ?? first.name);
-    // V8 names the first property when its key is an identifier, a string
-    // or a number; a computed first key takes the bare (source-only) form.
-    const firstProp =
-      firstKey === undefined || ts.isComputedPropertyName(firstKey)
-        ? undefined
-        : (patternKeyNameOf(lowerer, firstKey as ts.PropertyName) ?? undefined);
     out.push({
       kind: "exprStmt",
       expr: {
         kind: "dynDestrCheck",
         value: { kind: "varRef", localId: tmp.id, type: init.type, loc },
         spelling,
-        ...(firstProp !== undefined ? { firstProp } : {}),
+        ...firstPatternProp(lowerer, decl.name as ts.ObjectBindingPattern),
         type: init.type,
         loc,
       },
       loc,
     });
   }
-  // V8's destructuring TypeError spells STATIC sources: an identifier
-  // source reads "<name> is not iterable", an identifier-callee call
-  // "<name> is not a function or its return value is not iterable";
-  // everything else (property reads, method calls, parameters) gets the
-  // runtime kind wording — exactly V8's CallPrinter behavior. Only the
-  // DYN pattern arm consumes this.
-  const src = decl.initializer!;
-  const dynSpell = ts.isIdentifier(src)
-    ? `${src.text} is not iterable`
-    : ts.isCallExpression(src) && ts.isIdentifier(src.expression)
-      ? `${src.expression.text} is not a function or its return value is not iterable`
-      : undefined;
   lowerer.lowerBindingPattern(
     decl.name as ts.ArrayBindingPattern | ts.ObjectBindingPattern,
     () => ({ kind: "varRef", localId: tmp.id, type: init.type, loc }),
@@ -3790,6 +3861,10 @@ export function lowerBindingPattern(
       type: fieldType,
       loc,
     };
+    // A field some partial record assertion leaves unwritten (a partial
+    // record view, partial-assertions.ts): the element read throws the
+    // catchable TypeError instead of reading a slot the view lacks.
+    value = partialFieldRead(lowerer, srcRef(), srcType.shapeId, propName, fieldType, loc) ?? value;
     // `{ tld = "localhost" }`: the element default applies exactly when
     // the field holds the undefined arm — the same undefined test and
     // narrow/retag as a defaulted parameter's prologue (declareParams).
@@ -6494,6 +6569,12 @@ export function lowerVarDecl(
     type = init.type;
     notePreservedLayout(lowerer, decl);
   }
+  // A JavaScript binding assigned values outside its declared type
+  // (analyzeJsWidenedBindings in lowerer.ts) holds them as checked-dynamic.
+  {
+    const symbol = lowerer.resolveValueSymbol(decl.name);
+    if (symbol && lowerer.jsWidenedBindings.has(symbol)) type = DYN;
+  }
   // A typed-arguments function expression (typed-arguments.ts): the
   // checker types the binding variadic, but its value has the fixed
   // signature every use asserts.
@@ -7255,13 +7336,18 @@ export function jsBindingHasOpenWrites(lowerer: Lowerer, decl: ts.VariableDeclar
     )
   )
     return true;
-  // A `+=` of a string turns a number or boolean binding into a string
-  // (`n += "px"`); the checker keeps the declared type.
+  // A `+=` of a string, or of a value that may be one, turns a number or
+  // boolean binding into a string (`n += "px"`); the checker keeps the
+  // declared type.
+  const mayBeString = (type: ts.Type): boolean =>
+    type.flags & ts.TypeFlags.Union
+      ? constituentTypes(type).some(mayBeString)
+      : (type.flags & ts.TypeFlags.StringLike) !== 0;
   if (
     candidates.some(
       (node) =>
         node.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken &&
-        (lowerer.typeOf(node.right).flags & ts.TypeFlags.StringLike) !== 0,
+        mayBeString(lowerer.typeOf(node.right)),
     )
   ) {
     const declared = lowerer.mapTypeOf(lowerer.typeOf(decl.name));
@@ -7298,6 +7384,13 @@ export function jsBindingHasOpenWrites(lowerer: Lowerer, decl: ts.VariableDeclar
   if (declared === null || declared.kind === "dyn" || declared.kind === "union") return false;
   return differing.some((node) => {
     const written = lowerer.mapTypeOf(lowerer.typeOf(node.right));
+    // A union a primitive binding cannot hold (`x = c ? 1 : "a"` into
+    // `var x = 0`).
+    if (
+      written?.kind === "union" &&
+      (declared.kind === "f64" || declared.kind === "bool" || declared.kind === "string")
+    )
+      return true;
     return (
       written !== null &&
       written.kind !== "dyn" &&
@@ -8664,6 +8757,9 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
       if (urlWrite) return { kind: "exprStmt", expr: urlWrite, loc: locOf(expr) };
     }
     if (opKind === ts.SyntaxKind.EqualsToken) {
+      const staticPrivateWrite = lowerStaticPrivateAssignment(lowerer, expr);
+      if (staticPrivateWrite)
+        return { kind: "exprStmt", expr: staticPrivateWrite, loc: locOf(expr) };
       const callableWrite = lowerNativeFunctionAssignment(lowerer, expr);
       if (callableWrite) return { kind: "exprStmt", expr: callableWrite, loc: locOf(expr) };
       // Expando function members (`foo.bar = 12`, `foo[SYM] = v` on a
@@ -9261,6 +9357,39 @@ export function lowerExprStatement(lowerer: Lowerer, expr: ts.Expression): IrStm
           };
         }
       }
+      // process.stdout.write = fn (and stderr): replace the stream object's
+      // write slot. Every later write to the stream — console output, typed
+      // write calls (programPatchesStdio), runtime writers — goes through it.
+      if (ts.isPropertyAccessExpression(expr.left) && expr.left.name.text === "write") {
+        const recv = expr.left.expression;
+        const stream = ts.isPropertyAccessExpression(recv)
+          ? lowerer.stdlibGlobalMember(recv, "process")
+          : null;
+        if (stream === "stdout" || stream === "stderr") {
+          const loc = locOf(expr);
+          return {
+            kind: "exprStmt",
+            expr: {
+              kind: "libCall",
+              fn: "dyn.keySet",
+              args: [
+                {
+                  kind: "libCall",
+                  fn: "process.stdioSlot",
+                  args: [numLit(stream === "stdout" ? 1 : 2, loc)],
+                  type: DYN,
+                  loc,
+                },
+                strLit("write", locOf(expr.left.name)),
+                lowerer.lowerExprExpecting(expr.right, DYN),
+              ],
+              type: VOID,
+              loc,
+            },
+            loc,
+          };
+        }
+      }
       if (!ts.isIdentifier(expr.left)) {
         lowerer.unsupported("SC1090", expr.left, "assignment to non-variables");
       }
@@ -9587,6 +9716,59 @@ export function lowerDestructuringAssign(
 ): IrStmt {
   const parts = destructuringAssignInto(lowerer, target, init, null, blame, loc);
   return { kind: "block", body: parts.stmts, loc };
+}
+
+/** An object pattern whose first element has a default and a static key
+ * (`{ a = 1 }`, `{ a: b = 1 }`): V8 reads that key without checking the
+ * source first, so a null or undefined source throws the read's TypeError. */
+function firstReadsWithDefault(pattern: ts.ObjectBindingPattern): boolean {
+  const first = pattern.elements.nodes[0];
+  return (
+    first !== undefined &&
+    first.dotDotDotToken === undefined &&
+    first.initializer !== undefined &&
+    !(first.propertyName !== undefined && ts.isComputedPropertyName(first.propertyName))
+  );
+}
+
+/** The read of the first key of a pattern that `firstReadsWithDefault`
+ * accepts, over a dyn source: on null or undefined it throws the read's
+ * TypeError, as V8 does. Null when the key has no static name. */
+function firstKeyRead(
+  lowerer: Lowerer,
+  pattern: ts.ObjectBindingPattern,
+  source: () => IrExpr,
+  loc: SrcLoc,
+): IrExpr | null {
+  const { firstProp } = firstPatternProp(lowerer, pattern);
+  if (firstProp === undefined) return null;
+  return {
+    kind: "dynKeyGet",
+    key: { kind: "strLit", value: firstProp, type: STRING, loc },
+    value: source(),
+    type: DYN,
+    loc,
+  };
+}
+
+/** The first property V8 names in an object pattern's destructuring
+ * TypeError ("Cannot destructure property 'a' of ..."): an identifier,
+ * string or numeric first key. A computed first key, a rest element or
+ * an empty pattern takes the bare (source-only) form. */
+function firstPatternProp(
+  lowerer: Lowerer,
+  pattern: ts.ObjectBindingPattern,
+): { firstProp?: string } {
+  const first = pattern.elements.nodes[0];
+  const firstKey =
+    first === undefined || first.dotDotDotToken !== undefined
+      ? undefined
+      : (first.propertyName ?? first.name);
+  const firstProp =
+    firstKey === undefined || ts.isComputedPropertyName(firstKey)
+      ? undefined
+      : (patternKeyNameOf(lowerer, firstKey as ts.PropertyName) ?? undefined);
+  return firstProp !== undefined ? { firstProp } : {};
 }
 
 /** V8's spelling of a destructuring RHS in its TypeError message
@@ -12983,7 +13165,61 @@ function lowerForIn(lowerer: Lowerer, stmt: ts.ForInStatement): IrStmt {
       receiver = lowerer.coerceToExpected(receiver, DYN);
     }
   }
+  return lowerForInReceiver(lowerer, stmt, labels, receiver);
+}
+
+/** for-in over the lowered `receiver` of `stmt`. */
+function lowerForInReceiver(
+  lowerer: Lowerer,
+  stmt: ts.ForInStatement,
+  labels: string[] | undefined,
+  receiver: IrExpr,
+): IrStmt {
+  const loc = locOf(stmt);
   const recvT = receiver.type;
+  // A receiver that may be null or undefined: for-in visits nothing for
+  // either, and walks a present value as its own type. The receiver is
+  // evaluated once.
+  if (recvT.kind === "union") {
+    const arms = lowerer.unions.get(recvT.unionId)?.arms ?? [];
+    const present = arms.filter((arm) => arm.kind !== "undefinedT" && arm.kind !== "nullT");
+    if (present.length === 1 && present.length < arms.length) {
+      const arm = present[0]!;
+      const tag = lowerer.armTag(recvT.unionId, arm);
+      const recv = lowerer.declareHiddenLocal("%innullable", recvT);
+      const ref = varRef(recv.id, recvT, loc);
+      const narrowed: IrExpr = {
+        kind: "unionNarrow",
+        unionId: recvT.unionId,
+        tag,
+        value: ref,
+        type: arm,
+        loc,
+      };
+      return {
+        kind: "block",
+        body: [
+          { kind: "varDecl", localId: recv.id, init: receiver, loc },
+          {
+            kind: "if",
+            cond: {
+              kind: "unionIsTag",
+              unionId: recvT.unionId,
+              tag,
+              negated: false,
+              value: ref,
+              type: BOOL,
+              loc,
+            },
+            then: [lowerForInReceiver(lowerer, stmt, labels, narrowed)],
+            else_: null,
+            loc,
+          },
+        ],
+        loc,
+      };
+    }
+  }
   if (recvT.kind === "dyn") {
     const recv = lowerer.declareHiddenLocal("%indyn", DYN);
     const ref: IrExpr = { kind: "varRef", localId: recv.id, type: DYN, loc };

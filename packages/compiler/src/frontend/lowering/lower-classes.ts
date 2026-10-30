@@ -1,3 +1,4 @@
+import { lowerWrapperNew } from "./primitive-wrappers.js";
 import { lowerAsyncLocalStorageOptions } from "./builtins/async-context.js";
 import { shapeOverlayAnnotated } from "../shape-inference/index.js";
 import {
@@ -2452,9 +2453,15 @@ export function collectClassShapeInner(
               (modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword,
             ),
         )) &&
+      // A private static ACCESSOR has no native storage yet, and a private
+      // static method that reads `arguments` would lose the arguments past
+      // its parameters when called through its value (`this.#m` returned by
+      // a getter): keep such a class on the static path, whose public
+      // static accessors refuse.
       !decl.members.nodes.some(
         (member) =>
-          member.name &&
+          (ts.isAccessor(member) ||
+            (ts.isMethodDeclaration(member) && bodyReadsArguments(member))) &&
           ts.isPrivateIdentifier(member.name) &&
           ts
             .getModifiers(member)
@@ -2523,8 +2530,22 @@ export function collectClassShapeInner(
             .getModifiers(member)
             ?.some((modifier) => modifier.kind === ts.SyntaxKind.StaticKeyword))
       ) {
-        runtimeStatics.push(member);
-        continue;
+        // A private static of a declaration-level class keeps its native
+        // storage (the %C.static:#m function, the %g.s.C.#x global): the
+        // constructor object never carries a property for it, and every
+        // access brand-checks its receiver (private-statics.ts). A field
+        // also stays in runtimeStatics, so its initializer runs in source
+        // order with the constructor's other initializers.
+        const privateStatic =
+          checkedStatics &&
+          !functionLocalClass(decl) &&
+          (member as { name?: ts.PropertyName }).name !== undefined &&
+          ts.isPrivateIdentifier((member as { name: ts.PropertyName }).name);
+        if (!privateStatic) {
+          runtimeStatics.push(member);
+          continue;
+        }
+        if (ts.isPropertyDeclaration(member)) runtimeStatics.push(member);
       }
       if (
         functionLocalClass(decl) &&
@@ -5139,11 +5160,15 @@ function lowerStaticFieldInitsInner(lowerer: Lowerer, info: ClassInfo): IrStmt[]
     | { pos: number; kind: "field"; f: ClassInfo["staticFields"][number] }
     | { pos: number; kind: "block"; b: ts.ClassStaticBlockDeclaration };
   const items: Item[] = [
-    ...info.staticFields.map((f): Item => ({
-      pos: ts.tokenStartOfNode(f.initializer),
-      kind: "field",
-      f,
-    })),
+    // A runtime-statics class initializes its private static fields with
+    // its other initializers (initializeRuntimeStatics).
+    ...info.staticFields
+      .filter((f) => !(info.runtimeStatics && f.name.startsWith("#")))
+      .map((f): Item => ({
+        pos: ts.tokenStartOfNode(f.initializer),
+        kind: "field",
+        f,
+      })),
     ...(info.staticBlocks ?? []).map((b): Item => ({
       pos: ts.tokenStartOfNode(b),
       kind: "block",
@@ -5848,7 +5873,7 @@ export function lowerClassStaticRead(
     !(ts.isCallExpression(site.parent) && site.parent.expression === site)
   )
     lowerer.noLowering(`Date.${name} read through a class that extends Date`, site);
-  if (hasRuntimeStatics(info) && !found?.field)
+  if (hasRuntimeStatics(info) && !found?.field && !name.startsWith("#"))
     return {
       kind: "dynKeyGet",
       value: lowerer.coerceToExpected(classValueRef(lowerer, info, receiver), DYN),
@@ -6746,7 +6771,9 @@ function staticCallOn(
     if (date) return date;
   }
   if (
-    (hasRuntimeStatics(info) && !findStaticOn(lowerer, info, access.name.text)?.field) ||
+    (hasRuntimeStatics(info) &&
+      !access.name.text.startsWith("#") &&
+      !findStaticOn(lowerer, info, access.name.text)?.field) ||
     (info.callableBase &&
       !findStaticOn(lowerer, info, access.name.text) &&
       !findGenericStaticOn(lowerer, info, access.name.text))
@@ -7201,7 +7228,9 @@ export function lowerClassValueProperty(
   if (info?.def.runtime && member !== "name") return null;
   if (
     info &&
-    ((hasRuntimeStatics(info) && !findStaticOn(lowerer, info, member)?.field) ||
+    ((hasRuntimeStatics(info) &&
+      !member.startsWith("#") &&
+      !findStaticOn(lowerer, info, member)?.field) ||
       (info.callableBase && !findStaticOn(lowerer, info, member)))
   )
     return {
@@ -10075,6 +10104,21 @@ function lowerProgramClassNew(
   });
 }
 
+/** The supported map layout a contextual type pins for `new Map()`: the type
+ * itself, or the single map arm of a union — a nullable annotation such as
+ * `Map<K, V> | undefined`, or `ReadonlyMap<K, V> | undefined`, where a Map
+ * value can only inhabit the map arm and the no-argument constructor gives
+ * the checker nothing to infer the type arguments from. */
+function contextualMapLayout(lowerer: Lowerer, ctx: ts.Type): IrType | null {
+  const mapped = lowerer.mapTypeOf(ctx);
+  if (mapped?.kind === "map") return mapped;
+  if (mapped?.kind !== "union") return null;
+  const arms = (lowerer.unions.get(mapped.unionId)?.arms ?? []).filter(
+    (arm): arm is IrType & { kind: "map" } => arm.kind === "map",
+  );
+  return arms.length === 1 ? arms[0]! : null;
+}
+
 function assignedThisFieldType(lowerer: Lowerer, expr: ts.NewExpression): IrType | null {
   const parent = expr.parent;
   if (
@@ -10193,6 +10237,8 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
       return lowerWithInlineRequireInit(lowerer, req, () => lowerNew(lowerer, expr));
     }
   }
+  const wrapper = lowerWrapperNew(lowerer, expr);
+  if (wrapper) return wrapper;
   const worker = lowerWorkerNew(lowerer, expr);
   if (worker) return worker;
   const readlineUi = lowerReadlineUiNew(lowerer, expr) ?? lowerReadlineInterfaceNew(lowerer, expr);
@@ -10276,8 +10322,15 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
     lowerer.isStdlibGlobal(expr.expression.expression, "Intl")
   ) {
     const args = expr.arguments?.nodes ?? [];
-    const undefinedArg = (arg: ts.Expression): boolean =>
-      (lowerer.typeOf(arg).flags & ts.TypeFlags.Undefined) !== 0;
+    // An argument whose value IS undefined: exactly undefined, or void. A
+    // union that merely includes undefined may hold a locale or an options
+    // object at run time, and the constructor cannot inspect either — such
+    // an argument is refused below rather than silently read as the default
+    // locale or the default options.
+    const undefinedArg = (arg: ts.Expression): boolean => {
+      const flags = lowerer.typeOf(arg).flags;
+      return flags === ts.TypeFlags.Undefined || flags === ts.TypeFlags.Void;
+    };
     // A literal language tag: Unicode grapheme clusters have no locale
     // tailoring. Only tags of the form language[-script][-region] are
     // accepted; each is well-formed, so Node constructs the segmenter
@@ -10292,13 +10345,14 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         "omit the locale, pass undefined, or pass one language tag as a string literal",
       );
     }
-    // JavaScript dependencies may construct word and sentence segmenters
-    // that they use only on some paths (pi-tui's shared word segmenter):
-    // the construction compiles and their segment() throws SC2020.
-    // TypeScript sources keep the build-time refusal.
+    // Word segmentation lowers through ICU (scr_intl.c). Sentence
+    // segmentation does not: JavaScript dependencies may construct sentence
+    // segmenters they use only on some paths, so the construction compiles
+    // and their segment() throws SC2020; TypeScript sources keep the
+    // build-time refusal.
     const granularities = isJsSourceFile(ts.getSourceFileOfNode(expr))
       ? ["grapheme", "word", "sentence"]
-      : ["grapheme"];
+      : ["grapheme", "word"];
     const options = args[1];
     let granularity = "grapheme";
     if (options && !undefinedArg(options)) {
@@ -10308,7 +10362,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         lowerer.noLowering(
           "Intl.Segmenter options",
           options,
-          'the native segmenter supports default options and { granularity: "grapheme" }; word and sentence segmentation remain unsupported',
+          'the native segmenter supports default options, { granularity: "grapheme" } and { granularity: "word" }; sentence segmentation remains unsupported',
         );
       for (const property of options.properties.nodes) {
         if (
@@ -10321,7 +10375,7 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
           lowerer.noLowering(
             "Intl.Segmenter options",
             options,
-            'the native segmenter supports default options and { granularity: "grapheme" }; word and sentence segmentation remain unsupported',
+            'the native segmenter supports default options, { granularity: "grapheme" } and { granularity: "word" }; sentence segmentation remains unsupported',
           );
         }
         granularity = property.initializer.text;
@@ -10336,16 +10390,32 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         loc: locOf(arg),
       };
     });
+    // Grapheme segmentation is the engine-free table-driven segmenter
+    // (scr_grapheme.c). NOTE: once ICU is established everywhere, this fast
+    // path is deleted in favor of ICU's character iterator (design I4).
     let result: IrExpr = { kind: "libCall", fn: "intl.segmenterNew", args: [], type: DYN, loc };
-    // A word or sentence segmenter carries its segment() refusal, which
-    // coverage lists as deferred to runtime.
-    if (granularity !== "grapheme") {
+    if (granularity === "word") {
+      // ICU's word iterator at the requested locale; a literal language tag
+      // is the locale, and the empty string means the default locale (what
+      // Node negotiates when the argument is absent or undefined).
+      const tag = args[0] !== undefined && ts.isStringLiteralLike(args[0]) ? args[0].text : "";
+      result = {
+        kind: "libCall",
+        fn: "icu.segmenterWord",
+        args: [strLit(tag, loc)],
+        type: DYN,
+        loc,
+      };
+    }
+    // A sentence segmenter carries its segment() refusal, which coverage
+    // lists as deferred to runtime.
+    if (granularity === "sentence") {
       const surface = `Intl.Segmenter segmentation with granularity '${granularity}'`;
       lowerer.runtimeFences.push(
         noLoweringDiag(
           surface,
           loc,
-          "only grapheme segmenters segment; word and sentence segmenters construct",
+          "only grapheme and word segmenters segment; sentence segmenters construct",
         ),
       );
       const line = ts.getLineAndCharacterOfPosition(ts.getSourceFileOfNode(expr), loc.start).line;
@@ -11068,10 +11138,10 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         mapped = lowerer.mapTypeOf(inferred);
       } else if (mapped?.kind !== "map" || contextualSeed) {
         const ctx = lowerer.checker.getContextualType(expr);
-        const ctxMapped = ctx ? lowerer.mapTypeOf(ctx) : null;
-        if (ctx && ctxMapped?.kind === "map") {
+        const ctxMap = ctx ? contextualMapLayout(lowerer, ctx) : null;
+        if (ctx && ctxMap !== null) {
           tsType = ctx;
-          mapped = ctxMapped;
+          mapped = ctxMap;
         }
       }
       // `new Map(source)` the checker types `Map<any, any>` because the

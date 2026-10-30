@@ -79,20 +79,29 @@ test("worker programs poll counted loops over typed arrays between blocks of ite
         "console.log(b[7], mix(8), c[0], shrink(new Uint8Array(8).fill(1)));",
         workers ? "if (!isMainThread) new Worker(new URL(import.meta.url));" : "",
       ].join("\n");
-    const emit = async (workers: boolean): Promise<string> => {
+    const emit = async (
+      workers: boolean,
+      options: Parameters<typeof emitLlvmModule>[1] = {},
+    ): Promise<string> => {
       const entry = join(dir, `${workers ? "worker" : "plain"}.ts`);
       await writeFile(entry, source(workers));
       const outPath = join(dir, `${workers ? "worker" : "plain"}.ir.json`);
       const result = await compile(entry, { outPath, outDir: dir, outputKind: "ir" });
       if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
-      return emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")));
+      // ELF executables poll the thread's pending word (@scr_exc_flag);
+      // other targets read the process-wide alert word.
+      return emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")), {
+        targetTriple: "x86_64-unknown-linux-gnu",
+        ...options,
+      });
     };
-    // Every emitted version of a function (the number and int32 entries).
+    // Every emitted version of a function (the number and int32 entries, and
+    // the copies of a dispatching build).
     const bodies = (ll: string, name: string): string =>
       [
         ...ll.matchAll(
           new RegExp(
-            `define internal [^\\n]+ @sc_b?f_${name}(?:\\.i32)?\\([^\\n]*\\n([\\s\\S]*?)\\n\\}`,
+            `define internal [^\\n]+ @sc_b?f_${name}(?:\\.i32)?(?:\\.base|\\.v3)?\\([^\\n]*\\n([\\s\\S]*?)\\n\\}`,
             "g",
           ),
         ),
@@ -121,6 +130,20 @@ test("worker programs poll counted loops over typed arrays between blocks of ite
     expect(codes).toMatch(/@llvm\.uadd\.sat\.i64\(i64 %\w+, i64 64\)/);
     expect(codes).toMatch(/@llvm\.umin\.i64\(i64 %\w+, i64 %\w+\)/);
     expect(codes).toMatch(/^loop\.poll\d+:$/m);
+    // Code for x86-64-v3 takes blocks of 128 iterations, one step of its
+    // vectorized loop over bytes.
+    const x86 = { targetTriple: "x86_64-unknown-linux-gnu" };
+    for (const options of [
+      { ...x86, targetCpu: "x86-64-v3" as const },
+      { ...x86, targetCpu: "x86-64-v4" as const },
+      { ...x86, cpuDispatch: true },
+    ])
+      expect(bodies(await emit(true, options), "codes"), JSON.stringify(options)).toMatch(
+        /@llvm\.uadd\.sat\.i64\(i64 %\w+, i64 128\)/,
+      );
+    expect(bodies(await emit(true, { ...x86, targetCpu: "x86-64-v2" }), "codes")).toMatch(
+      /@llvm\.uadd\.sat\.i64\(i64 %\w+, i64 64\)/,
+    );
     // A loop that assigns its array reads the new length on the next
     // iteration: it keeps the budget.
     const shrink = bodies(workerModule, "shrink");
@@ -254,7 +277,10 @@ test("worker programs poll no loop whose proven ranges bound its runs inside ano
     const outPath = join(dir, "bounded.ir.json");
     const result = await compile(entry, { outPath, outDir: dir, outputKind: "ir" });
     if (!result.ok) throw new Error(result.diagnostics.map((d) => d.message).join("\n"));
-    const ll = emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")));
+    // The polls counted below read the thread's pending word of ELF executables.
+    const ll = emitLlvmModule(deserializeModule(await readFile(outPath, "utf8")), {
+      targetTriple: "x86_64-unknown-linux-gnu",
+    });
     const body = (name: string): string =>
       [
         ...ll.matchAll(

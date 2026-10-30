@@ -246,12 +246,13 @@ declare var process: {
   /* "v" plus versions.node: the compatibility target's release. */
   readonly version: string;
   /* The build-configuration snapshot Node exposes from its gyp config.
-   * A scriptc binary has no V8 and no gyp, so `variables` answers the
-   * honest capability record (v8_enable_i18n_support: 0 — no ICU; asan
-   * mirrors the sanitizer build flag) and `target_defaults` is absent —
-   * probe code takes its documented fallbacks. Reads of undeclared
-   * variables go through the index signature (string | number | boolean
-   * | undefined) and answer undefined. */
+   * A scriptc binary has no V8 and no gyp, so `variables` answers what is
+   * true of a compiled binary: v8_enable_i18n_support is 1 like Node's
+   * (the read links ICU, which the binary then carries), while the gyp
+   * variables it cannot answer (icu_path, asan, …) read undefined through
+   * the index signature (string | number | boolean | undefined), and
+   * `target_defaults` is absent — probe code takes its documented
+   * fallbacks. */
   readonly config: {
     readonly variables: { readonly [name: string]: string | number | boolean | undefined };
     readonly target_defaults?: { readonly default_configuration: string };
@@ -1115,9 +1116,9 @@ declare var ReadableStream: {
   from(iterable: string): ReadableStream<string>;
   readonly prototype: ReadableStream<unknown>;
 };
-/* The writable side of a TransformStream and its writer. The
- * WritableStream constructor has no native lowering; writable streams come
- * from `new TransformStream()`. */
+/* The writable side of a TransformStream and its writer. A program that
+ * constructs a WritableStream, or a TransformStream with a transformer,
+ * builds its streams with the web stream classes (scr_webstreams.c). */
 interface WritableStreamDefaultWriter<W = unknown> {
   readonly closed: Promise<void>;
   readonly desiredSize: number | null;
@@ -1133,14 +1134,25 @@ interface WritableStream<W = unknown> {
   close(): Promise<void>;
   getWriter(): WritableStreamDefaultWriter<W>;
 }
-/* The identity transform: chunks written to `writable` are read from
- * `readable`, and a write completes when its chunk is read. */
+/* Without a transformer, the identity transform: chunks written to
+ * `writable` are read from `readable`, and a write completes when its chunk
+ * is read. */
 interface TransformStream<I = unknown, O = unknown> {
   readonly readable: ReadableStream<O>;
   readonly writable: WritableStream<I>;
 }
+interface Transformer<I = unknown, O = unknown> {
+  start?(controller: TransformStreamDefaultController<O>): unknown;
+  transform?(chunk: I, controller: TransformStreamDefaultController<O>): unknown;
+  flush?(controller: TransformStreamDefaultController<O>): unknown;
+  cancel?(reason?: unknown): unknown;
+}
 declare var TransformStream: {
-  new <I = unknown, O = I>(): TransformStream<I, O>;
+  new <I = unknown, O = I>(
+    transformer?: Transformer<I, O>,
+    writableStrategy?: QueuingStrategy<I>,
+    readableStrategy?: QueuingStrategy<O>,
+  ): TransformStream<I, O>;
   readonly prototype: TransformStream<unknown, unknown>;
 };
 /* The other web stream interfaces. JavaScript sources construct and read
@@ -1158,8 +1170,14 @@ interface WritableStreamDefaultController {
   readonly signal: AbortSignal;
   error(reason?: unknown): void;
 }
+interface UnderlyingSink<W = unknown> {
+  start?(controller: WritableStreamDefaultController): unknown;
+  write?(chunk: W, controller: WritableStreamDefaultController): unknown;
+  close?(): unknown;
+  abort?(reason?: unknown): unknown;
+}
 declare var WritableStream: {
-  new <W = unknown>(sink?: object, strategy?: QueuingStrategy<W>): WritableStream<W>;
+  new <W = unknown>(sink?: UnderlyingSink<W>, strategy?: QueuingStrategy<W>): WritableStream<W>;
   readonly prototype: WritableStream<unknown>;
 };
 declare var WritableStreamDefaultWriter: {
@@ -1747,6 +1765,18 @@ declare module "tty" {
     /* The bytes queued behind the last write: the compiled binary's fd
      * 1/2 writes are synchronous, so it is always 0. */
     readonly writableLength: number;
+    /* Node's default for the process streams (65536 for a pipe, a file and a
+     * TTY): a constant, because nothing is ever queued. */
+    readonly writableHighWaterMark: number;
+    /* Always false: a synchronous write never returns false, so no 'drain'
+     * is ever pending. */
+    readonly writableNeedDrain: boolean;
+    /* 'drain' and the other events by name. Node returns the stream. */
+    on(event: string, listener: (...args: any[]) => void): this;
+    once(event: string, listener: (...args: any[]) => void): this;
+    addListener(event: string, listener: (...args: any[]) => void): this;
+    off(event: string, listener: (...args: any[]) => void): this;
+    removeListener(event: string, listener: (...args: any[]) => void): this;
     getWindowSize(): [number, number];
   }
   export function isatty(fd: number): boolean;

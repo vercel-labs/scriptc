@@ -10,6 +10,7 @@ import { matchStringSelfConcat, undefinedArmTag } from "../../ir/analysis.js";
 import { isRefCounted, type IrExpr, type IrStrCmpOp, type IrType } from "../../ir/ir.js";
 import { mangleRecordClone, mangleRecordNew } from "../mangle.js";
 import { arrNewCall, elemAccess } from "./shapes.js";
+import { recordViewTestLines } from "./record-views.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 import { offsetIndex } from "./expr-bytes.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
@@ -1473,16 +1474,70 @@ export function emitRecordExpr(
       return host.emitRecordKeyGet(e);
     case "recordHas": {
       // Own-property presence: only an undefined-armed union slot can
-      // lack its property, by holding the ABSENT state.
+      // lack its property, by holding the ABSENT state, and a PARTIAL
+      // record view (record-views.ts) can lack a field its viewed record
+      // does not declare.
+      const fieldType = host.recordsById
+        .get(e.shapeId)
+        ?.fields.find((f) => f.name === e.field)?.type;
       const obj = host.emitReadReceiver(e.obj);
+      if (host.shapeHost.recordViews?.partialMissing(e.shapeId, e.field) !== true) {
+        const { ptr, type, inline } = host.recordFieldPtr(obj.name, e.shapeId, e.field);
+        if (type.kind !== "union" || undefinedArmTag(type, host.unionsById) < 0)
+          return { name: "true", type: e.type };
+        const v = host.loadField(ptr, type, inline);
+        const absent = host.fieldAbsentTest(v, type.unionId);
+        const t = B.tmp();
+        B.line(`${t} = xor i1 ${absent}, true`);
+        return { name: t, type: e.type };
+      }
+      // A field some partial view of this shape lacks: ask the view first.
+      // Only a present field's slot may be looked up — a partial view's
+      // absent field answers no slot at all (scr_record_view_slot).
+      const position = host.recordsById.get(e.shapeId)!.fields.findIndex((f) => f.name === e.field);
+      host.declare(`declare ptr @scr_record_view_slot(ptr, ${host.sizeType})`);
+      const isView = B.tmp();
+      const rhFrom = B.currentLabel();
+      const view = B.newLabel("rh.view");
+      const done = B.newLabel("rh.done");
+      for (const line of recordViewTestLines(host.sizeType, obj.name, isView))
+        B.line(line.trimStart());
+      // Not a view: every field of the target has its slot.
+      B.condBr(isView, view, done, `, !prof !{!"branch_weights", i32 1, i32 1000}`);
+      B.startBlock(view);
+      const slot = B.tmp();
+      B.line(
+        `${slot} = call ptr @scr_record_view_slot(ptr ${obj.name}, ${host.sizeType} ${position})`,
+      );
+      const hasSlot = B.tmp();
+      B.line(`${hasSlot} = icmp ne ptr ${slot}, null`);
+      B.br(done);
+      B.startBlock(done);
+      const hasView = B.tmp();
+      B.line(`${hasView} = phi i1 [ true, %${rhFrom} ], [ ${hasSlot}, %${view} ]`);
+      if (fieldType === undefined || fieldType.kind !== "union")
+        return { name: hasView, type: e.type };
+      const unionId = fieldType.unionId;
+      if (undefinedArmTag(fieldType, host.unionsById) < 0) return { name: hasView, type: e.type };
+      // The field is also undefined-armed: a present slot still answers by
+      // its ABSENT state, a field the view lacks by the view.
+      const check = B.newLabel("rh.present");
+      const join = B.newLabel("rh.join");
+      const from = B.currentLabel();
+      B.condBr(hasView, check, join);
+      B.startBlock(check);
       const { ptr, type, inline } = host.recordFieldPtr(obj.name, e.shapeId, e.field);
-      if (type.kind !== "union" || undefinedArmTag(type, host.unionsById) < 0)
-        return { name: "true", type: e.type };
       const v = host.loadField(ptr, type, inline);
-      const absent = host.fieldAbsentTest(v, type.unionId);
-      const t = B.tmp();
-      B.line(`${t} = xor i1 ${absent}, true`);
-      return { name: t, type: e.type };
+      const absent = host.fieldAbsentTest(v, unionId);
+      const present = B.tmp();
+      B.line(`${present} = xor i1 ${absent}, true`);
+      // The field load can end in a later block (a view's slot read).
+      const checked = B.currentLabel();
+      B.br(join);
+      B.startBlock(join);
+      const answer = B.tmp();
+      B.line(`${answer} = phi i1 [ false, %${from} ], [ ${present}, %${checked} ]`);
+      return { name: answer, type: e.type };
     }
     case "fieldAbsent":
       return { name: host.absentInstanceRef(e.unionId), type: e.type };

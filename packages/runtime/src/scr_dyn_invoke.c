@@ -787,6 +787,14 @@ ScrDyn *scr_dyn_prepare_method(ScrDyn *recv, const char *method) {
     scr_str_release(key);
     return result;
   }
+  /* A class instance's own function-valued property is read before the
+   * arguments are evaluated, as JavaScript reads the callee first; its
+   * methods keep the dispatch scr_dyn_invoke makes. */
+  if (recv->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *own = scr_dyn_typed_ref_own_member(recv, method, strlen(method));
+    if (own && scr_dyn_is_callable(own)) return own;
+    scr_dyn_release(own);
+  }
   return NULL;
 }
 

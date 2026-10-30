@@ -1078,7 +1078,7 @@ describe.each(EMISSIONS)("K14: determinism fences, %s emission", (emission) => {
 
   test("a code-keyed teachings entry rides a non-fence refusal as the attributed note", async () => {
     const diags = await refusal(
-      `export function f(): number { return (1234.5).toLocaleString().length; }\n`,
+      `export function f(): number { return (1234.5).toLocaleString("de-DE").length; }\n`,
       {
         exports: [{ export: "f", symbol: "kx_f", params: [], returns: "f64" }],
         determinism: {

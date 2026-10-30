@@ -120,7 +120,7 @@ static void scr_console_inst_print(ScrConsoleInst *inst, int which, ScrStr *text
   }
   ScrLogArg arg = {.tag = SCR_ARG_STR};
   arg.v.s = text;
-  scr_console_write_fd(inst->fd[which] == 2 ? 2 : 1, 1, &arg);
+  scr_console_write_fd(inst->fd[which] == 2 ? 2 : 1, 1, &arg, inst->ignore_errors);
 }
 
 /* 0 for the stdout members, 1 for the stderr members, -1 otherwise. */
@@ -489,8 +489,8 @@ void scr_console_clear(void) {
   if (!scr_process_is_tty(1)) return;
   const char *term = getenv("TERM");
   if (term && strcmp(term, "dumb") == 0) return;
-  scr_stdio_write(1, "\x1b[1;1H", 6);
-  scr_stdio_write(1, "\x1b[0J", 4);
+  scr_stdio_write_text(1, "\x1b[1;1H", 6);
+  scr_stdio_write_text(1, "\x1b[0J", 4);
 }
 
 /* console.dir over a dyn value: inspect with custom inspection off. The

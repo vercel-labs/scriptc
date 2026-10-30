@@ -250,14 +250,22 @@ test("built-in error assertions are admitted without permitting constructor alia
   expect(exclusion(alias, metadata(alias), "strict")).toBe("harness:assert-surface");
 });
 
-test("the compareArray include only admits the implemented assertion form", () => {
+test("the compareArray include admits the assertion and the bare call form only", () => {
   const accepted = source(
     "includes: [compareArray.js]",
     "assert.compareArray([1, NaN], [1, NaN]);",
   );
   expect(exclusion(accepted, metadata(accepted), "strict")).toBeUndefined();
   const globalHelper = source("includes: [compareArray.js]", "compareArray([1], [1]);");
-  expect(exclusion(globalHelper, metadata(globalHelper), "strict")).toBe(
+  expect(exclusion(globalHelper, metadata(globalHelper), "strict")).toBeUndefined();
+  // assert.js supplies compareArray, so a test needs no include to call it.
+  const withoutInclude = source("description: intl", "assert(!compareArray([1], [2]));");
+  expect(exclusion(withoutInclude, metadata(withoutInclude), "strict")).toBeUndefined();
+  const valueReference = source(
+    "includes: [compareArray.js]",
+    "const compare = compareArray; assert(compare([1], [1]));",
+  );
+  expect(exclusion(valueReference, metadata(valueReference), "strict")).toBe(
     "harness:compareArray-surface",
   );
 });

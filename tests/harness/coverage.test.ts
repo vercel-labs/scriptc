@@ -407,13 +407,12 @@ test("--explain-dynamic attributes each refusal to the unit the dynamic tier wou
     requests.map((r) => [r.code, r.seed, r.scope, r.unit.kind, r.unit.name, r.enclosing.name]),
   ).toEqual([
     ["SC1090", "reflection", "reached", "class", "Point", "<top level>"],
-    ["SC2020", "operation", "reached", "binding", "n", "precise"],
+    ["SC2020", "operation", "reached", "function", "precise", "precise"],
   ]);
   expect(tiers.units.map((u) => [u.kind, u.name, u.requests, u.sites])).toEqual([
     ["class", "Point", 1, 0],
     ["function", "<top level>", 0, 1],
-    ["function", "precise", 0, 1],
-    ["binding", "n", 1, 0],
+    ["function", "precise", 1, 1],
   ]);
   const envelope = coverageEnvelope(coverage, { compilerVersion: "test", sourceTexts });
   expect(envelope.tiers?.requests[0]).toMatchObject({ unit: { kind: expect.any(String) } });
@@ -534,10 +533,10 @@ test("CLI: --tier and --explain-dynamic", () => {
     expect(explained.status).toBe(0);
     expect(explained.stdout).toContain("in dynamic tier     1");
     expect(explained.stdout).toContain("--tier=static-only");
-    expect(explained.stdout).toContain("binding n in precise");
+    expect(explained.stdout).toContain("function precise");
     const one = run("coverage", fixture("tier-demotions.ts"), "--explain-dynamic=Point");
     expect(one.stdout).toContain("class Point");
-    expect(one.stdout).not.toContain("binding n in precise");
+    expect(one.stdout).not.toContain("function precise");
     const bad = run("coverage", fixture("tier-demotions.ts"), "--tier=dynamic-only");
     expect(bad.status).toBe(1);
     expect(bad.stderr).toContain('unknown --tier value "dynamic-only"');

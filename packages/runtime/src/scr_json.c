@@ -261,6 +261,7 @@ void scr_dyn_install_to_string_tag_symbol(ScrDyn *key) {
   scr_to_string_tag_symbol = scr_dyn_retain(key);
   scr_atexit(scr_to_string_tag_symbol_cleanup);
 }
+const ScrDyn *scr_dyn_to_string_tag_symbol(void) { return scr_to_string_tag_symbol; }
 
 void scr_dyn_install_iterator_symbol(ScrDyn *key) {
   if (scr_iterator_symbol) return;
@@ -4404,10 +4405,23 @@ void *scr_dyn_record_view(ScrDyn *d, const ScrRecordViewSource *sources, size_t 
   return view;
 }
 
-/* The slot of field `position` of a view (emitted view guards, cold). */
+/* The slot of field `position` of a view (emitted view guards, cold). A
+ * PARTIAL view (a record literal asserted to a wider record type) holds
+ * SIZE_MAX for every field its viewed record does not declare: the
+ * SCR_RECORD_VIEW_PARTIAL build of this unit answers NULL for it, the guard
+ * that gets NULL stops with scr_trap and the program's own message, and a
+ * presence test asks for the same slot and answers by it. Only a program
+ * with such an assertion links that build (runtime-pack-matrix.mjs); every
+ * other program links this default object, whose bytes are unchanged. */
 void *scr_record_view_slot(void *view, size_t position) {
   ScrRecordSource *entry = scr_record_source_slot(view);
+#ifdef SCR_RECORD_VIEW_PARTIAL
+  size_t offset = entry->offsets[position];
+  if (offset == SIZE_MAX) return NULL;
+  return (char *)entry->viewed + offset;
+#else
   return (char *)entry->viewed + entry->offsets[position];
+#endif
 }
 
 /* The address of field `position` of a value of a view target type, whose
@@ -4761,6 +4775,52 @@ bool scr_dyn_typed_ref_class_has(const ScrDyn *d, const ScrStr *key) {
   return ops && scr_dyn_name_in_strs(key, ops->names, ops->count);
 }
 
+ScrDyn *scr_dyn_typed_ref_own_member(const ScrDyn *d, const char *key, size_t key_len) {
+  if (d->kind != SCR_DYN_TYPED_REF || d->prototype) return NULL;
+  if (!d->v.typed_ref.bag_class) {
+    /* A class instance's view holds its own fields and the properties added
+     * to it, and its class's prototype members stay off the view. A name
+     * that is neither one of those members nor one of Object.prototype's
+     * can only be an own property, so the view is built (refreshed from the
+     * instance) for it. Other capsules answer through scr_dyn_invoke. */
+    const ScrDynTypedClassOps *klass = scr_typed_ref_class_ops(d);
+    if (!klass) return NULL;
+    ScrStr *name = scr_str_new(key, key_len);
+    bool member = scr_dyn_name_in_strs(name, klass->names, klass->count) || scr_dyn_object_proto_name(name);
+    scr_str_release(name);
+    if (member) return NULL;
+    ScrDyn *view = scr_dyn_typed_ref_materialize(d);
+    if (scr_exc_pending()) {
+      scr_dyn_release(view);
+      return NULL;
+    }
+    ScrDyn *found = NULL;
+    if (view && view->kind == SCR_DYN_OBJ) {
+      if (scr_dyn_is_layout(view)) {
+        ScrDyn **slot = scr_dyn_layout_slot(view, key, key_len);
+        if (slot) found = scr_dyn_retain(*slot);
+      } else {
+        const ScrDynEntry *own = scr_dyn_find_entry(view, key, key_len);
+        if (own && !own->accessor) found = scr_dyn_retain(own->value);
+      }
+    }
+    scr_dyn_release(view);
+    return found;
+  }
+  const ScrDynTypedBagClassOps *ops = (const ScrDynTypedBagClassOps *)(const void *)d->v.typed_ref.array;
+  void *instance = d->v.typed_ref.ptr;
+  const ScrDyn *bag = ops->bag(instance);
+  if (!bag || bag->kind != SCR_DYN_OBJ) return NULL;
+  const ScrDynEntry *own = scr_dyn_find_entry(bag, key, key_len);
+  if (!own || own->accessor) return NULL;
+  for (size_t i = 0; i < ops->count; i++) {
+    const ScrStr *name = ops->names[i];
+    if (name->len != key_len || memcmp(name->data, key, key_len) != 0) continue;
+    return own->writable ? ops->field(instance, i) : NULL;
+  }
+  return scr_dyn_retain(own->value);
+}
+
 static const ScrDynTypedRecordOps *scr_typed_ref_record_ops(const ScrDyn *d) {
   if (!d->v.typed_ref.record || d->v.typed_ref.materialized) return NULL;
   const ScrDynTypedRecordOps *ops = (const ScrDynTypedRecordOps *)(const void *)d->v.typed_ref.array;
@@ -4970,15 +5030,33 @@ static bool scr_typed_ref_record_set(ScrDyn *d, const ScrStr *key, const ScrDyn 
   return scr_typed_ref_record_store(d, ops, index, value);
 }
 
-/* Object.assign onto a live record from a plain object whose own
- * properties are all data properties: each enumerable one that names a
- * present declared field stores in place. Answers false at the first key
+/* Object.assign onto a live record from another live record, or from a
+ * plain object whose own properties are all data properties: each
+ * enumerable one that names a present declared field stores in place. Answers false at the first key
  * it cannot store, leaving every key to the snapshot path, which stores
  * the already stored values again unchanged. */
 static bool scr_typed_ref_record_assign(ScrDyn *d, const ScrDyn *src) {
   const ScrDynTypedRecordOps *ops = scr_typed_ref_record_ops(d);
-  if (!ops || !ops->set || src->kind != SCR_DYN_OBJ || src->symbol_properties || src->symbol_keys)
-    return false;
+  if (!ops || !ops->set) return false;
+  /* A live record source (an object literal boxed as its record) has only
+   * enumerable string-keyed data fields, in its declared order. */
+  const ScrDynTypedRecordOps *from =
+      src->kind == SCR_DYN_TYPED_REF ? scr_typed_ref_record_ops(src) : NULL;
+  if (from) {
+    void *source = src->v.typed_ref.ptr;
+    for (size_t i = 0; i < from->count; i++) {
+      if (!from->fixed && !from->has(source, i)) continue;
+      size_t index;
+      if (!scr_typed_ref_record_field(ops, from->names[i], &index)) return false;
+      ScrDyn *value = from->get(source, i);
+      bool stored = scr_typed_ref_record_store(d, ops, index, value);
+      scr_dyn_release(value);
+      if (!stored) return false;
+      if (scr_exc_pending()) return true;
+    }
+    return true;
+  }
+  if (src->kind != SCR_DYN_OBJ || src->symbol_properties || src->symbol_keys) return false;
   size_t count = scr_dyn_obj_count(src);
   for (size_t i = 0; i < count; i++) {
     if (scr_dyn_obj_prop_at(src, i).accessor) return false;
@@ -6391,7 +6469,18 @@ ScrDyn *scr_dyn_new_func(ScrClosure *clo, ScrDynThunk thunk, uint32_t arity, con
   d->v.fn.arity = clo->identity != NULL ? clo->identity_length : arity;
   d->v.fn.class_obj = NULL;
   d->v.fn.message = NULL;
+  d->v.fn.js = NULL;
   return d;
+}
+
+/* The emitted fast path loads the entry at this offset (64-bit targets). */
+_Static_assert(sizeof(void *) != 8 || offsetof(ScrDyn, v.fn.js) == 72,
+               "ScrDyn.v.fn.js moved: update the dynamic tier's call sites");
+
+void scr_dyn_func_set_js(ScrDyn *fn, ScrDynThunk thunk, ScrDynJsEntry entry) {
+  /* As scr_dyn_func_set_message: an adapted function's original box keeps
+   * its own entries. */
+  if (fn && fn->kind == SCR_DYN_FUNC && fn->v.fn.thunk == thunk) fn->v.fn.js = entry;
 }
 
 void scr_dyn_func_set_message(ScrDyn *fn, ScrDynThunk thunk, ScrDynMessageListener listener) {
@@ -10707,6 +10796,20 @@ void scr_error_set_prop(ScrError *e, const char *key, size_t key_len, ScrDyn *va
   ScrDyn *view = scr_dyn_from_error(e);
   scr_dyn_obj_set(view, key, key_len, value);
   scr_dyn_release(view);
+}
+
+/* scr_throw_node_coded with Node's `url` own property: the
+ * ERR_MODULE_NOT_FOUND of an import() whose relative target does not
+ * exist carries the target's file URL. Borrows the strings; always throws
+ * (catchably — call sites are compiler-emitted pending checks). */
+void scr_throw_node_coded_url(double kind, const ScrStr *code, const ScrStr *msg, const ScrStr *url) {
+  ScrError *e = scr_error_new((int)kind, (ScrStr *)msg); /* borrowed in */
+  if (code->len > 0) {
+    scr_str_release(e->code); /* NULL-safe */
+    e->code = scr_str_retain((ScrStr *)code);
+  }
+  scr_error_set_prop(e, "url", 3, scr_dyn_new_str((ScrStr *)url));
+  scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
 }
 
 /* The error's checked-dynamic node when it has one (borrowed), else NULL:

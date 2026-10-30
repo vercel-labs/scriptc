@@ -257,6 +257,12 @@ export function flagScalar(name: string, get: () => boolean, set: () => void): J
 /** The events of the unit being recorded (Lowerer.unitEvents). */
 export class UnitEvents {
   readonly events: JournalEvent[] = [];
+  /** Entries the unit changes in place, which its IR cannot show: a table
+   * only grows by addition, so a write to an entry another unit added is not
+   * in the unit's function. recordUnit merges these into the names it reads
+   * from the unit's IR, so the unit is counted as changing what it wrote and
+   * the held content follows (HeldTables). */
+  readonly touched = new Set<string>();
   /** Calls into reachability nest (an edge can fire virtual edges). Only
    * the outermost call is recorded, because making it again makes the
    * nested ones. */
@@ -264,6 +270,11 @@ export class UnitEvents {
 
   record(kind: JournalEvent["kind"], name: string, detail: string | null = null, index = 0): void {
     if (this.depth === 0) this.events.push({ kind, name, detail, index });
+  }
+
+  /** Notes that the unit writes `name`, an entry it did not add. */
+  touch(name: string): void {
+    this.touched.add(name);
   }
 }
 
@@ -467,8 +478,11 @@ export function recordUnit(
     const entries = added[table.name] ?? table.entries!(before[index]!);
     if (entries !== null) for (const entry of entries) texts.push(entry);
   }
+  // A unit names every entry it writes: the ones its function shows, and the
+  // ones it changed in place (UnitEvents.touch), which a function cannot.
   const names = quotedStrings(texts);
   if (encoded?.strings != null) namedStrings(encoded.strings, names);
+  for (const touched of recorder.touched) names.add(touched);
   if (own !== null) {
     if (reasons.length === 0)
       tables.forEach((table, index) => {

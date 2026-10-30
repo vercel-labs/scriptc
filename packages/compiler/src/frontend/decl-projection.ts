@@ -1025,7 +1025,6 @@ export function planDeclProjection(input: DeclProjectionInput): DeclProjection |
       if (candidate !== "any") {
         fileOrigins.push(twin === undefined ? null : castOrigin(declChecker, twin, candidate));
       }
-      }
       const start = ts.tokenStartOfNode(e);
       const stmt = e.parent;
       let prefix = "(";

@@ -193,7 +193,7 @@ import {
   lowerProcStreamMethodCall,
   lowerProcessBuiltinModuleNamespace,
 } from "./builtins/process.js";
-import { recordMayKeepSource, recordSourceTest, throughRecordSource } from "./record-sources.js";
+import { recordMayKeepSource, throughRecordSource } from "./record-sources.js";
 import { lowerReflectCall } from "./builtins/reflection.js";
 import {
   lowerAbsenceProbe,
@@ -7713,35 +7713,6 @@ export function recordKeysArrayCall(
       }
       body.push(...perKeyOrder(current, ref, walks, loc));
       body.push({ kind: "return", value: outRef, loc });
-      // A record that kept undeclared keys answers for-in through its live
-      // kept view, exactly as Object.keys does at its call site. Gated on
-      // the shape being one a kept width spread builds (a shape that keeps
-      // no source stays byte-identical to main) and on the shape holding a
-      // source at all.
-      if (
-        lowerer.keyOrder.keptSourceShapes.has(argIr.shapeId) &&
-        recordMayKeepSource(lowerer, argIr)
-      ) {
-        body.unshift({
-          kind: "if",
-          cond: recordSourceTest(ref, loc),
-          then: [
-            {
-              kind: "return",
-              value: {
-                kind: "libCall",
-                fn: "dyn.objKeyStrings",
-                args: [{ kind: "dynFrom", value: ref, liveRef: true, type: DYN, loc }],
-                type: resultT,
-                loc,
-              },
-              loc,
-            },
-          ],
-          else_: null,
-          loc,
-        });
-      }
       fn.body = body;
     };
     finalize();
@@ -7803,33 +7774,6 @@ export function recordHasOwnHelper(lowerer: Lowerer, shapeId: string, loc: SrcLo
     body,
     loc,
   });
-  // A record that kept undeclared keys answers an undeclared key through
-  // its kept view: the declared branches above stay exact (the table's
-  // placeholders only fill declared names the record owns), and the
-  // closed-shape `false` fallback becomes the view's own-key test when a
-  // kept width spread builds this shape.
-  if (!shape.indexValue && recordMayKeepSource(lowerer, recT)) {
-    const fn = lowerer.liftedFns[lowerer.liftedFns.length - 1]!;
-    lowerer.shapeOrderHelperFinalizers.push(() => {
-      if (!lowerer.keyOrder.keptSourceShapes.has(shapeId)) return;
-      const last = fn.body[fn.body.length - 1]!;
-      if (last.kind !== "return") return;
-      last.value = {
-        kind: "logical",
-        op: "&&",
-        left: recordSourceTest(rRef, loc),
-        right: {
-          kind: "libCall",
-          fn: "dyn.hasOwn",
-          args: [{ kind: "dynFrom", value: rRef, liveRef: true, type: DYN, loc }, kRef],
-          type: BOOL,
-          loc,
-        },
-        type: BOOL,
-        loc,
-      };
-    });
-  }
   return helper;
 }
 

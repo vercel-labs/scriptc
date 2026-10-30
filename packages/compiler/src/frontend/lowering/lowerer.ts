@@ -10807,29 +10807,30 @@ export class Lowerer {
     this.settleGenericDemandPriorities();
     this.shapes.settleDeclaredOrderPriorities();
     for (const finalize of this.shapeOrderMetadataFinalizers) finalize();
-    const keyOrderFunctions = [
+    applyKeyOrderWitnesses(this, [
+      ...orderedUnits,
+      ...initFunctions,
+      ...instanceFunctions,
+      ...this.liftedFns,
+      ...this.implicitFns,
+    ]);
+    observeRecordLiteralRebuilds(null);
+    // A program whose functions never convert a checked-dynamic value into a
+    // closed record cannot keep a source view anywhere, so the captures that
+    // consult one keep their static copy (record-sources.ts).
+    const allFunctions = [
       ...orderedUnits,
       ...initFunctions,
       ...instanceFunctions,
       ...this.liftedFns,
       ...this.implicitFns,
     ];
-    // A program whose functions never convert a checked-dynamic value into a
-    // closed record cannot keep a source view anywhere, so the captures that
-    // consult one keep their static copy (record-sources.ts). Decided before
-    // the key-order pass, which reads the fact (a same-shape copy of a kept
-    // record keeps its keys; the `"k" in r` sites answer through the view).
     const sourceScan = { memo: new Map<string, boolean>(), visiting: new Set<string>() };
-    for (const fn of keyOrderFunctions) {
+    for (const fn of allFunctions) {
       if (!functionKeepsRecordSources(this, fn, sourceScan)) continue;
       this.recordSourcesPossible = true;
       break;
     }
-    applyKeyOrderWitnesses(this, keyOrderFunctions);
-    // A kept width spread builds a record that holds undeclared keys, so the
-    // captures that consult a kept source must be active for it too.
-    if (this.keyOrder.keptWidthSpreads > 0) this.recordSourcesPossible = true;
-    observeRecordLiteralRebuilds(null);
     for (const finalize of this.shapeOrderHelperFinalizers) finalize();
     this.settleSharedHelperLocations([
       ...orderedUnits,

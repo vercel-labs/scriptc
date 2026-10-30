@@ -2084,12 +2084,7 @@ export function lowerInExpression(
       loc,
     };
   }
-  // A kept record source can hold a key the shape does not declare (a
-  // checked conversion's undeclared keys, a width spread's extras), so the
-  // static `false` answer is registered for the key-order pass to answer
-  // through the record's own source table when the program keeps one.
-  const answer = staticAnswerAfter(recv, inherited, loc);
-  return inherited ? answer : lowerer.keyOrder.sourceProbe(answer, recv, key);
+  return staticAnswerAfter(recv, inherited, loc);
 }
 
 /** A statically-decided `in` answer: a side-effect-free receiver folds away,

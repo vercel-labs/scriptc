@@ -5023,12 +5023,6 @@ function buildLibFnSignatures() {
      * (key-order-witness.ts ordered spreads). Both are record types. Never
      * throws. */
     "record.sourceSpread": { argTypes: [null, null], result: VOID },
-    /** `record.sourceNote(built, keys)`: the record a width spread just
-     * built keeps `keys` (the copy's own keys, in order; declared ones are
-     * placeholders) as its kept source when they hold an undeclared key or
-     * another order (scr_record_source_note). The first is a record type,
-     * the second dyn (borrowed). Never throws. */
-    "record.sourceNote": { argTypes: [null, DYN], result: VOID },
     "insp.key": { argTypes: [STRING], result: STRING },
     "insp.moreItems": { argTypes: [F64], result: STRING },
     "insp.end": { argTypes: [STRING, STRING, STRING, F64, BOOL, BOOL], result: STRING },

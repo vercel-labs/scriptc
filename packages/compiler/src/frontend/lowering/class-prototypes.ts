@@ -592,11 +592,54 @@ function prototypeMutationTarget(lowerer: Lowerer, expr: ts.PropertyAccessExpres
  * may hold a subclass at run time): its prototype has a complete view whose
  * methods accept any receiver. */
 function viewableClass(lowerer: Lowerer, info: ClassInfo, receiver: ts.Expression): boolean {
+  return viewableClassShape(info) && exactClassOfReceiver(lowerer, receiver) === info;
+}
+
+/** The parts of `viewableClass` that do not depend on how the receiver is
+ * spelled: a JavaScript class that has one static identity. */
+function viewableClassShape(info: ClassInfo): boolean {
   return (
     info.decl !== null &&
     info.localClass === undefined &&
-    isJsSourceFile(ts.getSourceFileOfNode(info.decl)) &&
-    exactClassOfReceiver(lowerer, receiver) === info
+    isJsSourceFile(ts.getSourceFileOfNode(info.decl))
+  );
+}
+
+/** The receiver is the binding of the class expression itself (`var C = class
+ * { ... }`, the form a class-value receiver takes when it is not a class
+ * name). `exactClassOfReceiver` has no call-site class type to read from such
+ * a binding, but the binding cannot hold a subclass either: assigning another
+ * class to it is a type error, and the class expression evaluates once, so the
+ * binding's class value IS this class. A parameter, an array element, or a
+ * class expression evaluated per loop iteration may hold a different class at
+ * run time, so those stay refused. */
+function boundClassExpression(lowerer: Lowerer, info: ClassInfo, receiver: ts.Expression): boolean {
+  if (info.decl === null || !ts.isClassExpression(info.decl)) return false;
+  const declaration = info.decl.parent;
+  if (
+    !declaration ||
+    !ts.isVariableDeclaration(declaration) ||
+    declaration.initializer !== info.decl ||
+    !ts.isIdentifier(declaration.name)
+  )
+    return false;
+  // One evaluation: a class expression in a loop body builds a new class per
+  // iteration, whose prototype view is not the class type's static one.
+  for (let node: ts.Node | undefined = declaration.parent; node; node = node.parent)
+    if (
+      ts.isForStatement(node) ||
+      ts.isForInStatement(node) ||
+      ts.isForOfStatement(node) ||
+      ts.isWhileStatement(node) ||
+      ts.isDoStatement(node)
+    )
+      return false;
+  let target = receiver;
+  while (ts.isParenthesizedExpression(target)) target = target.expression;
+  if (!ts.isIdentifier(target)) return false;
+  return (
+    lowerer.checker.getSymbolAtLocation(target) ===
+    lowerer.checker.getSymbolAtLocation(declaration.name)
   );
 }
 
@@ -678,7 +721,8 @@ export function lowerClassPrototypeData(
   if (
     name === null &&
     !prototypeMutationTarget(lowerer, expr) &&
-    viewableClass(lowerer, info, expr.expression)
+    (viewableClass(lowerer, info, expr.expression) ||
+      (viewableClassShape(info) && boundClassExpression(lowerer, info, expr.expression)))
   ) {
     const reflected = reflectClassPrototype(
       lowerer,

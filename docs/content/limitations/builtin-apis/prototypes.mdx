@@ -3,6 +3,7 @@
   The inherited methods and accessors run with the inheriting object as `this`.
   Methods that use `#private` members or `super` throw a TypeError for a receiver that is not an instance of the class.
   `C.prototype` also reads as a value in any read position: passed to a function such as `Object.prototype.hasOwnProperty.call(C.prototype, key)`, inspected with the `Object` reflection surface (`getOwnPropertyDescriptor`, `getOwnPropertyNames`, `keys`), used as another object's prototype, or compared with `===` and `!==`.
+  A class expression bound to a variable answers the same view.
   A class constructor value's own properties are not modeled, so `Object.getOwnPropertyNames(C)` and `Object.prototype.hasOwnProperty.call(C, key)` are unsupported.
   Changing the prototype of a class prototype (`Object.setPrototypeOf(C.prototype, X)`, `util.inherits(C, F)`, or `Object.setPrototypeOf` on a class prototype reached through an instance) is unsupported.
   Other bare prototype reflection, TypeScript class prototypes as values, accessor replacement, and prototype storage on local, generic, mixin, or runtime-provided classes are unsupported.

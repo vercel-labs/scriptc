@@ -42,22 +42,38 @@ describe("runtime feature snapshots", () => {
     expect(moduleUsesHttp2(mod)).toBe(false);
   });
 
-  test("selects the array-attribute build only for a call that can reach an array", () => {
+  test("selects the array-attribute build only for the program's own call", () => {
+    const call = (fn: IrLibFn, mayTargetArray?: true) => ({
+      kind: "exprStmt" as const,
+      loc,
+      expr: {
+        kind: "libCall" as const,
+        fn,
+        args: [],
+        type: VOID,
+        loc,
+        ...(mayTargetArray ? { mayTargetArray } : {}),
+      },
+    });
     const define = module();
-    define.functions[0]!.body.push(call("dyn.defineProperty"));
+    define.functions[0]!.body.push(call("dyn.defineProperty", true));
     expect(moduleRuntimeFeatures(define)).toMatchObject({ dynArrayAttrs: true });
 
     for (const fn of ["dyn.freeze", "dyn.seal", "dyn.preventExtensions"] as const) {
       const integrity = module();
-      integrity.functions[0]!.body.push(call(fn));
+      integrity.functions[0]!.body.push(call(fn, true));
       expect(moduleRuntimeFeatures(integrity)).toMatchObject({ dynArrayAttrs: true });
     }
 
-    // The bound-function lowering stores its metadata through defineProps on
-    // a closure, so it must not grow an unrelated program's runtime object.
-    const props = module();
-    props.functions[0]!.body.push(call("dyn.defineProps"));
-    expect(moduleRuntimeFeatures(props)).toMatchObject({ dynArrayAttrs: false });
+    // The lowering's own calls on targets it built (class machinery,
+    // tagged-template `raw`, bound-function metadata) select nothing.
+    const internal = module();
+    internal.functions[0]!.body.push(
+      call("dyn.defineProperty"),
+      call("dyn.freeze"),
+      call("dyn.defineProps"),
+    );
+    expect(moduleRuntimeFeatures(internal)).toMatchObject({ dynArrayAttrs: false });
   });
 
   test("gates the BigIntStats unit on its member reads, not on bigint", () => {

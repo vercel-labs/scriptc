@@ -720,6 +720,16 @@ const HTTP2_LEGACY_FNS: ReadonlySet<IrLibFn> = new Set([
  * SCR_STDIO_EXTENDED events unit): stdin.setEncoding and 'resize'. */
 const STDIO_EXTENDED_NAMES: ReadonlySet<string> = new Set(["setEncoding", "resize"]);
 
+/** The user-level calls that can make a dynamic array's index or length
+ * part of its state (SCR_ARRAY_ATTRS): Object/Reflect.defineProperty, and
+ * the integrity mutators that can make an array non-extensible. */
+const DYN_ARRAY_ATTRS_FNS: ReadonlySet<string> = new Set([
+  "dyn.defineProperty",
+  "dyn.preventExtensions",
+  "dyn.freeze",
+  "dyn.seal",
+]);
+
 /** The libCall nodes the rules below test. */
 type LibCallNode = IrExpr & { kind: "libCall" };
 
@@ -1097,14 +1107,15 @@ const RUNTIME_FEATURE_RULES = {
    * (SCR_ARRAY_ATTRS in scr_json.c and scr_dyn_invoke.c): the dynamic tier
    * keeps per-element writable/enumerable/configurable bits and a
    * length-writability bit only for programs that can set them, so every
-   * other program keeps the default runtime object. A dyn.freeze/seal/
-   * preventExtensions call can make an array non-extensible, and the build
-   * also carries the first-new-index error unshift and splice report for
-   * one. dyn.defineProps alone does not select it: the bound-function
-   * lowering stores its metadata through it, always on a closure, and an
-   * Object.defineProperties of an array keeps its precise refusal. */
+   * other program keeps the default runtime object. The program's own
+   * defineProperty (and the integrity calls that can make an array
+   * non-extensible) mark the call mayTargetArray; the lowering's own calls
+   * on targets it built — class machinery, tagged-template `raw`, object
+   * literal accessors, bound-function defineProps — leave it unset, so
+   * they select nothing and an Object.defineProperties of an array keeps
+   * its precise refusal. */
   dynArrayAttrs: rule({
-    fns: ["dyn.defineProperty", "dyn.preventExtensions", "dyn.freeze", "dyn.seal"],
+    libCall: (node) => node.mayTargetArray === true && DYN_ARRAY_ATTRS_FNS.has(node.fn),
   }),
   /** Checked-dynamic stream slots test values and pipe into JavaScript
    * stream objects (scr_stream_dyn.c). */

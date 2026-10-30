@@ -1261,6 +1261,20 @@ const RUNTIME_FEATURE_RULES = {
   recordViewPartial: rule({
     expr: (node) => node.kind === "dynCheck" && node.partialView === true,
   }),
+  /** `new Promise` whose settled value is checked-dynamic and whose
+   * executor takes a reject parameter: that reason is the program's own
+   * value, not an Error, so the emitter builds the reject closure with
+   * scr_make_reject_dyn — which lives in the SCR_PROMISE_REJECT_DYN build of
+   * scr_async.c. Every other program links the default object, byte for
+   * byte. */
+  promiseRejectDyn: rule({
+    expr: (node) =>
+      node.kind === "newPromise" &&
+      node.type.kind === "promise" &&
+      node.type.inner.kind === "dyn" &&
+      node.executor.type.kind === "func" &&
+      node.executor.type.params.length === 2,
+  }),
   /** Module namespace objects as checked-dynamic values
    * (scr_module_namespace.c). */
   moduleNamespace: rule({ fns: ["module.namespaceValue"] }),
@@ -1420,6 +1434,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     utilPromisify: false,
     warningReplace: false,
     recordViewPartial: false,
+    promiseRejectDyn: false,
     wasm: false,
     webcrypto: false,
     zlib: false,

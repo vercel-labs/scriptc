@@ -1182,11 +1182,14 @@ export function emitAsyncExpr(
       }
       if (e.executor.type.kind === "func" && e.executor.type.params.length === 2) {
         // Two-param executor: reject is a runtime-provided closure
-        // rejecting the promise with its Error reason. First settle
-        // wins in the runtime; both closures' +1 move into the call.
-        host.declare(`declare ptr @scr_make_reject(ptr)`);
+        // rejecting the promise with its Error reason — or, for a promise
+        // whose settled value is checked-dynamic, with the dyn value the
+        // program rejected with. First settle wins in the runtime; both
+        // closures' +1 move into the call.
+        const maker = inner.kind === "dyn" ? "scr_make_reject_dyn" : "scr_make_reject";
+        host.declare(`declare ptr @${maker}(ptr)`);
         const reject = B.tmp();
-        B.line(`${reject} = call ptr @scr_make_reject(ptr ${p})`);
+        B.line(`${reject} = call ptr @${maker}(ptr ${p})`);
         const exec2 = host.emitExpr(e.executor);
         host.declare(`declare void @scr_promise_run_executor2(ptr, ptr, ptr, ptr)`);
         B.line(

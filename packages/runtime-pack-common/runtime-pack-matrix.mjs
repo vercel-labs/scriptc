@@ -488,6 +488,30 @@ export function variantsFor(source) {
       when: { nodeIsland: true },
       defines: ["SCR_NODE_ISLANDS"],
     });
+    // A checked-dynamic promise whose executor takes a reject parameter
+    // builds its reject closure with scr_make_reject_dyn, the reason being
+    // the program's own value; every other program keeps the default
+    // object, byte for byte. The selector takes the variant with the most
+    // conditions, so each build above needs its counterpart.
+    for (const [id, when, defines] of [
+      ["promise-reject-dyn", { promiseRejectDyn: true }, ["SCR_PROMISE_REJECT_DYN"]],
+      [
+        "native-reactions-promise-reject-dyn",
+        { webStreams: true, promiseRejectDyn: true },
+        ["SCR_NATIVE_REACTIONS", "SCR_PROMISE_REJECT_DYN"],
+      ],
+      [
+        "node-island-promise-reject-dyn",
+        { nodeIsland: true, promiseRejectDyn: true },
+        ["SCR_NODE_ISLANDS", "SCR_PROMISE_REJECT_DYN"],
+      ],
+      [
+        "native-reactions-node-island-promise-reject-dyn",
+        { webStreams: true, nodeIsland: true, promiseRejectDyn: true },
+        ["SCR_NATIVE_REACTIONS", "SCR_NODE_ISLANDS", "SCR_PROMISE_REJECT_DYN"],
+      ],
+    ])
+      variants.push({ id, when, defines });
   }
   // Error-taking write completion callbacks: the stream unit publishes the
   // error each callback receives; every other program keeps the default

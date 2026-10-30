@@ -453,6 +453,8 @@ const RUNTIME_DEFINES: readonly {
   // scr_json.c's view slot answers NULL for a field a partial record view
   // does not have; only a program with a partial assertion selects it.
   { define: "SCR_RECORD_VIEW_PARTIAL", when: (opts) => opts.recordViewPartial },
+  // scr_async.c's reject closure for a checked-dynamic promise reason.
+  { define: "SCR_PROMISE_REJECT_DYN", when: (opts) => opts.promiseRejectDyn },
   { define: "SCR_STDIO_EXTENDED", when: (opts) => opts.stdioExtended },
   // The wave's prepend registrations and stdin.isRaw (scr_events.c,
   // scr_async_dyn.c), server.off (scr_net.c) and copyFile's mode form

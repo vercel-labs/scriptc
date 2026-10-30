@@ -6402,6 +6402,44 @@ ScrClosure *scr_make_reject(ScrPromise *p) {
   return c;
 }
 
+#ifdef SCR_PROMISE_REJECT_DYN
+/* The checked-dynamic promise's reject closure: a promise whose settled
+ * value is unknown has no typed payload to protect, so its reason is the
+ * dyn value the program rejected with (undefined for a bare reject(), a
+ * number, a string, an object — JS-exact). It stores as the dyn payload
+ * kind, the representation scr_promise_reason_dyn hands back identity-
+ * preserving, so a catch handler receives the very value that was
+ * rejected. First settle wins, like scr_reject_thunk.
+ *
+ * Only a program with such a promise (the promiseRejectDyn feature) links
+ * this build of the unit; every other program keeps the default object,
+ * byte for byte. */
+static void scr_reject_dyn_thunk(ScrClosure *self, ScrDyn *reason) {
+  ScrPromise *p = scr_resolve_target(self);
+  if (p->state != SCR_PROM_PENDING) {
+    scr_dyn_release(reason);
+  } else {
+    p->state = SCR_PROM_REJECTED;
+    p->payload_kind = SCR_EXC_REF;
+    p->payload = reason; /* ownership moves in */
+    p->retain_fn = scr_dyn_retain_v;
+    p->release_fn = scr_dyn_release_v;
+    p->trace_fn = scr_dyn_trace_v;
+    scr_promise_settle_wake(p);
+  }
+  scr_promise_release(p);
+}
+
+ScrClosure *scr_make_reject_dyn(ScrPromise *p) {
+  ScrClosure *c = scr_closure_new((void *)&scr_reject_dyn_thunk, 1);
+  ScrBox *b = scr_box_new_obj(scr_promise_retain_v, scr_promise_release_v,
+                               scr_promise_trace_v);
+  scr_box_set_ref(b, scr_promise_retain(p));
+  c->caps[0] = b;
+  return c;
+}
+#endif /* SCR_PROMISE_REJECT_DYN */
+
 /* Shared executor epilogue: an escaping throw rejects a still-pending
  * promise (payload moved out of the active exception cell); a throw after
  * the promise settled is swallowed, like resolve-then-throw in JS. */

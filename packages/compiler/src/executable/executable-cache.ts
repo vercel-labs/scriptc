@@ -65,6 +65,7 @@ export interface EarlyExecutableNativeFeatures {
   wasm?: boolean;
   warningReplace?: boolean;
   recordViewPartial?: boolean;
+  promiseRejectDyn?: boolean;
   stdioExtended?: boolean;
   fsFlags?: boolean;
   strdecDyn?: boolean;

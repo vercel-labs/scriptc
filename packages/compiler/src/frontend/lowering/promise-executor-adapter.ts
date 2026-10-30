@@ -6,6 +6,7 @@ import {
   type IrParam,
   type IrType,
   type SrcLoc,
+  DYN,
   VOID,
   funcOf,
   typeKey,
@@ -30,7 +31,13 @@ export function adaptPromiseExecutor(
   if (execT.kind !== "func" || execT.rest || execT.params.length > 2) return null;
   if (!execT.params.some((p) => p.kind === "dyn")) return null;
   const resolveT = funcOf(inner.kind === "void" ? [] : [inner], VOID);
-  const rejectT = funcOf([{ kind: "object", className: "%Error" }], VOID);
+  // The rejection channel keeps the promise's own reason representation:
+  // Error for a typed payload, the checked-dynamic value for a promise
+  // whose settled value is unknown.
+  const rejectT = funcOf(
+    [inner.kind === "dyn" ? DYN : { kind: "object", className: "%Error" }],
+    VOID,
+  );
   const native = [resolveT, rejectT];
   if (
     !execT.params.every((p, i) => p.kind === "dyn" || typeKey(p) === typeKey(native[i]!)) ||

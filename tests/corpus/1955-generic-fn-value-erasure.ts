@@ -55,6 +55,13 @@ console.log(registry.run(3), registry.run("three"));
 const pinned: (x: number) => number = identity;
 console.log(pinned(9), stored(9));
 
+// JavaScript has ONE function object per declaration, so the erased value a
+// plain binding holds and a pinned instance of the same declaration compare
+// equal. The assertions keep the comparison a value comparison (a typed
+// comparison pins the unpinned side's signature, which this program holds at
+// two, and refuses).
+console.log((pinned as any) === (stored as any), (pinned as any) !== (stored as any));
+
 // A generic value over PRIMITIVES that returns a promise: the payload is not
 // a record, so nothing needs copying and the limiter composes.
 function createLimiter(limit: number): <T>(run: () => Promise<T>) => Promise<T> {

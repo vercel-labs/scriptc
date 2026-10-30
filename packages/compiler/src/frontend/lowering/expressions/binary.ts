@@ -59,7 +59,10 @@ import { tryLowerExpression } from "./try-lower-expression.js";
 import { fenceNodeModuleMutation, lowerRequireCacheHas } from "../lower-node-module.js";
 import { errorToStringCall } from "../error-methods.js";
 import { classToStringConversion, classUnionToString } from "../class-to-primitive.js";
-import { noteDynamicIdentityComparison } from "../generic-functions.js";
+import {
+  genericDeclarationBehindValue,
+  noteDynamicIdentityComparison,
+} from "../generic-functions.js";
 import { isPerfEntryType, perfEntryTag } from "../builtins/performance.js";
 import { isX509Type, x509ToString } from "../builtins/x509.js";
 import { guardNullProto, nullProtoRecordShape } from "../null-prototype.js";
@@ -2653,6 +2656,14 @@ export function lowerStrictEquality(
   // assignable to the other — a tuple-typed listeners() element
   // against a prefix-declared handler): the pointer answers it.
   if (idLeft.type.kind === "func" && idRight.type.kind === "func") {
+    // Two VALUE INSTANCES of one generic declaration are the SAME function
+    // object in JavaScript — the erased closure every unpinned value reads
+    // and each pinned signature's compiled closure are separate functions
+    // here, so the pointer would answer false against Node's true. The
+    // operands' declarations decide it, not their compiled instances.
+    const leftDecl = genericDeclarationBehindValue(lowerer, leftNode, true);
+    if (leftDecl !== null && leftDecl === genericDeclarationBehindValue(lowerer, rightNode, true))
+      return boolLit(!negated, loc);
     return {
       kind: "bin",
       op: negated ? "!==" : "===",

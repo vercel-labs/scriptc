@@ -1823,6 +1823,10 @@ export function checkGenericIdentityPins(lowerer: Lowerer): void {
 export function genericDeclarationBehindValue(
   lowerer: Lowerer,
   node: ts.Node,
+  // A comparison answers for the VALUE the binding holds at that point, so
+  // only a binding the program cannot reassign may stand for the
+  // declaration its initializer reads.
+  requireConst = false,
 ): GenericFnInfo | null {
   let current: ts.Node | undefined = node;
   const seen = new Set<ts.Node>();
@@ -1847,6 +1851,13 @@ export function genericDeclarationBehindValue(
     const decl = symbol.valueDeclaration ?? symbol.declarations?.[0];
     if (decl === undefined) return null;
     if (!ts.isVariableDeclaration(decl) && !ts.isPropertyDeclaration(decl) && !ts.isParameter(decl))
+      return null;
+    if (
+      requireConst &&
+      (!ts.isVariableDeclaration(decl) ||
+        !ts.isVariableDeclarationList(decl.parent) ||
+        (decl.parent.flags & ts.NodeFlags.Const) === 0)
+    )
       return null;
     current = decl.initializer;
   }

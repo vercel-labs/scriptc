@@ -2337,10 +2337,29 @@ static ScrDyn *dyn_builtin_fn_call(ScrClosure *clo, ScrDyn *const *args, size_t 
   ScrDyn *result = NULL;
   bool timeout = strcmp(name->data, dyn_s16) == 0;
   if (timeout || strcmp(name->data, dyn_s15) == 0) {
-    double ms = 0;
-    if (dyn_builtin_fn_callback(args, argc) && (argc < 2 || scr_dyn_number_coerce_js(args[1], &ms))) {
-      ScrClosure *c = dyn_builtin_fn_deferred(args, argc, 2);
-      result = scr_dyn_new_num(timeout ? scr_set_timeout_handle(c, ms) : scr_set_interval(c, ms));
+    /* Node validates the callback, then its Timeout constructor takes an
+     * undefined delay as the default 1ms, converts another as `after *= 1`
+     * does (a BigInt throws its TypeError) and warns when it sets the
+     * delay to 1. */
+    if (dyn_builtin_fn_callback(args, argc)) {
+      double ms = NAN;
+      bool converted = true;
+      if (argc >= 2 && args[1]->kind != SCR_DYN_UNDEF) {
+        ScrDyn *one = scr_dyn_new_num(1);
+        ScrStr *times = scr_str_new("*", 1);
+        ScrDyn *product = scr_dyn_arithmetic(args[1], one, times);
+        scr_str_release(times);
+        scr_dyn_release(one);
+        converted = product != NULL;
+        if (product) {
+          ms = scr_timer_user_delay(product->v.num, timeout ? 0 : 1);
+          scr_dyn_release(product);
+        }
+      }
+      if (converted) {
+        ScrClosure *c = dyn_builtin_fn_deferred(args, argc, 2);
+        result = scr_dyn_new_num(timeout ? scr_set_timeout_handle(c, ms) : scr_set_interval(c, ms));
+      }
     }
   } else if (strcmp(name->data, dyn_s13) == 0) {
     if (dyn_builtin_fn_callback(args, argc))

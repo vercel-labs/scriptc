@@ -1190,6 +1190,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "dyn.defineProperty": "scr_dyn_define_property",
   "dyn.getOwnPropertyDescriptor": "scr_dyn_get_own_property_descriptor",
   "dyn.arrayProtoCall": "scr_dyn_array_proto_call",
+  "dyn.arrayLikeProtoCall": "scr_dyn_array_like_call",
+  "dyn.builtinPrototype": "scr_dyn_builtin_prototype",
   "dyn.promiseAll": "scr_dyn_promise_all",
   "dyn.promiseAllSettled": "scr_dyn_promise_all_settled",
   "dyn.promiseAny": "scr_dyn_promise_any",
@@ -1861,6 +1863,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "timers.queueMicrotaskDyn": "scr_queue_microtask_dyn",
   "timers.setImmediateFnValue": "scr_set_immediate_dyn_value",
   "timers.immediatePromise": "scr_immediate_promise",
+  "timers.userDelay": "scr_timer_user_delay",
 };
 
 /** The mock-aware entry points (scr_test.c) that the timer calls of a

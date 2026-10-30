@@ -3,7 +3,14 @@
   `readable.pipe(process.stdout)` and `readable.pipe(process.stderr)` compile and, as in Node, do not end the process stream.
   When an untyped value reaches `NodeJS.ReadableStream` or `NodeJS.WritableStream`, those two interfaces hold any value, so JavaScript stream objects (constructor-function streams, plain objects with `on` and `pipe`) pass through TypeScript functions typed with them and come back to JavaScript as the same objects.
   Member calls on such a value use the native stream when it is one and call the object's own members otherwise; `readable.pipe()` into a JavaScript destination follows Node's pipe protocol.
-  A `pipeline` stage and a `for await` source that arrive as untyped values must be native streams, or `Cipheriv` and `Decipheriv` values, at run time; other values throw a not-supported error.
+  The first `pipeline` stage may arrive as an untyped value that is a native stream, a `Cipheriv` or `Decipheriv` value, or an iterable: a string, an array, a generator object, or any value with a `Symbol.asyncIterator` or `Symbol.iterator` method, which the pipeline pumps into the next stage as Node does.
+  It may also be a source function, which the pipeline calls with `{ signal }` and whose iterable result it pumps, or a `{ readable, writable }` pair, whose readable side it pumps.
+  Later `pipeline` stages that arrive as untyped values may be native streams, `Cipheriv` and `Decipheriv` values, functions, and iterables.
+  A function is called with the previous stage and `{ signal }` as a function stage: before the last stage it must return an async iterable, and as the last stage it may return a promise, whose value resolves the pipeline, or an async iterable, which feeds the PassThrough that `pipeline()` returns.
+  An untyped source function, function stage, or destination that returns a stream is unsupported.
+  An iterable becomes `Duplex.from` of it, which the next stage reads from while the stages before it are not read, as in Node.
+  A pipeline branches at run time on whether each of its first three untyped stages after the first is a function; a function in a later untyped stage, an untyped web stream, and a `{ readable, writable }` pair after the first stage throw a not-supported error.
+  `for await` sources that arrive as untyped values must be native streams, or `Cipheriv` and `Decipheriv` values, at run time; other values throw a not-supported error.
   Native streams expose no `emit` to JavaScript, so a JavaScript stream whose own `pipe()` emits on its destination (the legacy `Stream` pipe) cannot pipe into one.
   `Readable.from` accepts strings, Buffers, arrays, Sets, Maps, Map and Set iterators, generators, async generators, and class iterables and async iterables, and in JavaScript any iterable or async iterable.
   In JavaScript, a sync iterator value with a `then` method that is not a promise, and an object whose `[Symbol.asyncIterator]` or `[Symbol.iterator]` method is a generator method, are unsupported.
@@ -14,7 +21,7 @@
   `node:stream/consumers` and readline interfaces read object-mode streams of strings and Buffers; other values throw a not-supported error.
   `pipeline` accepts function stages anywhere among its streams: async generator functions (`async function* (source)`, iterating `source` with `for await`), an async generator source function (`async function* ({ signal })`), an async generator function as the destination, and an async function destination whose value resolves the promise form and reaches the callback's second argument.
   A stage is written inline, or named by a function declaration or a `const` bound to a function expression that nothing reassigns.
-  The source may also be an array, a string, a synchronous generator object, or a synchronous generator function without parameters; their elements reach the next stage on the same ticks as in Node.
+  The source may also be an array, a string, a `Set`, a `Map`, a generator or async generator object, or a synchronous generator function without parameters; their elements reach the next stage on the same ticks as in Node.
   Stages may take the `{ signal }` argument.
   With a function destination, `pipeline()` returns an object-mode PassThrough that receives an async generator destination's values, or an async function destination's value unless it is `null` or `undefined`.
   `@types/node` types that result as `NodeJS.WritableStream`, so `for await` over it needs the `PassThrough` type (`pipeline(...) as PassThrough`, or a JSDoc `@type`).
@@ -27,8 +34,10 @@
   A `Duplex.from` body function may take the `{ signal }` argument, which is aborted with the error the Duplex is destroyed with.
   `stream.compose` accepts streams and async generator functions in any position, an async function as the last stage, and an array, a string, or a generator as the first stage; one stage is `Duplex.from` of it.
   A web `ReadableStream` is read as an async iterable by `Readable.from` and as the first stage of `compose` or `pipeline`, and through its reader by `Readable.fromWeb` (with `objectMode`, `highWaterMark`, `encoding`, and `signal` in an options object literal) and `Duplex.from`.
-  `new TransformStream()` without arguments builds the identity transform: its readable side is a web `ReadableStream`, its writable side supports `getWriter`, `abort`, `close`, and `locked`, and the writer supports `write`, `close`, `abort`, `releaseLock`, `ready`, `closed`, and `desiredSize`, with Node's backpressure (a write completes when the readable side reads its chunk).
-  A web stream in a later compose stage, `Readable.toWeb`, a `TransformStream` with a transformer or queuing strategies, the `WritableStream` constructor, `pipeTo`, and `pipeThrough` are unsupported.
+  In TypeScript, `new TransformStream()` without arguments builds the identity transform: its readable side is a web `ReadableStream`, its writable side supports `getWriter`, `abort`, `close`, and `locked`, and the writer supports `write`, `close`, `abort`, `releaseLock`, `ready`, `closed`, and `desiredSize`, with Node's backpressure (a write completes when the readable side reads its chunk).
+  In TypeScript, `tee`, `pipeTo`, and `pipeThrough`, the `WritableStream` constructor with an underlying sink, and a `TransformStream` with a transformer or queuing strategies compile: a program that uses one of them builds its `ReadableStream`, `WritableStream`, and `TransformStream` values with the same classes as JavaScript, and a `Response` or `Request` body has those members too.
+  A TypeScript program that uses only `getReader`, `cancel`, `locked`, and the identity `TransformStream` keeps the smaller native streams.
+  A web stream in a later compose stage and `Readable.toWeb` are unsupported.
   The `ERR_INVALID_ARG_VALUE` message for a stream that is no longer readable or writable names the stream's class instead of printing the stream.
   `readable.compose(stage, { signal })` is `stream.compose(readable, stage)` with the signal added; the options are an object literal whose `signal` is a variable or a property read.
   `pipeline` from `node:stream/promises` accepts a trailing `{ signal, end }` object, with or without function stages, and `finished` accepts `readable`, `writable`, `error`, `cleanup`, and `signal` options, with boolean literals for the flags.
@@ -53,4 +62,12 @@
   The `readline/promises` `Readline` class writes to the same outputs.
   `readline.emitKeypressEvents` emits `'keypress'` events on `process.stdin` or a readable stream, shared with terminal interfaces on that stream as in Node; a listener's first parameter must admit `undefined`, which it receives for escape sequences.
   Chained listener registration is unsupported.
-  `node:stream/web` exports the same `ReadableStream` class as the global; its other classes are unsupported.
+  `node:stream/web` exports the same classes as the globals; in TypeScript, `ReadableStream`, `WritableStream`, and `TransformStream` have lowerings.
+  In JavaScript, `ReadableStream`, `WritableStream`, and `TransformStream` with their default readers, writers, and controllers, `CountQueuingStrategy`, `ByteLengthQueuingStrategy`, `TextEncoderStream`, and `TextDecoderStream`, as globals and as `node:stream/web` exports, are constructor values with Node's prototypes, brand checks, and errors.
+  Their underlying sources, sinks, and transformers, queuing strategies with a `size` function, readers and writers, `tee`, `pipeTo` and `pipeThrough` with their options and an abort signal, `ReadableStream.from`, and async iteration settle promises in Node's order, and the streams take own properties.
+  `TextDecoderStream` decodes UTF-8; its other encodings are unsupported.
+  A JavaScript `ReadableStream` given as a `Response` or `Request` body, or as `fetch`'s body, is read through a stream of its own: `response.body` is that stream rather than the one passed in, and the stream passed in is locked from the start.
+  In JavaScript, a `Response` or `Request` body has the members of a `ReadableStream`, including `tee`, `pipeTo`, `pipeThrough`, `values`, and `for await`, and its lock and `bodyUsed` follow them.
+  After one of those members is used, a body given to a new `Response` or `Request` is locked from the start, as a JavaScript `ReadableStream` is.
+  In a program that names none of the web stream classes, those members are available when the program's JavaScript names one of them or iterates a body with `for await`; reached only through a computed key, they are not.
+  In JavaScript, a byte stream (`type: 'bytes'`), a BYOB reader, a class that extends one of these classes, `Object.getPrototypeOf` on these values, their use as `WeakMap` and `WeakSet` keys, and `ReadableStream.from` of a function that is not iterable are unsupported.

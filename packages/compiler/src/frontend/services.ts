@@ -14,11 +14,21 @@ import {
 } from "./npm-static-builtin-aliases.js";
 import { mayHoldUmdWrapper, unwrapUmdFactory } from "./npm-static-umd.js";
 import { mayHoldEnumIife, rewriteEnumIifes } from "./npm-static-enum-iife.js";
+import {
+  mayHoldNamespaceDefault,
+  rewriteNamespaceDefaults,
+} from "./npm-static-namespace-defaults.js";
 import { mayHoldTscBuiltinImport, unwrapTscBuiltinImports } from "./npm-static-tsc-helpers.js";
 import { builtinPackageAliasFor } from "./package-shims.js";
 import * as syntax from "./npm-static-declaration-syntax.js";
 import { normalizeCjsExportsVar } from "./npm-static-cjs-exports-var.js";
 import type { SourceFile } from "./ts7/ast-types.js";
+
+/** Whether the source can contain `word` as a keyword or identifier: it
+ * holds the word itself or a Unicode escape that might spell it. */
+function spells(source: string, word: string): boolean {
+  return source.includes(word) || source.includes("\\u");
+}
 
 /** Evaluate an isolated, self-contained TypeScript callback under a finite
  * budget. Hosts supply execution; shared lowering owns capture checks and
@@ -55,7 +65,9 @@ export class FrontendServices {
     // Called as a plain function: the instance is not its receiver.
     const createApi = this.createApi;
     return (this.parser ??= new Ts7SourceParser(
-      (options) => createApi({ ...options, collectTiming: false }),
+      // The parser reads no libraries, so it gains nothing from the shared
+      // checker server, and leaves it to the program's checker.
+      (options) => createApi({ ...options, collectTiming: false, shared: false }),
       this.cwd,
     ));
   }
@@ -132,6 +144,13 @@ export class FrontendServices {
     if (!mayHoldEnumIife(source)) return null;
     return rewriteEnumIifes(this.parse(path, source, "js"));
   }
+  /** A package module with its guarded namespace declarations
+   * (`var ns = ns || {}`) respelled as plain ones (null: none). */
+  namespaceDefaults(source: string, path: string): string | null {
+    this.ensureOpen();
+    if (!mayHoldNamespaceDefault(source)) return null;
+    return rewriteNamespaceDefaults(this.parse(path, source, "js"));
+  }
   /** A package module with its requires of builtin-aliased polyfill
    * packages respelled as the builtins (null: none). */
   builtinAliasRequires(source: string, path: string): string | null {
@@ -150,13 +169,18 @@ export class FrontendServices {
     return normalizeCjsExportsVar(this.parse(path, source, "js"));
   }
   nullableClassFields(path: string, source: string): syntax.NpmStaticOverloadRewrite | null {
+    // Rewrites `null`-initialized fields of class declarations.
+    if (!spells(source, "class") || !spells(source, "null")) return null;
     return syntax.applyNpmStaticNullableClassFields(this.parse(path, source, "js"), source);
   }
   jsDocNamepaths(path: string, source: string): string | null {
-    if (!source.includes("~") && !source.includes("#")) return null;
+    // A namepath segment joined by `#` or `~` (applyNpmStaticJsDocNamepaths).
+    if (!/[$\w][#~][$A-Z_a-z]/.test(source)) return null;
     return syntax.applyNpmStaticJsDocNamepaths(this.parse(path, source, "js"), source);
   }
   findReturnWidening(path: string, source: string): syntax.NpmStaticOverloadRewrite | null {
+    // Widens `find` calls returned by methods of class declarations.
+    if (!spells(source, "class") || !spells(source, "find")) return null;
     return syntax.applyNpmStaticFindReturnWidening(this.parse(path, source, "js"), source);
   }
   declarationProperties(

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8179-tls-reject-unauthorized-values.mjs"
+ ],
+ "diags": []
+}

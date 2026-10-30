@@ -2,9 +2,10 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
+import type { NativeLinkFeatures } from "../backend/native-link-info.js";
 import type { NativeRuntimeSelection } from "../backend/runtime-pack-native.js";
 import { NativeCache } from "./cache.js";
-import { openNativeExecutableCache } from "./executable-cache.js";
+import { type ExecutableRuntimePack, openNativeExecutableCache } from "./executable-cache.js";
 import type { NativeToolchain } from "./toolchain.js";
 
 const directories: string[] = [];
@@ -50,14 +51,20 @@ function fixture(platform: string, driver: string) {
     linkerArgs: [],
     dsymutil: "dsymutil",
   } as unknown as NativeToolchain;
-  const pack = {
+  const pack: ExecutableRuntimePack = {
     root: runtime,
-    manifest: { licenses: [] },
-    packageText: "{}",
-    manifestText: "{}",
-    selected: { runtime: [], archives: [] },
+    features: {} as NativeLinkFeatures,
     flavor: "release",
-  } as unknown as NativeRuntimeSelection;
+    select: () =>
+      ({
+        root: runtime,
+        licenses: [],
+        packageText: "{}",
+        manifestText: "{}",
+        selected: { runtime: [], archives: [] },
+        flavor: "release",
+      }) as unknown as NativeRuntimeSelection,
+  };
   const open = () =>
     openNativeExecutableCache(
       new NativeCache(join(root, "cache")),

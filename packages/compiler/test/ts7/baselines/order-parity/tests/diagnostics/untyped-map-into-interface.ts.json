@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/untyped-map-into-interface.ts"
+ ],
+ "diags": []
+}

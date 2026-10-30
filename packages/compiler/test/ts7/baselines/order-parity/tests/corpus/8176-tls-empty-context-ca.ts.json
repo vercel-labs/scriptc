@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8176-tls-empty-context-ca.ts"
+ ],
+ "diags": []
+}

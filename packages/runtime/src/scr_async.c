@@ -26,6 +26,10 @@
 #define _DEFAULT_SOURCE 1
 #endif
 #include "scr_runtime.h"
+#ifdef SCR_NODE_ISLANDS
+#include "scr_node_bridge.h"
+#include "scr_node_island.h"
+#endif
 
 #include <errno.h>
 #include <fcntl.h>
@@ -54,6 +58,9 @@
 #include <sys/mman.h>
 #include <ucontext.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <sys/event.h>
+#endif
 #endif
 
 #if defined(__has_feature)
@@ -168,6 +175,9 @@ static void scr_fiber_stack_free(void *stack) {
 enum { SCR_PROM_PENDING = 0, SCR_PROM_FULFILLED = 1, SCR_PROM_REJECTED = 2 };
 
 #define SCR_CB_SYNC SIZE_MAX
+#ifdef SCR_NODE_ISLANDS
+#define SCR_CB_ANY SIZE_MAX /* all_idx of an any-settlement callback */
+#endif
 #define SCR_CB_BATCH (SIZE_MAX - 1)
 
 typedef struct ScrFiber ScrFiber;
@@ -211,12 +221,20 @@ struct ScrPromise {
    * Combinator entries (Promise.all / Promise.race) are reaction jobs:
    * `job_at` is the number of waiters parked before the entry subscribed,
    * so settlement queues the job in subscription order among the waking
-   * fibers. Conversions (SCR_CB_SYNC) run inside the settle itself. */
+   * fibers. Conversions (SCR_CB_SYNC) run inside the settle itself.
+   * Native reactions (scr_promise_react) are reaction jobs with no dst:
+   * `reaction` and `ctx` take the places of adapt and all_idx. */
   struct ScrPromiseCbWaiter {
-    void (*adapt)(ScrPromise *dst, ScrPromise *src);
+    union {
+      void (*adapt)(ScrPromise *dst, ScrPromise *src);
+      const ScrPromiseReaction *reaction;
+    };
     ScrPromise *dst;
     struct ScrAllState *all;
-    size_t all_idx;
+    union {
+      size_t all_idx;
+      void *ctx;
+    };
     size_t job_at;
   } *cbs;
   size_t ncbs, cbs_cap;
@@ -288,6 +306,24 @@ static void scr_promise_add_waiter(ScrPromise *p, ScrFiber *f) {
   p->waiters[p->nwaiters++] = f;
 }
 
+#ifdef SCR_NATIVE_REACTIONS
+/* A native reaction's steps (scr_promise_react). Only the build for
+ * programs with web streams has them (runtime-pack-matrix.mjs). */
+static void scr_promise_reaction_drop(struct ScrPromiseCbWaiter *cb) {
+  if (cb->reaction->drop) cb->reaction->drop(cb->ctx);
+}
+
+static void scr_promise_reaction_run(struct ScrPromiseCbWaiter *cb, ScrPromise *src) {
+  cb->reaction->react(cb->ctx, src);
+  scr_promise_reaction_drop(cb);
+}
+#define SCR_PROMISE_IS_REACTION(cb) ((cb)->dst == NULL)
+#else
+#define SCR_PROMISE_IS_REACTION(cb) false
+#define scr_promise_reaction_drop(cb) ((void)0)
+#define scr_promise_reaction_run(cb, src) ((void)0)
+#endif
+
 static bool scr_promise_has_traced_children(const ScrPromise *p) {
   return p->ncbs != 0 ||
          ((p->payload_kind == SCR_EXC_REF || p->payload_kind == SCR_EXC_OBJ ||
@@ -324,7 +360,8 @@ static void scr_promise_gcfree(void *o) {
    * is reachable only through them) — release like the untraced payload
    * above; the cb destinations stay untouched (trace visits them). */
   for (size_t i = 0; i < p->ncbs; i++) {
-    if (p->cbs[i].all) scr_promise_all_state_release(p->cbs[i].all);
+    if (SCR_PROMISE_IS_REACTION(&p->cbs[i])) scr_promise_reaction_drop(&p->cbs[i]);
+    else if (p->cbs[i].all) scr_promise_all_state_release(p->cbs[i].all);
   }
   scr_promise_free_side(p);
   if (p->cbs) free(p->cbs);
@@ -356,6 +393,26 @@ void scr_promise_share_identity(ScrPromise *dst, ScrPromise *src) {
   dst->identity = src->identity;
   dst->identity->rc++;
 }
+
+#ifdef SCR_NODE_ISLANDS
+/* Node islands (NI-5) key their export table by a promise's identity
+ * (scr_node_island_export.c); other programs link none of this. */
+const void *scr_promise_identity_key(ScrPromise *p) {
+  if (!p->identity) {
+    p->identity = malloc(sizeof *p->identity);
+    if (!p->identity) scr_oom();
+    p->identity->rc = 1;
+  }
+  return p->identity;
+}
+
+void scr_promise_identity_hold(const void *key) { ((ScrPromiseIdentity *)key)->rc++; }
+
+void scr_promise_identity_drop(const void *key) {
+  ScrPromiseIdentity *identity = (ScrPromiseIdentity *)key;
+  if (--identity->rc == 0) free(identity);
+}
+#endif
 
 bool scr_promise_identity_equal(ScrPromise *a, ScrPromise *b) {
   return a == b || (a->identity != NULL && a->identity == b->identity);
@@ -416,6 +473,10 @@ void scr_promise_release(ScrPromise *p) {
     scr_promise_release_payload(p);
     scr_promise_free_side(p);
     for (size_t i = 0; i < p->ncbs; i++) {
+      if (SCR_PROMISE_IS_REACTION(&p->cbs[i])) {
+        scr_promise_reaction_drop(&p->cbs[i]);
+        continue;
+      }
       scr_promise_release(p->cbs[i].dst);
       if (p->cbs[i].all) scr_promise_all_state_release(p->cbs[i].all);
     }
@@ -909,7 +970,44 @@ void scr_wasi_coro_started(void *handle) {
 static SCR_TL ScrFiber **scr_ready = NULL;
 static SCR_TL size_t scr_ready_head = 0, scr_ready_len = 0, scr_ready_cap = 0;
 
+#ifdef SCR_NODE_ISLANDS
+/* The hosted loop (scope-B NI-3, defined below the loop hooks): once Node
+ * is loaded, the runtime's queues live on Node's and this names the
+ * libnode bridge that schedules them. NULL until then, and in programs
+ * that never load Node. */
+static SCR_TL const ScrNodeBridge *scr_loop_hosted = NULL;
+/* Runtime ticks and microtasks queued on Node and not yet run: the
+ * dispatch stations' yield signal (scr_loop_has_ready). */
+static SCR_TL size_t scr_hosted_queued = 0;
+/* The end of the check phase the loop pass is running (0: none). */
+static SCR_TL size_t scr_check_end = 0;
+/* Where the loop pass is, for a switch in the middle of it: the turn
+ * continues at Node's poll phase after a timers or I/O phase, and a
+ * microtask drain in progress finishes before the ticks. */
+enum { SCR_PASS_START, SCR_PASS_IO, SCR_PASS_TIMERS, SCR_PASS_CHECK };
+static SCR_TL int scr_pass_phase = SCR_PASS_START;
+static SCR_TL bool scr_in_microtask = false;
+static SCR_TL bool scr_hosted_continue_turn = false;
+static SCR_TL bool scr_hosted_microtasks_first = false;
+#define SCR_PASS_PHASE(phase) (scr_pass_phase = (phase))
+#define SCR_RESUME_JOB(f) (scr_in_microtask = true, scr_resume_fiber(f), scr_in_microtask = false)
+static void scr_hosted_microtask(ScrFiber *f);
+/* A microtask turn may continue in place only while the runtime's own
+ * queue is the whole queue: hosted, V8's queue may hold Node's jobs. */
+#define SCR_READY_IDLE() (scr_ready_len == 0 && scr_loop_hosted == NULL)
+#else
+#define SCR_READY_IDLE() (scr_ready_len == 0)
+#define SCR_PASS_PHASE(phase) ((void)0)
+#define SCR_RESUME_JOB(f) scr_resume_fiber(f)
+#endif
+
 static void scr_ready_push(ScrFiber *f) {
+#ifdef SCR_NODE_ISLANDS
+  if (scr_loop_hosted != NULL) {
+    scr_hosted_microtask(f);
+    return;
+  }
+#endif
   if (scr_ready_head + scr_ready_len == scr_ready_cap) {
     if (scr_ready_len > 0) {
       memmove(scr_ready, scr_ready + scr_ready_head, scr_ready_len * sizeof *scr_ready);
@@ -955,6 +1053,44 @@ double scr_now_ms(void) {
   struct timespec ts;
   clock_gettime(CLOCK_MONOTONIC, &ts);
   return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+}
+
+/* The loop's sleep to its next timer when nothing else can wake it. macOS
+ * gives nanosleep the timer slack of the thread's QoS class: a 5 ms sleep
+ * takes about 38 ms at utility QoS and 180 ms at background QoS, which is
+ * where launchd services, CI jobs among them, run. A kevent timeout keeps
+ * its deadline at every QoS, as libuv's loop does. */
+#if defined(__APPLE__)
+/* One queue with no events for every thread that sleeps (worker loops
+ * included), created on first use. */
+static _Atomic int scr_sleep_kq = -1;
+#endif
+static void scr_loop_sleep(double wait_ms) {
+  struct timespec ts = {(time_t)(wait_ms / 1000.0),
+                        (long)((wait_ms - (double)((time_t)(wait_ms / 1000.0)) * 1000.0) * 1e6)};
+#if defined(__APPLE__)
+  int kq = atomic_load_explicit(&scr_sleep_kq, memory_order_acquire);
+  if (kq < 0) {
+    int created = kqueue();
+    if (created >= 0) {
+      (void)fcntl(created, F_SETFD, FD_CLOEXEC);
+      int none = -1;
+      if (atomic_compare_exchange_strong(&scr_sleep_kq, &none, created)) {
+        kq = created;
+      } else {
+        close(created);
+        kq = none;
+      }
+    }
+  }
+  if (kq >= 0) {
+    /* An interrupted wait returns early, as nanosleep does. */
+    struct kevent ignored;
+    (void)kevent(kq, NULL, 0, &ignored, 1, &ts);
+    return;
+  }
+#endif
+  nanosleep(&ts, NULL);
 }
 
 static bool scr_timer_before(const ScrTimer *a, const ScrTimer *b) {
@@ -1042,7 +1178,25 @@ static void scr_timer_swap(size_t i, size_t j) {
   scr_timer_set(j, tmp);
 }
 
+#ifdef SCR_NODE_ISLANDS
+static void scr_hosted_timer_push(ScrTimer t);
+/* The hosted timer, immediate and tick operations (defined with the
+ * hosted loop below). Each answers false when the handle names nothing. */
+enum { SCR_HOSTED_CLEAR, SCR_HOSTED_REF, SCR_HOSTED_UNREF, SCR_HOSTED_REFRESH, SCR_HOSTED_HAS_REF };
+static bool scr_hosted_timer_op(unsigned long id, int op);
+static double scr_hosted_set_immediate(ScrClosure *cb);
+static bool scr_hosted_immediate_op(unsigned long id, int op);
+static size_t scr_hosted_count(int kind);
+static void scr_hosted_teardown(void);
+#endif
+
 static void scr_timer_push(ScrTimer t) {
+#ifdef SCR_NODE_ISLANDS
+  if (scr_loop_hosted != NULL) {
+    scr_hosted_timer_push(t);
+    return;
+  }
+#endif
   if (scr_ntimers == scr_timers_cap) {
     scr_timers_cap = scr_timers_cap ? scr_timers_cap * 2 : 16;
     scr_timers = realloc(scr_timers, scr_timers_cap * sizeof *scr_timers);
@@ -1175,6 +1329,12 @@ void scr_timer_unref(double handle) {
     scr_firing_reffed = false;
     return;
   }
+#ifdef SCR_NODE_ISLANDS
+  if (scr_loop_hosted != NULL) {
+    scr_hosted_timer_op(id, SCR_HOSTED_UNREF);
+    return;
+  }
+#endif
   ScrTimer *t = scr_timer_find(id);
   if (t && t->reffed) {
     t->reffed = false;
@@ -1189,6 +1349,12 @@ void scr_timer_ref(double handle) {
     scr_firing_reffed = true;
     return;
   }
+#ifdef SCR_NODE_ISLANDS
+  if (scr_loop_hosted != NULL) {
+    scr_hosted_timer_op(id, SCR_HOSTED_REF);
+    return;
+  }
+#endif
   ScrTimer *t = scr_timer_find(id);
   if (t && !t->reffed) {
     t->reffed = true;
@@ -1212,6 +1378,12 @@ void scr_timer_refresh(double handle) {
     scr_firing_refresh = true;
     return;
   }
+#ifdef SCR_NODE_ISLANDS
+  if (scr_loop_hosted != NULL) {
+    scr_hosted_timer_op(id, SCR_HOSTED_REFRESH);
+    return;
+  }
+#endif
   ScrTimer *found = scr_timer_find(id);
   if (found) {
     ScrTimer t = *found;
@@ -1227,6 +1399,9 @@ bool scr_timer_has_ref(double handle) {
   if (!(handle >= 1)) return false;
   unsigned long id = (unsigned long)handle;
   if (id == scr_firing_id) return scr_firing_reffed;
+#ifdef SCR_NODE_ISLANDS
+  if (scr_loop_hosted != NULL) return scr_hosted_timer_op(id, SCR_HOSTED_HAS_REF);
+#endif
   ScrTimer *t = scr_timer_find(id);
   return t != NULL && t->reffed;
 }
@@ -1243,8 +1418,19 @@ static SCR_TL size_t scr_pending_immediates; /* defined below with the queue */
 ScrArr *scr_active_resources(void) {
   ScrArr *arr = scr_arr_new(SCR_ELEM_STR, 8);
   size_t timeouts = scr_ntimers + ((scr_firing_id != 0 && !scr_firing_cleared) ? 1 : 0);
+#ifdef SCR_NODE_ISLANDS
+  /* Hosted: the runtime's own (Node's are Node's to report). */
+  size_t immediates = scr_pending_immediates;
+  if (scr_loop_hosted != NULL) {
+    timeouts = scr_hosted_count(0);
+    immediates = scr_hosted_count(1);
+  }
+  for (size_t i = 0; i < timeouts; i++) scr_arr_push_ref(arr, scr_str_new("Timeout", 7));
+  for (size_t i = 0; i < immediates; i++) scr_arr_push_ref(arr, scr_str_new("Immediate", 9));
+#else
   for (size_t i = 0; i < timeouts; i++) scr_arr_push_ref(arr, scr_str_new("Timeout", 7));
   for (size_t i = 0; i < scr_pending_immediates; i++) scr_arr_push_ref(arr, scr_str_new("Immediate", 9));
+#endif
   return arr;
 }
 
@@ -1270,14 +1456,23 @@ static SCR_TL ScrNtick *scr_nt_tail = NULL;
  * it, because 'exit' listeners run AFTER the loop's teardown and may
  * enqueue ticks that must never run (Node) yet must not leak. */
 
+#ifdef SCR_NODE_ISLANDS
+static void scr_hosted_tick(ScrNtick *t);
+#endif
 static ScrClosure *scr_als_bind(ScrClosure *cb /*moves*/);
 
 /* A tick runs with the AsyncLocalStorage context active when it was
  * queued, as Node's process.nextTick does. */
 void scr_next_tick(ScrClosure *cb /*moves*/) {
-  ScrNtick *t = calloc(1, sizeof *t);
+  ScrNtick *t = scr_mem_calloc(sizeof *t);
   if (!t) scr_oom();
   t->cb = scr_als_bind(cb);
+#ifdef SCR_NODE_ISLANDS
+  if (scr_loop_hosted != NULL) {
+    scr_hosted_tick(t);
+    return;
+  }
+#endif
   if (scr_nt_tail) scr_nt_tail->next = t;
   else scr_nt_head = t;
   scr_nt_tail = t;
@@ -1288,10 +1483,16 @@ void scr_next_tick(ScrClosure *cb /*moves*/) {
  * adapter ABI also used by fs.rename: emitted adapters construct the
  * program's Error | null union, and NULL selects its null arm. */
 void scr_process_write_callback(ScrClosure *cb /*moves*/, ScrFsRenameFn fn) {
-  ScrNtick *t = calloc(1, sizeof *t);
+  ScrNtick *t = scr_mem_calloc(sizeof *t);
   if (!t) scr_oom();
   t->cb = cb;
   t->error_cb = fn;
+#ifdef SCR_NODE_ISLANDS
+  if (scr_loop_hosted != NULL) {
+    scr_hosted_tick(t);
+    return;
+  }
+#endif
   if (scr_nt_tail) scr_nt_tail->next = t;
   else scr_nt_head = t;
   scr_nt_tail = t;
@@ -1303,9 +1504,15 @@ void scr_process_write_callback(ScrClosure *cb /*moves*/, ScrFsRenameFn fn) {
  * endReadableNT, ...). The hook dispatches exactly one stream tick;
  * teardown just drops markers (the stream queue owns its entries). */
 void scr_next_tick_raw(void (*fn)(void)) {
-  ScrNtick *t = calloc(1, sizeof *t);
+  ScrNtick *t = scr_mem_calloc(sizeof *t);
   if (!t) scr_oom();
   t->raw = fn;
+#ifdef SCR_NODE_ISLANDS
+  if (scr_loop_hosted != NULL) {
+    scr_hosted_tick(t);
+    return;
+  }
+#endif
   if (scr_nt_tail) scr_nt_tail->next = t;
   else scr_nt_head = t;
   scr_nt_tail = t;
@@ -1314,9 +1521,16 @@ void scr_next_tick_raw(void (*fn)(void)) {
 /* A raw tick at the front of the queue: it runs before the ticks already
  * queued. */
 static void scr_next_tick_raw_first(void (*fn)(void)) {
-  ScrNtick *t = calloc(1, sizeof *t);
+  ScrNtick *t = scr_mem_calloc(sizeof *t);
   if (!t) scr_oom();
   t->raw = fn;
+  /* Hosted, Node's tick queue has no front: the tick queues last. */
+#ifdef SCR_NODE_ISLANDS
+  if (scr_loop_hosted != NULL) {
+    scr_hosted_tick(t);
+    return;
+  }
+#endif
   t->next = scr_nt_head;
   scr_nt_head = t;
   if (scr_nt_tail == NULL) scr_nt_tail = t;
@@ -1327,13 +1541,16 @@ void scr_nticks_teardown(void) {
     ScrNtick *t = scr_nt_head;
     scr_nt_head = t->next;
     if (t->cb) scr_closure_release(t->cb);
-    free(t);
+    scr_mem_free(t);
   }
   scr_nt_tail = NULL;
 }
 
 static void scr_immediates_teardown(void);
 void scr_timers_teardown(void) {
+#ifdef SCR_NODE_ISLANDS
+  scr_hosted_teardown();
+#endif
   for (size_t i = 0; i < scr_ntimers; i++) scr_closure_release(scr_timers[i].cb);
   scr_ntimers = 0;
   scr_reffed_timers = 0;
@@ -1351,6 +1568,12 @@ void scr_clear_interval(double handle) {
     scr_firing_cleared = true; /* the run loop drops the callback */
     return;
   }
+#ifdef SCR_NODE_ISLANDS
+  if (scr_loop_hosted != NULL) {
+    scr_hosted_timer_op(id, SCR_HOSTED_CLEAR);
+    return;
+  }
+#endif
   ScrTimer *found = scr_timer_find(id);
   if (found) {
     scr_closure_release(found->cb);
@@ -1380,6 +1603,9 @@ static SCR_TL size_t scr_pending_immediates = 0;
 static SCR_TL size_t scr_reffed_immediates = 0;
 
 double scr_set_immediate(ScrClosure *cb) {
+#ifdef SCR_NODE_ISLANDS
+  if (scr_loop_hosted != NULL) return scr_hosted_set_immediate(cb);
+#endif
   if (scr_nimmediates == scr_immediates_cap) {
     scr_immediates_cap = scr_immediates_cap ? scr_immediates_cap * 2 : 16;
     scr_immediates = realloc(scr_immediates, scr_immediates_cap * sizeof *scr_immediates);
@@ -1404,6 +1630,12 @@ static ScrImmediate *scr_immediate_find(unsigned long id) {
 
 void scr_clear_immediate(double handle) {
   if (!(handle >= 1)) return; /* NaN/0/negative: never a handle; Node tolerates */
+#ifdef SCR_NODE_ISLANDS
+  if (scr_loop_hosted != NULL) {
+    scr_hosted_immediate_op((unsigned long)handle, SCR_HOSTED_CLEAR);
+    return;
+  }
+#endif
   ScrImmediate *im = scr_immediate_find((unsigned long)handle);
   if (im == NULL) return; /* already fired/cleared: no-op, like Node */
   scr_closure_release(im->cb);
@@ -1420,6 +1652,12 @@ void scr_clear_immediate(double handle) {
  * (Node's Immediate methods on a dead handle do nothing). */
 void scr_immediate_unref(double handle) {
   if (!(handle >= 1)) return;
+#ifdef SCR_NODE_ISLANDS
+  if (scr_loop_hosted != NULL) {
+    scr_hosted_immediate_op((unsigned long)handle, SCR_HOSTED_UNREF);
+    return;
+  }
+#endif
   ScrImmediate *im = scr_immediate_find((unsigned long)handle);
   if (im && im->reffed) {
     im->reffed = false;
@@ -1429,6 +1667,12 @@ void scr_immediate_unref(double handle) {
 
 void scr_immediate_ref(double handle) {
   if (!(handle >= 1)) return;
+#ifdef SCR_NODE_ISLANDS
+  if (scr_loop_hosted != NULL) {
+    scr_hosted_immediate_op((unsigned long)handle, SCR_HOSTED_REF);
+    return;
+  }
+#endif
   ScrImmediate *im = scr_immediate_find((unsigned long)handle);
   if (im && !im->reffed) {
     im->reffed = true;
@@ -1438,6 +1682,9 @@ void scr_immediate_ref(double handle) {
 
 bool scr_immediate_has_ref(double handle) {
   if (!(handle >= 1)) return false;
+#ifdef SCR_NODE_ISLANDS
+  if (scr_loop_hosted != NULL) return scr_hosted_immediate_op((unsigned long)handle, SCR_HOSTED_HAS_REF);
+#endif
   ScrImmediate *im = scr_immediate_find((unsigned long)handle);
   return im != NULL && im->reffed;
 }
@@ -1495,9 +1742,26 @@ static void *scr_win_self(void) {
 }
 #endif
 
+#ifdef SCR_NODE_ISLANDS
+/* The lowest frame of Node's stack that is still live while a fiber runs:
+ * where runtime code on Node's stack (a job or host callback, however deep
+ * it went) last switched to a fiber. A call into Node from that fiber runs
+ * on Node's stack below it (scr_node_island.c), never over those frames.
+ * 0: none. scr_node_stack_has (set when Node starts) tells Node's stack. */
+uintptr_t scr_node_stack_low = 0;
+bool (*scr_node_stack_has)(uintptr_t sp) = NULL;
+#endif
+
 static void scr_switch(ScrCtx *from, ScrCtx *to, ScrFiber *to_fiber) {
 #ifdef SCR_ASAN_FIBERS
   ScrFiber *from_fiber = scr_current;
+#endif
+#ifdef SCR_NODE_ISLANDS
+  uintptr_t node_low = scr_node_stack_low;
+  if (to_fiber != NULL && scr_node_stack_has != NULL) {
+    uintptr_t here = (uintptr_t)__builtin_frame_address(0);
+    if (scr_node_stack_has(here)) scr_node_stack_low = here;
+  }
 #endif
   scr_current = to_fiber;
   scr_exc_swap_cell(to_fiber ? &to_fiber->exc : NULL);
@@ -1507,6 +1771,10 @@ static void scr_switch(ScrCtx *from, ScrCtx *to, ScrFiber *to_fiber) {
    * its own; every resumed context restores the guard it saved here. */
   uintptr_t guard = scr_stack_guard;
   if (to_fiber) SCR_STACK_GUARD_SET(scr_stack_guard_for((uintptr_t)to_fiber->stack, SCR_FIBER_STACK));
+#endif
+#ifdef SCR_NODE_ISLANDS
+  /* Leaving Node's stack keeps this frame and those above it live. */
+  scr_node_island_leave_stack((uintptr_t)__builtin_frame_address(0));
 #endif
 #ifdef _WIN32
   /* SwitchToFiber snapshots the outgoing fiber's state inside its own
@@ -1518,7 +1786,11 @@ static void scr_switch(ScrCtx *from, ScrCtx *to, ScrFiber *to_fiber) {
   (void)to;
   scr_trap("scriptc: internal error: native stack switch reached on WASI\n");
 #elif defined(SCR_ASAN_FIBERS)
-  void **save = from_fiber ? &from_fiber->fake_stack : &scr_main_fake_stack;
+  /* A finished fiber leaves for the last time: a NULL slot has
+   * AddressSanitizer free its fake stack, which otherwise stays mapped
+   * until exit. */
+  void **save = from_fiber ? (from_fiber->done ? NULL : &from_fiber->fake_stack)
+                           : &scr_main_fake_stack;
   const void *bottom = to_fiber ? to_fiber->stack : NULL;
   size_t size = to_fiber ? SCR_FIBER_STACK : 0;
   __sanitizer_start_switch_fiber(save, bottom, size);
@@ -1527,10 +1799,13 @@ static void scr_switch(ScrCtx *from, ScrCtx *to, ScrFiber *to_fiber) {
 #else
   swapcontext(from, to);
 #endif
+  /* Back in this frame: the context that saved into `save` above runs
+   * again, whichever fiber `scr_current` names (a finished fiber returns
+   * to its resumer with no fiber to switch to). */
   const void *old_bottom;
   size_t old_size;
-  __sanitizer_finish_switch_fiber(
-      scr_current ? scr_current->fake_stack : scr_main_fake_stack, &old_bottom, &old_size);
+  __sanitizer_finish_switch_fiber(from_fiber ? from_fiber->fake_stack : scr_main_fake_stack,
+                                  &old_bottom, &old_size);
 #elif defined(SCR_FAST_CTX)
   scr_ctx_swap(from, to);
 #else
@@ -1539,7 +1814,58 @@ static void scr_switch(ScrCtx *from, ScrCtx *to, ScrFiber *to_fiber) {
 #if !defined(_WIN32) && !defined(__wasi__)
   SCR_STACK_GUARD_SET(guard);
 #endif
+#ifdef SCR_NODE_ISLANDS
+  scr_node_stack_low = node_low; /* back on the stack that switched away */
+#endif
 }
+
+#ifdef SCR_NODE_ISLANDS
+/* A nested entry into Node (scr_node_island.c) runs on Node's stack in a
+ * context of its own while the fiber that made the call stays suspended in
+ * it. Runtime code that Node calls back there runs as the loop's code does:
+ * no current fiber, the main exception cell and ALS slot. It may resume
+ * other fibers, which saves the resumer's context in scr_loop_ctx (and,
+ * under ASan, its fake stack in the main slot); those belong to whoever
+ * resumed the calling fiber, so they are saved here and put back when the
+ * nested entry returns, or the calling fiber's next park would return to a
+ * context that no longer exists. */
+typedef struct {
+  ScrFiber *current;
+  ScrAlsCtx **als;
+  ScrCtx loop_ctx;
+#ifdef SCR_ASAN_FIBERS
+  void *main_fake;
+#endif
+} ScrNestedSave;
+
+void *scr_loop_nested_enter(void) {
+  ScrNestedSave *s = malloc(sizeof *s);
+  if (s == NULL) scr_oom();
+  s->current = scr_current;
+  s->als = scr_als_active;
+  s->loop_ctx = scr_loop_ctx;
+#ifdef SCR_ASAN_FIBERS
+  s->main_fake = scr_main_fake_stack;
+  scr_main_fake_stack = NULL;
+#endif
+  scr_current = NULL;
+  scr_exc_swap_cell(NULL);
+  scr_als_active = &scr_als_main_slot;
+  return s;
+}
+
+void scr_loop_nested_leave(void *save) {
+  ScrNestedSave *s = save;
+  scr_loop_ctx = s->loop_ctx;
+#ifdef SCR_ASAN_FIBERS
+  scr_main_fake_stack = s->main_fake;
+#endif
+  scr_current = s->current;
+  scr_exc_swap_cell(s->current ? &s->current->exc : NULL);
+  scr_als_active = s->als;
+  free(s);
+}
+#endif
 
 static void scr_promise_settle_wake(ScrPromise *p);
 
@@ -1628,11 +1954,19 @@ static inline void scr_promise_wake_one(ScrFiber *f) {
 /* Runs one callback waiter against its settled source and drops the
  * waiter's references (its destination and countdown state). */
 static void scr_promise_cb_run(struct ScrPromiseCbWaiter *cb, ScrPromise *src) {
+  if (SCR_PROMISE_IS_REACTION(cb)) {
+    scr_promise_reaction_run(cb, src);
+    return;
+  }
   if (cb->all) {
     scr_promise_all_settle(cb->all, cb->dst, cb->all_idx, src);
     scr_promise_all_state_release(cb->all);
   } else if (src->state == SCR_PROM_FULFILLED) {
     cb->adapt(cb->dst, src);
+#ifdef SCR_NODE_ISLANDS
+  } else if (cb->all_idx == SCR_CB_ANY) {
+    cb->adapt(cb->dst, src); /* scr_promise_on_settle_sync: rejections too */
+#endif
   } else {
     scr_promise_settle_from(cb->dst, src);
   }
@@ -1688,6 +2022,15 @@ static void scr_promise_cb_subscribe(ScrPromise *in, struct ScrPromiseCbWaiter c
   }
 }
 
+#ifdef SCR_NATIVE_REACTIONS
+void scr_promise_react(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx) {
+  struct ScrPromiseCbWaiter cb = {0};
+  cb.reaction = reaction;
+  cb.ctx = ctx;
+  scr_promise_cb_subscribe(p, cb);
+}
+#endif
+
 /* Settlement with callback waiters: combinator jobs enter the microtask
  * queue interleaved with the waking fibers in subscription order, then
  * the conversions run in place (they settle their destinations now, so
@@ -1734,8 +2077,30 @@ static void scr_promise_settle_wake(ScrPromise *p) {
 void scr_promise_race_join(ScrPromise *race, ScrPromise *in,
                             void (*adapt)(ScrPromise *dst, ScrPromise *src)) {
   scr_promise_cb_subscribe(
-      in, (struct ScrPromiseCbWaiter){ adapt, scr_promise_retain(race), NULL, 0, 0 });
+      in, (struct ScrPromiseCbWaiter){ .adapt = adapt, .dst = scr_promise_retain(race) });
 }
+
+#ifdef SCR_NODE_ISLANDS
+/* Node islands (NI-5): runs `cb(in, in)` inside `in`'s settlement, for
+ * fulfillments and rejections alike (a native promise's V8 representative
+ * settles at the same moment, so its reactions queue where a JavaScript
+ * promise's would). `in` must be pending. */
+void scr_promise_on_settle_sync(ScrPromise *in, void (*cb)(ScrPromise *dst, ScrPromise *src)) {
+  *scr_promise_cb_push(in) =
+      (struct ScrPromiseCbWaiter){ cb, scr_promise_retain(in), NULL, SCR_CB_ANY, SCR_CB_SYNC };
+}
+
+/* Node islands (NI-8): a settled promise's dyn payload when the promise
+ * owns a reference to it that its trace does not visit (settled without a
+ * trace function), else NULL. The cross-heap analysis counts that edge. */
+void *scr_promise_untraced_dyn_payload(const ScrPromise *p) {
+  if ((p->payload_kind == SCR_EXC_REF || p->payload_kind == SCR_EXC_OBJ ||
+       p->payload_kind == SCR_EXC_PRIMITIVE_REF) &&
+      p->payload != NULL && p->trace_fn == NULL && p->release_fn == scr_dyn_release_v)
+    return p->payload;
+  return NULL;
+}
+#endif
 
 void scr_promise_race_add(ScrPromise *race, ScrPromise *in,
                            void (*adapt)(ScrPromise *dst, ScrPromise *src)) {
@@ -1745,7 +2110,7 @@ void scr_promise_race_add(ScrPromise *race, ScrPromise *in,
     return;
   }
   *scr_promise_cb_push(in) =
-      (struct ScrPromiseCbWaiter){ adapt, scr_promise_retain(race), NULL, 0, SCR_CB_SYNC };
+      (struct ScrPromiseCbWaiter){ .adapt = adapt, .dst = scr_promise_retain(race), .job_at = SCR_CB_SYNC };
 }
 
 /* ── Promise.all / allSettled / any ───────────────────────────────────
@@ -1798,7 +2163,7 @@ __attribute__((always_inline)) static inline void scr_combine_add(ScrCombine *c,
   if (in->state == SCR_PROM_PENDING) {
     st->rc++;
     scr_promise_cb_subscribe(
-        in, (struct ScrPromiseCbWaiter){ NULL, scr_promise_retain(c->result), st, i, 0 });
+        in, (struct ScrPromiseCbWaiter){ .dst = scr_promise_retain(c->result), .all = st, .all_idx = i });
     return;
   }
   scr_prom_observe(in);
@@ -1818,8 +2183,8 @@ __attribute__((always_inline)) static inline void scr_combine_flush(ScrCombine *
   c->st->rc++;
   job->cb_job = true;
   job->cb_src = c->decided; /* the reference moves in */
-  job->cb = (struct ScrPromiseCbWaiter){ NULL, scr_promise_retain(c->result), c->st, c->batched,
-                                         SCR_CB_BATCH };
+  job->cb = (struct ScrPromiseCbWaiter){
+      .dst = scr_promise_retain(c->result), .all = c->st, .all_idx = c->batched, .job_at = SCR_CB_BATCH};
   scr_ready_push(job);
   c->decided = NULL;
   c->batched = 0;
@@ -2228,6 +2593,7 @@ static void scr_prefix_trampoline(void) {
   scr_als_active = &f->als;
   entry(f, argpack);
   scr_current = carrier;
+  carrier->done = true; /* its stack is freed once the spawner is back */
   scr_switch(&carrier->ctx, carrier->return_to, NULL);
   /* unreachable */
 }
@@ -2573,7 +2939,7 @@ void scr_gen_coro_finish(ScrFiber *self) {
  * continues a fiber in place: resumed by the loop's drain with nothing
  * else queued, this body is the very next job either way. */
 static bool scr_coro_hop_needed(ScrFiber *self) {
-  if (self->return_to == &scr_loop_ctx && scr_ready_len == 0) return false;
+  if (self->return_to == &scr_loop_ctx && SCR_READY_IDLE()) return false;
   scr_ready_push(self);
   return true;
 }
@@ -2720,7 +3086,7 @@ static void scr_await_yield(void) {
    * resumed by its spawner (the eager prefix) must still hop: the spawner
    * has code to run first. */
   ScrCtx *to = scr_fiber_park_awaiters(self);
-  if (to == &scr_loop_ctx && scr_ready_len == 0) return;
+  if (to == &scr_loop_ctx && SCR_READY_IDLE()) return;
   scr_ready_push(self);
   scr_switch(&self->ctx, to, NULL);
 }
@@ -3177,20 +3543,25 @@ ScrPromise *scr_fsp_rename(ScrStr *oldpath, ScrStr *newpath) {
  * platform mutex publishes each result before the loop removes it from the
  * completion queue. */
 #if !defined(SCR_LIB) && !defined(__wasi__)
-/* The completion wake: a worker signals it once per published completion,
+/* The completion wake: a worker signals it when it publishes a completion,
  * so the loop's sleep ends for the completion — a pipe the poll(2) sleep
- * watches on POSIX, an auto-reset event the Windows sleep waits on. */
+ * watches on POSIX, an auto-reset event the Windows sleep waits on. On
+ * POSIX, `posted` (guarded by the queue lock) records that the pipe holds
+ * a byte: a worker writes one only when none is there, and the loop reads
+ * it when it takes the last completion, so the pipe holds a byte exactly
+ * while completions wait. */
 typedef struct ScrFsRenameWake {
 #ifdef _WIN32
   HANDLE event; /* NULL until created */
 #else
   int fds[2]; /* -1 until created */
+  bool posted;
 #endif
 } ScrFsRenameWake;
 #ifdef _WIN32
 #define SCR_FS_RENAME_WAKE_NONE {NULL}
 #else
-#define SCR_FS_RENAME_WAKE_NONE {{-1, -1}}
+#define SCR_FS_RENAME_WAKE_NONE {{-1, -1}, false}
 #endif
 #ifdef SCR_WORKERS
 typedef struct ScrFsRenameOwner ScrFsRenameOwner;
@@ -3221,15 +3592,25 @@ struct ScrFsRenameOwner {
   ScrFsRenameOp **tail;
   size_t pending;
   ScrFsRenameWake wake;
+  ScrFsRenameOp *next_turn;
+  ScrFsRenameOp **next_turn_tail;
 };
 static SCR_TL ScrFsRenameOwner *scr_fs_rename_owner;
 #define scr_fs_rename_done (scr_fs_rename_owner->done)
 #define scr_fs_rename_done_tail (scr_fs_rename_owner->tail)
 #define scr_fs_rename_pending_count (scr_fs_rename_owner->pending)
+#define scr_fs_rename_next_turn (scr_fs_rename_owner->next_turn)
+#define scr_fs_rename_next_turn_tail (scr_fs_rename_owner->next_turn_tail)
 #else
 static ScrFsRenameOp *scr_fs_rename_done = NULL;
 static ScrFsRenameOp **scr_fs_rename_done_tail = &scr_fs_rename_done;
 static size_t scr_fs_rename_pending_count = 0;
+/* Jobs the main thread completed itself (scr_work_submit_done): they join
+ * the done queue at the loop's next sleep step (scr_fs_renames_promote), so
+ * their completions wait one loop turn as a pool job's do. Main thread
+ * only, so no lock. */
+static ScrFsRenameOp *scr_fs_rename_next_turn = NULL;
+static ScrFsRenameOp **scr_fs_rename_next_turn_tail = &scr_fs_rename_next_turn;
 static ScrFsRenameWake scr_fs_rename_wake_global = SCR_FS_RENAME_WAKE_NONE;
 #endif
 static size_t scr_fs_rename_worker_count = 0;
@@ -3284,28 +3665,29 @@ static void scr_fs_rename_wake_open(ScrFsRenameWake *wake) {
 #endif
 }
 
+/* Called with the queue lock held. */
 static void scr_fs_rename_wake_post(ScrFsRenameWake *wake) {
 #ifdef _WIN32
   if (wake->event != NULL) (void)SetEvent(wake->event);
 #else
-  if (wake->fds[1] >= 0) {
+  if (wake->fds[1] >= 0 && !wake->posted) {
     char byte = 1;
-    ssize_t n = write(wake->fds[1], &byte, 1); /* a full pipe already wakes the loop */
-    (void)n;
+    wake->posted = write(wake->fds[1], &byte, 1) == 1;
   }
 #endif
 }
 
-/* POSIX: empty the pipe before taking the queue, so a completion published
- * afterwards leaves its byte for the next poll. The Windows event resets
- * when a wait consumes it. */
+/* POSIX, with the queue lock held: the loop took the last completion, so
+ * the pipe's byte is read and the next completion writes a new one. The
+ * Windows event resets when a wait consumes it. */
 static void scr_fs_rename_wake_drain(ScrFsRenameWake *wake) {
 #ifdef _WIN32
   (void)wake;
 #else
-  if (wake->fds[0] < 0) return;
+  if (wake->fds[0] < 0 || !wake->posted) return;
+  wake->posted = false;
   char buf[64];
-  while (read(wake->fds[0], buf, sizeof buf) > 0) {
+  while (read(wake->fds[0], buf, sizeof buf) == (ssize_t)sizeof buf) {
   }
 #endif
 }
@@ -3339,6 +3721,13 @@ static void scr_fs_rename_op_release(ScrFsRenameOp *op) {
 #ifdef SCR_WORKERS
 static void scr_fs_rename_context_cleanup(void) {
   ScrFsRenameOwner *owner = scr_fs_rename_owner;
+  /* Jobs completed on this thread need no wait. */
+  while (owner->next_turn) {
+    ScrFsRenameOp *op = owner->next_turn;
+    owner->next_turn = op->next;
+    owner->pending--;
+    scr_fs_rename_op_release(op);
+  }
   /* Outstanding native work may still borrow payload storage. Wait for its
    * publication before reclaiming it, without invoking script callbacks
    * during context teardown. Other script contexts keep using the pool. */
@@ -3362,6 +3751,7 @@ static ScrFsRenameOwner *scr_fs_rename_context(void) {
     ScrFsRenameOwner *owner = calloc(1, sizeof(*owner));
     if (!owner) scr_oom();
     owner->tail = &owner->done;
+    owner->next_turn_tail = &owner->next_turn;
     owner->wake = (ScrFsRenameWake)SCR_FS_RENAME_WAKE_NONE;
     if (scr_atexit(scr_fs_rename_context_cleanup) != 0) {
       free(owner);
@@ -3415,6 +3805,20 @@ static DWORD WINAPI scr_fs_rename_worker(LPVOID payload) {
 #else
 static void *scr_fs_rename_worker(void *payload) {
   (void)payload;
+#ifdef SCR_LIB
+  /* In a library, a pool thread keeps SIGPIPE and SIGXFSZ blocked: its file
+   * writes then report EPIPE and EFBIG without changing the signal mask per
+   * write (scr_fs_write_once). Executables ignore both signals (scr_init). */
+  sigset_t write_set;
+  sigemptyset(&write_set);
+#ifdef SIGPIPE
+  sigaddset(&write_set, SIGPIPE);
+#endif
+#ifdef SIGXFSZ
+  sigaddset(&write_set, SIGXFSZ);
+#endif
+  (void)pthread_sigmask(SIG_BLOCK, &write_set, NULL);
+#endif
   scr_fs_rename_worker_loop();
   return NULL;
 }
@@ -3468,7 +3872,31 @@ static void scr_fs_renames_shutdown(void) {
     scr_fs_rename_op_release(done);
     done = next;
   }
+  while (scr_fs_rename_next_turn != NULL) {
+    ScrFsRenameOp *next = scr_fs_rename_next_turn->next;
+    scr_fs_rename_op_release(scr_fs_rename_next_turn);
+    scr_fs_rename_next_turn = next;
+  }
+  scr_fs_rename_next_turn_tail = &scr_fs_rename_next_turn;
 #endif
+}
+
+/* At the loop's sleep step: the jobs this thread completed during the turn
+ * join the done queue, so the next turn delivers them, one per checkpoint
+ * as pool completions are. Answers whether any joined (the sleep is then
+ * skipped). */
+static bool scr_fs_renames_promote(void) {
+#ifdef SCR_WORKERS
+  if (!scr_fs_rename_owner) return false;
+#endif
+  if (scr_fs_rename_next_turn == NULL) return false;
+  scr_fs_rename_lock_enter();
+  *scr_fs_rename_done_tail = scr_fs_rename_next_turn;
+  scr_fs_rename_done_tail = scr_fs_rename_next_turn_tail;
+  scr_fs_rename_lock_leave();
+  scr_fs_rename_next_turn = NULL;
+  scr_fs_rename_next_turn_tail = &scr_fs_rename_next_turn;
+  return true;
 }
 
 static bool scr_fs_renames_pending(void) {
@@ -3513,13 +3941,13 @@ static bool scr_fs_renames_dispatch(void) {
 #ifdef SCR_WORKERS
   if (!scr_fs_rename_owner) return false;
 #endif
-  scr_fs_rename_wake_drain(SCR_FS_RENAME_WAKE(scr_fs_rename_owner));
   scr_fs_rename_lock_enter();
   ScrFsRenameOp *op = scr_fs_rename_done;
   if (op != NULL) {
     scr_fs_rename_done = op->next;
     if (scr_fs_rename_done == NULL) scr_fs_rename_done_tail = &scr_fs_rename_done;
   }
+  if (scr_fs_rename_done == NULL) scr_fs_rename_wake_drain(SCR_FS_RENAME_WAKE(scr_fs_rename_owner));
   scr_fs_rename_lock_leave();
   if (op == NULL) return false;
   scr_fs_rename_pending_count--;
@@ -3634,6 +4062,7 @@ static size_t scr_fs_rename_pending_count = 0;
 static bool scr_fs_renames_pending(void) { return scr_fs_rename_pending_count != 0; }
 static int scr_fs_renames_pollfd(void) { return -1; }
 static bool scr_fs_renames_can_wait(void) { return false; }
+static bool scr_fs_renames_promote(void) { return false; }
 
 static bool scr_fs_renames_dispatch(void) {
   ScrFsRenameOp *op = scr_fs_rename_done;
@@ -3673,6 +4102,7 @@ static bool scr_fs_renames_pending(void) { return false; }
 static bool scr_fs_renames_dispatch(void) { return false; }
 static int scr_fs_renames_pollfd(void) { return -1; }
 static bool scr_fs_renames_can_wait(void) { return false; }
+static bool scr_fs_renames_promote(void) { return false; }
 #endif
 
 void scr_fs_rename_async(ScrStr *oldpath, ScrStr *newpath,
@@ -3734,6 +4164,44 @@ void scr_work_submit(void *payload, ScrWorkFn work, ScrWorkFn after,
   op->after = after;
   op->destroy = destroy;
   scr_work_submit_op(op);
+#endif
+}
+
+#if defined(__wasi__)
+static void scr_work_already_done(void *payload) { (void)payload; }
+#endif
+
+void scr_work_submit_done(void *payload, ScrWorkFn after, ScrWorkFn destroy) {
+#if defined(SCR_LIB)
+  (void)after;
+  destroy(payload);
+  scr_trap("scriptc: native worker jobs are not supported by this target\n");
+#else
+  ScrFsRenameOp *op = calloc(1, sizeof *op);
+  if (!op) scr_trap("scriptc: out of memory\n");
+  op->generic = true;
+  op->payload = payload;
+  op->after = after;
+  op->destroy = destroy;
+#if defined(__wasi__)
+  op->work = &scr_work_already_done; /* the dispatch runs work, then after */
+  *scr_fs_rename_done_tail = op;
+  scr_fs_rename_done_tail = &op->next;
+#else
+  op->ran = true;
+#ifdef SCR_WORKERS
+  op->owner = scr_fs_rename_context();
+#endif
+  if (!scr_fs_rename_shutdown_registered) {
+    if (atexit(scr_fs_renames_shutdown) != 0) {
+      scr_trap("scriptc: could not register worker cleanup\n");
+    }
+    scr_fs_rename_shutdown_registered = true;
+  }
+  *scr_fs_rename_next_turn_tail = op;
+  scr_fs_rename_next_turn_tail = &op->next;
+#endif
+  scr_fs_rename_pending_count++;
 #endif
 }
 
@@ -4322,6 +4790,7 @@ void scr_loop_set_watch(bool (*pending)(void), void (*dispatch)(void), int (*pol
   scr_watch_pollfd_fn = pollfd;
 }
 
+
 /* The child-process hook (scr_child.c, installed with the first spawned
  * child or IPC channel). Programs that never create one keep it NULL and
  * do not link the child unit; WASI never links it. */
@@ -4404,7 +4873,12 @@ static int scr_workers_pollfd(void) {
  * callbacks or fibers are already queued, so ticks and promise jobs
  * interleave with event delivery (Node's checkpoint after each
  * macrotask). */
-bool scr_loop_has_ready(void) { return scr_ready_len > 0 || scr_nt_head != NULL; }
+bool scr_loop_has_ready(void) {
+#ifdef SCR_NODE_ISLANDS
+  if (scr_loop_hosted != NULL) return scr_hosted_queued > 0;
+#endif
+  return scr_ready_len > 0 || scr_nt_head != NULL;
+}
 
 /* The poll phase runs once per loop iteration, like libuv's: the net unit
  * drains the poller at most once between check phases. I/O that becomes
@@ -4425,6 +4899,672 @@ bool scr_loop_io_take(void) {
 bool scr_loop_io_more(void) { return ++scr_loop_io_batches < SCR_LOOP_IO_BATCHES; }
 void scr_loop_io_reopen(void) { scr_loop_io_open = true; }
 
+#ifdef SCR_NODE_ISLANDS
+/* ── the hosted loop (scope-B NI-3) ───────────────────────────────────────
+ * Once Node is loaded into the process there is one event loop, Node's,
+ * and one set of queues. scr_loop_host (called by scr_node_island.c right
+ * after Node starts) migrates the runtime's pending work onto Node's
+ * queues in order and points every scheduling primitive at the bridge:
+ *
+ * - promise jobs and queueMicrotask envelopes (the READY queue) become V8
+ *   microtasks, ticks become process.nextTick callbacks, so the jobs of
+ *   both sides interleave in one FIFO each, exactly as in Node;
+ * - timers become Node timers, created in (deadline, sequence) order with
+ *   their remaining delay measured from the moment Node began loading (the
+ *   load itself is invisible to timer order, as it is to a program that
+ *   runs on Node from the start); immediates become Node immediates;
+ * - the runtime's I/O hooks (the scr_loop_set_* slots) are watched by the
+ *   bridge: their fds as uv_poll handles, their liveness as the ref of one
+ *   handle, always-ready work as an idle handle; scr_loop_hosted_io runs
+ *   the dispatch stations with Node's checkpoint after each.
+ *
+ * Every runtime job runs through scr_loop_hosted_run on the stack of
+ * Node's own dispatch, so Node drains ticks and microtasks after it as
+ * after any callback. A throw that escapes a job goes through the
+ * runtime's uncaught machinery (process 'uncaughtException' listeners)
+ * and, unhandled, ends the process as the runtime's main would. */
+
+typedef enum {
+  SCR_HJ_FREE = 0,
+  SCR_HJ_MICRO = SCR_NODE_JOB_MICROTASK,
+  SCR_HJ_TICK = SCR_NODE_JOB_TICK,
+  SCR_HJ_TIMER = SCR_NODE_JOB_TIMER,
+  SCR_HJ_IMMEDIATE = SCR_NODE_JOB_IMMEDIATE,
+} ScrHJobKind;
+
+/* One scheduled runtime job; its token (index + 1) travels through the
+ * bridge. Entries move when the table grows: never hold a pointer across
+ * a callback. */
+typedef struct {
+  uint8_t kind;
+  bool reffed;
+  bool firing;    /* a timer whose callback is running */
+  bool cleared;   /* ... and cleared from inside it */
+  bool refreshed; /* ... and refreshed from inside it */
+  bool due;       /* runs before Node's loop starts (handle 0 until then) */
+  uint32_t handle; /* the bridge's timer or immediate */
+  uint32_t next_free;
+  unsigned long id; /* the program's handle; 0 for plain setTimeout */
+  double repeat_ms;
+  double delay_ms; /* the original delay: refresh() of a due timer re-arms with it */
+  void *p; /* ScrFiber *, ScrNtick *, or the owned ScrClosure * */
+} ScrHJob;
+
+
+static SCR_TL ScrHJob *scr_hjobs = NULL;
+static SCR_TL uint32_t scr_hjobs_len = 0, scr_hjobs_cap = 0, scr_hjobs_free = 0;
+
+static uint32_t scr_hjob_new(uint8_t kind, void *p) {
+  uint32_t token;
+  if (scr_hjobs_free != 0) {
+    token = scr_hjobs_free;
+    scr_hjobs_free = scr_hjobs[token - 1].next_free;
+  } else {
+    if (scr_hjobs_len == scr_hjobs_cap) {
+      scr_hjobs_cap = scr_hjobs_cap ? scr_hjobs_cap * 2 : 64;
+      scr_hjobs = realloc(scr_hjobs, scr_hjobs_cap * sizeof *scr_hjobs);
+      if (!scr_hjobs) scr_oom();
+    }
+    token = ++scr_hjobs_len;
+  }
+  ScrHJob *j = &scr_hjobs[token - 1];
+  memset(j, 0, sizeof *j);
+  j->kind = kind;
+  j->p = p;
+  return token;
+}
+
+static ScrHJob *scr_hjob(uint32_t token, uint8_t kind) {
+  if (token == 0 || token > scr_hjobs_len) return NULL;
+  ScrHJob *j = &scr_hjobs[token - 1];
+  return j->kind == kind ? j : NULL;
+}
+
+static void scr_hjob_free(uint32_t token) {
+  ScrHJob *j = &scr_hjobs[token - 1];
+  j->kind = SCR_HJ_FREE;
+  j->due = false;
+  j->p = NULL;
+  j->next_free = scr_hjobs_free;
+  scr_hjobs_free = token;
+}
+
+/* Work the loop pass was about to run when Node loaded: immediates left in
+ * the check phase being run, and timers already due. They run, in that
+ * order, before Node's loop starts (scr_loop_run_hosted), as they would
+ * have in the phase the switch interrupted; Node would never have started
+ * a new turn first. */
+static SCR_TL uint32_t *scr_hosted_due = NULL;
+static SCR_TL size_t scr_hosted_due_len = 0, scr_hosted_due_cap = 0;
+
+static void scr_hosted_due_push(uint32_t token) {
+  if (scr_hosted_due_len == scr_hosted_due_cap) {
+    scr_hosted_due_cap = scr_hosted_due_cap ? scr_hosted_due_cap * 2 : 16;
+    scr_hosted_due = realloc(scr_hosted_due, scr_hosted_due_cap * sizeof *scr_hosted_due);
+    if (!scr_hosted_due) scr_oom();
+  }
+  scr_hosted_due[scr_hosted_due_len++] = token;
+  scr_hjobs[token - 1].due = true;
+}
+
+/* Program handle → token, for timers (key id*2) and immediates (id*2+1).
+ * Open addressing with linear probing and backward-shift deletion. */
+typedef struct {
+  unsigned long key; /* 0 = empty */
+  uint32_t token;
+} ScrHSlot;
+static SCR_TL ScrHSlot *scr_hmap = NULL;
+static SCR_TL size_t scr_hmap_cap = 0, scr_hmap_len = 0;
+
+static size_t scr_hmap_home(unsigned long key) {
+  uint64_t h = (uint64_t)key * UINT64_C(0x9E3779B97F4A7C15);
+  return (size_t)(h >> 32) & (scr_hmap_cap - 1);
+}
+
+static void scr_hmap_put(unsigned long key, uint32_t token);
+
+static void scr_hmap_grow(void) {
+  ScrHSlot *old = scr_hmap;
+  size_t old_cap = scr_hmap_cap;
+  scr_hmap_cap = old_cap ? old_cap * 2 : 64;
+  scr_hmap = calloc(scr_hmap_cap, sizeof *scr_hmap);
+  if (!scr_hmap) scr_oom();
+  scr_hmap_len = 0;
+  for (size_t i = 0; i < old_cap; i++)
+    if (old[i].key != 0) scr_hmap_put(old[i].key, old[i].token);
+  free(old);
+}
+
+static void scr_hmap_put(unsigned long key, uint32_t token) {
+  if ((scr_hmap_len + 1) * 2 > scr_hmap_cap) scr_hmap_grow();
+  size_t mask = scr_hmap_cap - 1, i = scr_hmap_home(key);
+  while (scr_hmap[i].key != 0 && scr_hmap[i].key != key) i = (i + 1) & mask;
+  if (scr_hmap[i].key == 0) scr_hmap_len++;
+  scr_hmap[i].key = key;
+  scr_hmap[i].token = token;
+}
+
+static size_t scr_hmap_find(unsigned long key) {
+  if (scr_hmap_cap == 0) return SIZE_MAX;
+  size_t mask = scr_hmap_cap - 1;
+  for (size_t i = scr_hmap_home(key); scr_hmap[i].key != 0; i = (i + 1) & mask)
+    if (scr_hmap[i].key == key) return i;
+  return SIZE_MAX;
+}
+
+static void scr_hmap_delete(unsigned long key) {
+  size_t i = scr_hmap_find(key);
+  if (i == SIZE_MAX) return;
+  size_t mask = scr_hmap_cap - 1;
+  for (size_t j = (i + 1) & mask; scr_hmap[j].key != 0; j = (j + 1) & mask) {
+    size_t home = scr_hmap_home(scr_hmap[j].key);
+    bool stays = i <= j ? (i < home && home <= j) : (i < home || home <= j);
+    if (stays) continue;
+    scr_hmap[i] = scr_hmap[j];
+    i = j;
+  }
+  scr_hmap[i].key = 0;
+  scr_hmap_len--;
+}
+
+static uint32_t scr_hmap_token(unsigned long key) {
+  size_t i = scr_hmap_find(key);
+  return i == SIZE_MAX ? 0 : scr_hmap[i].token;
+}
+
+/* ── scheduling ── */
+
+static void scr_hosted_microtask(ScrFiber *f) {
+  uint32_t token = scr_hjob_new(SCR_HJ_MICRO, f);
+  scr_hosted_queued++;
+  scr_loop_hosted->microtask(token);
+}
+
+static void scr_hosted_tick(ScrNtick *t) {
+  uint32_t token = scr_hjob_new(SCR_HJ_TICK, t);
+  scr_hosted_queued++;
+  scr_loop_hosted->tick(token);
+}
+
+/* Node's timer delay for a remaining time: whole milliseconds, at least
+ * one (Node's clamp), rounded up so a timer never fires before its
+ * deadline. */
+static double scr_hosted_delay(double remaining) {
+  if (!(remaining >= 1)) return 1;
+  if (remaining > 2147483647.0) return 2147483647.0;
+  double delay = (double)(long long)remaining;
+  return delay < remaining - 1e-6 ? delay + 1 : delay;
+}
+
+/* A runtime timer on Node's loop; a `due` one waits for scr_loop_run_hosted
+ * and is armed only if it runs again. */
+static void scr_hosted_timer_arm(ScrClosure *cb, double delay, double repeat, double delay_ms,
+                                 unsigned long id, bool reffed, bool due) {
+  uint32_t token = scr_hjob_new(SCR_HJ_TIMER, cb);
+  ScrHJob *j = &scr_hjobs[token - 1];
+  j->id = id;
+  j->repeat_ms = repeat;
+  j->delay_ms = delay_ms;
+  j->reffed = reffed;
+  if (id != 0) scr_hmap_put(id * 2, token);
+  if (due) {
+    scr_hosted_due_push(token);
+    return;
+  }
+  uint32_t handle = scr_loop_hosted->timer(delay, repeat, reffed ? 1 : 0, token);
+  scr_hjobs[token - 1].handle = handle;
+}
+
+static void scr_hosted_timer_push(ScrTimer t) {
+  scr_hosted_timer_arm(t.cb, scr_hosted_delay(t.deadline_ms - scr_now_ms()), t.repeat_ms,
+                       t.delay_ms, t.id, t.reffed, false);
+}
+
+static void scr_hosted_timer_drop(uint32_t token) {
+  ScrHJob *j = &scr_hjobs[token - 1];
+  ScrClosure *cb = (ScrClosure *)j->p;
+  if (j->id != 0) scr_hmap_delete(j->id * 2);
+  scr_hjob_free(token);
+  scr_closure_release(cb);
+}
+
+/* refresh(): re-arm to now + the delay the timer was created with, Node's
+ * Timeout.refresh(). A migrated timer's Node handle was created with its
+ * remaining delay at handoff, and a due one has no handle yet, so the
+ * handle is replaced rather than refreshed. A firing timer's flag makes the
+ * run loop keep the re-armed handle when its callback returns. */
+static void scr_hosted_timer_rearm(uint32_t token) {
+  ScrHJob *j = &scr_hjobs[token - 1];
+  if (j->handle != 0) scr_loop_hosted->timer_clear(j->handle);
+  j->due = false;
+  j->handle = scr_loop_hosted->timer(scr_hosted_delay(j->delay_ms), j->repeat_ms,
+                                     j->reffed ? 1 : 0, token);
+}
+
+static bool scr_hosted_timer_op(unsigned long id, int op) {
+  uint32_t token = scr_hmap_token(id * 2);
+  ScrHJob *j = scr_hjob(token, SCR_HJ_TIMER);
+  if (j == NULL) return false;
+  switch (op) {
+  case SCR_HOSTED_CLEAR:
+    scr_loop_hosted->timer_clear(j->handle);
+    if (j->firing) {
+      j->cleared = true; /* dropped when its callback returns */
+      scr_hmap_delete(id * 2);
+    } else {
+      scr_hosted_timer_drop(token);
+    }
+    return true;
+  case SCR_HOSTED_REF:
+  case SCR_HOSTED_UNREF:
+    j->reffed = op == SCR_HOSTED_REF;
+    scr_loop_hosted->timer_ref(j->handle, j->reffed ? 1 : 0);
+    return true;
+  case SCR_HOSTED_REFRESH:
+    if (j->firing) j->refreshed = true;
+    scr_hosted_timer_rearm(token);
+    return true;
+  default:
+    return j->reffed;
+  }
+}
+
+static double scr_hosted_set_immediate(ScrClosure *cb) {
+  unsigned long id = ++scr_immediate_seq;
+  uint32_t token = scr_hjob_new(SCR_HJ_IMMEDIATE, cb);
+  scr_hjobs[token - 1].id = id;
+  scr_hjobs[token - 1].reffed = true;
+  scr_hmap_put(id * 2 + 1, token);
+  uint32_t handle = scr_loop_hosted->immediate(1, token);
+  scr_hjobs[token - 1].handle = handle;
+  return (double)id;
+}
+
+static bool scr_hosted_immediate_op(unsigned long id, int op) {
+  uint32_t token = scr_hmap_token(id * 2 + 1);
+  ScrHJob *j = scr_hjob(token, SCR_HJ_IMMEDIATE);
+  if (j == NULL) return false;
+  switch (op) {
+  case SCR_HOSTED_CLEAR: {
+    ScrClosure *cb = (ScrClosure *)j->p;
+    scr_loop_hosted->immediate_clear(j->handle);
+    scr_hmap_delete(id * 2 + 1);
+    scr_hjob_free(token);
+    scr_closure_release(cb);
+    return true;
+  }
+  case SCR_HOSTED_REF:
+  case SCR_HOSTED_UNREF:
+    j->reffed = op == SCR_HOSTED_REF;
+    scr_loop_hosted->immediate_ref(j->handle, j->reffed ? 1 : 0);
+    return true;
+  default:
+    return j->reffed;
+  }
+}
+
+/* Live runtime timers (kind 0) or immediates (kind 1). */
+static size_t scr_hosted_count(int kind) {
+  uint8_t want = kind == 0 ? SCR_HJ_TIMER : SCR_HJ_IMMEDIATE;
+  size_t n = 0;
+  for (uint32_t i = 0; i < scr_hjobs_len; i++)
+    if (scr_hjobs[i].kind == want && !scr_hjobs[i].cleared) n++;
+  return n;
+}
+
+/* Loop exit: timers and immediates that never ran (unref'd ones, or what
+ * remained at process exit) release their closures, like the plain heap's
+ * teardown; Node keeps its objects, which can no longer fire. */
+static void scr_hosted_teardown(void) {
+  for (uint32_t i = 0; i < scr_hjobs_len; i++) {
+    ScrHJob *j = &scr_hjobs[i];
+    if ((j->kind == SCR_HJ_TIMER || j->kind == SCR_HJ_IMMEDIATE) && !j->firing) {
+      ScrClosure *cb = (ScrClosure *)j->p;
+      j->kind = SCR_HJ_FREE;
+      j->p = NULL;
+      j->next_free = scr_hjobs_free;
+      scr_hjobs_free = i + 1;
+      scr_closure_release(cb);
+    }
+  }
+  free(scr_hmap);
+  scr_hmap = NULL;
+  scr_hmap_cap = scr_hmap_len = 0;
+}
+
+/* ── running jobs ── */
+
+/* After a runtime callback: an escaped throw goes to the runtime's
+ * uncaught machinery; unhandled, it ends the process like main's
+ * uncaught path (report, exit listeners, the noted code). */
+static void scr_hosted_settle_exception(void) {
+  if (!scr_exc_pending()) return;
+  if (scr_exc_handle_uncaught(false)) return;
+  scr_exc_print_uncaught();
+  scr_process_exit((double)scr_exit_code_hint_get());
+}
+
+void scr_loop_hosted_run(uint32_t kind, uint32_t token) {
+  switch (kind) {
+  case SCR_HJ_MICRO: {
+    ScrHJob *j = scr_hjob(token, SCR_HJ_MICRO);
+    if (j == NULL) return;
+    ScrFiber *f = (ScrFiber *)j->p;
+    scr_hjob_free(token);
+    scr_hosted_queued--;
+    scr_resume_fiber(f);
+    break;
+  }
+  case SCR_HJ_TICK: {
+    ScrHJob *j = scr_hjob(token, SCR_HJ_TICK);
+    if (j == NULL) return;
+    ScrNtick *t = (ScrNtick *)j->p;
+    scr_hjob_free(token);
+    scr_hosted_queued--;
+    ScrClosure *cb = t->cb;
+    ScrFsRenameFn error_cb = t->error_cb;
+    void (*raw)(void) = t->raw;
+    scr_mem_free(t);
+    if (cb) {
+      if (error_cb) error_cb(cb, NULL);
+      else ((void (*)(ScrClosure *))cb->fn)(cb);
+      scr_closure_release(cb);
+    } else {
+      raw();
+    }
+    break;
+  }
+  case SCR_HJ_TIMER: {
+    ScrHJob *j = scr_hjob(token, SCR_HJ_TIMER);
+    if (j == NULL || j->cleared) return;
+    ScrClosure *cb = (ScrClosure *)j->p;
+    j->firing = true;
+    j->refreshed = false;
+    ((void (*)(ScrClosure *))cb->fn)(cb);
+    j = &scr_hjobs[token - 1];
+    j->firing = false;
+    if (j->cleared) {
+      j->cleared = false;
+      scr_hjob_free(token);
+      scr_closure_release(cb);
+    } else if (j->due) {
+      /* A due timer ran before Node's loop: arm it only to run again. */
+      j->due = false;
+      if (j->repeat_ms > 0 || j->refreshed) {
+        double delay = j->repeat_ms > 0 ? j->repeat_ms : j->delay_ms;
+        uint32_t handle =
+            scr_loop_hosted->timer(delay, j->repeat_ms, j->reffed ? 1 : 0, token);
+        scr_hjobs[token - 1].handle = handle;
+      } else {
+        scr_hosted_timer_drop(token);
+      }
+    } else if (j->repeat_ms <= 0 && !j->refreshed) {
+      /* A fired one-shot: Node drops its Timeout; the bridge forgets it. */
+      scr_loop_hosted->timer_clear(j->handle);
+      scr_hosted_timer_drop(token);
+    }
+    break;
+  }
+  case SCR_HJ_IMMEDIATE: {
+    ScrHJob *j = scr_hjob(token, SCR_HJ_IMMEDIATE);
+    if (j == NULL) return;
+    ScrClosure *cb = (ScrClosure *)j->p;
+    scr_hmap_delete(j->id * 2 + 1);
+    scr_hjob_free(token);
+    ((void (*)(ScrClosure *))cb->fn)(cb);
+    scr_closure_release(cb);
+    break;
+  }
+  default:
+    return;
+  }
+  scr_hosted_settle_exception();
+}
+
+/* V8 finished a microtask checkpoint: the runtime's unhandled rejections
+ * are decided here, where Node decides its own. An unhandled one ends the
+ * process like main's reported-rejection path. */
+void scr_loop_hosted_microtasks_done(void) {
+  if (scr_nunhandled == 0) return;
+  if (!scr_report_unhandled_rejections()) {
+    scr_hosted_settle_exception();
+    return;
+  }
+  scr_discard_unhandled_rejections();
+  scr_process_exit((double)scr_exit_code_hint_get());
+}
+
+/* ── the runtime's I/O on Node's loop ── */
+
+static void scr_hosted_io_fd(ScrNodeIoState *st, int fd) {
+  if (fd < 0 || st->nfds >= SCR_NODE_IO_MAX_FDS) return;
+  st->fds[st->nfds++] = fd;
+}
+
+static void scr_hosted_io_cap(ScrNodeIoState *st, double ms) {
+  int cap = (int)ms;
+  if (st->cap_ms < 0 || cap < st->cap_ms) st->cap_ms = cap;
+}
+
+/* The loop pass's liveness and sleep decisions, as Node's loop needs them
+ * before each poll phase and after each check phase. */
+void scr_loop_hosted_io_state(ScrNodeIoState *st) {
+  st->nfds = 0;
+  st->alive = 0;
+  st->ready = 0;
+  st->cap_ms = -1;
+  /* Quiescent before the poll phase: the turn's scheduled cycle collection. */
+  if (st->phase == SCR_NODE_IO_PREPARE) scr_cyc_collect_scheduled();
+  bool kids = scr_loop_children != NULL && scr_loop_children->pending();
+  bool kids_reffed = scr_loop_children != NULL && scr_loop_children->reffed_pending();
+  bool kids_failed = scr_loop_children != NULL && scr_loop_children->failed_pending();
+  bool events = scr_events_pending_fn != NULL && scr_events_pending_fn();
+  bool evw = scr_events_watching_fn != NULL && scr_events_watching_fn();
+  bool net = scr_net_pending_fn != NULL && scr_net_pending_fn();
+  bool net_io = net || (scr_net_io_fn != NULL && scr_net_io_fn());
+  bool dgram = scr_dgram_pending_fn != NULL && scr_dgram_pending_fn();
+  bool watch = scr_watch_pending_fn != NULL && scr_watch_pending_fn();
+  bool ffi = scr_ffi_pending_fn != NULL && scr_ffi_pending_fn();
+  bool stream = scr_stream_pending_fn != NULL && scr_stream_pending_fn();
+  bool renames = scr_fs_renames_pending();
+  bool crypto = scr_crypto_bytes_pending();
+  bool deferred = scr_loop_deferred_pending();
+  bool workers = scr_workers_pending();
+  /* Deferred native callbacks (the fs callbacks) become deliverable at the
+   * end of the turn that queued them and run in the next one, as the loop
+   * pass delivers them; Node's own fs requests take a turn or more too. */
+  if (st->phase == SCR_NODE_IO_CHECK) scr_loop_deferred_ready = scr_loop_deferred_count;
+  /* jobs this thread completed during the turn: delivered next turn */
+  bool promoted = st->phase == SCR_NODE_IO_CHECK && scr_fs_renames_promote();
+  st->alive = kids_reffed || kids_failed || events || net || dgram || watch || ffi || stream ||
+              renames || crypto || deferred || workers;
+  /* Queued deferred callbacks keep the poll from sleeping (their work is
+   * done; only the delivery waits for the next turn). */
+  st->ready = stream || crypto || deferred || promoted || kids_failed ||
+              (scr_loop_children != NULL && scr_loop_children->ready());
+#ifdef SCR_WORKERS
+  if (scr_workers_ready_fn && scr_workers_ready_fn()) st->ready = 1;
+#endif
+#if !defined(_WIN32) && !defined(__wasi__)
+  if (evw && scr_events_pollfds_fn != NULL) {
+    int evfds[2];
+    int nev = scr_events_pollfds_fn(evfds);
+    for (int i = 0; i < nev; i++) scr_hosted_io_fd(st, evfds[i]);
+  }
+  if (net_io) {
+    int fd = scr_net_pollfd_fn != NULL ? scr_net_pollfd_fn() : -1;
+    if (fd >= 0) scr_hosted_io_fd(st, fd);
+    else scr_hosted_io_cap(st, SCR_SIGNAL_POLL_MS);
+  }
+  if (dgram) {
+    int fd = scr_dgram_pollfd_fn != NULL ? scr_dgram_pollfd_fn() : -1;
+    if (fd >= 0) scr_hosted_io_fd(st, fd);
+    else scr_hosted_io_cap(st, SCR_SIGNAL_POLL_MS);
+  }
+  if (watch) {
+    int fd = scr_watch_pollfd_fn != NULL ? scr_watch_pollfd_fn() : -1;
+    if (fd >= 0) scr_hosted_io_fd(st, fd);
+    else scr_hosted_io_cap(st, SCR_SIGNAL_POLL_MS);
+  }
+  if (ffi) {
+    int fd = scr_ffi_pollfd_fn != NULL ? scr_ffi_pollfd_fn() : -1;
+    if (fd >= 0) scr_hosted_io_fd(st, fd);
+    else scr_hosted_io_cap(st, SCR_CHILD_POLL_MS);
+  }
+  if (kids) {
+    int fd = scr_loop_children->wake_fd();
+    if (fd >= 0) scr_hosted_io_fd(st, fd);
+    else scr_hosted_io_cap(st, SCR_CHILD_POLL_MS);
+  }
+  if (renames) {
+    int fd = scr_fs_renames_pollfd();
+    if (fd >= 0) scr_hosted_io_fd(st, fd);
+    else scr_hosted_io_cap(st, SCR_CHILD_POLL_MS);
+  }
+  if (workers) {
+    int fd = scr_workers_pollfd();
+    if (fd >= 0) scr_hosted_io_fd(st, fd);
+    else scr_hosted_io_cap(st, SCR_CHILD_POLL_MS);
+  }
+#else
+  (void)evw;
+  if (evw || net_io || dgram || watch || ffi || kids || renames || workers)
+    scr_hosted_io_cap(st, SCR_CHILD_POLL_MS);
+#endif
+}
+
+/* The end of one runtime macrotask inside a dispatch station: the throw
+ * it left, then Node's checkpoint (ticks and microtasks of both sides). */
+static void scr_hosted_macrotask_done(void) {
+  scr_hosted_settle_exception();
+  scr_loop_hosted->checkpoint(0);
+}
+
+/* One pass over the dispatch stations, in the loop pass's order: worker
+ * completions and deferred callbacks one per checkpoint, then the event,
+ * socket, watch and child stations. */
+void scr_loop_hosted_io(void) {
+  /* Once per loop iteration (the bridge calls this at most once per turn):
+   * the poll phase is open again, as after the pass's check phase. */
+  scr_loop_io_open = true;
+  scr_loop_io_batches = 0;
+  while (scr_fs_renames_pending() && scr_fs_renames_dispatch()) scr_hosted_macrotask_done();
+  while (scr_crypto_bytes_pending() && scr_crypto_bytes_dispatch()) scr_hosted_macrotask_done();
+  while (scr_loop_deferred_dispatch()) scr_hosted_macrotask_done();
+  if (scr_ffi_dispatch_fn != NULL && scr_ffi_dispatch_fn()) scr_hosted_macrotask_done();
+  if (scr_stream_dispatch_fn != NULL) {
+    scr_stream_dispatch_fn();
+    scr_hosted_macrotask_done();
+  }
+  scr_workers_dispatch();
+  scr_hosted_macrotask_done();
+  if (scr_events_dispatch_fn != NULL) {
+    scr_events_dispatch_fn();
+    scr_hosted_macrotask_done();
+  }
+  if (scr_net_dispatch_fn != NULL) {
+    scr_net_dispatch_fn();
+    scr_hosted_macrotask_done();
+  }
+  if (scr_dgram_dispatch_fn != NULL) {
+    scr_dgram_dispatch_fn();
+    scr_hosted_macrotask_done();
+  }
+  if (scr_watch_dispatch_fn != NULL) {
+    scr_watch_dispatch_fn();
+    scr_hosted_macrotask_done();
+  }
+  if (scr_loop_children != NULL && scr_loop_children->pending()) {
+#if !defined(_WIN32) && !defined(__wasi__)
+    (void)scr_loop_children->wait(0);
+#endif
+    scr_loop_children->poll();
+    scr_hosted_macrotask_done();
+  }
+}
+
+/* ── the switch ── */
+
+void scr_loop_host(const ScrNodeBridge *bridge, double since_ms) {
+  if (scr_loop_hosted != NULL) return;
+  scr_loop_hosted = bridge;
+  scr_hosted_continue_turn = scr_pass_phase == SCR_PASS_IO || scr_pass_phase == SCR_PASS_TIMERS;
+  scr_hosted_microtasks_first = scr_in_microtask;
+  bridge->host_loop();
+  /* Promise jobs, FIFO. */
+  while (scr_ready_len > 0) {
+    ScrFiber *f = scr_ready[scr_ready_head++];
+    scr_ready_len--;
+    scr_hosted_microtask(f);
+  }
+  scr_ready_head = 0;
+  /* Ticks, FIFO. */
+  ScrNtick *t = scr_nt_head;
+  scr_nt_head = scr_nt_tail = NULL;
+  while (t != NULL) {
+    ScrNtick *next = t->next;
+    t->next = NULL;
+    scr_hosted_tick(t);
+    t = next;
+  }
+  /* Immediates in queue order, keeping their handles. Those of a check
+   * phase the switch interrupted finish it before Node's loop starts. */
+  for (size_t i = scr_immediates_head; i < scr_nimmediates; i++) {
+    ScrImmediate *im = &scr_immediates[i];
+    if (im->cb == NULL) continue;
+    ScrClosure *cb = im->cb;
+    bool reffed = im->reffed;
+    unsigned long id = im->id;
+    im->cb = NULL;
+    uint32_t token = scr_hjob_new(SCR_HJ_IMMEDIATE, cb);
+    scr_hjobs[token - 1].id = id;
+    scr_hjobs[token - 1].reffed = reffed;
+    scr_hmap_put(id * 2 + 1, token);
+    if (i < scr_check_end) {
+      scr_hosted_due_push(token);
+      continue;
+    }
+    uint32_t handle = bridge->immediate(reffed ? 1 : 0, token);
+    scr_hjobs[token - 1].handle = handle;
+  }
+  scr_check_end = 0;
+  /* Timers in (deadline, sequence) order; those already due when Node
+   * began loading run before Node's loop starts, as the interrupted pass
+   * would have run them. */
+  while (scr_ntimers > 0) {
+    ScrTimer tm = scr_timer_pop();
+    scr_hosted_timer_arm(tm.cb, scr_hosted_delay(tm.deadline_ms - since_ms), tm.repeat_ms,
+                         tm.delay_ms, tm.id, tm.reffed, tm.deadline_ms <= since_ms);
+  }
+  scr_reffed_timers = 0;
+  scr_nimmediates = scr_immediates_head = 0;
+  scr_pending_immediates = scr_reffed_immediates = 0;
+}
+
+bool scr_loop_is_hosted(void) { return scr_loop_hosted != NULL; }
+
+static void scr_loop_run_hosted(bool first_checkpoint) {
+  scr_loop_hosted->checkpoint(first_checkpoint || scr_hosted_microtasks_first ? 1 : 0);
+  /* The interrupted phase's work, each followed by Node's checkpoint. A
+   * due entry cleared meanwhile is gone (or its token reused, not due). */
+  for (size_t i = 0; i < scr_hosted_due_len; i++) {
+    uint32_t token = scr_hosted_due[i];
+    if (token == 0 || token > scr_hjobs_len || !scr_hjobs[token - 1].due) continue;
+    uint8_t kind = scr_hjobs[token - 1].kind;
+    if (kind == SCR_HJ_IMMEDIATE) scr_hjobs[token - 1].due = false;
+    scr_loop_hosted_run(kind, token);
+    scr_loop_hosted->checkpoint(0);
+  }
+  free(scr_hosted_due);
+  scr_hosted_due = NULL;
+  scr_hosted_due_len = scr_hosted_due_cap = 0;
+  /* process.exitCode is one property in Node; island code's assignment
+   * becomes the program's code when the loop ends. */
+  int code = scr_loop_hosted->run_loop(scr_hosted_continue_turn ? 1 : 0);
+  if (code != 0) scr_process_set_exit_code_tracked((double)code);
+}
+#endif /* SCR_NODE_ISLANDS */
+
 /* The process.nextTick queue to exhaustion, ticks queued meanwhile
  * included. false: a tick threw (uncaught, pending). */
 static bool scr_loop_run_ticks(void) {
@@ -4435,7 +5575,7 @@ static bool scr_loop_run_ticks(void) {
     ScrClosure *cb = t->cb;
     ScrFsRenameFn error_cb = t->error_cb;
     void (*raw)(void) = t->raw;
-    free(t);
+    scr_mem_free(t);
     if (cb) {
       if (error_cb) error_cb(cb, NULL);
       else ((void (*)(ScrClosure *))cb->fn)(cb);
@@ -4457,7 +5597,7 @@ static bool scr_loop_run_checkpoint(void) {
     while (scr_ready_len > 0) {
       ScrFiber *f = scr_ready[scr_ready_head++];
       scr_ready_len--;
-      scr_resume_fiber(f);
+      SCR_RESUME_JOB(f);
     }
   }
   return true;
@@ -4472,6 +5612,10 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
    * pinned. Every later checkpoint drains ticks first. */
   bool rejection_failed = false;
   for (;;) {
+#ifdef SCR_NODE_ISLANDS
+    /* Node loaded during this turn: its loop takes over (scr_loop_run). */
+    if (scr_loop_hosted != NULL) return rejection_failed;
+#endif
     if (top_level != NULL && top_level->state == SCR_PROM_REJECTED) break;
     /* process.nextTick callbacks BEFORE promise jobs (Node's checkpoint
      * order): the tick queue to exhaustion, then the microtask queue to
@@ -4484,7 +5628,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     while (scr_ready_len > 0) {
       ScrFiber *f = scr_ready[scr_ready_head++];
       scr_ready_len--;
-      scr_resume_fiber(f);
+      SCR_RESUME_JOB(f);
     }
     first_checkpoint = false;
     /* The ESM loader observes a rejected entry evaluation at a promise-job
@@ -4518,6 +5662,7 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * occupied that thread. Deliver exactly one completion per checkpoint:
      * Node drains nextTicks and microtasks after each native callback before
      * invoking the next ready callback. */
+    SCR_PASS_PHASE(SCR_PASS_IO);
     if (scr_fs_renames_pending()) {
       bool dispatched = scr_fs_renames_dispatch();
       if (scr_exc_pending()) return false;
@@ -4615,7 +5760,8 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
           (scr_watch_pending_fn != NULL && scr_watch_pending_fn()) ||
           (scr_ffi_pending_fn != NULL && scr_ffi_pending_fn()) ||
           scr_fs_renames_pending() || scr_crypto_bytes_pending() || scr_loop_deferred_pending() ||
-          scr_workers_pending();
+          scr_workers_pending()
+          ;
       if (held) {
         scr_loop_children->poll();
         if (scr_exc_pending()) return false; /* uncaught throw in a listener */
@@ -4628,6 +5774,10 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
      * nextTicks enqueued by a station listener are the same story. */
     if (scr_stream_pending_fn != NULL && scr_stream_pending_fn()) continue;
     if (scr_nt_head != NULL) continue;
+#ifdef SCR_NODE_ISLANDS
+    /* Node loaded during this turn: its loop takes over (scr_loop_run). */
+    if (scr_loop_hosted != NULL) return rejection_failed;
+#endif
     bool kids = scr_loop_children != NULL && scr_loop_children->pending();
     bool kids_reffed = scr_loop_children != NULL && scr_loop_children->reffed_pending();
     bool events = scr_events_pending_fn != NULL && scr_events_pending_fn();
@@ -4687,6 +5837,9 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       due = now;
       scr_loop_deferred_ready = scr_loop_deferred_count;
     }
+    /* Jobs this thread completed during the turn (scr_work_submit_done)
+     * join the done queue: the next turn delivers them, no sleep. */
+    if (scr_fs_renames_promote()) due = now;
     /* Child polling can drain a pipe into the IPC queue after its dispatch
      * station has run. Completed sends and disconnects can also become ready
      * during that turn. No fd will wake us for this userspace work: return to
@@ -4850,15 +6003,14 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       } else
 #endif
       if (due > now) {
-        double wait = due - now;
-        struct timespec ts = {(time_t)(wait / 1000.0), (long)((wait - (double)((time_t)(wait / 1000.0)) * 1000.0) * 1e6)};
-        nanosleep(&ts, NULL);
+        scr_loop_sleep(due - now);
         now = due;
       }
     }
 #ifdef SCR_WORKERS
     scr_sa_loop_waiting(false);
 #endif
+    if (scr_ntimers > 0 && scr_timers[0].deadline_ms <= now) SCR_PASS_PHASE(SCR_PASS_TIMERS);
     while (scr_ntimers > 0 && scr_timers[0].deadline_ms <= now) {
       ScrTimer t = scr_timer_pop();
       /* Timer callbacks are plain sync closures, run on the main stack.
@@ -4873,13 +6025,16 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
         scr_firing_reffed = t.reffed; /* unref/ref during the callback lands here */
         scr_firing_refresh = false;
       }
+      double started = t.id != 0 && t.repeat_ms > 0 ? scr_now_ms() : 0;
       ((void (*)(ScrClosure *))t.cb->fn)(t.cb);
       if (t.id != 0 && t.repeat_ms > 0 && !scr_firing_cleared) {
-        /* Re-arm relative to the post-callback clock (libuv's uv_timer
-         * repeat behavior: no catch-up bursts after a slow callback). The
-         * ref state carries across ticks (a self-unref'd interval stays
-         * unref'd). */
-        ScrTimer again = {scr_now_ms() + t.repeat_ms, scr_timer_seq++, t.cb, t.repeat_ms, t.id, scr_firing_reffed, t.delay_ms};
+        /* Re-arm relative to the time the callback started, as Node's
+         * listOnTimeout does (getLibuvNow() before _onTimeout): a slow
+         * callback does not push the next tick back by its own duration.
+         * One slower than the interval makes the next tick due on the next
+         * turn, without catch-up bursts. The ref state carries across
+         * ticks (a self-unref'd interval stays unref'd). */
+        ScrTimer again = {started + t.repeat_ms, scr_timer_seq++, t.cb, t.repeat_ms, t.id, scr_firing_reffed, t.delay_ms};
         scr_timer_push(again);
       } else if (t.id != 0 && scr_firing_refresh && !scr_firing_cleared) {
         /* refresh() from inside the one-shot's own callback: re-arm to
@@ -4892,6 +6047,10 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
       }
       scr_firing_id = 0;
       if (scr_exc_pending()) return false; /* uncaught throw in a callback: main handles it */
+#ifdef SCR_NODE_ISLANDS
+      /* Node loaded during this turn: its loop takes over (scr_loop_run). */
+      if (scr_loop_hosted != NULL) return rejection_failed;
+#endif
       /* Drain ticks and microtasks, and report the rejections the callback
        * left, before more timers (Node's runNextTicks between timers). */
       if (scr_ready_len > 0 || scr_nt_head != NULL || scr_nunhandled > 0) break;
@@ -4907,6 +6066,10 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
     bool check_ran = false;
     if (scr_ready_len == 0 && scr_nt_head == NULL && scr_nunhandled == 0 && scr_pending_immediates > 0) {
       size_t end = scr_nimmediates;
+#ifdef SCR_NODE_ISLANDS
+      scr_check_end = end; /* a switch inside this phase finishes it first */
+      SCR_PASS_PHASE(SCR_PASS_CHECK);
+#endif
       while (scr_immediates_head < end) {
         size_t i = scr_immediates_head++;
         ScrClosure *cb = scr_immediates[i].cb;
@@ -4920,6 +6083,9 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
         ((void (*)(ScrClosure *))cb->fn)(cb);
         scr_closure_release(cb);
         if (scr_exc_pending()) return false; /* uncaught throw: main handles it */
+#ifdef SCR_NODE_ISLANDS
+        if (scr_loop_hosted != NULL) return rejection_failed;
+#endif
         if (!scr_loop_run_checkpoint()) return false;
         /* Node's runNextTicks between immediates also reports the
          * rejections the callback left before the next one runs; a
@@ -4930,6 +6096,9 @@ static bool scr_loop_run_pass(ScrPromise *top_level, bool first_checkpoint) {
         }
         if (top_level != NULL && top_level->state == SCR_PROM_REJECTED) break;
       }
+#ifdef SCR_NODE_ISLANDS
+      scr_check_end = 0;
+#endif
       /* Fully drained: reset the cursor so the array reuses its slots. */
       if (scr_immediates_head == scr_nimmediates) {
         scr_immediates_head = 0;
@@ -4965,12 +6134,26 @@ bool scr_loop_run(ScrPromise *top_level) {
   bool first_checkpoint = !scr_loop_cjs_entry;
   bool rejection_failed;
   for (;;) {
+#ifdef SCR_NODE_ISLANDS
+    /* Node is loaded (in the main body or a callback of an earlier pass):
+     * its loop runs everything from here, the runtime's queues included,
+     * and ends the process itself on an uncaught exception or an
+     * unhandled rejection. */
+    if (scr_loop_hosted != NULL) {
+      scr_loop_run_hosted(first_checkpoint);
+      rejection_failed = false;
+      break;
+    }
+#endif
     rejection_failed = scr_loop_run_pass(top_level && !top_level->top_level_handled ? top_level : NULL, first_checkpoint);
     first_checkpoint = false;
     if (scr_exc_pending()) {
       if (scr_exc_handle_uncaught(false)) continue;
       break; /* main reports the original or handler-thrown exception */
     }
+#ifdef SCR_NODE_ISLANDS
+    if (scr_loop_hosted != NULL) continue;
+#endif
     if (rejection_failed) break;
     if (top_level && top_level->state == SCR_PROM_REJECTED && !top_level->top_level_handled) {
       scr_promise_rethrow(top_level);
@@ -5385,6 +6568,11 @@ static ScrGen *scr_gen_new_common(void (*entry)(ScrFiber *, void *), void *argpa
                                   bool stackless) {
   ScrGen *g = scr_mem_calloc(sizeof *g);
   if (!g) scr_oom();
+  /* Install the tag reader with each generator rather than in a constructor:
+   * a constructor is a link root, so it would keep scr_gen_tag and this
+   * unit's string literals in every executable, generators or not. Threads
+   * store the same value, relaxed. */
+  __atomic_store_n(&scr_gen_tag_reader, scr_gen_tag, __ATOMIC_RELAXED);
   g->rc = 1;
   g->receiver = scr_dyn_this_get();
   g->state = SCR_GEN_UNSTARTED;
@@ -5434,6 +6622,14 @@ ScrGen *scr_async_gen_new(void (*entry)(ScrFiber *, void *), void *argpack,
                           void (*settle)(ScrGen *, ScrPromise *)) {
   return scr_gen_new_common(entry, argpack, drop_args, settle, false);
 }
+
+#ifndef __wasi__
+ScrGen *scr_async_gen_new_stackless(void (*entry)(ScrFiber *, void *), void *argpack,
+                                    void (*drop_args)(void *),
+                                    void (*settle)(ScrGen *, ScrPromise *)) {
+  return scr_gen_new_common(entry, argpack, drop_args, settle, true);
+}
+#endif
 
 ScrGen *scr_gen_retain(ScrGen *g) {
   if (g) g->rc++;
@@ -5783,7 +6979,7 @@ void scr_gen_ret_to_out(ScrGen *g) {
  * settle the generator's state, moving a finished body's exception to the
  * resumer and tearing the finished fiber down. `release` drops the hop's
  * own reference (see scr_gen_switch_in); `sync` marks a body known to be a
- * synchronous generator (every stackless one is). */
+ * synchronous generator. */
 __attribute__((always_inline)) static inline void scr_gen_switched_back(ScrGen *g, ScrFiber *f,
                                                                   bool release, bool sync) {
   if (__builtin_expect(f->done, 0)) {
@@ -5820,10 +7016,12 @@ static __attribute__((noinline)) void scr_async_gen_step_end(ScrFiber *f) { scr_
 
 #ifndef __wasi__
 /* The stackless form of the hop: the coroutine frame runs on this stack
- * until its next yield or its final suspension returns here. `retain`
- * holds the generator across the hop; a resumer whose own reference
- * provably outlives the hop passes false. */
-__attribute__((always_inline)) static inline void scr_gen_coro_hop(ScrGen *g, bool retain) {
+ * until its next yield, an async generator's await, or its final
+ * suspension returns here. `retain` holds the generator across the hop; a
+ * resumer whose own reference provably outlives the hop passes false.
+ * `sync` marks a body known to be a synchronous generator. */
+__attribute__((always_inline)) static inline void scr_gen_coro_hop(ScrGen *g, bool retain,
+                                                                  bool sync) {
   ScrFiber *f = g->fiber;
   if (retain) scr_gen_retain(g);
   /* A synchronous generator has no AsyncLocalStorage context of its own:
@@ -5848,10 +7046,29 @@ __attribute__((always_inline)) static inline void scr_gen_coro_hop(ScrGen *g, bo
   scr_exc_swap_cell(me != NULL ? &me->exc : NULL);
   scr_als_active = resumer_slot;
   if (g->is_async) scr_async_gen_step_end(f);
-  scr_gen_switched_back(g, f, retain, true);
+  scr_gen_switched_back(g, f, retain, sync);
 }
 
-static void scr_gen_coro_in(ScrGen *g) { scr_gen_coro_hop(g, true); }
+/* An async generator's step can resume the next one down a chain of them
+ * before it suspends, all on one stack, through runtime frames that check
+ * no guard: a step that would start below the stack guard throws the
+ * RangeError compiled code throws there, which rejects its request. */
+static __attribute__((noinline)) void scr_async_gen_coro_in(ScrGen *g) {
+  uintptr_t guard = scr_stack_guard;
+  if (guard != 0 && (uintptr_t)__builtin_frame_address(0) < guard) {
+    /* scr_stack_overflow's error, thrown here: this unit links without
+     * scr_context.c in the runtime's own tests. */
+    static const char text[] = "Maximum call stack size exceeded";
+    scr_throw_error_msg(SCR_ERR_RANGE, text, sizeof text - 1);
+    return;
+  }
+  scr_gen_coro_hop(g, true, false);
+}
+
+static void scr_gen_coro_in(ScrGen *g) {
+  if (g->is_async) scr_async_gen_coro_in(g);
+  else scr_gen_coro_hop(g, true, true);
+}
 #endif
 
 /* The consumer→fiber hop shared by every resume mode: switches in, and on
@@ -5930,10 +7147,6 @@ const char *scr_gen_tag(const ScrGen *g) {
   return g->tag ? g->tag : g->is_async ? "AsyncGenerator" : "Generator";
 }
 
-__attribute__((constructor)) static void scr_gen_tag_reader_init(void) {
-  scr_gen_tag_reader = scr_gen_tag;
-}
-
 void scr_gen_close(ScrGen *g) {
   scr_gen_slot_reset(&g->ret);
   scr_gen_resume_return(g);
@@ -5947,8 +7160,9 @@ void scr_gen_close(ScrGen *g) {
 bool scr_gen_step(ScrGen *g) {
   if (g->in.kind != SCR_EXC_NONE) scr_gen_slot_reset(&g->in);
 #ifndef __wasi__
-  if ((g->state == SCR_GEN_SUSPENDED || g->state == SCR_GEN_UNSTARTED) && g->fiber->stackless) {
-    scr_gen_coro_hop(g, false);
+  if ((g->state == SCR_GEN_SUSPENDED || g->state == SCR_GEN_UNSTARTED) && g->fiber->stackless &&
+      !g->is_async) {
+    scr_gen_coro_hop(g, false, true);
     return g->state == SCR_GEN_DONE;
   }
 #endif
@@ -6347,6 +7561,7 @@ static void scr_context_ready_discard(void) {
       scr_gen_release(generator);
       scr_mem_free(fiber);
     } else if (fiber->cb_job) {
+      if (SCR_PROMISE_IS_REACTION(&fiber->cb)) scr_promise_reaction_drop(&fiber->cb);
       scr_promise_release(fiber->cb.dst);
       if (fiber->cb.all) scr_promise_all_state_release(fiber->cb.all);
       scr_promise_release(fiber->cb_src);

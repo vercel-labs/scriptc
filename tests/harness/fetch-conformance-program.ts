@@ -429,7 +429,7 @@ export function generateFetchConformanceProgram(
   const traceCount = options.traceCount ?? 12;
   const scenarios = generatedScenarioIds(profile);
   const sections: string[] = [
-    `// Generated from NODE24_FETCH_COMPAT_PROFILE. Seed: 0x${seed.toString(16)}.`,
+    `// Generated from node24FetchCompatProfile(). Seed: 0x${seed.toString(16)}.`,
   ];
   for (const scenario of scenarios) {
     if (!Object.hasOwn(SCENARIO_GENERATORS, scenario)) {

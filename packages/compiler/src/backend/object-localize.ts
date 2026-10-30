@@ -84,9 +84,13 @@ interface ElfSymbol {
   name: string;
   info: number;
   other: number;
-  /** Resolved section index (SHT_SYMTAB_SHNDX applied), or a reserved
-   * SHN_* value below/at SHN_LORESERVE semantics. */
+  /** Section index (SHT_SYMTAB_SHNDX applied), or the reserved SHN_* value
+   * when `reserved`. */
   shndx: number;
+  /** st_shndx holds a reserved value (SHN_ABS, SHN_COMMON, ...), not a
+   * section index. An index from SHT_SYMTAB_SHNDX can itself be at or above
+   * SHN_LORESERVE. */
+  reserved: boolean;
 }
 
 /** Demote every defined global/weak symbol not named in `keep` to a local
@@ -143,8 +147,8 @@ export function localizeElfObject(object: Uint8Array, keep: ReadonlySet<string>)
   if (strtab === undefined) fail("ELF symbol table names an invalid string table");
 
   // SHT_SYMTAB_SHNDX (only present when section indices overflow st_shndx):
-  // resolve the real indices up front and drop the section — the rebuilt
-  // object's section count only shrinks, so inline indices always fit.
+  // resolve the real indices up front and drop the section. The rebuilt
+  // object writes a new one when its own section count still overflows.
   const shndxSection = sections.find(
     (s) => s.type === SHT_SYMTAB_SHNDX && sections[s.link] === symtab,
   );
@@ -170,9 +174,11 @@ export function localizeElfObject(object: Uint8Array, keep: ReadonlySet<string>)
   for (let i = 0; i < symCount; i++) {
     const at = i * 24;
     let shndx: number = symView.getUint16(at + 6, true);
+    let reserved = shndx >= SHN_LORESERVE;
     if (shndx === SHN_XINDEX) {
       if (shndxView === null) fail("ELF symbol uses SHN_XINDEX without a SHT_SYMTAB_SHNDX table");
       shndx = shndxView.getUint32(i * 4, true);
+      reserved = false;
     }
     symbols.push({
       nameOffset: symView.getUint32(at, true),
@@ -180,6 +186,7 @@ export function localizeElfObject(object: Uint8Array, keep: ReadonlySet<string>)
       info: symView.getUint8(at + 4),
       other: symView.getUint8(at + 5),
       shndx,
+      reserved,
     });
   }
 
@@ -212,11 +219,11 @@ export function localizeElfObject(object: Uint8Array, keep: ReadonlySet<string>)
   const symbolKept: boolean[] = [];
   for (let i = 0; i < symCount; i++) {
     const sym = symbols[i]!;
-    const regular = sym.shndx > SHN_UNDEF && sym.shndx < SHN_LORESERVE;
+    const regular = !sym.reserved && sym.shndx !== SHN_UNDEF;
     symbolKept.push(!(regular && sectionKept[sym.shndx] !== true));
     if (i === 0) continue;
     const binding = sym.info >> 4;
-    const defined = sym.shndx !== SHN_UNDEF && sym.shndx !== SHN_COMMON;
+    const defined = sym.shndx !== SHN_UNDEF && !(sym.reserved && sym.shndx === SHN_COMMON);
     if (binding !== STB_LOCAL && defined && !keep.has(sym.name)) {
       sym.info = (STB_LOCAL << 4) | (sym.info & 0xf);
     }
@@ -236,6 +243,16 @@ export function localizeElfObject(object: Uint8Array, keep: ReadonlySet<string>)
     symbolMap[oldIndex] = newIndex;
   });
 
+  // Extended section numbering: with SHN_LORESERVE or more sections, an
+  // index from SHN_LORESERVE up does not fit st_shndx, e_shnum or
+  // e_shstrndx. Such a symbol's st_shndx is SHN_XINDEX and its index goes in
+  // a SHT_SYMTAB_SHNDX section (one entry per symbol, appended after the
+  // kept sections); the counts go in section 0 (sh_size, sh_link).
+  let keptCount = 0;
+  for (const keptSection of sectionKept) if (keptSection) keptCount++;
+  const extended = keptCount >= SHN_LORESERVE;
+  const shndxOut = extended ? new Uint8Array(symbolOrder.length * 4) : null;
+  const shndxOutView = shndxOut === null ? null : new DataView(shndxOut.buffer);
   const newSymtabData = new Uint8Array(symbolOrder.length * 24);
   const newSymtabView = new DataView(newSymtabData.buffer);
   symbolOrder.forEach((oldIndex, newIndex) => {
@@ -244,9 +261,14 @@ export function localizeElfObject(object: Uint8Array, keep: ReadonlySet<string>)
     newSymtabView.setUint32(at, sym.nameOffset, true);
     newSymtabView.setUint8(at + 4, sym.info);
     newSymtabView.setUint8(at + 5, sym.other);
-    const shndx =
-      sym.shndx > SHN_UNDEF && sym.shndx < SHN_LORESERVE ? sectionMap[sym.shndx]! : sym.shndx;
-    newSymtabView.setUint16(at + 6, shndx, true);
+    const regular = !sym.reserved && sym.shndx !== SHN_UNDEF;
+    const shndx = regular ? sectionMap[sym.shndx]! : sym.shndx;
+    if (regular && shndx >= SHN_LORESERVE) {
+      newSymtabView.setUint16(at + 6, SHN_XINDEX, true);
+      shndxOutView!.setUint32(newIndex * 4, shndx, true);
+    } else {
+      newSymtabView.setUint16(at + 6, shndx, true);
+    }
     newSymtabView.setBigUint64(at + 8, symView.getBigUint64(oldIndex * 24 + 8, true), true);
     newSymtabView.setBigUint64(at + 16, symView.getBigUint64(oldIndex * 24 + 16, true), true);
   });
@@ -278,6 +300,33 @@ export function localizeElfObject(object: Uint8Array, keep: ReadonlySet<string>)
   // Rebuild. sh_link is a section index in every use this object can carry;
   // sh_info is one only on relocation sections.
   const kept = sections.filter((_, i) => sectionKept[i] === true);
+  const newSymtabIndex = sectionMap[symtabIndex]!;
+  if (shndxOut !== null) {
+    // The extended index table goes last, named in the section-name table.
+    const shstrtab = sections[shstrndx]!;
+    let nameOffset = shndxSection?.nameOffset;
+    if (nameOffset === undefined) {
+      const name = textEncoder.encode(".symtab_shndx\0");
+      const grown = new Uint8Array(shstrtab.data.length + name.length);
+      grown.set(shstrtab.data);
+      grown.set(name, shstrtab.data.length);
+      nameOffset = shstrtab.data.length;
+      shstrtab.data = grown;
+    }
+    kept.push({
+      nameOffset,
+      type: SHT_SYMTAB_SHNDX,
+      flags: 0n,
+      addr: 0n,
+      size: BigInt(shndxOut.length),
+      link: symtabIndex,
+      info: 0,
+      addralign: 4n,
+      entsize: 4n,
+      data: shndxOut,
+    });
+  }
+  const newShstrndx = sectionMap[shstrndx]!;
   let offset = 64;
   const offsets: number[] = [];
   for (const section of kept) {
@@ -301,8 +350,8 @@ export function localizeElfObject(object: Uint8Array, keep: ReadonlySet<string>)
   outView.setBigUint64(40, BigInt(shoffOut), true);
   outView.setUint16(54, 0, true); // e_phentsize
   outView.setUint16(56, 0, true); // e_phnum
-  outView.setUint16(60, kept.length, true);
-  outView.setUint16(62, sectionMap[shstrndx]!, true);
+  outView.setUint16(60, extended ? 0 : kept.length, true);
+  outView.setUint16(62, newShstrndx >= SHN_LORESERVE ? SHN_XINDEX : newShstrndx, true);
   kept.forEach((section, i) => {
     if (section.type !== SHT_NULL && section.type !== SHT_NOBITS) {
       out.set(section.data, offsets[i]!);
@@ -313,12 +362,27 @@ export function localizeElfObject(object: Uint8Array, keep: ReadonlySet<string>)
     outView.setBigUint64(at + 8, section.flags, true);
     outView.setBigUint64(at + 16, section.addr, true);
     outView.setBigUint64(at + 24, BigInt(offsets[i]!), true);
+    if (i === 0) {
+      // Section 0 carries the counts that overflow the ELF header.
+      outView.setBigUint64(at + 32, extended ? BigInt(kept.length) : 0n, true);
+      outView.setUint32(at + 40, newShstrndx >= SHN_LORESERVE ? newShstrndx : 0, true);
+      outView.setUint32(at + 44, 0, true);
+      return;
+    }
     outView.setBigUint64(
       at + 32,
       section.type === SHT_NOBITS ? section.size : BigInt(section.data.length),
       true,
     );
-    outView.setUint32(at + 40, section.link === 0 ? 0 : (sectionMap[section.link] ?? 0), true);
+    outView.setUint32(
+      at + 40,
+      section.type === SHT_SYMTAB_SHNDX
+        ? newSymtabIndex
+        : section.link === 0
+          ? 0
+          : (sectionMap[section.link] ?? 0),
+      true,
+    );
     outView.setUint32(
       at + 44,
       section.type === SHT_RELA || section.type === SHT_REL

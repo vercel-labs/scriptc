@@ -1,7 +1,8 @@
 import { keyedHelperName } from "../stable-names.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
-import { varRef } from "../../../ir/build.js";
+import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
+import { isJsSourceFile } from "../../program.js";
 import {
   BOOL,
   DYN,
@@ -92,12 +93,22 @@ function callbackShape(
   return { fnT, resultT, args, callbackT, callbackParamT: callbackParamT!, inner, error };
 }
 
-/** Whether `promisify(fn)`'s one argument is typed `any`: the function is
- * only known at run time, so the promisified function is built there. */
+/** Whether `promisify(fn)`'s one argument is only known at run time, so
+ * the promisified function is built there: a value typed `any`, a function
+ * with untyped parameters (the declarations type that call `any`), or any
+ * argument in JavaScript, whose inferred types do not describe the
+ * function Node receives (it validates the argument and reads its own
+ * properties). */
 export function untypedPromisifyArgument(lowerer: Lowerer, call: ts.CallExpression): boolean {
-  if (call.questionDotToken || call.arguments.nodes.length !== 1) return false;
-  const argNode = call.arguments.nodes[0]!;
-  return !ts.isSpreadElement(argNode) && (lowerer.typeOf(argNode).flags & ts.TypeFlags.Any) !== 0;
+  if (call.questionDotToken || call.arguments.nodes.length > 1) return false;
+  const argNode = call.arguments.nodes[0];
+  if (argNode !== undefined && ts.isSpreadElement(argNode)) return false;
+  if (isJsSourceFile(ts.getSourceFileOfNode(call))) return true;
+  if (argNode === undefined) return false;
+  return (
+    (lowerer.typeOf(argNode).flags & ts.TypeFlags.Any) !== 0 ||
+    (lowerer.typeOf(call).flags & ts.TypeFlags.Any) !== 0
+  );
 }
 
 /** The callback shape of a `promisify(fn)` call, or null. */
@@ -144,10 +155,11 @@ export function lowerCallbackPromisify(
   if (shape === null) {
     // An untyped (`any`) function: Node's promisify at run time.
     if (!untypedPromisifyArgument(lowerer, call)) return null;
+    const argNode = call.arguments.nodes[0];
     return {
       kind: "libCall",
       fn: "util.promisifyDyn",
-      args: [lowerer.lowerExprExpecting(call.arguments.nodes[0]!, DYN)],
+      args: [argNode ? lowerer.lowerExprExpecting(argNode, DYN) : dynUndefinedExpr(loc)],
       type: DYN,
       loc,
     };

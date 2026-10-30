@@ -1,0 +1,1 @@
+{ "name": "island-effectful-eager", "private": true, "type": "module", "scriptc": { "packages": { "loud-pkg": "node" } } }

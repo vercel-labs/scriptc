@@ -1,4 +1,6 @@
 /* Increment, decrement and prefix unary operators, and compound field updates. */
+import { staticPrivateUpdateTarget } from "../private-statics.js";
+import { lowerCompoundValueToTarget } from "./binary.js";
 import {
   indexedUnionArms,
   lowerIndexedUnionNumberRead,
@@ -49,6 +51,7 @@ import { expandoWritableTarget } from "../lower-expando.js";
 import { nsWritableTarget } from "../lower-namespaces.js";
 import { arrayNumberRead, arrayValueRead, arrayValueStore } from "../array-values.js";
 import { isSafeToRepeat } from "./evaluation-safety.js";
+import { partialFieldWriteError } from "../partial-assertions.js";
 import { errorPropertyWrite } from "../error-methods.js";
 import type { CompoundOp } from "../surfaces.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
@@ -120,6 +123,11 @@ function coercedUnion(lowerer: Lowerer, type: IrType): boolean {
   return arms.some((arm) => arm.kind !== "f64" && !isUnitType(arm));
 }
 
+/** ToNumber of a Date: its time value (valueOf, the number hint). */
+function dateTimeValue(date: IrExpr, loc: SrcLoc): IrExpr {
+  return { kind: "libCall", fn: "date.valueOf", args: [date], type: F64, loc };
+}
+
 /** ToNumber of a boolean: 1 for true, 0 for false. */
 function booleanToNumber(value: IrExpr, loc: SrcLoc): IrExpr {
   return {
@@ -145,23 +153,25 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
       const operand =
         raw.type.kind === "bool"
           ? booleanToNumber(raw, loc)
-          : coercedUnion(lowerer, raw.type)
-            ? ({
-                kind: "libCall",
-                fn: "dyn.toNumberCoerce",
-                args: [{ kind: "dynFrom", value: raw, type: DYN, loc }],
-                type: F64,
-                loc,
-              } satisfies IrExpr)
-            : raw.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr))
+          : raw.type.kind === "date"
+            ? dateTimeValue(raw, loc)
+            : coercedUnion(lowerer, raw.type)
               ? ({
                   kind: "libCall",
                   fn: "dyn.toNumberCoerce",
-                  args: [raw],
+                  args: [{ kind: "dynFrom", value: raw, type: DYN, loc }],
                   type: F64,
                   loc,
                 } satisfies IrExpr)
-              : lowerOptionalNumber(lowerer, raw, loc, expr.operand);
+              : raw.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr))
+                ? ({
+                    kind: "libCall",
+                    fn: "dyn.toNumberCoerce",
+                    args: [raw],
+                    type: F64,
+                    loc,
+                  } satisfies IrExpr)
+                : lowerOptionalNumber(lowerer, raw, loc, expr.operand);
       if (operand.type.kind !== "f64") operatorUnsupported(lowerer, expr, "-", [raw.type]);
       if (operand.kind === "numLit") return { ...operand, value: -operand.value, loc };
       return { kind: "unary", op: "-", operand, type: F64, loc };
@@ -185,6 +195,8 @@ export function lowerPrefixUnary(lowerer: Lowerer, expr: ts.PrefixUnaryExpressio
         return { kind: "libCall", fn: "num.fromString", args: [raw], type: F64, loc };
       }
       if (raw.type.kind === "bool") return booleanToNumber(raw, loc);
+      // A Date's number hint answers its time value.
+      if (raw.type.kind === "date") return dateTimeValue(raw, loc);
       const classNumber = classToNumberConversion(lowerer, raw, expr.operand, "unary plus");
       if (classNumber) return classNumber;
       const operand = lowerOptionalNumber(lowerer, raw, loc, expr.operand);
@@ -260,6 +272,19 @@ export function lowerIncDec(
     }
     fenceNodeModuleMutation(lowerer, access, "assignment");
     if (ts.isPropertyAccessExpression(access)) {
+      // `this.#x++` on a static private field (private-statics.ts): the
+      // brand check, then the field's native global.
+      const staticPrivate = staticPrivateUpdateTarget(lowerer, access);
+      if (staticPrivate) {
+        const update = lowerIncDecTarget(lowerer, expr, staticPrivate.target, prefix);
+        return {
+          kind: "seqExpr",
+          stmts: [staticPrivate.brand],
+          result: update,
+          type: update.type,
+          loc,
+        };
+      }
       const target =
         staticFieldWriteTarget(lowerer, access) ??
         expandoWritableTarget(lowerer, access) ??
@@ -879,24 +904,75 @@ export function fieldSetStmt(
       loc,
     };
   }
-  return target.container === "class"
-    ? {
-        kind: "fieldSet",
-        obj: target.obj,
-        className: target.className,
-        field: target.field,
-        value,
-        ...(isStrictCode(blame) ? {} : { sloppy: true as const }),
-        loc,
-      }
-    : {
-        kind: "recordSet",
-        obj: target.obj,
-        shapeId: target.shapeId,
-        field: target.field,
-        value,
-        loc,
-      };
+  if (target.container === "class")
+    return {
+      kind: "fieldSet",
+      obj: target.obj,
+      className: target.className,
+      field: target.field,
+      value,
+      ...(isStrictCode(blame) ? {} : { sloppy: true as const }),
+      loc,
+    };
+  // A field some partial record assertion leaves unwritten (a partial
+  // record view, partial-assertions.ts): a view cannot grow a slot the
+  // asserted literal never wrote, so the write throws the catchable
+  // TypeError (Node would add the property — a documented divergence). The
+  // receiver and the value are evaluated first, as JavaScript does, and the
+  // presence test runs where the write would.
+  const refused = partialFieldWriteError(lowerer, target.shapeId, target.field, loc);
+  if (refused !== null) {
+    const obj = target.obj;
+    const saved = isSafeToRepeat(value)
+      ? null
+      : lowerer.declareHiddenLocal("%partialWriteValue", value.type);
+    // The receiver is saved whenever the value is: a right side can
+    // reassign the variable the receiver reads.
+    const stable =
+      isSafeToRepeat(obj) && saved === null
+        ? null
+        : lowerer.declareHiddenLocal("%partialWrite", obj.type);
+    const ref = stable ? varRef(stable.id, obj.type, loc) : obj;
+    const written = saved ? varRef(saved.id, value.type, loc) : value;
+    return {
+      kind: "block",
+      body: [
+        ...(stable ? [{ kind: "varDecl" as const, localId: stable.id, init: obj, loc }] : []),
+        ...(saved ? [{ kind: "varDecl" as const, localId: saved.id, init: value, loc }] : []),
+        {
+          kind: "if",
+          cond: {
+            kind: "recordHas",
+            obj: ref,
+            shapeId: target.shapeId,
+            field: target.field,
+            type: BOOL,
+            loc,
+          },
+          then: [],
+          else_: [{ kind: "exprStmt", expr: refused, loc }],
+          loc,
+        },
+        {
+          kind: "recordSet",
+          obj: ref,
+          shapeId: target.shapeId,
+          field: target.field,
+          value: written,
+          loc,
+        },
+      ],
+      loc,
+    };
+  }
+  return {
+    kind: "recordSet",
+    obj: target.obj,
+    shapeId: target.shapeId,
+    field: target.field,
+    value,
+    loc,
+  };
 }
 
 export function lowerFieldCompoundValue(
@@ -912,6 +988,27 @@ export function lowerFieldCompoundValue(
       access,
       "compound assignment through 'super' (read and write separately)",
     );
+  }
+  // `this.#x op= v` on a static private field (private-statics.ts): the
+  // brand check, then the field's native global read before the right side.
+  if (
+    ts.isPropertyAccessExpression(access) &&
+    rhsNode !== null &&
+    ts.isBinaryExpression(access.parent) &&
+    access.parent.left === access
+  ) {
+    const staticPrivate = staticPrivateUpdateTarget(lowerer, access);
+    if (staticPrivate) {
+      const { target } = staticPrivate;
+      const value = lowerCompoundValueToTarget(lowerer, access.parent, op, target);
+      return {
+        kind: "seqExpr",
+        stmts: [staticPrivate.brand],
+        result: { kind: "assignExpr", localId: target.id, value, type: target.type, loc },
+        type: target.type,
+        loc,
+      };
+    }
   }
   const body: IrStmt[] = [];
   const save = (value: IrExpr, name: string): IrExpr => {

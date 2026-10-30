@@ -44,8 +44,8 @@ static size_t scr_bytes_dyn_width(ScrBytesNumKind kind) {
 
 /* Node's checkInt range test and message, before the offset is looked at. */
 static bool scr_bytes_dyn_value_in_range(double value, size_t width, bool sign) {
-  double max = sign ? exp2((double)(8 * width - 1)) - 1 : exp2((double)(8 * width)) - 1;
-  double min = sign ? -exp2((double)(8 * width - 1)) : 0;
+  double max = sign ? ldexp(1.0, (int)(8 * width - 1)) - 1 : ldexp(1.0, (int)(8 * width)) - 1;
+  double min = sign ? -ldexp(1.0, (int)(8 * width - 1)) : 0;
   if (!(value > max || value < min)) return true;
   char recv[48];
   scr_num_received(value, recv);

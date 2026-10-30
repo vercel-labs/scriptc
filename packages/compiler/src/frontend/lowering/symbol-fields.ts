@@ -76,7 +76,36 @@ export function fenceSymbolFieldCopy(
   }
 }
 
+/** The registry name util.inspect.custom denotes. */
+export const INSPECT_CUSTOM_DESCRIPTION = "nodejs.util.inspect.custom";
+/** The method slot of a class's `[util.inspect.custom]` member. */
+export const INSPECT_CUSTOM_MEMBER = `${FIELD_PREFIX}Symbol(${INSPECT_CUSTOM_DESCRIPTION})`;
+
+/** `inspect.custom` over node:util's inspect: a named import, `util.inspect`
+ * or the CommonJS `util_1.inspect`. */
+export function isInspectCustomAccess(lowerer: Lowerer, expr: ts.Expression): boolean {
+  while (ts.isParenthesizedExpression(expr)) expr = expr.expression;
+  if (!ts.isPropertyAccessExpression(expr) || expr.questionDotToken) return false;
+  if (!ts.isIdentifier(expr.name) || expr.name.text !== "custom") return false;
+  let target = expr.expression;
+  while (ts.isParenthesizedExpression(target)) target = target.expression;
+  const bi = ts.isIdentifier(target)
+    ? lowerer.builtinImportOf(target)
+    : ts.isPropertyAccessExpression(target) && !target.questionDotToken
+      ? lowerer.builtinMemberOf(target)
+      : null;
+  return bi?.module === "util" && bi.member === "inspect";
+}
+
 export function classSymbolKeyOf(lowerer: Lowerer, key: ts.Expression): ClassSymbolKey | null {
+  // util.inspect.custom is the registered Symbol.for(INSPECT_CUSTOM_DESCRIPTION),
+  // one identity with the program's own Symbol.for calls of that name.
+  if (isInspectCustomAccess(lowerer, key)) {
+    let e = key;
+    while (ts.isParenthesizedExpression(e)) e = e.expression;
+    const sym = lowerer.checker.getSymbolAtLocation((e as ts.PropertyAccessExpression).name);
+    return sym ? symbolKeyOf(lowerer, sym, true, INSPECT_CUSTOM_DESCRIPTION) : null;
+  }
   const wellKnown = wellKnownSymbolKeyOf(lowerer, key);
   if (wellKnown !== undefined) return wellKnown;
   if (
@@ -394,9 +423,9 @@ function tablePropertyWritten(
     }
     return false;
   };
-  for (const sf of lowerer.program.getSourceFiles()) {
+  for (const sf of lowerer.program.getImplementationSourceFiles()) {
     if (written) break;
-    if (sf.isDeclarationFile || !sf.text.includes(name)) continue;
+    if (!sf.text.includes(name)) continue;
     ts.walkPreorder(sf, (node) => {
       if (written) return "stop";
       let target: ts.Node | undefined;

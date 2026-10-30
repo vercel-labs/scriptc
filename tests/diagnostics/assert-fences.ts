@@ -1,12 +1,12 @@
 // The assert surface's honest fences: loose deep equality over recursive
 // types (equal/notEqual, deepEqual/notDeepEqual and assert/strict's aliases lower),
-// reference-equality strictEqual on objects,
-// union operands (narrow first), mismatched or uncomparable deep types
+// reference-equality strictEqual on objects, union operands with object
+// arms (narrow first), mismatched or uncomparable deep types
 // (typed arrays, class instances), namespace-object calls, unsupported
 // throws/rejects expectations (properties outside the static error
 // surface, empty shapes, non-literal objects, doesNotReject shapes —
-// Node's own TypeError), ifError over uncomparable types, and assert
-// functions as values. Every reached site terminates in a named
+// Node's own TypeError), ifError over uncomparable types, and assert.throws
+// as a value. Every reached site terminates in a named
 // diagnostic — never a miscompare, never silence.
 import assert from "node:assert";
 import * as assertNs from "node:assert";
@@ -19,9 +19,9 @@ assert.notDeepEqual([1], [2]);
 const box = { n: 1 };
 assert.strictEqual(box, box); // reference equality — deepStrictEqual hint
 
-let maybe: string | undefined = "x";
+let maybe: { n: number } | undefined = box;
 if ("x".length === 0) maybe = undefined;
-assert.strictEqual(maybe, "x"); // union operand — narrow first
+assert.strictEqual(maybe, box); // union operand with an object arm — narrow first
 
 const unk: unknown = JSON.parse("{}");
 assert.strictEqual(unk, { n: 1 }); // strict + composite static side: reference identity does not survive the unknown boundary
@@ -47,8 +47,8 @@ assert.throws(() => { throw new Error("x"); }, {}); // Node rejects the empty sh
 void assert.doesNotReject(async () => {}, { name: "TypeError" }); // Node's own TypeError (function or RegExp only)
 assert.ifError(new Map<string, number>()); // no honest ifError rendering for this type
 
-const eq = assert.strictEqual; // assert functions as values
-eq(1, 1);
+const throwsFn = assert.throws; // assert.throws as a value: it takes the function to run
+throwsFn(() => {});
 
 interface Tree { label: string; kids: Tree[] }
 const tree: Tree = { label: "t", kids: [] };

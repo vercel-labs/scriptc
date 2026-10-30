@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8234-handle-typeof.ts"
+ ],
+ "diags": []
+}

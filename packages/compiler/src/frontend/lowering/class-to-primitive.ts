@@ -41,6 +41,7 @@ interface ToStringTag {
 }
 
 const PRIMITIVE_KINDS = new Set(["f64", "string", "bool", "bigint", "undefinedT", "nullT"]);
+const OBJECT_ARMS_TO_STRING = new Set(["url", "bytes", "date", "regex"]);
 
 /** ToString(ToPrimitive(value, hint)) of a program class instance, as Node
  * computes it: `[Symbol.toPrimitive](hint)` when the class defines it, then
@@ -391,8 +392,9 @@ function refuse(lowerer: Lowerer, node: ts.Node, info: ClassInfo, what: string):
 }
 
 /** ToString(ToPrimitive(value, hint)) of a union whose arms are program
- * class instances, URLs and primitives (`Box | undefined`, `string | URL`):
- * each arm converts as it would alone. Null for other unions. */
+ * class instances, URLs, typed arrays, dates, regular expressions and
+ * primitives (`Box | undefined`, `string | URL`, `URL | Uint8Array`): each
+ * arm converts as it would alone. Null for other unions. */
 export function classUnionToString(
   lowerer: Lowerer,
   value: IrExpr,
@@ -402,11 +404,19 @@ export function classUnionToString(
   if (value.type.kind !== "union") return null;
   const unionId = value.type.unionId;
   const arms = lowerer.unions.get(unionId)?.arms;
-  if (!arms || !arms.some((arm) => arm.kind === "object" || arm.kind === "url")) return null;
+  if (!arms || arms.every((arm) => PRIMITIVE_KINDS.has(arm.kind))) return null;
+  // Without class or URL arms both hints give the same text, and
+  // ensureString, which tries the checker's narrowed arm first, converts
+  // the union with the string hint.
+  if (hint === "default" && !arms.some((arm) => arm.kind === "object" || arm.kind === "url"))
+    return null;
   const convertible = (arm: IrType): boolean => {
     if (PRIMITIVE_KINDS.has(arm.kind)) return true;
-    // A URL arm converts through its href, like String(url).
-    if (arm.kind === "url") return true;
+    // These arms convert as ensureString converts them alone, with the
+    // same result for both hints: a URL through its href, a typed array
+    // through its join, a date through toString, a regular expression
+    // through its source and flags.
+    if (OBJECT_ARMS_TO_STRING.has(arm.kind)) return true;
     if (arm.kind !== "object") return false;
     const info = lowerer.classes.get(arm.className);
     return info !== undefined && plainProgramClass(info);

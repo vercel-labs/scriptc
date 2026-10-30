@@ -7,14 +7,14 @@ create-require.ts:13:13 - error SC2020: 'module.createRequire' is part of the st
 
   hint: the lowered shape is a const binding (or a proven stable top-level let/var) over createRequire(import.meta.url) (or __filename) whose require calls take STATIC string literals — builtins, project modules (including #imports), relative .json documents and natively compiled npm packages resolve at build time; dynamic specifiers cannot exist in a compiled binary's fixed module graph
 
-create-require.ts:20:1 - error SC2020: 'createRequire's require with this argument shape' is part of the standard library types but has no scriptc lowering yet
+create-require.ts:20:1 - error SC2020: 'createRequire's require with a computed specifier or this argument shape' is part of the standard library types but has no scriptc lowering yet
 
   19 | const which = "left" + "-pad";
   20 | require(which);
      | ^~~~~~~~~~~~~~
   21 | 
 
-  hint: the compiled module graph is fixed at build time — the one lowered form is require("<static string literal>")
+  hint: the compiled module graph is fixed at build time — the one lowered form is require("<static string literal>"); native addons are not loaded
 
 create-require.ts:23:1 - error SC2020: 'createRequire's require of './helper.js'' is part of the standard library types but has no scriptc lowering yet
 

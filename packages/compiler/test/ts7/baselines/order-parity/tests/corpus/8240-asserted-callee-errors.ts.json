@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8240-asserted-callee-errors.ts"
+ ],
+ "diags": []
+}

@@ -9,6 +9,7 @@ import {
   callbackType,
   finishRuntimeCall,
   ptr,
+  caBytes,
   rawBytes,
   requestHandler,
 } from "./lib-abi.js";
@@ -21,7 +22,7 @@ function sniAnswer(host: LlvmEmitterContext, type: IrType): string {
   const key = "sni:" + typeKey(type);
   const previous = host.resolveThunks.get(key);
   if (previous !== undefined) return previous;
-  const symbol = `sc_sni_answer_${host.resolveThunks.size}`;
+  const symbol = host.contentSymbol("sc_sni_answer_", key);
   host.resolveThunks.set(key, symbol);
   host.journal?.allocated(symbol, "sniAnswer", [type]);
   const params = ["ptr %self"],
@@ -94,11 +95,12 @@ export function sniCallbackArgs(host: LlvmEmitterContext, cb: LlValue): AbiArgum
   let type = cb.type,
     value = cb.name;
   if (type.kind === "union") {
-    const arms = host.unionsById.get(type.unionId)?.arms ?? [];
+    const unionId = type.unionId;
+    const arms = host.unionsById.get(unionId)?.arms ?? [];
     const tag = arms.findIndex((arm) => arm.kind === "func");
     if (tag < 0) throw new InternalCompilerError("SNI callback union lacks its function arm");
     type = arms[tag]!;
-    value = host.unwrapNullableClosure(value, tag);
+    value = host.unwrapNullableClosure(value, unionId, tag);
   } else host.toHeap(cb);
   if (type.kind !== "func" || type.params[1] === undefined)
     throw new InternalCompilerError("SNI callback lacks its answer function");
@@ -204,7 +206,7 @@ export function emitHttp2LibCall(host: LlvmEmitterContext, e: LibCallExpr): LlVa
             );
       return finishRuntimeCall(host, e, "scr_http2_connect", [
         ...a.slice(0, 2),
-        ...rawBytes(host, args[2]!),
+        ...caBytes(host, args[2]!),
         ...handler,
       ]);
     }

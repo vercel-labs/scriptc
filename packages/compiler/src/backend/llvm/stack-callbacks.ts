@@ -32,10 +32,12 @@ export class StackCallbacks {
     const count = B.tmp();
     B.line(`${count} = getelementptr inbounds %ScrClosure, ptr ${closure}, i32 0, i32 2`);
     B.line(`store ${host.sizeType} ${value.captures.length}, ptr ${count}`);
-    if (this.functions.get(value.fnName)?.ownsPrototype) {
+    const target = this.functions.get(value.fnName);
+    const functionKind = target ? host.closureFunctionKind(target) : 0;
+    if (functionKind !== 0) {
       const kind = B.tmp();
       B.line(`${kind} = getelementptr inbounds %ScrClosure, ptr ${closure}, i32 0, i32 4`);
-      B.line(`store i32 4, ptr ${kind}`);
+      B.line(`store i32 ${functionKind}, ptr ${kind}`);
     }
     value.captures.forEach((localId, index) => {
       const box = host.retainBox(host.captureBox(localId));

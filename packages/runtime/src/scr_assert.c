@@ -212,7 +212,56 @@ bool scr_assert_skip_prototype(void) {
   return (g_instance_options & SCR_ASSERT_SKIP_PROTOTYPE) != 0;
 }
 
+/* A message argument that is not a string (an untyped value, or an Error
+ * to throw): the compiled call registers it before the assertion and passes
+ * SCR_ASSERT_VALUE_MESSAGE as its message, which the failure paths compose
+ * like any custom message. A failure whose message starts with it throws
+ * the Error itself (innerFail's `message instanceof Error`) or puts
+ * String(value) in its place with generatedMessage `!value`, as Node's
+ * AssertionError does. Matching the sentinel keeps a registration that no
+ * failure consumed from reaching another assertion. */
+static SCR_TL ScrDyn *g_message_value;
+static SCR_TL bool g_message_error;
+
+void scr_assert_message_value(ScrDyn *value, bool error) {
+  if (g_message_value) scr_dyn_release(g_message_value);
+  g_message_value = scr_dyn_retain(value);
+  g_message_error = error;
+}
+
+void scr_assert_message_clear(void) {
+  if (g_message_value) scr_dyn_release(g_message_value);
+  g_message_value = NULL;
+}
+
 void scr_assert_fail(ScrStr *message, bool generated) {
+  static const char sentinel[] = SCR_ASSERT_VALUE_MESSAGE;
+  const size_t n = sizeof sentinel - 1;
+  if (g_message_value && message->len >= n && memcmp(message->data, sentinel, n) == 0) {
+    ScrDyn *value = g_message_value;
+    g_message_value = NULL;
+    if (g_message_error) {
+      scr_str_release(message);
+      scr_assert_record(NULL, NULL, NULL);
+      g_instance_options = 0;
+      scr_dyn_throw(value);
+      return;
+    }
+    ScrStr *text = scr_dyn_string_coerce_js(value);
+    generated = !scr_dyn_truthy(value);
+    scr_dyn_release(value);
+    if (!text) {
+      scr_str_release(message);
+      return;
+    }
+    ScrJsonBuf b;
+    scr_jb_init(&b);
+    scr_jb_write(&b, text->data, text->len);
+    scr_jb_write(&b, message->data + n, message->len - n);
+    scr_str_release(text);
+    scr_str_release(message);
+    message = scr_jb_finish(&b);
+  }
   ScrError *e = scr_assert_error(message, generated, scr_assert_diff_full() ? "full" : "simple");
   g_instance_options = 0;
   scr_throw_obj(e, &scr_error_retain_v, &scr_error_release_v, scr_error_trace_arg());
@@ -669,7 +718,7 @@ static bool scr_assert_dyn_deep_eq(const ScrDyn *a, const ScrDyn *b) {
       if (a->v.arr.properties || b->v.arr.properties) {
         if (!a->v.arr.properties || !b->v.arr.properties) {
           const ScrDyn *table = a->v.arr.properties ? a->v.arr.properties : b->v.arr.properties;
-          if (table->v.obj.len != 0) return false;
+          if (scr_dyn_obj_count(table) != 0) return false;
         } else if (!scr_assert_dyn_deep_eq(a->v.arr.properties, b->v.arr.properties)) return false;
       }
       return true;
@@ -689,11 +738,11 @@ static bool scr_assert_dyn_deep_eq(const ScrDyn *a, const ScrDyn *b) {
       } else if (a->null_proto != b->null_proto || a->prototype != b->prototype) {
         return false;
       }
-      if (a->v.obj.len != b->v.obj.len) return false;
-      for (size_t i = 0; i < a->v.obj.len; i++) {
-        const ScrDynEntry *ent = &a->v.obj.entries[i];
-        ScrDyn *bv = scr_dyn_obj_get(b, ent->key, ent->key_len);
-        if (!bv || !scr_assert_dyn_deep_eq(ent->value, bv)) return false;
+      if (scr_dyn_obj_count(a) != scr_dyn_obj_count(b)) return false;
+      for (size_t i = 0; i < scr_dyn_obj_count(a); i++) {
+        ScrDynProp ent = scr_dyn_obj_prop_at(a, i);
+        ScrDyn *bv = scr_dyn_obj_get(b, ent.key, ent.key_len);
+        if (!bv || !scr_assert_dyn_deep_eq(ent.value, bv)) return false;
       }
       return true;
     }
@@ -733,30 +782,29 @@ static bool scr_assert_loose_nan(const ScrDyn *d) {
   return d->kind == SCR_DYN_NUM && d->v.num != d->v.num;
 }
 
-/* An enumerable own entry, or NULL. Borrowed. */
-static const ScrDynEntry *scr_assert_loose_entry(const ScrDyn *d, const char *key, size_t len) {
-  for (size_t i = 0; i < d->v.obj.len; i++) {
-    const ScrDynEntry *ent = &d->v.obj.entries[i];
-    if (ent->key_len == len && memcmp(ent->key, key, len) == 0) return ent->enumerable ? ent : NULL;
-  }
-  return NULL;
+/* The value of an enumerable own property, or NULL. Borrowed. */
+static const ScrDyn *scr_assert_loose_entry(const ScrDyn *d, const char *key, size_t len) {
+  size_t i = scr_dyn_obj_index_of(d, key, len);
+  if (i == SIZE_MAX) return NULL;
+  ScrDynProp ent = scr_dyn_obj_prop_at(d, i);
+  return ent.enumerable ? ent.value : NULL;
 }
 
-static bool scr_assert_loose_counted(const ScrDynEntry *ent) {
-  return ent->enumerable && !(ent->key_len == 6 && memcmp(ent->key, "%error", 6) == 0);
+static bool scr_assert_loose_counted(ScrDynProp ent) {
+  return ent.enumerable && !(ent.key_len == 6 && memcmp(ent.key, "%error", 6) == 0);
 }
 
 /* keyCheck and objEquiv over two objects' enumerable own keys. */
 static bool scr_assert_loose_keys(const ScrDyn *a, const ScrDyn *b) {
   size_t na = 0, nb = 0;
-  for (size_t i = 0; i < a->v.obj.len; i++) na += scr_assert_loose_counted(&a->v.obj.entries[i]);
-  for (size_t i = 0; i < b->v.obj.len; i++) nb += scr_assert_loose_counted(&b->v.obj.entries[i]);
+  for (size_t i = 0; i < scr_dyn_obj_count(a); i++) na += scr_assert_loose_counted(scr_dyn_obj_prop_at(a, i));
+  for (size_t i = 0; i < scr_dyn_obj_count(b); i++) nb += scr_assert_loose_counted(scr_dyn_obj_prop_at(b, i));
   if (na != nb) return false;
-  for (size_t i = 0; i < b->v.obj.len; i++) {
-    const ScrDynEntry *ent = &b->v.obj.entries[i];
+  for (size_t i = 0; i < scr_dyn_obj_count(b); i++) {
+    ScrDynProp ent = scr_dyn_obj_prop_at(b, i);
     if (!scr_assert_loose_counted(ent)) continue;
-    const ScrDynEntry *other = scr_assert_loose_entry(a, ent->key, ent->key_len);
-    if (!other || !scr_assert_loose_eq(other->value, ent->value)) return false;
+    const ScrDyn *other = scr_assert_loose_entry(a, ent.key, ent.key_len);
+    if (!other || !scr_assert_loose_eq(other, ent.value)) return false;
   }
   return true;
 }
@@ -1131,8 +1179,8 @@ static bool scr_assert_loose_array(const ScrDyn *a, const ScrDyn *b) {
   if (pa || pb) {
     if (!pa || !pb) {
       const ScrDyn *table = pa ? pa : pb;
-      for (size_t i = 0; i < table->v.obj.len; i++)
-        if (scr_assert_loose_counted(&table->v.obj.entries[i])) return false;
+      for (size_t i = 0; i < scr_dyn_obj_count(table); i++)
+        if (scr_assert_loose_counted(scr_dyn_obj_prop_at(table, i))) return false;
     } else if (!scr_assert_loose_keys(pa, pb)) {
       return false;
     }
@@ -1246,7 +1294,7 @@ static void scr_assert_cf_value(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
  * or `{`, then its entries. */
 static void scr_assert_cf_object(ScrAssertBuf *b, const ScrDyn *d, size_t indent, size_t depth,
                                  const char *cls) {
-  if (d->v.obj.len == 0) {
+  if (scr_dyn_obj_count(d) == 0) {
     if (cls) {
       ab_cstr(b, cls);
       ab_cstr(b, " {}");
@@ -1271,25 +1319,25 @@ static void scr_assert_cf_object(ScrAssertBuf *b, const ScrDyn *d, size_t indent
   } else if (d->null_proto) ab_cstr(b, "[Object: null prototype] ");
   /* Render every entry, then sort the RENDERED texts (Node's
    * sorted:true sorts formatted entries, quotes included). */
-  ScrCfEntry *ents = malloc(d->v.obj.len * sizeof *ents);
+  ScrCfEntry *ents = malloc(scr_dyn_obj_count(d) * sizeof *ents);
   if (!ents) scr_assert_oom();
-  for (size_t i = 0; i < d->v.obj.len; i++) {
-    const ScrDynEntry *ent = &d->v.obj.entries[i];
+  for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
+    ScrDynProp ent = scr_dyn_obj_prop_at(d, i);
     ScrAssertBuf eb = {0};
-    scr_assert_cf_key(&eb, ent->key, ent->key_len);
+    scr_assert_cf_key(&eb, ent.key, ent.key_len);
     ab_cstr(&eb, ": ");
-    scr_assert_cf_value(&eb, ent->value, indent + 2, depth - 1);
+    scr_assert_cf_value(&eb, ent.value, indent + 2, depth - 1);
     ents[i].text = eb.data ? eb.data : malloc(1);
     if (!ents[i].text) scr_assert_oom();
     ents[i].len = eb.len;
   }
-  qsort(ents, d->v.obj.len, sizeof *ents, scr_assert_cf_entry_cmp);
+  qsort(ents, scr_dyn_obj_count(d), sizeof *ents, scr_assert_cf_entry_cmp);
   ab_char(b, '{');
-  for (size_t i = 0; i < d->v.obj.len; i++) {
+  for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
     ab_char(b, '\n');
     scr_assert_cf_pad(b, indent + 2);
     ab_bytes(b, ents[i].text, ents[i].len);
-    if (i + 1 < d->v.obj.len) ab_char(b, ',');
+    if (i + 1 < scr_dyn_obj_count(d)) ab_char(b, ',');
     free(ents[i].text);
   }
   free(ents);
@@ -1315,11 +1363,11 @@ static const char *scr_assert_cf_bytes_class(ScrBytesElem elem) {
 }
 
 
-static bool scr_assert_cf_error_extra(const ScrDynEntry *ent) {
-  if (!ent->enumerable || (ent->key_len > 0 && ent->key[0] == '%')) return false;
-  return !((ent->key_len == 4 && memcmp(ent->key, "name", 4) == 0) ||
-           (ent->key_len == 7 && memcmp(ent->key, "message", 7) == 0) ||
-           (ent->key_len == 5 && memcmp(ent->key, "stack", 5) == 0));
+static bool scr_assert_cf_error_extra(ScrDynProp ent) {
+  if (!ent.enumerable || (ent.key_len > 0 && ent.key[0] == '%')) return false;
+  return !((ent.key_len == 4 && memcmp(ent.key, "name", 4) == 0) ||
+           (ent.key_len == 7 && memcmp(ent.key, "message", 7) == 0) ||
+           (ent.key_len == 5 && memcmp(ent.key, "stack", 5) == 0));
 }
 
 /* An encoded Error: Node's stackless `[Name: message]` (assertion_error.js
@@ -1337,8 +1385,8 @@ static void scr_assert_cf_error(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
   }
   ab_char(b, ']');
   size_t extra = 0;
-  for (size_t i = 0; i < d->v.obj.len; i++) {
-    const ScrDynEntry *ent = &d->v.obj.entries[i];
+  for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
+    ScrDynProp ent = scr_dyn_obj_prop_at(d, i);
     if (scr_assert_cf_error_extra(ent)) extra++;
   }
   if (extra == 0) return;
@@ -1346,13 +1394,13 @@ static void scr_assert_cf_error(ScrAssertBuf *b, const ScrDyn *d, size_t indent,
   ScrCfEntry *ents = malloc(extra * sizeof *ents);
   if (!ents) scr_assert_oom();
   size_t n = 0;
-  for (size_t i = 0; i < d->v.obj.len; i++) {
-    const ScrDynEntry *ent = &d->v.obj.entries[i];
+  for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
+    ScrDynProp ent = scr_dyn_obj_prop_at(d, i);
     if (!scr_assert_cf_error_extra(ent)) continue;
     ScrAssertBuf eb = {0};
-    scr_assert_cf_key(&eb, ent->key, ent->key_len);
+    scr_assert_cf_key(&eb, ent.key, ent.key_len);
     ab_cstr(&eb, ": ");
-    scr_assert_cf_value(&eb, ent->value, indent + 2, depth - 1);
+    scr_assert_cf_value(&eb, ent.value, indent + 2, depth - 1);
     ents[n].text = eb.data ? eb.data : malloc(1);
     if (!ents[n].text) scr_assert_oom();
     ents[n++].len = eb.len;
@@ -1788,6 +1836,10 @@ static bool scr_assert_dyn_is_object(const ScrDyn *d) {
          scr_dyn_ref_typeof_is(d, "object"); /* engine-held: the engine's typeof */
 }
 
+/* Set while a failing expectedException renders its two Comparison
+ * placeholders (scr_assert_expects_err_dyn): the diff names their class. */
+static SCR_TL bool scr_assert_comparison_labels = false;
+
 /* The failing EQUAL operators over dyn operands — createErrDiff. */
 static const char scr_assert_partial_header[] =
     "Expected values to be partially and strictly deep-equal:";
@@ -1809,6 +1861,17 @@ static ScrStr *scr_assert_dyn_diff_message(ScrDyn *a, ScrDyn *b, bool deep, cons
                     : "Expected values to be strictly equal:");
   ScrStr *ia = scr_assert_cf_inspect(a);
   ScrStr *ib = scr_assert_cf_inspect(b);
+  if (scr_assert_comparison_labels) {
+    /* expectedException's placeholders are instances of its Comparison class */
+    ScrStr *label = scr_str_new("Comparison ", 11);
+    ScrStr *la = scr_str_concat(label, ia);
+    ScrStr *lb = scr_str_concat(label, ib);
+    scr_str_release(label);
+    scr_str_release(ia);
+    scr_str_release(ib);
+    ia = la;
+    ib = lb;
+  }
   size_t an, en;
   ScrLine *alines = scr_assert_split_lines(ia, &an);
   ScrLine *elines = scr_assert_split_lines(ib, &en);
@@ -1940,11 +2003,11 @@ static bool scr_assert_partial_eq(const ScrDyn *a, const ScrDyn *b);
 
 /* objEquiv over the expected side's enumerable own keys. */
 static bool scr_assert_partial_keys(const ScrDyn *a, const ScrDyn *b) {
-  for (size_t i = 0; i < b->v.obj.len; i++) {
-    const ScrDynEntry *ent = &b->v.obj.entries[i];
+  for (size_t i = 0; i < scr_dyn_obj_count(b); i++) {
+    ScrDynProp ent = scr_dyn_obj_prop_at(b, i);
     if (!scr_assert_loose_counted(ent)) continue;
-    const ScrDynEntry *other = scr_assert_loose_entry(a, ent->key, ent->key_len);
-    if (!other || !scr_assert_partial_eq(other->value, ent->value)) return false;
+    const ScrDyn *other = scr_assert_loose_entry(a, ent.key, ent.key_len);
+    if (!other || !scr_assert_partial_eq(other, ent.value)) return false;
   }
   return true;
 }
@@ -1994,11 +2057,11 @@ static bool scr_assert_partial_array(const ScrDyn *a, const ScrDyn *b) {
   const ScrDyn *pb = b->v.arr.properties;
   if (pb) {
     const ScrDyn *pa = a->v.arr.properties;
-    for (size_t i = 0; i < pb->v.obj.len; i++) {
-      const ScrDynEntry *ent = &pb->v.obj.entries[i];
+    for (size_t i = 0; i < scr_dyn_obj_count(pb); i++) {
+      ScrDynProp ent = scr_dyn_obj_prop_at(pb, i);
       if (!scr_assert_loose_counted(ent)) continue;
-      const ScrDynEntry *other = pa ? scr_assert_loose_entry(pa, ent->key, ent->key_len) : NULL;
-      if (!other || !scr_assert_partial_eq(other->value, ent->value)) return false;
+      const ScrDyn *other = pa ? scr_assert_loose_entry(pa, ent.key, ent.key_len) : NULL;
+      if (!other || !scr_assert_partial_eq(other, ent.value)) return false;
     }
   }
   size_t pos = 0;
@@ -2374,26 +2437,188 @@ void scr_assert_loose_deep_result(bool equal, bool negated, ScrStr *msg, bool ha
                         g_record_expected ? g_record_expected : undef, negated, msg, has_msg);
 }
 
-/* Node's expectsError over an error-INSTANCE expected (assert.throws/
- * rejects second argument): every key of the expected dyn error (the
- * %error marker skipped; name/message/code is the encoding's surface)
- * must deep-strict-equal the caught value's — extra ACTUAL keys are fine
- * (Node walks the expected's keys only). A mismatch fails through the
- * deep-equal report (a mismatched key implies the full comparison
- * differs, so the diff is honest); a non-object pair falls back to the
- * full deep comparison outright. */
-void scr_assert_expects_err_dyn(ScrDyn *actual, ScrDyn *expected, ScrStr *msg, bool has_msg) {
-  if (actual->kind == SCR_DYN_OBJ && expected->kind == SCR_DYN_OBJ) {
-    bool ok = true;
-    for (size_t i = 0; i < expected->v.obj.len && ok; i++) {
-      const ScrDynEntry *e = &expected->v.obj.entries[i];
-      if (e->key_len == 6 && memcmp(e->key, "%error", 6) == 0) continue;
-      ScrDyn *av = scr_dyn_obj_get(actual, e->key, e->key_len);
-      if (av == NULL || !scr_assert_dyn_deep_eq(av, e->value)) ok = false;
+/* actual[key], read through the prototype chain (+1), or NULL with an
+ * exception pending. */
+static ScrDyn *scr_assert_key_read(ScrDyn *object, const ScrStr *key) {
+  ScrDyn *key_value = scr_dyn_new_str((ScrStr *)key);
+  ScrDyn *value = scr_dyn_reflect_get(object, key_value, object);
+  scr_dyn_release(key_value);
+  return value;
+}
+
+static bool scr_assert_is_regexp(const ScrDyn *value) {
+  return value != NULL && value->kind == SCR_DYN_HANDLE && value->v.handle.tag == SCR_DYNH_REGEXP;
+}
+
+/* RegExpPrototypeExec(re, text) !== null, through the handle's own
+ * dispatch, so this unit links no regex code. False with an exception
+ * pending when exec throws. */
+static bool scr_assert_regexp_matches(ScrDyn *re, ScrDyn *text) {
+  const ScrDynHandleOps *ops = scr_dyn_handle_ops_of(re);
+  ScrDyn *match = ops && ops->invoke ? ops->invoke(re->v.handle.ptr, re, "exec", &text, 1, "exec") : NULL;
+  bool matched = match != NULL && match->kind != SCR_DYN_NULL;
+  scr_dyn_release(match);
+  return matched && !scr_exc_pending();
+}
+
+/* Node's `typeof actual[key] === 'string' && isRegExp(obj[key]) &&
+ * RegExpPrototypeExec(obj[key], actual[key]) !== null`, with its reads in
+ * its order. False with an exception pending when a read throws. */
+static bool scr_assert_regexp_key_matches(ScrDyn *actual, const ScrStr *key, ScrDyn *obj) {
+  ScrDyn *probe = scr_assert_key_read(actual, key);
+  if (probe == NULL) return false;
+  bool text = probe->kind == SCR_DYN_STR;
+  scr_dyn_release(probe);
+  if (!text) return false;
+  ScrDyn *pattern = scr_assert_key_read(obj, key);
+  if (pattern == NULL) return false;
+  bool regexp = scr_assert_is_regexp(pattern);
+  scr_dyn_release(pattern);
+  if (!regexp) return false;
+  pattern = scr_assert_key_read(obj, key);
+  if (pattern == NULL) return false;
+  ScrDyn *value = scr_assert_key_read(actual, key);
+  bool matched = value != NULL && scr_assert_is_regexp(pattern) && scr_assert_regexp_matches(pattern, value);
+  scr_dyn_release(value);
+  scr_dyn_release(pattern);
+  return matched;
+}
+
+/* Node's Comparison(obj, keys, actual) (+1): for each key in `obj`, the
+ * actual value when the key holds a RegExp that matches the actual string
+ * (only when `actual` is given), else obj[key]. NULL with an exception
+ * pending when a read throws. */
+static ScrDyn *scr_assert_comparison(ScrDyn *obj, ScrStr *const *keys, size_t count, ScrDyn *actual) {
+  ScrDyn *out = scr_dyn_new_obj();
+  for (size_t i = 0; i < count; i++) {
+    bool present = scr_dyn_in(obj, keys[i]);
+    if (scr_exc_pending()) goto failed;
+    if (!present) continue;
+    ScrDyn *value = NULL;
+    if (actual != NULL) {
+      bool matched = scr_assert_regexp_key_matches(actual, keys[i], obj);
+      if (scr_exc_pending()) goto failed;
+      if (matched) value = scr_assert_key_read(actual, keys[i]);
     }
-    if (ok) return;
+    if (value == NULL && !scr_exc_pending()) value = scr_assert_key_read(obj, keys[i]);
+    if (value == NULL) goto failed;
+    scr_dyn_obj_set(out, keys[i]->data, keys[i]->len, value);
   }
-  scr_assert_eq_dyn(actual, expected, false, true, msg, has_msg);
+  return out;
+failed:
+  scr_dyn_release(out);
+  return NULL;
+}
+
+/* Node's expectedException over an object expected (assert.throws/rejects
+ * second argument), in Node's order. The keys are a validation object's
+ * own enumerable keys, or every key of an error instance's encoding (the
+ * %error marker skipped; name/message/code is its surface, the keys Node
+ * adds for an Error), taken once before the comparison. Values are read
+ * when Node's expressions read them, each held only while it is used, so
+ * a caught object's getter that changes the validation object is seen as
+ * Node sees it.
+ *   - A string value that the expected RegExp matches passes the key.
+ *   - Otherwise the caught value must have the key, own or inherited, and
+ *     its value must deep-strict-equal the expected one
+ *     (compareExceptionKey). The first key that fails ends the comparison:
+ *     with a custom message it is thrown as it is; without one the message
+ *     is Node's deep-equal diff of two Comparison objects that read the
+ *     keys again.
+ * A validation object without keys throws ERR_INVALID_ARG_VALUE, and a
+ * primitive caught value fails with the deep-equal message over the two
+ * values. The AssertionError's actual and expected are the caught value
+ * and the expected object, and its operator names the assert function. */
+void scr_assert_expects_err_dyn(ScrDyn *actual, ScrDyn *expected, ScrStr *msg, bool has_msg,
+                                bool rejection) {
+  const char *op = rejection ? "rejects" : "throws";
+  if (expected->kind != SCR_DYN_OBJ) {
+    scr_assert_eq_dyn(actual, expected, false, true, msg, has_msg);
+    return;
+  }
+  if (actual->kind == SCR_DYN_NULL || !scr_dyn_is_object(actual)) {
+    /* A primitive caught value fails outright: Node's deep-equal
+     * AssertionError over the two values, named for the assert function. */
+    scr_assert_record(scr_dyn_retain(actual), scr_dyn_retain(expected), op);
+    if (has_msg && msg->len > 0) {
+      scr_assert_fail(scr_str_retain(msg), false);
+      return;
+    }
+    scr_assert_fail(scr_assert_dyn_diff_message(actual, expected, true, NULL, msg, has_msg, scr_assert_diff_full()),
+                    true);
+    return;
+  }
+  bool is_error = scr_dyn_obj_get(expected, "%error", 6) != NULL;
+  size_t total = scr_dyn_obj_count(expected);
+  ScrStr **keys = total > 0 ? malloc(total * sizeof *keys) : NULL;
+  if (total > 0 && keys == NULL) scr_trap("scriptc: out of memory\n");
+  size_t count = 0;
+  for (size_t i = 0; i < total; i++) {
+    ScrDynProp e = scr_dyn_obj_prop_at(expected, i);
+    if (e.key_len == 6 && memcmp(e.key, "%error", 6) == 0) continue;
+    if (!is_error && !e.enumerable) continue;
+    keys[count++] = scr_str_new(e.key, e.key_len);
+  }
+  if (count == 0 && !is_error) {
+    free(keys);
+    if (total == 0) {
+      /* Node's inspect of the object it rejects */
+      static const char text[] = "The argument 'error' may not be an empty object. Received {}";
+      scr_throw_error_msg_code(SCR_ERR_TYPE, text, sizeof text - 1, "ERR_INVALID_ARG_VALUE");
+    } else {
+      scr_dyn_arg_value_fail("error", "may not be an empty object", expected);
+    }
+    return;
+  }
+  bool failed = false;
+  for (size_t i = 0; i < count && !failed; i++) {
+    bool matched = scr_assert_regexp_key_matches(actual, keys[i], expected);
+    if (!matched && !scr_exc_pending()) {
+      /* compareExceptionKey */
+      bool present = scr_dyn_in(actual, keys[i]);
+      if (!scr_exc_pending()) {
+        ScrDyn *have = present ? scr_assert_key_read(actual, keys[i]) : NULL;
+        if (!present) {
+          failed = true;
+        } else if (have != NULL) {
+          ScrDyn *again = scr_assert_key_read(expected, keys[i]);
+          failed = again == NULL || !scr_assert_dyn_deep_eq(have, again);
+          scr_dyn_release(again);
+        }
+        scr_dyn_release(have);
+      }
+    }
+    if (scr_exc_pending()) break;
+  }
+  if (!failed || scr_exc_pending()) {
+    for (size_t i = 0; i < count; i++) scr_str_release(keys[i]);
+    free(keys);
+    return;
+  }
+  /* Node attaches the caught value and the expected object themselves,
+   * and names the assert function as the operator. */
+  if (has_msg && msg->len > 0) {
+    for (size_t i = 0; i < count; i++) scr_str_release(keys[i]);
+    free(keys);
+    scr_assert_record(scr_dyn_retain(actual), scr_dyn_retain(expected), op);
+    scr_assert_fail(scr_str_retain(msg), false);
+    return;
+  }
+  ScrDyn *have = scr_assert_comparison(actual, keys, count, NULL);
+  ScrDyn *want = have != NULL ? scr_assert_comparison(expected, keys, count, actual) : NULL;
+  for (size_t i = 0; i < count; i++) scr_str_release(keys[i]);
+  free(keys);
+  if (want == NULL) {
+    scr_dyn_release(have);
+    return;
+  }
+  scr_assert_record(scr_dyn_retain(actual), scr_dyn_retain(expected), op);
+  scr_assert_comparison_labels = true;
+  ScrStr *text = scr_assert_dyn_diff_message(have, want, true, NULL, msg, has_msg, scr_assert_diff_full());
+  scr_assert_comparison_labels = false;
+  scr_dyn_release(have);
+  scr_dyn_release(want);
+  scr_assert_fail(text, true);
 }
 
 /* assert.throws(fn) that did NOT throw / assert.rejects whose promise
@@ -2703,6 +2928,60 @@ bool scr_assert_no_error_predicate(ScrDyn *predicate, ScrDyn *actual) {
   return matched;
 }
 
+/* assert.throws/rejects with a validation function (expectedException's
+ * function branch, after its instanceof check): the function runs with a
+ * fresh object as `this` and the caught value, and any result but true
+ * fails, with Node's generated message unless the call passed one. The
+ * caught value and the function are the AssertionError's actual and
+ * expected. Borrows all. */
+void scr_assert_throws_validate(ScrDyn *actual, ScrDyn *validate, ScrStr *op, ScrStr *msg,
+                                bool has_msg) {
+  ScrDyn *receiver = scr_dyn_new_obj();
+  scr_dyn_this_push_dyn(receiver);
+  ScrDyn *result = scr_dyn_call(validate, &actual, 1, "expected");
+  scr_dyn_this_pop();
+  scr_dyn_release(receiver);
+  if (!result) return;
+  if (result->kind == SCR_DYN_BOOL && result->v.b) {
+    scr_dyn_release(result);
+    return;
+  }
+  ScrStr *message;
+  bool generated = !(has_msg && msg->len > 0);
+  if (!generated) {
+    message = scr_str_retain(msg);
+  } else {
+    ScrAssertBuf b = {0};
+    ab_cstr(&b, "The ");
+    ScrDyn *name = scr_dyn_fn_get(validate, "name", 4);
+    if (name && name->kind == SCR_DYN_STR && name->v.str->len > 0) {
+      ab_cstr(&b, "\"");
+      ab_bytes(&b, name->v.str->data, name->v.str->len);
+      ab_cstr(&b, "\" ");
+    }
+    if (name) scr_dyn_release(name);
+    ab_cstr(&b, "validation function is expected to return \"true\". Received ");
+    ScrStr *shown = scr_assert_cf_inspect(result);
+    ab_bytes(&b, shown->data, shown->len);
+    scr_str_release(shown);
+    if (scr_dyn_ref_is_error(actual)) {
+      ScrStr *text = scr_dyn_string_coerce_js(actual);
+      if (!text) {
+        scr_dyn_release(result);
+        scr_str_release(ab_take(&b));
+        return;
+      }
+      ab_cstr(&b, "\n\nCaught error:\n\n");
+      ab_bytes(&b, text->data, text->len);
+      scr_str_release(text);
+    }
+    message = ab_take(&b);
+  }
+  scr_dyn_release(result);
+  scr_assert_record_dyn(actual, validate, op);
+  scr_assert_fail(message, generated);
+}
+
 /* ── assert.ifError ───────────────────────────────────────────────────
  * Node throws for ANY value but null/undefined (falsy included); the
  * frontend routes null/undefined to a no-op and everything else here.
@@ -2878,4 +3157,226 @@ ScrError *scr_assert_error_new(ScrDyn *options) {
   e->name_present = true;
   scr_assert_attach_values(e, generated, actual, expected, op, diff);
   return e;
+}
+
+/* ── assert functions as values ──────────────────────────────────────────
+ * `assert.fail` stored or passed as a function (`emitter.on("x",
+ * assert.fail)`): one function per method, which takes its arguments as
+ * untyped values and asserts as the method does. */
+
+/* Node's message argument: absent or null/undefined (a generated message),
+ * a string, an Error (thrown when the assertion fails), or another value
+ * (String(value)). The value is registered as scr_assert_fail reads it; the
+ * caller clears it after the assertion. +1 into *msg. */
+static void scr_av_message(ScrDyn *const *args, size_t argc, size_t i, ScrStr **msg, bool *has) {
+  const ScrDyn *m = i < argc ? args[i] : NULL;
+  if (!m || m->kind == SCR_DYN_UNDEF || m->kind == SCR_DYN_NULL) {
+    *msg = scr_str_new("", 0);
+    *has = false;
+    return;
+  }
+  *has = true;
+  if (m->kind == SCR_DYN_STR) {
+    *msg = scr_str_retain(m->v.str);
+    return;
+  }
+  bool error = scr_dyn_ref_is_error(m) ||
+               (m->kind == SCR_DYN_OBJ && scr_dyn_obj_get(m, "%error", 6) != NULL);
+  scr_assert_message_value((ScrDyn *)m, error);
+  *msg = scr_str_new(SCR_ASSERT_VALUE_MESSAGE, sizeof SCR_ASSERT_VALUE_MESSAGE - 1);
+}
+
+static const ScrDyn *scr_av_arg(ScrDyn *const *args, size_t argc, size_t i) {
+  return i < argc ? args[i] : scr_dyn_undefined();
+}
+
+static ScrDyn *scr_av_done(ScrStr *msg) {
+  scr_str_release(msg);
+  scr_assert_message_clear();
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+/* assert(value, message) and assert.ok: Node's generated message quotes
+ * the call's source, which a function value has no fixed site for; the
+ * message here is AssertionError's own `value == true`. */
+static ScrDyn *scr_av_ok(ScrClosure *c, ScrDyn *const *args, size_t argc) {
+  (void)c;
+  const ScrDyn *value = scr_av_arg(args, argc, 0);
+  if (scr_dyn_truthy(value)) return scr_dyn_retain(scr_dyn_undefined());
+  scr_assert_record(scr_dyn_retain((ScrDyn *)value), scr_dyn_new_bool(true), "==");
+  if (argc == 0) {
+    static const char text[] = "No value argument passed to `assert.ok()`";
+    scr_assert_fail(scr_str_new(text, sizeof text - 1), true);
+    return NULL;
+  }
+  ScrStr *msg;
+  bool has;
+  scr_av_message(args, argc, 1, &msg, &has);
+  if (has) {
+    scr_assert_fail(scr_str_retain(msg), false);
+    return scr_av_done(msg);
+  }
+  ScrStr *shown = scr_assert_cf_inspect(value);
+  ScrAssertBuf b = {0};
+  ab_str(&b, shown);
+  ab_cstr(&b, " == true");
+  scr_str_release(shown);
+  scr_assert_fail(ab_take(&b), true);
+  return scr_av_done(msg);
+}
+
+/* assert.fail(message): "Failed" without a message. */
+static ScrDyn *scr_av_fail(ScrClosure *c, ScrDyn *const *args, size_t argc) {
+  (void)c;
+  if (argc > 1) {
+    static const char text[] = "assert.fail with more than one argument through a function value is not supported yet";
+    scr_throw_error_msg_code(SCR_ERR_ERROR, text, sizeof text - 1, "SC2020");
+    return NULL;
+  }
+  ScrStr *msg;
+  bool has;
+  scr_av_message(args, argc, 0, &msg, &has);
+  scr_assert_record(scr_dyn_retain(scr_dyn_undefined()), scr_dyn_retain(scr_dyn_undefined()), "fail");
+  if (has) scr_assert_fail(scr_str_retain(msg), false);
+  else scr_assert_fail(scr_str_new("Failed", 6), true);
+  return scr_av_done(msg);
+}
+
+/* The comparison methods take both operands: Node's ERR_MISSING_ARGS
+ * TypeError otherwise. False with it pending. */
+static bool scr_av_operands(size_t argc) {
+  if (argc >= 2) return true;
+  static const char text[] = "The \"actual\" and \"expected\" arguments must be specified";
+  scr_throw_error_msg_code(SCR_ERR_TYPE, text, sizeof text - 1, "ERR_MISSING_ARGS");
+  return false;
+}
+
+/* equal / notEqual: Node's loose comparison, NaN equal to NaN. */
+static ScrDyn *scr_av_loose(ScrDyn *const *args, size_t argc, bool negated) {
+  if (!scr_av_operands(argc)) return NULL;
+  const ScrDyn *a = scr_av_arg(args, argc, 0), *b = scr_av_arg(args, argc, 1);
+  bool nan = a->kind == SCR_DYN_NUM && b->kind == SCR_DYN_NUM && isnan(a->v.num) && isnan(b->v.num);
+  bool equal = nan || scr_dyn_abstract_eq(a, b);
+  if (scr_exc_pending()) return NULL;
+  if (negated ? !equal : equal) return scr_dyn_retain(scr_dyn_undefined());
+  ScrStr *msg;
+  bool has;
+  scr_av_message(args, argc, 2, &msg, &has);
+  scr_assert_record(scr_dyn_retain((ScrDyn *)a), scr_dyn_retain((ScrDyn *)b), negated ? "!=" : "==");
+  ScrStr *ia = scr_assert_cf_inspect(a), *ib = scr_assert_cf_inspect(b);
+  scr_assert_loose_result(equal, negated, ia, ib, msg, has);
+  scr_str_release(ia);
+  scr_str_release(ib);
+  return scr_av_done(msg);
+}
+
+static ScrDyn *scr_av_equal(ScrClosure *c, ScrDyn *const *a, size_t n) {
+  (void)c;
+  return scr_av_loose(a, n, false);
+}
+static ScrDyn *scr_av_not_equal(ScrClosure *c, ScrDyn *const *a, size_t n) {
+  (void)c;
+  return scr_av_loose(a, n, true);
+}
+
+/* The strict and deep comparisons, through the untyped assert paths. */
+enum { SCR_AV_STRICT, SCR_AV_DEEP_STRICT, SCR_AV_DEEP, SCR_AV_PARTIAL };
+
+static ScrDyn *scr_av_compare(ScrDyn *const *args, size_t argc, int form, bool negated) {
+  if (!scr_av_operands(argc)) return NULL;
+  ScrDyn *a = (ScrDyn *)scr_av_arg(args, argc, 0), *b = (ScrDyn *)scr_av_arg(args, argc, 1);
+  ScrStr *msg;
+  bool has;
+  scr_av_message(args, argc, 2, &msg, &has);
+  if (form == SCR_AV_DEEP) scr_assert_loose_deep_dyn(a, b, negated, msg, has);
+  else if (form == SCR_AV_PARTIAL) scr_assert_partial_deep_dyn(a, b, msg, has);
+  else scr_assert_eq_dyn(a, b, negated, form == SCR_AV_DEEP_STRICT, msg, has);
+  return scr_av_done(msg);
+}
+
+static ScrDyn *scr_av_strict_equal(ScrClosure *c, ScrDyn *const *a, size_t n) {
+  (void)c;
+  return scr_av_compare(a, n, SCR_AV_STRICT, false);
+}
+static ScrDyn *scr_av_not_strict_equal(ScrClosure *c, ScrDyn *const *a, size_t n) {
+  (void)c;
+  return scr_av_compare(a, n, SCR_AV_STRICT, true);
+}
+static ScrDyn *scr_av_deep_strict_equal(ScrClosure *c, ScrDyn *const *a, size_t n) {
+  (void)c;
+  return scr_av_compare(a, n, SCR_AV_DEEP_STRICT, false);
+}
+static ScrDyn *scr_av_not_deep_strict_equal(ScrClosure *c, ScrDyn *const *a, size_t n) {
+  (void)c;
+  return scr_av_compare(a, n, SCR_AV_DEEP_STRICT, true);
+}
+static ScrDyn *scr_av_deep_equal(ScrClosure *c, ScrDyn *const *a, size_t n) {
+  (void)c;
+  return scr_av_compare(a, n, SCR_AV_DEEP, false);
+}
+static ScrDyn *scr_av_not_deep_equal(ScrClosure *c, ScrDyn *const *a, size_t n) {
+  (void)c;
+  return scr_av_compare(a, n, SCR_AV_DEEP, true);
+}
+static ScrDyn *scr_av_partial_deep_strict_equal(ScrClosure *c, ScrDyn *const *a, size_t n) {
+  (void)c;
+  return scr_av_compare(a, n, SCR_AV_PARTIAL, false);
+}
+
+static ScrDyn *scr_av_if_error(ScrClosure *c, ScrDyn *const *args, size_t argc) {
+  (void)c;
+  scr_assert_iferror_dyn(scr_av_arg(args, argc, 0));
+  return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
+}
+
+static const struct {
+  const char *name;
+  ScrDynThunk thunk;
+  uint32_t arity;
+} scr_av_methods[] = {
+    {"ok", &scr_av_ok, 0},
+    {"fail", &scr_av_fail, 1},
+    {"equal", &scr_av_equal, 3},
+    {"notEqual", &scr_av_not_equal, 3},
+    {"strictEqual", &scr_av_strict_equal, 3},
+    {"notStrictEqual", &scr_av_not_strict_equal, 3},
+    {"deepEqual", &scr_av_deep_equal, 3},
+    {"notDeepEqual", &scr_av_not_deep_equal, 3},
+    {"deepStrictEqual", &scr_av_deep_strict_equal, 3},
+    {"notDeepStrictEqual", &scr_av_not_deep_strict_equal, 3},
+    {"partialDeepStrictEqual", &scr_av_partial_deep_strict_equal, 3},
+    {"ifError", &scr_av_if_error, 1},
+};
+#define SCR_AV_COUNT (sizeof scr_av_methods / sizeof scr_av_methods[0])
+static SCR_TL ScrDyn *scr_av_values[SCR_AV_COUNT];
+static SCR_TL bool scr_av_registered;
+
+static void scr_av_cleanup(void) {
+  for (size_t i = 0; i < SCR_AV_COUNT; i++) {
+    scr_dyn_release(scr_av_values[i]);
+    scr_av_values[i] = NULL;
+  }
+  scr_av_registered = false;
+}
+
+/* The function value of an assert method by its canonical name (the frontend
+ * maps assert/strict's aliases), +1; one value per method, so stored copies
+ * compare equal. */
+ScrDyn *scr_assert_method_value(ScrStr *name) {
+  for (size_t i = 0; i < SCR_AV_COUNT; i++) {
+    if (strlen(scr_av_methods[i].name) != name->len ||
+        memcmp(scr_av_methods[i].name, name->data, name->len) != 0)
+      continue;
+    if (!scr_av_values[i]) {
+      if (!scr_av_registered) {
+        scr_av_registered = true;
+        scr_atexit(scr_av_cleanup);
+      }
+      scr_av_values[i] = scr_dyn_new_func(scr_closure_new(NULL, 0), scr_av_methods[i].thunk,
+                                          scr_av_methods[i].arity, "native:assert",
+                                          scr_av_methods[i].name);
+    }
+    return scr_dyn_retain(scr_av_values[i]);
+  }
+  return scr_dyn_retain(scr_dyn_undefined());
 }

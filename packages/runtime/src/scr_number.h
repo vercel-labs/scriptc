@@ -111,6 +111,23 @@ double scr_date_now(void); /* integer ms since epoch, like Node */
 extern SCR_TL const double *scr_date_mock_now;
 double scr_date_new_ms(double ms); /* TimeClip (NaN when invalid) */
 double scr_date_get_time(double ms);
+/* Date.prototype's setters (setMilliseconds ... setFullYear and their UTC
+ * forms) over a time value: the new time value for `argc` arguments
+ * `a`..`d` (scr_lib.c). `setter` is an SCR_DATE_SET_* code; it and `argc`
+ * are whole numbers passed as doubles, as the compiler's lib calls pass
+ * numbers. */
+enum {
+  SCR_DATE_SET_MILLISECONDS = 0,
+  SCR_DATE_SET_SECONDS = 1,
+  SCR_DATE_SET_MINUTES = 2,
+  SCR_DATE_SET_HOURS = 3,
+  SCR_DATE_SET_DATE = 4,
+  SCR_DATE_SET_MONTH = 5,
+  SCR_DATE_SET_FULL_YEAR = 6,
+  SCR_DATE_SET_UTC = 8,
+};
+double scr_date_set_fields(double t, double setter, double argc,
+                           double a, double b, double c, double d);
 /* A Date object: the TimeClip'd time value in milliseconds (NaN for an
  * invalid date). Dates are immutable; their identity is the pointer.
  * Retain/release follow the runtime's RC conventions (SIZE_MAX immortal). */

@@ -52,7 +52,7 @@ that may be newer than the installed declarations). Every item is classified:
 The selected adjacent interface families excluded from the census carry
 reasons too. A Node upgrade that adds/removes a public member or dictionary key
 fails the focused suite until that member is classified. The static and unsupported rows project into the shipped surface manifest;
-filter `NODE24_FETCH_COMPAT_PROFILE.inventory.entries` by `status`/`owner` for
+filter `node24FetchCompatProfile().inventory.entries` by `status`/`owner` for
 the next cohesive implementation queue.
 
 When Node changes, update `.node-version` and the profile's Node/Undici tuple

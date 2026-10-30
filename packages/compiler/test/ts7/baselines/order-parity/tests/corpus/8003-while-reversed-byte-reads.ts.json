@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8003-while-reversed-byte-reads.ts"
+ ],
+ "diags": []
+}

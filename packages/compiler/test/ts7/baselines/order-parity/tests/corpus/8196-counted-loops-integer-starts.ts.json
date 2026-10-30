@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8196-counted-loops-integer-starts.ts"
+ ],
+ "diags": []
+}

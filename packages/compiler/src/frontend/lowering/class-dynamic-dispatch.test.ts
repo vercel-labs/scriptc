@@ -41,6 +41,7 @@ function context() {
     protocolDispatches: new Map(),
     classMethodValueSelections: new Map(),
     isSubclassOf: () => false,
+    nodeAtLoc: () => null,
   } as unknown as Lowerer;
   const boxed = fn("box", [
     statement({

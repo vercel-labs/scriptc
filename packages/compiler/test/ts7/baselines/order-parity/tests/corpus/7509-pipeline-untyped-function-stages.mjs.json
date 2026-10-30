@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7509-pipeline-untyped-function-stages.mjs"
+ ],
+ "diags": []
+}

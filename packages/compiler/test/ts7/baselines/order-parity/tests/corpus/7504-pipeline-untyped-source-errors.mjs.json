@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7504-pipeline-untyped-source-errors.mjs"
+ ],
+ "diags": []
+}

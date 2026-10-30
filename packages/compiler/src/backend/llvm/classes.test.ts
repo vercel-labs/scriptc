@@ -87,9 +87,13 @@ test("teardowns of types with children of their own type free their blocks as on
     classes: [
       {
         name: "Linked",
+        // The array field keeps the recursive teardown: a type whose every
+        // reference field holds its own type tears down in one loop
+        // (iterative-teardown.test.ts).
         fields: [
           { name: "next", type: linked },
           { name: "other", type: linked },
+          { name: "tags", type: { kind: "array", elem: { kind: "string" } } },
         ],
         methods: [],
         loc,

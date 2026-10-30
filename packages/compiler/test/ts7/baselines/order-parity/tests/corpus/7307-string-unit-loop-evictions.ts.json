@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7307-string-unit-loop-evictions.ts"
+ ],
+ "diags": []
+}

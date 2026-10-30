@@ -128,8 +128,10 @@ bool scr_pub_mark(ScrPub *ctx, void *obj, bool cyc, int kind) {
   size_t *rc = obj;
   if (SCR_RC_PUBLISHED(obj) || ctx->refusal) return false;
   bool compact = (kind & SCR_PUB_COMPACT) != 0;
-  /* Both log the low 32 bits: a count, or a compact header word. */
-  bool class_id = compact || (kind & SCR_PUB_CLASS_ID) != 0;
+  /* Both log the low 32 bits: a count, or a compact header word. An
+   * object with a layout id in its rc word (scr_rc_layout_id) keeps it, as
+   * a class instance keeps its class id. */
+  bool class_id = compact || (kind & SCR_PUB_CLASS_ID) != 0 || scr_rc_layout_id(obj) != 0;
   kind &= ~(SCR_PUB_CLASS_ID | SCR_PUB_COMPACT);
   if (ctx->logged == ctx->log_cap)
     ctx->log = scr_pub_grow(ctx->log, &ctx->log_cap, sizeof *ctx->log, ctx->log_inline);
@@ -276,8 +278,8 @@ static bool scr_pub_dyn_ok(const ScrDyn *d, const char **why) {
     *why = "Cannot publish an Object object";
     return false;
   }
-  for (size_t i = 0; i < d->v.obj.len; i++)
-    if (d->v.obj.entries[i].accessor) {
+  for (size_t i = 0; i < scr_dyn_obj_count(d); i++)
+    if (scr_dyn_obj_prop_at(d, i).accessor) {
       *why = "Cannot publish an accessor property";
       return false;
     }
@@ -323,9 +325,9 @@ void scr_pub_dyn_fn(void *v, ScrPub *ctx) {
     case SCR_DYN_ARR:
     case SCR_DYN_OBJ: {
       if (!scr_pub_dyn_ok(d, &why)) break;
-      size_t n = d->kind == SCR_DYN_ARR ? d->v.arr.len : d->v.obj.len;
+      size_t n = d->kind == SCR_DYN_ARR ? d->v.arr.len : scr_dyn_obj_count(d);
       for (size_t i = 0; i < n; i++) {
-        ScrDyn *child = d->kind == SCR_DYN_ARR ? d->v.arr.items[i] : d->v.obj.entries[i].value;
+        ScrDyn *child = d->kind == SCR_DYN_ARR ? d->v.arr.items[i] : scr_dyn_obj_value_at(d, i);
         if (child && child->rc != SIZE_MAX) SCR_PUB_ADD((uintptr_t)child);
       }
       break;
@@ -479,9 +481,9 @@ void scr_publish(void *root, ScrPubFn fn) {
       void *obj = scr_pub_log_obj(&ctx.log[i]);
       if (ctx.log[i].obj & SCR_PUB_DYN) {
         ScrDyn *d = obj;
-        /* Other threads share the object; its shape belongs to this one
-         * (scr_js.h). */
-        if (d->kind == SCR_DYN_OBJ) d->v.obj.shape = NULL;
+        /* Other threads share the object; layouts belong to this thread
+         * (scr_dyn.h), so it moves to dictionary mode. */
+        if (d->kind == SCR_DYN_OBJ) scr_dyn_to_dictionary(d);
         scr_dyn_release(scr_dyn_freeze_data(d));
       }
 #ifdef SCR_RC_AUDIT

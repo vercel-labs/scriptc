@@ -745,9 +745,8 @@ double scr_os_cpus_field(double i, double field) {
 
 static void scr_os_constant(ScrDyn *o, const char *name, double value) {
   scr_dyn_obj_set(o, name, strlen(name), scr_dyn_new_num(value));
-  ScrDynEntry *entry = &o->v.obj.entries[o->v.obj.len - 1];
-  entry->writable = false;
-  entry->configurable = false;
+  size_t last = scr_dyn_obj_count(o) - 1;
+  scr_dyn_obj_set_attrs_at(o, last, false, scr_dyn_obj_prop_at(o, last).enumerable, false);
 }
 #define SCR_OS_CONSTANT(o, name) scr_os_constant((o), #name, (double)(name))
 
@@ -1514,10 +1513,10 @@ ScrDyn *scr_node_constants(const ScrDyn *crypto_table) {
   scr_os_signal_constants(o);
   scr_fs_constants(o);
   if (crypto && crypto->kind == SCR_DYN_OBJ) {
-    for (size_t i = 0; i < crypto->v.obj.len; i++) {
-      const ScrDynEntry *entry = &crypto->v.obj.entries[i];
-      if (entry->accessor || !entry->value) continue;
-      scr_dyn_obj_set(o, entry->key, entry->key_len, scr_dyn_retain(entry->value));
+    for (size_t i = 0; i < scr_dyn_obj_count(crypto); i++) {
+      ScrDynProp entry = scr_dyn_obj_prop_at(crypto, i);
+      if (entry.accessor || !entry.value) continue;
+      scr_dyn_obj_set(o, entry.key, entry.key_len, scr_dyn_retain(entry.value));
     }
   }
   scr_dyn_release(crypto);
@@ -1700,4 +1699,36 @@ ScrDyn *scr_fs_constants_object(void) {
   scr_fs_constants_value = o;
   scr_atexit(scr_fs_constants_clear);
   return scr_dyn_retain(o);
+}
+
+/* util.convertProcessSignalToExitCode(signalCode): 128 plus the number of
+ * the os.constants.signals entry, and validateOneOf's
+ * ERR_INVALID_ARG_VALUE, listing every name, for anything else. NaN with
+ * the exception pending. */
+double scr_util_signal_exit_code(const ScrDyn *code) {
+  ScrDyn *signals = scr_dyn_new_obj();
+  scr_os_signal_constants(signals);
+  const ScrDyn *number =
+      code->kind == SCR_DYN_STR ? scr_dyn_obj_get(signals, code->v.str->data, code->v.str->len) : NULL;
+  double result = NAN;
+  if (number && number->kind == SCR_DYN_NUM) {
+    result = 128 + number->v.num;
+  } else {
+    ScrJsonBuf reason;
+    scr_jb_init(&reason);
+    scr_jb_puts(&reason, "must be one of: ");
+    for (size_t i = 0; i < scr_dyn_obj_count(signals); i++) {
+      if (i > 0) scr_jb_puts(&reason, ", ");
+      scr_jb_putc(&reason, '\'');
+      size_t key_len;
+      const char *key = scr_dyn_obj_key_at(signals, i, &key_len);
+      scr_jb_write(&reason, key, key_len);
+      scr_jb_putc(&reason, '\'');
+    }
+    ScrStr *text = scr_jb_finish(&reason);
+    scr_dyn_arg_value_fail("signalCode", text->data, code);
+    scr_str_release(text);
+  }
+  scr_dyn_release(signals);
+  return result;
 }

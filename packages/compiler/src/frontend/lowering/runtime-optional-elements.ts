@@ -16,6 +16,9 @@ export interface ElementStateHost {
   elementAdmitsUndefined(key: string): boolean;
   /** The value stored by `node` can be `undefined` at runtime. */
   mayBeUndefined(node: ts.Expression): boolean;
+  /** Iterating `node`, an iterable other than an array (a Set, a Map's
+   * values, a generator), can yield `undefined`. */
+  iterationMayYieldUndefined?(node: ts.Expression): boolean;
   /** A callback argument can return `undefined` at runtime. */
   callbackReturnsUndefined(node: ts.Expression): boolean;
   /** The value may be a plain array-like object, whose missing indices
@@ -28,6 +31,9 @@ export interface ElementStateHost {
   /** Element keys of the rest parameter that the spread arguments of
    * `call` fill: `[]` when the callee has none, null when it is unknown. */
   restKeys(call: ts.CallExpression | ts.NewExpression): readonly string[] | null;
+  /** The argument index where the callee's rest parameter starts, or null
+   * when the callee has none or is unknown. */
+  restStart?(call: ts.CallExpression | ts.NewExpression): number | null;
   /** Record that iterating `node`'s binding can observe `undefined`;
    * `known` when the iterated array's own facts (not only those shared by
    * its element ABI) say so. Returns true when the binding's record grew. */
@@ -37,8 +43,17 @@ export interface ElementStateHost {
   ownerOf(node: ts.Expression): ts.Symbol | null;
   /** The owning slot a newly built array is stored into. */
   allocationOwner(node: ts.Expression): ts.Symbol | null;
+  /** `node` is a dynamic value (`any`, `unknown`, `unknown[]`): when it is
+   * a live view of a native array, a store through it writes that array's
+   * storage. */
+  isDynamicArray(node: ts.Expression): boolean;
+  /** Element keys of the native arrays a value converted to a dynamic type
+   * can reach, as live views ("*" for any array). */
+  nativeViewKeys(): ReadonlySet<string>;
   /** Debug provenance for a new fact. */
-  note: ((fact: "undefined" | "holes", key: string, site: ts.Node | undefined) => void) | null;
+  note:
+    | ((fact: "undefined" | "holes" | "foreign", key: string, site: ts.Node | undefined) => void)
+    | null;
   /** The scan read, or added to, the facts of an element key, of an owning
    * slot, or of every array (ANY_ARRAY), for dependency tracking
    * (SiteDependencies). */
@@ -48,6 +63,16 @@ export interface ElementStateHost {
 
 /** The fact name of the facts shared by every array. */
 const ANY_ARRAY = "*";
+/** The fact name of holes stored through dynamic views. */
+const VIEW_HOLES = "%view";
+/** The fact name of values stored through dynamic views. */
+const VIEW_VALUES = "%view-values";
+
+/** Element keys whose arrays store a value written through a dynamic view
+ * that the element type cannot hold, as a foreign element: `number[]` and
+ * `string[]`. Arrays of other element types reject such a write with the
+ * checked conversion's TypeError. */
+const FOREIGN_ELEMENT_KEYS: ReadonlySet<string> = new Set(["f64", "string"]);
 
 /** What an array value can contain besides present values. */
 interface Contents {
@@ -81,6 +106,13 @@ export class ArrayElementStates {
    * whose element ABI is decided per generic instantiation. */
   private anyUndefined = false;
   private anyHoley = false;
+  /** A store through a dynamic value can leave holes; they land in every
+   * native array such a value views. */
+  private viewHoles = false;
+  /** A store through a dynamic value can write any value, which the
+   * viewed native arrays then hold as undefined or foreign elements. */
+  private viewValues = false;
+  private viewKeys: ReadonlySet<string> | null = null;
   /** Facts of arrays owned by one storage slot. */
   private readonly undefinedOwners = new Set<ts.Symbol>();
   private readonly holeyOwners = new Set<ts.Symbol>();
@@ -330,12 +362,63 @@ export class ArrayElementStates {
     this.host.read?.(ANY_ARRAY);
     if (keys === null) return null;
     for (const key of keys) this.host.read?.(key);
+    this.host.read?.(VIEW_HOLES);
+    this.host.read?.(VIEW_VALUES);
     return {
       undefined:
         this.anyUndefined ||
-        keys.some((key) => this.undefinedKeys.has(key) || this.host.elementAdmitsUndefined(key)),
-      holes: this.anyHoley || keys.some((key) => this.holeyKeys.has(key)),
+        keys.some(
+          (key) =>
+            this.undefinedKeys.has(key) ||
+            this.host.elementAdmitsUndefined(key) ||
+            this.viewedValues(key),
+        ),
+      holes: this.anyHoley || keys.some((key) => this.holeyKeys.has(key) || this.viewed(key)),
     };
+  }
+
+  /** Holes stored through a dynamic view can be in arrays of this key. */
+  private viewed(key: string): boolean {
+    return this.viewHoles && this.isViewed(key);
+  }
+
+  /** Values of any type stored through a dynamic view can be in arrays of
+   * this key. */
+  private viewedValues(key: string): boolean {
+    return this.viewValues && FOREIGN_ELEMENT_KEYS.has(key) && this.isViewed(key);
+  }
+
+  private isViewed(key: string): boolean {
+    this.viewKeys ??= this.host.nativeViewKeys();
+    return this.viewKeys.has(key) || this.viewKeys.has(ANY_ARRAY);
+  }
+
+  /** Element keys whose arrays can hold elements outside their element
+   * type, stored through dynamic views (of FOREIGN_ELEMENT_KEYS). Final
+   * once the fixed point is reached. */
+  foreignKeys(): ReadonlySet<string> {
+    if (!this.viewValues) return new Set();
+    return new Set([...FOREIGN_ELEMENT_KEYS].filter((key) => this.isViewed(key)));
+  }
+
+  /** A store through `receiver`, which has no native element key, can
+   * write a value of any type into a viewed native array. */
+  private addViewValues(receiver: ts.Expression): boolean {
+    if (this.viewValues || !this.host.isDynamicArray(receiver)) return false;
+    this.viewValues = true;
+    this.host.changed?.(VIEW_VALUES);
+    this.host.note?.("foreign", VIEW_VALUES, this.site);
+    return true;
+  }
+
+  /** A store through `receiver`, which has no native element key, can
+   * leave holes. Only a dynamic value can be a view of a native array. */
+  private addViewHoles(receiver: ts.Expression): boolean {
+    if (this.viewHoles || !this.host.isDynamicArray(receiver)) return false;
+    this.viewHoles = true;
+    this.host.changed?.(VIEW_HOLES);
+    this.host.note?.("holes", VIEW_HOLES, this.site);
+    return true;
   }
 
   /** Reading every index of `node` (a spread, an iteration, `Array.from`)
@@ -353,7 +436,11 @@ export class ArrayElementStates {
 
   /** One stored value, or the elements a spread copies. */
   private valueMayBeUndefined(value: ts.Expression): boolean {
-    if (ts.isSpreadElement(value)) return this.mayYieldUndefined(value.expression);
+    if (ts.isSpreadElement(value))
+      return (
+        this.mayYieldUndefined(value.expression) ||
+        (this.host.iterationMayYieldUndefined?.(value.expression) ?? false)
+      );
     return this.host.mayBeUndefined(value);
   }
 
@@ -427,7 +514,11 @@ export class ArrayElementStates {
   /** A store through `receiver` can leave holes. */
   private addHolesTo(receiver: ts.Expression): boolean {
     const owner = this.host.ownerOf(receiver);
-    if (owner === null) return this.addHoles(this.host.arrayKeys(receiver));
+    if (owner === null) {
+      const keys = this.host.arrayKeys(receiver);
+      if (keys !== null && keys.length === 0) return this.addViewHoles(receiver);
+      return this.addHoles(keys);
+    }
     if (this.holeyOwners.has(owner)) return false;
     this.holeyOwners.add(owner);
     this.host.changed?.(owner);
@@ -487,10 +578,18 @@ export class ArrayElementStates {
         op === ts.SyntaxKind.QuestionQuestionEqualsToken ||
         op === ts.SyntaxKind.BarBarEqualsToken ||
         op === ts.SyntaxKind.AmpersandAmpersandEqualsToken;
+      const keys = this.host.arrayKeys(target.expression);
+      if (keys !== null && keys.length === 0) {
+        // Through a dynamic value: any element write can store a value the
+        // viewed native array's element type does not hold.
+        if (namesProperty(target)) return false;
+        let changed = false;
+        if (holes && this.addViewHoles(target.expression)) changed = true;
+        if (this.addViewValues(target.expression)) changed = true;
+        return changed;
+      }
       const undefinedValue = storesValue && this.host.mayBeUndefined(node.right);
       if (!holes && !undefinedValue) return false;
-      const keys = this.host.arrayKeys(target.expression);
-      if (keys !== null && keys.length === 0) return false;
       let changed = false;
       if (holes && this.addHolesTo(target.expression)) changed = true;
       if (undefinedValue && this.addUndefinedTo(target.expression)) changed = true;
@@ -501,8 +600,6 @@ export class ArrayElementStates {
       target.name.text === "length" &&
       !isShrinkingLength(node, target)
     ) {
-      const keys = this.host.arrayKeys(target.expression);
-      if (keys !== null && keys.length === 0) return false;
       return this.addHolesTo(target.expression);
     }
     return false;
@@ -511,14 +608,26 @@ export class ArrayElementStates {
   private scanCall(node: ts.CallExpression | ts.NewExpression): boolean {
     let changed = false;
     const args = node.arguments?.nodes ?? [];
-    // Spreading a sparse array into a rest parameter fills the holes.
+    // Spreading a sparse array, or a tuple with undefined elements, into a
+    // rest parameter fills the holes.
     if (args.some((arg) => ts.isSpreadElement(arg))) {
       for (const arg of args) {
-        if (!ts.isSpreadElement(arg) || !this.mayYieldUndefined(arg.expression)) continue;
+        if (!ts.isSpreadElement(arg) || !this.valueMayBeUndefined(arg)) continue;
         const rest = this.host.restKeys(node) ?? this.host.arrayKeys(arg.expression);
         if (this.addUndefined(rest)) changed = true;
       }
     }
+    // An argument in a rest position that may be undefined is a present
+    // undefined element of the rest array.
+    const restStart = this.host.restStart?.(node) ?? null;
+    if (restStart !== null)
+      for (const arg of args.slice(restStart))
+        if (
+          !ts.isSpreadElement(arg) &&
+          this.host.mayBeUndefined(arg) &&
+          this.addUndefined(this.host.restKeys(node))
+        )
+          changed = true;
     if (this.record(node)) changed = true;
     const callee = peel(node.expression);
     if (!ts.isPropertyAccessExpression(callee)) return changed;
@@ -541,7 +650,14 @@ export class ArrayElementStates {
         return changed;
     }
     const receiver = this.host.arrayKeys(callee.expression);
-    if (receiver !== null && receiver.length === 0) return changed;
+    if (receiver !== null && receiver.length === 0) {
+      if (
+        (stored.length > 0 || callee.name.text === "fill") &&
+        this.addViewValues(callee.expression)
+      )
+        changed = true;
+      return changed;
+    }
     for (const value of stored)
       if (this.valueMayBeUndefined(value) && this.addUndefinedTo(callee.expression)) changed = true;
     return changed;
@@ -574,10 +690,17 @@ export class ArrayElementStates {
         ));
     if (!reflective) return false;
     let changed = false;
-    for (const arg of args) {
+    // The written object: `Reflect.apply`'s receiver argument, otherwise
+    // the first argument.
+    const written = this.host.isGlobal(owner, "Reflect") && method === "apply" ? 1 : 0;
+    for (const [index, arg] of args.entries()) {
       const target = ts.isSpreadElement(arg) ? arg.expression : arg;
       const keys = this.host.arrayKeys(target);
-      if (keys !== null && keys.length === 0) continue;
+      if (keys !== null && keys.length === 0) {
+        if (index === written && this.addViewHoles(target)) changed = true;
+        if (index === written && this.addViewValues(target)) changed = true;
+        continue;
+      }
       if (this.addUndefinedTo(target)) changed = true;
       if (this.addHolesTo(target)) changed = true;
     }
@@ -759,6 +882,14 @@ function isAppendIndex(target: ts.ElementAccessExpression): boolean {
     index.name.text === "length" &&
     sameReference(index.expression, target.expression)
   );
+}
+
+/** `o["name"]`: a string literal key that is not an array index writes a
+ * named property, never an element. */
+function namesProperty(target: ts.ElementAccessExpression): boolean {
+  const key = peel(target.argumentExpression);
+  if (!ts.isStringLiteral(key) && !ts.isNoSubstitutionTemplateLiteral(key)) return false;
+  return !/^(0|[1-9][0-9]*)$/.test(key.text) || Number(key.text) >= 2 ** 32 - 1;
 }
 
 /** `xs.length = 0`, `xs.length = xs.length - k` and `xs.length -= k`

@@ -3,8 +3,10 @@ import { InternalCompilerError } from "../../errors.js";
 import { dynUndefinedExpr, helperLoc, varRef } from "../../ir/build.js";
 import {
   BOOL,
+  DYN,
   F64,
   type IrExpr,
+  type IrLocal,
   type IrStmt,
   type IrType,
   isIntegerBytesElem,
@@ -58,7 +60,33 @@ export function arrayNumberRead(arr: IrExpr, index: IrExpr, loc: SrcLoc): IrExpr
   };
 }
 
-/** Read one stabilized receiver/index pair. Both a hole and present undefined yield undefined. */
+/** A foreign element read into a typed result: it never fits, so the read
+ * throws the checked conversion's TypeError (array.foreignThrow). */
+export function foreignElementThrow(
+  lowerer: Lowerer,
+  arr: IrExpr,
+  index: IrExpr,
+  type: IrType,
+  loc: SrcLoc,
+): IrExpr {
+  return {
+    kind: "libCall",
+    fn: "array.foreignThrow",
+    args: [arr, index, { kind: "strLit", value: lowerer.fmt(type), type: STRING, loc }],
+    type,
+    loc,
+  };
+}
+
+/** Arrays of this element type can hold elements outside it, stored
+ * through dynamic views (Lowerer.foreignElementKeys). */
+export function elementMayBeForeign(lowerer: Lowerer, elem: IrType): boolean {
+  const keys = lowerer.foreignElementKeys;
+  return keys.size > 0 && elem.kind !== "dyn" && (keys.has("*") || keys.has(typeKey(elem)));
+}
+
+/** Read one stabilized receiver/index pair. Both a hole and present undefined yield undefined;
+ * a foreign element (state 3) takes the checked conversion into the typed result. */
 export function arrayValueRead(
   lowerer: Lowerer,
   arr: IrExpr,
@@ -68,8 +96,25 @@ export function arrayValueRead(
 ): IrExpr {
   const type = arrayValueType(lowerer, elem);
   const read: IrExpr = { kind: "arrayGet", arr, index, type: elem, loc };
-  const missing: IrExpr =
+  let missing: IrExpr =
     type.kind === "dyn" ? dynUndefinedExpr(loc) : lowerer.wrappedUndefined(type, loc)!;
+  if (elementMayBeForeign(lowerer, elem)) {
+    missing = {
+      kind: "ternary",
+      cond: {
+        kind: "bin",
+        op: "===",
+        left: { kind: "arrayState", arr, index, type: F64, loc },
+        right: { kind: "numLit", value: 3, type: F64, loc },
+        type: BOOL,
+        loc,
+      },
+      then: foreignElementThrow(lowerer, arr, index, type, loc),
+      else_: missing,
+      type,
+      loc,
+    };
+  }
   return {
     kind: "ternary",
     cond: {
@@ -215,6 +260,9 @@ const PURE_KINDS = new Set<IrExpr["kind"]>([
   "unionIsTag",
   "unionNarrow",
   "unionWrap",
+  // Its statements are checked on their own (declarations and assignments
+  // are recorded writes).
+  "seqExpr",
 ]);
 
 /** The locals evaluating `value` may assign, and whether it may run other
@@ -228,7 +276,11 @@ function valueEffects(lowerer: Lowerer, value: IrExpr): { writes: Set<string>; o
   everyExpr(value, {
     expr: (e) => {
       if (e.kind === "assignExpr" || e.kind === "incDec") writes.add(e.localId);
-      else if (e.kind === "call" ? !readers.has(e.callee) : !PURE_KINDS.has(e.kind)) opaque = true;
+      else if (e.kind === "libCall") {
+        // The "undefined" key of an undefined index is a constant.
+        if (e.fn !== "array.undefinedKey") opaque = true;
+      } else if (e.kind === "call" ? !readers.has(e.callee) : !PURE_KINDS.has(e.kind))
+        opaque = true;
       return true;
     },
     stmt: (s) => {
@@ -269,6 +321,311 @@ function readsMutableLocal(lowerer: Lowerer, e: IrExpr): boolean {
   });
 }
 
+/** Whether `receiver` still reads the same value after `index` runs: the
+ * index assigns none of the bindings it reads, and runs no code that could
+ * assign them through a closure. */
+export function unaffectedByIndex(lowerer: Lowerer, receiver: IrExpr, index: IrExpr): boolean {
+  const effects = valueEffects(lowerer, index);
+  return (
+    unaffectedBy(receiver, effects) && !(effects.opaque && readsMutableLocal(lowerer, receiver))
+  );
+}
+
+/** A number, string or boolean element type. Arrays of it hold a present
+ * undefined in the element's state, so `(T | undefined)[]` stores T
+ * elements (the type mapper) and a T[] seen as one stays the same array. */
+export function primitiveElement(elem: IrType): boolean {
+  return elem.kind === "f64" || elem.kind === "string" || elem.kind === "bool";
+}
+
+/** `value` is the element type with undefined, stored into an array of a
+ * primitive element type: a present undefined or the element. */
+export function optionalElementValue(lowerer: Lowerer, value: IrExpr, elem: IrType): boolean {
+  if (!primitiveElement(elem)) return false;
+  if (value.type.kind === "undefinedT") return true;
+  return (
+    value.type.kind === "union" &&
+    lowerer.armTag(value.type.unionId, UNDEFINED_T) >= 0 &&
+    typeEquals(lowerer.stripUndefinedArm(value.type), elem)
+  );
+}
+
+/** A value of a primitive element type that holds a slot until the value
+ * stored there replaces it (insertedValues), or stands for a slot that is
+ * not read. */
+export function elementPlaceholder(elem: IrType, loc: SrcLoc): IrExpr {
+  if (elem.kind === "f64") return { kind: "numLit", value: 0, type: F64, loc };
+  if (elem.kind === "bool") return { kind: "boolLit", value: false, type: BOOL, loc };
+  return { kind: "strLit", value: "", type: STRING, loc };
+}
+
+/** Values inserted into an array (push, unshift, splice, a literal), in
+ * source order. A value that can be undefined (optionalElementValue) is
+ * kept in a temporary: the insertion takes a placeholder for it, and
+ * `fill` then stores the value at the placeholder's index. */
+export function insertedValues(
+  lowerer: Lowerer,
+  values: readonly IrExpr[],
+  elem: IrType,
+  coerce: (value: IrExpr, index: number) => IrExpr,
+  loc: SrcLoc,
+): {
+  stmts: IrStmt[];
+  args: IrExpr[];
+  optional: boolean;
+  fill: (arr: IrExpr, first: IrExpr) => IrStmt[];
+} {
+  if (!values.some((value) => optionalElementValue(lowerer, value, elem)))
+    return { stmts: [], args: values.map(coerce), optional: false, fill: () => [] };
+  const stmts: IrStmt[] = [];
+  const args: IrExpr[] = [];
+  const held: { offset: number; value: IrExpr }[] = [];
+  values.forEach((value, offset) => {
+    // Every value is evaluated in order before the insertion.
+    if (value.type.kind === "undefinedT") {
+      if (value.kind !== "unitLit") stmts.push({ kind: "exprStmt", expr: value, loc });
+      args.push(elementPlaceholder(elem, loc));
+      held.push({ offset, value: { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc } });
+      return;
+    }
+    const temp = lowerer.declareHiddenLocal("%inserted", value.type);
+    stmts.push({ kind: "varDecl", localId: temp.id, init: value, loc });
+    const stable = varRef(temp.id, temp.type, loc);
+    if (optionalElementValue(lowerer, value, elem)) {
+      args.push(elementPlaceholder(elem, loc));
+      held.push({ offset, value: stable });
+    } else {
+      args.push(coerce(stable, offset));
+    }
+  });
+  const fill = (arr: IrExpr, first: IrExpr): IrStmt[] =>
+    held.map(({ offset, value }) =>
+      arrayValueStore(
+        lowerer,
+        arr,
+        offset === 0
+          ? first
+          : {
+              kind: "bin",
+              op: "+",
+              left: first,
+              right: { kind: "numLit", value: offset, type: F64, loc },
+              type: F64,
+              loc,
+            },
+        value,
+        elem,
+        loc,
+      ),
+    );
+  return { stmts, args, optional: true, fill };
+}
+
+/** Statements appending `value` to `arr` inside a lifted helper. A value
+ * that can be undefined in a primitive array (optionalElementValue) is held
+ * in the helper's local `slot` (which the caller declares with the value's
+ * type) and stored as a present undefined or the element; any other value
+ * converts to the element type. */
+export function appendElement(
+  lowerer: Lowerer,
+  arr: IrExpr,
+  value: IrExpr,
+  elem: IrType,
+  slot: string,
+  loc: SrcLoc,
+): IrStmt[] {
+  if (optionalElementValue(lowerer, value, elem) && value.type.kind !== "undefinedT") {
+    const held = varRef(slot, value.type, loc);
+    const length: IrExpr = {
+      kind: "arrIntrinsic",
+      method: "length",
+      receiver: arr,
+      args: [],
+      type: F64,
+      loc,
+    };
+    return [
+      { kind: "varDecl", localId: slot, init: value, loc },
+      arrayValueStore(lowerer, arr, length, held, elem, loc),
+    ];
+  }
+  return [
+    {
+      kind: "exprStmt",
+      expr: {
+        kind: "arrIntrinsic",
+        method: "push",
+        receiver: arr,
+        args: [lowerer.coerceToExpected(value, elem)],
+        type: F64,
+        loc,
+      },
+      loc,
+    },
+  ];
+}
+
+/** The argument a helper passes in place of an element its callback never
+ * reads (lowerArrayCallback's `unread`): a constant of the parameter's
+ * type, so the slot stays unread and an element the type cannot hold
+ * (stored through a dynamic view) passes. Null for a type without one. */
+export function unreadArgument(lowerer: Lowerer, type: IrType, loc: SrcLoc): IrExpr | null {
+  if (type.kind === "f64") return { kind: "numLit", value: NaN, type: F64, loc };
+  if (type.kind === "bool") return { kind: "boolLit", value: false, type: BOOL, loc };
+  if (type.kind === "string") return { kind: "strLit", value: "", type: STRING, loc };
+  if (type.kind === "union" && lowerer.armTag(type.unionId, UNDEFINED_T) >= 0)
+    return lowerer.wrappedUndefined(type, loc) ?? null;
+  return null;
+}
+
+/** The locals of an element snapshot (arraySlotSnapshot): whether the slot
+ * held an element outside the element type, the value read otherwise, and
+ * that element's dynamic value otherwise. */
+export interface SlotSnapshot {
+  isForeign: string;
+  value: string;
+  foreign: string;
+}
+
+/** The locals a snapshot of an `elem` element uses. */
+export function slotSnapshotLocals(lowerer: Lowerer, elem: IrType, ids: SlotSnapshot): IrLocal[] {
+  return [
+    { id: ids.isForeign, name: "foreign", type: BOOL, mutable: false },
+    { id: ids.value, name: "value", type: arrayValueType(lowerer, elem), mutable: false },
+    { id: ids.foreign, name: "element", type: DYN, mutable: false },
+  ];
+}
+
+/** Read the element at `arr[index]` as it is stored, before a callback runs,
+ * as JavaScript reads it before calling a callback that ignores it: a value
+ * or a present undefined into `ids.value`, or an element outside the element
+ * type (stored through a dynamic view) as its dynamic value into
+ * `ids.foreign`, which `ids.isForeign` tells apart. */
+export function arraySlotSnapshot(
+  lowerer: Lowerer,
+  arr: IrExpr,
+  index: IrExpr,
+  elem: IrType,
+  ids: SlotSnapshot,
+  loc: SrcLoc,
+): IrStmt[] {
+  const valueT = arrayValueType(lowerer, elem);
+  const isForeign: IrExpr = { kind: "varRef", localId: ids.isForeign, type: BOOL, loc };
+  const missing =
+    valueT.kind === "dyn" ? dynUndefinedExpr(loc) : lowerer.wrappedUndefined(valueT, loc)!;
+  return [
+    {
+      kind: "varDecl",
+      localId: ids.isForeign,
+      init: {
+        kind: "bin",
+        op: "===",
+        left: { kind: "arrayState", arr, index, type: F64, loc },
+        right: { kind: "numLit", value: 3, type: F64, loc },
+        type: BOOL,
+        loc,
+      },
+      loc,
+    },
+    {
+      kind: "varDecl",
+      localId: ids.value,
+      init: {
+        kind: "ternary",
+        cond: isForeign,
+        then: missing,
+        else_: arrayValueRead(lowerer, arr, index, elem, loc),
+        type: valueT,
+        loc,
+      },
+      loc,
+    },
+    {
+      kind: "varDecl",
+      localId: ids.foreign,
+      init: {
+        kind: "ternary",
+        cond: isForeign,
+        then: { kind: "libCall", fn: "array.foreign", args: [arr, index], type: DYN, loc },
+        else_: dynUndefinedExpr(loc),
+        type: DYN,
+        loc,
+      },
+      loc,
+    },
+  ];
+}
+
+/** Append a snapshot (arraySlotSnapshot) of an element to `out`, an array of
+ * the same element type, as it was stored: an element outside the element
+ * type stays one, appended as the view's push appends it. `out` is a
+ * binding. */
+export function arraySnapshotAppend(
+  lowerer: Lowerer,
+  out: IrExpr,
+  elem: IrType,
+  ids: SlotSnapshot,
+  loc: SrcLoc,
+): IrStmt {
+  const end: IrExpr = {
+    kind: "arrIntrinsic",
+    method: "length",
+    receiver: out,
+    args: [],
+    type: F64,
+    loc,
+  };
+  const value: IrExpr = {
+    kind: "varRef",
+    localId: ids.value,
+    type: arrayValueType(lowerer, elem),
+    loc,
+  };
+  return {
+    kind: "if",
+    cond: { kind: "varRef", localId: ids.isForeign, type: BOOL, loc },
+    then: [
+      {
+        kind: "exprStmt",
+        expr: {
+          kind: "dynInvoke",
+          recv: { kind: "dynFrom", value: out, liveRef: true, type: DYN, loc },
+          method: "push",
+          calleeName: "push",
+          args: [{ kind: "varRef", localId: ids.foreign, type: DYN, loc }],
+          type: DYN,
+          loc,
+        },
+        loc,
+      },
+    ],
+    else_: [arrayValueStore(lowerer, out, end, value, elem, loc)],
+    loc,
+  };
+}
+
+/** A snapshot (arraySlotSnapshot) as a value of `type`: the value read, or
+ * the element outside the element type through the checked conversion,
+ * which such an element fails as a typed read does. `typed` converts the
+ * value read. */
+export function arraySnapshotValue(
+  lowerer: Lowerer,
+  elem: IrType,
+  ids: SlotSnapshot,
+  type: IrType,
+  typed: (value: IrExpr) => IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  return {
+    kind: "ternary",
+    cond: { kind: "varRef", localId: ids.isForeign, type: BOOL, loc },
+    then: lowerer.coerceToExpected({ kind: "varRef", localId: ids.foreign, type: DYN, loc }, type),
+    else_: typed({ kind: "varRef", localId: ids.value, type: arrayValueType(lowerer, elem), loc }),
+    type,
+    loc,
+  };
+}
+
 /** Store a stabilized value without changing the array's element ABI. */
 export function arrayValueStore(
   lowerer: Lowerer,
@@ -279,6 +636,12 @@ export function arrayValueStore(
   loc: SrcLoc,
 ): IrStmt {
   if (typeEquals(value.type, elem)) return { kind: "arraySet", arr, index, value, loc };
+  // An undefined value of a `(T | undefined)[]` (primitiveElement).
+  if (value.type.kind === "undefinedT" && primitiveElement(elem)) {
+    const write: IrStmt = { kind: "arraySetUndefined", arr, index, loc };
+    if (value.kind === "unitLit") return write;
+    return { kind: "block", body: [{ kind: "exprStmt", expr: value, loc }, write], loc };
+  }
   if (value.type.kind === "union" && lowerer.armTag(value.type.unionId, UNDEFINED_T) >= 0) {
     // The tag test and the VALUE arm extraction both consume the value. Keep
     // an arbitrary expression (especially an array read or call) single
@@ -346,6 +709,9 @@ export function lowerSafeIndexRead(
   const elem = arr.type.elem;
   if (elem.kind === "void") return null;
   const resultT = arrayValueType(lowerer, elem);
+  // An element union that cannot take an undefined arm has no value for a
+  // missing element.
+  if (resultT.kind !== "dyn" && lowerer.wrappedUndefined(resultT, loc) === null) return null;
   const key = `idxOr:${typeKey(elem)}`;
   let name = lowerer.arrHofHelpers.get(key);
   if (!name) {
@@ -544,6 +910,9 @@ export function tryLowerNumericIndexRead(
     operand.callee !== lowerer.arrHofHelpers.get(`idxOr:${typeKey(F64)}`)
   )
     return null;
+  // ToNumber of a foreign element differs from its own value under `+`,
+  // comparisons and ToBoolean.
+  if (elementMayBeForeign(lowerer, F64)) return null;
   const [arr, index] = operand.args;
   if (
     operand.args.length !== 2 ||
@@ -637,6 +1006,8 @@ export function tryFuseIndexRead(
   if (arr?.type.kind !== "array" || index?.type.kind !== "f64") return null;
   const elem = arr.type.elem;
   if (elem.kind === "union" || elem.kind === "void") return null;
+  // A foreign element is neither the present value nor the missing one.
+  if (elementMayBeForeign(lowerer, elem)) return null;
   if (operand.callee !== lowerer.arrHofHelpers.get(`idxOr:${typeKey(elem)}`)) return null;
   if (arr.kind !== "varRef" || (index.kind !== "varRef" && index.kind !== "numLit")) return null;
   const loc = operand.loc;

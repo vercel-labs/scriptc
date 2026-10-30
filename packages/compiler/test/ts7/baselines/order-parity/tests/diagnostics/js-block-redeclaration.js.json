@@ -1,0 +1,61 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/js-block-redeclaration.js"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "Class declaration cannot implement overload list for 'collide'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/js-block-redeclaration.js",
+    "start": 386,
+    "end": 393
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Function with bodies can only merge with classes that are ambient.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/js-block-redeclaration.js",
+    "start": 414,
+    "end": 421
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Type '2' is not comparable to type '1'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/js-block-redeclaration.js",
+    "start": 491,
+    "end": 492
+   }
+  },
+  {
+   "code": "SC0001",
+   "message": "Cannot initialize outer scoped variable 'scoped' in the same scope as block scoped declaration 'scoped'.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/js-block-redeclaration.js",
+    "start": 502,
+    "end": 508
+   }
+  },
+  {
+   "code": "SC0006",
+   "message": "the lexical declaration 'scoped' collides with a 'var' declaration of the same name in this block",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/js-block-redeclaration.js",
+    "start": 461,
+    "end": 467
+   }
+  },
+  {
+   "code": "SC0005",
+   "message": "the declaration 'collide' is already declared in this block's statement list",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/js-block-redeclaration.js",
+    "start": 399,
+    "end": 426
+   }
+  }
+ ]
+}

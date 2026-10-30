@@ -19,7 +19,7 @@ function messageAdapter(host: LlvmEmitterContext, type: IrType): string {
   const key = "dgram:" + type.shapeId;
   const previous = host.resolveThunks.get(key);
   if (previous !== undefined) return previous;
-  const symbol = `sc_dgram_message_${host.resolveThunks.size}`;
+  const symbol = host.contentSymbol("sc_dgram_message_", key);
   host.resolveThunks.set(key, symbol);
   host.journal?.allocated(symbol, "messageAdapter", [type]);
   const shape = host.recordsById.get(type.shapeId);
@@ -68,7 +68,7 @@ function lookupAdapter(host: LlvmEmitterContext, cb: LlValue): string {
   const key = `dns:${error.unionId}:${arity}`;
   const previous = host.resolveThunks.get(key);
   if (previous !== undefined) return previous;
-  const symbol = `sc_dns_lookup_${host.resolveThunks.size}`;
+  const symbol = host.contentSymbol("sc_dns_lookup_", key);
   host.resolveThunks.set(key, symbol);
   host.journal?.allocated(symbol, "lookupAdapter", [cb]);
   host.declare("declare ptr @scr_error_new(i32, ptr)");

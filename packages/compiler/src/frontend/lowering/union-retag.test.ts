@@ -1,9 +1,20 @@
 import { describe, expect, test } from "vitest";
-import { BOOL, F64, NULL_T, STRING, UNDEFINED_T, typeEquals, typeKey } from "../../ir/ir.js";
+import {
+  BOOL,
+  DYN,
+  F64,
+  NULL_T,
+  STRING,
+  UNDEFINED_T,
+  VOID,
+  typeEquals,
+  typeKey,
+} from "../../ir/ir.js";
 import type { IrRecordShape, IrType, IrUnionDef, SrcLoc } from "../../ir/ir.js";
 import {
   planUnionRetag,
   buildUnionRetag,
+  identityRetagTags,
   planRecordUnionLift,
   planRecordUnionWrap,
 } from "./union-retag.js";
@@ -727,5 +738,52 @@ describe("retag IR construction", () => {
         () => "",
       ),
     ).toThrow("incomplete union retag plan");
+  });
+});
+
+describe("promise payload widening", () => {
+  const promise = (inner: IrType): IrType => ({ kind: "promise", inner });
+  const from: IrUnionDef = { id: "pw0", arms: [promise(VOID), UNDEFINED_T] };
+  const pairLift = (to: IrUnionDef) => {
+    const lift = (src: IrType, dst: IrType): WidthLift | null => {
+      if (typeEquals(src, dst)) return { how: "copy" };
+      if (dst.kind === "promise" && src.kind === "promise") return { how: "promiseWiden" };
+      if (dst.kind !== "union") return null;
+      const candidates = to.arms
+        .map((arm, tag) => ({ arm, tag }))
+        .filter(({ arm }) => lift(src, arm) !== null);
+      return candidates.length === 1
+        ? { how: "liftWrap", tag: candidates[0]!.tag, arm: candidates[0]!.arm }
+        : null;
+    };
+    return lift;
+  };
+
+  test("maps the promise arm through the payload widening", () => {
+    const to: IrUnionDef = { id: "pw1", arms: [promise(DYN), UNDEFINED_T] };
+    expect(planUnionRetag(from, to, () => undefined, pairLift(to))).toEqual([
+      { kind: "direct", route: { tag: 0, lift: { how: "promiseWiden" }, values: [] } },
+      { kind: "direct", route: { tag: 1, lift: { how: "copy" }, values: [] } },
+    ]);
+  });
+
+  test("two destination promise arms stay ambiguous", () => {
+    const to: IrUnionDef = { id: "pw2", arms: [promise(DYN), promise(STRING), UNDEFINED_T] };
+    expect(planUnionRetag(from, to, () => undefined, pairLift(to))).toBeNull();
+  });
+
+  test("an equal promise arm keeps the identity copy", () => {
+    const to: IrUnionDef = { id: "pw3", arms: [promise(VOID), UNDEFINED_T] };
+    expect(planUnionRetag(from, to, () => undefined, pairLift(to))).toEqual([
+      { kind: "direct", route: { tag: 0, lift: { how: "copy" }, values: [] } },
+      { kind: "direct", route: { tag: 1, lift: { how: "copy" }, values: [] } },
+    ]);
+    expect(
+      identityRetagTags(
+        from,
+        to,
+        planUnionRetag(from, to, () => undefined, pairLift(to))!,
+      ),
+    ).toEqual([0, 1]);
   });
 });

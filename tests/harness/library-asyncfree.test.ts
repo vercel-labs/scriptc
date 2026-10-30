@@ -106,6 +106,15 @@ describe("async_free detection over the IR", () => {
     ).toContain("asymmetric KeyObjects");
   });
 
+  test("X509Certificate's key members refuse", async () => {
+    expect(
+      await surfaceOf(
+        "x509-key",
+        `import { X509Certificate } from "node:crypto";\nimport { readFileSync } from "node:fs";\nconst cert = new X509Certificate(readFileSync("cert.pem"));\nconsole.log(cert.verify(cert.publicKey));\n`,
+      ),
+    ).toContain("X509Certificate publicKey, verify and checkPrivateKey");
+  });
+
   test("process signal listeners refuse", async () => {
     expect(
       await surfaceOf(

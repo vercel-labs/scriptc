@@ -118,20 +118,9 @@ export class NativeCache {
     }
   }
 
-  /** Whether a marker or entry exists, without reading or checking it. */
+  /** Whether an entry exists, without reading or checking it. */
   has(family: string, key: string): boolean {
     return existsSync(join(this.root, family, key));
-  }
-
-  /** Records an empty marker that has() finds. */
-  mark(family: string, key: string): void {
-    try {
-      const directory = join(this.root, family);
-      mkdirSync(directory, { recursive: true, mode: 0o700 });
-      writeFileSync(join(directory, key), "");
-    } catch {
-      /* Cache failures never change a build's result. */
-    }
   }
 
   /** Writes `bytes` under their content digest, and returns the digest. */
@@ -178,10 +167,15 @@ export class NativeCache {
         "object",
         "sanitizer",
         "executable",
-        "linked",
+        "kept",
+        "linker-job",
+        "runtime-pack",
+        "helper",
         "binary",
         "dsym",
         "coverage",
+        "units",
+        "unit-files",
       ]) {
         const directory = join(this.root, family);
         let names: string[];

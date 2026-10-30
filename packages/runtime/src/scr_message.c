@@ -636,9 +636,9 @@ static bool scr_publish_container_ok(const ScrDyn *d) {
   if (!scr_dyn_is_frozen(d)) return false;
   if (d->kind == SCR_DYN_ARR) return d->v.arr.properties == NULL;
   if (d->null_proto || d->v.obj.source_identity || d->v.obj.source_access) return false;
-  for (size_t i = 0; i < d->v.obj.len; i++) {
-    const ScrDynEntry *e = &d->v.obj.entries[i];
-    if (e->accessor || !e->enumerable) return false;
+  for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
+    ScrDynProp e = scr_dyn_obj_prop_at(d, i);
+    if (e.accessor || !e.enumerable) return false;
   }
   return true;
 }
@@ -666,8 +666,8 @@ static bool scr_publish_collect(ScrPublish *p, ScrDyn *root) {
       break;
     case SCR_DYN_OBJ:
       if (!scr_publish_container_ok(d)) return false;
-      for (size_t i = 0; i < d->v.obj.len; i++) {
-        ScrDyn *child = d->v.obj.entries[i].value;
+      for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
+        ScrDyn *child = scr_dyn_obj_value_at(d, i);
         if (child && !scr_publish_seen(p, child)) scr_publish_push(p, child);
       }
       break;
@@ -702,9 +702,10 @@ static ScrMessage *scr_message_try_publish(const ScrDyn *value) {
       } else if (d->rc != SIZE_MAX) {
         scr_cyc_on_dead(d); /* leave the candidate and tenured buffers */
         d->rc = SIZE_MAX;
-        /* A shape names a node of this thread's transition tree (scr_js.h),
-         * which other threads cannot use and which ends with this thread. */
-        if (d->kind == SCR_DYN_OBJ) d->v.obj.shape = NULL;
+        /* A layout names a node of this thread's transition tree
+         * (scr_dyn.h), which other threads cannot use and which ends with
+         * this thread: the object moves to dictionary mode. */
+        if (d->kind == SCR_DYN_OBJ) scr_dyn_to_dictionary(d);
 #ifdef SCR_RC_AUDIT
         scr_dyn_live_forget();
 #endif
@@ -1033,14 +1034,15 @@ ScrDyn *scr_message_decode(const ScrMessage *message) {
       } else scr_dyn_obj_set(values[i], property->key, property->length, value);
     }
     if (node->kind == SCR_MESSAGE_ERROR) {
-      for (size_t j = 0; j < values[i]->v.obj.len; j++) {
-        ScrDynEntry *entry = &values[i]->v.obj.entries[j];
-        entry->enumerable = false;
+      for (size_t j = 0; j < scr_dyn_obj_count(values[i]); j++) {
+        ScrDynProp entry = scr_dyn_obj_prop_at(values[i], j);
+        bool enumerable = false;
         for (size_t k = 0; k < node->count; k++) {
           const ScrMessageProperty *property = &node->properties[k];
-          if (!property->hidden && property->length == entry->key_len && !memcmp(property->key, entry->key, entry->key_len))
-            entry->enumerable = true;
+          if (!property->hidden && property->length == entry.key_len && !memcmp(property->key, entry.key, entry.key_len))
+            enumerable = true;
         }
+        scr_dyn_obj_set_attrs_at(values[i], j, entry.writable, enumerable, entry.configurable);
       }
       ScrError *error = scr_errdyn_err_of(values[i]);
       scr_error_commit_dyn(error, values[i]);

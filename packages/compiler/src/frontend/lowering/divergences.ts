@@ -177,6 +177,8 @@ export function scanDivergences(
       if (use === null || use === undefined || param === undefined || param.type === undefined)
         return;
       if (!isExistingObjectExpression(arg)) return;
+      // The call kept the argument's layout: the callee has the value itself.
+      if (lowerer.layoutKeptNodes.has(arg)) return;
       const copy = safely(() => widthCopyBetween(lowerer, arg, param.type!));
       if (copy === undefined || copy === null) return;
       out.push(
@@ -185,6 +187,7 @@ export function scanDivergences(
     });
   }
   for (const decl of typedDecls) {
+    if (lowerer.layoutKeptNodes.has(decl.initializer!)) continue;
     const name = (decl.name as ts.Identifier).text;
     const scope = enclosingScope(decl);
     if (scope === undefined) continue;

@@ -14,11 +14,25 @@ interface Bound extends Extent {
   minimum: number;
 }
 type Node = IrExpr | IrStmt;
+const FLIPPED: Readonly<Record<string, string>> = {
+  "<": ">",
+  "<=": ">=",
+  ">": "<",
+  ">=": "<=",
+  "===": "===",
+  "==": "==",
+  "!==": "!==",
+  "!=": "!=",
+};
 
 /** Relational proofs for fixed typed-array lengths. Cached lengths retain
  * their receiver identity only when that binding is never reassigned.
  * Loops may use offsets in either direction, but both index integrality
- * and receiver stability are established separately from the relation. */
+ * and receiver stability are established separately from the relation.
+ * For loops hold one bound over the body. While loops start from the
+ * condition's bound and follow the body in order: increments raise it and
+ * comparisons with the length in if conditions narrow it. Indexes are
+ * `counter + c` or `L + d - counter`, where L is the receiver's length. */
 export function findBytesBounds(fn: IrFunction, ranges: IntegerRanges): ReadonlySet<Node> {
   const proved = new Map<Node, boolean>();
   if (fn.async || fn.generator || !fn.locals.some((local) => local.type.kind === "bytes"))
@@ -96,6 +110,20 @@ export function findBytesBounds(fn: IrFunction, ranges: IntegerRanges): Readonly
     const result = left + (e.op === "+" ? e.right.value : -e.right.value);
     return Number.isSafeInteger(result) ? result : null;
   }
+  /** For an index of the form `L + d - counter` (`len - 1 - i`, `right - i`
+   * with `right = len - 1`), where L is the receiver's length: d. */
+  function reversed(e: IrExpr, bound: Bound): number | null {
+    if (e.kind !== "bin" || (e.op !== "+" && e.op !== "-")) return null;
+    if (e.op === "-" && e.right.kind === "varRef" && e.right.localId === bound.counter) {
+      const length = extent(e.left, false);
+      return length && length.receiver === bound.receiver ? length.offset : null;
+    }
+    if (e.right.kind !== "numLit" || !Number.isSafeInteger(e.right.value)) return null;
+    const left = reversed(e.left, bound);
+    if (left === null) return null;
+    const result = left + (e.op === "+" ? e.right.value : -e.right.value);
+    return Number.isSafeInteger(result) ? result : null;
+  }
   function affineRange(e: IrExpr, bound: Bound): IntegerRange | null {
     if (e.kind === "varRef" && e.localId === bound.counter) {
       const max = Number.MAX_SAFE_INTEGER + bound.offset - 1;
@@ -159,7 +187,7 @@ export function findBytesBounds(fn: IrFunction, ranges: IntegerRanges): Readonly
     if (s.cond.left.kind !== "varRef" || s.cond.left.localId !== counter) {
       if (right.kind !== "varRef" || right.localId !== counter) return null;
       right = s.cond.left;
-      op = ({ "<": ">", "<=": ">=", ">": "<", ">=": "<=" } as Record<string, string>)[op] ?? "";
+      op = FLIPPED[op] ?? "";
     }
     const update = s.update;
     let step = 0;
@@ -212,6 +240,98 @@ export function findBytesBounds(fn: IrFunction, ranges: IntegerRanges): Readonly
     }
     return result && stable(s.body, result.receiver, counter) ? result : null;
   }
+  /** A comparison of the counter with the receiver's length: the operator
+   * with the counter on the left, and the length's offset. */
+  function lengthComparison(e: IrExpr, bound: Bound): { op: string; offset: number } | null {
+    if (e.kind !== "bin") return null;
+    let other = e.right,
+      op: string = e.op;
+    if (e.left.kind !== "varRef" || e.left.localId !== bound.counter) {
+      if (other.kind !== "varRef" || other.localId !== bound.counter) return null;
+      other = e.left;
+      op = FLIPPED[op] ?? op;
+    }
+    const length = extent(other, false);
+    return length && length.receiver === bound.receiver ? { op, offset: length.offset } : null;
+  }
+  /** The step of `counter = counter + c` with a positive literal c, or null. */
+  function increment(s: IrStmt, counter: string): number | null {
+    return s.kind === "assign" &&
+      s.localId === counter &&
+      s.value.kind === "bin" &&
+      s.value.op === "+" &&
+      s.value.left.kind === "varRef" &&
+      s.value.left.localId === counter &&
+      s.value.right.kind === "numLit" &&
+      Number.isSafeInteger(s.value.right.value) &&
+      s.value.right.value > 0
+      ? s.value.right.value
+      : null;
+  }
+  function writes(s: IrStmt, id: string): boolean {
+    return !everyStmtList([s], {
+      expr: (e) => (e.kind !== "assignExpr" && e.kind !== "incDec") || e.localId !== id,
+      stmt: (child) =>
+        !(
+          ((child.kind === "assign" || child.kind === "forOf" || child.kind === "varDecl") &&
+            child.localId === id) ||
+          (child.kind === "tryCatch" && child.catchLocalId === id)
+        ),
+    });
+  }
+  /** A while loop whose condition bounds an integer counter by a typed
+   * array's length. The body may write the counter only by statements
+   * that add a positive literal, and may not write the receiver. Calls
+   * cannot write either binding (both are uncaptured locals), and a typed
+   * array's length is fixed at construction, so the body may hold calls. */
+  function whileBound(s: IrStmt & { kind: "while" }): Bound | null {
+    const cond = s.cond;
+    if (cond.kind !== "bin") return null;
+    const counterRef = [cond.left, cond.right].find(
+      (side, i) =>
+        side.kind === "varRef" &&
+        eligible(side.localId) &&
+        extent(i === 0 ? cond.right : cond.left, false) !== null,
+    );
+    const minimum = counterRef ? ranges.get(counterRef)?.min : undefined;
+    if (counterRef?.kind !== "varRef" || minimum === undefined) return null;
+    const counter = counterRef.localId;
+    const length = extent(counterRef === cond.left ? cond.right : cond.left, false)!;
+    const receiver = length.receiver;
+    const comparison = lengthComparison(cond, { receiver, counter, offset: 0, minimum });
+    if (comparison?.op !== "<" && comparison?.op !== "<=") return null;
+    // An increment is a statement of the body: one inside an expression
+    // (a comma expression's statements) would run where flow does not
+    // follow it.
+    const writesOk = everyStmtList(s.body, {
+      expr: (e) =>
+        ((e.kind !== "assignExpr" && e.kind !== "incDec") ||
+          (e.localId !== counter && e.localId !== receiver)) &&
+        everyExprChild(
+          e,
+          () => true,
+          (child) => !writes(child, counter),
+        ),
+      stmt: (child) => {
+        if (child.kind === "assign" && child.localId === counter)
+          return increment(child, counter) !== null;
+        if (child.kind === "assign" || child.kind === "forOf" || child.kind === "varDecl")
+          return child.localId !== counter && child.localId !== receiver;
+        return (
+          child.kind !== "tryCatch" ||
+          (child.catchLocalId !== counter && child.catchLocalId !== receiver)
+        );
+      },
+    });
+    return writesOk
+      ? {
+          receiver,
+          counter,
+          offset: comparison.offset + (comparison.op === "<=" ? 1 : 0),
+          minimum,
+        }
+      : null;
+  }
   function access(node: Node, array: IrExpr, index: IrExpr, active: Bound[], width: number): void {
     const integer = ranges.get(index);
     let safe = false;
@@ -225,6 +345,13 @@ export function findBytesBounds(fn: IrFunction, ranges: IntegerRanges): Readonly
           bound.minimum + offset >= 0 &&
           bound.offset + offset + width - 1 <= 0
         ) {
+          safe = true;
+          break;
+        }
+        // counter < L + bound.offset and counter >= bound.minimum put
+        // L + d - counter in [0, L - width].
+        const d = integer ? reversed(index, bound) : null;
+        if (d !== null && bound.offset <= d + 1 && bound.minimum >= d + width) {
           safe = true;
           break;
         }
@@ -244,8 +371,84 @@ export function findBytesBounds(fn: IrFunction, ranges: IntegerRanges): Readonly
       (child) => stmt(child, active),
     );
   }
+  /** The bounds where `cond` is true and where it is false, from the
+   * bound before it. */
+  function narrow(cond: IrExpr, bound: Bound): [Bound, Bound] {
+    const comparison = lengthComparison(cond, bound);
+    if (!comparison) return [bound, bound];
+    const j = comparison.offset,
+      offset = bound.offset;
+    // counter < L + j, counter <= L + j, and counter !== L + j.
+    const below = { ...bound, offset: Math.min(offset, j) },
+      atMost = { ...bound, offset: Math.min(offset, j + 1) },
+      unequal = offset === j + 1 ? { ...bound, offset: j } : bound;
+    switch (comparison.op) {
+      case "<":
+        return [below, bound];
+      case "<=":
+        return [atMost, bound];
+      case ">":
+        return [bound, atMost];
+      case ">=":
+        return [bound, below];
+      case "===":
+      case "==":
+        return [atMost, unequal];
+      case "!==":
+      case "!=":
+        return [unequal, atMost];
+      default:
+        return [bound, bound];
+    }
+  }
+  /** Visits a while body in order, from the bound that holds on entry.
+   * Returns the bound at the end of the list. Its offset is -Infinity (and
+   * its minimum Infinity) when the end is unreachable, and Infinity when
+   * nothing bounds the counter there. Every write of the counter adds a
+   * positive literal (whileBound), so the minimum survives any write. */
+  function flow(list: IrStmt[], active: Bound[], bound: Bound): Bound {
+    for (const s of list) {
+      const current = Number.isFinite(bound.offset) ? [...active, bound] : active;
+      const step = increment(s, bound.counter);
+      if (step !== null) {
+        bound = { ...bound, offset: bound.offset + step, minimum: bound.minimum + step };
+      } else if (s.kind === "if") {
+        expr(s.cond, current);
+        const [then, else_] = narrow(s.cond, bound);
+        const left = flow(s.then, active, then),
+          right = s.else_ ? flow(s.else_, active, else_) : else_;
+        bound = {
+          ...bound,
+          offset: Math.max(left.offset, right.offset),
+          minimum: Math.min(left.minimum, right.minimum),
+        };
+      } else if (s.kind === "block" && !s.labels?.length) {
+        bound = flow(s.body, active, bound);
+      } else if (writes(s, bound.counter)) {
+        stmt(s, active);
+        bound = { ...bound, offset: Infinity };
+      } else {
+        stmt(s, current);
+        if (
+          s.kind === "break" ||
+          s.kind === "continue" ||
+          s.kind === "return" ||
+          s.kind === "throw"
+        )
+          bound = { ...bound, offset: -Infinity, minimum: Infinity };
+      }
+    }
+    return bound;
+  }
   function stmt(s: IrStmt, active: Bound[]): boolean {
     if (s.kind === "bytesSet") access(s, s.arr, s.index, active, 1);
+    if (s.kind === "while") {
+      expr(s.cond, active);
+      const bound = whileBound(s);
+      if (!bound) return s.body.every((child) => stmt(child, active));
+      flow(s.body, active, bound);
+      return true;
+    }
     if (s.kind === "for") {
       if (s.init) stmt(s.init, active);
       if (s.cond) expr(s.cond, active);

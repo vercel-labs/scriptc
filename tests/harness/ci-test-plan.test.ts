@@ -12,6 +12,7 @@ import {
   isolatedFiles,
   leakSuppressions,
   memoryHeavyFiles,
+  sanitizedNodesJobEnv,
   sideOwners,
   testCosts,
 } from "../../scripts/ci-test-plan.mjs";
@@ -88,6 +89,42 @@ test("LeakSanitizer runs over the sanitized corpus on Linux only", () => {
     expect(env.LSAN_OPTIONS).toBeUndefined();
   }
   for (const task of plan("san", "linux").side) expect(task.env.ASAN_OPTIONS).toBeUndefined();
+});
+
+test("the sanitized three.js nodes build leaves the Linux corpus for its own job", () => {
+  const plan = (flavor: "plain" | "san", platform: string) =>
+    ciTestPlan({ shard: "1/20", flavor, workers: 4, platform });
+  const [name, value] = Object.entries(sanitizedNodesJobEnv)[0]!;
+  expect(plan("san", "linux").corpus.env[name]).toBe(value);
+  for (const env of [plan("plain", "linux").corpus.env, plan("san", "darwin").corpus.env])
+    expect(env[name]).toBeUndefined();
+  const three = readFileSync(new URL("./three.test.ts", import.meta.url), "utf8");
+  expect(three).toContain(`process.env["${name}"] === "${value}"`);
+  const { jobs } = load(
+    readFileSync(new URL("../../.github/workflows/ci.yml", import.meta.url), "utf8"),
+  ) as {
+    jobs: Record<
+      string,
+      { needs: string[]; env: Record<string, string>; steps: { run?: string }[] }
+    >;
+  };
+  const job = jobs["three_nodes_san"]!;
+  expect(job.needs).toContain("native_linux");
+  expect(jobs["test"]!.needs).toContain("three_nodes_san");
+  expect(job.env[name]).toBeUndefined();
+  expect(job.env["SCRIPTC_SAN"]).toBe("1");
+  // The same LeakSanitizer settings as the corpus it left.
+  const corpus = plan("san", "linux").corpus.env;
+  expect(job.env["ASAN_OPTIONS"]).toBe(corpus.ASAN_OPTIONS);
+  expect(job.env["LSAN_OPTIONS"]).toBe(
+    corpus.LSAN_OPTIONS!.replace(
+      leakSuppressions,
+      "${{ github.workspace }}/tests/harness/lsan.supp",
+    ),
+  );
+  expect(job.steps.at(-1)!.run).toBe(
+    `pnpm test tests/harness/three.test.ts -t "'nodes' runs statically through LLVM on 'native'"`,
+  );
 });
 
 test("the side queue balances measured files across the twenty Linux shards", () => {

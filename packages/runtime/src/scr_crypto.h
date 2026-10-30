@@ -305,5 +305,36 @@ ScrDyn *scr_crypto_create_sign(ScrDyn *algorithm);
 ScrDyn *scr_crypto_create_verify(ScrDyn *algorithm);
 bool scr_crypto_is_asymmetric_key(const ScrDyn *value);
 const char *scr_crypto_asymmetric_key_type(const ScrDyn *value);
+/* X509Certificate fields (scr_x509.c): raw decodes the constructor's input (+1 Buffer,
+ * or NULL with Node's PEM error pending); the others read that DER
+ * (borrowed) and never throw. subjectAltName, infoAccess and
+ * signatureAlgorithm answer "" where Node answers undefined. */
+ScrBytes *scr_crypto_x509_raw(ScrBytes *data);
+ScrBytes *scr_crypto_x509_raw_der(ScrBytes *der);
+ScrBytes *scr_crypto_x509_raw_str(ScrStr *pem);
+ScrStr *scr_crypto_x509_subject(ScrBytes *der);
+ScrStr *scr_crypto_x509_issuer(ScrBytes *der);
+ScrStr *scr_crypto_x509_subject_alt_name(ScrBytes *der);
+ScrStr *scr_crypto_x509_info_access(ScrBytes *der);
+ScrStr *scr_crypto_x509_serial_number(ScrBytes *der);
+ScrStr *scr_crypto_x509_fingerprint256(ScrBytes *der);
+ScrStr *scr_crypto_x509_fingerprint512(ScrBytes *der);
+bool scr_crypto_x509_ca(ScrBytes *der);
+ScrStr *scr_crypto_x509_signature_algorithm(ScrBytes *der);
+ScrStr *scr_crypto_x509_signature_algorithm_oid(ScrBytes *der);
+ScrStr *scr_crypto_x509_pem(ScrBytes *der);
+/* X509Certificate methods over the DER (borrowed). checkHost, checkEmail
+ * and checkIP answer the matching name ("" for none, Node's undefined) or
+ * NULL with Node's argument error pending (scr_x509.c). publicKey, verify
+ * and checkPrivateKey read keys (scr_pki.c): publicKey is +1 or NULL, and
+ * the two checks answer false with the error pending when they throw. */
+ScrStr *scr_crypto_x509_check_host(ScrBytes *der, ScrDyn *name, ScrDyn *options);
+ScrStr *scr_crypto_x509_check_email(ScrBytes *der, ScrDyn *email, ScrDyn *options);
+ScrStr *scr_crypto_x509_check_ip(ScrBytes *der, ScrDyn *ip, ScrDyn *options);
+bool scr_crypto_x509_check_issued(ScrBytes *der, ScrBytes *issuer_der);
+ScrDyn *scr_crypto_x509_legacy_object(ScrBytes *der);
+ScrDyn *scr_crypto_x509_public_key(ScrBytes *der);
+bool scr_crypto_x509_verify(ScrBytes *der, ScrDyn *key);
+bool scr_crypto_x509_check_private_key(ScrBytes *der, ScrDyn *key);
 
 #endif /* SCR_CRYPTO_H */

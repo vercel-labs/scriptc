@@ -571,10 +571,10 @@ static ScrDyn *define_from(ScrDyn *target, const char *key, ScrDyn *value, bool 
 }
 
 static const ScrDynEntry *entry_of(const ScrDyn *obj, const char *key) {
+  const ScrDynEntry *entries = scr_dyn_obj_dict_entries(obj);
   for (size_t i = 0; i < obj->v.obj.len; i++)
-    if (obj->v.obj.entries[i].key_len == strlen(key) &&
-        memcmp(obj->v.obj.entries[i].key, key, strlen(key)) == 0)
-      return &obj->v.obj.entries[i];
+    if (entries[i].key_len == strlen(key) && memcmp(entries[i].key, key, strlen(key)) == 0)
+      return &entries[i];
   return NULL;
 }
 
@@ -618,7 +618,7 @@ static void test_copy_property_descriptors(void) {
   scr_dyn_obj_set(existing, "label", 5, scr_dyn_new_num(9));
   scr_dyn_release(scr_dyn_copy_property_descriptors(existing, bag));
   const ScrDynEntry *label = entry_of(existing, "label");
-  check(!scr_exc_pending() && existing->v.obj.len == 5 && existing->v.obj.entries[0].key_len == 5 &&
+  check(!scr_exc_pending() && existing->v.obj.len == 5 && scr_dyn_obj_dict_entries(existing)[0].key_len == 5 &&
             label->value->v.num == 1,
         "copy redefines an existing property in place");
 

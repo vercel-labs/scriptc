@@ -1,0 +1,93 @@
+name: LLVM distribution
+
+# Builds the LLVM that the Linux release helpers link
+# (native/llvm-codegen/llvm-dist.mjs): LLVM from its release sources with
+# ThinLTO and native/llvm-codegen/llvm.profdata.gz, for each Linux
+# architecture. Each job builds a helper against it and one against LLVM's
+# release archive, requires the two to give identical objects on this
+# checkout's helper inputs (scripts/check-llvm-dist.mjs), prints both
+# helpers' times, and attaches the archive to the LLVM_DIST_TAG release.
+# The arm64 build uses the profile collected on x64; its job log reports how
+# many functions the profile no longer matches. Run it after a profile refresh
+# or an LLVM version change, with a new LLVM_DIST_TAG.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency: ${{ github.workflow }}
+
+jobs:
+  build:
+    name: Build LLVM (${{ matrix.arch }})
+    if: github.repository == 'vercel-labs/scriptc'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+            llvm_asset: LLVM-22.1.8-Linux-X64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            llvm_asset: LLVM-22.1.8-Linux-ARM64
+    runs-on: ${{ matrix.runner }}
+    # About an hour for LLVM on 4 cores, and 5 minutes for each helper link.
+    timeout-minutes: 240
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.1.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+      - name: Install LLVM's release archive and sources
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ninja-build zlib1g-dev libzstd-dev
+          base=https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.8
+          curl -fL --retry 3 -o "$RUNNER_TEMP/llvm.tar.xz" "$base/${{ matrix.llvm_asset }}.tar.xz"
+          tar -xJf "$RUNNER_TEMP/llvm.tar.xz" -C "$RUNNER_TEMP"
+          mv "$RUNNER_TEMP/${{ matrix.llvm_asset }}" "$RUNNER_TEMP/llvm-22.1.8"
+          curl -fL --retry 3 -o "$RUNNER_TEMP/llvm-src.tar.xz" "$base/llvm-project-22.1.8.src.tar.xz"
+          tar -xJf "$RUNNER_TEMP/llvm-src.tar.xz" -C "$RUNNER_TEMP"
+          rm "$RUNNER_TEMP/llvm.tar.xz" "$RUNNER_TEMP/llvm-src.tar.xz"
+          echo "$RUNNER_TEMP/llvm-22.1.8/bin" >> "$GITHUB_PATH"
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @scriptc/compiler --filter scriptc build
+      - name: Build the distribution
+        run: >-
+          node scripts/build-llvm-dist.mjs --source "$RUNNER_TEMP/llvm-project-22.1.8.src"
+          --prefix "$RUNNER_TEMP/dist/scriptc-llvm-22.1.8-linux-${{ matrix.arch }}"
+          --archive "$RUNNER_TEMP/scriptc-llvm-22.1.8-linux-${{ matrix.arch }}.tar.xz"
+          --work "$RUNNER_TEMP/llvm-dist-work"
+      - name: Build a helper against each LLVM
+        env:
+          HELPER: llvm-linux-${{ matrix.arch }}-gnu
+        run: |
+          LLVM_DIR="$RUNNER_TEMP/llvm-22.1.8/lib/cmake/llvm" pnpm --filter "@scriptc/$HELPER" build:native
+          cp "packages/$HELPER/bin/scriptc-llvm-codegen" "$RUNNER_TEMP/helper-release-archive"
+          LLVM_DIR="$RUNNER_TEMP/dist/scriptc-llvm-22.1.8-linux-${{ matrix.arch }}/lib/cmake/llvm" \
+            SCRIPTC_LLVM_THINLTO=1 pnpm --filter "@scriptc/$HELPER" build:native
+          cp "packages/$HELPER/bin/scriptc-llvm-codegen" "$RUNNER_TEMP/helper-profiled"
+      - name: Compare the helpers
+        run: >-
+          node scripts/check-llvm-dist.mjs --baseline "$RUNNER_TEMP/helper-release-archive"
+          --candidate "$RUNNER_TEMP/helper-profiled" --rounds 3 --work "$RUNNER_TEMP/llvm-check"
+      - name: Attach the archive to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARCHIVE: ${{ runner.temp }}/scriptc-llvm-22.1.8-linux-${{ matrix.arch }}.tar.xz
+        run: |
+          tag=$(node --input-type=module -e "import { LLVM_DIST_TAG } from './native/llvm-codegen/llvm-dist.mjs'; console.log(LLVM_DIST_TAG)")
+          # Both architectures' jobs create the release if it is missing.
+          gh release view "$tag" > /dev/null 2>&1 ||
+            gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --latest=false \
+              --notes "LLVM 22.1.8 built with ThinLTO and the helper profile, for the Linux LLVM helpers (scripts/build-llvm-dist.mjs)." ||
+            gh release view "$tag" > /dev/null
+          gh release upload "$tag" "$ARCHIVE" "$ARCHIVE.sha256" --clobber

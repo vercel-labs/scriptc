@@ -18,6 +18,7 @@ import {
   type SrcLoc,
   UNDEFINED_T,
   arrayOf,
+  canDynCheckTo,
   isRefCounted,
   isUnitType,
   typeEquals,
@@ -32,6 +33,10 @@ import {
   arrayValueRead,
   arrayValueStore,
   arrayValueType,
+  elementPlaceholder,
+  insertedValues,
+  optionalElementValue,
+  primitiveElement,
 } from "../array-values.js";
 import { typeKey } from "../../type-mapper.js";
 import {
@@ -41,6 +46,8 @@ import {
   positionNumber,
 } from "../optional-arguments.js";
 import { lowerArrayCopyWithin, lowerArrayFill } from "../array-indexed-mutation.js";
+import { checkedIteratorPack, widenedIterableType } from "../expressions/array-literals.js";
+import { notIterableSpelling } from "../iterable-spelling.js";
 import {
   lowerArrayUnionHofCall,
   lowerArraySortCall,
@@ -123,6 +130,14 @@ function lowerOptionalArrayPush(
     }
   }
   return { kind: "seqExpr", stmts, result: length(), type: F64, loc };
+}
+
+/** The checker type of `node` admits undefined. */
+function checkerTypeAdmitsUndefined(lowerer: Lowerer, node: ts.Expression): boolean {
+  const type = lowerer.typeOf(node);
+  return (type.isUnionType() ? ts.constituentTypes(type) : [type]).some(
+    (part) => (part.flags & (ts.TypeFlags.Undefined | ts.TypeFlags.Void)) !== 0,
+  );
 }
 
 /** `a.splice(start, count, v)` where v may hold undefined at run time.
@@ -230,50 +245,200 @@ function lowerArrayPosition(
   };
 }
 
-function lowerArrayJoinSeparator(
+/** `receiver.join(node)`: the separator defaults to "," for an absent or
+ * undefined argument and is ToString of anything else. */
+function lowerArrayJoin(
   lowerer: Lowerer,
+  receiver: IrExpr,
   node: ts.Expression | undefined,
   loc: SrcLoc,
 ): IrExpr {
+  const join = (sep: IrExpr): IrExpr => arrayJoin(receiver, sep, loc);
   const comma = strLit(",", loc);
-  if (!node) return comma;
+  if (!node) return join(comma);
   const undefinedValue = lowerStaticallyUndefinedArgument(lowerer, node);
-  if (undefinedValue) return defaultAfterUndefined(undefinedValue, comma);
+  if (undefinedValue) return join(defaultAfterUndefined(undefinedValue, comma));
   const value = lowerer.lowerExpr(node);
-  if (value.type.kind === "nullT") return defaultAfterUndefined(value, strLit("null", loc));
+  if (value.type.kind === "nullT") return join(defaultAfterUndefined(value, strLit("null", loc)));
+  const ternary = (cond: IrExpr, else_: IrExpr): IrExpr => ({
+    kind: "ternary",
+    cond,
+    then: comma,
+    else_,
+    type: STRING,
+    loc,
+  });
+  // The separator from its value: "," for the undefined value, ToString of
+  // anything else (null prints "null", a symbol throws the catchable
+  // TypeError).
+  let separatorOf = (ref: IrExpr): IrExpr => lowerer.ensureString(ref, node);
+  let held = false;
   if (value.type.kind === "union") {
-    const undefinedTag = lowerer.armTag(value.type.unionId, UNDEFINED_T);
+    const unionId = value.type.unionId;
+    const undefinedTag = lowerer.armTag(unionId, UNDEFINED_T);
     if (undefinedTag >= 0) {
-      const local = lowerer.declareHiddenLocal("%joinSeparator", value.type);
-      const ref = varRef(local.id, value.type, loc);
-      return {
-        kind: "seqExpr",
-        stmts: [{ kind: "varDecl", localId: local.id, init: value, loc }],
-        result: {
-          kind: "ternary",
-          cond: {
+      held = true;
+      separatorOf = (ref) =>
+        ternary(
+          {
             kind: "unionIsTag",
-            unionId: value.type.unionId,
+            unionId,
             tag: undefinedTag,
             value: ref,
             negated: false,
             type: BOOL,
             loc,
           },
-          then: comma,
-          else_: lowerer.ensureString(ref, node),
-          type: STRING,
-          loc,
-        },
+          lowerer.ensureString(ref, node),
+        );
+    }
+  } else if (value.type.kind === "dyn") {
+    held = true;
+    separatorOf = (ref) =>
+      ternary(
+        { kind: "dynTest", test: "undefined", value: ref, type: BOOL, loc },
+        { kind: "libCall", fn: "dyn.toStringCoerce", args: [ref], type: STRING, loc },
+      );
+  }
+  if (!convertsWithoutCode(lowerer, value.type))
+    return orderedSeparatorJoin(lowerer, receiver, value, separatorOf, loc);
+  if (!held) return join(separatorOf(value));
+  const local = lowerer.declareHiddenLocal("%joinSeparator", value.type);
+  return join({
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: local.id, init: value, loc }],
+    result: separatorOf(varRef(local.id, value.type, loc)),
+    type: STRING,
+    loc,
+  });
+}
+
+/** Whether ToString of a `type` value runs no code of the program: primitives
+ * and unions of them. */
+function convertsWithoutCode(lowerer: Lowerer, type: IrType): boolean {
+  if (type.kind === "union")
+    return (
+      lowerer.unions.get(type.unionId)?.arms.every((arm) => convertsWithoutCode(lowerer, arm)) ??
+      false
+    );
+  return (
+    type.kind === "string" ||
+    type.kind === "f64" ||
+    type.kind === "bool" ||
+    type.kind === "nullT" ||
+    type.kind === "undefinedT"
+  );
+}
+
+function arrayJoin(receiver: IrExpr, sep: IrExpr, loc: SrcLoc): IrExpr {
+  return { kind: "arrIntrinsic", method: "join", receiver, args: [sep], type: STRING, loc };
+}
+
+/** `receiver.join(value)` where ToString of the separator value can run code
+ * of the program (an object's toString, a checked-dynamic value).
+ * Array.prototype.join reads the length before it converts the separator,
+ * and that code can change the array, so the join covers exactly the
+ * elements below that length: a longer array joins its first ones, and the
+ * missing elements of a shorter one join as empty strings. */
+function orderedSeparatorJoin(
+  lowerer: Lowerer,
+  receiver: IrExpr,
+  value: IrExpr,
+  separatorOf: (ref: IrExpr) => IrExpr,
+  loc: SrcLoc,
+): IrExpr {
+  const array = lowerer.declareHiddenLocal("%joinArray", receiver.type);
+  const separatorValue = lowerer.declareHiddenLocal("%joinSeparatorValue", value.type);
+  const length = lowerer.declareHiddenLocal("%joinLength", F64);
+  const separator = lowerer.declareHiddenLocal("%joinSeparator", STRING);
+  const arrayRef = varRef(array.id, receiver.type, loc);
+  const separatorValueRef = varRef(separatorValue.id, value.type, loc);
+  const lengthRef = varRef(length.id, F64, loc);
+  const separatorRef = varRef(separator.id, STRING, loc);
+  const currentLength = (): IrExpr => ({
+    kind: "arrIntrinsic",
+    method: "length",
+    receiver: arrayRef,
+    args: [],
+    type: F64,
+    loc,
+  });
+  const compare = (op: "===" | ">", left: IrExpr, right: IrExpr): IrExpr => ({
+    kind: "bin",
+    op,
+    left,
+    right,
+    type: BOOL,
+    loc,
+  });
+  const minus = (left: IrExpr, right: IrExpr): IrExpr => ({
+    kind: "bin",
+    op: "-",
+    left,
+    right,
+    type: F64,
+    loc,
+  });
+  const repeat = (count: IrExpr): IrExpr => ({
+    kind: "strIntrinsic",
+    method: "repeat",
+    receiver: separatorRef,
+    args: [count],
+    type: STRING,
+    loc,
+  });
+  const ternary = (cond: IrExpr, then: IrExpr, else_: IrExpr): IrExpr => ({
+    kind: "ternary",
+    cond,
+    then,
+    else_,
+    type: STRING,
+    loc,
+  });
+  const first: IrExpr = {
+    kind: "arrIntrinsic",
+    method: "slice",
+    receiver: arrayRef,
+    args: [numLit(0, loc), lengthRef],
+    type: receiver.type,
+    loc,
+  };
+  const changed = ternary(
+    compare(">", currentLength(), lengthRef),
+    arrayJoin(first, separatorRef, loc),
+    ternary(
+      compare("===", currentLength(), numLit(0, loc)),
+      repeat(minus(lengthRef, numLit(1, loc))),
+      {
+        kind: "strConcat",
+        left: arrayJoin(arrayRef, separatorRef, loc),
+        right: repeat(minus(lengthRef, currentLength())),
         type: STRING,
         loc,
-      };
-    }
-  }
-  if (value.type.kind === "dyn") {
-    lowerer.noLowering(".join separator with a runtime-dependent undefined value", node);
-  }
-  return lowerer.ensureString(value, node);
+      },
+    ),
+  );
+  return {
+    kind: "seqExpr",
+    stmts: [
+      { kind: "varDecl", localId: array.id, init: receiver, loc },
+      { kind: "varDecl", localId: separatorValue.id, init: value, loc },
+      { kind: "varDecl", localId: length.id, init: currentLength(), loc },
+      {
+        kind: "varDecl",
+        localId: separator.id,
+        init: separatorOf(separatorValueRef),
+        loc,
+      },
+    ],
+    result: ternary(
+      compare("===", currentLength(), lengthRef),
+      arrayJoin(arrayRef, separatorRef, loc),
+      changed,
+    ),
+    type: STRING,
+    loc,
+  };
 }
 
 /** Ambient array method calls. `push`/`unshift`/`pop`/`reverse`/
@@ -377,6 +542,21 @@ export function lowerArrayMethodCall(
         ? lowerer.coerceInto(call, dispatched, result)
         : dispatched;
     }
+  }
+  // A checker ARRAY type with no mapping whose VALUE lowers to a static
+  // array: `Object.entries(value).filter(([, item]) => ...)` inside a
+  // generic body, where the checker spells the entry element as a deferred
+  // conditional over the lib overload's own type parameter
+  // (`[string, keyof T extends never ? unknown : T[keyof T]]`) that no
+  // bound-type-parameter resolver can decide, while the Object.entries
+  // lowering answers the concrete tuple array the value actually has. Ride
+  // the ordinary tables on the lowered element type, as the checker-untyped
+  // probe above does (re-lowering is pure IR construction); the stdlib
+  // member gate below still applies, because the checker does type this
+  // receiver.
+  if (receiverIr === null && lowerer.checker.isArrayType(checkerReceiver)) {
+    const probe = lowerer.lowerExpr(access.expression);
+    if (probe.type.kind === "array") receiverIr = probe.type;
   }
   if (receiverIr?.kind === "union") {
     const unionHof = lowerArrayUnionHofCall(lowerer, call, access, receiverIr);
@@ -658,7 +838,10 @@ export function lowerArrayMethodCall(
     const hasSpread = itemNodes.some(ts.isSpreadElement);
     const itemProbes = hasSpread ? [] : itemNodes.map((arg) => tryLowerExpression(lowerer, arg));
     const statefulItems = itemProbes.some(
-      (probe) => probe !== null && lowerer.runtimeOptionalWidening(probe.type, elem) !== null,
+      (probe) =>
+        probe !== null &&
+        (lowerer.runtimeOptionalWidening(probe.type, elem) !== null ||
+          optionalElementValue(lowerer, probe, elem)),
     );
     const items: IrExpr = hasSpread
       ? lowerArraySpreadItems(lowerer, itemNodes, elem, receiverIr, loc)
@@ -814,6 +997,27 @@ export function lowerArrayMethodCall(
         // Fresh elements (an array literal) convert into the element layout.
         src = liftedFreshSpread(lowerer, spreadArg.expression, src, receiverIr, loc) ?? src;
       }
+      // A source the checker typed WIDER than the iterable it holds at run
+      // time (an untyped value, a `T | undefined` local): Node iterates
+      // whatever the value is and throws the not-iterable TypeError for
+      // null/undefined. Drain through the checked iterator walk and
+      // validate each element into the receiver's slot.
+      if (
+        !typeEquals(src.type, receiverIr) &&
+        (src.type.kind === "dyn" || widenedIterableType(lowerer, src.type)) &&
+        canDynCheckTo(
+          receiverIr,
+          (id) => lowerer.shapes.get(id),
+          (id) => lowerer.unions.get(id),
+        )
+      ) {
+        const dynSrc = lowerer.coerceInto(spreadArg.expression, src, DYN);
+        src = lowerer.coerceInto(
+          spreadArg.expression,
+          checkedIteratorPack(lowerer, dynSrc, notIterableSpelling(spreadArg.expression), loc),
+          receiverIr,
+        );
+      }
       if (!typeEquals(src.type, receiverIr)) {
         lowerer.unsupported(
           "SC1090",
@@ -875,6 +1079,65 @@ export function lowerArrayMethodCall(
         loc,
       };
     }
+    // A `(T | undefined)[]` (primitiveElement) takes undefined values as
+    // present undefined elements, stored after the insertion.
+    if (
+      (name === "push" || name === "unshift") &&
+      primitiveElement(elem) &&
+      call.arguments.nodes.some((a) => checkerTypeAdmitsUndefined(lowerer, a))
+    ) {
+      const nodes = call.arguments.nodes;
+      const values = nodes.map((a) => lowerer.lowerExpr(a));
+      const inserted = insertedValues(
+        lowerer,
+        values,
+        elem,
+        (value, i) => lowerer.coerceInto(nodes[i]!, value, elem),
+        loc,
+      );
+      if (inserted.optional) {
+        const array = lowerer.declareHiddenLocal("%insertInto", receiver.type);
+        const arr = varRef(array.id, array.type, loc);
+        const length = lowerer.declareHiddenLocal("%insertLength", F64);
+        const count: IrExpr = numLit(values.length, loc);
+        const first: IrExpr =
+          name === "push"
+            ? {
+                kind: "bin",
+                op: "-",
+                left: varRef(length.id, F64, loc),
+                right: count,
+                type: F64,
+                loc,
+              }
+            : numLit(0, loc);
+        return {
+          kind: "seqExpr",
+          stmts: [
+            { kind: "varDecl", localId: array.id, init: receiver, loc },
+            ...inserted.stmts,
+            {
+              kind: "varDecl",
+              localId: length.id,
+              init: {
+                kind: "arrIntrinsic",
+                method: name,
+                receiver: arr,
+                args: inserted.args,
+                type: F64,
+                loc,
+              },
+              loc,
+            },
+            ...inserted.fill(arr, first),
+          ],
+          result: varRef(length.id, F64, loc),
+          type: F64,
+          loc,
+        };
+      }
+      return { kind: "arrIntrinsic", method: name, receiver, args: inserted.args, type: F64, loc };
+    }
     // Inserted values flow into the element slot like an assignment would:
     // union-element arrays wrap plain arm values (coerceInto is inert
     // when the types already agree).
@@ -924,7 +1187,7 @@ export function lowerArrayMethodCall(
     // an array-of-arrays receiver given a bare inner array, where TS
     // types it as an element but JS would SPREAD it — is fenced.
     const receiver = lowerer.lowerExpr(access.expression);
-    const shape: (IrType | null)[] = [];
+    const shape: (IrType | null | "dyn")[] = [];
     const args: IrExpr[] = [];
     for (const argNode of call.arguments.nodes) {
       if (ts.isSpreadElement(argNode)) {
@@ -956,6 +1219,16 @@ export function lowerArrayMethodCall(
         if (arg.type.kind !== "array") lowerer.badType(argNode, lowerer.typeOf(argNode));
         shape.push(arg.type.elem);
         args.push(arg);
+        continue;
+      }
+      // A checked-dynamic value: whether JS spreads it is decided at run
+      // time (an array spreads one level, anything else is one element).
+      if (
+        (argIr === null || argIr.kind === "dyn") &&
+        (probedArg ?? tryLowerExpression(lowerer, argNode))?.type.kind === "dyn"
+      ) {
+        shape.push("dyn");
+        args.push(lowerer.lowerExpr(argNode));
         continue;
       }
       // An element value — union elements wrap exactly like a push.
@@ -996,9 +1269,12 @@ export function lowerArrayMethodCall(
     const hasSpread = itemNodes.some(ts.isSpreadElement);
     const itemProbes = hasSpread ? [] : itemNodes.map((arg) => tryLowerExpression(lowerer, arg));
     const statefulItems = itemProbes.some(
-      (probe) => probe !== null && lowerer.runtimeOptionalWidening(probe.type, elem) !== null,
+      (probe) =>
+        probe !== null &&
+        (lowerer.runtimeOptionalWidening(probe.type, elem) !== null ||
+          optionalElementValue(lowerer, probe, elem)),
     );
-    if (statefulItems && itemNodes.length === 1) {
+    if (statefulItems && itemNodes.length === 1 && itemProbes[0]?.type.kind === "union") {
       return lowerOptionalSpliceItem(
         lowerer,
         receiver,
@@ -1103,8 +1379,7 @@ export function lowerArrayMethodCall(
       );
     }
     const receiver = lowerer.lowerExpr(access.expression);
-    const sep = lowerArrayJoinSeparator(lowerer, call.arguments.nodes[0], loc);
-    return { kind: "arrIntrinsic", method: "join", receiver, args: [sep], type: STRING, loc };
+    return lowerArrayJoin(lowerer, receiver, call.arguments.nodes[0], loc);
   }
   if (name === "map" || name === "filter" || name === "forEach") {
     return lowerArrayHofCall(lowerer, call, access, name, elem);
@@ -1734,7 +2009,28 @@ function arraySearchHelper(
     type: valueT,
     loc,
   };
-  const value = directNeedle ? rawRead : optionalValue;
+  // A direct needle matches only a present value (`match` tests the state
+  // first); a present undefined of a `(T | undefined)[]` (primitiveElement)
+  // must not be read as T.
+  const value = !directNeedle
+    ? optionalValue
+    : primitiveElement(elem)
+      ? {
+          kind: "ternary" as const,
+          cond: {
+            kind: "bin" as const,
+            op: "===" as const,
+            left: stateRef,
+            right: numLit(1, loc),
+            type: BOOL,
+            loc,
+          },
+          then: rawRead,
+          else_: elementPlaceholder(elem, loc),
+          type: elem,
+          loc,
+        }
+      : rawRead;
   const readT = directNeedle ? elem : valueT;
   const equal = arraySearchEquality(
     lowerer,
@@ -1788,17 +2084,27 @@ function arraySearchHelper(
     },
     loc,
   };
-  const visitPresent: IrStmt[] = [
-    { kind: "varDecl", localId: "value.0", init: value, loc },
-    {
-      kind: "if",
-      cond: match,
-      then: [{ kind: "return", value: method === "includes" ? boolLit(true, loc) : indexRef, loc }],
-      else_: null,
-      loc,
-    },
-    advance,
-  ];
+  const found: IrStmt = {
+    kind: "if",
+    cond: directNeedle ? equal : match,
+    then: [{ kind: "return", value: method === "includes" ? boolLit(true, loc) : indexRef, loc }],
+    else_: null,
+    loc,
+  };
+  // A direct needle reads only value slots: an undefined or foreign
+  // element written through a dynamic view has no element-typed payload.
+  const visitPresent: IrStmt[] = directNeedle
+    ? [
+        {
+          kind: "if",
+          cond: { kind: "bin", op: "===", left: stateRef, right: numLit(1, loc), type: BOOL, loc },
+          then: [{ kind: "varDecl", localId: "value.0", init: value, loc }, found],
+          else_: null,
+          loc,
+        },
+        advance,
+      ]
+    : [{ kind: "varDecl", localId: "value.0", init: value, loc }, found, advance];
   const skipHole: IrStmt[] =
     method === "lastIndexOf"
       ? [advance]

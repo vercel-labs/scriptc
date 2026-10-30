@@ -1,0 +1,7 @@
+{
+  "nodeVersion": "24.22.0",
+  "tarballSha256": "41f97cff2c666f1f8293dc5f85c65e8dd605c16b43fd9febd49ede32ee1e0329",
+  "moduleVersion": 137,
+  "configureFlags": ["--shared", "--ninja"],
+  "icu": "full"
+}

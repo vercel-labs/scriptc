@@ -1,0 +1,43 @@
+function-value-arguments-length.ts:7:17 - error SC1090: 'arguments.length' in function expressions passed where the expected function type has optional or rest parameters (the count varies per call) are not supported yet
+
+  6 | const replaced = "a-b".replace(/-/, function (match) {
+  7 |   return String(arguments.length) + match;
+    |                 ^~~~~~~~~~~~~~~~
+  8 | });
+
+function-value-arguments-length.ts:13:10 - error SC1090: 'arguments.length' in function expressions passed where the expected function type has optional or rest parameters (the count varies per call) are not supported yet
+
+  12 | const counted = call(function (a) {
+  13 |   return arguments.length + a;
+     |          ^~~~~~~~~~~~~~~~
+  14 | });
+
+function-value-arguments-length.ts:18:22 - error SC1090: functions that read 'arguments.length' used as values where the expected function type has optional or rest parameters (the count varies per call) are not supported yet
+
+  17 | }
+  18 | const offsets = call(offset);
+     |                      ^~~~~~
+  19 | class Scale {
+
+function-value-arguments-length.ts:21:20 - error SC1090: 'arguments.length' in methods, nested, async and generator functions used as values (a caller of the value can pass more arguments than the function declares) are not supported yet
+
+  20 |   static by(value: number): number {
+  21 |     return value * arguments.length;
+     |                    ^~~~~~~~~~~~~~~~
+  22 |   }
+
+function-value-arguments-length.ts:32:30 - error SC1090: 'arguments.length' in an arrow function inside a function that is also used as a value is not supported yet
+
+  31 | function deferred(value: number): number {
+  32 |   const read = (): number => arguments.length;
+     |                              ^~~~~~~~~~~~~~~~
+  33 |   return value + read();
+
+function-value-arguments-length.ts:33:18 - error SC2004: uses of 'read' inherit the blocker on its declaration
+
+  32 |   const read = (): number => arguments.length;
+  33 |   return value + read();
+     |                  ^~~~
+  34 | }
+
+  hint: the declaration of 'read' did not compile — fix the diagnostic reported there and these sites clear with it

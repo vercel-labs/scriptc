@@ -46,11 +46,15 @@ describe("output option compatibility", () => {
     [{ emit: "llvm", windowsSubsystem: "gui" }, /windows-subsystem/],
     [{ emit: "obj", strip: true }, /strip/],
     [{ emit: "llvm", strip: true }, /strip/],
+    [{ emit: "obj", staticLink: true }, /--static/],
+    [{ emit: "llvm", staticLink: true }, /--static/],
     [{ emit: "obj", detachedExit: true }, /detached-exit/],
     [{ emit: "llvm", detachedExit: true }, /detached-exit/],
+    [{ emit: "obj", largePages: true }, /large-pages/],
+    [{ emit: "llvm", largePages: true }, /large-pages/],
+    [{ emit: "asm", cpuDispatch: true }, /cpu-dispatch/],
     [{ emit: "obj", profileGenerate: "/tmp/%p.profraw" }, /profile-generate/],
     [{ emit: "llvm", profileUse: "/tmp/a.profdata" }, /profile-use/],
-    [{ profileGenerate: "/tmp/%p.profraw", profileUse: "/tmp/a.profdata" }, /cannot be combined/],
   ] as const)("rejects %j", (override, message) => {
     const result = resolveOutputOptions("build", { ...BASE, ...override });
     expect(result).toEqual({ ok: false, message: expect.stringMatching(message) });
@@ -114,5 +118,15 @@ describe("output option compatibility", () => {
       ok: true,
       outputKind: "exe",
     });
+  });
+
+  test("a second profile phase combines --profile-use and --profile-generate", () => {
+    expect(
+      resolveOutputOptions("build", {
+        ...BASE,
+        profileGenerate: "/tmp/%p.profraw",
+        profileUse: "/tmp/a.profdata",
+      }),
+    ).toMatchObject({ ok: true, outputKind: "exe" });
   });
 });

@@ -1,0 +1,17 @@
+{
+  "name": "type-patches-stale",
+  "private": true,
+  "type": "module",
+  "scriptc": {
+    "typePatches": {
+      "termctx@^2.0.0": { "declarations": { "OutputContext.width": "| undefined" } },
+      "ms@^2.1.0": {
+        "declarations": {
+          "index.js:format()": "| undefined",
+          "index.js:fmtShort(ms)": "| Number",
+          "index.js:plural()": "| undefined"
+        }
+      }
+    }
+  }
+}

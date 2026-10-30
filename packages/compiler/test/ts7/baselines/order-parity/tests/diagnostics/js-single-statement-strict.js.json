@@ -1,0 +1,34 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/js-single-statement-strict.js"
+ ],
+ "diags": [
+  {
+   "code": "SC0001",
+   "message": "A label is not allowed here.",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/js-single-statement-strict.js",
+    "start": 355,
+    "end": 356
+   }
+  },
+  {
+   "code": "SC0007",
+   "message": "strict mode code may not declare a function in a single-statement position",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/js-single-statement-strict.js",
+    "start": 358,
+    "end": 379
+   }
+  },
+  {
+   "code": "SC0007",
+   "message": "strict mode code may not declare a function in a single-statement position",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/js-single-statement-strict.js",
+    "start": 336,
+    "end": 354
+   }
+  }
+ ]
+}

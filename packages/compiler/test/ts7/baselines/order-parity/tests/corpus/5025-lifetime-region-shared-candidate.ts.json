@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5025-lifetime-region-shared-candidate.ts"
+ ],
+ "diags": []
+}

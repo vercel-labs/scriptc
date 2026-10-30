@@ -141,7 +141,7 @@ const CYC_GEN = 3;
 /** ScrCycHdr.buf, an i32 at this header offset. */
 export const CYC_BUF = 4;
 /** The emitted descriptor `{ trace, free_fn, kind, id }` (ScrCycType). */
-const CYC_TYPE = "{ ptr, ptr, i32, i32 }";
+export const CYC_TYPE = "{ ptr, ptr, i32, i32 }";
 
 function declareState(host: AllocHost): void {
   if (host.threadLocalAlloc !== true) host.declare(`@scr_sa = external global ${SA_TYPE}`);

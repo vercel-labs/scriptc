@@ -1,5 +1,9 @@
 import type { IrExpr, IrFunction, IrStmt, IrType } from "../../ir/ir.js";
 import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
+import { eachNodeOfKinds, type IrNodeIndex } from "../../ir/node-index.js";
+
+/** Assignment statements: only these rebind a parameter. */
+const ASSIGN_KINDS = ["assign"] as const;
 
 /** Parameters that keep the borrowed calling convention although the body
  * rebinds them (`source = (source as LiteralType).regularType`). The
@@ -15,6 +19,8 @@ export function findReboundParameters(
   fn: IrFunction,
   plainReference: (type: IrType) => boolean,
   excluded: ReadonlySet<string>,
+  /** The module's node index: a body that assigns no candidate parameter is not walked. */
+  nodes?: IrNodeIndex,
 ): ReadonlySet<string> {
   const result = new Set<string>();
   if (fn.async || fn.generator || fn.captures || fn.classCaptures) return result;
@@ -34,6 +40,15 @@ export function findReboundParameters(
       .map((param) => param.localId),
   );
   if (candidates.size === 0) return result;
+  // A parameter is rebound only by an assignment statement to it.
+  if (nodes !== undefined) {
+    let assigned = false;
+    eachNodeOfKinds(fn, nodes.scan(ASSIGN_KINDS), (node) => {
+      if (node.kind === "assign" && candidates.has(node.localId)) assigned = true;
+      return !assigned;
+    });
+    if (!assigned) return result;
+  }
   const rebound = new Set<string>();
   const invalid = new Set<string>();
   const expr = (e: IrExpr): boolean => {

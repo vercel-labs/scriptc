@@ -406,7 +406,7 @@ test("worker programs poll for termination only where execution can be unbounded
   expect(computeMayThrow({ ...mod, workers: false }).workerEntryPolls).toBeUndefined();
 });
 
-test("stack checks cover recursive components and recursion through reentrant operations", () => {
+test("stack checks cover every recursive cycle, including recursion through reentrant operations", () => {
   const mod = moduleWith(
     fn("caller", [call("self"), call("left"), call("leaf"), call("walker")], []),
     fn("self", [call("self"), call("leaf")], []),
@@ -420,7 +420,12 @@ test("stack checks cover recursive components and recursion through reentrant op
     fn("visitor", [callClosure("leaf")], []),
   );
   const answer = computeMayThrow(mod, { stackChecks: true });
-  expect([...answer.stackChecks!].sort()).toEqual(["left", "right", "self", "step", "walker"]);
+  // One check per cycle: self, one of left and right, and one of walker and
+  // step (the earlier function on ties).
+  expect([...answer.stackChecks!].sort()).toEqual(["left", "self", "walker"]);
+  expect(
+    [...computeMayThrow(mod, { stackChecks: "everyCycleMember" }).stackChecks!].sort(),
+  ).toEqual(["left", "right", "self", "step", "walker"]);
   // Checked functions throw the overflow RangeError, so their callers poll;
   // a throwing closure target makes every indirect call poll as well.
   expect(answer.indirect).toBe(true);
@@ -437,7 +442,7 @@ test("stack checks cover recursive components and recursion through reentrant op
   expect(computeMayThrow(mod).fns.size).toBe(0);
 });
 
-test("stack-checked synchronous functions skip the worker entry poll", () => {
+test("synchronous functions on a checked cycle skip the worker entry poll", () => {
   const asyncSelf: IrFunction = { ...fn("asyncSelf", [call("asyncSelf")], []), async: true };
   const mod: IrModule = {
     ...moduleWith(
@@ -452,10 +457,11 @@ test("stack-checked synchronous functions skip the worker entry poll", () => {
     workers: true,
   };
   const answer = computeMayThrow(mod, { stackChecks: true });
-  expect([...answer.stackChecks!].sort()).toEqual(["asyncSelf", "caller", "left", "right", "self"]);
-  // Callers test after every call of a stack-checked function, and its
-  // overflow unwinds through those tests, so only the module entry, async
-  // bodies and unbounded functions without a stack check poll on entry.
+  expect([...answer.stackChecks!].sort()).toEqual(["asyncSelf", "caller", "left", "self"]);
+  // Callers test after every call of a function on a checked cycle (it may
+  // throw), and an overflow unwinds through those tests, so only the module
+  // entry, async bodies and unbounded functions off any cycle poll on entry;
+  // right needs no poll although left holds the cycle's check.
   expect([...answer.workerEntryPolls!].sort()).toEqual(["asyncSelf", "caller", "walker"]);
   expect(answer.fns.has("self") && answer.fns.has("left") && answer.fns.has("right")).toBe(true);
   // Without stack checks (WASI, Windows, libraries) every cycle keeps its poll.
@@ -467,6 +473,48 @@ test("stack-checked synchronous functions skip the worker entry poll", () => {
     "self",
     "walker",
   ]);
+});
+
+test("stack checks meet every cycle once and bound the runs between checks", () => {
+  // A ring of 80 functions, with a chord from fn10 back to fn0, and a
+  // separate ring of three whose functions also call each other backwards.
+  const ring = Array.from({ length: 80 }, (_, i) =>
+    fn(`fn${i}`, i === 10 ? [call("fn11"), call("fn0")] : [call(`fn${(i + 1) % 80}`)], []),
+  );
+  const mod = moduleWith(
+    ...ring,
+    fn("a", [call("b"), call("c")], []),
+    fn("b", [call("c"), call("a")], []),
+    fn("c", [call("a"), call("b")], []),
+  );
+  const checks = computeMayThrow(mod, { stackChecks: true }).stackChecks!;
+  // Removing the checked functions leaves no cycle, and no run of more than
+  // 32 unchecked calls.
+  const callees = new Map(
+    mod.functions.map((f) => [
+      f.name,
+      f.body.flatMap((s) =>
+        s.kind === "exprStmt" && s.expr.kind === "call" ? [s.expr.callee] : [],
+      ),
+    ]),
+  );
+  const longest = new Map<string, number>();
+  const visiting = new Set<string>();
+  const run = (name: string): number => {
+    if (checks.has(name)) return 0;
+    expect(visiting.has(name)).toBe(false);
+    const known = longest.get(name);
+    if (known !== undefined) return known;
+    visiting.add(name);
+    const depth = 1 + Math.max(0, ...callees.get(name)!.map(run));
+    visiting.delete(name);
+    longest.set(name, depth);
+    return depth;
+  };
+  for (const f of mod.functions) expect(run(f.name)).toBeLessThanOrEqual(32);
+  // fn0 breaks both ring cycles, fn33 and fn66 bound the run along the
+  // ring, and two of a, b and c break their four cycles.
+  expect([...checks].sort()).toEqual(["a", "b", "fn0", "fn33", "fn66"]);
 });
 
 test("class members are reachable from reentrant operations", () => {

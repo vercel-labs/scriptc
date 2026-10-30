@@ -21,6 +21,7 @@
 #include <time.h>
 #include <unistd.h>
 #ifdef __linux__
+#include <poll.h>
 #include <sched.h>
 #endif
 #endif
@@ -321,7 +322,32 @@ void scr_mailbox_wait(ScrMailbox *mailbox, double milliseconds) {
   if (!(milliseconds > 0)) return;
   if (scr_mailbox_spin(mailbox, milliseconds)) return;
   scr_mailbox_lock(mailbox);
-  if (!mailbox->head && !mailbox->closed) {
+  bool waiting = !mailbox->head && !mailbox->closed;
+#ifdef __linux__
+  /* Linux sleeps in ppoll(2) on the wake pipe rather than on the
+   * condition: a pipe write wakes its reader as a synchronous wakeup,
+   * which the scheduler can run on the writer's CPU when the writer is
+   * about to block. A worker that posts its result and then waits frees
+   * that CPU, so the thread it woke runs there at once instead of queueing
+   * behind another busy thread until the scheduler preempts it. Bytes left
+   * by signals whose events were already taken are drained first, under
+   * the lock: an event posted after the unlock writes a new byte. */
+  if (waiting) scr_mailbox_drain(mailbox);
+  scr_mailbox_unlock(mailbox);
+  if (!waiting) return;
+  struct pollfd wake = {mailbox->read_fd, POLLIN, 0};
+  if (isinf(milliseconds)) (void)ppoll(&wake, 1, NULL, NULL);
+  else {
+    /* The event loop rechecks its monotonic deadlines after every wake,
+     * including spurious ones. Bound conversion before casting time_t. */
+    if (milliseconds > 86400000) milliseconds = 86400000;
+    struct timespec timeout = {(time_t)(milliseconds / 1000),
+        (long)ceil(fmod(milliseconds, 1000) * 1000000)};
+    if (timeout.tv_nsec == 1000000000) { timeout.tv_sec++; timeout.tv_nsec = 0; }
+    (void)ppoll(&wake, 1, &timeout, NULL);
+  }
+#else
+  if (waiting) {
 #ifdef _WIN32
     DWORD timeout = milliseconds >= INFINITE ? INFINITE : (DWORD)ceil(milliseconds);
     (void)SleepConditionVariableSRW(&mailbox->condition, &mailbox->lock, timeout, 0);
@@ -348,6 +374,7 @@ void scr_mailbox_wait(ScrMailbox *mailbox, double milliseconds) {
 #endif
   }
   scr_mailbox_unlock(mailbox);
+#endif
 }
 
 int scr_mailbox_pollfd(const ScrMailbox *mailbox) {

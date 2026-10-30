@@ -51,9 +51,58 @@ ScrStr *scr_insp_typed_array(ScrBytes *b, double recurse, double depth);
 ScrStr *scr_insp_bytes(ScrBytes *b, double recurse, double depth);
 /* format's %s / rest-args twin: dyn strings pass verbatim. */
 ScrStr *scr_insp_dyn_s(ScrDyn *d, double depth);
+/* util.format over checked-dynamic arguments (formatWithOptionsInternal):
+ * the options an inspect of each argument takes, and the API name the
+ * SC2020 refusals name. These entries call program code, so they answer
+ * NULL with the exception pending when it throws. */
+typedef struct ScrInspFormatOptions {
+  const char *surface;
+  double depth; /* Infinity for null, undefined and NaN */
+  /* The depth as the options gave it, which custom inspect functions
+   * receive when the depth is unbounded: 0 a number (depth_number,
+   * Infinity or NaN), 1 null, 2 undefined. */
+  int depth_kind;
+  double depth_number;
+  bool colors;
+  bool custom_inspect;
+  double break_length;
+  double compact; /* -1 for false */
+  bool sorted;
+  /* The options object, when it holds keys inspect does not read: custom
+   * inspect functions receive them (borrowed; NULL otherwise). */
+  const ScrDyn *user_options;
+} ScrInspFormatOptions;
+void scr_insp_format_defaults(ScrInspFormatOptions *o, const char *surface);
+/* Reads inspect's options from an options object into o; false with the
+ * SC2020 refusal pending for values that have no lowering. */
+bool scr_insp_format_read_options(const ScrDyn *options, ScrInspFormatOptions *o);
+ScrStr *scr_insp_format(ScrDyn *const *args, size_t argc, const ScrInspFormatOptions *o);
+/* util.format(...pack) and util.formatWithOptions(options, ...pack) over a
+ * dyn array of the arguments (+1). */
+ScrStr *scr_insp_format_pack(ScrDyn *pack);
+/* util.format over a native list of checked values, the compiled calls'
+ * held arguments (+1). */
+struct ScrArr;
+ScrStr *scr_insp_format_list(struct ScrArr *list);
+/* scr_insp_format_list when every argument is a string, number, boolean,
+ * null or undefined, without the checked-dynamic walk (+1). */
+ScrStr *scr_insp_format_primitives(struct ScrArr *list);
+ScrStr *scr_insp_format_with_options(ScrDyn *options, ScrDyn *pack);
+/* util.inspect(value, options, depth, colors) over checked-dynamic
+ * arguments with Node's legacy-argument rules; argc is the call's
+ * argument count (+1, or NULL with the exception pending). */
+ScrStr *scr_insp_inspect(ScrDyn *value, ScrDyn *options, ScrDyn *depth, ScrDyn *colors,
+                         double argc);
+/* Whether a format string has a '%' before its last character, the only
+ * strings whose substitutions can change the output. */
+bool scr_insp_format_specifies(ScrStr *first);
+bool scr_insp_format_specifies_dyn(ScrDyn *first);
+/* format's %s over a dyn value: scr_insp_dyn_s, except that values whose
+ * class defines its own toString print String(value). */
+ScrStr *scr_insp_dyn_format_s(ScrDyn *d, double depth);
 ScrStr *scr_insp_dyn_hidden(ScrDyn *d, double depth); /* %o: showHidden */
 void scr_insp_begin(double recurse);
-/* util.inspect's breakLength, compact (0 for false) and sorted for the
+/* util.inspect's breakLength, compact (-1 for false) and sorted for the
  * renders that follow; the call site restores the defaults (80, 3, false)
  * afterwards. */
 void scr_insp_layout(double break_length, double compact, bool sorted);
@@ -80,6 +129,38 @@ ScrStr *scr_insp_end(ScrStr *base, ScrStr *b0, ScrStr *b1, double recurse,
  * caller's level (+1; borrows both). */
 void scr_insp_nested_begin(void);
 ScrStr *scr_insp_nested_end(ScrStr *prefix, ScrStr *inner);
+/* nested_end's restore without its text: the caller's context returns. */
+void scr_insp_nested_restore(void);
+/* ctx.customInspect for the renders that follow; answers the previous
+ * value for the caller to restore. */
+bool scr_insp_custom_inspect(bool enabled);
+/* Around a custom inspect function's call: begin gives the calls it makes
+ * a fresh inspect context with the default options and answers a token;
+ * end(token) restores the caller's, also after calls that threw. */
+double scr_insp_custom_call_begin(void);
+void scr_insp_custom_call_end(double token);
+/* How the unbounded depth of the renders that follow was given, for custom
+ * inspect functions: 0 Infinity, 1 null, 2 undefined. Answers the
+ * previous kind for the caller to restore. */
+double scr_insp_depth_kind(double kind);
+/* A custom inspect function's string result re-indented at the current
+ * level (+1; borrows text). */
+ScrStr *scr_insp_custom_text(ScrStr *text);
+/* The compiled [util.inspect.custom] calls: ctx.customInspect, the depth
+ * argument at recursion `recurse` of `depth` and the options object (+1
+ * dyn values; options NULL with an exception pending), util.inspect as a
+ * function value (+1), whether a dyn result is the instance itself, and a
+ * dyn result's rendering at the instance's level (+1). */
+bool scr_insp_custom_enabled(void);
+/* Registers a class's compiled custom inspect function under the type key
+ * of its instances' typed refs: fn(self, depth, options, inspect) answers
+ * the method's result (borrows both). */
+void scr_insp_register_custom(ScrStr *type_key, ScrDyn *fn);
+ScrDyn *scr_insp_custom_depth(double recurse, double depth);
+ScrDyn *scr_insp_custom_options(double depth);
+ScrDyn *scr_insp_inspect_function(void);
+bool scr_insp_custom_is_self(ScrDyn *result, ScrDyn *self);
+ScrStr *scr_insp_custom_result(ScrDyn *result, double recurse, double depth);
 /* Mark the inspector's state before a top-level render, and return to the
  * mark when the render ends, normally or by an inspection refusal. */
 void scr_insp_mark(void);

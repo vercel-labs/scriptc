@@ -16,6 +16,10 @@ import { DYN, STRING, VOID } from "../../ir/ir.js";
 import { everyStmt } from "../../ir/traverse.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
 import { ENTRY_NAME, type Lowerer } from "./lowerer.js";
+import {
+  childStreamSetsEncoding,
+  lowerWithCheckedParams,
+} from "./builtins/child-process-methods.js";
 
 /** `child.name = value` in a JavaScript file over a typed child: the write
  * lands in the child's property table through its checked-dynamic box. */
@@ -235,10 +239,48 @@ export function lowerChildPropertyCall(
     recv,
     method: access.name.text,
     calleeName: ts.getTextOfNode(access),
-    args: call.arguments.nodes.map((arg) => lowerer.lowerExprExpecting(arg, DYN)),
+    args: call.arguments.nodes.map((arg, i) =>
+      i === 1 && dataListenerOfEncodedStream(lowerer, call, access)
+        ? lowerer.coerceToExpected(lowerUntypedChunkListener(lowerer, arg), DYN)
+        : lowerer.lowerExprExpecting(arg, DYN),
+    ),
     type: DYN,
     loc,
   };
+}
+
+const LISTENER_METHODS: ReadonlySet<string> = new Set([
+  "on",
+  "once",
+  "addListener",
+  "prependListener",
+  "prependOnceListener",
+]);
+
+/** `stream.on("data", (chunk) => ...)` with an unannotated chunk, on a
+ * stream the program calls `setEncoding` on. The declarations type the
+ * chunk as a Buffer, but after `setEncoding` Node passes strings. */
+function dataListenerOfEncodedStream(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): boolean {
+  const [event, listener] = call.arguments.nodes;
+  if (!LISTENER_METHODS.has(access.name.text) || event === undefined || listener === undefined)
+    return false;
+  if (!ts.isStringLiteralLike(event) || event.text !== "data") return false;
+  if (!ts.isArrowFunction(listener) && !ts.isFunctionExpression(listener)) return false;
+  const chunk = listener.parameters.nodes[0];
+  if (chunk === undefined || chunk.type !== undefined || !ts.isIdentifier(chunk.name)) return false;
+  return childStreamSetsEncoding(lowerer, access.expression);
+}
+
+/** The listener with its chunk parameter bound as a checked-dynamic value,
+ * which holds a string or a Buffer as Node passes it. */
+function lowerUntypedChunkListener(lowerer: Lowerer, listener: ts.Expression): IrExpr {
+  const fn = listener as ts.ArrowFunction | ts.FunctionExpression;
+  const symbol = lowerer.checker.getSymbolAtLocation(fn.parameters.nodes[0]!.name);
+  return symbol ? lowerWithCheckedParams(lowerer, listener, [symbol]) : lowerer.lowerExpr(listener);
 }
 
 /** `child.name` in JavaScript over an untyped receiver holding a child, or
@@ -283,10 +325,11 @@ const RENAMES: ReadonlyMap<IrLibFn, IrLibFn> = new Map<IrLibFn, IrLibFn>([
  * property-table entries (in place) and installs the table in %main. */
 export function applyHandleProperties(lowerer: Lowerer, functions: IrFunction[]): void {
   if (!lowerer.writesOntoChildren && !childAdditions(lowerer).any) return;
-  const calls: (IrExpr & { kind: "libCall" })[] = [];
+  // A node the IR shares at several places is renamed once.
+  const calls = new Set<IrExpr & { kind: "libCall" }>();
   const visitor = {
     expr: (e: IrExpr): boolean => {
-      if (e.kind === "libCall" && RENAMES.has(e.fn)) calls.push(e);
+      if (e.kind === "libCall" && RENAMES.has(e.fn)) calls.add(e);
       return true;
     },
     stmt: (): boolean => true,

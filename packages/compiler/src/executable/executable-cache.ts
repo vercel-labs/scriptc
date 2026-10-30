@@ -12,13 +12,14 @@ import {
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
+import type { NativeProfileMatch } from "../backend/native-profile.js";
 import type { FrontendInputSnapshot } from "../frontend/input-tracker.js";
 import { frontendInputsStillMatch, validFrontendInputSnapshot } from "../frontend/input-tracker.js";
 import { compilerReleaseVersion } from "../library/sidecar.js";
 import { nativeArtifactDependenciesStillMatch } from "../backend/native/artifact-stamps.js";
 import { type NativeArtifactDependency } from "../backend/native/contracts.js";
 import { optimizationKeyParts } from "../backend/optimization.js";
-import { type TargetCpu, targetCpuKeyParts } from "../backend/target-cpu.js";
+import { type TargetCpu, cpuDispatchKeyParts, targetCpuKeyParts } from "../backend/target-cpu.js";
 import { privateSiblingPath } from "../backend/build-cache.js";
 import type { CompilerImplementationDependency } from "../library/compiler-self-identity.js";
 import {
@@ -53,6 +54,8 @@ export interface EarlyExecutableNativeFeatures {
   optimization?: "dev" | "speed";
   workers?: boolean;
   youngNursery?: boolean;
+  /** `--large-pages` links scr_text_pages.c. */
+  largePages?: boolean;
   regex: boolean;
   copying: boolean;
   textDecoderLegacy: boolean;
@@ -61,7 +64,19 @@ export interface EarlyExecutableNativeFeatures {
   eventTarget?: boolean;
   wasm?: boolean;
   warningReplace?: boolean;
+  recordViewPartial?: boolean;
   stdioExtended?: boolean;
+  fsFlags?: boolean;
+  strdecDyn?: boolean;
+  processExtras?: boolean;
+  /** Error-taking write completion callbacks: SCR_STREAM_WRITE_ERRORS. */
+  streamWriteErrors?: boolean;
+  /** The process output write slot: SCR_STDIO_WRITE_SLOT. */
+  stdioWriteSlot?: boolean;
+  nodeIsland?: boolean;
+  moduleNamespace?: boolean;
+  moduleNamespaceDyn?: boolean;
+  primitiveWrapper?: boolean;
   zlib: boolean;
   brotli?: boolean;
   assert: boolean;
@@ -72,15 +87,24 @@ export interface EarlyExecutableNativeFeatures {
   dynTier?: boolean;
   streamDyn?: boolean;
   handleProps?: boolean;
+  childLifecycle?: boolean;
   declAdopt?: boolean;
+  typeOrigins?: boolean;
   dynForAwait?: boolean;
   eventsOnceSignal?: boolean;
+  mime?: boolean;
+  webStreams?: boolean;
+  abortSignal?: boolean;
+  utilTiming?: boolean;
   dynBuffer?: boolean;
   builtinValues?: boolean;
+  computedRequire?: boolean;
   events: boolean;
   emitter: boolean;
   symbol: boolean;
   bigint: boolean;
+  /** BigIntStats member reads: scr_stats_bigint.c. Absent (false) otherwise. */
+  bigstats?: boolean;
   searchParams: boolean;
   qs: boolean;
   utilPromisify: boolean;
@@ -96,6 +120,8 @@ export interface EarlyExecutableNativeFeatures {
   dgramDyn: boolean;
   textCodecDyn: boolean;
   watch: boolean;
+  watchFile: boolean;
+  fsBufferBrand: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;
@@ -104,9 +130,12 @@ export interface EarlyExecutableNativeFeatures {
   dh: boolean;
   pki: boolean;
   ed25519: boolean;
+  x509: boolean;
   perfLoop: boolean;
   tlsCa: boolean;
   webcrypto: boolean;
+  /** Intl over ICU (scr_intl.c, the ICU archive and its data file). */
+  intl?: boolean;
 }
 
 interface EarlyExecutableCacheStamp {
@@ -123,6 +152,13 @@ interface EarlyExecutableCacheStamp {
   native: EarlyExecutableNativeFeatures;
   /** The build's performance warnings (SC61xx), which a cache hit repeats. */
   performance?: ScrDiagnostic[];
+  /** The Node islands the build ran, which a cache hit reports again. */
+  islands?: { packages: string[]; modules: string[] };
+  /** Programs that call into Node.js: the libnode pack identity the build
+   * recorded (EarlyExecutableCacheOptions.libnodeIdentity). */
+  libnode?: string;
+  /** How a --profile-use build's profile matched, which a cache hit reports. */
+  profileMatch?: NativeProfileMatch;
   integrity: string;
 }
 
@@ -137,21 +173,49 @@ export interface EarlyExecutableCacheOptions {
   optimization?: "dev" | "speed";
   /** Omitted retains the unstripped executable's historical cache key. */
   strip?: true;
+  /** Omitted unless --static is set. */
+  staticLink?: true;
   /** Omitted for the default Windows console subsystem. */
   windowsSubsystem?: "gui";
   /** Omitted unless --detached-exit is set. */
   detachedExit?: true;
+  /** The identity of the libnode pack a program that calls into Node.js
+   * records (node-islands/libnode.ts libnodeCacheKey), or undefined when the
+   * build names none. Not part of the key: an entry of a program that calls
+   * into Node records it, and a hit requires the same identity, so the pack
+   * settings never change the key of a program that does not. */
+  libnodeIdentity?: () => string | undefined;
+  /** Omitted unless --large-pages is set. */
+  largePages?: true;
+  /** Omitted unless the build links without huge text (CompileOptions.hugeText). */
+  noHugeText?: true;
+  /** Omitted unless --exceptions=rare is set. */
+  exceptions?: "rare";
   /** Omitted for the x86-64 baseline (`--target-cpu`). */
   targetCpu?: TargetCpu;
+  /** Omitted for builds without runtime CPU dispatch. */
+  cpuDispatch?: true;
   /** Omitted without --profile-generate/--profile-use; otherwise the
    * pattern, or the digest of the profile's bytes. */
   profile?: string;
+  /** Omitted without a function layout; otherwise the digest of its bytes. */
+  functionLayout?: string;
   /** Omitted for the default tsgo checker; with SCRIPTC_CHECKER=tsc-ts, the
    * tsc-ts executable's file identity. */
   checker?: string;
   /** Omitted unless SCRIPTC_YOUNG_NURSERY=1 (backend/young-nursery.ts). */
   youngNursery?: true;
+  /** Omitted unless SCRIPTC_HEAP_CENSUS is set (backend/llvm/heap-census.ts). */
+  heapCensus?: true;
   npmStatic: readonly string[] | "auto" | null;
+  /** Omitted for the default Node island policy; else nodeIslandOptionsKey. */
+  nodeIslands?: string;
+  /** Omitted unless shape inference's overlay compiles the packages
+   * (frontend/shape-inference). */
+  shapeOverlay?: true;
+  /** Omitted unless shape inference types the program's own JavaScript
+   * (SCRIPTC_INFER_JS=1, frontend/js-inference.ts). */
+  jsInference?: true;
   /** Raw manifest identity: path and bytes. Native archives remain under the
    * stricter native cache's independent dependency validation. */
   ffiProfile: { path: string; bytes: Uint8Array } | null;
@@ -205,10 +269,33 @@ export interface EarlyExecutableCacheHit {
   frontend: FrontendInputSnapshot;
   /** The performance warnings the build reported (SC61xx), repeated on a hit. */
   performance?: ScrDiagnostic[];
+  /** The Node islands the build ran, repeated on a hit. */
+  islands?: { packages: string[]; modules: string[] };
+  /** How a --profile-use build's profile matched, reported again on a hit. */
+  profileMatch?: NativeProfileMatch;
 }
 
 export interface EarlyExecutableCachePublish extends EarlyExecutableCacheHit {
   nativeDependencies?: NativeArtifactDependency[];
+}
+
+function isIslands(value: unknown): value is { packages: string[]; modules: string[] } {
+  if (typeof value !== "object" || value === null) return false;
+  const islands = value as Record<string, unknown>;
+  return (
+    Array.isArray(islands.packages) &&
+    Array.isArray(islands.modules) &&
+    [...islands.packages, ...islands.modules].every((item) => typeof item === "string")
+  );
+}
+
+function isProfileMatch(value: unknown): value is NativeProfileMatch {
+  if (typeof value !== "object" || value === null) return false;
+  const match = value as Record<string, unknown>;
+  return ["annotated", "mismatched", "missing", "recovered", "unknownPartitions"].every((key) => {
+    const count = match[key];
+    return typeof count === "number" && Number.isInteger(count) && count >= 0;
+  });
 }
 
 const BOOLEAN_NATIVE_KEYS = [
@@ -242,6 +329,8 @@ const BOOLEAN_NATIVE_KEYS = [
   "dgramDyn",
   "textCodecDyn",
   "watch",
+  "watchFile",
+  "fsBufferBrand",
   "foreignFfi",
   "nodeTest",
   "tls",
@@ -251,6 +340,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "dh",
   "pki",
   "ed25519",
+  "x509",
   "webcrypto",
   "perfLoop",
 ] as const satisfies readonly (keyof EarlyExecutableNativeFeatures)[];
@@ -283,12 +373,22 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     options.backend,
     ...optimizationKeyParts(options.optimization),
     ...(options.strip ? ["strip"] : []),
+    ...(options.staticLink ? ["static-link"] : []),
     ...(options.windowsSubsystem === "gui" ? ["windows-subsystem-gui"] : []),
     ...(options.detachedExit ? ["detached-exit"] : []),
+    ...(options.largePages ? ["large-pages"] : []),
+    ...(options.noHugeText ? ["no-huge-text"] : []),
+    ...(options.exceptions === "rare" ? ["exceptions-rare"] : []),
     ...targetCpuKeyParts(options.targetCpu),
+    ...cpuDispatchKeyParts(options.cpuDispatch),
     ...(options.profile !== undefined ? [options.profile] : []),
+    ...(options.functionLayout !== undefined ? [`layout:${options.functionLayout}`] : []),
     ...(options.checker !== undefined ? [`checker:${options.checker}`] : []),
     ...(options.youngNursery ? ["young-nursery"] : []),
+    ...(options.nodeIslands !== undefined ? [`node-islands:${options.nodeIslands}`] : []),
+    ...(options.heapCensus ? ["heap-census"] : []),
+    ...(options.shapeOverlay ? ["shape-overlay"] : []),
+    ...(options.jsInference ? ["js-inference"] : []),
     options.npmStatic === null
       ? "<npm-static-off>"
       : options.npmStatic === "auto"
@@ -326,12 +426,22 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
     .update("\0");
   for (const part of optimizationKeyParts(options.optimization)) hash.update(`${part}\0`);
   if (options.strip) hash.update("strip\0");
+  if (options.staticLink) hash.update("static-link\0");
   if (options.windowsSubsystem === "gui") hash.update("windows-subsystem-gui\0");
   if (options.detachedExit) hash.update("detached-exit\0");
+  if (options.largePages) hash.update("large-pages\0");
+  if (options.noHugeText) hash.update("no-huge-text\0");
+  if (options.exceptions === "rare") hash.update("exceptions-rare\0");
   for (const part of targetCpuKeyParts(options.targetCpu)) hash.update(`${part}\0`);
+  for (const part of cpuDispatchKeyParts(options.cpuDispatch)) hash.update(`${part}\0`);
   if (options.profile !== undefined) hash.update(`${options.profile}\0`);
+  if (options.functionLayout !== undefined) hash.update(`layout:${options.functionLayout}\0`);
   if (options.checker !== undefined) hash.update(`checker:${options.checker}\0`);
   if (options.youngNursery) hash.update("young-nursery\0");
+  if (options.nodeIslands !== undefined) hash.update(`node-islands:${options.nodeIslands}\0`);
+  if (options.heapCensus) hash.update("heap-census\0");
+  if (options.shapeOverlay) hash.update("shape-overlay\0");
+  if (options.jsInference) hash.update("js-inference\0");
   hash
     .update(
       options.npmStatic === null
@@ -535,6 +645,8 @@ async function readExecutableCache(
       (stamp.nativeDependencies !== null && !Array.isArray(stamp.nativeDependencies)) ||
       (stamp.files.ir !== null) !== options.emitIr ||
       stampIntegrity(unsigned) !== integrity ||
+      (stamp.native.nodeIsland === true &&
+        (stamp.libnode ?? "") !== (options.libnodeIdentity?.() ?? "")) ||
       !frontendInputsStillMatch(
         validateRoute === undefined ? stamp.frontend : routedFrontendCandidate(stamp.frontend),
         executableFrontendOutputExclusions(options, stamp.native.backend),
@@ -660,6 +772,8 @@ async function readExecutableCache(
       ...(Array.isArray(stamp.performance) && stamp.performance.length > 0
         ? { performance: stamp.performance }
         : {}),
+      ...(isIslands(stamp.islands) ? { islands: stamp.islands } : {}),
+      ...(isProfileMatch(stamp.profileMatch) ? { profileMatch: stamp.profileMatch } : {}),
       ...(ir === null ? {} : { irPath: paths.irPath }),
       ...(llvmSourcePath === undefined ? {} : { llvmSourcePath }),
       ...(irSourcePath === undefined ? {} : { irSourcePath }),
@@ -850,6 +964,9 @@ export async function publishEarlyExecutableCache(
       ...(result.performance === undefined || result.performance.length === 0
         ? {}
         : { performance: result.performance }),
+      ...(result.islands === undefined ? {} : { islands: result.islands }),
+      ...(result.native.nodeIsland === true ? { libnode: options.libnodeIdentity?.() ?? "" } : {}),
+      ...(result.profileMatch === undefined ? {} : { profileMatch: result.profileMatch }),
     };
     const stamp: EarlyExecutableCacheStamp = { ...unsigned, integrity: stampIntegrity(unsigned) };
     await writeFile(join(stage, "stamp.json"), `${JSON.stringify(stamp)}\n`, { mode: 0o600 });

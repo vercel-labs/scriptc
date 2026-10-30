@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/fixtures/npm/cases/static-stores/main.ts"
+ ],
+ "diags": []
+}

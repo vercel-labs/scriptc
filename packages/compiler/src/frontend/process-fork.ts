@@ -8,6 +8,9 @@ export interface ProcessFork {
   exit(code: number): void;
   /** The worker's exit status, 128 plus a signal number, or -1. */
   wait(pid: number): number;
+  /** The pid of a child process that has ended, waiting for one if none
+   * has, or -1. It stays unreaped: `wait` reaps it. */
+  exited(): number;
   /** Opens the lock file checker requests from workers take. */
   openLock(path: string): boolean;
   lock(): void;

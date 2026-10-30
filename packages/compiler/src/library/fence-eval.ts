@@ -56,9 +56,9 @@ import {
 } from "../coverage/surface-manifest.js";
 import { libFenceDiag, type ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import {
-  AMBIENT_SURFACE_FNS,
+  ambientSurfaceFns,
   BUILTIN_MODULE_CONSTS,
-  BUILTIN_MODULE_FNS,
+  builtinModuleFns,
   BUILTIN_MODULE_FN_ALIASES,
   STATIC_MATH_FNS,
   STATIC_MATH_PROPS,
@@ -125,7 +125,7 @@ interface FenceTaxonomy {
   /** node-builtin constant ids: reads fold to literals at compile time. */
   foldedIds: Set<string>;
   /** Ambient dedicated-path surfaces (Date/perf_hooks/process): manifest
-   * id → the libCall spellings witnessing reach (AMBIENT_SURFACE_FNS —
+   * id → the libCall spellings witnessing reach (ambientSurfaceFns() —
    * the same rows the manifest projects the entries from). */
   ambientFns: Map<string, readonly string[]>;
 }
@@ -148,7 +148,7 @@ function fenceTaxonomy(): FenceTaxonomy {
   const builtinFns = new Map<string, readonly string[]>();
   const builtinRoots = new Map<string, readonly string[]>();
   const foldedIds = new Set<string>();
-  for (const [mod, members] of Object.entries(BUILTIN_MODULE_FNS)) {
+  for (const [mod, members] of Object.entries(builtinModuleFns())) {
     const root = new Set<string>();
     for (const [member, entry] of Object.entries(members!)) {
       if (entry === undefined) continue;
@@ -156,7 +156,7 @@ function fenceTaxonomy(): FenceTaxonomy {
       // The bare-path and url tables rebind per TARGET platform
       // (builtinModuleFnsOf): a fence on the bare id covers both flavors.
       if (mod === "path") {
-        const w = BUILTIN_MODULE_FNS["path/win32"]?.[member];
+        const w = builtinModuleFns()["path/win32"]?.[member];
         if (w !== undefined) fns.add(w.fn);
       }
       if (mod === "url" && member === "pathToFileURL") fns.add("url.pathToFileURLWin32");
@@ -173,7 +173,7 @@ function fenceTaxonomy(): FenceTaxonomy {
   }
   for (const member of Object.keys(STATIC_MATH_PROPS)) foldedIds.add(`stdlib.math.${member}`);
   const ambientFns = new Map(
-    AMBIENT_SURFACE_FNS.map((row) => [row.id, row.fns as readonly string[]]),
+    ambientSurfaceFns().map((row) => [row.id, row.fns as readonly string[]]),
   );
   taxonomy = {
     byId,

@@ -60,6 +60,10 @@ typedef enum {
   SCR_ARR_HOLE = 0,
   SCR_ARR_VALUE = 1,
   SCR_ARR_UNDEFINED = 2,
+  /* A present element outside the element type, stored through a dynamic
+   * view: the slot holds a retained ScrDyn * (scr_arr_set_foreign). Arrays
+   * that hold one mark their out-of-line storage (ScrArrExt.foreign). */
+  SCR_ARR_FOREIGN = 3,
 } ScrArrState;
 
 /* The RC entry points of an SCR_ELEM_REF array's element type: one constant
@@ -171,7 +175,34 @@ typedef struct ScrArrExt {
   /* The element ops of an array whose ops have no registry id
    * (SCR_ARR_OPS_OVERFLOW). */
   const ScrArrOps *ops;
+  /* The class of an instance of a program class that extends Array
+   * (scr_arr_subclass_init); NULL for every other array. */
+  const struct ScrArrClass *cls;
+  /* Some slot may hold SCR_ARR_FOREIGN; release and copies walk the states
+   * for their payloads only then. */
+  bool foreign;
 } ScrArrExt;
+
+/* A program class that extends Array. Its instances are emitted structs
+ * that begin with a ScrArr (the reference count is the array's) and keep
+ * the class's own fields after it; they always have an ext, whose `cls`
+ * names the class. Every array entry point accepts them as arrays. */
+typedef struct ScrArrClass {
+  /* The class's name, as constructor.name reads it. */
+  const char *name;
+  /* Destroys an instance whose count reached zero: releases the class's own
+   * fields, then scr_arr_subclass_drop, then frees the instance. */
+  void (*destroy)(void *a);
+  /* The class's own fields as a dyn object in declaration order (the array
+   * is passed owned, +1), or NULL when the class declares none. util.inspect
+   * and Object.keys list them after the elements. */
+  struct ScrDyn *(*fields)(ScrArr *a);
+  /* `new C(length)` (`new C()` without `with_length`): the instance
+   * ArraySpeciesCreate makes for map, filter, slice, splice, concat, flat
+   * and flatMap, and Array.of / Array.from called on the class. NULL when
+   * the class's constructor cannot take that argument. */
+  ScrArr *(*species)(double length, bool with_length);
+} ScrArrClass;
 /* The LLVM backend mirrors ScrArr as %ScrArr: its inline retain/release read
  * `cyc` (field 4, i8) to decide mark-live / candidate buffering exactly like
  * scr_arr_retain and scr_arr_release; its inline element access uses len and
@@ -450,6 +481,10 @@ ScrArr *scr_arr_new(ScrElemKind elem, size_t initial_cap); /* returns +1 */
  * header (the array then allocates with the collector header — see the
  * struct comment). Returns +1. */
 ScrArr *scr_arr_new_ops(const ScrArrOps *ops, size_t initial_cap);
+/* Inline array fields (scr_array.c): a frozen array over a field's 32-bit
+ * references, and the constructor's copy of an array into them. */
+ScrArr *scr_arr_view_cref(const ScrArrOps *ops, uint32_t *slots, uint32_t len);
+void scr_arr_copy_cref_tail(const ScrArr *src, uint32_t *slots, uint32_t len);
 /* An empty array expected to receive a few elements: its first slots live
  * in the array's own block (one allocation; the block of a plain empty
  * array plus five 8-byte slots). Otherwise exactly scr_arr_new(elem, 0) and
@@ -459,6 +494,12 @@ ScrArr *scr_arr_new_small(ScrElemKind elem);
  * SCR_ELEM_F64); no-op for any other kind. */
 void scr_arr_widen_i32(ScrArr *a);
 ScrArr *scr_arr_new_ops_small(const ScrArrOps *ops);
+/* The same constructors in the current group arena, when one is open
+ * (scr_arena.h): what arena-aware functions call. */
+ScrArr *scr_arr_new_r(ScrElemKind elem, size_t initial_cap);
+ScrArr *scr_arr_new_small_r(ScrElemKind elem);
+ScrArr *scr_arr_new_ops_r(const ScrArrOps *ops, size_t initial_cap);
+ScrArr *scr_arr_new_ops_small_r(const ScrArrOps *ops);
 /* scr_arr_new(elem, cap) for a known final length: the `cap` slots share
  * the array's own block (one allocation). With `states`, the array starts
  * with states (for holes or present undefined). Returns +1. */
@@ -475,11 +516,59 @@ static inline ScrArr *scr_arr_retain(ScrArr *a) {
  * NULL-tolerant (uninitialized locals). Cycle-capable arrays (`cyc`) feed
  * the candidate-root buffer like every headered type. */
 void scr_arr_release(ScrArr *a);
+/* Initializes the ScrArr prefix of a zeroed, freshly allocated instance of
+ * an Array subclass (count already 1): no elements, the element kind and
+ * ops, and an ext naming the class. `cyc` says the instance carries the
+ * collector header (its class is cycle-capable). */
+void scr_arr_subclass_init(ScrArr *a, uint8_t elem, const ScrArrOps *ops, const ScrArrClass *cls,
+                           bool cyc);
+/* The collector's teardown of an Array subclass instance's storage: the
+ * elements are released unless they are the collector's (`traced`). */
+void scr_arr_subclass_gc_drop(ScrArr *a);
+/* The collector trace of an Array subclass instance's elements: visits
+ * them when its current element ops trace them. */
+void scr_arr_subclass_trace(void *a, ScrTraceVisit visit, void *ctx);
+/* super(...args) in a class that extends Array (the Array constructor's
+ * length-or-elements rule); `args` is borrowed. */
+void scr_arr_subclass_construct(ScrArr *a, ScrArr *args, bool dyn_elems);
+/* The implicit constructor's super(...args) over its dyn argument array. */
+void scr_arr_subclass_construct_dyn(ScrArr *a, const struct ScrDyn *args, bool dyn_elems);
+/* ArraySpeciesCreate over the result `result` (owned) of an Array method
+ * called on `recv` (borrowed): a plain receiver keeps the result; a
+ * subclass instance's result is `new C(ctor_length)`, whose indices then
+ * receive the result's present elements, and whose length is set to the
+ * result's when `set_length` (slice, splice and concat set it; map,
+ * filter, flat and flatMap do not). A negative `ctor_length` passes the
+ * result's length. Result owned. */
+ScrArr *scr_arr_species_adopt(ScrArr *recv, ScrArr *result, double ctor_length, bool set_length);
+/* ArraySpeciesCreate ahead of an Array method that calls back into the
+ * program (map, filter, flatMap), so the species constructor runs before
+ * the first callback: a subclass instance `recv` (borrowed) answers
+ * `new C(ctor_length)`, a plain receiver itself. Result owned. */
+ScrArr *scr_arr_species_create(ScrArr *recv, double ctor_length);
+/* The present elements of the method's result `result` (owned) defined on
+ * the instance scr_arr_species_create answered (`species`, borrowed), and
+ * its length set to the result's when `set_length`; a plain receiver's
+ * result as it is. Result owned. */
+ScrArr *scr_arr_species_finish(ScrArr *species, ScrArr *result, bool set_length);
+/* Array.of / Array.from called on an Array subclass: `new C(ctor_length)`
+ * (`new C()` when ctor_length is negative), then the elements of `result`
+ * (owned) and its length, as scr_arr_species_adopt. */
+ScrArr *scr_arr_class_construct_adopt(const ScrArrClass *cls, ScrArr *result, double ctor_length);
+/* `value instanceof C` for a dyn value and a class that extends Array: a
+ * live view of an instance of C, or a snapshot of one. */
+bool scr_dyn_is_array_class(const struct ScrDyn *d, const ScrArrClass *cls);
+/* The class of an Array subclass instance, or NULL for a plain array. */
+const ScrArrClass *scr_arr_class_of(const ScrArr *a);
+/* Releases the elements of an Array subclass instance and frees its
+ * storage and ext, leaving the instance itself to its class's destroy. */
+void scr_arr_subclass_drop(ScrArr *a);
 void scr_arr_copy_metadata(ScrArr *a, struct ScrDyn *target);
 /* The commit of a live array view calls this on `a`, the array converted
  * from `view`, before `target` takes its storage: `a` takes the view's named
- * (non-index) properties as its metadata and the noncanonical numeric
- * properties of `target`, so neither is lost when the storage is swapped. */
+ * (non-index) properties as its metadata, the noncanonical numeric
+ * properties of `target` and the class of an Array subclass instance, so
+ * none is lost when the storage is swapped. */
 void scr_arr_adopt_view_properties(ScrArr *a, struct ScrDyn *view, ScrArr *target);
 /* True when `key` is the string spelling of a number that is not an array
  * index ("-1", "1.5", "NaN", "Infinity"), or "undefined", with the number in
@@ -595,6 +684,20 @@ void scr_arr_set_f64(ScrArr *a, double i, double v);
 void scr_arr_set_bool(ScrArr *a, double i, bool v);
 void scr_arr_set_ref(ScrArr *a, double i, void *v);
 void scr_arr_set_undefined(ScrArr *a, double i);
+/* Stores `v` (borrowed, retained) at a canonical index as a value outside
+ * the element type (SCR_ARR_FOREIGN), or as a present undefined when it is
+ * undefined, extending the length like the typed setters. False, with
+ * nothing stored, for an index that is not canonical and for a foreign
+ * value in a boolean array, whose 1-byte dense slots cannot hold it. */
+bool scr_arr_set_foreign(ScrArr *a, double i, struct ScrDyn *v);
+/* The value of a foreign element (+1), or NULL when a[i] is not one. */
+struct ScrDyn *scr_arr_get_foreign(const ScrArr *a, double i);
+/* Throws the checked conversion's TypeError for the foreign element a[i]
+ * read where a value of type `want` is expected. */
+void scr_arr_foreign_throw(const ScrArr *a, double i, const ScrStr *want);
+/* The same TypeError for a foreign element's value removed from an array
+ * (pop/shift into a typed result); takes and releases `value`. */
+void scr_dyn_foreign_throw(struct ScrDyn *value, const char *want);
 bool scr_arr_delete(ScrArr *a, double i);
 
 /* slice(start?, end?): a fresh +1 shallow copy of the index range —

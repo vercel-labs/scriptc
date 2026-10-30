@@ -62,8 +62,28 @@ bool scr_util_terminal_colors(void);
  * (scr_util_promisify.c). Arguments are borrowed; function results are +1
  * native dyn functions, or NULL with Node's TypeError pending. */
 void scr_util_inherits(struct ScrDyn *ctor, struct ScrDyn *super_ctor);
+void scr_util_inherits_prototype(struct ScrDyn *ctor, struct ScrDyn *super_ctor,
+                                 struct ScrDyn *super_prototype);
 struct ScrDyn *scr_util_deprecate(struct ScrDyn *fn, struct ScrDyn *msg, struct ScrDyn *code,
                                   struct ScrDyn *options);
+/* util.isArray and util._extend, with Node's DEP0044 and DEP0060 on the
+ * first call (scr_util_callable.c). _extend answers target +1. */
+bool scr_util_is_array_deprecated(const struct ScrDyn *value);
+struct ScrDyn *scr_util_extend(struct ScrDyn *target, struct ScrDyn *source);
+/* util.diff(actual, expected): Node's operation list (+1), or NULL with
+ * ERR_INVALID_ARG_TYPE pending. */
+struct ScrDyn *scr_util_diff(struct ScrDyn *actual, struct ScrDyn *expected);
+/* util.MIMEType and util.MIMEParams (scr_mime.c): +1 handles, or NULL
+ * with the error pending; parse answers null for invalid input. */
+struct ScrDyn *scr_mime_type_new(struct ScrDyn *input, struct ScrDyn *no_throw);
+struct ScrDyn *scr_mime_type_parse(struct ScrDyn *input);
+struct ScrDyn *scr_mime_params_new(void);
+bool scr_mime_is(const struct ScrDyn *value, double kind);
+/* util.debounce(fn, wait, options) and util.throttle(fn, limit, interval,
+ * options) (scr_util_timing.c): the wrapping function (+1), or NULL with
+ * the validation error pending. */
+struct ScrDyn *scr_util_debounce(struct ScrDyn *fn, struct ScrDyn *wait, struct ScrDyn *options);
+struct ScrDyn *scr_util_throttle(struct ScrDyn *fn, struct ScrDyn *limit, struct ScrDyn *interval, struct ScrDyn *options);
 struct ScrDyn *scr_util_callbackify(struct ScrDyn *original);
 struct ScrDyn *scr_util_promisify(struct ScrDyn *original);
 struct ScrDyn *scr_util_debuglog(struct ScrDyn *section, struct ScrDyn *callback);

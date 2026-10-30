@@ -37,9 +37,11 @@ export const eventLoopCases: EventLoopCase[] = [
   {
     title: "stdio values: 'readable' drains with read(), then fires once more at EOF",
     fixture: "stdio-readable.mjs",
+    // The first chunk waits until both readers run: a reader that starts
+    // after the second chunk arrives reads the two in one 'readable'.
     script: {
       writes: [
-        { delayMs: 0, data: "alpha " },
+        { delayMs: 500, data: "alpha " },
         { delayMs: 60, data: "beta\n" },
       ],
       end: true,

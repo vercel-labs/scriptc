@@ -43,8 +43,12 @@ console.log(spaces("a b c"), letters("abC1z"), chars("xyz").join("-"), chars("é
       ll.match(
         new RegExp(`define internal [^\\n]+ @sc_bf_${name}\\([^\\n]*\\) #0 \\{[\\s\\S]*?\\n\\}`),
       )![0];
-    // The fast copy follows the checked one.
-    const fast = (fn: string): string => fn.slice(fn.lastIndexOf("bytes.version.fast"));
+    // The byte copy follows the checked one, and the units copy (for
+    // strings that are not ASCII) follows it.
+    const fast = (fn: string): string => {
+      const units = fn.search(/^bytes\.version\.fast\.units\d+:/m);
+      return fn.slice(fn.search(/^bytes\.version\.fast\d+:/m), units < 0 ? undefined : units);
+    };
 
     // `s[i] === " "` compares the byte; the checked copy keeps the helper.
     const spaces = body("spaces");

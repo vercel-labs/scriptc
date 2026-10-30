@@ -33,6 +33,7 @@ import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
 import { STRING_INDEX_METHODS, STRING_REPLACE_METHODS, STR_METHODS } from "../surfaces.js";
 import { execResultCaptureMask } from "./exec-result-uses.js";
 import { lowerStringReplacement } from "./string-replacement.js";
+import { lowerReplacerCallback, regexLiteralCapturesOf } from "./replacer-params.js";
 import {
   coerceStringSearchValue,
   defaultAfterUndefined,
@@ -1025,7 +1026,11 @@ export function lowerRegexMethodCall(
         : [
             lowerer.lowerExprExpecting(arg0, { kind: "regex" }),
             call.arguments.nodes[1]
-              ? lowerer.lowerExpr(call.arguments.nodes[1])
+              ? lowerReplacerCallback(
+                  lowerer,
+                  call.arguments.nodes[1],
+                  regexLiteralCapturesOf(arg0),
+                )
               : dynUndefinedExpr(loc),
           ];
     if (name !== "split") {

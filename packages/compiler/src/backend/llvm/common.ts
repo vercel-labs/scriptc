@@ -32,6 +32,16 @@ export const SCR_ARR_STATES = 16;
 /** The `spare` flag of a frozen %ScrArr (SCR_ARR_FROZEN in scr_array.h). */
 export const SCR_ARR_FROZEN = 32;
 
+/** The bits of ScrClosure.function_kind (SCR_CLOSURE_KIND_* in
+ * scr_closure.h; runtime-registries.test.ts checks they agree). */
+export const CLOSURE_KIND = {
+  GENERATOR: 1,
+  ASYNC: 2,
+  OWN_PROTOTYPE: 4,
+  CHECKED_ADAPTER: 8,
+  RECEIVER_FREE: 16,
+} as const;
+
 /** Loads the i32 `len` or `cap` of a %ScrArr at `ptr` into `dest` as a
  * size-type count. */
 export function loadArrCount(
@@ -152,6 +162,44 @@ export function exactIndexLines(
   }
   lines.push(`${below} = icmp ult i64 ${wide}, ${len64}`, `${ok} = and i1 ${integral}, ${below}`);
   return { lines, ok, wide };
+}
+
+/** exactIndexLines for the index `base + offset`, where `offset` is an
+ * integer of magnitude below 2^31: the round trip converts `base` instead of
+ * the sum, so accesses at several offsets from one base share the
+ * conversion. When `base` is an integer, the sum is in range exactly when
+ * the integer sum is (a length is at most 2^52, and a sum of 2^52 or more is
+ * out of range either way). A fractional `base` can still give an integer
+ * sum, as `1e-20 + 1` is 1, so `integral` false leaves the index to an
+ * exact check of the sum itself. */
+export function exactOffsetIndexLines(
+  base: string,
+  offset: number,
+  length: string,
+  sizeType: string,
+  tmp: () => string,
+): { lines: string[]; ok: string; wide: string; integral: string } {
+  const raw = tmp(),
+    integer = tmp(),
+    back = tmp(),
+    integral = tmp(),
+    wide = tmp(),
+    below = tmp(),
+    ok = tmp();
+  const lines = [
+    `${raw} = fptosi double ${base} to i64`,
+    `${integer} = freeze i64 ${raw}`,
+    `${back} = sitofp i64 ${integer} to double`,
+    `${integral} = fcmp oeq double ${back}, ${base}`,
+    `${wide} = add i64 ${integer}, ${offset}`,
+  ];
+  let len64 = length;
+  if (sizeType !== "i64") {
+    len64 = tmp();
+    lines.push(`${len64} = zext ${sizeType} ${length} to i64`);
+  }
+  lines.push(`${below} = icmp ult i64 ${wide}, ${len64}`, `${ok} = and i1 ${integral}, ${below}`);
+  return { lines, ok, wide, integral };
 }
 
 /** User-controlled text embedded after an LLVM `;` comment marker. Preserve

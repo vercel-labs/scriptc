@@ -106,3 +106,49 @@ export function loopTestsEveryIteration(loop: Loop, tested: (call: IrExpr) => bo
   }
   return false;
 }
+
+/** True when the body of `loop`, outside its nested loops and closures,
+ * reads or writes a typed-array element: the loops whose cancellation poll
+ * the emitter moves between blocks of iterations, so that LLVM can
+ * vectorize them. Outside another loop, other loops keep the budget in
+ * their body, which costs less in a loop of a few iterations. */
+export function loopAccessesTypedArrays(loop: Loop): boolean {
+  const inExpr = (e: IrExpr): boolean => {
+    if (e.kind === "bytesIntrinsic" && e.method === "get") return true;
+    let found = false;
+    everyExprChild(
+      e,
+      (child) => !(found = inExpr(child)),
+      (child) => !(found = inStmt(child)),
+    );
+    return found;
+  };
+  const inStmt = (s: IrStmt): boolean => {
+    if (s.kind === "bytesSet") return true;
+    if (s.kind === "while" || s.kind === "doWhile" || s.kind === "for" || s.kind === "forOf")
+      return false;
+    let found = false;
+    everyStmtChild(
+      s,
+      (child) => !(found = inExpr(child)),
+      (child) => !(found = inStmt(child)),
+    );
+    return found;
+  };
+  return loop.body.some(inStmt);
+}
+
+/** Whether `body` holds a loop outside its closures. */
+export function containsLoop(body: readonly IrStmt[]): boolean {
+  const inStmt = (s: IrStmt): boolean =>
+    s.kind === "while" ||
+    s.kind === "doWhile" ||
+    s.kind === "for" ||
+    s.kind === "forOf" ||
+    !everyStmtChild(
+      s,
+      () => true,
+      (child) => !inStmt(child),
+    );
+  return body.some(inStmt);
+}

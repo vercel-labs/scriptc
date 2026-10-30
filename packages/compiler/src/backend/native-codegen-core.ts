@@ -9,22 +9,34 @@ export type NativeCodegenOutputKind = "asm" | "obj";
 /** LLVM text that stays one module, LLVM text per partition, the fewest
  * partitions (MIN_PROGRAM_PARTITIONS, of at least MIN_PARTITION_BYTES each)
  * a divided module gets, and the most one executable uses. */
-const SINGLE_PARTITION_BYTES = 1024 * 1024;
+const SINGLE_PARTITION_BYTES = 128 * 1024;
 const PROGRAM_PARTITION_BYTES = 4 * 1024 * 1024;
-const MIN_PARTITION_BYTES = 512 * 1024;
+const MIN_PARTITION_BYTES = 32 * 1024;
 const MIN_PROGRAM_PARTITIONS = 8;
 const MAX_PROGRAM_PARTITIONS = 64;
+/** SINGLE_PARTITION_BYTES of unoptimized (dev) executables. */
+const UNOPTIMIZED_SINGLE_PARTITION_BYTES = 64 * 1024;
 
 /** Executable objects larger than SINGLE_PARTITION_BYTES are divided into
  * partitions that the helper simplifies, optimizes and compiles concurrently,
  * importing small functions across partitions for inlining, and reuses
- * individually across builds. A divided module gets at least
- * MIN_PROGRAM_PARTITIONS so that mid-size programs use several cores. The
- * count is a power of two that depends only on the module's size, on every
- * target, so artifacts never vary with the host and ordinary edits keep every
- * function in its partition. */
-export function nativeProgramPartitions(llvmBytes: number): number {
-  if (llvmBytes <= SINGLE_PARTITION_BYTES) return 1;
+ * individually across builds, so an edit optimizes again only the partitions
+ * it affects. A divided module gets at least MIN_PROGRAM_PARTITIONS so that
+ * small and mid-size programs use several cores. The count is a power of two
+ * that depends only on the module's size and whether it is optimized, on
+ * every target, so artifacts never vary with the host and ordinary edits keep
+ * every function in its partition. An optimized module whose largest
+ * partition would hold more than two thirds of its function text is
+ * optimized whole by the helper instead (as for one partition), and its code
+ * is generated in parts.
+ *
+ * Unoptimized (dev) partitions are compiled on their own with nothing
+ * imported, so they cost no run time and an edit compiles only the partitions
+ * whose functions it changes: dev executables are divided from
+ * UNOPTIMIZED_SINGLE_PARTITION_BYTES. */
+export function nativeProgramPartitions(llvmBytes: number, unoptimized = false): number {
+  if (llvmBytes <= (unoptimized ? UNOPTIMIZED_SINGLE_PARTITION_BYTES : SINGLE_PARTITION_BYTES))
+    return 1;
   const required = Math.max(
     Math.ceil(llvmBytes / PROGRAM_PARTITION_BYTES),
     Math.min(MIN_PROGRAM_PARTITIONS, Math.ceil(llvmBytes / MIN_PARTITION_BYTES)),

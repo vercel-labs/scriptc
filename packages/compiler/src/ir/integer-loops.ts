@@ -12,6 +12,9 @@ import { preservesArrayLength } from "./array-length-stability.js";
 export interface IntegerBytesForLoop {
   localId: string;
   limitReceiver: IrExpr;
+  /** The receiver is a local of the function that the body never assigns
+   * (a typed array's length is then the same on every iteration). */
+  stableReceiver: boolean;
 }
 
 export interface IntegerCountedForLoop {
@@ -24,8 +27,12 @@ export interface IntegerCountedForLoop {
   /** The limit needs the run-time `guardLimit` test (part of `guarded`). */
   limitGuarded: boolean;
   /** The start has no proven integer range: the versioned loop also tests
-   * that it is an exact integer (not -0) of at most 2^53 in magnitude. */
+   * that it is an exact integer (not -0) of at most `startBound` in
+   * magnitude. */
   startGuarded: boolean;
+  /** The magnitude the guarded start is tested against: 2^53 - 1, or
+   * PRODUCT_COUNTER_BOUND when the body multiplies sums of the counter. */
+  startBound: number;
   guardLimit: number;
   range: IntegerRange;
   /** Counters declared and stepped beside this one that the condition does
@@ -48,6 +55,64 @@ export interface IntegerLoopFollower {
   tripGuarded: boolean;
   /** The follower's values on every body entry. */
   range: IntegerRange;
+}
+
+/** The counter magnitude below which a product of two sums of counters and
+ * small literals stays exact in a double: `(i + j) * (i + j + 1)` with both
+ * counters within 2^25 is below 2^52. A guarded loop whose body multiplies
+ * such sums for a bitwise operator tests its counter against this bound, so
+ * the product's integer form is proven exact. */
+export const PRODUCT_COUNTER_BOUND = 2 ** 25;
+
+/** Whether `e` is a sum or difference of locals and safe integer literals
+ * of magnitude at most 2^20, and whether it reads `counter`. */
+function localSum(e: IrExpr, counter: string): { sum: boolean; reads: boolean } {
+  let reads = false;
+  const sum = (x: IrExpr): boolean => {
+    if (x.kind === "varRef") {
+      if (x.localId === counter) reads = true;
+      return true;
+    }
+    if (x.kind === "numLit") return Number.isSafeInteger(x.value) && Math.abs(x.value) <= 2 ** 20;
+    return x.kind === "bin" && (x.op === "+" || x.op === "-") && sum(x.left) && sum(x.right);
+  };
+  return { sum: sum(e), reads };
+}
+
+/** Whether a bitwise operand `e` multiplies two sums of locals and
+ * literals, one of which reads `counter` (`((i + j) * (i + j + 1)) >>> 1`). */
+function multipliesCounterSums(e: IrExpr, counter: string): boolean {
+  if (e.kind !== "bin") return false;
+  if (e.op === "*") {
+    const left = localSum(e.left, counter),
+      right = localSum(e.right, counter);
+    return left.sum && right.sum && (left.reads || right.reads);
+  }
+  return (
+    (e.op === "+" || e.op === "-") &&
+    (multipliesCounterSums(e.left, counter) || multipliesCounterSums(e.right, counter))
+  );
+}
+
+const BITWISE = new Set(["&", "|", "^", "<<", ">>", ">>>"]);
+
+/** Whether `body`, nested loops included, takes a bitwise operator of a
+ * product that multipliesCounterSums matches. */
+function bodyMultipliesCounter(body: IrStmt[], counter: string): boolean {
+  let found = false;
+  everyStmtList(body, {
+    stmt: () => !found,
+    expr: (e) => {
+      if (
+        e.kind === "bin" &&
+        BITWISE.has(e.op) &&
+        (multipliesCounterSums(e.left, counter) || multipliesCounterSums(e.right, counter))
+      )
+        found = true;
+      return !found;
+    },
+  });
+  return found;
 }
 
 /** The bound of the run-time follower test. */
@@ -171,6 +236,23 @@ export function matchIntegerCountedForLoop(
   // The condition tests the driving counter; every other declaration
   // follows it.
   const driver = declared(cond.left) ?? declared(cond.right);
+  // A body that multiplies sums of the driver tests it against the bound
+  // under which those products are exact. A limit proven past that bound
+  // (a literal trip count) keeps the safe-integer bound instead.
+  const limitSide = driver !== null && declared(cond.left) === driver ? cond.right : cond.left;
+  const knownLimit =
+    limitSide.kind === "numLit"
+      ? { min: limitSide.value, max: limitSide.value }
+      : ranges.get(limitSide);
+  const driverBound =
+    driver !== null &&
+    !(
+      knownLimit &&
+      Math.max(Math.abs(knownLimit.min), Math.abs(knownLimit.max)) > PRODUCT_COUNTER_BOUND
+    ) &&
+    bodyMultipliesCounter(stmt.body, driver)
+      ? PRODUCT_COUNTER_BOUND
+      : Number.MAX_SAFE_INTEGER;
   const counterIds = decls.map((d) => (d.kind === "varDecl" ? d.localId : ""));
   const stepOf = (id: string): number | null => {
     const steps = updates.map((u) => constantStep(u, id)).filter((v) => v !== null);
@@ -191,7 +273,8 @@ export function matchIntegerCountedForLoop(
         ? { min: start.value, max: start.value }
         : ranges.get(start);
     const guarded = !known && start.kind !== "numLit" && start.type.kind === "f64";
-    const range = guarded ? { min: -Number.MAX_SAFE_INTEGER, max: Number.MAX_SAFE_INTEGER } : known;
+    const bound = id === driver ? driverBound : Number.MAX_SAFE_INTEGER;
+    const range = guarded ? { min: -bound, max: bound } : known;
     const step = stepOf(id);
     if (
       !range ||
@@ -248,7 +331,9 @@ export function matchIntegerCountedForLoop(
     );
   if (!stableLoopValue(limit, locals, stmt.body, true, local.id, stableLength)) return null;
   const inclusive = op === "<=" || op === ">=";
-  const guardLimit = step > 0 ? 2 ** 53 - (inclusive ? 1 : 0) : -(2 ** 53) + (inclusive ? 1 : 0);
+  const limitBound = driverBound === Number.MAX_SAFE_INTEGER ? 2 ** 53 : driverBound;
+  const guardLimit =
+    step > 0 ? limitBound - (inclusive ? 1 : 0) : -limitBound + (inclusive ? 1 : 0);
   const boundRange =
     limit.kind === "numLit" ? { min: limit.value, max: limit.value } : ranges.get(limit);
   const limitGuarded =
@@ -264,7 +349,9 @@ export function matchIntegerCountedForLoop(
               Number.MAX_SAFE_INTEGER,
               boundRange
                 ? Math.ceil(boundRange.max) - (inclusive ? 0 : 1)
-                : Number.MAX_SAFE_INTEGER,
+                : limitGuarded
+                  ? Math.ceil(guardLimit) - (inclusive ? 0 : 1)
+                  : Number.MAX_SAFE_INTEGER,
             ),
           ),
         }
@@ -275,7 +362,9 @@ export function matchIntegerCountedForLoop(
               -Number.MAX_SAFE_INTEGER,
               boundRange
                 ? Math.floor(boundRange.min) + (inclusive ? 0 : 1)
-                : -Number.MAX_SAFE_INTEGER,
+                : limitGuarded
+                  ? Math.floor(guardLimit) + (inclusive ? 0 : 1)
+                  : -Number.MAX_SAFE_INTEGER,
             ),
           ),
           max: startRange.max,
@@ -366,9 +455,15 @@ export function matchIntegerCountedForLoop(
   const bodyStmt = (s: IrStmt): boolean => {
     if (s.kind === "bytesSet" && counter(s.index)) useful = true;
     if (!guarded && s.kind === "arraySet" && counter(s.index)) useful = true;
+    // A guarded loop's copy duplicates nested loops too, so only a body
+    // whose counter products the bound proves exact may hold a nested
+    // `for` loop; the node budget counts its body.
     if (
       guarded &&
-      (s.kind === "for" || s.kind === "forOf" || s.kind === "while" || s.kind === "doWhile")
+      (s.kind === "forOf" ||
+        s.kind === "while" ||
+        s.kind === "doWhile" ||
+        (s.kind === "for" && driverBound === Number.MAX_SAFE_INTEGER))
     )
       return false;
     return (!guarded || ++cost <= 80) && everyStmtChild(s, expr, bodyStmt);
@@ -383,6 +478,7 @@ export function matchIntegerCountedForLoop(
     guarded,
     limitGuarded,
     startGuarded,
+    startBound: driverBound,
     guardLimit,
     range,
     followers,
@@ -522,6 +618,28 @@ function writesLocal(body: IrStmt[], localId: string): boolean {
   });
 }
 
+/** The counter of a `for` loop that its condition reads and its update
+ * steps by a constant, when nothing else in the loop writes it: each test
+ * of the condition then sees a different value. The local must not be
+ * boxed (a closure could write it). */
+export function steppedLoopCounter(
+  stmt: IrStmt & { kind: "for" },
+  locals: ReadonlyMap<string, IrLocal>,
+): { ref: IrExpr & { kind: "varRef" }; step: number } | null {
+  const cond = stmt.cond;
+  if (cond?.kind !== "bin") return null;
+  for (const side of [cond.left, cond.right]) {
+    if (side.kind !== "varRef") continue;
+    const local = locals.get(side.localId);
+    if (local === undefined || local.boxed) continue;
+    const step = constantStep(stmt.update, side.localId);
+    if (step === null || writesLocal(stmt.body, side.localId)) continue;
+    if (writesLocal([{ kind: "exprStmt", expr: cond, loc: cond.loc }], side.localId)) continue;
+    return { ref: side, step };
+  }
+  return null;
+}
+
 function isUnitIncrement(update: IrStmt | null, localId: string): boolean {
   // The frontend normally lowers `i++` to `i = i + 1` before backend
   // emission. Accept the incDec form too so this analysis remains valid for
@@ -589,7 +707,12 @@ export function matchIntegerBytesForLoop(
   if (!isUnitIncrement(stmt.update, init.localId)) return null;
   if (writesLocal(stmt.body, init.localId)) return null;
 
-  return { localId: init.localId, limitReceiver: cond.right.receiver };
+  return {
+    localId: init.localId,
+    limitReceiver: cond.right.receiver,
+    stableReceiver:
+      receiverLocal !== undefined && !writesLocal(stmt.body, cond.right.receiver.localId),
+  };
 }
 
 /** Array lengths are uint32, so zero-based loops and nested `j = i + 1`
@@ -636,5 +759,11 @@ export function matchIntegerArrayForLoop(
     writesLocal(stmt.body, local.id)
   )
     return null;
-  return { localId: local.id, limitReceiver: cond.right.receiver };
+  return {
+    localId: local.id,
+    limitReceiver: cond.right.receiver,
+    stableReceiver:
+      locals.has(cond.right.receiver.localId) &&
+      !writesLocal(stmt.body, cond.right.receiver.localId),
+  };
 }

@@ -30,6 +30,7 @@ beforeAll(async () => {
     // scr_str_split returns a real string[]: the array module and its
     // own dependencies join the link (the array.test.ts set).
     join(testDir, "../src/scr_array.c"),
+    join(testDir, "../src/scr_arena.c"),
     // Checked-value collection equality shares the native JSON value runtime.
     join(testDir, "../src/scr_json.c"),
     join(testDir, "../src/scr_map.c"),
@@ -85,6 +86,13 @@ test("string methods match Node on committed oracle cases", async () => {
     (e: Error & { stderr?: string }) => ({ stderr: e.stderr ?? "" }),
   );
   expect(r.stderr.trim()).toMatch(/^(\d+)\/\1 cases passed$/);
+});
+
+// A template literal of strings and numbers allocates exactly its length:
+// numbers format before the result is sized, not into a reserved maximum.
+test("template-literal concatenation allocates its exact length", async () => {
+  const { stderr } = await execFileAsync(bin, ["--concat-capacity"]);
+  expect(stderr.trim()).toBe("0 concat capacity failures");
 });
 
 // repeat(count) with count < 0 or Infinity is Node's catchable RangeError

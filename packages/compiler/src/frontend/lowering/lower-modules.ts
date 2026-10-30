@@ -1,4 +1,11 @@
+import { isIslandPromisifyCall, noteIslandSubclass } from "./lower-node-island.js";
+import { isIslandSubclassDecl } from "../../node-islands/boundary.js";
+import { globalValuesInstall, installsGlobalValues } from "./global-values.js";
+import type { TypeFailureSlot } from "../../diagnostics/diagnostic.js";
 import { THREADS_MODULE } from "../threads-import.js";
+import { collectIslandImport, collectIslandRequires } from "./lower-node-island.js";
+import { staticString } from "./builtins/module-resolution.js";
+import { NODE_API_MODULE } from "../node-api-import.js";
 import { positionTag } from "./structural-positions.js";
 import { EXPERIMENTAL_MODULE } from "../experimental-import.js";
 import { dynUndefinedExpr } from "../../ir/build.js";
@@ -12,8 +19,18 @@ import * as ts from "../ts7/adapter.js";
 import { collectRebindableFunctions, isRebindableFunction } from "./rebindable-functions.js";
 import { bindingSource } from "../binding-source.js";
 import type { Lowerer } from "./lowerer.js";
+import {
+  sharedInitFlagStores,
+  sharedModulePlans,
+  sharedModuleRegistrations,
+} from "./lower-shared-modules.js";
 import { dirname as dirnamePath, resolve as resolvePath } from "node:path";
-import { packageNameOfPath, probeNodeImportRefusal } from "../npm.js";
+import {
+  packageNameOfPath,
+  probeNodeFileImportRefusal,
+  probeNodeImportRefusal,
+  type NodeImportRefusal,
+} from "../npm.js";
 import { isNpmStaticPackage } from "../npm-static.js";
 import { isJsSourceFileName } from "../tsc-codes.js";
 import { isRelativeSpecifier } from "../workspace-registry.js";
@@ -31,11 +48,13 @@ import {
   locOf,
   makeCycleAdmission,
   orderedImportsOf,
+  npmStaticDepSf7,
   requireSpecOf,
   resolveImport,
   resolveNpmImport,
 } from "../program.js";
-import type { CycleEdge } from "../program.js";
+import type { CycleEdge, StartupCrash } from "../program.js";
+import { isUnloadedPackage } from "../package-shims.js";
 import {
   markCycleEarlyBindings,
   withClassInitFlag,
@@ -97,6 +116,7 @@ import {
   createRequireProgramModuleDecl,
 } from "./builtins/module-bindings.js";
 import { isPromisifyCall, registerBuiltinCallableAlias } from "./builtins/callable-aliases.js";
+import { customInspectRegistrations } from "./lower-inspect.js";
 import { registerBuiltinClassAlias } from "./builtins/class-values.js";
 import { stripTypeCasts } from "./builtins/arguments.js";
 import { isWebCryptoMemberType } from "./builtins/webcrypto.js";
@@ -117,6 +137,7 @@ import { funcTypeFromParamShapes, registerOverloadedCallableAlias } from "./call
 import {
   jsBindingHasOpenWrites,
   hasJsTypeAnnotation,
+  inferredEvolvingLetType,
   isVarDeclared,
   numericIteratorSourceOf,
   provenanceElidedConstDecl,
@@ -171,12 +192,25 @@ export interface FileParts {
 export interface AppendGraph {
   edges?: ReadonlyMap<ts.SourceFile, readonly CycleEdge[]> | undefined;
   inlineCycleCalls?: Set<ts.Node>;
+  /** LoadResult.dynamicImportRejections: import() roots that never load. */
+  rejected?: ReadonlyMap<ts.SourceFile, StartupCrash> | undefined;
 }
 
 /** An appended module's edges: its import and export declarations, then
  * the require() edges preflight resolved — a CommonJS file's only edges
  * (the compiled CommonJS package a workspace module loaded on demand
  * imports, and the sibling packages and files IT requires). */
+/** Whether a class declaration has a static field with an initializer,
+ * which Node runs where the class statement evaluates. */
+function hasStaticFieldInitializer(decl: ts.ClassDeclaration): boolean {
+  return decl.members.nodes.some(
+    (member) =>
+      ts.isPropertyDeclaration(member) &&
+      member.initializer !== undefined &&
+      member.modifiers?.nodes.some((m) => m.kind === ts.SyntaxKind.StaticKeyword) === true,
+  );
+}
+
 function appendedEdgesOf(
   program: ts.Program,
   graph: AppendGraph | undefined,
@@ -301,7 +335,15 @@ function appendEntryModules(
  * (tests, coverage on broken files) may arrive with an empty order — fall
  * back to the entry alone. */
 export function splitFiles(lowerer: Lowerer): FileParts[] {
-  const files = lowerer.moduleOrder.length > 0 ? lowerer.moduleOrder : [lowerer.entry];
+  // A declaration file is never a runtime module: it carries no
+  // implementation, so it has no %init to lower and its imports never load
+  // anything. Preflight keeps declarations out of the module order (a
+  // specifier that resolves only to declarations is refused at its own
+  // statement); this filter is the invariant that keeps a stray declaration
+  // from being lowered as code.
+  const files = (lowerer.moduleOrder.length > 0 ? lowerer.moduleOrder : [lowerer.entry]).filter(
+    (sf) => !sf.isDeclarationFile,
+  );
   return files.map((sf) => {
     const fp: FileParts = { sf, fnDecls: [], classDecls: [], topStmts: [] };
     const rebindable = collectRebindableFunctions(lowerer, sf);
@@ -310,6 +352,10 @@ export function splitFiles(lowerer: Lowerer): FileParts[] {
       // the init body assigns first (rebindable-functions.ts).
       if (ts.isFunctionDeclaration(stmt) && rebindable.has(stmt)) fp.topStmts.push(stmt);
       else if (ts.isFunctionDeclaration(stmt)) fp.fnDecls.push(stmt);
+      // A native class extending an island class is a value the init body
+      // creates at its position (NI-5b, lower-node-island.ts).
+      else if (ts.isClassDeclaration(stmt) && noteIslandSubclass(lowerer, stmt))
+        fp.topStmts.push(stmt);
       else if (ts.isClassDeclaration(stmt)) fp.classDecls.push(stmt);
       // Namespaces: ambient/type-only ones are zero-runtime and skip;
       // instantiated bodies FLATTEN into this file's parts (functions/
@@ -350,24 +396,28 @@ function dynamicImportProgramTargetOf(
 }
 
 /** Every distinct program module a file's `import("literal")` sites name
- * (source order, deduped). */
+ * (source order, deduped). The parser lists the specifier of every such call
+ * in the file's module references, in source order after the static imports,
+ * so the file's nodes need no walk. */
 function dynamicProgramImportsOf(program: ts.Program, sf: ts.SourceFile): ts.SourceFile[] {
   const out: ts.SourceFile[] = [];
   const seen = new Set<ts.SourceFile>();
-  ts.walkPreorder(sf, (node) => {
+  for (const specifier of sf.imports) {
+    const call = specifier.parent;
     if (
-      ts.isCallExpression(node) &&
-      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-      node.arguments.nodes[0] !== undefined &&
-      ts.isStringLiteralLike(node.arguments.nodes[0])
-    ) {
-      const dep = dynamicImportProgramTargetOf(program, sf, node.arguments.nodes[0].text);
-      if (dep && !seen.has(dep)) {
-        seen.add(dep);
-        out.push(dep);
-      }
+      call === undefined ||
+      !ts.isCallExpression(call) ||
+      call.expression.kind !== ts.SyntaxKind.ImportKeyword ||
+      call.arguments.nodes[0] !== specifier ||
+      !ts.isStringLiteralLike(specifier)
+    )
+      continue;
+    const dep = dynamicImportProgramTargetOf(program, sf, specifier.text);
+    if (dep && !seen.has(dep)) {
+      seen.add(dep);
+      out.push(dep);
     }
-  });
+  }
   return out;
 }
 
@@ -421,7 +471,8 @@ export function appendDynamicImportModules(
     if (scan.length === 0) break;
     for (const sf of scan) {
       scanned.add(sf);
-      for (const dep of dynamicProgramImportsOf(program, sf)) visit(dep);
+      for (const dep of dynamicProgramImportsOf(program, sf))
+        if (graph?.rejected?.has(dep) !== true) visit(dep);
     }
   }
   if (added.length > 0) order.splice(order.length - 1, 0, ...added);
@@ -602,8 +653,21 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
       if (
         reexport === null &&
         (!ts.isImportDeclaration(stmt) || !ts.isStringLiteral(stmt.moduleSpecifier))
-      )
+      ) {
+        // A star or namespace re-export (`export * from "pkg"`) names
+        // nothing the re-exporting module could bind: an island package's
+        // is refused at the boundary instead of silently dropped. Any
+        // other module keeps the previous skip, and a type-only one is
+        // erased like the type-only named re-export above.
+        if (
+          ts.isExportDeclaration(stmt) &&
+          !stmt.isTypeOnly &&
+          stmt.moduleSpecifier !== undefined &&
+          ts.isStringLiteral(stmt.moduleSpecifier)
+        )
+          collectIslandImport(lowerer, fp.sf, stmt, stmt.moduleSpecifier.text);
         continue;
+      }
       const specNode =
         ts.isImportDeclaration(stmt) || ts.isExportDeclaration(stmt)
           ? stmt.moduleSpecifier
@@ -629,7 +693,17 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
       // graph: resolveImport follows its node_modules link to the loaded
       // TypeScript entry. Its internal `.js` spellings have already been
       // resolved to `.ts` by that graph.
-      if (!isRelativeSpecifier(spec) && resolveImport(lowerer.program, fp.sf, spec) !== null) {
+      // A relative import of a program module the pre-scan put in a Node
+      // island (DESIGN.md note 1 §3.2): the island loads at this module's
+      // position and its bindings are island values.
+      if (lowerer.nodeIslands !== null && collectIslandImport(lowerer, fp.sf, stmt, spec)) continue;
+      const projectDep = isRelativeSpecifier(spec)
+        ? null
+        : resolveImport(lowerer.program, fp.sf, spec);
+      if (projectDep !== null) {
+        // A Node island package that tsconfig `paths` maps to its installed
+        // directory resolves to its declarations: it loads in Node.
+        if (projectDep.isDeclarationFile) collectIslandImport(lowerer, fp.sf, stmt, spec);
         continue;
       }
       const npm = resolveNpmImport(fp.sf.fileName, spec);
@@ -669,20 +743,31 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
       // scriptc's own @scriptc/threads and @scriptc/experimental: their
       // exports lower at their use sites (threads-import.ts,
       // experimental-import.ts); their Node.js bodies never run.
-      if (npm?.packageName === THREADS_MODULE || npm?.packageName === EXPERIMENTAL_MODULE) continue;
+      if (
+        npm?.packageName === THREADS_MODULE ||
+        npm?.packageName === EXPERIMENTAL_MODULE ||
+        npm?.packageName === NODE_API_MODULE
+      )
+        continue;
       // An edge Node's RUNTIME resolution refuses at startup (types
       // resolved, but the exports target ships no JS — the types-only
       // package shape): preflight registered Node's startup crash for
       // it, %main throws before any init runs, and the bindings never
 
       if (npm !== null && probeNodeImportRefusal(fp.sf.fileName, spec) !== null) continue;
+      // A Node island package (scope-B NI-4): loaded in Node at this
+      // module's position, its bindings are island values.
+      if (collectIslandImport(lowerer, fp.sf, stmt, spec)) continue;
       {
         lowerer.pushDiag(unsupportedPackageImportDiag(npm?.packageName ?? relPkg!, locOf(stmt)));
         continue;
       }
     }
   }
-  for (const fp of parts) collectDynamicImports(lowerer, fp.sf);
+  for (const fp of parts) {
+    collectDynamicImports(lowerer, fp.sf);
+    collectIslandRequires(lowerer, fp.sf);
+  }
 }
 
 /** Literal dynamic-import collection: every
@@ -698,6 +783,42 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
  * specifiers are skipped — the lowering owns that fence (the module
  * graph is a build-time artifact; there is nothing to embed for a
  * runtime-computed name). */
+/** The refusal a literal import() rejects with, or null when it loads:
+ * Node's ERR_MODULE_NOT_FOUND for a package the project marks never loaded
+ * (package-shims.ts), the first refusal in the static graph of a module
+ * only import() loads (LoadResult.dynamicImportRejections), or Node's
+ * resolution refusal for a specifier nothing resolves (a package nothing
+ * installed provides, a relative path to a file that does not exist). */
+function dynamicImportRejectionOf(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  spec: string,
+  call: ts.CallExpression,
+): StartupCrash | null {
+  const rejection = (refusal: NodeImportRefusal | null): StartupCrash | null =>
+    refusal === null
+      ? null
+      : {
+          message: refusal.message,
+          className: "%Error",
+          code: refusal.code,
+          ...(refusal.url === undefined ? {} : { url: refusal.url }),
+          loc: locOf(call),
+        };
+  if (isUnloadedPackage(spec)) return rejection(probeNodeImportRefusal(sf.fileName, spec));
+  const root =
+    resolveImport(lowerer.program, sf, spec) ?? npmStaticDepSf7(lowerer.program, sf, spec);
+  if (root !== null) return lowerer.dynamicImportRejections.get(root) ?? null;
+  // Builtins, and URL specifiers (file:, data:), are not package names.
+  if (canonicalBuiltinModule(spec) !== null || /^[a-z][a-z0-9+.-]*:/i.test(spec)) return null;
+  return rejection(
+    probeNodeFileImportRefusal(sf.fileName, spec) ??
+      (spec.startsWith(".") || spec.startsWith("/")
+        ? null
+        : probeNodeImportRefusal(sf.fileName, spec)),
+  );
+}
+
 function collectDynamicImports(lowerer: Lowerer, sf: ts.SourceFile): void {
   ts.walkPreorder(sf, (node) => {
     if (
@@ -705,9 +826,10 @@ function collectDynamicImports(lowerer: Lowerer, sf: ts.SourceFile): void {
       node.expression.kind === ts.SyntaxKind.ImportKeyword &&
       node.arguments.nodes.length >= 1 &&
       node.arguments.nodes[0] !== undefined &&
-      ts.isStringLiteralLike(node.arguments.nodes[0])
+      staticString(lowerer, node.arguments.nodes[0]) !== null
     ) {
-      const spec = node.arguments.nodes[0].text;
+      // A constant expression names its module as surely as a literal.
+      const spec = staticString(lowerer, node.arguments.nodes[0]!)!;
       if (lowerer.externalTypes.has(spec)) {
         return undefined;
       }
@@ -718,10 +840,22 @@ function collectDynamicImports(lowerer: Lowerer, sf: ts.SourceFile): void {
         // module has no runtime namespace object — the per-site fence
         // says so. Only non-declaration source files count; a sibling
         // .d.mts typing shipped JS is the EMBED case, not this one.
+        // A package the project marks never loaded, or a module whose
+        // static graph Node's resolution refuses: the import() rejects.
+        const rejection = dynamicImportRejectionOf(lowerer, sf, spec, node);
+        if (rejection !== null) {
+          lowerer.dynImports.set(mapKey, { kind: "rejected", crash: rejection });
+          return undefined;
+        }
         const modSym = lowerer.checker.getSymbolAtLocation(node.arguments.nodes[0]);
+        // A folded specifier carries no module symbol on its argument (the
+        // text comes from a `const`, not a literal), so fall back to the
+        // checker's program import resolution.
+        const folded = resolveImport(lowerer.program, sf, spec);
         const ownModule =
-          modSym !== undefined &&
-          modSym.declarations.some((d) => ts.isSourceFile(d) && !d.isDeclarationFile);
+          (modSym !== undefined &&
+            modSym.declarations.some((d) => ts.isSourceFile(d) && !d.isDeclarationFile)) ||
+          (folded !== null && !folded.isDeclarationFile);
         const builtin = canonicalBuiltinModule(spec);
         const res = ownModule
           ? ({ kind: "program-module" } as const)
@@ -949,6 +1083,12 @@ export function moduleArtifacts(
             visitClass("%Readable");
             visitClass("%Writable");
           }
+          // A class declared `extends Array` named by its instanceof test
+          // or by X.of / X.from.
+          if (node.fn === "array.dynIsClass" && node.args[1]?.kind === "strLit")
+            visitClass(node.args[1].value);
+          if (node.fn === "array.classConstructAdopt" && node.args[0]?.kind === "strLit")
+            visitClass(node.args[0].value);
           break;
         case "dynFrom":
           if (boxedChild(node.value.type)) {
@@ -1030,13 +1170,11 @@ export function moduleArtifacts(
     }
     while (pendingClasses.length > 0) {
       const name = pendingClasses.pop()!;
-      const info = lowerer.classes.get(name);
-      if (!info) {
-        // Referenced by an emitted type but never registered: collection
-        // deferred its diagnostics — a reached reference makes them count.
-        lowerer.flushDeferredClass(name);
-        continue;
-      }
+      // Referenced by an emitted type but never registered: collection
+      // deferred its diagnostics — a reached reference makes them count
+      // (or registers the class with dynamic slots, retryDeferred).
+      const info = lowerer.classes.get(name) ?? lowerer.flushDeferredClass(name);
+      if (!info) continue;
       for (const field of info.def.fields) visitType(field.type);
       if (info.base) visitClass(info.base.def.name);
       if (info.def.genericOf) visitClass(info.def.genericOf);
@@ -1104,8 +1242,8 @@ function deferJsCollectionDiags(lowerer: Lowerer, sf: ts.SourceFile, diagsBefore
   if (!isJsSourceFile(sf)) return;
   const captured = lowerer.diags.splice(diagsBefore);
   const ice = captured.filter((d) => d.code === "SC9001");
-  if (ice.length > 0) lowerer.diags.push(...ice);
-  lowerer.runtimeFences.push(...captured.filter((d) => d.code !== "SC9001"));
+  for (const d of ice) lowerer.diags.push(d);
+  for (const d of captured) if (d.code !== "SC9001") lowerer.runtimeFences.push(d);
 }
 
 /** A scalar-literal expression a single-value `module.exports =` can carry
@@ -1351,6 +1489,19 @@ export function collectGlobals(
   // collected earlier in this pass must resolve them (lower-expando.ts).
   collectExpandoMembers(lowerer, sf);
   for (const stmt of topStmts) {
+    if (ts.isClassDeclaration(stmt) && stmt.name && isIslandSubclassDecl(stmt)) {
+      const symbol = lowerer.checker.getSymbolAtLocation(stmt.name);
+      const g: IrGlobal = {
+        id: `%g.${tag}${stmt.name.text}`,
+        name: stmt.name.text,
+        type: DYN,
+        mutable: true,
+      };
+      if (symbol) lowerer.globalsBySymbol.set(symbol, g);
+      lowerer.globalsByDeclNode.set(stmt, g);
+      lowerer.globalsList.push(g);
+      continue;
+    }
     if (ts.isFunctionDeclaration(stmt) && stmt.name && isRebindableFunction(lowerer, stmt)) {
       const symbol = lowerer.checker.getSymbolAtLocation(stmt.name);
       if (symbol && !lowerer.globalsBySymbol.has(symbol)) {
@@ -1969,18 +2120,21 @@ export function collectGlobals(
       // symbol registers HERE, before any use site can lower, and the
       // statement lowering skips the declaration by the same check. A
       // bad promisify target reports here (recorded once; the statement
-      // lowering poisons too, like every collectGlobals failure).
+      // lowering poisons too, like every collectGlobals failure). Targets
+      // that promisify to a function value (typed callback-last functions
+      // and untyped functions) keep an ordinary global.
       if (
         ts.isIdentifier(decl.name) &&
         decl.initializer &&
         isPromisifyCall(lowerer, decl.initializer)
       ) {
+        let registered = true;
         try {
-          lowerer.registerPromisifiedBuiltinDecl(decl.name, decl.initializer);
+          registered = lowerer.registerPromisifiedBuiltinDecl(decl.name, decl.initializer);
         } catch (e) {
           if (!(e instanceof PoisonError)) throw e;
         }
-        continue;
+        if (registered) continue;
       }
       // `const inspect = require("util").inspect` at file scope: a
       // named import in const clothing (builtinImportOf resolves uses)
@@ -2040,7 +2194,15 @@ export function collectGlobals(
       // Destructuring declarations register EVERY bound identifier (the
       // desugar in the init function assigns the pre-registered globals,
       // exactly like plain declarations).
-      for (const nameNode of boundIdentifiersOf(decl.name)) {
+      const names = boundIdentifiersOf(decl.name);
+      // Localized failure: a degradable type failure at a module global
+      // degrades that type and the same name registers again
+      // (globalSlotRetry), at most MAX_GLOBAL_RETRIES times.
+      let retries = 0;
+      let retriedIndex = -1;
+      for (let nameIndex = 0; nameIndex < names.length; nameIndex++) {
+        const nameNode = names[nameIndex]!;
+        if (nameIndex !== retriedIndex) retries = 0;
         const diagsBefore = lowerer.diags.length;
         try {
           // Checked JavaScript factories can expose inferred callables by
@@ -2130,6 +2292,27 @@ export function collectGlobals(
               lowerer.globalsBySymbol.set(symbol, g);
               lowerer.globalsList.push(g);
               if (isVarDeclared(decl)) noteVarGlobalEntryInit(lowerer, sf, g);
+            }
+            continue;
+          }
+          // `const f = util.promisify(islandFn)` (NI-5b): an island function.
+          if (
+            ts.isIdentifier(decl.name) &&
+            nameNode === decl.name &&
+            decl.initializer !== undefined &&
+            isIslandPromisifyCall(lowerer, decl.initializer)
+          ) {
+            const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
+            if (symbol) {
+              const g: IrGlobal = {
+                id: `%g.${tag}${nsPrefix}${nameNode.text}`,
+                name: nameNode.text,
+                type: DYN,
+                mutable: isLet,
+                source: bindingSource(nameNode),
+              };
+              lowerer.globalsBySymbol.set(symbol, g);
+              lowerer.globalsList.push(g);
             }
             continue;
           }
@@ -2308,10 +2491,16 @@ export function collectGlobals(
           ) {
             const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
             if (symbol && !lowerer.globalsBySymbol.has(symbol)) {
+              // An initializer-less `let` whose writes all agree keeps
+              // their type, as a function's local does (lowerVarDecl).
+              const evolved =
+                isLet && !isVarDeclared(decl) && decl.initializer === undefined
+                  ? inferredEvolvingLetType(lowerer, decl)
+                  : null;
               const g: IrGlobal = {
                 id: `%g.${tag}${nsPrefix}${nameNode.text}`,
                 name: nameNode.text,
-                type: DYN,
+                type: evolved ?? DYN,
                 mutable: isLet,
                 source: bindingSource(nameNode),
               };
@@ -2320,7 +2509,7 @@ export function collectGlobals(
               // Mutable dyn globals hold the dyn undefined from module
               // entry (the main path's rule below): a closure called
               // above the declaration reads undefined instead of
-              // faulting on NULL.
+              // faulting on NULL. An undefined-armed union does the same.
               if (g.mutable) noteVarGlobalEntryInit(lowerer, sf, g);
             }
             continue;
@@ -2692,6 +2881,12 @@ export function collectGlobals(
           }
         } catch (e) {
           if (!(e instanceof PoisonError)) throw e;
+          if (retries < MAX_GLOBAL_RETRIES && globalSlotRetry(lowerer, sf, e)) {
+            retries++;
+            retriedIndex = nameIndex;
+            nameIndex--;
+            continue;
+          }
           // diagnostic already recorded; lowering the statement poisons
           // too — and in a JS file BOTH defer to the statement's
           // runtime fence (deferJsCollectionDiags).
@@ -2701,6 +2896,20 @@ export function collectGlobals(
     }
   }
 }
+
+/** Localized failure's commit point for module globals (design §3.3):
+ * collectGlobals commits a global's type failure directly, before any body
+ * lowers, so it degrades here and the registration runs again. */
+function globalSlotRetry(lowerer: Lowerer, sf: ts.SourceFile, e: PoisonError): boolean {
+  if (isJsSourceFile(sf)) return false;
+  const slot = lowerer.degradeAtCommit(e, GLOBAL_SLOTS);
+  if (slot === null) return false;
+  lowerer.noteDynamicSlot(slot);
+  return true;
+}
+
+const MAX_GLOBAL_RETRIES = 16;
+const GLOBAL_SLOTS: ReadonlySet<TypeFailureSlot> = new Set<TypeFailureSlot>(["global"]);
 
 /** Registers the entry-init note for a `var` module global: JS hoists
  * module vars to `undefined` at module entry, so an undefined-armed slot
@@ -3018,6 +3227,14 @@ export function lowerFileInit(
       });
     }
     if (sf === lowerer.entry) header.push(...lowerer.punycodeLinkWarning());
+    // Modules shared with Node islands register before any module runs
+    // (NI-6); the plan also creates their declarations' TDZ flags.
+    if (sharedModulePlans(lowerer).length > 0 && sf === lowerer.entry)
+      header.push(...sharedModuleRegistrations(lowerer));
+    // A module that reads builtin globals through the global object, by
+    // computed names or through a sloppy-mode function's `this`, installs
+    // the program's lookup before its body runs.
+    if (installsGlobalValues(lowerer, sf)) header.push(globalValuesInstall(lowerer, loc0));
     // Top-level `this` of a CommonJS module: its object exists before the
     // module's first statement (lowerCjsTopLevelThis).
     const exportsThis = lowerer.cjsExportsThis.get(sf);
@@ -3046,7 +3263,14 @@ export function lowerFileInit(
       });
       ctx.hoistedFnDecls.add(stmt);
     }
+    const islandActions = lowerer.islandImportActions.get(sf);
+    const islandPlaced = new Set<ts.Statement>();
     for (const { stmt, dep } of orderedImportsOf(lowerer.program, sf)) {
+      const island = islandActions?.get(stmt);
+      if (island !== undefined) {
+        header.push(...island);
+        islandPlaced.add(stmt);
+      }
       const npm = lowerer.npmInitActions.get(sf)?.get(stmt);
       if (npm !== undefined && npm.length > 0) {
         header.push(...npm);
@@ -3115,6 +3339,11 @@ export function lowerFileInit(
         }
       }
     }
+    // An island load whose statement the import order leaves out keeps the
+    // prelude's place.
+    const islandUnplaced: IrStmt[] = [];
+    for (const [stmt, actions] of islandActions ?? [])
+      if (!islandPlaced.has(stmt)) islandUnplaced.push(...actions);
     if (asyncDeps.length === 1) {
       const dep = asyncDeps[0]!;
       const promiseT: IrType = { kind: "promise", inner: VOID };
@@ -3194,7 +3423,19 @@ export function lowerFileInit(
     // by position) — exactly when JS evaluates decorators, static
     // initializers, and blocks, so code reading an earlier module
     // binding sees its assigned value.
-    const statics = [...lowerer.classes.values()]
+    const runsStatics = (c: ClassInfo): boolean =>
+      lowerer.classInitFlags.has(c.def.name) ||
+      c.callableBase !== undefined ||
+      c.def.baseValueGlobal !== undefined ||
+      c.runtimeStatics !== undefined ||
+      c.staticFields.length > 0 ||
+      (c.staticBlocks?.length ?? 0) > 0 ||
+      c.classDecorators !== undefined;
+    const statics: {
+      pos: number;
+      info: ClassInfo | null;
+      deferred?: { symbol: ts.Symbol; decl: ts.ClassDeclaration };
+    }[] = [...lowerer.classes.values()]
       .filter(
         (c) =>
           // Class DECLARATIONS only: expression classes run their static
@@ -3206,15 +3447,30 @@ export function lowerFileInit(
           ts.isClassDeclaration(c.decl) &&
           !c.mixinInstance &&
           ts.getSourceFileOfNode(c.decl) === sf &&
-          (lowerer.classInitFlags.has(c.def.name) ||
-            c.callableBase !== undefined ||
-            c.def.baseValueGlobal !== undefined ||
-            c.runtimeStatics !== undefined ||
-            c.staticFields.length > 0 ||
-            (c.staticBlocks?.length ?? 0) > 0 ||
-            c.classDecorators !== undefined),
+          runsStatics(c),
       )
       .map((c) => ({ pos: ts.tokenStartOfNode(c.decl!), info: c }));
+    // Localized failure: a deferred class with static field initializers
+    // is reached at its statement, where Node runs them. Its place retries
+    // it (retryDeferredAtDeclaration), and once it has registered there or
+    // through an earlier flush, its initializers lower in place.
+    for (const symbol of lowerer.deferredCollectors.keys())
+      for (const decl of symbol.declarations)
+        if (
+          ts.isClassDeclaration(decl) &&
+          ts.getSourceFileOfNode(decl) === sf &&
+          hasStaticFieldInitializer(decl)
+        )
+          statics.push({ pos: ts.tokenStartOfNode(decl), info: null, deferred: { symbol, decl } });
+    const lowerStaticsAt = (entry: (typeof statics)[number]): IrStmt[] => {
+      let info = entry.info;
+      if (entry.deferred) {
+        if (!lowerer.retryDeferredAtDeclaration(entry.deferred.symbol)) return [];
+        info = lowerer.classes.get(lowerer.classNamer(entry.deferred.decl)) ?? null;
+        if (info === null || !runsStatics(info)) return [];
+      }
+      return withClassInitFlag(lowerer, info!, lowerer.lowerStaticFieldInits(info!));
+    };
     // Statics-bearing MIXIN instantiations whose call evaluates in THIS
     // file: their declaration-time code runs when the call does — the
     // top-level statement lower-mixins recorded. Insertion order is
@@ -3226,7 +3482,7 @@ export function lowerFileInit(
       if (ms && ms.sf === sf) statics.push({ pos: ms.pos, info: c });
     }
     statics.sort((a, b) => a.pos - b.pos);
-    const body = [...header, ...prelude];
+    const body = [...header, ...islandUnplaced, ...prelude];
     let at = 0;
     for (const stmt of stmts) {
       // `<=`: a mixin instantiation's position IS its statement's start
@@ -3235,13 +3491,7 @@ export function lowerFileInit(
       // declarations never share a kept statement's start, so `<=`
       // changes nothing for them.
       while (at < statics.length && statics[at]!.pos <= ts.tokenStartOfNode(stmt)) {
-        body.push(
-          ...withClassInitFlag(
-            lowerer,
-            statics[at]!.info,
-            lowerer.lowerStaticFieldInits(statics[at]!.info),
-          ),
-        );
+        body.push(...lowerStaticsAt(statics[at]!));
         at++;
       }
       // A cycle binding's declaration stays at its position: its
@@ -3254,19 +3504,14 @@ export function lowerFileInit(
         stmt,
         deferred ? [deferred] : lowerer.lowerStmts([stmt]),
       );
+      if (lowerer.sharedInitFlags.size > 0) stmtIr.push(...sharedInitFlagStores(lowerer, stmt));
       // Class EXPRESSIONS inside this statement queued their static
       // inits while it lowered: they land immediately before it — JS's
       // order for the supported whole-initializer positions.
       body.push(...lowerer.pendingClassExprInits.splice(0), ...stmtIr);
     }
     while (at < statics.length) {
-      body.push(
-        ...withClassInitFlag(
-          lowerer,
-          statics[at]!.info,
-          lowerer.lowerStaticFieldInits(statics[at]!.info),
-        ),
-      );
+      body.push(...lowerStaticsAt(statics[at]!));
       at++;
     }
     for (const { at, g } of unionEntryInits) {
@@ -3545,6 +3790,9 @@ export function buildMain(lowerer: Lowerer): IrFunction {
       loc,
     });
   }
+  // Classes with custom inspect methods register their compiled calls for
+  // the runtime's inspect walk before any module runs, in every thread.
+  body.unshift(...customInspectRegistrations(lowerer, loc));
   // Node's startup refusal (a resolution the graph carries that Node
   // rejects — preflight's Node-order resolution walk — or a module-LINK
   // SyntaxError from either named-import checker): the graph is refused

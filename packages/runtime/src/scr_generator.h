@@ -60,6 +60,14 @@ void scr_gen_coro_finish(ScrFiber *self);
 ScrGen *scr_async_gen_new(void (*entry)(ScrFiber *, void *), void *argpack,
                           void (*drop_args)(void *),
                           void (*settle)(ScrGen *, ScrPromise *));
+/* An async generator whose body is a switched coroutine, as
+ * scr_gen_new_stackless's: its steps run on the resumer's stack (the loop's
+ * after an await), its awaits suspend through scr_coro_await_prepare and
+ * scr_coro_hop_prepare, and its yields store OUT through scr_coro_yield_*.
+ * Native targets only. */
+ScrGen *scr_async_gen_new_stackless(void (*entry)(ScrFiber *, void *), void *argpack,
+                                    void (*drop_args)(void *),
+                                    void (*settle)(ScrGen *, ScrPromise *));
 /* Runs when return() reaches the generator before its first resume, with
  * the packed arguments still alive: an iterator helper closes its source. */
 void scr_gen_set_unstarted_return(ScrGen *g, void (*hook)(void *));
@@ -74,8 +82,9 @@ void scr_gen_set_tag(ScrGen *g, const char *tag);
 void scr_gen_copy_tag(ScrGen *g, const ScrGen *from);
 const char *scr_gen_tag(const ScrGen *g);
 /* scr_gen_tag for units that also link without the generator runtime (a
- * library links none): the generator runtime sets it at startup, and only
- * then can a generator capsule exist. */
+ * library links none): the generator runtime sets it when it creates a
+ * generator, so it is set whenever a generator capsule exists. Read it with
+ * a relaxed atomic load. */
 extern const char *(*scr_gen_tag_reader)(const ScrGen *g);
 ScrGen *scr_gen_retain(ScrGen *g);
 void scr_gen_release(ScrGen *g); /* NULL-tolerant */
@@ -214,5 +223,43 @@ typedef struct ScrFetchReadSink {
 /* Queue a sink read request on a reader handle (borrowed). false with a
  * TypeError pending for a value that is not a reader or a released one. */
 bool scr_fetch_reader_read_into(ScrDyn *reader, const ScrFetchReadSink *sink, void *ctx);
+/* What the fetch unit reaches of checked-dynamic web streams
+ * (scr_webstreams.c installs it); NULL in programs without them. */
+typedef struct ScrWebStreamBridge {
+  /* scr_fetch_reader_read_into for one of their readers. */
+  bool (*reader_read_into)(ScrDyn *reader, const ScrFetchReadSink *sink, void *ctx);
+  /* Whether a ReadableStream is locked or disturbed, which makes it
+   * unusable as a body. */
+  bool (*unusable)(const ScrDyn *stream);
+  /* Whether a ReadableStream is disturbed: a read, a cancel or a pipe
+   * has started on it. */
+  bool (*disturbed)(const ScrDyn *stream);
+} ScrWebStreamBridge;
+extern SCR_TL const ScrWebStreamBridge *scr_web_stream_bridge;
+/* The read side of a stream another unit implements, which
+ * scr_webstream_readable_over reads: read_into queues one read request on
+ * it (false with the exception pending), cancel cancels it (+1 promise),
+ * and release drops the context. */
+typedef struct ScrWebStreamSource {
+  bool (*read_into)(void *ctx, const ScrFetchReadSink *sink, void *sink_ctx);
+  ScrPromise *(*cancel)(void *ctx, ScrDyn *reason);
+  void (*release)(void *ctx);
+} ScrWebStreamSource;
+/* A checked-dynamic ReadableStream (+1 handle) with a zero high-water mark
+ * that reads one chunk of `source` per pull (scr_webstreams.c). ctx's
+ * reference moves in; the stream releases it when it goes away. */
+ScrDyn *scr_webstream_readable_over(const ScrWebStreamSource *source, void *ctx);
+/* Installs the web stream classes (webstream.install): a program whose
+ * JavaScript uses a ReadableStream member the fetch unit's streams lack
+ * calls it at startup, which links the classes that fetch bodies then
+ * stand for. */
+void scr_webstream_install(void);
+/* The web stream class constructors for checked-dynamic code, by kind
+ * (scr_webstreams.c: ReadableStream, ReadableStreamDefaultReader,
+ * ReadableStreamDefaultController, CountQueuingStrategy,
+ * ByteLengthQueuingStrategy); +1. */
+ScrDyn *scr_webstream_class(double kind);
+/* `value instanceof <class>` for those classes (value borrowed). */
+bool scr_webstream_instanceof(ScrDyn *value, double kind);
 
 #endif /* SCR_GENERATOR_H */

@@ -72,6 +72,7 @@ const DISPATCH_LIB_CALLS = new Set<string>([
   "dyn.keySetComputed",
   "dyn.iterator",
   "dyn.arrayFromIterator",
+  "dyn.asyncIteratorOpen",
   "dyn.toString",
   "dyn.stringConstructor",
   "dyn.forInKeys",

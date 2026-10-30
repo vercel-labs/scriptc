@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8121-inspect-custom-nested.cjs"
+ ],
+ "diags": []
+}

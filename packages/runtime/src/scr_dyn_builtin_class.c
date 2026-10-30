@@ -1441,7 +1441,7 @@ static void bc_teardown(void) {
 
 static ScrDyn *bc_new_class(int kind, ScrDyn *parent) {
   ScrClosure *closure = scr_closure_new(NULL, 1);
-  closure->function_kind = 4; /* an ordinary function with its own prototype */
+  closure->function_kind = SCR_CLOSURE_KIND_OWN_PROTOTYPE;
   closure->caps[0] = scr_box_new(SCR_BOX_F64);
   scr_box_set_f64(closure->caps[0], kind);
   ScrDyn *ctor = scr_dyn_new_func(closure, bc_construct, 1, "native:events", bc_names[kind]);
@@ -1544,10 +1544,21 @@ ScrDyn *scr_dyn_builtin_class(double kind) {
 
 /* OrdinaryHasInstance over the value's prototype chain. */
 static bool bc_chain_has(ScrDyn *value, ScrDyn *prototype) {
-  if (value->kind != SCR_DYN_OBJ && value->kind != SCR_DYN_ARR && value->kind != SCR_DYN_FUNC &&
-      value->kind != SCR_DYN_PROXY)
-    return false;
-  ScrDyn *current = scr_dyn_get_prototype(value);
+  ScrDyn *current;
+#ifdef SCR_HANDLE_CLASSES
+  /* A handle of a class (scr_dyn_handle_class.c) has the class's
+   * prototype; this build is the one programs with such classes link. */
+  if (value->kind == SCR_DYN_HANDLE) {
+    current = scr_dyn_handle_class_prototype_of(value);
+    if (!current) return false;
+  } else
+#endif
+  {
+    if (value->kind != SCR_DYN_OBJ && value->kind != SCR_DYN_ARR && value->kind != SCR_DYN_FUNC &&
+        value->kind != SCR_DYN_PROXY)
+      return false;
+    current = scr_dyn_get_prototype(value);
+  }
   while (current && current->kind != SCR_DYN_NULL) {
     if (scr_dyn_strict_eq(current, prototype)) {
       scr_dyn_release(current);
@@ -1576,6 +1587,9 @@ bool scr_dyn_builtin_instanceof(ScrDyn *value, double kind) {
 
 /* `value instanceof callee` for an untyped constructor function. */
 bool scr_dyn_function_instanceof(ScrDyn *value, ScrDyn *callee) {
+#ifdef SCR_NODE_ISLANDS
+  if (scr_ni_is_handle(callee)) return scr_ni_instanceof(value, callee) == 1;
+#endif
   if (!scr_dyn_is_callable(callee)) {
     static const char message[] = "Right-hand side of 'instanceof' is not callable";
     scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);

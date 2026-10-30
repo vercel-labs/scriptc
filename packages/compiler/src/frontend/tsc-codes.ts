@@ -36,6 +36,21 @@ export const ADOPTED_OPTIONS = [
   "reactNamespace",
 ] as const;
 
+/* ── The early-error boundary (read this before relaxing a code) ────────
+ *
+ * Some of the codes below do double duty: TypeScript reports them for a
+ * JavaScript construct that ECMAScript ALSO makes a SyntaxError (a
+ * redeclared block binding, a declaration in a statement-only position).
+ * Relaxing such a code removes that construct's only rejection, so a
+ * parse-negative program would start compiling and running.
+ *
+ * frontend/early-errors.ts owns those rejections now, under their own
+ * preflight codes — SC0005 (duplicate lexical declaration in a block or
+ * switch statement list), SC0006 (lexical declaration colliding with a
+ * `var` in the same block), SC0007 (declaration in a single-statement
+ * position). A relaxation that needs one of those rules to keep firing must
+ * land with the matching rule in that pass, not rely on this table. */
+
 export const JS_RELAXED_TSC_CODES: ReadonlySet<number> = new Set([
   // implicit any (params, variables, elements, this, returns, rest,
   // construct signatures, index reads over shapes with no index
@@ -109,11 +124,24 @@ export const JS_RELAXED_TSC_CODES: ReadonlySet<number> = new Set([
   2488,
   2721,
   2722,
+  // the async-iterator protocol demand (2504: "must have a
+  // '[Symbol.asyncIterator]()' method that returns an async iterator").
+  // Whether a value is async-iterable is a runtime fact of untyped JS, exactly
+  // like the sync demand (2488) relaxed above: `for await` over a non-iterable
+  // value and `yield*` in an async generator both lower through the runtime
+  // protocol openers, which read the method, call it, and throw TypeError at
+  // the site when it is missing, uncallable, or returns a non-object — the
+  // same protocol failure Node reports. 2505 is the sync sibling on the typed
+  // lowering lanes and stays enforced.
+  2504,
   // an UNUSED @ts-expect-error: the directive annotated an error visible
   // under the project's OWN tsconfig world — scriptc's world deliberately
   // differs (adopted options, hidden declaration twins), and an unused
   // suppression changes nothing at runtime
   2578,
+  // a primitive on the left of instanceof (`"x" instanceof String`): Node
+  // answers false, which the lowering folds
+  2358,
   // a lib-floor demand (es2024+ members under the es2023 lib): the member
   // types as the error-any and its use fences per site with the honest
   // no-lowering story instead of gating the whole program
@@ -128,10 +156,30 @@ export const JS_RELAXED_TSC_CODES: ReadonlySet<number> = new Set([
   // JavaScript subclasses may widen fields or add method parameters.
   // Class lowering checks native storage and override ABIs at each use.
   2415,
+  // a private or protected constructor (`new readline.Interface(...)`,
+  // whose declaration is protected): JavaScript has no constructor
+  // accessibility, and Node constructs the class. Each `new` meets the
+  // lowerer's per-site constructor fences.
+  2673,
+  2674,
   // unresolvable modules: Node throws WHEN the require executes — the
   // binding types as any and reached uses fence instead of passing unchecked
   2307,
   2792,
+  // a write to a property declarations mark readonly (2540): `readonly` is
+  // a type annotation that Node never sees (Next.js's types mark
+  // process.env.NODE_ENV readonly; its server.js assigns it); the write
+  // lowers like any other and keeps its runtime behavior
+  2540,
+  // a resolved JavaScript module without declarations (7016): Node loads
+  // it like any other module; deployment trees such as Next.js standalone
+  // output ship runtime files only, so the binding types as any and its
+  // uses take the dynamic paths, as for 2307
+  7016,
+  // `delete` of a property the inference typed required (2790): JS deletes
+  // any configurable property, and the lowering checks each delete's
+  // receiver itself
+  2790,
   // useUnknownInCatchVariables' annotation demand ("'e' is of type
   // 'unknown'", "Object is of type 'unknown'"): a JS catch clause CANNOT
   // annotate its variable, so the demand is unsatisfiable in source —
@@ -140,6 +188,20 @@ export const JS_RELAXED_TSC_CODES: ReadonlySet<number> = new Set([
   // ride the checked-dynamic tree; unsupported operations report a compile-time diagnostic).
   18046,
   2571,
+  // UNDECLARED NAMES in a JavaScript source: Node resolves them at run time,
+  // never at compile time — a READ throws the catchable
+  // `ReferenceError: <name> is not defined` at the access (`typeof` of one
+  // answers "undefined"), and a sloppy-mode WRITE creates a global. The
+  // lowerer turns the read into `scr_undef_global_read` (exact Node text and
+  // behavior) and refuses the write with SC1091, which names the Node-island
+  // route the sloppy semantics need (the plan's D-2/D-5). TypeScript input
+  // keeps the compile error: an undeclared name there is a bug, not a
+  // runtime path. 2552 is 2304's did-you-mean spelling, and 18004 is the
+  // same unresolved name in SHORTHAND position (`{ x }`), which the checker
+  // reports against the property instead of the reference.
+  2304,
+  2552,
+  18004,
 ]);
 
 /* Arithmetic on an `any` operand (TS2362/2363/2365 fire when the other
@@ -150,7 +212,12 @@ export const JS_ANY_OPERATOR_CODES: ReadonlySet<number> = new Set([2362, 2363, 2
  * whose types come entirely from inference (checkJs + JSDoc) and whose JS
  * relaxation stance applies. */
 export function isJsSourceFileName(fileName: string): boolean {
-  // Only the final few code units can match. Keep the same expression so
-  // unusual filenames retain its classification.
-  return /\.(js|mjs|cjs|jsx)$/.test(fileName.slice(-6));
+  // The same classification as /\.(js|mjs|cjs|jsx)$/, without a regular
+  // expression: this runs for most type queries.
+  return (
+    fileName.endsWith(".js") ||
+    fileName.endsWith(".mjs") ||
+    fileName.endsWith(".cjs") ||
+    fileName.endsWith(".jsx")
+  );
 }

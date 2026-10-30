@@ -1,5 +1,6 @@
 import { F64, isRefCounted, type IrExpr, type IrFunction, type IrStmt } from "../../ir/ir.js";
 import { everyStmtList, transformStmtList } from "../../ir/traverse.js";
+import { eachNodeOfKinds, type IrNodeIndex, type IrNodeKind } from "../../ir/node-index.js";
 import type { CallLifetimes } from "./call-lifetimes.js";
 import type { ReferenceEffects } from "./reference-effects.js";
 import type { OptionalArrayReads } from "./local-array-reads.js";
@@ -57,6 +58,8 @@ export function dynHoleRead(value: IrExpr): (IrExpr & { kind: "arrayGet" }) | nu
   return same(cond.left.arr, then.arr) && same(cond.left.index, then.index) ? then : null;
 }
 
+const LOOP_KINDS: readonly IrNodeKind[] = ["forOf", "for", "while", "doWhile"];
+
 /** Limit a borrow to a loop whose complete iteration preserves heap edges.
  * Initialization and unrelated work elsewhere in the function may mutate.
  * The array remains owned by its unchanged local or global binding; the
@@ -72,6 +75,8 @@ export function findLoopArrayBorrows(
   optionalReads?: OptionalArrayReads,
   writes?: ReferenceWrites | null,
   functions?: ReadonlyMap<string, IrFunction>,
+  /** The module's node index, read instead of walking for the loops. */
+  nodes?: IrNodeIndex,
 ): ReadonlySet<IrStmt> {
   const result = new Set<IrStmt>();
   if (fn.async || fn.generator) return result;
@@ -88,9 +93,10 @@ export function findLoopArrayBorrows(
       (!local.boxed && !local.tdz && (bindings?.has(local.id) || parameters.has(local.id)))
     );
   };
-  everyStmtList(fn.body, {
-    expr: () => true,
-    stmt: (loop) => {
+  eachNodeOfKinds(fn, nodes?.scan(LOOP_KINDS), (node, statement) => {
+    if (!statement) return true;
+    const loop = node as IrStmt;
+    {
       if (loop.kind === "forOf") {
         const local = locals.get(loop.localId);
         if (
@@ -187,7 +193,7 @@ export function findLoopArrayBorrows(
         },
       });
       return true;
-    },
+    }
   });
   return result;
 }

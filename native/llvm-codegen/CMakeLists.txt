@@ -17,6 +17,14 @@ set(SCRIPTC_HELPER_ARCH "arm64" CACHE STRING
 # Linux packages ship this process-isolated helper as a fully static host
 # executable so it runs independently of the destination libc and libstdc++.
 option(SCRIPTC_STATIC_LINUX_BUILD "Build a static Linux helper executable" OFF)
+# The release Linux helpers link an LLVM built with ThinLTO and a profile of
+# the helper's code generation (llvm-dist.mjs). Its archives hold bitcode, so
+# the helper compiles and links with ThinLTO too, which needs clang and lld.
+option(SCRIPTC_LLVM_THINLTO "Compile and link the helper with ThinLTO" OFF)
+set(SCRIPTC_LLVM_PROFILE_USE "" CACHE FILEPATH
+    "Indexed profile the helper's own sources are optimized with")
+option(SCRIPTC_LLVM_PROFILE_GENERATE
+       "Instrument the helper's sources to collect that profile" OFF)
 
 # These must be cache variables before project() enables the Apple toolchain.
 # A target property named OSX_DEPLOYMENT_TARGET is not recognized by CMake and
@@ -76,10 +84,12 @@ endif()
 
 add_executable(scriptc-llvm-codegen
   src/cache.cpp
+  src/cpu-copies.cpp
   src/diagnostics.cpp
   src/emit.cpp
   src/main.cpp
   src/partition.cpp
+  src/profile-blocks.cpp
   src/profile.cpp
   src/runtime-import.cpp
   src/runtime-unit.cpp
@@ -218,6 +228,31 @@ else()
   list(REMOVE_DUPLICATES SCRIPTC_LLVM_LIBS)
 endif()
 target_link_libraries(scriptc-llvm-codegen PRIVATE ${SCRIPTC_LLVM_LIBS} ${SCRIPTC_LLVM_SYSTEM_LIBS})
+
+if(SCRIPTC_LLVM_THINLTO)
+  target_compile_options(scriptc-llvm-codegen PRIVATE -flto=thin)
+  # The thin link optimizes and compiles all of LLVM's code the helper
+  # reaches; the cache makes a relink after a helper edit incremental.
+  target_link_options(scriptc-llvm-codegen PRIVATE
+    -flto=thin
+    -fuse-ld=lld
+    "LINKER:--thinlto-jobs=all"
+    "LINKER:--thinlto-cache-dir=${CMAKE_BINARY_DIR}/thinlto-cache"
+  )
+endif()
+if(SCRIPTC_LLVM_PROFILE_USE)
+  # The profile covers LLVM's sources and the helper's. Functions it does
+  # not cover, or whose control flow changed since, are optimized without it.
+  target_compile_options(scriptc-llvm-codegen PRIVATE
+    "-fprofile-use=${SCRIPTC_LLVM_PROFILE_USE}"
+    -Wno-profile-instr-unprofiled
+    -Wno-profile-instr-out-of-date
+  )
+endif()
+if(SCRIPTC_LLVM_PROFILE_GENERATE)
+  target_compile_options(scriptc-llvm-codegen PRIVATE -fprofile-generate)
+  target_link_options(scriptc-llvm-codegen PRIVATE -fprofile-generate)
+endif()
 
 if(APPLE)
   # Homebrew's static LLVM archives contain broad component object files.

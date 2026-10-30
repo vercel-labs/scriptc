@@ -28,7 +28,10 @@ const SHF_EXECINSTR = 0x4n;
 const SHF_GROUP = 0x200n;
 const STB_GLOBAL = 1;
 const STB_WEAK = 2;
+const SHT_SYMTAB_SHNDX = 18;
+const SHN_LORESERVE = 0xff00;
 const SHN_COMMON = 0xfff2;
+const SHN_XINDEX = 0xffff;
 
 interface ElfSymbolSpec {
   name: string;
@@ -53,7 +56,11 @@ function buildStrtab(names: string[]): { data: Uint8Array; offsets: Map<string, 
 
 /** Assemble an ET_REL ELF64LE: caller supplies content sections; the
  * builder appends .symtab, .strtab, .shstrtab (their indices are
- * sections.length, +1, +2). Symbols must list locals first. */
+ * sections.length, +1, +2). Symbols must list locals first. With
+ * SHN_LORESERVE or more sections the builder uses extended section
+ * numbering, appending .symtab_shndx (index sections.length + 3) for symbol
+ * section indices from SHN_LORESERVE up; reserved symbol indices are then
+ * limited to SHN_COMMON. */
 function buildElf(
   sections: ElfSectionSpec[],
   symbols: ElfSymbolSpec[],
@@ -62,11 +69,19 @@ function buildElf(
   const strtab = buildStrtab(symbols.map((s) => s.name).filter((n) => n !== ""));
   const symData = new Uint8Array((symbols.length + 1) * 24);
   const symView = new DataView(symData.buffer);
+  const shndxData = new Uint8Array((symbols.length + 1) * 4);
+  let usesShndx = false;
   symbols.forEach((sym, i) => {
     const at = (i + 1) * 24;
     symView.setUint32(at, sym.name === "" ? 0 : strtab.offsets.get(sym.name)!, true);
     symView.setUint8(at + 4, (sym.binding << 4) | 0);
-    symView.setUint16(at + 6, sym.shndx, true);
+    if (sym.shndx >= SHN_LORESERVE && sym.shndx !== SHN_COMMON) {
+      symView.setUint16(at + 6, SHN_XINDEX, true);
+      new DataView(shndxData.buffer).setUint32((i + 1) * 4, sym.shndx, true);
+      usesShndx = true;
+    } else {
+      symView.setUint16(at + 6, sym.shndx, true);
+    }
     symView.setBigUint64(at + 8, sym.value ?? 0n, true);
   });
   const all: ElfSectionSpec[] = [
@@ -82,9 +97,22 @@ function buildElf(
     },
     { name: ".strtab", type: SHT_STRTAB, data: strtab.data },
     { name: ".shstrtab", type: SHT_STRTAB },
+    ...(usesShndx
+      ? [
+          {
+            name: ".symtab_shndx",
+            type: SHT_SYMTAB_SHNDX,
+            data: shndxData,
+            link: sections.length + 1,
+            entsize: 4n,
+          },
+        ]
+      : []),
   ];
+  const shstrndx = sections.length + 3;
+  const extended = all.length >= SHN_LORESERVE;
   const shstr = buildStrtab(all.map((s) => s.name).filter((n) => n !== ""));
-  all[all.length - 1]!.data = shstr.data;
+  all[shstrndx]!.data = shstr.data;
   let offset = 64;
   const offsets = all.map((s) => {
     const data = s.data ?? new Uint8Array(0);
@@ -106,8 +134,8 @@ function buildElf(
   view.setBigUint64(40, BigInt(shoff), true);
   view.setUint16(52, 64, true);
   view.setUint16(58, 64, true);
-  view.setUint16(60, all.length, true);
-  view.setUint16(62, all.length - 1, true);
+  view.setUint16(60, extended ? 0 : all.length, true);
+  view.setUint16(62, shstrndx >= SHN_LORESERVE ? SHN_XINDEX : shstrndx, true);
   all.forEach((s, i) => {
     const at = shoff + i * 64;
     const data = s.data ?? new Uint8Array(0);
@@ -116,8 +144,8 @@ function buildElf(
     view.setUint32(at + 4, s.type, true);
     view.setBigUint64(at + 8, s.flags ?? 0n, true);
     view.setBigUint64(at + 24, BigInt(s.type === 0 ? 0 : offsets[i]!), true);
-    view.setBigUint64(at + 32, BigInt(data.length), true);
-    view.setUint32(at + 40, s.link ?? 0, true);
+    view.setBigUint64(at + 32, BigInt(i === 0 && extended ? all.length : data.length), true);
+    view.setUint32(at + 40, i === 0 && shstrndx >= SHN_LORESERVE ? shstrndx : (s.link ?? 0), true);
     view.setUint32(at + 44, s.info ?? 0, true);
     view.setBigUint64(at + 48, s.addralign ?? 1n, true);
     view.setBigUint64(at + 56, s.entsize ?? 0n, true);
@@ -142,8 +170,10 @@ interface ReadElf {
 function readElf(bytes: Uint8Array): ReadElf {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const shoff = Number(view.getBigUint64(40, true));
-  const shnum = view.getUint16(60, true);
-  const shstrndx = view.getUint16(62, true);
+  let shnum = view.getUint16(60, true);
+  let shstrndx = view.getUint16(62, true);
+  if (shnum === 0) shnum = Number(view.getBigUint64(shoff + 32, true));
+  if (shstrndx === SHN_XINDEX) shstrndx = view.getUint32(shoff + 40, true);
   const raw = [] as {
     nameOff: number;
     type: number;
@@ -182,12 +212,16 @@ function readElf(bytes: Uint8Array): ReadElf {
   const symtabIdx = raw.findIndex((s) => s.type === SHT_SYMTAB);
   const symtab = raw[symtabIdx]!;
   const strtab = raw[symtab.link]!;
+  const shndxTable = raw.find((s) => s.type === SHT_SYMTAB_SHNDX && s.link === symtabIdx);
   const symbols = [] as ReadElf["symbols"];
   for (let at = symtab.offset; at < symtab.offset + symtab.size; at += 24) {
+    let shndx = view.getUint16(at + 6, true);
+    if (shndx === SHN_XINDEX)
+      shndx = view.getUint32(shndxTable!.offset + ((at - symtab.offset) / 24) * 4, true);
     symbols.push({
       name: name(strtab, view.getUint32(at, true)),
       binding: view.getUint8(at + 4) >> 4,
-      shndx: view.getUint16(at + 6, true),
+      shndx,
     });
   }
   return { sections, symbols, symtabInfo: symtab.info };
@@ -239,6 +273,65 @@ describe("localizeElfObject", () => {
     const target = localized.symbols[Number(info >> 32n)]!;
     expect(target.name).toBe("helper");
     expect(info & 0xffffffffn).toBe(2n);
+  });
+
+  test("keeps extended section numbering when the object has SHN_LORESERVE or more sections", () => {
+    // A sanitized dev program merges into an object with more sections than
+    // e_shnum and st_shndx can index: section 0 carries the count and the
+    // section-name table's index, and .symtab_shndx the symbols' indices.
+    const count = SHN_LORESERVE + 400;
+    const texts: ElfSectionSpec[] = Array.from({ length: count }, (_, i) => ({
+      name: `.text.f${i}`,
+      type: SHT_PROGBITS,
+      flags: SHF_ALLOC | SHF_EXECINSTR,
+      data: new Uint8Array(4),
+    }));
+    const rela = new Uint8Array(24);
+    new DataView(rela.buffer).setBigUint64(8, (2n << 32n) | 2n, true); // sym 2 (high)
+    const object = buildElf(
+      [
+        ...texts,
+        {
+          name: ".rela.text.last",
+          type: SHT_RELA,
+          data: rela,
+          link: count + 2,
+          info: count,
+          entsize: 24n,
+        },
+      ],
+      [
+        { name: "low", binding: STB_GLOBAL, shndx: 1 },
+        { name: "high", binding: STB_GLOBAL, shndx: count },
+        { name: "main", binding: STB_GLOBAL, shndx: count - 1 },
+        { name: "libc_ref", binding: STB_GLOBAL, shndx: 0 },
+        { name: "shared_common", binding: STB_GLOBAL, shndx: SHN_COMMON, value: 8n },
+      ],
+      0,
+    );
+    const output = localizeElfObject(object, new Set(["main"]));
+    const header = new DataView(output.buffer, output.byteOffset, output.byteLength);
+    expect(header.getUint16(60, true)).toBe(0);
+    expect(header.getUint16(62, true)).toBe(SHN_XINDEX);
+    const localized = readElf(output);
+    expect(localized.sections.length).toBe(count + 6);
+    expect(localized.sections.filter((s) => s.type === SHT_SYMTAB_SHNDX)).toHaveLength(1);
+    const byName = new Map(localized.symbols.map((s) => [s.name, s]));
+    expect(byName.get("low")!.binding).toBe(0);
+    expect(byName.get("high")!.binding).toBe(0);
+    expect(localized.sections[byName.get("high")!.shndx]!.name).toBe(`.text.f${count - 1}`);
+    expect(byName.get("main")!.binding).toBe(STB_GLOBAL);
+    expect(localized.sections[byName.get("main")!.shndx]!.name).toBe(`.text.f${count - 2}`);
+    expect(byName.get("libc_ref")!.shndx).toBe(0);
+    expect(byName.get("shared_common")!.shndx).toBe(SHN_COMMON);
+    const relaOut = localized.sections.find((s) => s.name === ".rela.text.last")!;
+    expect(localized.sections[relaOut.info]!.name).toBe(`.text.f${count - 1}`);
+    const info = new DataView(relaOut.data.buffer, relaOut.data.byteOffset).getBigUint64(8, true);
+    expect(localized.symbols[Number(info >> 32n)]!.name).toBe("high");
+    // The output reads back as the same object.
+    expect(readElf(localizeElfObject(output, new Set(["main"]))).symbols).toEqual(
+      localized.symbols,
+    );
   });
 
   test("resolves section groups: SHT_GROUP dropped, SHF_GROUP cleared, members and indices intact", () => {

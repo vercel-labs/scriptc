@@ -7,6 +7,8 @@
  *
  *   - a union element to one of its arms, or to a union of some of its
  *     arms, by its tag;
+ *   - a union element to a record with the same fields as one of its arms,
+ *     through that arm;
  *   - a checked-dynamic element by dynCheck;
  *   - a class instance to a subclass by its class;
  *   - a tuple or record to one with the same fields, field by field.
@@ -67,6 +69,31 @@ export function checkedFilterNarrowing(
     ),
   );
   return name;
+}
+
+/** The fields a written predicate's record target declares that the
+ * receiver's record element has no slot for, or null when there are none
+ * (or when the pair is not a plain record narrowing).
+ *
+ * An element narrowed when it was STORED (`const messages: { role: string }[]
+ * = [wider, ...]` copies each wider object into the element's layout) lost
+ * those fields before the filter ran: the predicate cannot make them real,
+ * so the narrowing stays refused with this reason instead of a generic
+ * missing-conversion report. */
+export function supersetGuardFields(
+  lowerer: Lowerer,
+  from: IrType,
+  to: IrType,
+): readonly string[] | null {
+  if (from.kind !== "record" || to.kind !== "record" || from.shapeId === to.shapeId) return null;
+  const source = lowerer.shapes.get(from.shapeId);
+  const target = lowerer.shapes.get(to.shapeId);
+  if (!source || !target) return null;
+  if (source.tuple || target.tuple || source.indexValue || target.indexValue) return null;
+  const absent = target.fields.filter(
+    (field) => !source.fields.some((own) => own.name === field.name),
+  );
+  return absent.length === 0 ? null : absent.map((field) => field.name);
 }
 
 /** The interned helper converting one `from` value to `to`, or null. */
@@ -161,7 +188,13 @@ function conversionBody(
       target.indexValue
     )
       return null;
-    if (source.fields.length !== target.fields.length) return null;
+    // A written predicate usually names FEWER members than the receiver's
+    // element has (`(c): c is { text: string } => ...` over a block with a
+    // `textSignature` and a `type`): the target's members are a subset of
+    // the source's, each read and converted, and the copy keeps the
+    // source's keys in the source's order. A member the source lacks has
+    // no slot to read, so it stays refused.
+    if (target.fields.length > source.fields.length) return null;
     const fields: { name: string; value: IrExpr }[] = [];
     for (const field of target.fields) {
       const own = source.fields.find((f) => f.name === field.name);
@@ -214,7 +247,13 @@ function keepAbsence(
 }
 
 /** A union value to one of its arms, or to a union of some of its arms:
- * each arm the target holds returns, any other arm throws. */
+ * each arm the target holds returns, any other arm throws.
+ *
+ * A written predicate may name a structural type that is no arm at all
+ * (`(c): c is { text: string; type: string } => ...` over the block union
+ * above, whose text arm also carries `textSignature`): when no arm matches
+ * exactly, each arm the target can be read from converts by its own shape,
+ * tag by tag, and an arm with no such read throws. */
 function unionConversion(
   lowerer: Lowerer,
   input: IrExpr,
@@ -229,10 +268,35 @@ function unionConversion(
   if (targetArms === null) return null;
   const body: IrStmt[] = [];
   let kept = 0;
+  let recordArmConversions = 0;
   for (let tag = 0; tag < source.arms.length; tag++) {
     const arm = source.arms[tag]!;
     const targetTag = targetArms.findIndex((t) => typeEquals(t, arm));
-    if (targetTag < 0) continue;
+    if (targetTag < 0) {
+      // A record target that is no arm itself but the same fields as one
+      // (`Model<"a">` from the `Model<Api>` arm, whose nested union field
+      // the predicate narrows): that arm converts field by field.
+      if (to.kind !== "record" || arm.kind !== "record") continue;
+      const narrowedArm: IrExpr = {
+        kind: "unionNarrow",
+        unionId,
+        tag,
+        value: input,
+        type: arm,
+        loc,
+      };
+      const converted = conversionBody(lowerer, narrowedArm, arm, to, typeText, loc);
+      if (converted === null) continue;
+      recordArmConversions++;
+      body.push({
+        kind: "if",
+        cond: { kind: "unionIsTag", unionId, tag, negated: false, value: input, type: BOOL, loc },
+        then: converted,
+        else_: null,
+        loc,
+      });
+      continue;
+    }
     kept++;
     const payload: IrExpr = isUnitType(arm)
       ? { kind: "unitLit", unit: arm.kind === "undefinedT" ? "undefined" : "null", type: arm, loc }
@@ -249,8 +313,53 @@ function unionConversion(
       loc,
     });
   }
-  // Every arm the target names must be one of the union's own arms.
-  if (kept === 0 || kept !== targetArms.length) return null;
+  // Every arm the target names must be one of the union's own arms, or a
+  // record target converts from at least one arm. A record target that is
+  // itself an arm keeps that arm's elements as they are, and the arms with
+  // its fields convert. Any other structural target that is no arm converts
+  // from each arm it can be read from.
+  if (kept === 0 && recordArmConversions === 0 && to.kind !== "union")
+    return structuralUnionConversion(lowerer, input, unionId, to, typeText, loc);
+  if (kept === 0 ? recordArmConversions === 0 : kept !== targetArms.length) return null;
+  body.push(
+    typeError(
+      `a kept element is not a '${typeText}' (a type predicate returned true for a value of another type)`,
+      loc,
+    ),
+  );
+  return body;
+}
+
+/** A union value to a structural type that is no arm: each arm the target
+ * can be read from returns its converted value, any other arm throws. */
+function structuralUnionConversion(
+  lowerer: Lowerer,
+  input: IrExpr,
+  unionId: string,
+  to: IrType,
+  typeText: string,
+  loc: SrcLoc,
+): IrStmt[] | null {
+  const source = lowerer.unions.get(unionId);
+  if (!source) return null;
+  const body: IrStmt[] = [];
+  let kept = 0;
+  for (let tag = 0; tag < source.arms.length; tag++) {
+    const arm = source.arms[tag]!;
+    if (isUnitType(arm)) continue;
+    const payload: IrExpr = { kind: "unionNarrow", unionId, tag, value: input, type: arm, loc };
+    const value = converted(lowerer, payload, arm, to, loc);
+    if (value === null) continue;
+    kept++;
+    body.push({
+      kind: "if",
+      cond: { kind: "unionIsTag", unionId, tag, negated: false, value: input, type: BOOL, loc },
+      then: [{ kind: "return", value, loc }],
+      else_: null,
+      loc,
+    });
+  }
+  if (kept === 0) return null;
   body.push(
     typeError(
       `a kept element is not a '${typeText}' (a type predicate returned true for a value of another type)`,

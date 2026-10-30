@@ -24,6 +24,12 @@ import { literalCapWord, literalCapWord32 } from "./string-key-hash.js";
 
 export const STRING_UTF16_LEN_DECL = "declare double @scr_str_utf16_len(ptr)";
 export const STRING_CHAR_CODE_AT_DECL = "declare double @scr_str_char_code_at(ptr, double)";
+/** Converts a string to UTF-16 units and publishes it as the scan receiver
+ * when the loop about to read it can read enough of it (the other two
+ * operands are the range of indexes it reads; bytes-loop-versions.ts).
+ * Like the fallbacks below, it can evict an index entry, so it carries no
+ * memory restriction. */
+export const STRING_SCAN_UNITS_DECL = "declare void @scr_str_scan_units_for(ptr, double, double)";
 /** The runtime fallbacks are cold: both common cases read inline. They
  * carry no
  * memory restriction: a fallback can evict an index entry, which resets
@@ -37,6 +43,10 @@ export const STRING_CHAR_CODE_AT_INT_MARKER = "; uses @sc_str_char_code_at_int";
 export const STRING_CHAR_AT_DECL = "declare ptr @scr_str_char_at(ptr, double)";
 /** Requests the integer-index charAt helper, as the marker above does. */
 export const STRING_CHAR_AT_INT_MARKER = "; uses @sc_str_char_at_int";
+/** The code-point character starting at a byte offset (the string
+ * iterator's step). Requested together with STRING_CHAR_AT_DECL, which
+ * defines the ASCII table. */
+export const STRING_CP_AT_BYTE_DECL = "declare ptr @scr_str_cp_at_byte(ptr, i64)";
 
 /** The proven-ASCII flag of string `s`, as an i1. */
 export function emitStringAsciiFlag(host: LlvmEmitterContext, s: string): string {
@@ -72,6 +82,19 @@ export function emitAsciiCharCode(host: LlvmEmitterContext, s: string, index: st
   B.line(`${pointer} = getelementptr inbounds i8, ptr ${data}, i64 ${index}`);
   B.line(`${byte} = load i8, ptr ${pointer}`);
   B.line(`${code} = uitofp i8 ${byte} to double`);
+  return code;
+}
+
+/** Unit `index` (an i64, below their count) of a string's UTF-16 `units`
+ * (ScrStrScan): one 16-bit load, as a double. */
+export function emitUnitCharCode(host: LlvmEmitterContext, units: string, index: string): string {
+  const B = host.B;
+  const pointer = B.tmp(),
+    unit = B.tmp(),
+    code = B.tmp();
+  B.line(`${pointer} = getelementptr inbounds i16, ptr ${units}, i64 ${index}`);
+  B.line(`${unit} = load i16, ptr ${pointer}`);
+  B.line(`${code} = uitofp i16 ${unit} to double`);
   return code;
 }
 
@@ -112,6 +135,15 @@ function loadLength(sz: string): string[] {
     `  %len.p = getelementptr inbounds %ScrStr, ptr %s, i32 0, i32 1`,
     `  %len = load ${sz}, ptr %len.p`,
   ];
+}
+
+/** Whether emitted reads use the runtime's scan receiver: from ordinary
+ * global storage, or, in worker executables, from the thread's static TLS
+ * block (executableTls). */
+export function stringScanInline(host: LlvmEmitterContext): boolean {
+  return (
+    host.executableTls || (host.mod.workers !== true && host.mod.lib?.threadInstances !== true)
+  );
 }
 
 /** The runtime's ScrStrScan record and the declaration naming it. */
@@ -322,6 +354,29 @@ export const STRING_READ_HELPERS: readonly StringReadHelper[] = [
         `}`,
       ];
     },
+  },
+  {
+    // The string iterator's step at byte `%b`, a character start below the
+    // byte count: an ASCII byte is the table entry for it; any other lead
+    // byte takes the runtime, which copies the character's bytes.
+    decl: STRING_CP_AT_BYTE_DECL,
+    define: (sz, attrs) => [
+      `define internal ptr @sc_str_cp_at_byte(ptr %s, i64 %b) ${attrs} {`,
+      `entry:`,
+      `  %data = getelementptr inbounds %ScrStr, ptr %s, i32 1`,
+      `  %p = getelementptr inbounds i8, ptr %data, i64 %b`,
+      `  %byte = load i8, ptr %p`,
+      `  %ascii = icmp sge i8 %byte, 0`,
+      `  br i1 %ascii, label %read, label %slow`,
+      `read:`,
+      `  %code = zext i8 %byte to i64`,
+      `  %char = getelementptr inbounds [128 x { ${sz}, ${sz}, ${sz}, [2 x i8] }], ptr @sc_ascii_chars, i64 0, i64 %code`,
+      `  ret ptr %char`,
+      `slow:`,
+      `  %r = call ptr @scr_str_cp_at_byte(ptr %s, i64 %b) nounwind willreturn`,
+      `  ret ptr %r`,
+      `}`,
+    ],
   },
   {
     // An exact integer index, as for sc_str_char_code_at_int. Requested

@@ -1205,9 +1205,11 @@ static __attribute__((noinline)) void scr_map_set_num(ScrMap *m, uint64_t hash, 
 }
 
 /* A number-key map with at least this many entries moves to the direct
- * index when its keys allow it, so small integer keys are indexed before
- * the linear scan ends. */
-#define SCR_MAP_DENSE_AFTER 4
+ * index when its keys allow it: from its second key, so a map of a few
+ * small integer keys (a histogram over 0..3) reads through the inline
+ * direct index rather than the out-of-line linear scan. A map with one
+ * key keeps its linear storage. */
+#define SCR_MAP_DENSE_AFTER 1
 
 /* Whether appending one more entry would grow the lookup index rather than
  * reuse tombstones: scr_map_reserve_append compacts a linear map with a

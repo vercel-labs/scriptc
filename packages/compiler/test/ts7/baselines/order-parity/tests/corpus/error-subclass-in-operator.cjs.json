@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/error-subclass-in-operator.cjs"
+ ],
+ "diags": []
+}

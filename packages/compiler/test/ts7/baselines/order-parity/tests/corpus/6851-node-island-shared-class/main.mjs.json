@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6851-node-island-shared-class/shapes.mjs",
+  "<repo>/tests/corpus/6851-node-island-shared-class/main.mjs"
+ ],
+ "diags": []
+}

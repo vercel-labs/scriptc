@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8182-typed-array-alias-scopes.ts"
+ ],
+ "diags": []
+}

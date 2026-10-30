@@ -2,3 +2,38 @@
 # (scripts/ci-test-plan.mjs). One `leak:<function>` line per intentional
 # leak, under a comment that gives the reason. Empty: no corpus program
 # leaks.
+
+# Node islands (scope-B NI-7c): OpenSSL inside libnode is initialized with
+# OPENSSL_INIT_NO_ATEXIT (scr_node_bridge.cc, KeepOpenSSLAtExit), so its
+# process-lifetime state is never freed: OPENSSL_cleanup at exit raced the
+# threads Node owns that can still be inside OpenSSL.
+leak:OPENSSL_init_crypto
+# Node islands (scope-B NI-7c): Node's root certificates (bundled, system
+# store, NODE_EXTRA_CA_CERTS) live in function-local statics that Node's
+# per-process teardown frees; a scriptc program leaves that teardown to
+# process exit (scr_node_bridge.cc, Stop), and the vectors' own destructors
+# drop the last pointers at exit.
+leak:node::crypto::LoadCACertificates
+leak:node::crypto::LoadSystemCACertificates
+leak:node::crypto::GetBundledRootCertificates
+leak:node::crypto::GetSystemStoreCACertificates
+leak:node::crypto::GetExtraCACertificates
+leak:node::crypto::GetOpenSSLSystemCertificates
+leak:node::crypto::LoadCertsFromBIO
+# The same certificates under a stripped libnode (the packs the
+# libnode-packs workflow builds), where the loading threads' Node frames
+# have no names: each one is parsed through libnode's OpenSSL PEM reader.
+# The runtime has no OpenSSL of its own, so only libnode reaches it.
+leak:PEM_ASN1_read_bio
+# The certificates' lazily decoded keys, cached in them when a root store
+# is built.
+leak:node::crypto::NewRootCertStore
+# The same policy covers OpenSSL's own default-verify-path store, which a
+# TLS context created inside an island loads on its own: undici needs TLS
+# for the builtin classes it backs (Headers, Request, Response), and OpenSSL
+# then parses the system CA bundle through PEM/X509 with no node::crypto
+# frame in the stack, so the entries above cannot match. That state is
+# likewise freed only by OPENSSL_cleanup at exit, which NI-7c keeps off, so
+# it is named here by OpenSSL's allocator entry points instead.
+leak:CRYPTO_malloc
+leak:CRYPTO_zalloc

@@ -42,6 +42,13 @@ extern SCR_TL ScrStrScan scr_str_scan;
  * [0, length) — note charCodeAt(1.5) is index 1, matching Node. */
 double scr_str_char_code_at(ScrStr *s, double i);
 
+/* Converts a non-ASCII s up to the units cap to UTF-16 at once and
+ * publishes it in scr_str_scan, for a loop about to read it between the
+ * indexes `from` and `to` (NaN: no bound), when that range has at least
+ * one unit per 16 bytes. A shorter loop counts as one indexed read. Leaves
+ * scr_str_scan unchanged for any other s. */
+void scr_str_scan_units_for(ScrStr *s, double from, double to);
+
 /* indexOf(needle, fromIndex): UTF-16 index of the first occurrence at or
  * after fromIndex (clamped to [0, length]), or -1. Empty needle returns the
  * clamped fromIndex per spec. */
@@ -143,6 +150,15 @@ ScrStr *scr_str_char_at(ScrStr *s, double i);
  * (two units); the consuming loop advances by the result's length.
  * Out of range → empty string. Returns +1. */
 ScrStr *scr_str_cp_at(ScrStr *s, double i);
+/* The string iterator's step over the WTF-8 bytes: the code-point
+ * character whose encoding starts at byte offset b, a character start
+ * below s->len (a lone surrogate is its own three-byte character). The
+ * compiler answers ASCII bytes inline and calls this for the rest.
+ * Returns +1. */
+ScrStr *scr_str_cp_at_byte(ScrStr *s, uint64_t b);
+/* [...s] and Array.from(s): the code-point characters of s in order, as a
+ * fresh string array of exactly that length. Returns +1. */
+struct ScrArr *scr_str_code_points(ScrStr *s);
 
 /* trimStart()/trimEnd(): the one-sided halves of trim. Returns +1. */
 ScrStr *scr_str_trim_start(ScrStr *s);

@@ -5,6 +5,7 @@ import {
   DYN,
   DYN_HANDLE_KINDS,
   F64,
+  STRING,
   type IrExpr,
   type IrStmt,
   type IrType,
@@ -284,6 +285,43 @@ export function lowerAbstractEquality(
       loc,
     };
     return negated ? { kind: "unary", op: "!", operand: result, type: BOOL, loc } : result;
+  }
+  // Two Dates are equal when they are the same object, as with ===.
+  if (left.type.kind === "date" && right.type.kind === "date")
+    return { kind: "bin", op: negated ? "!==" : "===", left, right, type: BOOL, loc };
+  // A Date and a string or number compare through the Date's default
+  // primitive, its toString() text.
+  if (left.type.kind === "date" || right.type.kind === "date") {
+    const otherType = left.type.kind === "date" ? right.type : left.type;
+    if (otherType.kind === "string" || otherType.kind === "f64") {
+      // Both operands evaluate before the Date converts.
+      const l = lowerer.declareHiddenLocal("%looseA", left.type);
+      const r = lowerer.declareHiddenLocal("%looseB", right.type);
+      const stmts: IrStmt[] = [
+        { kind: "varDecl", localId: l.id, init: left, loc },
+        { kind: "varDecl", localId: r.id, init: right, loc },
+      ];
+      const primitive = (value: IrExpr): IrExpr => {
+        if (value.type.kind !== "date") return value;
+        const text: IrExpr = {
+          kind: "libCall",
+          fn: "date.toString",
+          args: [value],
+          type: STRING,
+          loc,
+        };
+        return otherType.kind === "string"
+          ? text
+          : { kind: "libCall", fn: "num.fromString", args: [text], type: F64, loc };
+      };
+      const a = primitive(varRef(l.id, left.type, loc));
+      const b = primitive(varRef(r.id, right.type, loc));
+      const result: IrExpr =
+        otherType.kind === "string"
+          ? { kind: "strEq", negated, left: a, right: b, type: BOOL, loc }
+          : { kind: "bin", op: negated ? "!==" : "===", left: a, right: b, type: BOOL, loc };
+      return { kind: "seqExpr", stmts, result, type: BOOL, loc };
+    }
   }
   if (!supportsPair(lowerer, left.type, right.type)) return null;
   if (left.kind === "strLit" && right.kind === "strLit") {

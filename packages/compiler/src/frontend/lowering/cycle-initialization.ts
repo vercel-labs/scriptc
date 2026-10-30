@@ -233,6 +233,38 @@ function earlyHeritageReference(lowerer: Lowerer, binding: CycleEarlyBinding): t
   return null;
 }
 
+/** The identifiers of `sf` by text, each with its position in the file's
+ * preorder walk: one walk per file serves every class's reference scan. */
+function fileIdentifiers(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+): ReadonlyMap<string, readonly { order: number; node: ts.Identifier }[]> {
+  const memo = lowerer.program.analysis.fileIdentifiers;
+  const known = memo.get(sf);
+  if (known !== undefined) return known;
+  const byText = new Map<string, { order: number; node: ts.Identifier }[]>();
+  let order = 0;
+  ts.walkPreorder(sf, (node) => {
+    order++;
+    if (!ts.isIdentifier(node)) return undefined;
+    const list = byText.get(node.text);
+    if (list === undefined) byText.set(node.text, [{ order, node }]);
+    else list.push({ order, node });
+    return undefined;
+  });
+  memo.set(sf, byText);
+  return byText;
+}
+
+/** Whether `node` lies inside `ancestor` (or is it): the reference scans
+ * skip the class's own declaration. */
+function within(node: ts.Node, ancestor: ts.Node | undefined): boolean {
+  if (ancestor === undefined) return false;
+  for (let current: ts.Node | undefined = node; current !== undefined; current = current.parent)
+    if (current === ancestor) return true;
+  return false;
+}
+
 /** Whether `node` names `symbol`, through import aliases when `aliases`. */
 function resolvesTo(
   lowerer: Lowerer,
@@ -294,12 +326,14 @@ function classReferences(
     // the class's name or a local one.
     const names = classLocalNames(lowerer, sf, symbol, name.text, cycle);
     if (names.size === 0) continue;
-    ts.walkPreorder(sf, (node) => {
-      if (node === declaration) return "skip";
-      if (ts.isIdentifier(node) && names.has(node.text) && resolvesTo(lowerer, node, symbol, cycle))
+    // The file's identifiers under those names, in walk order.
+    const identifiers = fileIdentifiers(lowerer, sf);
+    const named: { order: number; node: ts.Identifier }[] = [];
+    for (const text of names) for (const entry of identifiers.get(text) ?? []) named.push(entry);
+    if (names.size > 1) named.sort((a, b) => a.order - b.order);
+    for (const { node } of named)
+      if (!within(node, declaration) && resolvesTo(lowerer, node, symbol, cycle))
         out.push({ loc: locOf(node), name: node.text });
-      return undefined;
-    });
   }
   return out;
 }

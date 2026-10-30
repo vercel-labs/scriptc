@@ -26,6 +26,13 @@ export class DeferredModuleInitializers {
   /** The last scan of each function (scanOf). */
   private readonly scans = new Map<IrFunction, FunctionScan>();
 
+  /** The sizes of the deferral tables (unit-journal.ts). */
+  journalSizes(): number[] {
+    let initializers = 0;
+    for (const list of this.pending.values()) initializers += list.length;
+    return [this.pending.size, initializers, this.registryGlobals.size, this.deferredKeys.size];
+  }
+
   defer(lowerer: Lowerer, statement: ts.Statement): IrStmt | null {
     let key: string;
     if (
@@ -387,18 +394,22 @@ function scanStatements(
   const placeholders: PlaceholderBlock[] = [];
   const typeEvents = lowerer ? typeScanner(lowerer, body) : null;
   const reads = new Set<string>();
+  const observe = (id: string): void => {
+    if (deferred!.has(id) && !reads.has(id)) {
+      reads.add(id);
+      body.push({ kind: "read", id });
+    }
+  };
   everyStmtList(statements, {
     stmt: (statement) => {
       if (statement.kind === "block" && statement.body.length === 0) placeholders.push(statement);
+      if (typeEvents !== null && statement.kind === "assign") observe(statement.localId);
       return true;
     },
     expr: (expr) => {
       if (typeEvents === null) return true;
       typeEvents(expr.type);
-      if (readsBinding(expr) && deferred!.has(expr.localId) && !reads.has(expr.localId)) {
-        reads.add(expr.localId);
-        body.push({ kind: "read", id: expr.localId });
-      }
+      if (observesBinding(expr)) observe(expr.localId);
       // Every call, as the helpers are visited from a stack in call order.
       if (
         expr.kind === "call" &&
@@ -411,10 +422,14 @@ function scanStatements(
   return { body, placeholders };
 }
 
-/** A read of a binding's current value: a plain read, or an update
- * (`n++`, `--n`) that reads before it writes. */
-function readsBinding(expr: IrExpr): expr is IrExpr & { kind: "varRef" | "incDec" } {
-  return expr.kind === "varRef" || expr.kind === "incDec";
+/** A use that needs the binding initialized: a plain read, an update
+ * (`n++`, `--n`) that reads before it writes, or an assignment, which
+ * checks that the binding is initialized and releases its current value.
+ * Assignment statements count the same way (scanStatements). */
+function observesBinding(
+  expr: IrExpr,
+): expr is IrExpr & { kind: "varRef" | "incDec" | "assignExpr" } {
+  return expr.kind === "varRef" || expr.kind === "incDec" || expr.kind === "assignExpr";
 }
 
 function registryInitializer(

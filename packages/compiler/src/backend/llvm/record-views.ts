@@ -202,6 +202,17 @@ export function planRecordViews(mod: IrModule, options: ViewOptions): RecordView
               source: e.value.value.type.shapeId,
             });
         } else if (e.kind === "dynFrom" && e.liveRef === true) boxed.push(e.value.type);
+        else if (e.kind === "libCall" && /^(transform|passthrough)\.(new|init)$/.test(e.fn)) {
+          // A transform or flush callback's typed completion data
+          // (pinTypedDataCompletion) reaches untyped consumers as a live
+          // capsule: scr_stream_push_typed boxes it for them.
+          for (const arg of e.args) {
+            if (arg.type.kind !== "func") continue;
+            for (const param of arg.type.params)
+              if (param.kind === "func" && param.params[1] !== undefined)
+                boxed.push(param.params[1]);
+          }
+        }
         return true;
       },
     });

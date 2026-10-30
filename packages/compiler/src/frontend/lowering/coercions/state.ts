@@ -9,6 +9,13 @@ export class CoercionState {
   // plan checks its other fields. Remove every assumption on unwind;
   // generated helpers must intern their names before building their bodies.
   readonly planning = new Set<string>();
+  /** > 0 while a record width plan plans or builds its fields: method
+   * fields may take checked function adapters (WidthLift funcAdaptChecked). */
+  methodFieldDepth = 0;
+  /** > 0 while a checked function adapter plans or builds: contravariant
+   * parameters may width-lift, and union fields may retag with trapping
+   * arms (WidthLift checkedRetag). */
+  checkedRetags = 0;
   // Registry revisions invalidate only fully validated copy-only routes.
   readonly copyRetags = new Map<string, { name: string; shapes: number; unions: number }>();
   // Provenance for checked extraction; consumers must not infer it from names.

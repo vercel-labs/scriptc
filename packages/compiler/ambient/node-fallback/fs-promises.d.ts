@@ -210,7 +210,7 @@ declare module "fs/promises" {
   export function access(path: string | URL, mode?: number): Promise<void>;
   export function truncate(path: string | URL, len?: number): Promise<void>;
   export function appendFile(path: string | URL, data: string | Uint8Array): Promise<void>;
-  export function copyFile(src: string | URL, dest: string | URL): Promise<void>;
+  export function copyFile(src: string | URL, dest: string | URL, mode?: number): Promise<void>;
   export function mkdtemp(prefix: string | URL): Promise<string>;
   export function rmdir(path: string | URL): Promise<void>;
   export function rename(oldPath: string | URL, newPath: string | URL): Promise<void>;

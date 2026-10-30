@@ -235,7 +235,7 @@ async function objectLinkerDependencyPaths(
  * file next to the binary is what the runtime looks for first.
  *
  * A file already present at the pinned size is left alone: the pack ships
- * one data set per file name, and re-copying 31.6 MiB on every build would
+ * one data set per file name, and re-copying 11.1 MiB on every build would
  * be pure cost. The copy is atomic (private temporary, then rename) so two
  * concurrent builds of the same program never observe a partial file. */
 export async function installRuntimeDataFiles(

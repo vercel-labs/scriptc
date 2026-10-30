@@ -100,6 +100,7 @@ const DYN_ASYNC_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.offWarning",
   "process.onRejectionHandled",
   "process.onUncaughtException",
+  "process.prependUncaughtException",
   "process.onUnhandledRejection",
   "process.onWarning",
   "process.setDeprecationFlag",
@@ -647,7 +648,10 @@ const PROCESS_EVENT_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "process.offSignal",
   "process.onExit",
   "process.onSignal",
+  "process.prependExit",
+  "process.prependSignal",
   "process.stdio",
+  "process.stdinIsRaw",
   "process.stdioSlot",
   "process.stdioWriteDyn",
   "stdin.nextChunk",
@@ -1122,6 +1126,8 @@ const RUNTIME_FEATURE_RULES = {
       "webstream.class",
       "webstream.install",
       "util.styleText",
+      // ERR_UNHANDLED_ERROR quotes util.inspect of a non-Error payload.
+      "emitter.emitErrorValue",
       "crypto.cipherNew",
       "webcrypto.encrypt",
       "webcrypto.decrypt",
@@ -1296,6 +1302,33 @@ const RUNTIME_FEATURE_RULES = {
       "tls.sockGetCertificate",
     ],
   }),
+  /** writeFile's `flag` disposition ("w" / "wx") and copyFile's mode
+   * argument: scr_fs_flags.c and the SCR_FS_FLAGS build of scr_fs_cp.c.
+   * Programs that never pass either keep both units' default objects. */
+  fsFlags: rule({
+    fns: [
+      "fs.copyFileFlagsSync",
+      "fs.writeFileFlagsSync",
+      "fsp.copyFileFlags",
+      "fsp.writeFileFlags",
+    ],
+  }),
+  /** string_decoder's checked-dynamic chunk forms (a stream "data" payload):
+   * scr_bytes_strdec_dyn.c. */
+  strdecDyn: rule({ fns: ["strdec.nextDyn", "strdec.writeDyn"] }),
+  /** The process and stream event registries' extras — prependListener for
+   * signals, 'exit' and uncaught exceptions, stdin.isRaw, and server.off:
+   * the SCR_PROCESS_EXTRAS builds of scr_events.c and scr_async_dyn.c and
+   * the SCR_NET_SERVER_OFF build of scr_net.c. */
+  processExtras: rule({
+    fns: [
+      "net.serverOff",
+      "process.prependExit",
+      "process.prependSignal",
+      "process.prependUncaughtException",
+      "process.stdinIsRaw",
+    ],
+  }),
   zlib: rule({ prefixes: ["zlib."] }),
   /** node:zlib's Brotli forms: zlib.brotliInstall, which %main calls when
    * the program uses Brotli (scr_brotli.c). */
@@ -1338,6 +1371,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     eventsOnceSignal: false,
     fetch: false,
     fileHandle: false,
+    fsFlags: false,
     fsWatch: false,
     fsWatchFile: false,
     http2: false,
@@ -1359,6 +1393,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     pki: false,
     ed25519: false,
     processEvents: false,
+    processExtras: false,
     qs: false,
     regex: false,
     searchParams: false,
@@ -1370,6 +1405,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     moduleNamespaceDyn: false,
     primitiveWrapper: false,
     stream: false,
+    strdecDyn: false,
     streamDyn: false,
     handleProps: false,
     childLifecycle: false,
@@ -1476,6 +1512,13 @@ function scanRuntimeFeatures(
     const sites = new JsIcSites(mod);
     features.dynTier = mod.functions.some((fn) => fn.tier === "dynamic" && hasJsIcSite(fn, sites));
   }
+  // A jsval parameter or result (ir/jsval.ts) is retained and released
+  // through the tier's word reference counting, with or without a js.*
+  // operation in the body.
+  if (!features.dynTier)
+    features.dynTier = mod.functions.some(
+      (fn) => fn.returnType.kind === "jsval" || fn.params.some((p) => p.type.kind === "jsval"),
+    );
   return features;
 }
 

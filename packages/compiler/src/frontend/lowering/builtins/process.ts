@@ -312,12 +312,13 @@ export function lowerProcStreamMethodCall(
 }
 
 /** Standard streams expose optional terminal properties: pipes have no
- * isTTY, columns, or rows. The declarations do not prove their presence. */
+ * isTTY, columns, or rows, and only a TTY stdin has a raw-mode flag. The
+ * declarations do not prove their presence. */
 export function isOptionalProcessStreamProperty(
   lowerer: Lowerer,
   expr: ts.PropertyAccessExpression,
 ): boolean {
-  if (!["isTTY", "columns", "rows"].includes(expr.name.text)) return false;
+  if (!["isTTY", "columns", "rows", "isRaw"].includes(expr.name.text)) return false;
   let recv = expr.expression;
   while (ts.isParenthesizedExpression(recv) || ts.isAsExpression(recv) || ts.isTypeAssertion(recv))
     recv = recv.expression;
@@ -326,7 +327,7 @@ export function isOptionalProcessStreamProperty(
     if (
       stream === "stdout" ||
       stream === "stderr" ||
-      (stream === "stdin" && expr.name.text === "isTTY")
+      (stream === "stdin" && (expr.name.text === "isTTY" || expr.name.text === "isRaw"))
     )
       return true;
   }
@@ -443,6 +444,8 @@ export function lowerProcessStreamProperty(
     member !== "columns" &&
     member !== "rows" &&
     member !== "writableLength" &&
+    member !== "fd" &&
+    member !== "isRaw" &&
     member !== "writableHighWaterMark" &&
     member !== "writableNeedDrain"
   )
@@ -558,7 +561,29 @@ export function lowerProcessStreamProperty(
       loc,
     };
   }
-  if (stream === "stdin") return null;
+  if (member === "fd") {
+    // The process streams are built over fd 0/1/2 (Node answers those on
+    // a TTY, a pipe, and a redirected file alike).
+    return {
+      kind: "numLit",
+      value: stream === "stdin" ? 0 : stream === "stdout" ? 1 : 2,
+      type: F64,
+      loc,
+    };
+  }
+  if (stream === "stdin") {
+    if (member !== "isRaw") return null;
+    // Node answers the raw-mode flag of a TTY stdin and undefined on
+    // anything else (a pipe-backed stdin); the runtime sentinel carries
+    // both (scr_process_stdin_is_raw).
+    return {
+      kind: "libCall",
+      fn: "process.stdinIsRaw",
+      args: [],
+      type: lowerer.withUndefinedArm(BOOL),
+      loc,
+    };
+  }
   const want = lowerer.withUndefinedArm(F64);
   return {
     kind: "libCall",
@@ -1526,13 +1551,33 @@ export function lowerProcessMethodCall(
   // the listener to a const so both sites see the same value), and
   // `removeListener` IS `off` — Node aliases them.
   const isOff = member === "off" || member === "removeListener";
-  if (member === "on" || member === "once" || isOff) {
+  // process.prependListener(event, cb): Node's front-of-list registration.
+  // The signal, 'exit', and 'uncaughtException'/'uncaughtExceptionMonitor'
+  // registries have a prepend entry; every other family registers by
+  // appending only, so it refuses rather than reordering silently.
+  // prependOnceListener has no runtime entry at all.
+  const isPrepend = member === "prependListener";
+  if (member === "prependOnceListener") {
+    lowerer.noLowering(
+      "process.prependOnceListener",
+      access,
+      "use prependListener or once (prependOnceListener has no lowering)",
+    );
+  }
+  if (member === "on" || member === "once" || isOff || isPrepend) {
     if (call.arguments.nodes.length !== 2) {
       lowerer.noLowering(`process.${member} with ${call.arguments.nodes.length} arguments`, call);
     }
     const evT = lowerer.typeOf(call.arguments.nodes[0]!);
     const event = evT.isStringLiteralType() ? evT.value : null;
     if ((event === "message" || event === "disconnect") && !isOff) {
+      if (isPrepend) {
+        lowerer.noLowering(
+          `process.prependListener("${event}", ...)`,
+          call,
+          "prependListener is supported for signals, 'exit', and 'uncaughtException' (register these families with on/once)",
+        );
+      }
       if (!resultIsDiscarded(call)) {
         lowerer.unsupported(
           "SC1090",
@@ -1560,8 +1605,16 @@ export function lowerProcessMethodCall(
       const monitor = boolLit(event === "uncaughtExceptionMonitor", loc);
       return {
         kind: "libCall",
-        fn: isOff ? "process.offUncaughtException" : "process.onUncaughtException",
-        args: isOff ? [cb, monitor] : [cb, boolLit(member === "once", loc), monitor],
+        fn: isOff
+          ? "process.offUncaughtException"
+          : isPrepend
+            ? "process.prependUncaughtException"
+            : "process.onUncaughtException",
+        args: isOff
+          ? [cb, monitor]
+          : isPrepend
+            ? [cb, monitor]
+            : [cb, boolLit(member === "once", loc), monitor],
         type: VOID,
         loc,
       };
@@ -1575,6 +1628,13 @@ export function lowerProcessMethodCall(
     // a handler attached after delivery fires it once, synchronously
     // with the promise.
     if (event === "unhandledRejection" || event === "rejectionHandled") {
+      if (isPrepend) {
+        lowerer.noLowering(
+          `process.prependListener("${event}", ...)`,
+          call,
+          "prependListener is supported for signals, 'exit', and 'uncaughtException' (register these families with on/once)",
+        );
+      }
       if (!resultIsDiscarded(call)) {
         lowerer.unsupported(
           "SC1090",
@@ -1598,6 +1658,13 @@ export function lowerProcessMethodCall(
     // util.deprecate dispatch on the next tick. off/removeListener remove
     // by closure identity.
     if (event === "warning" && (member === "on" || isOff)) {
+      if (isPrepend) {
+        lowerer.noLowering(
+          'process.prependListener("warning", ...)',
+          call,
+          "prependListener is supported for signals, 'exit', and 'uncaughtException' (register this family with on)",
+        );
+      }
       if (!resultIsDiscarded(call)) {
         lowerer.unsupported(
           "SC1090",
@@ -1632,8 +1699,12 @@ export function lowerProcessMethodCall(
       const cb = lowerDiagnosticsSubscriber(lowerer, call.arguments.nodes[1]!);
       return {
         kind: "libCall",
-        fn: isOff ? "process.offSignal" : "process.onSignal",
-        args: isOff ? [signal, cb] : [signal, cb, boolLit(member === "once", loc)],
+        fn: isOff ? "process.offSignal" : isPrepend ? "process.prependSignal" : "process.onSignal",
+        args: isOff
+          ? [signal, cb]
+          : isPrepend
+            ? [signal, cb]
+            : [signal, cb, boolLit(member === "once", loc)],
         type: VOID,
         loc,
       };
@@ -1702,6 +1773,9 @@ export function lowerProcessMethodCall(
     }
     if (isOff) {
       return { kind: "libCall", fn: "process.offExit", args: [cb], type: VOID, loc };
+    }
+    if (isPrepend) {
+      return { kind: "libCall", fn: "process.prependExit", args: [cb], type: VOID, loc };
     }
     return { kind: "libCall", fn: "process.onExit", args: [cb, onceArg], type: VOID, loc };
   }

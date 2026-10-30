@@ -5,6 +5,7 @@ import {
   lowerArrayClassStaticCall,
 } from "./builtins/array-classes.js";
 import { structuralCallInstance } from "./structural-instances.js";
+import { classViewOf } from "./class-views.js";
 import { checkedPrivateMethodReceiver, privateNameClass } from "./private-brands.js";
 import { lowerStaticPrivateCall } from "./private-statics.js";
 import { assertFunctionAliasOf } from "./lower-assert.js";
@@ -4074,8 +4075,7 @@ function lowerDynReceiverMethodCall(
         (lowerer.typeOf(access).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 ||
         // A receiver of the boxed String type may be a wrapper object.
         (lowerer.createsWrappers ??= programCreatesWrappers(lowerer))) &&
-      !call.questionDotToken &&
-      !access.questionDotToken &&
+      !lowerer.chainBlocked(call, access) &&
       !call.arguments.nodes.some(ts.isSpreadElement)
     )
       return lowerStringOrMemberCall(lowerer, call, access, recv);
@@ -4091,8 +4091,6 @@ function lowerDynReceiverMethodCall(
   // runtime dispatch.
   if (
     !ownCallable &&
-    !call.questionDotToken &&
-    !access.questionDotToken &&
     isDynPrimitiveKindMethod(access.name.text) &&
     !lowerer.chainBlocked(access, call)
   ) {
@@ -4240,9 +4238,13 @@ function lowerDynReceiverMethodCall(
     !stringOnlyName
   )
     return null;
-  // Optional forms (`obj.cb?.()`, `obj?.cb()`) belong to the chain
-  // machinery's short-circuit semantics — not modeled here yet.
-  if (call.questionDotToken || access.questionDotToken) return null;
+  // An UNHANDLED `?.` step (`obj.cb?.()`, `obj?.cb()`) belongs to the chain
+  // machinery's short-circuit semantics. Inside the guarded body of a chain
+  // the active lowering has ALREADY proven the receiver present, so the
+  // step is a plain read-and-call there — the same "read the member, call
+  // it" shape below, with `dynCall` throwing Node's catchable
+  // "obj.cb is not a function" for a present but non-callable member.
+  if (lowerer.chainBlocked(call, access)) return null;
   const loc = locOf(call);
   const receiverLocal = lowerer.declareHiddenLocal("%dynCallReceiver", DYN);
   const receiver: IrExpr = { kind: "varRef", localId: receiverLocal.id, type: DYN, loc };
@@ -8040,19 +8042,17 @@ function lowerObjectStaticCall(
       isUnitType(object.type)
     )
       object = { kind: "dynFrom", value: object, type: DYN, loc: locOf(call) };
-    // An array, instance or function answers through the same live property
-    // table its expando writes use, so the keys it reports are the keys
-    // Node's object has; a byte view reports its named properties the same
-    // way. A record's own-property names keep the typed walk below, which
-    // answers a string array instead of a dynamic one, and a kind without a
-    // table (a Date, Map, Set or RegExp handle) keeps whatever it answered
-    // before.
-    else if (
-      object.type.kind !== "dyn" &&
-      !(member === "getOwnPropertyNames" && object.type.kind === "record") &&
-      lowerer.dynConvertible(object.type) &&
-      (keepsLivePropertyTable(lowerer, object.type) || object.type.kind === "bytes")
-    )
+    // An array, class instance or function reflects through its own
+    // checked-dynamic view (own fields and elements, in property order): the
+    // same live property table its expando writes use, so the keys it
+    // reports are the keys Node's object has. A record keeps its static key
+    // walk below when it has one — `getOwnPropertyNames` over a fixed record
+    // is exactly Object.keys' construction, and boxing a typed record would
+    // link the dynamic tier into a program that needs none of it. The
+    // descriptor and symbol forms have no static walk, so a record takes the
+    // view there.
+    const staticWalk = member === "getOwnPropertyNames" && object.type.kind === "record";
+    if (!staticWalk && object.type.kind !== "dyn" && lowerer.dynConvertible(object.type))
       object = lowerer.coerceToExpected(object, DYN);
     if (object.type.kind === "dyn")
       return {
@@ -11558,7 +11558,8 @@ function maybePromiseHandlerResult(
   return stmt;
 }
 
-/** `view.m(args)` where `view` is a `Pick<C, K>` / `Omit<C, K>` view of a
+/** `view.m(args)` where `view` is a `Pick<C, K>` / `Omit<C, K>` view (inline
+ * or through type aliases, classViewOf) of a
  * program class C and `m` is one of C's GENERIC methods (its overloads
  * included): generic methods have no dispatchable method value, so the
  * view's live receiver is extracted as the C instance it holds (a checked
@@ -11571,11 +11572,9 @@ function pickViewGenericMethodCall(
   access: ts.PropertyAccessExpression,
   recvTs: ts.Type,
 ): IrExpr | null {
-  const alias = recvTs.getAliasSymbol();
-  if (alias === undefined || (ts.symbolName(alias) !== "Pick" && ts.symbolName(alias) !== "Omit"))
-    return null;
-  if (!alias.declarations.every((d) => ts.getSourceFileOfNode(d).isDeclarationFile)) return null;
-  const source = recvTs.getAliasTypeArguments()[0];
+  const view = classViewOf(lowerer.checker, recvTs);
+  if (view === null) return null;
+  const source = view.source;
   const symbol = source?.getSymbol();
   const info = symbol ? lowerer.classBySymbol.get(symbol) : undefined;
   if (!info || call.questionDotToken || access.questionDotToken) return null;
@@ -11595,7 +11594,7 @@ function pickViewGenericMethodCall(
     lowerer.unsupported(
       "SC1090",
       access,
-      `calling the generic method '${access.name.text}' through a '${ts.symbolName(alias)}' view of '${info.def.name}' that holds a '${lowerer.fmt(lowered.type)}'`,
+      `calling the generic method '${access.name.text}' through a '${view.name}' view of '${info.def.name}' that holds a '${lowerer.fmt(lowered.type)}'`,
     );
   }
   const receiver: IrExpr =

@@ -40,6 +40,7 @@ import { lowerCollectionSpread } from "./containers/collection-methods.js";
 import { lowerEventObjectPropertyWrite } from "./lower-event-target.js";
 import { lowerDynObjectLiteral } from "./expressions/object-literals.js";
 import { importMetaBindingSource } from "./import-meta.js";
+import { nullishEmptyPatternSource } from "./nullish-empty-pattern.js";
 import { anyResidueReplacedBy } from "./any-collection-residue.js";
 import { iteratorCanStep, iteratorValue } from "./iterator-consumption.js";
 import { notIterableSpelling } from "./iterable-spelling.js";
@@ -99,6 +100,7 @@ import {
   BYTES_U8,
   CAUGHT,
   DATE_T,
+  DYN_HANDLE_KINDS,
   DYN,
   F64,
   type IrExpr,
@@ -1767,10 +1769,12 @@ const THROWN_AS_DYN: ReadonlySet<IrType["kind"]> = new Set([
 
 /** A `return` at the top level of a CommonJS module (preflight admits it
  * there only): it ends the module's evaluation, and its value is
- * evaluated and discarded, as Node's module wrapper does. Top-level
- * bindings and export assignments after it would be left uninitialized
- * where Node leaves them in their temporal dead zone or absent, so a
- * module with any keeps a refusal. Null for a return inside a function. */
+ * evaluated and discarded, as Node's module wrapper does. Bindings
+ * declared after it stay uninitialized when it is taken, which only code
+ * that exists by then can observe: a function created before the return,
+ * or a hoisted function declaration. A module whose such functions read a
+ * later binding, or that assigns exports after the return, keeps a
+ * refusal. Null for a return inside a function. */
 function lowerModuleLevelReturn(lowerer: Lowerer, stmt: ts.ReturnStatement): IrStmt | null {
   let top: ts.Node = stmt;
   while (top.parent !== undefined && !ts.isSourceFile(top.parent)) {
@@ -1780,18 +1784,33 @@ function lowerModuleLevelReturn(lowerer: Lowerer, stmt: ts.ReturnStatement): IrS
   const sf = top.parent;
   if (sf === undefined || !ts.isSourceFile(sf)) return null;
   const stmts = sf.statements.nodes;
-  const later = stmts.slice(stmts.indexOf(top as ts.Statement) + 1);
-  if (
-    later.some(
-      (s) =>
-        ts.isVariableStatement(s) || ts.isClassDeclaration(s) || cjsExportAssignmentOf(s) !== null,
-    )
-  ) {
+  const index = stmts.indexOf(top as ts.Statement);
+  const later = stmts.slice(index + 1);
+  if (later.some((s) => cjsExportAssignmentOf(s) !== null)) {
     lowerer.unsupported(
       "SC1090",
       stmt,
-      "a top-level return in a CommonJS module that declares variables or classes, or assigns exports, after it",
+      "a top-level return in a CommonJS module that assigns exports after it",
     );
+  }
+  const laterBindings = laterModuleBindings(lowerer, later);
+  if (laterBindings.size > 0) {
+    // Functions that exist when the return is taken: every function in the
+    // statements up to the return, and the hoisted declarations after it.
+    const reachable = [
+      ...stmts.slice(0, index + 1),
+      ...later.filter((s) => ts.isFunctionDeclaration(s)),
+    ];
+    const read = reachable
+      .map((s) => functionReadOf(lowerer, s, laterBindings, ts.isFunctionDeclaration(s)))
+      .find((r) => r !== null);
+    if (read) {
+      lowerer.unsupported(
+        "SC1090",
+        read,
+        `reading '${read.text}', declared after a top-level CommonJS return, from a function that can run once the return is taken`,
+      );
+    }
   }
   const loc = locOf(stmt);
   const ret: IrStmt = { kind: "return", value: null, loc };
@@ -1801,6 +1820,57 @@ function lowerModuleLevelReturn(lowerer: Lowerer, stmt: ts.ReturnStatement): IrS
     body: [{ kind: "exprStmt", expr: lowerer.lowerExpr(stmt.expression), loc }, ret],
     loc,
   };
+}
+
+/** The module-scope bindings `stmts` declare: variables and classes, with
+ * `var` declarations in nested blocks. Bindings inside functions are not
+ * module-scope and are skipped. */
+function laterModuleBindings(lowerer: Lowerer, stmts: readonly ts.Statement[]): Set<ts.Symbol> {
+  const bindings = new Set<ts.Symbol>();
+  const addName = (name: ts.BindingName): void => {
+    if (ts.isIdentifier(name)) {
+      const symbol = lowerer.checker.getSymbolAtLocation(name);
+      if (symbol) bindings.add(symbol);
+      return;
+    }
+    for (const element of name.elements.nodes) {
+      if (ts.isBindingElement(element) && element.name) addName(element.name);
+    }
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isFunctionLike(node) || ts.isClassStaticBlockDeclaration(node)) return;
+    if (ts.isVariableDeclaration(node)) addName(node.name);
+    if (ts.isClassDeclaration(node) && node.name) addName(node.name);
+    ts.forEachChild(node, visit);
+  };
+  for (const stmt of stmts) visit(stmt);
+  return bindings;
+}
+
+/** The first identifier inside a function or class in `node` (anywhere in
+ * `node` when `inFunction`) that reads one of `bindings`, or null. */
+function functionReadOf(
+  lowerer: Lowerer,
+  node: ts.Node,
+  bindings: ReadonlySet<ts.Symbol>,
+  inFunction: boolean,
+): ts.Identifier | null {
+  if (inFunction && ts.isIdentifier(node)) {
+    const symbol = lowerer.resolveValueSymbol(node);
+    return symbol && bindings.has(symbol) ? node : null;
+  }
+  // Class bodies count as functions: field initializers run per instance.
+  const nested =
+    inFunction ||
+    ts.isFunctionLike(node) ||
+    ts.isClassDeclaration(node) ||
+    ts.isClassExpression(node);
+  return (
+    ts.forEachChild(
+      node,
+      (child) => functionReadOf(lowerer, child, bindings, nested) ?? undefined,
+    ) ?? null
+  );
 }
 
 export function lowerStmt(lowerer: Lowerer, stmt: ts.Statement): IrStmt | IrStmt[] | null {
@@ -2508,6 +2578,7 @@ export function lowerDestructuringDecl(
   }
   let init =
     importMetaBindingSource(lowerer, decl.name, decl.initializer) ??
+    nullishEmptyPatternSource(lowerer, decl.name, decl.initializer) ??
     lowerer.lowerExpr(decl.initializer);
   const parseArgsDynObject =
     init.type.kind === "dyn" &&
@@ -5923,15 +5994,24 @@ function evolvingArrayHolderType(lowerer: Lowerer, decl: ts.VariableDeclaration)
 /** A single static type for an initializer-less JavaScript `let` whose
  * later plain writes all agree. An evolving JS local reads as `undefined`
  * until control flow proves a write, so a scalar slot is sound only when
- * every ordinary use already has that concrete flow type. Any closure
- * capture stays checked-dynamic: it can observe the local before an outer
- * assignment, and the checker deliberately leaves captured evolving lets
- * broad. */
-function inferredEvolvingLetType(lowerer: Lowerer, decl: ts.VariableDeclaration): IrType | null {
+ * every ordinary use already has that concrete flow type. A write's call
+ * counts when its signature is declared in the standard library, whose
+ * return types are declared rather than inferred from JavaScript. A
+ * closure capture can observe the local before an outer assignment, and
+ * the checker leaves captured evolving lets broad: a captured runtime
+ * handle (`let child; if (...) child = spawn(...)`) takes the handle or
+ * `undefined`, which nested functions read as a checked-dynamic value
+ * (closureDynLets), and other captured bindings stay checked-dynamic. */
+export function inferredEvolvingLetType(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+): IrType | null {
   if (!ts.isIdentifier(decl.name)) return null;
   const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
   const scope = decl.parent?.parent?.parent;
   if (symbol === undefined || (!ts.isBlock(scope) && !ts.isSourceFile(scope))) return null;
+  // Another module reads an exported binding, which this scan does not see.
+  if (ts.getCombinedModifierFlags(decl) & ts.ModifierFlags.Export) return null;
 
   // A shorthand property's name (`{ width }`) resolves to the property
   // symbol, but it reads the binding: the checker's shorthand-value symbol.
@@ -5966,9 +6046,19 @@ function inferredEvolvingLetType(lowerer: Lowerer, decl: ts.VariableDeclaration)
   const writes: IrType[] = [];
   const reads: ts.Identifier[] = [];
   let invalid = false;
-  ts.walkPreorder(scope, (node) => {
-    if (node !== scope && ts.isFunctionLike(node)) {
-      if (captures(node)) invalid = true;
+  let captured = false;
+  // The capturing closure being scanned: reads inside one carry the
+  // checker's broad type, so only its writes are collected.
+  let closure: ts.Node | null = null;
+  const visit = (node: ts.Node): void | "skip" | "stop" => {
+    if (node !== scope && node !== closure && ts.isFunctionLike(node)) {
+      if (captures(node)) {
+        captured = true;
+        const outer = closure;
+        closure = node;
+        ts.walkPreorder(node, visit);
+        closure = outer;
+      }
       return "skip";
     }
     if (ts.isBinaryExpression(node)) {
@@ -5979,11 +6069,7 @@ function inferredEvolvingLetType(lowerer: Lowerer, decl: ts.VariableDeclaration)
           invalid = true;
           return "stop";
         }
-        if (
-          ts.isCallExpression(node.right) &&
-          (implicitMethodCallInfersReturn(lowerer, node.right) ||
-            isJsSourceFile(ts.getSourceFileOfNode(node.right)))
-        ) {
+        if (ts.isCallExpression(node.right) && !stdlibDeclaredCall(lowerer, node.right)) {
           invalid = true;
           return "stop";
         }
@@ -6012,6 +6098,7 @@ function inferredEvolvingLetType(lowerer: Lowerer, decl: ts.VariableDeclaration)
       return "stop";
     }
     if (
+      closure === null &&
       ts.isIdentifier(node) &&
       node !== decl.name &&
       refersToBinding(node) &&
@@ -6020,16 +6107,32 @@ function inferredEvolvingLetType(lowerer: Lowerer, decl: ts.VariableDeclaration)
       reads.push(node);
     }
     return undefined;
-  });
+  };
+  ts.walkPreorder(scope, visit);
   const first = writes[0];
   if (invalid || first === undefined || !writes.every((write) => typeEquals(write, first)))
     return null;
-  return reads.every((read) => {
-    const mapped = lowerer.mapTypeOf(lowerer.typeOf(read));
-    return mapped !== null && typeEquals(mapped, first);
-  })
-    ? first
-    : null;
+  if (
+    !reads.every((read) => {
+      const mapped = lowerer.mapTypeOf(lowerer.typeOf(read));
+      return mapped !== null && typeEquals(mapped, first);
+    })
+  )
+    return null;
+  if (!captured) return first;
+  if (!DYN_HANDLE_KINDS.has(first.kind)) return null;
+  lowerer.closureDynLets.add(symbol);
+  return { kind: "union", unionId: lowerer.unions.intern([first, UNDEFINED_T]) };
+}
+
+/** Whether a call's resolved signature is declared in the standard library
+ * (`spawn(...)`), so its declared return type is the value's type. Calls of
+ * JavaScript functions, and implicit generic methods, infer theirs, and a
+ * `require(...)` result is a module rather than a value of its type. */
+function stdlibDeclaredCall(lowerer: Lowerer, call: ts.CallExpression): boolean {
+  if (implicitMethodCallInfersReturn(lowerer, call) || requireSpecOf(call) !== null) return false;
+  const declaration = lowerer.checker.getResolvedSignature(call)?.declaration;
+  return declaration !== undefined && lowerer.isStdlibFile(ts.getSourceFileOfNode(declaration));
 }
 
 export function lowerVarDecl(
@@ -7335,13 +7438,18 @@ export function jsBindingHasOpenWrites(lowerer: Lowerer, decl: ts.VariableDeclar
     )
   )
     return true;
-  // A `+=` of a string turns a number or boolean binding into a string
-  // (`n += "px"`); the checker keeps the declared type.
+  // A `+=` of a string, or of a value that may be one, turns a number or
+  // boolean binding into a string (`n += "px"`); the checker keeps the
+  // declared type.
+  const mayBeString = (type: ts.Type): boolean =>
+    type.flags & ts.TypeFlags.Union
+      ? constituentTypes(type).some(mayBeString)
+      : (type.flags & ts.TypeFlags.StringLike) !== 0;
   if (
     candidates.some(
       (node) =>
         node.operatorToken.kind === ts.SyntaxKind.PlusEqualsToken &&
-        (lowerer.typeOf(node.right).flags & ts.TypeFlags.StringLike) !== 0,
+        mayBeString(lowerer.typeOf(node.right)),
     )
   ) {
     const declared = lowerer.mapTypeOf(lowerer.typeOf(decl.name));
@@ -7378,6 +7486,13 @@ export function jsBindingHasOpenWrites(lowerer: Lowerer, decl: ts.VariableDeclar
   if (declared === null || declared.kind === "dyn" || declared.kind === "union") return false;
   return differing.some((node) => {
     const written = lowerer.mapTypeOf(lowerer.typeOf(node.right));
+    // A union a primitive binding cannot hold (`x = c ? 1 : "a"` into
+    // `var x = 0`).
+    if (
+      written?.kind === "union" &&
+      (declared.kind === "f64" || declared.kind === "bool" || declared.kind === "string")
+    )
+      return true;
     return (
       written !== null &&
       written.kind !== "dyn" &&

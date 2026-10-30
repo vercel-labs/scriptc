@@ -2216,6 +2216,54 @@ function lowerNetServerMethodCall(
       '"connection", "request", "checkContinue", "checkExpectation", "drop", "stream", "session", "upgrade", "connect", "error", "close", "listening", and "sessionError" are the supported server events (as literals)',
     );
   }
+  if ((name === "off" || name === "removeListener") && args.length === 2) {
+    // server.off(event, cb): the LAST listener standing for the same
+    // function leaves that event's list (Node's removeListener order).
+    // Only the event families whose registry keeps a removable list; the
+    // rest refuse rather than silently leaving the listener in place.
+    requireStatementPosition(lowerer, call, `server.${name}(...)`);
+    const evT = lowerer.typeOf(args[0]!);
+    const event = evT.isStringLiteralType() ? evT.value : null;
+    const kind =
+      event === null
+        ? null
+        : event === "error"
+          ? 1
+          : event === "close"
+            ? 2
+            : event === "listening"
+              ? 3
+              : event === "connection" || event === "secureConnection"
+                ? 4
+                : event === "timeout"
+                  ? 5
+                  : event === "drop"
+                    ? 6
+                    : null;
+    if (kind === null) {
+      lowerer.noLowering(
+        `server.${name}(${event === null ? "non-literal event" : `"${event}"`}, ...)`,
+        args[0]!,
+        '"error", "close", "listening", "connection", "secureConnection", "timeout", and "drop" are the events off/removeListener removes (as literals)',
+      );
+    }
+    const receiver = coerceToHandle(lowerer, access.expression, NETSERVER_T);
+    const listener = lowerer.lowerExpr(args[1]!);
+    if (listener.type.kind !== "func") {
+      lowerer.unsupported(
+        "SC1090",
+        args[1]!,
+        `server.${name} with a listener that is not a function`,
+      );
+    }
+    return {
+      kind: "libCall",
+      fn: "net.serverOff",
+      args: [receiver, listener, numLit(kind, loc)],
+      type: VOID,
+      loc,
+    };
+  }
   if (name === "emit") {
     // The demux route: emit("connection", socket) hands an accepted
     // socket to ANOTHER server (portless's first-byte TLS peek). Only

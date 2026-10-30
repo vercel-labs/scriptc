@@ -632,7 +632,14 @@ function arrayHofHelper(
  * original concrete array arm — never a copied `(T | U)[]` — and an
  * arm-specific function adapter wraps the element and receiver arguments
  * into the union-wide callback ABI. That preserves sparse-array reads,
- * callback mutation, and the callback's third-argument identity. */
+ * callback mutation, and the callback's third-argument identity.
+ *
+ * `filter` joins them: the kept elements are the checker's result element
+ * (`(b): b is TextContent` over `(TextContent | ImageContent)[] |
+ * (ThinkingContent | TextContent)[]` answers `TextContent[]`), so each arm
+ * filters its own array and converts its survivors through the checked
+ * narrowing — a predicate that kept an element it does not describe throws
+ * the TypeError. An arm with no such conversion leaves the fence in place. */
 export function lowerArrayUnionHofCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
@@ -640,7 +647,7 @@ export function lowerArrayUnionHofCall(
   receiverT: IrType & { kind: "union" },
 ): IrExpr | null {
   const method = access.name.text;
-  if (method !== "map" && method !== "forEach") return null;
+  if (method !== "map" && method !== "forEach" && method !== "filter") return null;
   if (!lowerer.isStdlibMember(access)) return null;
   const def = lowerer.unions.get(receiverT.unionId);
   if (!def || def.arms.length < 2 || !def.arms.every((arm) => arm.kind === "array")) return null;
@@ -682,8 +689,45 @@ export function lowerArrayUnionHofCall(
     lowerer.badType(call, lowerer.typeOf(call));
   }
   if (method === "map") requireProducedArrayElement(lowerer, call, "'.map()'", fnRet);
-  const outElem = method === "map" ? callbackArrayElement(lowerer, call, fnRet) : VOID;
-  const resultT: IrType = method === "map" ? arrayOf(outElem) : VOID;
+  if (method === "filter" && !filterPredicateOk(lowerer, fnRet)) {
+    if (fnRet.kind === "void") {
+      lowerer.unsupported(
+        "SC1090",
+        call,
+        "'.filter()' with a void-returning predicate (the callback return value is erased before its truthiness can be tested)",
+      );
+    }
+    lowerer.badType(call, lowerer.typeOf(call));
+  }
+  // `map` stores the callback's answer; `filter` keeps the elements its
+  // predicate named. The kept element is the CHECKER's result element, which
+  // for a written type predicate is narrower than every arm's own:
+  // `(b): b is TextContent` over `(TextContent | ImageContent)[] |
+  // (ThinkingContent | TextContent)[]` answers `TextContent[]`. Each arm
+  // filters its own concrete array and converts its survivors to that
+  // element through the checked narrowing — a predicate that kept an element
+  // it does not describe throws instead of misreading it. No conversion the
+  // arms cannot make honestly means the fence stays.
+  let outElem: IrType = VOID;
+  const narrowing: (string | null)[] = [];
+  if (method === "map") {
+    outElem = callbackArrayElement(lowerer, call, fnRet);
+  } else if (method === "filter") {
+    const result = lowerer.mapTypeOf(lowerer.typeOf(call));
+    if (!result || result.kind !== "array") return null;
+    outElem = result.elem;
+    const typeText = filterTypeText(lowerer, call);
+    for (const array of arrays) {
+      if (typeEquals(array.elem, outElem)) {
+        narrowing.push(null);
+        continue;
+      }
+      const helper = checkedFilterNarrowing(lowerer, array.elem, outElem, typeText, locOf(call));
+      if (helper === null) return null;
+      narrowing.push(helper);
+    }
+  }
+  const resultT: IrType = method === "forEach" ? VOID : arrayOf(outElem);
   for (const array of arrays) {
     const armFnT = funcOf(
       [arrayValueType(lowerer, array.elem), F64, array].slice(0, arity),
@@ -700,6 +744,7 @@ export function lowerArrayUnionHofCall(
     arity,
     fnRet,
     outElem,
+    narrowing,
     locOf(call),
   );
   return {
@@ -716,24 +761,31 @@ export function lowerArrayUnionHofCall(
 
 function arrayUnionHofHelper(
   lowerer: Lowerer,
-  method: "map" | "forEach",
+  method: "map" | "forEach" | "filter",
   receiverT: IrType & { kind: "union" },
   arrays: (IrType & { kind: "array" })[],
   callbackT: IrType & { kind: "func" },
   arity: number,
   fnRet: IrType,
   outElem: IrType,
+  narrowing: (string | null)[],
   loc: SrcLoc,
 ): string {
-  const resultT: IrType = method === "map" ? arrayOf(outElem) : VOID;
-  const key = `union:${method}:${receiverT.unionId}:${typeKey(callbackT)}:${typeKey(resultT)}`;
+  const resultT: IrType = method === "forEach" ? VOID : arrayOf(outElem);
+  // A filter's per-arm conversions are part of what the helper does, so two
+  // sites that share receiver, callback and result but convert differently
+  // keep their own helper. `map`/`forEach` never narrow, and leaving their
+  // key untouched keeps the helpers a program already emitted byte-identical.
+  const narrowingKey =
+    method === "filter" ? `:${narrowing.map((helper) => helper ?? "").join(",")}` : "";
+  const key = `union:${method}:${receiverT.unionId}:${typeKey(callbackT)}:${typeKey(resultT)}${narrowingKey}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
   const name = keyedHelperName(lowerer, "%arr.union", key);
   lowerer.arrHofHelpers.set(key, name);
   const receiver = varRef("a.0", receiverT, loc);
   const callback = varRef("f.0", callbackT, loc);
-  const branch = (array: IrType & { kind: "array" }): IrStmt[] => {
+  const branch = (array: IrType & { kind: "array" }, index: number): IrStmt[] => {
     const tag = lowerer.armTag(receiverT.unionId, array);
     const concrete: IrExpr = {
       kind: "unionNarrow",
@@ -751,16 +803,38 @@ function arrayUnionHofHelper(
     if (!typeEquals(adapted.type, armFnT)) {
       throw new InternalCompilerError("lowerer bug: union-array callback stopped adapting");
     }
-    const callee = arrayHofHelper(lowerer, method, array.elem, fnRet, arity, loc, outElem);
-    const invoke: IrExpr = { kind: "call", callee, args: [concrete, adapted], type: resultT, loc };
+    const callee = arrayHofHelper(
+      lowerer,
+      method,
+      array.elem,
+      fnRet,
+      arity,
+      loc,
+      method === "filter" ? array.elem : outElem,
+    );
+    const invoke: IrExpr = {
+      kind: "call",
+      callee,
+      args: [concrete, adapted],
+      type: method === "filter" ? arrayOf(array.elem) : resultT,
+      loc,
+    };
+    // Survivors of this arm's own array, converted to the checker's result
+    // element. The helper throws for a kept element the predicate does not
+    // describe, so a lying predicate never reinterprets a value.
+    const armNarrow = narrowing[index] ?? null;
+    const answer: IrExpr =
+      armNarrow === null
+        ? invoke
+        : { kind: "call", callee: armNarrow, args: [invoke], type: resultT, loc };
     return resultT.kind === "void"
       ? [
           { kind: "exprStmt", expr: invoke, loc },
           { kind: "return", value: null, loc },
         ]
-      : [{ kind: "return", value: invoke, loc }];
+      : [{ kind: "return", value: answer, loc }];
   };
-  let body = branch(arrays[arrays.length - 1]!);
+  let body = branch(arrays[arrays.length - 1]!, arrays.length - 1);
   for (let i = arrays.length - 2; i >= 0; i--) {
     const array = arrays[i]!;
     body = [
@@ -775,7 +849,7 @@ function arrayUnionHofHelper(
           type: BOOL,
           loc,
         },
-        then: branch(array),
+        then: branch(array, i),
         else_: body,
         loc,
       },

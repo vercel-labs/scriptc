@@ -1261,9 +1261,9 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       // truncateSync's omitted len completes to 0 in lowerBuiltinModuleCall,
       // like accessSync's mode.
       truncateSync: { fn: "fs.truncateSync", params: [STRING, F64], result: VOID },
-      // The 2-argument form only: Node's mode flags (COPYFILE_EXCL, ...)
-      // land on the arity fence.
-      copyFileSync: { fn: "fs.copyFileSync", params: [STRING, STRING], result: VOID },
+      // The mode is libuv's copyfile flag bits (COPYFILE_EXCL, ...); the
+      // 2- and 3-argument forms lower in lowerBuiltinModuleCall.
+      copyFileSync: { fn: "fs.copyFileSync", params: [STRING, STRING, F64], result: VOID },
       // The callback form is special-cased in lowerBuiltinModuleCall: its
       // Error | null parameter is program-shaped and needs an emitted
       // adapter. The row still projects the static surface and routes the
@@ -1469,10 +1469,10 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         params: [STRING, STRING],
         result: { kind: "promise", inner: VOID },
       },
-      // The 2-argument form only, like copyFileSync.
+      // The 2- and 3-argument forms, like copyFileSync.
       copyFile: {
         fn: "fsp.copyFile",
-        params: [STRING, STRING],
+        params: [STRING, STRING, F64],
         result: { kind: "promise", inner: VOID },
       },
       mkdtemp: { fn: "fsp.mkdtemp", params: [STRING], result: { kind: "promise", inner: STRING } },
@@ -2271,15 +2271,20 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     ],
     // The string source's check before a URL destination converts
     // (fs-paths.ts).
-    copyFileSync: ["fs.checkPath"],
+    copyFileSync: ["fs.checkPath", "fs.copyFileFlagsSync"],
     renameSync: ["fs.checkPath"],
-    copyFile: ["fs.checkPath"],
+    copyFile: ["fs.checkPath", "fsp.copyFileFlags"],
     rename: ["fs.checkPath"],
     readlinkSync: ["fs.readlinkSyncStr", "fs.readlinkSyncBuffer"],
     // The bytes-data form and the { mode } options form.
     // The bytes-data form, the { mode } options form, and the
     // file-descriptor data form.
-    writeFileSync: ["fs.writeFileSyncBytes", "fs.writeFileModeSync", "fs.writeFileSyncFd"],
+    writeFileSync: [
+      "fs.writeFileSyncBytes",
+      "fs.writeFileModeSync",
+      "fs.writeFileFlagsSync",
+      "fs.writeFileSyncFd",
+    ],
     appendFileSync: ["fs.appendFileSyncBytes"],
     // The fs stream members (bytesRead/bytesWritten, pending, path, close).
     createReadStream: [
@@ -2330,8 +2335,8 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     // The Buffer form (no encoding) and the runtime-encoding forms.
     readFile: ["fsp.readFileBytes", "fsp.readFileEncoded"],
     readlink: ["fsp.readlinkStr", "fsp.readlinkBuffer"],
-    // The string-data { mode } options form.
-    writeFile: ["fsp.writeFileMode"],
+    // The string-data { mode, flag } options forms.
+    writeFile: ["fsp.writeFileMode", "fsp.writeFileFlags"],
     // The { withFileTypes: true } Dirent form.
     readdir: ["fsp.readdirTypes"],
     glob: ["fsp.globTypes"],

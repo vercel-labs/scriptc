@@ -3528,7 +3528,7 @@ function validateFunction(
         if (e.type.kind !== "dyn") err(`dynCall must be dyn-typed, got ${e.type.kind}`, e.loc);
         for (const a of e.args) {
           checkExpr(a);
-          if (a.type.kind !== "dyn")
+          if (a.type.kind !== "dyn" && !(a.type.kind === "jsval" && e.spreads === undefined))
             err(`dynCall argument of kind ${a.type.kind} (must be dyn)`, e.loc);
         }
         // The runtime-arity form: spread entries point into args (their
@@ -3556,7 +3556,7 @@ function validateFunction(
         if (e.type.kind !== "dyn") err(`dynInvoke must be dyn-typed, got ${e.type.kind}`, e.loc);
         for (const a of e.args) {
           checkExpr(a);
-          if (a.type.kind !== "dyn")
+          if (a.type.kind !== "dyn" && a.type.kind !== "jsval")
             err(`dynInvoke argument of kind ${a.type.kind} (must be dyn)`, e.loc);
         }
         break;
@@ -3871,6 +3871,14 @@ function validateFunction(
             }
             return;
           }
+          // A declared-only arm that lacks a literal key has no such own
+          // property: it answers undefined, like a unit arm.
+          if (
+            literal !== null &&
+            !shape.indexValue &&
+            resultUnion?.arms.some((a) => a.kind === "undefinedT")
+          )
+            return;
           if (!shape.indexValue && !(literal === null && shape.fields.length > 0)) {
             err(`unionKeyGet: arm ${i} of ${e.unionId} has no answer for the key`, e.loc);
           }
@@ -4154,6 +4162,7 @@ function validateFunction(
       e.fn === "emitter.emit" ||
       e.fn === "emitter.emitFlex" ||
       e.fn === "emitter.emitAny" ||
+      e.fn === "emitter.emitErrorValue" ||
       e.fn === "emitter.emitMixed" ||
       e.fn === "readable.new" ||
       e.fn === "writable.new" ||
@@ -4189,16 +4198,21 @@ function validateFunction(
       e.fn === "readable.unpipe" ||
       e.fn === "rl.create" ||
       e.fn === "rl.createSignal";
+    // error.nodeThrow takes an optional fourth argument: the error's own
+    // `url` property (a string).
+    const optionalUrl = e.fn === "error.nodeThrow" && e.args.length === 4;
     // fs.unwatchFile's listener is optional, so its last slot may be
     // omitted (1 or 2 args) rather than extended.
     const optionalTail = e.fn === "fs.unwatchFile" ? 1 : 0;
     const arityOk = variadic
       ? e.args.length >= sig.argTypes.length
       : e.args.length === sig.argTypes.length ||
+        optionalUrl ||
         (optionalTail > 0 && e.args.length === sig.argTypes.length - optionalTail);
     if (!arityOk) {
       err(`libCall ${e.fn}: ${e.args.length} args, expected ${sig.argTypes.length}`, e.loc);
     }
+    if (optionalUrl) expectType(e.args[3]!, STRING, `libCall ${e.fn} arg 3`);
     e.args.forEach((a, i) => {
       checkExpr(a);
       const want = sig.argTypes[i];
@@ -4485,6 +4499,20 @@ function validateFunction(
         def.arms[1]!.kind === "undefinedT";
       if (!ok) {
         err(`libCall ${e.fn} must return the 'number | undefined' union`, e.loc);
+      }
+      return true;
+    }
+    if (e.fn === "process.stdinIsRaw") {
+      // Result is the module's interned `boolean | undefined` union
+      // (Node's undefined on a pipe-backed stdin).
+      const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+      const ok =
+        def &&
+        def.arms.length === 2 &&
+        def.arms[0]!.kind === "bool" &&
+        def.arms[1]!.kind === "undefinedT";
+      if (!ok) {
+        err(`libCall process.stdinIsRaw must return the 'boolean | undefined' union`, e.loc);
       }
       return true;
     }
@@ -6191,6 +6219,12 @@ function validateFunction(
           err(`libCall ${e.fn} payloads must be checked-dynamic`, e.loc);
         }
       }
+      if (
+        e.fn === "emitter.emitErrorValue" &&
+        e.args.slice(1).some((arg) => arg.type.kind !== "dyn")
+      ) {
+        err(`libCall emitter.emitErrorValue payloads must be checked-dynamic`, e.loc);
+      }
       if (e.fn === "emitter.emitMixed") {
         const count = e.args[2];
         const k = count?.kind === "numLit" ? count.value : -1;
@@ -6204,6 +6238,7 @@ function validateFunction(
         e.fn === "emitter.emit" ||
         e.fn === "emitter.emitFlex" ||
         e.fn === "emitter.emitAny" ||
+        e.fn === "emitter.emitErrorValue" ||
         e.fn === "emitter.emitMixed" ||
         e.fn === "emitter.hasTyped" ||
         e.fn === "emitter.listenersDyn" ||

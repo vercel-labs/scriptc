@@ -20,7 +20,7 @@ import { installRuntimePack, withBuildLock } from "./build-state.mjs";
 import { shareIdenticalArtifacts } from "./share-artifacts.mjs";
 import { parallelMap } from "./parallel-map.mjs";
 import { zlibInputs } from "./zlib-inputs.mjs";
-import { ICU_DATA_FILE, ensureIcuData, ensureIcuSources, icuSourceList } from "./icu-data.mjs";
+import { ICU_DATA_FILE, ensurePackIcuData, ensureIcuSources, icuSourceList } from "./icu-data.mjs";
 
 const run = promisify(execFile);
 
@@ -668,11 +668,12 @@ async function build() {
     // ICU's data is a RUN-time input, not a link input: the executable loads
     // icudt78l.dat from beside itself (or ICU_DATA). `data` tells the
     // compiler where the pack keeps it, so every Intl build installs it
-    // beside the binary it links.
+    // beside the binary it links. The pack's copy leaves out the categories
+    // no Intl form reads (ICU_DATA_DROPPED in icu-inputs.mjs).
     const data = [];
     if (requestedArchives.has("icu")) {
       process.stdout.write(`building ${packageManifest.name} icu data\n`);
-      const source = await ensureIcuData(
+      const source = await ensurePackIcuData(
         join(repoRoot, "node_modules", ".cache", "scriptc-icu-data"),
       );
       const destination = join(stagedOutputRoot, "icu", ICU_DATA_FILE);
@@ -771,7 +772,7 @@ async function build() {
       package: packageManifest.name,
       version: packageManifest.version,
       target: matrix.target,
-      runtime_abi: { version: 47, marker: "scr_runtime_abi_v47" },
+      runtime_abi: { version: 48, marker: "scr_runtime_abi_v48" },
       compiler: {
         command: compiler,
         identity: compilerVersion,

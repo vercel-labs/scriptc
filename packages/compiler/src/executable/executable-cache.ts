@@ -66,6 +66,9 @@ export interface EarlyExecutableNativeFeatures {
   warningReplace?: boolean;
   recordViewPartial?: boolean;
   stdioExtended?: boolean;
+  fsFlags?: boolean;
+  strdecDyn?: boolean;
+  processExtras?: boolean;
   /** Error-taking write completion callbacks: SCR_STREAM_WRITE_ERRORS. */
   streamWriteErrors?: boolean;
   /** The process output write slot: SCR_STDIO_WRITE_SLOT. */
@@ -207,6 +210,9 @@ export interface EarlyExecutableCacheOptions {
   /** Omitted unless shape inference's overlay compiles the packages
    * (frontend/shape-inference). */
   shapeOverlay?: true;
+  /** Omitted unless shape inference types the program's own JavaScript
+   * (SCRIPTC_INFER_JS=1, frontend/js-inference.ts). */
+  jsInference?: true;
   /** Raw manifest identity: path and bytes. Native archives remain under the
    * stricter native cache's independent dependency validation. */
   ffiProfile: { path: string; bytes: Uint8Array } | null;
@@ -365,6 +371,8 @@ function cacheKey(options: EarlyExecutableCacheOptions): string {
     ...(options.youngNursery ? ["young-nursery"] : []),
     ...(options.nodeIslands !== undefined ? [`node-islands:${options.nodeIslands}`] : []),
     ...(options.heapCensus ? ["heap-census"] : []),
+    ...(options.shapeOverlay ? ["shape-overlay"] : []),
+    ...(options.jsInference ? ["js-inference"] : []),
     options.npmStatic === null
       ? "<npm-static-off>"
       : options.npmStatic === "auto"
@@ -416,6 +424,8 @@ function routeKey(options: Omit<EarlyExecutableRouteOptions, "nativeEnvironment"
   if (options.youngNursery) hash.update("young-nursery\0");
   if (options.nodeIslands !== undefined) hash.update(`node-islands:${options.nodeIslands}\0`);
   if (options.heapCensus) hash.update("heap-census\0");
+  if (options.shapeOverlay) hash.update("shape-overlay\0");
+  if (options.jsInference) hash.update("js-inference\0");
   hash
     .update(
       options.npmStatic === null

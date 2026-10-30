@@ -429,7 +429,7 @@ export function stageNativeRuntimeSelection(
  * own selection (backend/linker.ts); this host writes executables
  * synchronously and has no link plan, so it installs them here.
  *
- * A file already present at the pinned size is left alone (31.6 MiB of pure
+ * A file already present at the pinned size is left alone (11.1 MiB of pure
  * cost otherwise), and the copy is atomic — a private temporary, then a
  * rename — so two concurrent builds of one program never read a partial
  * file. */

@@ -1,6 +1,7 @@
 #include "emit.h"
 
 #include "cache.h"
+#include "cpu-copies.h"
 #include "diagnostics.h"
 #include "partition.h"
 #include "profile-blocks.h"
@@ -825,6 +826,7 @@ emitModule(Module &M, TargetMachine &Machine, OptimizationLevel Level,
   P.PB.buildPerModuleDefaultPipeline(Level).run(M, P.MAM);
   if (Annotating)
     Weigher.weigh(ProfileUse, Match);
+  useBaselineBodies(M);
   if (std::optional<EmitFailure> Failure =
           verify(M, "post_optimization_verification_failed"))
     return Failure;
@@ -1157,6 +1159,13 @@ compileOptimizedPartitions(const EmitOptions &Options,
       }
       CodeGeneration.run(Mod);
       return false;
+    };
+  else
+    // The backend passes the module it owns; only the hook's signature is
+    // const.
+    Config.PreCodeGenModuleHook = [](unsigned, const Module &Optimized) {
+      useBaselineBodies(const_cast<Module &>(Optimized));
+      return true;
     };
 
   // The link refers to module identifiers for its whole lifetime.
@@ -1573,6 +1582,7 @@ emitSplitCodegen(const EmitOptions &Options, Module &M, TargetMachine &Machine,
   }
   if (Annotating)
     Weigher.weigh(Options.ProfileUse, Match);
+  useBaselineBodies(M);
   if (std::optional<EmitFailure> Failure =
           verify(M, "post_optimization_verification_failed"))
     return Failure;

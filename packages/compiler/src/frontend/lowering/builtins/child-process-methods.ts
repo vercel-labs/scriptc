@@ -31,7 +31,9 @@ export function lowerChildMethodCall(
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
-  if (call.questionDotToken || access.questionDotToken) return null;
+  // A `?.` in the chain re-dispatches here with the receiver bound to the
+  // chain (optional-chains.ts), so only an UNHANDLED token declines.
+  if (lowerer.chainBlocked(call, access)) return null;
   if (lowerer.mapTypeOf(lowerer.typeOf(access.expression))?.kind !== "child") return null;
   if (!isChildSurfaceMember(lowerer, access)) return null;
   const name = access.name.text;

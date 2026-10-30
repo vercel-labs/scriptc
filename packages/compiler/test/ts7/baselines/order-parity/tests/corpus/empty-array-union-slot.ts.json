@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/empty-array-union-slot.ts"
+ ],
+ "diags": []
+}

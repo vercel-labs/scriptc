@@ -4,6 +4,7 @@ import { globalValuesInstall, installsGlobalValues } from "./global-values.js";
 import type { TypeFailureSlot } from "../../diagnostics/diagnostic.js";
 import { THREADS_MODULE } from "../threads-import.js";
 import { collectIslandImport, collectIslandRequires } from "./lower-node-island.js";
+import { staticString } from "./builtins/module-resolution.js";
 import { NODE_API_MODULE } from "../node-api-import.js";
 import { positionTag } from "./structural-positions.js";
 import { EXPERIMENTAL_MODULE } from "../experimental-import.js";
@@ -24,7 +25,12 @@ import {
   sharedModuleRegistrations,
 } from "./lower-shared-modules.js";
 import { dirname as dirnamePath, resolve as resolvePath } from "node:path";
-import { packageNameOfPath, probeNodeImportRefusal } from "../npm.js";
+import {
+  packageNameOfPath,
+  probeNodeFileImportRefusal,
+  probeNodeImportRefusal,
+  type NodeImportRefusal,
+} from "../npm.js";
 import { isNpmStaticPackage } from "../npm-static.js";
 import { isJsSourceFileName } from "../tsc-codes.js";
 import { isRelativeSpecifier } from "../workspace-registry.js";
@@ -131,6 +137,7 @@ import { funcTypeFromParamShapes, registerOverloadedCallableAlias } from "./call
 import {
   jsBindingHasOpenWrites,
   hasJsTypeAnnotation,
+  inferredEvolvingLetType,
   isVarDeclared,
   numericIteratorSourceOf,
   provenanceElidedConstDecl,
@@ -753,23 +760,38 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
  * runtime-computed name). */
 /** The refusal a literal import() rejects with, or null when it loads:
  * Node's ERR_MODULE_NOT_FOUND for a package the project marks never loaded
- * (package-shims.ts), or the first refusal in the static graph of a module
- * only import() loads (LoadResult.dynamicImportRejections). */
+ * (package-shims.ts), the first refusal in the static graph of a module
+ * only import() loads (LoadResult.dynamicImportRejections), or Node's
+ * resolution refusal for a specifier nothing resolves (a package nothing
+ * installed provides, a relative path to a file that does not exist). */
 function dynamicImportRejectionOf(
   lowerer: Lowerer,
   sf: ts.SourceFile,
   spec: string,
   call: ts.CallExpression,
 ): StartupCrash | null {
-  if (isUnloadedPackage(spec)) {
-    const refusal = probeNodeImportRefusal(sf.fileName, spec);
-    if (refusal === null) return null;
-    return { message: refusal.message, className: "%Error", code: refusal.code, loc: locOf(call) };
-  }
-  if (lowerer.dynamicImportRejections.size === 0) return null;
+  const rejection = (refusal: NodeImportRefusal | null): StartupCrash | null =>
+    refusal === null
+      ? null
+      : {
+          message: refusal.message,
+          className: "%Error",
+          code: refusal.code,
+          ...(refusal.url === undefined ? {} : { url: refusal.url }),
+          loc: locOf(call),
+        };
+  if (isUnloadedPackage(spec)) return rejection(probeNodeImportRefusal(sf.fileName, spec));
   const root =
     resolveImport(lowerer.program, sf, spec) ?? npmStaticDepSf7(lowerer.program, sf, spec);
-  return root === null ? null : (lowerer.dynamicImportRejections.get(root) ?? null);
+  if (root !== null) return lowerer.dynamicImportRejections.get(root) ?? null;
+  // Builtins, and URL specifiers (file:, data:), are not package names.
+  if (canonicalBuiltinModule(spec) !== null || /^[a-z][a-z0-9+.-]*:/i.test(spec)) return null;
+  return rejection(
+    probeNodeFileImportRefusal(sf.fileName, spec) ??
+      (spec.startsWith(".") || spec.startsWith("/")
+        ? null
+        : probeNodeImportRefusal(sf.fileName, spec)),
+  );
 }
 
 function collectDynamicImports(lowerer: Lowerer, sf: ts.SourceFile): void {
@@ -779,9 +801,10 @@ function collectDynamicImports(lowerer: Lowerer, sf: ts.SourceFile): void {
       node.expression.kind === ts.SyntaxKind.ImportKeyword &&
       node.arguments.nodes.length >= 1 &&
       node.arguments.nodes[0] !== undefined &&
-      ts.isStringLiteralLike(node.arguments.nodes[0])
+      staticString(lowerer, node.arguments.nodes[0]) !== null
     ) {
-      const spec = node.arguments.nodes[0].text;
+      // A constant expression names its module as surely as a literal.
+      const spec = staticString(lowerer, node.arguments.nodes[0]!)!;
       if (lowerer.externalTypes.has(spec)) {
         return undefined;
       }
@@ -800,9 +823,14 @@ function collectDynamicImports(lowerer: Lowerer, sf: ts.SourceFile): void {
           return undefined;
         }
         const modSym = lowerer.checker.getSymbolAtLocation(node.arguments.nodes[0]);
+        // A folded specifier carries no module symbol on its argument (the
+        // text comes from a `const`, not a literal), so fall back to the
+        // checker's program import resolution.
+        const folded = resolveImport(lowerer.program, sf, spec);
         const ownModule =
-          modSym !== undefined &&
-          modSym.declarations.some((d) => ts.isSourceFile(d) && !d.isDeclarationFile);
+          (modSym !== undefined &&
+            modSym.declarations.some((d) => ts.isSourceFile(d) && !d.isDeclarationFile)) ||
+          (folded !== null && !folded.isDeclarationFile);
         const builtin = canonicalBuiltinModule(spec);
         const res = ownModule
           ? ({ kind: "program-module" } as const)
@@ -2438,10 +2466,16 @@ export function collectGlobals(
           ) {
             const symbol = lowerer.checker.getSymbolAtLocation(nameNode);
             if (symbol && !lowerer.globalsBySymbol.has(symbol)) {
+              // An initializer-less `let` whose writes all agree keeps
+              // their type, as a function's local does (lowerVarDecl).
+              const evolved =
+                isLet && !isVarDeclared(decl) && decl.initializer === undefined
+                  ? inferredEvolvingLetType(lowerer, decl)
+                  : null;
               const g: IrGlobal = {
                 id: `%g.${tag}${nsPrefix}${nameNode.text}`,
                 name: nameNode.text,
-                type: DYN,
+                type: evolved ?? DYN,
                 mutable: isLet,
                 source: bindingSource(nameNode),
               };
@@ -2450,7 +2484,7 @@ export function collectGlobals(
               // Mutable dyn globals hold the dyn undefined from module
               // entry (the main path's rule below): a closure called
               // above the declaration reads undefined instead of
-              // faulting on NULL.
+              // faulting on NULL. An undefined-armed union does the same.
               if (g.mutable) noteVarGlobalEntryInit(lowerer, sf, g);
             }
             continue;

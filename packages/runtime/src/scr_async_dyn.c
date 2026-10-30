@@ -476,6 +476,24 @@ void scr_process_on_uncaught_exception(ScrDyn *fn, bool once, bool monitor) {
   scr_uncaught_sync_hook();
 }
 
+#ifdef SCR_PROCESS_EXTRAS
+/* process.prependListener("uncaughtException"[Monitor], fn): the same
+ * listener in FRONT of the registry's existing entries (Node's
+ * EventEmitter order). The append path above registers it and the new entry
+ * then moves to the front, so the two share one registration; a refused
+ * listener (a non-function) left the list alone and nothing moves. */
+void scr_process_prepend_uncaught_exception(ScrDyn *fn, bool monitor) {
+  size_t k = monitor ? 1 : 0;
+  size_t before = scr_uncaught_n[k];
+  scr_process_on_uncaught_exception(fn, false, monitor);
+  if (scr_uncaught_n[k] != before + 1) return;
+  ScrRejListener entry = scr_uncaught_ls[k][scr_uncaught_n[k] - 1];
+  memmove(scr_uncaught_ls[k] + 1, scr_uncaught_ls[k],
+          (scr_uncaught_n[k] - 1) * sizeof *scr_uncaught_ls[k]);
+  scr_uncaught_ls[k][0] = entry;
+}
+#endif
+
 void scr_process_off_uncaught_exception(ScrDyn *fn, bool monitor) {
   if (!scr_rej_check_listener(fn)) return;
   size_t k = monitor ? 1 : 0;

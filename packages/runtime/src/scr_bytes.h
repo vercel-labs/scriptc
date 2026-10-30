@@ -189,6 +189,11 @@ double scr_bytes_to_u8_clamp(double value);
  * incomplete-tail walk, base64's mod-3 groups, utf16le's odd-byte and
  * trailing-lead-surrogate holds. None throws. */
 ScrStr *scr_strdec_write(const ScrStr *enc, double pending, const ScrBytes *chunk);
+/* The checked-dynamic chunk forms: a string passes through unchanged (and
+ * leaves the buffered state alone); an ArrayBufferView decodes; anything
+ * else throws Node's ERR_INVALID_ARG_TYPE. */
+ScrStr *scr_strdec_write_dyn(const ScrStr *enc, double pending, const ScrDyn *chunk);
+double scr_strdec_next_dyn(const ScrStr *enc, double pending, const ScrDyn *chunk);
 double scr_strdec_next(const ScrStr *enc, double pending, const ScrBytes *chunk);
 ScrStr *scr_strdec_end(const ScrStr *enc, double pending);
 ScrStr *scr_strdec_encoding(const ScrDyn *enc); /* +1, or NULL with ERR_UNKNOWN_ENCODING pending */

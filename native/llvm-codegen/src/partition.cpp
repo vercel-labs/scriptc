@@ -824,8 +824,30 @@ std::optional<ProgramPartitions> partitionProgramText(StringRef Text,
         Symbols[Root].Kind != SymbolKind::Function)
       Root = I;
     Roots[I] = Root;
+  }
+  // The x86-64-v3 copy of a --cpu-dispatch build's function (`<name>.v3`),
+  // with the chain that ends at it, is placed with the chain of its baseline
+  // copy (`<name>.base`), so that the helper can compare the two copies
+  // after optimization (cpu-copies.h).
+  DenseMap<unsigned, unsigned> CopyRoots;
+  for (unsigned I = 0; I < Symbols.size(); ++I) {
+    StringRef Name = Symbols[I].Name;
+    if (Symbols[I].Kind != SymbolKind::Function || !Live[I] ||
+        Roots[I] != I || !Name.consume_back(".v3"))
+      continue;
+    auto Base = Index.find((Name + ".base").str());
+    if (Base != Index.end() && Live[Base->second] &&
+        Symbols[Base->second].Kind == SymbolKind::Function)
+      CopyRoots[I] = Roots[Base->second];
+  }
+  for (unsigned I = 0; I < Symbols.size(); ++I) {
+    if (Symbols[I].Kind == SymbolKind::Declaration || !Live[I])
+      continue;
+    auto Copy = CopyRoots.find(Roots[I]);
+    if (Copy != CopyRoots.end())
+      Roots[I] = Copy->second;
     if (Symbols[I].Kind == SymbolKind::Function)
-      Symbols[I].Partition = stableHash(Symbols[Root].Name) % Count;
+      Symbols[I].Partition = stableHash(Symbols[Roots[I]].Name) % Count;
   }
   placeGroups(Symbols, Roots, Count);
   balanceRoots(Symbols, Roots, Live, Count);

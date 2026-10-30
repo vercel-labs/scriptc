@@ -2,8 +2,11 @@
  *
  * Intl answers from ICU, so the pack builds ICU's C library from the release
  * source tarball and ships its data as a FILE the executable loads at run
- * time (31.6 MiB of CLDR patterns, locale metadata, break rules and
- * time-zone shapes) — never embedded in the binary. Neither is vendored:
+ * time — never embedded in the binary. The release's data file is 31.6 MiB;
+ * the pack's copy keeps the locale data, break rules and dictionaries,
+ * currency data and time-zone rules the Intl forms read, 11.1 MiB, and
+ * leaves out the categories in ICU_DATA_DROPPED (filterIcuData below,
+ * pinned by ICU_PACK_DATA_SHA256). Neither input is vendored:
  * both come from unicode-org/icu's official GitHub release for the pinned
  * version, each downloaded once into a cache and reused after that, and each
  * verified against a pinned sha256 on every use (the source by the tarball's,
@@ -11,9 +14,10 @@
  * here with both hashes, never later in a build. Offline builds work from a
  * pre-populated cache.
  *
- * The pack build drops `icudt78l.dat` into artifacts/icu/ and lists it in
- * runtime-pack.json's `data`, so the compiler can install it beside every
- * executable that links ICU (packages/compiler/src/backend/linker.ts). The
+ * The pack build writes that copy of `icudt78l.dat` to artifacts/icu/ and
+ * lists it in runtime-pack.json's `data`, so the compiler can install it
+ * beside every executable that links ICU (packages/compiler/src/backend/
+ * linker.ts). The
  * data zip is unpacked by the small reader below rather than a dependency:
  * it holds three stored/deflated members and nothing else. The source
  * tarball is unpacked by the system `tar`, as the libnode build does.
@@ -21,7 +25,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { inflateRawSync, crc32 } from "node:zlib";
 import {
@@ -31,6 +35,9 @@ import {
   ICU_DATA_URL,
   ICU_DATA_ZIP_SHA256,
   ICU_DATA_ZIP_SIZE,
+  ICU_DATA_DROPPED,
+  ICU_PACK_DATA_SHA256,
+  ICU_PACK_DATA_SIZE,
   ICU_SOURCE_SHA256,
   ICU_SOURCE_SIZE,
   ICU_SOURCE_URL,
@@ -180,7 +187,7 @@ export function unzipMember(zip, name) {
 export async function ensureIcuData(cacheDir) {
   const zipPath = join(cacheDir, `icu4c-${ICU_DATA_VERSION}-data-bin-l.zip`);
   const dataPath = join(cacheDir, `${ICU_DATA_VERSION}`, ICU_DATA_FILE);
-  if (await validFile(dataPath, ICU_DATA_SHA256)) return dataPath;
+  if (await validFile(dataPath, ICU_DATA_SHA256, ICU_DATA_SIZE)) return dataPath;
   let zip;
   try {
     zip = await readFile(zipPath);
@@ -211,11 +218,98 @@ export async function ensureIcuData(cacheDir) {
   return dataPath;
 }
 
-async function validFile(path, expectedSha256) {
+async function validFile(path, expectedSha256, expectedSize) {
   try {
-    if ((await stat(path)).size !== ICU_DATA_SIZE) return false;
+    if ((await stat(path)).size !== expectedSize) return false;
     return sha256(await readFile(path)) === expectedSha256;
   } catch {
     return false;
   }
+}
+
+/** The items of an ICU common data file (a `.dat`: a header, then a table of
+ * contents of name and data offsets, sorted by name, then the items): each
+ * item's name (`icudt78l/coll/de.res`) and its bytes. */
+export function icuDataItems(bytes) {
+  const headerSize = bytes.readUInt16LE(0);
+  if (bytes[2] !== 0xda || bytes[3] !== 0x27) throw new Error("not an ICU data file");
+  const count = bytes.readUInt32LE(headerSize);
+  const entries = [];
+  for (let i = 0; i < count; i++) {
+    const nameStart = headerSize + bytes.readUInt32LE(headerSize + 4 + i * 8);
+    const nameEnd = bytes.indexOf(0, nameStart);
+    entries.push({
+      name: bytes.toString("latin1", nameStart, nameEnd),
+      start: headerSize + bytes.readUInt32LE(headerSize + 8 + i * 8),
+    });
+  }
+  return entries.map((entry, i) => ({
+    name: entry.name,
+    bytes: bytes.subarray(
+      entry.start,
+      i + 1 < entries.length ? entries[i + 1].start : bytes.length,
+    ),
+  }));
+}
+
+/** Whether a data item falls under one of the ICU_DATA_DROPPED patterns. */
+export function icuDataItemDropped(name, dropped = ICU_DATA_DROPPED) {
+  const path = name.slice(name.indexOf("/") + 1);
+  return dropped.some((pattern) =>
+    pattern.startsWith("*.")
+      ? !path.includes("/") && path.endsWith(pattern.slice(1))
+      : path.startsWith(pattern),
+  );
+}
+
+/** An ICU common data file holding the items of `bytes` that `keep` accepts,
+ * in their order, laid out as icupkg writes one: the original header, the
+ * table of contents, the names, then each item at a 16-byte boundary. ICU
+ * finds items by a binary search of the sorted table, so a subset of a valid
+ * file in its order is a valid file. */
+export function filterIcuData(bytes, keep) {
+  const headerSize = bytes.readUInt16LE(0);
+  const items = icuDataItems(bytes).filter((item) => keep(item.name));
+  const names = items.map((item) => Buffer.from(`${item.name}\0`, "latin1"));
+  const tocSize = 4 + items.length * 8;
+  const align = (n) => (n + 15) & ~15;
+  let nameOffset = tocSize;
+  let dataOffset = align(tocSize + names.reduce((sum, name) => sum + name.length, 0));
+  const layout = items.map((item, i) => {
+    const entry = { nameOffset, dataOffset };
+    nameOffset += names[i].length;
+    dataOffset = align(dataOffset + item.bytes.length);
+    return entry;
+  });
+  const out = Buffer.alloc(headerSize + dataOffset);
+  bytes.copy(out, 0, 0, headerSize);
+  out.writeUInt32LE(items.length, headerSize);
+  items.forEach((item, i) => {
+    out.writeUInt32LE(layout[i].nameOffset, headerSize + 4 + i * 8);
+    out.writeUInt32LE(layout[i].dataOffset, headerSize + 8 + i * 8);
+    names[i].copy(out, headerSize + layout[i].nameOffset);
+    item.bytes.copy(out, headerSize + layout[i].dataOffset);
+  });
+  return out;
+}
+
+/** The runtime pack's data file: the pinned icudt78l.dat without the
+ * ICU_DATA_DROPPED items, written into `cacheDir` once and verified against
+ * its own pin on every call. Returns its path. */
+export async function ensurePackIcuData(cacheDir) {
+  const dataPath = join(cacheDir, `${ICU_DATA_VERSION}-pack`, ICU_DATA_FILE);
+  if (await validFile(dataPath, ICU_PACK_DATA_SHA256, ICU_PACK_DATA_SIZE)) return dataPath;
+  const full = await readFile(await ensureIcuData(cacheDir));
+  const bytes = filterIcuData(full, (name) => !icuDataItemDropped(name));
+  if (bytes.length !== ICU_PACK_DATA_SIZE || sha256(bytes) !== ICU_PACK_DATA_SHA256)
+    throw new Error(
+      `filtered ICU data is ${bytes.length} bytes with sha256 ${sha256(bytes)}, ` +
+        `expected ${ICU_PACK_DATA_SIZE} bytes with sha256 ${ICU_PACK_DATA_SHA256} ` +
+        "(update ICU_PACK_DATA_SHA256 and ICU_PACK_DATA_SIZE in icu-inputs.mjs with ICU_DATA_DROPPED)",
+    );
+  await mkdir(dirname(dataPath), { recursive: true });
+  const temporary = `${dataPath}.${process.pid}.tmp`;
+  await writeFile(temporary, bytes);
+  await rename(temporary, dataPath);
+  return dataPath;
 }

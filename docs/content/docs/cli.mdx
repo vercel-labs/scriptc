@@ -373,6 +373,8 @@ $ scriptc build app.ts --optimization=speed --cpu-dispatch -o app
 
 The second copy makes the executable larger and the first build of the program slower, since LLVM compiles the program's code twice. Unchanged rebuilds are not affected. Both copies compute the same results: neither contracts floating-point operations into fused multiply-adds.
 
+A function's `x86-64-v3` copy runs its baseline code when its optimized code has vectors of at most 128 bits, none wider, and no rounding or bit counting in a loop. In such code, `x86-64-v3` only lets LLVM's vectorizers move scalar work onto vector instructions, which can run slower. Its calls still go to the `x86-64-v3` copies of the functions it calls.
+
 The `SCRIPTC_CPU_LEVEL` environment variable caps the level the executable uses, for example to test the baseline code on a newer machine. It takes a level from `0` to `4`, `baseline`, or a level name such as `x86-64-v3`; any other value selects the baseline code.
 
 ```console

@@ -73,6 +73,7 @@ import { nsWritableTarget } from "../lower-namespaces.js";
 import { arrayValueStore, tryLowerBytesReadNumberEquality } from "../array-values.js";
 import { cjsExportMemberWriteGlobalOf, cjsInFileExportGlobalOf } from "../cjs-exports-object.js";
 import { lowerUnionFieldWrite } from "./union-fields.js";
+import { emptyArrayLiteralArm } from "./array-literals.js";
 import { lowerAbstractEquality } from "../abstract-equality.js";
 import { lowerInExpression } from "./relational.js";
 import { lowerDynTypeofTest, lowerErrorCodeTypeofTest } from "./typeof.js";
@@ -431,6 +432,23 @@ export function lowerNullishPair(
     const right = lowerer.lowerExprExpecting(expr.right, rest[0]!);
     return { kind: "nullish", left, right, type: rest[0]!, loc };
   }
+  // An EMPTY array-literal default (`''.match(re) ?? []`) has no element of
+  // its own, so it builds as the left's array arm (the emptyArrayLiteralArm
+  // rule the union slot and the contextual union share) and the whole
+  // expression answers the left's array type instead of the checker's
+  // `never[]`-flavored second arm. A JavaScript `[]` is `any[]` and keeps
+  // the dynamic path.
+  if (
+    rest.length === 1 &&
+    rest[0]!.kind === "array" &&
+    !isJsSourceFile(ts.getSourceFileOfNode(expr.right))
+  ) {
+    const arm = emptyArrayLiteralArm(expr.right, rest);
+    if (arm) {
+      const right = lowerer.lowerExprExpecting(expr.right, arm);
+      if (typeEquals(right.type, arm)) return { kind: "nullish", left, right, type: arm, loc };
+    }
+  }
   let type = lowerer.irTypeOf(expr);
   // A runtime-optional read can reach the default even when declarations
   // call the left side present. Preserve a differently typed primitive
@@ -696,6 +714,10 @@ export function ensureString(lowerer: Lowerer, e: IrExpr, node: ts.Node): IrExpr
   if (e.type.kind === "string") return e;
   if (e.type.kind === "url")
     return { kind: "libCall", fn: "url.href", args: [e], type: STRING, loc: e.loc };
+  // String(sp) / `${new URLSearchParams(...)}`: URLSearchParams.toString,
+  // the serialized list (`?` stripped, pairs encoded).
+  if (e.type.kind === "searchParams")
+    return { kind: "libCall", fn: "sp.toString", args: [e], type: STRING, loc: e.loc };
   // String(date) / `${date}` / "" + date: Date's ToPrimitive prefers
   // toString().
   if (e.type.kind === "date")

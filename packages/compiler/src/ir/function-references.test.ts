@@ -134,6 +134,7 @@ const TYPE_FIELDS: Classified<IrType> = {
 const FUNCTION_FIELDS: Record<StringFields<Omit<IrFunction, "body">>, Role> = {
   name: "other",
   sourceName: "other",
+  jsEntry: "reference",
   asyncCacheGlobal: "other",
   asyncCycleCacheGlobal: "other",
   "params[].name": "other",
@@ -292,6 +293,11 @@ const REFERENCE_FIXTURES: Record<string, () => IrModule> = {
       }),
     ]),
   entry: () => ({ ...module(), entry: TARGET }),
+  "functions[].jsEntry": () => {
+    const mod = module();
+    mod.functions.push({ ...entry(), name: "%m0.closure", captures: [], jsEntry: TARGET });
+    return mod;
+  },
   "classes[].prototypeDataHelper": () => ({
     ...module(),
     classes: [{ name: "%m0.Cell", fields: [], prototypeDataHelper: TARGET, loc }],

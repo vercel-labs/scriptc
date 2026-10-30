@@ -234,7 +234,10 @@ Environment:
   SCRIPTC_SANDBOX_TIMEOUT   sandbox and command timeout (default: 45m)
   SCRIPTC_TEST_WORKERS      Vitest workers per sandbox (default: 4)
   SCRIPTC_LOCAL_TEST_WORKERS Vitest workers per local lane (default: 2)
-  SCRIPTC_LOCAL_CASE_SHARDS local shards per external suite lane (default: 2)`);
+  SCRIPTC_LOCAL_CASE_SHARDS local shards per external suite lane (default: 2)
+  SCRIPTC_LIBNODE           Optional libnode pack inside the Sandbox (for example
+                            /vercel/sandbox/libnode-pack) that the lane exports, so the
+                            Node island tests run there as they do in CI`);
   process.exit(0);
 }
 

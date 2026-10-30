@@ -40,6 +40,7 @@ import {
   llFieldType,
   loadStructField,
   releaseSym,
+  traceAdapter,
   traceArg,
   vAdapters,
   type ShapeHost,
@@ -752,6 +753,50 @@ function symbolKeyLines(
     ],
     release: [`  call void @scr_sym_release(ptr %${name})`],
   };
+}
+
+/** The ScrStreamTypedDesc constant (scr_stream.h) of a record type an
+ * object-mode stream holds as the record itself, or null for a type whose
+ * chunks stay boxed: records without declared fields, with an index
+ * signature or accessor slots, tuples, the text codec records (they box as
+ * handles), and records the collector traces (a stream does not trace the
+ * records it holds). The constant's `box` converts the record as a
+ * live-reference conversion to dyn does (streamTypedRefBoxValue). */
+export function streamTypedDesc(host: LlvmEmitterContext, t: IrType): string | null {
+  if (t.kind !== "record") return null;
+  const shape = host.recordsById.get(t.shapeId);
+  if (
+    !shape ||
+    shape.fields.length === 0 ||
+    shape.indexValue !== undefined ||
+    shape.tuple ||
+    shapeHasAccessorSlots(shape) ||
+    shape.fields.some((field) => field.name === "handleEvent" && field.type.kind === "func") ||
+    textCodecRecordClass(t, (id) => host.recordsById.get(id)) !== null ||
+    traceAdapter(host.shapeHost, t) !== null
+  )
+    return null;
+  const key = typeKey(t);
+  const cacheKey = `std:${key}`;
+  const existing = host.resolveThunks.get(cacheKey);
+  if (existing) return `@${existing}`;
+  const sym = host.contentSymbol("sc_std_", key);
+  host.resolveThunks.set(cacheKey, sym);
+  host.journal?.allocated(sym, "streamTypedDesc", [t]);
+  const B = new BlockBuilder();
+  const boxed = streamTypedRefBoxValue(host, B, t, "%p");
+  B.terminate(`ret ptr ${boxed}`);
+  const rc = vAdapters(host.shapeHost, t);
+  host.resolveThunkDefs.push(
+    `define internal ptr @${sym}_box(ptr %p) ${FN_ATTRS} { ; box a typed stream chunk ${key}`,
+    B.render(),
+    `}`,
+    ``,
+    `@${sym} = internal constant { ptr, ${host.sizeType}, ptr, ptr, ptr } { ptr ${host.cstr(key)}, ${host.sizeType} ${Buffer.byteLength(key, "utf8")}, ptr ${rc.retain}, ptr ${rc.release}, ptr @${sym}_box }`,
+    ``,
+  );
+  host.journal?.built();
+  return `@${sym}`;
 }
 
 export function streamTypedRefBoxValue(
@@ -2018,6 +2063,9 @@ export function streamFromArrayAdapter(
 }
 
 registerReplay("dynPromiseAdapter", (host, args) => dynPromiseAdapter(host, args[0] as IrType));
+registerReplay("streamTypedDesc", (host, args) =>
+  (streamTypedDesc(host, args[0] as IrType) ?? "").slice(1),
+);
 registerReplay("liveDynUnionRefAdapter", (host, args) =>
   liveDynUnionRefAdapter(host, args[0] as IrType & { kind: "union" }),
 );

@@ -161,6 +161,7 @@ import {
   captureShapeOverlayState,
   type ShapeOverlayLoadState,
 } from "./shape-inference/index.js";
+import { jsInferenceEnabled } from "./js-inference.js";
 import { inferredJsDiagnosticSuppressed } from "./inferred-js-diagnostics.js";
 import {
   containsJsx,
@@ -556,6 +557,9 @@ export interface StartupCrash {
   loc: { file: string; start: number; end: number };
   /** Node's error code, for the refusals that carry one. */
   code?: string;
+  /** The error's own `url` property: the missing file's URL, for Node's
+   * ERR_MODULE_NOT_FOUND of an import() whose target does not exist. */
+  url?: string;
 }
 
 /** True when a coverage mapping names one exact bare host module. TypeScript
@@ -1401,7 +1405,10 @@ export function loadProgram(
       externalTypes,
       npmStaticPackages.length > 0,
       projector,
-      npmStaticPackages.length > 0 && shapeOverlayEnabled() ? shapeOverlayer : undefined,
+      (npmStaticPackages.length > 0 && shapeOverlayEnabled()) ||
+        (jsInferenceEnabled() && process.env["SCRIPTC_SHAPE_OVERLAY"] !== "0")
+        ? shapeOverlayer
+        : undefined,
     );
     // Shape inference, stage S1: a report only (SCRIPTC_DEBUG_SHAPES).
     const shapes = process.env["SCRIPTC_DEBUG_SHAPES"];

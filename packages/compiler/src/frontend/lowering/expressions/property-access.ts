@@ -715,7 +715,9 @@ export function lowerPropertyAccessExpr(
       };
     }
   }
-  if ((expr.name.text === "index" || expr.name.text === "input") && !expr.questionDotToken) {
+  // `re.exec(s)?.index` takes the same read: the chain lowering binds the
+  // guarded receiver (non-nullish inside the guard) before re-dispatching.
+  if (expr.name.text === "index" || expr.name.text === "input") {
     const represented = tryLowerExpression(lowerer, expr.expression);
     if (
       represented &&

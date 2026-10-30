@@ -482,7 +482,7 @@ export function funcCoerceAdapter(
     strandRet = false;
   // A record result the slot's result is a structural width of.
   if (strandRet && lowerer.widthLiftPlan(fromT.ret, toT.ret)) strandRet = false;
-  const key = `fnadapt:${typeKey(fromT)}:${typeKey(toT)}`;
+  const key = `fnadapt:${typeKey(fromT)}:${typeKey(toT)}${lowerer.coercions.checkedRetags > 0 ? ":checked" : ""}`;
   const existing = lowerer.coercions.retags.get(key);
   if (existing) return existing;
   const name = keyedHelperName(lowerer, "%fn.adapt", key);

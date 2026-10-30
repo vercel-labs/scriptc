@@ -73,7 +73,6 @@ const features = {
   textCodecDyn: false,
   watch: false,
   watchFile: false,
-  readlineStderr: false,
   fsBufferBrand: false,
   foreignFfi: false,
   nodeTest: false,

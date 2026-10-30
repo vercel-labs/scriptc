@@ -486,9 +486,6 @@ const RUNTIME_DEFINES: readonly {
   { define: "SCR_YIN", when: (opts) => opts.youngNursery },
   // scr_lib.c's path stat and zero Stats for the fs.watchFile poll.
   { define: "SCR_FS_WATCH_FILE", when: (opts) => opts.watchFile },
-  // scr_readline.c's and scr_readline_tty.c's fd-2 output for
-  // createInterface({ output: process.stderr }).
-  { define: "SCR_READLINE_STDERR", when: (opts) => opts.readlineStderr },
   // scr_lib.c's file reads brand their bytes as Node's Buffer answers.
   { define: "SCR_FS_BUFFER_BRAND", when: (opts) => opts.fsBufferBrand },
   { define: "SCR_NODE_ISLANDS", when: (opts) => opts.nodeIsland },

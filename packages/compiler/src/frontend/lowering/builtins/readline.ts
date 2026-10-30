@@ -1055,14 +1055,13 @@ function lowerInput(lowerer: Lowerer, node: ts.Expression): IrExpr | null {
   return v;
 }
 
-/** The interface's output: "stdout", "stderr", a writable stream, or
- * "none". The process streams are read as the direct property access (a
- * procStream value known only at run time has no mode to select). */
-function lowerOutput(lowerer: Lowerer, node: ts.Expression): IrExpr | "stdout" | "stderr" | "none" {
-  if (ts.isPropertyAccessExpression(node)) {
-    const processStream = lowerer.stdlibGlobalMember(node, "process");
-    if (processStream === "stdout") return "stdout";
-    if (processStream === "stderr") return "stderr";
+/** The interface's output: "stdout", a writable stream, or "none". */
+function lowerOutput(lowerer: Lowerer, node: ts.Expression): IrExpr | "stdout" | "none" {
+  if (
+    ts.isPropertyAccessExpression(node) &&
+    lowerer.stdlibGlobalMember(node, "process") === "stdout"
+  ) {
+    return "stdout";
   }
   if (node.kind === ts.SyntaxKind.NullKeyword) {
     return "none";
@@ -1075,7 +1074,7 @@ function lowerOutput(lowerer: Lowerer, node: ts.Expression): IrExpr | "stdout" |
     lowerer.noLowering(
       "createInterface with this output",
       node,
-      "process.stdout, process.stderr and writable streams are the supported outputs",
+      "process.stdout and writable streams are the supported outputs",
     );
   }
   return v;
@@ -1084,15 +1083,14 @@ function lowerOutput(lowerer: Lowerer, node: ts.Expression): IrExpr | "stdout" |
 /** createInterface({ input, output?, terminal?, crlfDelay?, prompt?,
  * signal?, ... }) or createInterface(input, output?, completer?,
  * terminal?), from node:readline or node:readline/promises. The input is process.stdin or a readable
- * stream; the output process.stdout, process.stderr, a writable stream, or
- * absent (prompts are then not written). rl.create's arguments: the mode
- * literal (1 stream input, 2 stream output, 4 stdout output, 8 signal, 16
- * prompt, 32 node:readline/promises, 64 stderr output), then the input and
- * output streams when present, crlfDelay, the prompt and the signal when
- * present. An interface that can be a terminal one (a `terminal` option
- * that is not false, or none with a process stream as the output, which is
- * a terminal when that fd is a TTY) goes through rl.terminal with the
- * completer. */
+ * stream; the output process.stdout, a writable stream, or absent
+ * (prompts are then not written). rl.create's arguments: the mode literal
+ * (1 stream input, 2 stream output, 4 stdout output, 8 signal, 16
+ * prompt, 32 node:readline/promises), then the input and output streams
+ * when present, crlfDelay, the prompt and the signal when present. An interface that can be a
+ * terminal one (a `terminal` option that is not false, or none with
+ * process.stdout as the output, which is a terminal when it is a TTY)
+ * goes through rl.terminal with the completer. */
 export function lowerReadlineCreateCall(
   lowerer: Lowerer,
   expr: ts.CallExpression | ts.NewExpression,
@@ -1102,7 +1100,7 @@ export function lowerReadlineCreateCall(
   const argNodes = expr.arguments?.nodes ?? [];
   const what = ts.isNewExpression(expr) ? "new Interface" : "createInterface";
   let input: IrExpr | null = null;
-  let output: IrExpr | "stdout" | "stderr" | "none" = "none";
+  let output: IrExpr | "stdout" | "none" = "none";
   let crlf: IrExpr = numLit(0, loc);
   let prompt: IrExpr | null = null;
   let signal: IrExpr | null = null;
@@ -1272,7 +1270,6 @@ export function lowerReadlineCreateCall(
     (input !== null ? 1 : 0) |
     (typeof output === "object" ? 2 : 0) |
     (output === "stdout" ? 4 : 0) |
-    (output === "stderr" ? 64 : 0) |
     (signal !== null ? 8 : 0) |
     (prompt !== null ? 16 : 0) |
     (promises ? 32 : 0);
@@ -1289,16 +1286,8 @@ export function lowerReadlineCreateCall(
     type: F64,
     loc,
   };
-  // terminal mode: 0 the option's value, 2 output.isTTY of process.stdout,
-  // 3 output.isTTY of process.stderr
-  const terminalMode =
-    terminal !== null
-      ? 0
-      : !terminalFalse && output === "stdout"
-        ? 2
-        : !terminalFalse && output === "stderr"
-          ? 3
-          : null;
+  // terminal mode: 0 the option's value, 2 output.isTTY of process.stdout
+  const terminalMode = terminal !== null ? 0 : !terminalFalse && output === "stdout" ? 2 : null;
   // The completer is kept as a checked-dynamic value when the interface
   // can be a terminal one; a function is otherwise only evaluated.
   let completerChecked = false;

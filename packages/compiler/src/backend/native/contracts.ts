@@ -307,11 +307,6 @@ export interface CcOptions {
    * unit under the same precedent, so polling-free binaries keep their
    * exact link line. */
   watchFile?: boolean;
-  /** The program creates a readline interface with output: process.stderr:
-   * links the SCR_READLINE_STDERR build of scr_readline.c and
-   * scr_readline_tty.c, whose interfaces write to fd 2. Every other program
-   * links the default objects, byte for byte. */
-  readlineStderr?: boolean;
   /** A typed fs read whose bytes value the program can observe as a Buffer
    * (moduleUsesFsBufferBrand on the IR): compiles scr_lib.c's
    * SCR_FS_BUFFER_BRAND build, so programs that never see the brand keep the

@@ -841,7 +841,6 @@ async function compileExecutableNative(
     textCodecDyn: features.textCodecDyn,
     watch: features.watch,
     watchFile: features.watchFile,
-    readlineStderr: features.readlineStderr,
     fsBufferBrand: features.fsBufferBrand,
     foreignFfi: features.foreignFfi,
     ...(features.workers ? { workers: true } : {}),

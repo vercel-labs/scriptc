@@ -128,7 +128,6 @@ export interface EarlyExecutableNativeFeatures {
   textCodecDyn: boolean;
   watch: boolean;
   watchFile: boolean;
-  readlineStderr: boolean;
   fsBufferBrand: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
@@ -338,7 +337,6 @@ const BOOLEAN_NATIVE_KEYS = [
   "textCodecDyn",
   "watch",
   "watchFile",
-  "readlineStderr",
   "fsBufferBrand",
   "foreignFfi",
   "nodeTest",

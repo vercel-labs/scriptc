@@ -20,17 +20,6 @@ enum {
   RL_EV_COUNT
 };
 
-/* The fd an interface with a std output writes to. Only programs that pass
- * output: process.stderr link the SCR_READLINE_STDERR build (the variant
- * from the readlineStderr feature), whose interfaces can carry fd 2;
- * everywhere else this is the literal 1 the unit always used, so the
- * default object is unchanged. */
-#ifdef SCR_READLINE_STDERR
-#define SCR_RL_OUT_FD(rl) ((rl)->out_fd ? (rl)->out_fd : 1)
-#else
-#define SCR_RL_OUT_FD(rl) 1
-#endif
-
 typedef void (*ScrRlLineFn)(ScrClosure *, ScrStr *); /* owns the +1 line */
 typedef void (*ScrRlErrFn)(ScrClosure *, ScrError *); /* borrows the error */
 typedef void (*ScrRlHistoryFn)(ScrClosure *, ScrArr *); /* borrows the history */
@@ -72,11 +61,6 @@ typedef struct ScrRl {
   void *in;  /* the input stream (+1), or NULL */
   void *out; /* the output stream (+1), or NULL */
   bool out_stdout;
-#ifdef SCR_READLINE_STDERR
-  /* The fd of an out_stdout interface: 2 for output: process.stderr, 0 for
-   * the process.stdout interfaces this build serves alike. */
-  int out_fd;
-#endif
   ScrStr *prompt, *old_prompt;
   /* A prompt that is not a string (setPrompt or question with another
    * value), +1, or NULL; prompt then holds String(value) for a terminal
@@ -136,10 +120,6 @@ ScrArr *scr_rl_history_of(ScrRl *rl); /* borrowed; created on first use */
 void scr_rl_emit(ScrRl *rl, int ev, ScrStr *line, ScrError *err);
 void scr_rl_emit_history(ScrRl *rl);
 void scr_rl_write_out(ScrRl *rl, ScrStr *text);
-#ifdef SCR_READLINE_STDERR
-/* output: process.stderr: the interface's std output becomes fd 2. */
-void scr_rl_use_stderr(double id);
-#endif
 /* kWriteToOutput(prompt)'s validateString: false with ERR_INVALID_ARG_TYPE
  * pending when the prompt is not a string. */
 bool scr_rl_prompt_writable(ScrRl *rl);

@@ -346,7 +346,6 @@ export function effectiveRuntimeFeatures(
     computedRequire: features.computedRequire === true,
     warningReplace: features.warningReplace === true,
     recordViewPartial: features.recordViewPartial === true,
-    readlineStderr: features.readlineStderr === true,
     stdioExtended: features.stdioExtended === true,
     streamWriteErrors: features.streamWriteErrors === true,
     stdioWriteSlot: features.stdioWriteSlot === true,

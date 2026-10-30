@@ -157,10 +157,6 @@ export interface NativeLinkFeatures {
   watch: boolean;
   /** fs.watchFile/fs.unwatchFile: scr_watch_file.c. */
   watchFile: boolean;
-  /** createInterface with output: process.stderr: the SCR_READLINE_STDERR
-   * build of scr_readline.c and scr_readline_tty.c. False keeps the default
-   * objects, byte for byte. */
-  readlineStderr: boolean;
   /** A typed fs read whose bytes value the program can observe as a Buffer:
    * scr_lib.c's SCR_FS_BUFFER_BRAND build, so programs that never see the
    * brand keep the default object. */

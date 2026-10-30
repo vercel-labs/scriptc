@@ -1214,16 +1214,6 @@ const RUNTIME_FEATURE_RULES = {
   fsWriteForms: rule({
     fns: ["fs.appendFileModeSync", "fsp.writeFileTextFlags", "fsp.writeFileBytesFlags"],
   }),
-  /** createInterface with process.stderr as its output: the program links
-   * the SCR_READLINE_STDERR build of scr_readline.c and
-   * scr_readline_tty.c, whose interfaces write to fd 2. The create mode
-   * literal's bit 64 is the only place the choice is recorded. */
-  readlineStderr: rule({
-    libCall: (node) =>
-      (node.fn === "rl.create" || node.fn === "rl.createSignal") &&
-      node.args[0]?.kind === "numLit" &&
-      (node.args[0].value & 64) !== 0,
-  }),
   /** A socket 'lookup' listener: the C main installs the net unit's
    * lookup records (scr_net_lookup_install). */
   netLookup: rule({ fns: ["net.sockOnLookup"] }),
@@ -1507,7 +1497,6 @@ function noRuntimeFeatures(): RuntimeFeatures {
     fsWatch: false,
     fsWatchFile: false,
     fsWriteForms: false,
-    readlineStderr: false,
     http2: false,
     http: false,
     icu: false,

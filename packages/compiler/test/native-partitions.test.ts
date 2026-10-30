@@ -739,6 +739,42 @@ describe.runIf(helper !== null)("LLVM program partitions", () => {
     },
   );
 
+  test("an !invariant.group load whose pointer becomes a constant keeps its own function's value", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-invariant-group-"));
+    dirs.push(dir);
+    // After inlining, both reads load through `getelementptr (ptr null, 4)`,
+    // a constant whose uses include the other function's load. LLVM 22.1.8's
+    // memory dependence analysis gave each load the other function's load as
+    // its value, and the optimizer crashed (MemoryDependenceAnalysis.cpp).
+    const read = (name: string, type: "i32" | "i64") => [
+      `define ${type} @${name}(ptr %p) {`,
+      "  %tag = call i32 @tag(ptr %p)",
+      "  %other = icmp eq i32 %tag, 0",
+      "  br i1 %other, label %done, label %read",
+      "done:",
+      `  ret ${type} 0`,
+      "read:",
+      "  %field = getelementptr i8, ptr %p, i64 4",
+      "  %value = load i32, ptr %field, !invariant.group !0",
+      ...(type === "i32"
+        ? ["  ret i32 %value"]
+        : ["  %wide = zext i32 %value to i64", "  ret i64 %wide"]),
+      "}",
+    ];
+    const source = [
+      ...read("first", "i32"),
+      ...read("second", "i64"),
+      "define i32 @tag(ptr %p) {",
+      "  %null = icmp eq ptr %p, null",
+      "  %tag = zext i1 %null to i32",
+      "  ret i32 %tag",
+      "}",
+      "!0 = !{}",
+    ].join("\n");
+    const [object] = await emit(dir, source + "\n", { outputs: 1, optLevel: "2", name: "reads" });
+    expect((await readFile(object!)).length).toBeGreaterThan(0);
+  });
+
   test("internal definitions nothing reaches are left out of every partition", async () => {
     const dir = await mkdtemp(join(tmpdir(), "scriptc-partitions-unreachable-"));
     dirs.push(dir);

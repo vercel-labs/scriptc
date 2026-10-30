@@ -4279,6 +4279,7 @@ export class Lowerer {
       mapTable("coercions.widthNarrows", this.coercions.widthNarrows),
       setTable("coercions.widenedReturns", this.coercions.widenedReturns),
       mapTable("valueHelpers", this.valueHelpers),
+      irDataTable("builtinNamespaceBoxKeys", this.builtinNamespaceBoxKeys),
       countTable("keyedNameKeys", this.keyedNameKeys),
       mapTable("assertHelpers", this.assertHelpers),
       mapTable("inspectHelpers", this.inspectHelpers),
@@ -5485,8 +5486,19 @@ export class Lowerer {
    * `node:` builtins have no compiled source, so their box comes from the
    * lowering tables instead (moduleNamespaceBuiltinDynValue). */
   moduleNamespaceDyn(ns: IrExpr & { type: IrType & { kind: "moduleNs" } }): IrExpr | null {
-    if (ns.type.moduleId.startsWith("builtin:"))
-      return moduleNamespaceBuiltinDynValue(this, ns.type.moduleId, ns.loc);
+    if (ns.type.moduleId.startsWith("builtin:")) {
+      const boxed = moduleNamespaceBuiltinDynValue(this, ns.type.moduleId, ns.loc);
+      // The namespace expression still runs first: an awaited import()
+      // suspends the caller until the import settles.
+      if (boxed === null || isSafeToRepeat(ns)) return boxed;
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: ns, loc: ns.loc }],
+        result: boxed,
+        type: boxed.type,
+        loc: ns.loc,
+      };
+    }
     if (!ns.type.moduleId.startsWith("file:")) return null;
     return moduleNamespaceDynValue(this, ns);
   }
@@ -12779,16 +12791,6 @@ export class Lowerer {
         const object = moduleNamespaceObject(this, ns) ?? moduleNamespaceValue(this, ns);
         if (object) return object;
       }
-      // A TypeScript source's module namespace as an untyped value: the
-      // runtime's namespace object with live reads, Node's sorted keys and
-      // read-only writes. `node:` builtins have no compiled source or
-      // complete export table here and keep their fence below.
-      if (expr.type.kind === "moduleNs") {
-        const boxed = this.moduleNamespaceDyn(
-          expr as IrExpr & { type: IrType & { kind: "moduleNs" } },
-        );
-        if (boxed) return boxed;
-      }
       // A node:path family is its module object (pathModuleValue), the
       // bare module the target platform's family.
       if (
@@ -12827,6 +12829,17 @@ export class Lowerer {
           type: DYN,
           loc: expr.loc,
         };
+      }
+      // A TypeScript source's module namespace as an untyped value: the
+      // runtime's namespace object with live reads, Node's sorted keys and
+      // read-only writes. A `node:` builtin's namespace boxes from the
+      // lowering tables (moduleNamespaceBuiltinDynValue), after the path
+      // families and the events class above.
+      if (expr.type.kind === "moduleNs") {
+        const boxed = this.moduleNamespaceDyn(
+          expr as IrExpr & { type: IrType & { kind: "moduleNs" } },
+        );
+        if (boxed) return boxed;
       }
       if (expr.type.kind === "classval" && this.classes.get(expr.type.className)?.def.runtime) {
         // Only the class itself: a slot of the class's type may hold a

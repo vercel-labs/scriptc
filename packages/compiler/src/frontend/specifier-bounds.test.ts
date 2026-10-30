@@ -89,6 +89,18 @@ export async function run(specifier: string): Promise<void> {
 function computed(): string {
   return "node:path";
 }
+function exportedByClause(specifier: string): Promise<unknown> {
+  return import(specifier);
+}
+export { exportedByClause };
+function overwritten(specifier: string): Promise<unknown> {
+  specifier = "node:os";
+  return import(specifier);
+}
+function viaShorthand(specifier: string): Promise<unknown> {
+  return import(specifier);
+}
+const table = { viaShorthand };
 async function main(specifier: string): Promise<void> {
   await import(fromArgv);
   await import(reassigned);
@@ -100,16 +112,22 @@ async function main(specifier: string): Promise<void> {
 void load("node:path");
 void run("node:path");
 void main("node:path");
-export {};
+void exportedByClause("node:path");
+void overwritten("node:path");
+void viaShorthand("node:path");
+void table.viaShorthand("node:os");
 `),
   ).toEqual([
     "('reassigned', which is written after its declaration)",
+    "('specifier', a parameter written in its function)",
+    "(a parameter of the exported function 'exportedByClause')",
     "(a parameter of the exported function 'load')",
     "(a parameter of the exported function 'run')",
     "(a value read from `process.argv`)",
     "(a value read from `process.argv`)",
     "(a value read from `process.env`)",
     "(a value read from `process.env`)",
+    "(the function value 'viaShorthand', which is used other than as a direct call)",
     "(the result of `computed(...)`)",
   ]);
 });

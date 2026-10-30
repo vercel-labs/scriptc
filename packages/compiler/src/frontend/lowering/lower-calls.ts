@@ -8074,6 +8074,7 @@ function lowerObjectStaticCall(
     if (object.type.kind === "func") {
       const fnName = jsFuncNameOf(call.arguments.nodes[0]!, lowerer);
       object = {
+        ...lowerer.functionIdentity(object),
         kind: "dynFrom",
         value: object,
         type: DYN,
@@ -8718,6 +8719,7 @@ function lowerObjectStaticCall(
     if (target?.type.kind === "func" && lowerer.dynConvertible(target.type)) {
       const fnName = jsFuncNameOf(call.arguments.nodes[0]!, lowerer);
       target = {
+        ...lowerer.functionIdentity(target),
         kind: "dynFrom",
         value: target,
         type: DYN,
@@ -8794,6 +8796,7 @@ function lowerObjectStaticCall(
     ) {
       const fnName = jsFuncNameOf(call.arguments.nodes[0]!, lowerer);
       target = {
+        ...lowerer.functionIdentity(target),
         kind: "dynFrom",
         value: target,
         type: DYN,

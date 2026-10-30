@@ -2186,6 +2186,62 @@ function builtinMemberValueName(
   return builtinModuleFnOf(lowerer, module, member)?.valueName ?? null;
 }
 
+/** ECMAScript's ExpectedArgumentCount (ECMA-262 15.1.3, FunctionInitialize):
+ * the parameters before the first one that has an initializer or a rest
+ * element. That count, not the native parameter count, is a JavaScript
+ * function's `length`. Null for anything that is not a function definition
+ * (the IR erases defaults, so the declaration is the only place it is
+ * still visible). */
+export function jsFuncLengthOf(node: ts.Node): number | null {
+  const n = ts.isParenthesizedExpression(node) ? node.expression : node;
+  if (!ts.isFunctionLike(n)) return null;
+  const parameters = n.parameters.nodes;
+  let count = 0;
+  while (count < parameters.length) {
+    const param = parameters[count]!;
+    if (param.dotDotDotToken || param.initializer) break;
+    count++;
+  }
+  return count;
+}
+
+/** The jsValueIdentities key of a module-level binding (a global id is
+ * unique across the program, unlike a local id). */
+export function globalIdentityKey(id: string): string {
+  return `global:${id}`;
+}
+
+/** The ExpectedArgumentCount `length` of the function value `expr` holds, resolved through the
+ * checker: the call signature's own declaration, when that declaration is a
+ * real function body. A function TYPE declaration (the annotation
+ * `(a: number, b?: number) => void`) describes the shape the value is used
+ * at, not the function that exists, so it answers null and the box keeps
+ * the IR signature's count.
+ *
+ * Restricted to JavaScript sources: a typed TypeScript module keeps the IR
+ * count its signature spells, so this compatibility surface costs a typed
+ * program's IR nothing. */
+export function jsFuncIdentityOfValue(
+  lowerer: Lowerer,
+  expr: ts.Node,
+): { fnName?: string; fnLength?: number } | null {
+  const sig = lowerer.checker.getCallSignatures(lowerer.typeOf(expr))[0];
+  const decl = sig?.declaration;
+  if (decl === undefined) return null;
+  if (
+    !(
+      ts.isFunctionExpression(decl) ||
+      ts.isArrowFunction(decl) ||
+      ts.isFunctionDeclaration(decl) ||
+      ts.isMethodDeclaration(decl)
+    )
+  )
+    return null;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(decl))) return null;
+  const length = jsFuncLengthOf(decl);
+  return length !== null ? { fnLength: length } : null;
+}
+
 export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
   let n: ts.Node = node;
   while (ts.isParenthesizedExpression(n)) n = n.expression;
@@ -3537,6 +3593,33 @@ export class Lowerer {
   /** Builtin function values whose `length` differs from their adapter's
    * parameter count (BuiltinModuleFn.valueLength), by adapter name. */
   readonly builtinCallableValueLengths = new Map<string, number>();
+  /** A source function's ECMAScript `length` (its ExpectedArgumentCount,
+   * jsFuncLengthOf), by lifted-function name. The IR erases parameter
+   * initializers, so a box built from the closure alone would report the
+   * native parameter count (`(a, b = 1) => {}` is 2 there, 1 in JS). */
+  readonly jsCallableLengths = new Map<
+    string,
+    number
+  >(); /** The same identity, by the STORAGE a read produces (`varRef`): a value
+   * the source never spells as a function literal at its box site —
+   * `var ref; ref = function (a, b = 1) {}`, `const f = (a, b = 1) => {}` —
+   * is boxed from its binding, whose IR type spells the native count and no
+   * name. identifiers.ts fills this from the call signature's declaration
+   * (jsFuncIdentityOfValue) when a function-typed binding is read. */
+  readonly jsValueIdentities = new Map<string, { fnName?: string; fnLength?: number }>();
+
+  /** The jsValueIdentities key of a local in the context being lowered:
+   * local ids repeat across functions, the context sequence disambiguates. */
+  jsValueIdentityKey(local: IrLocal): string {
+    return `${this.ctx.seq}:${local.id}`;
+  }
+  /** The context key a box site may consult, or null when nothing is being
+   * lowered in a function (class dynamic dispatch and error-method post
+   * passes box values after the function bodies are done). */
+  activeContextKey(): string | null {
+    const top = this.fnStack[this.fnStack.length - 1];
+    return top === undefined ? null : String(top.seq);
+  }
   /** Typed builtin adapters with a checked twin (checkedBuiltinValue): the
    * builtin, its display name and the location the twin is lowered at. */
   readonly builtinCheckedValues = new Map<
@@ -4251,6 +4334,11 @@ export class Lowerer {
       mapTable("builtinCallableValueFns", this.builtinCallableValueFns),
       mapTable("builtinCallableValueNames", this.builtinCallableValueNames),
       countTable("builtinCallableValueLengths", this.builtinCallableValueLengths),
+      // A JavaScript function's ExpectedArgumentCount, keyed by its lifted
+      // function — the shape of the builtin triple above. A box of that
+      // closure in a later unit reads it, so a record carries the entries its
+      // unit added.
+      countTable("jsCallableLengths", this.jsCallableLengths),
       irDataTable("builtinCheckedValues", this.builtinCheckedValues),
       mapTable("regionRunHelpers", this.regionRunHelpers),
       mapTable("internTableHelpers", this.internTableHelpers),
@@ -4588,6 +4676,13 @@ export class Lowerer {
     "fallibleFsCalls",
     "failureTouches",
     "partialHits",
+    // A function-typed JavaScript binding's identity, keyed by the context
+    // that read it (or by a module binding's global id): each read records it
+    // from the checker (jsFuncIdentityOfValue) before the box that reads it,
+    // so it is state of the unit being lowered, and a unit that records a
+    // binding it read differs from one that reuses another's entry only in
+    // which unit wrote it first.
+    "jsValueIdentities",
     // sized by journalTables, indexes over journaled tables, and state that
     // applying a unit's events rebuilds
     "deferredModuleInitializers",
@@ -12796,7 +12891,7 @@ export class Lowerer {
           type: DYN,
           loc: expr.loc,
           ...(liveRef ? { liveRef: true as const } : {}),
-          ...this.builtinFunctionIdentity(expr),
+          ...this.functionIdentity(expr),
         };
       }
       return expr;
@@ -17602,6 +17697,35 @@ export class Lowerer {
       ...(name !== undefined ? { fnName: name } : {}),
       ...(length !== undefined ? { fnLength: length } : {}),
     };
+  }
+
+  /** The length a boxed function value carries. A builtin adapter boxes
+   * under Node's length; a JavaScript source function boxes under its
+   * ECMAScript length (ExpectedArgumentCount), which its IR signature no
+   * longer spells. Typed TypeScript sources keep the IR signature's count:
+   * the map is filled for JavaScript declarations only. */
+  functionIdentity(expr: IrExpr): { fnName?: string; fnLength?: number } {
+    const identity = this.builtinFunctionIdentity(expr);
+    if (identity.fnLength !== undefined) return identity;
+    // A closure boxes by the function it names; a binding boxes by the
+    // storage the read resolves to (jsValueIdentities, filled at the read).
+    if (expr.kind === "closure") {
+      const length = this.jsCallableLengths.get(expr.fnName);
+      if (length === undefined) return identity;
+      return { fnLength: length, ...identity };
+    }
+    if (expr.kind === "varRef") {
+      // A box built from a post pass has no context to key a local by; a
+      // global id is unique on its own, so it stays readable there.
+      const contextKey = this.activeContextKey();
+      const value =
+        (contextKey === null
+          ? undefined
+          : this.jsValueIdentities.get(`${contextKey}:${expr.localId}`)) ??
+        this.jsValueIdentities.get(globalIdentityKey(expr.localId));
+      return value === undefined ? identity : { ...value, ...identity };
+    }
+    return identity;
   }
 
   isBuiltinCallableValue(expr: IrExpr): boolean {

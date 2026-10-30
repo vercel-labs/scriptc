@@ -7,7 +7,13 @@ import { lowerWebStreamClassRead } from "../builtins/web-streams-dyn.js";
 import * as ts from "../../ts7/adapter.js";
 import { InternalCompilerError } from "../../../errors.js";
 import * as posix from "node:path/posix";
-import { type Lowerer, PoisonError } from "../lowerer.js";
+import {
+  type Lowerer,
+  PoisonError,
+  globalIdentityKey,
+  jsFuncIdentityOfValue,
+  jsFuncLengthOf,
+} from "../lowerer.js";
 import {
   BOOL,
   BYTES_ELEMENT_NAME,
@@ -198,6 +204,18 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
     const closureRead = slot ? closureDynRead(lowerer, expr, slot.id, slot.type, loc) : null;
     if (closureRead) return closureRead;
   }
+  // A function-typed binding read as a value is boxed from its storage, and
+  // the storage's IR type spells the NATIVE parameter count and no name.
+  // Record the function's JavaScript identity (`name`, ExpectedArgumentCount
+  // `length`) for this read's local, so every box of it answers Node's
+  // (once per binding).
+  if (local && local.type.kind === "func" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    // Every read records, not just the first: a binding can be assigned two
+    // functions, and the read's own type is the one this box carries.
+    const identity = jsFuncIdentityOfValue(lowerer, expr);
+    if (identity !== null)
+      lowerer.jsValueIdentities.set(lowerer.jsValueIdentityKey(local), identity);
+  }
   // A Date local holding its time value reads as that Date: only uses
   // that read the time value reach here (date-values.ts).
   if (local && lowerer.timeValueDateLocals.has(local)) {
@@ -363,6 +381,13 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       lowerer.pushDiag(blockedBindingUseDiag(expr.text, loc));
       throw new PoisonError();
     }
+    // A module-level function binding is a global, not a local: record its
+    // JavaScript identity for the boxes built from this read (a global id is
+    // unique across the program, so it needs no context sequence).
+    if (g.type.kind === "func" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+      const identity = jsFuncIdentityOfValue(lowerer, expr);
+      if (identity !== null) lowerer.jsValueIdentities.set(globalIdentityKey(g.id), identity);
+    }
     const ref: IrExpr = { kind: "varRef", localId: g.id, type: g.type, loc };
     if (lowerer.isRuntimeOptionalArithmeticGlobal(g) && !runtimeOptionalUseOf(expr)) {
       return ref;
@@ -497,6 +522,18 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       loc,
     };
     const decl = lowerer.resolveValueSymbol(expr)?.valueDeclaration;
+    if (
+      decl &&
+      ts.isFunctionDeclaration(decl) &&
+      isJsSourceFile(ts.getSourceFileOfNode(decl)) &&
+      !lowerer.jsCallableLengths.has(sig.name)
+    ) {
+      // A read can lower BEFORE the declaration's body does (the body pass
+      // runs after a JavaScript module's top-level statements): record the
+      // value's identity here, where the declaration is in hand.
+      const jsLength = jsFuncLengthOf(decl);
+      if (jsLength !== null) lowerer.jsCallableLengths.set(sig.name, jsLength);
+    }
     return decl && ts.isFunctionDeclaration(decl) && funcType.kind === "func"
       ? argumentCountValue(lowerer, decl, expr, { ...closure, type: funcType })
       : closure;

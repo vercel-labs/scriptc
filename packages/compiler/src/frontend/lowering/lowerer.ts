@@ -2197,6 +2197,19 @@ function builtinMemberValueName(
   return builtinModuleFnOf(lowerer, module, member)?.valueName ?? null;
 }
 
+/** Whether `node` is a function, arrow or class DEFINITION that carries no
+ * name of its own, so the binding or property it initializes names it
+ * (V8's SetFunctionName). Every other expression evaluates to a value that
+ * already has whatever name it has. */
+function isAnonymousCallableDefinition(node: ts.Node): boolean {
+  if (ts.isArrowFunction(node)) return true;
+  return (ts.isFunctionExpression(node) || ts.isClassExpression(node)) && node.name === undefined;
+}
+
+/** The name V8 gives a function value read from this expression: its own
+ * definition, through parenthesized, rebindable and const bindings and
+ * property reads (`process.cwd`), or the binding an anonymous definition
+ * initializes. Null when the source does not determine it. */
 export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
   let n: ts.Node = node;
   while (ts.isParenthesizedExpression(n)) n = n.expression;
@@ -2210,20 +2223,31 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
       n = declaration;
       break;
     }
-    if (
-      !declaration ||
-      !ts.isVariableDeclaration(declaration) ||
-      !declaration.initializer ||
-      (ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0
-    )
+    if (!declaration || !ts.isVariableDeclaration(declaration) || !declaration.initializer) break;
+    let value: ts.Node = declaration.initializer;
+    while (ts.isParenthesizedExpression(value)) value = value.expression;
+    // Name inference (V8's SetFunctionName) covers an ANONYMOUS function or
+    // class definition and nothing else: the binding names it, so a
+    // rebindable binding keeps the binding's spelling below. Any other
+    // initializer is a value that carries its own name — a named
+    // definition, a builtin function (`var a = String; a.name` is
+    // "String") or another binding (`var a = b` keeps b's name) — and
+    // resolution follows it.
+    if (isAnonymousCallableDefinition(value)) {
+      // The binding this definition initializes named it when it was
+      // created, so answer that binding and not the alias the reference
+      // reached it through: `import b from "./m"` keeps the "root" of
+      // `const root = (text) => text;` in `m`.
+      if (ts.isIdentifier(declaration.name)) return declaration.name.text;
       break;
-    n = declaration.initializer;
-    while (ts.isParenthesizedExpression(n)) n = n.expression;
+    }
+    n = value;
   }
   if (ts.isIdentifier(n)) return n.text;
   if (ts.isPropertyAccessExpression(n)) return n.name.text;
   if ((ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n)) && n.name) return n.name.text;
-  if (ts.isFunctionExpression(n) || ts.isArrowFunction(n)) {
+  if (ts.isClassExpression(n) && n.name) return n.name.text;
+  if (ts.isFunctionExpression(n) || ts.isArrowFunction(n) || ts.isClassExpression(n)) {
     // An anonymous function takes the name of the binding or property it
     // initializes, through parentheses (`const f = (function () {})`).
     let outer: ts.Node = n;

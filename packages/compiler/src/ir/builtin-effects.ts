@@ -796,6 +796,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "child.propsDescriptor",
   "child.propsOnDyn",
   "dyn.arrayProtoCall",
+  "dyn.arrayLikeProtoCall",
   "process.chdir",
   "os.getPriority",
   "os.setPriority",

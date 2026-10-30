@@ -331,6 +331,8 @@ const READABLE_DYN_ASYNC_PREFIXES: readonly string[] = ["readable.fromGen", "rea
 /** Entry points that link the dyn-invoke unit. */
 const DYN_INVOKE_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.arrayProtoCall",
+  "dyn.arrayLikeProtoCall",
+  "dyn.builtinPrototype",
   "dyn.arrayPrototype",
   "dyn.builtinFunction",
   "dyn.builtinMethod",
@@ -1064,6 +1066,13 @@ const RUNTIME_FEATURE_RULES = {
    * half (scr_dyn_builtin_stream.c): native stream state for constructor
    * functions, over the stream unit. */
   dynBuiltinStream: rule({ fns: ["dyn.builtinStreamClass"] }),
+  /** Array.prototype's generic algorithms over array-like receivers
+   * (scr_dyn_array_like.c), which delegates every other name to the
+   * dyn-invoke unit's array dispatch. */
+  arrayLikeDispatch: rule({ fns: ["dyn.arrayLikeProtoCall"] }),
+  /** Number.prototype and Boolean.prototype as values
+   * (scr_dyn_builtin_prototype.c). */
+  builtinPrototypeValue: rule({ fns: ["dyn.builtinPrototype"] }),
   dynInvoke: rule({
     initial: (mod) => mod.workers === true,
     fns: [
@@ -1460,6 +1469,8 @@ function noRuntimeFeatures(): RuntimeFeatures {
     dynBuiltinClass: false,
     dynBuiltinStream: false,
     dynInvoke: false,
+    arrayLikeDispatch: false,
+    builtinPrototypeValue: false,
     dynTier: false,
     ecdh: false,
     x509: false,

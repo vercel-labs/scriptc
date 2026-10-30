@@ -584,7 +584,11 @@ function prototypeMutationTarget(lowerer: Lowerer, expr: ts.PropertyAccessExpres
     objectMethod === "preventExtensions" ||
     reflectMethod === "setPrototypeOf" ||
     reflectMethod === "defineProperty" ||
-    reflectMethod === "deleteProperty"
+    reflectMethod === "deleteProperty" ||
+    // `Reflect.set(C.prototype, "m", f)` replaces a compiled method the
+    // view cannot reach: a write through the view, exactly like the
+    // `Object` forms above.
+    reflectMethod === "set"
   );
 }
 

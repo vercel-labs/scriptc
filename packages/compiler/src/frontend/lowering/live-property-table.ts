@@ -23,10 +23,31 @@ function isBuiltinHandleRecord(lowerer: Lowerer, shapeId: string): boolean {
   return !!shape && shape.fields.some((field) => field.name.startsWith("%"));
 }
 
+/** A TUPLE shape is positional: its struct has a slot per position and no
+ * overflow, and a checked conversion of it keeps no source table
+ * (recordMayKeepSource excludes tuples), so a named property written into
+ * its capsule is lost by the next conversion — the array snapshot the
+ * read answers from never carries it. Tuple values stay fenced. */
+function isTupleRecord(lowerer: Lowerer, shapeId: string): boolean {
+  return lowerer.shapes.get(shapeId)?.tuple === true;
+}
+
+/** Whether any function in the program registered an expando member under
+ * this name. Those writes live in a MODULE GLOBAL keyed by the declaring
+ * function's symbol (lower-expando.ts), which a read through any other
+ * reference cannot reach: the function's live property table never holds
+ * the value, so such reads stay fenced rather than answering undefined. */
+export function registryExpandoName(lowerer: Lowerer, name: string): boolean {
+  for (const members of lowerer.expandoMembers.values()) {
+    if (members.names.has(name)) return true;
+  }
+  return false;
+}
+
 export function keepsLivePropertyTable(lowerer: Lowerer, type: IrType): boolean {
   switch (type.kind) {
     case "record":
-      return !isBuiltinHandleRecord(lowerer, type.shapeId);
+      return !isBuiltinHandleRecord(lowerer, type.shapeId) && !isTupleRecord(lowerer, type.shapeId);
     case "array":
     case "func":
       return true;

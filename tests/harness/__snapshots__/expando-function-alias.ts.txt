@@ -1,0 +1,6 @@
+expando-function-alias.ts:12:13 - error SC1090: reading 'tag' from a value of type 'Combo' is not supported yet
+
+  11 | const alias = combo;
+  12 | console.log(alias.tag);
+     |             ^~~~~~~~~
+  13 | // End of the function expando alias diagnostic fixture.

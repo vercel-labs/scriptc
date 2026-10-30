@@ -33,7 +33,7 @@ import {
   neverTaintedJsType,
   own,
 } from "../lowerer.js";
-import { keepsLivePropertyTable } from "../live-property-table.js";
+import { keepsLivePropertyTable, registryExpandoName } from "../live-property-table.js";
 import {
   ARRAY_METHODS,
   MAP_METHODS,
@@ -1710,7 +1710,8 @@ export function lowerPropertyAccessExpr(
   // member answer above, so this arm only replaces the fence.
   if (
     lowerer.dynConvertible(recvLowered.type) &&
-    keepsLivePropertyTable(lowerer, recvLowered.type)
+    keepsLivePropertyTable(lowerer, recvLowered.type) &&
+    !registryExpandoName(lowerer, expr.name.text)
   ) {
     return lowerer.maybeNarrow(
       {

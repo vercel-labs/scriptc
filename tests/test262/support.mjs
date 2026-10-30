@@ -266,7 +266,7 @@ function earlyErrorDiagnostics(source, variant) {
 // A negative-parse test only asks for SOME SyntaxError, so one of these
 // inside the test's source is a match — the same standard as the tsc
 // diagnostics above, minus tsc's ability to tell us where it points.
-const ownEarlyErrorCodes = new Set(["SC0005", "SC0006", "SC0007"]);
+const ownEarlyErrorCodes = new Set(["SC0005", "SC0006", "SC0007", "SC0008"]);
 
 export function matchesParseNegative(outcome, source, variant = "strict") {
   if (outcome.status !== "compile-refusal") return false;

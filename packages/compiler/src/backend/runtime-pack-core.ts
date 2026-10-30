@@ -120,6 +120,7 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   builtinPrototypeValue?: boolean;
   computedRequire: boolean;
   warningReplace: boolean;
+  dynArrayAttrs: boolean;
   recordViewPartial: boolean;
   /** The JavaScript object model build (t262-da §J): the runtime code every
    * feature reached only from JavaScript sources shares, the
@@ -360,6 +361,7 @@ export function effectiveRuntimeFeatures(
     builtinPrototypeValue: features.builtinPrototypeValue === true,
     computedRequire: features.computedRequire === true,
     warningReplace: features.warningReplace === true,
+    dynArrayAttrs: features.dynArrayAttrs === true,
     recordViewPartial: features.recordViewPartial === true,
     jsObjectModel,
     bigintBytes: features.bigintBytes === true,

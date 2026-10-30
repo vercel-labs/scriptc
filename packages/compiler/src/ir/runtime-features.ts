@@ -1183,6 +1183,12 @@ const RUNTIME_FEATURE_RULES = {
   /** The program has dynamic-tier jsval operations (js.* builtins, the
    * jsval pass): links the scr_js_* units (two-tier design I3). */
   dynTier: rule({ prefixes: ["js."] }),
+  /** Object.defineProperty on a checked-dynamic array's index or length
+   * (SCR_ARRAY_ATTRS in scr_json.c and scr_dyn_invoke.c): the dynamic tier
+   * keeps per-element writable/enumerable/configurable bits and a
+   * length-writability bit only for programs that can set them, so every
+   * other program keeps the default runtime object. */
+  dynArrayAttrs: rule({ fns: ["dyn.defineProperty", "dyn.defineProps"] }),
   /** Checked-dynamic stream slots test values and pipe into JavaScript
    * stream objects (scr_stream_dyn.c). */
   streamDyn: rule({
@@ -1606,6 +1612,7 @@ function noRuntimeFeatures(): RuntimeFeatures {
     arrayLikeDispatch: false,
     builtinPrototypeValue: false,
     dynTier: false,
+    dynArrayAttrs: false,
     ecdh: false,
     x509: false,
     dh: false,

@@ -65,6 +65,7 @@ export interface EarlyExecutableNativeFeatures {
   eventTarget?: boolean;
   wasm?: boolean;
   warningReplace?: boolean;
+  dynArrayAttrs?: boolean;
   recordViewPartial?: boolean;
   jsObjectModel?: boolean;
   stdioExtended?: boolean;

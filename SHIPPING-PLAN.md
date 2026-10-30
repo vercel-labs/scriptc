@@ -27,7 +27,7 @@ Statuses: not started → in progress → ready for review → approved → comm
 |---|---|---|---|---|
 | `--define` | `lfades/define-env` | `main` | open | |
 | 1 Correctness fixes and leaks | `pr/01-correctness` | `main` | not started | |
-| 2 React Node SSR compatibility | `pr/02-react-compat` | `main` | not started | |
+| 2 React Node SSR compatibility | `pr/02-react-compat` | `main` | ready for review | |
 | 3 Native Flow support | `pr/03-flow` | `pr/02-react-compat` until 2 merges | not started | |
 | 4 npm-static type inference | `pr/04-npm-static-inference` | `pr/03-flow` until 3 merges | not started | |
 | 5 Checked-object memory | `pr/05-checked-object-memory` | `main` | not started | |

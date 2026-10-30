@@ -4,6 +4,8 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+- Published values keep their native array, record, and class operations when sent between workers, including class method presence checks through untyped values.
+
 <!-- release:start -->
 
 ## 0.4.6

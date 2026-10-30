@@ -408,6 +408,123 @@ static void check_handle_transfer(void) {
   scr_collect_cycles();
 }
 
+/* Published referents and their operations outlive the sending heap. The
+ * receiver must bind fresh capsules, not find the sender's in its TLS cache. */
+static size_t published_objects[] = {SIZE_MAX, SIZE_MAX, SIZE_MAX};
+static ScrStr *published_names[1];
+static void *published_retain(void *ptr) { return ptr; }
+static void published_release(void *ptr) { (void)ptr; }
+static ScrDyn *published_element(void *ptr, double index) {
+  return scr_dyn_new_num(scr_arr_get_f64(ptr, index));
+}
+static bool published_has_field(void *ptr, size_t index) {
+  (void)ptr; (void)index;
+  return true;
+}
+static ScrDyn *published_field(void *ptr, size_t index) {
+  (void)ptr; (void)index;
+  return scr_dyn_new_num(7);
+}
+static ScrDyn *published_bag(void *ptr) { (void)ptr; return NULL; }
+static ScrDyn *published_prototype(void *ptr) {
+  (void)ptr;
+  ScrDyn *prototype = scr_dyn_new_obj();
+  put_number(prototype, "read", 7);
+  return prototype;
+}
+static ScrDyn *published_snapshot(void *ptr) {
+  if (ptr == &published_objects[0]) {
+    ScrDyn *record = scr_dyn_new_obj();
+    put_number(record, "read", 7);
+    return record;
+  }
+  if (ptr == &published_objects[1]) return scr_dyn_new_obj();
+  if (ptr == &published_objects[2]) {
+    ScrDyn *instance = scr_dyn_new_obj();
+    instance->prototype = published_prototype(ptr);
+    return instance;
+  }
+  ScrDyn *array = scr_dyn_new_arr();
+  scr_dyn_arr_push(array, published_element(ptr, 0));
+  return array;
+}
+static const ScrDynTypedArrayOps published_array_ops = {.get = published_element};
+static ScrDynTypedRecordOps published_record_ops = {
+    .count = 1, .names = published_names, .has = published_has_field,
+    .get = published_field, .fixed = true,
+};
+static const ScrDynTypedClassOps published_class_ops = {.count = 1, .names = published_names};
+static const ScrDynTypedBagClassOps published_bag_ops = {
+    .bag = published_bag, .prototype = published_prototype,
+};
+static void publish_numbers(void *ptr, ScrPub *context) { scr_pub_arr(ptr, context, NULL); }
+
+static void *send_published(void *unused) {
+  (void)unused;
+  scr_context_enter(1);
+  scr_init();
+  scr_lib_init(0, NULL);
+  ScrArr *array = scr_arr_new(SCR_ELEM_F64, 1);
+  scr_arr_push_f64(array, 7);
+  scr_publish(array, publish_numbers);
+  void *pointers[] = {array, &published_objects[0], &published_objects[1], &published_objects[2]};
+  const char *keys[] = {"array", "record", "class", "bag"};
+  ScrDyn *root = scr_dyn_new_obj();
+  for (size_t i = 0; i < 4; i++) {
+    ScrDyn *value = scr_dyn_new_typed_ref(pointers[i], published_retain, published_release,
+        keys[i], strlen(keys[i]), published_snapshot, NULL);
+    switch (i) {
+    case 0: scr_dyn_typed_ref_bind_array(value, &published_array_ops); break;
+    case 1: scr_dyn_typed_ref_bind_record(value, &published_record_ops); break;
+    case 2: scr_dyn_typed_ref_bind_class(value, &published_class_ops); break;
+    case 3: scr_dyn_typed_ref_bind_bag_class(value, &published_bag_ops); break;
+    }
+    scr_dyn_release(scr_dyn_typed_ref_materialize(value));
+    assert(!scr_exc_pending());
+    if (i == 2) scr_dyn_obj_set(root, "again", 5, scr_dyn_retain(value));
+    scr_dyn_obj_set(root, keys[i], strlen(keys[i]), value);
+  }
+  ScrMessage *message = scr_message_encode(root);
+  assert(message && !scr_exc_pending());
+  scr_dyn_release(root);
+  scr_context_cleanup();
+  return message;
+}
+
+static void check_published_operations(void) {
+  published_names[0] = scr_str_new("read", 4);
+  scr_publish(published_names[0], scr_pub_str_fn);
+  pthread_t sender;
+  void *sent = NULL;
+  assert(pthread_create(&sender, NULL, send_published, NULL) == 0);
+  assert(pthread_join(sender, &sent) == 0);
+  ScrDyn *root = scr_message_decode(sent);
+  assert(root && !scr_exc_pending());
+  /* Decoded capsules must also outlive the message's own metadata block. */
+  scr_message_free(sent);
+  ScrDyn *array = scr_dyn_obj_get(root, "array", 5);
+  ScrDyn *record = scr_dyn_obj_get(root, "record", 6);
+  ScrDyn *klass = scr_dyn_obj_get(root, "class", 5);
+  ScrDyn *bag = scr_dyn_obj_get(root, "bag", 3);
+  assert(klass == scr_dyn_obj_get(root, "again", 5));
+  assert(!array->v.typed_ref.materialized && !record->v.typed_ref.materialized);
+  assert(!klass->v.typed_ref.materialized && !bag->v.typed_ref.materialized);
+  ScrDyn *value = scr_dyn_index_get(array, 0);
+  assert(value && value->kind == SCR_DYN_NUM && value->v.num == 7);
+  scr_dyn_release(value);
+  value = scr_dyn_typed_ref_key_get(record, published_names[0]);
+  assert(value && value->kind == SCR_DYN_NUM && value->v.num == 7);
+  scr_dyn_release(value);
+  assert(scr_dyn_in(klass, published_names[0]));
+  value = scr_dyn_typed_ref_bag_method(bag, "read", 4);
+  assert(value && value->kind == SCR_DYN_NUM && value->v.num == 7);
+  scr_dyn_release(value);
+  assert(!array->v.typed_ref.materialized && !record->v.typed_ref.materialized);
+  assert(!bag->v.typed_ref.materialized && !scr_exc_pending());
+  scr_dyn_release(root);
+  scr_collect_cycles();
+}
+
 int main(void) {
   scr_init();
   scr_lib_init(0, NULL);
@@ -427,7 +544,9 @@ int main(void) {
   check_large();
   check_readers();
   check_handle_transfer();
+  check_published_operations();
   scr_context_cleanup();
   puts("message graphs preserve identity, sparse values, byte aliases and getter order");
   puts("native handles cross threads through their transfer hooks");
+  puts("published native operations survive the sender and the message");
 }

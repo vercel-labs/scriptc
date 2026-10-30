@@ -61,9 +61,10 @@ interface PromiseConstructor {
   /* ES2024's Promise.withResolvers, in the executor's own scriptc shape:
    * resolve takes the plain value (no PromiseLike union; the conditional
    * collapses Promise<void>'s resolve to () => void so the record's
-   * field types map exactly), reject is the executor's Error-pinned
-   * rejection closure. The lib's own declaration would otherwise be
-   * unrepresentable field-by-field. */
+   * field types map exactly), reject is the executor's rejection closure —
+   * `unknown` for a promise whose settled value is unknown, exactly the
+   * `new Promise` executor's reason. The lib's own declaration would
+   * otherwise be unrepresentable field-by-field. */
   withResolvers<T>(): {
     promise: Promise<T>;
     // `0 extends 1 & T` detects any (untyped JS: Promise.withResolvers()
@@ -75,7 +76,7 @@ interface PromiseConstructor {
       : [T] extends [void]
         ? () => void
         : (value: T) => void;
-    reject: (reason: Error) => void;
+    reject: (reason: unknown extends T ? unknown : Error) => void;
   };
 }
 

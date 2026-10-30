@@ -58,7 +58,7 @@ export function widenedReturnRecord(lowerer: Lowerer, genT: GenType): IrType & {
 /** Whether a generator of the program yields in a finally block, where a
  * `.return(value)` suspends before it completes. Computed once per lowering
  * over the program's source files; nested functions are their own. */
-function programYieldsInFinally(lowerer: Lowerer): boolean {
+export function programYieldsInFinally(lowerer: Lowerer): boolean {
   if (lowerer.generatorYieldsInFinally !== null) return lowerer.generatorYieldsInFinally;
   let found = false;
   const yieldsIn = (block: ts.Node): boolean => {

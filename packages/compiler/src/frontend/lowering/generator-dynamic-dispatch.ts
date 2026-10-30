@@ -15,6 +15,7 @@ import {
   type IrType,
 } from "../../ir/ir.js";
 import { transformStmtList } from "../../ir/traverse.js";
+import { programYieldsInFinally } from "./lower-generators.js";
 import { genResultRecord } from "../type-mapper.js";
 import type { DispatchSites } from "./dispatch-sites.js";
 import type { Lowerer, UntypedLoopSite } from "./lowerer.js";
@@ -326,12 +327,18 @@ export class GeneratorDynamicDispatch {
         // so does the capsule member the runtime closes through (widens).
         // An async generator settles through the declaration's record, which
         // this call site cannot widen, so it keeps the fence.
+        // A program with a generator that yields in a finally block keeps
+        // the plain record too: the return suspends there, and the `.next()`
+        // that completes it reads the value through the generator's own
+        // record, which has no value field — the typed `.return()` path
+        // refuses for the same reason (lower-generators.ts).
         const widened =
           dispatch.widens &&
           mode === "return" &&
           type.retT.kind === "void" &&
           supplied &&
-          !type.async;
+          !type.async &&
+          !programYieldsInFinally(lowerer);
         const result = (
           widened
             ? genResultRecord(type.yieldT, DYN, lowerer.shapes, lowerer.unions)

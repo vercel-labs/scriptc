@@ -648,6 +648,33 @@ console.log(it.return(5), it.next());
       /^Uncaught Error: \.return\(value\) on a generator whose return type carries no value, in a program with a generator that yields in a finally block \(call \.return\(\) with no argument\) is not supported yet \[SC1071 at .*generator-return-finally-yield\.cjs:10\]\n$/,
     );
   });
+
+  test("an untyped receiver throws the void-channel fence too", async () => {
+    // The receiver reaches the call as `any`, so the refusal is the dynamic
+    // dispatch's runtime fence rather than the typed call's diagnostic.
+    const r = await compileAndRun(
+      "generator-return-finally-yield-dyn",
+      `function* g() {
+  try {
+    yield 1;
+  } finally {
+    yield 2;
+  }
+}
+function drive(it) {
+  it.next();
+  console.log(it.return(5));
+}
+drive(g());
+`,
+      "cjs",
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toMatch(
+      /^Uncaught Error: returning a value through a void native generator channel is not supported yet \[SC1071\]\n$/,
+    );
+  });
 });
 
 // A spelled read of a namespace member keeps its static lowering, the

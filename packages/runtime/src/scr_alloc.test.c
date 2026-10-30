@@ -923,6 +923,49 @@ static void check_discard_waits_for_loop(void) {
   free(discard_blocks);
 }
 
+/* The thread that is not a worker returns its free pages when its loop
+ * waits with nothing ready, once it has carved SCR_SA_TRIM_MIN more since
+ * its last trim; blocks allocated afterwards come from the returned range,
+ * zeroed. The test's thread plays the loop's. IDLE_SIZE is a class the
+ * other checks leave unused. */
+enum { IDLE_BLOCKS = 1 << 20, IDLE_KEEP = 4096, IDLE_SIZE = 88 };
+static void check_idle_trim(void) {
+  unsigned char **blocks = malloc(IDLE_BLOCKS * sizeof *blocks);
+  unsigned char *kept[IDLE_BLOCKS / IDLE_KEEP];
+  assert(blocks);
+  uintptr_t lo = UINTPTR_MAX, hi = 0;
+  for (size_t i = 0; i < IDLE_BLOCKS; i++) {
+    blocks[i] = scr_mem_alloc(IDLE_SIZE);
+    assert(blocks[i] && owned(blocks[i]));
+    fill(blocks[i], IDLE_SIZE, (unsigned char)i);
+    if ((uintptr_t)blocks[i] < lo) lo = (uintptr_t)blocks[i];
+    if ((uintptr_t)blocks[i] + IDLE_SIZE > hi) hi = (uintptr_t)blocks[i] + IDLE_SIZE;
+  }
+  for (size_t i = 0; i < IDLE_BLOCKS; i++) {
+    if (i % IDLE_KEEP == 0) kept[i / IDLE_KEEP] = blocks[i];
+    else scr_mem_free(blocks[i]);
+  }
+  size_t total = (hi - lo) / (size_t)sysconf(_SC_PAGESIZE);
+  assert(resident_pages(lo, hi) > total / 2);
+  scr_sa_loop_waiting(true);
+  scr_sa_loop_waiting(false);
+  /* One page per kept block stays, give or take the pages at run ends. */
+  assert(resident_pages(lo, hi) < total / 8);
+  for (size_t k = 0; k < IDLE_BLOCKS / IDLE_KEEP; k++) verify(kept[k], IDLE_SIZE, (unsigned char)(k * IDLE_KEEP));
+  size_t outside = 0;
+  for (size_t i = 0; i < IDLE_BLOCKS / 2; i++) {
+    unsigned char *q = scr_mem_calloc(IDLE_SIZE);
+    assert(q && owned(q));
+    for (size_t k = 0; k < IDLE_SIZE; k++) assert(q[k] == 0);
+    if ((uintptr_t)q < lo || (uintptr_t)q >= hi) outside++;
+    blocks[i] = q;
+  }
+  assert(outside < 256);
+  for (size_t i = 0; i < IDLE_BLOCKS / 2; i++) scr_mem_free(blocks[i]);
+  for (size_t k = 0; k < IDLE_BLOCKS / IDLE_KEEP; k++) scr_mem_free(kept[k]);
+  free(blocks);
+}
+
 static void check_discard(void) {
   discard_blocks = malloc(DISCARD_BLOCKS * sizeof *discard_blocks);
   assert(discard_blocks);
@@ -1172,6 +1215,7 @@ int main(void) {
   check_discard();
   check_discard_delay_grows();
   check_discard_waits_for_loop();
+  check_idle_trim();
 #endif
   printf("allocator checks passed: size-class workers\n");
 #else

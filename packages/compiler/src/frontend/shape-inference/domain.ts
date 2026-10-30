@@ -127,7 +127,6 @@ export const STRING_METHOD_RESULTS: ReadonlyMap<string, MethodResult> = new Map<
   ["lastIndexOf", "number"],
   ["localeCompare", "number"],
   ["match", "array"],
-  ["matchAll", "array"],
   ["normalize", "string"],
   ["padEnd", "string"],
   ["padStart", "string"],

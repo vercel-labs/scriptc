@@ -24,6 +24,38 @@ function selected(
   return matches[0];
 }
 
+test("the typed stdio write slot selects the events build that carries it", () => {
+  const plain = { stdioExtended: false, nodeIsland: false, workers: false };
+  // Alone, the write slot selects its own build.
+  expect(selected("scr_events.c", { ...plain, stdioWriteSlot: true }).defines).toEqual([
+    "SCR_STDIO_WRITE_SLOT",
+  ]);
+  // Beside the other events features it keeps each one's defines.
+  expect(
+    selected("scr_events.c", { ...plain, stdioExtended: true, stdioWriteSlot: true }).defines,
+  ).toEqual(["SCR_STDIO_EXTENDED", "SCR_STDIO_WRITE_SLOT"]);
+  expect(
+    selected("scr_events.c", { ...plain, nodeIsland: true, stdioWriteSlot: true }).defines,
+  ).toEqual(["SCR_NODE_ISLANDS", "SCR_STDIO_WRITE_SLOT"]);
+  expect(
+    selected("scr_events.c", {
+      ...plain,
+      stdioExtended: true,
+      nodeIsland: true,
+      stdioWriteSlot: true,
+    }).defines,
+  ).toEqual(["SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS", "SCR_STDIO_WRITE_SLOT"]);
+  // A program that never reaches the write slot keeps the old object.
+  expect(
+    selected("scr_events.c", {
+      ...plain,
+      stdioExtended: true,
+      nodeIsland: true,
+      stdioWriteSlot: false,
+    }).defines,
+  ).toEqual(["SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS"]);
+});
+
 test("web streams and Node islands select an async build that defines both", () => {
   const variant = selected("scr_async.c", { webStreams: true, nodeIsland: true, workers: false });
   expect(variant.defines).toEqual(
@@ -39,6 +71,28 @@ test("web streams and Node islands select an async build that defines both", () 
   expect(
     selected("scr_async.c", { webStreams: false, nodeIsland: false, workers: false }).defines,
   ).toEqual([]);
+});
+
+test("a file read whose bytes the program can observe selects the branded build", () => {
+  const plain = { workers: false, watchFile: false, fsBufferBrand: false };
+  // Alone, the brand selects its own build.
+  expect(selected("scr_lib.c", { ...plain, fsBufferBrand: true }).defines).toEqual([
+    "SCR_FS_BUFFER_BRAND",
+  ]);
+  // Beside the poll it keeps both units' entry points.
+  expect(selected("scr_lib.c", { ...plain, watchFile: true, fsBufferBrand: true }).defines).toEqual(
+    ["SCR_FS_WATCH_FILE", "SCR_FS_BUFFER_BRAND"],
+  );
+  expect(selected("scr_lib.c", { ...plain, workers: true, fsBufferBrand: true }).defines).toEqual([
+    "SCR_FS_BUFFER_BRAND",
+    "SCR_WORKERS",
+  ]);
+  // A program that reads bytes without observing the brand keeps the default
+  // object, byte for byte.
+  expect(selected("scr_lib.c", plain).defines).toEqual([]);
+  expect(selected("scr_lib.c", { ...plain, watchFile: true }).defines).toEqual([
+    "SCR_FS_WATCH_FILE",
+  ]);
 });
 
 test("the BigIntStats unit follows its own member-read gate, not bigint", () => {

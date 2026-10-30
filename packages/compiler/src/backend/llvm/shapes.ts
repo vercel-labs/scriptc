@@ -73,7 +73,7 @@ import {
   disposeFieldLines,
   plainRefType,
 } from "./arenas.js";
-import { recordViewTestLines, type RecordViews } from "./record-views.js";
+import { PARTIAL_VIEW_ABSENT, recordViewTestLines, type RecordViews } from "./record-views.js";
 import { recordMayKeepSource } from "./record-sources.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 
@@ -109,6 +109,9 @@ export interface ShapeHost {
   /** Byte offset from an object pointer back to ScrCycHdr.buf. */
   readonly cycleBufOffset: number;
   declare(decl: string): void;
+  /** The module constant for a string (LlEmitter.cstr), for a trap message
+   * an emitted accessor passes to the runtime. */
+  cstr(text: string): string;
   /** Inline the small-object allocator's fast paths (llvm/alloc.ts). */
   readonly inlineAlloc?: boolean;
   /** Record and class fields that store a scalar union's tag and bits
@@ -2451,15 +2454,29 @@ export function emitRecordShapes(
         const inline = host.inlineUnions.record(field.type);
         const fieldTy = llFieldType(field.type, inline);
         if (host.recordViews?.targets.has(shape.id) === true) {
-          // A view's fields live in the viewed record (record-views.ts).
+          // A view's fields live in the viewed record (record-views.ts); a
+          // shape a partial view may present answers NULL for a field the
+          // viewed record lacks, so the copy stops with the program's own
+          // message (a source-level read threw first).
+          const partial = host.recordViews.partialTargets.has(shape.id);
           host.declare(`declare ptr @scr_record_view_slot(ptr, ${host.sizeType})`);
+          const fromView = partial
+            ? [
+                `  %sn${i} = icmp eq ptr %sw${i}, null`,
+                `  br i1 %sn${i}, label %sv${i}.absent, label %sv${i}.join`,
+                `sv${i}.absent:`,
+                `  call void @scr_trap(ptr ${host.cstr(PARTIAL_VIEW_ABSENT)})`,
+                `  unreachable`,
+              ]
+            : [`  br label %sv${i}.join`];
+          if (partial) host.declare(`declare void @scr_trap(ptr)`);
           clone.push(
             `  %so${i} = getelementptr inbounds %${struct}, ptr %src, i64 0, i32 ${index}`,
             ...recordViewTestLines(host.sizeType, "%src", `%sr${i}v`),
             `  br i1 %sr${i}v, label %sv${i}.view, label %sv${i}.join`,
             `sv${i}.view:`,
             `  %sw${i} = call ptr @scr_record_view_slot(ptr %src, ${host.sizeType} ${i})`,
-            `  br label %sv${i}.join`,
+            ...fromView,
             `sv${i}.join:`,
             `  %sp${i} = phi ptr [ %so${i}, %${i === 0 ? "entry" : `sv${i - 1}.join`} ], [ %sw${i}, %sv${i}.view ]`,
             `  %sv${i} = load ${fieldTy}, ptr %sp${i}`,

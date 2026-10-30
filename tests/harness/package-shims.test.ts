@@ -326,17 +326,18 @@ describe("package shims", () => {
     );
     writeFileSync(join(pkg, "index.js"), "exports.version = 6;\n");
     writeFileSync(
-      join(dir, "main.mjs"),
+      join(dir, "main.mts"),
       'import { version } from "undici";\nconsole.log(version);\n',
     );
-    const result = await compile(join(dir, "main.mjs"), {
+    const result = await compile(join(dir, "main.mts"), {
       outPath: join(dir, ".scriptc/program"),
       outDir: join(dir, ".scriptc"),
       npmStatic: ["undici"],
       sanitize,
     });
     // The package's JavaScript is not part of the program, so the import
-    // has no declarations.
+    // has no declarations. A TypeScript entry requires them; a JavaScript
+    // entry would load the package in a Node island.
     expect(result.ok).toBe(false);
     expect(result.diagnostics.map((d) => d.message).join("\n")).toContain(
       "Could not find a declaration file for module 'undici'",

@@ -7,10 +7,10 @@ assert-fences.ts:20:1 - error SC2020: 'assert.strictEqual of '{ n: number }' and
 
   hint: strictEqual on objects is reference equality — deepStrictEqual compares structure
 
-assert-fences.ts:24:1 - error SC2020: 'assert.strictEqual of 'string | undefined' and 'string' values' is part of the standard library types but has no scriptc lowering yet
+assert-fences.ts:24:1 - error SC2020: 'assert.strictEqual of '{ n: number } | undefined' and '{ n: number }' values' is part of the standard library types but has no scriptc lowering yet
 
   23 | if ("x".length === 0) maybe = undefined;
-  24 | assert.strictEqual(maybe, "x"); // union operand — narrow first
+  24 | assert.strictEqual(maybe, box); // union operand with an object arm — narrow first
      | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
   25 | 
 

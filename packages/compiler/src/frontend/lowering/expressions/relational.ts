@@ -1,4 +1,5 @@
 /* instanceof and in, including private-name and runtime-key in. */
+import { programCreatesWrappers, WRAPPER_KIND_NUMBER } from "../primitive-wrappers.js";
 import { lowerArrayClassInstanceOf } from "../builtins/array-classes.js";
 import { dateRootOf } from "../builtins/date-classes.js";
 import { keyedHelperName } from "../stable-names.js";
@@ -46,6 +47,7 @@ import { typedArrayHasMember } from "../builtins/typed-array-members.js";
 import { fenceEarlyNsMemberRef, nsMemberIdentOf } from "../lower-namespaces.js";
 import { maybePromiseInstanceOf } from "../maybe-promise.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
+import { partialFieldPresence } from "../partial-assertions.js";
 import { type ClassInfo, storedClassValueType } from "../lower-classes.js";
 import { classInstanceOf } from "../class-dynamic-dispatch.js";
 import { InternalCompilerError } from "../../../errors.js";
@@ -207,6 +209,23 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   // (typebox's IsBoolean/IsNumber/IsString guards). The operand still runs.
   if (PRIMITIVE_WRAPPERS.some((name) => lowerer.isStdlibGlobal(expr.right, name))) {
     const value = lowerer.lowerExpr(expr.left);
+    // In a program that creates wrappers, a checked-dynamic value may be
+    // one: the kind's prototype on its chain decides.
+    const wrapperKind = (["String", "Number", "Boolean"] as const).find((name) =>
+      lowerer.isStdlibGlobal(expr.right, name),
+    );
+    if (
+      wrapperKind &&
+      value.type.kind === "dyn" &&
+      (lowerer.createsWrappers ??= programCreatesWrappers(lowerer))
+    )
+      return {
+        kind: "libCall",
+        fn: "wrapper.instanceOf",
+        args: [value, { kind: "numLit", value: WRAPPER_KIND_NUMBER[wrapperKind], type: F64, loc }],
+        type: BOOL,
+        loc,
+      };
     return {
       kind: "seqExpr",
       stmts: [{ kind: "exprStmt", expr: value, loc }],
@@ -2065,6 +2084,13 @@ export function lowerInExpression(
   if (!shape) throw new InternalCompilerError(`lowerer bug: unknown shape ${recv.type.shapeId}`);
   const field = shape.fields.find((f) => f.name === key);
   if (field) {
+    // A field some partial record assertion leaves unwritten (a partial
+    // record view, partial-assertions.ts): the answer is the view's, not
+    // the declared type's.
+    {
+      const viewPresence = partialFieldPresence(lowerer, recv, recv.type.shapeId, key, loc);
+      if (viewPresence) return viewPresence;
+    }
     if (
       !OBJECT_PROTOTYPE_KEYS.has(key) &&
       field.type.kind === "union" &&

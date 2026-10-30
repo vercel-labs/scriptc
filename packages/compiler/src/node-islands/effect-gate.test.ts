@@ -37,6 +37,9 @@ exports.sep = path.sep;
 exports.join = join;
 exports.cache = new Map();
 exports.mode = typeof window === "undefined" ? "node" : "browser";
+exports.size = LIMIT * 2 + VERSION.length;
+exports.label = "v" + VERSION;
+var __importDefault = (this && this.__importDefault) || function (m) { return m; };
 `,
       "lib.js": `exports.x = 1;\n`,
     });
@@ -69,7 +72,7 @@ exports.mode = typeof window === "undefined" ? "node" : "browser";
     ["an unknown global", `const w = window;`],
     ["a static block", `class A { static { console.log(1); } }`],
     ["a getter with effects", `Object.defineProperty(exports, "x", { get() { return 1; } });`],
-    ["a template substitution", "const s = `${{}}`;"],
+    ["an increment", "let i = 0; const j = i++;"],
     [
       "a read of a class's static getter",
       `class C { static get x() { return require("fs").readFileSync("/etc/hostname"); } }

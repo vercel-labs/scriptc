@@ -543,6 +543,21 @@ export function lowerArrayMethodCall(
         : dispatched;
     }
   }
+  // A checker ARRAY type with no mapping whose VALUE lowers to a static
+  // array: `Object.entries(value).filter(([, item]) => ...)` inside a
+  // generic body, where the checker spells the entry element as a deferred
+  // conditional over the lib overload's own type parameter
+  // (`[string, keyof T extends never ? unknown : T[keyof T]]`) that no
+  // bound-type-parameter resolver can decide, while the Object.entries
+  // lowering answers the concrete tuple array the value actually has. Ride
+  // the ordinary tables on the lowered element type, as the checker-untyped
+  // probe above does (re-lowering is pure IR construction); the stdlib
+  // member gate below still applies, because the checker does type this
+  // receiver.
+  if (receiverIr === null && lowerer.checker.isArrayType(checkerReceiver)) {
+    const probe = lowerer.lowerExpr(access.expression);
+    if (probe.type.kind === "array") receiverIr = probe.type;
+  }
   if (receiverIr?.kind === "union") {
     const unionHof = lowerArrayUnionHofCall(lowerer, call, access, receiverIr);
     if (unionHof) return unionHof;

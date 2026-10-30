@@ -1,3 +1,4 @@
+import { lowerWrapperToObject, programCreatesWrappers } from "../primitive-wrappers.js";
 import { keyedHelperName } from "../stable-names.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js";
 import { countedFor, numLit, varRef } from "../../../ir/build.js";
@@ -52,6 +53,13 @@ export function lowerObjectConstructor(
   }
   if (args.length !== 1 || ts.isSpreadElement(args[0]!)) return null;
   const value = lowerer.lowerExpr(args[0]!);
+  // ToObject of a value that may be a primitive, once the program creates
+  // wrapper objects (programCreatesWrappers counts this very call).
+  if (
+    ["dyn", "string", "f64", "bool"].includes(value.type.kind) &&
+    (lowerer.createsWrappers ??= programCreatesWrappers(lowerer))
+  )
+    return lowerWrapperToObject(lowerer, lowerer.coerceToExpected(value, DYN), loc);
   if (value.kind === "dynObjLit" || value.kind === "dynArrLit") return value;
   if (
     [

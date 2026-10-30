@@ -578,8 +578,8 @@ export function resolveInferredReturn(
       // per-statement deferral, applied to one return of an instance).
       const captured = lowerer.diags.splice(diagsBefore);
       const ice = captured.filter((d) => d.code === "SC9001");
-      if (ice.length > 0) lowerer.diags.push(...ice);
-      lowerer.runtimeFences.push(...captured.filter((d) => d.code !== "SC9001"));
+      for (const d of ice) lowerer.diags.push(d);
+      for (const d of captured) if (d.code !== "SC9001") lowerer.runtimeFences.push(d);
       const first = captured.find((d) => d.code !== "SC9001");
       // Property writes, not literal element writes: the class method
       // census reads `x["kind"] = …` as a possible write to every method

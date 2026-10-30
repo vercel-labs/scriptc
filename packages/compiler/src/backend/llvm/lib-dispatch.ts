@@ -214,6 +214,9 @@ export function emitIoLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue
 
 export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
+  // The generic emitter registrations queue the maxListeners leak warning
+  // for the next tick like emitter.on (lib-process.ts).
+  if (e.fn === "emitter.onFlex" || e.fn === "emitter.onAny") host.usesTimers = true;
   if (host.coroAwait && e.fn === "async.hop") {
     host.emitCoroAwait(null);
     return { name: "", type: e.type };
@@ -271,15 +274,6 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     B.line(`${out} = call ptr @scr_promise_payload_ref(ptr ${promise.name}) ; +1`);
     return host.own({ name: out, type: e.type });
   }
-  if (e.fn === "record.sourceNote") {
-    const built = host.emitReadReceiver(e.args[0]!);
-    const mirror = host.emitReadReceiver(e.args[1]!);
-    const type = e.args[0]!.type;
-    if (type.kind !== "record")
-      throw new InternalCompilerError("llvm emitter bug: record.sourceNote of a non-record");
-    host.dyn.emitRecordSourceNote(B, built.name, mirror.name, type.shapeId);
-    return { name: "", type: e.type };
-  }
   if (e.fn === "record.sourceSpread") {
     const built = host.emitReadReceiver(e.args[0]!);
     const value = host.emitReadReceiver(e.args[1]!);
@@ -287,6 +281,15 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     if (type.kind !== "record")
       throw new InternalCompilerError("llvm emitter bug: record.sourceSpread of a non-record");
     host.dyn.emitRecordSourceSpread(B, built.name, value.name, type.shapeId);
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "record.sourceNote") {
+    const built = host.emitReadReceiver(e.args[0]!);
+    const keys = emitBorrowedInput(host, e.args[1]!);
+    const type = e.args[0]!.type;
+    if (type.kind !== "record")
+      throw new InternalCompilerError("llvm emitter bug: record.sourceNote of a non-record");
+    host.dyn.emitRecordSourceNote(B, built.name, keys.name, type.shapeId);
     return { name: "", type: e.type };
   }
   if (e.fn === "array.speciesCreate") {
@@ -1194,6 +1197,10 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "str":
     case "regexp":
     case "intl":
+    // ICU-backed Intl (scr_intl.c): ordinary libCalls whose C symbols the
+    // runtime provides — the same generic emission the engine-free intl
+    // forms use.
+    case "icu":
     case "sym":
     case "perf":
     case "number":
@@ -1280,6 +1287,9 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "mime":
       return host.emitGenericLibCall(e);
     case "nodeIsland":
+      return host.emitGenericLibCall(e);
+    // Primitive wrapper objects (scr_js_wrapper.c).
+    case "wrapper":
       return host.emitGenericLibCall(e);
     case "webstream":
       // A stream's start, pull and cancel steps run as promise jobs, so

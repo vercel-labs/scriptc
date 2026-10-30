@@ -60,11 +60,16 @@ export function textHash(text: string): string {
   return createHash("sha256").update(text).digest("hex").slice(0, 32);
 }
 
-/** The memo key of a program's JavaScript files (name and text). */
+/** The memo key of a program's JavaScript files (name and text) and the
+ * shape and inference settings. */
 export function overlayMemoKey(files: readonly (readonly [string, string])[]): string {
   const hash = createHash("sha256");
   const settings = Object.keys(process.env)
-    .filter((k) => k.startsWith("SCRIPTC_SHAPE_") && !k.startsWith("SCRIPTC_SHAPE_CHECK"))
+    .filter(
+      (k) =>
+        (k.startsWith("SCRIPTC_SHAPE_") && !k.startsWith("SCRIPTC_SHAPE_CHECK")) ||
+        k === "SCRIPTC_INFER_JS",
+    )
     .sort();
   for (const k of settings)
     hash

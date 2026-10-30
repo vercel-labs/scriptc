@@ -47,6 +47,8 @@ const features: NativeLinkFeatures = {
   dgramDyn: false,
   textCodecDyn: false,
   watch: false,
+  watchFile: false,
+  fsBufferBrand: false,
   foreignFfi: false,
   nodeTest: false,
   tls: false,

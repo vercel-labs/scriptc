@@ -4,8 +4,9 @@
  * unit's lowering reached: the unit's IR, the entries it added to the
  * tables that collect lowering results (Lowerer.journalTables), and the
  * calls it made into reachability, generic demand and statement counting
- * (JournalEvent). Records hold only strings, numbers and names, so they can
- * be written to a file and read by another process or another build.
+ * (JournalEvent). Records hold only the function's bytes (or its JSON),
+ * strings, numbers and names, so they can be written to a file and read by
+ * another process or another build.
  *
  * A unit has no record when its lowering changed state that no record
  * carries: a table that is not appendable grew, a field changed, an entry
@@ -23,18 +24,57 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { InternalCompilerError } from "../../errors.js";
+import { decodeFunctionBinary, encodeFunctionStrings, functionDigest } from "../../ir/codec.js";
 import type { IrFunction } from "../../ir/ir.js";
 import { deserializeFunction, encodeFunction } from "../../ir/serialize.js";
 
-/** A function as records hold it, or null when it does not encode. Every
- * function a record holds goes through this pair. */
+/** A function as table entries hold it, or null when it does not encode.
+ * Every function an entry holds goes through this pair. */
 export function encodeUnitFunction(fn: IrFunction): string | null {
   return encodeFunction(fn) ?? null;
 }
 
-/** A function from its record encoding (encodeUnitFunction). */
+/** A function from its entry encoding (encodeUnitFunction). */
 export function decodeUnitFunction(text: string): IrFunction {
   return deserializeFunction(text);
+}
+
+/** A unit's function as its record holds it: the binary IR encoding, or
+ * JSON (encodeUnitFunction) when an object in it would not read back with
+ * its own key order, which frontend passes and the IR's text depend on. */
+export type RecordFunction = string | Uint8Array;
+
+/** `fn` as a record holds it, or null when it does not encode. A binary
+ * encoding comes with its strings and the files its fields named `file`
+ * hold (encodeFunctionStrings). */
+export function encodeRecordFunction(fn: IrFunction): {
+  readonly fn: RecordFunction;
+  readonly strings: readonly string[] | null;
+  readonly files: readonly string[] | null;
+} | null {
+  const binary = encodeFunctionStrings(fn);
+  if (binary !== null) return { fn: binary.bytes, strings: binary.strings, files: binary.files };
+  const text = encodeUnitFunction(fn);
+  return text === null ? null : { fn: text, strings: null, files: null };
+}
+
+/** A function from its record encoding (encodeRecordFunction). */
+export function decodeRecordFunction(fn: RecordFunction): IrFunction {
+  return typeof fn === "string"
+    ? decodeUnitFunction(fn)
+    : decodeFunctionBinary(Buffer.from(fn.buffer, fn.byteOffset, fn.byteLength));
+}
+
+/** `record` as a JSON line, with a binary function in base64, marked when
+ * it was `applied` from an earlier build's store. */
+export function recordLine(record: UnitRecord, applied = false): string {
+  const fn =
+    record.fn === null || typeof record.fn === "string"
+      ? record.fn
+      : Buffer.from(record.fn.buffer, record.fn.byteOffset, record.fn.byteLength).toString(
+          "base64",
+        );
+  return JSON.stringify(applied ? { ...record, fn, applied: true } : { ...record, fn });
 }
 
 /** A call a unit made while it lowered, which applying its record makes
@@ -62,9 +102,9 @@ export interface JournalEvent {
 /** One unit's record. */
 export interface UnitRecord {
   readonly name: string;
-  /** The unit's function in the compact IR encoding, or null when the unit
+  /** The unit's function (encodeRecordFunction), or null when the unit
    * lowered to nothing. */
-  readonly fn: string | null;
+  readonly fn: RecordFunction | null;
   /** True when the unit's lowering ended in a poison: its diagnostics and
    * the edges it fired before poisoning stay, and it has no function. */
   readonly poisoned: boolean;
@@ -91,6 +131,12 @@ export interface JournalTable {
   readonly entries?: (from: number) => string[] | null;
   /** Adds the encoded entries whose keys this process's table lacks. */
   readonly apply?: (entries: readonly string[]) => void;
+  /** Whether every encoded entry whose key this process's table holds
+   * holds the same value there. */
+  readonly agrees?: (entries: readonly string[]) => boolean;
+  /** Whether this process's table holds an entry under the encoded entry's
+   * key. */
+  readonly holds?: (entry: string) => boolean;
   /** A digest of the content of the entry under `key`, when the table
    * holds one before position `before`; null otherwise. */
   readonly digest?: (key: string, before: number) => string | null;
@@ -125,10 +171,20 @@ export function contentDigest(text: string): string {
   return `${text.length}:${(a >>> 0).toString(16)}${(b >>> 0).toString(16)}`;
 }
 
-/** The names quoted in JSON `texts`, unescaped only as far as their
- * delimiting quotes: the strings that start with `%` (helper, lifted and
- * IR data names) and union ids (`u` and 12 hex digits), which the tables
- * a unit reads and changes are keyed by. */
+/** Adds to `out` the names among `strings`: the strings that start with `%`
+ * (helper, lifted and IR data names) and union ids (`u` and 12 hex digits),
+ * which the tables a unit reads and changes are keyed by. */
+export function namedStrings(strings: Iterable<string>, out: Set<string>): void {
+  for (const text of strings) {
+    const first = text.charCodeAt(0);
+    if (first === 37 /* % */) out.add(text);
+    else if (first === 117 /* u */ && text.length === 13 && /^u[0-9a-f]{12}$/.test(text))
+      out.add(text);
+  }
+}
+
+/** The names (namedStrings) quoted in JSON `texts`, unescaped only as far
+ * as their delimiting quotes. */
 export function quotedStrings(texts: readonly string[]): Set<string> {
   const out = new Set<string>();
   const hex = (char: number): boolean => (char >= 48 && char <= 57) || (char >= 97 && char <= 102);
@@ -225,6 +281,10 @@ export interface WaveHost {
   statementCounts(): { total: number; failed: number; other: number };
   /** Whether `event` names something this process holds. */
   resolves(event: JournalEvent): boolean;
+  /** Keeps a unit's function from its record and makes the record's events
+   * again, under the unit's generic demand owner and declared-order
+   * priority. */
+  keep(name: string, fn: IrFunction | null, events: readonly JournalEvent[]): void;
 }
 
 /** Whether reachable emit records its units (SCRIPTC_LOWER_JOURNAL=serial,
@@ -259,10 +319,69 @@ export interface WaveStats {
   unrecorded: number;
   /** Per table, field or check, the units it left without a record. */
   reasons: Record<string, number>;
+  /** Units whose stored record applied in place of lowering them
+   * (unit-reuse.ts). */
+  applied: number;
+  /** Time taking and checking the tables' contents, finding stored records,
+   * applying them, and lowering and recording units, in milliseconds. */
+  holdMs: number;
+  storedMs: number;
+  applyMs: number;
+  recordMs: number;
+  /** Of recordMs, the time the units' lowering took, and the time a
+   * recorded unit's results took to be replaced by its record's. */
+  lowerMs: number;
+  replaceMs: number;
 }
 
 export function waveStats(): WaveStats {
-  return { waves: 0, units: 0, recorded: 0, unrecorded: 0, reasons: {} };
+  return {
+    waves: 0,
+    units: 0,
+    recorded: 0,
+    unrecorded: 0,
+    reasons: {},
+    applied: 0,
+    holdMs: 0,
+    storedMs: 0,
+    applyMs: 0,
+    recordMs: 0,
+    lowerMs: 0,
+    replaceMs: 0,
+  };
+}
+
+/** A wave's use of the records an earlier build stored (unit-reuse.ts). */
+/** A record an earlier build stored, with its function, which the store
+ * can keep apart from the record (`record.fn` is null then). */
+export interface StoredRecord {
+  readonly record: UnitRecord;
+  fn(): IrFunction | null;
+}
+
+export interface WaveReuse {
+  /** The stored record of `name`, when the unit can apply it. */
+  stored(name: string): StoredRecord | null;
+  /** Whether units with a stored record lower and are checked against it
+   * instead (SCRIPTC_INCR_VERIFY=1). */
+  readonly verify: boolean;
+  /** Checks the record a unit lowered to against its stored one, whose
+   * entries the tables did not hold yet at the unit's turn are `pending`. */
+  check(
+    name: string,
+    stored: StoredRecord,
+    pending: Readonly<Record<string, readonly string[]>>,
+    unit: RecordedUnit,
+  ): void;
+  /** Notes the record a unit lowered to, with the files its binary
+   * function names (RecordedUnit.files), or the stored record it applied
+   * (`files` null). */
+  note(
+    name: string,
+    record: UnitRecord | null,
+    applied: boolean,
+    files: readonly string[] | null,
+  ): void;
 }
 
 /** What lowering one unit with its events recording produced. */
@@ -275,6 +394,11 @@ export interface RecordedUnit {
   readonly fn: IrFunction | null;
   /** Each table's size before the unit. */
   readonly before: readonly number[];
+  /** The time the unit's lowering took. */
+  readonly lowerMs: number;
+  /** The files the fields named `file` in the record's function hold, when
+   * the function is binary. */
+  readonly files: readonly string[] | null;
 }
 
 /** Lowers `name` with its events recording, and makes its record. The unit
@@ -297,7 +421,9 @@ export function recordUnit(
   const marks = host.scalars.map((scalar) => scalar.mark());
   const counts = host.statementCounts();
   const recorder = new UnitEvents();
+  const lowering = performance.now();
   const { fn, poisoned } = host.lowerRecorded(name, recorder);
+  const lowerMs = performance.now() - lowering;
   const reasons: string[] = [];
   const grown: number[] = [];
   tables.forEach((table, index) => {
@@ -322,8 +448,8 @@ export function recordUnit(
   if (now.total - counts.total !== statements || now.failed - counts.failed !== failed)
     reasons.push("statements");
   if (now.other !== counts.other) reasons.push("diagnostics");
-  const text = fn === null ? null : encodeUnitFunction(fn);
-  if (fn !== null && text === null) reasons.push("encoding");
+  const encoded = fn === null ? null : encodeRecordFunction(fn);
+  if (fn !== null && encoded === null) reasons.push("encoding");
   const added: Record<string, readonly string[]> = {};
   if (reasons.length === 0)
     for (const index of grown) {
@@ -335,13 +461,14 @@ export function recordUnit(
   // A unit uses the entries its IR and new entries name: it reads them, and
   // a unit that changes one in place changes one it names.
   const texts: string[] = [];
-  if (text !== null) texts.push(text);
+  if (typeof encoded?.fn === "string") texts.push(encoded.fn);
   for (const index of grown) {
     const table = tables[index]!;
     const entries = added[table.name] ?? table.entries!(before[index]!);
     if (entries !== null) for (const entry of entries) texts.push(entry);
   }
   const names = quotedStrings(texts);
+  if (encoded?.strings != null) namedStrings(encoded.strings, names);
   if (own !== null) {
     if (reasons.length === 0)
       tables.forEach((table, index) => {
@@ -369,36 +496,72 @@ export function recordUnit(
       }
       if (read.length > 0) reads[table.name] = read;
     });
-  if (reasons.length > 0) return { record: null, reasons, fn, before };
+  if (reasons.length > 0) return { record: null, reasons, fn, before, lowerMs, files: null };
   return {
-    record: { name, fn: text, poisoned, events, tables: added, reads },
+    record: { name, fn: encoded?.fn ?? null, poisoned, events, tables: added, reads },
     reasons,
     fn,
     before,
+    lowerMs,
+    files: encoded?.files ?? null,
   };
 }
 
-/** Lowers `wave` with every unit recorded. A unit with a record keeps the
- * results its record carries: the entries it added are taken out of their
- * tables and added again from the record, and its function is the one
- * decoded from the record. A unit without one keeps what lowering made.
+/** Lowers `wave` with every unit recorded. Without `reuse`, a unit with a
+ * record keeps the results its record carries: the entries it added are
+ * taken out of their tables and added again from the record, and its
+ * function is the one decoded from the record. Otherwise, and for a unit
+ * without a record, a unit keeps what lowering made.
  * Throws an InternalCompilerError when a unit changed the content of an
  * entry a table held when the unit started (JournalTable.contents), which
  * no record carries.
- * `lines`, when given, receives each unit's record as a JSON line. */
+ * `lines`, when given, receives each unit's record as a JSON line. A unit
+ * whose stored record `reuse` gives applies it, and lowers when it does not
+ * apply. With `held`, the wave continues the content the waves before it
+ * left (HeldTables), and the check waits for HeldTables.check. */
 export function lowerWaveRecorded(
   host: WaveHost,
   wave: readonly string[],
   stats: WaveStats,
   lines: string[] | null = null,
+  reuse: WaveReuse | null = null,
+  held: HeldTables | null = null,
 ): void {
   stats.waves++;
   const tables = host.tables;
-  // Units keep the content of the entries that tables held when they
-  // started: a record carries a unit's new entries, not changes to others.
-  const contents = tables.map((table) => (table.contents === undefined ? null : table.contents()));
+  const contents = held ?? new HeldTables(tables, stats);
+  let started = 0;
   for (const name of wave) {
-    const unit = recordUnit(host, name, contents);
+    started = performance.now();
+    let stored = reuse?.stored(name) ?? null;
+    stats.storedMs += performance.now() - started;
+    let pending: Readonly<Record<string, readonly string[]>> = {};
+    if (stored !== null && reuse!.verify) {
+      // Verify mode lowers the units whose stored record would apply and
+      // checks the record they lower to.
+      if (recordApplies(host, stored.record).length === 0)
+        pending = pendingEntries(host, stored.record);
+      else stored = null;
+    } else if (stored !== null) {
+      started = performance.now();
+      const reasons = applyRecord(host, stored.record, stored.fn);
+      stats.applyMs += performance.now() - started;
+      if (reasons.length === 0) {
+        stats.units++;
+        stats.recorded++;
+        stats.applied++;
+        contents.extendTaken();
+        lines?.push(recordLine(stored.record, true));
+        reuse!.note(name, stored.record, true, null);
+        continue;
+      }
+      for (const reason of reasons)
+        stats.reasons[`stored:${reason}`] = (stats.reasons[`stored:${reason}`] ?? 0) + 1;
+    }
+    started = performance.now();
+    const unit = recordUnit(host, name, contents.take());
+    stats.recordMs += performance.now() - started;
+    stats.lowerMs += unit.lowerMs;
     stats.units++;
     const record = unit.record;
     if (record === null) {
@@ -406,43 +569,174 @@ export function lowerWaveRecorded(
       stats.unrecorded++;
       for (const reason of unit.reasons) stats.reasons[reason] = (stats.reasons[reason] ?? 0) + 1;
       host.store(name, unit.fn);
+      if (stored !== null && reuse!.verify) reuse!.check(name, stored, pending, unit);
+      reuse?.note(name, null, false, null);
       continue;
     }
-    lines?.push(JSON.stringify(record));
+    lines?.push(recordLine(record));
     stats.recorded++;
-    tables.forEach((table, index) => {
-      const entries = record.tables[table.name];
-      if (entries === undefined) return;
-      table.truncate!(unit.before[index]!);
-      table.apply!(entries);
-    });
-    host.store(name, record.fn === null ? null : decodeUnitFunction(record.fn));
+    // The serial mode replaces a unit's results by its record's, so that the
+    // build's output is what applying the records gives. Reuse keeps what
+    // lowering made: its records apply in later builds, which verify mode
+    // and the edit-sequence tests check.
+    let fn = unit.fn;
+    if (reuse === null) {
+      const replacing = performance.now();
+      tables.forEach((table, index) => {
+        const entries = record.tables[table.name];
+        if (entries === undefined) return;
+        table.truncate!(unit.before[index]!);
+        table.apply!(entries);
+      });
+      fn = record.fn === null ? null : decodeRecordFunction(record.fn);
+      stats.replaceMs += performance.now() - replacing;
+    }
+    host.store(name, fn);
+    if (stored !== null && reuse!.verify) reuse!.check(name, stored, pending, unit);
+    reuse?.note(name, record, false, unit.files);
   }
-  tables.forEach((table, index) => {
-    const key = contents[index]?.changed() ?? null;
-    if (key !== null)
-      throw new InternalCompilerError(
-        `a unit changed ${table.name} entry ${key} in place without naming it, which no unit record carries`,
+  if (held === null) contents.check();
+}
+
+/** The content of the tables' entries that recorded units start from
+ * (JournalTable.contents): units keep the content of the entries the
+ * tables held when they started, since a record carries a unit's new
+ * entries, not changes to others. Applying a stored record only adds
+ * entries, so the content is taken when the first unit lowers, and not at
+ * all when none does. Consecutive waves with nothing but checker prefetches
+ * between them share one: the content a wave leaves, as the check finds it,
+ * is the content the next one starts with. */
+export class HeldTables {
+  private contents: (HeldContents | null)[] | null = null;
+
+  constructor(
+    private readonly tables: readonly JournalTable[],
+    private readonly stats: WaveStats,
+  ) {}
+
+  /** The held content, taken now when it was not yet. */
+  take(): (HeldContents | null)[] {
+    if (this.contents === null) {
+      const taken = performance.now();
+      this.contents = this.tables.map((table) =>
+        table.contents === undefined ? null : table.contents(),
       );
-  });
+      this.stats.holdMs += performance.now() - taken;
+    }
+    return this.contents;
+  }
+
+  /** Adds the entries past the held ones, when the content is taken. */
+  extendTaken(): void {
+    if (this.contents !== null) for (const entry of this.contents) entry?.extend();
+  }
+
+  /** Throws an InternalCompilerError when an entry a table held changed in
+   * place since the content was taken, other than by the units that keep
+   * their changes (HeldContents.refresh). */
+  check(): void {
+    const contents = this.contents;
+    if (contents === null) return;
+    const started = performance.now();
+    this.tables.forEach((table, index) => {
+      const key = contents[index]?.changed() ?? null;
+      if (key !== null)
+        throw new InternalCompilerError(
+          `a unit changed ${table.name} entry ${key} in place without naming it, which no unit record carries`,
+        );
+    });
+    this.stats.holdMs += performance.now() - started;
+  }
+}
+
+/** Applies `record` in place of lowering its unit, at the unit's turn, or
+ * returns why the unit has to lower instead. A record applies when every
+ * entry it adds agrees with what the tables hold, it names only known
+ * tables, every event resolves and every entry it reads is held with the
+ * same content. Applying adds its entries, keeps its function (`stored`'s,
+ * when the store keeps it apart from the record) and makes its events
+ * again. */
+export function applyRecord(
+  host: WaveHost,
+  record: UnitRecord,
+  stored?: () => IrFunction | null,
+): string[] {
+  const reasons = recordApplies(host, record);
+  if (reasons.length > 0) return reasons;
+  for (const table of host.tables) {
+    const entries = record.tables[table.name];
+    if (entries !== undefined) table.apply!(entries);
+  }
+  const fn = record.poisoned
+    ? null
+    : stored !== undefined
+      ? stored()
+      : record.fn === null
+        ? null
+        : decodeRecordFunction(record.fn);
+  host.keep(record.name, fn, record.events);
+  return [];
+}
+
+/** The entries `record` adds that the tables do not hold yet, by table
+ * name: what applying it would add at its unit's turn. */
+export function pendingEntries(
+  host: WaveHost,
+  record: UnitRecord,
+): Record<string, readonly string[]> {
+  const out: Record<string, readonly string[]> = {};
+  for (const table of host.tables) {
+    const entries = record.tables[table.name];
+    if (entries === undefined) continue;
+    const pending = entries.filter((entry) => table.holds?.(entry) !== true);
+    if (pending.length > 0) out[table.name] = pending;
+  }
+  return out;
+}
+
+/** Why `record` does not apply at its unit's turn (applyRecord), or no
+ * reasons when it does. */
+export function recordApplies(host: WaveHost, record: UnitRecord): string[] {
+  const tables = host.tables;
+  for (const table of tables) {
+    const entries = record.tables[table.name];
+    if (entries === undefined) continue;
+    if (table.agrees === undefined || table.apply === undefined || !table.agrees(entries))
+      return [`disagrees:${table.name}`];
+  }
+  for (const table of Object.keys(record.tables))
+    if (!tables.some((held) => held.name === table)) return [`unknown table:${table}`];
+  for (const event of record.events) if (!host.resolves(event)) return [`event:${event.kind}`];
+  for (const table of tables) {
+    const reads = record.reads[table.name];
+    if (reads === undefined) continue;
+    if (table.digest === undefined) return [`unknown read:${table.name}`];
+    const size = table.size();
+    for (const [key, digest] of reads)
+      if (table.digest(key, size) !== digest) return [`read:${table.name}`];
+  }
+  for (const table of Object.keys(record.reads))
+    if (!tables.some((held) => held.name === table)) return [`unknown read:${table}`];
+  return [];
 }
 
 /** The content of a keyed table's entries (JournalTable.contents): each
- * entry's encoded value, and the order of the keys, since a table only adds
- * entries at the end. An entry is found by its key, or by the name its value
- * holds (`valueName`): a unit names the helper it got, not the key it was
- * looked up by. `text` answers undefined for a key the table does not
+ * entry's content (`text`: its encoded value, or the value itself when it
+ * is a string or a number), and the order of the keys, since a table only
+ * adds entries at the end. An entry is found by its key, or by the name its
+ * value holds (`valueName`): a unit names the helper it got, not the key it
+ * was looked up by. `text` answers undefined for a key the table does not
  * hold. */
 function keyedContents(
   size: () => number,
   keys: () => Iterable<string>,
-  text: (key: string) => string | null | undefined,
+  text: (key: string) => string | number | null | undefined,
   valueName: (key: string) => string | null,
 ): HeldContents {
-  const texts = new Map<string, string | null>();
+  const texts = new Map<string, string | number | null>();
   let order: string[] = [];
   const byName = new Map<string, string>();
-  const differs = (key: string): boolean => text(key) !== texts.get(key);
+  const differs = (key: string): boolean => !Object.is(text(key), texts.get(key));
   const keyOf = (name: string): string | undefined => (texts.has(name) ? name : byName.get(name));
   const held: HeldContents = {
     extend: () => {
@@ -499,6 +793,7 @@ export function mapTable(name: string, map: Map<string, string>): JournalTable {
     (value) => JSON.stringify(value),
     (text) => JSON.parse(text) as string,
     (value) => value,
+    (value) => value,
   );
 }
 
@@ -509,6 +804,8 @@ export function countTable(name: string, map: Map<string, number>): JournalTable
     map,
     (value) => String(value),
     (text) => Number(text),
+    null,
+    (value) => value,
   );
 }
 
@@ -530,13 +827,17 @@ export function irDataTable<V>(name: string, map: Map<string, V>): JournalTable 
 /** An appendable table over a Map from strings to values that `encode`
  * writes, or answers null for, and `decode` reads back. An entry is its key
  * as a JSON string, a line break and its value: a JSON string holds no line
- * break. A value that does not encode leaves its unit without a record. */
+ * break. A value that does not encode leaves its unit without a record.
+ * `content` is what held contents compare (JournalTable.contents): the
+ * encoding, or the value itself for a table of strings or numbers, which
+ * only change by being replaced. */
 export function codecTable<V>(
   name: string,
   map: Map<string, V>,
   encode: (value: V) => string | null,
   decode: (text: string) => V,
   nameOf: ((value: V) => string) | null = null,
+  content: (value: V) => string | number | null = encode,
 ): JournalTable {
   return {
     name,
@@ -552,6 +853,13 @@ export function codecTable<V>(
       }
       return out;
     },
+    agrees: (entries) =>
+      entries.every((entry) => {
+        const split = entry.indexOf("\n");
+        const held = map.get(JSON.parse(entry.slice(0, split)) as string);
+        return held === undefined || encode(held) === entry.slice(split + 1);
+      }),
+    holds: (entry) => map.has(JSON.parse(entry.slice(0, entry.indexOf("\n"))) as string),
     apply: (entries) => {
       for (const entry of entries) {
         const split = entry.indexOf("\n");
@@ -569,7 +877,7 @@ export function codecTable<V>(
         () => map.keys(),
         (key) => {
           const value = map.get(key);
-          return value === undefined ? undefined : encode(value);
+          return value === undefined ? undefined : content(value);
         },
         (key) => {
           const value = map.get(key);
@@ -585,6 +893,8 @@ export function setTable(name: string, set: Set<string>): JournalTable {
     name,
     size: () => set.size,
     entries: (from) => [...set].slice(from),
+    agrees: () => true,
+    holds: (entry) => set.has(entry),
     apply: (entries) => {
       for (const entry of entries) set.add(entry);
     },
@@ -652,6 +962,14 @@ export function functionTable(
       }
       return out;
     },
+    agrees: (entries) =>
+      entries.every((entry) => {
+        const fn = decodeUnitFunction(entry);
+        if (!has(fn.name)) return true;
+        const index = indexOf(fn.name);
+        return index !== undefined && encodeUnitFunction(functions[index]!) === entry;
+      }),
+    holds: (entry) => has(decodeUnitFunction(entry).name),
     apply: (entries) => {
       for (const entry of entries) {
         const fn = decodeUnitFunction(entry);
@@ -663,16 +981,17 @@ export function functionTable(
       while (functions.length > from) functions.pop();
       changed();
     },
+    // Held functions are their content digests (heldFunction).
     contents: () => {
       const texts: (string | null)[] = [];
       const indexes = new Map<string, number>();
       const differs = (index: number): boolean =>
-        index < functions.length && encodeUnitFunction(functions[index]!) !== texts[index];
+        index < functions.length && heldFunction(functions[index]!) !== texts[index];
       const held: HeldContents = {
         extend: () => {
           for (let index = texts.length; index < functions.length; index++) {
             const fn = functions[index]!;
-            texts.push(encodeUnitFunction(fn));
+            texts.push(heldFunction(fn));
             indexes.set(fn.name, index);
           }
         },
@@ -692,7 +1011,7 @@ export function functionTable(
           for (const key of keys) {
             const index = indexes.get(key);
             if (index !== undefined && index < functions.length)
-              texts[index] = encodeUnitFunction(functions[index]!);
+              texts[index] = heldFunction(functions[index]!);
           }
         },
       };
@@ -700,6 +1019,17 @@ export function functionTable(
       return held;
     },
   };
+}
+
+/** The content a function table holds of `fn` (HeldContents): its digest
+ * (functionDigest), or its entry encoding when the binary encoder cannot
+ * write it. */
+function heldFunction(fn: IrFunction): string | null {
+  try {
+    return functionDigest(fn);
+  } catch {
+    return encodeUnitFunction(fn);
+  }
 }
 
 /** A table whose growth leaves the unit without a record. */

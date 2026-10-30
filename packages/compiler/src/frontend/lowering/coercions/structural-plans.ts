@@ -193,6 +193,26 @@ export function widthLiftPlan(lowerer: Lowerer, src: IrType, dst: IrType): Width
       if (exact.length === 1) selected = exact;
       else if (exact.length === 0 && lossless.length === 1) selected = lossless;
     }
+    // An 'unknown' (dyn) source whose union destination has no dyn arm of
+    // its own (`details: any` into `Details | undefined`, a tool result's
+    // `structuredContent: unknown` into the JSON-value union): the checked
+    // extraction, the same dynCheck coerceToExpected performs for a dyn
+    // value in a union slot. A dyn source has no arm family, so every arm
+    // rule above has passed it by, and every plan that exists for a dyn
+    // source is the one above (its own arm) — this is exactly the case
+    // that returned null (SC2002) before, so no convertible value changes
+    // its lowering.
+    if (
+      selected.length !== 1 &&
+      src.kind === "dyn" &&
+      canDynCheckTo(
+        dst,
+        (id) => lowerer.shapes.get(id),
+        (id) => lowerer.unions.get(id),
+      )
+    ) {
+      return { how: "dynOut" };
+    }
     if (selected.length !== 1) return null;
     return { how: "liftWrap", tag: selected[0]!.tag, arm: selected[0]!.arm };
   }

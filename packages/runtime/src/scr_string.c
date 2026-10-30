@@ -432,9 +432,13 @@ static ScrStr *scr_str_new_ascii(const char *bytes, size_t len) {
 #ifndef SCR_RC_AUDIT
 static SCR_TL ScrStr *scr_str_spare;
 #endif
+/* The largest block the spare keeps. A larger one stays resident until a
+ * string of about its size comes along, which may be never: a program that
+ * replaces a 50 MB input with its edited copy would otherwise hold both. */
+#define SCR_STR_SPARE_MAX ((size_t)1 << 20)
 
 /* A spare-block reuse must not waste grossly (cap <= 4x the need) and only
- * sizable blocks are worth stashing (>= 512). */
+ * sizable blocks are worth stashing (512 bytes to SCR_STR_SPARE_MAX). */
 static ScrStr *scr_str_take_spare(size_t len) {
 #ifndef SCR_RC_AUDIT
   ScrStr *s = scr_str_spare;
@@ -483,7 +487,7 @@ void scr_str_release(ScrStr *s) {
     scr_live_strings--;
 #endif
 #ifndef SCR_RC_AUDIT
-    if (s->cap >= 512) {
+    if (s->cap >= 512 && s->cap <= SCR_STR_SPARE_MAX) {
       ScrStr *old = scr_str_spare;
       scr_str_spare = s;
       if (!old) return;

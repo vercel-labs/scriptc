@@ -35,7 +35,9 @@
   `stream.compose` accepts streams and async generator functions in any position, an async function as the last stage, and an array, a string, or a generator as the first stage; one stage is `Duplex.from` of it.
   A web `ReadableStream` is read as an async iterable by `Readable.from` and as the first stage of `compose` or `pipeline`, and through its reader by `Readable.fromWeb` (with `objectMode`, `highWaterMark`, `encoding`, and `signal` in an options object literal) and `Duplex.from`.
   In TypeScript, `new TransformStream()` without arguments builds the identity transform: its readable side is a web `ReadableStream`, its writable side supports `getWriter`, `abort`, `close`, and `locked`, and the writer supports `write`, `close`, `abort`, `releaseLock`, `ready`, `closed`, and `desiredSize`, with Node's backpressure (a write completes when the readable side reads its chunk).
-  A web stream in a later compose stage and `Readable.toWeb` are unsupported, and in TypeScript, so are a `TransformStream` with a transformer or queuing strategies, the `WritableStream` constructor, `pipeTo`, and `pipeThrough`.
+  In TypeScript, `tee`, `pipeTo`, and `pipeThrough`, the `WritableStream` constructor with an underlying sink, and a `TransformStream` with a transformer or queuing strategies compile: a program that uses one of them builds its `ReadableStream`, `WritableStream`, and `TransformStream` values with the same classes as JavaScript, and a `Response` or `Request` body has those members too.
+  A TypeScript program that uses only `getReader`, `cancel`, `locked`, and the identity `TransformStream` keeps the smaller native streams.
+  A web stream in a later compose stage and `Readable.toWeb` are unsupported.
   The `ERR_INVALID_ARG_VALUE` message for a stream that is no longer readable or writable names the stream's class instead of printing the stream.
   `readable.compose(stage, { signal })` is `stream.compose(readable, stage)` with the signal added; the options are an object literal whose `signal` is a variable or a property read.
   `pipeline` from `node:stream/promises` accepts a trailing `{ signal, end }` object, with or without function stages, and `finished` accepts `readable`, `writable`, `error`, `cleanup`, and `signal` options, with boolean literals for the flags.
@@ -60,7 +62,7 @@
   The `readline/promises` `Readline` class writes to the same outputs.
   `readline.emitKeypressEvents` emits `'keypress'` events on `process.stdin` or a readable stream, shared with terminal interfaces on that stream as in Node; a listener's first parameter must admit `undefined`, which it receives for escape sequences.
   Chained listener registration is unsupported.
-  `node:stream/web` exports the same classes as the globals; in TypeScript, only `ReadableStream` and the identity `TransformStream` have lowerings.
+  `node:stream/web` exports the same classes as the globals; in TypeScript, `ReadableStream`, `WritableStream`, and `TransformStream` have lowerings.
   In JavaScript, `ReadableStream`, `WritableStream`, and `TransformStream` with their default readers, writers, and controllers, `CountQueuingStrategy`, `ByteLengthQueuingStrategy`, `TextEncoderStream`, and `TextDecoderStream`, as globals and as `node:stream/web` exports, are constructor values with Node's prototypes, brand checks, and errors.
   Their underlying sources, sinks, and transformers, queuing strategies with a `size` function, readers and writers, `tee`, `pipeTo` and `pipeThrough` with their options and an abort signal, `ReadableStream.from`, and async iteration settle promises in Node's order, and the streams take own properties.
   `TextDecoderStream` decodes UTF-8; its other encodings are unsupported.

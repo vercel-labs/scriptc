@@ -28,6 +28,10 @@ function declarationHost(
     declare(decl) {
       declarations.push(decl);
     },
+    cstr(text) {
+      declarations.push(`@cstr ${text}`);
+      return "@sc_cstr";
+    },
     needOom() {},
     mapOps: (operands) => (operands.every((op) => op === "null") ? "null" : "@sc_map_ops"),
     sizeType: pointerBits === 32 ? "i32" : "i64",

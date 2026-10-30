@@ -443,6 +443,13 @@ export const FS_WATCH_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set([
   "signal",
 ]);
 
+/** fs.watchFile's documented option keys. */
+export const FS_WATCH_FILE_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set([
+  "interval",
+  "persistent",
+  "bigint",
+]);
+
 /** fs.readdirSync's documented option keys. */
 export const FS_READDIR_DOCUMENTED_OPTIONS: ReadonlySet<string> = new Set([
   "encoding",
@@ -823,15 +830,28 @@ export interface BuiltinModuleFn {
   /** The function value's `length` when it is not the count of its
    * required value parameters (`Math.max`'s 2 over its rest pack). */
   valueLength?: number;
+  /** The order Node validates named value parameters in, when it is not
+   * the parameter order (basename checks its suffix first). */
+  valueOrder?: readonly number[];
+  /** The runtime entry point an untyped caller's adapter calls with every
+   * argument as given, when it validates them itself (resolve's last-first
+   * walk) or the value has no typed form (`only`: parse's record result,
+   * format's untyped pathObject). `args` are constants passed after the
+   * arguments (the win32 flag of an entry both path families share). */
+  checked?: { fn: IrLibFn; args: readonly boolean[]; result?: IrType; only?: true };
   /** The function value's `name` when it is not the member's
    * (`process.cwd` is Node's `wrappedCwd`). */
   valueName?: string;
 }
 
+/** `name` is the argument name Node's validator reports
+ * (ERR_INVALID_ARG_TYPE's 'The "path" argument ...'): the adapter accepts
+ * any value there and validates it, so a string parameter arrives checked
+ * and a dyn one reaches its valueFn as given. */
 export type BuiltinValueParam =
-  | { mode: "required"; type: IrType }
-  | { mode: "optional"; type: IrType; defaultValue: string | number | undefined }
-  | { mode: "rest"; type: IrType };
+  | { mode: "required"; type: IrType; name?: string }
+  | { mode: "optional"; type: IrType; defaultValue: string | number | undefined; name?: string }
+  | { mode: "rest"; type: IrType; name?: string };
 
 /** The common first-class shape for builtin functions whose supported
  * source signature is already exactly the fixed native ABI. Keeping the
@@ -933,26 +953,27 @@ const PATH_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
     params: [STRING],
     result: STRING,
     variadicPack: true,
-    valueParams: [{ mode: "rest", type: STRING }],
+    valueParams: [{ mode: "rest", type: STRING, name: "path" }],
   },
   resolve: {
     fn: "path.resolve",
     params: [STRING],
     result: STRING,
     variadicPack: true,
-    valueParams: [{ mode: "rest", type: STRING }],
+    valueParams: [{ mode: "rest", type: STRING, name: "paths" }],
+    checked: { fn: "path.resolveValue", args: [false] },
   },
   normalize: {
     fn: "path.normalize",
     params: [STRING],
     result: STRING,
-    valueParams: [{ mode: "required", type: STRING }],
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
   },
   dirname: {
     fn: "path.dirname",
     params: [STRING],
     result: STRING,
-    valueParams: [{ mode: "required", type: STRING }],
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
   },
   basename: {
     fn: "path.basename",
@@ -960,48 +981,65 @@ const PATH_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
     result: STRING,
     defaults: [""],
     valueParams: [
-      { mode: "required", type: STRING },
-      { mode: "optional", type: STRING, defaultValue: "" },
+      { mode: "required", type: STRING, name: "path" },
+      { mode: "optional", type: STRING, defaultValue: "", name: "suffix" },
     ],
+    valueOrder: [1, 0],
   },
   extname: {
     fn: "path.extname",
     params: [STRING],
     result: STRING,
-    valueParams: [{ mode: "required", type: STRING }],
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
   },
   isAbsolute: {
     fn: "path.isAbsolute",
     params: [STRING],
     result: BOOL,
-    valueParams: [{ mode: "required", type: STRING }],
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
   },
   relative: {
     fn: "path.relative",
     params: [STRING, STRING],
     result: STRING,
     valueParams: [
-      { mode: "required", type: STRING },
-      { mode: "required", type: STRING },
+      { mode: "required", type: STRING, name: "from" },
+      { mode: "required", type: STRING, name: "to" },
     ],
   },
   toNamespacedPath: {
     fn: "path.toNamespacedPath",
     params: [STRING],
     result: STRING,
-    valueParams: [{ mode: "required", type: STRING }],
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
+    checked: { fn: "path.toNamespacedValue", args: [false], result: DYN },
   },
   matchesGlob: {
     fn: "path.matchesGlob",
     params: [STRING, STRING],
     result: BOOL,
-    valueParams: exactValueParams(STRING, STRING),
+    valueParams: [
+      { mode: "required", type: STRING, name: "path" },
+      { mode: "required", type: STRING, name: "pattern" },
+    ],
   },
   // Special-cased (lowerPathParseCall / lowerPathFormatCall): the
   // ParsedPath record and the pathObject argument follow the call site's
   // mapped shapes.
-  parse: { fn: "path.parse", params: [STRING], result: VOID },
-  format: { fn: "path.format", params: [], result: STRING },
+  parse: {
+    fn: "path.parse",
+    params: [STRING],
+    result: VOID,
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
+    checked: { fn: "path.parseValue", args: [false], result: DYN, only: true },
+  },
+  format: {
+    fn: "path.format",
+    params: [],
+    result: STRING,
+    valueParams: [{ mode: "required", type: DYN, name: "pathObject" }],
+    checked: { fn: "path.formatValue", args: [false], result: DYN, only: true },
+  },
 };
 
 /** The win32 twins (scr_path.c's exact port of Node-v24 path.win32):
@@ -1013,26 +1051,27 @@ const PATH_WIN32_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
     params: [STRING],
     result: STRING,
     variadicPack: true,
-    valueParams: [{ mode: "rest", type: STRING }],
+    valueParams: [{ mode: "rest", type: STRING, name: "path" }],
   },
   resolve: {
     fn: "path.win32Resolve",
     params: [STRING],
     result: STRING,
     variadicPack: true,
-    valueParams: [{ mode: "rest", type: STRING }],
+    valueParams: [{ mode: "rest", type: STRING, name: "paths" }],
+    checked: { fn: "path.resolveValue", args: [true] },
   },
   normalize: {
     fn: "path.win32Normalize",
     params: [STRING],
     result: STRING,
-    valueParams: [{ mode: "required", type: STRING }],
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
   },
   dirname: {
     fn: "path.win32Dirname",
     params: [STRING],
     result: STRING,
-    valueParams: [{ mode: "required", type: STRING }],
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
   },
   basename: {
     fn: "path.win32Basename",
@@ -1040,48 +1079,65 @@ const PATH_WIN32_MODULE_FNS: Record<string, BuiltinModuleFn | undefined> = {
     result: STRING,
     defaults: [""],
     valueParams: [
-      { mode: "required", type: STRING },
-      { mode: "optional", type: STRING, defaultValue: "" },
+      { mode: "required", type: STRING, name: "path" },
+      { mode: "optional", type: STRING, defaultValue: "", name: "suffix" },
     ],
+    valueOrder: [1, 0],
   },
   extname: {
     fn: "path.win32Extname",
     params: [STRING],
     result: STRING,
-    valueParams: [{ mode: "required", type: STRING }],
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
   },
   isAbsolute: {
     fn: "path.win32IsAbsolute",
     params: [STRING],
     result: BOOL,
-    valueParams: [{ mode: "required", type: STRING }],
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
   },
   relative: {
     fn: "path.win32Relative",
     params: [STRING, STRING],
     result: STRING,
     valueParams: [
-      { mode: "required", type: STRING },
-      { mode: "required", type: STRING },
+      { mode: "required", type: STRING, name: "from" },
+      { mode: "required", type: STRING, name: "to" },
     ],
   },
   toNamespacedPath: {
     fn: "path.win32ToNamespacedPath",
     params: [STRING],
     result: STRING,
-    valueParams: [{ mode: "required", type: STRING }],
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
+    checked: { fn: "path.toNamespacedValue", args: [true], result: DYN },
   },
   matchesGlob: {
     fn: "path.win32MatchesGlob",
     params: [STRING, STRING],
     result: BOOL,
-    valueParams: exactValueParams(STRING, STRING),
+    valueParams: [
+      { mode: "required", type: STRING, name: "path" },
+      { mode: "required", type: STRING, name: "pattern" },
+    ],
   },
   // Special-cased (lowerPathParseCall / lowerPathFormatCall): the
   // ParsedPath record and the pathObject argument follow the call site's
   // mapped shapes.
-  parse: { fn: "path.win32Parse", params: [STRING], result: VOID },
-  format: { fn: "path.win32Format", params: [], result: STRING },
+  parse: {
+    fn: "path.win32Parse",
+    params: [STRING],
+    result: VOID,
+    valueParams: [{ mode: "required", type: STRING, name: "path" }],
+    checked: { fn: "path.parseValue", args: [true], result: DYN, only: true },
+  },
+  format: {
+    fn: "path.win32Format",
+    params: [],
+    result: STRING,
+    valueParams: [{ mode: "required", type: DYN, name: "pathObject" }],
+    checked: { fn: "path.formatValue", args: [true], result: DYN, only: true },
+  },
 };
 
 /** util.types's own keys in Node's order (Node 24.22.0). The table is the
@@ -1205,9 +1261,9 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
       // truncateSync's omitted len completes to 0 in lowerBuiltinModuleCall,
       // like accessSync's mode.
       truncateSync: { fn: "fs.truncateSync", params: [STRING, F64], result: VOID },
-      // The 2-argument form only: Node's mode flags (COPYFILE_EXCL, ...)
-      // land on the arity fence.
-      copyFileSync: { fn: "fs.copyFileSync", params: [STRING, STRING], result: VOID },
+      // The mode is libuv's copyfile flag bits (COPYFILE_EXCL, ...); the
+      // 2- and 3-argument forms lower in lowerBuiltinModuleCall.
+      copyFileSync: { fn: "fs.copyFileSync", params: [STRING, STRING, F64], result: VOID },
       // The callback form is special-cased in lowerBuiltinModuleCall: its
       // Error | null parameter is program-shaped and needs an emitted
       // adapter. The row still projects the static surface and routes the
@@ -1413,10 +1469,10 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         params: [STRING, STRING],
         result: { kind: "promise", inner: VOID },
       },
-      // The 2-argument form only, like copyFileSync.
+      // The 2- and 3-argument forms, like copyFileSync.
       copyFile: {
         fn: "fsp.copyFile",
-        params: [STRING, STRING],
+        params: [STRING, STRING, F64],
         result: { kind: "promise", inner: VOID },
       },
       mkdtemp: { fn: "fsp.mkdtemp", params: [STRING], result: { kind: "promise", inner: STRING } },
@@ -2215,15 +2271,20 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     ],
     // The string source's check before a URL destination converts
     // (fs-paths.ts).
-    copyFileSync: ["fs.checkPath"],
+    copyFileSync: ["fs.checkPath", "fs.copyFileFlagsSync"],
     renameSync: ["fs.checkPath"],
-    copyFile: ["fs.checkPath"],
+    copyFile: ["fs.checkPath", "fsp.copyFileFlags"],
     rename: ["fs.checkPath"],
     readlinkSync: ["fs.readlinkSyncStr", "fs.readlinkSyncBuffer"],
     // The bytes-data form and the { mode } options form.
     // The bytes-data form, the { mode } options form, and the
     // file-descriptor data form.
-    writeFileSync: ["fs.writeFileSyncBytes", "fs.writeFileModeSync", "fs.writeFileSyncFd"],
+    writeFileSync: [
+      "fs.writeFileSyncBytes",
+      "fs.writeFileModeSync",
+      "fs.writeFileFlagsSync",
+      "fs.writeFileSyncFd",
+    ],
     appendFileSync: ["fs.appendFileSyncBytes"],
     // The fs stream members (bytesRead/bytesWritten, pending, path, close).
     createReadStream: [
@@ -2274,8 +2335,8 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
     // The Buffer form (no encoding) and the runtime-encoding forms.
     readFile: ["fsp.readFileBytes", "fsp.readFileEncoded"],
     readlink: ["fsp.readlinkStr", "fsp.readlinkBuffer"],
-    // The string-data { mode } options form.
-    writeFile: ["fsp.writeFileMode"],
+    // The string-data { mode, flag } options forms.
+    writeFile: ["fsp.writeFileMode", "fsp.writeFileFlags"],
     // The { withFileTypes: true } Dirent form.
     readdir: ["fsp.readdirTypes"],
     glob: ["fsp.globTypes"],
@@ -2318,7 +2379,7 @@ export const BUILTIN_MODULE_FN_ALIASES: Record<
   },
   os: {
     // lowerOsUserInfoCall assembles the record from scalar libCalls.
-    userInfo: ["os.userHomedir", "os.userShell"],
+    userInfo: ["os.userHomedir", "os.userShell", "os.userUid", "os.userGid"],
     // lowerOsCpusCall reads the cpusTake snapshot through its accessors.
     cpus: ["os.cpusModel", "os.cpusField"],
   },
@@ -2435,6 +2496,22 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       name: "fs error-first callbacks",
       fns: ["fs.callbackValue", "fs.callbackCall", "fs.callbackGlob"],
       note: "native filesystem callbacks, including stored platform adapter functions",
+    },
+    // fs.watchFile/fs.unwatchFile lower in lowerFsWatchFileCall, ahead of
+    // the module table.
+    {
+      id: "node-builtin.fs.watchFile",
+      kind: "node-builtin",
+      name: "fs.watchFile",
+      fns: ["fs.watchFile"],
+      note: "stat polling of a resolved path with Stats listeners, in statement position; bigint: true is refused",
+    },
+    {
+      id: "node-builtin.fs.unwatchFile",
+      kind: "node-builtin",
+      name: "fs.unwatchFile",
+      fns: ["fs.unwatchFile"],
+      note: "removes one listener, or every listener, from a resolved path's poller",
     },
     // ── the Date slice (lowerDateCall/lowerNew): statics, construction,
     // stored read-only values, calendar getters, and ISO formatting.
@@ -2730,7 +2807,12 @@ function buildAmbientSurfaceFns(): readonly AmbientSurfaceRow[] {
       id: "node-builtin.process.getBuiltinModule",
       kind: "node-builtin",
       name: "process.getBuiltinModule",
-      fns: ["process.builtinId", "process.builtinModule", "process.builtinUnsupported"],
+      fns: [
+        "process.builtinId",
+        "process.builtinModule",
+        "process.builtinObject",
+        "process.builtinUnsupported",
+      ],
       note: "native path and os export subsets plus current-thread worker_threads metadata; other modules and exports throw SC2020",
     },
     {
@@ -3438,11 +3520,13 @@ export function stdlibMemberFence(lowerer: Lowerer, access: ts.PropertyAccessExp
     member === "toLocaleUpperCase"
   ) {
     hint =
-      "locale- and ICU-backed behavior lives outside the static runtime (the localeCompare " +
-      "stance: code-unit order, no collation/locale data) — what lowers: the composed " +
+      "collation and locale negotiation stay outside the static runtime (the localeCompare " +
+      "stance: code-unit order, no collation) — what lowers: the composed " +
       'new Intl.NumberFormat("en-US").format(x) and x.toLocaleString("en-US") with default ' +
-      "options, plus default Unicode grapheme segmentation with Intl.Segmenter; locale " +
-      "negotiation, word/sentence segmentation, and resolvedOptions remain unsupported";
+      "options, their default-locale forms (x.toLocaleString(), d.toLocaleString(), " +
+      "d.toLocaleTimeString()), and Intl.Segmenter with grapheme or word granularity; " +
+      "sentence segmentation, resolvedOptions, and the remaining Intl constructors remain " +
+      "unsupported";
   } else if (container === "Object" && member === "assign") {
     hint =
       "spread instead: { ...a, ...b } builds the merged record; what lowers: the empty-target " +
@@ -3689,25 +3773,28 @@ export function stdlibGlobalAliasNameOf(
   // These globals have provenance-aware call or member lowering, so a
   // stable snapshot keeps the same dispatch as the original global.
   // Other callable globals still use their ordinary value paths.
-  return [
-    "process",
-    "console",
-    "globalThis",
-    "performance",
-    "Array",
-    "Buffer",
-    "BigInt",
-    "Number",
-    "String",
-    "Boolean",
-    // Code generation from strings throws Node's EvalError at every call
-    // (code-generation.ts); zod 4 probes `const F = Function; new F("")`.
-    "Function",
-    "eval",
-  ].includes(name)
-    ? name
-    : null;
+  return SNAPSHOT_GLOBALS.has(name) ? name : null;
 }
+
+/** The globals a `const x = <global>` snapshot aliases (stdlibGlobalAliasNameOf).
+ * Node defines every one of them, so an optional step over one of them
+ * (`proc?.env`, `globalThis.process?.env`) is the plain member read. */
+export const SNAPSHOT_GLOBALS: ReadonlySet<string> = new Set([
+  "process",
+  "console",
+  "globalThis",
+  "performance",
+  "Array",
+  "Buffer",
+  "BigInt",
+  "Number",
+  "String",
+  "Boolean",
+  // Code generation from strings throws Node's EvalError at every call
+  // (code-generation.ts); zod 4 probes `const F = Function; new F("")`.
+  "Function",
+  "eval",
+]);
 
 /** `buffer.Buffer` through a buffer-module namespace binding (`var buffer
  * = require('buffer')`): the module's Buffer IS the global constructor. */

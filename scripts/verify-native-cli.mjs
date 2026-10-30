@@ -99,6 +99,15 @@ for (const directory of [distribution, join(distribution, "lib/runtime-sources/v
   if (readdirSync(directory).some((name) => ["node_modules", ".cache", "seed"].includes(name)))
     throw new Error(`development files present in ${directory}`);
 }
+// A build's record of the runtime pack's verified artifacts (runtime-pack-native.ts)
+// names that host's file identities.
+for (const name of readdirSync(join(distribution, "lib"))) {
+  if (
+    name.startsWith("runtime-") &&
+    existsSync(join(distribution, "lib", name, "runtime-pack.verified.json"))
+  )
+    throw new Error(`runtime pack verification record present in lib/${name}`);
+}
 if (process.argv.includes("--run")) {
   if (target.startsWith("linux-")) {
     for (const executable of [

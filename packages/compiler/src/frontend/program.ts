@@ -43,6 +43,7 @@ import { isFrontendIsland } from "../node-islands/boundary.js";
 import { builtinModules } from "node:module";
 import { dirname, isAbsolute, resolve } from "node:path";
 import * as ts from "./ts7/adapter.js";
+import { isSourcePhaseImport } from "./ts7/ast-node.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
 import {
   commonJsModuleSyntaxDiag,
@@ -136,6 +137,7 @@ import {
   JS_RELAXED_TSC_CODES,
 } from "./tsc-codes.js";
 import { trackedFileExists, trackedReadFile, trackedRealpath } from "./input-tracker.js";
+import { earlyErrorDiagnostics7 } from "./early-errors.js";
 import { forkTargetPaths } from "./fork-target.js";
 import { workerTargetPaths } from "./worker-target.js";
 import {
@@ -160,6 +162,7 @@ import {
   captureShapeOverlayState,
   type ShapeOverlayLoadState,
 } from "./shape-inference/index.js";
+import { jsInferenceEnabled } from "./js-inference.js";
 import { inferredJsDiagnosticSuppressed } from "./inferred-js-diagnostics.js";
 import {
   containsJsx,
@@ -555,6 +558,9 @@ export interface StartupCrash {
   loc: { file: string; start: number; end: number };
   /** Node's error code, for the refusals that carry one. */
   code?: string;
+  /** The error's own `url` property: the missing file's URL, for Node's
+   * ERR_MODULE_NOT_FOUND of an import() whose target does not exist. */
+  url?: string;
 }
 
 /** True when a coverage mapping names one exact bare host module. TypeScript
@@ -976,7 +982,7 @@ function loadProgram7(
       );
       if (extraRoots.length === 0) break;
       program.dispose();
-      programRoots.push(...extraRoots);
+      for (const root of extraRoots) programRoots.push(root);
       program = host.createProgram([...programRoots, overridesDtsPath()], options);
       if (pass === 31) throw new Error("static program-root discovery did not converge");
     }
@@ -1400,7 +1406,10 @@ export function loadProgram(
       externalTypes,
       npmStaticPackages.length > 0,
       projector,
-      npmStaticPackages.length > 0 && shapeOverlayEnabled() ? shapeOverlayer : undefined,
+      (npmStaticPackages.length > 0 && shapeOverlayEnabled()) ||
+        (jsInferenceEnabled() && process.env["SCRIPTC_SHAPE_OVERLAY"] !== "0")
+        ? shapeOverlayer
+        : undefined,
     );
     // Shape inference, stage S1: a report only (SCRIPTC_DEBUG_SHAPES).
     const shapes = process.env["SCRIPTC_DEBUG_SHAPES"];
@@ -1528,8 +1537,16 @@ function suppressedJsStrictness7(d: ts.Diagnostic): boolean {
   // runtime meaning in a JS file.
   if (d.code >= 8000 && d.code <= 8999) return true;
   if (JS_ANY_OPERATOR_CODES.has(d.code)) {
-    return ts.flattenDiagnosticMessageText(d, "\n").includes("'any'");
+    const text = ts.flattenDiagnosticMessageText(d, "\n");
+    // A primitive wrapper operand (`new Number(1) * 2`): the operator
+    // converts it with ToPrimitive, as for any object.
+    return text.includes("'any'") || /'(Number|String|Boolean)'/.test(text);
   }
+  // An index write on a String wrapper (`new String("ab")[5] = "q"`): Node
+  // adds the property past the end and ignores writes to the read-only
+  // index properties (sloppy) or throws (strict), as the object does.
+  if (d.code === 2542 && ts.flattenDiagnosticMessageText(d, "\n").includes("type 'String'"))
+    return true;
   // The deprecated Buffer(...) call without `new`, which Node's Buffer
   // function accepts (containers/bytes.ts lowers it), and fs.ReadStream(...)
   // and fs.WriteStream(...), which construct their stream
@@ -2756,6 +2773,107 @@ function isAssignmentTarget7(node: ts.Node): boolean {
     parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
     parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
   );
+}
+
+/** True when the identifier is a reference position that WRITES: an
+ * assignment (or compound-assignment) target, a `++`/`--` operand, a
+ * for-in/for-of head, or an element of a destructuring pattern — through
+ * parentheses and pattern containers, exactly the shapes a sloppy-mode
+ * implicit global can be introduced by. */
+export function isJsWriteTarget7(node: ts.Node): boolean {
+  let cur: ts.Node = node;
+  for (;;) {
+    const parent: ts.Node | undefined = cur.parent;
+    if (parent === undefined) return false;
+    if (ts.isParenthesizedExpression(parent)) {
+      cur = parent;
+      continue;
+    }
+    if (ts.isBinaryExpression(parent))
+      return (
+        parent.left === cur &&
+        parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+      );
+    if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent))
+      return (
+        parent.operand === cur &&
+        (parent.operator === ts.SyntaxKind.PlusPlusToken ||
+          parent.operator === ts.SyntaxKind.MinusMinusToken)
+      );
+    if (ts.isForInStatement(parent) || ts.isForOfStatement(parent))
+      return parent.initializer === cur;
+    if (ts.isArrayLiteralExpression(parent) || ts.isObjectLiteralExpression(parent)) {
+      cur = parent;
+      continue;
+    }
+    if (
+      (ts.isShorthandPropertyAssignment(parent) && parent.name === cur) ||
+      (ts.isPropertyAssignment(parent) && parent.initializer === cur) ||
+      ((ts.isSpreadElement(parent) || ts.isSpreadAssignment(parent)) && parent.expression === cur)
+    ) {
+      cur = parent;
+      continue;
+    }
+    return false;
+  }
+}
+
+/** Nothing binds `node`: the tsc had no symbol, and a shorthand pattern's
+ * name has no VALUE binding either (its property symbol is the target, not a
+ * declaration of the name being written). */
+function undeclaredJsName7(
+  checker: ReturnType<ts.Program["getTypeChecker"]>,
+  node: ts.Identifier,
+): boolean {
+  const parent = node.parent;
+  if (parent !== undefined && ts.isShorthandPropertyAssignment(parent) && parent.name === node)
+    return checker.getShorthandAssignmentValueSymbol(parent) === undefined;
+  return checker.getSymbolAtLocation(node) === undefined;
+}
+
+/** A `.js` WRITE to a name nothing declares (plan D-2/D-5). Sloppy mode
+ * resolves such a write by creating a property on Node's global object —
+ * process-wide state a native binary has no object for — so the program is
+ * refused at build time, under SC1091, whose text names the Node-island
+ * route those semantics need. A READ of the same name is admitted instead:
+ * it throws Node's own catchable `ReferenceError` at the access
+ * (lowering/expressions/identifiers.ts). TypeScript input never reaches
+ * either path — an undeclared name is a compile error there. */
+function jsUndeclaredWriteDiags(
+  program: ts.Program,
+  files: readonly ts.SourceFile[],
+): ScrDiagnostic[] {
+  const diags: ScrDiagnostic[] = [];
+  const checker = program.getTypeChecker();
+  for (const sf of files) {
+    if (!isJsSourceFileName(sf.fileName)) continue;
+    const stack: ts.Node[] = [sf];
+    while (stack.length > 0) {
+      const node = stack.pop()!;
+      // An empty name is a parse-recovery artifact (`@import x = require(…)`
+      // in a JSDoc prologue leaves one behind), never a reference a program
+      // writes; the syntax error that created it is already reported.
+      if (
+        ts.isIdentifier(node) &&
+        node.text !== "" &&
+        isJsWriteTarget7(node) &&
+        undeclaredJsName7(checker, node)
+      )
+        diags.push(
+          unsupportedDiag(
+            "SC1091",
+            { file: sf.fileName, start: node.getStart(sf), end: node.end },
+            `writing the undeclared name '${node.text}' in a JavaScript source`,
+          ),
+        );
+      ts.forEachChild(node, (child) => {
+        stack.push(child);
+        return undefined;
+      });
+    }
+  }
+  return diags;
 }
 
 /** True when `node` is inside the try block of a try statement in the same
@@ -4625,7 +4743,7 @@ function cycleReachedDeferredReferences7(
     if (symbol === undefined) continue;
     const units = unitsOfName.get(name)!;
     unitsBySymbol.set(symbol, [...(unitsBySymbol.get(symbol) ?? []), ...units]);
-    allUnits.push(...units);
+    for (const unit of units) allUnits.push(unit);
   }
   // A named class expression's inner name (`class Impl { static x =
   // Impl.m(); }`) names the class inside its own body, as the binding it
@@ -4794,7 +4912,7 @@ export function moduleEarlyBindings(
   const out: CycleEarlyBinding[] = [];
   for (const sf of order) {
     if (sf.isDeclarationFile || exact.has(sf)) continue;
-    out.push(...moduleEarlyBindingsOf7(program, sf, order));
+    for (const binding of moduleEarlyBindingsOf7(program, sf, order)) out.push(binding);
   }
   program.analysis.moduleEarlyBindings = { key, bindings: out };
   return out;
@@ -5422,6 +5540,23 @@ export function checkPreflightTs7(
   }
 }
 
+/** Whether a declaration file has the runtime file TypeScript pairs it
+ * with (`x.d.ts` with `x.js`, `x.d.mts` with `x.mjs`, `x.d.cts` with
+ * `x.cjs`): a specifier that resolves to the declaration then still names a
+ * module Node can load. */
+function declarationHasRuntimeFile(declaration: ts.SourceFile): boolean {
+  const name = declaration.fileName;
+  const pairs: [string, string][] = [
+    [".d.ts", ".js"],
+    [".d.mts", ".mjs"],
+    [".d.cts", ".cjs"],
+  ];
+  for (const [declared, runtime] of pairs)
+    if (name.endsWith(declared))
+      return trackedFileExists(name.slice(0, -declared.length) + runtime);
+  return false;
+}
+
 function preflight7(load: LoadResult): {
   diags: ScrDiagnostic[];
   moduleOrder: ts.SourceFile[];
@@ -5950,6 +6085,21 @@ function preflight7(load: LoadResult): {
             continue;
           }
         }
+        // A re-export whose specifier resolves ONLY to a declaration file
+        // has no runtime module to link (Node throws
+        // ERR_MODULE_NOT_FOUND), and a declaration file is not a program
+        // module: an edge to it would lower the declarations' own imports
+        // as code.
+        if (reDep !== null && reDep.isDeclarationFile && !declarationHasRuntimeFile(reDep)) {
+          diags.push(
+            unsupportedDiag(
+              "SC1010",
+              locOf7(stmt),
+              `the '${fromSpec}' re-export (it resolves only to type declarations — there is no runtime implementation to compile)`,
+            ),
+          );
+          continue;
+        }
         if (reDep && !reDep.fileName.endsWith(".json")) {
           deps.push({ dep: reDep, stmt });
           depPositions.get(sf)!.push({ dep: reDep, pos: ts.tokenStartOfNode(stmt) });
@@ -5958,6 +6108,14 @@ function preflight7(load: LoadResult): {
       }
       if (!ts.isImportDeclaration(stmt)) continue;
       if (erasedTypeOnlyImport(stmt)) continue;
+      // `import source x from "./x.wasm"` (TypeScript 7.1) binds the module's source object, such
+      // as a WebAssembly.Module; compiled programs do not support it yet.
+      if (isSourcePhaseImport(stmt.importClause)) {
+        diags.push(
+          unsupportedDiag("SC1090", locOf7(stmt), "source phase imports (`import source`)"),
+        );
+        continue;
+      }
 
       // Import-like nodes whose specifier the parse could not shape into a
       // string literal — the jsdoc `/** @import x = require(...) */`
@@ -6140,6 +6298,22 @@ function preflight7(load: LoadResult): {
       const clause = stmt.importClause;
       const dep = isRelative ? resolveImport7(program, sf, spec) : (npmStaticDep ?? projDep);
       const isJson = dep !== null && dep.fileName.endsWith(".json");
+      // A specifier that resolves ONLY to a declaration file has no runtime
+      // module to link: Node throws ERR_MODULE_NOT_FOUND at this import.
+      // Declarations are not program modules — taking one as a module-order
+      // edge would lower its imports as if it were code (SC2013 for every
+      // specifier inside a package's `.d.ts`). Type-only imports were
+      // already erased above; this is the value form.
+      if (dep !== null && dep.isDeclarationFile && !isJson && !declarationHasRuntimeFile(dep)) {
+        diags.push(
+          unsupportedDiag(
+            "SC1010",
+            locOf7(stmt),
+            `the '${spec}' import (it resolves only to type declarations — there is no runtime implementation to compile)`,
+          ),
+        );
+        continue;
+      }
       // SELF-imports: the bindings alias this module's OWN declarations,
       // so a TOP-LEVEL read lexically above the aliased declaration is
       // Node's TDZ ReferenceError at runtime (exactly what tsc's TS2448
@@ -6422,6 +6596,10 @@ function preflight7(load: LoadResult): {
             }
           }
           if (earlyRequireFence(req, bindingKind, loc)) continue;
+          // A declaration file is never a runtime module (see the import
+          // arm): the require throws MODULE_NOT_FOUND in Node, so it is not
+          // a module-order edge.
+          if (dep !== null && dep.isDeclarationFile) continue;
           if (dep) deps.push({ dep });
         }
       }
@@ -6500,7 +6678,8 @@ function preflight7(load: LoadResult): {
             lazy ? { dep, lazy: true, call } : { dep, call };
           const projectDep = resolveImport7(program, sf, spec, "require");
           if (projectDep !== null) {
-            if (!projectDep.fileName.endsWith(".json")) deps.push(edgeTo(projectDep));
+            if (!projectDep.fileName.endsWith(".json") && !projectDep.isDeclarationFile)
+              deps.push(edgeTo(projectDep));
             continue;
           }
           if (isRelativeSpecifier(spec) || spec.startsWith("#")) continue;
@@ -6588,6 +6767,11 @@ function preflight7(load: LoadResult): {
     }
   };
   visit(entry);
+
+  // ECMAScript's sloppy-mode WRITE to an undeclared name, which the JS
+  // relaxation above admits for READS (plan D-2): refused by name, with the
+  // island route in the text (SC1091).
+  for (const d of jsUndeclaredWriteDiags(program, order)) diags.push(d);
 
   // The startup crash Node's RESOLUTION phase reports: modules resolve
   // their request specifiers in source order, children linking depth-first
@@ -6679,6 +6863,11 @@ function preflight7(load: LoadResult): {
           cjsNamedImportLinkCheck(program, entry, order, diags),
           esmNamedImportLinkCheck(program, entry, order, diags),
         );
+
+  // ECMAScript early errors the TypeScript checker does not model (plan
+  // §7.7 D-4): a JavaScript source the spec makes a SyntaxError fails here,
+  // before any lowering, exactly where a tsc parse error fails.
+  diags.push(...earlyErrorDiagnostics7(order, (sf) => isNodeEsmFile7(sf, program)));
 
   return {
     diags,

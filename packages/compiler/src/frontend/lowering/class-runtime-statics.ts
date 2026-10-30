@@ -100,6 +100,21 @@ export function initializeRuntimeStatics(
       }
       if (!member.name) continue;
       const memberLoc = locOf(member);
+      // A private static field: its native global, assigned in order.
+      if (ts.isPrivateIdentifier(member.name)) {
+        const name = member.name.text;
+        const field = info.staticFields.find((candidate) => candidate.name === name);
+        if (!ts.isPropertyDeclaration(member) || !field) {
+          lowerer.unsupported("SC1090", member, "private static fields without an initializer");
+        }
+        statements.push({
+          kind: "assign",
+          localId: field.globalId,
+          value: lowerer.lowerExprExpecting(member.initializer!, field.type),
+          loc: memberLoc,
+        });
+        continue;
+      }
       const key: IrExpr = ts.isComputedPropertyName(member.name)
         ? computedKeys.get(member)!
         : lowerer.coerceToExpected(

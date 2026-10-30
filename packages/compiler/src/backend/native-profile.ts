@@ -111,13 +111,16 @@ export function nativeProfileHelperArgs(profile: NativeProfileOptions | undefine
  * profile has no record of (new, or never run while it was collected),
  * mismatched functions that the block-count file annotated (never more
  * than the mismatched ones), and partitions reused from the cache without
- * their counts. */
+ * their counts. Helpers that weigh the match also report the profile's
+ * counters on the annotated and on the mismatched functions. */
 export interface NativeProfileMatch {
   annotated: number;
   mismatched: number;
   missing: number;
   recovered: number;
   unknownPartitions: number;
+  annotatedCounts?: number;
+  mismatchedCounts?: number;
 }
 
 /** The profile match in a successful helper emit's output, or null when the
@@ -150,7 +153,18 @@ export function parseNativeProfileMatch(stdout: string): NativeProfileMatch | nu
       unknownPartitions === null
     )
       continue;
-    return { annotated, mismatched, missing, recovered, unknownPartitions };
+    const annotatedCounts = count("annotated_counts");
+    const mismatchedCounts = count("mismatched_counts");
+    return {
+      annotated,
+      mismatched,
+      missing,
+      recovered,
+      unknownPartitions,
+      ...(annotatedCounts === null || mismatchedCounts === null
+        ? {}
+        : { annotatedCounts, mismatchedCounts }),
+    };
   }
   return null;
 }

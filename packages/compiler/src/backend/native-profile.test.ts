@@ -145,6 +145,20 @@ test("the helper's profile match is read from its output", () => {
       '{"ok":true,"profile":{"annotated":1,"mismatched":0,"missing":0,"recovered":-1,"unknown_partitions":0}}\n',
     ),
   ).toBeNull();
+  // With the profile's counters on the annotated and the mismatched functions.
+  expect(
+    parseNativeProfileMatch(
+      '{"ok":true,"profile":{"annotated":120,"mismatched":7,"missing":40,"recovered":0,"unknown_partitions":0,"annotated_counts":9000,"mismatched_counts":1000}}\n',
+    ),
+  ).toEqual({
+    annotated: 120,
+    mismatched: 7,
+    missing: 40,
+    recovered: 0,
+    unknownPartitions: 0,
+    annotatedCounts: 9000,
+    mismatchedCounts: 1000,
+  });
   // A helper that predates the report prints nothing.
   expect(parseNativeProfileMatch("")).toBeNull();
   expect(parseNativeProfileMatch('{"ok":true}\n')).toBeNull();

@@ -3,12 +3,12 @@
  * once per bridge ABI and runs it against the libnode pack the program
  * will load, so the interface snapshot comes from that exact Node.
  *
- *   scr-node-probe <pack directory> <bootstrap.js> <input.json>
+ *   scr-node-probe <pack directory> <bootstrap.js> <input.json> <output.json>
  *
  * It starts Node from the pack's bridge with the bootstrap (which defines
  * the dispatcher and the probe), makes one synchronous call with the input
- * JSON, prints the outcome ("R<json>" or "T<json>") on stdout and stops
- * Node. Never includes a Node or V8 header. */
+ * JSON, writes the outcome ("R<json>" or "T<json>") to the output file
+ * (the probed modules may print) and exits. Never includes a Node or V8 header. */
 #include "scr_node_bridge.h"
 
 #include <dlfcn.h>
@@ -142,8 +142,8 @@ static const ScrNodeBridgeHost kHost = {
 };
 
 int main(int argc, char **argv) {
-  if (argc != 4) {
-    fprintf(stderr, "usage: scr-node-probe <pack directory> <bootstrap.js> <input.json>\n");
+  if (argc != 5) {
+    fprintf(stderr, "usage: scr-node-probe <pack directory> <bootstrap.js> <input.json> <output.json>\n");
     return 2;
   }
   char path[4096];
@@ -174,8 +174,12 @@ int main(int argc, char **argv) {
   }
   size_t len = 0;
   char *outcome = bridge->call(0, 1, "", "", "probe", input, ilen, &len);
-  fwrite(outcome, 1, len, stdout);
   fflush(stdout);
+  FILE *out = fopen(argv[4], "wb");
+  if (out == NULL || fwrite(outcome, 1, len, out) != len || fclose(out) != 0) {
+    fprintf(stderr, "scr-node-probe: cannot write %s\n", argv[4]);
+    _Exit(1);
+  }
   bridge->release(outcome);
   /* No orderly stop: the probe's modules may hold handles; the process
    * exits here. */

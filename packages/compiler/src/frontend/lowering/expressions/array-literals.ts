@@ -38,6 +38,28 @@ import { arrayValueStore, primitiveElement } from "../array-values.js";
 import { classGeneratorIterable } from "../class-iterables.js";
 import { iteratorCanStep } from "../iterator-consumption.js";
 
+/** The arm an EMPTY `[]` literal builds as: `arms`' first array arm, or
+ * null when the literal is not empty (an element selects the arm) or no
+ * arm is an array.
+ *
+ * An empty literal carries no element of its own — tsc infers `never[]`,
+ * whose f64-element mapping is the uninhabited element's representation,
+ * not one of the destination's arms — and every empty array is the same
+ * value whichever array family stores it, so several array arms raise no
+ * ambiguity. This is the ONE statement of that rule: a union slot, a
+ * contextual union, and the `??` default all ask it. A lone array slot
+ * states the same thing without asking. */
+export function emptyArrayLiteralArm(
+  node: ts.Expression,
+  arms: readonly IrType[],
+): (IrType & { kind: "array" }) | null {
+  let value = node;
+  while (ts.isParenthesizedExpression(value)) value = value.expression;
+  if (!ts.isArrayLiteralExpression(value) || value.elements.nodes.length > 0) return null;
+  const arm = arms.find((candidate) => candidate.kind === "array");
+  return (arm as (IrType & { kind: "array" }) | undefined) ?? null;
+}
+
 /** JavaScript: whether `expr` is or holds an existing checked-dynamic
  * object — a binding stored as a dyn value whose checker type is an
  * object, or an array or object literal with such an element. Building
@@ -206,16 +228,12 @@ export function lowerArrayLiteral(
       mapped = arrayOf(unitOnlyUnion(lowerer.unions));
     // An EMPTY literal in a union slot (`const t: string[] | undefined =
     // []`, the `[]` default argument against `string[] | undefined`) has
-    // no useful own type — tsc infers `never[]`, whose f64-element
-    // mapping is a representation for the uninhabited, not the slot's
-    // arm. When the contextual union has exactly ONE array arm there is
-    // no ambiguity: build the literal as that arm and let the slot's
-    // coercion wrap it. Two array arms would need tsc's own best-fit
-    // choice — none arises in practice; the fence stands.
-    if (ctxUnion && expr.elements.nodes.length === 0) {
+    // no useful own type: it builds as the union's first array arm (the
+    // emptyArrayLiteralArm rule) and the slot's coercion wraps it.
+    if (ctxUnion) {
       const def = lowerer.unions.get(ctxUnion.unionId);
-      const arrayArms = def?.arms.filter((a) => a.kind === "array") ?? [];
-      if (arrayArms.length === 1) mapped = arrayArms[0]!;
+      const arm = emptyArrayLiteralArm(expr, def?.arms ?? []);
+      if (arm) mapped = arm;
     }
     // A NON-EMPTY literal whose own type has no static home (the JS dyn
     // fallback — a null/dyn mapping, or an inference that degraded to a

@@ -13,6 +13,10 @@ import {
   resolveRuntimeUnitHelper,
 } from "../../runtime-pack-common/scripts/runtime-unit.mjs";
 import { createDeterministicArchive } from "./archive.mjs";
+import {
+  probeHardeningSupport,
+  runtimeHardeningFlags,
+} from "../../runtime-pack-common/scripts/hardening.mjs";
 import { installRuntimePack, withBuildLock } from "./build-state.mjs";
 import { shareIdenticalArtifacts } from "../../runtime-pack-common/scripts/share-artifacts.mjs";
 import { zlibInputs } from "../../runtime-pack-common/scripts/zlib-inputs.mjs";
@@ -52,6 +56,11 @@ async function build() {
   const compiler = process.env.CC ?? "clang";
   const archiver = process.env.AR ?? "ar";
   const compilerVersion = (await run(compiler, ["--version"])).stdout.split("\n", 1)[0].trim();
+  // Optional hardening flags follow what this compiler accepts.
+  const hardeningSupport = await probeHardeningSupport({
+    compiler,
+    args: ["-target", RUNTIME_PACK_MATRIX.target.llvm_triple],
+  });
   const commonFlags = [
     "-target",
     RUNTIME_PACK_MATRIX.target.llvm_triple,
@@ -181,6 +190,10 @@ async function build() {
               flavorSpec.optimization,
               ...variant.defines.map((define) => `-D${define}`),
               ...includeFlags,
+              ...runtimeHardeningFlags(
+                { platform: "darwin", target: RUNTIME_PACK_MATRIX.target },
+                { optimized: flavorSpec.optimization !== "-O0", ...hardeningSupport },
+              ),
             ];
             if (flavor === "speed") await mkdir(dirname(output), { recursive: true });
             if (
@@ -228,6 +241,12 @@ async function build() {
     const mbedtlsSources = (await readdir(join(mbedtls, "library")))
       .filter((name) => !name.startsWith(".") && name.endsWith(".c"))
       .sort();
+    // zlib, brotli and mbedtls parse untrusted input and are hardened like the
+    // runtime units; QuickJS and libregexp are not (see hardening.mjs).
+    const vendorHardening = runtimeHardeningFlags(
+      { platform: "darwin", target: RUNTIME_PACK_MATRIX.target },
+      { optimized: true, ...hardeningSupport },
+    );
     const brotliSources = (
       await Promise.all(
         ["common", "dec", "enc"].map(async (dir) =>
@@ -270,6 +289,7 @@ async function build() {
         "-O3",
         ...ZLIB_BUILD.defines.map((define) => `-D${define}`),
         ...codeAlignment,
+        ...vendorHardening,
         "-I",
         zlib,
       ]),
@@ -279,6 +299,7 @@ async function build() {
         "-std=c11",
         "-Os",
         ...codeAlignment,
+        ...vendorHardening,
         "-I",
         join(brotli, "include"),
       ]),
@@ -288,6 +309,7 @@ async function build() {
         "-std=c11",
         "-Os",
         ...codeAlignment,
+        ...vendorHardening,
         "-I",
         join(mbedtls, "include"),
         "-I",

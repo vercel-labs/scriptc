@@ -1415,9 +1415,13 @@ function lowerToIrWithIslands(
   if (
     result.module === null &&
     !reachableEmit.requiresGeneralNodeStreams &&
-    options.stopAfterPushDown?.(result) === true
-  )
-    return result;
+    options.stopAfterPushDown !== undefined
+  ) {
+    // The predicate reads the result as lowerToIr returns it: module-init
+    // fences carry their mark (lowerToIr marks them again, unchanged).
+    markModuleInitFences(program, result.runtimeFences);
+    if (options.stopAfterPushDown(result)) return result;
+  }
   // Localized failure (stage L3): push-down must never cost a failing
   // program more errors than the whole-slot checked dynamic. A pushed-down
   // type is baked into the globals, fields and signatures that hold it, so

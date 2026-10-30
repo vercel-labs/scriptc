@@ -871,6 +871,27 @@ export function applyKeyOrderWitnesses(lowerer: Lowerer, fns: readonly IrFunctio
         }
       }
     }
+    // A spread of a union holding several record arms, or a record that can
+    // be absent (`{ ...model, k }` over a discriminated union,
+    // `Partial<X> | undefined`), copies whichever arm the value holds when
+    // the spread runs: the literal's key order is that arm's own key order,
+    // which no static table can name (object-literals.ts marks those
+    // contributors `maybeAbsent`). When an order surface observes the target
+    // shape, the copy keeps its own order as the record's source exactly as
+    // a width spread does — the mirror is the same contributor list, and an
+    // absent source contributes no keys, as the spread copies none.
+    for (const { wrapper, literal, note } of widthSites) {
+      if (note.drops || keptWidths.has(wrapper) || literal.type.kind !== "record") continue;
+      if (!early.has(literal.type.shapeId) || !widthKeepable(lowerer, wrapper, note.segments))
+        continue;
+      const segments = notes.literalOf(literal);
+      if (segments === undefined || !segments.some((s) => s.kind === "spread" && s.maybeAbsent))
+        continue;
+      keptWidths.add(wrapper);
+      notes.keptSourceShapes.add(literal.type.shapeId);
+      for (const segment of note.segments)
+        if (segment.kind === "spread") shapesIn(segment.value.type, early, earlySeen);
+    }
     for (const { wrapper, literal, note } of widthSites) {
       if (!keptWidths.has(wrapper) || literal.type.kind !== "record") continue;
       const shapeId = literal.type.shapeId;

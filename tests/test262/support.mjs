@@ -121,10 +121,26 @@ function argumentsOwner(node) {
   return undefined;
 }
 
+// The only exclusions the island lane lifts (decision S4): each of these
+// names a construct the standalone strict adapter cannot express but Node's
+// own engine can, and an island variant runs under Node. Everything else —
+// the harness includes, the assertion surface, `$262` — stays excluded,
+// because the adapter still has to run for an island too.
+const LIFTED_IN_ISLAND = new Set([
+  "host:eval",
+  "host:Function",
+  "host:arguments",
+  "host:script-environment",
+  "host:globalThis",
+]);
+
 // The first static profile adapts scripts to standalone strict modules. Be
 // conservative about observable global-script semantics and helper reflection.
 // Exclusions are runner limitations, never implementation support claims.
-export function exclusion(source, meta, variant) {
+// `islands` reports which variants the island lane could measure: it never
+// widens the native profile, and it lifts the five host reasons on sloppy
+// variants only.
+export function exclusion(source, meta, variant, islands = false) {
   if (meta.negative) {
     if (meta.negative.phase !== "parse" || meta.negative.type !== "SyntaxError" || (variant !== "strict" && variant !== "sloppy")) {
       return `negative-phase:${meta.negative.phase}`;
@@ -142,18 +158,20 @@ export function exclusion(source, meta, variant) {
   const forbidden = new Set(["$262", "$DONE", "$DONOTEVALUATE", "globalThis", "eval", "Function", "print", "process", "require"]);
   if (variant === "sloppy") for (const name of ["module", "exports", "__dirname", "__filename"]) forbidden.add(name);
   if (meta.flags.includes("async")) forbidden.delete("$DONE");
+  const liftable = (item) => islands && variant === "sloppy" && LIFTED_IN_ISLAND.has(item);
+  const refuse = (item) => { if (reason === undefined && !liftable(item)) reason = item; };
   const visit = (node) => {
-    if (reason) return;
+    if (reason !== undefined) return;
     if ((node.kind === ts.SyntaxKind.ThisKeyword && !hasOwnThisBinding(node)) ||
       node.kind === ts.SyntaxKind.ImportKeyword || ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
-      reason = "host:script-environment";
+      refuse("host:script-environment");
     } else if (ts.isIdentifier(node) && forbidden.has(node.text)) {
-      reason = `host:${node.text}`;
+      refuse(`host:${node.text}`);
     } else if (ts.isIdentifier(node) && node.text === "arguments" &&
       (!argumentsOwner(node) ||
         !(ts.isPropertyAccessExpression(node.parent) && node.parent.expression === node && node.parent.name.text === "length") &&
         !(ts.isElementAccessExpression(node.parent) && node.parent.expression === node))) {
-      reason = "host:arguments";
+      refuse("host:arguments");
     } else if (ts.isIdentifier(node) && node.text === "assert") {
       const parent = node.parent;
       if (ts.isCallExpression(parent) && parent.expression === node) {
@@ -167,7 +185,7 @@ export function exclusion(source, meta, variant) {
             ["Error", "TypeError", "RangeError", "SyntaxError", "ReferenceError", "EvalError", "URIError"].includes(parent.parent.arguments[0].text)))
       ) {
         // Supported assertion calls; aliases, mutations, and reflection stay out.
-      } else reason = "harness:assert-surface";
+      } else refuse("harness:assert-surface");
     } else if (meta.includes.includes("compareArray.js") && ts.isIdentifier(node) && node.text === "compareArray" &&
       !(ts.isCallExpression(node.parent) && node.parent.expression === node) &&
       !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node && ts.isIdentifier(node.parent.expression) && node.parent.expression.text === "assert")) {
@@ -176,16 +194,16 @@ export function exclusion(source, meta, variant) {
       // function object and its format expando).
       reason = "harness:compareArray-surface";
     } else if (ts.isIdentifier(node) && node.text === "Test262Error") {
-      if (!ts.isNewExpression(node.parent) || node.parent.expression !== node) reason = "harness:Test262Error-surface";
+      if (!ts.isNewExpression(node.parent) || node.parent.expression !== node) refuse("harness:Test262Error-surface");
     } else if (typedArrayHelper && ts.isIdentifier(node) && node.text === "TypedArray") {
       // The adapted testTypedArray.js leaves out %TypedArray%.
-      reason = "harness:TypedArray-intrinsic";
+      refuse("harness:TypedArray-intrinsic");
     } else if (propertyHelper && ts.isIdentifier(node)) {
-      if (unsupportedPropertyHelpers.has(node.text)) reason = "harness:propertyHelper-surface";
+      if (unsupportedPropertyHelpers.has(node.text)) refuse("harness:propertyHelper-surface");
       else if (node.text === "verifyProperty") {
         const call = node.parent;
         if (!ts.isCallExpression(call) || call.expression !== node || call.arguments.length < 3 || !inlinePropertyDescriptor(call.arguments[2])) {
-          reason = "harness:propertyHelper-surface";
+          refuse("harness:propertyHelper-surface");
         }
       }
     }
@@ -205,6 +223,75 @@ export function prepare(source, asyncTest = false, marker = completion, variant 
     (includes.includes("testTypedArray.js") ? `${typedArrayHelperSource}\n` : "");
   if (variant === "sloppy") return `const { ${names} } = require("./harness.ts");\n${helpers}${source}\n${end}`;
   return `"use strict";\nimport { ${names} } from "./harness.ts";\n${helpers}${source}\n${end}`;
+}
+
+// The adapted test of the island lane (decision S4). It runs under Node, so
+// `assert` is a JavaScript object built there: a native function crosses the
+// bridge as a callable, but the namespace members attached to it do not (they
+// are properties of the native function object). The harness exports each
+// helper on its own for exactly this.
+//
+// The body normally runs as the island module itself. A lifted
+// `host:script-environment` variant keeps its script shape instead: the
+// module carries the body between these markers only as a dead copy the
+// pre-scan can island, and replays it as script code inside the island.
+const scriptBegin = "//@@SCRIPTC_TEST262_SCRIPT_BEGIN@@";
+const scriptEnd = "//@@SCRIPTC_TEST262_SCRIPT_END@@";
+
+export function prepareIsland(source, asyncTest = false, marker = completion, includes = [], script = false) {
+  const helpers =
+    (includes.includes("propertyHelper.js") ? `${propertyHelperSource}\n` : "") +
+    (includes.includes("testTypedArray.js") ? `${typedArrayHelperSource}\n` : "");
+  const end = asyncTest ? "" : `;console.log(${JSON.stringify(marker)});\n`;
+  const lines = [
+    'const harness = require("./harness.ts");',
+    "const assert = (value, message) => harness.assert(value, message);",
+    "assert.sameValue = harness.sameValue;",
+    "assert.notSameValue = harness.notSameValue;",
+    "assert.throws = harness.assertThrows;",
+    "assert.compareArray = harness.assertCompareArray;",
+    "const compareArray = harness.compareArray;",
+    "const Test262Error = harness.Test262Error;",
+    ...(asyncTest ? ["const $DONE = harness.$DONE;"] : []),
+  ];
+  if (!script) return `${lines.join("\n")}\n${helpers}${source}\n${end}`;
+  // A lifted `host:script-environment` variant is a script, not a module: its
+  // top-level `this` is the global object and its top-level `var` bindings are
+  // global properties. The island therefore replays the body as script code,
+  // and the module carries it only as a dead copy the pre-scan can island.
+  const globals = [
+    "globalThis.assert = assert;",
+    "globalThis.compareArray = compareArray;",
+    "globalThis.Test262Error = Test262Error;",
+    ...(asyncTest ? ["globalThis.$DONE = $DONE;"] : []),
+  ];
+  return [
+    'const { readFileSync } = require("node:fs");',
+    'const vm = require("node:vm");',
+    ...lines,
+    ...globals,
+    `const begin = ${JSON.stringify(scriptBegin)};`,
+    `const stop = ${JSON.stringify(scriptEnd)};`,
+    'const text = readFileSync(__filename, "utf8");',
+    // The markers also appear in the `begin`/`stop` definitions, so the body
+    // is the last block that starts with the begin marker.
+    "const from = text.lastIndexOf(begin);",
+    "const to = text.indexOf(stop, from + begin.length);",
+    'if (from < 0 || to < 0) throw new Error("the adapted script markers are missing");',
+    `vm.runInThisContext(text.slice(from + begin.length, to) + ${JSON.stringify(end)}, { filename: __filename });`,
+    "if (false) { (function () {",
+    scriptBegin,
+    `${helpers}${source}`,
+    scriptEnd,
+    "}); }",
+  ].join("\n");
+}
+
+/** `host:script-environment` also covers ESM syntax; only a CommonJS-shaped
+ * test can be replayed as a script inside its island. */
+export function scriptEnvironment(source) {
+  const sf = ts.createSourceFile("test.js", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  return !ts.isExternalModule(sf);
 }
 
 function parseDiagnostics(source, variant) {
@@ -310,8 +397,13 @@ export function compileFailureStatus(diagnostics) {
 }
 
 export function matchesExpectation(id, outcome) {
+  // Decision S4: a variant whose entry module ran in a Node island passes
+  // for the profile — it proved Node's semantics, which is what the
+  // expectation asserts — but it stays a separate status, so the counts
+  // never report it as a native pass.
+  const status = outcome.status === "island-pass" ? "pass" : outcome.status;
   const expected = expectations[id];
-  if (!expected) return outcome.status === "pass";
-  return outcome.status === expected.status && outcome.reason === expected.reason &&
+  if (!expected) return status === "pass";
+  return status === expected.status && outcome.reason === expected.reason &&
     outcome.stderr?.includes(expected.detail) === true;
 }

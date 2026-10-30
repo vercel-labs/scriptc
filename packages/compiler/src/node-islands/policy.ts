@@ -4,9 +4,8 @@
  * become islands only when marked (`nodeIslands.modules`,
  * `--node-island=<path>`); `"native"` (`--native=<pkg>`) makes one
  * dependency strict; `--node-islands=off` makes the whole program strict.
- *
- * This version is report-only: the policy decides what WOULD run in Node,
- * and coverage reports it, but code generation does not change. */
+ * The decision drives code generation: an island package or module is not
+ * compiled natively but loaded by the program's Node island. */
 import { isAbsolute, join, resolve, dirname } from "node:path";
 import type { ProjectConfig } from "../project-config.js";
 

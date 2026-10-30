@@ -294,7 +294,7 @@ export async function linkNativeExecutable(
         ...hugeTextLinkerArgs(plan.hugeText === true, (withLld && lld.length !== 0) || zig),
         ...plan.driverFlags,
         ...mapArgs,
-        ...(withLld ? inputs : inputsWithoutLld(plan.target.platform, inputs)),
+        ...(withLld ? inputs : inputsWithoutLld(plan.target, inputs)),
         ...systemLibraryLinkerArgs(plan.target, plan.systemLibraries),
         "-o",
         privateOut,

@@ -211,6 +211,7 @@ import { isZlibStreamMember, lowerZlibStreamBytesWritten } from "../builtins/com
 import { isWebCryptoReceiver } from "../builtins/crypto.js";
 import { isFsStreamMember, lowerFsStreamProperty } from "../builtins/fs-streams.js";
 import { keyedFieldRead } from "./keyed-field-targets.js";
+import { heldEnvValueType } from "../builtins/environment.js";
 import { promisePrototypeValue } from "../thenables.js";
 import { lowerChildPropertyRead } from "../handle-properties.js";
 
@@ -1943,6 +1944,8 @@ export function lowerIntrinsicProperty(
     lowerer.stdlibGlobalMember(expr.expression, "Object") === "prototype"
   )
     return builtinGlobalValue("Object", locOf(expr));
+  const primitivePrototype = jsPrimitivePrototypeValue(lowerer, expr);
+  if (primitivePrototype) return primitivePrototype;
   const builtinPrototype = builtinPrototypeMethod(lowerer, expr);
   if (builtinPrototype)
     return {
@@ -4820,6 +4823,21 @@ export function fieldGetExpr(
   // construction), typed as the index value armed with undefined
   // (mirroring lowerRecordKeyRead).
   if (target.container === "recordOvf") {
+    // A dot read through a value HELD from process.env (`const env =
+    // process.env; env.X`): the hold aliases the live table, so the read is
+    // the same getenv the direct spelling lowers to.
+    if (ts.isPropertyAccessExpression(blame)) {
+      const live = heldEnvValueType(lowerer, blame.expression);
+      if (live !== null) {
+        return {
+          kind: "libCall",
+          fn: "process.envGet",
+          args: [{ kind: "strLit", value: target.field, type: STRING, loc }],
+          type: live,
+          loc,
+        };
+      }
+    }
     let obj = target.obj;
     if (obj.type.kind === "union" && ts.isPropertyAccessExpression(blame)) {
       const present = lowerer.stripUndefinedArm(obj.type);
@@ -4983,7 +5001,10 @@ const ERROR_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
  * constructor, and dynamic values answer `.constructor` with the same one,
  * so `o.constructor === Object` and `err.constructor === TypeError` are
  * exact identity tests, and `err.constructor.name` is the constructor's
- * name. */
+ * name. SharedArrayBuffer, DataView, BigInt64Array, BigUint64Array and
+ * Proxy have values with Node's name, length and instanceof answers;
+ * calling one throws Node's TypeError, and constructing through the value
+ * is fenced. */
 const GLOBAL_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
   "Object",
   "Function",
@@ -4995,6 +5016,11 @@ const GLOBAL_CONSTRUCTOR_VALUES: ReadonlySet<string> = new Set([
   "WeakMap",
   "WeakSet",
   "FinalizationRegistry",
+  "SharedArrayBuffer",
+  "DataView",
+  "BigInt64Array",
+  "BigUint64Array",
+  "Proxy",
   ...ERROR_CONSTRUCTOR_VALUES,
 ]);
 
@@ -5406,4 +5432,57 @@ function globalThisWrittenNames(lowerer: Lowerer, globalType: ts.Type): Set<stri
     });
   }
   return names;
+}
+
+/** `Number.prototype` / `Boolean.prototype` in a JavaScript source: the
+ * prototype object the checked-dynamic world builds (with its methods), or
+ * one of its members read as a value. Typed sources keep their own
+ * lowering, so no typed program links the unit that builds it. */
+function jsPrimitivePrototypeValue(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
+  const loc = locOf(expr);
+  const value = (kind: string): IrExpr => ({
+    kind: "libCall",
+    fn: "dyn.builtinPrototype",
+    args: [{ kind: "strLit", value: kind, type: STRING, loc }],
+    type: DYN,
+    loc,
+  });
+  const receiver = expr.expression;
+  if (ts.isPropertyAccessExpression(receiver) && receiver.name.text === "prototype") {
+    const kind = primitivePrototypeKind(lowerer, receiver);
+    if (!kind) return null;
+    return {
+      kind: "dynKeyGet",
+      value: value(kind),
+      key: { kind: "strLit", value: expr.name.text, type: STRING, loc: locOf(expr.name) },
+      type: DYN,
+      loc,
+    };
+  }
+  const kind = primitivePrototypeKind(lowerer, expr);
+  return kind ? value(kind) : null;
+}
+
+/** Whether `expr` names `Number.prototype` or `Boolean.prototype` in a
+ * JavaScript source, which lowers to the prototype object above rather than
+ * to the wrapper interface's numeric/boolean value. */
+export function isPrimitivePrototypeRead(lowerer: Lowerer, expr: ts.Expression): boolean {
+  return primitivePrototypeKind(lowerer, expr) !== null;
+}
+
+/** The kind whose prototype `expr` names (`Number.prototype`) in a
+ * JavaScript source, if any. */
+function primitivePrototypeKind(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+): "Number" | "Boolean" | null {
+  if (!ts.isPropertyAccessExpression(expr) || expr.name.text !== "prototype") return null;
+  if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
+  if (lowerer.stdlibGlobalMember(expr, "Number") === "prototype") return "Number";
+  if (lowerer.stdlibGlobalMember(expr, "Boolean") === "prototype") return "Boolean";
+  return null;
 }

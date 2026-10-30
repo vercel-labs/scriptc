@@ -9,6 +9,7 @@ import {
 import {
   checkerBackend,
   tscTsExecutable,
+  writeCheckerOnce,
   tscTsPlatformPackage,
 } from "../frontend/ts7/checker-backend.js";
 
@@ -224,7 +225,7 @@ export function loadNativeToolchain(
       checkerBackend(env) === "tsgo"
         ? pathFrom(root, manifest.ts7)
         : manifest.tsc_ts !== undefined
-          ? pathFrom(root, manifest.tsc_ts)
+          ? distributionTscTs(pathFrom(root, manifest.tsc_ts), host.platform)
           : tscTsExecutable(
               [root, cwd],
               tscTsPlatformPackage(host.platform, host.architecture, host.name.endsWith("-musl")),
@@ -268,4 +269,11 @@ export function loadNativeToolchain(
       ? {}
       : { prebuiltLibDiagnostics: pathFrom(root, manifest.lib_diagnostics) }),
   };
+}
+
+/** The distribution's tsc-ts executable at `path`, written once with one
+ * write on Linux (writeCheckerOnce). */
+function distributionTscTs(path: string, platform: string): string {
+  if (platform === "linux") writeCheckerOnce(path);
+  return path;
 }

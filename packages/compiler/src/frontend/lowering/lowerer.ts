@@ -4365,6 +4365,14 @@ export class Lowerer {
       // one lowers again rather than replaying a record.
       checkedTable("nodeIslandCallers", () => this.nodeIslandCallers.length),
       checkedTable("nodeIslandSpecifiers", () => this.nodeIslandSpecifiers.length),
+      // A runtime-filesystem require's specifier literal is rewritten to its
+      // path in the island tree at lowering's end, like the calls above, and
+      // the load it adds joins this same record.
+      checkedTable("nodeIslandDynloads", () => this.nodeIslandDynloads.length),
+      // The members a boxed builtin namespace serves. The unit that boxes one
+      // also lifts its getter; a replayed unit reads the entry instead of
+      // lifting the getter a second time.
+      irDataTable("builtinNamespaceBoxKeys", this.builtinNamespaceBoxKeys),
       // Island module loads hold literals of the unit's IR too, and their
       // module globals (with each CommonJS named import's snapshot global)
       // are created by the first load: a unit that adds either lowers again.
@@ -4603,6 +4611,7 @@ export class Lowerer {
     // settings
     "frontendServices",
     "nodeIslands",
+    "nodeIslandsEnabled",
     "ambient",
     "overridesAmbient",
     "remainder",
@@ -4801,6 +4810,11 @@ export class Lowerer {
         "usesNodeIsland",
         () => this.usesNodeIsland,
         () => (this.usesNodeIsland = true),
+      ),
+      flag(
+        "usesDynamicRequire",
+        () => this.usesDynamicRequire,
+        () => (this.usesDynamicRequire = true),
       ),
       flag(
         "cjsModuleGraphEnabled",
@@ -12843,16 +12857,6 @@ export class Lowerer {
         const object = moduleNamespaceObject(this, ns) ?? moduleNamespaceValue(this, ns);
         if (object) return object;
       }
-      // A TypeScript source's module namespace as an untyped value: the
-      // runtime's namespace object with live reads, Node's sorted keys and
-      // read-only writes. `node:` builtins have no compiled source or
-      // complete export table here and keep their fence below.
-      if (expr.type.kind === "moduleNs") {
-        const boxed = this.moduleNamespaceDyn(
-          expr as IrExpr & { type: IrType & { kind: "moduleNs" } },
-        );
-        if (boxed) return boxed;
-      }
       // A node:path family is its module object (pathModuleValue), the
       // bare module the target platform's family.
       if (
@@ -12891,6 +12895,17 @@ export class Lowerer {
           type: DYN,
           loc: expr.loc,
         };
+      }
+      // Any other module namespace as an untyped value: the runtime's
+      // namespace object with live reads, Node's sorted keys and read-only
+      // writes, built by `moduleNamespaceDynValue` for a compiled module and
+      // from the lowering tables for a `node:` builtin. The path families and
+      // `events` above are their module object and class, Node's own values.
+      if (expr.type.kind === "moduleNs") {
+        const boxed = this.moduleNamespaceDyn(
+          expr as IrExpr & { type: IrType & { kind: "moduleNs" } },
+        );
+        if (boxed) return boxed;
       }
       if (expr.type.kind === "classval" && this.classes.get(expr.type.className)?.def.runtime) {
         // Only the class itself: a slot of the class's type may hold a

@@ -7,8 +7,10 @@
  * apply as written warn (SC8030-SC8033). The `.d.ts`, `@types`, replaced
  * file and supplied entry cases run in npm.test.ts (type-patch-dts,
  * type-patch-types-twin, type-patch-files, type-patch-types-entry); here
- * their unpatched copies show the patches are what makes them compile, and
- * a failing check names the declaration and the patch (scr_type_origin.c,
+ * their unpatched copies show what the patches add — a typed import for
+ * the supplied-declarations entry, whose unpatched package types as
+ * dynamic and loads as a Node island handle — and a failing check names
+ * the declaration and the patch (scr_type_origin.c,
  * frontend/lowering/decl-origin.ts), its own package's also when two
  * packages declare a record of one name and shape. And
  * commander-calc carries the HelpContext.helpWidth patch. */
@@ -19,6 +21,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
 import { compile } from "@scriptc/compiler";
+import { libnodePack } from "./libnode.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(import.meta.dirname, "../..");
@@ -154,7 +157,7 @@ describe("type patches", () => {
   );
 
   test(
-    "without its patch, a package without declarations is not compiled for a typed import",
+    "without its patch, a package without declarations is typed dynamically",
     { timeout: 600_000 },
     async () => {
       const copy = unpatched(join(repoRoot, "tests/fixtures/npm/cases/type-patch-types-entry"));
@@ -165,7 +168,26 @@ describe("type patches", () => {
           outDir,
           sanitize,
         });
-        expect(result.ok).toBe(false);
+        // Without the supplied declarations the import has no static type:
+        // the package's own CommonJS entry crosses into the program as a
+        // Node island handle and loads at run time, so the build needs a
+        // libnode pack and stops without one. The supplied declarations are
+        // what compile the same code statically (npm.test.ts
+        // type-patch-types-entry).
+        if (libnodePack() === null) {
+          expect(result.ok).toBe(false);
+          if (!result.ok) expect(result.diagnostics.map((d) => d.code)).toContain("SC8005");
+          return;
+        }
+        if (!result.ok)
+          throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+        const [node, native] = await Promise.all([
+          run(process.execPath, [join(copy, "main.ts")]),
+          run(result.binaryPath, []),
+        ]);
+        expect(node.exitCode).toBe(0);
+        expect(native.exitCode).toBe(0);
+        expect(native.stdout).toBe(node.stdout);
       } finally {
         rmSync(copy, { recursive: true, force: true });
       }

@@ -1,5 +1,5 @@
 import { recordToEnvPairs } from "./environment.js";
-import { boolLit, numLit } from "../../../ir/build.js";
+import { boolLit, numLit, varRef } from "../../../ir/build.js";
 import { resolve } from "node:path";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
@@ -11,6 +11,7 @@ import {
   DYN,
   F64,
   type IrExpr,
+  type IrStmt,
   SPAWNRES_T,
   STRING,
   type SrcLoc,
@@ -19,7 +20,7 @@ import {
 } from "../../../ir/ir.js";
 import { staticForkModulePath } from "../../fork-target.js";
 import { tsgoPath } from "../../dts-paths.js";
-import { isPureReadShape, optionMember, stripTypeCasts } from "./arguments.js";
+import { optionMember, stripTypeCasts } from "./arguments.js";
 
 /** The child-process args list: one string[] value. An omitted list
  * completes to an empty literal (Node's default); an array LITERAL
@@ -134,6 +135,10 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
   let hasInput: IrExpr = boolLit(false, loc);
   let extOptions = false; // cwd or input present: the extended entry point
   let plain = true; // no behavior-changing option: the historical libCall
+  // A union-typed `input` is tested for undefined AND read as the value:
+  // one read lands in a hidden local the call's prelude declares, so a
+  // getter behind the read runs once, as it does in Node.
+  let inputRead: { id: string; init: IrExpr } | null = null;
 
   if (optsNode) {
     if (!ts.isObjectLiteralExpression(optsNode)) {
@@ -258,22 +263,19 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
           break;
         case "input": {
           // string | undefined, Node's exact member semantics (see
-          // execFileSync): the undefined arm is an ABSENT option. A
-          // union-typed value re-reads for the presence test, so only
-          // pure reads qualify — the `options?.input` shape verbatim.
+          // execFileSync): the undefined arm is an ABSENT option. The
+          // presence test and the value share ONE read (the hidden local
+          // below), so any expression qualifies and a getter or call in it
+          // runs exactly once, as the options object's evaluation does.
           if (lowerer.typeOf(m.value).flags & ts.TypeFlags.Undefined) break;
           const it = lowerer.mapTypeOf(lowerer.typeOf(m.value));
           const uTag = it?.kind === "union" ? lowerer.armTag(it.unionId, UNDEFINED_T) : -1;
           const sTag = it?.kind === "union" ? lowerer.armTag(it.unionId, STRING) : -1;
           if (it?.kind === "union" && uTag >= 0 && sTag >= 0) {
-            if (!isPureReadShape(m.value)) {
-              lowerer.noLowering(
-                "spawnSync with a computed optional input",
-                m.value,
-                "the undefined test re-reads the expression — bind the input to a const first",
-              );
-            }
-            const read = lowerer.lowerExpr(m.value);
+            const readValue = lowerer.lowerExpr(m.value);
+            const slot = lowerer.declareHiddenLocal("%spawnSyncInput", readValue.type);
+            inputRead = { id: slot.id, init: readValue };
+            const read: IrExpr = varRef(slot.id, readValue.type, loc);
             hasInput = {
               kind: "unionIsTag",
               unionId: it.unionId,
@@ -353,28 +355,51 @@ export function lowerSpawnSyncCall(lowerer: Lowerer, expr: ts.CallExpression, lo
   }
   if (extOptions) {
     // Node IGNORES `input` when stdio[0] takes the child's fd 0 away
-    // ("ignore" is /dev/null, "inherit" the parent's): the option is dead
-    // there, not a pipe.
+    // ("ignore" is /dev/null, "inherit" the parent's): the value never
+    // reaches the child, not a pipe. The OPTION still evaluates — the
+    // caller's expression is evaluated before the call in JavaScript — so
+    // the value rides the call with the presence flag cleared.
     const ignoreInput = !stdinPiped;
-    return {
+    // The union read's prelude: the command and the earlier options are
+    // evaluated before it, as the argument expressions were, and the
+    // hidden local carries the one read the tag test and the value share.
+    const prelude: IrStmt[] = [];
+    let cmdArg = cmd;
+    let argvArg = argv;
+    let cwdArg = cwd;
+    const bind = (name: string, value: IrExpr): IrExpr => {
+      const local = lowerer.declareHiddenLocal(name, value.type);
+      prelude.push({ kind: "varDecl", localId: local.id, init: value, loc });
+      return varRef(local.id, value.type, loc);
+    };
+    if (inputRead !== null) {
+      cmdArg = bind("%spawnSyncCmd", cmd);
+      argvArg = bind("%spawnSyncArgs", argv);
+      cwdArg = bind("%spawnSyncCwd", cwd);
+      prelude.push({ kind: "varDecl", localId: inputRead.id, init: inputRead.init, loc });
+    }
+    const call: IrExpr = {
       kind: "libCall",
       fn: envPairs !== null ? "cp.spawnSyncExtEnv" : "cp.spawnSyncExt",
       args: [
-        cmd,
-        argv,
+        cmdArg,
+        argvArg,
         timeout,
         killSignal,
         numLit(inMode, loc),
         numLit(outMode, loc),
         numLit(errMode, loc),
-        cwd,
-        ignoreInput ? emptyStr : input,
+        cwdArg,
+        input,
         ignoreInput ? boolLit(false, loc) : hasInput,
         ...(envPairs !== null ? [envPairs] : []),
       ],
       type: SPAWNRES_T,
       loc,
     };
+    return prelude.length === 0
+      ? call
+      : { kind: "seqExpr", stmts: prelude, result: call, type: SPAWNRES_T, loc };
   }
   return {
     kind: "libCall",

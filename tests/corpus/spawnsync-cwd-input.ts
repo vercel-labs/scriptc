@@ -79,3 +79,45 @@ const all = spawnSync("sh", ["-c", "cat marker.txt; echo ${MARK:-unset}"], {
   encoding: "utf8",
 });
 console.log(`combined: ${JSON.stringify(all.stdout)} ${all.status}`);
+
+// Every option expression evaluates exactly once, whatever the mode: Node
+// reads `input` from the options object before stdio[0] decides whether the
+// value is used, so a side-effecting input still runs when "ignore" takes
+// the child's fd 0 away.
+let evaluations = 0;
+const computedInput = (): string => {
+  evaluations++;
+  return "dropped";
+};
+const ignoredInput = spawnSync("wc", ["-c"], {
+  input: computedInput(),
+  stdio: ["ignore", "pipe", "pipe"],
+  encoding: "utf8",
+});
+console.log(
+  `ignored input evaluated: ${evaluations} ${ignoredInput.stdout.trim()} ${ignoredInput.status}`,
+);
+
+// The optional-input idiom re-reads for the undefined test; a property
+// read behind it is a getter, and Node runs the getter once.
+class GetterInput {
+  reads = 0;
+  #value: string | undefined = "from-getter\n";
+  get input(): string | undefined {
+    this.reads++;
+    return this.#value;
+  }
+}
+const getterInput = new GetterInput();
+const viaGetter = spawnSync("cat", [], { input: getterInput.input, encoding: "utf8" });
+console.log(`optional getter: ${getterInput.reads} ${JSON.stringify(viaGetter.stdout)}`);
+
+// The same one-read rule for a call in the option: the union-typed value is
+// evaluated once and its undefined arm stays an absent option.
+let calls = 0;
+const optionalInput = (): string | undefined => {
+  calls++;
+  return calls === 1 ? "from-call\n" : undefined;
+};
+const viaCall = spawnSync("cat", [], { input: optionalInput(), encoding: "utf8" });
+console.log(`optional call: ${calls} ${JSON.stringify(viaCall.stdout)}`);

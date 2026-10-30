@@ -1,8 +1,10 @@
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { availableParallelism } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { shardSelect } from "../harness/shard.js";
 import { runSource, type Outcome } from "./execute.js";
+import { idPath, limitPerChapter, parseStatuses, readJournalIds, readPathList, resolveListedPaths } from "./select.mjs";
 import {
   assertThrowsSource, directory, exclusion, harnessSource, propertyHelperSource, typedArrayHelperSource, matchesExpectation, matchesParseNegative, metadata, pin, sha256, snapshotDigest, summarize,
   testPaths, variants, vendorRoot, verifyVendor,
@@ -10,7 +12,8 @@ import {
 
 async function main(): Promise<void> {
   const { values } = parseArgs({ options: {
-    root: { type: "string" }, filter: { type: "string", multiple: true }, limit: { type: "string" },
+    root: { type: "string" }, filter: { type: "string", multiple: true }, limit: { type: "string" }, "limit-per-chapter": { type: "string" },
+    files: { type: "string" }, "from-journal": { type: "string" }, status: { type: "string", multiple: true },
     report: { type: "string" }, journal: { type: "string" }, workers: { type: "string" }, backend: { type: "string", default: "default" },
     "compile-timeout": { type: "string" }, "runtime-timeout": { type: "string" },
     keep: { type: "boolean" }, list: { type: "boolean" }, help: { type: "boolean" },
@@ -21,8 +24,12 @@ async function main(): Promise<void> {
   pnpm test:test262                         run the vendored regression profile
   pnpm test:test262 --root PATH             survey a complete pinned snapshot
   --filter TEXT                            select test paths containing TEXT (repeatable)
+  --files PATH                             run exactly the test paths listed in PATH (one per line)
+  --from-journal PATH [--status=a,b]       rerun the journal records with those outcomes
+                                            (default: every unexpected outcome; pass and excluded never)
   --limit N                                first N selected test files
-  --workers N                              concurrent compiles (default 2)
+  --limit-per-chapter N                    up to N files per chapter, spread across the chapter
+  --workers N                              concurrent compiles (default: available cores, at most 8)
   --backend default|llvm                    LLVM is the production backend
   --report PATH                            JSON report (default under node_modules/.cache)
   --journal PATH                           append each result as JSONL during the run
@@ -49,22 +56,43 @@ pass and an island failure of such a variant is not a native regression.`);
   }
   if (!["default", "llvm"].includes(values.backend!)) throw new Error("invalid backend");
   const backend = values.backend as "default" | "llvm";
-  const workers = positive(values.workers ?? process.env.SCRIPTC_TEST_WORKERS, 2, "workers");
+  // The runner's wall clock is spent in compile-worker processes, so the
+  // machine's cores are the useful width. Capped at 8 to keep the per-worker
+  // compiler memory bounded on large hosts.
+  const workers = positive(values.workers ?? process.env.SCRIPTC_TEST_WORKERS, Math.min(8, availableParallelism()), "workers");
   const limit = positive(values.limit, Number.MAX_SAFE_INTEGER, "limit");
+  const perChapterLimit = positive(values["limit-per-chapter"], Number.MAX_SAFE_INTEGER, "limit-per-chapter");
   const compileTimeoutMs = positive(values["compile-timeout"], 120_000, "compile-timeout");
   const runtimeTimeoutMs = positive(values["runtime-timeout"], 10_000, "runtime-timeout");
   const root = values.root ? resolve(values.root) : vendorRoot;
   if (values.root) {
     if (snapshotDigest(root) !== pin.snapshotSha256) throw new Error("Test262 snapshot differs from the pinned revision");
   } else verifyVendor();
+  if (values.status && !values["from-journal"]) throw new Error("--status requires --from-journal");
+  const statuses = parseStatuses(values.status);
   const allPaths: string[] = values.root ? testPaths(root) : pin.tests;
   const filters = values.filter ?? [];
-  const selected = allPaths
-    .filter((path) => filters.length === 0 || filters.some((filter) => path.includes(filter)))
-    .slice(0, limit);
+  let selected = allPaths;
+  if (values.files) {
+    const listed = resolveListedPaths(readPathList(readFileSync(resolve(values.files), "utf8")), allPaths);
+    selected = selected.filter((path) => listed.has(path));
+  }
+  if (filters.length) selected = selected.filter((path) => filters.some((filter) => path.includes(filter)));
+  // A journal replay narrows the file inventory before any source is read: a
+  // survey inventory is 53k files and a replay is usually a few hundred.
+  const requested = values["from-journal"]
+    ? readJournalIds(readFileSync(resolve(values["from-journal"]), "utf8"), statuses)
+    : undefined;
+  if (requested) {
+    if (!requested.size) throw new Error(`no journal records match --status=${[...statuses].join(",")}`);
+    const requestedPaths = new Set([...requested].map((id) => idPath(id)!));
+    selected = selected.filter((path) => requestedPaths.has(path));
+  }
+  if (perChapterLimit !== Number.MAX_SAFE_INTEGER) selected = limitPerChapter(selected, perChapterLimit);
+  selected = selected.slice(0, limit);
   if (!selected.length) throw new Error("no Test262 files matched the selection");
   const islands = values.islands === true;
-  const cases = selected.flatMap((path) => {
+  let cases = selected.flatMap((path) => {
     const source = readFileSync(join(root, path), "utf8");
     const meta = metadata(source, path);
     return variants(meta).map((variant: string) => {
@@ -81,6 +109,14 @@ pass and an island failure of such a variant is not a native regression.`);
       };
     });
   });
+  if (requested) {
+    const known = new Set(cases.map((item) => item.id));
+    const missing = [...requested].filter((id) => !known.has(id));
+    if (missing.length) {
+      throw new Error(`--from-journal selected ${missing.length} variants that the path selection does not contain; first: ${missing.slice(0, 5).join(", ")}`);
+    }
+    cases = cases.filter((item) => requested.has(item.id));
+  }
   const shard = shardSelect(cases, (item) => item.id);
   if (values.list) {
     for (const item of shard) {
@@ -142,6 +178,8 @@ pass and an island failure of such a variant is not a native regression.`);
     scope: values.root ? "survey" : "regression-profile",
     upstreamTestFiles: pin.testFiles, availableTestFiles: allPaths.length,
     selectedTestFiles: selected.length, selectedVariants: cases.length,
+    fromJournal: values["from-journal"] ? resolve(values["from-journal"]) : null,
+    statuses: requested ? [...statuses].sort() : null,
     shard: process.env.SCRIPTC_TEST_SHARD ?? null, shardVariants: shard.length,
     islands, liftedVariants: liftedCases,
     unexpectedResults: unexpected.length,

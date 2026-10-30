@@ -57,3 +57,13 @@ console.log('descriptor', described.value);
 
 // Builtin function values keep Node's counts.
 console.log('builtin', Math.max.length, Math.min.length);
+
+// A class field holds whatever was last stored in it: an alias of a
+// reassigned field reads the stored function's length.
+class Fields {
+  fn = function (a, b = 1) {};
+}
+const fields = new Fields();
+fields.fn = function (a, b, c) {};
+const fieldAlias = fields.fn;
+console.log('field', fields.fn.length, fieldAlias.length, new Fields().fn.length);

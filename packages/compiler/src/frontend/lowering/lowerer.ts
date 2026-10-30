@@ -2270,11 +2270,11 @@ export function jsFuncIdentityOfValue(
 }
 
 /** The one function declaration the value `expr` IS, resolved through
- * `const` aliases and the properties that hold it: the declaration whose
- * ExpectedArgumentCount (`jsFuncLengthOf`) its `length` is. Null when the
+ * `const` aliases: the declaration whose ExpectedArgumentCount
+ * (`jsFuncLengthOf`) its `length` is. Null when the
  * value can stand for more than one function — a conditional over two of
- * them, a call's answer, a mutable binding — because then which one it is
- * is a runtime fact. */
+ * them, a call's answer, a mutable binding or a class field — because then
+ * which one it is is a runtime fact. */
 export function jsFuncValueOf(lowerer: Lowerer, expr: ts.Node): ts.Node | null {
   const seen = new Set<ts.Symbol>();
   let n: ts.Node = expr;
@@ -2304,10 +2304,8 @@ export function jsFuncValueOf(lowerer: Lowerer, expr: ts.Node): ts.Node | null {
       ts.isArrowFunction(declaration)
     )
       return declaration;
-    if (ts.isPropertyDeclaration(declaration) && declaration.initializer !== undefined) {
-      n = declaration.initializer;
-      continue;
-    }
+    // A class field is a reassignable property (`obj.fn = other`), so its
+    // initializer is not the function every read holds.
     if (
       ts.isVariableDeclaration(declaration) &&
       declaration.initializer !== undefined &&

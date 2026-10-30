@@ -4563,6 +4563,10 @@ export class Lowerer {
     "stdioPatchSites",
     "requestInitPropMutatedSyms",
     "classProtocols",
+    // isStdlibFile's memo: an answer is a pure function of the file's name
+    // and the program's library metadata, so a reused unit computes a
+    // missing answer again when it asks.
+    "stdlibFiles",
     // The whole-program prepass analyzeJsWidenedBindings computes this set
     // before lowering begins: a pure function of the program's modules.
     "jsWidenedBindings",

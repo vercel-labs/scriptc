@@ -34,16 +34,26 @@ test("other hosts retain native-file coverage in Linux Sandboxes", () => {
 });
 
 test("lane environments override inherited sanitizer and scheduler settings", () => {
-  expect(sandboxLaneEnv("plain")).toEqual({
+  expect(sandboxLaneEnv("plain", {})).toEqual({
     CI: "1",
     SCRIPTC_PORTABLE_ONLY: "",
     SCRIPTC_SAN: "",
     SCRIPTC_TEST_SHARD: "",
+    SCRIPTC_LIBNODE: "",
   });
-  expect(sandboxLaneEnv("san")).toEqual({
+  expect(sandboxLaneEnv("san", {})).toEqual({
     CI: "1",
     SCRIPTC_PORTABLE_ONLY: "",
     SCRIPTC_SAN: "1",
     SCRIPTC_TEST_SHARD: "",
+    SCRIPTC_LIBNODE: "",
   });
+});
+
+test("a lane forwards the libnode pack it is given", () => {
+  // The path names a pack inside the Sandbox; the island tests require one in
+  // a CI lane, and a snapshot-provided pack is only found through this.
+  const pack = "/vercel/sandbox/libnode-pack";
+  expect(sandboxLaneEnv("plain", { SCRIPTC_LIBNODE: pack }).SCRIPTC_LIBNODE).toBe(pack);
+  expect(sandboxLaneEnv("san", { SCRIPTC_LIBNODE: pack }).SCRIPTC_LIBNODE).toBe(pack);
 });

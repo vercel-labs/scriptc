@@ -122,9 +122,9 @@ const work = mkdtempSync(
 /* ── code-layout perturbation ──────────────────────────────────────────── */
 // Layout k > 0 links a retained k*16-byte padding object before every other
 // input, through a SCRIPTC_LINKER wrapper that forwards to clang (the default
-// linker driver on macOS and Linux). The runtime is linked before the program
-// object, so both move as if earlier code had grown; any checkout's compiler can
-// be perturbed this way.
+// linker driver on macOS and Linux) or, for a musl target, to `zig cc`. The
+// runtime is linked before the program object, so both move as if earlier code
+// had grown; any checkout's compiler can be perturbed this way.
 function layoutTooling() {
   if (layouts === 1) return null;
   const root = join(work, "layouts");
@@ -161,7 +161,13 @@ if (pad && !args.some((a) => a.startsWith("-print-prog-name"))) {
   }
   out = ["-Wl,-u,${symbol}", pad, ...args];
 }
-const result = spawnSync("clang", out, { stdio: "inherit" });
+// The musl lane links with \`zig cc\`; SCRIPTC_LINKER replaces the driver
+// together with its \`cc\` argument.
+const musl = (process.env.SCRIPTC_TARGET ?? "").includes("musl");
+if (out[0] === "cc") out = out.slice(1);
+const result = musl
+  ? spawnSync("zig", ["cc", ...out], { stdio: "inherit" })
+  : spawnSync("clang", out, { stdio: "inherit" });
 process.exit(result.status ?? 1);
 `,
   );

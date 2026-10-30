@@ -276,9 +276,20 @@ int runtimeUnit(int Argc, char **Argv) {
             Options->ProfileGeneratePattern, Options->ProfileUse, Match))
       return fail("optimization_failed", *Failure);
     if (!Options->ProfileUse.empty()) {
-      json::Object Profile{{"annotated", Match.Annotated},
-                           {"mismatched", Match.Mismatched},
-                           {"missing", Match.Missing}};
+      // Each matched function's counters in the profile, by profile name.
+      auto Counts =
+          [](const std::vector<std::pair<std::string, uint64_t>> &List) {
+            json::Object Object;
+            for (const auto &[Name, Sum] : List)
+              Object[Name] = Sum;
+            return Object;
+          };
+      json::Object Profile{
+          {"annotated", Match.Annotated},
+          {"mismatched", Match.Mismatched},
+          {"missing", Match.Missing},
+          {"annotated_counts", Counts(Match.AnnotatedCounts)},
+          {"mismatched_counts", Counts(Match.MismatchedCounts)}};
       json::Object Response{{"ok", true}, {"profile", std::move(Profile)}};
       outs() << formatv("{0}\n", json::Value(std::move(Response)));
     } else if (Options->ProfileGenerate) {

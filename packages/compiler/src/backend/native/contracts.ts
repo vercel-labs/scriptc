@@ -83,6 +83,17 @@ export interface CcOptions {
   /** The program uses node:zlib's Brotli forms (with zlib): compiles
    * scr_brotli.c and links the vendored brotli archive. */
   brotli?: boolean;
+  /** The program uses an Intl form that only ICU can answer (the `icu.*`
+   * libCalls: default-locale number/date formats, word segmentation):
+   * compiles scr_intl.c and links the ICU archive, and the
+   * executable gets icudt78l.dat next to it. Every engine-free form keeps
+   * linking none of it. */
+  intl?: boolean;
+  /** With `intl`: the installed runtime pack's ICU archive and the include
+   * root of the ICU headers it ships. The C-source path then links that
+   * archive and compiles scr_intl.c against those headers, instead of
+   * building ICU from its fetched release with Zig's C++ driver. */
+  icuPack?: { archive: string; include: string };
   /** The program uses node:assert (index.ts detects assert.* libCalls on
    * the IR): compiles scr_assert.c — the zlib gating precedent, so
    * assert-free binaries keep their exact size class. scr_regex.c calls
@@ -120,6 +131,9 @@ export interface CcOptions {
   streamDyn?: boolean;
   /** Own properties JavaScript adds to children: compiles scr_dyn_handle_props.c. */
   handleProps?: boolean;
+  /** ChildProcess listener removal and signalCode: compiles
+   * scr_child_lifecycle.c. */
+  childLifecycle?: boolean;
   declAdopt?: boolean;
   typeOrigins?: boolean;
   /** for await over checked-dynamic values: compiles scr_dyn_for_await.c. */
@@ -156,14 +170,37 @@ export interface CcOptions {
   wasm?: boolean;
   /** SCR_WARNING_REPLACE: process.emitWarning replacement support. */
   warningReplace?: boolean;
+  /** SCR_RECORD_VIEW_PARTIAL: the scr_json.c build whose view slot answers
+   * NULL for a field a partial record view does not have. */
+  recordViewPartial?: boolean;
   /** SCR_STDIO_EXTENDED: stdin encoding, string data listeners, resize. */
   stdioExtended?: boolean;
+  /** SCR_FS_FLAGS: writeFile's `flag` option and copyFile's mode argument
+   * (scr_fs_flags.c and that build of scr_fs_cp.c). */
+  fsFlags?: boolean;
+  /** string_decoder's checked-dynamic chunk forms: compiles
+   * scr_bytes_strdec_dyn.c. */
+  strdecDyn?: boolean;
+  /** SCR_PROCESS_EXTRAS / SCR_NET_SERVER_OFF: process.prependListener,
+   * stdin.isRaw and server.off. */
+  processExtras?: boolean;
+  /** SCR_STREAM_WRITE_ERRORS: the stream unit publishes the error each
+   * write completion callback receives (error-taking write callbacks). */
+  streamWriteErrors?: boolean;
+  /** SCR_STDIO_WRITE_SLOT: the events unit carries the typed write slot
+   * (the write method as a value, its replacement, run-time-typed chunks). */
+  stdioWriteSlot?: boolean;
   /** Calls into Node.js (@scriptc/node): compiles scr_node_island.c and
    * the event loop with SCR_NODE_ISLANDS (its helper slot). */
   nodeIsland?: boolean;
   /** Module namespace objects as checked-dynamic values: compiles
    * scr_module_namespace.c. */
   moduleNamespace?: boolean;
+  /** A module namespace boxed for typed code: compiles
+   * scr_module_namespace_dyn.c. */
+  moduleNamespaceDyn?: boolean;
+  /** Primitive wrapper objects: compiles scr_js_wrapper.c. */
+  primitiveWrapper?: boolean;
   /** The program uses the process-events surface (signal/exit listeners,
    * stdin events, for-await over stdin — moduleUsesProcessEvents on the
    * IR): compiles scr_events.c into the binary. Event-free binaries keep
@@ -182,6 +219,9 @@ export interface CcOptions {
    * Symbol-free binaries keep their exact link line. */
   symbol?: boolean;
   bigint?: boolean;
+  /** BigIntStats member reads: compiles scr_stats_bigint.c. Every other
+   * bigint program keeps its exact link line and size. */
+  bigstats?: boolean;
   /** Records URLSearchParams use in the build identity. Its runtime unit is
    * part of the base sources because checked URL handles expose searchParams. */
   searchParams?: boolean;
@@ -249,6 +289,16 @@ export interface CcOptions {
    * scr_watch.c into the binary — the net gating precedent, so watch-free
    * binaries keep their exact link line. */
   watch?: boolean;
+  /** The program uses fs.watchFile or fs.unwatchFile (moduleUsesFsWatchFile
+   * on the IR): compiles scr_watch_file.c into the binary — its own gated
+   * unit under the same precedent, so polling-free binaries keep their
+   * exact link line. */
+  watchFile?: boolean;
+  /** A typed fs read whose bytes value the program can observe as a Buffer
+   * (moduleUsesFsBufferBrand on the IR): compiles scr_lib.c's
+   * SCR_FS_BUFFER_BRAND build, so programs that never see the brand keep the
+   * default object byte for byte. */
+  fsBufferBrand?: boolean;
   /** The executable manifest has a format-5 foreign callback descriptor:
    * compiles the MPSC queue/self-pipe unit. Other FFI and non-FFI binaries
    * keep their existing runtime size class. */

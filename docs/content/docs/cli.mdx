@@ -166,6 +166,9 @@ With `--sparse`, the profile leaves out the functions the runs never reached. Th
   <dt><code>--large-pages</code></dt>
   <dd>On Linux, when the program starts, move its code onto 2 MiB transparent huge pages, as Node's <code>--use-largepages=silent</code> does. A large program's code then takes a few instruction TLB entries instead of hundreds, and runs faster. The move applies only when the system grants huge pages to memory that asks for them (<code>/sys/kernel/mm/transparent_hugepage/enabled</code> is <code>always</code> or <code>madvise</code>), and only to the code between the first and the last 2 MiB boundary of the executable, so small programs keep their code as it is. Opt in only where the trade-offs are acceptable: the move takes about 3 ms per 10 MiB of code at every start, all of the moved code stays resident and is not shared with other processes running the same executable, and profilers that read symbols from the executable file report the moved code as anonymous memory. If a step of the move fails, the program runs with its code where it was. Valid only for executable builds; it has no effect on other platforms.</dd>
 
+  <dt><code>--exceptions &lt;common|rare&gt;</code></dt>
+  <dd>On Linux, say how often the program throws. With the default, <code>common</code>, recursive functions and functions up to three calls above a <code>throw</code> report exceptions to their callers with a status check after each call, which costs a few nanoseconds per call and next to nothing when an exception passes. With <code>rare</code>, those functions also propagate exceptions by unwinding the native stack: their calls need no check, which makes programs such as type checkers, whose work is deep recursion that seldom throws, a few percent faster. An exception that crosses those functions then costs a native unwind, about 2 µs plus 0.1 to 0.7 µs per frame it crosses, so programs that throw in loops or use exceptions for control flow can become several times slower. Functions with a <code>throw</code> of their own keep the status check either way. It applies to executables and their LLVM and assembly output; object output and other platforms keep the status checks. A profile for <code>--profile-use</code> should be collected from a build with the same setting.</dd>
+
   <dt><code>--target-cpu &lt;baseline|x86-64-v2|x86-64-v3|x86-64-v4|native&gt;</code></dt>
   <dd>On x86-64 targets, compile the program's code for an x86-64 microarchitecture level. The default, <code>baseline</code>, runs on any x86-64 CPU. A higher level lets LLVM use more instructions, and the executable then runs only on CPUs that support that level. <code>native</code> uses the highest level the build machine supports. Valid for executable, assembly, and object output on x86-64 targets. See <a href="#target-cpu">Target CPU</a>.</dd>
 
@@ -176,7 +179,7 @@ With `--sparse`, the profile leaves out the functions the runs never reached. Th
   <dd>On Linux, build an instrumented executable for profile-guided optimization. Each run writes a raw profile to the path pattern, where <code>%p</code> expands to the process ID; the <code>LLVM_PROFILE_FILE</code> environment variable overrides the pattern at run time. A relative pattern resolves from the current working directory. Instrumented programs run slower. With <code>--profile-use</code>, the build is optimized by that profile and instrumented after inlining, the second phase of a <a href="#context-sensitive-profiles">context-sensitive profile</a>. Valid only for executable builds with <code>--optimization=release</code> or <code>speed</code>.</dd>
 
   <dt><code>--profile-use &lt;file.profdata&gt;</code></dt>
-  <dd>Optimize the executable with a profile from <code>scriptc merge-profiles</code>: code is laid out, inlined, and split by how the profiled runs used it. Code the profile does not describe, or describes from an older version of the program, is optimized as without a profile, so a stale profile only loses part of its gain. A new or changed profile compiles every partition of the program again. <code>scriptc build</code> prints how the profile matched the program's functions on stderr; see <a href="#profile-guided-optimization">Profile-guided optimization</a>. A profile with <a href="#context-sensitive-profiles">context-sensitive counts</a> also orders each function's blocks by them on Linux. Valid only for executable builds with <code>--optimization=release</code> or <code>speed</code>.</dd>
+  <dd>Optimize the executable with a profile from <code>scriptc merge-profiles</code>: code is laid out, inlined, and split by how the profiled runs used it. Code the profile does not describe, or describes from an older version of the program, is optimized as without a profile, so a stale profile only loses part of its gain; a <a href="#block-counts">block-count file</a> beside the profile gives changed functions their counts again. A new or changed profile compiles every partition of the program again. <code>scriptc build</code> prints how the profile matched the program's functions on stderr; see <a href="#profile-guided-optimization">Profile-guided optimization</a>. A profile with <a href="#context-sensitive-profiles">context-sensitive counts</a> also orders each function's blocks by them on Linux. Valid only for executable builds with <code>--optimization=release</code> or <code>speed</code>.</dd>
 
   <dt><code>--npm-static &lt;pkg[,pkg…]|auto&gt;</code></dt>
   <dd>Name npm packages to compile even if they don't ship their own type declarations (repeatable). A trailing <code>...</code>, as in <code>fs-extra...</code>, also names every package that package depends on. <code>auto</code> uses the default automatic selection. Packages that can't compile produce diagnostics. See <a href="/docs/dependencies#explicit-package-selection">npm Dependencies</a>.</dd>
@@ -266,7 +269,7 @@ $ scriptc merge-profiles -o app.profdata profiles/*.profraw
 $ scriptc build app.ts --optimization=speed --profile-use app.profdata
 ```
 
-Train on workloads like the ones the program will run: code the training never reached is optimized as without a profile. The profile can be committed and reused as the program changes. Functions whose control flow changed since the profile was collected lose their profile, and the rest keep theirs, so regenerate it when much of the program has changed. [Build parallelism](/docs/how-it-works#build-parallelism) describes what a profile adds to build time.
+Train on workloads like the ones the program will run: code the training never reached is optimized as without a profile. The profile can be committed and reused as the program changes, and in other checkouts and on other machines: it names functions by the entry's file name, not its directory. Functions whose control flow changed since the profile was collected lose their profile, and the rest keep theirs, so regenerate it when much of the program has changed. [Build parallelism](/docs/how-it-works#build-parallelism) describes what a profile adds to build time.
 
 `scriptc build --profile-use` prints one line on stderr with how the profile matched the program's functions:
 
@@ -303,6 +306,25 @@ $ scriptc build app.ts --optimization=speed --profile-use app-cs.profdata
 - **Optimized build:** `--profile-use` with the merged profile. On Linux, it also orders each function's blocks by the counts and moves blocks the runs never reached into separate sections, so the code that runs sits together.
 
 A profile that already holds context-sensitive counts cannot start a second phase. Merge the second phase's raw profiles into the first-phase profile instead. Both phases run the same workloads.
+
+### Block counts
+
+A profile matches a function only while the function's control flow hashes as it did when the profile was collected, so a change to the program or to scriptc leaves the changed functions without counts. A block-count file beside the profile, with its name and a `.blocks` extension in place of `.profdata` (`app.blocks` beside `app.profdata`), describes each function by the labels of its blocks instead. `--profile-use` reads it when it exists and annotates the functions whose control flow changed (the mismatched ones): blocks that keep their place in the function take their recorded counts, and the counts of the other blocks follow from the counts of the blocks and edges around them. The file also names the functions that never ran while the profile was collected, which a profile merged with `--sparse` has no record of. Those functions are compiled as cold code (an entry count of 0, optimized for size and placed with the other unlikely code), which shortens the build. A function the file does not name, for example one added since the profile was collected, keeps no counts and is optimized as without a profile. The report then adds a line, and the warning counts only the functions that remain without counts:
+
+```
+scriptc: profile app-cs.profdata: 0 functions annotated, 1 mismatched, 0 without a record
+scriptc: profile app-cs.profdata: 1 function without profile counts annotated from app-cs.blocks
+```
+
+A `--profile-use` build writes the block counts of the functions its profile annotates, and the names of the functions it has no record of, when the `SCRIPTC_RECORD_PROFILE_BLOCKS` environment variable names a path; such a build reuses no cached artifacts. For a context-sensitive profile, record them in the second phase, which the first-phase profile annotates:
+
+```console
+$ SCRIPTC_RECORD_PROFILE_BLOCKS=app-cs.blocks scriptc build app.ts --optimization=speed --profile-use app.profdata --profile-generate profiles-cs/%p.profraw -o app-instrumented-cs
+```
+
+A new or changed block-count file compiles every partition of the program again. Delete it when the profile it was recorded with is replaced.
+
+The file holds the counts before inlining. With a context-sensitive profile, a function whose control flow changed, and a function it is inlined into, also lose their context-sensitive counts and keep the counts from before inlining.
 
 ## Target CPU
 
@@ -350,6 +372,8 @@ $ scriptc build app.ts --optimization=speed --cpu-dispatch -o app
 ```
 
 The second copy makes the executable larger and the first build of the program slower, since LLVM compiles the program's code twice. Unchanged rebuilds are not affected. Both copies compute the same results: neither contracts floating-point operations into fused multiply-adds.
+
+A function's `x86-64-v3` copy runs its baseline code when its optimized code has vectors of at most 128 bits, none wider, and no rounding or bit counting in a loop. In such code, `x86-64-v3` only lets LLVM's vectorizers move scalar work onto vector instructions, which can run slower. Its calls still go to the `x86-64-v3` copies of the functions it calls.
 
 The `SCRIPTC_CPU_LEVEL` environment variable caps the level the executable uses, for example to test the baseline code on a newer machine. It takes a level from `0` to `4`, `baseline`, or a level name such as `x86-64-v3`; any other value selects the baseline code.
 

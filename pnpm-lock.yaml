@@ -236,6 +236,16 @@ importers:
         specifier: workspace:*
         version: link:../threads
 
+  packages/libnode-common: {}
+
+  packages/libnode-darwin-arm64: {}
+
+  packages/libnode-darwin-x64: {}
+
+  packages/libnode-linux-arm64-gnu: {}
+
+  packages/libnode-linux-x64-gnu: {}
+
   packages/llvm-darwin-arm64: {}
 
   packages/llvm-darwin-x64: {}

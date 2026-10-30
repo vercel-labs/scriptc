@@ -211,6 +211,11 @@ export class Ts7Host {
     });
   }
 
+  /** The text of a registered in-memory file, or undefined. */
+  virtualFileText(path: string): string | undefined {
+    return this.virtualFiles.get(tsgoPath(path));
+  }
+
   /** The text this host serves for a file (null when it serves none),
    * without asking the server for its syntax tree. */
   sourceText(fileName: string): string | null {

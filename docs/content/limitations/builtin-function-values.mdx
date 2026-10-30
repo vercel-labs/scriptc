@@ -1,6 +1,8 @@
 Some builtins can be stored and passed as functions:
 
 - Lowered `node:path` functions across the bare, POSIX, and win32 modules, including optional `basename` and variadic `join`/`resolve`.
+  Called through an untyped value, they validate their arguments with Node's `ERR_INVALID_ARG_TYPE`.
+  A path module held by untyped code is a plain object with Node's members in Node's order.
 - Supported zero-argument `node:os` functions and `querystring.escape`/`unescape`.
 - `util.isDeepStrictEqual`, `styleText`, `stripVTControlCharacters`, `toUSVString`, `inherits`, `deprecate`, `callbackify`, `debuglog`, and `debug`.
 - `fs.existsSync`, `unlinkSync`, `chmodSync`, `chownSync`, `renameSync`, and `closeSync`, and `fs/promises.unlink`, `chmod`, and `rename`.

@@ -73,12 +73,14 @@ void scriptc_native_collect_cycles(void) {
 int32_t scriptc_native_fork(void) { return -1; }
 void scriptc_native_exit(int32_t code) { ExitProcess((UINT)code); }
 int32_t scriptc_native_wait(int32_t pid) { (void)pid; return -1; }
+int32_t scriptc_native_exited(void) { return -1; }
 uint8_t scriptc_native_lock_open(const uint8_t *bytes, size_t size) { (void)bytes; (void)size; return 0; }
 void scriptc_native_lock(void) {}
 void scriptc_native_unlock(void) {}
 #else
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/file.h>
 #include <sys/wait.h>
 
@@ -117,6 +119,18 @@ int32_t scriptc_native_wait(int32_t pid) {
   if (WIFEXITED(status)) return WEXITSTATUS(status);
   if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
   return -1;
+}
+
+/* The pid of a child that has ended, waiting for one if none has, or -1
+ * when waitid fails. The child is left to scriptc_native_wait: a child
+ * another part of the process waits for is not reaped here. */
+int32_t scriptc_native_exited(void) {
+  siginfo_t info;
+  memset(&info, 0, sizeof info);
+  while (waitid(P_ALL, 0, &info, WEXITED | WNOWAIT) < 0) {
+    if (errno != EINTR) return -1;
+  }
+  return info.si_pid > 0 ? (int32_t)info.si_pid : -1;
 }
 
 static int scriptc_native_lock_fd = -1;

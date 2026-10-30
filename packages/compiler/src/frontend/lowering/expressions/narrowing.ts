@@ -28,6 +28,7 @@ import {
   typeEquals,
 } from "../../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../../program.js";
+import { lowerPartialAssertion, partialAssertionSite } from "../partial-assertions.js";
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { jsBindingHasOpenWrites } from "../lower-stmts.js";
 import { documentedParameter, prototypeAssignedFunction } from "../call-signatures.js";
@@ -529,6 +530,27 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
         )
       )
         return expr;
+      // A `let c;` binding without a type takes its flow types from what
+      // the code assigns, and the checker's types for those values can omit
+      // undefined (`c = s[i]` past the end): reads keep the actual value.
+      if (
+        symbol &&
+        symbol.declarations.some(
+          (decl) =>
+            ts.isVariableDeclaration(decl) &&
+            decl.initializer === undefined &&
+            decl.type === undefined &&
+            ts.isIdentifier(decl.name) &&
+            decl.parent?.parent !== undefined &&
+            ts.isVariableStatement(decl.parent.parent) &&
+            !/@type\b/.test(
+              ts
+                .getSourceFileOfNode(decl)
+                .text.slice(decl.parent?.parent?.pos ?? decl.pos, ts.tokenStartOfNode(decl)),
+            ),
+        )
+      )
+        return expr;
       if (
         symbol &&
         symbol.declarations.some(
@@ -568,7 +590,7 @@ export function maybeNarrow(lowerer: Lowerer, expr: IrExpr, node: ts.Node): IrEx
     if (
       isJsSourceFile(ts.getSourceFileOfNode(node)) &&
       ts.isPropertyAccessExpression(node) &&
-      ["isTTY", "columns", "rows"].includes(node.name.text) &&
+      ["isTTY", "columns", "rows", "isRaw"].includes(node.name.text) &&
       lowerer.isStdlibMember(node)
     )
       return expr;
@@ -1363,6 +1385,14 @@ export function lowerAsExpression(
       type: arrayOf(unitOnlyUnion(lowerer.unions)),
       loc: locOf(expr),
     };
+  }
+  // A RECORD LITERAL asserted to a wider record type (`{ truncated: true }
+  // as TruncationResult`): keep the literal's own layout and let the
+  // asserted type view it (partial-assertions.ts). The record-to-record
+  // width copy below cannot build a value the literal does not have.
+  {
+    const partial = partialAssertionSite(lowerer, expr);
+    if (partial) return lowerPartialAssertion(lowerer, expr, partial);
   }
   // `e as C` on a CATCH BINDING (`(err as Error).message`): the checked
   // extraction — an instanceof match extracts the payload, anything else

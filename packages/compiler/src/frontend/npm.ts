@@ -1,5 +1,6 @@
 /** Node package resolution shared by preflight and native module introspection. */
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { packageNameOfSpecifier as packageNameOf } from "./workspace-registry.js";
 import {
   trackedDirectoryExists,
@@ -140,6 +141,89 @@ export function probeNodeImportRefusal(
     }
     dir = parent;
   }
+}
+
+/** Node's import() refusal for a relative or absolute specifier whose
+ * target does not exist: ERR_MODULE_NOT_FOUND naming the resolved path, with
+ * the resolved URL. ESM resolution reads the specifier as a URL relative to
+ * the importer's file URL and adds no extension: percent escapes are
+ * decoded in the path, and a query or fragment stays in the URL only. An
+ * existing file or directory answers null, as do other specifier forms and
+ * the specifiers Node refuses with another error (a path ending in "/", an
+ * encoded "/" or "\", a malformed escape). */
+export function probeNodeFileImportRefusal(
+  fromFile: string,
+  specifier: string,
+  host: NpmGraphHost = realNpmGraphHost,
+): NodeImportRefusal | null {
+  if (!isRelativeImportSpecifier(specifier) && !specifier.startsWith("/")) return null;
+  const importer = resolve(fromFile);
+  let url: URL;
+  let target: string;
+  try {
+    url = new URL(specifier, pathToFileURL(importer));
+    if (url.pathname.endsWith("/") || /%2f|%5c/i.test(url.pathname)) return null;
+    target = fileURLToPath(url);
+  } catch {
+    return null;
+  }
+  if (host.isFile(target) || host.isDirectory(target)) return null;
+  const hint = specifier.startsWith("/") ? commonJsResolveFile(specifier, host) : null;
+  return {
+    code: "ERR_MODULE_NOT_FOUND",
+    message:
+      `Cannot find module '${target}' imported from ${importer}` +
+      (hint === null || hint === specifier
+        ? ""
+        : `\nDid you mean to import ${JSON.stringify(hint)}?`),
+    url: url.href,
+  };
+}
+
+function isRelativeImportSpecifier(specifier: string): boolean {
+  return (
+    specifier.startsWith("./") ||
+    specifier.startsWith("../") ||
+    specifier === "." ||
+    specifier === ".."
+  );
+}
+
+/* Node's ERR_MODULE_NOT_FOUND hint names the file CommonJS resolution of
+ * the literal specifier finds: the exact file, the .js/.json/.node
+ * extensions, or a directory's package.json main or index. Node resolves a
+ * relative specifier for the hint against the process's working directory,
+ * which the compiled program only knows when it runs, so only an absolute
+ * specifier gets the hint here; the found path is the hint itself. */
+const COMMONJS_EXTENSIONS = [".js", ".json", ".node"];
+
+function commonJsResolveFile(request: string, host: NpmGraphHost): string | null {
+  const file = (path: string): string | null => (host.isFile(path) ? host.realpath(path) : null);
+  const withExtensions = (path: string): string | null => {
+    for (const ext of COMMONJS_EXTENSIONS) {
+      const found = file(path + ext);
+      if (found !== null) return found;
+    }
+    return null;
+  };
+  const found = file(request) ?? withExtensions(request);
+  if (found !== null) return found;
+  if (!host.isDirectory(request)) return null;
+  const manifest = host.readFile(join(request, "package.json"));
+  if (manifest !== null) {
+    let main: unknown;
+    try {
+      main = (JSON.parse(manifest) as PkgJson).main;
+    } catch {
+      main = undefined;
+    }
+    if (typeof main === "string" && main !== "") {
+      const entry = resolve(request, main);
+      const found = file(entry) ?? withExtensions(entry) ?? withExtensions(join(entry, "index"));
+      if (found !== null) return found;
+    }
+  }
+  return withExtensions(join(request, "index"));
 }
 
 export function probeNodeRequireRefusal(

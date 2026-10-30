@@ -78,6 +78,36 @@ test("records of runtime-inspected unions keep every union over them boxed", () 
   expect(unions.shapeNumber("c")).toBe(0);
 });
 
+test("Set elements and Map keys over identity arms keep their pointer representation", () => {
+  const union = (unionId: string): IrType => ({ kind: "union", unionId });
+  const globals = [
+    { id: "%g.s", name: "s", type: { kind: "set", elem: union("au") } as IrType, mutable: false },
+    {
+      id: "%g.m",
+      name: "m",
+      type: { kind: "map", key: union("abnu"), value: F64 } as IrType,
+      mutable: false,
+    },
+    { id: "%g.t", name: "t", type: { kind: "set", elem: union("su") } as IrType, mutable: false },
+  ];
+  const unions: IrUnionDef[] = [
+    { id: "au", arms: [a, UNDEFINED_T] },
+    { id: "abnu", arms: [a, b, NULL_T, UNDEFINED_T] },
+    { id: "su", arms: [{ kind: "string" }, UNDEFINED_T] },
+  ];
+  const program = new NullableUnions(module(unions, { globals }));
+  expect(program.single("au")).not.toBeNull();
+  expect(program.shapes("abnu")).toMatchObject({ unitTag: 3, nullTag: 2 });
+  // Strings compare by value: such keys stay boxed.
+  expect(program.get("su")).toBeNull();
+  // Library builds keep them boxed.
+  const library = new NullableUnions(
+    module(unions, { globals, lib: { exports: [] } as unknown as NonNullable<IrModule["lib"]> }),
+  );
+  expect(library.get("au")).toBeNull();
+  expect(library.get("abnu")).toBeNull();
+});
+
 test("unions of records alone stay shape unions as Map keys and Set elements", () => {
   const set: IrType = { kind: "set", elem: { kind: "union", unionId: "ab" } };
   const map: IrType = { kind: "map", key: { kind: "union", unionId: "abc" }, value: F64 };

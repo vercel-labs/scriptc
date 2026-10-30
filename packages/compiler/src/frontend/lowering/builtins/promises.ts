@@ -5,7 +5,11 @@ import * as ts from "../../ts7/adapter.js";
 import type { Lowerer } from "../lowerer.js";
 import { countedFor, varRef } from "../../../ir/build.js";
 import { arrayValueStore, optionalElementValue, primitiveElement } from "../array-values.js";
-import { maybePromiseResolve, maybePromiseUnionOf } from "../maybe-promise.js";
+import {
+  maybePromiseResolve,
+  maybePromiseUnionOf,
+  promiseOrUnitUnionOf,
+} from "../maybe-promise.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import {
   BOOL,
@@ -437,6 +441,17 @@ export function lowerPromiseStaticCall(
       inner.kind === "void"
         ? { kind: "promise", inner: VOID }
         : lowerer.mapTypeOf(lowerer.typeOf(call));
+    // An unannotated JavaScript parameter (`Promise.all(items)` in a
+    // package's .js file) types the call as Promise<any[]>, which has no
+    // typed layout: the engine's Promise.all runs over the entries as
+    // checked-dynamic values, as it does for an array literal there.
+    if (
+      resultT === null &&
+      isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+      lowerer.dynConvertible(entries.type)
+    ) {
+      return checkedPromiseAll(lowerer, lowerer.coerceToExpected(entries, DYN), loc);
+    }
     // Promise<T | undefined>[] combines into a `(T | undefined)[]`, which
     // stores T elements (primitiveElement): collect the values, then copy
     // them in with their present undefined values.
@@ -670,11 +685,17 @@ export function lowerPromiseStaticCall(
         if (v.type.kind !== "promise") lowerer.badType(argNode, argT);
         return v;
       }
-      const maybePromise = argIr ? maybePromiseUnionOf(lowerer, argIr) : null;
+      // A promise-or-unit union (`Promise<void> | void`,
+      // `Promise<T> | undefined`) resolves exactly like a maybe-promise
+      // one: Node adopts a promise operand and fulfills every other value
+      // as itself (a nullish arm fulfills undefined).
+      const maybePromise = argIr
+        ? (maybePromiseUnionOf(lowerer, argIr) ?? promiseOrUnitUnionOf(lowerer, argIr))
+        : null;
       if (maybePromise) {
         const resultT = lowerer.mapTypeOf(lowerer.typeOf(call));
         const v = lowerer.lowerExpr(argNode);
-        const mp = maybePromiseUnionOf(lowerer, v.type);
+        const mp = maybePromiseUnionOf(lowerer, v.type) ?? promiseOrUnitUnionOf(lowerer, v.type);
         const resolved =
           resultT?.kind === "promise" && mp
             ? maybePromiseResolve(lowerer, v, mp, resultT, loc)

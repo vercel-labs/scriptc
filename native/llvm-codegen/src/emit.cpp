@@ -1,8 +1,10 @@
 #include "emit.h"
 
 #include "cache.h"
+#include "cpu-copies.h"
 #include "diagnostics.h"
 #include "partition.h"
+#include "profile-blocks.h"
 #include "runtime-import.h"
 #include "target.h"
 
@@ -13,6 +15,7 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/Analysis/ProfileSummaryInfo.h"
 #include "llvm/Analysis/RuntimeLibcallInfo.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Bitcode/BitcodeReader.h"
@@ -34,6 +37,7 @@
 #include "llvm/PassInfo.h"
 #include "llvm/PassRegistry.h"
 #include "llvm/Passes/PassBuilder.h"
+#include "llvm/ProfileData/InstrProf.h"
 #include "llvm/ProfileData/InstrProfReader.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/PGOOptions.h"
@@ -41,6 +45,7 @@
 #include "llvm/Support/Caching.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/SHA256.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/ThreadPool.h"
@@ -49,6 +54,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/TargetParser/Triple.h"
+#include "llvm/Transforms/Scalar/CorrelatedValuePropagation.h"
 #include "llvm/Transforms/Utils/SplitModule.h"
 
 #include <algorithm>
@@ -104,6 +110,10 @@ std::optional<EmitOptions> parseEmitOptions(int Argc, char **Argv) {
       Options.ProfileGenerate = Value.str();
     else if (Arg == "--profile-use")
       Options.ProfileUse = Value.str();
+    else if (Arg == "--profile-blocks")
+      Options.ProfileBlocks = Value.str();
+    else if (Arg == "--record-profile-blocks")
+      Options.RecordProfileBlocks = Value.str();
     else if (Arg == "--split" && Value == "codegen")
       Options.SplitCodegen = true;
     else
@@ -244,38 +254,57 @@ struct UnnameStructTypes : PassInfoMixin<UnnameStructTypes> {
 // over partitions: functions that received its counts, functions whose
 // control flow changed since it was collected (hash mismatch), and functions
 // it has no record of (new since it was collected, or never run in training
-// when the profile was merged with --sparse). A partition reused from the cache without its counts is counted
-// in Unknown.
+// when the profile was merged with --sparse). A partition reused from the cache
+// without its counts is counted in Unknown. Recovered counts the mismatched
+// functions that --profile-blocks annotated, so it never exceeds Mismatched.
+// The two weights sum the profile's counters for the annotated and for the
+// mismatched functions, so a changed hot function weighs more than a changed
+// cold one.
 struct ProfileMatch {
   std::atomic<uint64_t> Annotated{0};
   std::atomic<uint64_t> Mismatched{0};
   std::atomic<uint64_t> Missing{0};
+  std::atomic<uint64_t> Recovered{0};
   std::atomic<uint64_t> Unknown{0};
+  std::atomic<uint64_t> AnnotatedCounts{0};
+  std::atomic<uint64_t> MismatchedCounts{0};
+  // Set once the annotation before inlining has run. The context-sensitive
+  // annotation after inlining, which a single-module pipeline also runs,
+  // reports its mismatched and missing functions again; they are not
+  // counted twice.
+  std::atomic<bool> Counted{false};
 
   void add(const ProfileMatch &Other) {
     Annotated += Other.Annotated;
     Mismatched += Other.Mismatched;
     Missing += Other.Missing;
+    Recovered += Other.Recovered;
+    AnnotatedCounts += Other.AnnotatedCounts;
+    MismatchedCounts += Other.MismatchedCounts;
   }
 
   std::string serialize() const {
-    return formatv("{0} {1} {2}", Annotated.load(), Mismatched.load(),
-                   Missing.load())
+    return formatv("{0} {1} {2} {3} {4} {5}", Annotated.load(),
+                   Mismatched.load(), Missing.load(), Recovered.load(),
+                   AnnotatedCounts.load(), MismatchedCounts.load())
         .str();
   }
 
   bool deserialize(StringRef Text) {
-    SmallVector<StringRef, 3> Parts;
+    SmallVector<StringRef, 6> Parts;
     Text.split(Parts, ' ');
-    uint64_t Values[3];
-    if (Parts.size() != 3)
+    uint64_t Values[6];
+    if (Parts.size() != 6)
       return false;
-    for (size_t I = 0; I < 3; ++I)
+    for (size_t I = 0; I < 6; ++I)
       if (Parts[I].getAsInteger(10, Values[I]))
         return false;
     Annotated += Values[0];
     Mismatched += Values[1];
     Missing += Values[2];
+    Recovered += Values[3];
+    AnnotatedCounts += Values[4];
+    MismatchedCounts += Values[5];
     return true;
   }
 };
@@ -285,7 +314,9 @@ struct ProfileMatch {
 // context's default handling.
 class ProfileMatchHandler : public DiagnosticHandler {
 public:
-  explicit ProfileMatchHandler(ProfileMatch &Match) : Match(Match) {}
+  explicit ProfileMatchHandler(
+      ProfileMatch &Match, std::vector<std::string> *MismatchedNames = nullptr)
+      : Match(Match), MismatchedNames(MismatchedNames) {}
 
   bool handleDiagnostics(const DiagnosticInfo &Info) override {
     if (Info.getKind() != DK_PGOProfile)
@@ -294,17 +325,28 @@ public:
     raw_string_ostream Stream(Message);
     DiagnosticPrinterRawOStream Printer(Stream);
     Info.print(Printer);
-    if (StringRef(Message).contains("hash mismatch"))
-      ++Match.Mismatched;
-    else if (StringRef(Message).contains_insensitive("no profile data"))
-      ++Match.Missing;
-    else
+    bool Mismatched = StringRef(Message).contains("hash mismatch");
+    if (!Mismatched &&
+        !StringRef(Message).contains_insensitive("no profile data"))
       return false;
+    if (Match.Counted)
+      return true;
+    if (!Mismatched) {
+      ++Match.Missing;
+      return true;
+    }
+    ++Match.Mismatched;
+    // "...(hash mismatch) <function> Hash = <hash>"
+    if (MismatchedNames != nullptr) {
+      StringRef Name = StringRef(Message).split("(hash mismatch) ").second;
+      MismatchedNames->push_back(Name.split(" Hash = ").first.str());
+    }
     return true;
   }
 
 private:
   ProfileMatch &Match;
+  std::vector<std::string> *MismatchedNames;
 };
 
 // The annotation warns about functions the profile does not describe only
@@ -319,17 +361,79 @@ void reportMissingProfiles() {
   (void)Reported;
 }
 
-// Functions of `M` that the profile annotated with counts.
-uint64_t annotatedFunctions(const Module &M) {
-  uint64_t Count = 0;
-  for (const Function &F : M) {
+// The --profile-blocks counts, read once before any partition needs them
+// (inspectProfile), or null without them.
+std::unique_ptr<BlockCounts> FallbackCounts;
+// The block counts a --record-profile-blocks build collects, or null.
+std::unique_ptr<BlockRecorder> Recorder;
+
+// Whether the profile annotation found F's control flow changed: it tags
+// such a function with this annotation.
+bool hasHashMismatchTag(const Function &F) {
+  if (const MDNode *Annotation = F.getMetadata(LLVMContext::MD_annotation))
+    for (const MDOperand &Operand : Annotation->operands())
+      if (const auto *Name = dyn_cast<MDString>(Operand))
+        if (Name->getString() == "instr_prof_hash_mismatch")
+          return true;
+  return false;
+}
+
+// Whether F has counts from a profile.
+bool hasProfileCounts(const Function &F) {
+  std::optional<Function::ProfileCount> Entry = F.getEntryCount();
+  return Entry && !Entry->isSynthetic();
+}
+
+// Runs right after the profile annotation, before inlining and dead code
+// elimination change the functions it annotated: counts them and records
+// their block counts, then annotates from FallbackCounts the functions whose
+// control flow changed, and the functions the profile has no record of that
+// FallbackCounts records as never run. A sparse profile leaves out the
+// functions its training never ran; the block counts name them, so they get
+// an entry count of 0 and LLVM optimizes them as cold code, as a profile with
+// zero counts would make it. A function neither names keeps no counts, as
+// without block counts: it was added after the profile was collected.
+// Returns the analyses that remain valid.
+PreservedAnalyses afterProfileAnnotation(Module &M, ProfileMatch &Match) {
+  std::vector<Function *> Mismatched;
+  std::vector<Function *> Unrecorded;
+  for (Function &F : M) {
     if (F.isDeclaration())
       continue;
-    std::optional<Function::ProfileCount> Entry = F.getEntryCount();
-    if (Entry && !Entry->isSynthetic())
-      ++Count;
+    if (!hasProfileCounts(F)) {
+      if (hasHashMismatchTag(F))
+        Mismatched.push_back(&F);
+      else
+        Unrecorded.push_back(&F);
+      continue;
+    }
+    ++Match.Annotated;
+    if (Recorder)
+      Recorder->add(F);
   }
-  return Count;
+  if (Recorder)
+    for (Function *F : Unrecorded)
+      Recorder->addNeverRan(*F);
+  if (!FallbackCounts)
+    return PreservedAnalyses::all();
+  ProfileSummaryInfo Summary(M);
+  PreservedAnalyses Preserved = PreservedAnalyses::all();
+  for (Function *F : Mismatched) {
+    auto Record = FallbackCounts->find(F->getName());
+    if (Record == FallbackCounts->end())
+      continue;
+    annotateFromBlocks(*F, Record->second, Summary);
+    ++Match.Recovered;
+    Preserved = PreservedAnalyses::none();
+  }
+  for (Function *F : Unrecorded) {
+    auto Record = FallbackCounts->find(F->getName());
+    if (Record == FallbackCounts->end() || Record->second.EntryCount != 0)
+      continue;
+    annotateFromBlocks(*F, Record->second, Summary);
+    Preserved = PreservedAnalyses::none();
+  }
+  return Preserved;
 }
 
 // Prints the profile match as the successful emit's one line of JSON.
@@ -337,10 +441,77 @@ void reportProfileMatch(const ProfileMatch &Match) {
   json::Object Profile{{"annotated", Match.Annotated.load()},
                        {"mismatched", Match.Mismatched.load()},
                        {"missing", Match.Missing.load()},
-                       {"unknown_partitions", Match.Unknown.load()}};
+                       {"recovered", Match.Recovered.load()},
+                       {"unknown_partitions", Match.Unknown.load()},
+                       {"annotated_counts", Match.AnnotatedCounts.load()},
+                       {"mismatched_counts", Match.MismatchedCounts.load()}};
   json::Object Response{{"ok", true}, {"profile", std::move(Profile)}};
   outs() << formatv("{0}\n", json::Value(std::move(Response)));
 }
+
+// The sum of each function's counters in the indexed profile at `Path`, by
+// profile name, read once per process. An unreadable profile has no counts
+// (the annotation reports it).
+const StringMap<uint64_t> &profileCounts(const std::string &Path) {
+  static std::once_flag Once;
+  static StringMap<uint64_t> Counts;
+  std::call_once(Once, [&Path] {
+    Expected<std::unique_ptr<IndexedInstrProfReader>> Reader =
+        IndexedInstrProfReader::create(Path, *vfs::getRealFileSystem());
+    if (!Reader) {
+      consumeError(Reader.takeError());
+      return;
+    }
+    for (const NamedInstrProfRecord &Record : **Reader) {
+      uint64_t Sum = 0;
+      for (uint64_t Count : Record.Counts)
+        Sum += Count;
+      Counts[Record.Name] += Sum;
+    }
+    consumeError((*Reader)->getError());
+  });
+  return Counts;
+}
+
+// Weighs one module's profile match by the profile's counters: collects the
+// annotated and the mismatched functions while the module is optimized,
+// then adds their counts to the match.
+class MatchWeigher {
+public:
+  explicit MatchWeigher(const Module &M) {
+    for (const Function &F : M)
+      if (!F.isDeclaration())
+        ProfileNames[F.getName()] = getIRPGOFuncName(F);
+  }
+
+  void weigh(const std::string &ProfileUse, ProfileMatch &Match) const {
+    const StringMap<uint64_t> &Counts = profileCounts(ProfileUse);
+    auto CountsOf = [&Counts](StringRef Name) -> uint64_t {
+      auto It = Counts.find(Name);
+      return It == Counts.end() ? 0 : It->second;
+    };
+    // A context-sensitive profile annotates the module twice; each function
+    // counts once.
+    StringSet<> Seen;
+    for (const std::string &Name : Annotated)
+      if (Seen.insert(Name).second)
+        Match.AnnotatedCounts += CountsOf(Name);
+    // The mismatch warnings name functions by symbol.
+    for (const std::string &Name : Mismatched) {
+      auto It = ProfileNames.find(Name);
+      StringRef ProfileName =
+          It == ProfileNames.end() ? StringRef(Name) : StringRef(It->second);
+      if (Seen.insert(ProfileName).second)
+        Match.MismatchedCounts += CountsOf(ProfileName);
+    }
+  }
+
+  std::vector<std::string> Annotated;
+  std::vector<std::string> Mismatched;
+
+private:
+  StringMap<std::string> ProfileNames;
+};
 
 // Reads the profile's header once, before any partition needs it: it must
 // hold IR-level counts. Context-sensitive counts lay out the code by them;
@@ -369,7 +540,34 @@ std::optional<EmitFailure> inspectProfile(const EmitOptions &Options) {
     enableProfileLayout();
     enableExtTspPlacement();
   }
+  if (!Options.ProfileBlocks.empty()) {
+    std::string Error;
+    FallbackCounts = readProfileBlocks(Options.ProfileBlocks, Error);
+    if (!FallbackCounts)
+      return EmitFailure{"profile_blocks_read_failed", Error};
+  }
+  if (!Options.RecordProfileBlocks.empty())
+    Recorder = std::make_unique<BlockRecorder>();
   return std::nullopt;
+}
+
+// Writes the block counts a --record-profile-blocks build collected.
+std::optional<EmitFailure> writeRecordedBlocks(const EmitOptions &Options) {
+  if (!Recorder)
+    return std::nullopt;
+  if (std::optional<std::string> Error =
+          Recorder->write(Options.RecordProfileBlocks))
+    return EmitFailure{"profile_blocks_write_failed",
+                       Options.RecordProfileBlocks + ": " + *Error};
+  return std::nullopt;
+}
+
+// The source file name a program's modules carry: the entry's file name,
+// without its directory. Profiles name a module's local functions after it
+// ("<name>;<function>"), so a profile collected in one checkout matches the
+// builds of every other one.
+std::string moduleSourceName(StringRef SourcePath) {
+  return sys::path::filename(SourcePath).str();
 }
 
 // Owns the analysis managers a pipeline needs for one module.
@@ -391,16 +589,43 @@ struct Pipeline {
     PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
   }
 
-  // Adds to Count the functions the profile annotation gave counts to, as
-  // soon as that pass has run: inlining and dead code elimination later in
-  // the pipeline delete annotated functions.
-  void countAnnotated(std::atomic<uint64_t> &Count) {
+  // Runs afterProfileAnnotation as soon as the profile annotation has run.
+  // The context-sensitive annotation after inlining runs the same pass
+  // again, on functions the first one already counted.
+  void afterProfileAnnotation(ProfileMatch &Match) {
     Callbacks.registerAfterPassCallback(
-        [&Count](StringRef PassID, Any IR, const PreservedAnalyses &) {
-          if (PassID != "PGOInstrumentationUse")
+        [this, &Match, Done = false](StringRef PassID, Any IR,
+                                     const PreservedAnalyses &) mutable {
+          if (Done || PassID != "PGOInstrumentationUse")
             return;
+          const auto *M = llvm::any_cast<const Module *>(&IR);
+          if (M == nullptr)
+            return;
+          Done = true;
+          // The callback receives the module the pipeline runs on; only the
+          // signature is const.
+          Module &Annotated = const_cast<Module &>(**M);
+          MAM.invalidate(Annotated,
+                         scriptc::afterProfileAnnotation(Annotated, Match));
+          Match.Counted = true;
+        });
+  }
+
+  // Adds to Names the profile names of the functions the annotation before
+  // inlining gave counts to, as soon as that pass has run.
+  void collectAnnotated(std::vector<std::string> &Names) {
+    Callbacks.registerAfterPassCallback(
+        [&Names, Done = false](StringRef PassID, Any IR,
+                               const PreservedAnalyses &) mutable {
+          if (Done || PassID != "PGOInstrumentationUse")
+            return;
+          Done = true;
           if (const auto *M = llvm::any_cast<const Module *>(&IR))
-            Count += annotatedFunctions(**M);
+            for (const Function &F : **M) {
+              std::optional<Function::ProfileCount> Entry = F.getEntryCount();
+              if (!F.isDeclaration() && Entry && !Entry->isSynthetic())
+                Names.push_back(getIRPGOFuncName(F));
+            }
         });
   }
 };
@@ -587,13 +812,22 @@ emitModule(Module &M, TargetMachine &Machine, OptimizationLevel Level,
            StringRef OutputPath, std::vector<SmallString<256>> &Temporaries,
            ProfileMatch &Match) {
   bool Annotating = Profile && Profile->Action == PGOOptions::IRUse;
+  std::string ProfileUse = Annotating ? Profile->ProfileFile : "";
+  MatchWeigher Weigher(M);
   if (Annotating)
     M.getContext().setDiagnosticHandler(
-        std::make_unique<ProfileMatchHandler>(Match));
+        std::make_unique<ProfileMatchHandler>(Match, &Weigher.Mismatched));
   Pipeline P(Machine, Level, std::move(Profile));
-  if (Annotating)
-    P.countAnnotated(Match.Annotated);
+  if (Annotating) {
+    // Registered first, so it lists the functions the profile itself
+    // annotated, before block counts recover any.
+    P.collectAnnotated(Weigher.Annotated);
+    P.afterProfileAnnotation(Match);
+  }
   P.PB.buildPerModuleDefaultPipeline(Level).run(M, P.MAM);
+  if (Annotating)
+    Weigher.weigh(ProfileUse, Match);
+  useBaselineBodies(M);
   if (std::optional<EmitFailure> Failure =
           verify(M, "post_optimization_verification_failed"))
     return Failure;
@@ -639,6 +873,35 @@ std::optional<EmitFailure> splitParsedModule(const EmitOptions &Options,
   return std::nullopt;
 }
 
+// The level of an optimized partition's simplification before the thin
+// link. The backend optimizes every partition again at Level after
+// importing, so the pre-link runs the O1 simplification: it annotates the
+// profile, inlines and simplifies enough for the summaries the import
+// decisions read, and leaves the full simplification to the backend. The
+// O2 simplification before the link repeated most of the backend's work: on
+// a partition dominated by one large function it took about half as long as
+// the backend's optimization and code generation of that partition.
+OptimizationLevel preLinkLevel(OptimizationLevel Level) {
+  if (Level == OptimizationLevel::O2 || Level == OptimizationLevel::O3)
+    return OptimizationLevel::O1;
+  return Level;
+}
+
+// Adds correlated value propagation, which the O2 simplification runs and
+// the O1 one does not, once per function after the O1 pre-link simplifies
+// it. On the edge where a loop's early exit is taken, it replaces the values
+// the exit condition fixed with constants. Without it, SimplifyCFG folds a
+// jammed loop's early exit and its trip-count exit into one branch, the
+// latch no longer exits, and the backend's unroller keeps a trip-count test
+// in every unrolled iteration.
+void addPreLinkValuePropagation(PassBuilder &PB) {
+  PB.registerCGSCCOptimizerLateEPCallback(
+      [](CGSCCPassManager &CGPM, OptimizationLevel) {
+        CGPM.addPass(
+            createCGSCCToFunctionPassAdaptor(CorrelatedValuePropagationPass()));
+      });
+}
+
 // Runs Work(I) for every partition on a pool sized to the host. Outputs never
 // depend on the pool size or scheduling order.
 void forEachPartition(size_t Count, function_ref<void(size_t)> Work) {
@@ -678,7 +941,7 @@ Expected<std::unique_ptr<Module>> loadPartition(const EmitOptions &Options,
     return createStringError(inconvertibleErrorCode(), Stream.str());
   }
   if (!Options.SourcePath.empty())
-    Mod->setSourceFileName(Options.SourcePath);
+    Mod->setSourceFileName(moduleSourceName(Options.SourcePath));
   Mod->setTargetTriple(Triple(Options.Target));
   Mod->setDataLayout(Machine.createDataLayout());
   if (std::optional<EmitFailure> Failure = verify(*Mod, "verification_failed"))
@@ -767,7 +1030,9 @@ compileOptimizedPartitions(const EmitOptions &Options,
   SharedFailure Failures;
   forEachPartition(Count, [&](size_t I) {
     std::string Key = hashParts({Salt, "summary", Plan.Modules[I]});
-    if ((Summaries[I] = Cache.lookup(Key, "bc"))) {
+    // A reused summary has no block counts to record, so a recording build
+    // annotates every partition again.
+    if (!Recorder && (Summaries[I] = Cache.lookup(Key, "bc"))) {
       if (Annotating) {
         std::unique_ptr<MemoryBuffer> Counts = Cache.lookup(Key, "match");
         if (!Counts || !Match.deserialize(Counts->getBuffer()))
@@ -782,14 +1047,16 @@ compileOptimizedPartitions(const EmitOptions &Options,
       return Failures.set({"target_machine_failed", LookupError});
     LLVMContext Context;
     ProfileMatch PartitionMatch;
+    std::vector<std::string> MismatchedNames;
     if (Annotating)
-      Context.setDiagnosticHandler(
-          std::make_unique<ProfileMatchHandler>(PartitionMatch));
+      Context.setDiagnosticHandler(std::make_unique<ProfileMatchHandler>(
+          PartitionMatch, &MismatchedNames));
     Expected<std::unique_ptr<Module>> Loaded =
         loadPartition(Options, Plan.Modules[I], I, Context, *Machine);
     if (!Loaded)
       return Failures.set({"partition_failed", toString(Loaded.takeError())});
     Module &Mod = **Loaded;
+    MatchWeigher Weigher(Mod);
     if (!Options.ImportBitcode.empty()) {
       // See emit(): the attribute is inert without a sanitizer pass and
       // would block inlining of the imported runtime bodies.
@@ -808,16 +1075,26 @@ compileOptimizedPartitions(const EmitOptions &Options,
       // Profile instrumentation or annotation happens here, before the thin
       // link; the post-link optimization reads the annotated weights.
       Pipeline P(*Machine, Level, profileOptions(Options));
-      if (Annotating)
-        P.countAnnotated(PartitionMatch.Annotated);
-      ModulePassManager MPM = P.PB.buildThinLTOPreLinkDefaultPipeline(Level);
+      if (Annotating) {
+        // Registered first, so it lists the functions the profile itself
+        // annotated, before block counts recover any.
+        P.collectAnnotated(Weigher.Annotated);
+        P.afterProfileAnnotation(PartitionMatch);
+      }
+      if (preLinkLevel(Level) != Level)
+        addPreLinkValuePropagation(P.PB);
+      ModulePassManager MPM =
+          P.PB.buildThinLTOPreLinkDefaultPipeline(preLinkLevel(Level));
       MPM.addPass(UnnameStructTypes());
+      // The module hash is set at the thin link instead (see Names).
       MPM.addPass(BitcodeWriterPass(Stream, /*ShouldPreserveUseListOrder=*/false,
                                     /*EmitSummaryIndex=*/true,
-                                    /*EmitModuleHash=*/true));
+                                    /*EmitModuleHash=*/false));
       MPM.run(Mod, P.MAM);
     }
     if (Annotating) {
+      Weigher.Mismatched = std::move(MismatchedNames);
+      Weigher.weigh(Options.ProfileUse, PartitionMatch);
       Match.add(PartitionMatch);
       // Stored before the summary, so a reused summary finds its counts.
       Cache.store(Key, "match", PartitionMatch.serialize());
@@ -916,11 +1193,36 @@ compileOptimizedPartitions(const EmitOptions &Options,
       CodeGeneration.run(Mod);
       return false;
     };
+  else
+    // The backend passes the module it owns; only the hook's signature is
+    // const.
+    Config.PreCodeGenModuleHook = [](unsigned, const Module &Optimized) {
+      useBaselineBodies(const_cast<Module &>(Optimized));
+      return true;
+    };
 
   // The link refers to module identifiers for its whole lifetime.
   std::vector<std::string> Names(Count);
   for (size_t I = 0; I < Count; ++I)
     Names[I] = "partition-" + std::to_string(I);
+  // An internal function or variable that another partition imports a
+  // reference to is renamed <name>.llvm.<first 64 bits of its module's hash>.
+  // A hash of the module's contents would change that name in every
+  // importing partition after any edit of the exporting one, and compile
+  // them all again. Each module's hash is its partition number instead,
+  // which keeps the names unique within the program and the same across
+  // builds.
+  Config.CombinedIndexHook = [&Names](const ModuleSummaryIndex &Index,
+                                      const DenseSet<GlobalValue::GUID> &) {
+    StringMap<ModuleHash> &Paths =
+        const_cast<ModuleSummaryIndex &>(Index).modulePaths();
+    for (size_t I = 0; I < Names.size(); ++I) {
+      auto It = Paths.find(Names[I]);
+      if (It != Paths.end())
+        It->second = {0, static_cast<uint32_t>(I + 1), 0, 0, 0};
+    }
+    return true;
+  };
   limitImports();
   if (!Options.ProfileUse.empty())
     limitProfileImports();
@@ -997,6 +1299,17 @@ compilePartitions(const EmitOptions &Options, const PartitionPlan &Plan,
                              Profile.getError().message()};
     Salt = hashParts({Salt, "profile-use", (*Profile)->getBuffer()});
   }
+  // The block counts change the partitions they annotate.
+  if (!Options.ProfileBlocks.empty()) {
+    ErrorOr<std::unique_ptr<MemoryBuffer>> Blocks =
+        MemoryBuffer::getFile(Options.ProfileBlocks, /*IsText=*/false,
+                              /*RequiresNullTerminator=*/false);
+    if (!Blocks)
+      return EmitFailure{"profile_blocks_read_failed",
+                         Options.ProfileBlocks + ": " +
+                             Blocks.getError().message()};
+    Salt = hashParts({Salt, "profile-blocks", (*Blocks)->getBuffer()});
+  }
   for (const std::string &Path : Options.ImportBitcode) {
     ErrorOr<std::unique_ptr<MemoryBuffer>> Bitcode =
         MemoryBuffer::getFile(Path, /*IsText=*/false,
@@ -1060,8 +1373,22 @@ int emitPartitions(const EmitOptions &Options) {
         MemoryBuffer::getFile(Options.Input, /*IsText=*/false,
                               /*RequiresNullTerminator=*/false);
     if (Input) {
+      bool Optimized = Options.OptLevel != "0";
       std::optional<ProgramPartitions> Text = partitionProgramText(
-          (*Input)->getBuffer(), static_cast<unsigned>(Options.Outputs.size()));
+          (*Input)->getBuffer(), static_cast<unsigned>(Options.Outputs.size()),
+          /*SkipDominated=*/Optimized);
+      // An optimized partition is simplified before the thin link and
+      // optimized again after it, so one that holds more than two thirds of
+      // the program's function text takes longer than optimizing the module
+      // whole: such a module is optimized whole, and its code is generated in
+      // parts.
+      if (Text && Optimized && dominatedPartitions(Text->FunctionBytes)) {
+        EmitOptions Whole = Options;
+        Whole.SplitCodegen = true;
+        Whole.CacheDirectory.clear();
+        Input->reset();
+        return emit(Whole);
+      }
       if (Text) {
         Input->reset();
         PartitionPlan Plan{std::move(Text->Sources),
@@ -1082,6 +1409,8 @@ int emitPartitions(const EmitOptions &Options) {
     Failure = writePartitionObjects(Options, Objects, Temporaries);
   for (size_t I = 0; !Failure && I < Temporaries.size(); ++I)
     Failure = publish(Temporaries[I], Options.Outputs[I]);
+  if (!Failure)
+    Failure = writeRecordedBlocks(Options);
   if (Failure) {
     for (const SmallString<256> &Temporary : Temporaries)
       sys::fs::remove(Temporary);
@@ -1270,15 +1599,23 @@ std::optional<EmitFailure>
 emitSplitCodegen(const EmitOptions &Options, Module &M, TargetMachine &Machine,
                  OptimizationLevel Level, ProfileMatch &Match) {
   bool Annotating = !Options.ProfileUse.empty();
+  MatchWeigher Weigher(M);
   if (Annotating)
     M.getContext().setDiagnosticHandler(
-        std::make_unique<ProfileMatchHandler>(Match));
+        std::make_unique<ProfileMatchHandler>(Match, &Weigher.Mismatched));
   {
     Pipeline P(Machine, Level, profileOptions(Options));
-    if (Annotating)
-      P.countAnnotated(Match.Annotated);
+    if (Annotating) {
+      // Registered first, so it lists the functions the profile itself
+      // annotated, before block counts recover any.
+      P.collectAnnotated(Weigher.Annotated);
+      P.afterProfileAnnotation(Match);
+    }
     P.PB.buildPerModuleDefaultPipeline(Level).run(M, P.MAM);
   }
+  if (Annotating)
+    Weigher.weigh(Options.ProfileUse, Match);
+  useBaselineBodies(M);
   if (std::optional<EmitFailure> Failure =
           verify(M, "post_optimization_verification_failed"))
     return Failure;
@@ -1338,6 +1675,44 @@ emitSplitCodegen(const EmitOptions &Options, Module &M, TargetMachine &Machine,
   return Failure;
 }
 
+// Lists the annotated and the mismatched functions of one module in
+// `Result`, each with the sum of its counters in the profile. `ProfileNames`
+// maps the module's symbol names, which the mismatch warnings use, to
+// profile names.
+std::optional<std::string>
+weighProfileMatch(const std::string &ProfileUse,
+                  const StringMap<std::string> &ProfileNames,
+                  const std::vector<std::string> &AnnotatedNames,
+                  const std::vector<std::string> &MismatchedNames,
+                  ModuleProfileMatch &Result) {
+  Expected<std::unique_ptr<IndexedInstrProfReader>> Reader =
+      IndexedInstrProfReader::create(ProfileUse, *vfs::getRealFileSystem());
+  if (!Reader)
+    return ProfileUse + ": " + toString(Reader.takeError());
+  StringMap<uint64_t> Counts;
+  for (const NamedInstrProfRecord &Record : **Reader) {
+    uint64_t Sum = 0;
+    for (uint64_t Count : Record.Counts)
+      Sum += Count;
+    Counts[Record.Name] += Sum;
+  }
+  if (Error E = (*Reader)->getError())
+    return ProfileUse + ": " + toString(std::move(E));
+  auto CountsOf = [&Counts](StringRef Name) -> uint64_t {
+    auto It = Counts.find(Name);
+    return It == Counts.end() ? 0 : It->second;
+  };
+  for (const std::string &Name : AnnotatedNames)
+    Result.AnnotatedCounts.emplace_back(Name, CountsOf(Name));
+  for (const std::string &Name : MismatchedNames) {
+    auto It = ProfileNames.find(Name);
+    std::string ProfileName = It == ProfileNames.end() ? Name : It->second;
+    uint64_t Sum = CountsOf(ProfileName);
+    Result.MismatchedCounts.emplace_back(std::move(ProfileName), Sum);
+  }
+  return std::nullopt;
+}
+
 } // namespace
 
 std::optional<std::string> optimizeModule(Module &M, TargetMachine &Machine,
@@ -1360,18 +1735,34 @@ std::optional<std::string> optimizeModule(Module &M, TargetMachine &Machine,
   }
   bool Annotating = Profile && Profile->Action == PGOOptions::IRUse;
   ProfileMatch Match;
-  if (Annotating)
+  // The annotation reports a mismatched function by its symbol name; the
+  // profile names local functions after their source file.
+  StringMap<std::string> ProfileNames;
+  std::vector<std::string> MismatchedNames;
+  std::vector<std::string> AnnotatedNames;
+  if (Annotating) {
+    for (const Function &F : M)
+      if (!F.isDeclaration())
+        ProfileNames[F.getName()] = getIRPGOFuncName(F);
     M.getContext().setDiagnosticHandler(
-        std::make_unique<ProfileMatchHandler>(Match));
+        std::make_unique<ProfileMatchHandler>(Match, &MismatchedNames));
+  }
   {
     Pipeline P(Machine, Level, std::move(Profile));
-    if (Annotating)
-      P.countAnnotated(Match.Annotated);
+    if (Annotating) {
+      P.afterProfileAnnotation(Match);
+      P.collectAnnotated(AnnotatedNames);
+    }
     P.PB.buildPerModuleDefaultPipeline(Level).run(M, P.MAM);
   }
   Result.Annotated = Match.Annotated.load();
   Result.Mismatched = Match.Mismatched.load();
   Result.Missing = Match.Missing.load();
+  if (Annotating) {
+    if (std::optional<std::string> Failure = weighProfileMatch(
+            ProfileUse, ProfileNames, AnnotatedNames, MismatchedNames, Result))
+      return Failure;
+  }
   if (std::optional<EmitFailure> Failure =
           verify(M, "post_optimization_verification_failed"))
     return Failure->Message;
@@ -1417,6 +1808,12 @@ int emit(const EmitOptions &Options) {
     return reportError("invalid_import",
                        "runtime bitcode import requires an optimized build",
                        Options.DiagnosticFormat);
+  if (Options.ProfileUse.empty() &&
+      (!Options.ProfileBlocks.empty() || !Options.RecordProfileBlocks.empty()))
+    return reportError("invalid_profile_blocks",
+                       "--profile-blocks and --record-profile-blocks require "
+                       "--profile-use",
+                       Options.DiagnosticFormat);
   if (!Options.ProfileUse.empty())
     reportMissingProfiles();
   if (std::optional<EmitFailure> Failure = inspectProfile(Options))
@@ -1443,7 +1840,7 @@ int emit(const EmitOptions &Options) {
     return reportError("invalid_ir", Stream.str(), Options.DiagnosticFormat);
   }
   if (!Options.SourcePath.empty())
-    Mod->setSourceFileName(Options.SourcePath);
+    Mod->setSourceFileName(moduleSourceName(Options.SourcePath));
 
   std::string LookupError;
   std::unique_ptr<TargetMachine> Machine =
@@ -1489,8 +1886,11 @@ int emit(const EmitOptions &Options) {
                              : CodeGenFileType::AssemblyFile;
   if (Options.SplitCodegen) {
     ProfileMatch Match;
-    if (std::optional<EmitFailure> Failure =
-            emitSplitCodegen(Options, *Mod, *Machine, Level, Match))
+    std::optional<EmitFailure> Failure =
+        emitSplitCodegen(Options, *Mod, *Machine, Level, Match);
+    if (!Failure)
+      Failure = writeRecordedBlocks(Options);
+    if (Failure)
       return reportError(Failure->Code, Failure->Message,
                          Options.DiagnosticFormat);
     if (!Options.ProfileUse.empty())
@@ -1504,6 +1904,8 @@ int emit(const EmitOptions &Options) {
                  Options.Outputs[0], Temporaries, Match);
   if (!Failure)
     Failure = publish(Temporaries[0], Options.Outputs[0]);
+  if (!Failure)
+    Failure = writeRecordedBlocks(Options);
   if (Failure) {
     for (const SmallString<256> &Temporary : Temporaries)
       sys::fs::remove(Temporary);

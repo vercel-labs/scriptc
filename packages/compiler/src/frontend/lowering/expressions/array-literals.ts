@@ -16,7 +16,9 @@ import {
   UNDEFINED_T,
   VOID,
   arrayOf,
+  canDynCheckTo,
   isSupportedArrayElem,
+  isUnitType,
   typeEquals,
 } from "../../../ir/ir.js";
 import { isJsSourceFile, locOf } from "../../program.js";
@@ -35,6 +37,28 @@ import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
 import { arrayValueStore, primitiveElement } from "../array-values.js";
 import { classGeneratorIterable } from "../class-iterables.js";
 import { iteratorCanStep } from "../iterator-consumption.js";
+
+/** The arm an EMPTY `[]` literal builds as: `arms`' first array arm, or
+ * null when the literal is not empty (an element selects the arm) or no
+ * arm is an array.
+ *
+ * An empty literal carries no element of its own — tsc infers `never[]`,
+ * whose f64-element mapping is the uninhabited element's representation,
+ * not one of the destination's arms — and every empty array is the same
+ * value whichever array family stores it, so several array arms raise no
+ * ambiguity. This is the ONE statement of that rule: a union slot, a
+ * contextual union, and the `??` default all ask it. A lone array slot
+ * states the same thing without asking. */
+export function emptyArrayLiteralArm(
+  node: ts.Expression,
+  arms: readonly IrType[],
+): (IrType & { kind: "array" }) | null {
+  let value = node;
+  while (ts.isParenthesizedExpression(value)) value = value.expression;
+  if (!ts.isArrayLiteralExpression(value) || value.elements.nodes.length > 0) return null;
+  const arm = arms.find((candidate) => candidate.kind === "array");
+  return (arm as (IrType & { kind: "array" }) | undefined) ?? null;
+}
 
 /** JavaScript: whether `expr` is or holds an existing checked-dynamic
  * object — a binding stored as a dyn value whose checker type is an
@@ -204,16 +228,12 @@ export function lowerArrayLiteral(
       mapped = arrayOf(unitOnlyUnion(lowerer.unions));
     // An EMPTY literal in a union slot (`const t: string[] | undefined =
     // []`, the `[]` default argument against `string[] | undefined`) has
-    // no useful own type — tsc infers `never[]`, whose f64-element
-    // mapping is a representation for the uninhabited, not the slot's
-    // arm. When the contextual union has exactly ONE array arm there is
-    // no ambiguity: build the literal as that arm and let the slot's
-    // coercion wrap it. Two array arms would need tsc's own best-fit
-    // choice — none arises in practice; the fence stands.
-    if (ctxUnion && expr.elements.nodes.length === 0) {
+    // no useful own type: it builds as the union's first array arm (the
+    // emptyArrayLiteralArm rule) and the slot's coercion wraps it.
+    if (ctxUnion) {
       const def = lowerer.unions.get(ctxUnion.unionId);
-      const arrayArms = def?.arms.filter((a) => a.kind === "array") ?? [];
-      if (arrayArms.length === 1) mapped = arrayArms[0]!;
+      const arm = emptyArrayLiteralArm(expr, def?.arms ?? []);
+      if (arm) mapped = arm;
     }
     // A NON-EMPTY literal whose own type has no static home (the JS dyn
     // fallback — a null/dyn mapping, or an inference that degraded to a
@@ -557,7 +577,12 @@ export function lowerArrayLiteral(
           type.elem.kind === "f64" ||
           type.elem.kind === "string" ||
           type.elem.kind === "bool" ||
-          searchParamsSource)
+          searchParamsSource ||
+          canDynCheckTo(
+            type.elem,
+            (id) => lowerer.shapes.get(id),
+            (id) => lowerer.unions.get(id),
+          ))
       ) {
         src = lowerer.coerceInto(
           el.expression,
@@ -578,6 +603,29 @@ export function lowerArrayLiteral(
       ) {
         const w = lowerer.widthCoerce(src, type);
         if (w) src = w;
+      }
+      // `[...maybe]` over a source the checker typed WIDER than the
+      // iterable it holds at run time: `hex[1]` under indexed-access
+      // strictness (`string | undefined`), an optional array local. Node
+      // spreads whatever iterator the value has and throws the
+      // not-iterable TypeError for null/undefined, so drain through the
+      // checked iterator walk (the same walk the dyn source above uses)
+      // and validate each element into the literal's slot.
+      if (
+        !typeEquals(src.type, type) &&
+        widenedIterableType(lowerer, src.type) &&
+        canDynCheckTo(
+          type,
+          (id) => lowerer.shapes.get(id),
+          (id) => lowerer.unions.get(id),
+        )
+      ) {
+        const dynSrc = lowerer.coerceInto(el.expression, src, DYN);
+        src = lowerer.coerceInto(
+          el.expression,
+          checkedIteratorPack(lowerer, dynSrc, notIterableSpelling(el.expression), locOf(el)),
+          type,
+        );
       }
       if (!typeEquals(src.type, type)) {
         lowerer.unsupported(
@@ -810,13 +858,34 @@ function lowerTupleSpreadLiteral(
   return { kind: "seqExpr", stmts, result: { kind: "recordLit", fields, type, loc }, type, loc };
 }
 
+/** A spread source whose static type is wider than the iterable it holds
+ * at run time: a union of ONE iterable arm with unit arms (`string |
+ * undefined` from an indexed read under indexed-access strictness, an
+ * optional array local). The literal cannot copy elements off it
+ * statically; the runtime value still spreads like Node's. */
+export function widenedIterableType(lowerer: Lowerer, t: IrType): boolean {
+  const iterable = (x: IrType): boolean =>
+    x.kind === "array" || x.kind === "string" || x.kind === "generator" || x.kind === "bytes";
+  if (t.kind !== "union") return false;
+  const arms = lowerer.unions.get(t.unionId)?.arms ?? [];
+  return (
+    arms.filter((arm) => iterable(arm)).length === 1 &&
+    arms.every((arm) => iterable(arm) || isUnitType(arm))
+  );
+}
+
 /** Drain a checked-dynamic iterable: `next` is read once when the iterator
  * opens, as JS keeps it in the iterator record, so a `next` the iterator
  * assigns while it runs is not called. Runtime iterators step natively, and
  * other iterators call the `next` read (class methods keep their emitted
  * dispatch). `spell` is the TypeError message for a source that is not
  * iterable (notIterableSpelling). */
-function checkedIteratorPack(lowerer: Lowerer, source: IrExpr, spell: string, loc: SrcLoc): IrExpr {
+export function checkedIteratorPack(
+  lowerer: Lowerer,
+  source: IrExpr,
+  spell: string,
+  loc: SrcLoc,
+): IrExpr {
   const name = "%iterator.pack.checked";
   if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
     const ref = (id: string): IrExpr => ({ kind: "varRef", localId: id, type: DYN, loc });

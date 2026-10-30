@@ -84,10 +84,12 @@ endif()
 
 add_executable(scriptc-llvm-codegen
   src/cache.cpp
+  src/cpu-copies.cpp
   src/diagnostics.cpp
   src/emit.cpp
   src/main.cpp
   src/partition.cpp
+  src/profile-blocks.cpp
   src/profile.cpp
   src/runtime-import.cpp
   src/runtime-unit.cpp

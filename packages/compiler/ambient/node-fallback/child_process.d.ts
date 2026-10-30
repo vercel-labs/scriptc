@@ -86,6 +86,22 @@ declare module "child_process" {
     on(event: "disconnect", listener: () => void): this;
     once(event: "message", listener: (message: any) => void): this;
     once(event: "disconnect", listener: () => void): this;
+    /* off/removeListener remove by FUNCTION IDENTITY — pass the same
+     * function value (a const binding) that was registered. */
+    off(event: "spawn", listener: () => void): this;
+    off(event: "exit", listener: (code: number | null, signal: string | null) => void): this;
+    off(event: "close", listener: (code: number | null, signal: string | null) => void): this;
+    off(event: "error", listener: (err: Error) => void): this;
+    removeListener(event: "spawn", listener: () => void): this;
+    removeListener(
+      event: "exit",
+      listener: (code: number | null, signal: string | null) => void,
+    ): this;
+    removeListener(
+      event: "close",
+      listener: (code: number | null, signal: string | null) => void,
+    ): this;
+    removeListener(event: "error", listener: (err: Error) => void): this;
     /* The lifecycle members, Node's exact shapes: pid is undefined exactly
      * when the spawn failed; exitCode is null while running, the code
      * after a normal exit, null for a signal death, and -errno once a
@@ -98,6 +114,9 @@ declare module "child_process" {
      * has the reap story). */
     readonly pid: number | undefined;
     readonly exitCode: number | null;
+    /* signalCode is the signal that terminated the child, null while it
+     * runs, after a normal exit, and after a spawn failure. */
+    readonly signalCode: string | null;
     readonly killed: boolean;
     kill(signal?: string | number): boolean;
     unref(): void;

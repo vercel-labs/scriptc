@@ -11,6 +11,14 @@
  * and merging its raw profiles into the first profile adds the counts of the
  * inlined code. A profile with those counts also orders each function's
  * blocks by them and moves cold blocks to separate sections.
+ *
+ * A function whose control flow changed since the profile was collected
+ * takes none of its counts. A block-count file beside the profile
+ * (profileBlocksPath) describes each function by its blocks' labels instead,
+ * and annotates those functions: blocks that keep their place take their
+ * recorded counts, and the counts of the others follow from flow
+ * conservation. A `--profile-use` build writes that file for the functions
+ * its profile annotates when SCRIPTC_RECORD_PROFILE_BLOCKS names its path.
  */
 import type { NativeOptimization } from "./optimization.js";
 
@@ -19,9 +27,40 @@ export interface NativeProfileOptions {
    * `use`, the instrumentation runs after inlining and records
    * context-sensitive counts. */
   generate?: string;
-  /** Indexed profile, the digest of its bytes (which key every cache), and
-   * whether it holds context-sensitive counts. */
-  use?: { path: string; digest: string; contextSensitive: boolean };
+  /** Indexed profile, the digest of its bytes (which key every cache),
+   * whether it holds context-sensitive counts, and its block-count file
+   * with the digest of its bytes when there is one. */
+  use?: {
+    path: string;
+    digest: string;
+    contextSensitive: boolean;
+    blocks?: { path: string; digest: string };
+  };
+  /** With `use`: the path the build writes the block counts of the
+   * functions the profile annotates to. Such a build reuses no cached
+   * artifacts. */
+  recordBlocks?: string;
+}
+
+/** The environment variable that names the block-count file a
+ * `--profile-use` build writes. */
+export const RECORD_PROFILE_BLOCKS_ENV = "SCRIPTC_RECORD_PROFILE_BLOCKS";
+
+/** The block-count file beside a profile: its path with `.blocks` in place
+ * of a `.profdata` extension, or with `.blocks` appended. */
+export function profileBlocksPath(profilePath: string): string {
+  return profilePath.endsWith(".profdata")
+    ? `${profilePath.slice(0, -".profdata".length)}.blocks`
+    : `${profilePath}.blocks`;
+}
+
+/** The block-count file a `--profile-use` build writes, from the
+ * environment, or undefined. */
+export function recordProfileBlocksPath(
+  env: Record<string, string | undefined>,
+): string | undefined {
+  const path = env[RECORD_PROFILE_BLOCKS_ENV];
+  return path === undefined || path === "" ? undefined : path;
 }
 
 /** Whether an indexed profile holds context-sensitive counts: the header's
@@ -59,19 +98,29 @@ export function nativeProfileHelperArgs(profile: NativeProfileOptions | undefine
   return [
     ...(profile?.generate === undefined ? [] : ["--profile-generate", profile.generate]),
     ...(profile?.use === undefined ? [] : ["--profile-use", profile.use.path]),
+    ...(profile?.use?.blocks === undefined ? [] : ["--profile-blocks", profile.use.blocks.path]),
+    ...(profile?.use === undefined || profile.recordBlocks === undefined
+      ? []
+      : ["--record-profile-blocks", profile.recordBlocks]),
   ];
 }
 
 /** How an optimized build's profile matched the program's functions, as the
  * helper reports it: functions that took the profile's counts, functions
  * whose control flow changed since the profile was collected, functions the
- * profile has no record of (new, or never run while it was collected), and
- * partitions reused from the cache without their counts. */
+ * profile has no record of (new, or never run while it was collected),
+ * mismatched functions that the block-count file annotated (never more
+ * than the mismatched ones), and partitions reused from the cache without
+ * their counts. Helpers that weigh the match also report the profile's
+ * counters on the annotated and on the mismatched functions. */
 export interface NativeProfileMatch {
   annotated: number;
   mismatched: number;
   missing: number;
+  recovered: number;
   unknownPartitions: number;
+  annotatedCounts?: number;
+  mismatchedCounts?: number;
 }
 
 /** The profile match in a successful helper emit's output, or null when the
@@ -93,10 +142,29 @@ export function parseNativeProfileMatch(stdout: string): NativeProfileMatch | nu
     const annotated = count("annotated");
     const mismatched = count("mismatched");
     const missing = count("missing");
+    // A helper that predates block-count files reports no recovered count.
+    const recovered = profile["recovered"] === undefined ? 0 : count("recovered");
     const unknownPartitions = count("unknown_partitions");
-    if (annotated === null || mismatched === null || missing === null || unknownPartitions === null)
+    if (
+      annotated === null ||
+      mismatched === null ||
+      missing === null ||
+      recovered === null ||
+      unknownPartitions === null
+    )
       continue;
-    return { annotated, mismatched, missing, unknownPartitions };
+    const annotatedCounts = count("annotated_counts");
+    const mismatchedCounts = count("mismatched_counts");
+    return {
+      annotated,
+      mismatched,
+      missing,
+      recovered,
+      unknownPartitions,
+      ...(annotatedCounts === null || mismatchedCounts === null
+        ? {}
+        : { annotatedCounts, mismatchedCounts }),
+    };
   }
   return null;
 }
@@ -107,9 +175,15 @@ export function parseNativeProfileMatch(stdout: string): NativeProfileMatch | nu
 export const STALE_PROFILE_SHARE = 0.1;
 
 /** `scriptc build --profile-use`'s report on stderr: one line with the match,
- * and a warning line when more than STALE_PROFILE_SHARE of the functions the
- * profile describes changed since it was collected. */
-export function renderNativeProfileMatch(profile: string, match: NativeProfileMatch): string {
+ * a line with the functions the block-count file annotated when there are
+ * any, and a warning line when more than STALE_PROFILE_SHARE of the
+ * functions the profile describes changed since it was collected and took
+ * no counts. */
+export function renderNativeProfileMatch(
+  profile: string,
+  match: NativeProfileMatch,
+  blocks: string = profileBlocksPath(profile),
+): string {
   const unknown =
     match.unknownPartitions === 0
       ? ""
@@ -117,11 +191,16 @@ export function renderNativeProfileMatch(profile: string, match: NativeProfileMa
   const lines = [
     `scriptc: profile ${profile}: ${match.annotated} functions annotated, ${match.mismatched} mismatched, ${match.missing} without a record${unknown}`,
   ];
-  const described = match.annotated + match.mismatched;
-  if (described > 0 && match.mismatched / described > STALE_PROFILE_SHARE) {
-    const percent = ((match.mismatched / described) * 100).toFixed(1);
+  if (match.recovered > 0)
     lines.push(
-      `scriptc: warning: ${match.mismatched} of the ${described} functions ${profile} describes (${percent}%) changed since it was collected and are optimized without their counts; collect the profile again`,
+      `scriptc: profile ${profile}: ${match.recovered} function${match.recovered === 1 ? "" : "s"} without profile counts annotated from ${blocks}`,
+    );
+  const described = match.annotated + match.mismatched;
+  const uncounted = Math.max(0, match.mismatched - match.recovered);
+  if (described > 0 && uncounted / described > STALE_PROFILE_SHARE) {
+    const percent = ((uncounted / described) * 100).toFixed(1);
+    lines.push(
+      `scriptc: warning: ${uncounted} of the ${described} functions ${profile} describes (${percent}%) changed since it was collected and are optimized without their counts; collect the profile again`,
     );
   }
   return `${lines.join("\n")}\n`;
@@ -132,6 +211,7 @@ export function nativeProfileKey(profile: NativeProfileOptions | undefined): str
   return [
     ...(profile?.generate === undefined ? [] : [`profile-generate:${profile.generate}`]),
     ...(profile?.use === undefined ? [] : [`profile-use:${profile.use.digest}`]),
+    ...(profile?.use?.blocks === undefined ? [] : [`profile-blocks:${profile.use.blocks.digest}`]),
   ].join("\0");
 }
 

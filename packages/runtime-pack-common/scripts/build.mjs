@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { availableParallelism, tmpdir } from "node:os";
 import { existsSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join, relative, sep } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { gunzipSync } from "node:zlib";
@@ -21,8 +21,20 @@ import { installRuntimePack, withBuildLock } from "./build-state.mjs";
 import { shareIdenticalArtifacts } from "./share-artifacts.mjs";
 import { parallelMap } from "./parallel-map.mjs";
 import { zlibInputs } from "./zlib-inputs.mjs";
+import { ICU_DATA_FILE, ensurePackIcuData, ensureIcuSources, icuSourceList } from "./icu-data.mjs";
 
 const run = promisify(execFile);
+
+/** Zig's library directory, which carries the libc++/libc++abi sources the ICU
+ * archive merges: `ZIG_LIB_DIR` when the caller pins one, else the pinned
+ * toolchain's own answer. */
+async function zigLibDir() {
+  if (process.env.ZIG_LIB_DIR) return process.env.ZIG_LIB_DIR;
+  const { stdout } = await run("zig", ["env"]);
+  const match = /\.lib_dir\s*=\s*"([^"]+)"/.exec(stdout);
+  if (match === null) throw new Error("could not read zig's lib directory from `zig env`");
+  return match[1];
+}
 const packageRoot = process.env.SCRIPTC_RUNTIME_PACK_ROOT;
 const configText = process.env.SCRIPTC_RUNTIME_PACK_CONFIG;
 if (!packageRoot || !configText)
@@ -34,7 +46,18 @@ const runtimeSrc = join(runtimeRoot, "src");
 const vendorRoot = join(runtimeRoot, "vendor");
 const outputRoot = join(packageRoot, "artifacts");
 const manifestPath = join(packageRoot, "runtime-pack.json");
-const matrix = createRuntimePackMatrix(config);
+// ICU (and so every ICU-answered Intl form) ships only in the packs that opt
+// in with `icu: true` — linux-x64-gnu in this slice, the one pack whose build
+// runs Zig's C++ driver for a glibc target. Every other pack omits the unit
+// and the archive, and the compiler refuses Intl there (SC3002).
+const matrix = createRuntimePackMatrix({
+  ...config,
+  omitOptionalSources: [
+    ...(config.omitOptionalSources ?? []),
+    ...(config.icu === true ? [] : ["scr_intl.c"]),
+  ],
+  omitArchives: [...(config.omitArchives ?? []), ...(config.icu === true ? [] : ["icu"])],
+});
 
 async function build() {
   const buildRoot = join(
@@ -96,6 +119,10 @@ async function build() {
   const zlib = join(vendorRoot, "zlib");
   const mbedtls = join(vendorRoot, "mbedtls");
   const brotli = join(vendorRoot, "brotli", "c");
+  // ICU is fetched from its pinned release, not vendored (see icu-inputs.mjs),
+  // and only a pack that ships it pays for the download.
+  const icuSourceRoot = async () =>
+    ensureIcuSources(join(repoRoot, "node_modules", ".cache", "scriptc-icu-sources"));
   const qjsSources = ["dtoa.c", "libregexp.c", "libunicode.c", "quickjs.c"];
   const lreSources = ["libregexp.c", "libunicode.c"];
   const zlibBuild = zlibInputs(config.target.llvm_triple);
@@ -199,6 +226,141 @@ async function build() {
       size: (await stat(output)).size,
     };
   };
+  // ICU (Intl over ICU4C): the C++ units ICU's own source lists name, plus the
+  // C++ standard library they need, merged INTO the archive so the final link
+  // stays a plain C link with the pack's own `-lm`. Four things distinguish it
+  // from every other vendored archive:
+  //  - It is C++, so this pack's C driver cannot compile it: the TUs (and the
+  //    standard library they use) build with Zig's C++ driver for the PACK'S
+  //    OWN target. That target is the point. In C++ mode, glibc 2.38+ headers
+  //    redirect strtol/strtoul to the C23 __isoc23_* names, and a host
+  //    libstdc++ binds those names too, so a host-compiled C++ archive would
+  //    raise the glibc floor above the pack's. Zig's bundled libc++ and
+  //    libc++abi compile from the toolchain's own sources for the target and
+  //    bind the target's names only; the pack's forbidden-artifact check
+  //    proves it.
+  //  - ICU requires RTTI (typeid and dynamic_cast in its source), so -fno-rtti
+  //    is not available; -fno-exceptions is, and ICU, libc++, and libc++abi
+  //    all build so. That also means libc++abi's Itanium personality routine
+  //    (cxa_personality.cpp) is out: it is the one unit that needs exceptions,
+  //    and nothing can throw into it.
+  //  - Symbol renaming stays ON (the `_78` suffixes), which is what lets the
+  //    zero-cost gate prove that non-Intl binaries link no ICU symbol.
+  //  - Only a pack that opts in with `icu: true` ships the unit and this
+  //    archive; the compiler refuses Intl in every other pack (SC3002).
+  // packages/compiler/src/backend/vendor-archives.ts (ensureIcuArchive)
+  // builds the same archive on the source-build path.
+  const icuArchive = async () => {
+    process.stdout.write(`building ${packageManifest.name} icu archive\n`);
+    // The tarball extracts to `icu/source/...` with ICU's LICENSE beside it.
+    const icu = join(await icuSourceRoot(), "source");
+    const root = join(stagedOutputRoot, "vendor", "icu");
+    const objectRoot = join(root, "objects");
+    const libDir = await zigLibDir();
+    const cxx = ["zig", "c++", ...config.targetArgs];
+    const optimize = ["-Os"];
+    const commonFlags = [
+      "-std=c++17",
+      ...optimize,
+      "-fno-exceptions",
+      "-ffunction-sections",
+      "-fdata-sections",
+    ];
+    const icuFlags = [
+      ...commonFlags,
+      "-DU_STATIC_IMPLEMENTATION",
+      "-DU_ATTRIBUTE_DEPRECATED=",
+      "-DNDEBUG",
+      "-Wno-deprecated-declarations",
+      "-I",
+      join(icu, "common"),
+      "-I",
+      join(icu, "i18n"),
+    ];
+    // libc++ 20 sources need C++20 (`constinit`, ranges) and libc++'s
+    // charconv reads a header from `libcxx/libc`.
+    const cxxLibraryFlags = [
+      "-std=c++23",
+      ...optimize,
+      "-fno-exceptions",
+      "-ffunction-sections",
+      "-fdata-sections",
+      "-I",
+      join(libDir, "libcxx", "include"),
+      "-I",
+      join(libDir, "libcxx", "src"),
+      "-I",
+      join(libDir, "libcxx", "libc"),
+      "-I",
+      join(libDir, "libcxxabi", "include"),
+      "-D_LIBCPP_BUILDING_LIBRARY",
+      "-D_LIBCXXABI_BUILDING_LIBRARY",
+      "-DLIBCXX_BUILDING_LIBCXXABI",
+      "-Wno-unknown-warning-option",
+    ];
+    const cxxLibraryUnits = async (subdirectory, memberPrefix, skip) => {
+      const sources = (await readdir(join(libDir, subdirectory, "src")))
+        .filter((name) => name.endsWith(".cpp") && !skip.has(name))
+        .sort();
+      return sources.map((source) => ({
+        path: join(libDir, subdirectory, "src", source),
+        member: `${memberPrefix}${source}`,
+        flags: cxxLibraryFlags,
+      }));
+    };
+    const units = [
+      ...icuSourceList(await readFile(join(icu, "common", "sources.txt"), "utf8")).map(
+        (source) => ({
+          path: join(icu, "common", source),
+          member: `common-${source}`,
+          flags: icuFlags,
+          define: "U_COMMON_IMPLEMENTATION",
+        }),
+      ),
+      {
+        path: join(icu, "stubdata", "stubdata.cpp"),
+        member: "stubdata-stubdata.cpp",
+        flags: icuFlags,
+        define: "U_COMMON_IMPLEMENTATION",
+      },
+      ...icuSourceList(await readFile(join(icu, "i18n", "sources.txt"), "utf8")).map((source) => ({
+        path: join(icu, "i18n", source),
+        member: `i18n-${source}`,
+        flags: icuFlags,
+        define: "U_I18N_IMPLEMENTATION",
+      })),
+      ...(await cxxLibraryUnits("libcxx", "cxx-libcxx-", new Set())),
+      ...(await cxxLibraryUnits("libcxxabi", "cxx-libcxxabi-", new Set(["cxa_personality.cpp"]))),
+    ];
+    // Member order is fixed by the source lists (parallel() preserves it),
+    // so the archive's bytes depend only on the inputs.
+    const objects = await parallel(units, async (unit) => {
+      const output = join(objectRoot, unit.member.replace(/\.cpp$/, ".o"));
+      await mkdir(dirname(output), { recursive: true });
+      await run(cxx[0], [
+        ...cxx.slice(1),
+        ...sourcePathFlags,
+        ...unit.flags,
+        ...(unit.define === undefined ? [] : [`-D${unit.define}`]),
+        "-g0",
+        "-c",
+        unit.path,
+        "-o",
+        output,
+      ]);
+      return output;
+    });
+    const output = join(root, "libscriptc-icu.a");
+    await createDeterministicArchive(archiver, output, objects, archiverArgs);
+    await rm(objectRoot, { recursive: true, force: true });
+    return {
+      id: "icu",
+      path: artifactPath(output),
+      sha256: await sha256(output),
+      size: (await stat(output)).size,
+    };
+  };
+
   await rm(buildRoot, { recursive: true, force: true });
   try {
     await mkdir(stagedOutputRoot, { recursive: true });
@@ -276,6 +438,18 @@ async function build() {
                 ? ["-I", zlib]
                 : []),
               ...(unit.source === "scr_brotli.c" ? ["-I", join(brotli, "include")] : []),
+              // scr_intl.c includes ICU's C API headers straight from the
+              // fetched release: the core ones in source/common/unicode/*.h,
+              // and the format ones (udat.h, unumberformatter.h) in
+              // source/i18n/unicode/*.h.
+              ...(unit.source === "scr_intl.c"
+                ? [
+                    "-I",
+                    join(await icuSourceRoot(), "source", "common"),
+                    "-I",
+                    join(await icuSourceRoot(), "source", "i18n"),
+                  ]
+                : []),
             ];
             // Worker variants link only into executables, whose own TLS block
             // holds every runtime thread-local: on ELF the initial-exec model
@@ -398,6 +572,7 @@ async function build() {
                 annotated: profileMatches.reduce((sum, match) => sum + match.annotated, 0),
                 mismatched: profileMatches.reduce((sum, match) => sum + match.mismatched, 0),
                 missing: profileMatches.reduce((sum, match) => sum + match.missing, 0),
+                ...profileWeights(profileMatches),
               },
             }),
       };
@@ -491,6 +666,7 @@ async function build() {
                   ]),
                 ]
               : []),
+            ...(requestedArchives.has("icu") ? [await icuArchive()] : []),
             ...(requestedArchives.has("mbedtls")
               ? [
                   await archive("mbedtls", mbedtlsSources, join(mbedtls, "library"), [
@@ -506,6 +682,65 @@ async function build() {
                 ]
               : []),
           ];
+    // ICU's data is a RUN-time input, not a link input: the executable loads
+    // icudt78l.dat from beside itself (or ICU_DATA). `data` tells the
+    // compiler where the pack keeps it, so every Intl build installs it
+    // beside the binary it links. The pack's copy leaves out the categories
+    // no Intl form reads (ICU_DATA_DROPPED in icu-inputs.mjs).
+    const data = [];
+    if (requestedArchives.has("icu")) {
+      process.stdout.write(`building ${packageManifest.name} icu data\n`);
+      const source = await ensurePackIcuData(
+        join(repoRoot, "node_modules", ".cache", "scriptc-icu-data"),
+      );
+      const destination = join(stagedOutputRoot, "icu", ICU_DATA_FILE);
+      await mkdir(dirname(destination), { recursive: true });
+      await copyFile(source, destination);
+      data.push({
+        path: artifactPath(destination),
+        sha256: await sha256(destination),
+        size: (await stat(destination)).size,
+      });
+    }
+    // A sanitized build (`--sanitize` in the native compiler) compiles the
+    // runtime units from @scriptc/runtime's sources, and scr_intl.c includes
+    // ICU's C API headers, which that package does not carry. The pack ships
+    // the ICU headers scr_intl.c includes, as the compiler's dependency scan
+    // lists them, under one include root beside the archive.
+    const headers = [];
+    if (requestedArchives.has("icu")) {
+      const icu = join(await icuSourceRoot(), "source");
+      const icuHeaderDirs = [join(icu, "common", "unicode"), join(icu, "i18n", "unicode")];
+      const scan = await run(compiler, [
+        ...compilerArgs,
+        ...commonFlags,
+        "-I",
+        join(icu, "common"),
+        "-I",
+        join(icu, "i18n"),
+        "-MM",
+        join(runtimeSrc, "scr_intl.c"),
+      ]);
+      const included = scan.stdout
+        .replaceAll("\\\n", " ")
+        .split(/\s+/)
+        .filter((path) => icuHeaderDirs.includes(dirname(path)))
+        .sort((a, b) => basename(a).localeCompare(basename(b)));
+      if (included.length === 0) throw new Error("scr_intl.c includes no ICU header");
+      const includeRoot = join(stagedOutputRoot, "vendor", "icu", "include", "unicode");
+      await mkdir(includeRoot, { recursive: true });
+      for (const source of included) {
+        const destination = join(includeRoot, basename(source));
+        if (existsSync(destination))
+          throw new Error(`two ICU headers are named ${basename(source)}`);
+        await copyFile(source, destination);
+        headers.push({
+          path: artifactPath(destination),
+          sha256: await sha256(destination),
+          size: (await stat(destination)).size,
+        });
+      }
+    }
     await assertArtifactsExcludeStrings(
       stagedOutputRoot,
       runtimeForbiddenStrings(config.forbiddenArtifactStrings),
@@ -529,6 +764,11 @@ async function build() {
       [join(zlib, "LICENSE.chromium"), "artifacts/licenses/zlib-chromium.txt", "BSD-3-Clause"],
       [join(vendorRoot, "brotli", "LICENSE"), "artifacts/licenses/brotli.txt", "MIT"],
       [join(mbedtls, "LICENSE"), "artifacts/licenses/mbedtls.txt", "Apache-2.0"],
+      // ICU's terms cover both the sources and the data file it ships; only a
+      // pack that ships them carries its license.
+      ...(requestedArchives.has("icu")
+        ? [[join(await icuSourceRoot(), "LICENSE"), "artifacts/licenses/icu.txt", "Unicode-3.0"]]
+        : []),
     ];
     licensed.push([
       join(vendorRoot, "unicode", "LICENSE"),
@@ -549,7 +789,7 @@ async function build() {
       package: packageManifest.name,
       version: packageManifest.version,
       target: matrix.target,
-      runtime_abi: { version: 47, marker: "scr_runtime_abi_v47" },
+      runtime_abi: { version: 48, marker: "scr_runtime_abi_v48" },
       compiler: {
         command: compiler,
         identity: compilerVersion,
@@ -561,6 +801,8 @@ async function build() {
           "SCR_TEXT_DECODER_LEGACY",
           "SCR_WARNING_REPLACE",
           "SCR_STDIO_EXTENDED",
+          "SCR_STREAM_WRITE_ERRORS",
+          "SCR_STDIO_WRITE_SLOT",
           "SCR_NATIVE_REACTIONS",
           "SCR_HANDLE_CLASSES",
           "SCR_YIN",
@@ -574,6 +816,8 @@ async function build() {
         ...entry,
         predicate: archiveSpecs.get(entry.id).predicate,
       })),
+      ...(data.length === 0 ? {} : { data }),
+      ...(headers.length === 0 ? {} : { headers }),
       system_libraries: matrix.system_libraries,
       licenses: licensed.map(([, path, license]) => ({ path, license })),
     };
@@ -603,3 +847,32 @@ async function build() {
   }
 }
 await withBuildLock(join(packageRoot, ".runtime-pack-build.lock"), build);
+
+/** The profile's counters on the functions the speed units' annotation
+ * matched (annotated_counts) and on the functions whose control flow changed
+ * since the profile was collected (mismatched_counts), from helpers that
+ * report them per function. A function the profile describes for one unit
+ * variant (default or workers) only reads as mismatched in the other one, so
+ * a name annotated in any unit counts as annotated. `stale` names the
+ * mismatched functions with the most counts. */
+function profileWeights(matches) {
+  if (!matches.every((match) => match.annotated_counts !== undefined)) return {};
+  const annotated = new Map();
+  const mismatched = new Map();
+  for (const match of matches) {
+    for (const [name, counts] of Object.entries(match.annotated_counts))
+      annotated.set(name, counts);
+    for (const [name, counts] of Object.entries(match.mismatched_counts))
+      mismatched.set(name, counts);
+  }
+  for (const name of annotated.keys()) mismatched.delete(name);
+  const sum = (map) => [...map.values()].reduce((total, counts) => total + counts, 0);
+  return {
+    annotated_counts: sum(annotated),
+    mismatched_counts: sum(mismatched),
+    stale: [...mismatched]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([name]) => name),
+  };
+}

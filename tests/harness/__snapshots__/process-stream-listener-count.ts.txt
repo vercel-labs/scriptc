@@ -1,0 +1,8 @@
+process-stream-listener-count.ts:5:28 - error SC0001: Property 'listenerCount' does not exist on type 'WriteStream'.
+
+  4 | process.stdout.once("drain", () => {});
+  5 | console.log(process.stdout.listenerCount("drain"));
+    |                            ^~~~~~~~~~~~~
+  6 | 
+
+  hint: the project has no @types/node, so scriptc types Node with its bundled declarations, which list only the members that compile natively — 'listenerCount' does not compile natively yet (https://scriptc.dev/limitations); installing @types/node turns this into a located refusal with a hint

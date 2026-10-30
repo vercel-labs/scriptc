@@ -76,6 +76,17 @@ export function lowerMapMethodCall(
   if (!probedUntyped && !lowerer.isStdlibMember(access) && name !== "has") return null;
   const loc = locOf(call);
   const value = lowerer.lowerExpr(access.expression);
+  // A receiver the checker types `Map<any, any>` (inference residue of an
+  // untyped `new Map()`) whose value has a concrete layout: its keys and
+  // values convert into that layout.
+  if (
+    value.type.kind === "map" &&
+    receiverIr.key.kind === "dyn" &&
+    receiverIr.value.kind === "dyn" &&
+    value.type.key.kind !== "dyn" &&
+    value.type.value.kind !== "dyn"
+  )
+    receiverIr = value.type;
   const receiver =
     lowerer.runtimeOptionalPropertyReceiver(access.expression, value, receiverIr, name) ?? value;
   if (receiver.type.kind !== "map") {

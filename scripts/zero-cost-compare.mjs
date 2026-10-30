@@ -393,6 +393,38 @@ export function dynamicTierSymbols(names) {
  * program without a call into Node.js may define any of these. */
 export const NODE_ISLAND_PREFIXES = ["scr_node_island", "scr_loop_set_node_island"];
 
+/** The namespace ICU's own symbols live in after its version-suffixed
+ * renaming: `icu_78`, which Itanium mangling spells `6icu_78`. */
+export const ICU_CPP_NAMESPACE = "6icu_78";
+
+/** The ICU archive: no program that answers its Intl forms without
+ * ICU — that is, every program whose IR has no `icu.*` libCall — may define
+ * a symbol from it. The test is exact because ICU builds with symbol
+ * renaming on: every C API symbol carries the `_78` version suffix
+ * (`ubrk_open_78`), its data symbol is `icudt78_dat`, and every C++ symbol
+ * is an Itanium mangling that names namespace `icu_78`, which the mangling
+ * spells `6icu_78` wherever the name occurs — as the function's own
+ * namespace (`_ZN6icu_78...`), in its parameter types, in vtables, typeinfo
+ * and guard variables, or in a libc++ instantiation over an ICU type. No
+ * symbol outside the archive carries either mark.
+ *
+ * scr_intl.c's own functions are deliberately not tested by name. The
+ * engine-free Intl paths share their prefix (`scr_intl_num_format_en_us` in
+ * scr_lib.c, `scr_intl_segmenter_new` in scr_grapheme.c), and they must stay
+ * linkable without ICU (I4). Any scr_intl.c function that does link brings an
+ * ICU symbol with it, which the test catches. The C++ standard library
+ * merged into the archive cannot leak on its own either: an archive
+ * contributes a member only when something references it, and only ICU's
+ * objects reference libc++. */
+export function icuSymbols(names) {
+  return [...new Set(names)]
+    .filter(
+      (name) =>
+        name.endsWith("_78") || name.includes(ICU_CPP_NAMESPACE) || name.startsWith("icudt78"),
+    )
+    .sort();
+}
+
 /** The Node island symbols among `names`, sorted. */
 export function nodeIslandSymbols(names) {
   return [...new Set(names)]
@@ -415,7 +447,11 @@ export function nodeIslandSymbols(names) {
  * whose parameters the lib types `any`: captures a match can leave unset
  * and results the checker types `any`. bench/record-untyped-writes, also
  * added later, writes typed records through `unknown` and `Object.assign`
- * views. Every other bench workload is fully typed and must link none. The gate and
+ * views. bench/layered-errors, also added later, constructs and throws
+ * Error subclass instances, as bench/validate-errors does.
+ * bench/stream-buffered-drain, also added later, drains an object-mode
+ * Readable, whose chunks are checked-dynamic values. Every other bench
+ * workload is fully typed and must link none. The gate and
  * tests/harness/bench-dynamic-tier.test.ts enforce that, and the test also
  * fails when a listed workload stops linking them, so remove a workload here
  * when a leak fix makes its binary clean. */
@@ -440,6 +476,8 @@ export const DYNAMIC_WORKLOADS = new Set([
   "bench/throw-chains",
   "bench/regex-replacers",
   "bench/record-untyped-writes",
+  "bench/layered-errors",
+  "bench/stream-buffered-drain",
 ]);
 
 /** Names of the functions (text and weak symbols) in `nm` output. Mach-O

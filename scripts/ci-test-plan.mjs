@@ -7,6 +7,7 @@ export const corpusFiles = [
   "tests/harness/differential.test.ts",
   "tests/harness/llvm-differential.test.ts",
   "tests/harness/npm.test.ts",
+  "tests/harness/npm-shape-overlay.test.ts",
   "tests/harness/server.test.ts",
   "tests/harness/test262.test.ts",
   "tests/harness/three.test.ts",

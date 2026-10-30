@@ -2330,6 +2330,47 @@ console.log(util.format(s, { a: 1 }), util.formatWithOptions({ maxArrayLength: 1
   });
 });
 
+// With customInspect: false (console.dir's default) Node prints a codec's
+// internal slots, which have no lowering; past the depth limit it prints
+// the class placeholder.
+describe("TextDecoder and TextEncoder with customInspect: false", () => {
+  test("refuse within the depth limit and print [cls] past it", async () => {
+    const r = await compileAndRun(
+      "codec-custom-inspect-false",
+      `import * as util from "node:util";
+const decoder = new TextDecoder();
+const encoder = new TextEncoder();
+const attempts: Array<() => string> = [
+  () => util.inspect(decoder, { customInspect: false }),
+  () => util.inspect([encoder], { customInspect: false }),
+  () => {
+    console.dir(decoder);
+    return "printed";
+  },
+];
+for (const attempt of attempts) {
+  try {
+    console.log(attempt());
+  } catch (error) {
+    console.log((error as Error).message);
+  }
+}
+console.log(util.inspect({ a: { b: { c: decoder, d: encoder } } }, { customInspect: false }));
+console.log(util.inspect(decoder, { customInspect: true }));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      "util.inspect of a TextDecoder with customInspect: false is not supported yet\n" +
+        "util.inspect of a TextEncoder with customInspect: false is not supported yet\n" +
+        "util.inspect of a TextDecoder with customInspect: false is not supported yet\n" +
+        "{ a: { b: { c: [TextDecoder], d: [TextEncoder] } } }\n" +
+        "TextDecoder { encoding: 'utf-8', fatal: false, ignoreBOM: false }\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+});
+
 describe("numeric properties of native arrays", () => {
   // A native array keeps its numeric properties ("-1", "1.5") in a property
   // table that holds values without attributes, so defining one with a
@@ -2448,5 +2489,60 @@ console.log(new B().a());
     expect(r.stderr).toBe(
       "Uncaught Error: Object.setPrototypeOf with this value is not supported yet\n",
     );
+  });
+});
+
+// `{ ...maybe }` over a `T | undefined` source the checker PROVED present
+// (an indexed read under indexed-access strictness, a callback parameter
+// typed by the runtime-optional record ABI): the spread copies the record as
+// Node does. When the source is actually absent, Node copies nothing and
+// leaves the field off the object; a required destination field has no
+// absent representation, so the extraction throws the catchable TypeError
+// instead of returning a record with an unset field — the lying-assertion
+// stance this pin owns.
+describe("object spread of a proven-present runtime-optional source", () => {
+  test("a present source copies like Node; an absent one throws the TypeError", async () => {
+    const r = await compileAndRun(
+      "runtime-optional-spread",
+      `interface Rgb { r: number; g: number; b: number }
+const BASIC: Rgb[] = [
+  { r: 1, g: 2, b: 3 },
+  { r: 4, g: 5, b: 6 },
+];
+function basicColor(index: number): Rgb {
+  if (index < 16) return { ...BASIC[index] };
+  return { r: 0, g: 0, b: 0 };
+}
+console.log(JSON.stringify(basicColor(1)));
+try {
+  console.log(JSON.stringify(basicColor(5)));
+} catch (e) {
+  console.log("caught:", (e as Error).name, "-", (e as Error).message);
+}
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      '{"r":4,"g":5,"b":6}\n' +
+        "caught: TypeError - undefined is not representable in the target union (a value narrowed or asserted past it still held it)\n",
+    );
+    expect(r.stderr).toBe("");
+  });
+
+  test("an optional destination keeps the no-copy arm", async () => {
+    // The absent arm HAS a representation here (an optional field), so the
+    // copy stays a no-op and Node's own output stands.
+    const r = await compileAndRun(
+      "runtime-optional-spread-optional",
+      `interface Entry { path: string; isDirectory: boolean }
+interface Row { path?: string; isDirectory?: boolean; index: number }
+const entries: Entry[] = [{ path: "src", isDirectory: true }];
+const rows = entries.map((entry, index): Row => ({ ...entry, index }));
+console.log(JSON.stringify(rows));
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe('[{"path":"src","isDirectory":true,"index":0}]\n');
+    expect(r.stderr).toBe("");
   });
 });

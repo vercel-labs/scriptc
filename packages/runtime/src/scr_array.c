@@ -55,9 +55,12 @@ static size_t scr_arr_prefix(const ScrArr *a) {
   return (a->spare & SCR_ARR_HAS_EXT) ? SCR_ARR_EXT_PREFIX : 0;
 }
 
-/* The start of the block the dense storage was allocated as. */
+/* The start of the block the dense storage was allocated as. The block is
+ * NULL while the array has no storage, and offsetting a null pointer, even
+ * by 0, is undefined: the address is computed as an integer, which keeps the
+ * callers' control flow (and the runtime profile's view of it) as it was. */
 static void *scr_arr_alloc_start(const ScrArr *a) {
-  return (char *)scr_arr_block(a) - scr_arr_prefix(a);
+  return (void *)((uintptr_t)scr_arr_block(a) - scr_arr_prefix(a));
 }
 
 /* Bytes per dense slot: an 8-byte value or a boolean byte, and its state
@@ -1693,6 +1696,56 @@ ScrArr *scr_arr_new_ops_r(const ScrArrOps *ops, size_t initial_cap) {
 }
 
 ScrArr *scr_arr_new_ops_small_r(const ScrArrOps *ops) { return scr_arr_make_ops(ops, 0, true, true); }
+
+/* An inline array field's elements as an array value (llvm/inline-arrays.ts).
+ * The field keeps `len` 32-bit references to compact instances at `slots`, in
+ * a program-lifetime instance, and never changes them. The header borrows
+ * them: SCR_ARR_INLINE_SLOTS keeps scr_arr_free_parts from freeing them and
+ * SCR_ARR_FROZEN keeps every write, and so every move, away from them.
+ * Element types whose ops lie past the registry keep their ops pointer in
+ * the word before the slots (scr_arr_ext), which belongs to the instance:
+ * those get a frozen copy instead. */
+ScrArr *scr_arr_view_cref(const ScrArrOps *ops, uint32_t *slots, uint32_t len) {
+  ScrArr *a = scr_arr_make_ops_kind(ops, 0, false, SCR_ELEM_CREF, false);
+  if (scr_arr_ops_id(ops) == SCR_ARR_OPS_OVERFLOW) {
+    if (len > 0) {
+      scr_arr_grow_dense_to(a, len, SCR_ARR_GROW_EXACT);
+      memcpy(a->data, slots, (size_t)len * sizeof(uint32_t));
+    }
+  } else {
+    a->data = (uint64_t *)slots;
+    a->cap = len;
+    a->spare |= SCR_ARR_INLINE_SLOTS;
+  }
+  a->len = len;
+  a->filled = len;
+  a->spare |= SCR_ARR_FROZEN;
+  return a;
+}
+
+/* The constructor's write of an inline array field: the `len` elements of
+ * `src`, an array of the field's element class, as 32-bit references at
+ * `slots`. `len` is the length the instance was allocated for, read from the
+ * same constructor argument, so another length, a hole or an element that
+ * is not a compact instance means the program broke the field's contract. */
+void scr_arr_copy_cref_tail(const ScrArr *src, uint32_t *slots, uint32_t len) {
+  if (src->len != len)
+    scr_trap("scriptc: an inline array field's array changed length during construction\n");
+  if (len == 0) return;
+  if (src->filled < len) scr_trap("scriptc: an inline array field's array has holes\n");
+  if (src->elem == SCR_ELEM_CREF) {
+    memcpy(slots, src->data, (size_t)len * sizeof(uint32_t));
+    return;
+  }
+  if (src->elem != SCR_ELEM_REF)
+    scr_trap("scriptc: an inline array field's array holds other values\n");
+  for (uint32_t i = 0; i < len; i++) {
+    uint64_t slot = src->data[i];
+    if (slot == 0)
+      scr_trap("scriptc: an inline array field's array holds a missing element\n");
+    slots[i] = scr_cref_encode(slot);
+  }
+}
 
 /* Frees an acyclic array whose elements are already released. */
 static inline __attribute__((always_inline)) void scr_arr_free(ScrArr *a) {

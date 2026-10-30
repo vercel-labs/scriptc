@@ -20,6 +20,8 @@ static SCR_TL const ScrDynHandleClass *hc_classes[SCR_DYNH_CAPACITY];
 /* The class tag of another tag's handles + 1 (scr_dyn_handle_class_alias);
  * 0 = none. */
 static SCR_TL uint16_t hc_aliases[SCR_DYNH_CAPACITY];
+/* scr_dyn_handle_class_alias_view, per alias tag. */
+static SCR_TL ScrDyn *(*hc_alias_views[SCR_DYNH_CAPACITY])(ScrDyn *handle);
 static SCR_TL ScrDyn *hc_ctors[SCR_DYNH_CAPACITY];
 static SCR_TL ScrDyn *hc_prototypes[SCR_DYNH_CAPACITY];
 static SCR_TL bool hc_teardown_registered;
@@ -73,9 +75,13 @@ static ScrDyn *hc_getter(ScrClosure *closure, ScrDyn *const *args, size_t argc) 
   const ScrDynHandleOps *ops = hc_ops(tag);
   ScrDyn *self = scr_dyn_this_get();
   ScrDyn *result = NULL;
-  if (self->kind == SCR_DYN_HANDLE && self->v.handle.tag == tag) {
-    result = ops->get(self->v.handle.ptr, accessor->name, strlen(accessor->name));
-    if (!result && !scr_exc_pending()) result = scr_dyn_retain(scr_dyn_undefined());
+  ScrDyn *receiver = NULL;
+  if (scr_dyn_handle_class_receiver(tag, self, &receiver)) {
+    if (receiver) {
+      result = ops->get(receiver->v.handle.ptr, accessor->name, strlen(accessor->name));
+      if (!result && !scr_exc_pending()) result = scr_dyn_retain(scr_dyn_undefined());
+      scr_dyn_release(receiver);
+    }
   } else {
     hc_invalid_this(ops);
     if (accessor->rejects && ops->rejected) result = ops->rejected();
@@ -243,6 +249,23 @@ static void hc_create(ScrDynHandleTag tag) {
 
 void scr_dyn_handle_class_alias(ScrDynHandleTag tag, ScrDynHandleTag klass_tag) {
   hc_aliases[tag] = (uint16_t)(klass_tag + 1);
+}
+
+void scr_dyn_handle_class_alias_view(ScrDynHandleTag tag, ScrDyn *(*view)(ScrDyn *handle)) {
+  hc_alias_views[tag] = view;
+}
+
+bool scr_dyn_handle_class_receiver(ScrDynHandleTag klass_tag, ScrDyn *self, ScrDyn **out) {
+  *out = NULL;
+  if (self->kind != SCR_DYN_HANDLE) return false;
+  ScrDynHandleTag tag = self->v.handle.tag;
+  if (tag == klass_tag) {
+    *out = scr_dyn_retain(self);
+    return true;
+  }
+  if (hc_aliases[tag] != (uint16_t)(klass_tag + 1) || !hc_alias_views[tag]) return false;
+  *out = hc_alias_views[tag](self);
+  return true;
 }
 
 ScrDynHandleTag scr_dyn_handle_class_tag_of(const ScrDyn *handle) {

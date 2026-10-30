@@ -4,8 +4,10 @@ import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
   NodeIslandModuleCollector,
+  namedDataPaths,
   nodeIslandManifest,
   readNodeIslandModules,
+  requireModuleSpecifiers,
   scanModuleSpecifiers,
 } from "./modules.js";
 
@@ -17,6 +19,26 @@ function project(files: Record<string, string>): string {
   }
   return root;
 }
+
+describe("data paths a module names", () => {
+  test("string literals, and consecutive literal arguments joined", () => {
+    const names = namedDataPaths(`
+      const a = readFileSync(join(here, "fallback", "payload.txt"));
+      const b = "assets/config.json";
+      const c = resolve(__dirname, "x", base, "y");
+      // "comment.txt"
+      const d = \`\${dir}/template.txt\`;
+    `);
+    expect([...names.keys()].sort()).toEqual([
+      "assets/config.json",
+      "fallback",
+      "fallback/payload.txt",
+      "payload.txt",
+      "x",
+      "y",
+    ]);
+  });
+});
 
 describe("module specifiers in JavaScript", () => {
   test("string-literal loads in every form", () => {
@@ -30,6 +52,10 @@ describe("module specifiers in JavaScript", () => {
       export * from "./f";
       export { g } from "./g";
       const h = await import("./h.js");
+      const require2 = createRequire(import.meta.url);
+      const j = require2("./j.cjs");
+      const k = require2.resolve("k");
+      const i = import.meta.resolve("i");
       import.meta.url;
       obj.require("x");
       const t = \`\${require("./t")}\`;
@@ -44,6 +70,9 @@ describe("module specifiers in JavaScript", () => {
       "./f",
       "./g",
       "./h.js",
+      "./j.cjs",
+      "k",
+      "i",
       "./t",
     ]);
     expect(scan.computed).toEqual([]);
@@ -67,9 +96,18 @@ describe("module specifiers in JavaScript", () => {
     expect(forms("require(name)")).toEqual(["require() with a computed specifier"]);
     expect(forms("require('./a' + b)")).toEqual(["require() with a computed specifier"]);
     expect(forms("import(`./x/${y}`)")).toEqual(["import() with a computed specifier"]);
+    expect(forms("import.meta.resolve(name)")).toEqual([
+      "import.meta.resolve() with a computed specifier",
+    ]);
     expect(forms("const r = require; r('./a')")).toEqual(["require as a value"]);
     expect(forms("createRequire(import.meta.url)('./a')")).toEqual([
       "a require() from createRequire()",
+    ]);
+    expect(forms("const req = createRequire(import.meta.url); req(name)")).toEqual([
+      "require() with a computed specifier",
+    ]);
+    expect(forms("const req = createRequire(import.meta.url); use(req)")).toEqual([
+      "require as a value",
     ]);
     expect(forms("function require(x) {} typeof require")).toEqual([]);
   });
@@ -138,6 +176,36 @@ describe("the collected module tree", () => {
     ]);
   });
 
+  test("packages a package loads without declaring them ship too", () => {
+    const root = project({
+      "main.ts": "",
+      "node_modules/bridge/package.json": JSON.stringify({
+        type: "module",
+        imports: { "#mapped": { node: "mapped", default: "./local.js" } },
+      }),
+      "node_modules/bridge/index.js":
+        'import { a } from "zoo";\nexport const b = () => import("zoo/extra.js");',
+      "node_modules/bridge/index.d.ts": 'import type { T } from "typesonly";',
+      "node_modules/zoo/package.json": "{}",
+      "node_modules/zoo/index.js": "exports.a = 1;",
+      "node_modules/zoo/extra.js": "",
+      "node_modules/typesonly/index.d.ts": "",
+      "node_modules/mapped/index.js": "",
+    });
+    const collector = new NodeIslandModuleCollector();
+    expect(collector.addLoaded(join(root, "node_modules/bridge/index.js"))).toBeNull();
+    // The root stays above node_modules, where Node looks for packages.
+    expect(collector.tree()!.files.map((f) => f.path)).toEqual([
+      "node_modules/bridge/index.d.ts",
+      "node_modules/bridge/index.js",
+      "node_modules/bridge/package.json",
+      "node_modules/mapped/index.js",
+      "node_modules/zoo/extra.js",
+      "node_modules/zoo/index.js",
+      "node_modules/zoo/package.json",
+    ]);
+  });
+
   test("pnpm's links between package directories stay links inside the tree", () => {
     const root = project({
       "app/main.ts": "",
@@ -202,6 +270,101 @@ describe("the collected module tree", () => {
     expect(NodeIslandModuleCollector.callerPath(null, join(root, "main.ts"))).toBe("main.ts");
   });
 
+  test("a data file the module names beside itself ships with it", () => {
+    const root = project({
+      "src/main.ts": "",
+      "src/loader.ts": [
+        'import { join } from "node:path";',
+        'const here = "/x";',
+        'const fallback = join(here, "fallback", "payload.txt");',
+      ].join("\n"),
+      "src/fallback/payload.txt": "from the fallback path\n",
+      "src/unrelated.txt": "not named by the module\n",
+      "src/helper.ts": "export const h = 1;",
+    });
+    const collector = new NodeIslandModuleCollector();
+    expect(collector.add(join(root, "src/main.ts"), "./loader.ts")).toBeNull();
+    const paths = collector.tree()!.files.map((file) => file.path);
+    expect(paths).toContain("fallback/payload.txt");
+    expect(paths).not.toContain("unrelated.txt");
+    expect(paths).not.toContain("helper.ts");
+  });
+
+  test("named data stays inside the module's directory: links out of it are not followed", () => {
+    const outside = project({ "secrets/config.json": "{}", "token.txt": "secret\n" });
+    const root = project({
+      "src/main.ts": "",
+      "src/loader.ts":
+        'const names = ["linked/config.json", "data/token.txt", "data/payload.txt", "data/loop/data/payload.txt"];',
+      "src/data/payload.txt": "shipped\n",
+    });
+    symlinkSync(join(outside, "secrets"), join(root, "src/linked"), "dir");
+    symlinkSync(join(outside, "token.txt"), join(root, "src/data/token.txt"));
+    // A link back up the tree must not loop the walk.
+    symlinkSync(join(root, "src"), join(root, "src/data/loop"), "dir");
+    const collector = new NodeIslandModuleCollector();
+    expect(collector.add(join(root, "src/main.ts"), "./loader.ts")).toBeNull();
+    const paths = collector.tree()!.files.map((file) => file.path);
+    expect(paths).toContain("data/payload.txt");
+    expect(paths.filter((path) => path.endsWith("config.json"))).toEqual([]);
+    expect(paths.filter((path) => path.endsWith("token.txt"))).toEqual([]);
+    expect(paths.filter((path) => path.includes("loop"))).toEqual([]);
+  });
+
+  test("only the exact path a module names ships, never a file of the same name elsewhere", () => {
+    const outside = project({ "outside.txt": "private\n" });
+    const root = project({
+      "src/main.ts": "",
+      "src/loader.cjs": [
+        'const fs = require("node:fs");',
+        'const config = fs.readFileSync(__dirname + "/" + "assets/config.json");',
+        'const up = "../notes.txt";',
+        `const away = "${join(outside, "outside.txt")}";`,
+        'const deps = "node_modules/dep/config.json";',
+      ].join("\n"),
+      "src/assets/config.json": "{}",
+      "src/private/config.json": '{ "token": "secret" }',
+      "src/config.json": '{ "token": "secret" }',
+      "src/node_modules/dep/config.json": "{}",
+      "notes.txt": "beside the source directory\n",
+    });
+    const collector = new NodeIslandModuleCollector();
+    expect(collector.add(join(root, "src/main.ts"), "./loader.cjs")).toBeNull();
+    const paths = collector.tree()!.files.map((file) => file.path);
+    expect(paths.filter((path) => !path.endsWith(".cjs"))).toEqual(["assets/config.json"]);
+  });
+
+  test("a joined data path ships even when another directory has a file of that name", () => {
+    const root = project({
+      "src/main.ts": "",
+      "src/loader.cjs":
+        'const { join } = require("node:path");\nrequire("node:fs").readFileSync(join(__dirname, "fallback", "payload.txt"));\n',
+      "src/a-other/payload.txt": "not named by the module\n",
+      "src/fallback/payload.txt": "shipped\n",
+    });
+    const collector = new NodeIslandModuleCollector();
+    expect(collector.add(join(root, "src/main.ts"), "./loader.cjs")).toBeNull();
+    const paths = collector.tree()!.files.map((file) => file.path);
+    expect(paths).toContain("fallback/payload.txt");
+    expect(paths).not.toContain("a-other/payload.txt");
+  });
+
+  test("a named file that is only elsewhere in the module's directory is a build error", () => {
+    const root = project({
+      "src/main.ts": "",
+      "src/loader.cjs":
+        'const fs = require("node:fs");\nfs.readFileSync(__dirname + "/config.json");\n',
+      "src/private/config.json": '{ "token": "secret" }',
+    });
+    const collector = new NodeIslandModuleCollector();
+    const problem = collector.add(join(root, "src/main.ts"), "./loader.cjs");
+    expect(problem).toBe(
+      `${join(root, "src/loader.cjs")}:2 names the file 'config.json', which is not at that path beside the module; the build ships a module's data files by their exact path, so 'private/config.json' does not ship with the Node island. Name the file by its path relative to the module ('private/config.json')`,
+    );
+    expect(collector.isDataFileProblem(problem!)).toBe(true);
+    expect(collector.tree()!.files.map((file) => file.path)).not.toContain("private/config.json");
+  });
+
   test("the manifest names relative paths only, and the data is checked against it", () => {
     const root = project({ "main.ts": "", "m.cjs": "exports.f = () => 1;" });
     const collector = new NodeIslandModuleCollector();
@@ -211,5 +374,55 @@ describe("the collected module tree", () => {
     expect(readNodeIslandModules(tree)).toEqual(new TextEncoder().encode("exports.f = () => 1;"));
     writeFileSync(join(root, "m.cjs"), "exports.f = () => 2;");
     expect(readNodeIslandModules(tree)).toBe(`${join(root, "m.cjs")} changed during the build`);
+  });
+});
+
+describe("modules the program provides", () => {
+  test("a shared program module ships as a placeholder, not its source", () => {
+    const source = "// internal pricing rules\nexport const margin = 0.37;\n";
+    const root = project({
+      "src/main.ts": "",
+      "src/pricing.ts": source,
+      "src/plugin.mjs": "export const x = 1;",
+    });
+    const collector = new NodeIslandModuleCollector();
+    expect(collector.add(join(root, "src/main.ts"), "./plugin.mjs")).toBeNull();
+    collector.addProvided(join(root, "src/pricing.ts"));
+    const tree = collector.tree()!;
+    const entry = tree.files.find((f) => f.path.endsWith("pricing.ts"))!;
+    expect(entry.placeholder).toBe(true);
+    const data = readNodeIslandModules(tree);
+    if (typeof data === "string") throw new Error(data);
+    const shipped = new TextDecoder().decode(data);
+    expect(shipped).not.toContain("internal pricing rules");
+    expect(shipped).not.toContain("margin");
+    expect(shipped).toContain("export const x = 1;");
+  });
+
+  test("island code that imports a provided module ships neither its source nor its imports", () => {
+    const root = project({
+      "src/main.ts": "",
+      "src/plugin.mjs": 'import { y } from "./shared.mjs";\nexport const z = y;',
+      "src/shared.mjs": 'import { secret } from "./internal.mjs";\nexport const y = secret;',
+      "src/internal.mjs": "export const secret = 42;",
+    });
+    const collector = new NodeIslandModuleCollector();
+    collector.addProvided(join(root, "src/shared.mjs"));
+    expect(collector.add(join(root, "src/main.ts"), "./plugin.mjs")).toBeNull();
+    const files = collector.tree()!.files;
+    expect(files.find((f) => f.path.endsWith("shared.mjs"))!.placeholder).toBe(true);
+    expect(files.some((f) => f.path.endsWith("internal.mjs"))).toBe(false);
+  });
+
+  test("requireModule specifiers come from code, not comments or strings", () => {
+    expect(
+      requireModuleSpecifiers(`
+        // requireModule("./commented.mjs")
+        /* requireModule("./block.mjs") */
+        const s = 'requireModule("./in-string.mjs")';
+        const t = \`requireModule("./in-template.mjs")\`;
+        const p = requireModule("./plugin.mjs");
+      `),
+    ).toEqual(["./plugin.mjs"]);
   });
 });

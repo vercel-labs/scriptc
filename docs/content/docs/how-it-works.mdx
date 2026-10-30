@@ -34,7 +34,7 @@ Runtime pack and linker -> executable
 
 ## Build parallelism
 
-Most of a build runs on one CPU core. The LLVM helper uses more cores when it compiles an executable in partitions, and when it generates code for an optimized executable of one partition.
+Most of a build runs on one CPU core. The LLVM helper uses more cores when it compiles an executable in partitions, and when it generates code for an optimized executable that it optimizes whole.
 
 ### Frontend
 
@@ -42,16 +42,15 @@ Parsing, type checking, lowering, and LLVM IR generation run one after another o
 
 ### Partitions
 
-The LLVM helper divides an executable's LLVM IR into partitions by its size. Up to 1 MiB of LLVM text is one partition, and up to 2 MiB is four. Larger programs get one partition per 4 MiB of LLVM text, rounded up to a power of two, and at least 8 and at most 64. `--emit=llvm` writes this text, so its file size shows how many partitions a program gets. `dev` executables, whose partitions are compiled on their own with nothing imported, are divided from 64 KiB: up to 128 KiB is four partitions, and larger `dev` programs get at least 8.
+The LLVM helper divides an executable's LLVM IR into partitions by its size. Up to 128 KiB of LLVM text is one partition. Larger programs get one partition per 4 MiB of LLVM text, rounded up to a power of two, and at least 8 and at most 64. `--emit=llvm` writes this text, so its file size shows how many partitions a program gets. `dev` executables, whose partitions are compiled on their own with nothing imported, are divided from 64 KiB: up to 128 KiB is four partitions. An edit compiles again only the partitions whose code it changes, or that inline a function it changes.
 
 <table>
   <thead>
     <tr><th>LLVM text</th><th>Partitions</th></tr>
   </thead>
   <tbody>
-    <tr><td>Up to 1 MiB</td><td>1</td></tr>
-    <tr><td>Over 1 MiB, up to 2 MiB</td><td>4</td></tr>
-    <tr><td>Over 2 MiB, up to 32 MiB</td><td>8</td></tr>
+    <tr><td>Up to 128 KiB</td><td>1</td></tr>
+    <tr><td>Over 128 KiB, up to 32 MiB</td><td>8</td></tr>
     <tr><td>Over 32 MiB, up to 64 MiB</td><td>16</td></tr>
     <tr><td>Over 64 MiB, up to 128 MiB</td><td>32</td></tr>
     <tr><td>Over 128 MiB</td><td>64</td></tr>
@@ -59,6 +58,8 @@ The LLVM helper divides an executable's LLVM IR into partitions by its size. Up 
 </table>
 
 The count depends only on the size of the LLVM text, so a program has the same partitions, and builds the same executable, on every host. In programs with 32 partitions or more, functions from the same source file are placed in the same partition, so that their calls to each other stay inside it; a file larger than 1 MiB of LLVM text or than an average partition is divided into parts by function name. Other functions, and the functions of smaller programs, are placed by their name, and a small internal function goes with the one function that calls it. An edit leaves almost every other function in its partition.
+
+An optimized partition is optimized twice: on its own, and again after the small functions of other partitions it calls are imported for inlining. So in optimized builds, a program whose largest partition would hold more than two thirds of its function text is optimized whole instead, as one partition, and its code is generated in parts on several threads.
 
 These builds are not divided into partitions and compile on one thread: `--emit=asm`, `--emit=obj`, and `--print=native-link-info` output, library builds (`--lib`; `dev` library builds are compiled in pieces, one after another), and `--sanitize` builds, which compile the LLVM IR with the C compiler.
 
@@ -71,26 +72,15 @@ How partitions are compiled depends on `--optimization`:
 
 Reading the LLVM text and dividing it into partitions, and the import step, run on one thread.
 
-### Code generation of one partition
+### Code generation of a program optimized whole
 
-A `release` or `speed` executable of one partition is optimized as one module on one thread. When its LLVM text is larger than 128 KiB, the helper then divides the optimized module for code generation and generates machine code for the parts in parallel, on the same pool. Each part holds a run of consecutive functions with about the same amount of code, so the executable keeps the functions in the same order. The module is optimized before it is divided, so each function's machine code is the same as from one thread, except that a jump to a function that another part also uses takes the longer form. When one function holds most of the code, the first part holds the whole module and the others are empty.
+A `release` or `speed` executable whose largest partition would hold more than two thirds of its function text is optimized as one module on one thread. The helper then divides the optimized module for code generation into as many parts as the program has partitions and generates machine code for the parts in parallel, on the same pool. Each part holds a run of consecutive functions with about the same amount of code, so the executable keeps the functions in the same order. The module is optimized before it is divided, so each function's machine code is the same as from one thread, except that a jump to a function that another part also uses takes the longer form. When one function holds most of the code, the first part holds the whole module and the others are empty.
 
-<table>
-  <thead>
-    <tr><th>LLVM text</th><th>Code generation parts</th></tr>
-  </thead>
-  <tbody>
-    <tr><td>Up to 128 KiB</td><td>1</td></tr>
-    <tr><td>Over 128 KiB, up to 256 KiB</td><td>4</td></tr>
-    <tr><td>Over 256 KiB, up to 1 MiB</td><td>8</td></tr>
-  </tbody>
-</table>
-
-Like partitions, the count depends only on the size of the LLVM text. A `dev` executable of one partition is compiled on one thread.
+An executable of one partition (up to 128 KiB of LLVM text, or 64 KiB in `dev` builds) is compiled on one thread.
 
 ### Rebuilds
 
-With two or more partitions, the helper keeps each partition's summary and object in the build cache (see `SCRIPTC_CACHE_DIR` in the [CLI reference](/docs/cli#environment-variables)). A rebuild after an edit compiles again only the partitions whose functions changed and, in `release` and `speed` builds, the partitions that import a changed function; the others come from the cache. Dividing the program, the import step, and linking run on every build. A cold build, with nothing cached, compiles every partition.
+With two or more partitions, the helper keeps each partition's summary and object in the build cache (see `SCRIPTC_CACHE_DIR` in the [CLI reference](/docs/cli#environment-variables)). A rebuild after an edit compiles again only the partitions whose functions changed and, in `release` and `speed` builds, the partitions that import a changed function; the others come from the cache. Dividing the program, the import step, and linking run on every build. A cold build, with nothing cached, compiles every partition. A program optimized whole is compiled again whole after any edit.
 
 A program of one partition has no partition cache: a rebuild after an edit compiles the whole program again, and a rebuild that leaves the LLVM text unchanged takes the compiled code from the build cache.
 

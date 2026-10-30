@@ -62,7 +62,7 @@ import { emitIntegerClone, emitIntegerDispatcher } from "./integer-clones.js";
 import { beginFunctionLoops, LOOPS } from "./loop-state.js";
 import { runningExtremumUpdates } from "./running-extrema.js";
 import { findIntegerOrNaNLocals } from "./wrapping-sums.js";
-import { UNWIND_PERSONALITY, UNWIND_SLOT } from "./unwind-abi.js";
+import { UNWIND_PERSONALITY, UNWIND_RESUME_DECLARATION, UNWIND_SLOT } from "./unwind-abi.js";
 
 export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   const B = new BlockBuilder();
@@ -148,7 +148,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.integerTempsEnabled = emitter.debug === null && !fn.async && !fn.generator;
   beginFunctionLoops(emitter, fn, numericFn);
   emitter.speculativeLoopsEnabled = LOOPS.of(emitter).countedLoopsEnabled;
-  emitter.loopCopiesEnabled = true;
+  emitter.loopCopiesEnabled = fn.plainLoops !== true;
   emitter.speculativeFunction = fn.name;
   emitter.speculation = null;
   emitter.speculationResume = null;
@@ -681,7 +681,10 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.privateGlobalSlots.clear();
   // Landing pads (emitDirectCall) need the personality.
   const personality = emitter.usesLandingPads ? ` ${UNWIND_PERSONALITY}` : "";
-  if (emitter.usesLandingPads) emitter.declare(`declare i32 @__gcc_personality_v0(...)`);
+  if (emitter.usesLandingPads) {
+    emitter.declare(`declare i32 @__gcc_personality_v0(...)`);
+    emitter.declare(UNWIND_RESUME_DECLARATION);
+  }
   let body = `define internal ${ret} @${symbol}${int32Abi ? INT32_ABI_SUFFIX : ""}(${params.join(", ")}) ${attrs}${personality}${debug} { ; ${fn.name}\n${B.render()}\n}`;
   if (int32Abi) body += "\n" + emitter.emitInt32AbiWrapper(fn, symbol, int32Abi);
   if (emitter.integerClones.members.has(fn.name)) {

@@ -181,3 +181,48 @@ test("a changed function layout misses the executable cache", async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("the entry line precedes only the entry module's top-level code", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "scriptc-partition-entry-"));
+  try {
+    const entry = join(dir, "main.ts");
+    const outPath = join(dir, "main.ll");
+    await writeFile(
+      join(dir, "lib.ts"),
+      `function libOnly(n: number): number { return n * 2; }
+export function libValue(): number { return libOnly(Number(process.argv.length)); }
+console.log("lib");
+`,
+    );
+    await writeFile(
+      entry,
+      `import { libValue } from "./lib";
+function entryOnly(n: number): number { return n + 1; }
+console.log(entryOnly(libValue()));
+`,
+    );
+    const result = await compile(entry, { outDir: dir, outPath, outputKind: "llvm" });
+    expect(result.ok, JSON.stringify(result.diagnostics)).toBe(true);
+    const lines = (await readFile(outPath, "utf8")).split("\n");
+    const marked: string[] = [];
+    let pending = false;
+    for (const line of lines) {
+      if (line === "; scriptc-entry") pending = true;
+      const name = /^define [^@]*@([\w.$]+)\(/.exec(line)?.[1];
+      if (name !== undefined) {
+        if (pending) marked.push(name);
+        pending = false;
+      }
+    }
+    expect(marked).toHaveLength(1);
+    const defs = definitions(lines.join("\n"));
+    const groupOf = (pattern: RegExp) => defs.find((d) => pattern.test(d.name))?.group;
+    expect(marked[0]).toMatch(/init/);
+    expect(groupOf(new RegExp(`^${marked[0]!.replace(/[.$]/g, "\\$&")}$`))).toBe(
+      groupOf(/_entryOnly$/),
+    );
+    expect(groupOf(/_entryOnly$/)).not.toBe(groupOf(/_libOnly$/));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

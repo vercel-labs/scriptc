@@ -21,11 +21,13 @@ Application-shaped workloads for measuring the speed of compiled executables. Ea
 | `json-records` | cpu | `JSON.stringify`, typed `JSON.parse`, Map aggregation |
 | `json-unions` | cpu | `JSON.parse` into discriminated unions: an event log with eight kinds and nested expression trees with nine, evaluated after the cast |
 | `keyed-option-writes` | cpu | class methods whose names are also keys of option records written through element accesses: `enabled[name] = true` over a union of literal names and `totals["count"] = n` |
+| `layered-errors` | cpu | validation errors thrown below a stack of small functions that hold strings and arrays, and caught per entry in a loop: about half of 640,000 entries fail |
 | `line-reader` | cpu | `readline` over a file stream: 'line' events for a 67 MB access log (every 50th line not ASCII), with a status count, a path tally and byte totals |
 | `log-lines` | cpu | 200k immediate `console.log`/`process.stdout.write` lines into the runner's pipe |
 | `log-summary`, `inventory-report` | cpu | the multi-module applications from `benchmarks/builds`, on 300k-line inputs |
 | `number-maps` | cpu | number-keyed Map/Set: a dense-id table, sparse ids in many small maps, get/has/set mixes |
 | `numeric-kernels` | cpu | sieve, hashing, `number[][]` matmul, `Float64Array` |
+| `optional-child-sets` | cpu | syntax-tree walks through class nodes whose getters return `TreeNode \| undefined` children, in a program that also keeps a `Set<TreeNode \| undefined>` |
 | `optional-fields` | cpu | records and class instances with `number \| undefined` and other scalar-union fields |
 | `published-graphs` | cpu | syntax trees with parent links and a symbol table, published with `@scriptc/threads` and then read |
 | `record-untyped-writes` | cpu | typed records written through untyped views: a counter helper taking `unknown` bumps fields of a stats record, and `Object.assign` merges patches into a settings record, with typed reads in between |

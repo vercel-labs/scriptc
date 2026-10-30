@@ -927,6 +927,54 @@ static void local_navigation_asserts(void) {
   scr_sidx_test_reset_cache();
 }
 
+/* A scanner reading a mostly ASCII text front to back (positioned
+ * startsWith and substrings at increasing positions, with a non-ASCII
+ * character every 300 bytes) maps its positions through the ASCII run, so
+ * it walks only across the non-ASCII characters. */
+static void forward_scan_asserts(void) {
+  enum { ASCII = 300, UNITS = ASCII + 1, REPS = 100 };
+  char piece[ASCII + 2];
+  for (size_t i = 0; i < ASCII; i++) piece[i] = (char)('a' + i % 26);
+  memcpy(piece + ASCII, "\xC3\xA9", 2); /* é: one unit */
+  ScrStr *unit = scr_str_new(piece, sizeof piece);
+  ScrStr *s = scr_str_repeat(unit, REPS);
+  scr_str_release(unit);
+  scr_sidx_test_reset_cache();
+  if (scr_str_utf16_len(s) != UNITS * REPS) sidx_fail("forward scan length");
+  ScrStr *needle = scr_str_new("ab", 2);
+  scr_sidx_test_reset_steps();
+  for (size_t at = 0; at + 2 <= UNITS * REPS; at += 5) {
+    size_t offset = at % UNITS;
+    bool expected = offset + 1 < ASCII && offset % 26 == 0;
+    if (scr_str_starts_with_from(s, needle, (double)at) != expected) {
+      sidx_fail("forward startsWith");
+      break;
+    }
+    char want[4];
+    size_t n = 0;
+    for (size_t k = at; k < at + 2; k++) {
+      size_t o = k % UNITS;
+      if (o < ASCII) want[n++] = (char)('a' + o % 26);
+      else {
+        want[n++] = '\xC3';
+        want[n++] = '\xA9';
+      }
+    }
+    ScrStr *part = scr_str_substring(s, (double)at, (double)(at + 2));
+    bool same = part->len == n && memcmp(part->data, want, n) == 0;
+    scr_str_release(part);
+    if (!same) {
+      sidx_fail("forward substring");
+      break;
+    }
+  }
+  if (scr_sidx_test_walk_steps() > REPS * 16)
+    sidx_fail("forward reads walked between non-ASCII characters");
+  scr_str_release(needle);
+  scr_str_release(s);
+  scr_sidx_test_reset_cache();
+}
+
 /* An entry borrowed for a receiver must remain its entry when a second
  * string needs indexing. Fill the cursor tier so the needle would evict
  * precisely the receiver under a receiver-first lookup order. */
@@ -1244,6 +1292,7 @@ int main(int argc, char **argv) {
   index_activity_asserts();
   sparse_slice_churn_asserts();
   local_navigation_asserts();
+  forward_scan_asserts();
   positioned_suffix_eviction_asserts();
 #endif
 

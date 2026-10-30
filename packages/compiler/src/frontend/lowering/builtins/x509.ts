@@ -62,6 +62,22 @@ export function refuseX509DynValues(lowerer: Lowerer, functions: readonly IrFunc
   )
     return;
   const seen = new Map<string, boolean>();
+  // A type is recursive when it reaches itself without naming a shape or a
+  // union: `type Rec = string | Rec[]` passes through the array, set, map
+  // or promise case below. Those kinds have no id to memoize by, so a type
+  // met again while it is still being visited answers false: what a cycle
+  // adds to `holds` (a certificate exists somewhere in the type) is
+  // reachability, and nothing outside the cycle makes it reachable.
+  const visiting = new Set<IrType>();
+  const descend = (t: IrType, visit: () => boolean): boolean => {
+    if (visiting.has(t)) return false;
+    visiting.add(t);
+    try {
+      return visit();
+    } finally {
+      visiting.delete(t);
+    }
+  };
   const holds = (t: IrType): boolean => {
     switch (t.kind) {
       case "record": {
@@ -79,13 +95,24 @@ export function refuseX509DynValues(lowerer: Lowerer, functions: readonly IrFunc
       }
       case "array":
       case "set":
-        return holds(t.elem);
+        return descend(t, () => holds(t.elem));
       case "map":
-        return holds(t.key) || holds(t.value);
+        return descend(t, () => holds(t.key) || holds(t.value));
       case "promise":
-        return holds(t.inner);
-      case "union":
-        return lowerer.unions.get(t.unionId)?.arms.some(holds) === true;
+        return descend(t, () => holds(t.inner));
+      case "union": {
+        // Unions have an id, so a cycle that names one is answered from the
+        // memo above; the identity guard covers a cycle that does not.
+        const key = `union:${t.unionId}`;
+        const known = seen.get(key);
+        if (known !== undefined) return known;
+        return descend(t, () => {
+          seen.set(key, false);
+          const result = lowerer.unions.get(t.unionId)?.arms.some(holds) === true;
+          seen.set(key, result);
+          return result;
+        });
+      }
       default:
         return false;
     }

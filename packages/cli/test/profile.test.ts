@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
-import { mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -85,6 +85,15 @@ test.skipIf(process.platform !== "linux")(
       await scriptc(["build", entry, "--profile-use", sparse, "-o", optimized], env);
       expect((await execFileAsync(optimized, ["1000"])).stdout).toBe("total 167499\n");
 
+      // SCRIPTC_RECORD_PROFILE_BLOCKS writes the block counts of the
+      // functions the profile annotates.
+      const recorded = join(dir, "recorded.blocks");
+      await scriptc(["build", entry, "--profile-use", merged, "-o", optimized], {
+        ...env,
+        SCRIPTC_RECORD_PROFILE_BLOCKS: recorded,
+      });
+      expect((await readFile(recorded, "utf8")).split("\n")[0]).toBe("scriptc-profile-blocks 1");
+
       // A profile from an older version of the program still builds it. The
       // edited function no longer matches its counts, and the build warns.
       await writeFile(entry, PROGRAM + 'console.log("edited");\n');
@@ -94,6 +103,18 @@ test.skipIf(process.platform !== "linux")(
       expect(stale.stderr).toMatch(
         /\nscriptc: warning: [1-9]\d* of the \d+ functions .* describes \([\d.]+%\) changed since it was collected and are optimized without their counts; collect the profile again\n$/,
       );
+      // The block counts beside the profile annotate the edited function.
+      await copyFile(recorded, join(dir, "app.blocks"));
+      const recovered = await scriptc(
+        ["build", entry, "--profile-use", merged, "-o", optimized],
+        env,
+      );
+      expect((await execFileAsync(optimized, ["1000"])).stdout).toBe("total 167499\nedited\n");
+      expect(recovered.stderr).toMatch(/ [1-9]\d* mismatched, /);
+      expect(recovered.stderr).toMatch(
+        / [1-9]\d* functions? without profile counts annotated from \S+app\.blocks\n/,
+      );
+      expect(recovered.stderr).not.toContain("warning");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

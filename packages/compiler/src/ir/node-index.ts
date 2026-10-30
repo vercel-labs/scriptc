@@ -196,6 +196,13 @@ export class IrNodeIndex {
     return scan;
   }
 
+  /** The number of nodes recorded for `fn`, or undefined when `fn` is not
+   * recorded. */
+  nodeCount(fn: IrFunction): number | undefined {
+    const f = this.functionIndex.get(fn);
+    return f === undefined ? undefined : this.starts[f + 1]! - this.starts[f]!;
+  }
+
   /** Calls `note` with each recorded node of `fn` whose kind `scan` names,
    * in walk order, until it answers false. False (nothing called) when
    * `fn` is not recorded. */

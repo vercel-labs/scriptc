@@ -135,3 +135,8 @@ export async function call(specifier, name, ...args) {
     throw copyThrown(error);
   }
 }
+
+/** requireModule(specifier): the module's exports, by reference. */
+export function requireModule(specifier) {
+  return createRequire(callerFile(requireModule))(specifier);
+}

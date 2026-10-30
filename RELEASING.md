@@ -10,7 +10,8 @@ To prepare a release:
 4. Wrap the new entry in `<!-- release:start -->` and `<!-- release:end -->` markers; this marked block is also the GitHub release body
 5. Remove the `<!-- release:start -->` and `<!-- release:end -->` markers from the previous release entry; only the latest release should have markers
 6. With Zig on `PATH`, run `SCRIPTC_CROSS=1 pnpm exec vitest run tests/harness/library-cross.test.ts` and require the cross-target library conformance lane to pass
-7. Commit to `main`
+7. Refresh the runtime profile on a quiet Linux x64 host: `node scripts/refresh-runtime-profile.mjs --tsc-ts <tsc-ts checkout> --project <TypeORM>:tsconfig.bench.json --project <T3 server>:tsconfig.bench.json --project <VS Code>/src:tsconfig.bench.json`, and include the new `packages/runtime-pack-common/profiles/linux-x64-gnu.profdata.gz` (see the runtime profile paragraph below)
+8. Commit to `main`
 
 CI (`.github/workflows/release.yml`) compares the version in `packages/cli/package.json` to what `scriptc` has on npm. If it differs, it builds platform packages on matching macOS, Linux, and Windows runners, verifies the version spine, and publishes the runtime, helper, compiler, and CLI packages in dependency order. After the publish succeeds, a separate job creates the git tag `v<version>` and the GitHub release with the marked changelog entry as its body, and attaches `surface-manifest.json` — the machine-readable listing of the surface the static tier compiles at that version (stable per-entry ids, so two releases diff mechanically; see `packages/compiler/src/coverage/surface-manifest.ts` for the schema). The job regenerates the manifest from the tree and fails on any byte difference from the committed file before attaching, so the asset is always the manifest of the code being released. The same file ships inside the `@scriptc/compiler` package as `@scriptc/compiler/surface-manifest.json`.
 
@@ -20,8 +21,26 @@ Release builds of the native CLI optimize the compiler with a profile collected 
 
 Builds of the native compiler also order its functions by the committed layout `packages/compiler/native/cli.layout.gz`: the functions that `--version` and rebuilds of unchanged programs run come first, then the ones other builds run, ordered by the share of the layout's training builds that run each, so a run maps fewer pages of the executable. Functions the layout does not list keep their usual order. Function names of closures and generated helpers change with nearby edits, so the `cli-profile` job also collects a layout on the release commit (`scripts/refresh-cli-layout.mjs`), and the CLI builds use it (`SCRIPTC_NATIVE_LAYOUT`). Instrumented builds use the same layout as optimized builds, because a function laid out in a different partition than in the instrumented build no longer matches its profile record. The job therefore collects the layout first and then builds the instrumented compiler for the profile with that layout. Refresh the committed layout the same way, with `node scripts/refresh-cli-layout.mjs`, before the profile, and commit each on its own.
 
+The Linux x64 runtime pack optimizes its speed-flavor units with the committed runtime profile `packages/runtime-pack-common/profiles/linux-x64-gnu.profdata.gz`. Runtime functions whose code changed since the profile was collected are optimized as without a profile. The pack manifest records how the profile matched (`flavors.speed.runtime_profile`): the matched and changed functions, and the share of the profile's counts on changed functions. `packages/runtime-pack-common/test/runtime-profile.test.ts` fails when changed functions hold more than 5% of the counts, and names the functions with the most counts. Refresh the profile in each release commit (step 7), and between releases when that test fails.
+
 Publishing uses npm trusted publishing (OIDC) — there is no npm token secret.
 Each published package must have a GitHub Actions trusted publisher for
 `release.yml` and the `Release` environment. A missing configuration fails
 before upload. Re-runs skip package versions already present on npm, so a
 partially published release can be resumed safely.
+
+## libnode packs
+
+The `@scriptc/libnode-<platform>` packs (linux-x64-gnu, linux-arm64-gnu, darwin-arm64, darwin-x64) carry the Node.js shared library that programs with Node islands load in process, plus the scriptc bridge compiled against it. They version in lockstep with the other platform packages (`sync-versions.mjs` stamps them); the Node release they contain is pinned separately in `packages/libnode-common/libnode.json`, which must match `.node-version` and `internal/compatibility/node-v24.json`. Each pack's `manifest.json` records the Node version, `NODE_MODULE_VERSION`, the bridge ABI and the size and SHA-256 of both libraries.
+
+A Node `--shared` build takes about half an hour on 8 cores, so packs never build in `pnpm -r build`, the test suites or the release job. `.github/workflows/libnode-packs.yml` builds them on matching hosts when the pin, the bridge (`packages/libnode-common/bridge/`, `packages/runtime/src/scr_node_bridge.h`) or the pack packages change, or on manual dispatch. Linux packs build in the `manylinux_2_28` images (glibc 2.28, gcc-toolset-14) on native x64 and arm64 runners; Node disables its startup snapshot when cross-compiling, so arm64 is never cross-built. Each platform's libnode build is cached by Node release, configure flags, platform and toolchain; a bridge-only change restores libnode from the cache and rebuilds only the bridge. Every pack is smoke-tested by `packages/libnode-common/smoke/smoke.c`, which loads it the way the runtime does, and uploaded as the `libnode-<platform>` artifact, with zstd copies of both libraries as `libnode-<platform>-zst`. The Linux x64 and macOS test lanes of `ci.yml` restore the cached build for their platform through `.github/actions/libnode`, assemble the pack (`build.mjs --from-cache`, which never builds Node) and set `SCRIPTC_LIBNODE`, so the Node island tests run; without a cached build they fall back to the pinned development pack (`packages/libnode-common/dev-pack.json`). `packages/libnode-common/build-pack.mjs` assembles a pack from any matching libnode and headers, the bridge-only rebuild path.
+
+To build one pack by hand on its own platform (it needs Python 3.9+, Ninja, a C++20 compiler and zstd; on Linux, build in a manylinux_2_28 container for a distributable pack):
+
+```bash
+pnpm --filter @scriptc/libnode-linux-x64-gnu build:native
+node packages/libnode-common/scripts/verify.mjs packages/libnode-linux-x64-gnu
+node packages/libnode-common/scripts/smoke.mjs
+```
+
+The packs are `private` until the in-process Node island runtime ships. Publishing them then means removing `private`, configuring their npm trusted publishers, and having the release job download the `libnode-<platform>` artifacts of the workflow run for the release commit (or call the workflow, which restores every platform from its cache) and publish them with the other platform packages.

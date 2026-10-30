@@ -12,7 +12,7 @@ const g = globalThis;
 const nan = NaN; // lowers now — a non-finite numeric literal like Infinity
 const s5 = String(5);
 const n5 = Number.NaN; // lowers now, with the other Number constants
-const isArr = Array.isArray([1]);
+const isArr = Array.isArray([1]); // lowers now: a computed argument folds after it is evaluated
 const merged = Object.assign({}, { a: 1 }); // the empty-target literal-source shape lowers now (it IS the source literal)
 const aliasedAssign = Object.assign(merged, { b: 2 }); // aliased targets stay fenced (real mutation of a live object)
 const refl = Reflect.has({ a: 1 }, "a");
@@ -38,7 +38,7 @@ const arrAt = [1, 2].at(0);
 const norm = "abc".normalize();
 const limited = "a,b,c".split(Math.random() ? "," : /,/, 2); // union separators stay fenced; limits lower
 const fixed = (1.5).toFixed(); // digit-free toFixed lowers now (the static ties-up integer)
-const localized = (1234.5).toLocaleString();
+const localized = (1234.5).toLocaleString("de-DE");
 // Unlowered call FORMS of lowered members. (push is fully variadic now —
 // no fenced form remains to pin.)
 const nums = [1, 2, 3];

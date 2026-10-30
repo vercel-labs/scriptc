@@ -77,16 +77,62 @@ test("an equal promise arm stays a plain copy", async () => {
   expect(promisePayloadConversions(retag)).toBe(0);
 });
 
-test("two destination promise arms keep the conversion fence", async () => {
+test("two destination promise arms merge into one widened payload", async () => {
+  // `Promise<unknown> | Promise<string>` is `Promise<unknown>`: the
+  // checked-dynamic payload absorbs the faithful one, so the destination is
+  // the same one-promise-arm union the single-arm case has.
   const result = await compileSource(`
     function settle(flag: boolean): Promise<void> | undefined {
       return flag ? Promise.resolve() : undefined;
     }
-    const ambiguous: Promise<unknown> | Promise<string> | undefined = settle(true);
-    console.log(ambiguous === undefined);
+    const merged: Promise<unknown> | Promise<string> | undefined = settle(true);
+    console.log(merged === undefined);
     export {};
     `);
-  expect(result.ok).toBe(false);
-  if (result.ok) return;
-  expect(result.diagnostics.map((d) => d.code)).toContain("SC2003");
+  if (!result.ok)
+    throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+  const retag = result.module.functions.filter((fn) => fn.name.startsWith("%union.retag."));
+  expect(retag).toHaveLength(1);
+  expect(promisePayloadConversions(retag)).toBe(1);
+});
+
+test("several promise arms settle to one promise of the payload union", async () => {
+  const result = await compileSource(`
+    interface Decision { kind: "stop"; note: string }
+    interface Settled { reason: string }
+    function pick(n: number): void | Promise<Settled> | Promise<void> | Decision {
+      if (n === 0) return;
+      if (n === 1) return Promise.resolve({ reason: "one" });
+      return { kind: "stop", note: "x" };
+    }
+    async function main(): Promise<void> {
+      const hit = pick(1);
+      if (hit instanceof Promise) console.log("then", await hit.then((v) => v === undefined));
+      const decided = await pick(2);
+      console.log("decision", decided === undefined ? "?" : "note" in decided ? decided.note : "?");
+    }
+    void main();
+    export {};
+    `);
+  if (!result.ok)
+    throw new Error(result.diagnostics.map((d) => `${d.code}: ${d.message}`).join("\n"));
+  const unions = result.module.unions ?? [];
+  // The IR invariant the merge establishes: no union holds two promise arms
+  // (the promise arm's tag IS the `instanceof Promise` test).
+  for (const union of unions)
+    expect(union.arms.filter((arm) => arm.kind === "promise").length).toBeLessThan(2);
+  // The declared union is the promise beside the undefined unit.
+  const armed = unions.filter((union) => union.arms.some((arm) => arm.kind === "promise"));
+  expect(armed.length).toBeGreaterThan(0);
+  const promiseArm = armed[0]!.arms.find((arm) => arm.kind === "promise");
+  expect(promiseArm?.kind).toBe("promise");
+  // `void | Promise<Settled> | Promise<void>` merges to a payload UNION:
+  // the settled record beside the undefined unit.
+  if (promiseArm?.kind === "promise") {
+    expect(promiseArm.inner.kind).toBe("union");
+    if (promiseArm.inner.kind === "union") {
+      const payload = unions.find((union) => union.id === promiseArm.inner.unionId);
+      expect(payload?.arms.map((arm) => arm.kind).sort()).toEqual(["record", "undefinedT"]);
+    }
+  }
 });

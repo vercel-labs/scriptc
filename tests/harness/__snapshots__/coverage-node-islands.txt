@@ -2,7 +2,7 @@ scriptc coverage tests/coverage-fixtures/node-islands/main.ts
 
   statements analyzed   29
   compile statically    27  (93%)
-    in dynamic tier     17  (operate on values typed only at runtime; --explain-dynamic lists them)
+    in dynamic tier     13  (operate on values typed only at runtime; --explain-dynamic lists them)
 
   npm package compilation:
     ni-bundled  refused (its shipped JS carries build-transform markers (bundled/transpiled dist))

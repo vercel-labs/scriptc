@@ -11,6 +11,9 @@ import type { NodeIslandOptions } from "./node-islands/policy.js";
 export type CompileOutputKind = "ir" | "llvm" | "asm" | "obj" | "exe";
 
 export interface CompileBaseOptions {
+  /** The Node island policy's command-line half (`--node-islands`,
+   * `--node-island`, `--native`): which npm packages run in Node islands. */
+  nodeIslands?: NodeIslandOptions;
   /** Primary artifact path. The CLI supplies the output-kind default. */
   outPath: string;
   /** Where generated intermediates and compatibility side artifacts land. */
@@ -54,6 +57,18 @@ export interface CompileBaseOptions {
    * at startup when the system allows them. The moved code stays resident.
    * Executables only; no effect on other platforms. */
   largePages?: boolean;
+  /** Internal: `false` links a Linux executable with 4 KiB segment alignment
+   * even when its program code is large enough for text on huge pages
+   * (backend/huge-text.ts). The scriptc CLI is linked this way
+   * (scripts/build-native-cli.mts): most of its runs are short, and a short
+   * run maps every 2 MiB text window it touches whole. */
+  hugeText?: false;
+  /** How often the program throws (`--exceptions`). `rare` puts recursive
+   * functions and those near a `throw` on the unwinding exception ABI too:
+   * calls to them need no pending-flag test, and an exception that crosses
+   * them costs a native unwind. Linux executables only; `common` (the
+   * default) and other targets keep the default rules. */
+  exceptions?: "common" | "rare";
   /** The x86-64 microarchitecture level the executable's code may require
    * (`x86-64-v2` to `x86-64-v4`). The program's functions are compiled for
    * that level, and the executable then runs only on CPUs that support it.
@@ -83,7 +98,8 @@ export interface CompileBaseOptions {
   /** Eligible packages compile automatically. Explicit names override automatic selection heuristics. */
   npmStatic?: readonly string[] | "auto";
   /** Shape inference's typed overlay for opted-in packages' JavaScript.
-   * False disables it (`--no-shape-overlay`); a package opts out with
+   * True enables it, false disables it (`--no-shape-overlay`); unset
+   * follows SCRIPTC_SHAPE_OVERLAY. A package opts out with
    * `"scriptc": { "packages": { "<name>": { "shapes": false } } }`. */
   shapeOverlay?: boolean;
   /** Outbound native FFI manifest. Its signature-only TypeScript bindings
@@ -149,6 +165,10 @@ export type CompileFailure = {
 export interface CompileWarnings {
   warnings?: ScrDiagnostic[];
   sourceTexts?: Map<string, string>;
+  /** The Node islands the build ran: the npm packages and the program
+   * modules (absolute file paths). Reported again on an executable cache
+   * hit, so a runner can tell an island result from a native one. */
+  islands?: { packages: string[]; modules: string[] };
 }
 
 export type CompileSourceResult =

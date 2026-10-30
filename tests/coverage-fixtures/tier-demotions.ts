@@ -17,9 +17,9 @@ function readName(text: string): string {
   return String(data.name);
 }
 
-// An operation without a static lowering (the host's default locale), on a parameter.
+// An operation without a static lowering (ICU locale negotiation), on a parameter.
 function precise(n: number): string {
-  return n.toLocaleString();
+  return n.toLocaleString("de-DE");
 }
 
 console.log(readName('{"name":"a"}'), precise(1.5), new Point(1, 2).x);

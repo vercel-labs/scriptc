@@ -173,6 +173,16 @@ export class FrontendInputTracker {
     }
   }
 
+  /** Raw file names whose source text this tracker recorded. */
+  private readonly notedTexts = new Set<string>();
+
+  /** Records a raw read of a source file's text, once per file name. */
+  noteText(fileName: string): void {
+    if (this.notedTexts.has(fileName)) return;
+    this.notedTexts.add(fileName);
+    this.record({ op: "text", path: resolve(fileName) });
+  }
+
   record(probe: FrontendInputProbe): void {
     const key = `${probe.op}\0${probe.path}`;
     if (probe.op === "text" && this.probes.has(key)) return;
@@ -238,7 +248,7 @@ function record(probe: FrontendInputProbe): void {
 // callbacks, line numbers) changes with edits that keep the tokens.
 observeSourceText((fileName) => {
   const tracker = synchronousTracker ?? activeTracker.getStore();
-  if (tracker !== undefined) tracker.record({ op: "text", path: resolve(fileName) });
+  if (tracker !== undefined) tracker.noteText(fileName);
 });
 
 /** Mark the active frontend as unsafe to persist because an exact host query

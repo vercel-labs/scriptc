@@ -42,7 +42,7 @@ import {
   cycleAppendHelper,
   inlineBufferingSupported,
 } from "./alloc.js";
-import type { BlockBuilder } from "./blocks.js";
+import { LOOP_SITE, type BlockBuilder } from "./blocks.js";
 import { SCR_ARR_FIELD, llvmCommentText } from "./common.js";
 import {
   NULLABLE_NULL,
@@ -73,7 +73,7 @@ import {
   disposeFieldLines,
   plainRefType,
 } from "./arenas.js";
-import { recordViewTestLines, type RecordViews } from "./record-views.js";
+import { PARTIAL_VIEW_ABSENT, recordViewTestLines, type RecordViews } from "./record-views.js";
 import { recordMayKeepSource } from "./record-sources.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
 
@@ -109,6 +109,9 @@ export interface ShapeHost {
   /** Byte offset from an object pointer back to ScrCycHdr.buf. */
   readonly cycleBufOffset: number;
   declare(decl: string): void;
+  /** The module constant for a string (LlEmitter.cstr), for a trap message
+   * an emitted accessor passes to the runtime. */
+  cstr(text: string): string;
   /** Inline the small-object allocator's fast paths (llvm/alloc.ts). */
   readonly inlineAlloc?: boolean;
   /** Record and class fields that store a scalar union's tag and bits
@@ -805,7 +808,9 @@ function inlineRcName(family: string, op: RcOp): string {
  * grows faster than the number of inlined releases in one function, and
  * generated dispatch tables and module initializers of large packages have
  * thousands of release sites; a body with more calls scr_dyn_release, which
- * the inline helper mirrors, at every site. */
+ * the inline helper mirrors, at every site except up to this many sites
+ * inside its loops (a script's top-level loop runs in its module
+ * initializer). */
 export const INLINE_DYN_RELEASES_PER_FUNCTION = 256;
 
 /** Inlined string releases one function body keeps in `release` emission,
@@ -878,6 +883,14 @@ export function limitInlineReleases(
     for (let f = from; f <= to; f++) if (anyOver.has(f)) return true;
     return false;
   };
+  // A body over its dyn limit keeps inline the releases emitted inside
+  // loops (LOOP_SITE), up to the limit, and calls the runtime at the rest.
+  const dynFamily = families.indexOf("dyn");
+  const keptInLoops = new Map<number, number>();
+  const inLoop = (part: string, at: number): boolean => {
+    const end = part.indexOf("\n", at);
+    return (end < 0 ? part.slice(at) : part.slice(at, end)).endsWith(LOOP_SITE);
+  };
   return parts.map((part, index) => {
     const from = spans[2 * index]!;
     if (!touches(from, spans[2 * index + 1]!)) return part;
@@ -885,7 +898,15 @@ export function limitInlineReleases(
     sites(
       part,
       (at, family, f) => {
-        if (over[family]!.has(f)) cuts.push({ at, family });
+        if (!over[family]!.has(f)) return;
+        if (family === dynFamily && inLoop(part, at)) {
+          const kept = keptInLoops.get(f) ?? 0;
+          if (kept < limits[family]!) {
+            keptInLoops.set(f, kept + 1);
+            return;
+          }
+        }
+        cuts.push({ at, family });
       },
       from,
     );
@@ -1286,6 +1307,7 @@ function arrUsesRef(host: ShapeHost, elem: IrType): boolean {
     elem.kind === "child" || // spawned child handles: scr_child_* adapters, no trace
     elem.kind === "netServer" ||
     elem.kind === "stats" || // fs.Stats snapshots: scr_stats_* adapters, no trace
+    elem.kind === "bigintStats" || // the same snapshot handle, BigIntStats reads
     elem.kind === "dyn" || // native collection seeds/drains: traced REF
     elem.kind === "regex" || // RegExp values: scr_regex_* adapters, no trace (no refs inside)
     elem.kind === "date" || // Date objects: scr_date_* adapters, no trace (no refs inside)
@@ -2387,8 +2409,20 @@ export function emitRecordShapes(
           `  %shp = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${SHAPE_WORD_INDEX}`,
           `  store i32 ${shapeNumber}, ptr %shp ; shape number`,
         );
+      // A record literal covers every field of its shape (ir.ts recordLit),
+      // so without dispose entries, which read the fields at the drop, no
+      // field is read before the literal stores it.
       defs.push(
-        ...arenaNewLines(host, newSym, sizeOf, traced ? cycType : null, dispose, init, "%o"),
+        ...arenaNewLines(
+          host,
+          newSym,
+          sizeOf,
+          traced ? cycType : null,
+          dispose,
+          init,
+          "%o",
+          dispose === null ? "header" : "object",
+        ),
       );
       if (dispose !== null)
         defs.push(
@@ -2420,15 +2454,29 @@ export function emitRecordShapes(
         const inline = host.inlineUnions.record(field.type);
         const fieldTy = llFieldType(field.type, inline);
         if (host.recordViews?.targets.has(shape.id) === true) {
-          // A view's fields live in the viewed record (record-views.ts).
+          // A view's fields live in the viewed record (record-views.ts); a
+          // shape a partial view may present answers NULL for a field the
+          // viewed record lacks, so the copy stops with the program's own
+          // message (a source-level read threw first).
+          const partial = host.recordViews.partialTargets.has(shape.id);
           host.declare(`declare ptr @scr_record_view_slot(ptr, ${host.sizeType})`);
+          const fromView = partial
+            ? [
+                `  %sn${i} = icmp eq ptr %sw${i}, null`,
+                `  br i1 %sn${i}, label %sv${i}.absent, label %sv${i}.join`,
+                `sv${i}.absent:`,
+                `  call void @scr_trap(ptr ${host.cstr(PARTIAL_VIEW_ABSENT)})`,
+                `  unreachable`,
+              ]
+            : [`  br label %sv${i}.join`];
+          if (partial) host.declare(`declare void @scr_trap(ptr)`);
           clone.push(
             `  %so${i} = getelementptr inbounds %${struct}, ptr %src, i64 0, i32 ${index}`,
             ...recordViewTestLines(host.sizeType, "%src", `%sr${i}v`),
             `  br i1 %sr${i}v, label %sv${i}.view, label %sv${i}.join`,
             `sv${i}.view:`,
             `  %sw${i} = call ptr @scr_record_view_slot(ptr %src, ${host.sizeType} ${i})`,
-            `  br label %sv${i}.join`,
+            ...fromView,
             `sv${i}.join:`,
             `  %sp${i} = phi ptr [ %so${i}, %${i === 0 ? "entry" : `sv${i - 1}.join`} ], [ %sw${i}, %sv${i}.view ]`,
             `  %sv${i} = load ${fieldTy}, ptr %sp${i}`,

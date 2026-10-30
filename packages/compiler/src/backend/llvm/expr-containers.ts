@@ -1,5 +1,6 @@
 import { dynDesc } from "../../ir/analysis.js";
 /* Focused LLVM expression emission extracted from emitter.ts. */
+import { emitInlineArrayLength, inlineFieldTail } from "./inline-arrays.js";
 import { arraySearchHelperName, arraySearchKind } from "./array-search.js";
 import { InternalCompilerError } from "../../errors.js";
 import { isStableReceiverOperand, undefinedArmTag } from "../../ir/analysis.js";
@@ -650,6 +651,14 @@ export function emitArrIntrinsic(
   into?: { box: string; tag: string; payload: string },
 ): LlValue {
   const B = host.B;
+  // The length of an inline array field, read from the instance.
+  if (e.method === "length" && e.receiver.kind === "fieldGet") {
+    const tail = inlineFieldTail(host, e.receiver.className, e.receiver.field);
+    if (tail !== undefined) {
+      const obj = host.emitStableReceiver(e.receiver.obj, e.args);
+      return emitInlineArrayLength(host, obj.name, e.receiver.className, tail, e.type);
+    }
+  }
   // Every array intrinsic borrows its receiver, including mutation and
   // retained-identity results. Scalar reads also admit the narrower proof
   // that a mutable binding survives the remaining operand evaluations.
@@ -1318,7 +1327,7 @@ function collectionOps(host: LlvmEmitterContext, key: IrType, value: IrType): st
       : { retain: "null", release: "null", trace: "null" };
   const arms = key.kind === "union" ? host.unionsById.get(key.unionId)?.arms : undefined;
   let unionKeys = "null";
-  if (mapKeyKindNum(key, arms) === 7) {
+  if (mapKeyKindNum(key, arms) === 7 && host.nullableUnions.of(key) === null) {
     if (!arms) throw new InternalCompilerError("llvm emitter bug: collection key union missing");
     unionKeys = host.cstr(arms.map((arm) => String.fromCharCode(mapKeyKindNum(arm))).join(""));
   }
@@ -1337,9 +1346,9 @@ function collectionOps(host: LlvmEmitterContext, key: IrType, value: IrType): st
 function newCollection(host: LlvmEmitterContext, key: IrType, value: IrType): string {
   const B = host.B;
   const arms = key.kind === "union" ? host.unionsById.get(key.unionId)?.arms : undefined;
-  // SCR_MAP_KEY_REF (2): shape-union keys are record pointers.
-  const kind =
-    key.kind === "union" && host.nullableUnions.shapes(key.unionId) ? 2 : mapKeyKindNum(key, arms);
+  // SCR_MAP_KEY_REF (2): a union key with a pointer representation is that
+  // pointer (boxedUnionIds).
+  const kind = host.nullableUnions.of(key) !== null ? 2 : mapKeyKindNum(key, arms);
   const m = B.tmp();
   host.declare(`declare ptr @scr_map_new(i32, i32, ptr)`);
   // SCR_MAP_VAL_CREF (3): string keys and compact values (compactMapValues).

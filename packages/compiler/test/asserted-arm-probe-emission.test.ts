@@ -94,3 +94,40 @@ test("a real use of the asserted member keeps the checked extraction", async () 
   // that is not Streams throws at the read (the trap is the nodeThrow).
   expect(bodies(compiled.module!, "call")).toMatch(/union\.narrow|nodeThrow/);
 });
+
+test("the bracket spelling of the probe reads per arm too", async () => {
+  const compiled = await compileToIr([
+    "function detect<K extends string>(input: Options<K>): boolean {",
+    '  return typeof (input.api as Streams)["stream"] === "function";',
+    "}",
+    "function absent<K extends string>(input: Options<K>): boolean {",
+    '  return (input.api as Streams)["fetch"] !== undefined;',
+    "}",
+    'console.log(detect({ name: "one", api: { stream: () => "one" } }));',
+    'console.log(absent({ name: "one", api: { stream: () => "one" } }));',
+  ]);
+  expect(compiled.ok, compiled.diagnostics).toBe(true);
+  for (const fn of ["detect", "absent"]) {
+    const body = bodies(compiled.module!, fn);
+    expect(body).toContain('"unionIsTag"');
+    expect(body).not.toContain('"nodeThrow"');
+  }
+});
+
+test("a setter-only or getter-only arm answers its own read", async () => {
+  const compiled = await compileToIr([
+    "const setterArm = { tag: 's' as const, set stream(_v: () => string) {} };",
+    "const dataArm = { tag: 'd' as const, stream: () => 'd' };",
+    "function detect(which: 's' | 'd'): boolean {",
+    "  const stored = which === 's' ? setterArm : dataArm;",
+    "  return typeof (stored as typeof dataArm).stream === 'function';",
+    "}",
+    'console.log(detect("s"), detect("d"));',
+  ]);
+  expect(compiled.ok, compiled.diagnostics).toBe(true);
+  // The setter-only arm answers undefined; the assertion's checked
+  // extraction (which would trap on it) must not run for the probe.
+  const detect = bodies(compiled.module!, "detect");
+  expect(detect).toContain('"unionIsTag"');
+  expect(detect).not.toContain('"nodeThrow"');
+});

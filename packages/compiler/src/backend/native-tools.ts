@@ -49,9 +49,6 @@ export function emitNativeObject(options: {
   outputKind?: NativeCodegenOutputKind;
   /** Program partitions, written to nativePartitionPaths(outputPath). */
   partitions?: number;
-  /** With several partitions: optimize the module whole and divide only its
-   * code generation among them. */
-  splitCodegen?: boolean;
   /** Private directory where the helper reuses partition artifacts. */
   partitionCache?: string;
   /** Profile-guided optimization: instrumentation or an indexed profile. */
@@ -77,11 +74,9 @@ export function emitNativeObject(options: {
     "json",
     "--source-path",
     options.sourcePath,
-    ...(options.splitCodegen === true && outputs.length > 1
-      ? ["--split", "codegen"]
-      : options.partitionCache === undefined || outputs.length < 2
-        ? []
-        : ["--cache-dir", options.partitionCache]),
+    ...(options.partitionCache === undefined || outputs.length < 2
+      ? []
+      : ["--cache-dir", options.partitionCache]),
     ...nativeProfileHelperArgs(options.profile),
   ]);
   for (const output of outputs) requireNativeArtifact(output);

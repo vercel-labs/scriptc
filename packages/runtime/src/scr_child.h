@@ -176,6 +176,12 @@ void scr_child_release_v(void *p);
 void scr_child_on_exit(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildExitFn fn);
 void scr_child_on_close(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildExitFn fn);
 void scr_child_on_error(ScrChild *c, ScrClosure *cb /*moves*/, ScrChildErrFn fn);
+/* remove-by-identity (child.off/removeListener): the listener is
+ * borrowed, compared by pointer, never retained. */
+void scr_child_off_spawn(ScrChild *c, ScrClosure *cb);
+void scr_child_off_exit(ScrChild *c, ScrClosure *cb);
+void scr_child_off_close(ScrChild *c, ScrClosure *cb);
+void scr_child_off_error(ScrChild *c, ScrClosure *cb);
 bool scr_child_ipc_present(ScrChild *c);
 bool scr_child_ipc_connected(ScrChild *c);
 bool scr_child_ipc_send(ScrChild *c, ScrStr *json);
@@ -251,6 +257,8 @@ bool scr_child_has_pid(ScrChild *c);
 double scr_child_pid(ScrChild *c);
 bool scr_child_has_exit_code(ScrChild *c);
 double scr_child_exit_code(ScrChild *c);
+bool scr_child_has_signal_code(ScrChild *c);
+ScrStr *scr_child_signal_code(ScrChild *c); /* returns +1 */
 bool scr_child_killed(ScrChild *c);
 bool scr_child_kill(ScrChild *c, const ScrStr *signal);
 bool scr_child_kill_num(ScrChild *c, double signum);

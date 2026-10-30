@@ -100,6 +100,7 @@ export function emitExpr(host: LlvmEmitterContext, e: IrExpr): LlValue {
     case "caughtToDyn":
       return host.emitDynamicExpr(e);
     case "intrinsic":
+      if (e.name.startsWith("promise.")) host.usesPromises = true;
       return host.emitIntrinsicExpr(e);
     case "jsonStringify":
     case "dynCheck":
@@ -108,8 +109,10 @@ export function emitExpr(host: LlvmEmitterContext, e: IrExpr): LlValue {
     case "genResume":
     case "awaitExpr":
     case "awaitUnionExpr":
+      return host.emitAsyncExpr(e);
     case "newPromise":
     case "promiseWithResolvers":
+      host.usesPromises = true;
       return host.emitAsyncExpr(e);
     case "libCall":
       return host.emitLibCall(e);

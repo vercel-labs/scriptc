@@ -36,6 +36,7 @@ declare function compilerNativeCollectCycles(): void;
 declare function compilerNativeFork(): number;
 declare function compilerNativeExit(code: number): void;
 declare function compilerNativeWait(pid: number): number;
+declare function compilerNativeExited(): number;
 declare function compilerNativeLockOpen(path: string): boolean;
 declare function compilerNativeLock(): void;
 declare function compilerNativeUnlock(): void;
@@ -73,6 +74,7 @@ async function main(): Promise<number> {
       fork: () => compilerNativeFork(),
       exit: (code) => compilerNativeExit(code),
       wait: (pid) => compilerNativeWait(pid),
+      exited: () => compilerNativeExited(),
       openLock: (path) => compilerNativeLockOpen(path),
       lock: () => compilerNativeLock(),
       unlock: () => compilerNativeUnlock(),
@@ -192,6 +194,8 @@ async function main(): Promise<number> {
               dgramDyn: false,
               textCodecDyn: false,
               watch: false,
+              watchFile: false,
+              fsBufferBrand: false,
               foreignFfi: false,
               nodeTest: false,
               tls: false,

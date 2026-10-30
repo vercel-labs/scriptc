@@ -275,6 +275,12 @@ export function arenaCurrentAddress(host: ArenaHost, dest: string): string[] | n
  * the arena is full. The bump, the clear, the header and the dispose entry
  * are inline (scr_arena.c's ScrArena ABI); scr_arena_obj takes a new chunk
  * and scr_arena_disposal grows the list.
+ *
+ * `clear` is what the bump path zeroes: the whole object, or only the
+ * collector header, for callers that store every word of the object before
+ * anything reads it (a record literal of a shape with no dispose entries:
+ * `init` stores the count and the shape number, and the literal every
+ * field). scr_arena_obj and the heap constructor return zeroed objects.
  */
 export function arenaNewLines(
   host: ArenaHost,
@@ -284,6 +290,7 @@ export function arenaNewLines(
   dispose: string | null,
   init: string[],
   result: string,
+  clear: "object" | "header" = "object",
 ): string[] {
   const S = host.sizeType;
   // ScrArena's fields and dispose entries are pointer-sized (scr_arena.c).
@@ -328,8 +335,13 @@ export function arenaNewLines(
     `carve:`,
     `  %end = getelementptr inbounds i8, ptr %bp, ${S} %n`,
     `  store ptr %end, ptr %a`,
-    `  call void @llvm.memset.p0.${S}(ptr align 8 %bp, i8 0, ${S} %n, i1 false)`,
   );
+  if (clear === "object")
+    lines.push(`  call void @llvm.memset.p0.${S}(ptr align 8 %bp, i8 0, ${S} %n, i1 false)`);
+  else if (cyc !== null)
+    lines.push(
+      `  call void @llvm.memset.p0.${S}(ptr align 8 %bp, i8 0, ${S} ${CYC_HDR}, i1 false)`,
+    );
   if (cyc !== null)
     lines.push(
       `  %id = trunc i32 %tid to i16`,

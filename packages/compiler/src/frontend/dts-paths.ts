@@ -199,6 +199,11 @@ function fallbackModuleRoot(): string {
   return declarationPath(FALLBACK_MODULE_DIRECTORY);
 }
 
+/** The `node:` specifiers that have fallback declarations, one per file. */
+export function fallbackModuleSpecifiers(): string[] {
+  return Object.keys(FALLBACK_MODULE_FILES).filter((specifier) => specifier.startsWith("node:"));
+}
+
 /** The fallback declaration file of the Node module `specifier`, or null. */
 export function fallbackModulePath(specifier: string): string | null {
   return Object.hasOwn(FALLBACK_MODULE_FILES, specifier)

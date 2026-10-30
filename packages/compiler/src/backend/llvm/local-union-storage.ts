@@ -130,9 +130,10 @@ export function findLocalUnionStorage(
   const types = new Map(fn.locals.map((local) => [local.id, local.type]));
   const result = new Map<string, LocalUnionStorageProof>();
   const safe = lifetimes.projectedLocals.get(fn.name);
-  if (!safe?.size) return result;
+  const copied = lifetimes.copiedLocals.get(fn.name);
+  if (!safe?.size && !copied?.size) return result;
   for (const local of fn.locals) {
-    if (local.type.kind !== "union" || !safe.has(local.id)) continue;
+    if (local.type.kind !== "union" || !(safe?.has(local.id) || copied?.has(local.id))) continue;
     const arms = unions.get(local.type.unionId)?.arms;
     if (!arms) continue;
     const refs = arms.filter(isRefCounted);
@@ -149,6 +150,18 @@ export function findLocalUnionStorage(
       return true;
     },
   });
+  // A copied local's box stays private only while every local it is copied
+  // to snapshots the copy's tag and bits: one that keeps the box pointer
+  // makes the source a heap box again, which can cascade along the copies.
+  for (let changed = copied !== undefined; changed;) {
+    changed = false;
+    for (const [id, targets] of copied!) {
+      if (result.has(id) && !targets.every((target) => result.has(target))) {
+        result.delete(id);
+        changed = true;
+      }
+    }
+  }
   return result;
 }
 

@@ -67,6 +67,38 @@ console.log(total);
     expect(body).not.toContain("ScrArena.closed");
     expect(body).not.toContain("@scr_arena_disposal");
   }
+  // A record literal stores every field, and no dispose entry reads them:
+  // the record's constructor does not clear the object. A class constructor
+  // may leave fields unset, so the class's does.
+  const record = constructors.find((body) => body.includes("@sc_rnew_"))!;
+  const cls = constructors.find((body) => !body.includes("@sc_rnew_"))!;
+  expect(record).not.toContain("@llvm.memset");
+  expect(cls).toContain("@llvm.memset");
+});
+
+test("record literals in an arena that is not closed keep the clear their dispose entries need", async () => {
+  // The items hold outside strings, so their groups are not closed.
+  const llvm = await llvmFor(`
+interface Item {
+  label: string;
+  next: Item | null;
+}
+function chain(labels: string[], n: number): Item {
+  return n === 0 ? { label: labels[0]!, next: null } : { label: labels[n % labels.length]!, next: chain(labels, n - 1) };
+}
+function length(item: Item): number {
+  return item.next === null ? item.label.length : item.label.length + length(item.next);
+}
+const labels = ["a", "bb", "ccc"];
+let total = 0;
+for (let round = 0; round < 4; round++) total += length(chain(labels, 10 + round));
+console.log(total);
+`);
+  expect(llvm).toMatch(/@scr_arena_open\(ptr %[\w.]+, i32 0\)/);
+  const items = arenaConstructors(llvm).filter((body) => body.includes("@sc_rnew_"));
+  expect(items.length).toBe(1);
+  expect(items[0]).toContain(".dispose");
+  expect(items[0]).toContain("@llvm.memset");
 });
 
 test("an arena that is not closed keeps the dispose list in every arena-aware constructor", async () => {

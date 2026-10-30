@@ -23,20 +23,18 @@ bigint-fences.ts:8:28 - error SC1090: JSON.stringify of 'bigint' values (only nu
     |                            ^~
   9 | 
 
-bigint-fences.ts:11:39 - error SC2020: 'statSync with bigint: true' is part of the standard library types but has no scriptc lowering yet
+bigint-fences.ts:14:14 - error SC1090: BigIntStats methods as values (call 'isFile' directly) are not supported yet
 
-  10 | import { statSync } from "node:fs";
-  11 | const stats = statSync(".", { bigint: true });
-     |                                       ^~~~
-  12 | console.log(stats.size);
+  13 | // has no lowering.
+  14 | const read = stats.isFile;
+     |              ^~~~~~~~~~~~
+  15 | console.log(stats.size);
 
-  hint: BigIntStats has no lowering; omit bigint for Stats
+bigint-fences.ts:17:6 - error SC2004: uses of 'typed' inherit the blocker on its declaration
 
-bigint-fences.ts:14:6 - error SC2004: uses of 'typed' inherit the blocker on its declaration
-
-  13 | 
-  14 | void typed;
+  16 | 
+  17 | void typed;
      |      ^~~~~
-  15 | void dynamicValue;
+  18 | void dynamicValue;
 
   hint: the declaration of 'typed' did not compile — fix the diagnostic reported there and these sites clear with it

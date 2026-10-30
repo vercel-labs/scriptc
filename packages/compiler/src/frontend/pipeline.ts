@@ -1,7 +1,17 @@
-import { shapeOverlayReport } from "./shape-inference/index.js";
 /** Shared frontend orchestration. Hosts supply a program loader so Node
  * and native callers use the same npm selection, preflight and lowering. */
+import {
+  beginShapeOverlayBuild,
+  excludeRefusedOverlay,
+  recordShapeOverlayMemo,
+  restoreShapeOverlayState,
+  setShapeOverlayDropped,
+  shapeOverlayActive,
+  shapeOverlayMemoPlainFences,
+  shapeOverlayReport,
+} from "./shape-inference/index.js";
 import type { ScrDiagnostic } from "../diagnostics/diagnostic.js";
+import type { IrModule } from "../ir/ir.js";
 import type { SrcLoc } from "../ir/ir.js";
 import type { NpmStaticStatus } from "../coverage/report.js";
 import { entryFunctionExports, type EntryExportInfo } from "./lib-exports.js";
@@ -49,6 +59,7 @@ import { NODE_API_MODULE } from "./node-api-import.js";
 import { erasedTypeOnlyImport } from "./type-only-imports.js";
 import { EXPERIMENTAL_MODULE } from "./experimental-import.js";
 import { readProjectConfig } from "../project-config.js";
+import { setFrontendIslands } from "../node-islands/boundary.js";
 import { typePatchDiagnostics } from "./type-patches/layer.js";
 import { packageDirOf } from "../node-islands/origin.js";
 import {
@@ -109,7 +120,9 @@ export interface Frontend {
    * dispose — it reads the ts7 AST). */
   entryContract: () => ContractFacts;
   sourceTexts: () => Map<string, string>;
-  lower: (opts: LowerOptions) => LowerResult;
+  /** `valid`: the caller's IR validation; a module it rejects with the
+   * shape overlay on is lowered again without the overlay. */
+  lower: (opts: LowerOptions, valid?: (module: IrModule) => boolean) => LowerResult;
   /** Each requested or detected package's native compilation outcome,
    * including the first refusal reason for ineligible packages. */
   npmStatic: NpmStaticStatus[];
@@ -128,12 +141,22 @@ export interface Frontend {
 }
 
 /** Hosts own transport lifetimes; shared compiler stages own the frontend. */
-/** What a frontend computes beyond the build's own needs. */
+/** How a frontend loads the program, beyond its npm package selection. */
 export interface FrontendOptions {
+  /** Packages that run in Node islands (scope-B NI-4): never compiled,
+   * typed by their declarations. */
+  islandPackages?: ReadonlySet<string>;
+  /** Program modules that run in Node islands (DESIGN.md note 1 §3.2):
+   * their bodies are never compiled; their imports lower to island loads.
+   * Absolute file paths. */
+  islandModules?: ReadonlySet<string>;
   /** The Node island report (coverage): the project's scriptc settings and
    * the detector's scan of the program and its npm packages. Builds do not
    * read either. */
   nodeIslands?: boolean;
+  /** The detector's scan alone, for a build that may run packages in Node
+   * islands (executable/prepare.ts decides which). */
+  islandScan?: boolean;
 }
 
 export type FrontendFactory = (
@@ -196,6 +219,8 @@ function addDynamicImportGraph(load: LoadResult, scanned: Set<SourceFile>): void
         npmStaticDepSf7(load.program, sf, spec, kind);
       if (dep === null || scanned.has(dep)) continue;
       if (dep.fileName.includes("/node_modules/") && !isJsSourceFileName(dep.fileName)) continue;
+      // An import() whose graph Node refuses rejects: nothing in it loads.
+      if (kind === "import" && load.dynamicImportRejections?.has(dep)) continue;
       scanned.add(dep);
       added.add(dep);
       queue.push(dep);
@@ -240,7 +265,7 @@ function detectAutoPackages(
     // without the declaration eligibility bar.
     const owner = npmStaticPackageOfPath(sf.fileName);
     const viaTransitive = owner !== null && transitive.has(owner);
-    const edges: { spec: string; loc: SrcLoc }[] = [];
+    const edges: { spec: string; loc: SrcLoc; nested?: true }[] = [];
     for (const stmt of sf.statements.nodes) {
       if (
         (isImportDeclaration(stmt) || isExportDeclaration(stmt)) &&
@@ -259,6 +284,35 @@ function detectAutoPackages(
           edges.push({ spec: req.spec, loc: locOf(req.node) });
       }
     }
+    // A program file's literal require() calls outside top-level require
+    // statements (inside functions, in expressions) name packages the
+    // program loads at run time too. They count only to refuse a package
+    // that ships no declarations, which then runs in a Node island; any
+    // other package keeps the top-level edge rule.
+    if (
+      mode === "lib" &&
+      !viaTransitive &&
+      owner === null &&
+      !sf.fileName.includes("/node_modules/") &&
+      // Any spelling of a call (`require (`, a comment before the paren):
+      // the syntax scan below decides.
+      /\brequire\b/.test(sf.text)
+    ) {
+      const topLevel = new Set(edges.map((e) => `${e.spec}@${e.loc.start}`));
+      for (const call of moduleSourceCandidates(load.program, sf).calls) {
+        const arg = call.arguments.nodes[0];
+        if (
+          arg === undefined ||
+          !isStringLiteralLike(arg) ||
+          !isIdentifier(call.expression) ||
+          call.expression.text !== "require"
+        )
+          continue;
+        const loc = locOf(call);
+        if (topLevel.has(`${arg.text}@${loc.start}`)) continue;
+        edges.push({ spec: arg.text, loc, nested: true });
+      }
+    }
     // Transitive selection counts every literal require() and import()
     // anywhere in the package, nested ones included.
     if (viaTransitive) {
@@ -273,7 +327,7 @@ function detectAutoPackages(
           edges.push({ spec: arg.text, loc: locOf(call) });
       }
     }
-    for (const { spec, loc } of edges) {
+    for (const { spec, loc, nested } of edges) {
       if (load.externalTypes?.has(spec)) continue;
       // scriptc's own packages are not npm dependencies: contract types are
       // declarations only, and @scriptc/threads and @scriptc/experimental
@@ -315,6 +369,13 @@ function detectAutoPackages(
           ? resolveBareModule(sf.fileName, spec, "js-only")
           : null;
       const runtimePkg = js !== null && js.packageName !== npm?.packageName ? js.packageName : null;
+      // Nested requires only refuse packages without own declarations.
+      if (
+        nested === true &&
+        !(npm === null && runtimePkg !== null) &&
+        !(npm !== null && !/\.d\.(ts|mts|cts)$/.test(npm.typesFile))
+      )
+        continue;
       if (npm === null || runtimePkg !== null) {
         if (mode !== "lib" || runtimePkg === null || judged!.has(runtimePkg)) continue;
         judged!.add(runtimePkg);
@@ -434,8 +495,8 @@ function scanDroppedPackages(
       return at !== null && wanted.has(at.name);
     });
     const scanned = scanFiles(load.program, files, { userJs: false, dropped: true, edges: true });
-    into.modules.push(...scanned.modules);
-    into.edges.push(...scanned.edges);
+    for (const module of scanned.modules) into.modules.push(module);
+    for (const edge of scanned.edges) into.edges.push(edge);
   } catch {
     /* report-only detection */
   }
@@ -480,15 +541,21 @@ export function runFrontend(
       transitive.add(base);
       return base;
     });
-    return loadFrontend(
-      entryPath,
-      trackedLoader,
-      "lib",
-      externalTypes,
-      [...new Set(names)],
-      transitive,
-      options,
-    );
+    const islands = options.islandPackages ?? new Set<string>();
+    setFrontendIslands(islands);
+    try {
+      return loadFrontend(
+        entryPath,
+        trackedLoader,
+        "lib",
+        externalTypes,
+        [...new Set(names)].filter((name) => !islands.has(name)),
+        transitive,
+        options,
+      );
+    } finally {
+      setFrontendIslands(new Set());
+    }
   } catch (error) {
     for (const load of active) {
       // Preserve the original failure and attempt every remaining cleanup.
@@ -501,6 +568,15 @@ export function runFrontend(
     throw error;
   }
 }
+
+/** A file path as the frontend and the island decision spell it. */
+function normalizeFile(file: string): string {
+  return file.replaceAll("\\", "/");
+}
+
+/** Rounds of dropping single refused overlay annotations before the
+ * fallback drops whole files' overlays. */
+const OVERLAY_ANNOTATION_ROUNDS = 4;
 
 function loadFrontend(
   entryPath: string,
@@ -516,10 +592,25 @@ function loadFrontend(
   // separate compiles in a long-lived process.  A cache miss must observe
   // package.json edits before it can publish a new early-library entry.
   clearResolveCaches();
+  beginShapeOverlayBuild();
   const statuses: NpmStaticStatus[] = [];
   const npmSites = new Map<string, SrcLoc>();
-  // Node island detection (report-only): how each package was refused, and
-  // the modules of packages removed from the program.
+  // Program modules that run in Node islands (DESIGN.md note 1 §3.2): their
+  // bodies are not lowered, so their sloppy semantics stay Node's, and a
+  // diagnostic anchored in one does not fail the program the build does not
+  // compile.
+  const islandModules =
+    options.islandModules === undefined || options.islandModules.size === 0
+      ? null
+      : new Set([...options.islandModules].map(normalizeFile));
+  const inIslandModule = (loc: SrcLoc | undefined): boolean =>
+    islandModules !== null && loc !== undefined && islandModules.has(normalizeFile(loc.file));
+  const withoutIslandModules = (diags: ScrDiagnostic[]): ScrDiagnostic[] =>
+    islandModules === null ? diags : diags.filter((d) => !inIslandModule(d.loc));
+  // Node island detection (the report, or a build that may run islands):
+  // how each package was refused, and the modules of packages removed from
+  // the program.
+  const scanIslands = options.nodeIslands === true || options.islandScan === true;
   const refusals: RefusalRecord[] = [];
   const droppedScan: { modules: NodeIslandScan["modules"]; edges: NodeIslandScan["edges"] } = {
     modules: [],
@@ -530,7 +621,11 @@ function loadFrontend(
   };
   // Explicit library attempts bypass only the auto-selection heuristics.
   // The shared preflight/lowering refusal and dependency-closure checks remain.
+  // Node island packages are judged already: they stay out of the
+  // program, typed by their declarations (scope-B NI-4).
   const judged = new Set<string>(libraryNpmStatic);
+  if (options.islandPackages !== undefined)
+    for (const name of options.islandPackages) judged.add(name);
   let requested: string[] = [];
   let reusableScout: ReturnType<typeof loadProgram> | null = null;
   let reusablePreflight: ScrDiagnostic[] | null = null;
@@ -594,6 +689,32 @@ function loadFrontend(
   // and library builds with a package-specific diagnostic.
   let load = reusableScout ?? loadProgram(entryPath, { npmStatic: requested, externalTypes });
   let preflight = reusablePreflight ?? checkPreflight(load);
+  // Shape inference never makes the preflight fail: when the overlay's
+  // program reports diagnostics the program without it does not (its type
+  // references can load package files the program would not), the build
+  // continues without the overlay.
+  if (preflight.length > 0 && load.shapeOverlayState !== undefined) {
+    restoreShapeOverlayState(load.shapeOverlayState);
+    if (shapeOverlayActive()) {
+      const key = (d: ScrDiagnostic): string => `${d.code}|${d.loc.file}|${d.loc.start}`;
+      setShapeOverlayDropped(true);
+      const plain = loadProgram(entryPath, { npmStatic: requested, externalTypes });
+      const plainPreflight = checkPreflight(plain);
+      const known = new Set(plainPreflight.map(key));
+      if (preflight.some((d) => !known.has(key(d)))) {
+        load.dispose();
+        load = plain;
+        preflight = plainPreflight;
+        if (process.env["SCRIPTC_DEBUG_SHAPE_FALLBACK"] !== undefined)
+          process.stderr.write(
+            `[shape-fallback] preflight: the overlay's program failed; overlay off\n`,
+          );
+      } else {
+        plain.dispose();
+        setShapeOverlayDropped(false);
+      }
+    }
+  }
   // Library mode's fixpoint: the opted-in packages' files joined the
   // program just now, and THEIR bare edges (import statements and
   // top-level requires) name packages the scout could not see. Judge each
@@ -656,7 +777,7 @@ function loadFrontend(
     }
     const dropping = [...reasons.keys()].filter((p) => effective.has(p));
     if (dropping.length === 0) break;
-    if (options.nodeIslands === true) scanDroppedPackages(load, dropping, droppedScan);
+    if (scanIslands) scanDroppedPackages(load, dropping, droppedScan);
     for (const p of dropping) {
       effective.delete(p);
       statuses.push({ package: p, status: "refused", detail: reasons.get(p)! });
@@ -708,15 +829,13 @@ function loadFrontend(
       probe.dispose();
       if (probeDiags.some((d) => d.code === "SC0001")) dropWithNote(p);
     }
-    if (options.nodeIslands === true)
-      scanDroppedPackages(load, lastResortDropped.splice(0), droppedScan);
+    if (scanIslands) scanDroppedPackages(load, lastResortDropped.splice(0), droppedScan);
     load.dispose();
     load = loadProgram(entryPath, { npmStatic: [...effective], externalTypes });
     preflight = checkPreflight(load);
     if (preflight.some((d) => d.code === "SC0001") && effective.size > 0) {
       for (const p of [...effective]) dropWithNote(p);
-      if (options.nodeIslands === true)
-        scanDroppedPackages(load, lastResortDropped.splice(0), droppedScan);
+      if (scanIslands) scanDroppedPackages(load, lastResortDropped.splice(0), droppedScan);
       load.dispose();
       load = loadProgram(entryPath, { npmStatic: [...effective], externalTypes });
       preflight = checkPreflight(load);
@@ -736,7 +855,9 @@ function loadFrontend(
     }
   }
 
-  const finalLoad = load;
+  // The lowering may reload once the overlay drops refused annotations.
+  let finalLoad = load;
+  const finalNpmStatic = [...effective];
   // An unknown key or value in the project's scriptc configuration makes
   // the Node island report unavailable (SC8004). The settings configure
   // only that report: a build warns about them and goes on.
@@ -748,8 +869,9 @@ function loadFrontend(
   const patchDiagnostics = typePatchDiagnostics()?.diagnostics ?? [];
   const buildWarnings = [...(report ? [] : configDiagnostics), ...patchDiagnostics];
   return {
-    preflight:
+    preflight: withoutIslandModules(
       report && configDiagnostics.length > 0 ? [...configDiagnostics, ...preflight] : preflight,
+    ),
     ...(buildWarnings.length > 0 ? { warnings: buildWarnings } : {}),
     entryText: () => finalLoad.entry.text,
     entryExports: () => entryFunctionExports(finalLoad.entry),
@@ -795,17 +917,197 @@ function loadFrontend(
         texts.set(projectConfig.manifest, projectConfig.manifestText);
       return texts;
     },
-    lower: (opts) => {
-      const lowered = lowerToIr(finalLoad.program, finalLoad.entry, finalLoad.moduleOrder, {
-        ...opts,
-        frontendServices: finalLoad.services,
-        startupCrash: finalLoad.startupCrash ?? null,
-        inlineRequireCycleCalls: finalLoad.inlineRequireCycleCalls,
-        moduleEdges: finalLoad.moduleEdges,
-        projectCheckJs: finalLoad.typeWorld?.projectCheckJs ?? false,
-        externalTypes: finalLoad.externalTypes,
-        externalTypeSpecifiersByFile: finalLoad.externalTypeSpecifiersByFile,
-      });
+    lower: (opts, valid) => {
+      // The module order without the island modules, computed once per load:
+      // a reload keeps the array the lowering appends its dynamic import
+      // modules to. The map lives as long as this lowering, which owns the
+      // loads it keys.
+      const islandFiltered = new Map<readonly SourceFile[], SourceFile[]>();
+      const lowerOrder = (l: typeof finalLoad): SourceFile[] => {
+        if (islandModules === null) return l.moduleOrder;
+        let kept = islandFiltered.get(l.moduleOrder);
+        if (kept === undefined) {
+          kept = l.moduleOrder.filter((sf) => !islandModules.has(normalizeFile(sf.fileName)));
+          islandFiltered.set(l.moduleOrder, kept);
+        }
+        return kept;
+      };
+      const lowerLoad = (l: typeof finalLoad): LowerResult => {
+        if (l.shapeOverlayState !== undefined) restoreShapeOverlayState(l.shapeOverlayState);
+        return lowerToIr(l.program, l.entry, lowerOrder(l), {
+          ...opts,
+          frontendServices: l.services,
+          startupCrash: l.startupCrash ?? null,
+          inlineRequireCycleCalls: l.inlineRequireCycleCalls,
+          moduleEdges: l.moduleEdges,
+          dynamicImportRejections: l.dynamicImportRejections,
+          projectCheckJs: l.typeWorld?.projectCheckJs ?? false,
+          externalTypes: l.externalTypes,
+          externalTypeSpecifiersByFile: l.externalTypeSpecifiersByFile,
+        });
+      };
+      const lowerOnce = (): LowerResult => lowerLoad(finalLoad);
+      let lowered = lowerOnce();
+      // Shape inference never breaks compilation (shape-inference/
+      // fallback.ts): refusals drop the overlay annotations they depend on
+      // and the program reloads. Rounds that stop converging escalate to
+      // the overlay of every file involved, then to no overlay at all.
+      // Refusals deferred to run time (runtime fences) are compared with
+      // the build without the overlay below: a fence the overlay did not
+      // cause stays as it is without the overlay.
+      let level: "annotations" | "files" | "all" = "annotations";
+      // Deferred refusals the coverage pass found in code the lowering
+      // judged unreached count too: that code can still run.
+      const fencesOf = (l: LowerResult): ScrDiagnostic[] => [
+        ...l.runtimeFences,
+        ...(l.unreached?.runtimeFences ?? []),
+      ];
+      if (process.env["SCRIPTC_DEBUG_SHAPE_FALLBACK"] !== undefined)
+        process.stderr.write(
+          `[shape-fallback] lowered: overlay ${shapeOverlayActive()}, ${lowered.diagnostics.length} refusals, ${fencesOf(lowered).length} deferred\n`,
+        );
+      // Failing refusals first; deferred refusals are compared with the
+      // build without the overlay below.
+      for (let round = 0; shapeOverlayActive(); round++) {
+        const refusals = lowered.diagnostics;
+        if (refusals.length === 0) break;
+        if (round >= OVERLAY_ANNOTATION_ROUNDS && level === "annotations") level = "files";
+        else if (round > OVERLAY_ANNOTATION_ROUNDS) level = "all";
+        let changed = excludeRefusedOverlay(finalLoad.program, refusals, level);
+        while (!changed && level !== "all") {
+          level = level === "annotations" ? "files" : "all";
+          changed = excludeRefusedOverlay(finalLoad.program, refusals, level);
+        }
+        // The program reloads anyway: the same round also drops what the
+        // deferred refusals blame, which often saves the comparison below.
+        if (level !== "all" && fencesOf(lowered).length > 0)
+          changed =
+            excludeRefusedOverlay(finalLoad.program, fencesOf(lowered), "fences") || changed;
+        if (process.env["SCRIPTC_DEBUG_SHAPE_FALLBACK"] !== undefined)
+          process.stderr.write(
+            `[shape-fallback] round ${round} level ${level}: ${refusals.length} refusals (${refusals
+              .slice(0, process.env["SCRIPTC_DEBUG_SHAPE_FALLBACK"] === "all" ? undefined : 3)
+              .map(
+                (d) =>
+                  `${d.loc.file.split("/").pop()}:${d.loc.start} ${process.env["SCRIPTC_DEBUG_SHAPE_FALLBACK"] === "all" ? d.message : d.message.slice(0, 60)}`,
+              )
+              .join("; ")}), changed ${changed}\n`,
+          );
+        if (!changed) break;
+        const t0 = performance.now();
+        finalLoad.dispose();
+        finalLoad = loadProgram(entryPath, { npmStatic: finalNpmStatic, externalTypes });
+        const t1 = performance.now();
+        // The preflight fills the module order; the tsc world reads the
+        // files as written, so it answers as the first load did.
+        const reloadPreflight = withoutIslandModules(checkPreflight(finalLoad));
+        if (reloadPreflight.length > 0)
+          return { ...lowered, module: null, diagnostics: reloadPreflight };
+        const t2 = performance.now();
+        lowered = lowerOnce();
+        if (process.env["SCRIPTC_DEBUG_SHAPE_FALLBACK"] !== undefined)
+          process.stderr.write(
+            `[shape-fallback] reload ${(t1 - t0).toFixed(0)} ms, preflight ${(t2 - t1).toFixed(0)} ms, lower ${(performance.now() - t2).toFixed(0)} ms\n`,
+          );
+      }
+      // Deferred refusals the program without the overlay does not have
+      // mean the overlay changed what runs (the overlay must not add
+      // failures the default build lacks). The build lowers the program
+      // without the overlay once, drops what the added refusals blame and
+      // reloads; when they persist (or blame nothing), it compiles without
+      // the overlay, reusing that lowering. A memo of the same JavaScript
+      // that already knows every remaining refusal skips the comparison.
+      let plainFences: Set<string> | null = null;
+      if (shapeOverlayActive() && lowered.diagnostics.length === 0) {
+        const keyOf = (l: typeof finalLoad, d: ScrDiagnostic): string => {
+          const sf = l.program.getSourceFile(d.loc.file);
+          const line = sf === undefined ? -1 : sf.getLineAndCharacterOfPosition(d.loc.start).line;
+          return `${d.code}|${d.loc.file}|${line}`;
+        };
+        const remembered = shapeOverlayMemoPlainFences();
+        const fences = fencesOf(lowered);
+        const knownByMemo =
+          remembered !== null && fences.every((d) => remembered.has(keyOf(finalLoad, d)));
+        if (fences.length > 0 && !knownByMemo) {
+          const overlayState = finalLoad.shapeOverlayState;
+          setShapeOverlayDropped(true);
+          const plainLoad = loadProgram(entryPath, { npmStatic: finalNpmStatic, externalTypes });
+          const plainPreflight = checkPreflight(plainLoad);
+          const plain = plainPreflight.length === 0 ? lowerLoad(plainLoad) : null;
+          setShapeOverlayDropped(false);
+          if (overlayState !== undefined) restoreShapeOverlayState(overlayState);
+          if (plain === null || plain.diagnostics.length > 0) {
+            // Nothing to compare with: the default build itself fails.
+            plainLoad.dispose();
+          } else {
+            const known = new Set(fencesOf(plain).map((d) => keyOf(plainLoad, d)));
+            plainFences = known;
+            let usePlain = false;
+            for (let round = 0; ; round++) {
+              const added = fencesOf(lowered).filter((d) => !known.has(keyOf(finalLoad, d)));
+              if (added.length === 0) break;
+              const changed =
+                round < OVERLAY_ANNOTATION_ROUNDS &&
+                excludeRefusedOverlay(finalLoad.program, added, "fences");
+              if (process.env["SCRIPTC_DEBUG_SHAPE_FALLBACK"] !== undefined)
+                process.stderr.write(
+                  `[shape-fallback] ${added.length} deferred refusals the default build lacks (${added
+                    .slice(0, 3)
+                    .map((d) => `${d.loc.file.split("/").pop()}: ${d.message.slice(0, 60)}`)
+                    .join("; ")}), changed ${changed}\n`,
+                );
+              if (!changed) {
+                usePlain = true;
+                break;
+              }
+              finalLoad.dispose();
+              finalLoad = loadProgram(entryPath, { npmStatic: finalNpmStatic, externalTypes });
+              if (checkPreflight(finalLoad).length > 0) {
+                usePlain = true;
+                break;
+              }
+              lowered = lowerOnce();
+              if (lowered.diagnostics.length > 0) {
+                usePlain = true;
+                break;
+              }
+            }
+            if (usePlain) {
+              if (process.env["SCRIPTC_DEBUG_SHAPE_FALLBACK"] !== undefined)
+                process.stderr.write(`[shape-fallback] overlay off\n`);
+              setShapeOverlayDropped(true);
+              if (plainLoad.shapeOverlayState !== undefined)
+                restoreShapeOverlayState(plainLoad.shapeOverlayState);
+              finalLoad.dispose();
+              finalLoad = plainLoad;
+              lowered = plain;
+            } else {
+              plainLoad.dispose();
+            }
+          }
+        }
+      }
+      // A module the caller's IR validator rejects (a lowering bug the
+      // overlay's types reach) compiles without the overlay.
+      if (
+        shapeOverlayActive() &&
+        lowered.module !== null &&
+        valid !== undefined &&
+        !valid(lowered.module)
+      ) {
+        if (process.env["SCRIPTC_DEBUG_SHAPE_FALLBACK"] !== undefined)
+          process.stderr.write(
+            `[shape-fallback] the IR validator rejected the module; overlay off\n`,
+          );
+        setShapeOverlayDropped(true);
+        finalLoad.dispose();
+        finalLoad = loadProgram(entryPath, { npmStatic: finalNpmStatic, externalTypes });
+        const reloadPreflight = withoutIslandModules(checkPreflight(finalLoad));
+        if (reloadPreflight.length > 0)
+          return { ...lowered, module: null, diagnostics: reloadPreflight };
+        lowered = lowerOnce();
+      }
+      recordShapeOverlayMemo(plainFences);
       // The declaration-typed boundary's notes (SC6102) join the
       // performance warnings; they never fail a build.
       const notes = [
@@ -817,29 +1119,28 @@ function loadFrontend(
     },
     npmStatic: statuses,
     npmImportSites: npmSites,
-    nodeIslandScan:
-      options.nodeIslands !== true
-        ? undefined
-        : ({ userJs }) => {
-            const files = new Set<SourceFile>([finalLoad.entry, ...finalLoad.moduleOrder]);
-            addDynamicImportGraph(finalLoad, files);
-            // Package edges matter only when the program has npm packages: one
-            // that loads, one that was refused, or one judged and dropped.
-            const npm =
-              statuses.length > 0 ||
-              droppedScan.modules.length > 0 ||
-              [...files].some((sf) => sf.fileName.includes("/node_modules/"));
-            const scanned = scanFiles(finalLoad.program, [...files], {
-              userJs,
-              dropped: false,
-              edges: npm,
-            });
-            return {
-              modules: [...droppedScan.modules, ...scanned.modules],
-              edges: [...droppedScan.edges, ...scanned.edges],
-              refusals,
-            };
-          },
-    dispose: finalLoad.dispose,
+    nodeIslandScan: !scanIslands
+      ? undefined
+      : ({ userJs }) => {
+          const files = new Set<SourceFile>([finalLoad.entry, ...finalLoad.moduleOrder]);
+          addDynamicImportGraph(finalLoad, files);
+          // Package edges matter only when the program has npm packages: one
+          // that loads, one that was refused, or one judged and dropped.
+          const npm =
+            statuses.length > 0 ||
+            droppedScan.modules.length > 0 ||
+            [...files].some((sf) => sf.fileName.includes("/node_modules/"));
+          const scanned = scanFiles(finalLoad.program, [...files], {
+            userJs,
+            dropped: false,
+            edges: npm,
+          });
+          return {
+            modules: [...droppedScan.modules, ...scanned.modules],
+            edges: [...droppedScan.edges, ...scanned.edges],
+            refusals,
+          };
+        },
+    dispose: () => finalLoad.dispose(),
   };
 }

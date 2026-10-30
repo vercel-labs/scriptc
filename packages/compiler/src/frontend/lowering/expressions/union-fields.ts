@@ -69,13 +69,16 @@ function unionFieldRead(
       };
 }
 
-/** Whether `converted` is `value` itself or `value` wrapped into a union
- * or upcast to a base class: conversions that cannot fail. Checked
- * narrowings (a union into one of its arms) don't count. */
+/** Whether `converted` is `value` itself or `value` wrapped into a union,
+ * upcast to a base class, or boxed into the checked-dynamic representation:
+ * conversions that cannot fail. Checked narrowings (a union into one of its
+ * arms) don't count. */
 function isWidening(converted: IrExpr, value: IrExpr): boolean {
   if (converted === value) return true;
   return (
-    (converted.kind === "unionWrap" || converted.kind === "upcast") &&
+    (converted.kind === "unionWrap" ||
+      converted.kind === "upcast" ||
+      converted.kind === "dynFrom") &&
     isWidening(converted.value, value)
   );
 }
@@ -109,10 +112,11 @@ function sharedFieldType(
 
 /** Read a data field from a union of classes and records whose arms declare
  * it with DIFFERENT but compatible types (`T | undefined` beside `T`, a base
- * class beside a subclass). Each tag reads its own slot and converts it to
- * the widest arm type, so the result has one representation; the caller
- * narrows it to the checker's flow type. Unit arms, accessors, and fields
- * without a common type keep their existing fences. */
+ * class beside a subclass, `T` beside `unknown`). Each tag reads its own slot
+ * and converts it to the widest arm type, so the result has one
+ * representation; the caller narrows it to the checker's flow type. Unit
+ * arms, accessors, and fields without a common type keep their existing
+ * fences. */
 export function lowerUnionFieldRead(
   lowerer: Lowerer,
   access: ts.PropertyAccessExpression,
@@ -160,9 +164,13 @@ export function lowerUnionFieldRead(
  * aliases and identity-keyed collections observe the mutation. Arms may
  * declare the field with different types when one of them converts into
  * every other without a check (`T` beside `T | undefined`, a subclass
- * beside its base): the value is evaluated as that type and widened per
- * arm. Accessors, missing fields, and unrelated storage types retain their
- * own fences. */
+ * beside its base), or when one arm declares the field `unknown`/`any`
+ * beside specific arms (`T | undefined` beside `unknown`) and the value is
+ * converted per arm. A union of unrelated static storage types (a
+ * `string` arm beside a `number` arm) keeps its refusal: there is no
+ * dynamic arm to make the write meaningful, and the read path refuses the
+ * same shape. Accessors, missing fields, and unrelated storage types retain
+ * their own fences. */
 export function lowerUnionFieldWrite(
   lowerer: Lowerer,
   access: ts.PropertyAccessExpression,
@@ -194,8 +202,9 @@ export function lowerUnionFieldWrite(
     present.push(field);
   }
   if (present.length === 0) return null;
+  const mixed = present.some((field) => !typeEquals(field.type, present[0]!.type));
   let fieldType: IrType | null = present[0]!.type;
-  if (present.some((field) => !typeEquals(field.type, present[0]!.type))) {
+  if (mixed) {
     // Mixed storage types are probed only on unions without unit arms, where
     // the present arms' tags are the union's own.
     fieldType =
@@ -203,10 +212,25 @@ export function lowerUnionFieldWrite(
         ? sharedFieldType(lowerer, unionId, receiver, present, name, loc, false)
         : null;
   }
-  if (fieldType === null) return null;
+  if (
+    fieldType === null &&
+    (!mixed ||
+      !present.some((field) => field.type.kind === "dyn") ||
+      !present.every((field) => lowerer.dynConvertible(field.type)))
+  )
+    return null;
   const object = lowerer.declareHiddenLocal("%unionWriteObject", receiver.type);
   const objectRef = varRef(object.id, object.type, loc);
-  const value = lowerer.lowerExprExpecting(rhs, fieldType);
+  // No static supertype of the arm types, with one arm's slot dynamic
+  // (`T | undefined` beside `unknown`): TypeScript's writable property type
+  // is the UNION of the arms' property types, so the value is lowered once
+  // at its own type and each arm converts it. Those conversions are checked
+  // where the arm's slot is narrower, so a value that does not fit the
+  // selected arm throws the catchable TypeError of the dyn→static edge
+  // where JS would store it (the divergence a dyn value written into a
+  // typed slot already documents).
+  const value =
+    fieldType === null ? lowerer.lowerExpr(rhs) : lowerer.lowerExprExpecting(rhs, fieldType);
   const stored = lowerer.declareHiddenLocal("%unionWriteValue", value.type);
   // Snapshot the reference before evaluating the RHS, which can change the
   // original binding. Evaluate and retain the value once before dispatch.
@@ -280,6 +304,83 @@ export function lowerUnionFieldWrite(
           };
   }
   return { kind: "seqExpr", stmts: body, result: dispatch, type: result.type, loc };
+}
+
+/** `delete u.f` on a union receiver: each record arm declares `f` as an
+ * OPTIONAL field (an undefined-armed slot), so each tag writes its own
+ * slot's ABSENT state — the monomorphic optional-field delete, dispatched
+ * over the arms the way union field writes are. The union value is
+ * retained once, so every arm deletes the object the program passed, not a
+ * projection. Null when an arm is not a record that declares `f` optional
+ * (unit arms, class arms, required fields, accessors and index signatures
+ * keep their own fences): a required slot has no absence to represent. */
+export function lowerUnionFieldDelete(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): IrStmt | null {
+  const mapped = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
+  if (access.questionDotToken || mapped?.kind !== "union") return null;
+  let receiver = lowerer.maybeNarrow(lowerer.lowerExpr(access.expression), access.expression);
+  if (receiver.type.kind === "union" && !typeEquals(receiver.type, mapped))
+    receiver = narrowStoredClassValue(lowerer, receiver, mapped) ?? receiver;
+  if (receiver.type.kind !== "union") return null;
+  const unionId = receiver.type.unionId;
+  const arms = lowerer.unions.get(unionId)?.arms;
+  if (!arms || arms.length < 2) return null;
+  const name = access.name.text;
+  const loc = locOf(access);
+  const fields: { arm: IrType & { kind: "record" }; type: IrType }[] = [];
+  for (const arm of arms) {
+    if (arm.kind !== "record" || lowerer.shapes.get(arm.shapeId)?.tuple) return null;
+    const field = unionFieldArm(lowerer, arm, name);
+    if (!field || lowerer.absentFieldValue(field.type, loc) === null) return null;
+    fields.push({ arm, type: field.type });
+  }
+  const object = lowerer.declareHiddenLocal("%unionDeleteObject", receiver.type);
+  const objectRef = varRef(object.id, object.type, loc);
+  const branch = (tag: number): IrStmt[] => {
+    const field = fields[tag]!;
+    const absent = lowerer.absentFieldValue(field.type, loc);
+    if (absent === null) return [];
+    const write: IrStmt = {
+      kind: "recordSet",
+      obj: { kind: "unionNarrow", unionId, tag, value: objectRef, type: field.arm, loc },
+      shapeId: field.arm.shapeId,
+      field: name,
+      value: absent,
+      loc,
+    };
+    // A sloppy-mode delete on a frozen record leaves it unchanged.
+    markSloppyRecordWrites(lowerer, write, access);
+    return [write];
+  };
+  // One tag test per arm, the last arm as the fall-through else: a delete
+  // runs at most one arm's write.
+  const dispatch = (tag: number): IrStmt[] =>
+    tag === fields.length - 1
+      ? branch(tag)
+      : [
+          {
+            kind: "if",
+            cond: {
+              kind: "unionIsTag",
+              unionId,
+              tag,
+              value: objectRef,
+              negated: false,
+              type: BOOL,
+              loc,
+            },
+            then: branch(tag),
+            else_: dispatch(tag + 1),
+            loc,
+          },
+        ];
+  return {
+    kind: "block",
+    body: [{ kind: "varDecl", localId: object.id, init: receiver, loc }, ...dispatch(0)],
+    loc,
+  };
 }
 
 /** Read the element at a literal index from a union of tuples whose element

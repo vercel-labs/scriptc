@@ -16,7 +16,7 @@ test.each(["llvm"] as const)(
 const load = process.getBuiltinModule;
 try { load("node:fs"); } catch (error) { console.log(error.code, error.message.includes("native builtin 'fs'")); }
 const path = load("path");
-try { path.parse("/a"); } catch (error) { console.log(error.code, error.message.includes(".parse'")); }
+console.log(JSON.stringify(path.parse("/a")));
 const worker = load("worker_threads");
 try { console.log(worker.Worker); } catch (error) { console.log(error.code, error.message.includes("worker_threads.Worker")); }
 console.log(path.posix.join("still", "works"), worker.isMainThread);
@@ -39,7 +39,7 @@ try { console.log(segmenter.segment); } catch (error) { console.log(error.messag
       expect(child.status, child.stderr).toBe(0);
       expect(child.stderr).toBe("");
       expect(child.stdout).toBe(
-        "SC2020 true\nSC2020 true\nSC2020 true\nstill/works true\nSC2020 true\ntrue\ntrue\n",
+        'SC2020 true\n{"root":"/","dir":"/","base":"a","ext":"","name":"a"}\nSC2020 true\nstill/works true\nSC2020 true\ntrue\ntrue\n',
       );
     } finally {
       rmSync(dir, { recursive: true, force: true });

@@ -289,6 +289,26 @@ declare module "util" {
   export function promisify(
     fn: typeof import("node:dns").lookupService,
   ): (address: string, port: number) => Promise<{ hostname: string; service: string }>;
+  /* Error-first callback functions in general: lowered for Node island
+   * functions (Node's own promisify runs in the island); other targets
+   * fence at the call. Only functions that return nothing: a builtin that
+   * returns a handle (execFile's ChildProcess) keeps its overload above,
+   * which the subtype pass would otherwise skip for these. */
+  export function promisify<T1, TResult, F>(
+    fn: F &
+      ((arg1: T1, callback: (err: any, result: TResult) => void) => void) &
+      (F extends (...args: any[]) => infer R ? (R extends void ? unknown : never) : never),
+  ): (arg1: T1) => Promise<TResult>;
+  export function promisify<T1, T2, TResult, F>(
+    fn: F &
+      ((arg1: T1, arg2: T2, callback: (err: any, result: TResult) => void) => void) &
+      (F extends (...args: any[]) => infer R ? (R extends void ? unknown : never) : never),
+  ): (arg1: T1, arg2: T2) => Promise<TResult>;
+  export function promisify<T1, T2, T3, TResult, F>(
+    fn: F &
+      ((arg1: T1, arg2: T2, arg3: T3, callback: (err: any, result: TResult) => void) => void) &
+      (F extends (...args: any[]) => infer R ? (R extends void ? unknown : never) : never),
+  ): (arg1: T1, arg2: T2, arg3: T3) => Promise<TResult>;
   /* Declared surface without full lowering (the type-level tolerance
    * story: guarded/diagnostic-path code must TYPECHECK; a reached use
    * without a lowering fences at its site). */

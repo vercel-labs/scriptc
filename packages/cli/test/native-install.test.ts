@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -22,8 +23,10 @@ afterEach(() => {
 });
 
 function fixture() {
-  const root = mkdtempSync(
-    join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-install-"),
+  // installNativeCli resolves the installation directory, and on macOS /tmp
+  // is a link to /private/tmp, so the fixture's paths start resolved.
+  const root = realpathSync(
+    mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "scriptc-install-")),
   );
   roots.push(root);
   const directory = join(root, "installation");

@@ -93,7 +93,9 @@ test("a method of a class outside any hierarchy is on the unwinding ABI; closure
   // closure over mid is a pointer target and returns with the flag.
   const add = body(ir, "Counter_add");
   expect(add).toMatch(/invoke double @sc_b?f_[^(]*mid/);
-  expect(add).toMatch(/resume \{ ptr, i32 \} %[\w.]+/);
+  expect(add).toMatch(/call void @scr_unwind_resume\(ptr %[\w.]+\)\n\s+unreachable/);
+  expect(add).not.toMatch(/\bresume \{/);
+  expect(ir).toContain("declare void @scr_unwind_resume(ptr) cold");
   expect(add).not.toContain("@scr_unwind_raise");
   const closures = ir
     .split(/\n(?=define )/)
@@ -137,6 +139,40 @@ for (let i = -1; i < 2; i++) {
     expect(body(ir, name)).not.toContain("@scr_unwind_raise");
     expect(body(ir, name)).toMatch(/invoke double @sc_b?f_[^(]*four/);
   }
+});
+
+test("with rareExceptions, recursive functions and those near a throw unwind; throwing ones keep the flag", async () => {
+  const source = `
+function leaf(n: number): number {
+  if (n < 0) throw new RangeError("negative");
+  return n;
+}
+function one(n: number): number { return leaf(n) + 1; }
+function two(n: number): number { return one(n) + 1; }
+function walk(n: number, depth: number): number {
+  const parts: string[] = ["w" + n];
+  const r = depth === 0 ? two(n) : walk(n, depth - 1);
+  return r + parts.length;
+}
+for (let i = -1; i < 2; i++) {
+  try { console.log(walk(i, 3)); } catch (e) { console.log((e as Error).message); }
+}
+`;
+  const mod = await moduleFor(source);
+  const common = emitLlvmModule(mod, LINUX);
+  const rare = emitLlvmModule(mod, { ...LINUX, rareExceptions: true });
+  for (const [caller, callee] of [
+    ["two", "one"],
+    ["walk", "walk"],
+    ["walk", "two"],
+  ] as const) {
+    const invoke = new RegExp(`invoke double @sc_b?f_[^(]*${callee}`);
+    expect(body(common, caller)).not.toMatch(invoke);
+    expect(body(rare, caller)).toMatch(invoke);
+  }
+  // one raises what leaf returns pending; leaf throws, so it keeps the flag.
+  expect(body(rare, "one")).toContain("call void @scr_unwind_raise()");
+  expect(body(rare, "one")).not.toMatch(/invoke double @sc_b?f_[^(]*leaf/);
 });
 
 test("without the option, and off Linux, emission keeps the pending-flag ABI", async () => {
@@ -212,7 +248,10 @@ test("an invoked wrapper of a raising function resumes the unwind; its address m
   expect(out).toContain(
     "%r = invoke double @sc_bf_body.i32(i32 %i) to label %ub.ok.0 unwind label %ub.lp.0",
   );
-  expect(out).toContain("resume { ptr, i32 } %ub.v.0");
+  expect(out).toContain(
+    "%ub.e.0 = extractvalue { ptr, i32 } %ub.v.0, 0\n  call void @scr_unwind_resume(ptr %ub.e.0)\n  unreachable",
+  );
+  expect(out).toContain("declare void @scr_unwind_resume(ptr) cold");
   expect(() =>
     bridgePlainUnwindCalls([
       `${raising}\n@table = internal constant [1 x ptr] [ptr @sc_bf_body.i32]`,
@@ -277,11 +316,27 @@ test("calls that cannot unwind are marked nounwind", () => {
     "  unreachable",
     "}",
   ].join("\n");
-  const [out] = bridgePlainUnwindCalls([raising]);
+  const resuming = [
+    "define internal void @sc_bf_resumes(ptr %b) #0 personality ptr @__gcc_personality_v0 {",
+    "entry:",
+    "  invoke void @sc_bf_raises(ptr %b) to label %ok unwind label %lp",
+    "ok:",
+    "  ret void",
+    "lp:",
+    "  %e = landingpad { ptr, i32 } cleanup",
+    "  %t = extractvalue { ptr, i32 } %e, 0",
+    "  call void @scr_unwind_resume(ptr %t)",
+    "  unreachable",
+    "}",
+  ].join("\n");
+  const [out] = bridgePlainUnwindCalls([[raising, resuming].join("\n")]);
   expect(out).toContain("%n = call i64 @scr_bytes_length(ptr %b) nounwind ; length");
   expect(out).toContain("call void @scr_bytes_release(ptr %b) nounwind, !dbg !4");
   expect(out).toContain("%r = call ptr %b(ptr %b) nounwind");
   expect(out).toContain("  call void @scr_unwind_raise()\n");
+  // The resume unwinds: where LLVM inlines the function at an invoke, the
+  // call becomes an invoke of the caller's landing pad.
+  expect(out).toContain("  call void @scr_unwind_resume(ptr %t)\n");
 });
 
 test("functions without a plain call of a raising function change only their call lines", () => {

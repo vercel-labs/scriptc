@@ -16,36 +16,36 @@ maybe-promise-fences.ts:11:20 - error SC2004: uses of 'thenable' inherit the blo
 
   hint: the declaration of 'thenable' did not compile — fix the diagnostic reported there and these sites clear with it
 
-maybe-promise-fences.ts:14:10 - error SC2009: values of type 'boolean | Promise<string> | Promise<number>' cannot be compiled: the union shape is supported, but it has several promise arms ('Promise<string>' and 'Promise<number>'), and a compiled union holds at most one (the union tag is the 'instanceof Promise' test)
+maybe-promise-fences.ts:16:10 - error SC2009: values of type 'boolean | Promise<string> | Promise<RegExp>' cannot be compiled: the union shape is supported, but its promise arms ('Promise<string>' and 'Promise<RegExp>') do not merge into one promise (their payloads have no common union layout)
 
-  13 | // Two promise arms: the union tag cannot tell them apart by instanceof.
-  14 | function twoPromises(): Promise<number> | Promise<string> | boolean {
-     |          ^~~~~~~~~~~
-  15 |   return true;
+  15 | // a RegExp payload is the promise slot's own, not an arm.
+  16 | function splitPromises(): Promise<RegExp> | Promise<string> | boolean {
+     |          ^~~~~~~~~~~~~
+  17 |   return true;
 
   hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
 
-maybe-promise-fences.ts:17:20 - error SC2004: uses of 'twoPromises' inherit the blocker on its declaration
+maybe-promise-fences.ts:19:20 - error SC2004: uses of 'splitPromises' inherit the blocker on its declaration
 
-  16 | }
-  17 | console.log(typeof twoPromises);
-     |                    ^~~~~~~~~~~
-  18 | 
+  18 | }
+  19 | console.log(typeof splitPromises);
+     |                    ^~~~~~~~~~~~~
+  20 | 
 
-  hint: the declaration of 'twoPromises' did not compile — fix the diagnostic reported there and these sites clear with it
+  hint: the declaration of 'splitPromises' did not compile — fix the diagnostic reported there and these sites clear with it
 
-maybe-promise-fences.ts:23:13 - error SC1090: console.log of 'Promise<string> | string' values ('Promise<string>' values have no inspect lowering) are not supported yet
+maybe-promise-fences.ts:25:13 - error SC1090: console.log of 'Promise<string> | string' values ('Promise<string>' values have no inspect lowering) are not supported yet
 
-  22 | }
-  23 | console.log(maybe(true));
+  24 | }
+  25 | console.log(maybe(true));
      |             ^~~~~~~~~~~
-  24 | 
+  26 | 
 
-maybe-promise-fences.ts:27:50 - error SC2020: 'Promise.resolve over 'Promise<string> | string' at this result type' is part of the standard library types but has no scriptc lowering yet
+maybe-promise-fences.ts:29:50 - error SC2020: 'Promise.resolve over 'Promise<string> | string' at this result type' is part of the standard library types but has no scriptc lowering yet
 
-  26 | // must be that arm's own promise type.
-  27 | const widened = Promise.resolve<string | number>(maybe(false));
+  28 | // must be that arm's own promise type.
+  29 | const widened = Promise.resolve<string | number>(maybe(false));
      |                                                  ^~~~~~~~~~~~
-  28 | console.log(typeof widened);
+  30 | console.log(typeof widened);
 
   hint: the promise arm passes through identically, so it must already be the result's promise type

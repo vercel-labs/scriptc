@@ -70,8 +70,13 @@ async function tryFastPath(): Promise<number | null> {
     values["profile-generate"] !== undefined ||
     values["profile-use"] !== undefined ||
     values.sparse ||
+    // A --libnode=beside build places the pack and the island modules next
+    // to the executable, which a routed hit does not do.
+    values.libnode === "beside" ||
     // The full compiler resolves `native` against the build host.
     values["target-cpu"] !== undefined ||
+    // The full CLI validates the value.
+    values.exceptions !== undefined ||
     (values["external-types"] ?? []).length > 0 ||
     // The full CLI validates the Node island policy flags.
     hasNodeIslandFlags(values) ||
@@ -173,7 +178,7 @@ async function tryFastPath(): Promise<number | null> {
         : startup.executableNativeEnvironmentFingerprint(),
     nodeVersion: process.version,
     // An entry of a program that calls into Node.js serves only the same pack.
-    libnodeIdentity: () => startup.libnodeCacheKey(values.libnode),
+    libnodeIdentity: () => startup.libnodeCacheKey(values.libnode, process.env, dirname(input)),
   });
   if (hit === null) return null;
   if (!values["keep-llvm"]) await rm(hit.llvmPath, { force: true });
@@ -235,6 +240,7 @@ async function coverageFastPath(
     values.static ||
     values["detached-exit"] ||
     values["large-pages"] ||
+    values.exceptions !== undefined ||
     values["target-cpu"] !== undefined ||
     values["cpu-dispatch"] !== undefined ||
     values.lib ||

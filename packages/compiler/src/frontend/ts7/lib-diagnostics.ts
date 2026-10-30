@@ -4,8 +4,9 @@
  * no other file of a program can change what checking those files reports
  * (every one is a module without global or module augmentations, or a
  * script declaring no global name the supplied files declare), the answer
- * depends only on the checker, the compiler options and the files
- * themselves, so a stored answer for the same three stands in for checking
+ * depends only on the checker, the compiler options that can change it (not
+ * those of OPTIONS_WITHOUT_SUPPLIED_DIAGNOSTICS) and the files themselves,
+ * so a stored answer for the same three stands in for checking
  * them again: the server checks only the program's other files
  * (getDiagnosticsOfCheckedFiles), and the semantic diagnostics merge in the
  * order the full check sorts them, by file name. An answer is stored only
@@ -68,6 +69,51 @@ export type SuppliedKind = "library" | "module" | "declarations";
 
 const SCHEMA = "scriptc.lib-diagnostics.v2";
 const PREBUILT_SCHEMA = "scriptc.lib-diagnostics-prebuilt.v1";
+
+/**
+ * Compiler options that cannot change what checking the supplied declaration
+ * files reports, so their answers' keys leave them out: a project that sets
+ * them shares the answers of one that does not, and a build with an empty
+ * cache can use the prebuilt answers, which are recorded without a tsconfig.
+ * - `noUnusedLocals` and `noUnusedParameters`: the checker reports no unused
+ *   identifiers in declaration files.
+ * - `noImplicitReturns`, `noFallthroughCasesInSwitch`, `allowUnusedLabels` and
+ *   `allowUnreachableCode`: they apply to statements, which declaration files
+ *   do not have.
+ * - `noUncheckedIndexedAccess` and `noPropertyAccessFromIndexSignature`: they
+ *   apply to element and property access expressions (and to destructuring
+ *   and iteration), not to indexed access types.
+ * - `allowSyntheticDefaultImports`: it applies to default imports, which the
+ *   supplied files do not make.
+ * lib-diagnostics-options.test.ts checks the supplied files with each of them
+ * set and unset and compares the diagnostics, checks that the unused options
+ * report nothing in a declaration file, and that the supplied files have none
+ * of the statements, access expressions and default imports the others apply
+ * to.
+ */
+export const OPTIONS_WITHOUT_SUPPLIED_DIAGNOSTICS = [
+  "noUnusedLocals",
+  "noUnusedParameters",
+  "noImplicitReturns",
+  "noFallthroughCasesInSwitch",
+  "allowUnusedLabels",
+  "allowUnreachableCode",
+  "noUncheckedIndexedAccess",
+  "noPropertyAccessFromIndexSignature",
+  "allowSyntheticDefaultImports",
+] as const;
+
+const optionsWithoutSuppliedDiagnostics: ReadonlySet<string> = new Set(
+  OPTIONS_WITHOUT_SUPPLIED_DIAGNOSTICS,
+);
+
+/** `options` without OPTIONS_WITHOUT_SUPPLIED_DIAGNOSTICS, the others in their order. */
+function suppliedFileOptions(options: Record<string, unknown>): Record<string, unknown> {
+  const kept: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(options))
+    if (!optionsWithoutSuppliedDiagnostics.has(name)) kept[name] = value;
+  return kept;
+}
 
 let configured: {
   store: LibDiagnosticsStore;
@@ -245,10 +291,14 @@ function reuse(
   // one of them is also a global the supplied files declare.
   const collides = (globals: ReadonlySet<string>): boolean =>
     scripts.some((names) => [...names].some((name) => globals.has(name)));
-  // The options without the configuration file's path: it names where the
-  // project is, which checking the supplied files does not read (the files a
-  // project's location brings in are part of the key).
-  const options = { ...program.getCompilerOptions(), configFilePath: undefined };
+  // The options without the configuration file's path, which names where the
+  // project is and which checking the supplied files does not read (the files
+  // a project's location brings in are part of the key), and without the
+  // options that cannot change what checking them reports.
+  const options = suppliedFileOptions({
+    ...program.getCompilerOptions(),
+    configFilePath: undefined,
+  });
   const key = entryKey(checker, options, libs);
   if (key === null) return null;
   const stored = readEntry(store, key, libs) ?? prebuiltEntry(store, key, options, libs);

@@ -149,6 +149,20 @@ static void exchange_cases(void) {
   scriptc_ts7_close(newer);
 }
 
+/* A reply that arrives after the read's poll window: the read waits for it. */
+static void slow_reply_cases(void) {
+  uint32_t id = start("slow-echo", 0);
+  assert(id != 0);
+  const uint8_t bytes[3] = {1, 2, 3};
+  uint8_t result[3] = {0};
+  for (unsigned round = 0; round < 3; round++) {
+    write_exact(id, bytes, sizeof(bytes), 0, sizeof(bytes));
+    read_exact(id, result, sizeof(result));
+    assert(memcmp(bytes, result, sizeof(bytes)) == 0);
+  }
+  scriptc_ts7_close(id);
+}
+
 static void failure_cases(void) {
   uint8_t bytes[1] = {42};
   const char *saved = executable;
@@ -289,6 +303,7 @@ static int process_main(int argc, char **argv) {
   unsigned before = resource_count();
   argument_cases();
   exchange_cases();
+  slow_reply_cases();
   failure_cases();
 #ifndef _WIN32
   attach_cases();

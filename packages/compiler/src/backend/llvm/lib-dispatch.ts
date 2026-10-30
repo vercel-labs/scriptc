@@ -214,6 +214,9 @@ export function emitIoLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue
 
 export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
+  // The generic emitter registrations queue the maxListeners leak warning
+  // for the next tick like emitter.on (lib-process.ts).
+  if (e.fn === "emitter.onFlex" || e.fn === "emitter.onAny") host.usesTimers = true;
   if (host.coroAwait && e.fn === "async.hop") {
     host.emitCoroAwait(null);
     return { name: "", type: e.type };
@@ -278,6 +281,15 @@ export function emitGenericLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     if (type.kind !== "record")
       throw new InternalCompilerError("llvm emitter bug: record.sourceSpread of a non-record");
     host.dyn.emitRecordSourceSpread(B, built.name, value.name, type.shapeId);
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "record.sourceNote") {
+    const built = host.emitReadReceiver(e.args[0]!);
+    const keys = emitBorrowedInput(host, e.args[1]!);
+    const type = e.args[0]!.type;
+    if (type.kind !== "record")
+      throw new InternalCompilerError("llvm emitter bug: record.sourceNote of a non-record");
+    host.dyn.emitRecordSourceNote(B, built.name, keys.name, type.shapeId);
     return { name: "", type: e.type };
   }
   if (e.fn === "array.speciesCreate") {
@@ -1170,6 +1182,7 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "dir":
     case "watcher":
     case "stats":
+    case "bigstats":
     case "zlib":
     case "atomics":
       return host.emitFilesystemLibCall(e);
@@ -1184,6 +1197,10 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
     case "str":
     case "regexp":
     case "intl":
+    // ICU-backed Intl (scr_intl.c): ordinary libCalls whose C symbols the
+    // runtime provides — the same generic emission the engine-free intl
+    // forms use.
+    case "icu":
     case "sym":
     case "perf":
     case "number":
@@ -1271,10 +1288,13 @@ export function emitLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
       return host.emitGenericLibCall(e);
     case "nodeIsland":
       return host.emitGenericLibCall(e);
+    // Primitive wrapper objects (scr_js_wrapper.c).
+    case "wrapper":
+      return host.emitGenericLibCall(e);
     case "webstream":
       // A stream's start, pull and cancel steps run as promise jobs, so
       // a program with the classes runs its event loop.
-      if (e.fn === "webstream.class") host.usesTimers = true;
+      if (e.fn === "webstream.class" || e.fn === "webstream.install") host.usesTimers = true;
       return host.emitGenericLibCall(e);
     case "test":
       return emitTestLibCall(host, e);

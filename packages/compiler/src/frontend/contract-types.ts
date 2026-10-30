@@ -16,14 +16,32 @@ import { type HeritageElement, isHeritageElement } from "./heritage-elements.js"
 
 export const CONTRACT_TYPES_MODULE = "@scriptc/types";
 
-export type ContractMarker = "Int32" | "NoThrow" | "Immutable" | "Acyclic" | "ProgramLifetime";
+/** The module and name of the inline array field marker, which is
+ * experimental: `readonly f: InlineArray<C>` on an instance field of a
+ * ProgramLifetime class (ir/inline-arrays.ts). */
+export const INLINE_ARRAY_MODULE = "@scriptc/experimental";
+export const INLINE_ARRAY_MARKER = "InlineArray";
+
+export type ContractMarker =
+  | "Int32"
+  | "NoThrow"
+  | "Immutable"
+  | "Acyclic"
+  | "ProgramLifetime"
+  | typeof INLINE_ARRAY_MARKER;
 const MARKERS: ReadonlySet<string> = new Set([
   "Int32",
   "NoThrow",
   "Immutable",
   "Acyclic",
   "ProgramLifetime",
+  INLINE_ARRAY_MARKER,
 ]);
+
+/** The module a marker is imported from. */
+function markerModule(marker: string): string {
+  return marker === INLINE_ARRAY_MARKER ? INLINE_ARRAY_MODULE : CONTRACT_TYPES_MODULE;
+}
 
 /** One written contract: what it promises and where the annotation is. */
 export interface ContractNote {
@@ -67,6 +85,9 @@ export interface ContractAnnotations {
   acyclic: AcyclicNote[];
   /** ProgramLifetime classes (`implements ProgramLifetime`) by class key. */
   classes: Map<string, ContractNote>;
+  /** Inline array fields (`readonly f: InlineArray<C>`) by
+   * `${class key}\0${field name}`. */
+  inlineArrays: Map<string, ContractNote>;
   diagnostics: ScrDiagnostic[];
   /** Number of annotations found (for timing and tests). */
   count: number;
@@ -123,7 +144,7 @@ function markerNamed(
     importDecl === undefined ||
     !ts.isImportDeclaration(importDecl) ||
     !ts.isStringLiteral(importDecl.moduleSpecifier) ||
-    importDecl.moduleSpecifier.text !== CONTRACT_TYPES_MODULE
+    importDecl.moduleSpecifier.text !== markerModule(member)
   )
     return null;
   return MARKERS.has(member) ? (member as ContractMarker) : null;
@@ -158,6 +179,7 @@ export function collectContractAnnotations(
     fields: new Map(),
     acyclic: [],
     classes: new Map(),
+    inlineArrays: new Map(),
     diagnostics: [],
     count: 0,
   };
@@ -166,7 +188,11 @@ export function collectContractAnnotations(
     ts.SyntaxKind.ExpressionWithTypeArguments,
   ]);
   for (const sf of files) {
-    if (sf.isDeclarationFile || !sf.text.includes(CONTRACT_TYPES_MODULE)) continue;
+    if (
+      sf.isDeclarationFile ||
+      (!sf.text.includes(CONTRACT_TYPES_MODULE) && !sf.text.includes(INLINE_ARRAY_MODULE))
+    )
+      continue;
     ts.walkPreorder(
       sf,
       (node) => {
@@ -183,6 +209,7 @@ export function collectContractAnnotations(
         out.count++;
         if (marker === "Acyclic") placeAcyclicAlias(out, checker, node, resolveUnit);
         else if (marker === "ProgramLifetime") unsupported(out, node, marker);
+        else if (marker === INLINE_ARRAY_MARKER) placeInlineArray(out, node);
         else place(out, checker, node, marker);
       },
       kinds,
@@ -199,6 +226,17 @@ function unsupported(out: ContractAnnotations, node: ts.Node, marker: ContractMa
         locOf(node),
         "the Acyclic contract is not checked in this position (Acyclic is checked on classes, interfaces and object type aliases)",
         "write `class C implements Acyclic` or `interface I extends Acyclic` (without a type argument), or `type T = Acyclic<{ ... }>`",
+      ),
+    );
+    return;
+  }
+  if (marker === INLINE_ARRAY_MARKER) {
+    out.diagnostics.push(
+      contractDiag(
+        "SC7006",
+        locOf(node),
+        "the InlineArray contract is not checked in this position (InlineArray is checked on instance fields of ProgramLifetime classes)",
+        "write it directly as the type of an instance field: readonly f: InlineArray<C>",
       ),
     );
     return;
@@ -280,6 +318,28 @@ function placeHeritage(
     return;
   }
   unsupported(out, node, marker);
+}
+
+/** `readonly f: InlineArray<C>`: an instance field of a class. */
+function placeInlineArray(out: ContractAnnotations, ref: ts.TypeReferenceNode): void {
+  const parent = ref.parent;
+  if (
+    parent === undefined ||
+    !ts.isPropertyDeclaration(parent) ||
+    parent.type !== ref ||
+    ref.typeArguments?.nodes.length !== 1 ||
+    ts.getModifiers(parent)?.some((m) => m.kind === ts.SyntaxKind.StaticKeyword) === true ||
+    !(ts.isIdentifier(parent.name) || ts.isPrivateIdentifier(parent.name))
+  )
+    return unsupported(out, ref, INLINE_ARRAY_MARKER);
+  const cls = parent.parent;
+  if (cls === undefined || !(ts.isClassDeclaration(cls) || ts.isClassExpression(cls)))
+    return unsupported(out, ref, INLINE_ARRAY_MARKER);
+  out.inlineArrays.set(`${contractLocKey(locOf(cls))}\0${parent.name.text}`, {
+    marker: INLINE_ARRAY_MARKER,
+    loc: locOf(ref),
+    name: `${nameText(cls.name)}.${parent.name.text}`,
+  });
 }
 
 /** `type T = Acyclic<{ ... }>`: the aliased object type. */

@@ -260,6 +260,9 @@ const PURE_KINDS = new Set<IrExpr["kind"]>([
   "unionIsTag",
   "unionNarrow",
   "unionWrap",
+  // Its statements are checked on their own (declarations and assignments
+  // are recorded writes).
+  "seqExpr",
 ]);
 
 /** The locals evaluating `value` may assign, and whether it may run other
@@ -273,7 +276,11 @@ function valueEffects(lowerer: Lowerer, value: IrExpr): { writes: Set<string>; o
   everyExpr(value, {
     expr: (e) => {
       if (e.kind === "assignExpr" || e.kind === "incDec") writes.add(e.localId);
-      else if (e.kind === "call" ? !readers.has(e.callee) : !PURE_KINDS.has(e.kind)) opaque = true;
+      else if (e.kind === "libCall") {
+        // The "undefined" key of an undefined index is a constant.
+        if (e.fn !== "array.undefinedKey") opaque = true;
+      } else if (e.kind === "call" ? !readers.has(e.callee) : !PURE_KINDS.has(e.kind))
+        opaque = true;
       return true;
     },
     stmt: (s) => {
@@ -312,6 +319,16 @@ function readsMutableLocal(lowerer: Lowerer, e: IrExpr): boolean {
       x.kind !== "varRef" || lowerer.ctx.locals.find((l) => l.id === x.localId)?.mutable === false,
     stmt: () => true,
   });
+}
+
+/** Whether `receiver` still reads the same value after `index` runs: the
+ * index assigns none of the bindings it reads, and runs no code that could
+ * assign them through a closure. */
+export function unaffectedByIndex(lowerer: Lowerer, receiver: IrExpr, index: IrExpr): boolean {
+  const effects = valueEffects(lowerer, index);
+  return (
+    unaffectedBy(receiver, effects) && !(effects.opaque && readsMutableLocal(lowerer, receiver))
+  );
 }
 
 /** A number, string or boolean element type. Arrays of it hold a present

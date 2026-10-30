@@ -79,6 +79,12 @@ Options:
                      large programs. Takes about 3 ms per 10 MiB of code, and
                      all of the moved code stays resident (opt in; --emit=exe
                      only)
+      --exceptions <common|rare>
+                     Linux: how often the program throws (default: common).
+                     rare lets recursive functions and functions near a
+                     throw propagate exceptions by unwinding: their calls
+                     need no exception check, and a throw that crosses them
+                     costs a native unwind of several microseconds
       --target-cpu <baseline|x86-64-v2|x86-64-v3|x86-64-v4|native>
                      x86-64: compile the program's code for a CPU level
                      (default: baseline, which runs on any x86-64 CPU). The
@@ -102,7 +108,8 @@ Options:
                      code is laid out, inlined and split by how the profiled
                      runs used it. Code the profile does not describe, or
                      describes from an older version of the program, is
-                     optimized as without one. build prints how the profile
+                     optimized as without one, unless a .blocks file beside
+                     the profile describes it. build prints how the profile
                      matched on stderr, and warns when more than 10% of the
                      functions it describes changed (release or speed;
                      --emit=exe only)
@@ -191,6 +198,7 @@ export const CLI_OPTIONS = {
   "detached-exit": { type: "boolean", default: false },
   libnode: { type: "string" },
   "large-pages": { type: "boolean", default: false },
+  exceptions: { type: "string" },
   "target-cpu": { type: "string" },
   "cpu-dispatch": { type: "boolean" },
   "profile-generate": { type: "string" },

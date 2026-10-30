@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6899-node-island-unsafe-record/main.ts"
+ ],
+ "diags": []
+}

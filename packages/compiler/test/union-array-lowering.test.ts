@@ -91,7 +91,7 @@ export {};
   expect(helpers(result.ir, "%union.arr")).toEqual([]);
 });
 
-test("a union that already holds the array arm keeps its checked extraction", async () => {
+test("a mixed union that holds the array arm converts every arm", async () => {
   const result = await lower(`
 type T = string[] | ["a"];
 function pick(flag: boolean): T {
@@ -103,9 +103,26 @@ export {};
 `);
   expect(result.ok).toBe(true);
   if (!result.ok) return;
-  // `string[]` is an arm, so the conversion this program always used — the
-  // checked extraction of that arm — must stay byte-identical: the new union
-  // array lift is only for unions with no arm the slot can hold.
+  // Node has one array either way, so the tuple arm rebuilds instead of the
+  // checked extraction trapping on it.
+  expect(helpers(result.ir, "%union.arr").length).toBeGreaterThan(0);
+  expect(helpers(result.ir, "%union.narrow")).toEqual([]);
+});
+
+test("a union whose only non-unit arm is the slot keeps its checked extraction", async () => {
+  const result = await lower(`
+type T = string[] | undefined;
+function pick(flag: boolean): T {
+  return flag ? ["b", "c"] : undefined;
+}
+const widened: string[] = pick(true)!;
+console.log(widened.length);
+export {};
+`);
+  expect(result.ok).toBe(true);
+  if (!result.ok) return;
+  // Nothing to convert: the destination arm comes out through the same
+  // checked extraction this shape always took.
   expect(helpers(result.ir, "%union.narrow").length).toBeGreaterThan(0);
   expect(helpers(result.ir, "%union.arr")).toEqual([]);
 });
@@ -121,4 +138,26 @@ export {};
   expect(result.ok).toBe(true);
   if (!result.ok) return;
   expect(helpers(result.ir, "%union.arr").length).toBeGreaterThan(0);
+});
+
+test("an empty array literal takes the union's first array arm instead of trapping", async () => {
+  const result = await lower(`
+type TextContent = { type: "text"; text: string };
+type ImageContent = { type: "image"; url: string };
+interface Message {
+  content: TextContent[] | ImageContent[];
+}
+const message: Message = { content: [] };
+function lists(): string[] | number[] {
+  return [];
+}
+console.log(JSON.stringify(message.content), JSON.stringify(lists()));
+export {};
+`);
+  expect(result.ok).toBe(true);
+  if (!result.ok) return;
+  // An empty literal carries no element of its own, so it is built as the
+  // union's first array arm: no stranded-source trap and no element rebuild.
+  expect(helpers(result.ir, "%union.strand")).toEqual([]);
+  expect(helpers(result.ir, "%union.arr")).toEqual([]);
 });

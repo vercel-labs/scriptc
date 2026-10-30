@@ -12,6 +12,7 @@ import {
   lowerNewTargetName,
 } from "./new-target.js";
 import { lowerWebAssemblyValue, refuseWebAssemblyUse } from "./builtins/webassembly.js";
+import { lowerIslandExpr } from "./lower-node-island.js";
 import { lowerAwaitedUniformPromiseAll } from "./builtins/promises.js";
 import { dynUndefinedExpr, nodeThrowExpr, numLit, strLit, varRef } from "../../ir/build.js";
 import { InternalCompilerError } from "../../errors.js";
@@ -26,7 +27,11 @@ import { checkedPrivateReceiver, localPrivateBrandClass } from "./private-brands
 import { staticCondition } from "./static-typeof.js";
 import { constituentTypes } from "../ts7/checker.js";
 import type { Lowerer } from "./lowerer.js";
-import { lowerMaybePromiseAwait, maybePromiseUnionOf } from "./maybe-promise.js";
+import {
+  lowerMaybePromiseAwait,
+  maybePromiseUnionOf,
+  promiseArmedUnionOf,
+} from "./maybe-promise.js";
 import { checkedClassUnionAssertion } from "./class-assertions.js";
 import {
   BIGINT_T,
@@ -105,6 +110,7 @@ import {
 } from "./expressions/property-access.js";
 import { lowerNullishPair } from "./expressions/binary.js";
 import { lowerElementCompoundParts, recordKeyLiteralText } from "./expressions/element-access.js";
+import { heldEnvValueType } from "./builtins/environment.js";
 import { OBJECT_PROTOTYPE_MEMBERS } from "../shape-inference/domain.js";
 export {
   DEFERRED_READ_MESSAGE,
@@ -288,6 +294,13 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
   // enclosing optChain — read the bind temp instead of re-lowering.
   const chainRecv = lowerer.chainRecvByNode.get(expr);
   if (chainRecv) return { ...chainRecv, loc };
+
+  // Node islands (scope-B NI-4): member operations on island values and
+  // island import bindings. Programs without islands skip it.
+  if (lowerer.nodeIslands !== null) {
+    const island = lowerIslandExpr(lowerer, expr);
+    if (island !== null) return island;
+  }
 
   // --external-types supplies CHECKER truth only. A value rooted in one
   // of those declarations has no runtime implementation in scriptc, so
@@ -668,9 +681,23 @@ function lowerExprInner(lowerer: Lowerer, expr: ts.Expression): IrExpr {
             loc,
           };
         }
-        if (inner.kind === "union" || inner.kind === "dyn") {
-          // A union inner would need an arm-wise re-tag into the result
-
+        if (inner.kind === "union") {
+          // A UNION inner (`Promise<A | B> | undefined`): the awaited
+          // result is the checker's own `Awaited` of the operand, which
+          // the maybe-promise lowering already produces — it awaits the
+          // narrowed promise arm and coerces its settled union, and the
+          // unit arms keep JS's one-microtask hop. Only the promise-or-
+          // unit shape reaches here, so the maybe-promise union is the
+          // same union with its only data arms being units.
+          const armed = promiseArmedUnionOf(lowerer, value.type);
+          if (armed) return lowerMaybePromiseAwait(lowerer, expr, value, armed, loc);
+          lowerer.unsupported(
+            "SC1090",
+            expr,
+            `awaiting '${lowerer.fmt(value.type)}' (the promise's inner type has no combined result union — await the promise arm after narrowing instead)`,
+          );
+        }
+        if (inner.kind === "dyn") {
           lowerer.unsupported(
             "SC1090",
             expr,
@@ -2491,6 +2518,12 @@ export function lowerAbsenceProbe(lowerer: Lowerer, node: ts.Expression): IrExpr
   const header = lowerer.lowerHttpHeadersElement(expr);
   if (header) return header;
 
+  // A keyed read through a value HELD from process.env (`const env =
+  // process.env; env[k] ?? fallback`) aliases the live table: the ordinary
+  // lowering is getenv, whose `string | undefined` result already carries
+  // the missing arm this probe reconstructs for record keys.
+  if (heldEnvValueType(lowerer, expr.expression) !== null) return null;
+
   const receiverT = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
   if (receiverT?.kind === "record") {
     const shape = lowerer.shapes.get(receiverT.shapeId);
@@ -2927,6 +2960,7 @@ export function typeofAnswer(arm: IrType): string | null {
     case "url":
     case "searchParams":
     case "stats":
+    case "bigintStats":
     case "fileHandle":
     case "dir":
     case "spawnRes":

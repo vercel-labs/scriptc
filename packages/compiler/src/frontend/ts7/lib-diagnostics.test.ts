@@ -58,12 +58,13 @@ function sessionProgram(answers: {
   semantic: Map<string, Ts7DiagnosticData[]>;
   global?: Ts7DiagnosticData[];
   checked?: boolean;
+  options?: Record<string, unknown>;
 }): Ts7SessionProgram & { asked: string[] } {
   const asked: string[] = [];
   const all = [...answers.semantic.values()].flat();
   return {
     asked,
-    getCompilerOptions: () => ({ strict: true }),
+    getCompilerOptions: () => answers.options ?? { strict: true },
     diagnosticData: (method: string, file?: string) => {
       asked.push(file === undefined ? method : `${method} ${file}`);
       if (method === "getGlobalDiagnostics") return answers.global ?? [];
@@ -369,6 +370,56 @@ test("prebuilt answers apply only to the same checker release and file contents"
   reusedLibDiagnostics(edited, names, supplied, moduleFile);
   expect(edited.asked[0]).toBe("getGlobalDiagnostics");
   writeFileSync(fallback, fallbackText);
+});
+
+test("options that cannot change the supplied files' diagnostics share their answers", () => {
+  const store = memoryStore();
+  setLibDiagnosticsStore(store, "checker");
+  const semantic = new Map([
+    [lib, [diagnostic(lib, 1)]],
+    [main, [diagnostic(main, 5)]],
+  ]);
+  reusedLibDiagnostics(sessionProgram({ semantic }), names, supplied, moduleFile);
+  expect(store.entries.size).toBe(1);
+  // A project that also sets the options of OPTIONS_WITHOUT_SUPPLIED_DIAGNOSTICS checks only its own files.
+  const unused = sessionProgram({
+    semantic,
+    options: {
+      strict: true,
+      noUnusedLocals: true,
+      noUnusedParameters: true,
+      noImplicitReturns: true,
+      noFallthroughCasesInSwitch: true,
+      allowUnusedLabels: false,
+      allowUnreachableCode: false,
+      noUncheckedIndexedAccess: true,
+      noPropertyAccessFromIndexSignature: true,
+      allowSyntheticDefaultImports: true,
+    },
+  });
+  expect(reusedLibDiagnostics(unused, names, supplied, moduleFile)?.semantic).toEqual([
+    diagnostic(lib, 1),
+    diagnostic(main, 5),
+  ]);
+  expect(unused.asked).toEqual([`checked ${main}`]);
+  // Other options can change them: the answers stay apart.
+  for (const options of [{ strict: false }, { strict: true, exactOptionalPropertyTypes: true }]) {
+    const other = sessionProgram({ semantic, options });
+    reusedLibDiagnostics(other, names, supplied, moduleFile);
+    expect(other.asked[0]).toBe("getGlobalDiagnostics");
+  }
+});
+
+test("a prebuilt answer recorded without a tsconfig serves a project setting those options", () => {
+  const semantic = new Map([[main, [diagnostic(main, 5)]]]);
+  const prebuilt = recorded("1.0.0", semantic);
+  setLibDiagnosticsStore(memoryStore(), "installed checker", () => prebuilt);
+  const program = sessionProgram({
+    semantic,
+    options: { strict: true, noUnusedLocals: true, noUncheckedIndexedAccess: true },
+  });
+  reusedLibDiagnostics(program, names, supplied, moduleFile);
+  expect(program.asked).toEqual([`checked ${main}`]);
 });
 
 test("a full check that reports diagnostics in a supplied file records no prebuilt answer", () => {

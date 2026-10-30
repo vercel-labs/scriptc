@@ -56,6 +56,8 @@ import {
 import {
   requireProducedArrayElement,
   lowerArrayCallback,
+  lowerArrayCallbackAnswering,
+  unitOnlyArrayElement,
   callbackArrayElement,
 } from "./callback-arguments.js";
 import { classGeneratorIterable } from "../class-iterables.js";
@@ -1002,6 +1004,8 @@ export function lowerArrayFromCall(
           args[1]!,
           [input.element],
           arrayOf(input.element),
+          false,
+          unitOnlyArrayElement(lowerer, call) ?? undefined,
         );
         if (callback.arity > 2)
           lowerer.noLowering("Array.from mapper with an array parameter", args[1]!);
@@ -1085,6 +1089,19 @@ export function lowerArrayFromCall(
   // and materializes holes while keeping element reference identity.
   if ((args.length === 1 || args.length === 2) && !ts.isObjectLiteralExpression(args[0]!)) {
     const source = lowerer.lowerExpr(args[0]!);
+    // Array.from(s): the string iterator's code points, into a fresh
+    // array (scr_str_code_points already builds one, like Array.from).
+    // The checker can narrow the argument to a string while the binding
+    // keeps its nullable storage (`value.includes(x) && Array.from(value)`),
+    // so the site type decides and the read is coerced to that string.
+    if (
+      args.length === 1 &&
+      (source.type.kind === "string" ||
+        lowerer.mapTypeOf(lowerer.typeOf(args[0]!))?.kind === "string")
+    ) {
+      const str = source.type.kind === "string" ? source : lowerer.coerceToExpected(source, STRING);
+      return strCharsCall(str, loc);
+    }
     let src =
       source.type.kind === "string" && args.length === 2 ? strCharsCall(source, loc) : source;
     if (src.type.kind === "array") {
@@ -1123,7 +1140,14 @@ export function lowerArrayFromCall(
       if (paramSymbol) lowerer.runtimeOptionalBindingTypes.set(paramSymbol, valueT);
       let callback: ReturnType<typeof lowerArrayCallback>;
       try {
-        callback = lowerArrayCallback(lowerer, mapper, [valueT], arrT);
+        callback = lowerArrayCallback(
+          lowerer,
+          mapper,
+          [valueT],
+          arrT,
+          false,
+          unitOnlyArrayElement(lowerer, call) ?? undefined,
+        );
       } finally {
         if (paramSymbol) {
           if (previous === undefined) lowerer.runtimeOptionalBindingTypes.delete(paramSymbol);
@@ -1155,6 +1179,44 @@ export function lowerArrayFromCall(
         receiver: src,
         args: [],
         type: arrayOf(F64),
+        loc,
+      };
+    }
+    // `Array.from(typedArray, mapper)`: the element read is live (a
+    // mapper that writes the source changes later reads, as in Node),
+    // so this is a loop over the typed array, not a toArray snapshot.
+    if (src.type.kind === "bytes" && args.length === 2) {
+      const callback = lowerArrayCallback(
+        lowerer,
+        args[1]!,
+        [F64],
+        arrayOf(F64),
+        false,
+        unitOnlyArrayElement(lowerer, call) ?? undefined,
+      );
+      if (callback.arity > 2)
+        lowerer.noLowering("Array.from mapper with an array parameter", args[1]!);
+      const fnRet = callback.fnArg.type.ret;
+      if (fnRet.kind === "void" || fnRet.kind === "func")
+        lowerer.badType(call, lowerer.typeOf(call));
+      requireProducedArrayElement(lowerer, call, "'Array.from(typedArray, mapper)'", fnRet);
+      const outElem = callbackArrayElement(lowerer, call, fnRet);
+      // The element kind rides in the key because the lifted helper's
+      // source parameter carries it (the reads themselves are always f64).
+      const key = `fromBytes:${src.type.elem}:${typeKey(outElem)}:${typeKey(fnRet)}:${callback.arity}`;
+      let helper = lowerer.arrHofHelpers.get(key);
+      if (!helper) {
+        helper = keyedHelperName(lowerer, "%arr.fromBytes", key);
+        lowerer.arrHofHelpers.set(key, helper);
+        lowerer.liftedFns.push(
+          buildArrayFromBytesFn(lowerer, helper, src.type, outElem, fnRet, callback.arity, loc),
+        );
+      }
+      return {
+        kind: "call",
+        callee: helper,
+        args: [src, callback.fnArg],
+        type: arrayOf(outElem),
         loc,
       };
     }
@@ -1214,7 +1276,7 @@ export function lowerArrayFromCall(
     );
   }
   if (n.type.kind !== "f64") lowerer.badType(args[0]!, lowerer.typeOf(args[0]!));
-  const fnArg = lowerer.lowerExpr(args[1]!);
+  const fnArg = lowerArrayCallbackAnswering(lowerer, args[1]!, unitOnlyArrayElement(lowerer, call));
   // The mapper may declare any prefix of (v, i): v is the checker's own
   // `unknown` (Node passes undefined there — the dyn undefined singleton
   // here), i the index. The result type must be a legal array element.
@@ -1299,6 +1361,96 @@ function buildArrayFromArrayFn(
           op: "<",
           left: i,
           right: { kind: "arrIntrinsic", method: "length", receiver: a, args: [], type: F64, loc },
+          type: BOOL,
+          loc,
+        },
+        body: [
+          ...(held ? [{ kind: "varDecl", localId: "v.0", init: mapped, loc } as const] : []),
+          arrayValueStore(lowerer, out, i, value, outElem, loc),
+          {
+            kind: "assign",
+            localId: "i.0",
+            value: { kind: "bin", op: "+", left: i, right: numLit(1, loc), type: F64, loc },
+            loc,
+          },
+        ],
+        loc,
+      },
+      { kind: "return", value: out, loc },
+    ],
+    loc,
+  };
+}
+
+/** The `Array.from(typedArray, mapper)` generation loop: every index is
+ * read through the typed array itself (live, like Node's iteration), so
+ * a mapper that writes the source is visible to the indexes it has not
+ * visited yet. */
+function buildArrayFromBytesFn(
+  lowerer: Lowerer,
+  name: string,
+  bytesT: IrType & { kind: "bytes" },
+  outElem: IrType,
+  fnRet: IrType,
+  arity: number,
+  loc: SrcLoc,
+): IrFunction {
+  const outT = arrayOf(outElem);
+  const fnT = funcOf([F64, F64].slice(0, arity), fnRet);
+  const a = varRef("a.0", bytesT, loc);
+  const i = varRef("i.0", F64, loc);
+  const out = varRef("out.0", outT, loc);
+  // The index parameter is the second one, never read for an index the
+  // element covers, so an element-only mapper drops it.
+  const reads: IrExpr[] = [
+    { kind: "bytesIntrinsic", method: "get", receiver: a, args: [i], type: F64, loc },
+    i,
+  ];
+  const mapped: IrExpr = {
+    kind: "callValue",
+    callee: varRef("f.0", fnT, loc),
+    args: reads.slice(0, arity),
+    type: fnRet,
+    loc,
+  };
+  const held = !typeEquals(fnRet, outElem);
+  const value: IrExpr = held ? varRef("v.0", fnRet, loc) : mapped;
+  return {
+    name,
+    params: [
+      { localId: "a.0", name: "a", type: bytesT },
+      { localId: "f.0", name: "f", type: fnT },
+    ],
+    returnType: outT,
+    locals: [
+      { id: "a.0", name: "a", type: bytesT, mutable: true },
+      { id: "f.0", name: "f", type: fnT, mutable: true },
+      { id: "out.0", name: "out", type: outT, mutable: false },
+      { id: "i.0", name: "i", type: F64, mutable: true },
+      ...(held ? [{ id: "v.0", name: "v", type: fnRet, mutable: false }] : []),
+    ],
+    body: [
+      {
+        kind: "varDecl",
+        localId: "out.0",
+        init: { kind: "arrayLit", elems: [], type: outT, loc },
+        loc,
+      },
+      { kind: "varDecl", localId: "i.0", init: numLit(0, loc), loc },
+      {
+        kind: "while",
+        cond: {
+          kind: "bin",
+          op: "<",
+          left: i,
+          right: {
+            kind: "bytesIntrinsic",
+            method: "length",
+            receiver: a,
+            args: [],
+            type: F64,
+            loc,
+          },
           type: BOOL,
           loc,
         },

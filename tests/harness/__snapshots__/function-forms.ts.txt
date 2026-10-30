@@ -1,6 +1,0 @@
-function-forms.ts:38:3 - error SC1090: functions with optional or defaulted parameters as values, except where the target type spells the completed signature with required parameters (a '(x?: T) => R' function flows into a '(x: T | undefined) => R' slot, and a package/'any' slot takes any natively representable signature; otherwise call the function directly) are not supported yet
-
-  37 | function outer(): number {
-  38 |   function inner(n = 2): number {
-     |   ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  39 |     return n;

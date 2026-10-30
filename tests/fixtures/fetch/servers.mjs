@@ -22,12 +22,13 @@
  * /early-hints
  * /switching-protocols /invalid-utf8 /slow /drip
  * /chunked /backpressure /backpressure-state /gzip /gzip-concat
- * /gzip-truncated /gzip-pressure /deflate
+ * /gzip-truncated /gzip-pressure /gzip-incompressible /deflate
  * /status-meta /no-content /reset-content /reset-content-large
  * /truncated-response /upload-failure /sse,
  * 404 for the rest;
  * the proxy relays absolute-URI requests and CONNECT tunnels, counting one
  * per proxied request either way. */
+import { createCipheriv } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createServer, request } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
@@ -39,6 +40,7 @@ export async function startFetchServers() {
   const fragmentRedirects = new Set();
   const backpressureStates = new Map();
   let gzipPressurePayload;
+  let gzipIncompressiblePayload;
   const server = createServer((req, res) => {
     const url = req.url ?? "/";
     if (url === "/upload-failure") {
@@ -292,6 +294,20 @@ export async function startFetchServers() {
           "content-length": String(gzipPressurePayload.length),
         });
         res.end(gzipPressurePayload);
+      } else if (url === "/gzip-incompressible") {
+        // 4 MiB of fixed pseudo-random bytes: the representation spans many
+        // socket reads, so an unread body pauses the socket before HTTP EOF.
+        gzipIncompressiblePayload ??= gzipSync(
+          createCipheriv("aes-128-ctr", Buffer.alloc(16), Buffer.alloc(16)).update(
+            Buffer.alloc(4 * 1024 * 1024),
+          ),
+        );
+        res.writeHead(200, {
+          "content-type": "application/octet-stream",
+          "content-encoding": "gzip",
+          "content-length": String(gzipIncompressiblePayload.length),
+        });
+        res.end(gzipIncompressiblePayload);
       } else if (url === "/deflate") {
         // zlib-wrapped deflate (Node servers' `deflate` spelling).
         const payload = deflateSync(Buffer.from("deflated wörld", "utf8"));

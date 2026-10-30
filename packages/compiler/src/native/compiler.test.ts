@@ -424,7 +424,13 @@ test.skipIf(process.platform === "win32")(
         stats: { statementsTotal: 0, statementsFailed: 0, functionsSkipped: 0 },
       }),
     });
-    const match = { annotated: 120, mismatched: 7, missing: 40, unknownPartitions: 0 };
+    const match = {
+      annotated: 120,
+      mismatched: 7,
+      missing: 40,
+      recovered: 0,
+      unknownPartitions: 0,
+    };
     vi.mocked(emitNativeObject).mockImplementation((options) => {
       expect(options.profile?.use?.path).toBe(profile);
       writeFileSync(options.outputPath, "object");

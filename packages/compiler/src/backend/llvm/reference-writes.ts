@@ -94,6 +94,7 @@ const INERT_LIB_CALLS = new Set([
   "dyn.compare",
   // Reads the ambient receiver (a fresh reference to the bound value).
   "dyn.this",
+  // A sloppy-mode function's receiver from it (a fresh reference).
   "error.new",
   "error.nodeThrow",
   "dyn.typedRefIs",
@@ -102,6 +103,7 @@ const INERT_LIB_CALLS = new Set([
   "json.parse",
   "process.stderrWrite",
   "process.stdoutWrite",
+  "process.stdioWriteDyn",
   "process.envGet",
   "process.envPairs",
   "regex.groupEquals",
@@ -118,6 +120,7 @@ const INERT_LIB_CALLS = new Set([
   "process.platform",
   "process.execPath",
   "process.isTTY",
+  "process.isTTYValue",
   "worker.data",
   "worker.isMainThread",
   "worker.parentPort",

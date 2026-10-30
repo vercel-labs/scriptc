@@ -61,9 +61,11 @@ export function emitUnionWiden(
 /** The identity union conversion (IR unionRetype). Two tagged unions
  * share the operand's box: its +1 becomes the result, so no box is built
  * and no payload is retained. The operand is a whole-value use in every
- * lifetime analysis, so it is never a stack box. A nullable-pointer union
- * on either side, or a source union whose boxes a checked-dynamic cast has
- * cached (and refreshes in place), rebuilds each listed arm instead. */
+ * lifetime analysis, so it is never a stack box. Two pointer unions of one
+ * encoding share the pointer the same way. A pointer union on only one
+ * side, pointer unions whose encodings differ for an arm the value may
+ * hold, or a source union whose boxes a checked-dynamic cast has cached (and
+ * refreshes in place), rebuild each listed arm instead. */
 export function emitUnionRetype(
   host: LlvmEmitterContext,
   e: IrExpr & { kind: "unionRetype" },
@@ -75,14 +77,15 @@ export function emitUnionRetype(
   if (from && to) {
     // Equal encodings make the pointer itself the target value. A shape
     // union derives its record arms from the record and a class union its
-    // class arms from the class id, so only the unit encodings must agree.
+    // class arms from the class id, so only the unit encodings must agree,
+    // and only when the value may hold one of the source's unit arms: a
+    // narrowing that drops `undefined` or `null` keeps the very pointer.
+    const holdsUnit = e.tags.some((tag) => tag === from.unitTag || tag === from.nullTag);
+    const units = !holdsUnit || (from.unitTag === to.unitTag && from.nullTag === to.nullTag);
     const same =
       from.repr === "single" && to.repr === "single"
-        ? from.refTag === to.refTag && from.unitTag === to.unitTag && from.nullTag === to.nullTag
-        : from.repr !== "single" &&
-          from.repr === to.repr &&
-          from.unitTag === to.unitTag &&
-          from.nullTag === to.nullTag;
+        ? from.refTag === to.refTag && units
+        : from.repr !== "single" && from.repr === to.repr && units;
     if (same) return host.own({ name: value.name, type: e.type });
     return host.own({ name: rebuildRetype(host, value.name, e), type: e.type });
   }

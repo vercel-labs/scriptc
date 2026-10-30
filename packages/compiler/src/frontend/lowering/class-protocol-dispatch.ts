@@ -190,6 +190,9 @@ function protocolSignature(
 ): ProtocolSignature | null {
   // A guarded optional step's receiver still carries its nullish arms.
   const recvTs = lowerer.checker.getNonNullableType(lowerer.typeOf(access.expression));
+  // A record view of a Map or Set has no stored member to read: the call
+  // dispatches on the collection at runtime instead.
+  if (lowerer.classCollectionView(recvTs)) return null;
   const property = lowerer.checker.getPropertyOfType(recvTs, access.name.text);
   if (!property) return null;
   const declarations = property.declarations;

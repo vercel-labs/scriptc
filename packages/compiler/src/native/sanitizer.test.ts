@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "vitest";
@@ -17,6 +17,7 @@ const features = {
   dynTier: false,
   streamDyn: false,
   handleProps: false,
+  childLifecycle: false,
   declAdopt: false,
   typeOrigins: false,
   dynForAwait: false,
@@ -30,10 +31,15 @@ const features = {
   builtinValues: false,
   computedRequire: false,
   warningReplace: false,
+  recordViewPartial: false,
   stdioExtended: false,
+  streamWriteErrors: false,
+  stdioWriteSlot: false,
   nodeIsland: false,
   brotli: false,
   moduleNamespace: false,
+  moduleNamespaceDyn: false,
+  primitiveWrapper: false,
   regex: true,
   copying: false,
   textDecoderLegacy: false,
@@ -64,6 +70,8 @@ const features = {
   dgramDyn: false,
   textCodecDyn: false,
   watch: false,
+  watchFile: false,
+  fsBufferBrand: false,
   foreignFfi: false,
   nodeTest: false,
   tls: false,
@@ -148,6 +156,7 @@ test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
           selected: {
             runtime: [],
             archives: [artifact],
+            data: [],
             systemLibraries: [],
             features,
           },
@@ -241,7 +250,13 @@ test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
           packageText: "",
           manifestText: "",
           flavor: "dev",
-          selected: { runtime: [variants[0]!], archives: [], systemLibraries: [], features },
+          selected: {
+            runtime: [variants[0]!],
+            archives: [],
+            data: [],
+            systemLibraries: [],
+            features,
+          },
         },
         directory,
         "executable",
@@ -254,3 +269,93 @@ test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
     }
   },
 );
+
+const linuxPackRoot = fileURLToPath(new URL("../../../runtime-linux-x64-gnu", import.meta.url));
+
+test.skipIf(
+  process.platform !== "linux" ||
+    process.arch !== "x64" ||
+    !existsSync(join(linuxPackRoot, "runtime-pack.json")),
+)("scr_intl.c compiles against the ICU headers the pack ships, and refuses without them", () => {
+  const target = NATIVE_TARGETS.find((item) => item.name === "linux-x64-gnu");
+  if (target === undefined) throw new Error("unsupported sanitizer test host");
+  const runtimeSourceRoot = fileURLToPath(new URL("../../../runtime", import.meta.url));
+  const { version } = JSON.parse(readFileSync(join(runtimeSourceRoot, "package.json"), "utf8")) as {
+    version: string;
+  };
+  const installed = JSON.parse(
+    readFileSync(join(linuxPackRoot, "runtime-pack.json"), "utf8"),
+  ) as RuntimePackManifest;
+  expect(installed.headers?.length ?? 0).toBeGreaterThan(0);
+  const directory = mkdtempSync("/tmp/scriptc-sanitized-intl-");
+  const variant = {
+    path: "artifacts/dev/runtime/default/scr_intl.o",
+    sha256: "0".repeat(64),
+    size: 0,
+    id: "default",
+    when: {},
+    defines: [],
+  };
+  const base: RuntimePackManifest = { ...installed };
+  delete base.headers;
+  const manifest = (headers: RuntimePackManifest["headers"]): RuntimePackManifest => ({
+    ...base,
+    version,
+    flavors: {
+      dev: {
+        optimization: "-O0",
+        runtime_units: [{ source: "scr_intl.c", predicate: true, variants: [variant] }],
+      },
+    },
+    archives: [],
+    ...(headers === undefined ? {} : { headers }),
+  });
+  const build = (packManifest: RuntimePackManifest, stage: string) =>
+    buildSanitizedRuntime(
+      {
+        compilerVersion: version,
+        target,
+        helper: target.helper,
+        runtimeSourceRoot,
+        ts7Executable: "unused",
+        helperExecutable: "unused",
+        helperPackageRoot: "unused",
+        runtimePackRoot: "unused",
+        linker: "unused",
+        linkerArgs: [],
+        dsymutil: "unused",
+      },
+      {
+        root: linuxPackRoot,
+        manifest: packManifest,
+        licenses: packManifest.licenses,
+        packageText: "",
+        manifestText: "",
+        flavor: "dev",
+        selected: {
+          runtime: [variant],
+          archives: [],
+          data: [],
+          systemLibraries: [],
+          features: { ...features, intl: true },
+        },
+      },
+      stage,
+      "executable",
+      null,
+    );
+  try {
+    const built = build(manifest(installed.headers), join(directory, "with-headers"));
+    expect(built.runtimeObjects).toEqual([join(directory, "with-headers", "scr_intl.o")]);
+    expect(statSync(built.runtimeObjects[0]!).size).toBeGreaterThan(0);
+    expect(() => build(manifest(undefined), join(directory, "without"))).toThrow(/no ICU headers/);
+    const changed = installed.headers!.map((header, index) =>
+      index === 0 ? { ...header, sha256: "f".repeat(64) } : header,
+    );
+    expect(() => build(manifest(changed), join(directory, "changed"))).toThrow(
+      /does not match its manifest/,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});

@@ -1,0 +1,8 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "paths": {
+      "pathkit": ["./node_modules/pathkit"]
+    }
+  }
+}

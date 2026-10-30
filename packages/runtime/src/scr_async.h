@@ -23,6 +23,13 @@ ScrPromise *scr_tp_set_immediate(void);
 ScrPromise *scr_promise_new(void);
 void scr_promise_share_identity(ScrPromise *dst, ScrPromise *src);
 bool scr_promise_identity_equal(ScrPromise *a, ScrPromise *b);
+/* A key every promise sharing `p`'s identity answers (each adapter box of
+ * a typed promise), creating the shared cell when `p` has none. */
+const void *scr_promise_identity_key(ScrPromise *p);
+/* A reference on a key from scr_promise_identity_key, for a table that
+ * keeps the key after the promises that share it are gone. */
+void scr_promise_identity_hold(const void *key);
+void scr_promise_identity_drop(const void *key);
 ScrPromise *scr_promise_retain(ScrPromise *p);
 void scr_promise_release(ScrPromise *p);
 void *scr_promise_retain_v(void *p);
@@ -447,6 +454,19 @@ ScrPromise *scr_immediate_promise(void);
 void scr_clear_interval(double handle);
 
 double scr_set_timeout_handle(ScrClosure *cb, double ms); /* cb ownership moves in */
+/* A setTimeout/setInterval delay as given (after ToNumber): emits the
+ * warning Node's Timeout constructor emits when it sets the delay to 1
+ * (TimeoutOverflowWarning; TimeoutNegativeWarning and TimeoutNaNWarning
+ * once per process) on the next tick, and returns the delay unchanged.
+ * `kind` is 0 for the global setTimeout, 1 for the global setInterval,
+ * which emit nothing while mock.timers mocks them, and 2 for a node:timers
+ * import, which mock.timers leaves alone; bit 4 marks a delay read from an
+ * array element, whose NaN may be the undefined of a read past the end,
+ * which warns nothing. */
+double scr_timer_user_delay(double after, double kind);
+/* The mocked global timer functions (scr_test.c): bit 0 setTimeout, bit 1
+ * setInterval. */
+extern SCR_TL int scr_timer_mocked_apis;
 /* Queues `cb` (moved) on the MockTimers that mocks AbortSignal.timeout
  * (scr_test.c), NULL while it is not mocked. AbortSignal.timeout then
  * aborts its signal from that queue instead of arming a loop timer. */

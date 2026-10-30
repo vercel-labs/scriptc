@@ -1,0 +1,20 @@
+js-single-statement-strict.js:7:11 - error SC0007: strict mode code may not declare a function in a single-statement position
+
+  6 | "use strict";
+  7 | if (true) function inIf() {}
+    |           ^~~~~~~~~~~~~~~~~~
+  8 | l: function inLabel() {}
+
+js-single-statement-strict.js:8:1 - error SC0001: A label is not allowed here.
+
+  7 | if (true) function inIf() {}
+  8 | l: function inLabel() {}
+    | ^
+  9 | 
+
+js-single-statement-strict.js:8:4 - error SC0007: strict mode code may not declare a function in a single-statement position
+
+  7 | if (true) function inIf() {}
+  8 | l: function inLabel() {}
+    |    ^~~~~~~~~~~~~~~~~~~~~
+  9 | 

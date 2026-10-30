@@ -199,6 +199,18 @@ void scr_net_server_on_close(ScrNetServer *s, ScrClosure *cb /*moves*/, bool onc
  * cb) rides — fires once per successful bind; late registrations on an
  * already-listening server never fire (Node's once-per-listen emit). */
 void scr_net_server_on_listening(ScrNetServer *s, ScrClosure *cb /*moves*/, bool once);
+/* server.off(event, cb) / removeListener: the LAST listener standing for
+ * the same function leaves that event's list (Node's EventEmitter
+ * removal order). `kind` selects the list (SCR_NET_OFF_*). */
+enum {
+  SCR_NET_OFF_ERROR = 1,
+  SCR_NET_OFF_CLOSE = 2,
+  SCR_NET_OFF_LISTENING = 3,
+  SCR_NET_OFF_CONNECTION = 4,
+  SCR_NET_OFF_TIMEOUT = 5,
+  SCR_NET_OFF_DROP = 6,
+};
+void scr_net_server_off(ScrNetServer *s, ScrClosure *cb /*borrowed*/, double kind);
 void scr_net_server_on_connection(ScrNetServer *s, ScrClosure *cb /*moves*/, ScrNetConnFn fn, bool once);
 /* 'secureConnection' — the deferred-connection list (TLS handshake
  * timing); released unread on a server without deferral (a plain net
@@ -217,6 +229,11 @@ ScrNetSocket *scr_net_connect_attempt(double port, ScrStr *host /*borrowed*/, co
  * autoSelectFamily, attempt budget), then the compiler-rendered fence —
  * always leaves an exception pending. Borrowed. */
 void scr_net_connect_opts_chk(const ScrDyn *opts, const ScrStr *fence);
+/* The port of listen(arg[, ...]) for a checked-dynamic first argument
+ * (Node's normalizeArgs and validatePort): 0 for a function, undefined or
+ * null; ERR_SOCKET_BAD_PORT pending for a bad port; the fence pending for
+ * an options object or a pipe path. Borrowed. */
+double scr_net_listen_port_dyn(const ScrDyn *v, const ScrStr *fence);
 /* connect with a caller lookup (net.connect({ ..., lookup })): invokes
  * lookup(hostname, options, answer-closure) synchronously; answer_fn is
  * the emitted per-shape thunk that decodes the answer down to

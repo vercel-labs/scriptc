@@ -35,15 +35,18 @@ import {
 import { SCR_ARR_FIELD, llvmCommentText } from "./common.js";
 import {
   FN_ATTRS,
+  arrOps,
   elemAccess,
   llFieldType,
   loadStructField,
   releaseSym,
+  traceAdapter,
   traceArg,
   vAdapters,
   type ShapeHost,
 } from "./shapes.js";
 import type { LlvmEmitterContext, LlStreamTypedRefAdapter } from "./expr-context.js";
+import { inlineFieldTail } from "./inline-arrays.js";
 import type { NullableRefField } from "./nullable-fields.js";
 import { emitUnionPeek, emitUnionTag } from "./union-repr.js";
 import { inlineUnionCopyLines } from "./inline-unions.js";
@@ -278,10 +281,13 @@ export function streamTypedRefCommitAdapter(
         });
     }
     const symbols = new Map((meta.def.symbolFields ?? []).map((symbol) => [symbol.field, symbol]));
+    // An inline array field is never written through a view
+    // (inline-array-views.ts), so its elements stay as they are.
     const fields = meta.def.fields.filter(
       (field) =>
         (isClassOwnEnumerableFieldName(field.name) || symbols.has(field.name)) &&
-        !(meta.root.def.name === "%Error" && (field.name === "message" || field.name === "name")),
+        !(meta.root.def.name === "%Error" && (field.name === "message" || field.name === "name")) &&
+        inlineFieldTail(host, t.className, field.name) === undefined,
     );
     for (const [index, field] of fields.entries()) {
       const next = `f${index}_next`;
@@ -750,6 +756,50 @@ function symbolKeyLines(
     ],
     release: [`  call void @scr_sym_release(ptr %${name})`],
   };
+}
+
+/** The ScrStreamTypedDesc constant (scr_stream.h) of a record type an
+ * object-mode stream holds as the record itself, or null for a type whose
+ * chunks stay boxed: records without declared fields, with an index
+ * signature or accessor slots, tuples, the text codec records (they box as
+ * handles), and records the collector traces (a stream does not trace the
+ * records it holds). The constant's `box` converts the record as a
+ * live-reference conversion to dyn does (streamTypedRefBoxValue). */
+export function streamTypedDesc(host: LlvmEmitterContext, t: IrType): string | null {
+  if (t.kind !== "record") return null;
+  const shape = host.recordsById.get(t.shapeId);
+  if (
+    !shape ||
+    shape.fields.length === 0 ||
+    shape.indexValue !== undefined ||
+    shape.tuple ||
+    shapeHasAccessorSlots(shape) ||
+    shape.fields.some((field) => field.name === "handleEvent" && field.type.kind === "func") ||
+    textCodecRecordClass(t, (id) => host.recordsById.get(id)) !== null ||
+    traceAdapter(host.shapeHost, t) !== null
+  )
+    return null;
+  const key = typeKey(t);
+  const cacheKey = `std:${key}`;
+  const existing = host.resolveThunks.get(cacheKey);
+  if (existing) return `@${existing}`;
+  const sym = host.contentSymbol("sc_std_", key);
+  host.resolveThunks.set(cacheKey, sym);
+  host.journal?.allocated(sym, "streamTypedDesc", [t]);
+  const B = new BlockBuilder();
+  const boxed = streamTypedRefBoxValue(host, B, t, "%p");
+  B.terminate(`ret ptr ${boxed}`);
+  const rc = vAdapters(host.shapeHost, t);
+  host.resolveThunkDefs.push(
+    `define internal ptr @${sym}_box(ptr %p) ${FN_ATTRS} { ; box a typed stream chunk ${key}`,
+    B.render(),
+    `}`,
+    ``,
+    `@${sym} = internal constant { ptr, ${host.sizeType}, ptr, ptr, ptr } { ptr ${host.cstr(key)}, ${host.sizeType} ${Buffer.byteLength(key, "utf8")}, ptr ${rc.retain}, ptr ${rc.release}, ptr @${sym}_box }`,
+    ``,
+  );
+  host.journal?.built();
+  return `@${sym}`;
 }
 
 export function streamTypedRefBoxValue(
@@ -1703,6 +1753,27 @@ function classFieldDynValue(
   t: Extract<IrType, { kind: "object" }>,
   field: LlClassMeta["def"]["fields"][number],
 ): { boxed: string; nullable: NullableRefField | null; fieldValue: string } {
+  // An inline array field reads as a frozen array over the instance's
+  // elements (inline-arrays.ts), which the box keeps.
+  const tail = inlineFieldTail(host, t.className, field.name);
+  if (tail !== undefined) {
+    const countp = B.tmp(),
+      count = B.tmp(),
+      at = B.tmp(),
+      view = B.tmp();
+    B.line(
+      `${countp} = getelementptr inbounds %${classStructSym(t.className)}, ptr %p, i64 0, i32 ${meta.compactSlots[tail.field]!}`,
+    );
+    B.line(`${count} = load i32, ptr ${countp}`);
+    B.line(`${at} = getelementptr inbounds i8, ptr %p, i64 ${tail.tailOffset}`);
+    const ops = arrOps(host.shapeHost, { kind: "object", className: tail.elemClass });
+    host.declare(`declare ptr @scr_arr_view_cref(ptr, ptr, i32)`);
+    host.declare(`declare void @scr_arr_release(ptr)`);
+    B.line(`${view} = call ptr @scr_arr_view_cref(ptr ${ops}, ptr ${at}, i32 ${count})`);
+    const boxed = host.streamTypedRefBoxValue(B, field.type, view);
+    B.line(`call void @scr_arr_release(ptr ${view})`);
+    return { boxed, nullable: null, fieldValue: view };
+  }
   const { index, compressed } = classFieldIndex(meta, field.name, "compressed");
   const fieldPtr = B.tmp();
   let fieldValue = B.tmp();
@@ -1995,6 +2066,9 @@ export function streamFromArrayAdapter(
 }
 
 registerReplay("dynPromiseAdapter", (host, args) => dynPromiseAdapter(host, args[0] as IrType));
+registerReplay("streamTypedDesc", (host, args) =>
+  (streamTypedDesc(host, args[0] as IrType) ?? "").slice(1),
+);
 registerReplay("liveDynUnionRefAdapter", (host, args) =>
   liveDynUnionRefAdapter(host, args[0] as IrType & { kind: "union" }),
 );

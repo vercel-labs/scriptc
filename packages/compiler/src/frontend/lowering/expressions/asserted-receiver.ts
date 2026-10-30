@@ -39,13 +39,27 @@ export function assertedReceiverNode(
   return ts.isAsExpression(e) || ts.isTypeAssertion(e) ? e : null;
 }
 
-/** The property access this assertion is the receiver of, through
- * parentheses: `(u as R).member`. Null for any other use, and for the
- * optional chain `(u as R)?.member` (a unit arm answers undefined there
- * instead of Node's read-of-undefined TypeError). */
-function assertedReceiverAccess(
-  assertion: ts.AsExpression | ts.TypeAssertion,
-): ts.PropertyAccessExpression | null {
+/** The member a probe access names: a property access's name, or an
+ * element access's literal key (the bracket spelling of the same read).
+ * Null for an element key that is not a literal string or number. */
+export type ProbeAccess = ts.PropertyAccessExpression | ts.ElementAccessExpression;
+
+export function probeMemberName(access: ProbeAccess): string | null {
+  if (ts.isPropertyAccessExpression(access)) return access.name.text;
+  let key: ts.Expression = access.argumentExpression;
+  while (ts.isParenthesizedExpression(key)) key = key.expression;
+  if (ts.isStringLiteral(key) || ts.isNoSubstitutionTemplateLiteral(key)) return key.text;
+  // JS object keys ARE strings: `o[0x10]` reads `o["16"]`.
+  if (ts.isNumericLiteral(key)) return String(Number(key.text));
+  return null;
+}
+
+/** The property or element access this assertion is the receiver of,
+ * through parentheses: `(u as R).member`, `(u as R)["member"]`. Null for
+ * any other use, for a non-literal element key, and for the optional
+ * chains `(u as R)?.member` / `(u as R)?.["member"]` (a unit arm answers
+ * undefined there instead of Node's read-of-undefined TypeError). */
+function assertedReceiverAccess(assertion: ts.AsExpression | ts.TypeAssertion): ProbeAccess | null {
   let use: ts.Node = assertion;
   for (;;) {
     const parent = use.parent;
@@ -56,12 +70,10 @@ function assertedReceiverAccess(
     break;
   }
   const access = use.parent;
-  return access &&
-    ts.isPropertyAccessExpression(access) &&
-    access.expression === use &&
-    access.questionDotToken === undefined
-    ? access
-    : null;
+  if (access === undefined || access.questionDotToken !== undefined) return null;
+  if (ts.isPropertyAccessExpression(access)) return access.expression === use ? access : null;
+  if (!ts.isElementAccessExpression(access) || access.expression !== use) return null;
+  return probeMemberName(access) === null ? null : access;
 }
 
 /** An operand that names the absent values (`undefined`, `null`), through
@@ -82,7 +94,7 @@ function isAbsenceLiteral(node: ts.Expression): boolean {
  * extraction. */
 export function assertedProbeAccessOf(
   assertion: ts.AsExpression | ts.TypeAssertion,
-): ts.PropertyAccessExpression | null {
+): ProbeAccess | null {
   const access = assertedReceiverAccess(assertion);
   if (access === null) return null;
   let use: ts.Node = access;
@@ -109,27 +121,31 @@ export function assertedProbeAccessOf(
 
 /** True when the union's record arms read `member` unevenly: at least one
  * declares it as a data field and at least one does not (it declares a
- * getter instead, or nothing). Those are exactly the arms
- * assertedMemberRead answers per arm, calling a getter where an arm has
- * one; anything else keeps the assertion's extraction (and with it the
- * checked-narrow fence for a lying one), as does an arm with only a setter
- * of that name. */
+ * getter instead, or nothing), or at least one answers it through a getter
+ * while another arm has no read of it at all. Those are exactly the arms
+ * assertedMemberRead answers per arm; anything else keeps the assertion's
+ * extraction (and with it the checked-narrow fence for a lying one). An arm
+ * with only a setter of that name reads undefined (Node never invokes a
+ * setter on a read), so it counts as an arm with no read. */
 export function partialRecordMember(lowerer: Lowerer, union: IrType, member: string): boolean {
   if (union.kind !== "union") return false;
   const arms = lowerer.unions.get(union.unionId)?.arms ?? [];
   let records = 0;
-  let declaring = 0;
+  let dataFields = 0;
+  let getters = 0;
+  let absent = 0;
   for (const arm of arms) {
     if (isUnitType(arm)) continue;
     if (arm.kind !== "record") return false;
     const shape = lowerer.shapes.get(arm.shapeId);
-    if (!shape || shape.tuple || shape.indexValue) return false;
-    const getter = shape.fields.some((field) => field.name === `%get:${member}`);
-    if (!getter && shape.fields.some((field) => field.name === `%set:${member}`)) return false;
+    if (!shape || shape.tuple) return false;
     records++;
-    if (shape.fields.some((field) => field.name === member)) declaring++;
+    if (shape.fields.some((field) => field.name === member)) dataFields++;
+    else if (shape.fields.some((field) => field.name === `%get:${member}`)) getters++;
+    else absent++;
   }
-  return records > 0 && declaring > 0 && declaring < records;
+  if (records === 0) return false;
+  return (dataFields > 0 && dataFields < records) || (getters > 0 && absent > 0);
 }
 
 /** The asserted record type whose checked extraction is deferred for the
@@ -138,14 +154,16 @@ export function partialRecordMember(lowerer: Lowerer, union: IrType, member: str
 export function deferredMemberReadTarget(
   lowerer: Lowerer,
   assertion: ts.AsExpression | ts.TypeAssertion,
-  access: ts.PropertyAccessExpression,
+  access: ProbeAccess,
   value: IrExpr,
 ): IrType | null {
   if (assertedProbeAccessOf(assertion) !== access) return null;
   if (value.type.kind !== "union") return null;
+  const member = probeMemberName(access);
+  if (member === null) return null;
   const target = lowerer.mapTypeOf(lowerer.checker.getTypeFromTypeNode(assertion.type));
   if (target?.kind !== "record") return null;
-  if (!partialRecordMember(lowerer, value.type, access.name.text)) return null;
+  if (!partialRecordMember(lowerer, value.type, member)) return null;
   return target;
 }
 
@@ -154,10 +172,7 @@ export function deferredMemberReadTarget(
  * recognizes). Checker-derived field targets must not claim it first: the
  * field target would apply the assertion's checked extraction and trap on
  * the arm the probe exists to detect. */
-export function deferredProbeReadAccess(
-  lowerer: Lowerer,
-  access: ts.PropertyAccessExpression,
-): boolean {
+export function deferredProbeReadAccess(lowerer: Lowerer, access: ProbeAccess): boolean {
   const assertion = assertedReceiverNode(access.expression);
   if (assertion === null) return false;
   if (assertedProbeAccessOf(assertion) !== access) return false;
@@ -167,10 +182,11 @@ export function deferredProbeReadAccess(
 
 /** The stored value of an `in` probe whose receiver is an erased assertion
  * (`"stream" in (stored as R)`): Node asks membership of the value actually
- * stored, which for a union of fixed record shapes the union path answers
- * per arm. Null when the receiver is not such an assertion, or the stored
- * value is not a union of fixed record shapes (those keep the ordinary
- * lowering, and its refusals). */
+ * stored, which for a union of record shapes the union path answers per arm
+ * — a unit arm (`api?: ...` asserted away) answering its TypeError, an
+ * index-signature arm its own key. Null when the receiver is not such an
+ * assertion, or the stored value is not such a union (those keep the
+ * ordinary lowering, and its refusals). */
 export function assertedInOperand(lowerer: Lowerer, node: ts.Expression): IrExpr | null {
   let rhs = node;
   while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
@@ -178,12 +194,13 @@ export function assertedInOperand(lowerer: Lowerer, node: ts.Expression): IrExpr
   const stored = tryLowerExpression(lowerer, rhs.expression);
   if (stored === null || stored.type.kind !== "union") return null;
   const arms = lowerer.unions.get(stored.type.unionId)?.arms ?? [];
-  const fixed = arms.every((arm) => {
+  const answerable = arms.every((arm) => {
+    if (isUnitType(arm)) return true;
     if (arm.kind !== "record") return false;
     const shape = lowerer.shapes.get(arm.shapeId);
-    return shape !== undefined && !shape.tuple && !shape.indexValue;
+    return shape !== undefined && !shape.tuple;
   });
-  return arms.length > 0 && fixed ? stored : null;
+  return arms.length > 0 && answerable ? stored : null;
 }
 
 /** Apply the extraction lowerAsExpression would have applied to the

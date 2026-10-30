@@ -24,7 +24,12 @@
  * and its raw profiles are merged into the first profile. The result adds
  * the counts of inlined code, by which builds also order each function's
  * blocks and move cold blocks apart. --base-profile runs only that second
- * phase on a given first profile.
+ * phase on a given first profile. The second phase's compiler build also
+ * writes the block counts of the functions the first profile annotates
+ * (SCRIPTC_RECORD_PROFILE_BLOCKS), which both phases share, beside the
+ * output (cli.blocks.gz beside cli.profdata.gz). Builds that use the profile
+ * annotate the functions whose control flow changed since it was collected
+ * from them.
  *
  *   node scripts/refresh-cli-profile.mjs --tsc-ts <tsc-ts checkout> [--jobs 8] [--context-sensitive]
  */
@@ -107,8 +112,16 @@ const baseProfile =
 // The output's directory is created up front, before the instrumented build.
 const profileOutput = resolve(values.output);
 mkdirSync(dirname(profileOutput), { recursive: true });
+// The block counts beside the output, which only the second phase writes;
+// those of an earlier collection would describe another profile's code.
+const blocksOutput = profileOutput.endsWith(".profdata.gz")
+  ? `${profileOutput.slice(0, -".profdata.gz".length)}.blocks.gz`
+  : `${profileOutput}.blocks.gz`;
+rmSync(blocksOutput, { force: true });
 const work = resolve(values.work ?? mkdtempSync(join(tmpdir(), "scriptc-cli-profile-")));
 const raw = join(work, "raw");
+const blocks = join(work, "cli.blocks");
+rmSync(blocks, { force: true });
 const builds = join(work, "builds");
 rmSync(raw, { recursive: true, force: true });
 for (const dir of [raw, builds]) mkdirSync(dir, { recursive: true });
@@ -135,7 +148,9 @@ if (values.instrumented === undefined) {
       env: {
         ...process.env,
         SCRIPTC_NATIVE_PROFILE_GENERATE: profileFile,
-        ...(baseProfile === undefined ? {} : { SCRIPTC_NATIVE_PROFILE_USE: baseProfile }),
+        ...(baseProfile === undefined
+          ? {}
+          : { SCRIPTC_NATIVE_PROFILE_USE: baseProfile, SCRIPTC_RECORD_PROFILE_BLOCKS: blocks }),
       },
     },
   );
@@ -284,5 +299,12 @@ writeFileSync(
 console.log(
   `wrote ${profileOutput} (${statSync(profileOutput).size} bytes; ${statSync(indexed).size} uncompressed)`,
 );
+if (existsSync(blocks)) {
+  writeFileSync(
+    blocksOutput,
+    gzipSync(readFileSync(blocks), { level: constants.Z_BEST_COMPRESSION }),
+  );
+  console.log(`wrote ${blocksOutput} (${statSync(blocksOutput).size} bytes)`);
+}
 // A work directory the caller named stays for inspection.
 if (values.work === undefined) rmSync(work, { recursive: true, force: true });

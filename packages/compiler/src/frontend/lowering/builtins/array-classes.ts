@@ -647,26 +647,27 @@ export function lowerWithArraySpecies(
     // instance is created (with that length for map, 0 otherwise), then
     // the method runs to that length and its elements move into the
     // instance.
-    const bounded =
-      result.kind === "call" &&
-      result.args[0]?.kind === "varRef" &&
-      result.args[0].localId === local.id
-        ? boundedArrayHofHelper(lowerer, result.callee)
-        : null;
-    if (bounded === null || result.kind !== "call")
+    const stmts: IrStmt[] = [{ kind: "varDecl", localId: local.id, init: receiver, loc }];
+    let bound: IrLocal | undefined;
+    const rebound = rebuildSpeciesCall(result, local.id, (inner) => {
+      const args: IrExpr[] = [receiverRef];
+      for (const arg of inner.args.slice(1)) {
+        const held = lowerer.declareHiddenLocal("%speciesArgument", arg.type);
+        stmts.push({ kind: "varDecl", localId: held.id, init: arg, loc });
+        args.push({ kind: "varRef", localId: held.id, type: arg.type, loc });
+      }
+      const length = lowerer.declareHiddenLocal("%speciesLength", F64);
+      bound = length;
+      args.push({ kind: "varRef", localId: length.id, type: F64, loc });
+      const helper = boundedArrayHofHelper(lowerer, inner.callee);
+      return helper === null ? null : { ...inner, callee: helper, args };
+    });
+    if (rebound === null || bound === undefined)
       lowerer.unsupported(
         "SC1090",
         call,
         `'${access.name.text}' in this form when the program declares a class that extends Array`,
       );
-    const stmts: IrStmt[] = [{ kind: "varDecl", localId: local.id, init: receiver, loc }];
-    const args: IrExpr[] = [receiverRef];
-    for (const arg of result.args.slice(1)) {
-      const held = lowerer.declareHiddenLocal("%speciesArgument", arg.type);
-      stmts.push({ kind: "varDecl", localId: held.id, init: arg, loc });
-      args.push({ kind: "varRef", localId: held.id, type: arg.type, loc });
-    }
-    const bound = lowerer.declareHiddenLocal("%speciesLength", F64);
     stmts.push({
       kind: "varDecl",
       localId: bound.id,
@@ -681,7 +682,6 @@ export function lowerWithArraySpecies(
       loc,
     });
     const boundRef: IrExpr = { kind: "varRef", localId: bound.id, type: F64, loc };
-    args.push(boundRef);
     const instance = lowerer.declareHiddenLocal("%speciesInstance", receiver.type);
     const length: IrExpr = mode.resultLength
       ? boundRef
@@ -706,7 +706,7 @@ export function lowerWithArraySpecies(
         fn: "array.speciesFinish",
         args: [
           { kind: "varRef", localId: instance.id, type: receiver.type, loc },
-          { ...result, callee: bounded, args },
+          rebound,
           { kind: "boolLit", value: mode.setLength, type: BOOL, loc },
         ],
         type: result.type,
@@ -734,6 +734,31 @@ export function lowerWithArraySpecies(
     type: result.type,
     loc,
   };
+}
+
+/** `e` with the `%arr.<method>` helper call over `receiverLocal` rebuilt by
+ * `rebuild`, or null when `e` holds no such call. The helper call is the
+ * one taking the receiver as its first argument; a filter whose callback
+ * narrows converts the filtered array after the helper ran, so the call
+ * can sit behind a wrapper (the checked-narrowing call), which this
+ * rebuild leaves in place. */
+function rebuildSpeciesCall(
+  e: IrExpr,
+  receiverLocal: string,
+  rebuild: (inner: IrExpr & { kind: "call" }) => IrExpr | null,
+): IrExpr | null {
+  if (e.kind !== "call") return null;
+  const first = e.args[0];
+  if (first !== undefined && first.kind === "varRef" && first.localId === receiverLocal)
+    return rebuild(e);
+  for (let i = 0; i < e.args.length; i++) {
+    const replaced = rebuildSpeciesCall(e.args[i]!, receiverLocal, rebuild);
+    if (replaced === null) continue;
+    const args = e.args.slice();
+    args[i] = replaced;
+    return { ...e, args };
+  }
+  return null;
 }
 
 /** `C.of(...items)` and `C.from(iterable)` on a class declared `extends

@@ -28,6 +28,9 @@ const built =
 // whose control flow changed since it was collected. More than this share of
 // the functions it describes means it is due for scripts/refresh-runtime-profile.mjs.
 const MAX_MISMATCHED_SHARE = 0.1;
+// The same by the profile's counters: a changed hot function loses more of
+// the profile's gain than a changed cold one.
+const MAX_MISMATCHED_COUNTS_SHARE = 0.05;
 
 test.skipIf(!built)("the committed runtime profile still matches the runtime's speed units", () => {
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
@@ -39,6 +42,15 @@ test.skipIf(!built)("the committed runtime profile still matches the runtime's s
     match.mismatched / described,
     `${match.mismatched} of the ${described} runtime functions the profile describes changed since it was collected; run node scripts/refresh-runtime-profile.mjs`,
   ).toBeLessThanOrEqual(MAX_MISMATCHED_SHARE);
+  // Helpers that list the matched functions also report their counters.
+  if (match.annotated_counts !== undefined) {
+    const counts = match.annotated_counts + match.mismatched_counts;
+    expect(counts).toBeGreaterThan(0);
+    expect(
+      match.mismatched_counts / counts,
+      `runtime functions that changed since the profile was collected hold ${((100 * match.mismatched_counts) / counts).toFixed(1)}% of its counts (most: ${match.stale.join(", ")}); run node scripts/refresh-runtime-profile.mjs`,
+    ).toBeLessThanOrEqual(MAX_MISMATCHED_COUNTS_SHARE);
+  }
 });
 
 // The committed profile holds the runtime's records only. Training programs'

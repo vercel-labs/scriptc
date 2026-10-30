@@ -43,6 +43,7 @@ import { llvmCommentText } from "./common.js";
 import { INLINE_UNION_FIELD } from "./inline-unions.js";
 import { NullableRefFields } from "./nullable-fields.js";
 import type { Int32Slots } from "../../ir/int32-slots.js";
+import type { InlineArrayClass } from "../../ir/inline-arrays.js";
 import {
   cycleRootLines,
   traceFieldVisitLines,
@@ -117,10 +118,28 @@ export class LlClassMeta {
    * a compact class instance as a 32-bit index (COMPACT_REF) rather than a
    * pointer: compactRefLoadLines decodes it, compactRefStoreLines encodes it. */
   compressed: boolean[] = [];
+  /** Compact classes with an inline array field (ir/inline-arrays.ts): the
+   * field's slot holds the element count as an i32, and the elements follow
+   * the fixed fields as 32-bit references from `tailOffset`, the same offset
+   * in every class of the declaring class's subtree. Absent otherwise. */
+  inlineTail?: LlInlineTail;
 
   constructor(readonly def: IrClassDef) {
     this.root = this;
   }
+}
+
+/** A class's inline array field (LlClassMeta.inlineTail). */
+export interface LlInlineTail {
+  /** The field's index in def.fields. */
+  readonly field: number;
+  /** Byte offset of the first element. */
+  readonly tailOffset: number;
+  /** The elements' class. */
+  readonly elemClass: string;
+  /** The index in a `new` expression's args of the array the field is
+   * initialized from, whose length the allocation reads. */
+  readonly lengthArg: number;
 }
 
 /** The class graph: link base/children, number the forest in preorder
@@ -450,6 +469,12 @@ export function classFieldIndex(
   if (idx < 0)
     throw new InternalCompilerError(
       `llvm emitter bug: unknown field ${field} on class ${meta.def.name}`,
+    );
+  // An inline array field's slot holds its element count: its reads and
+  // writes go through inline-arrays.ts.
+  if (meta.inlineTail?.field === idx && meta.compact)
+    throw new InternalCompilerError(
+      `llvm emitter bug: field slot of the inline array field ${meta.def.name}.${field}`,
     );
   const compressed = meta.compressed[idx] === true;
   // Callers that read or write a field's storage as a pointer must not see
@@ -783,6 +808,7 @@ export function assignCompactLayouts(
     field: number,
     isCompact: (className: string) => boolean,
   ) => boolean,
+  inlineArrays?: ReadonlyMap<string, InlineArrayClass>,
 ): void {
   const isCompact = (className: string): boolean => {
     const target = metaMap.get(className);
@@ -814,7 +840,18 @@ export function assignCompactLayouts(
         ? base!.compressed[i]!
         : compressedRef !== undefined && compressedRef(meta.def, i, isCompact),
     );
+    // An inline array field (ir/inline-arrays.ts) whose elements are compact
+    // keeps its element count in its slot.
+    const inline = inlineArrays?.get(meta.def.name);
+    const inlineField =
+      inline !== undefined && isCompact(inline.elemClass) && isCompact(inline.declaringClass)
+        ? inline.fieldIndex
+        : -1;
     const types = fieldTypes(meta.def).map((t, i) => {
+      if (i === inlineField) {
+        compressed[i] = false;
+        return "i32";
+      }
       if (!compressed[i]) return t;
       if (t !== "ptr")
         throw new InternalCompilerError(
@@ -862,6 +899,44 @@ export function assignCompactLayouts(
     meta.compactSlots = slots;
     meta.compressed = compressed;
   }
+  if (inlineArrays !== undefined) assignInlineTails(metaMap, inlineArrays);
+}
+
+/** Gives each compact class of an inline array field's subtree its tail
+ * (LlClassMeta.inlineTail): the elements start after the largest fixed part
+ * of any class in the subtree, so that a read through any static type of
+ * the subtree finds them at the same offset. */
+function assignInlineTails(
+  metaMap: ReadonlyMap<string, LlClassMeta>,
+  inlineArrays: ReadonlyMap<string, InlineArrayClass>,
+): void {
+  const subtrees = new Map<string, LlClassMeta[]>();
+  for (const [name, plan] of inlineArrays) {
+    const meta = metaMap.get(name);
+    if (meta === undefined || !meta.compact) continue;
+    // The layout gave the field its i32 count only when the elements are
+    // compact (assignCompactLayouts).
+    const slot = meta.compactSlots[plan.fieldIndex];
+    if (slot === undefined || meta.compactElems[slot]?.type !== "i32") continue;
+    const members = subtrees.get(plan.declaringClass);
+    if (members === undefined) subtrees.set(plan.declaringClass, [meta]);
+    else members.push(meta);
+  }
+  for (const members of subtrees.values()) {
+    let end = 0;
+    for (const meta of members)
+      for (const e of meta.compactElems) end = Math.max(end, e.offset + e.size);
+    const tailOffset = alignTo(end, 4);
+    for (const meta of members) {
+      const plan = inlineArrays.get(meta.def.name)!;
+      meta.inlineTail = {
+        field: plan.fieldIndex,
+        tailOffset,
+        elemClass: plan.elemClass,
+        lengthArg: plan.lengthArg,
+      };
+    }
+  }
 }
 
 function alignTo(n: number, align: number): number {
@@ -901,6 +976,8 @@ export function classUndefinedFieldInits(
     if (f.name === "%cause") return;
     // A nullable-pointer field's zeroed slot already is its unit arm.
     if (nullable?.get(meta.def.name, f.name)) return;
+    // An inline array field's slot holds its count, which `new` stores.
+    if (meta.inlineTail?.field === i && meta.compact) return;
     // Only union and dyn fields get a store here; a compressed field is a
     // class reference, which starts NULL.
     const { index, compressed } = classFieldIndex(meta, f.name, "compressed");
@@ -1421,8 +1498,12 @@ export function emitClassShapes(
     // members, undefined-admitting union fields at the interned unit
     // instance. Traced shapes allocate with the collector header; alloc.ts
     // inlines the allocator fast paths and the alloc note.
+    // An inline array field's instance (LlClassMeta.inlineTail) takes the
+    // field's element count and has room for the elements after its fixed
+    // fields.
+    const tail = meta.compact && regionRefs ? (meta.inlineTail ?? null) : null;
     const nw: string[] = [
-      `define internal ptr @${mangleClassNew(cls.name)}() ${FN_ATTRS} { ; new ${cls.name}`,
+      `define internal ptr @${mangleClassNew(cls.name)}(${tail !== null ? "i32 %inl.len" : ""}) ${FN_ATTRS} { ; new ${cls.name}`,
       `entry:`,
     ];
     const cycType = `@${mangleClassTrace(cls.name)}.cyctype`;
@@ -1450,7 +1531,14 @@ export function emitClassShapes(
       // Compressed fields refer to compact instances by their index in the
       // program-lifetime region, so every compact instance lives there:
       // zeroed, 8-byte aligned and never freed.
-      nw.push(...plrAllocLines(host, sizeOf));
+      if (tail !== null) {
+        nw.push(
+          `  %inl.n = zext i32 %inl.len to ${host.sizeType}`,
+          `  %inl.bytes = shl nuw nsw ${host.sizeType} %inl.n, 2`,
+          `  %inl.size = add nuw nsw ${host.sizeType} %inl.bytes, ${tail.tailOffset}`,
+        );
+        nw.push(...plrAllocLines(host, "%inl.size"));
+      } else nw.push(...plrAllocLines(host, sizeOf));
     } else
       nw.push(
         ...emitObjectAlloc(
@@ -1527,6 +1615,11 @@ export function emitClassShapes(
       );
     }
     nw.push(...undefFieldInits(host, meta, nullable));
+    if (tail !== null)
+      nw.push(
+        `  %inl.countp = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${meta.compactSlots[tail.field]!}`,
+        `  store i32 %inl.len, ptr %inl.countp ; ${llvmCommentText(cls.name)} inline array count`,
+      );
     // Young instances: program-owned traced classes. Classes rooted at a
     // runtime base (errors, emitters, events, streams) carry runtime state
     // and stay with trial deletion, like every runtime family.
@@ -1677,6 +1770,10 @@ export function emitClassObjDefs(
     if (!ctor)
       throw new InternalCompilerError(
         `llvm emitter bug: class object for ${className} without a constructor`,
+      );
+    if (meta.inlineTail !== undefined)
+      throw new InternalCompilerError(
+        `llvm emitter bug: class object for ${className}, which has an inline array field`,
       );
     const params = ctor.params.slice(valueCtor.firstArg);
     const paramDecls = params.map((p, i) => `${llType(p.type)} %a${i}`).join(", ");

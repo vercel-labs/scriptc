@@ -178,6 +178,8 @@ declare module "net" {
     getConnections(callback: (error: Error | null, count: number) => void): Server;
     /* Node answers the server itself (`return this` chaining). */
     listen(port: number, callback?: () => void): Server;
+    /* No port: an arbitrary unused one. */
+    listen(callback?: () => void): Server;
     /* The positional bind address (the options form's host in argument
      * spelling). */
     listen(port: number, host: string, callback?: () => void): Server;
@@ -257,6 +259,23 @@ declare module "net" {
       event: "request" | "checkContinue" | "checkExpectation",
       listener: (req: import("http").IncomingMessage, res: import("http").ServerResponse) => void,
     ): void;
+    /* off / removeListener: the LAST listener standing for the same
+     * function leaves that event's list (Node's EventEmitter order). The
+     * server registries that keep a removable list: error, close,
+     * listening, connection/secureConnection, timeout, and drop. */
+    off(event: "error", listener: (err: Error) => void): void;
+    off(event: "close" | "listening", listener: () => void): void;
+    off(event: "connection" | "secureConnection", listener: (socket: Socket) => void): void;
+    off(event: "timeout", listener: (socket: Socket) => void): void;
+    off(event: "drop", listener: (data?: DropArgument) => void): void;
+    removeListener(event: "error", listener: (err: Error) => void): void;
+    removeListener(event: "close" | "listening", listener: () => void): void;
+    removeListener(
+      event: "connection" | "secureConnection",
+      listener: (socket: Socket) => void,
+    ): void;
+    removeListener(event: "timeout", listener: (socket: Socket) => void): void;
+    removeListener(event: "drop", listener: (data?: DropArgument) => void): void;
   }
   /* The 'drop' payload: the turned-away connection's addresses. */
   export interface DropArgument {

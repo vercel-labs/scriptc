@@ -1,3 +1,4 @@
 - **Intl.Segmenter:** Unicode grapheme segmentation, iteration, and `containing()` compile, with the default locale or one language tag of the form language[-script][-region] written as a string literal (grapheme clusters do not depend on the locale).
-  In JavaScript dependencies, word and sentence segmenters construct, and their `segment()` throws an SC2020 error.
-  Locale negotiation over several locales, word and sentence segmentation, `resolvedOptions()`, and detached methods are unsupported.
+  Word granularity compiles too, over ICU's UAX #29 word iterator at that locale; its segments carry `isWordLike` exactly as Node.js's do.
+  In JavaScript dependencies, sentence segmenters construct, and their `segment()` throws an SC2020 error; in TypeScript sources the construction is refused.
+  Locale negotiation over several locales, sentence segmentation, `resolvedOptions()`, and detached methods are unsupported.

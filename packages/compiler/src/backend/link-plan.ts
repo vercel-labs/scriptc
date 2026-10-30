@@ -48,6 +48,8 @@ export async function createNativeLinkPlan(options: {
   windowsSubsystem?: WindowsSubsystem;
   profileGenerate?: boolean;
   profileLayout?: boolean;
+  /** `false` keeps 4 KiB segment alignment for large program code. */
+  hugeText?: boolean;
   programObjectDependencies?: readonly NativeArtifactDependency[];
   env?: NodeJS.ProcessEnv;
   resolver?: (specifier: string) => string;
@@ -55,6 +57,9 @@ export async function createNativeLinkPlan(options: {
   if (options.ffi?.frameworks?.length && options.target.platform !== "darwin")
     throw new Error("FFI frameworks require a Darwin target");
   const runtimePack = await loadRuntimePack(options);
+  const hugeText =
+    options.hugeText !== false &&
+    hugeTextProgram(options.target, [options.programObject, ...(options.programPartitions ?? [])]);
   return {
     target: options.target,
     darwinDebugSymbols: needsDarwinDebugSymbols(
@@ -88,11 +93,6 @@ export async function createNativeLinkPlan(options: {
     programObjectDependencies: [...(options.programObjectDependencies ?? [])],
     runtimePack,
     ...(options.staticLink === true ? { staticLink: true } : {}),
-    ...(hugeTextProgram(options.target, [
-      options.programObject,
-      ...(options.programPartitions ?? []),
-    ])
-      ? { hugeText: true }
-      : {}),
+    ...(hugeText ? { hugeText: true } : {}),
   };
 }

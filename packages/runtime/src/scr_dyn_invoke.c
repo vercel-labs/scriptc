@@ -787,6 +787,14 @@ ScrDyn *scr_dyn_prepare_method(ScrDyn *recv, const char *method) {
     scr_str_release(key);
     return result;
   }
+  /* A class instance's own function-valued property is read before the
+   * arguments are evaluated, as JavaScript reads the callee first; its
+   * methods keep the dispatch scr_dyn_invoke makes. */
+  if (recv->kind == SCR_DYN_TYPED_REF) {
+    ScrDyn *own = scr_dyn_typed_ref_own_member(recv, method, strlen(method));
+    if (own && scr_dyn_is_callable(own)) return own;
+    scr_dyn_release(own);
+  }
   return NULL;
 }
 
@@ -1951,7 +1959,9 @@ ScrDyn *scr_dyn_builtin_method(const ScrStr *prototype, const ScrStr *method) {
  * answer `.constructor` on the matching dynamic values, so
  * `o.constructor === Object` and `a.constructor === b.constructor` are
  * exact identity tests. `Object(v)` works through the stored value; calling
- * the others through it is fenced. */
+ * the others through it is fenced. SharedArrayBuffer, DataView,
+ * BigInt64Array, BigUint64Array and Proxy are interned the same way;
+ * calling one throws Node's "Constructor X requires 'new'" TypeError. */
 /* String constants live in named arrays in their own section rather than
  * in the unit's merged string pool (the explicit section also keeps the
  * compiler from folding the unit's existing literals into them), so
@@ -2004,11 +2014,23 @@ static const char dyn_s38[] SCR_DYN_COMPAT_STR = "structuredClone";
 static const char dyn_s39[] SCR_DYN_COMPAT_STR = "The \"input\" argument must be specified";
 static const char dyn_s40[] SCR_DYN_COMPAT_STR = "The \"The value argument must be specified\" argument must be specified";
 static const char dyn_s41[] SCR_DYN_COMPAT_STR = "ERR_MISSING_ARGS";
+static const char dyn_s42[] SCR_DYN_COMPAT_STR = "SharedArrayBuffer";
+static const char dyn_s43[] SCR_DYN_COMPAT_STR = "DataView";
+static const char dyn_s44[] SCR_DYN_COMPAT_STR = "BigInt64Array";
+static const char dyn_s45[] SCR_DYN_COMPAT_STR = "BigUint64Array";
+static const char dyn_s46[] SCR_DYN_COMPAT_STR = "Proxy";
+static const char dyn_s47[] SCR_DYN_COMPAT_STR = "Constructor %s requires 'new'";
 
 static const char *const dyn_global_ctor_names[] = {
   dyn_s26, dyn_s29, dyn_s25, dyn_s30, dyn_s31, dyn_s21, dyn_s22, dyn_s24, dyn_s35,
+  dyn_s42, dyn_s43, dyn_s44, dyn_s45, dyn_s46,
 };
 #define DYN_GLOBAL_CTORS (sizeof dyn_global_ctor_names / sizeof dyn_global_ctor_names[0])
+/* Each constructor's own length, indexed like dyn_global_ctor_names. */
+static const uint8_t dyn_global_ctor_lengths[DYN_GLOBAL_CTORS] = {1, 7, 2, 0, 0, 1, 0, 0, 1, 1, 1, 3, 3, 2};
+/* The first of the constructors that only `new` builds
+ * (SharedArrayBuffer onward): calling one throws Node's TypeError. */
+#define DYN_GLOBAL_NEW_ONLY 9
 static SCR_TL ScrDyn *dyn_global_ctors[DYN_GLOBAL_CTORS];
 static SCR_TL bool dyn_global_ctors_registered;
 
@@ -2021,6 +2043,13 @@ static void dyn_global_ctors_cleanup(void) {
 
 static ScrDyn *dyn_global_ctor_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   const char *name = closure->fn;
+  for (size_t i = DYN_GLOBAL_NEW_ONLY; i < DYN_GLOBAL_CTORS; i++) {
+    if (name != dyn_global_ctor_names[i]) continue;
+    char message[64];
+    int length = snprintf(message, sizeof message, dyn_s47, name);
+    scr_throw_error_msg(SCR_ERR_TYPE, message, (size_t)length);
+    return NULL;
+  }
   bool object = strcmp(name, dyn_s26) == 0;
   if (object) {
     const ScrDyn *value = argc ? args[0] : scr_dyn_undefined();
@@ -2038,8 +2067,8 @@ static ScrDyn *dyn_global_ctor_call(ScrClosure *closure, ScrDyn *const *args, si
 }
 
 /* `new C(...args)` through a stored Object, Date, Map, Set, WeakMap or
- * WeakSet builds what the `new` expression builds. RegExp, Promise, and
- * Object over a primitive (a wrapper object) are fenced. */
+ * WeakSet builds what the `new` expression builds. The other constructors,
+ * and Object over a primitive (a wrapper object), are fenced. */
 static bool dyn_global_construct(const ScrDyn *callee, const ScrDyn *args, ScrDyn **result) {
   if (callee->kind != SCR_DYN_FUNC || callee->v.fn.thunk != dyn_global_ctor_call) return false;
   const char *name = callee->v.fn.clo->fn;
@@ -2075,11 +2104,8 @@ static ScrDyn *dyn_global_ctor(const char *name) {
       scr_dyn_global_construct_fn = dyn_global_construct;
     }
     if (!dyn_global_ctors[i]) {
-      /* Each constructor's own length: Object 1, Date 7, RegExp 2, Promise 1,
-       * the collections 0, FinalizationRegistry 1. */
-      uint32_t length = i == 0 || i == 5 || i == 8 ? 1 : i == 1 ? 7 : i == 2 ? 2 : 0;
       dyn_global_ctors[i] = scr_dyn_new_func(scr_closure_new((void *)dyn_global_ctor_names[i], 0),
-                                             dyn_global_ctor_call, length, dyn_s6,
+                                             dyn_global_ctor_call, dyn_global_ctor_lengths[i], dyn_s6,
                                              dyn_global_ctor_names[i]);
       /* `o.constructor.prototype` of a plain object is Object.prototype
        * (zod's isPlainObject). The other prototypes are not modeled. */
@@ -2311,10 +2337,29 @@ static ScrDyn *dyn_builtin_fn_call(ScrClosure *clo, ScrDyn *const *args, size_t 
   ScrDyn *result = NULL;
   bool timeout = strcmp(name->data, dyn_s16) == 0;
   if (timeout || strcmp(name->data, dyn_s15) == 0) {
-    double ms = 0;
-    if (dyn_builtin_fn_callback(args, argc) && (argc < 2 || scr_dyn_number_coerce_js(args[1], &ms))) {
-      ScrClosure *c = dyn_builtin_fn_deferred(args, argc, 2);
-      result = scr_dyn_new_num(timeout ? scr_set_timeout_handle(c, ms) : scr_set_interval(c, ms));
+    /* Node validates the callback, then its Timeout constructor takes an
+     * undefined delay as the default 1ms, converts another as `after *= 1`
+     * does (a BigInt throws its TypeError) and warns when it sets the
+     * delay to 1. */
+    if (dyn_builtin_fn_callback(args, argc)) {
+      double ms = NAN;
+      bool converted = true;
+      if (argc >= 2 && args[1]->kind != SCR_DYN_UNDEF) {
+        ScrDyn *one = scr_dyn_new_num(1);
+        ScrStr *times = scr_str_new("*", 1);
+        ScrDyn *product = scr_dyn_arithmetic(args[1], one, times);
+        scr_str_release(times);
+        scr_dyn_release(one);
+        converted = product != NULL;
+        if (product) {
+          ms = scr_timer_user_delay(product->v.num, timeout ? 0 : 1);
+          scr_dyn_release(product);
+        }
+      }
+      if (converted) {
+        ScrClosure *c = dyn_builtin_fn_deferred(args, argc, 2);
+        result = scr_dyn_new_num(timeout ? scr_set_timeout_handle(c, ms) : scr_set_interval(c, ms));
+      }
     }
   } else if (strcmp(name->data, dyn_s13) == 0) {
     if (dyn_builtin_fn_callback(args, argc))

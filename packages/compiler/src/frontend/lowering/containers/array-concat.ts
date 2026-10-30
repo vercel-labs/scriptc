@@ -4,6 +4,7 @@ import { elementMayBeForeign, foreignElementThrow } from "../array-values.js";
 import { countedFor, numLit, varRef } from "../../../ir/build.js";
 import {
   BOOL,
+  DYN,
   F64,
   arrayOf,
   typeEquals,
@@ -19,15 +20,18 @@ import type { Lowerer } from "../lowerer.js";
 
 /** Copy into fresh storage after every argument has evaluated. Array
  * arguments retain their own element ABI; only copied values are widened.
- * Missing slots stay holes and present undefined stays present. */
+ * Missing slots stay holes and present undefined stays present. A shape
+ * entry is an array argument's element type, null for an element value, or
+ * "dyn" for a checked-dynamic argument, which JS spreads when it is an
+ * array at run time (IsConcatSpreadable) and appends otherwise. */
 export function arrayConcatHelper(
   lowerer: Lowerer,
   elem: IrType,
-  shape: (IrType | null)[],
+  shape: (IrType | null | "dyn")[],
   node: ts.CallExpression,
   loc: SrcLoc,
 ): string {
-  const key = `concat:${typeKey(elem)}:${shape.map((type) => (type ? `a:${typeKey(type)}` : "e")).join(";")}`;
+  const key = `concat:${typeKey(elem)}:${shape.map((type) => (type === "dyn" ? "d" : type ? `a:${typeKey(type)}` : "e")).join(";")}`;
   const existing = lowerer.arrHofHelpers.get(key);
   if (existing) return existing;
   const name = keyedHelperName(lowerer, "%arr.concat", key);
@@ -37,7 +41,7 @@ export function arrayConcatHelper(
     ...shape.map((type, i) => ({
       localId: `x.${i}`,
       name: `x${i}`,
-      type: type ? arrayOf(type) : elem,
+      type: type === "dyn" ? DYN : type ? arrayOf(type) : elem,
     })),
   ];
   const locals: IrLocal[] = params.map((p) => ({
@@ -173,6 +177,43 @@ export function arrayConcatHelper(
       },
     ];
   };
+  // A checked-dynamic argument: an array spreads its elements, converted
+  // to the element type; any other value is appended as one element.
+  const appendDyn = (source: IrExpr, site: ts.Node): IrStmt[] => [
+    {
+      kind: "if",
+      cond: { kind: "dynTest", test: "array", value: source, type: BOOL, loc },
+      then: [
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "arrIntrinsic",
+            method: "concatSpread",
+            receiver: out,
+            args: [lowerer.coerceInto(site, source, arrT)],
+            type: F64,
+            loc,
+          },
+          loc,
+        },
+      ],
+      else_: [
+        {
+          kind: "exprStmt",
+          expr: {
+            kind: "arrIntrinsic",
+            method: "push",
+            receiver: out,
+            args: [lowerer.coerceInto(site, source, elem)],
+            type: F64,
+            loc,
+          },
+          loc,
+        },
+      ],
+      loc,
+    },
+  ];
   const body: IrStmt[] = [
     {
       kind: "varDecl",
@@ -182,11 +223,17 @@ export function arrayConcatHelper(
     },
     ...append(varRef("a.0", arrT, loc), elem, node.expression),
     ...shape.flatMap((type, i) =>
-      append(varRef(`x.${i}`, type ? arrayOf(type) : elem, loc), type, node.arguments.nodes[i]!),
+      type === "dyn"
+        ? appendDyn(varRef(`x.${i}`, DYN, loc), node.arguments.nodes[i]!)
+        : append(
+            varRef(`x.${i}`, type ? arrayOf(type) : elem, loc),
+            type,
+            node.arguments.nodes[i]!,
+          ),
     ),
     { kind: "return", value: out, loc },
   ];
-  if (shape.some((type) => type && !typeEquals(type, elem))) {
+  if (shape.some((type) => type !== null && type !== "dyn" && !typeEquals(type, elem))) {
     for (const id of ["i.0", "offset.0", "count.0"])
       locals.push({ id, name: id, type: F64, mutable: true });
   }

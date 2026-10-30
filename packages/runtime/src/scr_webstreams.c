@@ -1691,6 +1691,96 @@ static ScrDyn *ws_readable_from_thunk(ScrClosure *closure, ScrDyn *const *args, 
   return ws_readable_from(argc > 0 ? args[0] : scr_dyn_undefined());
 }
 
+/* ── streams over another unit's reads (scr_webstream_readable_over) ─ */
+
+typedef struct WsOver {
+  WsObj obj;
+  WsReadable *stream; /* +1 */
+  const ScrWebStreamSource *source;
+  void *ctx; /* released through source->release */
+} WsOver;
+
+static void ws_over_trace(void *obj, ScrTraceVisit visit, void *ctx) { ws_visit(((WsOver *)obj)->stream, visit, ctx); }
+
+static void ws_over_drop(void *obj, bool gc) {
+  WsOver *o = obj;
+  ws_drop_obj(o->stream, gc);
+  o->stream = NULL;
+  /* The context is the other unit's, outside the collector. */
+  void *ctx = o->ctx;
+  o->ctx = NULL;
+  if (ctx) o->source->release(ctx);
+}
+
+static const WsObjType ws_over_type = {ws_over_trace, ws_over_drop};
+
+/* The stream's controller while it still holds this source. */
+static WsRController *ws_over_controller(WsOver *o) {
+  WsRController *c = o->stream ? o->stream->controller : NULL;
+  return c && !c->algorithms_cleared ? c : NULL;
+}
+
+static void ws_over_chunk(void *ctx, ScrDyn *value) {
+  WsOver *o = ctx;
+  WsRController *c = ws_over_controller(o);
+  if (c) {
+    if (ws_rcontroller_enqueue(c, value)) {
+      ws_pull_fulfilled(c, NULL);
+    } else {
+      ScrDyn *error = ws_take_pending();
+      ws_rcontroller_error(c, error);
+      scr_dyn_release(error);
+    }
+  }
+  ws_release(o);
+}
+
+static void ws_over_close(void *ctx) {
+  WsOver *o = ctx;
+  WsRController *c = ws_over_controller(o);
+  if (c) ws_rcontroller_close(c);
+  ws_release(o);
+}
+
+static void ws_over_error(void *ctx, ScrDyn *reason) {
+  WsOver *o = ctx;
+  WsRController *c = ws_over_controller(o);
+  if (c) ws_rcontroller_error(c, reason ? reason : scr_dyn_undefined());
+  ws_release(o);
+}
+
+static const ScrFetchReadSink ws_over_sink = {ws_over_chunk, ws_over_close, ws_over_error};
+
+static ScrDyn *ws_over_pull(void *ctx, WsRController *c) {
+  (void)c;
+  WsOver *o = ctx;
+  if (!o->source->read_into(o->ctx, &ws_over_sink, ws_retain(o))) {
+    ws_release(o);
+    return NULL;
+  }
+  return WS_PARKED;
+}
+
+static ScrPromise *ws_over_cancel(void *ctx, WsRController *c, ScrDyn *reason) {
+  (void)c;
+  WsOver *o = ctx;
+  return o->source->cancel(o->ctx, reason);
+}
+
+static const WsSourceOps ws_over_source_ops = {ws_over_pull, ws_over_cancel};
+
+ScrDyn *scr_webstream_readable_over(const ScrWebStreamSource *source, void *ctx) {
+  ws_install();
+  WsOver *o = ws_obj_new(sizeof *o, &ws_over_type);
+  o->source = source;
+  o->ctx = ctx;
+  WsReadable *s = ws_readable_create_native(&ws_over_source_ops, o, 0, 0);
+  o->stream = ws_readable_retain(s);
+  ScrDyn *box = ws_stream_box(s);
+  ws_readable_release(s);
+  return box;
+}
+
 /* ── async iteration (ReadableStream.prototype.values) ────────────── */
 
 typedef struct WsIter {
@@ -2047,7 +2137,12 @@ static bool ws_readable_unusable(const ScrDyn *stream) {
   return !s || ws_readable_locked(s) || s->disturbed;
 }
 
-static const ScrWebStreamBridge ws_fetch_bridge = {ws_reader_read_into, ws_readable_unusable};
+static bool ws_readable_disturbed(const ScrDyn *stream) {
+  WsReadable *s = ws_stream_of(stream);
+  return s && s->disturbed;
+}
+
+static const ScrWebStreamBridge ws_fetch_bridge = {ws_reader_read_into, ws_readable_unusable, ws_readable_disturbed};
 
 /* ── WritableStream (lib/internal/webstreams/writablestream.js) ──── */
 
@@ -5183,6 +5278,8 @@ static ScrDynHandleTag ws_class_tag(double kind) {
   if (index < 0 || index >= (int)(sizeof tags / sizeof tags[0])) scr_trap("scriptc: unknown web stream class\n");
   return tags[index];
 }
+
+void scr_webstream_install(void) { ws_install(); }
 
 /* The web stream class `kind` names as a constructor value (+1): the
  * compiler's webstream.class. */

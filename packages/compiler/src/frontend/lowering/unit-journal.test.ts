@@ -4,6 +4,7 @@ import { Lowerer } from "./lowerer.js";
 import {
   checkedTable,
   contentDigest,
+  decodeRecordFunction,
   encodeUnitFunction,
   flagScalar,
   functionTable,
@@ -12,7 +13,9 @@ import {
   recordUnit,
   setTable,
   waveStats,
+  type UnitRecord,
   type WaveHost,
+  type WaveReuse,
 } from "./unit-journal.js";
 import type { IrFunction } from "../../ir/ir.js";
 
@@ -42,7 +45,17 @@ const sized: Record<string, readonly string[]> = {
     "extendedNames",
   ],
   unions: ["keyedNameKeys", "byKey", "byId", "armTags", "unions", "recIds", "pendingRec"],
-  keyOrder: ["literals", "copies", "methodResults", "observed", "changed"],
+  keyOrder: [
+    "literals",
+    "copies",
+    "methodResults",
+    "widths",
+    "sourceProbes",
+    "clones",
+    "observed",
+    "changed",
+    "keptSourceShapes",
+  ],
 };
 
 /** Scratch of the registries' own mapping (it unwinds before mapType returns). */
@@ -225,6 +238,7 @@ function host(lower: (name: string, state: HostState) => IrFunction | null): {
       },
       statementCounts: () => ({ total: 0, failed: 0, other: 0 }),
       resolves: () => true,
+      keep: () => {},
     },
   };
 }
@@ -276,7 +290,10 @@ test("a unit's record lists its events, flags and added entries", () => {
     ["flag", "flag"],
   ]);
   expect(record!.tables).toEqual({ helpers: [`"key.a"\n"%h.a"`] });
-  expect(JSON.parse(JSON.stringify(record))).toEqual(record);
+  // The function is in the binary encoding, and the rest is JSON data.
+  const { fn: bytes, ...rest } = record!;
+  expect(bytes).toBeInstanceOf(Uint8Array);
+  expect(JSON.parse(JSON.stringify(rest))).toEqual(rest);
 });
 
 test("a unit that changes an entry it did not add has no record", () => {
@@ -303,11 +320,53 @@ test("a recorded wave throws when a unit changes a held function in place", () =
     store: () => {},
     statementCounts: () => ({ total: 0, failed: 0, other: 0 }),
     resolves: () => true,
+    keep: () => {},
   };
   lowerWaveRecorded(subject, ["a"], waveStats());
   expect(() => lowerWaveRecorded(subject, ["a", "b"], waveStats())).toThrow(
     "a unit changed lifted entry %shared in place without naming it",
   );
+});
+
+test("a recorded wave holds the entries an applied record adds after its first lowering unit", () => {
+  // `first` lowers, which takes the wave's content; `a` applies a stored
+  // record that adds `%added`; `b` changes `%added` in place without naming
+  // it, which the end of the wave must see.
+  const functions: IrFunction[] = [];
+  const subject: WaveHost = {
+    tables: [functionTable("lifted", functions, (name) => functions.some((f) => f.name === name))],
+    scalars: [],
+    lowerRecorded: (name) => {
+      if (name === "b")
+        functions
+          .find((f) => f.name === "%added")!
+          .locals.push({ id: "x.0", name: "x", type: { kind: "f64" } } as never);
+      return { fn: fn(`%${name}`), poisoned: false };
+    },
+    store: () => {},
+    statementCounts: () => ({ total: 0, failed: 0, other: 0 }),
+    resolves: () => true,
+    keep: () => {},
+  };
+  const stored: UnitRecord = {
+    name: "a",
+    fn: null,
+    poisoned: false,
+    events: [],
+    tables: { lifted: [encodeUnitFunction(fn("%added"))!] },
+    reads: {},
+  };
+  const reuse: WaveReuse = {
+    stored: (name) => (name === "a" ? { record: stored, fn: () => null } : null),
+    verify: false,
+    check: () => {},
+    note: () => {},
+  };
+  const stats = waveStats();
+  expect(() => lowerWaveRecorded(subject, ["first", "a", "b"], stats, null, reuse)).toThrow(
+    "a unit changed lifted entry %added in place without naming it",
+  );
+  expect(stats.applied).toBe(1);
 });
 
 /** A wave host over one function table holding `%shared` and one checked
@@ -334,6 +393,7 @@ function sharedHost(grows: (name: string) => boolean): { host: WaveHost; checked
       store: () => {},
       statementCounts: () => ({ total: 0, failed: 0, other: 0 }),
       resolves: () => true,
+      keep: () => {},
     },
   };
 }
@@ -350,6 +410,40 @@ test("a unit that changes a function it names in place has no record", () => {
   const stats = waveStats();
   lowerWaveRecorded(subject, ["a"], stats);
   expect(stats).toMatchObject({ recorded: 0, unrecorded: 1, reasons: { "lifted:changed": 1 } });
+});
+
+test("a record's binary function names the held functions its strings name", () => {
+  const functions = [fn("%shared")];
+  const loc = { file: "b.ts", start: 0, end: 0 };
+  const subject: WaveHost = {
+    tables: [functionTable("lifted", functions, (name) => functions.some((f) => f.name === name))],
+    scalars: [],
+    lowerRecorded: () => ({
+      fn: {
+        ...fn("%a"),
+        body: [
+          {
+            kind: "exprStmt",
+            expr: { kind: "call", callee: "%shared", args: [], type: { kind: "f64" }, loc },
+            loc,
+          },
+        ] as never,
+      },
+      poisoned: false,
+    }),
+    store: () => {},
+    statementCounts: () => ({ total: 0, failed: 0, other: 0 }),
+    resolves: () => true,
+    keep: () => {},
+  };
+  const unit = recordUnit(subject, "a");
+  expect(unit.record!.fn).toBeInstanceOf(Uint8Array);
+  expect(unit.record!.reads).toEqual({
+    lifted: [["%shared", contentDigest(encodeUnitFunction(functions[0]!)!)]],
+  });
+  // The files of the function's source positions, for reuse to check.
+  expect([...unit.files!].sort()).toEqual(["a.ts", "b.ts"]);
+  expect(decodeRecordFunction(unit.record!.fn!)).toEqual(unit.fn);
 });
 
 test("a record lists the held functions it names, with their digests", () => {
@@ -373,6 +467,7 @@ test("a record lists the held functions it names, with their digests", () => {
     store: () => {},
     statementCounts: () => ({ total: 0, failed: 0, other: 0 }),
     resolves: () => true,
+    keep: () => {},
   };
   const { record } = recordUnit(subject, "a");
   // The function the unit added is in its entries, not its reads.

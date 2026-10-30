@@ -155,6 +155,12 @@ const typedInterfaceUnsupported = "typed source has no compiler bridge for this 
 const metadataExclusion =
   "WebIDL brand metadata is observable reflection, not an executable compatibility operation";
 
+/** ReadableStream methods a typed program reaches through the web stream
+ * classes (scr_webstreams.c): on a stream it constructs with them, and on
+ * the native stream through its web view (scr_fetch.c, sf_stream_web_view).
+ * A program that calls one links the classes. */
+export const READABLE_STREAM_WEB_VIEW_CALLS = ["pipeThrough", "pipeTo", "tee"] as const;
+
 function buildFetchCompatProfile() {
   return {
     schemaVersion: 1,
@@ -231,9 +237,9 @@ function buildFetchCompatProfile() {
         "body",
         "bodyUsed",
       ],
-      responseCalls: ["json", "text", "bytes"],
+      responseCalls: ["json", "text", "bytes", "clone"],
       readableStreamReads: ["locked"],
-      readableStreamCalls: ["cancel", "getReader"],
+      readableStreamCalls: ["cancel", "getReader", ...READABLE_STREAM_WEB_VIEW_CALLS],
     },
     operations: [
       {
@@ -287,6 +293,13 @@ function buildFetchCompatProfile() {
         facets: ["body-consumption", "promise-settlement", "state-machine", "error-shape"],
         evidence: [fixture("static-request")],
       })),
+      {
+        id: "stdlib.request.clone",
+        name: "Request.clone",
+        kind: "method",
+        facets: ["body-consumption", "identity", "state-machine", "error-shape"],
+        evidence: [fixture("static-clone")],
+      },
       {
         id: "stdlib.response.constructor",
         name: "Response constructor",
@@ -440,6 +453,13 @@ function buildFetchCompatProfile() {
         facets: ["webidl-conversion", "identity", "state-machine", "error-shape"],
         evidence: [generated("stream-traces"), fixture("static-stream")],
       },
+      ...READABLE_STREAM_WEB_VIEW_CALLS.map((member): FetchCompatOperation => ({
+        id: `stdlib.readable-stream.${member}`,
+        name: `ReadableStream.${member}`,
+        kind: "method",
+        facets: ["identity", "promise-settlement", "state-machine", "error-shape"],
+        evidence: [fixture("static-web-streams")],
+      })),
       {
         id: "stdlib.readable-stream-default-reader.closed",
         name: "ReadableStreamDefaultReader.closed",
@@ -538,6 +558,13 @@ function buildFetchCompatProfile() {
             ? [fixture("static")]
             : [fixture("static"), fixture("static-stream")],
       })),
+      {
+        id: "stdlib.response.clone",
+        name: "Response.clone",
+        kind: "method",
+        facets: ["body-consumption", "identity", "state-machine", "error-shape"],
+        evidence: [fixture("static-clone")],
+      },
     ],
     inventory: {
       interfaces: [
@@ -672,7 +699,7 @@ function buildFetchCompatProfile() {
           "bytes",
           "attribute",
         ].map((member) =>
-          ["clone", "blob", "formData", "attribute"].includes(member)
+          ["blob", "formData", "attribute"].includes(member)
             ? unsupportedEntry(
                 `stdlib.request.${member}`,
                 "Request",
@@ -706,7 +733,8 @@ function buildFetchCompatProfile() {
           (member) => staticEntry(`stdlib.response.${member}`, "Response", member, "prototype"),
         ),
         staticEntry("stdlib.response.arrayBuffer", "Response", "arrayBuffer", "prototype"),
-        ...["clone", "blob", "formData"].map((member) =>
+        staticEntry("stdlib.response.clone", "Response", "clone", "prototype"),
+        ...["blob", "formData"].map((member) =>
           unsupportedEntry(
             `stdlib.response.${member}`,
             "Response",
@@ -742,25 +770,15 @@ function buildFetchCompatProfile() {
           "getReader",
           "prototype",
         ),
-        ...["pipeThrough", "values"].map((member) =>
-          unsupportedEntry(
-            `stdlib.readable-stream.${member}`,
-            "ReadableStream",
-            member,
-            "prototype",
-            member === "values"
-              ? "direct for-await consumption compiles statically; storing or driving the first-class iterator handle is unsupported"
-              : "the wider Web Streams graph is outside the native readable-stream slice",
-          ),
+        ...READABLE_STREAM_WEB_VIEW_CALLS.map((member) =>
+          staticEntry(`stdlib.readable-stream.${member}`, "ReadableStream", member, "prototype"),
         ),
-        ...["pipeTo", "tee"].map((member) =>
-          unsupportedEntry(
-            `stdlib.readable-stream.${member}`,
-            "ReadableStream",
-            member,
-            "prototype",
-            "this operation is outside the native readable-stream implementation",
-          ),
+        unsupportedEntry(
+          "stdlib.readable-stream.values",
+          "ReadableStream",
+          "values",
+          "prototype",
+          "direct for-await consumption compiles statically; storing or driving the first-class iterator handle is unsupported",
         ),
         unsupportedEntry(
           "stdlib.readable-stream.symbol.asyncIterator",
@@ -938,6 +956,10 @@ export interface StaticFetchMembers {
   headersCalls: ReadonlySet<string>;
   readableStreamReads: ReadonlySet<string>;
   readableStreamCalls: ReadonlySet<string>;
+  /** ReadableStream prototype members the native stream does not
+   * implement itself, symbol-keyed ones as `[Symbol.name]`: the unsupported
+   * ones, and the calls it answers through its web view. */
+  readableStreamUnsupported: ReadonlySet<string>;
 }
 
 let staticFetchMemberSets: StaticFetchMembers | undefined;
@@ -961,6 +983,17 @@ export function staticFetchMembers(): StaticFetchMembers {
     ),
     readableStreamReads: new Set(profile.members.readableStreamReads),
     readableStreamCalls: new Set(profile.members.readableStreamCalls),
+    readableStreamUnsupported: new Set([
+      ...profile.inventory.entries
+        .filter(
+          (entry) =>
+            entry.owner === "ReadableStream" &&
+            (entry.placement === "prototype" || entry.placement === "prototype-symbol") &&
+            entry.status === "unsupported",
+        )
+        .map((entry) => entry.member),
+      ...READABLE_STREAM_WEB_VIEW_CALLS,
+    ]),
   };
   return staticFetchMemberSets;
 }

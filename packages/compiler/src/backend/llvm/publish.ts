@@ -80,6 +80,10 @@ export interface PublishClassInfo {
    * `compressed` when the field holds a 32-bit reference (classes.ts
    * LlClassMeta.compressed), which the walker decodes. */
   fields: { name: string; index: number; type: IrType; compressed?: boolean }[];
+  /** An inline array field (classes.ts LlClassMeta.inlineTail), which
+   * `fields` leaves out: the GEP index of its i32 element count, the byte
+   * offset of its 32-bit references and their type. */
+  tail?: { name: string; countIndex: number; offset: number; elem: IrType };
 }
 
 /** scr_pub_mark's object kinds (SCR_PUB_KIND_* in scr_runtime.h), for the RC audit. */
@@ -406,6 +410,7 @@ export class PublishWalkers {
       loc,
       info.idInRc,
       info.compact,
+      info.tail,
     );
   }
 
@@ -564,6 +569,7 @@ export class PublishWalkers {
     loc: SrcLoc,
     classId = false,
     compact = false,
+    tail?: PublishClassInfo["tail"],
   ): string[] {
     const lines = [
       head,
@@ -592,7 +598,33 @@ export class PublishWalkers {
       );
       n++;
     }
-    lines.push(`  br label %done`, `done:`, `  ret void`, `}`);
+    const tailFn =
+      tail === undefined ? null : this.walker(tail.elem, `${path}.${tail.name}[]`, loc);
+    if (tail !== undefined && tailFn !== null) {
+      // Each element of an inline array field, as a 32-bit reference.
+      lines.push(
+        `  br label %tail.pre`,
+        `tail.pre:`,
+        `  %tail.cp = getelementptr inbounds %${struct}, ptr %o, i64 0, i32 ${tail.countIndex} ; ${llvmComment(tail.name)}`,
+        `  %tail.n = load i32, ptr %tail.cp`,
+        `  %tail.at = getelementptr inbounds i8, ptr %o, i64 ${tail.offset}`,
+        `  br label %tail.head`,
+        `tail.head:`,
+        `  %tail.i = phi i32 [ 0, %tail.pre ], [ %tail.next, %tail.latch ]`,
+        `  %tail.end = icmp uge i32 %tail.i, %tail.n`,
+        `  br i1 %tail.end, label %done, label %tail.body`,
+        `tail.body:`,
+        `  %tail.p = getelementptr inbounds i32, ptr %tail.at, i32 %tail.i`,
+        `  %tail.r = load i32, ptr %tail.p`,
+        ...compactRefLoadLines(`%tail.r`, `%tail.v`, `%tail.d`),
+        ...this.push(`%tail.v`, tailFn, `tail`, this.compactRef(tail.elem)),
+        `  br label %tail.latch`,
+        `tail.latch:`,
+        `  %tail.next = add nuw i32 %tail.i, 1`,
+        `  br label %tail.head`,
+      );
+    } else lines.push(`  br label %done`);
+    lines.push(`done:`, `  ret void`, `}`);
     return lines;
   }
 }

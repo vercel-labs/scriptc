@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/generic-arrow-mutable-captures.ts"
+ ],
+ "diags": []
+}

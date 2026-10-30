@@ -6,8 +6,8 @@
  * SCRIPTC_LIBNODE overrides the recorded directory at run time.
  *
  * Where the build finds the pack: `--libnode=<pack directory>`, else
- * SCRIPTC_LIBNODE in the build's environment (until NI-13 publishes
- * @scriptc/libnode-<platform> packages that an installation carries).
+ * SCRIPTC_LIBNODE in the build's environment, else the installed
+ * @scriptc/libnode-<platform> pack (libnode-pack.ts).
  * `--libnode=beside` takes that pack and copies it next to the executable
  * as `<output>.libnode/`, recorded as `$ORIGIN/<output>.libnode`, so the
  * executable and its Node travel together; a recorded `$ORIGIN/` path is
@@ -24,6 +24,16 @@ import {
   rmSync,
 } from "node:fs";
 import { basename, isAbsolute, join, resolve, sep } from "node:path";
+import { compilerReleaseVersion } from "../library/sidecar.js";
+import { nativeCodegenTarget } from "../backend/targets.js";
+import {
+  findInstalledLibnodePack,
+  hostLibnodeTarget,
+  LibnodePackError,
+  libnodePackPackage,
+  readLibnodePack,
+  type LibnodePack,
+} from "./libnode-pack.js";
 
 /** The oldest Node.js release Node islands support: synchronous
  * module.registerHooks, which shared modules need, is a release candidate
@@ -31,7 +41,7 @@ import { basename, isAbsolute, join, resolve, sep } from "node:path";
 export const NODE_ISLAND_MIN_NODE = "24.13.1";
 
 /** The bridge ABI this compiler's runtime speaks (scr_node_bridge.h). */
-export const NODE_BRIDGE_ABI = 3;
+export const NODE_BRIDGE_ABI = 10;
 
 /** The prefix of a recorded path relative to the executable's directory. */
 export const ORIGIN = "$ORIGIN/";
@@ -131,18 +141,56 @@ function realpathOr(path: string): string {
   }
 }
 
+/** The native target whose libnode pack a build records: the codegen
+ * target (SCRIPTC_TARGET, and the host's libc), else the host. */
+export function libnodeTarget(env: NodeJS.ProcessEnv = process.env): string {
+  return nativeCodegenTarget(env)?.name ?? hostLibnodeTarget();
+}
+
+/** Why the installed pack in `dir` cannot serve this compiler, or null: it
+ * must be the target's package at the compiler's own version. */
+function installedPackProblem(dir: string, packageName: string): string | null {
+  let pack: LibnodePack;
+  try {
+    // An installed pack is found, not named: check its files' digests too.
+    pack = readLibnodePack(dir, { packageName, verifyHashes: true });
+  } catch (error) {
+    return error instanceof LibnodePackError ? error.message : String(error);
+  }
+  const version = compilerReleaseVersion();
+  if (pack.manifest.version !== version)
+    return `the installed libnode pack ${packageName} at ${dir} is version ${pack.manifest.version ?? "unknown"}; this scriptc is ${version}: install ${packageName}@${version}`;
+  return null;
+}
+
 /** What to record for a program that calls into Node, or the reason the
  * build cannot (an SC8005 message). `option` is --libnode. */
 export function libnodeRecord(
   option: string | undefined,
   outPath: string,
   env: NodeJS.ProcessEnv = process.env,
+  projectDir: string = process.cwd(),
 ): LibnodeRecord | string {
   const fromEnv = env["SCRIPTC_LIBNODE"];
   const beside = option === "beside";
-  const source = option !== undefined && !beside ? option : fromEnv;
-  if (source === undefined || source === "")
-    return "this program calls into Node.js (@scriptc/node), but no libnode pack is installed: set SCRIPTC_LIBNODE or pass --libnode=<pack directory>";
+  const explicit = option !== undefined && !beside ? option : fromEnv;
+  const target = libnodeTarget(env);
+  // Without an explicit pack, the installed @scriptc/libnode-<target>.
+  const installed =
+    explicit !== undefined && explicit !== ""
+      ? null
+      : findInstalledLibnodePack({ targetName: target, projectDir });
+  const source = installed ?? explicit;
+  if (source === undefined || source === null || source === "") {
+    const pack = libnodePackPackage(target);
+    return pack === null
+      ? `this program calls into Node.js (@scriptc/node), but there is no libnode pack for ${target}: set SCRIPTC_LIBNODE or pass --libnode=<pack directory>`
+      : `this program calls into Node.js (@scriptc/node), but no libnode pack is installed: install ${pack}, set SCRIPTC_LIBNODE or pass --libnode=<pack directory>`;
+  }
+  if (installed !== null) {
+    const problem = installedPackProblem(installed, libnodePackPackage(target)!);
+    if (problem !== null) return problem;
+  }
   if (source.startsWith(ORIGIN)) {
     // A pack the deployment places next to the executable: nothing to read.
     return { libnode: source, nodeVersion: "" };
@@ -159,18 +207,23 @@ export function libnodeRecord(
 
 /** The identity of the libnode pack a build that calls into Node.js
  * records, which the program's executable cache entry keeps
- * (EarlyExecutableCacheOptions.libnodeIdentity), or undefined when neither
- * --libnode nor SCRIPTC_LIBNODE is set. It holds the option, the pack
- * directory and a digest of the pack's manifest.json, so that a pack
- * upgraded in place (another Node version, bridge ABI or file list)
- * invalidates the entry instead of restoring its old record. */
+ * (EarlyExecutableCacheOptions.libnodeIdentity): the option, the pack
+ * directory (named by --libnode or SCRIPTC_LIBNODE, or the installed pack
+ * found from `projectDir`), and a digest of the pack's manifest.json. A pack
+ * upgraded in place, removed, or replaced by another installed pack changes
+ * it. Undefined when no pack is named or installed. */
 export function libnodeCacheKey(
   option: string | undefined,
   env: NodeJS.ProcessEnv = process.env,
+  projectDir: string = process.cwd(),
 ): string | undefined {
   const fromEnv = env["SCRIPTC_LIBNODE"];
-  if (option === undefined && fromEnv === undefined) return undefined;
-  const source = option !== undefined && option !== "beside" ? option : (fromEnv ?? "");
+  const explicit = option !== undefined && option !== "beside" ? option : fromEnv;
+  const source =
+    explicit !== undefined && explicit !== ""
+      ? explicit
+      : findInstalledLibnodePack({ targetName: libnodeTarget(env), projectDir });
+  if (source === undefined || source === null) return option === undefined ? undefined : option;
   let manifest = "none";
   if (isAbsolute(source)) {
     try {
@@ -182,4 +235,22 @@ export function libnodeCacheKey(
     }
   }
   return `${option ?? ""}|${source}|${manifest}`;
+}
+
+/** The libnode pack directory the build-time probe of deferred islands
+ * runs in (scope-B NI-7): the same pack libnodeRecord records (before a
+ * `beside` copy), or null when the build host has none to run. */
+export function libnodeProbePack(
+  option: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+  projectDir: string = process.cwd(),
+): string | null {
+  const fromEnv = env["SCRIPTC_LIBNODE"];
+  const explicit = option !== undefined && option !== "beside" ? option : fromEnv;
+  const source =
+    explicit !== undefined && explicit !== ""
+      ? explicit
+      : findInstalledLibnodePack({ targetName: hostLibnodeTarget(), projectDir });
+  if (source === undefined || source === null || source === "" || !isAbsolute(source)) return null;
+  return typeof readManifest(source) === "string" ? null : resolve(source);
 }

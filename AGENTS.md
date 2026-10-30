@@ -6,6 +6,8 @@ This is the only agent guide for the repository. Its rules apply everywhere, inc
 
 Write prose paragraphs and list items as single source lines and let editors and renderers wrap them naturally. Do not hard-wrap Markdown at a fixed column; preserve separate lines only where Markdown syntax or intentional formatting requires them, such as headings, lists, tables, blockquotes, and code blocks. The Limitations page partials under `docs/content/limitations/` are the exception: they keep one sentence per line (see Limitations page partials).
 
+Use the `technical-writer` skill (`.agents/skills/technical-writer/SKILL.md`) when you write or edit prose for this repo, including docs pages, READMEs, changelog entries, commit messages, PR descriptions, and issues.
+
 ## Build and test
 
 Use `pnpm lint` and `pnpm format:check` for owned JS/TS; apply formatting with `pnpm format` and review any `pnpm lint:fix` changes. Preserve the exclusions in `.oxlintrc.jsonc` and `.oxfmtrc.jsonc`: program fixtures and deliberately invalid or formatting-sensitive inputs, generated outputs, vendor sources, and the standalone docs workspace are not part of the root tooling scope. Do not reformat embedded source strings or sort imports. Keep lint exceptions narrowly scoped and explain their semantic purpose. Compiler frontend/backend imports and the explicit TypeScript parser islands are enforced by oxlint.

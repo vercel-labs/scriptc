@@ -8,11 +8,7 @@ import {
   NativeCodegenError,
   validateNativeCodegenVersion,
 } from "./native-codegen.js";
-import {
-  nativeCodegenParts,
-  nativePartitionPaths,
-  nativeProgramPartitions,
-} from "./native-codegen-core.js";
+import { nativePartitionPaths, nativeProgramPartitions } from "./native-codegen-core.js";
 import { nativeArtifactDependenciesStillMatch } from "./native-toolchain.js";
 import { LINUX_X64_GNU_TARGET, MACOS_ARM64_TARGET, WASM32_WASI_TARGET } from "./targets.js";
 import { compilerReleaseVersion } from "../library/sidecar.js";
@@ -206,6 +202,36 @@ test("profiles reach the helper and key the native cache by their bytes", async 
   expect(calls[2]).toContain("--profile-use /profiles/a.profdata");
 });
 
+test("block counts reach the helper, and a build that records them reuses no artifact", async () => {
+  const pkg = await fakePackage();
+  const use = { path: "/profiles/a.profdata", digest: "a".repeat(64), contextSensitive: false };
+  const base = request(pkg.root, pkg.packageJson, join(pkg.root, "used.o"));
+  await emitNativeArtifact({ ...base, profile: { use } });
+  const blocks = { path: "/profiles/a.blocks", digest: "c".repeat(64) };
+  const annotated = {
+    ...base,
+    outputPath: join(pkg.root, "blocks.o"),
+    profile: { use: { ...use, blocks } },
+  };
+  await emitNativeArtifact(annotated);
+  await emitNativeArtifact({ ...annotated, outputPath: join(pkg.root, "blocks-again.o") });
+  const recording = {
+    ...base,
+    outputPath: join(pkg.root, "recorded.o"),
+    profile: { use, recordBlocks: "/work/a.blocks" },
+  };
+  await emitNativeArtifact(recording);
+  await emitNativeArtifact(recording);
+  const calls = (await readFile(pkg.log, "utf8")).trim().split("\n");
+  // The block counts key the cache; each recording build runs the helper.
+  expect(calls).toHaveLength(4);
+  expect(calls[1]).toContain(
+    "--profile-use /profiles/a.profdata --profile-blocks /profiles/a.blocks",
+  );
+  expect(calls[2]).toContain("--record-profile-blocks /work/a.blocks");
+  expect(calls[3]).toContain("--record-profile-blocks /work/a.blocks");
+});
+
 test("a cached artifact keeps the profile match of the build that produced it", async () => {
   const pkg = await fakePackage({
     profileReport:
@@ -217,7 +243,8 @@ test("a cached artifact keeps the profile match of the build that produced it", 
       use: { path: "/profiles/a.profdata", digest: "a".repeat(64), contextSensitive: false },
     },
   };
-  const match = { annotated: 120, mismatched: 7, missing: 40, unknownPartitions: 0 };
+  // A helper that predates block-count files reports no recovered count.
+  const match = { annotated: 120, mismatched: 7, missing: 40, recovered: 0, unknownPartitions: 0 };
   expect((await emitNativeArtifact(used)).profileMatch).toEqual(match);
   const again = await emitNativeArtifact({ ...used, outputPath: join(pkg.root, "again.o") });
   expect(again.profileMatch).toEqual(match);
@@ -232,6 +259,7 @@ test("a cached artifact keeps the profile match of the build that produced it", 
     annotated: 0,
     mismatched: 0,
     missing: 0,
+    recovered: 0,
     unknownPartitions: 1,
   });
   // Builds without a profile carry no match, from the helper or the cache.
@@ -398,18 +426,16 @@ test("sanitized native artifacts fail before helper resolution", async () => {
 });
 
 test("program partitions depend only on module size", () => {
-  const megabyte = 1024 * 1024;
-  expect(nativeProgramPartitions(megabyte)).toBe(1);
-  expect(nativeProgramPartitions(megabyte + 1)).toBe(4);
-  expect(nativeProgramPartitions(2 * megabyte)).toBe(4);
-  expect(nativeProgramPartitions(2 * megabyte + 1)).toBe(8);
+  const kilobyte = 1024;
+  const megabyte = 1024 * kilobyte;
+  expect(nativeProgramPartitions(128 * kilobyte)).toBe(1);
+  expect(nativeProgramPartitions(128 * kilobyte + 1)).toBe(8);
   expect(nativeProgramPartitions(32 * megabyte)).toBe(8);
   // Powers of two keep every function in its partition across small edits.
   expect(nativeProgramPartitions(32 * megabyte + 1)).toBe(16);
   expect(nativeProgramPartitions(100 * megabyte)).toBe(32);
   expect(nativeProgramPartitions(1024 * megabyte)).toBe(64);
   // Unoptimized (dev) programs are divided from 64 KiB.
-  const kilobyte = 1024;
   expect(nativeProgramPartitions(64 * kilobyte, true)).toBe(1);
   expect(nativeProgramPartitions(64 * kilobyte + 1, true)).toBe(4);
   expect(nativeProgramPartitions(128 * kilobyte, true)).toBe(4);
@@ -425,41 +451,6 @@ test("program partitions depend only on module size", () => {
     "C:\\build.d\\program",
     "C:\\build.d\\program.part1",
   ]);
-});
-
-test("code generation parts depend only on module size", () => {
-  const kilobyte = 1024;
-  expect(nativeCodegenParts(128 * kilobyte)).toBe(1);
-  expect(nativeCodegenParts(128 * kilobyte + 1)).toBe(4);
-  expect(nativeCodegenParts(256 * kilobyte)).toBe(4);
-  expect(nativeCodegenParts(256 * kilobyte + 1)).toBe(8);
-  expect(nativeCodegenParts(1024 * kilobyte)).toBe(8);
-  // Partitioned modules already compile their partitions concurrently.
-  expect(nativeCodegenParts(1024 * kilobyte + 1)).toBe(1);
-});
-
-test("split code generation passes --split codegen and no partition cache", async () => {
-  const pkg = await fakePackage();
-  const output = join(pkg.root, "split", "program.o");
-  const artifact = await emitNativeArtifact({
-    ...request(pkg.root, pkg.packageJson, output),
-    partitions: 4,
-    splitCodegen: true,
-  });
-  expect(artifact.outputPaths).toEqual(nativePartitionPaths(output, 4));
-  const args = (await readFile(pkg.log, "utf8")).trim().split(" ");
-  expect(args.filter((arg) => arg === "--output")).toHaveLength(4);
-  expect(args.join(" ")).toContain("--split codegen");
-  expect(args).not.toContain("--cache-dir");
-
-  // Partitions of the same module are a distinct artifact.
-  await emitNativeArtifact({
-    ...request(pkg.root, pkg.packageJson, join(pkg.root, "partitions", "program.o")),
-    partitions: 4,
-  });
-  const calls = (await readFile(pkg.log, "utf8")).trim().split("\n");
-  expect(calls).toHaveLength(2);
-  expect(calls[1]).not.toContain("--split");
 });
 
 test("partitioned objects are emitted, cached and restored together", async () => {

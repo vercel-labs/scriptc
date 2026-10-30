@@ -42,6 +42,8 @@ export interface Candidate {
   /** Whether the creating syntax is a plain data literal. */
   readonly plain: boolean;
   readonly inPackage: boolean;
+  /** The per-call-site clone that allocates it ("" outside clones). */
+  readonly ctx?: string;
 }
 
 export interface ConstantObject {
@@ -187,6 +189,34 @@ export function computeConstantGraphs(analysis: ShapeAnalysis): ConstantGraphs {
     return result;
   };
 
+  // A per-call-site clone (analyze.ts siteClone) runs once when its one
+  // call site runs once: its caller is module code, or another such clone.
+  const edgesToInfo = new Map<FunctionInfo, (typeof analysis.calls)[number][]>();
+  for (const e of analysis.calls) {
+    let l = edgesToInfo.get(e.callee);
+    if (l === undefined) edgesToInfo.set(e.callee, (l = []));
+    l.push(e);
+  }
+  const onceInfoMemo = new Map<FunctionInfo, boolean>();
+  const onceInfo = (info: FunctionInfo): boolean => {
+    if (ts.isSourceFile(info.node)) return true;
+    if (!info.ctx.includes("@S")) return once(info.node);
+    const known = onceInfoMemo.get(info);
+    if (known !== undefined) return known;
+    onceInfoMemo.set(info, false);
+    const edges = edgesToInfo.get(info) ?? [];
+    const result =
+      !escapedNodes.has(info.node) &&
+      edges.length > 0 &&
+      new Set(edges.map((e) => e.site)).size === 1 &&
+      edges.every(
+        (e) =>
+          !e.inLoop && e.caller !== null && !inLoop(e.site, e.caller.node) && onceInfo(e.caller),
+      );
+    onceInfoMemo.set(info, result);
+    return result;
+  };
+
   // Whether every call of a function comes from once-only code outside
   // loops, through any number of call sites: an init factory, whose
   // allocations are one object per call site (schema builders called at
@@ -240,6 +270,7 @@ export function computeConstantGraphs(analysis: ShapeAnalysis): ConstantGraphs {
         site.keys === null
       ),
       inPackage: site.inPackage,
+      ctx: site.ctx,
     });
   }
   const inPackage = (n: Node): boolean =>
@@ -271,7 +302,13 @@ export function computeConstantGraphs(analysis: ShapeAnalysis): ConstantGraphs {
     // A function object is created where its expression or declaration
     // runs; its prototype with it.
     const owner = ownerFunction(site.node);
-    if (!once(owner) || inLoop(site.node, owner)) {
+    // Allocated in a per-call-site clone: once when that clone runs once.
+    const cloneOwner =
+      site.ctx !== undefined && site.ctx !== ""
+        ? infosByNode.get(owner)?.find((i) => i.ctx === site.ctx)
+        : undefined;
+    const runsOnce = cloneOwner !== undefined ? onceInfo(cloneOwner) : once(owner);
+    if (!runsOnce || inLoop(site.node, owner)) {
       const factory = !inLoop(site.node, owner) && initOnly(owner);
       if (site.inPackage || factory)
         nearMisses.push({
@@ -348,10 +385,14 @@ export function computeConstantGraphs(analysis: ShapeAnalysis): ConstantGraphs {
     mixedReads = 0;
   for (const op of analysis.ops) {
     if (op.kind !== "read" || op.name === null) continue;
-    const atoms = analysis.nodes[op.recv]!.atoms;
-    const constant = [...atoms].filter((a) => constantKeys.get(a)?.has(op.name!) === true);
+    // A nullish receiver throws (absent keys read undefined in the analysis).
+    const optional = (op.node.flags & ts.NodeFlags.OptionalChain) !== 0;
+    const atoms = [...analysis.nodes[op.recv]!.atoms].filter(
+      (a) => optional || !(a.kind === "prim" && (a.label === "undefined" || a.label === "null")),
+    );
+    const constant = atoms.filter((a) => constantKeys.get(a)?.has(op.name!) === true);
     if (constant.length === 0) continue;
-    if (atoms.size === 1) {
+    if (atoms.length === 1) {
       foldableReads++;
       const p = op.node.parent;
       if (p !== undefined && ts.isCallExpression(p) && p.expression === op.node) foldableCalls++;

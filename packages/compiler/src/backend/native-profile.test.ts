@@ -10,6 +10,8 @@ import {
   profileGenerateLinkerArgs,
   profileHasContextCounts,
   profileLayoutLinkerArgs,
+  profileBlocksPath,
+  recordProfileBlocksPath,
 } from "./native-profile.js";
 import { NATIVE_TARGETS } from "./targets.js";
 
@@ -129,9 +131,34 @@ test("only the instrumented link adds the profile runtime", () => {
 test("the helper's profile match is read from its output", () => {
   expect(
     parseNativeProfileMatch(
+      '{"ok":true,"profile":{"annotated":120,"mismatched":7,"missing":40,"recovered":6,"unknown_partitions":1}}\n',
+    ),
+  ).toEqual({ annotated: 120, mismatched: 7, missing: 40, recovered: 6, unknownPartitions: 1 });
+  // A helper that predates block-count files reports no recovered count.
+  expect(
+    parseNativeProfileMatch(
       '{"ok":true,"profile":{"annotated":120,"mismatched":7,"missing":40,"unknown_partitions":1}}\n',
     ),
-  ).toEqual({ annotated: 120, mismatched: 7, missing: 40, unknownPartitions: 1 });
+  ).toEqual({ annotated: 120, mismatched: 7, missing: 40, recovered: 0, unknownPartitions: 1 });
+  expect(
+    parseNativeProfileMatch(
+      '{"ok":true,"profile":{"annotated":1,"mismatched":0,"missing":0,"recovered":-1,"unknown_partitions":0}}\n',
+    ),
+  ).toBeNull();
+  // With the profile's counters on the annotated and the mismatched functions.
+  expect(
+    parseNativeProfileMatch(
+      '{"ok":true,"profile":{"annotated":120,"mismatched":7,"missing":40,"recovered":0,"unknown_partitions":0,"annotated_counts":9000,"mismatched_counts":1000}}\n',
+    ),
+  ).toEqual({
+    annotated: 120,
+    mismatched: 7,
+    missing: 40,
+    recovered: 0,
+    unknownPartitions: 0,
+    annotatedCounts: 9000,
+    mismatchedCounts: 1000,
+  });
   // A helper that predates the report prints nothing.
   expect(parseNativeProfileMatch("")).toBeNull();
   expect(parseNativeProfileMatch('{"ok":true}\n')).toBeNull();
@@ -144,6 +171,7 @@ test("the build reports the match, and warns when the profile is stale", () => {
       annotated: 9170,
       mismatched: 0,
       missing: 28636,
+      recovered: 0,
       unknownPartitions: 0,
     }),
   ).toBe(
@@ -155,6 +183,7 @@ test("the build reports the match, and warns when the profile is stale", () => {
       annotated: 90,
       mismatched: 10,
       missing: 5,
+      recovered: 0,
       unknownPartitions: 1,
     }),
   ).toBe(
@@ -165,6 +194,7 @@ test("the build reports the match, and warns when the profile is stale", () => {
       annotated: 5208,
       mismatched: 3739,
       missing: 28859,
+      recovered: 0,
       unknownPartitions: 2,
     }),
   ).toBe(
@@ -177,9 +207,69 @@ test("the build reports the match, and warns when the profile is stale", () => {
       annotated: 0,
       mismatched: 0,
       missing: 12,
+      recovered: 0,
       unknownPartitions: 0,
     }),
   ).toBe(
     "scriptc: profile app.profdata: 0 functions annotated, 0 mismatched, 12 without a record\n",
   );
+  // Functions the block-count file annotated have counts, so they leave the warning's share.
+  expect(
+    renderNativeProfileMatch("app.profdata", {
+      annotated: 5208,
+      mismatched: 3739,
+      missing: 28859,
+      recovered: 3600,
+      unknownPartitions: 0,
+    }),
+  ).toBe(
+    "scriptc: profile app.profdata: 5208 functions annotated, 3739 mismatched, 28859 without a record\n" +
+      "scriptc: profile app.profdata: 3600 functions without profile counts annotated from app.blocks\n",
+  );
+  expect(
+    renderNativeProfileMatch("app.profdata", {
+      annotated: 5208,
+      mismatched: 3739,
+      missing: 28859,
+      recovered: 1,
+      unknownPartitions: 0,
+    }),
+  ).toBe(
+    "scriptc: profile app.profdata: 5208 functions annotated, 3739 mismatched, 28859 without a record\n" +
+      "scriptc: profile app.profdata: 1 function without profile counts annotated from app.blocks\n" +
+      "scriptc: warning: 3738 of the 8947 functions app.profdata describes (41.8%) changed since it was collected and are optimized without their counts; collect the profile again\n",
+  );
+});
+
+test("the block-count file sits beside the profile", () => {
+  expect(profileBlocksPath("/p/tsc-ts.cs.profdata")).toBe("/p/tsc-ts.cs.blocks");
+  expect(profileBlocksPath("/p/cli.profile")).toBe("/p/cli.profile.blocks");
+  expect(recordProfileBlocksPath({})).toBeUndefined();
+  expect(recordProfileBlocksPath({ SCRIPTC_RECORD_PROFILE_BLOCKS: "" })).toBeUndefined();
+  expect(recordProfileBlocksPath({ SCRIPTC_RECORD_PROFILE_BLOCKS: "/p/a.blocks" })).toBe(
+    "/p/a.blocks",
+  );
+});
+
+test("the block-count file reaches the helper and keys the caches", () => {
+  const use = { path: "/p/a.profdata", digest: "d", contextSensitive: false };
+  const blocks = { path: "/p/a.blocks", digest: "b" };
+  expect(nativeProfileHelperArgs({ use: { ...use, blocks } })).toEqual([
+    "--profile-use",
+    "/p/a.profdata",
+    "--profile-blocks",
+    "/p/a.blocks",
+  ]);
+  expect(nativeProfileHelperArgs({ use, recordBlocks: "/w/a.blocks" })).toEqual([
+    "--profile-use",
+    "/p/a.profdata",
+    "--record-profile-blocks",
+    "/w/a.blocks",
+  ]);
+  // Recording needs a profile to record from.
+  expect(
+    nativeProfileHelperArgs({ generate: "/r/%p.profraw", recordBlocks: "/w/a.blocks" }),
+  ).toEqual(["--profile-generate", "/r/%p.profraw"]);
+  expect(nativeProfileKey({ use })).toBe("profile-use:d");
+  expect(nativeProfileKey({ use: { ...use, blocks } })).toBe("profile-use:d\0profile-blocks:b");
 });

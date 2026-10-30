@@ -481,6 +481,10 @@ ScrArr *scr_arr_new(ScrElemKind elem, size_t initial_cap); /* returns +1 */
  * header (the array then allocates with the collector header — see the
  * struct comment). Returns +1. */
 ScrArr *scr_arr_new_ops(const ScrArrOps *ops, size_t initial_cap);
+/* Inline array fields (scr_array.c): a frozen array over a field's 32-bit
+ * references, and the constructor's copy of an array into them. */
+ScrArr *scr_arr_view_cref(const ScrArrOps *ops, uint32_t *slots, uint32_t len);
+void scr_arr_copy_cref_tail(const ScrArr *src, uint32_t *slots, uint32_t len);
 /* An empty array expected to receive a few elements: its first slots live
  * in the array's own block (one allocation; the block of a plain empty
  * array plus five 8-byte slots). Otherwise exactly scr_arr_new(elem, 0) and

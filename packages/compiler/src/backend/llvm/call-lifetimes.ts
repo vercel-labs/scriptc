@@ -34,6 +34,10 @@ interface Uses {
   /** Narrowed payloads of union bindings passed directly as call arguments:
    * the payload stays in place if the callee's parameter is proved. */
   payloadForwards: Map<string, ForwardedUse[]>;
+  /** Union bindings whose whole value initializes or is assigned to
+   * another union local (`const x = y`, `x = y` as a statement), with the
+   * locals it is copied to. */
+  copies: Map<string, string[]>;
 }
 
 interface Parameter {
@@ -59,6 +63,11 @@ export interface CallLifetimes {
   /** Projection-only local uses, allowing statement assignments. Each
    * initializer and assignment still needs a separate storage proof. */
   projectedLocals: Map<string, Set<string>>;
+  /** Locals that projectedLocals leaves out only because their whole value
+   * is copied to other union locals, with those locals. Such a local is
+   * only projected when every local it is copied to snapshots the copy
+   * (local-union-storage.ts) instead of keeping the box. */
+  copiedLocals: Map<string, Map<string, readonly string[]>>;
   /** Generator bodies own their parameters for the whole body, including
    * every suspension: the frame releases them only on its final exit. A
    * reference parameter nothing rebinds, declares or captures is therefore
@@ -132,6 +141,7 @@ function collectUses(
     forwards: new Map(),
     payloadKept: new Set(),
     payloadForwards: new Map(),
+    copies: new Map(),
   };
   const forward = (
     table: Map<string, ForwardedUse[]>,
@@ -292,6 +302,18 @@ function collectUses(
     }
     return everyExprChild(node, expr, (node) => stmt(node, true));
   }
+  /** `const x = y` or a statement `x = y` of union locals: the copy is
+   * recorded instead of rejecting `y`. A parameter's copy still rejects it,
+   * since callers may lend projection-only parameters a stack box. */
+  const params = new Set(fn.params.map((param) => param.localId));
+  const unionCopy = (target: string, value: IrExpr | null | undefined): boolean => {
+    if (value?.kind !== "varRef" || value.type.kind !== "union" || params.has(value.localId))
+      return false;
+    let targets = uses.copies.get(value.localId);
+    if (!targets) uses.copies.set(value.localId, (targets = []));
+    targets.push(target);
+    return true;
+  };
   function stmt(node: IrStmt, inExpression: boolean): boolean {
     switch (node.kind) {
       case "return":
@@ -300,6 +322,7 @@ function collectUses(
         break;
       case "varDecl":
         uses.declarations.set(node.localId, (uses.declarations.get(node.localId) ?? 0) + 1);
+        if (unionCopy(node.localId, node.init)) return true;
         // A receiver temporary (`%compoundReceiver = this`) projects its
         // source as long as the temporary itself is only projected.
         if (
@@ -342,6 +365,7 @@ function collectUses(
         // Sequence expressions can rebind a previous call argument before
         // its consumer runs. Those locals need an owned heap snapshot.
         if (inExpression) uses.invalid.add(node.localId);
+        else if (unionCopy(node.localId, node.value)) return true;
         break;
       case "forOf":
         // The binding is initialized afresh for each iteration. Its uses
@@ -429,6 +453,7 @@ export function analyzeCallLifetimes(
     borrowed: new Map(),
     bindings: new Map(),
     projectedLocals: new Map(),
+    copiedLocals: new Map(),
     generatorParameters: new Map(),
   };
   for (const fn of functions.values()) {
@@ -602,6 +627,7 @@ export function analyzeCallLifetimes(
     const params = new Set(fn.params.map((param) => param.localId));
     const safe = new Set<string>();
     const projected = new Set<string>();
+    const copied = new Map<string, readonly string[]>();
     for (const local of fn.locals) {
       if (
         params.has(local.id) ||
@@ -611,13 +637,18 @@ export function analyzeCallLifetimes(
       )
         continue;
       const forwards = uses.forwards.get(local.id) ?? [];
-      if (forwards.every((use) => target(use)?.safe === true)) {
-        projected.add(local.id);
-        if (eligible(local) && !uses.written.has(local.id)) safe.add(local.id);
+      if (!forwards.every((use) => target(use)?.safe === true)) continue;
+      const copies = uses.copies.get(local.id);
+      if (copies) {
+        copied.set(local.id, copies);
+        continue;
       }
+      projected.add(local.id);
+      if (eligible(local) && !uses.written.has(local.id)) safe.add(local.id);
     }
     result.locals.set(fn.name, safe);
     result.projectedLocals.set(fn.name, projected);
+    if (copied.size > 0) result.copiedLocals.set(fn.name, copied);
   }
   // Consumed parameters take the owned convention, unless only projected.
   for (const { fn, index } of consumed) {

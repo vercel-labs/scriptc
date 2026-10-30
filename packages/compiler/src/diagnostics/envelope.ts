@@ -234,6 +234,19 @@ export interface NodeIslandsEnvelope {
   unknownPackages: string[];
 }
 
+/** Node island notices of a build that succeeds (scope-B): SC8001 and
+ * SC8021 notes (a package runs in a Node island, an island evaluates at
+ * boot) and the SC8020 warning (a stateful module duplicated across the
+ * boundary). The envelope reports all three as warnings. */
+export function isNodeIslandNoticeCode(code: string): boolean {
+  return code === "SC8001" || code === "SC8020" || code === "SC8021" || code === "SC8023";
+}
+
+/** SC8001 and SC8021 are notes, not warnings. */
+export function isNodeIslandNoteCode(code: string): boolean {
+  return code === "SC8001" || code === "SC8021";
+}
+
 /** The divergence band: compiles, but the program can behave differently
  * from Node. Warnings, never build failures. */
 export function isDivergenceCode(code: string): boolean {
@@ -370,6 +383,7 @@ export function locateDiagnostic(
     severity:
       isDivergenceCode(diag.code) ||
       isPerformanceCode(diag.code) ||
+      isNodeIslandNoticeCode(diag.code) ||
       diag.code === "SC8004" ||
       isTypePatchCode(diag.code)
         ? "warning"

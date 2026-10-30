@@ -16,6 +16,7 @@ import * as ts from "../ts7/adapter.js";
 import {
   BYTES_ELEMENT_NAME,
   DYN,
+  F64,
   STRING,
   UNDEFINED_T,
   type IrExpr,
@@ -24,6 +25,7 @@ import {
   type SrcLoc,
 } from "../../ir/ir.js";
 import { isJsSourceFile } from "../program.js";
+import { isStrictCode } from "./strict-mode.js";
 import type { Lowerer } from "./lowerer.js";
 import { TEMPORAL_GLOBAL } from "../builtin-modules.js";
 import { stdlibGlobalNameOf } from "./surfaces.js";
@@ -121,18 +123,75 @@ function readsBuiltinByName(lowerer: Lowerer, node: ts.ElementAccessExpression):
 /** The value a JavaScript source reads for the declared global `name`
  * taken as a value, whatever its spelling (`name`, `globalThis.name`,
  * `const { name } = globalThis`, `globalThis[name]`), or null when it
- * reads the opaque identity token. */
-export function jsGlobalValueByName(lowerer: Lowerer, name: string, loc: SrcLoc): IrExpr | null {
+ * reads the opaque identity token. `reportFences` (builtinNamespaceValue)
+ * is false for the program's lookup. */
+export function jsGlobalValueByName(
+  lowerer: Lowerer,
+  name: string,
+  loc: SrcLoc,
+  reportFences = true,
+): IrExpr | null {
   return (
     jsSpecialGlobalValue(lowerer, name, loc) ??
-    builtinNamespaceValue(lowerer, name, loc) ??
+    builtinNamespaceValue(lowerer, name, loc, reportFences) ??
     builtinGlobalValue(name, loc, true)
   );
+}
+
+/** Globals whose values a TypeScript read keeps refused: the Array
+ * constructor value has none of Array's static members (`o.Array.isArray`
+ * would read undefined), and the timer values lack the
+ * util.promisify.custom getter Node's util.inspect lists. */
+const UNTYPED_UNMODELED: ReadonlySet<string> = new Set(["Array", "setTimeout", "setImmediate"]);
+
+/** The value a TypeScript source reads for the declared global `name` at
+ * `node` when the checker types the slot it flows into as any or unknown
+ * (`const o: any = { j: JSON }`, a call to a parameter typed unknown): the
+ * value a JavaScript source reads. Null in JavaScript sources, in typed
+ * slots, and for a global without a value, whose read keeps its SC2020
+ * refusal. Null for the primitive constructors too: a TypeScript read of
+ * String, Number, Boolean or BigInt is the closure with the typed
+ * signature (lowerIdentifierExpr), and `{ String }` must equal it. */
+export function tsUntypedGlobalValue(
+  lowerer: Lowerer,
+  node: ts.Expression,
+  name: string,
+  loc: SrcLoc,
+): IrExpr | null {
+  if (isJsSourceFile(ts.getSourceFileOfNode(node)) || UNTYPED_UNMODELED.has(name)) return null;
+  if (name === "String" || name === "Number" || name === "Boolean" || name === "BigInt")
+    return null;
+  if (!flowsIntoUntypedSlot(lowerer, node)) return null;
+  return jsGlobalValueByName(lowerer, name, loc);
+}
+
+/** Whether the checker types the slot `node` flows into as any or unknown.
+ * A member of an object or array literal whose own slot is any has no
+ * contextual type, so the literal's slot decides. */
+function flowsIntoUntypedSlot(lowerer: Lowerer, node: ts.Expression): boolean {
+  let value: ts.Expression = node;
+  for (;;) {
+    const slot = lowerer.checker.getContextualType(value);
+    if (slot !== undefined) return (slot.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
+    const parent = value.parent;
+    if (
+      (ts.isPropertyAssignment(parent) && parent.initializer === value) ||
+      ts.isShorthandPropertyAssignment(parent)
+    ) {
+      value = parent.parent as ts.ObjectLiteralExpression;
+    } else if (ts.isArrayLiteralExpression(parent) || ts.isParenthesizedExpression(parent)) {
+      value = parent;
+    } else {
+      return false;
+    }
+  }
 }
 
 /** jsGlobalValueByName for the globals other than the interned builtin
  * functions and constructors (builtinGlobalValue). */
 export function jsSpecialGlobalValue(lowerer: Lowerer, name: string, loc: SrcLoc): IrExpr | null {
+  if (name === "NaN" || name === "Infinity")
+    return { kind: "numLit", value: name === "NaN" ? NaN : Infinity, type: F64, loc };
   if (name === "String" || name === "Number" || name === "Boolean" || name === "BigInt")
     return primitiveCtorClosure(lowerer, name, loc, true);
   if (name === "ArrayBuffer")
@@ -166,22 +225,150 @@ const URI_FUNCTIONS = new Set([
   "decodeURIComponent",
 ]);
 
+/** The builtin globals that sloppy-mode functions of the JavaScript source
+ * `sf` read through their `this` (`this.Array`, `this["Array"]`) or through
+ * a variable it initializes (`var root = this; root.Array`); every declared
+ * global when such a read takes a computed key (`this[name]`). Called with
+ * undefined or null as `this`, such a function reads them on the global
+ * object, which answers them through the program's lookup. */
+export function sloppyThisGlobalReadsOf(lowerer: Lowerer, sf: ts.SourceFile): ReadonlySet<string> {
+  const cached = lowerer.sloppyThisGlobalReads.get(sf);
+  if (cached !== undefined) return cached;
+  const reads = new Set<string>();
+  if (isJsSourceFile(sf)) {
+    const declared = new Set(declaredGlobalNames(lowerer, sf));
+    // Element reads of `this` or of a variable, and the names of the
+    // variables initialized with `this`: the checker resolves only the
+    // element reads of `this` and of those variables.
+    const elementReads: ts.ElementAccessExpression[] = [];
+    const thisAliases = new Set<string>();
+    ts.walkPreorder(sf, (node) => {
+      if (
+        ts.isPropertyAccessExpression(node) &&
+        ts.isIdentifier(node.name) &&
+        declared.has(node.name.text) &&
+        readsSloppyThis(lowerer, node.expression)
+      )
+        reads.add(node.name.text);
+      else if (ts.isElementAccessExpression(node)) {
+        const target = withoutParentheses(node.expression);
+        if (target.kind === ts.SyntaxKind.ThisKeyword || ts.isIdentifier(target))
+          elementReads.push(node);
+      } else if (
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        node.initializer !== undefined &&
+        withoutParentheses(node.initializer).kind === ts.SyntaxKind.ThisKeyword
+      )
+        thisAliases.add(node.name.text);
+      return undefined;
+    });
+    for (const node of elementReads) {
+      const target = withoutParentheses(node.expression);
+      if (ts.isIdentifier(target) && !thisAliases.has(target.text)) continue;
+      if (!readsSloppyThis(lowerer, node.expression) || !readsBuiltinByName(lowerer, node))
+        continue;
+      const key = withoutParentheses(node.argumentExpression);
+      if (ts.isStringLiteralLike(key)) {
+        if (declared.has(key.text)) reads.add(key.text);
+      } else if (!ts.isNumericLiteral(key)) {
+        for (const name of declared) reads.add(name);
+        break;
+      }
+    }
+  }
+  lowerer.sloppyThisGlobalReads.set(sf, reads);
+  return reads;
+}
+
+/** Whether `expr` is the `this` of a sloppy-mode function, or a variable
+ * whose only declaration initializes it with that `this`. */
+function readsSloppyThis(lowerer: Lowerer, expr: ts.Expression): boolean {
+  const inner = withoutParentheses(expr);
+  if (inner.kind === ts.SyntaxKind.ThisKeyword) return sloppyReceiverOf(inner);
+  if (!ts.isIdentifier(inner)) return false;
+  const declarations = lowerer.checker.getSymbolAtLocation(inner)?.declarations ?? [];
+  const declaration = declarations[0];
+  if (
+    declarations.length !== 1 ||
+    declaration === undefined ||
+    !ts.isVariableDeclaration(declaration)
+  )
+    return false;
+  const init =
+    declaration.initializer === undefined ? undefined : withoutParentheses(declaration.initializer);
+  return init !== undefined && init.kind === ts.SyntaxKind.ThisKeyword && sloppyReceiverOf(init);
+}
+
+function withoutParentheses(expr: ts.Expression): ts.Expression {
+  let inner = expr;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  return inner;
+}
+
+/** Whether the `this` at `node` is a sloppy-mode function's receiver
+ * (lower-functions.ts declareCallReceiver): arrows take the enclosing one. */
+function sloppyReceiverOf(node: ts.Node): boolean {
+  for (let parent = node.parent; parent !== undefined; parent = parent.parent) {
+    if (ts.isArrowFunction(parent)) continue;
+    if (ts.isFunctionLike(parent)) return parent.body !== undefined && !isStrictCode(parent.body);
+    if (
+      ts.isSourceFile(parent) ||
+      ts.isClassDeclaration(parent) ||
+      ts.isClassExpression(parent) ||
+      ts.isClassStaticBlockDeclaration(parent)
+    )
+      return false;
+  }
+  return false;
+}
+
+/** The names of the global object's declared properties that the lookup can
+ * answer. */
+function declaredGlobalNames(lowerer: Lowerer, at: ts.Node): string[] {
+  const symbol = lowerer.checker.resolveName(
+    "globalThis",
+    ts.SymbolFlags.Value,
+    ts.getSourceFileOfNode(at),
+    false,
+  );
+  if (symbol === undefined) return [];
+  return lowerer.checker
+    .getPropertiesOfType(lowerer.checker.getTypeOfSymbol(symbol))
+    .map((property) => ts.symbolName(property))
+    .filter((name) => name !== TEMPORAL_GLOBAL && !RUNTIME_ANSWERED.has(name));
+}
+
+/** The names the program's lookup answers: every declared global when a
+ * module reads the global object by computed names, else the ones its
+ * sloppy-mode functions read through `this`. */
+function lookupNames(lowerer: Lowerer): readonly string[] {
+  if (lowerer.globalLookupNames !== undefined) return lowerer.globalLookupNames;
+  const modules = lowerer.moduleOrder.length > 0 ? lowerer.moduleOrder : [lowerer.entry];
+  const names = modules.some((sf) => computedGlobalReadOf(lowerer, sf) !== null)
+    ? declaredGlobalNames(lowerer, lowerer.entry)
+    : modules.flatMap((sf) => [...sloppyThisGlobalReadsOf(lowerer, sf)]);
+  lowerer.globalLookupNames = [...new Set(names)].sort();
+  return lowerer.globalLookupNames;
+}
+
+/** Whether the JavaScript source `sf` installs the program's lookup when its
+ * body starts: it reads builtin globals through the global object by
+ * computed names, or through a sloppy-mode function's `this`. */
+export function installsGlobalValues(lowerer: Lowerer, sf: ts.SourceFile): boolean {
+  return (
+    computedGlobalReadOf(lowerer, sf) !== null || sloppyThisGlobalReadsOf(lowerer, sf).size > 0
+  );
+}
+
 /** The statement that installs the program's lookup, built on first use
- * from the names the checker declares on `receiver` (a global object). */
-export function globalValuesInstall(
-  lowerer: Lowerer,
-  receiver: ts.Expression,
-  loc: SrcLoc,
-): IrStmt {
+ * from the names it answers (lookupNames). */
+export function globalValuesInstall(lowerer: Lowerer, loc: SrcLoc): IrStmt {
   const fnType: IrType & { kind: "func" } = { kind: "func", params: [STRING], ret: DYN };
   if (!lowerer.liftedFnNamed(LOOKUP_FN)) {
-    const names = lowerer.checker
-      .getPropertiesOfType(lowerer.typeOf(receiver))
-      .map((property) => ts.symbolName(property))
-      .filter((name) => name !== TEMPORAL_GLOBAL && !RUNTIME_ANSWERED.has(name));
     const name: IrExpr = { kind: "varRef", localId: "name.0", type: STRING, loc };
     const body: IrStmt[] = [];
-    for (const global of [...new Set(names)].sort()) {
+    for (const global of lookupNames(lowerer)) {
       const webStream = (WEB_STREAM_CLASSES as readonly string[]).indexOf(global);
       const value: IrExpr | null = REFUSED.has(global)
         ? { kind: "unitLit", unit: "null", type: { kind: "nullT" }, loc }
@@ -189,7 +376,7 @@ export function globalValuesInstall(
           ? programNamesWebStreamClass(lowerer)
             ? webStreamClassValue(webStream, loc)
             : null
-          : jsGlobalValueByName(lowerer, global, loc);
+          : jsGlobalValueByName(lowerer, global, loc, false);
       if (value === null) continue;
       body.push({
         kind: "if",

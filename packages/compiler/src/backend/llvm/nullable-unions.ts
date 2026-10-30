@@ -1,4 +1,5 @@
 import {
+  isIdentityCollectionKey,
   isUnitType,
   type IrClassDef,
   type IrModule,
@@ -142,6 +143,7 @@ export type NullableRefArm =
   | { kind: "record"; shapeId: string }
   | { kind: "string" }
   | { kind: "stats" }
+  | { kind: "bigintStats" }
   | (IrType & { kind: "array" | "bytes" | "map" | "set" | "func" });
 
 /** The arm is a JS object: always truthy. */
@@ -190,13 +192,21 @@ export class NullableUnions {
   /** `shapes`: allow shape and class unions (debug builds keep boxes,
    * whose debug-info layouts describe every arm). `classIds`: the target
    * keeps class ids in instance headers (64-bit targets), which class
-   * unions read their arm from. */
-  constructor(mod: IrModule, shapes = true, nodes?: IrNodeIndex, classIds = true) {
+   * unions read their arm from. `kept`: unions that stay boxes whatever
+   * their arms (LlvmTargetOptions.boxedUnions). */
+  constructor(
+    mod: IrModule,
+    shapes = true,
+    nodes?: IrNodeIndex,
+    classIds = true,
+    kept: ReadonlySet<string> = new Set(),
+  ) {
     const emitted = new Set<string>();
     for (const cls of mod.classes ?? []) if (!cls.runtime) emitted.add(cls.name);
     const records = new Set<string>();
     for (const shape of mod.records ?? []) records.add(shape.id);
     const boxed = boxedUnionIds(mod, nodes);
+    for (const id of kept) boxed.add(id);
     // Shape unions stay out of library builds (their host ABI marshals
     // boxes) and of programs with lifetime regions (whose walks report a
     // reference slot by its type's release entry point).
@@ -358,6 +368,7 @@ function nullableShape(
     return { ...base, arm: { kind: "record", shapeId: arm.shapeId } };
   if (arm.kind === "string") return { ...base, arm: { kind: "string" } };
   if (arm.kind === "stats") return { ...base, arm: { kind: "stats" } };
+  if (arm.kind === "bigintStats") return { ...base, arm: { kind: "bigintStats" } };
   if (
     arm.kind === "array" ||
     arm.kind === "bytes" ||
@@ -500,19 +511,21 @@ function classUnion(def: IrUnionDef, classes: ClassForest): ClassUnion | null {
 
 /** Unions the runtime itself inspects as tagged boxes keep that
  * representation: Map keys and Set elements hash and compare union keys by
- * tag and payload inside the C map. A union of records alone is the
- * exception: its keys compare by record identity, which a shape union's
- * record pointer carries as well (the map keys it by reference). */
+ * tag and payload inside the C map. A union whose arms all compare by
+ * identity (records, class instances, arrays, functions), with at most an
+ * undefined and a null arm, is the exception: a pointer representation
+ * carries that identity, with NULL and the null sentinel as two more
+ * distinct keys, so the map keys it by reference. Library builds keep
+ * such unions boxed, except unions of records alone. */
 function boxedUnionIds(mod: IrModule, nodes?: IrNodeIndex): Set<string> {
   const boxed = new Set<string>();
   // Only the module's union definitions consult the result.
   if (!mod.unions?.length) return boxed;
-  const recordsOnly = new Set<string>();
+  const identityKeys = new Set<string>();
   for (const def of mod.unions)
-    if (def.arms.length >= 2 && def.arms.every((arm) => arm.kind === "record"))
-      recordsOnly.add(def.id);
+    if (mod.lib === undefined ? identityKeyUnion(def) : recordsOnly(def)) identityKeys.add(def.id);
   const mark = (t: IrType): void => {
-    if (t.kind === "union" && !recordsOnly.has(t.unionId)) boxed.add(t.unionId);
+    if (t.kind === "union" && !identityKeys.has(t.unionId)) boxed.add(t.unionId);
   };
   if (nodes !== undefined) {
     for (const t of nodes.types) {
@@ -531,6 +544,25 @@ function boxedUnionIds(mod: IrModule, nodes?: IrNodeIndex): Set<string> {
     },
   });
   return boxed;
+}
+
+function recordsOnly(def: IrUnionDef): boolean {
+  return def.arms.length >= 2 && def.arms.every((arm) => arm.kind === "record");
+}
+
+/** Every arm compares by identity as a key, beside at most one undefined
+ * and one null arm. */
+function identityKeyUnion(def: IrUnionDef): boolean {
+  let refs = 0,
+    undefinedArms = 0,
+    nullArms = 0;
+  for (const arm of def.arms) {
+    if (arm.kind === "undefinedT") undefinedArms++;
+    else if (arm.kind === "nullT") nullArms++;
+    else if (isIdentityCollectionKey(arm)) refs++;
+    else return false;
+  }
+  return refs > 0 && undefinedArms <= 1 && nullArms <= 1;
 }
 
 /** Emitted classes keyed by name, for callers that only hold the class

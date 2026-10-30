@@ -41,6 +41,7 @@ import * as ts from "../ts7/adapter.js";
 import { isPackageShimFile, isShimIntrinsicName, packageShimFor } from "../package-shims.js";
 import type { Lowerer } from "./lowerer.js";
 import { boundIdentifiersOf } from "./lowerer.js";
+import { isIslandImportBinding } from "./lower-node-island.js";
 import type { FileParts } from "./lower-modules.js";
 import { isCjsJsFile, isJsSourceFile, locOf, resolveImport } from "../program.js";
 import { F64, type IrExpr, type IrStmt, type IrType, STRING } from "../../ir/ir.js";
@@ -686,6 +687,9 @@ export function ambientUndefinedVarSymbolOf(
   lowerer: Lowerer,
   ident: ts.Identifier,
 ): ts.Symbol | null {
+  // An island package's `declare const` is defined by its JavaScript, which
+  // runs in the island.
+  if (isIslandImportBinding(lowerer, ident)) return null;
   const sym = lowerer.resolveValueSymbol(ident);
   const decl = sym ? sym.declarations[0] : undefined;
   if (

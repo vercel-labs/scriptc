@@ -83,24 +83,52 @@ const BAIL = `${CLONE_RESULT} { i32 poison, i1 true }`;
 /** The stack one replaced recursion level is charged, in bytes. Ordinary
  * frames of these functions are about that size. */
 const VIRTUAL_FRAME = 32;
+/** Iterations between the polls of a loop over plain tail calls in worker
+ * executables (emitLoopPoll). */
+const POLL_INTERVAL = 64;
 
-/** The single-threaded stack guard, declared as the emitter's ordinary
- * stack checks declare it (clones only exist without workers). */
-export const STACK_GUARD_DECL = "@scr_stack_guard = external global ptr";
+/** The stack guard and the termination word, declared as the emitter's
+ * ordinary stack checks and polls declare them: process-wide in programs
+ * without workers, per thread in ELF worker executables (the only worker
+ * programs with clones). */
+export function stackGuardDecl(workers: boolean): string {
+  return `@scr_stack_guard = external ${workers ? "thread_local " : ""}global ptr`;
+}
+const EXC_FLAG_DECL = "@scr_exc_flag = external thread_local(localexec) global i32, align 4";
 
 export const INTEGER_CLONE_SUFFIX = ".int";
 export const INTEGER_DISPATCH_SUFFIX = ".spec";
 
 type Scalar = "num" | "bool";
-/** A value kind: an int32 number, a boolean, or a borrowed number array. */
-type Kind = Scalar | "arr";
+/** A value kind: an int32 number, a boolean, a borrowed number array, or a
+ * reference into a borrowed record graph. */
+type Kind = Scalar | "arr" | "ref";
+
+/** The records a clone may read (from the emitter's layouts). A reference
+ * is a plain pointer: a record, or a union of one record arm and `null`
+ * (NULL). A clone only reads its records' fields, and it has no effect, so
+ * every record reachable from a borrowed parameter stays alive and
+ * unchanged while it runs: it reads them without retaining them. */
+export interface CloneReferences {
+  /** Whether values of `type` are such pointers. */
+  reference(type: IrType): boolean;
+  /** For a tag of a reference union: whether it names the record arm
+   * ("record") or the `null` arm ("null"). */
+  arm(unionId: string, tag: number): "record" | "null" | null;
+  /** Where record shape `shapeId` keeps `field` (its struct and element
+   * index), or null when the field is not a slot a clone reads in place:
+   * a number (a double), a boolean (an i8) or a reference. */
+  field(shapeId: string, field: string): { struct: string; index: number; type: IrType } | null;
+}
 
 function scalarKind(type: IrType): Scalar | null {
   return type.kind === "f64" ? "num" : type.kind === "bool" ? "bool" : null;
 }
 
-function valueKind(type: IrType): Kind | null {
-  return type.kind === "array" && type.elem.kind === "f64" ? "arr" : scalarKind(type);
+function valueKind(type: IrType, refs: CloneReferences | undefined): Kind | null {
+  if (type.kind === "array" && type.elem.kind === "f64") return "arr";
+  if (refs?.reference(type) === true) return "ref";
+  return scalarKind(type);
 }
 
 /** The LLVM type of a value of `kind` inside a clone. */
@@ -119,20 +147,26 @@ function isInt32Literal(value: number): boolean {
 }
 
 /** The call targets of `fn` when its body has the qualifying shape. */
-function cloneShape(fn: IrFunction, borrowed?: BorrowedParameter): Set<string> | null {
+function cloneShape(
+  fn: IrFunction,
+  borrowed?: BorrowedParameter,
+  refs?: CloneReferences,
+): Set<string> | null {
   if (fn.async || fn.generator !== undefined || fn.captures !== undefined) return null;
   if (fn.classCaptures !== undefined && fn.classCaptures.length > 0) return null;
   const result = scalarKind(fn.returnType);
   if (result === null) return null;
   const locals = new Map<string, IrLocal>(fn.locals.map((l) => [l.id, l]));
-  // Array parameters are only read: never assigned, and their locals are
-  // the parameters themselves.
+  // Array and reference parameters are only read: never assigned, and their
+  // locals are the parameters themselves.
   const arrays = new Set<string>();
-  for (const [index, p] of fn.params.entries())
-    if (valueKind(p.type) === "arr") {
-      if (borrowed?.(fn.name, index) !== true) return null;
-      arrays.add(p.localId);
-    }
+  const references = new Set<string>();
+  for (const [index, p] of fn.params.entries()) {
+    const kind = valueKind(p.type, refs);
+    if (kind !== "arr" && kind !== "ref") continue;
+    if (borrowed?.(fn.name, index) !== true) return null;
+    (kind === "arr" ? arrays : references).add(p.localId);
+  }
   const localKind = (id: string): Scalar | null => {
     const local = locals.get(id);
     if (!local || local.boxed || local.tdz) return null;
@@ -140,12 +174,38 @@ function cloneShape(fn: IrFunction, borrowed?: BorrowedParameter): Set<string> |
   };
   const arrayRef = (e: IrExpr): boolean => e.kind === "varRef" && arrays.has(e.localId);
   for (const p of fn.params)
-    if (!arrays.has(p.localId) && (localKind(p.localId) === null || scalarKind(p.type) === null))
+    if (
+      !arrays.has(p.localId) &&
+      !references.has(p.localId) &&
+      (localKind(p.localId) === null || scalarKind(p.type) === null)
+    )
       return null;
+  /** A field the clone reads in place, of a record a reference reads. */
+  const readsField = (e: Extract<IrExpr, { kind: "recordGet" }>): boolean =>
+    reference(e.obj) && refs?.field(e.shapeId, e.field) != null;
+  /** A reference parameter, a reference field of a record one reaches, or
+   * a narrow of a reference union to its record arm. */
+  const reference = (e: IrExpr): boolean => {
+    if (refs?.reference(e.type) !== true) return false;
+    switch (e.kind) {
+      case "varRef":
+        return references.has(e.localId);
+      case "recordGet":
+        return readsField(e);
+      case "unionNarrow":
+        return refs.arm(e.unionId, e.tag) === "record" && reference(e.value);
+      default:
+        return false;
+    }
+  };
   const callees = new Set<string>();
   const expr = (e: IrExpr, want: Scalar): boolean => {
     if (scalarKind(e.type) !== want) return false;
     switch (e.kind) {
+      case "recordGet":
+        return readsField(e);
+      case "unionIsTag":
+        return want === "bool" && refs?.arm(e.unionId, e.tag) != null && reference(e.value);
       case "numLit":
         return isInt32Literal(e.value);
       case "boolLit":
@@ -202,8 +262,10 @@ function cloneShape(fn: IrFunction, borrowed?: BorrowedParameter): Set<string> |
       case "call":
         callees.add(e.callee);
         return e.args.every((a) => {
-          const kind = valueKind(a.type);
-          return kind === "arr" ? arrayRef(a) : kind !== null && expr(a, kind);
+          const kind = valueKind(a.type, refs);
+          if (kind === "arr") return arrayRef(a);
+          if (kind === "ref") return reference(a);
+          return kind !== null && expr(a, kind);
         });
       default:
         return false;
@@ -238,7 +300,11 @@ function cloneShape(fn: IrFunction, borrowed?: BorrowedParameter): Set<string> |
 }
 
 /** Every call in `fn`'s body has arguments of its callee's parameter kinds. */
-function callsMatch(fn: IrFunction, byName: ReadonlyMap<string, IrFunction>): boolean {
+function callsMatch(
+  fn: IrFunction,
+  byName: ReadonlyMap<string, IrFunction>,
+  refs: CloneReferences | undefined,
+): boolean {
   let ok = true;
   const visit = (e: IrExpr): void => {
     switch (e.kind) {
@@ -248,7 +314,7 @@ function callsMatch(fn: IrFunction, byName: ReadonlyMap<string, IrFunction>): bo
           !callee ||
           callee.params.length !== e.args.length ||
           scalarKind(callee.returnType) !== scalarKind(e.type) ||
-          callee.params.some((p, i) => valueKind(p.type) !== valueKind(e.args[i]!.type))
+          callee.params.some((p, i) => valueKind(p.type, refs) !== valueKind(e.args[i]!.type, refs))
         )
           ok = false;
         e.args.forEach(visit);
@@ -295,12 +361,16 @@ function callsMatch(fn: IrFunction, byName: ReadonlyMap<string, IrFunction>): bo
   return ok;
 }
 
-export function findIntegerClones(mod: IrModule, borrowed?: BorrowedParameter): IntegerClones {
+export function findIntegerClones(
+  mod: IrModule,
+  borrowed?: BorrowedParameter,
+  refs?: CloneReferences,
+): IntegerClones {
   const byName = new Map(mod.functions.map((fn) => [fn.name, fn]));
   const edges = new Map<string, Set<string>>();
   for (const fn of mod.functions) {
-    const callees = cloneShape(fn, borrowed);
-    if (callees && callsMatch(fn, byName)) edges.set(fn.name, callees);
+    const callees = cloneShape(fn, borrowed, refs);
+    if (callees && callsMatch(fn, byName, refs)) edges.set(fn.name, callees);
   }
   // Drop functions that call a non-member until none does.
   for (let changed = true; changed;) {
@@ -414,6 +484,11 @@ export interface IntegerCloneHost {
   declare(decl: string): void;
   /** Lines setting the i1 `dest` to "an exception is pending". */
   pendingTestLines(dest: string): string[];
+  /** The records clones read (the same oracle findIntegerClones used). */
+  readonly cloneReferences: CloneReferences | undefined;
+  /** An ELF worker executable: the stack guard is per thread, and clones
+   * poll the thread's pending word, which a stop request also sets. */
+  readonly executableTls: boolean;
 }
 
 interface NumValue {
@@ -590,7 +665,9 @@ class CloneEmitter {
     };
     const params = new Set(fn.params.map((p) => p.localId));
     for (const local of fn.locals) {
-      const kind = params.has(local.id) ? valueKind(local.type) : scalarKind(local.type);
+      const kind = params.has(local.id)
+        ? valueKind(local.type, this.host.cloneReferences)
+        : scalarKind(local.type);
       if (kind === null || local.boxed) continue;
       const slot = `%l${this.slotCount++}`;
       B.entryAllocas.push(`${slot} = alloca ${kindType(kind)} ; ${local.name}`);
@@ -602,6 +679,7 @@ class CloneEmitter {
     });
     this.frame = frame;
     if (inline === null && this.stackCheck) this.emitStackCheck();
+    if (inline === null) this.emitPoll();
     const tail = this.tailShape();
     if (!tail.loop) {
       this.assumeParamRanges();
@@ -613,10 +691,55 @@ class CloneEmitter {
       B.entryAllocas.push(`${frame.accSlot} = alloca i32 ; accumulator`);
       B.line(`store i32 0, ptr ${frame.accSlot}`);
     }
+    const budget = tail.plain && this.host.executableTls ? `%l${this.slotCount++}` : null;
+    if (budget !== null) {
+      B.entryAllocas.push(`${budget} = alloca i32 ; poll countdown`);
+      B.line(`store i32 0, ptr ${budget}`);
+    }
     frame.loopLabel = B.newLabel("tail");
     B.br(frame.loopLabel);
     B.startBlock(frame.loopLabel);
+    if (budget !== null) this.emitLoopPoll(budget);
     this.assumeParamRanges();
+  }
+
+  /** In an ELF worker executable, bails when the thread's pending word is
+   * set: an exception is pending, or the worker must stop. The dispatcher
+   * then forwards it. Ordinary bodies observe a stop through their pending
+   * tests after calls and in loops, which clones do not run, so a clone
+   * polls when it is called and every POLL_INTERVAL iterations of a loop
+   * over plain tail calls, which can run forever. An accumulating loop runs
+   * at most until its virtual stack pointer passes the guard. The load is
+   * ordered, so LLVM keeps it in loops it forms out of tail calls. */
+  private emitPoll(): void {
+    if (!this.host.executableTls) return;
+    const { B } = this;
+    this.host.declare(EXC_FLAG_DECL);
+    const word = B.tmp();
+    const clear = B.tmp();
+    B.line(`${word} = load atomic i32, ptr @scr_exc_flag monotonic, align 4`);
+    B.line(`${clear} = icmp eq i32 ${word}, 0`);
+    this.require(clear);
+  }
+
+  /** The poll of a loop iteration, every POLL_INTERVAL iterations. */
+  private emitLoopPoll(budget: string): void {
+    const { B } = this;
+    const left = B.tmp();
+    const rest = B.tmp();
+    const due = B.tmp();
+    B.line(`${left} = load i32, ptr ${budget}`);
+    B.line(`${rest} = sub i32 ${left}, 1`);
+    B.line(`store i32 ${rest}, ptr ${budget}`);
+    B.line(`${due} = icmp eq i32 ${left}, 0`);
+    const poll = B.newLabel("poll");
+    const next = B.newLabel("poll.next");
+    B.condBr(due, poll, next);
+    B.startBlock(poll);
+    B.line(`store i32 ${POLL_INTERVAL - 1}, ptr ${budget}`);
+    this.emitPoll();
+    B.br(next);
+    B.startBlock(next);
   }
 
   /** Starts the virtual stack pointer of an activation with an accumulating
@@ -673,7 +796,9 @@ class CloneEmitter {
 
   emit(): string {
     const { B, fn } = this;
-    const params = fn.params.map((p, i) => `${kindType(valueKind(p.type)!)} %a${i}`);
+    const params = fn.params.map(
+      (p, i) => `${kindType(valueKind(p.type, this.host.cloneReferences)!)} %a${i}`,
+    );
     this.openFrame(
       fn.params.map((_, i) => `%a${i}`),
       null,
@@ -720,16 +845,17 @@ class CloneEmitter {
     return this.inlineSelf && this.frame.inline === null && this.isSelfCall(e);
   }
 
-  /** Whether the body has self tail calls, and whether one accumulates. */
-  private tailShape(): { loop: boolean; accumulates: boolean } {
-    let loop = false;
+  /** Whether the body has self tail calls, whether one accumulates, and
+   * whether one is a plain tail call. */
+  private tailShape(): { loop: boolean; accumulates: boolean; plain: boolean } {
+    let plain = false;
     let accumulates = false;
     const ret = (e: IrExpr): void => {
       if (e.kind === "ternary") {
         ret(e.then);
         ret(e.else_);
-      } else if (this.isSelfCall(e)) loop = true;
-      else if (this.accumulatingCall(e) !== null) loop = accumulates = true;
+      } else if (this.isSelfCall(e)) plain = true;
+      else if (this.accumulatingCall(e) !== null) accumulates = true;
     };
     const stmts = (list: readonly IrStmt[]): void => {
       for (const s of list) {
@@ -741,7 +867,7 @@ class CloneEmitter {
       }
     };
     stmts(this.fn.body);
-    return { loop, accumulates };
+    return { loop: plain || accumulates, accumulates, plain };
   }
 
   private isSelfCall(e: IrExpr): e is Extract<IrExpr, { kind: "call" }> {
@@ -779,7 +905,7 @@ class CloneEmitter {
     host.declare(`declare ptr @llvm.stacksave.p0()`);
     host.declare(`declare i1 @llvm.expect.i1(i1, i1)`);
     host.declare(`declare void @scr_stack_overflow()`);
-    host.declare(STACK_GUARD_DECL);
+    host.declare(stackGuardDecl(host.executableTls));
     const sp = B.tmp();
     const guard = B.tmp();
     const low = B.tmp();
@@ -809,7 +935,7 @@ class CloneEmitter {
    * continuing at the overflow block past the guard. */
   private consumeFrame(): void {
     const { B } = this;
-    this.host.declare(STACK_GUARD_DECL);
+    this.host.declare(stackGuardDecl(this.host.executableTls));
     const depth = B.tmp();
     const next = B.tmp();
     const guardPtr = B.tmp();
@@ -991,7 +1117,9 @@ class CloneEmitter {
     exprs: readonly IrExpr[],
     marker = "",
   ): string {
-    const list = args.map((a, i) => `${kindType(valueKind(exprs[i]!.type)!)} ${a}`);
+    const list = args.map(
+      (a, i) => `${kindType(valueKind(exprs[i]!.type, this.host.cloneReferences)!)} ${a}`,
+    );
     const result = this.B.tmp();
     this.B.line(
       `${result} = ${marker}call ${CLONE_RESULT} @${mangleFunction(callee)}${INTEGER_CLONE_SUFFIX}(${list.join(", ")})`,
@@ -1005,6 +1133,43 @@ class CloneEmitter {
     if (e.kind !== "varRef") throw new Error("integer clone: unexpected array expression");
     this.B.line(`${value} = load ptr, ptr ${this.frame.slots.get(e.localId)!.slot}`);
     return value;
+  }
+
+  /** The record pointer of a reference expression (cloneShape's
+   * `reference`): a parameter, a field read, or a narrow to the record arm,
+   * which bails on NULL so the ordinary body reports it. */
+  private emitRef(e: IrExpr): string {
+    const { B } = this;
+    switch (e.kind) {
+      case "varRef": {
+        const value = B.tmp();
+        B.line(`${value} = load ptr, ptr ${this.frame.slots.get(e.localId)!.slot}`);
+        return value;
+      }
+      case "recordGet": {
+        const value = B.tmp();
+        B.line(`${value} = load ptr, ptr ${this.emitFieldPtr(e)}`);
+        return value;
+      }
+      case "unionNarrow": {
+        const value = this.emitRef(e.value);
+        const present = B.tmp();
+        B.line(`${present} = icmp ne ptr ${value}, null`);
+        this.require(present);
+        return value;
+      }
+      default:
+        throw new Error(`integer clone: unexpected reference expression ${e.kind}`);
+    }
+  }
+
+  /** The address of the field a record read names. */
+  private emitFieldPtr(e: Extract<IrExpr, { kind: "recordGet" }>): string {
+    const obj = this.emitRef(e.obj);
+    const { struct, index } = this.host.cloneReferences!.field(e.shapeId, e.field)!;
+    const ptr = this.B.tmp();
+    this.B.line(`${ptr} = getelementptr inbounds %${struct}, ptr ${obj}, i64 0, i32 ${index}`);
+    return ptr;
   }
 
   /** `a.length`, bailing beyond the int32 range. */
@@ -1108,12 +1273,14 @@ class CloneEmitter {
 
   private emitArgs(call: Extract<IrExpr, { kind: "call" }>): string[] {
     return call.args.map((a) => {
-      const kind = valueKind(a.type);
+      const kind = valueKind(a.type, this.host.cloneReferences);
       return kind === "arr"
         ? this.emitArray(a)
-        : kind === "num"
-          ? this.narrow(this.emitNum(a))
-          : this.emitBool(a);
+        : kind === "ref"
+          ? this.emitRef(a)
+          : kind === "num"
+            ? this.narrow(this.emitNum(a))
+            : this.emitBool(a);
     });
   }
 
@@ -1202,6 +1369,12 @@ class CloneEmitter {
         return { name: this.emitLength(this.emitArray(e.receiver)), wide: false };
       case "arrayGet":
         return { name: this.emitElement(e.arr, e.index), wide: false };
+      case "recordGet": {
+        // A number field that is exactly an int32; any other number bails.
+        const number = B.tmp();
+        B.line(`${number} = load double, ptr ${this.emitFieldPtr(e)}`);
+        return { name: this.exactInt32(number), wide: false };
+      }
       case "unary": {
         const operand = this.narrow(this.emitNum(e.operand));
         const value = B.tmp();
@@ -1351,6 +1524,21 @@ class CloneEmitter {
         B.line(`${value} = xor i1 ${operand}, true`);
         return value;
       }
+      case "recordGet": {
+        const byte = B.tmp();
+        const value = B.tmp();
+        B.line(`${byte} = load i8, ptr ${this.emitFieldPtr(e)}`);
+        B.line(`${value} = trunc i8 ${byte} to i1`);
+        return value;
+      }
+      case "unionIsTag": {
+        // NULL is the `null` arm; any other pointer the record arm.
+        const pointer = this.emitRef(e.value);
+        const isNull = this.host.cloneReferences!.arm(e.unionId, e.tag) === "null";
+        const value = B.tmp();
+        B.line(`${value} = icmp ${isNull !== e.negated ? "eq" : "ne"} ptr ${pointer}, null`);
+        return value;
+      }
       case "toBool": {
         if (scalarKind(e.operand.type) === "bool") return this.emitBool(e.operand);
         const operand = this.narrow(this.emitNum(e.operand));
@@ -1441,9 +1629,10 @@ export function emitIntegerDispatcher(
   const cloneArgs: string[] = [];
   const exact: string[] = [];
   fn.params.forEach((p, i) => {
-    const kind = valueKind(p.type);
-    if (kind === "bool" || kind === "arr") {
-      // Borrowed arrays pass through to the clone and the ordinary entry.
+    const kind = valueKind(p.type, host.cloneReferences);
+    if (kind === "bool" || kind === "arr" || kind === "ref") {
+      // Borrowed arrays and records pass through to the clone and the
+      // ordinary entry.
       const type = kindType(kind);
       params.push(`${type} %p${i}`);
       entryArgs.push(`${type} %p${i}`);

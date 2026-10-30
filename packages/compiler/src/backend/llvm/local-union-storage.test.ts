@@ -104,7 +104,7 @@ function facts(mod: IrModule) {
 function body(mod: IrModule, pointerBits: 32 | 64): string {
   expect(validateModule(mod)).toEqual([]);
   return /^define internal [^\n]*@sc_(?:b)?f_work(?:\.i32)?\([^]*?^}/m.exec(
-    emitLlvmModule(keepUnionsBoxed(mod), { pointerBits }),
+    emitLlvmModule(mod, { pointerBits, ...keepUnionsBoxed(mod) }),
   )![0];
 }
 

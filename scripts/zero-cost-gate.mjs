@@ -48,6 +48,7 @@ import {
   linkedRuntimeFiles,
   llvmFunctionHashes,
   median,
+  icuSymbols,
   nodeIslandSymbols,
   nmOutput,
   parseNm,
@@ -379,6 +380,10 @@ function dynamicTierCheck(program, baseline, candidate, artifacts, allowed) {
   const nodeIsland = nodeIslandSymbols(definedFunctions(candidate.exe));
   if (nodeIsland.length > 0 && !allowed)
     failures.push(`links Node island symbols: ${nodeIsland.slice(0, 5).join(", ")}`);
+  // Intl over ICU is linked only into programs whose IR lowers to it. A
+  // program that legitimately calls it names the pattern in --allow.
+  const icu = icuSymbols(definedFunctions(candidate.exe));
+  if (icu.length > 0 && !allowed) failures.push(`links ICU symbols: ${icu.slice(0, 5).join(", ")}`);
   if (typed && after.length > 0)
     failures.push(
       `fully typed program links dynamic-tier symbols: ${after.slice(0, 5).join(", ")}`,

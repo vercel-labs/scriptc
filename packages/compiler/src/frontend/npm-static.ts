@@ -101,6 +101,7 @@ export function setNpmStaticPackages<T extends Iterable<string>>(packages: T): v
   lexerNames.clear();
   clearVirtualSources();
   untypedPkgCache.clear();
+  transformedPkgTexts.clear();
   realpathProbed.clear();
   aliasNames.clear();
 }
@@ -308,10 +309,25 @@ export function npmStaticTransformPkgJson(pkg: Record<string, unknown>): void {
   if (pkg["imports"] !== undefined) pkg["imports"] = transform(pkg["imports"]);
 }
 
+/** The transform of each package.json the fs shadow served, by path and the
+ * text it read. tsgo asks the host for one manifest many times while it
+ * resolves a load's imports, and the appending rule below only answers about
+ * the text; the package set that decides which manifests are transformed
+ * resets the table (setNpmStaticPackages). */
+const transformedPkgTexts = new Map<string, { source: string; transformed: string }>();
+
 /** npmStaticTransformPkgJson over a package.json TEXT (the fs shadow's
  * form). Malformed documents pass through untouched — resolution reports
  * them exactly as it always did. */
-function npmStaticTransformPkgJsonText(text: string): string {
+function npmStaticTransformPkgJsonText(path: string, text: string): string {
+  const hit = transformedPkgTexts.get(path);
+  if (hit !== undefined && hit.source === text) return hit.transformed;
+  const transformed = transformPkgJsonText(text);
+  transformedPkgTexts.set(path, { source: text, transformed });
+  return transformed;
+}
+
+function transformPkgJsonText(text: string): string {
   let doc: unknown;
   try {
     doc = JSON.parse(text);
@@ -450,7 +466,7 @@ export function npmStaticFsShadow(services: FrontendServices): NpmStaticFsShadow
       if (path.endsWith("/package.json") || path.endsWith("\\package.json")) {
         try {
           const source = trackedReadFile(path);
-          return source === null ? undefined : npmStaticTransformPkgJsonText(source);
+          return source === null ? undefined : npmStaticTransformPkgJsonText(path, source);
         } catch {
           return undefined;
         }

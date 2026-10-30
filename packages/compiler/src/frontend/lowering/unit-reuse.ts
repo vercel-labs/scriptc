@@ -58,6 +58,7 @@ import { IrReader, IrWriter, decodeFunctionBinary } from "../../ir/codec.js";
 import { IR_CODEC_LAYOUT } from "../../ir/codec.generated.js";
 import { IR_VERSION } from "../../ir/serialize.js";
 import * as ts from "../ts7/adapter.js";
+import { invalidateTrackedPath } from "../input-tracker.js";
 import { isJsSourceFileName } from "../tsc-codes.js";
 import {
   decodeRecordFunction,
@@ -109,6 +110,7 @@ export function directoryUnitStore(directory: string, key: string): UnitStore {
       const stage = `${path}.${process.pid}.tmp`;
       writeFileSync(stage, bytes);
       renameSync(stage, path);
+      invalidateTrackedPath(path);
     } catch {
       // A failed write only costs the next build its reuse.
     }

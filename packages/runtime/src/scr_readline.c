@@ -303,16 +303,43 @@ static size_t scr_rl_next_lf(const char *p, size_t i, size_t n) {
   return lf ? (size_t)(lf - p) : n;
 }
 
-/* The end of the line starting at `i`: the next LF or CR, or n. */
+/* Whether a LINE SEPARATOR (U+2028) or PARAGRAPH SEPARATOR (U+2029)
+ * starts at `i`: Node's lineEnding also ends a line there. */
+static bool scr_rl_separator_at(const char *p, size_t i, size_t n) {
+  return i + 2 < n && (unsigned char)p[i] == 0xE2 && (unsigned char)p[i + 1] == 0x80 &&
+         ((unsigned char)p[i + 2] == 0xA8 || (unsigned char)p[i + 2] == 0xA9);
+}
+
+/* Whether the text holds a line ending other than LF: CR, U+2028 or
+ * U+2029. */
+static bool scr_rl_rare_breaks(const char *p, size_t n) {
+  if (memchr(p, '\r', n) != NULL) return true;
+  for (const char *at = memchr(p, 0xE2, n); at != NULL;
+       at = memchr(at + 1, 0xE2, n - (size_t)(at + 1 - p))) {
+    if (scr_rl_separator_at(p, (size_t)(at - p), n)) return true;
+  }
+  return false;
+}
+
+/* The end of the line starting at `i`: the next LF, CR, U+2028 or U+2029,
+ * or n. */
 static size_t scr_rl_next_break(const char *p, size_t i, size_t n) {
-  while (i < n && p[i] != '\n' && p[i] != '\r') i++;
+  while (i < n && p[i] != '\n' && p[i] != '\r' && !scr_rl_separator_at(p, i, n)) i++;
   return i;
 }
 
-/* kNormalWrite over decoded UTF-8 text. The text is scanned once: LF-only
- * text (no CR anywhere in it) moves from LF to LF with memchr, other text
- * splits at LF, CR and CRLF. The unfinished line before the text only
- * joins the first line, so the rest of the text is never copied whole. */
+/* The length of the line ending at `end` (scr_rl_next_break's result):
+ * CRLF is two bytes, a separator three, LF and a lone CR one. */
+static size_t scr_rl_break_len(const char *p, size_t end, size_t n) {
+  if (p[end] == '\r') return end + 1 < n && p[end + 1] == '\n' ? 2 : 1;
+  return p[end] == '\n' ? 1 : 3;
+}
+
+/* kNormalWrite over decoded UTF-8 text. LF-only text (no CR, U+2028 or
+ * U+2029 in it) moves from LF to LF with memchr; other text splits at LF,
+ * CR, CRLF, U+2028 and U+2029, as Node's lineEnding does. The unfinished
+ * line before the text only joins the first line, so the rest of the text
+ * is never copied whole. */
 static void scr_rl_feed_text(ScrRl *rl, const char *p, size_t n) {
   if (rl->tty) {
     scr_rl_tty_ops->feed(rl, p, n);
@@ -325,7 +352,7 @@ static void scr_rl_feed_text(ScrRl *rl, const char *p, size_t n) {
     }
     rl->saw_return_at = 0;
   }
-  bool cr = n > 0 && memchr(p, '\r', n) != NULL;
+  bool cr = n > 0 && scr_rl_rare_breaks(p, n);
   size_t end = n == 0 ? 0 : cr ? scr_rl_next_break(p, 0, n) : scr_rl_next_lf(p, 0, n);
   if (end == n) {
     if (n > 0) scr_rl_buf_append(rl, p, n);
@@ -345,7 +372,7 @@ static void scr_rl_feed_text(ScrRl *rl, const char *p, size_t n) {
     } else {
       lines[n_lines++] = scr_str_new(p + start, end - start);
     }
-    start = end + (p[end] == '\r' && end + 1 < n && p[end + 1] == '\n' ? 2 : 1);
+    start = end + scr_rl_break_len(p, end, n);
     end = start >= n ? n : cr ? scr_rl_next_break(p, start, n) : scr_rl_next_lf(p, start, n);
   }
   rl->line_len = 0;

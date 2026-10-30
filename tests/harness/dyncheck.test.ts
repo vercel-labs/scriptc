@@ -209,6 +209,40 @@ console.log("unreachable", c.host);
     expect(r.stderr).toContain("Uncaught TypeError: expected number at $.port, got string");
   });
 
+  test("a record cast from unknown to a dictionary throws at its mismatched read", async () => {
+    // An element of an `unknown[]` keeps the record's identity, as an
+    // `unknown` binding does: the write lands, and only the read of a
+    // field the dictionary's value type does not admit throws.
+    const r = await compileAndRun(
+      "dictionary-view-mismatch",
+      `type Stats = { hits: number; name: string };
+const stats: Stats[] = [{ hits: 1, name: "a" }, { hits: 1, name: "b" }];
+function attempt(label: string, view: Record<string, number>): void {
+  view["hits"] = view["hits"]! + 1;
+  try {
+    console.log(label, view["name"]);
+  } catch (error) {
+    console.log(label, (error as Error).name, (error as Error).message);
+  }
+}
+const mapped: unknown[] = stats.map((s) => s as unknown);
+attempt("mapped", mapped[0] as Record<string, number>);
+const listed: unknown[] = [stats[1]];
+attempt("listed", listed[0] as Record<string, number>);
+console.log(stats[0]!.hits, stats[1]!.hits);
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      [
+        "mapped TypeError expected number at $, got string",
+        "listed TypeError expected number at $, got string",
+        "2 2",
+        "",
+      ].join("\n"),
+    );
+  });
+
   test("schema-directed JSON.parse declines to the checked route with identical errors", async () => {
     // `JSON.parse(text) as T` for plain record/array targets parses in one
     // pass and reruns the checked-dynamic route whenever it declines, so
@@ -1121,6 +1155,40 @@ console.log("recovered");
     );
     expect(r.exitCode).toBe(0);
     expect(r.stdout).toBe("TypeError true\nscalar: TypeError\nrecovered\n");
+  });
+
+  test("a union spread merge's checked-dynamic object refuses a single-arm reinterpretation catchably", async () => {
+    // Where the per-arm distribution cannot pick one arm, a spread merge
+    // over union sources builds the object Node builds — the checked-
+    // dynamic copy — and the union's checked conversion validates it at
+    // every typed slot. Node keeps the merged keys through a narrower
+    // `as`; scriptc refuses to reinterpret them silently and throws the
+    // catchable TypeError instead. That makes this path scriptc-only:
+    // corpus union-spread-merge.ts pins the accepting paths differentially.
+    const r = await compileAndRun(
+      "union-spread-merge-dyn",
+      `interface OpenAiCompat { supportsStore?: boolean }
+interface AnthropicCompat { supportsLongCacheRetention?: boolean }
+type Compat = OpenAiCompat | AnthropicCompat;
+function mergeCompat(base: Compat, override: Compat): Compat {
+  return { ...base, ...override } as Compat;
+}
+const merged = mergeCompat({ supportsStore: true }, { supportsLongCacheRetention: true });
+console.log(JSON.stringify(merged));
+try {
+  const single = merged as OpenAiCompat;
+  console.log("unreachable", JSON.stringify(single));
+} catch (e) {
+  console.log((e as Error).name, (e as Error).message.includes("not representable in the target union"));
+}
+console.log("recovered");
+`,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toBe(
+      '{"supportsStore":true,"supportsLongCacheRetention":true}\nTypeError true\nrecovered\n',
+    );
+    expect(r.stderr).toBe("");
   });
 
   test("a unit smuggled into a PLAIN non-nullable slot throws the stranded trap catchably", async () => {

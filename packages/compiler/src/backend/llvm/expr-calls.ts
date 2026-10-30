@@ -68,7 +68,7 @@ import {
   inputSuffixWrites,
 } from "./borrowed-inputs.js";
 import type { Writes } from "./reference-writes.js";
-import { emitJsIcCall, jsIcSiteOf } from "./js-ic.js";
+import { capsuleCallSite, emitCapsuleCall, emitJsIcCall, jsIcSiteOf } from "./js-ic.js";
 import { emitClassMembership, emitDowncastGuard } from "./narrow-guards.js";
 import { registerReplay } from "./emit-journal.js";
 
@@ -110,6 +110,10 @@ export function emitCallExpr(
         // cache site (two-tier design S4).
         const site = jsIcSiteOf(host, e);
         if (site) return emitJsIcCall(host, e, callee, site);
+        // So is a method dispatch helper whose class branches a capsule
+        // receiver can call directly.
+        const capsuleCalls = capsuleCallSite(host, e, callee);
+        if (capsuleCalls) return emitCapsuleCall(host, e, callee, capsuleCalls);
       }
       if (callee.fastRead === "index" && !plainCall && !awaitEntry && !resultSlot) {
         const indexed = emitNumericIndexRead(host, e, callee);
@@ -1647,7 +1651,7 @@ function emitNumericIndexRead(
 
 /** The recipe a lazily boxed receiver of type `t` is built from: its RC
  * adapters, type key and live view, one per type. */
-function typedRefRecipe(host: LlvmEmitterContext, t: IrType): string {
+export function typedRefRecipe(host: LlvmEmitterContext, t: IrType): string {
   const key = typeKey(t);
   let recipe = host.typedRefRecipes.get(key);
   if (recipe !== undefined) return recipe;

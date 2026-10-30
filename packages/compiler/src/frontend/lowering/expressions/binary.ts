@@ -59,6 +59,7 @@ import { tryLowerExpression } from "./try-lower-expression.js";
 import { fenceNodeModuleMutation, lowerRequireCacheHas } from "../lower-node-module.js";
 import { errorToStringCall } from "../error-methods.js";
 import { classToStringConversion, classUnionToString } from "../class-to-primitive.js";
+import { noteDynamicIdentityComparison } from "../generic-functions.js";
 import { isPerfEntryType, perfEntryTag } from "../builtins/performance.js";
 import { isX509Type, x509ToString } from "../builtins/x509.js";
 import { guardNullProto, nullProtoRecordShape } from "../null-prototype.js";
@@ -87,6 +88,7 @@ import { lowerUnionEquality, sameNamespace, tagEqualityMayMissAlias } from "../s
 import { withUnitArm } from "../../type-mapper.js";
 import { npmStaticPackageOfPath } from "../../npm-static.js";
 import { lowerWebAssemblyTypeof } from "../builtins/webassembly.js";
+import { lowerEnvironmentIdentity } from "../builtins/environment.js";
 
 /** `v === undefined` / `v !== null` — the narrowing tests for unit-armed
  * unions. A union operand compared with a unit literal lowers to a
@@ -1495,6 +1497,12 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
         : "compound assignment as an expression (write `x op= e` as a statement, or spell out `x = x op e`)",
     );
   }
+  // An identity comparison with process.env or a value held from it
+  // compares the one environment object, which no snapshot can stand for.
+  {
+    const identity = lowerEnvironmentIdentity(lowerer, expr, loc);
+    if (identity) return identity;
+  }
   if (op === ts.SyntaxKind.EqualsEqualsToken || op === ts.SyntaxKind.ExclamationEqualsToken) {
     const nullTest = lowerLooseNullCompare(lowerer, expr, loc);
     if (nullTest) return nullTest;
@@ -1699,6 +1707,8 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
             ? { liveRef: true as const }
             : {}),
         };
+        if (reference.kind === "func")
+          noteDynamicIdentityComparison(lowerer, expr, expr.left, expr.right);
         return {
           kind: "dynScalarEq",
           left: scalarSide === left ? boxed : left,
@@ -1754,6 +1764,12 @@ export function lowerBinary(lowerer: Lowerer, expr: ts.BinaryExpression): IrExpr
           // reference kinds by identity (scr_dyn_strict_eq).
           scalarSide.type.kind === "dyn")
       ) {
+        // A generic declaration read through `unknown` compares as the
+        // function object it names, which is one object in JavaScript but
+        // one closed instance per signature here: the whole-program check
+        // refuses it when the program holds the declaration at more than
+        // one signature.
+        noteDynamicIdentityComparison(lowerer, expr, expr.left, expr.right);
         return {
           kind: "dynScalarEq",
           left,
@@ -2715,6 +2731,11 @@ export function lowerStrictEquality(
     };
   }
   if (lowerer.dynConvertible(idLeft.type) && lowerer.dynConvertible(idRight.type)) {
+    // A generic declaration read through `unknown` compares as the function
+    // object it names, which is one object in JavaScript but one closed
+    // instance per signature here: the whole-program check refuses it when
+    // the program holds the declaration at more than one signature.
+    noteDynamicIdentityComparison(lowerer, node, leftNode, rightNode);
     return {
       kind: "dynScalarEq",
       left: lowerer.coerceToExpected(idLeft, DYN),

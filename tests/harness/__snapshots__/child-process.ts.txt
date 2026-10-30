@@ -7,93 +7,86 @@ child-process.ts:20:17 - error SC2020: 'spawn with shell enabled and separate ar
 
   hint: put the complete shell command in the first argument and pass [] (Node deprecates unescaped shell argument concatenation)
 
-child-process.ts:27:14 - error SC1090: listeners returning a value (make the callback body a block, or return nothing) is not supported yet
+child-process.ts:27:7 - error SC2007: values of type '{ (event: "spawn", listener: () => void): ChildProcess; (event: "exit", listener: (code: number | null, signal: string | null) => void): ChildProcess; (event: "close", listener: (code: number | null, signal: string | null) => void): ChildProcess; (event: "error", listener: (err: Error) => void): ChildProcess; (event...' cannot be compiled: the type declares multiple call signatures (overloads), and a compiled function value is always one concrete signature
 
-  26 | // as void.
-  27 | c.on("exit", (): number => 5);
-     |              ^~~~~~~~~~~~~~~
-  28 | // Methods have no bound-value form — call on directly.
-
-child-process.ts:29:7 - error SC2007: values of type '{ (event: "spawn", listener: () => void): ChildProcess; (event: "exit", listener: (code: number | null, signal: string | null) => void): ChildProcess; (event: "close", listener: (code: number | null, signal: string | null) => void): ChildProcess; (event: "error", listener: (err: Error) => void): ChildProcess; (event...' cannot be compiled: the type declares multiple call signatures (overloads), and a compiled function value is always one concrete signature
-
-  28 | // Methods have no bound-value form — call on directly.
-  29 | const f = c.on;
+  26 | // Methods have no bound-value form — call on directly.
+  27 | const f = c.on;
      |       ^
-  30 | // The callback slice accepts inline utf8/maxBuffer options, but not all of
+  28 | // The callback slice accepts inline utf8/maxBuffer options, but not all of
 
   hint: annotate the slot with the ONE signature the program actually calls (e.g. '(x: number) => string'), or wrap the overloaded function in a single-signature arrow
 
-child-process.ts:29:11 - error SC1090: child methods as values (call 'on' directly) are not supported yet
+child-process.ts:27:11 - error SC1090: child methods as values (call 'on' directly) are not supported yet
 
-  28 | // Methods have no bound-value form — call on directly.
-  29 | const f = c.on;
+  26 | // Methods have no bound-value form — call on directly.
+  27 | const f = c.on;
      |           ^~~~
-  30 | // The callback slice accepts inline utf8/maxBuffer options, but not all of
+  28 | // The callback slice accepts inline utf8/maxBuffer options, but not all of
 
-child-process.ts:32:1 - error SC2020: 'execFile with 1 arguments' is part of the standard library types but has no scriptc lowering yet
+child-process.ts:30:1 - error SC2020: 'execFile with 1 arguments' is part of the standard library types but has no scriptc lowering yet
 
-  31 | // Node's options or the optional-callback overload family.
-  32 | execFile("true");
+  29 | // Node's options or the optional-callback overload family.
+  30 | execFile("true");
      | ^~~~~~~~~~~~~~~~
-  33 | execFile("true", [], { cwd: "/tmp" }, () => {});
+  31 | execFile("true", [], { cwd: "/tmp" }, () => {});
 
   hint: the supported callback forms are execFile(file, callback), execFile(file, args, callback), and execFile(file, args, { encoding: 'utf8', maxBuffer: N }, callback)
 
-child-process.ts:35:35 - error SC2020: 'execFile with a non-literal maxBuffer' is part of the standard library types but has no scriptc lowering yet
+child-process.ts:33:35 - error SC2020: 'execFile with a non-literal maxBuffer' is part of the standard library types but has no scriptc lowering yet
 
-  34 | const bufferLimit = 1024;
-  35 | execFile("true", [], { maxBuffer: bufferLimit }, () => {});
+  32 | const bufferLimit = 1024;
+  33 | execFile("true", [], { maxBuffer: bufferLimit }, () => {});
      |                                   ^~~~~~~~~~~
-  36 | const getEncoding = (): "utf8" => "utf8";
+  34 | const getEncoding = (): "utf8" => "utf8";
 
   hint: pass a numeric literal or literal arithmetic (the native capture grows without enforcing this limit)
 
-child-process.ts:37:34 - error SC2020: 'execFile with a non-literal utf8 encoding' is part of the standard library types but has no scriptc lowering yet
+child-process.ts:35:34 - error SC2020: 'execFile with a non-literal utf8 encoding' is part of the standard library types but has no scriptc lowering yet
 
-  36 | const getEncoding = (): "utf8" => "utf8";
-  37 | execFile("true", [], { encoding: getEncoding() }, () => {});
+  34 | const getEncoding = (): "utf8" => "utf8";
+  35 | execFile("true", [], { encoding: getEncoding() }, () => {});
      |                                  ^~~~~~~~~~~~~
-  38 | // Fork targets are part of the compiled graph and therefore must resolve at
+  36 | // Fork targets are part of the compiled graph and therefore must resolve at
 
   hint: pass the literal 'utf8' or 'utf-8' (other expressions might have side effects)
 
-child-process.ts:40:6 - error SC2020: 'fork with a runtime-valued module path' is part of the standard library types but has no scriptc lowering yet
+child-process.ts:38:6 - error SC2020: 'fork with a runtime-valued module path' is part of the standard library types but has no scriptc lowering yet
 
-  39 | // build time. The remaining channel is JSON-only and occupies stdio slot 3.
-  40 | fork(process.argv[1]!);
+  37 | // build time. The remaining channel is JSON-only and occupies stdio slot 3.
+  38 | fork(process.argv[1]!);
      |      ^~~~~~~~~~~~~~~~
-  41 | const staticWorker = new URL("./child-process.ts", import.meta.url);
+  39 | const staticWorker = new URL("./child-process.ts", import.meta.url);
 
   hint: resolve a relative worker with new URL("./worker.ts", import.meta.url) or fileURLToPath(...) and bind it to a const if needed
 
-child-process.ts:42:41 - error SC2020: 'fork with non-JSON serialization' is part of the standard library types but has no scriptc lowering yet
+child-process.ts:40:41 - error SC2020: 'fork with non-JSON serialization' is part of the standard library types but has no scriptc lowering yet
 
-  41 | const staticWorker = new URL("./child-process.ts", import.meta.url);
-  42 | fork(staticWorker, [], { serialization: "advanced" });
+  39 | const staticWorker = new URL("./child-process.ts", import.meta.url);
+  40 | fork(staticWorker, [], { serialization: "advanced" });
      |                                         ^~~~~~~~~~
-  43 | fork(staticWorker, [], { stdio: ["ignore", "ignore", "ignore", "ignore"] });
+  41 | fork(staticWorker, [], { stdio: ["ignore", "ignore", "ignore", "ignore"] });
 
   hint: the static IPC channel supports Node's default serialization or serialization: "json"
 
-child-process.ts:43:64 - error SC2020: 'fork without a fourth-slot IPC channel' is part of the standard library types but has no scriptc lowering yet
+child-process.ts:41:64 - error SC2020: 'fork without a fourth-slot IPC channel' is part of the standard library types but has no scriptc lowering yet
 
-  42 | fork(staticWorker, [], { serialization: "advanced" });
-  43 | fork(staticWorker, [], { stdio: ["ignore", "ignore", "ignore", "ignore"] });
+  40 | fork(staticWorker, [], { serialization: "advanced" });
+  41 | fork(staticWorker, [], { stdio: ["ignore", "ignore", "ignore", "ignore"] });
      |                                                                ^~~~~~~~
-  44 | // Keep each fence on its own statement so diagnostics remain site-specific.
+  42 | // Keep each fence on its own statement so diagnostics remain site-specific.
 
   hint: the fourth stdio entry must be "ipc"
 
-child-process.ts:48:21 - error SC1090: untyped child-stream 'data' listeners whose setEncoding state is unclear at their registration sites (declare the chunk as 'Buffer' or 'string') are not supported yet
+child-process.ts:46:21 - error SC1090: untyped child-stream 'data' listeners whose setEncoding state is unclear at their registration sites (declare the chunk as 'Buffer' or 'string') are not supported yet
 
-  47 | const pipedOut = piped.stdout!;
-  48 | pipedOut.on("data", (chunk: unknown) => console.log(String(chunk)));
+  45 | const pipedOut = piped.stdout!;
+  46 | pipedOut.on("data", (chunk: unknown) => console.log(String(chunk)));
      |                     ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  49 | pipedOut.setEncoding("utf8");
+  47 | pipedOut.setEncoding("utf8");
 
-child-process.ts:54:26 - error SC1090: untyped child-stream 'data' listeners whose setEncoding state is unclear at their registration sites (declare the chunk as 'Buffer' or 'string') are not supported yet
+child-process.ts:52:26 - error SC1090: untyped child-stream 'data' listeners whose setEncoding state is unclear at their registration sites (declare the chunk as 'Buffer' or 'string') are not supported yet
 
-  53 | pipedErr.setEncoding("utf8");
-  54 | piped.stderr!.on("data", (chunk: unknown) => console.log(String(chunk)));
+  51 | pipedErr.setEncoding("utf8");
+  52 | piped.stderr!.on("data", (chunk: unknown) => console.log(String(chunk)));
      |                          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  55 | 
+  53 | 

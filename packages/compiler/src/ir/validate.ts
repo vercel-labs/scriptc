@@ -3851,6 +3851,22 @@ function validateFunction(
             return;
           }
           if (arm.kind !== "record") {
+            // A SCALAR PRIMITIVE arm under a literal key answers undefined:
+            // JS boxes the primitive, finds no such property, and gets
+            // undefined — the answer a record arm without the key gives.
+            // The frontend only emits this when the primitive's own type
+            // declares no such member, and the result must carry the
+            // undefined arm (the backend stores it).
+            if (
+              e.key.kind === "strLit" &&
+              (arm.kind === "string" ||
+                arm.kind === "f64" ||
+                arm.kind === "bool" ||
+                arm.kind === "bigint") &&
+              resultUnion?.arms.some((a) => a.kind === "undefinedT")
+            ) {
+              return;
+            }
             err(`unionKeyGet: arm ${i} of ${e.unionId} is ${arm.kind}, not a record`, e.loc);
             return;
           }
@@ -5175,7 +5191,7 @@ function validateFunction(
       }
       return true;
     }
-    if (e.fn === "qs.parse") {
+    if (e.fn === "qs.parse" || e.fn === "qs.parseCustom") {
       // Result: a pure index-signature record whose value union
       // carries a string arm and a string[] arm (undefined tolerated
       // — @types/node's Dict — and f64 too: the header-family

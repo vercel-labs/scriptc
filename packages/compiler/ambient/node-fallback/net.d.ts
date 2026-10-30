@@ -178,6 +178,8 @@ declare module "net" {
     getConnections(callback: (error: Error | null, count: number) => void): Server;
     /* Node answers the server itself (`return this` chaining). */
     listen(port: number, callback?: () => void): Server;
+    /* No port: an arbitrary unused one. */
+    listen(callback?: () => void): Server;
     /* The positional bind address (the options form's host in argument
      * spelling). */
     listen(port: number, host: string, callback?: () => void): Server;

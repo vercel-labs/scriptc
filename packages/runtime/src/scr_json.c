@@ -5538,10 +5538,26 @@ static int scr_dyn_global_constructor_instanceof(const ScrDyn *value, const ScrD
     return -1;
   /* A native Date, or an instance of a class declared `extends Date`. */
   if (strcmp(callee->v.fn.name, "Date") == 0) return scr_dyn_date_instance_is(value);
+  if (strcmp(callee->v.fn.name, "DataView") == 0) return scr_dyn_data_view_is(value);
+  /* No value is a BigInt64Array or BigUint64Array: neither is constructed. */
+  if (strcmp(callee->v.fn.name, "BigInt64Array") == 0 || strcmp(callee->v.fn.name, "BigUint64Array") == 0)
+    return 0;
+  /* Proxy has no prototype: false for a primitive, Node's TypeError for an
+   * object. */
+  if (strcmp(callee->v.fn.name, "Proxy") == 0) {
+    if (value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_BOOL ||
+        value->kind == SCR_DYN_NUM || value->kind == SCR_DYN_STR || value->kind == SCR_DYN_BIGINT ||
+        value->kind == SCR_DYN_SYMBOL)
+      return 0;
+    static const char message[] = "Function has non-object prototype 'undefined' in instanceof check";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return 0;
+  }
   static const struct { const char *name; int tag; } kinds[] = {
     {"RegExp", SCR_DYNH_REGEXP}, {"Map", SCR_DYNH_MAP}, {"Set", SCR_DYNH_SET},
     {"WeakMap", SCR_DYNH_WEAK_MAP}, {"WeakSet", SCR_DYNH_WEAK_SET},
     {"FinalizationRegistry", SCR_DYNH_FINALIZATION_REGISTRY},
+    {"SharedArrayBuffer", SCR_DYNH_SHARED_ARRAY_BUFFER},
   };
   bool promise = strcmp(callee->v.fn.name, "Promise") == 0;
   int tag = -1;
@@ -12058,7 +12074,12 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
     if (scr_exc_pending()) { scr_dyn_release(materialized); return false; }
     const ScrDynTypedClassOps *klass = scr_typed_ref_class_ops(v);
     bool out;
-    if (klass && materialized->kind == SCR_DYN_OBJ && !materialized->prototype && !materialized->null_proto) {
+    if (klass && scr_dyn_name_in_strs(key, klass->names, klass->count)) {
+      /* a compiled method or accessor of the class or a base class, also
+       * on a view whose snapshot has a prototype (an Error subclass's view
+       * carries Error.prototype) */
+      out = true;
+    } else if (klass && materialized->kind == SCR_DYN_OBJ && !materialized->prototype && !materialized->null_proto) {
       /* An instance view keeps only own fields; its class prototype chain
        * contributes the compiled methods and accessors. */
       out = scr_dyn_property_owner(materialized, key->data, key->len) ||
@@ -15602,6 +15623,73 @@ typedef struct ScrScParent {
   const struct ScrScParent *up;
 } ScrScParent;
 
+static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up, ScrDynRegion *region);
+
+static const char scr_sc_cycle_message[] =
+    "structuredClone of cyclic values (the checked-dynamic tree cannot represent cycles) is not supported yet";
+
+/* The clone a handle's clone hook runs inside: its parent chain and region,
+ * so a Map or Set clones its entries with the cycle check and region of the
+ * value that holds it. */
+static SCR_TL struct {
+  const ScrScParent *up;
+  ScrDynRegion *region;
+  /* scr_sc_clone, reached through the context so that the Map and Set
+   * handle ops do not link the structured-clone code into programs that
+   * never clone (volatile, so the call is not resolved at compile time). */
+  ScrDyn *(*volatile clone)(const ScrDyn *v, const ScrScParent *up, ScrDynRegion *region);
+} scr_sc_nested;
+
+/* A Map or Set clones entry by entry, cloning each key and value. The copy
+ * keeps the source's storage kinds and typed slot adapters, so a typed
+ * collection checks back into its own type; a typed slot converts the
+ * cloned value into a fresh element. The Map and Set handle ops install it
+ * as their clone hook. */
+static ScrMap *scr_sc_clone_collection(ScrMap *source, bool is_map) {
+  const ScrScParent *up = scr_sc_nested.up;
+  ScrDynRegion *region = scr_sc_nested.region;
+  ScrDyn *(*clone)(const ScrDyn *, const ScrScParent *, ScrDynRegion *) = scr_sc_nested.clone;
+  ScrMap *out = scr_map_new((ScrMapKeyKind)source->key_kind, (ScrMapValKind)source->val_kind, source->ops);
+  out->dyn_ops = source->dyn_ops;
+  scr_map_iter_enter(source);
+  for (double i = 0; i < scr_map_iter_count(source); i++) {
+    if (!scr_map_iter_live(source, i)) continue;
+    ScrDyn *key = scr_map_dyn_key(source, i);
+    ScrDyn *key_copy = clone(key, up, region);
+    scr_dyn_release(key);
+    ScrDyn *value_copy = NULL;
+    if (key_copy && is_map) {
+      ScrDyn *value = scr_map_dyn_value(source, i);
+      value_copy = clone(value, up, region);
+      scr_dyn_release(value);
+    }
+    if (key_copy && (value_copy || !is_map)) scr_map_dyn_set(out, key_copy, value_copy, !is_map);
+    scr_dyn_release(key_copy);
+    scr_dyn_release(value_copy);
+    if (scr_exc_pending()) break;
+  }
+  scr_map_iter_exit(source);
+  if (scr_exc_pending()) {
+    scr_map_release(out);
+    return NULL;
+  }
+  return out;
+}
+
+static ScrDyn *scr_native_map_clone(void *ptr) {
+  ScrMap *copy = scr_sc_clone_collection(ptr, true);
+  ScrDyn *result = copy ? scr_dyn_native_map(copy) : NULL;
+  scr_map_release(copy);
+  return result;
+}
+
+static ScrDyn *scr_native_set_clone(void *ptr) {
+  ScrMap *copy = scr_sc_clone_collection(ptr, false);
+  ScrDyn *result = copy ? scr_dyn_native_set(copy) : NULL;
+  scr_map_release(copy);
+  return result;
+}
+
 /* The clone is a fresh tree (shared inputs are copied per path, cycles
  * throw), so it is tagged like a parse result (ScrDynRegion); a leaf the
  * region may not hold clears it. */
@@ -15719,7 +15807,25 @@ static ScrDyn *scr_sc_clone(const ScrDyn *v, const ScrScParent *up, ScrDynRegion
   case SCR_DYN_HANDLE:
     if (scr_dyn_handle_ops_of(v)->clone) {
       region->intact = false; /* a handle is not a leaf the region may hold */
-      return scr_dyn_handle_ops_of(v)->clone(v->v.handle.ptr);
+      /* A handle that holds values (a Map or Set) clones them with this
+       * value as their parent; one that holds its own storage is cut off
+       * by its parent's identity. */
+      for (const ScrScParent *p = up; p != NULL; p = p->up) {
+        if (p->node->kind == SCR_DYN_HANDLE && p->node->v.handle.ptr == v->v.handle.ptr) {
+          scr_throw_error_msg(SCR_ERR_ERROR, scr_sc_cycle_message, sizeof scr_sc_cycle_message - 1);
+          return NULL;
+        }
+      }
+      ScrScParent self = {v, up};
+      const ScrScParent *saved_up = scr_sc_nested.up;
+      ScrDynRegion *saved_region = scr_sc_nested.region;
+      scr_sc_nested.up = &self;
+      scr_sc_nested.region = region;
+      scr_sc_nested.clone = scr_sc_clone;
+      ScrDyn *out = scr_dyn_handle_ops_of(v)->clone(v->v.handle.ptr);
+      scr_sc_nested.up = saved_up;
+      scr_sc_nested.region = saved_region;
+      return out;
     }
     /* fall through */
   case SCR_DYN_FUNC:
@@ -19123,6 +19229,7 @@ ScrDyn *scr_dyn_native_set(ScrMap *value) {
       .iter_pack = &scr_native_set_pack,
       /* Entries live in internal slots: JSON.stringify writes {}, as Node. */
       .json_empty_object = true,
+      .clone = &scr_native_set_clone,
   };
   scr_dyn_handle_install(SCR_DYNH_SET, &ops);
   return scr_dyn_new_handle(value, SCR_DYNH_SET);
@@ -19240,6 +19347,7 @@ ScrDyn *scr_dyn_native_map(ScrMap *value) {
       .iter_pack = &scr_native_map_pack,
       /* Entries live in internal slots: JSON.stringify writes {}, as Node. */
       .json_empty_object = true,
+      .clone = &scr_native_map_clone,
   };
   scr_dyn_handle_install(SCR_DYNH_MAP, &ops);
   return scr_dyn_new_handle(value, SCR_DYNH_MAP);

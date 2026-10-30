@@ -282,8 +282,7 @@ export function variantsFor(source) {
     // build per flavor, so every variant here already carries the dynamic
     // tier's primitives and each one gets its object model twin. Every other
     // program keeps the default object, byte for byte.
-    withJsObjectModel(variants);  }
-  // util.inspect and instanceof of Node island handles; Node's report for
+    withJsObjectModel(variants);  }  // util.inspect and instanceof of Node island handles; Node's report for
   // an uncaught island error.
   if (
     source === "scr_inspect.c" ||

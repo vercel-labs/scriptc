@@ -36,9 +36,9 @@ export interface NativeLinkFeatures {
    * SCR_WARNING_REPLACE variant of the dyn-async unit. */
   warningReplace?: boolean;
   /** The program lowers Object.defineProperty onto a checked-dynamic
-   * array: links the SCR_ARRAY_ATTRS variants of scr_json.c and
-   * scr_dyn_invoke.c. Absent for every other program, so their objects
-   * stay identical. */
+   * value, or freeze/seal/preventExtensions onto one: links the
+   * SCR_ARRAY_ATTRS variants of scr_json.c and scr_dyn_invoke.c. Absent
+   * for every other program, so their objects stay identical. */
   dynArrayAttrs?: boolean;
   /** The program asserts a record literal to a wider record type (a partial
    * record view): links the SCR_RECORD_VIEW_PARTIAL variant of scr_json.c.

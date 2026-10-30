@@ -1430,7 +1430,9 @@ static ScrDyn *scr_dyn_alloc(ScrDynKind kind) {
       d->v.arr.properties = NULL;
       d->v.arr.sealed = false;
       d->v.arr.frozen = false;
+#ifdef SCR_ARRAY_ATTRS
       d->v.arr.length_readonly = false; /* a recycled node's last attributes */
+#endif
       d->v.arr.presence = NULL;
       d->v.arr.region = NULL;
     } else if (kind == SCR_DYN_OBJ) {
@@ -10695,10 +10697,10 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
     ScrStr *name = scr_dyn_property_key(key);
     if (!name) return NULL;
     double index;
+#ifdef SCR_ARRAY_ATTRS
     bool length_key = name->len == 6 && memcmp(name->data, "length", 6) == 0;
     bool special = length_key || scr_dyn_key_is_index(name->data, name->len, &index);
     if (special) {
-#ifdef SCR_ARRAY_ATTRS
       ScrDyn *fields[6];
       if (!scr_dyn_descriptor_fields_read(descriptor, fields)) {
         scr_str_release(name);
@@ -10727,14 +10729,18 @@ ScrDyn *scr_dyn_define_property(ScrDyn *target, ScrDyn *key, ScrDyn *descriptor)
       scr_dyn_descriptor_fields_drop(fields);
       scr_str_release(name);
       return ok ? scr_dyn_retain(target) : NULL;
-#else
-      static const char message[] = "Object.defineProperty on an array index or length is not supported yet";
-      scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
-      scr_str_release(name);
-      return NULL;
-#endif
     }
     scr_str_release(name);
+#else
+    bool special = name->len == 6 && memcmp(name->data, "length", 6) == 0;
+    special = special || scr_dyn_key_is_index(name->data, name->len, &index);
+    scr_str_release(name);
+    if (special) {
+      static const char message[] = "Object.defineProperty on an array index or length is not supported yet";
+      scr_throw_error_msg(SCR_ERR_ERROR, message, sizeof message - 1);
+      return NULL;
+    }
+#endif
     if (!target->v.arr.properties) target->v.arr.properties = scr_dyn_new_obj();
     target->v.arr.properties->non_extensible = target->non_extensible;
     ScrDyn *defined = scr_dyn_define_property(target->v.arr.properties, key, descriptor);
@@ -13535,19 +13541,22 @@ void scr_dyn_key_set(ScrDyn *recv, ScrStr *key, ScrDyn *value) {
       }
       while (recv->v.arr.len < length) scr_dyn_arr_push_hole(recv);
       while (recv->v.arr.len > length) {
-        size_t last = recv->v.arr.len - 1;
 #ifdef SCR_ARRAY_ATTRS
         /* ArraySetLength deletes the elements from the top down and stops
          * at the first non-configurable one, reporting that delete. */
-        bool undeletable = !scr_dyn_arr_index_configurable(recv, last);
-#else
-        bool undeletable = recv->v.arr.sealed;
-#endif
-        if (undeletable && scr_dyn_arr_has_index(recv, last)) {
+        size_t last = recv->v.arr.len - 1;
+        if (!scr_dyn_arr_index_configurable(recv, last) && scr_dyn_arr_has_index(recv, last)) {
           scr_array_frozen_error(5, recv->v.arr.len, (double)last, 0, 0);
           scr_dyn_note_assign_failure();
           return;
         }
+#else
+        if (recv->v.arr.sealed && scr_dyn_arr_has_index(recv, recv->v.arr.len - 1)) {
+          scr_array_frozen_error(5, recv->v.arr.len, (double)(recv->v.arr.len - 1), 0, 0);
+          scr_dyn_note_assign_failure();
+          return;
+        }
+#endif
         scr_dyn_release(recv->v.arr.items[--recv->v.arr.len]);
       }
       return;

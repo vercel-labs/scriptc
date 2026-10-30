@@ -1375,10 +1375,12 @@ static ScrDyn *scr_dyn_invoke_impl(
       if (frozen_op >= 0 &&
           scr_array_frozen_error(frozen_op, len, (double)splice_start, frozen_op == 10 ? (double)splice_removed : items, items))
         return NULL;
+#ifdef SCR_ARRAY_ATTRS
       /* Growing an array that is not extensible refuses the first index it
        * would add: push writes its items in order, unshift moves the last
        * element up first, and splice moves the element at the old end to
-       * the new one. */
+       * the new one. (The default build keeps its push-only check so its
+       * object stays byte-identical.) */
       if (grows && recv->non_extensible) {
         double first_new = (mid == DYN_M_push) ? (double)len
             : (mid == DYN_M_unshift) ? (double)len + items - 1
@@ -1386,6 +1388,12 @@ static ScrDyn *scr_dyn_invoke_impl(
         scr_array_not_extensible_error(first_new);
         return NULL;
       }
+#else
+      if ((mid == DYN_M_push) && grows && recv->non_extensible) {
+        scr_array_not_extensible_error((double)len);
+        return NULL;
+      }
+#endif
 #ifdef SCR_ARRAY_ATTRS
       /* Object.defineProperty can make the length read-only and an element
        * non-writable or non-configurable; a refused element write throws
@@ -1415,7 +1423,11 @@ static ScrDyn *scr_dyn_invoke_impl(
         scr_array_undeletable_error((double)(len - 1));
         return NULL;
       }
+#ifdef SCR_ARRAY_ATTRS
       if (shrinks && recv->v.arr.sealed && !(mid == DYN_M_shift)) {
+#else
+      if ((grows && recv->non_extensible) || (shrinks && recv->v.arr.sealed && !(mid == DYN_M_shift))) {
+#endif
         static const char message[] = "Cannot modify a sealed or frozen array";
         scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
         return NULL;

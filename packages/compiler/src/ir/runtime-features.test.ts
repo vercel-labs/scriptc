@@ -47,6 +47,24 @@ describe("runtime feature snapshots", () => {
     expect(moduleUsesHttp2(mod)).toBe(false);
   });
 
+  test("selects the array-attribute build only for a call that can reach an array", () => {
+    const define = module();
+    define.functions[0]!.body.push(call("dyn.defineProperty"));
+    expect(moduleRuntimeFeatures(define)).toMatchObject({ dynArrayAttrs: true });
+
+    for (const fn of ["dyn.freeze", "dyn.seal", "dyn.preventExtensions"] as const) {
+      const integrity = module();
+      integrity.functions[0]!.body.push(call(fn));
+      expect(moduleRuntimeFeatures(integrity)).toMatchObject({ dynArrayAttrs: true });
+    }
+
+    // The bound-function lowering stores its metadata through defineProps on
+    // a closure, so it must not grow an unrelated program's runtime object.
+    const props = module();
+    props.functions[0]!.body.push(call("dyn.defineProps"));
+    expect(moduleRuntimeFeatures(props)).toMatchObject({ dynArrayAttrs: false });
+  });
+
   test("gates the BigIntStats unit on its member reads, not on bigint", () => {
     const reads = module();
     reads.functions[0]!.body.push(call("bigstats.size"));

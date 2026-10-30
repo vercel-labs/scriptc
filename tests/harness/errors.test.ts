@@ -1945,12 +1945,13 @@ describe("builtin constructor values (JS lane)", () => {
     // reflection on or redefinition of their members, must stay a located
     // SC2020/SC1090 refusal, never an undefined or otherwise wrong value.
     // `key in Ctor` answers from the constructor's fixed keys.
+    // Set.prototype is the one prototype read with a lowering: the JavaScript
+    // lane provides %Set.prototype%, so it reads as an object.
     // Test262 lost 769 refusals to undefined reads before this was pinned.
     const reads = [
       ["Map.prototype", "Map.prototype"],
       ["Date.prototype", "Date.prototype"],
       ["RegExp.prototype", "RegExp.prototype"],
-      ["Set.prototype", "Set.prototype"],
       ["WeakMap.prototype", "WeakMap.prototype"],
       ["WeakSet.prototype", "WeakSet.prototype"],
       ["Date.prototype.getYear", "Date.prototype.getYear"],
@@ -1980,6 +1981,8 @@ function report(label, e) {
   console.log(label, m ? "refused " + m[1] + " line " + m[2] : "threw " + e.message);
 }
 ${reads.map(([label, read]) => `try { const value = ${read}; console.log(${JSON.stringify(label)}, "read", typeof value); } catch (e) { report(${JSON.stringify(label)}, e); }`).join("\n")}
+const setPrototype = Set.prototype;
+console.log("Set.prototype", "read", typeof setPrototype);
 console.log(Date.length, RegExp.length, Promise.length, Object.length, Map.length, Set.length);
 console.log(Date.name, Map.name, Map.constructor === Function, Object.constructor === Function);
 const promisePrototype = Promise.prototype;
@@ -1999,9 +2002,11 @@ console.log("prototype" in Map, "groupBy" in Map, "captureStackTrace" in Error, 
         ),
       ),
     );
-    // Promise.prototype reads as an object holding the runtime's methods,
-    // and `in` on a builtin constructor answers from its fixed keys.
+    // Set.prototype reads as an object, Promise.prototype reads as an object
+    // holding the runtime's methods, and `in` on a builtin constructor
+    // answers from its fixed keys.
     expect(lines.slice(reads.length)).toEqual([
+      "Set.prototype read object",
       "7 2 1 1 0 0",
       "Date Map true true",
       "object function true",

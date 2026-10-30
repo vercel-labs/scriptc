@@ -162,3 +162,78 @@ refusal("close non-object", () =>
     keys: () => ({ next: () => ({ done: false, value: 42 }), return: () => 5 }),
   }),
 );
+
+// difference compares the argument against a snapshot of the receiver: `has`
+// may delete from or add to the receiver, and the walk still visits exactly
+// the members that were there when the call began.
+const mutated = new Set([1, 2, 3]);
+const mutatedVisits = [];
+const mutating = {
+  size: 3,
+  has(value) {
+    mutatedVisits.push(value);
+    if (value === 1) mutated.delete(2);
+    return value === 2;
+  },
+  keys() {
+    let i = 0;
+    return {
+      next() {
+        return i++ < 1 ? { value: 9, done: false } : { done: true };
+      },
+    };
+  },
+};
+log("difference snapshot", [...mutated.difference(mutating)]);
+log("difference snapshot visits", mutatedVisits);
+
+const grown = new Set([1]);
+const grownVisits = [];
+const growing = {
+  size: 1,
+  has(value) {
+    grownVisits.push(value);
+    grown.add(4);
+    return false;
+  },
+  keys: () => ({ next: () => ({ done: true }) }),
+};
+log("difference added member", [...grown.difference(growing)]);
+log("difference added member visits", grownVisits);
+
+// The keys branch tests membership against the same snapshot: a key the
+// argument yields after deleting it from the receiver is still removed.
+const keyed = new Set([1, 2, 3]);
+const keyedOther = {
+  size: 1,
+  has: () => false,
+  keys() {
+    let i = 0;
+    return {
+      next() {
+        if (i === 0) keyed.delete(2);
+        return i++ < 1 ? { value: 2, done: false } : { done: true };
+      },
+    };
+  },
+};
+log("difference keys snapshot", [...keyed.difference(keyedOther)]);
+
+// Every composition drives the argument's keys iterator with a bare next(), so
+// an iterator that inspects its arguments sees no argument.
+const arities = [];
+const argumentSensitive = {
+  size: 1,
+  has: () => false,
+  keys() {
+    let i = 0;
+    return {
+      next(...args) {
+        arities.push(args.length);
+        return i++ < 1 ? { value: 5, done: false } : { done: true };
+      },
+    };
+  },
+};
+log("union bare next", [...new Set([1]).union(argumentSensitive)]);
+log("next arities", arities);

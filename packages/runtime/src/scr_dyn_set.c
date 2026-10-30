@@ -330,7 +330,7 @@ static bool scr_set_iterator_open(ScrSetRecord *record, ScrSetIterator *iter) {
 static int scr_set_iterator_step(ScrSetIterator *iter, ScrDyn **value) {
   *value = NULL;
   scr_dyn_this_push_dyn(iter->iterator);
-  ScrDyn *result = scr_dyn_call(iter->next, &iter->iterator, 1, "next");
+  ScrDyn *result = scr_dyn_call(iter->next, NULL, 0, "next");
   scr_dyn_this_pop();
   if (!result) return -1;
   if (!scr_set_is_object(result)) {
@@ -408,9 +408,11 @@ static bool scr_set_is_predicate(const char *name) {
          !strcmp(name, "isDisjointFrom");
 }
 
-/* The size-branch walk over the receiver's LIVE data: user code the walk
- * calls (`has`) may mutate the set, so the entry count is re-read every
- * step, as the spec does. */
+/* Walks a set's entries in insertion order, re-reading the entry count every
+ * step: entries appended during the walk are visited and removals leave
+ * tombstones the walk skips. intersection, isSubsetOf and isDisjointFrom walk
+ * the receiver live, because `has` may mutate it; difference walks its own
+ * copy, whose visit removes the entries `has` rules out. */
 typedef int (*ScrSetVisit)(void *context, ScrDyn *entry);
 
 static int scr_set_walk_this(ScrMap *set, ScrSetVisit visit, void *context) {
@@ -595,7 +597,9 @@ static ScrDyn *scr_set_difference(ScrSetRecord *record, ScrMap *set) {
   ScrMap *data = scr_set_copy(set);
   ScrSetHasContext context = {record, data, set, 1};
   if (scr_map_size(set) <= record->size) {
-    if (scr_set_walk_this(set, scr_set_difference_has_visit, &context) < 0) {
+    /* The result comes from the copy taken before the walk: `has` may add to
+     * or delete from the receiver, and neither reaches this walk. */
+    if (scr_set_walk_this(data, scr_set_difference_has_visit, &context) < 0) {
       scr_map_release(data);
       return NULL;
     }

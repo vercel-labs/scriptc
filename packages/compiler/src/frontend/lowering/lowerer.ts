@@ -3900,8 +3900,8 @@ export class Lowerer {
    * by the installed typeParamBindings map, then the typeParamTsBindings map
    * (NO_BINDINGS stands for null). Binding maps are filled before they are
    * installed and never change while installed, so their identity is the
-   * context. */
-  private readonly scopedTypeMemos = new WeakMap<object, WeakMap<object, Map<number, IrType>>>();
+   * context. The lowerer owns the memos: they live as long as it does. */
+  private readonly scopedTypeMemos = new Map<object, Map<object, Map<number, IrType>>>();
   readonly ambient = ambientDtsPath();
   readonly overridesAmbient = overridesDtsPath();
   /** The one mapType context: registries + hooks, assembled in the
@@ -3916,7 +3916,7 @@ export class Lowerer {
     const inner: object = this.typeParamTsBindings ?? NO_BINDINGS;
     let byTs = this.scopedTypeMemos.get(outer);
     if (byTs === undefined) {
-      byTs = new WeakMap();
+      byTs = new Map();
       this.scopedTypeMemos.set(outer, byTs);
     }
     let memo = byTs.get(inner);

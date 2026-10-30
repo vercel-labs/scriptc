@@ -68,6 +68,24 @@ const chained = remerge(two, { maxTokensField: "M" });
 console.log(JSON.stringify(chained));
 console.log(Object.keys(chained).join(","));
 
+// A checked-dynamic source is walked once per spread: a proxy's ownKeys
+// trap runs once, and its keys keep their own order.
+function mergeObject(a: Small, b: object): Compat {
+  return { ...a, ...b };
+}
+const traps: string[] = [];
+const proxyTarget: any = { maxTokensField: "m", imageInput: "i" };
+const proxyHandler: any = {
+  ownKeys: (target: object) => {
+    traps.push("ownKeys");
+    return Reflect.ownKeys(target);
+  },
+};
+const proxied: any = new Proxy(proxyTarget, proxyHandler);
+const viaProxy = mergeObject({ sendImageOptInHeader: "h" }, proxied);
+console.log(JSON.stringify(viaProxy), traps.length);
+console.log(JSON.stringify(mergeObject({}, { imageInput: "i", sendImageOptInHeader: "h" })));
+
 // Values stay live: the same shape read through the kept view.
 console.log(two.imageInput, two.sendImageOptInHeader, two.maxTokensField);
 console.log("done");

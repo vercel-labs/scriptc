@@ -2120,11 +2120,24 @@ function keepDeclaredMerges(
         calls.add(st);
     }
     if (calls.size !== note.sources.length) continue;
-    notes.keptDeclaredMerges++;
-    const index = site++;
     const declared = shape.fields
       .map((field) => field.name)
       .filter((name) => !name.startsWith("%"));
+    // A dyn source's copy records its keys as it walks them
+    // (keyedDeclaredMergeHelper): a second walk would run a proxy's
+    // `ownKeys` trap again.
+    const keyedHelpers = new Map<IrStmt, string>();
+    let unkeyed = false;
+    for (const st of calls) {
+      if (st.kind !== "exprStmt" || st.expr.kind !== "call") continue;
+      if (st.expr.args[1]?.type.kind !== "dyn") continue;
+      const keyed = keyedDeclaredMergeHelper(lowerer, st.expr.callee, declared, loc);
+      if (keyed === null) unkeyed = true;
+      else keyedHelpers.set(st, keyed);
+    }
+    if (unkeyed) continue;
+    notes.keptDeclaredMerges++;
+    const index = site++;
     const keysId = `%declMergeKeys.${index}`;
     const keys = varRef(keysId, DYN, loc);
     fn.locals.push({ id: keysId, name: "%declMergeKeys", type: DYN, mutable: false });
@@ -2150,6 +2163,14 @@ function keepDeclaredMerges(
       fn.locals.push({ id: sourceId, name: "%declMergeSource", type: spread.type, mutable: false });
       const source = varRef(sourceId, spread.type, loc);
       stmts.push({ kind: "varDecl", localId: sourceId, init: spread, loc });
+      const keyed = keyedHelpers.get(st);
+      if (keyed !== undefined) {
+        stmts.push({
+          ...st,
+          expr: { ...st.expr, callee: keyed, args: [st.expr.args[0]!, source, keys] },
+        });
+        continue;
+      }
       stmts.push({ ...st, expr: { ...st.expr, args: [st.expr.args[0]!, source] } });
       stmts.push(...collectDeclaredKeys(fn, keys, source, declared, `${index}.${i}`, loc));
     }
@@ -2162,10 +2183,12 @@ function keepDeclaredMerges(
   }
 }
 
-/** The statements that append `source`'s present declared keys to the dyn
- * object `keys`, in the source's own order: a walk of the source's own keys
- * (a record's present fields in its table's order, a dyn value's own-key
- * order), each one that is a declared field set into `keys`. Setting an
+/** The statements that append a record `source`'s present declared keys
+ * to the dyn object `keys`, in the source's own order: a walk of its own
+ * keys (its present fields in its table's order), each one that is a
+ * declared field set into `keys`. A record has no traps, so this second
+ * walk after the copy runs no user code; a dyn source records its keys in
+ * the copy's own walk instead (keyedDeclaredMergeHelper). Setting an
  * existing key keeps its position, as Node's copy does for an override.
  * The source's nullish check reads one record, as the copy's does. */
 function collectDeclaredKeys(
@@ -2193,21 +2216,6 @@ function collectDeclaredKeys(
   const list = varRef(listId, listType, loc);
   const index = varRef(indexId, F64, loc);
   const key = varRef(keyId, STRING, loc);
-  let isDeclared: IrExpr | null = null;
-  for (const name of declared) {
-    const test: IrExpr = {
-      kind: "strEq",
-      negated: false,
-      left: key,
-      right: strLit(name, loc),
-      type: BOOL,
-      loc,
-    };
-    isDeclared =
-      isDeclared === null
-        ? test
-        : { kind: "logical", op: "||", left: isDeclared, right: test, type: BOOL, loc };
-  }
   return [
     {
       kind: "if",
@@ -2251,25 +2259,7 @@ function collectDeclaredKeys(
               init: { kind: "arrayGet", arr: list, index, type: STRING, loc },
               loc,
             },
-            {
-              kind: "if",
-              cond: isDeclared!,
-              then: [
-                {
-                  kind: "exprStmt",
-                  expr: {
-                    kind: "libCall",
-                    fn: "dyn.keySet",
-                    args: [keys, key, dynUndefinedExpr(loc)],
-                    type: VOID,
-                    loc,
-                  },
-                  loc,
-                },
-              ],
-              else_: null,
-              loc,
-            },
+            noteDeclaredKey(keys, key, declared, loc),
             {
               kind: "assign",
               localId: indexId,
@@ -2580,4 +2570,85 @@ function keepRecordClones(
     };
     replaceInPlace(node, replacement);
   }
+}
+
+/** `if (key is a declared field) keys[key] = undefined`: appends a declared
+ * key to the dyn key object, or keeps its position when it is already
+ * there, as Node's copy does for an override. */
+function noteDeclaredKey(
+  keys: IrExpr,
+  key: IrExpr,
+  declared: readonly string[],
+  loc: SrcLoc,
+): IrStmt {
+  let isDeclared: IrExpr | null = null;
+  for (const name of declared) {
+    const test: IrExpr = {
+      kind: "strEq",
+      negated: false,
+      left: key,
+      right: strLit(name, loc),
+      type: BOOL,
+      loc,
+    };
+    isDeclared =
+      isDeclared === null
+        ? test
+        : { kind: "logical", op: "||", left: isDeclared, right: test, type: BOOL, loc };
+  }
+  return {
+    kind: "if",
+    cond: isDeclared!,
+    then: [
+      {
+        kind: "exprStmt",
+        expr: {
+          kind: "libCall",
+          fn: "dyn.keySet",
+          args: [keys, key, dynUndefinedExpr(loc)],
+          type: VOID,
+          loc,
+        },
+        loc,
+      },
+    ],
+    else_: null,
+    loc,
+  };
+}
+
+/** The dyn-source copy helper of a declared merge (lowerDeclaredSpreadMerge)
+ * with a third parameter, the dyn key object: as the copy walks the
+ * source's own keys it appends each declared one there. The order comes
+ * from the walk that copies the values, so a proxy source's `ownKeys` trap
+ * runs once per spread, as in Node. Built once per helper; null when the
+ * helper does not have the walk's shape. */
+function keyedDeclaredMergeHelper(
+  lowerer: Lowerer,
+  callee: string,
+  declared: readonly string[],
+  loc: SrcLoc,
+): string | null {
+  const name = `${callee}.keyed`;
+  if (lowerer.liftedFnNamed(name) !== undefined) return name;
+  const original = lowerer.liftedFnNamed(callee);
+  if (original === undefined) return null;
+  const walk = original.body.findIndex((st) => st.kind === "for");
+  const loop = original.body[walk];
+  const first = loop?.kind === "for" ? loop.body[0] : undefined;
+  if (first?.kind !== "varDecl" || first.localId !== "key.0") return null;
+  const helper = structuredClone(original);
+  helper.name = name;
+  const keysId = "orderKeys.0";
+  helper.params = [...helper.params, { localId: keysId, name: "orderKeys", type: DYN }];
+  helper.locals.push({ id: keysId, name: "orderKeys", type: DYN, mutable: false });
+  const keyedLoop = helper.body[walk];
+  if (keyedLoop?.kind !== "for") return null;
+  keyedLoop.body.splice(
+    1,
+    0,
+    noteDeclaredKey(varRef(keysId, DYN, loc), varRef("key.0", STRING, loc), declared, loc),
+  );
+  lowerer.liftedFns.push(helper);
+  return name;
 }

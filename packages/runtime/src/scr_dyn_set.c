@@ -798,17 +798,8 @@ static bool scr_set_construct_add(ScrDyn *set, ScrDyn *adder, ScrDyn *value) {
   return true;
 }
 
-/* Whether the seed hands its values over as a pack (an array, a string, a
- * native collection): the same split scr_dyn_destructure_rest makes, whose
- * entries no user iterator can observe, so adding them closes nothing. */
-static bool scr_set_seed_packs(const ScrDyn *seed) {
-  return seed->kind == SCR_DYN_ARR || seed->kind == SCR_DYN_STR || seed->kind == SCR_DYN_BYTES ||
-         (seed->kind == SCR_DYN_HANDLE && scr_dyn_handle_ops_of(seed)->iter_pack) ||
-         (seed->kind == SCR_DYN_TYPED_REF && !scr_dyn_iterates_by_protocol(seed));
-}
-
-/* IteratorStepValue over (iterator, next): +1 with *done set, or NULL with
- * the exception pending. */
+/* IteratorStepValue over (iterator, next): the value, or NULL with the
+ * exception pending. */
 static ScrDyn *scr_set_iterable_step(ScrDyn *iterator, ScrDyn *next, bool *done) {
   *done = false;
   if (scr_dyn_iterator_can_step(iterator, next)) {
@@ -821,21 +812,19 @@ static ScrDyn *scr_set_iterable_step(ScrDyn *iterator, ScrDyn *next, bool *done)
   ScrDyn *raw = scr_dyn_call(next, NULL, 0, "next");
   scr_dyn_this_pop();
   if (!raw) return NULL;
-  if (!scr_set_is_object(raw)) {
-    scr_dyn_release(raw);
-    static const char message[] = "Iterator result is not an object";
-    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
-    return NULL;
-  }
-  ScrDyn *finished = scr_set_prop(raw, "done");
+  /* A primitive result is Node's TypeError, which names the value. */
+  ScrDyn *result = scr_dyn_iterator_result(raw);
+  scr_dyn_release(raw);
+  if (!result) return NULL;
+  ScrDyn *finished = scr_set_prop(result, "done");
   if (!finished) {
-    scr_dyn_release(raw);
+    scr_dyn_release(result);
     return NULL;
   }
   *done = scr_dyn_truthy(finished);
   scr_dyn_release(finished);
-  ScrDyn *value = *done ? scr_dyn_retain(scr_dyn_undefined()) : scr_set_prop(raw, "value");
-  scr_dyn_release(raw);
+  ScrDyn *value = *done ? scr_dyn_retain(scr_dyn_undefined()) : scr_set_prop(result, "value");
+  scr_dyn_release(result);
   return value;
 }
 
@@ -888,8 +877,9 @@ ScrDyn *scr_dyn_set_construct(ScrDyn *seed) {
       adder = NULL;
     }
   }
-  /* `add` is the builtin the bulk path inserts with, or a program that
-   * never materialized %Set.prototype% cannot have replaced it. */
+  /* Without an overridden `add`, the native constructor's bulk insert runs;
+   * a program that never materialized %Set.prototype% cannot have replaced
+   * it. */
   if (!adder) return scr_dyn_native_set_new(seed);
   ScrDyn *set = scr_dyn_native_set_new(scr_dyn_undefined());
   if (!set) {
@@ -900,13 +890,13 @@ ScrDyn *scr_dyn_set_construct(ScrDyn *seed) {
   if (!scr_dyn_is_callable(adder)) {
     scr_set_throw_adder_not_callable(adder);
     ok = false;
-  } else if (scr_set_seed_packs(seed)) {
-    ScrDyn *items = scr_dyn_destructure_rest(seed, NULL);
-    ok = items != NULL;
-    for (size_t i = 0; ok && items && i < items->v.arr.len; i++)
-      ok = scr_set_construct_add(set, adder, items->v.arr.items[i]);
-    if (items) scr_dyn_release(items);
   } else {
+    /* Every seed iterates as it stands at each step: the walk runs the
+     * program's `add`, which may add to or delete from the seed, and the
+     * pack a spread or a rest pattern takes would freeze the entries before
+     * the first adder call. Only the adder's throw closes the iterator;
+     * a throw from `next`, from a result accessor or a primitive result
+     * propagates on its own (AddEntriesFromIterable). */
     ScrDyn *iterator = scr_dyn_iterator(seed, NULL);
     ok = iterator != NULL;
     if (iterator) {
@@ -916,7 +906,6 @@ ScrDyn *scr_dyn_set_construct(ScrDyn *seed) {
         bool done = false;
         ScrDyn *value = scr_set_iterable_step(iterator, next, &done);
         if (!value) {
-          scr_set_iterator_close_abrupt(iterator);
           ok = false;
           break;
         }

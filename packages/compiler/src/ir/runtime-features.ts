@@ -338,6 +338,8 @@ const DYN_SET_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.setGetPrototype",
   "dyn.setCombine",
   "dyn.setForEach",
+  "dyn.setConstruct",
+  "dyn.setValues",
 ]);
 
 /** Entry points that link the dyn-invoke unit. */

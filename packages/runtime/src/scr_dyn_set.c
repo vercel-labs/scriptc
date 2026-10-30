@@ -771,6 +771,187 @@ ScrDyn *scr_dyn_set_for_each(ScrDyn *receiver, ScrDyn *callback, ScrDyn *this_ar
   return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
 }
 
+/* ── Set(iterable) ────────────────────────────────────────────────────── */
+
+/* Node's TypeError for an `add` the constructor read that is not callable:
+ * `'null' returned for property 'add' of object '#<Set>' is not a function`. */
+static void scr_set_throw_adder_not_callable(ScrDyn *value) {
+  ScrStr *shown = scr_dyn_string_coerce_js(value);
+  ScrJsonBuf message;
+  scr_jb_init(&message);
+  scr_jb_puts(&message, "'");
+  if (shown) {
+    scr_jb_put_str(&message, shown);
+    scr_str_release(shown);
+  }
+  scr_jb_puts(&message, "' returned for property 'add' of object '#<Set>' is not a function");
+  scr_throw_error(SCR_ERR_TYPE, scr_jb_finish(&message));
+}
+
+/* Call(adder, set, «value»): false with the exception pending. */
+static bool scr_set_construct_add(ScrDyn *set, ScrDyn *adder, ScrDyn *value) {
+  scr_dyn_this_push_dyn(set);
+  ScrDyn *result = scr_dyn_call(adder, &value, 1, "add");
+  scr_dyn_this_pop();
+  if (!result) return false;
+  scr_dyn_release(result);
+  return true;
+}
+
+/* Whether the seed hands its values over as a pack (an array, a string, a
+ * native collection): the same split scr_dyn_destructure_rest makes, whose
+ * entries no user iterator can observe, so adding them closes nothing. */
+static bool scr_set_seed_packs(const ScrDyn *seed) {
+  return seed->kind == SCR_DYN_ARR || seed->kind == SCR_DYN_STR || seed->kind == SCR_DYN_BYTES ||
+         (seed->kind == SCR_DYN_HANDLE && scr_dyn_handle_ops_of(seed)->iter_pack) ||
+         (seed->kind == SCR_DYN_TYPED_REF && !scr_dyn_iterates_by_protocol(seed));
+}
+
+/* IteratorStepValue over (iterator, next): +1 with *done set, or NULL with
+ * the exception pending. */
+static ScrDyn *scr_set_iterable_step(ScrDyn *iterator, ScrDyn *next, bool *done) {
+  *done = false;
+  if (scr_dyn_iterator_can_step(iterator, next)) {
+    ScrDyn *value = scr_dyn_iterator_step(iterator);
+    if (!value) return NULL;
+    *done = scr_dyn_iterator_step_done(iterator);
+    return value;
+  }
+  scr_dyn_this_push_dyn(iterator);
+  ScrDyn *raw = scr_dyn_call(next, NULL, 0, "next");
+  scr_dyn_this_pop();
+  if (!raw) return NULL;
+  if (!scr_set_is_object(raw)) {
+    scr_dyn_release(raw);
+    static const char message[] = "Iterator result is not an object";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return NULL;
+  }
+  ScrDyn *finished = scr_set_prop(raw, "done");
+  if (!finished) {
+    scr_dyn_release(raw);
+    return NULL;
+  }
+  *done = scr_dyn_truthy(finished);
+  scr_dyn_release(finished);
+  ScrDyn *value = *done ? scr_dyn_retain(scr_dyn_undefined()) : scr_set_prop(raw, "value");
+  scr_dyn_release(raw);
+  return value;
+}
+
+/* IteratorClose(iterator, the pending throw completion): `return` runs
+ * unobserved, a throw from its read or its call replaces the pending
+ * exception, and the result is not checked for object-ness. */
+static void scr_set_iterator_close_abrupt(ScrDyn *iterator) {
+  ScrCaught *first = scr_exc_pending() ? scr_exc_take() : NULL;
+  ScrDyn *closer = scr_set_prop(iterator, "return");
+  if (closer) {
+    if (closer->kind != SCR_DYN_UNDEF && closer->kind != SCR_DYN_NULL) {
+      if (!scr_dyn_is_callable(closer)) {
+        scr_set_throw_not_callable(closer);
+      } else {
+        scr_dyn_this_push_dyn(iterator);
+        ScrDyn *result = scr_dyn_call(closer, NULL, 0, "return");
+        scr_dyn_this_pop();
+        if (result) scr_dyn_release(result);
+      }
+    }
+    scr_dyn_release(closer);
+  }
+  if (first) {
+    if (scr_exc_pending()) {
+      ScrCaught *dropped = scr_exc_take();
+      if (dropped) scr_caught_release(dropped);
+    }
+    scr_rethrow(first);
+    scr_caught_release(first);
+  }
+}
+
+ScrDyn *scr_dyn_set_construct(ScrDyn *seed) {
+  /* A nullish iterable returns the empty set without reading `add`. */
+  if (seed->kind == SCR_DYN_NULL || seed->kind == SCR_DYN_UNDEF)
+    return scr_dyn_native_set_new(scr_dyn_undefined());
+  ScrDyn *adder = NULL;
+  if (scr_set_prototype_object) {
+    adder = scr_set_prop(scr_set_prototype_object, "add");
+    if (!adder) return NULL;
+    ScrDyn *builtin = scr_set_builtin_method("Set", "add");
+    if (!builtin) {
+      scr_dyn_release(adder);
+      return NULL;
+    }
+    bool overridden = adder != builtin;
+    scr_dyn_release(builtin);
+    if (!overridden) {
+      scr_dyn_release(adder);
+      adder = NULL;
+    }
+  }
+  /* `add` is the builtin the bulk path inserts with, or a program that
+   * never materialized %Set.prototype% cannot have replaced it. */
+  if (!adder) return scr_dyn_native_set_new(seed);
+  ScrDyn *set = scr_dyn_native_set_new(scr_dyn_undefined());
+  if (!set) {
+    scr_dyn_release(adder);
+    return NULL;
+  }
+  bool ok = true;
+  if (!scr_dyn_is_callable(adder)) {
+    scr_set_throw_adder_not_callable(adder);
+    ok = false;
+  } else if (scr_set_seed_packs(seed)) {
+    ScrDyn *items = scr_dyn_destructure_rest(seed, NULL);
+    ok = items != NULL;
+    for (size_t i = 0; ok && items && i < items->v.arr.len; i++)
+      ok = scr_set_construct_add(set, adder, items->v.arr.items[i]);
+    if (items) scr_dyn_release(items);
+  } else {
+    ScrDyn *iterator = scr_dyn_iterator(seed, NULL);
+    ok = iterator != NULL;
+    if (iterator) {
+      ScrDyn *next = scr_set_prop(iterator, "next");
+      ok = next != NULL;
+      while (ok) {
+        bool done = false;
+        ScrDyn *value = scr_set_iterable_step(iterator, next, &done);
+        if (!value) {
+          scr_set_iterator_close_abrupt(iterator);
+          ok = false;
+          break;
+        }
+        if (done) {
+          scr_dyn_release(value);
+          break;
+        }
+        ok = scr_set_construct_add(set, adder, value);
+        scr_dyn_release(value);
+        if (!ok) scr_set_iterator_close_abrupt(iterator);
+      }
+      if (next) scr_dyn_release(next);
+      scr_dyn_release(iterator);
+    }
+  }
+  scr_dyn_release(adder);
+  if (!ok) {
+    scr_dyn_release(set);
+    return NULL;
+  }
+  return set;
+}
+
+/* The values of a Set handle as a checked-dynamic array, in insertion
+ * order. The typed constructor path (`new Set(seed)` into `Set<T>`) adds
+ * them to its native set after a program's own `add` has run. */
+ScrDyn *scr_dyn_set_values(ScrDyn *set) {
+  if (!scr_dyn_native_set_is(set)) {
+    static const char message[] = "Set values expected";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "SC2020");
+    return NULL;
+  }
+  return scr_dyn_destructure_rest(set, NULL);
+}
+
 /* The method value of one Set.prototype member. */
 static ScrDyn *scr_dyn_set_proto_method(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
   ScrStr *name = scr_box_get_ref(closure->caps[0]);

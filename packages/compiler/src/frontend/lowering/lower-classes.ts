@@ -135,6 +135,7 @@ import { isCjsRequireGlobal } from "./lower-node-module.js";
 import { lowerArrayConstructor } from "./containers/array-construction.js";
 import { initializedCollectionType } from "./js-collection-types.js";
 import {
+  jsSourcePatchesSetPrototype,
   lowerMapSeedNew,
   lowerSetSeedNew,
   mapFromSeedValue,
@@ -11333,14 +11334,17 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
         (expr.arguments?.nodes.length ?? 0) <= 1 &&
         !expr.arguments?.nodes.some(ts.isSpreadElement)
       ) {
+        // With a seed the constructor reads `add` off the new set and steps
+        // the iterable, so a program's own Set.prototype.add runs per
+        // element and a throwing one closes the iterator. The no-argument
+        // form reads nothing, and a program that never patches the
+        // prototype cannot observe the bulk native path.
+        const seed = expr.arguments?.nodes[0];
+        const patched = !!seed && jsSourcePatchesSetPrototype(lowerer, expr);
         return {
           kind: "libCall",
-          fn: "dyn.nativeSetNew",
-          args: [
-            expr.arguments?.nodes[0]
-              ? lowerer.lowerExprExpecting(expr.arguments.nodes[0], DYN)
-              : dynUndefinedExpr(loc),
-          ],
+          fn: patched ? "dyn.setConstruct" : "dyn.nativeSetNew",
+          args: [seed ? lowerer.lowerExprExpecting(seed, DYN) : dynUndefinedExpr(loc)],
           type: DYN,
           loc,
         };

@@ -1055,6 +1055,18 @@ bool scr_dyn_native_set_is(const ScrDyn *value);
  * receiver is brand-checked, `other` runs GetSetRecord and the keys
  * iterator. +1, or NULL with the exception pending. */
 ScrDyn *scr_dyn_set_combine(ScrDyn *receiver, const ScrStr *name, ScrDyn *other);
+/* Set(iterable) for a JavaScript source: the spec's constructor, which
+ * reads `add` off the new set (a program's own Set.prototype.add runs per
+ * element) and closes the iterable when that call throws. A program that
+ * never materialized %Set.prototype%, or left `add` as the builtin, keeps
+ * the native constructor's bulk path. +1, or NULL with the exception
+ * pending. */
+ScrDyn *scr_dyn_set_construct(ScrDyn *seed);
+/* The values of a Set handle as a checked-dynamic array in insertion order
+ * (scr_dyn_set.c): the typed `new Set(seed)` path adds what a program's own
+ * `add` inserted to the native set it keeps. +1, or NULL with the exception
+ * pending. */
+ScrDyn *scr_dyn_set_values(ScrDyn *set);
 /* Set.prototype.forEach with an unchecked callback: Node's
  * `<value> is not a function` for a non-callable one. +1 undefined or NULL. */
 ScrDyn *scr_dyn_set_for_each(ScrDyn *receiver, ScrDyn *callback, ScrDyn *this_arg);

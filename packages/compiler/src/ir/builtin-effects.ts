@@ -106,6 +106,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "text.decodeStream",
   "text.decodeLegacyOptions",
   "dyn.nativeSetNew",
+  // Set(iterable) runs the program's own add and steps the iterable
+  "dyn.setConstruct",
+  "dyn.setValues",
   "ffi.argument",
   "ffi.memoryModule",
   "process.stdoutWrite",

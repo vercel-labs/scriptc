@@ -1210,6 +1210,8 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "collection.preventExtensions": "scr_map_prevent_extensions",
   "collection.isExtensible": "scr_map_is_extensible",
   "dyn.nativeSetNew": "scr_dyn_native_set_new",
+  "dyn.setConstruct": "scr_dyn_set_construct",
+  "dyn.setValues": "scr_dyn_set_values",
   "dyn.nativeSetIs": "scr_dyn_native_set_is",
   "dyn.nativeMapIs": "scr_dyn_native_map_is",
   "dyn.nativeUrlIs": "scr_dyn_native_url_is",

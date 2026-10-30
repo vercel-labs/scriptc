@@ -1017,6 +1017,90 @@ function buildSetCombineFn(
   };
 }
 
+/** Whether a JavaScript source file writes `Set.prototype`: a direct
+ * assignment or update of a member, a `delete`, or an install through
+ * Object.assign/Object.defineProperty(Object|Properties)/Reflect.set(
+ * defineProperty). Such a program makes the constructor's `add` lookup
+ * observable (Set([ iterable ]) step 7), so `new Set(seed)` takes the
+ * checked-dynamic constructor, which consults the prototype and steps the
+ * iterable (and closes it when `add` throws). Every other program keeps the
+ * bulk native construction. */
+const setPrototypePatchCache = new WeakMap<ts.SourceFile, boolean>();
+
+export function jsSourcePatchesSetPrototype(lowerer: Lowerer, node: ts.Node): boolean {
+  const file = ts.getSourceFileOfNode(node);
+  if (!isJsSourceFile(file)) return false;
+  const cached = setPrototypePatchCache.get(file);
+  if (cached !== undefined) return cached;
+  const isPrototype = (expr: ts.Node | undefined): boolean => {
+    if (!expr) return false;
+    let node: ts.Node = expr;
+    while (ts.isParenthesizedExpression(node)) node = node.expression;
+    return (
+      ts.isPropertyAccessExpression(node) &&
+      !node.questionDotToken &&
+      lowerer.stdlibGlobalMember(node, "Set") === "prototype"
+    );
+  };
+  // A write target below or at %Set.prototype%.
+  const writesPrototype = (expr: ts.Node): boolean => {
+    let node: ts.Node = expr;
+    while (ts.isParenthesizedExpression(node)) node = node.expression;
+    if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node))
+      return isPrototype(node.expression);
+    return isPrototype(node);
+  };
+  const installsOnto = (expr: ts.Node): boolean => {
+    let node: ts.Node = expr;
+    while (ts.isParenthesizedExpression(node)) node = node.expression;
+    if (!ts.isCallExpression(node)) return false;
+    const callee = node.expression;
+    if (!ts.isPropertyAccessExpression(callee)) return false;
+    const name = callee.name.text;
+    if (
+      name !== "assign" &&
+      name !== "defineProperty" &&
+      name !== "defineProperties" &&
+      name !== "set"
+    )
+      return false;
+    const first = node.arguments.nodes[0];
+    return !!first && !ts.isSpreadElement(first) && isPrototype(first);
+  };
+  let patched = false;
+  const visit = (child: ts.Node): void => {
+    if (patched) return;
+    if (
+      (ts.isBinaryExpression(child) &&
+        ts.isAssignmentOperator(child.operatorToken.kind) &&
+        writesPrototype(child.left)) ||
+      (ts.isDeleteExpression(child) && writesPrototype(child.expression)) ||
+      ((ts.isPrefixUnaryExpression(child) || ts.isPostfixUnaryExpression(child)) &&
+        (child.operator === ts.SyntaxKind.PlusPlusToken ||
+          child.operator === ts.SyntaxKind.MinusMinusToken) &&
+        writesPrototype(child.operand)) ||
+      installsOnto(child)
+    ) {
+      patched = true;
+      return;
+    }
+    ts.forEachChild(child, visit);
+  };
+  ts.forEachChild(file, visit);
+  setPrototypePatchCache.set(file, patched);
+  return patched;
+}
+
+/** A Set seed whose checked-dynamic representation keeps the value the
+ * program observes: dynamic values and the scalars, bytes (retained views)
+ * and scalar arrays the to-dyn walker boxes without copying identity. */
+function dynSetSeedPreservesIdentity(t: IrType): boolean {
+  const scalar = (arm: IrType): boolean =>
+    arm.kind === "dyn" || arm.kind === "f64" || arm.kind === "string" || arm.kind === "bool";
+  if (scalar(t) || t.kind === "bytes") return true;
+  return t.kind === "array" && scalar(t.elem);
+}
+
 /** Consume a Set seed immediately, including optional inherited sets used
  * by compiler tables. Nullish seeds construct empty sets; a lazy fallback
  * consumes its evaluated branch even when it reassigns the source binding. */
@@ -1031,6 +1115,35 @@ export function lowerSetSeedNew(
   const undefinedSeed = lowerStaticallyUndefinedArgument(lowerer, node);
   if (undefinedSeed)
     return defaultAfterUndefined(undefinedSeed, { kind: "setNew", type: setT, loc });
+  // A program that patches Set.prototype owns `add`, so the constructor
+  // must run it per iterated value instead of bulk-adding the seed. A
+  // literal seed is checked at the element type it is built at.
+  const literalSeed =
+    ts.isArrayLiteralExpression(node) && !node.elements.nodes.some(ts.isSpreadElement);
+  const seedIr = literalSeed ? setT.elem : lowerer.mapTypeOf(lowerer.typeOf(node));
+  if (seedIr && dynSetSeedPreservesIdentity(seedIr) && jsSourcePatchesSetPrototype(lowerer, node)) {
+    const constructed: IrExpr = {
+      kind: "libCall",
+      fn: "dyn.setConstruct",
+      args: [lowerer.lowerExprExpecting(node, DYN)],
+      type: DYN,
+      loc,
+    };
+    if (setT.elem.kind === "dyn") return { kind: "dynCheck", value: constructed, type: setT, loc };
+    // A native Set destination keeps its element ABI: read the values the
+    // program's own `add` inserted back and add them in order.
+    return {
+      kind: "setNew",
+      seed: {
+        kind: "dynCheck",
+        value: { kind: "libCall", fn: "dyn.setValues", args: [constructed], type: DYN, loc },
+        type: arrayOf(setT.elem),
+        loc,
+      },
+      type: setT,
+      loc,
+    };
+  }
   if (
     ts.isBinaryExpression(node) &&
     node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
@@ -1098,7 +1211,9 @@ export function lowerSetSeedNew(
       kind: "dynCheck",
       value: {
         kind: "libCall",
-        fn: "dyn.nativeSetNew",
+        // Elements are dynamic values either way, so the checked-dynamic
+        // constructor costs nothing beyond the patched-prototype protocol.
+        fn: jsSourcePatchesSetPrototype(lowerer, node) ? "dyn.setConstruct" : "dyn.nativeSetNew",
         args: [lowerer.coerceInto(node, source, DYN)],
         type: DYN,
         loc,

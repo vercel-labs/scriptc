@@ -57,8 +57,8 @@ Each worktree needs its own `pnpm install` (fast: pnpm hard-links from a shared 
 
 **Bringing changes in, unstaged.** PR branches start from `origin/main` (chained ones from their predecessor's branch), never from `lfades/react-node-ssr`. That branch is only the source of the changes. The agent brings every change relevant to its PR into its worktree and leaves it unstaged. No commits until you've reviewed.
 
-`main` has moved a lot since the work branched off at `828ea84dc` (Oct 25): over 1,300 commits. So carry over the *changes*, never whole files. `git restore --source=lfades/react-node-ssr -- <path>` would replace the file with our older version and silently undo everything `main` changed in it since. The changes to carry are `git diff 828ea84dc lfades/react-node-ssr`:
-- a file whose changes all belong to the PR: `git diff 828ea84dc lfades/react-node-ssr -- <path> | git apply -3`;
+`main` has moved a lot since the work branched off (Oct 25): over 1,300 commits. So carry over the *changes*, never whole files. `git restore --source=lfades/react-node-ssr -- <path>` would replace the file with our older version and silently undo everything `main` changed in it since. The changes to carry are `git diff 1405b514a lfades/react-node-ssr`. Use `1405b514a`, the parent of `4d60d90ea`, not the merge base `828ea84dc`: the commits in between are the still-open `--define` PR, which must not leak into these PRs.
+- a file whose changes all belong to the PR: `git diff 1405b514a lfades/react-node-ssr -- <path> | git apply -3`;
 - a file shared by several PRs (most of `4d60d90ea`): write its diff to a file, keep only this PR's hunks, and apply that with `git apply -3`;
 - files that are new on our branch are the one case where copying is safe: `git restore --source=lfades/react-node-ssr --worktree -- <path>`.
 

@@ -5,7 +5,7 @@ import type { IrReader, IrWriter } from "./codec.js";
 
 /** A digest of the coders below: an encoding written with other coders is
  * refused instead of misread, also after a change that keeps IR_VERSION. */
-export const IR_CODEC_LAYOUT = "23df825e49b75d14";
+export const IR_CODEC_LAYOUT = "4e5df16f6d7e8dc1";
 
 /** Writes `mod` field by field (codec.ts describes the bytes). */
 export function encodeIrModule(w: IrWriter, mod: IrModule): void {
@@ -223,7 +223,7 @@ const KEYS195: readonly string[] = ["kind","className","method","args","type","l
 const KEYS196: readonly string[] = ["kind","value","awaited","delegated","captureCompletion","type","loc"];
 const KEYS197: readonly string[] = ["name","type"];
 const KEYS198: readonly string[] = ["name","type"];
-const KEYS199: readonly string[] = ["path","size","sha256","placeholder"];
+const KEYS199: readonly string[] = ["path","size","sha256","placeholder","content"];
 const KEYS200: readonly string[] = ["path","target"];
 const KEYS201: readonly string[] = ["diff","skipPrototype"];
 const KEYS202: readonly string[] = ["returnType"];
@@ -4667,13 +4667,19 @@ function encT59(w: IrWriter, v: NonNullable<NonNullable<IrNodeIslandModules["fil
     w.byte(1);
     w.bool(v.placeholder);
   }
+  if (v.content === undefined) w.byte(0);
+  else {
+    w.byte(1);
+    w.str(v.content);
+  }
 }
 function decT59(r: IrReader): NonNullable<NonNullable<IrNodeIslandModules["files"]>[number]> {
   const f0 = r.str();
   const f1 = r.num();
   const f2 = r.str();
   const f3 = r.tag(2, "IrModule.nodeIsland.modules.files[].placeholder") === 0 ? undefined : (r.bool() as NonNullable<NonNullable<NonNullable<IrNodeIslandModules["files"]>[number]>["placeholder"]>);
-  const o: NonNullable<NonNullable<IrNodeIslandModules["files"]>[number]> = { path: f0, size: f1, sha256: f2, ...(f3 !== undefined ? { placeholder: f3 } : {}) };
+  const f4 = r.tag(2, "IrModule.nodeIsland.modules.files[].content") === 0 ? undefined : r.str();
+  const o: NonNullable<NonNullable<IrNodeIslandModules["files"]>[number]> = { path: f0, size: f1, sha256: f2, ...(f3 !== undefined ? { placeholder: f3 } : {}), ...(f4 !== undefined ? { content: f4 } : {}) };
   return o;
 }
 

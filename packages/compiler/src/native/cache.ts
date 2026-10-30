@@ -174,6 +174,8 @@ export class NativeCache {
         "binary",
         "dsym",
         "coverage",
+        "units",
+        "unit-files",
       ]) {
         const directory = join(this.root, family);
         let names: string[];

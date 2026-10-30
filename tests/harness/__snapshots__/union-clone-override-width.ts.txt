@@ -1,6 +1,8 @@
-union-clone-override-width.ts:8:18 - error SC2001: values of type '{ kind: "left"; left: number; payload: WiderPayload; } | { kind: "right"; right: number; payload: WiderPayload; }' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
+union-clone-override-width.ts:8:18 - error SC2003: a spread merge over union-typed sources builds a value that can carry fields from several arms at once, so no single arm of '{ kind: "left"; left: number; payload: WiderPayload; } | { kind: "right"; right: number; payload: WiderPayload; }' can represent it (candidate arms: '{ kind: "left"; left: number; payload: WiderPayload; }', '{ kind: "right"; right: number; payload: WiderPayload; }')
 
   7 |   // copy its record. The inferred spread result keeps the wider payload.
   8 |   const result = { ...source, payload };
     |                  ^~~~~~~~~~~~~~~~~~~~~~
   9 |   return result.payload.extra;
+
+  hint: merge ONE arm per path (narrow every spread source to that same arm first — a discriminant switch or an assertion — so the spread builds a single record), or declare ONE open record type whose fields are all optional instead of a union of all-optional arms

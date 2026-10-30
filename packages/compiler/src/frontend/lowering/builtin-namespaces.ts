@@ -19,7 +19,7 @@ import {
   funcOf,
 } from "../../ir/ir.js";
 import { helperLoc, varRef } from "../../ir/build.js";
-import { unsupportedDiag } from "../../diagnostics/diagnostic.js";
+import { unsupportedDiag, type ScrDiagnostic } from "../../diagnostics/diagnostic.js";
 import type { Lowerer } from "./lowerer.js";
 import { InternalCompilerError } from "../../errors.js";
 import { mathMemberValue } from "./lower-stdlib.js";
@@ -117,19 +117,44 @@ const WRITABLE = 1;
 const CONFIGURABLE = 4;
 
 /** The namespace object the stdlib global `canonical` reads as in
- * JavaScript, or null when it is not a namespace. */
+ * JavaScript, or null when it is not a namespace. The fences of its members
+ * without a function value are reported unless `reportFences` is false: the
+ * program's builtin lookup (global-values.ts) holds every namespace without
+ * the program naming it, and its members still throw their fences when
+ * called. */
 export function builtinNamespaceValue(
   lowerer: Lowerer,
   canonical: string,
   loc: SrcLoc,
+  reportFences = true,
 ): IrExpr | null {
   const members = namespaceMembers(canonical);
   if (members === null) return null;
   const name = `%builtin.namespace.${canonical}`;
   if (!lowerer.liftedFns.some((fn) => fn.name === name))
     defineNamespaceBuilder(lowerer, canonical, members, name, helperLoc(loc));
+  if (reportFences) reportMemberFences(lowerer, canonical, members, helperLoc(loc));
   lowerer.noteEdge(name);
   return { kind: "call", callee: name, args: [], type: DYN, loc };
+}
+
+/** Reports the SC1090 fence of each member of `canonical` whose function
+ * throws it (fencedMember), once per program. */
+function reportMemberFences(
+  lowerer: Lowerer,
+  canonical: string,
+  members: readonly NamespaceMember[],
+  loc: SrcLoc,
+): void {
+  for (const { key, length } of members) {
+    if (length < 0) continue;
+    const display = `${canonical}.${key}`;
+    if (!lowerer.liftedFns.some((fn) => fn.name === fenceName(display))) continue;
+    const diag = fenceDiag(display, loc);
+    if (lowerer.runtimeFences.some((d) => d.code === diag.code && d.message === diag.message))
+      continue;
+    lowerer.runtimeFences.push(diag);
+  }
 }
 
 /** The lifted function that builds the namespace object once and answers
@@ -253,18 +278,17 @@ function functionValue(lowerer: Lowerer, canonical: string, key: string, loc: Sr
   return fencedMember(lowerer, `${canonical}.${key}`, key, loc);
 }
 
+const fenceName = (display: string): string => `%builtin.fence.${display}`;
+const fenceDiag = (display: string, loc: SrcLoc): ScrDiagnostic =>
+  unsupportedDiag("SC1090", loc, `'${display}' as a function value (call it directly)`);
+
 /** One function per member without a function value: calling it throws the
  * SC1090 fence, while `typeof`, identity and the property's presence stay
- * as in Node. */
+ * as in Node. builtinNamespaceValue reports the fence. */
 function fencedMember(lowerer: Lowerer, display: string, key: string, loc: SrcLoc): IrExpr {
-  const name = `%builtin.fence.${display}`;
+  const name = fenceName(display);
   if (!lowerer.liftedFns.some((fn) => fn.name === name)) {
-    const diag = unsupportedDiag(
-      "SC1090",
-      loc,
-      `'${display}' as a function value (call it directly)`,
-    );
-    lowerer.runtimeFences.push(diag);
+    const diag = fenceDiag(display, loc);
     lowerer.liftedFns.push({
       name,
       params: [],

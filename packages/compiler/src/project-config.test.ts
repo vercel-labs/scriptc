@@ -21,6 +21,7 @@ test("a package.json without a scriptc key has the default configuration", () =>
     nodeVersion: null,
     packaging: "embedded",
     speculativeStart: false,
+    publicEnv: [],
   });
   expect(parseProjectConfig(manifest, "{ not json").diagnostics).toEqual([]);
 });
@@ -106,6 +107,7 @@ test("nodeIslands settings", () => {
       nodeVersion: ">=24.13.1",
       packaging: "beside",
       speculativeStart: true,
+      publicEnv: ["NODE_ENV", "DEBUG"],
     },
     wasm: ["build/a.wasm", 3],
   });
@@ -117,9 +119,18 @@ test("nodeIslands settings", () => {
     nodeVersion: ">=24.13.1",
     packaging: "beside",
     speculativeStart: true,
+    publicEnv: ["NODE_ENV", "DEBUG"],
   });
   // scriptc.wasm keeps its lenient reading.
   expect(c.wasm).toEqual(["/project/build/a.wasm"]);
+});
+
+test("publicEnv must be an array of variable names", () => {
+  const c = config({ nodeIslands: { publicEnv: "NODE_ENV" } });
+  expect(c.diagnostics.map((d) => d.message)).toEqual([
+    `package.json 'scriptc.nodeIslands.publicEnv' must be an array of environment variable names, not "NODE_ENV"`,
+  ]);
+  expect(c.nodeIslands.publicEnv).toEqual([]);
 });
 
 test("unknown keys and values are SC8004, located at the key", () => {

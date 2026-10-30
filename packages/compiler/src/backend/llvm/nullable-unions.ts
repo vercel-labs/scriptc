@@ -143,6 +143,7 @@ export type NullableRefArm =
   | { kind: "record"; shapeId: string }
   | { kind: "string" }
   | { kind: "stats" }
+  | { kind: "bigintStats" }
   | (IrType & { kind: "array" | "bytes" | "map" | "set" | "func" });
 
 /** The arm is a JS object: always truthy. */
@@ -367,6 +368,7 @@ function nullableShape(
     return { ...base, arm: { kind: "record", shapeId: arm.shapeId } };
   if (arm.kind === "string") return { ...base, arm: { kind: "string" } };
   if (arm.kind === "stats") return { ...base, arm: { kind: "stats" } };
+  if (arm.kind === "bigintStats") return { ...base, arm: { kind: "bigintStats" } };
   if (
     arm.kind === "array" ||
     arm.kind === "bytes" ||

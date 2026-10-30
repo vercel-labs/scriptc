@@ -261,6 +261,7 @@ void scr_dyn_install_to_string_tag_symbol(ScrDyn *key) {
   scr_to_string_tag_symbol = scr_dyn_retain(key);
   scr_atexit(scr_to_string_tag_symbol_cleanup);
 }
+const ScrDyn *scr_dyn_to_string_tag_symbol(void) { return scr_to_string_tag_symbol; }
 
 void scr_dyn_install_iterator_symbol(ScrDyn *key) {
   if (scr_iterator_symbol) return;
@@ -4404,10 +4405,23 @@ void *scr_dyn_record_view(ScrDyn *d, const ScrRecordViewSource *sources, size_t 
   return view;
 }
 
-/* The slot of field `position` of a view (emitted view guards, cold). */
+/* The slot of field `position` of a view (emitted view guards, cold). A
+ * PARTIAL view (a record literal asserted to a wider record type) holds
+ * SIZE_MAX for every field its viewed record does not declare: the
+ * SCR_RECORD_VIEW_PARTIAL build of this unit answers NULL for it, the guard
+ * that gets NULL stops with scr_trap and the program's own message, and a
+ * presence test asks for the same slot and answers by it. Only a program
+ * with such an assertion links that build (runtime-pack-matrix.mjs); every
+ * other program links this default object, whose bytes are unchanged. */
 void *scr_record_view_slot(void *view, size_t position) {
   ScrRecordSource *entry = scr_record_source_slot(view);
+#ifdef SCR_RECORD_VIEW_PARTIAL
+  size_t offset = entry->offsets[position];
+  if (offset == SIZE_MAX) return NULL;
+  return (char *)entry->viewed + offset;
+#else
   return (char *)entry->viewed + entry->offsets[position];
+#endif
 }
 
 /* The address of field `position` of a value of a view target type, whose
@@ -4761,6 +4775,52 @@ bool scr_dyn_typed_ref_class_has(const ScrDyn *d, const ScrStr *key) {
   return ops && scr_dyn_name_in_strs(key, ops->names, ops->count);
 }
 
+ScrDyn *scr_dyn_typed_ref_own_member(const ScrDyn *d, const char *key, size_t key_len) {
+  if (d->kind != SCR_DYN_TYPED_REF || d->prototype) return NULL;
+  if (!d->v.typed_ref.bag_class) {
+    /* A class instance's view holds its own fields and the properties added
+     * to it, and its class's prototype members stay off the view. A name
+     * that is neither one of those members nor one of Object.prototype's
+     * can only be an own property, so the view is built (refreshed from the
+     * instance) for it. Other capsules answer through scr_dyn_invoke. */
+    const ScrDynTypedClassOps *klass = scr_typed_ref_class_ops(d);
+    if (!klass) return NULL;
+    ScrStr *name = scr_str_new(key, key_len);
+    bool member = scr_dyn_name_in_strs(name, klass->names, klass->count) || scr_dyn_object_proto_name(name);
+    scr_str_release(name);
+    if (member) return NULL;
+    ScrDyn *view = scr_dyn_typed_ref_materialize(d);
+    if (scr_exc_pending()) {
+      scr_dyn_release(view);
+      return NULL;
+    }
+    ScrDyn *found = NULL;
+    if (view && view->kind == SCR_DYN_OBJ) {
+      if (scr_dyn_is_layout(view)) {
+        ScrDyn **slot = scr_dyn_layout_slot(view, key, key_len);
+        if (slot) found = scr_dyn_retain(*slot);
+      } else {
+        const ScrDynEntry *own = scr_dyn_find_entry(view, key, key_len);
+        if (own && !own->accessor) found = scr_dyn_retain(own->value);
+      }
+    }
+    scr_dyn_release(view);
+    return found;
+  }
+  const ScrDynTypedBagClassOps *ops = (const ScrDynTypedBagClassOps *)(const void *)d->v.typed_ref.array;
+  void *instance = d->v.typed_ref.ptr;
+  const ScrDyn *bag = ops->bag(instance);
+  if (!bag || bag->kind != SCR_DYN_OBJ) return NULL;
+  const ScrDynEntry *own = scr_dyn_find_entry(bag, key, key_len);
+  if (!own || own->accessor) return NULL;
+  for (size_t i = 0; i < ops->count; i++) {
+    const ScrStr *name = ops->names[i];
+    if (name->len != key_len || memcmp(name->data, key, key_len) != 0) continue;
+    return own->writable ? ops->field(instance, i) : NULL;
+  }
+  return scr_dyn_retain(own->value);
+}
+
 static const ScrDynTypedRecordOps *scr_typed_ref_record_ops(const ScrDyn *d) {
   if (!d->v.typed_ref.record || d->v.typed_ref.materialized) return NULL;
   const ScrDynTypedRecordOps *ops = (const ScrDynTypedRecordOps *)(const void *)d->v.typed_ref.array;
@@ -4970,15 +5030,33 @@ static bool scr_typed_ref_record_set(ScrDyn *d, const ScrStr *key, const ScrDyn 
   return scr_typed_ref_record_store(d, ops, index, value);
 }
 
-/* Object.assign onto a live record from a plain object whose own
- * properties are all data properties: each enumerable one that names a
- * present declared field stores in place. Answers false at the first key
+/* Object.assign onto a live record from another live record, or from a
+ * plain object whose own properties are all data properties: each
+ * enumerable one that names a present declared field stores in place. Answers false at the first key
  * it cannot store, leaving every key to the snapshot path, which stores
  * the already stored values again unchanged. */
 static bool scr_typed_ref_record_assign(ScrDyn *d, const ScrDyn *src) {
   const ScrDynTypedRecordOps *ops = scr_typed_ref_record_ops(d);
-  if (!ops || !ops->set || src->kind != SCR_DYN_OBJ || src->symbol_properties || src->symbol_keys)
-    return false;
+  if (!ops || !ops->set) return false;
+  /* A live record source (an object literal boxed as its record) has only
+   * enumerable string-keyed data fields, in its declared order. */
+  const ScrDynTypedRecordOps *from =
+      src->kind == SCR_DYN_TYPED_REF ? scr_typed_ref_record_ops(src) : NULL;
+  if (from) {
+    void *source = src->v.typed_ref.ptr;
+    for (size_t i = 0; i < from->count; i++) {
+      if (!from->fixed && !from->has(source, i)) continue;
+      size_t index;
+      if (!scr_typed_ref_record_field(ops, from->names[i], &index)) return false;
+      ScrDyn *value = from->get(source, i);
+      bool stored = scr_typed_ref_record_store(d, ops, index, value);
+      scr_dyn_release(value);
+      if (!stored) return false;
+      if (scr_exc_pending()) return true;
+    }
+    return true;
+  }
+  if (src->kind != SCR_DYN_OBJ || src->symbol_properties || src->symbol_keys) return false;
   size_t count = scr_dyn_obj_count(src);
   for (size_t i = 0; i < count; i++) {
     if (scr_dyn_obj_prop_at(src, i).accessor) return false;
@@ -5060,6 +5138,9 @@ static bool scr_native_iterator_over(const ScrDyn *value, unsigned kind);
 /* Node util.types reads internal brands, never user properties or prototypes. */
 bool scr_dyn_util_type_is(const ScrDyn *value, const ScrStr *probe) {
   if (!value) return false;
+#ifdef SCR_NODE_ISLANDS
+  if (scr_ni_is_handle(value)) return scr_ni_util_type_is(value, probe);
+#endif
 
 #define PROBE(name) (probe->len == sizeof(name) - 1 && memcmp(probe->data, name, sizeof(name) - 1) == 0)
   if (PROBE("isAnyArrayBuffer")) return scr_buffer_storage_is(value);
@@ -19267,26 +19348,29 @@ ScrDyn *scr_dyn_freeze_data(ScrDyn *value) {
   return NULL;
 }
 
-bool scr_dyn_is_frozen(const ScrDyn *value) {
-  if (scr_dyn_class_reflection_fence(value)) return false;
+/* Object.isFrozen of `value` with `self` for the values it contains. A value
+ * without an integrity level the runtime models refuses with SC2020 when
+ * `refuse` is set, and otherwise answers false: Object.freeze refuses such
+ * a value too, so it is never frozen. */
+static bool scr_dyn_frozen_answer(const ScrDyn *value, bool (*self)(const ScrDyn *), bool refuse) {
   if (scr_dyn_published_object(value)) return true;
   bool answer;
-  if (scr_dyn_typed_ref_view_answer((ScrDyn *)value, scr_dyn_is_frozen, &answer)) return answer;
+  if (scr_dyn_typed_ref_view_answer((ScrDyn *)value, self, &answer)) return answer;
   ScrMap *collection = scr_dyn_native_collection(value);
   if (collection) return !scr_map_is_extensible(collection);
-  if (value->symbol_properties && !scr_dyn_is_frozen(value->symbol_properties)) return false;
+  if (value->symbol_properties && !self(value->symbol_properties)) return false;
   if (scr_dyn_plain_fn(value)) {
     ScrDyn *table = scr_dyn_fn_existing_table(value);
-    answer = table && scr_dyn_is_frozen(table);
+    answer = table && self(table);
     scr_dyn_release(table);
     return answer;
   }
   if (value->kind == SCR_DYN_ARR)
     return scr_dyn_is_sealed(value) && (value->v.arr.len == 0 || value->v.arr.frozen) &&
-      (!value->v.arr.properties || scr_dyn_is_frozen(value->v.arr.properties));
+      (!value->v.arr.properties || self(value->v.arr.properties));
   if (value->kind == SCR_DYN_BYTES)
     return (value->v.bytes->is_data_view || value->v.bytes->len == 0) && value->v.bytes->properties &&
-      scr_dyn_is_frozen(value->v.bytes->properties);
+      self(value->v.bytes->properties);
   if (value->kind == SCR_DYN_OBJ && !value->copied_from_native) {
     if (!value->non_extensible) return false;
     for (size_t i = 0; i < value->v.obj.len; i++) {
@@ -19298,9 +19382,27 @@ bool scr_dyn_is_frozen(const ScrDyn *value) {
   }
   if (value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NUM ||
       value->kind == SCR_DYN_BOOL || value->kind == SCR_DYN_STR || value->kind == SCR_DYN_BIGINT || value->kind == SCR_DYN_SYMBOL) return true;
+  if (!refuse) return false;
   static const char message[] = "Object.isFrozen of this native value has no lowering";
   scr_throw_error_msg_code(SCR_ERR_ERROR, message, sizeof message - 1, "SC2020");
   return false;
+}
+
+bool scr_dyn_is_frozen(const ScrDyn *value) {
+  if (scr_dyn_class_reflection_fence(value)) return false;
+  return scr_dyn_frozen_answer(value, scr_dyn_is_frozen, true);
+}
+
+/* A record checked from `value` copies its integrity: whether `value` is
+ * frozen, answered for every value the check can meet. A proxy is frozen
+ * exactly when its target is (the proxy invariants). Object.prototype and
+ * class constructors, which Object.isFrozen fences, and native values
+ * without a modeled integrity level are not frozen. */
+bool scr_dyn_checked_record_frozen(const ScrDyn *value) {
+  while (value && value->kind == SCR_DYN_PROXY) value = value->v.proxy.target;
+  if (!value || value == scr_builtin_object_prototype) return false;
+  if (value->kind == SCR_DYN_FUNC && value->v.fn.class_obj && !value->v.fn.class_obj->static_data) return false;
+  return scr_dyn_frozen_answer(value, scr_dyn_checked_record_frozen, false);
 }
 
 double scr_buffer_byte_length_dyn(ScrDyn *value, ScrStr *encoding) {

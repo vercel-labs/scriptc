@@ -30,11 +30,11 @@ const HEAP_STATISTICS_FIELDS = [
 ];
 
 /** `v8.getHeapStatistics()`: one memoryUsage sample (the runtime heap's
- * total and used bytes), with the machine's memory as the heap limit (the
- * runtime heap has no fixed ceiling) and the available size the limit
- * minus used bytes. V8-only figures (executable code space, malloced
- * memory, global handles, external memory, zapping) read 0, and one
- * native context exists. The record is the call site's interned HeapInfo
+ * total and used bytes, and external memory, memoryUsage's `external`),
+ * with the machine's memory as the heap limit (the runtime heap has no
+ * fixed ceiling) and the available size the limit minus used bytes.
+ * V8-only figures (executable code space, malloced memory, global handles,
+ * zapping) read 0, and one native context exists. The record is the call site's interned HeapInfo
  * shape, built by a shared helper per shape. */
 export function lowerV8HeapStatisticsCall(
   lowerer: Lowerer,
@@ -73,6 +73,8 @@ export function lowerV8HeapStatisticsCall(
           return sample(1);
         case "used_heap_size":
           return sample(2);
+        case "external_memory":
+          return sample(3);
         case "heap_size_limit":
           return limit();
         case "total_available_size":

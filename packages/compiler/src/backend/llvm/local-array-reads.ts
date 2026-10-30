@@ -682,7 +682,11 @@ export function emitBorrowedArrayRead(
   B.startBlock(slow);
   host.declare("declare ptr @scr_arr_borrow_ref(ptr, double)");
   const value = B.tmp();
-  B.line(`${value} = call ptr @scr_arr_borrow_ref(ptr ${array.name}, double ${index.name})`);
+  // The fallback only reads the array (a hole or an out-of-range index
+  // traps), so loops keep the array's header loads hoisted past it.
+  B.line(
+    `${value} = call ptr @scr_arr_borrow_ref(ptr ${array.name}, double ${index.name})${READ_FALLBACK}`,
+  );
   B.line(`store ptr ${value}, ptr ${slot}`);
   B.br(join);
   B.startBlock(join);

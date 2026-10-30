@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/stdout-write-patch.ts"
+ ],
+ "diags": []
+}

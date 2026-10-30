@@ -35,6 +35,7 @@ output/
 /packages/runtime-*/artifacts/
 /packages/runtime-*/runtime-pack.json
 /packages/runtime-*/.runtime-pack-*
+/packages/runtime-*/runtime-pack.verified.json*
 # libnode packs: built by build:native, never committed
 /packages/libnode-*/libnode.so.*
 /packages/libnode-*/libnode.*.dylib

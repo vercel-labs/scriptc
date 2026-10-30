@@ -44292,6 +44292,7 @@
         "evidence": "derived:descendants",
         "tests": [
           "tests/corpus/1403-buffer-fs.ts",
+          "tests/corpus/1564-fs-watch.ts",
           "tests/corpus/2595-fs-arg-ladders.cjs",
           "tests/corpus/2686-fs-file-handle.ts",
           "tests/corpus/2844-node-disposable-resources.ts",
@@ -44328,6 +44329,8 @@
           "tests/corpus/6207-fs-constants-object.ts",
           "tests/corpus/6208-fs-constants-require.cjs",
           "tests/corpus/fs-native-realpath.ts",
+          "tests/corpus/fs-watch-file-names.ts",
+          "tests/corpus/fs-watch-file-polling.ts",
           "tests/corpus/node24-fs-links-callbacks.cjs",
           "tests/corpus/node24-fs-links-errors.cjs",
           "tests/corpus/node24-fs-links-options.cjs",
@@ -47429,8 +47432,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-dedicated:fs.unwatchFile",
+        "tests": [
+          "tests/corpus/1564-fs-watch.ts",
+          "tests/corpus/fs-watch-file-names.ts",
+          "tests/corpus/fs-watch-file-polling.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -47601,8 +47609,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-dedicated:fs.watchFile",
+        "tests": [
+          "tests/corpus/1564-fs-watch.ts",
+          "tests/corpus/fs-watch-file-names.ts",
+          "tests/corpus/fs-watch-file-polling.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -49669,8 +49682,13 @@
         "inherited": true
       },
       "static": {
-        "status": "not-implemented",
-        "evidence": "compiler-unmatched:fs"
+        "status": "partial",
+        "evidence": "compiler-dedicated:fs.FSWatcher",
+        "tests": [
+          "tests/corpus/1564-fs-watch.ts",
+          "tests/corpus/fs-watch-file-names.ts",
+          "tests/corpus/fs-watch-file-polling.ts"
+        ]
       },
       "anchorSource": "exact"
     },
@@ -79679,6 +79697,7 @@
           "tests/corpus/process-builtin-values.js",
           "tests/corpus/process-hrtime.js",
           "tests/corpus/process-named-signals.cjs",
+          "tests/corpus/process-stream-drain.ts",
           "tests/corpus/process-uncaught-handler-throws.cjs",
           "tests/corpus/process-uncaught-loop.cjs",
           "tests/corpus/process-uncaught-module.mjs",
@@ -79686,9 +79705,11 @@
           "tests/corpus/process-uncaught-rejection.cjs",
           "tests/corpus/process-uncaught-sync.cjs",
           "tests/corpus/process-versions-storage.ts",
+          "tests/corpus/process-write-dynamic-chunks.ts",
           "tests/corpus/stdio-values.mjs",
           "tests/corpus/stdio-write-errors.mjs",
           "tests/corpus/stdio-write-overrides.mjs",
+          "tests/corpus/stdout-write-patch.ts",
           "tests/fixtures/node-types/env-files.ts",
           "tests/fixtures/node-types/util-callables.ts",
           "tests/harness/event-loop.test.ts",
@@ -82047,6 +82068,9 @@
           "tests/corpus/stdio-values.mjs",
           "tests/corpus/stdio-write-overrides.mjs",
           "tests/corpus/stdio-write-errors.mjs",
+          "tests/corpus/stdout-write-patch.ts",
+          "tests/corpus/process-stream-drain.ts",
+          "tests/corpus/process-write-dynamic-chunks.ts",
           "tests/harness/event-loop.test.ts"
         ]
       },
@@ -82089,6 +82113,9 @@
           "tests/corpus/stdio-values.mjs",
           "tests/corpus/stdio-write-overrides.mjs",
           "tests/corpus/stdio-write-errors.mjs",
+          "tests/corpus/stdout-write-patch.ts",
+          "tests/corpus/process-stream-drain.ts",
+          "tests/corpus/process-write-dynamic-chunks.ts",
           "tests/harness/event-loop.test.ts"
         ]
       },
@@ -82131,6 +82158,9 @@
           "tests/corpus/stdio-values.mjs",
           "tests/corpus/stdio-write-overrides.mjs",
           "tests/corpus/stdio-write-errors.mjs",
+          "tests/corpus/stdout-write-patch.ts",
+          "tests/corpus/process-stream-drain.ts",
+          "tests/corpus/process-write-dynamic-chunks.ts",
           "tests/harness/event-loop.test.ts"
         ]
       },
@@ -86933,7 +86963,8 @@
           "tests/corpus/5611-readable-from-class-iterables.ts",
           "tests/corpus/5612-readable-from-iterables.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "chapter"
@@ -87059,7 +87090,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "exact"
@@ -87093,7 +87125,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "exact"
@@ -87127,7 +87160,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "exact"
@@ -87184,7 +87218,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "exact"
@@ -87218,7 +87253,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "exact"
@@ -87252,7 +87288,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "exact"
@@ -87648,7 +87685,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "exact"
@@ -87705,7 +87743,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "exact"
@@ -87739,7 +87778,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "exact"
@@ -87796,7 +87836,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -87830,7 +87871,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -87864,7 +87906,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -88260,7 +88303,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -88363,7 +88407,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "exact"
@@ -88423,7 +88468,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "exact"
@@ -88457,7 +88503,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "exact"
@@ -88491,7 +88538,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "exact"
@@ -88548,7 +88596,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "exact"
@@ -89141,7 +89190,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "exact"
@@ -89175,7 +89225,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "exact"
@@ -89209,7 +89260,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "exact"
@@ -89243,7 +89295,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "exact"
@@ -89277,7 +89330,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "exact"
@@ -89311,7 +89365,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "exact"
@@ -89345,7 +89400,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "exact"
@@ -89379,7 +89435,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "exact"
@@ -89413,7 +89470,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "exact"
@@ -90832,7 +90890,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "exact"
@@ -91096,7 +91155,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "ancestor"
@@ -91130,7 +91190,8 @@
           "tests/corpus/5425-pipeline-generator-stage.ts",
           "tests/corpus/5428-pipeline-generator-stages.cjs",
           "tests/corpus/5617-pipeline-function-ends.ts",
-          "tests/corpus/5619-pipeline-function-ends.cjs"
+          "tests/corpus/5619-pipeline-function-ends.cjs",
+          "tests/corpus/writable-error-callbacks.ts"
         ]
       },
       "anchorSource": "ancestor"

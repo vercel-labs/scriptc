@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/erased-never-member-read.ts"
+ ],
+ "diags": []
+}

@@ -455,6 +455,44 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     host.emitPendingCheck();
     return e.type.kind === "void" ? { name: "", type: e.type } : { name: t, type: e.type };
   }
+  if (e.fn === "writable.writeEcb") {
+    // (recv, mode, chunk, encoding, cb): mode 0 bytes, 1 string, 2 dyn. The
+    // callback MOVES into an error-first wrapper (scr_stream_ecb_wrap); the
+    // adapter turns the runtime's ScrError (NULL = success) into the
+    // callback's Error | null argument, as fs.rename callbacks do.
+    const modeArg = e.args[1]!;
+    if (modeArg.kind !== "numLit")
+      throw new InternalCompilerError("llvm emitter bug: writable.writeEcb mode not a literal");
+    const cbT = e.args[4]!.type;
+    if (cbT.kind !== "func")
+      throw new InternalCompilerError("llvm emitter bug: writable.writeEcb callback not a func");
+    const args = e.args.map((a) => host.emitExpr(a));
+    host.toHeap(args[4]!);
+    const adapter = host.fsRenameThunkFor(cbT);
+    host.declare(`declare ptr @scr_stream_ecb_wrap(ptr, ptr)`);
+    const wrapped = B.tmp();
+    B.line(`${wrapped} = call ptr @scr_stream_ecb_wrap(ptr ${args[4]!.name}, ptr @${adapter})`);
+    const entry =
+      modeArg.value === 0
+        ? "scr_stream_write"
+        : modeArg.value === 1
+          ? "scr_stream_write_str"
+          : null;
+    const t = B.tmp();
+    if (entry !== null) {
+      host.declare(`declare zeroext i1 @${entry}(ptr, ptr, ptr)`);
+      B.line(
+        `${t} = call zeroext i1 @${entry}(ptr ${args[0]!.name}, ptr ${args[2]!.name}, ptr ${wrapped})`,
+      );
+    } else {
+      host.declare(`declare zeroext i1 @scr_stream_write_enc(ptr, ptr, ptr, ptr)`);
+      B.line(
+        `${t} = call zeroext i1 @scr_stream_write_enc(ptr ${args[0]!.name}, ptr ${args[2]!.name}, ptr ${args[3]!.name}, ptr ${wrapped})`,
+      );
+    }
+    host.emitPendingCheck();
+    return e.type.kind === "void" ? { name: "", type: e.type } : { name: t, type: e.type };
+  }
   if (e.fn === "writable.end") {
     // (recv, flags[, chunk][, encoding][, cb]) — flags: 1 bytes chunk, 2
     // string chunk, 8 dyn chunk (write first, Node's end(chunk)

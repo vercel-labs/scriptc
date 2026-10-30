@@ -32,13 +32,19 @@ import { lowerUtilTypeCall } from "./util-types.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { dynUndefinedExpr, varRef } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
+import { jsCheckedBuiltinCall } from "../lower-builtin-values.js";
 import { type Lowerer } from "../lowerer.js";
 import { type BuiltinModuleFn } from "../surfaces.js";
 import { type ParamShape } from "../call-signatures.js";
 import { BYTES_U8, DYN, F64, type IrExpr, STRING, type SrcLoc, arrayOf } from "../../../ir/ir.js";
 import { typeKey } from "../../type-mapper.js";
 import { lowerProcessLoadEnvFile } from "./environment.js";
-import { lowerFsWatchCall, lowerFsReaddirTypesCall, lowerFsStatOptionsCall } from "./filesystem.js";
+import {
+  lowerFsWatchCall,
+  lowerFsReaddirTypesCall,
+  lowerFsStatFdOptionsCall,
+  lowerFsStatOptionsCall,
+} from "./filesystem.js";
 import { lowerZlibModuleCall } from "./compression.js";
 import { lowerForkCall } from "./child-process.js";
 import {
@@ -67,6 +73,10 @@ export function lowerBuiltinModuleCall(
   );
   if (fallible) return fallible;
   checkFsUrlPaths(lowerer, expr, bi);
+  {
+    const checked = jsCheckedBuiltinCall(lowerer, expr, fn, `${bi.module}.${bi.member}`, loc);
+    if (checked) return checked;
+  }
   if (bi.module === "util/types") {
     return lowerUtilTypeCall(lowerer, expr, bi, loc, name);
   }
@@ -162,14 +172,17 @@ export function lowerBuiltinModuleCall(
   if ((syncReaddirTypes || promiseReaddirTypes) && expr.arguments.nodes.length === 2) {
     return lowerFsReaddirTypesCall(lowerer, expr, loc, promiseReaddirTypes);
   }
-  // fs.statSync/fs.lstatSync(path, options): throwIfNoEntry and bigint:
-  // false, routed BEFORE the 1-arg table completion.
+  // fs.statSync/fs.lstatSync(path, options) and fs.fstatSync(fd, options):
+  // throwIfNoEntry and bigint, routed BEFORE the table completion.
   if (
     bi.module === "fs" &&
     (bi.member === "statSync" || bi.member === "lstatSync") &&
     expr.arguments.nodes.length === 2
   ) {
     return lowerFsStatOptionsCall(lowerer, expr, loc, bi.member === "lstatSync");
+  }
+  if (bi.module === "fs" && bi.member === "fstatSync" && expr.arguments.nodes.length === 2) {
+    return lowerFsStatFdOptionsCall(lowerer, expr, loc);
   }
   if (bi.module === "os" && bi.member === "userInfo") {
     return lowerOsUserInfoCall(lowerer, expr, loc);

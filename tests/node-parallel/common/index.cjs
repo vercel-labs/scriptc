@@ -4,11 +4,15 @@
 // test/common/index.js. Add a helper here, with Node's semantics, when a
 // lane's files need it.
 const assert = require("assert");
+const os = require("os");
 const { inspect } = require("util");
 
 const hasIntl = true;
 const isDebug = false;
 const isWindows = process.platform === "win32";
+const isAIX = os.type() === "AIX";
+const isIBMi = os.type() === "OS400";
+const isSunOS = process.platform === "sunos";
 const mustCallChecks = [];
 
 function runCallChecks(exitCode) {
@@ -119,7 +123,10 @@ function spawnPromisified(...args) {
 
 module.exports = {
   hasIntl,
+  isAIX,
   isDebug,
+  isIBMi,
+  isSunOS,
   isWindows,
   mustCall,
   mustCallAtLeast,

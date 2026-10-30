@@ -1,6 +1,6 @@
 {
   "name": "scriptc",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "description": "Compile ordinary TypeScript and JavaScript to small, fast native executables and WebAssembly modules that run without Node.js",
   "license": "Apache-2.0",
   "homepage": "https://scriptc.dev",

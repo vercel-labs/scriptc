@@ -2953,6 +2953,7 @@ export function typeofAnswer(arm: IrType): string | null {
     case "url":
     case "searchParams":
     case "stats":
+    case "bigintStats":
     case "fileHandle":
     case "dir":
     case "spawnRes":

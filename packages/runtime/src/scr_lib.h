@@ -71,9 +71,16 @@ ScrStr *scr_process_cwd(void);      /* +1 fresh (getcwd) */
 bool scr_stdio_write(int fd, const void *data, size_t len);
 bool scr_stdio_write_str(int fd, const ScrStr *s);
 int scr_stdio_write_raw(int fd, const void *data, size_t len);
-/* `wide` marks string bytes that may hold lone surrogates, which become
- * U+FFFD when they reach the stream itself. */
-extern SCR_TL bool (*scr_stdio_write_hook)(int fd, const void *data, size_t len, bool wide);
+/* `flags` describes the chunk a patched write receives: SCR_STDIO_HOOK_WIDE
+ * marks string bytes that may hold lone surrogates (they become U+FFFD when
+ * they reach the stream itself), SCR_STDIO_HOOK_CONSOLE a console line
+ * (Node's console passes its error handler as the second argument), and
+ * SCR_STDIO_HOOK_BYTES a byte chunk (the replacement receives a Buffer). */
+enum { SCR_STDIO_HOOK_WIDE = 1, SCR_STDIO_HOOK_CONSOLE = 2, SCR_STDIO_HOOK_BYTES = 4 };
+extern SCR_TL bool (*scr_stdio_write_hook)(int fd, const void *data, size_t len, int flags);
+/* A string chunk given as bytes (UTF-8, no lone surrogates): what
+ * scr_stdio_write was for callers that write text. */
+bool scr_stdio_write_text(int fd, const void *data, size_t len);
 /* A worker created with the stdout or stderr option: answers true when it
  * took the bytes for fd 1 or 2 instead of the process descriptor. */
 extern SCR_TL bool (*scr_stdio_capture)(int fd, const void *data, size_t len);
@@ -386,6 +393,7 @@ double scr_atomics_notify_dyn(const ScrDyn *, double, double);
  * non-TTY streams expose undefined (SEMANTICS.md). stdin_destroy is a
  * documented no-op. */
 bool scr_process_is_tty(double fd);
+bool scr_process_is_tty_value(const ScrDyn *fd);
 void scr_process_stdin_destroy(void);
 void scr_process_stdin_set_raw_mode(bool raw);
 
@@ -477,8 +485,41 @@ double scr_stats_atime(ScrStats *s);
 double scr_stats_mtime(ScrStats *s);
 double scr_stats_ctime(ScrStats *s);
 double scr_stats_birthtime(ScrStats *s);
+/* BigIntStats members (scr_stats_bigint.c): every number member of Stats
+ * as a bigint (+1), the `*Ns` nanosecond members, and the Date fields'
+ * time values from the truncated `*Ms` member. */
+typedef struct ScrBigInt ScrBigInt;
+ScrBigInt *scr_stats_big_dev(ScrStats *s);
+ScrBigInt *scr_stats_big_mode(ScrStats *s);
+ScrBigInt *scr_stats_big_nlink(ScrStats *s);
+ScrBigInt *scr_stats_big_uid(ScrStats *s);
+ScrBigInt *scr_stats_big_gid(ScrStats *s);
+ScrBigInt *scr_stats_big_rdev(ScrStats *s);
+ScrBigInt *scr_stats_big_blksize(ScrStats *s);
+ScrBigInt *scr_stats_big_ino(ScrStats *s);
+ScrBigInt *scr_stats_big_size(ScrStats *s);
+ScrBigInt *scr_stats_big_blocks(ScrStats *s);
+ScrBigInt *scr_stats_big_atime_ns(ScrStats *s);
+ScrBigInt *scr_stats_big_mtime_ns(ScrStats *s);
+ScrBigInt *scr_stats_big_ctime_ns(ScrStats *s);
+ScrBigInt *scr_stats_big_birthtime_ns(ScrStats *s);
+ScrBigInt *scr_stats_big_atime_ms(ScrStats *s);
+ScrBigInt *scr_stats_big_mtime_ms(ScrStats *s);
+ScrBigInt *scr_stats_big_ctime_ms(ScrStats *s);
+ScrBigInt *scr_stats_big_birthtime_ms(ScrStats *s);
+double scr_stats_big_atime(ScrStats *s);
+double scr_stats_big_mtime(ScrStats *s);
+double scr_stats_big_ctime(ScrStats *s);
+double scr_stats_big_birthtime(ScrStats *s);
 /* fstat without throwing: +1, or NULL with *error set to the errno. */
 ScrStats *scr_stats_of_fd(int fd, int *error);
+/* stat(2) following symlinks without throwing (the fs.watchFile poll):
+ * +1, or NULL with *error set to the errno. Both this and scr_stats_zero
+ * exist only in the SCR_FS_WATCH_FILE build of scr_lib.c, which programs
+ * that poll link; every other program links the default object. */
+ScrStats *scr_stats_poll_path(ScrStr *path, int *error);
+/* The all-zero snapshot a failed poll reports (Node's kZeroStats). +1. */
+ScrStats *scr_stats_zero(void);
 /* Node's Stats (or BigIntStats) object for the snapshot: own fields in the
  * binding's order, lazy Date accessors and the type tests on the
  * prototypes. Borrows s; +1. */
@@ -548,6 +589,10 @@ int scr_fs_raw_close(int fd);
 typedef void (*ScrWorkFn)(void *payload);
 void scr_work_submit(void *payload, ScrWorkFn work, ScrWorkFn after,
                      ScrWorkFn destroy);
+/* A job whose work already ran on the main runtime thread: `after` runs on
+ * the next loop turn, as a pool job's completion does, and `destroy`
+ * follows it. */
+void scr_work_submit_done(void *payload, ScrWorkFn after, ScrWorkFn destroy);
 
 /* fs.rename: the syscall is submitted to a native worker immediately and
  * its error-first callback fires on a later event-loop turn through an

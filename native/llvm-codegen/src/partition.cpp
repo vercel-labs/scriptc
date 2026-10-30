@@ -176,71 +176,108 @@ void balanceRoots(std::vector<Symbol> &Symbols, ArrayRef<unsigned> Roots,
                   ArrayRef<char> Live, unsigned Count) {
   if (Count >= MinGroupedPartitions)
     return;
+  // A root's size leaves out the digits of metadata references, which an
+  // edit elsewhere in the module can renumber.
+  auto TextBytes = [](StringRef Text) {
+    uint64_t Bytes = 0;
+    for (size_t I = 0; I < Text.size(); ++I) {
+      ++Bytes;
+      if (Text[I] == '!')
+        while (I + 1 < Text.size() && isDigit(Text[I + 1]))
+          ++I;
+    }
+    return Bytes;
+  };
   DenseMap<unsigned, uint64_t> RootBytes;
-  uint64_t Total = 0;
   for (unsigned I = 0; I < Symbols.size(); ++I)
     if (Symbols[I].Kind == SymbolKind::Function && Live[I])
-      RootBytes[Roots[I]] += Symbols[I].Header.size() + Symbols[I].Body.size();
-  // Each root counts in whole 4 KiB units, so that an edit that grows a root
-  // by less than that leaves every comparison, and every other root's
-  // partition, unchanged.
-  constexpr uint64_t Unit = 4096;
-  for (auto &Entry : RootBytes) {
-    Entry.second = (Entry.second + Unit - 1) / Unit * Unit;
-    Total += Entry.second;
-  }
+      RootBytes[Roots[I]] +=
+          TextBytes(Symbols[I].Header) + TextBytes(Symbols[I].Body);
   std::vector<unsigned> Order;
   for (auto &Entry : RootBytes)
     Order.push_back(Entry.first);
   llvm::sort(Order, [&](unsigned A, unsigned B) {
     return Symbols[A].Name < Symbols[B].Name;
   });
+  DenseSet<unsigned> EntryRoots;
+  for (unsigned I = 0; I < Symbols.size(); ++I)
+    if (Symbols[I].Entry && Live[I])
+      EntryRoots.insert(Roots[I]);
+  // A root of at least one unit counts in whole units, so that an edit that
+  // grows it by less than that leaves every comparison, and every other
+  // root's partition, unchanged.
+  constexpr uint64_t Unit = 4096;
+  uint64_t Total = 0;
+  for (unsigned Root : Order)
+    if (RootBytes[Root] >= Unit) {
+      RootBytes[Root] = (RootBytes[Root] + Unit - 1) / Unit * Unit;
+      Total += RootBytes[Root];
+    }
   uint64_t Cap = Total * 5 / 4 / Count;
   std::vector<uint64_t> Load(Count, 0);
   // Partitions that take no further root.
   std::vector<char> Closed(Count, 0);
   DenseMap<unsigned, unsigned> Placed;
+  auto FirstOpen = [&](unsigned Home) {
+    for (unsigned K = 0; K < Count; ++K)
+      if (!Closed[(Home + K) % Count])
+        return (Home + K) % Count;
+    return Home;
+  };
   // A root without room anywhere stays in the first open partition from its
   // own.
   auto Place = [&](unsigned Root) {
     uint64_t Bytes = RootBytes[Root];
-    unsigned Home = stableHash(Symbols[Root].Name) % Count, Chosen = Home;
-    bool Found = false;
-    for (unsigned K = 0; K < Count && !Found; ++K) {
+    unsigned Home = stableHash(Symbols[Root].Name) % Count;
+    unsigned Chosen = FirstOpen(Home);
+    for (unsigned K = 0; K < Count; ++K) {
       unsigned P = (Home + K) % Count;
       if (!Closed[P] && Load[P] + Bytes <= Cap) {
         Chosen = P;
-        Found = true;
-      }
-    }
-    for (unsigned K = 0; K < Count && !Found; ++K) {
-      unsigned P = (Home + K) % Count;
-      if (!Closed[P]) {
-        Chosen = P;
-        Found = true;
+        break;
       }
     }
     Load[Chosen] += Bytes;
     Placed[Root] = Chosen;
   };
-  DenseSet<unsigned> EntryRoots;
-  for (unsigned I = 0; I < Symbols.size(); ++I)
-    if (Symbols[I].Entry && Live[I])
-      EntryRoots.insert(Roots[I]);
-  // Entry roots first, each closing its partition, then roots of more than
-  // half the cap, in name order, so that small roots fill around them; the
-  // others follow in name order.
+  // Entry roots first, each closing its partition; then roots of more than
+  // half the cap, in name order, so that the others fill around them; then
+  // the other roots of at least one unit, in name order.
   for (unsigned Root : Order)
     if (EntryRoots.contains(Root)) {
       Place(Root);
       Closed[Placed[Root]] = 1;
     }
   for (unsigned Root : Order)
-    if (!EntryRoots.contains(Root) && RootBytes[Root] * 2 > Cap)
+    if (!EntryRoots.contains(Root) && RootBytes[Root] >= Unit &&
+        RootBytes[Root] * 2 > Cap)
       Place(Root);
   for (unsigned Root : Order)
-    if (!EntryRoots.contains(Root) && RootBytes[Root] * 2 <= Cap)
+    if (!EntryRoots.contains(Root) && RootBytes[Root] >= Unit &&
+        RootBytes[Root] * 2 <= Cap)
       Place(Root);
+  // Roots under one unit (runtime helpers, mostly) count in no load of the
+  // larger roots, so a helper that an edit adds or removes moves no larger
+  // root. Each goes to the first open partition from its name's whose load,
+  // the helpers placed there included, is below the cap, or else to its
+  // name's: the helpers fill the partitions with room, and once those are
+  // full they spread by name instead of gathering in one partition (which
+  // could then hold most of the module and have it optimized whole).
+  std::vector<uint64_t> SmallLoad(Count, 0);
+  for (unsigned Root : Order)
+    if (!EntryRoots.contains(Root) && RootBytes[Root] < Unit) {
+      unsigned Home = stableHash(Symbols[Root].Name) % Count;
+      unsigned Chosen = FirstOpen(Home);
+      for (unsigned K = 0; K < Count; ++K) {
+        unsigned P = (Home + K) % Count;
+        if (!Closed[P] && Load[P] + SmallLoad[P] < Cap) {
+          Chosen = P;
+          break;
+        }
+      }
+      SmallLoad[Chosen] += RootBytes[Root];
+      Placed[Root] = Chosen;
+    }
   for (unsigned I = 0; I < Symbols.size(); ++I)
     if (Symbols[I].Kind == SymbolKind::Function && Live[I])
       Symbols[I].Partition = Placed[Roots[I]];

@@ -24,6 +24,38 @@ function selected(
   return matches[0];
 }
 
+test("the typed stdio write slot selects the events build that carries it", () => {
+  const plain = { stdioExtended: false, nodeIsland: false, workers: false };
+  // Alone, the write slot selects its own build.
+  expect(selected("scr_events.c", { ...plain, stdioWriteSlot: true }).defines).toEqual([
+    "SCR_STDIO_WRITE_SLOT",
+  ]);
+  // Beside the other events features it keeps each one's defines.
+  expect(
+    selected("scr_events.c", { ...plain, stdioExtended: true, stdioWriteSlot: true }).defines,
+  ).toEqual(["SCR_STDIO_EXTENDED", "SCR_STDIO_WRITE_SLOT"]);
+  expect(
+    selected("scr_events.c", { ...plain, nodeIsland: true, stdioWriteSlot: true }).defines,
+  ).toEqual(["SCR_NODE_ISLANDS", "SCR_STDIO_WRITE_SLOT"]);
+  expect(
+    selected("scr_events.c", {
+      ...plain,
+      stdioExtended: true,
+      nodeIsland: true,
+      stdioWriteSlot: true,
+    }).defines,
+  ).toEqual(["SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS", "SCR_STDIO_WRITE_SLOT"]);
+  // A program that never reaches the write slot keeps the old object.
+  expect(
+    selected("scr_events.c", {
+      ...plain,
+      stdioExtended: true,
+      nodeIsland: true,
+      stdioWriteSlot: false,
+    }).defines,
+  ).toEqual(["SCR_STDIO_EXTENDED", "SCR_NODE_ISLANDS"]);
+});
+
 test("web streams and Node islands select an async build that defines both", () => {
   const variant = selected("scr_async.c", { webStreams: true, nodeIsland: true, workers: false });
   expect(variant.defines).toEqual(
@@ -39,4 +71,13 @@ test("web streams and Node islands select an async build that defines both", () 
   expect(
     selected("scr_async.c", { webStreams: false, nodeIsland: false, workers: false }).defines,
   ).toEqual([]);
+});
+
+test("the BigIntStats unit follows its own member-read gate, not bigint", () => {
+  const unit = matrix.runtime_units.find(
+    (u: { source: string }) => u.source === "scr_stats_bigint.c",
+  );
+  // Every bigint value turns the bigint feature on; only the member reads
+  // name bigstats, so a bigint program keeps this unit out of its binary.
+  expect(unit.predicate).toBe("bigstats");
 });

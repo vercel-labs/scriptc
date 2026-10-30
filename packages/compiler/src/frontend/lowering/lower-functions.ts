@@ -38,6 +38,8 @@ import {
   blockBodyOf,
 } from "./function-returns.js";
 import { generatorMeta, isThisParameter, type ParamShape } from "./call-signatures.js";
+import { isStrictCode } from "./strict-mode.js";
+import { lowerSloppyGlobalReceiver } from "./lower-global-value.js";
 
 /** Save the call-site receiver before defaults or body effects. Escaping
  * arrows capture this binding instead of reading a later call's receiver. */
@@ -48,16 +50,28 @@ function declareCallReceiver(
 ): IrStmt {
   const receiver = lowerer.declareThis(DYN);
   const loc = locOf(node);
+  const bound: IrExpr = {
+    kind: "libCall",
+    fn: generator ? "dyn.generatorThis" : "dyn.this",
+    args: [],
+    type: DYN,
+    loc,
+  };
+  // A sloppy-mode function's `this` is the global object when it is called
+  // with undefined or null. The function's own body decides its mode.
+  const sloppy = !ts.isArrowFunction(node) && node.body !== undefined && !isStrictCode(node.body);
   return {
     kind: "varDecl",
     localId: receiver.id,
-    init: {
-      kind: "libCall",
-      fn: generator ? "dyn.generatorThis" : "dyn.this",
-      args: [],
-      type: DYN,
-      loc,
-    },
+    init: sloppy
+      ? {
+          kind: "nullish",
+          left: bound,
+          right: lowerSloppyGlobalReceiver(lowerer, node, loc),
+          type: DYN,
+          loc,
+        }
+      : bound,
     loc,
   };
 }
@@ -298,9 +312,15 @@ export function lowerLambda(
   // A lambda IS a value: the completed-ABI rule applies at birth. The
   // contextual (target) type decides — `(x?: number) => void` may flow
   // into a slot annotated `(x: number | undefined) => void` (same ABI
-  // signature), anything else is fenced. Nested function declarations and
-  // object-literal shorthand methods aren't expressions — always fenced.
+  // signature), anything else is fenced. Object-literal shorthand methods
+  // aren't expressions: their slot is the literal's, judged inside.
+  // A nested function DECLARATION is not an expression either: lowering it
+  // builds the body, not a value, and every value use re-runs the same
+  // fence at the reference (identifiers.ts) with that use's own target
+  // (a call, or `const g = f` under an annotated slot). Fencing it here
+  // refused declarations that are only ever CALLED.
   if (
+    !ts.isFunctionDeclaration(node) &&
     !(
       ts.isMethodDeclaration(node) &&
       isJsSourceFile(ts.getSourceFileOfNode(node)) &&

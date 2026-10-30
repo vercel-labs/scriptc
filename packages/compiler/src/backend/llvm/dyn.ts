@@ -1179,8 +1179,11 @@ export class LlDyn {
         const struct = mangleRecordStruct(sourceId);
         const base = host.nullableUnions.fieldBase(sourceId);
         const offsets = target.fields.map((field) => {
-          const index = source.fields.findIndex((f) => f.name === field.name) + base;
-          return `${S} ptrtoint (ptr getelementptr (%${struct}, ptr null, i32 0, i32 ${index}) to ${S})`;
+          const index = source.fields.findIndex((f) => f.name === field.name);
+          // A partial view's target field the source does not declare has
+          // no slot: all ones (SIZE_MAX) marks it absent (record-views.ts).
+          if (index < 0) return `${S} -1`;
+          return `${S} ptrtoint (ptr getelementptr (%${struct}, ptr null, i32 0, i32 ${index + base}) to ${S})`;
         });
         const offsetTable = `${table}_${k}`;
         this.defs.push(
@@ -2888,6 +2891,21 @@ export class LlDyn {
             }
             B.line(`call void @scr_str_release(ptr ${ek})`);
           });
+        }
+        // A record built from a frozen object is frozen too, as the object it
+        // copies (frozen-records.ts makes such shapes freezable).
+        if (shape.freezable) {
+          host.declare(`declare zeroext i1 @scr_dyn_checked_record_frozen(ptr)`);
+          host.declare(`declare void @scr_record_freeze(ptr)`);
+          const frozen = B.tmp();
+          const lFreeze = B.newLabel("dcr.freeze");
+          const lDone = B.newLabel("dcr.frozen");
+          B.line(`${frozen} = call i1 @scr_dyn_checked_record_frozen(ptr %d)`);
+          B.condBr(frozen, lFreeze, lDone);
+          B.startBlock(lFreeze);
+          B.line(`call void @scr_record_freeze(ptr %r0)`);
+          B.br(lDone);
+          B.startBlock(lDone);
         }
         B.terminate(`ret ptr %r0`);
         break;

@@ -56,6 +56,8 @@ import {
 import {
   requireProducedArrayElement,
   lowerArrayCallback,
+  lowerArrayCallbackAnswering,
+  unitOnlyArrayElement,
   callbackArrayElement,
 } from "./callback-arguments.js";
 import { classGeneratorIterable } from "../class-iterables.js";
@@ -1002,6 +1004,8 @@ export function lowerArrayFromCall(
           args[1]!,
           [input.element],
           arrayOf(input.element),
+          false,
+          unitOnlyArrayElement(lowerer, call) ?? undefined,
         );
         if (callback.arity > 2)
           lowerer.noLowering("Array.from mapper with an array parameter", args[1]!);
@@ -1123,7 +1127,14 @@ export function lowerArrayFromCall(
       if (paramSymbol) lowerer.runtimeOptionalBindingTypes.set(paramSymbol, valueT);
       let callback: ReturnType<typeof lowerArrayCallback>;
       try {
-        callback = lowerArrayCallback(lowerer, mapper, [valueT], arrT);
+        callback = lowerArrayCallback(
+          lowerer,
+          mapper,
+          [valueT],
+          arrT,
+          false,
+          unitOnlyArrayElement(lowerer, call) ?? undefined,
+        );
       } finally {
         if (paramSymbol) {
           if (previous === undefined) lowerer.runtimeOptionalBindingTypes.delete(paramSymbol);
@@ -1162,7 +1173,14 @@ export function lowerArrayFromCall(
     // mapper that writes the source changes later reads, as in Node),
     // so this is a loop over the typed array, not a toArray snapshot.
     if (src.type.kind === "bytes" && args.length === 2) {
-      const callback = lowerArrayCallback(lowerer, args[1]!, [F64], arrayOf(F64));
+      const callback = lowerArrayCallback(
+        lowerer,
+        args[1]!,
+        [F64],
+        arrayOf(F64),
+        false,
+        unitOnlyArrayElement(lowerer, call) ?? undefined,
+      );
       if (callback.arity > 2)
         lowerer.noLowering("Array.from mapper with an array parameter", args[1]!);
       const fnRet = callback.fnArg.type.ret;
@@ -1245,7 +1263,7 @@ export function lowerArrayFromCall(
     );
   }
   if (n.type.kind !== "f64") lowerer.badType(args[0]!, lowerer.typeOf(args[0]!));
-  const fnArg = lowerer.lowerExpr(args[1]!);
+  const fnArg = lowerArrayCallbackAnswering(lowerer, args[1]!, unitOnlyArrayElement(lowerer, call));
   // The mapper may declare any prefix of (v, i): v is the checker's own
   // `unknown` (Node passes undefined there — the dyn undefined singleton
   // here), i the index. The result type must be a legal array element.

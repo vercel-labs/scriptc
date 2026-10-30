@@ -6,10 +6,14 @@
  * files), and no throw. The gate is the conservative half of that proof:
  * it admits a module only when the top-level code of every file it loads
  * (the closure over literal require()/import specifiers) is built from the
- * forms below, which cannot have effects whatever the environment. The
- * build-time probe (snapshot.ts) then runs the admitted modules in libnode
- * and confirms they load without throwing and without the effects it can
- * observe.
+ * forms below, which cannot have effects whatever the environment.
+ *
+ * NI-7b: the gate is the static tier only. Whether a module defers is
+ * decided by the build-time probe's load recording (probe-recorder.ts):
+ * a load that reads no run-time input is deterministic, so one recorded
+ * run without effects proves deferral unobservable whether or not the
+ * gate admits the code (bundles such as esbuild output never pass the
+ * gate). The gate's verdict is reported with the decision.
  *
  * Admitted top-level statements (per file, CommonJS or ES module):
  *   - directives ("use strict"), empty statements;
@@ -36,9 +40,9 @@
  * admitted class expressions; object and array literals of pure parts
  * (no spreads, no accessors); `require("<literal>")` of an admitted file or
  * an allowlisted builtin; member reads on required modules, allowlisted
- * globals and same-file bindings; `typeof`, `void`, `!`; `===`, `!==`,
- * `&&`, `||`, `??` and the conditional operator over pure operands;
- * arithmetic between literals; `Symbol(…)`, `Symbol.for(…)`,
+ * globals and same-file bindings; unary and binary operators (no
+ * assignments or increments) and the conditional operator over pure
+ * operands; CommonJS's top-level `this`; `Symbol(…)`, `Symbol.for(…)`,
  * `Object.freeze(…)` and `Object.create(…)` over pure arguments; `new` of
  * Map, Set, WeakMap and WeakSet without arguments.
  *
@@ -357,6 +361,7 @@ function checkFile(parser: typeof ts, file: string, load: (file: string) => void
       return PURE_GLOBALS.has(e.text) || (!esm && (e.text === "module" || e.text === "exports"));
     }
     if (parser.isPropertyAccessExpression(e)) return readable(e.expression);
+    if (e.kind === SK.ThisKeyword) return !esm;
     if (parser.isCallExpression(e)) return isRequireCall(e);
     return false;
   };
@@ -389,13 +394,14 @@ function checkFile(parser: typeof ts, file: string, load: (file: string) => void
       case SK.FunctionExpression:
       case SK.ArrowFunction:
         return;
+      case SK.ThisKeyword:
+        // CommonJS: `exports` (tsc's `this && this.__importDefault`).
+        if (esm) refuse(e, "`this` in an ES module");
+        return;
       case SK.ClassExpression:
         return checkClass(e as ts.ClassExpression);
       case SK.TemplateExpression:
-        for (const span of (e as ts.TemplateExpression).templateSpans) {
-          // A substitution converts its value to a string: literals only.
-          if (!isLiteral(span.expression)) refuse(span.expression, "a template substitution");
-        }
+        for (const span of (e as ts.TemplateExpression).templateSpans) pure(span.expression);
         return;
       case SK.ObjectLiteralExpression:
         for (const p of (e as ts.ObjectLiteralExpression).properties) {
@@ -437,9 +443,9 @@ function checkFile(parser: typeof ts, file: string, load: (file: string) => void
         return pure((e as ts.VoidExpression).expression);
       case SK.PrefixUnaryExpression: {
         const u = e as ts.PrefixUnaryExpression;
-        if (u.operator === SK.ExclamationToken) return pure(u.operand);
-        if (isLiteral(u.operand)) return;
-        return refuse(e, "a unary operator on a non-literal");
+        if (u.operator === SK.PlusPlusToken || u.operator === SK.MinusMinusToken)
+          return refuse(e, "an increment");
+        return pure(u.operand);
       }
       case SK.BinaryExpression: {
         const b = e as ts.BinaryExpression;
@@ -456,8 +462,13 @@ function checkFile(parser: typeof ts, file: string, load: (file: string) => void
           pure(b.right);
           return;
         }
-        if (isLiteral(b.left) && isLiteral(b.right) && op !== SK.EqualsToken) return;
-        return refuse(e, "a binary operator on non-literals");
+        if (op >= SK.FirstAssignment && op <= SK.LastAssignment)
+          return refuse(e, "an assignment inside an expression");
+        // Coercions of pure operands; a module-defined valueOf/toString
+        // runs module code, whose effects the probe's recording sees.
+        pure(b.left);
+        pure(b.right);
+        return;
       }
       case SK.ConditionalExpression: {
         const c = e as ts.ConditionalExpression;

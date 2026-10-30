@@ -1,0 +1,8 @@
+union-spread-merge.ts:21:18 - error SC2003: a spread merge over union-typed sources builds a value that can carry fields from several arms at once, so no single arm of 'NonNullable<Compat>' can represent it (candidate arms: 'AnthropicCompat', 'OpenAiCompat')
+
+  20 |   if (!override) return base;
+  21 |   const merged = { ...base, ...override } as NonNullable<Compat>;
+     |                  ^~~~~~~~~~~~~~~~~~~~~~~~
+  22 |   return merged;
+
+  hint: merge ONE arm per path (narrow every spread source to that same arm first — a discriminant switch or an assertion — so the spread builds a single record), or declare ONE open record type whose fields are all optional instead of a union of all-optional arms

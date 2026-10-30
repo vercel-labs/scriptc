@@ -64,6 +64,7 @@ export function everyTypeChild(node: IrType, visit: (node: IrType) => boolean): 
     case "searchParams":
     case "symbol":
     case "stats":
+    case "bigintStats":
     case "fileHandle":
     case "dir":
     case "spawnRes":

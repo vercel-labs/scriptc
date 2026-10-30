@@ -450,7 +450,7 @@ test("unimplemented Response and ReadableStream calls stay fenced", () => {
       "  void value.blob(); void value.formData();\n" +
       "}\n" +
       "function stream(value: ReadableStream<Uint8Array>): void {\n" +
-      "  void value.tee(); void value.pipeTo(null as never);\n" +
+      "  void value.values(); void value[Symbol.asyncIterator]();\n" +
       "}\n" +
       "void response; void stream;\n",
   });

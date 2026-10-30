@@ -376,6 +376,8 @@ async function build() {
           "SCR_TEXT_DECODER_LEGACY",
           "SCR_WARNING_REPLACE",
           "SCR_STDIO_EXTENDED",
+          "SCR_STREAM_WRITE_ERRORS",
+          "SCR_STDIO_WRITE_SLOT",
           "SCR_NATIVE_REACTIONS",
           "SCR_HANDLE_CLASSES",
           "SCR_YIN",

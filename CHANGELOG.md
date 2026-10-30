@@ -6,6 +6,46 @@ All notable changes to scriptc will be documented in this file.
 
 <!-- release:start -->
 
+## 0.4.6
+
+### Highlights
+
+- **Node islands:** programs can load Node.js in-process on first use and run npm packages that scriptc doesn't compile in Node islands.
+  - Native values, closures and promises pass into islands by reference, and island handles, classes and collections can be used from compiled code.
+  - Modules are shared between a program and its islands, and island modules are evaluated only when the program uses them.
+  - Once Node loads, the runtime's event loop runs on Node's libuv, and programs exit cleanly with Node loaded.
+- **New options:**
+  - `--exceptions=rare` unwinds through recursive functions instead of checking a status after each call.
+  - `--static` builds static Linux executables (opt-in).
+  - `--large-pages` moves executable code onto huge pages; `--cpu-dispatch` adds x86-64-v3 copies of hot functions.
+  - Type patches replace a package's declaration files or supply missing declarations.
+  - The shape overlay types JavaScript from facts the compiler proves (opt-in).
+- **Faster programs:**
+  - Exceptions raise through cached unwind plans on x86-64 Linux, and every native function has an unwind table entry.
+  - Ordinary objects are stored as a layout plus value slots; unions of classes are the instance pointer itself; class instances that stay in their frame use frame storage.
+  - Object groups that die together are allocated in arenas, and the cycle collector does cheaper trial deletion and adapts its nursery trigger.
+  - The speed runtime is optimized with a committed runtime profile, and Math functions are computed as V8 does, with libm linked only when needed.
+  - Loops: short constant-count loops run together, for and while loops are versioned on the ranges their locals enter with, counted loops unroll by the period of a guard, and small leaf functions called from loops are inlined.
+  - Typed arrays: header fields are read once at a speculative loop's entry, products under bitwise operators stay in 32 bits, and shared typed-array elements are read and written with plain accesses at a counted loop's counter.
+  - Strings: UTF-16 indexes of long non-ASCII strings map in constant time, ASCII case converts eight bytes at a time, template literals allocate at their exact length, and strings iterate over their bytes.
+  - Untyped code: class instance fields are read inline at dynamic property sites with two inline-cache entries, native arrays iterate without type-name scans, and numbers pass to directly called untyped functions as JavaScript values.
+  - I/O: fs thread-pool completions and pool-thread writes make fewer syscalls; sockets, clients and agent entries register in constant time; fetch() reuses keep-alive connections; web streams, WritableStream and TransformStream run natively.
+  - Large executables map their text with 2 MiB pages, and freed heap pages are returned to the system after the frontend is disposed.
+- **Faster builds:**
+  - Small release and speed programs compile in balanced partitions, the entry module's top-level code gets its own partition, and unchanged partitions stay cached across edits.
+  - Optimized executables that stay one partition generate code concurrently, and emission's workers stay busy.
+  - The native compiler is laid out by context-sensitive profiles collected in two phases.
+  - Type checking uses a shared tsc-ts server by default on Linux and macOS, and lib diagnostics are reused across options and module sets that cannot change them.
+  - Rebuilds skip the helper version probe and the digests of unchanged files, and the CLI links without huge text pages, so cold builds use less memory.
+- **Node.js parity:**
+  - `Error.captureStackTrace`, Node's navigator, builtin globals read through the global object, and unhandled rejections reported in programs without async work.
+  - node:zlib is built on the zlib Node bundles; `Response.clone` and `Request.clone` work on typed values; fetch bodies have the members of a web ReadableStream; redirects whose chunked body has not ended are followed.
+  - Classes that extend Array compile; strings spread into their code points; frozen checked records stay frozen; sloppy-mode `this` is the global object.
+  - `util.format` runtime format strings, `inspect.custom` and colors, and untyped `promisify`.
+- **TypeScript:** scriptc reads TypeScript 7.1's binary AST format and API server beside 7.0's, and tsc-ts is updated to 0.0.10.
+
+<!-- release:end -->
+
 ## 0.4.5
 
 ### Highlights
@@ -39,8 +79,6 @@ All notable changes to scriptc will be documented in this file.
   - Error messages: `JSON.parse` syntax errors use V8's messages and positions; `Object.getPrototypeOf` of an Error answers `Error.prototype`.
   - `util.inspect` of dynamic classes, functions and `%o` arguments, and `Symbol.toStringTag` fields and getters, match Node.
 - **npm packages:** more npm and CommonJS dependencies compile statically, including namespace-style packages with guarded declarations and `var` exports, and untyped Maps, Sets and arrays are typed from their uses.
-
-<!-- release:end -->
 
 ## 0.4.4
 

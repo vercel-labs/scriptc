@@ -47,7 +47,7 @@ type Known =
 const KNOWN: Record<string, Known> = {
   "assert-shims": { run: "SC1043" },
   "buffer-shims": { run: "SC2020" },
-  "bytes-exit": { build: "SC2004" },
+  "bytes-exit": { island: true },
   "cjs-esm-named": { island: true },
   "cjs-lexer-aligned": { island: true },
   "commander-calc": { run: "SC1090", argvs: [["--help"]] },
@@ -98,7 +98,16 @@ const KNOWN: Record<string, Known> = {
   "node24-style-text": { run: "SC2020" },
   "node24-system-errors": { run: "SC1090" },
   "node24-text-encoding": { run: "SC2020" },
-  "node24-text-utilities": { run: "SC2020" },
+  // The fixture builds a String and a Number wrapper, which used to refuse
+  // with SC2020 and now compile: the case runs, but Node's
+  // ERR_INVALID_ARG_TYPE names a wrapper's class (`an instance of String`)
+  // where the error formatter prints `Object`, and the program's own
+  // `String(functionValue)` prints `function () { [native code] }` for a
+  // named function where Node prints its source.
+  "node24-text-utilities": {
+    divergence:
+      "wrapper objects reach the text utilities now, but ERR_INVALID_ARG_TYPE names them `Object` instead of `String`/`Number`, and function values print without their source",
+  },
   "node24-timers-unref": { run: "SC2020" },
   "node24-url-factories": { run: "SC2020" },
   "node24-url-mutation": { run: "SC1090" },
@@ -107,7 +116,6 @@ const KNOWN: Record<string, Known> = {
   "package-imports": { island: true },
   "promise-bridge": { build: "SC1090" },
   "self-name": { build: "SC2013" },
-  "stream-shims": { run: "SC2020" },
   "util-shims": { run: "SC2020" },
   // The package redeclares the var it exported: Node copies the first value.
   "var-export-redeclared": { island: true },
@@ -214,6 +222,43 @@ async function build(entry: string, shapeOverlay: boolean | undefined): Promise<
   };
 }
 
+/** Node's uncaught-error report ends with `Node.js v<version>`: the island
+ * prints libnode's release, which may differ from the reference Node's
+ * patch release. */
+function normalizeNodeVersion([a, b]: [string, string]): [string, string] {
+  const re = /^Node\.js v\d+\.\d+\.\d+$/m;
+  return [a.replace(re, "Node.js v<version>"), b.replace(re, "Node.js v<version>")];
+}
+
+/** The two stderr texts with their stack frame runs cut to the frames
+ * they share: an uncaught error from a Node island prints Node's report,
+ * whose frames match Node's from the throw site up to the first native
+ * frame, which has no Node-identical spelling (DESIGN.md §2.10). Every
+ * other line, and each run's common leading frames, compare exactly. */
+function sharedFrames(native: Buffer, node: Buffer): [string, string] {
+  const frame = (line: string): boolean => /^ {4}at /.test(line);
+  const a = native.toString("utf8").split("\n");
+  const b = node.toString("utf8").split("\n");
+  const outA: string[] = [];
+  const outB: string[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.length || j < b.length) {
+    if (i < a.length && j < b.length && frame(a[i]!) && frame(b[j]!)) {
+      while (i < a.length && j < b.length && frame(a[i]!) && a[i] === b[j]) {
+        outA.push(a[i++]!);
+        outB.push(b[j++]!);
+      }
+      while (i < a.length && frame(a[i]!)) i++;
+      while (j < b.length && frame(b[j]!)) j++;
+      continue;
+    }
+    if (i < a.length) outA.push(a[i++]!);
+    if (j < b.length) outB.push(b[j++]!);
+  }
+  return [outA.join("\n"), outB.join("\n")];
+}
+
 /** A Node island's modules run from the module tree the program ships
  * (node-islands/modules.ts), extracted under the user's cache directory, so
  * a path they print names the tree's copy. The tree's root is the fixtures'
@@ -223,14 +268,14 @@ function fixturePaths(out: Buffer): Buffer {
   return Buffer.from(out.toString("utf8").replace(tree, join(fixturesRoot, "npm")), "utf8");
 }
 
-async function expectMatchesNode(c: NpmCase, binary: string, island = false): Promise<void> {
+async function expectMatchesNode(c: NpmCase, binary: string, islandFrames = false): Promise<void> {
   const cwd = dirname(c.entry);
   for (const argv of c.argvs ?? [[]]) {
     const [nodeRes, ran] = await Promise.all([
       runBinary(process.execPath, [c.entry, ...argv], cwd),
       runBinary(binary, argv, cwd),
     ]);
-    const nativeRes = island
+    const nativeRes = islandFrames
       ? { ...ran, stdout: fixturePaths(ran.stdout), stderr: fixturePaths(ran.stderr) }
       : ran;
     const label = argv.join(" ");
@@ -239,7 +284,13 @@ async function expectMatchesNode(c: NpmCase, binary: string, island = false): Pr
       expect.unreachable("stdout differed at byte level but not after utf8 decode");
     }
     expect(nativeRes.exitCode, label).toBe(nodeRes.exitCode);
-    if (c.compareStderr) expect(programStderr(nativeRes.stderr), label).toEqual(nodeRes.stderr);
+    if (c.compareStderr && islandFrames) {
+      const [native, node] = normalizeNodeVersion(
+        sharedFrames(programStderr(nativeRes.stderr), nodeRes.stderr),
+      );
+      expect(native, label).toBe(node);
+    } else if (c.compareStderr)
+      expect(programStderr(nativeRes.stderr), label).toEqual(nodeRes.stderr);
   }
 }
 

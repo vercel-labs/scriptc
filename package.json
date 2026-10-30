@@ -16,6 +16,7 @@
     "test:ts7": "node scripts/test-ts7.mjs",
     "test:checker-identity": "node scripts/checker-identity.mjs",
     "generate:ts7-ast": "node scripts/generate-ts7-ast-schema.mjs",
+    "generate:ir-codec": "node scripts/generate-ir-codec.mjs",
     "generate:ir-fields": "node scripts/generate-ir-fields.mjs",
     "test:fetch-conformance": "vitest run tests/harness/fetch-conformance.test.ts",
     "test:test262": "tsx tests/test262/run.ts",

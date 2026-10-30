@@ -128,7 +128,9 @@ describe("checked records with opaque payloads", () => {
         id: "unsafe",
         fields: [
           { name: "child", type: { kind: "record", shapeId: "unsafe" } },
-          { name: "map", type: { kind: "map", key: STRING, value: F64 } },
+          // The back-edge answers coinductively; this sibling is what makes
+          // the shape uncheckable.
+          { name: "payload", type: { kind: "caught" } },
         ],
       },
     ],
@@ -252,6 +254,150 @@ describe("native process stream checked storage", () => {
     }
     expect(canConvertToDyn(arrayOf(stream), record, union)).toBe(false);
     expect(canDynCheckTo(arrayOf(stream), record, union)).toBe(false);
+  });
+});
+
+describe("native promise checked storage", () => {
+  test("preserves promise fields, elements and union arms without claiming JSON storage", () => {
+    const promise: IrType = { kind: "promise", inner: STRING };
+    const openPromise: IrType = { kind: "promise", inner: DYN };
+    const settled: IrType = { kind: "promise", inner: { kind: "void" } };
+    const reload: IrType = { kind: "record", shapeId: "reload" };
+    const optional: IrType = { kind: "union", unionId: "optionalReload" };
+    const record = (id: string): IrRecordShape | undefined =>
+      id === "reload"
+        ? {
+            id,
+            fields: [
+              { name: "readers", type: F64 },
+              { name: "promise", type: promise },
+            ],
+          }
+        : undefined;
+    const union = (id: string): IrUnionDef | undefined =>
+      id === "optionalReload" ? { id, arms: [reload, { kind: "undefinedT" }] } : undefined;
+    for (const type of [
+      promise,
+      openPromise,
+      settled,
+      arrayOf(promise),
+      { kind: "map", key: STRING, value: promise } as IrType,
+      reload,
+      optional,
+      arrayOf(optional),
+    ]) {
+      expect(canConvertToDyn(type, record, union)).toBe(true);
+      expect(canDynCheckTo(type, record, union)).toBe(true);
+      expect(isJsonSafeType(type, record, union)).toBe(false);
+      expect(isJsonStringifySafeType(type, record, union)).toBe(false);
+    }
+    // A promise of a value with no dynamic representation stays outside the
+    // conversion domain, including when it sits in a record field.
+    const blocked: IrType = { kind: "promise", inner: arrayOf({ kind: "procStream" }) };
+    expect(canConvertToDyn(blocked, record, union)).toBe(false);
+    expect(canConvertToDyn(arrayOf(blocked), record, union)).toBe(false);
+    expect(
+      canConvertToDyn(
+        { kind: "record", shapeId: "blockedReload" },
+        (id) =>
+          id === "blockedReload" ? { id, fields: [{ name: "promise", type: blocked }] } : undefined,
+        () => undefined,
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("recursive checked graphs", () => {
+  // A context whose method takes an options object whose callback receives
+  // the same context: the check domain re-enters the record through a
+  // checked slot, as a callback-options API does.
+  const records = new Map<string, IrRecordShape>([
+    [
+      "context",
+      {
+        id: "context",
+        fields: [
+          {
+            name: "fork",
+            type: {
+              kind: "func",
+              params: [STRING, { kind: "union", unionId: "options" }],
+              ret: { kind: "promise", inner: { kind: "record", shapeId: "result" } },
+            },
+          },
+        ],
+      },
+    ],
+    [
+      "options",
+      {
+        id: "options",
+        fields: [
+          {
+            name: "withSession",
+            type: {
+              kind: "func",
+              params: [{ kind: "record", shapeId: "context" }],
+              ret: { kind: "promise", inner: { kind: "void" } },
+            },
+          },
+        ],
+      },
+    ],
+    ["result", { id: "result", fields: [{ name: "cancelled", type: { kind: "bool" } }] }],
+    [
+      "unsafeContext",
+      {
+        id: "unsafeContext",
+        fields: [
+          {
+            name: "fork",
+            type: {
+              kind: "func",
+              params: [{ kind: "record", shapeId: "unsafeOptions" }],
+              ret: { kind: "void" },
+            },
+          },
+        ],
+      },
+    ],
+    [
+      "unsafeOptions",
+      {
+        id: "unsafeOptions",
+        fields: [
+          {
+            name: "withSession",
+            type: {
+              kind: "func",
+              params: [{ kind: "record", shapeId: "unsafeContext" }],
+              ret: { kind: "void" },
+            },
+          },
+          { name: "body", type: { kind: "caught" } },
+        ],
+      },
+    ],
+  ]);
+  const unions = new Map<string, IrUnionDef>([
+    [
+      "options",
+      { id: "options", arms: [{ kind: "record", shapeId: "options" }, { kind: "undefinedT" }] },
+    ],
+  ]);
+  const record = (id: string): IrRecordShape | undefined => records.get(id);
+  const union = (id: string): IrUnionDef | undefined => unions.get(id);
+
+  test("answers a recursion back-edge coinductively in both directions", () => {
+    const context: IrType = { kind: "record", shapeId: "context" };
+    expect(canConvertToDyn(context, record, union)).toBe(true);
+    expect(canDynCheckTo(context, record, union)).toBe(true);
+    expect(canDynCheckTo({ kind: "union", unionId: "options" }, record, union)).toBe(true);
+  });
+
+  test("a failing field inside the cycle still refuses it", () => {
+    expect(canDynCheckTo({ kind: "record", shapeId: "unsafeContext" }, record, union)).toBe(false);
+    expect(canDynCheckTo({ kind: "record", shapeId: "unsafeOptions" }, record, union)).toBe(false);
   });
 });
 

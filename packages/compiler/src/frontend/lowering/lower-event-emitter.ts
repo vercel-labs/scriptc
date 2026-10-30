@@ -49,6 +49,7 @@ import type { Lowerer } from "./lowerer.js";
 import { dynFallbackType, newFnCtx } from "./lowerer.js";
 import type { ClassInfo } from "./lower-classes.js";
 import { isJsSourceFile, locOf } from "../program.js";
+import { bodyReadsArguments } from "../arguments-usage.js";
 import {
   arrayOf,
   BOOL,
@@ -339,11 +340,13 @@ function emitterEvents(lowerer: Lowerer): Map<string, EventSig> {
           const cbCt = lowerer.typeOf(node.arguments.nodes[1]);
           const cbT =
             lowerer.mapTypeOf(cbCt) ?? dynFallbackType(lowerer, node.arguments.nodes[1], cbCt);
+          const pack = readsArgumentsPack(lowerer, node.arguments.nodes[1]);
           // A TypeScript listener with no parameters is typed too: it
           // registers without the adapter, so an untyped emit reaches it
           // only through the event's fixed ABI. A JavaScript function
           // without parameters can still read `arguments`.
           if (
+            !pack &&
             cbT?.kind !== "dyn" &&
             (cbT?.kind !== "func" ||
               (cbT.params.length === 0 && !isJsSourceFile(sf)) ||
@@ -358,7 +361,8 @@ function emitterEvents(lowerer: Lowerer): Map<string, EventSig> {
           // undefined (exactly JS's extra-parameter semantics).
           if (
             cbT?.kind === "dyn" ||
-            (cbT?.kind === "func" && cbT.params.some((p) => p.kind === "dyn"))
+            (cbT?.kind === "func" && cbT.params.some((p) => p.kind === "dyn")) ||
+            pack
           ) {
             const sig = sigOf(name);
             sig.hasListener = true;
@@ -714,6 +718,26 @@ function tupleOf(
   return sig.tuple;
 }
 
+/** True when the listener is a function whose body reads `arguments`: it
+ * lowers with an arguments-pack ABI and takes every emitted argument,
+ * which the typed path's call with a prefix of the event's tuple would not
+ * pass, so it registers as a checked-dynamic listener. */
+function readsArgumentsPack(lowerer: Lowerer, node: ts.Expression): boolean {
+  let declaration: ts.Node | undefined;
+  try {
+    declaration = lowerer.checker.getCallSignatures(lowerer.typeOf(node))[0]?.declaration;
+  } catch {
+    return false;
+  }
+  return (
+    declaration !== undefined &&
+    ts.isFunctionLike(declaration) &&
+    !ts.isArrowFunction(declaration) &&
+    isJsSourceFile(ts.getSourceFileOfNode(declaration)) &&
+    bodyReadsArguments(declaration)
+  );
+}
+
 /** How a listener argument is dyn-flavored: "dyn" for a checked-dynamic
  * VALUE (a mustCall wrapper, a listener that rode an untyped binding),
  * "func" for a function whose parameters include dyn (the JS lane's
@@ -734,6 +758,7 @@ function dynListenerFlavor(lowerer: Lowerer, node: ts.Expression): "dyn" | "func
   if (t?.kind === "dyn") return "dyn";
   if (t?.kind === "func") {
     if (t.params.some((p) => p.kind === "dyn")) return "func";
+    if (readsArgumentsPack(lowerer, node)) return "func";
     // The inferred signature of a wrapper can omit its runtime arguments
     // pack. Register the checked callable produced by the factory itself.
     return tryLowerExpression(lowerer, node)?.type.kind === "dyn" ? "dyn" : null;
@@ -2532,6 +2557,43 @@ export function lowerEventsOnce(lowerer: Lowerer, call: ts.CallExpression, loc: 
   const arrayT = arrayOf(DYN);
   const resultT: IrType = { kind: "promise", inner: arrayT };
   let receiver = lowerer.lowerExpr(args[0]!);
+  // events.once(process.stdout, "drain"): the next 'drain' of a stream
+  // whose writes are synchronous never comes (Node emits it only after a
+  // write returned false), so the promise stays pending. A pending promise
+  // holds nothing: the process exits when the loop is empty, as in Node.
+  {
+    let target = args[0]!;
+    while (ts.isParenthesizedExpression(target)) target = target.expression;
+    const stream = ts.isPropertyAccessExpression(target)
+      ? lowerer.stdlibGlobalMember(target, "process")
+      : null;
+    const nameT = lowerer.typeOf(args[1]!);
+    if (
+      (stream === "stdout" || stream === "stderr") &&
+      nameT.isStringLiteralType() &&
+      nameT.value === "drain" &&
+      args.length === 2
+    ) {
+      const pending: IrExpr = {
+        kind: "libCall",
+        fn: "events.pendingForever",
+        args: [],
+        type: resultT,
+        loc,
+      };
+      let name = args[1]!;
+      while (ts.isParenthesizedExpression(name)) name = name.expression;
+      if (ts.isStringLiteralLike(name)) return pending;
+      // A name expression typed "drain" still runs (`pick()`, `(log(), "drain")`).
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: lowerer.lowerExpr(args[1]!), loc }],
+        result: pending,
+        type: resultT,
+        loc,
+      };
+    }
+  }
   // A checked-dynamic NodeJS stream slot (dyn-streams.ts): a native stream
   // unboxes by identity; any other value throws the not-supported Error.
   if (

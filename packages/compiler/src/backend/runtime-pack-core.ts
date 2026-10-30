@@ -34,7 +34,7 @@ interface RuntimePackUnit {
 }
 
 interface RuntimePackArchive extends RuntimePackArtifact {
-  id: "quickjs" | "libregexp" | "zlib" | "brotli" | "mbedtls";
+  id: "quickjs" | "libregexp" | "zlib" | "brotli" | "mbedtls" | "icu";
   predicate: RuntimePredicate;
 }
 
@@ -74,6 +74,15 @@ export interface RuntimePackManifest {
   };
   flavors: Partial<Record<RuntimePackFlavor, RuntimePackFlavorManifest>>;
   archives: RuntimePackArchive[];
+  /** Files the linked executable needs at RUN time rather than at link time,
+   * installed beside it on every build. ICU's data file (icudt78l.dat, 31.6
+   * MiB) is the only one; Intl programs copy it, every other program links
+   * neither ICU nor its data. */
+  data?: RuntimePackArtifact[];
+  /** C headers under one include root (`<root>/unicode/*.h`): the ICU C API
+   * headers scr_intl.c includes, which a sanitized build compiles that unit
+   * against (native/sanitizer.ts). Only a pack that ships ICU lists them. */
+  headers?: RuntimePackArtifact[];
   system_libraries: { name: string; predicate: RuntimePredicate }[];
   licenses: { path: string; license: string }[];
 }
@@ -100,11 +109,19 @@ export interface RuntimeFeatureSet extends NativeLinkFeatures {
   builtinValues: boolean;
   computedRequire: boolean;
   warningReplace: boolean;
+  recordViewPartial: boolean;
   stdioExtended: boolean;
+  /** The program's write completion callbacks take the error argument:
+   * the SCR_STREAM_WRITE_ERRORS build of the stream unit. */
+  streamWriteErrors: boolean;
+  /** The program reaches the process output streams' write slot: the
+   * SCR_STDIO_WRITE_SLOT build of the events unit. */
+  stdioWriteSlot: boolean;
   nodeIsland: boolean;
   brotli: boolean;
   moduleNamespace: boolean;
   moduleNamespaceDyn: boolean;
+  primitiveWrapper: boolean;
   nativeFetch: boolean;
   abortSignalOnly: boolean;
   netEffective: boolean;
@@ -245,6 +262,10 @@ export function parseRuntimePackManifest(value: unknown): RuntimePackManifest {
         validArtifact(raw) && typeof archive?.id === "string" && validPredicate(archive.predicate)
       );
     }) ||
+    (manifest.data !== undefined &&
+      (!Array.isArray(manifest.data) || !manifest.data.every(validArtifact))) ||
+    (manifest.headers !== undefined &&
+      (!Array.isArray(manifest.headers) || !manifest.headers.every(validArtifact))) ||
     !Array.isArray(manifest.system_libraries) ||
     !manifest.system_libraries.every((raw) => {
       const library = object(raw);
@@ -311,11 +332,15 @@ export function effectiveRuntimeFeatures(
     builtinValues: features.builtinValues === true,
     computedRequire: features.computedRequire === true,
     warningReplace: features.warningReplace === true,
+    recordViewPartial: features.recordViewPartial === true,
     stdioExtended: features.stdioExtended === true,
+    streamWriteErrors: features.streamWriteErrors === true,
+    stdioWriteSlot: features.stdioWriteSlot === true,
     nodeIsland: features.nodeIsland === true,
     brotli: features.brotli === true,
     moduleNamespace: features.moduleNamespace === true,
     moduleNamespaceDyn: features.moduleNamespaceDyn === true,
+    primitiveWrapper: features.primitiveWrapper === true,
     nativeFetch,
     // The fetch unit has AbortController and AbortSignal; scr_abort.c is
     // the same implementation without the fetch transport.
@@ -395,6 +420,8 @@ export interface RuntimePackArtifacts {
   /** Selected unit variants; each may carry its bitcode artifact. */
   runtime: (RuntimePackArtifact & { bitcode?: RuntimePackArtifact })[];
   archives: RuntimePackArtifact[];
+  /** Files to install beside the executable (ICU's data file for Intl). */
+  data: RuntimePackArtifact[];
   systemLibraries: string[];
 }
 
@@ -447,12 +474,26 @@ export function selectRuntimePackArtifacts(
       `runtime pack has no ${key} flavor; reinstall the matching runtime package`,
       "invalid",
     );
+  // Intl needs the ICU objects only the host-flavored packs carry (ICU is
+  // C++, so a pack builds it with Zig's C++ driver for its own glibc target);
+  // say so instead of linking a program whose scr_intl.c references would go
+  // undefined.
+  if (
+    features.intl === true &&
+    !selectedFlavor.runtime_units.some((unit) => unit.source === "scr_intl.c")
+  )
+    throw new RuntimePackError(
+      `the ${manifest.target.name} runtime pack has no ICU objects, which Intl needs; reinstall a runtime package that supports Intl`,
+      "unsupported",
+    );
   return {
     features,
     runtime: selectedRuntimeUnits(selectedFlavor, features).map(({ variant }) => variant),
     archives: manifest.archives.filter((archive) =>
       evaluateRuntimePredicate(archive.predicate, features),
     ),
+    // ICU's data file is 31.6 MiB: only a program that links ICU installs it.
+    data: features.intl === true ? (manifest.data ?? []) : [],
     systemLibraries: manifest.system_libraries
       .filter((entry) => evaluateRuntimePredicate(entry.predicate, features))
       .map((entry) => entry.name),

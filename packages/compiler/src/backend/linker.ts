@@ -7,7 +7,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync, realpathSync, statSync } from "node:fs";
-import { mkdtemp, readFile, rename, rm, stat } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, rename, rm, stat } from "node:fs/promises";
 import { delimiter } from "node:path";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -21,7 +21,11 @@ import {
   toolchainEnvironmentFingerprint,
 } from "./toolchain-environment.js";
 import { type NativeArtifactDependency } from "./native/contracts.js";
-import { RuntimePackError, stageRuntimePackArtifacts } from "./runtime-pack.js";
+import {
+  RuntimePackError,
+  stageRuntimePackArtifacts,
+  type RuntimePackSelection,
+} from "./runtime-pack.js";
 import type { NativeLinkPlan } from "./link-plan.js";
 import { inputsWithoutLld, lldLinkerArgs } from "./lld.js";
 import { hugeTextLinkerArgs, rewriteHugeTextExecutable } from "./huge-text.js";
@@ -225,6 +229,38 @@ async function objectLinkerDependencyPaths(
     .sort();
 }
 
+/** Install the selected runtime pack's RUN-time data files (ICU's
+ * icudt78l.dat) beside the executable that links them. The compiler's link
+ * step is the only moment the executable's directory is known, and a data
+ * file next to the binary is what the runtime looks for first.
+ *
+ * A file already present at the pinned size is left alone: the pack ships
+ * one data set per file name, and re-copying 31.6 MiB on every build would
+ * be pure cost. The copy is atomic (private temporary, then rename) so two
+ * concurrent builds of the same program never observe a partial file. */
+export async function installRuntimeDataFiles(
+  selection: RuntimePackSelection,
+  outputPath: string,
+): Promise<void> {
+  if (selection.dataFiles.length === 0) return;
+  const outputDir = dirname(resolve(outputPath));
+  for (const source of selection.dataFiles) {
+    const destination = join(outputDir, basename(source));
+    const sourceSize = (await stat(source)).size;
+    const existing = await stat(destination).catch(() => null);
+    if (existing?.isFile() && existing.size === sourceSize) continue;
+    const temporary = join(
+      outputDir,
+      `.${basename(destination)}.scriptc-${process.pid}-${randomUUID()}`,
+    );
+    await copyFile(source, temporary);
+    await rename(temporary, destination).catch(async () => {
+      await rm(destination, { force: true });
+      await rename(temporary, destination);
+    });
+  }
+}
+
 export async function linkNativeExecutable(
   plan: NativeLinkPlan,
   options: {
@@ -314,6 +350,7 @@ export async function linkNativeExecutable(
       await rm(plan.outputPath, { force: true });
       await rename(privateOut, plan.outputPath);
     });
+    await installRuntimeDataFiles(plan.runtimePack, plan.outputPath);
     if (plan.target.platform === "darwin" && !plan.darwinDebugSymbols) {
       await rm(`${plan.outputPath}.dSYM`, { recursive: true, force: true });
     }

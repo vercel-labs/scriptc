@@ -231,8 +231,8 @@ jobs:
             llvm_dist: x64
             use_zig: true
     runs-on: ${{ matrix.runner }}
-    # The Intel macOS build took 24 minutes for 0.3.2 and passed 30 for 0.3.3.
-    timeout-minutes: 45
+    # The Intel macOS build took 24 minutes for 0.3.2, 40 for 0.4.5, and passed 45 for 0.4.6.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

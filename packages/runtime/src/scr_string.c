@@ -432,9 +432,13 @@ static ScrStr *scr_str_new_ascii(const char *bytes, size_t len) {
 #ifndef SCR_RC_AUDIT
 static SCR_TL ScrStr *scr_str_spare;
 #endif
+/* The largest block the spare keeps. A larger one stays resident until a
+ * string of about its size comes along, which may be never: a program that
+ * replaces a 50 MB input with its edited copy would otherwise hold both. */
+#define SCR_STR_SPARE_MAX ((size_t)1 << 20)
 
 /* A spare-block reuse must not waste grossly (cap <= 4x the need) and only
- * sizable blocks are worth stashing (>= 512). */
+ * sizable blocks are worth stashing (512 bytes to SCR_STR_SPARE_MAX). */
 static ScrStr *scr_str_take_spare(size_t len) {
 #ifndef SCR_RC_AUDIT
   ScrStr *s = scr_str_spare;
@@ -483,7 +487,7 @@ void scr_str_release(ScrStr *s) {
     scr_live_strings--;
 #endif
 #ifndef SCR_RC_AUDIT
-    if (s->cap >= 512) {
+    if (s->cap >= 512 && s->cap <= SCR_STR_SPARE_MAX) {
       ScrStr *old = scr_str_spare;
       scr_str_spare = s;
       if (!old) return;
@@ -1756,6 +1760,36 @@ static __attribute__((noinline)) size_t scr_u16_to_byte_walk(const ScrStr *s, Sc
     e->cb = cb;
     return cb;
   }
+  /* A forward access past the cached ASCII run (a scanner taking slices at
+   * increasing positions of a mostly ASCII text) grows the run over the
+   * ASCII bytes up to it. When a non-ASCII character ends the run first, a
+   * nearby access walks from the run's end or the hot cursor, whichever is
+   * nearer, and a new run starts where the walk lands, so the accesses after
+   * it map by arithmetic again. */
+  if (u16 >= e->ascii_cu) {
+    if (scr_sidx_ascii_grow(s, e, e->ascii_cb + (u16 - e->ascii_cu))) {
+      e->cb = e->ascii_cb + (u16 - e->ascii_cu);
+      e->cu = u16;
+      *mid = false;
+      return e->cb;
+    }
+    size_t run_cu = e->ascii_cu + (e->ascii_end - e->ascii_cb);
+    if (e->ascii_end < s->len && u16 - run_cu <= SCR_SIDX_NEAR_UNITS) {
+      size_t cu = run_cu, cb = e->ascii_end;
+      if (e->cb <= s->len && e->cu >= cu && e->cu <= u16) {
+        cu = e->cu;
+        cb = e->cb;
+      }
+      size_t at = scr_sidx_walk_from(s, e, cu, cb, u16, mid, false);
+      if (!*mid && at < s->len && (unsigned char)s->data[at] < 0x80) {
+        e->ascii_cu = e->cu;
+        e->ascii_cb = at;
+        e->ascii_end = at;
+        (void)scr_sidx_ascii_grow(s, e, at);
+      }
+      return at;
+    }
+  }
   /* Within a short distance of the hot cursor (a scanner
    * taking slices near its position), walk from that cursor: no index
    * search, extension or ASCII-run growth is cheaper. */
@@ -1784,12 +1818,6 @@ static __attribute__((noinline)) size_t scr_u16_to_byte_walk(const ScrStr *s, Sc
       *mid = m;
       return cb;
     }
-  }
-  if (u16 >= e->ascii_cu && scr_sidx_ascii_grow(s, e, e->ascii_cb + (u16 - e->ascii_cu))) {
-    e->cb = e->ascii_cb + (u16 - e->ascii_cu);
-    e->cu = u16;
-    *mid = false;
-    return e->cb;
   }
   scr_sidx_extend_to_u16(s, e, u16);
   /* Extending a far-end lookup can just have proved identity. Do not

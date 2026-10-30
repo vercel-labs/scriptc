@@ -3930,11 +3930,15 @@ struct ScrHttpClientReq {
   bool sock_pooled;           /* the socket went back to the agent after the response */
   ScrStr *pool_key;           /* https: TLS options a pooled socket must match (+1), or NULL */
   ScrClosure *abort_listener; /* its closure (borrowed); caps[0] points back here */
+  struct ScrHttpAgentEnt *agent_ent; /* its entry in the agent's list while listed */
   bool in_registry;
-  struct ScrHttpClientReq *next;
+  struct ScrHttpClientReq *prev, *next;
 };
 
-static SCR_TL ScrHttpClientReq *scr_http_clients = NULL; /* registry: +1 each */
+/* registry: +1 each, in registration order; prev/next and the last
+ * pointer make registering and unregistering constant-time */
+static SCR_TL ScrHttpClientReq *scr_http_clients = NULL;
+static SCR_TL ScrHttpClientReq *scr_http_clients_last = NULL;
 
 ScrHttpClientReq *scr_http_client_retain(ScrHttpClientReq *c) {
   if (c->rc != SIZE_MAX) c->rc++;
@@ -3992,21 +3996,38 @@ static void scr_http_client_register(ScrHttpClientReq *c) {
   if (c->in_registry) return;
   c->in_registry = true;
   c->next = NULL;
-  ScrHttpClientReq **link = &scr_http_clients;
-  while (*link) link = &(*link)->next;
-  *link = scr_http_client_retain(c);
+  c->prev = scr_http_clients_last;
+  if (scr_http_clients_last) scr_http_clients_last->next = c;
+  else scr_http_clients = c;
+  scr_http_clients_last = scr_http_client_retain(c);
 }
+
+#ifdef SCR_RC_AUDIT
+/* The registry's links: `c` is reachable from the head, its neighbors
+ * point back at it, and the last pointer ends the list. */
+static void scr_http_client_registry_audit(const ScrHttpClientReq *c) {
+  const ScrHttpClientReq *it = scr_http_clients;
+  while (it != NULL && it != c) it = it->next;
+  if (it == NULL || (c->prev ? c->prev->next != c : scr_http_clients != c) ||
+      (c->next ? c->next->prev != c : scr_http_clients_last != c)) {
+    fprintf(stderr, "scr_http: the client registry's links disagree\n");
+    abort();
+  }
+}
+#endif
 
 static void scr_http_client_unregister(ScrHttpClientReq *c) {
   if (!c->in_registry) return;
-  ScrHttpClientReq **link = &scr_http_clients;
-  while (*link && *link != c) link = &(*link)->next;
-  if (*link) {
-    *link = c->next;
-    c->next = NULL;
-    c->in_registry = false;
-    scr_http_client_release(c);
-  }
+#ifdef SCR_RC_AUDIT
+  scr_http_client_registry_audit(c);
+#endif
+  if (c->prev) c->prev->next = c->next;
+  else scr_http_clients = c->next;
+  if (c->next) c->next->prev = c->prev;
+  else scr_http_clients_last = c->prev;
+  c->prev = c->next = NULL;
+  c->in_registry = false;
+  scr_http_client_release(c);
 }
 
 /* Agent bookkeeping (implementation below, with the Agent unit): the
@@ -5313,7 +5334,7 @@ typedef struct ScrHttpAgentEnt {
   ScrStr *name; /* getName's shape: "host:port:" */
   ScrHttpClientReq *client; /* +1 while listed */
   bool queued;              /* waiting for a slot: the dial is deferred */
-  struct ScrHttpAgentEnt *next;
+  struct ScrHttpAgentEnt *prev, *next;
 } ScrHttpAgentEnt;
 
 typedef struct ScrHttpAgent {
@@ -5330,7 +5351,8 @@ typedef struct ScrHttpAgent {
   double idle_ms;
   double default_port; /* settable (agent.defaultPort = p) */
   bool destroyed;
-  ScrHttpAgentEnt *ents; /* append order — Node's FIFO queue */
+  ScrHttpAgentEnt *ents, *ents_last; /* append order — Node's FIFO queue */
+  size_t nqueued; /* entries with queued set */
   struct ScrHttpAgentFree *free_socks; /* keepAlive: idle sockets, most recent first */
   ScrHttpSockCount *sock_count; /* totalSocketCount (+1) */
   bool in_registry;
@@ -5373,6 +5395,7 @@ static void scr_http_agent_release(ScrHttpAgent *a) {
   ScrHttpAgentEnt *e = a->ents;
   while (e) {
     ScrHttpAgentEnt *next = e->next;
+    e->client->agent_ent = NULL;
     scr_str_release(e->name);
     scr_http_client_release(e->client);
     free(e);
@@ -5553,10 +5576,8 @@ static bool scr_http_client_pool(struct ScrHttpConn *conn, struct ScrHttpClientR
   if (ag == NULL || !ag->keep_alive || ag->destroyed || c->destroyed || c->aborted) return false;
   if (hint == -2 || !c->ended || conn->len != 0 || scr_http_client_has_header_value(c, "connection", "close"))
     return false;
-  ScrStr *name = NULL;
-  for (ScrHttpAgentEnt *e = ag->ents; e && name == NULL; e = e->next)
-    if (e->client == c) name = scr_str_retain(e->name);
-  if (name == NULL) return false;
+  if (c->agent_ent == NULL) return false;
+  ScrStr *name = scr_str_retain(c->agent_ent->name);
   if ((double)scr_http_agent_free_count(ag, name) >= ag->max_free) {
     scr_str_release(name);
     return false;
@@ -5592,26 +5613,46 @@ static bool scr_http_client_pool(struct ScrHttpConn *conn, struct ScrHttpClientR
 /* The settling/dying client leaves the lists; a freed slot starts the
  * first queued dial for the same name (Node's FIFO). */
 static void scr_http_agent_client_done(struct ScrHttpAgent *ag, struct ScrHttpClientReq *c) {
-  ScrHttpAgentEnt **link = &ag->ents;
   ScrStr *name = NULL;
-  while (*link && (*link)->client != c) link = &(*link)->next;
-  if (*link) {
-    ScrHttpAgentEnt *e = *link;
-    *link = e->next;
-    name = e->name; /* ownership moves out for the pump below */
-    scr_http_client_release(e->client);
-    free(e);
+  ScrHttpAgentEnt *done = c->agent_ent;
+  if (done != NULL) {
+#ifdef SCR_RC_AUDIT
+    /* the entry list's links and the queued count agree */
+    size_t queued = 0;
+    bool listed = false;
+    for (const ScrHttpAgentEnt *it = ag->ents; it; it = it->next) {
+      listed = listed || it == done;
+      queued += it->queued;
+    }
+    if (!listed || done->client != c || queued != ag->nqueued ||
+        (done->prev ? done->prev->next != done : ag->ents != done) ||
+        (done->next ? done->next->prev != done : ag->ents_last != done)) {
+      fprintf(stderr, "scr_http: an agent's entry list disagrees with its links\n");
+      abort();
+    }
+#endif
+    c->agent_ent = NULL;
+    if (done->prev) done->prev->next = done->next;
+    else ag->ents = done->next;
+    if (done->next) done->next->prev = done->prev;
+    else ag->ents_last = done->prev;
+    if (done->queued) ag->nqueued--;
+    name = done->name; /* ownership moves out for the pump below */
+    scr_http_client_release(done->client);
+    free(done);
   }
-  if (name != NULL && !ag->destroyed) {
+  if (name != NULL && !ag->destroyed && ag->nqueued > 0) {
     for (ScrHttpAgentEnt *e = ag->ents; e; e = e->next) {
       if (e->queued && e->name->len == name->len &&
           memcmp(e->name->data, name->data, name->len) == 0) {
         ScrHttpAgentFree *f = scr_http_agent_free_take(ag, name, e->client->pool_key);
         if (f != NULL) {
           e->queued = false;
+          ag->nqueued--;
           scr_http_client_rebind(e->client, f, false);
         } else if (scr_http_agent_active(ag, name) < ag->max_sockets) {
           e->queued = false;
+          ag->nqueued--;
           if (e->client->sock) {
             scr_http_conn_count(e->client->conn, ag->sock_count);
             scr_net_sock_dial_start(e->client->sock);
@@ -5803,9 +5844,12 @@ static ScrHttpClientReq *scr_http_request_pooled(ScrHttpAgent *ag, ScrStr *host 
   e->name = name; /* ownership moves */
   e->client = scr_http_client_retain(c);
   e->queued = queue;
-  ScrHttpAgentEnt **link = &ag->ents;
-  while (*link) link = &(*link)->next;
-  *link = e;
+  if (queue) ag->nqueued++;
+  e->prev = ag->ents_last;
+  if (ag->ents_last) ag->ents_last->next = e;
+  else ag->ents = e;
+  ag->ents_last = e;
+  c->agent_ent = e;
   return c;
 }
 
@@ -5908,9 +5952,11 @@ static void scr_http_agents_cleanup(void) {
     scr_http_agents = a->next;
     a->in_registry = false;
     ScrHttpAgentEnt *e = a->ents;
-    a->ents = NULL;
+    a->ents = a->ents_last = NULL;
+    a->nqueued = 0;
     while (e) {
       ScrHttpAgentEnt *next = e->next;
+      e->client->agent_ent = NULL;
       if (e->client->agent) {
         scr_http_agent_release(e->client->agent);
         e->client->agent = NULL;

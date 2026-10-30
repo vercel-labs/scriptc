@@ -1,9 +1,9 @@
 import { isIslandPromisifyCall, noteIslandSubclass } from "./lower-node-island.js";
 import { isIslandSubclassDecl } from "../../node-islands/boundary.js";
-import { computedGlobalReadOf, globalValuesInstall } from "./global-values.js";
+import { globalValuesInstall, installsGlobalValues } from "./global-values.js";
 import type { TypeFailureSlot } from "../../diagnostics/diagnostic.js";
 import { THREADS_MODULE } from "../threads-import.js";
-import { collectIslandImport } from "./lower-node-island.js";
+import { collectIslandImport, collectIslandRequires } from "./lower-node-island.js";
 import { NODE_API_MODULE } from "../node-api-import.js";
 import { positionTag } from "./structural-positions.js";
 import { EXPERIMENTAL_MODULE } from "../experimental-import.js";
@@ -732,7 +732,10 @@ export function collectNpmImports(lowerer: Lowerer, parts: FileParts[]): void {
       }
     }
   }
-  for (const fp of parts) collectDynamicImports(lowerer, fp.sf);
+  for (const fp of parts) {
+    collectDynamicImports(lowerer, fp.sf);
+    collectIslandRequires(lowerer, fp.sf);
+  }
 }
 
 /** Literal dynamic-import collection: every
@@ -1186,8 +1189,8 @@ function deferJsCollectionDiags(lowerer: Lowerer, sf: ts.SourceFile, diagsBefore
   if (!isJsSourceFile(sf)) return;
   const captured = lowerer.diags.splice(diagsBefore);
   const ice = captured.filter((d) => d.code === "SC9001");
-  if (ice.length > 0) lowerer.diags.push(...ice);
-  lowerer.runtimeFences.push(...captured.filter((d) => d.code !== "SC9001"));
+  for (const d of ice) lowerer.diags.push(d);
+  for (const d of captured) if (d.code !== "SC9001") lowerer.runtimeFences.push(d);
 }
 
 /** A scalar-literal expression a single-value `module.exports =` can carry
@@ -3169,10 +3172,10 @@ export function lowerFileInit(
     // (NI-6); the plan also creates their declarations' TDZ flags.
     if (sharedModulePlans(lowerer).length > 0 && sf === lowerer.entry)
       header.push(...sharedModuleRegistrations(lowerer));
-    // A module that reads builtin globals through the global object by
-    // computed names installs the program's lookup before its body runs.
-    const computedGlobalRead = computedGlobalReadOf(lowerer, sf);
-    if (computedGlobalRead) header.push(globalValuesInstall(lowerer, computedGlobalRead, loc0));
+    // A module that reads builtin globals through the global object, by
+    // computed names or through a sloppy-mode function's `this`, installs
+    // the program's lookup before its body runs.
+    if (installsGlobalValues(lowerer, sf)) header.push(globalValuesInstall(lowerer, loc0));
     // Top-level `this` of a CommonJS module: its object exists before the
     // module's first statement (lowerCjsTopLevelThis).
     const exportsThis = lowerer.cjsExportsThis.get(sf);

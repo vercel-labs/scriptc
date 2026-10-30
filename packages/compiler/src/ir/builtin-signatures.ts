@@ -2,6 +2,7 @@ import type { IrType } from "./ir.js";
 import { BIGINT_T } from "./ir.js";
 import {
   arrayOf,
+  BIGINT_STATS_T,
   BOOL,
   BYTES_U8,
   bytesOf,
@@ -204,6 +205,9 @@ function buildLibFnSignatures() {
     "nodeIsland.applyTo": { argTypes: [DYN, DYN, DYN], result: DYN },
     "nodeIsland.construct": { argTypes: [DYN, DYN], result: DYN },
     "nodeIsland.instanceof": { argTypes: [DYN, DYN], result: BOOL },
+    /** Array.isArray of a dyn value in a program with Node islands: island
+     * arrays answer true too. */
+    "nodeIsland.isArray": { argTypes: [DYN], result: BOOL },
     /** NI-5: a class instance crossing into an island, with the builder of
      * its class's method table (run once per class). Answers the value. */
     "nodeIsland.classMethods": { argTypes: [DYN, DYN], result: DYN },
@@ -802,17 +806,28 @@ function buildLibFnSignatures() {
      * value: path and options arrive unchecked; the result is a string or a
      * Buffer by the options' encoding. */
     "fs.realpathValue": { argTypes: [DYN, DYN, BOOL], result: DYN },
+    // Builtin functions read as values: validateString under Node's argument
+    // name, and node:path's value adapters (scr_builtin_values.c).
+    "dyn.validateString": { argTypes: [DYN, STRING], result: STRING },
+    "dyn.validateStrings": { argTypes: [DYN, STRING], result: arrayOf(STRING) },
+    "path.resolveValue": { argTypes: [DYN, BOOL], result: STRING },
+    "path.parseValue": { argTypes: [DYN, BOOL], result: DYN },
+    "path.formatValue": { argTypes: [DYN, BOOL], result: DYN },
+    "path.toNamespacedValue": { argTypes: [DYN, BOOL], result: DYN },
     /** Native realpath with syscall "realpath" on failure. +1 fresh string. */
     "fs.realpathNativeSync": { argTypes: [STRING], result: STRING },
-    /** The os.userInfo() field trio (uv_os_get_passwd's slices): pw_name,
-     * pw_shell, pw_dir — the PASSWD homedir, not os.homedir's $HOME-first
-     * cascade (Node's own split). The frontend assembles the UserInfo
-     * record from these plus getuid/getgid. +1 fresh strings; a passwd
-     * lookup failure aborts (Node throws a system error there — no
-     * compiled program path reaches it for the running uid). */
+    /** The os.userInfo() fields (uv_os_get_passwd's slices of the passwd
+     * entry for the effective uid): pw_name, pw_shell, pw_dir — the PASSWD
+     * homedir, not os.homedir's $HOME-first cascade (Node's own split) —
+     * and pw_uid, pw_gid (-1 on Windows). The frontend assembles the
+     * UserInfo record from these. +1 fresh strings; a passwd lookup
+     * failure aborts (Node throws a system error there — no compiled
+     * program path reaches it for the running uid). */
     "os.userName": { argTypes: [], result: STRING },
     "os.userShell": { argTypes: [], result: STRING },
     "os.userHomedir": { argTypes: [], result: STRING },
+    "os.userUid": { argTypes: [], result: F64 },
+    "os.userGid": { argTypes: [], result: F64 },
     "os.tmpdir": { argTypes: [], result: STRING },
     // Result is the call site's Dict<NetworkInterfaceInfo[]> record (VOID is
     // the dgram.address sentinel — the libCall case checks the structure).
@@ -1000,6 +1015,20 @@ function buildLibFnSignatures() {
      * grouping every three integer digits, "∞"/"NaN" texts, and "-0" for
      * negative inputs rounding to zero. Result +1; never throws. */
     "intl.numFormatEnUs": { argTypes: [F64], result: STRING },
+    /** `x.toLocaleString()` at the default locale: the same ICU number
+     * engine V8 uses, over the full ICU data (scr_intl.c). Throws an Error
+     * when the ICU data file is missing. Result +1. */
+    "icu.numFormatDefault": { argTypes: [F64], result: STRING },
+    /** `process.config.variables.v8_enable_i18n_support`: the number 1, as
+     * Node (which bundles ICU) answers. Reading it selects the `icu`
+     * runtime feature, so the binary that reports ICU is the binary that
+     * carries it (scr_intl.c). */
+    "icu.i18nSupport": { argTypes: [], result: F64 },
+    /** `d.toLocaleString()` / `d.toLocaleTimeString()` at the default
+     * locale over `d`'s time value (scr_intl.c). Throws an Error when the
+     * ICU data file is missing. Result +1. */
+    "icu.dateLocaleString": { argTypes: [DATE_T], result: STRING },
+    "icu.dateLocaleTimeString": { argTypes: [DATE_T], result: STRING },
     /** ES Symbol values (scr_symbol.c — link-gated by moduleUsesSymbol).
      * sym.new: `Symbol(desc)` — a fresh runtime-unique identity (+1) whose
      * one arg is the description string (borrowed); sym.newAnon is the
@@ -1304,6 +1333,23 @@ function buildLibFnSignatures() {
     "fs.watch": { argTypes: [STRING], result: FSWATCHER_T },
     "fs.watchCb": { argTypes: [STRING, null], result: FSWATCHER_T },
     "watcher.close": { argTypes: [FSWATCHER_T], result: VOID },
+    // FSWatcher's EventEmitter surface: (receiver, event code, once|prepend
+    // flags, listener) for on/once/addListener/prependListener/
+    // prependOnceListener, and (receiver, event code, listener) for
+    // off/removeListener. The listener's func type is program-dependent;
+    // the null slot pins the arity and the receiver.
+    "watcher.on": { argTypes: [FSWATCHER_T, F64, F64, null], result: VOID },
+    "watcher.off": { argTypes: [FSWATCHER_T, F64, null], result: VOID },
+    /** fs.watchFile(path, interval, persistent, listener) → void
+     * (scr_watch_file.c — its own gated unit; moduleUsesFsWatchFile is the
+     * switch, and scr_watch_file_install() is emitted with it). One
+     * libuv-shaped stat poller per RESOLVED path, shared by every listener
+     * on it; the listener's (current, previous) Stats func type is
+     * program-dependent, so the slot pins the arity. Statement position
+     * only (Node returns a StatWatcher). fs.unwatchFile(path[, listener])
+     * takes a borrowed listener; the null slot is the absent one. */
+    "fs.watchFile": { argTypes: [STRING, F64, BOOL, null], result: VOID },
+    "fs.unwatchFile": { argTypes: [STRING, null], result: VOID },
     /** The composed `new crypto.X509Certificate(data).fingerprint` read
      * (scr_lib.c — no certificate handle exists): the SHA-1 of the DER,
      * uppercase colon-separated, over PEM or raw-DER Buffer input; other
@@ -1379,6 +1425,39 @@ function buildLibFnSignatures() {
     "stats.mtime": { argTypes: [STATS_T], result: DATE_T },
     "stats.ctime": { argTypes: [STATS_T], result: DATE_T },
     "stats.birthtime": { argTypes: [STATS_T], result: DATE_T },
+    /** BigIntStats (statSync with `{ bigint: true }`): the same snapshot
+     * handle under Node's bigint member table — every number member of Stats
+     * (the integers, `*Ms` and the BigIntStats-only `*Ns`) answers `bigint`;
+     * only the four time members stay `Date`s. */
+    "bigstats.isFile": { argTypes: [BIGINT_STATS_T], result: BOOL },
+    "bigstats.isDirectory": { argTypes: [BIGINT_STATS_T], result: BOOL },
+    "bigstats.isSymbolicLink": { argTypes: [BIGINT_STATS_T], result: BOOL },
+    "bigstats.isBlockDevice": { argTypes: [BIGINT_STATS_T], result: BOOL },
+    "bigstats.isCharacterDevice": { argTypes: [BIGINT_STATS_T], result: BOOL },
+    "bigstats.isFIFO": { argTypes: [BIGINT_STATS_T], result: BOOL },
+    "bigstats.isSocket": { argTypes: [BIGINT_STATS_T], result: BOOL },
+    "bigstats.size": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.dev": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.ino": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.blocks": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.nlink": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.mode": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.uid": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.gid": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.rdev": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.blksize": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.atimeNs": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.mtimeNs": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.ctimeNs": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.birthtimeNs": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.atimeMs": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.mtimeMs": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.ctimeMs": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.birthtimeMs": { argTypes: [BIGINT_STATS_T], result: BIGINT_T },
+    "bigstats.atime": { argTypes: [BIGINT_STATS_T], result: DATE_T },
+    "bigstats.mtime": { argTypes: [BIGINT_STATS_T], result: DATE_T },
+    "bigstats.ctime": { argTypes: [BIGINT_STATS_T], result: DATE_T },
+    "bigstats.birthtime": { argTypes: [BIGINT_STATS_T], result: DATE_T },
     // The wider sync fs slice (unlink/chmod/chown/copyfile and the
     // mode-carrying write/mkdir forms).
     /** The wider sync fs slice (scr_lib.c), all throwing catchably with
@@ -3600,6 +3679,8 @@ function buildLibFnSignatures() {
     "process.pid": { argTypes: [], result: F64 },
     "dyn.this": { argTypes: [], result: DYN },
     "dyn.generatorThis": { argTypes: [], result: DYN },
+    /** A sloppy-mode function's `this` from its receiver: the global object
+     * for undefined and null, else the receiver. Never throws. */
     "process.getuid": { argTypes: [], result: F64 },
     "process.getgid": { argTypes: [], result: F64 },
     /** geteuid(2) / getegid(2) / getgroups(2) (the effective gid appended
@@ -3633,6 +3714,7 @@ function buildLibFnSignatures() {
     "process.versions": { argTypes: [], result: DYN },
     "process.builtinId": { argTypes: [DYN, arrayOf(STRING)], result: STRING },
     "process.builtinModule": { argTypes: [STRING, DYN], result: DYN },
+    "process.builtinObject": { argTypes: [STRING, DYN, arrayOf(STRING)], result: DYN },
     "process.builtinUnsupported": { argTypes: [STRING, STRING], result: DYN },
     /** A module namespace object as a checked-dynamic value
      * (scr_module_namespace_value): the module id, its sorted export names
@@ -3643,6 +3725,33 @@ function buildLibFnSignatures() {
      * names, the compiled getter, and the Symbol.toStringTag key. Draws
      * Node's frozen null-prototype object, one per module. Never throws. */
     "module.namespaceDyn": { argTypes: [STRING, arrayOf(STRING), DYN, DYN], result: DYN },
+    /** A primitive wrapper object (scr_js_wrapper_new): the kind
+     * (0 String, 1 Number, 2 Boolean), the value it converts, and the three
+     * constructor values for the prototypes' `constructor`. */
+    "wrapper.new": { argTypes: [F64, DYN, DYN, DYN, DYN], result: DYN },
+    /** ToObject (scr_js_wrapper_to_object): a wrapper for a primitive, the
+     * value for an object, a fresh object for null/undefined; then the
+     * three constructor values. */
+    "wrapper.toObject": { argTypes: [DYN, DYN, DYN, DYN], result: DYN },
+    /** `value instanceof String/Number/Boolean` (scr_js_wrapper_instance_of):
+     * the kind's prototype on the value's chain. */
+    "wrapper.instanceOf": { argTypes: [DYN, F64], result: BOOL },
+    /** Object.prototype.toString with the [[PrimitiveValue]] brands
+     * (scr_js_wrapper_object_tag); dyn.objectTag otherwise. */
+    "wrapper.objectTag": { argTypes: [DYN], result: STRING },
+    /** util.types brands that read the slot (scr_js_wrapper_type_is). */
+    "wrapper.typeIs": { argTypes: [DYN, STRING], result: BOOL },
+    /** The value unchanged, or the not-supported Error when its own data
+     * graph holds a wrapper (scr_js_wrapper_guard; the string names the
+     * consumer). guardList checks each element. */
+    "wrapper.guard": { argTypes: [DYN, STRING], result: DYN },
+    "wrapper.guardList": { argTypes: [arrayOf(DYN), STRING], result: arrayOf(DYN) },
+    /** Whether a member value a call read as `name` is the builtin
+     * String.prototype method of that name (scr_js_wrapper_is_string_method),
+     * and the method's receiver, ToString of the value
+     * (scr_js_wrapper_this_string). */
+    "wrapper.isStringMethod": { argTypes: [DYN, STRING], result: BOOL },
+    "wrapper.thisString": { argTypes: [DYN, STRING], result: DYN },
     "fs.callbackValue": { argTypes: [STRING], result: DYN },
     "fs.callbackCall": { argTypes: [STRING, DYN], result: DYN },
     "process.hrtimeValue": { argTypes: [], result: DYN },
@@ -3668,6 +3777,14 @@ function buildLibFnSignatures() {
      * never throws. */
     "process.stdoutWrite": { argTypes: [STRING], result: BOOL },
     "process.stdio": { argTypes: [F64], result: DYN },
+    /** The same stream object, reached by the typed write-slot lowering
+     * (the write method as a value, its replacement, a patched program's
+     * typed writes): identical at run time, and the link switch for the
+     * SCR_STDIO_WRITE_SLOT build of the events unit. */
+    "process.stdioSlot": { argTypes: [F64], result: DYN },
+    /** process.stdout/stderr.write(chunk) with a run-time chunk: Node's
+     * Writable validation, then a synchronous write. */
+    "process.stdioWriteDyn": { argTypes: [F64, DYN], result: BOOL },
     "process.stderrWrite": { argTypes: [STRING], result: BOOL },
     // error.new's result and the receiver slots are builtin-error classes —
     // program-dependent object types, checked in the libCall case.
@@ -3939,6 +4056,13 @@ function buildLibFnSignatures() {
     "ffi.memoryModule": { argTypes: [DYN], result: DYN },
     "intl.segmenterNew": { argTypes: [], result: DYN },
     "intl.segmenterRefusing": { argTypes: [STRING], result: DYN },
+    /** `new Intl.Segmenter(locale?, { granularity: "word" })`: ICU's UAX
+     * #29 word iterator (scr_intl.c over ICU), which the
+     * table-driven grapheme segmenter above cannot express. The argument is
+     * the negotiated language tag; the empty string selects the default
+     * locale (ICU's, resolved from the host environment like V8's). +1
+     * handle. */
+    "icu.segmenterWord": { argTypes: [STRING], result: DYN },
     "arrayBuffer.is": { argTypes: [DYN], result: BOOL },
     "arrayBuffer.isView": { argTypes: [DYN], result: BOOL },
     "arrayBuffer.byteLengthGetter": { argTypes: [], result: F64 },
@@ -4576,6 +4700,10 @@ function buildLibFnSignatures() {
     "writable.writeU": { argTypes: [null, null], result: BOOL },
     "writable.writeDyn": { argTypes: [null, DYN], result: BOOL },
     "writable.writeEnc": { argTypes: [null, F64, DYN], result: BOOL },
+    /** The error-first write form: (recv, mode, chunk, encoding, cb) where
+     * mode 0 is a bytes chunk, 1 a string, 2 a run-time chunk, and the
+     * callback takes the completion's error (Node's null on success). */
+    "writable.writeEcb": { argTypes: [null, F64, null, DYN, null], result: BOOL },
     "writable.end": { argTypes: [null, F64], result: VOID },
     "writable.cork": { argTypes: [null], result: VOID },
     "writable.uncork": { argTypes: [null], result: VOID },
@@ -5337,6 +5465,11 @@ function buildLibFnSignatures() {
     /** Validated isatty(3) probe. Stream property lowering maps false to
      * undefined; tty.isatty exposes the boolean result directly. */
     "process.isTTY": { argTypes: [F64], result: BOOL },
+    "process.isTTYValue": { argTypes: [DYN], result: BOOL },
+    /** A promise that never settles (events.once of an event that cannot
+     * occur, e.g. 'drain' on a synchronous process stream). The result is
+     * events.once's own Promise<any[]> type. */
+    "events.pendingForever": { argTypes: [], result: { kind: "promise", inner: arrayOf(DYN) } },
     // Like process.envGet: the result is the module's interned
     // `number | undefined` union — checked by arms in the libCall case.
     /** Terminal width over an fd literal (1/2 — process.stdout/stderr

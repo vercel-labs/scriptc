@@ -343,6 +343,8 @@ typedef struct ScrBuiltinModule {
   ScrDyn *getter;
   ScrDyn *exports;
   struct ScrBuiltinModule *next;
+  /* The exports object is the module value (scr_process_builtin_object). */
+  bool object;
 } ScrBuiltinModule;
 
 static SCR_TL ScrBuiltinModule *scr_builtin_modules;
@@ -364,6 +366,17 @@ static void scr_builtin_release(void *handle) {
 }
 
 static void scr_builtin_cleanup(void) {
+  /* An exports object can hold itself and the other path family
+   * (path.posix.posix, path.posix.win32): its member values are released
+   * first, so the objects are freed. The values are swapped out without
+   * reading the keys (scr_dyn_obj_exchange_value_at): the exit-time layout
+   * reset can run before this and free the layout the keys live in. */
+  for (ScrBuiltinModule *module = scr_builtin_modules; module; module = module->next) {
+    if (!module->object) continue;
+    ScrDyn *exports = module->exports;
+    for (size_t i = 0; i < scr_dyn_obj_count(exports); i++)
+      scr_dyn_release(scr_dyn_obj_exchange_value_at(exports, i, scr_dyn_retain(scr_dyn_undefined())));
+  }
   while (scr_builtin_modules) {
     ScrBuiltinModule *module = scr_builtin_modules;
     scr_builtin_modules = module->next;
@@ -439,9 +452,43 @@ ScrDyn *scr_process_builtin_module(ScrStr *id, ScrDyn *getter) {
   }
   ScrBuiltinModule *module = malloc(sizeof(*module));
   if (!module) scr_trap("scriptc: out of memory\n");
-  *module = (ScrBuiltinModule){ 1, scr_str_retain(id), scr_dyn_retain(getter), scr_dyn_new_obj(), scr_builtin_modules };
+  *module = (ScrBuiltinModule){ 1, scr_str_retain(id), scr_dyn_retain(getter), scr_dyn_new_obj(), scr_builtin_modules, false };
   scr_builtin_modules = module;
   return scr_dyn_new_handle(module, SCR_DYNH_BUILTIN_MODULE);
+}
+
+/* A builtin module whose value is a plain object (the path families): every
+ * key in `keys`, in that order, holds the getter's answer, so Object.keys,
+ * Object.assign, spreads and own-property checks see Node's members. The
+ * object is built once per id and registered before its members are read,
+ * so a member naming the module itself or another family (path.posix.posix,
+ * path.posix.win32) answers the registered object. Borrows all three; +1. */
+ScrDyn *scr_process_builtin_object(ScrStr *id, ScrDyn *getter, ScrArr *keys) {
+  for (ScrBuiltinModule *module = scr_builtin_modules; module; module = module->next) {
+    if (module->id->len == id->len && memcmp(module->id->data, id->data, id->len) == 0)
+      return scr_dyn_retain(module->exports);
+  }
+  if (!scr_builtin_cleanup_registered) {
+    scr_atexit(scr_builtin_cleanup);
+    scr_builtin_cleanup_registered = true;
+  }
+  ScrBuiltinModule *module = malloc(sizeof(*module));
+  if (!module) scr_trap("scriptc: out of memory\n");
+  *module = (ScrBuiltinModule){ 1, scr_str_retain(id), scr_dyn_retain(getter), scr_dyn_new_obj(), scr_builtin_modules, true };
+  scr_builtin_modules = module;
+  for (size_t i = 0; i < keys->len; i++) {
+    ScrStr *key = (ScrStr *)scr_arr_get_ref(keys, (double)i);
+    ScrDyn *arg = scr_dyn_new_str(key);
+    ScrDyn *value = scr_dyn_call(getter, &arg, 1, "builtin export");
+    scr_dyn_release(arg);
+    if (!value) {
+      scr_str_release(key);
+      return NULL;
+    }
+    scr_dyn_obj_set(module->exports, key->data, key->len, value);
+    scr_str_release(key);
+  }
+  return scr_dyn_retain(module->exports);
 }
 
 ScrDyn *scr_process_builtin_unsupported(ScrStr *id, ScrStr *member) {

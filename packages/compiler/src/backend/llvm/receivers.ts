@@ -11,6 +11,7 @@ import {
 import type { LlValue } from "./expr-context.js";
 import { guardedValue } from "./borrowed-receivers.js";
 import { InternalCompilerError } from "../../errors.js";
+import { llvmQuoted } from "../literals.js";
 import { emitBorrowedArrayRead, emitProjectedArrayRead } from "./local-array-reads.js";
 import {
   emitBorrowedMapGet,
@@ -459,12 +460,19 @@ export function analyzeBorrowedReturns(emitter: LlEmitter): void {
   }
 }
 
+/** The alias metadata of the module's field and memory categories. Each type
+ * node is named by its category (`field:<name>`, `array:header`, ...), not
+ * by its number: numbers follow the order in which the module's functions
+ * first use the categories, so an edit that adds one renumbers the rest. The
+ * LLVM helper renumbers each program partition's metadata, so a partition
+ * whose functions are unchanged keeps the same text and its cached
+ * artifacts. */
 export function fieldAliasMetadata(emitter: LlEmitter): string[] {
   if (emitter.fieldAliasTags.size === 0) return [];
   const lines = ['!0 = !{!"scriptc native fields"}'];
-  for (const tag of emitter.fieldAliasTags.values()) {
+  for (const [category, tag] of emitter.fieldAliasTags) {
     lines.push(
-      `!${tag - 1} = !{!"field.${tag}", !0, i64 0}`,
+      `!${tag - 1} = !{!${llvmQuoted(category)}, !0, i64 0}`,
       `!${tag} = !{!${tag - 1}, !${tag - 1}, i64 0}`,
     );
   }

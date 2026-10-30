@@ -42,6 +42,21 @@ describe("runtime feature snapshots", () => {
     expect(moduleUsesHttp2(mod)).toBe(false);
   });
 
+  test("gates the BigIntStats unit on its member reads, not on bigint", () => {
+    const reads = module();
+    reads.functions[0]!.body.push(call("bigstats.size"));
+    expect(moduleRuntimeFeatures(reads)).toMatchObject({ bigint: true, bigstats: true });
+
+    const storage = module();
+    storage.functions[0]!.locals.push({
+      id: "value",
+      name: "value",
+      mutable: false,
+      type: { kind: "bigint" },
+    });
+    expect(moduleRuntimeFeatures(storage)).toMatchObject({ bigint: true, bigstats: false });
+  });
+
   test("keeps legacy HTTP/2 calls and isolated CA inspection out of the HTTP/2 unit", () => {
     const mod = module();
     mod.functions[0]!.body.push(call("http2.streamNoop"));

@@ -1,6 +1,6 @@
 import { InternalCompilerError } from "../errors.js";
 import { keyedHelperName, type KeyedNameOwner } from "./lowering/stable-names.js";
-import type { HeldContents, JournalTable } from "./lowering/unit-journal.js";
+import { contentDigest, type HeldContents, type JournalTable } from "./lowering/unit-journal.js";
 import { mockCallRecordType, mockContextType } from "./mock-shapes.js";
 import * as ts from "./ts7/adapter.js";
 import { bodyReadsArguments } from "./arguments-usage.js";
@@ -220,8 +220,10 @@ export const FETCH_AMBIENT_TYPES = [
   "ReadableStreamReadValueResult",
   "ReadableStreamReadDoneResult",
   "TransformStream",
+  "TransformStreamDefaultController",
   "WritableStream",
   "WritableStreamDefaultWriter",
+  "WritableStreamDefaultController",
   "Blob",
   "File",
   "BlobPropertyBag",
@@ -716,9 +718,39 @@ export class UnionRegistry {
    * the key its arms give. A unit that adds a recursive union changes
    * journalSizes, so the unions past a unit's start are interned ones. */
   journalTable(): JournalTable {
+    // The position of each union by id, for the unions indexed so far.
+    let indexes = new Map<string, number>();
+    let indexed = 0;
+    const indexOf = (id: string): number | undefined => {
+      if (indexed > this.unions.length) {
+        indexes = new Map();
+        indexed = 0;
+      }
+      for (; indexed < this.unions.length; indexed++)
+        indexes.set(this.unions[indexed]!.id, indexed);
+      const index = indexes.get(id);
+      return index !== undefined && this.unions[index]?.id === id ? index : undefined;
+    };
     return {
       name: "unions",
       size: () => this.unions.length,
+      digest: (key, before) => {
+        if (!this.byId.has(key)) return null;
+        let index = indexOf(key);
+        if (index === undefined) {
+          // A list that was cut and grown again holds other unions at the
+          // positions indexed before.
+          indexes = new Map();
+          indexed = 0;
+          index = indexOf(key);
+        }
+        if (index === undefined || index >= before) return null;
+        return contentDigest(JSON.stringify(this.unions[index]!));
+      },
+      holds: (entry) => {
+        const def = JSON.parse(entry) as IrUnionDef;
+        return this.byKey.has(unionKey(def.arms, def.discriminant));
+      },
       entries: (from) => {
         const out: string[] = [];
         for (const def of this.unions.slice(from)) {
@@ -729,6 +761,12 @@ export class UnionRegistry {
         }
         return out;
       },
+      agrees: (entries) =>
+        entries.every((entry) => {
+          const def = JSON.parse(entry) as IrUnionDef;
+          const held = this.byKey.get(unionKey(def.arms, def.discriminant));
+          return held === undefined ? !this.byId.has(def.id) : held === def.id;
+        }),
       apply: (entries) => {
         for (const entry of entries) {
           const def = JSON.parse(entry) as IrUnionDef;
@@ -1087,6 +1125,8 @@ export function formatIrType(
         return append("bigint");
       case "stats":
         return append("Stats");
+      case "bigintStats":
+        return append("BigIntStats");
       case "fileHandle":
         return append("FileHandle");
       case "dir":
@@ -1367,6 +1407,11 @@ export type TypeParamTsResolver = (t: ts.Type) => ts.Type | null;
  * once per Lowerer and threaded through the recursion — adding a hook means
  * one new field here, not a new parameter at every call site. */
 export interface TypeMapperCtx {
+  /** Whether the program creates primitive wrapper objects
+   * (primitive-wrappers.ts): then the boxed interface types (`String`,
+   * `Number`, `Boolean`) map to the checked-dynamic value instead of the
+   * primitive. Absent or false: every mapping is unchanged. */
+  primitiveWrappers?: () => boolean;
   /** Node islands (scope-B NI-4): whether a type's values are island
    * handles, which map to the `foreign` type (a dyn value). Absent in
    * programs without islands. */
@@ -1649,6 +1694,27 @@ export function isLegacyUrlSymbol(
  * (errno, dlopen, priority) and SignalConstants, and the fallback's twins:
  * the runtime's checked-dynamic constants object, whose members vary by
  * platform. */
+/** True for node:path's platform-specific namespaces ("path/posix",
+ * "path/win32"). Their values are the path module object, so they map to
+ * the checked-dynamic module value (see pathModuleValue in
+ * lowering/lower-builtin-values.ts), not to a module declaration. */
+export function isPathPlatformNamespaceId(moduleId: string): boolean {
+  return moduleId === "builtin:path/posix" || moduleId === "builtin:path/win32";
+}
+
+/** @types/node's `PlatformPath` interface (module "path"): the declared type
+ * of `path.posix`/`path.win32`. Its values are the path module object. */
+function isPlatformPathType(type: ts.Type, ctx: Pick<TypeMapperCtx, "isStdlibFile">): boolean {
+  const sym = type.getSymbol();
+  if (sym === undefined || ts.symbolName(sym) !== "PlatformPath") return false;
+  return sym.declarations.some(
+    (decl) =>
+      ts.isInterfaceDeclaration(decl) &&
+      ctx.isStdlibFile(ts.getSourceFileOfNode(decl)) &&
+      isDeclaredInAmbientModule(decl, "path"),
+  );
+}
+
 export function isOsConstantsType(
   type: ts.Type,
   ctx: Pick<TypeMapperCtx, "checker" | "isStdlibFile">,
@@ -2145,7 +2211,15 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   }
   {
     const moduleId = ctx.moduleNamespaceId?.(type) ?? null;
-    if (moduleId !== null) return { kind: "moduleNs", moduleId };
+    // node:path's platform namespaces (`path.posix`, `path.win32`) are
+    // ordinary objects at run time: the same module object the whole
+    // namespace lowers to (pathModuleValue). Typing them as a module
+    // namespace declaration made every value read a static type with no
+    // value lowering; the checked-dynamic module value is the honest
+    // type, and a union with a plain record arm collapses onto it.
+    if (moduleId !== null && !isPathPlatformNamespaceId(moduleId))
+      return { kind: "moduleNs", moduleId };
+    if (moduleId !== null) return DYN;
   }
   // A TypeScript object literal that spreads a checked-dynamic value
   // (`{ ...requestOptions, path, timeout }`): its keys are the source's
@@ -2193,6 +2267,10 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   ) {
     return { kind: "object", className: "%Error" };
   }
+  // @types/node declares the platform-path namespace value as the
+  // `PlatformPath` interface of module "path"; its values ARE the path
+  // module object (the checked-dynamic module value).
+  if (isPlatformPathType(type, ctx)) return DYN;
   if (isOsConstantsType(type, ctx) || isLegacyUrlType(type, ctx)) return DYN;
   // The WebAssembly API's values have the checked-dynamic representation, so
   // declarations that merely mention them compile; each reached use of the
@@ -2373,6 +2451,9 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         ts.symbolName(boxSym) === "Boolean") &&
       boxSym.declarations.some((d) => ctx.isStdlibFile(ts.getSourceFileOfNode(d)))
     ) {
+      // Once the program creates wrapper objects, a slot of the boxed type
+      // may hold one: the checked-dynamic value holds both.
+      if (ctx.primitiveWrappers?.()) return DYN;
       return ts.symbolName(boxSym) === "Number"
         ? F64
         : ts.symbolName(boxSym) === "String"
@@ -3682,6 +3763,21 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
     )
   ) {
     return { kind: "stats" };
+  }
+  // fs.BigIntStats: the SAME snapshot handle under Node's bigint member
+  // table (`statSync(p, { bigint: true })`). Declared by @types/node as
+  // `class BigIntStats` in "fs"; the fallback declarations keep the class
+  // shape too. Provenance-checked like Stats.
+  if (
+    psym !== undefined &&
+    ts.symbolName(psym) === "BigIntStats" &&
+    psym.declarations.some(
+      (d) =>
+        (ts.isInterfaceDeclaration(d) || ts.isClassDeclaration(d)) &&
+        ctx.isStdlibFile(ts.getSourceFileOfNode(d)),
+    )
+  ) {
+    return { kind: "bigintStats" };
   }
   // Capacity snapshots and options keep their live object representation
   // across numeric/BigInt overloads, runtime options, and callbacks.
@@ -5101,6 +5197,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
   // AsyncLocalStorage.snapshot()'s generic runner is a dyn function value
   // (als.snapshot), called through the dyn call path.
   if (callSigs.length === 1 && isAsyncLocalStorageSnapshot(callSigs[0]!, ctx)) return DYN;
+  // A process/net/stream `write` method taken as a value (`typeof
+  // process.stdout.write`, the saved original of an output guard): its
+  // overload set has no single compiled signature, and the value is the
+  // stream's replaceable method slot, so it is the checked-dynamic function
+  // the stream object hands out (scr_events.c ProcessStream).
+  if (callSigs.length > 1 && isStdlibStreamWriteOverloads(callSigs, ctx)) return DYN;
   if (callSigs.length === 1) return mapCallSignature(callSigs[0]!, ctx);
   // Records: object types whose members are all data properties (shorthand
   // methods in type position count — they're func-typed fields) with
@@ -5419,25 +5521,58 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
       ) {
         return DYN;
       }
+      // A module namespace beside another value in one slot (`[path.posix,
+      // path.win32]`, a `['posix', path.posix]` table row): a namespace has
+      // no union representation, and as a value it is the runtime's module
+      // object, so the slot is checked-dynamic. A namespace or null keeps
+      // its union (a probed process.getBuiltinModule result).
       if (
-        arms.some(
+        arms.some((a) => a.kind === "moduleNs") &&
+        arms.filter((a) => !isUnitType(a)).length > 1 &&
+        !unions.recursivePending(widened)
+      ) {
+        return DYN;
+      }
+      // SEVERAL PROMISE ARMS are ONE: `Promise<A> | Promise<B>` is
+      // `Promise<A | B>`. A promise arm's tag IS the `instanceof Promise`
+      // test, so JavaScript cannot tell the arms apart at run time (both
+      // answer true, both `await` to a value of their payload), and the
+      // merged payload union is exactly what `await` produces either way.
+      // The merge happens here, in the union the checker gave us, so every
+      // use site (a declaration slot, an argument, an `await`, `.then`)
+      // sees the same one-promise-arm layout; the conversion of a
+      // `Promise<A>` value into it is the checked promise-payload widening
+      // (promisePayloadWidens / promiseWiden). A payload that cannot ride
+      // that union (a promise of a promise, a regex or generator payload)
+      // keeps the whole union fenced.
+      const mergedArms = mergePromiseArms(arms, ctx);
+      if (mergedArms === null) return null;
+      // Promise arms were the whole union (`Promise<void> | Promise<undefined>`
+      // merges to the plain `Promise<void>`): a one-armed union has no
+      // representation and needs none — the merge left the arm alone.
+      if (mergedArms.length === 1) {
+        if (unions.recursivePending(widened)) return null;
+        return mergedArms[0]!;
+      }
+      if (
+        mergedArms.some(
           (a) =>
             a.kind === "void" ||
             a.kind === "union" ||
             a.kind === "dyn" ||
             // A generator arm only comes from an Iterable<T> (an optional
             // one keeps its unit arms beside the iterable union's).
-            (a.kind === "generator" && iterableArmsElem(arms) === null),
+            (a.kind === "generator" && iterableArmsElem(mergedArms) === null),
         ) ||
-        !maybePromiseUnionOk(parts, arms, ctx)
+        !maybePromiseUnionOk(parts, mergedArms, ctx)
       ) {
         return null;
       }
-      arms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
+      mergedArms.sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1));
       const discriminant =
-        unionDiscriminant(recordParts, arms, ctx) ??
+        unionDiscriminant(recordParts, mergedArms, ctx) ??
         (substitutedUnions.length === 1
-          ? remapUnionDiscriminant(substitutedUnions[0]!, arms)
+          ? remapUnionDiscriminant(substitutedUnions[0]!, mergedArms)
           : undefined);
       if (unions.recursivePending(widened)) {
         // The knot closed through this union. A frame that resolved
@@ -5446,9 +5581,12 @@ function mapTypeInner(type: ts.Type, ctx: TypeMapperCtx): IrType | null {
         // same ts.Type answers differently per instantiation — so
         // recursive generic-open unions stay fenced.
         if (contextResolutions !== sensitivityAtEntry) return null;
-        return { kind: "union", unionId: unions.finalizeRecursive(widened, arms, discriminant) };
+        return {
+          kind: "union",
+          unionId: unions.finalizeRecursive(widened, mergedArms, discriminant),
+        };
       }
-      return { kind: "union", unionId: unions.intern(arms, discriminant) };
+      return { kind: "union", unionId: unions.intern(mergedArms, discriminant) };
     } finally {
       unions.inProgress.delete(widened);
     }
@@ -5477,6 +5615,36 @@ function isAsyncLocalStorageSnapshot(sig: ts.Signature, ctx: TypeMapperCtx): boo
     ctx.isStdlibFile(ts.getSourceFileOfNode(decl)) &&
     isDeclaredInAmbientModule(decl, "async_hooks")
   );
+}
+
+const STREAM_WRITE_OWNERS = new Set(["Socket", "Writable", "WriteStream", "WritableStream"]);
+
+/** Every signature is a `write` method declared on a standard-library
+ * stream interface or class (net.Socket, stream.Writable, tty.WriteStream,
+ * NodeJS.WritableStream) — @types/node's or the fallback declarations'. */
+function isStdlibStreamWriteOverloads(
+  sigs: readonly ts.Signature[],
+  ctx: Pick<TypeMapperCtx, "isStdlibFile">,
+): boolean {
+  return sigs.every((sig) => {
+    const decl = sig.declaration;
+    if (
+      decl === undefined ||
+      !(ts.isMethodSignatureDeclaration(decl) || ts.isMethodDeclaration(decl))
+    )
+      return false;
+    if (!ts.isIdentifier(decl.name) || decl.name.text !== "write") return false;
+    const owner = decl.parent;
+    const ownerName =
+      owner !== undefined && (ts.isInterfaceDeclaration(owner) || ts.isClassDeclaration(owner))
+        ? (owner.name?.text ?? null)
+        : null;
+    return (
+      ownerName !== null &&
+      STREAM_WRITE_OWNERS.has(ownerName) &&
+      ctx.isStdlibFile(ts.getSourceFileOfNode(decl))
+    );
+  });
 }
 
 function mapCallSignature(sig: ts.Signature, ctx: TypeMapperCtx): IrType | null {
@@ -8871,6 +9039,79 @@ function maybePromiseUnionOk(
   return maybePromiseThenableArm(parts, ctx) === null;
 }
 
+/** Merge the promise arms of one union into a single `Promise<A | B>`
+ * (mapTypeInner's union rule): JavaScript-wise the arms are
+ * indistinguishable — `instanceof Promise` answers true for both, and
+ * `await` settles to the payload union — so the merged arm is the same
+ * value in the same slot. Payloads join like union arms: a `void` payload
+ * becomes the undefined unit, a payload that is already a union flattens,
+ * and a checked-dynamic payload (`Promise<unknown>`) absorbs the arms the
+ * checked-dynamic representation holds faithfully (dynSubsumableUnionArm).
+ * Null keeps the whole union fenced: a promise-of-a-promise payload, a
+ * payload with no union home (regex, generator), or a dyn payload beside an
+ * arm whose semantics would degrade. */
+function mergePromiseArms(arms: IrType[], ctx: TypeMapperCtx): IrType[] | null {
+  let promiseArms = 0;
+  for (const arm of arms) if (arm.kind === "promise") promiseArms++;
+  if (promiseArms < 2) return arms;
+  const payloads: IrType[] = [];
+  let dynamic = false;
+  for (const arm of arms) {
+    if (arm.kind !== "promise") continue;
+    const inner = arm.inner;
+    if (inner.kind === "void") {
+      payloads.push(UNDEFINED_T);
+      continue;
+    }
+    if (inner.kind === "dyn") {
+      dynamic = true;
+      continue;
+    }
+    if (inner.kind === "union") {
+      const substituted = ctx.unions.get(inner.unionId);
+      if (!substituted?.arms.length) return null;
+      payloads.push(...substituted.arms);
+      continue;
+    }
+    payloads.push(inner);
+  }
+  if (dynamic) {
+    if (!payloads.every((arm) => dynSubsumableUnionArm(arm, ctx))) return null;
+    payloads.length = 0;
+    payloads.push(DYN);
+  }
+  const byKey = new Map<string, IrType>();
+  for (const arm of payloads) {
+    // A promise payload has no arm home beside the others: `await` of the
+    // merged promise would adopt it as a thenable, which no union tag does.
+    if (arm.kind === "promise") return null;
+    byKey.set(typeKey(arm), arm);
+  }
+  const payload = [...byKey.values()];
+  if (payload.length === 0) return null;
+  // Every arm is the undefined unit: the promise never settles a value,
+  // exactly `Promise<void>`.
+  if (payload.every((arm) => arm.kind === "undefinedT")) payload.length = 0;
+  // One payload arm is that arm itself (a regex or a promise payload has a
+  // promise slot but no union arm); a JOINT payload is a union, so its arms
+  // need union homes.
+  const inner: IrType | null =
+    payload.length === 0
+      ? VOID
+      : payload.length === 1
+        ? payload[0]!
+        : payload.every((arm) => armHasUnionHome(arm))
+          ? {
+              kind: "union",
+              unionId: ctx.unions.intern(
+                [...payload].sort((a, b) => (typeKey(a) < typeKey(b) ? -1 : 1)),
+              ),
+            }
+          : null;
+  const merged: IrType | null = inner === null ? null : { kind: "promise", inner };
+  return merged === null ? null : [...arms.filter((arm) => arm.kind !== "promise"), merged];
+}
+
 /** The first non-promise constituent of a promise-armed union whose type
  * has a `then` member (a thenable data arm), or null. */
 function maybePromiseThenableArm(parts: readonly ts.Type[], ctx: TypeMapperCtx): ts.Type | null {
@@ -9025,7 +9266,7 @@ export function describeComponentBlocker(widened: ts.Type, ctx: TypeMapperCtx): 
     }
     const promiseArms = mappedArms.filter(({ mapped }) => mapped?.kind === "promise");
     if (promiseArms.length > 1) {
-      return `the union shape is supported, but it has several promise arms ('${text(promiseArms[0]!.p)}' and '${text(promiseArms[1]!.p)}'), and a compiled union holds at most one (the union tag is the 'instanceof Promise' test)`;
+      return `the union shape is supported, but its promise arms ('${text(promiseArms[0]!.p)}' and '${text(promiseArms[1]!.p)}') do not merge into one promise (their payloads have no common union layout)`;
     }
     if (promiseArms.length === 1 && dataArms.length > 1) {
       const callable = mappedArms.find(({ mapped }) => mapped?.kind === "func");

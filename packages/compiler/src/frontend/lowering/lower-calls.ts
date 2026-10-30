@@ -1,3 +1,4 @@
+import { programCreatesWrappers } from "./primitive-wrappers.js";
 import {
   arrayClassMemberOwner,
   arrayClassReceiver,
@@ -5,6 +6,7 @@ import {
 } from "./builtins/array-classes.js";
 import { structuralCallInstance } from "./structural-instances.js";
 import { checkedPrivateMethodReceiver, privateNameClass } from "./private-brands.js";
+import { lowerStaticPrivateCall } from "./private-statics.js";
 import { assertFunctionAliasOf } from "./lower-assert.js";
 import { keyedHelperName } from "./stable-names.js";
 import { perKeyOrder } from "./key-order-witness.js";
@@ -257,7 +259,12 @@ import {
   nsUndefRead,
 } from "./lower-namespaces.js";
 import { expandoMemberRead } from "./lower-expando.js";
-import { fenceNodeModuleMutationCall, lowerRequireCacheKeys } from "./lower-node-module.js";
+import {
+  fenceNodeModuleMutationCall,
+  isCjsRequireGlobal,
+  lowerRequireCacheKeys,
+} from "./lower-node-module.js";
+import { pathModuleValue } from "./lower-builtin-values.js";
 import {
   defaultAfterUndefined,
   lowerOptionalArgument,
@@ -469,6 +476,22 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     const inlineValue = lowerInlineRequireValue(lowerer, expr);
     if (inlineValue) return inlineValue;
   }
+  // `require("path/posix")` of a builtin as a value: the module's
+  // namespace, as a `const posix = require("path/posix")` binding is.
+  if (
+    ts.isIdentifier(expr.expression) &&
+    expr.expression.text === "require" &&
+    isCjsRequireGlobal(lowerer, expr.expression)
+  ) {
+    const module = lowerer.builtinNamespaceModuleOf(expr);
+    // The platform namespaces are the path module objects.
+    if (module === "path/posix" || module === "path/win32")
+      return pathModuleValue(lowerer, module, loc);
+    if (module !== null && module !== "constants") {
+      const moduleId = `builtin:${module}`;
+      return { kind: "moduleNsRef", moduleId, type: { kind: "moduleNs", moduleId }, loc };
+    }
+  }
 
   // A call whose chain ROOTS at an ambient-undefined name (`declare
   // const value: Y | undefined; value?.foo("a")`, `declare function
@@ -670,6 +693,8 @@ export function lowerCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr {
     ts.isPrivateIdentifier(expr.expression.name) &&
     !expr.expression.questionDotToken
   ) {
+    const staticPrivate = lowerStaticPrivateCall(lowerer, expr, expr.expression);
+    if (staticPrivate) return staticPrivate;
     const privateCall = lowerCheckedPrivateMethodCall(lowerer, expr, expr.expression);
     if (privateCall) return privateCall;
   }
@@ -2125,7 +2150,7 @@ function callableInstanceStringCall(
 
 /** A call through an evaluated callee value: checked-dynamic callees,
  * function unions, typed-rest and runtime-arity closures. */
-function lowerCallThroughValue(
+export function lowerCallThroughValue(
   lowerer: Lowerer,
   expr: ts.CallExpression,
   callee: IrExpr,
@@ -3708,7 +3733,17 @@ function lowerDynReceiverMethodCall(
     const binding = ts.isIdentifier(access.expression)
       ? lowerer.builtinImportOf(access.expression)
       : null;
-    if (binding?.module !== "worker_threads" || binding.member !== "parentPort") return null;
+    const parentPort = binding?.module === "worker_threads" && binding.member === "parentPort";
+    // node:path's platform namespaces resolve to ambient declarations the
+    // same way, but their VALUE is the checked-dynamic module object (the
+    // whole namespace), so `win32.join(...)` takes this receiver path
+    // exactly like `path.win32.join(...)`.
+    const pathNamespace =
+      (binding?.module === "path" ||
+        binding?.module === "path/posix" ||
+        binding?.module === "path/win32") &&
+      (binding.member === "posix" || binding.member === "win32");
+    if (!parentPort && !pathNamespace) return null;
   }
   // Only checker-untyped receivers: `any`/`unknown`, or the `any[]` an
   // Array.isArray guard narrows them to (the value is STILL the checked-dynamic tree
@@ -4036,7 +4071,9 @@ function lowerDynReceiverMethodCall(
     // else calls its member as Node does.
     if (
       (checkerUntyped ||
-        (lowerer.typeOf(access).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0) &&
+        (lowerer.typeOf(access).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 ||
+        // A receiver of the boxed String type may be a wrapper object.
+        (lowerer.createsWrappers ??= programCreatesWrappers(lowerer))) &&
       !call.questionDotToken &&
       !access.questionDotToken &&
       !call.arguments.nodes.some(ts.isSpreadElement)
@@ -4280,7 +4317,24 @@ function lowerStringOrMemberCall(
   const loc = locOf(call);
   const receiverLocal = lowerer.declareHiddenLocal("%dynCallReceiver", DYN);
   const receiver = varRef(receiverLocal.id, DYN, loc);
-  const isString: IrExpr = { kind: "dynTest", test: "string", value: receiver, type: BOOL, loc };
+  const nameLit: IrExpr = { kind: "strLit", value: access.name.text, type: STRING, loc };
+  const receiverIsString: IrExpr = {
+    kind: "dynTest",
+    test: "string",
+    value: receiver,
+    type: BOOL,
+    loc,
+  };
+  // In a program that creates wrapper objects, a receiver whose member is
+  // the builtin String.prototype method runs the string lowering on
+  // ToString of the receiver, after the arguments, as the builtin does.
+  // The member is read once: the check inspects the value the call read.
+  const wrappers = (lowerer.createsWrappers ??= programCreatesWrappers(lowerer));
+  const builtinLocal = wrappers ? lowerer.declareHiddenLocal("%dynCallStringMethod", BOOL) : null;
+  const isString: IrExpr = builtinLocal
+    ? { kind: "varRef", localId: builtinLocal.id, type: BOOL, loc }
+    : receiverIsString;
+  const stringLocal = wrappers ? lowerer.declareHiddenLocal("%dynCallString", DYN) : null;
   const calleeLocal = lowerer.declareHiddenLocal("%dynCallCallee", DYN);
   const callee = varRef(calleeLocal.id, DYN, loc);
   const stmts: IrStmt[] = [
@@ -4290,7 +4344,7 @@ function lowerStringOrMemberCall(
       localId: calleeLocal.id,
       init: {
         kind: "ternary",
-        cond: isString,
+        cond: receiverIsString,
         then: dynUndefinedExpr(loc),
         else_: {
           kind: "dynKeyGet",
@@ -4304,16 +4358,53 @@ function lowerStringOrMemberCall(
       },
       loc,
     },
+    ...(builtinLocal
+      ? [
+          {
+            kind: "varDecl" as const,
+            localId: builtinLocal.id,
+            init: {
+              kind: "logical" as const,
+              op: "||" as const,
+              left: receiverIsString,
+              right: {
+                kind: "libCall" as const,
+                fn: "wrapper.isStringMethod" as const,
+                args: [callee, nameLit],
+                type: BOOL,
+                loc,
+              },
+              type: BOOL,
+              loc,
+            },
+            loc,
+          },
+        ]
+      : []),
   ];
   const args = call.arguments.nodes.map((node) => {
-    const value = lowerer.lowerExpr(node);
+    const lowered = lowerer.lowerExpr(node);
+    // A unit-typed argument (`f()` of a void function, a literal undefined
+    // or null) has no local storage of its own: hold it as the dynamic
+    // value both branches receive.
+    const value =
+      lowered.type.kind === "void" ||
+      lowered.type.kind === "undefinedT" ||
+      lowered.type.kind === "nullT"
+        ? lowerer.coerceToExpected(lowered, DYN)
+        : lowered;
     const local = lowerer.declareHiddenLocal("%dynCallArg", value.type);
     stmts.push({ kind: "varDecl", localId: local.id, init: value, loc: value.loc });
     return { node, value: varRef(local.id, value.type, value.loc) };
   });
   // String.prototype methods ignore arguments past the ones they read.
   const arity = DYN_STRING_ONLY_ARITY[access.name.text] ?? call.arguments.nodes.length;
-  const stringReceiver = (): IrExpr => ({ kind: "dynCheck", value: receiver, type: STRING, loc });
+  const stringReceiver = (): IrExpr => ({
+    kind: "dynCheck",
+    value: stringLocal ? varRef(stringLocal.id, DYN, loc) : receiver,
+    type: STRING,
+    loc,
+  });
   const lowerString = (): IrExpr | null =>
     (call.arguments.nodes.length <= arity
       ? lowerRegexMethodCall(lowerer, call, access, stringReceiver)
@@ -4342,7 +4433,35 @@ function lowerStringOrMemberCall(
       kind: "ternary",
       cond: isString,
       then: stringCall
-        ? lowerer.coerceToExpected(stringCall, DYN)
+        ? stringLocal
+          ? {
+              kind: "seqExpr",
+              stmts: [
+                {
+                  kind: "varDecl",
+                  localId: stringLocal.id,
+                  init: {
+                    kind: "ternary",
+                    cond: receiverIsString,
+                    then: receiver,
+                    else_: {
+                      kind: "libCall",
+                      fn: "wrapper.thisString",
+                      args: [receiver, nameLit],
+                      type: DYN,
+                      loc,
+                    },
+                    type: DYN,
+                    loc,
+                  },
+                  loc,
+                },
+              ],
+              result: lowerer.coerceToExpected(stringCall, DYN),
+              type: DYN,
+              loc,
+            }
+          : lowerer.coerceToExpected(stringCall, DYN)
         : nodeThrowExpr(
             0,
             "SC1090",
@@ -4920,6 +5039,9 @@ function lowerArrayIsArrayCall(
   // itself instead of folding on the extracted type (typeof's rule).
   if (arg.kind === "dynCheck" && arg.value.type.kind === "dyn") arg = arg.value;
   if (arg.type.kind === "dyn") {
+    // With Node islands the value may be an island array (scope-B NI-4).
+    if (lowerer.nodeIslands !== null)
+      return { kind: "libCall", fn: "nodeIsland.isArray", args: [arg], type: BOOL, loc };
     return { kind: "dynTest", test: "array", value: arg, type: BOOL, loc };
   }
   if (arg.type.kind === "union") {
@@ -5143,11 +5265,22 @@ function lowerUnionToStringCall(
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (call.questionDotToken || access.questionDotToken) return null;
-  if (access.name.text !== "toString" || call.arguments.nodes.length !== 0) return null;
+  if (access.name.text !== "toString") return null;
+  // `.toString("utf8")` on `string | Buffer` (a Buffer's default decode;
+  // String.prototype.toString ignores its arguments): the same helper.
+  const args = call.arguments.nodes;
+  const utf8Arg =
+    args.length === 1 && ts.isStringLiteralLike(args[0]!) && /^utf-?8$/i.test(args[0].text);
+  if (args.length !== 0 && !utf8Arg) return null;
   const recvT = lowerer.mapTypeOf(lowerer.typeOf(access.expression));
   if (recvT?.kind !== "union") return null;
   if (!lowerer.isStdlibMember(access)) return null;
   const def = lowerer.unions.get(recvT.unionId);
+  if (
+    utf8Arg &&
+    !def?.arms.every((a) => a.kind === "string" || (a.kind === "bytes" && a.elem === "u8"))
+  )
+    return null;
   const stringable = def?.arms.every(
     (a) =>
       a.kind === "string" ||
@@ -5473,24 +5606,60 @@ function lowerPrimitiveProtoCall(
   }
   // Number.prototype.toLocaleString("en-US") — the spec makes it
   // NumberFormat(locale).format(this), so the en-US embedded formatter
-  // answers exactly. The unlowered forms fence by NAME: no locale (the
-  // host environment's default, which a compiled binary cannot carry),
-  // other locales (ICU data the binary does not embed), options bags.
+  // answers exactly. Without a locale (or with `undefined`) the DEFAULT
+  // locale answers, over the ICU data scr_intl.c loads; other locales and
+  // options bags stay fenced.
   if (name === "toLocaleString" && recvKind === "f64") {
-    if (call.arguments.nodes.length === 0) {
-      lowerer.noLowering(
-        "Number.prototype.toLocaleString without a locale",
-        call,
-        "the default locale is the host environment's, which a compiled binary cannot carry — " +
-          'pass it explicitly: x.toLocaleString("en-US")',
-      );
+    // Exactly undefined (or void): what the absent form means. A union that
+    // merely includes undefined may hold a locale at run time and falls
+    // through to the refusal below.
+    const isUndefined = (node: ts.Expression): boolean => {
+      const flags = lowerer.typeOf(node).flags;
+      return flags === ts.TypeFlags.Undefined || flags === ts.TypeFlags.Void;
+    };
+    const defaultLocale =
+      call.arguments.nodes.length === 0 ||
+      (call.arguments.nodes.length === 1 &&
+        !ts.isSpreadElement(call.arguments.nodes[0]!) &&
+        isUndefined(call.arguments.nodes[0]!));
+    if (defaultLocale) {
+      const operand = lowerer.lowerExpr(recv);
+      if (operand.type.kind !== "f64") return null;
+      const stmts: IrStmt[] = [];
+      let formatted: IrExpr = operand;
+      if (call.arguments.nodes.length === 1) {
+        // An explicit undefined may be any expression that evaluates to it
+        // (a call, a variable), so it still runs, after the receiver and
+        // before the formatting: the receiver's value is read first, so an
+        // argument that writes it does not change the number formatted. Its
+        // unit value has no standalone representation, so it is coerced
+        // into the dynamic slot every argument occupies.
+        const receiver = lowerer.declareHiddenLocal("%localeReceiver", F64);
+        stmts.push({ kind: "varDecl", localId: receiver.id, init: operand, loc });
+        formatted = varRef(receiver.id, F64, loc);
+        const arg = call.arguments.nodes[0]!;
+        const value = lowerer.lowerExpr(arg);
+        stmts.push({
+          kind: "exprStmt",
+          expr: value.type.kind === "void" ? value : lowerer.coerceInto(arg, value, DYN),
+          loc,
+        });
+      }
+      const call_: IrExpr = {
+        kind: "libCall",
+        fn: "icu.numFormatDefault",
+        args: [formatted],
+        type: STRING,
+        loc,
+      };
+      return stmts.length ? { kind: "seqExpr", stmts, result: call_, type: STRING, loc } : call_;
     }
     if (call.arguments.nodes.length > 1) {
       lowerer.noLowering(
         "Number.prototype.toLocaleString with an options bag",
         call,
-        "the embedded data covers DEFAULT options only (decimal notation, up to 3 fraction " +
-          'digits, grouping) — x.toLocaleString("en-US")',
+        "what lowers is the DEFAULT options shape (decimal notation, up to 3 fraction digits, " +
+          "grouping) at the default locale or at en-US — omit the options bag",
       );
     }
     const locNode = call.arguments.nodes[0]!;
@@ -5504,8 +5673,8 @@ function lowerPrimitiveProtoCall(
           ? `Number.prototype.toLocaleString at locale "${locNode.text}"`
           : "Number.prototype.toLocaleString with a non-literal locale",
         locNode,
-        '"en-US" (Node\'s default-build locale) is the one locale whose data the runtime embeds — ' +
-          "everything else is ICU data the binary does not carry",
+        "what lowers is the default locale (no argument) and the composed en-US form — " +
+          "other locales are ICU data the binary does not negotiate yet",
       );
     }
     const operand = lowerer.lowerExpr(recv);

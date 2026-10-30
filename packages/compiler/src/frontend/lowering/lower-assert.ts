@@ -1290,9 +1290,21 @@ function lowerAssertEqual(
           ?.arms.every((arm) => instanceType(arm) || isUnitType(arm)) ??
           false))) &&
     lowerer.dynConvertible(e.type);
-  if (a.type.kind === "dyn" || b.type.kind === "dyn" || (instance(a) && instance(b))) {
+  if (
+    a.type.kind === "dyn" ||
+    b.type.kind === "dyn" ||
+    a.type.kind === "moduleNs" ||
+    b.type.kind === "moduleNs" ||
+    (instance(a) && instance(b))
+  ) {
     const box = (e: IrExpr, node: ts.Expression): IrExpr => {
       if (e.type.kind === "dyn") return e;
+      // A builtin module namespace crosses as its module object, whose
+      // identity is the module's (`assert.strictEqual(path, path.posix)`).
+      if (e.type.kind === "moduleNs") {
+        const value = lowerer.coerceToExpected(e, DYN);
+        if (value.type.kind === "dyn") return value;
+      }
       const k = e.type.kind;
       const ok =
         e.kind === "unitLit" ||

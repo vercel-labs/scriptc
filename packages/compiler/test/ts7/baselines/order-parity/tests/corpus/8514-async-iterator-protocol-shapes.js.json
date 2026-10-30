@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8514-async-iterator-protocol-shapes.js"
+ ],
+ "diags": []
+}

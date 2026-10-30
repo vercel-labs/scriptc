@@ -22,6 +22,20 @@ export function lowerModuleNamespaceElement(
 ): IrExpr | null {
   const type = lowerer.mapTypeOf(lowerer.typeOf(expr.expression));
   if (type?.kind !== "moduleNs") return null;
+  // A builtin namespace with a module object (`path[platform]`): the keyed
+  // read of that object.
+  if (type.moduleId.startsWith("builtin:")) {
+    const receiver = lowerer.coerceToExpected(lowerer.lowerExpr(expr.expression), DYN);
+    if (receiver.type.kind !== "dyn") return null;
+    const key = lowerer.lowerExpr(expr.argumentExpression);
+    return {
+      kind: "dynKeyGet",
+      key: key.type.kind === "string" ? key : lowerer.coerceInto(expr.argumentExpression, key, DYN),
+      value: receiver,
+      type: DYN,
+      loc: locOf(expr),
+    };
+  }
   const source = lowerer.sourceFileOfModuleNamespace(type);
   if (!source) return null;
   const loc = locOf(expr);

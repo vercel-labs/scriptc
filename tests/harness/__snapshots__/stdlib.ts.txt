@@ -3,13 +3,13 @@ stdlib.ts:8:40 - error SC1090: a builtin function alias as an escaping value (ca
   7 | import { writeFile } from "node:fs/promises";
   8 | const read = readFileSync; console.log(read);
     |                                        ^~~~
-  9 | const cwd = process.cwd;
+  9 | const exit = process.exit;
 
-stdlib.ts:9:13 - error SC1090: process methods as values (call 'cwd' directly) are not supported yet
+stdlib.ts:9:14 - error SC1090: process methods as values (call 'exit' directly) are not supported yet
 
    8 | const read = readFileSync; console.log(read);
-   9 | const cwd = process.cwd;
-     |             ^~~~~~~~~~~
+   9 | const exit = process.exit;
+     |              ^~~~~~~~~~~~
   10 | const p = process;
 
 stdlib.ts:13:15 - error SC1090: string methods as values (call 'toUpperCase' directly) are not supported yet

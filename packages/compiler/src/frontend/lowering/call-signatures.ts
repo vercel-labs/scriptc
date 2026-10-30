@@ -20,7 +20,7 @@ import {
   isUnitType,
   typeEquals,
 } from "../../ir/ir.js";
-import { isJsSourceFile, isNodeEsmFile } from "../program.js";
+import { isJsSourceFile, isNodeEsmFile, locOf } from "../program.js";
 import {
   genResultRecord,
   restTupleParamTypes,
@@ -36,7 +36,7 @@ import { isStreamUndefCallExpr } from "./lower-server.js";
 import { nsPathPrefix } from "./lower-namespaces.js";
 import { declSymbolOf } from "./lower-modules.js";
 import { npmStaticPackageOfPath } from "../npm-static.js";
-import { restPackingAdapterFits } from "./coercions/function-adapters.js";
+import { funcSlotAdaptable, restPackingAdapterFits } from "./coercions/function-adapters.js";
 import { implicitMonoFile, implicitAnyParamSymbolsOf } from "./generic-functions.js";
 
 /** How a parameter participates in CALL-SITE COMPLETION (the frontend
@@ -630,6 +630,41 @@ export function checkDefaultParamBodyType(
   }
 }
 
+/** Whether a lambda's OWN signature maps to its completed ABI position for
+ * position — the contract its reads carry (mapType spells `x?: T` as the
+ * `T | undefined` slot). Two positions can escape the mapped-TYPE
+ * comparison in requireExactArityValue: a parameter the checker spells
+ * `any` holds the checked-dynamic value that mapType leaves unmapped when
+ * its spelling is context-free, and a *contextually* typed lambda's own
+ * signature need not be the slot's (a comparator with a surplus optional
+ * parameter under a two-parameter slot). */
+function lambdaSpellsCompletedAbi(
+  lowerer: Lowerer,
+  lambda: ts.ArrowFunction | ts.FunctionExpression,
+  funcType: IrType,
+): boolean {
+  if (funcType.kind !== "func" || funcType.rest === true) return false;
+  const sigs = lowerer.checker.getCallSignatures(lowerer.typeOf(lambda));
+  if (sigs.length !== 1) return false;
+  const sig = sigs[0]!;
+  const params = sig.getParameters();
+  if (params.length !== funcType.params.length) return false;
+  for (let i = 0; i < params.length; i++) {
+    const pTs = lowerer.checker.getTypeOfSymbol(params[i]!);
+    const slot = funcType.params[i]!;
+    if ((pTs.flags & ts.TypeFlags.Any) !== 0) {
+      if (slot.kind !== "dyn") return false;
+      continue;
+    }
+    const mappedParam = lowerer.mapTypeOf(pTs);
+    if (!mappedParam || !typeEquals(mappedParam, slot)) return false;
+  }
+  const retTs = lowerer.checker.getReturnTypeOfSignature(sig);
+  if ((retTs.flags & ts.TypeFlags.Any) !== 0) return funcType.ret.kind === "dyn";
+  const mappedRet = lowerer.mapTypeOf(retTs);
+  return mappedRet !== null && typeEquals(mappedRet, funcType.ret);
+}
+
 /** DECISION (docs/ir.md): function VALUES carry one completed native ABI.
  * Optional/default parameters appear as literal `T | undefined` slots;
  * typed rest parameters appear as one trailing typed-array slot plus the
@@ -668,21 +703,6 @@ export function requireExactArityValue(
   // optional/defaulted params spell their `T | undefined` slots (mapType's
   // completed-signature contract), so omitted trailing args complete with
   // the undefined arm like any direct call.
-  // A nested function declaration whose only non-required parameter is a
-  // typed rest: its value carries the typed-rest ABI its own type spells,
-  // and every use converts it at its slot (same signature, or the rest
-  // packing adapter for fixed parameters).
-  if (
-    contextual === null &&
-    ts.isFunctionDeclaration(blame) &&
-    blame.name !== undefined &&
-    funcType.kind === "func" &&
-    funcType.restAbi === "typed" &&
-    shapes.every((s) => s.mode === "required" || s.mode === "rest")
-  ) {
-    const own = lowerer.mapTypeOf(lowerer.typeOf(blame.name));
-    if (own && typeEquals(own, funcType)) return;
-  }
   const target = contextual ? lowerer.checker.getContextualType(contextual) : undefined;
   const mapped = target
     ? lowerer.mapTypeOf(target)
@@ -690,6 +710,20 @@ export function requireExactArityValue(
       ? lowerer.mapTypeOf(lowerer.typeOf(contextual))
       : null;
   if (mapped && typeEquals(mapped, funcType)) return;
+  // A lambda whose OWN signature already spells the completed ABI is a
+  // value: every read of it types it that way, and its slot converts it
+  // (the surplus-parameter and undefined-arm adapters). The mapped-type
+  // comparison above misses two such lambdas — one whose `any` parameter
+  // mapType leaves unmapped (`(a: any, b: any, loose?: boolean) => number`
+  // beside a two-parameter slot), and one whose signature is wider than
+  // the contextual slot it is written under.
+  if (
+    contextual !== null &&
+    (ts.isArrowFunction(contextual) || ts.isFunctionExpression(contextual)) &&
+    lambdaSpellsCompletedAbi(lowerer, contextual, funcType)
+  ) {
+    return;
+  }
   // An 'any' slot (`C.prototype.m = function (a, b) {…}` through an
   // untyped receiver), or a slot whose type maps to a checked-dynamic
   // value (a member of a literal lowered with a generic function's type
@@ -722,8 +756,33 @@ export function requireExactArityValue(
     const member = literalType
       ? lowerer.checker.getPropertyOfType(literalType, blame.name.text)
       : undefined;
-    const slot = member ? lowerer.memberSlotTypeOf(lowerer.checker.getTypeOfSymbol(member)) : null;
+    let slot = member ? lowerer.memberSlotTypeOf(lowerer.checker.getTypeOfSymbol(member)) : null;
+    // A literal contextualized by an INDEX SIGNATURE (`Record<string,
+    // Handler>`) names no member for the method: its slot is the index
+    // signature's value type.
+    if (!slot && literalType) {
+      const index = lowerer.checker.getIndexInfosOfType(literalType)[0];
+      if (index) slot = lowerer.memberSlotTypeOf(index.type);
+    }
     if (slot && typeEquals(slot, funcType)) return;
+    // The slot may pass parameters the method's completed ABI cannot take
+    // verbatim (a required narrower interface parameter where the method
+    // declares `ctx?: Ctx`, completing to `Ctx | undefined`): the slot
+    // coercion adapts the pair like any other function value.
+    if (
+      slot?.kind === "func" &&
+      funcType.kind === "func" &&
+      funcSlotAdaptable(lowerer, funcType, slot, locOf(blame))
+    )
+      return;
+    // An UNCONTEXTUALIZED literal's own inferred type is what every later
+    // read of the member spells, and it is built from the method's own
+    // completed signature (mapType's completed-signature contract), so the
+    // method's own completed type is its slot.
+    if (!slot) {
+      const own = lowerer.mapTypeOf(lowerer.typeOf(blame));
+      if (own && typeEquals(own, funcType)) return;
+    }
   }
   // A union-typed slot (`runner || defaultRunner` under a
   // `CommandRunner | undefined` context): the value can only inhabit
@@ -767,6 +826,18 @@ export function requireExactArityValue(
     mappedFn?.kind === "func" &&
     funcType.kind === "func" &&
     restPackingAdapterFits(lowerer, funcType, mappedFn)
+  ) {
+    return;
+  }
+  // A signature the slot's coercion adapts without a trap-only path: an
+  // extra trailing OPTIONAL parameter the slot never passes (forwarded as
+  // undefined, JavaScript's surplus-argument rule) or a parameter pair the
+  // adapter converts (a required narrower interface parameter against the
+  // value's `Ctx | undefined` completed slot).
+  if (
+    mappedFn?.kind === "func" &&
+    funcType.kind === "func" &&
+    funcSlotAdaptable(lowerer, funcType, mappedFn, locOf(blame))
   ) {
     return;
   }
@@ -1040,6 +1111,9 @@ export function lambdaSignature(
         type: DYN,
         mode: "required",
       }));
+      // `arguments` holds the call's own tuple: a console line passes one
+      // or two arguments whatever the replacement declares.
+      appendArgumentsParameter(lowerer, node, shapes, "arguments");
       return { shapes, funcType: funcTypeFromParamShapes(shapes, DYN) };
     }
   }

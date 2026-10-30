@@ -43,6 +43,16 @@ ScrPromise *scr_node_island_call(ScrStr *file, ScrStr *specifier, ScrStr *name, 
 struct ScrNodeBridge;
 struct ScrNodeIoState;
 void scr_loop_host(const struct ScrNodeBridge *bridge, double since_ms);
+/* The lowest live frame of Node's stack while a fiber runs (the SCR_NODE_ISLANDS
+ * build of scr_async.c records it at each switch from Node's stack to a
+ * fiber; 0: none), and the test for Node's stack it uses. */
+extern uintptr_t scr_node_stack_low;
+extern bool (*scr_node_stack_has)(uintptr_t sp);
+/* Around a nested entry: the runtime's scheduling state of the suspended
+ * calling fiber, saved and put back (the SCR_NODE_ISLANDS build of
+ * scr_async.c). */
+void *scr_loop_nested_enter(void);
+void scr_loop_nested_leave(void *save);
 bool scr_loop_is_hosted(void);
 void scr_loop_hosted_run(uint32_t kind, uint32_t token);
 void scr_loop_hosted_io_state(struct ScrNodeIoState *state);
@@ -87,6 +97,13 @@ ScrDyn *scr_ni_call_method(ScrDyn *obj, const char *key, size_t len, ScrDyn *con
                            size_t argc);
 ScrDyn *scr_ni_construct(ScrDyn *ctor, ScrDyn *const *args, size_t argc);
 ScrStr *scr_ni_typeof(ScrDyn *value);
+/* util.types.<probe>(value) answered by Node for an island handle. */
+bool scr_ni_util_type_is(const ScrDyn *value, const ScrStr *probe);
+/* Array.isArray of a dyn value, island arrays included. */
+bool scr_ni_is_array(ScrDyn *value);
+/* Prints Node's uncaught-exception report for an error thrown by island
+ * code (true), or nothing (false: not an island error). */
+bool scr_ni_report_uncaught(ScrError *error);
 int scr_ni_instanceof(ScrDyn *value, ScrDyn *ctor);
 bool scr_ni_is_handle(const ScrDyn *value);
 /* ToPrimitive of an island object (hint SCR_DYN_HINT_*), run by V8:
@@ -163,6 +180,17 @@ int scr_ni_host_export_op(uint32_t id, uint32_t op, const struct ScrNodeValue *a
                           struct ScrNodeValue *out);
 /* Promise settlement callback (SCR_NODE_ISLANDS build of scr_async.c). */
 void scr_promise_on_settle_sync(ScrPromise *in, void (*cb)(ScrPromise *dst, ScrPromise *src));
+void *scr_promise_untraced_dyn_payload(const ScrPromise *p);
+
+/* ── cross-heap cycle collection (scope-B NI-8, scr_node_island_gc.c) ──── */
+const void *scr_ni_export_identity(uint32_t id);
+void *scr_ni_gc_ref(const ScrDyn *box, size_t *rc, uint32_t *id);
+void *scr_ni_gc_ref_info(void *ref, size_t *rc, uint32_t *id);
+size_t scr_ni_gc_pins(void ***objs, void ***refs);
+struct ScrNodeGcResult;
+int scr_ni_host_gc_analyze(const uint32_t *exports, size_t nexports,
+                           struct ScrNodeGcResult *out);
+void scr_ni_gc_cleanup(void); /* at exit */
 
 /* ── deferred island modules (scope-B NI-7, scr_node_island_boot.c) ─────
  * nodeIsland.defer(path, snapshot): a statically imported island module the
@@ -183,8 +211,10 @@ void *scr_ni_stub_of(const ScrDyn *value); /* the stub entry of an unmaterialize
 bool scr_ni_stub_reconcile(ScrDyn *stub, ScrDyn *real);
 ScrDyn *scr_ni_boot_member(void *stub, const char *key, size_t len); /* +1 or NULL: unknown */
 bool scr_ni_boot_plain_class(void *stub);
+bool scr_ni_boot_snapshot_valid(void *stub); /* its module has not evaluated */
 const char *scr_ni_pack_dir(void); /* the libnode pack directory this run uses */
 void scr_ni_boot_stub_failed(void *stub); /* raises the module's load error */
+void scr_ni_boot_materialize(void *stub); /* evaluates the stub's module (component) */
 /* Called at the end of Node's start (scr_node_island.c), set by the boot unit. */
 extern void (*scr_ni_started_hook)(void);
 
@@ -195,6 +225,7 @@ ScrDyn *scr_node_island_apply_to(ScrDyn *fn, ScrDyn *this_, ScrDyn *args);
 ScrDyn *scr_node_island_construct(ScrDyn *ctor, ScrDyn *args);
 void scr_node_island_define_field(ScrDyn *self, ScrStr *key, ScrDyn *value);
 ScrDyn *scr_node_island_get(ScrDyn *obj, ScrStr *key);
+ScrDyn *scr_node_island_get_key(ScrDyn *obj, ScrDyn *key);
 bool scr_node_island_instanceof(ScrDyn *value, ScrDyn *ctor);
 bool scr_node_island_instanceof_global(ScrDyn *value, ScrStr *name);
 ScrDyn *scr_node_island_invoke(ScrDyn *obj, ScrStr *key, ScrDyn *args);

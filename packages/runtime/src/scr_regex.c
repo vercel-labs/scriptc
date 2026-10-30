@@ -2145,18 +2145,50 @@ static void scr_case_put_cp(ScrJsonBuf *b, uint32_t cp) {
   }
 }
 
+/* 0x80 in each byte of `w`, eight ASCII bytes, that lies in [first, last].
+ * Every byte is below 0x80, so neither sum carries into the next byte: a
+ * byte's sum with 0x80 - first has its top bit set when the byte is at
+ * least `first`, and its sum with 0x7f - last when it is above `last`. */
+static inline uint64_t scr_ascii_range_mask(uint64_t w, unsigned char first, unsigned char last) {
+  const uint64_t ones = UINT64_C(0x0101010101010101);
+  return (w + ones * (uint64_t)(0x80 - first)) & ~(w + ones * (uint64_t)(0x7f - last)) &
+         (ones * 0x80);
+}
+
 static ScrStr *scr_str_case_conv(const ScrStr *s, int to_lower) {
   unsigned char first = to_lower ? 'A' : 'a';
   unsigned char last = to_lower ? 'Z' : 'z';
   if (scr_text_ascii(s)) {
+    /* ASCII text converts eight bytes at a time: a letter of the other
+     * case differs from its conversion only in bit 0x20. */
     size_t changed = 0;
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    for (; changed + 8 <= s->len; changed += 8) {
+      uint64_t w;
+      memcpy(&w, s->data + changed, 8);
+      uint64_t letters = scr_ascii_range_mask(w, first, last);
+      if (letters != 0) {
+        changed += (size_t)__builtin_ctzll(letters) >> 3;
+        break;
+      }
+    }
+#endif
     while (changed < s->len &&
            ((unsigned char)s->data[changed] < first || (unsigned char)s->data[changed] > last))
       changed++;
     if (changed == s->len) return scr_str_retain((ScrStr *)s);
     ScrStr *out = scr_str_alloc_raw(s->len, s->len);
     memcpy(out->data, s->data, changed);
-    for (size_t i = changed; i < s->len; i++) {
+    size_t i = changed;
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+    for (; i + 8 <= s->len; i += 8) {
+      uint64_t w;
+      memcpy(&w, s->data + i, 8);
+      w ^= scr_ascii_range_mask(w, first, last) >> 2;
+      memcpy(out->data + i, &w, 8);
+    }
+#endif
+    for (; i < s->len; i++) {
       unsigned char c = (unsigned char)s->data[i];
       out->data[i] = (char)(c >= first && c <= last ? c ^ 0x20 : c);
     }

@@ -85,3 +85,87 @@ handler.press?.();
 `);
   expect(kinds["handler"]).toBe("record");
 });
+
+test("a named alias of Pick over a class stays a live view", async () => {
+  const kinds = await globalKinds(`
+class Counter {
+  count = 0;
+  tick(): number { this.count += 1; return this.count; }
+  peek(): number { return this.count; }
+}
+type Tickable = Pick<Counter, "tick">;
+const counter = new Counter();
+const view: Tickable = counter;
+console.log(view.tick(), counter.count);
+`);
+  expect(kinds["view"]).toBe("dyn");
+  expect(kinds["counter"]).toBe("object");
+});
+
+test("a named alias of Omit over a class stays a live view", async () => {
+  const kinds = await globalKinds(`
+class Counter {
+  count = 0;
+  tick(): number { this.count += 1; return this.count; }
+  peek(): number { return this.count; }
+}
+type Peekable = Omit<Counter, "tick">;
+const counter = new Counter();
+const view: Peekable = counter;
+console.log(view.peek());
+`);
+  expect(kinds["view"]).toBe("dyn");
+});
+
+test("an alias of an alias of Pick over a class stays a live view", async () => {
+  const kinds = await globalKinds(`
+class Counter {
+  count = 0;
+  tick(): number { this.count += 1; return this.count; }
+}
+type Tickable = Pick<Counter, "tick">;
+type AlsoTickable = Tickable;
+const counter = new Counter();
+const view: AlsoTickable = counter;
+console.log(view.tick());
+`);
+  expect(kinds["view"]).toBe("dyn");
+});
+
+test("a Map received as a record with one of its members stays the collection", async () => {
+  const kinds = await globalKinds(`
+type Exists = { has(key: string): boolean };
+const byId = new Map<string, number>();
+const view: Exists = byId;
+console.log(view.has("a"), byId.has("a"));
+`);
+  expect(kinds["view"]).toBe("dyn");
+});
+
+test("a Set received as a record with one of its members stays the collection", async () => {
+  const kinds = await globalKinds(`
+type Exists = { has(key: string): boolean };
+const seen = new Set<string>();
+const view: Exists = seen;
+console.log(view.has("a"), seen.has("a"));
+`);
+  expect(kinds["view"]).toBe("dyn");
+});
+
+test("an interface that extends Error received from an error stays the error", async () => {
+  const kinds = await globalKinds(`
+interface HttpError extends Error {
+  status: number | undefined;
+  body: string;
+}
+function fail(): HttpError {
+  const error = new Error("x") as HttpError;
+  error.status = 500;
+  error.body = "b";
+  return error;
+}
+const failure = fail();
+console.log(failure.status, failure instanceof Error);
+`);
+  expect(kinds["failure"]).toBe("dyn");
+});

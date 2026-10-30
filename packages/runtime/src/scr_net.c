@@ -643,7 +643,7 @@ struct ScrNetSocket {
   bool t_est;
   bool t_want_write; /* a handshake send hit EAGAIN: arm the write filter */
   bool in_registry;
-  struct ScrNetSocket *next;
+  struct ScrNetSocket *prev, *next;
   /* the registry position (registration order) and the sweep work queue
    * slot: 0 outside the queue, SCR_NET_WORK_LATER waiting for the next
    * sweep, otherwise the heap index plus one */
@@ -701,7 +701,10 @@ long scr_net_live_count(void) { return scr_net_live; }
 #endif
 
 static SCR_TL ScrNetServer *scr_net_servers = NULL; /* registry: +1 each, tail-appended */
+/* the socket registry: +1 each, tail-appended; prev/next and the last
+ * pointer make registering and unregistering constant-time */
 static SCR_TL ScrNetSocket *scr_net_socks = NULL;
+static SCR_TL ScrNetSocket *scr_net_socks_last = NULL;
 static SCR_TL ScrPoller *scr_net_poller = NULL;
 
 /* ── RC ──────────────────────────────────────────────────────────────── */
@@ -1096,23 +1099,40 @@ static void scr_net_sock_register(ScrNetSocket *s) {
   s->in_registry = true;
   s->next = NULL;
   s->reg_seq = ++scr_net_reg_seq;
-  ScrNetSocket **link = &scr_net_socks;
-  while (*link) link = &(*link)->next;
-  *link = scr_net_sock_retain(s);
+  s->prev = scr_net_socks_last;
+  if (scr_net_socks_last) scr_net_socks_last->next = s;
+  else scr_net_socks = s;
+  scr_net_socks_last = scr_net_sock_retain(s);
   scr_net_work_add(s);
 }
 
+#ifdef SCR_RC_AUDIT
+/* The registry's links: `s` is reachable from the head, its neighbors
+ * point back at it, and the last pointer ends the list. */
+static void scr_net_sock_registry_audit(const ScrNetSocket *s) {
+  const ScrNetSocket *it = scr_net_socks;
+  while (it != NULL && it != s) it = it->next;
+  if (it == NULL || (s->prev ? s->prev->next != s : scr_net_socks != s) ||
+      (s->next ? s->next->prev != s : scr_net_socks_last != s)) {
+    fprintf(stderr, "scr_net: the socket registry's links disagree\n");
+    abort();
+  }
+}
+#endif
+
 static void scr_net_sock_unregister(ScrNetSocket *s) {
   if (!s->in_registry) return;
-  ScrNetSocket **link = &scr_net_socks;
-  while (*link && *link != s) link = &(*link)->next;
-  if (*link) {
-    *link = s->next;
-    s->next = NULL;
-    s->in_registry = false;
-    scr_net_work_remove(s);
-    scr_net_sock_release(s);
-  }
+#ifdef SCR_RC_AUDIT
+  scr_net_sock_registry_audit(s);
+#endif
+  if (s->prev) s->prev->next = s->next;
+  else scr_net_socks = s->next;
+  if (s->next) s->next->prev = s->prev;
+  else scr_net_socks_last = s->prev;
+  s->prev = s->next = NULL;
+  s->in_registry = false;
+  scr_net_work_remove(s);
+  scr_net_sock_release(s);
 }
 
 /* ── socket state machine ────────────────────────────────────────────── */

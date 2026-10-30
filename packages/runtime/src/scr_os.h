@@ -48,11 +48,15 @@ ScrDyn *scr_fs_constants_object(void);
  * and frozen (+1). */
 ScrDyn *scr_node_constants(const ScrDyn *crypto_table);
 double scr_os_available_parallelism(void); /* uv_available_parallelism: CPUs this process may use, >= 1 */
-/* os.userInfo()'s field trio (pw_name / pw_shell / pw_dir — the passwd
- * home, not the $HOME cascade). +1 fresh; abort on lookup failure. */
+/* os.userInfo()'s fields from the passwd entry of the effective uid
+ * (pw_name / pw_shell / pw_dir — the passwd home, not the $HOME cascade —
+ * and pw_uid / pw_gid, -1 on Windows). Strings +1 fresh; abort on lookup
+ * failure. */
 ScrStr *scr_os_user_name(void);
 ScrStr *scr_os_user_shell(void);
 ScrStr *scr_os_user_homedir(void);
+double scr_os_user_uid(void);
+double scr_os_user_gid(void);
 
 /* fs.readdirSync(path, { withFileTypes: true }): one readdir pass
  * snapshotting name + entry kind (scr_lib.c) — the emitter walks it to

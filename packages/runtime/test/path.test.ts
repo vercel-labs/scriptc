@@ -7,6 +7,7 @@ import { beforeAll, expect, test } from "vitest";
 const execFileAsync = promisify(execFile);
 const testDir = import.meta.dirname;
 const bin = join(testDir, "build", "test_path");
+const vendorDir = join(testDir, "../vendor/quickjs-ng");
 
 // Compiles the C-side oracle test once. Built with ASan + the RC audit so
 // the oracle run also proves the win32 path functions neither leak nor
@@ -20,10 +21,19 @@ beforeAll(async () => {
     "-Wextra",
     "-fsanitize=address",
     "-DSCR_RC_AUDIT",
+    "-I",
+    vendorDir,
     "-o",
     bin,
     join(testDir, "test_path.c"),
     join(testDir, "../src/scr_path.c"),
+    // win32.relative lowercases through the regex unit's case mapping; the
+    // regex unit brings scr_assert.c and the vendored engine (regex.test.ts).
+    join(testDir, "../src/scr_path_win32_relative.c"),
+    join(testDir, "../src/scr_regex.c"),
+    join(testDir, "../src/scr_assert.c"),
+    join(vendorDir, "libregexp.c"),
+    join(vendorDir, "libunicode.c"),
     // join/resolve take a packed string[]; the array module and its own
     // dependencies join the link (the array.test.ts set).
     join(testDir, "../src/scr_string.c"),

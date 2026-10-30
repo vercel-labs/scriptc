@@ -60,6 +60,12 @@ ScrStats *scr_file_handle_stat(ScrFileHandle *h);
  * nonnegative positions leave that offset unchanged (pread/ReadFile seam). */
 double scr_fs_read_sync(double fd, ScrBytes *buf, double offset, double length,
                         double position);
+/* fs.readSync's offset check; false with ERR_OUT_OF_RANGE pending. */
+bool scr_fs_read_offset_chk(double offset);
+/* scr_fs_read_sync after its offset and position checks, with an exact
+ * position (-1 for the current offset). */
+double scr_fs_read_sync_at(double fd, ScrBytes *buf, double offset, double length,
+                           int64_t position);
 /* writeSync's classic Buffer window and utf8 string forms. position -1 (or
  * any other non-safe/nonnegative-integer value) writes at and advances the
  * current descriptor offset; safe nonnegative positions leave it unchanged. */

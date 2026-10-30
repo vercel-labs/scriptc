@@ -19,6 +19,9 @@ export const DIAGNOSTIC_CODES = {
   SC0002: "project configuration incompatible with scriptc",
   SC0003: "malformed imported JSON module",
   SC0004: "TypeScript checker panic",
+  SC0005: "duplicate lexical declaration in a block or switch statement list",
+  SC0006: "lexical declaration colliding with a var in the same block",
+  SC0007: "declaration in a single-statement position",
   SC1010: "package imports outside the supported set",
   SC1012: "default exports/imports (residual edges)",
   SC1013: "namespace imports (residual edges)",
@@ -40,6 +43,7 @@ export const DIAGNOSTIC_CODES = {
   SC1071: "generators",
   SC1080: "'this' outside a class method",
   SC1090: "this syntax (generic construct fence)",
+  SC1091: "write to an undeclared name in a JavaScript source",
   SC1100: "operations on 'unknown' values",
   SC1101: "converting typed values to 'unknown'",
   SC1110: "comptime evaluation failure",
@@ -117,7 +121,9 @@ export const DIAGNOSTIC_CODES = {
   SC8010: "value crossing a Node island boundary in a form without an exact copy",
   SC8011: "native class extending a Node island class outside the supported forms",
   SC8020: "stateful module duplicated across the Node island boundary",
+  SC8021: "Node island evaluation notes (deferred or at startup)",
   SC8022: "island code extends a class of a compiled module",
+  SC8023: "Node island build failed; built natively with runtime fences",
   SC8030: "type patch: no range covers the installed copy",
   SC8031: "type patch: selector matches nothing",
   SC8032: "type patch: declaration already has the type",
@@ -156,8 +162,6 @@ export const RETIRED_DIAGNOSTIC_CODES = {
  * abandoned, delete them here. */
 export const RESERVED_DIAGNOSTIC_CODES = {
   SC8012: "Node islands (ni/* branches)",
-  SC8021: "Node islands (ni/* branches)",
-  SC8023: "Node islands (ni/* branches)",
 } as const satisfies Record<`SC${number}`, string>;
 
 export type DiagnosticCode = keyof typeof DIAGNOSTIC_CODES;

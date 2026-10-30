@@ -268,3 +268,51 @@ test("record unions retype as the record pointer itself", async () => {
   // No record of the visitor is ever boxed.
   expect(ir).not.toMatch(/call ptr @scr_union_new_ref/);
 });
+
+// Children that may be absent, as IR nodes have: reading one after its
+// `=== undefined` or `=== null` test narrows a shape union with a unit arm
+// to the shape union without it.
+const OPTIONAL_CHILDREN = `
+type Num = { kind: "num"; value: number };
+type Ref = { kind: "ref"; id: string };
+type Call = { kind: "call"; callee: Expr; receiver?: Expr; args: Expr[] };
+type Init = { kind: "init"; value: Expr | null };
+type Expr = Num | Ref | Call | Init;
+function count(e: Expr): number {
+  switch (e.kind) {
+    case "num":
+    case "ref":
+      return 1;
+    case "call":
+      return (
+        1 +
+        count(e.callee) +
+        (e.receiver === undefined ? 0 : count(e.receiver)) +
+        e.args.reduce((n, a) => n + count(a), 0)
+      );
+    case "init":
+      return 1 + (e.value === null ? 0 : count(e.value));
+  }
+}
+const tree: Expr = {
+  kind: "call",
+  callee: { kind: "ref", id: "f" },
+  receiver: { kind: "init", value: { kind: "num", value: 1 } },
+  args: [{ kind: "init", value: null }],
+};
+console.log(count(tree));
+`;
+
+test("dropping a shape union's unit arm keeps the record pointer", async () => {
+  const { module, ir } = await llvmFor(OPTIONAL_CHILDREN, false);
+  const identities = module.functions.filter(
+    (fn) =>
+      fn.name.startsWith("%union.retag.") &&
+      JSON.stringify(fn.body).includes('"kind":"unionRetype"'),
+  );
+  expect(identities.length).toBeGreaterThan(0);
+  for (const helper of identities) {
+    const symbol = `sc_bf__x25_union_retag_${helper.name.slice("%union.retag.".length)}`;
+    expect(body(ir, symbol)).not.toMatch(/retype\.built/);
+  }
+});

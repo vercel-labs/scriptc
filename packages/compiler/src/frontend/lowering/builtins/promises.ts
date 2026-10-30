@@ -441,6 +441,17 @@ export function lowerPromiseStaticCall(
       inner.kind === "void"
         ? { kind: "promise", inner: VOID }
         : lowerer.mapTypeOf(lowerer.typeOf(call));
+    // An unannotated JavaScript parameter (`Promise.all(items)` in a
+    // package's .js file) types the call as Promise<any[]>, which has no
+    // typed layout: the engine's Promise.all runs over the entries as
+    // checked-dynamic values, as it does for an array literal there.
+    if (
+      resultT === null &&
+      isJsSourceFile(ts.getSourceFileOfNode(call)) &&
+      lowerer.dynConvertible(entries.type)
+    ) {
+      return checkedPromiseAll(lowerer, lowerer.coerceToExpected(entries, DYN), loc);
+    }
     // Promise<T | undefined>[] combines into a `(T | undefined)[]`, which
     // stores T elements (primitiveElement): collect the values, then copy
     // them in with their present undefined values.

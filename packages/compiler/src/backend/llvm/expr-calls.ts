@@ -1003,6 +1003,16 @@ export function emitCallExpr(
         } else if (needsReceiver) B.line("call void @scr_dyn_this_pop()");
         return result;
       };
+      // The direct entry of a known target brackets the call when the target
+      // may observe the receiver. A signature adapter that only forwards the
+      // receiver to its original carries the original's RECEIVER_FREE bit
+      // (set where the adapter closure is built), so its entry tests the bit,
+      // like the entry through the closure's own pointer.
+      const invokeKnown = (target: string): string => {
+        const readers = host.receiverReaders;
+        if (readers.ignores(known!)) return invoke(target, false);
+        return invoke(target, true, args, readers.forwardsOnly(known!));
+      };
       const lending =
         lent && !dynamic
           ? known!.captures !== undefined
@@ -1025,7 +1035,7 @@ export function emitCallExpr(
         (e.callee.kind === "closure" ||
           (e.callee.kind === "varRef" && host.knownCallbacks.has(e.callee.localId)))
       ) {
-        t = invoke(lending ?? direct, !host.receiverReaders.ignores(known!));
+        t = invokeKnown(lending ?? direct);
         if (quiet) pending = false;
       } else {
         const fnp = B.tmp(),
@@ -1072,7 +1082,7 @@ export function emitCallExpr(
           B.line(`${matches} = icmp eq ptr ${fn}, ${direct}`);
           B.condBr(matches, fast, fallback);
           B.startBlock(fast);
-          const specialized = invoke(lending ?? direct, !host.receiverReaders.ignores(known!));
+          const specialized = invokeKnown(lending ?? direct);
           // `fast` may have split for exception checks; join from the end.
           const fastEnd = B.currentLabel();
           B.br(done);

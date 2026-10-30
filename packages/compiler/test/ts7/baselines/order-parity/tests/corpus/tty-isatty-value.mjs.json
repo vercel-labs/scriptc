@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/tty-isatty-value.mjs"
+ ],
+ "diags": []
+}

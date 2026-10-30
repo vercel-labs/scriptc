@@ -302,6 +302,17 @@ test("CommonJS object reads are recorded for the patch check (H3.4)", () => {
     "fs.readFileSync",
   ]);
   expect(reads("import * as fs from 'node:fs'; fs.readFileSync(p);", "mjs")).toEqual([]);
+  // Destructuring the CommonJS object reads each member it binds, and a
+  // require() read directly is a read through the object too.
+  expect(reads("const { readFileSync } = require('fs'); readFileSync(p);")).toEqual([
+    "fs.readFileSync",
+  ]);
+  expect(
+    reads("const { readFileSync: read, promises: { readFile } } = require('node:fs');"),
+  ).toEqual(["fs.readFileSync", "fs.promises", "fs.promises.readFile"]);
+  expect(reads("const fs = require('fs'); const { statSync } = fs;")).toEqual(["fs.statSync"]);
+  expect(reads("require('fs').readFileSync(p);")).toEqual(["fs.readFileSync"]);
+  expect(reads("const { helper } = require('./local');")).toEqual([]);
 });
 
 test("markers come back in source order with their locations", () => {

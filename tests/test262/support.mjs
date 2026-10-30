@@ -249,7 +249,8 @@ export function prepareIsland(source, asyncTest = false, marker = completion, in
     "assert.sameValue = harness.sameValue;",
     "assert.notSameValue = harness.notSameValue;",
     "assert.throws = harness.assertThrows;",
-    "assert.compareArray = harness.compareArray;",
+    "assert.compareArray = harness.assertCompareArray;",
+    "const compareArray = harness.compareArray;",
     "const Test262Error = harness.Test262Error;",
     ...(asyncTest ? ["const $DONE = harness.$DONE;"] : []),
   ];
@@ -258,7 +259,11 @@ export function prepareIsland(source, asyncTest = false, marker = completion, in
   // top-level `this` is the global object and its top-level `var` bindings are
   // global properties. The island therefore replays the body as script code,
   // and the module carries it only as a dead copy the pre-scan can island.
-  const globals = ["globalThis.assert = assert;", "globalThis.Test262Error = Test262Error;"];
+  const globals = [
+    "globalThis.assert = assert;",
+    "globalThis.compareArray = compareArray;",
+    "globalThis.Test262Error = Test262Error;",
+  ];
   return [
     'const { readFileSync } = require("node:fs");',
     'const vm = require("node:vm");',

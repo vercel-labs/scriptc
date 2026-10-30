@@ -124,8 +124,10 @@ export namespace assert {
 // function crosses the bridge as a callable, but the namespace members
 // attached to it do not (they are properties of the native function object).
 // Test262's `assert` must be callable and carry the helpers, so each helper
-// is exported on its own and the island wrapper builds the object.
+// is exported on its own and the island wrapper builds the object. The bare
+// `compareArray` above is assert.js's own function, so assert's member
+// exports as `assertCompareArray`.
 export const sameValue = assert.sameValue;
 export const notSameValue = assert.notSameValue;
 export const assertThrows = assert.throws;
-export const compareArray = assert.compareArray;
+export const assertCompareArray = assert.compareArray;

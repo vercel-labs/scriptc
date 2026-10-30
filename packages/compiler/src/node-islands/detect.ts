@@ -385,6 +385,10 @@ class ModuleScanner {
     }
     if (ts.isObjectBindingPattern(name)) {
       const base = init === undefined ? null : this.builtinOf(init);
+      // Destructuring a builtin's CommonJS object reads each member it
+      // binds (H3.4), as `fs.readFileSync` does.
+      if (base !== null && !base.includes(".") && this.isCjsObjectValue(stripWrappers(init!)))
+        this.recordPatternReads(name, base);
       for (const element of name.elements.nodes) {
         if (!ts.isBindingElement(element)) continue;
         const local = element.name;
@@ -648,16 +652,32 @@ class ModuleScanner {
     }
   }
 
+  /** Records the members an object binding pattern reads from `base`, a
+   * builtin module's CommonJS object or a member of one: each element's
+   * property, and the members a nested pattern reads from it. */
+  private recordPatternReads(pattern: ts.ObjectBindingPattern, base: string): void {
+    for (const element of pattern.elements.nodes) {
+      if (!ts.isBindingElement(element) || element.dotDotDotToken !== undefined) continue;
+      const key = element.propertyName ?? element.name;
+      const member =
+        key !== undefined && (ts.isIdentifier(key) || ts.isStringLiteral(key)) ? key.text : null;
+      if (member === null) continue;
+      this.cjsReads.push({
+        member: `${base}.${member}`,
+        loc: { file: this.sf.fileName, start: ts.tokenStartOfNode(element), end: element.end },
+      });
+      if (element.name !== undefined && ts.isObjectBindingPattern(element.name))
+        this.recordPatternReads(element.name, `${base}.${member}`);
+    }
+  }
+
   /** Records a read of a member of a builtin module's CommonJS object, so
    * a patch installed by an island module can be checked against it
    * (H3.4). The left of an assignment (and a delete or ++/-- target) is a
    * write, not a read. */
   private recordCjsRead(node: ts.PropertyAccessExpression): void {
-    const root = chainRoot(node);
-    if (root === null || !this.cjsBuiltinObjects.has(root.text)) return;
-    const module = this.builtinBindings.get(root.text);
-    const text = chainText(node);
-    if (module === undefined || text === null) return;
+    const member = this.cjsMemberOf(node);
+    if (member === null) return;
     const parent = node.parent;
     if (parent !== undefined) {
       if (
@@ -674,9 +694,26 @@ class ModuleScanner {
         return;
     }
     this.cjsReads.push({
-      member: module + text.slice(root.text.length),
+      member,
       loc: { file: this.sf.fileName, start: ts.tokenStartOfNode(node), end: node.end },
     });
+  }
+
+  /** The `module.member` a property read names through a builtin module's
+   * CommonJS object: a name bound to one, or a require() of the builtin
+   * read directly (`require("fs").readFileSync`). Null for any other read. */
+  private cjsMemberOf(node: ts.PropertyAccessExpression): string | null {
+    const root = chainRoot(node);
+    if (root !== null) {
+      if (!this.cjsBuiltinObjects.has(root.text)) return null;
+      const module = this.builtinBindings.get(root.text);
+      const text = chainText(node);
+      return module === undefined || text === null ? null : module + text.slice(root.text.length);
+    }
+    let base = stripWrappers(node.expression);
+    while (ts.isPropertyAccessExpression(base) || ts.isElementAccessExpression(base))
+      base = stripWrappers(base.expression);
+    return ts.isCallExpression(base) && this.isCjsObjectValue(base) ? this.builtinOf(node) : null;
   }
 
   private visitSpecifier(spec: string, node: ts.Node): void {

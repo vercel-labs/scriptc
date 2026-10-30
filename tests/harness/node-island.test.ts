@@ -423,6 +423,25 @@ console.log(result.text, fs.readFileSync("payload.txt", "utf8"));
       expect(read).toContain("loader.ts");
     }, 300_000);
 
+    test("a native read of the patched member through destructuring is SC8020", async () => {
+      const dir = copyCorpus(
+        "read-destructured",
+        `import { createRequire } from "node:module";
+import { loadPayload } from "./loader.ts";
+const require = createRequire(import.meta.url);
+const { readFileSync } = require("fs") as typeof import("fs");
+const result = await loadPayload();
+console.log(result.text, readFileSync("payload.txt", "utf8"));
+`,
+      );
+      const result = await buildDir(dir, "main");
+      expect(result.ok).toBe(false);
+      const read = messages(result).find((m) => m.startsWith("SC8020:"));
+      expect(read).toBeDefined();
+      expect(read).toContain("fs.readFileSync");
+      expect(read).toContain("loader.ts");
+    }, 300_000);
+
     test("--node-islands=off makes the patch a native refusal again", async () => {
       const dir = copyCorpus(
         "off",
@@ -677,6 +696,37 @@ export function describeSocket(): string {
       expect(shipped("launcher.ts")).toContain("new Worker(new URL");
     }, 600_000);
 
+    // state.ts is compiled for the program's thread and also runs in the
+    // worker's thread from the tree: a Worker it starts is the worker
+    // thread's own, so its entry ships too.
+    test("ships the worker entries of a compiled module a worker imports", async () => {
+      const dir = copyCorpus("nested", {
+        "state.ts": `import { Worker } from "node:worker_threads";
+
+export let count = 0;
+
+export function bump(): number {
+  count++;
+  return count;
+}
+
+export function startNested(): Worker {
+  return new Worker(new URL("./nested.ts", import.meta.url));
+}
+`,
+        "nested.ts": `import { parentPort } from "node:worker_threads";
+
+parentPort?.postMessage("nested");
+`,
+      });
+      const result = await buildDir(dir, "beside");
+      expect(messages(result)).toEqual([]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const modules = join(dir, "main.libnode/modules");
+      expect(readFileSync(join(modules, "nested.ts"), "utf8")).toContain('postMessage("nested")');
+    }, 600_000);
+
     test("runs the worker on its own module instances", async () => {
       const dir = copyCorpus("run");
       const result = await buildDir(dir);
@@ -692,6 +742,40 @@ export function describeSocket(): string {
       expect(executed).toEqual({
         stdout:
           "socket: socket:true\nmain: 1 2 2\nworker: echo=21 worker=1,2,3 count=3 echo=22 worker=4,5,6 count=6\nmain after: 2\n",
+        stderr: "",
+        code: 0,
+      });
+    }, 600_000);
+
+    // A .mts module is an ES module whatever its package.json says, so the
+    // island loads it as one: a default import is its default export.
+    test("an islanded .mts module in a CommonJS package keeps its default export", async () => {
+      const dir = copyCorpus("mts", {
+        "package.json": '{ "name": "island-mts", "private": true }\n',
+        "launcher.mts": `/// <reference path="./globals.d.ts" />
+export class Socket extends WebSocket {
+  static tag = "socket";
+}
+
+export default function greet(name: string): string {
+  return \`hello \${name} from \${Socket.tag}:\${Object.getPrototypeOf(Socket) === WebSocket}\`;
+}
+`,
+        "main.ts": `import greet from "./launcher.mts";
+
+console.log(greet("island"));
+`,
+      });
+      const result = await buildDir(dir);
+      expect(messages(result)).toEqual([]);
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const executed = await run(join(dir, "main"), [], {
+        ...process.env,
+        XDG_CACHE_HOME: join(dir, "cache"),
+      });
+      expect(executed).toEqual({
+        stdout: "hello island from socket:true\n",
         stderr: "",
         code: 0,
       });

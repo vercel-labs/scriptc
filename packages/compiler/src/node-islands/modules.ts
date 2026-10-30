@@ -173,9 +173,11 @@ export type NodeIslandWorkerScan =
 
 export interface NodeIslandModuleHooks {
   /** The worker entries `file`'s source starts, or the reason one cannot
-   * ship. Only asked for modules whose shipped copy is the only copy: a
-   * module the program compiles lowers its Worker constructions natively. */
-  workers?: ((file: string) => NodeIslandWorkerScan) | undefined;
+   * ship. `fresh` is true for a file of a worker entry's subtree, whose real
+   * source runs in the worker's own thread even when the program compiles
+   * the file too; otherwise a module the program compiles lowers its Worker
+   * constructions natively and its shipped copy starts none. */
+  workers?: ((file: string, fresh: boolean) => NodeIslandWorkerScan) | undefined;
   /** Why Node cannot run `file`'s source as shipped (type stripping), or
    * null. Asked for every file a worker entry's subtree ships. */
   sourceProblem?: ((file: string) => string | null) | undefined;
@@ -389,7 +391,7 @@ export class NodeIslandModuleCollector {
       const problem = this.resolveFrom(file, specifier, fresh);
       if (problem !== null) return problem;
     }
-    const workers = this.hooks.workers?.(file);
+    const workers = this.hooks.workers?.(file, fresh);
     if (workers === undefined) return null;
     if (workers.kind === "refused") return workers.reason;
     for (const entry of workers.files) {

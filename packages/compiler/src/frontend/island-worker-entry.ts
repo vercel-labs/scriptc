@@ -43,8 +43,10 @@ import { stripProblem } from "../node-islands/type-strip.js";
 
 export interface IslandWorkerScan {
   /** The worker entries `file`'s shipped copy starts, or the reason one
-   * cannot ship (node-islands/modules.ts asks for each traced module). */
-  workers(file: string): NodeIslandWorkerScan;
+   * cannot ship (node-islands/modules.ts asks for each traced module).
+   * `fresh`: the file belongs to a worker entry's subtree, so its shipped
+   * copy runs in the worker thread even when the program compiles it. */
+  workers(file: string, fresh: boolean): NodeIslandWorkerScan;
   /** Why Node cannot run `file`'s source as shipped, or null. */
   sourceProblem(file: string): string | null;
 }
@@ -55,9 +57,12 @@ const NONE: NodeIslandWorkerScan = { kind: "entries", files: [] };
 
 /** The scan over one program: `compiled` answers whether the program lowers
  * a file natively, whose Worker constructions the native lowering answers
- * (lowerWorkerNew) and which therefore never run from the shipped tree. It
- * is asked on every call, not read once: the module order grows while
- * lowering (worker targets join it) and the tree is collected after. */
+ * (lowerWorkerNew), so outside a worker entry's subtree they never run from
+ * the shipped tree. Inside one (`fresh`), the worker thread evaluates the
+ * file's shipped copy, natively compiled or not, and its Worker
+ * constructions are scanned. `compiled` is asked on every call, not read
+ * once: the module order grows while lowering (worker targets join it) and
+ * the tree is collected after. */
 export function createIslandWorkerScan(
   program: ts.Program,
   compiled: (file: string) => boolean,
@@ -72,8 +77,8 @@ export function createIslandWorkerScan(
     return programSources.get(key(file)) ?? null;
   };
 
-  const workers = (file: string): NodeIslandWorkerScan => {
-    if (compiled(key(file))) return NONE;
+  const workers = (file: string, fresh: boolean): NodeIslandWorkerScan => {
+    if (!fresh && compiled(key(file))) return NONE;
     // A file outside the program has no checked source: its Worker cannot be
     // recognised, and Node reports its entry as a missing module in the
     // worker thread exactly as it did before the tree carried the file.

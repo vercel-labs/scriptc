@@ -3767,8 +3767,8 @@ export class Lowerer {
   readonly nodeIslandLoads: { literal: IrExpr & { kind: "strLit" }; path: string }[] = [];
   /** The worker entries a module its shipped copy runs starts, or why one
    * cannot ship; null when the program has no Node islands. */
-  private islandWorkerEntries(file: string): NodeIslandWorkerScan {
-    return this.islandWorkerScan().workers(file);
+  private islandWorkerEntries(file: string, fresh: boolean): NodeIslandWorkerScan {
+    return this.islandWorkerScan().workers(file, fresh);
   }
   /** Why Node cannot run a module's source as shipped (type stripping). */
   private islandWorkerSourceProblem(file: string): string | null {
@@ -5093,7 +5093,7 @@ export class Lowerer {
     this.dynNodeStreams = this.generalNodeStreams && (mode.dynNodeStreams ?? false);
     this.workerTargets = mode.workerTargets ?? [];
     this.nodeIslandModules = new NodeIslandModuleCollector({
-      workers: (file) => this.islandWorkerEntries(file),
+      workers: (file, fresh) => this.islandWorkerEntries(file, fresh),
       sourceProblem: (file) => this.islandWorkerSourceProblem(file),
     });
     this.workerTargets.forEach((sf, id) => {

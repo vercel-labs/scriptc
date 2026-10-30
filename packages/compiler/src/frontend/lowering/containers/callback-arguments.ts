@@ -270,6 +270,25 @@ export function lowerArrayCallback(
       fnArg = lowerer.coerceToExpected(fnArg, callbackType);
     }
   }
+  // A DYN-receiver HOF whose callback declares NARROWER parameters than
+  // the dyn element the helper passes (`.filter((m): m is string => ...)`
+  // on `xs.map(...)` where the checker types the callback parameter
+  // `string | undefined` from the receiver's precise element while the
+  // receiver LOWERS to the checked-dynamic array): the callback is a
+  // value whose parameter types are the checker's proof of what the dyn
+  // element holds, so each argument crosses the checked-dynamic boundary
+  // into them with the usual checked conversion — a lying type throws,
+  // like any other checked extraction, instead of reading a mistyped
+  // value. Adapt the callback to the helper's ABI rather than refusing.
+  if (
+    fnArg.type.kind === "func" &&
+    fnArg.type.params.length <= full.length &&
+    !fnArg.type.params.every((p, i) => typeEquals(p, full[i]!)) &&
+    fnArg.type.params.every((p, i) => typeEquals(p, full[i]!) || full[i]!.kind === "dyn")
+  ) {
+    const func = fnArg.type as IrType & { kind: "func" };
+    fnArg = lowerer.coerceToExpected(fnArg, funcOf(full.slice(0, func.params.length), func.ret));
+  }
   if (
     fnArg.type.kind !== "func" ||
     fnArg.type.params.length > full.length ||

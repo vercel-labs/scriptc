@@ -3773,25 +3773,28 @@ export function stdlibGlobalAliasNameOf(
   // These globals have provenance-aware call or member lowering, so a
   // stable snapshot keeps the same dispatch as the original global.
   // Other callable globals still use their ordinary value paths.
-  return [
-    "process",
-    "console",
-    "globalThis",
-    "performance",
-    "Array",
-    "Buffer",
-    "BigInt",
-    "Number",
-    "String",
-    "Boolean",
-    // Code generation from strings throws Node's EvalError at every call
-    // (code-generation.ts); zod 4 probes `const F = Function; new F("")`.
-    "Function",
-    "eval",
-  ].includes(name)
-    ? name
-    : null;
+  return SNAPSHOT_GLOBALS.has(name) ? name : null;
 }
+
+/** The globals a `const x = <global>` snapshot aliases (stdlibGlobalAliasNameOf).
+ * Node defines every one of them, so an optional step over one of them
+ * (`proc?.env`, `globalThis.process?.env`) is the plain member read. */
+export const SNAPSHOT_GLOBALS: ReadonlySet<string> = new Set([
+  "process",
+  "console",
+  "globalThis",
+  "performance",
+  "Array",
+  "Buffer",
+  "BigInt",
+  "Number",
+  "String",
+  "Boolean",
+  // Code generation from strings throws Node's EvalError at every call
+  // (code-generation.ts); zod 4 probes `const F = Function; new F("")`.
+  "Function",
+  "eval",
+]);
 
 /** `buffer.Buffer` through a buffer-module namespace binding (`var buffer
  * = require('buffer')`): the module's Buffer IS the global constructor. */

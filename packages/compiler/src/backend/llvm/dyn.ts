@@ -223,6 +223,9 @@ export interface DynHost extends WalkerHost {
   /** The closures with a jsval body (IrFunction.jsEntry) on targets with
    * jsval words, which the box builders give a jsval entry. */
   jsEntryClosures?(): readonly JsEntryClosure[];
+  /** The entry point and JavaScript name of each named function the module
+   * makes closures of (LlEmitter.closureNames). */
+  closureNames?(): readonly { entry: string; name: string }[];
 }
 
 /** A closure with a jsval body (IrFunction.jsEntry), for the box builders. */
@@ -309,6 +312,8 @@ export class LlDyn {
         return this.dynFuncBoxHelper(args[0] as IrType & { kind: "func" });
       case "dyn.jsEntryThunk":
         return this.jsEntryThunk(args[0] as string, args[1] as IrType[], args[2] as IrType);
+      case "dyn.unnamedFuncBoxHelper":
+        return this.unnamedFuncBoxHelper(args[0] as IrType & { kind: "func" }) ?? "";
       case "dyn.dynFuncAdapterHelper":
         return this.dynFuncAdapterHelper(args[0] as IrType & { kind: "func" });
       case "dyn.dynToStrHelper":
@@ -1974,10 +1979,11 @@ export class LlDyn {
     );
   }
 
-  /** `record.sourceNote(built, keys)`: the built record keeps `keys` (the
-   * declared keys its spread sources supplied, in creation order; declared
-   * ones are placeholders) as its source when it holds them in another
-   * order (scr_record_source_note). */
+  /** `record.sourceNote(built, keys)`: the built record keeps `keys` as its
+   * source when they hold an undeclared key (a width spread's copy) or
+   * another order: the declared keys a declared spread merge's sources
+   * supplied, in creation order, or a width spread's own keys in order
+   * (declared ones are placeholders; scr_record_source_note). */
   emitRecordSourceNote(B: BlockBuilder, built: string, keys: string, shapeId: string): void {
     const host = this.host;
     const shape = host.recordsById.get(shapeId)!;
@@ -3576,7 +3582,7 @@ export class LlDyn {
       }
       case "func": {
         const r = B.tmp();
-        B.line(`${r} = call ptr @${this.dynFuncBoxHelper(t)}(ptr %v, ptr null)`);
+        B.line(`${r} = ${this.unnamedFuncBoxCall(t, "%v")}`);
         B.terminate(`ret ptr ${r}`);
         break;
       }
@@ -3987,7 +3993,7 @@ export class LlDyn {
             // function boundary (the dynFrom func special case, sans name).
             const p = emitUnionPeek(B, nullable, "%v");
             const r = B.tmp();
-            B.line(`${r} = call ptr @${this.dynFuncBoxHelper(arm)}(ptr ${p}, ptr null)`);
+            B.line(`${r} = ${this.unnamedFuncBoxCall(arm, p)}`);
             B.terminate(`ret ptr ${r}`);
           } else {
             const p = emitUnionPeek(B, nullable, "%v");
@@ -5374,9 +5380,8 @@ export class LlDyn {
   private toDynExpr(B: BlockBuilder, t: IrType, expr: string): string {
     if (t.kind === "dyn") return this.retainDyn(B, expr);
     if (t.kind === "func") {
-      const box = this.dynFuncBoxHelper(t);
       const r = B.tmp();
-      B.line(`${r} = call ptr @${box}(ptr ${expr}, ptr null)`);
+      B.line(`${r} = ${this.unnamedFuncBoxCall(t, expr)}`);
       return r;
     }
 
@@ -5664,6 +5669,98 @@ export class LlDyn {
     );
     this.host.journalBuilt?.();
     return name;
+  }
+
+  private closureNames: { symbol: string; count: number } | null | undefined;
+
+  /** The module's closure-name lookup (`sc_closure_name(closure)`, over a
+   * table of `{ ptr entry, ptr name }` pairs), defined on first use; null
+   * when no named function becomes a closure. */
+  private closureNameTable(): { symbol: string; count: number } | null {
+    if (this.closureNames !== undefined) return this.closureNames;
+    const entries = this.host.closureNames?.() ?? [];
+    if (entries.length === 0) return (this.closureNames = null);
+    const host = this.host;
+    const S = host.sizeType;
+    const table = "sc_closure_names";
+    const symbol = "sc_closure_name";
+    // The closure's entry point (an adapter's root's, ScrClosure.identity)
+    // compared with each entry; null when none matches.
+    this.defs.push(
+      `@${table} = internal constant [${entries.length} x { ptr, ptr }] [${entries
+        .map((e) => `{ ptr, ptr } { ptr @${e.entry}, ptr ${host.cstr(e.name)} }`)
+        .join(", ")}]`,
+      ``,
+      `define internal ptr @${symbol}(ptr %v) ${FN_ATTRS} { ; the JavaScript name of a closure's function`,
+      `entry:`,
+      `  %idp = getelementptr inbounds %ScrClosure, ptr %v, i64 0, i32 6`,
+      `  %id = load ptr, ptr %idp`,
+      `  %own = icmp eq ptr %id, null`,
+      `  %root = select i1 %own, ptr %v, ptr %id`,
+      `  %fnp = getelementptr inbounds %ScrClosure, ptr %root, i64 0, i32 1`,
+      `  %fn = load ptr, ptr %fnp`,
+      `  br label %loop`,
+      `loop:`,
+      `  %i = phi ${S} [ 0, %entry ], [ %next, %step ]`,
+      `  %done = icmp eq ${S} %i, ${entries.length}`,
+      `  br i1 %done, label %none, label %test`,
+      `test:`,
+      `  %ep = getelementptr inbounds [${entries.length} x { ptr, ptr }], ptr @${table}, i64 0, ${S} %i, i32 0`,
+      `  %e = load ptr, ptr %ep`,
+      `  %hit = icmp eq ptr %e, %fn`,
+      `  br i1 %hit, label %found, label %step`,
+      `step:`,
+      `  %next = add ${S} %i, 1`,
+      `  br label %loop`,
+      `found:`,
+      `  %np = getelementptr inbounds [${entries.length} x { ptr, ptr }], ptr @${table}, i64 0, ${S} %i, i32 1`,
+      `  %name = load ptr, ptr %np`,
+      `  ret ptr %name`,
+      `none:`,
+      `  ret ptr null`,
+      `}`,
+      ``,
+    );
+    return (this.closureNames = { symbol, count: entries.length });
+  }
+
+  private readonly unnamedFuncBoxes = new Map<string, string>();
+
+  /** `sc_dfu_<n>(ptr closure) -> ptr`: the box of a function value with no
+   * static name (one inside a record, array or other value being
+   * converted), named from the module's closure-name table. The plain box
+   * when no named function becomes a closure. */
+  unnamedFuncBoxHelper(t: IrType & { kind: "func" }): string | null {
+    if ((this.host.closureNames?.() ?? []).length === 0) return null;
+    const box = this.dynFuncBoxHelper(t);
+    const key = typeKey(t);
+    const existing = this.unnamedFuncBoxes.get(key);
+    if (existing) return existing;
+    const name = `sc_dfu_${this.unnamedFuncBoxes.size}`;
+    this.unnamedFuncBoxes.set(key, name);
+    this.host.journalAllocated?.(name, "dyn.unnamedFuncBoxHelper", [t]);
+    // The first box defines the table and its lookup.
+    const table = this.closureNameTable()!;
+    this.defs.push(
+      `define internal ptr @${name}(ptr %v) ${FN_ATTRS} { ; box ${key} into dyn with its own name`,
+      `entry:`,
+      `  %n = call ptr @${table.symbol}(ptr %v)`,
+      `  %r = call ptr @${box}(ptr %v, ptr %n)`,
+      `  ret ptr %r`,
+      `}`,
+      ``,
+    );
+    this.host.journalBuilt?.();
+    return name;
+  }
+
+  /** The call that boxes the function value `value` of type `t` without a
+   * static name (unnamedFuncBoxHelper). */
+  unnamedFuncBoxCall(t: IrType & { kind: "func" }, value: string): string {
+    const named = this.unnamedFuncBoxHelper(t);
+    return named === null
+      ? `call ptr @${this.dynFuncBoxHelper(t)}(ptr ${value}, ptr null)`
+      : `call ptr @${named}(ptr ${value})`;
   }
 
   /** The box builder dynFrom emits for one closure signature. */

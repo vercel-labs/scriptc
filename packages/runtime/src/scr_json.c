@@ -5538,10 +5538,26 @@ static int scr_dyn_global_constructor_instanceof(const ScrDyn *value, const ScrD
     return -1;
   /* A native Date, or an instance of a class declared `extends Date`. */
   if (strcmp(callee->v.fn.name, "Date") == 0) return scr_dyn_date_instance_is(value);
+  if (strcmp(callee->v.fn.name, "DataView") == 0) return scr_dyn_data_view_is(value);
+  /* No value is a BigInt64Array or BigUint64Array: neither is constructed. */
+  if (strcmp(callee->v.fn.name, "BigInt64Array") == 0 || strcmp(callee->v.fn.name, "BigUint64Array") == 0)
+    return 0;
+  /* Proxy has no prototype: false for a primitive, Node's TypeError for an
+   * object. */
+  if (strcmp(callee->v.fn.name, "Proxy") == 0) {
+    if (value->kind == SCR_DYN_UNDEF || value->kind == SCR_DYN_NULL || value->kind == SCR_DYN_BOOL ||
+        value->kind == SCR_DYN_NUM || value->kind == SCR_DYN_STR || value->kind == SCR_DYN_BIGINT ||
+        value->kind == SCR_DYN_SYMBOL)
+      return 0;
+    static const char message[] = "Function has non-object prototype 'undefined' in instanceof check";
+    scr_throw_error_msg(SCR_ERR_TYPE, message, sizeof message - 1);
+    return 0;
+  }
   static const struct { const char *name; int tag; } kinds[] = {
     {"RegExp", SCR_DYNH_REGEXP}, {"Map", SCR_DYNH_MAP}, {"Set", SCR_DYNH_SET},
     {"WeakMap", SCR_DYNH_WEAK_MAP}, {"WeakSet", SCR_DYNH_WEAK_SET},
     {"FinalizationRegistry", SCR_DYNH_FINALIZATION_REGISTRY},
+    {"SharedArrayBuffer", SCR_DYNH_SHARED_ARRAY_BUFFER},
   };
   bool promise = strcmp(callee->v.fn.name, "Promise") == 0;
   int tag = -1;
@@ -12058,7 +12074,12 @@ bool scr_dyn_in(const ScrDyn *v, const ScrStr *key) {
     if (scr_exc_pending()) { scr_dyn_release(materialized); return false; }
     const ScrDynTypedClassOps *klass = scr_typed_ref_class_ops(v);
     bool out;
-    if (klass && materialized->kind == SCR_DYN_OBJ && !materialized->prototype && !materialized->null_proto) {
+    if (klass && scr_dyn_name_in_strs(key, klass->names, klass->count)) {
+      /* a compiled method or accessor of the class or a base class, also
+       * on a view whose snapshot has a prototype (an Error subclass's view
+       * carries Error.prototype) */
+      out = true;
+    } else if (klass && materialized->kind == SCR_DYN_OBJ && !materialized->prototype && !materialized->null_proto) {
       /* An instance view keeps only own fields; its class prototype chain
        * contributes the compiled methods and accessors. */
       out = scr_dyn_property_owner(materialized, key->data, key->len) ||

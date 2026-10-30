@@ -121,6 +121,7 @@ export interface EarlyExecutableNativeFeatures {
   textCodecDyn: boolean;
   watch: boolean;
   watchFile: boolean;
+  fsBufferBrand: boolean;
   foreignFfi: boolean;
   nodeTest: boolean;
   tls: boolean;
@@ -151,6 +152,8 @@ interface EarlyExecutableCacheStamp {
   native: EarlyExecutableNativeFeatures;
   /** The build's performance warnings (SC61xx), which a cache hit repeats. */
   performance?: ScrDiagnostic[];
+  /** The Node islands the build ran, which a cache hit reports again. */
+  islands?: { packages: string[]; modules: string[] };
   /** Programs that call into Node.js: the libnode pack identity the build
    * recorded (EarlyExecutableCacheOptions.libnodeIdentity). */
   libnode?: string;
@@ -266,12 +269,24 @@ export interface EarlyExecutableCacheHit {
   frontend: FrontendInputSnapshot;
   /** The performance warnings the build reported (SC61xx), repeated on a hit. */
   performance?: ScrDiagnostic[];
+  /** The Node islands the build ran, repeated on a hit. */
+  islands?: { packages: string[]; modules: string[] };
   /** How a --profile-use build's profile matched, reported again on a hit. */
   profileMatch?: NativeProfileMatch;
 }
 
 export interface EarlyExecutableCachePublish extends EarlyExecutableCacheHit {
   nativeDependencies?: NativeArtifactDependency[];
+}
+
+function isIslands(value: unknown): value is { packages: string[]; modules: string[] } {
+  if (typeof value !== "object" || value === null) return false;
+  const islands = value as Record<string, unknown>;
+  return (
+    Array.isArray(islands.packages) &&
+    Array.isArray(islands.modules) &&
+    [...islands.packages, ...islands.modules].every((item) => typeof item === "string")
+  );
 }
 
 function isProfileMatch(value: unknown): value is NativeProfileMatch {
@@ -315,6 +330,7 @@ const BOOLEAN_NATIVE_KEYS = [
   "textCodecDyn",
   "watch",
   "watchFile",
+  "fsBufferBrand",
   "foreignFfi",
   "nodeTest",
   "tls",
@@ -756,6 +772,7 @@ async function readExecutableCache(
       ...(Array.isArray(stamp.performance) && stamp.performance.length > 0
         ? { performance: stamp.performance }
         : {}),
+      ...(isIslands(stamp.islands) ? { islands: stamp.islands } : {}),
       ...(isProfileMatch(stamp.profileMatch) ? { profileMatch: stamp.profileMatch } : {}),
       ...(ir === null ? {} : { irPath: paths.irPath }),
       ...(llvmSourcePath === undefined ? {} : { llvmSourcePath }),
@@ -947,6 +964,7 @@ export async function publishEarlyExecutableCache(
       ...(result.performance === undefined || result.performance.length === 0
         ? {}
         : { performance: result.performance }),
+      ...(result.islands === undefined ? {} : { islands: result.islands }),
       ...(result.native.nodeIsland === true ? { libnode: options.libnodeIdentity?.() ?? "" } : {}),
       ...(result.profileMatch === undefined ? {} : { profileMatch: result.profileMatch }),
     };

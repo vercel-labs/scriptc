@@ -26,6 +26,7 @@ import {
   canDynCheckTo,
   isDynTypedRefType,
   isUnitType,
+  recordTextCodecClass,
   shapeHasAccessorSlots,
   typeEquals,
   typeKey,
@@ -279,6 +280,28 @@ export function lowerElementAccess(lowerer: Lowerer, expr: ts.ElementAccessExpre
     const target = symbolFieldTarget(lowerer, expr);
     if (target) return lowerer.maybeNarrow(lowerer.fieldGetExpr(target, locOf(expr), expr), expr);
     let receiver = lowerer.lowerExpr(expr.expression);
+    // TextEncoder and TextDecoder define Symbol.toStringTag on their
+    // prototypes as the class name.
+    const codec =
+      receiver.type.kind === "record"
+        ? recordTextCodecClass(lowerer.shapes.get(receiver.type.shapeId)!)
+        : null;
+    const key = expr.argumentExpression;
+    if (
+      codec !== null &&
+      ts.isPropertyAccessExpression(key) &&
+      key.name.text === "toStringTag" &&
+      lowerer.isStdlibGlobal(key.expression, "Symbol")
+    ) {
+      const loc = locOf(expr);
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "exprStmt", expr: receiver, loc }],
+        result: { kind: "strLit", value: codec, type: STRING, loc },
+        type: STRING,
+        loc,
+      };
+    }
     const classInfo =
       receiver.type.kind === "classval" ? lowerer.classes.get(receiver.type.className) : undefined;
     if (

@@ -161,6 +161,11 @@ export interface GenericAliasPresence {
   flagId: string;
   name: string;
   decl: ts.VariableDeclaration;
+  /** A `let`/`const` declaration (a temporal dead zone, where an early
+   * read throws before a call's arguments run) or a `var` (undefined,
+   * where an early call runs the arguments and throws "is not a
+   * function"). */
+  lexical: boolean;
   /** useRunsAfter's answers for the declarations it placed. */
   ordering: Map<ts.Node, boolean>;
 }
@@ -376,7 +381,7 @@ export function lowerGenericCall(
       type: instance.returnType,
       loc,
     };
-    return guardEarlyAliasCall(lowerer, expr, guardEarlyBindingCall(lowerer, info, expr, call));
+    return guardEarlyCall(lowerer, info, expr, call);
   }
   // The enclosing-frame values follow the declared arguments, the order
   // the instance takes them in (lowerGenericInstance).
@@ -390,7 +395,7 @@ export function lowerGenericCall(
     type: instance.returnType,
     loc,
   };
-  return guardEarlyAliasCall(lowerer, expr, guardEarlyBindingCall(lowerer, info, expr, call));
+  return guardEarlyCall(lowerer, info, expr, call);
 }
 
 /** The instance a CALL of a generic function-like names: resolved
@@ -1585,10 +1590,18 @@ export function lowerGenericFnValue(
  * the alias's declaration: the alias has no binding storage, so JavaScript
  * reaches its temporal dead zone through the flag the declaration sets —
  * the read throws before it hands out the function. Reads that can only
- * run after the declaration stay direct. */
+ * run after the declaration stay direct. A `var` alias reads `undefined`
+ * there, which is no function value to hand out, so that read is
+ * refused. */
 function aliasTdzGuard(lowerer: Lowerer, ref: ts.Expression, value: IrExpr): IrExpr {
   const presence = earlyAliasPresence(lowerer, ref);
   if (presence === undefined) return value;
+  if (!presence.lexical)
+    lowerer.unsupported(
+      "SC1090",
+      ref,
+      `generic 'var' aliases read as values before their declaration runs (Node reads undefined there; declare '${presence.name}' with const)`,
+    );
   const loc = value.loc;
   const flag: IrExpr = { kind: "varRef", localId: presence.flagId, type: BOOL, loc };
   return {
@@ -3638,8 +3651,20 @@ function guardEarlyBindingCall(
       type: call.type,
       loc,
     };
-  // Arguments first, in order, then the check: Node evaluates them
-  // before it finds the callee is not callable.
+  return earlyUnassignedCall(lowerer, call, flag, info.baseName, loc);
+}
+
+/** A call whose callee is an unassigned `var` binding — or a `var` alias
+ * — before its initializer runs: arguments first, in order, then the
+ * check. Node evaluates them before it finds the callee is not
+ * callable. */
+function earlyUnassignedCall(
+  lowerer: Lowerer,
+  call: IrExpr & { kind: "call" | "callValue" },
+  flag: IrExpr,
+  name: string,
+  loc: SrcLoc,
+): IrExpr {
   const stmts: IrStmt[] = [];
   const args = call.args.map((arg): IrExpr => {
     const id = `%earlyCallArg.${lowerer.ctx.locals.length}`;
@@ -3654,7 +3679,7 @@ function guardEarlyBindingCall(
       kind: "ternary",
       cond: flag,
       then: { ...call, args },
-      else_: nodeThrowExpr(1, "", `${info.baseName} is not a function`, call.type, loc),
+      else_: nodeThrowExpr(1, "", `${name} is not a function`, call.type, loc),
       type: call.type,
       loc,
     },
@@ -3690,18 +3715,28 @@ function guardEarlyBindingValue(
   };
 }
 
-/** A call through a generic ALIAS binding (`h(3)`) that can run before the
- * alias's declaration: JavaScript reads the callee first, so the temporal
- * dead zone throws before the arguments evaluate. */
-function guardEarlyAliasCall(lowerer: Lowerer, expr: ts.CallExpression, call: IrExpr): IrExpr {
+/** A call of a generic binding or ALIAS that can run before the
+ * declaration. Through an ALIAS (`h(3)`), JavaScript reads the alias first:
+ * a `let`/`const` alias is in its temporal dead zone, so the call throws
+ * before the arguments evaluate, while a `var` alias is `undefined`, so the
+ * arguments run and the call throws "is not a function" — the alias names
+ * no binding the callee could have read, so no check of the aliased
+ * binding's own flag applies. Other calls check the binding's flag. */
+function guardEarlyCall(
+  lowerer: Lowerer,
+  info: GenericFnInfo,
+  expr: ts.CallExpression,
+  call: IrExpr & { kind: "call" | "callValue" },
+): IrExpr {
   const presence = earlyAliasPresence(lowerer, expr.expression);
-  if (presence === undefined) return call;
+  if (presence === undefined) return guardEarlyBindingCall(lowerer, info, expr, call);
   const loc = call.loc;
   const flag: IrExpr = { kind: "varRef", localId: presence.flagId, type: BOOL, loc };
+  if (!presence.lexical) return earlyUnassignedCall(lowerer, call, flag, presence.name, loc);
   return {
     kind: "seqExpr",
     stmts: [tdzCheck(flag, presence.name, loc)],
-    result: call,
+    result: guardEarlyBindingCall(lowerer, info, expr, call),
     type: call.type,
     loc,
   };
@@ -3802,7 +3837,13 @@ function noteAliasPresence(
     nsPathPrefix(lowerer, stmt, decl) + name,
   )}%initialized`;
   lowerer.globalsList.push({ id: flagId, name: "%initialized", type: BOOL, mutable: true });
-  lowerer.genericAliasPresence.set(symbol, { flagId, name, decl, ordering });
+  lowerer.genericAliasPresence.set(symbol, {
+    flagId,
+    name,
+    decl,
+    lexical: !isVarDeclared(decl),
+    ordering,
+  });
 }
 
 /** The statement that records a generic alias's declaration as run, for

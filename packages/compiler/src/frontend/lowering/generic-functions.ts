@@ -1537,13 +1537,37 @@ export function lowerGenericFnValue(
     target = identityComparisonPin(lowerer, ref);
     if (target) lowerer.genericIdentityPins.push({ info, node: ref });
   }
-  if (!target) fenceUnpinned();
+  // No concrete pin, or a pin that keeps its own type parameters (the slot
+  // type is the generic signature itself, as a record field of a generic
+  // method or a generic result flows): the value is the ERASED instance —
+  // the one function JavaScript runs for every type argument — and each
+  // instantiating call converts its arguments in and its result out
+  // (lower-calls.ts, genericValueCall). `f === f` still holds: the erased
+  // instance is one interned closure per declaration.
+  if (!target || target.getTypeParameters().length > 0) {
+    return guardEarlyBindingValue(lowerer, info, ref, erasedGenericFnValue(lowerer, ref, info));
+  }
   return guardEarlyBindingValue(
     lowerer,
     info,
     ref,
     pinnedGenericClosure(lowerer, ref, info, target, fenceUnpinned),
   );
+}
+
+/** The value of a generic declaration read where no concrete instantiation
+ * pins it: the declaration's erased instance's closure — the ONE function
+ * JavaScript has, whose parameters and result are `unknown`, so arguments
+ * entering it box (records, arrays, maps and sets as live capsules;
+ * identity preserved) and results leaving it are checked against the
+ * instantiated signature at the call. */
+function erasedGenericFnValue(lowerer: Lowerer, ref: ts.Expression, info: GenericFnInfo): IrExpr {
+  const loc = locOf(ref);
+  const inst = erasedGenericInstance(lowerer, ref, info);
+  const funcType: IrType = funcTypeFromParamShapes(inst.params, inst.returnType);
+  lowerer.requireExactArityValue(ref, ref, inst.params, funcType);
+  lowerer.noteEdge(inst.name);
+  return { kind: "closure", fnName: inst.name, captures: [], type: funcType, loc };
 }
 
 /** The pinning signature of a generic declaration compared by identity

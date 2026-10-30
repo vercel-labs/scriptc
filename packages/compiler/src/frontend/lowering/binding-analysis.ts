@@ -292,6 +292,17 @@ export function nullishGenericBindingUnitOf(
   if (unit === null) return null;
   const declared = lowerer.checker.getTypeOfSymbol(sym);
   const mapped = lowerer.mapTypeOf(declared);
+  // A DECLARED generic signature (`let a: <T>() => T = null!`) maps to its
+  // erased func type, but a nullish value has no func slot either: the
+  // no-storage family keeps the binding, exactly as it does for the empty
+  // record below. A non-generic func slot keeps its storage and its
+  // representation error.
+  if (
+    mapped !== null &&
+    mapped.kind === "func" &&
+    lowerer.checker.getCallSignatures(declared).some((sig) => sig.getTypeParameters().length > 0)
+  )
+    return unit;
   if (mapped !== null) {
     // Only the EMPTY interned shape qualifies among record mappings —
     // the all-generic-signature interface (`I<A & B>`) whose struct has

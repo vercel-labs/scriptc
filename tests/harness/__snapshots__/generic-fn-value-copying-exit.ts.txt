@@ -1,0 +1,13 @@
+generic-fn-value-copying-exit.ts:19:25 - error SC1090: passing this argument across the erased generic boundary (a promise of '{ id: number; tag: string }' is re-materialized when it settles; JavaScript hands the same object over) is not supported yet
+
+  18 | async function throughPromise(): Promise<void> {
+  19 |   const r = await limit(async () => shared);
+     |                         ^~~~~~~~~~~~~~~~~~
+  20 |   console.log(r === shared);
+
+generic-fn-value-copying-exit.ts:36:23 - error SC1090: passing this argument across the erased generic boundary (a '{ extra: boolean; id: number; tag: string }' becomes the narrower '{ id: number }' by copying it; JavaScript hands the same object over) is not supported yet
+
+  35 | const wide = { id: 2, tag: "b", extra: true };
+  36 | console.log(erased(1, wide), wide.id);
+     |                       ^~~~
+  37 | 

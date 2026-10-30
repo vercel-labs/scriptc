@@ -217,7 +217,9 @@ function boundParameter(
     if (escaped !== null) return "stop";
     if (!ts.isIdentifier(node) || node === binding || node === ownName) return;
     if (ts.isTypeNode(node)) return;
-    const target = lowerer.checker.getSymbolAtLocation(node);
+    // resolveValueSymbol reads a shorthand property (`{ load }`) as the
+    // binding it stores, which escapes like any other value use.
+    const target = lowerer.resolveValueSymbol(node) ?? lowerer.checker.getSymbolAtLocation(node);
     if (target !== fnSym && (ownSym === undefined || target !== ownSym)) return;
     const call = directCallee(node);
     if (call === null) escaped = node;

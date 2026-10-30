@@ -34,6 +34,7 @@ import {
   type BuiltinValueParam,
 } from "./surfaces.js";
 import { CRYPTO_CONSTANTS } from "./crypto-tables.js";
+import { isDynIteratorValue } from "./iterator-prototype.js";
 
 const PROTOTYPE_METHODS: Record<string, readonly string[]> = {
   Date: ["getTime", "valueOf", "toISOString", "toJSON"],
@@ -100,6 +101,7 @@ export function isNativeBuiltinValueInitializer(
   if (global && !["undefined", "Infinity", "NaN"].includes(global)) return true;
   if (lowerer.isStdlibGlobal(expr, "console")) return true;
   if (ts.isNewExpression(expr) && lowerer.isStdlibGlobal(expr.expression, "Date")) return true;
+  if (isDynIteratorValue(lowerer, expr)) return true;
   if (ts.isConditionalExpression(expr)) {
     return (
       isNativeBuiltinValueInitializer(lowerer, expr.whenTrue, new Set(seen)) ||

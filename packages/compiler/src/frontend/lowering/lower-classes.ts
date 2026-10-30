@@ -1,3 +1,8 @@
+import {
+  isJsIteratorGlobal,
+  iteratorPrototypeExpr,
+  lowerIteratorNew,
+} from "./iterator-prototype.js";
 import { lowerWrapperNew } from "./primitive-wrappers.js";
 import { lowerAsyncLocalStorageOptions } from "./builtins/async-context.js";
 import { shapeOverlayAnnotated } from "../shape-inference/index.js";
@@ -667,7 +672,16 @@ export interface ClassInfo {
   genericBase?: ts.ExpressionWithTypeArguments;
   /** A module class may inherit a compiled ordinary JS constructor. Its
    * callable and prototype are captured when the class declaration runs. */
-  callableBase?: { expression: ts.Expression; constructorId: string; prototypeId: string };
+  callableBase?: {
+    expression: ts.Expression;
+    constructorId: string;
+    prototypeId: string;
+    /** `extends Iterator` in JavaScript: the constructor is %Iterator%,
+     * the prototype %Iterator.prototype% (scr_js_iterator.c), and super()
+     * only evaluates its arguments (the abstract constructor checks
+     * NewTarget, which is never %Iterator% for a subclass). */
+    iterator?: true;
+  };
   factoryBaseExpression?: ts.Expression;
   /** DIRECT subclasses, filled as derived classes collect — the frontend's
    * side of whole-program devirtualization (overrideBelow). */
@@ -2029,6 +2043,15 @@ export function collectClassShapeInner(
     let factoryBaseExpression: ts.Expression | undefined;
     const adoptCallableBase = (expression: ts.Expression): boolean => {
       if (familyMode || inst || mixin) return false;
+      if (isJsIteratorGlobal(lowerer, expression)) {
+        callableBase = {
+          expression,
+          constructorId: `%g.${className}.base`,
+          prototypeId: `%g.${className}.basePrototype`,
+          iterator: true,
+        };
+        return true;
+      }
       if (lowerer.computedCallableBases.has(decl)) {
         callableBase = {
           expression,
@@ -5135,17 +5158,25 @@ function lowerStaticFieldInitsInner(lowerer: Lowerer, info: ClassInfo): IrStmt[]
       {
         kind: "assign",
         localId: prototypeId,
-        value: {
-          kind: "libCall",
-          fn: "dyn.classBasePrototype",
-          args: [{ kind: "varRef", localId: constructorId, type: DYN, loc }],
-          type: DYN,
-          loc,
-        },
+        value: info.callableBase.iterator
+          ? iteratorPrototypeExpr(loc)
+          : {
+              kind: "libCall",
+              fn: "dyn.classBasePrototype",
+              args: [{ kind: "varRef", localId: constructorId, type: DYN, loc }],
+              type: DYN,
+              loc,
+            },
         loc,
       },
     );
-    const prototype = classPrototypeData(lowerer, info, loc);
+    // An iterator subclass's instances are driven by the runtime's helpers,
+    // which read `next` and `return` (methods or accessors) through the
+    // instance's view: its prototype holds every member.
+    const prototype =
+      info.callableBase.iterator && info.decl
+        ? reflectClassPrototype(lowerer, info, loc, classValueRef(lowerer, info, info.decl))
+        : classPrototypeData(lowerer, info, loc);
     if (prototype) out.push({ kind: "exprStmt", expr: prototype, loc });
     out.push({
       kind: "exprStmt",
@@ -6383,7 +6414,15 @@ function lowerClassValue(
             fn: "dyn.classPrototype",
             args: [
               boxed,
-              { kind: "libCall", fn: "dyn.classBasePrototype", args: [baseRef], type: DYN, loc },
+              info.callableBase.iterator
+                ? iteratorPrototypeExpr(loc)
+                : {
+                    kind: "libCall",
+                    fn: "dyn.classBasePrototype",
+                    args: [baseRef],
+                    type: DYN,
+                    loc,
+                  },
             ],
             type: DYN,
             loc,
@@ -9496,6 +9535,9 @@ export function superCallStmt(
   };
   if (info.extendsDate) return dateSuperCall(thisRef, info, args[0]!, loc);
   if (info.extendsArray) return arraySuperCall(info, thisRef, args[0]!, loc);
+  // super() into %Iterator%: NewTarget is the subclass, so the abstract
+  // constructor only creates the receiver the derived constructor made.
+  if (info.callableBase?.iterator) return { kind: "exprStmt", expr: args[0]!, loc };
   if (info.callableBase)
     return {
       kind: "exprStmt",
@@ -10215,6 +10257,48 @@ function checkedElementConstruction(
     loc,
   };
 }
+/** `new x.someLibMethod(...)`: a built-in method is not a constructor.
+ * Node evaluates the receiver, then the arguments, then throws
+ * `TypeError: <callee> is not a constructor` (V8 prints an anonymous
+ * intermediate value as `(intermediate value)`). Null otherwise. */
+function lowerNonConstructorNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
+  let callee = expr.expression;
+  while (ts.isParenthesizedExpression(callee)) callee = callee.expression;
+  if (!ts.isPropertyAccessExpression(callee) || callee.questionDotToken) return null;
+  if (!lowerer.isStdlibMember(callee)) return null;
+  const symbol = lowerer.checker.getSymbolAtLocation(callee.name);
+  const method = symbol?.declarations?.some(
+    (decl) => ts.isMethodSignatureDeclaration(decl) || ts.isMethodDeclaration(decl),
+  );
+  if (!method) return null;
+  const args = expr.arguments?.nodes ?? [];
+  if (args.some(ts.isSpreadElement)) return null;
+  const loc = locOf(expr);
+  let receiver = callee.expression;
+  while (ts.isParenthesizedExpression(receiver)) receiver = receiver.expression;
+  const left =
+    ts.isClassExpression(receiver) ||
+    ts.isFunctionExpression(receiver) ||
+    ts.isArrowFunction(receiver)
+      ? "(intermediate value)"
+      : ts.getTextOfNode(receiver);
+  const stmts: IrStmt[] = [
+    { kind: "exprStmt", expr: lowerer.lowerExpr(receiver), loc: locOf(receiver) },
+    ...args.map((arg): IrStmt => ({
+      kind: "exprStmt",
+      expr: lowerer.lowerExpr(arg),
+      loc: locOf(arg),
+    })),
+  ];
+  return {
+    kind: "seqExpr",
+    stmts,
+    result: nodeThrowExpr(1, "", `${left}.${callee.name.text} is not a constructor`, DYN, loc),
+    type: DYN,
+    loc,
+  };
+}
+
 /** Map, Set and the error classes construct in lowerNew's identifier
  * branch, which a module member alias of one (`new mod.M()`) also takes. */
 function isCollectionOrErrorClass(ref: BuiltinClassRef | null): boolean {
@@ -10252,6 +10336,10 @@ export function lowerNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr {
   }
   const wrapper = lowerWrapperNew(lowerer, expr);
   if (wrapper) return wrapper;
+  const abstractIterator = lowerIteratorNew(lowerer, expr);
+  if (abstractIterator) return abstractIterator;
+  const nonConstructor = lowerNonConstructorNew(lowerer, expr);
+  if (nonConstructor) return nonConstructor;
   const worker = lowerWorkerNew(lowerer, expr);
   if (worker) return worker;
   const readlineUi = lowerReadlineUiNew(lowerer, expr) ?? lowerReadlineInterfaceNew(lowerer, expr);

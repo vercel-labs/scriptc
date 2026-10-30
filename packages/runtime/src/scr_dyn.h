@@ -1498,6 +1498,17 @@ ScrDyn *scr_js_wrapper_guard(ScrDyn *value, ScrStr *consumer);
 ScrArr *scr_js_wrapper_guard_list(ScrArr *values, ScrStr *consumer);
 bool scr_js_wrapper_is_string_method(ScrDyn *member, ScrStr *name);
 ScrDyn *scr_js_wrapper_this_string(ScrDyn *value, ScrStr *name);
+
+/* %Iterator%, %Iterator.prototype% and Iterator.from (scr_js_iterator.c,
+ * linked only into programs that reach them): the live prototype holds
+ * the interned helper methods every iterator answers; `new Iterator()`
+ * throws the abstract-class TypeError; instance_of is
+ * OrdinaryHasInstance(%Iterator%, value). All arguments borrowed. */
+ScrDyn *scr_js_iterator_prototype(void);
+ScrDyn *scr_js_iterator_constructor(void);
+ScrDyn *scr_js_iterator_construct(void);
+ScrDyn *scr_js_iterator_from(ScrDyn *value);
+bool scr_js_iterator_instance_of(ScrDyn *value);
 ScrDyn *scr_dyn_util_type_value(const ScrDyn *value, const ScrStr *probe);
 void scr_dyn_arr_push(ScrDyn *arr, ScrDyn *item);
 /* Spread completion for a runtime-arity argument list (`f(...xs)` in the

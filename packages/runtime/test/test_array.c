@@ -2591,6 +2591,83 @@ static void test_foreign_elements(void) {
   scr_dyn_release(x);
 }
 
+/* Guard decisions must leave both throwing and permitted frozen receivers
+ * untouched, including their storage metadata and sparse entries. */
+static void check_frozen_guard(ScrArr *a, int op, double x, double y, double z, const char *error) {
+  unsigned char header[sizeof *a];
+  memcpy(header, a, sizeof *a);
+  size_t bytes = a->cap * (scr_arr_slot_width(a) + (scr_arr_has_states(a) ? 1 : 0));
+  void *dense = malloc(bytes ? bytes : 1);
+  if (bytes) memcpy(dense, a->data, bytes);
+  const ScrArrExt *ext = scr_arr_ext_of(a);
+  ScrArrExt saved_ext;
+  size_t sparse_bytes = ext ? ext->sparse_len * sizeof *ext->sparse : 0;
+  void *sparse = malloc(sparse_bytes ? sparse_bytes : 1);
+  if (ext) memcpy(&saved_ext, ext, sizeof saved_ext);
+  if (sparse_bytes) memcpy(sparse, ext->sparse, sparse_bytes);
+  check(scr_array_frozen_native_error(op, a, x, y, z) == (error != NULL), "frozen guard decision");
+  check(scr_exc_pending() == (error != NULL), "frozen guard exception state");
+  if (scr_exc_pending()) {
+    ScrCaught *caught = scr_exc_take();
+    ScrStr *text = scr_caught_to_string(caught);
+    check(error && !strncmp(text->data, "TypeError: ", 11) && strstr(text->data, error),
+          "frozen guard first operation and index");
+    scr_str_release(text);
+    scr_caught_release(caught);
+  }
+  bool same = !memcmp(header, a, sizeof *a);
+  check(same, "frozen guard preserves array header");
+  if (same) {
+    check(!bytes || !memcmp(dense, a->data, bytes), "frozen guard preserves dense values and states");
+    check(!ext || !memcmp(&saved_ext, ext, sizeof saved_ext), "frozen guard preserves extension");
+    check(!sparse_bytes || !memcmp(sparse, ext->sparse, sparse_bytes), "frozen guard preserves sparse entries");
+  }
+  free(dense);
+  free(sparse);
+}
+
+static void test_frozen_presence(void) {
+  static const char *reverse[] = {NULL, "delete property '0'", NULL, "delete property '0'",
+      "add property 0", "read only property '0'", "add property 0", "read only property '0'"};
+  static const char *sort[] = {NULL, "read only property '0'", "add property 0", "read only property '0'",
+      "add property 0", "read only property '0'", "add property 0", "read only property '0'"};
+  static const char *forward[] = {NULL, "delete property '0'", "add property 0", "read only property '0'",
+      "add property 1", "delete property '0'", "add property 0", "read only property '0'"};
+  static const char *backward[] = {NULL, "add property 1", "add property 2", "add property 2",
+      "delete property '2'", "delete property '2'", "read only property '2'", "read only property '2'"};
+  for (unsigned mask = 0; mask < 8; mask++) {
+    ScrArr *a = scr_arr_new(SCR_ELEM_F64, 0);
+    scr_arr_set_len(a, 3);
+    for (size_t i = 0; i < 3; i++) if (mask & (1u << i)) scr_arr_set_f64(a, (double)i, (double)i);
+    scr_arr_freeze(a);
+    check_frozen_guard(a, 7, 0, 0, 0, reverse[mask]);
+    check_frozen_guard(a, 11, 0, 0, 0, sort[mask]);
+    check_frozen_guard(a, 9, 0, 1, 3, forward[mask]);
+    check_frozen_guard(a, 9, 1, 0, 2, backward[mask]);
+    check_frozen_guard(a, 9, 99, 0, 3, NULL);
+    scr_arr_release(a);
+  }
+  ScrArr *a = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_set_len(a, 3);
+  scr_arr_set_undefined(a, 1);
+  scr_arr_set_f64(a, -1, 7);
+  scr_arr_freeze(a);
+  check_frozen_guard(a, 7, 0, 0, 0, NULL);
+  check_frozen_guard(a, 11, 0, 0, 0, "add property 0");
+  check_frozen_guard(a, 0, 0, 0, 0, "add property 0");
+  check_frozen_guard(a, 0, 1, 0, 0, "read only property '1'");
+  check_frozen_guard(a, 5, 0, 0, 0, NULL);
+  check_frozen_guard(a, 5, 1, 0, 0, "delete property '1'");
+  check_frozen_guard(a, 5, -1, 0, 0, "delete property '-1'");
+  scr_arr_release(a);
+  a = scr_arr_new(SCR_ELEM_F64, 0);
+  scr_arr_set_f64(a, 4294967294.0, 7);
+  scr_arr_freeze(a);
+  check_frozen_guard(a, 7, 0, 0, 0, "add property 0");
+  check_frozen_guard(a, 9, 1, 0, 4294967294.0, "delete property '4294967294'");
+  scr_arr_release(a);
+}
+
 int main(int argc, char **argv) {
   if (argc > 1) {
     ScrArr *a = scr_arr_new(SCR_ELEM_F64, 0);
@@ -2613,6 +2690,7 @@ int main(int argc, char **argv) {
     return 2;
   }
 
+  test_frozen_presence();
   test_primitive_sort();
   test_comparator_sort();
   test_keyed_sort();

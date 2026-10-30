@@ -72,7 +72,7 @@ describe.runIf(supported)("macOS arm64 native link info", () => {
         minimum_os: "14.0",
       },
       program: { object, entry_symbol: "main" },
-      runtime_abi: { version: 48, marker: "scr_runtime_abi_v48" },
+      runtime_abi: { version: 49, marker: "scr_runtime_abi_v49" },
       runtime_pack: {
         kind: "precompiled",
         package: "@scriptc/runtime-darwin-arm64",
@@ -144,7 +144,7 @@ describe.runIf(supported)("macOS arm64 native link info", () => {
     await writeFile(
       stub,
       [
-        "void scr_runtime_abi_v1(void) {} /* previous ABI */",
+        "void scr_runtime_abi_v48(void) {} /* before presence-aware array guards */",
         "void scr_console_log(void) {}",
         "void scr_init(void) {}",
         "void scr_lib_init(void) {}",
@@ -161,6 +161,39 @@ describe.runIf(supported)("macOS arm64 native link info", () => {
       stub,
       "-o",
       join(dir, "bad"),
+    ]).then(
+      () => null,
+      (failure: { stderr?: string }) => failure,
+    );
+    expect(error?.stderr).toContain("scr_runtime_abi_v49");
+  });
+
+  test("an ABI48 object cannot link against the current runtime pack", async () => {
+    const { dir, entry, object } = await fixture();
+    const { stdout } = await cli(["build", entry, "--print=native-link-info", "-o", object]);
+    const info = JSON.parse(stdout) as NativeLinkInfo;
+    const previous = join(dir, "previous.c");
+    const previousObject = join(dir, "previous.o");
+    // Old program objects require v48. The current pack must not retain
+    // that symbol as an alias: its array guards have different semantics.
+    await writeFile(
+      previous,
+      "void scr_runtime_abi_v48(void);\nint main(void) { scr_runtime_abi_v48(); return 0; }\n",
+    );
+    await execFileAsync("clang", [
+      "-target",
+      info.target.llvm_triple,
+      "-c",
+      previous,
+      "-o",
+      previousObject,
+    ]);
+    const error = await execFileAsync("clang", [
+      ...info.link.driver_flags,
+      ...info.link.input_order.map((path) => (path === object ? previousObject : path)),
+      ...info.link.system_libraries.map((name) => `-l${name}`),
+      "-o",
+      join(dir, "bad-previous"),
     ]).then(
       () => null,
       (failure: { stderr?: string }) => failure,

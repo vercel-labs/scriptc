@@ -530,11 +530,11 @@ void scr_throw_published_field(const char *prop, const char *owner) {
 }
 
 bool scr_throw_published_array(int op, const ScrArr *a, double index, double n) {
-  return scr_array_frozen_error(op, a->len, index, n, 0);
+  return scr_array_frozen_native_error(op, a, index, n, 0);
 }
 
 bool scr_throw_published_array_range(int op, const ScrArr *a, double x, double y, double z) {
-  return scr_array_frozen_error(op, a->len, x, y, z);
+  return scr_array_frozen_native_error(op, a, x, y, z);
 }
 
 void scr_throw_published_collection(bool set) {

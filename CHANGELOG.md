@@ -4,6 +4,8 @@ All notable changes to scriptc will be documented in this file.
 
 ## Unreleased
 
+- Frozen and published sparse arrays allow no-write `reverse`, `sort`, and `copyWithin` operations without changing their shared storage. Present elements still reject writes, including self-copies. Generated objects now require runtime ABI 49 so older runtime packs cannot misinterpret these guards.
+
 <!-- release:start -->
 
 ## 0.4.6

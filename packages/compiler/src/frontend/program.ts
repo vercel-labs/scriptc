@@ -39,7 +39,7 @@
  *    JSON.parse's wording rather than tsc's, the one message-text delta on
  *    that path (no snapshot pins it). */
 
-import { isFrontendIsland } from "../node-islands/boundary.js";
+import { frontendIslandTypeRoots, isFrontendIsland } from "../node-islands/boundary.js";
 import { builtinModules } from "node:module";
 import { dirname, isAbsolute, resolve } from "node:path";
 import * as ts from "./ts7/adapter.js";
@@ -962,6 +962,10 @@ function loadProgram7(
   const coreRoots = [
     entryPath,
     ambientDtsPath(),
+    // An island package's declaration entry types its subpath imports
+    // (node-islands/boundary.ts: frontendIslandTypeRoots). A .d.ts root
+    // adds declarations, never a runtime module.
+    ...frontendIslandTypeRoots(),
     ...(nodeTypes === null
       ? [fallbackDtsPath(), ...fallbackModulesNamedIn(host.sourceText(entryPath) ?? "")]
       : [nodeTypes]),

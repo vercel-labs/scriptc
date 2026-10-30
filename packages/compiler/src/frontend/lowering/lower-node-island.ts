@@ -651,14 +651,21 @@ export function isIslandImportBinding(lowerer: Lowerer, ident: ts.Identifier): b
 }
 
 function islandBindingOf(lowerer: Lowerer, ident: ts.Identifier): IslandBinding | null {
+  const symbol = lowerer.checker.getSymbolAtLocation(ident);
+  return symbol === undefined ? null : islandBindingOfSymbol(lowerer, symbol);
+}
+
+/** The island binding `symbol` declares, or null. A shorthand property's
+ * name carries the PROPERTY's symbol, so `{ perl }` passes the value symbol
+ * (getShorthandAssignmentValueSymbol) here instead of the identifier. */
+export function islandBindingOfSymbol(lowerer: Lowerer, symbol: ts.Symbol): IslandBinding | null {
   const islands = lowerer.nodeIslands;
   if (islands === null) return null;
-  const symbol = lowerer.checker.getSymbolAtLocation(ident);
   // A name a native module re-exports from an island package binds the
   // island's own export: the import's alias chain reaches it.
   const reexport = islandReexportOf(lowerer, symbol);
   if (reexport !== null) return reexport;
-  const decl = symbol ? symbol.declarations[0] : undefined;
+  const decl = symbol.declarations[0];
   if (decl === undefined) return null;
   let importDecl: ts.Node | undefined;
   let binding: "namespace" | "default" | { name: string };
@@ -709,6 +716,19 @@ function islandBindingOf(lowerer: Lowerer, ident: ts.Identifier): IslandBinding 
   if (binding === "namespace") return { kind: "namespace", module };
   if (binding === "default") return { kind: "default", module };
   return { kind: "named", module, name: binding.name };
+}
+
+/** The value of an island import binding in shorthand property position
+ * (`{ perl }`, whose name carries the property's symbol), or null when the
+ * symbol is not an island import. */
+export function lowerIslandShorthandValue(
+  lowerer: Lowerer,
+  symbol: ts.Symbol,
+  node: ts.Node,
+  loc: SrcLoc,
+): IrExpr | null {
+  const binding = islandBindingOfSymbol(lowerer, symbol);
+  return binding === null ? null : islandBindingValue(lowerer, binding, node, loc);
 }
 
 /** The raw (dyn) value an island import binding reads. */

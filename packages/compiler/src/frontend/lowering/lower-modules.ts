@@ -55,6 +55,7 @@ import {
 } from "../program.js";
 import type { CycleEdge, StartupCrash } from "../program.js";
 import { isUnloadedPackage } from "../package-shims.js";
+import { boundSpecifier } from "../specifier-bounds.js";
 import {
   markCycleEarlyBindings,
   withClassInitFlag,
@@ -825,51 +826,71 @@ function collectDynamicImports(lowerer: Lowerer, sf: ts.SourceFile): void {
       ts.isCallExpression(node) &&
       node.expression.kind === ts.SyntaxKind.ImportKeyword &&
       node.arguments.nodes.length >= 1 &&
-      node.arguments.nodes[0] !== undefined &&
-      staticString(lowerer, node.arguments.nodes[0]) !== null
+      node.arguments.nodes[0] !== undefined
     ) {
-      // A constant expression names its module as surely as a literal.
-      const spec = staticString(lowerer, node.arguments.nodes[0]!)!;
-      if (lowerer.externalTypes.has(spec)) {
-        return undefined;
-      }
-      const mapKey = `${sf.fileName}\u0000${spec}`;
-      if (!lowerer.dynImports.has(mapKey)) {
-        // The program's OWN modules first, by the checker's resolution
-        // (tsc already resolved "./helper.js" to helper.ts): a compiled
-        // module has no runtime namespace object — the per-site fence
-        // says so. Only non-declaration source files count; a sibling
-        // .d.mts typing shipped JS is the EMBED case, not this one.
-        // A package the project marks never loaded, or a module whose
-        // static graph Node's resolution refuses: the import() rejects.
-        const rejection = dynamicImportRejectionOf(lowerer, sf, spec, node);
-        if (rejection !== null) {
-          lowerer.dynImports.set(mapKey, { kind: "rejected", crash: rejection });
-          return undefined;
-        }
-        const modSym = lowerer.checker.getSymbolAtLocation(node.arguments.nodes[0]);
-        // A folded specifier carries no module symbol on its argument (the
-        // text comes from a `const`, not a literal), so fall back to the
-        // checker's program import resolution.
-        const folded = resolveImport(lowerer.program, sf, spec);
-        const ownModule =
-          (modSym !== undefined &&
-            modSym.declarations.some((d) => ts.isSourceFile(d) && !d.isDeclarationFile)) ||
-          (folded !== null && !folded.isDeclarationFile);
-        const builtin = canonicalBuiltinModule(spec);
-        const res = ownModule
-          ? ({ kind: "program-module" } as const)
-          : builtin !== null
-            ? ({ kind: "static-builtin", module: builtin } as const)
-            : undefined;
-        if (res === undefined) {
-          return undefined;
-        }
-        lowerer.dynImports.set(mapKey, res);
-      }
+      const arg = node.arguments.nodes[0];
+      // A constant expression names its module as surely as a literal
+      // (staticString folds a `const` and its concatenations); a computed
+      // specifier contributes one literal edge per value the bounder proves
+      // it may take (SPEC §3.1). Top and the unimplemented glob form
+      // contribute nothing here: the per-site lowering reports the refusal.
+      const constant = staticString(lowerer, arg);
+      const specs: string[] =
+        constant !== null
+          ? [constant]
+          : (() => {
+              const bound = boundSpecifier(lowerer, arg);
+              return bound.kind === "set" ? bound.values : [];
+            })();
+      for (const spec of specs) collectOneDynamicImport(lowerer, sf, spec, node);
     }
     return undefined;
   });
+}
+
+/** One literal edge of a dynamic-import site: the program's OWN modules
+ * first, by the checker's resolution (tsc already resolved "./helper.js" to
+ * helper.ts): a compiled module has no runtime namespace object — the
+ * per-site fence says so. Only non-declaration source files count; a sibling
+ * .d.mts typing shipped JS is the EMBED case, not this one. A package the
+ * project marks never loaded, or a module whose static graph Node's
+ * resolution refuses: the import() rejects. */
+function collectOneDynamicImport(
+  lowerer: Lowerer,
+  sf: ts.SourceFile,
+  spec: string,
+  node: ts.CallExpression,
+): void {
+  if (lowerer.externalTypes.has(spec)) return;
+  const mapKey = `${sf.fileName}\u0000${spec}`;
+  if (lowerer.dynImports.has(mapKey)) return;
+  // A package the project marks never loaded, or a module whose static
+  // graph Node's resolution refuses: the import() rejects.
+  const rejection = dynamicImportRejectionOf(lowerer, sf, spec, node);
+  if (rejection !== null) {
+    lowerer.dynImports.set(mapKey, { kind: "rejected", crash: rejection });
+    return;
+  }
+  const arg = node.arguments.nodes[0];
+  // The program's OWN modules: a compiled module has no runtime namespace
+  // object, so the per-site fence says so. A literal specifier asks the
+  // checker (which already mapped "./helper.js" to helper.ts); a folded or
+  // bounded value carries no module symbol on its argument (the text comes
+  // from a `const`), so its specifier resolves by path.
+  const modSym = arg === undefined ? undefined : lowerer.checker.getSymbolAtLocation(arg);
+  const folded = resolveImport(lowerer.program, sf, spec);
+  const ownModule =
+    (modSym !== undefined &&
+      modSym.declarations.some((d) => ts.isSourceFile(d) && !d.isDeclarationFile)) ||
+    (folded !== null && !folded.isDeclarationFile);
+  const builtin = canonicalBuiltinModule(spec);
+  const res = ownModule
+    ? ({ kind: "program-module" } as const)
+    : builtin !== null
+      ? ({ kind: "static-builtin", module: builtin } as const)
+      : undefined;
+  if (res === undefined) return;
+  lowerer.dynImports.set(mapKey, res);
 }
 
 /** JSON module default imports (`import pkg from "../package.json"`):

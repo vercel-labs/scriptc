@@ -50,6 +50,7 @@ import { builtinGlobalValue } from "./property-access.js";
 import { holdsEvolvingArray } from "../lower-stmts.js";
 import { builtinNamespaceValue } from "../builtin-namespaces.js";
 import { tsUntypedGlobalValue } from "../global-values.js";
+import { lowerIslandShorthandValue } from "../lower-node-island.js";
 
 /** `{ a: 1, b: "x" }` → recordLit. The record type comes from the
  * contextual type when tsc has one (annotated declarations, arguments,
@@ -465,22 +466,29 @@ export function lowerDynObjectLiteral(
     let raw: IrExpr;
     const propDiagsBefore = lowerer.diags.length;
     try {
-      const lowerValue = (): IrExpr =>
-        ts.isMethodDeclaration(prop)
-          ? lowerer.lowerLambda(prop, true)
-          : ts.isShorthandPropertyAssignment(prop) && shorthandBuiltinValue(lowerer, prop)
-            ? shorthandBuiltinValue(lowerer, prop)!
-            : !boxValue &&
-                (ts.isObjectLiteralExpression(valueExpr) ||
-                  (ts.isArrayLiteralExpression(valueExpr) &&
-                    // An empty literal takes whatever the object's users
-                    // store into it (`{ [kChildren]: [] }`), so it is a
-                    // checked-dynamic array rather than its `never[]` layout.
-                    (valueExpr.elements.nodes.length === 0 ||
-                      holdsEvolvingArray(lowerer, valueExpr) ||
-                      lowerer.untypedLiteralContext(valueExpr))))
-              ? lowerer.lowerExprExpecting(valueExpr, DYN)
-              : lowerer.lowerExpr(valueExpr as ts.Expression);
+      const lowerValue = (): IrExpr => {
+        if (ts.isMethodDeclaration(prop)) return lowerer.lowerLambda(prop, true);
+        if (ts.isShorthandPropertyAssignment(prop)) {
+          // The name carries the PROPERTY's symbol, so the identifier path
+          // reads a package value where the shorthand names a stdlib global
+          // or an island import: resolve both through the value symbol.
+          const builtinValue = shorthandBuiltinValue(lowerer, prop);
+          if (builtinValue !== null) return builtinValue;
+          const island = shorthandIslandValue(lowerer, prop);
+          if (island !== null) return island;
+        }
+        return !boxValue &&
+          (ts.isObjectLiteralExpression(valueExpr) ||
+            (ts.isArrayLiteralExpression(valueExpr) &&
+              // An empty literal takes whatever the object's users
+              // store into it (`{ [kChildren]: [] }`), so it is a
+              // checked-dynamic array rather than its `never[]` layout.
+              (valueExpr.elements.nodes.length === 0 ||
+                holdsEvolvingArray(lowerer, valueExpr) ||
+                lowerer.untypedLiteralContext(valueExpr))))
+          ? lowerer.lowerExprExpecting(valueExpr, DYN)
+          : lowerer.lowerExpr(valueExpr as ts.Expression);
+      };
       raw = fenceClosureProbe(lowerer, valueExpr, undefined, lowerValue) ?? lowerValue();
     } catch (err) {
       // A PURE member read a JS file cannot lower (a namespace object
@@ -4115,6 +4123,18 @@ function shorthandBuiltinValue(
   );
 }
 
+/** `{ perl }` of an island import (scope-B NI-4): the name carries the
+ * property's symbol, so the value symbol resolves the island binding. */
+function shorthandIslandValue(
+  lowerer: Lowerer,
+  prop: ts.ShorthandPropertyAssignment,
+): IrExpr | null {
+  const symbol = lowerer.checker.getShorthandAssignmentValueSymbol(prop);
+  if (symbol === undefined) return null;
+  const name = prop.name as ts.Identifier;
+  return lowerIslandShorthandValue(lowerer, symbol, name, locOf(name));
+}
+
 export function lowerShorthandValue(
   lowerer: Lowerer,
   prop: ts.ShorthandPropertyAssignment,
@@ -4134,6 +4154,9 @@ export function lowerShorthandValue(
   const builtinValue = shorthandBuiltinValue(lowerer, prop);
   if (builtinValue) return builtinValue;
   if (symbol) {
+    // An island import's value, as `{ perl: perl }` reads it.
+    const island = lowerIslandShorthandValue(lowerer, symbol, propName, loc);
+    if (island !== null) return island;
     if (lowerer.ctx.selfSymbol === symbol) {
       return { kind: "selfRef", type: lowerer.ctx.selfType!, loc };
     }

@@ -59,7 +59,7 @@ import { NODE_API_MODULE } from "./node-api-import.js";
 import { erasedTypeOnlyImport } from "./type-only-imports.js";
 import { EXPERIMENTAL_MODULE } from "./experimental-import.js";
 import { readProjectConfig } from "../project-config.js";
-import { setFrontendIslands } from "../node-islands/boundary.js";
+import { setFrontendIslandTypeRoots, setFrontendIslands } from "../node-islands/boundary.js";
 import { typePatchDiagnostics } from "./type-patches/layer.js";
 import { packageDirOf } from "../node-islands/origin.js";
 import {
@@ -157,6 +157,10 @@ export interface FrontendOptions {
   /** The detector's scan alone, for a build that may run packages in Node
    * islands (executable/prepare.ts decides which). */
   islandScan?: boolean;
+  /** The island packages' declaration entries, rooted so that a package
+   * whose declarations are ambient `declare module` blocks types its
+   * subpath imports. */
+  islandTypeRoots?: readonly string[];
 }
 
 export type FrontendFactory = (
@@ -543,6 +547,7 @@ export function runFrontend(
     });
     const islands = options.islandPackages ?? new Set<string>();
     setFrontendIslands(islands);
+    setFrontendIslandTypeRoots(options.islandTypeRoots ?? []);
     try {
       return loadFrontend(
         entryPath,
@@ -555,6 +560,7 @@ export function runFrontend(
       );
     } finally {
       setFrontendIslands(new Set());
+      setFrontendIslandTypeRoots([]);
     }
   } catch (error) {
     for (const load of active) {
@@ -623,9 +629,9 @@ function loadFrontend(
   // The shared preflight/lowering refusal and dependency-closure checks remain.
   // Node island packages are judged already: they stay out of the
   // program, typed by their declarations (scope-B NI-4).
+  const islands = options.islandPackages ?? new Set<string>();
   const judged = new Set<string>(libraryNpmStatic);
-  if (options.islandPackages !== undefined)
-    for (const name of options.islandPackages) judged.add(name);
+  for (const name of islands) judged.add(name);
   let requested: string[] = [];
   let reusableScout: ReturnType<typeof loadProgram> | null = null;
   let reusablePreflight: ScrDiagnostic[] | null = null;
@@ -640,7 +646,9 @@ function loadFrontend(
               ...libraryNpmStatic,
               ...detectAutoPackages(scout, statuses, "lib", judged, npmSites, transitive),
             ]
-          : detectAutoPackages(scout, statuses);
+          : // An island package is removed from --npm-static placement for
+            // this build (SPEC §5.6): it runs in Node, not in the program.
+            detectAutoPackages(scout, statuses).filter((name) => !islands.has(name));
       // With no package to opt in, the scout already IS the final frontend:
       // same roots, resolution posture, preflight, and module order. Retain it
       // instead of spawning a second tsgo server and checking the whole graph

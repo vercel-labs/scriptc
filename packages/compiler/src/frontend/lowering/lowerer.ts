@@ -46,6 +46,7 @@ import {
 } from "./unit-journal.js";
 import { UnitReuse, unitReuseVerify, verifyStoredUnit, type UnitStore } from "./unit-reuse.js";
 import {
+  moduleNamespaceBuiltinDynValue,
   moduleNamespaceDynValue,
   moduleNamespaceObject,
   moduleNamespaceValue,
@@ -53,8 +54,10 @@ import {
 import { keyedHelperName, moduleTagNumber, portableRelativePath } from "./stable-names.js";
 import { positionTag, StructuralPositions } from "./structural-positions.js";
 import {
+  activeNodeIslandMode,
   activeNodeIslands,
   isForeignType,
+  setActiveNodeIslandMode,
   setActiveNodeIslands,
   type NodeIslandSet,
 } from "../../node-islands/boundary.js";
@@ -268,6 +271,7 @@ export { newFnCtx, type FnCtx } from "./function-context.js";
  * - Lexical scoping is resolved here: locals get function-unique ids
  *   ("x.0", "x.1" for shadowing); the IR is scope-flat.
  */
+import { realpathSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { bindingSource } from "../binding-source.js";
 import { compilerOwnedFileName, tsgoPath } from "../dts-paths.js";
@@ -797,6 +801,7 @@ import {
   promiseArmedUnionOf,
 } from "./maybe-promise.js";
 import { NodeIslandModuleCollector } from "../../node-islands/modules.js";
+import { DYNLOAD_MODULE_PATH } from "../../node-islands/dynload.js";
 
 /** Entry function name. '%' cannot appear in a TS identifier, so a user
  * function can never collide with it (mangling is injective per prefix). */
@@ -983,6 +988,10 @@ export interface LowerOptions {
   /** Packages that run in Node islands (scope-B NI-4): their imports lower
    * to island loads and their values to island handles. */
   nodeIslands?: NodeIslandSet | null;
+  /** The build's Node island policy mode: under "auto" and "explicit" a
+   * createRequire() require the build cannot resolve lowers through the
+   * generated island module (SPEC §5.4); under "off" it keeps its refusal. */
+  nodeIslandMode?: "auto" | "explicit" | "off";
   /** Parser/checker services owned by the load; required for npm graph analysis. */
   frontendServices?: FrontendServices | undefined;
   /** Where reachable emit stores its units' records and finds an earlier
@@ -1229,12 +1238,14 @@ export function lowerToIr(
   options: LowerOptions = {},
 ): LowerResult {
   setActiveNodeIslands(options.nodeIslands ?? null);
+  setActiveNodeIslandMode(options.nodeIslandMode !== undefined && options.nodeIslandMode !== "off");
   try {
     const result = lowerToIrWithIslands(program, entry, moduleOrder, options);
     markModuleInitFences(program, result.runtimeFences);
     return result;
   } finally {
     setActiveNodeIslands(null);
+    setActiveNodeIslandMode(false);
   }
 }
 
@@ -3807,11 +3818,22 @@ export class Lowerer {
   usesNodeIsland = false;
   /** The program's Node island packages (scope-B NI-4), or null. */
   readonly nodeIslands: NodeIslandSet | null = activeNodeIslands();
+  /** SPEC §5.4: the build may run islands (its policy mode is not off), so
+   * a runtime-filesystem require lowers through the generated island
+   * module even when no package runs in an island. */
+  readonly nodeIslandsEnabled: boolean = activeNodeIslandMode();
   /** Island module loads, by the importing file and specifier: the module
    * global holding what the import form sees (lower-node-island.ts). */
   readonly islandModules = new Map<string, IslandModuleBinding>();
   /** The modules Node island calls load (lower-node-island.ts). */
   readonly nodeIslandModules = new NodeIslandModuleCollector();
+  /** SPEC §5.4: the program has a runtime-filesystem require. Its generated
+   * island module joins the tree, with the program's modules as its
+   * duplicate guard. */
+  usesDynamicRequire = false;
+  /** Each runtime-filesystem require's dynload specifier literal, set to the
+   * generated module's path relative to the caller when lowering ends. */
+  readonly nodeIslandDynloads: { literal: IrExpr & { kind: "strLit" }; caller: string }[] = [];
   /** Each call's caller literal, set to its tree path when lowering ends. */
   readonly nodeIslandCallers: { literal: IrExpr & { kind: "strLit" }; caller: string }[] = [];
   /** Absolute specifiers, rewritten to the shipped file relative to their caller. */
@@ -3950,6 +3972,10 @@ export class Lowerer {
    * values other than fresh literals (noteUntypedIntegrity). */
   untypedIntegrity = false;
   readonly liftedFns: IrFunction[] = [];
+  /** The export keys each builtin namespace box serves, by module id (the
+   * box's getter is lifted once per module; its key list comes from
+   * module-namespace-elements.ts). */
+  readonly builtinNamespaceBoxKeys = new Map<string, string[]>();
   /** `for … of` and `for await` loops over untyped iterables, by their
    * generator-kind local (generator-dynamic-dispatch.ts steps the program's
    * own generators there on the typed path). Local ids repeat across
@@ -5501,9 +5527,11 @@ export class Lowerer {
    * = ns`, `take(ns)`): the runtime's namespace object — one per module,
    * Node's sorted export keys, live reads through a compiled getter, and
    * Node's read-only write errors — built by `moduleNamespaceDynValue`.
-   * `node:` builtins have no compiled source and no complete export table,
-   * so they keep their fence. */
+   * `node:` builtins have no compiled source, so their box comes from the
+   * lowering tables instead (moduleNamespaceBuiltinDynValue). */
   moduleNamespaceDyn(ns: IrExpr & { type: IrType & { kind: "moduleNs" } }): IrExpr | null {
+    if (ns.type.moduleId.startsWith("builtin:"))
+      return moduleNamespaceBuiltinDynValue(this, ns.type.moduleId, ns.loc);
     if (!ns.type.moduleId.startsWith("file:")) return null;
     return moduleNamespaceDynValue(this, ns);
   }
@@ -5519,7 +5547,9 @@ export class Lowerer {
     value: IrExpr & { type: IrType & { kind: "promise" } },
   ): IrExpr | null {
     const inner = value.type.inner;
-    if (inner.kind !== "moduleNs" || !inner.moduleId.startsWith("file:")) return null;
+    if (inner.kind !== "moduleNs") return null;
+    const builtin = inner.moduleId.startsWith("builtin:");
+    if (!builtin && !inner.moduleId.startsWith("file:")) return null;
     const loc = value.loc;
     const name = `%module.promise:${inner.moduleId}`;
     const promiseT: IrType & { kind: "promise" } = { kind: "promise", inner };
@@ -5537,7 +5567,9 @@ export class Lowerer {
           type: inner,
           loc,
         };
-        namespace = moduleNamespaceDynValue(this, awaited);
+        namespace = builtin
+          ? moduleNamespaceBuiltinDynValue(this, inner.moduleId, loc)
+          : moduleNamespaceDynValue(this, awaited);
         if (namespace) {
           const fn: IrFunction = {
             name,
@@ -11265,7 +11297,26 @@ export class Lowerer {
    * call's caller literal and each load's path literal set to its path in
    * that tree. The executable build fills in the libnode pack (index.ts). */
   private nodeIslandRecord(): NonNullable<IrModule["nodeIsland"]> {
+    if (this.usesDynamicRequire) {
+      // SPEC §5.4: every module the program compiled, as a build path (an
+      // absolute specifier the native code computed names it so).
+      const owned: string[] = [];
+      for (const file of this.initNameOf.keys()) {
+        try {
+          owned.push(realpathSync(file.fileName));
+        } catch {
+          owned.push(file.fileName);
+        }
+      }
+      this.nodeIslandModules.enableDynload(
+        owned,
+        this.nodeIslandDynloads.map((d) => d.caller),
+      );
+    }
     const modules = this.nodeIslandModules.tree();
+    // The generated module's specifier is relative to the tree ROOT (the
+    // runtime resolves a `./` specifier under it), not to the caller.
+    for (const { literal } of this.nodeIslandDynloads) literal.value = `./${DYNLOAD_MODULE_PATH}`;
     for (const { literal, caller } of this.nodeIslandCallers)
       literal.value = NodeIslandModuleCollector.callerPath(modules, caller);
     for (const { literal, caller, target } of this.nodeIslandSpecifiers)
@@ -17535,6 +17586,43 @@ export class Lowerer {
       return fsRealpathValue(this, bi.member === "realpathSync.native", loc);
     const fn = builtinModuleFnOf(this, bi.module, bi.member);
     return fn ? this.lowerNativeCallableValue(fn, `${bi.module}.${bi.member}`, loc) : null;
+  }
+
+  /** One builtin module member as a value BY NAME (no expression node): the
+   * value half of the named-import/property surface, for the checked-dynamic
+   * namespace box a bounded dynamic import of a builtin produces
+   * (module-namespace-elements.ts). Null when the member has no value
+   * lowering — the box then leaves it out of its key list, so a read fails
+   * the checked cast instead of answering something Node would not. The
+   * node-based `lowerNamespaceBuiltinProperty` keeps its own order (it also
+   * answers JavaScript-only class/global spellings a box never needs). */
+  lowerBuiltinMemberDynValue(module: string, member: string, loc: SrcLoc): IrExpr | null {
+    const bi = { module, member };
+    const c = builtinModuleConstOf(this, module, member);
+    if (c !== undefined) return builtinConstLit(c, loc);
+    if (module === "module" && member === "builtinModules") return builtinModulesArrayLit(loc);
+    if (module === "http" && member === "METHODS")
+      return { kind: "libCall", fn: "http.methods", args: [], type: arrayOf(STRING), loc };
+    if ((module === "http" || module === "https") && member === "globalAgent")
+      return {
+        kind: "libCall",
+        fn: "http.globalAgent",
+        args: [{ kind: "boolLit", value: module === "https", type: BOOL, loc }],
+        type: DYN,
+        loc,
+      };
+    if (module === "http" && member === "STATUS_CODES")
+      return { kind: "libCall", fn: "http.statusCodes", args: [], type: DYN, loc };
+    if (module === "os" && member === "constants")
+      return { kind: "libCall", fn: "os.constants", args: [], type: DYN, loc };
+    const roots = lowerTlsRootCertificates(this, bi, loc);
+    if (roots !== null) return roots;
+    const callable = this.lowerBuiltinCallableValue(bi, loc);
+    if (callable !== null) return callable;
+    if (module === "crypto" && member === "webcrypto")
+      return { kind: "libCall", fn: "webcrypto.object", args: [], type: DYN, loc };
+    if (module === "fs" && member === "constants") return fsConstantsObject(loc);
+    return null;
   }
 
   lowerNativeCallableValue(fn: BuiltinModuleFn, display: string, loc: SrcLoc): IrExpr | null {

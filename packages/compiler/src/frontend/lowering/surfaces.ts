@@ -3148,6 +3148,23 @@ export const FS_CALLBACK_MEMBERS = new Set([
   "readdir",
 ]);
 
+/** Members of one builtin module that the lowering tables answer as VALUES:
+ * its lowered functions and its constants, sorted. Used by the checked-
+ * dynamic namespace box (a bounded dynamic import of a builtin) to name the
+ * keys it can serve; a member outside the tables is left out of the box. */
+export function builtinModuleMemberNames(lowerer: Lowerer, module: string): string[] {
+  const names = new Set<string>();
+  const fns = builtinModuleFnsOf(lowerer, module);
+  if (fns !== undefined) {
+    for (const name of Object.keys(fns)) if (fns[name] !== undefined) names.add(name);
+  }
+  const consts = ownEntry(BUILTIN_MODULE_CONSTS, module);
+  if (consts !== undefined) {
+    for (const name of Object.keys(consts)) if (consts[name] !== undefined) names.add(name);
+  }
+  return [...names].sort();
+}
+
 /** One member's fence hint, own-property-safe (a collision would print an
  * inherited function into the diagnostic text). */
 export function builtinFenceHintOf(module: string, member: string): string | undefined {

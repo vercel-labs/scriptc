@@ -204,6 +204,20 @@ export function activeNodeIslands(): NodeIslandSet | null {
   return active;
 }
 
+/* Whether the build may run islands at all (the policy mode is not off),
+ * set for the same window as the island set. A build can have no island
+ * package and still need one: a runtime-filesystem require lowers through
+ * the generated island module (SPEC §5.4). */
+let islandsEnabled = false;
+
+export function setActiveNodeIslandMode(enabled: boolean): void {
+  islandsEnabled = enabled;
+}
+
+export function activeNodeIslandMode(): boolean {
+  return islandsEnabled;
+}
+
 /* The island package names of the frontend load in progress (runFrontend
  * sets them for one synchronous load): preflight lets their imports
  * through, typed by their declarations. */
@@ -215,4 +229,19 @@ export function setFrontendIslands(names: ReadonlySet<string>): void {
 
 export function isFrontendIsland(pkg: string): boolean {
   return frontendIslands.size > 0 && frontendIslands.has(pkg);
+}
+
+/* The declaration entries of the frontend load's island packages, set with
+ * the island names for the same synchronous load: a package whose
+ * declarations exist only as ambient `declare module` blocks in one file
+ * (highlight.js 10.7.3) types its subpath imports only when that file is
+ * part of the program. */
+let frontendIslandRoots: readonly string[] = [];
+
+export function setFrontendIslandTypeRoots(paths: readonly string[]): void {
+  frontendIslandRoots = paths;
+}
+
+export function frontendIslandTypeRoots(): readonly string[] {
+  return frontendIslandRoots;
 }

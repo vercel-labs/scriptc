@@ -4,6 +4,7 @@ import {
   BYTES_ELEMENT_NAME,
   DYN_HANDLE_KINDS,
   RUNTIME_STREAM_CLASSES,
+  recordTextCodecClass,
   typeEquals,
   type IrExpr,
   type IrLibFn,
@@ -141,8 +142,10 @@ export function dynDesc(
       return "string";
     case "bool":
       return "boolean";
-    case "record":
-      return recordsById.get(t.shapeId)?.tuple ? "array" : "object";
+    case "record": {
+      const shape = recordsById.get(t.shapeId);
+      return shape?.tuple ? "array" : ((shape && recordTextCodecClass(shape)) ?? "object");
+    }
     case "array":
       return "array";
     case "nullT":

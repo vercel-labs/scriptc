@@ -7,7 +7,7 @@ class-interface-refinements.ts:8:26 - error SC2002: record shapes must match exa
 
   hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead
 
-class-interface-refinements.ts:12:16 - error SC2001: values of type 'AddedStorage' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, read-only Date values, functions, classes, records, unions of those, and 'unknown')
+class-interface-refinements.ts:12:16 - error SC2001: values of type 'AddedStorage' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
 
   11 | interface AddedStorage extends Box { extra: string; }
   12 | function added(view: AddedStorage): string { return view.extra; }
@@ -23,7 +23,7 @@ class-interface-refinements.ts:13:13 - error SC2004: uses of 'added' inherit the
 
   hint: the declaration of 'added' did not compile — fix the diagnostic reported there and these sites clear with it
 
-class-interface-refinements.ts:16:18 - error SC2001: values of type 'ChangedMethod' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, read-only Date values, functions, classes, records, unions of those, and 'unknown')
+class-interface-refinements.ts:16:18 - error SC2001: values of type 'ChangedMethod' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
 
   15 | interface ChangedMethod extends Box { read(): number; }
   16 | function changed(view: ChangedMethod): number { return view.read(); }
@@ -39,7 +39,7 @@ class-interface-refinements.ts:17:13 - error SC2004: uses of 'changed' inherit t
 
   hint: the declaration of 'changed' did not compile — fix the diagnostic reported there and these sites clear with it
 
-class-interface-refinements.ts:20:18 - error SC2006: values of type 'Indexed' cannot be compiled: this index signature is outside the supported shape (string or number keys; values limited to numbers, strings, booleans, records, classes, arrays, unions, functions, Maps, Sets, RegExps, Promises, or 'unknown')
+class-interface-refinements.ts:20:18 - error SC2006: values of type 'Indexed' cannot be compiled: this index signature is outside the supported shape (string or number keys; values limited to numbers, strings, booleans, records, classes, arrays, unions, functions, Maps, Sets, RegExps, Dates, Promises, or 'unknown')
 
   19 | type Indexed = Box & { [name: string]: number };
   20 | function indexed(view: Indexed, key: string): number { return view[key]!; }

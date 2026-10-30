@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7530-buffer-constructor.ts"
+ ],
+ "diags": []
+}

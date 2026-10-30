@@ -44,8 +44,8 @@ static size_t scr_bytes_dyn_width(ScrBytesNumKind kind) {
 
 /* Node's checkInt range test and message, before the offset is looked at. */
 static bool scr_bytes_dyn_value_in_range(double value, size_t width, bool sign) {
-  double max = sign ? exp2((double)(8 * width - 1)) - 1 : exp2((double)(8 * width)) - 1;
-  double min = sign ? -exp2((double)(8 * width - 1)) : 0;
+  double max = sign ? ldexp(1.0, (int)(8 * width - 1)) - 1 : ldexp(1.0, (int)(8 * width)) - 1;
+  double min = sign ? -ldexp(1.0, (int)(8 * width - 1)) : 0;
   if (!(value > max || value < min)) return true;
   char recv[48];
   scr_num_received(value, recv);
@@ -509,8 +509,9 @@ static bool scr_bytes_dyn_buffer(const ScrDyn *recv) {
 /* One entry per method family, so a program links only the families it
  * names: each runs its methods on a Buffer receiver and gives any other
  * receiver the ordinary dispatch. */
-ScrDyn *scr_dyn_invoke_buffer_num(ScrDyn *recv, ScrDyn *callee, const char *method, ScrDyn *const *args,
-                                  size_t argc, const char *what) {
+ScrDyn *scr_dyn_invoke_buffer_num(ScrDyn *recv, ScrDyn *callee, const char *method,
+                                  int32_t *mid_slot, ScrDyn *const *args, size_t argc,
+                                  const char *what) {
   if (scr_bytes_dyn_buffer(recv)) {
     bool read = !strncmp(method, "read", 4);
     const char *rest = method + (read ? 4 : 5);
@@ -518,40 +519,45 @@ ScrDyn *scr_dyn_invoke_buffer_num(ScrDyn *recv, ScrDyn *callee, const char *meth
       if (!strcmp(rest, scr_bytes_dyn_names[at].name)) return scr_bytes_dyn_num_method(recv->v.bytes, read, at, args, argc);
     }
   }
-  return scr_dyn_invoke_prepared(recv, callee, method, args, argc, what);
+  return scr_dyn_invoke_prepared_id(recv, callee, method, mid_slot, args, argc, what);
 }
 
-ScrDyn *scr_dyn_invoke_buffer_write(ScrDyn *recv, ScrDyn *callee, const char *method, ScrDyn *const *args,
-                                    size_t argc, const char *what) {
+ScrDyn *scr_dyn_invoke_buffer_write(ScrDyn *recv, ScrDyn *callee, const char *method,
+                                    int32_t *mid_slot, ScrDyn *const *args, size_t argc,
+                                    const char *what) {
   if (scr_bytes_dyn_buffer(recv)) return scr_bytes_dyn_write(recv->v.bytes, args, argc);
-  return scr_dyn_invoke_prepared(recv, callee, method, args, argc, what);
+  return scr_dyn_invoke_prepared_id(recv, callee, method, mid_slot, args, argc, what);
 }
 
-ScrDyn *scr_dyn_invoke_buffer_fill(ScrDyn *recv, ScrDyn *callee, const char *method, ScrDyn *const *args,
-                                   size_t argc, const char *what) {
+ScrDyn *scr_dyn_invoke_buffer_fill(ScrDyn *recv, ScrDyn *callee, const char *method,
+                                   int32_t *mid_slot, ScrDyn *const *args, size_t argc,
+                                   const char *what) {
   if (scr_bytes_dyn_buffer(recv)) return scr_bytes_dyn_fill(recv, args, argc);
-  return scr_dyn_invoke_prepared(recv, callee, method, args, argc, what);
+  return scr_dyn_invoke_prepared_id(recv, callee, method, mid_slot, args, argc, what);
 }
 
-ScrDyn *scr_dyn_invoke_buffer_to_string(ScrDyn *recv, ScrDyn *callee, const char *method, ScrDyn *const *args,
-                                        size_t argc, const char *what) {
+ScrDyn *scr_dyn_invoke_buffer_to_string(ScrDyn *recv, ScrDyn *callee, const char *method,
+                                        int32_t *mid_slot, ScrDyn *const *args, size_t argc,
+                                        const char *what) {
   if (scr_bytes_dyn_buffer(recv)) return scr_bytes_dyn_to_string(recv->v.bytes, args, argc);
-  return scr_dyn_invoke_prepared(recv, callee, method, args, argc, what);
+  return scr_dyn_invoke_prepared_id(recv, callee, method, mid_slot, args, argc, what);
 }
 
 /* indexOf, lastIndexOf and includes. */
-ScrDyn *scr_dyn_invoke_buffer_search(ScrDyn *recv, ScrDyn *callee, const char *method, ScrDyn *const *args,
-                                     size_t argc, const char *what) {
+ScrDyn *scr_dyn_invoke_buffer_search(ScrDyn *recv, ScrDyn *callee, const char *method,
+                                     int32_t *mid_slot, ScrDyn *const *args, size_t argc,
+                                     const char *what) {
   if (scr_bytes_dyn_buffer(recv)) {
     bool includes = !strcmp(method, "includes");
     return scr_bytes_dyn_index_of(recv->v.bytes, args, argc, strcmp(method, "lastIndexOf") != 0, includes);
   }
-  return scr_dyn_invoke_prepared(recv, callee, method, args, argc, what);
+  return scr_dyn_invoke_prepared_id(recv, callee, method, mid_slot, args, argc, what);
 }
 
 /* toJSON, equals, compare, copy, swap16/32/64, and the refused members. */
-ScrDyn *scr_dyn_invoke_buffer(ScrDyn *recv, ScrDyn *callee, const char *method, ScrDyn *const *args,
-                              size_t argc, const char *what) {
+ScrDyn *scr_dyn_invoke_buffer(ScrDyn *recv, ScrDyn *callee, const char *method,
+                              int32_t *mid_slot, ScrDyn *const *args, size_t argc,
+                              const char *what) {
   if (scr_bytes_dyn_buffer(recv)) {
     ScrBytes *b = recv->v.bytes;
     if (!strcmp(method, "toJSON")) return scr_bytes_dyn_to_json(b);
@@ -584,5 +590,217 @@ ScrDyn *scr_dyn_invoke_buffer(ScrDyn *recv, ScrDyn *callee, const char *method, 
       return NULL;
     }
   }
-  return scr_dyn_invoke_prepared(recv, callee, method, args, argc, what);
+  return scr_dyn_invoke_prepared_id(recv, callee, method, mid_slot, args, argc, what);
+}
+
+/* A fixed-width read or write name (readUInt8, writeDoubleLE, ...). */
+static bool scr_bytes_dyn_num_method_name(const char *method) {
+  bool read = !strncmp(method, "read", 4);
+  if (!read && strncmp(method, "write", 5)) return false;
+  const char *rest = method + (read ? 4 : 5);
+  for (size_t at = 0; at < sizeof scr_bytes_dyn_names / sizeof scr_bytes_dyn_names[0]; at++)
+    if (!strcmp(rest, scr_bytes_dyn_names[at].name)) return true;
+  return false;
+}
+
+/* ── Buffer.prototype members read as values ────────────────────────────
+ * `Buffer.prototype[name]` (smart-buffer's typeof probe for the BigInt
+ * methods): an own member answers one function per name, with the name and
+ * length Node's function has; the parent and offset getters, read on the
+ * prototype itself, answer undefined; constructor is the Buffer value.
+ * Members inherited from Uint8Array.prototype and Object.prototype, symbol
+ * keys and object keys throw SC2020, and other keys answer undefined. The
+ * functions run the method on a Buffer receiver (`.call(buf, ...)`); other
+ * receivers throw SC2020. */
+static const struct { const char *key; const char *name; uint32_t length; } scr_buffer_proto_own[] = {
+  {"readBigUInt64LE", "readBigUInt64LE", 0},
+  {"readBigUInt64BE", "readBigUInt64BE", 0},
+  {"readBigUint64LE", "readBigUInt64LE", 0},
+  {"readBigUint64BE", "readBigUInt64BE", 0},
+  {"readBigInt64LE", "readBigInt64LE", 0},
+  {"readBigInt64BE", "readBigInt64BE", 0},
+  {"writeBigUInt64LE", "writeBigUInt64LE", 1},
+  {"writeBigUInt64BE", "writeBigUInt64BE", 1},
+  {"writeBigUint64LE", "writeBigUInt64LE", 1},
+  {"writeBigUint64BE", "writeBigUInt64BE", 1},
+  {"writeBigInt64LE", "writeBigInt64LE", 1},
+  {"writeBigInt64BE", "writeBigInt64BE", 1},
+  {"readUIntLE", "readUIntLE", 2},
+  {"readUInt32LE", "", 1},
+  {"readUInt16LE", "", 1},
+  {"readUInt8", "", 1},
+  {"readUIntBE", "readUIntBE", 2},
+  {"readUInt32BE", "", 1},
+  {"readUInt16BE", "", 1},
+  {"readUintLE", "readUIntLE", 2},
+  {"readUint32LE", "", 1},
+  {"readUint16LE", "", 1},
+  {"readUint8", "", 1},
+  {"readUintBE", "readUIntBE", 2},
+  {"readUint32BE", "", 1},
+  {"readUint16BE", "", 1},
+  {"readIntLE", "readIntLE", 2},
+  {"readInt32LE", "", 1},
+  {"readInt16LE", "", 1},
+  {"readInt8", "", 1},
+  {"readIntBE", "readIntBE", 2},
+  {"readInt32BE", "", 1},
+  {"readInt16BE", "", 1},
+  {"writeUIntLE", "writeUIntLE", 3},
+  {"writeUInt32LE", "writeUInt32LE", 1},
+  {"writeUInt16LE", "writeUInt16LE", 1},
+  {"writeUInt8", "writeUInt8", 1},
+  {"writeUIntBE", "writeUIntBE", 3},
+  {"writeUInt32BE", "writeUInt32BE", 1},
+  {"writeUInt16BE", "writeUInt16BE", 1},
+  {"writeUintLE", "writeUIntLE", 3},
+  {"writeUint32LE", "writeUInt32LE", 1},
+  {"writeUint16LE", "writeUInt16LE", 1},
+  {"writeUint8", "writeUInt8", 1},
+  {"writeUintBE", "writeUIntBE", 3},
+  {"writeUint32BE", "writeUInt32BE", 1},
+  {"writeUint16BE", "writeUInt16BE", 1},
+  {"writeIntLE", "writeIntLE", 3},
+  {"writeInt32LE", "writeInt32LE", 1},
+  {"writeInt16LE", "writeInt16LE", 1},
+  {"writeInt8", "writeInt8", 1},
+  {"writeIntBE", "writeIntBE", 3},
+  {"writeInt32BE", "writeInt32BE", 1},
+  {"writeInt16BE", "writeInt16BE", 1},
+  {"readFloatLE", "readFloatForwards", 0},
+  {"readFloatBE", "readFloatBackwards", 0},
+  {"readDoubleLE", "readDoubleForwards", 0},
+  {"readDoubleBE", "readDoubleBackwards", 0},
+  {"writeFloatLE", "writeFloatForwards", 1},
+  {"writeFloatBE", "writeFloatBackwards", 1},
+  {"writeDoubleLE", "writeDoubleForwards", 1},
+  {"writeDoubleBE", "writeDoubleBackwards", 1},
+  {"asciiSlice", "", 2},
+  {"base64Slice", "", 2},
+  {"base64urlSlice", "", 2},
+  {"latin1Slice", "", 2},
+  {"hexSlice", "", 2},
+  {"ucs2Slice", "", 2},
+  {"utf8Slice", "", 2},
+  {"asciiWrite", "", 3},
+  {"base64Write", "", 3},
+  {"base64urlWrite", "", 3},
+  {"latin1Write", "", 3},
+  {"hexWrite", "", 3},
+  {"ucs2Write", "", 3},
+  {"utf8Write", "", 3},
+  {"parent", NULL, 0},
+  {"offset", NULL, 0},
+  {"copy", "copy", 4},
+  {"toString", "toString", 3},
+  {"equals", "equals", 1},
+  {"inspect", "inspect", 2},
+  {"compare", "compare", 5},
+  {"indexOf", "indexOf", 4},
+  {"lastIndexOf", "lastIndexOf", 4},
+  {"includes", "includes", 4},
+  {"fill", "fill", 4},
+  {"write", "write", 4},
+  {"toJSON", "toJSON", 0},
+  {"subarray", "subarray", 2},
+  {"slice", "slice", 2},
+  {"swap16", "swap16", 0},
+  {"swap32", "swap32", 0},
+  {"swap64", "swap64", 0},
+  {"toLocaleString", "toString", 3},
+};
+
+static const char *const scr_buffer_proto_inherited[] = {
+  "BYTES_PER_ELEMENT", "buffer", "byteLength", "byteOffset", "length", "entries", "keys", "values",
+  "at", "copyWithin", "every", "filter", "find", "findIndex", "findLast", "findLastIndex",
+  "forEach", "join", "map", "reverse", "reduce", "reduceRight", "set", "some", "sort", "toReversed",
+  "toSorted", "with", "__defineGetter__", "__defineSetter__", "hasOwnProperty", "__lookupGetter__",
+  "__lookupSetter__", "isPrototypeOf", "propertyIsEnumerable", "valueOf", "__proto__",
+};
+
+static SCR_TL ScrDyn *scr_buffer_proto_fns;
+
+static void scr_buffer_proto_cleanup(void) {
+  scr_dyn_release(scr_buffer_proto_fns);
+  scr_buffer_proto_fns = NULL;
+}
+
+static ScrDyn *scr_buffer_proto_unsupported(const char *format, const char *name) {
+  char message[200];
+  int n = snprintf(message, sizeof message, format, name);
+  scr_throw_error_msg_code(SCR_ERR_ERROR, message, (size_t)n, "SC2020");
+  return NULL;
+}
+
+static ScrDyn *scr_buffer_proto_run(ScrDyn *recv, const char *method, ScrDyn *const *args, size_t argc) {
+  if (!scr_bytes_dyn_buffer(recv))
+    return scr_buffer_proto_unsupported("Buffer.prototype.%s on a receiver that is not a Buffer is not supported yet",
+                                        method);
+  const char *what = "Buffer.prototype method";
+  /* The method-id cache slot of a call site, here a fresh one per call. */
+  int32_t slot = -1;
+  int32_t *mid = &slot;
+  if (scr_bytes_dyn_num_method_name(method)) return scr_dyn_invoke_buffer_num(recv, NULL, method, mid, args, argc, what);
+  if (!strcmp(method, "write")) return scr_dyn_invoke_buffer_write(recv, NULL, method, mid, args, argc, what);
+  if (!strcmp(method, "fill")) return scr_dyn_invoke_buffer_fill(recv, NULL, method, mid, args, argc, what);
+  if (!strcmp(method, "toString") || !strcmp(method, "toLocaleString"))
+    return scr_dyn_invoke_buffer_to_string(recv, NULL, "toString", mid, args, argc, what);
+  if (!strcmp(method, "indexOf") || !strcmp(method, "lastIndexOf") || !strcmp(method, "includes"))
+    return scr_dyn_invoke_buffer_search(recv, NULL, method, mid, args, argc, what);
+  if (!strcmp(method, "subarray") || !strcmp(method, "slice"))
+    return scr_dyn_invoke(recv, method, args, argc, what);
+  if (!strcmp(method, "inspect"))
+    return scr_buffer_proto_unsupported("Buffer.prototype.%s through a stored value is not supported yet", method);
+  return scr_dyn_invoke_buffer(recv, NULL, method, mid, args, argc, what);
+}
+
+static ScrDyn *scr_buffer_proto_call(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  ScrDyn *recv = scr_dyn_this_get();
+  ScrDyn *result = scr_buffer_proto_run(recv, closure->fn, args, argc);
+  scr_dyn_release(recv);
+  return result;
+}
+
+ScrDyn *scr_buffer_prototype_member(const ScrDyn *key) {
+  if (key->kind == SCR_DYN_SYMBOL)
+    return scr_buffer_proto_unsupported("Buffer.prototype members keyed by %s are not supported yet", "symbols");
+  if (key->kind != SCR_DYN_STR) {
+    if (key->kind == SCR_DYN_NUM || key->kind == SCR_DYN_BOOL || key->kind == SCR_DYN_UNDEF ||
+        key->kind == SCR_DYN_NULL || key->kind == SCR_DYN_BIGINT)
+      return scr_dyn_retain(scr_dyn_undefined());
+    return scr_buffer_proto_unsupported("Buffer.prototype members keyed by %s are not supported yet", "objects");
+  }
+  const ScrStr *name = key->v.str;
+  if (name->len == 11 && memcmp(name->data, "constructor", 11) == 0) {
+    /* A program that reads the Buffer function's value answers it (the
+     * builtin-values unit installs the hook); otherwise Buffer keeps its
+     * builtin identity token, as typed array reads do (scr_json.c). */
+    if (scr_bytes_buffer_constructor_fn) return scr_bytes_buffer_constructor_fn();
+    ScrStr *token = scr_str_new("[builtin Buffer]", 16);
+    ScrDyn *result = scr_dyn_new_str(token);
+    scr_str_release(token);
+    return result;
+  }
+  for (size_t i = 0; i < sizeof scr_buffer_proto_inherited / sizeof scr_buffer_proto_inherited[0]; i++) {
+    const char *inherited = scr_buffer_proto_inherited[i];
+    if (strlen(inherited) == name->len && memcmp(inherited, name->data, name->len) == 0)
+      return scr_buffer_proto_unsupported("Buffer.prototype.%s is not supported yet", inherited);
+  }
+  for (size_t i = 0; i < sizeof scr_buffer_proto_own / sizeof scr_buffer_proto_own[0]; i++) {
+    const char *own = scr_buffer_proto_own[i].key;
+    if (strlen(own) != name->len || memcmp(own, name->data, name->len) != 0) continue;
+    if (!scr_buffer_proto_own[i].name) return scr_dyn_retain(scr_dyn_undefined());
+    if (!scr_buffer_proto_fns) {
+      scr_buffer_proto_fns = scr_dyn_new_obj_null_proto();
+      scr_atexit(scr_buffer_proto_cleanup);
+    }
+    ScrDyn *fn = scr_dyn_obj_get(scr_buffer_proto_fns, own, name->len);
+    if (!fn) {
+      fn = scr_dyn_new_func(scr_closure_new((void *)own, 0), scr_buffer_proto_call, scr_buffer_proto_own[i].length,
+                            "native:function", scr_buffer_proto_own[i].name);
+      scr_dyn_obj_set(scr_buffer_proto_fns, own, name->len, fn);
+    }
+    return scr_dyn_retain(fn);
+  }
+  return scr_dyn_retain(scr_dyn_undefined());
 }

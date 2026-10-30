@@ -2,7 +2,7 @@ import { dynUndefinedExpr, boolLit, numLit, varRef } from "../../../ir/build.js"
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
 import { lowerFsPath } from "./fs-paths.js";
-import { locOf } from "../../program.js";
+import { isJsSourceFile, locOf } from "../../program.js";
 import {
   type BuiltinModuleFn,
   FS_WRITE_FILE_DOCUMENTED_OPTIONS,
@@ -26,7 +26,13 @@ import {
   funcOf,
   typeEquals,
 } from "../../../ir/ir.js";
-import { lowerBuiltinOptionalDefault, optionMember, literalBoolOptions } from "./arguments.js";
+import {
+  lowerBuiltinOptionalDefault,
+  optionMember,
+  literalBoolOptions,
+  stripTypeCasts,
+} from "./arguments.js";
+import { constInitializerOf } from "../lower-exprs.js";
 import {
   lowerFsTimestampValue,
   lowerFsSyncBufferWindow,
@@ -265,7 +271,7 @@ export function lowerFsPromisesOpenCall(
       "use open(path[, stringFlags[, numericMode]])",
     );
   }
-  const path = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, STRING);
+  const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
   const defaultFlags: IrExpr = { kind: "strLit", value: "r", type: STRING, loc };
   const defaultMode: IrExpr = { kind: "numLit", value: 0o666, type: F64, loc };
   const flags = expr.arguments.nodes[1]
@@ -402,6 +408,28 @@ export function lowerFsReadSyncCall(
       );
     }
     lowerer.noLowering("readSync with a non-literal options argument", optionsNode, supported);
+  }
+  // JavaScript arguments outside the typed signature (an untyped fd or
+  // buffer, a bigint or untyped position) take Node's argument checks at
+  // run time, then the same read.
+  if (isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    const nodes = expr.arguments.nodes;
+    const typed = [F64, BYTES_U8, F64, F64, F64].every((want, i) => {
+      const node = nodes[i];
+      if (node === undefined) return true;
+      let value: ts.Expression = node;
+      while (ts.isParenthesizedExpression(value)) value = value.expression;
+      if (i === 4 && value.kind === ts.SyntaxKind.NullKeyword) return true;
+      const t = lowerer.mapTypeOf(lowerer.typeOf(node));
+      return t !== null && (want.kind === "bytes" ? t.kind === "bytes" : t.kind === "f64");
+    });
+    if (!typed) {
+      const args = [0, 1, 2, 3, 4].map((i): IrExpr => {
+        const node = nodes[i];
+        return node === undefined ? dynUndefinedExpr(loc) : lowerer.lowerExprExpecting(node, DYN);
+      });
+      return { kind: "libCall", fn: "fs.readSyncDyn", args, type: F64, loc };
+    }
   }
   const args: IrExpr[] = [
     lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, F64),
@@ -705,7 +733,7 @@ export function lowerFsPromisesEncodedRead(
     )
       return null;
   }
-  const path = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, STRING);
+  const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
   const encoding: IrExpr =
     optionsType.kind === "string"
       ? lowerer.lowerExprExpecting(options, STRING)
@@ -853,7 +881,7 @@ export function lowerFsPromisesMkdirCall(
     );
   }
   const { recursive, modeNode } = options;
-  const path = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, STRING);
+  const path = lowerFsPath(lowerer, expr.arguments.nodes[0]!);
   const mode: IrExpr | null = modeNode ? lowerer.lowerExprExpecting(modeNode, F64) : null;
   const type: IrType = { kind: "promise", inner: VOID };
   if (!recursive) {
@@ -975,6 +1003,42 @@ export function lowerFsWriteBytesCall(
   return null;
 }
 
+// The writeFileSync(fd, data[, "utf8"]) form — Node accepts a file
+// descriptor where it accepts a path (write to a descriptor openSync
+// returned, the descriptor staying open: closeSync owns its lifetime).
+// Routed by the ARGUMENT's static type, like readFileSync(fd).
+export function lowerFsWriteDescriptorCall(
+  lowerer: Lowerer,
+  expr: ts.CallExpression,
+  loc: SrcLoc,
+): IrExpr {
+  const supported = 'only string data is supported: writeFileSync(fd, data, "utf8")';
+  const dataNode = expr.arguments.nodes[1]!;
+  const dataIr = lowerer.mapTypeOf(lowerer.typeOf(dataNode));
+  if (dataIr?.kind !== "string") {
+    lowerer.noLowering(
+      `writeFileSync(fd) of '${dataIr ? lowerer.fmt(dataIr) : lowerer.checker.typeToString(lowerer.typeOf(dataNode))}' data`,
+      dataNode,
+      supported,
+    );
+  }
+  if (expr.arguments.nodes.length > 3) {
+    lowerer.noLowering(
+      `writeFileSync(fd) with ${expr.arguments.nodes.length} arguments`,
+      expr,
+      supported,
+    );
+  }
+  const fd = lowerer.lowerExprExpecting(expr.arguments.nodes[0]!, F64);
+  return {
+    kind: "libCall",
+    fn: "fs.writeFileSyncFd",
+    args: [fd, lowerer.lowerExprExpecting(dataNode, STRING)],
+    type: VOID,
+    loc,
+  };
+}
+
 export function lowerFsWriteOptionsCall(
   lowerer: Lowerer,
   expr: ts.CallExpression,
@@ -985,8 +1049,14 @@ export function lowerFsWriteOptionsCall(
   const operation = promiseWriteOptions ? "fs.promises.writeFile" : "writeFileSync";
   const plainFn: IrLibFn = promiseWriteOptions ? "fsp.writeFile" : "fs.writeFileSync";
   const modeFn: IrLibFn = promiseWriteOptions ? "fsp.writeFileMode" : "fs.writeFileModeSync";
+  const flagsFn: IrLibFn = promiseWriteOptions ? "fsp.writeFileFlags" : "fs.writeFileFlagsSync";
   const resultType: IrType = promiseWriteOptions ? { kind: "promise", inner: VOID } : VOID;
   type WriteOptionValue = { kind: "effect" | "mode"; value: IrExpr };
+  /** `flag: "w"` is the plain truncate-or-create write; `flag: "wx"` is
+   * open(2)'s O_EXCL (EEXIST when the path exists). Both are literals, so
+   * the bit is known here and carries no evaluation of its own. */
+  let exclusive = false;
+  let sawFlag = false;
   // The runtime needs only `mode`, but every source option value is an
   // ordinary JS expression. Stage path/data and then evaluate the option
   // values in object-literal order before issuing the write; otherwise a
@@ -1015,19 +1085,36 @@ export function lowerFsWriteOptionsCall(
       });
       mode = varRef(modeLocal.id, modeLocal.type, loc);
     }
-    const result: IrExpr = {
-      kind: "libCall",
-      fn: mode ? modeFn : plainFn,
-      args: mode
-        ? [
+    const result: IrExpr = sawFlag
+      ? {
+          kind: "libCall",
+          fn: flagsFn,
+          args: [
             varRef(pathLocal.id, pathLocal.type, loc),
             varRef(dataLocal.id, dataLocal.type, loc),
-            mode,
-          ]
-        : [varRef(pathLocal.id, pathLocal.type, loc), varRef(dataLocal.id, dataLocal.type, loc)],
-      type: resultType,
-      loc,
-    };
+            // Node's default creation mode when only the flag is given.
+            mode ?? { kind: "numLit", value: 0o666, type: F64, loc },
+            { kind: "numLit", value: exclusive ? 1 : 0, type: F64, loc },
+          ],
+          type: resultType,
+          loc,
+        }
+      : {
+          kind: "libCall",
+          fn: mode ? modeFn : plainFn,
+          args: mode
+            ? [
+                varRef(pathLocal.id, pathLocal.type, loc),
+                varRef(dataLocal.id, dataLocal.type, loc),
+                mode,
+              ]
+            : [
+                varRef(pathLocal.id, pathLocal.type, loc),
+                varRef(dataLocal.id, dataLocal.type, loc),
+              ],
+          type: resultType,
+          loc,
+        };
     return { kind: "seqExpr", stmts, result, type: resultType, loc };
   };
   // The bare-encoding spelling — writeFileSync(p, data, "utf-8") — is
@@ -1045,9 +1132,16 @@ export function lowerFsWriteOptionsCall(
     }
   }
   const optionValues: WriteOptionValue[] = [];
-  let ok = ts.isObjectLiteralExpression(optsNode);
-  if (ok) {
-    for (const p of (optsNode as ts.ObjectLiteralExpression).properties.nodes) {
+  // The options argument may be a const BINDING (`const OPTS =
+  // {encoding: "utf-8", mode: 0o600} as const`, shared by every write of
+  // a file): the literal behind it is the options record. Resolved only
+  // through type casts and a never-reassigned const, and only when every
+  // value is a literal — the const evaluated them once, so staging them
+  // again at the write site is the same evaluation.
+  const optsLiteral = optionsLiteralOf(lowerer, optsNode);
+  let ok = optsLiteral !== null;
+  if (optsLiteral !== null) {
+    for (const p of optsLiteral.properties.nodes) {
       const m = optionMember(p);
       if (!m) {
         ok = false;
@@ -1063,13 +1157,21 @@ export function lowerFsWriteOptionsCall(
         }
         optionValues.push({ kind: "effect", value: lowerer.lowerExprExpecting(m.value, STRING) });
       } else if (m.name === "flag") {
-        // Documented, behavior-changing (open(2)'s disposition — 'a'
-        // IS appendFileSync), no lowering: fence by name.
-        lowerer.noLowering(
-          `${operation} with the flag option`,
-          p,
-          "the write truncates-or-creates (Node's default 'w'); other flags have no lowering",
-        );
+        // Node's disposition flag changes whether an existing file is
+        // truncated: "w" is the default write, "wx" the exclusive create.
+        // Every other flag (append "a"/"as", synchronous "ws", ...) writes
+        // different bytes and keeps the fence by name.
+        const t = lowerer.typeOf(m.value);
+        if (!t.isStringLiteralType() || (t.value !== "w" && t.value !== "wx")) {
+          lowerer.noLowering(
+            `${operation} with the flag option`,
+            p,
+            'the lowered flags are "w" (the default truncate-or-create) and "wx" (O_EXCL: EEXIST when the path exists); other flags write different bytes',
+          );
+        }
+        exclusive = t.value === "wx";
+        sawFlag = true;
+        optionValues.push({ kind: "effect", value: lowerer.lowerExprExpecting(m.value, STRING) });
       } else {
         // The options-record stance: documented keys with no lowering
         // fence by name; undocumented keys drop like Node.
@@ -1079,7 +1181,7 @@ export function lowerFsWriteOptionsCall(
           m.name,
           operation,
           FS_WRITE_FILE_DOCUMENTED_OPTIONS,
-          'the supported options are { mode: <number>, encoding: "utf8" }',
+          'the supported options are { mode: <number>, encoding: "utf8", flag: "w" | "wx" }',
         );
       }
     }
@@ -1088,10 +1190,60 @@ export function lowerFsWriteOptionsCall(
     lowerer.noLowering(
       `${operation} with 3 arguments`,
       optsNode,
-      'the supported options are { mode: <number>, encoding: "utf8" } over string data',
+      'the supported options are { mode: <number>, encoding: "utf8", flag: "w" | "wx" } over string data',
     );
   }
   return finishWrite(optionValues);
+}
+
+/** ts.CheckFlags.Readonly — the property symbol's readonly bit, the same
+ * test decl-projection.ts makes for a projected declaration. */
+const READONLY_CHECK_FLAG = 8;
+
+/** The object literal behind a write options argument: the literal
+ * itself, or the initializer of the const binding that holds it (through
+ * type casts and parentheses). A const's values must all be literals —
+ * inlining anything else would re-evaluate it at the write site — and the
+ * binding's record must be readonly, so the inlined values are also what
+ * a later read of the record would answer. */
+function optionsLiteralOf(
+  lowerer: Lowerer,
+  node: ts.Expression,
+): ts.ObjectLiteralExpression | null {
+  // stripTypeCasts also strips parentheses: `({...} as const)` is the literal.
+  const unwrap = (expr: ts.Expression): ts.Expression => stripTypeCasts(expr);
+  const bare = unwrap(node);
+  if (ts.isObjectLiteralExpression(bare)) return bare;
+  if (!ts.isIdentifier(bare)) return null;
+  const init = constInitializerOf(lowerer, bare);
+  if (init === null) return null;
+  const value = unwrap(init);
+  if (!ts.isObjectLiteralExpression(value)) return null;
+  // The literal values are inlined at the WRITE SITE. That is the same
+  // evaluation Node performs — it reads the options record when the call
+  // runs — only while the record cannot change after its initializer: a
+  // mutable one (`const OPTS: { mode: number } = { mode: 0o600 }`) would
+  // let `OPTS.mode = 0o644` reach Node's write and not this one. Only a
+  // readonly record (`as const`, `Readonly<...>`) admits the inline; the
+  // rest keep the SC2020 fence.
+  const props = lowerer.checker.getPropertiesOfType(lowerer.typeOf(bare));
+  if (props.length === 0 || !props.every((p) => (p.checkFlags & READONLY_CHECK_FLAG) !== 0))
+    return null;
+  const literalValue = (expr: ts.Expression): boolean => {
+    const v = unwrap(expr);
+    if (ts.isStringLiteral(v) || ts.isNoSubstitutionTemplateLiteral(v)) return true;
+    if (ts.isNumericLiteral(v)) return true;
+    return (
+      ts.isPrefixUnaryExpression(v) &&
+      (v.operator === ts.SyntaxKind.MinusToken || v.operator === ts.SyntaxKind.PlusToken) &&
+      ts.isNumericLiteral(v.operand)
+    );
+  };
+  for (const p of value.properties.nodes) {
+    const m = optionMember(p);
+    if (!m || !literalValue(m.value)) return null;
+  }
+  return value;
 }
 
 export function lowerFsReadPathCall(

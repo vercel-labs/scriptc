@@ -1,6 +1,6 @@
 {
   "name": "@scriptc/cli-linux-x64-musl",
-  "version": "0.4.2",
+  "version": "0.4.6",
   "description": "Native scriptc compiler for linux-x64-musl",
   "license": "Apache-2.0",
   "homepage": "https://scriptc.dev",
@@ -18,9 +18,13 @@
   "files": [
     "dist"
   ],
+  "dependencies": {
+    "@scriptc/llvm-linux-x64-musl": "workspace:*",
+    "@scriptc/runtime-linux-x64-musl": "workspace:*"
+  },
   "scripts": {
     "build": "node -e \"\"",
-    "build:native": "node --max-old-space-size=8192 --import tsx ../../scripts/build-native-cli.mts dist",
+    "build:native": "node --max-old-space-size=8192 --import tsx ../../scripts/build-native-cli.mts dist --platform-packages",
     "prepack": "node ../../scripts/verify-native-cli.mjs ."
   },
   "publishConfig": {

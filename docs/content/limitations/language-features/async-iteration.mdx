@@ -1,6 +1,7 @@
 - **Async iteration:** Async `yield*` delegation, stored Web or Node iterator handles, and general structural async-iterator objects are unsupported.
   Typed async generators support lazy execution, `await`, direct `yield`, queued `.next()`/`.return()`/`.throw()` requests, and `for await`.
   `for await` also accepts Node `Readable` streams, Web `ReadableStream` values, and compiled class iterators whose zero-parameter `next()` returns a promise of a `{ value, done? }` record.
+  A class instance whose `[Symbol.asyncIterator]()` returns an object literal, or that has only `[Symbol.iterator]()`, iterates through the checked-dynamic async protocol, and an early exit awaits the iterator's `return()`.
   Abrupt completion runs cleanup, including literal `destroyOnReturn` and `preventCancel` options.
   The `node:timers/promises` `setInterval(delay, value)` iterator compiles without AbortSignal options.
   `Array.fromAsync` accepts arrays of values or of promises and typed async generators, with an optional mapping function; a `thisArg` and arrays that mix values and promises are unsupported.

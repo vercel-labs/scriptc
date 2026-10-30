@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { analyze, compile } from "@scriptc/compiler";
@@ -72,6 +72,20 @@ for (const backend of ["llvm"] as const) {
       expect(transport.status, transport.stderr).toBe(0);
       expect(transport.stdout).toBe("native transport passed\n");
       expect(transport.stderr).toBe("");
+      if (process.platform !== "win32") {
+        // A shared server in a private server directory, which the stand-in
+        // leaves after its idle time.
+        const runtime = join(dir, "run");
+        mkdirSync(runtime, { mode: 0o700 });
+        const shared = spawnSync(built.binaryPath, [child, dir, "unused", "shared"], {
+          encoding: "utf8",
+          timeout: 15_000,
+          env: { ...process.env, XDG_RUNTIME_DIR: runtime, TSC_TS_LISTEN_MEMORY: undefined },
+        });
+        expect(shared.status, shared.stderr).toBe(0);
+        expect(shared.stdout).toBe("native shared server passed\n");
+        expect(shared.stderr).toBe("");
+      }
       for (const mode of ["normal-exit", "exit"]) {
         const pidFile = join(dir, mode + ".pid");
         const run = spawnSync(built.binaryPath, [child, dir, pidFile, mode], {
@@ -94,6 +108,20 @@ for (const backend of ["llvm"] as const) {
         dir,
         join(dir, "oracle.json"),
       );
+      if (process.platform !== "win32") {
+        // With the shared server requested, a checker without --listen exits
+        // as it starts and the build checks with its own process.
+        const runtime = join(dir, "api-run");
+        mkdirSync(runtime, { mode: 0o700 });
+        const api = spawnSync(built.binaryPath, [tsgoExecutable(), dir, "unused", "api"], {
+          encoding: "utf8",
+          timeout: 45_000,
+          env: { ...process.env, XDG_RUNTIME_DIR: runtime, SCRIPTC_CHECKER_SERVER: "1" },
+        });
+        expect(api.status, api.stderr).toBe(0);
+        expect(api.stdout).toBe("");
+        expect(api.stderr).toBe("");
+      }
       const report = join(dir, "native.json");
       // Only ordinary stdio is inherited. The native executable starts the
       // actual tsgo process; the test runner never creates its RPC pipes. As in

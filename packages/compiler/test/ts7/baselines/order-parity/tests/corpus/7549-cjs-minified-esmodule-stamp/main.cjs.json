@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7549-cjs-minified-esmodule-stamp/stamped.cjs",
+  "<repo>/tests/corpus/7549-cjs-minified-esmodule-stamp/module-stamped.cjs",
+  "<repo>/tests/corpus/7549-cjs-minified-esmodule-stamp/main.cjs"
+ ],
+ "diags": []
+}

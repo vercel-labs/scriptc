@@ -80,16 +80,42 @@ ScrStr *scr_regex_flags(ScrRegex *re);        /* +1 */
 ScrStr *scr_regex_to_string(ScrRegex *re);    /* +1 */
 /* replace: first match without /g, every match with it. */
 ScrStr *scr_regex_replace(ScrStr *s, ScrRegex *re, ScrStr *rep);
-/* replace/replaceAll with a typed replacer closure of `arity` (at most 4)
- * parameters returning a string. Parameter i receives what Node passes at
- * position i: the match and captures (strings) below the capture count n,
- * the match offset (a number) at n, the subject (a string) at n + 1. The
- * compiler admits a closure only when every position it declares is one of
- * those with the declared kind, and every capture it reads is set in every
- * match (scr_regex_replace_callback handles the rest). Borrows all. */
+/* The output of a build-time replacer (regex-matchers.ts): the replacer
+ * appends each gap and the replacement at data[len] after reserving room,
+ * and leaves in `next` the subject index the unmatched tail starts at. */
+typedef struct {
+  int64_t len;
+  int64_t cap;
+  int64_t next;
+  char *data; /* at offset 24 on every target */
+  ScrStr *str;
+} ScrReReplaceOut;
+/* Grows o->str so that `need` more bytes fit at o->data[o->len]. */
+void scr_re_replace_out_reserve(ScrReReplaceOut *o, int64_t need);
+/* A global substitution with a literal ASCII replacement, through the
+ * replacer built for that pattern and replacement. Borrows all. */
+ScrStr *scr_regex_replace_with(ScrStr *s, ScrRegex *re, ScrStr *rep,
+                               ScrRegexMatcherFn replacer);
+/* replace/replaceAll with a replacer closure of `arity` (at most
+ * SCR_REPLACER_MAX_ARITY) parameters. Parameter i receives what Node passes
+ * at position i: the match and captures below the capture count n, the
+ * match offset at n, the subject at n + 1, the groups object at n + 2 when
+ * the pattern has named groups, and undefined after that. Bit i of
+ * `kinds` makes parameter i a checked-dynamic value, and bit
+ * SCR_REPLACER_OPTIONAL << i a capture held as a string or NULL for
+ * undefined; otherwise it is a string, or a number at n.
+ * SCR_REPLACER_BOXED_RESULT makes the result a checked-dynamic value,
+ * converted with ToString. The compiler admits a closure only when every
+ * typed position it declares is one of those with the declared kind, and
+ * every capture a string parameter reads is set in every match
+ * (scr_regex_replace_callback handles the rest). Borrows all. */
+#define SCR_REPLACER_MAX_ARITY 6
+#define SCR_REPLACER_BOXED_PARAMS 0xffu
+#define SCR_REPLACER_OPTIONAL (1u << 8)
+#define SCR_REPLACER_BOXED_RESULT (1u << 31)
 struct ScrClosure;
 ScrStr *scr_regex_replace_fn(ScrStr *s, ScrRegex *re, struct ScrClosure *f, uint32_t arity,
-                             bool all);
+                             uint32_t kinds, bool all);
 /* replaceAll: throws Node's TypeError when /g is missing (may-throw). */
 ScrStr *scr_regex_replace_all(ScrStr *s, ScrRegex *re, ScrStr *rep);
 /* split: captured substrings are interleaved with the split pieces;

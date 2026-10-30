@@ -1,35 +1,35 @@
-fs-url-path-fences.ts:9:1 - error SC2020: 'copyFileSync with a string path before a URL path' is part of the standard library types but has no scriptc lowering yet
+fs-url-path-fences.ts:9:19 - error SC2020: 'mkdirSync with a URL path and options that are not literals' is part of the standard library types but has no scriptc lowering yet
 
-   8 | // Node validates the string source before converting the URL destination.
-   9 | fs.copyFileSync("/tmp/source", url);
-     | ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  10 | // Node validates the options before the path.
-
-  hint: convert the URL first: fileURLToPath(url) from node:url
-
-fs-url-path-fences.ts:11:34 - error SC2020: 'readFileSync with a URL path and options that are not literals' is part of the standard library types but has no scriptc lowering yet
-
-  10 | // Node validates the options before the path.
-  11 | console.log(fs.readFileSync(url, encoding));
-     |                                  ^~~~~~~~
-  12 | fs.mkdirSync(url, { recursive });
-
-  hint: convert the URL first: fileURLToPath(url) from node:url
-
-fs-url-path-fences.ts:12:19 - error SC2020: 'mkdirSync with a URL path and options that are not literals' is part of the standard library types but has no scriptc lowering yet
-
-  11 | console.log(fs.readFileSync(url, encoding));
-  12 | fs.mkdirSync(url, { recursive });
+   8 | // Node validates the options before the path.
+   9 | fs.mkdirSync(url, { recursive });
      |                   ^~~~~~~~~~~~~
-  13 | // A literal's members are lowered one by one, so they cannot be evaluated
+  10 | void fsp.mkdir(url, { recursive });
 
   hint: convert the URL first: fileURLToPath(url) from node:url
 
-fs-url-path-fences.ts:15:30 - error SC2020: 'statSync with a URL path and a later literal that has effects' is part of the standard library types but has no scriptc lowering yet
+fs-url-path-fences.ts:10:21 - error SC2020: 'fs.promises.mkdir with a URL path and options that are not literals' is part of the standard library types but has no scriptc lowering yet
 
-  14 | // ahead of the conversion as one value.
-  15 | console.log(fs.statSync(url, { throwIfNoEntry: process.argv.length > 9 }));
+   9 | fs.mkdirSync(url, { recursive });
+  10 | void fsp.mkdir(url, { recursive });
+     |                     ^~~~~~~~~~~~~
+  11 | // A literal's members are lowered one by one, so they cannot be evaluated
+
+  hint: convert the URL first: fileURLToPath(url) from node:url
+
+fs-url-path-fences.ts:13:30 - error SC2020: 'statSync with a URL path and a later literal that has effects' is part of the standard library types but has no scriptc lowering yet
+
+  12 | // ahead of the conversion as one value.
+  13 | console.log(fs.statSync(url, { throwIfNoEntry: process.argv.length > 9 }));
      |                              ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-  16 | 
+  14 | // fs.promises checks the string source inside the call, after the
+
+  hint: convert the URL first: fileURLToPath(url) from node:url
+
+fs-url-path-fences.ts:16:6 - error SC2020: 'fs.promises.copyFile with a string path before a URL path' is part of the standard library types but has no scriptc lowering yet
+
+  15 | // conversion would have run.
+  16 | void fsp.copyFile("/tmp/source", url);
+     |      ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  17 | 
 
   hint: convert the URL first: fileURLToPath(url) from node:url

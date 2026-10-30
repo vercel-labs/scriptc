@@ -18,6 +18,9 @@ test("the complete production frontend lowers with zero rejected statements", as
   const { stdout, stderr } = await promisify(execFile)(
     process.execPath,
     [
+      // The lowering holds about 3 GB of heap; Node's default limit is lower
+      // on hosts with less memory.
+      "--max-old-space-size=8192",
       "--import",
       "tsx",
       "--input-type=module",

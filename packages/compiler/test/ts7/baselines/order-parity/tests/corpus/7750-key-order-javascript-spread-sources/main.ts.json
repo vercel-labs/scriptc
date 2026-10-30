@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7750-key-order-javascript-spread-sources/lib.js",
+  "<repo>/tests/corpus/7750-key-order-javascript-spread-sources/main.ts"
+ ],
+ "diags": []
+}

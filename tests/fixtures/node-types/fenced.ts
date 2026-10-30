@@ -25,17 +25,17 @@ fetch("https://example.invalid/", fetchInit);
 async function inspectResponse(url: string): Promise<void> {
   const response = await fetch(url);
   console.log(response.type);
-  response.clone();
+  response.formData();
 }
 void inspectResponse;
 ReadableStream.from(new Set([1, 2]));
 /* Members of SUPPORTED builtin modules beyond the lowered tables: they
  * typecheck under @types/node and fence with the module-qualified name —
  * calls and value reads alike. */
-import { watchFile } from "fs";
+import { openAsBlob } from "fs";
 import { EventEmitter, on } from "node:events";
 import { win32 } from "path";
-watchFile("x", () => {});
+openAsBlob("x");
 on(new EventEmitter(), "tick");
 console.log(win32.sep);
 /* URL getters and serialization lower under @types/node, but object-URL
@@ -45,9 +45,8 @@ console.log(win32.sep);
 const u = new URL("https://example.com/x?a=1");
 console.log(URL.createObjectURL(new Blob(["data"])));
 u.searchParams.get("a");
-/* The one-shot zlib/raw/gzip codecs take Node's options (the deflateSync
- * call lowers), while Brotli remains a member-qualified fence with the
- * lowered family named. */
+/* The one-shot zlib/raw/gzip and Brotli codecs take Node's options (the
+ * deflateSync and brotliCompressSync calls lower). */
 import { brotliCompressSync, deflateSync } from "zlib";
 deflateSync("data", { level: 9, strategy: 1 });
 brotliCompressSync(Buffer.from("data"));
@@ -74,7 +73,7 @@ http2.connect("https://localhost");
  * secure heap the generic hint, and setFips the FIPS truth (getFips() lowers to 0). */
 import { createCipheriv, publicEncrypt, secureHeapUsed, setFips } from "node:crypto";
 publicEncrypt("key", Buffer.alloc(1));
-createCipheriv("aes-128-ccm", Buffer.alloc(16), Buffer.alloc(12), { authTagLength: 16 });
+createCipheriv("aes-128-ocb", Buffer.alloc(16), Buffer.alloc(12), { authTagLength: 16 });
 secureHeapUsed();
 setFips(false);
 fetch("https://example.invalid/", {
@@ -99,12 +98,9 @@ void callbackified;
 import { createECDH } from "node:crypto";
 createECDH("sect163k1");
 createECDH("prime256v1").computeSecret(Buffer.alloc(65), "hex");
-/* DiffieHellman's Object.prototype members, and crypto.diffieHellman over
- * asymmetric KeyObjects. */
-import { createDiffieHellman, diffieHellman, type KeyObject } from "node:crypto";
+/* DiffieHellman's Object.prototype members. */
+import { createDiffieHellman } from "node:crypto";
 createDiffieHellman(Buffer.from([23])).toString();
-declare const dhKey: KeyObject;
-diffieHellman({ privateKey: dhKey, publicKey: dhKey });
 /* WebCrypto beyond the secret-key slice: @types/node declares the whole
  * SubtleCrypto surface, and the methods outside the slice, such as
  * getPublicKey, fence by name. */
@@ -112,8 +108,8 @@ async function publicKeyWithWebCrypto(key: import("node:crypto").webcrypto.Crypt
   await crypto.subtle.getPublicKey(key, ["verify"]);
 }
 void publicKeyWithWebCrypto;
-/* Node's navigator global: typeof navigator and navigator.userAgent
- * compile; the other members fence by name. */
-const cores = navigator.hardwareConcurrency;
-void cores;
+/* Node's navigator global: navigator.locks (the Web Locks API) fences
+ * by name. */
+const locks = navigator.locks;
+void locks;
 // End of the declared-but-not-lowered surface.

@@ -354,17 +354,23 @@ static bool scr_worker_transfer_has(const ScrDyn *transfer, const ScrWorkerView 
   return false;
 }
 
+/* Whether a method name is `name`: first characters compare inline, so
+ * the dispatch ladders below call strcmp only for names that can match. */
+static inline bool method_is(const char *method, const char *name) {
+  return method[0] == name[0] && strcmp(method, name) == 0;
+}
+
 static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *method,
                                      ScrDyn *const *args, size_t argc, const char *what) {
   (void)what;
   ScrWorkerView *view = ptr;
-  if (!strcmp(method, "ref") || !strcmp(method, "unref")) {
-    view->referenced = !strcmp(method, "ref");
+  if (method_is(method, "ref") || method_is(method, "unref")) {
+    view->referenced = method_is(method, "ref");
     return scr_dyn_retain(scr_dyn_undefined());
   }
-  if (view->port && !strcmp(method, "hasRef"))
+  if (view->port && method_is(method, "hasRef"))
     return scr_dyn_new_bool(view->referenced && (!view->closed || (view->channel && view->closing)));
-  if (!view->port && !strcmp(method, "terminate")) {
+  if (!view->port && method_is(method, "terminate")) {
     if (!view->termination) {
       view->termination = scr_promise_new();
       if (view->closed) scr_promise_fulfill_ref(view->termination,
@@ -373,7 +379,7 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
     }
     return scr_dyn_new_promise(view->termination);
   }
-  if (!strcmp(method, "postMessage")) {
+  if (method_is(method, "postMessage")) {
     /* Worker drops messages after exit before validating or cloning. A
      * closed MessagePort still validates its payload, as Node does. */
     if (!view->port && view->closed) return scr_dyn_retain(scr_dyn_undefined());
@@ -405,9 +411,9 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
     else scr_worker_thread_post(view->thread, message);
     return scr_dyn_retain(scr_dyn_undefined());
   }
-  bool once = !strcmp(method, "once") || !strcmp(method, "prependOnceListener");
-  bool prepend = !strcmp(method, "prependListener") || !strcmp(method, "prependOnceListener");
-  if (once || prepend || !strcmp(method, "on") || !strcmp(method, "addListener")) {
+  bool once = method_is(method, "once") || method_is(method, "prependOnceListener");
+  bool prepend = method_is(method, "prependListener") || method_is(method, "prependOnceListener");
+  if (once || prepend || method_is(method, "on") || method_is(method, "addListener")) {
     ScrDyn *listener = argc > 1 ? args[1] : scr_dyn_undefined();
     scr_dyn_check_listener(listener, "listener");
     if (scr_exc_pending()) return NULL;
@@ -416,7 +422,7 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
     scr_emitter_release(scr_emitter_on_flex(view->events, args[0]->v.str, listener, once, prepend));
     return scr_exc_pending() ? NULL : scr_dyn_retain(self);
   }
-  if (!strcmp(method, "off") || !strcmp(method, "removeListener")) {
+  if (method_is(method, "off") || method_is(method, "removeListener")) {
     ScrDyn *listener = argc > 1 ? args[1] : scr_dyn_undefined();
     scr_dyn_check_listener(listener, "listener");
     if (scr_exc_pending()) return NULL;
@@ -425,21 +431,21 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
     scr_emitter_release(scr_emitter_off_dyn(view->events, args[0]->v.str, listener));
     return scr_exc_pending() ? NULL : scr_dyn_retain(self);
   }
-  if (!strcmp(method, "removeAllListeners")) {
+  if (method_is(method, "removeAllListeners")) {
     bool all = !argc || args[0]->kind == SCR_DYN_UNDEF;
     if (!all && args[0]->kind != SCR_DYN_STR)
       return scr_worker_refusal("Worker event names must be strings");
     scr_emitter_release(scr_emitter_remove_all(view->events, all ? NULL : args[0]->v.str, all));
     return scr_exc_pending() ? NULL : scr_dyn_retain(self);
   }
-  if (!strcmp(method, "listenerCount")) {
+  if (method_is(method, "listenerCount")) {
     if (!argc || args[0]->kind != SCR_DYN_STR)
       return scr_worker_refusal("Worker event names must be strings");
     return scr_dyn_new_num(argc > 1 && args[1]->kind != SCR_DYN_UNDEF
       ? scr_emitter_listener_count_dyn(view->events, args[0]->v.str, args[1])
       : scr_emitter_listener_count(view->events, args[0]->v.str));
   }
-  if (view->port && !strcmp(method, "close")) {
+  if (view->port && method_is(method, "close")) {
     if (argc && args[0]->kind != SCR_DYN_UNDEF) {
       scr_dyn_check_listener(args[0], "callback");
       if (scr_exc_pending()) return NULL;
@@ -460,7 +466,7 @@ static ScrDyn *scr_worker_view_invoke(void *ptr, ScrDyn *self, const char *metho
     }
     return scr_dyn_retain(scr_dyn_undefined());
   }
-  if (view->port && !strcmp(method, "start")) {
+  if (view->port && method_is(method, "start")) {
     view->started = true;
     return scr_dyn_retain(scr_dyn_undefined());
   }
@@ -1021,7 +1027,7 @@ static ScrDyn *scr_broadcast_invoke(void *ptr, ScrDyn *self, const char *method,
                                     ScrDyn *const *args, size_t argc, const char *what) {
   (void)what;
   ScrWorkerView *view = ptr;
-  if (!strcmp(method, "postMessage")) {
+  if (method_is(method, "postMessage")) {
     if (view->closed) {
       scr_throw_domex("InvalidStateError", "BroadcastChannel is closed.");
       return NULL;
@@ -1045,7 +1051,7 @@ static ScrDyn *scr_broadcast_invoke(void *ptr, ScrDyn *self, const char *method,
     scr_message_free(first);
     return scr_exc_pending() ? NULL : scr_dyn_retain(scr_dyn_undefined());
   }
-  if (!strcmp(method, "close")) {
+  if (method_is(method, "close")) {
     if (!view->closed) {
       view->closed = true;
       scr_broadcast_leave(view->channel);
@@ -1053,8 +1059,8 @@ static ScrDyn *scr_broadcast_invoke(void *ptr, ScrDyn *self, const char *method,
     }
     return scr_dyn_retain(scr_dyn_undefined());
   }
-  if (!strcmp(method, "ref") || !strcmp(method, "unref")) {
-    view->referenced = !strcmp(method, "ref");
+  if (method_is(method, "ref") || method_is(method, "unref")) {
+    view->referenced = method_is(method, "ref");
     return scr_dyn_retain(self);
   }
   ScrDyn *out = NULL;
@@ -1379,17 +1385,17 @@ static ScrDyn *scr_worker_new_options(double root, ScrStr *filename, ScrDyn *opt
       scr_dyn_arg_type_fail("options", "object", options);
       return NULL;
     }
-    for (size_t i = 0; i < options->v.obj.len; i++) {
-      const ScrDynEntry *entry = &options->v.obj.entries[i];
-      if (entry->accessor) return scr_worker_refusal("Worker option accessors are not supported yet");
-      if (entry->key_len == 10 && !memcmp(entry->key, "workerData", 10)) data = entry->value;
-      else if (entry->key_len == 4 && !memcmp(entry->key, "argv", 4)) argv = entry->value;
-      else if (entry->key_len == 12 && !memcmp(entry->key, "transferList", 12)) transfer_list = entry->value;
-      else if (entry->key_len == 14 && !memcmp(entry->key, "resourceLimits", 14)) limits = entry->value;
-      else if (entry->key_len == 4 && !memcmp(entry->key, "name", 4)) name = entry->value;
-      else if (entry->key_len == 6 && !memcmp(entry->key, "stdout", 6)) capture |= scr_dyn_truthy(entry->value) ? 1 : 0;
-      else if (entry->key_len == 6 && !memcmp(entry->key, "stderr", 6)) capture |= scr_dyn_truthy(entry->value) ? 2 : 0;
-      else if (entry->key_len == 5 && !memcmp(entry->key, "stdin", 5)) capture |= scr_dyn_truthy(entry->value) ? 4 : 0;
+    for (size_t i = 0; i < scr_dyn_obj_count(options); i++) {
+      ScrDynProp entry = scr_dyn_obj_prop_at(options, i);
+      if (entry.accessor) return scr_worker_refusal("Worker option accessors are not supported yet");
+      if (entry.key_len == 10 && !memcmp(entry.key, "workerData", 10)) data = entry.value;
+      else if (entry.key_len == 4 && !memcmp(entry.key, "argv", 4)) argv = entry.value;
+      else if (entry.key_len == 12 && !memcmp(entry.key, "transferList", 12)) transfer_list = entry.value;
+      else if (entry.key_len == 14 && !memcmp(entry.key, "resourceLimits", 14)) limits = entry.value;
+      else if (entry.key_len == 4 && !memcmp(entry.key, "name", 4)) name = entry.value;
+      else if (entry.key_len == 6 && !memcmp(entry.key, "stdout", 6)) capture |= scr_dyn_truthy(entry.value) ? 1 : 0;
+      else if (entry.key_len == 6 && !memcmp(entry.key, "stderr", 6)) capture |= scr_dyn_truthy(entry.value) ? 2 : 0;
+      else if (entry.key_len == 5 && !memcmp(entry.key, "stdin", 5)) capture |= scr_dyn_truthy(entry.value) ? 4 : 0;
       else return scr_worker_refusal("This Worker constructor option is not supported yet");
     }
   }

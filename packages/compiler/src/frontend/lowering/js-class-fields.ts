@@ -2,11 +2,19 @@ import * as ts from "../ts7/adapter.js";
 import { isClassOwnEnumerableFieldName } from "../../ir/ir.js";
 import type { ClassInfo } from "./lower-classes.js";
 
-/** Reflection that can remove a property or change its attributes. */
-const PROPERTY_REFLECTION = new Set(["deleteProperty", "freeze", "seal", "preventExtensions"]);
+/* Object.freeze, Object.seal and Object.preventExtensions do not appear
+ * here: they never create or remove a property, and a class instance keeps
+ * its integrity state outside the field layout. A statically typed call
+ * sets the instance's CLASS_ATTRIBUTES word (class-attributes.ts), which
+ * TypeScript classes use with the same fixed layouts; through an untyped
+ * value the runtime refuses the operation on any class instance
+ * (scr_dyn_class_integrity_fence). Lifting that fence must revisit this. */
 
-/** `Object.freeze({ ... })` and the like apply to a new literal, which is
- * not a class instance. */
+/** Reflection that can remove any property. */
+const PROPERTY_REFLECTION = new Set(["deleteProperty"]);
+
+/** `Reflect.deleteProperty({ ... }, key)` applies to a new literal, which
+ * is not a class instance. */
 function freshLiteralArgument(callee: ts.PropertyAccessExpression): boolean {
   const call = callee.parent;
   if (!ts.isCallExpression(call) || call.expression !== callee) return false;
@@ -141,12 +149,35 @@ export function constructionPrefix(
   return { created, sealed };
 }
 
-/** Whether a class declares a getter or setter, which can intercept a
- * base constructor's field assignment. */
-function declaresAccessor(info: ClassInfo): boolean {
-  return [...info.methods.keys()].some(
-    (name) => name.startsWith("get:") || name.startsWith("set:"),
-  );
+/** The names of the getters and setters among a class's own methods. */
+export function accessorNames(methods: Iterable<string>): Set<string> {
+  const names = new Set<string>();
+  for (const name of methods)
+    if (name.startsWith("get:") || name.startsWith("set:")) names.add(name.slice(4));
+  return names;
+}
+
+/** Whether one of `accessors` can intercept an assignment the base
+ * constructions make: a base constructor's `this.name = value` runs a
+ * subclass accessor of that name instead of creating the field. Only field
+ * names can reach the created prefix; any other assignment already ends
+ * it. */
+export function accessorInterceptsBase(accessors: ReadonlySet<string>, base: ClassInfo): boolean {
+  for (const name of accessors) if (base.fields.has(name)) return true;
+  return false;
+}
+
+/** Whether an accessor that instances of `info` inherit or declare shares
+ * a name with one of their fields. Such a field and accessor disagree on
+ * what the instance's property is; any other accessor lives on the
+ * prototype beside the fields and never touches the layout. */
+function accessorShadowsField(info: ClassInfo): boolean {
+  for (let current: ClassInfo | null = info; current; current = current.base) {
+    if (current.def.runtime) break;
+    for (const name of accessorNames(current.methods.keys()))
+      if (info.fields.has(name)) return true;
+  }
+  return false;
 }
 
 /** `constructionPrefix` for a collected class and its bases. */
@@ -156,7 +187,8 @@ export function construction(info: ClassInfo): Construction | null {
   if (info.base) {
     base = construction(info.base);
     if (!base) return null;
-    if (declaresAccessor(info)) base = { created: base.created, sealed: false };
+    if (accessorInterceptsBase(accessorNames(info.methods.keys()), info.base))
+      base = { created: base.created, sealed: false };
   }
   return constructionPrefix(info.decl, base, (name) => info.fields.has(name));
 }
@@ -169,7 +201,7 @@ export function construction(info: ClassInfo): Construction | null {
 export function fixedFieldFamily(root: ClassInfo, deleted: Set<string> | null): boolean {
   if (deleted === null) return false;
   const fixed = (info: ClassInfo): boolean => {
-    if (declaresAccessor(info)) return false;
+    if (accessorShadowsField(info)) return false;
     const built = construction(info);
     if (!built) return false;
     for (const field of info.fieldOrder) {

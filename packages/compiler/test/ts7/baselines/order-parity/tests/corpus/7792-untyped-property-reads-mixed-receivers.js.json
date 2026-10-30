@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7792-untyped-property-reads-mixed-receivers.js"
+ ],
+ "diags": []
+}

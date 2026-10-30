@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7262-fresh-literal-untyped-param/lib.js",
+  "<repo>/tests/corpus/7262-fresh-literal-untyped-param/main.ts"
+ ],
+ "diags": []
+}

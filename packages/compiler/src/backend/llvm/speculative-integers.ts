@@ -1,5 +1,6 @@
-import type { IrExpr, IrStmt } from "../../ir/ir.js";
-import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
+import type { IrExpr, IrFunction, IrStmt } from "../../ir/ir.js";
+import { everyExpr, everyExprChild, everyStmtChild } from "../../ir/traverse.js";
+import { InternalCompilerError } from "../../errors.js";
 import { f64Lit } from "./common.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
@@ -30,6 +31,337 @@ export interface SpeculativeLoopPlan {
    * than through its condition, `break` or a failed check: no calls, no
    * throwing operations, no labeled jumps and no `return`. */
   observerFree: boolean;
+  /** The writes that speculate a rewritten value (rewriteSpeculable). */
+  values: Map<IrStmt, SpeculativeValue>;
+}
+
+/** A write's value as speculation evaluates it: calls of small pure number
+ * functions expanded in place, and other number leaves (`leaves`) replaced
+ * by references to fresh locals. The fast copy evaluates each leaf once,
+ * stores it to its local and checks it as an integer; a failed check
+ * resumes at a copy of the write that reads the locals, so a leaf is never
+ * evaluated twice. */
+export interface SpeculativeValue {
+  value: IrExpr;
+  leaves: { localId: string; expr: IrExpr; ref: IrExpr }[];
+}
+
+/** What the planner may assume about the code around a loop. */
+export interface SpeculationContext {
+  /** The parameters and the returned expression of `callee` when it is a
+   * small pure number function (inlinableNumberFunction). */
+  inlinable?: (callee: string) => InlinableFunction | undefined;
+  /** A local that no call can write: not captured, boxed or global. */
+  unaliased?: (localId: string) => boolean;
+  /** A fresh local id for a hoisted leaf. */
+  leafId?: () => string;
+}
+
+export interface InlinableFunction {
+  params: readonly string[];
+  body: IrExpr;
+}
+
+/** `s` (a speculated write) writing `value` instead. */
+export function withSpeculativeValue(s: IrStmt, value: IrExpr): IrStmt {
+  switch (s.kind) {
+    case "assign":
+      return { ...s, value };
+    case "varDecl":
+      return { ...s, init: value };
+    case "exprStmt":
+      if (s.expr.kind === "assignExpr") return { ...s, expr: { ...s.expr, value } };
+      break;
+    default:
+      break;
+  }
+  throw new InternalCompilerError(`llvm emitter bug: speculated ${s.kind} with a rewritten value`);
+}
+
+/** Calls nest at most this deep in one expansion. */
+const MAX_INLINE_DEPTH = 4;
+/** An expansion larger than this stays a call. */
+const MAX_INLINE_NODES = 64;
+
+/** A function that only returns arithmetic over its number parameters:
+ * `function trim(v, n) { return v - Math.floor(v / Math.pow(2, n)) * Math.pow(2, n); }`.
+ * Its call evaluates nothing but its arguments, so a speculated write may
+ * expand it in place. A call in its body must be of another such function
+ * (`resolve`): any other call could change what the expansion reads. */
+export function inlinableNumberFunction(
+  fn: IrFunction,
+  resolve?: (callee: string) => InlinableFunction | undefined,
+): InlinableFunction | undefined {
+  if (
+    fn.async ||
+    fn.generator ||
+    (fn.captures?.length ?? 0) > 0 ||
+    (fn.classCaptures?.length ?? 0) > 0 ||
+    fn.returnType.kind !== "f64" ||
+    fn.params.some((p) => p.type.kind !== "f64" && p.type.kind !== "union") ||
+    fn.body.length !== 1 ||
+    fn.body[0]!.kind !== "return" ||
+    fn.body[0]!.value === undefined
+  )
+    return undefined;
+  const params = fn.params.map((p) => p.localId);
+  const known = new Set(params);
+  let nodes = 0;
+  // A parameter of a union type (`number | undefined`) is read only
+  // through its tag test and narrowing, which a wrapped argument folds.
+  const union = (e: IrExpr): boolean => e.kind === "varRef" && known.has(e.localId);
+  const pure = (e: IrExpr): boolean => {
+    if (++nodes > MAX_INLINE_NODES) return false;
+    if (e.kind === "boolLit") return true;
+    if (e.kind === "unionIsTag") return union(e.value);
+    if (e.kind === "unionNarrow") return e.type.kind === "f64" && union(e.value);
+    if (e.type.kind !== "f64") return false;
+    switch (e.kind) {
+      case "numLit":
+        return true;
+      case "varRef":
+        return known.has(e.localId);
+      case "ternary":
+        return pure(e.cond) && pure(e.then) && pure(e.else_);
+      case "bin":
+        return (INTEGER_OPS.has(e.op) || e.op === "/") && pure(e.left) && pure(e.right);
+      case "unary":
+        return e.op === "-" && pure(e.operand);
+      case "libCall":
+        return (e.fn === "math.floor" || e.fn === "math.pow") && e.args.every(pure);
+      case "call":
+        return resolve?.(e.callee) !== undefined && e.args.every(pure);
+      default:
+        return false;
+    }
+  };
+  const body = fn.body[0]!.value!;
+  return pure(body) ? { params, body } : undefined;
+}
+
+/** `e` with each parameter reference replaced by its argument. A tag test
+ * or narrowing of a wrapped argument folds, and so does a ternary over a
+ * folded test. */
+function substitute(e: IrExpr, args: ReadonlyMap<string, IrExpr>): IrExpr {
+  switch (e.kind) {
+    case "varRef":
+      return args.get(e.localId) ?? e;
+    case "unionIsTag": {
+      const value = substitute(e.value, args);
+      if (value.kind !== "unionWrap" || value.unionId !== e.unionId) return { ...e, value };
+      return {
+        kind: "boolLit",
+        value: (value.tag === e.tag) !== (e.negated === true),
+        type: e.type,
+        loc: e.loc,
+      };
+    }
+    case "unionNarrow": {
+      const value = substitute(e.value, args);
+      return value.kind === "unionWrap" && value.unionId === e.unionId && value.tag === e.tag
+        ? value.value
+        : { ...e, value };
+    }
+    case "ternary": {
+      const cond = substitute(e.cond, args);
+      if (cond.kind === "boolLit") return substitute(cond.value ? e.then : e.else_, args);
+      return { ...e, cond, then: substitute(e.then, args), else_: substitute(e.else_, args) };
+    }
+    case "bin":
+      return { ...e, left: substitute(e.left, args), right: substitute(e.right, args) };
+    case "unary":
+      return { ...e, operand: substitute(e.operand, args) };
+    case "libCall":
+    case "call":
+      return { ...e, args: e.args.map((a) => substitute(a, args)) };
+    default:
+      return e;
+  }
+}
+
+/** k when `value` is exactly 2^k with k in [0, 52], else null.
+ * Math.log2 rounds: 2^52 + 1 gives 52, so the power is compared back. */
+function exactPowerOfTwo(value: number): number | null {
+  if (!(value >= 1)) return null;
+  const k = Math.round(Math.log2(value));
+  return k >= 0 && k <= 52 && 2 ** k === value ? k : null;
+}
+
+/** The same speculated operand written twice: a local, a literal, or a
+ * power of two of the same exponent. */
+function sameOperand(a: IrExpr, b: IrExpr): boolean {
+  if (a.kind === "varRef") return b.kind === "varRef" && a.localId === b.localId;
+  if (a.kind === "numLit") return b.kind === "numLit" && Object.is(a.value, b.value);
+  return (
+    a.kind === "libCall" &&
+    b.kind === "libCall" &&
+    a.fn === "math.pow" &&
+    b.fn === "math.pow" &&
+    powerOfTwo(a) &&
+    powerOfTwo(b) &&
+    sameOperand(a.args[1]!, b.args[1]!)
+  );
+}
+
+/** `a - Math.floor(a / p) * p` (either factor order) with p a power of two
+ * and `a` a local or literal: the floor-mod of `a` by p. */
+function floorModPowerOfTwo(e: IrExpr): { value: IrExpr; power: IrExpr } | null {
+  if (e.kind !== "bin" || e.op !== "-" || e.right.kind !== "bin" || e.right.op !== "*") return null;
+  const { left, right } = e.right;
+  const [floor, power] =
+    left.kind === "libCall" && left.fn === "math.floor" ? [left, right] : [right, left];
+  if (floor.kind !== "libCall" || floor.fn !== "math.floor" || floor.args.length !== 1) return null;
+  const quotient = floor.args[0]!;
+  if (quotient.kind !== "bin" || quotient.op !== "/") return null;
+  if (!powerOfTwo(power) || !sameOperand(quotient.right, power)) return null;
+  if (e.left.kind !== "varRef" && e.left.kind !== "numLit") return null;
+  return sameOperand(quotient.left, e.left) ? { value: e.left, power } : null;
+}
+
+/** Whether `e` is a power of two speculation can shift by:
+ * `Math.pow(2, n)` or a literal 2^k with k in [0, 52]. */
+function powerOfTwo(e: IrExpr): boolean {
+  if (e.kind === "numLit") return exactPowerOfTwo(e.value) !== null;
+  return (
+    e.kind === "libCall" &&
+    e.fn === "math.pow" &&
+    e.args.length === 2 &&
+    e.args[0]!.kind === "numLit" &&
+    e.args[0]!.value === 2
+  );
+}
+
+/** Typed-array element kinds whose elements are integers. */
+const INTEGER_ELEMENTS = new Set(["u8", "u8c", "i8", "u16", "i16", "u32", "i32"]);
+
+/** The values of each integer element kind. */
+const ELEMENT_RANGES: Record<string, { min: number; max: number }> = {
+  u8: { min: 0, max: 255 },
+  u8c: { min: 0, max: 255 },
+  i8: { min: -128, max: 127 },
+  u16: { min: 0, max: 65535 },
+  i16: { min: -32768, max: 32767 },
+  u32: { min: 0, max: 2 ** 32 - 1 },
+  i32: { min: -(2 ** 31), max: 2 ** 31 - 1 },
+};
+
+/** A typed-array element read of an integer kind with no effect: an
+ * out-of-range read gives NaN, which fails its check. Float elements would
+ * only bail. */
+function isSpeculativeByteRead(e: IrExpr): boolean {
+  return (
+    e.kind === "bytesIntrinsic" &&
+    e.method === "get" &&
+    e.type.kind === "f64" &&
+    e.receiver.type.kind === "bytes" &&
+    INTEGER_ELEMENTS.has(e.receiver.type.elem) &&
+    e.args.length === 1 &&
+    isEffectFree(e.receiver) &&
+    isEffectFree(e.args[0]!)
+  );
+}
+
+/** Whether evaluating `e` assigns no binding: no `++`/`--`, no assignment
+ * expression, and no statement inside it. */
+function writesNoLocal(e: IrExpr): boolean {
+  return everyExpr(e, {
+    expr: (node) => node.kind !== "incDec" && node.kind !== "assignExpr",
+    stmt: () => false,
+  });
+}
+
+/** Rewrite a write's value that isSpeculableValue refuses into one it can
+ * speculate (SpeculativeValue), or null. Expansion and the new operations
+ * (`Math.pow(2, n)`, `Math.floor(a / 2^n)`, byte reads) evaluate nothing
+ * but numbers, so the fast copy may evaluate them in any order. Hoisted
+ * leaves run in the write's evaluation order before the arithmetic; that
+ * reorders nothing only when the write reads no heap and every local it
+ * reads is one no call can write. */
+export function rewriteSpeculable(
+  value: IrExpr,
+  context: SpeculationContext,
+): SpeculativeValue | null {
+  const leaves: SpeculativeValue["leaves"] = [];
+  let reads = false;
+  const locals: string[] = [];
+  const rewrite = (e: IrExpr, depth: number): IrExpr | null => {
+    if (e.type.kind !== "f64") return null;
+    switch (e.kind) {
+      case "numLit":
+        return Number.isSafeInteger(e.value) && !Object.is(e.value, -0) ? e : null;
+      case "varRef":
+        locals.push(e.localId);
+        return e;
+      case "bin": {
+        if (!ARITHMETIC_OPS.has(e.op)) break;
+        const left = rewrite(e.left, depth);
+        const right = left && rewrite(e.right, depth);
+        return left && right ? { ...e, left, right } : null;
+      }
+      case "unary": {
+        if (e.op !== "-") break;
+        const operand = rewrite(e.operand, depth);
+        return operand ? { ...e, operand } : null;
+      }
+      case "libCall": {
+        if (powerOfTwo(e) && e.kind === "libCall") {
+          const exponent = rewrite(e.args[1]!, depth);
+          return exponent ? { ...e, args: [e.args[0]!, exponent] } : null;
+        }
+        const quotient = e.args[0];
+        if (
+          e.fn === "math.floor" &&
+          e.args.length === 1 &&
+          quotient?.kind === "bin" &&
+          quotient.op === "/" &&
+          powerOfTwo(quotient.right)
+        ) {
+          const left = rewrite(quotient.left, depth);
+          const right = left && rewrite(quotient.right, depth);
+          return left && right ? { ...e, args: [{ ...quotient, left, right }] } : null;
+        }
+        break;
+      }
+      case "call": {
+        const fn = depth < MAX_INLINE_DEPTH ? context.inlinable?.(e.callee) : undefined;
+        // Arguments are evaluated before the body: an expansion may read
+        // them in another order, or twice, only when they are pure.
+        const plain = (a: IrExpr): boolean =>
+          isSpeculableValue(a, false) ||
+          (a.kind === "unionWrap" && isSpeculableValue(a.value, false));
+        if (fn !== undefined && fn.params.length === e.args.length && e.args.every(plain)) {
+          const args = new Map(fn.params.map((id, i) => [id, e.args[i]!]));
+          return rewrite(substitute(fn.body, args), depth + 1);
+        }
+        break;
+      }
+      default:
+        if (isSpeculativeRead(e) || isSpeculativeByteRead(e)) {
+          reads = true;
+          return e;
+        }
+        break;
+    }
+    // Only calls of program functions are hoisted: other leaves (a string's
+    // length, a Map read) are cheap where they stand, and would turn every
+    // loop that adds one into a second copy.
+    if (context.leafId === undefined || e.kind !== "call") return null;
+    // Hoisting runs the arguments before the rest of the write: one that
+    // assigns a local would move that write ahead of the write's earlier
+    // reads of it.
+    if (!e.args.every(writesNoLocal)) return null;
+    const ref: IrExpr = { kind: "varRef", localId: context.leafId(), type: e.type, loc: e.loc };
+    leaves.push({ localId: (ref as { localId: string }).localId, expr: e, ref });
+    return ref;
+  };
+  const rewritten = rewrite(value, 0);
+  if (rewritten === null) return null;
+  if (leaves.length > 0) {
+    const leafIds = new Set(leaves.map((leaf) => leaf.localId));
+    if (reads || !locals.every((id) => leafIds.has(id) || context.unaliased?.(id) === true))
+      return null;
+  }
+  return { value: rewritten, leaves };
 }
 
 type SpeculativeLoop = Extract<IrStmt, { kind: "for" | "while" | "doWhile" }>;
@@ -170,13 +502,16 @@ function isEffectFree(e: IrExpr): boolean {
   }
 }
 
-/** The speculative reads of a speculable value in evaluation order. */
+/** The speculative reads of a speculable value in evaluation order, those
+ * of a rewritten value (rewriteSpeculable) included. */
 export function speculativeReads(e: IrExpr, out: IrExpr[] = []): IrExpr[] {
-  if (e.kind === "bin" && ARITHMETIC_OPS.has(e.op)) {
+  if (e.kind === "bin" && (ARITHMETIC_OPS.has(e.op) || e.op === "/")) {
     speculativeReads(e.left, out);
     speculativeReads(e.right, out);
   } else if (e.kind === "unary" && e.op === "-") speculativeReads(e.operand, out);
-  else if (isSpeculativeRead(e)) out.push(e);
+  else if (e.kind === "libCall" && (e.fn === "math.floor" || e.fn === "math.pow"))
+    for (const arg of e.args) speculativeReads(arg, out);
+  else if (isSpeculativeRead(e) || isSpeculativeByteRead(e)) out.push(e);
   return out;
 }
 
@@ -195,6 +530,8 @@ function hasProduct(e: IrExpr): boolean {
   if (e.kind === "bin")
     return e.op === "*" || e.op === "%" || hasProduct(e.left) || hasProduct(e.right);
   if (e.kind === "unary") return hasProduct(e.operand);
+  // Math.floor(a / 2^n) and Math.pow(2, n) replace a division and a call.
+  if (e.kind === "libCall") return e.fn === "math.floor" || e.fn === "math.pow";
   return false;
 }
 
@@ -202,6 +539,7 @@ function hasArithmetic(e: IrExpr): boolean {
   if (e.kind === "bin")
     return ARITHMETIC_OPS.has(e.op) || hasArithmetic(e.left) || hasArithmetic(e.right);
   if (e.kind === "unary") return e.op === "-" || hasArithmetic(e.operand);
+  if (e.kind === "libCall") return e.fn === "math.floor" || e.fn === "math.pow";
   return false;
 }
 
@@ -236,8 +574,11 @@ export function planSpeculativeLoop(
   integral: (localId: string) => boolean = () => false,
   proven: (e: IrExpr) => boolean = () => false,
   invariantEligible: (localId: string) => boolean = eligible,
+  context: SpeculationContext = {},
 ): SpeculativeLoopPlan | null {
   const writes = new Map<string, IrStmt[]>();
+  const values = new Map<IrStmt, SpeculativeValue>();
+  const leafIds = new Set<string>();
   const unspeculable = new Set<string>();
   const reads = new Set<string>();
   // Locals with at least one read the static analysis does not prove.
@@ -263,11 +604,9 @@ export function planSpeculativeLoop(
   // make the body's work integer.
   let inCondition = false;
 
-  const expr = (e: IrExpr): boolean => {
-    if (rejected) return false;
-    nodes++;
-    if (!OBSERVER_FREE_EXPRESSIONS.has(e.kind) || (e.kind === "bin" && e.left.type.kind !== "f64"))
-      observerFree = false;
+  // What the integer writes read and consume. A rewritten value is noted
+  // here alone: its original, which `expr` walks, has its effects.
+  const note = (e: IrExpr): void => {
     if (e.kind === "varRef") {
       reads.add(e.localId);
       if (!proven(e)) unproven.add(e.localId);
@@ -281,6 +620,20 @@ export function planSpeculativeLoop(
     } else if (e.kind === "arrayGet" || e.kind === "arrayHas" || e.kind === "arrayState")
       consume(e.index);
     else if (e.kind === "bytesIntrinsic" || e.kind === "strIntrinsic") e.args.forEach(consume);
+  };
+  // An expanded call is emitted in the fast copy: it counts toward the
+  // duplicated code.
+  const noteAll = (e: IrExpr): boolean => {
+    nodes++;
+    note(e);
+    return everyExprChild(e, noteAll, () => true);
+  };
+  const expr = (e: IrExpr): boolean => {
+    if (rejected) return false;
+    nodes++;
+    if (!OBSERVER_FREE_EXPRESSIONS.has(e.kind) || (e.kind === "bin" && e.left.type.kind !== "f64"))
+      observerFree = false;
+    note(e);
     return everyExprChild(e, expr, nested);
   };
   // Statements inside expressions (sequence expressions) run mid-expression,
@@ -307,7 +660,11 @@ export function planSpeculativeLoop(
     if (s.kind === "arraySet" || s.kind === "bytesSet") consume(s.index);
     const target = speculativeWriteTarget(s);
     if (target) {
-      if (target.value === null || isSpeculableValue(target.value)) {
+      const rewritten =
+        target.value === null || isSpeculableValue(target.value)
+          ? null
+          : rewriteSpeculable(target.value, context);
+      if (target.value === null || isSpeculableValue(target.value) || rewritten !== null) {
         const list = writes.get(target.localId) ?? [];
         list.push(s);
         writes.set(target.localId, list);
@@ -315,6 +672,11 @@ export function planSpeculativeLoop(
           reads.add(target.localId);
           if (s.kind !== "exprStmt" || !proven(s.expr)) unproven.add(target.localId);
         } else expr(target.value);
+        if (rewritten !== null) {
+          values.set(s, rewritten);
+          for (const leaf of rewritten.leaves) leafIds.add(leaf.localId);
+          noteAll(rewritten.value);
+        }
         return !rejected;
       }
       unspeculable.add(target.localId);
@@ -341,25 +703,28 @@ export function planSpeculativeLoop(
   // write runs: speculated itself, already an integer, or loop-invariant
   // (checked on entry). A value computed from doubles the loop writes
   // would only fail its check on every entry.
+  const valueOf = (s: IrStmt): IrExpr | null =>
+    values.get(s)?.value ?? speculativeWriteTarget(s)!.value;
   const grounded = (e: IrExpr): boolean => {
     if (e.kind === "varRef") {
       const id = e.localId;
       return (
+        leafIds.has(id) ||
         proven(e) ||
         locals.has(id) ||
         integral(id) ||
         (!writes.has(id) && !unspeculable.has(id) && invariantEligible(id))
       );
     }
-    if (isSpeculativeRead(e)) return true;
+    if (isSpeculativeRead(e) || isSpeculativeByteRead(e)) return true;
     return everyExprChild(e, grounded, () => false);
   };
   for (let changed = true; changed;) {
     changed = false;
     for (const id of [...locals.keys()]) {
       for (const s of writes.get(id)!) {
-        const target = speculativeWriteTarget(s)!;
-        if (target.value !== null && !grounded(target.value)) {
+        const value = valueOf(s);
+        if (value !== null && !grounded(value)) {
           locals.delete(id);
           changed = true;
           break;
@@ -376,6 +741,7 @@ export function planSpeculativeLoop(
     if (e.kind === "varRef") {
       const id = e.localId;
       if (
+        !leafIds.has(id) &&
         !proven(e) &&
         !locals.has(id) &&
         !writes.has(id) &&
@@ -388,11 +754,11 @@ export function planSpeculativeLoop(
     return everyExprChild(e, invariant, () => true);
   };
   for (const s of speculated) {
-    const target = speculativeWriteTarget(s)!;
-    if (target.value === null) arithmetic = true;
+    const value = valueOf(s);
+    if (value === null) arithmetic = true;
     else {
-      if (hasArithmetic(target.value)) arithmetic = true;
-      invariant(target.value);
+      if (hasArithmetic(value)) arithmetic = true;
+      invariant(value);
     }
   }
   if (!arithmetic) return null;
@@ -401,13 +767,12 @@ export function planSpeculativeLoop(
     [...locals.keys()].some((id) => multiplied.has(id)) ||
     [...speculated].some((s) => {
       const target = speculativeWriteTarget(s)!;
-      return (
-        target.value !== null &&
-        (hasProduct(target.value) || isVariableStep(target.localId, target.value))
-      );
+      const value = valueOf(s);
+      return value !== null && (hasProduct(value) || isVariableStep(target.localId, value));
     });
   if (!heavy) return null;
-  return { locals, writes: speculated, observerFree };
+  for (const s of values.keys()) if (!speculated.has(s)) values.delete(s);
+  return { locals, writes: speculated, observerFree, values };
 }
 
 /** A proven integer loop. The bindings integer-ranges.ts bounds over a for
@@ -419,6 +784,9 @@ export interface ProvenLoopPlan {
   locals: Map<string, IntegerRange>;
   /** Statement-level writes computed as integers. */
   writes: Set<IrStmt>;
+  /** Expression-position `++`/`--` of shadowed bindings (`out[o++] = v`),
+   * computed on the shadows. */
+  increments: Set<IrExpr>;
 }
 
 /** Plan a proven integer loop. `cursors` are the loop's bounded bindings,
@@ -437,10 +805,17 @@ export function planProvenIntegerLoop(
 ): ProvenLoopPlan | null {
   if (cursors.size === 0) return null;
   const writes = new Map<string, IrStmt[]>();
+  const increments = new Map<string, IrExpr[]>();
   const refused = new Set<string>();
   let rejected = false;
   const expr = (e: IrExpr): boolean => {
-    if (e.kind === "assignExpr" || e.kind === "incDec") refused.add(e.localId);
+    // Every value a cursor holds in the loop lies in its loop range, so an
+    // increment of one writes an integer of that range.
+    if (e.kind === "incDec" && cursors.has(e.localId)) {
+      const list = increments.get(e.localId) ?? [];
+      list.push(e);
+      increments.set(e.localId, list);
+    } else if (e.kind === "assignExpr" || e.kind === "incDec") refused.add(e.localId);
     return everyExprChild(e, expr, nested);
   };
   const nested = (s: IrStmt): boolean => {
@@ -473,12 +848,13 @@ export function planProvenIntegerLoop(
   for (const s of loop.body) stmt(s);
   if (rejected) return null;
   const locals = new Map<string, IntegerRange>();
-  for (const [id, list] of writes) {
+  for (const id of new Set([...writes.keys(), ...increments.keys()])) {
     if (refused.has(id) || !eligible(id)) continue;
-    const exact = list.every((s) => {
-      const value = speculativeWriteTarget(s)!.value!;
-      return isSpeculableValue(value, false) && proven(value);
-    });
+    const exact =
+      (writes.get(id) ?? []).every((s) => {
+        const value = speculativeWriteTarget(s)!.value!;
+        return isSpeculableValue(value, false) && proven(value);
+      }) && (increments.get(id) ?? []).every(proven);
     if (exact) locals.set(id, cursors.get(id)!);
   }
   // Every binding a shadowed write reads is shadowed, already an integer,
@@ -490,15 +866,19 @@ export function planProvenIntegerLoop(
   for (let changed = true; changed;) {
     changed = false;
     for (const id of [...locals.keys()])
-      if (!writes.get(id)!.every((s) => grounded(speculativeWriteTarget(s)!.value!))) {
+      if (!(writes.get(id) ?? []).every((s) => grounded(speculativeWriteTarget(s)!.value!))) {
         locals.delete(id);
         changed = true;
       }
   }
   if (locals.size === 0) return null;
   const planned = new Set<IrStmt>();
-  for (const id of locals.keys()) for (const s of writes.get(id)!) planned.add(s);
-  return { locals, writes: planned };
+  const plannedIncrements = new Set<IrExpr>();
+  for (const id of locals.keys()) {
+    for (const s of writes.get(id) ?? []) planned.add(s);
+    for (const e of increments.get(id) ?? []) plannedIncrements.add(e);
+  }
+  return { locals, writes: planned, increments: plannedIncrements };
 }
 
 const SAFE = Number.MAX_SAFE_INTEGER;
@@ -535,6 +915,17 @@ export function emitSafeIntegerCheck(host: LlvmEmitterContext, value: string): [
   return [integer, ok];
 }
 
+/** The condition that a bounded value's exponent is above `limit`. A
+ * value test it replaces can fail only past that limit; testing the
+ * exponent alone, which is usually the same in every iteration of a loop,
+ * keeps the value out of the test. Past the limit the write bails to the
+ * double copy, also for a value the replaced test would have passed. */
+function exponentAbove(host: LlvmEmitterContext, bound: MaskBound, limit: number): string {
+  const above = host.B.tmp();
+  host.B.line(`${above} = icmp sgt i64 ${bound.exponent}, ${limit}`);
+  return above;
+}
+
 /** A condition that is true when an i64 lies outside the safe range. */
 function unsafeInteger(host: LlvmEmitterContext, value: string): string {
   const B = host.B;
@@ -561,6 +952,29 @@ function outsideRange(host: LlvmEmitterContext, value: string, low: number, high
     outside = outside === "false" ? above : either(host, outside, above);
   }
   return outside;
+}
+
+/** The range of an operand once its speculative evaluation continued: a
+ * literal's value, the range analysis' proof (well inside the safe
+ * integers), or for an integer element read, which bails on the NaN of an
+ * out-of-range index, the element kind's values. */
+function operandRange(
+  host: LlvmEmitterContext,
+  e: IrExpr,
+): { min: number; max: number } | undefined {
+  const range = staticRange(host, e);
+  if (range || !isSpeculativeByteRead(e) || e.kind !== "bytesIntrinsic") return range;
+  return e.receiver.type.kind === "bytes" ? ELEMENT_RANGES[e.receiver.type.elem] : undefined;
+}
+
+/** An i64 the speculative evaluation has bounded to [0, 2^(exponent +
+ * shift)): the floor-mod of a value by 2^exponent, shifted left by `shift`.
+ * `exponent` is an i64 already checked to be in [0, 52]; in a loop it is
+ * usually the same value on every iteration, so a test on it alone is
+ * loop-invariant. */
+interface MaskBound {
+  exponent: string;
+  shift: number;
 }
 
 /** A literal's value or the range analysis' proof for an expression whose
@@ -593,6 +1007,7 @@ export function emitSpeculativeInteger(
   bail: (condition: string) => void,
   reads: ReadonlyMap<IrExpr, LlValue> = new Map(),
   integral = false,
+  bounds = new Map<string, MaskBound>(),
 ): string {
   const B = host.B;
   // A value the range analysis already proves takes the ordinary integer
@@ -627,16 +1042,67 @@ export function emitSpeculativeInteger(
     }
     case "bin": {
       if (e.op !== "+" && e.op !== "-" && e.op !== "*" && e.op !== "%") break;
-      const a = emitSpeculativeInteger(host, e.left, bail, reads, integral);
-      const b = emitSpeculativeInteger(host, e.right, bail, reads, integral);
+      // The floor-mod of a safe integer by 2^n (n in [0, 52]) is its low n
+      // bits, also for a negative value: in [0, 2^n), and never -0.
+      const mod = floorModPowerOfTwo(e);
+      if (mod) {
+        const value = emitSpeculativeInteger(host, mod.value, bail, reads, integral, bounds);
+        const n = exponentOf(host, mod.power, bail, reads, integral);
+        const mask = B.tmp(),
+          low = B.tmp();
+        B.line(`${mask} = sub i64 ${shiftOne(host, n)}, 1`);
+        B.line(`${low} = and i64 ${value}, ${mask}`);
+        bounds.set(low, { exponent: n, shift: 0 });
+        return low;
+      }
+      // A product with 2^n shifts: it is safe iff the other factor's
+      // magnitude is at most (2^53 - 1) >> n, and a zero product of a safe
+      // integer and a positive power is +0.
+      if (e.op === "*" && (powerOfTwo(e.right) || powerOfTwo(e.left))) {
+        const [factor, power] = powerOfTwo(e.right) ? [e.left, e.right] : [e.right, e.left];
+        const value = emitSpeculativeInteger(host, factor, bail, reads, integral, bounds);
+        const n = exponentOf(host, power, bail, reads, integral);
+        // A factor below 2^(m + s) times 2^k is below 2^(m + s + k), so
+        // safe when m + s + k <= 53.
+        const bound = bounds.get(value);
+        const k = power.kind === "numLit" ? exactPowerOfTwo(power.value) : null;
+        if (bound && k !== null) {
+          bail(exponentAbove(host, bound, 53 - bound.shift - k));
+          const product = B.tmp();
+          B.line(`${product} = shl nuw nsw i64 ${value}, ${n}`);
+          bounds.set(product, { exponent: bound.exponent, shift: bound.shift + k });
+          return product;
+        }
+        const limit = B.tmp(),
+          magnitude = B.tmp(),
+          outside = B.tmp(),
+          product = B.tmp();
+        B.line(`${limit} = ashr i64 ${SAFE}, ${n}`);
+        host.declare("declare i64 @llvm.abs.i64(i64, i1)");
+        B.line(`${magnitude} = call i64 @llvm.abs.i64(i64 ${value}, i1 true)`);
+        B.line(`${outside} = icmp ugt i64 ${magnitude}, ${limit}`);
+        bail(outside);
+        B.line(`${product} = shl nsw i64 ${value}, ${n}`);
+        return product;
+      }
+      const a = emitSpeculativeInteger(host, e.left, bail, reads, integral, bounds);
+      const b = emitSpeculativeInteger(host, e.right, bail, reads, integral, bounds);
       const result = B.tmp();
       if (e.op === "+" || e.op === "-") {
         // With one operand's range known, the other is checked against the
         // narrowed bounds before the operation: the check then depends on
         // no new value, and LLVM keeps the operation itself simple.
-        const right = staticRange(host, e.right);
-        const left = e.op === "+" ? staticRange(host, e.left) : undefined;
-        if (right) {
+        const right = operandRange(host, e.right);
+        const left = e.op === "+" ? operandRange(host, e.left) : undefined;
+        // A bounded operand, in [0, 2^(m + s)), plus one in [lo, hi] with
+        // |lo|, hi <= 2^52 is safe when m + s <= 52.
+        const bound = (value: string): MaskBound | undefined =>
+          e.op === "+" ? bounds.get(value) : undefined;
+        const aBound = right ? bound(a) : undefined;
+        const bBound = !right && left ? bound(b) : undefined;
+        if (aBound) bail(exponentAbove(host, aBound, 52 - aBound.shift));
+        else if (bBound) bail(exponentAbove(host, bBound, 52 - bBound.shift));
+        else if (right) {
           // a + b with b in [lo, hi] is safe iff a in [-SAFE - lo, SAFE - hi];
           // a - b iff a in [-SAFE + hi, SAFE + lo].
           const low = e.op === "+" ? -SAFE - right.min : -SAFE + right.max;
@@ -682,6 +1148,19 @@ export function emitSpeculativeInteger(
       bail(negativeZero);
       return result;
     }
+    case "libCall": {
+      // A rewritten value's Math.pow(2, n) and Math.floor(a / 2^n)
+      // (rewriteSpeculable): with n an integer in [0, 52], 2^n is exact and
+      // so is a / 2^n for a safe integer a, whose floor the arithmetic shift
+      // computes, also for negative a. No result is -0.
+      if (e.fn === "math.pow") return shiftOne(host, exponentOf(host, e, bail, reads, integral));
+      if (e.fn !== "math.floor" || e.args[0]?.kind !== "bin") break;
+      const a = emitSpeculativeInteger(host, e.args[0].left, bail, reads, integral);
+      const n = exponentOf(host, e.args[0].right, bail, reads, integral);
+      const result = B.tmp();
+      B.line(`${result} = ashr i64 ${a}, ${n}`);
+      return result;
+    }
     case "unary": {
       if (e.op !== "-") break;
       const a = emitSpeculativeInteger(host, e.operand, bail, reads, integral);
@@ -697,6 +1176,35 @@ export function emitSpeculativeInteger(
       break;
   }
   return speculativeLeaf(host, reads.get(e) ?? host.emitExpr(e), e, bail);
+}
+
+/** The exponent of a power of two (Math.pow(2, n) or a literal 2^k) as an
+ * i64 in [0, 52]; other exponents bail. */
+function exponentOf(
+  host: LlvmEmitterContext,
+  e: IrExpr,
+  bail: (condition: string) => void,
+  reads: ReadonlyMap<IrExpr, LlValue>,
+  integral: boolean,
+): string {
+  if (e.kind === "numLit") {
+    const k = exactPowerOfTwo(e.value);
+    if (k === null) throw new InternalCompilerError("llvm emitter bug: speculative power of two");
+    return String(k);
+  }
+  if (e.kind !== "libCall")
+    throw new InternalCompilerError("llvm emitter bug: speculative power of two");
+  const n = emitSpeculativeInteger(host, e.args[1]!, bail, reads, integral);
+  const outside = host.B.tmp();
+  host.B.line(`${outside} = icmp ugt i64 ${n}, 52`);
+  bail(outside);
+  return n;
+}
+
+function shiftOne(host: LlvmEmitterContext, n: string): string {
+  const result = host.B.tmp();
+  host.B.line(`${result} = shl i64 1, ${n}`);
+  return result;
 }
 
 /** The safe i64 of an evaluated number: its proven integer, or a checked

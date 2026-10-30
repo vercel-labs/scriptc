@@ -177,6 +177,8 @@ export function scanDivergences(
       if (use === null || use === undefined || param === undefined || param.type === undefined)
         return;
       if (!isExistingObjectExpression(arg)) return;
+      // The call kept the argument's layout: the callee has the value itself.
+      if (lowerer.layoutKeptNodes.has(arg)) return;
       const copy = safely(() => widthCopyBetween(lowerer, arg, param.type!));
       if (copy === undefined || copy === null) return;
       out.push(
@@ -185,6 +187,7 @@ export function scanDivergences(
     });
   }
   for (const decl of typedDecls) {
+    if (lowerer.layoutKeptNodes.has(decl.initializer!)) continue;
     const name = (decl.name as ts.Identifier).text;
     const scope = enclosingScope(decl);
     if (scope === undefined) continue;
@@ -727,6 +730,11 @@ function keyOrderFinding(
   written: readonly string[],
   assignedNames: ReadonlySet<string>,
 ): { native: string; node: string; detail: "reordered" | "added-later" } | null {
+  // Values of a shape with orderVariants enumerate in the order their
+  // literal wrote (key-order-witness.ts).
+  const mapped = safely(() => lowerer.mapTypeOf(contextual));
+  if (mapped?.kind === "record" && lowerer.shapes.get(mapped.shapeId)?.orderVariants !== undefined)
+    return null;
   // A shape whose table the witness pass re-chose (key-order-witness.ts)
   // enumerates that table, not the checker's declaration order.
   const table = witnessTable(lowerer, contextual);

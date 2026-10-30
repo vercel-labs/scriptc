@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/empty-mapped-alias-types.ts"
+ ],
+ "diags": []
+}

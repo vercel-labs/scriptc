@@ -41,6 +41,7 @@ function context() {
     protocolDispatches: new Map(),
     classMethodValueSelections: new Map(),
     isSubclassOf: () => false,
+    nodeAtLoc: () => null,
   } as unknown as Lowerer;
   const boxed = fn("box", [
     statement({
@@ -458,9 +459,11 @@ test("normalizes base capsules before dispatching each derived member once", () 
   });
   expect(dispatch.body.filter((statement) => statement.kind === "if")).toHaveLength(2);
   const normalize = liftedFns.find((helper) => helper.name === "%dyn.class.normalize")!;
+  // The capsule branch unboxes its receiver once, then tests each subclass.
   expect(normalize.body[0]).toMatchObject({
     kind: "if",
     then: [
+      { kind: "varDecl", init: { kind: "dynCheck", type: { kind: "object", className: "Base" } } },
       {
         kind: "if",
         then: [
@@ -557,4 +560,54 @@ test("class branches read their exact class's bag, also for classes with subclas
     kind: "if",
     then: [{ kind: "return", value: { kind: "dynObjLit", fields: [] } }],
   });
+});
+
+test("records a class's bag initializer only when all its class-table branches agree", () => {
+  const { lowerer } = context();
+  const classBagInitializers = new Map<string, IrExpr>();
+  Object.assign(lowerer, { classBagInitializers });
+  for (const name of ["Material", "Texture"])
+    lowerer.classes.set(name, { def: { name, tracksOwnFields: true } } as unknown as ClassInfo);
+  const initializer = (
+    className: string,
+    prototype: string,
+    start: number,
+  ): Extract<IrStmt, { kind: "fieldSet" }> => {
+    const at = { ...loc, start };
+    return {
+      kind: "fieldSet",
+      obj: {
+        kind: "dynCheck",
+        value: { kind: "varRef", localId: "p.0", type: DYN, loc: at },
+        type: { kind: "object", className },
+        loc: at,
+      },
+      className,
+      field: "%bag",
+      value: {
+        kind: "libCall",
+        fn: "dyn.objCreate",
+        args: [{ kind: "call", callee: prototype, args: [], type: DYN, loc: at }],
+        type: DYN,
+        loc: at,
+      },
+      loc: at,
+    };
+  };
+  const dispatch = new ClassDynamicDispatch();
+  const tables = (dispatch as unknown as { bagInitializers: Map<string, unknown[]> })
+    .bagInitializers;
+  // A base class whose own instances get its prototype and whose subclass
+  // instances get theirs through a per-instance dispatch has no single bag.
+  tables.set("Material", [
+    initializer("Material", "%prototype.data.Material", 1),
+    initializer("Material", "%class.bagPrototype:Material", 2),
+  ]);
+  // Branches that differ only in source location agree.
+  tables.set("Texture", [
+    initializer("Texture", "%prototype.data.Texture", 3),
+    initializer("Texture", "%prototype.data.Texture", 4),
+  ]);
+  dispatch.finalize(lowerer);
+  expect([...classBagInitializers.keys()]).toEqual(["Texture"]);
 });

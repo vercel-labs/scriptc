@@ -525,7 +525,7 @@ export function splitBundledChunks(
       }
     }
   }
-  const helperNames = [...top.keys()].filter((n) => helperBase(n) === "__commonJS");
+  let helperNames = [...top.keys()].filter((n) => helperBase(n) === "__commonJS");
 
   // Every name a recognizer relies on is written nowhere and declared
   // once at the top level; `Object` itself is never rebound.
@@ -552,18 +552,14 @@ export function splitBundledChunks(
     );
   };
   if (helperNames.length === 0) {
-    // The helper's shape under another name: an identifier-minified bundle,
-    // whose other interop helpers lost their names as well.
-    for (const [name, t] of top) {
+    // An identifier-minified bundle: the helper's shape under another name.
+    helperNames = [...top].flatMap(([name, t]) => {
       const init = ts.isVariableDeclaration(t.node) ? t.node.initializer : undefined;
-      if (init !== undefined && stable(name) && helperForm(init, sf, ownNames) !== null)
-        return {
-          degrade:
-            "its shipped JS is an identifier-minified bundle whose bundler-interop helpers " +
-            "(__commonJS and the rest) have lost the names the recognizers verify",
-        };
-    }
-    return null;
+      return init !== undefined && stable(name) && helperForm(init, sf, ownNames) !== null
+        ? [name]
+        : [];
+    });
+    if (helperNames.length === 0) return null;
   }
   const forms = new Map<string, HelperForm>();
   for (const name of helperNames) {

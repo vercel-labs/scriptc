@@ -16,6 +16,7 @@ import {
   type IrExpr,
   type IrStmt,
   type IrType,
+  REGEX,
   STRING,
   type SrcLoc,
   UNDEFINED_T,
@@ -32,6 +33,7 @@ import { isSafeToDiscard } from "../expressions/evaluation-safety.js";
 import { STRING_INDEX_METHODS, STRING_REPLACE_METHODS, STR_METHODS } from "../surfaces.js";
 import { execResultCaptureMask } from "./exec-result-uses.js";
 import { lowerStringReplacement } from "./string-replacement.js";
+import { lowerReplacerCallback, regexLiteralCapturesOf } from "./replacer-params.js";
 import {
   coerceStringSearchValue,
   defaultAfterUndefined,
@@ -920,12 +922,15 @@ export function lowerRegexMethodCall(
     })();
   if ((receiverKind === "string" || nullableStringRecv) && name === "match") {
     const arg0 = call.arguments.nodes[0];
-    if (!arg0 || !isRegexPatternArgument(lowerer, arg0)) return null; // string-pattern match: the SC2020 fence
-    if (call.arguments.nodes.length !== 1) return null;
+    if (!arg0 || call.arguments.nodes.length !== 1) return null;
+    const checkedPattern = isCheckedPatternArgument(lowerer, arg0);
+    if (!checkedPattern && !isRegexPatternArgument(lowerer, arg0)) return null; // string-pattern match: the SC2020 fence
     const receiver = nullableStringRecv
       ? lowerMethodReceiver(lowerer, access.expression, STRING, access.name.text)
       : lowerReceiver();
-    const re = lowerRegexPatternArgument(lowerer, arg0);
+    const re = checkedPattern
+      ? lowerCheckedPatternArgument(lowerer, arg0)
+      : lowerRegexPatternArgument(lowerer, arg0);
     // RegExpMatchArray | null maps to the string[] | null union by
     // itself; intern it directly when the checker's spelling doesn't —
     // or when it maps to something WIDER (an optional-chain call node
@@ -983,10 +988,13 @@ export function lowerRegexMethodCall(
   // 0, exactly Node. Never throws.
   if (receiverKind === "string" && name === "search") {
     const arg0 = call.arguments.nodes[0];
-    if (!arg0 || !isRegexPatternArgument(lowerer, arg0)) return null; // string-pattern form: the SC2020 fence
-    if (call.arguments.nodes.length !== 1) return null;
+    if (!arg0 || call.arguments.nodes.length !== 1) return null;
+    const checkedPattern = isCheckedPatternArgument(lowerer, arg0);
+    if (!checkedPattern && !isRegexPatternArgument(lowerer, arg0)) return null; // string-pattern form: the SC2020 fence
     const receiver = lowerReceiver();
-    const re = lowerRegexPatternArgument(lowerer, arg0);
+    const re = checkedPattern
+      ? lowerCheckedPatternArgument(lowerer, arg0)
+      : lowerRegexPatternArgument(lowerer, arg0);
     return { kind: "regexIntrinsic", method: "search", receiver, args: [re], type: F64, loc };
   }
   if (receiverKind === "string" && (name === "replace" || name === "replaceAll")) {
@@ -1018,7 +1026,11 @@ export function lowerRegexMethodCall(
         : [
             lowerer.lowerExprExpecting(arg0, { kind: "regex" }),
             call.arguments.nodes[1]
-              ? lowerer.lowerExpr(call.arguments.nodes[1])
+              ? lowerReplacerCallback(
+                  lowerer,
+                  call.arguments.nodes[1],
+                  regexLiteralCapturesOf(arg0),
+                )
               : dynUndefinedExpr(loc),
           ];
     if (name !== "split") {
@@ -1934,6 +1946,46 @@ function isRegexPatternArgument(lowerer: Lowerer, node: ts.Expression): boolean 
     arms.some((arm) => arm.kind === "regex") &&
     arms.some((arm) => arm.kind === "undefinedT")
   );
+}
+
+/** True when a `match` or `search` pattern is checker-untyped (`any` or
+ * `unknown`), so its runtime value decides the protocol. */
+function isCheckedPatternArgument(lowerer: Lowerer, node: ts.Expression): boolean {
+  if (ts.isSpreadElement(node)) return false;
+  return (lowerer.typeOf(node).flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0;
+}
+
+/** An untyped `match` or `search` pattern as a RegExp, chosen at run time as
+ * Node does: a RegExp is used as is (its lastIndex state included), and any
+ * other value builds `new RegExp(value)` (undefined is the empty pattern,
+ * other values convert with ToString). */
+function lowerCheckedPatternArgument(lowerer: Lowerer, node: ts.Expression): IrExpr {
+  const loc = locOf(node);
+  const value = lowerer.lowerExpr(node);
+  if (value.type.kind === "regex") return value;
+  const checked = lowerer.coerceInto(node, value, DYN);
+  const local = lowerer.declareHiddenLocal("%matchPattern", DYN);
+  const ref = varRef(local.id, DYN, loc);
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "varDecl", localId: local.id, init: checked, loc }],
+    result: {
+      kind: "ternary",
+      cond: { kind: "libCall", fn: "dyn.nativeRegexIs", args: [ref], type: BOOL, loc },
+      then: lowerer.coerceInto(node, ref, REGEX),
+      else_: {
+        kind: "libCall",
+        fn: "regex.newChecked",
+        args: [ref, dynUndefinedExpr(loc)],
+        type: REGEX,
+        loc,
+      },
+      type: REGEX,
+      loc,
+    },
+    type: REGEX,
+    loc,
+  };
 }
 
 /** The pattern of `match` or `search` as a RegExp: an undefined pattern is

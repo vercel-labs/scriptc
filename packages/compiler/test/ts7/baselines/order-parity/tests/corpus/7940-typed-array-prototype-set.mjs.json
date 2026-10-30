@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7940-typed-array-prototype-set.mjs"
+ ],
+ "diags": []
+}

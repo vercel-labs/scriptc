@@ -1,0 +1,12 @@
+{
+ "order": [
+  "<repo>/tests/corpus/split-cjs-require-binding/lib.cjs",
+  "<repo>/tests/corpus/split-cjs-require-binding/whole.cjs",
+  "<repo>/tests/corpus/split-cjs-require-binding/reexport.cjs",
+  "<repo>/tests/corpus/split-cjs-require-binding/reexport-extra.cjs",
+  "<repo>/tests/corpus/split-cjs-require-binding/chain.cjs",
+  "<repo>/tests/corpus/split-cjs-require-binding/chain-wrap.cjs",
+  "<repo>/tests/corpus/split-cjs-require-binding/main.cjs"
+ ],
+ "diags": []
+}

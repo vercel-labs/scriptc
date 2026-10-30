@@ -5,6 +5,7 @@ import {
   sandboxBootstrapCommand,
   sandboxEffectWorkerAllocation,
   sandboxImageConfig,
+  sandboxNativeReference,
   sandboxRunnerConfig,
   sandboxTestSourceConfig,
   sandboxTestWorkerAllocation,
@@ -97,6 +98,10 @@ test("the managed-image bootstrap pins the custom image's Node, pnpm, and LLVM",
   expect(bootstrap).toContain("libclang-rt-22-dev");
   expect(bootstrap).toContain("llvm-22-dev");
   expect(bootstrap).toContain("ninja-build");
+  // CI links with ld.lld; without it Sandbox binaries link with GNU ld.
+  expect(bootstrap).toContain("lld-22");
+  const dockerfile = readFileSync(new URL("../../Dockerfile.sandbox", import.meta.url), "utf8");
+  expect(dockerfile).toContain("lld-22");
 });
 
 test("a custom image does not select the Sandbox team or project", () => {
@@ -152,6 +157,24 @@ test("ambiguous or malformed snapshot sources fail before creating workers", () 
   expect(() => sandboxTestSourceConfig({ SCRIPTC_SANDBOX_SNAPSHOT: "wrong-id" })).toThrow(
     "snapshot ID",
   );
+});
+
+test("a native reference checkout needs a prepared source and an absolute path", () => {
+  const snapshot = { SCRIPTC_SANDBOX_SNAPSHOT: "snap_ABC123" };
+  expect(sandboxNativeReference(snapshot)).toBeUndefined();
+  expect(
+    sandboxNativeReference({
+      ...snapshot,
+      SCRIPTC_SANDBOX_NATIVE_REFERENCE: " /vercel/sandbox/prev/ ",
+    }),
+  ).toBe("/vercel/sandbox/prev");
+  expect(() =>
+    sandboxNativeReference({ SCRIPTC_SANDBOX_NATIVE_REFERENCE: "/vercel/sandbox/prev" }),
+  ).toThrow("needs SCRIPTC_SANDBOX_SNAPSHOT");
+  for (const path of ["prev", "/a/../b", "/a b", "/a;rm"])
+    expect(() =>
+      sandboxNativeReference({ ...snapshot, SCRIPTC_SANDBOX_NATIVE_REFERENCE: path }),
+    ).toThrow("absolute path");
 });
 
 test("OIDC authentication wins and supplies its own Sandbox scope", () => {

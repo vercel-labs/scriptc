@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7713-buffer-numeric-untyped-arguments.cjs"
+ ],
+ "diags": []
+}

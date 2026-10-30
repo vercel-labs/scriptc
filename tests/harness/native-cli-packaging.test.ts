@@ -1,6 +1,14 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, expect, test } from "vitest";
@@ -71,6 +79,10 @@ function fixture(windows = true) {
     ),
     "fixture",
   );
+  write(
+    join(distribution, "lib/llvm/package.json"),
+    JSON.stringify({ name: `@scriptc/llvm-${platform}`, version: identity.version }),
+  );
   mkdirSync(join(distribution, "lib/runtime-sources/vendor"), { recursive: true });
   mkdirSync(join(distribution, "lib/declarations"), { recursive: true });
   for (const path of [join(distribution, "lib/runtime"), join(packages, `runtime-${platform}`)]) {
@@ -130,6 +142,80 @@ test.each([true, false])(
     ).toBe(f.manifest.target);
     expect(manifest.runtime_packs).toEqual(f.manifest.runtime_packs);
     expect(readFileSync(f.manifestPath)).toEqual(original);
+  },
+);
+
+test.each([true, false])(
+  "a platform package depends on its helper and runtime pack, and its archive bundles them (Windows=%s)",
+  (windows) => {
+    const f = fixture(windows);
+    const helper = `@scriptc/llvm-${f.platform}`;
+    const runtime = `@scriptc/runtime-${f.platform}`;
+    const manifest: Record<string, unknown> = { ...f.manifest };
+    delete manifest.llvm_package;
+    delete manifest.runtime_pack;
+    delete manifest.runtime_packs;
+    writeFileSync(f.manifestPath, JSON.stringify(manifest));
+    const notices = join(f.cli, "dist/THIRD_PARTY_NOTICES");
+    writeFileSync(
+      notices,
+      `LLVM licensing and notices: LICENSE and THIRD_PARTY_NOTICES in the ${helper} package.\n`,
+    );
+    rmSync(join(f.cli, "dist/lib/llvm"), { recursive: true });
+    rmSync(join(f.cli, "dist/lib/runtime"), { recursive: true });
+    const helperPackage = join(f.packages, `llvm-${f.platform}`);
+    const codegen = windows ? "scriptc-llvm-codegen.exe" : "scriptc-llvm-codegen";
+    mkdirSync(join(helperPackage, "bin"), { recursive: true });
+    for (const [name, directory] of [
+      [helper, helperPackage],
+      [runtime, join(f.packages, `runtime-${f.platform}`)],
+    ] as const) {
+      writeFileSync(join(directory, "package.json"), JSON.stringify({ name, version: "1.2.3" }));
+      // pnpm links workspace dependencies into the package's node_modules.
+      mkdirSync(join(f.cli, "node_modules/@scriptc"), { recursive: true });
+      symlinkSync(directory, join(f.cli, "node_modules", name), "junction");
+    }
+    writeFileSync(join(helperPackage, "bin", codegen), "helper");
+    const identity = { name: `@scriptc/cli-${f.platform}`, version: "1.2.3" };
+    writeFileSync(join(f.cli, "package.json"), JSON.stringify(identity));
+    const missing = run("verify-native-cli.mjs", f.cli);
+    expect(missing.status).toBe(1);
+    expect(missing.stderr).toContain(`must depend on its @scriptc/llvm-* package at 1.2.3`);
+    writeFileSync(
+      join(f.cli, "package.json"),
+      JSON.stringify({
+        ...identity,
+        dependencies: { [helper]: "1.2.3", [runtime]: "workspace:*" },
+      }),
+    );
+    const verified = run("verify-native-cli.mjs", f.cli);
+    expect(verified.status, verified.stderr).toBe(0);
+    const output = join(f.directory, "archives");
+    const packed = run("package-native-cli.mjs", f.packages, output);
+    expect(packed.status, packed.stderr).toBe(0);
+    const unpacked = join(f.directory, "unpacked");
+    mkdirSync(unpacked);
+    const archive = join(output, `scriptc-1.2.3-${f.platform}.tar.gz`);
+    const extracted = spawnSync("tar", ["-xzf", archive, "-C", unpacked], { encoding: "utf8" });
+    expect(extracted.status, extracted.stderr).toBe(0);
+    const bundled = JSON.parse(readFileSync(join(unpacked, "bin", f.executable + ".json"), "utf8"));
+    const slash = windows ? "\\" : "/";
+    expect(bundled.llvm_package).toBe(["..", "lib", "llvm"].join(slash));
+    expect(bundled.runtime_pack).toBe(["..", "lib", `runtime-${f.platform}`].join(slash));
+    expect(bundled.runtime_packs).toEqual([
+      { target: f.manifest.target, path: bundled.runtime_pack },
+    ]);
+    expect(readFileSync(join(unpacked, "lib/llvm/bin", codegen), "utf8")).toBe("helper");
+    expect(
+      JSON.parse(
+        readFileSync(join(unpacked, `lib/runtime-${f.platform}/runtime-pack.json`), "utf8"),
+      ).target.name,
+    ).toBe(f.manifest.target);
+    expect(readFileSync(join(unpacked, "THIRD_PARTY_NOTICES"), "utf8")).toBe(
+      "LLVM licensing and notices: lib/llvm/LICENSE and lib/llvm/THIRD_PARTY_NOTICES.\n",
+    );
+    // The npm package itself is unchanged.
+    expect(JSON.parse(readFileSync(f.manifestPath, "utf8"))).toEqual(manifest);
   },
 );
 

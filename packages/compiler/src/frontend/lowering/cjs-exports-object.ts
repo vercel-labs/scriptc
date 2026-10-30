@@ -381,7 +381,7 @@ function esModuleExportIgnoresThis(
   depth: number,
 ): boolean {
   const moduleSym = lowerer.checker.getSymbolAtLocation(sf);
-  const exported = moduleSym?.getExports().get(name as ts.__String);
+  const exported = moduleSym?.getExports().get(ts.escapedSymbolName(name));
   if (exported !== undefined) {
     const target =
       exported.flags & ts.SymbolFlags.Alias ? lowerer.checker.getAliasedSymbol(exported) : exported;

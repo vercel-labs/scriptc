@@ -1,5 +1,5 @@
 // Library-mode npm posture fixture (static-or-refuse): a bare specifier
-// naming an ELIGIBLE package (own .d.ts, unminified shipped JS, no
+// naming an ELIGIBLE package (own .d.ts, no
 // build-transform markers) compiles statically as part of the library
 // graph — no flag, no island — and the package's own top-level require
 // ("mathdep") joins through the same bar. The node:path import alongside

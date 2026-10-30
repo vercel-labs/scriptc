@@ -9,13 +9,19 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
-async function emit(source: string): Promise<string> {
+async function emit(source: string, optimization?: "dev"): Promise<string> {
   const outDir = await mkdtemp(join(tmpdir(), "scriptc-await-call-"));
   directories.push(outDir);
   const entry = join(outDir, "main.ts");
   await writeFile(entry, source);
   const outPath = join(outDir, "program.ll");
-  const result = await compile(entry, { entry, outDir, outPath, outputKind: "llvm" });
+  const result = await compile(entry, {
+    entry,
+    outDir,
+    outPath,
+    outputKind: "llvm",
+    ...(optimization !== undefined ? { optimization } : {}),
+  });
   expect(result.ok, JSON.stringify(result)).toBe(true);
   return readFile(outPath, "utf8");
 }
@@ -28,8 +34,9 @@ function definition(llvm: string, symbol: string): string {
   return match![0];
 }
 
-// Consuming an async generator keeps a body on its fiber: the await-call
-// entries serve fiber bodies (stackless bodies suspend at their awaits).
+// The await-call entries serve fiber bodies (stackless bodies suspend at
+// their awaits). Debug builds keep every async body on its fiber, so the
+// sources below that test them build with optimization "dev".
 const tick = `
 async function* tick(): AsyncGenerator<number, void, undefined> {
   yield 0;
@@ -58,7 +65,7 @@ void main();
 `;
 
 test("awaiting a direct call to a body that never suspends skips the promise", async () => {
-  const llvm = await emit(source);
+  const llvm = await emit(source, "dev");
   expect(definition(llvm, "sc_f_middle")).toContain("call double @sc_aw_leaf(double");
   const entry = definition(llvm, "sc_aw_leaf");
   expect(entry).toContain("call double @sc_f_leaf(double %a0)");
@@ -74,7 +81,7 @@ test("awaiting a direct call to a body that never suspends skips the promise", a
 });
 
 test("awaiting a direct call to a suspending body spawns and awaits in one call", async () => {
-  const llvm = await emit(source);
+  const llvm = await emit(source, "dev");
   const main = definition(llvm, "sc_f_main");
   expect(main).toContain("call double @sc_aw_middle(double");
   // A call whose promise is kept keeps the promise-returning entry.
@@ -82,7 +89,7 @@ test("awaiting a direct call to a suspending body spawns and awaits in one call"
   expect(definition(llvm, "sc_aw_middle")).toContain(
     "call double @scr_async_spawn_await_f64(ptr @sc_tr_middle, ptr %ap)",
   );
-  // middle consumes an async generator, so it keeps its fiber.
+  // The debug build keeps middle on its fiber.
   expect(definition(llvm, "sc_as_middle")).toContain("@scr_async_spawn(");
 });
 
@@ -119,7 +126,7 @@ void main();
 `;
 
 test("returning a direct call adopts its promise one microtask turn later", async () => {
-  const llvm = await emit(adoptSource);
+  const llvm = await emit(adoptSource, "dev");
   expect(definition(llvm, "sc_f_relay")).toContain("call double @sc_ad_leaf(double");
   // A body that never suspends: the adoption's then-job turn, then the
   // settled promise's own turn, still without materializing the promise.
@@ -141,7 +148,7 @@ test("returning a direct call adopts its promise one microtask turn later", asyn
 });
 
 test("a returned promise is adopted after finally regions, outside catch handlers", async () => {
-  const llvm = await emit(adoptSource);
+  const llvm = await emit(adoptSource, "dev");
   const guarded = definition(llvm, "sc_f_guarded");
   // The call produces the promise; the finally body runs; only then the
   // adoption turn and the await.
@@ -167,7 +174,7 @@ async function middle(x: number): Promise<number> {
   const z = await leaf(y);
   return y * 2 + z;
 }
-async function fibered(): Promise<number> {
+async function fibered(): Promise<any> {
   let s = 0;
   for await (const t of tick()) s += t;
   return s + (await middle(1));
@@ -206,8 +213,9 @@ test("bodies that suspend only at their own awaits compile to stackless coroutin
   expect(middle).not.toContain("@scr_await_f64(");
   expect(definition(llvm, "sc_as_middle")).toContain("@scr_async_spawn_stackless(");
   expect(definition(llvm, "sc_f_main")).toContain("@scr_coro_await_prepare(");
-  // A body that keeps its fiber still awaits a stackless callee in one
-  // call: spawn, then the ordinary await of its promise.
+  // A body with a dynamic result keeps its fiber, and still awaits a
+  // stackless callee in one call: spawn, then the ordinary await of its
+  // promise.
   expect(definition(llvm, "sc_as_fibered")).toContain("@scr_async_spawn(");
   expect(definition(llvm, "sc_f_fibered")).toContain("call double @sc_aw_middle(double");
   const entry = definition(llvm, "sc_aw_middle");

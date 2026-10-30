@@ -858,12 +858,12 @@ static void scr_rgn_walk_dyn(ScrRgnWalk *w, ScrDyn *d) {
     break;
   case SCR_DYN_OBJ:
     /* source_identity is owned through its access callback: not walked. */
-    for (size_t i = 0; i < d->v.obj.len; i++) {
-      const ScrDynEntry *e = &d->v.obj.entries[i];
-      if (e->accessor) {
-        scr_rgn_enter(w, e->getter, SCR_RGN_W_DYN, NULL);
-        scr_rgn_enter(w, e->setter, SCR_RGN_W_DYN, NULL);
-      } else scr_rgn_enter(w, e->value, SCR_RGN_W_DYN, NULL);
+    for (size_t i = 0; i < scr_dyn_obj_count(d); i++) {
+      ScrDynProp e = scr_dyn_obj_prop_at(d, i);
+      if (e.accessor) {
+        scr_rgn_enter(w, e.getter, SCR_RGN_W_DYN, NULL);
+        scr_rgn_enter(w, e.setter, SCR_RGN_W_DYN, NULL);
+      } else scr_rgn_enter(w, e.value, SCR_RGN_W_DYN, NULL);
     }
     break;
   case SCR_DYN_FUNC: scr_rgn_enter(w, d->v.fn.clo, SCR_RGN_W_CLOSURE, NULL); break;
@@ -871,7 +871,7 @@ static void scr_rgn_walk_dyn(ScrRgnWalk *w, ScrDyn *d) {
     scr_region_slot(w, d->v.typed_ref.ptr, d->v.typed_ref.release);
     scr_rgn_enter(w, d->v.typed_ref.materialized, SCR_RGN_W_DYN, NULL);
     for (ScrDynTypedCast *cast = d->v.typed_ref.casts; cast; cast = cast->next)
-      scr_region_slot(w, cast->ptr, cast->release);
+      if (!cast->borrowed) scr_region_slot(w, cast->ptr, cast->release);
     break;
   case SCR_DYN_PROXY:
     scr_rgn_enter(w, d->v.proxy.target, SCR_RGN_W_DYN, NULL);

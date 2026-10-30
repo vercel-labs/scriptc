@@ -40,6 +40,7 @@
  * Holes, present undefined, out-of-range reads and `length` changes keep
  * their JavaScript behavior: the contract constrains the values stored, not
  * the array's shape. */
+import type { DiagnosticCode } from "../diagnostics/codes.js";
 import type { ContractNote, ContractAnnotations } from "../frontend/contract-types.js";
 import type {
   IrClassDef,
@@ -61,7 +62,7 @@ export interface ElementContractHost {
   readonly notes: ContractAnnotations;
   readonly functions: ReadonlyMap<string, IrFunction>;
   readonly classes: ReadonlyMap<string, IrClassDef>;
-  report(code: `SC${number}`, loc: SrcLoc, message: string, hint: string): void;
+  report(code: DiagnosticCode, loc: SrcLoc, message: string, hint: string): void;
   text(loc: SrcLoc, max?: number): string;
   where(loc: SrcLoc | null): string;
   displayName(fnName: string): string;
@@ -709,7 +710,8 @@ export class Int32ElementContracts {
     const findChainsIn = (st: IrStmt): boolean => everyStmtChild(st, findChains, findChainsIn);
     for (const st of fn.body) findChainsIn(st);
     // Parameters whose callers are not all visible hold opaque arrays.
-    if (this.valueEscaped.has(fn.name) || this.runtimeVirtual(fn.name))
+    const runtimeVirtual = this.runtimeVirtual;
+    if (this.valueEscaped.has(fn.name) || runtimeVirtual(fn.name))
       for (const p of fn.params)
         if (this.holds(p.type)) {
           const why = this.valueEscaped.has(fn.name)

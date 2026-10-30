@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/5967-date-alias-mutation/clock.js",
+  "<repo>/tests/corpus/5967-date-alias-mutation/main.ts"
+ ],
+ "diags": []
+}

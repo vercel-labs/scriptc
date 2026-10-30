@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8223-argument-count-destructured-parameter.ts"
+ ],
+ "diags": []
+}

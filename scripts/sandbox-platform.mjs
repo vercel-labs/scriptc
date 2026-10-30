@@ -21,12 +21,18 @@ export function sandboxHostSchedule(platform, invariantFiles) {
  * Sandbox image already defines these variables. Empty values restore the
  * unsharded, platform-native defaults; intentional remote and local shards
  * override them at their call sites.
+ *
+ * An explicitly configured SCRIPTC_LIBNODE is forwarded as is. It names a pack
+ * inside the Sandbox, never on the host, and the Node island tests fail rather
+ * than skip in a CI lane without one, so a lane started from a snapshot that
+ * carries a pack must be told where it is.
  */
-export function sandboxLaneEnv(lane) {
+export function sandboxLaneEnv(lane, env = process.env) {
   return {
     CI: "1",
     SCRIPTC_PORTABLE_ONLY: "",
     SCRIPTC_SAN: lane === "san" ? "1" : "",
     SCRIPTC_TEST_SHARD: "",
+    SCRIPTC_LIBNODE: env.SCRIPTC_LIBNODE ?? "",
   };
 }

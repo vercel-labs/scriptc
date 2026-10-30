@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8428-spawn-detached-runtime.ts"
+ ],
+ "diags": []
+}

@@ -10,7 +10,7 @@
  * behavior. */
 
 import type { IrExpr, IrModule, IrStmt } from "../../ir/ir.js";
-import { everyStmtList } from "../../ir/traverse.js";
+import { eachNodeOfKinds, type IrNodeIndex, type IrNodeKind } from "../../ir/node-index.js";
 
 const APPENDING_METHODS: ReadonlySet<string> = new Set([
   "push",
@@ -30,7 +30,27 @@ function isEmptyLiteral(e: IrExpr): boolean {
   );
 }
 
-export function findAppendedArrayLiterals(module: IrModule): ReadonlySet<IrExpr> {
+/** The nodes that name an appended binding or field, and the stores that
+ * initialize one. */
+const TARGET_KINDS: readonly IrNodeKind[] = [
+  "arrIntrinsic",
+  "assignExpr",
+  "arraySet",
+  "varDecl",
+  "assign",
+];
+const STORE_KINDS: readonly IrNodeKind[] = [
+  "assignExpr",
+  "varDecl",
+  "assign",
+  "fieldSet",
+  "recordSet",
+];
+
+export function findAppendedArrayLiterals(
+  module: IrModule,
+  index?: IrNodeIndex,
+): ReadonlySet<IrExpr> {
   // Bindings are function-scoped by id; module globals are shared.
   const localsOf = new Map<string, ReadonlySet<string>>();
   for (const fn of module.functions) {
@@ -65,20 +85,15 @@ export function findAppendedArrayLiterals(module: IrModule): ReadonlySet<IrExpr>
     const field = fieldOf(target);
     if (field !== null) appendedFields.add(field);
   };
+  const targets = index?.scan(TARGET_KINDS);
   for (const fn of module.functions) {
-    everyStmtList(fn.body, {
-      expr: (e) => {
-        if (e.kind === "arrIntrinsic" && APPENDING_METHODS.has(e.method))
-          noteTarget(fn.name, e.receiver);
-        else if (e.kind === "assignExpr") noteAlias(fn.name, e.localId, e.value);
-        return true;
-      },
-      stmt: (s) => {
-        if (s.kind === "arraySet") noteTarget(fn.name, s.arr);
-        else if (s.kind === "varDecl") noteAlias(fn.name, s.localId, s.init);
-        else if (s.kind === "assign") noteAlias(fn.name, s.localId, s.value);
-        return true;
-      },
+    eachNodeOfKinds(fn, targets, (node) => {
+      if (node.kind === "arrIntrinsic" && APPENDING_METHODS.has(node.method))
+        noteTarget(fn.name, node.receiver);
+      else if (node.kind === "assignExpr") noteAlias(fn.name, node.localId, node.value);
+      else if (node.kind === "arraySet") noteTarget(fn.name, node.arr);
+      else if (node.kind === "varDecl") noteAlias(fn.name, node.localId, node.init);
+      else if (node.kind === "assign") noteAlias(fn.name, node.localId, node.value);
     });
   }
   for (const binding of appendedBindings)
@@ -89,24 +104,52 @@ export function findAppendedArrayLiterals(module: IrModule): ReadonlySet<IrExpr>
   const consider = (value: IrExpr | null, appended: boolean): void => {
     if (value && appended && isEmptyLiteral(value)) result.add(value);
   };
+  const stores = index?.scan(STORE_KINDS);
   for (const fn of module.functions) {
     const binding = (localId: string): boolean =>
       appendedBindings.has(bindingKey(fn.name, localId));
-    everyStmtList(fn.body, {
-      expr: (e) => {
-        if (e.kind === "assignExpr") consider(e.value, binding(e.localId));
-        return true;
-      },
-      stmt: (s: IrStmt) => {
-        if (s.kind === "varDecl") consider(s.init, binding(s.localId));
-        else if (s.kind === "assign") consider(s.value, binding(s.localId));
-        else if (s.kind === "fieldSet")
-          consider(s.value, appendedFields.has(fieldKey(s.className, s.field)));
-        else if (s.kind === "recordSet")
-          consider(s.value, appendedFields.has(fieldKey(s.shapeId, s.field)));
-        return true;
-      },
+    eachNodeOfKinds(fn, stores, (node) => {
+      if (node.kind === "assignExpr") consider(node.value, binding(node.localId));
+      else if (node.kind === "varDecl") consider(node.init, binding(node.localId));
+      else if (node.kind === "assign") consider(node.value, binding(node.localId));
+      else if (node.kind === "fieldSet")
+        consider(node.value, appendedFields.has(fieldKey(node.className, node.field)));
+      else if (node.kind === "recordSet")
+        consider(node.value, appendedFields.has(fieldKey(node.shapeId, node.field)));
     });
   }
   return result;
+}
+
+/** `const xs = []` directly followed by a capacity hint for `xs` (an
+ * `arraySetLength` with `reserve`) whose length reads only literals and
+ * other locals: the literal can be constructed with that capacity, and the
+ * hint then has nothing left to do. */
+export function reservedArrayLength(
+  stmts: readonly IrStmt[],
+  i: number,
+): { literal: IrExpr; hint: IrStmt & { kind: "arraySetLength" } } | null {
+  const decl = stmts[i];
+  const next = stmts[i + 1];
+  if (decl?.kind !== "varDecl" || decl.init === null || !isEmptyLiteral(decl.init)) return null;
+  if (next?.kind !== "arraySetLength" || next.reserve !== true) return null;
+  if (next.arr.kind !== "varRef" || next.arr.localId !== decl.localId) return null;
+  return plainLength(next.length, decl.localId) ? { literal: decl.init, hint: next } : null;
+}
+
+function plainLength(e: IrExpr, array: string): boolean {
+  switch (e.kind) {
+    case "numLit":
+      return true;
+    case "varRef":
+      return e.localId !== array;
+    case "bin":
+      return plainLength(e.left, array) && plainLength(e.right, array);
+    case "ternary":
+      return (
+        plainLength(e.cond, array) && plainLength(e.then, array) && plainLength(e.else_, array)
+      );
+    default:
+      return false;
+  }
 }

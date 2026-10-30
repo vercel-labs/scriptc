@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7614-npm-local-class-per-instance/main.ts"
+ ],
+ "diags": []
+}

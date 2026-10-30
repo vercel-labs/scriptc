@@ -30,7 +30,7 @@ export type {
   SemanticSignature as Signature,
   SemanticSymbol as Symbol,
 } from "./semantic-model.js";
-export { symbolName, symbolNameOf } from "./semantic-model.js";
+export { escapedSymbolName, symbolName, symbolNameOf } from "./semantic-model.js";
 export type {
   SemanticIndexInfo as IndexInfo,
   SemanticTypePredicate as TypePredicate,

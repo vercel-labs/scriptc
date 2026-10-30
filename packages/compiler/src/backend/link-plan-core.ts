@@ -2,12 +2,13 @@
 import type { NativeOptimization } from "./optimization.js";
 import {
   executableOptimizationLinkerArgs,
+  executableStaticLinkerArgs,
   executableStripLinkerArgs,
   windowsSubsystemLinkerArgs,
   type NativeTargetSpec,
   type WindowsSubsystem,
 } from "./targets.js";
-import { profileGenerateLinkerArgs } from "./native-profile.js";
+import { profileGenerateLinkerArgs, profileLayoutLinkerArgs } from "./native-profile.js";
 
 export interface ExecutableLinkInputs {
   inputs: string[];
@@ -28,9 +29,13 @@ export function executableLinkInputs(options: {
   runtimeSystemLibraries: readonly string[];
   optimization: NativeOptimization;
   strip?: boolean;
+  /** Link the C library and the other system libraries statically (`--static`). */
+  staticLink?: boolean;
   windowsSubsystem?: WindowsSubsystem;
   /** Instrumented for profile-guided optimization. */
   profileGenerate?: boolean;
+  /** Laid out by a profile's context-sensitive counts (nativeProfileLayout). */
+  profileLayout?: boolean;
 }): ExecutableLinkInputs {
   if (options.ffiFrameworks.length !== 0 && options.target.platform !== "darwin")
     throw new Error("FFI frameworks require a Darwin target");
@@ -65,8 +70,26 @@ export function executableLinkInputs(options: {
       ),
       ...executableOptimizationLinkerArgs(options.target.platform, options.optimization),
       ...executableStripLinkerArgs(options.target.platform, options.strip ?? false),
+      ...executableStaticLinkerArgs(options.target, options.staticLink ?? false),
       ...windowsSubsystemLinkerArgs(options.target.platform, options.windowsSubsystem),
       ...profileGenerateLinkerArgs(options.profileGenerate ?? false),
+      ...profileLayoutLinkerArgs(options.target, options.profileLayout ?? false),
     ],
   };
+}
+
+/** The linker arguments for an executable's system libraries. On Linux, libm
+ * links as needed: the runtime defines the libm functions most programs
+ * reach (scr_glibc_math.c) and Math's transcendentals (scr_ieee754.c), so a
+ * program that calls no other libm function, such as pow, starts without
+ * loading libm.so when it links with lld (see inputsWithoutLld). */
+export function systemLibraryLinkerArgs(
+  target: Pick<NativeTargetSpec, "platform">,
+  names: readonly string[],
+): string[] {
+  return names.flatMap((name) =>
+    name === "m" && target.platform === "linux"
+      ? ["-Wl,--as-needed", "-lm", "-Wl,--no-as-needed"]
+      : [`-l${name}`],
+  );
 }

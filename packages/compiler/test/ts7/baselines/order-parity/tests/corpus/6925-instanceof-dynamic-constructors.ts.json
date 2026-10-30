@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6925-instanceof-dynamic-constructors.ts"
+ ],
+ "diags": []
+}

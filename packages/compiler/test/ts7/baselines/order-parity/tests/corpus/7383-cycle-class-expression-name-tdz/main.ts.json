@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7383-cycle-class-expression-name-tdz/beta.ts",
+  "<repo>/tests/corpus/7383-cycle-class-expression-name-tdz/alpha.ts",
+  "<repo>/tests/corpus/7383-cycle-class-expression-name-tdz/main.ts"
+ ],
+ "diags": []
+}

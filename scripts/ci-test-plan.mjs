@@ -7,6 +7,7 @@ export const corpusFiles = [
   "tests/harness/differential.test.ts",
   "tests/harness/llvm-differential.test.ts",
   "tests/harness/npm.test.ts",
+  "tests/harness/npm-shape-overlay.test.ts",
   "tests/harness/server.test.ts",
   "tests/harness/test262.test.ts",
   "tests/harness/three.test.ts",
@@ -18,14 +19,17 @@ const cacheFile = "packages/compiler/src/backend/native-toolchain.test.ts";
 export const isolatedFiles = [
   ["self-hosting serialization", "tests/harness/self-hosting-serialization.test.ts"],
   ["self-hosting", "tests/harness/self-hosting.test.ts"],
-  ["self-hosting LLVM emitter", "tests/harness/self-hosting-llvm-emitter.test.ts"],
   ["fetch", "tests/harness/fetch.test.ts"],
   ["surface manifest", "tests/harness/surface-manifest.test.ts"],
 ];
 // Suites that split their own tests across the shards (SCRIPTC_TEST_SHARD,
 // skipUnownedTest in tests/harness/shard.ts): every shard runs its share in
 // its own vitest process.
-export const caseShardedSideFiles = [["npm static", "tests/harness/npm-static.test.ts"]];
+export const caseShardedSideFiles = [
+  ["npm static", "tests/harness/npm-static.test.ts"],
+  ["self-hosting LLVM emitter", "tests/harness/self-hosting-llvm-emitter.test.ts"],
+  ["three.js library", "tests/harness/three-library.test.ts"],
+];
 export const fileExclusions = [
   ...corpusFiles,
   ...effectFiles,
@@ -42,27 +46,55 @@ export const testCosts = JSON.parse(
   readFileSync(new URL("./ci-test-costs.json", import.meta.url), "utf8"),
 );
 
+// Side-queue files whose process tree, run alone, peaks far above a plain
+// vitest run (about 1 GB): megabytes at the peak, measured with CI's settings.
+// They run beside the corpus task's three workers, so no two of them share a
+// shard while there are shards without one.
+export const memoryHeavyFiles = {
+  "tests/harness/decl-boundary.test.ts": 1838,
+};
+
 // The shard (1-based) of each measured side-queue file and isolated suite:
 // longest first to the shard with the least work so far, counting about a
 // second per file for vitest to import it. Ties go to the highest shard, so the
 // longest files start from the last shard while the cost-balanced corpus and
 // three.js cases (tests/harness/shard.ts) place their longest from the first.
-// An isolated suite without a measurement weighs as much as the median
-// measured file. Files without a measurement are left to vitest's --shard,
-// which splits them by count.
+// An isolated suite or memory-heavy file without a measurement weighs as much
+// as the median measured file. Memory-heavy files are placed after the others,
+// each on the shard with the least memory-heavy work so far and, among those,
+// the least work. Files without a
+// measurement are left to vitest's --shard, which splits them by count.
 export function sideOwners(flavor, count) {
   const costs = testCosts[flavor];
   const known = Object.values(costs).sort((a, b) => a - b);
   const median = known.length === 0 ? 0 : known[Math.floor(known.length / 2)];
   const weight = (file) => (costs[file] ?? median) + 1000;
-  const files = [...new Set([...Object.keys(costs), ...isolatedFiles.map(([, file]) => file)])];
+  const heavy = Object.keys(memoryHeavyFiles).sort(
+    (a, b) => memoryHeavyFiles[b] - memoryHeavyFiles[a] || (a < b ? -1 : a > b ? 1 : 0),
+  );
+  const files = [
+    ...new Set([...Object.keys(costs), ...isolatedFiles.map(([, file]) => file)]),
+  ].filter((file) => !(file in memoryHeavyFiles));
   files.sort((a, b) => weight(b) - weight(a) || (a < b ? -1 : a > b ? 1 : 0));
   const loads = new Array(count).fill(0);
+  const memory = new Array(count).fill(0);
   const owners = new Map();
   for (const file of files) {
     let lightest = count - 1;
     for (let shard = count - 2; shard >= 0; shard--)
       if (loads[shard] < loads[lightest]) lightest = shard;
+    loads[lightest] += weight(file);
+    owners.set(file, lightest + 1);
+  }
+  for (const file of heavy) {
+    let lightest = count - 1;
+    for (let shard = count - 2; shard >= 0; shard--)
+      if (
+        memory[shard] < memory[lightest] ||
+        (memory[shard] === memory[lightest] && loads[shard] < loads[lightest])
+      )
+        lightest = shard;
+    memory[lightest] += memoryHeavyFiles[file];
     loads[lightest] += weight(file);
     owners.set(file, lightest + 1);
   }
@@ -105,6 +137,15 @@ export const darwinFiles = [
 export const leakSuppressions = fileURLToPath(
   new URL("../tests/harness/lsan.supp", import.meta.url),
 );
+
+// The sanitized three.js nodes build runs in its own Linux job
+// (three_nodes_san in .github/workflows/ci.yml). Beside the corpus's other
+// workers it took 860 to more than 1200 seconds, past its test timeout.
+export const sanitizedNodesJobEnv = { SCRIPTC_THREE_SANITIZED_NODES_JOB: "1" };
+
+function corpusThreeEnv(flavor, platform) {
+  return flavor === "san" && platform === "linux" ? sanitizedNodesJobEnv : {};
+}
 
 function corpusLeakEnv(flavor, platform) {
   if (flavor !== "san" || platform !== "linux") return {};
@@ -218,6 +259,7 @@ export function ciTestPlan({
       env: {
         ...env,
         ...corpusLeakEnv(flavor, platform),
+        ...corpusThreeEnv(flavor, platform),
         SCRIPTC_TEST_WORKERS: String(workers - sideWorkers),
         SCRIPTC_LLVM_TEST_MODE: "dev",
       },

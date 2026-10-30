@@ -14,7 +14,15 @@ import { boolLit, dynUndefinedExpr, numLit, strLit, varRef } from "../../ir/buil
 import { locOf } from "../program.js";
 import { type ConsoleMethodMember } from "./builtins/console.js";
 import { jsFuncNameOf, type Lowerer } from "./lowerer.js";
-import { lowerConsoleInspectArg, lowerFormatCall, lowerInspectValue } from "./lower-inspect.js";
+import {
+  heldFormatArgs,
+  lowerConsoleInspectArg,
+  lowerFormatCall,
+  lowerInspectValue,
+  lowerRuntimeFormat,
+  runtimeFormatString,
+  formatStringConverts,
+} from "./lower-inspect.js";
 import { streamSidesOf } from "./lower-stream.js";
 
 /** node:console Console instances: a native handle (the checked-dynamic
@@ -249,7 +257,8 @@ export function lowerConsoleArg(
   // inspect at the rest-args depth 2 (formatWithOptions) — scalar
   // kinds byte-exactly, boxed functions as [Function: name] /
   // [Function (anonymous)], composites through the dyn walk
-  // (insp.dyn). Never throws — Node's console.log never does.
+  // (insp.dyn). A value the inspector does not render throws the
+  // 'not supported yet' Error before anything is written.
   if (lowered.type.kind === "dyn") {
     return {
       kind: "libCall",
@@ -357,9 +366,32 @@ export function lowerConsoleOutput(
   ) {
     return consoleWrite(stdout, [lowerFormatCall(lowerer, expr, loc, false)], loc);
   }
-  const args = expr.arguments.nodes.map((a) =>
-    lowerConsoleArg(lowerer, a, lowerer.lowerExpr(a), surface, loc),
-  );
+  const nodes = expr.arguments.nodes;
+  // Spread arguments and format strings that may hold a substitution at
+  // run time go through the runtime formatter. A string first argument
+  // without a '%' keeps the space-joined write below.
+  if (nodes.some(ts.isSpreadElement))
+    return consoleWrite(stdout, [lowerRuntimeFormat(lowerer, nodes, loc)], loc);
+  const runtime =
+    nodes.length > 1 && !isStringLiteralLike(first) ? runtimeFormatString(lowerer, first!) : null;
+  if (runtime === "other" && !formatStringConverts(lowerer, first!))
+    return consoleWrite(stdout, [lowerRuntimeFormat(lowerer, nodes, loc)], loc);
+  if (runtime !== null) {
+    const held = heldFormatArgs(lowerer, nodes, loc);
+    if (!held.joinable) return seq(held.stmts, consoleWrite(stdout, [held.format()], loc), loc);
+    const joined = held.args.map((arg) =>
+      lowerConsoleArg(lowerer, arg.node, arg.ref(), surface, loc),
+    );
+    const write: IrStmt = {
+      kind: "if",
+      cond: held.specifies,
+      then: [{ kind: "exprStmt", expr: consoleWrite(stdout, [held.format()], loc), loc }],
+      else_: [{ kind: "exprStmt", expr: consoleWrite(stdout, joined, loc), loc }],
+      loc,
+    };
+    return seq([...held.stmts, write], noop(loc), loc);
+  }
+  const args = nodes.map((a) => lowerConsoleArg(lowerer, a, lowerer.lowerExpr(a), surface, loc));
   return consoleWrite(stdout, args, loc);
 }
 

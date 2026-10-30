@@ -15,7 +15,7 @@ function tail(path: string): string {
   return path.slice(i + 1);
 }
 
-const scratch = "tmp-1354-" + tail(process.argv[1]);
+const scratch = "tmp-1354-" + tail(process.argv[1]) + "-" + process.pid;
 if (existsSync(scratch)) {
   if (existsSync(j(scratch, "f.txt"))) {
     rmSync(j(scratch, "f.txt"));

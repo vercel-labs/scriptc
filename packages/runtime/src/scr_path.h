@@ -1,5 +1,6 @@
-/* scriptc runtime — node:path (scr_path.c) and path globs (scr_glob.c).
- * Included by scr_runtime.h, which says where new declarations go. */
+/* scriptc runtime — node:path (scr_path.c), path globs (scr_glob.c), and
+ * module resolution at run time (scr_require.c). Included by scr_runtime.h,
+ * which says where new declarations go. */
 #ifndef SCR_PATH_H
 #define SCR_PATH_H
 
@@ -52,6 +53,20 @@ ScrArr *scr_path_win32_parse(ScrStr *path);
 ScrStr *scr_path_format(ScrStr *root, ScrStr *dir, ScrStr *base, ScrStr *name, ScrStr *ext);
 ScrStr *scr_path_win32_format(ScrStr *root, ScrStr *dir, ScrStr *base, ScrStr *name,
                               ScrStr *ext);
+/* ── node:path functions read as values (scr_builtin_values.c) ───────
+ * The adapters behind a stored `path.posix.join` or a `path.win32`
+ * namespace passed around, whose arguments arrive unchecked: lib/path.js's
+ * validateString/validateObject under Node's argument names, then the
+ * functions above. All borrow; results are +1, or NULL with Node's
+ * ERR_INVALID_ARG_TYPE pending. resolve_value validates `paths[i]` only as
+ * far as Node's last-first walk reads them; format_value answers `base`
+ * itself when there is no dir (Node's _format), so its result is a dyn
+ * value. */
+struct ScrDyn;
+ScrStr *scr_path_resolve_value(const struct ScrDyn *args, bool win32);
+struct ScrDyn *scr_path_parse_value(const struct ScrDyn *path, bool win32);
+struct ScrDyn *scr_path_format_value(const struct ScrDyn *object, bool win32);
+struct ScrDyn *scr_path_to_namespaced_value(struct ScrDyn *path, bool win32);
 /* path.matchesGlob (scr_glob.c): Node 24's minimatch with matchGlobPattern's
  * options, case-insensitive on macOS and Windows hosts like Node. Borrows
  * both; a brace sequence over 2^32 - 1 elements throws Node's RangeError, a
@@ -88,5 +103,19 @@ void scr_fs_glob_callback(ScrDyn *args);
  * undefined when there is none) once, for the loop to throw after them. */
 ScrArr *scr_fsp_glob_strings(const ScrDyn *pattern, const ScrDyn *options);
 ScrDyn *scr_fsp_glob_error(void);
+
+/* createRequire's require(id) and require.resolve(request, options) with a
+ * specifier computed at run time (scr_require.c). Both resolve with Node
+ * 24's CommonJS algorithm from `importer`, the requiring file; `builtins`
+ * lists the builtin ids (process.getBuiltinModule's table), and `site` is
+ * the call's "file:line" for the SC2020 refusal. All arguments are
+ * borrowed. scr_require_computed always leaves an exception pending and
+ * returns NULL: Node's argument errors, or MODULE_NOT_FOUND when nothing
+ * resolves; a specifier that resolves ends the program with the refusal.
+ * scr_require_resolve answers the resolved id or real path (+1), or NULL
+ * with Node's error pending. */
+ScrDyn *scr_require_computed(ScrDyn *id, ScrStr *importer, ScrStr *site, ScrArr *builtins);
+ScrStr *scr_require_resolve(ScrDyn *request, ScrDyn *options, ScrStr *importer, ScrStr *site,
+                            ScrArr *builtins);
 
 #endif /* SCR_PATH_H */

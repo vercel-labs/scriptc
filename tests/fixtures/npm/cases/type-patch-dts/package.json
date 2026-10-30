@@ -1,0 +1,15 @@
+{
+  "name": "type-patch-dts-case",
+  "private": true,
+  "type": "module",
+  "scriptc": {
+    "typePatches": {
+      "profilekit@^3.0.0": {
+        "declarations": {
+          "Profile.email": "| undefined",
+          "findProfile()": "| undefined"
+        }
+      }
+    }
+  }
+}

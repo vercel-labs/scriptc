@@ -5,9 +5,9 @@
 const byFlag = new Map<boolean, string>();
 console.log(byFlag);
 
-// Map values have no slot for Dates.
-const stamps = new Map<string, Date>();
-console.log(stamps);
+// Map values have no slot for URLSearchParams.
+const queries = new Map<string, URLSearchParams>();
+console.log(queries);
 
 // Boolean Set elements remain outside the supported element domain.
 const flags = new Set<boolean>();

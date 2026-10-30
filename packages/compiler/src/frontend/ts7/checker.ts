@@ -345,6 +345,15 @@ export class CheckerFacade {
     this.prefetchSymbols(sf);
   }
 
+  /** The symbols at a file's identifiers only, for consumers that resolve
+   * names but never ask for types (shape inference). The file stays open
+   * to a later whole-file prefetch, which skips the answered nodes. */
+  prefetchSourceFileSymbols(sf: SourceFile): void {
+    this.ensureActive();
+    if (this.cache.prefetchedSymbols.has(sf)) return;
+    this.prefetchSymbolNodes(collectNodes([sf]), false, false);
+  }
+
   /** Batches the non-body structure of many files as ONE logical wave.
    * Top-level executable statements, class field initializers/static blocks,
    * and every declaration header are included; function/method/constructor

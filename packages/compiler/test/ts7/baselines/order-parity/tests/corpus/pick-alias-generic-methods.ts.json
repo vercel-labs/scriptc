@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/pick-alias-generic-methods.ts"
+ ],
+ "diags": []
+}

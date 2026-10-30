@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6349-instanceof-subclass-capsules/errors.cjs",
+  "<repo>/tests/corpus/6349-instanceof-subclass-capsules/main.ts"
+ ],
+ "diags": []
+}

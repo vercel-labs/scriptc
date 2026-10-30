@@ -1,0 +1,41 @@
+// X509Certificate fields in a library archive: the field code lives in
+// scr_x509.c, which the archive carries when the program reads a field.
+import * as crypto from "node:crypto";
+
+const CA = `-----BEGIN CERTIFICATE-----
+MIIEITCCAwmgAwIBAgIIASNFZ4mrze8wDQYJKoZIhvcNAQELBQAwgZwxCzAJBgNV
+BAYTAlVTMRMwEQYDVQQIDApDYWxpZm9ybmlhMRYwFAYDVQQHDA1TYW4gRnJhbmNp
+c2NvMRQwEgYDVQQKDAtFeGFtcGxlIE9yZzERMA8GA1UECwwIRGV2IFRlYW0xGDAW
+BgNVBAMMD0V4YW1wbGUgUm9vdCBDQTEdMBsGCSqGSIb3DQEJARYOY2FAZXhhbXBs
+ZS5jb20wIBcNMjYxMDIxMTYzMzUyWhgPMjEyNjA5MjcxNjMzNTJaMIGcMQswCQYD
+VQQGEwJVUzETMBEGA1UECAwKQ2FsaWZvcm5pYTEWMBQGA1UEBwwNU2FuIEZyYW5j
+aXNjbzEUMBIGA1UECgwLRXhhbXBsZSBPcmcxETAPBgNVBAsMCERldiBUZWFtMRgw
+FgYDVQQDDA9FeGFtcGxlIFJvb3QgQ0ExHTAbBgkqhkiG9w0BCQEWDmNhQGV4YW1w
+bGUuY29tMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA0YGcCr0pxR8d
+6qDdLuILcoT7vhtAjyHwfkoChnH6N3TLWzDUugnBp9NbDb7gDLqbRT4uTDoNb6zS
+tEJZ4Q7/hhd0jDvoPmOy0Y3Kyj9uNsdf25GdbvwwEnlddELJCZprTZ4OhEg6w2s0
+Yy4SlviLzDXLmsggTypxeS+K8JHT9onMipi5L4GFu8n1QZbzXvSS4BkRgMXEyrtr
+FOE9qSo2qkubFyd/WNKRTRIpTSc5/GGsqJ0FKDDJnN5adotcUucbJFn4noNnFUWh
+M8mhBEj7ENDdJsD2EVFsI6H958jA2SbNNu4ngzAOs2AKNBYBfQK02ZQAdRNOSL3K
+5FkfbII5LwIDAQABo2MwYTAdBgNVHQ4EFgQUP+yQyItpNYEls26Jfv+NnciGaK8w
+HwYDVR0jBBgwFoAUP+yQyItpNYEls26Jfv+NnciGaK8wDwYDVR0TAQH/BAUwAwEB
+/zAOBgNVHQ8BAf8EBAMCAQYwDQYJKoZIhvcNAQELBQADggEBABDw3Va/C+RFc/Hs
+TJnHtQJtxFL0ZhnHUqg4DcDA3m+JDdIDNL8sNpLEbtn/pr0VeEWgG+MImWAQlrUW
+IAZkLj9/Zg1wSO0oZ86ZyZJZmp54lUYXgG17CNl4g+F7VHt3bBwUJHTbWye/FKM6
+5OVZetCYKVj7Z+5BYuf7cumzvRqcn32fXidB/kjRX14SJ4JDPn2yFZWCr2ygIqWQ
+SOuEmWbNAbYGaVZkQr2Ma8U28DWY2jb0f6nP8jLt49t9o6N/e6Fwd6I5t/mx9Mfj
+0403omkxmr9vqN2kBamzVnun+2mDkRZcKPCr72Q4sfbvmDi/W5Nf1Iu2cQW8VfDO
+SqpyT54=
+-----END CERTIFICATE-----
+`;
+
+export function describe(): string {
+  const cert = new crypto.X509Certificate(CA);
+  return [
+    cert.subject,
+    cert.serialNumber,
+    cert.validTo,
+    String(cert.ca),
+    cert.fingerprint256,
+  ].join("|");
+}

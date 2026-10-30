@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/rest-tuple-shorthand-property.ts"
+ ],
+ "diags": []
+}

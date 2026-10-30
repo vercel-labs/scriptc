@@ -1,6 +1,9 @@
 /* instanceof and in, including private-name and runtime-key in. */
+import { programCreatesWrappers, WRAPPER_KIND_NUMBER } from "../primitive-wrappers.js";
+import { lowerArrayClassInstanceOf } from "../builtins/array-classes.js";
 import { dateRootOf } from "../builtins/date-classes.js";
 import { keyedHelperName } from "../stable-names.js";
+import { lowerWebStreamInstanceof } from "../builtins/web-streams-dyn.js";
 import * as ts from "../../ts7/adapter.js";
 import { builtinClassInstanceOfAny, builtinClassKind } from "../builtins/builtin-class-dyn.js";
 import {
@@ -32,21 +35,24 @@ import { lowerWebAssemblyInstanceof, refuseWebAssemblyUse } from "../builtins/we
 import { lowerSocketInstanceOf } from "../lower-server.js";
 import { builtinClassRefOf } from "../builtins/class-values.js";
 import { lowerZlibInstanceOf } from "../builtins/compression.js";
-import { numLit, strLit, varRef } from "../../../ir/build.js";
+import { nodeThrowExpr, numLit, strLit, varRef } from "../../../ir/build.js";
 import { lowerDisposableStackInstanceOf } from "../builtins/disposable-stack.js";
 import { lowerBlobInstanceof } from "../builtins/blob.js";
 import { lowerReadlineInstanceof } from "../builtins/readline.js";
 import { lowerKeyObjectInstanceof } from "../builtins/key-object.js";
 import { lowerCryptoKeyInstanceof } from "../builtins/webcrypto.js";
 import { lowerNetAddressInstanceof } from "../builtins/net-address.js";
+import { lowerMimeInstanceof } from "../builtins/mime.js";
 import { typedArrayHasMember } from "../builtins/typed-array-members.js";
 import { fenceEarlyNsMemberRef, nsMemberIdentOf } from "../lower-namespaces.js";
 import { maybePromiseInstanceOf } from "../maybe-promise.js";
 import { isSafeToDiscard, isSafeToRepeat } from "./evaluation-safety.js";
+import { partialFieldPresence } from "../partial-assertions.js";
 import { type ClassInfo, storedClassValueType } from "../lower-classes.js";
 import { classInstanceOf } from "../class-dynamic-dispatch.js";
 import { InternalCompilerError } from "../../../errors.js";
 import { tryLowerExpression } from "./try-lower-expression.js";
+import { assertedInOperand } from "./asserted-receiver.js";
 import { isJsSourceFile, locOf } from "../../program.js";
 import { checkedClassInstanceOf } from "../class-construction.js";
 import { unsupportedDiag } from "../../../diagnostics/diagnostic.js";
@@ -58,6 +64,46 @@ import { isExecExceptionType, refuseExecExceptionCode } from "../builtins/errors
 import { hasRuntimeStatics } from "../class-runtime-statics.js";
 import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js";
 
+/** The class value an `instanceof` right-hand side holds. A JavaScript
+ * object's property holding a program class (`holder.type`) reads as a
+ * checked-dynamic value that the checker types as the class: it converts
+ * to the class value. Runtime-provided classes keep their own lowering. */
+function classValueOperand(
+  lowerer: Lowerer,
+  right: ts.Expression,
+  type: IrType & { kind: "classval" },
+): IrExpr {
+  if (
+    !isJsSourceFile(ts.getSourceFileOfNode(right)) ||
+    ts.isIdentifier(right) ||
+    lowerer.classes.get(type.className)?.def.runtime
+  )
+    return lowerer.lowerExpr(right);
+  const value = lowerer.lowerExprExpecting(right, DYN);
+  if (value.type.kind !== "dyn") return value;
+  return { kind: "dynCheck", value, type, loc: locOf(right) };
+}
+
+/** The value kinds that never hold an instance of a program class. */
+const NO_CLASS_INSTANCE_KINDS: ReadonlySet<IrType["kind"]> = new Set([
+  "f64",
+  "bigint",
+  "date",
+  "string",
+  "bool",
+  "array",
+  "map",
+  "set",
+  "regex",
+  "bytes",
+  "symbol",
+  "promise",
+  "undefinedT",
+  "nullT",
+]);
+
+const PRIMITIVE_WRAPPERS = ["Boolean", "Number", "String", "BigInt", "Symbol"] as const;
+
 /** `x instanceof C` for a program-declared class C. When x's static
  * class and C are both in extends-hierarchies the test is dynamic — the
  * O(1) preorder-interval check against the vtable (`instanceOf` node).
@@ -68,6 +114,8 @@ import { nullProtoRecordShape, recordNullProtoTest } from "../null-prototype.js"
  * Folding is limited to side-effect-free operands — dropping a computed
  * operand would skip its effects, so those are rejected instead. */
 export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc: SrcLoc): IrExpr {
+  const arrayClassTest = lowerArrayClassInstanceOf(lowerer, expr, loc);
+  if (arrayClassTest !== null) return arrayClassTest;
   const webAssembly = lowerWebAssemblyInstanceof(lowerer, expr);
   if (webAssembly !== null) return webAssembly;
   refuseWebAssemblyUse(lowerer, expr.right);
@@ -149,6 +197,37 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       loc,
     };
   }
+  // The primitive wrapper constructors: a compiled program never creates a
+  // boxed primitive (`new Boolean(...)` and friends have no lowering), and
+  // a primitive is never an instance, so the test is false for every value
+  // (typebox's IsBoolean/IsNumber/IsString guards). The operand still runs.
+  if (PRIMITIVE_WRAPPERS.some((name) => lowerer.isStdlibGlobal(expr.right, name))) {
+    const value = lowerer.lowerExpr(expr.left);
+    // In a program that creates wrappers, a checked-dynamic value may be
+    // one: the kind's prototype on its chain decides.
+    const wrapperKind = (["String", "Number", "Boolean"] as const).find((name) =>
+      lowerer.isStdlibGlobal(expr.right, name),
+    );
+    if (
+      wrapperKind &&
+      value.type.kind === "dyn" &&
+      (lowerer.createsWrappers ??= programCreatesWrappers(lowerer))
+    )
+      return {
+        kind: "libCall",
+        fn: "wrapper.instanceOf",
+        args: [value, { kind: "numLit", value: WRAPPER_KIND_NUMBER[wrapperKind], type: F64, loc }],
+        type: BOOL,
+        loc,
+      };
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "exprStmt", expr: value, loc }],
+      result: { kind: "boolLit", value: false, type: BOOL, loc },
+      type: BOOL,
+      loc,
+    };
+  }
   if (lowerer.isStdlibGlobal(expr.right, "FinalizationRegistry")) {
     const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
     return { kind: "libCall", fn: "finalizationRegistry.is", args: [value], type: BOOL, loc };
@@ -192,6 +271,8 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     if (cryptoKey) return cryptoKey;
     const netAddress = lowerNetAddressInstanceof(lowerer, expr);
     if (netAddress) return netAddress;
+    const mime = lowerMimeInstanceof(lowerer, expr);
+    if (mime) return mime;
     const readlineInterface = lowerReadlineInstanceof(lowerer, expr);
     if (readlineInterface) return readlineInterface;
   }
@@ -250,6 +331,16 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   if (!target) {
     const date = lowerer.isStdlibGlobal(expr.right, "Date");
     const url = lowerer.isStdlibGlobal(expr.right, "URL");
+    // A catch binding holds a thrown Date as its checked-dynamic handle.
+    const caughtDate = date ? lowerer.caughtLocalOf(expr.left) : null;
+    if (caughtDate)
+      return {
+        kind: "libCall",
+        fn: "dyn.nativeDateIs",
+        args: [{ kind: "caughtToDyn", value: varRef(caughtDate.id, CAUGHT, loc), type: DYN, loc }],
+        type: BOOL,
+        loc,
+      };
     if ((date || url) && !lowerer.caughtLocalOf(expr.left)) {
       const value = lowerer.lowerExpr(expr.left);
       if (value.type.kind === "dyn")
@@ -300,6 +391,24 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         type: BOOL,
         loc,
       };
+    // A codec in untyped storage is its record's handle box.
+    const codec = (["TextEncoder", "TextDecoder"] as const).find((name) =>
+      lowerer.isStdlibGlobal(expr.right, name),
+    );
+    if (codec && lowerer.mapTypeOf(lowerer.typeOf(expr.left))?.kind === "dyn") {
+      return {
+        kind: "libCall",
+        fn: "text.codecIs",
+        args: [
+          lowerer.lowerExprExpecting(expr.left, DYN),
+          { kind: "boolLit", value: codec === "TextDecoder", type: BOOL, loc },
+        ],
+        type: BOOL,
+        loc,
+      };
+    }
+    const webStream = lowerWebStreamInstanceof(lowerer, expr);
+    if (webStream) return webStream;
     if (lowerer.isStdlibGlobal(expr.right, "ReadableStream")) {
       const value = lowerer.lowerExprExpecting(expr.left, DYN);
       return { kind: "libCall", fn: "fetch.streamIs", args: [value], type: BOOL, loc };
@@ -346,6 +455,22 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
           kind: "seqExpr",
           stmts: [{ kind: "exprStmt", expr: left, loc }],
           result: yes,
+          type: BOOL,
+          loc,
+        };
+      }
+      // Plain data (records, arrays, strings, numbers, booleans, and unions
+      // of them) is never a promise: false after the operand's evaluation.
+      const neverPromise = (t: IrType): boolean =>
+        NEVER_PROMISE_KINDS.has(t.kind) ||
+        (t.kind === "union" && (lowerer.unions.get(t.unionId)?.arms ?? [t]).every(neverPromise));
+      if (neverPromise(left.type)) {
+        const no: IrExpr = { kind: "boolLit", value: false, type: BOOL, loc };
+        if (isSafeToDiscard(left)) return no;
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: left, loc }],
+          result: no,
           type: BOOL,
           loc,
         };
@@ -400,13 +525,65 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
     // (itself — no descendants can flow into the slot), so the answer
     // folds statically exactly like the named-target folds below.
     const rhsClassval = storedClassValueType(lowerer, expr.right);
-    if (rhsClassval?.kind === "classval" && !lowerer.caughtLocalOf(expr.left)) {
-      const targetInfo = lowerer.classes.get(rhsClassval.className);
+    // A catch binding against a class held by a binding (`var E = class
+    // extends Error {}`). The binding holds the declared class or one of its
+    // subclasses. Without subclasses the test is the class's caught test,
+    // after the right operand's read; otherwise a payload of the declared
+    // class is tested against the class the binding holds.
+    const caught = lowerer.caughtLocalOf(expr.left);
+    const caughtTarget =
+      rhsClassval?.kind === "classval" && caught
+        ? lowerer.classes.get(rhsClassval.className)
+        : undefined;
+    if (caught && caughtTarget && !caughtTarget.localClass && !caughtTarget.def.runtime) {
+      const classValue = lowerer.lowerExpr(expr.right);
+      if (caughtTarget.subclasses.length === 0) {
+        return {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: classValue, loc }],
+          result: caughtClassInstanceOf(lowerer, caught.id, caughtTarget, loc),
+          type: BOOL,
+          loc,
+        };
+      }
+      if (classValue.type.kind !== "classval")
+        lowerer.badType(expr.right, lowerer.typeOf(expr.right));
+      const held = lowerer.declareHiddenLocal("%instanceofClass", classValue.type);
+      const instance: IrType = { kind: "object", className: caughtTarget.def.name };
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "varDecl", localId: held.id, init: classValue, loc }],
+        result: {
+          kind: "logical",
+          op: "&&",
+          left: caughtClassInstanceOf(lowerer, caught.id, caughtTarget, loc),
+          right: {
+            kind: "instanceOfValue",
+            value: {
+              kind: "caughtNarrow",
+              value: varRef(caught.id, CAUGHT, loc),
+              type: instance,
+              loc,
+            },
+            classValue: varRef(held.id, classValue.type, loc),
+            type: BOOL,
+            loc,
+          },
+          type: BOOL,
+          loc,
+        },
+        type: BOOL,
+        loc,
+      };
+    }
+    if (rhsClassval?.kind === "classval" && !caught) {
+      const targetInfo =
+        lowerer.classes.get(rhsClassval.className) ??
+        lowerer.flushDeferredClass(rhsClassval.className);
       if (!targetInfo) {
         // The type world names a class the lowering never registered
-        // (a fenced class expression, a deferred declaration): flush
-        // its diagnostics and poison the test site, never an ICE.
-        lowerer.flushDeferredClass(rhsClassval.className);
+        // (a fenced class expression, a deferred declaration): its
+        // diagnostics flushed above; poison the test site, never an ICE.
         lowerer.unsupported(
           "SC1090",
           expr,
@@ -432,7 +609,7 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
             "'instanceof' through a runtime-provided class value on an untyped value (give the operand a class type first)",
           );
         }
-        const classValue = lowerer.lowerExpr(expr.right);
+        const classValue = classValueOperand(lowerer, expr.right, rhsClassval);
         return classInstanceOf(lowerer, left, targetInfo, loc, classValue);
       }
       // A union of class instances against a runtime class value (`new K()`
@@ -440,6 +617,22 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
       if (left.type.kind === "union" && targetInfo.def.runtime) {
         const tested = unionClassValueInstanceOf(lowerer, left, expr.right, targetInfo, loc);
         if (tested) return tested;
+      }
+      // A value whose type holds no class instance (a primitive, a native
+      // collection, a date, a regex, an array) is never an instance
+      // of a program class: false, after both operands evaluate.
+      if (!targetInfo.def.runtime && NO_CLASS_INSTANCE_KINDS.has(left.type.kind)) {
+        const classValue = classValueOperand(lowerer, expr.right, rhsClassval);
+        return {
+          kind: "seqExpr",
+          stmts: [
+            { kind: "exprStmt", expr: left, loc },
+            { kind: "exprStmt", expr: classValue, loc },
+          ],
+          result: { kind: "boolLit", value: false, type: BOOL, loc },
+          type: BOOL,
+          loc,
+        };
       }
       if (left.type.kind !== "object") {
         lowerer.unsupported(
@@ -455,7 +648,7 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         (lowerer.inHierarchy(targetInfo) && lowerer.inHierarchy(lhsInfo)) ||
         (targetInfo.localClass !== undefined && lhsInfo.localClass !== undefined)
       ) {
-        const classValue = lowerer.lowerExpr(expr.right);
+        const classValue = classValueOperand(lowerer, expr.right, rhsClassval);
         if (classValue.type.kind !== "classval")
           lowerer.badType(expr.right, lowerer.typeOf(expr.right));
         const writableTest = writableClassValueTest(
@@ -493,8 +686,11 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
         "statically-decided 'instanceof' on computed operands (bind the values to variables first)",
       );
     }
+    // A checked-dynamic right-hand side (a constructor read from a table, a
+    // structural constructor type, a builtin constructor held as `any`):
+    // the runtime's instanceof over the value, in both source languages.
     const constructor = tryLowerExpression(lowerer, expr.right);
-    if (constructor?.type.kind === "dyn" && isJsSourceFile(ts.getSourceFileOfNode(expr))) {
+    if (constructor?.type.kind === "dyn") {
       const value = lowerer.coerceInto(expr.left, lowerer.lowerExpr(expr.left), DYN);
       return checkedClassInstanceOf(
         lowerer,
@@ -551,39 +747,8 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   // narrowing then types the branches; reads bridge through caughtRead.
   const caughtLocal = lowerer.caughtLocalOf(expr.left);
   if (caughtLocal) {
-    const caughtInstanceOf = (info: ClassInfo): IrExpr => {
-      if (!lowerer.inHierarchy(info)) {
-        const value = varRef(caughtLocal.id, CAUGHT, loc);
-        return {
-          kind: "ternary",
-          cond: {
-            kind: "caughtTest",
-            value,
-            test: "instanceof",
-            className: info.def.name,
-            type: BOOL,
-            loc,
-          },
-          then: { kind: "boolLit", value: true, type: BOOL, loc },
-          else_: classInstanceOf(
-            lowerer,
-            { kind: "caughtToDyn", value, type: DYN, loc },
-            info,
-            loc,
-          ),
-          type: BOOL,
-          loc,
-        };
-      }
-      return {
-        kind: "caughtTest",
-        value: { kind: "varRef", localId: caughtLocal.id, type: CAUGHT, loc },
-        test: "instanceof",
-        className: info.def.name,
-        type: BOOL,
-        loc,
-      };
-    };
+    const caughtInstanceOf = (info: ClassInfo): IrExpr =>
+      caughtClassInstanceOf(lowerer, caughtLocal.id, info, loc);
     let test = caughtInstanceOf(target);
     // A thrown checked-dynamic object whose prototype chain reaches
     // Error.prototype (an ES5 constructor function inheriting from it).
@@ -698,9 +863,10 @@ export function lowerInstanceOf(lowerer: Lowerer, expr: ts.BinaryExpression, loc
   if (left.type.kind === "union") {
     const unionId = left.type.unionId;
     const arms = lowerer.unions.get(unionId)?.arms;
-    // Ordinary records, arrays and scalar values do not carry a class
-    // prototype (no program class extends Array). Dynamic/opaque runtime
-    // objects keep their existing instanceof fences.
+    // Records, arrays and scalar values are no instances of a class that
+    // does not extend Array (lowerArrayClassInstanceOf tests the classes
+    // that do). Dynamic/opaque runtime objects keep their existing
+    // instanceof fences.
     if (
       arms?.every(
         (arm) =>
@@ -973,6 +1139,42 @@ function writableClassValueTest(
       type: BOOL,
       loc,
     },
+    type: BOOL,
+    loc,
+  };
+}
+
+/** A catch binding tested against a program class: the runtime test against
+ * the class's preorder interval (false for non-hierarchy-object payloads). */
+function caughtClassInstanceOf(
+  lowerer: Lowerer,
+  caughtId: string,
+  info: ClassInfo,
+  loc: SrcLoc,
+): IrExpr {
+  if (!lowerer.inHierarchy(info)) {
+    const value = varRef(caughtId, CAUGHT, loc);
+    return {
+      kind: "ternary",
+      cond: {
+        kind: "caughtTest",
+        value,
+        test: "instanceof",
+        className: info.def.name,
+        type: BOOL,
+        loc,
+      },
+      then: { kind: "boolLit", value: true, type: BOOL, loc },
+      else_: classInstanceOf(lowerer, { kind: "caughtToDyn", value, type: DYN, loc }, info, loc),
+      type: BOOL,
+      loc,
+    };
+  }
+  return {
+    kind: "caughtTest",
+    value: { kind: "varRef", localId: caughtId, type: CAUGHT, loc },
+    test: "instanceof",
+    className: info.def.name,
     type: BOOL,
     loc,
   };
@@ -1490,7 +1692,11 @@ export function lowerInExpression(
       if (probed) return probed;
     }
   }
-  let recv = lowerer.lowerExpr(expr.right);
+  // `"stream" in (stored as R)` probes the value actually stored (Node
+  // erases the assertion): a union of fixed record shapes answers per arm
+  // below, so the assertion's checked extraction must not run first (it
+  // would trap on the very arm the probe exists to detect).
+  let recv = assertedInOperand(lowerer, expr.right) ?? lowerer.lowerExpr(expr.right);
   const classInfo =
     recv.type.kind === "classval" ? lowerer.classes.get(recv.type.className) : undefined;
   if (
@@ -1665,12 +1871,22 @@ export function lowerInExpression(
   if (recv.type.kind === "union") {
     const unionId = recv.type.unionId;
     const arms = lowerer.unions.get(unionId)?.arms ?? [];
-    const answers: { tag: number; has: boolean | "slot"; arm: IrType }[] = [];
+    const answers: { tag: number; has: boolean | "slot" | "unit" | "keyed"; arm: IrType }[] = [];
     let staticAnswers = arms.length > 0;
     for (const arm of arms) {
       const tag = lowerer.armTag(unionId, arm);
+      if (tag < 0) {
+        staticAnswers = false;
+        break;
+      }
+      // A unit arm answers Node's TypeError (`'k' in undefined`): only an
+      // erased assertion over an optional value still carries one.
+      if (isUnitType(arm)) {
+        answers.push({ tag, has: "unit", arm });
+        continue;
+      }
       const shape = arm.kind === "record" ? lowerer.shapes.get(arm.shapeId) : undefined;
-      if (tag < 0 || !shape || shape.tuple || shape.indexValue) {
+      if (!shape || shape.tuple) {
         staticAnswers = false;
         break;
       }
@@ -1689,23 +1905,32 @@ export function lowerInExpression(
       // true without invoking the getter) — either slot present makes
       // the name a member.
       const acc = shape.fields.some((x) => x.name === `%get:${key}` || x.name === `%set:${key}`);
-      answers.push({ tag, has: f !== undefined || acc || inherited, arm });
+      if (f !== undefined || acc || !shape.indexValue) {
+        answers.push({ tag, has: f !== undefined || acc || inherited, arm });
+        continue;
+      }
+      // An index-signature arm answers the overflow map's own key (a
+      // stored undefined is present), or the prototype's name.
+      answers.push({ tag, has: "keyed", arm });
     }
-    if (staticAnswers && answers.some((a) => a.has === "slot")) {
+    if (
+      staticAnswers &&
+      answers.some((a) => a.has === "slot" || a.has === "unit" || a.has === "keyed")
+    ) {
       return perValueUnionIn(lowerer, recv, unionId, key, answers, loc);
     }
     if (staticAnswers) {
-      const pureRecv =
-        recv.kind === "varRef" ||
-        recv.kind === "recordGet" ||
-        recv.kind === "fieldGet" ||
-        pureRecvNode;
+      // A field read is pure only over a pure object: the stored value of
+      // an asserted receiver (`"k" in (make().stored as R)`) still
+      // evaluates its call.
+      const pureRecv = isSafeToRepeat(recv) || pureRecvNode;
+      let value = recv;
       const isTag = (tag: number, negated: boolean): IrExpr => ({
         kind: "unionIsTag",
         unionId,
         tag,
         negated,
-        value: recv,
+        value,
         type: BOOL,
         loc,
       });
@@ -1731,27 +1956,29 @@ export function lowerInExpression(
       if (trues.length === 1) return isTag(trues[0]!.tag, false);
       const falses = answers.filter((a) => !a.has);
       if (falses.length === 1) return isTag(falses[0]!.tag, true);
-      // Several arms on each side: the OR chain re-reads the receiver,
-      // so only side-effect-free reads qualify.
-      if (pureRecv) {
-        let out: IrExpr = isTag(trues[0]!.tag, false);
-        for (const t of trues.slice(1)) {
-          out = {
-            kind: "logical",
-            op: "||",
-            left: out,
-            right: isTag(t.tag, false),
-            type: BOOL,
-            loc,
-          };
-        }
-        return out;
+      // Several arms on each side: the OR chain re-reads the receiver, so
+      // anything but a pure read is evaluated once into a hidden local.
+      const stable = pureRecv ? null : lowerer.declareHiddenLocal("%inRecv", recv.type);
+      if (stable) value = varRef(stable.id, recv.type, loc);
+      let out: IrExpr = isTag(trues[0]!.tag, false);
+      for (const t of trues.slice(1)) {
+        out = {
+          kind: "logical",
+          op: "||",
+          left: out,
+          right: isTag(t.tag, false),
+          type: BOOL,
+          loc,
+        };
       }
-      lowerer.unsupported(
-        "SC1090",
-        expr,
-        "statically-decided 'in' on computed receivers (bind the value to a variable first)",
-      );
+      if (!stable) return out;
+      return {
+        kind: "seqExpr",
+        stmts: [{ kind: "varDecl", localId: stable.id, init: recv, loc }],
+        result: out,
+        type: BOOL,
+        loc,
+      };
     }
   }
   // A literal member name over a typed array (`"BYTES_PER_ELEMENT" in a`):
@@ -1773,6 +2000,30 @@ export function lowerInExpression(
           };
     }
   }
+  // A child process has `send`, `disconnect` and `channel` only when it was
+  // created with an IPC channel (fork, or an "ipc" stdio entry), and keeps
+  // them after the channel closes: the runtime answers from the child.
+  if (recv.type.kind === "child" && CHILD_CHANNEL_MEMBERS.has(key))
+    return { kind: "libCall", fn: "child.hasChannel", args: [recv], type: BOOL, loc };
+  // A native Node handle (an http.Server, a socket, a child process...):
+  // a member Node's declarations give the class is on its prototype, so
+  // `"closeAllConnections" in server` answers true. Undeclared names can
+  // still be real (internal `_`-prefixed fields), so they keep the fence.
+  if (
+    NATIVE_HANDLE_KINDS.has(recv.type.kind) &&
+    nodeDeclaredMember(lowerer, lowerer.typeOf(expr.right), key)
+  ) {
+    const answer: IrExpr = { kind: "boolLit", value: true, type: BOOL, loc };
+    return isSafeToDiscard(recv)
+      ? answer
+      : {
+          kind: "seqExpr",
+          stmts: [{ kind: "exprStmt", expr: recv, loc }],
+          result: answer,
+          type: BOOL,
+          loc,
+        };
+  }
   if (recv.type.kind !== "record") {
     lowerer.unsupported(
       "SC1090",
@@ -1784,6 +2035,13 @@ export function lowerInExpression(
   if (!shape) throw new InternalCompilerError(`lowerer bug: unknown shape ${recv.type.shapeId}`);
   const field = shape.fields.find((f) => f.name === key);
   if (field) {
+    // A field some partial record assertion leaves unwritten (a partial
+    // record view, partial-assertions.ts): the answer is the view's, not
+    // the declared type's.
+    {
+      const viewPresence = partialFieldPresence(lowerer, recv, recv.type.shapeId, key, loc);
+      if (viewPresence) return viewPresence;
+    }
     if (
       !OBJECT_PROTOTYPE_KEYS.has(key) &&
       field.type.kind === "union" &&
@@ -1794,39 +2052,14 @@ export function lowerInExpression(
       return lowerer.recordFieldPresent(recv, recv.type.shapeId, key, loc);
     }
     // A declared non-optional field always exists on every value of the
-    // shape — statically true, but folding may only drop a
-    // side-effect-free receiver read.
-    if (
-      recv.kind === "varRef" ||
-      recv.kind === "recordGet" ||
-      recv.kind === "fieldGet" ||
-      pureRecvNode
-    ) {
-      return { kind: "boolLit", value: true, type: BOOL, loc };
-    }
-    lowerer.unsupported(
-      "SC1090",
-      expr,
-      "statically-decided 'in' on computed receivers (bind the value to a variable first)",
-    );
+    // shape — statically true, but a calling receiver (`"k" in make().api`)
+    // must still run exactly once.
+    return staticAnswerAfter(recv, true, loc);
   }
   // Accessor properties answer `in` as own members (Node: true, getter
-  // NOT invoked) — statically true under the same purity discipline as
-  // declared non-optional fields.
+  // NOT invoked) — statically true, with the receiver evaluated once.
   if (shape.fields.some((f) => f.name === `%get:${key}` || f.name === `%set:${key}`)) {
-    if (
-      recv.kind === "varRef" ||
-      recv.kind === "recordGet" ||
-      recv.kind === "fieldGet" ||
-      pureRecvNode
-    ) {
-      return { kind: "boolLit", value: true, type: BOOL, loc };
-    }
-    lowerer.unsupported(
-      "SC1090",
-      expr,
-      "statically-decided 'in' on computed receivers (bind the value to a variable first)",
-    );
+    return staticAnswerAfter(recv, true, loc);
   }
   // Records are ordinary objects: Object.prototype's members are in them.
   const inherited = OBJECT_PROTOTYPE_KEYS.has(key);
@@ -1837,30 +2070,44 @@ export function lowerInExpression(
       "'in' over index-signature keys (read the key and test '!== undefined' instead)",
     );
   }
-  if (
-    recv.kind === "varRef" ||
-    recv.kind === "recordGet" ||
-    recv.kind === "fieldGet" ||
-    pureRecvNode
-  ) {
-    // A null-prototype record (Object.groupBy) has no inherited names.
-    const nullProtoT = inherited ? nullProtoRecordShape(lowerer, recv.type) : null;
-    if (nullProtoT) {
-      return {
-        kind: "unary",
-        op: "!",
-        operand: recordNullProtoTest(recv, nullProtoT.shapeId, loc),
-        type: BOOL,
-        loc,
-      };
-    }
-    return { kind: "boolLit", value: inherited, type: BOOL, loc };
+  // A null-prototype record (Object.groupBy) has no inherited names.
+  const nullProtoT = inherited ? nullProtoRecordShape(lowerer, recv.type) : null;
+  if (nullProtoT) {
+    // The answer reads the receiver itself, so it already evaluates it
+    // exactly once; wrapping it in a discard statement would run an
+    // effectful receiver (a call result) twice.
+    return {
+      kind: "unary",
+      op: "!",
+      operand: recordNullProtoTest(recv, nullProtoT.shapeId, loc),
+      type: BOOL,
+      loc,
+    };
   }
-  lowerer.unsupported(
-    "SC1090",
-    expr,
-    "statically-decided 'in' on computed receivers (bind the value to a variable first)",
-  );
+  // A kept record source can hold a key the shape does not declare (a
+  // checked conversion's undeclared keys, a width spread's extras), so the
+  // static `false` answer is registered for the key-order pass to answer
+  // through the record's own source table when the program keeps one.
+  const answer = staticAnswerAfter(recv, inherited, loc);
+  return inherited ? answer : lowerer.keyOrder.sourceProbe(answer, recv, key);
+}
+
+/** A statically-decided `in` answer: a side-effect-free receiver folds away,
+ * while any other receiver (a call result, an effectful read) is still
+ * evaluated exactly once for its effects. */
+function staticAnswerAfter(recv: IrExpr, answer: boolean, loc: SrcLoc): IrExpr {
+  return staticAnswerAfterWith(recv, { kind: "boolLit", value: answer, type: BOOL, loc }, loc);
+}
+
+function staticAnswerAfterWith(recv: IrExpr, result: IrExpr, loc: SrcLoc): IrExpr {
+  if (isSafeToDiscard(recv)) return result;
+  return {
+    kind: "seqExpr",
+    stmts: [{ kind: "exprStmt", expr: recv, loc }],
+    result,
+    type: BOOL,
+    loc,
+  };
 }
 
 /** `"k" in u` over a union of fixed record shapes where some arm declares
@@ -1876,7 +2123,11 @@ function perValueUnionIn(
   recv: IrExpr,
   unionId: string,
   key: string,
-  answers: readonly { tag: number; has: boolean | "slot"; arm: IrType }[],
+  answers: readonly {
+    tag: number;
+    has: boolean | "slot" | "unit" | "keyed";
+    arm: IrType;
+  }[],
   loc: SrcLoc,
 ): IrExpr {
   const recvType = recv.type;
@@ -1892,8 +2143,9 @@ function perValueUnionIn(
     loc,
   });
   let out: IrExpr | null = null;
+  const inherited = OBJECT_PROTOTYPE_KEYS.has(key);
   for (const a of answers) {
-    if (a.has === false) continue;
+    if (a.has === false || a.has === "unit") continue;
     let test = isTag(a.tag);
     if (a.has === "slot" && a.arm.kind === "record") {
       test = {
@@ -1919,9 +2171,68 @@ function perValueUnionIn(
         loc,
       };
     }
+    if (a.has === "keyed" && a.arm.kind === "record") {
+      const narrowed: IrExpr = {
+        kind: "unionNarrow",
+        unionId,
+        tag: a.tag,
+        value: ref(),
+        type: a.arm,
+        loc,
+      };
+      // An inherited name answers the prototype (a null-prototype record
+      // has none); any other key is an own key of the overflow map.
+      const nullProtoT = inherited ? nullProtoRecordShape(lowerer, a.arm) : null;
+      const presence: IrExpr = nullProtoT
+        ? {
+            kind: "unary",
+            op: "!",
+            operand: recordNullProtoTest(narrowed, a.arm.shapeId, loc),
+            type: BOOL,
+            loc,
+          }
+        : inherited
+          ? { kind: "boolLit", value: true, type: BOOL, loc }
+          : {
+              kind: "recordOvfHas",
+              obj: narrowed,
+              shapeId: a.arm.shapeId,
+              key: { kind: "strLit", value: key, type: STRING, loc },
+              type: BOOL,
+              loc,
+            };
+      test = {
+        kind: "logical",
+        op: "&&",
+        left: test,
+        right: presence,
+        type: BOOL,
+        loc,
+      };
+    }
     out = out ? { kind: "logical", op: "||", left: out, right: test, type: BOOL, loc } : test;
   }
-  const result: IrExpr = out ?? { kind: "boolLit", value: false, type: BOOL, loc };
+  let result: IrExpr = out ?? { kind: "boolLit", value: false, type: BOOL, loc };
+  // A unit arm throws Node's TypeError (`'k' in undefined`); the tests are
+  // disjoint by tag, so the order among them does not matter.
+  for (const a of answers) {
+    if (a.has !== "unit") continue;
+    const unit = a.arm.kind === "nullT" ? "null" : "undefined";
+    result = {
+      kind: "ternary",
+      cond: isTag(a.tag),
+      then: nodeThrowExpr(
+        1,
+        "",
+        `Cannot use 'in' operator to search for '${key}' in ${unit}`,
+        BOOL,
+        loc,
+      ),
+      else_: result,
+      type: BOOL,
+      loc,
+    };
+  }
   if (!stable) return result;
   return {
     kind: "seqExpr",
@@ -2049,24 +2360,60 @@ function lowerRuntimeKeyIn(
   return { kind: "call", callee: helper, args: [keyIr, recv], type: BOOL, loc };
 }
 
-/** Standard-library constructors the untyped instanceof helper has no
- * instance test for: an untyped `x instanceof Object` always refuses. */
-const DYN_INSTANCEOF_REFUSED: ReadonlySet<string> = new Set(["Object", "Function"]);
-
 /** The SC1090 message `x instanceof C` throws, with the site's position,
- * when `C` is a runtime constructor with no instance test. A right-hand
- * side that names one of DYN_INSTANCEOF_REFUSED always reaches that
- * refusal, so the site is listed with the runtime fences. */
+ * when `C` is a runtime constructor with no instance test. */
 function dynInstanceOfRefusal(lowerer: Lowerer, expr: ts.BinaryExpression): string {
   const diag = unsupportedDiag("SC1090", locOf(expr), "instanceof against this native constructor");
-  const symbol = lowerer.checker.getSymbolAtLocation(expr.right);
-  if (
-    symbol !== undefined &&
-    lowerer.isStdlibSymbol(symbol) &&
-    DYN_INSTANCEOF_REFUSED.has(ts.symbolName(symbol))
-  )
-    lowerer.runtimeFences.push(diag);
   const sf = ts.getSourceFileOfNode(expr);
   const line = ts.getLineAndCharacterOfPosition(sf, diag.loc.start).line + 1;
   return `${diag.message} [${diag.code} at ${diag.loc.file}:${line}]`;
 }
+
+/** IR kinds of native Node handles whose members come from Node's own
+ * declarations. */
+const NATIVE_HANDLE_KINDS: ReadonlySet<IrType["kind"]> = new Set([
+  "netServer",
+  "netSocket",
+  "httpReq",
+  "httpRes",
+  "httpClientReq",
+  "child",
+  "dgramSocket",
+  "fsWatcher",
+  "http2Session",
+  "http2Stream",
+]);
+
+/** Child process members that exist only on a child with an IPC channel. */
+const CHILD_CHANNEL_MEMBERS: ReadonlySet<string> = new Set(["send", "disconnect", "channel"]);
+
+/** Whether every constituent of `t` declares a required member `key` in
+ * a declaration file (Node's @types/node). */
+function nodeDeclaredMember(lowerer: Lowerer, t: ts.Type, key: string): boolean {
+  const parts = t.isUnionType() ? ts.constituentTypes(t) : [t];
+  return parts.every((part) => {
+    const prop = lowerer.checker.getPropertyOfType(part, key);
+    if (prop === undefined || (prop.flags & ts.SymbolFlags.Optional) !== 0) return false;
+    return (
+      prop.declarations.length > 0 &&
+      prop.declarations.every((d) => ts.getSourceFileOfNode(d).isDeclarationFile)
+    );
+  });
+}
+
+const NEVER_PROMISE_KINDS: ReadonlySet<IrType["kind"]> = new Set([
+  "record",
+  "array",
+  "string",
+  "f64",
+  "bool",
+  "bigint",
+  "date",
+  "map",
+  "set",
+  "regex",
+  "bytes",
+  "symbol",
+  "nullT",
+  "undefinedT",
+]);

@@ -3,6 +3,8 @@ import { InternalCompilerError } from "../../errors.js";
 import type { LlvmEmitterContext, LibCallExpr, LlValue } from "./expr-context.js";
 import { f64Lit } from "./common.js";
 import { pipelinePumpedRuns } from "../../ir/builtin-signatures.js";
+import { emitBorrowedInput } from "./borrowed-inputs.js";
+import { streamTypedDesc } from "./expr-stream-bridges.js";
 
 const STREAM_CANONICAL_CBS: Record<string, ("r" | "w" | "f" | "d" | "t" | "l")[]> = {
   readable: ["r", "d"],
@@ -14,6 +16,10 @@ const STREAM_CANONICAL_CBS: Record<string, ("r" | "w" | "f" | "d" | "t" | "l")[]
 
 export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
+  if (e.fn === "readable.pushDyn" || e.fn === "writable.writeDyn") {
+    const typed = emitTypedChunkCall(host, e);
+    if (typed !== null) return typed;
+  }
   if (e.fn === "stream.addAbortSignal" || e.fn === "stream.addAbortSignalFn") {
     // stream.addAbortSignal: [stream, signal] — the constructors' signal
     // option chained over the fresh stream (a falsy signal is ignored);
@@ -189,6 +195,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     e.fn === "stream.setTransform" ||
     e.fn === "stream.setFlush" ||
     e.fn === "stream.setConstruct" ||
+    e.fn === "stream.replaceConstruct" ||
     e.fn === "stream.setWritev" ||
     e.fn === "stream.setWritevDefault"
   ) {
@@ -203,6 +210,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
       "stream.setTransform": "t",
       "stream.setFlush": "l",
       "stream.setConstruct": "c",
+      "stream.replaceConstruct": "c",
       "stream.setWritev": "v",
       "stream.setWritevDefault": "v",
     };
@@ -214,6 +222,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
       "stream.setTransform": "scr_stream_set_transform",
       "stream.setFlush": "scr_stream_set_flush",
       "stream.setConstruct": "scr_stream_set_construct",
+      "stream.replaceConstruct": "scr_stream_replace_construct",
       "stream.setWritev": "scr_stream_set_writev",
       "stream.setWritevDefault": "scr_stream_set_writev_default",
     };
@@ -449,6 +458,44 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     B.line(
       `${t} = call zeroext i1 @scr_stream_write_enc(ptr ${args[0]!.name}, ptr ${args[2]!.name}, ptr ${enc}, ptr ${cb})`,
     );
+    host.emitPendingCheck();
+    return e.type.kind === "void" ? { name: "", type: e.type } : { name: t, type: e.type };
+  }
+  if (e.fn === "writable.writeEcb") {
+    // (recv, mode, chunk, encoding, cb): mode 0 bytes, 1 string, 2 dyn. The
+    // callback MOVES into an error-first wrapper (scr_stream_ecb_wrap); the
+    // adapter turns the runtime's ScrError (NULL = success) into the
+    // callback's Error | null argument, as fs.rename callbacks do.
+    const modeArg = e.args[1]!;
+    if (modeArg.kind !== "numLit")
+      throw new InternalCompilerError("llvm emitter bug: writable.writeEcb mode not a literal");
+    const cbT = e.args[4]!.type;
+    if (cbT.kind !== "func")
+      throw new InternalCompilerError("llvm emitter bug: writable.writeEcb callback not a func");
+    const args = e.args.map((a) => host.emitExpr(a));
+    host.toHeap(args[4]!);
+    const adapter = host.fsRenameThunkFor(cbT);
+    host.declare(`declare ptr @scr_stream_ecb_wrap(ptr, ptr)`);
+    const wrapped = B.tmp();
+    B.line(`${wrapped} = call ptr @scr_stream_ecb_wrap(ptr ${args[4]!.name}, ptr @${adapter})`);
+    const entry =
+      modeArg.value === 0
+        ? "scr_stream_write"
+        : modeArg.value === 1
+          ? "scr_stream_write_str"
+          : null;
+    const t = B.tmp();
+    if (entry !== null) {
+      host.declare(`declare zeroext i1 @${entry}(ptr, ptr, ptr)`);
+      B.line(
+        `${t} = call zeroext i1 @${entry}(ptr ${args[0]!.name}, ptr ${args[2]!.name}, ptr ${wrapped})`,
+      );
+    } else {
+      host.declare(`declare zeroext i1 @scr_stream_write_enc(ptr, ptr, ptr, ptr)`);
+      B.line(
+        `${t} = call zeroext i1 @scr_stream_write_enc(ptr ${args[0]!.name}, ptr ${args[2]!.name}, ptr ${args[3]!.name}, ptr ${wrapped})`,
+      );
+    }
     host.emitPendingCheck();
     return e.type.kind === "void" ? { name: "", type: e.type } : { name: t, type: e.type };
   }
@@ -740,7 +787,7 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
     const helpers = packed(5 + n + k, helperCount);
     let at = 5 + n + k + helperCount;
     const take = (present: boolean): string => (present ? args[at++]!.name : "null");
-    const box = take(((flags >> 1) & 3) === 2);
+    const box = take(((flags >> 1) & 3) >= 2);
     const signal = take((flags & 32) !== 0);
     const abort = take((flags & 32) !== 0);
     const head =
@@ -829,6 +876,34 @@ export function emitStreamLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlV
   // their callbacks into the handle's registry with runtime-provided
   // adapters; the handful of union-wrapped reads use the envGet shapes.
   return host.emitGenericLibCall(e);
+}
+
+/** push(value) or write(value) of a record that converts to dyn by
+ * reference: the stream receives the record as a typed chunk
+ * (scr_stream_push_typed / scr_stream_write_typed), boxed only for a
+ * consumer that reads it as a dyn value. Null for another chunk. */
+function emitTypedChunkCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue | null {
+  const chunk = e.args[1];
+  if (chunk === undefined || chunk.kind !== "dynFrom" || !chunk.liveRef) return null;
+  const desc = streamTypedDesc(host, chunk.value.type);
+  if (desc === null) return null;
+  const B = host.B;
+  const recv = host.emitExpr(e.args[0]!);
+  const rec = emitBorrowedInput(host, chunk.value);
+  const t = B.tmp();
+  if (e.fn === "readable.pushDyn") {
+    host.declare(`declare zeroext i1 @scr_stream_push_typed(ptr, ptr, ptr)`);
+    B.line(
+      `${t} = call zeroext i1 @scr_stream_push_typed(ptr ${recv.name}, ptr ${rec.name}, ptr ${desc})`,
+    );
+  } else {
+    host.declare(`declare zeroext i1 @scr_stream_write_typed(ptr, ptr, ptr, ptr)`);
+    B.line(
+      `${t} = call zeroext i1 @scr_stream_write_typed(ptr ${recv.name}, ptr ${rec.name}, ptr ${desc}, ptr null)`,
+    );
+  }
+  host.emitPendingCheck();
+  return e.type.kind === "void" ? { name: "", type: e.type } : { name: t, type: e.type };
 }
 
 /** The encoding argument a write passes when the call has none: undefined

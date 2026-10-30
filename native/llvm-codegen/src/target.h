@@ -40,6 +40,10 @@ bool supportsTarget(llvm::StringRef Triple);
 // The target options and code generation level every helper target machine
 // uses, shared with the partitioned optimizer's configuration.
 llvm::TargetOptions targetOptions(const llvm::Triple &TargetTriple);
+// Lays out code by a profile's context-sensitive counts from now on: one
+// section per function, and cold blocks split into .text.split sections.
+// ELF targets only; the helper calls it once, before any target machine.
+void enableProfileLayout();
 llvm::CodeGenOptLevel codeGenLevel(llvm::StringRef OptLevel);
 std::unique_ptr<llvm::TargetMachine>
 createTargetMachine(llvm::StringRef Triple, llvm::StringRef OptLevel,

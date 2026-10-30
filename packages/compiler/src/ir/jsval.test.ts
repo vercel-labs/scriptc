@@ -277,3 +277,227 @@ test("static functions keep their dyn values; async functions keep their dyn res
   expect(jsCalls(asyncChain.body)).toEqual(["js.toDyn", "js.add", "js.fromDyn", "js.fromF64"]);
   expect(validateModule(mod)).toEqual([]);
 });
+
+const call = (callee: string, ...args: IrExpr[]): IrExpr => ({
+  kind: "call",
+  callee,
+  args,
+  type: DYN,
+  loc,
+});
+
+test("a parameter that callers pass numbers and operator results takes a jsval", () => {
+  // scale(o) { return o * 2 }
+  const scale = fn("scale", [
+    { kind: "return", value: op("dyn.arithmetic", ref("o"), num(2), "*"), loc },
+  ]);
+  // return scale(1.5) + scale(o.n + 1)
+  const caller = fn("caller", [
+    {
+      kind: "return",
+      value: op(
+        "dyn.add",
+        call("scale", num(1.5)),
+        call("scale", op("dyn.add", keyGet(ref("o"), "n"), num(1))),
+      ),
+      loc,
+    },
+  ]);
+  const mod = moduleOf(scale, caller);
+  promoteJsvals(mod);
+  expect(scale.params[0]!.type).toEqual(JSVAL);
+  expect(scale.locals.find((l) => l.id === "o")!.type).toEqual(JSVAL);
+  // The parameter is the operand itself: no conversion in the callee.
+  expect(jsCalls(scale.body)).toEqual(["js.arithmetic", "js.fromF64"]);
+  // The callers pass an immediate and an operator result: no box.
+  expect(jsCalls(caller.body)).not.toContain("js.toDyn");
+  expect(jsCalls(caller.body).filter((f) => f === "js.fromF64")).toHaveLength(2);
+  expect(validateModule(mod)).toEqual([]);
+});
+
+test("a parameter read by dyn consumers or passed cells keeps the dyn ABI", () => {
+  // keyed(o) { o.y; return o.x }: both reads need a cell, so a jsval would
+  // box twice where the caller boxes once.
+  const keyed = fn("keyed", [
+    { kind: "exprStmt", expr: keyGet(ref("o"), "y"), loc },
+    { kind: "return", value: keyGet(ref("o"), "x"), loc },
+  ]);
+  // half(o) { return o / 2 }, called with property reads only.
+  const half = fn("half", [
+    { kind: "return", value: op("dyn.arithmetic", ref("o"), num(2), "/"), loc },
+  ]);
+  // twice(o) { return o * 2 }, also called by a static function.
+  const twice = fn("twice", [
+    { kind: "return", value: op("dyn.arithmetic", ref("o"), num(2), "*"), loc },
+  ]);
+  const caller = fn("caller", [
+    { kind: "exprStmt", expr: call("keyed", num(1)), loc },
+    { kind: "exprStmt", expr: call("half", keyGet(ref("o"), "n")), loc },
+    { kind: "return", value: op("dyn.add", call("twice", num(3)), num(1)), loc },
+  ]);
+  const staticCaller = fn("staticCaller", [
+    { kind: "exprStmt", expr: call("twice", ref("o")), loc },
+    { kind: "return", value: ref("o"), loc },
+  ]);
+  const mod = moduleOf(keyed, half, twice, caller, staticCaller);
+  expect(staticCaller.tier).toBeUndefined();
+  promoteJsvals(mod);
+  expect(keyed.params[0]!.type).toEqual(DYN);
+  expect(half.params[0]!.type).toEqual(DYN);
+  expect(twice.params[0]!.type).toEqual(DYN);
+  expect(twice.returnType).toEqual(DYN);
+  expect(validateModule(mod)).toEqual([]);
+});
+
+/** `for (...) %g.sum = %g.sum + o.step` in a dynamic function. */
+function globalLoop(name: string, global: string): IrFunction {
+  return fn(name, [
+    {
+      kind: "while",
+      cond: { kind: "boolLit", value: false, type: BOOL, loc },
+      body: [
+        {
+          kind: "assign",
+          localId: global,
+          value: op("dyn.add", ref(global), keyGet(ref("o"), "step")),
+          loc,
+        },
+      ],
+      loc,
+    },
+    { kind: "return", value: ref("o"), loc },
+  ]);
+}
+
+test("a dyn module global written by operators in a loop becomes a jsval global", () => {
+  const loop = globalLoop("loop", "%g.e.sum");
+  // %g.sum.x, once: a dyn consumer.
+  const report = fn("report", [
+    { kind: "exprStmt", expr: keyGet(ref("%g.e.sum"), "x"), loc },
+    { kind: "return", value: ref("o"), loc },
+  ]);
+  const mod = moduleOf(loop, report);
+  mod.globals = [{ id: "%g.e.sum", name: "sum", type: DYN, mutable: true }];
+  promoteJsvals(mod);
+  expect(mod.globals[0]!.type).toEqual(JSVAL);
+  // The loop's own result (o, a jsval result) is the second js.fromDyn.
+  expect(jsCalls(loop.body)).toEqual(["js.add", "js.fromDyn", "js.fromDyn"]);
+  // One box for the read; the second call is the jsval result o.
+  expect(jsCalls(report.body)).toEqual(["js.toDyn", "js.fromDyn"]);
+  expect(validateModule(mod)).toEqual([]);
+});
+
+test("a module global a static function reads stays dyn", () => {
+  const loop = globalLoop("loop", "%g.e.sum");
+  const reader: IrFunction = {
+    name: "reader",
+    params: [],
+    returnType: DYN,
+    locals: [],
+    body: [{ kind: "return", value: ref("%g.e.sum"), loc }],
+    loc,
+  };
+  const mod = moduleOf(loop, reader);
+  expect(reader.tier).toBeUndefined();
+  mod.globals = [{ id: "%g.e.sum", name: "sum", type: DYN, mutable: true }];
+  promoteJsvals(mod);
+  expect(mod.globals[0]!.type).toEqual(DYN);
+  expect(jsCalls(loop.body)).toEqual([
+    "js.toDyn",
+    "js.add",
+    "js.fromDyn",
+    "js.fromDyn",
+    "js.fromDyn",
+  ]);
+  expect(validateModule(mod)).toEqual([]);
+});
+
+test("a class member that dynamic code calls directly gets a jsval entry", () => {
+  // %Counter.scale(o) { return o * 2 }: vtables and the runtime reach the
+  // member by name, so it keeps the dyn ABI as a wrapper.
+  const member = fn("%Counter.scale", [
+    { kind: "return", value: op("dyn.arithmetic", ref("o"), num(2), "*"), loc },
+  ]);
+  member.sourceName = "scale";
+  const caller = fn("caller", [
+    { kind: "return", value: op("dyn.add", call("%Counter.scale", num(1.5)), num(1)), loc },
+  ]);
+  const staticCaller = fn("staticCaller", [
+    { kind: "exprStmt", expr: call("%Counter.scale", ref("o")), loc },
+    { kind: "return", value: ref("o"), loc },
+  ]);
+  const mod = moduleOf(member, caller, staticCaller);
+  promoteJsvals(mod);
+  const entry = mod.functions.find((f) => f.name === "%js.%Counter.scale")!;
+  expect(entry.params[0]!.type).toEqual(JSVAL);
+  expect(entry.returnType).toEqual(JSVAL);
+  expect(entry.sourceName).toBe("scale");
+  expect(jsCalls(entry.body)).toEqual(["js.arithmetic", "js.fromF64"]);
+  // The member forwards its cell and boxes the entry's result.
+  expect(member.params[0]!.type).toEqual(DYN);
+  expect(member.returnType).toEqual(DYN);
+  expect(member.sourceName).toBeUndefined();
+  expect(member.body).toHaveLength(1);
+  expect(jsCalls(member.body)).toEqual(["js.toDyn", "js.fromDyn"]);
+  // Dynamic callers call the entry; static callers keep the member.
+  expect(JSON.stringify(caller.body)).toContain('"callee":"%js.%Counter.scale"');
+  expect(JSON.stringify(staticCaller.body)).toContain('"callee":"%Counter.scale"');
+  expect(validateModule(mod)).toEqual([]);
+});
+
+test("a closure boxed into a function value gets a jsval body, and dynamic calls pass jsvals", () => {
+  // %fn.add(o) { return o + 1 }, boxed by a dynamic function and called
+  // through dynInvoke with an operator result.
+  const closure = fn("%fn.add", [{ kind: "return", value: op("dyn.add", ref("o"), num(1)), loc }]);
+  closure.captures = [];
+  // %fn.read(o) { return o.x }: a property read needs the cell.
+  const reader = fn("%fn.read", [{ kind: "return", value: keyGet(ref("o"), "x"), loc }]);
+  reader.captures = [];
+  const funcType = { kind: "func" as const, params: [DYN], ret: DYN };
+  const box = (name: string): IrExpr => ({
+    kind: "dynFrom",
+    value: { kind: "closure", fnName: name, captures: [], type: funcType, loc },
+    type: DYN,
+    loc,
+  });
+  const user = fn("user", [
+    { kind: "exprStmt", expr: box("%fn.add"), loc },
+    { kind: "exprStmt", expr: box("%fn.read"), loc },
+    {
+      kind: "return",
+      value: {
+        kind: "dynInvoke",
+        recv: ref("o"),
+        method: "add",
+        calleeName: "o.add",
+        args: [op("dyn.add", keyGet(ref("o"), "n"), num(1)), ref("o")],
+        type: DYN,
+        loc,
+      },
+      loc,
+    },
+  ]);
+  const mod = moduleOf(closure, reader, user);
+  promoteJsvals(mod);
+  expect(closure.jsEntry).toBe("%js.%fn.add");
+  expect(reader.jsEntry).toBeUndefined();
+  const entry = mod.functions.find((f) => f.name === "%js.%fn.add")!;
+  expect(entry.captures).toEqual([]);
+  expect(entry.params[0]!.type).toEqual(JSVAL);
+  expect(entry.returnType).toEqual(JSVAL);
+  // The closure keeps its dyn body for every other caller.
+  expect(closure.params[0]!.type).toEqual(DYN);
+  expect(closure.returnType).toEqual(DYN);
+  // The operator result crosses unboxed; the cell argument stays dyn.
+  let invoke: Extract<IrExpr, { kind: "dynInvoke" }> | undefined;
+  const find = (value: unknown): void => {
+    if (Array.isArray(value)) value.forEach(find);
+    else if (value !== null && typeof value === "object") {
+      if ((value as IrExpr).kind === "dynInvoke") invoke = value as typeof invoke;
+      Object.values(value).forEach(find);
+    }
+  };
+  find(user.body);
+  expect(invoke!.args.map((a) => a.type.kind)).toEqual(["jsval", "dyn"]);
+  expect(validateModule(mod)).toEqual([]);
+});

@@ -1,7 +1,10 @@
+import { shapeOverlayAnnotated } from "../shape-inference/index.js";
+import { documentedParameter } from "./call-signatures.js";
 import { staticNameBindings } from "./static-function-names.js";
 import { positionTag } from "./structural-positions.js";
 import { keyedHelperName } from "./stable-names.js";
 import * as ts from "../ts7/adapter.js";
+import { heritageElementTarget, isHeritageTypeReference } from "../heritage-elements.js";
 import { bodyReadsArguments } from "../arguments-usage.js";
 import type { Lowerer } from "./lowerer.js";
 import {
@@ -19,6 +22,7 @@ import {
   typeEquals,
 } from "../../ir/ir.js";
 import { helperLoc, nodeThrowExpr } from "../../ir/build.js";
+import { unsupportedDiag } from "../../diagnostics/diagnostic.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { typeKey } from "../type-mapper.js";
 import { functionCanReturnUndefined } from "../function-completion.js";
@@ -45,6 +49,7 @@ import {
   promiseCarriesDyn,
 } from "./function-returns.js";
 import { bindingNeverReassigned, stripValueWrappers } from "./binding-analysis.js";
+import { declareContextLocal } from "./function-context.js";
 import {
   extendInstantiationPath,
   MAX_INSTANTIATION_RECURSION,
@@ -98,6 +103,21 @@ export interface GenericFnInfo {
    * declaration makes a new function object in JavaScript, while the
    * compiled instances are shared module functions, so only calls lower. */
   functionScoped?: true;
+  /** The enclosing-frame values a function-scoped generic arrow reads.
+   * The instances are module functions, so each captured binding travels
+   * as a TRAILING parameter: the call sites (which sit in the declaring
+   * frame or in a closure over it) pass the value, in this order, and the
+   * instance body reads it through the same symbol. Only never-reassigned
+   * bindings qualify — a shared copy is exact exactly as long as nothing
+   * writes the original. */
+  captures?: FrameCapture[];
+  /** "env": some capture is reassigned, so a copy cannot stand in for it.
+   * The instances are then LIFTED functions that receive every capture
+   * through a closure environment (boxed, shared with the declaring frame
+   * and every ordinary closure over it), and each call site calls a fresh
+   * closure over its own boxes. Absent: captures travel as trailing
+   * parameters. */
+  captureMode?: "env";
   /** The declaration of a generic arrow/function-expression binding. */
   bindingDecl?: ts.VariableDeclaration;
   /** A module-scope binding that code can use before its declaration
@@ -126,6 +146,24 @@ export interface GenericFnInfo {
   /** Parameter index → symbol for the function parameters whose `.name`
    * the body reads (static-function-names.ts); computed on first use. */
   nameReadParams?: Map<number, ts.Symbol>;
+  /** Names of the instances value references produced (pinnedGenericClosure,
+   * erasedGenericInstance, the implicit-any default): more than one means the
+   * program holds this declaration as several function objects, while
+   * JavaScript has one. */
+  valueInstances?: Set<string>;
+}
+
+/** One enclosing-frame value a generic arrow/function-expression binding
+ * reads (GenericFnInfo.captures). `nameNode` is the binding's own
+ * declaration identifier: declaring a local for it binds the SYMBOL, so
+ * the instance body resolves the reference like any parameter. */
+export interface FrameCapture {
+  symbol: ts.Symbol;
+  nameNode: ts.Node;
+  name: string;
+  type: IrType;
+  /** Something in the file writes the binding (bindingNeverReassigned). */
+  reassigned: boolean;
 }
 
 export interface GenericInstance {
@@ -282,6 +320,57 @@ export function lowerGenericCall(
     ? implicitCallInstance(lowerer, expr, info)
     : genericCallInstance(lowerer, expr, info);
   const args = lowerer.completeArgs(expr.arguments.nodes, instance.params, loc, expr);
+  if (info.captureMode === "env") {
+    // The environment form: a closure over this call site's boxes of the
+    // captured bindings (resolveKey threads them through any closures in
+    // between and boxes the origin), called at once. Arguments evaluate
+    // after the callee, as in JavaScript; building the closure only reads
+    // the boxes.
+    if (
+      instance.params.some(
+        (p) => p.mode === "rest" || p.mode === "dynRest" || p.mode === "arguments",
+      )
+    ) {
+      lowerer.unsupported(
+        "SC1090",
+        expr,
+        `generic arrow/function-expression bindings with rest parameters that write the frames of their enclosing functions ('${info.baseName}')`,
+      );
+    }
+    const sources = info.captures!.map((capture) => {
+      const local = lowerer.resolveKey(capture.symbol, expr);
+      if (local === null || !typeEquals(local.type, capture.type)) {
+        lowerer.unsupported(
+          "SC1090",
+          expr,
+          `generic arrow/function-expression bindings sharing '${capture.name}' with their enclosing function when its storage differs from its declared type ('${info.baseName}')`,
+        );
+      }
+      // An origin read from its own frame is not boxed by resolveKey; the
+      // closure needs the box (captureContextBinding's origin rule).
+      local.boxed = true;
+      return local.id;
+    });
+    const call: IrExpr & { kind: "callValue" } = {
+      kind: "callValue",
+      callee: {
+        kind: "closure",
+        fnName: instance.name,
+        captures: sources,
+        type: funcTypeFromParamShapes(instance.params, instance.returnType),
+        loc,
+      },
+      args,
+      type: instance.returnType,
+      loc,
+    };
+    return guardEarlyBindingCall(lowerer, info, expr, call);
+  }
+  // The enclosing-frame values follow the declared arguments, the order
+  // the instance takes them in (lowerGenericInstance).
+  for (const capture of info.captures ?? []) {
+    args.push(lowerer.lowerExprExpecting(capture.nameNode as ts.Expression, capture.type));
+  }
   const call: IrExpr & { kind: "call" } = {
     kind: "call",
     callee: instance.name,
@@ -645,8 +734,7 @@ function extendsParameter(
   info: GenericFnInfo,
 ): boolean {
   const params = new Set<ts.Symbol>();
-  const fn = info.decl as { parameters?: { nodes: readonly ts.ParameterDeclaration[] } };
-  for (const param of fn.parameters?.nodes ?? []) {
+  for (const param of info.decl.parameters.nodes) {
     const symbol = ts.isIdentifier(param.name)
       ? lowerer.checker.getSymbolAtLocation(param.name)
       : undefined;
@@ -654,8 +742,9 @@ function extendsParameter(
   }
   for (const clause of decl.heritageClauses?.nodes ?? [])
     for (const base of clause.types.nodes) {
-      const symbol = ts.isIdentifier(base.expression)
-        ? lowerer.checker.getSymbolAtLocation(base.expression)
+      const target = heritageElementTarget(base);
+      const symbol = ts.isIdentifier(target)
+        ? lowerer.checker.getSymbolAtLocation(target)
         : undefined;
       if (symbol !== undefined && params.has(symbol)) return true;
     }
@@ -672,8 +761,7 @@ function declaredInside(node: ts.Node, owner: ts.Node): boolean {
  * return gives anything else (or nothing). Nested functions and classes keep
  * their own returns. */
 function returnedLocalClass(lowerer: Lowerer, info: GenericFnInfo): ts.ClassLikeDeclaration | null {
-  const fn = info.decl as ts.Node & { body?: ts.Node };
-  const body = fn.body;
+  const body = info.decl.body;
   if (!body) return null;
   const classOf = (node: ts.Expression): ts.ClassLikeDeclaration | null => {
     let expr = node;
@@ -1042,6 +1130,14 @@ function unifySignatureBindings(
       dAliasArgs.length &&
       iAliasArgs.length === dAliasArgs.length
     ) {
+      if (tsBindings && declared !== inst) {
+        let entries = lowerer.boundAliasInstances.get(declared);
+        if (!entries) lowerer.boundAliasInstances.set(declared, (entries = []));
+        // A body forwarding its own alias (`inner(g)` returning `Catalog<G,
+        // "x">` inside an instance) resolves through the enclosing one.
+        if (!entries.some((entry) => entry.tsBindings === tsBindings))
+          entries.push({ tsBindings, instance: lowerer.boundAliasTsResolver(inst) ?? inst });
+      }
       dAliasArgs.forEach((da, i) => {
         const ia = iAliasArgs[i];
         if (ia) unify(da, ia, depth + 1);
@@ -1192,7 +1288,10 @@ export function lowerGenericInstance(
   let bodyReturn = isGenerator
     ? lowerer.genBodyReturnType(inst.returnType)
     : lowerer.bodyReturnType(isAsync, inst.returnType);
-  const fnCtx = newFnCtx(false, null, null, bodyReturn);
+  // The environment form lowers as a LIFTED function: its captures arrive
+  // in the closure environment, never as parameters.
+  const envForm = info.captureMode === "env";
+  const fnCtx = newFnCtx(envForm, null, null, bodyReturn);
   fnCtx.isAsync = isAsync;
   // Instances lower on demand, on top of whichever caller reached them.
   fnCtx.thisBoundary = true;
@@ -1236,10 +1335,41 @@ export function lowerGenericInstance(
       const thisLocal = lowerer.declareThis(thisType);
       params.push({ localId: thisLocal.id, name: "this", type: thisType });
     }
+    // Environment form: one boxed capture entry per captured binding, in
+    // FrameCapture order (the call sites' closure caps[] order), keyed by
+    // the binding's symbol so the body (parameter defaults included)
+    // reads and writes the shared box. Pre-registering them also keeps
+    // resolution from walking past this instance's frame.
+    if (envForm) {
+      for (const capture of info.captures!) {
+        const entry = declareContextLocal(
+          fnCtx,
+          capture.name,
+          capture.type,
+          capture.reassigned,
+          undefined,
+          undefined,
+        );
+        entry.boxed = true;
+        fnCtx.captureBySymbol.set(capture.symbol, entry);
+        fnCtx.captures!.push({ localId: entry.id, name: entry.name, type: entry.type });
+      }
+    }
+    // The enclosing-frame values travel as TRAILING parameters, after the
+    // declared ones: a call lowers its arguments first (JavaScript's
+    // order), then reads the captures. Binding each local to the captured
+    // symbol is what lets the body resolve the reference; the locals are
+    // bound before the declared parameters so that a default initializer
+    // reading a capture resolves it too.
+    const captureParams: IrParam[] = [];
+    for (const capture of envForm ? [] : (info.captures ?? [])) {
+      const local = lowerer.declareLocal(capture.nameNode, capture.name, capture.type, false);
+      captureParams.push({ localId: local.id, name: capture.name, type: capture.type });
+    }
     // Default-param initializers lower per instance, with the bindings
     // threaded — a default mentioning T resolves like any body expression.
     const declared = lowerer.declareParams(decl.parameters.nodes, inst.params);
-    params.push(...declared.params);
+    params.push(...declared.params, ...captureParams);
     const body = [...receiverInit, ...declared.prologue];
     const bodyBlock = blockBodyOf(decl);
     if (bodyBlock) {
@@ -1294,6 +1424,7 @@ export function lowerGenericInstance(
       params,
       returnType: bodyReturn,
       locals: lowerer.ctx.locals,
+      ...(envForm ? { captures: fnCtx.captures! } : {}),
       body,
       loc: locOf(decl),
     };
@@ -1313,6 +1444,19 @@ export function lowerGenericInstance(
     lowerer.suppressStats = prevSuppress;
     if (inst.erased) lowerer.erasingDepth--;
   }
+}
+
+/** Records that `instance` is one of `info`'s value instances (see
+ * `valueInstances`). Written as its own statements rather than
+ * `(x ??= new Set()).add(...)`: the self-hosted frontend fences a Set method
+ * call on a non-Set receiver, and this compiler compiles its own source. */
+function noteValueInstance(info: GenericFnInfo, instance: string): void {
+  let instances = info.valueInstances;
+  if (instances === undefined) {
+    instances = new Set<string>();
+    info.valueInstances = instances;
+  }
+  instances.add(instance);
 }
 
 /** A generic function taken as a VALUE, monomorphized by flow. A function
@@ -1339,6 +1483,7 @@ export function lowerGenericFnValue(
   // closure per function, so `f === f` holds like any declaration).
   if (info.implicitParams) {
     const inst = implicitDefaultInstance(lowerer, ref, info);
+    noteValueInstance(info, inst.name);
     const funcType: IrType = funcTypeFromParamShapes(inst.params, inst.returnType);
     lowerer.requireExactArityValue(ref, ref, inst.params, funcType);
     lowerer.noteEdge(inst.name);
@@ -1388,6 +1533,10 @@ export function lowerGenericFnValue(
       if (callable.length === 1) target = callable[0]![0]!;
     }
   }
+  if (!target) {
+    target = identityComparisonPin(lowerer, ref);
+    if (target) lowerer.genericIdentityPins.push({ info, node: ref });
+  }
   if (!target) fenceUnpinned();
   return guardEarlyBindingValue(
     lowerer,
@@ -1395,6 +1544,41 @@ export function lowerGenericFnValue(
     ref,
     pinnedGenericClosure(lowerer, ref, info, target, fenceUnpinned),
   );
+}
+
+/** The pinning signature of a generic declaration compared by identity
+ * (`held === ident`, `held !== ident`, and the loose forms): the other
+ * operand's one concrete call signature. A held value of that type that is
+ * this declaration is its instance at that signature, whose interned
+ * closure is the one this reference names, so the comparison answers as
+ * in JavaScript, provided the program holds the declaration at that one
+ * signature only (checkGenericIdentityPins). Null when the other operand
+ * has no single concrete call signature (another generic value, a union of
+ * callables, a non-function). */
+function identityComparisonPin(lowerer: Lowerer, ref: ts.Expression): ts.Signature | null {
+  let operand: ts.Node = ref;
+  if (
+    ref.parent !== undefined &&
+    ts.isPropertyAccessExpression(ref.parent) &&
+    ref.parent.name === ref
+  )
+    operand = ref.parent;
+  while (operand.parent !== undefined && ts.isParenthesizedExpression(operand.parent))
+    operand = operand.parent;
+  const bin = operand.parent;
+  if (bin === undefined || !ts.isBinaryExpression(bin)) return null;
+  const op = bin.operatorToken.kind;
+  if (
+    op !== ts.SyntaxKind.EqualsEqualsEqualsToken &&
+    op !== ts.SyntaxKind.ExclamationEqualsEqualsToken &&
+    op !== ts.SyntaxKind.EqualsEqualsToken &&
+    op !== ts.SyntaxKind.ExclamationEqualsToken
+  )
+    return null;
+  const other = bin.left === operand ? bin.right : bin.left;
+  const sigs = lowerer.checker.getCallSignatures(lowerer.typeOf(other));
+  if (sigs.length !== 1 || sigs[0]!.getTypeParameters()?.length) return null;
+  return sigs[0]!;
 }
 
 /** The value a generic binding declared inside a function stores when a
@@ -1503,6 +1687,7 @@ function pinnedGenericClosure(
   // nothing: mapType answers null for an unsubstituted parameter.
   if (info.typeParams.some((tp) => !bindings.get(tp))) fenceUnpinned();
   const inst = genericValueInstance(lowerer, ref, info, bindings);
+  noteValueInstance(info, inst.name);
   // The value's type is the completed ABI signature. Typed rest keeps its
   // packed-array slot; dynRest stays hidden behind the rest marker.
   const funcType: IrType = funcTypeFromParamShapes(inst.params, inst.returnType);
@@ -1552,10 +1737,151 @@ export function erasedGenericInstance(
       new Map(info.typeParams.map((tp) => [tp, DYN])),
     );
     instance.erased = true;
+    noteValueInstance(info, instance.name);
     return instance;
   } finally {
     lowerer.erasingDepth--;
   }
+}
+
+/** After every body lowered: an identity comparison of a generic
+ * declaration is exact only when the program holds the declaration as one
+ * function object. Otherwise a held value may be another instance's
+ * closure, where JavaScript has one function, so the comparison is
+ * refused instead of answering false. */
+export function checkGenericIdentityPins(lowerer: Lowerer): void {
+  if (lowerer.genericIdentityCheckDone) return;
+  lowerer.genericIdentityCheckDone = true;
+  const seen = new Map<ts.Node, Set<GenericFnInfo>>();
+  const report = (info: GenericFnInfo, node: ts.Node, dynamic: boolean): void => {
+    let infos = seen.get(node);
+    if (infos === undefined) seen.set(node, (infos = new Set()));
+    if (infos.has(info)) return;
+    infos.add(info);
+    const held = info.valueInstances?.size ?? 0;
+    if (held <= 1) return;
+    const through = dynamic ? " through a dynamic value" : "";
+    lowerer.pushDiag(
+      unsupportedDiag(
+        "SC1090",
+        locOf(node),
+        `comparing the generic function '${info.baseName}' by identity${through} while the program holds it at ${held} different signatures (each is a separate compiled function object; JavaScript has one) — compare against a value pinned once, or hold '${info.baseName}' at a single signature`,
+      ),
+    );
+  };
+  for (const { info, node } of lowerer.genericIdentityPins) report(info, node, false);
+  // Dynamic comparisons resolve their provenance only when some declaration
+  // is held at more than one signature: the symbol lookups are the
+  // expensive part, and every other program answers them all at one
+  // instance. Recorded at lowering, resolved here so the pins' instance
+  // sets are complete.
+  let ambiguous = false;
+  for (const info of lowerer.genericFnsBySymbol.values()) {
+    if ((info.valueInstances?.size ?? 0) > 1) {
+      ambiguous = true;
+      break;
+    }
+  }
+  if (!ambiguous) return;
+  for (const { node, left, right } of lowerer.dynIdentityComparisons) {
+    for (const operand of [left, right]) {
+      const info = genericDeclarationBehindValue(lowerer, operand);
+      if (info) report(info, node, true);
+    }
+  }
+}
+
+/** The generic declaration whose value instance an expression names, when
+ * the expression is a binding initialized (directly, or through casts,
+ * aliasing bindings and property initializers) from that declaration. Used
+ * where a comparison reads the value through `unknown`/`any`, so the
+ * declaration is not syntactically at the compared site. */
+export function genericDeclarationBehindValue(
+  lowerer: Lowerer,
+  node: ts.Node,
+): GenericFnInfo | null {
+  let current: ts.Node | undefined = node;
+  const seen = new Set<ts.Node>();
+  while (current !== undefined && !seen.has(current)) {
+    seen.add(current);
+    if (
+      ts.isParenthesizedExpression(current) ||
+      ts.isAsExpression(current) ||
+      ts.isSatisfiesExpression(current) ||
+      ts.isNonNullExpression(current)
+    ) {
+      current = current.expression;
+      continue;
+    }
+    if (!ts.isIdentifier(current) && !ts.isPropertyAccessExpression(current)) return null;
+    const symbol = lowerer.checker.getSymbolAtLocation(
+      ts.isPropertyAccessExpression(current) ? current.name : current,
+    );
+    if (symbol === undefined) return null;
+    const info = lowerer.genericFnsBySymbol.get(symbol);
+    if (info !== undefined) return info;
+    const decl = symbol.valueDeclaration ?? symbol.declarations?.[0];
+    if (decl === undefined) return null;
+    if (!ts.isVariableDeclaration(decl) && !ts.isPropertyDeclaration(decl) && !ts.isParameter(decl))
+      return null;
+    current = decl.initializer;
+  }
+  return null;
+}
+
+/** An identity comparison at the dynamic boundary (`unknown`/`any`
+ * operands): when either operand reads a generic declaration's value
+ * instance, the comparison is exact only while the program holds that
+ * declaration at one signature (checkGenericIdentityPins). */
+export function noteDynamicIdentityComparison(
+  lowerer: Lowerer,
+  node: ts.Node,
+  left: ts.Node,
+  right: ts.Node,
+): void {
+  // A function compared with a string, number, boolean, bigint or symbol
+  // is unequal whichever instance it is, as in JavaScript.
+  if (isPrimitiveTyped(lowerer, left) || isPrimitiveTyped(lowerer, right)) return;
+  // The only work done while lowering. No instance count can gate this:
+  // a value reference's instance is interned when its binding settles,
+  // which can be later than the comparison that reads it, so the notes
+  // are resolved at the end of lowering, when every instance is known.
+  if (mightNameBinding(left) || mightNameBinding(right))
+    lowerer.dynIdentityComparisons.push({ node, left, right });
+}
+
+const PRIMITIVE_TYPE_FLAGS =
+  ts.TypeFlags.StringLike |
+  ts.TypeFlags.NumberLike |
+  ts.TypeFlags.BooleanLike |
+  ts.TypeFlags.BigIntLike |
+  ts.TypeFlags.ESSymbolLike;
+
+/** Whether the checker types `node` as a string, number, boolean, bigint or
+ * symbol (a union with any other member is not). */
+function isPrimitiveTyped(lowerer: Lowerer, node: ts.Node): boolean {
+  return (lowerer.typeOf(node).flags & PRIMITIVE_TYPE_FLAGS) !== 0;
+}
+
+/** Whether an expression could name a binding at all — an identifier or a
+ * property access, through parentheses and casts. A literal, a call, an
+ * operator expression: nothing to resolve. */
+function mightNameBinding(node: ts.Node): boolean {
+  let current: ts.Node | undefined = node;
+  for (let hops = 0; hops < 16 && current !== undefined; hops++) {
+    if (ts.isIdentifier(current) || ts.isPropertyAccessExpression(current)) return true;
+    if (
+      ts.isParenthesizedExpression(current) ||
+      ts.isAsExpression(current) ||
+      ts.isNonNullExpression(current) ||
+      ts.isSatisfiesExpression(current)
+    ) {
+      current = current.expression;
+      continue;
+    }
+    return false;
+  }
+  return false;
 }
 
 /** The instance a pinned VALUE reference names: the declaration's modes
@@ -1644,7 +1970,7 @@ export function implicitMonoFile(sf: ts.SourceFile): boolean {
  * parameter symbol — assignment, compound assignment, ++/--, a
  * destructuring-assignment target, or a for-in/of cursor. A written
  * param's binding could lie after the write, so it stays dyn. */
-function paramWrittenInBody(
+export function paramWrittenInBody(
   lowerer: Lowerer,
   body: ts.Node,
   sym: ts.Symbol,
@@ -1857,10 +2183,14 @@ export function implicitAnyParamSymbolsOf(
   // The variadic-`arguments` form keeps its dynRest story whole.
   if (bodyReadsArguments(decl)) return null;
   let hasImplicitParams = false;
+  const overlayTyped = shapeOverlayAnnotated(decl);
   const out = decl.parameters.nodes.map((param): ts.Symbol | null => {
     if (!ts.isIdentifier(param.name)) return null;
     if (param.dotDotDotToken || param.questionToken || param.initializer) return null;
     if (param.name.text === "this") return null;
+    // A parameter typed by shape inference's overlay is a proven type,
+    // not an implicit type parameter.
+    if (overlayTyped && documentedParameter(param)) return null;
     const t = lowerer.typeOf(param.name);
     const broadFunction = lowerer.checker.typeToString(t) === "Function";
     const broadArray = lowerer.checkerAnyArrayType(t);
@@ -2084,6 +2414,10 @@ function storedImplicitArgumentType(lowerer: Lowerer, arg: ts.Expression): IrTyp
     isJsSourceFile(ts.getSourceFileOfNode(arg)) &&
     (ts.isArrowFunction(arg) || ts.isFunctionExpression(arg))
   ) {
+    // A closure lowered here before (another call site's instance key, or
+    // a repeated demand) keeps its value for the argument's own lowering.
+    const known = lowerer.speculatedClosure(arg);
+    if (known !== null) return known.type;
     const saved = lowerer.diagSink;
     const diagnostics: typeof lowerer.diags = [];
     lowerer.diagSink = diagnostics;
@@ -2094,8 +2428,17 @@ function storedImplicitArgumentType(lowerer: Lowerer, arg: ts.Expression): IrTyp
       lowerer.diagSink = saved;
     }
     // Direct inferred helpers can receive native callbacks even when their
-    // result is an opaque handle that cannot cross checked storage.
-    if (diagnostics.length === 0 && value?.type.kind === "func") return value.type;
+    // result is an opaque handle that cannot cross checked storage. The
+    // argument's own lowering then takes this value instead of lowering
+    // the closure a second time.
+    if (diagnostics.length === 0 && value?.type.kind === "func") {
+      lowerer.speculatedClosures.set(arg, {
+        ctx: lowerer.ctx,
+        bindings: lowerer.typeParamBindings,
+        value,
+      });
+      return value.type;
+    }
   }
   if (arg.kind === ts.SyntaxKind.ThisKeyword) return lowerer.resolveThis()?.type ?? null;
   if (ts.isAwaitExpression(arg)) {
@@ -2351,18 +2694,46 @@ export function implicitDefaultInstance(
   return internImplicitInstance(lowerer, blame, info, shapes, argTypes);
 }
 
-function internImplicitInstance(
+export function internImplicitInstance(
   lowerer: Lowerer,
   blame: ts.Node,
   info: GenericFnInfo,
   shapes: ParamShape[],
   argTypes: Map<ts.Symbol, ts.Type>,
   patternKey = "",
+  declaredReturn?: IrType,
 ): GenericInstance {
+  return internImplicitInstanceOr(
+    lowerer,
+    blame,
+    info,
+    shapes,
+    argTypes,
+    patternKey,
+    declaredReturn,
+    false,
+  )!;
+}
+
+/** internImplicitInstance; with `fallible`, a body that does not lower
+ * leaves no instance and no diagnostics, and the answer is null (the caller
+ * keeps its own lowering). */
+export function internImplicitInstanceOr(
+  lowerer: Lowerer,
+  blame: ts.Node,
+  info: GenericFnInfo,
+  shapes: ParamShape[],
+  argTypes: Map<ts.Symbol, ts.Type>,
+  patternKey: string,
+  declaredReturn: IrType | undefined,
+  fallible: boolean,
+): GenericInstance | null {
   const key = shapes.map((s) => typeKey(s.type)).join(",") + (patternKey ? `|${patternKey}` : "");
   let inst = info.instances.get(key);
-  if (inst?.implicitState === "failed")
+  if (inst?.implicitState === "failed") {
+    if (fallible) return null;
     lowerer.unsupported("SC1090", blame, `the failed specialization of '${info.baseName}'`);
+  }
   if (inst) {
     // A recursive caller has observed this ABI before inference settles.
     // Keep the promised return slot and coerce the completed body's returns.
@@ -2386,7 +2757,8 @@ function internImplicitInstance(
       shapes[index]?.type.kind === "dyn" &&
       broadPromiseParam(lowerer, lowerer.typeOf(param.name)),
   );
-  const declared = dynamicBroadPromise ? null : implicitDeclaredReturn(lowerer, info);
+  const declared =
+    declaredReturn ?? (dynamicBroadPromise ? null : implicitDeclaredReturn(lowerer, info));
   inst = {
     path,
     name: keyedHelperName(lowerer, `${info.qualifiedName}%`, key, ""),
@@ -2407,6 +2779,25 @@ function internImplicitInstance(
   // JS body must still have a throwing implementation: later references
   // (including recursive ones) can already hold its cached signature.
   const diagsBefore = lowerer.diags.length;
+  const fencesBefore = lowerer.runtimeFences.length;
+  const totalBefore = lowerer.stats.statementsTotal;
+  const failedBefore = lowerer.stats.statementsFailed;
+  const skippedBefore = lowerer.stats.functionsSkipped;
+  const blockedBefore = fallible ? new Set(lowerer.blockedBindings) : null;
+  const deferredBefore = fallible ? new Set(lowerer.deferredDiags.keys()) : null;
+  /** Undoes what a failed fallible body recorded: the instance's
+   * statements share their symbols with the declaration's own body. */
+  const rollback = (): void => {
+    lowerer.diags.splice(diagsBefore);
+    lowerer.runtimeFences.splice(fencesBefore);
+    lowerer.stats.statementsTotal = totalBefore;
+    lowerer.stats.statementsFailed = failedBefore;
+    lowerer.stats.functionsSkipped = skippedBefore;
+    for (const symbol of [...lowerer.blockedBindings])
+      if (!blockedBefore!.has(symbol)) lowerer.blockedBindings.delete(symbol);
+    for (const symbol of [...lowerer.deferredDiags.keys()])
+      if (!deferredBefore!.has(symbol)) lowerer.deferredDiags.delete(symbol);
+  };
   // The instance is cached even when a receiver probe requested it.
   // Its body must retain statement fences instead of dropping failures
   // into that probe's temporary diagnostic sink and caching empty code.
@@ -2426,10 +2817,22 @@ function internImplicitInstance(
       ...(info.decl.body ? [info.decl.body] : []),
     ]);
     const fn = lowerer.lowerGenericInstance(info, inst);
+    if (
+      fallible &&
+      (lowerer.diags.length > diagsBefore || lowerer.runtimeFences.length > fencesBefore)
+    ) {
+      inst.implicitState = "failed";
+      rollback();
+      return null;
+    }
     lowerer.implicitFns.push(fn);
   } catch (e) {
     if (!(e instanceof PoisonError)) throw e;
     inst.implicitState = "failed";
+    if (fallible) {
+      rollback();
+      return null;
+    }
     const types: IrType[] = shapes.map((shape) => shape.type);
     if (info.member?.kind === "method")
       types.unshift({ kind: "object", className: info.member.cls.def.name });
@@ -2548,6 +2951,120 @@ function capturesEnclosingFrame(
     ts.forEachChild(n, scan);
   };
   scan(scope);
+  return captures;
+}
+
+/** The enclosing-frame VALUES `fn`, bound by `decl`, reads — in first-use
+ * order, the order the instances take them as trailing parameters. The
+ * shape is the one the instance body resolves: a binding declared by an
+ * enclosing function (a local, a parameter, a local function or class).
+ *
+ * Module-scope declarations and the binding itself are reachable from the
+ * module functions the instances compile to, so they are not captures; nor
+ * are type-only declarations, whose mapping is static. `this`, `super`,
+ * `arguments`, `new.target`, and an enclosing generic's type parameter
+ * have no value a parameter can stand in for and stay fenced. A
+ * reassigned binding is shared through the environment form instead of
+ * copied. */
+function enclosingFrameCaptures(
+  lowerer: Lowerer,
+  fn: ts.FunctionExpression | ts.ArrowFunction,
+  decl: ts.VariableDeclaration,
+  scope: ts.Node,
+  name: string,
+): FrameCapture[] {
+  const file = ts.getSourceFileOfNode(decl);
+  const self = lowerer.checker.getSymbolAtLocation(decl.name);
+  const frameFence = (): never =>
+    lowerer.unsupported(
+      "SC1090",
+      fn,
+      `generic arrow/function-expression bindings that use the frames of their enclosing functions (the compiled instantiations of '${name}' are module functions and cannot capture its locals, parameters, type parameters or 'this' — pass them as arguments, or declare the binding at module scope)`,
+    );
+  const captures: FrameCapture[] = [];
+  const seen = new Set<ts.Symbol>();
+  const scan = (n: ts.Node): void => {
+    if (
+      n.kind === ts.SyntaxKind.ThisKeyword ||
+      n.kind === ts.SyntaxKind.SuperKeyword ||
+      ts.isMetaProperty(n)
+    ) {
+      // Arrow bodies see the ENCLOSING this; function expressions
+      // rebind their own — but a bare `this` there is untyped JS
+      // dynamism either way. Reject both, cheaply and soundly.
+      frameFence();
+    }
+    if (ts.isIdentifier(n)) {
+      const s = lowerer.checker.getSymbolAtLocation(n);
+      if (s === undefined) {
+        if (n.text === "arguments") frameFence();
+      } else if (s !== self && !seen.has(s)) {
+        for (const d of s.declarations) {
+          if (ts.getSourceFileOfNode(d) !== file || (d.pos >= fn.pos && d.end <= fn.end)) continue;
+          let enclosing = false;
+          for (
+            let p: ts.Node | undefined = d.parent;
+            p !== undefined && !ts.isSourceFile(p);
+            p = p.parent
+          ) {
+            if (ts.isFunctionLike(p)) {
+              enclosing = true;
+              break;
+            }
+          }
+          if (!enclosing) continue;
+          // A type parameter (of the enclosing function or class) keys
+          // the enclosing instantiation; the instance would need that
+          // frame's type arguments, which this binding cannot carry.
+          if ((s.flags & ts.SymbolFlags.TypeParameter) !== 0) frameFence();
+          // Type-only declarations cost no runtime slot.
+          if ((s.flags & ts.SymbolFlags.Value) === 0) break;
+          // A trailing-parameter COPY is exact only while the original
+          // never changes; a binding written anywhere in the file puts the
+          // whole binding in the environment form (GenericFnInfo.captureMode).
+          const reassigned = !bindingNeverReassigned(lowerer, s, d);
+          // ...and exact only once the original is INITIALIZED. A capture
+          // declared after the binding could be read from a call that runs
+          // before its initializer — a temporal dead zone JavaScript would
+          // throw on. Declared before, the copy is always the initialized
+          // value: reaching the binding's own declaration ran it.
+          if (d.pos > decl.pos) frameFence();
+          // The declaration's own identifier (a binding element's for a
+          // destructured name): lowering it resolves the SYMBOL, so the
+          // instance body reads the parameter we declare for it.
+          const declaredName = (d as { name?: ts.Node }).name;
+          const nameNode =
+            declaredName !== undefined && ts.isIdentifier(declaredName) ? declaredName : d;
+          const type = lowerer.irTypeOf(nameNode);
+          captures.push({
+            symbol: s,
+            nameNode,
+            name: ts.isIdentifier(nameNode) ? nameNode.text : ts.symbolName(s),
+            type,
+            reassigned,
+          });
+          seen.add(s);
+          break;
+        }
+      }
+    }
+    ts.forEachChild(n, scan);
+  };
+  scan(scope);
+  // A capture's type is fixed when the info is registered, once per
+  // binding, while an enclosing generic function or class re-lowers its
+  // frame per instantiation: the second instantiation's value would have a
+  // different type than the parameter the shared instance declares.
+  // Generic enclosing scopes keep the fence; non-generic ones carry no
+  // type argument for the instance to miss.
+  if (captures.length > 0) {
+    for (let p: ts.Node | undefined = fn.parent; p && !ts.isSourceFile(p); p = p.parent) {
+      if (!ts.isFunctionLike(p) && !ts.isClassLikeDeclaration(p)) continue;
+      const typeParameters = (p as { typeParameters?: ts.NodeArray<ts.TypeParameterDeclaration> })
+        .typeParameters;
+      if (typeParameters !== undefined && typeParameters.nodes.length > 0) frameFence();
+    }
+  }
   return captures;
 }
 
@@ -2761,22 +3278,22 @@ export function bindingGenericFnInfoOf(
   if (existing) return existing;
   const name = (decl.name as ts.Identifier).text;
   if (fnNode.asteriskToken) lowerer.unsupported("SC1071", fnNode);
-  // Inside a function, the compiled instances are module functions, so
-  // the initializer may not use the enclosing frame.
+  // Inside a function, the compiled instances are module functions: the
+  // values the initializer reads from the enclosing frame travel as
+  // trailing parameters (FrameCapture), or through a closure environment
+  // when one of them is reassigned (captureMode). `this`, `arguments` and
+  // an enclosing generic's type parameters have no value to pass and stay
+  // fenced.
   let functionScoped = false;
+  let captures: FrameCapture[] | undefined;
   for (
     let n: ts.Node | undefined = decl.parent;
     n !== undefined && !ts.isSourceFile(n);
     n = n.parent
   ) {
     if (ts.isFunctionLike(n)) {
-      if (capturesEnclosingFrame(lowerer, fnNode, decl, fnNode)) {
-        lowerer.unsupported(
-          "SC1090",
-          fnNode,
-          `generic arrow/function-expression bindings that use the frames of their enclosing functions (the compiled instantiations of '${name}' are module functions and cannot capture its locals, parameters, type parameters or 'this' — pass them as arguments, or declare the binding at module scope)`,
-        );
-      }
+      const found = enclosingFrameCaptures(lowerer, fnNode, decl, fnNode, name);
+      if (found.length > 0) captures = found;
       functionScoped = true;
       break;
     }
@@ -2825,6 +3342,8 @@ export function bindingGenericFnInfoOf(
     typeParams,
     instances: new Map(),
     ...(functionScoped ? { functionScoped: true as const } : {}),
+    ...(captures ? { captures } : {}),
+    ...(captures?.some((capture) => capture.reassigned) ? { captureMode: "env" as const } : {}),
     bindingDecl: decl,
   };
   lowerer.bindingGenericFns.set(fnNode, info);
@@ -2951,7 +3470,12 @@ function bindingReferences(
       resolved = lowerer.checker.getShorthandAssignmentValueSymbol(parent) ?? resolved;
     if (resolved !== symbol) return false;
     for (let p: ts.Node | undefined = parent; p !== undefined; p = p.parent) {
-      if (ts.isTypeNode(p) && p.kind !== ts.SyntaxKind.ExpressionWithTypeArguments) return false;
+      if (
+        ts.isTypeNode(p) &&
+        p.kind !== ts.SyntaxKind.ExpressionWithTypeArguments &&
+        !isHeritageTypeReference(p)
+      )
+        return false;
       if (ts.isStatement(p) || ts.isFunctionLike(p)) break;
     }
     return true;
@@ -3003,7 +3527,7 @@ function guardEarlyBindingCall(
   lowerer: Lowerer,
   info: GenericFnInfo,
   expr: ts.CallExpression,
-  call: IrExpr & { kind: "call" },
+  call: IrExpr & { kind: "call" | "callValue" },
 ): IrExpr {
   if (info.bindingDecl === undefined || runsAfterDeclaration(lowerer, info, expr)) return call;
   const loc = call.loc;

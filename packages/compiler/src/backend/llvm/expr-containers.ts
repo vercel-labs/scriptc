@@ -1,9 +1,10 @@
+import { dynDesc } from "../../ir/analysis.js";
 /* Focused LLVM expression emission extracted from emitter.ts. */
+import { emitInlineArrayLength, inlineFieldTail } from "./inline-arrays.js";
 import { arraySearchHelperName, arraySearchKind } from "./array-search.js";
 import { InternalCompilerError } from "../../errors.js";
 import { isStableReceiverOperand, undefinedArmTag } from "../../ir/analysis.js";
 import { F64, type IrExpr, type IrType, isRefCounted, typeEquals, typeKey } from "../../ir/ir.js";
-import { mangleResolveThunk } from "../mangle.js";
 import {
   arrOps,
   elemAccess,
@@ -42,28 +43,34 @@ import {
   emitStringMapGetRef,
   emitStringMapGetScalar,
   emitStringMapHas,
+  noteNumberMapKey,
 } from "./map-number-lookup.js";
 import { emitBorrowedInput } from "./borrowed-inputs.js";
 import { emitFusedMapSet, rememberMapEntry } from "./map-entry-fusion.js";
 import { emitScratchStringSlice, emitStringSliceRead } from "./string-slices.js";
 import {
   STRING_CHAR_AT_DECL,
+  STRING_CP_AT_BYTE_DECL,
   STRING_CHAR_AT_INT_MARKER,
   STRING_CHAR_CODE_AT_DECL,
   STRING_CHAR_CODE_AT_INT_MARKER,
   emitAsciiChar,
   emitAsciiCharCode,
+  emitStringByteLength,
+  emitUnitCharCode,
   STRING_UTF16_LEN_DECL,
 } from "./string-reads.js";
 import { exactInteger, widenInteger } from "./integer-values.js";
 import {
   emitDenseArrayNumber,
+  emitDenseArrayNumberInt32,
   emitDenseArrayPop,
   emitDenseArrayPush,
   runtimeAccess,
   type ArrayAccess,
 } from "./dense-array-access.js";
 import { INT32_ARRAY_METHODS } from "../../ir/int32-arrays.js";
+import { INT32_RANGE } from "../../ir/integer-ranges.js";
 import { emitUnionWiden } from "./expr-records.js";
 import { registerReplay } from "./emit-journal.js";
 
@@ -71,7 +78,7 @@ export function resolveThunkFor(host: LlvmEmitterContext, inner: IrType): string
   const key = typeKey(inner);
   let sym = host.resolveThunks.get(key);
   if (!sym) {
-    sym = mangleResolveThunk(host.resolveThunks.size);
+    sym = host.contentSymbol("sc_rslv_", key);
     host.resolveThunks.set(key, sym);
     host.journal?.allocated(sym, "resolveThunkFor", [inner]);
     const v = vAdapters(host.shapeHost, inner);
@@ -257,6 +264,16 @@ function emitDiscarded(host: LlvmEmitterContext, e: IrExpr): void {
   const start = host.emitExpr(e.args[0]!);
   const count = e.args[1] ? host.emitExpr(e.args[1]).name : F64_INF;
   const values = items.map((item) => host.emitExpr(item));
+  // Before the values move into the buffer: a throw releases them with the
+  // frame.
+  host.emitPublishedArrayGuard(
+    r.name,
+    e.receiver.type,
+    10,
+    start.name,
+    count,
+    f64Lit(values.length),
+  );
   if (acc === "ref") values.forEach((value) => host.toHeap(value));
   let buffer = "null";
   if (values.length > 0) {
@@ -312,6 +329,15 @@ export function charAtUnitRead(
   return read;
 }
 
+/** The UTF-16 units an enclosing loop version proved the index of `e`
+ * below the count of (string-unit-versions.ts). */
+function provenUnitsRead(host: LlvmEmitterContext, e: IrExpr): string | null {
+  const units = host.stringUnitReads.get(e);
+  if (units !== undefined) return units;
+  const origin = host.charAtUnitReads.get(e);
+  return origin !== undefined ? (host.stringUnitReads.get(origin) ?? null) : null;
+}
+
 /** An enclosing loop version proved the string of `e` ASCII and its index
  * below the length (bytes-loop-versions.ts). */
 function provenStringRead(host: LlvmEmitterContext, e: IrExpr): boolean {
@@ -354,9 +380,14 @@ export function emitStrIntrinsic(
   const method = e.method;
   switch (method) {
     case "length": {
+      const t = B.tmp();
+      const length = host.stringLengthReads.get(e);
+      if (length !== undefined) {
+        B.line(`${t} = sitofp i64 ${length} to double`);
+        return { name: t, type: e.type };
+      }
       // sc_str_utf16_len (string-reads.ts) answers proven-ASCII strings inline.
       host.declare(STRING_UTF16_LEN_DECL);
-      const t = B.tmp();
       B.line(`${t} = call double @sc_str_utf16_len(ptr ${r.name})`);
       return { name: t, type: e.type };
     }
@@ -366,6 +397,8 @@ export function emitStrIntrinsic(
       const index = e.args[0] ? exactInteger(host, args[0]!, e.args[0]) : null;
       if (index) {
         const wide = widenInteger(host, index);
+        const units = provenUnitsRead(host, e);
+        if (units !== null) return { name: emitUnitCharCode(host, units, wide), type: e.type };
         if (provenStringRead(host, e))
           return { name: emitAsciiCharCode(host, r.name, wide), type: e.type };
         host.declare(STRING_CHAR_CODE_AT_INT_MARKER);
@@ -536,16 +569,30 @@ export function emitStrIntrinsic(
       return call("scr_str_is_well_formed", "zeroext i1 (ptr)", `ptr ${r.name}`, "i1", false);
     case "toWellFormed":
       return call("scr_str_to_well_formed", "ptr (ptr)", `ptr ${r.name}`, "ptr", true);
-    case "cpAt":
-      // The code point AT an index as a one-code-point string (+1) —
-      // the string-for-of desugar's read.
-      return call(
-        "scr_str_cp_at",
-        "ptr (ptr, double)",
-        `ptr ${r.name}, double ${args[0]!.name}`,
-        "ptr",
-        true,
-      );
+    case "byteLength": {
+      const t = B.tmp();
+      // A byte count fits in a signed size, whose conversion is one instruction.
+      B.line(`${t} = sitofp ${host.sizeType} ${emitStringByteLength(host, r.name)} to double`);
+      return { name: t, type: e.type };
+    }
+    case "cpAtByte": {
+      // sc_str_cp_at_byte (string-reads.ts) answers ASCII bytes from the
+      // charAt table inline. The cursor is a character start, an exact
+      // integer below the byte count.
+      host.declare(STRING_CHAR_AT_DECL);
+      host.declare(STRING_CP_AT_BYTE_DECL);
+      const index = e.args[0] ? exactInteger(host, args[0]!, e.args[0]) : null;
+      let wide: string;
+      if (index) {
+        wide = widenInteger(host, index);
+      } else {
+        wide = B.tmp();
+        B.line(`${wide} = fptosi double ${args[0]!.name} to i64`);
+      }
+      const t = B.tmp();
+      B.line(`${t} = call ptr @sc_str_cp_at_byte(ptr ${r.name}, i64 ${wide})`);
+      return host.own({ name: t, type: e.type });
+    }
     default: {
       const _exhaustive: never = method;
       void _exhaustive;
@@ -604,6 +651,14 @@ export function emitArrIntrinsic(
   into?: { box: string; tag: string; payload: string },
 ): LlValue {
   const B = host.B;
+  // The length of an inline array field, read from the instance.
+  if (e.method === "length" && e.receiver.kind === "fieldGet") {
+    const tail = inlineFieldTail(host, e.receiver.className, e.receiver.field);
+    if (tail !== undefined) {
+      const obj = host.emitStableReceiver(e.receiver.obj, e.args);
+      return emitInlineArrayLength(host, obj.name, e.receiver.className, tail, e.type);
+    }
+  }
   // Every array intrinsic borrows its receiver, including mutation and
   // retained-identity results. Scalar reads also admit the narrower proof
   // that a mutable binding survives the remaining operand evaluations.
@@ -649,6 +704,25 @@ export function emitArrIntrinsic(
           emitDenseArrayNumber(host, r.name, index, e.args[0], proven, kind),
         )!;
         return { name: value, type: e.type };
+      }
+      // In a store statement of an int32 kind loop's fast copy, a read that
+      // is not an int32 (a missing element's NaN) leaves for the
+      // statement's resume point, so the element is at hand as an i32.
+      if (!table && elem.kind === "f64" && access === "i32" && host.int32KindResume !== null) {
+        const read = emitDenseArrayNumberInt32(
+          host,
+          r.name,
+          index,
+          e.args[0],
+          host.provenDenseIndex(e.receiver, e.args[0]!),
+          host.int32KindResume,
+        );
+        return {
+          name: read.value,
+          type: e.type,
+          uint32: read.int32,
+          integer: { name: read.int32, type: "i32", signed: true, range: INT32_RANGE },
+        };
       }
       if (!table && elem.kind === "f64")
         return {
@@ -762,6 +836,9 @@ export function emitArrIntrinsic(
     case "shift": {
       host.emitPublishedArrayGuard(r.name, e.receiver.type, method === "pop" ? 2 : 6);
       const checkedValue = elem.kind === "dyn" && e.type.kind === "dyn";
+      // A foreign element (SCR_ARR_FOREIGN) cannot be the typed result:
+      // removing one throws the checked conversion's TypeError.
+      const foreignElements = !checkedValue && host.mayHoldForeign(elem);
       if (!checkedValue && e.type.kind !== "union")
         throw new InternalCompilerError("llvm emitter bug: array removal result is not a union");
       const def = e.type.kind === "union" ? host.unionsById.get(e.type.unionId) : undefined;
@@ -804,7 +881,25 @@ export function emitArrIntrinsic(
       );
       B.line(`${slowRaw} = load i64, ptr ${rawSlot}`);
       B.line(`${has} = icmp eq i8 ${state}, 1`);
-      B.condBr(has, lp, la);
+      const lf = foreignElements ? B.newLabel("remove.f") : la;
+      B.condBr(has, lp, lf);
+      if (foreignElements) {
+        // Only the runtime call removes a foreign element; its value moves
+        // out with the slot, and the throw releases it.
+        B.startBlock(lf);
+        const foreign = B.tmp();
+        const throwLabel = B.newLabel("remove.foreign");
+        B.line(`${foreign} = icmp eq i8 ${state}, 3`);
+        B.condBr(foreign, throwLabel, la);
+        B.startBlock(throwLabel);
+        const payload = B.tmp();
+        B.line(`${payload} = inttoptr i64 ${slowRaw} to ptr`);
+        host.declare(`declare void @scr_dyn_foreign_throw(ptr, ptr)`);
+        const want = host.cstr(dynDesc(e.type, host.recordsById, host.unionsById));
+        B.line(`call void @scr_dyn_foreign_throw(ptr ${payload}, ptr ${want})`);
+        host.emitAlwaysPendingUnwind();
+        B.br(la);
+      }
       B.startBlock(lp);
       let raw = slowRaw;
       const value = B.tmp();
@@ -904,6 +999,12 @@ export function emitArrIntrinsic(
         B.line(`${t} = call ptr @${helper}(ptr ${r.name}, ptr ${sep.name})`);
         return host.own({ name: t, type: e.type });
       }
+      if (elem.kind === "date") {
+        host.declare(`declare ptr @scr_date_arr_join(ptr, ptr)`);
+        const t = B.tmp();
+        B.line(`${t} = call ptr @scr_date_arr_join(ptr ${r.name}, ptr ${sep.name})`);
+        return host.own({ name: t, type: e.type });
+      }
       host.declare(`declare ptr @scr_arr_join(ptr, ptr)`);
       const t = B.tmp();
       B.line(`${t} = call ptr @scr_arr_join(ptr ${r.name}, ptr ${sep.name})`);
@@ -928,6 +1029,16 @@ export function emitArrIntrinsic(
     case "sortPrimitive":
     case "toSortedPrimitive": {
       if (e.method === "sortPrimitive") host.emitPublishedArrayGuard(r.name, e.receiver.type, 7);
+      if (elem.kind === "date") {
+        // Dates order by their toString() text.
+        host.declare(`declare ptr @scr_arr_sort_by_text(ptr, i1 zeroext, ptr)`);
+        host.declare(`declare ptr @scr_date_object_to_string(ptr)`);
+        const sorted = B.tmp();
+        B.line(
+          `${sorted} = call ptr @scr_arr_sort_by_text(ptr ${r.name}, i1 ${e.method === "toSortedPrimitive" ? 1 : 0}, ptr @scr_date_object_to_string)`,
+        );
+        return host.own({ name: sorted, type: e.type });
+      }
       host.declare(`declare ptr @scr_arr_sort_primitive(ptr, i1 zeroext)`);
       const result = B.tmp();
       B.line(
@@ -978,7 +1089,25 @@ export function emitArrIntrinsic(
     case "fill":
     case "fillUndefined": {
       const args = e.args.map((arg) => host.emitExpr(arg));
-      host.emitPublishedArrayGuard(r.name, e.receiver.type, 7);
+      // fill's range is its last two arguments; copyWithin's target,
+      // start and end are its three.
+      if (e.method === "copyWithin")
+        host.emitPublishedArrayGuard(
+          r.name,
+          e.receiver.type,
+          9,
+          args[0]!.name,
+          args[1]!.name,
+          args[2]!.name,
+        );
+      else
+        host.emitPublishedArrayGuard(
+          r.name,
+          e.receiver.type,
+          8,
+          args[args.length - 2]!.name,
+          args[args.length - 1]!.name,
+        );
       if (host.checkedFills.has(e)) {
         // A new int32 array with checked stores, filled with a value that
         // may not be an int32: widen it first then.
@@ -1042,7 +1171,7 @@ export function emitArrIntrinsic(
       // removes to the end (+Infinity, the slice convention).
       const start = host.emitExpr(e.args[0]!);
       const cnt = e.args[1] ? host.emitExpr(e.args[1]).name : F64_INF;
-      host.emitPublishedArrayGuard(r.name, e.receiver.type, 7);
+      host.emitPublishedArrayGuard(r.name, e.receiver.type, 10, start.name, cnt, f64Lit(0));
       host.declare(`declare ptr @scr_arr_splice(ptr, double, double)`);
       const t = B.tmp();
       B.line(`${t} = call ptr @scr_arr_splice(ptr ${r.name}, double ${start.name}, double ${cnt})`);
@@ -1052,7 +1181,12 @@ export function emitArrIntrinsic(
       const start = host.emitExpr(e.args[0]!);
       const count = host.emitExpr(e.args[1]!);
       const items = emitBorrowedInput(host, e.args[2]!);
-      host.emitPublishedArrayGuard(r.name, e.receiver.type, 7);
+      if (host.publishedTypes?.containerGuarded(e.receiver.type) === true) {
+        host.declare(`declare double @scr_arr_len(ptr)`);
+        const n = B.tmp();
+        B.line(`${n} = call double @scr_arr_len(ptr ${items.name})`);
+        host.emitPublishedArrayGuard(r.name, e.receiver.type, 10, start.name, count.name, n);
+      }
       host.declare(`declare ptr @scr_arr_splice_insert(ptr, double, double, ptr)`);
       const t = B.tmp();
       B.line(
@@ -1076,6 +1210,65 @@ export function emitArrIntrinsic(
       throw new InternalCompilerError("unreachable");
     }
   }
+}
+
+/** Whether `e` is a Map.get that emitBorrowedMapGet can emit without a
+ * retain: a typed map with number or inline string keys, a reference value,
+ * and a nullable result (the value's pointer, or the absent arm's). */
+export function borrowableMapGet(host: LlvmEmitterContext, e: IrExpr): boolean {
+  if (e.kind !== "mapIntrinsic" || e.method !== "get" || e.args.length !== 1) return false;
+  if (!borrowsMapReadInputs(e) || e.receiver.type.kind !== "map") return false;
+  const { key, value } = e.receiver.type;
+  if (!isRefCounted(value) || value.kind === "union" || key.kind === "union") return false;
+  if (e.type.kind !== "union" || !host.nullableUnions.has(e.type.unionId)) return false;
+  const arg = e.args[0]!;
+  const access = mapKeyAccess(key);
+  return (
+    (access === "f64" && arg.type.kind === "f64") ||
+    (access === "str" && arg.type.kind === "string")
+  );
+}
+
+/** A borrowableMapGet read as the entry's own reference: no retain, and
+ * no owner. The caller proves that nothing can change the map while the
+ * value is used (findMapReadBorrows). Null, before emitting anything, for
+ * a key held as a split span, which takes the runtime's owned lookup. */
+export function emitBorrowedMapGet(
+  host: LlvmEmitterContext,
+  e: IrExpr & { kind: "mapIntrinsic" },
+): LlValue | null {
+  const arg = e.args[0]!;
+  if (arg.kind === "varRef" && host.splitSpans.get(arg.localId) !== undefined) return null;
+  const B = host.B;
+  const mapType = e.receiver.type as IrType & { kind: "map" };
+  const r = host.emitStableReceiver(e.receiver, e.args);
+  const k = emitMapLookupKey(host, e.args[0]!, true);
+  const numberKey = inlineNumberKey(k);
+  const stringKey = entryStringKey(k);
+  const value = mapType.value;
+  let raw: string;
+  if (numberKey !== null) raw = emitNumberMapGetRef(host, r.name, numberKey, value, true);
+  else if (stringKey !== null)
+    raw = emitStringMapGetRef(
+      host,
+      r.name,
+      stringKey,
+      value,
+      compactMapValues(host, mapType.key, value),
+      true,
+    );
+  else throw new InternalCompilerError("llvm emitter bug: borrowed Map.get without an inline key");
+  const resultType = e.type as IrType & { kind: "union" };
+  const absent = host.unitInstanceRef(
+    resultType.unionId,
+    undefinedArmTag(resultType, host.unionsById),
+  );
+  if (absent === "null") return { name: raw, type: e.type };
+  const isnull = B.tmp(),
+    t = B.tmp();
+  B.line(`${isnull} = icmp eq ptr ${raw}, null`);
+  B.line(`${t} = select i1 ${isnull}, ptr ${absent}, ptr ${raw}`);
+  return { name: t, type: e.type };
 }
 
 export function wrapNullable(
@@ -1134,7 +1327,7 @@ function collectionOps(host: LlvmEmitterContext, key: IrType, value: IrType): st
       : { retain: "null", release: "null", trace: "null" };
   const arms = key.kind === "union" ? host.unionsById.get(key.unionId)?.arms : undefined;
   let unionKeys = "null";
-  if (mapKeyKindNum(key, arms) === 7) {
+  if (mapKeyKindNum(key, arms) === 7 && host.nullableUnions.of(key) === null) {
     if (!arms) throw new InternalCompilerError("llvm emitter bug: collection key union missing");
     unionKeys = host.cstr(arms.map((arm) => String.fromCharCode(mapKeyKindNum(arm))).join(""));
   }
@@ -1153,7 +1346,9 @@ function collectionOps(host: LlvmEmitterContext, key: IrType, value: IrType): st
 function newCollection(host: LlvmEmitterContext, key: IrType, value: IrType): string {
   const B = host.B;
   const arms = key.kind === "union" ? host.unionsById.get(key.unionId)?.arms : undefined;
-  const kind = mapKeyKindNum(key, arms);
+  // SCR_MAP_KEY_REF (2): a union key with a pointer representation is that
+  // pointer (boxedUnionIds).
+  const kind = host.nullableUnions.of(key) !== null ? 2 : mapKeyKindNum(key, arms);
   const m = B.tmp();
   host.declare(`declare ptr @scr_map_new(i32, i32, ptr)`);
   // SCR_MAP_VAL_CREF (3): string keys and compact values (compactMapValues).
@@ -1412,6 +1607,7 @@ export function emitMapLikeIntrinsic(
               : emitStringMapGetScalar(host, r.name, stringKey!);
           found = scalar.found;
           if (stringKey !== null) rememberMapEntry(host, e, r.name, stringKey, scalar.entry);
+          else rememberMapEntry(host, e, r.name, numberKey!, scalar.entry, "double");
           readHit = () => {
             const hit = B.tmp();
             B.line(
@@ -1479,11 +1675,18 @@ export function emitMapLikeIntrinsic(
       // Key borrowed (the runtime retains stored string keys); the
       // value MOVES in (replacement releases the old value inside).
       const k = emitBorrowedInput(host, e.args[0]!);
+      if (kAcc === "f64") noteNumberMapKey(host, k, e.args[0]!);
       const v = host.emitExpr(e.args[1]!);
       const vAcc = elemAccess(receiverType.value);
       if (vAcc === "ref") host.toHeap(v);
       const ordinary = (): void => host.mapSet(r.name, kAcc, vAcc, k.name, v.name);
-      if (kAcc === "f64" && vAcc !== "ref" && host.readNumberMapWrites.has(e)) {
+      if (
+        (kAcc === "str" || kAcc === "f64") &&
+        vAcc !== "ref" &&
+        emitFusedMapSet(host, e, r.name, k.name, { name: v.name, access: vAcc }, ordinary)
+      ) {
+        // Written through the read's entry, or inserted.
+      } else if (kAcc === "f64" && vAcc !== "ref" && host.readNumberMapWrites.has(e)) {
         const bits = B.tmp();
         B.line(
           vAcc === "f64"
@@ -1491,12 +1694,7 @@ export function emitMapLikeIntrinsic(
             : `${bits} = zext i1 ${v.name} to i64`,
         );
         emitNumberMapSetScalar(host, r.name, k.name, bits, ordinary);
-      } else if (
-        kAcc !== "str" ||
-        vAcc === "ref" ||
-        !emitFusedMapSet(host, e, r.name, k.name, { name: v.name, access: vAcc }, ordinary)
-      )
-        ordinary();
+      } else ordinary();
       return { name: "", type: e.type };
     }
     case "add": {
@@ -1504,6 +1702,7 @@ export function emitMapLikeIntrinsic(
       // Element borrowed (the runtime retains stored strings); the unit
       // value is 0. Re-adding overwrites in place, preserving insertion.
       const k = emitBorrowedInput(host, e.args[0]!);
+      if (kAcc === "f64") noteNumberMapKey(host, k, e.args[0]!);
       if (kAcc === "f64" && host.readNumberMapWrites.has(e))
         emitNumberMapSetScalar(host, r.name, k.name, null, () =>
           host.mapSet(r.name, kAcc, "f64", k.name, f64Lit(0)),
@@ -1513,7 +1712,10 @@ export function emitMapLikeIntrinsic(
     }
     case "has": {
       const k = borrowInputs ? host.emitReadReceiver(e.args[0]!) : host.emitExpr(e.args[0]!);
-      if (kAcc === "f64") return { name: emitNumberMapHas(host, r.name, k.name), type: e.type };
+      if (kAcc === "f64") {
+        noteNumberMapKey(host, k, e.args[0]!);
+        return { name: emitNumberMapHas(host, r.name, k.name), type: e.type };
+      }
       if (kAcc === "str")
         return { name: emitStringMapHas(host, r.name, k.name, compact), type: e.type };
       host.declare(`declare zeroext i1 @scr_map_has_${kAcc}(ptr, ${kTy})`);

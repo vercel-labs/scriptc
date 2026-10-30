@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../cli/command.js";
@@ -12,11 +12,20 @@ import { mergeNativeProfiles } from "../backend/native-tools.js";
 import { setDeclarationRoot } from "../frontend/dts-paths.js";
 import { setFrontendDisposedHook } from "../frontend/dispose-hook.js";
 import { FrontendServices } from "../frontend/services.js";
-import { createNativeTs7Api } from "../frontend/ts7/native-api.js";
+import { runTypePatchCommand } from "../frontend/type-patches/command.js";
+import { checkerServerLost, createNativeTs7Api } from "../frontend/ts7/native-api.js";
 import { resolveProvenanceSourcesWithParser } from "../frontend/provenance-core.js";
 import { setCompilerReleaseVersion } from "../library/sidecar.js";
 import { NativeCompiler } from "./compiler.js";
-import { openNativeCache } from "./cache.js";
+import { NATIVE_STRING_BYTES, openNativeCache } from "./cache.js";
+import {
+  checkerExecutableIdentity,
+  checkerPackageVersion,
+  distributionPrebuiltLibDiagnostics,
+  recordPrebuiltLibDiagnostics,
+  setLibDiagnosticsStore,
+} from "../frontend/ts7/lib-diagnostics.js";
+import { setCheckerFeatureStore } from "../frontend/ts7/checker-features.js";
 import { loadNativeToolchain } from "./toolchain.js";
 import { buildSanitizedRuntime } from "./sanitizer.js";
 import { runCompilerTask } from "./task.js";
@@ -27,10 +36,35 @@ declare function compilerNativeCollectCycles(): void;
 declare function compilerNativeFork(): number;
 declare function compilerNativeExit(code: number): void;
 declare function compilerNativeWait(pid: number): number;
+declare function compilerNativeExited(): number;
 declare function compilerNativeLockOpen(path: string): boolean;
 declare function compilerNativeLock(): void;
 declare function compilerNativeUnlock(): void;
 declare function compilerNativeBoundCycleGrowth(): void;
+
+/** Runs a build. When this process's connection to the shared checker server
+ * failed during it, the command runs again in a new process that checks with
+ * its own tsc-ts process (SCRIPTC_CHECKER_SERVER=0), and this process exits
+ * with that one's status: the new process prints the build's output. */
+async function withCheckerFallback<T>(work: () => Promise<T>): Promise<T> {
+  let result: T;
+  try {
+    result = await work();
+  } catch (error) {
+    if (!checkerServerLost()) throw error;
+    return runWithOwnChecker();
+  }
+  return checkerServerLost() ? runWithOwnChecker() : result;
+}
+
+function runWithOwnChecker(): never {
+  const run = spawnSync(process.execPath, process.argv.slice(2), {
+    stdio: "inherit",
+    env: { ...process.env, SCRIPTC_CHECKER_SERVER: "0" },
+  });
+  if (run.error) throw new Error(run.error.message);
+  process.exit(run.status ?? 1);
+}
 
 async function main(): Promise<number> {
   compilerNativeBoundCycleGrowth();
@@ -40,6 +74,7 @@ async function main(): Promise<number> {
       fork: () => compilerNativeFork(),
       exit: (code) => compilerNativeExit(code),
       wait: (pid) => compilerNativeWait(pid),
+      exited: () => compilerNativeExited(),
       openLock: (path) => compilerNativeLockOpen(path),
       lock: () => compilerNativeLock(),
       unlock: () => compilerNativeUnlock(),
@@ -53,15 +88,50 @@ async function main(): Promise<number> {
     if (toolchain.declarationsRoot !== undefined) setDeclarationRoot(toolchain.declarationsRoot);
     setCompilerReleaseVersion(toolchain.compilerVersion);
     cache = openNativeCache((path, harden) => compilerNativePrivateDirectory(path, harden));
+    if (cache !== null) {
+      const store = cache;
+      setLibDiagnosticsStore(
+        {
+          read: (key) =>
+            store.read("lib-diagnostics", key, NATIVE_STRING_BYTES)?.toString("utf8") ?? null,
+          write: (key, text) => store.write("lib-diagnostics", key, text),
+        },
+        checkerExecutableIdentity(toolchain.ts7Executable),
+        toolchain.prebuiltLibDiagnostics === undefined
+          ? null
+          : () =>
+              distributionPrebuiltLibDiagnostics(
+                toolchain.prebuiltLibDiagnostics!,
+                toolchain.ts7Executable,
+              ),
+      );
+      // A distribution build records its prebuilt lib diagnostics (build-native-cli.mts).
+      const recordPath = process.env["SCRIPTC_LIB_DIAGNOSTICS_RECORD"];
+      const checkerVersion =
+        recordPath === undefined ? null : checkerPackageVersion(toolchain.ts7Executable);
+      if (recordPath !== undefined && checkerVersion !== null)
+        recordPrebuiltLibDiagnostics({
+          checker: checkerVersion,
+          record: (key) => appendFileSync(recordPath, `${key}\n`),
+        });
+      setCheckerFeatureStore({
+        read: (key) =>
+          store.read("checker-features", key, NATIVE_STRING_BYTES)?.toString("utf8") ?? null,
+        write: (key, text) => store.write("checker-features", key, text),
+      });
+    }
     compiler = new NativeCompiler(toolchain, cache);
     return compiler;
   };
   return runCli(process.argv.slice(2), {
     version: () => loadNativeToolchain(manifestPath).compilerVersion,
     sourceTargetPlatform: () => getCompiler().toolchain.target.platform,
-    analyze: (entry, options) => runCompilerTask(() => getCompiler().analyzeCached(entry, options)),
-    compile: (entry, options) => runCompilerTask(() => getCompiler().compile(entry, options)),
-    compileLibrary: (options) => runCompilerTask(() => getCompiler().compileLibrary(options)),
+    analyze: (entry, options) =>
+      withCheckerFallback(() => runCompilerTask(() => getCompiler().analyzeCached(entry, options))),
+    compile: (entry, options) =>
+      withCheckerFallback(() => runCompilerTask(() => getCompiler().compile(entry, options))),
+    compileLibrary: (options) =>
+      withCheckerFallback(() => runCompilerTask(() => getCompiler().compileLibrary(options))),
     resolveProvenanceSources: async (entry) => {
       const toolchain = getCompiler().toolchain;
       const services = new FrontendServices((options) =>
@@ -122,7 +192,10 @@ async function main(): Promise<number> {
               dgram: false,
               dnsPromises: false,
               dgramDyn: false,
+              textCodecDyn: false,
               watch: false,
+              watchFile: false,
+              fsBufferBrand: false,
               foreignFfi: false,
               nodeTest: false,
               tls: false,
@@ -131,6 +204,7 @@ async function main(): Promise<number> {
               dh: false,
               pki: false,
               ed25519: false,
+              x509: false,
               webcrypto: false,
               perfLoop: false,
               tlsCa: false,
@@ -145,6 +219,19 @@ async function main(): Promise<number> {
         profiles.push({ profile, elapsedMs: performance.now() - start });
       }
       return { cacheRoot: cache.root, profiles };
+    },
+    typePatches: async (request) => {
+      const toolchain = getCompiler().toolchain;
+      const services = new FrontendServices((options) =>
+        createNativeTs7Api({ ...options, executable: toolchain.ts7Executable }),
+      );
+      try {
+        return runTypePatchCommand(request, (path, source, kind) =>
+          services.parse(path, source, kind),
+        );
+      } finally {
+        services.close();
+      }
     },
     mergeProfiles: async (outputPath, inputPaths, sparse) => {
       const toolchain = getCompiler().toolchain;

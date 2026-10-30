@@ -1,6 +1,7 @@
 - **Text encoding:** `TextEncoder` and `TextDecoder` can be stored in fields, arguments, return values, arrays, and closures.
   Encoding supports UTF-8, including `encodeInto` into a Uint8Array or Buffer view.
   Codec properties expose the canonical encoding and decoder flags.
+  Codecs held in `any` or `unknown` storage keep their identity and streaming state, and dynamic code can call `encode`, `encodeInto` and `decode`, with options objects, and read their properties.
   Decoding accepts recognized WHATWG labels, including runtime labels and omitted or undefined encodings.
   Literal constructor options support `fatal` and `ignoreBOM`; literal decode options support streaming UTF-8, UTF-16, and single-byte encodings.
   Other legacy streaming encodings, runtime options objects, inspection, JSON conversion, and module-scope declarations using `var` or lacking an initializer are unsupported.

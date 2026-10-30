@@ -12,10 +12,11 @@ import { toPrimitiveHint } from "./class-dynamic-dispatch.js";
 import { GENERATOR_STEP_METHODS, HELPER_METHODS } from "./generator-dynamic-dispatch.js";
 
 /** Runtime entry points that step a checked-dynamic iterable's iterator:
- * destructuring rest, and the collection constructors' and
- * Object.fromEntries' seeds. */
+ * destructuring rest, the collection constructors' and Object.fromEntries'
+ * seeds, and Math.min/Math.max over a spread. */
 const RUNTIME_STEP_LIB_FNS: ReadonlySet<string> = new Set([
   "dyn.destructureRest",
+  "dyn.mathFold",
   "dyn.nativeSetNew",
   "dyn.mapSeedEntries",
   "dyn.fromEntries",
@@ -71,6 +72,7 @@ const DISPATCH_LIB_CALLS = new Set<string>([
   "dyn.keySetComputed",
   "dyn.iterator",
   "dyn.arrayFromIterator",
+  "dyn.asyncIteratorOpen",
   "dyn.toString",
   "dyn.stringConstructor",
   "dyn.forInKeys",
@@ -80,6 +82,7 @@ const DISPATCH_LIB_CALLS = new Set<string>([
   "dyn.propertyIsEnumerableComputed",
   "dyn.defineProperty",
   "dyn.getPrototype",
+  "dyn.getPrototypeForIdentity",
   "dyn.inheritsErrorPrototype",
   "dyn.reflectGet",
   "dyn.reflectSet",

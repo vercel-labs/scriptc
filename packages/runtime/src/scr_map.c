@@ -988,6 +988,12 @@ double scr_map_size(const ScrMap *m) { return (double)m->nlive; }
  *    table. Regrowth is amortized against the insertions that need it.
  * A map without entries has empty tables already: clearing it does no
  * work and keeps its storage for the next fill. */
+void scr_map_prevent_extensions(ScrMap *m) {
+  if (m->rc != SIZE_MAX) m->flags |= SCR_MAP_NOT_EXTENSIBLE;
+}
+
+bool scr_map_is_extensible(const ScrMap *m) { return (m->flags & SCR_MAP_NOT_EXTENSIBLE) == 0; }
+
 void scr_map_clear(ScrMap *m) {
   size_t walked = m->nentries;
   if (walked == 0) return;
@@ -1199,9 +1205,11 @@ static __attribute__((noinline)) void scr_map_set_num(ScrMap *m, uint64_t hash, 
 }
 
 /* A number-key map with at least this many entries moves to the direct
- * index when its keys allow it, so small integer keys are indexed before
- * the linear scan ends. */
-#define SCR_MAP_DENSE_AFTER 4
+ * index when its keys allow it: from its second key, so a map of a few
+ * small integer keys (a histogram over 0..3) reads through the inline
+ * direct index rather than the out-of-line linear scan. A map with one
+ * key keeps its linear storage. */
+#define SCR_MAP_DENSE_AFTER 1
 
 /* Whether appending one more entry would grow the lookup index rather than
  * reuse tombstones: scr_map_reserve_append compacts a linear map with a

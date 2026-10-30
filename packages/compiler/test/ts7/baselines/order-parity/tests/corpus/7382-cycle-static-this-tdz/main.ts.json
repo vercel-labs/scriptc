@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7382-cycle-static-this-tdz/beta.ts",
+  "<repo>/tests/corpus/7382-cycle-static-this-tdz/alpha.ts",
+  "<repo>/tests/corpus/7382-cycle-static-this-tdz/main.ts"
+ ],
+ "diags": []
+}

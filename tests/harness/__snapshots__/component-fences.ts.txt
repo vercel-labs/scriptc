@@ -1,27 +1,27 @@
-component-fences.ts:9:7 - error SC2009: values of type 'Map<string, Date>' cannot be compiled: the Map shape is supported, but 'Date' values have no Map slot yet
+component-fences.ts:9:7 - error SC2009: values of type 'Map<string, URLSearchParams>' cannot be compiled: the Map shape is supported, but 'URLSearchParams' values have no Map slot yet
 
-   8 | // Map values have no slot for Dates.
-   9 | const stamps = new Map<string, Date>();
-     |       ^~~~~~
-  10 | console.log(stamps);
+   8 | // Map values have no slot for URLSearchParams.
+   9 | const queries = new Map<string, URLSearchParams>();
+     |       ^~~~~~~
+  10 | console.log(queries);
 
   hint: the outer shape is supported — the named component is the blocker; restate it inside the compilable set (number, string, boolean, arrays, Maps, Sets, RegExp, functions, classes, records, unions of those, and 'unknown')
 
-component-fences.ts:9:16 - error SC1090: Map values of type 'Date' (Map values must be number, string, boolean, records, class instances, functions, typed arrays, arrays, promises, Maps, Sets, or supported unions and checked values) is not supported yet
+component-fences.ts:9:17 - error SC1090: Map values of type 'URLSearchParams' (Map values must be number, string, boolean, records, class instances, functions, typed arrays, arrays, promises, Dates, Maps, Sets, or supported unions and checked values) is not supported yet
 
-   8 | // Map values have no slot for Dates.
-   9 | const stamps = new Map<string, Date>();
-     |                ^~~~~~~~~~~~~~~~~~~~~~~
-  10 | console.log(stamps);
+   8 | // Map values have no slot for URLSearchParams.
+   9 | const queries = new Map<string, URLSearchParams>();
+     |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+  10 | console.log(queries);
 
-component-fences.ts:10:13 - error SC2004: uses of 'stamps' inherit the blocker on its declaration
+component-fences.ts:10:13 - error SC2004: uses of 'queries' inherit the blocker on its declaration
 
-   9 | const stamps = new Map<string, Date>();
-  10 | console.log(stamps);
-     |             ^~~~~~
+   9 | const queries = new Map<string, URLSearchParams>();
+  10 | console.log(queries);
+     |             ^~~~~~~
   11 | 
 
-  hint: the declaration of 'stamps' did not compile — fix the diagnostic reported there and these sites clear with it
+  hint: the declaration of 'queries' did not compile — fix the diagnostic reported there and these sites clear with it
 
 component-fences.ts:35:7 - error SC2009: values of type '() => WeakRef<object>' cannot be compiled: the function shape is supported, but its return type 'WeakRef<object>' does not compile
 

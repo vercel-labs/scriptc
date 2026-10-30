@@ -54,7 +54,10 @@ export async function compilePackedLibrary(
     dgram: false,
     dnsPromises: false,
     dgramDyn: false,
+    textCodecDyn: false,
     watch: false,
+    watchFile: false,
+    fsBufferBrand: false,
     foreignFfi: false,
     nodeTest: false,
     tls: false,
@@ -63,6 +66,7 @@ export async function compilePackedLibrary(
     dh: false,
     pki: false,
     ed25519: false,
+    x509: options.x509 ?? false,
     webcrypto: false,
     perfLoop: false,
     tlsCa: false,
@@ -151,7 +155,7 @@ export async function compilePackedLibrary(
             ...(await Promise.all(
               shards
                 .slice(start, start + 4)
-                .map((shard, offset) => emit(shard.source, `shard-${start + offset}.o`)),
+                .map((shard, offset) => emit(shard.source(), `shard-${start + offset}.o`)),
             )),
           );
         }
@@ -164,6 +168,7 @@ export async function compilePackedLibrary(
           options.programPublicSymbols,
           stem,
           target.platform,
+          { inProcessElf: true },
         );
       } else {
         program = await emit(

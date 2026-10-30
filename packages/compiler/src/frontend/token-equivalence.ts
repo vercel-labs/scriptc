@@ -17,7 +17,10 @@
  *   before it. After `)` it divides unless the parenthesis closes an `if`,
  *   `while`, `for`, `for await`, or `with` header. After `}`, `++` or
  *   `--` the scanner cannot tell which, so it gives up, as it does for
- *   escaped identifiers, which can spell keywords.
+ *   escaped identifiers, which can spell keywords. After `!` in
+ *   TypeScript it divides when the `!` follows an operand on the same line
+ *   (a non-null assertion, `x! / 2`) and gives up when that operand is a
+ *   `)`, `}`, `++` or `--`.
  * - A `/` with a line break (or a comment that spans lines) since the
  *   previous token gives up: whether automatic semicolon insertion ends the
  *   statement before it decides how it reads.
@@ -35,6 +38,8 @@ interface Token {
   text: string;
   comment: boolean;
   lineBreakBefore: boolean;
+  /** The offset of the token's first code unit. */
+  start: number;
 }
 
 /** Keywords after which `/` starts a regular expression. */
@@ -135,14 +140,20 @@ function scan(path: string, source: string): Token[] | null {
   // A line break, or a comment spanning lines, since the last token other
   // than a comment.
   let breakSinceCode = false;
-  // The previous token and the one before it, and whether a `)` closed a
-  // statement header.
-  const last: { token: string | null; before: string | null } = { token: null, before: null };
+  // The previous token and the one before it, whether a line break came
+  // before the previous token, and whether a `)` closed a statement header.
+  const last: { token: string | null; before: string | null; broke: boolean } = {
+    token: null,
+    before: null,
+    broke: false,
+  };
   let closedHeader = false;
+  // Every token ends at `index` when it is pushed.
   const push = (text: string, comment = false): void => {
-    tokens.push({ text, comment, lineBreakBefore });
+    tokens.push({ text, comment, lineBreakBefore, start: index - text.length });
     lineBreakBefore = false;
     if (!comment) {
+      last.broke = breakSinceCode;
       breakSinceCode = false;
       last.before = last.token;
       last.token = text;
@@ -291,7 +302,19 @@ function scan(path: string, source: string): Token[] | null {
       else if (before.startsWith("'") || before.startsWith('"') || before.endsWith("`"))
         regex = false;
       else if (before.startsWith("/") && before.length > 1 && before !== "/=") regex = false;
-      else regex = true;
+      else if (before === "!" && typeScript && !last.broke && last.before !== null) {
+        // `x! / 2` divides: a `!` right after an operand on the same line is
+        // a non-null assertion. `!/re/.test(s)` negates a regular expression.
+        const operand = last.before;
+        if (operand === ")" || operand === "}" || operand === "++" || operand === "--") return null;
+        regex = !(
+          operand === "]" ||
+          operand.startsWith("'") ||
+          operand.startsWith('"') ||
+          operand.endsWith("`") ||
+          (/^[A-Za-z0-9_$]/.test(operand) && !EXPRESSION_KEYWORDS.has(operand))
+        );
+      } else regex = true;
       if (regex) {
         const start = index;
         index++;
@@ -373,9 +396,33 @@ function scan(path: string, source: string): Token[] | null {
   return tokens;
 }
 
-/** Whether `current` differs from `previous` only in whitespace and in
- * comments that cannot affect compilation. */
-export function tokenEquivalentSource(path: string, previous: string, current: string): boolean {
+/** The line and column of each token's start, with the line terminators
+ * source locations count (backend/source-locations.ts). */
+function tokenPositions(source: string, tokens: readonly Token[]): number[] {
+  const positions: number[] = [];
+  let line = 0;
+  let lineStart = 0;
+  let offset = 0;
+  for (const token of tokens) {
+    for (; offset < token.start; offset++) {
+      const code = source.charCodeAt(offset);
+      if (code === 13 && source.charCodeAt(offset + 1) === 10) offset++;
+      if (code === 10 || code === 13 || code === 0x2028 || code === 0x2029) {
+        line++;
+        lineStart = offset + 1;
+      }
+    }
+    positions.push(line, token.start - lineStart);
+  }
+  return positions;
+}
+
+function equivalentSources(
+  path: string,
+  previous: string,
+  current: string,
+  positions: boolean,
+): boolean {
   if (previous === current) return true;
   const left = scan(path, previous);
   if (left === null) return false;
@@ -387,5 +434,27 @@ export function tokenEquivalentSource(path: string, previous: string, current: s
     if (a.text !== b.text || a.comment !== b.comment) return false;
     if (index > 0 && a.lineBreakBefore !== b.lineBreakBefore) return false;
   }
-  return true;
+  if (!positions) return true;
+  const before = tokenPositions(previous, left);
+  const after = tokenPositions(current, right);
+  return before.every((value, index) => value === after[index]);
+}
+
+/** Whether `current` differs from `previous` only in whitespace and in
+ * comments that cannot affect compilation. */
+export function tokenEquivalentSource(path: string, previous: string, current: string): boolean {
+  return equivalentSources(path, previous, current, false);
+}
+
+/** Whether `current` is token-equivalent to `previous` (tokenEquivalentSource)
+ * and every token keeps its line and column: the edit leaves the source
+ * positions debug information records unchanged (a comment's text within
+ * its line, comments and whitespace after the last token, trailing
+ * whitespace). */
+export function tokenPositionEquivalentSource(
+  path: string,
+  previous: string,
+  current: string,
+): boolean {
+  return equivalentSources(path, previous, current, true);
 }

@@ -51,6 +51,9 @@ typedef struct ScrZlibStream {
   bool done_pending;   /* Transform's kCallback: completion waits for _read */
   double rlen_before;  /* readableLength when the chunk's transform began */
   ScrBytes *flush_bufs[6]; /* zero-length sentinels, one per flush kind */
+  /* The AsyncLocalStorage context of the stream's creation (+1, NULL
+   * outside a store): Node runs the handle's step callbacks in it. */
+  ScrAlsCtx *als;
 } ScrZlibStream;
 
 static void scr_zlib_stream_oom(void) {
@@ -81,6 +84,7 @@ static void scr_zs_release_v(void *p) {
   for (size_t i = 0; i < 6; i++) {
     if (zs->flush_bufs[i]) scr_bytes_release(zs->flush_bufs[i]);
   }
+  scr_als_ctx_release(zs->als);
   free(zs);
 }
 
@@ -242,6 +246,7 @@ static void scr_zs_step_after(void *payload) {
   ScrZlibStep *op = payload;
   ScrZlibStream *zs = op->zs;
   ScrStream *s = op->s;
+  ScrAlsCtx *prev = scr_als_dispatch_enter(zs->als);
   zs->write_in_progress = false;
   ScrZlibError ze;
   if (scr_zlib_engine_error(zs->eng, &ze)) {
@@ -252,6 +257,7 @@ static void scr_zs_step_after(void *payload) {
     scr_zs_process(zs, s);
   }
   if (zs->pending_close) scr_zs_close_engine(zs);
+  scr_als_dispatch_leave(prev);
 }
 
 static void scr_zs_step_destroy(void *payload) {
@@ -427,6 +433,8 @@ static const char *scr_zs_class_name(int mode) {
   case SCR_ZM_GUNZIP: return "Gunzip";
   case SCR_ZM_DEFLATERAW: return "DeflateRaw";
   case SCR_ZM_INFLATERAW: return "InflateRaw";
+  case 8: return "BrotliDecompress";
+  case 9: return "BrotliCompress";
   default: return "Unzip";
   }
 }
@@ -463,6 +471,7 @@ ScrStream *scr_zlib_stream_new(double mode_d, ScrDyn *opts) {
   ScrZlibStream *zs = calloc(1, sizeof *zs);
   if (!zs) scr_zlib_stream_oom();
   zs->rc = 1;
+  zs->als = scr_als_capture();
   zs->mode = mode;
   zs->eng = scr_zlib_engine_from_options(mode, &zo);
   scr_zlib_options_drop(&zo);
@@ -471,7 +480,8 @@ ScrStream *scr_zlib_stream_new(double mode_d, ScrDyn *opts) {
   if (!zs->out_buf) scr_zlib_stream_oom();
   zs->default_flush = (int)zo.flush;
   zs->finish_flush = (int)zo.finish_flush;
-  zs->full_flush = SCR_ZF_FULL;
+  /* Brotli's full flush is BROTLI_OPERATION_FLUSH (brotliDefaultOpts). */
+  zs->full_flush = mode == 8 || mode == 9 ? 1 : SCR_ZF_FULL;
   zs->level = zo.level;
   zs->strategy = zo.strategy;
   zs->reject_garbage = zo.reject_garbage;

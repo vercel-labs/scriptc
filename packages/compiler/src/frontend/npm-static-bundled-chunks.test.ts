@@ -276,13 +276,14 @@ export default require_f();
   ).toBeNull();
 });
 
-test("an identifier-minified bundle names its lost helper names", () => {
-  // esbuild --minify output: the helper shapes survive, their names do not.
-  const result = split(
+test("an identifier-minified bundle splits through its helper's shape", () => {
+  // esbuild --minify output: the helper shape survives, its name does not.
+  const answer = expectSameBehavior(
     `var c=(r,e)=>()=>(e||r((e={exports:{}}).exports,e),e.exports);` +
-      `var x=c((t,m)=>{m.exports={v:1}});console.log(x().v);`,
+      `var x=c((t,m)=>{m.exports={v:1}});var y=c(t=>{t.w=x().v+1});` +
+      `console.log(x().v,y().w,x()===x());`,
   );
-  expect(result).toEqual({ degrade: expect.stringContaining("identifier-minified") as string });
+  expect(answer.chunks.map((c) => basename(c.path))).toEqual(["index.js.x.cjs", "index.js.y.cjs"]);
 });
 
 test("an ES-module bundle of CommonJS chunks names the chunk interop", () => {

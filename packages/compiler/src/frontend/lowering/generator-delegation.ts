@@ -577,10 +577,11 @@ export function lowerBuiltinDelegation(
       loc,
     });
   } else if (sourceT.kind === "string") {
+    // A byte cursor over the WTF-8 data, as for-of over a string walks.
     const ch = lowerer.declareHiddenLocal("%delegateElement", STRING);
     const length = (receiver: IrExpr): IrExpr => ({
       kind: "strIntrinsic",
-      method: "length",
+      method: "byteLength",
       receiver,
       args: [],
       type: F64,
@@ -595,7 +596,7 @@ export function lowerBuiltinDelegation(
           localId: ch.id,
           init: {
             kind: "strIntrinsic",
-            method: "cpAt",
+            method: "cpAtByte",
             receiver: src(),
             args: [at()],
             type: STRING,

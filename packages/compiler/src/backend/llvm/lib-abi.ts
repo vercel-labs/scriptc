@@ -73,6 +73,26 @@ export function rawBytes(host: LlvmEmitterContext, value: LlValue): AbiArgument[
   return [ptr(data), { type: host.sizeType, name: length }];
 }
 
+/** A TLS client's `ca` as rawBytes, with a null pointer for none: an empty
+ * string, which Node reads as no ca (and which an omitted ca lowers to).
+ * A Buffer's pointer is never null, so an empty one is an empty trust
+ * store. */
+export function caBytes(host: LlvmEmitterContext, value: LlValue): AbiArgument[] {
+  const B = host.B;
+  const [data, length] = rawBytes(host, value);
+  const test = B.tmp(),
+    pointer = B.tmp();
+  if (value.type.kind === "string") {
+    B.line(`${test} = icmp eq ${host.sizeType} ${length!.name}, 0`);
+    B.line(`${pointer} = select i1 ${test}, ptr null, ptr ${data!.name}`);
+  } else {
+    // An empty Buffer's data pointer may be null; its object stands in.
+    B.line(`${test} = icmp eq ptr ${data!.name}, null`);
+    B.line(`${pointer} = select i1 ${test}, ptr ${value.name}, ptr ${data!.name}`);
+  }
+  return [ptr(pointer), length!];
+}
+
 export function callbackType(value: LlValue): IrType & { kind: "func" } {
   if (value.type.kind !== "func")
     throw new InternalCompilerError("runtime callback must be a function");

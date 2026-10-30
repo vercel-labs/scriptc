@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7749-text-codec-unknown-roundtrip.ts"
+ ],
+ "diags": []
+}

@@ -1,5 +1,5 @@
 import { isRefCounted, type IrExpr, type IrFunction, type IrLocal } from "../../ir/ir.js";
-import { everyStmtList } from "../../ir/traverse.js";
+import { eachNodeOfKinds, type IrNodeIndex, type IrNodeKind } from "../../ir/node-index.js";
 
 /** What the emitter knows about a projection's storage. */
 export interface WalkBorrowHost {
@@ -22,12 +22,29 @@ export interface WalkBorrowHost {
    * (whose own rebinding releases nothing). Absent: the body preserves
    * every edge. */
   unwritten?(value: IrExpr, candidates: ReadonlySet<string>): boolean;
+  /** The module's node index, read instead of walking the body. */
+  nodes?: IrNodeIndex;
 }
+
+/** The node kinds analyzeWalks reads from a body. */
+const WALK_KINDS: readonly IrNodeKind[] = [
+  "varDecl",
+  "assign",
+  "forOf",
+  "rethrow",
+  "tryCatch",
+  "return",
+  "assignExpr",
+  "incDec",
+  "closure",
+  "classRef",
+];
 
 export interface WalkFacts {
   locals: ReadonlySet<string>;
-  /** Every return yields a walk (or a throw), so the body can return its
-   * pointer without a reference: no try statement, at least one return. */
+  /** Every return yields a walk, a throw or a string literal (an interned
+   * constant that nothing frees), so the body can return its pointer
+   * without a reference: no try statement, at least one return. */
   returnsWalk: boolean;
 }
 
@@ -71,44 +88,36 @@ export function analyzeWalks(fn: IrFunction, host: WalkBorrowHost): WalkFacts {
     if (!list) definitions.set(id, (list = []));
     list.push(value);
   };
-  everyStmtList(fn.body, {
-    stmt: (s) => {
-      switch (s.kind) {
-        case "varDecl":
-          define(s.localId, s.init);
-          break;
-        case "assign":
-          define(s.localId, s.value);
-          break;
-        case "forOf":
-          excluded.add(s.localId);
-          break;
-        case "rethrow":
-          excluded.add(s.localId);
-          break;
-        case "tryCatch":
-          guarded = true;
-          if (s.catchLocalId !== null) excluded.add(s.catchLocalId);
-          break;
-        case "return":
-          returns.push(s.value);
-          break;
-      }
-      return true;
-    },
-    expr: (e) => {
-      switch (e.kind) {
-        case "assignExpr":
-        case "incDec":
-          excluded.add(e.localId);
-          break;
-        case "closure":
-        case "classRef":
-          for (const id of e.captures ?? []) excluded.add(id);
-          break;
-      }
-      return true;
-    },
+  eachNodeOfKinds(fn, host.nodes?.scan(WALK_KINDS), (node) => {
+    switch (node.kind) {
+      case "varDecl":
+        define(node.localId, node.init);
+        break;
+      case "assign":
+        define(node.localId, node.value);
+        break;
+      case "forOf":
+        excluded.add(node.localId);
+        break;
+      case "rethrow":
+        excluded.add(node.localId);
+        break;
+      case "tryCatch":
+        guarded = true;
+        if (node.catchLocalId !== null) excluded.add(node.catchLocalId);
+        break;
+      case "return":
+        returns.push(node.value);
+        break;
+      case "assignExpr":
+      case "incDec":
+        excluded.add(node.localId);
+        break;
+      case "closure":
+      case "classRef":
+        for (const id of node.captures ?? []) excluded.add(id);
+        break;
+    }
   });
   const plain = (id: string): boolean => {
     const local = locals.get(id);
@@ -168,6 +177,7 @@ export function analyzeWalks(fn: IrFunction, host: WalkBorrowHost): WalkFacts {
   };
   const isThrow = (e: IrExpr): boolean => e.kind === "libCall" && e.fn === "error.nodeThrow";
   const walkOrThrow = (e: IrExpr): boolean => isThrow(e) || walk(e);
+  const constant = (e: IrExpr): boolean => isThrow(e) || e.kind === "strLit";
   for (let changed = true; changed;) {
     changed = false;
     for (const id of candidates) {
@@ -191,8 +201,7 @@ export function analyzeWalks(fn: IrFunction, host: WalkBorrowHost): WalkFacts {
     returns.every(
       (value) =>
         value !== null &&
-        walkOrThrow(value) &&
-        (isThrow(value) || host.unwritten?.(value, candidates) !== false),
+        (constant(value) || (walk(value) && host.unwritten?.(value, candidates) !== false)),
     );
   return { locals: result, returnsWalk };
 }

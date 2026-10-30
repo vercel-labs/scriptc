@@ -64,6 +64,7 @@ export function everyTypeChild(node: IrType, visit: (node: IrType) => boolean): 
     case "searchParams":
     case "symbol":
     case "stats":
+    case "bigintStats":
     case "fileHandle":
     case "dir":
     case "spawnRes":
@@ -140,6 +141,7 @@ export function everyModuleNode(mod: IrModule, visitor: IrModuleVisitor): boolea
   for (const cls of mod.classes ?? []) {
     for (const capture of cls.localCaptures ?? []) if (!type(capture.type, cls.loc)) return false;
     for (const field of cls.fields) if (!type(field.type, cls.loc)) return false;
+    if (cls.arrayElem !== undefined && !type(cls.arrayElem, cls.loc)) return false;
   }
   for (const global of mod.globals ?? [])
     if (!type(global.type, global.source?.loc ?? entryLoc)) return false;
@@ -473,9 +475,10 @@ export function everyStmtChild(
   throw new Error("unhandled IR node");
 }
 
-/** Called with each record literal mapExprChildren rebuilds and its
- * replacement, so a side table keyed by node identity (the lowering's
- * key-order witness notes) follows the literal into the rewritten tree. */
+/** Called with each record literal and checked conversion mapExprChildren
+ * rebuilds and its replacement, so a side table keyed by node identity (the
+ * lowering's key-order witness notes) follows the node into the rewritten
+ * tree. */
 let recordLiteralRebuilt: ((from: IrExpr, to: IrExpr) => void) | null = null;
 
 /** Installs (or with null removes) the record-literal rebuild observer. */
@@ -504,8 +507,11 @@ export function mapExprChildren(
       return node;
     case "libCall":
       return { ...node, args: mapOf(node.args, expr) };
-    case "dynCheck":
-      return { ...node, value: expr(node.value) };
+    case "dynCheck": {
+      const rebuilt: IrExpr = { ...node, value: expr(node.value) };
+      if (recordLiteralRebuilt !== null) recordLiteralRebuilt(node, rebuilt);
+      return rebuilt;
+    }
     case "strEq":
       return { ...node, left: expr(node.left), right: expr(node.right) };
     case "fieldGet":

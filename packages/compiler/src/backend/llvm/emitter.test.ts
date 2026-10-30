@@ -1,7 +1,6 @@
 import { expect, test } from "vitest";
 import {
   BOOL,
-  DATE_T,
   F64,
   PROCSTREAM_T,
   STRING,
@@ -202,6 +201,37 @@ test("detached exit defines the runtime opt-in symbol only when requested", () =
   expect(detached.replace("@scr_detached_exit = constant i8 1\n", "")).toBe(plain);
 });
 
+test("a target CPU level reaches every function attribute group and nothing else", () => {
+  const module = moduleFor([call()]);
+  const plain = emitLlvmModule(module);
+  expect(plain).not.toContain("target-cpu");
+  const v3 = emitLlvmModule(module, { targetCpu: "x86-64-v3" });
+  expect(v3).toMatch(/^attributes #0 = \{ sanitize_address uwtable "target-cpu"="x86-64-v3" \}$/m);
+  expect(v3.replaceAll(' "target-cpu"="x86-64-v3"', "")).toBe(plain);
+  expect(emitLlvmModule(module, { targetCpu: "baseline" })).toBe(plain);
+});
+
+test("only sanitized builds mark the emitted functions sanitize_address", () => {
+  const module = moduleFor([call()]);
+  const sanitized = emitLlvmModule(module);
+  expect(emitLlvmModule(module, { sanitizeAttributes: true })).toBe(sanitized);
+  expect(sanitized).toMatch(/^attributes #0 = \{ sanitize_address uwtable \}$/m);
+  const plain = emitLlvmModule(module, { sanitizeAttributes: false });
+  expect(plain).not.toContain("sanitize_address");
+  expect(plain).toMatch(/^attributes #0 = \{ uwtable \}$/m);
+  const v3 = emitLlvmModule(module, { sanitizeAttributes: false, targetCpu: "x86-64-v3" });
+  expect(v3).toMatch(/^attributes #0 = \{ uwtable "target-cpu"="x86-64-v3" \}$/m);
+});
+
+test("native functions get unwind tables and wasm32-wasi functions do not", () => {
+  const module = moduleFor([call()]);
+  expect(emitLlvmModule(module)).toMatch(/^attributes #0 = \{ sanitize_address uwtable \}$/m);
+  const wasi = emitLlvmModule(module, { wasi: true, pointerBits: 32, sanitizeAttributes: false });
+  expect(wasi).not.toContain("uwtable");
+  // A group needs an attribute: an ignored string attribute stands in.
+  expect(wasi).toMatch(/^attributes #0 = \{ "scriptc-function" \}$/m);
+});
+
 test("inline RC inlines every fast path at speed and keeps box releases as calls in release", () => {
   for (const boxed of [false, true]) {
     const module = moduleFor(Array.from({ length: 4 }, call), { boxed });
@@ -287,7 +317,7 @@ test("shared exceptional exits preserve the function's scalar return ABI", () =>
 });
 
 test("exceptional exits use each scalar kind's LLVM return type", () => {
-  for (const type of [F64, DATE_T, BOOL, PROCSTREAM_T]) {
+  for (const type of [F64, BOOL, PROCSTREAM_T]) {
     for (const ownedLocals of [false, true]) {
       const module = moduleFor([call(), call(), { kind: "throw", value: literal("failed"), loc }]);
       const work = module.functions[1]!;
@@ -459,6 +489,33 @@ test("class brand probes borrow a local only across an inert literal key", () =>
   expect(computed).toContain("call ptr @scr_dyn_retain_v(");
 });
 
+test("class constructor probes test the function tag and borrow across a literal key", () => {
+  const dyn: IrType = { kind: "dyn" };
+  const key: IrExpr = { kind: "strLit", value: "classval:Example", type: STRING, loc: receiverLoc };
+  const probe: IrExpr = {
+    kind: "libCall",
+    fn: "dyn.classIs",
+    args: [ref(dyn), key],
+    type: BOOL,
+    loc: receiverLoc,
+  };
+  const borrowed = work(probe, dyn);
+  expect(borrowed).not.toContain("call ptr @scr_dyn_retain_v(");
+  expect(borrowed).toContain("icmp ne ptr");
+  expect(borrowed).toContain("icmp eq i32 %t");
+  expect(borrowed).toMatch(/icmp eq i32 %t\d+, 8\b/);
+  expect(borrowed).toContain("call zeroext i1 @scr_dyn_class_is_key(");
+  const computed = work(
+    {
+      ...probe,
+      args: [ref(dyn), { kind: "toString", operand: ref(dyn), type: STRING, loc: receiverLoc }],
+    },
+    dyn,
+  );
+  expect(computed).toContain("call ptr @scr_dyn_retain_v(");
+  expect(computed).toContain("call zeroext i1 @scr_dyn_class_is_key(");
+});
+
 test("class brand probes compare the program's key constant before the key text", () => {
   const dyn: IrType = { kind: "dyn" };
   const key: IrExpr = { kind: "strLit", value: "object:Example", type: STRING, loc: receiverLoc };
@@ -472,6 +529,27 @@ test("class brand probes compare the program's key constant before the key text"
   const named = work(probe("dyn.typedRefIs"), dyn);
   expect(named).toContain("; ->v.typed_ref.type_key");
   expect(named).toContain("@scr_dyn_typed_ref_is_key");
+  // Another key pointer is rejected on its length and last eight bytes
+  // ("Example" plus the prefix's ':') before the out-of-line comparison.
+  expect(named).toContain("; ->v.typed_ref.type_key_len");
+  expect(named).toContain("and i32 %t");
+  expect(named).toMatch(/icmp eq i32 %t\d+, 14\b/);
+  const tail = Buffer.from("object:Example").readBigInt64LE(6);
+  expect(named).toContain(`icmp eq i64 %t`);
+  expect(named).toContain(`, ${tail}`);
+  const shortKey: IrExpr = { kind: "strLit", value: "o:E", type: STRING, loc: receiverLoc };
+  const short = work(
+    {
+      kind: "libCall",
+      fn: "dyn.typedRefIs",
+      args: [ref(dyn), shortKey],
+      type: BOOL,
+      loc: receiverLoc,
+    },
+    dyn,
+  );
+  expect(short).toMatch(/icmp eq i32 %t\d+, 3\b/);
+  expect(short).not.toContain("load i64");
   // The key-pointer test answers false for capsules boxed elsewhere.
   const exact = work(probe("dyn.typedRefKeyIs"), dyn);
   expect(exact).toContain("; ->v.typed_ref.type_key");

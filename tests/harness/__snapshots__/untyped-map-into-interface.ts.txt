@@ -1,0 +1,8 @@
+untyped-map-into-interface.ts:9:10 - error SC2002: record shapes must match exactly or width-coerce: expected '{ get: (string) => number | undefined; set: (string, number) => unknown }', got 'Map<unknown, unknown>'
+
+   8 | function make(c?: Cache): Cache {
+   9 |   return c ?? new Map();
+     |          ^~~~~~~~~~~~~~
+  10 | }
+
+  hint: width subtyping compiles as a copy (each expected field copied off the source; extra fields drop) — this pair is outside the copy's rules; build a literal with exactly the expected fields instead

@@ -20,12 +20,18 @@ import { constructorClass } from "../../ir/final-fields.js";
 import { findLoopArrayBorrows } from "./loop-array-borrows.js";
 import { findCallArrayReads, findLocalArrayReads } from "./local-array-reads.js";
 import { findScalarStringSlices, findScratchStringSlices } from "./string-slices.js";
-import { findMapReadLifetimes, findReadNumberMapWrites } from "./map-read-lifetimes.js";
+import {
+  findMapReadBorrows,
+  findMapReadLifetimes,
+  findReadNumberMapWrites,
+} from "./map-read-lifetimes.js";
+import { borrowableMapGet } from "./expr-containers.js";
 import { findMapEntryFusions } from "./map-entry-fusion.js";
 import { findLocalStackUnions } from "./stack-unions.js";
 import { findLocalStackObjects, findReassignedStackObjects } from "./stack-objects.js";
 import { findLocalUnionStorage } from "./local-union-storage.js";
 import { INT32_RANGE, analyzeIntegerRangeFacts } from "../../ir/integer-ranges.js";
+import { beginLoopEntryVersions } from "./loop-entry-versions.js";
 import { findBytesBounds } from "./bytes-bounds.js";
 import { findInt32Locals } from "./int32-locals.js";
 import { findIntegerViews } from "./integer-views.js";
@@ -56,12 +62,17 @@ import { emitIntegerClone, emitIntegerDispatcher } from "./integer-clones.js";
 import { beginFunctionLoops, LOOPS } from "./loop-state.js";
 import { runningExtremumUpdates } from "./running-extrema.js";
 import { findIntegerOrNaNLocals } from "./wrapping-sums.js";
+import { UNWIND_PERSONALITY, UNWIND_RESUME_DECLARATION, UNWIND_SLOT } from "./unwind-abi.js";
 
 export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   const B = new BlockBuilder();
   emitter.B = B;
   emitter.currentFunctionName = fn.name;
+  emitter.currentUnwindAbi = emitter.unwindAbi.has(fn.name);
+  emitter.usesLandingPads = false;
+  emitter.aliasScopedVersions = 0;
   emitter.findInt32Allocations(fn);
+  emitter.speculativeLeaves = 0;
   emitter.currentTier = fn.tier;
   // Fiber switches restore the active exception cell before control
   // returns to a synchronous frame (emitPendingCheck).
@@ -73,6 +84,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.unwindCleanups.clear();
   emitter.jumpTargets = [];
   emitter.currentLocals = new Map(fn.locals.map((l) => [l.id, l]));
+  emitter.currentParameters = new Set(fn.params.map((p) => p.localId));
   emitter.lazyCaptureBoxes.clear();
   emitter.lazyStackBoxes.clear();
   // An unchanged captured parameter keeps its value in a plain slot; the
@@ -136,6 +148,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   emitter.integerTempsEnabled = emitter.debug === null && !fn.async && !fn.generator;
   beginFunctionLoops(emitter, fn, numericFn);
   emitter.speculativeLoopsEnabled = LOOPS.of(emitter).countedLoopsEnabled;
+  emitter.loopCopiesEnabled = fn.plainLoops !== true;
   emitter.speculativeFunction = fn.name;
   emitter.speculation = null;
   emitter.speculationResume = null;
@@ -147,6 +160,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     constructorClass(fn.name) === null &&
     emitter.finalFields.size > 0;
   emitter.integerViews.clear();
+  emitter.orderedViews.clear();
   emitter.fieldPointerTags.clear();
   emitter.compressedFieldPtrs.clear();
   emitter.integerArrayBindings.clear();
@@ -159,6 +173,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
           emitter.optionalArrayReads,
           emitter.referenceWrites,
           emitter.fnByName,
+          emitter.nodeIndex,
         )
       : new Set();
   emitter.localArrayReads = findLocalArrayReads(
@@ -186,15 +201,27 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
           fn,
           emitter.callLifetimes,
           emitter.scalarStringSlices,
-          emitter.lentStringParameters,
+          emitter.lendingFacts,
         )
       : new Set();
   emitter.mapReadLifetimes = findMapReadLifetimes(
     fn,
     emitter.boxedUnionsById,
     emitter.callLifetimes,
+    emitter.referenceEffects,
+  );
+  const stable = emitter.callLifetimes.bindings.get(fn.name);
+  emitter.borrowedMapGets = findMapReadBorrows(
+    fn,
+    emitter.referenceEffects,
+    (decl) =>
+      decl.init !== null &&
+      stable?.has(decl.localId) === true &&
+      !emitter.mapReadLifetimes.locals.has(decl.localId) &&
+      borrowableMapGet(emitter, decl.init),
   );
   emitter.readNumberMapWrites = findReadNumberMapWrites(fn);
+  emitter.numberMapKeyIntegers = new Map();
   emitter.mapEntryFusion = emitter.debug === null ? findMapEntryFusions(fn) : null;
   emitter.localStackUnions = findLocalStackUnions(
     fn,
@@ -220,6 +247,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   const rangeFacts = analyzeIntegerRangeFacts(numericFn, slotFacts);
   emitter.integerRanges = rangeFacts.ranges;
   emitter.integerLoopRanges = rangeFacts.loopRanges;
+  beginLoopEntryVersions(emitter, numericFn, slotFacts, rangeFacts);
   emitter.int32Elements = slotFacts.elements ?? null;
   emitter.integerOrNaNLocals = findIntegerOrNaNLocals(emitter, numericFn);
   emitter.bytesBounds = findBytesBounds(numericFn, emitter.integerRanges);
@@ -304,11 +332,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     // ScrGen owns the frame), so its OUT slot address is fixed.
     let out: string | null = null;
     const yieldKind = fn.generator?.yieldT.kind;
-    if (
-      !emitter.wasi &&
-      fn.async !== true &&
-      (yieldKind === "f64" || yieldKind === "date" || yieldKind === "bool")
-    ) {
+    if (!emitter.wasi && fn.async !== true && (yieldKind === "f64" || yieldKind === "bool")) {
       emitter.declare(`declare ptr @scr_gen_of_fiber(ptr)`);
       const gen = B.tmp();
       B.line(`${gen} = call ptr @scr_gen_of_fiber(ptr ${self})`);
@@ -316,6 +340,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     }
     emitter.currentCoro = {
       kind: fn.generator !== undefined ? "generator" : "async",
+      awaits: fn.async === true,
       id,
       handle,
       self,
@@ -328,7 +353,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
 
   const paramIds = new Set(fn.params.map((p) => p.localId));
   if (emitter.debug === null) {
-    for (const id of findIntegerViews(numericFn)) {
+    for (const id of findIntegerViews(numericFn, emitter.nodeIndex)) {
       // An i32 slot is its own view.
       if (emitter.int32Locals.has(id)) continue;
       const slot = B.slot();
@@ -336,6 +361,15 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
         `${slot} = alloca i32 ; integer view ${emitter.numericLocals.get(id)!.name}`,
       );
       emitter.integerViews.set(id, slot);
+      // A local of exact integers or NaN also keeps whether it is NaN, so
+      // its integer is usable without converting the double.
+      if (emitter.integerOrNaNLocals.has(id)) {
+        const ordered = B.slot();
+        B.entryAllocas.push(
+          `${ordered} = alloca i1 ; ordered view ${emitter.numericLocals.get(id)!.name}`,
+        );
+        emitter.orderedViews.set(id, ordered);
+      }
     }
   }
   for (const global of initializerBindings) {
@@ -494,6 +528,7 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     }
   }
   emitter.scopes.push(fnScope);
+  emitter.beginArenaFunction(fn);
   // Stackful native fibers and native coroutine frames retain these frames
   // while suspended. The active exception context owns the chain, so
   // concurrent fibers isolate it.
@@ -599,6 +634,8 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
     B.terminate(cleanup.terminator);
   }
 
+  if (emitter.usesLandingPads && emitter.currentUnwindAbi)
+    B.entryAllocas.push(`${UNWIND_SLOT} = alloca { ptr, i32 }`);
   if (emitter.logArgSlots > 0) {
     B.entryAllocas.push(`%logargs = alloca [${emitter.logArgSlots} x %ScrLogArg]`);
   }
@@ -633,13 +670,22 @@ export function emitFunction(emitter: LlEmitter, fn: IrFunction): string {
   // checked dynamic call. Keeping that fallback out of line leaves the
   // tests small enough to inline at each call site.
   if (fn.name.startsWith("%dyn.class.protocol.fallback.")) attrs = `noinline ${attrs}`;
+  // A keyed record read's inherited-method miss path (record-inherited.ts)
+  // stays out of line, so the hit path keeps its own small frame.
+  else if (fn.name.startsWith("%rec.inherited.")) attrs = `noinline cold ${attrs}`;
   else if (fn.name.startsWith("%dyn.class.protocol.")) attrs = `inlinehint ${attrs}`;
   if (fn.name.startsWith(RESULT_ENTRY_PREFIX)) attrs = `inlinehint ${attrs}`;
   if (unoptimized && attrs === FN_ATTRS) attrs = `noinline optnone ${attrs}`;
   const debug = emitter.debugScope === null ? "" : ` !dbg ${emitter.debugScope}`;
   const symbol = borrowed ? mangleBorrowedFunction(fn.name) : mangleFunction(fn.name);
   emitter.privateGlobalSlots.clear();
-  let body = `define internal ${ret} @${symbol}${int32Abi ? INT32_ABI_SUFFIX : ""}(${params.join(", ")}) ${attrs}${debug} { ; ${fn.name}\n${B.render()}\n}`;
+  // Landing pads (emitDirectCall) need the personality.
+  const personality = emitter.usesLandingPads ? ` ${UNWIND_PERSONALITY}` : "";
+  if (emitter.usesLandingPads) {
+    emitter.declare(`declare i32 @__gcc_personality_v0(...)`);
+    emitter.declare(UNWIND_RESUME_DECLARATION);
+  }
+  let body = `define internal ${ret} @${symbol}${int32Abi ? INT32_ABI_SUFFIX : ""}(${params.join(", ")}) ${attrs}${personality}${debug} { ; ${fn.name}\n${B.render()}\n}`;
   if (int32Abi) body += "\n" + emitter.emitInt32AbiWrapper(fn, symbol, int32Abi);
   if (emitter.integerClones.members.has(fn.name)) {
     body += "\n" + emitIntegerClone(fn, emitter, emitter.stackChecks?.has(fn.name) === true);
@@ -704,7 +750,6 @@ export function emitGenScaffolding(emitter: LlEmitter): string[] {
           tr.push(`  br label %done ; void body: the done value is undefined (NONE)`);
           break;
         case "f64":
-        case "date":
           emitter.declare(`declare void @scr_gen_out_f64(ptr, double)`);
           tr.push(`  call void @scr_gen_out_f64(ptr %g, double %r)`, `  br label %done`);
           break;
@@ -827,10 +872,14 @@ export function emitGenScaffolding(emitter: LlEmitter): string[] {
     ];
     const genNew = coroBody && !emitter.wasi ? "scr_gen_new_stackless" : "scr_gen_new";
     if (genNew !== "scr_gen_new") emitter.declare(`declare ptr @${genNew}(ptr, ptr, ptr)`);
+    const asyncGenNew =
+      coroBody && !emitter.wasi ? "scr_async_gen_new_stackless" : "scr_async_gen_new";
+    if (settleAsync !== null && asyncGenNew !== "scr_async_gen_new")
+      emitter.declare(`declare ptr @${asyncGenNew}(ptr, ptr, ptr, ptr)`);
     sp.push(
       settleAsync === null
         ? `  %gg = call ptr @${genNew}(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)})`
-        : `  %gg = call ptr @scr_async_gen_new(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)}, ptr @${settleAsync})`,
+        : `  %gg = call ptr @${asyncGenNew}(ptr @${mangleTrampoline(fn.name)}, ptr %ap, ptr @${mangleGenDrop(fn.name)}, ptr @${settleAsync})`,
       ...(fn.generator.tag !== undefined
         ? [`  call void @scr_gen_set_tag(ptr %gg, ptr ${emitter.cstr(fn.generator.tag)})`]
         : []),
@@ -1053,7 +1102,6 @@ export function emitAsyncAwaitCall(
         emitter.declare(`declare void @scr_await_void(ptr)`);
         return `  call void @scr_await_void(ptr ${promise})`;
       case "f64":
-      case "date":
         emitter.declare(`declare double @scr_await_f64(ptr)`);
         return `  ${dest} = call double @scr_await_f64(ptr ${promise})`;
       case "bool":
@@ -1108,7 +1156,7 @@ export function emitAsyncAwaitCall(
     const kind =
       ret.kind === "void"
         ? "void"
-        : ret.kind === "f64" || ret.kind === "date"
+        : ret.kind === "f64"
           ? "f64"
           : ret.kind === "bool"
             ? "bool"
@@ -1187,7 +1235,6 @@ export function emitWasiFulfill(emitter: LlEmitter, v: LlValue | null): void {
       case "void":
         return;
       case "f64":
-      case "date":
         emitter.declare(`declare void @scr_gen_out_f64(ptr, double)`);
         emitter.B.line(`call void @scr_gen_out_f64(ptr ${gen}, double ${v!.name})`);
         return;
@@ -1212,7 +1259,6 @@ export function emitWasiFulfill(emitter: LlEmitter, v: LlValue | null): void {
       emitter.B.line(`call void @scr_promise_fulfill_void(ptr ${pr})`);
       break;
     case "f64":
-    case "date":
       emitter.declare(`declare void @scr_promise_fulfill_f64(ptr, double)`);
       emitter.B.line(`call void @scr_promise_fulfill_f64(ptr ${pr}, double ${v!.name})`);
       break;
@@ -1315,8 +1361,10 @@ export function emitArgPackAndTrampolinePrologue(
  * code. */
 export function parkingFunctions(emitter: LlEmitter): Set<string> | null {
   if (emitter.wasi || emitter.mod.workers === true) return null;
-  for (const decl of emitter.decls) if (/@scr_test_sub\b/.test(decl)) return null;
-  for (const text of emitter.fnDefText.values()) if (/@scr_test_sub\b/.test(text)) return null;
+  const testSub = (text: string): boolean =>
+    text.includes("@scr_test_sub") && /@scr_test_sub\b/.test(text);
+  for (const decl of emitter.decls) if (testSub(decl)) return null;
+  for (const text of emitter.fnDefText.values()) if (testSub(text)) return null;
   // Reverse mention edges, then propagate "may park" to every mentioner.
   const mentionedBy = new Map<string, Set<string>>();
   const parks = new Set<string>();

@@ -32,6 +32,7 @@ sudo env DEBIAN_FRONTEND=noninteractive apt-get install --quiet=2 --yes --no-ins
   libclang-rt-22-dev \
   libpolly-22-dev \
   libzstd-dev \
+  lld-22 \
   llvm-22-dev \
   ninja-build \
   xz-utils \
@@ -40,6 +41,9 @@ sudo rm -f /usr/local/bin/clang /usr/local/bin/clang++
 sudo ln -sf clang-22 /usr/bin/clang
 sudo ln -sf clang++-22 /usr/bin/clang++
 test "$(llvm-config-22 --version)" = 22.1.8
+# CI's pinned LLVM ships ld.lld and the compiler links with it when the
+# driver finds it (beside clang's real executable): match that here.
+test -x "$(dirname "$(readlink -f "$(command -v clang)")")/ld.lld"
 
 node_archive="node-v${node_version}-linux-x64.tar.xz"
 curl --fail --silent --show-error --location \

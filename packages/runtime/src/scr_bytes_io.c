@@ -59,6 +59,10 @@ static bool scr_fs_read_utf8(ScrStr *encoding) {
   return encoding->len == 0 || scr_bytes_encoding_is_utf8(encoding);
 }
 
+void scr_fs_check_read_encoding(ScrStr *encoding) {
+  (void)scr_fs_read_encoding_valid(encoding);
+}
+
 ScrStr *scr_fs_read_file_encoded(ScrStr *path, ScrStr *encoding) {
   if (!scr_fs_read_encoding_valid(encoding)) return NULL;
   if (scr_fs_read_utf8(encoding)) return scr_fs_read_file(path);
@@ -161,6 +165,9 @@ static bool scr_fs_path_chk(const ScrDyn *value, const char *name);
 static ScrDyn *scr_fs_cb_arg(ScrDyn *const *args, size_t argc, size_t index) {
   return index < argc ? args[index] : scr_dyn_undefined();
 }
+
+static bool scr_fs_bigint_position_chk(ScrBigInt *position, double length);
+static double scr_fs_int32(double n);
 
 static ScrDyn *scr_fs_cb_option(const ScrDyn *options, const char *name) {
   if (scr_fs_dyn_absent(options)) return scr_dyn_retain(scr_dyn_undefined());
@@ -631,9 +638,12 @@ void scr_fs_cb_schedule(const ScrDyn *callback, ScrDyn *result, const ScrDyn *bu
 #endif
 }
 
-static bool scr_fs_read_validate(const ScrDyn *, const ScrDyn *, const ScrDyn *, const ScrDyn *, const ScrDyn *);
+static bool scr_fs_read_validate(const ScrDyn *, const ScrDyn *, const ScrDyn *, const ScrDyn *, const ScrDyn *,
+                                 double *);
 static bool scr_fs_encoding_chk(const ScrDyn *);
 static bool scr_fs_int_range_chk(const ScrDyn *, const char *, double, double, const char *);
+static bool scr_fs_length_int32(const ScrDyn *, double *);
+static bool scr_fs_write_validate(const ScrDyn *, const ScrDyn *, const ScrDyn *);
 static bool scr_fs_mode_chk(const ScrDyn *, const char *);
 
 /* Where Node's signature handling finds the callback: a fixed position, or
@@ -852,7 +862,7 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
    * (below); every other form checks it here, before its path. */
   bool late = !strcmp(op, "access") || !strcmp(op, "copyFile") || !strcmp(op, "chmod") || !strcmp(op, "open") ||
               !strcmp(op, "mkdir") || !strcmp(op, "fchmod") || !strcmp(op, "ftruncate") || !strcmp(op, "truncate") ||
-              !strcmp(op, "read");
+              !strcmp(op, "read") || !strcmp(op, "write");
   if (!late && !scr_fs_cb_chk(callback, legacy ? "callback" : "cb")) { scr_arr_release(vectors); return NULL; }
   size_t count = timestamp ? argc : slot < argc ? slot : argc;
 #define ARG(index) scr_fs_cb_arg(args, count, index)
@@ -885,7 +895,8 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
       const ScrDyn *params = count == 3 ? ARG(2) : scr_dyn_bytes_is(ARG(1), SCR_BYTES_U8) ? NULL : ARG(1);
       bool object = !params || scr_fs_dyn_absent(params) ||
                     params->kind == SCR_DYN_OBJ || params->kind == SCR_DYN_BYTES ||
-                    (params->kind == SCR_DYN_TYPED_REF && !scr_dyn_ref_is_array(params));
+                    (params->kind == SCR_DYN_TYPED_REF && !scr_dyn_ref_is_array(params)) ||
+                    (params->kind == SCR_DYN_PROXY && scr_dyn_is_object(params));
       if (!object) {
         scr_dyn_arg_type_fail("options", "of type object", params);
         return NULL;
@@ -897,7 +908,28 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
     }
     if (!scr_fs_cb_chk(callback, "cb")) return NULL;
   }
-  if (!strcmp(op, "read") && count >= 4 && !scr_fs_read_validate(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4))) return NULL;
+  /* The read length after `length |= 0`, converted once (a valueOf call
+   * runs once, as in Node). */
+  double readLength = 0;
+  if (!strcmp(op, "read") && count >= 4 &&
+      !scr_fs_read_validate(ARG(0), ARG(1), ARG(2), ARG(3), ARG(4), &readLength))
+    return NULL;
+  /* write checks its fd first, then the buffer form's callback, offset and
+   * length (validateOffsetLengthWrite), or the string form's data and
+   * callback. */
+  if (!strcmp(op, "write")) {
+    if (!scr_fs_int_range_chk(ARG(0), "fd", 0, 2147483647.0, ">= 0 && <= 2147483647")) return NULL;
+    if (ARG(1)->kind == SCR_DYN_BYTES) {
+      if (!scr_fs_cb_chk(callback, "cb") || !scr_fs_write_validate(ARG(1), ARG(2), ARG(3))) return NULL;
+    } else {
+      if (ARG(1)->kind != SCR_DYN_STR) {
+        scr_dyn_arg_type_fail("buffer", "of type string or an instance of Buffer, TypedArray, or DataView",
+                              ARG(1));
+        return NULL;
+      }
+      if (!scr_fs_cb_chk(callback, "cb")) return NULL;
+    }
+  }
   bool descriptor = timestamp_fd || vector || newControl || !strcmp(op, "close") || !strcmp(op, "fstat") || !strcmp(op, "fsync") || !strcmp(op, "read") || !strcmp(op, "write") || !strcmp(op, "fchown");
   /* truncate checks len, then the callback, before the open its request
    * starts with. */
@@ -1096,9 +1128,32 @@ static ScrDyn *scr_fs_cb_invoke(ScrStr *member, ScrDyn *const *args, size_t argc
       return NULL;
     } else {
       double offset = ownedBuffer ? scr_fs_cb_option_number(options, "offset", 0) : scr_fs_cb_number(ARG(2), "offset", 0);
-      double length = ownedBuffer ? scr_fs_cb_option_number(options, "length", bytes->len - offset) : scr_fs_cb_number(ARG(3), "length", bytes->len - offset);
-      double position = ownedBuffer ? scr_fs_cb_option_number(options, "position", -1) : scr_fs_cb_number(ARG(4), "position", -1);
-      if (!scr_exc_pending()) result = scr_dyn_new_num(readOp ? scr_fs_read_sync(fd, bytes, offset, length, position) : scr_fs_write_sync(fd, bytes, offset, length, position));
+      double length = bytes->len - offset;
+      if (ownedBuffer) length = scr_fs_cb_option_number(options, "length", length);
+      else if (readOp && count >= 4) length = readLength;
+      else length = scr_fs_cb_number(ARG(3), "length", length);
+      /* The position option is read once, so a getter runs once. A bigint
+       * read position takes readSync's range check against `length |= 0`
+       * and reads at its exact value: a double would round it past 2^53. */
+      ScrDyn *positionValue = ownedBuffer ? scr_fs_cb_option(options, "position")
+                                          : scr_dyn_retain(ARG(4));
+      bool bigPosition = readOp && positionValue && positionValue->kind == SCR_DYN_BIGINT;
+      double position = bigPosition || !positionValue
+                            ? -1
+                            : scr_fs_cb_number(positionValue, "position", -1);
+      if (!scr_exc_pending()) {
+        if (bigPosition) {
+          double count32 = scr_fs_int32(length);
+          if (scr_fs_read_offset_chk(offset) &&
+              scr_fs_bigint_position_chk(positionValue->v.bigint, count32))
+            result = scr_dyn_new_num(scr_fs_read_sync_at(fd, bytes, offset, count32,
+                                                         scr_bigint_to_i64(positionValue->v.bigint)));
+        } else {
+          result = scr_dyn_new_num(readOp ? scr_fs_read_sync(fd, bytes, offset, length, position)
+                                          : scr_fs_write_sync(fd, bytes, offset, length, position));
+        }
+      }
+      scr_dyn_release(positionValue);
     }
     scr_bytes_release(bytes);
     /* The completion retains the original buffer, including options.buffer. */
@@ -1194,16 +1249,46 @@ ScrBytes *scr_crypto_random_bytes(double n) {
 
 /* ── process.stdout/stderr.write(buf) ──────────────────────────────────── */
 
+/* Where another thread can write shared bytes (where SCR_BYTES_SNAPSHOT
+ * copies them), they are read with scr_shared_load, so no shared raw memory
+ * reaches the system call. Written to the stream itself, they go through a
+ * bounded local buffer, so a large shared view is not copied whole first.
+ * With a write hook (the program reads process.stdout or process.stderr as
+ * a value, and may have replaced its write), the view is copied whole: a
+ * replaced write receives it in one call, as in Node, whatever it returns. */
+static bool scr_stdio_write_bytes(int fd, const ScrBytes *b) {
+  size_t n = b->len * scr_bytes_elem_size(b->elem);
+#if defined(SCR_WORKERS) || (defined(SCR_LIB) && defined(SCR_THREAD_INSTANCES))
+  if (!b->shared) return scr_stdio_write(fd, b->data, n);
+  if (scr_stdio_write_hook) {
+    unsigned char *copy = scr_mem_alloc(n ? n : 1);
+    scr_shared_load(copy, b->data, n);
+    bool ok = scr_stdio_write(fd, copy, n);
+    scr_mem_free(copy);
+    return ok;
+  }
+  enum { CHUNK = 64 * 1024 };
+  unsigned char *chunk = scr_mem_alloc(n < CHUNK ? (n ? n : 1) : CHUNK);
+  for (size_t off = 0; off < n; off += CHUNK) {
+    size_t k = n - off < CHUNK ? n - off : CHUNK;
+    scr_shared_load(chunk, b->data + off, k);
+    (void)scr_stdio_write_raw(fd, chunk, k);
+  }
+  scr_mem_free(chunk);
+  return true;
+#else
+  return scr_stdio_write(fd, b->data, n);
+#endif
+}
+
 bool scr_process_stdout_write_bytes(const ScrBytes *b, const ScrStr *encoding) {
-  SCR_BYTES_SNAPSHOT(b);
   (void)encoding;
-  return scr_stdio_write(1, b->data, b->len * scr_bytes_elem_size(b->elem));
+  return scr_stdio_write_bytes(1, b);
 }
 
 bool scr_process_stderr_write_bytes(const ScrBytes *b, const ScrStr *encoding) {
-  SCR_BYTES_SNAPSHOT(b);
   (void)encoding;
-  return scr_stdio_write(2, b->data, b->len * scr_bytes_elem_size(b->elem));
+  return scr_stdio_write_bytes(2, b);
 }
 
 /* Buffer.from over checked-native input. Strings use the existing codec;
@@ -1299,13 +1384,16 @@ ScrBytes *scr_buffer_concat_len_dyn(const ScrDyn *list, double total) {
   return scr_buffer_concat_dyn_impl(list, total, true);
 }
 
-/* Buffer.from(arrayBuffer, byteOffset) over a checked ArrayBuffer or
- * SharedArrayBuffer, as Node's fromArrayBuffer: a Buffer from the offset to
- * the end of the buffer that shares its memory. The offset converts with
- * ToNumber, where a missing offset (NULL) or undefined and NaN are 0; an
- * offset past the end throws ERR_BUFFER_OUT_OF_BOUNDS, and one at or below
- * -1 V8's start-offset RangeError. NULL with the exception pending. */
-static ScrBytes *scr_buffer_from_storage(const ScrDyn *storage, const ScrDyn *offset_value) {
+/* Buffer.from(arrayBuffer, byteOffset, length) over a checked ArrayBuffer
+ * or SharedArrayBuffer, as Node's fromArrayBuffer: a Buffer that shares its
+ * memory. The offset converts with ToNumber, where a missing offset (NULL)
+ * or undefined and NaN are 0; an offset past the end throws
+ * ERR_BUFFER_OUT_OF_BOUNDS, and one at or below -1 V8's start-offset
+ * RangeError. A missing length runs to the end; a given one converts with
+ * ToNumber, past the end throws ERR_BUFFER_OUT_OF_BOUNDS for "length", and
+ * zero, negative and NaN lengths are 0. NULL with the exception pending. */
+static ScrBytes *scr_buffer_from_storage(const ScrDyn *storage, const ScrDyn *offset_value,
+                                         const ScrDyn *length_value) {
   double offset = 0;
   if (offset_value && offset_value->kind != SCR_DYN_UNDEF) {
     if (!scr_dyn_number_coerce_js(offset_value, &offset)) return NULL;
@@ -1313,10 +1401,25 @@ static ScrBytes *scr_buffer_from_storage(const ScrDyn *storage, const ScrDyn *of
   }
   ScrBytes *bytes = storage->v.handle.ptr;
   ScrBytes *owner = bytes->backing ? bytes->backing : bytes;
-  if ((double)scr_bytes_byte_len(owner) - offset < 0) {
+  double max_length = (double)scr_bytes_byte_len(owner) - offset;
+  if (max_length < 0) {
     static const char msg[] = "\"offset\" is outside of buffer bounds";
     scr_throw_error_msg_code(SCR_ERR_RANGE, msg, sizeof msg - 1, "ERR_BUFFER_OUT_OF_BOUNDS");
     return NULL;
+  }
+  bool has_length = length_value && length_value->kind != SCR_DYN_UNDEF;
+  double length = max_length;
+  if (has_length) {
+    if (!scr_dyn_number_coerce_js(length_value, &length)) return NULL;
+    if (length > 0) {
+      if (length > max_length) {
+        static const char msg[] = "\"length\" is outside of buffer bounds";
+        scr_throw_error_msg_code(SCR_ERR_RANGE, msg, sizeof msg - 1, "ERR_BUFFER_OUT_OF_BOUNDS");
+        return NULL;
+      }
+    } else {
+      length = 0;
+    }
   }
   double start = trunc(offset);
   if (start < 0) {
@@ -1331,7 +1434,7 @@ static ScrBytes *scr_buffer_from_storage(const ScrDyn *storage, const ScrDyn *of
     scr_throw_error(SCR_ERR_RANGE, message);
     return NULL;
   }
-  ScrBytes *out = scr_bytes_buffer_view(bytes, SCR_BYTES_U8, start, false, 0);
+  ScrBytes *out = scr_bytes_buffer_view(bytes, SCR_BYTES_U8, start, has_length, trunc(length));
   if (out) out->is_buffer = true;
   return out;
 }
@@ -1340,7 +1443,7 @@ ScrBytes *scr_buffer_from_dyn(const ScrDyn *value, const ScrStr *encoding) {
   if (value->kind == SCR_DYN_STR) return scr_bytes_from_str(value->v.str, encoding);
   /* The second argument here is an encoding name, which as a byte offset
    * converts to NaN: offset 0. */
-  if (scr_buffer_storage_is(value)) return scr_buffer_from_storage(value, NULL);
+  if (scr_buffer_storage_is(value)) return scr_buffer_from_storage(value, NULL, NULL);
   if (value->kind == SCR_DYN_BYTES) return scr_bytes_convert(SCR_BYTES_U8, value->v.bytes);
   if (value->kind == SCR_DYN_ARR) {
     return scr_buffer_from_array_like(value, (double)value->v.arr.len);
@@ -1386,7 +1489,7 @@ ScrBytes *scr_buffer_from_dyn_pooled(const ScrDyn *value, const ScrStr *encoding
     return scr_buffer_from_bytes(value->v.bytes);
   /* A view of an ArrayBuffer shares its memory, so it never comes from the
    * pool. The second argument here is an encoding name: offset 0. */
-  if (scr_buffer_storage_is(value)) return scr_buffer_from_storage(value, NULL);
+  if (scr_buffer_storage_is(value)) return scr_buffer_from_storage(value, NULL, NULL);
   ScrBytes *out = scr_buffer_from_dyn(value, encoding);
   if (!out) return NULL;
   out->is_buffer = true;
@@ -1413,21 +1516,51 @@ ScrBytes *scr_buffer_from_dyn_ref_pooled(const ScrDyn *value, const ScrStr *enco
 
 /* Buffer.from(value, second) over checked values whose second argument is
  * not a literal encoding name: an ArrayBuffer or SharedArrayBuffer takes it
- * as the byte offset (scr_buffer_from_storage); other values convert as
- * scr_buffer_from_dyn_ref_pooled with utf8. */
+ * as the byte offset (scr_buffer_from_storage); a string takes it as the
+ * encoding (Node's fromString: utf8 unless it is a non-empty string, which
+ * must name a Buffer encoding or throw ERR_UNKNOWN_ENCODING); other values
+ * convert as scr_buffer_from_dyn_ref_pooled with utf8. */
 ScrBytes *scr_buffer_from_dyn_offset_pooled(const ScrDyn *value, const ScrDyn *second) {
+  if (value->kind == SCR_DYN_STR) {
+    if (second->kind == SCR_DYN_STR && second->v.str->len > 0)
+      return scr_buffer_from_str_checked(value->v.str, second->v.str);
+    ScrStr *utf8 = scr_str_new("utf8", 4);
+    ScrBytes *out = scr_buffer_from_str(value->v.str, utf8);
+    scr_str_release(utf8);
+    return out;
+  }
   if (!scr_buffer_storage_is(value)) {
     ScrStr *utf8 = scr_str_new("utf8", 4);
     ScrBytes *out = scr_buffer_from_dyn_ref_pooled(value, utf8);
     scr_str_release(utf8);
     return out;
   }
-  return scr_buffer_from_storage(value, second);
+  return scr_buffer_from_storage(value, second, NULL);
+}
+
+/* Buffer.from(value, second, third): an ArrayBuffer or SharedArrayBuffer
+ * takes them as its byte offset and length; other values convert as
+ * scr_buffer_from_dyn_offset_pooled does, without the third argument. */
+ScrBytes *scr_buffer_from_dyn_range_pooled(const ScrDyn *value, const ScrDyn *second,
+                                           const ScrDyn *third) {
+  if (!scr_buffer_storage_is(value)) return scr_buffer_from_dyn_offset_pooled(value, second);
+  return scr_buffer_from_storage(value, second, third);
+}
+
+/* The deprecated Buffer constructor's DEP0005 state, Node's
+ * bufferWarningAlreadyEmitted and nodeModulesCheckCounter: a call from
+ * node_modules only counts toward the 10000-call check, and
+ * scr_buffer_deprecation (scr_async_dyn.c) reports for the others. */
+SCR_TL bool scr_buffer_ctor_warned = false;
+SCR_TL uint64_t scr_buffer_ctor_checks = 0;
+
+void scr_buffer_deprecation_count(void) {
+  if (!scr_buffer_ctor_warned) scr_buffer_ctor_checks++;
 }
 
 /* new Buffer(number, encoding) — the deprecated ctor's string arm with a
- * non-string first argument: Node's exact ERR_INVALID_ARG_TYPE (the
- * throwing path never fires DEP0005, so compiled silence matches). */
+ * non-string first argument: Node's exact ERR_INVALID_ARG_TYPE, thrown
+ * after scr_buffer_deprecation has reported DEP0005. */
 ScrBytes *scr_buffer_new_string_fail(const ScrDyn *got) {
   scr_dyn_arg_type_fail("string", "of type string", got);
   return NULL;
@@ -1677,11 +1810,11 @@ ScrStr *scr_fs_mkdtemp_sync_chk(const ScrDyn *prefix, const ScrDyn *opts, const 
   if (!scr_fs_encoding_chk(opts)) return NULL;
   bool utf8 = true;
   if (opts->kind == SCR_DYN_OBJ) {
-    for (size_t i = 0; i < opts->v.obj.len; i++) {
-      const ScrDynEntry *e = &opts->v.obj.entries[i];
-      if (scr_fs_dyn_absent(e->value)) continue;
-      if (strcmp(e->key, "encoding") == 0) {
-        if (!scr_fs_utf8_encoding(e->value)) utf8 = false;
+    for (size_t i = 0; i < scr_dyn_obj_count(opts); i++) {
+      ScrDynProp e = scr_dyn_obj_prop_at(opts, i);
+      if (scr_fs_dyn_absent(e.value)) continue;
+      if (strcmp(e.key, "encoding") == 0) {
+        if (!scr_fs_utf8_encoding(e.value)) utf8 = false;
         continue;
       }
       utf8 = false; /* an unmodeled effectful option */
@@ -1825,68 +1958,138 @@ static bool scr_fs_int_range_chk(const ScrDyn *v, const char *name, double min, 
   return true;
 }
 
-static bool scr_fs_read_validate(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn *offset,
-                                 const ScrDyn *length, const ScrDyn *position) {
-  if (buffer->kind != SCR_DYN_BYTES) {
-    scr_dyn_arg_type_fail("buffer", "an instance of Buffer, TypedArray, or DataView", buffer);
+/* `length |= 0`: ToInt32 of the length argument (a non-numeric value is
+ * 0). False with the exception pending when ToNumber throws. */
+static bool scr_fs_length_int32(const ScrDyn *length, double *out) {
+  double n;
+  if (length->kind == SCR_DYN_NUM) {
+    n = length->v.num;
+  } else if (!scr_dyn_number_coerce_js(length, &n)) {
     return false;
   }
+  *out = scr_fs_int32(n);
+  return true;
+}
+
+/* ToInt32 of a number: 0 for NaN and the infinities. */
+static double scr_fs_int32(double n) {
+  if (!isfinite(n)) return 0;
+  double m = fmod(trunc(n), 4294967296.0);
+  if (m < 0) m += 4294967296.0;
+  return m >= 2147483648.0 ? m - 4294967296.0 : m;
+}
+
+/* A bigint read position in [-1n, 2n ** 63n - 1n - BigInt(length)]
+ * (validatePosition); false with ERR_OUT_OF_RANGE pending otherwise. The
+ * received value groups the digits past 2^32 in threes, as Node's
+ * ERR_OUT_OF_RANGE does for bigints. */
+static bool scr_fs_bigint_position_chk(ScrBigInt *position, double length) {
+  ScrBigInt *top = scr_bigint_from_i64(INT64_MAX);
+  ScrBigInt *span = scr_bigint_from_f64(length);
+  ScrBigInt *max = scr_bigint_sub(top, span);
+  scr_bigint_release(top);
+  scr_bigint_release(span);
+  ScrBigInt *low = scr_bigint_from_i64(-1);
+  bool ok = scr_bigint_cmp_f64(position, low) >= 0 && scr_bigint_cmp_f64(position, max) <= 0;
+  scr_bigint_release(low);
+  if (ok) {
+    scr_bigint_release(max);
+    return true;
+  }
+  ScrStr *limit = scr_bigint_to_string(max, 10);
+  scr_bigint_release(max);
+  ScrStr *decimal = scr_bigint_to_string(position, 10);
+  if (!limit || !decimal) {
+    if (limit) scr_str_release(limit);
+    if (decimal) scr_str_release(decimal);
+    return false;
+  }
+  ScrBigInt *bound = scr_bigint_from_i64((int64_t)1 << 32);
+  ScrBigInt *negBound = scr_bigint_from_i64(-((int64_t)1 << 32));
+  bool group = scr_bigint_cmp_f64(position, bound) > 0 || scr_bigint_cmp_f64(position, negBound) < 0;
+  scr_bigint_release(bound);
+  scr_bigint_release(negBound);
+  /* addNumericalSeparator: underscores every three digits from the right,
+   * after an optional sign. */
+  char digits[200];
+  size_t len = decimal->len < 120 ? decimal->len : 120, out = 0;
+  size_t start = len > 0 && decimal->data[0] == '-' ? 1 : 0;
+  for (size_t i = 0; i < len; i++) {
+    if (group && i > start && (len - i) % 3 == 0) digits[out++] = '_';
+    digits[out++] = (char)decimal->data[i];
+  }
+  digits[out] = '\0';
+  char msg[384];
+  int n = snprintf(msg, sizeof msg,
+                   "The value of \"position\" is out of range. It must be >= -1 && <= %.*s. Received %sn",
+                   (int)limit->len, (const char *)limit->data, digits);
+  scr_str_release(limit);
+  scr_str_release(decimal);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, n < 0 ? 0 : (size_t)n, "ERR_OUT_OF_RANGE");
+  return false;
+}
+
+
+/* fs.read(fd, buffer, offset, length, position, cb)'s argument checks, in
+ * Node's order: the fd, the buffer, the offset (an integer >= 0), the
+ * length as `length |= 0`, the position (validatePosition, against that
+ * length), then for a non-empty read the empty-buffer and
+ * validateOffsetLengthRead checks. The converted length goes to
+ * *length_out when it is not NULL, so the read does not convert again. */
+static bool scr_fs_read_validate(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn *offset,
+                                 const ScrDyn *length, const ScrDyn *position, double *length_out) {
   if (fd->kind != SCR_DYN_NUM) {
     scr_dyn_arg_type_fail("fd", "of type number", fd);
     return false;
   }
+  if (buffer->kind != SCR_DYN_BYTES) {
+    scr_dyn_arg_type_fail("buffer", "an instance of Buffer, TypedArray, or DataView", buffer);
+    return false;
+  }
   double buflen = scr_bytes_byte_len(buffer->v.bytes);
+  double off = 0;
   if (!scr_fs_dyn_absent(offset)) {
-    /* validateInteger's MAX_SAFE range first, the buffer bound second —
-     * Node renders each with its own max. */
     if (!scr_fs_int_range_chk(offset, "offset", 0, 9007199254740991.0,
                               ">= 0 && <= 9007199254740991")) {
       return false;
     }
-    if (offset->v.num > buflen) {
-      char range[64];
-      snprintf(range, sizeof range, ">= 0 && <= %.0f", buflen);
-      if (!scr_fs_int_range_chk(offset, "offset", 0, buflen, range)) return false;
-    }
+    off = offset->v.num;
   }
+  double count = 0;
+  if (!scr_fs_length_int32(length, &count)) return false;
+  if (length_out) *length_out = count;
   if (!scr_fs_dyn_absent(position)) {
-    if (position->kind != SCR_DYN_NUM) {
+    if (position->kind == SCR_DYN_BIGINT) {
+      if (!scr_fs_bigint_position_chk(position->v.bigint, count)) return false;
+    } else if (position->kind != SCR_DYN_NUM) {
       scr_dyn_arg_type_fail("position", "of type bigint or integer", position);
       return false;
-    }
-    if (!scr_fs_int_range_chk(position, "position", -1, 9007199254740991.0,
-                              ">= -1 && <= 9007199254740991")) {
+    } else if (!scr_fs_int_range_chk(position, "position", -1, 9007199254740991.0,
+                                     ">= -1 && <= 9007199254740991")) {
       return false;
     }
   }
-  double off = offset->kind == SCR_DYN_NUM ? offset->v.num : 0;
-  if (!scr_fs_dyn_absent(length)) {
-    if (length->kind != SCR_DYN_NUM || !(isfinite(length->v.num) && trunc(length->v.num) == length->v.num) ||
-        length->v.num < 0) {
-      /* Node renders the bare ">= 0" form here (checkPosition's cousin). */
-      if (length->kind == SCR_DYN_NUM) {
-        char recv[48], msg[160];
-        scr_num_received(length->v.num, recv);
-        const char *shape = (isfinite(length->v.num) && trunc(length->v.num) == length->v.num)
-                                ? "It must be >= 0."
-                                : "It must be an integer.";
-        int len = snprintf(msg, sizeof msg,
-                           "The value of \"length\" is out of range. %s Received %s", shape, recv);
-        scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
-        return false;
-      }
-      scr_dyn_arg_type_fail("length", "of type number", length);
-      return false;
+  if (count == 0) return true;
+  if (buflen == 0) {
+    if (scr_bytes_is_buffer(buffer->v.bytes)) {
+      static const char empty[] =
+          "The argument 'buffer' is empty and cannot be written. Received <Buffer >";
+      scr_throw_error_msg_code(SCR_ERR_TYPE, empty, sizeof empty - 1, "ERR_INVALID_ARG_VALUE");
+    } else {
+      scr_dyn_arg_value_fail("buffer", "is empty and cannot be written", buffer);
     }
-    if (length->v.num > buflen - off) {
-      char recv[48], msg[160];
-      scr_num_received(length->v.num, recv);
-      int len = snprintf(msg, sizeof msg,
-                         "The value of \"length\" is out of range. It must be <= %.0f. Received %s",
-                         buflen - off, recv);
-      scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
-      return false;
-    }
+    return false;
+  }
+  if (count < 0 || off + count > buflen) {
+    char recv[48], range[64], msg[192];
+    scr_num_received(count, recv);
+    if (count < 0) snprintf(range, sizeof range, ">= 0");
+    else snprintf(range, sizeof range, "<= %.0f", buflen - off);
+    int len = snprintf(msg, sizeof msg,
+                       "The value of \"length\" is out of range. It must be %s. Received %s", range,
+                       recv);
+    scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+    return false;
   }
   return true;
 }
@@ -1894,7 +2097,7 @@ static bool scr_fs_read_validate(const ScrDyn *fd, const ScrDyn *buffer, const S
 
 void scr_fs_read_chk(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn *offset,
                      const ScrDyn *length, const ScrDyn *position, const ScrStr *fence) {
-  if (scr_fs_read_validate(fd, buffer, offset, length, position)) scr_throw_lowering_fence(fence);
+  if (scr_fs_read_validate(fd, buffer, offset, length, position, NULL)) scr_throw_lowering_fence(fence);
 }
 
 /* createReadStream/createWriteStream(path, options?): getOptions'
@@ -1938,4 +2141,72 @@ bool scr_fs_stream_mode(const ScrDyn *value, double *mode) {
     return true;
   }
   return scr_fs_cb_file_mode(value, "mode", mode);
+}
+
+/* fs.readSync(fd, buffer, offset, length[, position]) with arguments the
+ * compiler could not type (JavaScript): Node's checks (validateBuffer
+ * first, then the fd, the offset, `length |= 0` and the position, which
+ * may be a bigint), then the typed read. */
+double scr_fs_read_sync_dyn(const ScrDyn *fd, const ScrDyn *buffer, const ScrDyn *offset,
+                            const ScrDyn *length, const ScrDyn *position) {
+  if (buffer->kind != SCR_DYN_BYTES) {
+    scr_dyn_arg_type_fail("buffer", "an instance of Buffer, TypedArray, or DataView", buffer);
+    return 0;
+  }
+  double count = 0;
+  if (!scr_fs_read_validate(fd, buffer, offset, length, position, &count)) return 0;
+  if (count == 0) return 0;
+  double off = scr_fs_dyn_absent(offset) ? 0 : offset->v.num;
+  ScrBytes *bytes = scr_dyn_bytes_unbox(buffer);
+  /* A bigint position passed its range check above and reads at its exact
+   * value: a double would round it past 2^53. */
+  double read =
+      !scr_fs_dyn_absent(position) && position->kind == SCR_DYN_BIGINT
+          ? scr_fs_read_sync_at(fd->v.num, bytes, off, count, scr_bigint_to_i64(position->v.bigint))
+          : scr_fs_read_sync(fd->v.num, bytes, off, count,
+                             scr_fs_dyn_absent(position) ? -1 : position->v.num);
+  scr_bytes_release(bytes);
+  return read;
+}
+
+/* ERR_OUT_OF_RANGE for the number `n` of argument `name`. Always false. */
+static bool scr_fs_num_range_fail(const char *name, const char *range, double n) {
+  char recv[48], msg[192];
+  scr_num_received(n, recv);
+  int len = snprintf(msg, sizeof msg, "The value of \"%s\" is out of range. It must be %s. Received %s",
+                     name, range, recv);
+  scr_throw_error_msg_code(SCR_ERR_RANGE, msg, (size_t)len, "ERR_OUT_OF_RANGE");
+  return false;
+}
+
+/* fs.write(fd, buffer, offset, length, position, cb)'s buffer checks: the
+ * offset (an integer >= 0 unless omitted, null or the callback), a
+ * non-number length defaulting to the rest of the buffer, then
+ * validateOffsetLengthWrite. An options object in the offset slot is read
+ * by the write itself. */
+static bool scr_fs_write_validate(const ScrDyn *buffer, const ScrDyn *offset, const ScrDyn *length) {
+  if (offset->kind == SCR_DYN_OBJ || offset->kind == SCR_DYN_TYPED_REF || offset->kind == SCR_DYN_PROXY ||
+      offset->kind == SCR_DYN_NULL)
+    return true;
+  double buflen = scr_bytes_byte_len(buffer->v.bytes);
+  double off = 0;
+  if (!scr_fs_dyn_absent(offset) && offset->kind != SCR_DYN_FUNC) {
+    if (!scr_fs_int_range_chk(offset, "offset", 0, 9007199254740991.0, ">= 0 && <= 9007199254740991"))
+      return false;
+    off = offset->v.num;
+  }
+  double len = length->kind == SCR_DYN_NUM ? length->v.num : buflen - off;
+  char range[64];
+  if (off > buflen) {
+    snprintf(range, sizeof range, "<= %.0f", buflen);
+    return scr_fs_num_range_fail("offset", range, off);
+  }
+  if (len > buflen - off) {
+    snprintf(range, sizeof range, "<= %.0f", buflen - off);
+    return scr_fs_num_range_fail("length", range, len);
+  }
+  if (len < 0) return scr_fs_num_range_fail("length", ">= 0", len);
+  if (!(isfinite(len) && trunc(len) == len)) return scr_fs_num_range_fail("length", "an integer", len);
+  if (len > 2147483647.0) return scr_fs_num_range_fail("length", ">= 0 && <= 2147483647", len);
+  return true;
 }

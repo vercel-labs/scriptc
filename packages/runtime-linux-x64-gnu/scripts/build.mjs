@@ -24,6 +24,15 @@ process.env.SCRIPTC_RUNTIME_PACK_CONFIG = JSON.stringify({
   },
   ...toolchain,
   compileFlags: ["-ffunction-sections", "-fdata-sections"],
-  systemLibraries: [{ name: "m", predicate: true }],
+  // Intl over ICU. The pack ships the C++ ICU archive and its data file
+  // (artifacts/icu/icudt78l.dat); the cross and non-Linux packs omit both,
+  // and the compiler refuses Intl there (SC3002). This slice is
+  // linux-x64-gnu, the target the archive's Zig C++ recipe builds for.
+  icu: true,
+  // scr_unwind_raise: the static libgcc_eh, which loads no shared library.
+  systemLibraries: [
+    { name: "m", predicate: true },
+    { name: "gcc_eh", predicate: true },
+  ],
 });
 await import("../../runtime-pack-common/scripts/build.mjs");

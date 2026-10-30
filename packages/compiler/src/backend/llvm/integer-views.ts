@@ -1,6 +1,9 @@
 import type { IrExpr, IrFunction, IrStmt } from "../../ir/ir.js";
 import { everyExprChild, everyStmtChild } from "../../ir/traverse.js";
 import { byteNumberAccess } from "../../ir/byte-numbers.js";
+import { eachNodeOfKinds, type IrNodeIndex, type IrNodeKind } from "../../ir/node-index.js";
+
+const LOOP_KINDS: readonly IrNodeKind[] = ["for", "forOf", "while", "doWhile"];
 
 /** Keep a computed ToUint32 view beside an ordinary number when integer
  * consumers in loops can reuse it. The number remains authoritative for floating
@@ -14,9 +17,16 @@ import { byteNumberAccess } from "../../ir/byte-numbers.js";
  * compare converts the stored number back, and LLVM moves that number's
  * conversion into the join of a NaN-coded typed-array read (`phi [sitofp x,
  * 0.0]`), where nothing folds it back to the integer. */
-export function findIntegerViews(fn: IrFunction): Set<string> {
+export function findIntegerViews(fn: IrFunction, nodes?: IrNodeIndex): Set<string> {
   const wanted = new Set<string>();
   if (fn.async || fn.generator) return wanted;
+  // Every view is wanted inside a loop: a body without one wants none.
+  let loops = false;
+  eachNodeOfKinds(fn, nodes?.scan(LOOP_KINDS), (node, statement) => {
+    if (statement && LOOP_KINDS.includes(node.kind)) loops = true;
+    return !loops;
+  });
+  if (!loops) return wanted;
   const initialized = new Set(fn.params.map((p) => p.localId));
   const excluded = new Set(
     [...(fn.captures ?? []), ...(fn.classCaptures ?? [])].map((c) => c.localId),

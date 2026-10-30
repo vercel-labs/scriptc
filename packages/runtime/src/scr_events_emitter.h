@@ -109,6 +109,10 @@ ScrEmitter *scr_emitter_on_flex(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
 ScrEmitter *scr_emitter_on_any(ScrEmitter *em, ScrStr *name, const ScrDyn *cb,
                                bool once, bool prepend);
 bool scr_emitter_emit_any(ScrEmitter *em, ScrStr *name, ScrDyn *const *args, size_t argc);
+/* emit('error', ...args) with a non-Error payload from typed code, the
+ * arguments boxed; `render` is util.inspect's dyn entry (scr_insp_dyn). */
+bool scr_emitter_emit_error_value(ScrEmitter *em, ScrDyn *const *args, size_t argc,
+                                  ScrStr *(*render)(ScrDyn *, double, double));
 ScrEmitter *scr_emitter_off_dyn(ScrEmitter *em, ScrStr *name, const ScrDyn *cb);
 /* The registry's checked-dynamic half (meta-event argument vectors and
  * rebuilt listener values), installed by the first on_any call; NULL in

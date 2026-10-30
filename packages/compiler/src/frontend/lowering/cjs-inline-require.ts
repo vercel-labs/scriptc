@@ -28,19 +28,348 @@ import {
   isModuleExportsAccess,
   locOf,
   npmStaticDepSf7,
+  requireBindingEarlyUse7,
   requireSpecOf,
   resolveImport,
+  splitRequireCallOf,
 } from "../program.js";
 import { createRequireCalleeFileOf } from "./builtins/module-bindings.js";
 import { isCjsRequireGlobal } from "./lower-node-module.js";
 import { DYN, type IrExpr } from "../../ir/ir.js";
 import { nodeThrowExpr } from "../../ir/build.js";
 import { probeNodeRequireRefusal } from "../npm.js";
+import { lowerIslandRequireCall } from "./lower-node-island.js";
 
 export interface InlineRequire {
   call: ts.CallExpression;
   spec: string;
   dep: ts.SourceFile;
+}
+
+/** A top-level `var m; m = require("./x")` binding. Node evaluates the
+ * require at the assignment; the binding is alias plumbing exactly like
+ * `const m = require("./x")` for every later read. */
+export interface SplitRequireBinding {
+  decl: ts.VariableDeclaration;
+  assign: ts.BinaryExpression;
+  call: ts.CallExpression;
+  spec: string;
+  dep: ts.SourceFile;
+}
+
+function symbolOfIdentifierValue(lowerer: Lowerer, ident: ts.Identifier): ts.Symbol | undefined {
+  const parent = ident.parent;
+  // A destructuring shorthand target resolves to the property symbol at
+  // the name, but reads/writes the variable through its value symbol.
+  if (ts.isShorthandPropertyAssignment(parent) && parent.name === ident) {
+    return (
+      lowerer.checker.getShorthandAssignmentValueSymbol(parent) ??
+      lowerer.checker.getSymbolAtLocation(ident)
+    );
+  }
+  return lowerer.checker.getSymbolAtLocation(ident);
+}
+
+function destructuringContainerOf(node: ts.Node): ts.Node | null {
+  const parent = node.parent;
+  if (ts.isShorthandPropertyAssignment(parent) && parent.name === node) return parent;
+  if (ts.isPropertyAssignment(parent) && parent.initializer === node) return parent;
+  if (ts.isSpreadElement(parent) && parent.expression === node) return parent;
+  if (ts.isSpreadAssignment(parent) && parent.expression === node) return parent;
+  return null;
+}
+
+function writeTargetOf(node: ts.Node): ts.Node | null {
+  let target = node;
+  for (;;) {
+    const parent = target.parent;
+    if (
+      ts.isParenthesizedExpression(parent) ||
+      ts.isArrayLiteralExpression(parent) ||
+      ts.isObjectLiteralExpression(parent)
+    ) {
+      target = parent;
+      continue;
+    }
+    const container = destructuringContainerOf(target);
+    if (container === null) break;
+    target = container;
+  }
+  const parent = target.parent;
+  if (
+    ts.isBinaryExpression(parent) &&
+    parent.left === target &&
+    ts.isAssignmentOperator(parent.operatorToken.kind)
+  )
+    return parent;
+  if (
+    (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) &&
+    parent.operand === target &&
+    (parent.operator === ts.SyntaxKind.PlusPlusToken ||
+      parent.operator === ts.SyntaxKind.MinusMinusToken)
+  )
+    return parent;
+  if ((ts.isForInStatement(parent) || ts.isForOfStatement(parent)) && parent.initializer === target)
+    return parent;
+  return null;
+}
+
+/** The split form of a top-level require binding: `var m; m = require("./x")`.
+ * Exactly one write, at a top-level `m = require("<literal>")` statement.
+ * Null for the ordinary `const m = require("./x")` declaration and for
+ * every form that needs runtime module selection. */
+export function splitRequireBindingOf(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+): SplitRequireBinding | null {
+  // Cheap shape gate before the cache: ordinary declarations never enter the
+  // per-Lowerer map.
+  if (decl.initializer !== undefined || !ts.isIdentifier(decl.name)) return null;
+  const list = decl.parent as ts.VariableDeclarationList;
+  if ((list.flags & ts.NodeFlags.Const) !== 0) return null;
+  const stmt = list.parent;
+  if (!ts.isVariableStatement(stmt) || !ts.isSourceFile(stmt.parent)) return null;
+  const cached = lowerer.cjsSplitRequireBindings.get(decl);
+  if (cached !== undefined) return cached;
+  const result = computeSplitRequireBinding(lowerer, decl);
+  lowerer.cjsSplitRequireBindings.set(decl, result);
+  return result;
+}
+
+function computeSplitRequireBinding(
+  lowerer: Lowerer,
+  decl: ts.VariableDeclaration,
+): SplitRequireBinding | null {
+  const sf = ts.getSourceFileOfNode(decl);
+  if (!isCjsJsFile(sf, lowerer.program)) return null;
+  if (!sf.text.includes("require")) return null;
+  const symbol = lowerer.checker.getSymbolAtLocation(decl.name);
+  if (symbol === undefined) return null;
+  // Merged declarations make the binding's initialization order ambiguous;
+  // keep ordinary storage instead of guessing.
+  let declarations = 0;
+  for (const other of symbol.declarations) {
+    if (!ts.isVariableDeclaration(other) || ++declarations > 1) return null;
+  }
+  if (declarations !== 1) return null;
+
+  // Find the one top-level `m = ...` statement first: most uninitialized
+  // variables never reach that shape, so they avoid the full-file write scan.
+  let assign: ts.BinaryExpression | null = null;
+  for (const stmt of sf.statements.nodes) {
+    if (!ts.isExpressionStatement(stmt)) continue;
+    const expr = stmt.expression;
+    if (
+      !ts.isBinaryExpression(expr) ||
+      expr.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+      !ts.isIdentifier(expr.left) ||
+      expr.left.text !== decl.name.text ||
+      lowerer.checker.getSymbolAtLocation(expr.left) !== symbol
+    )
+      continue;
+    if (assign !== null) return null;
+    assign = expr;
+  }
+  if (assign === null) return null;
+
+  const req = inlineProgramRequireOf(lowerer, assign.right);
+  if (req === null) return null;
+  // Preflight treats the same bindings as require declarations (module edge,
+  // cycle admission, early-read fence); a binding it does not know keeps
+  // ordinary storage.
+  if (splitRequireCallOf(lowerer.program, decl) !== req.call) return null;
+
+  // Any other write makes the value depend on runtime control flow.
+  let writes = 0;
+  ts.walkPreorder(sf, (node) => {
+    if (!ts.isIdentifier(node) || node.text !== decl.name.text) return;
+    if (symbolOfIdentifierValue(lowerer, node) !== symbol) return;
+    if (writeTargetOf(node) === null) return;
+    if (++writes > 1) return "stop";
+  });
+  if (writes !== 1) return null;
+
+  return { decl, assign, call: req.call, spec: req.spec, dep: req.dep };
+}
+
+/** The split binding an identifier names, or null. */
+export function splitRequireBindingOfIdent(
+  lowerer: Lowerer,
+  ident: ts.Identifier,
+): SplitRequireBinding | null {
+  const symbol = symbolOfIdentifierValue(lowerer, ident);
+  return symbol === undefined ? null : splitBindingOfSymbol(lowerer, symbol);
+}
+
+/** The exact top-level assignment statement that initializes `expr`, or null. */
+export function splitRequireAssignmentOf(
+  lowerer: Lowerer,
+  expr: ts.Expression,
+): SplitRequireBinding | null {
+  if (
+    !ts.isBinaryExpression(expr) ||
+    expr.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+    !ts.isIdentifier(expr.left)
+  )
+    return null;
+  const bindingOfIdent = splitRequireBindingOfIdent(lowerer, expr.left);
+  return bindingOfIdent !== null && bindingOfIdent.assign === expr ? bindingOfIdent : null;
+}
+
+/** The whole-export symbol a module's `module.exports = <value>` names,
+ * or null when the module is a table. */
+export function wholeExportSymbolOfModule(lowerer: Lowerer, dep: ts.SourceFile): ts.Symbol | null {
+  const cached = lowerer.cjsWholeExportSymbols.get(dep);
+  if (cached !== undefined) return cached;
+  if (cjsNamespaceModule(lowerer, dep)) {
+    lowerer.cjsWholeExportSymbols.set(dep, null);
+    return null;
+  }
+  const moduleSymbol = lowerer.checker.getSymbolAtLocation(dep);
+  let symbol = moduleSymbol?.getExports()?.get("export=" as ts.__String);
+  if (symbol === undefined) {
+    lowerer.cjsWholeExportSymbols.set(dep, null);
+    return null;
+  }
+  if (symbol.flags & ts.SymbolFlags.Alias) symbol = lowerer.checker.getAliasedSymbol(symbol);
+  lowerer.cjsWholeExportSymbols.set(dep, symbol);
+  return symbol;
+}
+
+function splitBindingOfSymbol(lowerer: Lowerer, symbol: ts.Symbol): SplitRequireBinding | null {
+  const decl = symbol.declarations.find(ts.isVariableDeclaration);
+  return decl === undefined ? null : splitRequireBindingOf(lowerer, decl);
+}
+
+/** The target whole-export symbol behind a split-binding symbol. */
+function splitWholeExportSymbolOfSymbol(lowerer: Lowerer, symbol: ts.Symbol): ts.Symbol | null {
+  const binding = splitBindingOfSymbol(lowerer, symbol);
+  return binding === null ? null : wholeExportSymbolOfModule(lowerer, binding.dep);
+}
+
+/** True when a CommonJS module has a live member export (`exports.x` or
+ * `module.exports.x`) after all `module.exports =` replacements. Those
+ * members need a mutable whole-export root. */
+export function cjsHasLiveMemberExports(lowerer: Lowerer, sf: ts.SourceFile): boolean {
+  const cached = lowerer.cjsLiveMemberExports.get(sf);
+  if (cached !== undefined) return cached;
+  const stmts = sf.statements.nodes;
+  let lastTable = -1;
+  for (let i = 0; i < stmts.length; i++) {
+    if (cjsExportAssignmentOf(stmts[i]!)?.kind === "table") lastTable = i;
+  }
+  let live = false;
+  // Only members attached after the last replacement survive in Node.
+  if (lastTable >= 0) {
+    for (let i = lastTable + 1; i < stmts.length; i++) {
+      const stmt = stmts[i]!;
+      if (cjsExportAssignmentOf(stmt)?.kind === "member" && cjsExportDiscardReason(stmt) === null) {
+        live = true;
+        break;
+      }
+    }
+  }
+  lowerer.cjsLiveMemberExports.set(sf, live);
+  return live;
+}
+
+/** The wrapper's export= symbol when a split binding is re-exported whole
+ * (`module.exports = m`) and that assignment owns storage for later member
+ * writes. Importers must read the wrapper's storage, not the split
+ * binding's underlying value. */
+function splitWholeExportStorageSymbolOf(lowerer: Lowerer, symbol: ts.Symbol): ts.Symbol | null {
+  const binding = splitBindingOfSymbol(lowerer, symbol);
+  if (binding === null) return null;
+  if (wholeExportSymbolOfModule(lowerer, binding.dep) === null) return null;
+  const sf = ts.getSourceFileOfNode(binding.decl);
+  if (!cjsHasLiveMemberExports(lowerer, sf)) return null;
+  const whole = cjsWholeExportValueOf(sf);
+  if (whole === null) return null;
+  let rhs: ts.Expression = whole.rhs;
+  while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
+  if (!ts.isIdentifier(rhs) || lowerer.checker.getSymbolAtLocation(rhs) !== symbol) return null;
+  const moduleSymbol = lowerer.checker.getSymbolAtLocation(sf);
+  let exportSymbol = moduleSymbol?.getExports()?.get("export=" as ts.__String);
+  if (exportSymbol === undefined) return null;
+  if (exportSymbol.flags & ts.SymbolFlags.Alias)
+    exportSymbol = lowerer.checker.getAliasedSymbol(exportSymbol);
+  return exportSymbol;
+}
+
+/** The source file whose `module.exports =` assignment declares `symbol`. */
+function moduleExportSourceFileOf(symbol: ts.Symbol): ts.SourceFile | null {
+  for (const decl of symbol.declarations) {
+    if (
+      ts.isBinaryExpression(decl) &&
+      isModuleExportsAccess(decl.left) &&
+      ts.isExpressionStatement(decl.parent) &&
+      ts.isSourceFile(decl.parent.parent)
+    )
+      return decl.getSourceFile();
+  }
+  return null;
+}
+
+/** One hop from a wrapper's export= symbol to the value it re-exports
+ * (`module.exports = require(...)` or `= <split binding>`), or null. A
+ * wrapper with live members owns storage for them, so it is not followed. */
+function wholeReexportTargetOf(lowerer: Lowerer, symbol: ts.Symbol): ts.Symbol | null {
+  const sf = moduleExportSourceFileOf(symbol);
+  if (sf === null) return null;
+  // A wrapper with live members owns storage for them; importers must keep
+  // reading that root rather than the inner value.
+  if (cjsHasLiveMemberExports(lowerer, sf)) return null;
+  const whole = cjsWholeExportValueOf(sf);
+  if (whole === null) return null;
+  const inner = inlineProgramRequireOf(lowerer, whole.rhs);
+  if (inner !== null) return wholeExportSymbolOfModule(lowerer, inner.dep);
+  let rhs: ts.Expression = whole.rhs;
+  while (ts.isParenthesizedExpression(rhs)) rhs = rhs.expression;
+  if (!ts.isIdentifier(rhs)) return null;
+  const rhsSymbol = lowerer.checker.getSymbolAtLocation(rhs);
+  return rhsSymbol === undefined ? null : splitWholeExportSymbolOfSymbol(lowerer, rhsSymbol);
+}
+
+/** Follow split bindings and whole re-exports to the ultimate value symbol. */
+function followSplitWholeTarget(lowerer: Lowerer, candidate: ts.Symbol | null): ts.Symbol | null {
+  if (candidate === null) return null;
+  let symbol = candidate;
+  const seen = new Set<ts.Symbol>();
+  for (let depth = 0; depth < 32 && !seen.has(symbol); depth++) {
+    seen.add(symbol);
+    const next =
+      splitWholeExportSymbolOfSymbol(lowerer, symbol) ?? wholeReexportTargetOf(lowerer, symbol);
+    if (next === null) break;
+    symbol = next;
+  }
+  return symbol;
+}
+
+/** The target whole-export symbol behind `module.exports = <split binding>`,
+ * letting importers of that wrapper resolve to the real value symbol. */
+export function splitWholeExportAliasTargetOf(
+  lowerer: Lowerer,
+  symbol: ts.Symbol,
+): ts.Symbol | null {
+  const storage = splitWholeExportStorageSymbolOf(lowerer, symbol);
+  if (storage !== null) return followSplitWholeTarget(lowerer, storage);
+  const direct = followSplitWholeTarget(lowerer, splitWholeExportSymbolOfSymbol(lowerer, symbol));
+  if (direct !== null) return direct;
+  return followSplitWholeTarget(lowerer, wholeReexportTargetOf(lowerer, symbol));
+}
+
+/** The first read of a split binding that code before its assignment can
+ * reach, using the same reachability model as ordinary require bindings. */
+export function splitRequireEarlyReadOf(
+  lowerer: Lowerer,
+  binding: SplitRequireBinding,
+): ts.Identifier | null {
+  const sf = ts.getSourceFileOfNode(binding.decl);
+  const stmt = binding.assign.parent;
+  // `binding` was recognized only from a top-level `m = require(...)`
+  // statement, so the statement index is always present.
+  const index = sf.statements.nodes.indexOf(stmt as ts.ExpressionStatement);
+  return requireBindingEarlyUse7(lowerer.program, sf, index, binding.decl, []);
 }
 
 /** A `require("<literal>")` call of the CommonJS global in a CommonJS JS
@@ -108,13 +437,6 @@ export function inlineNamespaceRequireOf(
 /** `value` evaluated after the required module's run-once %init (and its
  * module-registry link) at the require's own position. */
 export function withRequireInit(lowerer: Lowerer, req: InlineRequire, value: IrExpr): IrExpr {
-  if (lowerer.inlineRequireCycleCalls.has(req.call)) {
-    lowerer.unsupported(
-      "SC1090",
-      req.call,
-      `require() of '${req.spec}' while it is still evaluating (a require cycle: Node answers its partial exports, which the static export table does not model)`,
-    );
-  }
   // Every inline program require is a preflight module edge, so its module
   // has an initializer; never read its exports without evaluating it.
   if (!lowerer.initNameOf.has(req.dep)) {
@@ -211,9 +533,14 @@ export function lowerUncompiledRequireCall(
       "SC1090",
       call,
       'require() with a computed specifier (the compiled module graph is fixed at build time: require("<string literal>") lowers)',
+      undefined,
+      "dynamic-require",
     );
   }
   if (canonicalBuiltinModule(spec) !== null) return null;
+  // A package that runs in a Node island loads at the call (scope B).
+  const island = lowerIslandRequireCall(lowerer, call);
+  if (island !== null) return island;
   if (!spec.startsWith(".") && !spec.startsWith("/") && !spec.startsWith("#")) {
     const refusal = probeNodeRequireRefusal(sf.fileName, spec);
     if (refusal !== null) {

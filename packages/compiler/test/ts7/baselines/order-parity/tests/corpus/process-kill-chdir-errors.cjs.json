@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/process-kill-chdir-errors.cjs"
+ ],
+ "diags": []
+}

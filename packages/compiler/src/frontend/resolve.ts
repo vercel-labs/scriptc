@@ -24,6 +24,7 @@ import {
 } from "./npm-static.js";
 import {
   clearPackageShimCaches,
+  isUnloadedPackage,
   packageShimFor,
   throughBundledShimForwarder,
 } from "./package-shims.js";
@@ -37,9 +38,11 @@ import {
   trackedRealpath,
 } from "./input-tracker.js";
 import { isRelativeSpecifier, packageNameOfSpecifier } from "./workspace-registry.js";
+import { typePatchFileExists } from "./type-patches/layer.js";
 
 function isFile(path: string): boolean {
-  return trackedFileExists(path);
+  // A declaration entry a project type patch supplies (type-patches/layer.ts).
+  return trackedFileExists(path) || typePatchFileExists(path);
 }
 
 function isDirectory(path: string): boolean {
@@ -562,6 +565,12 @@ export function nearestPkgJsonPath(fromFile: string): string | null {
   return dir === null ? null : join(dir, "package.json");
 }
 
+/** The nearest package scope's "imports" field (undefined without one). */
+export function nearestPackageImports(fromFile: string): unknown {
+  const dir = nearestPkgDir(dirname(resolve(fromFile)));
+  return dir === null ? undefined : pkgJsonOf(dir)?.imports;
+}
+
 /** The target the nearest package scope's "imports" field maps a '#'
  * specifier to under Node's ESM runtime conditions: a './' path inside the
  * package or another package's specifier. Null when no entry maps it. */
@@ -1018,6 +1027,9 @@ export function resolveWorkspaceSourceModule(
   ) {
     return null;
   }
+  // A workspace package the project marks never loaded (package-shims.ts)
+  // resolves like a missing one.
+  if (isUnloadedPackage(specifier)) return null;
   const source = resolveBareModule(fromFile, specifier, "runtime-source");
   if (
     source?.workspaceDir === undefined ||

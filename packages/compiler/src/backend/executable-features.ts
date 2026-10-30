@@ -5,10 +5,11 @@ import { hasForeignFfiCallback } from "./ffi-callbacks.js";
 import type { NativeLinkFeatures } from "./native-link-info.js";
 import { youngNurseryRequested } from "./young-nursery.js";
 
-export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
+export function executableLinkFeatures(mod: IrModule, largePages = false): NativeLinkFeatures {
   const features = moduleRuntimeFeatures(mod);
   return {
     ...(mod.workers ? { workers: true } : {}),
+    ...(largePages ? { largePages: true } : {}),
     ...(youngNurseryRequested() && mod.lib === undefined ? { youngNursery: true } : {}),
     regex: features.regex,
     copying: features.copying,
@@ -18,8 +19,19 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     ...(features.eventTarget ? { eventTarget: true } : {}),
     ...(features.wasm ? { wasm: true } : {}),
     ...(features.warningReplace ? { warningReplace: true } : {}),
+    ...(features.recordViewPartial ? { recordViewPartial: true } : {}),
     ...(features.stdioExtended ? { stdioExtended: true } : {}),
+    ...(features.fsFlags ? { fsFlags: true } : {}),
+    ...(features.strdecDyn ? { strdecDyn: true } : {}),
+    ...(features.processExtras ? { processExtras: true } : {}),
+    ...(features.streamWriteErrors ? { streamWriteErrors: true } : {}),
+    ...(features.stdioWriteSlot ? { stdioWriteSlot: true } : {}),
+    ...(features.nodeIsland ? { nodeIsland: true } : {}),
+    ...(features.moduleNamespace ? { moduleNamespace: true } : {}),
+    ...(features.moduleNamespaceDyn ? { moduleNamespaceDyn: true } : {}),
+    ...(features.primitiveWrapper ? { primitiveWrapper: true } : {}),
     zlib: features.zlib,
+    ...(features.brotli ? { brotli: true } : {}),
     assert: features.assert,
     inspect: features.inspect,
     dynInvoke: features.dynInvoke,
@@ -28,14 +40,25 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     ...(features.dynTier ? { dynTier: true } : {}),
     ...(features.streamDyn ? { streamDyn: true } : {}),
     ...(features.handleProps ? { handleProps: true } : {}),
+    ...(features.childLifecycle ? { childLifecycle: true } : {}),
+    ...(features.declAdopt ? { declAdopt: true } : {}),
+    ...(features.typeOrigins ? { typeOrigins: true } : {}),
     ...(features.dynForAwait ? { dynForAwait: true } : {}),
     ...(features.eventsOnceSignal ? { eventsOnceSignal: true } : {}),
+    ...(features.mime ? { mime: true } : {}),
+    ...(features.webStreams ? { webStreams: true } : {}),
+    ...(features.abortSignal ? { abortSignal: true } : {}),
+    ...(features.utilTiming ? { utilTiming: true } : {}),
     ...(features.dynBuffer ? { dynBuffer: true } : {}),
     ...(features.builtinValues ? { builtinValues: true } : {}),
-    events: features.processEvents,
+    ...(features.computedRequire ? { computedRequire: true } : {}),
+    // Island code's signal and exit listeners join the events unit's
+    // registries (scope-B NI-3).
+    events: features.processEvents || features.nodeIsland === true,
     emitter: features.emitter,
     symbol: features.symbol,
     bigint: features.bigint,
+    ...(features.bigstats ? { bigstats: true } : {}),
     searchParams: features.searchParams,
     qs: features.qs,
     utilPromisify: features.utilPromisify,
@@ -49,7 +72,10 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     dgram: features.dgram,
     dnsPromises: features.dnsPromises,
     dgramDyn: features.dgramDyn,
+    textCodecDyn: features.textCodecDyn,
     watch: features.fsWatch,
+    watchFile: features.fsWatchFile,
+    fsBufferBrand: features.fsBufferBrand,
     foreignFfi: hasForeignFfiCallback(mod.ffiImports ?? []),
     nodeTest: features.nodeTest,
     tls: features.tls,
@@ -59,7 +85,9 @@ export function executableLinkFeatures(mod: IrModule): NativeLinkFeatures {
     dh: features.dh,
     pki: features.pki,
     ed25519: features.ed25519,
+    x509: features.x509,
     webcrypto: features.webcrypto,
     perfLoop: features.perfLoop,
+    ...(features.icu ? { intl: true } : {}),
   };
 }

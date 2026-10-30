@@ -11,7 +11,7 @@ function tail(path: string): string {
   }
   return path.slice(i + 1);
 }
-const path = "tmp-1006-" + tail(process.argv[1]) + ".json";
+const path = "tmp-1006-" + tail(process.argv[1]) + "-" + process.pid + ".json";
 
 type Config = {
   name: string;

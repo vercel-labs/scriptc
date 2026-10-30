@@ -1,7 +1,7 @@
 scriptc coverage tests/coverage-fixtures/divergences.ts
 
-  statements analyzed   18
-  compile statically    18  (100%)
+  statements analyzed   20
+  compile statically    20  (100%)
     in dynamic tier     1  (operate on values typed only at runtime; --explain-dynamic lists them)
 
   fully static — all analyzed statements compile to native code.
@@ -14,11 +14,11 @@ scriptc coverage tests/coverage-fixtures/divergences.ts
           at tests/coverage-fixtures/divergences.ts:20:23
           hint: declare the parameter or binding with the value's full type ('Tagged'), or make the shape a class — class instances keep their identity when passed as a base class
       ×1  SC6002  this object's keys enumerate as 'x, y' natively (the declaration order of 'Point') but as 'y, x' under Node (insertion order), and the program observes the order (JSON.stringify, Object.keys, for-in …
-          at tests/coverage-fixtures/divergences.ts:29:22
+          at tests/coverage-fixtures/divergences.ts:31:22
           hint: write the properties in the declaration order of 'Point' (or reorder the declaration to match how objects are built)
       ×1  SC6003  localeCompare over 'яблоко' compares characters outside the built-in collation (Latin letters, digits, punctuation and symbols) by code point natively, while Node applies ICU's full collation
-          at tests/coverage-fixtures/divergences.ts:33:70
+          at tests/coverage-fixtures/divergences.ts:37:70
           hint: results agree with Node for Latin-script text; for other scripts compare explicitly (for example by code point with < and >) so both runtimes agree
       ×1  SC6004  this 'Circle' reaches a cast to the unrelated class 'Square' in the callee: natively the checked cast throws a TypeError when it executes, while Node reads the members structurally
-          at tests/coverage-fixtures/divergences.ts:48:20
+          at tests/coverage-fixtures/divergences.ts:52:20
           hint: narrow with 'instanceof Square' before casting, or cast to a base class or interface both classes share

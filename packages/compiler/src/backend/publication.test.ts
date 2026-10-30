@@ -85,3 +85,34 @@ test("published types close over fields, containers and whole hierarchies", () =
     computePublishedTypes({ ...withStores, functions: withStores.functions.slice(1) }),
   ).toBeNull();
 });
+
+test("freezable array types carry the array write guard without a publish", () => {
+  const numbers = arrayOf(F64);
+  const push: IrStmt = {
+    kind: "exprStmt",
+    expr: {
+      kind: "arrIntrinsic",
+      method: "push",
+      receiver: ref("a", numbers),
+      args: [{ kind: "numLit", value: 1, type: F64, loc }],
+      type: F64,
+      loc,
+    },
+    loc,
+  };
+  const mod: IrModule = {
+    irVersion: 17,
+    sourceFile: loc.file,
+    entry: "main",
+    functions: [fn("main", []), fn("pushNumber", [push])],
+    freezableArrays: ["array<f64>"],
+  };
+  const guarded = computePublishedTypes(mod)!;
+  expect(guarded.containerGuarded(numbers)).toBe(true);
+  expect(guarded.arrayGuards(numbers)).toEqual({ published: false, frozen: true });
+  expect(guarded.containerGuarded(arrayOf(STRING))).toBe(false);
+  // A frozen array's push throws, so the function may throw.
+  expect(computeMayThrow(mod).fns.has("pushNumber")).toBe(true);
+  const { freezableArrays: _frozen, ...plain } = mod;
+  expect(computePublishedTypes(plain)).toBeNull();
+});

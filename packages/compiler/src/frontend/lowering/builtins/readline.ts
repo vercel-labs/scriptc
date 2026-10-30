@@ -6,12 +6,15 @@ import {
   DYN,
   F64,
   type IrExpr,
+  type IrType,
   type IrStmt,
   type SrcLoc,
   STRING,
+  UNDEFINED_T,
   VOID,
   arrayOf,
   BYTES_U8,
+  funcOf,
 } from "../../../ir/ir.js";
 import { boolLit, dynUndefinedExpr, numLit } from "../../../ir/build.js";
 import { READLINE_DOCUMENTED_OPTIONS, fenceOrDropOptionKey } from "../surfaces.js";
@@ -52,6 +55,21 @@ export function isReadlineTyped(lowerer: Lowerer, node: ts.Expression): boolean 
     if (!lowerer.isStdlibFile(ts.getSourceFileOfNode(d))) return false;
     return isReadlineModule(ambientModuleOf(d));
   });
+}
+
+/** `rl.cursor`: @types/node declares a number, but an interface that is
+ * not a terminal answers undefined, so the read keeps its
+ * `number | undefined` union. */
+export function isOptionalReadlineCursorRead(
+  lowerer: Lowerer,
+  expr: ts.PropertyAccessExpression,
+): boolean {
+  return (
+    expr.name.text === "cursor" &&
+    !expr.questionDotToken &&
+    isReadlineTyped(lowerer, expr.expression) &&
+    lowerer.isStdlibMember(expr)
+  );
 }
 
 /** The runtime's listener event numbers (scr_readline.c). */
@@ -285,6 +303,15 @@ function interfaceClassModule(lowerer: Lowerer, node: ts.Expression): string | n
     : null;
 }
 
+/** `new readline.Interface(...)` and `new readlinePromises.Interface(...)`:
+ * the constructor createInterface calls, with the same arguments. Null for
+ * other constructors. */
+export function lowerReadlineInterfaceNew(lowerer: Lowerer, expr: ts.NewExpression): IrExpr | null {
+  const module = interfaceClassModule(lowerer, expr.expression);
+  if (module === null) return null;
+  return lowerReadlineCreateCall(lowerer, expr, locOf(expr), module === "readline/promises");
+}
+
 /** `rl instanceof readline.Interface` and `rl instanceof
  * readlinePromises.Interface` over a readline Interface: an interface is
  * an instance of the class of the module that created it (Node's
@@ -393,7 +420,12 @@ export function lowerReadlineMethodCall(
   if (name === "question" && args.length === 2) {
     const recv = receiver();
     const query = lowerPromptArg(lowerer, args[0]!);
-    const cb = lowerer.lowerExpr(args[1]!);
+    let cb = lowerer.lowerExpr(args[1]!);
+    // A checked-dynamic callback answers through a dynCheck to (answer:
+    // string) => void; a returned value is discarded.
+    if (cb.type.kind === "dyn")
+      cb = { kind: "dynCheck", value: cb, type: funcOf([STRING], VOID), loc };
+    cb = voidizedCallback(lowerer, cb, loc);
     if (cb.type.kind !== "func" || cb.type.ret.kind !== "void" || cb.type.params.length > 1) {
       lowerer.unsupported(
         "SC1090",
@@ -519,7 +551,7 @@ export function lowerReadlineMethodCall(
       recvLocal === undefined
         ? receiver()
         : { kind: "varRef", localId: recvLocal.id, type: F64, loc };
-    const cb = lowerer.lowerExpr(args[1]!);
+    let cb = lowerer.lowerExpr(args[1]!);
     const want =
       event === "line"
         ? "string"
@@ -528,6 +560,20 @@ export function lowerReadlineMethodCall(
           : event === "history"
             ? "history"
             : null;
+    // A checked-dynamic listener (test/common's mustCall wrapper) is called
+    // through a dynCheck to the event's signature, and a listener's return
+    // value is discarded, as Node does.
+    const payload: IrType[] =
+      want === "string"
+        ? [STRING]
+        : want === "history"
+          ? [arrayOf(STRING)]
+          : want === "error"
+            ? [DYN]
+            : [];
+    if (cb.type.kind === "dyn")
+      cb = { kind: "dynCheck", value: cb, type: funcOf(payload, VOID), loc };
+    cb = voidizedCallback(lowerer, cb, loc);
     const param = cb.type.kind === "func" ? cb.type.params[0] : undefined;
     const paramOk =
       param === undefined ||
@@ -1042,10 +1088,12 @@ function lowerOutput(lowerer: Lowerer, node: ts.Expression): IrExpr | "stdout" |
  * goes through rl.terminal with the completer. */
 export function lowerReadlineCreateCall(
   lowerer: Lowerer,
-  expr: ts.CallExpression,
+  expr: ts.CallExpression | ts.NewExpression,
   loc: SrcLoc,
   promises: boolean,
 ): IrExpr {
+  const argNodes = expr.arguments?.nodes ?? [];
+  const what = ts.isNewExpression(expr) ? "new Interface" : "createInterface";
   let input: IrExpr | null = null;
   let output: IrExpr | "stdout" | "none" = "none";
   let crlf: IrExpr = numLit(0, loc);
@@ -1095,39 +1143,38 @@ export function lowerReadlineCreateCall(
     });
     terminal = { kind: "varRef", localId: local.id, type: BOOL, loc };
   };
-  const optsNode = expr.arguments.nodes[0];
+  const optsNode = argNodes[0];
   if (optsNode === undefined) {
     lowerer.noLowering(
-      "createInterface without arguments",
+      `${what} without arguments`,
       expr,
       "pass { input: process.stdin, output: process.stdout } or createInterface(input, output)",
     );
   }
   if (!ts.isObjectLiteralExpression(optsNode)) {
     // createInterface(input, output?, completer?, terminal?)
-    if (expr.arguments.nodes.length > 4) {
+    if (argNodes.length > 4) {
       lowerer.noLowering(
-        `createInterface with ${expr.arguments.nodes.length} arguments`,
-        expr.arguments.nodes[4]!,
+        `${what} with ${argNodes.length} arguments`,
+        argNodes[4]!,
         "pass createInterface(input, output, completer, terminal) or one options object",
       );
     }
     input = lowerInput(lowerer, optsNode);
-    if (expr.arguments.nodes[1] !== undefined)
-      output = lowerOutput(lowerer, expr.arguments.nodes[1]);
-    const completerNode = expr.arguments.nodes[2];
+    if (argNodes[1] !== undefined) output = lowerOutput(lowerer, argNodes[1]);
+    const completerNode = argNodes[2];
     if (
       completerNode !== undefined &&
       !(ts.isIdentifier(completerNode) && completerNode.text === "undefined")
     ) {
       setCompleter(completerNode);
     }
-    if (expr.arguments.nodes[3] !== undefined) setTerminal(expr.arguments.nodes[3]);
+    if (argNodes[3] !== undefined) setTerminal(argNodes[3]);
   } else {
-    if (expr.arguments.nodes.length > 1) {
+    if (argNodes.length > 1) {
       lowerer.noLowering(
-        "createInterface with more than one argument",
-        expr.arguments.nodes[1]!,
+        `${what} with more than one argument`,
+        argNodes[1]!,
         "pass every option in the one options object",
       );
     }
@@ -1341,7 +1388,7 @@ export function lowerReadlineCreateCall(
 /** Property reads on an Interface: `history` (the history option itself,
  * or the interface's own empty array), `historySize`, `historyIndex`,
  * `crlfDelay`, `tabSize`, `escapeCodeTimeout`, `line`, `terminal` and
- * `cursor` (a non-terminal interface's undefined cursor throws SC2020).
+ * `cursor` (undefined on a non-terminal interface).
  * Null for other receivers. */
 export function lowerReadlineProperty(
   lowerer: Lowerer,
@@ -1373,10 +1420,38 @@ export function lowerReadlineProperty(
       loc,
     };
   }
-  const reads: Record<string, ["rl.line" | "rl.isTerminal" | "rl.cursor", IrExpr["type"]]> = {
+  if (name === "cursor") {
+    // `number | undefined`: a non-terminal interface has no cursor
+    const recv = lowerer.lowerExprExpecting(access.expression, F64);
+    const type: IrType = { kind: "union", unionId: lowerer.unions.intern([F64, UNDEFINED_T]) };
+    const local = recv.kind === "varRef" ? null : lowerer.declareHiddenLocal("%rlCursor", F64);
+    const id: IrExpr = local ? { kind: "varRef", localId: local.id, type: F64, loc } : recv;
+    const result: IrExpr = {
+      kind: "ternary",
+      cond: { kind: "libCall", fn: "rl.isTerminal", args: [id], type: BOOL, loc },
+      then: lowerer.coerceToExpected(
+        { kind: "libCall", fn: "rl.cursor", args: [id], type: F64, loc },
+        type,
+      ),
+      else_: lowerer.coerceToExpected(
+        { kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc },
+        type,
+      ),
+      type,
+      loc,
+    };
+    if (!local) return result;
+    return {
+      kind: "seqExpr",
+      stmts: [{ kind: "varDecl", localId: local.id, init: recv, loc }],
+      result,
+      type,
+      loc,
+    };
+  }
+  const reads: Record<string, ["rl.line" | "rl.isTerminal", IrExpr["type"]]> = {
     line: ["rl.line", STRING],
     terminal: ["rl.isTerminal", BOOL],
-    cursor: ["rl.cursor", F64],
   };
   const read = reads[name];
   if (read !== undefined) {

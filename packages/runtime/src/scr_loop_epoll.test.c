@@ -23,8 +23,20 @@ static double now_ms(void) {
 }
 
 static int keys[KEYS];
-static double deadline[KEYS];
+/* The poller reads the clock inside scrp_timer_arm, so a key's deadline is
+ * only known to lie between the delay added to the clock read before the
+ * call and the delay added to the read after it. A loaded machine can pause
+ * the test between its read and the poller's for milliseconds, so the
+ * checks below use these bounds instead of one guessed deadline. */
+static double earliest[KEYS], latest[KEYS];
 static int state[KEYS]; /* 0 unarmed/cancelled, 1 armed, 2 fired */
+
+static void arm(ScrPoller *p, int i, double ms) {
+  double before = now_ms();
+  assert(scrp_timer_arm(p, &keys[i], ms, &keys[i]));
+  earliest[i] = before + ms;
+  latest[i] = now_ms() + ms;
+}
 
 /* Wait for the poller fd, then drain; returns the events drained. */
 static int pump(ScrPoller *p, ScrPollerEvent *evs, int max, int wait_ms) {
@@ -45,20 +57,14 @@ int main(void) {
     if (i == KEYS / 2)
       for (double until = now_ms() + 3; now_ms() < until;) {
       }
-    double ms = 5 + rand() % 120;
-    double t = now_ms();
-    assert(scrp_timer_arm(p, &keys[i], ms, &keys[i]));
-    deadline[i] = t + ms;
+    arm(p, i, 5 + rand() % 120);
     state[i] = 1;
   }
   /* re-arm a third later and earlier, cancel a third (the heap and the key
    * table move entries on every one of these) */
   for (int i = 0; i < KEYS; i++) {
     if (i % 3 == 0) {
-      double ms = 1 + rand() % 150;
-      double t = now_ms();
-      assert(scrp_timer_arm(p, &keys[i], ms, &keys[i]));
-      deadline[i] = t + ms;
+      arm(p, i, 1 + rand() % 150);
     } else if (i % 3 == 1) {
       scrp_timer_cancel(p, &keys[i]);
       state[i] = 0;
@@ -74,7 +80,7 @@ int main(void) {
   int armed = 0;
   for (int i = 0; i < KEYS; i++) armed += state[i] == 1;
   int fired = 0, piped = 0;
-  double last = 0;
+  double fired_earliest = 0; /* the largest earliest bound of a fired key */
   ScrPollerEvent evs[16]; /* small batches leave due timers for the next drain */
   while (fired < armed) {
     int n = pump(p, evs, 16, 1000);
@@ -91,9 +97,11 @@ int main(void) {
       assert(i >= 0 && i < KEYS);
       assert(state[i] == 1);
       double t = now_ms();
-      assert(t + 1.0 >= deadline[i]); /* never early (timerfd rounding aside) */
-      assert(deadline[i] + 1.0 >= last); /* deadline order */
-      if (deadline[i] > last) last = deadline[i];
+      assert(t + 1.0 >= earliest[i]); /* never early (timerfd rounding aside) */
+      /* deadline order: no key fired earlier has a deadline after this
+       * one's (equal deadlines fire in arm order, which the bounds allow) */
+      assert(latest[i] >= fired_earliest);
+      if (earliest[i] > fired_earliest) fired_earliest = earliest[i];
       state[i] = 2;
       fired++;
     }

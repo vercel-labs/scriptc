@@ -1,10 +1,12 @@
 /* Focused LLVM expression emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
-import { type IrType, isRefCounted, typeKey } from "../../ir/ir.js";
-import { FN_ATTRS, releaseSym, retainSym, traceArg } from "./shapes.js";
+import { type IrType, isRefCounted, STRING, typeKey } from "../../ir/ir.js";
+import { streamTypedRefEligible } from "../../ir/analysis.js";
+import { FN_ATTRS, releaseSym, retainSym, traceArg, vAdapters } from "./shapes.js";
 import type { LlvmEmitterContext } from "./expr-context.js";
 import { unionPeekLines, unionTagLines } from "./union-repr.js";
 import { registerReplay } from "./emit-journal.js";
+import { streamTypedDesc } from "./expr-stream-bridges.js";
 
 export function streamDataAdapter(
   host: LlvmEmitterContext,
@@ -13,7 +15,7 @@ export function streamDataAdapter(
   const key = `eed:${typeKey(cbT)}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return sym;
-  sym = `sc_ee_dad_${host.resolveThunks.size}`;
+  sym = host.contentSymbol("sc_ee_dad_", key);
   host.resolveThunks.set(key, sym);
   host.journal?.allocated(sym, "streamDataAdapter", [cbT]);
   const p = cbT.params[0];
@@ -221,7 +223,7 @@ export function streamDoneFnFor(
   const key = `sd:${kind}:${typeKey(doneT)}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return sym;
-  sym = `sc_sd_${host.resolveThunks.size}`;
+  sym = host.contentSymbol("sc_sd_", key);
   host.resolveThunks.set(key, sym);
   host.journal?.allocated(sym, "streamDoneFnFor", [kind, doneT]);
   const errT = doneT.params[0];
@@ -259,6 +261,31 @@ export function streamDoneFnFor(
       strTag = def!.arms.findIndex((a) => a.kind === "string");
     }
   }
+  // data of one record type or nothing (a typed completion,
+  // pinTypedDataCompletion): a record with a typed-chunk descriptor
+  // completes as a typed chunk, and another record boxes by reference
+  // (the conversion a dyn `data` parameter receives).
+  let typedTag = -1;
+  let typedDesc: string | null = null;
+  let liveData = false;
+  if (valueData && dataT?.kind === "union") {
+    const arms = host.unionsById.get(dataT.unionId)?.arms ?? [];
+    const record = arms.findIndex((a) => a.kind === "record");
+    if (arms.length === 2 && record >= 0 && arms.some((a) => a.kind === "undefinedT")) {
+      typedDesc = streamTypedDesc(host, arms[record]!);
+      if (typedDesc !== null) typedTag = record;
+      else {
+        // the records a conversion to dyn keeps by reference (Lowerer's
+        // liveReference)
+        const armT = arms[record]!;
+        const shape = armT.kind === "record" ? host.recordsById.get(armT.shapeId) : undefined;
+        liveData =
+          streamTypedRefEligible(armT) &&
+          shape !== undefined &&
+          (shape.fields.length > 0 || shape.indexValue !== undefined);
+      }
+    }
+  }
   const entry =
     kind === "c"
       ? "scr_stream_construct_done"
@@ -269,18 +296,20 @@ export function streamDoneFnFor(
           : kind === "d"
             ? "scr_stream_destroy_done"
             : kind === "t"
-              ? valueData
-                ? "scr_stream_transform_done_value"
-                : "scr_stream_transform_done"
-              : valueData
-                ? "scr_stream_flush_done_value"
-                : "scr_stream_flush_done";
+              ? typedDesc !== null
+                ? "scr_stream_transform_done_typed"
+                : valueData
+                  ? "scr_stream_transform_done_value"
+                  : "scr_stream_transform_done"
+              : typedDesc !== null
+                ? "scr_stream_flush_done_typed"
+                : valueData
+                  ? "scr_stream_flush_done_value"
+                  : "scr_stream_flush_done";
   const twoSlot = (kind === "t" || kind === "l") && !valueData;
   host.declare(
-    `declare void @${entry}(ptr, ptr${twoSlot ? ", ptr, ptr" : valueData ? ", ptr" : ""})`,
+    `declare void @${entry}(ptr, ptr${typedDesc !== null ? ", ptr, ptr" : twoSlot ? ", ptr, ptr" : valueData ? ", ptr" : ""})`,
   );
-  host.declare(`declare ptr @scr_box_get_ref(ptr)`);
-  host.declare(`declare void @scr_stream_release_v(ptr)`);
   host.declare(`declare ptr @scr_error_retain_v(ptr)`);
   host.declare(`declare void @scr_union_release(ptr)`);
   const params = [
@@ -293,15 +322,21 @@ export function streamDoneFnFor(
     `entry:`,
     `  %eslot = alloca ptr`,
     ...(twoSlot ? [`  %bslot = alloca ptr`, `  %sslot = alloca ptr`] : []),
+    ...(typedDesc !== null ? [`  %tslot = alloca ptr`] : []),
     `  %capsp = getelementptr inbounds %ScrClosure, ptr %self, i64 1`,
     `  %bx = load ptr, ptr %capsp`,
-    `  %s = call ptr @scr_box_get_ref(ptr %bx) ; the stream, +1`,
+    // the stream, borrowed: the box holds it, and the closure (alive for
+    // the call) holds the box
+    `  %sp = getelementptr inbounds %ScrBox, ptr %bx, i64 0, i32 5`,
+    `  %s = load ptr, ptr %sp`,
     `  store ptr null, ptr %eslot`,
     ...(twoSlot ? [`  store ptr null, ptr %bslot`, `  store ptr null, ptr %sslot`] : []),
+    ...(typedDesc !== null ? [`  store ptr null, ptr %tslot`] : []),
   ];
-  // A tag-guarded retained peek out of a union argument into a slot.
+  // A tag-guarded peek out of a union argument into a slot, retained
+  // unless retain is null.
   let arm = 0;
-  const unwrap = (u: string, tag: number, retain: string, slot: string): void => {
+  const unwrap = (u: string, tag: number, retain: string | null, slot: string): void => {
     const a = arm++;
     const union = u === "%e" ? errT : dataT;
     const nullable = union?.kind === "union" ? host.nullableUnions.get(union.unionId) : null;
@@ -314,8 +349,9 @@ export function streamDoneFnFor(
       `  br i1 %hit${a}, label %yes${a}, label %done${a}`,
       `yes${a}:`,
       ...unionPeekLines(nullable, u, `%pv${a}`),
-      `  %rt${a} = call ptr ${retain}(ptr %pv${a})`,
-      `  store ptr %rt${a}, ptr ${slot}`,
+      ...(retain !== null
+        ? [`  %rt${a} = call ptr ${retain}(ptr %pv${a})`, `  store ptr %rt${a}, ptr ${slot}`]
+        : [`  store ptr %pv${a}, ptr ${slot}`]),
       `  br label %done${a}`,
       `done${a}:`,
     );
@@ -329,8 +365,21 @@ export function streamDoneFnFor(
     host.declare(`declare ptr @scr_str_retain_v(ptr)`);
     unwrap("%d", strTag, "@scr_str_retain_v", "%sslot");
   }
+  if (typedDesc !== null) unwrap("%d", typedTag, null, "%tslot");
   d.push(`  %ev = load ptr, ptr %eslot`);
-  if (valueData) {
+  if (typedDesc !== null) {
+    d.push(
+      `  %tv = load ptr, ptr %tslot`,
+      `  call void @${entry}(ptr %s, ptr %ev, ptr %tv, ptr ${typedDesc}) ; moves err; borrows s and the record`,
+    );
+  } else if (liveData) {
+    host.declare(`declare void @scr_dyn_release(ptr)`);
+    d.push(
+      `  %dv = call ptr @${host.liveDynUnionRefAdapter(dataT as IrType & { kind: "union" })}(ptr %d)`,
+      `  call void @${entry}(ptr %s, ptr %ev, ptr %dv) ; moves err; borrows s and the value`,
+      `  call void @scr_dyn_release(ptr %dv)`,
+    );
+  } else if (valueData) {
     const conv = host.dyn.toDynHelper(dataT!);
     host.declare(`declare void @scr_dyn_release(ptr)`);
     d.push(
@@ -347,7 +396,6 @@ export function streamDoneFnFor(
   } else {
     d.push(`  call void @${entry}(ptr %s, ptr %ev) ; moves err; borrows s`);
   }
-  d.push(`  call void @scr_stream_release_v(ptr %s)`);
   if (errT !== undefined) d.push(`  call void ${releaseSym(host.shapeHost, errT)}(ptr %e)`);
   if (dataT !== undefined && isRefCounted(dataT))
     d.push(`  call void ${releaseSym(host.shapeHost, dataT)}(ptr %d)`);
@@ -365,7 +413,7 @@ export function fsRenameThunkFor(host: LlvmEmitterContext, cbT: IrType & { kind:
   const key = `fsren:${typeKey(cbT)}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return sym;
-  sym = `sc_fsren_${host.resolveThunks.size}`;
+  sym = host.contentSymbol("sc_fsren_", key);
   host.resolveThunks.set(key, sym);
   host.journal?.allocated(sym, "fsRenameThunkFor", [cbT]);
   const param = cbT.params[0]!;
@@ -454,7 +502,7 @@ export function cryptoIntThunkFor(
   const key = `cryptoint:${typeKey(cbT)}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return sym;
-  sym = `sc_cryptoint_${host.resolveThunks.size}`;
+  sym = host.contentSymbol("sc_cryptoint_", key);
   host.resolveThunks.set(key, sym);
   host.journal?.allocated(sym, "cryptoIntThunkFor", [cbT]);
   const d: string[] = [
@@ -516,7 +564,7 @@ export function zlibBytesThunkFor(
   const key = `${family}bytes:${arrayBuffer ? "arraybuffer:" : ""}${mode}${typeKey(cbT)}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return sym;
-  sym = `sc_${family}bytes_${host.resolveThunks.size}`;
+  sym = host.contentSymbol(`sc_${family}bytes_`, key);
   host.resolveThunks.set(key, sym);
   host.journal?.allocated(sym, "zlibBytesThunkFor", [cbT, arrayBuffer, family, valueMode]);
   const d: string[] = [
@@ -644,7 +692,7 @@ export function streamCbThunkFor(
   const key = `scb:${kind}:${typeKey(cbT)}`;
   let sym = host.resolveThunks.get(key);
   if (sym) return sym;
-  sym = `sc_scb_${host.resolveThunks.size}`;
+  sym = host.contentSymbol("sc_scb_", key);
   host.resolveThunks.set(key, sym);
   host.journal?.allocated(sym, "streamCbThunkFor", [kind, cbT]);
   const runtimeParams =
@@ -684,22 +732,15 @@ export function streamCbThunkFor(
     passed.push(`ptr %sr`);
   }
   // The stream-owning completion closure (a 1-cap closure boxing the
-  // retained stream) — shared by the typed and dyn done shapes.
+  // retained stream) — shared by the typed and dyn done shapes. Every
+  // write and writev call receives the same one, as Node passes one
+  // onwrite function; other calls receive a new one, which the stream
+  // reuses while it holds the only reference.
+  const doneEntry =
+    kind === "w" || kind === "v" ? "scr_stream_write_closure" : "scr_stream_done_closure";
   const doneClosure = (fnRef: string, tag: string): string => {
-    host.declare(`declare ptr @scr_closure_new(ptr, ${host.sizeType})`);
-    host.declare(`declare ptr @scr_box_new_obj(ptr, ptr, ptr)`);
-    host.declare(`declare void @scr_box_set_ref(ptr, ptr)`);
-    host.declare(`declare ptr @scr_stream_retain_v(ptr)`);
-    host.declare(`declare void @scr_stream_release_v(ptr)`);
-    host.declare(`declare void @scr_stream_trace(ptr, ptr, ptr)`);
-    d.push(
-      `  %${tag}clo = call ptr @scr_closure_new(ptr ${fnRef}, ${host.sizeType} 1)`,
-      `  %${tag}bx = call ptr @scr_box_new_obj(ptr @scr_stream_retain_v, ptr @scr_stream_release_v, ptr @scr_stream_trace)`,
-      `  %${tag}cp = getelementptr inbounds %ScrClosure, ptr %${tag}clo, i64 1`,
-      `  store ptr %${tag}bx, ptr %${tag}cp`,
-      `  %${tag}sr = call ptr @scr_stream_retain_v(ptr %s)`,
-      `  call void @scr_box_set_ref(ptr %${tag}bx, ptr %${tag}sr)`,
-    );
+    host.declare(`declare ptr @${doneEntry}(ptr, ptr)`);
+    d.push(`  %${tag}clo = call ptr @${doneEntry}(ptr %s, ptr ${fnRef})`);
     return `%${tag}clo`;
   };
   for (let i = off; i < declared.length; i++) {
@@ -727,6 +768,17 @@ export function streamCbThunkFor(
         const ty = host.llType(p);
         host.declare(`declare zeroext i1 @scr_exc_pending()`);
         if (hasThis) host.declare(`declare void @scr_stream_release_v(ptr)`);
+        // An entry `encoding` declared as a string (the declarations'
+        // `encoding: string`) receives "" where Node passes undefined or
+        // null (an object-mode write), as a write's encoding parameter does.
+        const entry =
+          p.kind === "array" && p.elem.kind === "record"
+            ? host.recordsById.get(p.elem.shapeId)
+            : undefined;
+        if (entry?.fields.some((f) => f.name === "encoding" && f.type.kind === "string")) {
+          host.declare(`declare void @scr_stream_writev_fill_encodings(ptr)`);
+          d.push(`  call void @scr_stream_writev_fill_encodings(ptr %chunks)`);
+        }
         d.push(
           `  %vt${i} = call ${ty === "i1" ? "zeroext i1" : ty} @${helper}(ptr %chunks, ptr null)`,
           `  %vtbad${i} = call zeroext i1 @scr_exc_pending()`,
@@ -836,18 +888,42 @@ export function streamCbThunkFor(
       host.declare(`declare void @scr_dyn_release(ptr)`);
       host.declare(`declare zeroext i1 @scr_exc_pending()`);
       if (hasThis) host.declare(`declare void @scr_stream_release_v(ptr)`);
+      // A typed chunk of the declared record type (scr_stream_push_typed)
+      // is the record itself; any other chunk converts.
+      const desc = streamTypedDesc(host, p);
+      if (desc !== null) {
+        host.declare(`declare ptr @scr_stream_chunk_typed(ptr, ptr, ptr)`);
+        d.push(
+          `  br label %ctchk${i}`,
+          `ctchk${i}:`,
+          `  %ctt${i} = call ptr @scr_stream_chunk_typed(ptr %s, ptr %chunk, ptr ${desc})`,
+          `  %cthit${i} = icmp ne ptr %ctt${i}, null`,
+          `  br i1 %cthit${i}, label %ctok${i}, label %ctconv${i}`,
+          `ctconv${i}:`,
+        );
+      }
       d.push(
         `  %cv${i} = call ptr @scr_stream_chunk_value(ptr %s, ptr %chunk)`,
         `  %ct${i} = call ${ty === "i1" ? "zeroext i1" : ty} @${helper}(ptr %cv${i}, ptr null)`,
         `  call void @scr_dyn_release(ptr %cv${i})`,
         `  %ctbad${i} = call zeroext i1 @scr_exc_pending()`,
-        `  br i1 %ctbad${i}, label %ctfail${i}, label %ctok${i}`,
+        `  br i1 %ctbad${i}, label %ctfail${i}, label %${desc !== null ? "ctconvok" : "ctok"}${i}`,
         `ctfail${i}:`,
         ...(hasThis ? [`  call void @scr_stream_release_v(ptr %sr)`] : []),
         `  ret void`,
-        `ctok${i}:`,
       );
-      passed.push(`${ty} %ct${i}`);
+      if (desc !== null) {
+        d.push(
+          `ctconvok${i}:`,
+          `  br label %ctok${i}`,
+          `ctok${i}:`,
+          `  %ctv${i} = phi ptr [ %ctt${i}, %ctchk${i} ], [ %ct${i}, %ctconvok${i} ]`,
+        );
+        passed.push(`ptr %ctv${i}`);
+      } else {
+        d.push(`ctok${i}:`);
+        passed.push(`${ty} %ct${i}`);
+      }
     } else if (isEncPos && p.kind === "string") {
       // Node's encoding for decoded (Buffer) chunks is 'buffer'; an
       // object-mode side passes the write's encoding argument ("" for
@@ -864,18 +940,46 @@ export function streamCbThunkFor(
       host.declare(`declare void @scr_dyn_release(ptr)`);
       host.declare(`declare zeroext i1 @scr_exc_pending()`);
       if (hasThis) host.declare(`declare void @scr_stream_release_v(ptr)`);
+      // An object-mode write without an encoding argument passes
+      // undefined: a pointer union whose unit arm is undefined holds it as
+      // the null pointer, so that case skips the conversion.
+      const pointer = p.kind === "union" ? host.nullableUnions.get(p.unionId) : null;
+      const undefinedIsNull =
+        pointer !== null &&
+        p.kind === "union" &&
+        host.unionsById.get(p.unionId)?.arms[pointer.unitTag]?.kind === "undefinedT";
+      if (undefinedIsNull) {
+        host.declare(`declare zeroext i1 @scr_stream_chunk_encoding_undefined(ptr)`);
+        d.push(
+          `  br label %etchk${i}`,
+          `etchk${i}:`,
+          `  %eu${i} = call zeroext i1 @scr_stream_chunk_encoding_undefined(ptr %s)`,
+          `  br i1 %eu${i}, label %etok${i}, label %etconv${i}`,
+          `etconv${i}:`,
+        );
+      }
       d.push(
         `  %ev${i} = call ptr @scr_stream_chunk_encoding_value(ptr %s)`,
         `  %et${i} = call ${ty === "i1" ? "zeroext i1" : ty} @${helper}(ptr %ev${i}, ptr null)`,
         `  call void @scr_dyn_release(ptr %ev${i})`,
         `  %etbad${i} = call zeroext i1 @scr_exc_pending()`,
-        `  br i1 %etbad${i}, label %etfail${i}, label %etok${i}`,
+        `  br i1 %etbad${i}, label %etfail${i}, label %${undefinedIsNull ? "etconvok" : "etok"}${i}`,
         `etfail${i}:`,
         ...(hasThis ? [`  call void @scr_stream_release_v(ptr %sr)`] : []),
         `  ret void`,
-        `etok${i}:`,
       );
-      passed.push(`${ty} %et${i}`);
+      if (undefinedIsNull) {
+        d.push(
+          `etconvok${i}:`,
+          `  br label %etok${i}`,
+          `etok${i}:`,
+          `  %etv${i} = phi ptr [ null, %etchk${i} ], [ %et${i}, %etconvok${i} ]`,
+        );
+        passed.push(`${ty} %etv${i}`);
+      } else {
+        d.push(`etok${i}:`);
+        passed.push(`${ty} %et${i}`);
+      }
     } else if (isErrPos) {
       // destroy's error argument: `Error | null` — wrap type-directedly.
       // The finished/pipeline callback ("e") may declare `Error | null |
@@ -961,6 +1065,161 @@ registerReplay("streamDoneFnFor", (host, args) =>
 );
 registerReplay("fsRenameThunkFor", (host, args) =>
   fsRenameThunkFor(host, args[0] as IrType & { kind: "func" }),
+);
+/** The fs.watch listener adapter for an (eventType, filename) listener, or
+ * for an (eventType) listener whose parameter is dynamic: the runtime hands
+ * the borrowed C strings, the thunk builds what the listener declared. The
+ * listener owns its +1 arguments (the universal convention
+ * scr_watch_thunk_event follows), so a string the thunk boxes into a dynamic
+ * value is released once the box holds it. */
+export function watchNameThunkFor(
+  host: LlvmEmitterContext,
+  cbT: IrType & { kind: "func" },
+): string {
+  const key = `watchname:${typeKey(cbT)}`;
+  let sym = host.resolveThunks.get(key);
+  if (sym) return sym;
+  sym = host.contentSymbol("sc_watchname_", key);
+  host.resolveThunks.set(key, sym);
+  host.journal?.allocated(sym, "watchNameThunkFor", [cbT]);
+  const S = host.sizeType;
+  host.declare(`declare ${S} @strlen(ptr)`);
+  host.declare(`declare ptr @scr_str_new(ptr, ${S})`);
+  host.declare(`declare void @scr_str_release(ptr)`);
+  const d: string[] = [
+    `define internal void @${sym}(ptr %cb, ptr %event, ptr %name) ${FN_ATTRS} { ; fs.watch listener ${typeKey(cbT)}`,
+    `entry:`,
+    `  %evlen = call ${S} @strlen(ptr %event)`,
+    `  %evstr = call ptr @scr_str_new(ptr %event, ${S} %evlen)`,
+  ];
+  const named = cbT.params.length === 2;
+  if (named) {
+    d.push(
+      `  %slot = alloca ptr`,
+      `  %has = icmp ne ptr %name, null`,
+      `  br i1 %has, label %yes, label %no`,
+      `yes:`,
+    );
+    const nameParam = cbT.params[1]!;
+    if (nameParam.kind === "dyn") {
+      host.declare(`declare ptr @scr_dyn_new_null()`);
+      host.declare(`declare ptr @scr_dyn_new_str(ptr)`);
+      d.push(
+        `  %nlen = call ${S} @strlen(ptr %name)`,
+        `  %nstr = call ptr @scr_str_new(ptr %name, ${S} %nlen)`,
+        `  %ndyn = call ptr @scr_dyn_new_str(ptr %nstr)`,
+        `  call void @scr_str_release(ptr %nstr)`,
+        `  store ptr %ndyn, ptr %slot`,
+        `  br label %go`,
+        `no:`,
+        `  %dn = call ptr @scr_dyn_new_null()`,
+        `  store ptr %dn, ptr %slot`,
+      );
+    } else {
+      if (nameParam.kind !== "union")
+        throw new InternalCompilerError("llvm emitter bug: fs.watch filename param is not a union");
+      const def = host.unionsById.get(nameParam.unionId);
+      const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
+      const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
+      if (strTag < 0 || nullTag < 0)
+        throw new InternalCompilerError("llvm emitter bug: fs.watch filename union lacks its arms");
+      if (host.nullableUnions.has(nameParam.unionId)) {
+        // `string | null` erases: the owned payload IS the union's value.
+        d.push(
+          `  %nlen = call ${S} @strlen(ptr %name)`,
+          `  %nstr = call ptr @scr_str_new(ptr %name, ${S} %nlen)`,
+          `  store ptr %nstr, ptr %slot`,
+          `  br label %go`,
+          `no:`,
+          `  store ptr null, ptr %slot`,
+        );
+      } else {
+        const rc = vAdapters(host.shapeHost, STRING);
+        host.declare(`declare ptr @scr_union_new_ref(i32, ptr, ptr, ptr, ptr)`);
+        d.push(
+          `  %nlen = call ${S} @strlen(ptr %name)`,
+          `  %nstr = call ptr @scr_str_new(ptr %name, ${S} %nlen)`,
+          `  %nu = call ptr @scr_union_new_ref(i32 ${strTag}, ptr %nstr, ptr ${rc.retain}, ptr ${rc.release}, ptr ${traceArg(host.shapeHost, STRING)})`,
+          `  store ptr %nu, ptr %slot`,
+          `  br label %go`,
+          `no:`,
+          `  store ptr ${host.unitInstanceRef(nameParam.unionId, nullTag)}, ptr %slot`,
+        );
+      }
+    }
+    d.push(`  br label %go`, `go:`);
+  }
+  let ev: string;
+  if (cbT.params[0]?.kind === "dyn") {
+    // The box retains the string; the thunk's own reference goes.
+    host.declare(`declare ptr @scr_dyn_new_str(ptr)`);
+    d.push(
+      `  %evd = call ptr @scr_dyn_new_str(ptr %evstr)`,
+      `  call void @scr_str_release(ptr %evstr)`,
+    );
+    ev = "%evd";
+  } else {
+    ev = "%evstr";
+  }
+  d.push(
+    `  %fnp = getelementptr inbounds %ScrClosure, ptr %cb, i64 0, i32 1`,
+    `  %fn = load ptr, ptr %fnp`,
+  );
+  if (named)
+    d.push(`  %arg = load ptr, ptr %slot`, `  call void %fn(ptr %cb, ptr ${ev}, ptr %arg)`);
+  else d.push(`  call void %fn(ptr %cb, ptr ${ev})`);
+  d.push(`  ret void`, `}`, ``);
+  host.resolveThunkDefs.push(...d);
+  host.journal?.built();
+  return sym;
+}
+
+/** The FSWatcher 'error' listener adapter: the runtime hands a borrowed
+ * ScrError, the listener receives the declared dyn value or an Error
+ * object it owns. A zero-parameter listener uses the runtime's
+ * scr_watch_err_thunk0 and never reaches here. */
+export function watchErrorThunkFor(
+  host: LlvmEmitterContext,
+  cbT: IrType & { kind: "func" },
+): string {
+  const key = `watcherr:${typeKey(cbT)}`;
+  let sym = host.resolveThunks.get(key);
+  if (sym) return sym;
+  sym = host.contentSymbol("sc_watcherr_", key);
+  host.resolveThunks.set(key, sym);
+  host.journal?.allocated(sym, "watchErrorThunkFor", [cbT]);
+  const param = cbT.params[0]!;
+  const d: string[] = [
+    `define internal void @${sym}(ptr %cb, ptr %err) ${FN_ATTRS} { ; FSWatcher error listener ${typeKey(cbT)}`,
+    `entry:`,
+  ];
+  if (param.kind === "dyn") {
+    host.declare(`declare ptr @scr_dyn_from_error(ptr)`);
+    d.push(`  %de = call ptr @scr_dyn_from_error(ptr %err)`);
+  } else if (param.kind === "object" && param.className === "%Error") {
+    host.declare(`declare ptr @scr_error_retain(ptr)`);
+    d.push(`  %de = call ptr @scr_error_retain(ptr %err)`);
+  } else {
+    throw new InternalCompilerError("llvm emitter bug: FSWatcher error param is not an Error");
+  }
+  d.push(
+    `  %fnp = getelementptr inbounds %ScrClosure, ptr %cb, i64 0, i32 1`,
+    `  %fn = load ptr, ptr %fnp`,
+    `  call void %fn(ptr %cb, ptr %de)`,
+    `  ret void`,
+    `}`,
+    ``,
+  );
+  host.resolveThunkDefs.push(...d);
+  host.journal?.built();
+  return sym;
+}
+
+registerReplay("watchNameThunkFor", (host, args) =>
+  watchNameThunkFor(host, args[0] as IrType & { kind: "func" }),
+);
+registerReplay("watchErrorThunkFor", (host, args) =>
+  watchErrorThunkFor(host, args[0] as IrType & { kind: "func" }),
 );
 registerReplay("cryptoIntThunkFor", (host, args) =>
   cryptoIntThunkFor(host, args[0] as IrType & { kind: "func" }),

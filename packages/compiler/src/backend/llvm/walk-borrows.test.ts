@@ -139,3 +139,24 @@ test("returns of walks, including calls to borrowed-return callees, return borro
   );
   expect(analyzeWalks(owned, borrowedHost).returnsWalk).toBe(true);
 });
+
+test("a string literal return keeps the body's other walks borrowed", () => {
+  const ret = (value: IrExpr | null): IrStmt => ({ kind: "return", value, loc });
+  const STRING: IrType = { kind: "string" };
+  const text: IrExpr = {
+    kind: "fieldGet",
+    obj: ref("node"),
+    className: "Node",
+    field: "text",
+    type: STRING,
+    loc,
+  };
+  const empty: IrExpr = { kind: "strLit", value: "", type: STRING, loc };
+  const getter = fn([ret(text), ret(empty)], []);
+  expect(analyzeWalks(getter, host).returnsWalk).toBe(true);
+  // The literal needs no unwritten location; the field read still does.
+  expect(analyzeWalks(getter, { ...host, unwritten: () => false }).returnsWalk).toBe(false);
+  expect(analyzeWalks(fn([ret(empty)], []), { ...host, unwritten: () => false }).returnsWalk).toBe(
+    true,
+  );
+});

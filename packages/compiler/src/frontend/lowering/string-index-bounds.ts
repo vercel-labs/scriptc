@@ -182,10 +182,27 @@ export class StringIndexBounds {
   private readonly identifiers = new Map<ts.Node, Map<string, ts.Identifier[]>>();
 
   constructor(
-    private readonly symbolAt: (node: ts.Node) => ts.Symbol | null,
-    private readonly declarationOf: (symbol: ts.Symbol) => ts.Node | undefined,
-    private readonly isString: (node: ts.Expression) => boolean,
+    private readonly lookupSymbol: (node: ts.Node) => ts.Symbol | null,
+    private readonly lookupDeclaration: (symbol: ts.Symbol) => ts.Node | undefined,
+    private readonly stringTyped: (node: ts.Expression) => boolean,
   ) {}
+
+  // The lookups are called as plain functions: the instance is not their
+  // receiver.
+  private symbolAt(node: ts.Node): ts.Symbol | null {
+    const lookup = this.lookupSymbol;
+    return lookup(node);
+  }
+
+  private declarationOf(symbol: ts.Symbol): ts.Node | undefined {
+    const lookup = this.lookupDeclaration;
+    return lookup(symbol);
+  }
+
+  private isString(node: ts.Expression): boolean {
+    const test = this.stringTyped;
+    return test(node);
+  }
 
   /** True when `read` (an element access on a string receiver) is proven
    * to name an existing code unit. */

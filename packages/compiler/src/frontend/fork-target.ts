@@ -1,7 +1,14 @@
 import { resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as ts from "./ts7/adapter.js";
-import { fallbackDtsPath, isNodeTypesPath, tsgoPath } from "./dts-paths.js";
+import {
+  ambientDtsPath,
+  isFallbackDtsPath,
+  isNodeTypesPath,
+  overridesDtsPath,
+  tsgoPath,
+} from "./dts-paths.js";
+import { nearestPackageImports } from "./resolve.js";
 import { canonicalBuiltinModule } from "./builtin-modules.js";
 import { moduleSourceCandidates } from "./module-source-candidates.js";
 
@@ -15,7 +22,7 @@ export function isNodeGlobal(program: ts.Program, expression: ts.Identifier): bo
       const source = ts.getSourceFileOfNode(declaration);
       return (
         source.isDeclarationFile &&
-        (tsgoPath(source.fileName) === fallbackDtsPath() || isNodeTypesPath(source.fileName))
+        (isFallbackDtsPath(source.fileName) || isNodeTypesPath(source.fileName))
       );
     })
   );
@@ -292,9 +299,77 @@ export function forkCallModulePath(program: ts.Program, call: ts.CallExpression)
   return staticForkModulePath(program, call.arguments.nodes[0]);
 }
 
+/** The ways a string or template literal can spell one character of a
+ * module name: the character, \xHH, \uHHHH, \u{H…}, a legacy octal escape,
+ * or the character after a backslash where that is not another escape. */
+function spelledCharacter(ch: string): string {
+  const code = ch.charCodeAt(0);
+  const hex = code.toString(16);
+  const forms = [
+    ch,
+    "\\\\x" + hex.padStart(2, "0"),
+    "\\\\u" + hex.padStart(4, "0"),
+    "\\\\u\\{0*" + hex + "\\}",
+    "\\\\" + code.toString(8),
+  ];
+  if (!"bfnrtvux0123456789".includes(ch)) forms.push("\\\\" + ch);
+  return "(?:" + forms.join("|") + ")";
+}
+
+/** "child_process" with escapes and line continuations in any of its
+ * characters (case-insensitive, a superset). */
+const SPELLED_CHILD_PROCESS = new RegExp(
+  [..."child_process"].map(spelledCharacter).join("(?:\\\\(?:\\r\\n|[\\n\\r\\u2028\\u2029]))*"),
+  "i",
+);
+
+/** Whether a call in the program can reach node:child_process's fork. A
+ * fork binding is an import or alias whose chain names the module in a
+ * module specifier (a string), or a '#' specifier the nearest package.json
+ * "imports" field maps. Node's type declarations and scriptc's own declare
+ * the module, and alias it only as node:child_process, so they are not
+ * read; any other file that names the module in a string holds
+ * "child_process" in its text, or an escape that spells it. */
+function namesChildProcess(program: ts.Program): boolean {
+  const known = program.analysis.namesChildProcess;
+  if (known !== null) return known;
+  const own = new Set([ambientDtsPath(), overridesDtsPath()]);
+  // Implementation files are already fetched; any other file is read as
+  // the host serves it, without fetching its syntax tree.
+  const texts = new Map<string, string>();
+  for (const sourceFile of program.getImplementationSourceFiles())
+    texts.set(tsgoPath(sourceFile.fileName), sourceFile.text);
+  const scopes = new Set<unknown>();
+  let names = false;
+  for (const fileName of program.getSourceFileNames()) {
+    const path = tsgoPath(fileName);
+    if (isNodeTypesPath(fileName) || isFallbackDtsPath(fileName) || own.has(path)) continue;
+    const text = texts.get(path) ?? program.getSourceText(fileName) ?? "";
+    if (
+      text.includes("child_process") ||
+      (text.includes("\\") && SPELLED_CHILD_PROCESS.test(text))
+    ) {
+      names = true;
+      break;
+    }
+    const imports = nearestPackageImports(fileName);
+    if (imports === undefined || scopes.has(imports)) continue;
+    scopes.add(imports);
+    if (JSON.stringify(imports).includes("child_process")) {
+      names = true;
+      break;
+    }
+  }
+  program.analysis.namesChildProcess = names;
+  return names;
+}
+
 /** Source-order static fork targets in the supplied files, deduplicated by
  * resolved path. */
 export function forkTargetPaths(program: ts.Program, files: readonly ts.SourceFile[]): string[] {
+  // Without a binding of node:child_process no call is a fork, and the
+  // checker queries below are skipped.
+  if (!namesChildProcess(program)) return [];
   const targets: string[] = [];
   const seen = new Set<string>();
   for (const sourceFile of files) {

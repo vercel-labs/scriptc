@@ -17,7 +17,7 @@ function tail(p: string): string {
   return p.slice(i + 1);
 }
 
-const scratch = "tmp-957-" + tail(process.argv[1]);
+const scratch = "tmp-957-" + tail(process.argv[1]) + "-" + process.pid;
 if (fs.existsSync(scratch)) {
   fs.rmSync(scratch + "/a.txt");
   fs.rmdirSync(scratch);

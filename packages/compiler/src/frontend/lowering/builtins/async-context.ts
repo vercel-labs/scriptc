@@ -2,7 +2,7 @@ import { isBuiltinClassInstance } from "./receiver-types.js";
 import { dynUndefinedExpr } from "../../../ir/build.js";
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
-import { locOf } from "../../program.js";
+import { isJsSourceFile, locOf } from "../../program.js";
 import {
   BOOL,
   DYN,
@@ -184,16 +184,89 @@ export function lowerDiagnosticsChannelMethodCall(
   );
 }
 
+/** Whether `node` names the AsyncLocalStorage class itself. */
+function isAsyncLocalStorageClass(lowerer: Lowerer, node: ts.Expression): boolean {
+  if (!ts.isIdentifier(node)) return false;
+  const symbol = lowerer.resolveValueSymbol(node);
+  return (
+    symbol !== null &&
+    lowerer.isStdlibSymbol(symbol) &&
+    ts.symbolName(symbol) === "AsyncLocalStorage"
+  );
+}
+
+/** The static AsyncLocalStorage members: bind(fn) answers fn bound to the
+ * active context (its own type for a typed function; a dyn function in
+ * JavaScript files, where the bound function's name and receiver are
+ * observable, and for dyn values); snapshot() answers a dyn function
+ * (cb, ...args) that runs cb in the context active at the snapshot. */
+function lowerAsyncLocalStorageStaticCall(
+  lowerer: Lowerer,
+  call: ts.CallExpression,
+  access: ts.PropertyAccessExpression,
+): IrExpr {
+  const name = access.name.text;
+  const loc = locOf(call);
+  const always: IrExpr = { kind: "boolLit", value: true, type: BOOL, loc };
+  if (name === "bind" && call.arguments.nodes.length === 1) {
+    const arg = call.arguments.nodes[0]!;
+    if (!isJsSourceFile(ts.getSourceFileOfNode(call))) {
+      const fn = lowerer.lowerExpr(arg);
+      if (fn.type.kind === "func")
+        return { kind: "libCall", fn: "als.bindCallback", args: [fn, always], type: fn.type, loc };
+    }
+    return asyncLocalStorageResult(lowerer, call, {
+      kind: "libCall",
+      fn: "als.bindCallbackDyn",
+      args: [lowerDiagnosticsMessage(lowerer, arg), always],
+      type: DYN,
+      loc,
+    });
+  }
+  if (name === "snapshot" && call.arguments.nodes.length === 0)
+    return { kind: "libCall", fn: "als.snapshot", args: [], type: DYN, loc };
+  lowerer.noLowering(
+    `AsyncLocalStorage.${name}`,
+    call,
+    "AsyncLocalStorage.bind(fn) and AsyncLocalStorage.snapshot() are the supported static members",
+    lowerer.checker.getSymbolAtLocation(access.name),
+  );
+}
+
+/** new AsyncLocalStorage(options): the options object as a dyn value
+ * (plain property literals build it member by member). */
+export function lowerAsyncLocalStorageOptions(lowerer: Lowerer, node: ts.Expression): IrExpr {
+  return lowerTracingHandlers(lowerer, node);
+}
+
+/** `.name` on AsyncLocalStorage receivers: the constructor's name option
+ * (als.name), converted to the property's type. Null otherwise. */
+export function lowerAsyncLocalStorageProperty(
+  lowerer: Lowerer,
+  access: ts.PropertyAccessExpression,
+): IrExpr | null {
+  if (access.questionDotToken || access.name.text !== "name") return null;
+  if (!isBuiltinClassInstance(lowerer, access.expression, "AsyncLocalStorage")) return null;
+  if (!lowerer.isStdlibMember(access)) return null;
+  const loc = locOf(access);
+  const receiver = lowerer.lowerExprExpecting(access.expression, F64);
+  const value: IrExpr = { kind: "libCall", fn: "als.name", args: [receiver], type: DYN, loc };
+  const expected = lowerer.mapTypeOf(lowerer.typeOf(access));
+  return !expected || expected.kind === "dyn" ? value : lowerer.coerceInto(access, value, expected);
+}
+
 /** Method calls on AsyncLocalStorage receivers: run(store, fn, ...args),
  * exit(fn, ...args), getStore(), enterWith(store), disable() — over the
- * f64 store handle (als.* libCalls; values cross as dyn values). Null
- * for non-ALS receivers. */
+ * f64 store handle (als.* libCalls; values cross as dyn values) — and the
+ * static bind/snapshot members. Null for other receivers. */
 export function lowerAsyncLocalStorageMethodCall(
   lowerer: Lowerer,
   call: ts.CallExpression,
   access: ts.PropertyAccessExpression,
 ): IrExpr | null {
   if (call.questionDotToken || access.questionDotToken) return null;
+  if (isAsyncLocalStorageClass(lowerer, access.expression))
+    return lowerAsyncLocalStorageStaticCall(lowerer, call, access);
   if (!isBuiltinClassInstance(lowerer, access.expression, "AsyncLocalStorage")) return null;
   if (!lowerer.isStdlibMember(access)) return null;
   const name = access.name.text;

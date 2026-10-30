@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6307-number-map-get-set-fusion.ts"
+ ],
+ "diags": []
+}

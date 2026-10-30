@@ -1,0 +1,20 @@
+array-subclass-retyped-members.ts:21:3 - error SC1090: members of an Array subclass on an array whose elements are another type (a species result narrowed back to the class) is not supported yet
+
+  20 | if (numbers instanceof Group) {
+  21 |   numbers.owner = new Holder();
+     |   ^~~~~~~
+  22 |   console.log(numbers.owner.tag);
+
+array-subclass-retyped-members.ts:22:15 - error SC1090: members of an Array subclass on an array whose elements are another type (a species result narrowed back to the class) is not supported yet
+
+  21 |   numbers.owner = new Holder();
+  22 |   console.log(numbers.owner.tag);
+     |               ^~~~~~~
+  23 |   console.log(numbers.firstTag());
+
+array-subclass-retyped-members.ts:23:15 - error SC1090: members of an Array subclass on an array whose elements are another type (a species result narrowed back to the class) is not supported yet
+
+  22 |   console.log(numbers.owner.tag);
+  23 |   console.log(numbers.firstTag());
+     |               ^~~~~~~
+  24 | }

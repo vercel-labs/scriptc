@@ -1,9 +1,7 @@
 // JSON.parse syntax errors are CATCHABLE, exactly like Node's SyntaxError.
-// The message text itself is unobservable here (the supported catch form is
-// bindingless) and its V8-flavored shape is deliberately approximate —
-// exact-message assertions live in the runtime C tests (test_json.c), per
-// SEMANTICS.md. This program only proves the throw/catch/recover behavior
-// matches Node for every syntax-error class.
+// This program proves the throw/catch/recover behavior matches Node for
+// every syntax-error class; 7993-json-parse-error-messages pins the
+// messages themselves.
 
 function attempt(raw: string, label: string): void {
   try {

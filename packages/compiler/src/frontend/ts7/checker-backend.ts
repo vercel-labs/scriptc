@@ -1,20 +1,30 @@
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import {
+  accessSync,
+  closeSync,
+  constants,
+  existsSync,
+  fchmodSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /** The TypeScript 7 API servers a compile can check with: tsc-ts, the default,
  * and tsgo from the `typescript` package, selected with `SCRIPTC_CHECKER=tsgo`.
- * Both serve the same API and give the same results. On Windows the default is
- * tsgo: the compiler connects to the server over a named pipe there, and tsc-ts's
- * API server has no named-pipe transport yet. */
+ * Both serve the same API and give the same results. On Windows the Node host
+ * connects to either over a named pipe the server creates (rpc-process.ts). */
 export type CheckerBackend = "tsgo" | "tsc-ts";
 
-export function checkerBackend(
-  env: NodeJS.ProcessEnv = process.env,
-  platform: string = process.platform,
-): CheckerBackend {
+export function checkerBackend(env: NodeJS.ProcessEnv = process.env): CheckerBackend {
   const value = env["SCRIPTC_CHECKER"];
-  if (value === undefined || value === "") return platform === "win32" ? "tsgo" : "tsc-ts";
+  if (value === undefined || value === "") return "tsc-ts";
   if (value === "tsc-ts") return "tsc-ts";
   if (value === "tsgo") return "tsgo";
   throw new Error(`SCRIPTC_CHECKER must be tsgo or tsc-ts, not ${JSON.stringify(value)}`);
@@ -92,11 +102,91 @@ export function tscTsExecutable(
       join(dirname(root), platformPackage),
     ]) {
       const executable = join(candidate, "lib", name);
-      if (existsSync(executable)) return executable;
+      if (existsSync(executable)) {
+        if (platform === "linux") writeCheckerOnce(executable);
+        return executable;
+      }
     }
     throw new Error(`tsc-ts checker: ${root} has no ${platformPackage} executable`);
   }
   throw new Error("tsc-ts checker: the tsc-ts package is not installed");
+}
+
+/** The checker executables writeCheckerOnce looked at in this process: each is
+ * checked once, whatever the outcome. */
+const checkersSeen = new Set<string>();
+
+/**
+ * Writes the tsc-ts executable again with one write, once per installed
+ * copy. Its code maps with 2 MiB pages when the page cache holds the file in
+ * 2 MiB folios, which a file written with one write gets on file systems with
+ * large folios (XFS, ext4 from Linux 6.16); package managers write it in
+ * chunks, which leaves 4 KiB folios until the file is read from disk again.
+ * The copy is renamed into place, and `.tsc-ts-written` beside it holds its
+ * size, as tsc-ts's own launcher (bin/tsc-ts.js) writes it, so whichever runs
+ * first makes the copy. When the directory is not writable, the executable
+ * stays as installed, and it is not read. Each executable is checked once per
+ * process. Linux only; the callers check the platform.
+ */
+export function writeCheckerOnce(executable: string): void {
+  if (checkersSeen.has(executable)) return;
+  checkersSeen.add(executable);
+  const marker = join(dirname(executable), ".tsc-ts-written");
+  let size: number;
+  try {
+    size = statSync(executable).size;
+  } catch {
+    return;
+  }
+  try {
+    if (readFileSync(marker, "utf8") === String(size)) return;
+  } catch {
+    // No copy has been written.
+  }
+  // The copy goes beside the executable: in a directory this process cannot
+  // write, the executable is not read at all.
+  try {
+    accessSync(dirname(executable), constants.W_OK);
+  } catch {
+    return;
+  }
+  try {
+    const bytes = readFileSync(executable);
+    replaceFile(executable, bytes, statSync(executable).mode & 0o7777);
+    replaceFile(marker, Buffer.from(String(bytes.length)), 0o644);
+  } catch {
+    // The executable stays as installed.
+  }
+}
+
+/** Replaces `file` with `bytes` and `mode` through a new file beside it. The
+ * copy has an unpredictable name and is created exclusively (an existing
+ * path, a symbolic link included, is never opened) with mode 0600, so no
+ * other user can open it while it is written; it gets `mode` from its own
+ * descriptor before it is renamed into place. Only a copy this call created
+ * is removed. */
+function replaceFile(file: string, bytes: Uint8Array, mode: number): void {
+  const temporary = `${file}.${randomBytes(8).toString("hex")}.tmp`;
+  const fd = openSync(
+    temporary,
+    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+    0o600,
+  );
+  try {
+    for (let offset = 0; offset < bytes.length;)
+      offset += writeSync(fd, bytes, offset, bytes.length - offset);
+    fchmodSync(fd, mode);
+    closeSync(fd);
+    renameSync(temporary, file);
+  } catch (error) {
+    try {
+      closeSync(fd);
+    } catch {
+      // Closed before the failure.
+    }
+    unlinkSync(temporary);
+    throw error;
+  }
 }
 
 function installedPackage(start: string, name: string): string | undefined {

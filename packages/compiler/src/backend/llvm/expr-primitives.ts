@@ -1,10 +1,24 @@
 /* Focused LLVM expression emission extracted from emitter.ts. */
+import {
+  emitInlineArrayGet,
+  emitInlineArrayState,
+  emitInlineArrayView,
+  inlineFieldTail,
+} from "./inline-arrays.js";
 import { InternalCompilerError } from "../../errors.js";
 import { matchStringSelfConcat, undefinedArmTag } from "../../ir/analysis.js";
-import { isRefCounted, type IrExpr, type IrStrCmpOp, type IrType } from "../../ir/ir.js";
+import {
+  isRefCounted,
+  recordTextCodecClass,
+  type IrExpr,
+  type IrStrCmpOp,
+  type IrType,
+} from "../../ir/ir.js";
 import { mangleRecordClone, mangleRecordNew } from "../mangle.js";
 import { arrNewCall, elemAccess } from "./shapes.js";
+import { recordViewTestLines } from "./record-views.js";
 import { LlvmUnsupportedError } from "./unsupported.js";
+import { offsetIndex } from "./expr-bytes.js";
 import type { LlvmEmitterContext, ExprOf, LlValue } from "./expr-context.js";
 
 import { BYTES_ELEM_NUM, closureIdentityEqual, f64Lit } from "./common.js";
@@ -13,12 +27,15 @@ import { emitStringInputs } from "./string-lifetimes.js";
 import { emitStringParts, numberPart, stringParts } from "./string-construction.js";
 import { emitBorrowedInputs } from "./borrowed-inputs.js";
 import {
+  exactCompareOperands,
   exactInteger,
   int32Number,
   integerNumber,
   narrowInteger,
+  uint32Number,
   wideArithmetic,
   widenInteger,
+  type LlInteger,
 } from "./integer-values.js";
 import {
   bitwiseIdentityOperand,
@@ -44,7 +61,90 @@ import {
   slotWidth,
   type ArrayAccess,
 } from "./dense-array-access.js";
-import { emitWrappingSum, markWrappingOperands } from "./wrapping-sums.js";
+import {
+  emitNanArithmetic,
+  emitWrappingSum,
+  integerOrNaNRange,
+  markWrappingOperands,
+} from "./wrapping-sums.js";
+import { emitPowF64, emitPowerOfTwoQuotient, isPowerOfTwoCall } from "./lib-filesystem.js";
+
+/** The signed integer predicates of the number compares. */
+const INTEGER_COMPARES: Record<string, string> = {
+  "<": "slt",
+  "<=": "sle",
+  ">": "sgt",
+  ">=": "sge",
+  "===": "eq",
+  "!==": "ne",
+};
+
+const UNSIGNED_COMPARES: Record<string, string> = {
+  "<": "ult",
+  "<=": "ule",
+  ">": "ugt",
+  ">=": "uge",
+  "===": "eq",
+  "!==": "ne",
+};
+
+/** A number compare of operands that are each an exact integer or an
+ * integer-or-NaN value (integerOrNaNRange: integer typed-array elements,
+ * `charCodeAt` results, sums of those), all within int32 or all within
+ * uint32: their 32-bit views compared, and NaN comparing false (unequal for
+ * `!==`). The 32-bit view is the value's ToUint32, which holds its bits
+ * whenever it is not NaN. Null when an operand has no such view. */
+function emitIntegerOrNaNCompare(
+  host: LlvmEmitterContext,
+  e: ExprOf<"bin">,
+  l: LlValue,
+  li: LlInteger | null,
+  r: LlValue,
+  ri: LlInteger | null,
+): string | null {
+  const lr = li?.range ?? integerOrNaNRange(host, e.left),
+    rr = ri?.range ?? integerOrNaNRange(host, e.right);
+  if (!lr || !rr) return null;
+  const signed = withinInt32(lr) && withinInt32(rr);
+  if (!signed && !(withinUint32(lr) && withinUint32(rr))) return null;
+  const bits = (value: LlValue, integer: LlInteger | null): string | undefined =>
+    integer ? narrowInteger(host, integer) : value.uint32;
+  const left = bits(l, li),
+    right = bits(r, ri);
+  if (left === undefined || right === undefined) return null;
+  const B = host.B;
+  const compare = B.tmp();
+  B.line(
+    `${compare} = icmp ${(signed ? INTEGER_COMPARES : UNSIGNED_COMPARES)[e.op]} i32 ${left}, ${right}`,
+  );
+  let result = compare;
+  for (const [value, integer] of [
+    [l, li],
+    [r, ri],
+  ] as const) {
+    if (integer) continue;
+    const ordered = B.tmp(),
+      combined = B.tmp();
+    B.line(`${ordered} = fcmp ord double ${value.name}, 0.0`);
+    if (e.op === "!==") {
+      const unordered = B.tmp();
+      B.line(`${unordered} = xor i1 ${ordered}, true`);
+      B.line(`${combined} = or i1 ${result}, ${unordered}`);
+    } else B.line(`${combined} = and i1 ${result}, ${ordered}`);
+    result = combined;
+  }
+  return result;
+}
+
+/** A `>>>` result, or a sum, difference or product with one as an operand. */
+function unsignedShiftArithmetic(e: IrExpr): boolean {
+  if (e.kind !== "bin") return false;
+  if (e.op === ">>>") return true;
+  return (
+    (e.op === "+" || e.op === "-" || e.op === "*") &&
+    (unsignedShiftArithmetic(e.left) || unsignedShiftArithmetic(e.right))
+  );
+}
 
 export function emitLiteralExpr(
   host: LlvmEmitterContext,
@@ -135,7 +235,19 @@ export function emitLiteralExpr(
         // the binding. Consumers must not reload its current view.
         const uint32 = B.tmp();
         B.line(`${uint32} = load i32, ptr ${integerView}`);
-        return { name: t, type: e.type, uint32 };
+        const orderedView = host.orderedViews.get(e.localId);
+        const range = orderedView && host.integerOrNaNLocals.get(e.localId);
+        if (!orderedView || !range) return { name: t, type: e.type, uint32 };
+        const ordered = B.tmp();
+        B.line(`${ordered} = load i1, ptr ${orderedView}`);
+        // The view holds the integer's low 32 bits (0 for NaN): its integer
+        // when the range is within int32 or uint32.
+        const signed = range.min >= -2147483648 && range.max <= 2147483647;
+        if (!signed && !(range.min >= 0 && range.max <= 4294967295))
+          return { name: t, type: e.type, uint32, ordered };
+        const nanInteger = B.tmp();
+        B.line(`${nanInteger} = ${signed ? "sext" : "zext"} i32 ${uint32} to i64`);
+        return { name: t, type: e.type, uint32, ordered, nanInteger };
       }
       if (isRefCounted(e.type)) {
         // An immortal Immutable constant: nothing to count.
@@ -235,7 +347,6 @@ export function emitOperatorExpr(
         "===": "oeq",
         "!==": "une",
       };
-      const libm: Record<string, string> = { "**": "pow" };
       const bit: Record<string, "and" | "or" | "xor" | "shl" | "ashr" | "lshr"> = {
         "&": "and",
         "|": "or",
@@ -289,6 +400,28 @@ export function emitOperatorExpr(
             );
             return int32Number(host, result, range, e.type);
           }
+          if (
+            range &&
+            withinUint32(range) &&
+            withinUint32(li.range) &&
+            withinUint32(ri.range) &&
+            (unsignedShiftArithmetic(e.left) || unsignedShiftArithmetic(e.right))
+          ) {
+            // A uint32 result built on a `>>>` result, such as
+            // `(x >>> 1) + i`: 32-bit arithmetic that cannot wrap. Its double
+            // converts from the 32 bits, which vectorizes to three
+            // instructions on x86-64 without AVX-512, where the unsigned
+            // 64-bit conversion takes six. Sums of counters and literals,
+            // such as `i + 1`, keep the 64-bit form, whose conversion LLVM
+            // folds with their uses as indexes.
+            const result = B.tmp();
+            B.line(
+              `${result} = ${e.op === "+" ? "add" : e.op === "-" ? "sub" : "mul"} nuw i32 ${narrowInteger(host, li)}, ${narrowInteger(host, ri)}`,
+            );
+            const number = uint32Number(host, result, range, e.type);
+            const wrapped = emitWrappingSum(host, e, l, r, li, ri);
+            return wrapped === undefined ? number : { ...number, ...wrapped };
+          }
           const left = widenInteger(host, li),
             right = widenInteger(host, ri);
           if (range) {
@@ -297,8 +430,8 @@ export function emitOperatorExpr(
               `${result} = ${e.op === "+" ? "add" : e.op === "-" ? "sub" : "mul"} nsw i64 ${left}, ${right}`,
             );
             const number = integerNumber(host, result, range, e.type);
-            const uint32 = emitWrappingSum(host, e, l, r, li, ri);
-            return uint32 === undefined ? number : { ...number, uint32 };
+            const wrapped = emitWrappingSum(host, e, l, r, li, ri);
+            return wrapped === undefined ? number : { ...number, ...wrapped };
           }
           if (e.op === "%" && li.range.min >= 0 && ri.range.min > 0) {
             const range = { min: 0, max: Math.min(li.range.max, ri.range.max - 1) };
@@ -318,15 +451,7 @@ export function emitOperatorExpr(
             if (integer) return integer;
           }
           if (cmp[e.op] !== undefined) {
-            const integerCmp: Record<string, string> = {
-              "<": "slt",
-              "<=": "sle",
-              ">": "sgt",
-              ">=": "sge",
-              "===": "eq",
-              "!==": "ne",
-            };
-            B.line(`${t} = icmp ${integerCmp[e.op]} i64 ${left}, ${right}`);
+            B.line(`${t} = icmp ${INTEGER_COMPARES[e.op]} i64 ${left}, ${right}`);
             return { name: t, type: e.type };
           }
         }
@@ -345,18 +470,37 @@ export function emitOperatorExpr(
               : emitCheckedRemainder(host, l, r, li, ri);
           if (checked) return checked;
         }
+        if (e.op === "/" && isPowerOfTwoCall(e.right))
+          return { name: emitPowerOfTwoQuotient(host, l.name, r.name), type: e.type };
         if (arith[e.op] !== undefined) {
           B.line(`${t} = ${arith[e.op]} double ${l.name}, ${r.name}`);
-          const uint32 = emitWrappingSum(host, e, l, r, li, ri);
+          const wrapped = emitWrappingSum(host, e, l, r, li, ri);
           // The exact integer beside the double, for index consumers.
           const wideInteger = wideArithmetic(host, e.op, l, li, r, ri);
-          if (uint32 !== undefined || wideInteger) {
+          // The integer of an exact integer or NaN, for index and loop guards.
+          const nan = emitNanArithmetic(host, e, l, r, li, ri);
+          const offset = offsetIndex(e, l, r);
+          if (wrapped !== undefined || wideInteger || nan || offset) {
             const value: LlValue = { name: t, type: e.type };
-            if (uint32 !== undefined) value.uint32 = uint32;
+            if (nan) Object.assign(value, nan);
+            if (wrapped !== undefined) Object.assign(value, wrapped);
             if (wideInteger) value.wideInteger = wideInteger;
+            if (offset) value.offsetIndex = offset;
             return value;
           }
-        } else B.line(`${t} = fcmp ${cmp[e.op]} double ${l.name}, ${r.name}`);
+        } else {
+          // An operand with only a wide view, such as `i + 1` or `2 * i + 1`
+          // of a speculated counter: compare the integers when that gives the
+          // doubles' result.
+          const operands = exactCompareOperands(host, l, li, r, ri);
+          if (operands) {
+            B.line(`${t} = icmp ${INTEGER_COMPARES[e.op]} i64 ${operands[0]}, ${operands[1]}`);
+            return { name: t, type: e.type };
+          }
+          const nanCoded = emitIntegerOrNaNCompare(host, e, l, li, r, ri);
+          if (nanCoded) return { name: nanCoded, type: e.type };
+          B.line(`${t} = fcmp ${cmp[e.op]} double ${l.name}, ${r.name}`);
+        }
       } else if (bit[e.op] !== undefined) {
         if (e.left.type.kind !== "f64" || e.right.type.kind !== "f64") {
           throw new LlvmUnsupportedError(
@@ -395,32 +539,8 @@ export function emitOperatorExpr(
         B.line(`${t} = ${e.op === ">>>" ? "uitofp" : "sitofp"} i32 ${result} to double`);
         return { name: t, type: e.type, uint32: result };
       } else {
-        const fn = libm[e.op];
-        if (fn === undefined) throw new LlvmUnsupportedError(`bin:${e.op}`, e.loc);
-        host.declare(`declare double @${fn}(double, double)`);
-        // libm's pow answers 1 for pow(±1, ±Infinity) and pow(1, NaN), where
-        // `**` answers NaN (and LLVM folds pow(1.0, x) to 1.0): an inline
-        // guard selects NaN for a base of ±1 with a non-finite exponent and
-        // keeps the direct pow call. A finite literal exponent, or a literal
-        // base other than ±1, cannot meet those cases and needs no guard.
-        if (fn === "pow" && !libmPowAgrees(e.left, e.right)) {
-          host.declare(`declare double @llvm.fabs.f64(double)`);
-          const power = B.tmp();
-          B.line(`${power} = call double @pow(double ${l.name}, double ${r.name})`);
-          const base = B.tmp();
-          const unit = B.tmp();
-          const magnitude = B.tmp();
-          const finite = B.tmp();
-          const reject = B.tmp();
-          B.line(`${base} = call double @llvm.fabs.f64(double ${l.name})`);
-          B.line(`${unit} = fcmp oeq double ${base}, 1.0`);
-          B.line(`${magnitude} = call double @llvm.fabs.f64(double ${r.name})`);
-          B.line(`${finite} = fcmp olt double ${magnitude}, 0x7FF0000000000000`);
-          B.line(`${reject} = select i1 ${finite}, i1 false, i1 ${unit}`);
-          B.line(`${t} = select i1 ${reject}, double 0x7FF8000000000000, double ${power}`);
-        } else {
-          B.line(`${t} = call double @${fn}(double ${l.name}, double ${r.name})`);
-        }
+        if (e.op !== "**") throw new LlvmUnsupportedError(`bin:${e.op}`, e.loc);
+        return { name: emitPowF64(host, l.name, r.name, e.right), type: e.type };
       }
       return { name: t, type: e.type };
     }
@@ -443,6 +563,29 @@ export function emitOperatorExpr(
       // Expression-position ++/-- over an f64 binding (locals, module
       // globals, capture boxes): read, write ±1, yield old (postfix) or
       // new (prefix).
+      const shadow = host.integerLoopBindings.get(e.localId);
+      if (shadow !== undefined && host.speculation?.increments?.has(e)) {
+        // A proven integer loop's shadow: the loop range holds every value
+        // the binding takes, so the step cannot overflow.
+        const old = B.tmp();
+        const next = B.tmp();
+        const number = B.tmp();
+        B.line(`${old} = load i64, ptr ${shadow.slot}`);
+        B.line(`${next} = ${e.op === "+" ? "add" : "sub"} nsw i64 ${old}, 1`);
+        B.line(`store i64 ${next}, ptr ${shadow.slot}`);
+        const value = e.prefix ? next : old;
+        B.line(`${number} = sitofp i64 ${value} to double`);
+        return {
+          name: number,
+          type: e.type,
+          integer: {
+            name: value,
+            type: "i64",
+            signed: true,
+            range: shadow.range ?? { min: -Number.MAX_SAFE_INTEGER, max: Number.MAX_SAFE_INTEGER },
+          },
+        };
+      }
       const b = host.binding(e.localId);
       if (host.int32Locals.has(e.localId)) {
         if (!host.int32LocalWrites.has(e))
@@ -573,7 +716,7 @@ export function regexLiteralTemplate(
   let re = host.regexInstances.get(key);
   if (!re) {
     re = {
-      sym: `sc_re_${host.regexInstances.size}`,
+      sym: host.contentSymbol("sc_re_", key),
       src: host.internLiteral(e.pattern),
       fl: host.internLiteral(e.flags),
       pattern: e.pattern,
@@ -583,6 +726,29 @@ export function regexLiteralTemplate(
   }
   host.journal?.entry("regex", key, re);
   return `@${re.sym}`;
+}
+
+/** The build-time replacer of a global substitution of regex literal `e`
+ * with the literal `replacement` (regex-matchers.ts), registered on first
+ * use. */
+export function regexLiteralReplacer(
+  host: LlvmEmitterContext,
+  e: IrExpr & { kind: "regexLit" },
+  replacement: string,
+): string {
+  const key = `${e.flags}/${e.pattern}\0${replacement}`;
+  let rr = host.regexReplacers.get(key);
+  if (!rr) {
+    rr = {
+      sym: host.contentSymbol("sc_rr_", key),
+      pattern: e.pattern,
+      flags: e.flags,
+      replacement,
+    };
+    host.regexReplacers.set(key, rr);
+  }
+  host.journal?.entry("regexReplacer", key, rr);
+  return `@${rr.sym}`;
 }
 
 /** A string equality or comparison between `s.charAt(i)` and a literal of
@@ -798,8 +964,10 @@ export function emitStringExpr(
       }
       if (v.type.kind === "record") {
         // String(record) / `${record}`: Object.prototype.toString's
-        // constant — the interned literal, retained like a strLit.
-        const sym = host.internLiteral("[object Object]");
+        // constant — the interned literal, retained like a strLit. A
+        // TextEncoder or TextDecoder answers its Symbol.toStringTag.
+        const codec = recordTextCodecClass(host.recordShape(v.type.shapeId));
+        const sym = host.internLiteral(`[object ${codec ?? "Object"}]`);
         return host.own({ name: host.retainFrame(sym, e.type), type: e.type });
       }
       if (v.type.kind === "caught") {
@@ -868,6 +1036,34 @@ export function emitStringExpr(
       throw new InternalCompilerError("unreachable");
     }
   }
+}
+
+/** scr_arr_reserve_len reserves dense storage only up to this many slots
+ * (SCR_ARR_DENSE_LIMIT, scr_array.c). */
+const RESERVE_LIMIT = 2 ** 20;
+
+/** Elements the inline slots of a small array construction
+ * (scr_arr_new_small, scr_arr_new_ops_small) hold at least
+ * (SCR_ARR_SMALL_SLOTS, scr_array.c). */
+const SMALL_ARRAY_SLOTS = 3;
+
+/** The capacity scr_arr_reserve_len would reserve for `length` on an empty
+ * array: the length truncated when it is at least 1 and at most
+ * RESERVE_LIMIT, else 0. */
+function reservedCapacity(host: LlvmEmitterContext, length: IrExpr): string {
+  const B = host.B;
+  const n = host.emitExpr(length);
+  const atLeastOne = B.tmp(),
+    withinLimit = B.tmp(),
+    reserves = B.tmp(),
+    slots = B.tmp(),
+    capacity = B.tmp();
+  B.line(`${atLeastOne} = fcmp oge double ${n.name}, ${f64Lit(1)}`);
+  B.line(`${withinLimit} = fcmp ole double ${n.name}, ${f64Lit(RESERVE_LIMIT)}`);
+  B.line(`${reserves} = and i1 ${atLeastOne}, ${withinLimit}`);
+  B.line(`${slots} = select i1 ${reserves}, double ${n.name}, double ${f64Lit(0)}`);
+  B.line(`${capacity} = fptoui double ${slots} to ${host.sizeType}`);
+  return capacity;
 }
 
 export function emitContainerExpr(
@@ -941,7 +1137,39 @@ export function emitContainerExpr(
             ? `${arr} = call ptr @scr_arr_new_small(i32 ${SCR_ELEM_I32})`
             : `${arr} = call ptr @scr_arr_new(i32 ${SCR_ELEM_I32}, ${host.sizeType} ${capacity})`,
         );
-      } else B.line(`${arr} = ${arrNewCall(host.shapeHost, elem, String(capacity), small)}`);
+      } else {
+        const hint = host.reservedArrayLengths.get(e);
+        if (hint !== undefined) {
+          host.reservedArrayLengths.delete(e);
+          host.consumedReserves.add(hint);
+          const capacity = reservedCapacity(host, hint.length);
+          // The small construction's inline slots hold at least
+          // SMALL_ARRAY_SLOTS elements; larger capacities are sized.
+          const fits = B.tmp(),
+            smallArr = B.tmp(),
+            sizedArr = B.tmp();
+          const smallLabel = B.newLabel("arr.cap.small"),
+            sizedLabel = B.newLabel("arr.cap.sized"),
+            joined = B.newLabel("arr.cap.j");
+          B.line(`${fits} = icmp ule ${host.sizeType} ${capacity}, ${SMALL_ARRAY_SLOTS}`);
+          B.condBr(fits, smallLabel, sizedLabel);
+          B.startBlock(smallLabel);
+          B.line(`${smallArr} = ${arrNewCall(host.shapeHost, elem, "0", true, host.arenaSite(e))}`);
+          B.br(joined);
+          B.startBlock(sizedLabel);
+          B.line(
+            `${sizedArr} = ${arrNewCall(host.shapeHost, elem, capacity, false, host.arenaSite(e))}`,
+          );
+          B.br(joined);
+          B.startBlock(joined);
+          B.line(
+            `${arr} = phi ptr [ ${smallArr}, %${smallLabel} ], [ ${sizedArr}, %${sizedLabel} ]`,
+          );
+        } else
+          B.line(
+            `${arr} = ${arrNewCall(host.shapeHost, elem, String(capacity), small, host.arenaSite(e))}`,
+          );
+      }
       const out = host.own({ name: arr, type: e.type });
       const acc: ArrayAccess = int32 ? "i32" : elemAccess(elem);
       let pending: LlValue[] = [];
@@ -1001,6 +1229,26 @@ export function emitContainerExpr(
       return out;
     }
     case "arrayGet": {
+      // An element of an inline array field, read from the instance.
+      if (e.arr.kind === "fieldGet" && e.arr.type.kind === "array") {
+        const tail = inlineFieldTail(host, e.arr.className, e.arr.field);
+        if (tail !== undefined) {
+          const obj = host.emitStableReceiver(e.arr.obj, [e.index]);
+          const idx = host.emitExpr(e.index);
+          const value = emitInlineArrayGet(
+            host,
+            obj.name,
+            e.arr.className,
+            tail,
+            idx,
+            e.arr.type.elem,
+            true,
+          );
+          return isRefCounted(e.arr.type.elem)
+            ? host.own({ name: value, type: e.type })
+            : { name: value, type: e.type };
+        }
+      }
       // Element reads run no user code: a projection receiver (an array in
       // a parameter's field) stays rooted while the index preserves edges.
       const arr = host.emitStableReceiver(e.arr, [e.index]);
@@ -1053,6 +1301,16 @@ export function emitContainerExpr(
       return host.own({ name: read.value, type: e.type });
     }
     case "arrayHas": {
+      // An inline array field has no holes: presence is the bounds check.
+      if (e.arr.kind === "fieldGet") {
+        const tail = inlineFieldTail(host, e.arr.className, e.arr.field);
+        if (tail !== undefined) {
+          const obj = host.emitStableReceiver(e.arr.obj, [e.index]);
+          const idx = host.emitExpr(e.index);
+          const name = emitInlineArrayState(host, obj.name, e.arr.className, tail, idx, "has");
+          return { name, type: e.type };
+        }
+      }
       const arr = host.emitStableReceiver(e.arr, [e.index]);
       const idx = host.emitExpr(e.index);
       if (e.arr.type.kind !== "array")
@@ -1072,13 +1330,24 @@ export function emitContainerExpr(
       return { name: t, type: e.type };
     }
     case "arrayState": {
+      // An inline array field has no holes: presence is the bounds check.
+      if (e.arr.kind === "fieldGet") {
+        const tail = inlineFieldTail(host, e.arr.className, e.arr.field);
+        if (tail !== undefined) {
+          const obj = host.emitStableReceiver(e.arr.obj, [e.index]);
+          const idx = host.emitExpr(e.index);
+          const name = emitInlineArrayState(host, obj.name, e.arr.className, tail, idx, "state");
+          return { name, type: e.type };
+        }
+      }
       const arr = host.emitStableReceiver(e.arr, [e.index]);
       const idx = host.emitExpr(e.index);
       if (e.arr.type.kind !== "array")
         throw new InternalCompilerError("llvm emitter bug: arrayState on non-array");
+      const proven = host.provenDenseIndex(e.arr, e.index);
       const t = host.checkedInt32Array(e.arr)
         ? host.emitByElementKind(arr.name, "double", (kind) =>
-            emitDenseArrayState(host, arr.name, idx, e.index, "state", slotWidth(kind)),
+            emitDenseArrayState(host, arr.name, idx, e.index, "state", slotWidth(kind), proven),
           )!
         : emitDenseArrayState(
             host,
@@ -1087,6 +1356,7 @@ export function emitContainerExpr(
             e.index,
             "state",
             host.int32Array(e.arr) ? slotWidth("i32") : denseSlotWidth(host, e.arr.type.elem),
+            proven,
           );
       return { name: t, type: e.type };
     }
@@ -1174,6 +1444,14 @@ export function emitRecordExpr(
   switch (e.kind) {
     case "fieldGet": {
       const obj = host.emitReadReceiver(e.obj);
+      // An inline array field read as a value: a frozen array over the
+      // elements (backend/llvm/inline-arrays.ts).
+      const tail = inlineFieldTail(host, e.className, e.field);
+      if (tail !== undefined)
+        return host.own({
+          name: emitInlineArrayView(host, obj.name, e.className, tail),
+          type: e.type,
+        });
       const { ptr, type, inline } = host.classFieldPtr(
         obj.name,
         e.className,
@@ -1211,7 +1489,7 @@ export function emitRecordExpr(
         throw new InternalCompilerError("llvm emitter bug: recordLit of non-record type");
       const shapeId = e.type.shapeId;
       const rec = B.tmp();
-      B.line(`${rec} = call ptr @${mangleRecordNew(shapeId)}()`);
+      B.line(`${rec} = call ptr @${host.allocSym(mangleRecordNew(shapeId), e)}()`);
       const out = host.own({ name: rec, type: e.type });
       // A null-prototype record: SCR_MAP_NULL_PROTO on the fresh map.
       if (e.nullProto) B.line(`store i8 1, ptr ${host.recordMapFlagsPtr(rec, shapeId)}`);
@@ -1237,16 +1515,70 @@ export function emitRecordExpr(
       return host.emitRecordKeyGet(e);
     case "recordHas": {
       // Own-property presence: only an undefined-armed union slot can
-      // lack its property, by holding the ABSENT state.
+      // lack its property, by holding the ABSENT state, and a PARTIAL
+      // record view (record-views.ts) can lack a field its viewed record
+      // does not declare.
+      const fieldType = host.recordsById
+        .get(e.shapeId)
+        ?.fields.find((f) => f.name === e.field)?.type;
       const obj = host.emitReadReceiver(e.obj);
+      if (host.shapeHost.recordViews?.partialMissing(e.shapeId, e.field) !== true) {
+        const { ptr, type, inline } = host.recordFieldPtr(obj.name, e.shapeId, e.field);
+        if (type.kind !== "union" || undefinedArmTag(type, host.unionsById) < 0)
+          return { name: "true", type: e.type };
+        const v = host.loadField(ptr, type, inline);
+        const absent = host.fieldAbsentTest(v, type.unionId);
+        const t = B.tmp();
+        B.line(`${t} = xor i1 ${absent}, true`);
+        return { name: t, type: e.type };
+      }
+      // A field some partial view of this shape lacks: ask the view first.
+      // Only a present field's slot may be looked up — a partial view's
+      // absent field answers no slot at all (scr_record_view_slot).
+      const position = host.recordsById.get(e.shapeId)!.fields.findIndex((f) => f.name === e.field);
+      host.declare(`declare ptr @scr_record_view_slot(ptr, ${host.sizeType})`);
+      const isView = B.tmp();
+      const rhFrom = B.currentLabel();
+      const view = B.newLabel("rh.view");
+      const done = B.newLabel("rh.done");
+      for (const line of recordViewTestLines(host.sizeType, obj.name, isView))
+        B.line(line.trimStart());
+      // Not a view: every field of the target has its slot.
+      B.condBr(isView, view, done, `, !prof !{!"branch_weights", i32 1, i32 1000}`);
+      B.startBlock(view);
+      const slot = B.tmp();
+      B.line(
+        `${slot} = call ptr @scr_record_view_slot(ptr ${obj.name}, ${host.sizeType} ${position})`,
+      );
+      const hasSlot = B.tmp();
+      B.line(`${hasSlot} = icmp ne ptr ${slot}, null`);
+      B.br(done);
+      B.startBlock(done);
+      const hasView = B.tmp();
+      B.line(`${hasView} = phi i1 [ true, %${rhFrom} ], [ ${hasSlot}, %${view} ]`);
+      if (fieldType === undefined || fieldType.kind !== "union")
+        return { name: hasView, type: e.type };
+      const unionId = fieldType.unionId;
+      if (undefinedArmTag(fieldType, host.unionsById) < 0) return { name: hasView, type: e.type };
+      // The field is also undefined-armed: a present slot still answers by
+      // its ABSENT state, a field the view lacks by the view.
+      const check = B.newLabel("rh.present");
+      const join = B.newLabel("rh.join");
+      const from = B.currentLabel();
+      B.condBr(hasView, check, join);
+      B.startBlock(check);
       const { ptr, type, inline } = host.recordFieldPtr(obj.name, e.shapeId, e.field);
-      if (type.kind !== "union" || undefinedArmTag(type, host.unionsById) < 0)
-        return { name: "true", type: e.type };
       const v = host.loadField(ptr, type, inline);
-      const absent = host.fieldAbsentTest(v, type.unionId);
-      const t = B.tmp();
-      B.line(`${t} = xor i1 ${absent}, true`);
-      return { name: t, type: e.type };
+      const absent = host.fieldAbsentTest(v, unionId);
+      const present = B.tmp();
+      B.line(`${present} = xor i1 ${absent}, true`);
+      // The field load can end in a later block (a view's slot read).
+      const checked = B.currentLabel();
+      B.br(join);
+      B.startBlock(join);
+      const answer = B.tmp();
+      B.line(`${answer} = phi i1 [ false, %${from} ], [ ${present}, %${checked} ]`);
+      return { name: answer, type: e.type };
     }
     case "fieldAbsent":
       return { name: host.absentInstanceRef(e.unionId), type: e.type };
@@ -1316,20 +1648,4 @@ export function emitRecordLitFields(
     const { ptr, type, inline } = host.recordFieldPtr(rec, shapeId, f.name);
     host.initField(ptr, type, inline, v);
   }
-}
-
-/** Whether libm pow matches `**` for these operands: every case except a
- * base of ±1 with a NaN or infinite exponent agrees. */
-function libmPowAgrees(base: IrExpr, exponent: IrExpr): boolean {
-  const power = numericLiteral(exponent);
-  if (power !== null && Number.isFinite(power)) return true;
-  const value = numericLiteral(base);
-  return value !== null && !Number.isNaN(value) && Math.abs(value) !== 1;
-}
-
-function numericLiteral(expr: IrExpr): number | null {
-  if (expr.kind === "numLit") return expr.value;
-  if (expr.kind === "unary" && expr.op === "-" && expr.operand.kind === "numLit")
-    return -expr.operand.value;
-  return null;
 }

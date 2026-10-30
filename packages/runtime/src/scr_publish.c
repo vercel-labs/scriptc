@@ -128,8 +128,10 @@ bool scr_pub_mark(ScrPub *ctx, void *obj, bool cyc, int kind) {
   size_t *rc = obj;
   if (SCR_RC_PUBLISHED(obj) || ctx->refusal) return false;
   bool compact = (kind & SCR_PUB_COMPACT) != 0;
-  /* Both log the low 32 bits: a count, or a compact header word. */
-  bool class_id = compact || (kind & SCR_PUB_CLASS_ID) != 0;
+  /* Both log the low 32 bits: a count, or a compact header word. An
+   * object with a layout id in its rc word (scr_rc_layout_id) keeps it, as
+   * a class instance keeps its class id. */
+  bool class_id = compact || (kind & SCR_PUB_CLASS_ID) != 0 || scr_rc_layout_id(obj) != 0;
   kind &= ~(SCR_PUB_CLASS_ID | SCR_PUB_COMPACT);
   if (ctx->logged == ctx->log_cap)
     ctx->log = scr_pub_grow(ctx->log, &ctx->log_cap, sizeof *ctx->log, ctx->log_inline);
@@ -276,8 +278,8 @@ static bool scr_pub_dyn_ok(const ScrDyn *d, const char **why) {
     *why = "Cannot publish an Object object";
     return false;
   }
-  for (size_t i = 0; i < d->v.obj.len; i++)
-    if (d->v.obj.entries[i].accessor) {
+  for (size_t i = 0; i < scr_dyn_obj_count(d); i++)
+    if (scr_dyn_obj_prop_at(d, i).accessor) {
       *why = "Cannot publish an accessor property";
       return false;
     }
@@ -323,9 +325,9 @@ void scr_pub_dyn_fn(void *v, ScrPub *ctx) {
     case SCR_DYN_ARR:
     case SCR_DYN_OBJ: {
       if (!scr_pub_dyn_ok(d, &why)) break;
-      size_t n = d->kind == SCR_DYN_ARR ? d->v.arr.len : d->v.obj.len;
+      size_t n = d->kind == SCR_DYN_ARR ? d->v.arr.len : scr_dyn_obj_count(d);
       for (size_t i = 0; i < n; i++) {
-        ScrDyn *child = d->kind == SCR_DYN_ARR ? d->v.arr.items[i] : d->v.obj.entries[i].value;
+        ScrDyn *child = d->kind == SCR_DYN_ARR ? d->v.arr.items[i] : scr_dyn_obj_value_at(d, i);
         if (child && child->rc != SIZE_MAX) SCR_PUB_ADD((uintptr_t)child);
       }
       break;
@@ -479,9 +481,9 @@ void scr_publish(void *root, ScrPubFn fn) {
       void *obj = scr_pub_log_obj(&ctx.log[i]);
       if (ctx.log[i].obj & SCR_PUB_DYN) {
         ScrDyn *d = obj;
-        /* Other threads share the object; its shape belongs to this one
-         * (scr_js.h). */
-        if (d->kind == SCR_DYN_OBJ) d->v.obj.shape = NULL;
+        /* Other threads share the object; layouts belong to this thread
+         * (scr_dyn.h), so it moves to dictionary mode. */
+        if (d->kind == SCR_DYN_OBJ) scr_dyn_to_dictionary(d);
         scr_dyn_release(scr_dyn_freeze_data(d));
       }
 #ifdef SCR_RC_AUDIT
@@ -527,62 +529,12 @@ void scr_throw_published_field(const char *prop, const char *owner) {
   scr_pub_throw("Cannot assign to read only property '%s' of object '#<%s>'", prop, owner);
 }
 
-static void scr_pub_index_text(double index, char *out, size_t size) {
-  char buf[64];
-  size_t n = scr_f64_to_str(index, buf);
-  if (n > size - 1) n = size - 1;
-  memcpy(out, buf, n);
-  out[n] = 0;
+bool scr_throw_published_array(int op, const ScrArr *a, double index, double n) {
+  return scr_array_frozen_error(op, a->len, index, n, 0);
 }
 
-/* op: 0 index write, 1 push (n = argument count), 2 pop, 3 length write,
- * 4 unshift (n = argument count), 5 delete, 6 shift, 7 other in-place
- * rewrites (splice, reverse, fill, copyWithin, sort). Returns false when
- * Node's operation would not write the frozen array at all (it then is not
- * an error: e.g. reversing an empty array). */
-bool scr_throw_published_array(int op, const ScrArr *a, double index, double n) {
-  static const char length[] = "Cannot assign to read only property 'length' of object '[object Array]'";
-  char text[64];
-  size_t len = a->len;
-  switch (op) {
-  case 0:
-    scr_pub_index_text(index, text, sizeof text);
-    if (index >= 0 && index < (double)len && index == (double)(size_t)index)
-      scr_pub_throw("Cannot assign to read only property '%s' of object '[object Array]'%s", text, "");
-    else scr_pub_throw("Cannot add property %s, object is not extensible%s", text, "");
-    return true;
-  case 1:
-    if (n == 0) break;
-    scr_pub_index_text((double)len, text, sizeof text);
-    scr_pub_throw("Cannot add property %s, object is not extensible%s", text, "");
-    return true;
-  case 2:
-  case 6:
-    if (len == 0) break;
-    if (op == 6 && len > 1) {
-      scr_pub_throw("Cannot assign to read only property '0' of object '[object Array]'%s%s", "", "");
-      return true;
-    }
-    scr_pub_index_text((double)(len - 1), text, sizeof text);
-    scr_pub_throw("Cannot delete property '%s' of [object Array]%s", text, "");
-    return true;
-  case 3: break;
-  case 4:
-    if (n == 0) break;
-    scr_pub_index_text(len ? (double)len + n - 1 : 0, text, sizeof text);
-    scr_pub_throw("Cannot add property %s, object is not extensible%s", text, "");
-    return true;
-  case 5:
-    scr_pub_index_text(index, text, sizeof text);
-    scr_pub_throw("Cannot delete property '%s' of [object Array]%s", text, "");
-    return true;
-  default:
-    if (len == 0) return false;
-    scr_pub_throw("Cannot assign to read only property '0' of object '[object Array]'%s%s", "", "");
-    return true;
-  }
-  scr_throw_error_msg(SCR_ERR_TYPE, length, sizeof length - 1);
-  return true;
+bool scr_throw_published_array_range(int op, const ScrArr *a, double x, double y, double z) {
+  return scr_array_frozen_error(op, a->len, x, y, z);
 }
 
 void scr_throw_published_collection(bool set) {

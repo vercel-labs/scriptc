@@ -259,6 +259,22 @@ try {
   console.log("consumed request reader:", (error as Error).name);
 }
 
+// A TransformStream's readable side as the request body: fetch's upload
+// reads it, so writes to the writable side do not wait on backpressure.
+const uploadTransform = new TransformStream<Uint8Array, Uint8Array>();
+const uploadWriter = uploadTransform.writable.getWriter();
+const transformPosted = fetch(`${process.argv[2]}/post-echo`, {
+  method: "POST",
+  body: uploadTransform.readable,
+  duplex: "half",
+});
+for (const part of ["trans", "form ", "body"]) {
+  await uploadWriter.write(new TextEncoder().encode(part));
+}
+await uploadWriter.close();
+const transformResult = (await (await transformPosted).json()) as { body: string };
+console.log("transform request body:", transformResult.body);
+
 const prelockedRequestBody = ReadableStream.from([
   Buffer.from("prelocked request"),
 ]);

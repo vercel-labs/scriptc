@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/flatmap-long-tuple-arms.ts"
+ ],
+ "diags": []
+}

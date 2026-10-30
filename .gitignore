@@ -1,4 +1,6 @@
 node_modules/
+# A symlinked node_modules is a file to git, which node_modules/ does not match.
+/packages/*/node_modules
 .pnpm-store/
 # test-fixture packages are TEST DATA, committed on purpose
 !tests/diagnostics/npm-imports/node_modules/
@@ -9,6 +11,7 @@ node_modules/
 !tests/corpus/*/node_modules/
 !tests/fixtures/npm-static/node_modules/
 !tests/coverage-fixtures/wasm/node_modules/
+!tests/coverage-fixtures/node-islands*/node_modules/
 !tests/coverage-fixtures/dynamic-tier/package/node_modules/
 !tests/fixtures/npm-static/nested/inner/node_modules/
 !tests/fixtures/npm-static/node_modules/*/node_modules/
@@ -32,7 +35,15 @@ output/
 /packages/runtime-*/artifacts/
 /packages/runtime-*/runtime-pack.json
 /packages/runtime-*/.runtime-pack-*
+/packages/runtime-*/runtime-pack.verified.json*
+# libnode packs: built by build:native, never committed
+/packages/libnode-*/libnode.so.*
+/packages/libnode-*/libnode.*.dylib
+/packages/libnode-*/libscr_node_bridge.*
+/packages/libnode-*/manifest.json
+/packages/libnode-*/LICENSE
 !tests/fixtures/npm/node_modules/*/dist/
+!tests/fixtures/npm/node_modules/@*/*/dist/
 !tests/fixtures/npm/workspace/*/dist/
 !tests/fixtures/npm/cases/workspace-copied/members/*/dist/
 !tests/fixtures/npm/cases/workspace-copied/node_modules/*/dist/

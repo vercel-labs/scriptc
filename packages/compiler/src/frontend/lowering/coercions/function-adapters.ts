@@ -16,6 +16,7 @@ import {
 import { typeKey } from "../../type-mapper.js";
 import { newFnCtx } from "../function-context.js";
 import type { Lowerer } from "../lowerer.js";
+import { omittedArgFor } from "../call-arguments.js";
 import { maybePromiseUnionOf } from "../maybe-promise.js";
 
 /** Wrap a zero-argument function whose array result needs an element
@@ -113,10 +114,28 @@ export function coercibleValue(lowerer: Lowerer, src: IrType, dst: IrType): bool
   return false;
 }
 
+/** Whether an omitted parameter position completes with the native
+ * undefined value: a checked-dynamic slot takes undefined as-is, and an
+ * undefined-armed union (`x?: T`, `x: T = e`) is the completed ABI
+ * spelling. */
+export function omittableTrailingParam(lowerer: Lowerer, type: IrType): boolean {
+  if (type.kind === "dyn" || typeEquals(type, UNDEFINED_T)) return true;
+  return type.kind === "union" && lowerer.armTag(type.unionId, UNDEFINED_T) >= 0;
+}
+
 /** Whether all parameters and the result adapt without a trap-only path.
  * Rest signatures are excluded, except a typed-rest source in a slot with
  * fixed parameters (the rest packing adapter); extra destination
- * parameters are ignored. */
+ * parameters are ignored. A source with MORE parameters than the slot is
+ * clean when every extra trailing one is omittable — the adapter passes
+ * that absent value explicitly (funcCoerceAdapter's omittedParams), the
+ * same way a call through the slot would. A parameter the slot coercion
+ * converts through a STRUCTURAL width counts (cleanParamPair), which
+ * recurses through a nested function type: a callback parameter of the
+ * value taking a narrower record where the slot's takes its `unknown` view
+ * converts the argument the same way a top-level call does. The result side
+ * likewise accepts what funcCoerceAdapter converts (cleanResult), including
+ * a promise whose payload widens. */
 export function cleanFuncAdaptable(
   lowerer: Lowerer,
   src: IrType & { kind: "func" },
@@ -124,9 +143,84 @@ export function cleanFuncAdaptable(
 ): boolean {
   if (restPackingAdapterFits(lowerer, src, dst)) return true;
   if (src.rest === true || dst.rest === true) return false;
-  if (src.params.length > dst.params.length) return false;
-  for (let i = 0; i < src.params.length; i++) {
-    if (!lowerer.coercibleValue(dst.params[i]!, src.params[i]!)) return false;
+  // In checked mode (a method field's adapter, WidthLift funcAdaptChecked)
+  // the width conversions below include checked retags.
+  // Recursive function types (`type Handler = (h: Handler) => void`) reach
+  // the same pair again one parameter down: assume it converts, the same
+  // coinductive answer recordWidthPlan gives its own back-edges.
+  const key = `funcClean:${typeKey(src)}:${typeKey(dst)}`;
+  if (lowerer.coercions.planning.has(key)) return true;
+  lowerer.coercions.planning.add(key);
+  try {
+    for (let i = dst.params.length; i < src.params.length; i++) {
+      if (!omittableTrailingParam(lowerer, src.params[i]!)) return false;
+    }
+    for (let i = 0; i < src.params.length && i < dst.params.length; i++) {
+      if (!cleanParamPair(lowerer, dst.params[i]!, src.params[i]!)) return false;
+    }
+    return cleanResult(lowerer, src.ret, dst.ret);
+  } finally {
+    lowerer.coercions.planning.delete(key);
+  }
+}
+
+/** Whether the slot's coercion converts the value's RESULT without a
+ * trap-only path: the dispositions funcCoerceAdapter's result side accepts
+ * (a void slot drops the value; coercibleValue; a structural width, which
+ * includes the promise payload widening and a nested function adaptation;
+ * the void-into-unknown drop). */
+function cleanResult(lowerer: Lowerer, actual: IrType, expected: IrType): boolean {
+  if (expected.kind === "void") return true;
+  if (lowerer.coercibleValue(actual, expected)) return true;
+  if (actual.kind === "void" && expected.kind === "dyn") return true;
+  return lowerer.widthLiftPlan(actual, expected) !== null;
+}
+
+/** Whether the slot's argument type `actual` converts into the function's
+ * parameter type `expected` without a trap-only path: the pieces
+ * funcCoerceAdapter's parameter loop converts (coercibleValue, the record
+ * width conversion — which also selects a width-liftable arm of a union
+ * destination, the required-narrower-argument shape — the partial
+ * checked-dynamic extraction, and the union arm preservation). */
+function cleanParamPair(lowerer: Lowerer, actual: IrType, expected: IrType): boolean {
+  if (lowerer.coercibleValue(actual, expected)) return true;
+  if (lowerer.widthLiftPlan(actual, expected) !== null) return true;
+  if (actual.kind === "union" && expected.kind === "dyn")
+    return (
+      lowerer.unions.get(actual.unionId)?.arms.some((arm) => lowerer.dynConvertible(arm)) ?? false
+    );
+  if (actual.kind === "union" && expected.kind === "union") {
+    const target = lowerer.unions.get(expected.unionId);
+    return (
+      target !== undefined && target.arms.every((arm) => lowerer.armTag(actual.unionId, arm) >= 0)
+    );
+  }
+  return false;
+}
+
+/** Whether a function VALUE of `src` may inhabit a `dst` slot: the slot's
+ * coercion (funcCoerceAdapter) forwards its arguments, converts them, and
+ * converts the result — with no trap-only (stranded) path. This is
+ * cleanFuncAdaptable extended to the source-with-MORE-parameters shape: a
+ * value carrying extra trailing parameters whose completed ABI holds
+ * undefined (a `(id, params, signal, onUpdate, ctx?: Ctx)` lambda in a
+ * four-parameter slot). A call through the slot never passes them, so the
+ * coercion forwards undefined — JavaScript's surplus-argument rule. */
+export function funcSlotAdaptable(
+  lowerer: Lowerer,
+  src: IrType & { kind: "func" },
+  dst: IrType & { kind: "func" },
+  loc: SrcLoc,
+): boolean {
+  if (restPackingAdapterFits(lowerer, src, dst)) return true;
+  if (src.rest === true || dst.rest === true) return false;
+  for (let i = dst.params.length; i < src.params.length; i++) {
+    const param = src.params[i]!;
+    if (omittedArgFor(lowerer, param, loc) === null && !typeEquals(param, UNDEFINED_T))
+      return false;
+  }
+  for (let i = 0; i < src.params.length && i < dst.params.length; i++) {
+    if (!cleanParamPair(lowerer, dst.params[i]!, src.params[i]!)) return false;
   }
   if (dst.ret.kind === "void") return true;
   if (lowerer.coercibleValue(src.ret, dst.ret)) return true;
@@ -273,7 +367,22 @@ export function funcCoerceAdapter(
   if (toT.rest === true && toT.restAbi === undefined && toT.params.length === 0)
     return funcIntoDynRestAdapter(lowerer, fromT, toT, loc);
   if (fromT.rest === true || toT.rest === true) return null;
-  if (fromT.params.length > toT.params.length) return null;
+  // A source with MORE parameters than the slot: the checker admits it only
+  // when every extra trailing parameter is optional, so a call through the
+  // slot hands them undefined (JavaScript ignores surplus arguments). Pass
+  // that absent value explicitly. A pair whose extra parameter cannot hold
+  // undefined stays refused.
+  const omittedParams = new Map<number, IrExpr>();
+  for (let i = toT.params.length; i < fromT.params.length; i++) {
+    const param = fromT.params[i]!;
+    const absent =
+      omittedArgFor(lowerer, param, loc) ??
+      (typeEquals(param, UNDEFINED_T)
+        ? ({ kind: "unitLit", unit: "undefined", type: UNDEFINED_T, loc } as IrExpr)
+        : null);
+    if (!absent) return null;
+    omittedParams.set(i, absent);
+  }
   // Piece dispositions beyond coercibleValue, all CHECKER-APPROVED
   // function compatibilities (bivariant method params under the suite's
   // non-strict settings, `() => never` throwers displayed as void by
@@ -290,7 +399,7 @@ export function funcCoerceAdapter(
   let strandParams = false;
   const narrowedParams = new Map<number, ReadonlySet<number>>();
   const partialDynParams = new Map<number, IrType>();
-  for (let i = 0; i < fromT.params.length; i++) {
+  for (let i = 0; i < toT.params.length && i < fromT.params.length; i++) {
     const actual = toT.params[i]!;
     const expected = fromT.params[i]!;
     if (lowerer.coercibleValue(actual, expected)) continue;
@@ -332,6 +441,7 @@ export function funcCoerceAdapter(
         continue;
       }
     }
+    if (cleanParamPair(lowerer, actual, expected)) continue;
     strandParams = true;
   }
   let voidRet: "dyn" | "strand" | null = null;
@@ -374,7 +484,7 @@ export function funcCoerceAdapter(
     strandRet = false;
   // A record result the slot's result is a structural width of.
   if (strandRet && lowerer.widthLiftPlan(fromT.ret, toT.ret)) strandRet = false;
-  const key = `fnadapt:${typeKey(fromT)}:${typeKey(toT)}`;
+  const key = `fnadapt:${typeKey(fromT)}:${typeKey(toT)}${lowerer.coercions.checkedRetags > 0 ? ":checked" : ""}`;
   const existing = lowerer.coercions.retags.get(key);
   if (existing) return existing;
   const name = keyedHelperName(lowerer, "%fn.adapt", key);
@@ -412,6 +522,8 @@ export function funcCoerceAdapter(
       ];
     } else {
       const args = fromT.params.map((pt, i) => {
+        const omitted = omittedParams.get(i);
+        if (omitted) return omitted;
         const aRef: IrExpr = { kind: "varRef", localId: `a.${i}`, type: toT.params[i]!, loc };
         const partial = partialDynParams.get(i);
         if (partial && aRef.type.kind === "union") {

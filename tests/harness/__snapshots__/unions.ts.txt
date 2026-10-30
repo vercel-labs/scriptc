@@ -14,16 +14,9 @@ unions.ts:61:22 - error SC1090: string conversions of unions with object arms (n
      |                      ^~~~~~
   62 | 
 
-unions.ts:69:19 - error SC1090: '== null' / '!= null' on a 'null | string | undefined' value that isn't a plain read (both unit arms need the operand twice — bind it to a const first) is not supported yet
+unions.ts:92:10 - error SC1090: reading 'valueOf' on a union-typed value (every arm must be an object/record with a same-typed field 'valueOf'; narrow first: check a discriminant field, or compare with '!== undefined'/'!== null' for unit arms) is not supported yet
 
-  68 | }
-  69 | const looseCall = mkNullish() == null;
-     |                   ^~~~~~~~~~~~~~~~~~~
-  70 | 
-
-unions.ts:100:10 - error SC1090: reading 'valueOf' on a union-typed value (every arm must be an object/record with a same-typed field 'valueOf'; narrow first: check a discriminant field, or compare with '!== undefined'/'!== null' for unit arms) is not supported yet
-
-   99 | function chainSubUnion(x: number | string | undefined): number {
-  100 |   return x?.valueOf === undefined ? 0 : 1;
-      |          ^~~~~~~~~~
-  101 | }
+  91 | function chainSubUnion(x: number | string | undefined): number {
+  92 |   return x?.valueOf === undefined ? 0 : 1;
+     |          ^~~~~~~~~~
+  93 | }

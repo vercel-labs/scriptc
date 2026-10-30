@@ -16,7 +16,7 @@ assert-class-fences.ts:12:16 - error SC2020: 'assert.Assert instances used as va
 
   hint: bind `new Assert(...)` with literal options to a const and only call methods on it (`const a = new Assert({ diff: 'full' }); a.strictEqual(x, y)`)
 
-assert-class-fences.ts:13:22 - error SC2001: values of type 'object | Assert' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, read-only Date values, functions, classes, records, unions of those, and 'unknown')
+assert-class-fences.ts:13:22 - error SC2001: values of type 'object | Assert' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
 
   12 | const passed = new Assert();
   13 | function useInstance(a: Assert | object): void {

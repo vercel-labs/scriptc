@@ -4,51 +4,27 @@
 // empty after an edit.
 // @refresh reset
 
-import { useEffect, useMemo, useState } from "react";
+import { memo, startTransition, useCallback, useDeferredValue, useEffect, useId, useMemo, useState, type FocusEvent, type KeyboardEvent, type ReactNode } from "react";
+import {
+  buildTree,
+  expandableIds,
+  filterTree,
+  flattenTree,
+  nodeCount,
+  rowMatcher,
+  searchTexts,
+  statusCounts,
+  statuses,
+  type NodeStability,
+  type Row,
+  type Snapshot,
+  type Status,
+  type Verification,
+} from "@/lib/compatibility-tree";
 
 // Set by next.config.mjs from the committed artifact.
 const artifactVersion = process.env.COMPATIBILITY_ARTIFACT_VERSION;
 const rowCount = Number(process.env.COMPATIBILITY_ROW_COUNT);
-
-type Status =
-  | "supported"
-  | "partial"
-  | "refused"
-  | "not-implemented"
-  | "by-design"
-  | "unreviewed"
-  | "not-applicable";
-type VerificationBasis =
-  | "test-backed"
-  | "explicit-refusal"
-  | "verified-absence"
-  | "declared-gap"
-  | "registry-gap"
-  | "architectural-policy"
-  | "unreviewed"
-  | "not-applicable"
-  | "derived";
-type Verification = { label: string; detail: string };
-type Tier = { status: Status; detail: string; verification: VerificationBasis };
-type NodeStability = { index: string; level: number; text: string; inherited: boolean } | null;
-type Row = {
-  id: string;
-  chapter: string;
-  kind: string;
-  name: string;
-  signature: string;
-  label: string;
-  apiSymbol: string;
-  depth: number;
-  scope: "api" | "documentation" | "metadata" | "configuration";
-  anchor: string;
-  nodeStability: NodeStability;
-  static: Tier;
-};
-type Chapter = { slug: string; title: string; entries: number; apiEntries: number };
-type Snapshot = { nodeVersion: string; verificationBases: Record<VerificationBasis, Verification>; chapters: Chapter[]; rows: Row[] };
-type TreeNode = { row: Row; children: TreeNode[] };
-type VisibleNode = { node: TreeNode; level: number };
 
 const labels: Record<Status, string> = {
   supported: "Supported",
@@ -70,7 +46,6 @@ const styles: Record<Status, string> = {
   "not-applicable": "border-gray-alpha-400 bg-background-200 text-gray-700",
 };
 
-const statuses = ["supported", "partial", "not-implemented", "refused", "by-design", "unreviewed", "not-applicable"] as const;
 const stabilityStyles: Record<number, string> = {
   0: "border-red-500/40 bg-red-100 text-red-900 dark:bg-red-200",
   1: "border-amber-500/50 bg-amber-100 text-amber-900 dark:bg-amber-200",
@@ -78,114 +53,83 @@ const stabilityStyles: Record<number, string> = {
   3: "border-gray-alpha-500 bg-gray-alpha-100 text-gray-900",
 };
 
-function StatusBadge({ status, detail, verification }: { status: Status; detail?: string; verification?: Verification }) {
-  const tooltip = verification ? `${detail ?? ""}${detail ? "\n\n" : ""}Verification: ${verification.label}. ${verification.detail}` : detail;
+/** A badge's tooltip, mounted only while the badge is hovered or has
+ * keyboard focus (the :focus-visible rule the CSS-only tooltip used), and
+ * named by aria-describedby while open. Hover and focus are tracked apart,
+ * so moving the pointer away keeps a keyboard-focused badge's tooltip.
+ * Escape dismisses it until the next hover or focus. */
+function BadgeTooltip({ tooltipClass, children, badge }: { tooltipClass: string; children: ReactNode; badge: ReactNode }) {
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const open = hovered || focused;
+  const id = useId();
+  const enter = useCallback(() => setHovered(true), []);
+  const leave = useCallback(() => setHovered(false), []);
+  const focus = useCallback((event: FocusEvent<HTMLSpanElement>) => {
+    if (event.currentTarget.matches(":focus-visible")) setFocused(true);
+  }, []);
+  const blur = useCallback(() => setFocused(false), []);
+  const key = useCallback((event: KeyboardEvent<HTMLSpanElement>) => {
+    if (event.key !== "Escape") return;
+    setHovered(false);
+    setFocused(false);
+  }, []);
   return (
-    <span className="group relative inline-flex" tabIndex={tooltip ? 0 : undefined}>
-      <span
-        className={`inline-flex whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-medium ${styles[status]}`}
-        title={tooltip}
-      >
-        {labels[status]}
-      </span>
-      {tooltip ? (
-        <span role="tooltip" className="pointer-events-none invisible absolute left-0 top-full z-30 mt-2 w-64 rounded-md border border-gray-alpha-500 bg-background-100 p-2 text-left text-xs font-normal leading-5 text-gray-1000 opacity-0 shadow-popover transition-opacity group-hover:visible group-hover:opacity-100 group-focus-visible:visible group-focus-visible:opacity-100">
-          {detail ? <span className="block">{detail}</span> : null}
-          {verification ? <span className={detail ? "mt-2 block border-t border-gray-alpha-400 pt-2" : "block"}><strong>Verification:</strong> {verification.label}. {verification.detail}</span> : null}
+    <span
+      className="relative inline-flex"
+      tabIndex={0}
+      aria-describedby={open ? id : undefined}
+      onMouseEnter={enter}
+      onMouseLeave={leave}
+      onFocus={focus}
+      onBlur={blur}
+      onKeyDown={key}
+    >
+      {badge}
+      {open ? (
+        <span id={id} role="tooltip" className={`pointer-events-none absolute top-full z-30 mt-2 rounded-md border border-gray-alpha-500 bg-background-100 p-2 text-left text-xs font-normal leading-5 text-gray-1000 opacity-100 shadow-popover transition-opacity starting:opacity-0 ${tooltipClass}`}>
+          {children}
         </span>
       ) : null}
     </span>
   );
 }
 
-function StabilityBadge({ stability }: { stability: NodeStability }) {
+export const StatusBadge = memo(function StatusBadge({ status, detail, verification }: { status: Status; detail?: string; verification?: Verification }) {
+  const tooltip = verification ? `${detail ?? ""}${detail ? "\n\n" : ""}Verification: ${verification.label}. ${verification.detail}` : detail;
+  const badge = (
+    <span
+      className={`inline-flex whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-medium ${styles[status]}`}
+      title={tooltip}
+    >
+      {labels[status]}
+    </span>
+  );
+  if (!tooltip) return <span className="relative inline-flex">{badge}</span>;
+  return (
+    <BadgeTooltip tooltipClass="left-0 w-64" badge={badge}>
+      {detail ? <span className="block">{detail}</span> : null}
+      {verification ? <span className={detail ? "mt-2 block border-t border-gray-alpha-400 pt-2" : "block"}><strong>Verification:</strong> {verification.label}. {verification.detail}</span> : null}
+    </BadgeTooltip>
+  );
+});
+
+export const StabilityBadge = memo(function StabilityBadge({ stability }: { stability: NodeStability }) {
   if (stability === null) return <span className="text-xs text-gray-700" title="Node.js does not publish a stability index for this entry.">—</span>;
   const detail = `Node.js Stability ${stability.index}: ${stability.text}${stability.inherited ? " (inherited from the nearest parent section)" : ""}`;
   return (
-    <span className="group relative inline-flex" tabIndex={0}>
-      <span className={`inline-flex min-w-7 justify-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${stabilityStyles[stability.level] ?? stabilityStyles[3]}`} title={detail}>
-        {stability.index}
-      </span>
-      <span role="tooltip" className="pointer-events-none invisible absolute left-1/2 top-full z-30 mt-2 w-72 -translate-x-1/2 rounded-md border border-gray-alpha-500 bg-background-100 p-2 text-left text-xs font-normal leading-5 text-gray-1000 opacity-0 shadow-popover transition-opacity group-hover:visible group-hover:opacity-100 group-focus-visible:visible group-focus-visible:opacity-100">
-        {detail}
-      </span>
-    </span>
-  );
-}
-
-function statusCounts(rows: Row[], tier: "static") {
-  return rows.reduce<Record<Status, number>>(
-    (counts, row) => {
-      if (row.scope !== "api" || row.depth === 0) return counts;
-      counts[row[tier].status] += 1;
-      return counts;
-    },
-    {
-      supported: 0,
-      partial: 0,
-      refused: 0,
-      "not-implemented": 0,
-      "by-design": 0,
-      unreviewed: 0,
-      "not-applicable": 0,
-    },
-  );
-}
-
-/** Node's all.json is preorder with an explicit heading depth. */
-function buildTree(rows: Row[]): TreeNode[] {
-  const roots: TreeNode[] = [];
-  const stack: TreeNode[] = [];
-  for (const row of rows) {
-    const node: TreeNode = { row, children: [] };
-    while (stack.length > row.depth) stack.pop();
-    const parent = stack[row.depth - 1];
-    if (row.depth === 0 || parent === undefined) roots.push(node);
-    else parent.children.push(node);
-    stack[row.depth] = node;
-    stack.length = row.depth + 1;
-  }
-  return roots;
-}
-
-function filterTree(nodes: TreeNode[], matches: (row: Row) => boolean): TreeNode[] {
-  const filtered: TreeNode[] = [];
-  for (const node of nodes) {
-    const children = filterTree(node.children, matches);
-    if (matches(node.row) || children.length > 0) filtered.push({ row: node.row, children });
-  }
-  return filtered;
-}
-
-function flattenTree(nodes: TreeNode[], expanded: Set<string>, forceExpanded: boolean): VisibleNode[] {
-  const visible: VisibleNode[] = [];
-  const visit = (items: TreeNode[], level: number) => {
-    for (const node of items) {
-      visible.push({ node, level });
-      if (node.children.length > 0 && (forceExpanded || expanded.has(node.row.id))) {
-        visit(node.children, level + 1);
+    <BadgeTooltip
+      tooltipClass="left-1/2 w-72 -translate-x-1/2"
+      badge={
+        <span className={`inline-flex min-w-7 justify-center rounded-full border px-2 py-0.5 text-[11px] font-medium ${stabilityStyles[stability.level] ?? stabilityStyles[3]}`} title={detail}>
+          {stability.index}
+        </span>
       }
-    }
-  };
-  visit(nodes, 1);
-  return visible;
-}
-
-function nodeCount(nodes: TreeNode[]): number {
-  return nodes.reduce((count, node) => count + 1 + nodeCount(node.children), 0);
-}
-
-function expandableIds(nodes: TreeNode[]): Set<string> {
-  const ids = new Set<string>();
-  const visit = (items: TreeNode[]) => {
-    for (const node of items) {
-      if (node.children.length > 0) ids.add(node.row.id);
-      visit(node.children);
-    }
-  };
-  visit(nodes);
-  return ids;
-}
+    >
+      {detail}
+    </BadgeTooltip>
+  );
+});
 
 function Chevron({ open }: { open: boolean }) {
   return (
@@ -195,6 +139,47 @@ function Chevron({ open }: { open: boolean }) {
   );
 }
 
+type MatrixRowProps = {
+  row: Row;
+  level: number;
+  hasChildren: boolean;
+  open: boolean;
+  filtering: boolean;
+  displayName: string;
+  href: string;
+  verification: Verification | undefined;
+  onToggle: (id: string) => void;
+};
+
+/** One table row. Memoized on its own values, so a filter or expansion
+ * change re-renders only the rows whose values changed. */
+const MatrixRow = memo(function MatrixRow({ row, level, hasChildren, open, filtering, displayName, href, verification, onToggle }: MatrixRowProps) {
+  const isRoot = level === 1;
+  return (
+    <tr aria-level={level} aria-expanded={hasChildren ? open : undefined} className={`align-top hover:bg-gray-alpha-100/60 ${isRoot ? "bg-background-200/60" : ""}`}>
+      <td>
+        <div className="flex items-start gap-1.5" style={{ paddingLeft: `${(level - 1) * 18}px` }}>
+          {hasChildren ? (
+            <button type="button" onClick={() => onToggle(row.id)} disabled={filtering} aria-label={`${open ? "Collapse" : "Expand"} ${displayName}`} className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-gray-800 hover:bg-gray-alpha-200 hover:text-gray-1000 disabled:cursor-default disabled:hover:bg-transparent">
+              <Chevron open={open} />
+            </button>
+          ) : <span className="h-5 w-5 shrink-0" />}
+          <div className="min-w-0">
+            <a href={href} target="_blank" rel="noopener noreferrer" className={`${isRoot ? "font-sans text-sm font-medium" : "font-mono text-xs"} text-gray-1000 underline decoration-gray-alpha-500 underline-offset-2 hover:decoration-gray-1000`}>
+              {displayName}
+            </a>
+            <div className="mt-1 text-[11px] text-gray-800">
+              {row.kind}{row.apiSymbol && row.apiSymbol !== row.signature && !isRoot ? ` · ${row.apiSymbol}` : ""}
+            </div>
+          </div>
+        </div>
+      </td>
+      <td className="text-center"><StabilityBadge stability={row.nodeStability} /></td>
+      <td><StatusBadge status={row.static.status} detail={row.static.detail} verification={verification} /></td>
+    </tr>
+  );
+});
+
 export function NodeCompatibilityMatrix() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [loadError, setLoadError] = useState(false);
@@ -202,15 +187,16 @@ export function NodeCompatibilityMatrix() {
   const [staticFilter, setStaticFilter] = useState<"all" | Status>("all");
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
 
-  const rows = snapshot?.rows ?? [];
-  const chapters = snapshot?.chapters ?? [];
+  const rows = useMemo(() => snapshot?.rows ?? [], [snapshot]);
+  const chapters = useMemo(() => snapshot?.chapters ?? [], [snapshot]);
   const verificationBases = snapshot?.verificationBases;
   const apiRowCount = useMemo(() => rows.filter((row) => row.scope === "api").length, [rows]);
   const chapterTitles = useMemo(() => new Map(chapters.map((item) => [item.slug, item.title])), [chapters]);
   const base = `https://nodejs.org/docs/v${snapshot?.nodeVersion ?? "24.22.0"}/api/`;
-  const staticCounts = useMemo(() => statusCounts(rows, "static"), [rows]);
+  const staticCounts = useMemo(() => statusCounts(rows), [rows]);
   const visibleStatuses = useMemo(() => statuses.filter((status) => staticCounts[status] > 0), [staticCounts]);
   const tree = useMemo(() => buildTree(rows), [rows]);
+  const texts = useMemo(() => searchTexts(rows, chapterTitles), [rows, chapterTitles]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -231,36 +217,23 @@ export function NodeCompatibilityMatrix() {
     return () => controller.abort();
   }, []);
 
-  const needle = query.trim().toLocaleLowerCase();
-  const hasResultFilter = needle !== "" || staticFilter !== "all";
-  const rowMatches = (row: Row) => {
-    if (staticFilter !== "all" && row.static.status !== staticFilter) return false;
-    if (!needle) return true;
-    return [chapterTitles.get(row.chapter), row.kind, row.name, row.signature, row.apiSymbol, row.static.detail]
-      .join(" ")
-      .toLocaleLowerCase()
-      .includes(needle);
-  };
+  // The search field and the status select update at once; the table
+  // follows the deferred values, so input stays responsive while the rows
+  // re-render.
+  const deferredQuery = useDeferredValue(query);
+  const deferredStatic = useDeferredValue(staticFilter);
+  const needle = deferredQuery.trim().toLocaleLowerCase();
+  const hasResultFilter = needle !== "" || deferredStatic !== "all";
 
-  const resultTree = useMemo(
-    () => hasResultFilter ? filterTree(tree, rowMatches) : tree,
-    // rowMatches closes over these filter values.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [hasResultFilter, needle, staticFilter, tree],
+  const result = useMemo(
+    () => hasResultFilter ? filterTree(tree, rowMatcher(texts, needle, deferredStatic)) : { nodes: tree, matched: nodeCount(tree) },
+    [hasResultFilter, needle, deferredStatic, texts, tree],
   );
   const visible = useMemo(
-    () => flattenTree(resultTree, expanded, hasResultFilter),
-    [expanded, hasResultFilter, resultTree],
+    () => flattenTree(result.nodes, expanded, hasResultFilter),
+    [expanded, hasResultFilter, result],
   );
-  const matchedCount = useMemo(
-    () => hasResultFilter ? tree.reduce((count, node) => {
-      const visit = (item: TreeNode): number => (rowMatches(item.row) ? 1 : 0) + item.children.reduce((sum, child) => sum + visit(child), 0);
-      return count + visit(node);
-    }, 0) : nodeCount(tree),
-    // rowMatches closes over these filter values.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [hasResultFilter, needle, staticFilter, tree],
-  );
+  const matchedCount = result.matched;
 
   const changeQuery = (value: string) => setQuery(value);
   const resetFilters = () => {
@@ -268,12 +241,12 @@ export function NodeCompatibilityMatrix() {
     setStaticFilter("all");
     setExpanded(new Set());
   };
-  const toggle = (id: string) => setExpanded((current) => {
+  const toggle = useCallback((id: string) => setExpanded((current) => {
     const next = new Set(current);
     if (next.has(id)) next.delete(id);
     else next.add(id);
     return next;
-  });
+  }), []);
 
   useEffect(() => {
     if (!snapshot) return;
@@ -316,8 +289,8 @@ export function NodeCompatibilityMatrix() {
             <span aria-live="polite">{visible.length.toLocaleString()} visible · {matchedCount.toLocaleString()} {hasResultFilter ? "matching" : "API"} rows</span>
             {!hasResultFilter ? (
               <span className="flex gap-1">
-                <button type="button" onClick={() => setExpanded(expandableIds(tree))} className="rounded px-1.5 py-1 text-gray-900 hover:bg-gray-alpha-100 hover:text-gray-1000">Expand all</button>
-                <button type="button" onClick={() => setExpanded(new Set())} className="rounded px-1.5 py-1 text-gray-900 hover:bg-gray-alpha-100 hover:text-gray-1000">Collapse all</button>
+                <button type="button" onClick={() => startTransition(() => setExpanded(expandableIds(tree)))} className="rounded px-1.5 py-1 text-gray-900 hover:bg-gray-alpha-100 hover:text-gray-1000">Expand all</button>
+                <button type="button" onClick={() => startTransition(() => setExpanded(new Set()))} className="rounded px-1.5 py-1 text-gray-900 hover:bg-gray-alpha-100 hover:text-gray-1000">Collapse all</button>
               </span>
             ) : null}
           </div>
@@ -335,33 +308,19 @@ export function NodeCompatibilityMatrix() {
           <tbody>
             {visible.map(({ node, level }) => {
               const row = node.row;
-              const hasChildren = node.children.length > 0;
-              const open = hasResultFilter || expanded.has(row.id);
-              const href = `${base}${row.chapter}.html${row.anchor ? `#${row.anchor}` : ""}`;
-              const isRoot = level === 1;
-              const displayName = isRoot ? chapterTitles.get(row.chapter) ?? row.label : row.label;
               return (
-                <tr key={row.id} aria-level={level} aria-expanded={hasChildren ? open : undefined} className={`align-top hover:bg-gray-alpha-100/60 ${isRoot ? "bg-background-200/60" : ""}`}>
-                  <td>
-                    <div className="flex items-start gap-1.5" style={{ paddingLeft: `${(level - 1) * 18}px` }}>
-                      {hasChildren ? (
-                        <button type="button" onClick={() => toggle(row.id)} disabled={hasResultFilter} aria-label={`${open ? "Collapse" : "Expand"} ${displayName}`} className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded text-gray-800 hover:bg-gray-alpha-200 hover:text-gray-1000 disabled:cursor-default disabled:hover:bg-transparent">
-                          <Chevron open={open} />
-                        </button>
-                      ) : <span className="h-5 w-5 shrink-0" />}
-                      <div className="min-w-0">
-                        <a href={href} target="_blank" rel="noopener noreferrer" className={`${isRoot ? "font-sans text-sm font-medium" : "font-mono text-xs"} text-gray-1000 underline decoration-gray-alpha-500 underline-offset-2 hover:decoration-gray-1000`}>
-                          {displayName}
-                        </a>
-                        <div className="mt-1 text-[11px] text-gray-800">
-                          {row.kind}{row.apiSymbol && row.apiSymbol !== row.signature && !isRoot ? ` · ${row.apiSymbol}` : ""}
-                        </div>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="text-center"><StabilityBadge stability={row.nodeStability} /></td>
-                  <td><StatusBadge status={row.static.status} detail={row.static.detail} verification={verificationBases?.[row.static.verification]} /></td>
-                </tr>
+                <MatrixRow
+                  key={row.id}
+                  row={row}
+                  level={level}
+                  hasChildren={node.children.length > 0}
+                  open={hasResultFilter || expanded.has(row.id)}
+                  filtering={hasResultFilter}
+                  displayName={level === 1 ? chapterTitles.get(row.chapter) ?? row.label : row.label}
+                  href={`${base}${row.chapter}.html${row.anchor ? `#${row.anchor}` : ""}`}
+                  verification={verificationBases?.[row.static.verification]}
+                  onToggle={toggle}
+                />
               );
             })}
           </tbody>

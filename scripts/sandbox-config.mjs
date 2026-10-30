@@ -291,3 +291,22 @@ export function sandboxTestSourceConfig(env) {
     createArgs: ["--image", image.sandboxImage],
   };
 }
+
+/** A built checkout inside a prepared snapshot whose native artifacts a
+ * lane may reuse when their inputs match (SCRIPTC_SANDBOX_NATIVE_REFERENCE).
+ * It needs the snapshot's tools, so it is ignored for the managed image. */
+export function sandboxNativeReference(env) {
+  loadLocalEnv();
+  const source = env ?? process.env;
+  const reference = source.SCRIPTC_SANDBOX_NATIVE_REFERENCE?.trim();
+  if (!reference) return undefined;
+  if (!sandboxTestSourceConfig(source).prepared) {
+    throw new Error(
+      "SCRIPTC_SANDBOX_NATIVE_REFERENCE needs SCRIPTC_SANDBOX_SNAPSHOT or SCRIPTC_SANDBOX_IMAGE",
+    );
+  }
+  if (!/^\/[\w./-]+$/.test(reference) || reference.split("/").includes("..")) {
+    throw new Error("SCRIPTC_SANDBOX_NATIVE_REFERENCE must be an absolute path without '..'");
+  }
+  return reference.replace(/\/+$/, "");
+}

@@ -1,0 +1,6 @@
+{
+  "entry": "workloads/dynamic-methods.mjs",
+  "args": [
+    "300000"
+  ]
+}

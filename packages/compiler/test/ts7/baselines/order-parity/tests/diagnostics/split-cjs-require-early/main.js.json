@@ -1,0 +1,27 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/split-cjs-require-early/main.js"
+ ],
+ "diags": [
+  {
+   "code": "SC1013",
+   "message": "require() binding 'lib' assigned below code that can reach it (Node reads undefined before the assignment runs, which is not modeled — move the assignment above the code that can run first) is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/split-cjs-require-early/main.js",
+    "start": 396,
+    "end": 415
+   },
+   "milestone": "later"
+  },
+  {
+   "code": "SC1013",
+   "message": "require() binding 'wrapped' assigned below code that can reach it (Node reads undefined before the assignment runs, which is not modeled — move the assignment above the code that can run first) is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/split-cjs-require-early/main.js",
+    "start": 530,
+    "end": 549
+   },
+   "milestone": "later"
+  }
+ ]
+}

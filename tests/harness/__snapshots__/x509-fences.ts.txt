@@ -1,0 +1,48 @@
+x509-fences.ts:8:13 - error SC1090: Object.keys over X509Certificate values (Node keeps their fields as prototype getters, so own-key walks see none; read the fields) are not supported yet
+
+  7 | const cert = new X509Certificate(readFileSync("cert.pem"));
+  8 | console.log(Object.keys(cert));
+    |             ^~~~~~~~~~~~~~~~~
+  9 | console.log(Object.entries(cert));
+
+x509-fences.ts:9:13 - error SC1090: Object.entries over X509Certificate values (Node keeps their fields as prototype getters, so own-key walks see none; read the fields) are not supported yet
+
+   8 | console.log(Object.keys(cert));
+   9 | console.log(Object.entries(cert));
+     |             ^~~~~~~~~~~~~~~~~~~~
+  10 | console.log({ ...cert });
+
+x509-fences.ts:10:15 - error SC1090: object spread over X509Certificate values (Node keeps their fields as prototype getters, so own-key walks see none; read the fields) are not supported yet
+
+   9 | console.log(Object.entries(cert));
+  10 | console.log({ ...cert });
+     |               ^~~~~~~
+  11 | console.log(Object.prototype.hasOwnProperty.call(cert, "subject"));
+
+x509-fences.ts:11:50 - error SC1090: Object.prototype.hasOwnProperty over X509Certificate values (Node keeps their fields as prototype getters, so own-key walks see none; read the fields) are not supported yet
+
+  10 | console.log({ ...cert });
+  11 | console.log(Object.prototype.hasOwnProperty.call(cert, "subject"));
+     |                                                  ^~~~
+  12 | for (const key in cert) console.log(key);
+
+x509-fences.ts:12:19 - error SC1090: for-in over X509Certificate values (Node keeps their fields as prototype getters, so own-key walks see none; read the fields) are not supported yet
+
+  11 | console.log(Object.prototype.hasOwnProperty.call(cert, "subject"));
+  12 | for (const key in cert) console.log(key);
+     |                   ^~~~
+  13 | 
+
+x509-fences.ts:16:23 - error SC1090: X509Certificate values in 'unknown' or 'any' slots (Node keeps a certificate's fields as prototype getters, and its toString() and toJSON() give the PEM; keep the X509Certificate type) are not supported yet
+
+  15 | // its fields, which Node's certificate is not.
+  16 | const held: unknown = cert;
+     |                       ^~~~
+  17 | console.log(held);
+
+x509-fences.ts:21:23 - error SC1090: X509Certificate values in 'unknown' or 'any' slots (Node keeps a certificate's fields as prototype getters, and its toString() and toJSON() give the PEM; keep the X509Certificate type) are not supported yet
+
+  20 | }
+  21 | console.log(describe([cert]));
+     |                       ^~~~
+  22 | 

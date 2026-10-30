@@ -198,3 +198,24 @@ test("byte decoding keeps the whole-document errors and version refusal", () => 
   const sentinel = text.replace('"nan"', '"future"');
   expect(() => deserializeModuleBytes(Buffer.from(sentinel))).toThrow("Invalid IR number sentinel");
 });
+
+test("file roots respell the source locations under them and nothing else", () => {
+  const mod = numbers([1, 2]);
+  const shim = { file: '/opt/scriptc "a"/shims/pkg/index.ts', start: 3, end: 4 };
+  const other = { file: "/opt/elsewhere/shims/pkg/index.ts", start: 5, end: 6 };
+  const body = mod.functions[0]!.body as IrStmt[];
+  body.push(
+    { kind: "exprStmt", expr: { kind: "numLit", value: 3, type: F64, loc: shim }, loc: shim },
+    { kind: "exprStmt", expr: { kind: "numLit", value: 4, type: F64, loc: other }, loc: other },
+  );
+  const roots = [{ from: '/opt/scriptc "a"/shims/', to: "scriptc:shims/" }];
+  const relocated = deserializeModule(serializeModuleParts(mod, roots).join(""));
+  const files = (relocated.functions[0]!.body as IrStmt[]).map((stmt) => stmt.loc.file);
+  expect(files).toEqual([
+    "numbers.ts",
+    "numbers.ts",
+    "scriptc:shims/pkg/index.ts",
+    "/opt/elsewhere/shims/pkg/index.ts",
+  ]);
+  expect(serializeModuleParts(mod).join("")).toBe(serializeModule(mod, true));
+});

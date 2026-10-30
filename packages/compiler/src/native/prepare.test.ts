@@ -1,8 +1,12 @@
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, test } from "vitest";
-import { nativeCodegenTarget } from "../backend/targets.js";
+import { afterEach, expect, test, vi } from "vitest";
+import {
+  LINUX_ARM64_GNU_TARGET,
+  nativeCodegenTarget,
+  WASM32_WASI_TARGET,
+} from "../backend/targets.js";
 import { runFrontend, type FrontendFactory } from "../frontend/pipeline.js";
 import { loadProgram } from "../frontend/program-node.js";
 import { ts7Executable } from "../frontend/ts7/rpc-api.js";
@@ -19,6 +23,7 @@ function text(input: ReturnType<ReturnType<typeof fixture>["prepare"]>) {
 
 const scratch: string[] = [];
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const path of scratch.splice(0)) rmSync(path, { recursive: true, force: true });
 });
 
@@ -66,7 +71,7 @@ function fixture() {
     loads++;
     return runFrontend(path, loadProgram, npmStatic, externalTypes);
   };
-  const prepare = (extra: { emitIr?: boolean } = {}) =>
+  const prepare = (extra: { emitIr?: boolean; optimization?: "release" | "dev" } = {}) =>
     prepareNativeExecutable(entry, { ...options, ...extra }, null, toolchain, frontend, cache);
   return { root, entry, dependency, cache, options, prepare, loads: () => loads };
 }
@@ -119,6 +124,38 @@ test("comment and whitespace edits reuse the frontend output a fresh build repro
   expect(edited.ok && edited.llvm.join("")).not.toBe(first.llvm.join(""));
 });
 
+test("a dev build reuses its frontend output after edits that keep every token's position", () => {
+  const f = fixture();
+  const dev = { optimization: "dev" as const };
+  const first = f.prepare(dev);
+  expect(first.ok, JSON.stringify(first)).toBe(true);
+  if (!first.ok) return;
+  // Debug information records lines and columns: a comment after the last
+  // token and trailing whitespace keep them.
+  const appended = 'export const value = "first";  \n// The exported value.\n';
+  writeFileSync(f.dependency, appended);
+  const reused = f.prepare(dev);
+  expect(f.loads()).toBe(1);
+  expect(reused.ok).toBe(true);
+  if (!reused.ok) return;
+  expect(reused.llvm.join("")).toBe(first.llvm.join(""));
+  expect(new Map(reused.sources).get(f.dependency)).toBe(appended);
+  const fresh = prepareNativeExecutable(
+    f.entry,
+    { ...f.options, ...dev },
+    null,
+    fixtureToolchain(),
+    (path, npmStatic, externalTypes) => runFrontend(path, loadProgram, npmStatic, externalTypes),
+    new NativeCache(join(f.root, "fresh-cache")),
+  );
+  expect(fresh.ok && fresh.llvm.join("")).toBe(first.llvm.join(""));
+  // A comment that moves the token after it is rebuilt.
+  writeFileSync(f.dependency, '// The exported value.\nexport const value = "first";\n');
+  const moved = f.prepare(dev);
+  expect(f.loads()).toBe(2);
+  expect(moved.ok && moved.llvm.join("")).not.toBe(first.llvm.join(""));
+});
+
 test("a comment edit inside source text the output carries is rebuilt", () => {
   const f = fixture();
   // A failing assert(value) reports its call's source text.
@@ -161,6 +198,30 @@ test("structurally invalid cached features cause a rebuild even with a valid dig
   expect(f.loads()).toBe(2);
 });
 
+test("timing, cache placement and emission worker variables keep the frontend output", () => {
+  for (const name of [
+    "SCRIPTC_CACHE_DIR",
+    "SCRIPTC_CACHE_MAX_MB",
+    "SCRIPTC_EMIT_WORKERS",
+    "SCRIPTC_EMIT_WORKER_FUNCTIONS",
+    "SCRIPTC_TIMING",
+    "SCRIPTC_TEST_FRONTEND_KEY",
+  ])
+    vi.stubEnv(name, undefined);
+  const f = fixture();
+  expect(f.prepare().ok).toBe(true);
+  vi.stubEnv("SCRIPTC_CACHE_DIR", f.cache.root);
+  vi.stubEnv("SCRIPTC_CACHE_MAX_MB", "8192");
+  vi.stubEnv("SCRIPTC_EMIT_WORKERS", "1");
+  vi.stubEnv("SCRIPTC_EMIT_WORKER_FUNCTIONS", "100");
+  vi.stubEnv("SCRIPTC_TIMING", "0");
+  expect(f.prepare().ok).toBe(true);
+  expect(f.loads()).toBe(1);
+  vi.stubEnv("SCRIPTC_TEST_FRONTEND_KEY", "1");
+  expect(f.prepare().ok).toBe(true);
+  expect(f.loads()).toBe(2);
+});
+
 test("serialized IR travels as bounded parts through the frontend cache", () => {
   const f = fixture();
   const first = f.prepare({ emitIr: true });
@@ -176,8 +237,31 @@ test("serialized IR travels as bounded parts through the frontend cache", () => 
   const key = readdirSync(family).find((name) => /^[0-9a-f]{64}$/.test(name))!;
   const payload = JSON.parse(readFileSync(join(family, key), "utf8"));
   expect(payload.schema).toBe("scriptc.native-frontend.v3");
-  expect(payload.input.llvm).toBe("");
+  // The placeholders keep NativeExecutableInput's member types: the native
+  // compiler checks the parsed entry against them when it reads it back.
+  expect(payload.input.llvm).toEqual([]);
   expect(payload.input.ir).toBeNull();
   expect(payload.llvm).toBe(first.llvm.join(""));
   expect(payload.ir).toEqual(first.ir);
+});
+
+test("an x86-64 level is refused for targets that are not x86-64 before the frontend runs", () => {
+  const f = fixture();
+  for (const target of [LINUX_ARM64_GNU_TARGET, WASM32_WASI_TARGET]) {
+    const result = prepareNativeExecutable(
+      f.entry,
+      { ...f.options, targetCpu: "x86-64-v3" },
+      null,
+      { ...fixtureToolchain(), target },
+      () => {
+        throw new Error("the frontend ran");
+      },
+      null,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) continue;
+    expect(result.diagnostics.map((d) => [d.code, d.message])).toEqual([
+      ["SC3002", "--target-cpu=x86-64-v3 requires an x86-64 target"],
+    ]);
+  }
 });

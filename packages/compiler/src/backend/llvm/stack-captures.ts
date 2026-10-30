@@ -105,13 +105,7 @@ export class StackCaptures {
     // sites, including duplicated finally bodies and versioned loops.
     if (!this.locals.has(id) || this.remaining < 48) return null;
     const ref = isRefCounted(type);
-    if (
-      !ref &&
-      type.kind !== "f64" &&
-      type.kind !== "date" &&
-      type.kind !== "procStream" &&
-      type.kind !== "bool"
-    )
+    if (!ref && type.kind !== "f64" && type.kind !== "procStream" && type.kind !== "bool")
       return null;
     this.remaining -= 48;
     const B = host.B;

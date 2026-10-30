@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7682-constructor-function-globals.js"
+ ],
+ "diags": []
+}

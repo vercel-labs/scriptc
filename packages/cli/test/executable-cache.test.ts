@@ -198,3 +198,57 @@ test.skipIf(process.platform === "win32")(
   },
   120_000,
 );
+
+test.skipIf(process.platform !== "linux")(
+  "a warm executable cache still builds the heap census and writes the representation report",
+  async () => {
+    const dir = await mkdtemp(join(tmpdir(), "scriptc-cli-diagnostic-cache-"));
+    const cacheRoot = join(dir, "cache");
+    const entry = join(dir, "main.ts");
+    const outPath = join(dir, "program");
+    try {
+      await mkdir(cacheRoot, { mode: 0o700 });
+      // `new` and construction through a class value both count.
+      await writeFile(
+        entry,
+        [
+          "class Item { constructor(readonly id: number) {} }",
+          "const kind: typeof Item = Item;",
+          "const items = [new Item(1), new kind(2), new kind(3)];",
+          "console.log(items.length);",
+          "",
+        ].join("\n"),
+      );
+      const build = async (env: NodeJS.ProcessEnv = {}): Promise<string> =>
+        (
+          await execFileAsync(
+            process.execPath,
+            ["--import", tsxLoader, cliEntry, "build", entry, "-o", outPath],
+            {
+              env: { ...process.env, SCRIPTC_CACHE_DIR: cacheRoot, SCRIPTC_TIMING: "1", ...env },
+              maxBuffer: 4 * 1024 * 1024,
+            },
+          )
+        ).stderr;
+      expect(await build()).toContain("scriptc lowering");
+      expect(await build()).not.toContain("scriptc lowering");
+
+      // The census build is its own cache entry.
+      const census = join(dir, "census.tsv");
+      await build({ SCRIPTC_HEAP_CENSUS: "1" });
+      const { stdout } = await execFileAsync(outPath, [], {
+        env: { ...process.env, SCRIPTC_HEAP_CENSUS: census },
+      });
+      expect(stdout).toBe("3\n");
+      expect(await readFile(census, "utf8")).toMatch(/^new\tItem\t\t3\t[1-9]\d*$/m);
+
+      // A report is written even when the executable is cached.
+      const report = join(dir, "repr.tsv");
+      await build({ SCRIPTC_REPR_REPORT: report });
+      expect(await readFile(report, "utf8")).toMatch(/^field\tItem\tid\t/m);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  },
+  600_000,
+);

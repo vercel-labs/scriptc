@@ -5,7 +5,7 @@ regex-match-destructuring-fences.ts:6:16 - error SC1031: rest bindings over rege
     |                ^~~~~~~
   7 | const { input = "none" } = m;
 
-regex-match-destructuring-fences.ts:6:19 - error SC2001: values of type '{ [n: number]: string; input: string; 0: string; length: number; toString(): string; toLocaleString(): string; toLocaleString(locales: string | string[], options?: (NumberFormatOptions & DateTimeFormatOptions) | undefined): string; ... 39 more ...; with(index: number, value: string): string[]; }' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, read-only Date values, functions, classes, records, unions of those, and 'unknown')
+regex-match-destructuring-fences.ts:6:19 - error SC2001: values of type '{ [n: number]: string; input: string; 0: string; length: number; toString(): string; toLocaleString(): string; toLocaleString(locales: string | string[], options?: (NumberFormatOptions & DateTimeFormatOptions) | undefined): string; ... 39 more ...; with(index: number, value: string): string[]; }' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
 
   5 | const m = /(a)(b)?/.exec("ab")!;
   6 | const { index, ...rest } = m;

@@ -1,0 +1,8 @@
+{
+ "order": [
+  "<repo>/tests/corpus/6850-node-island-shared-singleton/state.mjs",
+  "<repo>/tests/corpus/6850-node-island-shared-singleton/tally.mjs",
+  "<repo>/tests/corpus/6850-node-island-shared-singleton/main.mjs"
+ ],
+ "diags": []
+}

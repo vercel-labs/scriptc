@@ -81,7 +81,8 @@ test.each(["sample", "@scope/sample"])(
         expect(actual).toBe(reference);
         expect(actual).toBe("22\n");
       }
-      // Opting in to one runtime package does not admit its untyped dependency.
+      // A dependency the package's JavaScript imports compiles without
+      // declarations of its own: no declaration checks that import.
       const dependency = join(dir, "node_modules/unchecked-dependency");
       await mkdir(dependency, { recursive: true });
       await writeFile(
@@ -96,14 +97,18 @@ test.each(["sample", "@scope/sample"])(
         join(pkg, "index.js"),
         "import { adjust } from 'unchecked-dependency'; export function calculate(value) { return adjust(value) * 3 + 1; }\n",
       );
-      const refused = await compileLibrary({ profilePath, outDir: join(dir, "refused") });
-      expect(refused.ok).toBe(false);
-      if (!refused.ok)
-        expect(
-          refused.diagnostics.some(
-            (d) => d.code === "SC4020" && d.message.includes("unchecked-dependency"),
-          ),
-        ).toBe(true);
+      const withDependency = await compileLibrary({ profilePath, outDir: join(dir, "dependency") });
+      if (!withDependency.ok) throw new Error(JSON.stringify(withDependency.diagnostics));
+      if (process.env["SCRIPTC_PORTABLE_ONLY"] !== "1") {
+        const source = join(dir, "dependency-host.c"),
+          binary = join(dir, "dependency-host");
+        await writeFile(
+          source,
+          '#include <stdio.h>\nextern void st_init(void); extern double st_result(void);\nint main(void) { st_init(); printf("%.0f\\n", st_result()); }\n',
+        );
+        execFileSync("clang", [source, withDependency.archivePath, "-lm", "-o", binary]);
+        expect(execFileSync(binary, { encoding: "utf8" })).toBe("22\n");
+      }
       expect(await readFile(join(types, "index.d.ts"), "utf8")).toBe(declaration);
     } finally {
       await rm(dir, { recursive: true, force: true });

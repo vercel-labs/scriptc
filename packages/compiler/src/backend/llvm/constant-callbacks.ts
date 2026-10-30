@@ -1,8 +1,27 @@
 import type { IrExpr, IrFunction, IrModule } from "../../ir/ir.js";
-import { exprFunctionReference, moduleFunctionReferences } from "../../ir/function-references.js";
+import {
+  exprFunctionReference,
+  FUNCTION_REFERENCE_KINDS,
+  moduleFunctionReferences,
+} from "../../ir/function-references.js";
 import { writtenLocals } from "../../ir/callback-specialization.js";
+import { eachNodeOfKinds, type IrNodeIndex, type IrNodeKind } from "../../ir/node-index.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import type { CallLifetimes } from "./call-lifetimes.js";
+
+/** The nodes the body census below reads. */
+const CENSUS_KINDS: readonly IrNodeKind[] = [
+  "varDecl",
+  "assign",
+  "forOf",
+  "rethrow",
+  "tryCatch",
+  "call",
+  "callValue",
+  "assignExpr",
+  "incDec",
+  ...FUNCTION_REFERENCE_KINDS,
+];
 
 /** Closed direct-call consumers can devirtualize a callback when every
  * incoming call supplies the same function. Keep its evaluated environment,
@@ -15,6 +34,7 @@ import type { CallLifetimes } from "./call-lifetimes.js";
 export function findConstantCallbacks(
   mod: IrModule,
   lifetimes: CallLifetimes,
+  index?: IrNodeIndex,
 ): Map<string, Map<string, string>> {
   const functions = new Map(mod.functions.map((fn) => [fn.name, fn]));
   const definitions = new Map<string, Map<string, IrExpr>>();
@@ -50,7 +70,7 @@ export function findConstantCallbacks(
   const writes = new Set<string>();
   // Parameters and captures each function (or a closure sharing the
   // binding) writes after entry.
-  const rebinds = writtenLocals(mod);
+  const rebinds = writtenLocals(mod, index);
   // A function named anywhere but as a direct call's callee can be entered
   // by a generated adapter or the runtime, which a direct-call census cannot
   // specialize: the entry, exports, class helpers and methods here, and
@@ -66,6 +86,7 @@ export function findConstantCallbacks(
   // The initializer of each immutable function-typed local declared once:
   // its only write, even when a capture box (not a stable slot) holds it.
   const constDefinitions = new Map<string, Map<string, IrExpr | null>>();
+  const scan = index?.scan(CENSUS_KINDS);
   for (const fn of mod.functions) {
     const defs = new Map<string, IrExpr>();
     const consts = new Map<string, IrExpr | null>();
@@ -85,51 +106,64 @@ export function findConstantCallbacks(
     const emptyDecls = new Map<string, number>();
     const assigned = new Map<string, IrExpr[]>();
     const rebound = new Set<string>();
-    everyStmtList(fn.body, {
-      stmt: (stmt) => {
-        if (stmt.kind === "varDecl" && stmt.init?.type.kind === "func" && stable?.has(stmt.localId))
-          defs.set(stmt.localId, stmt.init);
-        if (stmt.kind === "varDecl" && immutable.has(stmt.localId))
-          consts.set(stmt.localId, consts.has(stmt.localId) ? null : stmt.init);
-        if (stmt.kind === "varDecl" && hoisted.has(stmt.localId)) {
-          if (stmt.init !== null) rebound.add(stmt.localId);
-          emptyDecls.set(stmt.localId, (emptyDecls.get(stmt.localId) ?? 0) + 1);
-        }
-        if (stmt.kind === "assign" && hoisted.has(stmt.localId)) {
-          const values = assigned.get(stmt.localId) ?? [];
-          values.push(stmt.value);
-          assigned.set(stmt.localId, values);
-        }
-        if (stmt.kind === "forOf" || stmt.kind === "rethrow") rebound.add(stmt.localId);
-        if (stmt.kind === "tryCatch" && stmt.catchLocalId !== null) rebound.add(stmt.catchLocalId);
-        if (stmt.kind === "assign") {
-          if (globalIds.has(stmt.localId)) {
-            if (globals.has(stmt.localId)) writes.add(stmt.localId);
-            else globals.set(stmt.localId, stmt.value);
+    eachNodeOfKinds(fn, scan, (node) => {
+      switch (node.kind) {
+        case "varDecl":
+          if (node.init?.type.kind === "func" && stable?.has(node.localId))
+            defs.set(node.localId, node.init);
+          if (immutable.has(node.localId))
+            consts.set(node.localId, consts.has(node.localId) ? null : node.init);
+          if (hoisted.has(node.localId)) {
+            if (node.init !== null) rebound.add(node.localId);
+            emptyDecls.set(node.localId, (emptyDecls.get(node.localId) ?? 0) + 1);
           }
+          return;
+        case "assign":
+          if (hoisted.has(node.localId)) {
+            const values = assigned.get(node.localId) ?? [];
+            values.push(node.value);
+            assigned.set(node.localId, values);
+          }
+          if (globalIds.has(node.localId)) {
+            if (globals.has(node.localId)) writes.add(node.localId);
+            else globals.set(node.localId, node.value);
+          }
+          return;
+        case "forOf":
+        case "rethrow":
+          rebound.add(node.localId);
+          return;
+        case "tryCatch":
+          if (node.catchLocalId !== null) rebound.add(node.catchLocalId);
+          return;
+        case "call":
+          if (consumers.has(node.callee)) {
+            const calls = incoming.get(node.callee) ?? [];
+            calls.push({ owner: fn.name, args: node.args });
+            incoming.set(node.callee, calls);
+          }
+          return;
+        case "callValue":
+          if (node.callee.kind === "varRef") callees.add(node.callee.localId);
+          return;
+        case "closure": {
+          escaped.add(node.fnName);
+          const sites = closureSites.get(node.fnName) ?? [];
+          sites.push({ owner: fn.name, captures: node.captures });
+          closureSites.set(node.fnName, sites);
+          return;
         }
-        return true;
-      },
-      expr: (expr) => {
-        if (expr.kind === "call" && consumers.has(expr.callee)) {
-          const calls = incoming.get(expr.callee) ?? [];
-          calls.push({ owner: fn.name, args: expr.args });
-          incoming.set(expr.callee, calls);
+        case "orDefault": {
+          const referenced = exprFunctionReference(node);
+          if (referenced !== undefined) escaped.add(referenced);
+          return;
         }
-        if (expr.kind === "callValue" && expr.callee.kind === "varRef")
-          callees.add(expr.callee.localId);
-        const referenced = exprFunctionReference(expr);
-        if (referenced !== undefined) escaped.add(referenced);
-        if (expr.kind === "closure") {
-          const sites = closureSites.get(expr.fnName) ?? [];
-          sites.push({ owner: fn.name, captures: expr.captures });
-          closureSites.set(expr.fnName, sites);
-        }
-        if ((expr.kind === "assignExpr" || expr.kind === "incDec") && globalIds.has(expr.localId))
-          writes.add(expr.localId);
-        if (expr.kind === "assignExpr" || expr.kind === "incDec") rebound.add(expr.localId);
-        return true;
-      },
+        case "assignExpr":
+        case "incDec":
+          if (globalIds.has(node.localId)) writes.add(node.localId);
+          rebound.add(node.localId);
+          return;
+      }
     });
     for (const [id, values] of assigned)
       if (emptyDecls.get(id) === 1 && values.length === 1 && !rebound.has(id))

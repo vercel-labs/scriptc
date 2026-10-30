@@ -53,7 +53,7 @@ Type-only imports follow Node.js's type stripping. `import type` and `export typ
 scriptc compiles a package automatically when it:
 
 - ships its own type declarations, or is typed by its DefinitelyTyped `@types/` package, or is a dependency of another package that has no declarations at all, and
-- ships readable JavaScript: unminified, or minified by a bundler whose helpers keep their names.
+- ships JavaScript that isn't a webpack bundle. Minified JavaScript compiles like unminified JavaScript.
 
 The declarations check your program; the package's JavaScript compiles with the types scriptc infers from it. A program that doesn't typecheck against the inferred types, for example because an `@types/` package describes another release, fails the build at that use.
 
@@ -91,6 +91,13 @@ scriptc implements a few packages itself and compiles that implementation in pla
 - `ensureLink`, `ensureSymlink`, `createLink`, `createSymlink`, `gracefulify`, the promise forms of the descriptor-based methods, and the callback forms of `stat`, `lstat`, `readdir`, `mkdtemp`, `realpath` and `readJson` aren't declared, so using one is a type error at build time. Paths are strings, text is UTF-8, and write flags, string modes and `copyFile` mode flags aren't accepted.
 - graceful-fs's retry queue, which fs-extra uses under Node.js, isn't part of the implementation, so a program that runs out of file descriptors fails at the first `EMFILE` error instead of retrying.
 - An ES module that imports fs-extra can use any of its exports by name. Node.js only exposes the names its CommonJS lexer finds in fs-extra's source, so a name like `readFile` throws a `SyntaxError` there.
+
+`@hono/node-server` 2.x is built in. `serve`, `createAdaptorServer`, `getRequestListener` and `RequestError` serve a fetch handler such as Hono's `app.fetch` over `node:http` with native `Request` and `Response` objects, and write each response the way the package does under Node.js: the same status line, header names, header order and content length, for buffered and streamed bodies, including the package's shortcut for a response that is still exactly what its constructor received. Request bodies stream to the handler as it reads them, and a body the handler leaves unread is drained after the response, up to 64 MiB or 500 ms, as the package does. Known differences:
+
+- Only HTTP/1.1 servers are declared: the `createServer` and `serverOptions` options for `node:https` and `node:http2`, the `websocket` option and `upgradeWebSocket` aren't declared, so using one is a type error at build time. Subpath modules such as `@hono/node-server/serve-static` compile from the package's own files.
+- The fetch handler must return a `Response` or a promise of one; the handler's second argument holds `incoming` and `outgoing`.
+- The global `Request` and `Response` stay the built-in classes, so `overrideGlobalObjects` has no effect, and a `Response` reads its default text content type as `text/plain;charset=UTF-8` where the package's replacement reads `text/plain; charset=UTF-8`. Written responses carry the package's spelling.
+- A streamed response is written without waiting for `drain`, and a failed handler answers 504 only for an error whose `name` is `TimeoutError`.
 
 Small polyfill packages whose module is exactly a Node.js built-in on Node.js 24 compile as that built-in, at the `require()` that loads them, from your program's CommonJS files, from compiled packages, and from esbuild bundles whose module paths name the package and its version (as pnpm installs do). The package's own files aren't compiled.
 
@@ -133,6 +140,75 @@ CommonJS packages compile with Node.js's module semantics. Each `require()` eval
 ## Unsupported code inside a package
 
 A JavaScript package can contain operations scriptc can't compile, often in functions your program never calls. These don't fail the build: each one compiles to code that throws a runtime error if it ever runs. Coverage reports list them as deferred sites, so review the list and test the parts of the package your program uses. Sites in a module's top-level code are listed under `runs at startup`: that code runs when the module loads, at startup for a module the program imports.
+
+## Fix a package's types
+
+scriptc trusts declared types: a package's `.d.ts` files, its `@types/` package, and the JSDoc types in its JavaScript. A value that contradicts its declared type throws a `TypeError` instead of flowing on, so a package whose declarations are wrong can stop a program that runs under Node.js. A common case is a member declared `string` or `number` that is sometimes `undefined`.
+
+When the type comes from a package's declarations, the error names the declaration and the patch that would admit the value:
+
+```text
+Uncaught TypeError: expected string at $, got undefined
+    profilekit@3.1.0 declares Profile.email as string (index.d.ts:7)
+    if that declaration is wrong, patch it: scriptc types patch profilekit "Profile.email" "| undefined"
+```
+
+Fix such a declaration in your project with a type patch. `scriptc types patch` shows what a declaration path matches in the installed package and adds the patch to your `package.json`:
+
+```console
+$ scriptc types patch commander "HelpContext.helpWidth" "| undefined"
+commander 15.0.0 (node_modules/commander)
+  lib/command.js:2481  number  ->  number | undefined
+wrote package.json scriptc.typePatches["commander@^15.0.0"].declarations["HelpContext.helpWidth"]
+```
+
+The patch it writes looks like this:
+
+```json:package.json
+{
+  "scriptc": {
+    "typePatches": {
+      "commander@^15.0.0": {
+        "declarations": {
+          "HelpContext.helpWidth": "| undefined"
+        }
+      }
+    }
+  }
+}
+```
+
+Each key names a package and a semver range of the installed versions the patch describes. `declarations` maps a declaration to a type:
+
+<dl>
+  <dt>`"| undefined"`</dt>
+  <dd>A type that starts with `|` widens the declared type, here to `number | undefined`.</dd>
+  <dt>`"string | null"`</dt>
+  <dd>Any other type replaces the declared type.</dd>
+</dl>
+
+A declaration is named by its path: `Options.name` for a member of a type, `parse()` for a function's return type, `parse(text)` for a parameter, `list()[]` for an array's elements, and `Env[string]` for an index signature. `export=()` names the return type of the function the module exports, `default` its default export, and a file prefix such as `index.js:parse()` names a declaration inside one of the package's files. One patch applies to the package's own declarations, its JSDoc, and its `@types/` package. The patched type then holds everywhere, so your code has to handle the `undefined` that a widened declaration allows. An optional `"note"` string can link the upstream issue.
+
+For larger fixes, replace a whole declaration file, or give a package without declarations its own:
+
+```json:package.json
+{
+  "scriptc": {
+    "typePatches": {
+      "some-client@^3.2.0": {
+        "files": { "dist/types/options.d.ts": "./type-patches/options.d.ts" }
+      },
+      "untyped-helper@1.x": {
+        "types": "./type-patches/untyped-helper.d.ts"
+      }
+    }
+  }
+}
+```
+
+`files` maps a declaration file inside the package, or inside its `@types/` package written as `@types/<name>/<path>`, to a local `.d.ts` file. `types` supplies the package's declaration entry. Paths of local files are relative to the `package.json`, and a replaced file can import the package's other declaration files with the same relative paths as the file it replaces.
+
+Patches change only declarations, never the package's code, and values are still checked against the patched types. A build warns when a patch doesn't apply as written: when no range covers the installed version, when a declaration path matches nothing, when the declaration already has the type, or when a path is ambiguous. Report wrong declarations to the package too, so the patch can be removed later.
 
 ## Provenance sources (experimental)
 

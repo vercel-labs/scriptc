@@ -7,7 +7,9 @@
 // thread: Node.js threads share no objects, so every thread has its own
 // tables, and stored values are published (deep-frozen) as in scriptc.
 // ThreadSlots is a WeakMap per name and thread: module state is per thread
-// under Node.js, so each thread sees only the values it set.
+// under Node.js, so each thread sees only the values it set. InlineArray is
+// a type (`import type`), with no value here: under Node.js the field holds
+// the array its constructor stored.
 
 import { publish } from "@scriptc/threads";
 

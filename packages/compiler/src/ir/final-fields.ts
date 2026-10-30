@@ -1,6 +1,7 @@
 import { isRefCounted, type IrClassDef, type IrExpr, type IrModule, type IrStmt } from "./ir.js";
 import { dynamicFieldStores, type DynamicFieldStores } from "./int32-slots.js";
 import { everyExprChild, everyStmtChild } from "./traverse.js";
+import { eachNodeOfKinds, type IrNodeIndex, type IrNodeKind } from "./node-index.js";
 
 /** Whole-program final reference fields.
  *
@@ -75,6 +76,9 @@ export function constructorClass(fnName: string): string | null {
     : null;
 }
 
+/** The nodes that write a class field. */
+const FIELD_WRITE_KINDS: readonly IrNodeKind[] = ["fieldSet", "fieldIncDec"];
+
 /** `scalars` extends the analysis from reference-counted fields to fields of
  * every type, for consumers that read a final field's value once instead of
  * borrowing it (field-values.ts). */
@@ -82,6 +86,7 @@ export function analyzeFinalFields(
   mod: IrModule,
   scalars = false,
   stores?: DynamicFieldStores,
+  nodes?: IrNodeIndex,
 ): FinalFields {
   const classes = new Map((mod.classes ?? []).map((c) => [c.name, c]));
   const finals = new FinalFields(classes);
@@ -121,30 +126,25 @@ export function analyzeFinalFields(
     }
   if (finals.size === 0) return finals;
 
+  const scan = nodes?.scan(FIELD_WRITE_KINDS);
   for (const fn of mod.functions) {
     const ctor = constructorClass(fn.name);
     const self = ctor !== null ? fn.params[0]?.localId : undefined;
     const selfLocal = self !== undefined ? fn.locals.find((l) => l.id === self) : undefined;
     // `this` must name the object under construction for the whole body.
     const constructing = selfLocal !== undefined && !selfLocal.boxed && !reassigns(fn.body, self!);
-    const stmt = (s: IrStmt): boolean => {
-      if (s.kind === "fieldSet") {
-        const family = finals.family(s.className, s.field);
-        if (family !== null && finals.isFinal(s.className, s.field)) {
+    eachNodeOfKinds(fn, scan, (node) => {
+      if (node.kind === "fieldSet") {
+        const family = finals.family(node.className, node.field);
+        if (family !== null && finals.isFinal(node.className, node.field)) {
           const own =
-            constructing && ctor !== null && inFamily(ctor, family) && isSelf(s.obj, self!);
+            constructing && ctor !== null && inFamily(ctor, family) && isSelf(node.obj, self!);
           if (!own) finals.drop(family, `written in ${fn.name}`);
         }
-      }
-      return everyStmtChild(s, expr, stmt);
-    };
-    // `o.n++` updates a numeric field in place; reference fields never see it.
-    const expr = (e: IrExpr): boolean => {
-      if (e.kind === "fieldIncDec" && finals.isFinal(e.className, e.field))
-        finals.drop(finals.family(e.className, e.field)!, `updated in ${fn.name}`);
-      return everyExprChild(e, expr, stmt);
-    };
-    for (const s of fn.body) stmt(s);
+      } else if (node.kind === "fieldIncDec" && finals.isFinal(node.className, node.field))
+        // `o.n++` updates a numeric field in place; reference fields never see it.
+        finals.drop(finals.family(node.className, node.field)!, `updated in ${fn.name}`);
+    });
   }
   return finals;
 }

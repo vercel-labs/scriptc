@@ -1,10 +1,12 @@
 /* Focused LLVM library-call emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
-import { F64, RUNTIME_ERROR_CLASSES, STRING } from "../../ir/ir.js";
+import { BOOL, F64, type IrType, RUNTIME_ERROR_CLASSES, STRING, typeKey } from "../../ir/ir.js";
 import type { LlvmEmitterContext, LibCallExpr, LlValue } from "./expr-context.js";
 import { f64Lit } from "./common.js";
 import { mockTimerSym } from "./lib-shared.js";
+import { FN_ATTRS } from "./shapes.js";
+import { registerReplay } from "./emit-journal.js";
 
 export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
@@ -118,6 +120,13 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
     B.line(`call void @scr_child_on_error(ptr ${child.name}, ptr ${cb.name}, ptr @${adapter})`);
     return { name: "", type: e.type };
   }
+  if (e.fn === "child.hasChannel") {
+    const child = host.emitExpr(e.args[0]!);
+    host.declare(`declare zeroext i1 @scr_child_ipc_present(ptr)`);
+    const out = B.tmp();
+    B.line(`${out} = call i1 @scr_child_ipc_present(ptr ${child.name})`);
+    return { name: out, type: e.type };
+  }
   if (e.fn === "child.connected") {
     const child = host.emitExpr(e.args[0]!);
     host.declare(`declare zeroext i1 @scr_child_ipc_connected(ptr)`);
@@ -224,22 +233,25 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
     B.line(`${t} = load ptr, ptr ${slot}`);
     return host.own({ name: t, type: e.type });
   }
-  if (e.fn === "spawnRes.signal") {
+  if (e.fn === "spawnRes.signal" || e.fn === "child.signalCode") {
     // The `string | null` union (the termination signal's name, null
     // for a normal exit or spawn failure) — the has/get pair wrapped
     // type-directedly.
     if (e.type.kind !== "union")
-      throw new InternalCompilerError("llvm emitter bug: spawnRes.signal result is not a union");
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
     const def = host.unionsById.get(e.type.unionId);
     const strTag = def ? def.arms.findIndex((a) => a.kind === "string") : -1;
     const nullTag = def ? def.arms.findIndex((a) => a.kind === "nullT") : -1;
     if (strTag < 0 || nullTag < 0)
-      throw new InternalCompilerError("llvm emitter bug: spawnRes.signal union lacks its arms");
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
     const recv = host.emitExpr(e.args[0]!);
-    host.declare(`declare zeroext i1 @scr_spawn_res_has_signal(ptr)`);
-    host.declare(`declare ptr @scr_spawn_res_signal(ptr)`);
+    const has =
+      e.fn === "spawnRes.signal" ? "scr_spawn_res_has_signal" : "scr_child_has_signal_code";
+    const get = e.fn === "spawnRes.signal" ? "scr_spawn_res_signal" : "scr_child_signal_code";
+    host.declare(`declare zeroext i1 @${has}(ptr)`);
+    host.declare(`declare ptr @${get}(ptr)`);
     const hasV = B.tmp();
-    B.line(`${hasV} = call zeroext i1 @scr_spawn_res_has_signal(ptr ${recv.name})`);
+    B.line(`${hasV} = call zeroext i1 @${has}(ptr ${recv.name})`);
     const rawSlot = B.slot();
     B.entryAllocas.push(`${rawSlot} = alloca ptr`);
     B.line(`store ptr null, ptr ${rawSlot}`);
@@ -248,7 +260,7 @@ export function emitChildProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr
     B.condBr(hasV, lp, lj);
     B.startBlock(lp);
     const sv = B.tmp();
-    B.line(`${sv} = call ptr @scr_spawn_res_signal(ptr ${recv.name}) ; +1`);
+    B.line(`${sv} = call ptr @${get}(ptr ${recv.name}) ; +1`);
     B.line(`store ptr ${sv}, ptr ${rawSlot}`);
     B.br(lj);
     B.startBlock(lj);
@@ -460,8 +472,63 @@ export function emitAsyncContextLibCall(host: LlvmEmitterContext, e: LibCallExpr
     for (const a of e.args) host.emitExpr(a);
     return { name: "", type: e.type };
   }
+  if (e.fn === "als.bindCallback") {
+    // The closure moves into the bound closure, whose entry is the
+    // per-signature thunk; with nothing to bind the runtime answers the
+    // closure itself.
+    if (e.type.kind !== "func")
+      throw new InternalCompilerError("llvm emitter bug: als.bindCallback on non-func");
+    const cb = host.emitExpr(e.args[0]!);
+    const always = host.emitExpr(e.args[1]!);
+    host.toHeap(cb);
+    const thunk = boundCallbackThunk(host, e.type);
+    host.declare("declare ptr @scr_als_bind_closure(ptr, ptr, i1 zeroext)");
+    const t = B.tmp();
+    B.line(
+      `${t} = call ptr @scr_als_bind_closure(ptr ${cb.name}, ptr @${thunk}, i1 ${always.name})`,
+    );
+    return host.own({ name: t, type: e.type });
+  }
   return host.emitGenericLibCall(e);
 }
+
+/** The entry of a callback bound to an AsyncLocalStorage context, one per
+ * callback signature: enters the captured context, calls the target with
+ * the same arguments (the callValue ABI) and restores the caller's
+ * context, also when the target leaves an exception pending. */
+function boundCallbackThunk(host: LlvmEmitterContext, cbT: IrType & { kind: "func" }): string {
+  const key = `alsbound:${typeKey(cbT)}`;
+  let sym = host.resolveThunks.get(key);
+  if (sym) return sym;
+  sym = host.contentSymbol("sc_alsbound_", key);
+  host.resolveThunks.set(key, sym);
+  host.journal?.allocated(sym, "boundCallbackThunk", [cbT]);
+  host.declare("declare ptr @scr_als_bound_target(ptr)");
+  host.declare("declare ptr @scr_als_bound_enter(ptr)");
+  host.declare("declare void @scr_als_bound_leave(ptr, ptr)");
+  const ret = host.llType(cbT.ret);
+  const params = cbT.params.map((p, i) => `${host.llType(p)} %a${i}`);
+  const call = `call ${ret} %fn(${["ptr %cb", ...params].join(", ")})`;
+  host.resolveThunkDefs.push(
+    `define internal ${ret} @${sym}(${["ptr %self", ...params].join(", ")}) ${FN_ATTRS} { ; AsyncLocalStorage-bound callback ${typeKey(cbT)}`,
+    `entry:`,
+    `  %cb = call ptr @scr_als_bound_target(ptr %self)`,
+    `  %prev = call ptr @scr_als_bound_enter(ptr %self)`,
+    `  %fnp = getelementptr inbounds %ScrClosure, ptr %cb, i64 0, i32 1`,
+    `  %fn = load ptr, ptr %fnp`,
+    ret === "void" ? `  ${call}` : `  %r = ${call}`,
+    `  call void @scr_als_bound_leave(ptr %prev, ptr %cb)`,
+    ret === "void" ? `  ret void` : `  ret ${ret} %r`,
+    `}`,
+    ``,
+  );
+  host.journal?.built();
+  return sym;
+}
+
+registerReplay("boundCallbackThunk", (host, args) =>
+  boundCallbackThunk(host, args[0] as IrType & { kind: "func" }),
+);
 
 export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
@@ -612,32 +679,46 @@ export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     host.emitPendingCheck();
     return { name: "", type: e.type };
   }
-  if (e.fn === "process.onExit") {
+  if (e.fn === "process.onExit" || e.fn === "process.prependExit") {
     // Runtime adapters cover both shapes (the code is a plain double);
     // the registry owns the callback.
     const cbT = e.args[0]!.type;
     if (cbT.kind !== "func")
-      throw new InternalCompilerError("llvm emitter bug: process.onExit callback not a func");
+      throw new InternalCompilerError(`llvm emitter bug: ${e.fn} callback not a func`);
     const cb = host.emitExpr(e.args[0]!);
-    const once = host.emitExpr(e.args[1]!);
     host.toHeap(cb);
     const adapter = cbT.params.length === 0 ? "scr_exit_thunk0" : "scr_exit_thunk_code";
     host.declare(`declare void @${adapter}(ptr, double)`);
+    if (e.fn === "process.prependExit") {
+      host.declare(`declare void @scr_process_prepend_exit(ptr, ptr)`);
+      B.line(`call void @scr_process_prepend_exit(ptr ${cb.name}, ptr @${adapter})`);
+      return { name: "", type: e.type };
+    }
+    const once = host.emitExpr(e.args[1]!);
     host.declare(`declare void @scr_process_on_exit(ptr, ptr, i1 zeroext)`);
     B.line(`call void @scr_process_on_exit(ptr ${cb.name}, ptr @${adapter}, i1 ${once.name})`);
     return { name: "", type: e.type };
   }
-  if (e.fn === "process.envGet" || e.fn === "process.columns" || e.fn === "process.rows") {
-    // getenv(3) / ioctl(TIOCGWINSZ): the runtime answers a +1 string or
-    // NULL (a width or a negative sentinel); the union construction is
-    // type-directed HERE — present wraps the value arm, absent yields
+  if (
+    e.fn === "process.envGet" ||
+    e.fn === "process.columns" ||
+    e.fn === "process.rows" ||
+    e.fn === "process.stdinIsRaw"
+  ) {
+    // getenv(3) / ioctl(TIOCGWINSZ) / termios: the runtime answers a +1
+    // string or NULL, or a number with a negative sentinel (the raw-mode
+    // flag rides the same double channel, 1/0/-1); the union construction
+    // is type-directed HERE — present wraps the value arm, absent yields
     // the interned immortal undefined-arm instance.
     if (e.type.kind !== "union")
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
     const def = host.unionsById.get(e.type.unionId);
     const undefTag = undefinedArmTag(e.type, host.unionsById);
     const isEnv = e.fn === "process.envGet";
-    const valTag = def ? def.arms.findIndex((a) => a.kind === (isEnv ? "string" : "f64")) : -1;
+    const isRaw = e.fn === "process.stdinIsRaw";
+    const valTag = def
+      ? def.arms.findIndex((a) => a.kind === (isEnv ? "string" : isRaw ? "bool" : "f64"))
+      : -1;
     if (valTag < 0 || undefTag < 0)
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
     const args = e.args.map((a) => host.emitExpr(a));
@@ -652,6 +733,10 @@ export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
       host.declare(`declare ptr @scr_env_get(ptr)`);
       B.line(`${raw} = call ptr @scr_env_get(ptr ${args[0]!.name})`);
       B.line(`${present} = icmp ne ptr ${raw}, null`);
+    } else if (isRaw) {
+      host.declare(`declare double @scr_process_stdin_is_raw()`);
+      B.line(`${raw} = call double @scr_process_stdin_is_raw()`);
+      B.line(`${present} = fcmp oge double ${raw}, ${f64Lit(0)}`);
     } else {
       const runtimeFn = e.fn === "process.rows" ? "scr_process_rows" : "scr_process_columns";
       host.declare(`declare double @${runtimeFn}(double)`);
@@ -660,9 +745,18 @@ export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
     }
     B.condBr(present, lp, la);
     B.startBlock(lp);
-    B.line(
-      `store ptr ${host.unionNewOwned(e.type.unionId, valTag, { name: raw, type: isEnv ? STRING : F64 })}, ptr ${slot}`,
-    );
+    if (isRaw) {
+      // The raw flag: 1/0 becomes the bool arm's i1.
+      const flag = B.tmp();
+      B.line(`${flag} = fcmp one double ${raw}, ${f64Lit(0)}`);
+      B.line(
+        `store ptr ${host.unionNewOwned(e.type.unionId, valTag, { name: flag, type: BOOL })}, ptr ${slot}`,
+      );
+    } else {
+      B.line(
+        `store ptr ${host.unionNewOwned(e.type.unionId, valTag, { name: raw, type: isEnv ? STRING : F64 })}, ptr ${slot}`,
+      );
+    }
     B.br(lj);
     B.startBlock(la);
     B.line(`store ptr ${host.unitInstanceRef(e.type.unionId, undefTag)}, ptr ${slot}`);
@@ -677,6 +771,32 @@ export function emitProcessLibCall(host: LlvmEmitterContext, e: LibCallExpr): Ll
 
 export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
+  if (e.fn === "error.captureStackTrace") {
+    // The second argument names the function constructorOpt skips through;
+    // its frame text is the constant its own frame pushes (emit-function.ts),
+    // or null when it has no frame, which leaves no frames.
+    const target = host.emitExpr(e.args[0]!);
+    const named = e.args[1]!;
+    const skip = e.args[2]!.kind === "boolLit" && e.args[2]!.value;
+    let through = "null";
+    if (named.kind === "strLit" && named.value !== "") {
+      const fn = host.mod.functions.find((f) => f.name === named.value);
+      if (
+        fn !== undefined &&
+        host.stackTraces &&
+        !host.wasi &&
+        fn.sourceName !== undefined &&
+        !host.unframedFunctions.has(fn.name)
+      )
+        through = host.cstr(`    at ${fn.sourceName} (${fn.loc.file})`);
+    }
+    host.declare(`declare void @scr_error_capture_stack_trace(ptr, ptr, i1)`);
+    B.line(
+      `call void @scr_error_capture_stack_trace(ptr ${target.name}, ptr ${through}, i1 ${skip ? "true" : "false"})`,
+    );
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
   if (e.fn === "error.argTypeThrow") {
     // Always throws with the runtime-rendered Received tail (the
     // error.nodeThrow dummy pattern). Borrows all three.
@@ -718,10 +838,19 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
     const kind = host.emitExpr(e.args[0]!);
     const code = host.emitExpr(e.args[1]!);
     const msg = host.emitExpr(e.args[2]!);
-    host.declare(`declare void @scr_throw_node_coded(double, ptr, ptr)`);
-    B.line(
-      `call void @scr_throw_node_coded(double ${kind.name}, ptr ${code.name}, ptr ${msg.name})`,
-    );
+    if (e.args.length > 3) {
+      // The fourth argument: the error's own `url` property.
+      const url = host.emitExpr(e.args[3]!);
+      host.declare(`declare void @scr_throw_node_coded_url(double, ptr, ptr, ptr)`);
+      B.line(
+        `call void @scr_throw_node_coded_url(double ${kind.name}, ptr ${code.name}, ptr ${msg.name}, ptr ${url.name})`,
+      );
+    } else {
+      host.declare(`declare void @scr_throw_node_coded(double, ptr, ptr)`);
+      B.line(
+        `call void @scr_throw_node_coded(double ${kind.name}, ptr ${code.name}, ptr ${msg.name})`,
+      );
+    }
     const ty = host.llType(e.type);
     if (ty === "void") {
       host.emitAlwaysPendingUnwind();
@@ -774,6 +903,10 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
     const cbT = e.args[2]!.type;
     if (cbT.kind !== "func")
       throw new InternalCompilerError("llvm emitter bug: emitter.on listener not a func");
+    // A registration past the emitter's maxListeners queues the leak
+    // warning for the next tick (scr_events_emitter.c), which the loop
+    // delivers before the process exits.
+    host.usesTimers = true;
     const args = e.args.map((a) => host.emitExpr(a));
     const { fn: adapterFn, shim } = host.emitterFixedAdapter(cbT);
     // The wrapper's capture box owns its OWN +1 of the listener; the
@@ -804,6 +937,7 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
     const adT = e.args[3]!.type;
     if (adT.kind !== "func")
       throw new InternalCompilerError("llvm emitter bug: emitter.onDyn adapter not a func");
+    host.usesTimers = true; // the leak warning's tick (emitter.on)
     const args = e.args.map((a) => host.emitExpr(a));
     const { fn: adapterFn, shim } = host.emitterFixedAdapter(adT);
     host.toHeap(args[3]!); // the frame's +1 moves into the wrapper's box
@@ -850,6 +984,34 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
     }
     const t = B.tmp();
     B.line(`${t} = ${call}`);
+    host.emitPendingCheck();
+    return { name: t, type: e.type };
+  }
+  if (e.fn === "emitter.emitErrorValue") {
+    // (recv, ...payload as dyn): emit('error') with a non-Error payload.
+    // The unhandled case renders the payload with util.inspect
+    // (scr_insp_dyn), which this call links.
+    const args = e.args.map((a) => host.emitExpr(a));
+    const n = args.length - 1;
+    let payload = "null";
+    if (n > 0) {
+      const arr = B.slot();
+      B.entryAllocas.push(`${arr} = alloca [${n} x ptr]`);
+      for (let i = 0; i < n; i++) {
+        const slot = B.tmp();
+        B.line(`${slot} = getelementptr inbounds [${n} x ptr], ptr ${arr}, i64 0, i64 ${i}`);
+        B.line(`store ptr ${args[i + 1]!.name}, ptr ${slot}`);
+      }
+      payload = arr;
+    }
+    host.declare(`declare ptr @scr_insp_dyn(ptr, double, double)`);
+    host.declare(
+      `declare zeroext i1 @scr_emitter_emit_error_value(ptr, ptr, ${host.sizeType}, ptr)`,
+    );
+    const t = B.tmp();
+    B.line(
+      `${t} = call i1 @scr_emitter_emit_error_value(ptr ${args[0]!.name}, ptr ${payload}, ${host.sizeType} ${n}, ptr @scr_insp_dyn)`,
+    );
     host.emitPendingCheck();
     return { name: t, type: e.type };
   }
@@ -953,6 +1115,7 @@ export function emitErrorsEventsLibCall(host: LlvmEmitterContext, e: LibCallExpr
     // emitter.on/onDyn, but the DATA adapter (the three-slot payload ABI
     // — scr_stream_emit_data) behind the arity-3 fixed shim.
     const isDyn = e.fn === "emitter.onDataDyn";
+    host.usesTimers = true; // the leak warning's tick (emitter.on)
     const cbT = e.args[isDyn ? 3 : 2]!.type;
     if (cbT.kind !== "func")
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} listener not a func`);

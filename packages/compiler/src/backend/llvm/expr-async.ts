@@ -184,7 +184,7 @@ export function emitIntrinsicExpr(host: LlvmEmitterContext, e: ExprOf<"intrinsic
         }
         const v = host.emitExpr(e.args[0]!);
         const t = e.args[0]!.type;
-        if (t.kind === "f64" || t.kind === "date") {
+        if (t.kind === "f64") {
           host.declare(`declare void @scr_promise_fulfill_f64(ptr, double)`);
           B.line(`call void @scr_promise_fulfill_f64(ptr ${p}, double ${v.name})`);
         } else if (t.kind === "bool") {
@@ -372,6 +372,21 @@ export function emitSerializationExpr(
       // the dummy harmlessly.
       // `JSON.parse(text) as T` fuses into one schema-directed parse that
       // falls back to exactly this route whenever the fast path declines.
+      // A package-declared target: the cold path names the declaration in
+      // the pending TypeError (scr_type_origin.c).
+      // Library archives and reactors link a fixed runtime set without the
+      // note unit: their checks keep the plain message.
+      const origin =
+        e.origin === undefined || host.mod.lib !== undefined
+          ? undefined
+          : host.mod.declOrigins?.[e.origin];
+      const note =
+        origin === undefined
+          ? undefined
+          : (): void => {
+              host.declare("declare void @scr_type_origin_note(ptr)");
+              B.line(`call void @scr_type_origin_note(ptr ${host.cstr(origin)})`);
+            };
       const parsed = e.value;
       if (!e.preserveRefs && parsed.kind === "libCall" && parsed.fn === "json.parse") {
         const fused = host.dyn.jsonParseHelper(e.type);
@@ -380,7 +395,7 @@ export function emitSerializationExpr(
           const r = B.tmp();
           B.line(`${r} = call ptr @${fused}(ptr ${text.name})`);
           const fusedOut = host.own({ name: r, type: e.type });
-          host.emitPendingCheck();
+          host.emitPendingCheck(undefined, false, undefined, note);
           return fusedOut;
         }
       }
@@ -394,14 +409,26 @@ export function emitSerializationExpr(
       }
       const dynV = emitBorrowedInput(host, e.value);
       const helper = host.dyn.dynCheckHelper(e.type, e.preserveRefs);
-      if (isDynTypedRefType(e.type)) return emitClassCheck(host, e.type, dynV.name, helper);
+      // A check of an analysis-proven fact (shape inference's overlay)
+      // names its site, so a failure reports a compiler bug.
+      const site = e.inferredSite !== undefined ? host.cstr(e.inferredSite) : null;
+      if (site !== null) {
+        host.declare(`declare void @scr_dyn_inferred_site(ptr)`);
+        B.line(`call void @scr_dyn_inferred_site(ptr ${site})`);
+      }
+      if (isDynTypedRefType(e.type)) {
+        const checked = emitClassCheck(host, e.type, dynV.name, helper, note);
+        if (site !== null) B.line(`call void @scr_dyn_inferred_site(ptr null)`);
+        return checked;
+      }
       const ty = host.llType(e.type);
       const t = B.tmp();
       B.line(
         `${t} = call ${ty === "i1" ? "zeroext i1" : ty} @${helper}(ptr ${dynV.name}, ptr null)`,
       );
+      if (site !== null) B.line(`call void @scr_dyn_inferred_site(ptr null)`);
       const out = host.own({ name: t, type: e.type });
-      host.emitPendingCheck();
+      host.emitPendingCheck(undefined, false, undefined, note);
       return out;
     }
     default: {
@@ -420,6 +447,7 @@ function emitClassCheck(
   type: IrType & { kind: "object" },
   value: string,
   helper: string,
+  note?: () => void,
 ): LlValue {
   const B = host.B;
   const slot = B.slot();
@@ -460,7 +488,7 @@ function emitClassCheck(
   B.line(`${result} = call ptr @${helper}(ptr ${value}, ptr null)`);
   B.line(`store ptr ${result}, ptr ${slot}`);
   // A throwing check returns null, so the unwind has nothing to release.
-  host.emitPendingCheck();
+  host.emitPendingCheck(undefined, false, undefined, note);
   B.br(done);
   B.startBlock(done);
   const out = B.tmp();
@@ -500,7 +528,7 @@ export function emitAsyncExpr(
         host.declare(`declare void @scr_async_gen_hop_done()`);
         B.line(`call void @scr_async_gen_hop_done()`);
       }
-      if (yt.kind === "f64" || yt.kind === "date") {
+      if (yt.kind === "f64") {
         if (host.currentCoro !== null) {
           const coro = host.currentCoro;
           if (coro.out !== null) host.emitGenSlotStore(coro.out, "f64", v.name);
@@ -582,7 +610,7 @@ export function emitAsyncExpr(
         return { name: "", type: e.type };
       }
       const t = B.tmp();
-      if (e.type.kind === "f64" || e.type.kind === "date") {
+      if (e.type.kind === "f64") {
         host.declare(`declare double @scr_gen_take_in_f64()`);
         B.line(`${t} = call double @scr_gen_take_in_f64()`);
         return { name: t, type: e.type };
@@ -710,12 +738,12 @@ export function emitAsyncExpr(
           throw new InternalCompilerError(`llvm emitter bug: genResume ${e.mode} on async`);
         const gb = emitBorrowedInput(host, e.gen);
         if (e.mode === "value") {
-          if (!host.wasi && (e.type.kind === "f64" || e.type.kind === "date"))
+          if (!host.wasi && e.type.kind === "f64")
             return { name: host.emitGenSlotTake(host.genOutSlot(gb.name), "f64"), type: e.type };
           if (!host.wasi && e.type.kind === "bool")
             return { name: host.emitGenSlotTake(host.genOutSlot(gb.name), "bool"), type: e.type };
           const t = B.tmp();
-          if (e.type.kind === "f64" || e.type.kind === "date") {
+          if (e.type.kind === "f64") {
             host.declare(`declare double @scr_gen_take_out_f64(ptr)`);
             B.line(`${t} = call double @scr_gen_take_out_f64(ptr ${gb.name})`);
             return { name: t, type: e.type };
@@ -752,7 +780,7 @@ export function emitAsyncExpr(
         store(a.name, e.arg!.type);
       };
       const parkIn = (name: string, t: IrType): void => {
-        if (t.kind === "f64" || t.kind === "date") {
+        if (t.kind === "f64") {
           host.declare(`declare void @scr_gen_in_f64(ptr, double)`);
           B.line(`call void @scr_gen_in_f64(ptr ${g.name}, double ${name})`);
         } else if (t.kind === "bool") {
@@ -787,7 +815,7 @@ export function emitAsyncExpr(
             const a = host.emitExpr(e.arg);
             const t = e.arg.type;
             if (isRefCounted(t)) host.toHeap(a);
-            if (t.kind === "f64" || t.kind === "date") {
+            if (t.kind === "f64") {
               host.declare(`declare ptr @scr_async_gen_next_f64(ptr, double)`);
               call = `call ptr @scr_async_gen_next_f64(ptr ${g.name}, double ${a.name})`;
             } else if (t.kind === "bool") {
@@ -806,7 +834,7 @@ export function emitAsyncExpr(
             const a = host.emitExpr(e.arg);
             const t = e.arg.type;
             if (isRefCounted(t)) host.toHeap(a);
-            if (t.kind === "f64" || t.kind === "date") {
+            if (t.kind === "f64") {
               host.declare(`declare ptr @scr_async_gen_return_f64(ptr, double)`);
               call = `call ptr @scr_async_gen_return_f64(ptr ${g.name}, double ${a.name})`;
             } else if (t.kind === "bool") {
@@ -849,7 +877,7 @@ export function emitAsyncExpr(
           B.line(`call void @scr_gen_ret_none(ptr ${g.name})`);
         } else {
           sendArg((name, t) => {
-            if (t.kind === "f64" || t.kind === "date") {
+            if (t.kind === "f64") {
               host.declare(`declare void @scr_gen_ret_f64(ptr, double)`);
               B.line(`call void @scr_gen_ret_f64(ptr ${g.name}, double ${name})`);
             } else if (t.kind === "bool") {
@@ -960,7 +988,7 @@ export function emitAsyncExpr(
         return { name: "", type: e.type };
       }
       const t = B.tmp();
-      if (e.type.kind === "f64" || e.type.kind === "date") {
+      if (e.type.kind === "f64") {
         const f64Await = host.awaitResultFn("f64");
         host.declare(`declare double @${f64Await}(ptr)`);
         B.line(`${t} = call double @${f64Await}(ptr ${pr.name})`);
@@ -1050,7 +1078,7 @@ export function emitAsyncExpr(
       const peek = host.unionPeek(u.name, def.id);
       if (host.coroAwait) host.emitCoroAwait(peek);
       let awaited: LlValue;
-      if (inner.kind === "f64" || inner.kind === "date") {
+      if (inner.kind === "f64") {
         const f64Await = host.awaitResultFn("f64");
         host.declare(`declare double @${f64Await}(ptr)`);
         const x = B.tmp();
@@ -1136,7 +1164,6 @@ export function emitAsyncExpr(
       let resolve: string;
       const kindNums: Partial<Record<IrType["kind"], number>> = {
         f64: 0,
-        date: 0,
         bool: 1,
         string: 2,
         void: 3,
@@ -1191,7 +1218,6 @@ export function emitAsyncExpr(
       B.line(`${p} = call ptr @scr_promise_new()`);
       const kindNums: Partial<Record<IrType["kind"], number>> = {
         f64: 0,
-        date: 0,
         bool: 1,
         string: 2,
         void: 3,

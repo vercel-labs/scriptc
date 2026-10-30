@@ -33,6 +33,8 @@ ScrClassObj *scr_classobj_new(const ScrClassObj *template, size_t ncaps) {
   c->length = template->length;
   c->prototype_data = NULL;
   c->static_data = NULL;
+  c->base_name = template->base_name;
+  c->own_static_fields = template->own_static_fields;
   scr_obj_alloc_note();
   return c;
 }

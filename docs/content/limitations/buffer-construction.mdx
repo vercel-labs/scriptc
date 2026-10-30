@@ -1,3 +1,8 @@
 `Buffer.from` accepts untyped strings, byte arrays, arrays, and plain array-like or Buffer JSON objects.
 Encoding arguments must be supported literals.
+`Buffer.from(arrayBuffer, byteOffset, length)` is a view of the ArrayBuffer or SharedArrayBuffer, with Node's offset and length checks.
 Custom input `valueOf` hooks and opaque class or native-handle inputs throw an unsupported-operation error.
+The deprecated `Buffer()` and `new Buffer()` take up to three arguments, without spreads, and follow Node: the first call made outside `node_modules` reports DEP0005 on the next tick, a number allocates zero-filled bytes, and other arguments convert as `Buffer.from` does.
+In JavaScript, `Buffer` read as a value (the global or the buffer module's `Buffer`) is one function with Node's statics and `poolSize`.
+Calling or constructing it through a stored value, reading its `prototype`, and its `copyBytesFrom` and `of` statics throw an unsupported-operation error.
+`Buffer.prototype` members read as values are functions that run on Buffer receivers; inherited and symbol-keyed members throw an unsupported-operation error.

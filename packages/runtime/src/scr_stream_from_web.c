@@ -207,7 +207,8 @@ static void sfw_closed_entry(ScrFiber *fiber, void *arg) {
  * pending. */
 ScrStream *scr_stream_readable_from_web(ScrDyn *web, bool object_mode, double hwm, ScrStr *encoding) {
   if (encoding && encoding->len == 0) encoding = NULL;
-  if (!web || web->kind != SCR_DYN_HANDLE || web->v.handle.tag != SCR_DYNH_WEB_STREAM) {
+  if (!web || web->kind != SCR_DYN_HANDLE ||
+      (web->v.handle.tag != SCR_DYNH_WEB_STREAM && web->v.handle.tag != SCR_DYNH_WS_READABLE)) {
     scr_dyn_arg_type_fail("readableStream", "an instance of ReadableStream", web);
     return NULL;
   }

@@ -141,7 +141,7 @@ const CYC_GEN = 3;
 /** ScrCycHdr.buf, an i32 at this header offset. */
 export const CYC_BUF = 4;
 /** The emitted descriptor `{ trace, free_fn, kind, id }` (ScrCycType). */
-const CYC_TYPE = "{ ptr, ptr, i32, i32 }";
+export const CYC_TYPE = "{ ptr, ptr, i32, i32 }";
 
 function declareState(host: AllocHost): void {
   if (host.threadLocalAlloc !== true) host.declare(`@scr_sa = external global ${SA_TYPE}`);
@@ -459,16 +459,70 @@ export type FreeObservers = "weak" | "weak-or-source";
  * type's disposals), and the block — `scr_cyc_free` for collector-headered
  * objects, `scr_rt_free` otherwise. Labels use the `sf.` prefix; the lines
  * end in an open block.
+ *
+ * With `keep` (an alloca of ptr holding NULL; inline allocation paths only),
+ * a block that would go onto the calling thread's free list is stored there
+ * instead, for a teardown segment (emitSegmentFree); a block the system or
+ * another arena owns is still freed.
  */
 export function emitObjectFree(
   host: AllocHost,
   cyc: boolean,
   observers: FreeObservers = "weak",
+  keep: string | null = null,
 ): string[] {
-  const lines = threadLocalState(host, "sf", freeLines(host, cyc, observers));
+  const lines = threadLocalState(host, "sf", freeLines(host, cyc, observers, keep));
   if (host.objectAudit === false) return lines.filter((line) => line !== FREE_NOTE);
   host.declare(`declare void @scr_obj_free_note()`);
   return lines;
+}
+
+/** Lines that put the blocks `first` to `last` (linked through their first
+ * words; one block when they are equal) of the class at reservation offset
+ * `off` on the calling thread's free list. */
+function freeListPushLines(prefix: string, off: string, first: string, last: string): string[] {
+  return [
+    `  %${prefix}.shp = getelementptr inbounds i8, ptr @scr_sa, i64 ${SA_SHIFT}`,
+    `  %${prefix}.sh32 = load i32, ptr %${prefix}.shp`,
+    `  %${prefix}.sh = zext i32 %${prefix}.sh32 to i64`,
+    `  %${prefix}.c = lshr i64 ${off}, %${prefix}.sh`,
+    `  %${prefix}.c8 = shl i64 %${prefix}.c, 3`,
+    `  %${prefix}.fo = add i64 %${prefix}.c8, ${SA_FREE}`,
+    `  %${prefix}.fp = getelementptr inbounds i8, ptr @scr_sa, i64 %${prefix}.fo`,
+    `  %${prefix}.head = load ptr, ptr %${prefix}.fp`,
+    `  store ptr %${prefix}.head, ptr ${last}`,
+    `  store ptr ${first}, ptr %${prefix}.fp`,
+  ];
+}
+
+/**
+ * Lines that free a teardown segment: the blocks `first` to `last` (ptr
+ * values, both NULL for an empty segment), linked through their first words,
+ * which emitObjectFree kept. Every block of a segment is in the calling
+ * thread's arena and of one size class, so the segment goes onto that
+ * class's free list in one step, and the next allocations of the class take
+ * its blocks in segment order. Labels use `prefix`; the lines end in the
+ * open block `${prefix}.done`.
+ */
+export function emitSegmentFree(
+  host: AllocHost,
+  prefix: string,
+  first: string,
+  last: string,
+): string[] {
+  declareState(host);
+  const lines = [
+    `  %${prefix}.none = icmp eq ptr ${first}, null`,
+    `  br i1 %${prefix}.none, label %${prefix}.done, label %${prefix}.push`,
+    `${prefix}.push:`,
+    `  %${prefix}.base = load i64, ptr @scr_sa`,
+    `  %${prefix}.bi = ptrtoint ptr ${first} to i64`,
+    `  %${prefix}.off = sub i64 %${prefix}.bi, %${prefix}.base`,
+    ...freeListPushLines(prefix, `%${prefix}.off`, first, last),
+    `  br label %${prefix}.done`,
+    `${prefix}.done:`,
+  ];
+  return threadLocalState(host, prefix, lines);
 }
 
 /** Lines that leave in `%<prefix>.obs` whether the program can observe a
@@ -482,8 +536,14 @@ function observedLines(prefix: string, observers: FreeObservers): string[] {
   ];
 }
 
-function freeLines(host: AllocHost, cyc: boolean, observers: FreeObservers): string[] {
+function freeLines(
+  host: AllocHost,
+  cyc: boolean,
+  observers: FreeObservers,
+  keep: string | null,
+): string[] {
   if (host.inlineAlloc !== true) {
+    if (keep !== null) throw new Error("a kept block needs the inline allocation paths");
     if (cyc) {
       host.declare(`declare void @scr_cyc_free(ptr)`);
       return [`  call void @scr_obj_free_note()`, `  call void @scr_cyc_free(ptr %o)`];
@@ -548,16 +608,9 @@ function freeLines(host: AllocHost, cyc: boolean, observers: FreeObservers): str
     `  %sf.inx = call i1 @llvm.expect.i1(i1 %sf.in, i1 true)`,
     `  br i1 %sf.inx, label %sf.push, label %sf.sys`,
     `sf.push:`,
-    `  %sf.shp = getelementptr inbounds i8, ptr @scr_sa, i64 ${SA_SHIFT}`,
-    `  %sf.sh32 = load i32, ptr %sf.shp`,
-    `  %sf.sh = zext i32 %sf.sh32 to i64`,
-    `  %sf.c = lshr i64 %sf.off, %sf.sh`,
-    `  %sf.c8 = shl i64 %sf.c, 3`,
-    `  %sf.fo = add i64 %sf.c8, ${SA_FREE}`,
-    `  %sf.fp = getelementptr inbounds i8, ptr @scr_sa, i64 %sf.fo`,
-    `  %sf.head = load ptr, ptr %sf.fp`,
-    `  store ptr %sf.head, ptr ${blk}`,
-    `  store ptr ${blk}, ptr %sf.fp`,
+    ...(keep !== null
+      ? [`  store ptr ${blk}, ptr ${keep}`]
+      : freeListPushLines("sf", "%sf.off", blk, blk)),
     `  br label %sf.done`,
     `sf.sys: ; outside the reservation, or the allocator is compiled out`,
     `  call void @scr_obj_free_note()`,

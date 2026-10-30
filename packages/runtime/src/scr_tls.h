@@ -58,6 +58,19 @@ ScrNetSocket *scr_tls_connect_dyn(double port, ScrStr *host /*borrowed, nullable
 bool scr_tls_sock_authorized(ScrNetSocket *s);
 ScrStr *scr_tls_sock_auth_error(ScrNetSocket *s); /* +1 or NULL */
 ScrDyn *scr_tls_sock_get_protocol(ScrNetSocket *s);  /* +1: string or null */
+/* The certificates behind getPeerCertificate, getCertificate and their
+ * X509Certificate forms (scr_tls_x509.c reads them). */
+bool scr_tls_sock_has_handle(ScrNetSocket *s);
+size_t scr_tls_sock_peer_chain(ScrNetSocket *s, const uint8_t **der, size_t *len, size_t max);
+const uint8_t *scr_tls_sock_own_cert(ScrNetSocket *s, size_t *len);
+void scr_tls_sock_each_trusted(ScrNetSocket *s, bool (*visit)(void *ctx, const uint8_t *der, size_t len),
+                               void *ctx);
+ScrBytes *scr_tls_sock_peer_cert_der(ScrNetSocket *s); /* +1 Buffer, empty for none */
+ScrBytes *scr_tls_sock_own_cert_der(ScrNetSocket *s);  /* +1 Buffer, empty for none */
+/* scr_tls_x509.c: getPeerCertificate([detailed]) and getCertificate(), +1
+ * (an object, {} or null). */
+ScrDyn *scr_tls_sock_get_peer_certificate(ScrNetSocket *s, const ScrDyn *detailed);
+ScrDyn *scr_tls_sock_get_certificate(ScrNetSocket *s);
 ScrDyn *scr_tls_sock_get_cipher(ScrNetSocket *s);    /* +1: object, undefined or null */
 ScrDyn *scr_tls_sock_alpn_protocol(ScrNetSocket *s); /* +1: string, false or null */
 void scr_tls_sock_on_secure_connect(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once);
@@ -72,7 +85,7 @@ void scr_tls_sock_on_secure(ScrNetSocket *s, ScrClosure *cb /*moves*/, bool once
  * every http2-using binary links the TLS unit (the moduleUsesTls
  * switch), so no registration indirection is needed. */
 void scr_tls_server_wrap_h2(ScrNetServer *s, const char *cert, size_t cert_len, const char *key, size_t key_len, ScrNetNativeConnFn h2_conn, void *h2_ctx /*moves*/, void (*h2_ctx_free)(void *), ScrClosure *sni_cb /*moves, nullable*/, void *sni_answer_fn);
-void scr_tls_h2_client_wrap(ScrNetSocket *sock, ScrStr *host /*borrowed*/, bool reject_unauthorized, const char *ca /*borrowed, len 0 = none*/, size_t ca_len);
+void scr_tls_h2_client_wrap(ScrNetSocket *sock, ScrStr *host /*borrowed*/, bool reject_unauthorized, const char *ca /*borrowed, NULL = none*/, size_t ca_len);
 
 /* ── tls.SecureContext + the SNI callback (scr_tls.c) ─────────────────
  * A SecureContext is an opaque refcounted parsed cert/key pair
@@ -97,6 +110,12 @@ ScrSecureCtx *scr_tls_create_secure_context(const char *cert, size_t cert_len, c
  * validations first, then the pem walk (+1, or NULL with the exception
  * pending). Borrowed. */
 ScrSecureCtx *scr_tls_create_secure_context_dyn(const ScrDyn *opts);
+/* server.addContext(servername, context) (a SecureContext, or options when
+ * NULL) and server.setSecureContext(options) on a tls or https server;
+ * Node's errors pending on failure. */
+void scr_tls_server_add_context(ScrNetServer *server, const ScrDyn *servername,
+                                const ScrDyn *options /*nullable*/, ScrSecureCtx *ctx /*nullable*/);
+void scr_tls_server_set_secure_context(ScrNetServer *server, const ScrDyn *options);
 /* new tls.TLSSocket(socket, options) in server mode: a fresh TLS socket
  * takes over socket's connection and runs the server handshake, serving
  * ctx (options.secureContext; borrowed, nullable) or the options record's

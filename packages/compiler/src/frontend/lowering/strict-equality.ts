@@ -12,6 +12,7 @@ import {
 } from "../../ir/ir.js";
 import type { Lowerer } from "./lowerer.js";
 import { unionComparison } from "./union-comparison.js";
+import { builtinModuleConstOf } from "./surfaces.js";
 
 const IDENTITY_KINDS: ReadonlySet<IrType["kind"]> = new Set([
   "array",
@@ -29,6 +30,19 @@ const IDENTITY_KINDS: ReadonlySet<IrType["kind"]> = new Set([
   "moduleNs",
 ]);
 
+/** Whether two namespace references are the same module object: the bare
+ * node:path namespace IS its target platform's family (`path ===
+ * path.posix` on POSIX targets); other namespaces are their module. */
+export function sameNamespace(lowerer: Lowerer, a: string, b: string): boolean {
+  const family = (id: string): string =>
+    id !== "builtin:path"
+      ? id
+      : builtinModuleConstOf(lowerer, "path", "sep") === "\\"
+        ? "builtin:path/win32"
+        : "builtin:path/posix";
+  return family(a) === family(b);
+}
+
 function atomicEquality(
   lowerer: Lowerer,
   left: IrExpr,
@@ -41,6 +55,8 @@ function atomicEquality(
   if ([a.kind, b.kind].some((kind) => kind === "dyn" || kind === "caught" || kind === "void"))
     return null;
   if (isUnitType(a) || isUnitType(b)) return boolLit(a.kind === b.kind, loc);
+  if (left.kind === "moduleNsRef" && right.kind === "moduleNsRef")
+    return boolLit(sameNamespace(lowerer, left.moduleId, right.moduleId), loc);
   if (a.kind === "object" && b.kind === "object" && !typeEquals(a, b)) {
     if (lowerer.isSubclassOf(a.className, b.className)) left = lowerer.upcastTo(left, b.className);
     else if (lowerer.isSubclassOf(b.className, a.className))

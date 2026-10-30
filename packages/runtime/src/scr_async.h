@@ -23,6 +23,13 @@ ScrPromise *scr_tp_set_immediate(void);
 ScrPromise *scr_promise_new(void);
 void scr_promise_share_identity(ScrPromise *dst, ScrPromise *src);
 bool scr_promise_identity_equal(ScrPromise *a, ScrPromise *b);
+/* A key every promise sharing `p`'s identity answers (each adapter box of
+ * a typed promise), creating the shared cell when `p` has none. */
+const void *scr_promise_identity_key(ScrPromise *p);
+/* A reference on a key from scr_promise_identity_key, for a table that
+ * keeps the key after the promises that share it are gone. */
+void scr_promise_identity_hold(const void *key);
+void scr_promise_identity_drop(const void *key);
 ScrPromise *scr_promise_retain(ScrPromise *p);
 void scr_promise_release(ScrPromise *p);
 void *scr_promise_retain_v(void *p);
@@ -143,6 +150,9 @@ void scr_promise_rethrow_top_level(ScrPromise *p);
  * value), or NULL with the rejection re-thrown into the awaiter. */
 ScrDyn *scr_await_dyn(ScrPromise *p);
 ScrDyn *scr_await_dyn_value_settled(ScrDyn *value);
+/* The native coroutine form's extraction: the body has already suspended
+ * until the value's promise settled, or taken the non-promise hop. */
+ScrDyn *scr_coro_await_dyn_value(ScrDyn *value);
 void scr_promise_resolve_dyn(ScrPromise *destination, ScrDyn *value);
 /* `await v` over a checked-dynamic VALUE: dyn promises adopt, everything
  * else takes JS's one-hop non-thenable await and answers itself (+1). */
@@ -154,6 +164,20 @@ ScrDyn *scr_await_dyn_value(ScrDyn *v);
  * settles a fresh result promise, answered BOXED (+1). Microtask-exact
  * ordering rides the fiber machinery. */
 ScrDyn *scr_dyn_promise_then(ScrPromise *src, ScrDyn *onf, ScrDyn *onr, ScrDyn *onfin);
+/* A native reaction to a promise's settlement, as PerformPromiseThen with
+ * native steps: react(ctx, settled) runs as a reaction job once the promise
+ * settles (from the next microtask checkpoint when it already has), in
+ * subscription order among the promise's other reactions, and borrows the
+ * settled promise. drop(ctx), when non-NULL, runs after react, or when the
+ * promise goes away unsettled. The collector does not trace the context:
+ * the reaction's references count as outside references while it waits. */
+typedef struct ScrPromiseReaction {
+  void (*react)(void *ctx, ScrPromise *settled);
+  void (*drop)(void *ctx);
+} ScrPromiseReaction;
+/* Subscribes a native reaction to `p` (the descriptor outlives it) and
+ * marks `p` handled, as a `then` does. */
+void scr_promise_react(ScrPromise *p, const ScrPromiseReaction *reaction, void *ctx);
 /* ── AsyncLocalStorage (node:async_hooks — scr_async.c) ───────────────
  * Stores are process-lived f64 handles; the CONTEXT is an immutable
  * refcounted snapshot of (store → dyn value) entries riding the fiber
@@ -192,12 +216,29 @@ ScrDyn *scr_als_get(double id); /* +1; the undefined value when unset */
 ScrAlsCtx *scr_als_enter(double id, ScrDyn *value); /* borrows value; prev out (owned) */
 ScrAlsCtx *scr_als_enter_absent(double id);         /* exit()'s cleared arm */
 void scr_als_restore(ScrAlsCtx *prev);              /* moves prev back in */
+/* A runtime dispatch (an I/O event the loop delivers, a deferred emit)
+ * runs its listeners in the AsyncLocalStorage context of the object or
+ * request Node would run them in: enter installs `ctx` (borrowed, NULL
+ * for no store) and answers the previous context, which leave puts back.
+ * A store a listener enters (enterWith) ends with the dispatch. */
+ScrAlsCtx *scr_als_dispatch_enter(ScrAlsCtx *ctx);
+void scr_als_dispatch_leave(ScrAlsCtx *prev);
+/* The active context, +1 (NULL outside a store): what a handle keeps. */
+ScrAlsCtx *scr_als_capture(void);
 void scr_als_enter_with(double id, ScrDyn *value);  /* no restore point (enterWith) */
 void scr_als_disable(double id);
 /* run/exit: enter (or clear), call the dyn function with the forwarded
  * argument vector, restore (the finally). Result +1 or NULL pending. */
 ScrDyn *scr_als_run(double id, ScrDyn *value, ScrDyn *fn, ScrDyn *args);
 ScrDyn *scr_als_exit_run(double id, ScrDyn *fn, ScrDyn *args);
+/* new AsyncLocalStorage(options) (options borrowed; NaN with the exception
+ * pending for a non-object) and the name it carries (+1). */
+double scr_als_new_options(const ScrDyn *options);
+ScrDyn *scr_als_name(double id);
+/* AsyncLocalStorage.bind over a dyn function and the dyn completion
+ * callbacks (fn borrowed; +1), and AsyncLocalStorage.snapshot() (+1). */
+ScrDyn *scr_als_bind_dyn(ScrDyn *fn, bool always);
+ScrDyn *scr_als_snapshot(void);
 
 /* process.on/once('unhandledRejection', fn): dyn listeners dispatched
  * per never-observed rejection at the end of its nextTick/microtask
@@ -252,6 +293,10 @@ void scr_process_set_emit_warning(ScrDyn *fn);
  * made from node_modules) — at once for a static ES import, which Node
  * links before any module evaluates, otherwise on the next tick. */
 void scr_punycode_warn(bool immediate, bool report);
+/* The deprecated Buffer() and new Buffer() called outside node_modules
+ * (scr_async_dyn.c): DEP0005 on the next tick, once, within Node's
+ * 10000-call check (scr_buffer_deprecation_count). */
+void scr_buffer_deprecation(void);
 /* scr_emit_warning once a 'warning' listener exists (scr_lib.c; set by the
  * listener registration): units that cannot link the dyn-async unit route
  * their warnings through it, and print the default report otherwise. */
@@ -369,6 +414,8 @@ void scr_promise_all_store_f64(ScrArr *a, double i, ScrPromise *src);
 void scr_promise_all_store_bool(ScrArr *a, double i, ScrPromise *src);
 void scr_promise_all_store_str(ScrArr *a, double i, ScrPromise *src);
 void scr_promise_all_store_ref(ScrArr *a, double i, ScrPromise *src);
+/* Stores the fulfilled entry promise itself (+1), for Promise.all's tuple form. */
+void scr_promise_all_store_promise(ScrArr *a, double i, ScrPromise *src);
 void scr_promise_adapt_copy(ScrPromise *dst, ScrPromise *src);
 double scr_promise_payload_f64(ScrPromise *p);
 bool scr_promise_payload_bool(ScrPromise *p);
@@ -473,6 +520,13 @@ double scr_set_timeout_handle_als(ScrClosure *cb, double ms);
 double scr_set_immediate_als(ScrClosure *cb);
 void scr_next_tick_als(ScrClosure *cb);
 void scr_queue_microtask_als(ScrClosure *cb);
+/* A typed callback bound to the active context (scr_async.c): `thunk` is
+ * the compiler's per-signature entry, which brackets the call with
+ * scr_als_bound_target/enter/leave. cb moves in; the result is +1. */
+ScrClosure *scr_als_bind_closure(ScrClosure *cb, void *thunk, bool always);
+ScrClosure *scr_als_bound_target(ScrClosure *self);
+ScrAlsCtx *scr_als_bound_enter(ScrClosure *self);
+void scr_als_bound_leave(ScrAlsCtx *prev, ScrClosure *target);
 /* A successful process.stdout/stderr.write completion on that same queue.
  * The callback and its program-shaped Error | null adapter both MOVE into
  * the entry; the adapter is invoked with NULL (Node's success argument). */

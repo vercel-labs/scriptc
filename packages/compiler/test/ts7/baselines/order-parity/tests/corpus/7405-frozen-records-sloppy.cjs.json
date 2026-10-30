@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7405-frozen-records-sloppy.cjs"
+ ],
+ "diags": []
+}

@@ -193,3 +193,34 @@ test("number and boolean writes to class fields run no user code", () => {
   // A reference stored into a field releases the old one.
   expect(preserves([fieldSet(arr("b"))], "i", new Set(), scope)).toBe(false);
 });
+
+test("optional element reads, their assertion errors and present-undefined stores at an in-range index keep the length", () => {
+  const optional = (receiver: string, index: IrExpr): IrExpr => ({
+    kind: "call",
+    callee: "%arr.idxOr.f64",
+    args: [arr(receiver), index],
+    type: F64,
+    loc,
+  });
+  const undefinedAt = (receiver: string, index: IrExpr): IrStmt => ({
+    kind: "arraySetUndefined",
+    arr: arr(receiver),
+    index,
+    loc,
+  });
+  const thrown: IrExpr = { kind: "libCall", fn: "error.nodeThrow", args: [num(1)], type: F64, loc };
+  expect(preserves([stmt(optional("a", ref("i"))), stmt(thrown)])).toBe(true);
+  expect(preserves([undefinedAt("a", ref("i"))])).toBe(true);
+  // Past the counter, a present undefined extends the array.
+  expect(preserves([undefinedAt("a", plus(ref("i"), num(1)))])).toBe(false);
+  // The high counter of a two-counter loop is in range as well.
+  const paired = (body: IrStmt[]): boolean =>
+    preservesArrayLength(
+      [cond, ...body],
+      { receiver: "a", inRange: "i", inRangeHigh: "j" },
+      locals,
+      new Set(),
+    );
+  expect(paired([undefinedAt("a", ref("j")), set("a", ref("j"), num(0))])).toBe(true);
+  expect(preserves([set("a", ref("j"), num(0))])).toBe(false);
+});

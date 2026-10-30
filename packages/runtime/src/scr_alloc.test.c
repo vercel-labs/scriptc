@@ -343,6 +343,60 @@ static void *reclaim_arena(void *arg) {
   return NULL;
 }
 
+#if defined(__linux__) && defined(__GLIBC__)
+/* A thread whose large blocks pass 16 MiB gets them from a glibc heap of
+ * its own, which is then advised huge pages where THP is in madvise mode. */
+enum { HEAP_BLOCKS = 320, HEAP_BLOCK = 64 << 10 };
+static void *heap_blocks[HEAP_BLOCKS];
+static char heap_flags[256];
+static void *thread_heap_allocate(void *arg) {
+  (void)arg;
+  for (unsigned i = 0; i < HEAP_BLOCKS; i++) {
+    heap_blocks[i] = scr_mem_alloc(HEAP_BLOCK);
+    assert(heap_blocks[i] && !owned(heap_blocks[i]));
+    ((unsigned char *)heap_blocks[i])[0] = (unsigned char)i;
+  }
+  vm_flags(heap_blocks[HEAP_BLOCKS - 1], heap_flags, sizeof heap_flags);
+  for (unsigned i = 0; i < HEAP_BLOCKS; i++) {
+    assert(((unsigned char *)heap_blocks[i])[0] == (unsigned char)i);
+    scr_mem_free(heap_blocks[i]);
+  }
+  scr_sa_thread_park();
+  return NULL;
+}
+
+static void check_thread_heap_huge_pages(void) {
+  pthread_t t;
+  assert(pthread_create(&t, NULL, thread_heap_allocate, NULL) == 0);
+  assert(pthread_join(t, NULL) == 0);
+  char mode[96] = {0};
+  FILE *thp = fopen("/sys/kernel/mm/transparent_hugepage/enabled", "r");
+  if (thp) {
+    size_t n = fread(mode, 1, sizeof mode - 1, thp);
+    mode[n] = '\0';
+    fclose(thp);
+  }
+  FILE *f = fopen("/proc/sys/vm/overcommit_memory", "r");
+  int overcommit = f ? fgetc(f) : '0';
+  if (f) fclose(f);
+  /* ThreadSanitizer replaces malloc, which turns the policy off. */
+  bool glibc_malloc = true;
+#if defined(__SANITIZE_THREAD__)
+  glibc_malloc = false;
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+  glibc_malloc = false;
+#endif
+#endif
+  /* With glibc's memory tagging tunable set the heap is left alone: under
+   * arm64 MTE, reading its chunk headers through block pointers faults. */
+  const char *tunables = getenv("GLIBC_TUNABLES");
+  if (tunables && strstr(tunables, "glibc.mem.tagging=3")) assert(!strstr(heap_flags, " hg"));
+  else if (glibc_malloc && strstr(mode, "[madvise]") && !tunables && overcommit != '2')
+    assert(strstr(heap_flags, " hg"));
+}
+#endif
+
 static void check_threads(void) {
   void *mine = scr_mem_alloc(48);
   assert(owned(mine));
@@ -869,6 +923,49 @@ static void check_discard_waits_for_loop(void) {
   free(discard_blocks);
 }
 
+/* The thread that is not a worker returns its free pages when its loop
+ * waits with nothing ready, once it has carved SCR_SA_TRIM_MIN more since
+ * its last trim; blocks allocated afterwards come from the returned range,
+ * zeroed. The test's thread plays the loop's. IDLE_SIZE is a class the
+ * other checks leave unused. */
+enum { IDLE_BLOCKS = 1 << 20, IDLE_KEEP = 4096, IDLE_SIZE = 88 };
+static void check_idle_trim(void) {
+  unsigned char **blocks = malloc(IDLE_BLOCKS * sizeof *blocks);
+  unsigned char *kept[IDLE_BLOCKS / IDLE_KEEP];
+  assert(blocks);
+  uintptr_t lo = UINTPTR_MAX, hi = 0;
+  for (size_t i = 0; i < IDLE_BLOCKS; i++) {
+    blocks[i] = scr_mem_alloc(IDLE_SIZE);
+    assert(blocks[i] && owned(blocks[i]));
+    fill(blocks[i], IDLE_SIZE, (unsigned char)i);
+    if ((uintptr_t)blocks[i] < lo) lo = (uintptr_t)blocks[i];
+    if ((uintptr_t)blocks[i] + IDLE_SIZE > hi) hi = (uintptr_t)blocks[i] + IDLE_SIZE;
+  }
+  for (size_t i = 0; i < IDLE_BLOCKS; i++) {
+    if (i % IDLE_KEEP == 0) kept[i / IDLE_KEEP] = blocks[i];
+    else scr_mem_free(blocks[i]);
+  }
+  size_t total = (hi - lo) / (size_t)sysconf(_SC_PAGESIZE);
+  assert(resident_pages(lo, hi) > total / 2);
+  scr_sa_loop_waiting(true);
+  scr_sa_loop_waiting(false);
+  /* One page per kept block stays, give or take the pages at run ends. */
+  assert(resident_pages(lo, hi) < total / 8);
+  for (size_t k = 0; k < IDLE_BLOCKS / IDLE_KEEP; k++) verify(kept[k], IDLE_SIZE, (unsigned char)(k * IDLE_KEEP));
+  size_t outside = 0;
+  for (size_t i = 0; i < IDLE_BLOCKS / 2; i++) {
+    unsigned char *q = scr_mem_calloc(IDLE_SIZE);
+    assert(q && owned(q));
+    for (size_t k = 0; k < IDLE_SIZE; k++) assert(q[k] == 0);
+    if ((uintptr_t)q < lo || (uintptr_t)q >= hi) outside++;
+    blocks[i] = q;
+  }
+  assert(outside < 256);
+  for (size_t i = 0; i < IDLE_BLOCKS / 2; i++) scr_mem_free(blocks[i]);
+  for (size_t k = 0; k < IDLE_BLOCKS / IDLE_KEEP; k++) scr_mem_free(kept[k]);
+  free(blocks);
+}
+
 static void check_discard(void) {
   discard_blocks = malloc(DISCARD_BLOCKS * sizeof *discard_blocks);
   assert(discard_blocks);
@@ -969,6 +1066,65 @@ static void check_discard(void) {
 }
 #endif
 
+/* ThreadSanitizer stops a child that starts a thread after a fork in a
+ * threaded program, so its build skips the fork check. */
+#define FORK_CHECK 1
+#if defined(__SANITIZE_THREAD__)
+#undef FORK_CHECK
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#undef FORK_CHECK
+#endif
+#endif
+
+#if defined(__linux__) && SCR_SMALL_ALLOC && defined(FORK_CHECK)
+#include <signal.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
+#define FORK_ROUNDS 64
+#define FORK_SPAN ((size_t)64 << 20)
+#define FORK_OWN ((size_t)1 << 20)
+
+/* A child forked while the prefault helper faults in a range has no helper.
+ * It releases that range (which waits for a busy range to finish), then
+ * requests a fault-in of its own and releases it, and must exit within five
+ * seconds. */
+static void check_fork_while_prefaulting(void) {
+  for (unsigned round = 0; round < FORK_ROUNDS; round++) {
+    char *lo = mmap(NULL, FORK_SPAN, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    assert(lo != MAP_FAILED);
+    scr_mem_prefault(lo, lo + FORK_SPAN);
+    pid_t pid = fork();
+    assert(pid >= 0);
+    if (pid == 0) {
+      scr_mem_release_ahead(lo, lo + FORK_SPAN);
+      char *own = mmap(NULL, FORK_OWN, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+      if (own == MAP_FAILED) _exit(2);
+      scr_mem_prefault(own, own + FORK_OWN);
+      scr_mem_release_ahead(own, own + FORK_OWN);
+      _exit(0);
+    }
+    int status = 0;
+    pid_t done = 0;
+    for (unsigned ms = 0; ms < 5000 && done == 0; ms++) {
+      done = waitpid(pid, &status, WNOHANG);
+      if (done == 0) nanosleep(&(struct timespec){0, 1000000L}, NULL);
+    }
+    if (done == 0) {
+      kill(pid, SIGKILL);
+      (void)waitpid(pid, &status, 0);
+      fprintf(stderr, "the child forked in round %u did not exit\n", round);
+      abort();
+    }
+    assert(done == pid && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    scr_mem_release_ahead(lo, lo + FORK_SPAN);
+    assert(munmap(lo, FORK_SPAN) == 0);
+  }
+}
+#endif
+
 #if defined(__linux__) && SCR_SMALL_ALLOC
 /* The program-lifetime region hands out zeroed, 8-byte aligned blocks below
  * 32 GiB, in order from the calling thread's chunk; a block larger than a
@@ -1033,6 +1189,9 @@ int main(void) {
   check_system_pointers();
   check_churn();
   check_free_order();
+#if defined(__linux__) && SCR_SMALL_ALLOC && defined(FORK_CHECK)
+  check_fork_while_prefaulting();
+#endif
 #if SCR_SMALL_ALLOC && defined(__linux__) && defined(__GLIBC__)
   check_heap_huge_pages();
 #endif
@@ -1047,12 +1206,16 @@ int main(void) {
   setenv("SCR_SA_DISCARD_DELAY_MS", "100", 1);
   setenv("SCR_SA_DISCARD_DELAY_MAX_MS", "0", 1);
   check_threads();
+#if defined(__linux__) && defined(__GLIBC__)
+  check_thread_heap_huge_pages();
+#endif
 #ifdef __linux__
   check_trim();
   check_release_frontiers();
   check_discard();
   check_discard_delay_grows();
   check_discard_waits_for_loop();
+  check_idle_trim();
 #endif
   printf("allocator checks passed: size-class workers\n");
 #else

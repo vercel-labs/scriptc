@@ -12,6 +12,9 @@ export interface FnCtx {
   /** Lexical this has no checker symbol and one binding per function.
    * Direct parameters and threaded captures use this same slot. */
   thisLocal: IrLocal | null;
+  /** Set when a lookup of `this` returned thisLocal, from this function's
+   * body or from a nested function that captures it. */
+  thisRead?: true;
   /** Derived constructors initialize fields at the actual super() site,
    * including sites nested in a try/finally block. Nested functions do not
    * inherit this hook. */
@@ -46,6 +49,9 @@ export interface FnCtx {
    * rest param): the synthetic trailing dyn-array param `arguments`
    * reads resolve to. */
   argumentsLocal?: IrLocal | null;
+  /** The count `arguments.length` reads in a top-level function declaration
+   * that is also used as a value (argument-counts.ts). */
+  argumentCount?: IrLocal;
   /** Arrows inherit the nearest ordinary function's arguments binding. */
   inheritsArguments?: boolean;
   /** A function lowered on demand on top of an unrelated caller's frames
@@ -132,7 +138,10 @@ export function bindingInContext(
   ctx: FnCtx,
   symbol: ts.Symbol | "arguments" | undefined,
 ): IrLocal | null {
-  if (symbol === undefined) return ctx.thisLocal;
+  if (symbol === undefined) {
+    if (ctx.thisLocal !== null) ctx.thisRead = true;
+    return ctx.thisLocal;
+  }
   if (symbol === "arguments") return ctx.argumentsLocal ?? null;
   for (let i = ctx.scopes.length - 1; i >= 0; i--) {
     const local = ctx.scopes[i]!.get(symbol);

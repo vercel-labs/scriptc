@@ -1,5 +1,7 @@
-- **Date:** Date unions, spread constructor arguments, setters, statically typed TypeScript identity comparisons, thrown Date values, and locale formatters are unsupported.
-  Zero-argument, single number/string, and local-time year/month field constructors, storage and passing, `getTime`, `valueOf`, `toISOString`, `toUTCString`, `toJSON` (a `string | null`: null for an invalid date, as in Node), `toString`, `toDateString`, `toTimeString`, `String(date)` and template literal conversion, calendar getters, `getTimezoneOffset`, and single-string `Date.parse` compile.
-  JavaScript Dates retain identity through checked storage and support Date-copy construction and JSON serialization.
-  A TypeScript Date converted to `unknown` becomes a Date with the same time value; each conversion creates a new Date, so two `unknown` values converted from one TypeScript Date are not `===`.
+- **Date:** Spread constructor arguments, `toLocaleDateString()`, and locale or options arguments to the locale formatters are unsupported.
+  Dates are objects with identity: `===` and `==` compare identity, `new Date(date)` makes a new Date, setters change the one Date every reference holds, and Dates compile in arrays (`includes`, `indexOf`, `lastIndexOf`, `join`, and default `sort` by `toString()` text), in unions with other types, as Map and Set keys and values, and in records, tuples, class fields, closures, promises and generators.
+  Thrown and rejected Dates keep their identity; `structuredClone` and `postMessage` copy them.
+  Zero-argument, single number/string, and local-time year/month field constructors, `getTime`, `valueOf`, `toISOString`, `toUTCString`, `toJSON` (a `string | null`: null for an invalid date, as in Node), `toString`, `toDateString`, `toTimeString`, the argument-free `toLocaleString()` and `toLocaleTimeString()` (the default locale's ICU patterns over the host time zone, as Node prints them), the local and UTC calendar getters and setters, `setTime`, `getTimezoneOffset`, and single-string `Date.parse` compile.
+  Unary `+`, `-` and `Number(date)` read the time value; `String(date)`, template literals and `+` with a string read the `toString()` text; `date[Symbol.toPrimitive](hint)` compiles with a literal hint.
+  A Date converted to `unknown` is the same Date object.
   See [Dates and timezones](#dates-and-timezones) for timezone data.

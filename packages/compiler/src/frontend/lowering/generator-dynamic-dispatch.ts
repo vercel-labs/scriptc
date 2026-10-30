@@ -1,7 +1,8 @@
-import { dynUndefinedExpr, varRef } from "../../ir/build.js";
+import { dynUndefinedExpr, numLit, varRef } from "../../ir/build.js";
 import {
   BOOL,
   DYN,
+  F64,
   STRING,
   canConvertToDyn,
   funcOf,
@@ -16,7 +17,7 @@ import {
 import { transformStmtList } from "../../ir/traverse.js";
 import { genResultRecord } from "../type-mapper.js";
 import type { DispatchSites } from "./dispatch-sites.js";
-import type { Lowerer } from "./lowerer.js";
+import type { Lowerer, UntypedLoopSite } from "./lowerer.js";
 
 type GeneratorType = Extract<IrType, { kind: "generator" }>;
 type Invoke = Extract<IrExpr, { kind: "dynInvoke" }>;
@@ -401,6 +402,310 @@ export class GeneratorDynamicDispatch {
         });
         changed = true;
       }
+    return this.stepUntypedLoops(lowerer, functions) || changed;
+  }
+
+  /** The generator types a loop over an untyped iterable can step natively:
+   * sync generators for `for … of`, and both kinds for `for await` (a sync
+   * generator through the async-from-sync rules). Insertion order, so a
+   * type keeps its index as later waves add types. */
+  private loopTypes(lowerer: Lowerer, site: UntypedLoopSite): [string, GeneratorType][] {
+    const out: [string, GeneratorType][] = [];
+    for (const [key, type] of this.generators) {
+      if (type.async === true && !site.async) continue;
+      const result = genResultRecord(type.yieldT, type.retT, lowerer.shapes, lowerer.unions);
+      if (result === null) continue;
+      // next() with no argument, as the protocol calls it.
+      const channel = type.nextT;
+      if (channel.kind !== "undefinedT" && channel.kind !== "void" && channel.kind !== "dyn")
+        continue;
+      if (
+        !canConvertToDyn(
+          result,
+          (id) => lowerer.shapes.get(id),
+          (id) => lowerer.unions.get(id),
+        )
+      )
+        continue;
+      out.push([key, type]);
+    }
+    return out;
+  }
+
+  /** Loops over untyped iterables step the program's own generators on the
+   * typed path. Once the loop has its iterator and next method, a kind local
+   * records which generator type the iterator is, when its next method is
+   * the generator's own (`%dyn.generator.method.next`); each step then
+   * resumes the generator directly and boxes only the value, where the
+   * protocol would box the result record and its promise and read them
+   * back. Every other iterator, and every early exit (return() through the
+   * protocol), keeps the dynamic path. The awaits are the protocol's: a
+   * `for await` over an async generator awaits next()'s promise, and over a
+   * sync generator awaits once for the result and, reached through
+   * Symbol.iterator, once for the value. */
+  private stepUntypedLoops(lowerer: Lowerer, functions: readonly IrFunction[]): boolean {
+    if (this.generators.size === 0 || lowerer.untypedLoops.size === 0) return false;
+    // The loop reads next through the getter only once it exists.
+    if (!this.properties.has("next")) return false;
+    let changed = false;
+    for (const fn of functions) {
+      if (this.generated.has(fn)) continue;
+      const byKind = new Map<string, UntypedLoopSite>();
+      const byValue = new Map<string, UntypedLoopSite>();
+      for (const local of fn.locals) {
+        const site = lowerer.untypedLoops.get(local);
+        if (site === undefined) continue;
+        byKind.set(site.kind, site);
+        byValue.set(site.value, site);
+      }
+      if (byKind.size === 0) continue;
+      fn.body = transformStmtList(fn.body, {
+        expr: (expr) => expr,
+        stmt: (stmt) => {
+          if (stmt.kind !== "varDecl" || stmt.init === null) return stmt;
+          const opened = byKind.get(stmt.localId);
+          if (opened !== undefined) {
+            const types = this.loopTypes(lowerer, opened);
+            const init = this.loopKind(opened, types, stmt.loc);
+            if (this.loopKindCount(stmt.init) === types.length) return stmt;
+            changed = true;
+            return { ...stmt, init };
+          }
+          const site = byValue.get(stmt.localId);
+          if (site === undefined) return stmt;
+          const types = this.loopTypes(lowerer, site);
+          // The protocol step is the innermost else of the type chain.
+          let fallback = stmt.init;
+          let present = 0;
+          while (
+            fallback.kind === "ternary" &&
+            fallback.cond.kind === "bin" &&
+            fallback.cond.left.kind === "varRef" &&
+            fallback.cond.left.localId === site.kind
+          ) {
+            fallback = fallback.else_;
+            present++;
+          }
+          if (present === types.length) return stmt;
+          let init = fallback;
+          for (let i = types.length - 1; i >= 0; i--) {
+            const [, type] = types[i]!;
+            const record = `${site.kind}.r${i + 1}`;
+            init = {
+              kind: "ternary",
+              cond: {
+                kind: "bin",
+                op: "===",
+                left: varRef(site.kind, F64, stmt.loc),
+                right: numLit(i + 1, stmt.loc),
+                type: BOOL,
+                loc: stmt.loc,
+              },
+              then: this.loopStep(lowerer, fn, site, type, record, stmt.loc),
+              else_: init,
+              type: DYN,
+              loc: stmt.loc,
+            };
+          }
+          changed = true;
+          return { ...stmt, init };
+        },
+      });
+    }
     return changed;
+  }
+
+  /** How many generator types a loop's kind initializer tests: the chain
+   * inside its own-method test (loopKind). */
+  private loopKindCount(init: IrExpr): number {
+    if (init.kind !== "ternary") return 0;
+    let count = 0;
+    for (let chain = init.then; chain.kind === "ternary"; chain = chain.else_) count++;
+    return count;
+  }
+
+  /** The loop's kind: the 1-based index of the generator type its iterator
+   * is, when the next method it read is that generator's own, else 0. */
+  private loopKind(
+    site: UntypedLoopSite,
+    types: readonly [string, GeneratorType][],
+    loc: IrExpr["loc"],
+  ): IrExpr {
+    const own: IrExpr = {
+      kind: "libCall",
+      fn: "dyn.sameValue",
+      args: [
+        varRef(site.next, DYN, loc),
+        {
+          kind: "dynFrom",
+          value: {
+            kind: "closure",
+            fnName: "%dyn.generator.method.next",
+            captures: [],
+            type: funcOf([DYN], DYN),
+            loc,
+          },
+          type: DYN,
+          loc,
+        },
+      ],
+      type: BOOL,
+      loc,
+    };
+    let kind: IrExpr = numLit(0, loc);
+    for (let i = types.length - 1; i >= 0; i--)
+      kind = {
+        kind: "ternary",
+        cond: {
+          kind: "libCall",
+          fn: "dyn.typedRefIs",
+          args: [
+            varRef(site.iterator, DYN, loc),
+            { kind: "strLit", value: types[i]![0], type: STRING, loc },
+          ],
+          type: BOOL,
+          loc,
+        },
+        then: numLit(i + 1, loc),
+        else_: kind,
+        type: F64,
+        loc,
+      };
+    return types.length === 0
+      ? kind
+      : { kind: "ternary", cond: own, then: kind, else_: numLit(0, loc), type: F64, loc };
+  }
+
+  /** One step of a loop over an untyped iterable that is a `type`
+   * generator: sets the loop's done flag and answers the value, boxed. */
+  private loopStep(
+    lowerer: Lowerer,
+    fn: IrFunction,
+    site: UntypedLoopSite,
+    type: GeneratorType,
+    recordId: string,
+    loc: IrExpr["loc"],
+  ): IrExpr {
+    const gen: IrExpr = { kind: "dynCheck", value: varRef(site.iterator, DYN, loc), type, loc };
+    const setDone = (value: IrExpr): IrStmt => ({ kind: "assign", localId: site.done, value, loc });
+    const doneRef = varRef(site.done, BOOL, loc);
+    const result = genResultRecord(type.yieldT, type.retT, lowerer.shapes, lowerer.unions)!;
+    if (!fn.locals.some((local) => local.id === recordId))
+      fn.locals.push({ id: recordId, name: recordId, type: result, mutable: false });
+    const field = (name: "value" | "done", fieldType: IrType): IrExpr => ({
+      kind: "recordGet",
+      obj: varRef(recordId, result, loc),
+      shapeId: result.shapeId,
+      field: name,
+      type: fieldType,
+      loc,
+    });
+    const valueType = lowerer.shapes
+      .get(result.shapeId)!
+      .fields.find((f) => f.name === "value")!.type;
+    const boxed: IrExpr = { kind: "dynFrom", value: field("value", valueType), type: DYN, loc };
+    const awaitDyn = (value: IrExpr): IrExpr => ({
+      kind: "libCall",
+      fn: "async.awaitDyn",
+      args: [value],
+      type: DYN,
+      loc,
+    });
+    const resumed: IrExpr = {
+      kind: "genResume",
+      mode: "next",
+      gen,
+      arg: null,
+      type: type.async === true ? { kind: "promise", inner: result } : result,
+      loc,
+    };
+    if (!site.async)
+      return {
+        kind: "seqExpr",
+        stmts: [
+          { kind: "varDecl", localId: recordId, init: resumed, loc },
+          setDone(field("done", BOOL)),
+        ],
+        result: {
+          kind: "ternary",
+          cond: doneRef,
+          then: dynUndefinedExpr(loc),
+          else_: boxed,
+          type: DYN,
+          loc,
+        },
+        type: DYN,
+        loc,
+      };
+    if (type.async === true)
+      return {
+        kind: "seqExpr",
+        stmts: [
+          {
+            kind: "varDecl",
+            localId: recordId,
+            init: { kind: "awaitExpr", value: resumed, type: result, loc },
+            loc,
+          },
+          setDone(field("done", BOOL)),
+        ],
+        result: {
+          kind: "ternary",
+          cond: doneRef,
+          then: dynUndefinedExpr(loc),
+          else_: boxed,
+          type: DYN,
+          loc,
+        },
+        type: DYN,
+        loc,
+      };
+    // for await over a sync generator: the result awaits once. When the
+    // loop reached it through Symbol.iterator, the async-from-sync iterator
+    // also awaits the value (the final one too); a sync generator that an
+    // object's Symbol.asyncIterator returns passes the value as it is, as
+    // the protocol does.
+    const fromSync: IrExpr =
+      site.sync === null
+        ? { kind: "boolLit", value: false, type: BOOL, loc }
+        : varRef(site.sync, BOOL, loc);
+    return {
+      kind: "seqExpr",
+      stmts: [
+        { kind: "varDecl", localId: recordId, init: resumed, loc },
+        setDone(field("done", BOOL)),
+        { kind: "exprStmt", expr: awaitDyn(dynUndefinedExpr(loc)), loc },
+      ],
+      result: {
+        kind: "ternary",
+        cond: doneRef,
+        then: {
+          kind: "ternary",
+          cond: fromSync,
+          then: {
+            kind: "seqExpr",
+            stmts: [{ kind: "exprStmt", expr: awaitDyn(boxed), loc }],
+            result: dynUndefinedExpr(loc),
+            type: DYN,
+            loc,
+          },
+          else_: dynUndefinedExpr(loc),
+          type: DYN,
+          loc,
+        },
+        else_: {
+          kind: "ternary",
+          cond: fromSync,
+          then: awaitDyn(boxed),
+          else_: boxed,
+          type: DYN,
+          loc,
+        },
+        type: DYN,
+        loc,
+      },
+      type: DYN,
+      loc,
+    };
   }
 }

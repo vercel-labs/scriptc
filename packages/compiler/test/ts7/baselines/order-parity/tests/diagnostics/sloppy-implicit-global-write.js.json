@@ -1,0 +1,18 @@
+{
+ "order": [
+  "<repo>/tests/diagnostics/sloppy-implicit-global-write.js"
+ ],
+ "diags": [
+  {
+   "code": "SC1091",
+   "message": "writing the undeclared name 'implicitGlobal' in a JavaScript source is not supported yet",
+   "loc": {
+    "file": "<repo>/tests/diagnostics/sloppy-implicit-global-write.js",
+    "start": 306,
+    "end": 320
+   },
+   "milestone": "later",
+   "hint": "a write to an undeclared name has no native lowering: sloppy mode makes it a property on Node's global object, which a native binary has none of, and strict mode makes it throw; declare the name, or keep the module in a Node island (sloppy-mode programs route there)"
+  }
+ ]
+}

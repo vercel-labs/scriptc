@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8023-date-clone-throw.ts"
+ ],
+ "diags": []
+}

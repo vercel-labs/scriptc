@@ -368,6 +368,34 @@ static bool scr_sa_pf_on(void) {
   return s > 0;
 }
 
+/* fork() copies only the calling thread, so a child has no helper. The
+ * prepare handler takes the lock, so no other thread holds it across the
+ * fork. The child handler gives the child fresh helper state: an empty ring,
+ * no busy range or waiters, new conditions (the parent's can still record
+ * the helper as a waiter), and the heap watermarks cleared. Its first
+ * request then starts a helper of its own. */
+static bool scr_sa_pf_atfork;
+
+static void scr_sa_pf_fork_prepare(void) { pthread_mutex_lock(&scr_sa_pf_lock); }
+
+static void scr_sa_pf_fork_parent(void) { pthread_mutex_unlock(&scr_sa_pf_lock); }
+
+static void scr_sa_pf_fork_child(void) {
+  (void)pthread_mutex_init(&scr_sa_pf_lock, NULL);
+  (void)pthread_cond_init(&scr_sa_pf_cond, NULL);
+  (void)pthread_cond_init(&scr_sa_pf_done, NULL);
+  scr_sa_pf_head = scr_sa_pf_tail = 0;
+  scr_sa_pf_busy = (ScrSaPfRange){NULL, NULL};
+  scr_sa_pf_forgetting = 0;
+  scr_sa_pf_waiting = false;
+  scr_sa_pf_started = false;
+#ifdef SCR_SA_PF_HEAP
+  scr_sa_pf_heap_mode = 0;
+  scr_sa_pf_brk0 = scr_sa_pf_brk = NULL;
+  scr_sa_pf_heap_big = false;
+#endif
+}
+
 /* Asks the helper to fault in [lo, hi) (page aligned). Dropped when the
  * ring is full: the owner then faults those pages itself. */
 static void scr_sa_prefault(char *lo, char *hi) {
@@ -375,6 +403,14 @@ static void scr_sa_prefault(char *lo, char *hi) {
   pthread_mutex_lock(&scr_sa_pf_lock);
   if (!scr_sa_pf_started) {
     scr_sa_pf_started = true;
+    /* Once per process: a child inherits the parent's handlers. */
+    if (!scr_sa_pf_atfork &&
+        pthread_atfork(scr_sa_pf_fork_prepare, scr_sa_pf_fork_parent, scr_sa_pf_fork_child) != 0) {
+      pthread_mutex_unlock(&scr_sa_pf_lock);
+      atomic_store_explicit(&scr_sa_pf_state, -1, memory_order_relaxed);
+      return;
+    }
+    scr_sa_pf_atfork = true;
 #ifdef SCR_SA_PF_HEAP
     /* Nobody waits on the condition yet: give it the monotonic clock for
      * the helper's polls (no polls without it). */
@@ -567,7 +603,153 @@ static _Atomic(uintptr_t) scr_sa_heap_page; /* the page size, read with the mode
  * These loads run only on blocks too large for the small allocator, next to
  * a glibc malloc call: plain loads on x86-64, LDAR (or LDAPR) on arm64. */
 
+#if defined(SCR_WORKERS) && !defined(SCR_LIB)
+#if defined(__aarch64__)
+#include <sys/prctl.h>
+#endif
+/* glibc's per-thread heaps (worker executables; library archives run on
+ * their embedder's threads and leave its heaps alone). glibc serves a thread's
+ * blocks from a heap of its own: a 64 MiB mapping, aligned to its size,
+ * that it makes accessible with mprotect as it grows, a page-rounded step
+ * at a time, so every 2 MiB range is first touched while part of it is
+ * still inaccessible and gets small pages. Once a thread has allocated
+ * SCR_SA_THREAD_HUGE_AFTER bytes of large blocks (threads with few keep
+ * small pages), the heap of each large block it gets is made accessible
+ * whole and advised huge pages, once per heap; glibc's calloc still clears
+ * only what lies below its own high-water mark, so this touches nothing.
+ * glibc's mmap and trim thresholds are fixed at SCR_SA_THREAD_MMAP_THRESHOLD
+ * and SCR_SA_THREAD_TRIM_THRESHOLD: lower than the maxima glibc's adaptive
+ * thresholds reach, so that blocks of 4 MiB and more get mappings of their
+ * own and a heap's free top goes back once it passes 8 MiB, while huge
+ * pages keep resident memory that a heap would otherwise leave untouched.
+ * The brk heap policy below sets its own (higher) values when the main heap
+ * grows past SCR_SA_HEAP_HUGE_AFTER, and those take precedence. The
+ * policy is off unless THP is in madvise mode, when the glibc.malloc.hugetlb
+ * tunable is set (glibc then advises its heaps itself, or sizes them by
+ * hugetlbfs pages), when the system forbids overcommit (making a heap
+ * accessible would commit all of it), when malloc is not glibc's (a
+ * sanitizer or a preloaded allocator: blocks have no glibc chunk header),
+ * and when memory tagging is on (arm64 MTE, the glibc.mem.tagging tunable):
+ * a chunk header then carries another tag than the block's pointer, and
+ * reading it through that pointer faults.
+ * A heap is only advised when /proc/self/maps shows the anonymous mappings
+ * of exactly its range. */
+#define SCR_SA_GLIBC_HEAP ((uintptr_t)64 << 20) /* glibc's heap size and alignment */
+#define SCR_SA_THREAD_HUGE_AFTER ((size_t)16 << 20)
+#define SCR_SA_THREAD_MMAP_THRESHOLD (4 << 20)
+#define SCR_SA_THREAD_TRIM_THRESHOLD (8 << 20)
+static _Thread_local size_t scr_sa_thread_large_bytes;
+static _Thread_local uintptr_t scr_sa_thread_heap; /* the heap this thread advised last */
+/* The heaps decided already, process-wide: advised, or found not to be a
+ * whole glibc heap. Each heap is checked against /proc/self/maps once: the
+ * threads of a type check switch between heaps often, and reading the maps
+ * at each switch cost thousands of reads of a file that grows with the
+ * process's mappings. A full table decides again; a heap that glibc maps
+ * again at an address decided before keeps the pages it gets. */
+#define SCR_SA_HEAPS_SEEN 1024u
+static _Atomic(uintptr_t) scr_sa_heaps_seen[SCR_SA_HEAPS_SEEN];
+
+/* Whether `heap` was decided already; records it when it was not. */
+static bool scr_sa_heap_seen(uintptr_t heap) {
+  size_t h = (size_t)(((uint64_t)(heap / SCR_SA_GLIBC_HEAP) * 0x9E3779B97F4A7C15ull) >> 54) & (SCR_SA_HEAPS_SEEN - 1);
+  for (size_t k = 0; k < SCR_SA_HEAPS_SEEN; k++, h = (h + 1) & (SCR_SA_HEAPS_SEEN - 1)) {
+    uintptr_t cur = atomic_load_explicit(&scr_sa_heaps_seen[h], memory_order_relaxed);
+    if (cur == heap) return true;
+    if (cur == 0) {
+      if (atomic_compare_exchange_strong_explicit(&scr_sa_heaps_seen[h], &cur, heap, memory_order_relaxed,
+                                                  memory_order_relaxed))
+        return false;
+      if (cur == heap) return true;
+    }
+  }
+  return false;
+}
+static _Atomic(int) scr_sa_thread_heaps; /* 0 undecided, 1 advised, 2 off */
+extern void *__libc_malloc(size_t);
+
+/* Whether glibc tags heap memory: the glibc.mem.tagging tunable is set to a
+ * nonzero value, or (arm64) the kernel checks tags for this process. */
+static bool scr_sa_mem_tagging(const char *tunables) {
+  const char *t = tunables ? strstr(tunables, "glibc.mem.tagging=") : NULL;
+  if (t && t[sizeof "glibc.mem.tagging=" - 1] != '0') return true;
+#if defined(__aarch64__)
+  /* PR_GET_TAGGED_ADDR_CTRL (56); PR_MTE_TCF_MASK is bits 1-2. A kernel
+   * without the call returns -1: no tag checks. */
+  long ctrl = prctl(56, 0, 0, 0, 0);
+  if (ctrl > 0 && (ctrl & (3L << 1))) return true;
+#endif
+  return false;
+}
+
+/* Whether [heap, heap + SCR_SA_GLIBC_HEAP) is covered exactly by anonymous
+ * mappings, as a glibc heap is (its accessible part and the rest). */
+static bool scr_sa_glibc_heap_mapped(uintptr_t heap) {
+  FILE *f = fopen("/proc/self/maps", "r");
+  if (!f) return false;
+  char line[512];
+  uintptr_t next = heap, end = heap + SCR_SA_GLIBC_HEAP;
+  while (next < end && fgets(line, sizeof line, f)) {
+    unsigned long lo, hi, inode;
+    char path[2] = {0};
+    if (sscanf(line, "%lx-%lx %*s %*s %*s %lu %1s", &lo, &hi, &inode, path) < 3) continue;
+    if (hi <= next) continue;
+    if (lo != next || inode != 0 || path[0]) break;
+    next = hi;
+  }
+  fclose(f);
+  return next == end;
+}
+
+static void scr_sa_thread_heap_note(void *p, size_t n) {
+  if (scr_sa_thread_large_bytes < SCR_SA_THREAD_HUGE_AFTER) {
+    scr_sa_thread_large_bytes += n;
+    return;
+  }
+  int mode = atomic_load_explicit(&scr_sa_thread_heaps, memory_order_relaxed);
+  if (mode == 2) return;
+  if (mode == 0) {
+    int undecided = 0;
+    const char *tunables = getenv("GLIBC_TUNABLES");
+    FILE *f = fopen("/proc/sys/vm/overcommit_memory", "r");
+    int overcommit = f ? fgetc(f) : '0';
+    if (f) fclose(f);
+    /* Loaded through volatile: the compiler takes two declared functions
+     * to have different addresses. */
+    void *(*volatile used)(size_t) = malloc, *(*volatile own)(size_t) = __libc_malloc;
+    bool glibc_malloc = used == own;
+    mode = glibc_malloc && scr_sa_thp_mode() == 'm' && !(tunables && strstr(tunables, "glibc.malloc.hugetlb")) &&
+                   overcommit != '2' && !scr_sa_mem_tagging(tunables)
+               ? 1
+               : 2;
+    if (atomic_compare_exchange_strong(&scr_sa_thread_heaps, &undecided, mode) && mode == 1 &&
+        atomic_load_explicit(&scr_sa_heap_state, memory_order_relaxed) != 1) {
+      (void)mallopt(M_MMAP_THRESHOLD, SCR_SA_THREAD_MMAP_THRESHOLD);
+      (void)mallopt(M_TRIM_THRESHOLD, SCR_SA_THREAD_TRIM_THRESHOLD);
+      /* The brk heap policy marks itself on before it sets its values: if it
+       * did so meanwhile, its values are set again. */
+      if (atomic_load(&scr_sa_heap_state) == 1) {
+        (void)mallopt(M_MMAP_THRESHOLD, SCR_SA_HEAP_MMAP_THRESHOLD);
+        (void)mallopt(M_TRIM_THRESHOLD, SCR_SA_HEAP_TRIM_THRESHOLD);
+      }
+    }
+    mode = atomic_load_explicit(&scr_sa_thread_heaps, memory_order_relaxed);
+    if (mode != 1) return;
+  }
+  /* glibc's chunk header: NON_MAIN_ARENA (4) set, IS_MMAPPED (2) clear. */
+  if ((((const size_t *)p)[-1] & 6) != 4) return;
+  uintptr_t heap = (uintptr_t)p & ~(SCR_SA_GLIBC_HEAP - 1);
+  if (heap == scr_sa_thread_heap) return;
+  scr_sa_thread_heap = heap;
+  if (scr_sa_heap_seen(heap)) return;
+  if (scr_sa_glibc_heap_mapped(heap) && mprotect((void *)heap, SCR_SA_GLIBC_HEAP, PROT_READ | PROT_WRITE) == 0)
+    (void)madvise((void *)heap, SCR_SA_GLIBC_HEAP, MADV_HUGEPAGE);
+}
+#endif
+
 static void scr_sa_large_note(void *p, size_t n) {
+#if defined(SCR_WORKERS) && !defined(SCR_LIB)
+  if (p) scr_sa_thread_heap_note(p, n);
+#endif
   int state = atomic_load_explicit(&scr_sa_heap_state, memory_order_relaxed);
   if (state == 2 || !p) return;
   uintptr_t top = (uintptr_t)sbrk(0);
@@ -640,10 +822,12 @@ static void scr_sa_large_note(void *p, size_t n) {
  * once; arena i spans [region + i * arena_span, + arena_span) and is split
  * into class slices exactly like the single-threaded reservation. */
 #define SCR_SA_ARENAS 32u
+#define SCR_SA_MIN_ARENAS 4u /* the fewest arenas a limited host gets before smaller slices */
 static pthread_mutex_t scr_sa_region_lock = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic(uintptr_t) scr_sa_region; /* 0 until reserved */
 static uintptr_t scr_sa_arena_span;
 static unsigned scr_sa_region_shift;
+static unsigned scr_sa_region_arenas; /* arenas the region holds, a power of two */
 static bool scr_sa_region_refused;
 static _Atomic(uint32_t) scr_sa_claimed;              /* one bit per arena */
 static ScrSaState scr_sa_parked[SCR_SA_ARENAS];         /* unowned arenas */
@@ -656,17 +840,34 @@ static bool scr_sa_reserve_region(void) {
   pthread_mutex_lock(&scr_sa_region_lock);
   if (!atomic_load_explicit(&scr_sa_region, memory_order_acquire) && !scr_sa_region_refused) {
     /* Same per-class slice ladder as the single-threaded reservation, for
-     * every arena at once; hosts that limit address space get smaller
-     * slices (each slice that fills falls back to the system). */
-    for (unsigned shift = 30; shift >= 22; shift -= 2) {
-      size_t arena = (size_t)SCR_SA_NCLASS << shift;
-      size_t span = arena * SCR_SA_ARENAS;
-      void *p = scr_sa_map(span);
-      if (!p) continue;
-      scr_sa_arena_span = arena;
-      scr_sa_region_shift = shift;
-      atomic_store_explicit(&scr_sa_region, (uintptr_t)p, memory_order_release);
-      break;
+     * every arena at once. A host that limits address space (valgrind maps
+     * at most 56 GiB) gets fewer arenas before smaller slices, down to
+     * SCR_SA_MIN_ARENAS, and fewer still only when no slice size fits that
+     * many. A slice that fills falls back to the system, so with smaller
+     * slices a program that keeps many objects of one class makes system
+     * allocations that a run with full slices does not, and a profile taken
+     * under the limit counts them. At least SCR_SA_MIN_ARENAS arenas are
+     * kept because threads claim them in the order they first allocate:
+     * the main thread keeps its arena, and a thread that starts later reuses
+     * one that another thread parked. Threads beyond the arenas reserved use
+     * the system allocator. */
+    for (unsigned least = SCR_SA_MIN_ARENAS; least >= 1 && !scr_sa_region_arenas; least /= 2) {
+      for (unsigned shift = 30; shift >= 22 && !scr_sa_region_arenas; shift -= 2) {
+        for (unsigned arenas = least == SCR_SA_MIN_ARENAS ? SCR_SA_ARENAS : least; arenas >= least;
+             arenas /= 2) {
+          size_t arena = (size_t)SCR_SA_NCLASS << shift;
+          void *p = scr_sa_map(arena * arenas);
+          if (!p) continue;
+          scr_sa_arena_span = arena;
+          scr_sa_region_shift = shift;
+          scr_sa_region_arenas = arenas;
+          /* The arenas that were not reserved stay claimed. */
+          if (arenas < SCR_SA_ARENAS)
+            atomic_fetch_or_explicit(&scr_sa_claimed, ~((1u << arenas) - 1u), memory_order_relaxed);
+          atomic_store_explicit(&scr_sa_region, (uintptr_t)p, memory_order_release);
+          break;
+        }
+      }
     }
     if (!atomic_load_explicit(&scr_sa_region, memory_order_relaxed)) scr_sa_region_refused = true;
   }
@@ -1423,10 +1624,30 @@ static void scr_sa_group_starting(void) {
  * waits. Only that thread writes it. */
 static _Atomic(unsigned long) scr_sa_loop_turns;
 
+/* The carved bytes of the main thread's arena at its last idle trim. */
+static size_t scr_sa_idle_carved;
+
+/* The main thread returns its free pages when its loop waits with nothing
+ * ready, as a parking thread does (scr_sa_trim), once it has carved at least
+ * SCR_SA_TRIM_MIN more since its last trim: memory it freed (a large teardown
+ * before it starts workers, say) then stops counting while the workers
+ * allocate their own. Measuring the carved bytes costs one pass over the
+ * classes; the trim itself only runs when the frontier has grown. */
+static void scr_sa_idle_trim(void) {
+  if (scr_sa_arena < 0) return;
+  size_t carved = scr_sa_carved();
+  if (carved - scr_sa_idle_carved < SCR_SA_TRIM_MIN) return;
+  scr_sa_trim();
+  scr_sa_idle_carved = scr_sa_carved();
+}
+
 void scr_sa_loop_waiting(bool waiting) {
   if (scr_sa_worker) return;
   unsigned long turns = atomic_load_explicit(&scr_sa_loop_turns, memory_order_relaxed);
-  if ((bool)(turns & 1) != waiting) atomic_store_explicit(&scr_sa_loop_turns, turns + 1, memory_order_relaxed);
+  if ((bool)(turns & 1) != waiting) {
+    atomic_store_explicit(&scr_sa_loop_turns, turns + 1, memory_order_relaxed);
+    if (waiting) scr_sa_idle_trim();
+  }
 }
 
 /* Waits out the delay first, and stops if a worker starts meanwhile: the
@@ -1586,7 +1807,7 @@ static void scr_sa_park_arena(void) {
 static size_t scr_sa_foreign_size(const void *p) {
   uintptr_t region = atomic_load_explicit(&scr_sa_region, memory_order_acquire);
   uintptr_t off = (uintptr_t)p - region;
-  if (!region || off >= scr_sa_arena_span * SCR_SA_ARENAS) return 0;
+  if (!region || off >= scr_sa_arena_span * scr_sa_region_arenas) return 0;
   return scr_sa_class_size((unsigned)((off % scr_sa_arena_span) >> scr_sa_region_shift));
 }
 
@@ -1596,7 +1817,7 @@ void scr_sa_free_foreign(void *p) {
 #endif
   uintptr_t region = atomic_load_explicit(&scr_sa_region, memory_order_acquire);
   uintptr_t off = (uintptr_t)p - region;
-  if (region && off < scr_sa_arena_span * SCR_SA_ARENAS) {
+  if (region && off < scr_sa_arena_span * scr_sa_region_arenas) {
     unsigned i = (unsigned)(off / scr_sa_arena_span);
     ScrSaBlock *b = p;
     ScrSaBlock *head = atomic_load_explicit(&scr_sa_remote[i], memory_order_relaxed);
@@ -1993,6 +2214,99 @@ void scr_heap_stats(double *total, double *used) {
 #endif
   *total = (double)(held + sys_held);
   *used = (double)(held - (idle < held ? idle : held) + sys_used);
+}
+
+/* scr_heap_trim: returns the heap pages that hold only freed memory to the
+ * system after a phase's data died (scr_collect_cycles_phase). The
+ * size-class slices keep freed blocks on their class's free list, which only
+ * later blocks of the same class reuse, so a program whose next phase
+ * allocates other sizes would otherwise grow its resident memory on top of
+ * the freed heap. */
+#if defined(__GLIBC__) && !defined(SCR_HEAP_SANITIZER)
+#include <malloc.h>
+#endif
+#if SCR_SMALL_ALLOC && !defined(SCR_WORKERS) && defined(__linux__) && defined(MADV_DONTNEED)
+#include <sys/mman.h>
+#include <unistd.h>
+
+/* Returns the pages of class c's slice below its frontier that hold only
+ * free blocks (MADV_DONTNEED), and relinks the class's other free blocks in
+ * address order. A block wholly inside a returned page leaves the free list:
+ * the class carves new blocks past its frontier instead, and the slice's
+ * reservation is far larger than what a program fills. */
+static void scr_sa_return_free_pages(unsigned c, size_t page) {
+  size_t sz = scr_sa_class_size(c);
+  char *start = (char *)scr_sa.base + ((size_t)c << scr_sa.shift);
+  char *top = scr_sa.bump[c];
+  size_t nblocks = (size_t)(top - start) / sz;
+  if (!nblocks || !scr_sa.free[c]) return;
+  size_t words = (nblocks + 63) / 64;
+  uint64_t *bits = mmap(NULL, words * 8, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+  if (bits == MAP_FAILED) return;
+  for (ScrSaBlock *b = scr_sa.free[c]; b; b = b->next) {
+    size_t k = (size_t)((char *)b - start) / sz;
+    bits[k / 64] |= (uint64_t)1 << (k % 64);
+  }
+#define SCR_SA_FREE_BIT(k) ((bits[(k) / 64] >> ((k) % 64)) & 1)
+  /* Mark the returned pages' blocks by clearing their bits after the
+   * madvise; a page is returned when every block overlapping it is free. */
+  uintptr_t first = ((uintptr_t)start + page - 1) & ~(uintptr_t)(page - 1);
+  uintptr_t last = (uintptr_t)top & ~(uintptr_t)(page - 1);
+  char *run = NULL;
+  for (uintptr_t pg = first; pg <= last; pg += page) {
+    bool empty = false;
+    if (pg < last) {
+      size_t k0 = (size_t)((char *)pg - start) / sz;
+      size_t k1 = (size_t)((char *)pg + page - 1 - start) / sz;
+      if (k1 >= nblocks) k1 = nblocks - 1;
+      empty = true;
+      for (size_t k = k0; k <= k1 && empty; k++) empty = SCR_SA_FREE_BIT(k);
+    }
+    if (empty && !run) run = (char *)pg;
+    if (!empty && run) {
+      (void)madvise(run, (size_t)((char *)pg - run), MADV_DONTNEED);
+      /* Blocks wholly inside the returned pages are dropped. */
+      size_t k0 = ((size_t)(run - start) + sz - 1) / sz;
+      size_t k1 = (size_t)((char *)pg - start) / sz;
+      for (size_t k = k0; k < k1 && (char *)start + (k + 1) * sz <= (char *)pg; k++)
+        bits[k / 64] &= ~((uint64_t)1 << (k % 64));
+      run = NULL;
+    }
+  }
+  /* The kept free blocks, in address order. */
+  ScrSaBlock *head = NULL, **tail = &head;
+  for (size_t w = 0; w < words; w++)
+    for (uint64_t m = bits[w]; m; m &= m - 1) {
+      ScrSaBlock *b = (ScrSaBlock *)(start + (w * 64 + (size_t)__builtin_ctzll(m)) * sz);
+      *tail = b;
+      tail = &b->next;
+    }
+  *tail = NULL;
+  scr_sa.free[c] = head;
+#undef SCR_SA_FREE_BIT
+  (void)munmap(bits, words * 8);
+}
+#endif
+
+void scr_heap_trim(void) {
+#ifdef SCR_SA_TRIM
+  /* A worker runtime returns the calling thread's arena pages as a parking
+   * thread does; the arena stays the thread's own. */
+  if (scr_sa_arena >= 0 && scr_sa_trim_worth()) {
+    scr_sa_trim();
+    return;
+  }
+#elif SCR_SMALL_ALLOC && !defined(SCR_WORKERS) && defined(__linux__) && defined(MADV_DONTNEED)
+  if (scr_sa.span) {
+    long page = sysconf(_SC_PAGESIZE);
+    for (unsigned c = 0; c < SCR_SA_NCLASS; c++)
+      if (scr_sa.lim[c]) scr_sa_return_free_pages(c, page > 0 ? (size_t)page : 4096);
+  }
+#endif
+#if defined(__GLIBC__) && !defined(SCR_HEAP_SANITIZER)
+  /* Large blocks: the system allocator's free pages too. */
+  (void)malloc_trim(0);
+#endif
 }
 
 /* ── program-lifetime region ────────────────────────────────────────────

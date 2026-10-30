@@ -162,6 +162,10 @@ export interface ArrayLengthLoop {
    * long as the length itself has not changed). An element write at this
    * index replaces an existing element or sets a non-index property. */
   inRange: string | null;
+  /** A second such binding: the high counter of a two-counter loop
+   * (`for (let i = lo, j = hi; i < j; i++, j--)`), whose values stay
+   * between the low counter's start and its own. */
+  inRangeHigh?: string | null;
 }
 
 /** Whether running `nodes` (a loop's condition, body and update) can never
@@ -191,7 +195,10 @@ export function preservesArrayLength(
   // escaping.
   const receiver = (e: IrExpr): boolean =>
     (e.kind === "varRef" && e.localId === loop.receiver) || expr(e);
-  const written = (id: string): boolean => id === loop.receiver || id === loop.inRange;
+  const inRange = (id: string): boolean =>
+    (loop.inRange !== null && id === loop.inRange) ||
+    (loop.inRangeHigh != null && id === loop.inRangeHigh);
+  const written = (id: string): boolean => id === loop.receiver || inRange(id);
   const expr = (e: IrExpr): boolean => {
     switch (e.kind) {
       case "varRef":
@@ -224,12 +231,21 @@ export function preservesArrayLength(
       case "call":
         // A checked union extraction (`x!`, coercions/unions.ts): the
         // asserted arm's payload or a TypeError, and no user code.
-        return e.callee.startsWith("%union.narrow.") && e.args.every(expr);
+        if (e.callee.startsWith("%union.narrow.")) return e.args.every(expr);
+        // An element read as `T | undefined` (int32-arrays.ts isElementReader).
+        return (
+          e.callee.startsWith("%arr.idxOr.") &&
+          e.args.length === 2 &&
+          receiver(e.args[0]!) &&
+          expr(e.args[1]!)
+        );
       case "mapIntrinsic":
         return READING_MAP_METHODS.has(e.method) && expr(e.receiver) && e.args.every(expr);
       case "setIntrinsic":
         return READING_SET_METHODS.has(e.method) && expr(e.receiver) && e.args.every(expr);
       case "libCall":
+        // The TypeError of an assertion past a union arm leaves the loop.
+        if (e.fn === "error.nodeThrow") return e.args.every(expr);
         return (
           isBorrowSafeMath(e.fn) &&
           e.args.every((arg) => arg.type.kind === "f64") &&
@@ -254,13 +270,17 @@ export function preservesArrayLength(
         break;
       case "arraySet":
         return (
-          (separate(s.arr) ||
-            (s.index.kind === "varRef" &&
-              loop.inRange !== null &&
-              s.index.localId === loop.inRange)) &&
+          (separate(s.arr) || (s.index.kind === "varRef" && inRange(s.index.localId))) &&
           receiver(s.arr) &&
           expr(s.index) &&
           expr(s.value)
+        );
+      case "arraySetUndefined":
+        // A present undefined replacing an element below the length.
+        return (
+          (separate(s.arr) || (s.index.kind === "varRef" && inRange(s.index.localId))) &&
+          receiver(s.arr) &&
+          expr(s.index)
         );
       case "return":
         return s.value === null || expr(s.value);

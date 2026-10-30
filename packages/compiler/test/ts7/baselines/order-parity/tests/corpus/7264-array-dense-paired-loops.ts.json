@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7264-array-dense-paired-loops.ts"
+ ],
+ "diags": []
+}

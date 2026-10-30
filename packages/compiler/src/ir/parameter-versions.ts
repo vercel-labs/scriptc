@@ -122,7 +122,7 @@ function numericLoop(loop: IrStmt, functions: ReadonlyMap<string, IrFunction>): 
       const target = functions.get(e.callee);
       allowed = target !== undefined && simple(target);
     } else if (e.kind === "libCall") allowed = e.fn.startsWith("math.");
-    else if (e.kind === "arrIntrinsic") allowed = e.method === "length";
+    else if (e.kind === "arrIntrinsic") allowed = e.method === "length" || e.method === "getNumber";
     return allowed && everyExprChild(e, expr, stmt);
   };
   const stmt = (s: IrStmt): boolean =>
@@ -171,7 +171,8 @@ function loopBounds(fn: IrFunction, functions: ReadonlyMap<string, IrFunction>):
  * -0 (`1 / p` is not -Infinity). The copy then receives `p | 0`, which is
  * the same double, so it computes what the body would; its only caller
  * proves the parameter an int32, so it gets the i32 entry. Other values
- * run the body as before.
+ * run the body as before, whose loops the backend then emits once
+ * (`plainLoops`).
  *
  * Only plain synchronous functions qualify: not class members, no
  * captures, not the module entry, not dynamic-tier, at most
@@ -184,7 +185,8 @@ export function versionLoopBoundParameters(
   symbolName: (name: string) => string = (name) => name,
 ): IrModule {
   const candidates: { fn: IrFunction; params: Set<string> }[] = [];
-  const sites = callSites(mod);
+  // Call sites are read only for functions with loop-bound parameters.
+  let sites: ReturnType<typeof callSites> | null = null;
   const functions = new Map(mod.functions.map((fn) => [fn.name, fn]));
   const members = new Set((mod.classes ?? []).flatMap((cls) => cls.methods ?? []));
   for (const fn of mod.functions) {
@@ -207,7 +209,11 @@ export function versionLoopBoundParameters(
       const local = locals.get(id);
       if (!local || local.boxed || local.tdz) params.delete(id);
     }
-    if (params.size === 0 || size(fn) > MAX_FUNCTION_NODES || keepsSingleBody(fn, sites, functions))
+    if (
+      params.size === 0 ||
+      size(fn) > MAX_FUNCTION_NODES ||
+      keepsSingleBody(fn, (sites ??= callSites(mod)), functions)
+    )
       continue;
     candidates.push({ fn, params });
   }
@@ -296,6 +302,7 @@ export function versionLoopBoundParameters(
         : [{ kind: "return", value: call, loc }];
     replaced.set(fn, {
       ...fn,
+      plainLoops: true,
       body: [{ kind: "if", cond: test!, then: run, else_: null, loc }, ...fn.body],
     });
   }

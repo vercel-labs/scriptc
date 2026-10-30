@@ -1,0 +1,7 @@
+split-cjs-require-cycle/main.js:1:1 - error SC1016: circular imports (split-cjs-require-cycle/main.js → split-cjs-require-cycle/b.js → split-cjs-require-cycle/main.js; the cycle closes through a require() edge: split-cjs-require-cycle/main.js uses its exports at split-cjs-require-cycle/main.js:10 outside the export statements that precede its first require, so a module of the cycle can observe them before they settle) are not supported yet
+
+  1 | // A split require binding (`var b; b = require("./b.js")`) whose require
+    | ^
+  2 | // closes a CommonJS cycle that top-level code can observe: b.js reads a.js's
+
+  hint: ES-module cycles of let/const/function bindings compile as-is; rewrite the named construct (a named import instead of a namespace, a const instead of a default-export expression or var, a class declared before the code that can reach it) or break the named edge

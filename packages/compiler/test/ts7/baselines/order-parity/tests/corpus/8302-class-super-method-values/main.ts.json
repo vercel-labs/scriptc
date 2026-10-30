@@ -1,0 +1,7 @@
+{
+ "order": [
+  "<repo>/tests/corpus/8302-class-super-method-values/lib.cjs",
+  "<repo>/tests/corpus/8302-class-super-method-values/main.ts"
+ ],
+ "diags": []
+}

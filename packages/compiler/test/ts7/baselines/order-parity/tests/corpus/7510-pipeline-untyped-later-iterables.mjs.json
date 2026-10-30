@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7510-pipeline-untyped-later-iterables.mjs"
+ ],
+ "diags": []
+}

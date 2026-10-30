@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "compilerVersion": "0.4.2",
+  "compilerVersion": "0.4.6",
   "coverage": [
     "Entries are projected mechanically from the compiler's own decision tables: the diagnostics registry, the unsupported-syntax dispatch tables, the stdlib and node-builtin lowering tables, and the supported-builtin-module list. Nothing is hand-maintained; the manifest regenerates byte-identically from the source tree at this version.",
     "Absence from this manifest means 'not projected', never 'unsupported'. Surfaces lowered through dedicated code paths rather than tables are not yet projected: console, JSON, Promise/async and the timer surface, the net/http/tls/https/dgram/dns/assert/test/stream/readline module member surfaces, template literals, the regex slice, global functions (parseInt, parseFloat, isNaN, isFinite), and the process surface outside its ambient slice.",
@@ -9,7 +9,7 @@
     "Entries with status 'unsupported' describe where the named code is raised: forms of the construct outside the supported subset are refused with that code — not that every form of the named feature is refused. Supported forms appear as their own static entries where a table projects them.",
     "The engine-free fetch projection targets Node 24.22.0 with bundled Undici 7.29.1. Each projected row names the differential evidence that guards it; changing the pinned Node or Undici version is an explicit profile update.",
     "The fetch profile also contains a runtime-reflected census of the selected fetch, abort, Headers, and readable-stream interfaces plus RequestInit/ResponseInit dictionary reads. Static and unsupported census rows are projected here; its explicitly out-of-scope metadata rows and adjacent-interface exclusions remain in the profile so absence is deliberate rather than ambiguous.",
-    "Process-level diagnostic codes are not surface entries: SC0001-SC0004 are preflight gates, SC1110 is a comptime evaluation failure, SC3001/SC3002 are backend/target tier refusals, SC9001/SC9002 are internal errors.",
+    "Process-level diagnostic codes are not surface entries: SC0001-SC0007 are preflight gates (SC0005-SC0007 are the ECMAScript early errors), SC1110 is a comptime evaluation failure, SC3001/SC3002 are backend/target tier refusals, SC9001/SC9002 are internal errors.",
     "Entry statuses are projected for the desktop targets. The mobile targets (aarch64-apple-ios, aarch64-apple-ios-simulator, aarch64-linux-android) compile library-mode archives only: the library-admissible surface (what SC4005's async_free requirement and the library link set admit) is supported there, the executable lane refuses those triples with SC3002, and no entry outside the library-admissible surface carries a mobile support claim. iOS archives build for iOS 15.0 on darwin hosts; Android archives build against NDK API level 26.",
     "No scheduling metadata is published; entry ids are the stable diff keys across releases."
   ],
@@ -171,6 +171,14 @@
       "code": "SC1090"
     },
     {
+      "id": "diagnostic.sc1091",
+      "kind": "diagnostic-fence",
+      "name": "writing an undeclared name in a JavaScript source",
+      "status": "unsupported",
+      "code": "SC1091",
+      "note": "a write to an undeclared name has no native lowering: sloppy mode makes it a property on Node's global object, which a native binary has none of, and strict mode makes it throw; declare the name, or keep the module in a Node island (sloppy-mode programs route there)"
+    },
+    {
       "id": "diagnostic.sc1100",
       "kind": "diagnostic-fence",
       "name": "operations on 'unknown' values",
@@ -284,6 +292,13 @@
       "name": "npm package imports and values without native lowering",
       "status": "unsupported",
       "code": "SC2013"
+    },
+    {
+      "id": "diagnostic.sc2014",
+      "kind": "diagnostic-fence",
+      "name": "writes through a value held from process.env (a snapshot, not the live table)",
+      "status": "unsupported",
+      "code": "SC2014"
     },
     {
       "id": "diagnostic.sc2020",
@@ -568,9 +583,7 @@
       "id": "node-builtin.crypto.diffieHellman",
       "kind": "node-builtin",
       "name": "crypto.diffieHellman",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "crypto.diffieHellman takes DH, EC or X25519 KeyObjects and has no lowering; the objects of createDiffieHellman, getDiffieHellman and createECDH compute shared secrets"
+      "status": "static"
     },
     {
       "id": "node-builtin.crypto.generateKey",
@@ -612,9 +625,7 @@
       "id": "node-builtin.crypto.getCipherInfo",
       "kind": "node-builtin",
       "name": "crypto.getCipherInfo",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "cipher metadata has no lowering — createCipheriv and createDecipheriv support aes-128/192/256 in cbc, ctr, gcm, ecb, cfb, cfb8, cfb1, and ofb modes, des-ede3 and des-ede, chacha20, and chacha20-poly1305"
+      "status": "static"
     },
     {
       "id": "node-builtin.crypto.getDiffieHellman",
@@ -1284,6 +1295,13 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.fs.unwatchFile",
+      "kind": "node-builtin",
+      "name": "fs.unwatchFile",
+      "status": "static",
+      "note": "removes one listener, or every listener, from a resolved path's poller"
+    },
+    {
       "id": "node-builtin.fs.utimesSync",
       "kind": "node-builtin",
       "name": "fs.utimesSync",
@@ -1294,6 +1312,13 @@
       "kind": "node-builtin",
       "name": "fs.watch",
       "status": "static"
+    },
+    {
+      "id": "node-builtin.fs.watchFile",
+      "kind": "node-builtin",
+      "name": "fs.watchFile",
+      "status": "static",
+      "note": "stat polling of a resolved path with Stats listeners, in statement position; bigint: true is refused"
     },
     {
       "id": "node-builtin.fs.writeFileSync",
@@ -2474,6 +2499,12 @@
       "status": "static"
     },
     {
+      "id": "node-builtin.url.urlToHttpOptions",
+      "kind": "node-builtin",
+      "name": "url.urlToHttpOptions",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.util",
       "kind": "node-builtin",
       "name": "util",
@@ -2481,9 +2512,33 @@
       "note": "recognized module (bare and node:-prefixed specifiers)"
     },
     {
+      "id": "node-builtin.util._extend",
+      "kind": "node-builtin",
+      "name": "util._extend",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.aborted",
+      "kind": "node-builtin",
+      "name": "util.aborted",
+      "status": "static"
+    },
+    {
       "id": "node-builtin.util.callbackify",
       "kind": "node-builtin",
       "name": "util.callbackify",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.convertProcessSignalToExitCode",
+      "kind": "node-builtin",
+      "name": "util.convertProcessSignalToExitCode",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.debounce",
+      "kind": "node-builtin",
+      "name": "util.debounce",
       "status": "static"
     },
     {
@@ -2502,6 +2557,12 @@
       "id": "node-builtin.util.deprecate",
       "kind": "node-builtin",
       "name": "util.deprecate",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.diff",
+      "kind": "node-builtin",
+      "name": "util.diff",
       "status": "static"
     },
     {
@@ -2526,6 +2587,12 @@
       "id": "node-builtin.util.inherits",
       "kind": "node-builtin",
       "name": "util.inherits",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.isArray",
+      "kind": "node-builtin",
+      "name": "util.isArray",
       "status": "static"
     },
     {
@@ -2564,6 +2631,12 @@
       "id": "node-builtin.util.styleText",
       "kind": "node-builtin",
       "name": "util.styleText",
+      "status": "static"
+    },
+    {
+      "id": "node-builtin.util.throttle",
+      "kind": "node-builtin",
+      "name": "util.throttle",
       "status": "static"
     },
     {
@@ -2879,22 +2952,6 @@
       "name": "zlib",
       "status": "static",
       "note": "recognized module (bare and node:-prefixed specifiers)"
-    },
-    {
-      "id": "node-builtin.zlib.BrotliCompress",
-      "kind": "node-builtin",
-      "name": "zlib.BrotliCompress",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
-    },
-    {
-      "id": "node-builtin.zlib.BrotliDecompress",
-      "kind": "node-builtin",
-      "name": "zlib.BrotliDecompress",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
     },
     {
       "id": "node-builtin.zlib.DEFLATE",
@@ -3649,33 +3706,25 @@
       "id": "node-builtin.zlib.brotliCompress",
       "kind": "node-builtin",
       "name": "zlib.brotliCompress",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
+      "status": "static"
     },
     {
       "id": "node-builtin.zlib.brotliCompressSync",
       "kind": "node-builtin",
       "name": "zlib.brotliCompressSync",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
+      "status": "static"
     },
     {
       "id": "node-builtin.zlib.brotliDecompress",
       "kind": "node-builtin",
       "name": "zlib.brotliDecompress",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
+      "status": "static"
     },
     {
       "id": "node-builtin.zlib.brotliDecompressSync",
       "kind": "node-builtin",
       "name": "zlib.brotliDecompressSync",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
+      "status": "static"
     },
     {
       "id": "node-builtin.zlib.crc32",
@@ -3687,17 +3736,13 @@
       "id": "node-builtin.zlib.createBrotliCompress",
       "kind": "node-builtin",
       "name": "zlib.createBrotliCompress",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
+      "status": "static"
     },
     {
       "id": "node-builtin.zlib.createBrotliDecompress",
       "kind": "node-builtin",
       "name": "zlib.createBrotliDecompress",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Brotli needs a Brotli codec, which the static runtime does not vendor — the deflate/inflate, raw, gzip/gunzip, and unzip sync/callback forms with Node's options, crc32, and the Deflate/Inflate/Gzip/Gunzip/DeflateRaw/InflateRaw/Unzip streams are the lowered zlib surface"
+      "status": "static"
     },
     {
       "id": "node-builtin.zlib.createDeflate",
@@ -4254,6 +4299,13 @@
       "name": "Date.parse",
       "status": "static",
       "note": "one date string, using V8's date parser shared with new Date(dateString)"
+    },
+    {
+      "id": "stdlib.date.setters",
+      "kind": "stdlib",
+      "name": "Date.prototype setters",
+      "status": "static",
+      "note": "setTime and the local and UTC field setters, with their optional arguments"
     },
     {
       "id": "stdlib.date.toDateString",
@@ -5016,17 +5068,15 @@
       "id": "stdlib.readable-stream.pipeThrough",
       "kind": "stdlib",
       "name": "ReadableStream.pipeThrough",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.0 / Undici 7.29.1; the wider Web Streams graph is outside the native readable-stream slice"
+      "status": "static",
+      "note": "Node 24.22.0 / Undici 7.29.1; facets: identity, promise-settlement, state-machine, error-shape; differential evidence: fixture:static-web-streams"
     },
     {
       "id": "stdlib.readable-stream.pipeTo",
       "kind": "stdlib",
       "name": "ReadableStream.pipeTo",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.0 / Undici 7.29.1; this operation is outside the native readable-stream implementation"
+      "status": "static",
+      "note": "Node 24.22.0 / Undici 7.29.1; facets: identity, promise-settlement, state-machine, error-shape; differential evidence: fixture:static-web-streams"
     },
     {
       "id": "stdlib.readable-stream.symbol.asyncIterator",
@@ -5040,9 +5090,8 @@
       "id": "stdlib.readable-stream.tee",
       "kind": "stdlib",
       "name": "ReadableStream.tee",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.0 / Undici 7.29.1; this operation is outside the native readable-stream implementation"
+      "status": "static",
+      "note": "Node 24.22.0 / Undici 7.29.1; facets: identity, promise-settlement, state-machine, error-shape; differential evidence: fixture:static-web-streams"
     },
     {
       "id": "stdlib.readable-stream.values",
@@ -5107,9 +5156,8 @@
       "id": "stdlib.request.clone",
       "kind": "stdlib",
       "name": "Request.clone",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.0 / Undici 7.29.1; typed source has no compiler bridge for this interface"
+      "status": "static",
+      "note": "Node 24.22.0 / Undici 7.29.1; facets: body-consumption, identity, state-machine, error-shape; differential evidence: fixture:static-clone"
     },
     {
       "id": "stdlib.request.constructor",
@@ -5306,9 +5354,8 @@
       "id": "stdlib.response.clone",
       "kind": "stdlib",
       "name": "Response.clone",
-      "status": "unsupported",
-      "code": "SC2020",
-      "note": "Node 24.22.0 / Undici 7.29.1; the native fetch runtime does not implement this Response operation"
+      "status": "static",
+      "note": "Node 24.22.0 / Undici 7.29.1; facets: body-consumption, identity, state-machine, error-shape; differential evidence: fixture:static-clone"
     },
     {
       "id": "stdlib.response.constructor",

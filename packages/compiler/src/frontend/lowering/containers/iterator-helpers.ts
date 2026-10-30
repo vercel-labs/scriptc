@@ -1182,10 +1182,10 @@ function bindSource(
 
 /** Where chain code allocates its locals: a lifted helper function's own
  * frame, or hidden locals of the function being lowered (a fused for-of). */
-interface ChainFrame {
-  local(base: string, type: IrType, mutable: boolean): string;
+abstract class ChainFrame {
+  abstract local(base: string, type: IrType, mutable: boolean): string;
   /** `id = id + 1` over a number local. */
-  bump(id: string): IrStmt;
+  abstract bump(id: string): IrStmt;
 }
 
 /** `id = id + 1` over a number local. */
@@ -1206,11 +1206,13 @@ function bumpLocal(id: string, loc: SrcLoc): IrStmt {
 }
 
 /** Hidden locals of the function being lowered. */
-class HostFrame implements ChainFrame {
+class HostFrame extends ChainFrame {
   constructor(
     private readonly lowerer: Lowerer,
     private readonly loc: SrcLoc,
-  ) {}
+  ) {
+    super();
+  }
   local(base: string, type: IrType, mutable: boolean): string {
     const local = this.lowerer.declareHiddenLocal(`%${base}`, type);
     local.mutable = mutable;
@@ -1223,11 +1225,13 @@ class HostFrame implements ChainFrame {
 
 /** The locals and parameters of a lifted helper function under
  * construction. */
-export class LiftedFrame implements ChainFrame {
+export class LiftedFrame extends ChainFrame {
   readonly locals: IrLocal[] = [];
   readonly params: IrParam[] = [];
   private n = 0;
-  constructor(private readonly loc: SrcLoc) {}
+  constructor(private readonly loc: SrcLoc) {
+    super();
+  }
   local(base: string, type: IrType, mutable: boolean): string {
     const id = `${base}.${this.n++}`;
     this.locals.push({ id, name: base, type, mutable });

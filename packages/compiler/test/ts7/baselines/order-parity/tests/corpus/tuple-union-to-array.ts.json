@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/tuple-union-to-array.ts"
+ ],
+ "diags": []
+}

@@ -10,6 +10,7 @@
 #ifdef SCR_RC_AUDIT
 long scr_str_live_count(void);
 long scr_dyn_key_live_count(void);
+void scr_layout_reset_idle(void);
 #endif
 
 static void put(ScrDyn *map, ScrDyn *key, ScrDyn *value) {
@@ -167,7 +168,7 @@ static void checked_storage(void) {
       char key[16];
       int length = snprintf(key, sizeof key, "key-%d", i);
       scr_dyn_obj_set(object, key, (size_t)length, scr_dyn_new_num(i));
-      assert((object->v.obj.index != NULL) == (i >= 31));
+      assert((object->v.obj.index != NULL) == (i >= (int)SCR_LAYOUT_MAX_KEYS));
     }
     for (int i = 0; i < 129; i++) {
       char key[16];
@@ -229,6 +230,8 @@ static void checked_storage(void) {
 
 static void shared_property_keys(void) {
 #ifdef SCR_RC_AUDIT
+  /* Layouts hold key references until the thread's state is torn down. */
+  scr_layout_reset_idle();
   long before = scr_dyn_key_live_count();
 #endif
   /* Distinct objects share bytes, not values or property attributes. Key
@@ -238,7 +241,8 @@ static void shared_property_keys(void) {
   char key[] = "shared\0name";
   scr_dyn_obj_set(first, key, sizeof key - 1, scr_dyn_new_num(1));
   scr_dyn_obj_set(second, key, sizeof key - 1, scr_dyn_new_num(2));
-  assert(first->v.obj.entries[0].key == second->v.obj.entries[0].key);
+  size_t first_len, second_len;
+  assert(scr_dyn_obj_key_at(first, 0, &first_len) == scr_dyn_obj_key_at(second, 0, &second_len));
   key[0] = 'x';
   ScrStr *name = scr_str_new("shared\0name", sizeof key - 1);
   scr_dyn_key_delete(first, name, true);
@@ -269,6 +273,7 @@ static void shared_property_keys(void) {
     }
   }
 #ifdef SCR_RC_AUDIT
+  scr_layout_reset_idle();
   assert(scr_dyn_key_live_count() == before);
 #endif
 }
@@ -389,6 +394,30 @@ static bool buffered(ScrDyn *d) { return scr_cyc_is_buffered(scr_cyc_hdr(d)); }
 static bool buffered_after_read(ScrDyn *d) {
   scr_dyn_release(scr_dyn_retain(d));
   return buffered(d);
+}
+
+/* A collector pass can buffer a number or string box that it reached
+ * through an owner that traces it: scr_xg_release, settling an edge a
+ * restricted pass skipped, calls scr_cyc_on_release on the target. The
+ * box's last release must take it out of its candidate buffer before its
+ * block returns to the free list, which hands it to the next box. */
+static void buffered_leaf_release(void) {
+  for (uint16_t gen = SCR_CYC_NURSERY; gen < SCR_CYC_NGENS; gen++) {
+    ScrStr *text = scr_str_new("buffered", 8);
+    ScrDyn *leaves[2] = {scr_dyn_new_str(text), scr_dyn_new_num(0.5)};
+    scr_str_release(text);
+    for (int i = 0; i < 2; i++) {
+      scr_cyc_set_gen(scr_cyc_hdr(leaves[i]), gen);
+      scr_cyc_on_release(leaves[i]);
+      scr_dyn_release(leaves[i]);
+    }
+    ScrDyn *fresh[2] = {scr_dyn_new_num(1.5), scr_dyn_new_num(2.5)};
+    assert(!buffered(fresh[0]) && !buffered(fresh[1]));
+    scr_collect_cycles();
+    assert(fresh[0]->v.num == 1.5 && fresh[1]->v.num == 2.5);
+    scr_dyn_release(fresh[0]);
+    scr_dyn_release(fresh[1]);
+  }
 }
 
 static ScrDyn *parse_text(const char *text) {
@@ -627,8 +656,10 @@ static void json_schema_parse(void) {
   static const char *const order[] = {"tags", "ok", "extra", "qty", "sku"};
   assert(view->kind == SCR_DYN_OBJ && view->v.obj.len == 5);
   for (size_t i = 0; i < 5; i++) {
-    assert(view->v.obj.entries[i].key_len == strlen(order[i]));
-    assert(memcmp(view->v.obj.entries[i].key, order[i], strlen(order[i])) == 0);
+    size_t key_len;
+    const char *key = scr_dyn_obj_key_at(view, i, &key_len);
+    assert(key_len == strlen(order[i]));
+    assert(memcmp(key, order[i], strlen(order[i])) == 0);
   }
   assert(scr_dyn_obj_get(view, "extra", 5)->kind == SCR_DYN_OBJ);
   test_item_release(second);
@@ -802,14 +833,28 @@ static void json_schema_union_members(void) {
   assert(test_opts_live == 0);
 }
 
+/* Freezing a record sets the frozen bit beside its count; an immortal
+ * record keeps its word, which does not read as frozen. */
+static void record_frozen_bit(void) {
+  size_t record[2] = {3, 0};
+  assert(!scr_rc_frozen(record));
+  scr_record_freeze(record);
+  assert(scr_rc_frozen(record) && SCR_RC_REFS(record) == 3);
+  size_t immortal[2] = {SIZE_MAX, 0};
+  scr_record_freeze(immortal);
+  assert(immortal[0] == SIZE_MAX && !scr_rc_frozen(immortal));
+}
+
 int main(void) {
   json_string_boundaries();
+  record_frozen_bit();
   json_indent_ownership();
   scr_init();
   checked_storage();
   shared_property_keys();
   checked_leaf_cycles();
   checked_number_storage();
+  buffered_leaf_release();
   json_intact_regions();
   json_schema_parse();
   json_schema_special_names();

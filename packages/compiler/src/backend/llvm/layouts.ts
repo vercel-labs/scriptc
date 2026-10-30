@@ -17,7 +17,7 @@ export function emitLlvmLayouts(
   host: ClassHost,
   mod: IrModule,
   classes: Map<string, LlClassMeta>,
-  classObjects: Map<string, { nameSym: string }>,
+  classObjects: Map<string, { nameSym: string; baseNameSym: string | null }>,
   functions: Map<string, IrFunction>,
   llType: (type: IrType) => string,
   nullable?: NullableRefFields,

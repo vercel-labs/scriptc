@@ -1043,6 +1043,9 @@ static ScrDyn *scr_et_method_value(const char *key, size_t len, bool target) {
     const char *name = scr_et_method_names[i];
     if (strlen(name) != len || memcmp(name, key, len) != 0) continue;
     if (!scr_et_method_values[i]) {
+      /* An AbortSignal answers these without the unit ever installing:
+       * exit releases the cached function either way. */
+      scr_et_register_teardown();
       ScrClosure *clo = scr_closure_new(NULL, 1);
       clo->caps[0] = scr_box_new(SCR_BOX_F64);
       scr_box_set_f64(clo->caps[0], (double)i);
@@ -1052,6 +1055,10 @@ static ScrDyn *scr_et_method_value(const char *key, size_t len, bool target) {
     return scr_dyn_retain(scr_et_method_values[i]);
   }
   return NULL;
+}
+
+ScrDyn *scr_event_target_method_value(const char *key, size_t len) {
+  return scr_et_method_value(key, len, true);
 }
 
 static ScrDyn *scr_event_target_value(const ScrEvent *ev) {
@@ -1954,4 +1961,61 @@ ScrPromise *scr_tp_scheduler_wait_signal(double ms, ScrPromise *value, bool ref,
 
 ScrPromise *scr_tp_set_immediate_signal(ScrPromise *value, bool ref, ScrDyn *signal) {
   return scr_tp_signal(0, value, ref, signal, true);
+}
+
+/* ── util.aborted(signal, resource) ────────────────────────────────────
+ * Node's async function: the signal must be an AbortSignal and the
+ * resource an object (functions and arrays included), or the promise
+ * rejects with ERR_INVALID_ARG_TYPE. An aborted signal gives a promise of
+ * undefined; otherwise a once 'abort' listener that resists
+ * stopImmediatePropagation resolves it with the event. The answer adopts
+ * that promise, as an async function's result does. */
+static ScrDyn *scr_util_aborted_listener(ScrClosure *closure, ScrDyn *const *args, size_t argc) {
+  ScrPromise *inner = scr_box_get_ref(closure->caps[0]);
+  /* scr_promise_resolve_dyn takes the value's reference. */
+  scr_promise_resolve_dyn(inner, scr_dyn_retain(argc ? args[0] : scr_dyn_undefined()));
+  scr_promise_release(inner);
+  return scr_dyn_retain(scr_dyn_undefined());
+}
+
+ScrDyn *scr_util_aborted(ScrDyn *signal, ScrDyn *resource) {
+  ScrPromise *outer = scr_promise_new();
+  bool aborted = false;
+  ScrEventTargetCore *core = scr_et_signal_core_fn ? scr_et_signal_core_fn(signal, &aborted) : NULL;
+  bool object = resource->kind == SCR_DYN_OBJ || resource->kind == SCR_DYN_ARR || resource->kind == SCR_DYN_FUNC ||
+                resource->kind == SCR_DYN_TYPED_REF || resource->kind == SCR_DYN_HANDLE ||
+                resource->kind == SCR_DYN_BYTES || resource->kind == SCR_DYN_PROMISE ||
+                resource->kind == SCR_DYN_PROXY;
+  if (!core) {
+    static const char message[] = "signal is not of type AbortSignal.";
+    scr_throw_error_msg_code(SCR_ERR_TYPE, message, sizeof message - 1, "ERR_INVALID_ARG_TYPE");
+  } else if (!object) {
+    scr_dyn_arg_type_fail("resource", "of type object", resource);
+  }
+  if (scr_exc_pending()) {
+    scr_promise_reject_pending(outer);
+    ScrDyn *rejected = scr_dyn_new_promise(outer);
+    scr_promise_release(outer);
+    return rejected;
+  }
+  ScrPromise *inner = scr_promise_new();
+  if (aborted) {
+    scr_promise_fulfill_void(inner);
+  } else {
+    ScrClosure *closure = scr_closure_new(NULL, 1);
+    closure->caps[0] = scr_box_new_obj(scr_promise_retain_v, scr_promise_release_v, NULL);
+    scr_box_set_ref(closure->caps[0], scr_promise_retain(inner));
+    ScrDyn *listener = scr_dyn_new_func(closure, scr_util_aborted_listener, 1, "native:function", "");
+    ScrStr *abort = scr_str_new("abort", 5);
+    bool duplicate;
+    (void)scr_et_append(core, abort, listener, SCR_ET_ONCE | SCR_ET_RESIST, &duplicate);
+    scr_str_release(abort);
+    scr_dyn_release(listener);
+  }
+  ScrDyn *adopted = scr_dyn_new_promise(inner);
+  scr_promise_release(inner);
+  scr_promise_resolve_dyn(outer, adopted); /* moves the promise box in */
+  ScrDyn *result = scr_dyn_new_promise(outer);
+  scr_promise_release(outer);
+  return result;
 }

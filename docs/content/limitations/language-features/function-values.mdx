@@ -5,3 +5,5 @@
 - **JavaScript parameters:** In a JavaScript file TypeScript does not check, a prototype method (`C.prototype.m = function (...) {}`) takes whatever values its callers pass; its JSDoc types document the usual values without constraining them.
   A sloppy-mode function with named parameters may read `arguments` only where the aliasing of its parameters cannot show: it reads `arguments.length`, or reads elements and never writes a parameter or an element.
   Other uses of `arguments` in such a function are refused with `SC1090`; ES modules, `'use strict'` code, classes, and functions with default, rest, or destructured parameters have no such restriction.
+  A sloppy-mode function called with `undefined` or `null` as its receiver gets the global object as `this`, as in Node.
+  Called with a primitive receiver, its `this` is the primitive itself, where Node passes the primitive's wrapper object (`typeof this` is `"object"` there).

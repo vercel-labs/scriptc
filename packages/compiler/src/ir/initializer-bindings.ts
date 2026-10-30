@@ -1,11 +1,27 @@
 import type { IrExpr, IrFunction, IrGlobal, IrModule, IrStmt } from "./ir.js";
-import { everyExprChild, everyStmtChild, everyStmtList } from "./traverse.js";
+import { everyExprChild, everyStmtChild } from "./traverse.js";
+import { eachNodeOfKinds, type IrNodeIndex, type IrNodeKind } from "./node-index.js";
+
+/** The nodes findInitializerBindings reads: binding uses and captures. */
+const USE_KINDS: readonly IrNodeKind[] = [
+  "varRef",
+  "assignExpr",
+  "incDec",
+  "closure",
+  "assign",
+  "varDecl",
+  "forOf",
+  "tryCatch",
+];
 
 /** Globals private to a guarded, synchronous initializer have local numeric
  * dataflow: no other function can replace their slots, and reentrant module
  * evaluation returns before reaching them. Keep the actual global storage
  * and lifetime; these facts are only inputs to numeric and extent analysis. */
-export function findInitializerBindings(mod: IrModule): ReadonlyMap<string, IrGlobal[]> {
+export function findInitializerBindings(
+  mod: IrModule,
+  nodes?: IrNodeIndex,
+): ReadonlyMap<string, IrGlobal[]> {
   const result = new Map<string, IrGlobal[]>();
   // Embedders can reset library state between entries. Async initialization
   // and lifted captures also remain outside this synchronous proof.
@@ -17,6 +33,7 @@ export function findInitializerBindings(mod: IrModule): ReadonlyMap<string, IrGl
   for (const cls of mod.classes ?? []) {
     for (const capture of cls.localCaptures ?? []) excluded.add(capture.localId);
   }
+  const scan = nodes?.scan(USE_KINDS);
   for (const fn of mod.functions) {
     for (const capture of [...(fn.captures ?? []), ...(fn.classCaptures ?? [])])
       excluded.add(capture.localId);
@@ -26,18 +43,13 @@ export function findInitializerBindings(mod: IrModule): ReadonlyMap<string, IrGl
       owners.set(id, owner === undefined || owner === fn.name ? fn.name : null);
       if (write) writes.set(id, (writes.get(id) ?? 0) + 1);
     };
-    everyStmtList(fn.body, {
-      expr: (e) => {
-        if (e.kind === "varRef") use(e.localId, false);
-        if (e.kind === "assignExpr" || e.kind === "incDec") use(e.localId, true);
-        if (e.kind === "closure") for (const id of e.captures) excluded.add(id);
-        return true;
-      },
-      stmt: (s) => {
-        if (s.kind === "assign" || s.kind === "varDecl" || s.kind === "forOf") use(s.localId, true);
-        if (s.kind === "tryCatch" && s.catchLocalId) excluded.add(s.catchLocalId);
-        return true;
-      },
+    eachNodeOfKinds(fn, scan, (node) => {
+      if (node.kind === "varRef") use(node.localId, false);
+      else if (node.kind === "assignExpr" || node.kind === "incDec") use(node.localId, true);
+      else if (node.kind === "closure") for (const id of node.captures) excluded.add(id);
+      else if (node.kind === "assign" || node.kind === "varDecl" || node.kind === "forOf")
+        use(node.localId, true);
+      else if (node.kind === "tryCatch" && node.catchLocalId) excluded.add(node.catchLocalId);
     });
   }
   const guarded = new Set<string>();

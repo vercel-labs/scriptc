@@ -1,7 +1,8 @@
 // A JavaScript package (the TypeScript namespace downlevel zod uses) whose
 // namespace object assigns its own `toString` returning string | undefined;
 // Number.parseInt with one argument; and a `then` whose handler result the
-// declared union types (zod's ParseStatus.mergeArray pattern).
+// declared union types (zod's ParseStatus.mergeArray pattern), over mixed and
+// uniform promise arrays.
 import { check, direct, mergeLater, note, show, showRadix, wholePart } from "nsutil";
 
 console.log(String(direct("a")), String(direct({ message: "b" })), String(direct(undefined)));
@@ -12,5 +13,7 @@ console.log(values.map((value) => show(value)).join(" "), showRadix(5, 2), note.
 async function main(): Promise<void> {
   console.log(JSON.stringify(await mergeLater([Promise.resolve(1), Promise.resolve("two")], { ok: true })));
   console.log(JSON.stringify(await mergeLater([Promise.resolve(3), Promise.resolve("four")], { ok: false })));
+  const uniform: Promise<number>[] = [Promise.resolve(5), Promise.resolve(6)];
+  console.log(JSON.stringify(await mergeLater(uniform, { ok: true })));
 }
 void main();

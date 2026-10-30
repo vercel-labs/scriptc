@@ -3,6 +3,7 @@
 import type { DynamicFieldStores } from "../ir/int32-slots.js";
 import type { IrExpr, IrModule, IrStmt } from "../ir/ir.js";
 import { everyExprChild, everyStmtChild } from "../ir/traverse.js";
+import { eachNodeOfKinds, type IrNodeIndex, type IrNodeKind } from "../ir/node-index.js";
 import {
   computeCycleMutability,
   constructorEscapePoint,
@@ -97,7 +98,10 @@ export interface ConstructionFacts {
   privateStores: Set<IrStmt>;
 }
 
-export function computeConstructionFacts(mod: IrModule): ConstructionFacts {
+/** The nodes that can reach a constructor with a reused receiver. */
+const CONSTRUCTOR_USE_KINDS: readonly IrNodeKind[] = ["call", "closure"];
+
+export function computeConstructionFacts(mod: IrModule, nodes?: IrNodeIndex): ConstructionFacts {
   const facts: ConstructionFacts = { privateStores: new Set() };
   if (mod.lib !== undefined) return facts;
   const classes = new Map((mod.classes ?? []).map((c) => [c.name, c] as const));
@@ -122,6 +126,7 @@ export function computeConstructionFacts(mod: IrModule): ConstructionFacts {
       c = classes.get(c)!.base;
     }
   };
+  const scan = nodes?.scan(CONSTRUCTOR_USE_KINDS);
   for (const fn of mod.functions) {
     const own = ctorClass.get(fn.name);
     const thisId = own !== undefined ? thisOf(own) : null;
@@ -129,22 +134,19 @@ export function computeConstructionFacts(mod: IrModule): ConstructionFacts {
       own !== undefined && classes.get(own)!.base !== undefined
         ? `%${classes.get(own)!.base}.constructor`
         : null;
-    const expr = (e: IrExpr): boolean => {
-      if (e.kind === "call") {
-        const target = ctorClass.get(e.callee);
+    eachNodeOfKinds(fn, scan, (node) => {
+      if (node.kind === "call") {
+        const target = ctorClass.get(node.callee);
         if (
           target !== undefined &&
-          !(e.callee === baseCtor && e.args.length > 0 && isThisRef(e.args[0]!, thisId))
+          !(node.callee === baseCtor && node.args.length > 0 && isThisRef(node.args[0]!, thisId))
         )
           markReused(target);
-      } else if (e.kind === "closure") {
-        const target = ctorClass.get(e.fnName);
+      } else if (node.kind === "closure") {
+        const target = ctorClass.get(node.fnName);
         if (target !== undefined) markReused(target);
       }
-      return everyExprChild(e, expr, stmt);
-    };
-    const stmt = (s: IrStmt): boolean => everyStmtChild(s, expr, stmt);
-    fn.body.every(stmt);
+    });
   }
 
   // The first escaping statement of each constructor (body length: none).
@@ -192,32 +194,32 @@ export function computeConstructionFacts(mod: IrModule): ConstructionFacts {
   return facts;
 }
 
+/** The nodes that write a binding: statement and expression assignments. */
+const ASSIGNMENT_KINDS: readonly IrNodeKind[] = ["assign", "assignExpr"];
+
 /** Module constants whose value never changes once initialized: immutable,
  * not TDZ-checked (every read follows the initialization), no import-cycle
  * init flag, and at most one assignment in the whole module. Such a global
  * owns its value for the rest of the program, so a read of it can be
  * borrowed across any later operand or call. */
-export function stableGlobals(mod: IrModule): Set<string> {
+export function stableGlobals(mod: IrModule, nodes?: IrNodeIndex): Set<string> {
   const candidates = new Set(
     (mod.globals ?? [])
       .filter((g) => !g.mutable && g.tdz !== true && g.initFlag === undefined)
       .map((g) => g.id),
   );
   const assigned = new Set<string>();
-  const expr = (e: IrExpr): boolean => {
-    if (e.kind === "assignExpr" && candidates.has(e.localId)) candidates.delete(e.localId);
-    return everyExprChild(e, expr, stmt);
-  };
-  const stmt = (s: IrStmt): boolean => {
-    if (s.kind === "assign" && candidates.has(s.localId)) {
-      if (assigned.has(s.localId)) candidates.delete(s.localId);
-      assigned.add(s.localId);
-    }
-    return everyStmtChild(s, expr, stmt);
-  };
+  const scan = nodes?.scan(ASSIGNMENT_KINDS);
   for (const fn of mod.functions) {
     if (candidates.size === 0) break;
-    fn.body.every(stmt);
+    eachNodeOfKinds(fn, scan, (node) => {
+      if (node.kind === "assignExpr" && candidates.has(node.localId))
+        candidates.delete(node.localId);
+      else if (node.kind === "assign" && candidates.has(node.localId)) {
+        if (assigned.has(node.localId)) candidates.delete(node.localId);
+        assigned.add(node.localId);
+      }
+    });
   }
   return candidates;
 }

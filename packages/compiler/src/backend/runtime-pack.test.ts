@@ -14,6 +14,7 @@ import {
   RuntimePackError,
   type RuntimePackManifest,
 } from "./runtime-pack.js";
+import { HUGE_TEXT_MIN_CODE_BYTES } from "./huge-text.js";
 import { createNativeLinkPlan } from "./link-plan.js";
 import {
   executableLinkerEnvironmentFingerprint,
@@ -21,7 +22,12 @@ import {
   platformLinkerSupportsPersistentCache,
   resolvePlatformLinker,
 } from "./linker.js";
-import { MACOS_ARM64_TARGET, WINDOWS_X64_MSVC_TARGET, type NativeTargetSpec } from "./targets.js";
+import {
+  LINUX_X64_GNU_TARGET,
+  MACOS_ARM64_TARGET,
+  WINDOWS_X64_MSVC_TARGET,
+  type NativeTargetSpec,
+} from "./targets.js";
 
 const VERSION = compilerReleaseVersion();
 
@@ -54,7 +60,10 @@ const BASE: NativeLinkFeatures = {
   dgram: false,
   dnsPromises: false,
   dgramDyn: false,
+  textCodecDyn: false,
   watch: false,
+  watchFile: false,
+  fsBufferBrand: false,
   foreignFfi: false,
   nodeTest: false,
   tls: false,
@@ -64,6 +73,7 @@ const BASE: NativeLinkFeatures = {
   dh: false,
   pki: false,
   ed25519: false,
+  x509: false,
   webcrypto: false,
   perfLoop: false,
 };
@@ -127,7 +137,7 @@ async function fixture(target: NativeTargetSpec = MACOS_ARM64_TARGET) {
       object_format: target.objectFormat,
       minimum_os: target.minimumOs,
     },
-    runtime_abi: { version: 33, marker: "scr_runtime_abi_v33" },
+    runtime_abi: { version: 48, marker: "scr_runtime_abi_v48" },
     compiler: {
       command: "clang",
       identity: "fixture clang",
@@ -238,6 +248,53 @@ describe("runtime pack manifests", () => {
     expect(defaultPlan.driverFlags).not.toContain("-Wl,--subsystem,windows");
     expect(consolePlan.driverFlags).toEqual(defaultPlan.driverFlags);
     expect(guiPlan.driverFlags).toEqual([...defaultPlan.driverFlags, "-Wl,--subsystem,windows"]);
+  });
+
+  test("Linux runtime-pack links are static PIE only when requested", async () => {
+    const { packagePath, root } = await fixture(LINUX_X64_GNU_TARGET);
+    const options = {
+      target: LINUX_X64_GNU_TARGET,
+      programObject: join(root, "program.o"),
+      outPath: join(root, "program"),
+      features: BASE,
+      ffi: null,
+      optimization: "release" as const,
+      resolver: () => packagePath,
+    };
+    const defaultPlan = await createNativeLinkPlan(options);
+    const staticPlan = await createNativeLinkPlan({ ...options, staticLink: true });
+    expect(defaultPlan.driverFlags).not.toContain("-static-pie");
+    expect(defaultPlan.staticLink).toBeUndefined();
+    expect(staticPlan.driverFlags).toEqual([...defaultPlan.driverFlags, "-static-pie"]);
+    expect(staticPlan.staticLink).toBe(true);
+  });
+
+  test("Linux links of large program code use huge text unless it is turned off", async () => {
+    const { packagePath, root } = await fixture(LINUX_X64_GNU_TARGET);
+    // An ELF64 relocatable object's headers with one executable section of
+    // HUGE_TEXT_MIN_CODE_BYTES; only the headers are read.
+    const object = Buffer.alloc(64 + 2 * 64);
+    object.writeUInt32BE(0x7f454c46, 0);
+    object[4] = 2;
+    object[5] = 1;
+    object.writeBigUInt64LE(64n, 40);
+    object.writeUInt16LE(64, 58);
+    object.writeUInt16LE(2, 60);
+    object.writeUInt32LE(1, 128 + 4); // SHT_PROGBITS
+    object.writeBigUInt64LE(0x6n, 128 + 8); // SHF_ALLOC | SHF_EXECINSTR
+    object.writeBigUInt64LE(BigInt(HUGE_TEXT_MIN_CODE_BYTES), 128 + 32);
+    await writeFile(join(root, "program.o"), object);
+    const options = {
+      target: LINUX_X64_GNU_TARGET,
+      programObject: join(root, "program.o"),
+      outPath: join(root, "program"),
+      features: BASE,
+      ffi: null,
+      optimization: "release" as const,
+      resolver: () => packagePath,
+    };
+    expect((await createNativeLinkPlan(options)).hugeText).toBe(true);
+    expect((await createNativeLinkPlan({ ...options, hugeText: false })).hugeText).toBeUndefined();
   });
 
   test("selection chooses the most-specific variant and feature archive", async () => {

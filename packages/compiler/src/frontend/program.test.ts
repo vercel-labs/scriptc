@@ -371,15 +371,60 @@ test("repeated cycle edges reuse a file's binding index", () => {
 
 test.for([
   [
-    // A shared instance built by a user constructor: the reads of it in
-    // the partner's function can run early; the class cannot.
+    // A shared instance built by a user constructor that calls the
+    // partner's function: its read of the instance can run early.
+    {
+      "main.ts": 'import { shared } from "./a.ts"; console.log(shared.n);',
+      "a.ts":
+        'import { f } from "./b.ts"; export class C { n = 1; constructor() { console.log(f()); } } export const shared = new C();',
+      "b.ts": 'import { shared } from "./a.ts"; export function f(): number { return shared.n; }',
+    },
+    ["shared"],
+  ],
+  [
+    // User code runs while the instance is built, but nothing it reaches
+    // calls the partner's function before the declaration completed.
     {
       "main.ts": 'import { shared } from "./a.ts"; console.log(shared.n);',
       "a.ts":
         'import { f } from "./b.ts"; export class C { n = 1; } export const shared = new C(); console.log(f());',
       "b.ts": 'import { shared } from "./a.ts"; export function f(): number { return shared.n; }',
     },
-    ["shared"],
+    [],
+  ],
+  [
+    // The partner's top level runs first and calls a hoisted function of
+    // the importer that reads a const declared later; a second function
+    // reads another const but nothing calls it early.
+    {
+      "main.ts": 'import { late } from "./a.ts"; console.log(late());',
+      "a.ts":
+        'import { probe } from "./b.ts"; export function read(): string { return name; } export function late(): string { return other + probe; } export const name = "n"; export const other = "o";',
+      "b.ts":
+        'import { read } from "./a.ts"; function attempt(): string { try { return read(); } catch { return "tdz"; } } export const probe = attempt();',
+    },
+    ["name"],
+  ],
+  [
+    // The partner's class calls a method through `this` in a static
+    // initializer; the method reads a const of the importer declared later.
+    {
+      "main.ts": 'import { name } from "./a.ts"; console.log(name);',
+      "a.ts": 'import { Probe } from "./b.ts"; export const name = "n"; console.log(Probe.value);',
+      "b.ts":
+        'import { name } from "./a.ts"; export class Probe { static read(): string { return name; } static value = this.read(); }',
+    },
+    ["name"],
+  ],
+  [
+    // The same through a static block of a class stored by a const.
+    {
+      "main.ts": 'import { name } from "./a.ts"; console.log(name);',
+      "a.ts": 'import { Box } from "./b.ts"; export const name = "n"; console.log(Box.value);',
+      "b.ts":
+        'import { name } from "./a.ts"; export const Box = class { static value = ""; static read(): string { return name; } static { this.value = this.read(); } };',
+    },
+    ["name"],
   ],
   [
     // The partner's top level reads the importer's const before it ran.

@@ -21,7 +21,7 @@ function inspect(input: number, enabled: boolean, fallback = 9): void {
   for (let i = 0; i < bytes.length; i++) {
     console.log("loop", i, bytes[i]); // debug: loop
   }
-  for (const item of [6, 7] as (number | undefined)[]) {
+  for (const item of [6, 7, undefined]) {
     console.log("item"); // debug: item
     console.log(item);
   }

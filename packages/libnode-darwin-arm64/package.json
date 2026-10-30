@@ -1,0 +1,35 @@
+{
+  "name": "@scriptc/libnode-darwin-arm64",
+  "version": "0.4.6",
+  "private": true,
+  "description": "Prebuilt Node.js shared library and scriptc bridge for Node islands on macOS arm64",
+  "license": "SEE LICENSE IN LICENSE",
+  "homepage": "https://scriptc.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vercel-labs/scriptc.git",
+    "directory": "packages/libnode-darwin-arm64"
+  },
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "arm64"
+  ],
+  "files": [
+    "libnode.137.dylib",
+    "libscr_node_bridge.dylib",
+    "manifest.json",
+    "LICENSE",
+    "SCRIPTC_LICENSE",
+    "THIRD_PARTY_NOTICES"
+  ],
+  "scripts": {
+    "build": "true",
+    "build:native": "node scripts/build.mjs",
+    "prepack": "node ../libnode-common/scripts/verify.mjs ."
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

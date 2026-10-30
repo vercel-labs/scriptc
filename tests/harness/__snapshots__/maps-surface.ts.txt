@@ -1,4 +1,4 @@
-maps-surface.ts:21:11 - error SC2001: values of type '(v: number, k: string, theMap: Map<string, number>) => void' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, read-only Date values, functions, classes, records, unions of those, and 'unknown')
+maps-surface.ts:21:11 - error SC2001: values of type '(v: number, k: string, theMap: Map<string, number>) => void' cannot be compiled yet (supported: number, string, boolean, arrays, Maps, Sets, RegExp, Dates, functions, classes, records, unions of those, and 'unknown')
 
   20 | // The forEach callback receives (value, key) — no third map parameter.
   21 | m.forEach((v, k, theMap) => console.log(k, v));

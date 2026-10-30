@@ -4,7 +4,7 @@
  * and everything inherited goes through the stream spoke. */
 import * as ts from "../../ts7/adapter.js";
 import { type Lowerer } from "../lowerer.js";
-import { locOf } from "../../program.js";
+import { isJsSourceFile, locOf } from "../../program.js";
 import { isNodeTypesPath } from "../../dts-paths.js";
 import { dynUndefinedExpr } from "../../../ir/build.js";
 import {
@@ -174,6 +174,35 @@ export function lowerFsStreamNew(
     expr.arguments?.nodes ?? [],
     cls === "ReadStream",
     `new fs.${cls}`,
+    expr,
+    locOf(expr),
+  );
+}
+
+/** `fs.ReadStream(path, options)` / `fs.WriteStream(...)` called without
+ * `new` in JavaScript: Node's stream constructors construct when called as
+ * functions, so the call is the `new` form. Null for other calls. */
+export function lowerFsStreamCall(lowerer: Lowerer, expr: ts.CallExpression): IrExpr | null {
+  if (!isJsSourceFile(ts.getSourceFileOfNode(expr))) return null;
+  const callee = expr.expression;
+  const name = ts.isPropertyAccessExpression(callee)
+    ? callee.name
+    : ts.isIdentifier(callee)
+      ? callee
+      : null;
+  if (name === null || !ts.isIdentifier(name)) return null;
+  const symbol = lowerer.checker.getSymbolAtLocation(name);
+  const resolved =
+    symbol && symbol.flags & ts.SymbolFlags.Alias
+      ? lowerer.checker.getAliasedSymbol(symbol)
+      : symbol;
+  const cls = fsStreamClassOf(lowerer, resolved);
+  if (cls === null) return null;
+  return fsStreamCreateExpr(
+    lowerer,
+    expr.arguments.nodes,
+    cls === "ReadStream",
+    `fs.${cls}`,
     expr,
     locOf(expr),
   );

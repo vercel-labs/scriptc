@@ -1,6 +1,10 @@
 #ifndef _WIN32
 #define _POSIX_C_SOURCE 200809L
 #endif
+/* flock and LOCK_EX/LOCK_UN, which Darwin hides under _POSIX_C_SOURCE. */
+#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
+#define _DARWIN_C_SOURCE 1
+#endif
 #include <stdint.h>
 #include <limits.h>
 #include <stddef.h>
@@ -52,7 +56,9 @@ void scr_collect_cycles_phase(void);
  * frontend's syntax trees and program state refer to each other, so
  * reference counting frees almost none of them when the frontend is
  * disposed, and the collector's schedule alone may not run a full pass
- * before the build ends. */
+ * before the build ends. The sweep then returns the freed pages to the
+ * system (scr_heap_trim), so code generation does not grow on top of the
+ * frontend's heap. */
 void scriptc_native_collect_cycles(void) {
   scr_collect_cycles_phase();
 }
@@ -67,18 +73,41 @@ void scriptc_native_collect_cycles(void) {
 int32_t scriptc_native_fork(void) { return -1; }
 void scriptc_native_exit(int32_t code) { ExitProcess((UINT)code); }
 int32_t scriptc_native_wait(int32_t pid) { (void)pid; return -1; }
+int32_t scriptc_native_exited(void) { return -1; }
 uint8_t scriptc_native_lock_open(const uint8_t *bytes, size_t size) { (void)bytes; (void)size; return 0; }
 void scriptc_native_lock(void) {}
 void scriptc_native_unlock(void) {}
 #else
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/file.h>
 #include <sys/wait.h>
 
-int32_t scriptc_native_fork(void) { return (int32_t)fork(); }
+#if defined(__linux__)
+/* LLVM's profile runtime, linked into instrumented builds of the compiler
+ * (SCRIPTC_NATIVE_PROFILE_GENERATE); other builds leave these null. A worker
+ * starts with zeroed counters and writes its profile before _exit, which
+ * skips the runtime's atexit writer, so the profile counts the worker's work
+ * once. */
+extern void __llvm_profile_reset_counters(void) __attribute__((weak));
+extern int __llvm_profile_write_file(void) __attribute__((weak));
+#endif
 
-void scriptc_native_exit(int32_t code) { _exit(code); }
+int32_t scriptc_native_fork(void) {
+  pid_t pid = fork();
+#if defined(__linux__)
+  if (pid == 0 && __llvm_profile_reset_counters != NULL) __llvm_profile_reset_counters();
+#endif
+  return (int32_t)pid;
+}
+
+void scriptc_native_exit(int32_t code) {
+#if defined(__linux__)
+  if (__llvm_profile_write_file != NULL) (void)__llvm_profile_write_file();
+#endif
+  _exit(code);
+}
 
 /* The worker's exit status, 128 plus the signal for a worker a signal
  * ended, or -1 when waitpid fails. */
@@ -90,6 +119,18 @@ int32_t scriptc_native_wait(int32_t pid) {
   if (WIFEXITED(status)) return WEXITSTATUS(status);
   if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
   return -1;
+}
+
+/* The pid of a child that has ended, waiting for one if none has, or -1
+ * when waitid fails. The child is left to scriptc_native_wait: a child
+ * another part of the process waits for is not reaped here. */
+int32_t scriptc_native_exited(void) {
+  siginfo_t info;
+  memset(&info, 0, sizeof info);
+  while (waitid(P_ALL, 0, &info, WEXITED | WNOWAIT) < 0) {
+    if (errno != EINTR) return -1;
+  }
+  return info.si_pid > 0 ? (int32_t)info.si_pid : -1;
 }
 
 static int scriptc_native_lock_fd = -1;
@@ -130,4 +171,17 @@ void scr_cyc_set_growth_cap(long cap);
  * passes over the live heap. SCR_CYCLE_GROWTH_CAP still overrides it. */
 void scriptc_native_bound_cycle_growth(void) {
   scr_cyc_set_growth_cap(2);
+}
+
+/* The runtime's nursery trigger (scr_rc.h). */
+void scr_cyc_set_nursery_threshold(long threshold);
+
+/* Runs nursery passes every 1024 new candidates instead of every 256. Much
+ * of a build's cyclic garbage outlives 256 releases: in the shorter window
+ * it survives a nursery pass, is promoted, and only full passes over the
+ * whole live heap find it. A constructor sets it before the compiler's
+ * modules initialize, so every pass of a build uses it.
+ * SCR_CYCLE_THRESHOLD still overrides it. */
+__attribute__((constructor)) static void scriptc_native_widen_cycle_nursery(void) {
+  scr_cyc_set_nursery_threshold(1024);
 }

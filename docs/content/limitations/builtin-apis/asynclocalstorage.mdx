@@ -1,2 +1,12 @@
 - **AsyncLocalStorage:** timer, interval, `setImmediate`, `process.nextTick` and `queueMicrotask` callbacks run with the stores that were active when they were scheduled, as in Node.
-  Completion callbacks of callback-style I/O APIs, such as `fs.readFile` and `crypto.randomBytes`, run with no store, where Node runs them with the stores that were active when the operation started.
+  The completion callbacks of `fs`, `crypto` and `zlib` callback APIs, `dns.lookup`, `child_process.execFile`, `server.listen`, `net.connect`, `http.request`, `http.get` and `dgram` run with the stores that were active at the call, as in Node.
+  Events of `net`, `tls`, `http` and `https` sockets, servers, requests and responses run with the stores Node runs them with.
+  A socket's or client request's events see the context of the call that created it, and a server's events and its requests' and responses' events see the context of its `listen()` call.
+  Socket `write` and `end` callbacks, `'finish'` and `server.close(callback)` see the context of their call.
+  Stream events and callbacks run with the stores of the code that triggers them, as in Node.
+  Stream steps that Node defers with `process.nextTick` see the context that scheduled them, and `stream.finished` and `stream.pipeline` callbacks see the context of their call.
+  `fs` read and write streams and `zlib` streams run their events and callbacks in the context that created them.
+  Events of `child_process` children, their standard streams and their IPC channels see the context of the `spawn()` or `fork()` call; stdin's `'finish'` and `send()` callbacks see the context of their call.
+  A client `http2` session's events see the context of its `http2.connect()` call, and a client stream's events the context of its `request()` call.
+  An `http2` server's `'session'` and `'stream'` events and the compatibility API's request handler see the context of its `listen()` call; a server stream's own events, and its compatibility request's and response's, run with no store, as in Node.
+  `AsyncResource` has no lowering yet.

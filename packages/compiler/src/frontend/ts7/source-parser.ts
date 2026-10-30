@@ -42,7 +42,9 @@ export class Ts7SourceParser {
   }
 
   private connect(): Ts7Api {
-    return this.createApi({
+    // Called as a plain function: the instance is not its receiver.
+    const createApi = this.createApi;
+    return createApi({
       cwd: this.cwd,
       fs: {
         readFile: (path) => this.files.get(tsgoPath(path)) ?? null,

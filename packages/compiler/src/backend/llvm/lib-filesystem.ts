@@ -1,7 +1,7 @@
 /* Focused LLVM library-call emission extracted from emitter.ts. */
 import { InternalCompilerError } from "../../errors.js";
 import { undefinedArmTag } from "../../ir/analysis.js";
-import { DYN, F64, STATS_T, STRING } from "../../ir/ir.js";
+import { DYN, F64, STRING, type IrExpr, type IrType } from "../../ir/ir.js";
 import { mangleRecordNew } from "../mangle.js";
 import { arrNewCall, traceArg, vAdapters } from "./shapes.js";
 import type { LlvmEmitterContext, LibCallExpr, LlValue } from "./expr-context.js";
@@ -171,6 +171,22 @@ function emitObjEntryPairs(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   B.startBlock(le);
   B.line(`call void @scr_dyn_entry_pairs_free(ptr ${snap})`);
   return out;
+}
+
+/** The adapter of an fs.watch 'change' listener, by its declared shape: the
+ * runtime's for no parameters and for a string eventType, and one this
+ * module emits for a dynamic eventType or an (eventType, filename) listener.
+ * Only the runtime's adapters need a declaration. */
+function watchChangeAdapter(host: LlvmEmitterContext, cbT: IrType & { kind: "func" }): string {
+  const runtime =
+    cbT.params.length === 0
+      ? "scr_watch_thunk0"
+      : cbT.params.length === 1 && cbT.params[0]!.kind !== "dyn"
+        ? "scr_watch_thunk_event"
+        : null;
+  if (runtime === null) return host.watchNameThunkFor(cbT);
+  host.declare(`declare void @${runtime}(ptr, ptr, ptr)`);
+  return runtime;
 }
 
 export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
@@ -448,17 +464,19 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     // loop (usesTimers).
     host.usesTimers = true;
     const path = host.emitExpr(e.args[0]!);
-    host.declare(`declare ptr @scr_fs_watch(ptr, ptr, ptr)`);
+    host.declare(`declare ptr @scr_fs_watch(ptr, ptr, ptr, i1 zeroext)`);
     const t = B.tmp();
-    B.line(`${t} = call ptr @scr_fs_watch(ptr ${path.name}, ptr null, ptr null)`);
+    B.line(`${t} = call ptr @scr_fs_watch(ptr ${path.name}, ptr null, ptr null, i1 false)`);
     const out = host.own({ name: t, type: e.type });
     host.emitPendingCheck();
     return out;
   }
   if (e.fn === "fs.watchCb") {
     // The callback MOVES into the watcher's registry; the adapter is
-    // runtime-provided per listener shape (zero-param, or the eventType
-    // string). May throw (ENOENT) — the standard pending check.
+    // runtime-provided per listener shape (zero-param, the eventType
+    // string, or the compiler's (eventType, filename) adapter). May
+    // throw (ENOENT, or the macOS directory-names refusal) — the
+    // standard pending check.
     host.usesTimers = true;
     const cbT = e.args[1]!.type;
     if (cbT.kind !== "func")
@@ -466,20 +484,108 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     const path = host.emitExpr(e.args[0]!);
     const cb = host.emitExpr(e.args[1]!);
     host.toHeap(cb);
-    const adapter = cbT.params.length === 0 ? "scr_watch_thunk0" : "scr_watch_thunk_event";
-    host.declare(`declare void @${adapter}(ptr, ptr)`);
-    host.declare(`declare ptr @scr_fs_watch(ptr, ptr, ptr)`);
+    const adapter = watchChangeAdapter(host, cbT);
+    host.declare(`declare ptr @scr_fs_watch(ptr, ptr, ptr, i1 zeroext)`);
     const t = B.tmp();
-    B.line(`${t} = call ptr @scr_fs_watch(ptr ${path.name}, ptr ${cb.name}, ptr @${adapter})`);
+    B.line(
+      `${t} = call ptr @scr_fs_watch(ptr ${path.name}, ptr ${cb.name}, ptr @${adapter}, i1 ${cbT.params.length === 2 ? "true" : "false"})`,
+    );
     const out = host.own({ name: t, type: e.type });
     host.emitPendingCheck();
     return out;
+  }
+  if (e.fn === "watcher.on") {
+    // (recv, event, flags, listener) — flags: 1 once, 2 prepend. The
+    // listener MOVES in; the adapter follows the event (0 change, 1
+    // error, 2 close — CLOSE takes no adapter, a plain zero-arg call).
+    // Registration can throw (the macOS directory-names refusal).
+    const flagsArg = e.args[2]!;
+    if (flagsArg.kind !== "numLit")
+      throw new InternalCompilerError("llvm emitter bug: watcher.on flags not a literal");
+    const flags = flagsArg.value;
+    const codeArg = e.args[1]!;
+    if (codeArg.kind !== "numLit")
+      throw new InternalCompilerError("llvm emitter bug: watcher.on event not a literal");
+    const code = codeArg.value;
+    const cbT = e.args[3]!.type;
+    if (cbT.kind !== "func")
+      throw new InternalCompilerError("llvm emitter bug: watcher.on listener not a func");
+    const w = host.emitExpr(e.args[0]!);
+    const event = host.emitExpr(e.args[1]!);
+    const cb = host.emitExpr(e.args[3]!);
+    host.toHeap(cb);
+    let adapter = "null";
+    let wantsName = false;
+    if (code === 0) {
+      adapter = watchChangeAdapter(host, cbT);
+      wantsName = cbT.params.length === 2;
+    } else if (code === 1) {
+      adapter = cbT.params.length === 0 ? "scr_watch_err_thunk0" : host.watchErrorThunkFor(cbT);
+      if (cbT.params.length === 0) host.declare(`declare void @scr_watch_err_thunk0(ptr, ptr)`);
+    }
+    host.declare(
+      `declare void @scr_watcher_on(ptr, double, ptr, ptr, i1 zeroext, i1 zeroext, i1 zeroext)`,
+    );
+    B.line(
+      `call void @scr_watcher_on(ptr ${w.name}, double ${event.name}, ptr ${cb.name}, ptr ${adapter === "null" ? "null" : `@${adapter}`}, i1 ${flags & 1 ? "true" : "false"}, i1 ${flags & 2 ? "true" : "false"}, i1 ${wantsName ? "true" : "false"})`,
+    );
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "watcher.off") {
+    // Removal is by pointer identity: the listener stays borrowed
+    // (never heap-moved), exactly like process.offExit's.
+    const w = host.emitExpr(e.args[0]!);
+    const event = host.emitExpr(e.args[1]!);
+    const cb = host.emitExpr(e.args[2]!);
+    host.declare(`declare void @scr_watcher_off(ptr, double, ptr)`);
+    B.line(`call void @scr_watcher_off(ptr ${w.name}, double ${event.name}, ptr ${cb.name})`);
+    return { name: "", type: e.type };
   }
   if (e.fn === "watcher.close") {
     // Idempotent; never throws.
     const w = host.emitExpr(e.args[0]!);
     host.declare(`declare void @scr_watcher_close(ptr)`);
     B.line(`call void @scr_watcher_close(ptr ${w.name})`);
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "fs.watchFile") {
+    // (path, interval, persistent, listener) — the listener MOVES into
+    // the poller's registry and the adapter is runtime-provided per
+    // listener shape (zero, one or two Stats parameters). The poller
+    // re-arms a timer every interval, so this is a timer program. May
+    // throw (a null byte in the path, or an interval that is not a
+    // uint32) — the standard pending check.
+    host.usesTimers = true;
+    const cbT = e.args[3]!.type;
+    if (cbT.kind !== "func")
+      throw new InternalCompilerError("llvm emitter bug: fs.watchFile listener not a func");
+    const path = host.emitExpr(e.args[0]!);
+    const interval = host.emitExpr(e.args[1]!);
+    const persistent = host.emitExpr(e.args[2]!);
+    const cb = host.emitExpr(e.args[3]!);
+    host.toHeap(cb);
+    const adapter = `scr_watch_file_thunk${cbT.params.length}`;
+    host.declare(`declare void @${adapter}(ptr, ptr, ptr)`);
+    host.declare(`declare void @scr_fs_watch_file(ptr, double, i1 zeroext, ptr, ptr)`);
+    B.line(
+      `call void @scr_fs_watch_file(ptr ${path.name}, double ${interval.name}, i1 ${persistent.name}, ptr ${cb.name}, ptr @${adapter})`,
+    );
+    host.emitPendingCheck();
+    return { name: "", type: e.type };
+  }
+  if (e.fn === "fs.unwatchFile") {
+    // Removal is by closure identity: the listener stays borrowed
+    // (never heap-moved), exactly like watcher.off's; an absent one is
+    // the NULL that removes every listener on the path. A null byte in
+    // the path throws.
+    const path = host.emitExpr(e.args[0]!);
+    const cb = e.args[1] === undefined ? null : host.emitExpr(e.args[1]!);
+    host.declare(`declare void @scr_fs_unwatch_file(ptr, ptr)`);
+    B.line(
+      `call void @scr_fs_unwatch_file(ptr ${path.name}, ptr ${cb === null ? "null" : cb.name})`,
+    );
+    host.emitPendingCheck();
     return { name: "", type: e.type };
   }
   if (e.fn === "fs.globTypesSync" || e.fn === "fsp.globTypes") {
@@ -551,9 +657,12 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
     if (e.type.kind !== "union")
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} result is not a union`);
     const def = host.unionsById.get(e.type.unionId);
-    const statsTag = def ? def.arms.findIndex((a) => a.kind === "stats") : -1;
+    const statsTag = def
+      ? def.arms.findIndex((a) => a.kind === "stats" || a.kind === "bigintStats")
+      : -1;
+    const statsArm = def?.arms[statsTag];
     const undefTag = undefinedArmTag(e.type, host.unionsById);
-    if (statsTag < 0 || undefTag < 0)
+    if (statsTag < 0 || undefTag < 0 || !statsArm)
       throw new InternalCompilerError(`llvm emitter bug: ${e.fn} union lacks its arms`);
     const path = host.emitExpr(e.args[0]!);
     const throws = host.emitExpr(e.args[1]!);
@@ -564,7 +673,7 @@ export function emitFilesystemLibCall(host: LlvmEmitterContext, e: LibCallExpr):
       `${raw} = call ptr @scr_fs_stat_probe(ptr ${path.name}, i1 zeroext ${noFollow}, i1 zeroext ${throws.name})`,
     );
     host.emitPendingCheck();
-    return host.wrapNullable(raw, raw, STATS_T, statsTag, e.type, undefTag);
+    return host.wrapNullable(raw, raw, statsArm, statsTag, e.type, undefTag);
   }
   if (e.fn === "fs.readdirTypesSync" || e.fn === "fsp.readdirTypes") {
     // Dirent rows assembled inline from one scandir snapshot — the C
@@ -1027,6 +1136,105 @@ function emitPowerOfTwo(host: LlvmEmitterContext, n: string): string {
   return out;
 }
 
+/** `base ** exponent` and `Math.pow(base, exponent)` as V8's math::pow
+ * answers them: a literal exponent 2 is `base * base`, a literal 0.5 is
+ * `sqrt(base + 0)` (+Infinity for an infinite base), and every other
+ * exponent calls scr_math_pow, which applies V8's other special cases
+ * before the platform pow. The platform pow is never called by its libm
+ * name, which LLVM would rewrite (pow(2, x) to exp2(x), pow(x, -1) to 1/x)
+ * into answers that can differ from V8's. */
+export function emitPowF64(
+  host: LlvmEmitterContext,
+  base: string,
+  exponent: string,
+  exponentExpr: IrExpr,
+): string {
+  const B = host.B;
+  const literal =
+    exponentExpr.kind === "numLit"
+      ? exponentExpr.value
+      : exponentExpr.kind === "unary" &&
+          exponentExpr.op === "-" &&
+          exponentExpr.operand.kind === "numLit"
+        ? -exponentExpr.operand.value
+        : null;
+  const out = B.tmp();
+  if (literal === 2) {
+    B.line(`${out} = fmul double ${base}, ${base}`);
+    return out;
+  }
+  if (literal === 0.5) {
+    host.declare(`declare double @llvm.sqrt.f64(double)`);
+    host.declare(`declare double @llvm.fabs.f64(double)`);
+    const plus = B.tmp(),
+      root = B.tmp(),
+      magnitude = B.tmp(),
+      infinite = B.tmp();
+    B.line(`${plus} = fadd double ${base}, ${f64Lit(0)}`);
+    B.line(`${root} = call double @llvm.sqrt.f64(double ${plus})`);
+    B.line(`${magnitude} = call double @llvm.fabs.f64(double ${base})`);
+    B.line(`${infinite} = fcmp oeq double ${magnitude}, 0x7FF0000000000000`);
+    B.line(`${out} = select i1 ${infinite}, double 0x7FF0000000000000, double ${root}`);
+    return out;
+  }
+  host.declare(`declare double @scr_math_pow(double, double)`);
+  B.line(
+    `${out} = call double @scr_math_pow(double ${base}, double ${exponent}) nounwind willreturn`,
+  );
+  return out;
+}
+
+/** `Math.pow(2, n)`, the divisor emitPowerOfTwoQuotient takes. */
+export function isPowerOfTwoCall(e: IrExpr): boolean {
+  return (
+    e.kind === "libCall" &&
+    e.fn === "math.pow" &&
+    e.args.length === 2 &&
+    e.args[0]!.kind === "numLit" &&
+    e.args[0]!.value === 2
+  );
+}
+
+/** `left / divisor` for a divisor that is usually a power of two
+ * (`x / Math.pow(2, n)`). A positive power of two from 2^-1022 to 2^1022
+ * has a reciprocal that is a power of two too, whose bits are
+ * 0x7FE0000000000000 minus the divisor's, and the product with it is the
+ * quotient for every `left`: both are `left` scaled by the same power of
+ * two, rounded once. Any other divisor divides. */
+export function emitPowerOfTwoQuotient(
+  host: LlvmEmitterContext,
+  left: string,
+  divisor: string,
+): string {
+  const B = host.B;
+  const bits = B.tmp(),
+    mantissa = B.tmp(),
+    plain = B.tmp(),
+    biased = B.tmp(),
+    offset = B.tmp(),
+    normal = B.tmp(),
+    power = B.tmp(),
+    inverseBits = B.tmp(),
+    inverse = B.tmp(),
+    scaled = B.tmp(),
+    divided = B.tmp(),
+    out = B.tmp();
+  B.line(`${bits} = bitcast double ${divisor} to i64`);
+  B.line(`${mantissa} = and i64 ${bits}, ${2n ** 52n - 1n}`);
+  B.line(`${plain} = icmp eq i64 ${mantissa}, 0`);
+  // Biased exponents 1 to 2045 with a clear sign bit.
+  B.line(`${biased} = lshr i64 ${bits}, 52`);
+  B.line(`${offset} = sub i64 ${biased}, 1`);
+  B.line(`${normal} = icmp ult i64 ${offset}, 2045`);
+  B.line(`${power} = and i1 ${plain}, ${normal}`);
+  B.line(`${inverseBits} = sub i64 ${0x7fe0000000000000n}, ${bits}`);
+  B.line(`${inverse} = bitcast i64 ${inverseBits} to double`);
+  B.line(`${scaled} = fmul double ${left}, ${inverse}`);
+  B.line(`${divided} = fdiv double ${left}, ${divisor}`);
+  B.line(`${out} = select i1 ${power}, double ${scaled}, double ${divided}`);
+  return out;
+}
+
 export function emitPrimitiveLibCall(host: LlvmEmitterContext, e: LibCallExpr): LlValue {
   const B = host.B;
   if (e.fn === "math.min" || e.fn === "math.max") {
@@ -1047,6 +1255,11 @@ export function emitPrimitiveLibCall(host: LlvmEmitterContext, e: LibCallExpr): 
   if (e.fn === "math.pow" && e.args[0]!.kind === "numLit" && e.args[0]!.value === 2) {
     const v = host.emitExpr(e.args[1]!);
     return { name: emitPowerOfTwo(host, v.name), type: e.type };
+  }
+  if (e.fn === "math.pow") {
+    const base = host.emitExpr(e.args[0]!);
+    const exponent = host.emitExpr(e.args[1]!);
+    return { name: emitPowF64(host, base.name, exponent.name, e.args[1]!), type: e.type };
   }
   if (e.fn === "math.floor" || e.fn === "math.ceil") {
     const intr = e.fn === "math.floor" ? "floor" : "ceil";

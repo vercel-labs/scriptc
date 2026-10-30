@@ -29,8 +29,10 @@ function bump(): void {
 
 const sizes = [1, 2, 3];
 const len: Int32 = sizes.length;
+const weights = [1.5, 2];
+const shifted = weights.map((w: Int32) => w + 1);
 
 const span = new Span(1.5);
 span.advance();
 bump();
-console.log(width(span), half(7), count, len);
+console.log(width(span), half(7), count, len, shifted);

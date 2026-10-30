@@ -6,6 +6,7 @@
  * the first unit that differs. The self-hosted compiler's IR and LLVM exceed
  * V8's maximum string length, so splitting works on Buffers and hashes each
  * unit instead of decoding the artifact. */
+import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 
 const hash = (bytes) => createHash("sha1").update(bytes).digest("hex");
@@ -388,13 +389,69 @@ export function dynamicTierSymbols(names) {
     .sort();
 }
 
+/** The Node island runtime (scr_node_island*.c, scope-B design §2.15): no
+ * program without a call into Node.js may define any of these. */
+export const NODE_ISLAND_PREFIXES = ["scr_node_island", "scr_loop_set_node_island"];
+
+/** The namespace ICU's own symbols live in after its version-suffixed
+ * renaming: `icu_78`, which Itanium mangling spells `6icu_78`. */
+export const ICU_CPP_NAMESPACE = "6icu_78";
+
+/** The ICU archive: no program that answers its Intl forms without
+ * ICU — that is, every program whose IR has no `icu.*` libCall — may define
+ * a symbol from it. The test is exact because ICU builds with symbol
+ * renaming on: every C API symbol carries the `_78` version suffix
+ * (`ubrk_open_78`), its data symbol is `icudt78_dat`, and every C++ symbol
+ * is an Itanium mangling that names namespace `icu_78`, which the mangling
+ * spells `6icu_78` wherever the name occurs — as the function's own
+ * namespace (`_ZN6icu_78...`), in its parameter types, in vtables, typeinfo
+ * and guard variables, or in a libc++ instantiation over an ICU type. No
+ * symbol outside the archive carries either mark.
+ *
+ * scr_intl.c's own functions are deliberately not tested by name. The
+ * engine-free Intl paths share their prefix (`scr_intl_num_format_en_us` in
+ * scr_lib.c, `scr_intl_segmenter_new` in scr_grapheme.c), and they must stay
+ * linkable without ICU (I4). Any scr_intl.c function that does link brings an
+ * ICU symbol with it, which the test catches. The C++ standard library
+ * merged into the archive cannot leak on its own either: an archive
+ * contributes a member only when something references it, and only ICU's
+ * objects reference libc++. */
+export function icuSymbols(names) {
+  return [...new Set(names)]
+    .filter(
+      (name) =>
+        name.endsWith("_78") || name.includes(ICU_CPP_NAMESPACE) || name.startsWith("icudt78"),
+    )
+    .sort();
+}
+
+/** The Node island symbols among `names`, sorted. */
+export function nodeIslandSymbols(names) {
+  return [...new Set(names)]
+    .filter((name) => NODE_ISLAND_PREFIXES.some((prefix) => name.startsWith(prefix)))
+    .sort();
+}
+
 /* Bench workloads whose release binaries link dynamic-tier symbols on
  * b14377864: JSON.parse trees, worker messages, regex exec metadata
  * (two-tier §3.3 L5), and a shared scr_dyn_call/scr_dyn_define_property core
  * not yet traced to its typed root. bench/thread-slots,
  * bench/channel-messages and bench/worker-messages, added later, link them
  * through worker messages:
- * node:worker_threads values are dyn objects. Every other bench workload is fully typed and must link none. The gate and
+ * node:worker_threads values are dyn objects. bench/json-unions, added
+ * later too, decodes JSON.parse trees. bench/throw-chains, also added
+ * later, tests caught values with `instanceof`, as bench/validate-errors
+ * does. bench/dynamic-methods and
+ * bench/dynamic-properties are untyped JavaScript. bench/regex-replacers,
+ * also added later, passes checked-dynamic values to replace callbacks
+ * whose parameters the lib types `any`: captures a match can leave unset
+ * and results the checker types `any`. bench/record-untyped-writes, also
+ * added later, writes typed records through `unknown` and `Object.assign`
+ * views. bench/layered-errors, also added later, constructs and throws
+ * Error subclass instances, as bench/validate-errors does.
+ * bench/stream-buffered-drain, also added later, drains an object-mode
+ * Readable, whose chunks are checked-dynamic values. Every other bench
+ * workload is fully typed and must link none. The gate and
  * tests/harness/bench-dynamic-tier.test.ts enforce that, and the test also
  * fails when a listed workload stops linking them, so remove a workload here
  * when a leak fix makes its binary clean. */
@@ -408,10 +465,19 @@ export const DYNAMIC_WORKLOADS = new Set([
   "bench/intern-table",
   "bench/thread-slots",
   "bench/channel-messages",
+  "bench/dynamic-methods",
+  "bench/dynamic-properties",
   "bench/worker-messages",
   "bench/typed-array-scan-workers",
   "bench/log-summary",
   "bench/inventory-report",
+  "bench/line-reader",
+  "bench/json-unions",
+  "bench/throw-chains",
+  "bench/regex-replacers",
+  "bench/record-untyped-writes",
+  "bench/layered-errors",
+  "bench/stream-buffered-drain",
 ]);
 
 /** Names of the functions (text and weak symbols) in `nm` output. Mach-O
@@ -474,6 +540,150 @@ export function compareCounts(baseline, candidate) {
   };
 }
 
+/* ── runtime packs ─────────────────────────────────────────────────────── */
+
+/** Every file a runtime-pack.json lists (each flavor's runtime unit
+ * variants, their bitcode, and the vendor archives), as path → sha256. */
+export function runtimePackFiles(manifest) {
+  const files = new Map();
+  const visit = (value) => {
+    if (Array.isArray(value)) value.forEach(visit);
+    else if (value !== null && typeof value === "object") {
+      if (typeof value.path === "string" && typeof value.sha256 === "string")
+        files.set(value.path, value.sha256);
+      Object.values(value).forEach(visit);
+    }
+  };
+  visit(manifest.flavors ?? {});
+  visit(manifest.archives ?? {});
+  return files;
+}
+
+/** The runtime pack files that differ between two runtime-pack.json
+ * manifests: changed, added and removed paths, each sorted. */
+export function runtimePackDiff(baseline, candidate) {
+  const before = runtimePackFiles(baseline);
+  const after = runtimePackFiles(candidate);
+  const changed = [...before].filter(([path, sha]) => after.has(path) && after.get(path) !== sha);
+  return {
+    changed: changed.map(([path]) => path).sort(),
+    added: [...after.keys()].filter((path) => !before.has(path)).sort(),
+    removed: [...before.keys()].filter((path) => !after.has(path)).sort(),
+  };
+}
+
+/** The changed runtime pack files whose symbols executables link: runtime
+ * objects and vendor archives. */
+export function linkedRuntimeFiles(diff) {
+  return [...diff.changed, ...diff.added, ...diff.removed].filter(
+    (path) => path.endsWith(".o") || path.endsWith(".a"),
+  );
+}
+
+/** Defined functions of textual LLVM IR (llvm-dis output) as name → hash of
+ * the body. Attribute group and metadata numbers are dropped first, since
+ * an unrelated change elsewhere in the unit renumbers them. */
+export function llvmFunctionHashes(text) {
+  const functions = new Map();
+  const lines = text.split("\n");
+  for (let index = 0; index < lines.length; index++) {
+    const head = /^define\b[^@]*@("(?:[^"\\]|\\.)*"|[\w.$-]+)\(/.exec(lines[index]);
+    if (head === null) continue;
+    const body = [];
+    for (; index < lines.length && lines[index] !== "}"; index++) body.push(lines[index]);
+    const normalized = body.join("\n").replace(/ #\d+/g, "").replace(/!\d+/g, "!");
+    functions.set(head[1].replace(/^"|"$/g, ""), hash(normalized));
+  }
+  return functions;
+}
+
+/** Names whose hashes differ between two function maps, and the names only
+ * one side defines. */
+export function changedFunctions(before, after) {
+  return {
+    changed: [...before]
+      .filter(([name, h]) => after.has(name) && after.get(name) !== h)
+      .map(([name]) => name)
+      .sort(),
+    added: [...after.keys()].filter((name) => !before.has(name)).sort(),
+    removed: [...before.keys()].filter((name) => !after.has(name)).sort(),
+  };
+}
+
+/** Whether every symbol an executable comparison added, removed or resized
+ * is one of `runtimeSymbols`, the symbols the changed runtime objects
+ * define. Mach-O nm prints no sizes, so there only additions and removals
+ * are checked. */
+export function confinedToRuntime(exe, runtimeSymbols) {
+  return [...exe.added, ...exe.removed, ...exe.resized.map((s) => s.name)].every((name) =>
+    runtimeSymbols.has(name),
+  );
+}
+
+/** The report lines the gate prints for one program. */
+export function programLines(entry) {
+  const lines = [];
+  const pct = (ratio) => `${ratio >= 1 ? "+" : ""}${((ratio - 1) * 100).toFixed(2)}%`;
+  const label = {
+    identical: "identical",
+    allowed: "allowed  ",
+    differs: "DIFFERS  ",
+    "runtime-only": "runtime  ",
+    nondeterministic: "nondet   ",
+    "build-error": "ERROR    ",
+    "both-fail": "both-fail",
+  }[entry.verdict];
+  const notes = [];
+  for (const [kind, result] of Object.entries(entry.artifacts))
+    if (!result.identical) {
+      const counts = result.changed
+        ? ` (${result.changed.length} changed, ${result.added.length} added, ${result.removed.length} removed)`
+        : "";
+      notes.push(`${kind}: ${result.first}${counts}`);
+    }
+  const size = entry.artifacts.exe?.bytes;
+  if (size && size.baseline !== size.candidate)
+    notes.push(
+      `size ${size.baseline} -> ${size.candidate} B (${pct(size.candidate / size.baseline)})`,
+    );
+  if (entry.cachegrind?.total) {
+    const { total, deltas } = entry.cachegrind;
+    notes.push(
+      `Ir ${total.baseline} -> ${total.candidate} (${pct(total.candidate / Math.max(1, total.baseline))})` +
+        (deltas[0]
+          ? `, largest ${deltas[0].name} ${deltas[0].delta > 0 ? "+" : ""}${deltas[0].delta}`
+          : ""),
+    );
+  } else if (entry.cachegrind?.skipped)
+    notes.push(`cachegrind skipped: ${entry.cachegrind.skipped}`);
+  if (entry.runtime) {
+    const linked = [...entry.runtime.changed, ...entry.runtime.added];
+    notes.push(
+      `runtime-only: links ${linked.length} changed runtime function${linked.length === 1 ? "" : "s"}` +
+        (linked.length
+          ? ` (${linked.slice(0, 8).join(", ")}${linked.length > 8 ? ", ..." : ""})`
+          : ""),
+    );
+  }
+  if (entry.nondeterministic)
+    notes.push(`the baseline's own rebuild differs in ${entry.nondeterministic.join(", ")}`);
+  for (const failure of entry.dynamicTier?.failures ?? []) notes.push(`SYMBOLS: ${failure}`);
+  lines.push(`${label}  ${entry.id}${notes.length ? `  ${notes.join("; ")}` : ""}`);
+  // A build error's first line is often a warning; print all of it.
+  const errors =
+    entry.baselineError !== undefined && entry.baselineError === entry.candidateError
+      ? [["baseline and candidate", entry.baselineError]]
+      : [
+          ["baseline", entry.baselineError],
+          ["candidate", entry.candidateError],
+        ].filter(([, error]) => error !== undefined);
+  for (const [side, error] of errors) {
+    lines.push(`           ${side}:`);
+    for (const line of error.split("\n")) lines.push(`             ${line}`);
+  }
+  return lines;
+}
+
 /* ── verdicts ──────────────────────────────────────────────────────────── */
 
 /** One program's verdict from its build results and artifact comparisons.
@@ -481,7 +691,23 @@ export function compareCounts(baseline, candidate) {
 /** `required` programs must build with both checkouts: a failure both share
  * means the gate compared nothing for them. Other programs may fail the same
  * way on both sides, as a corpus program the compiler refuses does. */
-export function programVerdict({ baseline, candidate, artifacts, allowed, required = false }) {
+/** A difference in the release executable alone, with identical IR and
+ * LLVM, is "runtime-only" when `runtimeOnly` says the changed runtime
+ * objects explain it (the gate checks the runtime packs and the symbols).
+ * A difference the baseline also shows when it builds the program again is
+ * "nondeterministic": `nondeterministic` lists the artifact kinds whose
+ * baseline rebuild differs, and every differing artifact must be among
+ * them. Neither fails the gate unless `strict` is set. */
+export function programVerdict({
+  baseline,
+  candidate,
+  artifacts,
+  allowed,
+  required = false,
+  runtimeOnly = false,
+  nondeterministic = [],
+  strict = false,
+}) {
   if (!baseline.ok || !candidate.ok) {
     if (!baseline.ok && !candidate.ok && baseline.error === candidate.error)
       return { verdict: "both-fail", fails: required };
@@ -489,7 +715,12 @@ export function programVerdict({ baseline, candidate, artifacts, allowed, requir
   }
   const differing = Object.entries(artifacts).filter(([, r]) => !r.identical);
   if (differing.length === 0) return { verdict: "identical", fails: false };
-  return allowed ? { verdict: "allowed", fails: false } : { verdict: "differs", fails: true };
+  if (allowed) return { verdict: "allowed", fails: false };
+  if (runtimeOnly && differing.every(([kind]) => kind === "exe"))
+    return { verdict: "runtime-only", fails: strict };
+  if (differing.every(([kind]) => nondeterministic.includes(kind)))
+    return { verdict: "nondeterministic", fails: strict };
+  return { verdict: "differs", fails: true };
 }
 
 export function median(values) {
@@ -525,4 +756,144 @@ export function timeRatio(rows, resamples = 2000) {
     low: ratios[Math.floor(resamples * 0.025)],
     high: ratios[Math.floor(resamples * 0.975)],
   };
+}
+
+/** The compile-time verdict for one group of timing rows (`bench` or
+ * `self`): it fails when the 95% interval lies entirely above the allowed
+ * growth, and is inconclusive when the interval straddles it. */
+export function timingVerdict(name, rows, maxGrowth) {
+  const result = timeRatio(rows);
+  const fails = result.low > 1 + maxGrowth;
+  const verdict = fails
+    ? "SLOWER"
+    : result.high > 1 + maxGrowth
+      ? "inconclusive (rerun with more runs)"
+      : "within tolerance";
+  const pct = (ratio) => `${ratio >= 1 ? "+" : ""}${((ratio - 1) * 100).toFixed(2)}%`;
+  return {
+    result,
+    fails,
+    line:
+      `time       ${name} ${rows.length > 1 ? "geomean " : ""}${pct(result.ratio)} ` +
+      `[95% CI ${pct(result.low)}, ${pct(result.high)}]: ${verdict}`,
+    failure: fails
+      ? `${name} compile time grew ${pct(result.ratio)} (CI low ${pct(result.low)})`
+      : null,
+  };
+}
+
+/** Timing rows grouped as the gate judges them. */
+export function timingGroups(rows) {
+  return {
+    bench: rows.filter((r) => r.id.startsWith("bench/")),
+    self: rows.filter((r) => r.id === "self/cli"),
+  };
+}
+
+/* ── baseline cache ────────────────────────────────────────────────────── */
+
+/** A content hash of one artifact file, as the baseline cache records it. */
+export const artifactHash = hash;
+
+/** The hash of what a program's build reads, as the baseline cache records
+ * it: `files` (the entry and its relative imports) by path relative to
+ * `root` and content, read through `read`, and the optimization level. */
+export function programInputsHash(root, files, optimization, read) {
+  const h = createHash("sha1").update(`${optimization}\0`);
+  for (const file of [...files].sort())
+    h.update(`${file.startsWith(root + "/") ? file.slice(root.length + 1) : file}\0`)
+      .update(read(file))
+      .update("\0");
+  return h.digest("hex");
+}
+
+/** The baseline cache entry recorded for program `id`, or undefined when the
+ * cache has none or recorded it for other inputs (`programInputsHash`): a
+ * program or an import that changed since the record must build its
+ * baseline, or a recorded build error or artifact hash of the old sources
+ * would settle the new sources' comparison. */
+export function recordedBaseline(cache, id, inputs) {
+  const entry = cache?.programs[id];
+  return entry !== undefined && entry.inputs === inputs ? entry : undefined;
+}
+
+/** The comparison a cached baseline entry settles without building the
+ * baseline, or null when the baseline must be built: identical artifacts
+ * (every recorded hash equals the candidate's) or the same build error on
+ * both sides. `candidate` holds the candidate's build result and `hashes`
+ * its artifact hashes. */
+export function cachedComparison(entry, candidate, hashes) {
+  if (entry === undefined) return null;
+  if (!entry.ok || !candidate.ok)
+    return !entry.ok && !candidate.ok && entry.error === candidate.error
+      ? {
+          baseline: { ok: false, error: entry.error, ms: entry.ms ?? null, cached: true },
+          artifacts: {},
+        }
+      : null;
+  const kinds = Object.keys(entry.hashes);
+  const differs = (kind) => entry.hashes[kind] === null || entry.hashes[kind] !== hashes[kind];
+  if (kinds.length === 0 || kinds.some(differs)) return null;
+  const artifacts = {};
+  for (const kind of kinds) artifacts[kind] = { identical: true };
+  if (artifacts.exe) artifacts.exe.bytes = { baseline: entry.exeBytes, candidate: entry.exeBytes };
+  return { baseline: { ok: true, ms: entry.ms ?? null }, artifacts };
+}
+
+/* ── sharded runs ──────────────────────────────────────────────────────── */
+
+/** Merge the --json reports of gate shards that split one good-code set
+ * (--shard, --set) into a single report with one verdict. Program entries
+ * and their failures are concatenated; the compile-time groups and the
+ * "nothing was compared" check are recomputed over all shards. */
+export function mergeReports(reports) {
+  assert(reports.length > 0, "no gate reports to merge");
+  const [first] = reports;
+  for (const report of reports) {
+    assert(report.schema === first.schema, "gate reports have different schemas");
+    for (const label of ["baseline", "candidate"])
+      assert(
+        report.trees[label].revision === first.trees[label].revision,
+        `gate reports compare different ${label} revisions`,
+      );
+  }
+  const globals = new Set(reports.flatMap((r) => r.globalFailures ?? []));
+  const merged = {
+    ...first,
+    shards: reports.length,
+    programs: reports.flatMap((r) => r.programs),
+    failures: reports.flatMap((r) => r.failures.filter((f) => !globals.has(f))),
+    globalFailures: [],
+    timing: null,
+    candidateSelf: reports.find((r) => r.candidateSelf)?.candidateSelf,
+    elapsedMs: Math.max(...reports.map((r) => r.elapsedMs ?? 0)),
+  };
+  const ids = new Set();
+  for (const p of merged.programs) {
+    assert(!ids.has(p.id), `program ${p.id} appears in more than one gate report`);
+    ids.add(p.id);
+  }
+  const timed = reports.filter((r) => r.timing !== null);
+  const lines = [];
+  if (timed.length > 0) {
+    const rows = timed.flatMap((r) => r.timing.rows);
+    const maxGrowth = timed[0].timing.maxGrowth;
+    merged.timing = { runs: timed[0].timing.runs, maxGrowth, rows, groups: {} };
+    for (const [name, group] of Object.entries(timingGroups(rows))) {
+      if (group.length === 0) continue;
+      const { result, line, failure } = timingVerdict(name, group, maxGrowth);
+      merged.timing.groups[name] = result;
+      lines.push(line);
+      if (failure !== null) merged.globalFailures.push(failure);
+    }
+  }
+  const counts = {};
+  for (const p of merged.programs) counts[p.verdict] = (counts[p.verdict] ?? 0) + 1;
+  const compared = ["identical", "allowed", "runtime-only", "nondeterministic", "differs"];
+  if (!merged.programs.some((p) => compared.includes(p.verdict)))
+    merged.globalFailures.push("no program built with both checkouts, so nothing was compared");
+  merged.failures.push(...merged.globalFailures);
+  merged.counts = counts;
+  merged.verdict = merged.failures.length > 0 ? "fail" : "pass";
+  return { report: merged, timingLines: lines };
 }

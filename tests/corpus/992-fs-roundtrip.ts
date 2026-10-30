@@ -2,7 +2,9 @@
 // inside a scratch directory derived from THIS process's own identity: the
 // harness runs Node and the native binary CONCURRENTLY in one cwd, and
 // argv[1]'s trailing segment differs between the two (script name vs binary
-// name), so the sides never touch the same paths.
+// name), so the sides never touch the same paths. The pid keeps two Node
+// oracles apart too: the differential and LLVM differential suites can run
+// the same program at once in one shard.
 import {
   appendFileSync,
   existsSync,
@@ -32,7 +34,7 @@ function freshDir(dir: string): void {
   }
   mkdirSync(dir);
 }
-const scratch = "tmp-992-" + tail(process.argv[1]);
+const scratch = "tmp-992-" + tail(process.argv[1]) + "-" + process.pid;
 freshDir(scratch);
 
 const file = scratch + "/notes.txt";

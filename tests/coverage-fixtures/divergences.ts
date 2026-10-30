@@ -20,14 +20,18 @@ console.log(tagged.label);
 const view: Labeled = tagged;
 console.log(view === tagged);
 
-// Key order: values of one type are built in two orders and the program
-// observes them, so the type keeps its declaration order.
+// Key order: values of one type are built in two orders, and a spread sets
+// an optional key its source lacks, so the values cannot record their own
+// orders and the type keeps its declaration order.
 interface Point {
   x: number;
   y: number;
+  label?: string;
 }
 const point: Point = { y: 1, x: 2 };
-console.log(JSON.stringify(point), JSON.stringify({ x: 3, y: 4 }));
+const other: Point = { x: 3, y: 4 };
+const labeled: Point = { ...point, label: "p" };
+console.log(JSON.stringify(point), JSON.stringify(other), JSON.stringify(labeled));
 
 // Text outside the built-in collation compares by code point natively.
 console.log(["б", "а"].sort((p, q) => p.localeCompare(q)).join(","), "яблоко".localeCompare("груша"));

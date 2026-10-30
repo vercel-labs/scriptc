@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/7534-buffer-prototype-members.cjs"
+ ],
+ "diags": []
+}

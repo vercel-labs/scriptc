@@ -278,6 +278,18 @@ test("sums that only feed a bitwise conversion of int32 operands add in 32 bits"
     returning("float_read_add", bin("|", bin("+", length, read("floats")), zero)),
     returning("product", bin("|", bin("*", length, length), zero)),
     returning("number_add", bin("+", length, read("bytes"))),
+    returning(
+      "read_products",
+      bin(
+        ">>>",
+        bin(
+          "+",
+          bin("*", read("bytes"), { kind: "numLit", value: 77, type: F64, loc }),
+          bin("*", read("bytes"), { kind: "numLit", value: 150, type: F64, loc }),
+        ),
+        zero,
+      ),
+    ),
   ];
   const llvm = emitLlvmModule(mod);
   const body = (name: string): string =>
@@ -292,8 +304,10 @@ test("sums that only feed a bitwise conversion of int32 operands add in 32 bits"
     expect(body(name), name).not.toContain("uint32.coerce");
   }
   // A NaN-coded read converts to 0 through the sum: the result selects 0
-  // unless every NaN-coded operand is ordered.
-  expect(body("read_add")).toMatch(/ = fcmp ord double .*, 0\.0$/m);
+  // unless every NaN-coded operand is ordered. A read's own validity bit
+  // tells, so the number is not compared.
+  expect(body("read_add")).toMatch(/ = phi i1 \[ true, /);
+  expect(body("read_add")).not.toMatch(/fcmp ord/);
   expect(body("read_add")).toMatch(/ = add i32 /);
   expect(body("read_add")).toMatch(/ = select i1 .*, i32 .*, i32 0$/m);
   expect(body("read_chain")).toMatch(/ = and i1 /);
@@ -309,6 +323,12 @@ test("sums that only feed a bitwise conversion of int32 operands add in 32 bits"
     expect(body(name), name).not.toMatch(/ = (add|mul) i32 /);
   }
   expect(body("number_add")).not.toMatch(/ = add i32 |fcmp ord/);
+  // Products of NaN-coded reads and constants are exact integers or NaN, so
+  // their sum adds in 32 bits too, selected by the reads' validity bits.
+  expect(body("read_products")).toMatch(/ = mul i32 /);
+  expect(body("read_products")).toMatch(/ = add i32 /);
+  expect(body("read_products")).not.toContain("uint32.coerce");
+  expect(body("read_products")).not.toMatch(/fcmp ord/);
 });
 
 test.each([32, 64] as const)(

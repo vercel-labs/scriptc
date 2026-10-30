@@ -1,0 +1,35 @@
+globalthis-buffer-alias-values.ts:10:15 - error SC1090: the Buffer constructor read through a cast of globalThis as a value is not supported yet
+
+   9 | }
+  10 | const bytes = runtimeBuffer && runtimeBuffer.from("abc", "utf8");
+     |               ^~~~~~~~~~~~~
+  11 | keep(runtimeBuffer);
+
+  hint: test it in a condition, read its typeof, or call its members
+
+globalthis-buffer-alias-values.ts:11:6 - error SC1090: the Buffer constructor read through a cast of globalThis as a value is not supported yet
+
+  10 | const bytes = runtimeBuffer && runtimeBuffer.from("abc", "utf8");
+  11 | keep(runtimeBuffer);
+     |      ^~~~~~~~~~~~~
+  12 | keep(bytes);
+
+  hint: test it in a condition, read its typeof, or call its members
+
+globalthis-buffer-alias-values.ts:17:6 - error SC1090: the Buffer constructor read through a cast of globalThis as a value is not supported yet
+
+  16 | const orFallback = (globalThis as { Buffer?: RuntimeBuffer }).Buffer || { from: () => new Uint8Array(0) };
+  17 | keep(copied);
+     |      ^~~~~~
+  18 | keep(orFallback);
+
+  hint: test it in a condition, read its typeof, or call its members
+
+globalthis-buffer-alias-values.ts:18:6 - error SC1090: the Buffer constructor read through a cast of globalThis as a value is not supported yet
+
+  17 | keep(copied);
+  18 | keep(orFallback);
+     |      ^~~~~~~~~~
+  19 | 
+
+  hint: test it in a condition, read its typeof, or call its members

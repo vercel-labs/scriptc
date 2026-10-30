@@ -8,13 +8,27 @@
 
 /* ── reference counts ─────────────────────────────────────────────────
  * Every heap object's first member is its `size_t rc` word. On 64-bit
- * targets the reference count is the word's low 32 bits: an emitted
- * instance of a class in a program-rooted hierarchy keeps its class id (its
- * class's preorder number + 1) in the high 32 bits (llvm/classes.ts
- * classIdRcWord), and no other object's count reaches 2^32. A count of SCR_RC_IMMORTAL marks
- * an immortal object; for every object but those class instances the whole
- * word is then SIZE_MAX. Code that reads or writes the count of an object of
- * any kind goes through SCR_RC_COUNT. */
+ * targets the word is
+ *
+ *     bits  0-31  the reference count (SCR_RC_COUNT)
+ *     bit  62     F: a frozen record (SCR_RC_FROZEN)
+ *     bit  63     P: a program-lifetime record (llvm/classes.ts
+ *                 programLifetimeRc)
+ *     bits 32-61  the layout id (scr_rc_layout_id)
+ *
+ * and no object's count reaches 2^32. The layout id names the object's
+ * layout in the single object model (scr_layout.h); 0 means the object
+ * never needed one. An emitted instance of a class in a program-rooted
+ * hierarchy keeps its class id (its class's preorder number + 1) there
+ * (llvm/classes.ts classIdRcWord): a class id is the layout id of its
+ * class's canonical layout. A count of SCR_RC_IMMORTAL marks an immortal
+ * object. Publication and the runtime's own immortal objects write the
+ * whole word as SIZE_MAX when the object has no layout id, and write only
+ * the count when it has one, so an immortal object keeps its layout id
+ * (scr_rc_immortal tests the count; a high half of all ones reads as no
+ * layout id). Code that reads or writes the count of an object of any
+ * kind goes through SCR_RC_COUNT; code that may see an object with a layout
+ * id tests immortality with scr_rc_immortal, never against SIZE_MAX. */
 #if SIZE_MAX > UINT32_MAX
 typedef uint32_t ScrRcCount;
 #ifdef __BYTE_ORDER__
@@ -45,18 +59,58 @@ typedef size_t ScrRcCount;
 /* Whether `obj`, an object of any kind, is published (immortal). */
 #define SCR_RC_PUBLISHED(obj) (SCR_RC_COUNT(obj) >= SCR_RC_PUBLISHED_MIN)
 
-/* The class id in the high half of `obj`'s rc word, or 0 for an object
- * without one: the high half of any other object's word is 0, or 0xffffffff
- * (immortal) or 0x80000000 (program-lifetime), and a class id is never one of
- * these. */
-static inline uint32_t scr_rc_class_id(const void *obj) {
+/* Frozen records (Object.freeze). The rc word of a record a program may
+ * freeze (llvm/shapes.ts) carries SCR_RC_FROZEN beside its count, and that
+ * record's emitted release ignores the bit. On 64-bit targets the bit is in
+ * the high half, outside the count; on 32-bit targets it is the count's bit
+ * 30, which SCR_RC_REFS masks. An immortal word has the bit set too; it
+ * does not read as frozen. */
+#if SIZE_MAX > UINT32_MAX
+#define SCR_RC_FROZEN ((size_t)1 << 62)
+#define SCR_RC_REFS(obj) SCR_RC_COUNT(obj)
+#else
+#define SCR_RC_FROZEN ((size_t)1 << 30)
+#define SCR_RC_REFS(obj) (SCR_RC_COUNT(obj) == SCR_RC_IMMORTAL ? SCR_RC_IMMORTAL : SCR_RC_COUNT(obj) & ~SCR_RC_FROZEN)
+#endif
+/* Whether `obj`, an object whose rc word is a count (not a compact class
+ * instance), is immortal: its count is SCR_RC_IMMORTAL, whatever its high
+ * half holds. */
+static inline bool scr_rc_immortal(const void *obj) {
+  return SCR_RC_COUNT(obj) == SCR_RC_IMMORTAL;
+}
+
+static inline bool scr_rc_frozen(const void *obj) {
+  return !scr_rc_immortal(obj) && (*(const size_t *)obj & SCR_RC_FROZEN) != 0;
+}
+
+/* The high half of the rc word on 64-bit targets: the program-lifetime
+ * bit, the frozen bit and the layout id (see the layout above). 32-bit
+ * targets have no high half; their objects keep a layout id elsewhere when
+ * they need one (scr_layout.h). */
+#define SCR_RC_HIGH_LIFETIME UINT32_C(0x80000000)
+#define SCR_RC_HIGH_FROZEN UINT32_C(0x40000000)
+#define SCR_RC_LAYOUT_ID_MASK UINT32_C(0x3fffffff)
+/* Layout ids are below this bound: 2^30 - 1 is the id bits of an all-ones
+ * high half, which reads as no id. */
+#define SCR_RC_LAYOUT_ID_LIMIT SCR_RC_LAYOUT_ID_MASK
+
+/* The layout id in the high half of `obj`'s rc word, or 0 for an object
+ * without one. The whole-word immortal encoding (SIZE_MAX) has no id. */
+static inline uint32_t scr_rc_layout_id(const void *obj) {
 #if SIZE_MAX > UINT32_MAX
   uint32_t high = (uint32_t)(*(const size_t *)obj >> 32);
-  return high == UINT32_MAX || high == UINT32_C(0x80000000) ? 0 : high;
+  return high == UINT32_MAX ? 0 : high & SCR_RC_LAYOUT_ID_MASK;
 #else
   (void)obj;
   return 0;
 #endif
+}
+
+/* The class id in the high half of `obj`'s rc word, or 0 for an object
+ * without one. A class id is the layout id of the class's canonical
+ * layout, and no object of any other kind has a layout id yet. */
+static inline uint32_t scr_rc_class_id(const void *obj) {
+  return scr_rc_layout_id(obj);
 }
 
 /* ── cycle collection (scr_cycle.c) ───────────────────────────────────
@@ -552,6 +606,14 @@ _Static_assert(sizeof(((ScrCycHdr *)0)->gen) == 1 && SCR_CYC_OLD == 2,
  * depth; deeper objects wait until the outer disposal drains the worklist.
  * The callback owns the object and must release its children and free it. */
 void scr_rc_destroy(void *obj, void (*destroy)(void *));
+/* scr_rc_destroy for an emitted teardown that keeps the blocks it frees in
+ * a segment, linked through their first words, instead of freeing them onto
+ * the free list (llvm/shapes.ts): destroy_seg tears obj down, appending its
+ * blocks after the segment's last link `tail`, and returns the new last
+ * link, which this returns. A disposal past the depth budget is queued with
+ * `destroy`, which frees its own blocks, and leaves `tail` as it was. */
+void *scr_rc_destroy_seg(void *obj, void *(*destroy_seg)(void *, void *),
+                         void (*destroy)(void *), void *tail);
 
 /* RC hooks for cycle-headered types. on_release: rc was decremented and
  * stayed above zero — buffer the object as a possible cycle root (may run
@@ -670,10 +732,21 @@ static inline void scr_cyc_dead(void *obj) {
  * live heap — do not put it on a per-turn path. */
 void scr_collect_cycles(void);
 void scr_collect_cycles_phase(void);
+/* Returns the heap pages that hold only freed memory to the system: the
+ * calling thread's size-class pages whose blocks are all free, and the
+ * system allocator's free pages (scr_alloc.c). */
+void scr_heap_trim(void);
 /* Sets the growth cap SCR_CYCLE_GROWTH_CAP sets (scr_cycle.c), for a program
  * that knows its own memory profile; the environment variable takes
  * precedence. Call it before the program allocates much. */
 void scr_cyc_set_growth_cap(long cap);
+/* Sets the nursery trigger SCR_CYCLE_THRESHOLD sets (scr_cycle.c): the
+ * number of new candidates at which the release path runs a pass, for a
+ * program that knows its own collection profile. The environment variable
+ * takes precedence; 0 restores the default, which starts at 256 and adapts
+ * to the program. The trigger re-arms with it at the end of the next pass.
+ * Call it before the program allocates much. */
+void scr_cyc_set_nursery_threshold(long threshold);
 void scr_cyc_context_cleanup(void);
 
 /* One pass on the normal generational schedule, for callers that reach a
@@ -725,12 +798,14 @@ void scr_pub_dyn_fn(void *v, ScrPub *ctx);
 void scr_pub_arr(void *v, ScrPub *ctx, ScrPubFn elem);
 void scr_pub_map(void *v, ScrPub *ctx, ScrPubFn key, ScrPubFn val);
 void scr_publish_refuse(const char *message);
-/* Writes into published objects (emitted guards): Node's frozen-object
- * TypeErrors. scr_throw_published_array answers false (and throws nothing)
- * when Node's operation would not write the array. */
+/* Writes into published or frozen objects (emitted guards): Node's
+ * frozen-object TypeErrors. The array guards answer false (and throw
+ * nothing) when Node's operation would not write the array; their ops are
+ * scr_array_frozen_error's (scr_array.h). */
 struct ScrArr;
 SCR_COLD void scr_throw_published_field(const char *prop, const char *owner);
 bool scr_throw_published_array(int op, const struct ScrArr *a, double index, double n);
+bool scr_throw_published_array_range(int op, const struct ScrArr *a, double x, double y, double z);
 SCR_COLD void scr_throw_published_collection(bool set);
 
 /* Young-in nursery (scr_cycle.c built with SCR_YIN, linked by programs

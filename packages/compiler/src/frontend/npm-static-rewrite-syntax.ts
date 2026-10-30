@@ -260,9 +260,19 @@ function definePropertyExportOf(
       value = getterReturnOf(p);
     }
   }
-  const esModuleStamp =
-    name === "__esModule" && value !== null && value.kind === ts.SyntaxKind.TrueKeyword;
+  const esModuleStamp = name === "__esModule" && value !== null && isTrueLiteral(value);
   return { name, value, esModuleStamp };
+}
+
+/** `true`, or `!0`, its minified spelling. */
+function isTrueLiteral(expr: ts.Expression): boolean {
+  return (
+    expr.kind === ts.SyntaxKind.TrueKeyword ||
+    (ts.isPrefixUnaryExpression(expr) &&
+      expr.operator === ts.SyntaxKind.ExclamationToken &&
+      ts.isNumericLiteral(expr.operand) &&
+      expr.operand.text === "0")
+  );
 }
 
 /** Space-pads [start, end) of `text` preserving newlines — the recognized

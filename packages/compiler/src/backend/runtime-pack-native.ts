@@ -1,18 +1,28 @@
 /** Synchronous runtime-pack host for the statically compiled driver. Each
- * selected artifact is hashed and copied from the same read into private
- * storage. This host has no persistent cache or mutable installed link inputs. */
+ * selected artifact is verified and copied from the same read into private
+ * storage. With a store, a pack's selections and the identities of the
+ * artifacts it verified are kept between builds: an artifact whose file
+ * identity is unchanged since it was hashed is not hashed again. The
+ * identities are also kept in a record beside the pack when its directory
+ * can be written, which builds with an empty store read too. */
 import type { NativeOptimization } from "./optimization.js";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import {
   closeSync,
   constants,
+  copyFileSync,
   existsSync,
+  fstatSync,
   mkdirSync,
   openSync,
   readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
   writeSync,
+  type Stats,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import type { NativeLinkFeatures } from "./native-link-info.js";
 import type { NativeTargetSpec } from "./targets.js";
 import {
@@ -34,11 +44,66 @@ export interface NativeRuntimePack {
 
 export interface NativeRuntimeSelection {
   root: string;
-  manifest: RuntimePackManifest;
+  /** The parsed manifest; a selection read from a store has none until
+   * runtimePackManifest parses it. */
+  manifest?: RuntimePackManifest;
+  licenses: RuntimePackManifest["licenses"];
   packageText: string;
   manifestText: string;
   selected: RuntimePackArtifacts;
   flavor: NativeOptimization;
+}
+
+/** Text entries kept between builds (the native compiler's cache). */
+export interface RuntimePackStore {
+  read(key: string): string | null;
+  write(key: string, text: string): void;
+}
+
+interface FileIdentity {
+  dev: number;
+  ino: number;
+  size: number;
+  mtime: number;
+  ctime: number;
+}
+
+function fileIdentity(path: string): FileIdentity {
+  return statsIdentity(statSync(path));
+}
+
+function statsIdentity(info: Stats): FileIdentity {
+  return {
+    dev: info.dev,
+    ino: info.ino,
+    size: info.size,
+    mtime: info.mtimeMs,
+    ctime: info.ctimeMs,
+  };
+}
+
+function sameIdentity(a: FileIdentity, b: FileIdentity): boolean {
+  return (
+    a.dev === b.dev &&
+    a.ino === b.ino &&
+    a.size === b.size &&
+    a.mtime === b.mtime &&
+    a.ctime === b.ctime
+  );
+}
+
+function storeKey(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
+
+/** A stored selection: what selecting from the pack's files, with these
+ * identities, returned. */
+interface StoredSelection {
+  /** 2 adds the selection's data artifacts: a stored selection from before
+   * them would make an Intl build stage none of them, so it is discarded. */
+  schema: 2;
+  licenses: RuntimePackManifest["licenses"];
+  selected: RuntimePackArtifacts;
 }
 
 export function selectNativeRuntimePack(
@@ -48,38 +113,228 @@ export function selectNativeRuntimePack(
   features: NativeLinkFeatures,
   flavor: NativeOptimization,
   mode: RuntimePackMode = "executable",
+  store?: RuntimePackStore,
 ): NativeRuntimeSelection {
-  if (!existsSync(join(root, "package.json"))) {
+  const packagePath = join(root, "package.json");
+  const manifestPath = join(root, "runtime-pack.json");
+  if (!existsSync(packagePath)) {
     throw new RuntimePackError(
       `runtime pack for ${target.name} is not installed; install ${target.runtimePackPackage}@${compilerVersion} in your project or set SCRIPTC_RUNTIME_PACK to its directory`,
       "missing",
       "scriptc includes the runtime pack for its own platform only; other targets need their runtime pack package in the project",
     );
   }
-  const packageText = readFileSync(join(root, "package.json"), "utf8");
-  const manifestText = readFileSync(join(root, "runtime-pack.json"), "utf8");
+  // The pack's files by identity, with everything else selection reads.
+  let key: string | null = null;
+  let identities: FileIdentity[] = [];
+  if (store !== undefined) {
+    try {
+      identities = [fileIdentity(packagePath), fileIdentity(manifestPath)];
+      key = storeKey(
+        JSON.stringify({
+          schema: 1,
+          root,
+          identities,
+          target: target.name,
+          compilerVersion,
+          features,
+          flavor,
+          mode,
+        }),
+      );
+      const stored = readStoredSelection(store.read(key));
+      if (stored !== null) {
+        const packageText = readFileSync(packagePath, "utf8");
+        const manifestText = readFileSync(manifestPath, "utf8");
+        // The texts read are the ones with the stored identities.
+        if (
+          sameIdentity(fileIdentity(packagePath), identities[0]!) &&
+          sameIdentity(fileIdentity(manifestPath), identities[1]!)
+        ) {
+          return {
+            root,
+            licenses: stored.licenses,
+            packageText,
+            manifestText,
+            selected: stored.selected,
+            flavor,
+          };
+        }
+      }
+    } catch {
+      key = null;
+    }
+  }
+  const packageText = readFileSync(packagePath, "utf8");
+  const manifestText = readFileSync(manifestPath, "utf8");
   const identity = JSON.parse(packageText) as { name?: string; version?: string };
   const manifest = parseRuntimePackManifest(JSON.parse(manifestText));
   validateRuntimePackIdentity(manifest, identity.name, identity.version, target, compilerVersion);
   const selected = selectRuntimePackArtifacts(manifest, features, flavor, process.env, mode);
-  return { root, manifest, packageText, manifestText, selected, flavor };
+  if (store !== undefined && key !== null) {
+    try {
+      // Stored only when the files selected from still have the identities
+      // in the key.
+      if (
+        sameIdentity(fileIdentity(packagePath), identities[0]!) &&
+        sameIdentity(fileIdentity(manifestPath), identities[1]!)
+      ) {
+        const entry: StoredSelection = { schema: 2, licenses: manifest.licenses, selected };
+        store.write(key, JSON.stringify(entry));
+      }
+    } catch {
+      /* A failed write is a later miss. */
+    }
+  }
+  return {
+    root,
+    manifest,
+    licenses: manifest.licenses,
+    packageText,
+    manifestText,
+    selected,
+    flavor,
+  };
 }
 
-function stageArtifact(root: string, stage: string, artifact: RuntimePackArtifact): string {
+/** The selection's parsed manifest. */
+export function runtimePackManifest(selection: NativeRuntimeSelection): RuntimePackManifest {
+  return (selection.manifest ??= parseRuntimePackManifest(JSON.parse(selection.manifestText)));
+}
+
+function readStoredSelection(text: string | null): StoredSelection | null {
+  if (text === null) return null;
+  const value: unknown = JSON.parse(text);
+  if (value === null || typeof value !== "object") return null;
+  const entry = value as Partial<StoredSelection>;
+  if (
+    entry.schema !== 2 ||
+    !Array.isArray(entry.licenses) ||
+    entry.selected === undefined ||
+    entry.selected === null ||
+    typeof entry.selected !== "object" ||
+    !Array.isArray(entry.selected.runtime) ||
+    !Array.isArray(entry.selected.archives) ||
+    !Array.isArray(entry.selected.data) ||
+    !Array.isArray(entry.selected.systemLibraries)
+  )
+    return null;
+  return entry as StoredSelection;
+}
+
+/** An artifact path's identity when its bytes last matched the manifest's
+ * size and digest. */
+interface VerifiedArtifact {
+  path: string;
+  sha256: string;
+  dev: number;
+  ino: number;
+  size: number;
+  mtime: number;
+  ctime: number;
+}
+
+interface StoredVerification {
+  schema: number;
+  artifacts: VerifiedArtifact[];
+}
+
+function readVerified(
+  store: RuntimePackStore | undefined,
+  key: string,
+): Map<string, VerifiedArtifact> {
+  const verified = new Map<string, VerifiedArtifact>();
+  try {
+    const text = store?.read(key) ?? null;
+    if (text === null) return verified;
+    for (const artifact of storedArtifacts(text)) verified.set(artifact.path, artifact);
+  } catch {
+    /* A malformed entry verifies everything again. */
+  }
+  return verified;
+}
+
+/** The well-formed entries of a stored verification; none when the text is
+ * not a stored verification. */
+function storedArtifacts(text: string): VerifiedArtifact[] {
+  const stored = JSON.parse(text) as Partial<StoredVerification> | null;
+  if (stored === null || stored.schema !== 1 || !Array.isArray(stored.artifacts)) return [];
+  const number = (value: unknown): boolean => typeof value === "number" && Number.isFinite(value);
+  return stored.artifacts.filter(
+    (artifact): artifact is VerifiedArtifact =>
+      artifact !== null &&
+      typeof artifact === "object" &&
+      typeof artifact.path === "string" &&
+      typeof artifact.sha256 === "string" &&
+      number(artifact.dev) &&
+      number(artifact.ino) &&
+      number(artifact.size) &&
+      number(artifact.mtime) &&
+      number(artifact.ctime),
+  );
+}
+
+/** `known` records `artifact`'s digest and size for a file with `identity`. */
+function verifiedAs(
+  known: VerifiedArtifact | undefined,
+  artifact: { sha256: string; size: number },
+  identity: FileIdentity,
+): boolean {
+  return (
+    known !== undefined &&
+    known.sha256 === artifact.sha256 &&
+    known.size === artifact.size &&
+    sameIdentity(known, identity)
+  );
+}
+
+function stageArtifact(
+  root: string,
+  stage: string,
+  artifact: RuntimePackArtifact,
+  records: readonly Map<string, VerifiedArtifact>[],
+  verified: VerifiedArtifact[],
+): string {
   const source = join(root, artifact.path);
   const destination = join(stage, artifact.path);
   let bytes: Buffer;
+  let before: FileIdentity;
+  let after: FileIdentity;
   try {
-    bytes = readFileSync(source);
+    // The identities are those of the open file the bytes come from, also
+    // when the path is a symbolic link that changes during the read.
+    const input = openSync(source, constants.O_RDONLY);
+    try {
+      before = statsIdentity(fstatSync(input));
+      bytes = readFileSync(input);
+      after = statsIdentity(fstatSync(input));
+    } finally {
+      closeSync(input);
+    }
   } catch {
     throw new RuntimePackError(`runtime pack artifact is missing: ${artifact.path}`, "invalid");
   }
+  // The bytes are those last hashed when the file kept the identity it had
+  // then for the whole read.
+  const unchanged = sameIdentity(before, after);
+  const trusted =
+    unchanged && records.some((record) => verifiedAs(record.get(artifact.path), artifact, before));
   if (
     bytes.length !== artifact.size ||
-    createHash("sha256").update(bytes).digest("hex") !== artifact.sha256
+    (!trusted && createHash("sha256").update(bytes).digest("hex") !== artifact.sha256)
   ) {
     throw new RuntimePackError(`runtime pack artifact hash mismatch: ${artifact.path}`, "invalid");
   }
+  if (unchanged)
+    verified.push({
+      path: artifact.path,
+      sha256: artifact.sha256,
+      dev: before.dev,
+      ino: before.ino,
+      size: before.size,
+      mtime: before.mtime,
+      ctime: before.ctime,
+    });
   mkdirSync(dirname(destination), { recursive: true });
   const fd = openSync(
     destination,
@@ -123,15 +378,21 @@ export function stageNativeRuntimePack(
 export function stageNativeRuntimeSelection(
   selection: NativeRuntimeSelection,
   stageRoot: string,
+  store?: RuntimePackStore,
 ): NativeRuntimePack {
-  const { root, manifest, selected, packageText, manifestText } = selection;
+  const { root, licenses, selected, packageText, manifestText } = selection;
   const packagePath = join(root, "package.json");
   const manifestPath = join(root, "runtime-pack.json");
-  const runtimeObjects = selected.runtime.map((artifact) =>
-    stageArtifact(root, stageRoot, artifact),
-  );
-  const archives = selected.archives.map((artifact) => stageArtifact(root, stageRoot, artifact));
-  for (const license of manifest.licenses) {
+  const key = storeKey(JSON.stringify({ schema: 1, verified: root }));
+  const cacheRecord = readVerified(store, key);
+  const packRecordPath = join(root, PACK_VERIFIED_FILE);
+  const packRecord = readPackVerified(packRecordPath);
+  const verified: VerifiedArtifact[] = [];
+  const stage = (artifact: RuntimePackArtifact): string =>
+    stageArtifact(root, stageRoot, artifact, [cacheRecord, packRecord], verified);
+  const runtimeObjects = selected.runtime.map(stage);
+  const archives = selected.archives.map(stage);
+  for (const license of licenses) {
     try {
       readFileSync(join(root, license.path));
     } catch {
@@ -144,5 +405,112 @@ export function stageNativeRuntimeSelection(
   ) {
     throw new RuntimePackError("runtime pack changed while staging verified artifacts", "invalid");
   }
+  // Each record learns the artifacts verified here that it does not list
+  // with their current identity.
+  const missing = (record: Map<string, VerifiedArtifact>): VerifiedArtifact[] =>
+    verified.filter((artifact) => !verifiedAs(record.get(artifact.path), artifact, artifact));
+  const cacheMissing = missing(cacheRecord);
+  if (store !== undefined && cacheMissing.length > 0) {
+    for (const artifact of cacheMissing) cacheRecord.set(artifact.path, artifact);
+    const entry: StoredVerification = { schema: 1, artifacts: [...cacheRecord.values()] };
+    try {
+      store.write(key, JSON.stringify(entry));
+    } catch {
+      /* A failed write only means hashing again next time. */
+    }
+  }
+  const packMissing = missing(packRecord);
+  if (packMissing.length > 0) writePackVerified(packRecordPath, packMissing);
   return { runtimeObjects, archives, systemLibraries: selected.systemLibraries };
+}
+
+/** Install the selected RUN-time data artifacts (ICU's icudt78l.dat) beside an
+ * executable this host linked. The in-process linker does the same from its
+ * own selection (backend/linker.ts); this host writes executables
+ * synchronously and has no link plan, so it installs them here.
+ *
+ * A file already present at the pinned size is left alone (11.1 MiB of pure
+ * cost otherwise), and the copy is atomic — a private temporary, then a
+ * rename — so two concurrent builds of one program never read a partial
+ * file. */
+export function installNativeRuntimeData(
+  selection: NativeRuntimeSelection,
+  outputPath: string,
+): void {
+  const data = selection.selected.data ?? [];
+  if (data.length === 0) return;
+  const outputDir = dirname(resolve(outputPath));
+  for (const artifact of data) {
+    const destination = join(outputDir, basename(artifact.path));
+    const existing = statSync(destination, { throwIfNoEntry: false });
+    if (existing?.isFile() === true && existing.size === artifact.size) continue;
+    const temporary = join(
+      outputDir,
+      `.${basename(destination)}.scriptc-${process.pid}-${randomUUID()}`,
+    );
+    copyFileSync(join(selection.root, artifact.path), temporary);
+    try {
+      renameSync(temporary, destination);
+    } catch {
+      rmSync(destination, { force: true });
+      renameSync(temporary, destination);
+    }
+  }
+}
+
+/** The verification record kept beside the runtime pack, so a build with an
+ * empty cache does not hash the pack's artifacts again. Like the cache's
+ * record, it trusts an artifact only while its file keeps the identity
+ * (device, inode, size, mtime, ctime) the record lists. */
+export const PACK_VERIFIED_FILE = "runtime-pack.verified.json";
+
+/** The pack record's well-formed entries; none when it is missing,
+ * unreadable or malformed. */
+function readPackVerified(path: string): Map<string, VerifiedArtifact> {
+  const verified = new Map<string, VerifiedArtifact>();
+  try {
+    for (const artifact of storedArtifacts(readFileSync(path, "utf8")))
+      verified.set(artifact.path, artifact);
+  } catch {
+    /* The artifacts are hashed again. */
+  }
+  return verified;
+}
+
+/** Adds `artifacts` to the pack record: the record as it is now, with these
+ * entries replacing the ones for the same paths, written to a new file and
+ * renamed over the record, so a reader sees a whole record. Of two builds
+ * writing at once, the last rename wins; the entries the other added are
+ * hashed again by a later build. When the pack directory cannot be written,
+ * the cache's record is the only one. */
+function writePackVerified(path: string, artifacts: readonly VerifiedArtifact[]): void {
+  const temporary = `${path}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
+  try {
+    const record = readPackVerified(path);
+    for (const artifact of artifacts) record.set(artifact.path, artifact);
+    const entry: StoredVerification = { schema: 1, artifacts: [...record.values()] };
+    const bytes = Buffer.from(JSON.stringify(entry));
+    const fd = openSync(
+      temporary,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL,
+      0o644,
+    );
+    try {
+      let offset = 0;
+      while (offset < bytes.length) {
+        const written = writeSync(fd, bytes, offset, bytes.length - offset);
+        if (written === 0) throw new Error("the pack record was not written");
+        offset += written;
+      }
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(temporary, path);
+  } catch {
+    try {
+      rmSync(temporary, { force: true });
+    } catch {
+      /* Cleanup is best effort. */
+    }
+  }
 }

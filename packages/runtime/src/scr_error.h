@@ -48,6 +48,12 @@ typedef struct ScrClassObj {
   size_t length;
   struct ScrBox *prototype_data;
   struct ScrBox *static_data;
+  /* The base class's name, which util.inspect prints as
+   * `[class C extends B]`; NULL without a named base. */
+  const ScrStr *base_name;
+  /* Nonzero when the class declares public static fields, which the
+   * class object does not carry without static_data. */
+  size_t own_static_fields;
   struct ScrBox *caps[];
 } ScrClassObj;
 
@@ -296,6 +302,9 @@ void scr_error_assign_dyn(ScrError *e, const struct ScrDyn *sources);
 /* `key in err` for a key no compiled class declares: a runtime-set own
  * property or an Object.prototype member. Borrows both (scr_json.c). */
 bool scr_error_has_key(ScrError *e, const ScrStr *key);
+bool scr_error_own_accessor(ScrError *e, const ScrStr *key);
+struct ScrDyn *scr_error_accessor_get(ScrError *e, const ScrStr *key);
+void scr_error_accessor_set(ScrError *e, const ScrStr *key, struct ScrDyn *value);
 bool scr_error_has_code(ScrError *e);
 const char *scr_error_message_code(const ScrStr *msg);
 ScrStr *scr_error_code(ScrError *e);

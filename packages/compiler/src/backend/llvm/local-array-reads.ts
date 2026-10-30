@@ -8,6 +8,7 @@ import {
   type IrType,
   type IrUnionDef,
 } from "../../ir/ir.js";
+import { emitInlineArrayGet, inlineFieldTail } from "./inline-arrays.js";
 import { everyStmtList } from "../../ir/traverse.js";
 import { analyzeCallLifetimes, type CallLifetimes } from "./call-lifetimes.js";
 import type { LlValue, LlvmEmitterContext } from "./expr-context.js";
@@ -607,6 +608,25 @@ export function emitBorrowedArrayRead(
   slot: string,
 ): void {
   const B = host.B;
+  // An element of an inline array field, borrowed from the instance.
+  if (read.arr.kind === "fieldGet" && read.arr.type.kind === "array") {
+    const tail = inlineFieldTail(host, read.arr.className, read.arr.field);
+    if (tail !== undefined) {
+      const obj = host.emitStableReceiver(read.arr.obj, [read.index]);
+      const index = host.emitExpr(read.index);
+      const value = emitInlineArrayGet(
+        host,
+        obj.name,
+        read.arr.className,
+        tail,
+        index,
+        read.arr.type.elem,
+        false,
+      );
+      B.line(`store ptr ${value}, ptr ${slot}`);
+      return;
+    }
+  }
   const array = host.emitStableReceiver(read.arr, [read.index]);
   const loopIndex = host.emitIntegerLoopIndex(read.index);
   if (loopIndex !== null && host.provenDenseIndex(read.arr, read.index)) {
@@ -662,7 +682,11 @@ export function emitBorrowedArrayRead(
   B.startBlock(slow);
   host.declare("declare ptr @scr_arr_borrow_ref(ptr, double)");
   const value = B.tmp();
-  B.line(`${value} = call ptr @scr_arr_borrow_ref(ptr ${array.name}, double ${index.name})`);
+  // The fallback only reads the array (a hole or an out-of-range index
+  // traps), so loops keep the array's header loads hoisted past it.
+  B.line(
+    `${value} = call ptr @scr_arr_borrow_ref(ptr ${array.name}, double ${index.name})${READ_FALLBACK}`,
+  );
   B.line(`store ptr ${value}, ptr ${slot}`);
   B.br(join);
   B.startBlock(join);
@@ -797,7 +821,33 @@ export function emitLocalArrayRead(
       );
       return null;
     });
-  else if (inline)
+  else if (
+    inline &&
+    loopIndex !== null &&
+    read.element.kind === "f64" &&
+    host.provenDenseIndex(read.array, read.index)
+  ) {
+    // In a dense array loop's fast copy, the entry test proved the counter
+    // below the array's hole-free prefix: the slot holds a present value,
+    // and the read has no missing arm.
+    const dataPtr = B.tmp(),
+      data = B.tmp(),
+      valuePtr = B.tmp(),
+      value = B.tmp(),
+      width = int32 ? "i32" : "i64";
+    B.line(
+      `${dataPtr} = getelementptr inbounds %ScrArr, ptr ${array.name}, i32 0, i32 ${SCR_ARR_FIELD.data}`,
+    );
+    host.markMemoryPointer(dataPtr, "array:header");
+    B.line(`${data} = load ptr, ptr ${dataPtr}${host.fieldAliasAttachment(dataPtr)}`);
+    B.line(
+      `${valuePtr} = getelementptr inbounds ${width}, ptr ${data}, ${host.sizeType} ${loopIndex}`,
+    );
+    host.markMemoryPointer(valuePtr, "array:elements");
+    B.line(`${value} = load ${width}, ptr ${valuePtr}${host.fieldAliasAttachment(valuePtr)}`);
+    storeValue(value);
+    B.br(join);
+  } else if (inline)
     emitDenseReferenceArrayRead(
       host,
       array,

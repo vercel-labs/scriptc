@@ -2,6 +2,7 @@ import type { IrExpr, IrFunction, IrStmt } from "./ir.js";
 import { everyExprChild, everyStmtChild, everyStmtList } from "./traverse.js";
 import { byteNumberAccess, byteNumberRange } from "./byte-numbers.js";
 import {
+  BYTES_LENGTH_RANGE,
   boundedIntegerLoopFacts,
   guardedLoopCounterFacts,
   integerPathFallsThrough,
@@ -22,6 +23,12 @@ export interface IntegerRangeFacts {
   ranges: IntegerRanges;
   loopRanges: ReadonlyMap<IrStmt, ReadonlyMap<string, IntegerRange>>;
 }
+/** Ranges assumed for locals on entry to while and for loops
+ * (loop-entry-ranges.ts), after a for loop's initializer:
+ * the facts inside such a loop hold in a copy of it that runs only after a
+ * test proves every assumed local is an integer in its range. After the
+ * loop, its assumed locals and its writes carry no facts. */
+export type LoopEntryAssumptions = ReadonlyMap<IrStmt, ReadonlyMap<string, IntegerRange>>;
 const SIGNED: IntegerRange = { min: -2147483648, max: 2147483647 };
 const UNSIGNED: IntegerRange = { min: 0, max: 4294967295 };
 /** Int32 and uint32 at once: the bound under which `%` (modeled only for
@@ -308,6 +315,7 @@ export function analyzeIntegerRanges(fn: IrFunction, slots: IntegerSlotFacts = {
 export function analyzeIntegerRangeFacts(
   fn: IrFunction,
   slots: IntegerSlotFacts = {},
+  entries?: LoopEntryAssumptions,
 ): IntegerRangeFacts {
   const ranges = new Map<IrExpr, IntegerRange | null>();
   const loopRanges = new Map<IrStmt, Map<string, IntegerRange>>();
@@ -480,6 +488,7 @@ export function analyzeIntegerRangeFacts(
             return boxedRange(e.localId);
           }
           case "fieldGet":
+          case "arrayGet":
           case "call":
             return slotRange(e);
           default:
@@ -736,8 +745,11 @@ export function analyzeIntegerRangeFacts(
         set(facts, e.localId, range);
         break;
       case "incDec": {
-        const before = facts.get(e.localId) ?? null;
+        // A binding a for loop bounds holds a value in its loop range at
+        // every point of the loop, also where a statement around this
+        // increment has discarded its fact.
         const bound = counterRanges.get(e.localId);
+        const before = facts.get(e.localId) ?? bound ?? null;
         const sum = before ? integerArithmeticRange(e.op, before, { min: 1, max: 1 }) : null;
         const after =
           bound && sum
@@ -820,7 +832,7 @@ export function analyzeIntegerRangeFacts(
         const numeric = byteNumberAccess(e);
         if (numeric && !numeric.write) range = byteNumberRange(numeric);
         else if (e.method === "length" || e.method === "byteLength" || e.method === "byteOffset")
-          range = { min: 0, max: Number.MAX_SAFE_INTEGER };
+          range = BYTES_LENGTH_RANGE;
         else if (e.method === "get" && e.invalidNaN !== true && e.receiver.type.kind === "bytes") {
           const elem = e.receiver.type.elem;
           if (elem === "u8" || elem === "u8c") range = { min: 0, max: 255 };
@@ -865,6 +877,8 @@ export function analyzeIntegerRangeFacts(
         );
         if (e.type.kind === "f64") {
           if (e.method === "length") range = { min: 0, max: STRING_MAX_UNITS };
+          // A string holds at most SCR_STR_MAX_CAP (0x7fffffff) bytes.
+          else if (e.method === "byteLength") range = { min: 0, max: STRING_MAX_UNITS };
           // An empty needle is found at the clamped position, up to the length.
           else if (e.method === "indexOf") range = { min: -1, max: STRING_MAX_UNITS };
         }
@@ -995,6 +1009,9 @@ export function analyzeIntegerRangeFacts(
         }
         case "for": {
           if (s.init) body([s.init], facts);
+          // The initializer writes none of the assumed locals.
+          const assumed = entries?.get(s);
+          if (assumed) for (const [id, range] of assumed) if (!facts.has(id)) set(facts, id, range);
           const counter = induction(s, facts);
           const bounded = boundedIntegerLoopFacts(s, loopLocals, facts);
           const loop = new Map(facts);
@@ -1066,14 +1083,33 @@ export function analyzeIntegerRangeFacts(
             body([s.update], entry);
           }
           havoc(facts, [s], facts);
+          if (assumed) {
+            invalidate(facts, [s]);
+            for (const id of assumed.keys()) facts.delete(id);
+          }
           break;
         }
         case "while":
         case "doWhile": {
+          const assumed = entries?.get(s);
+          if (assumed) for (const [id, range] of assumed) if (!facts.has(id)) set(facts, id, range);
           // Counters the condition bounds keep their range at every read
           // inside and after the loop.
           const guarded =
             s.kind === "while" ? guardedLoopCounterFacts(s, loopLocals, facts) : noInvariants;
+          // The same bounds hold on entry and at every write in the loop,
+          // which is what a proven integer loop needs (loopRanges). A loop
+          // analyzed again keeps the bindings every analysis bounds.
+          if (s.kind === "while") {
+            const previous = loopRanges.get(s);
+            if (!previous) loopRanges.set(s, new Map(guarded));
+            else
+              for (const [id, range] of previous) {
+                const other = guarded.get(id);
+                if (other) previous.set(id, union(range, other));
+                else previous.delete(id);
+              }
+          }
           const loop = new Map(facts);
           havocWith(loop, [s], loop, guarded);
           for (const [id, range] of guarded) set(loop, id, range);
@@ -1085,6 +1121,10 @@ export function analyzeIntegerRangeFacts(
           } else body(s.body, new Map(loop));
           havocWith(facts, [s], facts, guarded);
           for (const [id, range] of guarded) set(facts, id, range);
+          if (assumed) {
+            invalidate(facts, [s]);
+            for (const id of assumed.keys()) facts.delete(id);
+          }
           break;
         }
         case "forOf": {

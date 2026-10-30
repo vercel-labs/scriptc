@@ -30,7 +30,8 @@ export function borrowsStringInputs(method: IrStrIntrinsicMethod): boolean {
     case "normalize":
     case "isWellFormed":
     case "toWellFormed":
-    case "cpAt":
+    case "byteLength":
+    case "cpAtByte":
       return true;
     default:
       return false;

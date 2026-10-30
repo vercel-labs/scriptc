@@ -8,6 +8,28 @@ import type { IrLibFn } from "./builtin-signatures.js";
  * seed on `dynCheck` and `awaitExpr` nodes, which throw on validation
  * failure / promise rejection). */
 export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  // The copied error of a synchronous call into Node (@scriptc/node).
+  "nodeIsland.callSync",
+  // Island module evaluation and member operations run JavaScript.
+  "nodeIsland.require",
+  "nodeIsland.defer",
+  "nodeIsland.get",
+  "nodeIsland.getKey",
+  "nodeIsland.set",
+  "nodeIsland.setKey",
+  "nodeIsland.invoke",
+  "nodeIsland.apply",
+  "nodeIsland.applyTo",
+  "nodeIsland.construct",
+  "nodeIsland.instanceof",
+  "nodeIsland.classMethods",
+  "nodeIsland.subclass",
+  "nodeIsland.superConstruct",
+  "nodeIsland.superMethod",
+  "nodeIsland.defineField",
+  "nodeIsland.promisify",
+  "nodeIsland.classMethodsOf",
+  "nodeIsland.copyArrays",
   // Node's argument, cipher-name, IV, tag-length and key-length errors.
   "crypto.cipherNew",
   // Node's curve, key, point, encoding and format errors.
@@ -16,6 +38,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // Node's prime, generator, size, encoding and group-name errors.
   "crypto.dhNew",
   "crypto.dhGroupNew",
+  // Node's nameOrNid and options errors.
+  "crypto.getCipherInfo",
   // Node's candidate, size, options, add and rem errors, and OpenSSL's
   // generation errors.
   "crypto.checkPrimeSync",
@@ -67,6 +91,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "child.onDyn",
   "text.decoderEncoding",
   "strdec.encoding",
+  "strdec.writeDyn",
+  "strdec.nextDyn",
   "dyn.construct",
   "dyn.reflectApply",
   "dyn.reflectGet",
@@ -83,12 +109,17 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "ffi.argument",
   "ffi.memoryModule",
   "process.stdoutWrite",
+  "process.stdioWriteDyn",
   "process.stderrWrite",
   "process.stdoutWriteBytes",
   "process.stderrWriteBytes",
   "procStream.write",
   "child.stdioStream",
   "stream.unboxDyn",
+  "stream.dynIterableSource",
+  "stream.dynSourceValue",
+  "stream.unboxDynStage",
+  "stream.dynTransformResult",
   "stream.handleStream",
   "stream.pipeDyn",
   "stream.unpipeDyn",
@@ -103,6 +134,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.byteLenValue",
   "buffer.allocValue",
   "fs.realpathValue",
+  "dyn.validateString",
+  "dyn.validateStrings",
+  "path.resolveValue",
+  "path.parseValue",
+  "path.formatValue",
   "bytes.construct",
   "arrayBuffer.new",
   "sharedArrayBuffer.new",
@@ -125,6 +161,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "arrayBuffer.viewF64",
   "arrayBuffer.viewDV",
   "bytes.bufferSource",
+  "text.decoderInput",
+  "text.decoderFlag",
+  "text.decodeStreamOption",
+  "text.decoderEncodingOptions",
   "text.decodeBufferSource",
 
   "bigint.parse",
@@ -145,8 +185,6 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fetch.headersNew",
   "fetch.responseNew",
   "fetch.responseJsonStatic",
-  "fetch.abortTimeout",
-  "fetch.abortAny",
   "abort.timeout",
   "abort.any",
   "event.new",
@@ -179,9 +217,31 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "num.toPrecision",
   "num.toExponentialDigits",
   "str.localeCase",
+  // The default-locale ICU formatters throw an Error when the ICU data file
+  // is missing (scr_intl.c).
+  "icu.numFormatDefault",
+  "icu.dateLocaleString",
+  "icu.dateLocaleTimeString",
   "num.toStringRadix",
   "num.toStringRadixF64",
   "insp.jsonDyn",
+  // The runtime formatter calls toString, valueOf and toJSON, and refuses
+  // renderings it has no lowering for.
+  "insp.format",
+  "insp.formatList",
+  "insp.formatWithOptions",
+  "insp.inspect",
+  // The options object reads the caller's options (getters included), and
+  // the checked-dynamic walk calls custom inspect functions.
+  "insp.customOptions",
+  "insp.customResult",
+  // A checked-dynamic value the inspector does not render (a promise, a
+  // URL, a RegExp) throws the 'not supported yet' Error.
+  "insp.dyn",
+  "insp.dynS",
+  // %o's showHidden walk refuses the kinds whose hidden entries it cannot
+  // render.
+  "insp.dynHidden",
   // diagnostics_channel: publish runs subscribers synchronously (a throw
   // propagates — the documented divergence from triggerUncaughtException);
   // the subscribe/unsubscribe forms throw Node's ERR_INVALID_ARG_TYPE for
@@ -198,13 +258,17 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dc.tcTracePromise",
   "process.onUncaughtException",
   "process.offUncaughtException",
+  "process.prependUncaughtException",
   "process.onSignal",
   "process.offSignal",
+  "process.prependSignal",
   "process.onUnhandledRejection",
   "process.onRejectionHandled",
   "async.awaitDyn",
   "als.run",
   "als.exitRun",
+  "als.newOptions",
+  "als.bindCallbackDyn",
   "dc.chanBindStore",
   "dc.chanRunStores",
   "http.resWriteHeadDyn",
@@ -243,6 +307,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "tls.connectCb",
   "tls.wrapSocket",
   "tls.wrapSocketCtx",
+  // addContext's ERR_TLS_REQUIRED_SERVER_NAME and the context's errors,
+  // setSecureContext's validateObject.
+  "tls.serverAddContext",
+  "tls.serverAddContextCtx",
+  "tls.serverSetSecureContext",
   // The CA-store surface: an unknown getCACertificates type throws
   // Node's ERR_INVALID_ARG_VALUE TypeError; setDefaultCACertificates
   // throws Node's ERR_CRYPTO_OPERATION_FAILED on a certificate-free
@@ -256,6 +325,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "emitter.emit",
   "emitter.emitFlex",
   "emitter.emitAny",
+  "emitter.emitErrorValue",
   "emitter.emitMixed",
   "emitter.listenersDyn",
   "emitter.emitError",
@@ -362,6 +432,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "transform.newDyn",
   "passthrough.newDyn",
   "readable.initDyn",
+  "stream.checkEncodingOption",
   "writable.initDyn",
   "duplex.initDyn",
   "transform.initDyn",
@@ -387,6 +458,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "writable.writeU",
   "writable.writeDyn",
   "writable.writeEnc",
+  "writable.writeEcb",
   "writable.end",
   "writable.uncork",
   "writable.setDefaultEncoding",
@@ -446,6 +518,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "global.undefRead",
   // The compiler-resolved Node-parity throw: always throws, catchably.
   "error.nodeThrow",
+  // An accessor over an error's own name or message runs user code.
+  "error.accessorGet",
+  "error.accessorSet",
   // USVString coercion runs user toString/valueOf — throws propagate.
   "dyn.toStringCoerce",
   "dyn.stringConstructor",
@@ -464,6 +539,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "js.toNumberCoerce",
   // Error messages use the same coercion protocol before installing cause.
   "error.newOptions",
+  "error.captureStackTrace",
   "error.ctorOptions",
   "error.newAggregate",
   "error.newSuppressed",
@@ -576,7 +652,15 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "util.styleText",
   "util.toUSVString",
   "util.inherits",
+  "util.inheritsPrototype",
   "util.deprecate",
+  "util.extend",
+  "util.signalExitCode",
+  "util.diff",
+  "util.debounce",
+  "util.throttle",
+  "mime.typeNew",
+  "mime.typeParse",
   "util.callbackify",
   "util.promisifyDyn",
   "util.debuglog",
@@ -610,6 +694,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   // fence; the zero-argument form always throws ERR_MISSING_ARGS. The
   // DOMException clone shares the option validation.
   "dyn.structuredClone",
+  "dyn.declAdopt",
   "dyn.cloneMissing",
   "dyn.cloneTransferFail",
   "dyn.cloneTransferFailWith",
@@ -632,10 +717,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.objCreate",
   "dyn.objCreateWithProperties",
   "dyn.getPrototype",
+  "dyn.getPrototypeForIdentity",
   "dyn.setPrototype",
-  // Error.captureStackTrace: Node's TypeError for a primitive target, and
-  // the error string conversion of name and message
-  "dyn.errorCaptureStackTrace",
   // a proxy in the prototype chain can throw
   "dyn.builtinInstanceOf",
   "dyn.functionInstanceOf",
@@ -661,16 +744,23 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dyn.keySetComputed",
   "process.builtinId",
   "process.builtinModule",
+  "process.builtinObject",
   "process.builtinUnsupported",
+  "module.requireComputed",
+  "module.resolveComputed",
   "fs.callbackValue",
   "fs.callbackCall",
   "dyn.keyDelete",
   "dyn.keyDeleteComputed",
+  "dyn.reflectDeleteProperty",
+  "dyn.reflectHasTarget",
   "dyn.hasKeyComputed",
   "dyn.hasOwnComputed",
   "dyn.propertyIsEnumerableComputed",
   // the destructuring pack throws V8's TypeError on non-iterable dyn kinds
   "dyn.iterPack",
+  // ToNumber of each element can run valueOf
+  "dyn.mathFold",
   "dyn.destructureRest",
   "dyn.arrayFromIterator",
   "dyn.iterator",
@@ -684,8 +774,17 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "class.defineField",
   "class.throwReadOnly",
   "class.throwNotExtensible",
+  "record.throwFrozen",
   "dyn.toString",
   "dyn.valueOf",
+  // Primitive wrapper objects (scr_js_wrapper.c): the conversions run
+  // user hooks and the guard refuses.
+  "wrapper.new",
+  "wrapper.toObject",
+  "wrapper.objectTag",
+  "wrapper.thisString",
+  "wrapper.guard",
+  "wrapper.guardList",
   "string.fromCodePoint",
   "dyn.defineProps",
   "dyn.definePrototypeProps",
@@ -715,6 +814,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.rmSync",
   "fs.rmdirSync",
   "fs.readdirSync",
+  "fs.readdirRecursiveSync",
   "fs.readdirTypesSync",
   "fs.globSync",
   "fs.globTypesSync",
@@ -726,6 +826,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "url.set",
   "url.setChecked",
   "url.fileURLToPathUrl",
+  "fs.checkPath",
+  "fs.checkReadEncoding",
   "url.fileURLToPathChecked",
   "url.fileURLToPathOptions",
   "url.fileURLToPathBuffer",
@@ -738,6 +840,8 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "url.legacyResolve",
   "url.domainToASCII",
   "url.domainToUnicode",
+  // ERR_INVALID_ARG_TYPE and the credentials' URIError.
+  "url.toHttpOptions",
   // The win32-target flavor of pathToFileURL (same runtime entry point —
   // the bridge dispatches by the binary's platform): Node's win32 arm
   // raises ERR_INVALID_ARG_VALUE TypeErrors for malformed UNC inputs, so
@@ -822,12 +926,15 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "buffer.poolFromDyn",
   "buffer.poolFromDynRef",
   "buffer.poolFromDynOffset",
+  "buffer.poolFromDynRange",
   // The checked-dynamic compare/equals validators: Node's argument
   // ladders throw ERR_INVALID_ARG_TYPE / ERR_OUT_OF_RANGE catchably.
   "buffer.compareChk",
   "bytes.equalsChk",
   "bytes.compareChk",
   "buffer.newStringFail",
+  // Inherited and symbol-keyed Buffer.prototype members throw SC2020.
+  "buffer.prototypeMember",
   "fs.toUnixTimestamp",
   "fs.existsChk",
   "fs.mkdtempChk",
@@ -845,10 +952,12 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "net.setAutoSelTimeout",
   "error.argTypeThrow",
   "error.propTypeThrow",
+  "array.foreignThrow",
   "emitter.setMaxChk",
   "emitter.setDefaultMaxChk",
   "fs.readFileSyncBytes",
   "fs.writeFileSyncBytes",
+  "fs.writeFileSyncFd",
   "fs.appendFileSyncBytes",
   "zlib.inflateSync",
   "zlib.inflateRawSync",
@@ -885,6 +994,11 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dns.setDefaultResultOrder",
   "net.connect",
   "net.connectCb",
+  "net.connectPath",
+  "net.connectPathCb",
+  // listen's port from a checked-dynamic first argument: ERR_SOCKET_BAD_PORT,
+  // or the fence for forms without a lowering.
+  "net.listenPortDyn",
   // resetAndDestroy on a TLS socket throws ERR_INVALID_HANDLE_TYPE.
   "net.sockResetAndDestroy",
   // SocketAddress's option checks and parse()'s input check.
@@ -949,6 +1063,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "assert.noErrorPredicate",
   "assert.regexDynTest",
   "assert.expectsErrDyn",
+  "assert.throwsValidate",
   "assert.ifErrorErr",
   "assert.ifErrorF64",
   "assert.ifErrorStr",
@@ -974,6 +1089,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "dir.readSync",
   "dir.closeSync",
   "fs.copyFileSync",
+  "fs.copyFileFlagsSync",
   "fs.renameSync",
   "fs.renameCb",
   "fs.lstatSync",
@@ -996,16 +1112,22 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "fs.readlinkSyncStr",
   "fs.readlinkSyncBuffer",
   "fs.writeFileModeSync",
+  "fs.writeFileFlagsSync",
   "fs.mkdirModeSync",
   "fs.mkdirRecursiveModeSync",
   "fs.openSync",
   "fs.openNumericSync",
   "fs.readSync",
+  "fs.readSyncDyn",
   "fs.writeSync",
   "fs.writeStrSync",
   "fs.closeSync",
   "fs.watch",
   "fs.watchCb",
+  "watcher.on",
+  "watcher.off",
+  "fs.watchFile",
+  "fs.unwatchFile",
   "crypto.x509Fingerprint",
   "crypto.x509FingerprintStr",
   "crypto.x509ValidFrom",
@@ -1018,8 +1140,19 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "crypto.generateKeyPairCb",
   "crypto.signOneshot",
   "crypto.verifyOneshot",
+  "crypto.diffieHellman",
   "crypto.createSign",
   "crypto.createVerify",
+  "crypto.x509Raw",
+  "crypto.x509RawDer",
+  "crypto.x509RawStr",
+  // Node's argument errors (name, options, pkey) and the key parse.
+  "crypto.x509CheckHost",
+  "crypto.x509CheckEmail",
+  "crypto.x509CheckIP",
+  "crypto.x509PublicKey",
+  "crypto.x509Verify",
+  "crypto.x509CheckPrivateKey",
 ]);
 
 /** libCall members that always throw. Their result type is the replaced
@@ -1033,6 +1166,7 @@ export const ALWAYS_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "error.nodeThrow",
   "error.argTypeThrow",
   "error.propTypeThrow",
+  "array.foreignThrow",
   "fs.mkdtempChk",
   "fs.readFileChk",
   "fs.opendirChk",

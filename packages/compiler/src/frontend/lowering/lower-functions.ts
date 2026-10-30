@@ -357,6 +357,8 @@ export function lowerLambda(
   if (isJsSourceFile(ts.getSourceFileOfNode(node))) {
     const jsLength = jsFuncLengthOf(node);
     if (jsLength !== null) lowerer.jsCallableLengths.set(fnName, jsLength);
+    const jsName = jsFuncNameOf(node, lowerer);
+    if (jsName !== null) lowerer.jsCallableNames.set(fnName, jsName);
   }
   // Named function expressions/declarations can self-reference by name; an
   // object-literal method's name is a PROPERTY, not a binding — no self.
@@ -664,6 +666,8 @@ export function lowerFunction(lowerer: Lowerer, decl: ts.FunctionDeclaration): I
     if (isJsSourceFile(ts.getSourceFileOfNode(decl))) {
       const jsLength = jsFuncLengthOf(decl);
       if (jsLength !== null) lowerer.jsCallableLengths.set(sig.name, jsLength);
+      const jsName = jsFuncNameOf(decl, lowerer);
+      if (jsName !== null) lowerer.jsCallableNames.set(sig.name, jsName);
     }
     const fn: IrFunction = {
       name: sig.name,

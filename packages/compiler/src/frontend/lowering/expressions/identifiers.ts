@@ -13,6 +13,7 @@ import {
   globalIdentityKey,
   jsFuncIdentityOfValue,
   jsFuncLengthOf,
+  jsFuncNameOf,
 } from "../lowerer.js";
 import {
   BOOL,
@@ -533,6 +534,8 @@ export function lowerIdentifierExpr(lowerer: Lowerer, expr: ts.Identifier, loc: 
       // value's identity here, where the declaration is in hand.
       const jsLength = jsFuncLengthOf(decl);
       if (jsLength !== null) lowerer.jsCallableLengths.set(sig.name, jsLength);
+      const jsName = jsFuncNameOf(decl, lowerer);
+      if (jsName !== null) lowerer.jsCallableNames.set(sig.name, jsName);
     }
     return decl && ts.isFunctionDeclaration(decl) && funcType.kind === "func"
       ? argumentCountValue(lowerer, decl, expr, { ...closure, type: funcType })

@@ -2211,7 +2211,8 @@ export function globalIdentityKey(id: string): string {
   return `global:${id}`;
 }
 
-/** The ExpectedArgumentCount `length` of the function value `expr` holds, resolved through the
+/** The JavaScript identity (its `name` and its ExpectedArgumentCount
+ * `length`) of the function value `expr` holds, resolved through the
  * checker: the call signature's own declaration, when that declaration is a
  * real function body. A function TYPE declaration (the annotation
  * `(a: number, b?: number) => void`) describes the shape the value is used
@@ -2239,10 +2240,20 @@ export function jsFuncIdentityOfValue(
     return null;
   if (!isJsSourceFile(ts.getSourceFileOfNode(decl))) return null;
   const length = jsFuncLengthOf(decl);
-  return length !== null ? { fnLength: length } : null;
+  const name = jsFuncNameOf(decl, lowerer);
+  return {
+    ...(name !== null ? { fnName: name } : {}),
+    ...(length !== null ? { fnLength: length } : {}),
+  };
 }
 
 export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
+  // The SetFunctionName rules below are the JavaScript surface's, so they
+  // answer only in a JavaScript source. A typed module keeps what this
+  // function always answered for it: its boxed functions' `dynFrom.fnName`
+  // is part of its IR (inspect output, call-error text), and a compatibility
+  // fix must not change a typed program's IR.
+  const js = isJsSourceFile(ts.getSourceFileOfNode(node));
   let n: ts.Node = node;
   while (ts.isParenthesizedExpression(n)) n = n.expression;
   const seen = new Set<ts.Symbol>();
@@ -2255,6 +2266,11 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
       n = declaration;
       break;
     }
+    // A PARAMETER carries no function name: the value it holds was named
+    // where it was created (`(resolve) => rf = resolve` stores Node's
+    // anonymous resolve function, whose name is ""), so the parameter's
+    // spelling is not an answer.
+    if (js && declaration && ts.isParameter(declaration)) return null;
     if (
       !declaration ||
       !ts.isVariableDeclaration(declaration) ||
@@ -2268,6 +2284,8 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
   if (ts.isIdentifier(n)) return n.text;
   if (ts.isPropertyAccessExpression(n)) return n.name.text;
   if ((ts.isFunctionExpression(n) || ts.isFunctionDeclaration(n)) && n.name) return n.name.text;
+  // A method's SetFunctionName is its property key (`class C { m() {} }`).
+  if (js && ts.isMethodDeclaration(n) && ts.isIdentifier(n.name)) return n.name.text;
   if (ts.isFunctionExpression(n) || ts.isArrowFunction(n)) {
     // An anonymous function takes the name of the binding or property it
     // initializes, through parentheses (`const f = (function () {})`).
@@ -2281,6 +2299,34 @@ export function jsFuncNameOf(node: ts.Node, lowerer?: Lowerer): string | null {
       return p.name.text;
     }
     if (p && ts.isPropertyAssignment(p) && p.initializer === outer && ts.isIdentifier(p.name)) {
+      return p.name.text;
+    }
+    // `f = function () {}`: an assignment whose target is a bare reference
+    // names the value it stores (NamedEvaluation of an anonymous
+    // AssignmentExpression, ECMA-262 13.15.2). A PARENTHESIZED target is not
+    // an IdentifierReference — `(f) = function () {}` leaves the function
+    // unnamed — and the frontend's write-target view drops the parentheses,
+    // so the source's own spelling has to answer that.
+    if (
+      js &&
+      p &&
+      ts.isBinaryExpression(p) &&
+      p.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      p.right === outer &&
+      ts.isIdentifier(p.left) &&
+      !ts.isParenthesizedWriteTarget(p.left)
+    ) {
+      return p.left.text;
+    }
+    // `class C { f = function () {} }`: a field initializer takes the field's
+    // name, exactly like a variable initializer.
+    if (
+      js &&
+      p &&
+      ts.isPropertyDeclaration(p) &&
+      p.initializer === outer &&
+      ts.isIdentifier(p.name)
+    ) {
       return p.name.text;
     }
   }
@@ -3597,10 +3643,15 @@ export class Lowerer {
    * jsFuncLengthOf), by lifted-function name. The IR erases parameter
    * initializers, so a box built from the closure alone would report the
    * native parameter count (`(a, b = 1) => {}` is 2 there, 1 in JS). */
-  readonly jsCallableLengths = new Map<
-    string,
-    number
-  >(); /** The same identity, by the STORAGE a read produces (`varRef`): a value
+  readonly jsCallableLengths = new Map<string, number>();
+  /** The same source functions' SetFunctionName (ECMA-262 7.3.24, applied
+   * where the value is defined — a variable or property it initializes, the
+   * assignment that stores it), by lifted-function name. A box built where
+   * the value is created has no source expression to read the name from
+   * (`class C { f = (a, b = 1) => {} }` stores the field), so the
+   * definition records it. */
+  readonly jsCallableNames = new Map<string, string>();
+  /** The same identity, by the STORAGE a read produces (`varRef`): a value
    * the source never spells as a function literal at its box site —
    * `var ref; ref = function (a, b = 1) {}`, `const f = (a, b = 1) => {}` —
    * is boxed from its binding, whose IR type spells the native count and no
@@ -4334,10 +4385,11 @@ export class Lowerer {
       mapTable("builtinCallableValueFns", this.builtinCallableValueFns),
       mapTable("builtinCallableValueNames", this.builtinCallableValueNames),
       countTable("builtinCallableValueLengths", this.builtinCallableValueLengths),
-      // A JavaScript function's ExpectedArgumentCount, keyed by its lifted
-      // function — the shape of the builtin triple above. A box of that
-      // closure in a later unit reads it, so a record carries the entries its
-      // unit added.
+      // A JavaScript function's SetFunctionName and ExpectedArgumentCount,
+      // keyed by its lifted function — the shape of the builtin triple above.
+      // A box of that closure in a later unit reads them, so a record carries
+      // the entries its unit added.
+      mapTable("jsCallableNames", this.jsCallableNames),
       countTable("jsCallableLengths", this.jsCallableLengths),
       irDataTable("builtinCheckedValues", this.builtinCheckedValues),
       mapTable("regionRunHelpers", this.regionRunHelpers),
@@ -17699,20 +17751,26 @@ export class Lowerer {
     };
   }
 
-  /** The length a boxed function value carries. A builtin adapter boxes
-   * under Node's length; a JavaScript source function boxes under its
-   * ECMAScript length (ExpectedArgumentCount), which its IR signature no
-   * longer spells. Typed TypeScript sources keep the IR signature's count:
-   * the map is filled for JavaScript declarations only. */
+  /** The name and length a boxed function value carries. A builtin adapter
+   * boxes under Node's name and length; a JavaScript source function boxes
+   * under its SetFunctionName and its ECMAScript length (ExpectedArgumentCount),
+   * neither of which its IR signature still spells. Typed TypeScript sources
+   * keep the IR signature's answer: both maps are filled for JavaScript
+   * declarations only. */
   functionIdentity(expr: IrExpr): { fnName?: string; fnLength?: number } {
     const identity = this.builtinFunctionIdentity(expr);
     if (identity.fnLength !== undefined) return identity;
     // A closure boxes by the function it names; a binding boxes by the
     // storage the read resolves to (jsValueIdentities, filled at the read).
     if (expr.kind === "closure") {
+      const name = this.jsCallableNames.get(expr.fnName);
       const length = this.jsCallableLengths.get(expr.fnName);
-      if (length === undefined) return identity;
-      return { fnLength: length, ...identity };
+      if (name === undefined && length === undefined) return identity;
+      return {
+        ...(name !== undefined ? { fnName: name } : {}),
+        ...(length !== undefined ? { fnLength: length } : {}),
+        ...identity,
+      };
     }
     if (expr.kind === "varRef") {
       // A box built from a post pass has no context to key a local by; a

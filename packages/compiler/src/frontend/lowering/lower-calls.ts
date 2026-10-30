@@ -7119,16 +7119,27 @@ export function lowerPromiseMethodCall(
           const snapshot = lowerer.declareHiddenLocal("%catch", CAUGHT);
           catchLocalId = snapshot.id;
           const local = lowerer.declareLocal(param.name, param.name.text, target, false);
+          const caught: IrExpr = { kind: "varRef", localId: snapshot.id, type: CAUGHT, loc };
+          // caughtCheck tests the class's preorder interval, which only
+          // classes in an inheritance relation have; a standalone class
+          // converts the payload as an untyped value, whose checked
+          // conversion recovers a thrown instance and raises a catchable
+          // TypeError for anything else.
           claimInit = {
             kind: "varDecl",
             localId: local.id,
-            init: {
-              kind: "caughtCheck",
-              value: { kind: "varRef", localId: snapshot.id, type: CAUGHT, loc },
-              className: target.className,
-              type: target,
-              loc,
-            },
+            init: lowerer.inHierarchy(info)
+              ? {
+                  kind: "caughtCheck",
+                  value: caught,
+                  className: target.className,
+                  type: target,
+                  loc,
+                }
+              : lowerer.coerceToExpected(
+                  { kind: "caughtToDyn", value: caught, type: DYN, loc },
+                  target,
+                ),
             loc,
           };
         } else {

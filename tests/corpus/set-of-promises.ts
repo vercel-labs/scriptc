@@ -56,6 +56,18 @@ async function main(): Promise<void> {
     }),
   );
   console.log("later", (await Promise.all([...later])).join(","));
+
+  // A promise that went through `unknown` is the same key: `===` holds, and
+  // Set.has, Map.get and a second add find the stored promise.
+  const stored: Promise<number> = Promise.resolve(3);
+  const keyed = new Set<Promise<number>>([stored]);
+  const named = new Map<Promise<number>, string>([[stored, "stored"]]);
+  const opaque: unknown = stored;
+  const back = opaque as Promise<number>;
+  console.log("round trip", back === stored, keyed.has(back), named.get(back));
+  keyed.add(back);
+  named.set(back, "again");
+  console.log("one key", keyed.size, named.size, named.get(stored), await back);
 }
 
 main();

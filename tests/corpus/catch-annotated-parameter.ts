@@ -83,6 +83,25 @@ async function main(): Promise<void> {
 
   // A bare-expression annotated handler returning a string.
   console.log(await fail(0).catch((error: Error): string => `${error.name}: ${error.message}`));
+
+  // A class outside the Error hierarchy, with no base and no subclass: the
+  // handler receives the thrown instance itself.
+  const code = await throwPlain().catch((p: Plain) => {
+    console.log("plain", p.code, p === plain, p instanceof Plain);
+    return p.code;
+  });
+  console.log("plain code", code);
+}
+
+class Plain {
+  code: number;
+  constructor(code: number) {
+    this.code = code;
+  }
+}
+const plain = new Plain(7);
+async function throwPlain(): Promise<number> {
+  throw plain;
 }
 
 main();

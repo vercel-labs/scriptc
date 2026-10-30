@@ -105,3 +105,26 @@ test("an unannotated catch handler keeps the plain typed-catch binding", async (
     expect(ir).not.toContain('"%catch"');
   }
 });
+
+test("a standalone class annotation converts the payload as an untyped value", async () => {
+  const compiled = await compileToIr([
+    "class Plain {",
+    "  constructor(readonly code: number) {}",
+    "}",
+    "async function throwPlain(): Promise<number> {",
+    "  throw new Plain(7);",
+    "}",
+    "async function main(): Promise<void> {",
+    "  const v = await throwPlain().catch((p: Plain) => p.code);",
+    "  console.log(v);",
+    "}",
+    "main();",
+  ]);
+  expect(compiled.ok, compiled.diagnostics).toBe(true);
+  const ir = functions(compiled.module!);
+  // caughtCheck needs a class in an inheritance relation: the standalone
+  // class takes the checked conversion of the untyped payload instead.
+  expect(ir).not.toContain('"caughtCheck"');
+  expect(ir).toContain('"caughtToDyn"');
+  expect(ir).toContain('"%catch"');
+});

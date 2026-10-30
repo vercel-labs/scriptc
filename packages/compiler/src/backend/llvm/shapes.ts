@@ -1471,6 +1471,9 @@ export function mapKeyKindNum(key: IrType, unionArms?: IrType[]): number {
   if (key.kind === "bool") return 6;
   if (key.kind === "nullT") return 8;
   if (key.kind === "undefinedT") return 9;
+  // SCR_MAP_KEY_PROMISE (10): a reference key compared by the identity cell
+  // its adapter boxes share (collectionOps adds scr_promise_map_identity).
+  if (key.kind === "promise") return 10;
   if (key.kind === "union") return unionArms?.every(isIdentityCollectionKey) ? 3 : 7;
   const acc = mapKeyAccess(key);
   return acc === "f64" ? 0 : acc === "str" ? 1 : 2;

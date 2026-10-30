@@ -818,7 +818,7 @@ static void scr_rgn_walk_arr(ScrRgnWalk *w, ScrArr *a) {
 
 static void scr_rgn_walk_map(ScrRgnWalk *w, ScrMap *m) {
   bool keyref = m->key_kind == SCR_MAP_KEY_REF || m->key_kind == SCR_MAP_KEY_UNION_REF ||
-      m->key_kind == SCR_MAP_KEY_UNION_VALUE;
+      m->key_kind == SCR_MAP_KEY_UNION_VALUE || m->key_kind == SCR_MAP_KEY_PROMISE;
   bool keydyn = m->key_kind == SCR_MAP_KEY_DYN;
   bool valref = m->val_kind == SCR_MAP_VAL_REF;
   if (!keyref && !keydyn && !valref) return;

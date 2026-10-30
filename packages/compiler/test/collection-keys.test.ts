@@ -84,7 +84,8 @@ test("a promise is a reference key: Set<Promise<T>> compares by identity", () =>
   expect(isSupportedMapKey(promise)).toBe(true);
   expect(isSupportedSetElem(promise)).toBe(true);
   expect(mapKeyAccess(promise)).toBe("ref");
-  expect(mapKeyKindNum(promise)).toBe(2);
+  // SCR_MAP_KEY_PROMISE: identity through the cell its adapter boxes share.
+  expect(mapKeyKindNum(promise)).toBe(10);
 
   const dir = mkdtempSync(join(tmpdir(), "scriptc-promise-set-"));
   try {

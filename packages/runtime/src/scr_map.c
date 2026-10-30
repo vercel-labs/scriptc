@@ -112,6 +112,10 @@ static void *scr_map_slot_to_ptr(uint64_t s) { return (void *)(uintptr_t)s; }
 /* Union boxes are a compiler representation, not JavaScript objects. Keep
  * the box as the owned key, but hash and compare its reference payload. */
 static uint64_t scr_map_identity(const ScrMap *m, uint64_t key) {
+  if (m->key_kind == SCR_MAP_KEY_PROMISE) {
+    const ScrMapIdentityOps *ops = (const ScrMapIdentityOps *)m->ops;
+    return scr_map_slot_from_ptr(ops->key_identity(scr_map_slot_to_ptr(key)));
+  }
   if (m->key_kind == SCR_MAP_KEY_UNION_REF) {
     const ScrUnion *u = (const ScrUnion *)scr_map_slot_to_ptr(key);
     return scr_map_slot_from_ptr(scr_union_peek(u));
@@ -847,7 +851,8 @@ static void scr_map_reserve_append(ScrMap *m) {
 
 static bool scr_map_ref_key(ScrMapKeyKind kind) {
   return kind == SCR_MAP_KEY_REF || kind == SCR_MAP_KEY_UNION_REF || kind == SCR_MAP_KEY_DYN ||
-         kind == SCR_MAP_KEY_BIGINT || kind == SCR_MAP_KEY_UNION_VALUE;
+         kind == SCR_MAP_KEY_BIGINT || kind == SCR_MAP_KEY_UNION_VALUE ||
+         kind == SCR_MAP_KEY_PROMISE;
 }
 
 static void scr_map_release_key(ScrMap *m, uint64_t key) {

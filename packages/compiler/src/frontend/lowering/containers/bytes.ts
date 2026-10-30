@@ -44,7 +44,11 @@ import {
   lowerStaticallyUndefinedArgument,
 } from "../optional-arguments.js";
 import { lowerArraySpreadItems, lowerCheckedArrayFrom } from "./array-construction.js";
-import { lowerOptionalNumber, lowerToNumberArgument } from "../lower-exprs.js";
+import {
+  lowerOptionalNumber,
+  lowerToNumberArgument,
+  lowerToNumberArguments,
+} from "../lower-exprs.js";
 import { lowerBytesIteratorValue } from "../iterator-adapters.js";
 import { lowerArrayCallback } from "./callback-arguments.js";
 import { callbackSite, findPredicateOk, predicateToBoolean } from "./array-callbacks.js";
@@ -682,6 +686,12 @@ export function lowerBytesNew(
       (src.type.kind === "array" && src.type.elem.kind === "f64")
     ) {
       return { kind: "bytesNew", source: src, type, loc };
+    }
+    // A Symbol length is ToIndex's TypeError ("Cannot convert a Symbol
+    // value to a number"), which the checked constructor dispatch raises.
+    // Box it like any other non-number length instead of refusing here.
+    if (src.type.kind === "symbol") {
+      return { kind: "bytesNew", source: lowerer.coerceInto(argNode, src, DYN), type, loc };
     }
     lowerer.noLowering(
       `new ${name} over '${lowerer.fmt(src.type)}' values`,
@@ -1577,7 +1587,9 @@ export function lowerBytesMethodCall(
   if (dvBigGetter !== undefined && receiverIr.elem === "u8") {
     if (nArgs < 1 || nArgs > 2) lowerer.noLowering(`.${name} with ${nArgs} arguments`, call);
     const receiver = lowerer.lowerExprExpecting(access.expression, receiverIr);
-    const offset = lowerer.lowerExprExpecting(call.arguments.nodes[0]!, F64);
+    // ToIndex(byteOffset): the same ToNumber conversion as the other
+    // getters (a Symbol value throws Node's TypeError).
+    const offset = lowerToNumberArgument(lowerer, call.arguments.nodes[0]!);
     const sign: IrExpr = { kind: "boolLit", value: dvBigGetter.sign, type: BOOL, loc };
     const le: IrExpr = call.arguments.nodes[1]
       ? lowerer.lowerExprExpecting(call.arguments.nodes[1], BOOL)
@@ -1598,9 +1610,26 @@ export function lowerBytesMethodCall(
     }
     const receiver = lowerer.lowerExprExpecting(access.expression, receiverIr);
     // ToIndex(undefined) is ToIndex(NaN): a missing offset reads offset 0.
-    const args = [lowerToNumberArgument(lowerer, call.arguments.nodes[0]!)];
-    if (nArgs === 2) args.push(lowerer.lowerExprExpecting(call.arguments.nodes[1]!, BOOL));
-    return { kind: "bytesIntrinsic", method: dvGetter.method, receiver, args, type: F64, loc };
+    // Node evaluates every argument before it converts any, so a
+    // littleEndian argument still runs its effects when the offset's
+    // ToIndex throws (a Symbol).
+    const leNode = nArgs === 2 ? call.arguments.nodes[1]! : null;
+    const { stmts, values } = lowerToNumberArguments(
+      lowerer,
+      leNode ? [call.arguments.nodes[0]!, leNode] : [call.arguments.nodes[0]!],
+      leNode
+        ? (node) => (node === leNode ? lowerer.lowerExprExpecting(node, BOOL) : null)
+        : undefined,
+    );
+    const getter: IrExpr = {
+      kind: "bytesIntrinsic",
+      method: dvGetter.method,
+      receiver,
+      args: values,
+      type: F64,
+      loc,
+    };
+    return stmts.length === 0 ? getter : { kind: "seqExpr", stmts, result: getter, type: F64, loc };
   }
   // DataView setters — the getters' mirror: (byteOffset, value) plus the
   // optional littleEndian bool on the multi-byte kinds. Void results;
@@ -1612,7 +1641,9 @@ export function lowerBytesMethodCall(
   if ((name === "setBigUint64" || name === "setBigInt64") && receiverIr.elem === "u8") {
     if (nArgs < 2 || nArgs > 3) lowerer.noLowering(`.${name} with ${nArgs} arguments`, call);
     const receiver = lowerer.lowerExprExpecting(access.expression, receiverIr);
-    const offset = lowerer.lowerExprExpecting(call.arguments.nodes[0]!, F64);
+    // The offset is ToIndex, as for the numeric setters; the value is
+    // ToBigInt and keeps its own lowering.
+    const offset = lowerToNumberArgument(lowerer, call.arguments.nodes[0]!);
     const value = lowerer.lowerExprExpecting(call.arguments.nodes[1]!, BIGINT_T);
     const le: IrExpr = call.arguments.nodes[2]
       ? lowerer.lowerExprExpecting(call.arguments.nodes[2], BOOL)
@@ -1627,18 +1658,38 @@ export function lowerBytesMethodCall(
   }
   if (dvSetter !== undefined && receiverIr.elem === "u8") {
     const maxArgs = dvSetter.le ? 3 : 2;
-    if (nArgs < 2 || nArgs > maxArgs) {
+    if (nArgs < 1 || nArgs > maxArgs) {
       lowerer.noLowering(`.${name} with ${nArgs} arguments`, call);
     }
     const receiver = lowerer.lowerExprExpecting(access.expression, receiverIr);
     // The offset (ToIndex) and the value (ToNumber) treat a missing value
-    // as NaN.
-    const args = [
-      lowerToNumberArgument(lowerer, call.arguments.nodes[0]!),
-      lowerToNumberArgument(lowerer, call.arguments.nodes[1]!),
-    ];
-    if (nArgs === 3) args.push(lowerer.lowerExprExpecting(call.arguments.nodes[2]!, BOOL));
-    return { kind: "bytesIntrinsic", method: dvSetter.method, receiver, args, type: VOID, loc };
+    // as NaN. Both evaluate, and the optional littleEndian flag with them,
+    // before either conversion can throw, as Node evaluates every argument
+    // first.
+    const valueNode = call.arguments.nodes[1] ?? null;
+    const leNode = nArgs === 3 ? call.arguments.nodes[2]! : null;
+    const argNodes: ts.Expression[] = [call.arguments.nodes[0]!];
+    if (valueNode) argNodes.push(valueNode);
+    if (leNode) argNodes.push(leNode);
+    const { stmts, values: lowered } = lowerToNumberArguments(
+      lowerer,
+      argNodes,
+      leNode
+        ? (node) => (node === leNode ? lowerer.lowerExprExpecting(node, BOOL) : null)
+        : undefined,
+    );
+    const values = valueNode ? lowered : [lowered[0]!, numLit(NaN, loc)];
+    const setter: IrExpr = {
+      kind: "bytesIntrinsic",
+      method: dvSetter.method,
+      receiver,
+      args: values,
+      type: VOID,
+      loc,
+    };
+    return stmts.length === 0
+      ? setter
+      : { kind: "seqExpr", stmts, result: setter, type: VOID, loc };
   }
   return null;
 }

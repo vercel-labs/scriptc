@@ -1953,8 +1953,14 @@ export function lowerInExpression(
                 value,
                 unionId,
                 key,
-                answers.map((a): { tag: number; has: boolean | "slot" | "unit" | "keyed" | "source"; arm: IrType } =>
-                  pendingTags.has(a.tag) ? { ...a, has: "source" } : a,
+                answers.map(
+                  (
+                    a,
+                  ): {
+                    tag: number;
+                    has: boolean | "slot" | "unit" | "keyed" | "source";
+                    arm: IrType;
+                  } => (pendingTags.has(a.tag) ? { ...a, has: "source" } : a),
                 ),
                 loc,
                 declare,

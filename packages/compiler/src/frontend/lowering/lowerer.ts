@@ -4581,6 +4581,7 @@ export class Lowerer {
     // caches made when first needed
     "nanCodedReads",
     "mentionsProcessVersions",
+    "generatorYieldsInFinally",
     "createsWrappers",
     "stringIndexBoundsCache",
     "functionLocalSubclasses",

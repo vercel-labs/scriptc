@@ -551,6 +551,28 @@ export function emitDynamicExpr(
           B.br(join);
           return;
         }
+        // A scalar primitive arm under a LITERAL key the frontend proved
+        // the primitive does not declare (`{ url?: string } | "pending"`
+        // read as `x?.url`): JS boxes the primitive, finds no such
+        // property, and answers undefined — the record arm's
+        // missing-key answer below.
+        if (
+          literal !== null &&
+          (arm.kind === "string" ||
+            arm.kind === "f64" ||
+            arm.kind === "bool" ||
+            arm.kind === "bigint")
+        ) {
+          const tag = resultDef?.arms.findIndex((a) => a.kind === "undefinedT") ?? -1;
+          if (tag < 0 || e.type.kind !== "union") {
+            throw new InternalCompilerError(
+              "llvm emitter bug: unionKeyGet primitive arm without an undefined result arm",
+            );
+          }
+          B.line(`store ptr ${host.unitInstanceRef(e.type.unionId, tag)}, ptr ${slot}`);
+          B.br(join);
+          return;
+        }
         if (arm.kind !== "record") throw new LlvmUnsupportedError(`unionKeyGet:${arm.kind}`, e.loc);
         const shape = host.recordShape(arm.shapeId);
         const payload = host.unionPeek(u.name, def.id);

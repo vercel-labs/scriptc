@@ -407,7 +407,15 @@ const SYMBOL_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
 ]);
 
 /** Entry points that link the querystring unit. */
-const QS_LIB_FNS: ReadonlySet<IrLibFn> = new Set(["qs.parse", "qs.stringify", "qs.unescape"]);
+const QS_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
+  "qs.parse",
+  "qs.parseCustom",
+  "qs.stringify",
+  "qs.stringifyCustom",
+  "qs.separator",
+  "qs.unescape",
+  "qs.unescapeBuffer",
+]);
 
 /** Entry points that link the parseArgs unit. */
 const PARSE_ARGS_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
@@ -1231,6 +1239,8 @@ const RUNTIME_FEATURE_RULES = {
       "global.native",
       // ERR_ARG_NOT_ITERABLE renders the value as util.format's %s does.
       "webstream.class",
+      // ERR_UNKNOWN_ENCODING formats an encoding that is not a string with %s.
+      "strdec.encodingValue",
       "webstream.install",
       "util.styleText",
       // ERR_UNHANDLED_ERROR quotes util.inspect of a non-Error payload.

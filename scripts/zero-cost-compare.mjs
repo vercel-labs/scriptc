@@ -549,7 +549,8 @@ export function compareCounts(baseline, candidate) {
 /* ── runtime packs ─────────────────────────────────────────────────────── */
 
 /** Every file a runtime-pack.json lists (each flavor's runtime unit
- * variants, their bitcode, and the vendor archives), as path → sha256. */
+ * variants and the vendor archives, and the bitcode packs built before
+ * 0.4.7 listed), as path → sha256. */
 export function runtimePackFiles(manifest) {
   const files = new Map();
   const visit = (value) => {
@@ -586,20 +587,36 @@ export function linkedRuntimeFiles(diff) {
   );
 }
 
-/** Defined functions of textual LLVM IR (llvm-dis output) as name → hash of
- * the body. Attribute group and metadata numbers are dropped first, since
- * an unrelated change elsewhere in the unit renumbers them. */
-export function llvmFunctionHashes(text) {
+/** Functions of an object's disassembly (llvm-objdump -d -r
+ * --no-show-raw-insn --no-leading-addr) as name → hash of the body. Branch
+ * targets and relocations keep their symbol and offset but drop addresses,
+ * so a function that only moved within its section is not a change. */
+export function objectFunctionHashes(text) {
   const functions = new Map();
-  const lines = text.split("\n");
-  for (let index = 0; index < lines.length; index++) {
-    const head = /^define\b[^@]*@("(?:[^"\\]|\\.)*"|[\w.$-]+)\(/.exec(lines[index]);
-    if (head === null) continue;
-    const body = [];
-    for (; index < lines.length && lines[index] !== "}"; index++) body.push(lines[index]);
-    const normalized = body.join("\n").replace(/ #\d+/g, "").replace(/!\d+/g, "!");
-    functions.set(head[1].replace(/^"|"$/g, ""), hash(normalized));
+  let name = null;
+  let body = [];
+  const flush = () => {
+    if (name !== null) functions.set(name, hash(body.join("\n")));
+    name = null;
+    body = [];
+  };
+  for (const line of text.split("\n")) {
+    const head = /^(?:[0-9a-f]+ )?<(.+)>:$/.exec(line.trim());
+    if (head !== null) {
+      flush();
+      name = head[1];
+    } else if (line.trim() === "" || line.startsWith("Disassembly of section")) {
+      flush();
+    } else if (name !== null) {
+      body.push(
+        line
+          .trim()
+          .replace(/^[0-9a-f]+:\s+/, "")
+          .replace(/\b(?:0x)?[0-9a-f]+ <([^>]+)>/g, "<$1>"),
+      );
+    }
   }
+  flush();
   return functions;
 }
 

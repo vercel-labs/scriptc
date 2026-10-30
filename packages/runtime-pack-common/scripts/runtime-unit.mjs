@@ -5,26 +5,18 @@ import { promisify } from "node:util";
 
 const run = promisify(execFile);
 
-/* Executable runtime units ship the bitcode the LLVM helper imports small
- * runtime functions from (available_externally, so program code can inline
- * them while the unit's object stays the only linked definition).
- *
- * Speed units produce both artifacts from one optimized LLVM module: the
- * runtime compiler optimizes the C source to bitcode, and the host helper's
- * `runtime-unit` command promotes translation-unit-local symbols to hidden
- * unit-qualified globals and emits the object and the bitcode. With the
- * target's committed runtime profile, the runtime compiler emits the bitcode
- * unoptimized and the helper also optimizes it with the profile (build.mjs),
- * so one LLVM reads and writes every profile. Release units keep the
- * runtime compiler's own objects; their bitcode is the same compilation with
- * -emit-llvm, which the helper's `prune-import` reduces to the bodies that
- * need none of the unit's local state. Both bitcode forms
- * keep only what a program build can import.
+/* Speed units are emitted through the host LLVM helper: the runtime
+ * compiler compiles the C source to bitcode, and the helper's `runtime-unit`
+ * command promotes translation-unit-local symbols to hidden unit-qualified
+ * globals and emits the object. With the target's committed runtime profile,
+ * the runtime compiler emits the bitcode unoptimized and the helper also
+ * optimizes it with the profile (build.mjs), so one LLVM reads and writes
+ * every profile. Runtime packs ship objects only: program builds do not
+ * import runtime bitcode.
  *
  * Every host helper supports every scriptc target, so packs keep building
  * on their usual hosts. Without a runnable host helper (or with
- * SCRIPTC_RUNTIME_BITCODE=0) units are compiled to objects directly and
- * ship no bitcode; program builds then simply import nothing. */
+ * SCRIPTC_RUNTIME_BITCODE=0) a pack has no speed flavor. */
 
 function hostHelperPackage() {
   if (process.platform === "darwin") return `llvm-darwin-${process.arch}`;
@@ -63,7 +55,8 @@ export async function resolveRuntimeUnitHelper(repoRoot, triple) {
       // Commands and options newer than the protocol version, such as
       // "runtime-unit-profile": `runtime-unit` takes --opt-level,
       // --profile-use and --profile-generate (older helpers only promote and
-      // emit).
+      // emit); "runtime-unit-optional-bitcode": it emits the object without
+      // the import bitcode.
       features: Array.isArray(version.features) ? version.features : [],
     };
   } catch {
@@ -72,14 +65,31 @@ export async function resolveRuntimeUnitHelper(repoRoot, triple) {
   }
 }
 
+/** The helper's diagnostic from a failed command: its JSON line, which
+ * follows any LLVM warnings on the same streams. */
+function helperFailure(error) {
+  const lines = [error.stdout, error.stderr]
+    .filter((text) => typeof text === "string")
+    .join("\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "");
+  return (
+    lines.find((line) => line.startsWith("{")) ??
+    lines.find((line) => !line.includes("is not a recognized feature")) ??
+    lines[0] ??
+    error.message ??
+    String(error)
+  );
+}
+
 /** Compile one unit through the helper. `compileBitcode(output)` must run
  * the runtime compiler with the unit's exact flags plus -emit-llvm.
  * `helperArgs` asks the helper to optimize the unit itself (`--opt-level`,
  * with `--profile-use` or `--profile-generate`), for bitcode the runtime
  * compiler emitted unoptimized.
  * Returns false, leaving no artifacts behind, when the helper cannot emit
- * this unit; the caller then compiles the object directly without bitcode,
- * so a pack never fails to build because of the import path. Otherwise
+ * this unit; the caller then compiles the object directly. Otherwise
  * returns an object, with the helper's `profile` match counts when a profile
  * guided the unit, or the profile names of the unit's `functions` when it
  * was instrumented. */
@@ -88,12 +98,15 @@ export async function buildRuntimeUnit({
   compileBitcode,
   helperArgs = [],
   object,
-  bitcode,
   triple,
   tag,
   sections,
 }) {
   const optimized = object.replace(/\.o$/, ".opt.bc");
+  // Helpers older than "runtime-unit-optional-bitcode" always write it.
+  const bitcode = helper.features.includes("runtime-unit-optional-bitcode")
+    ? null
+    : object.replace(/\.o$/, ".import.bc");
   // A runtime compiler failure is a real build error and surfaces as one.
   await compileBitcode(optimized);
   try {
@@ -103,8 +116,7 @@ export async function buildRuntimeUnit({
       optimized,
       "--object",
       object,
-      "--bitcode",
-      bitcode,
+      ...(bitcode === null ? [] : ["--bitcode", bitcode]),
       "--target",
       triple,
       "--tag",
@@ -118,31 +130,13 @@ export async function buildRuntimeUnit({
       ...(report.functions === undefined ? {} : { functions: report.functions }),
     };
   } catch (error) {
-    const detail = (error.stderr || error.message || String(error)).trim().split("\n")[0];
-    process.stderr.write(`runtime-unit: ${tag}: emitting without import bitcode (${detail})\n`);
-    await Promise.all([rm(object, { force: true }), rm(bitcode, { force: true })]);
+    process.stderr.write(
+      `runtime-unit: ${tag}: compiling the object directly (${helperFailure(error)})\n`,
+    );
+    await rm(object, { force: true });
     return false;
   } finally {
     await rm(optimized, { force: true });
-  }
-}
-
-/** Import bitcode for a unit whose object the runtime compiler emits
- * itself (the release flavor). `compileBitcode(output)` must run the
- * runtime compiler with the unit's exact flags plus -emit-llvm. A helper
- * failure only drops the bitcode; the object is unaffected. */
-export async function buildImportBitcode({ helper, compileBitcode, bitcode, tag }) {
-  const optimized = bitcode.replace(/\.bc$/, ".opt.bc");
-  await compileBitcode(optimized);
-  try {
-    await run(helper.path, ["prune-import", "--input", optimized, "--output", bitcode]);
-    return true;
-  } catch (error) {
-    const detail = (error.stderr || error.message || String(error)).trim().split("\n")[0];
-    process.stderr.write(`prune-import: ${tag}: shipping without import bitcode (${detail})\n`);
-    await rm(bitcode, { force: true });
-    return false;
-  } finally {
-    await rm(optimized, { force: true });
+    if (bitcode !== null) await rm(bitcode, { force: true });
   }
 }

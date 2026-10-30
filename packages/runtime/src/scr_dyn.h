@@ -2305,7 +2305,7 @@ void scr_dyn_this_push_dyn(const ScrDyn *v);          /* retained for the window
  * constant (kind: 0 plain, 1 observed, 2 traced capsule). `view` names the
  * live view bound to the new capsule, as eager boxing binds it: 0 none,
  * 1 array ops, 2 record ops, 3 class ops (`ops`). */
-typedef struct {
+typedef struct ScrDynTypedRefRecipe {
   void *(*retain)(void *);
   void (*release)(void *);
   const char *type_key;

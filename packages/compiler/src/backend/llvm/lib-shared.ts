@@ -627,6 +627,7 @@ export const LIB_FN_SYMS: Record<string, string> = {
   "strdec.next": "scr_strdec_next",
   "strdec.end": "scr_strdec_end",
   "strdec.encoding": "scr_strdec_encoding",
+  "strdec.encodingValue": "scr_strdec_encoding_value",
   "stats.isFile": "scr_stats_is_file",
   "stats.isDirectory": "scr_stats_is_dir",
   "stats.isSymbolicLink": "scr_stats_is_symlink",
@@ -893,8 +894,12 @@ export const LIB_FN_SYMS: Record<string, string> = {
   // codec unit. qs.parse is special-cased in emitLibCall (the result
   // dictionary's construction).
   "qs.escape": "scr_qs_escape",
+  "qs.escapeValue": "scr_qs_escape_value",
   "qs.unescape": "scr_qs_unescape",
   "qs.stringify": "scr_qs_stringify",
+  "qs.stringifyCustom": "scr_qs_stringify_custom",
+  "qs.separator": "scr_qs_separator",
+  "qs.unescapeBuffer": "scr_qs_unescape_buffer",
   // Timer handle bookkeeping (never throws; the comma-shaped chaining
   // forms are special-cased in emitLibCall).
   "timers.hasRef": "scr_timer_has_ref",

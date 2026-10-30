@@ -2069,6 +2069,7 @@ function buildBuiltinModuleFns(): BuiltinModuleFnTable {
         result: STRING,
         valueParams: [{ mode: "required", type: STRING }],
       },
+      unescapeBuffer: { fn: "qs.unescapeBuffer", params: [STRING, BOOL], result: BYTES_U8 },
     },
     // node:punycode (deprecated): punycode.js 2.1.0's conversions over
     // strings (scr_url.c). ucs2.decode/encode are members of the module's

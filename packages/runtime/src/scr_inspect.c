@@ -3182,6 +3182,63 @@ ScrStr *scr_insp_format(ScrDyn *const *args, size_t argc, const ScrInspFormatOpt
   return insp_format_loop(args, argc, o, &ops);
 }
 
+/* new StringDecoder(encoding) with an encoding that may not be a string:
+ * Node's normalizeEncoding. Strings, undefined and null go through
+ * scr_strdec_encoding. Another value matches only as an object whose
+ * `length` is 3 to 9: its string, in lower case, against the names of that
+ * length (slowCases converts it once). Everything else throws
+ * ERR_UNKNOWN_ENCODING, formatted as Node formats it ("Unknown encoding:
+ * %s"). The canonical name (+1), or NULL with the exception pending. */
+ScrStr *scr_strdec_encoding_value(const ScrDyn *enc) {
+  if (enc->kind == SCR_DYN_STR || enc->kind == SCR_DYN_UNDEF || enc->kind == SCR_DYN_NULL)
+    return scr_strdec_encoding(enc);
+  if (insp_fmt_object(enc)) {
+    ScrStr *name = scr_str_new("length", 6);
+    ScrDyn *key = scr_dyn_new_str(name);
+    scr_str_release(name);
+    ScrDyn *length = scr_dyn_reflect_get((ScrDyn *)enc, key, (ScrDyn *)enc);
+    scr_dyn_release(key);
+    if (!length) return NULL;
+    double count = length->kind == SCR_DYN_NUM ? length->v.num : 0;
+    scr_dyn_release(length);
+    static const struct { int length; const char *from; const char *to; } names[] = {
+      {3, "hex", "hex"},         {4, "utf8", "utf8"},           {4, "ucs2", "utf16le"},
+      {5, "utf-8", "utf8"},      {5, "ascii", "ascii"},         {5, "ucs-2", "utf16le"},
+      {6, "base64", "base64"},   {6, "latin1", "latin1"},       {6, "binary", "latin1"},
+      {7, "utf16le", "utf16le"}, {8, "utf-16le", "utf16le"},    {9, "base64url", "base64url"},
+    };
+    if (count >= 3 && count <= 9 && count == (int)count) {
+      ScrStr *text = scr_dyn_string_coerce_js(enc);
+      if (!text) return NULL;
+      const char *match = NULL;
+      for (size_t i = 0; i < sizeof names / sizeof names[0] && !match; i++) {
+        size_t n = strlen(names[i].from);
+        if (names[i].length != (int)count || text->len != n) continue;
+        bool same = true;
+        for (size_t k = 0; k < n && same; k++) {
+          char c = text->data[k];
+          if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+          same = c == names[i].from[k];
+        }
+        if (same) match = names[i].to;
+      }
+      scr_str_release(text);
+      if (match) return scr_str_new(match, strlen(match));
+    }
+  }
+  ScrStr *format = scr_str_new("Unknown encoding: %s", 20);
+  ScrDyn *args[2] = {scr_dyn_new_str(format), (ScrDyn *)enc};
+  scr_str_release(format);
+  ScrInspFormatOptions options;
+  scr_insp_format_defaults(&options, "new StringDecoder");
+  ScrStr *message = scr_insp_format(args, 2, &options);
+  scr_dyn_release(args[0]);
+  if (!message) return NULL;
+  scr_throw_error_msg_code(SCR_ERR_TYPE, message->data, message->len, "ERR_UNKNOWN_ENCODING");
+  scr_str_release(message);
+  return NULL;
+}
+
 /* The formatter over arguments that are all strings, numbers, booleans,
  * null or undefined (the compiler proves it from their types): the same
  * rules for those kinds, without the checked-dynamic walk the other

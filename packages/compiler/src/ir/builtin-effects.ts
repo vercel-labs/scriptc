@@ -91,6 +91,7 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "child.onDyn",
   "text.decoderEncoding",
   "strdec.encoding",
+  "strdec.encodingValue",
   "strdec.writeDyn",
   "strdec.nextDyn",
   "dyn.construct",
@@ -671,6 +672,10 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "str.encodeUriComponent",
   "str.encodeUri",
   "qs.escape",
+  "qs.escapeValue",
+  "qs.parseCustom",
+  "qs.stringifyCustom",
+  "qs.separator",
   "qs.stringify",
   // node:punycode's RangeErrors (encode/toASCII only past 32-bit deltas)
   // and String.fromCodePoint's for ucs2.encode.

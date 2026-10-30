@@ -1255,8 +1255,21 @@ function buildLibFnSignatures() {
      * All borrow; string results +1; escape and stringify throw URIError
      * [ERR_INVALID_URI] on a lone surrogate. */
     "qs.parse": { argTypes: [STRING, STRING, STRING, F64], result: VOID },
+    /** parse with a decodeURIComponent option: qs, sep, eq, maxKeys and
+     * the option's value (a function decodes; any other value means the
+     * default decoder). The result is the same dictionary as qs.parse's. */
+    "qs.parseCustom": { argTypes: [STRING, STRING, STRING, F64, DYN], result: VOID },
     "qs.stringify": { argTypes: [DYN, STRING, STRING], result: STRING },
+    /** stringify with an encodeURIComponent option's value. */
+    "qs.stringifyCustom": { argTypes: [DYN, STRING, STRING, DYN], result: STRING },
+    /** A sep/eq argument that may not be a string: (value, default, parse). */
+    "qs.separator": { argTypes: [DYN, STRING, BOOL], result: STRING },
+    /** unescapeBuffer(s, decodeSpaces) as a new Buffer. */
+    "qs.unescapeBuffer": { argTypes: [STRING, BOOL], result: BYTES_U8 },
     "qs.escape": { argTypes: [STRING], result: STRING },
+    /** escape of a value that may not be a string: String(value) for an
+     * object or null, value + "" otherwise (a symbol throws TypeError). */
+    "qs.escapeValue": { argTypes: [DYN], result: STRING },
     "qs.unescape": { argTypes: [STRING], result: STRING },
     /** node:util.parseArgs: one checked-dynamic config object in, one
      * checked-dynamic ParsedResults tree out. Statically typed member reads
@@ -5063,6 +5076,10 @@ function buildLibFnSignatures() {
     /** A runtime encoding argument's canonical name (Node's normalizeEncoding:
      * nullish and "" are utf8); an unknown name throws ERR_UNKNOWN_ENCODING. */
     "strdec.encoding": { argTypes: [DYN], result: STRING },
+    /** The same for an encoding that may not be a string (scr_inspect.c):
+     * an object whose `length` is 3 to 9 matches by its string in lower
+     * case; other values throw ERR_UNKNOWN_ENCODING formatted with %s. */
+    "strdec.encodingValue": { argTypes: [DYN], result: STRING },
     // node:readline: the interface handle is f64; the callbacks' func types
     // are program-dependent (the emitter picks the adapter by parameter
     // count), so those slots are null like child.onExit's.

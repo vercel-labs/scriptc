@@ -104,6 +104,25 @@ export function recordDynKeepsIdentity(shape: IrRecordShape): boolean {
   );
 }
 
+/** Whether a promise's fulfillment payload crosses to a checked-dynamic
+ * value as a LIVE capsule of the same record or array (the `dynFrom
+ * liveRef` spelling, lowerer.ts's `liveReference`), so `(await p) ===
+ * shared` holds as it does in Node. Arrays always do; records do when
+ * they declare fields or an index signature (an empty record keeps its
+ * identity through `recordDynKeepsIdentity`'s source access instead). */
+function promisePayloadIsLive(host: DynHost, t: IrType): boolean {
+  if (t.kind === "array") return true;
+  if (t.kind === "record") {
+    const shape = host.recordsById.get(t.shapeId);
+    return shape !== undefined && (shape.fields.length > 0 || shape.indexValue !== undefined);
+  }
+  if (t.kind === "union")
+    return (host.unionsById.get(t.unionId)?.arms ?? []).some((arm) =>
+      promisePayloadIsLive(host, arm),
+    );
+  return false;
+}
+
 /** ScrDynKind values (scr_runtime.h). */
 /** ScrDynHandleTag values (scr_dyn.h's explicit values; dyn-handle-tags.test.ts checks them). */
 export const DYN_HANDLE_TAG_NUM: Record<string, number> = {
@@ -4148,10 +4167,18 @@ export class LlDyn {
         // Ref-payload inners (records, arrays, bytes, %Error, unions,
         // nested promises, handles): extract (+1 via the stored retain),
         // convert through the shared to-dyn spelling, release the extract.
+        // A record or array payload crosses the way `dynFrom liveRef` boxes
+        // one — a LIVE capsule of the settled record — so the settled
+        // payload and the record the producer holds stay one object
+        // (`(await p) === shared`). Everything else keeps the to-dyn
+        // spelling: maps, sets, class instances and bytes box by reference
+        // there already.
         host.declare(`declare ptr @scr_promise_payload_ref(ptr)`);
         const pv = B.tmp();
         B.line(`${pv} = call ptr @scr_promise_payload_ref(ptr %src) ; +1`);
-        const dv = this.toDynExpr(B, inner, pv);
+        const dv = promisePayloadIsLive(host, inner)
+          ? (this.liveToDyn(B, inner, pv) ?? this.toDynExpr(B, inner, pv))
+          : this.toDynExpr(B, inner, pv);
         if (isRefCounted(inner)) B.line(`call void ${releaseSym(host, inner)}(ptr ${pv})`);
         fulfill(dv);
         break;
@@ -5352,9 +5379,12 @@ export class LlDyn {
   /** A live capsule of a record or array value (+1; the value is
    * borrowed), as `dynFrom` with `liveRef` builds it; null for other
    * types. Closures boxed in a declaration-typed boundary program return
-   * their records and arrays this way. */
+   * their records and arrays this way. A TextEncoder, TextDecoder or
+   * StringDecoder record is null too: it boxes as its own handle, which
+   * holds the record by reference (toDynHelper). */
   private liveToDyn(B: BlockBuilder, t: IrType, expr: string): string | null {
     const host = this.host;
+    if (textCodecRecordClass(t, (id) => host.recordsById.get(id)) !== null) return null;
     if (t.kind === "union") {
       const arms = host.unionsById.get(t.unionId)?.arms ?? [];
       if (!arms.some((arm) => arm.kind === "record" || arm.kind === "array")) return null;

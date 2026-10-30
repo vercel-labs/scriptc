@@ -4059,6 +4059,40 @@ function lowerUnionAccessorRead(
   );
 }
 
+/** A LITERAL-key read on a union receiver whose stored arm is a scalar
+ * primitive the property does not exist on. Lowering erases flow
+ * narrowing, so the value keeps arms the checker ruled out
+ * (`{ url?: string } | "pending"` read as `x?.url` after the guard); JS
+ * boxes a primitive and answers undefined for a name its prototype chain
+ * does not carry, which is exactly what the unit and missing-field arms
+ * answer. A name the primitive DOES declare (`length`, `toUpperCase`)
+ * leaves the read to its own lowering/refusal — `{ n: number } | string`
+ * must keep answering the string's own member, not undefined. */
+function primitiveArmLacksMember(lowerer: Lowerer, arm: IrType, field: string): boolean {
+  // `"abc"[0]` is an element read (JS indexes a string by position), not a
+  // missing property: canonical numeric keys keep their own lowering.
+  if (/^(?:0|[1-9]\d*)$/.test(field)) return false;
+  const checker = lowerer.checker;
+  let primitive: ts.Type;
+  switch (arm.kind) {
+    case "string":
+      primitive = checker.getStringType();
+      break;
+    case "f64":
+      primitive = checker.getNumberType();
+      break;
+    case "bool":
+      primitive = checker.getBooleanType();
+      break;
+    case "bigint":
+      primitive = checker.getBigIntType();
+      break;
+    default:
+      return false;
+  }
+  return checker.getPropertyOfType(primitive, field) === undefined;
+}
+
 /** The unionDisc generalization: a keyed read on a union receiver whose
  * arms answer DIFFERENT (but joinable) types. Each arm contributes its
  * declared answer — an array element's type (number keys), a declared field's type (literal keys), an
@@ -4083,6 +4117,17 @@ export function lowerUnionKeyedRead(
 ): IrExpr | null {
   const def = lowerer.unions.get(unionId);
   if (!def) return null;
+  // A JavaScript-source read on a dyn-convertible receiver already has a
+  // dynamic fallback at every call site (`dynKeyGet`), so the primitive
+  // arm's undefined answer would REPLACE a read that compiles today and
+  // change a working program's IR. Keep that fallback: the static answer
+  // exists to replace a refusal, which is the TypeScript-source case.
+  const keepsDynamicFallback =
+    isJsSourceFile(ts.getSourceFileOfNode(expr)) && lowerer.dynConvertible(value.type);
+  const primitiveArmAnswers = (arm: IrType): boolean =>
+    literalField !== null &&
+    !keepsDynamicFallback &&
+    primitiveArmLacksMember(lowerer, arm, literalField);
   // Pass 1: per-arm declared answers, joined into the result type.
   const joinArms: IrType[] = [];
   const seen = new Set<string>();
@@ -4113,7 +4158,13 @@ export function lowerUnionKeyedRead(
       if (arm.kind !== "array" || !pushAnswer(arm.elem)) return null;
       continue;
     }
-    if (arm.kind !== "record") return null;
+    if (arm.kind !== "record") {
+      if (primitiveArmAnswers(arm)) {
+        push(UNDEFINED_T);
+        continue;
+      }
+      return null;
+    }
     const shape = lowerer.shapes.get(arm.shapeId);
     if (!shape || shape.tuple) return null;
     const declared =
@@ -4172,7 +4223,15 @@ export function lowerUnionKeyedRead(
       if (arm.kind !== "array" || !surfaces(arm.elem)) return null;
       continue;
     }
-    if (arm.kind !== "record") return null;
+    if (arm.kind !== "record") {
+      if (primitiveArmAnswers(arm)) {
+        // The primitive's answer above must surface as the join's
+        // undefined arm (the backend's missing-key path stores it).
+        if (!(type.kind === "union" && lowerer.armTag(type.unionId, UNDEFINED_T) >= 0)) return null;
+        continue;
+      }
+      return null;
+    }
     const shape = lowerer.shapes.get(arm.shapeId);
     if (!shape) return null;
     const declared =

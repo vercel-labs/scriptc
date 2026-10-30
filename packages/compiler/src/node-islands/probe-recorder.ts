@@ -20,6 +20,9 @@
  *     (island-local, since native code has its own builtins, but
  *     observable by other island modules evaluated out of order);
  *   - every file the load required (the module's closure), and a throw;
+ *     a load that resolves a file outside every node_modules directory (the
+ *     program's own source) throws before that file evaluates, and its
+ *     record is that throw even when the load catches it;
  *
  * and takes the interface snapshot of the module's value (snapshot.ts).
  * Calls made by Node's own internals (the module loader reading files,
@@ -188,6 +191,11 @@ exports.probe = function probe(input) {
   const inputs = [], volatile = [], effects = [], tty = new Map(), envKeys = new Map();
   const files = new Set();
   let recording = false;
+  // The first program file the current load asked for (the resolve hook),
+  // and, for every file a load with a refusal evaluated, that program file:
+  // the module cache keeps what such a file exported without it.
+  let refused = null;
+  const refusedBy = new Map();
   const note = (list, what) => {
     if (recording && !internalCaller()) list.push(list === volatile ? what : what + " (" + lastCaller + ")");
   };
@@ -429,11 +437,21 @@ exports.probe = function probe(input) {
   undo.push(() => hook.disable());
   // The closure: a resolve hook (no frame of ours stays on the stack while
   // modules evaluate, so Node's node_modules checks see the real callers).
+  // The probe evaluates installed packages only: a file outside every
+  // node_modules directory is the program's own source (a program module,
+  // or a project file a package requires), and its load throws before the
+  // file evaluates, so the module that asked for it stays eager.
   const hooks = Module.registerHooks({
     resolve(specifier, context, nextResolve) {
       const result = nextResolve(specifier, context);
-      if (recording && typeof result.url === "string" && result.url.startsWith("file:"))
-        files.add(require("node:url").fileURLToPath(result.url));
+      if (recording && typeof result.url === "string" && result.url.startsWith("file:")) {
+        const file = require("node:url").fileURLToPath(result.url);
+        if (!/[\\/]node_modules[\\/]/.test(file)) {
+          if (refused === null) refused = file;
+          throw new Error("the build does not evaluate " + file + ", a file of the program");
+        }
+        files.add(file);
+      }
       return result;
     },
   });
@@ -501,6 +519,7 @@ exports.probe = function probe(input) {
     pendingTimers.clear();
     loadPromises.clear();
     tty.clear(); envKeys.clear(); files.clear();
+    refused = null;
     files.add(path);
     currentFiles = files;
     currentPackageDir = null;
@@ -512,6 +531,15 @@ exports.probe = function probe(input) {
     recording = true;
     try { exportsValue = createRequire(path)(path); } catch (e) { threw = String((e && e.message) || e); }
     recording = false;
+    // A load that catches the refusal evaluates a fallback the executable
+    // never runs: its exports are not the module's, and neither are those of
+    // a later load that reaches one of its files through the module cache.
+    if (refused === null)
+      for (const f of files) if (refusedBy.has(f)) { refused = refusedBy.get(f); break; }
+    if (refused !== null) {
+      threw = "the build does not evaluate " + refused + ", a file of the program";
+      for (const f of files) if (!refusedBy.has(f)) refusedBy.set(f, refused);
+    }
     const after = shot();
     const root = threw === undefined ? value(exportsValue, 0) : undefined;
     const mutations = [];

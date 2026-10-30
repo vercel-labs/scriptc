@@ -40,6 +40,7 @@ import {
 import { generatorMeta, isThisParameter, type ParamShape } from "./call-signatures.js";
 import { isStrictCode } from "./strict-mode.js";
 import { lowerSloppyGlobalReceiver } from "./lower-global-value.js";
+import { noteObjectMethodName } from "./function-names.js";
 
 /** Save the call-site receiver before defaults or body effects. Escaping
  * arrows capture this binding instead of reading a later call's receiver. */
@@ -550,6 +551,7 @@ export function lowerLambda(
     if (isAsync) lifted.async = true;
     if (fnCtx.generator) lifted.generator = fnCtx.generator;
     lowerer.liftedFns.push(lifted);
+    noteObjectMethodName(lowerer, node, fnName);
     return { kind: "closure", fnName, captures: ctx.captureSources, type: funcType, loc };
   } catch (e) {
     // JS sources defer LAMBDA poisons like function declarations

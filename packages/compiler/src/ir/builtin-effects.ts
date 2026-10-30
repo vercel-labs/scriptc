@@ -992,6 +992,9 @@ export const MAY_THROW_LIB_FNS: ReadonlySet<IrLibFn> = new Set([
   "net.connectCb",
   "net.connectPath",
   "net.connectPathCb",
+  // listen's port from a checked-dynamic first argument: ERR_SOCKET_BAD_PORT,
+  // or the fence for forms without a lowering.
+  "net.listenPortDyn",
   // resetAndDestroy on a TLS socket throws ERR_INVALID_HANDLE_TYPE.
   "net.sockResetAndDestroy",
   // SocketAddress's option checks and parse()'s input check.

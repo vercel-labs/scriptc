@@ -22,6 +22,7 @@ import {
   typeEquals,
 } from "../../ir/ir.js";
 import { helperLoc, nodeThrowExpr } from "../../ir/build.js";
+import { unsupportedDiag } from "../../diagnostics/diagnostic.js";
 import { isJsSourceFile, locOf } from "../program.js";
 import { typeKey } from "../type-mapper.js";
 import { functionCanReturnUndefined } from "../function-completion.js";
@@ -145,6 +146,11 @@ export interface GenericFnInfo {
   /** Parameter index → symbol for the function parameters whose `.name`
    * the body reads (static-function-names.ts); computed on first use. */
   nameReadParams?: Map<number, ts.Symbol>;
+  /** Names of the instances value references produced (pinnedGenericClosure,
+   * erasedGenericInstance, the implicit-any default): more than one means the
+   * program holds this declaration as several function objects, while
+   * JavaScript has one. */
+  valueInstances?: Set<string>;
 }
 
 /** One enclosing-frame value a generic arrow/function-expression binding
@@ -1440,6 +1446,19 @@ export function lowerGenericInstance(
   }
 }
 
+/** Records that `instance` is one of `info`'s value instances (see
+ * `valueInstances`). Written as its own statements rather than
+ * `(x ??= new Set()).add(...)`: the self-hosted frontend fences a Set method
+ * call on a non-Set receiver, and this compiler compiles its own source. */
+function noteValueInstance(info: GenericFnInfo, instance: string): void {
+  let instances = info.valueInstances;
+  if (instances === undefined) {
+    instances = new Set<string>();
+    info.valueInstances = instances;
+  }
+  instances.add(instance);
+}
+
 /** A generic function taken as a VALUE, monomorphized by flow. A function
  * value needs ONE concrete signature; tsc pins one at exactly two
  * reference shapes — an instantiation EXPRESSION (`identity<number>`,
@@ -1464,6 +1483,7 @@ export function lowerGenericFnValue(
   // closure per function, so `f === f` holds like any declaration).
   if (info.implicitParams) {
     const inst = implicitDefaultInstance(lowerer, ref, info);
+    noteValueInstance(info, inst.name);
     const funcType: IrType = funcTypeFromParamShapes(inst.params, inst.returnType);
     lowerer.requireExactArityValue(ref, ref, inst.params, funcType);
     lowerer.noteEdge(inst.name);
@@ -1513,6 +1533,10 @@ export function lowerGenericFnValue(
       if (callable.length === 1) target = callable[0]![0]!;
     }
   }
+  if (!target) {
+    target = identityComparisonPin(lowerer, ref);
+    if (target) lowerer.genericIdentityPins.push({ info, node: ref });
+  }
   if (!target) fenceUnpinned();
   return guardEarlyBindingValue(
     lowerer,
@@ -1520,6 +1544,41 @@ export function lowerGenericFnValue(
     ref,
     pinnedGenericClosure(lowerer, ref, info, target, fenceUnpinned),
   );
+}
+
+/** The pinning signature of a generic declaration compared by identity
+ * (`held === ident`, `held !== ident`, and the loose forms): the other
+ * operand's one concrete call signature. A held value of that type that is
+ * this declaration is its instance at that signature, whose interned
+ * closure is the one this reference names, so the comparison answers as
+ * in JavaScript, provided the program holds the declaration at that one
+ * signature only (checkGenericIdentityPins). Null when the other operand
+ * has no single concrete call signature (another generic value, a union of
+ * callables, a non-function). */
+function identityComparisonPin(lowerer: Lowerer, ref: ts.Expression): ts.Signature | null {
+  let operand: ts.Node = ref;
+  if (
+    ref.parent !== undefined &&
+    ts.isPropertyAccessExpression(ref.parent) &&
+    ref.parent.name === ref
+  )
+    operand = ref.parent;
+  while (operand.parent !== undefined && ts.isParenthesizedExpression(operand.parent))
+    operand = operand.parent;
+  const bin = operand.parent;
+  if (bin === undefined || !ts.isBinaryExpression(bin)) return null;
+  const op = bin.operatorToken.kind;
+  if (
+    op !== ts.SyntaxKind.EqualsEqualsEqualsToken &&
+    op !== ts.SyntaxKind.ExclamationEqualsEqualsToken &&
+    op !== ts.SyntaxKind.EqualsEqualsToken &&
+    op !== ts.SyntaxKind.ExclamationEqualsToken
+  )
+    return null;
+  const other = bin.left === operand ? bin.right : bin.left;
+  const sigs = lowerer.checker.getCallSignatures(lowerer.typeOf(other));
+  if (sigs.length !== 1 || sigs[0]!.getTypeParameters()?.length) return null;
+  return sigs[0]!;
 }
 
 /** The value a generic binding declared inside a function stores when a
@@ -1628,6 +1687,7 @@ function pinnedGenericClosure(
   // nothing: mapType answers null for an unsubstituted parameter.
   if (info.typeParams.some((tp) => !bindings.get(tp))) fenceUnpinned();
   const inst = genericValueInstance(lowerer, ref, info, bindings);
+  noteValueInstance(info, inst.name);
   // The value's type is the completed ABI signature. Typed rest keeps its
   // packed-array slot; dynRest stays hidden behind the rest marker.
   const funcType: IrType = funcTypeFromParamShapes(inst.params, inst.returnType);
@@ -1677,10 +1737,151 @@ export function erasedGenericInstance(
       new Map(info.typeParams.map((tp) => [tp, DYN])),
     );
     instance.erased = true;
+    noteValueInstance(info, instance.name);
     return instance;
   } finally {
     lowerer.erasingDepth--;
   }
+}
+
+/** After every body lowered: an identity comparison of a generic
+ * declaration is exact only when the program holds the declaration as one
+ * function object. Otherwise a held value may be another instance's
+ * closure, where JavaScript has one function, so the comparison is
+ * refused instead of answering false. */
+export function checkGenericIdentityPins(lowerer: Lowerer): void {
+  if (lowerer.genericIdentityCheckDone) return;
+  lowerer.genericIdentityCheckDone = true;
+  const seen = new Map<ts.Node, Set<GenericFnInfo>>();
+  const report = (info: GenericFnInfo, node: ts.Node, dynamic: boolean): void => {
+    let infos = seen.get(node);
+    if (infos === undefined) seen.set(node, (infos = new Set()));
+    if (infos.has(info)) return;
+    infos.add(info);
+    const held = info.valueInstances?.size ?? 0;
+    if (held <= 1) return;
+    const through = dynamic ? " through a dynamic value" : "";
+    lowerer.pushDiag(
+      unsupportedDiag(
+        "SC1090",
+        locOf(node),
+        `comparing the generic function '${info.baseName}' by identity${through} while the program holds it at ${held} different signatures (each is a separate compiled function object; JavaScript has one) — compare against a value pinned once, or hold '${info.baseName}' at a single signature`,
+      ),
+    );
+  };
+  for (const { info, node } of lowerer.genericIdentityPins) report(info, node, false);
+  // Dynamic comparisons resolve their provenance only when some declaration
+  // is held at more than one signature: the symbol lookups are the
+  // expensive part, and every other program answers them all at one
+  // instance. Recorded at lowering, resolved here so the pins' instance
+  // sets are complete.
+  let ambiguous = false;
+  for (const info of lowerer.genericFnsBySymbol.values()) {
+    if ((info.valueInstances?.size ?? 0) > 1) {
+      ambiguous = true;
+      break;
+    }
+  }
+  if (!ambiguous) return;
+  for (const { node, left, right } of lowerer.dynIdentityComparisons) {
+    for (const operand of [left, right]) {
+      const info = genericDeclarationBehindValue(lowerer, operand);
+      if (info) report(info, node, true);
+    }
+  }
+}
+
+/** The generic declaration whose value instance an expression names, when
+ * the expression is a binding initialized (directly, or through casts,
+ * aliasing bindings and property initializers) from that declaration. Used
+ * where a comparison reads the value through `unknown`/`any`, so the
+ * declaration is not syntactically at the compared site. */
+export function genericDeclarationBehindValue(
+  lowerer: Lowerer,
+  node: ts.Node,
+): GenericFnInfo | null {
+  let current: ts.Node | undefined = node;
+  const seen = new Set<ts.Node>();
+  while (current !== undefined && !seen.has(current)) {
+    seen.add(current);
+    if (
+      ts.isParenthesizedExpression(current) ||
+      ts.isAsExpression(current) ||
+      ts.isSatisfiesExpression(current) ||
+      ts.isNonNullExpression(current)
+    ) {
+      current = current.expression;
+      continue;
+    }
+    if (!ts.isIdentifier(current) && !ts.isPropertyAccessExpression(current)) return null;
+    const symbol = lowerer.checker.getSymbolAtLocation(
+      ts.isPropertyAccessExpression(current) ? current.name : current,
+    );
+    if (symbol === undefined) return null;
+    const info = lowerer.genericFnsBySymbol.get(symbol);
+    if (info !== undefined) return info;
+    const decl = symbol.valueDeclaration ?? symbol.declarations?.[0];
+    if (decl === undefined) return null;
+    if (!ts.isVariableDeclaration(decl) && !ts.isPropertyDeclaration(decl) && !ts.isParameter(decl))
+      return null;
+    current = decl.initializer;
+  }
+  return null;
+}
+
+/** An identity comparison at the dynamic boundary (`unknown`/`any`
+ * operands): when either operand reads a generic declaration's value
+ * instance, the comparison is exact only while the program holds that
+ * declaration at one signature (checkGenericIdentityPins). */
+export function noteDynamicIdentityComparison(
+  lowerer: Lowerer,
+  node: ts.Node,
+  left: ts.Node,
+  right: ts.Node,
+): void {
+  // A function compared with a string, number, boolean, bigint or symbol
+  // is unequal whichever instance it is, as in JavaScript.
+  if (isPrimitiveTyped(lowerer, left) || isPrimitiveTyped(lowerer, right)) return;
+  // The only work done while lowering. No instance count can gate this:
+  // a value reference's instance is interned when its binding settles,
+  // which can be later than the comparison that reads it, so the notes
+  // are resolved at the end of lowering, when every instance is known.
+  if (mightNameBinding(left) || mightNameBinding(right))
+    lowerer.dynIdentityComparisons.push({ node, left, right });
+}
+
+const PRIMITIVE_TYPE_FLAGS =
+  ts.TypeFlags.StringLike |
+  ts.TypeFlags.NumberLike |
+  ts.TypeFlags.BooleanLike |
+  ts.TypeFlags.BigIntLike |
+  ts.TypeFlags.ESSymbolLike;
+
+/** Whether the checker types `node` as a string, number, boolean, bigint or
+ * symbol (a union with any other member is not). */
+function isPrimitiveTyped(lowerer: Lowerer, node: ts.Node): boolean {
+  return (lowerer.typeOf(node).flags & PRIMITIVE_TYPE_FLAGS) !== 0;
+}
+
+/** Whether an expression could name a binding at all — an identifier or a
+ * property access, through parentheses and casts. A literal, a call, an
+ * operator expression: nothing to resolve. */
+function mightNameBinding(node: ts.Node): boolean {
+  let current: ts.Node | undefined = node;
+  for (let hops = 0; hops < 16 && current !== undefined; hops++) {
+    if (ts.isIdentifier(current) || ts.isPropertyAccessExpression(current)) return true;
+    if (
+      ts.isParenthesizedExpression(current) ||
+      ts.isAsExpression(current) ||
+      ts.isNonNullExpression(current) ||
+      ts.isSatisfiesExpression(current)
+    ) {
+      current = current.expression;
+      continue;
+    }
+    return false;
+  }
+  return false;
 }
 
 /** The instance a pinned VALUE reference names: the declaration's modes

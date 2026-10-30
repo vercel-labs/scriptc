@@ -2425,18 +2425,29 @@ void scr_assert_loose_deep_result(bool equal, bool negated, ScrStr *msg, bool ha
 /* Node's expectsError over an error-INSTANCE expected (assert.throws/
  * rejects second argument): every key of the expected dyn error (the
  * %error marker skipped; name/message/code is the encoding's surface)
- * must deep-strict-equal the caught value's — extra ACTUAL keys are fine
- * (Node walks the expected's keys only). A mismatch fails through the
+ * must be in the caught value (own or inherited) and deep-strict-equal
+ * it — extra ACTUAL keys are fine (Node walks the expected's keys only). A mismatch fails through the
  * deep-equal report (a mismatched key implies the full comparison
  * differs, so the diff is honest); a non-object pair falls back to the
  * full deep comparison outright. */
+/* actual[key] where `key in actual` holds: an own property or one on the
+ * prototype chain (an error's name, and its message when it is not own,
+ * sit on the prototype). NULL when the key is absent. */
+static ScrDyn *scr_assert_dyn_key(const ScrDyn *actual, const char *key, size_t key_len) {
+  for (const ScrDyn *o = actual; o != NULL && o->kind == SCR_DYN_OBJ; o = o->prototype) {
+    ScrDyn *v = scr_dyn_obj_get(o, key, key_len);
+    if (v != NULL) return v;
+  }
+  return NULL;
+}
+
 void scr_assert_expects_err_dyn(ScrDyn *actual, ScrDyn *expected, ScrStr *msg, bool has_msg) {
   if (actual->kind == SCR_DYN_OBJ && expected->kind == SCR_DYN_OBJ) {
     bool ok = true;
     for (size_t i = 0; i < scr_dyn_obj_count(expected) && ok; i++) {
       ScrDynProp e = scr_dyn_obj_prop_at(expected, i);
       if (e.key_len == 6 && memcmp(e.key, "%error", 6) == 0) continue;
-      ScrDyn *av = scr_dyn_obj_get(actual, e.key, e.key_len);
+      ScrDyn *av = scr_assert_dyn_key(actual, e.key, e.key_len);
       if (av == NULL || !scr_assert_dyn_deep_eq(av, e.value)) ok = false;
     }
     if (ok) return;

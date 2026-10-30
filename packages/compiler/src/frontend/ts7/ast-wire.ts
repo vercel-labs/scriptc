@@ -143,8 +143,9 @@ export function syntaxKind71(kind: number): number {
 /** The node table of a protocol 7.1 response in TypeScript 7.0's terms: each
  * kind above SourceKeyword one lower, and each module declaration's child
  * mask without the attributes slot. Throws for the nodes 7.0 has no form
- * for: a SourceKeyword node, a module declaration with import attributes,
- * and an `import source` clause. */
+ * for: a SourceKeyword node and a module declaration with import attributes.
+ * An `import source` clause keeps its phase, which `phaseModifier` reports as
+ * SOURCE_PHASE_MODIFIER. */
 function wordsAs70(words: Uint32Array, count: number): Uint32Array {
   const result = new Uint32Array(words);
   for (let index = 1; index < count; index++) {
@@ -159,8 +160,6 @@ function wordsAs70(words: Uint32Array, count: number): Uint32Array {
       if ((data & 4) !== 0)
         throw new AstDecodeError("import attributes on a module declaration are not supported");
       result[word + WORD_DATA] = ((data & ~0xff) | (data & 3) | ((data & 8) >>> 1)) >>> 0;
-    } else if (kind === AstKind.ImportClause && ((data >>> 24) & 3) === 3) {
-      throw new AstDecodeError("`import source` is not supported");
     }
   }
   return result;

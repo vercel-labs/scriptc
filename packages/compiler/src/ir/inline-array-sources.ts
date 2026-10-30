@@ -1699,7 +1699,11 @@ class SourceAnalysis {
         }
         case "dynFrom":
         case "caughtToDyn":
-          if (!readSinks.has(e)) escape(e.value, e.loc, "a dynamic value", true, true);
+          // Generic code reads no member of a viewed boxing by an unknown
+          // name (inline-array-views.ts): its fields' arrays are read
+          // through the members the dynamic value's code names.
+          if (!readSinks.has(e))
+            escape(e.value, e.loc, "a dynamic value", true, !this.plan.viewed.has(e));
           break;
         case "callValue":
           for (const a of e.args) escape(a, e.loc, "a call through a function value");

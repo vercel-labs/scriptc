@@ -22,3 +22,29 @@ export const ICU_DATA_ZIP_SIZE = 12_836_659;
 export const ICU_DATA_FILE = "icudt78l.dat";
 export const ICU_DATA_SHA256 = "d5cf2a40dccbe471781ec7af85693bff542ff12f0b670c9630c4e72d60714b8b";
 export const ICU_DATA_SIZE = 33_107_232;
+
+/** The data categories the runtime pack's copy of icudt78l.dat leaves out:
+ * item-name prefixes under `icudt78l/` (a trailing `/` names a tree) and
+ * `*.cnv` for the charset converters. scr_intl.c answers its Intl forms with
+ * ICU's break iterators, number and date formatters, calendars and locale
+ * IDs, which read the locale data, `brkitr/` and `curr/` and never these:
+ * converters, collation, display names of languages, regions and time
+ * zones, unit names, spell-out rules and transliterators. An Intl form that
+ * needs one of them removes it from this list and updates the two pins
+ * below in the same change. tests/harness/icu-data-filter.test.ts runs every
+ * `@requires-icu` corpus program with the pack's file and with the full one
+ * and fails when their outputs differ. */
+export const ICU_DATA_DROPPED = [
+  "*.cnv",
+  "coll/",
+  "lang/",
+  "rbnf/",
+  "region/",
+  "translit/",
+  "unit/",
+  "zone/",
+];
+/** icudt78l.dat without the ICU_DATA_DROPPED items (icu-data.mjs, filterIcuData). */
+export const ICU_PACK_DATA_SHA256 =
+  "513a72821c8ee68c7e8a24c346cadc2f8de22efaa19fb68c14957f313e74f35b";
+export const ICU_PACK_DATA_SIZE = 11_653_984;

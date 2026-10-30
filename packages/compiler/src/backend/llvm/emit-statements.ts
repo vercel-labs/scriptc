@@ -1147,6 +1147,14 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
         (countedLoop?.guarded || pairedLoop?.guarded) &&
         !LOOPS.of(emitter).provenCountedGuards.has(s)
       ) {
+        // A function that emits each loop once takes only the copy without
+        // the integer form, which needs no safety test.
+        if (LOOPS.of(emitter).plainLoops) {
+          LOOPS.of(emitter).countedLoopsEnabled = false;
+          emitSlowCopy(emitter, s);
+          LOOPS.of(emitter).countedLoopsEnabled = true;
+          break;
+        }
         const safe = countedLoop
           ? emitCountedLoopSafety(emitter, countedLoop)
           : emitPairedLoopSafety(emitter, pairedLoop!);
@@ -1318,6 +1326,7 @@ export function emitStmtBody(emitter: LlEmitter, s: IrStmt): void {
       // longer runs take the loop as it is emitted otherwise.
       const shortRuns: { stride: number; left: () => string } | null =
         !innermost ||
+        LOOPS.of(emitter).plainLoops ||
         bounded ||
         capturedLets.length > 0 ||
         !emitter.workerLoopPolls(s) ||

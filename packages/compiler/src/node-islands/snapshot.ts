@@ -1,8 +1,10 @@
 /* Deferred island modules: the decision, the build-time probe and the
  * interface snapshot (scope-B NI-7, DESIGN.md §2.7, §5.4).
  *
- * Lowering emits `nodeIsland.defer(path, "")` for every static import of an
- * island module (lower-node-island.ts). After lowering, once the build
+ * Lowering emits `nodeIsland.defer(path, "")` for every static import of a
+ * module of an island package (lower-node-island.ts); a program module that
+ * runs in an island loads eagerly, so the probe never evaluates the
+ * program's own source. After lowering, once the build
  * knows the libnode pack the executable will load, finalizeDeferredIslands
  * decides each one:
  *

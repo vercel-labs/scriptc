@@ -1974,6 +1974,10 @@ export interface IrFunction {
   name: string;
   /** Source function name for native error stack frames. */
   sourceName?: string;
+  /** The function's JavaScript `name` when it differs from sourceName: an
+   * object literal's method. Present only in modules that box function
+   * values into checked values (function-names.ts). */
+  displayName?: string;
   /** Ordinary authored function declarations/expressions own a prototype. */
   ownsPrototype?: true;
   params: IrParam[];
@@ -2012,6 +2016,11 @@ export interface IrFunction {
    * `index`: a computed read `(value, key)` whose callers pass a number
    * converted to a string as the key. */
   fastRead?: "index";
+  /** The body of a function whose parameter version takes its calls with
+   * int32 arguments (parameter-versions.ts). It runs for other arguments
+   * only, so the backend emits each of its loops once, as in the copy a
+   * failed version guard runs. */
+  plainLoops?: true;
   /** Async: the body runs on a fiber; `returnType` is the INNER type T (a
    * `return v` fulfills with v) while ordinary call sites receive
    * Promise<T>. With `generator` present, call sites receive the lazy

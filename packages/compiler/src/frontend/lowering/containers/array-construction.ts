@@ -1089,6 +1089,19 @@ export function lowerArrayFromCall(
   // and materializes holes while keeping element reference identity.
   if ((args.length === 1 || args.length === 2) && !ts.isObjectLiteralExpression(args[0]!)) {
     const source = lowerer.lowerExpr(args[0]!);
+    // Array.from(s): the string iterator's code points, into a fresh
+    // array (scr_str_code_points already builds one, like Array.from).
+    // The checker can narrow the argument to a string while the binding
+    // keeps its nullable storage (`value.includes(x) && Array.from(value)`),
+    // so the site type decides and the read is coerced to that string.
+    if (
+      args.length === 1 &&
+      (source.type.kind === "string" ||
+        lowerer.mapTypeOf(lowerer.typeOf(args[0]!))?.kind === "string")
+    ) {
+      const str = source.type.kind === "string" ? source : lowerer.coerceToExpected(source, STRING);
+      return strCharsCall(str, loc);
+    }
     let src =
       source.type.kind === "string" && args.length === 2 ? strCharsCall(source, loc) : source;
     if (src.type.kind === "array") {

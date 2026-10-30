@@ -27,10 +27,11 @@ export function beginFunctionLoops(
   loops.unaliasedArrays = findUnaliasedLocalArrays(fn);
   loops.countedLoopsEnabled = emitter.debug === null && !fn.async && !fn.generator;
   loops.byteWindowsEnabled = loops.countedLoopsEnabled;
-  loops.bytesLoopVersionsEnabled = loops.countedLoopsEnabled;
+  loops.plainLoops = fn.plainLoops === true;
+  loops.bytesLoopVersionsEnabled = loops.countedLoopsEnabled && !loops.plainLoops;
   loops.bytesLoopEntries = null;
   loops.bytesLoopFunction = fn;
-  loops.denseLoopsEnabled = loops.countedLoopsEnabled;
+  loops.denseLoopsEnabled = loops.countedLoopsEnabled && !loops.plainLoops;
   loops.denseLoop = null;
   loops.denseLoopEntries =
     loops.denseLoopsEnabled && numericFn.locals.some((l) => l.type.kind === "array")
@@ -65,8 +66,11 @@ export interface LoopState {
   byteWindowsEnabled: boolean;
   byteWindowEntries: ReturnType<typeof findInitializedByteLoopBindings>;
   /** Typed-array loop versioning (bytes-loop-versions.ts) for the current
-   * function: off in debug and suspending functions and inside a copy. */
+   * function: off in debug and suspending functions, in a function that
+   * emits each loop once and inside a copy. */
   bytesLoopVersionsEnabled: boolean;
+  /** The current function emits each loop once (IrFunction.plainLoops). */
+  plainLoops: boolean;
   /** Loops being versioned around the statement being emitted: a loop is
    * never versioned inside its own copies, and versions nest boundedly. */
   readonly bytesLoopVersioning: Set<IrStmt>;
@@ -89,6 +93,7 @@ export const LOOPS = defineModuleState<LoopState>(() => ({
   byteWindowsEnabled: true,
   byteWindowEntries: new Map(),
   bytesLoopVersionsEnabled: false,
+  plainLoops: false,
   bytesLoopVersioning: new Set<IrStmt>(),
   bytesLoopEntries: null,
   bytesLoopFunction: null,

@@ -1,0 +1,6 @@
+{
+ "order": [
+  "<repo>/tests/corpus/builtin-values-proxy-intl-views.cjs"
+ ],
+ "diags": []
+}

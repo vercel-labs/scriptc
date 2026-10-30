@@ -4162,6 +4162,7 @@ function validateFunction(
       e.fn === "emitter.emit" ||
       e.fn === "emitter.emitFlex" ||
       e.fn === "emitter.emitAny" ||
+      e.fn === "emitter.emitErrorValue" ||
       e.fn === "emitter.emitMixed" ||
       e.fn === "readable.new" ||
       e.fn === "writable.new" ||
@@ -4498,6 +4499,20 @@ function validateFunction(
         def.arms[1]!.kind === "undefinedT";
       if (!ok) {
         err(`libCall ${e.fn} must return the 'number | undefined' union`, e.loc);
+      }
+      return true;
+    }
+    if (e.fn === "process.stdinIsRaw") {
+      // Result is the module's interned `boolean | undefined` union
+      // (Node's undefined on a pipe-backed stdin).
+      const def = e.type.kind === "union" ? unions.get(e.type.unionId) : undefined;
+      const ok =
+        def &&
+        def.arms.length === 2 &&
+        def.arms[0]!.kind === "bool" &&
+        def.arms[1]!.kind === "undefinedT";
+      if (!ok) {
+        err(`libCall process.stdinIsRaw must return the 'boolean | undefined' union`, e.loc);
       }
       return true;
     }
@@ -6204,6 +6219,12 @@ function validateFunction(
           err(`libCall ${e.fn} payloads must be checked-dynamic`, e.loc);
         }
       }
+      if (
+        e.fn === "emitter.emitErrorValue" &&
+        e.args.slice(1).some((arg) => arg.type.kind !== "dyn")
+      ) {
+        err(`libCall emitter.emitErrorValue payloads must be checked-dynamic`, e.loc);
+      }
       if (e.fn === "emitter.emitMixed") {
         const count = e.args[2];
         const k = count?.kind === "numLit" ? count.value : -1;
@@ -6217,6 +6238,7 @@ function validateFunction(
         e.fn === "emitter.emit" ||
         e.fn === "emitter.emitFlex" ||
         e.fn === "emitter.emitAny" ||
+        e.fn === "emitter.emitErrorValue" ||
         e.fn === "emitter.emitMixed" ||
         e.fn === "emitter.hasTyped" ||
         e.fn === "emitter.listenersDyn" ||

@@ -480,6 +480,42 @@ export function lowerCreateRequireCall(
   }
 }
 
+/** The statically-known text of a module specifier expression. Module
+ * resolution is a build-time artifact, so only a value the compiler already
+ * knows can name a module: a string literal (or substitution-free
+ * template), a parenthesized or cast form of one, a `+` concatenation of
+ * those, or a `const` binding whose initializer folds to one
+ * (`const FS = "node:" + "fs"; import(FS)`). Null when the text is only
+ * known at run time. */
+export function staticString(
+  lowerer: Lowerer,
+  node: ts.Expression | undefined,
+  depth = 0,
+): string | null {
+  if (node === undefined || depth > 8) return null;
+  const value = stripTypeCasts(node);
+  if (ts.isStringLiteralLike(value)) return value.text;
+  if (ts.isBinaryExpression(value) && value.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    const left = staticString(lowerer, value.left, depth + 1);
+    if (left === null) return null;
+    const right = staticString(lowerer, value.right, depth + 1);
+    return right === null ? null : left + right;
+  }
+  if (ts.isIdentifier(value)) {
+    const decl = lowerer.checker.getSymbolAtLocation(value)?.valueDeclaration;
+    if (
+      decl !== undefined &&
+      ts.isVariableDeclaration(decl) &&
+      decl.initializer !== undefined &&
+      decl.initializer !== value &&
+      ts.isVariableDeclarationList(decl.parent) &&
+      (decl.parent.flags & ts.NodeFlags.Const) !== 0
+    )
+      return staticString(lowerer, decl.initializer, depth + 1);
+  }
+  return null;
+}
+
 /** SPEC §5.4: a createRequire() require whose specifier the build cannot
  * name loads a file that exists only when the program runs. One generated
  * island module (.scriptc/dynload.cjs, node-islands/dynload.ts) resolves the
@@ -557,12 +593,6 @@ function lowerRuntimeFilesystemRequire(
   );
 }
 
-function staticString(node: ts.Expression | undefined): string | null {
-  if (node === undefined) return null;
-  const value = stripTypeCasts(node);
-  return ts.isStringLiteralLike(value) ? value.text : null;
-}
-
 function runtimeResolveThrow(error: RuntimeResolveError, type: IrType, loc: SrcLoc): IrExpr {
   return nodeThrowExpr(error.name === "TypeError" ? 1 : 0, error.code, error.message, type, loc);
 }
@@ -593,7 +623,7 @@ export function lowerImportMetaResolveCall(
       'the lowered form is import.meta.resolve("<static specifier>") using the containing module as its parent',
     );
   }
-  const specifier = staticString(call.arguments.nodes[0]);
+  const specifier = staticString(lowerer, call.arguments.nodes[0]);
   if (specifier === null)
     return lowerBoundedImportMetaResolve(lowerer, call, call.arguments.nodes[0]!);
   const result = resolveImportMetaRuntime(
@@ -807,7 +837,7 @@ export function lowerRequireResolveCall(lowerer: Lowerer, call: ts.CallExpressio
       call,
     );
   }
-  const specifier = staticString(call.arguments.nodes[0]);
+  const specifier = staticString(lowerer, call.arguments.nodes[0]);
   // A computed request (or options) through a createRequire loader in
   // JavaScript source resolves at run time.
   if (

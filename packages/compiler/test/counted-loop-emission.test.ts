@@ -299,9 +299,10 @@ test("worker programs poll no loop whose proven ranges bound its runs inside ano
     expect(rows).not.toMatch(/^loop\.poll\d+:$/m);
     expect(polls(rows)).toBeGreaterThan(0);
     // With a limit known only at run time the inner loops keep their polls.
-    // The innermost one is strip-mined, and a block that ends at the limit
+    // `open`'s int32 parameter version takes calls with int32 arguments. Its
+    // innermost loop is strip-mined, and a block that ends at the limit
     // leaves it without polling: only a block that ends short of it polls.
-    const open = body("open");
+    const open = body("open_int32Params");
     expect(polls(open)).toBeGreaterThan(polls(rows));
     expect(open).toMatch(/^loop\.poll\d+:$/m);
     const ends = [...open.matchAll(/^loop\.end\d+:$[\s\S]*?^\S/gm)].map((match) => match[0]);
@@ -310,6 +311,12 @@ test("worker programs poll no loop whose proven ranges bound its runs inside ano
     // A run of up to 16384 iterations is one block, polled as it leaves when
     // it took more than 64.
     expect(open).toMatch(/^loop\.poll\.run\d+:$/m);
+    // The body the version leaves runs for other arguments and emits each
+    // loop once: its loops poll without strip-mining.
+    const generic = body("open");
+    expect(polls(generic)).toBeGreaterThan(polls(rows));
+    expect(generic).not.toMatch(/^loop\.end\d+:$/m);
+    expect(generic).not.toMatch(/^loop\.poll\.run\d+:$/m);
     // Steps of 1 below 2^53 are exact, so 50 runs near it are bounded. From
     // 2^53, `j + 1 === j`: a counter ranging up to it can run without end
     // and keeps its poll.

@@ -155,7 +155,17 @@ function runProbe(
   bin: string,
   args: string[] = [],
 ): { stdout: string; status: number | null; signal: string | null } {
-  const r = spawnSync(bin, args, { encoding: "utf8", timeout: 60_000 });
+  // A trap's sink longjmp abandons the active operation by contract (K5/K7).
+  // LeakSanitizer, on by default on Linux, cannot model that non-local
+  // recovery; ASan still checks the memory-safety paths.
+  const r = spawnSync(bin, args, {
+    encoding: "utf8",
+    timeout: 60_000,
+    env:
+      process.env["SCRIPTC_SAN"] === "1" || bin.includes("-san/")
+        ? { ...process.env, ASAN_OPTIONS: "detect_leaks=0" }
+        : undefined,
+  });
   return { stdout: r.stdout ?? "", status: r.status, signal: r.signal };
 }
 

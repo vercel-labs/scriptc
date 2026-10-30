@@ -26,3 +26,15 @@ class Destructured {
     console.log(blockLocal);
   }
 }
+
+// An ACCESSOR named `arguments` names a property too.
+class Accessors {
+  field = {
+    get arguments() {
+      return 1;
+    },
+    set arguments(v) {
+      this.seen = v;
+    },
+  }.arguments;
+}

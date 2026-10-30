@@ -270,7 +270,7 @@ import {
 import { keptIdentityAssertion } from "./assertion-identity.js";
 import { isNativeProxyInitializer } from "./expressions/native-proxy.js";
 import { tryLowerExpression } from "./expressions/try-lower-expression.js";
-import { keepsLivePropertyTable } from "./live-property-table.js";
+import { keepsLivePropertyTable, registryExpandoName } from "./live-property-table.js";
 import { lowerUnionFieldDelete, lowerUnionFieldWrite } from "./expressions/union-fields.js";
 import {
   UNSUPPORTED,
@@ -8614,13 +8614,16 @@ function lowerDereferencedElementWrite(lowerer: Lowerer, expr: ts.BinaryExpressi
  * already lowers — a declared field, `length`, an element, a class field
  * through its own arm — answers before it, and a kind without a live
  * property table (a Date, RegExp, Map or Set handle: an expando would not
- * survive the box) keeps its fence. */
+ * survive the box) keeps its fence. So does a name some function registered
+ * as an expando member: reads through the function's name answer from that
+ * member's module global, which a write into the live table would not
+ * update. */
 function lowerExpandoWrite(
   lowerer: Lowerer,
   left: ts.PropertyAccessExpression,
   right: ts.Expression,
 ): IrStmt | null {
-  if (left.questionDotToken) return null;
+  if (left.questionDotToken || registryExpandoName(lowerer, left.name.text)) return null;
   const recv = tryLowerExpression(lowerer, left.expression);
   if (!recv || !lowerer.dynConvertible(recv.type)) return null;
   if (!keepsLivePropertyTable(lowerer, recv.type)) return null;

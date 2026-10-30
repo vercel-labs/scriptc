@@ -25,6 +25,7 @@ import {
 import { basename, dirname, join, resolve } from "node:path";
 import type { NativeLinkFeatures } from "./native-link-info.js";
 import type { NativeTargetSpec } from "./targets.js";
+import { RUNTIME_ABI_MARKER, RUNTIME_ABI_VERSION } from "./runtime-abi.js";
 import {
   RuntimePackError,
   parseRuntimePackManifest,
@@ -137,6 +138,9 @@ export function selectNativeRuntimePack(
           identities,
           target: target.name,
           compilerVersion,
+          // Development compiler rebuilds can change ABI without changing
+          // the package version; a cached selection must not skip that check.
+          runtimeAbi: { version: RUNTIME_ABI_VERSION, marker: RUNTIME_ABI_MARKER },
           features,
           flavor,
           mode,

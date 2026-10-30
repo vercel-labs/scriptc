@@ -2275,6 +2275,73 @@ bool scr_array_frozen_error(int op, size_t len, double x, double y, double z) {
   return true;
 }
 
+/* Find a present index in a bounded range in mutation order. Sparse tails
+ * are searched as entries, never by walking their potentially huge holes. */
+static size_t scr_frozen_present(const ScrArr *a, size_t start, size_t end, bool backwards) {
+  if (start >= end) return SIZE_MAX;
+  if (!backwards) {
+    size_t index = (size_t)scr_arr_next_present(a, (double)start);
+    return index < end ? index : SIZE_MAX;
+  }
+  const ScrArrExt *ext = scr_arr_ext_of(a);
+  if (ext) {
+    size_t pos = scr_arr_sparse_lower_bound(ext->sparse, ext->sparse_len, end);
+    if (pos && ext->sparse[pos - 1].index >= start) return ext->sparse[pos - 1].index;
+  }
+  if (end > a->cap) end = a->cap;
+  while (end > start) {
+    if (scr_arr_dense_state(a, --end) != SCR_ARR_HOLE) return end;
+  }
+  return SIZE_MAX;
+}
+
+bool scr_array_frozen_native_error(int op, const ScrArr *a, double x, double y, double z) {
+  size_t len = a->len;
+  switch (op) {
+  case 0:
+    if (scr_arr_has(a, x)) scr_frozen_read_only(x);
+    else scr_frozen_not_extensible(x);
+    return true;
+  case 5:
+    if (!scr_arr_has(a, x)) return false;
+    scr_frozen_undeletable(x);
+    return true;
+  case 7: {
+    size_t lower = scr_frozen_present(a, 0, len / 2, false);
+    size_t upper = scr_frozen_present(a, len - len / 2, len, true);
+    if (lower == SIZE_MAX && upper == SIZE_MAX) return false;
+    size_t mirrored = upper == SIZE_MAX ? SIZE_MAX : len - 1 - upper;
+    size_t first = lower < mirrored ? lower : mirrored;
+    if (!scr_arr_has(a, (double)first)) scr_frozen_not_extensible((double)first);
+    else if (!scr_arr_has(a, (double)(len - 1 - first))) scr_frozen_undeletable((double)first);
+    else scr_frozen_read_only((double)first);
+    return true;
+  }
+  case 9: {
+    size_t to = scr_frozen_relative_index(x, len), from = scr_frozen_relative_index(y, len);
+    size_t final = scr_frozen_relative_index(z, len);
+    if (final <= from || to == len) return false;
+    size_t count = final - from < len - to ? final - from : len - to;
+    bool backwards = from < to && to < from + count;
+    size_t source = scr_frozen_present(a, from, from + count, backwards);
+    size_t target = scr_frozen_present(a, to, to + count, backwards);
+    if (source == SIZE_MAX && target == SIZE_MAX) return false;
+    size_t offset = source == SIZE_MAX ? target - to : source - from;
+    if (target != SIZE_MAX && (backwards ? target - to > offset : target - to < offset))
+      offset = target - to;
+    if (!scr_arr_has(a, (double)(from + offset))) scr_frozen_undeletable((double)(to + offset));
+    else if (!scr_arr_has(a, (double)(to + offset))) scr_frozen_not_extensible((double)(to + offset));
+    else scr_frozen_read_only((double)(to + offset));
+    return true;
+  }
+  case 11:
+    if (len < 2 || scr_frozen_present(a, 0, len, false) == SIZE_MAX) return false;
+    return scr_array_frozen_native_error(0, a, 0, 0, 0);
+  default:
+    return scr_array_frozen_error(op, len, x, y, z);
+  }
+}
+
 void scr_arr_freeze(ScrArr *a) {
   if (a->rc != SIZE_MAX) a->spare |= SCR_ARR_FROZEN;
 }

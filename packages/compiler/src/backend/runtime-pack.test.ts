@@ -137,7 +137,7 @@ async function fixture(target: NativeTargetSpec = MACOS_ARM64_TARGET) {
       object_format: target.objectFormat,
       minimum_os: target.minimumOs,
     },
-    runtime_abi: { version: 48, marker: "scr_runtime_abi_v48" },
+    runtime_abi: { version: 49, marker: "scr_runtime_abi_v49" },
     compiler: {
       command: "clang",
       identity: "fixture clang",
@@ -330,6 +330,23 @@ describe("runtime pack manifests", () => {
       size: 1,
     };
     expect(() => parseRuntimePackManifest(malformed)).toThrow("malformed");
+  });
+
+  test.each([
+    { version: 48, marker: "scr_runtime_abi_v48" },
+    { version: 48, marker: "scr_runtime_abi_v49" },
+    { version: 49, marker: "scr_runtime_abi_v48" },
+  ])("incompatible runtime ABI $version/$marker is rejected", async (runtime_abi) => {
+    const { packagePath, manifest, root } = await fixture();
+    await writeFile(join(root, "runtime-pack.json"), JSON.stringify({ ...manifest, runtime_abi }));
+    await expect(
+      loadRuntimePack({
+        target: MACOS_ARM64_TARGET,
+        features: BASE,
+        optimization: "release",
+        resolver: () => packagePath,
+      }),
+    ).rejects.toThrow("malformed");
   });
 
   test("a stale manifest reports its identity independently from the package", async () => {

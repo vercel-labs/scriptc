@@ -74,6 +74,28 @@ import { INT32_RANGE } from "../../ir/integer-ranges.js";
 import { emitUnionWiden } from "./expr-records.js";
 import { registerReplay } from "./emit-journal.js";
 
+/** An immutable no-op returns the receiver with the mutator's fresh +1,
+ * without entering helpers that may rewrite presence or storage metadata. */
+function finishArrayMutation(
+  host: LlvmEmitterContext,
+  receiver: LlValue,
+  result: LlValue,
+  skipped: string | null,
+): LlValue {
+  if (skipped === null) return host.own(result);
+  const B = host.B;
+  const mutated = B.currentLabel(),
+    done = B.newLabel("arr.mutation.done");
+  B.br(done);
+  B.startBlock(skipped);
+  const retained = host.retainFrame(receiver.name, receiver.type);
+  B.br(done);
+  B.startBlock(done);
+  const joined = B.tmp();
+  B.line(`${joined} = phi ptr [ ${result.name}, %${mutated} ], [ ${retained}, %${skipped} ]`);
+  return host.own({ name: joined, type: result.type });
+}
+
 export function resolveThunkFor(host: LlvmEmitterContext, inner: IrType): string {
   const key = typeKey(inner);
   let sym = host.resolveThunks.get(key);
@@ -1028,7 +1050,18 @@ export function emitArrIntrinsic(
     }
     case "sortPrimitive":
     case "toSortedPrimitive": {
-      if (e.method === "sortPrimitive") host.emitPublishedArrayGuard(r.name, e.receiver.type, 7);
+      const skipped =
+        e.method === "sortPrimitive"
+          ? host.emitPublishedArrayGuard(
+              r.name,
+              e.receiver.type,
+              11,
+              f64Lit(0),
+              f64Lit(0),
+              null,
+              true,
+            )
+          : null;
       if (elem.kind === "date") {
         // Dates order by their toString() text.
         host.declare(`declare ptr @scr_arr_sort_by_text(ptr, i1 zeroext, ptr)`);
@@ -1037,14 +1070,14 @@ export function emitArrIntrinsic(
         B.line(
           `${sorted} = call ptr @scr_arr_sort_by_text(ptr ${r.name}, i1 ${e.method === "toSortedPrimitive" ? 1 : 0}, ptr @scr_date_object_to_string)`,
         );
-        return host.own({ name: sorted, type: e.type });
+        return finishArrayMutation(host, r, { name: sorted, type: e.type }, skipped);
       }
       host.declare(`declare ptr @scr_arr_sort_primitive(ptr, i1 zeroext)`);
       const result = B.tmp();
       B.line(
         `${result} = call ptr @scr_arr_sort_primitive(ptr ${r.name}, i1 ${e.method === "toSortedPrimitive" ? 1 : 0})`,
       );
-      return host.own({ name: result, type: e.type });
+      return finishArrayMutation(host, r, { name: result, type: e.type }, skipped);
     }
     case "sortValues": {
       // The runtime invokes the borrowed comparator with the callValue ABI
@@ -1079,11 +1112,19 @@ export function emitArrIntrinsic(
     }
     case "reverse": {
       // Mutates in place and returns the same receiver as a fresh +1.
-      host.emitPublishedArrayGuard(r.name, e.receiver.type, 7);
+      const skipped = host.emitPublishedArrayGuard(
+        r.name,
+        e.receiver.type,
+        7,
+        f64Lit(0),
+        f64Lit(0),
+        null,
+        true,
+      );
       host.declare(`declare ptr @scr_arr_reverse(ptr)`);
       const t = B.tmp();
       B.line(`${t} = call ptr @scr_arr_reverse(ptr ${r.name})`);
-      return host.own({ name: t, type: e.type });
+      return finishArrayMutation(host, r, { name: t, type: e.type }, skipped);
     }
     case "copyWithin":
     case "fill":
@@ -1091,23 +1132,26 @@ export function emitArrIntrinsic(
       const args = e.args.map((arg) => host.emitExpr(arg));
       // fill's range is its last two arguments; copyWithin's target,
       // start and end are its three.
-      if (e.method === "copyWithin")
-        host.emitPublishedArrayGuard(
-          r.name,
-          e.receiver.type,
-          9,
-          args[0]!.name,
-          args[1]!.name,
-          args[2]!.name,
-        );
-      else
-        host.emitPublishedArrayGuard(
-          r.name,
-          e.receiver.type,
-          8,
-          args[args.length - 2]!.name,
-          args[args.length - 1]!.name,
-        );
+      const skipped =
+        e.method === "copyWithin"
+          ? host.emitPublishedArrayGuard(
+              r.name,
+              e.receiver.type,
+              9,
+              args[0]!.name,
+              args[1]!.name,
+              args[2]!.name,
+              true,
+            )
+          : host.emitPublishedArrayGuard(
+              r.name,
+              e.receiver.type,
+              8,
+              args[args.length - 2]!.name,
+              args[args.length - 1]!.name,
+              null,
+              true,
+            );
       if (host.checkedFills.has(e)) {
         // A new int32 array with checked stores, filled with a value that
         // may not be an int32: widen it first then.
@@ -1129,7 +1173,7 @@ export function emitArrIntrinsic(
       B.line(
         `${result} = call ptr @${helper}(ptr ${r.name}, ${args.map((arg, i) => `${types[i]} ${arg.name}`).join(", ")})`,
       );
-      return host.own({ name: result, type: e.type });
+      return finishArrayMutation(host, r, { name: result, type: e.type }, skipped);
     }
     case "toSpliced": {
       const start = host.emitExpr(e.args[0]!);

@@ -182,6 +182,44 @@ test("a stored selection answers while the pack's files keep their identities", 
   expect(f.select().selected.systemLibraries).toEqual(["System"]);
 });
 
+test("an older ABI's stored selection cannot bypass manifest validation", async () => {
+  const f = await packFixture();
+  f.select();
+  const stored = [...f.entries.values()][0]!;
+  const manifest = JSON.parse(f.manifestText);
+  manifest.runtime_abi = { version: 48, marker: "scr_runtime_abi_v48" };
+  writeFileSync(join(f.root, "runtime-pack.json"), JSON.stringify(manifest));
+  // Reconstruct the ABI48 compiler's persisted key after it read these
+  // files. Its selected artifacts have the same stored representation.
+  const identities = ["package.json", "runtime-pack.json"].map((file) => {
+    const stat = statSync(join(f.root, file));
+    return {
+      dev: stat.dev,
+      ino: stat.ino,
+      size: stat.size,
+      mtime: stat.mtimeMs,
+      ctime: stat.ctimeMs,
+    };
+  });
+  const key = createHash("sha256")
+    .update(
+      JSON.stringify({
+        schema: 1,
+        root: f.root,
+        identities,
+        target: MACOS_ARM64_TARGET.name,
+        compilerVersion: compilerReleaseVersion(),
+        features: {},
+        flavor: "release",
+        mode: "executable",
+      }),
+    )
+    .digest("hex");
+  f.entries.clear();
+  f.entries.set(key, stored);
+  expect(() => f.select()).toThrow("malformed");
+});
+
 test.each(["replaced", "rewritten in place"])(
   "staging hashes an artifact again when it is %s, even at the same size and mtime",
   async (change) => {

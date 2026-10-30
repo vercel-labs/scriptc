@@ -262,6 +262,10 @@ bool scr_arr_is_frozen(const ScrArr *a);
  * end), 9 copyWithin (x = target, y = start, z = end), 10 splice (x =
  * start, y = delete count, z = item count). */
 bool scr_array_frozen_error(int op, size_t len, double x, double y, double z);
+/* Native arrays consult own-index presence. Operation 7 is reverse and 11
+ * is default sort; other operations use the numbering above. A false result
+ * permits only a no-write path, not a raw mutator on shared storage. */
+bool scr_array_frozen_native_error(int op, const ScrArr *a, double x, double y, double z);
 /* Node's TypeErrors for a write that a non-extensible or sealed array
  * refuses: adding the element at `index`, or deleting it. */
 void scr_array_not_extensible_error(double index);

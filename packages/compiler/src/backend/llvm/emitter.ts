@@ -7543,7 +7543,9 @@ export class LlEmitter {
   }
 
   /** The frozen-array guard (scr_throw_published_array's ops): `index` and
-   * `count` are doubles (the written index, the argument count). */
+   * `count` are doubles (the written index, the argument count). A mutator
+   * can request a separate no-write block so immutable no-ops never touch
+   * the receiver's shared storage. The caller emits that block. */
   emitPublishedArrayGuard(
     arr: string,
     arrType: IrType,
@@ -7551,9 +7553,10 @@ export class LlEmitter {
     index = f64Lit(0),
     count = f64Lit(0),
     third: string | null = null,
-  ): void {
+    skipMutation = false,
+  ): string | null {
     const published = this.publishedTypes;
-    if (published?.containerGuarded(arrType) !== true) return;
+    if (published?.containerGuarded(arrType) !== true) return null;
     const B = this.B;
     const guards = published.arrayGuards(arrType);
     const ok = guards.frozen
@@ -7574,10 +7577,12 @@ export class LlEmitter {
       );
     }
     const unwind = B.newLabel("pub.throw");
-    B.condBr(threw, unwind, ok);
+    const skipped = skipMutation ? B.newLabel("arr.immutable.noop") : null;
+    B.condBr(threw, unwind, skipped ?? ok);
     B.startBlock(unwind);
     this.emitUnwind();
     B.startBlock(ok);
+    return skipped;
   }
 
   /** The published Map/Set guard: "Cannot modify a published Map/Set". */

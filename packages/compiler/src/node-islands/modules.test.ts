@@ -70,6 +70,66 @@ describe("module specifiers in JavaScript", () => {
     expect(scan.computed).toEqual([]);
   });
 
+  test("a program module's syntactically bounded loads name every value", () => {
+    expect(
+      scanModuleSpecifiers(
+        `
+        const flag = Math.random() > 0.5;
+        require(flag ? "./c.js" : "./d.js");
+        require("./a/" + "x.js");
+        require(("./b" + ".js"));
+        require(("./x" + ".js") || "./g.js");
+        require(("." + "/h.js") ?? "./i.js");
+      `,
+        { bounds: true },
+      ),
+    ).toEqual({
+      specifiers: [
+        "./c.js",
+        "./d.js",
+        "./a/x.js",
+        "./b.js",
+        "./x.js",
+        "./g.js",
+        "./h.js",
+        "./i.js",
+      ],
+      computed: [],
+    });
+  });
+
+  test("a bounded scan still reports the loads it cannot bound", () => {
+    const forms = (text: string) =>
+      scanModuleSpecifiers(text, { bounds: true }).computed.map((c) => c.form);
+    expect(forms("require('./a/' + name)")).toEqual(["require() with a computed specifier"]);
+    expect(forms("import(`./x/${y}`)")).toEqual(["import() with a computed specifier"]);
+    expect(forms("require(flag ? './a.js' : name)")).toEqual([
+      "require() with a computed specifier",
+    ]);
+    // The scan reads literals only: a bound the frontend's const analysis
+    // proves (a `process.env` branch, a no-span template) is not one here.
+    expect(forms("require(process.env.SCRIPTC_M ?? './e.js')")).toEqual([
+      "require() with a computed specifier",
+    ]);
+    expect(forms("require(`./g.js`)")).toEqual(["require() with a computed specifier"]);
+    // `+` binds tighter than `||`, so this concatenates the union as a whole:
+    // no flat chain names its values (parenthesized, it would bound).
+    expect(forms("require('./a.js' || './b' + '.js')")).toEqual([
+      "require() with a computed specifier",
+    ]);
+    expect(scanModuleSpecifiers("require(('./a.js' || './b') + '.js')", { bounds: true })).toEqual({
+      specifiers: ["./a.js.js", "./b.js"],
+      computed: [],
+    });
+  });
+
+  test("without bounds a computed load is neither bound nor traced", () => {
+    expect(scanModuleSpecifiers('require("./a/" + "x.js")')).toEqual({
+      specifiers: [],
+      computed: [{ at: 0, form: "require() with a computed specifier" }],
+    });
+  });
+
   test("computed loads are reported", () => {
     const forms = (text: string) => scanModuleSpecifiers(text).computed.map((c) => c.form);
     expect(forms("require(name)")).toEqual(["require() with a computed specifier"]);

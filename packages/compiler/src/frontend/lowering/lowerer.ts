@@ -3638,10 +3638,12 @@ export class Lowerer {
   readonly jsonRequireCalls = new Map<ts.CallExpression, JsonRequireModule>();
   /** Dynamic `import("literal")` resolutions, keyed
    * `fileName\u0000specifier` (collectDynamicImports fills it during npm
-   * collection; lowerDynamicImportCall reads it per site). */
+   * collection; lowerDynamicImportCall reads it per site). A program module
+   * carries the module when the specifier was a BOUNDED value: its site has
+   * no literal node, so the lowering needs the module this value named. */
   readonly dynImports = new Map<
     string,
-    | { kind: "program-module" }
+    | { kind: "program-module"; dep?: ts.SourceFile }
     | { kind: "static-builtin"; module: string }
     | { kind: "rejected"; crash: StartupCrash }
   >();

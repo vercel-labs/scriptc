@@ -324,7 +324,9 @@ export class NodeIslandModuleCollector {
     if (!TRACED.test(file)) return null;
     const text = trackedReadFile(file);
     if (text === null) return `cannot read ${file}`;
-    const scan = scanModuleSpecifiers(text);
+    // The program's own code names its modules as far as its syntax does
+    // (SPEC §5.3): a bounded argument's values are traced specifiers.
+    const scan = scanModuleSpecifiers(text, { bounds: true });
     if (scan.computed.length > 0) {
       const first = scan.computed[0]!;
       const line = text.slice(0, first.at).split("\n").length;
@@ -590,6 +592,187 @@ export interface ModuleSpecifierScan {
   computed: { at: number; form: string }[];
 }
 
+export interface ModuleSpecifierScanOptions {
+  /** Report the SYNTACTICALLY bounded forms of a computed argument — string
+   * literals joined by `+`, `||` and `??`, both branches of `?:`, and
+   * parentheses around any of them — as specifiers instead of as a computed
+   * load. A program module that runs in an island (SPEC §5.3) needs it: the
+   * values are what the module may load, so they join its traced specifiers
+   * and a native module they name is served by the shared-module hooks.
+   * Package JavaScript keeps the default scan, where a computed load is
+   * neither refused nor traced. */
+  bounds?: boolean;
+}
+
+/** At most this many values for a bounded island argument (the frontend
+ * bounder's cap, specifier-bounds.ts). */
+const MAX_BOUNDED_VALUES = 256;
+
+/** The specifier values a call's first argument may take, or null when the
+ * source does not name them with string literals. */
+function boundedCallArgument(tokens: readonly Token[], open: number): string[] | null {
+  const close = closingParen(tokens, open);
+  if (close < 0) return null;
+  // The first argument: up to a top-level comma (import(spec, options)).
+  let end = close;
+  let depth = 0;
+  for (let j = open + 1; j < close; j++) {
+    const t = tokens[j]!;
+    if (t.kind !== "punct") continue;
+    if (t.value === "(" || t.value === "{" || t.value === "[") depth++;
+    else if (t.value === ")" || t.value === "}" || t.value === "]") depth--;
+    else if (t.value === "," && depth === 0) {
+      end = j;
+      break;
+    }
+  }
+  return boundTokenRange(tokens, open + 1, end);
+}
+
+/** The index of the `)` that closes the `(` at `open`, or -1. */
+function closingParen(tokens: readonly Token[], open: number): number {
+  let depth = 0;
+  for (let j = open; j < tokens.length; j++) {
+    const t = tokens[j]!;
+    if (t.kind !== "punct") continue;
+    if (t.value === "(") depth++;
+    else if (t.value === ")") {
+      depth--;
+      if (depth === 0) return j;
+    }
+  }
+  return -1;
+}
+
+/** The values of the token range [lo, hi), or null when it is not a bounded
+ * form. Grammar: string literals, parentheses, `a ? b : c` (the condition is
+ * not evaluated), and left-associative `+`, `||` and `??` chains. `+` binds
+ * tighter than `||` and `??`, so a range that concatenates after a union
+ * (`a || b + c`) is not one of these chains. */
+function boundTokenRange(tokens: readonly Token[], lo: number, hi: number): string[] | null {
+  if (lo >= hi) return null;
+  const question = topLevelQuestion(tokens, lo, hi);
+  if (question >= 0) {
+    const colon = matchingColon(tokens, question + 1, hi);
+    if (colon < 0) return null;
+    const whenTrue = boundTokenRange(tokens, question + 1, colon);
+    const whenFalse = boundTokenRange(tokens, colon + 1, hi);
+    return whenTrue === null || whenFalse === null ? null : unionValues(whenTrue, whenFalse);
+  }
+  let term = boundTokenTerm(tokens, lo, hi);
+  if (term === null) return null;
+  let values = term.values;
+  let cursor = term.next;
+  let unionSeen = false;
+  while (cursor < hi) {
+    const op = operatorAt(tokens, cursor);
+    if (op === null) return null;
+    // `+` binds tighter than `||` and `??`, so `a || b + c` is no flat
+    // chain: its values are not this list's. (Parenthesized, it is one:
+    // `(a || b) + c` bounds through the term's parentheses.)
+    if (op.kind === "concat" && unionSeen) return null;
+    term = boundTokenTerm(tokens, op.next, hi);
+    if (term === null) return null;
+    const combined =
+      op.kind === "concat" ? concatValues(values, term.values) : unionValues(values, term.values);
+    if (combined === null) return null;
+    if (op.kind === "union") unionSeen = true;
+    values = combined;
+    cursor = term.next;
+  }
+  return values;
+}
+
+function boundTokenTerm(
+  tokens: readonly Token[],
+  lo: number,
+  hi: number,
+): { values: string[]; next: number } | null {
+  if (lo >= hi) return null;
+  const t = tokens[lo]!;
+  if (t.kind === "string") return { values: [t.value], next: lo + 1 };
+  if (t.kind === "punct" && t.value === "(") {
+    const close = closingParen(tokens, lo);
+    if (close < 0 || close >= hi) return null;
+    const values = boundTokenRange(tokens, lo + 1, close);
+    return values === null ? null : { values, next: close + 1 };
+  }
+  return null;
+}
+
+/** The index of the first `?` of a conditional in [lo, hi), or -1. A `??`
+ * operator is not one (and `?.` is a single token). */
+function topLevelQuestion(tokens: readonly Token[], lo: number, hi: number): number {
+  let depth = 0;
+  for (let j = lo; j < hi; j++) {
+    const t = tokens[j]!;
+    if (t.kind !== "punct") continue;
+    if (t.value === "(" || t.value === "{" || t.value === "[") depth++;
+    else if (t.value === ")" || t.value === "}" || t.value === "]") depth--;
+    else if (depth === 0 && t.value === "?") {
+      const next = tokens[j + 1];
+      if (next !== undefined && next.kind === "punct" && next.value === "?") {
+        j++;
+        continue;
+      }
+      return j;
+    }
+  }
+  return -1;
+}
+
+/** The `:` that closes the conditional whose `?` precedes [lo, hi). */
+function matchingColon(tokens: readonly Token[], lo: number, hi: number): number {
+  let depth = 0;
+  let nested = 0;
+  for (let j = lo; j < hi; j++) {
+    const t = tokens[j]!;
+    if (t.kind !== "punct") continue;
+    if (t.value === "(" || t.value === "{" || t.value === "[") depth++;
+    else if (t.value === ")" || t.value === "}" || t.value === "]") depth--;
+    else if (depth !== 0) continue;
+    else if (t.value === "?") {
+      const next = tokens[j + 1];
+      if (next !== undefined && next.kind === "punct" && next.value === "?") j++;
+      else nested++;
+    } else if (t.value === ":") {
+      if (nested === 0) return j;
+      nested--;
+    }
+  }
+  return -1;
+}
+
+/** The `+`, `||` or `??` operator at `k`, with the index after it. */
+function operatorAt(
+  tokens: readonly Token[],
+  k: number,
+): { kind: "concat" | "union"; next: number } | null {
+  const t = tokens[k];
+  if (t === undefined || t.kind !== "punct") return null;
+  if (t.value === "+") return { kind: "concat", next: k + 1 };
+  const next = tokens[k + 1];
+  if (next === undefined || next.kind !== "punct" || next.value !== t.value) return null;
+  if (t.value === "|" || t.value === "?") return { kind: "union", next: k + 2 };
+  return null;
+}
+
+/** The deduplicated union of two value lists (source order), or null over
+ * the cap. */
+function unionValues(left: readonly string[], right: readonly string[]): string[] | null {
+  const out = [...left];
+  for (const value of right) if (!out.includes(value)) out.push(value);
+  return out.length > MAX_BOUNDED_VALUES ? null : out;
+}
+
+/** The cartesian concatenation of two value lists, or null over the cap. */
+function concatValues(left: readonly string[], right: readonly string[]): string[] | null {
+  if (left.length * right.length > MAX_BOUNDED_VALUES) return null;
+  const out: string[] = [];
+  for (const l of left) for (const r of right) out.push(l + r);
+  return out;
+}
+
 /** The string-literal arguments of `requireModule(...)` calls in source
  * code, comments and template text excluded. */
 export function requireModuleSpecifiers(text: string): string[] {
@@ -611,7 +794,10 @@ export function requireModuleSpecifiers(text: string): string[] {
   return out;
 }
 
-export function scanModuleSpecifiers(text: string): ModuleSpecifierScan {
+export function scanModuleSpecifiers(
+  text: string,
+  options: ModuleSpecifierScanOptions = {},
+): ModuleSpecifierScan {
   const tokens = moduleTokens(text);
   const specifiers: string[] = [];
   const computed: { at: number; form: string }[] = [];
@@ -620,13 +806,17 @@ export function scanModuleSpecifiers(text: string): ModuleSpecifierScan {
     const t = tokens[k];
     return t !== undefined && t.kind === kind && (value === undefined || t.value === value);
   };
-  /** A call `(` at k whose single argument is a string literal. */
-  const literalCall = (k: number): string | null =>
-    is(k, "punct", "(") &&
-    is(k + 1, "string") &&
-    (is(k + 2, "punct", ")") || is(k + 2, "punct", ","))
-      ? at(k + 1)!.value
-      : null;
+  /** The values a call `(` at k passes as its module: the literal argument,
+   * or (options.bounds) every value of a syntactically bounded expression. */
+  const callArguments = (k: number): string[] | null => {
+    if (!is(k, "punct", "(")) return null;
+    if (options.bounds === true) return boundedCallArgument(tokens, k);
+    const literal =
+      is(k + 1, "string") && (is(k + 2, "punct", ")") || is(k + 2, "punct", ","))
+        ? at(k + 1)!.value
+        : null;
+    return literal === null ? null : [literal];
+  };
   // `const r = createRequire(...)` declares a require function of the
   // module: calls of `r` load modules as require() calls do.
   const aliases = new Set<string>();
@@ -661,9 +851,9 @@ export function scanModuleSpecifiers(text: string): ModuleSpecifierScan {
         computed.push({ at: t.at, form: "require as a value" });
         continue;
       }
-      const literal = literalCall(call);
-      if (literal === null) computed.push({ at: t.at, form: `${form} with a computed specifier` });
-      else specifiers.push(literal);
+      const values = callArguments(call);
+      if (values === null) computed.push({ at: t.at, form: `${form} with a computed specifier` });
+      else specifiers.push(...values);
       continue;
     }
     if (t.value === "createRequire" && !member && is(k + 1, "punct", "(")) {
@@ -674,18 +864,18 @@ export function scanModuleSpecifiers(text: string): ModuleSpecifierScan {
       if (is(k + 1, "punct", ".")) {
         // import.meta.resolve() names a module, as require.resolve() does.
         if (is(k + 2, "name", "meta") && is(k + 3, "punct", ".") && is(k + 4, "name", "resolve")) {
-          const literal = literalCall(k + 5);
-          if (literal !== null) specifiers.push(literal);
+          const values = callArguments(k + 5);
+          if (values !== null) specifiers.push(...values);
           else if (is(k + 5, "punct", "("))
             computed.push({ at: t.at, form: "import.meta.resolve() with a computed specifier" });
         }
         continue;
       }
       if (is(k + 1, "punct", "(")) {
-        const literal = literalCall(k + 1);
-        if (literal === null)
+        const values = callArguments(k + 1);
+        if (values === null)
           computed.push({ at: t.at, form: "import() with a computed specifier" });
-        else specifiers.push(literal);
+        else specifiers.push(...values);
         continue;
       }
       if (is(k + 1, "string")) {

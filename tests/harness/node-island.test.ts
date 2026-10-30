@@ -195,6 +195,29 @@ describe.skipIf(skip)("Node islands in-process", () => {
     expect((await run(join(moved, "app"), [], env)).stdout).toBe(`${before}\n42\n${after}\ndone\n`);
   });
 
+  test("a bounded import() names a program module the island shares", async () => {
+    // The island loads its module through a syntactically bounded argument
+    // (`"./bounded" + "-dyn.mjs"`), so the module it names is provided to
+    // the island instead of refused, and both sides write the one instance.
+    const app = await build(
+      "bounded-import",
+      undefined,
+      join(repoRoot, "tests/fixtures/node-island/bounded-import.ts"),
+    );
+    expect(await run(app, [])).toEqual({
+      stdout: [
+        'main 1 "main-1"',
+        "island main-1 -> 2 ns=2",
+        'main after true "main-1,island-dyn"',
+        "island again main-1,island-dyn -> 3 ns=3",
+        'main end "main-1,island-dyn,island-dyn"',
+        "",
+      ].join("\n"),
+      stderr: "",
+      code: 0,
+    });
+  }, 300_000);
+
   test("a missing pack fails the first call", async () => {
     const result = await run(binary, [], {
       ...process.env,

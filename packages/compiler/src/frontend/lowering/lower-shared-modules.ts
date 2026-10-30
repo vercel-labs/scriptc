@@ -430,8 +430,9 @@ export function sharedModulePlans(lowerer: Lowerer): SharedModulePlan[] {
       continue;
     }
     // Specifiers in code only: a comment or a string that looks like an
-    // import names no module.
-    for (const spec of scanModuleSpecifiers(text).specifiers) {
+    // import names no module. A bounded argument names one module per value
+    // (SPEC §5.3): a compiled module it names is shared, not duplicated.
+    for (const spec of scanModuleSpecifiers(text, { bounds: true }).specifiers) {
       for (const target of resolveAll(file, spec)) {
         const sf = compiled.get(target);
         if (sf !== undefined) {

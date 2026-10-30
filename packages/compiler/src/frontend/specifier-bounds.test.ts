@@ -76,6 +76,50 @@ export {};
   ).toEqual([]);
 });
 
+test("the whitelisted String methods fold a bounded receiver and arguments", () => {
+  expect(
+    features(`
+const NAME = "PATH";
+const spaced = " node:os ".trim();
+async function main(): Promise<void> {
+  await import("node:" + NAME.toLowerCase());
+  await import("NODE:PATH".toUpperCase().toLowerCase());
+  await import("node:PATH".replace("PATH", "path"));
+  await import("node:pa_th".replaceAll("_", ""));
+  await import("node_os".replace(/node_/, "node:"));
+  await import(spaced);
+  await import("node:os-extra".slice(0, 7));
+  await import("node:os-extra".slice(0, -6));
+  await import("node:".concat("os"));
+  await import("node:".concat(NAME.toLowerCase()));
+}
+void main();
+export {};
+`),
+  ).toEqual([]);
+});
+
+test("a String call the fold cannot evaluate names the source that stops it", () => {
+  expect(
+    unboundedWhys(`
+const pad = process.env.SCRIPTC_PAD ?? "0";
+async function main(): Promise<void> {
+  await import("node:path".padEnd(9));
+  await import("node:path".slice(process.argv.length));
+  await import("node:path".replace(process.env.SCRIPTC_SPEC ?? "p", "x"));
+  await import("node:path".concat(pad));
+}
+void main();
+export {};
+`),
+  ).toEqual([
+    "(a value read from `process.env`)",
+    "(the result of `padEnd(...)`)",
+    "(the result of `replace(...)`)",
+    "(the result of `slice(...)`)",
+  ]);
+});
+
 test("every unbounded form names the first source that stops it", () => {
   expect(
     unboundedWhys(`
